@@ -36,9 +36,6 @@ def is_protected_branch(branch: str | None) -> bool:
 # Commands that destroy git history or bypass quality gates
 DESTRUCTIVE_GIT = [
     ("git reset --hard", "Destroys all uncommitted work. Use 'git stash' first."),
-    ("git clean -f", "Deletes untracked files permanently. Use 'git clean -n' to preview."),
-    ("git push --force ", "Overwrites remote history. Use '--force-with-lease' instead."),
-    ("git push -f ", "Overwrites remote history. Use '--force-with-lease' instead."),
     ("git stash drop", "Permanently deletes stashed changes."),
     ("git stash clear", "Permanently deletes ALL stashed changes."),
     ("gh pr merge", "Merges PR. Run manually to review."),
@@ -49,12 +46,7 @@ DANGEROUS_FLAGS = [
     ("--no-verify", "Skips git hooks. Hooks enforce quality gates — don't bypass them."),
 ]
 
-SAFE_PATTERNS = [
-    "--force-with-lease",
-    "--force-if-includes",
-    "git clean -n",
-    "git clean --dry-run",
-]
+SAFE_FORCE_FLAGS = ("--force-with-lease", "--force-if-includes")
 
 
 def check_push_protection(cmd: str) -> tuple[bool, str]:
@@ -101,14 +93,35 @@ def check_rebase_protection(cmd: str) -> tuple[bool, str]:
     return False, ""
 
 
+def check_force_push_protection(cmd: str) -> tuple[bool, str]:
+    """Block force pushes unless explicit safety flags are used."""
+    if not re.match(r"^git\s+push\b", cmd):
+        return False, ""
+
+    has_force = re.search(r"(^|\s)(-f|--force)(\s|$)", cmd)
+    if not has_force:
+        return False, ""
+
+    if any(flag in cmd for flag in SAFE_FORCE_FLAGS):
+        return False, ""
+
+    return True, "Overwrites remote history. Use '--force-with-lease' instead."
+
+
+def check_clean_protection(cmd: str) -> tuple[bool, str]:
+    """Block destructive git clean invocations."""
+    if not re.match(r"^git\s+clean\b", cmd):
+        return False, ""
+
+    if " -n" in cmd or "--dry-run" in cmd:
+        return False, ""
+
+    return True, "git clean deletes untracked files permanently. Use 'git clean -n' to preview."
+
+
 def check_command(cmd: str) -> tuple[bool, str]:
     if not cmd:
         return False, ""
-
-    # Allow safe patterns
-    for safe in SAFE_PATTERNS:
-        if safe in cmd:
-            return False, ""
 
     # Check push protection
     blocked, reason = check_push_protection(cmd)
@@ -117,6 +130,16 @@ def check_command(cmd: str) -> tuple[bool, str]:
 
     # Check rebase protection
     blocked, reason = check_rebase_protection(cmd)
+    if blocked:
+        return True, reason
+
+    # Check force-push protection
+    blocked, reason = check_force_push_protection(cmd)
+    if blocked:
+        return True, reason
+
+    # Check git clean protection
+    blocked, reason = check_clean_protection(cmd)
     if blocked:
         return True, reason
 

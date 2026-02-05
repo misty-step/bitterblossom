@@ -21,8 +21,6 @@ set -euo pipefail
 #   ./scripts/dispatch.sh <sprite> --stop                      # Stop Ralph loop
 #   ./scripts/dispatch.sh <sprite> --status                    # Check sprite
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 SPRITE_CLI="${SPRITE_CLI:-sprite}"
 ORG="${FLY_ORG:-misty-step}"
 REMOTE_HOME="/home/sprite"
@@ -38,7 +36,6 @@ sprite_exists() {
 # Generate a Ralph loop PROMPT.md with task-specific content
 generate_ralph_prompt() {
     local task="$1"
-    local repo="${2:-}"
 
     cat << RALPH_EOF
 # Task
@@ -73,6 +70,34 @@ If something is ambiguous, make your best judgment call and document the decisio
 RALPH_EOF
 }
 
+setup_repo() {
+    local name="$1"
+    local repo="$2"
+
+    log "Setting up repo: $repo"
+    "$SPRITE_CLI" exec -o "$ORG" -s "$name" -- bash -c \
+        "cd $WORKSPACE && \
+         if [ -d '$(basename "$repo")' ]; then \
+             cd '$(basename "$repo")' && git fetch origin && git pull --ff-only; \
+         else \
+             gh repo clone '$repo'; \
+         fi"
+}
+
+upload_prompt() {
+    local name="$1"
+    local prompt="$2"
+    local remote_path="$3"
+    local tmp_prompt
+
+    tmp_prompt="$(mktemp)"
+    printf '%s' "$prompt" > "$tmp_prompt"
+    "$SPRITE_CLI" exec -o "$ORG" -s "$name" \
+        -file "$tmp_prompt:$remote_path" \
+        -- echo "prompt uploaded"
+    rm -f "$tmp_prompt"
+}
+
 # Start a Ralph loop on a sprite
 start_ralph() {
     local name="$1"
@@ -84,7 +109,7 @@ start_ralph() {
     # Upload the PROMPT.md
     local tmp_prompt
     tmp_prompt="$(mktemp)"
-    generate_ralph_prompt "$prompt" "$repo" > "$tmp_prompt"
+    generate_ralph_prompt "$prompt" > "$tmp_prompt"
 
     "$SPRITE_CLI" exec -o "$ORG" -s "$name" \
         -file "$tmp_prompt:$WORKSPACE/PROMPT.md" \
@@ -93,14 +118,7 @@ start_ralph() {
 
     # If repo specified, clone/pull it
     if [[ -n "$repo" ]]; then
-        log "Setting up repo: $repo"
-        "$SPRITE_CLI" exec -o "$ORG" -s "$name" -- bash -c \
-            "cd $WORKSPACE && \
-             if [ -d '$(basename "$repo")' ]; then \
-                 cd '$(basename "$repo")' && git fetch && git pull --rebase; \
-             else \
-                 gh repo clone '$repo'; \
-             fi"
+        setup_repo "$name" "$repo"
     fi
 
     # Create the Ralph loop runner script on the sprite
@@ -229,18 +247,27 @@ check_status() {
 dispatch_oneshot() {
     local name="$1"
     local prompt="$2"
+    local repo="${3:-}"
+    local remote_prompt="$WORKSPACE/.dispatch-prompt.md"
 
     log "=== One-shot dispatch to $name ==="
     log "Prompt: ${prompt:0:200}$([ ${#prompt} -gt 200 ] && echo '...')"
     log ""
 
+    if [[ -n "$repo" ]]; then
+        setup_repo "$name" "$repo"
+    fi
+
+    upload_prompt "$name" "$prompt" "$remote_prompt"
+
     "$SPRITE_CLI" exec -o "$ORG" -s "$name" -- bash -c \
         "cd $WORKSPACE && \
-         script -q -c 'claude -p --permission-mode bypassPermissions \"$(echo "$prompt" | sed "s/\"/\\\\\"/g")\"' /dev/null 2>&1 | \
+         script -q -c 'claude -p --permission-mode bypassPermissions \"\$(cat .dispatch-prompt.md)\"' /dev/null 2>&1 | \
          sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' | \
          sed 's/\x1b\][0-9;]*[^\x07]*\x07//g' | \
          tr -d '\r' | \
-         grep -v '^\$'"
+         grep -v '^\$'; \
+         rm -f .dispatch-prompt.md"
 
     log ""
     log "=== Done: $name ==="
@@ -285,8 +312,22 @@ ACTION=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --ralph) RALPH=true; shift ;;
-        --repo) REPO="$2"; shift 2 ;;
-        --file) PROMPT_FILE="$2"; shift 2 ;;
+        --repo)
+            if [[ $# -lt 2 ]]; then
+                err "--repo requires a value (<org/repo>)"
+                exit 1
+            fi
+            REPO="$2"
+            shift 2
+            ;;
+        --file)
+            if [[ $# -lt 2 ]]; then
+                err "--file requires a path"
+                exit 1
+            fi
+            PROMPT_FILE="$2"
+            shift 2
+            ;;
         --stop) ACTION="stop"; shift ;;
         --status) ACTION="status"; shift ;;
         *) PROMPT="$*"; break ;;
@@ -316,5 +357,5 @@ fi
 if [[ "$RALPH" == true ]]; then
     start_ralph "$SPRITE_NAME" "$PROMPT" "$REPO"
 else
-    dispatch_oneshot "$SPRITE_NAME" "$PROMPT"
+    dispatch_oneshot "$SPRITE_NAME" "$PROMPT" "$REPO"
 fi
