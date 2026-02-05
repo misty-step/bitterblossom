@@ -1,85 +1,59 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code when working in this repository.
 
 ## What This Is
 
-Bitterblossom is a declarative sprite factory for provisioning and managing a fleet of Fly.io machines running Claude Code agents. It's the configuration layer for OpenClaw (Kaylee), a multi-agent coordinator that routes engineering tasks to specialized sprites.
+Bitterblossom is a declarative sprite factory. It provisions and manages Fly.io Sprites running Claude Code. This is infrastructure-as-config for AI agent orchestration.
 
-This is **not a traditional codebase** — it's infrastructure-as-config for AI agent orchestration. There are no build steps, no tests, no dependencies to install.
+**No build steps, no tests, no dependencies.** Just config, scripts, and documentation.
+
+## Key Concepts
+
+- **Sprites** = Fly.io AI workloads (NOT Machines). Durable 100GB disk, auto-sleep, Claude Code pre-installed.
+- **Compositions** = Team hypotheses. YAML files defining which sprites exist and their preferences.
+- **Base config** = Shared engineering philosophy, hooks, skills inherited by all sprites.
+- **Persona** = Individual sprite identity and specialization (in `sprites/`).
+- **Observations** = Learning journal tracking what works and what doesn't.
 
 ## Architecture
 
 ```
-bitterblossom/
-├── base/              # Shared config inherited by ALL sprites
-│   ├── CLAUDE.md      # Engineering philosophy (sprite prompt)
-│   ├── settings.json  # Claude Code hooks config
-│   ├── hooks/         # Python safety hooks (PreToolUse, PostToolUse, Stop)
-│   ├── skills/        # Reference skills (testing, naming, git, integration)
-│   └── commands/      # Workflow commands (commit)
-├── compositions/      # Team hypotheses as YAML — defines the fleet
-│   └── v1.yaml        # Active: 5 sprites, keyword routing, fallback to bramble
-├── sprites/           # Individual sprite identity + specialization prompts
-├── observations/      # Kaylee's learning journal (manual pattern logging)
-├── scripts/           # Lifecycle: provision.sh, sync.sh, teardown.sh
-└── openclaw/          # Routing config (agents.yaml) + integration docs
+base/              → Shared config pushed to every sprite
+compositions/      → Team hypotheses (YAML)
+sprites/           → Individual persona definitions
+observations/      → Learning journal + experiment archives
+scripts/           → Real lifecycle scripts (provision, sync, teardown, dispatch, status)
+openclaw/          → Integration docs
 ```
 
-**Key relationships:**
-- `compositions/v1.yaml` is the source of truth for fleet configuration
-- `openclaw/agents.yaml` mirrors routing from the composition for Kaylee's runtime use
-- `base/` contents get copied to every sprite machine during provisioning
-- Each sprite gets `base/` + its own `sprites/<name>.md` definition
+## Scripts
 
-## Lifecycle Scripts
+All scripts are real implementations using the `sprite` CLI:
 
-```bash
-./scripts/provision.sh bramble    # Create a Fly.io machine for a sprite
-./scripts/provision.sh --all         # Provision entire fleet
-./scripts/sync.sh                    # Push config updates to running sprites
-./scripts/sync.sh bramble         # Sync specific sprite
-./scripts/teardown.sh bramble     # Decommission (exports MEMORY.md first)
-```
+| Script | Purpose |
+|--------|---------|
+| `provision.sh` | Create sprite + upload config |
+| `sync.sh` | Push config updates to running sprites |
+| `teardown.sh` | Export data + destroy sprite |
+| `dispatch.sh` | Send a task to a sprite |
+| `status.sh` | Fleet overview |
 
-All scripts are **placeholder implementations** (TODO: Fly.io API calls). Structure and validation logic exists; actual machine operations don't yet.
+## Hooks
 
-## Sprites (The Fleet)
-
-5 full-stack agents with specialization preferences. Routing is advisory, not restrictive.
-
-| Sprite | Preference | Fallback |
-|--------|-----------|----------|
-| Bramble | Systems & Data | Default for ambiguous tasks |
-| Willow | Interface & Experience | |
-| Thorn | Quality & Security | |
-| Fern | Platform & Operations | |
-| Moss | Architecture & Evolution | |
-
-## Hooks System
-
-`base/settings.json` wires Python hooks into Claude Code's lifecycle:
+Two safety hooks in `base/hooks/`:
 
 | Hook | Trigger | Purpose |
 |------|---------|---------|
-| `destructive-command-guard.py` | PreToolUse (Bash) | Blocks `rm`, force push, `git reset --hard`, direct push to main |
-| `github-cli-guard.py` | PreToolUse (Bash) | Transforms `gh issue view` to avoid deprecated `projectCards` field |
-| `fast-feedback.py` | PostToolUse (Edit/Write) | Auto-runs type checker after file edits (detects TS/Python/Rust/Go) |
-| `memory-reminder.py` | Stop | Prompts sprite to update MEMORY.md before session ends |
+| `destructive-command-guard.py` | PreToolUse (Bash) | Blocks destructive git ops (force push, direct push to main, rebase, --no-verify) |
+| `fast-feedback.py` | PostToolUse (Edit/Write) | Auto-runs type checker after file edits |
+| `memory-reminder.py` | Stop | Prompts sprite to update MEMORY.md |
 
-Hooks target **Linux** (Fly.io machines), not macOS. The destructive-command-guard uses `trash-cli` not `/usr/bin/trash`.
+**Note:** `rm` is allowed — sprites run on disposable machines. Only git operations are guarded because they affect shared remote state.
 
-## Routing Algorithm
+## Important
 
-1. Extract keywords from task description
-2. Score each sprite by keyword overlap (defined in `openclaw/agents.yaml`)
-3. Apply rule overrides (e.g., "bug" → Thorn, "deploy" → Fern)
-4. Highest score wins; ties use preference match; fallback = Bramble
-
-## Key Constraints
-
-- Fae/fairy naming convention for all sprites and concepts
-- All sprites share a single GitHub account
-- PR review is a separate GitHub Action (multi-model council), not done by sprites
-- Human approval required for composition changes
-- Compositions are hypotheses — designed to be cheap to change and iterate on
+- **Sprites, not Machines.** Use `sprite` CLI, not `fly machines`.
+- **Compositions are hypotheses.** Designed to be cheap to change and test.
+- **OpenClaw routes intelligently.** No programmatic keyword matching — Kaylee decides.
+- **Observation journal is mandatory.** Every experiment needs data.
