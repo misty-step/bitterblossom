@@ -1,0 +1,83 @@
+# OpenClaw Multi-Agent Routing Configuration
+# Kaylee uses this to route tasks to the appropriate sprite.
+
+version: 1
+coordinator: openclaw
+
+routing:
+  strategy: keyword_match
+  fallback: bramblecap
+
+agents:
+  bramblecap:
+    preference: "Systems & Data"
+    keywords:
+      - db, database, sql, query, migration, schema, index
+      - api, endpoint, route, rest, graphql, websocket
+      - performance, cache, optimize, latency, throughput
+      - server, backend, service, worker, queue
+      - data, model, relation, aggregate, pipeline
+    weight: 1.0
+
+  willowwisp:
+    preference: "Interface & Experience"
+    keywords:
+      - ui, component, button, form, modal, dialog, page
+      - css, tailwind, style, layout, responsive, grid, flex
+      - accessibility, a11y, aria, semantic, screen reader
+      - animation, transition, interaction, hover, focus
+      - design, theme, token, color, typography, spacing
+    weight: 1.0
+
+  thornguard:
+    preference: "Quality & Security"
+    keywords:
+      - test, spec, coverage, tdd, jest, vitest, pytest
+      - security, vulnerability, xss, csrf, injection, auth
+      - bug, fix, error, exception, failure, crash, regression
+      - validate, sanitize, guard, check, verify
+      - dependency, audit, cve, upgrade
+    weight: 1.0
+
+  fernweaver:
+    preference: "Platform & Operations"
+    keywords:
+      - ci, cd, pipeline, github actions, workflow, yaml
+      - docker, container, compose, dockerfile, image
+      - deploy, release, rollback, provision, scale
+      - env, environment, secrets, config, variable
+      - monitor, alert, log, metric, observability
+      - fly, vercel, aws, cloud, infrastructure
+    weight: 1.0
+
+  mosshollow:
+    preference: "Architecture & Evolution"
+    keywords:
+      - refactor, simplify, extract, abstract, decouple
+      - architecture, design, pattern, module, boundary
+      - tech debt, complexity, coupling, cohesion
+      - documentation, adr, readme, comment, explain
+      - interface, contract, abstraction, layer
+    weight: 1.0
+
+rules:
+  - name: "Bug reports go to Thornguard"
+    condition: "task contains 'bug' or 'error' or 'broken' or 'fix'"
+    override: thornguard
+    priority: high
+
+  - name: "Deploy tasks go to Fernweaver"
+    condition: "task contains 'deploy' or 'CI' or 'pipeline'"
+    override: fernweaver
+    priority: high
+
+  - name: "Refactor tasks go to Mosshollow"
+    condition: "task contains 'refactor' or 'tech debt' or 'architecture'"
+    override: mosshollow
+    priority: medium
+
+notes: |
+  Routing is advisory, not restrictive. Any sprite can handle any task.
+  Specialization preferences improve quality for domain-specific work
+  but should never block progress. If the preferred sprite is busy,
+  route to the next best match or the fallback.

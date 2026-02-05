@@ -1,0 +1,127 @@
+# Bitterblossom Composition v1
+# Hypothesis: 5 full-stack sprites with specialization preferences
+# All can handle any task; preferences guide routing, not restrict capability.
+
+version: 1
+name: "Fae Court v1"
+created: 2026-02-05
+status: active
+
+base:
+  claude_md: base/CLAUDE.md
+  settings: base/settings.json
+  hooks:
+    - base/hooks/destructive-command-guard.py
+    - base/hooks/fast-feedback.py
+    - base/hooks/github-cli-guard.py
+    - base/hooks/memory-reminder.py
+  skills:
+    - base/skills/testing-philosophy
+    - base/skills/naming-conventions
+    - base/skills/git-mastery
+    - base/skills/external-integration
+  commands:
+    - base/commands/commit.md
+
+sprites:
+  bramblecap:
+    definition: sprites/bramblecap.md
+    preference: "Systems & Data"
+    philosophy: "Deep foundations. Fast, correct, scalable."
+    routes_when:
+      - database queries, migrations, schema changes
+      - API endpoint design or implementation
+      - performance optimization, caching
+      - server-side business logic
+      - data pipelines, ETL
+    keywords:
+      - db, database, sql, query, migration, schema
+      - api, endpoint, route, rest, graphql
+      - performance, cache, index, optimize
+      - server, backend, service
+    extra_skills:
+      - external-integration
+
+  willowwisp:
+    definition: sprites/willowwisp.md
+    preference: "Interface & Experience"
+    philosophy: "Craft matters. Every detail serves the user."
+    routes_when:
+      - UI component creation or modification
+      - styling, layout, responsive design
+      - accessibility improvements
+      - animation and interaction
+      - design system implementation
+    keywords:
+      - ui, component, button, form, modal, page
+      - css, tailwind, style, layout, responsive
+      - accessibility, a11y, aria, semantic
+      - animation, transition, interaction
+      - design, theme, token
+    extra_skills: []
+
+  thornguard:
+    definition: sprites/thornguard.md
+    preference: "Quality & Security"
+    philosophy: "Defend the system. Trust nothing external."
+    routes_when:
+      - writing or improving tests
+      - security audits or vulnerability fixes
+      - bug investigation and resolution
+      - error handling improvements
+      - input validation, sanitization
+    keywords:
+      - test, spec, coverage, tdd, jest, vitest
+      - security, vulnerability, xss, csrf, injection
+      - bug, fix, error, exception, failure
+      - validate, sanitize, guard
+      - dependency, audit, cve
+    extra_skills:
+      - external-integration
+
+  fernweaver:
+    definition: sprites/fernweaver.md
+    preference: "Platform & Operations"
+    philosophy: "Automate the boring. Make deployment invisible."
+    routes_when:
+      - CI/CD pipeline creation or debugging
+      - Docker/container configuration
+      - deployment scripts and automation
+      - environment variable management
+      - monitoring and alerting
+    keywords:
+      - ci, cd, pipeline, github actions, workflow
+      - docker, container, compose, dockerfile
+      - deploy, release, rollback, provision
+      - env, environment, secrets, config
+      - monitor, alert, log, observability
+      - fly, vercel, aws, infrastructure
+    extra_skills:
+      - external-integration
+
+  mosshollow:
+    definition: sprites/mosshollow.md
+    preference: "Architecture & Evolution"
+    philosophy: "Simplify relentlessly. Codebases should want to be extended."
+    routes_when:
+      - code refactoring and simplification
+      - technical debt reduction
+      - architecture decisions and design
+      - documentation creation or improvement
+      - module boundary redesign
+    keywords:
+      - refactor, simplify, extract, abstract
+      - architecture, design, pattern, module
+      - tech debt, complexity, coupling
+      - documentation, adr, readme
+      - boundary, interface, contract
+    extra_skills: []
+
+routing:
+  strategy: keyword_match
+  fallback: bramblecap  # Systems sprite handles ambiguous tasks
+  notes: |
+    OpenClaw matches task description keywords against sprite keyword lists.
+    Highest match score wins. Ties go to the sprite whose preference
+    most closely matches the task category. Fallback to bramblecap
+    for truly ambiguous tasks (systems work is the safest default).
