@@ -1,7 +1,14 @@
 {
   "permissions": {
-    "allow": [],
-    "deny": []
+    "defaultMode": "bypassPermissions"
+  },
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://api.moonshot.ai/anthropic",
+    "ANTHROPIC_AUTH_TOKEN": "sk-nzZv1NVUUKiSAiaMUkmS5wMZlE0zmXAwDkrDngTACvJP6BEu",
+    "ANTHROPIC_MODEL": "kimi-k2.5",
+    "ANTHROPIC_SMALL_FAST_MODEL": "kimi-k2.5",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "API_TIMEOUT_MS": "600000"
   },
   "hooks": {
     "PreToolUse": [
@@ -10,11 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 hooks/destructive-command-guard.py"
-          },
-          {
-            "type": "command",
-            "command": "python3 hooks/github-cli-guard.py"
+            "command": "python3 /home/sprite/.claude/hooks/destructive-command-guard.py"
           }
         ]
       }
@@ -25,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 hooks/fast-feedback.py"
+            "command": "python3 /home/sprite/.claude/hooks/fast-feedback.py"
           }
         ]
       }
@@ -36,7 +39,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 hooks/memory-reminder.py"
+            "command": "python3 /home/sprite/.claude/hooks/memory-reminder.py"
           }
         ]
       }
