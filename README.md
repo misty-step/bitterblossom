@@ -50,13 +50,13 @@ bitterblossom/
 ./scripts/provision.sh --all
 
 # Provision a single sprite
-./scripts/provision.sh bramblecap
+./scripts/provision.sh bramble
 
 # Sync config updates to running fleet
 ./scripts/sync.sh
 
 # Decommission a sprite
-./scripts/teardown.sh bramblecap
+./scripts/teardown.sh bramble
 ```
 
 ## Composition Philosophy
@@ -65,10 +65,10 @@ bitterblossom/
 
 | Sprite | Preference | Routes When |
 |--------|-----------|-------------|
-| **Bramblecap** | Systems & Data | DB, APIs, performance, server logic |
-| **Willowwisp** | Interface & Experience | UI, components, accessibility, design |
-| **Thornguard** | Quality & Security | Tests, security, bugs, error handling |
-| **Fernweaver** | Platform & Operations | CI/CD, deploy, Docker, environments |
-| **Mosshollow** | Architecture & Evolution | Refactoring, tech debt, design, docs |
+| **Bramble** | Systems & Data | DB, APIs, performance, server logic |
+| **Willow** | Interface & Experience | UI, components, accessibility, design |
+| **Thorn** | Quality & Security | Tests, security, bugs, error handling |
+| **Fern** | Platform & Operations | CI/CD, deploy, Docker, environments |
+| **Moss** | Architecture & Evolution | Refactoring, tech debt, design, docs |
 
 See `compositions/v1.yaml` for full details.

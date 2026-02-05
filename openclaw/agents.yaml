@@ -6,10 +6,10 @@ coordinator: openclaw
 
 routing:
   strategy: keyword_match
-  fallback: bramblecap
+  fallback: bramble
 
 agents:
-  bramblecap:
+  bramble:
     preference: "Systems & Data"
     keywords:
       - db, database, sql, query, migration, schema, index
@@ -19,7 +19,7 @@ agents:
       - data, model, relation, aggregate, pipeline
     weight: 1.0
 
-  willowwisp:
+  willow:
     preference: "Interface & Experience"
     keywords:
       - ui, component, button, form, modal, dialog, page
@@ -29,7 +29,7 @@ agents:
       - design, theme, token, color, typography, spacing
     weight: 1.0
 
-  thornguard:
+  thorn:
     preference: "Quality & Security"
     keywords:
       - test, spec, coverage, tdd, jest, vitest, pytest
@@ -39,7 +39,7 @@ agents:
       - dependency, audit, cve, upgrade
     weight: 1.0
 
-  fernweaver:
+  fern:
     preference: "Platform & Operations"
     keywords:
       - ci, cd, pipeline, github actions, workflow, yaml
@@ -50,7 +50,7 @@ agents:
       - fly, vercel, aws, cloud, infrastructure
     weight: 1.0
 
-  mosshollow:
+  moss:
     preference: "Architecture & Evolution"
     keywords:
       - refactor, simplify, extract, abstract, decouple
@@ -61,19 +61,19 @@ agents:
     weight: 1.0
 
 rules:
-  - name: "Bug reports go to Thornguard"
+  - name: "Bug reports go to Thorn"
     condition: "task contains 'bug' or 'error' or 'broken' or 'fix'"
-    override: thornguard
+    override: thorn
     priority: high
 
-  - name: "Deploy tasks go to Fernweaver"
+  - name: "Deploy tasks go to Fern"
     condition: "task contains 'deploy' or 'CI' or 'pipeline'"
-    override: fernweaver
+    override: fern
     priority: high
 
-  - name: "Refactor tasks go to Mosshollow"
+  - name: "Refactor tasks go to Moss"
     condition: "task contains 'refactor' or 'tech debt' or 'architecture'"
-    override: mosshollow
+    override: moss
     priority: medium
 
 notes: |

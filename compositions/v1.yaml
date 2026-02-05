@@ -24,8 +24,8 @@ base:
     - base/commands/commit.md
 
 sprites:
-  bramblecap:
-    definition: sprites/bramblecap.md
+  bramble:
+    definition: sprites/bramble.md
     preference: "Systems & Data"
     philosophy: "Deep foundations. Fast, correct, scalable."
     routes_when:
@@ -42,8 +42,8 @@ sprites:
     extra_skills:
       - external-integration
 
-  willowwisp:
-    definition: sprites/willowwisp.md
+  willow:
+    definition: sprites/willow.md
     preference: "Interface & Experience"
     philosophy: "Craft matters. Every detail serves the user."
     routes_when:
@@ -60,8 +60,8 @@ sprites:
       - design, theme, token
     extra_skills: []
 
-  thornguard:
-    definition: sprites/thornguard.md
+  thorn:
+    definition: sprites/thorn.md
     preference: "Quality & Security"
     philosophy: "Defend the system. Trust nothing external."
     routes_when:
@@ -79,8 +79,8 @@ sprites:
     extra_skills:
       - external-integration
 
-  fernweaver:
-    definition: sprites/fernweaver.md
+  fern:
+    definition: sprites/fern.md
     preference: "Platform & Operations"
     philosophy: "Automate the boring. Make deployment invisible."
     routes_when:
@@ -99,8 +99,8 @@ sprites:
     extra_skills:
       - external-integration
 
-  mosshollow:
-    definition: sprites/mosshollow.md
+  moss:
+    definition: sprites/moss.md
     preference: "Architecture & Evolution"
     philosophy: "Simplify relentlessly. Codebases should want to be extended."
     routes_when:
@@ -119,9 +119,9 @@ sprites:
 
 routing:
   strategy: keyword_match
-  fallback: bramblecap  # Systems sprite handles ambiguous tasks
+  fallback: bramble  # Systems sprite handles ambiguous tasks
   notes: |
     OpenClaw matches task description keywords against sprite keyword lists.
     Highest match score wins. Ties go to the sprite whose preference
-    most closely matches the task category. Fallback to bramblecap
+    most closely matches the task category. Fallback to bramble
     for truly ambiguous tasks (systems work is the safest default).

@@ -8,9 +8,9 @@ Kaylee reads `agents.yaml` to match incoming tasks to sprites. The routing algor
 
 1. Extract keywords from task description
 2. Score each sprite by keyword overlap with their keyword list
-3. Apply rule overrides (high-priority patterns like "bug" → Thornguard)
+3. Apply rule overrides (high-priority patterns like "bug" → Thorn)
 4. Route to highest-scoring sprite
-5. If tied or no match, use fallback (Bramblecap)
+5. If tied or no match, use fallback (Bramble)
 
 ## Task Lifecycle
 

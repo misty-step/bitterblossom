@@ -19,7 +19,7 @@ bitterblossom/
 │   ├── skills/        # Reference skills (testing, naming, git, integration)
 │   └── commands/      # Workflow commands (commit)
 ├── compositions/      # Team hypotheses as YAML — defines the fleet
-│   └── v1.yaml        # Active: 5 sprites, keyword routing, fallback to bramblecap
+│   └── v1.yaml        # Active: 5 sprites, keyword routing, fallback to bramble
 ├── sprites/           # Individual sprite identity + specialization prompts
 ├── observations/      # Kaylee's learning journal (manual pattern logging)
 ├── scripts/           # Lifecycle: provision.sh, sync.sh, teardown.sh
@@ -35,11 +35,11 @@ bitterblossom/
 ## Lifecycle Scripts
 
 ```bash
-./scripts/provision.sh bramblecap    # Create a Fly.io machine for a sprite
+./scripts/provision.sh bramble    # Create a Fly.io machine for a sprite
 ./scripts/provision.sh --all         # Provision entire fleet
 ./scripts/sync.sh                    # Push config updates to running sprites
-./scripts/sync.sh bramblecap         # Sync specific sprite
-./scripts/teardown.sh bramblecap     # Decommission (exports MEMORY.md first)
+./scripts/sync.sh bramble         # Sync specific sprite
+./scripts/teardown.sh bramble     # Decommission (exports MEMORY.md first)
 ```
 
 All scripts are **placeholder implementations** (TODO: Fly.io API calls). Structure and validation logic exists; actual machine operations don't yet.
@@ -50,11 +50,11 @@ All scripts are **placeholder implementations** (TODO: Fly.io API calls). Struct
 
 | Sprite | Preference | Fallback |
 |--------|-----------|----------|
-| Bramblecap | Systems & Data | Default for ambiguous tasks |
-| Willowwisp | Interface & Experience | |
-| Thornguard | Quality & Security | |
-| Fernweaver | Platform & Operations | |
-| Mosshollow | Architecture & Evolution | |
+| Bramble | Systems & Data | Default for ambiguous tasks |
+| Willow | Interface & Experience | |
+| Thorn | Quality & Security | |
+| Fern | Platform & Operations | |
+| Moss | Architecture & Evolution | |
 
 ## Hooks System
 
@@ -73,8 +73,8 @@ Hooks target **Linux** (Fly.io machines), not macOS. The destructive-command-gua
 
 1. Extract keywords from task description
 2. Score each sprite by keyword overlap (defined in `openclaw/agents.yaml`)
-3. Apply rule overrides (e.g., "bug" → Thornguard, "deploy" → Fernweaver)
-4. Highest score wins; ties use preference match; fallback = Bramblecap
+3. Apply rule overrides (e.g., "bug" → Thorn, "deploy" → Fern)
+4. Highest score wins; ties use preference match; fallback = Bramble
 
 ## Key Constraints
 
