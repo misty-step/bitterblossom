@@ -18,11 +18,45 @@ BASE_DIR="$ROOT_DIR/base"
 SPRITE_CLI="${SPRITE_CLI:-sprite}"
 ORG="${FLY_ORG:-misty-step}"
 REMOTE_HOME="/home/sprite"
+SETTINGS_PATH="$BASE_DIR/settings.json"
+RENDERED_SETTINGS=""
 
 BASE_ONLY=false
 
 log() { echo "[bitterblossom:sync] $*"; }
 err() { echo "[bitterblossom:sync] ERROR: $*" >&2; }
+
+cleanup() {
+    if [[ -n "$RENDERED_SETTINGS" && -f "$RENDERED_SETTINGS" ]]; then
+        rm -f "$RENDERED_SETTINGS"
+    fi
+}
+
+prepare_settings() {
+    local token="${ANTHROPIC_AUTH_TOKEN:-}"
+    if [[ -z "$token" ]]; then
+        err "ANTHROPIC_AUTH_TOKEN is required to sync settings.json"
+        err "Export it in your shell before running this script."
+        exit 1
+    fi
+
+    RENDERED_SETTINGS="$(mktemp)"
+    python3 - "$BASE_DIR/settings.json" "$RENDERED_SETTINGS" "$token" <<'PY'
+import json
+import sys
+
+source_path, out_path, token = sys.argv[1:]
+with open(source_path, "r", encoding="utf-8") as source_file:
+    settings = json.load(source_file)
+
+settings.setdefault("env", {})["ANTHROPIC_AUTH_TOKEN"] = token
+
+with open(out_path, "w", encoding="utf-8") as out_file:
+    json.dump(settings, out_file, indent=2)
+    out_file.write("\n")
+PY
+    SETTINGS_PATH="$RENDERED_SETTINGS"
+}
 
 upload_file() {
     local sprite_name="$1" local_path="$2" remote_path="$3"
@@ -35,7 +69,7 @@ upload_dir() {
     local sprite_name="$1" local_dir="$2" remote_dir="$3"
     "$SPRITE_CLI" exec -o "$ORG" -s "$sprite_name" -- mkdir -p "$remote_dir"
     find "$local_dir" -type f | while read -r file; do
-        local rel="${file#$local_dir/}"
+        local rel="${file#"$local_dir"/}"
         local dest="$remote_dir/$rel"
         local parent
         parent="$(dirname "$dest")"
@@ -76,7 +110,7 @@ sync_sprite() {
 
     # Sync settings.json
     log "Syncing Claude Code settings..."
-    upload_file "$name" "$BASE_DIR/settings.json" "$REMOTE_HOME/.claude/settings.json"
+    upload_file "$name" "$SETTINGS_PATH" "$REMOTE_HOME/.claude/settings.json"
 
     # Sync persona definition (unless --base-only)
     if [[ "$BASE_ONLY" == false ]]; then
@@ -109,6 +143,8 @@ for arg in "$@"; do
 done
 
 if [[ ${#TARGETS[@]} -eq 0 ]]; then
+    trap cleanup EXIT
+    prepare_settings
     log "Syncing all sprites..."
     for def in "$SPRITES_DIR"/*.md; do
         name="$(basename "$def" .md)"
@@ -117,6 +153,8 @@ if [[ ${#TARGETS[@]} -eq 0 ]]; then
     done
     log "All sprites synced."
 else
+    trap cleanup EXIT
+    prepare_settings
     for name in "${TARGETS[@]}"; do
         sync_sprite "$name"
         echo ""

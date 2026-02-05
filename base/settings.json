@@ -4,7 +4,7 @@
   },
   "env": {
     "ANTHROPIC_BASE_URL": "https://api.moonshot.ai/anthropic",
-    "ANTHROPIC_AUTH_TOKEN": "sk-nzZv1NVUUKiSAiaMUkmS5wMZlE0zmXAwDkrDngTACvJP6BEu",
+    "ANTHROPIC_AUTH_TOKEN": "__SET_VIA_ANTHROPIC_AUTH_TOKEN_ENV__",
     "ANTHROPIC_MODEL": "kimi-k2.5",
     "ANTHROPIC_SMALL_FAST_MODEL": "kimi-k2.5",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
