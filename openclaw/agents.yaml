@@ -1,83 +1,72 @@
-# OpenClaw Multi-Agent Routing Configuration
-# Kaylee uses this to route tasks to the appropriate sprite.
+# Bitterblossom Fleet — OpenClaw Reference
+#
+# This is a reference for Kaylee (OpenClaw) when deciding where to route work.
+# Routing is INTELLIGENT, not programmatic. Kaylee reads this for context
+# about each sprite's strengths, then makes her own judgment call.
+#
+# Any sprite can handle any task. Preferences improve quality but never block.
 
 version: 1
 coordinator: openclaw
 
 routing:
-  strategy: keyword_match
-  fallback: bramble
+  strategy: intelligent  # Kaylee decides, not keywords
+  fallback: bramble      # Default for truly ambiguous tasks
 
-agents:
+sprites:
   bramble:
     preference: "Systems & Data"
-    keywords:
-      - db, database, sql, query, migration, schema, index
-      - api, endpoint, route, rest, graphql, websocket
-      - performance, cache, optimize, latency, throughput
-      - server, backend, service, worker, queue
-      - data, model, relation, aggregate, pipeline
-    weight: 1.0
+    strengths:
+      - Database design, queries, migrations, schema evolution
+      - API endpoint design and implementation
+      - Performance optimization, caching, indexing
+      - Server-side business logic
+      - Data pipelines and aggregation
+    personality: "Deep foundations. Fast, correct, scalable."
 
   willow:
     preference: "Interface & Experience"
-    keywords:
-      - ui, component, button, form, modal, dialog, page
-      - css, tailwind, style, layout, responsive, grid, flex
-      - accessibility, a11y, aria, semantic, screen reader
-      - animation, transition, interaction, hover, focus
-      - design, theme, token, color, typography, spacing
-    weight: 1.0
+    strengths:
+      - UI component creation and styling
+      - Responsive design, layout, accessibility
+      - Animation and interaction design
+      - Design system implementation
+      - User-facing feedback and error messages
+    personality: "Craft matters. Every detail serves the user."
 
   thorn:
     preference: "Quality & Security"
-    keywords:
-      - test, spec, coverage, tdd, jest, vitest, pytest
-      - security, vulnerability, xss, csrf, injection, auth
-      - bug, fix, error, exception, failure, crash, regression
-      - validate, sanitize, guard, check, verify
-      - dependency, audit, cve, upgrade
-    weight: 1.0
+    strengths:
+      - Test-first development, coverage gaps
+      - Security audits, vulnerability fixes
+      - Bug investigation and root-cause analysis
+      - Error handling, input validation
+      - Dependency audit, CVE remediation
+    personality: "Defend the system. Trust nothing external."
 
   fern:
     preference: "Platform & Operations"
-    keywords:
-      - ci, cd, pipeline, github actions, workflow, yaml
-      - docker, container, compose, dockerfile, image
-      - deploy, release, rollback, provision, scale
-      - env, environment, secrets, config, variable
-      - monitor, alert, log, metric, observability
-      - fly, vercel, aws, cloud, infrastructure
-    weight: 1.0
+    strengths:
+      - CI/CD pipeline creation and debugging
+      - Docker/container configuration
+      - Deployment automation, Fly.io config
+      - Environment and secrets management
+      - Monitoring, alerting, observability
+    personality: "Automate the boring. Make deployment invisible."
 
   moss:
     preference: "Architecture & Evolution"
-    keywords:
-      - refactor, simplify, extract, abstract, decouple
-      - architecture, design, pattern, module, boundary
-      - tech debt, complexity, coupling, cohesion
-      - documentation, adr, readme, comment, explain
-      - interface, contract, abstraction, layer
-    weight: 1.0
-
-rules:
-  - name: "Bug reports go to Thorn"
-    condition: "task contains 'bug' or 'error' or 'broken' or 'fix'"
-    override: thorn
-    priority: high
-
-  - name: "Deploy tasks go to Fern"
-    condition: "task contains 'deploy' or 'CI' or 'pipeline'"
-    override: fern
-    priority: high
-
-  - name: "Refactor tasks go to Moss"
-    condition: "task contains 'refactor' or 'tech debt' or 'architecture'"
-    override: moss
-    priority: medium
+    strengths:
+      - Code refactoring and simplification
+      - Technical debt reduction
+      - Architecture decisions, module boundaries
+      - Documentation, ADRs
+      - Pattern extraction and abstraction
+    personality: "Simplify relentlessly. Codebases should want to be extended."
 
 notes: |
-  Routing is advisory, not restrictive. Any sprite can handle any task.
-  Specialization preferences improve quality for domain-specific work
-  but should never block progress. If the preferred sprite is busy,
-  route to the next best match or the fallback.
+  Kaylee: You're smarter than keyword matching. Use your judgment.
+  Consider the task holistically — what domain expertise matters most?
+  When in doubt, Bramble is the safe default (systems work is foundational).
+  If a sprite is already working on a related task in the same repo,
+  route to them for continuity even if another sprite is a better match.
