@@ -36,8 +36,8 @@ Considerations when routing:
 # Complex prompt from file
 ./scripts/dispatch.sh moss --file prompts/refactor-auth.md
 
-# Resume a sprite's last session
-./scripts/dispatch.sh fern --continue
+# Long-running autonomous loop
+./scripts/dispatch.sh fern --ralph "Investigate flaky CI failures and ship a fix"
 ```
 
 ## Observing Results

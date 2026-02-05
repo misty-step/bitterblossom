@@ -105,7 +105,7 @@ All sprites use Kimi K2.5 via Moonshot's Anthropic-compatible API:
 }
 ```
 
-This is set in `base/settings.json` and passed as env vars to Claude Code.
+`base/settings.json` stores non-secret defaults. `ANTHROPIC_AUTH_TOKEN` is injected at provision/sync time from the local `ANTHROPIC_AUTH_TOKEN` environment variable.
 The `model: inherit` in sprite definitions means "use whatever's in settings.json" — i.e., the base model config.
 
 ### Future

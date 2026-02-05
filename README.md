@@ -44,6 +44,9 @@ bitterblossom/
 ## Quick Start
 
 ```bash
+# Required for provision/sync (settings.json is rendered at runtime)
+export ANTHROPIC_AUTH_TOKEN="<moonshot-key>"
+
 # Fleet status
 ./scripts/status.sh
 
