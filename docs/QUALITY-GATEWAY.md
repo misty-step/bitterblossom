@@ -1,152 +1,525 @@
-# Quality Gateway — Autonomous Software Factory Safeguards
+# Quality Gateway — System Design for the Autonomous Software Factory
 
-*The faster we move, the stronger the guardrails need to be.*
+*Last updated: 2026-02-05*
 
 ## Philosophy
 
-High velocity × low quality = expensive rework. High velocity × high quality = compounding advantage.
+**Unix philosophy applied to quality.** Small, composable, well-tested tools. Each does one thing well. Together they form an impenetrable quality barrier. Every tool is version-controlled, documented, and independently testable.
 
-An autonomous software factory shipping code 24/7 requires **more** safeguards than a human team, not fewer. Every layer of automated quality control we add is a layer of trust we earn. The goal: make it structurally difficult to ship bugs.
-
-## The Quality Stack
-
-### Layer 1: Pre-Commit (Developer/Sprite)
-**Goal: Catch problems before they leave the branch.**
-
-- [ ] **Strong typing everywhere** — TypeScript strict mode, Swift strict concurrency
-- [ ] **Exhaustive linting** — ESLint (strictest config), SwiftLint, `tsc --noEmit`
-- [ ] **Pre-commit hooks** — lint + type-check + format on every commit
-- [ ] **Tests pass locally** — sprites must run tests before pushing
-- [ ] **Branch protection** — no direct pushes to master/main, period
-
-### Layer 2: CI/CD Pipeline (GitHub Actions)
-**Goal: Automated, exhaustive verification on every PR.**
-
-- [ ] **Build verification** — clean build with zero warnings (warnings-as-errors)
-- [ ] **Test suite** — all unit + integration tests pass
-- [ ] **Coverage enforcement** — 80% minimum, 90% target, block merge if below threshold
-- [ ] **Linting** — full lint pass (not just changed files)
-- [ ] **Type checking** — full type check pass
-- [ ] **Security scanning** — dependency audit, secret detection
-- [ ] **Cerberus review council** — 5 AI reviewers from different perspectives
-  - Security reviewer (threat modeling, injection, auth)
-  - Architecture reviewer (design, coupling, patterns)
-  - Performance reviewer (complexity, memory, latency)
-  - Quality reviewer (readability, maintainability, edge cases)
-  - Test reviewer (coverage, assertions, scenarios)
-- [ ] **All checks must pass** — zero tolerance for failures
-
-### Layer 3: Review & Merge (Claw)
-**Goal: Human-grade final review with taste and judgment.**
-
-- [ ] **Codex 5.3 xhigh deep review** — architecture, correctness, style
-- [ ] **Cross-PR impact analysis** — does this conflict with other open PRs?
-- [ ] **Manual QA when possible** — build and test the actual app
-- [ ] **Merge only when:** CI green + Cerberus approves + Codex approves
-- [ ] **Squash merge** — clean commit history on master
-
-### Layer 4: Post-Deploy Monitoring
-**Goal: Catch problems that escape pre-deploy checks.**
-
-- [ ] **Error tracking** — Sentry (or equivalent) on all deployed apps
-- [ ] **Error rate alerting** — >5% error rate spike → automatic rollback + notification
-- [ ] **Health checks** — HTTP health endpoints, uptime monitoring
-- [ ] **Log aggregation** — structured logging, easily searchable
-- [ ] **Performance monitoring** — latency p50/p95/p99 tracking
-- [ ] **Webhooks for anomalies** — real-time alerts, not just polling
-  - Sentry webhook → notify Claw of new error spikes
-  - Fly.io alerts → notify on machine crashes/restarts
-  - GitHub webhook → notify on failed deploys
-
-### Layer 5: Continuous Quality Improvement
-**Goal: The system gets better over time.**
-
-- [ ] **Post-mortem on every bug** — what escaped and why? Update checks.
-- [ ] **Coverage ratchet** — coverage threshold can only go up, never down
-- [ ] **Lint rule additions** — when a new class of bug appears, add a lint rule
-- [ ] **Test pattern library** — document testing patterns for sprites to follow
-- [ ] **Cerberus prompt tuning** — improve reviewer prompts based on miss analysis
-
-## Implementation Roadmap
-
-### Phase 1: Foundation (Now)
-- [x] CI/CD exists (GitHub Actions on vox, heartbeat)
-- [x] Cerberus in progress (Phaedrus setting up)
-- [x] Branch protection on repos
-- [ ] **Ralph Loop v2** — sprites self-heal PRs (CI + reviews)
-- [ ] **Claw final review** — Codex 5.3 reviews before merge
-- [ ] **Coverage reporting** — add coverage to CI output
-
-### Phase 2: Enforcement (Next Week)
-- [ ] **Coverage thresholds** — enforce 80% minimum on all repos
-- [ ] **Warnings-as-errors** — zero-warning policy
-- [ ] **SwiftLint for Vox** — strict config
-- [ ] **ESLint strict for TS projects** — all rules cranked up
-- [ ] **Sentry integration** — error tracking on deployed apps
-- [ ] **PR shepherd cron** — check open sprite PRs, re-dispatch if needed
-
-### Phase 3: Observability (Week After)
-- [ ] **Structured logging standard** — JSON logs with correlation IDs
-- [ ] **Fly.io log drains** — aggregate logs to searchable store
-- [ ] **Error rate dashboards** — in Overmind command center
-- [ ] **Webhook alerting** — Sentry → Telegram alerts to Claw
-- [ ] **Auto-rollback** — deploy fails health check → rollback + alert
-
-### Phase 4: Automation (Ongoing)
-- [ ] **Auto-revert on error spike** — >5% error rate → revert last deploy
-- [ ] **Flaky test detection** — quarantine flaky tests, fix them
-- [ ] **Dependency update bot** — automated dependency PRs (Renovate/Dependabot)
-- [ ] **Performance regression detection** — benchmark on every PR
-- [ ] **Coverage ratchet enforcement** — CI blocks if coverage drops
-
-## Per-Project Requirements
-
-### TypeScript Projects (Conviction, Overmind, etc.)
-```json
-// tsconfig.json
-{
-  "compilerOptions": {
-    "strict": true,
-    "noUncheckedIndexedAccess": true,
-    "noImplicitOverride": true,
-    "exactOptionalPropertyTypes": true,
-    "noFallthroughCasesInSwitch": true,
-    "forceConsistentCasingInFileNames": true
-  }
-}
-```
-
-### Swift Projects (Vox)
-```yaml
-# .swiftlint.yml
-strict: true
-opt_in_rules:
-  - force_unwrapping
-  - implicitly_unwrapped_optional
-  - discouraged_optional_boolean
-  - fatal_error_message
-  - unowned_variable_capture
-```
-
-### All Projects
-- README with build/test/deploy instructions
-- CLAUDE.md with architecture and conventions
-- .github/workflows/ci.yml with full check suite
-- Pre-commit hooks (lint + type-check)
-- Minimum 80% test coverage
-
-## Metrics to Track
-
-| Metric | Target | Alert Threshold |
-|--------|--------|----------------|
-| Test coverage | >90% | <80% blocks merge |
-| CI pass rate | >95% | <90% investigate |
-| Error rate (production) | <1% | >5% auto-rollback |
-| Mean time to merge | <4 hours | >24h investigate |
-| PR iteration count | ≤2 rounds | >3 rounds investigate process |
-| Deploy frequency | Multiple/day | <1/week investigate blockers |
+**The faster we ship, the stronger the gates.** An autonomous factory producing code 24/7 needs more safeguards than a human team, not fewer. The goal: make it *structurally difficult* to ship bugs, and *trivially easy* to catch and fix them.
 
 ---
 
-*This document is a living spec. Update it as we learn what works and what doesn't.*
-*Last updated: 2026-02-05*
+## System Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    EVENT SOURCES                             │
+│  GitHub (PRs, CI, pushes) · Fly.io (deploys, health)       │
+│  Sentry (errors, perf) · Sprites (dispatch, completion)     │
+└────────────┬────────────────────────┬───────────────────────┘
+             │                        │
+     ┌───────▼────────┐    ┌─────────▼──────────┐
+     │  GitHub Actions │    │  Claw Cron Jobs     │
+     │  (CI/CD layer)  │    │  (polling layer)    │
+     │                 │    │                     │
+     │ • Build & Test  │    │ • pr-shepherd       │
+     │ • Lint & Type   │    │ • sentry-watcher    │
+     │ • Coverage Gate │    │ • deploy-monitor    │
+     │ • Cerberus      │    │ • fleet-health      │
+     │ • Deploy Gate   │    │                     │
+     └───────┬─────────┘    └─────────┬───────────┘
+             │                        │
+     ┌───────▼────────────────────────▼───────────┐
+     │              CLAW (Coordinator)              │
+     │  OpenClaw main session on Phaedrus's Mac    │
+     │                                              │
+     │  Receives: cron reports, Telegram messages   │
+     │  Actions: dispatch sprites, Codex review,    │
+     │           merge PRs, rollback deploys,       │
+     │           alert Phaedrus                     │
+     └───────┬─────────────────────────┬───────────┘
+             │                         │
+     ┌───────▼────────┐      ┌────────▼──────────┐
+     │  Sprites        │      │  Phaedrus          │
+     │  (executors)    │      │  (via Telegram)    │
+     │  Fix, build,    │      │  Alerts, reports,  │
+     │  test, PR       │      │  approvals         │
+     └────────────────┘      └───────────────────┘
+```
+
+### Why Polling Over Webhooks (For Now)
+
+Webhooks require:
+- A publicly accessible endpoint (NAT traversal, tunnels, or a hosted receiver)
+- A running web server (another thing to monitor and maintain)
+- Webhook secret management and verification
+- Retry logic for failed deliveries
+
+Polling requires:
+- A cron job
+- An API call
+- Done.
+
+**Polling is simpler, more robust, and good enough for 15-minute resolution.** We have `gh` CLI, Sentry API, Fly.io CLI — all already authenticated on this machine. A shell script + cron is the Unix answer.
+
+**When to add webhooks:** Only when 15-minute latency is genuinely unacceptable (e.g., production error spike → immediate rollback). Even then, the simplest webhook receiver is a 20-line Fly.io app that converts webhook → OpenClaw wake event. We build that later, if needed.
+
+---
+
+## The Tools (Unix-Style, Composable)
+
+Each tool is a standalone script. Each can be run manually or via cron. Each outputs structured data (JSON or plain text). Each is independently testable.
+
+### 1. `quality-spec.yml` — Declarative Quality Standard
+
+A YAML file defining the quality bar for each project type. Lives in Bitterblossom, referenced by all other tools.
+
+```yaml
+# bitterblossom/quality/spec.yml
+version: 1
+
+profiles:
+  typescript:
+    ci:
+      required_checks:
+        - build
+        - test
+        - lint
+        - type-check
+        - cerberus
+      coverage_threshold: 80
+      warnings_as_errors: true
+    linting:
+      tool: eslint
+      config: strict  # references bitterblossom/quality/configs/eslint-strict.json
+    typing:
+      strict: true
+      noUncheckedIndexedAccess: true
+      exactOptionalPropertyTypes: true
+    branch_protection:
+      require_pr: true
+      require_checks: true
+      require_reviews: 0  # Cerberus handles review — human review optional
+      block_force_push: true
+      block_deletions: true
+    monitoring:
+      sentry: required
+      health_check: required
+      structured_logging: required
+
+  swift:
+    ci:
+      required_checks:
+        - build-and-test
+        - cerberus
+      coverage_threshold: 80
+      warnings_as_errors: true
+    linting:
+      tool: swiftlint
+      config: strict  # references bitterblossom/quality/configs/.swiftlint-strict.yml
+    branch_protection:
+      require_pr: true
+      require_checks: true
+      require_reviews: 0
+      block_force_push: true
+    monitoring:
+      sentry: optional  # macOS app, harder to instrument
+      structured_logging: required
+
+  static-site:
+    ci:
+      required_checks:
+        - build
+      coverage_threshold: 0
+    branch_protection:
+      require_pr: false  # Simple sites, fast iteration
+```
+
+### 2. `quality-audit` — Check a Repo Against Its Spec
+
+```bash
+#!/bin/bash
+# bitterblossom/scripts/quality-audit.sh
+# Usage: quality-audit.sh <org/repo> <profile>
+# Output: JSON report of what passes and what's missing
+
+REPO=$1
+PROFILE=$2
+
+# Check: Has CI workflow?
+# Check: CI has required checks?
+# Check: Branch protection configured?
+# Check: Linting config present and strict?
+# Check: Coverage above threshold?
+# Check: Sentry configured?
+# Check: CLAUDE.md present?
+# Check: Tests exist?
+
+# Output:
+# { "repo": "misty-step/vox", "profile": "swift",
+#   "checks": [
+#     {"name": "ci_workflow", "status": "pass"},
+#     {"name": "branch_protection", "status": "fail", "detail": "no protection on master"},
+#     {"name": "coverage", "status": "warn", "detail": "62% < 80% threshold"},
+#     ...
+#   ],
+#   "score": "6/10", "grade": "C" }
+```
+
+### 3. `pr-shepherd` — Monitor and Act on Open PRs
+
+```bash
+#!/bin/bash
+# bitterblossom/scripts/pr-shepherd.sh
+# Usage: pr-shepherd.sh
+# Checks all open sprite PRs, reports status, optionally dispatches fixes
+
+# For each open PR by kaylee-mistystep:
+#   1. Check CI status (passing/failing/pending)
+#   2. Check review status (approved/changes_requested/pending)
+#   3. Check age (>24h without activity = stale)
+#   4. If CI failing: extract errors, generate fix prompt
+#   5. If reviews need addressing: extract comments, generate fix prompt
+#   6. If merge-ready: flag for Claw final review
+
+# Output: JSON summary
+# [
+#   {"pr": 155, "repo": "vox", "ci": "failing", "reviews": "changes_requested",
+#    "age_hours": 4, "action_needed": "fix_ci", "fix_prompt": "..."},
+#   {"pr": 156, "repo": "vox", "ci": "passing", "reviews": "approved",
+#    "age_hours": 4, "action_needed": "merge_review"}
+# ]
+```
+
+### 4. `sentry-watcher` — Poll Sentry for Anomalies
+
+```bash
+#!/bin/bash
+# bitterblossom/scripts/sentry-watcher.sh
+# Usage: sentry-watcher.sh
+# Polls Sentry API, reports new/spiking issues
+
+# For each project in misty-step org:
+#   1. Get unresolved issues sorted by date
+#   2. Compare against last check (stored in /tmp/sentry-state.json)
+#   3. Flag: new issues since last check
+#   4. Flag: issues with >5% event rate increase
+#   5. Flag: issues with >100 events in last hour
+
+# Output: JSON alert list
+# [
+#   {"project": "heartbeat", "severity": "critical",
+#    "issue": "TypeError: Cannot read property 'id' of undefined",
+#    "events_1h": 150, "action": "investigate"}
+# ]
+```
+
+### 5. `deploy-monitor` — Check Deployed App Health
+
+```bash
+#!/bin/bash
+# bitterblossom/scripts/deploy-monitor.sh
+# Usage: deploy-monitor.sh
+# Checks health of all Fly.io apps
+
+# For each Fly.io app in misty-step:
+#   1. Check machine status (running/stopped/failed)
+#   2. Hit health endpoint
+#   3. Check recent deploy status
+#   4. Check for restarts/crashes in last hour
+
+# Output: JSON health report
+```
+
+### 6. `repo-scaffold` — Set Up a New Repo with Standards
+
+```bash
+#!/bin/bash
+# bitterblossom/scripts/repo-scaffold.sh
+# Usage: repo-scaffold.sh <name> <profile> [--private]
+# Creates a new repo with full quality infrastructure
+
+# 1. Create GitHub repo
+# 2. Initialize with: README.md, CLAUDE.md, .gitignore, LICENSE
+# 3. Copy CI workflow from template (profile-specific)
+# 4. Copy Cerberus workflow + config
+# 5. Copy linting config (profile-specific)
+# 6. Set up branch protection rules
+# 7. Run quality-audit to verify
+```
+
+---
+
+## Where Things Live
+
+### In Bitterblossom (version-controlled, shared with sprites)
+```
+bitterblossom/
+├── quality/
+│   ├── spec.yml                    # Declarative quality standards
+│   └── configs/
+│       ├── eslint-strict.json      # Shared ESLint config
+│       ├── .swiftlint-strict.yml   # Shared SwiftLint config
+│       ├── tsconfig-strict.json    # Shared TypeScript config
+│       └── ci-templates/
+│           ├── typescript.yml      # CI workflow template for TS
+│           ├── swift.yml           # CI workflow template for Swift
+│           └── cerberus.yml        # Cerberus workflow (copy from cerberus repo)
+├── scripts/
+│   ├── quality-audit.sh
+│   ├── pr-shepherd.sh
+│   ├── sentry-watcher.sh
+│   ├── deploy-monitor.sh
+│   └── repo-scaffold.sh
+├── base/
+│   └── prompts/
+│       └── ralph-loop-v2.md        # Self-healing PR template
+└── docs/
+    └── QUALITY-GATEWAY.md          # This document
+```
+
+### In Each Repo (applied by scaffold or manually)
+```
+repo/
+├── .github/
+│   ├── workflows/
+│   │   ├── ci.yml                  # Build + test + lint + coverage
+│   │   └── cerberus.yml           # AI review council (copied from cerberus/)
+│   └── cerberus/                  # Cerberus config + agents + scripts
+├── CLAUDE.md                      # Project spec for AI agents
+├── .eslintrc.json / .swiftlint.yml  # Strict linting
+└── tsconfig.json                  # Strict typing (if TS)
+```
+
+### On Claw's Machine (OpenClaw crons + local tools)
+```
+~/.openclaw/workspace/
+├── HEARTBEAT.md                   # Periodic check triggers
+└── scripts/                       # Claw-specific operational scripts
+
+Cron jobs:
+├── pr-shepherd        # Every 30 min: check open sprite PRs
+├── sentry-watcher     # Every 15 min: check for error anomalies
+├── deploy-monitor     # Every 30 min: check app health
+└── quality-audit      # Weekly: audit all repos against spec
+```
+
+### On Phaedrus's Machine (Cerberus, manual overrides)
+```
+Cerberus repo → installed as GitHub Action on all repos
+Manual override: /council override on any PR
+GitHub org admin: rulesets, branch protection, secrets
+```
+
+---
+
+## GitHub Configuration (Org-Wide)
+
+### Option A: GitHub Rulesets (Preferred — org-level, applies to all repos)
+
+Requires org admin access. Rulesets are the modern replacement for per-repo branch protection. You set them once, they apply to all matching repos.
+
+```
+Ruleset: "production-branches"
+  Target: all repositories, default branch
+  Rules:
+    - Require pull request before merge
+    - Require status checks to pass:
+        - "Build & Test" (or profile-equivalent)
+        - "Council Verdict" (Cerberus)
+    - Block force pushes
+    - Block deletions
+    - Require linear history (squash merge)
+```
+
+**This is the #1 thing to set up.** One ruleset = every repo in the org gets branch protection. New repos automatically inherit it.
+
+### Option B: Per-Repo Branch Protection (Fallback)
+
+If rulesets aren't available or need per-repo customization, the `repo-scaffold` script sets branch protection via API:
+
+```bash
+gh api repos/misty-step/$REPO/branches/master/protection \
+  -X PUT \
+  -f required_status_checks='{"strict":true,"contexts":["Build & Test","Council Verdict"]}' \
+  -f enforce_admins=true \
+  -f required_pull_request_reviews='{"required_approving_review_count":0}' \
+  -F restrictions=null
+```
+
+### Shared Workflows via `misty-step/.github` Repo
+
+Create `misty-step/.github` repo with:
+- Shared CI workflow templates
+- Default community health files (issue templates, PR templates)
+- Org-level CODEOWNERS patterns
+
+Then repos can reference shared workflows:
+```yaml
+jobs:
+  ci:
+    uses: misty-step/.github/.github/workflows/ci-typescript.yml@main
+```
+
+This means: update CI once → all repos get the update.
+
+---
+
+## Scaling to New Repos (Including Sprite-Created)
+
+### The `repo-scaffold` Script
+Every new repo goes through scaffold. This is non-negotiable. The script:
+1. Creates the repo with correct visibility
+2. Applies the profile-appropriate CI, linting, typing configs
+3. Copies Cerberus workflow + config
+4. Sets branch protection
+5. Runs quality-audit to verify everything is wired
+
+### Sprite Dispatch Prompts Include Quality Standards
+The Ralph Loop v2 prompt template includes:
+- "Run the full test suite before pushing"
+- "Ensure `swift build` / `npm run build` has zero warnings"
+- "Ensure linting passes"
+- Sprint never push code that doesn't compile
+
+### Bitterblossom Composition Includes Quality Config
+Each sprite composition references the quality spec. When a new sprite is provisioned, it gets the quality expectations as part of its base config.
+
+---
+
+## Monitoring & Observability
+
+### What We Have Now
+- **Sentry** on 12 projects (all Next.js) — API access confirmed
+- **GitHub Actions CI** on ~24 repos
+- **Cerberus** being set up (5 AI reviewers per PR)
+- **Fly.io** for deployments (health checks built-in)
+
+### What We Need
+
+#### Phase 1: Polling-Based Monitoring (This Week)
+- [ ] `pr-shepherd` cron — every 30 min, check all open sprite PRs
+- [ ] `sentry-watcher` cron — every 15 min, check for new/spiking issues
+- [ ] `deploy-monitor` cron — every 30 min, check Fly.io app health
+- [ ] State files in `/tmp/` for diffing against last check
+
+#### Phase 2: Structured Logging Standard (Next Week)
+- [ ] Define log format: JSON with `{timestamp, level, service, message, context}`
+- [ ] Add to all deployed apps
+- [ ] Fly.io log drain → searchable store (Fly.io's built-in logging, or Axiom/Logtail)
+
+#### Phase 3: Alerting Pipeline (When Latency Matters)
+- [ ] Sentry webhook → tiny Fly.io app → OpenClaw wake event
+- [ ] GitHub webhook → same app → wake event for failed deploys
+- [ ] OR: GitHub Actions step that calls `openclaw gateway wake` on failure
+- [ ] Auto-rollback: Fly.io deploy fails health check → previous release auto-restores
+
+---
+
+## Error Rate Auto-Rollback
+
+### Design
+```
+Deploy completes
+    │
+    ▼
+Health check passes? ──no──▶ Auto-rollback (Fly.io handles this)
+    │ yes
+    ▼
+Monitor error rate for 10 minutes
+    │
+    ▼
+Error rate > 5%? ──yes──▶ Rollback + alert Claw
+    │ no
+    ▼
+Deploy confirmed stable
+```
+
+### Implementation
+Fly.io already supports health check-based auto-rollback. For error rate monitoring, the `sentry-watcher` cron detects spikes and alerts. Manual rollback is:
+```bash
+flyctl releases --app $APP | head -5
+flyctl deploy --image $PREVIOUS_IMAGE --app $APP
+```
+
+Later: automate this in a deploy-gate script.
+
+---
+
+## Coverage Enforcement
+
+### TypeScript (Jest/Vitest)
+```json
+// package.json or vitest.config.ts
+{
+  "coverage": {
+    "thresholds": {
+      "lines": 80,
+      "branches": 75,
+      "functions": 80,
+      "statements": 80
+    }
+  }
+}
+```
+CI fails if coverage drops below threshold.
+
+### Swift (Xcode/SPM)
+```bash
+swift test --enable-code-coverage
+xcrun llvm-cov report .build/debug/VoxPackageTests.xctest/Contents/MacOS/VoxPackageTests \
+  -instr-profile .build/debug/codecov/default.profdata
+```
+Parse coverage percentage in CI, fail if below 80%.
+
+### Coverage Ratchet
+Coverage threshold can only go up. When a repo hits 85%, the threshold moves to 85%. Implemented as: store current threshold in `.quality.yml` in the repo, CI reads it.
+
+---
+
+## Metrics & Tracking
+
+| Metric | Source | Target | Alert |
+|--------|--------|--------|-------|
+| Test coverage | CI coverage report | >80% (>90% goal) | <80% blocks merge |
+| CI pass rate | GitHub Actions API | >95% | <90% investigate |
+| Error rate | Sentry API | <1% | >5% rollback |
+| PR merge time | GitHub API | <4 hours | >24h stale alert |
+| PR iteration count | GitHub API | ≤2 rounds | >3 rounds process review |
+| Deploy frequency | Fly.io API | Multiple/day | <1/week investigate |
+| Sprite dispatch success | Bitterblossom logs | >80% | <60% prompt review |
+| Cerberus false positive rate | Manual tracking | <20% | >40% tune prompts |
+
+---
+
+## Implementation Priority
+
+### Now (Today)
+1. ~~Ralph Loop v2 prompt template~~ ✅
+2. ~~Re-dispatch sprites with CI fix prompts~~ ✅
+3. Cerberus setup (Phaedrus)
+
+### This Week
+4. `pr-shepherd.sh` — automated PR monitoring cron
+5. `sentry-watcher.sh` — error anomaly detection cron
+6. GitHub Rulesets — org-wide branch protection
+7. `misty-step/.github` — shared workflow templates
+8. Coverage enforcement in CI for vox + heartbeat
+
+### Next Week
+9. `quality-audit.sh` — repo compliance checker
+10. `repo-scaffold.sh` — new repo bootstrap
+11. SwiftLint strict config for Vox
+12. ESLint strict config for TS projects
+13. Structured logging standard
+
+### Ongoing
+14. Coverage ratchet implementation
+15. Cerberus prompt tuning based on false positive analysis
+16. Deploy-gate automation
+17. Webhook alerting (when polling latency becomes a problem)
+
+---
+
+*This is a living document. Update as we learn what works.*
