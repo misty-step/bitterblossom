@@ -57,8 +57,8 @@ def check_push_protection(cmd: str) -> tuple[bool, str]:
 
     push_args = push_match.group(1).strip()
 
-    # Explicit push to main/master (with optional refs/heads/ prefix)
-    explicit = re.search(r"\b(\S+)\s+(refs/heads/)?(main|master)\s*$", push_args)
+    # Explicit push to main/master (with optional +refspec and refs/heads/ prefix)
+    explicit = re.search(r"\b(\S+)\s+\+?(refs/heads/)?(main|master)(?:\s|$)", push_args)
     if explicit:
         return True, (
             f"Direct push to {explicit.group(3)} blocked. Use PR workflow:\n"
@@ -66,8 +66,8 @@ def check_push_protection(cmd: str) -> tuple[bool, str]:
             "  gh pr create"
         )
 
-    # Refspec targeting main/master (with optional refs/heads/ prefix)
-    refspec = re.search(r":\s*(refs/heads/)?(main|master)\b", push_args)
+    # Refspec targeting main/master (with optional +refspec and refs/heads/ prefix)
+    refspec = re.search(r"\+?:\s*(refs/heads/)?(main|master)(?:\s|$)", push_args)
     if refspec:
         branch = refspec.group(2)
         return True, f"Refspec targeting {branch} blocked. Use PR workflow."
@@ -122,29 +122,58 @@ def check_clean_protection(cmd: str) -> tuple[bool, str]:
     return True, "git clean deletes untracked files permanently. Use 'git clean -n' to preview."
 
 
+def _extract_subshells(cmd: str) -> list[str]:
+    """Extract subshell contents at all nesting levels, innermost first."""
+    results = []
+    remaining = cmd
+    while True:
+        inner = re.findall(r"\$\(([^()]*)\)", remaining)
+        backtick = re.findall(r"`([^`]*)`", remaining)
+        if not inner and not backtick:
+            break
+        results.extend(inner)
+        results.extend(backtick)
+        remaining = re.sub(r"\$\([^()]*\)", " ", remaining)
+        remaining = re.sub(r"`[^`]*`", " ", remaining)
+    return results
+
+
+def _strip_shell_grouping(cmd: str) -> str:
+    """Strip bare subshell parens and brace groups from a command."""
+    cmd = cmd.strip()
+    if cmd.startswith("(") and cmd.endswith(")"):
+        cmd = cmd[1:-1].strip()
+    if cmd.startswith("{"):
+        cmd = cmd.lstrip("{").rstrip("}").rstrip(";").strip()
+    return cmd
+
+
 def split_shell_commands(cmd: str) -> list[str]:
     """Split a compound shell command into individual commands.
 
-    Handles &&, ||, ;, |, and $() / backtick subshells.
-    Subshell contents are extracted AND checked, not discarded.
+    Handles &&, ||, ;, |, $() / backtick subshells, bare ()-subshells,
+    and { } brace groups. Nested subshells are extracted iteratively.
     Conservative — false positives are safer than false negatives.
     """
-    # Extract subshell contents before replacing
-    subshells = re.findall(r"\$\(([^)]*)\)", cmd) + re.findall(r"`([^`]*)`", cmd)
+    subshells = _extract_subshells(cmd)
 
     # Replace subshell markers with separators for outer command parsing
-    flattened = re.sub(r"\$\([^)]*\)", " ", cmd)
-    flattened = re.sub(r"`[^`]*`", " ", flattened)
+    remaining = cmd
+    while re.search(r"\$\([^()]*\)", remaining) or re.search(r"`[^`]*`", remaining):
+        remaining = re.sub(r"\$\([^()]*\)", " ", remaining)
+        remaining = re.sub(r"`[^`]*`", " ", remaining)
 
-    parts = re.split(r"\s*(?:&&|\|\||[;|])\s*", flattened)
-    all_parts = [p.strip() for p in parts if p.strip()]
+    parts = re.split(r"\s*(?:&&|\|\||[;|])\s*", remaining)
+    all_parts = [_strip_shell_grouping(p) for p in parts if p.strip()]
 
     # Also check commands inside subshells
     for sub in subshells:
         sub_parts = re.split(r"\s*(?:&&|\|\||[;|])\s*", sub)
-        all_parts.extend(p.strip() for p in sub_parts if p.strip())
+        all_parts.extend(
+            _strip_shell_grouping(p) for p in sub_parts if p.strip()
+        )
 
-    return all_parts
+    return [p for p in all_parts if p]
 
 
 def check_single_command(cmd: str) -> tuple[bool, str]:
