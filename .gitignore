@@ -1,0 +1,11 @@
+# Secrets
+*.secret
+*.key
+.env
+.env.*
+
+# Archives may contain exported settings with tokens
+observations/archives/*/settings.json
+
+# OS
+.DS_Store

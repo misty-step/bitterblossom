@@ -87,9 +87,11 @@ def check_push_protection(cmd: str) -> tuple[bool, str]:
 
 
 def check_rebase_protection(cmd: str) -> tuple[bool, str]:
-    """Block rebase (rewrites history)."""
+    """Block rebase and other history-rewriting commands."""
     if re.match(r"^git\s+rebase\b", cmd):
         return True, "git rebase rewrites history. Use 'git merge main' instead."
+    if re.match(r"^git\s+filter-branch\b", cmd):
+        return True, "git filter-branch rewrites history. Not allowed on sprites."
     return False, ""
 
 
@@ -119,7 +121,23 @@ def check_clean_protection(cmd: str) -> tuple[bool, str]:
     return True, "git clean deletes untracked files permanently. Use 'git clean -n' to preview."
 
 
-def check_command(cmd: str) -> tuple[bool, str]:
+def split_shell_commands(cmd: str) -> list[str]:
+    """Split a compound shell command into individual commands.
+
+    Handles &&, ||, ;, |, and $() / backtick subshells.
+    This is intentionally conservative — may produce extra fragments,
+    which is fine since false positives are safer than false negatives.
+    """
+    # Replace subshell markers with separators
+    flattened = re.sub(r"\$\([^)]*\)", " ", cmd)
+    flattened = re.sub(r"`[^`]*`", " ", flattened)
+
+    parts = re.split(r"\s*(?:&&|\|\||[;|])\s*", flattened)
+    return [p.strip() for p in parts if p.strip()]
+
+
+def check_single_command(cmd: str) -> tuple[bool, str]:
+    """Check a single (non-compound) command for dangerous operations."""
     if not cmd:
         return False, ""
 
@@ -143,14 +161,27 @@ def check_command(cmd: str) -> tuple[bool, str]:
     if blocked:
         return True, reason
 
-    # Check destructive git commands
+    # Check destructive git commands (word-boundary match)
     for pattern, reason in DESTRUCTIVE_GIT:
         if pattern in cmd:
             return True, reason
 
     # Check dangerous flags
     for flag, reason in DANGEROUS_FLAGS:
-        if flag in cmd:
+        if re.search(r"(^|\s)" + re.escape(flag) + r"(\s|$)", cmd):
+            return True, reason
+
+    return False, ""
+
+
+def check_command(cmd: str) -> tuple[bool, str]:
+    if not cmd:
+        return False, ""
+
+    # Split compound commands and check each part
+    for part in split_shell_commands(cmd):
+        blocked, reason = check_single_command(part)
+        if blocked:
             return True, reason
 
     return False, ""

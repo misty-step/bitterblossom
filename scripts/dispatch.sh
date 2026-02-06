@@ -21,58 +21,42 @@ set -euo pipefail
 #   ./scripts/dispatch.sh <sprite> --stop                      # Stop Ralph loop
 #   ./scripts/dispatch.sh <sprite> --status                    # Check sprite
 
-SPRITE_CLI="${SPRITE_CLI:-sprite}"
-ORG="${FLY_ORG:-misty-step}"
-REMOTE_HOME="/home/sprite"
-WORKSPACE="$REMOTE_HOME/workspace"
+LOG_PREFIX="dispatch" source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-log() { echo "[bitterblossom:dispatch] $*"; }
-err() { echo "[bitterblossom:dispatch] ERROR: $*" >&2; }
+TEMPLATE_DIR="$(dirname "${BASH_SOURCE[0]}")"
 
-sprite_exists() {
-    "$SPRITE_CLI" list -o "$ORG" 2>/dev/null | grep -qx "$1"
-}
+# Max iterations before Ralph loop self-terminates (safety valve)
+MAX_RALPH_ITERATIONS="${MAX_RALPH_ITERATIONS:-50}"
 
-# Generate a Ralph loop PROMPT.md with task-specific content
+# Render ralph-prompt-template.md with task-specific values
 generate_ralph_prompt() {
     local task="$1"
+    local repo="${2:-}"
+    local sprite="${3:-}"
 
-    cat << RALPH_EOF
-# Task
+    local template="$TEMPLATE_DIR/ralph-prompt-template.md"
+    if [[ ! -f "$template" ]]; then
+        err "Ralph prompt template not found: $template"
+        exit 1
+    fi
 
-$task
-
-# Instructions
-
-You are working autonomously. Do NOT stop to ask clarifying questions.
-If something is ambiguous, make your best judgment call and document the decision.
-
-## Workflow
-1. Read MEMORY.md and CLAUDE.md for context from previous iterations
-2. Assess current state: what's done, what's left, what's broken
-3. Work on the highest-priority remaining item
-4. Run tests after every meaningful change
-5. Commit working changes with descriptive messages
-6. Update MEMORY.md with what you learned and what's left
-7. If the task is COMPLETE, create a file called TASK_COMPLETE with a summary
-
-## When you finish or get stuck
-- If task is complete: write TASK_COMPLETE file, commit, push
-- If genuinely blocked (missing credentials, permission error, etc.):
-  write BLOCKED.md explaining exactly what you need, then stop
-- Otherwise: KEEP WORKING. Don't stop for cosmetic concerns or hypothetical questions.
-
-## Git workflow
-- Work on a feature branch (never main/master)
-- Commit frequently with conventional commit messages
-- Push to origin when you have working changes
-- Open a PR when the feature is ready
-RALPH_EOF
+    local content
+    content="$(cat "$template")"
+    content="${content//\{\{TASK_DESCRIPTION\}\}/$task}"
+    content="${content//\{\{REPO\}\}/${repo:-OWNER/REPO}}"
+    content="${content//\{\{SPRITE_NAME\}\}/${sprite:-sprite}}"
+    printf '%s' "$content"
 }
 
 setup_repo() {
     local name="$1"
     local repo="$2"
+
+    # Validate repo format: org/repo or URL
+    if [[ ! "$repo" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$ ]] && [[ ! "$repo" =~ ^https:// ]]; then
+        err "Invalid repo format: '$repo'. Use 'org/repo' or a full URL."
+        exit 1
+    fi
 
     log "Setting up repo: $repo"
     "$SPRITE_CLI" exec -o "$ORG" -s "$name" -- bash -c \
@@ -104,12 +88,12 @@ start_ralph() {
     local prompt="$2"
     local repo="${3:-}"
 
-    log "Starting Ralph loop on $name..."
+    log "Starting Ralph loop on $name (max $MAX_RALPH_ITERATIONS iterations)..."
 
-    # Upload the PROMPT.md
+    # Generate and upload PROMPT.md from template
     local tmp_prompt
     tmp_prompt="$(mktemp)"
-    generate_ralph_prompt "$prompt" > "$tmp_prompt"
+    generate_ralph_prompt "$prompt" "$repo" "$name" > "$tmp_prompt"
 
     "$SPRITE_CLI" exec -o "$ORG" -s "$name" \
         -file "$tmp_prompt:$WORKSPACE/PROMPT.md" \
@@ -121,55 +105,68 @@ start_ralph() {
         setup_repo "$name" "$repo"
     fi
 
-    # Create the Ralph loop runner script on the sprite
-    "$SPRITE_CLI" exec -o "$ORG" -s "$name" -- bash -c "cat > $WORKSPACE/ralph-loop.sh << 'SCRIPT_EOF'
+    # Create the Ralph loop runner script directly with proper variable values
+    local ralph_script
+    ralph_script="$(cat <<RALPH_SCRIPT
 #!/bin/bash
 set -uo pipefail
 
-WORKSPACE=\"$WORKSPACE\"
-LOG=\"\$WORKSPACE/ralph.log\"
+WORKSPACE="$WORKSPACE"
+LOG="\$WORKSPACE/ralph.log"
 ITERATION=0
+MAX_ITERATIONS=$MAX_RALPH_ITERATIONS
 
-echo \"[ralph] Starting loop at \$(date -u +%Y-%m-%dT%H:%M:%SZ)\" | tee -a \"\$LOG\"
+echo "[ralph] Starting loop at \$(date -u +%Y-%m-%dT%H:%M:%SZ) (max \$MAX_ITERATIONS iterations)" | tee -a "\$LOG"
 
 while true; do
     ITERATION=\$((ITERATION + 1))
-    echo \"\" >> \"\$LOG\"
-    echo \"[ralph] === Iteration \$ITERATION at \$(date -u +%Y-%m-%dT%H:%M:%SZ) ===\" | tee -a \"\$LOG\"
+    echo "" >> "\$LOG"
+    echo "[ralph] === Iteration \$ITERATION / \$MAX_ITERATIONS at \$(date -u +%Y-%m-%dT%H:%M:%SZ) ===" | tee -a "\$LOG"
+
+    # Safety valve: max iterations
+    if [ "\$ITERATION" -gt "\$MAX_ITERATIONS" ]; then
+        echo "[ralph] Hit max iterations (\$MAX_ITERATIONS). Stopping." | tee -a "\$LOG"
+        break
+    fi
 
     # Check for completion signal
-    if [ -f \"\$WORKSPACE/TASK_COMPLETE\" ]; then
-        echo \"[ralph] Task marked complete. Stopping.\" | tee -a \"\$LOG\"
+    if [ -f "\$WORKSPACE/TASK_COMPLETE" ]; then
+        echo "[ralph] Task marked complete. Stopping." | tee -a "\$LOG"
         break
     fi
 
     # Check for blocked signal
-    if [ -f \"\$WORKSPACE/BLOCKED.md\" ]; then
-        echo \"[ralph] Task blocked. See BLOCKED.md. Stopping.\" | tee -a \"\$LOG\"
+    if [ -f "\$WORKSPACE/BLOCKED.md" ]; then
+        echo "[ralph] Task blocked. See BLOCKED.md. Stopping." | tee -a "\$LOG"
         break
     fi
 
     # Run Claude Code with the prompt
-    cd \"\$WORKSPACE\"
-    script -q -c \"claude -p --permission-mode bypassPermissions \\\"\$(cat PROMPT.md)\\\"\" /dev/null 2>&1 | \\
+    cd "\$WORKSPACE"
+    script -q -c "claude -p --permission-mode bypassPermissions \"\$(cat PROMPT.md)\"" /dev/null 2>&1 | \\
         sed 's/\\x1b\\[[0-9;?]*[a-zA-Z]//g' | \\
         sed 's/\\x1b\\][0-9;]*[^\\x07]*\\x07//g' | \\
-        tr -d '\\r' >> \"\$LOG\" 2>&1
+        tr -d '\\r' >> "\$LOG" 2>&1
 
     EXIT_CODE=\$?
-    echo \"[ralph] Claude exited with code \$EXIT_CODE\" | tee -a \"\$LOG\"
+    echo "[ralph] Claude exited with code \$EXIT_CODE" | tee -a "\$LOG"
 
     # Brief pause between iterations
     sleep 5
 done
 
-echo \"[ralph] Loop ended after \$ITERATION iterations at \$(date -u +%Y-%m-%dT%H:%M:%SZ)\" | tee -a \"\$LOG\"
-SCRIPT_EOF
-chmod +x $WORKSPACE/ralph-loop.sh"
+echo "[ralph] Loop ended after \$ITERATION iterations at \$(date -u +%Y-%m-%dT%H:%M:%SZ)" | tee -a "\$LOG"
+RALPH_SCRIPT
+)"
 
-    # Replace the hardcoded WORKSPACE path
-    "$SPRITE_CLI" exec -o "$ORG" -s "$name" -- \
-        sed -i "s|\\\$WORKSPACE|$WORKSPACE|g" "$WORKSPACE/ralph-loop.sh"
+    # Upload the script
+    local tmp_script
+    tmp_script="$(mktemp)"
+    printf '%s' "$ralph_script" > "$tmp_script"
+    "$SPRITE_CLI" exec -o "$ORG" -s "$name" \
+        -file "$tmp_script:$WORKSPACE/ralph-loop.sh" \
+        -- chmod +x "$WORKSPACE/ralph-loop.sh"
+    rm -f "$tmp_script"
 
     # Start the loop in the background via nohup
     log "Launching Ralph loop..."
@@ -287,6 +284,9 @@ if [[ $# -lt 1 ]]; then
     echo "  --file <path>    Read prompt from a file"
     echo "  --stop           Stop a running Ralph loop"
     echo "  --status         Check sprite status and recent logs"
+    echo ""
+    echo "Environment:"
+    echo "  MAX_RALPH_ITERATIONS  Safety cap for Ralph loops (default: 50)"
     exit 1
 fi
 
@@ -296,6 +296,8 @@ shift
 if [[ "$SPRITE_NAME" == "--help" || "$SPRITE_NAME" == "-h" ]]; then
     exec "$0"  # Re-run with no args to show usage
 fi
+
+validate_sprite_name "$SPRITE_NAME"
 
 if ! sprite_exists "$SPRITE_NAME"; then
     err "Sprite '$SPRITE_NAME' does not exist"

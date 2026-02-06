@@ -33,15 +33,16 @@ All scripts are real implementations using the `sprite` CLI:
 
 | Script | Purpose |
 |--------|---------|
+| `lib.sh` | Shared functions (sourced by other scripts) |
 | `provision.sh` | Create sprite + upload config |
 | `sync.sh` | Push config updates to running sprites |
 | `teardown.sh` | Export data + destroy sprite |
-| `dispatch.sh` | Send a task to a sprite |
+| `dispatch.sh` | Send a task to a sprite (one-shot or Ralph loop) |
 | `status.sh` | Fleet overview |
 
 ## Hooks
 
-Two safety hooks in `base/hooks/`:
+Three hooks in `base/hooks/`:
 
 | Hook | Trigger | Purpose |
 |------|---------|---------|

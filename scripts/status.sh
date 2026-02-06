@@ -7,14 +7,7 @@ set -euo pipefail
 #   ./scripts/status.sh              # Fleet overview
 #   ./scripts/status.sh <sprite>     # Detailed sprite status
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(dirname "$SCRIPT_DIR")"
-SPRITES_DIR="$ROOT_DIR/sprites"
-SPRITE_CLI="${SPRITE_CLI:-sprite}"
-ORG="${FLY_ORG:-misty-step}"
-REMOTE_HOME="/home/sprite"
-
-log() { echo "$*"; }
+LOG_PREFIX="status" source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 fleet_status() {
     echo "=== Bitterblossom Fleet Status ==="

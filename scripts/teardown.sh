@@ -10,29 +10,18 @@ set -euo pipefail
 #   ./scripts/teardown.sh <sprite-name>
 #   ./scripts/teardown.sh --force <sprite-name>   # Skip confirmation
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(dirname "$SCRIPT_DIR")"
-SPRITES_DIR="$ROOT_DIR/sprites"
+LOG_PREFIX="teardown" source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
 ARCHIVE_DIR="$ROOT_DIR/observations/archives"
-SPRITE_CLI="${SPRITE_CLI:-sprite}"
-ORG="${FLY_ORG:-misty-step}"
-REMOTE_HOME="/home/sprite"
-
 FORCE=false
-
-log() { echo "[bitterblossom:teardown] $*"; }
-err() { echo "[bitterblossom:teardown] ERROR: $*" >&2; }
-
-sprite_exists() {
-    local name="$1"
-    "$SPRITE_CLI" list -o "$ORG" 2>/dev/null | grep -qx "$name"
-}
 
 teardown_sprite() {
     local name="$1"
     local timestamp
     timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
     local archive_path="$ARCHIVE_DIR/${name}-${timestamp}"
+
+    validate_sprite_name "$name"
 
     log "=== Tearing down sprite: $name ==="
 
@@ -74,12 +63,21 @@ teardown_sprite() {
         log "No workspace CLAUDE.md found"
     fi
 
-    # Export the sprite's modified settings.json
+    # Export the sprite's modified settings.json (strip auth token)
     if "$SPRITE_CLI" exec -o "$ORG" -s "$name" -- cat "$REMOTE_HOME/.claude/settings.json" \
-        > "$archive_path/settings.json" 2>/dev/null; then
-        log "Exported settings.json → $archive_path/settings.json"
+        2>/dev/null | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    env = data.get('env', {})
+    if 'ANTHROPIC_AUTH_TOKEN' in env:
+        env['ANTHROPIC_AUTH_TOKEN'] = '__REDACTED__'
+    json.dump(data, sys.stdout, indent=2)
+except: sys.exit(1)
+" > "$archive_path/settings.json"; then
+        log "Exported settings.json → $archive_path/settings.json (token redacted)"
     else
-        log "No settings.json found"
+        log "No settings.json found (or parse error)"
     fi
 
     # Step 2: Create a final checkpoint (safety net)
