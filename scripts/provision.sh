@@ -114,20 +114,44 @@ if [[ $# -eq 0 ]]; then
     usage
 fi
 
-if [[ "$1" == "--all" ]]; then
-    trap lib_cleanup EXIT
-    prepare_settings
-    log "Provisioning all sprites..."
-    for def in "$SPRITES_DIR"/*.md; do
-        name="$(basename "$def" .md)"
+if [[ $# -eq 0 ]]; then
+    usage
+fi
+
+# Parse args
+TARGETS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --composition)
+            COMPOSITION="$2"
+            shift 2
+            ;;
+        --composition=*)
+            COMPOSITION="${1#--composition=}"
+            shift
+            ;;
+        --all) TARGETS=("__ALL__"); shift ;;
+        --help|-h) usage ;;
+        *) TARGETS+=("$1"); shift ;;
+    esac
+done
+
+if [[ ${#TARGETS[@]} -eq 0 ]]; then
+    usage
+fi
+
+trap lib_cleanup EXIT
+prepare_settings
+
+if [[ "${TARGETS[0]}" == "__ALL__" ]]; then
+    log "Provisioning sprites from composition: $COMPOSITION"
+    while IFS= read -r name; do
         provision_sprite "$name"
         echo ""
-    done
+    done < <(composition_sprites)
     log "All sprites provisioned."
-elif [[ "$1" == "--help" ]] || [[ "$1" == "-h" ]]; then
-    usage
 else
-    trap lib_cleanup EXIT
-    prepare_settings
-    provision_sprite "$1"
+    for name in "${TARGETS[@]}"; do
+        provision_sprite "$name"
+    done
 fi

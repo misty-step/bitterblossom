@@ -21,10 +21,10 @@ fleet_status() {
     if [[ -z "$live_sprites" ]]; then
         echo "No sprites found (or API call failed)."
         echo ""
-        echo "Defined sprites (not yet provisioned):"
-        for def in "$SPRITES_DIR"/*.md; do
-            echo "  - $(basename "$def" .md)"
-        done
+        echo "Composition sprites ($COMPOSITION):"
+        while IFS= read -r name; do
+            echo "  - $name (not provisioned)"
+        done < <(composition_sprites)
         return
     fi
 
@@ -35,18 +35,16 @@ fleet_status() {
         printf "%-15s %-8s %s\n" "$name" "$status" "$url"
     done
 
-    # Show defined but not provisioned
+    # Show composition sprites vs provisioned
     echo ""
-    echo "Defined sprites:"
-    for def in "$SPRITES_DIR"/*.md; do
-        local name
-        name="$(basename "$def" .md)"
+    echo "Composition sprites ($COMPOSITION):"
+    while IFS= read -r name; do
         if echo "$live_sprites" | grep -q "^$name"; then
             echo "  ✓ $name (provisioned)"
         else
             echo "  ○ $name (not provisioned)"
         fi
-    done
+    done < <(composition_sprites)
 
     # Show checkpoints
     echo ""
@@ -95,14 +93,32 @@ for k, v in data.items():
     "$SPRITE_CLI" checkpoint list -o "$ORG" -s "$name" 2>/dev/null || echo "  (none)"
 }
 
-if [[ $# -eq 0 ]]; then
+# Parse args
+TARGET=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --composition)
+            COMPOSITION="$2"
+            shift 2
+            ;;
+        --composition=*)
+            COMPOSITION="${1#--composition=}"
+            shift
+            ;;
+        --help|-h)
+            echo "Usage: $0 [--composition <path>] [sprite-name]"
+            echo ""
+            echo "  No args: fleet overview"
+            echo "  --composition <path>  Use specific composition YAML"
+            echo "  sprite-name: detailed status for one sprite"
+            exit 0
+            ;;
+        *) TARGET="$1"; shift ;;
+    esac
+done
+
+if [[ -z "$TARGET" ]]; then
     fleet_status
-elif [[ "$1" == "--help" || "$1" == "-h" ]]; then
-    echo "Usage: $0 [sprite-name]"
-    echo ""
-    echo "  No args: fleet overview"
-    echo "  sprite-name: detailed status for one sprite"
-    exit 0
 else
-    sprite_detail "$1"
+    sprite_detail "$TARGET"
 fi

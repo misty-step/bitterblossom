@@ -63,33 +63,40 @@ sync_sprite() {
 
 # Parse args
 TARGETS=()
-for arg in "$@"; do
-    case "$arg" in
-        --base-only) BASE_ONLY=true ;;
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --base-only) BASE_ONLY=true; shift ;;
+        --composition)
+            COMPOSITION="$2"
+            shift 2
+            ;;
+        --composition=*)
+            COMPOSITION="${1#--composition=}"
+            shift
+            ;;
         --help|-h)
-            echo "Usage: $0 [--base-only] [sprite-name ...]"
+            echo "Usage: $0 [--base-only] [--composition <path>] [sprite-name ...]"
             echo ""
-            echo "  --base-only   Only sync shared base config (skip persona definitions)"
-            echo "  sprite-name   Sync specific sprite(s). Default: all."
+            echo "  --base-only          Only sync shared base config (skip persona definitions)"
+            echo "  --composition <path> Use specific composition YAML (default: compositions/v1.yaml)"
+            echo "  sprite-name          Sync specific sprite(s). Default: all from composition."
             exit 0
             ;;
-        *) TARGETS+=("$arg") ;;
+        *) TARGETS+=("$1"); shift ;;
     esac
 done
 
+trap lib_cleanup EXIT
+prepare_settings
+
 if [[ ${#TARGETS[@]} -eq 0 ]]; then
-    trap lib_cleanup EXIT
-    prepare_settings
-    log "Syncing all sprites..."
-    for def in "$SPRITES_DIR"/*.md; do
-        name="$(basename "$def" .md)"
+    log "Syncing sprites from composition: $COMPOSITION"
+    while IFS= read -r name; do
         sync_sprite "$name"
         echo ""
-    done
+    done < <(composition_sprites)
     log "All sprites synced."
 else
-    trap lib_cleanup EXIT
-    prepare_settings
     for name in "${TARGETS[@]}"; do
         sync_sprite "$name"
         echo ""

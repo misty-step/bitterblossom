@@ -13,6 +13,9 @@ BASE_DIR="$ROOT_DIR/base"
 SPRITE_CLI="${SPRITE_CLI:-sprite}"
 ORG="${FLY_ORG:-misty-step}"
 REMOTE_HOME="/home/sprite"
+COMPOSITIONS_DIR="$ROOT_DIR/compositions"
+DEFAULT_COMPOSITION="$COMPOSITIONS_DIR/v1.yaml"
+COMPOSITION="${COMPOSITION:-$DEFAULT_COMPOSITION}"
 
 # Rendered settings tempfile (cleaned up via lib_cleanup)
 RENDERED_SETTINGS=""
@@ -89,6 +92,23 @@ upload_dir() {
         "$SPRITE_CLI" exec -o "$ORG" -s "$sprite_name" -- mkdir -p "$parent"
         upload_file "$sprite_name" "$file" "$dest"
     done
+}
+
+# List sprite names from the active composition YAML.
+# Falls back to globbing sprites/*.md if composition file is missing or yq unavailable.
+composition_sprites() {
+    if [[ -f "$COMPOSITION" ]] && command -v yq &>/dev/null; then
+        yq '.sprites | keys | .[]' "$COMPOSITION"
+    else
+        if [[ ! -f "$COMPOSITION" ]]; then
+            err "Composition file not found: $COMPOSITION (falling back to sprites/*.md)"
+        else
+            err "yq not found (falling back to sprites/*.md)"
+        fi
+        for def in "$SPRITES_DIR"/*.md; do
+            basename "$def" .md
+        done
+    fi
 }
 
 # Check if a sprite already exists
