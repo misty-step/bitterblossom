@@ -307,6 +307,20 @@ if ! sprite_exists "$SPRITE_NAME"; then
     exit 1
 fi
 
+# Preflight check: verify sprite is ready to work (Ousterhout: define errors out of existence)
+# Skip for --stop and --status actions
+if [[ "${1:-}" != "--stop" && "${1:-}" != "--status" ]]; then
+    PREFLIGHT_SCRIPT="$(dirname "${BASH_SOURCE[0]}")/preflight.sh"
+    if [[ -x "$PREFLIGHT_SCRIPT" ]]; then
+        log "Running preflight checks..."
+        if ! "$PREFLIGHT_SCRIPT" "$SPRITE_NAME"; then
+            err "Preflight FAILED for '$SPRITE_NAME'. Fix issues before dispatching."
+            err "Run: ./scripts/preflight.sh $SPRITE_NAME"
+            exit 1
+        fi
+    fi
+fi
+
 # Parse remaining args
 RALPH=false
 REPO=""

@@ -77,11 +77,40 @@ Composition: v1 (Fae Court)
 _No observations yet. Update after completing work._
 MEMEOF"
 
-    # Step 6: Set up git config for shared account
-    log "Configuring git..."
+    # Step 6: Set up git config AND credentials (CRITICAL — sprites can't push without this)
+    local gh_token="${GITHUB_TOKEN:-}"
+    if [[ -z "$gh_token" ]]; then
+        # Try to get token from gh CLI
+        gh_token="$(gh auth token 2>/dev/null || echo "")"
+    fi
+    if [[ -z "$gh_token" ]]; then
+        err "GITHUB_TOKEN not set and gh CLI not authenticated."
+        err "Sprites CANNOT push without git credentials. This is a hard requirement."
+        err "Export GITHUB_TOKEN or authenticate gh CLI before provisioning."
+        exit 1
+    fi
+
+    log "Configuring git identity + credentials..."
     "$SPRITE_CLI" exec -o "$ORG" -s "$name" -- bash -c \
         "git config --global user.name '$name (bitterblossom sprite)' && \
-         git config --global user.email 'kaylee@mistystep.io'"
+         git config --global user.email 'kaylee@mistystep.io' && \
+         git config --global credential.helper store && \
+         echo 'https://kaylee-mistystep:$gh_token@github.com' > /home/sprite/.git-credentials && \
+         echo 'Git credentials configured for kaylee-mistystep'"
+
+    # Verify git auth works (define errors out of existence — fail here, not at push time)
+    log "Verifying git push access..."
+    local push_test
+    push_test=$("$SPRITE_CLI" exec -o "$ORG" -s "$name" -- bash -c \
+        "cd /tmp && rm -rf _git_test && mkdir _git_test && cd _git_test && \
+         git init -q && git remote add origin https://github.com/misty-step/cerberus.git && \
+         git ls-remote origin HEAD >/dev/null 2>&1 && echo 'GIT_AUTH_OK' || echo 'GIT_AUTH_FAIL'" 2>&1)
+    if [[ "$push_test" != *"GIT_AUTH_OK"* ]]; then
+        err "Git auth verification FAILED on sprite '$name'."
+        err "The sprite will not be able to push code. Fix credentials before dispatching."
+        exit 1
+    fi
+    log "Git auth verified ✅"
 
     # Step 7: Create initial checkpoint
     log "Creating initial checkpoint..."
