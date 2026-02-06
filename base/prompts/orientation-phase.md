@@ -22,11 +22,18 @@ Before starting any task, complete this orientation:
 - Medium confidence (mostly clear, some unknowns): Research first, then execute
 - Low confidence (unclear, risky): Document what you know, write BLOCKED.md
 
-## 5. After Task Completion
-Write LEARNINGS.md with:
-- What patterns did you discover in this codebase?
-- What was harder/easier than expected?
-- What would you tell the next agent working on this repo?
-- Any architectural insights or gotchas?
+## 5. Plan the Work
+For non-trivial tasks (3+ steps):
+- Write `PLAN.md` with checkable items before touching code
+- Verify the plan makes sense before executing
+- Check items off as you complete them
 
-These learnings will be fed back to the fleet.
+## 6. After Task Completion
+Write `LEARNINGS.md` with concrete rules, not vague principles:
+- What patterns did you discover in this codebase?
+- What was harder/easier than expected? Why?
+- What would you tell the next agent working on this repo?
+- Any gotchas or traps to avoid?
+- Write each learning as an actionable instruction.
+
+These learnings get harvested back to the fleet — your experience compounds across all sprites.
