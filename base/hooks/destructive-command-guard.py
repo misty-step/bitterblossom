@@ -57,19 +57,20 @@ def check_push_protection(cmd: str) -> tuple[bool, str]:
 
     push_args = push_match.group(1).strip()
 
-    # Explicit push to main/master
-    explicit = re.search(r"\b(\w+)\s+(main|master)\s*$", push_args)
+    # Explicit push to main/master (with optional refs/heads/ prefix)
+    explicit = re.search(r"\b(\S+)\s+(refs/heads/)?(main|master)\s*$", push_args)
     if explicit:
         return True, (
-            f"Direct push to {explicit.group(2)} blocked. Use PR workflow:\n"
+            f"Direct push to {explicit.group(3)} blocked. Use PR workflow:\n"
             "  git push origin <feature-branch>\n"
             "  gh pr create"
         )
 
-    # Refspec targeting main/master
-    refspec = re.search(r":\s*(main|master)\b", push_args)
+    # Refspec targeting main/master (with optional refs/heads/ prefix)
+    refspec = re.search(r":\s*(refs/heads/)?(main|master)\b", push_args)
     if refspec:
-        return True, f"Refspec targeting {refspec.group(1)} blocked. Use PR workflow."
+        branch = refspec.group(2)
+        return True, f"Refspec targeting {branch} blocked. Use PR workflow."
 
     # On protected branch with bare push
     current = get_current_branch()
@@ -125,15 +126,25 @@ def split_shell_commands(cmd: str) -> list[str]:
     """Split a compound shell command into individual commands.
 
     Handles &&, ||, ;, |, and $() / backtick subshells.
-    This is intentionally conservative — may produce extra fragments,
-    which is fine since false positives are safer than false negatives.
+    Subshell contents are extracted AND checked, not discarded.
+    Conservative — false positives are safer than false negatives.
     """
-    # Replace subshell markers with separators
+    # Extract subshell contents before replacing
+    subshells = re.findall(r"\$\(([^)]*)\)", cmd) + re.findall(r"`([^`]*)`", cmd)
+
+    # Replace subshell markers with separators for outer command parsing
     flattened = re.sub(r"\$\([^)]*\)", " ", cmd)
     flattened = re.sub(r"`[^`]*`", " ", flattened)
 
     parts = re.split(r"\s*(?:&&|\|\||[;|])\s*", flattened)
-    return [p.strip() for p in parts if p.strip()]
+    all_parts = [p.strip() for p in parts if p.strip()]
+
+    # Also check commands inside subshells
+    for sub in subshells:
+        sub_parts = re.split(r"\s*(?:&&|\|\||[;|])\s*", sub)
+        all_parts.extend(p.strip() for p in sub_parts if p.strip())
+
+    return all_parts
 
 
 def check_single_command(cmd: str) -> tuple[bool, str]:
