@@ -1,0 +1,21 @@
+title = "bitterblossom gitleaks config"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "moonshot-api-key"
+description = "Moonshot/Anthropic proxy API key"
+regex = '''sk-[a-zA-Z0-9]{40,}'''
+tags = ["key", "moonshot"]
+
+[[rules]]
+id = "anthropic-api-key"
+description = "Anthropic API key"
+regex = '''sk-ant-[a-zA-Z0-9\-_]{40,}'''
+tags = ["key", "anthropic"]
+
+[allowlist]
+paths = [
+  '''\.gitleaks\.toml$''',
+]
