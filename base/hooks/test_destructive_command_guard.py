@@ -29,6 +29,8 @@ class TestPushProtection:
         "git push upstream main",
         "git push origin refs/heads/main",
         "git push origin refs/heads/master",
+        "git push --all origin",
+        "git push --mirror origin",
         "git push origin 'main'",
         'git push origin "master"',
         'git push origin "refs/heads/main"',
@@ -42,10 +44,21 @@ class TestPushProtection:
         "git push origin main-dev",
         "git push origin fix/main-thing",
         "git push -u origin my-branch",
+        "git push origin --tags",
     ])
     def test_allows_feature_branch_push(self, cmd):
         blocked, _ = check(cmd)
         assert not blocked, f"should allow: {cmd}"
+
+    @pytest.mark.parametrize("cmd", [
+        "git -C /tmp push origin main",
+        "git -c core.abbrev=8 push origin master",
+        "git --git-dir=/tmp/repo/.git push origin main",
+        "git --work-tree=/tmp/repo push origin master",
+    ])
+    def test_blocks_push_to_protected_with_global_git_options(self, cmd):
+        blocked, _ = check(cmd)
+        assert blocked, f"should block: {cmd}"
 
     def test_blocks_plus_refspec_force(self):
         blocked, _ = check("git push origin +main")
@@ -148,6 +161,10 @@ class TestClean:
         blocked, _ = check("git clean --dry-run -d")
         assert not blocked
 
+    def test_allows_dry_run_combined_short_flags(self):
+        blocked, _ = check("git clean -nfd")
+        assert not blocked
+
 
 # --- Destructive commands ---
 
@@ -214,6 +231,14 @@ class TestShellGrouping:
         blocked, _ = check("(git push origin main)")
         assert blocked
 
+    def test_blocks_double_nested_parens(self):
+        blocked, _ = check("((git push origin main))")
+        assert blocked
+
+    def test_blocks_paren_group_with_semicolon(self):
+        blocked, _ = check("(git push origin main; echo done)")
+        assert blocked
+
     def test_blocks_brace_group(self):
         blocked, _ = check("{ git push origin main; }")
         assert blocked
@@ -268,6 +293,10 @@ class TestSplitShellCommands:
     def test_strips_bare_parens(self):
         parts = split("(git status)")
         assert "git status" in parts
+
+    def test_strips_partial_paren_from_split_fragments(self):
+        parts = split("(git push origin main; echo done)")
+        assert "git push origin main" in parts
 
     def test_strips_brace_group(self):
         parts = split("{ git status; }")

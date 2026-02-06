@@ -50,6 +50,30 @@ DANGEROUS_FLAGS = [
     ("--no-verify", "Skips git hooks. Hooks enforce quality gates — don't bypass them."),
 ]
 
+GIT_GLOBAL_OPTS_WITH_VALUE = {
+    "-C",
+    "-c",
+    "--config-env",
+    "--exec-path",
+    "--git-dir",
+    "--namespace",
+    "--super-prefix",
+    "--work-tree",
+}
+
+GIT_GLOBAL_FLAGS = {
+    "--bare",
+    "--literal-pathspecs",
+    "--glob-pathspecs",
+    "--noglob-pathspecs",
+    "--icase-pathspecs",
+    "--no-pager",
+    "--paginate",
+    "--no-optional-locks",
+}
+
+PUSH_ALL_FLAGS = {"--all", "--mirror"}
+
 
 def _shell_split(cmd: str) -> list[str]:
     """Split a shell command while honoring quotes."""
@@ -62,9 +86,40 @@ def _shell_split(cmd: str) -> list[str]:
 def _push_args(cmd: str) -> list[str]:
     """Return args after `git push` or empty when command is not push."""
     tokens = _shell_split(cmd)
-    if len(tokens) < 2 or tokens[0] != "git" or tokens[1] != "push":
+    if not tokens or tokens[0] != "git":
         return []
-    return tokens[2:]
+
+    i = 1
+    while i < len(tokens):
+        token = tokens[i]
+
+        if token == "--":
+            return []
+
+        if token == "push":
+            return tokens[i + 1:]
+
+        if token in GIT_GLOBAL_OPTS_WITH_VALUE:
+            if i + 1 >= len(tokens):
+                return []
+            i += 2
+            continue
+
+        if any(token.startswith(f"{opt}=") for opt in GIT_GLOBAL_OPTS_WITH_VALUE):
+            i += 1
+            continue
+
+        if token in GIT_GLOBAL_FLAGS:
+            i += 1
+            continue
+
+        if token.startswith("-"):
+            i += 1
+            continue
+
+        return []
+
+    return []
 
 
 def _normalize_branch_ref(ref: str) -> str:
@@ -98,6 +153,14 @@ def check_push_protection(cmd: str) -> tuple[bool, str]:
     args = _push_args(cmd)
     if not args:
         return False, ""
+
+    push_all = next((a for a in args if a in PUSH_ALL_FLAGS), None)
+    if push_all:
+        return True, (
+            f"{push_all} can update protected branches. Use PR workflow:\n"
+            "  git push origin <feature-branch>\n"
+            "  gh pr create"
+        )
 
     targets = _extract_push_targets(args)
     for target in targets:
@@ -174,11 +237,17 @@ def check_force_push_protection(cmd: str) -> tuple[bool, str]:
 
 def check_clean_protection(cmd: str) -> tuple[bool, str]:
     """Block destructive git clean invocations."""
-    if not re.match(r"^git\s+clean\b", cmd):
+    tokens = _shell_split(cmd)
+    if len(tokens) < 2 or tokens[0] != "git" or tokens[1] != "clean":
         return False, ""
 
-    if " -n" in cmd or "--dry-run" in cmd:
-        return False, ""
+    for arg in tokens[2:]:
+        if arg == "--":
+            break
+        if arg == "--dry-run":
+            return False, ""
+        if arg.startswith("-") and not arg.startswith("--") and "n" in arg[1:]:
+            return False, ""
 
     return True, "git clean deletes untracked files permanently. Use 'git clean -n' to preview."
 
@@ -202,10 +271,10 @@ def _extract_subshells(cmd: str) -> list[str]:
 def _strip_shell_grouping(cmd: str) -> str:
     """Strip bare subshell parens and brace groups from a command."""
     cmd = cmd.strip()
-    if cmd.startswith("(") and cmd.endswith(")"):
-        cmd = cmd[1:-1].strip()
-    if cmd.startswith("{"):
-        cmd = cmd.lstrip("{").rstrip("}").rstrip(";").strip()
+    while cmd and cmd[0] in "({":
+        cmd = cmd[1:].lstrip()
+    while cmd and cmd[-1] in ")};":
+        cmd = cmd[:-1].rstrip()
     return cmd
 
 
