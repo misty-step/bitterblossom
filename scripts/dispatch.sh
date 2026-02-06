@@ -141,15 +141,18 @@ while true; do
         break
     fi
 
-    # Run Claude Code with the prompt
+    # Run Claude Code with the prompt (line-buffered for real-time tailing)
     cd "\$WORKSPACE"
     script -q -c "claude -p --permission-mode bypassPermissions \"\$(cat PROMPT.md)\"" /dev/null 2>&1 | \\
-        sed 's/\\x1b\\[[0-9;?]*[a-zA-Z]//g' | \\
-        sed 's/\\x1b\\][0-9;]*[^\\x07]*\\x07//g' | \\
-        tr -d '\\r' >> "\$LOG" 2>&1
+        stdbuf -oL sed 's/\\x1b\\[[0-9;?]*[a-zA-Z]//g' | \\
+        stdbuf -oL sed 's/\\x1b\\][0-9;]*[^\\x07]*\\x07//g' | \\
+        stdbuf -oL tr -d '\\r' >> "\$LOG" 2>&1
 
     EXIT_CODE=\$?
-    echo "[ralph] Claude exited with code \$EXIT_CODE" | tee -a "\$LOG"
+    echo "[ralph] Claude exited with code \$EXIT_CODE at \$(date -u +%Y-%m-%dT%H:%M:%SZ)" | tee -a "\$LOG"
+
+    # Heartbeat: log iteration summary for observability
+    echo "[ralph] heartbeat: iteration=\$ITERATION exit=\$EXIT_CODE ts=\$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "\$LOG"
 
     # Brief pause between iterations
     sleep 5
@@ -260,9 +263,9 @@ dispatch_oneshot() {
     "$SPRITE_CLI" exec -o "$ORG" -s "$name" -- bash -c \
         "cd $WORKSPACE && \
          script -q -c 'claude -p --permission-mode bypassPermissions \"\$(cat .dispatch-prompt.md)\"' /dev/null 2>&1 | \
-         sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' | \
-         sed 's/\x1b\][0-9;]*[^\x07]*\x07//g' | \
-         tr -d '\r' | \
+         stdbuf -oL sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' | \
+         stdbuf -oL sed 's/\x1b\][0-9;]*[^\x07]*\x07//g' | \
+         stdbuf -oL tr -d '\r' | \
          grep -v '^\$'; \
          rm -f .dispatch-prompt.md"
 
