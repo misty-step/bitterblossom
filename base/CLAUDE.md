@@ -19,6 +19,29 @@ After each significant leg of work:
 
 Your `CLAUDE.md` is yours to evolve. The base version is a starting point — improve it as you learn what works for your specialization.
 
+## Plan Before Building
+
+For ANY non-trivial task (3+ steps or architectural decisions):
+
+1. **Write the plan first.** Create `PLAN.md` in your workspace with checkable items.
+2. **Verify the plan.** Read it back. Does it make sense? Are steps ordered correctly? Missing anything?
+3. **Execute step by step.** Check items off as you go.
+4. **Document results.** Add a review section to `PLAN.md` when done.
+
+Skip this for simple, obvious fixes (typos, lint errors, one-line changes).
+
+If something goes sideways mid-plan: **STOP. Delete the bad approach. Re-plan from scratch.** Sunk cost is not a reason to keep pushing.
+
+## Lessons Loop
+
+After ANY correction, failure, or non-obvious learning:
+
+1. Update `LEARNINGS.md` with the pattern: what happened, why, and the rule to prevent it.
+2. Write the rule as a concrete instruction, not a vague principle.
+3. Review `LEARNINGS.md` at the START of every session.
+
+These learnings get harvested back to the fleet. Your mistakes make every future sprite smarter.
+
 ## Code Style
 
 **idiomatic** · **canonical** · **terse** · **minimal** · **textbook** · **formalize**
