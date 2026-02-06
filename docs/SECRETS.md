@@ -2,35 +2,26 @@
 
 ## Tooling
 
-[gitleaks](https://github.com/gitleaks/gitleaks) scans for secrets in code and git history. Config: `.gitleaks.toml`.
+[TruffleHog](https://github.com/trufflesecurity/trufflehog) scans for secrets in code and git history. It detects 800+ secret types with verification — it actually checks whether detected credentials are live.
 
-CI runs gitleaks on every PR and push to master via `.github/workflows/gitleaks.yml`.
+CI runs TruffleHog on every PR and push to master via `.github/workflows/secret-detection.yml`.
 
 ## Local Usage
 
 ```bash
-brew install gitleaks
+brew install trufflehog
 
-# Scan current files
-gitleaks detect --source . --no-git -v
+# Scan current directory
+trufflehog filesystem --directory . --only-verified
 
 # Scan full git history
-gitleaks detect --source . -v
+trufflehog git file://. --only-verified
 
-# Pre-commit hook (optional)
-gitleaks protect --staged
+# Scan only since a branch point
+trufflehog git file://. --since-commit HEAD~10 --only-verified
 ```
 
-## Custom Rules
-
-`.gitleaks.toml` extends gitleaks defaults with two patterns:
-
-| Rule | Pattern | Matches |
-|------|---------|---------|
-| `moonshot-api-key` | `sk-[a-zA-Z0-9]{40,}` | Moonshot proxy API keys |
-| `anthropic-api-key` | `sk-ant-[a-zA-Z0-9\-_]{40,}` | Anthropic API keys |
-
-Update these if key formats change. Test with `gitleaks detect -v` after changes.
+`--only-verified` means TruffleHog confirms the secret is live before reporting. Drop the flag to see unverified matches too.
 
 ## When a Leak is Detected
 
@@ -46,7 +37,7 @@ Update these if key formats change. Test with `gitleaks detect -v` after changes
    export ANTHROPIC_AUTH_TOKEN="new-key-here"
    ./scripts/sync.sh
    ```
-4. **Verify** the old key no longer appears: `gitleaks detect --source . -v`
+4. **Verify** the old key no longer appears: `trufflehog git file://. --only-verified`
 
 ## Sprite Auth Token Flow
 
