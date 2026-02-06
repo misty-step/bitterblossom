@@ -99,6 +99,12 @@ The observation journal (`observations/OBSERVATIONS.md`) is the core feedback lo
 
 Compositions live in `compositions/`. When patterns suggest a change, create a new composition version, provision it, and compare.
 
+## Security
+
+Secret detection runs on every PR and push to master via [TruffleHog](https://github.com/trufflesecurity/trufflehog). See [docs/SECRETS.md](docs/SECRETS.md) for local usage, leak response runbook, and how sprite auth tokens work.
+
+API keys are never stored in git. `base/settings.json` uses a placeholder rendered at provision/sync time from `$ANTHROPIC_AUTH_TOKEN`.
+
 ## Constraints
 
 - PR review is a separate GitHub Action (multi-model council), not done by sprites
