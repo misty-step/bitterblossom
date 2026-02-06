@@ -1,6 +1,10 @@
-# Bitterblossom Composition v1
-# Hypothesis: 5 full-stack sprites with specialization preferences
-# All can handle any task; preferences guide routing, not restrict capability.
+# Bitterblossom Composition v1 — "Fae Court"
+#
+# Hypothesis: 5 full-stack sprites with specialization preferences produce
+# higher quality output than generalist sprites, while maintaining flexibility.
+#
+# All can handle any task. Preferences guide Kaylee's routing decisions.
+# This composition is an experiment — compare against future compositions.
 
 version: 1
 name: "Fae Court v1"
@@ -13,7 +17,6 @@ base:
   hooks:
     - base/hooks/destructive-command-guard.py
     - base/hooks/fast-feedback.py
-    - base/hooks/github-cli-guard.py
     - base/hooks/memory-reminder.py
   skills:
     - base/skills/testing-philosophy
@@ -28,100 +31,62 @@ sprites:
     definition: sprites/bramble.md
     preference: "Systems & Data"
     philosophy: "Deep foundations. Fast, correct, scalable."
-    routes_when:
-      - database queries, migrations, schema changes
-      - API endpoint design or implementation
-      - performance optimization, caching
-      - server-side business logic
-      - data pipelines, ETL
-    keywords:
-      - db, database, sql, query, migration, schema
-      - api, endpoint, route, rest, graphql
-      - performance, cache, index, optimize
-      - server, backend, service
-    extra_skills:
-      - external-integration
+    strengths:
+      - Database design, queries, migrations
+      - API endpoint design and implementation
+      - Performance optimization, caching
+      - Server-side business logic
+    fallback: true  # Default for ambiguous tasks
 
   willow:
     definition: sprites/willow.md
     preference: "Interface & Experience"
     philosophy: "Craft matters. Every detail serves the user."
-    routes_when:
-      - UI component creation or modification
-      - styling, layout, responsive design
-      - accessibility improvements
-      - animation and interaction
-      - design system implementation
-    keywords:
-      - ui, component, button, form, modal, page
-      - css, tailwind, style, layout, responsive
-      - accessibility, a11y, aria, semantic
-      - animation, transition, interaction
-      - design, theme, token
-    extra_skills: []
+    strengths:
+      - UI components, styling, layout
+      - Accessibility, responsive design
+      - Animation and interaction
+      - Design system implementation
 
   thorn:
     definition: sprites/thorn.md
     preference: "Quality & Security"
     philosophy: "Defend the system. Trust nothing external."
-    routes_when:
-      - writing or improving tests
-      - security audits or vulnerability fixes
-      - bug investigation and resolution
-      - error handling improvements
-      - input validation, sanitization
-    keywords:
-      - test, spec, coverage, tdd, jest, vitest
-      - security, vulnerability, xss, csrf, injection
-      - bug, fix, error, exception, failure
-      - validate, sanitize, guard
-      - dependency, audit, cve
-    extra_skills:
-      - external-integration
+    strengths:
+      - Test-first development
+      - Security audits, vulnerability fixes
+      - Bug investigation, root-cause analysis
+      - Input validation, error handling
 
   fern:
     definition: sprites/fern.md
     preference: "Platform & Operations"
     philosophy: "Automate the boring. Make deployment invisible."
-    routes_when:
-      - CI/CD pipeline creation or debugging
-      - Docker/container configuration
-      - deployment scripts and automation
-      - environment variable management
-      - monitoring and alerting
-    keywords:
-      - ci, cd, pipeline, github actions, workflow
-      - docker, container, compose, dockerfile
-      - deploy, release, rollback, provision
-      - env, environment, secrets, config
-      - monitor, alert, log, observability
-      - fly, vercel, aws, infrastructure
-    extra_skills:
-      - external-integration
+    strengths:
+      - CI/CD pipelines
+      - Docker, containers, deployment
+      - Environment and secrets management
+      - Monitoring and observability
 
   moss:
     definition: sprites/moss.md
     preference: "Architecture & Evolution"
     philosophy: "Simplify relentlessly. Codebases should want to be extended."
-    routes_when:
-      - code refactoring and simplification
-      - technical debt reduction
-      - architecture decisions and design
-      - documentation creation or improvement
-      - module boundary redesign
-    keywords:
-      - refactor, simplify, extract, abstract
-      - architecture, design, pattern, module
-      - tech debt, complexity, coupling
-      - documentation, adr, readme
-      - boundary, interface, contract
-    extra_skills: []
+    strengths:
+      - Code refactoring, simplification
+      - Technical debt reduction
+      - Architecture decisions, documentation
+      - Module boundary design
 
-routing:
-  strategy: keyword_match
-  fallback: bramble  # Systems sprite handles ambiguous tasks
+experiment:
+  hypothesis: "Specialized sprites produce higher quality domain work than generalists"
+  metrics:
+    - Task completion rate
+    - Code review feedback quality
+    - Time to completion
+    - Routing accuracy (was the right sprite chosen?)
+  comparison: null  # No previous composition to compare against yet
   notes: |
-    OpenClaw matches task description keywords against sprite keyword lists.
-    Highest match score wins. Ties go to the sprite whose preference
-    most closely matches the task category. Fallback to bramble
-    for truly ambiguous tasks (systems work is the safest default).
+    Track observations in observations/OBSERVATIONS.md.
+    After 20+ observations, evaluate whether specialization matters.
+    Consider v2: fewer sprites (3?), different specializations, or generalists.
