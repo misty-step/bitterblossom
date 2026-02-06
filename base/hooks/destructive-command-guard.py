@@ -10,6 +10,7 @@ PreToolUse hook — runs before Bash commands execute.
 """
 import json
 import re
+import shlex
 import subprocess
 import sys
 
@@ -30,7 +31,10 @@ def get_current_branch() -> str | None:
 def is_protected_branch(branch: str | None) -> bool:
     if not branch:
         return False
-    return branch in ("main", "master")
+    return branch in PROTECTED_BRANCHES
+
+
+PROTECTED_BRANCHES = ("main", "master")
 
 
 # Commands that destroy git history or bypass quality gates
@@ -46,37 +50,76 @@ DANGEROUS_FLAGS = [
     ("--no-verify", "Skips git hooks. Hooks enforce quality gates — don't bypass them."),
 ]
 
-SAFE_FORCE_FLAGS = ("--force-with-lease", "--force-if-includes")
+
+def _shell_split(cmd: str) -> list[str]:
+    """Split a shell command while honoring quotes."""
+    try:
+        return shlex.split(cmd)
+    except ValueError:
+        return cmd.split()
+
+
+def _push_args(cmd: str) -> list[str]:
+    """Return args after `git push` or empty when command is not push."""
+    tokens = _shell_split(cmd)
+    if len(tokens) < 2 or tokens[0] != "git" or tokens[1] != "push":
+        return []
+    return tokens[2:]
+
+
+def _normalize_branch_ref(ref: str) -> str:
+    return ref.removeprefix("refs/heads/")
+
+
+def _extract_push_targets(args: list[str]) -> list[str]:
+    """Extract push targets/refspecs from git push args.
+
+    Assumes first non-option token is remote unless it clearly looks
+    like a ref/refspec.
+    """
+    non_option = [a for a in args if a and not a.startswith("-")]
+    if not non_option:
+        return []
+
+    targets = non_option[1:]
+    first = non_option[0]
+    if (
+        ":" in first
+        or first.startswith("+")
+        or first.startswith("refs/heads/")
+        or _normalize_branch_ref(first) in PROTECTED_BRANCHES
+    ):
+        targets.insert(0, first)
+    return targets
 
 
 def check_push_protection(cmd: str) -> tuple[bool, str]:
     """Block direct pushes to main/master."""
-    push_match = re.match(r"^git\s+push\b(.*)$", cmd)
-    if not push_match:
+    args = _push_args(cmd)
+    if not args:
         return False, ""
 
-    push_args = push_match.group(1).strip()
+    targets = _extract_push_targets(args)
+    for target in targets:
+        normalized = target.lstrip("+")
+        if ":" in normalized:
+            branch = _normalize_branch_ref(normalized.rsplit(":", 1)[1])
+            if branch in PROTECTED_BRANCHES:
+                return True, f"Refspec targeting {branch} blocked. Use PR workflow."
+            continue
 
-    # Explicit push to main/master (with optional +refspec and refs/heads/ prefix)
-    explicit = re.search(r"\b(\S+)\s+\+?(refs/heads/)?(main|master)(?:\s|$)", push_args)
-    if explicit:
-        return True, (
-            f"Direct push to {explicit.group(3)} blocked. Use PR workflow:\n"
-            "  git push origin <feature-branch>\n"
-            "  gh pr create"
-        )
-
-    # Refspec targeting main/master (with optional +refspec and refs/heads/ prefix)
-    refspec = re.search(r"\+?:\s*(refs/heads/)?(main|master)(?:\s|$)", push_args)
-    if refspec:
-        branch = refspec.group(2)
-        return True, f"Refspec targeting {branch} blocked. Use PR workflow."
+        branch = _normalize_branch_ref(normalized)
+        if branch in PROTECTED_BRANCHES:
+            return True, (
+                f"Direct push to {branch} blocked. Use PR workflow:\n"
+                "  git push origin <feature-branch>\n"
+                "  gh pr create"
+            )
 
     # On protected branch with bare push
     current = get_current_branch()
     if is_protected_branch(current):
-        has_branch = re.search(r"\b\w+\s+[\w\-/]+\s*$", push_args)
-        if not has_branch:
+        if not targets:
             return True, (
                 f"On {current}. Direct push blocked.\n"
                 "Switch to feature branch:\n"
@@ -98,17 +141,35 @@ def check_rebase_protection(cmd: str) -> tuple[bool, str]:
 
 def check_force_push_protection(cmd: str) -> tuple[bool, str]:
     """Block force pushes unless explicit safety flags are used."""
-    if not re.match(r"^git\s+push\b", cmd):
+    args = _push_args(cmd)
+    if not args:
         return False, ""
 
-    has_force = re.search(r"(^|\s)(-f|--force)(\s|$)", cmd)
-    if not has_force:
+    targets = _extract_push_targets(args)
+    if any(t.startswith("+") for t in targets):
+        return True, "Force refspec (+) overwrites remote history. Use '--force-with-lease' instead."
+
+    has_safe_force = any(
+        a == "--force-if-includes" or a.startswith("--force-with-lease")
+        for a in args
+    )
+    if has_safe_force:
         return False, ""
 
-    if any(flag in cmd for flag in SAFE_FORCE_FLAGS):
-        return False, ""
+    has_force = any(
+        a == "--force"
+        or a == "-f"
+        or (
+            a.startswith("-")
+            and not a.startswith("--")
+            and "f" in a[1:]
+        )
+        for a in args
+    )
+    if has_force:
+        return True, "Overwrites remote history. Use '--force-with-lease' instead."
 
-    return True, "Overwrites remote history. Use '--force-with-lease' instead."
+    return False, ""
 
 
 def check_clean_protection(cmd: str) -> tuple[bool, str]:

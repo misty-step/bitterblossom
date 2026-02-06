@@ -29,6 +29,9 @@ class TestPushProtection:
         "git push upstream main",
         "git push origin refs/heads/main",
         "git push origin refs/heads/master",
+        "git push origin 'main'",
+        'git push origin "master"',
+        'git push origin "refs/heads/main"',
     ])
     def test_blocks_direct_push(self, cmd):
         blocked, _ = check(cmd)
@@ -75,6 +78,8 @@ class TestRefspecProtection:
         "git push origin feature:main",
         "git push origin HEAD:refs/heads/main",
         "git push origin feature:refs/heads/master",
+        "git push origin 'HEAD:main'",
+        'git push origin "feature:refs/heads/master"',
     ])
     def test_blocks_refspec_to_protected(self, cmd):
         blocked, _ = check(cmd)
@@ -97,6 +102,9 @@ class TestForcePush:
     @pytest.mark.parametrize("cmd", [
         "git push --force origin feature",
         "git push -f origin feature",
+        "git push origin +feature",
+        "git push origin +refs/heads/feature",
+        "git push origin '+feature'",
     ])
     def test_blocks_force_push(self, cmd):
         blocked, _ = check(cmd)
