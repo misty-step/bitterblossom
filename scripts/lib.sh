@@ -91,6 +91,17 @@ upload_dir() {
     done
 }
 
+# Push base config (CLAUDE.md, hooks, skills, commands, settings) to a sprite.
+# Single source of truth for what config artifacts get uploaded.
+push_config() {
+    local name="$1"
+    upload_file "$name" "$BASE_DIR/CLAUDE.md" "$REMOTE_HOME/workspace/CLAUDE.md"
+    upload_dir "$name" "$BASE_DIR/hooks" "$REMOTE_HOME/.claude/hooks"
+    upload_dir "$name" "$BASE_DIR/skills" "$REMOTE_HOME/.claude/skills"
+    upload_dir "$name" "$BASE_DIR/commands" "$REMOTE_HOME/.claude/commands"
+    upload_file "$name" "$SETTINGS_PATH" "$REMOTE_HOME/.claude/settings.json"
+}
+
 # Check if a sprite already exists
 sprite_exists() {
     local name="$1"

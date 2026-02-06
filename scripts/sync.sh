@@ -27,25 +27,9 @@ sync_sprite() {
         return 1
     fi
 
-    # Sync base CLAUDE.md
-    log "Syncing base CLAUDE.md..."
-    upload_file "$name" "$BASE_DIR/CLAUDE.md" "$REMOTE_HOME/workspace/CLAUDE.md"
-
-    # Sync hooks
-    log "Syncing hooks..."
-    upload_dir "$name" "$BASE_DIR/hooks" "$REMOTE_HOME/.claude/hooks"
-
-    # Sync skills
-    log "Syncing skills..."
-    upload_dir "$name" "$BASE_DIR/skills" "$REMOTE_HOME/.claude/skills"
-
-    # Sync commands
-    log "Syncing commands..."
-    upload_dir "$name" "$BASE_DIR/commands" "$REMOTE_HOME/.claude/commands"
-
-    # Sync settings.json
-    log "Syncing Claude Code settings..."
-    upload_file "$name" "$SETTINGS_PATH" "$REMOTE_HOME/.claude/settings.json"
+    # Sync base config (CLAUDE.md, hooks, skills, commands, settings)
+    log "Syncing base config..."
+    push_config "$name"
 
     # Sync persona definition (unless --base-only)
     if [[ "$BASE_ONLY" == false ]]; then
