@@ -101,14 +101,26 @@ composition_sprites() {
         yq '.sprites | keys | .[]' "$COMPOSITION"
     else
         if [[ ! -f "$COMPOSITION" ]]; then
-            err "Composition file not found: $COMPOSITION (falling back to sprites/*.md)"
+            log "Composition file not found: $COMPOSITION (falling back to sprites/*.md)"
         else
-            err "yq not found (falling back to sprites/*.md)"
+            log "yq not found (falling back to sprites/*.md)"
         fi
         for def in "$SPRITES_DIR"/*.md; do
+            [[ -f "$def" ]] || continue
             basename "$def" .md
         done
     fi
+}
+
+# Push base config (CLAUDE.md, hooks, skills, commands, settings) to a sprite.
+# Single source of truth for what config artifacts get uploaded.
+push_config() {
+    local name="$1"
+    upload_file "$name" "$BASE_DIR/CLAUDE.md" "$REMOTE_HOME/workspace/CLAUDE.md"
+    upload_dir "$name" "$BASE_DIR/hooks" "$REMOTE_HOME/.claude/hooks"
+    upload_dir "$name" "$BASE_DIR/skills" "$REMOTE_HOME/.claude/skills"
+    upload_dir "$name" "$BASE_DIR/commands" "$REMOTE_HOME/.claude/commands"
+    upload_file "$name" "$SETTINGS_PATH" "$REMOTE_HOME/.claude/settings.json"
 }
 
 # Check if a sprite already exists

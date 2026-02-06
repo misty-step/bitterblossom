@@ -39,7 +39,7 @@ fleet_status() {
     echo ""
     echo "Composition sprites ($COMPOSITION):"
     while IFS= read -r name; do
-        if echo "$live_sprites" | grep -q "^$name"; then
+        if echo "$live_sprites" | grep -q "^${name}	"; then
             echo "  ✓ $name (provisioned)"
         else
             echo "  ○ $name (not provisioned)"
@@ -98,6 +98,10 @@ TARGET=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --composition)
+            if [[ -z "${2:-}" ]]; then
+                err "--composition requires a value"
+                exit 1
+            fi
             COMPOSITION="$2"
             shift 2
             ;;
