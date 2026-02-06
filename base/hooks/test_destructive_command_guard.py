@@ -50,6 +50,16 @@ class TestPushProtection:
         blocked, _ = check(cmd)
         assert not blocked, f"should allow: {cmd}"
 
+    def test_blocks_bare_push_on_protected_branch(self, monkeypatch):
+        monkeypatch.setattr(guard, "get_current_branch", lambda: "master")
+        blocked, _ = check("git push")
+        assert blocked
+
+    def test_allows_bare_push_on_non_protected_branch(self, monkeypatch):
+        monkeypatch.setattr(guard, "get_current_branch", lambda: "feature/test")
+        blocked, _ = check("git push")
+        assert not blocked
+
     @pytest.mark.parametrize("cmd", [
         "git -C /tmp push origin main",
         "git -c core.abbrev=8 push origin master",

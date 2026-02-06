@@ -83,25 +83,25 @@ def _shell_split(cmd: str) -> list[str]:
         return cmd.split()
 
 
-def _push_args(cmd: str) -> list[str]:
-    """Return args after `git push` or empty when command is not push."""
+def _push_args(cmd: str) -> list[str] | None:
+    """Return args after `git push`, or None when command is not git push."""
     tokens = _shell_split(cmd)
     if not tokens or tokens[0] != "git":
-        return []
+        return None
 
     i = 1
     while i < len(tokens):
         token = tokens[i]
 
         if token == "--":
-            return []
+            return None
 
         if token == "push":
             return tokens[i + 1:]
 
         if token in GIT_GLOBAL_OPTS_WITH_VALUE:
             if i + 1 >= len(tokens):
-                return []
+                return None
             i += 2
             continue
 
@@ -117,9 +117,27 @@ def _push_args(cmd: str) -> list[str]:
             i += 1
             continue
 
-        return []
+        return None
 
-    return []
+    return None
+
+
+def _iter_option_args(args: list[str]):
+    """Yield option-like args until '--' end-of-options marker."""
+    for arg in args:
+        if arg == "--":
+            break
+        yield arg
+
+
+def _has_short_flag(args: list[str], flag_char: str) -> bool:
+    """Return True if short flag appears in args (supports combined flags)."""
+    return any(
+        arg.startswith("-")
+        and not arg.startswith("--")
+        and flag_char in arg[1:]
+        for arg in _iter_option_args(args)
+    )
 
 
 def _normalize_branch_ref(ref: str) -> str:
@@ -151,10 +169,10 @@ def _extract_push_targets(args: list[str]) -> list[str]:
 def check_push_protection(cmd: str) -> tuple[bool, str]:
     """Block direct pushes to main/master."""
     args = _push_args(cmd)
-    if not args:
+    if args is None:
         return False, ""
 
-    push_all = next((a for a in args if a in PUSH_ALL_FLAGS), None)
+    push_all = next((a for a in _iter_option_args(args) if a in PUSH_ALL_FLAGS), None)
     if push_all:
         return True, (
             f"{push_all} can update protected branches. Use PR workflow:\n"
@@ -205,7 +223,7 @@ def check_rebase_protection(cmd: str) -> tuple[bool, str]:
 def check_force_push_protection(cmd: str) -> tuple[bool, str]:
     """Block force pushes unless explicit safety flags are used."""
     args = _push_args(cmd)
-    if not args:
+    if args is None:
         return False, ""
 
     targets = _extract_push_targets(args)
@@ -214,21 +232,12 @@ def check_force_push_protection(cmd: str) -> tuple[bool, str]:
 
     has_safe_force = any(
         a == "--force-if-includes" or a.startswith("--force-with-lease")
-        for a in args
+        for a in _iter_option_args(args)
     )
     if has_safe_force:
         return False, ""
 
-    has_force = any(
-        a == "--force"
-        or a == "-f"
-        or (
-            a.startswith("-")
-            and not a.startswith("--")
-            and "f" in a[1:]
-        )
-        for a in args
-    )
+    has_force = any(a == "--force" for a in _iter_option_args(args)) or _has_short_flag(args, "f")
     if has_force:
         return True, "Overwrites remote history. Use '--force-with-lease' instead."
 
@@ -241,13 +250,11 @@ def check_clean_protection(cmd: str) -> tuple[bool, str]:
     if len(tokens) < 2 or tokens[0] != "git" or tokens[1] != "clean":
         return False, ""
 
-    for arg in tokens[2:]:
-        if arg == "--":
-            break
-        if arg == "--dry-run":
-            return False, ""
-        if arg.startswith("-") and not arg.startswith("--") and "n" in arg[1:]:
-            return False, ""
+    args = tokens[2:]
+    if any(arg == "--dry-run" for arg in _iter_option_args(args)):
+        return False, ""
+    if _has_short_flag(args, "n"):
+        return False, ""
 
     return True, "git clean deletes untracked files permanently. Use 'git clean -n' to preview."
 
