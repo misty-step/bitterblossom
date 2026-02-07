@@ -32,7 +32,8 @@ func (e *exitError) Unwrap() error {
 }
 
 func main() {
-	if err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr); err != nil {
+	root := newRootCommand()
+	if err := root.Execute(); err != nil {
 		var coded *exitError
 		if errors.As(err, &coded) {
 			if coded.Err != nil {
@@ -40,7 +41,7 @@ func main() {
 			}
 			os.Exit(coded.Code)
 		}
-		_, _ = fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		_, _ = fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
@@ -52,17 +53,17 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	return cmd.Execute()
 }
 
+func newRootCommand() *cobra.Command {
+	return newRootCmd(os.Stdout, os.Stderr)
+}
+
 func newRootCmd(stdout, stderr io.Writer) *cobra.Command {
-	factories := rootCommandFactories{
+	return newRootCmdWithFactories(stdout, stderr, rootCommandFactories{
 		composeFactory: newComposeCmd,
 		watchFactory:   newWatchCmd,
 		logsFactory:    newLogsCmd,
-	}
-	return newRootCmdWithFactories(stdout, stderr, factories)
-}
-
-func newRootCommand() *cobra.Command {
-	return newRootCmd(os.Stdout, os.Stderr)
+		agentFactory:   newAgentCommand,
+	})
 }
 
 type rootCommandFactories struct {
@@ -86,7 +87,7 @@ func newRootCmdWithFactories(stdout, stderr io.Writer, factories rootCommandFact
 	root.SetOut(stdout)
 	root.SetErr(stderr)
 
-	root.AddCommand(newVersionCmd(stdout))
+	root.AddCommand(newVersionCmd())
 	if factories.composeFactory != nil {
 		root.AddCommand(factories.composeFactory())
 	}
@@ -109,12 +110,12 @@ func newRootCmdWithComposeFactory(composeFactory func() *cobra.Command) *cobra.C
 	})
 }
 
-func newVersionCmd(stdout io.Writer) *cobra.Command {
+func newVersionCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
 		Short: "Print bb version",
-		RunE: func(_ *cobra.Command, _ []string) error {
-			_, err := fmt.Fprintf(stdout, "bb version %s\n", version)
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			_, err := fmt.Fprintf(cmd.OutOrStdout(), "bb version %s\n", version)
 			return err
 		},
 	}
