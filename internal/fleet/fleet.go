@@ -2,25 +2,10 @@ package fleet
 
 import (
 	"sort"
+	"strconv"
 
 	"github.com/misty-step/bitterblossom/internal/sprite"
 )
-
-// ActionKind describes a reconciliation action.
-type ActionKind string
-
-const (
-	ActionProvision   ActionKind = "provision"
-	ActionTeardown    ActionKind = "teardown"
-	ActionReconfigure ActionKind = "reconfigure"
-)
-
-// Action is a side-effect-free reconciliation result.
-type Action struct {
-	Kind   ActionKind `json:"kind"`
-	Sprite string     `json:"sprite"`
-	Reason string     `json:"reason,omitempty"`
-}
 
 // SpriteReport summarizes one actual sprite in the fleet.
 type SpriteReport struct {
@@ -60,64 +45,26 @@ func New(desired Composition, sprites []*sprite.Sprite) *Fleet {
 
 // Reconcile returns the actions required to converge actual state to desired state.
 func (f *Fleet) Reconcile() []Action {
-	desired := make(map[string]SpriteSpec, len(f.Desired.Sprites))
-	for _, spec := range f.Desired.Sprites {
-		desired[spec.Name] = spec
+	configVersion := ""
+	if f.Desired.Version > 0 {
+		configVersion = strconv.Itoa(f.Desired.Version)
 	}
 
-	actual := make(map[string]sprite.Snapshot, len(f.Sprites))
+	actual := make([]SpriteStatus, 0, len(f.Sprites))
 	for _, handle := range f.Sprites {
 		if handle == nil {
 			continue
 		}
 		snap := handle.Snapshot()
-		actual[snap.Name] = snap
-	}
-
-	actions := make([]Action, 0)
-
-	desiredNames := sortedKeys(desired)
-	for _, name := range desiredNames {
-		spec := desired[name]
-		snap, ok := actual[name]
-		if !ok {
-			actions = append(actions, Action{
-				Kind:   ActionProvision,
-				Sprite: name,
-				Reason: "missing from actual fleet",
-			})
-			continue
-		}
-		delete(actual, name)
-
-		if !snap.Provisioned || snap.State == sprite.StateDead {
-			actions = append(actions, Action{
-				Kind:   ActionProvision,
-				Sprite: name,
-				Reason: "sprite not healthy/provisioned",
-			})
-			continue
-		}
-
-		if snap.Persona.Name != spec.Persona.Name || snap.Persona.Definition != spec.Persona.Definition {
-			actions = append(actions, Action{
-				Kind:   ActionReconfigure,
-				Sprite: name,
-				Reason: "persona drift",
-			})
-		}
-	}
-
-	extras := sortedKeys(actual)
-	for _, name := range extras {
-		actions = append(actions, Action{
-			Kind:   ActionTeardown,
-			Sprite: name,
-			Reason: "not in desired composition",
+		actual = append(actual, SpriteStatus{
+			Name:          snap.Name,
+			Persona:       snap.Persona.Name,
+			ConfigVersion: configVersion,
+			State:         snap.State,
 		})
 	}
 
-	return actions
+	return Reconcile(f.Desired, actual)
 }
 
 // Status returns a current-state summary for reporting and API consumers.

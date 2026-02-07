@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -13,6 +14,7 @@ type Kind string
 const (
 	KindProvision Kind = "provision"
 	KindDispatch  Kind = "dispatch"
+	KindHeartbeat Kind = "heartbeat"
 	KindProgress  Kind = "progress"
 	KindDone      Kind = "done"
 	KindBlocked   Kind = "blocked"
@@ -24,6 +26,9 @@ type Event interface {
 	Timestamp() time.Time
 	Sprite() string
 	Kind() Kind
+	GetTimestamp() time.Time
+	GetSprite() string
+	GetKind() Kind
 }
 
 // Meta carries shared event fields.
@@ -42,6 +47,15 @@ func (m Meta) Sprite() string { return m.SpriteName }
 // Kind returns the event kind.
 func (m Meta) Kind() Kind { return m.EventKind }
 
+// GetTimestamp returns the event timestamp.
+func (m Meta) GetTimestamp() time.Time { return m.Timestamp() }
+
+// GetSprite returns the sprite name.
+func (m Meta) GetSprite() string { return m.Sprite() }
+
+// GetKind returns the event kind.
+func (m Meta) GetKind() Kind { return m.Kind() }
+
 // ProvisionEvent reports sprite provisioning.
 type ProvisionEvent struct {
 	Meta
@@ -59,8 +73,27 @@ type DispatchEvent struct {
 // ProgressEvent reports in-flight task progress.
 type ProgressEvent struct {
 	Meta
-	Commits      int `json:"commits"`
-	FilesChanged int `json:"files_changed"`
+	Branch        string `json:"branch,omitempty"`
+	Commits       int    `json:"commits,omitempty"`
+	FilesChanged  int    `json:"files_changed,omitempty"`
+	Activity      string `json:"activity,omitempty"`
+	Detail        string `json:"detail,omitempty"`
+	LastCommit    string `json:"last_commit,omitempty"`
+	BranchCreated string `json:"branch_created,omitempty"`
+	Success       *bool  `json:"success,omitempty"`
+	Stalled       *bool  `json:"stalled,omitempty"`
+}
+
+// HeartbeatEvent reports supervisor liveness and resource data.
+type HeartbeatEvent struct {
+	Meta
+	UptimeSeconds      int64   `json:"uptime_seconds"`
+	AgentPID           int     `json:"agent_pid,omitempty"`
+	CPUPercent         float64 `json:"cpu_percent,omitempty"`
+	MemoryBytes        uint64  `json:"memory_bytes,omitempty"`
+	Branch             string  `json:"branch,omitempty"`
+	LastCommit         string  `json:"last_commit,omitempty"`
+	UncommittedChanges *bool   `json:"uncommitted_changes,omitempty"`
 }
 
 // DoneEvent reports task completion.
@@ -90,6 +123,25 @@ var (
 	ErrInvalidEvent = errors.New("events: invalid event")
 )
 
+// Valid reports whether kind is recognized by this package.
+func (k Kind) Valid() bool {
+	switch k {
+	case KindProvision, KindDispatch, KindHeartbeat, KindProgress, KindDone, KindBlocked, KindError:
+		return true
+	default:
+		return false
+	}
+}
+
+// ParseKind parses a kind name from user input.
+func ParseKind(raw string) (Kind, error) {
+	kind := Kind(strings.TrimSpace(strings.ToLower(raw)))
+	if !kind.Valid() {
+		return "", fmt.Errorf("%w: %q", ErrUnknownKind, raw)
+	}
+	return kind, nil
+}
+
 // MarshalEvent encodes an event as one JSON object (one JSONL line).
 func MarshalEvent(event Event) ([]byte, error) {
 	if event == nil {
@@ -117,6 +169,8 @@ func UnmarshalEvent(data []byte) (Event, error) {
 		event = &ProvisionEvent{}
 	case KindDispatch:
 		event = &DispatchEvent{}
+	case KindHeartbeat:
+		event = &HeartbeatEvent{}
 	case KindProgress:
 		event = &ProgressEvent{}
 	case KindDone:
@@ -141,6 +195,9 @@ func UnmarshalEvent(data []byte) (Event, error) {
 func validateEvent(event Event) error {
 	if event.Kind() == "" {
 		return fmt.Errorf("%w: missing event kind", ErrInvalidEvent)
+	}
+	if !event.Kind().Valid() {
+		return fmt.Errorf("%w: unknown event kind %q", ErrInvalidEvent, event.Kind())
 	}
 	if event.Sprite() == "" {
 		return fmt.Errorf("%w: missing sprite name", ErrInvalidEvent)

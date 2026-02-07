@@ -3,133 +3,120 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
-	"strconv"
-	"strings"
 
-	"github.com/misty-step/bitterblossom/internal/config"
-	"github.com/misty-step/bitterblossom/internal/dispatch"
-	"github.com/misty-step/bitterblossom/internal/monitor"
-	"github.com/misty-step/bitterblossom/internal/sprite"
+	"github.com/spf13/cobra"
 )
 
 var version = "dev"
 
+type exitError struct {
+	Code int
+	Err  error
+}
+
+func (e *exitError) Error() string {
+	if e == nil || e.Err == nil {
+		return "command failed"
+	}
+	return e.Err.Error()
+}
+
+func (e *exitError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
 func main() {
-	if err := run(context.Background(), os.Args[1:], os.Stdout); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+	root := newRootCommand()
+	if err := root.Execute(); err != nil {
+		var coded *exitError
+		if errors.As(err, &coded) {
+			if coded.Err != nil {
+				_, _ = fmt.Fprintln(os.Stderr, coded.Err)
+			}
+			os.Exit(coded.Code)
+		}
+		_, _ = fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, args []string, out io.Writer) error {
-	if len(args) == 0 || args[0] == "version" {
-		_, err := fmt.Fprintf(out, "bb version %s\n", version)
-		return err
-	}
-
-	switch args[0] {
-	case "run-task":
-		return runTask(ctx, args[1:], out)
-	case "check-fleet":
-		return checkFleet(ctx, args[1:], out)
-	default:
-		return fmt.Errorf("unknown command %q", args[0])
-	}
+func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	cmd := newRootCmd(stdout, stderr)
+	cmd.SetArgs(args)
+	cmd.SetContext(ctx)
+	return cmd.Execute()
 }
 
-func runTask(ctx context.Context, args []string, out io.Writer) error {
-	if len(args) < 3 {
-		return errors.New("usage: bb run-task <sprite> <repo|owner/repo> <issue-number> [persona-role]")
-	}
+func newRootCommand() *cobra.Command {
+	return newRootCmd(os.Stdout, os.Stderr)
+}
 
-	issueNumber, err := strconv.Atoi(args[2])
-	if err != nil {
-		return fmt.Errorf("invalid issue number %q: %w", args[2], err)
-	}
-
-	personaRole := "sprite"
-	if len(args) > 3 {
-		personaRole = args[3]
-	}
-
-	svc := dispatch.NewService(sprite.NewCLI(os.Getenv("SPRITE_CLI")))
-	result, err := svc.RunIssueTask(ctx, dispatch.DispatchRequest{
-		Sprite:      args[0],
-		Repo:        args[1],
-		IssueNumber: issueNumber,
-		PersonaRole: personaRole,
+func newRootCmd(stdout, stderr io.Writer) *cobra.Command {
+	return newRootCmdWithFactories(stdout, stderr, rootCommandFactories{
+		composeFactory: newComposeCmd,
+		watchFactory:   newWatchCmd,
+		logsFactory:    newLogsCmd,
+		agentFactory:   newAgentCommand,
 	})
-	if err != nil {
-		return err
-	}
-
-	_, err = fmt.Fprintf(
-		out,
-		"Dispatched %s to %s (pid=%d)\nLog: %s\n",
-		result.Sprite,
-		result.Task,
-		result.PID,
-		result.LogPath,
-	)
-	return err
 }
 
-func checkFleet(ctx context.Context, args []string, out io.Writer) error {
-	fs := flag.NewFlagSet("check-fleet", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	all := fs.Bool("all", false, "check all sprites from `sprite list`")
-	compositionPath := fs.String("composition", "compositions/v1.yaml", "composition yaml path")
-	if err := fs.Parse(args); err != nil {
-		return err
+type rootCommandFactories struct {
+	composeFactory func() *cobra.Command
+	watchFactory   func(io.Writer, io.Writer) *cobra.Command
+	logsFactory    func(io.Writer, io.Writer) *cobra.Command
+	agentFactory   func() *cobra.Command
+}
+
+func newRootCmdWithFactories(stdout, stderr io.Writer, factories rootCommandFactories) *cobra.Command {
+	root := &cobra.Command{
+		Use:           "bb",
+		Short:         "Bitterblossom fleet CLI",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		Version:       version,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return cmd.Help()
+		},
+	}
+	root.SetOut(stdout)
+	root.SetErr(stderr)
+
+	root.AddCommand(newVersionCmd())
+	if factories.composeFactory != nil {
+		root.AddCommand(factories.composeFactory())
+	}
+	if factories.watchFactory != nil {
+		root.AddCommand(factories.watchFactory(stdout, stderr))
+	}
+	if factories.logsFactory != nil {
+		root.AddCommand(factories.logsFactory(stdout, stderr))
+	}
+	if factories.agentFactory != nil {
+		root.AddCommand(factories.agentFactory())
 	}
 
-	targets := fs.Args()
-	if !*all && len(targets) == 0 {
-		composition, err := config.LoadComposition(*compositionPath)
-		if err != nil {
-			return fmt.Errorf("loading default sprite targets: %w", err)
-		}
-		targets = config.SpriteNames(composition)
-	}
+	return root
+}
 
-	svc := monitor.NewService(sprite.NewCLI(os.Getenv("SPRITE_CLI")))
-	report, err := svc.CheckFleet(ctx, monitor.FleetRequest{Sprites: targets, All: *all})
-	if err != nil {
-		return err
-	}
+func newRootCmdWithComposeFactory(composeFactory func() *cobra.Command) *cobra.Command {
+	return newRootCmdWithFactories(os.Stdout, os.Stderr, rootCommandFactories{
+		composeFactory: composeFactory,
+	})
+}
 
-	if _, err := fmt.Fprintf(out, "%-12s %-10s %-30s %-20s %s\n", "SPRITE", "STATUS", "TASK", "STARTED", "RUNTIME"); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(out, "%-12s %-10s %-30s %-20s %s\n", "------", "------", "----", "-------", "-------"); err != nil {
-		return err
-	}
-
-	var failures []string
-	for _, spriteStatus := range report.Sprites {
-		if _, err := fmt.Fprintf(
-			out,
-			"%-12s %-10s %-30s %-20s %s\n",
-			spriteStatus.Sprite,
-			spriteStatus.State,
-			spriteStatus.Task,
-			spriteStatus.Started,
-			spriteStatus.Runtime,
-		); err != nil {
+func newVersionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print bb version",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			_, err := fmt.Fprintf(cmd.OutOrStdout(), "bb version %s\n", version)
 			return err
-		}
-		if spriteStatus.Error != "" {
-			failures = append(failures, fmt.Sprintf("%s: %s", spriteStatus.Sprite, spriteStatus.Error))
-		}
+		},
 	}
-
-	if len(failures) == 0 {
-		return nil
-	}
-	_, err = fmt.Fprintf(out, "\nWarnings:\n- %s\n", strings.Join(failures, "\n- "))
-	return err
 }
