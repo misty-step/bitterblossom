@@ -46,11 +46,14 @@ prepare_settings() {
     fi
 
     RENDERED_SETTINGS="$(mktemp)"
-    python3 - "$BASE_DIR/settings.json" "$RENDERED_SETTINGS" "$token" <<'PY'
+    chmod 600 "$RENDERED_SETTINGS"
+    _BB_TOKEN="$token" python3 - "$BASE_DIR/settings.json" "$RENDERED_SETTINGS" <<'PY'
 import json
+import os
 import sys
 
-source_path, out_path, token = sys.argv[1:]
+source_path, out_path = sys.argv[1:]
+token = os.environ["_BB_TOKEN"]
 with open(source_path, "r", encoding="utf-8") as source_file:
     settings = json.load(source_file)
 

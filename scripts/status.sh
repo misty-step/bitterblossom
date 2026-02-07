@@ -19,7 +19,7 @@ fleet_status() {
         python3 -c "import sys,json; data=json.load(sys.stdin); [print(f\"{s['name']}\t{s['status']}\t{s.get('url','n/a')}\") for s in data.get('sprites',[])]" 2>/dev/null || echo "")
 
     local sprite_list
-    sprite_list=$(composition_sprites) || return 1
+    sprite_list=$(composition_sprites 2>/dev/null) || sprite_list=""
 
     if [[ -z "$live_sprites" ]]; then
         echo "No sprites found (or API call failed)."
@@ -27,6 +27,7 @@ fleet_status() {
         echo "Composition sprites ($COMPOSITION):"
         if [[ -n "$sprite_list" ]]; then
             while IFS= read -r name; do
+                validate_sprite_name "$name" || continue
                 echo "  - $name (not provisioned)"
             done <<< "$sprite_list"
         fi
@@ -42,15 +43,17 @@ fleet_status() {
 
     # Show composition sprites vs provisioned
     echo ""
-    echo "Composition sprites ($COMPOSITION):"
-    while IFS= read -r name; do
-        validate_sprite_name "$name" || continue
-        if echo "$live_sprites" | grep -qF "${name}	"; then
-            echo "  ✓ $name (provisioned)"
-        else
-            echo "  ○ $name (not provisioned)"
-        fi
-    done <<< "$sprite_list"
+    if [[ -n "$sprite_list" ]]; then
+        echo "Composition sprites ($COMPOSITION):"
+        while IFS= read -r name; do
+            validate_sprite_name "$name" || continue
+            if echo "$live_sprites" | grep -qF "${name}	"; then
+                echo "  ✓ $name (provisioned)"
+            else
+                echo "  ○ $name (not provisioned)"
+            fi
+        done <<< "$sprite_list"
+    fi
 
     # Show checkpoints
     echo ""
