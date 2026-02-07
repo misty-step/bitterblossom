@@ -291,6 +291,11 @@ def _has_short_flag(args: list[str], flag_char: str) -> bool:
     )
 
 
+def _has_push_tags_flag(args: list[str]) -> bool:
+    """Return True if git push args include --tags."""
+    return any(arg == "--tags" for arg in _iter_option_args(args))
+
+
 def _normalize_branch_ref(ref: str) -> str:
     return ref.removeprefix("refs/heads/")
 
@@ -351,7 +356,7 @@ def check_push_protection(cmd: str) -> tuple[bool, str]:
     # On protected branch with bare push
     current = get_current_branch()
     if is_protected_branch(current):
-        if not targets:
+        if not targets and not _has_push_tags_flag(args):
             return True, (
                 f"On {current}. Direct push blocked.\n"
                 "Switch to feature branch:\n"
