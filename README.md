@@ -105,6 +105,14 @@ Secret detection runs on every PR and push to master via [TruffleHog](https://gi
 
 API keys are never stored in git. `base/settings.json` uses a placeholder rendered at provision/sync time from `$ANTHROPIC_AUTH_TOKEN`.
 
+## Hook Testing
+
+Safety-critical hooks in `base/hooks/` are covered with pytest:
+
+```bash
+python3 -m pytest -q
+```
+
 ## Constraints
 
 - PR review is a separate GitHub Action (multi-model council), not done by sprites
