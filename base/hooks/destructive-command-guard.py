@@ -83,6 +83,21 @@ def _shell_split(cmd: str) -> list[str]:
         return cmd.split()
 
 
+def _starts_with_command_pattern(cmd: str, pattern: str) -> bool:
+    """Return True when cmd starts with pattern tokens (ignoring env prefixes)."""
+    cmd_tokens = _shell_split(cmd.strip())
+    pattern_tokens = _shell_split(pattern)
+    if not cmd_tokens or not pattern_tokens:
+        return False
+
+    i = 0
+    while i < len(cmd_tokens) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=.*$", cmd_tokens[i]):
+        i += 1
+    cmd_tokens = cmd_tokens[i:]
+
+    return cmd_tokens[:len(pattern_tokens)] == pattern_tokens
+
+
 def _push_args(cmd: str) -> list[str] | None:
     """Return args after `git push`, or None when command is not git push."""
     tokens = _shell_split(cmd)
@@ -340,7 +355,7 @@ def check_single_command(cmd: str) -> tuple[bool, str]:
 
     # Check destructive git commands (word-boundary match)
     for pattern, reason in DESTRUCTIVE_GIT:
-        if pattern in cmd:
+        if _starts_with_command_pattern(cmd, pattern):
             return True, reason
 
     # Check dangerous flags

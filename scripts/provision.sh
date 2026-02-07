@@ -10,7 +10,8 @@ set -euo pipefail
 #   ./scripts/provision.sh <sprite-name>    # Provision single sprite
 #   ./scripts/provision.sh --all            # Provision all sprites
 
-LOG_PREFIX="provision" source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+LOG_PREFIX="provision"
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 usage() {
     local exit_code="${1:-1}"
@@ -166,7 +167,7 @@ prepare_settings
 
 if [[ "$PROVISION_ALL" == true ]]; then
     log "Provisioning sprites from composition: $COMPOSITION"
-    sprite_list=$(composition_sprites) || exit 1
+    sprite_list=$(composition_sprites --strict) || exit 1
     if [[ -z "$sprite_list" ]]; then
         err "No sprites found in composition: $COMPOSITION"
         exit 1

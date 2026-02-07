@@ -7,7 +7,18 @@ set -euo pipefail
 #   ./scripts/status.sh              # Fleet overview
 #   ./scripts/status.sh <sprite>     # Detailed sprite status
 
-LOG_PREFIX="status" source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+LOG_PREFIX="status"
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+usage() {
+    local exit_code="${1:-1}"
+    echo "Usage: $0 [--composition <path>] [sprite-name]"
+    echo ""
+    echo "  No args: fleet overview"
+    echo "  --composition <path>  Use specific composition YAML"
+    echo "  sprite-name: detailed status for one sprite"
+    exit "$exit_code"
+}
 
 fleet_status() {
     echo "=== Bitterblossom Fleet Status ==="
@@ -143,14 +154,16 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --help|-h)
-            echo "Usage: $0 [--composition <path>] [sprite-name]"
-            echo ""
-            echo "  No args: fleet overview"
-            echo "  --composition <path>  Use specific composition YAML"
-            echo "  sprite-name: detailed status for one sprite"
-            exit 0
+            usage 0
             ;;
-        *) TARGET="$1"; shift ;;
+        *)
+            if [[ -n "$TARGET" ]]; then
+                err "Only one sprite name can be provided."
+                usage
+            fi
+            TARGET="$1"
+            shift
+            ;;
     esac
 done
 

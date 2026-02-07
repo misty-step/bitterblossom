@@ -35,11 +35,14 @@ validate_sprite_name() {
 set_composition_path() {
     local input="$1"
     local candidate="$input"
-    local allowed_root="$ROOT_DIR/compositions"
+    local allowed_root
     local resolved_parent
     local resolved_path
-    local allowed_root_lower
-    local resolved_path_lower
+
+    if ! allowed_root="$(cd "$ROOT_DIR/compositions" 2>/dev/null && pwd -P)"; then
+        err "Unable to resolve compositions directory under $ROOT_DIR"
+        return 1
+    fi
 
     if [[ "$candidate" != /* ]]; then
         candidate="$ROOT_DIR/$candidate"
@@ -50,10 +53,8 @@ set_composition_path() {
         return 1
     fi
     resolved_path="$resolved_parent/$(basename "$candidate")"
-    allowed_root_lower="$(printf '%s' "$allowed_root" | tr '[:upper:]' '[:lower:]')"
-    resolved_path_lower="$(printf '%s' "$resolved_path" | tr '[:upper:]' '[:lower:]')"
 
-    if [[ "$resolved_path_lower" != "$allowed_root_lower"/* ]]; then
+    if [[ "$resolved_path" != "$allowed_root"/* ]]; then
         err "Invalid composition path '$input'. Must be within $allowed_root"
         return 1
     fi
@@ -77,8 +78,7 @@ prepare_settings() {
         exit 1
     fi
 
-    RENDERED_SETTINGS="$(mktemp)"
-    chmod 600 "$RENDERED_SETTINGS"
+    RENDERED_SETTINGS="$(umask 077 && mktemp)"
     _BB_TOKEN="$token" python3 - "$BASE_DIR/settings.json" "$RENDERED_SETTINGS" <<'PY'
 import json
 import os
@@ -146,41 +146,50 @@ fallback_sprite_names() {
     fi
 }
 
+fallback_or_fail() {
+    local strict="$1"
+    local reason="$2"
+
+    err "$reason"
+    if [[ "$strict" == "true" ]]; then
+        return 1
+    fi
+
+    err "Falling back to sprite definitions in $SPRITES_DIR"
+    fallback_sprite_names
+}
+
 # List sprite names from the active composition YAML.
 # Requires yq (mikefarah/yq) and a valid composition file.
 composition_sprites() {
+    local strict=false
     local sprites_from_composition=""
 
+    if [[ "${1:-}" == "--strict" ]]; then
+        strict=true
+    fi
+
     if ! set_composition_path "$COMPOSITION"; then
-        err "Falling back to sprite definitions in $SPRITES_DIR"
-        fallback_sprite_names
+        fallback_or_fail "$strict" "Invalid composition path: $COMPOSITION"
         return
     fi
 
     if [[ ! -f "$COMPOSITION" ]]; then
-        err "Composition file not found: $COMPOSITION"
-        err "Falling back to sprite definitions in $SPRITES_DIR"
-        fallback_sprite_names
+        fallback_or_fail "$strict" "Composition file not found: $COMPOSITION"
         return
     fi
     if ! command -v yq &>/dev/null; then
-        err "yq is required but not installed (https://github.com/mikefarah/yq)"
-        err "Falling back to sprite definitions in $SPRITES_DIR"
-        fallback_sprite_names
+        fallback_or_fail "$strict" "yq is required but not installed (https://github.com/mikefarah/yq)"
         return
     fi
 
     if ! sprites_from_composition="$(yq '.sprites | keys | .[]' "$COMPOSITION" 2>/dev/null)"; then
-        err "Failed to parse composition file: $COMPOSITION"
-        err "Falling back to sprite definitions in $SPRITES_DIR"
-        fallback_sprite_names
+        fallback_or_fail "$strict" "Failed to parse composition file: $COMPOSITION"
         return
     fi
 
-    if [[ -z "$sprites_from_composition" ]]; then
-        err "No sprites found in composition: $COMPOSITION"
-        err "Falling back to sprite definitions in $SPRITES_DIR"
-        fallback_sprite_names
+    if ! grep -q '[^[:space:]]' <<< "$sprites_from_composition"; then
+        fallback_or_fail "$strict" "No sprites found in composition: $COMPOSITION"
         return
     fi
 

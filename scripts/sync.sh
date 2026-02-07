@@ -11,7 +11,8 @@ set -euo pipefail
 #   ./scripts/sync.sh <sprite>     # Sync specific sprite
 #   ./scripts/sync.sh --base-only  # Only sync base config (no persona)
 
-LOG_PREFIX="sync" source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+LOG_PREFIX="sync"
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 BASE_ONLY=false
 
@@ -75,7 +76,7 @@ prepare_settings
 
 if [[ ${#TARGETS[@]} -eq 0 ]]; then
     log "Syncing sprites from composition: $COMPOSITION"
-    sprite_list=$(composition_sprites) || exit 1
+    sprite_list=$(composition_sprites --strict) || exit 1
     if [[ -z "$sprite_list" ]]; then
         err "No sprites found in composition: $COMPOSITION"
         exit 1
