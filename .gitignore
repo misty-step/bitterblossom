@@ -9,4 +9,7 @@ observations/archives/*/settings.json
 
 # OS
 .DS_Store
-base/hooks/__pycache__/
+
+# Python bytecode/cache artifacts
+__pycache__/
+*.pyc
