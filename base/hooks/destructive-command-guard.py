@@ -50,6 +50,50 @@ DANGEROUS_FLAGS = [
     ("--no-verify", "Skips git hooks. Hooks enforce quality gates — don't bypass them."),
 ]
 
+WRAPPER_COMMANDS = {"command", "env", "nice", "nohup", "sudo", "time"}
+
+ENV_OPTS_WITH_VALUE = {
+    "-C",
+    "-S",
+    "-u",
+    "--chdir",
+    "--split-string",
+    "--unset",
+}
+
+SUDO_OPTS_WITH_VALUE = {
+    "-A",
+    "-C",
+    "-D",
+    "-R",
+    "-T",
+    "-U",
+    "-g",
+    "-h",
+    "-p",
+    "-r",
+    "-t",
+    "-u",
+    "--chdir",
+    "--close-from",
+    "--group",
+    "--host",
+    "--other-user",
+    "--prompt",
+    "--role",
+    "--runas-group",
+    "--runas-user",
+    "--type",
+    "--user",
+}
+
+TIME_OPTS_WITH_VALUE = {
+    "-f",
+    "-o",
+    "--format",
+    "--output",
+}
+
 GIT_GLOBAL_OPTS_WITH_VALUE = {
     "-C",
     "-c",
@@ -83,17 +127,109 @@ def _shell_split(cmd: str) -> list[str]:
         return cmd.split()
 
 
+def _command_name(token: str) -> str:
+    """Return executable name without any path prefix."""
+    return token.rsplit("/", 1)[-1]
+
+
+def _skip_option(
+    tokens: list[str],
+    idx: int,
+    options_with_value: set[str],
+) -> int:
+    """Skip one wrapper option token (and its value when required)."""
+    token = tokens[idx]
+    if token in options_with_value and "=" not in token and idx + 1 < len(tokens):
+        return idx + 2
+    return idx + 1
+
+
+def _strip_command_prefixes(tokens: list[str]) -> list[str]:
+    """Strip env assignments and wrapper commands before the real command."""
+    cmd_tokens = tokens[:]
+
+    while cmd_tokens:
+        i = 0
+        while i < len(cmd_tokens) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=.*$", cmd_tokens[i]):
+            i += 1
+        cmd_tokens = cmd_tokens[i:]
+        if not cmd_tokens:
+            return []
+
+        wrapper = _command_name(cmd_tokens[0])
+        if wrapper not in WRAPPER_COMMANDS:
+            return cmd_tokens
+
+        i = 1
+        if wrapper == "env":
+            while i < len(cmd_tokens):
+                token = cmd_tokens[i]
+                if token == "--":
+                    i += 1
+                    break
+                if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=.*$", token):
+                    i += 1
+                    continue
+                if token.startswith("-"):
+                    i = _skip_option(cmd_tokens, i, ENV_OPTS_WITH_VALUE)
+                    continue
+                break
+        elif wrapper == "sudo":
+            while i < len(cmd_tokens):
+                token = cmd_tokens[i]
+                if token == "--":
+                    i += 1
+                    break
+                if not token.startswith("-"):
+                    break
+                i = _skip_option(cmd_tokens, i, SUDO_OPTS_WITH_VALUE)
+        elif wrapper == "nice":
+            while i < len(cmd_tokens):
+                token = cmd_tokens[i]
+                if token == "--":
+                    i += 1
+                    break
+                if not token.startswith("-"):
+                    break
+                i = _skip_option(cmd_tokens, i, {"-n", "--adjustment"})
+        elif wrapper == "time":
+            while i < len(cmd_tokens):
+                token = cmd_tokens[i]
+                if token == "--":
+                    i += 1
+                    break
+                if not token.startswith("-"):
+                    break
+                i = _skip_option(cmd_tokens, i, TIME_OPTS_WITH_VALUE)
+        else:
+            while i < len(cmd_tokens):
+                token = cmd_tokens[i]
+                if token == "--":
+                    i += 1
+                    break
+                if not token.startswith("-"):
+                    break
+                i += 1
+
+        cmd_tokens = cmd_tokens[i:]
+
+    return []
+
+
+def _normalize_command_prefix(cmd: str) -> str:
+    """Return command string after stripping wrapper prefixes."""
+    tokens = _strip_command_prefixes(_shell_split(cmd.strip()))
+    if not tokens:
+        return ""
+    return " ".join(shlex.quote(token) for token in tokens)
+
+
 def _starts_with_command_pattern(cmd: str, pattern: str) -> bool:
-    """Return True when cmd starts with pattern tokens (ignoring env prefixes)."""
-    cmd_tokens = _shell_split(cmd.strip())
+    """Return True when cmd starts with pattern tokens (after wrapper stripping)."""
+    cmd_tokens = _strip_command_prefixes(_shell_split(cmd.strip()))
     pattern_tokens = _shell_split(pattern)
     if not cmd_tokens or not pattern_tokens:
         return False
-
-    i = 0
-    while i < len(cmd_tokens) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=.*$", cmd_tokens[i]):
-        i += 1
-    cmd_tokens = cmd_tokens[i:]
 
     return cmd_tokens[:len(pattern_tokens)] == pattern_tokens
 
@@ -330,37 +466,38 @@ def split_shell_commands(cmd: str) -> list[str]:
 
 def check_single_command(cmd: str) -> tuple[bool, str]:
     """Check a single (non-compound) command for dangerous operations."""
-    if not cmd:
+    normalized_cmd = _normalize_command_prefix(cmd)
+    if not normalized_cmd:
         return False, ""
 
     # Check push protection
-    blocked, reason = check_push_protection(cmd)
+    blocked, reason = check_push_protection(normalized_cmd)
     if blocked:
         return True, reason
 
     # Check rebase protection
-    blocked, reason = check_rebase_protection(cmd)
+    blocked, reason = check_rebase_protection(normalized_cmd)
     if blocked:
         return True, reason
 
     # Check force-push protection
-    blocked, reason = check_force_push_protection(cmd)
+    blocked, reason = check_force_push_protection(normalized_cmd)
     if blocked:
         return True, reason
 
     # Check git clean protection
-    blocked, reason = check_clean_protection(cmd)
+    blocked, reason = check_clean_protection(normalized_cmd)
     if blocked:
         return True, reason
 
     # Check destructive git commands (word-boundary match)
     for pattern, reason in DESTRUCTIVE_GIT:
-        if _starts_with_command_pattern(cmd, pattern):
+        if _starts_with_command_pattern(normalized_cmd, pattern):
             return True, reason
 
     # Check dangerous flags
     for flag, reason in DANGEROUS_FLAGS:
-        if re.search(r"(^|\s)" + re.escape(flag) + r"(\s|$)", cmd):
+        if re.search(r"(^|\s)" + re.escape(flag) + r"(\s|$)", normalized_cmd):
             return True, reason
 
     return False, ""
