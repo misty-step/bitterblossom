@@ -38,6 +38,8 @@ set_composition_path() {
     local allowed_root="$ROOT_DIR/compositions"
     local resolved_parent
     local resolved_path
+    local allowed_root_lower
+    local resolved_path_lower
 
     if [[ "$candidate" != /* ]]; then
         candidate="$ROOT_DIR/$candidate"
@@ -48,8 +50,10 @@ set_composition_path() {
         return 1
     fi
     resolved_path="$resolved_parent/$(basename "$candidate")"
+    allowed_root_lower="$(printf '%s' "$allowed_root" | tr '[:upper:]' '[:lower:]')"
+    resolved_path_lower="$(printf '%s' "$resolved_path" | tr '[:upper:]' '[:lower:]')"
 
-    if [[ "$resolved_path" != "$allowed_root"/* ]]; then
+    if [[ "$resolved_path_lower" != "$allowed_root_lower"/* ]]; then
         err "Invalid composition path '$input'. Must be within $allowed_root"
         return 1
     fi
@@ -65,6 +69,8 @@ lib_cleanup() {
 
 prepare_settings() {
     local token="${ANTHROPIC_AUTH_TOKEN:-}"
+    RENDERED_SETTINGS=""
+
     if [[ -z "$token" ]]; then
         err "ANTHROPIC_AUTH_TOKEN is required"
         err "Export it in your shell before running this script."

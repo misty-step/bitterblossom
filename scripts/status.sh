@@ -38,6 +38,10 @@ fleet_status() {
     printf "%-15s %-8s %s\n" "SPRITE" "STATUS" "URL"
     printf "%-15s %-8s %s\n" "------" "------" "---"
     echo "$live_sprites" | while IFS=$'\t' read -r name status url; do
+        if [[ -z "$name" || -z "$status" ]]; then
+            err "Malformed sprite data from API; skipping row."
+            continue
+        fi
         printf "%-15s %-8s %s\n" "$name" "$status" "$url"
     done
 
@@ -59,6 +63,10 @@ fleet_status() {
     if [[ -n "$sprite_list" ]]; then
         local orphans=""
         while IFS=$'\t' read -r name status url; do
+            if [[ -z "$name" || -z "$status" ]]; then
+                err "Malformed sprite data from API; skipping row."
+                continue
+            fi
             if ! echo "$sprite_list" | grep -qxF "$name"; then
                 orphans+="  ? $name ($status, not in composition)"$'\n'
             fi
@@ -74,6 +82,10 @@ fleet_status() {
     echo ""
     echo "Checkpoints:"
     echo "$live_sprites" | while IFS=$'\t' read -r name status url; do
+        if [[ -z "$name" ]]; then
+            err "Malformed sprite data from API; skipping checkpoint lookup."
+            continue
+        fi
         local checkpoints
         checkpoints=$("$SPRITE_CLI" checkpoint list -o "$ORG" -s "$name" 2>/dev/null || echo "  (none)")
         echo "  $name: $checkpoints"
