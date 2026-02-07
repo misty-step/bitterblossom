@@ -19,7 +19,7 @@ fleet_status() {
         python3 -c "import sys,json; data=json.load(sys.stdin); [print(f\"{s['name']}\t{s['status']}\t{s.get('url','n/a')}\") for s in data.get('sprites',[])]" 2>/dev/null || echo "")
 
     local sprite_list
-    sprite_list=$(composition_sprites 2>/dev/null) || sprite_list=""
+    sprite_list=$(composition_sprites) || sprite_list=""
 
     if [[ -z "$live_sprites" ]]; then
         echo "No sprites found (or API call failed)."
@@ -55,6 +55,21 @@ fleet_status() {
         done <<< "$sprite_list"
     fi
 
+    # Show orphan sprites (live but not in composition)
+    if [[ -n "$sprite_list" ]]; then
+        local orphans=""
+        while IFS=$'\t' read -r name status url; do
+            if ! echo "$sprite_list" | grep -qx "$name"; then
+                orphans+="  ? $name ($status, not in composition)"$'\n'
+            fi
+        done <<< "$live_sprites"
+        if [[ -n "$orphans" ]]; then
+            echo ""
+            echo "Orphan sprites (live but not in composition):"
+            printf "%s" "$orphans"
+        fi
+    fi
+
     # Show checkpoints
     echo ""
     echo "Checkpoints:"
@@ -67,6 +82,7 @@ fleet_status() {
 
 sprite_detail() {
     local name="$1"
+    validate_sprite_name "$name"
     echo "=== Sprite: $name ==="
     echo ""
 
