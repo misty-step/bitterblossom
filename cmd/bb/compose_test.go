@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/misty-step/bitterblossom/internal/contracts"
 	"github.com/misty-step/bitterblossom/internal/fleet"
 	"github.com/misty-step/bitterblossom/internal/sprite"
 	"github.com/misty-step/bitterblossom/pkg/fly"
@@ -163,15 +164,28 @@ func TestComposeStatusJSON(t *testing.T) {
 		t.Fatalf("cmd.Execute() error = %v", err)
 	}
 
-	var payload map[string]any
+	var payload struct {
+		Version string `json:"version"`
+		Command string `json:"command"`
+		Data    struct {
+			Desired int `json:"desired"`
+			Actual  int `json:"actual"`
+		} `json:"data"`
+	}
 	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
 		t.Fatalf("json.Unmarshal() error = %v, output=%q", err, stdout.String())
 	}
-	if payload["desired"].(float64) != 1 {
-		t.Fatalf("desired = %v, want 1", payload["desired"])
+	if payload.Version != contracts.SchemaVersion {
+		t.Fatalf("version = %q, want %q", payload.Version, contracts.SchemaVersion)
 	}
-	if payload["actual"].(float64) != 1 {
-		t.Fatalf("actual = %v, want 1", payload["actual"])
+	if payload.Command != "compose.status" {
+		t.Fatalf("command = %q, want compose.status", payload.Command)
+	}
+	if payload.Data.Desired != 1 {
+		t.Fatalf("desired = %d, want 1", payload.Data.Desired)
+	}
+	if payload.Data.Actual != 1 {
+		t.Fatalf("actual = %d, want 1", payload.Data.Actual)
 	}
 }
 

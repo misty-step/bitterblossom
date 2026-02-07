@@ -12,6 +12,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/misty-step/bitterblossom/internal/contracts"
 	"github.com/misty-step/bitterblossom/internal/fleet"
 	"github.com/misty-step/bitterblossom/internal/sprite"
 	"github.com/misty-step/bitterblossom/pkg/fly"
@@ -187,7 +188,7 @@ func runComposeStatus(ctx context.Context, cmd *cobra.Command, opts composeOptio
 			"drift":       plan.Drift,
 			"rows":        rows,
 		}
-		return printJSON(cmd, payload)
+		return contracts.WriteJSON(cmd.OutOrStdout(), "compose.status", payload)
 	}
 
 	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Composition: %s\n", composition.Name); err != nil {

@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	"github.com/misty-step/bitterblossom/internal/agent"
+	"github.com/misty-step/bitterblossom/internal/contracts"
 	"github.com/spf13/cobra"
 )
 
@@ -205,11 +205,9 @@ func newAgentStatusCommand() *cobra.Command {
 					State   agent.SupervisorState `json:"state"`
 					Running bool                  `json:"running"`
 				}{State: state, Running: running}
-				encoded, err := json.MarshalIndent(payload, "", "  ")
-				if err != nil {
+				if err := contracts.WriteJSON(cmd.OutOrStdout(), "agent.status", payload); err != nil {
 					return &exitError{Code: 1, Err: err}
 				}
-				_, _ = fmt.Fprintln(cmd.OutOrStdout(), string(encoded))
 				return nil
 			}
 
@@ -297,13 +295,13 @@ func runAgentForeground(cmd *cobra.Command, opts agentStartOptions) error {
 		SpriteName: opts.sprite,
 		RepoDir:    opts.repoDir,
 		Agent: agent.AgentConfig{
-			Kind:        kind,
-			Command:     strings.TrimSpace(opts.agentCommand),
-			Flags:       parseCSV(opts.agentFlags),
-			Model:       strings.TrimSpace(opts.model),
-			Yolo:        opts.yolo,
-			FullAuto:    opts.fullAuto,
-			Environment: parseEnvAssignments(opts.envAssignments),
+			Kind:           kind,
+			Command:        strings.TrimSpace(opts.agentCommand),
+			Flags:          parseCSV(opts.agentFlags),
+			Model:          strings.TrimSpace(opts.model),
+			Yolo:           opts.yolo,
+			FullAuto:       opts.fullAuto,
+			Environment:    parseEnvAssignments(opts.envAssignments),
 			PassThroughEnv: parseCSV(opts.passThroughEnv),
 			Assignment: agent.TaskAssignment{
 				IssueURL: strings.TrimSpace(opts.issueURL),
