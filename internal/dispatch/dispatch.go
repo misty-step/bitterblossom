@@ -7,8 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/misty-step/bitterblossom/internal/contracts"
 )
 
 const workspace = "/home/sprite/workspace"
@@ -31,9 +29,18 @@ type DispatchRequest struct {
 	PersonaRole string
 }
 
+// DispatchResult reports issue-dispatch launch details.
+type DispatchResult struct {
+	Sprite    string
+	Task      string
+	StartedAt time.Time
+	PID       int
+	LogPath   string
+}
+
 // Dispatcher fans work out to a sprite.
 type Dispatcher interface {
-	RunIssueTask(ctx context.Context, req DispatchRequest) (contracts.DispatchResult, error)
+	RunIssueTask(ctx context.Context, req DispatchRequest) (DispatchResult, error)
 }
 
 // Service dispatches issue-driven tasks to sprites.
@@ -54,18 +61,18 @@ func NewService(exec Executor) *Service {
 }
 
 // RunIssueTask writes TASK.md, launches Claude, and records STATUS.json.
-func (s *Service) RunIssueTask(ctx context.Context, req DispatchRequest) (contracts.DispatchResult, error) {
+func (s *Service) RunIssueTask(ctx context.Context, req DispatchRequest) (DispatchResult, error) {
 	sprite := strings.TrimSpace(req.Sprite)
 	if !spriteNamePattern.MatchString(sprite) {
-		return contracts.DispatchResult{}, fmt.Errorf("invalid sprite name %q", req.Sprite)
+		return DispatchResult{}, fmt.Errorf("invalid sprite name %q", req.Sprite)
 	}
 
 	owner, repoName, err := parseRepo(req.Repo)
 	if err != nil {
-		return contracts.DispatchResult{}, err
+		return DispatchResult{}, err
 	}
 	if req.IssueNumber <= 0 {
-		return contracts.DispatchResult{}, fmt.Errorf("issue number must be greater than zero")
+		return DispatchResult{}, fmt.Errorf("issue number must be greater than zero")
 	}
 
 	personaRole := strings.TrimSpace(req.PersonaRole)
@@ -76,22 +83,22 @@ func (s *Service) RunIssueTask(ctx context.Context, req DispatchRequest) (contra
 	repoSlug := owner + "/" + repoName
 	prompt := buildPrompt(sprite, personaRole, repoSlug, req.IssueNumber)
 	if _, err := s.exec.Exec(ctx, sprite, "cat > "+workspace+"/TASK.md", []byte(prompt)); err != nil {
-		return contracts.DispatchResult{}, fmt.Errorf("uploading task prompt: %w", err)
+		return DispatchResult{}, fmt.Errorf("uploading task prompt: %w", err)
 	}
 
 	logFile := fmt.Sprintf("%s-%s-%d.log", sprite, repoName, req.IssueNumber)
 	launchScript := buildLaunchScript(repoSlug, repoName, req.IssueNumber, logFile)
 	pidOutput, err := s.exec.Exec(ctx, sprite, launchScript, nil)
 	if err != nil {
-		return contracts.DispatchResult{}, fmt.Errorf("starting task agent: %w", err)
+		return DispatchResult{}, fmt.Errorf("starting task agent: %w", err)
 	}
 
 	pid, err := parsePID(pidOutput)
 	if err != nil {
-		return contracts.DispatchResult{}, fmt.Errorf("parsing task pid: %w", err)
+		return DispatchResult{}, fmt.Errorf("parsing task pid: %w", err)
 	}
 
-	return contracts.DispatchResult{
+	return DispatchResult{
 		Sprite:    sprite,
 		Task:      fmt.Sprintf("%s#%d", repoSlug, req.IssueNumber),
 		StartedAt: s.now().UTC(),
