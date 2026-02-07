@@ -141,12 +141,9 @@ while true; do
         break
     fi
 
-    # Run Claude Code with the prompt (line-buffered for real-time tailing)
+    # Run Claude Code with the prompt (piped, no pseudo-TTY needed)
     cd "\$WORKSPACE"
-    script -q -c "claude -p --permission-mode bypassPermissions \"\$(cat PROMPT.md)\"" /dev/null 2>&1 | \\
-        stdbuf -oL sed 's/\\x1b\\[[0-9;?]*[a-zA-Z]//g' | \\
-        stdbuf -oL sed 's/\\x1b\\][0-9;]*[^\\x07]*\\x07//g' | \\
-        stdbuf -oL tr -d '\\r' >> "\$LOG" 2>&1
+    cat PROMPT.md | claude -p --permission-mode bypassPermissions >> "\$LOG" 2>&1
 
     EXIT_CODE=\$?
     echo "[ralph] Claude exited with code \$EXIT_CODE at \$(date -u +%Y-%m-%dT%H:%M:%SZ)" | tee -a "\$LOG"
@@ -262,10 +259,7 @@ dispatch_oneshot() {
 
     "$SPRITE_CLI" exec -o "$ORG" -s "$name" -- bash -c \
         "cd $WORKSPACE && \
-         script -q -c 'claude -p --permission-mode bypassPermissions \"\$(cat .dispatch-prompt.md)\"' /dev/null 2>&1 | \
-         stdbuf -oL sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' | \
-         stdbuf -oL sed 's/\x1b\][0-9;]*[^\x07]*\x07//g' | \
-         stdbuf -oL tr -d '\r' | \
+         cat .dispatch-prompt.md | claude -p --permission-mode bypassPermissions 2>&1 | \
          grep -v '^\$'; \
          rm -f .dispatch-prompt.md"
 
