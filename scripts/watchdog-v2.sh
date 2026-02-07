@@ -66,15 +66,53 @@ for name in $SPRITES; do
     log_activity "Sprite $name DEAD: Claude exited without signal on $CURRENT_TASK"
     
   else
-    # Check for staleness — any file changes in last 30 min?
-    RECENT=$("$SPRITE_CLI" exec -s "$name" -- bash -c '
-      find /home/sprite/workspace -maxdepth 3 -newer /tmp/watchdog-marker -type f 2>/dev/null | grep -v node_modules | grep -v .git | head -1
+    # Claude is running — check if making progress
+    # 1. Any branch created? (signals work has started)
+    BRANCH=$("$SPRITE_CLI" exec -s "$name" -- bash -c '
+      for d in /home/sprite/workspace/*/; do
+        [ -d "$d/.git" ] || continue
+        cd "$d"
+        B=$(git branch --show-current 2>/dev/null)
+        [ "$B" != "master" ] && [ "$B" != "main" ] && [ -n "$B" ] && echo "$B" && exit
+      done
     ' 2>/dev/null || echo "")
-    
-    if [ -z "$RECENT" ]; then
-      echo "  🟡 Possibly stale (no recent file changes)"
+    BRANCH=$(echo "$BRANCH" | tr -d '[:space:]')
+
+    # 2. Any commits in last 2h?
+    COMMIT_COUNT=$("$SPRITE_CLI" exec -s "$name" -- bash -c '
+      count=0
+      for d in /home/sprite/workspace/*/; do
+        [ -d "$d/.git" ] || continue
+        cd "$d"
+        c=$(git log --oneline --since="2 hours ago" 2>/dev/null | wc -l)
+        count=$((count + c))
+      done
+      echo $count
+    ' 2>/dev/null || echo "0")
+    COMMIT_COUNT=$(echo "$COMMIT_COUNT" | tr -d '[:space:]')
+
+    # 3. How long since dispatch?
+    DISPATCH_TIME=$(grep "^$name|" /tmp/active-agents.txt 2>/dev/null | head -1 | cut -d'|' -f3 || echo "")
+    ELAPSED_MIN=""
+    if [ -n "$DISPATCH_TIME" ]; then
+      DISPATCH_EPOCH=$(date -j -f "%Y-%m-%dT%H:%M" "$DISPATCH_TIME" "+%s" 2>/dev/null || echo "")
+      if [ -n "$DISPATCH_EPOCH" ]; then
+        NOW_EPOCH=$(date "+%s")
+        ELAPSED_MIN=$(( (NOW_EPOCH - DISPATCH_EPOCH) / 60 ))
+      fi
+    fi
+
+    # Decision logic:
+    # - Claude running + has branch or commits = definitely active
+    # - Claude running + no branch + no commits + <60min = still ramping (reading code)
+    # - Claude running + no branch + no commits + >120min = potentially stuck
+    if [ -n "$BRANCH" ] || [ "$COMMIT_COUNT" -gt 0 ]; then
+      echo "  🟢 Active (claude running, branch: ${BRANCH:-master}, commits: $COMMIT_COUNT)"
+    elif [ -n "$ELAPSED_MIN" ] && [ "$ELAPSED_MIN" -gt 120 ]; then
+      echo "  🟡 Potentially stuck (claude running ${ELAPSED_MIN}min, no branch, no commits)"
+      ALERTS="${ALERTS}STALE: $name running ${ELAPSED_MIN}min with no branch or commits on '$CURRENT_TASK'. May need investigation.\n"
     else
-      echo "  🟢 Active (claude running, files changing)"
+      echo "  🟢 Active (claude running, ramping up — ${ELAPSED_MIN:-?}min elapsed)"
     fi
   fi
 done

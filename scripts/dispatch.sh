@@ -88,8 +88,10 @@ start_ralph() {
     local name="$1"
     local prompt="$2"
     local repo="${3:-}"
+    local task_id
+    task_id="bb-$(date -u +%Y%m%d-%H%M%S)-${name}"
 
-    log "Starting Ralph loop on $name (max $MAX_RALPH_ITERATIONS iterations)..."
+    log "Starting Ralph loop on $name via sprite-agent (task_id=$task_id, max $MAX_RALPH_ITERATIONS iterations)..."
 
     # Generate and upload PROMPT.md from template
     local tmp_prompt
@@ -106,75 +108,71 @@ start_ralph() {
         setup_repo "$name" "$repo"
     fi
 
-    # Create the Ralph loop runner script directly with proper variable values
-    local ralph_script
-    ralph_script="$(cat <<RALPH_SCRIPT
-#!/bin/bash
-set -uo pipefail
-
-WORKSPACE="$WORKSPACE"
-LOG="\$WORKSPACE/ralph.log"
-ITERATION=0
-MAX_ITERATIONS=$MAX_RALPH_ITERATIONS
-
-echo "[ralph] Starting loop at \$(date -u +%Y-%m-%dT%H:%M:%SZ) (max \$MAX_ITERATIONS iterations)" | tee -a "\$LOG"
-
-while true; do
-    ITERATION=\$((ITERATION + 1))
-    echo "" >> "\$LOG"
-    echo "[ralph] === Iteration \$ITERATION / \$MAX_ITERATIONS at \$(date -u +%Y-%m-%dT%H:%M:%SZ) ===" | tee -a "\$LOG"
-
-    # Safety valve: max iterations
-    if [ "\$ITERATION" -gt "\$MAX_ITERATIONS" ]; then
-        echo "[ralph] Hit max iterations (\$MAX_ITERATIONS). Stopping." | tee -a "\$LOG"
-        break
+    # Upload sprite-agent script as a fallback for older sprites.
+    local local_agent="$TEMPLATE_DIR/sprite-agent.sh"
+    if [[ -f "$local_agent" ]]; then
+        log "Uploading sprite-agent fallback script..."
+        "$SPRITE_CLI" exec -o "$ORG" -s "$name" \
+            -file "$local_agent:$WORKSPACE/.sprite-agent.sh" \
+            -- chmod +x "$WORKSPACE/.sprite-agent.sh"
+    else
+        log "Local sprite-agent.sh not found; relying on installed ~/.local/bin/sprite-agent"
     fi
 
-    # Check for completion signal
-    if [ -f "\$WORKSPACE/TASK_COMPLETE" ]; then
-        echo "[ralph] Task marked complete. Stopping." | tee -a "\$LOG"
-        break
-    fi
-
-    # Check for blocked signal
-    if [ -f "\$WORKSPACE/BLOCKED.md" ]; then
-        echo "[ralph] Task blocked. See BLOCKED.md. Stopping." | tee -a "\$LOG"
-        break
-    fi
-
-    # Run Claude Code with the prompt (piped, no pseudo-TTY needed)
-    cd "\$WORKSPACE"
-    cat PROMPT.md | claude -p --permission-mode bypassPermissions >> "\$LOG" 2>&1
-
-    EXIT_CODE=\$?
-    echo "[ralph] Claude exited with code \$EXIT_CODE at \$(date -u +%Y-%m-%dT%H:%M:%SZ)" | tee -a "\$LOG"
-
-    # Heartbeat: log iteration summary for observability
-    echo "[ralph] heartbeat: iteration=\$ITERATION exit=\$EXIT_CODE ts=\$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "\$LOG"
-
-    # Brief pause between iterations
-    sleep 5
-done
-
-echo "[ralph] Loop ended after \$ITERATION iterations at \$(date -u +%Y-%m-%dT%H:%M:%SZ)" | tee -a "\$LOG"
-RALPH_SCRIPT
-)"
-
-    # Upload the script
-    local tmp_script
-    tmp_script="$(mktemp)"
-    printf '%s' "$ralph_script" > "$tmp_script"
+    # Start sprite-agent in the background.
+    log "Launching sprite-agent..."
     "$SPRITE_CLI" exec -o "$ORG" -s "$name" \
-        -file "$tmp_script:$WORKSPACE/ralph-loop.sh" \
-        -- chmod +x "$WORKSPACE/ralph-loop.sh"
-    rm -f "$tmp_script"
+        -- bash -c '
+            set -euo pipefail
+            TASK_ID="$1"
+            MAX_ITERS="$2"
+            SPRITE_LABEL="$3"
+            WEBHOOK_URL="$4"
+            WORKSPACE_DIR="'"$WORKSPACE"'"
 
-    # Start the loop in the background via nohup
-    log "Launching Ralph loop..."
-    "$SPRITE_CLI" exec -o "$ORG" -s "$name" -- bash -c \
-        "cd $WORKSPACE && nohup bash ralph-loop.sh > /dev/null 2>&1 & echo \$! > ralph.pid && echo \"PID: \$(cat ralph.pid)\""
+            mkdir -p "$WORKSPACE_DIR/logs"
+            rm -f "$WORKSPACE_DIR/TASK_COMPLETE" "$WORKSPACE_DIR/BLOCKED.md"
+            printf "%s\n" "$TASK_ID" > "$WORKSPACE_DIR/.current-task-id"
 
-    log "Ralph loop started on $name"
+            if [[ -f "$WORKSPACE_DIR/agent.pid" ]] && kill -0 "$(cat "$WORKSPACE_DIR/agent.pid")" 2>/dev/null; then
+                kill "$(cat "$WORKSPACE_DIR/agent.pid")" 2>/dev/null || true
+                sleep 1
+            fi
+            if [[ -f "$WORKSPACE_DIR/ralph.pid" ]] && kill -0 "$(cat "$WORKSPACE_DIR/ralph.pid")" 2>/dev/null; then
+                kill "$(cat "$WORKSPACE_DIR/ralph.pid")" 2>/dev/null || true
+                sleep 1
+            fi
+
+            AGENT_BIN="$HOME/.local/bin/sprite-agent"
+            if [[ ! -x "$AGENT_BIN" ]]; then
+                AGENT_BIN="$WORKSPACE_DIR/.sprite-agent.sh"
+            fi
+            if [[ ! -x "$AGENT_BIN" ]]; then
+                echo "ERROR: sprite-agent not found. Run sprite-bootstrap first." >&2
+                exit 1
+            fi
+
+            cd "$WORKSPACE_DIR"
+            if [[ -n "$WEBHOOK_URL" ]]; then
+                nohup env \
+                    SPRITE_NAME="$SPRITE_LABEL" \
+                    SPRITE_WEBHOOK_URL="$WEBHOOK_URL" \
+                    MAX_ITERATIONS="$MAX_ITERS" \
+                    "$AGENT_BIN" >/dev/null 2>&1 &
+            else
+                nohup env \
+                    SPRITE_NAME="$SPRITE_LABEL" \
+                    MAX_ITERATIONS="$MAX_ITERS" \
+                    "$AGENT_BIN" >/dev/null 2>&1 &
+            fi
+
+            PID="$!"
+            echo "$PID" > "$WORKSPACE_DIR/agent.pid"
+            echo "$PID" > "$WORKSPACE_DIR/ralph.pid"
+            echo "PID: $PID"
+        ' _ "$task_id" "$MAX_RALPH_ITERATIONS" "$name" "${SPRITE_WEBHOOK_URL:-}"
+
+    log "Ralph loop started on $name (managed by sprite-agent)"
     log ""
     log "Monitor with:"
     log "  $0 $name --status"
@@ -187,20 +185,22 @@ RALPH_SCRIPT
 # Stop a Ralph loop
 stop_ralph() {
     local name="$1"
-    log "Stopping Ralph loop on $name..."
+    log "Stopping Ralph loop on $name (sprite-agent + legacy processes)..."
 
-    # Kill the loop process
     "$SPRITE_CLI" exec -o "$ORG" -s "$name" -- bash -c \
-        "if [ -f $WORKSPACE/ralph.pid ]; then \
+        "if [ -f $WORKSPACE/agent.pid ]; then \
+             PID=\$(cat $WORKSPACE/agent.pid); \
+             kill \$PID 2>/dev/null || true; \
+         fi; \
+         if [ -f $WORKSPACE/ralph.pid ]; then \
              PID=\$(cat $WORKSPACE/ralph.pid); \
              kill \$PID 2>/dev/null || true; \
-             pkill -f ralph-loop.sh 2>/dev/null || true; \
-             pkill -f 'claude -p' 2>/dev/null || true; \
-             rm -f $WORKSPACE/ralph.pid; \
-             echo 'Ralph loop stopped'; \
-         else \
-             echo 'No Ralph loop running (no PID file)'; \
-         fi"
+         fi; \
+         pkill -f sprite-agent 2>/dev/null || true; \
+         pkill -f ralph-loop.sh 2>/dev/null || true; \
+         pkill -f 'claude -p' 2>/dev/null || true; \
+         rm -f $WORKSPACE/agent.pid $WORKSPACE/ralph.pid; \
+         echo 'Ralph loop stopped'"
 
     log "Done"
 }
@@ -212,15 +212,24 @@ check_status() {
     echo "=== Sprite: $name ==="
     echo ""
 
-    # Check if Ralph loop is running
+    # Check if sprite-agent / Ralph loop is running
     local ralph_status
     ralph_status=$("$SPRITE_CLI" exec -o "$ORG" -s "$name" -- bash -c \
-        "if [ -f $WORKSPACE/ralph.pid ] && kill -0 \$(cat $WORKSPACE/ralph.pid) 2>/dev/null; then \
-             echo 'RUNNING (PID '\$(cat $WORKSPACE/ralph.pid)')'; \
+        "if [ -f $WORKSPACE/agent.pid ] && kill -0 \$(cat $WORKSPACE/agent.pid) 2>/dev/null; then \
+             echo 'RUNNING sprite-agent (PID '\$(cat $WORKSPACE/agent.pid)')'; \
+         elif [ -f $WORKSPACE/ralph.pid ] && kill -0 \$(cat $WORKSPACE/ralph.pid) 2>/dev/null; then \
+             echo 'RUNNING legacy loop (PID '\$(cat $WORKSPACE/ralph.pid)')'; \
          else \
              echo 'NOT RUNNING'; \
          fi" 2>&1)
-    echo "Ralph loop: $ralph_status"
+    echo "Supervisor: $ralph_status"
+
+    local current_task_id
+    current_task_id=$("$SPRITE_CLI" exec -o "$ORG" -s "$name" -- bash -c \
+        "cat $WORKSPACE/.current-task-id 2>/dev/null || true" 2>/dev/null | tr -d '\r\n')
+    if [[ -n "$current_task_id" ]]; then
+        echo "Task ID: $current_task_id"
+    fi
 
     # Check for completion/blocked signals
     "$SPRITE_CLI" exec -o "$ORG" -s "$name" -- bash -c \

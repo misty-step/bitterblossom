@@ -120,7 +120,22 @@ MEMEOF' _ "$name" "$timestamp" "$composition_label"
     fi
     log "Git auth verified ✅"
 
-    # Step 7: Create initial checkpoint
+    # Step 7: Bootstrap sprite environment (tools, dirs, sprite-agent)
+    local bootstrap_script="$ROOT_DIR/scripts/sprite-bootstrap.sh"
+    local agent_script="$ROOT_DIR/scripts/sprite-agent.sh"
+    if [[ ! -f "$bootstrap_script" || ! -f "$agent_script" ]]; then
+        err "Missing bootstrap assets. Expected:"
+        err "  $bootstrap_script"
+        err "  $agent_script"
+        exit 1
+    fi
+
+    log "Running sprite bootstrap..."
+    upload_file "$name" "$bootstrap_script" "/tmp/sprite-bootstrap.sh"
+    upload_file "$name" "$agent_script" "/tmp/sprite-agent.sh"
+    "$SPRITE_CLI" exec -o "$ORG" -s "$name" -- bash /tmp/sprite-bootstrap.sh --agent-source /tmp/sprite-agent.sh
+
+    # Step 8: Create initial checkpoint
     log "Creating initial checkpoint..."
     "$SPRITE_CLI" checkpoint create -o "$ORG" -s "$name" 2>&1 || log "Checkpoint creation skipped (may already exist)"
 
