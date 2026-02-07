@@ -1,2 +1,2 @@
-// Package monitor contains fleet monitoring contracts.
+// Package monitor contains fleet monitoring services.
 package monitor
