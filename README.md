@@ -60,6 +60,10 @@ export ANTHROPIC_AUTH_TOKEN="<moonshot-key>"
 ./scripts/dispatch.sh bramble "Build the user authentication API"
 ./scripts/dispatch.sh thorn --repo misty-step/heartbeat "Write tests for the webhook handler"
 
+# Go control-plane equivalents for issue dispatch and fleet polling
+go run ./cmd/bb run-task bramble heartbeat 42
+go run ./cmd/bb check-fleet --composition compositions/v2.yaml
+
 # Sync config updates to running fleet
 ./scripts/sync.sh
 
