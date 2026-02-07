@@ -105,6 +105,13 @@ Secret detection runs on every PR and push to master via [TruffleHog](https://gi
 
 API keys are never stored in git. `base/settings.json` uses a placeholder rendered at provision/sync time from `$ANTHROPIC_AUTH_TOKEN`.
 
+## CI Pipeline
+
+GitHub Actions CI runs on pull requests and pushes to `master` with:
+- `shellcheck` for `scripts/*.sh`
+- `ruff` + `pytest` for `base/hooks/`
+- `yamllint` for `compositions/`
+
 ## Hook Testing
 
 Safety-critical hooks in `base/hooks/` are covered with pytest:
