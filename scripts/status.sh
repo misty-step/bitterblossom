@@ -7,7 +7,18 @@ set -euo pipefail
 #   ./scripts/status.sh              # Fleet overview
 #   ./scripts/status.sh <sprite>     # Detailed sprite status
 
-LOG_PREFIX="status" source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+LOG_PREFIX="status"
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+usage() {
+    local exit_code="${1:-1}"
+    echo "Usage: $0 [--composition <path>] [sprite-name]"
+    echo ""
+    echo "  No args: fleet overview"
+    echo "  --composition <path>  Use specific composition YAML"
+    echo "  sprite-name: detailed status for one sprite"
+    exit "$exit_code"
+}
 
 fleet_status() {
     echo "=== Bitterblossom Fleet Status ==="
@@ -18,13 +29,19 @@ fleet_status() {
     live_sprites=$("$SPRITE_CLI" api -o "$ORG" /sprites 2>/dev/null | \
         python3 -c "import sys,json; data=json.load(sys.stdin); [print(f\"{s['name']}\t{s['status']}\t{s.get('url','n/a')}\") for s in data.get('sprites',[])]" 2>/dev/null || echo "")
 
+    local sprite_list
+    sprite_list=$(composition_sprites) || sprite_list=""
+
     if [[ -z "$live_sprites" ]]; then
         echo "No sprites found (or API call failed)."
         echo ""
-        echo "Defined sprites (not yet provisioned):"
-        for def in "$SPRITES_DIR"/*.md; do
-            echo "  - $(basename "$def" .md)"
-        done
+        echo "Composition sprites ($COMPOSITION):"
+        if [[ -n "$sprite_list" ]]; then
+            while IFS= read -r name; do
+                validate_sprite_name "$name" || continue
+                echo "  - $name (not provisioned)"
+            done <<< "$sprite_list"
+        fi
         return
     fi
 
@@ -32,26 +49,54 @@ fleet_status() {
     printf "%-15s %-8s %s\n" "SPRITE" "STATUS" "URL"
     printf "%-15s %-8s %s\n" "------" "------" "---"
     echo "$live_sprites" | while IFS=$'\t' read -r name status url; do
+        if [[ -z "$name" || -z "$status" ]]; then
+            err "Malformed sprite data from API; skipping row."
+            continue
+        fi
         printf "%-15s %-8s %s\n" "$name" "$status" "$url"
     done
 
-    # Show defined but not provisioned
+    # Show composition sprites vs provisioned
     echo ""
-    echo "Defined sprites:"
-    for def in "$SPRITES_DIR"/*.md; do
-        local name
-        name="$(basename "$def" .md)"
-        if echo "$live_sprites" | grep -q "^$name"; then
-            echo "  ✓ $name (provisioned)"
-        else
-            echo "  ○ $name (not provisioned)"
+    if [[ -n "$sprite_list" ]]; then
+        echo "Composition sprites ($COMPOSITION):"
+        while IFS= read -r name; do
+            validate_sprite_name "$name" || continue
+            if echo "$live_sprites" | grep -qF "${name}	"; then
+                echo "  ✓ $name (provisioned)"
+            else
+                echo "  ○ $name (not provisioned)"
+            fi
+        done <<< "$sprite_list"
+    fi
+
+    # Show orphan sprites (live but not in composition)
+    if [[ -n "$sprite_list" ]]; then
+        local orphans=""
+        while IFS=$'\t' read -r name status url; do
+            if [[ -z "$name" || -z "$status" ]]; then
+                err "Malformed sprite data from API; skipping row."
+                continue
+            fi
+            if ! echo "$sprite_list" | grep -qxF "$name"; then
+                orphans+="  ? $name ($status, not in composition)"$'\n'
+            fi
+        done <<< "$live_sprites"
+        if [[ -n "$orphans" ]]; then
+            echo ""
+            echo "Orphan sprites (live but not in composition):"
+            printf "%s" "$orphans"
         fi
-    done
+    fi
 
     # Show checkpoints
     echo ""
     echo "Checkpoints:"
     echo "$live_sprites" | while IFS=$'\t' read -r name status url; do
+        if [[ -z "$name" ]]; then
+            err "Malformed sprite data from API; skipping checkpoint lookup."
+            continue
+        fi
         local checkpoints
         checkpoints=$("$SPRITE_CLI" checkpoint list -o "$ORG" -s "$name" 2>/dev/null || echo "  (none)")
         echo "  $name: $checkpoints"
@@ -60,6 +105,7 @@ fleet_status() {
 
 sprite_detail() {
     local name="$1"
+    validate_sprite_name "$name"
     echo "=== Sprite: $name ==="
     echo ""
 
@@ -95,14 +141,34 @@ for k, v in data.items():
     "$SPRITE_CLI" checkpoint list -o "$ORG" -s "$name" 2>/dev/null || echo "  (none)"
 }
 
-if [[ $# -eq 0 ]]; then
+# Parse args
+TARGET=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --composition)
+            if [[ -z "${2:-}" ]]; then
+                err "--composition requires a value"
+                exit 1
+            fi
+            set_composition_path "$2" || exit 1
+            shift 2
+            ;;
+        --help|-h)
+            usage 0
+            ;;
+        *)
+            if [[ -n "$TARGET" ]]; then
+                err "Only one sprite name can be provided."
+                usage
+            fi
+            TARGET="$1"
+            shift
+            ;;
+    esac
+done
+
+if [[ -z "$TARGET" ]]; then
     fleet_status
-elif [[ "$1" == "--help" || "$1" == "-h" ]]; then
-    echo "Usage: $0 [sprite-name]"
-    echo ""
-    echo "  No args: fleet overview"
-    echo "  sprite-name: detailed status for one sprite"
-    exit 0
 else
-    sprite_detail "$1"
+    sprite_detail "$TARGET"
 fi

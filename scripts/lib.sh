@@ -13,6 +13,7 @@ BASE_DIR="$ROOT_DIR/base"
 SPRITE_CLI="${SPRITE_CLI:-sprite}"
 ORG="${FLY_ORG:-misty-step}"
 REMOTE_HOME="/home/sprite"
+COMPOSITION="${COMPOSITION:-$ROOT_DIR/compositions/v1.yaml}"
 
 # Rendered settings tempfile (cleaned up via lib_cleanup)
 RENDERED_SETTINGS=""
@@ -30,6 +31,37 @@ validate_sprite_name() {
     fi
 }
 
+# Restrict composition paths to this repo's compositions directory.
+set_composition_path() {
+    local input="$1"
+    local candidate="$input"
+    local allowed_root
+    local resolved_parent
+    local resolved_path
+
+    if ! allowed_root="$(cd "$ROOT_DIR/compositions" 2>/dev/null && pwd -P)"; then
+        err "Unable to resolve compositions directory under $ROOT_DIR"
+        return 1
+    fi
+
+    if [[ "$candidate" != /* ]]; then
+        candidate="$ROOT_DIR/$candidate"
+    fi
+
+    if ! resolved_parent="$(cd "$(dirname "$candidate")" 2>/dev/null && pwd -P)"; then
+        err "Invalid composition path '$input'"
+        return 1
+    fi
+    resolved_path="$resolved_parent/$(basename "$candidate")"
+
+    if [[ "$resolved_path" != "$allowed_root"/* ]]; then
+        err "Invalid composition path '$input'. Must be within $allowed_root"
+        return 1
+    fi
+
+    COMPOSITION="$resolved_path"
+}
+
 lib_cleanup() {
     if [[ -n "$RENDERED_SETTINGS" && -f "$RENDERED_SETTINGS" ]]; then
         rm -f "$RENDERED_SETTINGS"
@@ -38,18 +70,22 @@ lib_cleanup() {
 
 prepare_settings() {
     local token="${ANTHROPIC_AUTH_TOKEN:-}"
+    RENDERED_SETTINGS=""
+
     if [[ -z "$token" ]]; then
         err "ANTHROPIC_AUTH_TOKEN is required"
         err "Export it in your shell before running this script."
         exit 1
     fi
 
-    RENDERED_SETTINGS="$(mktemp)"
-    python3 - "$BASE_DIR/settings.json" "$RENDERED_SETTINGS" "$token" <<'PY'
+    RENDERED_SETTINGS="$(umask 077 && mktemp)"
+    _BB_TOKEN="$token" python3 - "$BASE_DIR/settings.json" "$RENDERED_SETTINGS" <<'PY'
 import json
+import os
 import sys
 
-source_path, out_path, token = sys.argv[1:]
+source_path, out_path = sys.argv[1:]
+token = os.environ["_BB_TOKEN"]
 with open(source_path, "r", encoding="utf-8") as source_file:
     settings = json.load(source_file)
 
@@ -81,14 +117,83 @@ upload_dir() {
 
     "$SPRITE_CLI" exec -o "$ORG" -s "$sprite_name" -- mkdir -p "$remote_dir"
 
-    find "$local_dir" -type f | while read -r file; do
+    while IFS= read -r file; do
         local rel="${file#"$local_dir"/}"
         local dest="$remote_dir/$rel"
         local parent
         parent="$(dirname "$dest")"
         "$SPRITE_CLI" exec -o "$ORG" -s "$sprite_name" -- mkdir -p "$parent"
         upload_file "$sprite_name" "$file" "$dest"
+    done < <(find "$local_dir" -type f)
+}
+
+# Fall back to sprite definitions on disk when composition lookups are unavailable.
+fallback_sprite_names() {
+    local found=0
+    local definition
+
+    for definition in "$SPRITES_DIR"/*.md; do
+        if [[ ! -e "$definition" ]]; then
+            continue
+        fi
+        basename "$definition" .md
+        found=1
     done
+
+    if [[ "$found" -eq 0 ]]; then
+        err "No sprite definitions found in $SPRITES_DIR"
+        return 1
+    fi
+}
+
+fallback_or_fail() {
+    local strict="$1"
+    local reason="$2"
+
+    err "$reason"
+    if [[ "$strict" == "true" ]]; then
+        return 1
+    fi
+
+    err "Falling back to sprite definitions in $SPRITES_DIR"
+    fallback_sprite_names
+}
+
+# List sprite names from the active composition YAML.
+# Requires yq (mikefarah/yq) and a valid composition file.
+composition_sprites() {
+    local strict=false
+    local sprites_from_composition=""
+
+    if [[ "${1:-}" == "--strict" ]]; then
+        strict=true
+    fi
+
+    if ! set_composition_path "$COMPOSITION"; then
+        fallback_or_fail "$strict" "Invalid composition path: $COMPOSITION"
+        return
+    fi
+
+    if [[ ! -f "$COMPOSITION" ]]; then
+        fallback_or_fail "$strict" "Composition file not found: $COMPOSITION"
+        return
+    fi
+    if ! command -v yq &>/dev/null; then
+        fallback_or_fail "$strict" "yq is required but not installed (https://github.com/mikefarah/yq)"
+        return
+    fi
+
+    if ! sprites_from_composition="$(yq '.sprites | keys | .[]' "$COMPOSITION" 2>/dev/null)"; then
+        fallback_or_fail "$strict" "Failed to parse composition file: $COMPOSITION"
+        return
+    fi
+
+    if ! grep -q '[^[:space:]]' <<< "$sprites_from_composition"; then
+        fallback_or_fail "$strict" "No sprites found in composition: $COMPOSITION"
+        return
+    fi
+
+    printf '%s\n' "$sprites_from_composition"
 }
 
 # Push base config (CLAUDE.md, hooks, skills, commands, settings) to a sprite.

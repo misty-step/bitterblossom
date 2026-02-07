@@ -14,7 +14,8 @@
 
 set -euo pipefail
 
-LOG_PREFIX="preflight" source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+LOG_PREFIX="preflight"
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 FAILURES=0
 WARNINGS=0

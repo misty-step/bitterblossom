@@ -10,13 +10,16 @@ set -euo pipefail
 #   ./scripts/provision.sh <sprite-name>    # Provision single sprite
 #   ./scripts/provision.sh --all            # Provision all sprites
 
-LOG_PREFIX="" source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+LOG_PREFIX="provision"
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 usage() {
-    echo "Usage: $0 <sprite-name|--all>"
+    local exit_code="${1:-1}"
+    echo "Usage: $0 [--composition <path>] <sprite-name|--all>"
     echo ""
-    echo "  sprite-name   Name of sprite (matches sprites/<name>.md)"
-    echo "  --all         Provision all sprites from current composition"
+    echo "  sprite-name              Name of sprite (matches sprites/<name>.md)"
+    echo "  --all                    Provision all sprites from current composition"
+    echo "  --composition <path>     Use specific composition YAML (default: compositions/v1.yaml)"
     echo ""
     echo "Environment:"
     echo "  SPRITE_CLI    Path to sprite CLI (default: sprite)"
@@ -25,7 +28,8 @@ usage() {
     echo "Examples:"
     echo "  $0 bramble"
     echo "  $0 --all"
-    exit 1
+    echo "  $0 --composition compositions/v2.yaml --all"
+    exit "$exit_code"
 }
 
 provision_sprite() {
@@ -64,18 +68,22 @@ provision_sprite() {
 
     # Step 5: Create initial MEMORY.md
     log "Creating initial MEMORY.md..."
+    local composition_label
+    composition_label="$(basename "$COMPOSITION" .yaml)"
+    local timestamp
+    timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     "$SPRITE_CLI" exec -o "$ORG" -s "$name" -- bash -c \
-        "cat > $REMOTE_HOME/workspace/MEMORY.md << 'MEMEOF'
-# MEMORY.md — $name
+        'cat > '"$REMOTE_HOME"'/workspace/MEMORY.md << MEMEOF
+# MEMORY.md — $1
 
-Sprite: $name
-Provisioned: $(date -u +%Y-%m-%dT%H:%M:%SZ)
-Composition: v1 (Fae Court)
+Sprite: $1
+Provisioned: $2
+Composition: $3
 
 ## Learnings
 
 _No observations yet. Update after completing work._
-MEMEOF"
+MEMEOF' _ "$name" "$timestamp" "$composition_label"
 
     # Step 6: Set up git config AND credentials (CRITICAL — sprites can't push without this)
     local gh_token="${GITHUB_TOKEN:-}"
@@ -92,19 +100,19 @@ MEMEOF"
 
     log "Configuring git identity + credentials..."
     "$SPRITE_CLI" exec -o "$ORG" -s "$name" -- bash -c \
-        "git config --global user.name '$name (bitterblossom sprite)' && \
-         git config --global user.email 'kaylee@mistystep.io' && \
+        'git config --global user.name "$1 (bitterblossom sprite)" && \
+         git config --global user.email "kaylee@mistystep.io" && \
          git config --global credential.helper store && \
-         echo 'https://kaylee-mistystep:$gh_token@github.com' > /home/sprite/.git-credentials && \
-         echo 'Git credentials configured for kaylee-mistystep'"
+         echo "https://kaylee-mistystep:$2@github.com" > /home/sprite/.git-credentials && \
+         echo "Git credentials configured for kaylee-mistystep"' _ "$name" "$gh_token"
 
     # Verify git auth works (define errors out of existence — fail here, not at push time)
     log "Verifying git push access..."
     local push_test
     push_test=$("$SPRITE_CLI" exec -o "$ORG" -s "$name" -- bash -c \
-        "cd /tmp && rm -rf _git_test && mkdir _git_test && cd _git_test && \
+        'cd /tmp && rm -rf _git_test && mkdir _git_test && cd _git_test && \
          git init -q && git remote add origin https://github.com/misty-step/cerberus.git && \
-         git ls-remote origin HEAD >/dev/null 2>&1 && echo 'GIT_AUTH_OK' || echo 'GIT_AUTH_FAIL'" 2>&1)
+         git ls-remote origin HEAD >/dev/null 2>&1 && echo GIT_AUTH_OK || echo GIT_AUTH_FAIL' 2>&1)
     if [[ "$push_test" != *"GIT_AUTH_OK"* ]]; then
         err "Git auth verification FAILED on sprite '$name'."
         err "The sprite will not be able to push code. Fix credentials before dispatching."
@@ -127,20 +135,50 @@ if [[ $# -eq 0 ]]; then
     usage
 fi
 
-if [[ "$1" == "--all" ]]; then
-    trap lib_cleanup EXIT
-    prepare_settings
-    log "Provisioning all sprites..."
-    for def in "$SPRITES_DIR"/*.md; do
-        name="$(basename "$def" .md)"
+# Parse args
+PROVISION_ALL=false
+TARGETS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --composition)
+            if [[ -z "${2:-}" ]]; then
+                err "--composition requires a value"
+                usage
+            fi
+            set_composition_path "$2" || exit 1
+            shift 2
+            ;;
+        --all) PROVISION_ALL=true; shift ;;
+        --help|-h) usage 0 ;;
+        *) TARGETS+=("$1"); shift ;;
+    esac
+done
+
+if [[ "$PROVISION_ALL" == false ]] && [[ ${#TARGETS[@]} -eq 0 ]]; then
+    usage
+fi
+if [[ "$PROVISION_ALL" == true ]] && [[ ${#TARGETS[@]} -gt 0 ]]; then
+    err "Use either --all or explicit sprite names, not both."
+    usage
+fi
+
+trap lib_cleanup EXIT
+prepare_settings
+
+if [[ "$PROVISION_ALL" == true ]]; then
+    log "Provisioning sprites from composition: $COMPOSITION"
+    sprite_list=$(composition_sprites --strict) || exit 1
+    if [[ -z "$sprite_list" ]]; then
+        err "No sprites found in composition: $COMPOSITION"
+        exit 1
+    fi
+    while IFS= read -r name; do
         provision_sprite "$name"
         echo ""
-    done
+    done <<< "$sprite_list"
     log "All sprites provisioned."
-elif [[ "$1" == "--help" ]] || [[ "$1" == "-h" ]]; then
-    usage
 else
-    trap lib_cleanup EXIT
-    prepare_settings
-    provision_sprite "$1"
+    for name in "${TARGETS[@]}"; do
+        provision_sprite "$name"
+    done
 fi

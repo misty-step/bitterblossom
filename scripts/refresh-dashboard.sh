@@ -153,12 +153,27 @@ HTMLEOF
 
 # --- Fill in placeholders ---
 
-# Timestamp
-sed -i '' "s|TIMESTAMP_PLACEHOLDER|$NOW|" "$OUT_DIR/index.html"
-sed -i '' "s|SPRITES_COUNT|$NUM_SPRITES|" "$OUT_DIR/index.html"
-sed -i '' "s|PRS_COUNT|$NUM_PRS|" "$OUT_DIR/index.html"
-sed -i '' "s|RUNNING_COUNT|$NUM_RUNNING|" "$OUT_DIR/index.html"
-sed -i '' "s|COMPLETE_COUNT|$NUM_COMPLETE|" "$OUT_DIR/index.html"
+replace_placeholder() {
+  local placeholder="$1"
+  local value="$2"
+
+  python3 - "$OUT_DIR/index.html" "$placeholder" "$value" <<'PY'
+import sys
+
+path, placeholder, value = sys.argv[1:]
+with open(path, encoding="utf-8") as f:
+    html = f.read()
+html = html.replace(placeholder, value)
+with open(path, "w", encoding="utf-8") as f:
+    f.write(html)
+PY
+}
+
+replace_placeholder "TIMESTAMP_PLACEHOLDER" "$NOW"
+replace_placeholder "SPRITES_COUNT" "$NUM_SPRITES"
+replace_placeholder "PRS_COUNT" "$NUM_PRS"
+replace_placeholder "RUNNING_COUNT" "$NUM_RUNNING"
+replace_placeholder "COMPLETE_COUNT" "$NUM_COMPLETE"
 
 # Generate sprite rows
 SPRITE_HTML=""

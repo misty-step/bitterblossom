@@ -10,7 +10,8 @@ set -euo pipefail
 #   ./scripts/teardown.sh <sprite-name>
 #   ./scripts/teardown.sh --force <sprite-name>   # Skip confirmation
 
-LOG_PREFIX="teardown" source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+LOG_PREFIX="teardown"
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 ARCHIVE_DIR="$ROOT_DIR/observations/archives"
 FORCE=false

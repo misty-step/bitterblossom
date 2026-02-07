@@ -192,6 +192,36 @@ class TestDestructiveGit:
         assert blocked, f"should block: {cmd}"
 
 
+# --- Wrapper-prefixed bypasses ---
+
+class TestWrapperPrefixes:
+    """Wrapper commands must not bypass destructive-command checks."""
+
+    @pytest.mark.parametrize("cmd", [
+        "env FOO=1 git reset --hard HEAD~1",
+        "sudo git reset --hard",
+        "command git stash clear",
+        "nice -n 5 git stash drop",
+        "/usr/bin/env FOO=1 sudo -u root git reset --hard",
+    ])
+    def test_blocks_destructive_with_wrappers(self, cmd):
+        blocked, _ = check(cmd)
+        assert blocked, f"should block wrapped destructive command: {cmd}"
+
+    @pytest.mark.parametrize("cmd", [
+        "sudo git push origin main",
+        "env FOO=1 git rebase main",
+        "time git clean -fd",
+    ])
+    def test_blocks_other_guarded_ops_with_wrappers(self, cmd):
+        blocked, _ = check(cmd)
+        assert blocked, f"should block wrapped guarded command: {cmd}"
+
+    def test_allows_safe_wrapped_command(self):
+        blocked, _ = check("env FOO=1 git status")
+        assert not blocked
+
+
 # --- Dangerous flags ---
 
 class TestDangerousFlags:

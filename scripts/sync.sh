@@ -11,7 +11,8 @@ set -euo pipefail
 #   ./scripts/sync.sh <sprite>     # Sync specific sprite
 #   ./scripts/sync.sh --base-only  # Only sync base config (no persona)
 
-LOG_PREFIX="sync" source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+LOG_PREFIX="sync"
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 BASE_ONLY=false
 
@@ -47,33 +48,45 @@ sync_sprite() {
 
 # Parse args
 TARGETS=()
-for arg in "$@"; do
-    case "$arg" in
-        --base-only) BASE_ONLY=true ;;
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --base-only) BASE_ONLY=true; shift ;;
+        --composition)
+            if [[ -z "${2:-}" ]]; then
+                err "--composition requires a value"
+                exit 1
+            fi
+            set_composition_path "$2" || exit 1
+            shift 2
+            ;;
         --help|-h)
-            echo "Usage: $0 [--base-only] [sprite-name ...]"
+            echo "Usage: $0 [--base-only] [--composition <path>] [sprite-name ...]"
             echo ""
-            echo "  --base-only   Only sync shared base config (skip persona definitions)"
-            echo "  sprite-name   Sync specific sprite(s). Default: all."
+            echo "  --base-only          Only sync shared base config (skip persona definitions)"
+            echo "  --composition <path> Use specific composition YAML (default: compositions/v1.yaml)"
+            echo "  sprite-name          Sync specific sprite(s). Default: all from composition."
             exit 0
             ;;
-        *) TARGETS+=("$arg") ;;
+        *) TARGETS+=("$1"); shift ;;
     esac
 done
 
+trap lib_cleanup EXIT
+prepare_settings
+
 if [[ ${#TARGETS[@]} -eq 0 ]]; then
-    trap lib_cleanup EXIT
-    prepare_settings
-    log "Syncing all sprites..."
-    for def in "$SPRITES_DIR"/*.md; do
-        name="$(basename "$def" .md)"
+    log "Syncing sprites from composition: $COMPOSITION"
+    sprite_list=$(composition_sprites --strict) || exit 1
+    if [[ -z "$sprite_list" ]]; then
+        err "No sprites found in composition: $COMPOSITION"
+        exit 1
+    fi
+    while IFS= read -r name; do
         sync_sprite "$name"
         echo ""
-    done
+    done <<< "$sprite_list"
     log "All sprites synced."
 else
-    trap lib_cleanup EXIT
-    prepare_settings
     for name in "${TARGETS[@]}"; do
         sync_sprite "$name"
         echo ""
