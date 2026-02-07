@@ -47,12 +47,12 @@ func TestFleetReconcile(t *testing.T) {
 		ActionTeardown:  "moss",
 	}
 	for _, action := range actions {
-		wantSprite, ok := expected[action.Kind]
+		wantSprite, ok := expected[action.Kind()]
 		if !ok {
-			t.Fatalf("unexpected action kind: %s", action.Kind)
+			t.Fatalf("unexpected action kind: %s", action.Kind())
 		}
-		if action.Sprite != wantSprite {
-			t.Fatalf("expected %s target %q, got %q", action.Kind, wantSprite, action.Sprite)
+		if action.SpriteName() != wantSprite {
+			t.Fatalf("expected %s target %q, got %q", action.Kind(), wantSprite, action.SpriteName())
 		}
 	}
 }
@@ -81,11 +81,11 @@ func TestFleetReconcileDetectsPersonaDrift(t *testing.T) {
 	if len(actions) != 1 {
 		t.Fatalf("expected one action, got %d", len(actions))
 	}
-	if actions[0].Kind != ActionReconfigure {
-		t.Fatalf("expected reconfigure action, got %s", actions[0].Kind)
+	if actions[0].Kind() != ActionUpdate {
+		t.Fatalf("expected update action, got %s", actions[0].Kind())
 	}
-	if actions[0].Sprite != "bramble" {
-		t.Fatalf("expected bramble action, got %s", actions[0].Sprite)
+	if actions[0].SpriteName() != "bramble" {
+		t.Fatalf("expected bramble action, got %s", actions[0].SpriteName())
 	}
 }
 

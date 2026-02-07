@@ -69,6 +69,11 @@ func LoadComposition(path string) (Composition, error) {
 	return LoadCompositionWithSprites(path, spritesDir)
 }
 
+// ParseComposition is an alias for LoadComposition.
+func ParseComposition(path string) (Composition, error) {
+	return LoadComposition(path)
+}
+
 // LoadCompositionWithSprites loads one composition using an explicit personas directory.
 func LoadCompositionWithSprites(path, spritesDir string) (Composition, error) {
 	content, err := os.ReadFile(path)
