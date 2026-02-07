@@ -144,7 +144,7 @@ while [[ $# -gt 0 ]]; do
                 err "--composition requires a value"
                 usage
             fi
-            COMPOSITION="$2"
+            set_composition_path "$2" || exit 1
             shift 2
             ;;
         --all) PROVISION_ALL=true; shift ;;

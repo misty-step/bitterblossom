@@ -55,7 +55,7 @@ while [[ $# -gt 0 ]]; do
                 err "--composition requires a value"
                 exit 1
             fi
-            COMPOSITION="$2"
+            set_composition_path "$2" || exit 1
             shift 2
             ;;
         --help|-h)

@@ -31,6 +31,32 @@ validate_sprite_name() {
     fi
 }
 
+# Restrict composition paths to this repo's compositions directory.
+set_composition_path() {
+    local input="$1"
+    local candidate="$input"
+    local allowed_root="$ROOT_DIR/compositions"
+    local resolved_parent
+    local resolved_path
+
+    if [[ "$candidate" != /* ]]; then
+        candidate="$ROOT_DIR/$candidate"
+    fi
+
+    if ! resolved_parent="$(cd "$(dirname "$candidate")" 2>/dev/null && pwd -P)"; then
+        err "Invalid composition path '$input'"
+        return 1
+    fi
+    resolved_path="$resolved_parent/$(basename "$candidate")"
+
+    if [[ "$resolved_path" != "$allowed_root"/* ]]; then
+        err "Invalid composition path '$input'. Must be within $allowed_root"
+        return 1
+    fi
+
+    COMPOSITION="$resolved_path"
+}
+
 lib_cleanup() {
     if [[ -n "$RENDERED_SETTINGS" && -f "$RENDERED_SETTINGS" ]]; then
         rm -f "$RENDERED_SETTINGS"
@@ -118,6 +144,12 @@ fallback_sprite_names() {
 # Requires yq (mikefarah/yq) and a valid composition file.
 composition_sprites() {
     local sprites_from_composition=""
+
+    if ! set_composition_path "$COMPOSITION"; then
+        err "Falling back to sprite definitions in $SPRITES_DIR"
+        fallback_sprite_names
+        return
+    fi
 
     if [[ ! -f "$COMPOSITION" ]]; then
         err "Composition file not found: $COMPOSITION"
