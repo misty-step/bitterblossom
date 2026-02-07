@@ -17,9 +17,9 @@ type SpriteStatus struct {
 	Name       string      `json:"name"`
 	State      SpriteState `json:"state"`
 	ClaudePID  int         `json:"claude_pid"`
-	Uptime     string      `json:"uptime"`
+	Uptime     time.Duration `json:"uptime"`
 	LastCommit string      `json:"last_commit"`
-	DiskUsage  string      `json:"disk_usage"`
+	DiskUsage  uint64      `json:"disk_usage"`
 }
 
 // DispatchResult captures metadata for a dispatched task.
@@ -36,6 +36,7 @@ type FleetSummary struct {
 	Running int `json:"running"`
 	Idle    int `json:"idle"`
 	Dead    int `json:"dead"`
+	Stuck   int `json:"stuck"`
 }
 
 // FleetStatus captures full-fleet status and summary counts.
@@ -46,11 +47,11 @@ type FleetStatus struct {
 
 // TaskComplete captures task completion details from a sprite.
 type TaskComplete struct {
-	Sprite   string `json:"sprite"`
-	Task     string `json:"task"`
-	PRURL    string `json:"pr_url"`
-	Duration string `json:"duration"`
-	ExitCode int    `json:"exit_code"`
+	Sprite   string        `json:"sprite"`
+	Task     string        `json:"task"`
+	PRURL    string        `json:"pr_url"`
+	Duration time.Duration `json:"duration"`
+	ExitCode int           `json:"exit_code"`
 }
 
 // Error represents a structured control plane error payload.
