@@ -18,13 +18,18 @@ fleet_status() {
     live_sprites=$("$SPRITE_CLI" api -o "$ORG" /sprites 2>/dev/null | \
         python3 -c "import sys,json; data=json.load(sys.stdin); [print(f\"{s['name']}\t{s['status']}\t{s.get('url','n/a')}\") for s in data.get('sprites',[])]" 2>/dev/null || echo "")
 
+    local sprite_list
+    sprite_list=$(composition_sprites) || return 1
+
     if [[ -z "$live_sprites" ]]; then
         echo "No sprites found (or API call failed)."
         echo ""
         echo "Composition sprites ($COMPOSITION):"
-        while IFS= read -r name; do
-            echo "  - $name (not provisioned)"
-        done < <(composition_sprites)
+        if [[ -n "$sprite_list" ]]; then
+            while IFS= read -r name; do
+                echo "  - $name (not provisioned)"
+            done <<< "$sprite_list"
+        fi
         return
     fi
 
@@ -39,12 +44,13 @@ fleet_status() {
     echo ""
     echo "Composition sprites ($COMPOSITION):"
     while IFS= read -r name; do
-        if echo "$live_sprites" | grep -q "^${name}	"; then
+        validate_sprite_name "$name" || continue
+        if echo "$live_sprites" | grep -qF "${name}	"; then
             echo "  ✓ $name (provisioned)"
         else
             echo "  ○ $name (not provisioned)"
         fi
-    done < <(composition_sprites)
+    done <<< "$sprite_list"
 
     # Show checkpoints
     echo ""
@@ -104,10 +110,6 @@ while [[ $# -gt 0 ]]; do
             fi
             COMPOSITION="$2"
             shift 2
-            ;;
-        --composition=*)
-            COMPOSITION="${1#--composition=}"
-            shift
             ;;
         --help|-h)
             echo "Usage: $0 [--composition <path>] [sprite-name]"

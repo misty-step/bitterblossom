@@ -58,10 +58,6 @@ while [[ $# -gt 0 ]]; do
             COMPOSITION="$2"
             shift 2
             ;;
-        --composition=*)
-            COMPOSITION="${1#--composition=}"
-            shift
-            ;;
         --help|-h)
             echo "Usage: $0 [--base-only] [--composition <path>] [sprite-name ...]"
             echo ""
@@ -79,10 +75,15 @@ prepare_settings
 
 if [[ ${#TARGETS[@]} -eq 0 ]]; then
     log "Syncing sprites from composition: $COMPOSITION"
+    sprite_list=$(composition_sprites) || exit 1
+    if [[ -z "$sprite_list" ]]; then
+        err "No sprites found in composition: $COMPOSITION"
+        exit 1
+    fi
     while IFS= read -r name; do
         sync_sprite "$name"
         echo ""
-    done < <(composition_sprites)
+    done <<< "$sprite_list"
     log "All sprites synced."
 else
     for name in "${TARGETS[@]}"; do

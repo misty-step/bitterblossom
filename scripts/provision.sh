@@ -10,7 +10,7 @@ set -euo pipefail
 #   ./scripts/provision.sh <sprite-name>    # Provision single sprite
 #   ./scripts/provision.sh --all            # Provision all sprites
 
-LOG_PREFIX="" source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+LOG_PREFIX="provision" source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 usage() {
     echo "Usage: $0 [--composition <path>] <sprite-name|--all>"
@@ -72,7 +72,7 @@ provision_sprite() {
 
 Sprite: $name
 Provisioned: $(date -u +%Y-%m-%dT%H:%M:%SZ)
-Composition: v1 (Fae Court)
+Composition: $(basename "$COMPOSITION" .yaml)
 
 ## Learnings
 
@@ -101,6 +101,7 @@ if [[ $# -eq 0 ]]; then
 fi
 
 # Parse args
+PROVISION_ALL=false
 TARGETS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -112,29 +113,30 @@ while [[ $# -gt 0 ]]; do
             COMPOSITION="$2"
             shift 2
             ;;
-        --composition=*)
-            COMPOSITION="${1#--composition=}"
-            shift
-            ;;
-        --all) TARGETS=("__ALL__"); shift ;;
+        --all) PROVISION_ALL=true; shift ;;
         --help|-h) usage ;;
         *) TARGETS+=("$1"); shift ;;
     esac
 done
 
-if [[ ${#TARGETS[@]} -eq 0 ]]; then
+if [[ "$PROVISION_ALL" == false ]] && [[ ${#TARGETS[@]} -eq 0 ]]; then
     usage
 fi
 
 trap lib_cleanup EXIT
 prepare_settings
 
-if [[ "${TARGETS[0]}" == "__ALL__" ]]; then
+if [[ "$PROVISION_ALL" == true ]]; then
     log "Provisioning sprites from composition: $COMPOSITION"
+    sprite_list=$(composition_sprites) || exit 1
+    if [[ -z "$sprite_list" ]]; then
+        err "No sprites found in composition: $COMPOSITION"
+        exit 1
+    fi
     while IFS= read -r name; do
         provision_sprite "$name"
         echo ""
-    done < <(composition_sprites)
+    done <<< "$sprite_list"
     log "All sprites provisioned."
 else
     for name in "${TARGETS[@]}"; do
