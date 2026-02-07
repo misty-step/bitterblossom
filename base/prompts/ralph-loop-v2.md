@@ -59,12 +59,36 @@ For each comment:
 
 Push fixes and go back to Step 2.
 
-### Step 5: Completion
-When CI passes AND no unaddressed critical/high comments:
+### Step 5: Check merge conflicts
+After CI passes, check if the PR is actually mergeable:
+```bash
+gh pr view {{PR_NUMBER}} --json mergeable --jq '.mergeable'
+```
+
+If the result is `CONFLICTING`:
+1. Rebase on the latest master:
+   ```bash
+   git fetch origin master
+   git rebase origin/master
+   ```
+2. If there are conflicts, resolve them:
+   - Edit conflicting files
+   - `git add <resolved files>`
+   - `git rebase --continue`
+3. Force push (safe after rebase):
+   ```bash
+   git push origin {{BRANCH}} --force-with-lease
+   ```
+4. Go back to Step 2 (CI will re-run after force push)
+
+**A PR with merge conflicts is NOT done.** The loop does not stop until the PR is `MERGEABLE`.
+
+### Step 6: Completion
+When CI passes AND no unaddressed critical/high comments AND no merge conflicts:
 - Print: `TASK_COMPLETE: PR #{{PR_NUMBER}} is merge-ready`
 - Print: `SUMMARY: {{one-line description of what was done}}`
 
-### Step 6: Stuck detection
+### Step 7: Stuck detection
 If you've attempted fixes 3+ times and CI still fails, or you can't resolve a review comment:
 - Print: `BLOCKED: {{description of what's blocking}}`
 - Print: `ATTEMPTED: {{list of what you tried}}`
@@ -121,4 +145,6 @@ done
 2. **CI is the source of truth** — if it doesn't build, it's not done
 3. **Review comments are mandatory** — critical/high MUST be addressed
 4. **Fail fast, fail loud** — 3 attempts max, then BLOCKED signal
-5. **No force-push** — clean commit history, no rewriting
+5. **Force-push only after rebase** — rebase to resolve conflicts, force-push-with-lease to update
+6. **Merge conflicts = not done** — a PR with conflicts is NOT merge-ready, keep looping
+7. **Mergeable is the exit condition** — CI green + reviews addressed + no conflicts = done
