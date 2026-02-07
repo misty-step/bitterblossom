@@ -33,11 +33,25 @@ func TestMarshalUnmarshalRoundTrip(t *testing.T) {
 			},
 		},
 		{
+			name: "heartbeat",
+			in: &HeartbeatEvent{
+				Meta:          Meta{TS: ts, SpriteName: "bramble", EventKind: KindHeartbeat},
+				UptimeSeconds: 120,
+				AgentPID:      4321,
+				CPUPercent:    15.2,
+				MemoryBytes:   512 * 1024 * 1024,
+				Branch:        "fix/auth",
+				LastCommit:    "abc123",
+			},
+		},
+		{
 			name: "progress",
 			in: &ProgressEvent{
 				Meta:         Meta{TS: ts, SpriteName: "bramble", EventKind: KindProgress},
+				Branch:       "fix/auth",
 				Commits:      3,
 				FilesChanged: 7,
+				Activity:     "git_commit",
 			},
 		},
 		{
