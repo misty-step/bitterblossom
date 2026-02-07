@@ -9,4 +9,5 @@ observations/archives/*/settings.json
 
 # OS
 .DS_Store
+__pycache__/
 base/hooks/__pycache__/
