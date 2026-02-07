@@ -1,0 +1,213 @@
+# Bitterblossom Composition v2 — "Expanded Fae Court"
+#
+# Evolution of v1: adds specialized sprites for security, testing, investigation,
+# issue grooming, tech debt, refactoring, and documentation.
+#
+# The original 5 (Bramble, Willow, Thorn, Fern, Moss) are generalist-specialists.
+# The new 7 (Hemlock, Clover, Foxglove, Hazel, Nettle, Rowan, Sage) are deep specialists.
+#
+# Deploy 7-8 at a time; rotate based on current priority.
+# Full roster of 12 defined here; more can be added from sprite-personas.md.
+
+version: 2
+name: "Fae Court v2"
+created: 2026-02-07
+status: active
+parent: v1
+
+base:
+  claude_md: base/CLAUDE.md
+  settings: base/settings.json
+  hooks:
+    - base/hooks/destructive-command-guard.py
+    - base/hooks/fast-feedback.py
+    - base/hooks/memory-reminder.py
+  skills:
+    - base/skills/testing-philosophy
+    - base/skills/naming-conventions
+    - base/skills/git-mastery
+    - base/skills/external-integration
+  commands:
+    - base/commands/commit.md
+
+# ── Original Fae Court (v1 generalist-specialists) ──────────
+
+sprites:
+  bramble:
+    definition: sprites/bramble.md
+    preference: "Systems & Data"
+    philosophy: "Deep foundations. Fast, correct, scalable."
+    strengths:
+      - Database design, queries, migrations
+      - API endpoint design and implementation
+      - Performance optimization, caching
+      - Server-side business logic
+    fallback: true
+
+  willow:
+    definition: sprites/willow.md
+    preference: "Interface & Experience"
+    philosophy: "Craft matters. Every detail serves the user."
+    strengths:
+      - UI components, styling, layout
+      - Accessibility, responsive design
+      - Animation and interaction
+      - Design system implementation
+
+  thorn:
+    definition: sprites/thorn.md
+    preference: "Quality & Security"
+    philosophy: "Defend the system. Trust nothing external."
+    strengths:
+      - Test-first development
+      - Security audits, vulnerability fixes
+      - Bug investigation, root-cause analysis
+      - Input validation, error handling
+
+  fern:
+    definition: sprites/fern.md
+    preference: "Platform & Operations"
+    philosophy: "Automate the boring. Make deployment invisible."
+    strengths:
+      - CI/CD pipelines
+      - Docker, containers, deployment
+      - Environment and secrets management
+      - Monitoring and observability
+
+  moss:
+    definition: sprites/moss.md
+    preference: "Architecture & Evolution"
+    philosophy: "Simplify relentlessly. Codebases should want to be extended."
+    strengths:
+      - Code refactoring, simplification
+      - Technical debt reduction
+      - Architecture decisions, documentation
+      - Module boundary design
+
+  # ── New Deep Specialists (v2) ────────────────────────────
+
+  hemlock:
+    definition: sprites/hemlock.md
+    preference: "Security Audit"
+    philosophy: "Assume every input is hostile and every boundary is permeable."
+    strengths:
+      - Vulnerability hunting (OWASP methodology)
+      - Auth/identity system auditing
+      - Attack path tracing
+      - Security fix implementation
+    routing_labels:
+      - domain/security
+      - type/bug
+
+  clover:
+    definition: sprites/clover.md
+    preference: "Test Writing"
+    philosophy: "Tests are documentation that runs. Edge cases are where the truth lives."
+    strengths:
+      - Comprehensive test suite creation
+      - Edge case discovery
+      - Test infrastructure setup
+      - Regression test writing
+    routing_labels:
+      - domain/quality
+      - type/test
+
+  foxglove:
+    definition: sprites/foxglove.md
+    preference: "Bug Investigation"
+    philosophy: "Every bug has a root cause. Follow the evidence."
+    strengths:
+      - Bug triage and root-cause analysis
+      - Log analysis and reproduction
+      - Flaky test diagnosis
+      - Regression fix + test
+    routing_labels:
+      - type/bug
+
+  hazel:
+    definition: sprites/hazel.md
+    preference: "Issue Grooming"
+    philosophy: "Great work starts with great issues."
+    strengths:
+      - Codebase audit and investigation
+      - Well-structured issue creation
+      - Backlog grooming and prioritization
+      - Architecture mapping
+    routing_labels: []  # Hazel creates issues, doesn't consume them
+
+  nettle:
+    definition: sprites/nettle.md
+    preference: "Tech Debt"
+    philosophy: "Every line of code is a liability. Complexity is the enemy."
+    strengths:
+      - Dead code removal
+      - Pattern consolidation
+      - Duplication elimination
+      - Dependency cleanup
+    routing_labels:
+      - type/chore
+      - domain/quality
+
+  rowan:
+    definition: sprites/rowan.md
+    preference: "Refactoring"
+    philosophy: "Good architecture is invisible. Make the codebase want to be extended."
+    strengths:
+      - Clean architecture refactoring
+      - Module boundary redesign
+      - Abstraction improvement
+      - Coupling reduction
+    routing_labels:
+      - type/refactor
+
+  sage:
+    definition: sprites/sage.md
+    preference: "Documentation"
+    philosophy: "Code tells you what. Documentation tells you why."
+    strengths:
+      - README creation and improvement
+      - Architecture Decision Records
+      - API documentation
+      - Onboarding guides
+    routing_labels:
+      - type/docs
+      - domain/docs
+
+# ── Deployment Strategy ──────────────────────────────────
+
+deployment:
+  max_concurrent: 8
+  default_set:
+    - bramble
+    - fern
+    - moss
+    - thorn
+    - willow
+    - hemlock
+    - clover
+    - hazel
+  rotation_pool:
+    - nettle
+    - foxglove
+    - rowan
+    - sage
+  rotation_strategy: |
+    Default set runs continuously. Rotation pool sprites are swapped in
+    based on current priority:
+    - Security sprint? Swap in Hemlock + Nightshade, bench Sage
+    - Testing push? Swap in Clover, bench a generalist
+    - Tech debt week? Swap in Nettle + Rowan
+    - Bug triage? Swap in Foxglove
+
+experiment:
+  hypothesis: "Deep specialist sprites produce measurably higher quality domain work than generalist-specialists"
+  metrics:
+    - Task completion rate by persona type
+    - PR review feedback (fewer revision requests = better)
+    - Time to completion (specialist vs generalist on same domain)
+    - Issue quality scores (for Hazel's output)
+  comparison: v1
+  notes: |
+    Track observations in observations/OBSERVATIONS.md.
+    Compare v2 specialist output against v1 generalist output on same task types.
+    Key question: does Hemlock find more vulnerabilities than Thorn on security tasks?
