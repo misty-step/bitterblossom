@@ -1,2 +1,2 @@
-// Package sprite defines core sprite domain types and client contracts.
+// Package sprite provides the opaque sprite handle and lifecycle state machine.
 package sprite
