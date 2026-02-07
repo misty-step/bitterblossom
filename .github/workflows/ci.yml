@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  shellcheck:
+    name: Shell Scripts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Run shellcheck
+        run: |
+          find scripts -type f -name "*.sh" -print0 \
+            | xargs -0 shellcheck -x -S error
+
+  python-hooks:
+    name: Hook Python Checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest==8.4.1 ruff==0.15.0
+      - name: Ruff
+        run: ruff check base/hooks
+      - name: Pytest
+        run: python -m pytest -q base/hooks
+
+  yaml:
+    name: YAML Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install yamllint
+        run: python -m pip install --upgrade yamllint==1.38.0
+      - name: Lint composition YAML
+        run: yamllint -c .yamllint.yml compositions
