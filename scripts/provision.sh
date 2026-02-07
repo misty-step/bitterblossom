@@ -66,24 +66,28 @@ provision_sprite() {
 
     # Step 5: Create initial MEMORY.md
     log "Creating initial MEMORY.md..."
+    local composition_label
+    composition_label="$(basename "$COMPOSITION" .yaml)"
+    local timestamp
+    timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     "$SPRITE_CLI" exec -o "$ORG" -s "$name" -- bash -c \
-        "cat > $REMOTE_HOME/workspace/MEMORY.md << 'MEMEOF'
-# MEMORY.md — $name
+        'cat > '"$REMOTE_HOME"'/workspace/MEMORY.md << MEMEOF
+# MEMORY.md — $1
 
-Sprite: $name
-Provisioned: $(date -u +%Y-%m-%dT%H:%M:%SZ)
-Composition: $(basename "$COMPOSITION" .yaml)
+Sprite: $1
+Provisioned: $2
+Composition: $3
 
 ## Learnings
 
 _No observations yet. Update after completing work._
-MEMEOF"
+MEMEOF' _ "$name" "$timestamp" "$composition_label"
 
     # Step 6: Set up git config for shared account
     log "Configuring git..."
     "$SPRITE_CLI" exec -o "$ORG" -s "$name" -- bash -c \
-        "git config --global user.name '$name (bitterblossom sprite)' && \
-         git config --global user.email 'kaylee@mistystep.io'"
+        'git config --global user.name "$1 (bitterblossom sprite)" && \
+         git config --global user.email "kaylee@mistystep.io"' _ "$name"
 
     # Step 7: Create initial checkpoint
     log "Creating initial checkpoint..."

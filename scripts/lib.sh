@@ -85,14 +85,14 @@ upload_dir() {
 
     "$SPRITE_CLI" exec -o "$ORG" -s "$sprite_name" -- mkdir -p "$remote_dir"
 
-    find "$local_dir" -type f | while read -r file; do
+    while read -r file; do
         local rel="${file#"$local_dir"/}"
         local dest="$remote_dir/$rel"
         local parent
         parent="$(dirname "$dest")"
         "$SPRITE_CLI" exec -o "$ORG" -s "$sprite_name" -- mkdir -p "$parent"
         upload_file "$sprite_name" "$file" "$dest"
-    done
+    done < <(find "$local_dir" -type f)
 }
 
 # List sprite names from the active composition YAML.
