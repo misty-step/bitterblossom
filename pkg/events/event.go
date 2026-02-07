@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -24,6 +25,9 @@ type Event interface {
 	Timestamp() time.Time
 	Sprite() string
 	Kind() Kind
+	GetTimestamp() time.Time
+	GetSprite() string
+	GetKind() Kind
 }
 
 // Meta carries shared event fields.
@@ -41,6 +45,15 @@ func (m Meta) Sprite() string { return m.SpriteName }
 
 // Kind returns the event kind.
 func (m Meta) Kind() Kind { return m.EventKind }
+
+// GetTimestamp returns the event timestamp.
+func (m Meta) GetTimestamp() time.Time { return m.Timestamp() }
+
+// GetSprite returns the sprite name.
+func (m Meta) GetSprite() string { return m.Sprite() }
+
+// GetKind returns the event kind.
+func (m Meta) GetKind() Kind { return m.Kind() }
 
 // ProvisionEvent reports sprite provisioning.
 type ProvisionEvent struct {
@@ -89,6 +102,25 @@ var (
 	// ErrInvalidEvent indicates malformed event payload.
 	ErrInvalidEvent = errors.New("events: invalid event")
 )
+
+// Valid reports whether kind is recognized by this package.
+func (k Kind) Valid() bool {
+	switch k {
+	case KindProvision, KindDispatch, KindProgress, KindDone, KindBlocked, KindError:
+		return true
+	default:
+		return false
+	}
+}
+
+// ParseKind parses a kind name from user input.
+func ParseKind(raw string) (Kind, error) {
+	kind := Kind(strings.TrimSpace(strings.ToLower(raw)))
+	if !kind.Valid() {
+		return "", fmt.Errorf("%w: %q", ErrUnknownKind, raw)
+	}
+	return kind, nil
+}
 
 // MarshalEvent encodes an event as one JSON object (one JSONL line).
 func MarshalEvent(event Event) ([]byte, error) {
@@ -141,6 +173,9 @@ func UnmarshalEvent(data []byte) (Event, error) {
 func validateEvent(event Event) error {
 	if event.Kind() == "" {
 		return fmt.Errorf("%w: missing event kind", ErrInvalidEvent)
+	}
+	if !event.Kind().Valid() {
+		return fmt.Errorf("%w: unknown event kind %q", ErrInvalidEvent, event.Kind())
 	}
 	if event.Sprite() == "" {
 		return fmt.Errorf("%w: missing sprite name", ErrInvalidEvent)
