@@ -59,7 +59,7 @@ fleet_status() {
     if [[ -n "$sprite_list" ]]; then
         local orphans=""
         while IFS=$'\t' read -r name status url; do
-            if ! echo "$sprite_list" | grep -qx "$name"; then
+            if ! echo "$sprite_list" | grep -qxF "$name"; then
                 orphans+="  ? $name ($status, not in composition)"$'\n'
             fi
         done <<< "$live_sprites"

@@ -13,6 +13,7 @@ set -euo pipefail
 LOG_PREFIX="provision" source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 usage() {
+    local exit_code="${1:-1}"
     echo "Usage: $0 [--composition <path>] <sprite-name|--all>"
     echo ""
     echo "  sprite-name              Name of sprite (matches sprites/<name>.md)"
@@ -27,7 +28,7 @@ usage() {
     echo "  $0 bramble"
     echo "  $0 --all"
     echo "  $0 --composition compositions/v2.yaml --all"
-    exit 1
+    exit "$exit_code"
 }
 
 provision_sprite() {
@@ -147,12 +148,16 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --all) PROVISION_ALL=true; shift ;;
-        --help|-h) usage ;;
+        --help|-h) usage 0 ;;
         *) TARGETS+=("$1"); shift ;;
     esac
 done
 
 if [[ "$PROVISION_ALL" == false ]] && [[ ${#TARGETS[@]} -eq 0 ]]; then
+    usage
+fi
+if [[ "$PROVISION_ALL" == true ]] && [[ ${#TARGETS[@]} -gt 0 ]]; then
+    err "Use either --all or explicit sprite names, not both."
     usage
 fi
 

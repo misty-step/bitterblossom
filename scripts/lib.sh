@@ -85,7 +85,7 @@ upload_dir() {
 
     "$SPRITE_CLI" exec -o "$ORG" -s "$sprite_name" -- mkdir -p "$remote_dir"
 
-    while read -r file; do
+    while IFS= read -r file; do
         local rel="${file#"$local_dir"/}"
         local dest="$remote_dir/$rel"
         local parent
@@ -95,18 +95,58 @@ upload_dir() {
     done < <(find "$local_dir" -type f)
 }
 
+# Fall back to sprite definitions on disk when composition lookups are unavailable.
+fallback_sprite_names() {
+    local found=0
+    local definition
+
+    for definition in "$SPRITES_DIR"/*.md; do
+        if [[ ! -e "$definition" ]]; then
+            continue
+        fi
+        basename "$definition" .md
+        found=1
+    done
+
+    if [[ "$found" -eq 0 ]]; then
+        err "No sprite definitions found in $SPRITES_DIR"
+        return 1
+    fi
+}
+
 # List sprite names from the active composition YAML.
 # Requires yq (mikefarah/yq) and a valid composition file.
 composition_sprites() {
+    local sprites_from_composition=""
+
     if [[ ! -f "$COMPOSITION" ]]; then
         err "Composition file not found: $COMPOSITION"
-        return 1
+        err "Falling back to sprite definitions in $SPRITES_DIR"
+        fallback_sprite_names
+        return
     fi
     if ! command -v yq &>/dev/null; then
         err "yq is required but not installed (https://github.com/mikefarah/yq)"
-        return 1
+        err "Falling back to sprite definitions in $SPRITES_DIR"
+        fallback_sprite_names
+        return
     fi
-    yq '.sprites | keys | .[]' "$COMPOSITION"
+
+    if ! sprites_from_composition="$(yq '.sprites | keys | .[]' "$COMPOSITION" 2>/dev/null)"; then
+        err "Failed to parse composition file: $COMPOSITION"
+        err "Falling back to sprite definitions in $SPRITES_DIR"
+        fallback_sprite_names
+        return
+    fi
+
+    if [[ -z "$sprites_from_composition" ]]; then
+        err "No sprites found in composition: $COMPOSITION"
+        err "Falling back to sprite definitions in $SPRITES_DIR"
+        fallback_sprite_names
+        return
+    fi
+
+    printf '%s\n' "$sprites_from_composition"
 }
 
 # Push base config (CLAUDE.md, hooks, skills, commands, settings) to a sprite.
