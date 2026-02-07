@@ -25,7 +25,6 @@ LOG_PREFIX="dispatch"
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 TEMPLATE_DIR="$(dirname "${BASH_SOURCE[0]}")"
-WORKSPACE="$REMOTE_HOME/workspace"
 
 # Max iterations before Ralph loop self-terminates (safety valve)
 MAX_RALPH_ITERATIONS="${MAX_RALPH_ITERATIONS:-50}"

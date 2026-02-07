@@ -13,6 +13,7 @@ BASE_DIR="$ROOT_DIR/base"
 SPRITE_CLI="${SPRITE_CLI:-sprite}"
 ORG="${FLY_ORG:-misty-step}"
 REMOTE_HOME="/home/sprite"
+WORKSPACE="$REMOTE_HOME/workspace"
 COMPOSITION="${COMPOSITION:-$ROOT_DIR/compositions/v1.yaml}"
 
 # Rendered settings tempfile (cleaned up via lib_cleanup)
@@ -200,7 +201,7 @@ composition_sprites() {
 # Single source of truth for what config artifacts get uploaded.
 push_config() {
     local name="$1"
-    upload_file "$name" "$BASE_DIR/CLAUDE.md" "$REMOTE_HOME/workspace/CLAUDE.md"
+    upload_file "$name" "$BASE_DIR/CLAUDE.md" "$WORKSPACE/CLAUDE.md"
     upload_dir "$name" "$BASE_DIR/hooks" "$REMOTE_HOME/.claude/hooks"
     upload_dir "$name" "$BASE_DIR/skills" "$REMOTE_HOME/.claude/skills"
     upload_dir "$name" "$BASE_DIR/commands" "$REMOTE_HOME/.claude/commands"
