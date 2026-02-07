@@ -1,5 +1,18 @@
 # Design Decisions & Open Questions
 
+## 0. Visual & UI Standards (All Dashboards)
+
+**Canonical reference:** Overmind hexagonal vortex logo (deep purple/indigo). This defines the aesthetic for all Misty Step dashboards and tools.
+
+### Rules:
+- **Icons, NEVER emojis** — All UI uses SVG icons (Lucide, Heroicons, or custom). No Unicode emoji in any product interface.
+- **Dark mode, flat, no gradients** — Think Linear/Vercel. Subtle borders, sharp typography, monochrome with purple accent.
+- **Brand color: Deep purple/indigo** — As accent, active states, brand touchpoints. Chrome stays dark neutral.
+- **Zerg meets command center** — Organic vortex geometry with clean modern dashboard layout. Alive, intelligent, controlled.
+- **Information-dense** — War room aesthetic. Pack data in cleanly.
+- **System fonts only** — No custom font downloads.
+- **Full spec:** `~/.openclaw/workspace/docs/naming-aesthetic.md`
+
 ## 1. Permission Hierarchy: Kaylee vs Sprites
 
 ### Problem
