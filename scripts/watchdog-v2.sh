@@ -95,7 +95,7 @@ for name in $SPRITES; do
     DISPATCH_TIME=$(grep "^$name|" /tmp/active-agents.txt 2>/dev/null | head -1 | cut -d'|' -f3 || echo "")
     ELAPSED_MIN=""
     if [ -n "$DISPATCH_TIME" ]; then
-      DISPATCH_EPOCH=$(date -j -f "%Y-%m-%dT%H:%M" "$DISPATCH_TIME" "+%s" 2>/dev/null || echo "")
+      DISPATCH_EPOCH=$(TZ=UTC date -j -f "%Y-%m-%dT%H:%M" "$DISPATCH_TIME" "+%s" 2>/dev/null || echo "")
       if [ -n "$DISPATCH_EPOCH" ]; then
         NOW_EPOCH=$(date "+%s")
         ELAPSED_MIN=$(( (NOW_EPOCH - DISPATCH_EPOCH) / 60 ))
