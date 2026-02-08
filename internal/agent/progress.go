@@ -153,7 +153,7 @@ func (m *ProgressMonitor) ObserveOutput(line string, stderr bool) {
 	m.mu.Unlock()
 
 	_ = m.emitter.Emit(&events.ProgressEvent{
-		Meta: events.Meta{TS: now, SpriteName: m.cfg.Sprite, EventKind: events.KindProgress},
+		Meta:     events.Meta{TS: now, SpriteName: m.cfg.Sprite, EventKind: events.KindProgress},
 		Branch:   branch,
 		Activity: activity,
 		Detail:   detail,
@@ -296,11 +296,11 @@ func (m *ProgressMonitor) poll(ctx context.Context) {
 		})
 		stalledValue := true
 		_ = m.emitter.Emit(&events.ProgressEvent{
-			Meta:    events.Meta{TS: now, SpriteName: m.cfg.Sprite, EventKind: events.KindProgress},
-			Branch:  current.Branch,
+			Meta:     events.Meta{TS: now, SpriteName: m.cfg.Sprite, EventKind: events.KindProgress},
+			Branch:   current.Branch,
 			Activity: "stalled",
-			Detail:  blockedReason,
-			Stalled: &stalledValue,
+			Detail:   blockedReason,
+			Stalled:  &stalledValue,
 		})
 		m.notifyActivity("stalled", now, true)
 		m.signal(ProgressSignal{Type: ProgressSignalStalled, Reason: blockedReason})
@@ -328,6 +328,10 @@ var (
 	testRunPattern = regexp.MustCompile(`(?i)\b(go test|pytest|npm test|pnpm test|yarn test|jest|cargo test)\b`)
 	successPattern = regexp.MustCompile(`(?i)\b(build succeeded|build successful|compiled successfully|tests passed|all checks passed)\b`)
 	failurePattern = regexp.MustCompile(`(?i)\b(build failed|tests failed|panic:|fatal:|exception|\berror\b|\bfail\b)\b`)
+
+	toolCallPattern = regexp.MustCompile(`(?i)\b(tool( call)?|using tool|invoking tool|exec_command|apply_patch|mcp__|search_query|read_mcp_resource|write_stdin)\b`)
+	fileEditPattern = regexp.MustCompile(`(?i)(\*\*\*\s+(add|update|delete|move)\s+file:|\b(edit|edited|update|updated|create|created|delete|deleted|rename|renamed)\b\s+\S+(\.\w+)?|\bapply_patch\b)`)
+	commandPattern  = regexp.MustCompile(`(?i)(^[$#]\s+\S+|^\s*(bash|sh|zsh)\s+-lc\b|\b(running|executing)\s+command\b|\b(git|go|pnpm|npm|yarn|pytest|cargo|make|docker|kubectl|uv|bun)\s+\S+)`)
 )
 
 func classifyAgentOutput(line string, stderr bool) (activity string, detail string, success *bool, meaningful bool) {
@@ -350,6 +354,18 @@ func classifyAgentOutput(line string, stderr bool) (activity string, detail stri
 	if failurePattern.MatchString(trimmed) || stderr {
 		ok := false
 		return "error", detail, &ok, true
+	}
+
+	if toolCallPattern.MatchString(trimmed) {
+		return "tool_call", detail, nil, true
+	}
+
+	if fileEditPattern.MatchString(trimmed) {
+		return "file_edit", detail, nil, true
+	}
+
+	if commandPattern.MatchString(trimmed) {
+		return "command_run", detail, nil, true
 	}
 
 	return "", "", nil, false

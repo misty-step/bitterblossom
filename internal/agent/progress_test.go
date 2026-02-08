@@ -65,6 +65,10 @@ func TestClassifyAgentOutput(t *testing.T) {
 		{line: "go test ./...", activity: "test_run", meaning: true},
 		{line: "build succeeded", activity: "build_result", meaning: true},
 		{line: "build failed", activity: "error", meaning: true},
+		{line: "Tool call: exec_command", activity: "tool_call", meaning: true},
+		{line: "*** Update File: internal/agent/progress.go", activity: "file_edit", meaning: true},
+		{line: "$ git status --short", activity: "command_run", meaning: true},
+		{line: "stdout note", stderr: true, activity: "error", meaning: true},
 		{line: "arbitrary log line", activity: "", meaning: false},
 		{line: "", activity: "", meaning: false},
 	}
@@ -182,6 +186,34 @@ func TestProgressMonitorObserveOutput(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected test_run progress event")
+	}
+}
+
+func TestProgressMonitorObserveOutputStructuredActivities(t *testing.T) {
+	t.Parallel()
+
+	emitter := &recordingEventEmitter{}
+	monitor := NewProgressMonitor(ProgressConfig{
+		Sprite: "bramble",
+	}, emitter)
+
+	monitor.ObserveOutput("Tool call: exec_command", false)
+	monitor.ObserveOutput("*** Update File: cmd/bb/watch.go", false)
+	monitor.ObserveOutput("$ git status --short", false)
+
+	activities := make([]string, 0, 3)
+	for _, event := range emitter.Events() {
+		progress, ok := event.(*events.ProgressEvent)
+		if !ok {
+			continue
+		}
+		activities = append(activities, progress.Activity)
+	}
+
+	for _, want := range []string{"tool_call", "file_edit", "command_run"} {
+		if !contains(activities, want) {
+			t.Fatalf("missing activity %q in %#v", want, activities)
+		}
 	}
 }
 

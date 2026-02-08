@@ -157,6 +157,10 @@ func writeLogEvent(stdout io.Writer, event events.Event, jsonMode bool) error {
 		line += " task=" + typed.Task
 	case *events.DispatchEvent:
 		line += " task=" + typed.Task
+	case events.ProgressEvent:
+		line = appendProgressSummary(line, typed)
+	case *events.ProgressEvent:
+		line = appendProgressSummary(line, *typed)
 	case events.BlockedEvent:
 		line += " reason=" + typed.Reason
 	case *events.BlockedEvent:
@@ -168,6 +172,22 @@ func writeLogEvent(stdout io.Writer, event events.Event, jsonMode bool) error {
 	}
 	_, err := fmt.Fprintln(stdout, line)
 	return err
+}
+
+func appendProgressSummary(line string, progress events.ProgressEvent) string {
+	if progress.Activity != "" {
+		line += " activity=" + progress.Activity
+	}
+	if progress.Branch != "" {
+		line += " branch=" + progress.Branch
+	}
+	if progress.Detail != "" {
+		line += " detail=" + progress.Detail
+	}
+	if progress.Success != nil {
+		line += fmt.Sprintf(" success=%t", *progress.Success)
+	}
+	return line
 }
 
 func parseTimeRange(now time.Time, sinceRaw, untilRaw string) (time.Time, time.Time, error) {

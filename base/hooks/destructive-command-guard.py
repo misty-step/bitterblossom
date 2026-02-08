@@ -13,9 +13,10 @@ import re
 import shlex
 import subprocess
 import sys
+from typing import Optional
 
 
-def get_current_branch() -> str | None:
+def get_current_branch() -> Optional[str]:
     try:
         result = subprocess.run(
             ["git", "branch", "--show-current"],
@@ -28,7 +29,7 @@ def get_current_branch() -> str | None:
     return None
 
 
-def is_protected_branch(branch: str | None) -> bool:
+def is_protected_branch(branch: Optional[str]) -> bool:
     if not branch:
         return False
     return branch in PROTECTED_BRANCHES
@@ -234,7 +235,7 @@ def _starts_with_command_pattern(cmd: str, pattern: str) -> bool:
     return cmd_tokens[:len(pattern_tokens)] == pattern_tokens
 
 
-def _push_args(cmd: str) -> list[str] | None:
+def _push_args(cmd: str) -> Optional[list[str]]:
     """Return args after `git push`, or None when command is not git push."""
     tokens = _shell_split(cmd)
     if not tokens or tokens[0] != "git":

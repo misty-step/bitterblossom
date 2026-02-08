@@ -7,6 +7,7 @@ set -euo pipefail
 # Usage:
 #   ./scripts/tail-logs.sh <sprite>          # Last 50 lines from one sprite
 #   ./scripts/tail-logs.sh <sprite> -n 100   # Last 100 lines
+#   ./scripts/tail-logs.sh <sprite> --follow # Follow live output
 #   ./scripts/tail-logs.sh --all             # Last 20 lines from ALL sprites
 #   ./scripts/tail-logs.sh --all --brief     # Last 5 lines (quick status)
 
@@ -15,12 +16,14 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 LINES=50
 BRIEF=false
 ALL=false
+FOLLOW=false
 SPRITE=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --all) ALL=true; shift ;;
         --brief) BRIEF=true; LINES=5; shift ;;
+        --follow|-f) FOLLOW=true; shift ;;
         -n) LINES="$2"; shift 2 ;;
         *) SPRITE="$1"; shift ;;
     esac
@@ -48,7 +51,11 @@ tail_sprite() {
     echo ""
     
     # Tail the log
-    "$SPRITE_CLI" exec -o "$ORG" -s "$name" -- tail -"$n" "$WORKSPACE/ralph.log" 2>/dev/null || echo "  (no ralph.log)"
+    if [[ "$FOLLOW" == true ]]; then
+        "$SPRITE_CLI" exec -o "$ORG" -s "$name" -- tail -n "$n" -f "$WORKSPACE/ralph.log" 2>/dev/null || echo "  (no ralph.log)"
+    else
+        "$SPRITE_CLI" exec -o "$ORG" -s "$name" -- tail -"$n" "$WORKSPACE/ralph.log" 2>/dev/null || echo "  (no ralph.log)"
+    fi
     echo ""
 }
 
@@ -61,6 +68,6 @@ elif [[ -n "$SPRITE" ]]; then
     validate_sprite_name "$SPRITE"
     tail_sprite "$SPRITE" "$LINES"
 else
-    echo "Usage: $0 <sprite> [-n lines] | --all [--brief]"
+    echo "Usage: $0 <sprite> [-n lines] [--follow] | --all [--brief] [--follow]"
     exit 1
 fi

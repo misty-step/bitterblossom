@@ -54,6 +54,13 @@ PUSH_INTERVAL="${PUSH_INTERVAL:-1800}"
 HEALTH_INTERVAL="${HEALTH_INTERVAL:-120}"
 LOOP_SLEEP_SEC="${LOOP_SLEEP_SEC:-5}"
 
+HAS_SCRIPT_PTY=false
+if command -v script >/dev/null 2>&1; then
+    if script -qefc "true" /dev/null >/dev/null 2>&1; then
+        HAS_SCRIPT_PTY=true
+    fi
+fi
+
 for v in MAX_ITERATIONS HEARTBEAT_INTERVAL PROGRESS_INTERVAL PUSH_INTERVAL HEALTH_INTERVAL LOOP_SLEEP_SEC; do
     if [[ ! "${!v}" =~ ^[0-9]+$ ]]; then
         echo "[sprite-agent] ERROR: $v must be a non-negative integer (got '${!v}')" >&2
@@ -316,6 +323,20 @@ stop_runner_if_needed() {
     fi
 }
 
+run_claude_once() {
+    local prompt_file="$1"
+    local log_file="$2"
+
+    # Prefer PTY-backed execution for near-real-time flush behavior.
+    if [[ "$HAS_SCRIPT_PTY" == true ]]; then
+        script -qefc "claude -p --permission-mode bypassPermissions < \"$prompt_file\"" \
+            /dev/null >> "$log_file" 2>&1
+        return
+    fi
+
+    claude -p --permission-mode bypassPermissions < "$prompt_file" >> "$log_file" 2>&1
+}
+
 on_signal() {
     shutdown_requested=true
     shutdown_signal="$1"
@@ -360,7 +381,7 @@ while (( iteration < MAX_ITERATIONS )); do
 
     (
         cd "$WORKSPACE"
-        cat "$PROMPT_FILE" | claude -p --permission-mode bypassPermissions >> "$RALPH_LOG" 2>&1
+        run_claude_once "$PROMPT_FILE" "$RALPH_LOG"
     ) &
     current_runner_pid="$!"
 
