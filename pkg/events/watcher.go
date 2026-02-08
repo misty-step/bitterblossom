@@ -162,7 +162,7 @@ func (w *Watcher) scanOnce() error {
 	return nil
 }
 
-func (w *Watcher) readPath(path string) error {
+func (w *Watcher) readPath(path string) (retErr error) {
 	file, err := os.Open(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -170,7 +170,11 @@ func (w *Watcher) readPath(path string) error {
 		}
 		return fmt.Errorf("events: open %s: %w", path, err)
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("events: close %s: %w", path, closeErr))
+		}
+	}()
 
 	info, err := file.Stat()
 	if err != nil {

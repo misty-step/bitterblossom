@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -181,8 +182,16 @@ func TestSupervisorStopAgentForceKill(t *testing.T) {
 	if err != nil {
 		t.Fatalf("launch process: %v", err)
 	}
-	defer stdout.Close()
-	defer stderr.Close()
+	defer func() {
+		if closeErr := stdout.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
+			t.Errorf("close stdout: %v", closeErr)
+		}
+	}()
+	defer func() {
+		if closeErr := stderr.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
+			t.Errorf("close stderr: %v", closeErr)
+		}
+	}()
 
 	waitCh := make(chan error, 1)
 	go func() {
@@ -190,7 +199,7 @@ func TestSupervisorStopAgentForceKill(t *testing.T) {
 	}()
 
 	supervisor := NewSupervisor(SupervisorConfig{
-		Agent: AgentConfig{Kind: AgentCodex, Assignment: TaskAssignment{Prompt: "x", Repo: "r"}},
+		Agent:               AgentConfig{Kind: AgentCodex, Assignment: TaskAssignment{Prompt: "x", Repo: "r"}},
 		ShutdownGracePeriod: 20 * time.Millisecond,
 	})
 

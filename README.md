@@ -99,13 +99,53 @@ Compositions are hypotheses. The current v1 is 5 full-stack sprites with special
 
 Any sprite can handle any task. Preferences improve quality for domain work but never block progress.
 
-## Sprites vs Machines
+## Fleet Management: Sprites
 
 **Important:** This uses Fly.io **Sprites**, not Machines. They are different products:
 - Sprites: AI-native workloads with durable 100GB disks, auto-sleep (~$0 idle), Claude Code pre-installed
 - Machines: General-purpose VMs
 
 Always use the `sprite` CLI, not `fly machines`.
+
+### API Endpoint
+
+Sprites are managed through the `api.sprites.dev` endpoint:
+```bash
+export FLY_API_HOSTNAME="https://api.sprites.dev"
+```
+
+### Sprite CLI Commands
+
+The sprite CLI provides specialized commands for managing AI workloads:
+
+```bash
+# Create a new sprite
+sprite create <name> --region <region>
+
+# List all sprites
+sprite list
+
+# Get sprite details
+sprite show <name>
+
+# Connect to a sprite (SSH access)
+sprite connect <name>
+
+# Destroy a sprite
+sprite destroy <name>
+```
+
+### Sprites vs Machines Comparison
+
+| Feature | Sprites | Machines |
+|---------|---------|----------|
+| **Purpose** | AI-native workloads | General-purpose VMs |
+| **Disk** | 100GB durable disk | Variable, ephemeral by default |
+| **Auto-sleep** | Yes (~$0 when idle) | No (always running) |
+| **Claude Code** | Pre-installed | Manual installation |
+| **Cost model** | Sleep-based billing | Always-on billing |
+| **CLI** | `sprite` commands | `fly machines` commands |
+| **API endpoint** | api.sprites.dev | api.fly.io |
 
 ## Experimentation
 
