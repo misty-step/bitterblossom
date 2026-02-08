@@ -23,6 +23,63 @@ SETTINGS_PATH="$BASE_DIR/settings.json"
 log() { echo "[bitterblossom${LOG_PREFIX:+:$LOG_PREFIX}] $*"; }
 err() { echo "[bitterblossom${LOG_PREFIX:+:$LOG_PREFIX}] ERROR: $*" >&2; }
 
+# sprite_env_key converts sprite name to env var suffix form.
+# Example: "thorn-beta" -> "THORN_BETA"
+sprite_env_key() {
+    local name="$1"
+    printf '%s' "$name" | tr '[:lower:]-' '[:upper:]_'
+}
+
+# resolve_sprite_github_auth resolves GitHub identity and token for one sprite.
+# Output: "<user>\t<email>\t<token>"
+resolve_sprite_github_auth() {
+    local sprite_name="$1"
+    local env_key
+    env_key="$(sprite_env_key "$sprite_name")"
+
+    local user_var="SPRITE_GITHUB_USER_${env_key}"
+    local email_var="SPRITE_GITHUB_EMAIL_${env_key}"
+    local token_var="SPRITE_GITHUB_TOKEN_${env_key}"
+
+    local user="${!user_var-}"
+    if [[ -z "$user" ]]; then
+        user="${SPRITE_GITHUB_DEFAULT_USER:-misty-step-sprites}"
+    fi
+
+    local email_default="${SPRITE_GITHUB_DEFAULT_EMAIL:-${user}@users.noreply.github.com}"
+    local email="${!email_var-}"
+    if [[ -z "$email" ]]; then
+        email="$email_default"
+    fi
+
+    local token="${!token_var-}"
+    if [[ -z "$token" ]]; then
+        token="${SPRITE_GITHUB_DEFAULT_TOKEN:-${GITHUB_TOKEN:-}}"
+    fi
+    if [[ -z "$token" ]]; then
+        token="$(gh auth token 2>/dev/null || true)"
+    fi
+
+    if [[ -z "$user" ]]; then
+        err "GitHub user missing for sprite '$sprite_name'."
+        err "Set $user_var or SPRITE_GITHUB_DEFAULT_USER."
+        return 1
+    fi
+    if [[ -z "$email" ]]; then
+        err "GitHub email missing for sprite '$sprite_name'."
+        err "Set $email_var or SPRITE_GITHUB_DEFAULT_EMAIL."
+        return 1
+    fi
+    if [[ -z "$token" ]]; then
+        err "GitHub token missing for sprite '$sprite_name'."
+        err "Set $token_var, SPRITE_GITHUB_DEFAULT_TOKEN, or GITHUB_TOKEN."
+        err "Fallback to \`gh auth token\` also failed."
+        return 1
+    fi
+
+    printf '%s\t%s\t%s\n' "$user" "$email" "$token"
+}
+
 # Validate sprite name: lowercase alphanumeric + hyphens
 validate_sprite_name() {
     local name="$1"

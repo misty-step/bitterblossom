@@ -175,7 +175,7 @@ PROFILE=$2
 # Usage: pr-shepherd.sh
 # Checks all open sprite PRs, reports status, optionally dispatches fixes
 
-# For each open PR by kaylee-mistystep:
+# For each open PR by configured sprite author(s):
 #   1. Check CI status (passing/failing/pending)
 #   2. Check review status (approved/changes_requested/pending)
 #   3. Check age (>24h without activity = stale)

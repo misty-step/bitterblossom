@@ -13,6 +13,7 @@ ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 OUT_DIR="$ROOT_DIR/dashboard/public"
 SPRITE_CLI="${SPRITE_CLI:-sprite}"
 ORG="${FLY_ORG:-misty-step}"
+PR_AUTHOR_CSV="${SPRITE_PR_AUTHORS:-${SPRITE_PR_AUTHOR:-${SPRITE_GITHUB_DEFAULT_USER:-misty-step-sprites}}}"
 
 mkdir -p "$OUT_DIR"
 
@@ -32,13 +33,27 @@ print(json.dumps(sprites))
 
 # Open PRs across repos
 PRS=""
-for repo in heartbeat bitterblossom conviction scry gitpulse chrondle volume bibliomnomnom cadence overmind linejam sploot; do
-  pr_data=$(gh pr list --repo "misty-step/$repo" --author kaylee-mistystep --json number,title,headRefName,state,statusCheckRollup \
-    --jq ".[] | \"$repo|\(.number)|\(.title)|\(.headRefName)|\(.statusCheckRollup // [] | map(.conclusion // \"PENDING\") | join(\",\"))\"" 2>/dev/null || true)
-  if [[ -n "$pr_data" ]]; then
-    PRS="${PRS}${pr_data}"$'\n'
-  fi
+PR_AUTHORS=()
+IFS=',' read -r -a _raw_pr_authors <<< "$PR_AUTHOR_CSV"
+for _author in "${_raw_pr_authors[@]}"; do
+  _author="$(printf '%s' "$_author" | xargs)"
+  [[ -z "$_author" ]] && continue
+  PR_AUTHORS+=("$_author")
 done
+if [[ ${#PR_AUTHORS[@]} -eq 0 ]]; then
+  PR_AUTHORS=("misty-step-sprites")
+fi
+
+for repo in heartbeat bitterblossom conviction scry gitpulse chrondle volume bibliomnomnom cadence overmind linejam sploot; do
+  for author in "${PR_AUTHORS[@]}"; do
+    pr_data=$(gh pr list --repo "misty-step/$repo" --author "$author" --json number,title,headRefName,state,statusCheckRollup \
+      --jq ".[] | \"$repo|\(.number)|\(.title)|\(.headRefName)|\(.statusCheckRollup // [] | map(.conclusion // \"PENDING\") | join(\",\"))\"" 2>/dev/null || true)
+    if [[ -n "$pr_data" ]]; then
+      PRS="${PRS}${pr_data}"$'\n'
+    fi
+  done
+done
+PRS=$(printf '%s' "$PRS" | awk -F'|' 'NF && !seen[$1 FS $2]++')
 
 # Sprite task status
 SPRITE_STATUSES=""
@@ -209,17 +224,6 @@ open('$OUT_DIR/index.html', 'w').write(html)
 PR_HTML=""
 while IFS='|' read -r repo num title branch checks; do
   [[ -z "$repo" ]] && continue
-  # Determine sprite from branch prefix
-  sprite=""
-  case "$branch" in
-    thorn/*) sprite="Thorn" ;;
-    bramble/*) sprite="Bramble" ;;
-    willow/*) sprite="Willow" ;;
-    fern/*) sprite="Fern" ;;
-    moss/*) sprite="Moss" ;;
-    claw/*) sprite="Claw" ;;
-    *) sprite="—" ;;
-  esac
   # CI status
   if echo "$checks" | grep -qi "failure"; then
     ci='<span class="badge b-red">✗ Failing</span>'

@@ -24,6 +24,13 @@ usage() {
     echo "Environment:"
     echo "  SPRITE_CLI    Path to sprite CLI (default: sprite)"
     echo "  FLY_ORG       Fly.io organization (default: misty-step)"
+    echo "  SPRITE_GITHUB_DEFAULT_USER   Shared sprite GitHub username (default: misty-step-sprites)"
+    echo "  SPRITE_GITHUB_DEFAULT_EMAIL  Shared sprite GitHub email (default: <user>@users.noreply.github.com)"
+    echo "  SPRITE_GITHUB_DEFAULT_TOKEN  Shared sprite GitHub token"
+    echo "  SPRITE_GITHUB_USER_<SPRITE>  Per-sprite GitHub username override"
+    echo "  SPRITE_GITHUB_EMAIL_<SPRITE> Per-sprite GitHub email override"
+    echo "  SPRITE_GITHUB_TOKEN_<SPRITE> Per-sprite GitHub token override"
+    echo "  GITHUB_TOKEN                 Legacy token fallback (if default/per-sprite token unset)"
     echo ""
     echo "Examples:"
     echo "  $0 bramble"
@@ -85,26 +92,19 @@ Composition: $3
 _No observations yet. Update after completing work._
 MEMEOF' _ "$name" "$timestamp" "$composition_label"
 
-    # Step 6: Set up git config AND credentials (CRITICAL — sprites can't push without this)
-    local gh_token="${GITHUB_TOKEN:-}"
-    if [[ -z "$gh_token" ]]; then
-        # Try to get token from gh CLI
-        gh_token="$(gh auth token 2>/dev/null || echo "")"
-    fi
-    if [[ -z "$gh_token" ]]; then
-        err "GITHUB_TOKEN not set and gh CLI not authenticated."
-        err "Sprites CANNOT push without git credentials. This is a hard requirement."
-        err "Export GITHUB_TOKEN or authenticate gh CLI before provisioning."
-        exit 1
-    fi
+    # Step 6: Set up git config + credentials (sprites cannot push without this)
+    local gh_auth
+    gh_auth="$(resolve_sprite_github_auth "$name")" || exit 1
+    local gh_user gh_email gh_token
+    IFS=$'\t' read -r gh_user gh_email gh_token <<< "$gh_auth"
 
-    log "Configuring git identity + credentials..."
+    log "Configuring git identity + credentials (account: $gh_user)..."
     "$SPRITE_CLI" exec -o "$ORG" -s "$name" -- bash -c \
-        'git config --global user.name "$1 (bitterblossom sprite)" && \
-         git config --global user.email "kaylee@mistystep.io" && \
+        'git config --global user.name "$1 ($2 sprite)" && \
+         git config --global user.email "$3" && \
          git config --global credential.helper store && \
-         echo "https://kaylee-mistystep:$2@github.com" > /home/sprite/.git-credentials && \
-         echo "Git credentials configured for kaylee-mistystep"' _ "$name" "$gh_token"
+         printf "https://%s:%s@github.com\n" "$4" "$5" > /home/sprite/.git-credentials && \
+         echo "Git credentials configured for $4"' _ "$name" "$gh_user" "$gh_email" "$gh_user" "$gh_token"
 
     # Verify git auth works (define errors out of existence — fail here, not at push time)
     log "Verifying git push access..."

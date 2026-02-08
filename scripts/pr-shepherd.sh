@@ -5,38 +5,66 @@
 #
 # Designed to run as a cron job every 30 minutes.
 # Checks CI status, review status, and age for all open PRs
-# authored by kaylee-mistystep (sprite account).
+# authored by configured sprite bot account(s).
 
 set -euo pipefail
 
-ORG="misty-step"
-AUTHOR="kaylee-mistystep"
-STATE_FILE="/tmp/pr-shepherd-state.json"
+ORG="${GITHUB_ORG:-misty-step}"
+AUTHOR_CSV="${SPRITE_PR_AUTHORS:-${SPRITE_PR_AUTHOR:-${SPRITE_GITHUB_DEFAULT_USER:-misty-step-sprites}}}"
 
-# Get all open PRs by sprite account across the org
-echo "[pr-shepherd] Checking open PRs by $AUTHOR in $ORG..." >&2
+normalize_author_csv() {
+  local input="$1"
+  local -a output=()
+  local -a pieces=()
+  local piece=""
 
-PRS=$(gh api "search/issues" \
-  --method GET \
-  -f q="org:$ORG is:pr is:open author:$AUTHOR" \
-  -f per_page=50 \
-  --jq '.items[] | {
-    number: .number,
-    title: .title,
-    repo: (.repository_url | split("/") | last),
-    created_at: .created_at,
-    updated_at: .updated_at,
-    html_url: .html_url
-  }' 2>/dev/null) || { echo "[]"; exit 0; }
+  IFS=',' read -r -a pieces <<< "$input"
+  for piece in "${pieces[@]}"; do
+    piece="$(printf '%s' "$piece" | xargs)"
+    [[ -z "$piece" ]] && continue
+    output+=("$piece")
+  done
 
-if [ -z "$PRS" ]; then
+  if [[ ${#output[@]} -eq 0 ]]; then
+    return 1
+  fi
+
+  printf '%s\n' "${output[@]}"
+}
+
+AUTHOR_LIST="$(normalize_author_csv "$AUTHOR_CSV" || true)"
+if [[ -z "$AUTHOR_LIST" ]]; then
+  echo "[pr-shepherd] No authors configured. Set SPRITE_PR_AUTHORS or SPRITE_PR_AUTHOR." >&2
   echo "[]"
   exit 0
 fi
 
-# Process each PR
-RESULTS="["
-FIRST=true
+ALL_PRS=""
+while IFS= read -r author; do
+  echo "[pr-shepherd] Checking open PRs by $author in $ORG..." >&2
+  pr_data=$(gh api "search/issues" \
+    --method GET \
+    -f q="org:$ORG is:pr is:open author:$author" \
+    -f per_page=50 \
+    --jq '.items[] | {
+      number: .number,
+      title: .title,
+      repo: (.repository_url | split("/") | last),
+      created_at: .created_at,
+      updated_at: .updated_at,
+      html_url: .html_url
+    }' 2>/dev/null || true)
+  if [[ -n "$pr_data" ]]; then
+    ALL_PRS="${ALL_PRS}"$'\n'"$pr_data"
+  fi
+done <<< "$AUTHOR_LIST"
+
+if [[ -z "$(printf '%s' "$ALL_PRS" | tr -d '[:space:]')" ]]; then
+  echo "[]"
+  exit 0
+fi
+
+PRS="$(printf '%s\n' "$ALL_PRS" | jq -s 'unique_by(.repo, .number)[]')"
 
 echo "$PRS" | jq -c '.' | while IFS= read -r pr; do
   REPO=$(echo "$pr" | jq -r '.repo')
