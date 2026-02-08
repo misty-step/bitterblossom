@@ -10,10 +10,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
+source "$SCRIPT_DIR/lib.sh"
+
 OUT_DIR="$ROOT_DIR/dashboard/public"
 SPRITE_CLI="${SPRITE_CLI:-sprite}"
 ORG="${FLY_ORG:-misty-step}"
-PR_AUTHOR_CSV="${SPRITE_PR_AUTHORS:-${SPRITE_PR_AUTHOR:-${SPRITE_GITHUB_DEFAULT_USER:-misty-step-sprites}}}"
+GITHUB_ORG_NAME="${GITHUB_ORG:-misty-step}"
 
 mkdir -p "$OUT_DIR"
 
@@ -34,19 +36,18 @@ print(json.dumps(sprites))
 # Open PRs across repos
 PRS=""
 PR_AUTHORS=()
-IFS=',' read -r -a _raw_pr_authors <<< "$PR_AUTHOR_CSV"
-for _author in "${_raw_pr_authors[@]}"; do
-  _author="$(printf '%s' "$_author" | xargs)"
+while IFS= read -r _author; do
   [[ -z "$_author" ]] && continue
   PR_AUTHORS+=("$_author")
-done
+done < <(resolve_sprite_pr_authors || true)
 if [[ ${#PR_AUTHORS[@]} -eq 0 ]]; then
+  echo "[dashboard] WARN: No PR authors configured; falling back to misty-step-sprites" >&2
   PR_AUTHORS=("misty-step-sprites")
 fi
 
 for repo in heartbeat bitterblossom conviction scry gitpulse chrondle volume bibliomnomnom cadence overmind linejam sploot; do
   for author in "${PR_AUTHORS[@]}"; do
-    pr_data=$(gh pr list --repo "misty-step/$repo" --author "$author" --json number,title,headRefName,state,statusCheckRollup \
+    pr_data=$(gh pr list --repo "$GITHUB_ORG_NAME/$repo" --author "$author" --json number,title,headRefName,state,statusCheckRollup \
       --jq ".[] | \"$repo|\(.number)|\(.title)|\(.headRefName)|\(.statusCheckRollup // [] | map(.conclusion // \"PENDING\") | join(\",\"))\"" 2>/dev/null || true)
     if [[ -n "$pr_data" ]]; then
       PRS="${PRS}${pr_data}"$'\n'

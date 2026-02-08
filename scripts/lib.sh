@@ -27,7 +27,35 @@ err() { echo "[bitterblossom${LOG_PREFIX:+:$LOG_PREFIX}] ERROR: $*" >&2; }
 # Example: "thorn-beta" -> "THORN_BETA"
 sprite_env_key() {
     local name="$1"
-    printf '%s' "$name" | tr '[:lower:]-' '[:upper:]_'
+    LC_ALL=C printf '%s' "$name" | tr 'a-z-' 'A-Z_'
+}
+
+# normalize_csv_list splits comma-separated values, trims whitespace, and drops empty entries.
+# Output: one value per line.
+normalize_csv_list() {
+    local input="$1"
+    local -a pieces=()
+    local piece=""
+    local count=0
+
+    IFS=',' read -r -a pieces <<< "$input"
+    for piece in "${pieces[@]}"; do
+        piece="$(printf '%s' "$piece" | xargs)"
+        [[ -z "$piece" ]] && continue
+        printf '%s\n' "$piece"
+        count=$((count + 1))
+    done
+
+    if [[ "$count" -eq 0 ]]; then
+        return 1
+    fi
+}
+
+# resolve_sprite_pr_authors returns configured PR author usernames, one per line.
+resolve_sprite_pr_authors() {
+    local fallback="${SPRITE_GITHUB_DEFAULT_USER:-misty-step-sprites}"
+    local csv="${SPRITE_PR_AUTHORS:-${SPRITE_PR_AUTHOR:-$fallback}}"
+    normalize_csv_list "$csv"
 }
 
 # resolve_sprite_github_auth resolves GitHub identity and token for one sprite.
@@ -42,14 +70,20 @@ resolve_sprite_github_auth() {
     local token_var="SPRITE_GITHUB_TOKEN_${env_key}"
 
     local user="${!user_var-}"
+    local user_from_default=true
     if [[ -z "$user" ]]; then
         user="${SPRITE_GITHUB_DEFAULT_USER:-misty-step-sprites}"
+    else
+        user_from_default=false
     fi
 
-    local email_default="${SPRITE_GITHUB_DEFAULT_EMAIL:-${user}@users.noreply.github.com}"
     local email="${!email_var-}"
     if [[ -z "$email" ]]; then
-        email="$email_default"
+        if [[ "$user_from_default" == true ]]; then
+            email="${SPRITE_GITHUB_DEFAULT_EMAIL:-${user}@users.noreply.github.com}"
+        else
+            email="${user}@users.noreply.github.com"
+        fi
     fi
 
     local token="${!token_var-}"

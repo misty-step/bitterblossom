@@ -9,30 +9,11 @@
 
 set -euo pipefail
 
-ORG="${GITHUB_ORG:-misty-step}"
-AUTHOR_CSV="${SPRITE_PR_AUTHORS:-${SPRITE_PR_AUTHOR:-${SPRITE_GITHUB_DEFAULT_USER:-misty-step-sprites}}}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lib.sh"
 
-normalize_author_csv() {
-  local input="$1"
-  local -a output=()
-  local -a pieces=()
-  local piece=""
-
-  IFS=',' read -r -a pieces <<< "$input"
-  for piece in "${pieces[@]}"; do
-    piece="$(printf '%s' "$piece" | xargs)"
-    [[ -z "$piece" ]] && continue
-    output+=("$piece")
-  done
-
-  if [[ ${#output[@]} -eq 0 ]]; then
-    return 1
-  fi
-
-  printf '%s\n' "${output[@]}"
-}
-
-AUTHOR_LIST="$(normalize_author_csv "$AUTHOR_CSV" || true)"
+GITHUB_ORG_NAME="${GITHUB_ORG:-misty-step}"
+AUTHOR_LIST="$(resolve_sprite_pr_authors || true)"
 if [[ -z "$AUTHOR_LIST" ]]; then
   echo "[pr-shepherd] No authors configured. Set SPRITE_PR_AUTHORS or SPRITE_PR_AUTHOR." >&2
   echo "[]"
@@ -41,10 +22,10 @@ fi
 
 ALL_PRS=""
 while IFS= read -r author; do
-  echo "[pr-shepherd] Checking open PRs by $author in $ORG..." >&2
+  echo "[pr-shepherd] Checking open PRs by $author in $GITHUB_ORG_NAME..." >&2
   pr_data=$(gh api "search/issues" \
     --method GET \
-    -f q="org:$ORG is:pr is:open author:$author" \
+    -f q="org:$GITHUB_ORG_NAME is:pr is:open author:$author" \
     -f per_page=50 \
     --jq '.items[] | {
       number: .number,
@@ -55,7 +36,11 @@ while IFS= read -r author; do
       html_url: .html_url
     }' 2>/dev/null || true)
   if [[ -n "$pr_data" ]]; then
-    ALL_PRS="${ALL_PRS}"$'\n'"$pr_data"
+    if [[ -z "$ALL_PRS" ]]; then
+      ALL_PRS="$pr_data"
+    else
+      ALL_PRS="${ALL_PRS}"$'\n'"$pr_data"
+    fi
   fi
 done <<< "$AUTHOR_LIST"
 
@@ -76,7 +61,7 @@ echo "$PRS" | jq -c '.' | while IFS= read -r pr; do
 
   # Get CI status
   CI_STATUS="unknown"
-  CHECKS=$(gh pr checks "$NUMBER" --repo "$ORG/$REPO" 2>&1) || true
+  CHECKS=$(gh pr checks "$NUMBER" --repo "$GITHUB_ORG_NAME/$REPO" 2>&1) || true
   if echo "$CHECKS" | grep -q "fail"; then
     CI_STATUS="failing"
   elif echo "$CHECKS" | grep -q "pass"; then
@@ -86,7 +71,7 @@ echo "$PRS" | jq -c '.' | while IFS= read -r pr; do
   fi
 
   # Get review status
-  REVIEWS=$(gh api "repos/$ORG/$REPO/pulls/$NUMBER/reviews" \
+  REVIEWS=$(gh api "repos/$GITHUB_ORG_NAME/$REPO/pulls/$NUMBER/reviews" \
     --jq '[.[] | select(.state != "COMMENTED")] | last | .state // "none"' 2>/dev/null) || REVIEWS="none"
 
   # Calculate age in hours
