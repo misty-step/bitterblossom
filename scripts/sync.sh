@@ -7,17 +7,22 @@ set -euo pipefail
 # sprite persona definitions to running sprites.
 #
 # Usage:
-#   ./scripts/sync.sh              # Sync all sprites
-#   ./scripts/sync.sh <sprite>     # Sync specific sprite
-#   ./scripts/sync.sh --base-only  # Only sync base config (no persona)
+#   ./scripts/sync.sh                  # Sync all sprites
+#   ./scripts/sync.sh <sprite>         # Sync specific sprite
+#   ./scripts/sync.sh --base-only      # Only sync base config (no persona)
+#   ./scripts/sync.sh --provider <p>   # Use specific provider settings
 
 LOG_PREFIX="sync"
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 BASE_ONLY=false
+SYNC_PROVIDER=""
+SYNC_MODEL=""
 
 sync_sprite() {
     local name="$1"
+    local provider="${2:-}"
+    local model="${3:-}"
 
     validate_sprite_name "$name"
 
@@ -27,6 +32,18 @@ sync_sprite() {
         err "Sprite '$name' does not exist. Run provision.sh first."
         return 1
     fi
+
+    # Get provider configuration if not specified
+    if [[ -z "$provider" ]]; then
+        local provider_info
+        provider_info="$(get_provider_for_sprite "$name")"
+        IFS=$'\t' read -r provider model <<< "$provider_info"
+    fi
+
+    log "Using provider: $provider${model:+ (model: $model)}"
+
+    # Prepare settings with provider-specific configuration
+    prepare_settings_with_provider "$provider" "$model"
 
     # Sync base config (CLAUDE.md, hooks, skills, commands, settings)
     log "Syncing base config..."
@@ -51,6 +68,22 @@ TARGETS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --base-only) BASE_ONLY=true; shift ;;
+        --provider)
+            if [[ -z "${2:-}" ]]; then
+                err "--provider requires a value"
+                exit 1
+            fi
+            SYNC_PROVIDER="$2"
+            shift 2
+            ;;
+        --model)
+            if [[ -z "${2:-}" ]]; then
+                err "--model requires a value"
+                exit 1
+            fi
+            SYNC_MODEL="$2"
+            shift 2
+            ;;
         --composition)
             if [[ -z "${2:-}" ]]; then
                 err "--composition requires a value"
@@ -60,11 +93,17 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --help|-h)
-            echo "Usage: $0 [--base-only] [--composition <path>] [sprite-name ...]"
+            echo "Usage: $0 [--base-only] [--provider <name>] [--model <model>] [--composition <path>] [sprite-name ...]"
             echo ""
             echo "  --base-only          Only sync shared base config (skip persona definitions)"
+            echo "  --provider <name>    LLM provider: moonshot, openrouter-kimi, openrouter-claude"
+            echo "  --model <model>      Model identifier (e.g., kimi-k2.5, anthropic/claude-opus-4)"
             echo "  --composition <path> Use specific composition YAML (default: compositions/v1.yaml)"
             echo "  sprite-name          Sync specific sprite(s). Default: all from composition."
+            echo ""
+            echo "Environment:"
+            echo "  ANTHROPIC_AUTH_TOKEN     API key for Moonshot or OpenRouter"
+            echo "  BB_OPENROUTER_API_KEY    Alternative OpenRouter API key"
             exit 0
             ;;
         *) TARGETS+=("$1"); shift ;;
@@ -72,7 +111,6 @@ while [[ $# -gt 0 ]]; do
 done
 
 trap lib_cleanup EXIT
-prepare_settings
 
 if [[ ${#TARGETS[@]} -eq 0 ]]; then
     log "Syncing sprites from composition: $COMPOSITION"
@@ -82,13 +120,13 @@ if [[ ${#TARGETS[@]} -eq 0 ]]; then
         exit 1
     fi
     while IFS= read -r name; do
-        sync_sprite "$name"
+        sync_sprite "$name" "$SYNC_PROVIDER" "$SYNC_MODEL"
         echo ""
     done <<< "$sprite_list"
     log "All sprites synced."
 else
     for name in "${TARGETS[@]}"; do
-        sync_sprite "$name"
+        sync_sprite "$name" "$SYNC_PROVIDER" "$SYNC_MODEL"
         echo ""
     done
 fi

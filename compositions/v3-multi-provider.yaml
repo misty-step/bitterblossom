@@ -1,0 +1,161 @@
+# Bitterblossom Composition v3 — "Multi-Provider Fae Court"
+#
+# This composition demonstrates multi-provider support:
+# - Default sprites use Moonshot/Kimi (backward compatible)
+# - Specialized sprites can use Claude via OpenRouter
+#
+# Provider Configuration:
+# - moonshot:          Native Moonshot AI API (Kimi models)
+# - openrouter-kimi:   Kimi models via OpenRouter
+# - openrouter-claude: Claude models via OpenRouter
+
+version: 3
+name: "Multi-Provider Fae Court"
+created: 2026-02-08
+status: active
+parent: v2
+
+base:
+  claude_md: base/CLAUDE.md
+  settings: base/settings.json
+  hooks:
+    - base/hooks/destructive-command-guard.py
+    - base/hooks/fast-feedback.py
+    - base/hooks/memory-reminder.py
+  skills:
+    - base/skills/testing-philosophy
+    - base/skills/naming-conventions
+    - base/skills/git-mastery
+    - base/skills/external-integration
+  commands:
+    - base/commands/commit.md
+
+sprites:
+  # ── Core Team: Moonshot/Kimi (default) ────────────────────
+
+  bramble:
+    definition: sprites/bramble.md
+    preference: "Systems & Data"
+    philosophy: "Deep foundations. Fast, correct, scalable."
+    # Uses default provider (moonshot/kimi) - backward compatible
+    fallback: true
+
+  willow:
+    definition: sprites/willow.md
+    preference: "Interface & Experience"
+    philosophy: "Craft matters. Every detail serves the user."
+
+  thorn:
+    definition: sprites/thorn.md
+    preference: "Quality & Security"
+    philosophy: "Defend the system. Trust nothing external."
+
+  # ── Platform Team: Kimi via OpenRouter ────────────────────
+
+  fern:
+    definition: sprites/fern.md
+    preference: "Platform & Operations"
+    philosophy: "Automate the boring. Make deployment invisible."
+    provider:
+      name: openrouter-kimi
+      model: kimi-k2.5
+
+  moss:
+    definition: sprites/moss.md
+    preference: "Architecture & Evolution"
+    philosophy: "Simplify relentlessly. Codebases should want to be extended."
+    provider:
+      name: openrouter-kimi
+      model: kimi-k2.5
+
+  # ── Security & Architecture: Claude via OpenRouter ────────
+
+  hemlock:
+    definition: sprites/hemlock.md
+    preference: "Security Audit"
+    philosophy: "Assume every input is hostile and every boundary is permeable."
+    provider:
+      name: openrouter-claude
+      model: anthropic/claude-opus-4
+    strengths:
+      - Vulnerability hunting (OWASP methodology)
+      - Auth/identity system auditing
+      - Attack path tracing
+      - Security fix implementation
+    routing_labels:
+      - domain/security
+      - type/bug
+
+  sage:
+    definition: sprites/sage.md
+    preference: "Documentation"
+    philosophy: "Code tells you what. Documentation tells you why."
+    provider:
+      name: openrouter-claude
+      model: anthropic/claude-sonnet-4
+    strengths:
+      - README creation and improvement
+      - Architecture Decision Records
+      - API documentation
+      - Onboarding guides
+    routing_labels:
+      - type/docs
+      - domain/docs
+
+  # ── Simple Provider Syntax (inline) ───────────────────────
+
+  clover:
+    definition: sprites/clover.md
+    preference: "Test Writing"
+    # Short syntax: just specify provider name
+    provider: openrouter-kimi
+    model: kimi-k2.5
+
+# ── Provider Configuration Examples ─────────────────────────
+#
+# Full provider block syntax:
+#   provider:
+#     name: openrouter-claude
+#     model: anthropic/claude-opus-4
+#     # Additional env vars can be specified:
+#     API_TIMEOUT_MS: "900000"
+#
+# Short syntax (just provider name):
+#   provider: moonshot
+#
+# Available providers:
+#   - moonshot:          Native Moonshot AI API (default)
+#   - openrouter-kimi:   Kimi models via OpenRouter
+#   - openrouter-claude: Claude models via OpenRouter
+#
+# Available models:
+#   Kimi:  kimi-k2.5
+#   Claude: anthropic/claude-opus-4
+#           anthropic/claude-sonnet-4
+#           anthropic/claude-haiku-4
+
+# ── Deployment Strategy ────────────────────────────────────
+
+deployment:
+  max_concurrent: 8
+  default_set:
+    - bramble
+    - willow
+    - thorn
+    - fern
+    - moss
+    - hemlock
+    - clover
+
+experiment:
+  hypothesis: "Different LLM providers excel at different task types - Claude for security/docs, Kimi for code"
+  metrics:
+    - Task completion rate by provider
+    - Code quality scores
+    - Time to completion
+    - Cost per task
+  comparison: v2
+  notes: |
+    Track which provider performs best for which task types.
+    Hemlock (Claude) should excel at security analysis.
+    Sage (Claude Sonnet) should produce excellent documentation.

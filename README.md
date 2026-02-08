@@ -85,6 +85,27 @@ go run ./cmd/bb check-fleet --composition compositions/v2.yaml
 ./scripts/teardown.sh bramble
 ```
 
+## Multi-Provider Support (New in v3)
+
+Bitterblossom now supports multiple LLM providers. You can configure different providers per sprite:
+
+```bash
+# Provision a sprite with Claude via OpenRouter
+./scripts/provision.sh --provider openrouter-claude --model anthropic/claude-opus-4 hemlock
+
+# Or use environment variables for per-sprite configuration
+export BB_PROVIDER_HEMLOCK=openrouter-claude
+export BB_MODEL_HEMLOCK=anthropic/claude-opus-4
+./scripts/provision.sh hemlock
+```
+
+**Supported providers:**
+- `moonshot` — Native Moonshot AI API (Kimi models) [default]
+- `openrouter-kimi` — Kimi models via OpenRouter
+- `openrouter-claude` — Claude models via OpenRouter
+
+See [docs/PROVIDERS.md](docs/PROVIDERS.md) for full documentation and [compositions/v3-multi-provider.yaml](compositions/v3-multi-provider.yaml) for an example configuration.
+
 ## Composition Philosophy
 
 Compositions are hypotheses. The current v1 is 5 full-stack sprites with specialization preferences. OpenClaw (Kaylee) decides where to route work — routing is intelligent, not programmatic.
@@ -162,6 +183,16 @@ Compositions live in `compositions/`. When patterns suggest a change, create a n
 Secret detection runs on every PR and push to master via [TruffleHog](https://github.com/trufflesecurity/trufflehog). See [docs/SECRETS.md](docs/SECRETS.md) for local usage, leak response runbook, and how sprite auth tokens work.
 
 API keys are never stored in git. `base/settings.json` uses a placeholder rendered at provision/sync time from `$ANTHROPIC_AUTH_TOKEN`.
+
+### Multi-Provider Authentication
+
+For multi-provider support, you can use:
+- `ANTHROPIC_AUTH_TOKEN` — Works for both Moonshot and OpenRouter
+- `BB_OPENROUTER_API_KEY` — Alternative specifically for OpenRouter
+
+Per-sprite provider configuration:
+- `BB_PROVIDER_<SPRITE>` — Provider for a specific sprite (e.g., `BB_PROVIDER_HEMLOCK=openrouter-claude`)
+- `BB_MODEL_<SPRITE>` — Model for a specific sprite (e.g., `BB_MODEL_HEMLOCK=anthropic/claude-opus-4`)
 
 ## CI Pipeline
 
