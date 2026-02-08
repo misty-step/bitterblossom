@@ -2,9 +2,12 @@ package dispatch
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/misty-step/bitterblossom/pkg/fly"
 )
 
 type execCall struct {
@@ -13,100 +16,386 @@ type execCall struct {
 	stdin   string
 }
 
-type fakeExecutor struct {
-	calls   []execCall
-	outputs []string
-	errs    []error
+type uploadCall struct {
+	sprite string
+	path   string
+	body   string
 }
 
-func (f *fakeExecutor) Exec(_ context.Context, sprite, command string, stdin []byte) (string, error) {
-	f.calls = append(f.calls, execCall{
+type fakeRemote struct {
+	execCalls     []execCall
+	execResponses []string
+	execErrs      []error
+	uploads       []uploadCall
+	uploadErrs    []error
+	uploadErr     error
+}
+
+func (f *fakeRemote) Exec(_ context.Context, sprite, command string, stdin []byte) (string, error) {
+	f.execCalls = append(f.execCalls, execCall{
 		sprite:  sprite,
 		command: command,
 		stdin:   string(stdin),
 	})
-	idx := len(f.calls) - 1
+	index := len(f.execCalls) - 1
 	var output string
-	if idx < len(f.outputs) {
-		output = f.outputs[idx]
+	if index < len(f.execResponses) {
+		output = f.execResponses[index]
 	}
 	var err error
-	if idx < len(f.errs) {
-		err = f.errs[idx]
+	if index < len(f.execErrs) {
+		err = f.execErrs[index]
 	}
 	return output, err
 }
 
-func TestRunIssueTask(t *testing.T) {
-	fake := &fakeExecutor{
-		outputs: []string{"", "1234\n"},
+func (f *fakeRemote) Upload(_ context.Context, sprite, remotePath string, content []byte) error {
+	f.uploads = append(f.uploads, uploadCall{
+		sprite: sprite,
+		path:   remotePath,
+		body:   string(content),
+	})
+	index := len(f.uploads) - 1
+	if index < len(f.uploadErrs) {
+		return f.uploadErrs[index]
 	}
-	svc := NewService(fake)
-	now := time.Date(2026, time.February, 7, 17, 0, 0, 0, time.UTC)
-	svc.now = func() time.Time { return now }
+	return f.uploadErr
+}
 
-	result, err := svc.RunIssueTask(context.Background(), DispatchRequest{
-		Sprite:      "bramble",
-		Repo:        "heartbeat",
-		IssueNumber: 42,
-		PersonaRole: "tester",
+type fakeFly struct {
+	listMachines []fly.Machine
+	listErr      error
+	createReqs   []fly.CreateRequest
+	createErr    error
+}
+
+func (f *fakeFly) Create(_ context.Context, req fly.CreateRequest) (fly.Machine, error) {
+	f.createReqs = append(f.createReqs, req)
+	if f.createErr != nil {
+		return fly.Machine{}, f.createErr
+	}
+	return fly.Machine{ID: "m-created", Name: req.Name}, nil
+}
+
+func (f *fakeFly) Destroy(context.Context, string, string) error {
+	return errors.New("not implemented")
+}
+
+func (f *fakeFly) List(context.Context, string) ([]fly.Machine, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	result := make([]fly.Machine, len(f.listMachines))
+	copy(result, f.listMachines)
+	return result, nil
+}
+
+func (f *fakeFly) Status(context.Context, string, string) (fly.Machine, error) {
+	return fly.Machine{}, errors.New("not implemented")
+}
+
+func (f *fakeFly) Exec(context.Context, string, string, fly.ExecRequest) (fly.ExecResult, error) {
+	return fly.ExecResult{}, errors.New("not implemented")
+}
+
+func TestRunDryRunBuildsPlanWithoutSideEffects(t *testing.T) {
+	remote := &fakeRemote{}
+	flyClient := &fakeFly{listMachines: []fly.Machine{}}
+	now := time.Date(2026, time.February, 8, 12, 0, 0, 0, time.UTC)
+
+	service, err := NewService(Config{
+		Remote:    remote,
+		Fly:       flyClient,
+		App:       "bb-app",
+		Workspace: "/home/sprite/workspace",
+		Now:       func() time.Time { return now },
 	})
 	if err != nil {
-		t.Fatalf("RunIssueTask() error = %v", err)
+		t.Fatalf("NewService() error = %v", err)
 	}
 
-	if len(fake.calls) != 2 {
-		t.Fatalf("expected 2 executor calls, got %d", len(fake.calls))
+	result, err := service.Run(context.Background(), Request{
+		Sprite:  "bramble",
+		Prompt:  "Fix flaky auth tests",
+		Repo:    "misty-step/heartbeat",
+		Ralph:   true,
+		Execute: false,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
 	}
 
-	if got := fake.calls[0].command; got != "cat > /home/sprite/workspace/TASK.md" {
-		t.Fatalf("unexpected upload command: %q", got)
+	if result.Executed {
+		t.Fatalf("Executed = %v, want false", result.Executed)
 	}
-	if !strings.Contains(fake.calls[0].stdin, "GitHub issue #42 in misty-step/heartbeat") {
-		t.Fatalf("prompt does not include issue target: %q", fake.calls[0].stdin)
+	if len(result.Plan.Steps) != 5 {
+		t.Fatalf("len(plan.steps) = %d, want 5", len(result.Plan.Steps))
 	}
-
-	if !strings.Contains(fake.calls[1].command, "git clone 'https://github.com/misty-step/heartbeat.git' 'heartbeat'") {
-		t.Fatalf("launch command missing clone line: %q", fake.calls[1].command)
+	if len(flyClient.createReqs) != 0 {
+		t.Fatalf("unexpected create calls: %d", len(flyClient.createReqs))
 	}
-
-	if result.Sprite != "bramble" {
-		t.Fatalf("unexpected sprite: %q", result.Sprite)
+	if len(remote.execCalls) != 0 {
+		t.Fatalf("unexpected exec calls: %d", len(remote.execCalls))
 	}
-	if result.Task != "misty-step/heartbeat#42" {
-		t.Fatalf("unexpected task: %q", result.Task)
-	}
-	if result.PID != 1234 {
-		t.Fatalf("unexpected pid: %d", result.PID)
-	}
-	if result.StartedAt != now {
-		t.Fatalf("unexpected started time: %s", result.StartedAt)
+	if len(remote.uploads) != 0 {
+		t.Fatalf("unexpected uploads: %d", len(remote.uploads))
 	}
 }
 
-func TestRunIssueTaskInvalidRepo(t *testing.T) {
-	svc := NewService(&fakeExecutor{})
-	_, err := svc.RunIssueTask(context.Background(), DispatchRequest{
-		Sprite:      "bramble",
-		Repo:        "https://github.com/misty-step/heartbeat",
-		IssueNumber: 7,
+func TestRunExecuteProvisionAndStartRalph(t *testing.T) {
+	remote := &fakeRemote{
+		execResponses: []string{
+			"",          // setup repo
+			"PID: 4242", // start ralph
+		},
+	}
+	flyClient := &fakeFly{listMachines: []fly.Machine{}}
+	now := time.Date(2026, time.February, 8, 12, 0, 0, 0, time.UTC)
+
+	service, err := NewService(Config{
+		Remote:    remote,
+		Fly:       flyClient,
+		App:       "bb-app",
+		Workspace: "/home/sprite/workspace",
+		Now:       func() time.Time { return now },
 	})
-	if err == nil {
-		t.Fatal("expected invalid repo error")
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	result, err := service.Run(context.Background(), Request{
+		Sprite:  "fern",
+		Prompt:  "Implement webhook retries",
+		Repo:    "misty-step/heartbeat",
+		Ralph:   true,
+		Execute: true,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if !result.Executed {
+		t.Fatalf("Executed = %v, want true", result.Executed)
+	}
+	if !result.Provisioned {
+		t.Fatalf("Provisioned = %v, want true", result.Provisioned)
+	}
+	if result.State != StateRunning {
+		t.Fatalf("state = %q, want %q", result.State, StateRunning)
+	}
+	if result.AgentPID != 4242 {
+		t.Fatalf("AgentPID = %d, want 4242", result.AgentPID)
+	}
+	if len(flyClient.createReqs) != 1 {
+		t.Fatalf("create calls = %d, want 1", len(flyClient.createReqs))
+	}
+	if flyClient.createReqs[0].Name != "fern" {
+		t.Fatalf("create name = %q, want fern", flyClient.createReqs[0].Name)
+	}
+	if len(remote.uploads) != 2 {
+		t.Fatalf("upload calls = %d, want 2", len(remote.uploads))
+	}
+	if remote.uploads[0].path != "/home/sprite/workspace/PROMPT.md" {
+		t.Fatalf("prompt path = %q, want PROMPT.md", remote.uploads[0].path)
+	}
+	if !strings.Contains(remote.uploads[0].body, "Implement webhook retries") {
+		t.Fatalf("prompt upload missing task text: %q", remote.uploads[0].body)
+	}
+	if !strings.Contains(remote.execCalls[0].command, "gh repo clone") {
+		t.Fatalf("expected repo setup command, got %q", remote.execCalls[0].command)
+	}
+	if !strings.Contains(remote.execCalls[1].command, "sprite-agent") {
+		t.Fatalf("expected ralph start command, got %q", remote.execCalls[1].command)
 	}
 }
 
-func TestRunIssueTaskInvalidPID(t *testing.T) {
-	fake := &fakeExecutor{
-		outputs: []string{"", "not-a-pid"},
+func TestRunExecuteOneShotCompletes(t *testing.T) {
+	remote := &fakeRemote{
+		execResponses: []string{
+			"done",
+		},
 	}
-	svc := NewService(fake)
-	_, err := svc.RunIssueTask(context.Background(), DispatchRequest{
-		Sprite:      "bramble",
-		Repo:        "misty-step/heartbeat",
-		IssueNumber: 7,
+	flyClient := &fakeFly{
+		listMachines: []fly.Machine{{Name: "willow", ID: "m1"}},
+	}
+
+	service, err := NewService(Config{
+		Remote:    remote,
+		Fly:       flyClient,
+		App:       "bb-app",
+		Workspace: "/home/sprite/workspace",
 	})
-	if err == nil {
-		t.Fatal("expected pid parse error")
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	result, err := service.Run(context.Background(), Request{
+		Sprite:  "willow",
+		Prompt:  "Generate release notes",
+		Execute: true,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if result.State != StateCompleted {
+		t.Fatalf("state = %q, want %q", result.State, StateCompleted)
+	}
+	if len(flyClient.createReqs) != 0 {
+		t.Fatalf("unexpected create calls: %d", len(flyClient.createReqs))
+	}
+	if len(remote.uploads) != 2 {
+		t.Fatalf("upload calls = %d, want 2", len(remote.uploads))
+	}
+	if remote.uploads[0].path != "/home/sprite/workspace/.dispatch-prompt.md" {
+		t.Fatalf("oneshot prompt path = %q", remote.uploads[0].path)
+	}
+	if len(remote.execCalls) != 1 {
+		t.Fatalf("exec calls = %d, want 1", len(remote.execCalls))
+	}
+	if !strings.Contains(remote.execCalls[0].command, "claude -p") {
+		t.Fatalf("expected claude command, got %q", remote.execCalls[0].command)
+	}
+}
+
+func TestRunExecuteErrorsPreserveFailedState(t *testing.T) {
+	now := time.Date(2026, time.February, 8, 12, 0, 0, 0, time.UTC)
+
+	cases := []struct {
+		name     string
+		req      Request
+		remote   *fakeRemote
+		fly      *fakeFly
+		wantErr  string
+	}{
+		{
+			name: "provision failure returns failed state",
+			req: Request{
+				Sprite:  "fern",
+				Prompt:  "Fix tests",
+				Execute: true,
+			},
+			remote:  &fakeRemote{},
+			fly:     &fakeFly{createErr: errors.New("provision failed")},
+			wantErr: "dispatch: provision sprite",
+		},
+		{
+			name: "setup repo failure returns failed state",
+			req: Request{
+				Sprite:  "fern",
+				Prompt:  "Fix tests",
+				Repo:    "misty-step/heartbeat",
+				Execute: true,
+			},
+			remote:  &fakeRemote{execErrs: []error{errors.New("setup failed")}},
+			fly:     &fakeFly{listMachines: []fly.Machine{{Name: "fern", ID: "m1"}}},
+			wantErr: "dispatch: setup repo",
+		},
+		{
+			name: "upload prompt failure returns failed state",
+			req: Request{
+				Sprite:  "fern",
+				Prompt:  "Fix tests",
+				Execute: true,
+			},
+			remote:  &fakeRemote{uploadErrs: []error{errors.New("prompt upload failed")}},
+			fly:     &fakeFly{listMachines: []fly.Machine{{Name: "fern", ID: "m1"}}},
+			wantErr: "dispatch: upload prompt",
+		},
+		{
+			name: "upload status failure returns failed state",
+			req: Request{
+				Sprite:  "fern",
+				Prompt:  "Fix tests",
+				Execute: true,
+			},
+			remote:  &fakeRemote{uploadErrs: []error{nil, errors.New("status upload failed")}},
+			fly:     &fakeFly{listMachines: []fly.Machine{{Name: "fern", ID: "m1"}}},
+			wantErr: "dispatch: upload status",
+		},
+		{
+			name: "start agent failure returns failed state",
+			req: Request{
+				Sprite:  "fern",
+				Prompt:  "Fix tests",
+				Execute: true,
+			},
+			remote:  &fakeRemote{execErrs: []error{errors.New("start failed")}},
+			fly:     &fakeFly{listMachines: []fly.Machine{{Name: "fern", ID: "m1"}}},
+			wantErr: "dispatch: start agent",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			service, err := NewService(Config{
+				Remote:    tc.remote,
+				Fly:       tc.fly,
+				App:       "bb-app",
+				Workspace: "/home/sprite/workspace",
+				Now:       func() time.Time { return now },
+			})
+			if err != nil {
+				t.Fatalf("NewService() error = %v", err)
+			}
+
+			result, runErr := service.Run(context.Background(), tc.req)
+			if runErr == nil {
+				t.Fatalf("Run() error = nil, want non-nil")
+			}
+			if !strings.Contains(runErr.Error(), tc.wantErr) {
+				t.Fatalf("Run() error = %v, want contains %q", runErr, tc.wantErr)
+			}
+			if result.State != StateFailed {
+				t.Fatalf("state = %q, want %q", result.State, StateFailed)
+			}
+		})
+	}
+}
+
+func TestRunValidation(t *testing.T) {
+	service, err := NewService(Config{
+		Remote: &fakeRemote{},
+		Fly:    &fakeFly{},
+		App:    "bb-app",
+	})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	cases := []struct {
+		name string
+		req  Request
+	}{
+		{
+			name: "missing prompt",
+			req: Request{
+				Sprite: "bramble",
+			},
+		},
+		{
+			name: "invalid sprite",
+			req: Request{
+				Sprite: "Bad Sprite",
+				Prompt: "Fix tests",
+			},
+		},
+		{
+			name: "invalid repo",
+			req: Request{
+				Sprite: "bramble",
+				Prompt: "Fix tests",
+				Repo:   "https://github.com/",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, runErr := service.Run(context.Background(), tc.req)
+			if runErr == nil {
+				t.Fatalf("expected error for case %q", tc.name)
+			}
+		})
 	}
 }
