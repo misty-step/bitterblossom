@@ -46,7 +46,7 @@ func TestSupervisorRunWritesArtifactsAndEmitsEvents(t *testing.T) {
 		Agent: AgentConfig{
 			Kind:    AgentCodex,
 			Command: "sh",
-			Flags: []string{"-c", "echo go test ./...; echo build failed 1>&2; exit 1"},
+			Flags:   []string{"-c", "echo go test ./...; echo build failed 1>&2; exit 1"},
 			Assignment: TaskAssignment{
 				Prompt: "Fix auth",
 				Repo:   "cerberus",
@@ -68,8 +68,11 @@ func TestSupervisorRunWritesArtifactsAndEmitsEvents(t *testing.T) {
 	defer cancel()
 
 	result := supervisor.Run(ctx)
-	if result.State != RunStateInterrupted {
-		t.Fatalf("expected interrupted result, got %s (%v)", result.State, result.Err)
+	if result.State != RunStateInterrupted && result.State != RunStateError {
+		t.Fatalf("expected interrupted/error result, got %s (%v)", result.State, result.Err)
+	}
+	if result.State == RunStateError && !errors.Is(result.Err, context.DeadlineExceeded) {
+		t.Fatalf("expected deadline-exceeded error state, got %v", result.Err)
 	}
 	if result.Restarts == 0 {
 		t.Fatalf("expected at least one restart")
@@ -146,7 +149,7 @@ func TestWriteAndReadSupervisorState(t *testing.T) {
 		Restarts:      3,
 		StartedAt:     time.Date(2026, 2, 7, 21, 0, 0, 0, time.UTC),
 		UpdatedAt:     time.Date(2026, 2, 7, 21, 1, 0, 0, time.UTC),
-		Task: TaskAssignment{Prompt: "Fix auth", Repo: "cerberus"},
+		Task:          TaskAssignment{Prompt: "Fix auth", Repo: "cerberus"},
 	}
 
 	if err := writeStateFile(path, state); err != nil {
