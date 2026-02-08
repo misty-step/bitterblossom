@@ -554,7 +554,7 @@ func buildStartRalphScript(workspace, sprite string, maxIterations int, webhookU
 		"if [ ! -x \"$AGENT_BIN\" ]; then AGENT_BIN=\"$WORKSPACE_DIR/.sprite-agent.sh\"; fi",
 		"if [ ! -x \"$AGENT_BIN\" ]; then echo \"sprite-agent not found\" >&2; exit 1; fi",
 		"cd \"$WORKSPACE_DIR\"",
-		"printf '%s\\n' " + shellQuote("bb-"+time.Now().UTC().Format("20060102-150405")+"-"+sprite) + " > \"$WORKSPACE_DIR/.current-task-id\"",
+		"printf 'bb-%s-%s\\n' \"$(date -u +%Y%m%d-%H%M%S)\" " + shellQuote(sprite) + " > \"$WORKSPACE_DIR/.current-task-id\"",
 	}
 	if strings.TrimSpace(webhookURL) != "" {
 		lines = append(lines,
