@@ -12,6 +12,9 @@ Bitterblossom is how OpenClaw (Kaylee) provisions, manages, experiments with, an
 
 ```
 bitterblossom/
+├── cmd/bb/                # Go CLI control plane
+├── internal/              # Core packages (dispatch, watchdog, agent, lifecycle, fleet)
+├── pkg/                   # Shared libraries (fly, events)
 ├── base/                  # Shared config all sprites inherit
 │   ├── CLAUDE.md          # Base engineering philosophy (prompt)
 │   ├── settings.json      # Claude Code config (env, hooks)
@@ -24,66 +27,64 @@ bitterblossom/
 ├── sprites/               # Individual sprite identity + persona
 ├── observations/          # Learning journal + experiment results
 │   └── archives/          # Exported data from decommissioned sprites
-├── scripts/               # Lifecycle scripts (real implementations)
-│   ├── provision.sh       # Create sprite + upload config
-│   ├── sync.sh            # Push config updates to running sprites
-│   ├── teardown.sh        # Export data + destroy sprite
-│   ├── dispatch.sh        # Send a task to a sprite
-│   └── status.sh          # Fleet overview
+├── scripts/               # Legacy shell scripts (deprecated, see docs/MIGRATION.md)
+├── docs/                  # CLI reference, contracts, migration guide
 └── openclaw/              # Integration docs for Kaylee
 ```
 
 ## How It Works
 
-1. **Provision:** `./scripts/provision.sh bramble` — creates a Fly.io sprite, uploads base config + persona, configures Claude Code
-2. **Dispatch:** `./scripts/dispatch.sh bramble "Implement the auth middleware"` — sends work to a sprite
-3. **Observe:** After tasks complete, log patterns in `observations/OBSERVATIONS.md`
-4. **Iterate:** Edit composition YAML, re-provision, observe again
-5. **Experiment:** Try different compositions, compare observations, evolve
+1. **Provision:** `bb provision bramble` — creates a Fly.io sprite, uploads base config + persona, configures Claude Code
+2. **Dispatch:** `bb dispatch bramble "Implement the auth middleware" --execute` — sends work to a sprite
+3. **Monitor:** `bb watchdog` — check fleet health, auto-recover dead sprites
+4. **Observe:** After tasks complete, log patterns in `observations/OBSERVATIONS.md`
+5. **Iterate:** Edit composition YAML, `bb compose apply --execute`, observe again
+6. **Experiment:** Try different compositions, compare observations, evolve
 
 ## Quick Start
 
 ```bash
 # Required for provision/sync (settings.json is rendered at runtime)
 export ANTHROPIC_AUTH_TOKEN="<moonshot-key>"
+export FLY_APP="<fly-app-name>"
+export FLY_API_TOKEN="<fly-api-token>"
 
 # Recommended for GitHub permission isolation (phase 1 shared bot account)
 export SPRITE_GITHUB_DEFAULT_USER="misty-step-sprites"
 export SPRITE_GITHUB_DEFAULT_EMAIL="misty-step-sprites@users.noreply.github.com"
 export SPRITE_GITHUB_DEFAULT_TOKEN="<github-bot-token>"
 
-# Optional phase 2 override for one sprite (example: bramble)
-# export SPRITE_GITHUB_USER_BRAMBLE="bramble-sprite"
-# export SPRITE_GITHUB_EMAIL_BRAMBLE="bramble-sprite@users.noreply.github.com"
-# export SPRITE_GITHUB_TOKEN_BRAMBLE="<github-token-for-bramble>"
-
 # Fleet status
-./scripts/status.sh
+bb status --format text
+
+# Composition health: desired vs actual
+bb compose status
 
 # Provision all sprites from current composition
-./scripts/provision.sh --all
+bb provision --all
 
 # Provision a single sprite
-./scripts/provision.sh bramble
+bb provision bramble
 
-# Dispatch a task
-./scripts/dispatch.sh bramble "Build the user authentication API"
-./scripts/dispatch.sh thorn --repo misty-step/heartbeat "Write tests for the webhook handler"
+# Dispatch a task (dry-run first, then execute)
+bb dispatch bramble "Build the user authentication API"
+bb dispatch bramble "Build the user authentication API" --execute
 
-# Tail sprite logs (last N or live follow)
-./scripts/tail-logs.sh bramble -n 120
-./scripts/tail-logs.sh bramble --follow
+# Dispatch with repo clone
+bb dispatch thorn --repo misty-step/heartbeat "Write tests for the webhook handler" --execute
 
-# Go control-plane equivalents for issue dispatch and fleet polling
-go run ./cmd/bb run-task bramble heartbeat 42
-go run ./cmd/bb check-fleet --composition compositions/v2.yaml
+# Fleet health check (identifies dead/stale/blocked sprites)
+bb watchdog
+bb watchdog --execute    # auto-redispatch dead sprites
 
 # Sync config updates to running fleet
-./scripts/sync.sh
+bb sync
 
 # Decommission a sprite (exports MEMORY.md first)
-./scripts/teardown.sh bramble
+bb teardown bramble
 ```
+
+See [docs/CLI-REFERENCE.md](docs/CLI-REFERENCE.md) for the complete command reference.
 
 ## Multi-Provider Support (New in v3)
 
@@ -91,12 +92,9 @@ Bitterblossom now supports multiple LLM providers. You can configure different p
 
 ```bash
 # Provision a sprite with Claude via OpenRouter
-./scripts/provision.sh --provider openrouter-claude --model anthropic/claude-opus-4 hemlock
-
-# Or use environment variables for per-sprite configuration
 export BB_PROVIDER_HEMLOCK=openrouter-claude
 export BB_MODEL_HEMLOCK=anthropic/claude-opus-4
-./scripts/provision.sh hemlock
+bb provision hemlock
 ```
 
 **Supported providers:**
@@ -183,16 +181,6 @@ Compositions live in `compositions/`. When patterns suggest a change, create a n
 Secret detection runs on every PR and push to master via [TruffleHog](https://github.com/trufflesecurity/trufflehog). See [docs/SECRETS.md](docs/SECRETS.md) for local usage, leak response runbook, and how sprite auth tokens work.
 
 API keys are never stored in git. `base/settings.json` uses a placeholder rendered at provision/sync time from `$ANTHROPIC_AUTH_TOKEN`.
-
-### Multi-Provider Authentication
-
-For multi-provider support, you can use:
-- `ANTHROPIC_AUTH_TOKEN` — Works for both Moonshot and OpenRouter
-- `BB_OPENROUTER_API_KEY` — Alternative specifically for OpenRouter
-
-Per-sprite provider configuration:
-- `BB_PROVIDER_<SPRITE>` — Provider for a specific sprite (e.g., `BB_PROVIDER_HEMLOCK=openrouter-claude`)
-- `BB_MODEL_<SPRITE>` — Model for a specific sprite (e.g., `BB_MODEL_HEMLOCK=anthropic/claude-opus-4`)
 
 ## CI Pipeline
 

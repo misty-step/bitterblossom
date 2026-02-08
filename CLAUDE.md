@@ -6,7 +6,7 @@ This file provides guidance to Claude Code when working in this repository.
 
 Bitterblossom is a declarative sprite factory. It provisions and manages Fly.io Sprites running Claude Code. This is infrastructure-as-config for AI agent orchestration.
 
-**No build steps, no tests, no dependencies.** Just config, scripts, and documentation.
+Go control plane (`bb` CLI) for fleet lifecycle, dispatch, and monitoring. Config, personas, and compositions are declarative.
 
 ## Key Concepts
 
@@ -19,26 +19,36 @@ Bitterblossom is a declarative sprite factory. It provisions and manages Fly.io 
 ## Architecture
 
 ```
+cmd/bb/            → Go CLI control plane (Cobra)
+internal/          → Core packages (dispatch, watchdog, agent, lifecycle, fleet)
+pkg/               → Shared libraries (fly, events)
 base/              → Shared config pushed to every sprite
 compositions/      → Team hypotheses (YAML)
 sprites/           → Individual persona definitions
 observations/      → Learning journal + experiment archives
-scripts/           → Real lifecycle scripts (provision, sync, teardown, dispatch, status)
+scripts/           → Legacy shell scripts (deprecated, see docs/MIGRATION.md)
 openclaw/          → Integration docs
+docs/              → CLI reference, contracts, migration guide
 ```
 
-## Scripts
+## CLI
 
-All scripts are real implementations using the `sprite` CLI:
+Primary interface is `bb` (Go CLI). See `docs/CLI-REFERENCE.md` for full reference.
 
-| Script | Purpose |
-|--------|---------|
-| `lib.sh` | Shared functions (sourced by other scripts) |
-| `provision.sh` | Create sprite + upload config |
-| `sync.sh` | Push config updates to running sprites |
-| `teardown.sh` | Export data + destroy sprite |
-| `dispatch.sh` | Send a task to a sprite (one-shot or Ralph loop) |
-| `status.sh` | Fleet overview |
+| Command | Purpose |
+|---------|---------|
+| `bb provision` | Create sprite + upload config |
+| `bb sync` | Push config updates to running sprites |
+| `bb teardown` | Export data + destroy sprite |
+| `bb dispatch` | Send a task to a sprite (one-shot or Ralph loop) |
+| `bb status` | Fleet overview or sprite detail |
+| `bb watchdog` | Fleet health checks + auto-recovery |
+| `bb compose` | Composition-driven reconciliation |
+| `bb agent` | On-sprite supervisor (start, stop, status, logs) |
+| `bb watch` | Real-time event stream dashboard |
+| `bb logs` | Historical event log queries |
+
+Build: `go build -o bb ./cmd/bb`
 
 ## Hooks
 
