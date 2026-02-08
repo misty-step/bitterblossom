@@ -125,7 +125,12 @@ func (c AgentConfig) CommandAndArgs() (string, []string, error) {
 
 	args := make([]string, 0, len(c.Flags)+6)
 	if c.Yolo {
-		args = append(args, "--yolo")
+		switch c.Kind {
+		case AgentClaude:
+			args = append(args, "--dangerously-skip-permissions")
+		case AgentCodex, AgentKimi:
+			args = append(args, "--yolo")
+		}
 	}
 	if c.FullAuto {
 		args = append(args, "--full-auto")
