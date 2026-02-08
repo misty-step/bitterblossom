@@ -1,10 +1,11 @@
-run:
-  timeout: 5m
-
+version: "2"
 linters:
-  disable-all: true
+  default: none
   enable:
+    - errcheck
     - govet
     - staticcheck
-    - errcheck
     - unused
+  exclusions:
+    presets:
+      - std-error-handling
