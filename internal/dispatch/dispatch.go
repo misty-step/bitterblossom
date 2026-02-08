@@ -224,7 +224,7 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 			if _, failErr := advanceState(state, EventFailure); failErr == nil {
 				result.State = StateFailed
 			}
-			return Result{}, fmt.Errorf("dispatch: provision sprite %q: %w", prepared.Sprite, err)
+			return result, fmt.Errorf("dispatch: provision sprite %q: %w", prepared.Sprite, err)
 		}
 		result.Provisioned = true
 		if err := transition(EventProvisionSucceeded); err != nil {
@@ -238,14 +238,14 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 		s.logger.Info("dispatch setup repo", "sprite", prepared.Sprite, "repo", prepared.Repo.CloneURL)
 		if _, err := s.remote.Exec(ctx, prepared.Sprite, buildSetupRepoScript(s.workspace, prepared.Repo.CloneURL, prepared.Repo.RepoDir), nil); err != nil {
 			result.State = StateFailed
-			return Result{}, fmt.Errorf("dispatch: setup repo: %w", err)
+			return result, fmt.Errorf("dispatch: setup repo: %w", err)
 		}
 	}
 
 	s.logger.Info("dispatch upload prompt", "sprite", prepared.Sprite, "path", prepared.PromptPath)
 	if err := s.remote.Upload(ctx, prepared.Sprite, prepared.PromptPath, []byte(prepared.Prompt)); err != nil {
 		result.State = StateFailed
-		return Result{}, fmt.Errorf("dispatch: upload prompt: %w", err)
+		return result, fmt.Errorf("dispatch: upload prompt: %w", err)
 	}
 	if err := transition(EventPromptUploaded); err != nil {
 		return Result{}, err
@@ -259,18 +259,18 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 	})
 	if err != nil {
 		result.State = StateFailed
-		return Result{}, fmt.Errorf("dispatch: marshal status: %w", err)
+		return result, fmt.Errorf("dispatch: marshal status: %w", err)
 	}
 	if err := s.remote.Upload(ctx, prepared.Sprite, s.workspace+"/STATUS.json", append(statusBytes, '\n')); err != nil {
 		result.State = StateFailed
-		return Result{}, fmt.Errorf("dispatch: upload status: %w", err)
+		return result, fmt.Errorf("dispatch: upload status: %w", err)
 	}
 
 	s.logger.Info("dispatch start agent", "sprite", prepared.Sprite, "mode", prepared.Mode)
 	output, err := s.remote.Exec(ctx, prepared.Sprite, prepared.StartCommand, nil)
 	if err != nil {
 		result.State = StateFailed
-		return Result{}, fmt.Errorf("dispatch: start agent: %w", err)
+		return result, fmt.Errorf("dispatch: start agent: %w", err)
 	}
 	result.CommandOutput = strings.TrimSpace(output)
 	if pid, ok := parsePID(output); ok {
@@ -504,8 +504,9 @@ func parseRepo(input string) (repoTarget, error) {
 }
 
 func parsePID(output string) (int, bool) {
-	for i := len(strings.Split(output, "\n")) - 1; i >= 0; i-- {
-		line := strings.TrimSpace(strings.Split(output, "\n")[i])
+	lines := strings.Split(output, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
 		if line == "" {
 			continue
 		}

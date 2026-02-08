@@ -27,6 +27,7 @@ type fakeRemote struct {
 	execResponses []string
 	execErrs      []error
 	uploads       []uploadCall
+	uploadErrs    []error
 	uploadErr     error
 }
 
@@ -54,6 +55,10 @@ func (f *fakeRemote) Upload(_ context.Context, sprite, remotePath string, conten
 		path:   remotePath,
 		body:   string(content),
 	})
+	index := len(f.uploads) - 1
+	if index < len(f.uploadErrs) {
+		return f.uploadErrs[index]
+	}
 	return f.uploadErr
 }
 
@@ -250,6 +255,101 @@ func TestRunExecuteOneShotCompletes(t *testing.T) {
 	}
 	if !strings.Contains(remote.execCalls[0].command, "claude -p") {
 		t.Fatalf("expected claude command, got %q", remote.execCalls[0].command)
+	}
+}
+
+func TestRunExecuteErrorsPreserveFailedState(t *testing.T) {
+	now := time.Date(2026, time.February, 8, 12, 0, 0, 0, time.UTC)
+
+	cases := []struct {
+		name     string
+		req      Request
+		remote   *fakeRemote
+		fly      *fakeFly
+		wantErr  string
+	}{
+		{
+			name: "provision failure returns failed state",
+			req: Request{
+				Sprite:  "fern",
+				Prompt:  "Fix tests",
+				Execute: true,
+			},
+			remote:  &fakeRemote{},
+			fly:     &fakeFly{createErr: errors.New("provision failed")},
+			wantErr: "dispatch: provision sprite",
+		},
+		{
+			name: "setup repo failure returns failed state",
+			req: Request{
+				Sprite:  "fern",
+				Prompt:  "Fix tests",
+				Repo:    "misty-step/heartbeat",
+				Execute: true,
+			},
+			remote:  &fakeRemote{execErrs: []error{errors.New("setup failed")}},
+			fly:     &fakeFly{listMachines: []fly.Machine{{Name: "fern", ID: "m1"}}},
+			wantErr: "dispatch: setup repo",
+		},
+		{
+			name: "upload prompt failure returns failed state",
+			req: Request{
+				Sprite:  "fern",
+				Prompt:  "Fix tests",
+				Execute: true,
+			},
+			remote:  &fakeRemote{uploadErrs: []error{errors.New("prompt upload failed")}},
+			fly:     &fakeFly{listMachines: []fly.Machine{{Name: "fern", ID: "m1"}}},
+			wantErr: "dispatch: upload prompt",
+		},
+		{
+			name: "upload status failure returns failed state",
+			req: Request{
+				Sprite:  "fern",
+				Prompt:  "Fix tests",
+				Execute: true,
+			},
+			remote:  &fakeRemote{uploadErrs: []error{nil, errors.New("status upload failed")}},
+			fly:     &fakeFly{listMachines: []fly.Machine{{Name: "fern", ID: "m1"}}},
+			wantErr: "dispatch: upload status",
+		},
+		{
+			name: "start agent failure returns failed state",
+			req: Request{
+				Sprite:  "fern",
+				Prompt:  "Fix tests",
+				Execute: true,
+			},
+			remote:  &fakeRemote{execErrs: []error{errors.New("start failed")}},
+			fly:     &fakeFly{listMachines: []fly.Machine{{Name: "fern", ID: "m1"}}},
+			wantErr: "dispatch: start agent",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			service, err := NewService(Config{
+				Remote:    tc.remote,
+				Fly:       tc.fly,
+				App:       "bb-app",
+				Workspace: "/home/sprite/workspace",
+				Now:       func() time.Time { return now },
+			})
+			if err != nil {
+				t.Fatalf("NewService() error = %v", err)
+			}
+
+			result, runErr := service.Run(context.Background(), tc.req)
+			if runErr == nil {
+				t.Fatalf("Run() error = nil, want non-nil")
+			}
+			if !strings.Contains(runErr.Error(), tc.wantErr) {
+				t.Fatalf("Run() error = %v, want contains %q", runErr, tc.wantErr)
+			}
+			if result.State != StateFailed {
+				t.Fatalf("state = %q, want %q", result.State, StateFailed)
+			}
+		})
 	}
 }
 
