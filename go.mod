@@ -1,6 +1,8 @@
 module github.com/misty-step/bitterblossom
 
-go 1.25.6
+go 1.25
+
+toolchain go1.25.6
 
 require (
 	github.com/spf13/cobra v1.8.1
