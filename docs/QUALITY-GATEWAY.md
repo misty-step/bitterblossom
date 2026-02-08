@@ -48,22 +48,13 @@
      └────────────────┘      └───────────────────┘
 ```
 
-### Why Polling Over Webhooks (For Now)
+### Architecture Evolution
 
-Webhooks require:
-- A publicly accessible endpoint (NAT traversal, tunnels, or a hosted receiver)
-- A running web server (another thing to monitor and maintain)
-- Webhook secret management and verification
-- Retry logic for failed deliveries
+**v1 (historical):** Shell scripts + cron jobs for polling. Simple, worked well for bootstrapping.
 
-Polling requires:
-- A cron job
-- An API call
-- Done.
+**v2 (current):** Go control plane (`bb` CLI) handles fleet lifecycle, dispatch, and health monitoring. Polling scripts are being replaced by `bb watchdog` (fleet health) and `bb watch` (event stream monitoring). See [docs/MIGRATION.md](MIGRATION.md) for the shell→Go mapping.
 
-**Polling is simpler, more robust, and good enough for 15-minute resolution.** We have `gh` CLI, Sentry API, Fly.io CLI — all already authenticated on this machine. A shell script + cron is the Unix answer.
-
-**When to add webhooks:** Only when 15-minute latency is genuinely unacceptable (e.g., production error spike → immediate rollback). Even then, the simplest webhook receiver is a 20-line Fly.io app that converts webhook → OpenClaw wake event. We build that later, if needed.
+**Polling vs webhooks:** Polling remains the pragmatic default for 15-minute resolution. `bb watchdog` replaces the ad-hoc shell health checks with a deterministic state machine. When sub-minute latency matters, a minimal webhook receiver can convert events to `bb` commands.
 
 ---
 
@@ -292,17 +283,17 @@ repo/
 └── tsconfig.json                  # Strict typing (if TS)
 ```
 
-### On Claw's Machine (OpenClaw crons + local tools)
+### On Claw's Machine (OpenClaw + bb CLI)
 ```
 ~/.openclaw/workspace/
 ├── HEARTBEAT.md                   # Periodic check triggers
 └── scripts/                       # Claw-specific operational scripts
 
-Cron jobs:
-├── pr-shepherd        # Every 30 min: check open sprite PRs
-├── sentry-watcher     # Every 15 min: check for error anomalies
-├── deploy-monitor     # Every 30 min: check app health
-└── quality-audit      # Weekly: audit all repos against spec
+Go CLI commands (replacing cron jobs):
+├── bb watchdog          # Fleet health: dead/stale/blocked detection + auto-recovery
+├── bb watch             # Real-time event stream dashboard
+├── bb compose status    # Composition drift detection
+└── bb status            # Fleet overview
 ```
 
 ### On Phaedrus's Machine (Cerberus, manual overrides)
