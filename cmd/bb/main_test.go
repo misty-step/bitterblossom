@@ -85,4 +85,9 @@ func TestExitErrorMethods(t *testing.T) {
 	if got := err.Error(); got != wrapped.Error() {
 		t.Fatalf("unexpected error string: %s", got)
 	}
+
+	var nilErr *exitError
+	if nilErr.Unwrap() != nil {
+		t.Fatalf("nil receiver Unwrap() should return nil")
+	}
 }
