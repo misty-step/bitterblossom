@@ -70,6 +70,22 @@ func TestVersionSubcommandOutput(t *testing.T) {
 	}
 }
 
+func TestRootWiresDispatchAndWatchdog(t *testing.T) {
+	t.Parallel()
+
+	root := newRootCommand()
+	names := make(map[string]struct{}, len(root.Commands()))
+	for _, command := range root.Commands() {
+		names[command.Name()] = struct{}{}
+	}
+	if _, ok := names["dispatch"]; !ok {
+		t.Fatal("dispatch command not wired")
+	}
+	if _, ok := names["watchdog"]; !ok {
+		t.Fatal("watchdog command not wired")
+	}
+}
+
 func TestExitErrorMethods(t *testing.T) {
 	t.Parallel()
 
