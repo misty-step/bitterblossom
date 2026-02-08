@@ -47,6 +47,16 @@ bitterblossom/
 # Required for provision/sync (settings.json is rendered at runtime)
 export ANTHROPIC_AUTH_TOKEN="<moonshot-key>"
 
+# Recommended for GitHub permission isolation (phase 1 shared bot account)
+export SPRITE_GITHUB_DEFAULT_USER="misty-step-sprites"
+export SPRITE_GITHUB_DEFAULT_EMAIL="misty-step-sprites@users.noreply.github.com"
+export SPRITE_GITHUB_DEFAULT_TOKEN="<github-bot-token>"
+
+# Optional phase 2 override for one sprite (example: bramble)
+# export SPRITE_GITHUB_USER_BRAMBLE="bramble-sprite"
+# export SPRITE_GITHUB_EMAIL_BRAMBLE="bramble-sprite@users.noreply.github.com"
+# export SPRITE_GITHUB_TOKEN_BRAMBLE="<github-token-for-bramble>"
+
 # Fleet status
 ./scripts/status.sh
 
@@ -127,6 +137,6 @@ python3 -m pytest -q
 ## Constraints
 
 - PR review is a separate GitHub Action (multi-model council), not done by sprites
-- All sprites share a GitHub identity (commits attributed via Co-Authored-By)
+- Sprite GitHub identity is env-configurable (shared bot by default, per-sprite overrides supported)
 - Human approval required for composition changes
 - Fae/fairy naming convention throughout

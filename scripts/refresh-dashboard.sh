@@ -10,9 +10,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
+source "$SCRIPT_DIR/lib.sh"
+
 OUT_DIR="$ROOT_DIR/dashboard/public"
 SPRITE_CLI="${SPRITE_CLI:-sprite}"
 ORG="${FLY_ORG:-misty-step}"
+GITHUB_ORG_NAME="${GITHUB_ORG:-misty-step}"
 
 mkdir -p "$OUT_DIR"
 
@@ -32,13 +35,26 @@ print(json.dumps(sprites))
 
 # Open PRs across repos
 PRS=""
+PR_AUTHORS=()
+while IFS= read -r _author; do
+  [[ -z "$_author" ]] && continue
+  PR_AUTHORS+=("$_author")
+done < <(resolve_sprite_pr_authors || true)
+if [[ ${#PR_AUTHORS[@]} -eq 0 ]]; then
+  echo "[dashboard] WARN: No PR authors configured; falling back to misty-step-sprites" >&2
+  PR_AUTHORS=("misty-step-sprites")
+fi
+
 for repo in heartbeat bitterblossom conviction scry gitpulse chrondle volume bibliomnomnom cadence overmind linejam sploot; do
-  pr_data=$(gh pr list --repo "misty-step/$repo" --author kaylee-mistystep --json number,title,headRefName,state,statusCheckRollup \
-    --jq ".[] | \"$repo|\(.number)|\(.title)|\(.headRefName)|\(.statusCheckRollup // [] | map(.conclusion // \"PENDING\") | join(\",\"))\"" 2>/dev/null || true)
-  if [[ -n "$pr_data" ]]; then
-    PRS="${PRS}${pr_data}"$'\n'
-  fi
+  for author in "${PR_AUTHORS[@]}"; do
+    pr_data=$(gh pr list --repo "$GITHUB_ORG_NAME/$repo" --author "$author" --json number,title,headRefName,state,statusCheckRollup \
+      --jq ".[] | \"$repo|\(.number)|\(.title)|\(.headRefName)|\(.statusCheckRollup // [] | map(.conclusion // \"PENDING\") | join(\",\"))\"" 2>/dev/null || true)
+    if [[ -n "$pr_data" ]]; then
+      PRS="${PRS}${pr_data}"$'\n'
+    fi
+  done
 done
+PRS=$(printf '%s' "$PRS" | awk -F'|' 'NF && !seen[$1 FS $2]++')
 
 # Sprite task status
 SPRITE_STATUSES=""
@@ -209,17 +225,6 @@ open('$OUT_DIR/index.html', 'w').write(html)
 PR_HTML=""
 while IFS='|' read -r repo num title branch checks; do
   [[ -z "$repo" ]] && continue
-  # Determine sprite from branch prefix
-  sprite=""
-  case "$branch" in
-    thorn/*) sprite="Thorn" ;;
-    bramble/*) sprite="Bramble" ;;
-    willow/*) sprite="Willow" ;;
-    fern/*) sprite="Fern" ;;
-    moss/*) sprite="Moss" ;;
-    claw/*) sprite="Claw" ;;
-    *) sprite="—" ;;
-  esac
   # CI status
   if echo "$checks" | grep -qi "failure"; then
     ci='<span class="badge b-red">✗ Failing</span>'

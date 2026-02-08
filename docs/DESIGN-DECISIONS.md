@@ -25,7 +25,7 @@ But if sprites use Kaylee's GitHub account, they inherit all of Kaylee's permiss
 
 ### Options
 
-#### A. Hook-Based Enforcement (Current Approach)
+#### A. Hook-Based Enforcement (Historical v1 Approach)
 Sprites share Kaylee's `kaylee-mistystep` account but the destructive-command-guard blocks `gh pr merge`, direct pushes to main, etc.
 
 **Pros:** Simple, already works, no extra accounts needed.
@@ -55,7 +55,7 @@ Create a Misty Step GitHub App with precisely scoped permissions.
 
 **Verdict:** Ideal for v3 / production. Overkill for experimentation phase.
 
-### Decision (v1)
+### Decision (v1 historical)
 Use **Option A: Hook-based enforcement**. Sprites share Kaylee's GitHub identity. The destructive-command-guard blocks dangerous operations. This is a trust boundary based on hooks, not GitHub permissions.
 
 We accept the risk that hooks are client-side enforcement. Our sprites aren't adversaries — we're guarding against Claude Code doing something dumb on autopilot.
@@ -64,6 +64,13 @@ We accept the risk that hooks are client-side enforcement. Our sprites aren't ad
 - We have 5+ sprites running simultaneously
 - We want clean audit trails
 - We're running sprites on tasks from external contributors
+
+### Update (2026-02-08)
+Provisioning now supports **Option B-compatible credentials** via environment variables:
+- Shared bot defaults: `SPRITE_GITHUB_DEFAULT_USER`, `SPRITE_GITHUB_DEFAULT_EMAIL`, `SPRITE_GITHUB_DEFAULT_TOKEN`
+- Per-sprite overrides: `SPRITE_GITHUB_USER_<SPRITE>`, `SPRITE_GITHUB_EMAIL_<SPRITE>`, `SPRITE_GITHUB_TOKEN_<SPRITE>`
+
+This keeps rollout simple (phase 1 shared bot) while enabling phase 2 per-sprite accounts without changing script internals.
 
 ## 2. Self-Modifying Config with Version Control
 
