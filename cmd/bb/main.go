@@ -59,22 +59,30 @@ func newRootCommand() *cobra.Command {
 
 func newRootCmd(stdout, stderr io.Writer) *cobra.Command {
 	return newRootCmdWithFactories(stdout, stderr, rootCommandFactories{
-		composeFactory:  newComposeCmd,
-		watchFactory:    newWatchCmd,
-		logsFactory:     newLogsCmd,
-		agentFactory:    newAgentCommand,
-		dispatchFactory: newDispatchCmd,
-		watchdogFactory: newWatchdogCmd,
+		composeFactory:   newComposeCmd,
+		watchFactory:     newWatchCmd,
+		logsFactory:      newLogsCmd,
+		agentFactory:     newAgentCommand,
+		dispatchFactory:  newDispatchCmd,
+		watchdogFactory:  newWatchdogCmd,
+		provisionFactory: newProvisionCmd,
+		syncFactory:      newSyncCmd,
+		statusFactory:    newStatusCmd,
+		teardownFactory:  newTeardownCmd,
 	})
 }
 
 type rootCommandFactories struct {
-	composeFactory  func() *cobra.Command
-	watchFactory    func(io.Writer, io.Writer) *cobra.Command
-	logsFactory     func(io.Writer, io.Writer) *cobra.Command
-	agentFactory    func() *cobra.Command
-	dispatchFactory func() *cobra.Command
-	watchdogFactory func() *cobra.Command
+	composeFactory   func() *cobra.Command
+	watchFactory     func(io.Writer, io.Writer) *cobra.Command
+	logsFactory      func(io.Writer, io.Writer) *cobra.Command
+	agentFactory     func() *cobra.Command
+	dispatchFactory  func() *cobra.Command
+	watchdogFactory  func() *cobra.Command
+	provisionFactory func() *cobra.Command
+	syncFactory      func() *cobra.Command
+	statusFactory    func() *cobra.Command
+	teardownFactory  func() *cobra.Command
 }
 
 func newRootCmdWithFactories(stdout, stderr io.Writer, factories rootCommandFactories) *cobra.Command {
@@ -109,6 +117,18 @@ func newRootCmdWithFactories(stdout, stderr io.Writer, factories rootCommandFact
 	}
 	if factories.watchdogFactory != nil {
 		root.AddCommand(factories.watchdogFactory())
+	}
+	if factories.provisionFactory != nil {
+		root.AddCommand(factories.provisionFactory())
+	}
+	if factories.syncFactory != nil {
+		root.AddCommand(factories.syncFactory())
+	}
+	if factories.statusFactory != nil {
+		root.AddCommand(factories.statusFactory())
+	}
+	if factories.teardownFactory != nil {
+		root.AddCommand(factories.teardownFactory())
 	}
 
 	return root
