@@ -64,8 +64,10 @@ func TestSupervisorRunWritesArtifactsAndEmitsEvents(t *testing.T) {
 	}
 
 	supervisor := NewSupervisor(cfg)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 	defer cancel()
+	cancelTimer := time.AfterFunc(450*time.Millisecond, cancel)
+	defer cancelTimer.Stop()
 
 	result := supervisor.Run(ctx)
 	if result.State != RunStateInterrupted && result.State != RunStateError {
