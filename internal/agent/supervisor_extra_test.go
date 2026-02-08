@@ -22,8 +22,7 @@ func TestWithProcessLauncherOptionAndStopAgentNil(t *testing.T) {
 	}
 
 	// Bridge type check via real signature.
-	var wrapped func(string, []string, string, []string) (*exec.Cmd, io.ReadCloser, io.ReadCloser, error)
-	wrapped = launcher
+	wrapped := launcher
 
 	supervisor := NewSupervisor(SupervisorConfig{
 		Agent: AgentConfig{Kind: AgentCodex, Assignment: TaskAssignment{Prompt: "p", Repo: "r"}},

@@ -55,17 +55,17 @@ func (r RunResult) ExitCode() int {
 
 // SupervisorConfig controls daemon behavior on the sprite VM.
 type SupervisorConfig struct {
-	SpriteName         string
-	RepoDir            string
-	Agent              AgentConfig
-	Runtime            RuntimePaths
-	HeartbeatInterval  time.Duration
-	ProgressInterval   time.Duration
-	StallTimeout       time.Duration
-	RestartDelay       time.Duration
+	SpriteName          string
+	RepoDir             string
+	Agent               AgentConfig
+	Runtime             RuntimePaths
+	HeartbeatInterval   time.Duration
+	ProgressInterval    time.Duration
+	StallTimeout        time.Duration
+	RestartDelay        time.Duration
 	ShutdownGracePeriod time.Duration
-	Stdout             io.Writer
-	Stderr             io.Writer
+	Stdout              io.Writer
+	Stderr              io.Writer
 }
 
 // SupervisorState is the persisted supervisor status read by bb agent status.
@@ -222,7 +222,7 @@ func applyDefaults(cfg SupervisorConfig) SupervisorConfig {
 }
 
 // Run starts the supervisor daemon loop and blocks until termination.
-func (s *Supervisor) Run(ctx context.Context) RunResult {
+func (s *Supervisor) Run(ctx context.Context) (result RunResult) {
 	if err := s.cfg.Agent.Validate(); err != nil {
 		return RunResult{State: RunStateError, Err: err}
 	}
@@ -236,19 +236,31 @@ func (s *Supervisor) Run(ctx context.Context) RunResult {
 		return RunResult{State: RunStateError, Err: err}
 	}
 	s.emitter = emitter
-	defer s.emitter.Close()
+	defer func() {
+		if err := s.emitter.Close(); err != nil {
+			result = appendRunError(result, fmt.Errorf("close event emitter: %w", err))
+		}
+	}()
 
 	output, err := newOutputLogger(s.cfg.Stderr, s.cfg.Runtime.OutputLog)
 	if err != nil {
 		return RunResult{State: RunStateError, Err: err}
 	}
 	s.output = output
-	defer s.output.Close()
+	defer func() {
+		if err := s.output.Close(); err != nil {
+			result = appendRunError(result, fmt.Errorf("close output logger: %w", err))
+		}
+	}()
 
 	if err := writePIDFile(s.cfg.Runtime.PIDFile, os.Getpid()); err != nil {
 		return RunResult{State: RunStateError, Err: err}
 	}
-	defer os.Remove(s.cfg.Runtime.PIDFile)
+	defer func() {
+		if err := os.Remove(s.cfg.Runtime.PIDFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+			result = appendRunError(result, fmt.Errorf("remove pid file %s: %w", s.cfg.Runtime.PIDFile, err))
+		}
+	}()
 
 	if err := s.persistState(); err != nil {
 		return RunResult{State: RunStateError, Err: err}
@@ -469,6 +481,21 @@ func (s *Supervisor) Run(ctx context.Context) RunResult {
 	}
 }
 
+func appendRunError(result RunResult, err error) RunResult {
+	if err == nil {
+		return result
+	}
+	if result.Err == nil {
+		result.Err = err
+	} else {
+		result.Err = errors.Join(result.Err, err)
+	}
+	if result.State == "" {
+		result.State = RunStateError
+	}
+	return result
+}
+
 func (s *Supervisor) stopAgent(cmd *exec.Cmd, waitCh <-chan error) error {
 	if cmd == nil || cmd.Process == nil {
 		return nil
@@ -493,7 +520,19 @@ func (s *Supervisor) stopAgent(cmd *exec.Cmd, waitCh <-chan error) error {
 
 func (s *Supervisor) consumeOutput(ctx context.Context, reader io.ReadCloser, stderr bool, progress *ProgressMonitor, wg *sync.WaitGroup) {
 	defer wg.Done()
-	defer reader.Close()
+	defer func() {
+		if err := reader.Close(); err != nil {
+			stream := "stdout"
+			if stderr {
+				stream = "stderr"
+			}
+			_ = s.emitter.Emit(&events.ErrorEvent{
+				Meta:    events.Meta{TS: s.now().UTC(), SpriteName: s.cfg.SpriteName, EventKind: events.KindError},
+				Code:    "output_close_failed",
+				Message: fmt.Sprintf("close %s reader: %v", stream, err),
+			})
+		}
+	}()
 
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 64*1024), 2*1024*1024)
@@ -697,7 +736,9 @@ func newJSONLEmitter(stdout io.Writer, path string) (*jsonlEmitter, error) {
 	multi := io.MultiWriter(stdout, file)
 	emitter, err := events.NewEmitter(multi)
 	if err != nil {
-		file.Close()
+		if closeErr := file.Close(); closeErr != nil {
+			return nil, errors.Join(err, fmt.Errorf("close event log: %w", closeErr))
+		}
 		return nil, err
 	}
 	return &jsonlEmitter{emitter: emitter, file: file}, nil

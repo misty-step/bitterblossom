@@ -541,12 +541,16 @@ func parseEnvAssignments(raw string) map[string]string {
 	return result
 }
 
-func readTailLines(path string, lineCount int) ([]string, error) {
+func readTailLines(path string, lineCount int) (lines []string, retErr error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			retErr = errors.Join(retErr, closeErr)
+		}
+	}()
 
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 64*1024), 2*1024*1024)
@@ -567,12 +571,16 @@ func readTailLines(path string, lineCount int) ([]string, error) {
 	return buffer, nil
 }
 
-func followLog(ctx context.Context, path string, out io.Writer) error {
+func followLog(ctx context.Context, path string, out io.Writer) (retErr error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			retErr = errors.Join(retErr, closeErr)
+		}
+	}()
 
 	if _, err := file.Seek(0, io.SeekEnd); err != nil {
 		return err

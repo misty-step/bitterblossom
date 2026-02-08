@@ -176,7 +176,11 @@ func appendEvent(path string, event Event) error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
 	if _, err := file.Write(payload); err != nil {
 		return err
 	}
