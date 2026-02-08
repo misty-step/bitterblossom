@@ -70,6 +70,10 @@ export SPRITE_GITHUB_DEFAULT_TOKEN="<github-bot-token>"
 ./scripts/dispatch.sh bramble "Build the user authentication API"
 ./scripts/dispatch.sh thorn --repo misty-step/heartbeat "Write tests for the webhook handler"
 
+# Tail sprite logs (last N or live follow)
+./scripts/tail-logs.sh bramble -n 120
+./scripts/tail-logs.sh bramble --follow
+
 # Go control-plane equivalents for issue dispatch and fleet polling
 go run ./cmd/bb run-task bramble heartbeat 42
 go run ./cmd/bb check-fleet --composition compositions/v2.yaml

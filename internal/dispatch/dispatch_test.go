@@ -69,6 +69,12 @@ func TestRunIssueTask(t *testing.T) {
 	if !strings.Contains(fake.calls[1].command, "git clone 'https://github.com/misty-step/heartbeat.git' 'heartbeat'") {
 		t.Fatalf("launch command missing clone line: %q", fake.calls[1].command)
 	}
+	if !strings.Contains(fake.calls[1].command, "script -qefc") {
+		t.Fatalf("launch command missing PTY log path: %q", fake.calls[1].command)
+	}
+	if !strings.Contains(fake.calls[1].command, "claude -p --permission-mode bypassPermissions < '/home/sprite/workspace/TASK.md'") {
+		t.Fatalf("launch command missing fallback claude invocation: %q", fake.calls[1].command)
+	}
 
 	if result.Sprite != "bramble" {
 		t.Fatalf("unexpected sprite: %q", result.Sprite)

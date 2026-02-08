@@ -177,6 +177,10 @@ gh issue view %d --repo %s
 }
 
 func buildLaunchScript(repoSlug, repoName string, issue int, logFile string) string {
+	taskFile := workspace + "/TASK.md"
+	logPath := workspace + "/" + logFile
+	ptyCommand := shellQuote("claude -p --permission-mode bypassPermissions < " + taskFile)
+
 	return strings.Join([]string{
 		"set -euo pipefail",
 		"cd " + shellQuote(workspace),
@@ -187,7 +191,11 @@ func buildLaunchScript(repoSlug, repoName string, issue int, logFile string) str
 		"  git clone " + shellQuote("https://github.com/"+repoSlug+".git") + " " + shellQuote(repoName) + " >/dev/null 2>&1 || true",
 		"  cd " + shellQuote(repoName),
 		"fi",
-		"cat " + shellQuote(workspace+"/TASK.md") + " | claude -p --permission-mode bypassPermissions > " + shellQuote(workspace+"/"+logFile) + " 2>&1 &",
+		"if command -v script >/dev/null 2>&1 && script -qefc \"true\" /dev/null >/dev/null 2>&1; then",
+		"  script -qefc " + ptyCommand + " /dev/null >> " + shellQuote(logPath) + " 2>&1 &",
+		"else",
+		"  claude -p --permission-mode bypassPermissions < " + shellQuote(taskFile) + " >> " + shellQuote(logPath) + " 2>&1 &",
+		"fi",
 		"AGENT_PID=$!",
 		"echo \"$AGENT_PID\" > " + shellQuote(workspace+"/AGENT_PID"),
 		"printf '{\"repo\":\"%s\",\"issue\":%d,\"started\":\"%s\"}\\n' " + shellQuote(repoSlug) + " " + strconv.Itoa(issue) + " \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" > " + shellQuote(workspace+"/STATUS.json"),

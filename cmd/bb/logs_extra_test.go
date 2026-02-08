@@ -13,9 +13,21 @@ func TestWriteLogEventVariants(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 2, 7, 20, 0, 0, 0, time.UTC)
+	success := true
 	cases := []events.Event{
 		events.DispatchEvent{Meta: events.Meta{TS: now, SpriteName: "bramble", EventKind: events.KindDispatch}, Task: "task"},
 		&events.DispatchEvent{Meta: events.Meta{TS: now, SpriteName: "bramble", EventKind: events.KindDispatch}, Task: "task"},
+		events.ProgressEvent{
+			Meta:     events.Meta{TS: now, SpriteName: "bramble", EventKind: events.KindProgress},
+			Activity: "tool_call",
+			Detail:   "exec_command",
+			Success:  &success,
+		},
+		&events.ProgressEvent{
+			Meta:     events.Meta{TS: now, SpriteName: "bramble", EventKind: events.KindProgress},
+			Activity: "command_run",
+			Detail:   "git status",
+		},
 		events.BlockedEvent{Meta: events.Meta{TS: now, SpriteName: "bramble", EventKind: events.KindBlocked}, Reason: "blocked"},
 		&events.BlockedEvent{Meta: events.Meta{TS: now, SpriteName: "bramble", EventKind: events.KindBlocked}, Reason: "blocked"},
 		events.ErrorEvent{Meta: events.Meta{TS: now, SpriteName: "bramble", EventKind: events.KindError}, Message: "boom"},
@@ -29,7 +41,7 @@ func TestWriteLogEventVariants(t *testing.T) {
 		}
 	}
 	text := out.String()
-	for _, needle := range []string{"task=task", "reason=blocked", "message=boom"} {
+	for _, needle := range []string{"task=task", "activity=tool_call", "detail=exec_command", "reason=blocked", "message=boom"} {
 		if !strings.Contains(text, needle) {
 			t.Fatalf("missing %q in output %q", needle, text)
 		}
