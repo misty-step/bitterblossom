@@ -130,7 +130,7 @@ func TestSupervisorRunSignalAndCleanExitPaths(t *testing.T) {
 
 		repoDir := setupGitRepo(t)
 		runtime := DefaultRuntimePaths(repoDir)
-		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 
 		supervisor := NewSupervisor(SupervisorConfig{

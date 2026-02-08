@@ -412,10 +412,7 @@ func (s *Supervisor) Run(ctx context.Context) (result RunResult) {
 					state.Status = "stopped"
 					state.AgentPID = 0
 				})
-				if errors.Is(runCtx.Err(), context.Canceled) {
-					return RunResult{State: RunStateInterrupted, Restarts: restarts, Err: runCtx.Err()}
-				}
-				return RunResult{State: RunStateError, Restarts: restarts, Err: runCtx.Err()}
+				return RunResult{State: RunStateInterrupted, Restarts: restarts, Err: runCtx.Err()}
 
 			case stalled := <-progress.Signals():
 				if stalled.Type == ProgressSignalStalled {
