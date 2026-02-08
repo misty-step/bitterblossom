@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/misty-step/bitterblossom/internal/agent"
+	"github.com/misty-step/bitterblossom/internal/contracts"
 	"github.com/spf13/cobra"
 )
 
@@ -112,13 +113,23 @@ func TestAgentStatusHumanAndJSON(t *testing.T) {
 			t.Fatalf("status json command: %v", err)
 		}
 		var payload struct {
-			State   agent.SupervisorState `json:"state"`
-			Running bool                  `json:"running"`
+			Version string `json:"version"`
+			Command string `json:"command"`
+			Data    struct {
+				State   agent.SupervisorState `json:"state"`
+				Running bool                  `json:"running"`
+			} `json:"data"`
 		}
 		if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
 			t.Fatalf("unmarshal json output: %v", err)
 		}
-		if payload.State.Sprite != "bramble" {
+		if payload.Version != contracts.SchemaVersion {
+			t.Fatalf("version = %q, want %q", payload.Version, contracts.SchemaVersion)
+		}
+		if payload.Command != "agent.status" {
+			t.Fatalf("command = %q, want agent.status", payload.Command)
+		}
+		if payload.Data.State.Sprite != "bramble" {
 			t.Fatalf("unexpected sprite in payload: %+v", payload)
 		}
 	})
