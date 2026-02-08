@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -127,11 +128,11 @@ func Provision(ctx context.Context, cli sprite.SpriteCLI, cfg Config, opts Provi
 
 	bootstrapScript := strings.TrimSpace(opts.BootstrapScript)
 	if bootstrapScript == "" {
-		bootstrapScript = path.Join(cfg.RootDir, "scripts", "sprite-bootstrap.sh")
+		bootstrapScript = filepath.Join(cfg.RootDir, "scripts", "sprite-bootstrap.sh")
 	}
 	agentScript := strings.TrimSpace(opts.AgentScript)
 	if agentScript == "" {
-		agentScript = path.Join(cfg.RootDir, "scripts", "sprite-agent.sh")
+		agentScript = filepath.Join(cfg.RootDir, "scripts", "sprite-agent.sh")
 	}
 	if _, err := os.Stat(bootstrapScript); err != nil {
 		return ProvisionResult{}, fmt.Errorf("missing bootstrap script %q: %w", bootstrapScript, err)

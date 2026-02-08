@@ -95,7 +95,7 @@ func newTeardownCmdWithDeps(deps teardownDeps) *cobra.Command {
 			result, err := deps.teardown(runCtx, cli, cfg, lifecycle.TeardownOpts{
 				Name:       name,
 				ArchiveDir: archiveDir,
-				Force:      true,
+				Force:      opts.Force,
 			})
 			if err != nil {
 				return err

@@ -46,7 +46,10 @@ func Sync(ctx context.Context, cli sprite.SpriteCLI, cfg Config, opts SyncOpts) 
 
 	definition := spriteDefinitionPath(cfg, name)
 	if _, err := os.Stat(definition); err != nil {
-		return nil
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat persona definition %q: %w", definition, err)
 	}
 	return cli.UploadFile(ctx, name, cfg.Org, definition, path.Join(cfg.Workspace, "PERSONA.md"))
 }

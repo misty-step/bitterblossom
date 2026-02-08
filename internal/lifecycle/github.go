@@ -3,10 +3,21 @@ package lifecycle
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 )
 
 const defaultSpriteGitHubUser = "misty-step-sprites"
+
+// ghAuthToken returns a token from `gh auth token`, or empty string on failure.
+// Package-level var for test isolation.
+var ghAuthToken = func() string {
+	out, err := exec.Command("gh", "auth", "token").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
 
 // GitHubAuth is the resolved git identity + token for one sprite.
 type GitHubAuth struct {
@@ -31,10 +42,8 @@ func ResolveGitHubAuth(spriteName string, getenv func(string) string) (GitHubAut
 	tokenVar := "SPRITE_GITHUB_TOKEN_" + key
 
 	user := strings.TrimSpace(getenv(userVar))
-	userFromDefault := false
 	if user == "" {
 		user = strings.TrimSpace(getenv("SPRITE_GITHUB_DEFAULT_USER"))
-		userFromDefault = true
 	}
 	if user == "" {
 		user = defaultSpriteGitHubUser
@@ -42,12 +51,10 @@ func ResolveGitHubAuth(spriteName string, getenv func(string) string) (GitHubAut
 
 	email := strings.TrimSpace(getenv(emailVar))
 	if email == "" {
-		if userFromDefault {
-			email = strings.TrimSpace(getenv("SPRITE_GITHUB_DEFAULT_EMAIL"))
-		}
-		if email == "" && user != "" {
-			email = user + "@users.noreply.github.com"
-		}
+		email = strings.TrimSpace(getenv("SPRITE_GITHUB_DEFAULT_EMAIL"))
+	}
+	if email == "" && user != "" {
+		email = user + "@users.noreply.github.com"
 	}
 
 	token := strings.TrimSpace(getenv(tokenVar))
@@ -56,6 +63,9 @@ func ResolveGitHubAuth(spriteName string, getenv func(string) string) (GitHubAut
 	}
 	if token == "" {
 		token = strings.TrimSpace(getenv("GITHUB_TOKEN"))
+	}
+	if token == "" {
+		token = ghAuthToken()
 	}
 
 	if user == "" {

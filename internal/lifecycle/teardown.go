@@ -52,10 +52,11 @@ func Teardown(ctx context.Context, cli sprite.SpriteCLI, cfg Config, opts Teardo
 
 	timestamp := time.Now().UTC().Format("20060102T150405Z")
 	archivePath := filepath.Join(archiveDir, name+"-"+timestamp)
-	if err := os.MkdirAll(archivePath, 0o755); err != nil {
+	if err := os.MkdirAll(archivePath, 0o700); err != nil {
 		return TeardownResult{}, fmt.Errorf("create archive path %q: %w", archivePath, err)
 	}
 
+	// Exports are non-fatal: sprite may not have these files yet (e.g. fresh provision).
 	_ = exportRemoteFile(ctx, cli, name, path.Join(cfg.Workspace, "MEMORY.md"), filepath.Join(archivePath, "MEMORY.md"))
 	_ = exportRemoteFile(ctx, cli, name, path.Join(cfg.Workspace, "CLAUDE.md"), filepath.Join(archivePath, "CLAUDE.md"))
 	_ = exportSettings(ctx, cli, name, path.Join(cfg.RemoteHome, ".claude", "settings.json"), filepath.Join(archivePath, "settings.json"))
@@ -78,7 +79,7 @@ func exportRemoteFile(ctx context.Context, cli sprite.SpriteCLI, spriteName, rem
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(localPath, []byte(content), 0o644)
+	return os.WriteFile(localPath, []byte(content), 0o600)
 }
 
 func exportSettings(ctx context.Context, cli sprite.SpriteCLI, spriteName, remotePath, localPath string) error {
@@ -105,5 +106,5 @@ func exportSettings(ctx context.Context, cli sprite.SpriteCLI, spriteName, remot
 		return err
 	}
 	encoded = append(encoded, '\n')
-	return os.WriteFile(localPath, encoded, 0o644)
+	return os.WriteFile(localPath, encoded, 0o600)
 }

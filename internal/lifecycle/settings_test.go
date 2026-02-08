@@ -32,7 +32,10 @@ func TestRenderSettingsInjectsToken(t *testing.T) {
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		t.Fatalf("json.Unmarshal() error = %v", err)
 	}
-	env := payload["env"].(map[string]any)
+	env, ok := payload["env"].(map[string]any)
+	if !ok {
+		t.Fatal("env is not a map")
+	}
 	if env["ANTHROPIC_AUTH_TOKEN"] != "test-token" {
 		t.Fatalf("token = %v, want test-token", env["ANTHROPIC_AUTH_TOKEN"])
 	}

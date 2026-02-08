@@ -59,7 +59,9 @@ func TestResolveGitHubAuthGitHubTokenFallback(t *testing.T) {
 }
 
 func TestResolveGitHubAuthMissingCredentials(t *testing.T) {
-	t.Parallel()
+	orig := ghAuthToken
+	ghAuthToken = func() string { return "" }
+	t.Cleanup(func() { ghAuthToken = orig })
 
 	_, err := ResolveGitHubAuth("moss", envLookup(map[string]string{}))
 	if err == nil {
@@ -67,6 +69,24 @@ func TestResolveGitHubAuthMissingCredentials(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "GitHub token missing") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestResolveGitHubAuthGhCLIFallback(t *testing.T) {
+	orig := ghAuthToken
+	ghAuthToken = func() string { return "gh-cli-token" }
+	t.Cleanup(func() { ghAuthToken = orig })
+
+	env := map[string]string{
+		"SPRITE_GITHUB_DEFAULT_USER": "default-user",
+	}
+
+	auth, err := ResolveGitHubAuth("vine", envLookup(env))
+	if err != nil {
+		t.Fatalf("ResolveGitHubAuth() error = %v", err)
+	}
+	if auth.Token != "gh-cli-token" {
+		t.Fatalf("token = %q, want gh-cli-token", auth.Token)
 	}
 }
 

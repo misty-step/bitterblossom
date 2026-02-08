@@ -66,7 +66,16 @@ func withOrgArgs(base []string, org string) []string {
 	if org == "" {
 		return base
 	}
+	// Insert -o before "--" so the flag reaches sprite CLI, not the remote shell.
 	out := make([]string, 0, len(base)+2)
+	for i, arg := range base {
+		if arg == "--" {
+			out = append(out, base[:i]...)
+			out = append(out, "-o", org)
+			out = append(out, base[i:]...)
+			return out
+		}
+	}
 	out = append(out, base...)
 	out = append(out, "-o", org)
 	return out
