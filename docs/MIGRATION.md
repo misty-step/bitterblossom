@@ -34,6 +34,23 @@ The Go CLI provides: explicit state machines, dependency-injected tests, validat
 | `./scripts/tail-logs.sh <sprite> -n 120` | `bb agent logs --lines 120` (on-sprite) | Ported |
 | `./scripts/tail-logs.sh <sprite> --follow` | `bb agent logs --follow` (on-sprite) | Ported |
 
+### Compatibility Wrappers
+
+The ported lifecycle entrypoints below are now thin wrappers that delegate to `bb`
+while keeping legacy invocation shapes intact:
+
+- `scripts/provision.sh`
+- `scripts/sync.sh`
+- `scripts/status.sh`
+- `scripts/teardown.sh`
+
+Wrapper `bb` resolution order:
+
+1. `BB_BIN` override
+2. repo-local `./bb`
+3. `bb` from `PATH`
+4. fallback `go run ./cmd/bb`
+
 ### New Commands (no shell equivalent)
 
 | Go Command | Purpose |
