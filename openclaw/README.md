@@ -17,7 +17,7 @@ Considerations when routing:
 ```
 1. Task arrives (GitHub issue, PR, manual request, cron)
 2. Kaylee decides which sprite to route to
-3. Kaylee dispatches: ./scripts/dispatch.sh <sprite> <prompt>
+3. Kaylee dispatches: bb dispatch <sprite> <prompt> --execute
 4. Sprite implements, commits, pushes to branch
 5. GitHub Action runs multi-model PR review (separate system)
 6. Kaylee logs observation in observations/OBSERVATIONS.md
@@ -28,17 +28,22 @@ Considerations when routing:
 
 ```bash
 # Simple task
-./scripts/dispatch.sh bramble "Build the REST API for user profiles"
+bb dispatch bramble "Build the REST API for user profiles" --execute
 
 # Task in a specific repo
-./scripts/dispatch.sh thorn --repo misty-step/heartbeat "Add integration tests for the alerting system"
+bb dispatch thorn --repo misty-step/heartbeat "Add integration tests for the alerting system" --execute
 
 # Complex prompt from file
-./scripts/dispatch.sh moss --file prompts/refactor-auth.md
+bb dispatch moss --file prompts/refactor-auth.md --execute
 
 # Long-running autonomous loop
-./scripts/dispatch.sh fern --ralph "Investigate flaky CI failures and ship a fix"
+bb dispatch fern --ralph "Investigate flaky CI failures and ship a fix" --execute
+
+# JSON output for programmatic consumption
+bb dispatch bramble "Fix the auth bug" --execute --json | jq '.data.state'
 ```
+
+All dispatch commands are dry-run by default. Omit `--execute` to preview the dispatch plan without side effects.
 
 ## Observing Results
 
@@ -74,18 +79,30 @@ When observations suggest changes:
 ## Fleet Management
 
 ```bash
-# Check fleet status
-./scripts/status.sh
+# Fleet status
+bb status --format text
+
+# Composition vs actual state
+bb compose status
+
+# Fleet health check (dead/stale/blocked detection)
+bb watchdog
+bb watchdog --execute    # auto-redispatch dead sprites
 
 # Sync config to all sprites after editing base/
-./scripts/sync.sh
+bb sync
 
 # Sync to just one sprite
-./scripts/sync.sh bramble
+bb sync bramble
 
 # Provision a new sprite
-./scripts/provision.sh <name>
+bb provision <name>
 
 # Decommission (exports MEMORY.md first)
-./scripts/teardown.sh <name>
+bb teardown <name>
+
+# Reconcile entire fleet to match composition
+bb compose apply --execute
 ```
+
+See [docs/CLI-REFERENCE.md](../docs/CLI-REFERENCE.md) for the full command reference.
