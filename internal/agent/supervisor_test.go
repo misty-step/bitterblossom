@@ -64,8 +64,10 @@ func TestSupervisorRunWritesArtifactsAndEmitsEvents(t *testing.T) {
 	}
 
 	supervisor := NewSupervisor(cfg)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 	defer cancel()
+	cancelTimer := time.AfterFunc(450*time.Millisecond, cancel)
+	defer cancelTimer.Stop()
 
 	result := supervisor.Run(ctx)
 	if result.State != RunStateInterrupted && result.State != RunStateError {
@@ -186,7 +188,11 @@ func readEventKinds(t *testing.T, path string) []string {
 	if err != nil {
 		t.Fatalf("open event log: %v", err)
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			t.Errorf("close event log: %v", closeErr)
+		}
+	}()
 
 	reader, err := events.NewReader(file)
 	if err != nil {
@@ -225,7 +231,11 @@ func TestOutputLoggerWriteLine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new output logger: %v", err)
 	}
-	defer logger.Close()
+	defer func() {
+		if closeErr := logger.Close(); closeErr != nil {
+			t.Errorf("close output logger: %v", closeErr)
+		}
+	}()
 
 	logger.WriteLine(time.Date(2026, 2, 7, 21, 0, 0, 0, time.UTC), "stdout", "hello")
 
@@ -233,7 +243,11 @@ func TestOutputLoggerWriteLine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open output log: %v", err)
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			t.Errorf("close output log file: %v", closeErr)
+		}
+	}()
 
 	scanner := bufio.NewScanner(file)
 	if !scanner.Scan() {

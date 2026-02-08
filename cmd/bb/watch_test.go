@@ -82,7 +82,7 @@ func TestWatchValidation(t *testing.T) {
 	}
 }
 
-func writeEventsFile(path string, input ...events.Event) error {
+func writeEventsFile(path string, input ...events.Event) (err error) {
 	if err := os.WriteFile(path, nil, 0o644); err != nil {
 		return err
 	}
@@ -90,7 +90,11 @@ func writeEventsFile(path string, input ...events.Event) error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}()
 
 	emitter, err := events.NewEmitter(file)
 	if err != nil {
