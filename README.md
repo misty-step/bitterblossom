@@ -98,7 +98,8 @@ bb provision hemlock
 ```
 
 **Supported providers:**
-- `moonshot` — Native Moonshot AI API (Kimi models) [default]
+- `moonshot-anthropic` — Moonshot Anthropic endpoint (preferred for Claude Code) [default]
+- `moonshot` — Native Moonshot AI API (Kimi models)
 - `openrouter-kimi` — Kimi models via OpenRouter
 - `openrouter-claude` — Claude models via OpenRouter
 

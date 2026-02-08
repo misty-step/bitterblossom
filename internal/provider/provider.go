@@ -15,8 +15,12 @@ import (
 type Provider string
 
 const (
+	// ProviderMoonshotAnthropic uses Moonshot AI's Anthropic-compatible endpoint.
+	// This is the preferred/default provider for new sprite dispatches.
+	ProviderMoonshotAnthropic Provider = "moonshot-anthropic"
+
 	// ProviderMoonshot uses Moonshot AI (Kimi models) via their native Anthropic-compatible API.
-	// This is the legacy/default provider for backward compatibility.
+	// This is the legacy provider for backward compatibility.
 	ProviderMoonshot Provider = "moonshot"
 
 	// ProviderOpenRouterKimi uses Kimi models via OpenRouter's unified API.
@@ -32,7 +36,8 @@ const (
 // Model identifiers for known providers.
 const (
 	// Kimi models
-	ModelKimiK25 = "kimi-k2.5"
+	ModelKimiK25             = "kimi-k2.5"
+	ModelKimiK2ThinkingTurbo = "kimi-k2-thinking-turbo"
 
 	// Claude models via OpenRouter
 	ModelClaudeOpus4   = "anthropic/claude-opus-4"
@@ -42,8 +47,8 @@ const (
 
 // Default provider and model for backward compatibility.
 const (
-	DefaultProvider = ProviderMoonshot
-	DefaultModel    = ModelKimiK25
+	DefaultProvider = ProviderMoonshotAnthropic
+	DefaultModel    = ModelKimiK2ThinkingTurbo
 )
 
 // Config holds provider-specific configuration for a sprite.
@@ -82,6 +87,8 @@ func (c Config) Resolve() ResolvedConfig {
 	// Set defaults based on provider if model not specified
 	if model == "" {
 		switch provider {
+		case ProviderMoonshotAnthropic:
+			model = ModelKimiK2ThinkingTurbo
 		case ProviderMoonshot, ProviderOpenRouterKimi:
 			model = ModelKimiK25
 		case ProviderOpenRouterClaude:
@@ -110,6 +117,15 @@ func (r ResolvedConfig) EnvironmentVars(authToken string) map[string]string {
 	env := make(map[string]string)
 
 	switch r.Provider {
+	case ProviderMoonshotAnthropic:
+		// Moonshot Anthropic endpoint (preferred/default)
+		env["ANTHROPIC_BASE_URL"] = "https://api.moonshot.ai/anthropic"
+		env["ANTHROPIC_MODEL"] = r.Model
+		env["ANTHROPIC_SMALL_FAST_MODEL"] = r.Model
+		if authToken != "" {
+			env["ANTHROPIC_AUTH_TOKEN"] = authToken
+		}
+
 	case ProviderMoonshot:
 		// Native Moonshot API (legacy, backward compatible)
 		env["ANTHROPIC_BASE_URL"] = "https://api.moonshot.ai/anthropic"
@@ -170,10 +186,10 @@ func (c Config) Validate() error {
 	}
 
 	switch c.Provider {
-	case ProviderMoonshot, ProviderOpenRouterKimi, ProviderOpenRouterClaude, ProviderInherit:
+	case ProviderMoonshotAnthropic, ProviderMoonshot, ProviderOpenRouterKimi, ProviderOpenRouterClaude, ProviderInherit:
 		// Valid
 	default:
-		return fmt.Errorf("invalid provider: %q (valid: moonshot, openrouter-kimi, openrouter-claude, inherit)", c.Provider)
+		return fmt.Errorf("invalid provider: %q (valid: moonshot-anthropic, moonshot, openrouter-kimi, openrouter-claude, inherit)", c.Provider)
 	}
 
 	if c.Model != "" {
@@ -190,6 +206,8 @@ func (c Config) Validate() error {
 func ParseProvider(s string) (Provider, error) {
 	s = strings.ToLower(strings.TrimSpace(s))
 	switch s {
+	case "moonshot-anthropic", "moonshotanthropic":
+		return ProviderMoonshotAnthropic, nil
 	case "moonshot", "kimi":
 		return ProviderMoonshot, nil
 	case "openrouter-kimi", "openrouter/kimi":
@@ -206,6 +224,7 @@ func ParseProvider(s string) (Provider, error) {
 // AvailableProviders returns a list of valid provider identifiers.
 func AvailableProviders() []string {
 	return []string{
+		string(ProviderMoonshotAnthropic),
 		string(ProviderMoonshot),
 		string(ProviderOpenRouterKimi),
 		string(ProviderOpenRouterClaude),
@@ -216,6 +235,9 @@ func AvailableProviders() []string {
 // AvailableModels returns a map of provider to available models.
 func AvailableModels() map[string][]string {
 	return map[string][]string{
+		string(ProviderMoonshotAnthropic): {
+			ModelKimiK2ThinkingTurbo,
+		},
 		string(ProviderMoonshot): {
 			ModelKimiK25,
 		},
@@ -235,7 +257,7 @@ func AvailableModels() map[string][]string {
 func GetAuthToken(provider Provider) string {
 	// Check provider-specific env vars first
 	switch provider {
-	case ProviderMoonshot, ProviderOpenRouterKimi, ProviderOpenRouterClaude:
+	case ProviderMoonshotAnthropic, ProviderMoonshot, ProviderOpenRouterKimi, ProviderOpenRouterClaude:
 		if token := os.Getenv("OPENROUTER_API_KEY"); token != "" {
 			return token
 		}

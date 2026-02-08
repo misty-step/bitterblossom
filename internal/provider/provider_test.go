@@ -385,7 +385,7 @@ func TestGetAuthToken(t *testing.T) {
 
 func TestAvailableProviders(t *testing.T) {
 	providers := AvailableProviders()
-	expected := []string{"moonshot", "openrouter-kimi", "openrouter-claude", "inherit"}
+	expected := []string{"moonshot-anthropic", "moonshot", "openrouter-kimi", "openrouter-claude", "inherit"}
 
 	if len(providers) != len(expected) {
 		t.Errorf("AvailableProviders() returned %d providers, want %d", len(providers), len(expected))
