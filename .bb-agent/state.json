@@ -1,0 +1,18 @@
+{
+  "sprite": "bb-43",
+  "status": "running",
+  "supervisor_pid": 69912,
+  "agent_pid": 69913,
+  "restarts": 0,
+  "started_at": "2026-02-08T15:10:35.578197Z",
+  "updated_at": "2026-02-08T15:10:35.650978Z",
+  "last_heartbeat_at": "0001-01-01T00:00:00Z",
+  "last_progress_at": "2026-02-08T15:10:35.579525Z",
+  "last_activity": "git_snapshot",
+  "stalled": false,
+  "task": {
+    "prompt": "Implement BB #43: Port dispatch/watchdog to Go state-machine supervision. Port Ralph loop orchestration, watchdog health/staleness detection to explicit state transitions. Replace fragile process handling with tracked metadata. Emit structured events (started, heartbeat, blocked, complete, stale, error). Add state-machine tests for transitions. Acceptance: dispatch + watchdog run from bb with deterministic status, regression tests for fragility cases. Issue: https://github.com/misty-step/bitterblossom/issues/43",
+    "repo": "bitterblossom",
+    "branch": "feat/dispatch-watchdog-go-43"
+  }
+}
