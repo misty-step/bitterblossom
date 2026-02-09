@@ -81,6 +81,24 @@ func withOrgArgs(base []string, org string) []string {
 	return out
 }
 
+func createArgs(name, org string) []string {
+	args := []string{"create", "--skip-console"}
+	if org != "" {
+		args = append(args, "-o", org)
+	}
+	args = append(args, name)
+	return args
+}
+
+func destroyArgs(name, org string) []string {
+	args := []string{"destroy", "--force"}
+	if org != "" {
+		args = append(args, "-o", org)
+	}
+	args = append(args, name)
+	return args
+}
+
 func (c CLI) run(ctx context.Context, args []string, stdin []byte) (string, error) {
 	cmd := exec.CommandContext(ctx, c.command(), args...)
 	var stdout bytes.Buffer
@@ -126,7 +144,7 @@ func (c CLI) Exec(ctx context.Context, sprite, remoteCommand string, stdin []byt
 
 // Create creates a sprite in the target org.
 func (c CLI) Create(ctx context.Context, name, org string) error {
-	_, err := c.run(ctx, withOrgArgs([]string{"create", name, "--skip-console"}, c.resolvedOrg(org)), nil)
+	_, err := c.run(ctx, createArgs(name, c.resolvedOrg(org)), nil)
 	if err != nil {
 		return fmt.Errorf("create sprite %q: %w", name, err)
 	}
@@ -135,7 +153,7 @@ func (c CLI) Create(ctx context.Context, name, org string) error {
 
 // Destroy destroys a sprite in the target org.
 func (c CLI) Destroy(ctx context.Context, name, org string) error {
-	_, err := c.run(ctx, withOrgArgs([]string{"destroy", name, "--force"}, c.resolvedOrg(org)), nil)
+	_, err := c.run(ctx, destroyArgs(name, c.resolvedOrg(org)), nil)
 	if err != nil {
 		return fmt.Errorf("destroy sprite %q: %w", name, err)
 	}
