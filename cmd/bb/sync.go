@@ -106,7 +106,7 @@ func newSyncCmdWithDeps(deps syncDeps) *cobra.Command {
 
 	command.Flags().StringVar(&opts.Composition, "composition", opts.Composition, "Path to composition YAML")
 	command.Flags().BoolVar(&opts.BaseOnly, "base-only", false, "Only sync shared base config")
-	command.Flags().StringVar(&opts.Org, "org", opts.Org, "Fly.io organization")
+	command.Flags().StringVar(&opts.Org, "org", opts.Org, "Sprites organization")
 	command.Flags().StringVar(&opts.SpriteCLI, "sprite-cli", opts.SpriteCLI, "Path to sprite CLI")
 	command.Flags().DurationVar(&opts.Timeout, "timeout", opts.Timeout, "Command timeout")
 

@@ -195,7 +195,7 @@ func TestMockMachineClient(t *testing.T) {
 func mustClient(t *testing.T, transport http.RoundTripper, opts ...Option) *Client {
 	t.Helper()
 	baseOpts := []Option{
-		WithBaseURL("https://api.machines.dev/v1"),
+		WithBaseURL("https://api.sprites.dev/v1"),
 		WithHTTPClient(&http.Client{Transport: transport}),
 	}
 	baseOpts = append(baseOpts, opts...)

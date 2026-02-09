@@ -15,17 +15,17 @@ import (
 )
 
 const (
-	// DefaultBaseURL is the Fly.io Machines API endpoint.
-	DefaultBaseURL = "https://api.machines.dev/v1"
+	// DefaultBaseURL is the Sprites API endpoint (sprites.dev).
+	DefaultBaseURL = "https://api.sprites.dev/v1"
 )
 
 var (
 	// ErrMissingToken indicates no API token was provided.
-	ErrMissingToken = errors.New("missing Fly.io API token")
+	ErrMissingToken = errors.New("missing API token")
 	// ErrMissingApp indicates an empty app name in a request.
-	ErrMissingApp = errors.New("missing Fly.io app")
+	ErrMissingApp = errors.New("missing app")
 	// ErrMissingMachineID indicates an empty machine id in a request.
-	ErrMissingMachineID = errors.New("missing Fly.io machine id")
+	ErrMissingMachineID = errors.New("missing machine id")
 	// ErrMissingCommand indicates no command was supplied for exec.
 	ErrMissingCommand = errors.New("missing exec command")
 	// ErrMockNotImplemented indicates no behavior is configured for a mock method.
@@ -86,7 +86,7 @@ func (e APIError) Error() string {
 	return fmt.Sprintf("fly api error: status %d: %s", e.StatusCode, strings.TrimSpace(e.Body))
 }
 
-// Client is the real Fly.io Machines API implementation.
+// Client is the Sprites API implementation.
 type Client struct {
 	token      string
 	baseURL    string
@@ -108,7 +108,7 @@ func WithHTTPClient(httpClient *http.Client) Option {
 	}
 }
 
-// WithBaseURL overrides the default Machines API URL.
+// WithBaseURL overrides the default Sprites API URL.
 func WithBaseURL(baseURL string) Option {
 	return func(client *Client) {
 		if strings.TrimSpace(baseURL) != "" {
@@ -138,7 +138,7 @@ func WithSleepFn(sleepFn func(time.Duration)) Option {
 	}
 }
 
-// NewClient constructs a Machines API client.
+// NewClient constructs a Sprites API client.
 func NewClient(token string, opts ...Option) (*Client, error) {
 	if strings.TrimSpace(token) == "" {
 		return nil, ErrMissingToken

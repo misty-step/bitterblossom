@@ -60,9 +60,9 @@ func newComposeCmdWithDeps(deps composeDeps) *cobra.Command {
 	}
 
 	cmd.PersistentFlags().StringVar(&opts.CompositionPath, "composition", opts.CompositionPath, "Path to composition YAML")
-	cmd.PersistentFlags().StringVar(&opts.App, "app", opts.App, "Fly.io app name")
-	cmd.PersistentFlags().StringVar(&opts.Token, "token", opts.Token, "Fly.io API token (or FLY_API_TOKEN)")
-	cmd.PersistentFlags().StringVar(&opts.APIURL, "api-url", opts.APIURL, "Fly.io Machines API base URL")
+	cmd.PersistentFlags().StringVar(&opts.App, "app", opts.App, "Sprites app name")
+	cmd.PersistentFlags().StringVar(&opts.Token, "token", opts.Token, "API token (or FLY_API_TOKEN)")
+	cmd.PersistentFlags().StringVar(&opts.APIURL, "api-url", opts.APIURL, "Sprites API base URL")
 	cmd.PersistentFlags().BoolVar(&opts.JSON, "json", false, "Emit JSON output")
 
 	diffCmd := &cobra.Command{

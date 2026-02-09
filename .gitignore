@@ -8,7 +8,7 @@
 observations/archives/*/settings.json
 
 # Build output
-bb
+/bb
 
 # Runtime state files
 .bb-agent/

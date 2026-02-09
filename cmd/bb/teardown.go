@@ -106,7 +106,7 @@ func newTeardownCmdWithDeps(deps teardownDeps) *cobra.Command {
 
 	command.Flags().StringVar(&opts.ArchiveDir, "archive-dir", opts.ArchiveDir, "Archive directory for exported sprite data")
 	command.Flags().BoolVar(&opts.Force, "force", opts.Force, "Skip confirmation prompt")
-	command.Flags().StringVar(&opts.Org, "org", opts.Org, "Fly.io organization")
+	command.Flags().StringVar(&opts.Org, "org", opts.Org, "Sprites organization")
 	command.Flags().StringVar(&opts.SpriteCLI, "sprite-cli", opts.SpriteCLI, "Path to sprite CLI")
 	command.Flags().DurationVar(&opts.Timeout, "timeout", opts.Timeout, "Command timeout")
 

@@ -101,7 +101,7 @@ func newStatusCmdWithDeps(deps statusDeps) *cobra.Command {
 	}
 
 	command.Flags().StringVar(&opts.Composition, "composition", opts.Composition, "Path to composition YAML")
-	command.Flags().StringVar(&opts.Org, "org", opts.Org, "Fly.io organization")
+	command.Flags().StringVar(&opts.Org, "org", opts.Org, "Sprites organization")
 	command.Flags().StringVar(&opts.SpriteCLI, "sprite-cli", opts.SpriteCLI, "Path to sprite CLI")
 	command.Flags().StringVar(&opts.Format, "format", opts.Format, "Output format: json|text")
 	command.Flags().DurationVar(&opts.Timeout, "timeout", opts.Timeout, "Command timeout")
