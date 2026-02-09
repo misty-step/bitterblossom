@@ -7,6 +7,9 @@
 # Archives may contain exported settings with tokens
 observations/archives/*/settings.json
 
+# Runtime state files
+.bb-agent/
+
 # OS
 .DS_Store
 __pycache__/
