@@ -16,6 +16,11 @@ REMOTE_HOME="/home/sprite"
 WORKSPACE="$REMOTE_HOME/workspace"
 COMPOSITION="${COMPOSITION:-$ROOT_DIR/compositions/v1.yaml}"
 
+# Provider configuration (defaults to moonshot-anthropic for consistency with Go code)
+BB_PROVIDER="${BB_PROVIDER:-moonshot-anthropic}"
+BB_MODEL="${BB_MODEL:-}"
+BB_OPENROUTER_API_KEY="${BB_OPENROUTER_API_KEY:-${OPENROUTER_API_KEY:-}}"
+
 # Rendered settings tempfile (cleaned up via lib_cleanup)
 RENDERED_SETTINGS=""
 SETTINGS_PATH="$BASE_DIR/settings.json"
@@ -114,6 +119,31 @@ resolve_sprite_github_auth() {
     printf '%s\t%s\t%s\n' "$user" "$email" "$token"
 }
 
+# get_provider_for_sprite returns the provider configuration for a sprite.
+# Checks for per-sprite provider env vars first, then falls back to global defaults.
+# Output: "<provider>\t<model>"
+get_provider_for_sprite() {
+    local sprite_name="$1"
+    local env_key
+    env_key="$(sprite_env_key "$sprite_name")"
+
+    local provider_var="BB_PROVIDER_${env_key}"
+    local model_var="BB_MODEL_${env_key}"
+
+    local provider="${!provider_var-}"
+    local model="${!model_var-}"
+
+    # Fall back to global defaults
+    if [[ -z "$provider" ]]; then
+        provider="$BB_PROVIDER"
+    fi
+    if [[ -z "$model" ]]; then
+        model="$BB_MODEL"
+    fi
+
+    printf '%s\t%s\n' "$provider" "$model"
+}
+
 # Validate sprite name: lowercase alphanumeric + hyphens
 validate_sprite_name() {
     local name="$1"
@@ -160,6 +190,8 @@ lib_cleanup() {
     fi
 }
 
+# prepare_settings renders settings.json with the auth token injected.
+# For backward compatibility, uses moonshot provider by default.
 prepare_settings() {
     local token="${ANTHROPIC_AUTH_TOKEN:-}"
     RENDERED_SETTINGS=""
@@ -182,6 +214,89 @@ with open(source_path, "r", encoding="utf-8") as source_file:
     settings = json.load(source_file)
 
 settings.setdefault("env", {})["ANTHROPIC_AUTH_TOKEN"] = token
+
+with open(out_path, "w", encoding="utf-8") as out_file:
+    json.dump(settings, out_file, indent=2)
+    out_file.write("\n")
+PY
+    SETTINGS_PATH="$RENDERED_SETTINGS"
+}
+
+# prepare_settings_with_provider renders settings.json with provider-specific configuration.
+# Usage: prepare_settings_with_provider <provider> [model]
+#   provider: moonshot | openrouter-kimi | openrouter-claude
+#   model: optional model identifier (e.g., "kimi-k2.5", "anthropic/claude-opus-4")
+prepare_settings_with_provider() {
+    local provider="${1:-moonshot}"
+    local model="${2:-}"
+    local token="${ANTHROPIC_AUTH_TOKEN:-}"
+    local openrouter_key="${BB_OPENROUTER_API_KEY:-}"
+
+    RENDERED_SETTINGS=""
+
+    # Determine which token to use
+    local auth_token="$token"
+    if [[ -z "$auth_token" && ( "$provider" == "openrouter-kimi" || "$provider" == "openrouter-claude" ) ]]; then
+        auth_token="$openrouter_key"
+    fi
+
+    if [[ -z "$auth_token" ]]; then
+        err "ANTHROPIC_AUTH_TOKEN (or BB_OPENROUTER_API_KEY for OpenRouter) is required"
+        err "Export it in your shell before running this script."
+        exit 1
+    fi
+
+    RENDERED_SETTINGS="$(umask 077 && mktemp)"
+    _BB_TOKEN="$auth_token" \
+    _BB_PROVIDER="$provider" \
+    _BB_MODEL="$model" \
+    python3 - "$BASE_DIR/settings.json" "$RENDERED_SETTINGS" <<'PY'
+import json
+import os
+import sys
+
+source_path, out_path = sys.argv[1:]
+token = os.environ["_BB_TOKEN"]
+provider = os.environ["_BB_PROVIDER"]
+model = os.environ["_BB_MODEL"]
+
+with open(source_path, "r", encoding="utf-8") as source_file:
+    settings = json.load(source_file)
+
+env = settings.setdefault("env", {})
+
+# Configure based on provider
+if provider == "moonshot":
+    env["ANTHROPIC_BASE_URL"] = "https://api.moonshot.ai/anthropic"
+    env["ANTHROPIC_MODEL"] = model if model else "kimi-k2.5"
+    env["ANTHROPIC_AUTH_TOKEN"] = token
+elif provider == "openrouter-kimi":
+    env["ANTHROPIC_BASE_URL"] = "https://openrouter.ai/api/v1"
+    env["ANTHROPIC_MODEL"] = model if model else "kimi-k2.5"
+    env["ANTHROPIC_AUTH_TOKEN"] = token
+    env["OPENROUTER_API_KEY"] = token
+    env["CLAUDE_CODE_OPENROUTER_COMPAT"] = "1"
+elif provider == "openrouter-claude":
+    env["ANTHROPIC_BASE_URL"] = "https://openrouter.ai/api/v1"
+    # Ensure model has provider prefix for OpenRouter
+    if model and "/" in model:
+        env["ANTHROPIC_MODEL"] = model
+    elif model:
+        env["ANTHROPIC_MODEL"] = f"anthropic/{model}"
+    else:
+        env["ANTHROPIC_MODEL"] = "anthropic/claude-opus-4"
+    env["ANTHROPIC_AUTH_TOKEN"] = token
+    env["OPENROUTER_API_KEY"] = token
+    env["CLAUDE_CODE_OPENROUTER_COMPAT"] = "1"
+else:
+    # Unknown provider, use defaults
+    env["ANTHROPIC_AUTH_TOKEN"] = token
+    if model:
+        env["ANTHROPIC_MODEL"] = model
+
+# Common settings
+env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+env["API_TIMEOUT_MS"] = "600000"
 
 with open(out_path, "w", encoding="utf-8") as out_file:
     json.dump(settings, out_file, indent=2)

@@ -86,6 +86,25 @@ bb teardown bramble
 
 See [docs/CLI-REFERENCE.md](docs/CLI-REFERENCE.md) for the complete command reference.
 
+## Multi-Provider Support (New in v3)
+
+Bitterblossom now supports multiple LLM providers. You can configure different providers per sprite:
+
+```bash
+# Provision a sprite with Claude via OpenRouter
+export BB_PROVIDER_HEMLOCK=openrouter-claude
+export BB_MODEL_HEMLOCK=anthropic/claude-opus-4
+bb provision hemlock
+```
+
+**Supported providers:**
+- `moonshot-anthropic` — Moonshot Anthropic endpoint (preferred for Claude Code) [default]
+- `moonshot` — Native Moonshot AI API (Kimi models)
+- `openrouter-kimi` — Kimi models via OpenRouter
+- `openrouter-claude` — Claude models via OpenRouter
+
+See [docs/PROVIDERS.md](docs/PROVIDERS.md) for full documentation and [compositions/v3-multi-provider.yaml](compositions/v3-multi-provider.yaml) for an example configuration.
+
 ## Composition Philosophy
 
 Compositions are hypotheses. The current v1 is 5 full-stack sprites with specialization preferences. OpenClaw (Kaylee) decides where to route work — routing is intelligent, not programmatic.
