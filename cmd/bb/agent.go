@@ -105,7 +105,7 @@ func newAgentStartCommand() *cobra.Command {
 
 	command.Flags().StringVar(&opts.sprite, "sprite", defaults.sprite, "Sprite name for event metadata")
 	command.Flags().StringVar(&opts.repoDir, "repo-dir", defaults.repoDir, "Repository directory to supervise")
-	command.Flags().StringVar(&opts.agentKind, "agent", defaults.agentKind, "Agent kind: codex|kimi-code|claude")
+	command.Flags().StringVar(&opts.agentKind, "agent", defaults.agentKind, "Agent kind: codex|kimi-code|claude|opencode")
 	command.Flags().StringVar(&opts.agentCommand, "agent-command", defaults.agentCommand, "Explicit agent executable (optional override)")
 	command.Flags().StringVar(&opts.agentFlags, "agent-flags", defaults.agentFlags, "Comma-separated agent flags")
 	command.Flags().StringVar(&opts.model, "model", defaults.model, "Agent model selection")

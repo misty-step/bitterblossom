@@ -212,7 +212,7 @@ bb agent start --agent codex --yolo --task-prompt "Refactor auth" --task-repo or
 |------|-----|---------|-------------|
 | `--sprite` | `BB_SPRITE` | hostname | Sprite name |
 | `--repo-dir` | `BB_REPO_DIR` | `.` | Repository directory |
-| `--agent` | `BB_AGENT` | `codex` | Agent kind: `codex`, `kimi-code`, `claude` |
+| `--agent` | `BB_AGENT` | `codex` | Agent kind: `codex`, `kimi-code`, `claude`, `opencode` |
 | `--agent-command` | `BB_AGENT_COMMAND` | | Explicit agent executable |
 | `--agent-flags` | `BB_AGENT_FLAGS` | | Comma-separated agent flags |
 | `--model` | `BB_AGENT_MODEL` | | Model selection |
