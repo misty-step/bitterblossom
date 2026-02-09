@@ -104,7 +104,7 @@ func TestRenderSettingsWithProvider(t *testing.T) {
 			name:         "inherited uses base URL",
 			provider:     provider.Config{Provider: provider.ProviderInherit},
 			wantProvider: "moonshot",
-			wantModel:    "kimi-k2.5",
+			wantModel:    "kimi-k2-thinking-turbo",
 			wantBaseURL:  "https://api.moonshot.ai/anthropic",
 		},
 	}
