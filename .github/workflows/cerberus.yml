@@ -34,7 +34,7 @@ jobs:
         with:
           perspective: ${{ matrix.perspective }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          api-key: ${{ secrets.OPENROUTER_API_KEY || secrets.MOONSHOT_API_KEY }}
+          api-key: ${{ secrets.OPENROUTER_API_KEY }}
           timeout: '600'
 
   verdict:
