@@ -45,7 +45,7 @@ bitterblossom/
 
 ```bash
 # Required for provision/sync (settings.json is rendered at runtime)
-export ANTHROPIC_AUTH_TOKEN="<moonshot-key>"
+export OPENROUTER_API_KEY="<openrouter-key>"
 export FLY_API_TOKEN="<fly-api-token>"       # Sprites API uses Fly.io auth
 export FLY_ORG="misty-step"                  # Your org slug
 
@@ -86,24 +86,15 @@ bb teardown bramble
 
 See [docs/CLI-REFERENCE.md](docs/CLI-REFERENCE.md) for the complete command reference.
 
-## Multi-Provider Support (New in v3)
+## Runtime Profile
 
-Bitterblossom now supports multiple LLM providers. You can configure different providers per sprite:
+Bitterblossom ships one canonical runtime profile out of the box:
 
-```bash
-# Provision a sprite with Claude via OpenRouter
-export BB_PROVIDER_HEMLOCK=openrouter-claude
-export BB_MODEL_HEMLOCK=anthropic/claude-opus-4
-bb provision hemlock
-```
+- Provider: `openrouter-kimi`
+- Model: `moonshotai/kimi-k2.5`
+- Auth: `OPENROUTER_API_KEY`
 
-**Supported providers:**
-- `moonshot-anthropic` — Moonshot Anthropic endpoint (preferred for Claude Code) [default]
-- `moonshot` — Native Moonshot AI API (Kimi models)
-- `openrouter-kimi` — Kimi models via OpenRouter
-- `openrouter-claude` — Claude models via OpenRouter
-
-See [docs/PROVIDERS.md](docs/PROVIDERS.md) for full documentation and [compositions/v3-multi-provider.yaml](compositions/v3-multi-provider.yaml) for an example configuration.
+Legacy provider variants are still parseable for compatibility, but they are not the default path. See [docs/PROVIDERS.md](docs/PROVIDERS.md) for compatibility notes.
 
 ## Composition Philosophy
 
@@ -162,7 +153,7 @@ Compositions live in `compositions/`. When patterns suggest a change, create a n
 
 Secret detection runs on every PR and push to master via [TruffleHog](https://github.com/trufflesecurity/trufflehog). See [docs/SECRETS.md](docs/SECRETS.md) for local usage, leak response runbook, and how sprite auth tokens work.
 
-API keys are never stored in git. `base/settings.json` uses a placeholder rendered at provision/sync time from `$ANTHROPIC_AUTH_TOKEN`.
+API keys are never stored in git. `base/settings.json` uses a placeholder rendered at provision/sync time from `$OPENROUTER_API_KEY` (with `$ANTHROPIC_AUTH_TOKEN` accepted as a legacy fallback).
 
 ## CI Pipeline
 

@@ -25,7 +25,7 @@ trufflehog git file://. --since-commit $(git merge-base HEAD master) --only-veri
 
 ## When a Leak is Detected
 
-1. **Rotate the key immediately** from the provider dashboard (Anthropic, Moonshot, GitHub, Fly.io, etc.)
+1. **Rotate the key immediately** from the provider dashboard (OpenRouter, Anthropic, GitHub, Fly.io, etc.)
 2. **Check for unauthorized usage** in the provider's dashboard — look for anomalous API calls between the time of commit and rotation.
 3. **Rewrite git history** if the key was committed:
    ```bash
@@ -42,11 +42,11 @@ trufflehog git file://. --since-commit $(git merge-base HEAD master) --only-veri
    **Warning:** This rewrites shared history. Coordinate with all collaborators before force-pushing. Sprites with diverged local state will need re-provisioning. This must be done from a local workstation — the destructive-command-guard hook blocks force pushes from sprites.
 5. **Update sprites** — if the rotated key was deployed, re-sync:
    ```bash
-   export ANTHROPIC_AUTH_TOKEN="new-key-here"
-   ./scripts/sync.sh
+   export OPENROUTER_API_KEY="new-key-here"
+   bb sync
    ```
 6. **Verify** the old key no longer appears: `trufflehog git file://. --only-verified`
 
 ## Sprite Auth Token Flow
 
-Sprites receive their API key at provision/sync time. The key is never stored in git — `base/settings.json` contains a placeholder (`__SET_VIA_ANTHROPIC_AUTH_TOKEN_ENV__`) that gets rendered from `$ANTHROPIC_AUTH_TOKEN` at deploy time. At teardown, `teardown.sh` redacts the token from exported archives.
+Sprites receive their API key at provision/sync time. The key is never stored in git. `base/settings.json` contains placeholders rendered from `$OPENROUTER_API_KEY` (with `$ANTHROPIC_AUTH_TOKEN` accepted as legacy fallback) at deploy time. At teardown, exported archives redact auth tokens.

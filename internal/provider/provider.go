@@ -1,8 +1,7 @@
 // Package provider abstracts LLM provider configurations for Bitterblossom sprites.
 //
 // This package provides a unified interface for configuring different LLM providers
-// (Moonshot/Kimi via OpenRouter, Claude via OpenRouter) while maintaining
-// backward compatibility with existing composition YAMLs.
+// while keeping one canonical default profile for sprite runtime.
 package provider
 
 import (
@@ -38,6 +37,7 @@ const (
 	// Kimi models
 	ModelKimiK25             = "kimi-k2.5"
 	ModelKimiK2ThinkingTurbo = "kimi-k2-thinking-turbo"
+	ModelOpenRouterKimiK25   = "moonshotai/kimi-k2.5"
 
 	// Claude models via OpenRouter
 	ModelClaudeOpus4   = "anthropic/claude-opus-4"
@@ -45,10 +45,10 @@ const (
 	ModelClaudeHaiku4  = "anthropic/claude-haiku-4"
 )
 
-// Default provider and model for backward compatibility.
+// Default provider and model for canonical runtime operation.
 const (
-	DefaultProvider = ProviderMoonshotAnthropic
-	DefaultModel    = ModelKimiK2ThinkingTurbo
+	DefaultProvider = ProviderOpenRouterKimi
+	DefaultModel    = ModelOpenRouterKimiK25
 )
 
 // Config holds provider-specific configuration for a sprite.
@@ -89,8 +89,10 @@ func (c Config) Resolve() ResolvedConfig {
 		switch provider {
 		case ProviderMoonshotAnthropic:
 			model = ModelKimiK2ThinkingTurbo
-		case ProviderMoonshot, ProviderOpenRouterKimi:
+		case ProviderMoonshot:
 			model = ModelKimiK25
+		case ProviderOpenRouterKimi:
+			model = ModelOpenRouterKimiK25
 		case ProviderOpenRouterClaude:
 			model = ModelClaudeOpus4
 		}
@@ -138,8 +140,12 @@ func (r ResolvedConfig) EnvironmentVars(authToken string) map[string]string {
 	case ProviderOpenRouterKimi:
 		// Kimi via OpenRouter
 		env["ANTHROPIC_BASE_URL"] = "https://openrouter.ai/api/v1"
-		env["ANTHROPIC_MODEL"] = r.Model
-		env["ANTHROPIC_SMALL_FAST_MODEL"] = r.Model
+		model := r.Model
+		if !strings.Contains(model, "/") {
+			model = "moonshotai/" + model
+		}
+		env["ANTHROPIC_MODEL"] = model
+		env["ANTHROPIC_SMALL_FAST_MODEL"] = model
 		// OpenRouter uses OPENROUTER_API_KEY, but we can also use ANTHROPIC_AUTH_TOKEN
 		// Claude Code will use ANTHROPIC_AUTH_TOKEN if set
 		if authToken != "" {
@@ -242,6 +248,7 @@ func AvailableModels() map[string][]string {
 			ModelKimiK25,
 		},
 		string(ProviderOpenRouterKimi): {
+			ModelOpenRouterKimiK25,
 			ModelKimiK25,
 		},
 		string(ProviderOpenRouterClaude): {

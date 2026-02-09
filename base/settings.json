@@ -3,10 +3,12 @@
     "defaultMode": "bypassPermissions"
   },
   "env": {
-    "ANTHROPIC_BASE_URL": "https://api.moonshot.ai/anthropic",
-    "ANTHROPIC_AUTH_TOKEN": "__SET_VIA_ANTHROPIC_AUTH_TOKEN_ENV__",
-    "ANTHROPIC_MODEL": "kimi-k2.5",
-    "ANTHROPIC_SMALL_FAST_MODEL": "kimi-k2.5",
+    "ANTHROPIC_BASE_URL": "https://openrouter.ai/api/v1",
+    "ANTHROPIC_AUTH_TOKEN": "__SET_VIA_OPENROUTER_API_KEY_ENV__",
+    "OPENROUTER_API_KEY": "__SET_VIA_OPENROUTER_API_KEY_ENV__",
+    "CLAUDE_CODE_OPENROUTER_COMPAT": "1",
+    "ANTHROPIC_MODEL": "moonshotai/kimi-k2.5",
+    "ANTHROPIC_SMALL_FAST_MODEL": "moonshotai/kimi-k2.5",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
     "API_TIMEOUT_MS": "600000"
   },

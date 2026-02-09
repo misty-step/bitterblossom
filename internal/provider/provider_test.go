@@ -78,7 +78,7 @@ func TestConfig_Resolve(t *testing.T) {
 			},
 			want: ResolvedConfig{
 				Provider: ProviderOpenRouterKimi,
-				Model:    ModelKimiK25,
+				Model:    ModelOpenRouterKimiK25,
 			},
 		},
 		{
@@ -147,7 +147,7 @@ func TestResolvedConfig_EnvironmentVars(t *testing.T) {
 			name: "openrouter kimi",
 			cfg: ResolvedConfig{
 				Provider: ProviderOpenRouterKimi,
-				Model:    ModelKimiK25,
+				Model:    ModelOpenRouterKimiK25,
 			},
 			authToken: "test-token",
 			wantKeys: []string{
@@ -159,8 +159,19 @@ func TestResolvedConfig_EnvironmentVars(t *testing.T) {
 			},
 			checkVals: map[string]string{
 				"ANTHROPIC_BASE_URL":            "https://openrouter.ai/api/v1",
-				"ANTHROPIC_MODEL":               ModelKimiK25,
+				"ANTHROPIC_MODEL":               ModelOpenRouterKimiK25,
 				"CLAUDE_CODE_OPENROUTER_COMPAT": "1",
+			},
+		},
+		{
+			name: "openrouter kimi with model needing prefix",
+			cfg: ResolvedConfig{
+				Provider: ProviderOpenRouterKimi,
+				Model:    ModelKimiK25, // missing moonshotai/ prefix
+			},
+			authToken: "test-token",
+			checkVals: map[string]string{
+				"ANTHROPIC_MODEL": "moonshotai/kimi-k2.5",
 			},
 		},
 		{
@@ -257,7 +268,7 @@ func TestConfig_Validate(t *testing.T) {
 		},
 		{
 			name:    "valid openrouter kimi",
-			cfg:     Config{Provider: ProviderOpenRouterKimi, Model: ModelKimiK25},
+			cfg:     Config{Provider: ProviderOpenRouterKimi, Model: ModelOpenRouterKimiK25},
 			wantErr: false,
 		},
 		{
@@ -294,9 +305,9 @@ func TestConfig_Validate(t *testing.T) {
 
 func TestParseProvider(t *testing.T) {
 	tests := []struct {
-		input    string
-		want     Provider
-		wantErr  bool
+		input   string
+		want    Provider
+		wantErr bool
 	}{
 		{"moonshot", ProviderMoonshot, false},
 		{"kimi", ProviderMoonshot, false},
@@ -334,11 +345,11 @@ func TestGetAuthToken(t *testing.T) {
 	}()
 
 	tests := []struct {
-		name         string
-		openRouter   string
-		anthropic    string
-		provider     Provider
-		want         string
+		name       string
+		openRouter string
+		anthropic  string
+		provider   Provider
+		want       string
 	}{
 		{
 			name:       "openrouter key for openrouter provider",

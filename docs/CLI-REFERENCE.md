@@ -9,7 +9,8 @@
 | `FLY_API_TOKEN` / `FLY_TOKEN` | API token (Sprites API uses Fly.io auth) |
 | `FLY_ORG` | Organization slug (e.g. `misty-step`) |
 | `SPRITE_CLI` | Path to `sprite` binary |
-| `ANTHROPIC_AUTH_TOKEN` | Moonshot key for settings rendering |
+| `OPENROUTER_API_KEY` | Canonical OpenRouter key for settings rendering |
+| `ANTHROPIC_AUTH_TOKEN` | Legacy auth fallback when `OPENROUTER_API_KEY` is unset |
 
 > **Note:** Sprites are a standalone service at [sprites.dev](https://sprites.dev), not Fly.io Machines. The `FLY_*` env vars are used because Sprites API authenticates via Fly.io tokens.
 

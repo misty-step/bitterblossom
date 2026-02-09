@@ -14,6 +14,8 @@ const (
 	defaultLifecycleComposition = "compositions/v1.yaml"
 	defaultLifecycleOrg         = "misty-step"
 	defaultSpriteCLIBinary      = "sprite"
+	canonicalAuthEnvVar         = "OPENROUTER_API_KEY"
+	legacyAuthEnvVar            = "ANTHROPIC_AUTH_TOKEN"
 )
 
 func defaultOrg() string {
@@ -54,4 +56,14 @@ func resolveCompositionSprites(path string) ([]string, error) {
 		names = append(names, sprite.Name)
 	}
 	return names, nil
+}
+
+func resolveLifecycleAuthToken(getenv func(string) string) string {
+	if getenv == nil {
+		return ""
+	}
+	if value := strings.TrimSpace(getenv(canonicalAuthEnvVar)); value != "" {
+		return value
+	}
+	return strings.TrimSpace(getenv(legacyAuthEnvVar))
 }

@@ -11,9 +11,9 @@ import (
 
 // RenderSettings reads settings from settingsPath, injects the auth token,
 // and returns the path to a rendered temp file. Caller must clean up.
-// This is the legacy function for backward compatibility - uses default provider.
+// Uses the canonical default provider profile when no per-sprite provider is set.
 func RenderSettings(settingsPath, authToken string) (string, error) {
-	// Use default provider configuration (Moonshot/Kimi for backward compatibility)
+	// Use default provider configuration (canonical OpenRouter Kimi profile).
 	cfg := provider.Config{Provider: provider.ProviderInherit}
 	return RenderSettingsWithProvider(settingsPath, authToken, cfg)
 }
@@ -23,7 +23,7 @@ func RenderSettings(settingsPath, authToken string) (string, error) {
 func RenderSettingsWithProvider(settingsPath, authToken string, cfg provider.Config) (string, error) {
 	token := strings.TrimSpace(authToken)
 	if token == "" {
-		return "", fmt.Errorf("ANTHROPIC_AUTH_TOKEN is required")
+		return "", fmt.Errorf("provider auth token is required (set OPENROUTER_API_KEY; ANTHROPIC_AUTH_TOKEN accepted as legacy fallback)")
 	}
 
 	raw, err := os.ReadFile(settingsPath)
