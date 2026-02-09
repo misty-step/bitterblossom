@@ -164,6 +164,10 @@ func TestRenderSettingsWithProvider(t *testing.T) {
 				if _, ok := env["CLAUDE_CODE_OPENROUTER_COMPAT"]; !ok {
 					t.Error("expected CLAUDE_CODE_OPENROUTER_COMPAT to be set")
 				}
+			case provider.ProviderMoonshot, provider.ProviderMoonshotAnthropic:
+				if _, ok := env["CLAUDE_CODE_OPENROUTER_COMPAT"]; ok {
+					t.Error("did not expect CLAUDE_CODE_OPENROUTER_COMPAT for moonshot providers")
+				}
 			}
 		})
 	}
