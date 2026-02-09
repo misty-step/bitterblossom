@@ -573,7 +573,7 @@ func TestDefaultComposeDeps(t *testing.T) {
 		t.Fatalf("expected non-empty composition name")
 	}
 
-	client, err := deps.newClient("token", "https://api.machines.dev/v1")
+	client, err := deps.newClient("token", "https://api.sprites.dev/v1")
 	if err != nil {
 		t.Fatalf("default newClient() error = %v", err)
 	}

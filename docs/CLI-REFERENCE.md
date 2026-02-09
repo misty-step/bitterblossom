@@ -6,11 +6,12 @@
 
 | Variable | Purpose |
 |----------|---------|
-| `FLY_APP` | Fly.io app name |
-| `FLY_API_TOKEN` / `FLY_TOKEN` | Fly.io API token |
-| `FLY_ORG` | Fly.io organization |
+| `FLY_API_TOKEN` / `FLY_TOKEN` | API token (Sprites API uses Fly.io auth) |
+| `FLY_ORG` | Organization slug (e.g. `misty-step`) |
 | `SPRITE_CLI` | Path to `sprite` binary |
 | `ANTHROPIC_AUTH_TOKEN` | Moonshot key for settings rendering |
+
+> **Note:** Sprites are a standalone service at [sprites.dev](https://sprites.dev), not Fly.io Machines. The `FLY_*` env vars are used because Sprites API authenticates via Fly.io tokens.
 
 ---
 
@@ -29,7 +30,7 @@ bb compose <subcommand> [flags]
 | `--composition` | `compositions/v1.yaml` | Path to composition YAML |
 | `--app` | `$FLY_APP` | Fly.io app name |
 | `--token` | `$FLY_API_TOKEN` | Fly.io API token |
-| `--api-url` | `https://api.machines.dev` | Fly Machines API base URL |
+| `--api-url` | `https://api.sprites.dev` | Sprites API base URL |
 | `--json` | `false` | Emit JSON output |
 
 ### compose diff
@@ -106,7 +107,7 @@ bb dispatch bramble "Fix the bug" --execute --json
 | `--json` | `false` | Emit JSON output |
 | `--app` | `$FLY_APP` | Fly app name |
 | `--token` | `$FLY_API_TOKEN` | Fly API token |
-| `--api-url` | `https://api.machines.dev` | Fly Machines API URL |
+| `--api-url` | `https://api.sprites.dev` | Sprites API URL |
 | `--org` | `$FLY_ORG` | Sprite org |
 | `--sprite-cli` | `$SPRITE_CLI` | Sprite CLI binary path |
 | `--composition` | `compositions/v1.yaml` | Composition YAML |

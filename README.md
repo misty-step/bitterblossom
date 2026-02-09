@@ -1,6 +1,6 @@
 # Bitterblossom
 
-Declarative sprite factory for provisioning and managing a fleet of Fly.io Sprites running Claude Code.
+Declarative sprite factory for provisioning and managing a fleet of [Sprites](https://sprites.dev) running Claude Code.
 
 ## What This Is
 
@@ -34,7 +34,7 @@ bitterblossom/
 
 ## How It Works
 
-1. **Provision:** `bb provision bramble` — creates a Fly.io sprite, uploads base config + persona, configures Claude Code
+1. **Provision:** `bb provision bramble` — creates a sprite, uploads base config + persona, configures Claude Code
 2. **Dispatch:** `bb dispatch bramble "Implement the auth middleware" --execute` — sends work to a sprite
 3. **Monitor:** `bb watchdog` — check fleet health, auto-recover dead sprites
 4. **Observe:** After tasks complete, log patterns in `observations/OBSERVATIONS.md`
@@ -46,8 +46,8 @@ bitterblossom/
 ```bash
 # Required for provision/sync (settings.json is rendered at runtime)
 export ANTHROPIC_AUTH_TOKEN="<moonshot-key>"
-export FLY_APP="<fly-app-name>"
-export FLY_API_TOKEN="<fly-api-token>"
+export FLY_API_TOKEN="<fly-api-token>"       # Sprites API uses Fly.io auth
+export FLY_ORG="misty-step"                  # Your org slug
 
 # Recommended for GitHub permission isolation (phase 1 shared bot account)
 export SPRITE_GITHUB_DEFAULT_USER="misty-step-sprites"
@@ -121,51 +121,32 @@ Any sprite can handle any task. Preferences improve quality for domain work but 
 
 ## Fleet Management: Sprites
 
-**Important:** This uses Fly.io **Sprites**, not Machines. They are different products:
-- Sprites: AI-native workloads with durable 100GB disks, auto-sleep (~$0 idle), Claude Code pre-installed
-- Machines: General-purpose VMs
+**Important:** [Sprites](https://sprites.dev) are a standalone service — they are NOT Fly.io Machines. Sprites are isolated Linux sandboxes with persistent filesystems, purpose-built for AI workloads. Always use the `sprite` CLI, never `fly machines`.
 
-Always use the `sprite` CLI, not `fly machines`.
+### API & CLI
 
-### API Endpoint
-
-Sprites are managed through the `api.sprites.dev` endpoint:
-```bash
-export FLY_API_HOSTNAME="https://api.sprites.dev"
-```
-
-### Sprite CLI Commands
-
-The sprite CLI provides specialized commands for managing AI workloads:
+- **API:** `https://api.sprites.dev` ([docs](https://sprites.dev/api))
+- **CLI:** `sprite` (installed at `~/.local/bin/sprite`)
+- **SDKs:** Go, Node, Python, Elixir
 
 ```bash
-# Create a new sprite
-sprite create <name> --region <region>
-
-# List all sprites
-sprite list
-
-# Get sprite details
-sprite show <name>
-
-# Connect to a sprite (SSH access)
-sprite connect <name>
-
-# Destroy a sprite
-sprite destroy <name>
+sprite create <name>          # Create a new sprite
+sprite list                   # List all sprites
+sprite show <name>            # Get sprite details
+sprite connect <name>         # SSH access
+sprite destroy <name>         # Destroy a sprite
 ```
 
-### Sprites vs Machines Comparison
+### Key Properties
 
-| Feature | Sprites | Machines |
-|---------|---------|----------|
-| **Purpose** | AI-native workloads | General-purpose VMs |
-| **Disk** | 100GB durable disk | Variable, ephemeral by default |
-| **Auto-sleep** | Yes (~$0 when idle) | No (always running) |
-| **Claude Code** | Pre-installed | Manual installation |
-| **Cost model** | Sleep-based billing | Always-on billing |
-| **CLI** | `sprite` commands | `fly machines` commands |
-| **API endpoint** | api.sprites.dev | api.fly.io |
+| Property | Detail |
+|----------|--------|
+| **Disk** | 100GB persistent filesystem |
+| **Auto-sleep** | Yes (~$0 when idle) |
+| **Claude Code** | Pre-installed |
+| **Checkpoints** | Point-in-time snapshots and restore |
+| **Networking** | TCP proxy tunneling, DNS-based network policies |
+| **Exec** | WebSocket-based command execution |
 
 ## Experimentation
 
