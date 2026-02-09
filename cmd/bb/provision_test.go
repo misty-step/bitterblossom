@@ -44,8 +44,9 @@ func TestProvisionCmdWiringSingleSprite(t *testing.T) {
 
 	cmd := newProvisionCmdWithDeps(deps)
 	var out bytes.Buffer
+	var errOut bytes.Buffer
 	cmd.SetOut(&out)
-	cmd.SetErr(&out)
+	cmd.SetErr(&errOut)
 	cmd.SetArgs([]string{"--composition", "compositions/v2.yaml", "willow"})
 
 	if err := cmd.Execute(); err != nil {
@@ -59,6 +60,9 @@ func TestProvisionCmdWiringSingleSprite(t *testing.T) {
 	}
 	if calls[0].CompositionLabel != "v2" {
 		t.Fatalf("composition label = %q, want v2", calls[0].CompositionLabel)
+	}
+	if !strings.Contains(errOut.String(), "starting provisioning") {
+		t.Fatalf("expected progress output, got %q", errOut.String())
 	}
 
 	var payload struct {
