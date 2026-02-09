@@ -5,11 +5,22 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/misty-step/bitterblossom/internal/provider"
 )
 
 // RenderSettings reads settings from settingsPath, injects the auth token,
 // and returns the path to a rendered temp file. Caller must clean up.
+// This is the legacy function for backward compatibility - uses default provider.
 func RenderSettings(settingsPath, authToken string) (string, error) {
+	// Use default provider configuration (Moonshot/Kimi for backward compatibility)
+	cfg := provider.Config{Provider: provider.ProviderInherit}
+	return RenderSettingsWithProvider(settingsPath, authToken, cfg)
+}
+
+// RenderSettingsWithProvider renders settings with a specific provider configuration.
+// This allows per-sprite provider/model selection.
+func RenderSettingsWithProvider(settingsPath, authToken string, cfg provider.Config) (string, error) {
 	token := strings.TrimSpace(authToken)
 	if token == "" {
 		return "", fmt.Errorf("ANTHROPIC_AUTH_TOKEN is required")
@@ -25,6 +36,7 @@ func RenderSettings(settingsPath, authToken string) (string, error) {
 		return "", fmt.Errorf("parse settings %q: %w", settingsPath, err)
 	}
 
+	// Get or create env map
 	envAny, ok := settings["env"]
 	if !ok {
 		settings["env"] = map[string]any{}
@@ -34,7 +46,18 @@ func RenderSettings(settingsPath, authToken string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("settings %q has invalid env object", settingsPath)
 	}
-	env["ANTHROPIC_AUTH_TOKEN"] = token
+
+	// Resolve provider configuration
+	resolved := cfg.Resolve()
+
+	// Generate provider-specific environment variables
+	providerEnv := resolved.EnvironmentVars(token)
+
+	// Merge provider env vars into settings env
+	// Provider vars take precedence over base settings
+	for key, value := range providerEnv {
+		env[key] = value
+	}
 
 	encoded, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {

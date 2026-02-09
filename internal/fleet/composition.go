@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/misty-step/bitterblossom/internal/provider"
 	"github.com/misty-step/bitterblossom/internal/sprite"
 )
 
@@ -27,6 +28,8 @@ type SpriteSpec struct {
 	Persona    sprite.Persona `json:"persona"`
 	Definition string         `json:"definition"`
 	Fallback   bool           `json:"fallback"`
+	// Provider configuration for this sprite (optional, inherits from base if empty)
+	Provider provider.Config `json:"provider,omitempty"`
 }
 
 type rawComposition struct {
@@ -36,10 +39,13 @@ type rawComposition struct {
 }
 
 type rawSpriteSpec struct {
-	Definition string
-	Preference string
-	Philosophy string
-	Fallback   bool
+	Definition     string
+	Preference     string
+	Philosophy     string
+	Fallback       bool
+	Provider       string // Provider identifier (e.g., "moonshot", "openrouter-claude")
+	Model          string // Model identifier (e.g., "kimi-k2.5", "anthropic/claude-opus-4")
+	ProviderConfig map[string]string // Additional provider env vars
 }
 
 var errInvalidComposition = errors.New("fleet: invalid composition")
@@ -101,7 +107,7 @@ func LoadCompositionWithSprites(path, spritesDir string) (Composition, error) {
 		return Composition{}, err
 	}
 
-	names := sortedKeys(raw.Sprites)
+	names := sortedRawSpriteSpecKeys(raw.Sprites)
 	specs := make([]SpriteSpec, 0, len(names))
 	for _, spriteName := range names {
 		rawSpec := raw.Sprites[spriteName]
@@ -119,6 +125,12 @@ func LoadCompositionWithSprites(path, spritesDir string) (Composition, error) {
 			return Composition{}, fmt.Errorf("%w: sprite %q references unknown persona %q", errInvalidComposition, spriteName, personaName)
 		}
 
+		// Parse provider configuration
+		providerCfg, err := parseProviderConfig(rawSpec)
+		if err != nil {
+			return Composition{}, fmt.Errorf("%w: sprite %q has invalid provider config: %w", errInvalidComposition, spriteName, err)
+		}
+
 		specs = append(specs, SpriteSpec{
 			Name: spriteName,
 			Persona: sprite.Persona{
@@ -129,6 +141,7 @@ func LoadCompositionWithSprites(path, spritesDir string) (Composition, error) {
 			},
 			Definition: resolved,
 			Fallback:   rawSpec.Fallback,
+			Provider:   providerCfg,
 		})
 	}
 
@@ -140,12 +153,66 @@ func LoadCompositionWithSprites(path, spritesDir string) (Composition, error) {
 	}, nil
 }
 
+// parseProviderConfig converts raw sprite spec to provider configuration.
+func parseProviderConfig(raw rawSpriteSpec) (provider.Config, error) {
+	// Handle the deprecated "model: inherit" pattern
+	if raw.Model == "inherit" {
+		raw.Model = ""
+	}
+
+	cfg := provider.Config{
+		Model:       raw.Model,
+		Environment: raw.ProviderConfig,
+	}
+
+	// Parse provider string if set
+	if raw.Provider != "" {
+		p, err := provider.ParseProvider(raw.Provider)
+		if err != nil {
+			return cfg, err
+		}
+		cfg.Provider = p
+	} else if raw.Model != "" && !strings.EqualFold(raw.Model, "inherit") {
+		// If model is specified without provider, try to infer provider from model
+		cfg.Provider = inferProviderFromModel(raw.Model)
+	}
+
+	if err := cfg.Validate(); err != nil {
+		return cfg, err
+	}
+
+	return cfg, nil
+}
+
+// inferProviderFromModel attempts to determine the provider based on model name.
+func inferProviderFromModel(model string) provider.Provider {
+	model = strings.ToLower(model)
+
+	// Check for Kimi models
+	if strings.Contains(model, "kimi") {
+		// Check if it looks like an OpenRouter format
+		if strings.Contains(model, "/") {
+			return provider.ProviderOpenRouterKimi
+		}
+		return provider.ProviderMoonshot
+	}
+
+	// Check for Claude models
+	if strings.Contains(model, "claude") {
+		return provider.ProviderOpenRouterClaude
+	}
+
+	// Default to inherit for unknown models
+	return provider.ProviderInherit
+}
+
 func parseCompositionYAML(input string) (rawComposition, error) {
 	result := rawComposition{Sprites: map[string]rawSpriteSpec{}}
 
 	scanner := bufio.NewScanner(strings.NewReader(input))
 	inSprites := false
 	currentSprite := ""
+	inProviderConfig := false
 
 	for lineNo := 1; scanner.Scan(); lineNo++ {
 		rawLine := stripInlineComment(scanner.Text())
@@ -159,6 +226,7 @@ func parseCompositionYAML(input string) (rawComposition, error) {
 		if indent == 0 {
 			currentSprite = ""
 			inSprites = false
+			inProviderConfig = false
 
 			key, value, ok := splitYAMLKeyValue(trimmed)
 			if !ok {
@@ -195,12 +263,18 @@ func parseCompositionYAML(input string) (rawComposition, error) {
 			if _, exists := result.Sprites[spriteName]; exists {
 				return rawComposition{}, fmt.Errorf("%w: duplicate sprite name %q", errInvalidComposition, spriteName)
 			}
-			result.Sprites[spriteName] = rawSpriteSpec{}
+			result.Sprites[spriteName] = rawSpriteSpec{ProviderConfig: map[string]string{}}
 			currentSprite = spriteName
+			inProviderConfig = false
 			continue
 		}
 
-		if currentSprite == "" || indent < 4 || strings.HasPrefix(strings.TrimSpace(rawLine), "- ") {
+		if currentSprite == "" || indent < 4 {
+			continue
+		}
+
+		// Check for list items (skills, strengths, etc.) - skip these
+		if strings.HasPrefix(strings.TrimSpace(rawLine), "-") {
 			continue
 		}
 
@@ -210,21 +284,55 @@ func parseCompositionYAML(input string) (rawComposition, error) {
 		}
 
 		spec := result.Sprites[currentSprite]
-		switch key {
-		case "definition":
-			spec.Definition = parseYAMLString(value)
-		case "preference":
-			spec.Preference = parseYAMLString(value)
-		case "philosophy":
-			spec.Philosophy = parseYAMLString(value)
-		case "fallback":
-			boolValue, err := strconv.ParseBool(strings.ToLower(parseYAMLString(value)))
-			if err != nil {
-				return rawComposition{}, fmt.Errorf("%w: invalid fallback boolean at line %d", errInvalidComposition, lineNo)
-			}
-			spec.Fallback = boolValue
+
+		// Handle provider config block
+		if key == "provider" && value == "" {
+			inProviderConfig = true
+			result.Sprites[currentSprite] = spec
+			continue
 		}
-		result.Sprites[currentSprite] = spec
+
+		// Handle provider config nested keys
+		if inProviderConfig && indent >= 6 {
+			switch key {
+			case "name", "provider":
+				spec.Provider = parseYAMLString(value)
+			case "model":
+				spec.Model = parseYAMLString(value)
+			default:
+				// Additional env vars
+				if spec.ProviderConfig == nil {
+					spec.ProviderConfig = map[string]string{}
+				}
+				spec.ProviderConfig[key] = parseYAMLString(value)
+			}
+			result.Sprites[currentSprite] = spec
+			continue
+		}
+
+		// Handle top-level sprite fields
+		if indent >= 4 {
+			switch key {
+			case "definition":
+				spec.Definition = parseYAMLString(value)
+			case "preference":
+				spec.Preference = parseYAMLString(value)
+			case "philosophy":
+				spec.Philosophy = parseYAMLString(value)
+			case "fallback":
+				boolValue, err := strconv.ParseBool(strings.ToLower(parseYAMLString(value)))
+				if err != nil {
+					return rawComposition{}, fmt.Errorf("%w: invalid fallback boolean at line %d", errInvalidComposition, lineNo)
+				}
+				spec.Fallback = boolValue
+			case "provider":
+				// Inline provider: "provider-name" format
+				spec.Provider = parseYAMLString(value)
+			case "model":
+				spec.Model = parseYAMLString(value)
+			}
+			result.Sprites[currentSprite] = spec
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		return rawComposition{}, err
@@ -343,4 +451,15 @@ func resolveDefinitionPath(compositionPath, definition string) string {
 
 	rootRelative := filepath.Clean(filepath.Join(filepath.Dir(filepath.Dir(compositionPath)), definition))
 	return rootRelative
+}
+
+// sortedKeys returns sorted keys from a rawSpriteSpec map.
+// This is a non-generic version to avoid conflict with the generic version in fleet.go
+func sortedRawSpriteSpecKeys(m map[string]rawSpriteSpec) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
