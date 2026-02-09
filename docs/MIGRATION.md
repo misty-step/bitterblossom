@@ -44,6 +44,8 @@ while keeping legacy invocation shapes intact:
 - `scripts/status.sh`
 - `scripts/teardown.sh`
 
+Compatibility is enforced by `scripts/test_legacy_wrappers.sh` and runs in `make test`.
+
 Wrapper `bb` resolution order:
 
 1. `BB_BIN` override

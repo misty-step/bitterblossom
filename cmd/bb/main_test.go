@@ -70,7 +70,34 @@ func TestVersionSubcommandOutput(t *testing.T) {
 	}
 }
 
-func TestRootWiresDispatchAndWatchdog(t *testing.T) {
+func TestRootHelpListsCoreCommandGroups(t *testing.T) {
+	t.Parallel()
+
+	root := newRootCommand()
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"--help"})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("execute help command: %v", err)
+	}
+
+	help := out.String()
+	for _, want := range []string{
+		"dispatch",
+		"provision",
+		"sync",
+		"status",
+		"teardown",
+	} {
+		if !strings.Contains(help, want) {
+			t.Fatalf("help output missing %q:\n%s", want, help)
+		}
+	}
+}
+
+func TestRootWiresCoreCommands(t *testing.T) {
 	t.Parallel()
 
 	root := newRootCommand()
@@ -78,11 +105,22 @@ func TestRootWiresDispatchAndWatchdog(t *testing.T) {
 	for _, command := range root.Commands() {
 		names[command.Name()] = struct{}{}
 	}
-	if _, ok := names["dispatch"]; !ok {
-		t.Fatal("dispatch command not wired")
-	}
-	if _, ok := names["watchdog"]; !ok {
-		t.Fatal("watchdog command not wired")
+
+	for _, want := range []string{
+		"agent",
+		"compose",
+		"dispatch",
+		"logs",
+		"provision",
+		"status",
+		"sync",
+		"teardown",
+		"watch",
+		"watchdog",
+	} {
+		if _, ok := names[want]; !ok {
+			t.Fatalf("%s command not wired", want)
+		}
 	}
 }
 
