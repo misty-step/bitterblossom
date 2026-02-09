@@ -1,19 +1,19 @@
-# Fly.io Sprites in Bitterblossom
+# Sprites in Bitterblossom
 
-Bitterblossom uses Fly.io Sprites as the compute substrate for AI coding agents. This document describes how BB provisions, manages, and monitors sprites.
+Bitterblossom uses [Sprites](https://sprites.dev) as the compute substrate for AI coding agents. Sprites are a standalone service — isolated Linux sandboxes with persistent filesystems, purpose-built for AI workloads. They are NOT Fly.io Machines. This document describes how BB provisions, manages, and monitors sprites.
 
 ## Overview
 
 ```
 ┌─────────────┐     ┌─────────────┐     ┌─────────────────┐
-│   bb CLI    │────▶│   Dispatch  │────▶│  Fly.io Sprite  │
-│  (local)    │     │  (provisioning│   │  (remote agent) │
+│   bb CLI    │────▶│   Dispatch  │────▶│     Sprite      │
+│  (local)    │     │ (provisioning)│   │  (remote agent) │
 └─────────────┘     └─────────────┘     └─────────────────┘
                            │                       │
                            ▼                       ▼
                     ┌─────────────┐        ┌─────────────┐
-                    │  Fly API    │        │ bb agent    │
-                    │api.sprites.dev      │ supervisor  │
+                    │ Sprites API │        │ bb agent    │
+                    │api.sprites.dev│      │ supervisor  │
                     └─────────────┘        └─────────────┘
 ```
 
@@ -70,7 +70,7 @@ When you run `bb dispatch`, BB executes this workflow:
    Yes /    \ No
       ▼      ▼
 ┌────────┐  ┌─────────────────┐
-│ SKIP   │  │ 3. PROVISION    │  Create via Fly API
+│ SKIP   │  │ 3. PROVISION    │  Create via Sprites API
 │        │  │                 │  Metadata: managed_by=bb.dispatch
 └────────┘  └────────┬────────┘
                      ▼
@@ -470,7 +470,6 @@ sprite exec -s my-sprite -- curl -H "Authorization: Bearer $ANTHROPIC_API_KEY" \
 
 ## See Also
 
-- **Fly.io Sprites Skill**: `~/.openclaw/workspace/skills/fly-sprites/SKILL.md`
 - **Sprite CLI Reference**: Run `sprite --help`
-- **API Documentation**: https://api.sprites.dev
-- **Composition Examples**: `~/bitterblossom/compositions/`
+- **API Documentation**: https://sprites.dev/api
+- **Composition Examples**: `compositions/`

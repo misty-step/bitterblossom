@@ -4,13 +4,13 @@ This file provides guidance to Claude Code when working in this repository.
 
 ## What This Is
 
-Bitterblossom is a declarative sprite factory. It provisions and manages Fly.io Sprites running Claude Code. This is infrastructure-as-config for AI agent orchestration.
+Bitterblossom is a declarative sprite factory. It provisions and manages [Sprites](https://sprites.dev) running Claude Code. This is infrastructure-as-config for AI agent orchestration.
 
 Go control plane (`bb` CLI) for fleet lifecycle, dispatch, and monitoring. Config, personas, and compositions are declarative.
 
 ## Key Concepts
 
-- **Sprites** = Fly.io AI workloads (NOT Machines). Durable 100GB disk, auto-sleep, Claude Code pre-installed.
+- **Sprites** = Isolated Linux sandboxes with persistent 100GB filesystems, auto-sleep, Claude Code pre-installed. Standalone service at [sprites.dev](https://sprites.dev) — NOT Fly.io Machines. Use the `sprite` CLI, not `fly machines`.
 - **Compositions** = Team hypotheses. YAML files defining which sprites exist and their preferences.
 - **Base config** = Shared engineering philosophy, hooks, skills inherited by all sprites.
 - **Persona** = Individual sprite identity and specialization (in `sprites/`).
