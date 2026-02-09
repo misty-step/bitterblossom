@@ -78,7 +78,7 @@ func TestConfig_Resolve(t *testing.T) {
 			},
 			want: ResolvedConfig{
 				Provider: ProviderOpenRouterKimi,
-				Model:    ModelKimiK25,
+				Model:    ModelOpenRouterKimiK25,
 			},
 		},
 		{
@@ -147,7 +147,7 @@ func TestResolvedConfig_EnvironmentVars(t *testing.T) {
 			name: "openrouter kimi",
 			cfg: ResolvedConfig{
 				Provider: ProviderOpenRouterKimi,
-				Model:    ModelKimiK25,
+				Model:    ModelOpenRouterKimiK25,
 			},
 			authToken: "test-token",
 			wantKeys: []string{
@@ -159,8 +159,19 @@ func TestResolvedConfig_EnvironmentVars(t *testing.T) {
 			},
 			checkVals: map[string]string{
 				"ANTHROPIC_BASE_URL":            "https://openrouter.ai/api/v1",
-				"ANTHROPIC_MODEL":               ModelKimiK25,
+				"ANTHROPIC_MODEL":               ModelOpenRouterKimiK25,
 				"CLAUDE_CODE_OPENROUTER_COMPAT": "1",
+			},
+		},
+		{
+			name: "openrouter kimi with model needing prefix",
+			cfg: ResolvedConfig{
+				Provider: ProviderOpenRouterKimi,
+				Model:    ModelKimiK25, // missing moonshotai/ prefix
+			},
+			authToken: "test-token",
+			checkVals: map[string]string{
+				"ANTHROPIC_MODEL": "moonshotai/kimi-k2.5",
 			},
 		},
 		{
@@ -257,7 +268,7 @@ func TestConfig_Validate(t *testing.T) {
 		},
 		{
 			name:    "valid openrouter kimi",
-			cfg:     Config{Provider: ProviderOpenRouterKimi, Model: ModelKimiK25},
+			cfg:     Config{Provider: ProviderOpenRouterKimi, Model: ModelOpenRouterKimiK25},
 			wantErr: false,
 		},
 		{
@@ -294,9 +305,9 @@ func TestConfig_Validate(t *testing.T) {
 
 func TestParseProvider(t *testing.T) {
 	tests := []struct {
-		input    string
-		want     Provider
-		wantErr  bool
+		input   string
+		want    Provider
+		wantErr bool
 	}{
 		{"moonshot", ProviderMoonshot, false},
 		{"kimi", ProviderMoonshot, false},
@@ -334,11 +345,11 @@ func TestGetAuthToken(t *testing.T) {
 	}()
 
 	tests := []struct {
-		name         string
-		openRouter   string
-		anthropic    string
-		provider     Provider
-		want         string
+		name       string
+		openRouter string
+		anthropic  string
+		provider   Provider
+		want       string
 	}{
 		{
 			name:       "openrouter key for openrouter provider",
@@ -380,6 +391,64 @@ func TestGetAuthToken(t *testing.T) {
 				t.Errorf("GetAuthToken(%v) = %q, want %q", tt.provider, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestResolveAuthToken(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider Provider
+		env      map[string]string
+		want     string
+	}{
+		{
+			name:     "openrouter provider prefers openrouter key",
+			provider: ProviderOpenRouterKimi,
+			env: map[string]string{
+				"OPENROUTER_API_KEY":   "openrouter-token",
+				"ANTHROPIC_AUTH_TOKEN": "anthropic-token",
+			},
+			want: "openrouter-token",
+		},
+		{
+			name:     "moonshot provider ignores openrouter key",
+			provider: ProviderMoonshot,
+			env: map[string]string{
+				"OPENROUTER_API_KEY":   "openrouter-token",
+				"ANTHROPIC_AUTH_TOKEN": "anthropic-token",
+			},
+			want: "anthropic-token",
+		},
+		{
+			name:     "inherit uses canonical default provider",
+			provider: ProviderInherit,
+			env: map[string]string{
+				"OPENROUTER_API_KEY": "openrouter-token",
+			},
+			want: "openrouter-token",
+		},
+		{
+			name:     "missing token",
+			provider: ProviderOpenRouterKimi,
+			env:      map[string]string{},
+			want:     "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			getenv := func(key string) string {
+				return tt.env[key]
+			}
+			got := ResolveAuthToken(tt.provider, getenv)
+			if got != tt.want {
+				t.Fatalf("ResolveAuthToken(%v) = %q, want %q", tt.provider, got, tt.want)
+			}
+		})
+	}
+
+	if got := ResolveAuthToken(ProviderOpenRouterKimi, nil); got != "" {
+		t.Fatalf("ResolveAuthToken(nil getenv) = %q, want empty string", got)
 	}
 }
 

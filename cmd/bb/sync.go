@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"time"
@@ -75,7 +76,11 @@ func newSyncCmdWithDeps(deps syncDeps) *cobra.Command {
 			cfg := defaultLifecycleConfig(rootDir, opts.Org)
 
 			settingsPath := filepath.Join(cfg.BaseDir, "settings.json")
-			renderedSettings, err := deps.renderSettings(settingsPath, deps.getenv("ANTHROPIC_AUTH_TOKEN"))
+			authToken := resolveLifecycleAuthToken(deps.getenv)
+			if authToken == "" {
+				return errors.New("sync: OPENROUTER_API_KEY is required (ANTHROPIC_AUTH_TOKEN is accepted as a legacy fallback)")
+			}
+			renderedSettings, err := deps.renderSettings(settingsPath, authToken)
 			if err != nil {
 				return err
 			}

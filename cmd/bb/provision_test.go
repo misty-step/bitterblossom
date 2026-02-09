@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/misty-step/bitterblossom/internal/lifecycle"
@@ -21,7 +22,7 @@ func TestProvisionCmdWiringSingleSprite(t *testing.T) {
 	deps := provisionDeps{
 		getwd: func() (string, error) { return rootDir, nil },
 		getenv: func(key string) string {
-			if key == "ANTHROPIC_AUTH_TOKEN" {
+			if key == "OPENROUTER_API_KEY" {
 				return "token"
 			}
 			return ""
@@ -81,7 +82,7 @@ func TestProvisionCmdAllUsesComposition(t *testing.T) {
 	deps := provisionDeps{
 		getwd: func() (string, error) { return rootDir, nil },
 		getenv: func(key string) string {
-			if key == "ANTHROPIC_AUTH_TOKEN" {
+			if key == "OPENROUTER_API_KEY" {
 				return "token"
 			}
 			return ""
@@ -108,5 +109,81 @@ func TestProvisionCmdAllUsesComposition(t *testing.T) {
 	}
 	if len(callNames) != 2 {
 		t.Fatalf("provision call count = %d, want 2", len(callNames))
+	}
+}
+
+func TestProvisionCmdAcceptsLegacyAuthFallback(t *testing.T) {
+	t.Parallel()
+
+	rootDir := t.TempDir()
+	rendered := filepath.Join(t.TempDir(), "rendered-settings.json")
+
+	deps := provisionDeps{
+		getwd: func() (string, error) { return rootDir, nil },
+		getenv: func(key string) string {
+			if key == "ANTHROPIC_AUTH_TOKEN" {
+				return "legacy-token"
+			}
+			return ""
+		},
+		newCLI:             func(string, string) sprite.SpriteCLI { return &sprite.MockSpriteCLI{} },
+		resolveComposition: func(string) ([]string, error) { return []string{"willow"}, nil },
+		resolveGitHubAuth: func(string, func(string) string) (lifecycle.GitHubAuth, error) {
+			return lifecycle.GitHubAuth{User: "u", Email: "e", Token: "t"}, nil
+		},
+		renderSettings: func(_ string, token string) (string, error) {
+			if token != "legacy-token" {
+				t.Fatalf("renderSettings token = %q, want legacy-token", token)
+			}
+			return rendered, nil
+		},
+		provision: func(_ context.Context, _ sprite.SpriteCLI, _ lifecycle.Config, opts lifecycle.ProvisionOpts) (lifecycle.ProvisionResult, error) {
+			return lifecycle.ProvisionResult{Name: opts.Name, Created: true}, nil
+		},
+	}
+
+	cmd := newProvisionCmdWithDeps(deps)
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"willow"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cmd.Execute() error = %v", err)
+	}
+}
+
+func TestProvisionCmdFailsWithoutCanonicalAuth(t *testing.T) {
+	t.Parallel()
+
+	rootDir := t.TempDir()
+
+	deps := provisionDeps{
+		getwd:              func() (string, error) { return rootDir, nil },
+		getenv:             func(string) string { return "" },
+		newCLI:             func(string, string) sprite.SpriteCLI { return &sprite.MockSpriteCLI{} },
+		resolveComposition: func(string) ([]string, error) { return []string{"willow"}, nil },
+		resolveGitHubAuth: func(string, func(string) string) (lifecycle.GitHubAuth, error) {
+			return lifecycle.GitHubAuth{User: "u", Email: "e", Token: "t"}, nil
+		},
+		renderSettings: func(string, string) (string, error) {
+			t.Fatal("renderSettings should not be called when auth is missing")
+			return "", nil
+		},
+		provision: func(_ context.Context, _ sprite.SpriteCLI, _ lifecycle.Config, _ lifecycle.ProvisionOpts) (lifecycle.ProvisionResult, error) {
+			t.Fatal("provision should not be called when auth is missing")
+			return lifecycle.ProvisionResult{}, nil
+		},
+	}
+
+	cmd := newProvisionCmdWithDeps(deps)
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"willow"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for missing canonical auth")
+	}
+	if !strings.Contains(err.Error(), "OPENROUTER_API_KEY") {
+		t.Fatalf("expected OPENROUTER_API_KEY guidance, got: %v", err)
 	}
 }

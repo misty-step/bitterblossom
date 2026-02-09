@@ -163,24 +163,24 @@ bb agent start \
 
 ## Kimi K2.5 Setup
 
-Kimi K2.5 runs via Moonshot's OpenAI-compatible API. Set these environment variables:
+Canonical runtime uses OpenRouter Kimi K2.5. Set these environment variables:
 
 ```bash
 # On the sprite, configure the environment
 sprite exec -s my-sprite -- bash -c 'cat >> ~/.bashrc << EOF
-export ANTHROPIC_BASE_URL=https://api.moonshot.cn/v1
-export ANTHROPIC_API_KEY=your-moonshot-api-key
+export ANTHROPIC_BASE_URL=https://openrouter.ai/api/v1
+export OPENROUTER_API_KEY=your-openrouter-api-key
+export ANTHROPIC_AUTH_TOKEN=$OPENROUTER_API_KEY
+export CLAUDE_CODE_OPENROUTER_COMPAT=1
 EOF'
 ```
 
 ### Dispatch with Kimi
 
 ```bash
-# Pass environment through bb dispatch
 bb dispatch my-sprite "Refactor authentication" \
   --repo misty-step/project \
-  --execute \
-  --env "ANTHROPIC_BASE_URL=https://api.moonshot.cn/v1,ANTHROPIC_API_KEY=$MOONSHOT_AI_API_KEY"
+  --execute
 ```
 
 ### Manual Agent Start with Kimi
@@ -190,8 +190,10 @@ bb dispatch my-sprite "Refactor authentication" \
 sprite console -s my-sprite
 
 # Then on the sprite:
-export ANTHROPIC_BASE_URL=https://api.moonshot.cn/v1
-export ANTHROPIC_API_KEY=your-moonshot-api-key
+export ANTHROPIC_BASE_URL=https://openrouter.ai/api/v1
+export OPENROUTER_API_KEY=your-openrouter-api-key
+export ANTHROPIC_AUTH_TOKEN="$OPENROUTER_API_KEY"
+export CLAUDE_CODE_OPENROUTER_COMPAT=1
 
 bb agent start \
   --agent kimi-code \
@@ -200,7 +202,7 @@ bb agent start \
   --task-repo misty-step/project
 ```
 
-**Note:** Kimi uses the `ANTHROPIC_*` variables because the API is OpenAI-compatible and BB's agent configuration uses this convention for all OpenAI-compatible endpoints.
+**Note:** BB uses `ANTHROPIC_*` variables for Claude/Kimi runtime compatibility. For canonical OpenRouter flow, source them from `OPENROUTER_API_KEY`.
 
 ---
 
@@ -329,8 +331,10 @@ sprite exec -s bb-dev-01 -- git config --global user.name "Bitterblossom"
 
 # Set up Kimi environment
 sprite exec -s bb-dev-01 -- bash -c 'cat >> ~/.bashrc << EOF
-export ANTHROPIC_BASE_URL=https://api.moonshot.cn/v1
-export ANTHROPIC_API_KEY='"$MOONSHOT_AI_API_KEY"'
+export ANTHROPIC_BASE_URL=https://openrouter.ai/api/v1
+export OPENROUTER_API_KEY='"$OPENROUTER_API_KEY"'
+export ANTHROPIC_AUTH_TOKEN=$OPENROUTER_API_KEY
+export CLAUDE_CODE_OPENROUTER_COMPAT=1
 EOF'
 ```
 
@@ -462,8 +466,8 @@ sprite exec -s my-sprite -- git config --list
 sprite exec -s my-sprite -- env | grep -E 'ANTHROPIC|OPENAI'
 
 # Test API directly
-sprite exec -s my-sprite -- curl -H "Authorization: Bearer $ANTHROPIC_API_KEY" \
-  https://api.moonshot.cn/v1/models
+sprite exec -s my-sprite -- curl -H "Authorization: Bearer $OPENROUTER_API_KEY" \
+  https://openrouter.ai/api/v1/models
 ```
 
 ---

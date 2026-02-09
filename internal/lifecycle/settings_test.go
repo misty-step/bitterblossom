@@ -41,6 +41,12 @@ func TestRenderSettingsInjectsToken(t *testing.T) {
 	if env["ANTHROPIC_AUTH_TOKEN"] != "test-token" {
 		t.Fatalf("token = %v, want test-token", env["ANTHROPIC_AUTH_TOKEN"])
 	}
+	if env["OPENROUTER_API_KEY"] != "test-token" {
+		t.Fatalf("OPENROUTER_API_KEY = %v, want test-token", env["OPENROUTER_API_KEY"])
+	}
+	if env["ANTHROPIC_MODEL"] != provider.ModelOpenRouterKimiK25 {
+		t.Fatalf("ANTHROPIC_MODEL = %v, want %s", env["ANTHROPIC_MODEL"], provider.ModelOpenRouterKimiK25)
+	}
 }
 
 func TestRenderSettingsMissingToken(t *testing.T) {
@@ -88,9 +94,9 @@ func TestRenderSettingsWithProvider(t *testing.T) {
 		},
 		{
 			name:         "openrouter kimi",
-			provider:     provider.Config{Provider: provider.ProviderOpenRouterKimi, Model: provider.ModelKimiK25},
+			provider:     provider.Config{Provider: provider.ProviderOpenRouterKimi, Model: provider.ModelOpenRouterKimiK25},
 			wantProvider: "openrouter-kimi",
-			wantModel:    "kimi-k2.5",
+			wantModel:    provider.ModelOpenRouterKimiK25,
 			wantBaseURL:  "https://openrouter.ai/api/v1",
 		},
 		{
@@ -103,9 +109,9 @@ func TestRenderSettingsWithProvider(t *testing.T) {
 		{
 			name:         "inherited uses base URL",
 			provider:     provider.Config{Provider: provider.ProviderInherit},
-			wantProvider: "moonshot",
-			wantModel:    "kimi-k2-thinking-turbo",
-			wantBaseURL:  "https://api.moonshot.ai/anthropic",
+			wantProvider: "openrouter-kimi",
+			wantModel:    provider.ModelOpenRouterKimiK25,
+			wantBaseURL:  "https://openrouter.ai/api/v1",
 		},
 	}
 
@@ -158,6 +164,10 @@ func TestRenderSettingsWithProvider(t *testing.T) {
 				if _, ok := env["CLAUDE_CODE_OPENROUTER_COMPAT"]; !ok {
 					t.Error("expected CLAUDE_CODE_OPENROUTER_COMPAT to be set")
 				}
+			case provider.ProviderMoonshot, provider.ProviderMoonshotAnthropic:
+				if _, ok := env["CLAUDE_CODE_OPENROUTER_COMPAT"]; ok {
+					t.Error("did not expect CLAUDE_CODE_OPENROUTER_COMPAT for moonshot providers")
+				}
 			}
 		})
 	}
@@ -176,7 +186,7 @@ func TestRenderSettingsWithCustomEnvVars(t *testing.T) {
 		Provider: provider.ProviderMoonshot,
 		Model:    provider.ModelKimiK25,
 		Environment: map[string]string{
-			"CUSTOM_VAR":    "custom_value",
+			"CUSTOM_VAR":     "custom_value",
 			"API_TIMEOUT_MS": "1200000",
 		},
 	}

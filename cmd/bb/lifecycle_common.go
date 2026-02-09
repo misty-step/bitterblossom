@@ -8,6 +8,7 @@ import (
 
 	"github.com/misty-step/bitterblossom/internal/fleet"
 	"github.com/misty-step/bitterblossom/internal/lifecycle"
+	"github.com/misty-step/bitterblossom/internal/provider"
 )
 
 const (
@@ -54,4 +55,8 @@ func resolveCompositionSprites(path string) ([]string, error) {
 		names = append(names, sprite.Name)
 	}
 	return names, nil
+}
+
+func resolveLifecycleAuthToken(getenv func(string) string) string {
+	return provider.ResolveAuthToken(provider.DefaultProvider, getenv)
 }

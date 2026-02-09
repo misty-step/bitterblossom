@@ -44,66 +44,37 @@ bitterblossom/
 ## Quick Start
 
 ```bash
-# Required for provision/sync (settings.json is rendered at runtime)
-export ANTHROPIC_AUTH_TOKEN="<moonshot-key>"
-export FLY_API_TOKEN="<fly-api-token>"       # Sprites API uses Fly.io auth
-export FLY_ORG="misty-step"                  # Your org slug
+# 0) Build CLI
+go build -o bb ./cmd/bb
 
-# Recommended for GitHub permission isolation (phase 1 shared bot account)
-export SPRITE_GITHUB_DEFAULT_USER="misty-step-sprites"
-export SPRITE_GITHUB_DEFAULT_EMAIL="misty-step-sprites@users.noreply.github.com"
-export SPRITE_GITHUB_DEFAULT_TOKEN="<github-bot-token>"
+# 1) Generate env exports (auto-detects org/app where possible)
+./scripts/onboard.sh --app bitterblossom-dash --write .env.bb
+source .env.bb
 
-# Fleet status
-bb status --format text
+# 2) If FLY_API_TOKEN is empty in .env.bb, create one (fly auth token is deprecated)
+fly tokens create org -o misty-step -n bb-cli -x 720h
+# then paste token into .env.bb and source again
 
-# Composition health: desired vs actual
-bb compose status
+# 3) Set model key
+export OPENROUTER_API_KEY="<openrouter-key>"
 
-# Provision all sprites from current composition
-bb provision --all
-
-# Provision a single sprite
-bb provision bramble
-
-# Dispatch a task (dry-run first, then execute)
-bb dispatch bramble "Build the user authentication API"
-bb dispatch bramble "Build the user authentication API" --execute
-
-# Dispatch with repo clone
-bb dispatch thorn --repo misty-step/heartbeat "Write tests for the webhook handler" --execute
-
-# Fleet health check (identifies dead/stale/blocked sprites)
-bb watchdog
-bb watchdog --execute    # auto-redispatch dead sprites
-
-# Sync config updates to running fleet
-bb sync
-
-# Decommission a sprite (exports MEMORY.md first)
-bb teardown bramble
+# 4) Launch a Ralph loop
+./bb provision bramble
+./bb dispatch bramble --repo misty-step/bitterblossom --ralph --file /tmp/task.md --execute
+./bb watchdog --sprite bramble
 ```
 
 See [docs/CLI-REFERENCE.md](docs/CLI-REFERENCE.md) for the complete command reference.
 
-## Multi-Provider Support (New in v3)
+## Runtime Profile
 
-Bitterblossom now supports multiple LLM providers. You can configure different providers per sprite:
+Bitterblossom ships one canonical runtime profile out of the box:
 
-```bash
-# Provision a sprite with Claude via OpenRouter
-export BB_PROVIDER_HEMLOCK=openrouter-claude
-export BB_MODEL_HEMLOCK=anthropic/claude-opus-4
-bb provision hemlock
-```
+- Provider: `openrouter-kimi`
+- Model: `moonshotai/kimi-k2.5`
+- Auth: `OPENROUTER_API_KEY`
 
-**Supported providers:**
-- `moonshot-anthropic` — Moonshot Anthropic endpoint (preferred for Claude Code) [default]
-- `moonshot` — Native Moonshot AI API (Kimi models)
-- `openrouter-kimi` — Kimi models via OpenRouter
-- `openrouter-claude` — Claude models via OpenRouter
-
-See [docs/PROVIDERS.md](docs/PROVIDERS.md) for full documentation and [compositions/v3-multi-provider.yaml](compositions/v3-multi-provider.yaml) for an example configuration.
+Legacy provider variants are still parseable for compatibility, but they are not the default path. See [docs/PROVIDERS.md](docs/PROVIDERS.md) for compatibility notes.
 
 ## Composition Philosophy
 
@@ -162,7 +133,7 @@ Compositions live in `compositions/`. When patterns suggest a change, create a n
 
 Secret detection runs on every PR and push to master via [TruffleHog](https://github.com/trufflesecurity/trufflehog). See [docs/SECRETS.md](docs/SECRETS.md) for local usage, leak response runbook, and how sprite auth tokens work.
 
-API keys are never stored in git. `base/settings.json` uses a placeholder rendered at provision/sync time from `$ANTHROPIC_AUTH_TOKEN`.
+API keys are never stored in git. `base/settings.json` uses a placeholder rendered at provision/sync time from `$OPENROUTER_API_KEY` (with `$ANTHROPIC_AUTH_TOKEN` accepted as a legacy fallback).
 
 ## CI Pipeline
 

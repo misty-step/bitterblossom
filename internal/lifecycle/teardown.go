@@ -98,6 +98,9 @@ func exportSettings(ctx context.Context, cli sprite.SpriteCLI, spriteName, remot
 			if _, exists := env["ANTHROPIC_AUTH_TOKEN"]; exists {
 				env["ANTHROPIC_AUTH_TOKEN"] = "__REDACTED__"
 			}
+			if _, exists := env["OPENROUTER_API_KEY"]; exists {
+				env["OPENROUTER_API_KEY"] = "__REDACTED__"
+			}
 		}
 	}
 

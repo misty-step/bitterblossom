@@ -116,16 +116,18 @@ Kaylee can review these branches and merge good changes back to main/base.
 ## 3. Model Configuration
 
 ### Current Setup
-All sprites use Kimi K2.5 via Moonshot's Anthropic-compatible API:
+All sprites use OpenRouter Kimi K2.5 as the canonical runtime profile:
 ```json
 {
-  "ANTHROPIC_BASE_URL": "https://api.moonshot.ai/anthropic",
-  "ANTHROPIC_MODEL": "kimi-k2.5",
-  "ANTHROPIC_AUTH_TOKEN": "<moonshot-key>"
+  "ANTHROPIC_BASE_URL": "https://openrouter.ai/api/v1",
+  "ANTHROPIC_MODEL": "moonshotai/kimi-k2.5",
+  "ANTHROPIC_AUTH_TOKEN": "<openrouter-key>",
+  "OPENROUTER_API_KEY": "<openrouter-key>",
+  "CLAUDE_CODE_OPENROUTER_COMPAT": "1"
 }
 ```
 
-`base/settings.json` stores non-secret defaults. `ANTHROPIC_AUTH_TOKEN` is injected at provision/sync time from the local `ANTHROPIC_AUTH_TOKEN` environment variable.
+`base/settings.json` stores non-secret defaults. Auth is injected at provision/sync time from local `OPENROUTER_API_KEY` (legacy fallback: `ANTHROPIC_AUTH_TOKEN`).
 The `model: inherit` in sprite definitions means "use whatever's in settings.json" — i.e., the base model config.
 
 ### Future

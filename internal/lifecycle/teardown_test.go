@@ -28,7 +28,7 @@ func TestTeardownHappyPath(t *testing.T) {
 			case "cat '/home/sprite/workspace/CLAUDE.md'":
 				return "claude content", nil
 			case "cat '/home/sprite/.claude/settings.json'":
-				return `{"env":{"ANTHROPIC_AUTH_TOKEN":"secret","X":"1"}}`, nil
+				return `{"env":{"ANTHROPIC_AUTH_TOKEN":"secret","OPENROUTER_API_KEY":"openrouter-secret","X":"1"}}`, nil
 			default:
 				return "", nil
 			}
@@ -69,6 +69,9 @@ func TestTeardownHappyPath(t *testing.T) {
 	}
 	if string(settingsRaw) == "" || !containsAny([]string{string(settingsRaw)}, "__REDACTED__") {
 		t.Fatalf("expected redacted token, got %q", string(settingsRaw))
+	}
+	if containsAny([]string{string(settingsRaw)}, "secret") || containsAny([]string{string(settingsRaw)}, "openrouter-secret") {
+		t.Fatalf("expected no raw secret values, got %q", string(settingsRaw))
 	}
 }
 

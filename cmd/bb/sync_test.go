@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/misty-step/bitterblossom/internal/lifecycle"
@@ -21,7 +22,7 @@ func TestSyncCmdWiring(t *testing.T) {
 	deps := syncDeps{
 		getwd: func() (string, error) { return rootDir, nil },
 		getenv: func(key string) string {
-			if key == "ANTHROPIC_AUTH_TOKEN" {
+			if key == "OPENROUTER_API_KEY" {
 				return "token"
 			}
 			return ""
@@ -75,7 +76,7 @@ func TestSyncCmdNoArgsUsesComposition(t *testing.T) {
 	deps := syncDeps{
 		getwd: func() (string, error) { return rootDir, nil },
 		getenv: func(key string) string {
-			if key == "ANTHROPIC_AUTH_TOKEN" {
+			if key == "OPENROUTER_API_KEY" {
 				return "token"
 			}
 			return ""
@@ -99,5 +100,75 @@ func TestSyncCmdNoArgsUsesComposition(t *testing.T) {
 	}
 	if len(callNames) != 2 {
 		t.Fatalf("sync call count = %d, want 2", len(callNames))
+	}
+}
+
+func TestSyncCmdAcceptsLegacyAuthFallback(t *testing.T) {
+	t.Parallel()
+
+	rootDir := t.TempDir()
+	rendered := filepath.Join(t.TempDir(), "rendered-settings.json")
+
+	deps := syncDeps{
+		getwd: func() (string, error) { return rootDir, nil },
+		getenv: func(key string) string {
+			if key == "ANTHROPIC_AUTH_TOKEN" {
+				return "legacy-token"
+			}
+			return ""
+		},
+		newCLI:             func(string, string) sprite.SpriteCLI { return &sprite.MockSpriteCLI{} },
+		resolveComposition: func(string) ([]string, error) { return []string{"willow"}, nil },
+		renderSettings: func(_ string, token string) (string, error) {
+			if token != "legacy-token" {
+				t.Fatalf("renderSettings token = %q, want legacy-token", token)
+			}
+			return rendered, nil
+		},
+		sync: func(_ context.Context, _ sprite.SpriteCLI, _ lifecycle.Config, _ lifecycle.SyncOpts) error {
+			return nil
+		},
+	}
+
+	cmd := newSyncCmdWithDeps(deps)
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"willow"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cmd.Execute() error = %v", err)
+	}
+}
+
+func TestSyncCmdFailsWithoutCanonicalAuth(t *testing.T) {
+	t.Parallel()
+
+	rootDir := t.TempDir()
+
+	deps := syncDeps{
+		getwd:              func() (string, error) { return rootDir, nil },
+		getenv:             func(string) string { return "" },
+		newCLI:             func(string, string) sprite.SpriteCLI { return &sprite.MockSpriteCLI{} },
+		resolveComposition: func(string) ([]string, error) { return []string{"willow"}, nil },
+		renderSettings: func(string, string) (string, error) {
+			t.Fatal("renderSettings should not be called when auth is missing")
+			return "", nil
+		},
+		sync: func(_ context.Context, _ sprite.SpriteCLI, _ lifecycle.Config, _ lifecycle.SyncOpts) error {
+			t.Fatal("sync should not be called when auth is missing")
+			return nil
+		},
+	}
+
+	cmd := newSyncCmdWithDeps(deps)
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"willow"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for missing canonical auth")
+	}
+	if !strings.Contains(err.Error(), "OPENROUTER_API_KEY") {
+		t.Fatalf("expected OPENROUTER_API_KEY guidance, got: %v", err)
 	}
 }

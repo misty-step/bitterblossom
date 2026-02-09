@@ -1,8 +1,7 @@
 // Package provider abstracts LLM provider configurations for Bitterblossom sprites.
 //
 // This package provides a unified interface for configuring different LLM providers
-// (Moonshot/Kimi via OpenRouter, Claude via OpenRouter) while maintaining
-// backward compatibility with existing composition YAMLs.
+// while keeping one canonical default profile for sprite runtime.
 package provider
 
 import (
@@ -16,7 +15,7 @@ type Provider string
 
 const (
 	// ProviderMoonshotAnthropic uses Moonshot AI's Anthropic-compatible endpoint.
-	// This is the preferred/default provider for new sprite dispatches.
+	// This is retained for compatibility with legacy compositions.
 	ProviderMoonshotAnthropic Provider = "moonshot-anthropic"
 
 	// ProviderMoonshot uses Moonshot AI (Kimi models) via their native Anthropic-compatible API.
@@ -38,6 +37,7 @@ const (
 	// Kimi models
 	ModelKimiK25             = "kimi-k2.5"
 	ModelKimiK2ThinkingTurbo = "kimi-k2-thinking-turbo"
+	ModelOpenRouterKimiK25   = "moonshotai/kimi-k2.5"
 
 	// Claude models via OpenRouter
 	ModelClaudeOpus4   = "anthropic/claude-opus-4"
@@ -45,10 +45,10 @@ const (
 	ModelClaudeHaiku4  = "anthropic/claude-haiku-4"
 )
 
-// Default provider and model for backward compatibility.
+// Default provider and model for canonical runtime operation.
 const (
-	DefaultProvider = ProviderMoonshotAnthropic
-	DefaultModel    = ModelKimiK2ThinkingTurbo
+	DefaultProvider = ProviderOpenRouterKimi
+	DefaultModel    = ModelOpenRouterKimiK25
 )
 
 // Config holds provider-specific configuration for a sprite.
@@ -89,8 +89,10 @@ func (c Config) Resolve() ResolvedConfig {
 		switch provider {
 		case ProviderMoonshotAnthropic:
 			model = ModelKimiK2ThinkingTurbo
-		case ProviderMoonshot, ProviderOpenRouterKimi:
+		case ProviderMoonshot:
 			model = ModelKimiK25
+		case ProviderOpenRouterKimi:
+			model = ModelOpenRouterKimiK25
 		case ProviderOpenRouterClaude:
 			model = ModelClaudeOpus4
 		}
@@ -138,8 +140,12 @@ func (r ResolvedConfig) EnvironmentVars(authToken string) map[string]string {
 	case ProviderOpenRouterKimi:
 		// Kimi via OpenRouter
 		env["ANTHROPIC_BASE_URL"] = "https://openrouter.ai/api/v1"
-		env["ANTHROPIC_MODEL"] = r.Model
-		env["ANTHROPIC_SMALL_FAST_MODEL"] = r.Model
+		model := r.Model
+		if !strings.Contains(model, "/") {
+			model = "moonshotai/" + model
+		}
+		env["ANTHROPIC_MODEL"] = model
+		env["ANTHROPIC_SMALL_FAST_MODEL"] = model
 		// OpenRouter uses OPENROUTER_API_KEY, but we can also use ANTHROPIC_AUTH_TOKEN
 		// Claude Code will use ANTHROPIC_AUTH_TOKEN if set
 		if authToken != "" {
@@ -242,6 +248,7 @@ func AvailableModels() map[string][]string {
 			ModelKimiK25,
 		},
 		string(ProviderOpenRouterKimi): {
+			ModelOpenRouterKimiK25,
 			ModelKimiK25,
 		},
 		string(ProviderOpenRouterClaude): {
@@ -255,19 +262,38 @@ func AvailableModels() map[string][]string {
 // GetAuthToken retrieves the appropriate auth token from environment variables.
 // It checks provider-specific variables first, then falls back to generic ones.
 func GetAuthToken(provider Provider) string {
+	return ResolveAuthToken(provider, os.Getenv)
+}
+
+// ResolveAuthToken retrieves auth token for a provider using the supplied getenv function.
+// OpenRouter providers prefer OPENROUTER_API_KEY and fall back to ANTHROPIC_AUTH_TOKEN.
+// Moonshot providers only use ANTHROPIC_AUTH_TOKEN.
+func ResolveAuthToken(provider Provider, getenv func(string) string) string {
+	if getenv == nil {
+		return ""
+	}
+
+	get := func(key string) string {
+		return strings.TrimSpace(getenv(key))
+	}
+
+	if provider == "" || provider == ProviderInherit {
+		provider = DefaultProvider
+	}
+
 	// Check provider-specific env vars first
 	switch provider {
 	case ProviderOpenRouterKimi, ProviderOpenRouterClaude:
 		// OpenRouter providers: check OPENROUTER_API_KEY first, then fall back to ANTHROPIC_AUTH_TOKEN
-		if token := os.Getenv("OPENROUTER_API_KEY"); token != "" {
+		if token := get("OPENROUTER_API_KEY"); token != "" {
 			return token
 		}
-		if token := os.Getenv("ANTHROPIC_AUTH_TOKEN"); token != "" {
+		if token := get("ANTHROPIC_AUTH_TOKEN"); token != "" {
 			return token
 		}
 	case ProviderMoonshotAnthropic, ProviderMoonshot:
 		// Moonshot providers: ONLY check ANTHROPIC_AUTH_TOKEN
-		if token := os.Getenv("ANTHROPIC_AUTH_TOKEN"); token != "" {
+		if token := get("ANTHROPIC_AUTH_TOKEN"); token != "" {
 			return token
 		}
 	}
