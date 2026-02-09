@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -94,11 +95,16 @@ func newProvisionCmdWithDeps(deps provisionDeps) *cobra.Command {
 			compositionLabel := strings.TrimSuffix(filepath.Base(opts.Composition), filepath.Ext(opts.Composition))
 
 			results := make([]lifecycle.ProvisionResult, 0, len(names))
-			for _, name := range names {
+			total := len(names)
+			for idx, name := range names {
+				stepPrefix := fmt.Sprintf("[%d/%d] %s", idx+1, total, name)
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "%s: starting provisioning\n", stepPrefix)
+
 				auth, err := deps.resolveGitHubAuth(name, deps.getenv)
 				if err != nil {
 					return err
 				}
+
 				result, err := deps.provision(runCtx, cli, cfg, lifecycle.ProvisionOpts{
 					Name:             name,
 					CompositionLabel: compositionLabel,
@@ -106,10 +112,19 @@ func newProvisionCmdWithDeps(deps provisionDeps) *cobra.Command {
 					GitHubAuth:       auth,
 					BootstrapScript:  filepath.Join(cfg.RootDir, "scripts", "sprite-bootstrap.sh"),
 					AgentScript:      filepath.Join(cfg.RootDir, "scripts", "sprite-agent.sh"),
+					Progress: func(progress lifecycle.ProvisionProgress) {
+						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "%s: %s\n", stepPrefix, progress.Message)
+					},
 				})
 				if err != nil {
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "%s: failed: %v\n", stepPrefix, err)
 					return err
 				}
+				status := "updated"
+				if result.Created {
+					status = "created"
+				}
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "%s: done (%s)\n", stepPrefix, status)
 				results = append(results, result)
 			}
 

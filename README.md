@@ -58,6 +58,9 @@ fly tokens create org -o misty-step -n bb-cli -x 720h
 # 3) Set model key
 export OPENROUTER_API_KEY="<openrouter-key>"
 
+# 3.1) Required for Cerberus PR review (GitHub Actions)
+printf '%s' "$OPENROUTER_API_KEY" | gh secret set OPENROUTER_API_KEY --repo misty-step/bitterblossom
+
 # 4) Launch a Ralph loop
 ./bb provision bramble
 ./bb dispatch bramble --repo misty-step/bitterblossom --ralph --file /tmp/task.md --execute

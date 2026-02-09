@@ -22,13 +22,14 @@ type statusOptions struct {
 	Org         string
 	SpriteCLI   string
 	Format      string
+	Checkpoints bool
 	Timeout     time.Duration
 }
 
 type statusDeps struct {
 	getwd         func() (string, error)
 	newCLI        func(binary, org string) sprite.SpriteCLI
-	fleetOverview func(ctx context.Context, cli sprite.SpriteCLI, cfg lifecycle.Config, compositionPath string) (lifecycle.FleetStatus, error)
+	fleetOverview func(ctx context.Context, cli sprite.SpriteCLI, cfg lifecycle.Config, compositionPath string, opts lifecycle.FleetOverviewOpts) (lifecycle.FleetStatus, error)
 	spriteDetail  func(ctx context.Context, cli sprite.SpriteCLI, cfg lifecycle.Config, name string) (lifecycle.SpriteDetailResult, error)
 }
 
@@ -54,6 +55,7 @@ func newStatusCmdWithDeps(deps statusDeps) *cobra.Command {
 		Org:         defaultOrg(),
 		SpriteCLI:   defaultSpriteCLIPath(),
 		Format:      "json",
+		Checkpoints: false,
 		Timeout:     2 * time.Minute,
 	}
 
@@ -79,20 +81,30 @@ func newStatusCmdWithDeps(deps statusDeps) *cobra.Command {
 			defer cancel()
 
 			if len(args) == 0 {
-				status, err := deps.fleetOverview(runCtx, cli, cfg, opts.Composition)
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "status: fetching fleet overview")
+				if opts.Checkpoints {
+					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "status: fetching checkpoints (slower)")
+				}
+
+				status, err := deps.fleetOverview(runCtx, cli, cfg, opts.Composition, lifecycle.FleetOverviewOpts{
+					IncludeCheckpoints: opts.Checkpoints,
+				})
 				if err != nil {
 					return err
 				}
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "status: loaded %d sprites\n", len(status.Sprites))
 				if format == "json" {
 					return contracts.WriteJSON(cmd.OutOrStdout(), "status.fleet", status)
 				}
 				return writeFleetStatusText(cmd.OutOrStdout(), status, opts.Composition)
 			}
 
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "status: fetching detail for %s\n", args[0])
 			detail, err := deps.spriteDetail(runCtx, cli, cfg, args[0])
 			if err != nil {
 				return err
 			}
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "status: detail loaded for %s\n", args[0])
 			if format == "json" {
 				return contracts.WriteJSON(cmd.OutOrStdout(), "status.sprite", detail)
 			}
@@ -104,6 +116,7 @@ func newStatusCmdWithDeps(deps statusDeps) *cobra.Command {
 	command.Flags().StringVar(&opts.Org, "org", opts.Org, "Sprites organization")
 	command.Flags().StringVar(&opts.SpriteCLI, "sprite-cli", opts.SpriteCLI, "Path to sprite CLI")
 	command.Flags().StringVar(&opts.Format, "format", opts.Format, "Output format: json|text")
+	command.Flags().BoolVar(&opts.Checkpoints, "checkpoints", opts.Checkpoints, "Fetch checkpoint listings (slower for large fleets)")
 	command.Flags().DurationVar(&opts.Timeout, "timeout", opts.Timeout, "Command timeout")
 
 	return command
@@ -163,6 +176,10 @@ func writeFleetStatusText(out io.Writer, status lifecycle.FleetStatus, compositi
 	}
 
 	if _, err := fmt.Fprintln(out); err != nil {
+		return err
+	}
+	if !status.CheckpointsIncluded {
+		_, err := fmt.Fprintln(out, "Checkpoints: skipped (use --checkpoints)")
 		return err
 	}
 	if _, err := fmt.Fprintln(out, "Checkpoints:"); err != nil {

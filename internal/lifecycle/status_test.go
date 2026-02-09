@@ -32,7 +32,9 @@ sprites:
 		},
 	}
 
-	status, err := FleetOverview(context.Background(), cli, fx.cfg, compositionPath)
+	status, err := FleetOverview(context.Background(), cli, fx.cfg, compositionPath, FleetOverviewOpts{
+		IncludeCheckpoints: true,
+	})
 	if err != nil {
 		t.Fatalf("FleetOverview() error = %v", err)
 	}
@@ -50,6 +52,47 @@ sprites:
 	}
 	if status.Checkpoints["thorn"] != "(none)" {
 		t.Fatalf("checkpoint for thorn = %q", status.Checkpoints["thorn"])
+	}
+	if !status.CheckpointsIncluded {
+		t.Fatalf("CheckpointsIncluded = false, want true")
+	}
+}
+
+func TestFleetOverviewSkipsCheckpointsByDefault(t *testing.T) {
+	t.Parallel()
+
+	fx := newFixture(t, "bramble")
+	compositionPath := filepath.Join(fx.rootDir, "compositions", "v1.yaml")
+	writeFixtureFile(t, compositionPath, `version: 1
+name: "test"
+sprites:
+  bramble:
+    definition: sprites/bramble.md
+`)
+
+	var checkpointCalls int
+	cli := &sprite.MockSpriteCLI{
+		APIFn: func(context.Context, string, string) (string, error) {
+			return `{"sprites":[{"name":"bramble","status":"running","url":"https://bramble"}]}`, nil
+		},
+		CheckpointListFn: func(_ context.Context, _ string, _ string) (string, error) {
+			checkpointCalls++
+			return "checkpoint-a", nil
+		},
+	}
+
+	status, err := FleetOverview(context.Background(), cli, fx.cfg, compositionPath, FleetOverviewOpts{})
+	if err != nil {
+		t.Fatalf("FleetOverview() error = %v", err)
+	}
+	if checkpointCalls != 0 {
+		t.Fatalf("checkpoint calls = %d, want 0", checkpointCalls)
+	}
+	if status.CheckpointsIncluded {
+		t.Fatalf("CheckpointsIncluded = true, want false")
+	}
+	if len(status.Checkpoints) != 0 {
+		t.Fatalf("len(Checkpoints) = %d, want 0", len(status.Checkpoints))
 	}
 }
 
