@@ -13,6 +13,11 @@
 | `ANTHROPIC_AUTH_TOKEN` | Legacy auth fallback when `OPENROUTER_API_KEY` is unset |
 
 > **Note:** Sprites are a standalone service at [sprites.dev](https://sprites.dev), not Fly.io Machines. The `FLY_*` env vars are used because Sprites API authenticates via Fly.io tokens.
+>
+> **Token creation:** `fly auth token` is deprecated. Use:
+> `fly tokens create org -o misty-step -n bb-cli -x 720h`
+>
+> **Onboarding helper:** `./scripts/onboard.sh --app bitterblossom-dash --write .env.bb && source .env.bb`
 
 ---
 

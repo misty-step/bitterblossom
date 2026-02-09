@@ -44,44 +44,24 @@ bitterblossom/
 ## Quick Start
 
 ```bash
-# Required for provision/sync (settings.json is rendered at runtime)
+# 0) Build CLI
+go build -o bb ./cmd/bb
+
+# 1) Generate env exports (auto-detects org/app where possible)
+./scripts/onboard.sh --app bitterblossom-dash --write .env.bb
+source .env.bb
+
+# 2) If FLY_API_TOKEN is empty in .env.bb, create one (fly auth token is deprecated)
+fly tokens create org -o misty-step -n bb-cli -x 720h
+# then paste token into .env.bb and source again
+
+# 3) Set model key
 export OPENROUTER_API_KEY="<openrouter-key>"
-export FLY_API_TOKEN="<fly-api-token>"       # Sprites API uses Fly.io auth
-export FLY_ORG="misty-step"                  # Your org slug
 
-# Recommended for GitHub permission isolation (phase 1 shared bot account)
-export SPRITE_GITHUB_DEFAULT_USER="misty-step-sprites"
-export SPRITE_GITHUB_DEFAULT_EMAIL="misty-step-sprites@users.noreply.github.com"
-export SPRITE_GITHUB_DEFAULT_TOKEN="<github-bot-token>"
-
-# Fleet status
-bb status --format text
-
-# Composition health: desired vs actual
-bb compose status
-
-# Provision all sprites from current composition
-bb provision --all
-
-# Provision a single sprite
-bb provision bramble
-
-# Dispatch a task (dry-run first, then execute)
-bb dispatch bramble "Build the user authentication API"
-bb dispatch bramble "Build the user authentication API" --execute
-
-# Dispatch with repo clone
-bb dispatch thorn --repo misty-step/heartbeat "Write tests for the webhook handler" --execute
-
-# Fleet health check (identifies dead/stale/blocked sprites)
-bb watchdog
-bb watchdog --execute    # auto-redispatch dead sprites
-
-# Sync config updates to running fleet
-bb sync
-
-# Decommission a sprite (exports MEMORY.md first)
-bb teardown bramble
+# 4) Launch a Ralph loop
+./bb provision bramble
+./bb dispatch bramble --repo misty-step/bitterblossom --ralph --file /tmp/task.md --execute
+./bb watchdog --sprite bramble
 ```
 
 See [docs/CLI-REFERENCE.md](docs/CLI-REFERENCE.md) for the complete command reference.
