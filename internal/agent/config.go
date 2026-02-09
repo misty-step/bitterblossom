@@ -13,10 +13,13 @@ import (
 type AgentKind string
 
 const (
-	AgentCodex AgentKind = "codex"
-	AgentKimi  AgentKind = "kimi-code"
-	AgentClaude AgentKind = "claude"
+	AgentCodex    AgentKind = "codex"
+	AgentKimi     AgentKind = "kimi-code"
+	AgentClaude   AgentKind = "claude"
+	AgentOpenCode AgentKind = "opencode"
 )
+
+const defaultOpenCodeModel = "openrouter/moonshotai/kimi-k2.5"
 
 // TaskAssignment is the active work item supervised on the sprite.
 type TaskAssignment struct {
@@ -39,15 +42,15 @@ func (t TaskAssignment) Validate() error {
 
 // AgentConfig defines which coding agent to run and how to invoke it.
 type AgentConfig struct {
-	Kind           AgentKind          `json:"kind"`
-	Command        string             `json:"command,omitempty"`
-	Flags          []string           `json:"flags,omitempty"`
-	Model          string             `json:"model,omitempty"`
-	Yolo           bool               `json:"yolo,omitempty"`
-	FullAuto       bool               `json:"full_auto,omitempty"`
-	Environment    map[string]string  `json:"environment,omitempty"`
-	PassThroughEnv []string           `json:"pass_through_env,omitempty"`
-	Assignment     TaskAssignment     `json:"assignment"`
+	Kind           AgentKind         `json:"kind"`
+	Command        string            `json:"command,omitempty"`
+	Flags          []string          `json:"flags,omitempty"`
+	Model          string            `json:"model,omitempty"`
+	Yolo           bool              `json:"yolo,omitempty"`
+	FullAuto       bool              `json:"full_auto,omitempty"`
+	Environment    map[string]string `json:"environment,omitempty"`
+	PassThroughEnv []string          `json:"pass_through_env,omitempty"`
+	Assignment     TaskAssignment    `json:"assignment"`
 }
 
 // RuntimePaths stores pid/state/log file locations for supervisor runtime artifacts.
@@ -89,7 +92,7 @@ func (c AgentConfig) Validate() error {
 // Valid reports whether the agent kind is supported.
 func (k AgentKind) Valid() bool {
 	switch k {
-	case AgentCodex, AgentKimi, AgentClaude:
+	case AgentCodex, AgentKimi, AgentClaude, AgentOpenCode:
 		return true
 	default:
 		return false
@@ -104,6 +107,8 @@ func (k AgentKind) defaultCommand() string {
 		return "kimi-code"
 	case AgentClaude:
 		return "claude"
+	case AgentOpenCode:
+		return "opencode"
 	default:
 		return ""
 	}
@@ -123,7 +128,25 @@ func (c AgentConfig) CommandAndArgs() (string, []string, error) {
 		return "", nil, fmt.Errorf("no command configured for agent kind %q", c.Kind)
 	}
 
-	args := make([]string, 0, len(c.Flags)+6)
+	args := make([]string, 0, len(c.Flags)+8)
+	if c.Kind == AgentOpenCode {
+		model := strings.TrimSpace(c.Model)
+		if model == "" {
+			model = defaultOpenCodeModel
+		}
+		args = append(args, "run", "-m", model, "--agent", "coder")
+		for _, flag := range c.Flags {
+			flag = strings.TrimSpace(flag)
+			if flag == "" {
+				continue
+			}
+			args = append(args, flag)
+		}
+		args = append(args, c.Assignment.Prompt)
+
+		return command, args, nil
+	}
+
 	if c.Yolo {
 		switch c.Kind {
 		case AgentClaude:
