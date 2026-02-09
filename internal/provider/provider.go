@@ -15,7 +15,7 @@ type Provider string
 
 const (
 	// ProviderMoonshotAnthropic uses Moonshot AI's Anthropic-compatible endpoint.
-	// This is the preferred/default provider for new sprite dispatches.
+	// This is retained for compatibility with legacy compositions.
 	ProviderMoonshotAnthropic Provider = "moonshot-anthropic"
 
 	// ProviderMoonshot uses Moonshot AI (Kimi models) via their native Anthropic-compatible API.
@@ -262,19 +262,38 @@ func AvailableModels() map[string][]string {
 // GetAuthToken retrieves the appropriate auth token from environment variables.
 // It checks provider-specific variables first, then falls back to generic ones.
 func GetAuthToken(provider Provider) string {
+	return ResolveAuthToken(provider, os.Getenv)
+}
+
+// ResolveAuthToken retrieves auth token for a provider using the supplied getenv function.
+// OpenRouter providers prefer OPENROUTER_API_KEY and fall back to ANTHROPIC_AUTH_TOKEN.
+// Moonshot providers only use ANTHROPIC_AUTH_TOKEN.
+func ResolveAuthToken(provider Provider, getenv func(string) string) string {
+	if getenv == nil {
+		return ""
+	}
+
+	get := func(key string) string {
+		return strings.TrimSpace(getenv(key))
+	}
+
+	if provider == "" || provider == ProviderInherit {
+		provider = DefaultProvider
+	}
+
 	// Check provider-specific env vars first
 	switch provider {
 	case ProviderOpenRouterKimi, ProviderOpenRouterClaude:
 		// OpenRouter providers: check OPENROUTER_API_KEY first, then fall back to ANTHROPIC_AUTH_TOKEN
-		if token := os.Getenv("OPENROUTER_API_KEY"); token != "" {
+		if token := get("OPENROUTER_API_KEY"); token != "" {
 			return token
 		}
-		if token := os.Getenv("ANTHROPIC_AUTH_TOKEN"); token != "" {
+		if token := get("ANTHROPIC_AUTH_TOKEN"); token != "" {
 			return token
 		}
 	case ProviderMoonshotAnthropic, ProviderMoonshot:
 		// Moonshot providers: ONLY check ANTHROPIC_AUTH_TOKEN
-		if token := os.Getenv("ANTHROPIC_AUTH_TOKEN"); token != "" {
+		if token := get("ANTHROPIC_AUTH_TOKEN"); token != "" {
 			return token
 		}
 	}

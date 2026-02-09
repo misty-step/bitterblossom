@@ -103,6 +103,42 @@ func TestSyncCmdNoArgsUsesComposition(t *testing.T) {
 	}
 }
 
+func TestSyncCmdAcceptsLegacyAuthFallback(t *testing.T) {
+	t.Parallel()
+
+	rootDir := t.TempDir()
+	rendered := filepath.Join(t.TempDir(), "rendered-settings.json")
+
+	deps := syncDeps{
+		getwd: func() (string, error) { return rootDir, nil },
+		getenv: func(key string) string {
+			if key == "ANTHROPIC_AUTH_TOKEN" {
+				return "legacy-token"
+			}
+			return ""
+		},
+		newCLI:             func(string, string) sprite.SpriteCLI { return &sprite.MockSpriteCLI{} },
+		resolveComposition: func(string) ([]string, error) { return []string{"willow"}, nil },
+		renderSettings: func(_ string, token string) (string, error) {
+			if token != "legacy-token" {
+				t.Fatalf("renderSettings token = %q, want legacy-token", token)
+			}
+			return rendered, nil
+		},
+		sync: func(_ context.Context, _ sprite.SpriteCLI, _ lifecycle.Config, _ lifecycle.SyncOpts) error {
+			return nil
+		},
+	}
+
+	cmd := newSyncCmdWithDeps(deps)
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"willow"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cmd.Execute() error = %v", err)
+	}
+}
+
 func TestSyncCmdFailsWithoutCanonicalAuth(t *testing.T) {
 	t.Parallel()
 

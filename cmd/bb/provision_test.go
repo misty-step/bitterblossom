@@ -112,6 +112,45 @@ func TestProvisionCmdAllUsesComposition(t *testing.T) {
 	}
 }
 
+func TestProvisionCmdAcceptsLegacyAuthFallback(t *testing.T) {
+	t.Parallel()
+
+	rootDir := t.TempDir()
+	rendered := filepath.Join(t.TempDir(), "rendered-settings.json")
+
+	deps := provisionDeps{
+		getwd: func() (string, error) { return rootDir, nil },
+		getenv: func(key string) string {
+			if key == "ANTHROPIC_AUTH_TOKEN" {
+				return "legacy-token"
+			}
+			return ""
+		},
+		newCLI:             func(string, string) sprite.SpriteCLI { return &sprite.MockSpriteCLI{} },
+		resolveComposition: func(string) ([]string, error) { return []string{"willow"}, nil },
+		resolveGitHubAuth: func(string, func(string) string) (lifecycle.GitHubAuth, error) {
+			return lifecycle.GitHubAuth{User: "u", Email: "e", Token: "t"}, nil
+		},
+		renderSettings: func(_ string, token string) (string, error) {
+			if token != "legacy-token" {
+				t.Fatalf("renderSettings token = %q, want legacy-token", token)
+			}
+			return rendered, nil
+		},
+		provision: func(_ context.Context, _ sprite.SpriteCLI, _ lifecycle.Config, opts lifecycle.ProvisionOpts) (lifecycle.ProvisionResult, error) {
+			return lifecycle.ProvisionResult{Name: opts.Name, Created: true}, nil
+		},
+	}
+
+	cmd := newProvisionCmdWithDeps(deps)
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"willow"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cmd.Execute() error = %v", err)
+	}
+}
+
 func TestProvisionCmdFailsWithoutCanonicalAuth(t *testing.T) {
 	t.Parallel()
 

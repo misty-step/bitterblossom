@@ -394,6 +394,64 @@ func TestGetAuthToken(t *testing.T) {
 	}
 }
 
+func TestResolveAuthToken(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider Provider
+		env      map[string]string
+		want     string
+	}{
+		{
+			name:     "openrouter provider prefers openrouter key",
+			provider: ProviderOpenRouterKimi,
+			env: map[string]string{
+				"OPENROUTER_API_KEY":   "openrouter-token",
+				"ANTHROPIC_AUTH_TOKEN": "anthropic-token",
+			},
+			want: "openrouter-token",
+		},
+		{
+			name:     "moonshot provider ignores openrouter key",
+			provider: ProviderMoonshot,
+			env: map[string]string{
+				"OPENROUTER_API_KEY":   "openrouter-token",
+				"ANTHROPIC_AUTH_TOKEN": "anthropic-token",
+			},
+			want: "anthropic-token",
+		},
+		{
+			name:     "inherit uses canonical default provider",
+			provider: ProviderInherit,
+			env: map[string]string{
+				"OPENROUTER_API_KEY": "openrouter-token",
+			},
+			want: "openrouter-token",
+		},
+		{
+			name:     "missing token",
+			provider: ProviderOpenRouterKimi,
+			env:      map[string]string{},
+			want:     "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			getenv := func(key string) string {
+				return tt.env[key]
+			}
+			got := ResolveAuthToken(tt.provider, getenv)
+			if got != tt.want {
+				t.Fatalf("ResolveAuthToken(%v) = %q, want %q", tt.provider, got, tt.want)
+			}
+		})
+	}
+
+	if got := ResolveAuthToken(ProviderOpenRouterKimi, nil); got != "" {
+		t.Fatalf("ResolveAuthToken(nil getenv) = %q, want empty string", got)
+	}
+}
+
 func TestAvailableProviders(t *testing.T) {
 	providers := AvailableProviders()
 	expected := []string{"moonshot-anthropic", "moonshot", "openrouter-kimi", "openrouter-claude", "inherit"}
