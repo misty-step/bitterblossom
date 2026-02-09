@@ -257,15 +257,19 @@ func AvailableModels() map[string][]string {
 func GetAuthToken(provider Provider) string {
 	// Check provider-specific env vars first
 	switch provider {
-	case ProviderMoonshotAnthropic, ProviderMoonshot, ProviderOpenRouterKimi, ProviderOpenRouterClaude:
+	case ProviderOpenRouterKimi, ProviderOpenRouterClaude:
+		// OpenRouter providers: check OPENROUTER_API_KEY first, then fall back to ANTHROPIC_AUTH_TOKEN
 		if token := os.Getenv("OPENROUTER_API_KEY"); token != "" {
 			return token
 		}
-	}
-
-	// Fall back to generic env vars
-	if token := os.Getenv("ANTHROPIC_AUTH_TOKEN"); token != "" {
-		return token
+		if token := os.Getenv("ANTHROPIC_AUTH_TOKEN"); token != "" {
+			return token
+		}
+	case ProviderMoonshotAnthropic, ProviderMoonshot:
+		// Moonshot providers: ONLY check ANTHROPIC_AUTH_TOKEN
+		if token := os.Getenv("ANTHROPIC_AUTH_TOKEN"); token != "" {
+			return token
+		}
 	}
 
 	return ""
