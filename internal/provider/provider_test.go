@@ -329,8 +329,8 @@ func TestGetAuthToken(t *testing.T) {
 	origOpenRouter := os.Getenv("OPENROUTER_API_KEY")
 	origAnthropic := os.Getenv("ANTHROPIC_AUTH_TOKEN")
 	defer func() {
-		os.Setenv("OPENROUTER_API_KEY", origOpenRouter)
-		os.Setenv("ANTHROPIC_AUTH_TOKEN", origAnthropic)
+		_ = os.Setenv("OPENROUTER_API_KEY", origOpenRouter)
+		_ = os.Setenv("ANTHROPIC_AUTH_TOKEN", origAnthropic)
 	}()
 
 	tests := []struct {
@@ -372,8 +372,8 @@ func TestGetAuthToken(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			os.Setenv("OPENROUTER_API_KEY", tt.openRouter)
-			os.Setenv("ANTHROPIC_AUTH_TOKEN", tt.anthropic)
+			_ = os.Setenv("OPENROUTER_API_KEY", tt.openRouter)
+			_ = os.Setenv("ANTHROPIC_AUTH_TOKEN", tt.anthropic)
 
 			got := GetAuthToken(tt.provider)
 			if got != tt.want {
