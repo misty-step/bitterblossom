@@ -16,6 +16,8 @@ concurrency:
 
 jobs:
   review:
+    # Never run Cerberus with secrets on fork PRs.
+    if: github.event.pull_request.head.repo.full_name == github.repository
     name: "${{ matrix.reviewer }}"
     runs-on: ubuntu-latest
     strategy:
@@ -29,11 +31,12 @@ jobs:
       fail-fast: false
     steps:
       - uses: actions/checkout@v4
-      - uses: misty-step/cerberus@v1
+      - uses: misty-step/cerberus@v2
         with:
           perspective: ${{ matrix.perspective }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          kimi-api-key: ${{ secrets.MOONSHOT_API_KEY }}
+          api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          timeout: '600'
 
   verdict:
     name: "Council Verdict"
@@ -41,6 +44,6 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - uses: misty-step/cerberus/verdict@v1
+      - uses: misty-step/cerberus/verdict@v2
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
