@@ -16,8 +16,8 @@ REMOTE_HOME="/home/sprite"
 WORKSPACE="$REMOTE_HOME/workspace"
 COMPOSITION="${COMPOSITION:-$ROOT_DIR/compositions/v1.yaml}"
 
-# Provider configuration (defaults to moonshot for backward compatibility)
-BB_PROVIDER="${BB_PROVIDER:-moonshot}"
+# Provider configuration (defaults to moonshot-anthropic for consistency with Go code)
+BB_PROVIDER="${BB_PROVIDER:-moonshot-anthropic}"
 BB_MODEL="${BB_MODEL:-}"
 BB_OPENROUTER_API_KEY="${BB_OPENROUTER_API_KEY:-${OPENROUTER_API_KEY:-}}"
 
