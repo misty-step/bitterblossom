@@ -15,10 +15,11 @@ import (
 
 // FleetStatus contains fleet and composition state.
 type FleetStatus struct {
-	Sprites     []SpriteStatus     `json:"sprites"`
-	Composition []CompositionEntry `json:"composition"`
-	Orphans     []SpriteStatus     `json:"orphans"`
-	Checkpoints map[string]string  `json:"checkpoints"`
+	Sprites             []SpriteStatus     `json:"sprites"`
+	Composition         []CompositionEntry `json:"composition"`
+	Orphans             []SpriteStatus     `json:"orphans"`
+	Checkpoints         map[string]string  `json:"checkpoints"`
+	CheckpointsIncluded bool               `json:"checkpoints_included"`
 }
 
 // SpriteStatus describes one live sprite from the Sprite API.
@@ -51,8 +52,13 @@ type spriteAPIListResponse struct {
 	} `json:"sprites"`
 }
 
+// FleetOverviewOpts configures expensive fleet overview features.
+type FleetOverviewOpts struct {
+	IncludeCheckpoints bool
+}
+
 // FleetOverview returns live fleet status + composition coverage + checkpoint summaries.
-func FleetOverview(ctx context.Context, cli sprite.SpriteCLI, cfg Config, compositionPath string) (FleetStatus, error) {
+func FleetOverview(ctx context.Context, cli sprite.SpriteCLI, cfg Config, compositionPath string, opts FleetOverviewOpts) (FleetStatus, error) {
 	if err := requireConfig(cfg); err != nil {
 		return FleetStatus{}, err
 	}
@@ -93,25 +99,29 @@ func FleetOverview(ctx context.Context, cli sprite.SpriteCLI, cfg Config, compos
 		return orphans[i].Name < orphans[j].Name
 	})
 
-	checkpoints := make(map[string]string, len(live))
-	for _, item := range live {
-		value, err := cli.CheckpointList(ctx, item.Name, cfg.Org)
-		if err != nil {
-			checkpoints[item.Name] = "(none)"
-			continue
+	checkpoints := make(map[string]string)
+	if opts.IncludeCheckpoints {
+		checkpoints = make(map[string]string, len(live))
+		for _, item := range live {
+			value, err := cli.CheckpointList(ctx, item.Name, cfg.Org)
+			if err != nil {
+				checkpoints[item.Name] = "(none)"
+				continue
+			}
+			value = strings.TrimSpace(value)
+			if value == "" {
+				value = "(none)"
+			}
+			checkpoints[item.Name] = value
 		}
-		value = strings.TrimSpace(value)
-		if value == "" {
-			value = "(none)"
-		}
-		checkpoints[item.Name] = value
 	}
 
 	return FleetStatus{
-		Sprites:     live,
-		Composition: entries,
-		Orphans:     orphans,
-		Checkpoints: checkpoints,
+		Sprites:             live,
+		Composition:         entries,
+		Orphans:             orphans,
+		Checkpoints:         checkpoints,
+		CheckpointsIncluded: opts.IncludeCheckpoints,
 	}, nil
 }
 
