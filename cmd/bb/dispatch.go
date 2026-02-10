@@ -142,7 +142,8 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 			}
 
 			// Pre-dispatch issue validation
-			if !opts.SkipValidation && opts.Issue > 0 {
+			// Skip validation for dry-run (Execute=false) to keep planning fast and offline.
+			if opts.Execute && !opts.SkipValidation && opts.Issue > 0 {
 				validationResult, err := dispatchsvc.ValidateIssueFromRequest(cmd.Context(), dispatchsvc.Request{
 					Sprite:  args[0],
 					Prompt:  prompt,

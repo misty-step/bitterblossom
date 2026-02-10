@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // IssueValidator validates GitHub issues before dispatch.
@@ -71,6 +72,13 @@ func DefaultIssueValidator() *IssueValidator {
 
 // defaultRunGH executes the gh CLI command.
 func defaultRunGH(ctx context.Context, args ...string) ([]byte, error) {
+	// Add a safety timeout if the caller didn't set one.
+	// gh calls can hang on network issues; dispatch should have a bounded critical path.
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+	}
 	cmd := exec.CommandContext(ctx, "gh", args...)
 	return cmd.Output()
 }
