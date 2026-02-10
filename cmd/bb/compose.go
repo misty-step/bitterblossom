@@ -232,11 +232,10 @@ func loadFleetState(ctx context.Context, opts composeOptions, deps composeDeps) 
 		return fleet.Composition{}, nil, nil, err
 	}
 
-	if strings.TrimSpace(opts.App) == "" {
-		return fleet.Composition{}, nil, nil, errors.New("--app (or FLY_APP) is required")
-	}
-	if strings.TrimSpace(opts.Token) == "" {
-		return fleet.Composition{}, nil, nil, errors.New("--token (or FLY_API_TOKEN/FLY_TOKEN) is required")
+	appMissing := strings.TrimSpace(opts.App) == ""
+	tokenMissing := strings.TrimSpace(opts.Token) == ""
+	if appMissing || tokenMissing {
+		return fleet.Composition{}, nil, nil, errors.New("Error: FLY_APP and FLY_API_TOKEN are required for sprite operations.\n  export FLY_APP=your-app\n  export FLY_API_TOKEN=your-token")
 	}
 
 	client, err := deps.newClient(opts.Token, opts.APIURL)

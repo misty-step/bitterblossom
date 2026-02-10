@@ -94,11 +94,10 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 				return err
 			}
 
-			if strings.TrimSpace(opts.App) == "" {
-				return errors.New("dispatch: --app (or FLY_APP) is required")
-			}
-			if strings.TrimSpace(opts.Token) == "" {
-				return errors.New("dispatch: --token (or FLY_API_TOKEN/FLY_TOKEN) is required")
+			appMissing := strings.TrimSpace(opts.App) == ""
+			tokenMissing := strings.TrimSpace(opts.Token) == ""
+			if appMissing || tokenMissing {
+				return errors.New("Error: FLY_APP and FLY_API_TOKEN are required for sprite operations.\n  export FLY_APP=your-app\n  export FLY_API_TOKEN=your-token")
 			}
 
 			flyClient, err := deps.newFlyClient(opts.Token, opts.APIURL)
