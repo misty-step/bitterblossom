@@ -200,6 +200,9 @@ func (r ResolvedConfig) EnvironmentVars(authToken string) map[string]string {
 	case ProviderProxy:
 		// Proxy provider: local Node.js proxy translates Anthropic API to OpenAI
 		// The proxy runs on localhost:4000 and forwards to OpenRouter
+		// Security note: The proxy binds to localhost without authentication.
+		// This is acceptable for single-tenant sprites but should be documented
+		// for multi-tenant deployments where any local process could access the proxy.
 		env["ANTHROPIC_BASE_URL"] = "http://127.0.0.1:4000"
 		env["ANTHROPIC_API_KEY"] = "proxy-mode"
 		// The proxy handles auth via OPENROUTER_API_KEY env var on the sprite
@@ -210,6 +213,7 @@ func (r ResolvedConfig) EnvironmentVars(authToken string) map[string]string {
 		}
 		env["ANTHROPIC_MODEL"] = model
 		env["ANTHROPIC_SMALL_FAST_MODEL"] = model
+		env["CLAUDE_CODE_SUBAGENT_MODEL"] = model
 	}
 
 	// Common settings for all providers

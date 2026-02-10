@@ -21,7 +21,7 @@ import http from 'node:http';
 import https from 'node:https';
 
 const PORT = parseInt(process.env.PROXY_PORT || '4000');
-const PID_FILE = process.env.PROXY_PID_FILE || '/tmp/anthropic-proxy.pid';
+const PID_FILE = process.env.PROXY_PID_FILE || '/run/sprite/anthropic-proxy.pid';
 const UPSTREAM_BASE = process.env.UPSTREAM_BASE || 'https://openrouter.ai';
 const UPSTREAM_PATH = process.env.UPSTREAM_PATH || '/api/v1/chat/completions';
 const API_KEY = process.env.OPENROUTER_API_KEY || '';
@@ -271,7 +271,19 @@ const server = http.createServer((req, res) => {
   }
 
   let body = '';
-  req.on('data', (c) => { body += c; });
+  let bodySize = 0;
+  const MAX_BODY_SIZE = 10 * 1024 * 1024; // 10MB max request size
+
+  req.on('data', (c) => {
+    bodySize += Buffer.byteLength(c);
+    if (bodySize > MAX_BODY_SIZE) {
+      res.writeHead(413, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ type: 'error', error: { type: 'request_too_large', message: 'Request body exceeds 10MB limit' } }));
+      req.destroy();
+      return;
+    }
+    body += c;
+  });
   req.on('end', () => {
     let anthropicBody;
     try { anthropicBody = JSON.parse(body); } catch (e) {
@@ -292,6 +304,7 @@ const server = http.createServer((req, res) => {
       port: url.port || 443,
       path: url.pathname,
       method: 'POST',
+      timeout: 300000, // 5 minute timeout
       headers: {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(payload),
@@ -302,10 +315,13 @@ const server = http.createServer((req, res) => {
         let errBody = '';
         upstreamRes.on('data', (c) => { errBody += c; });
         upstreamRes.on('end', () => {
-          console.error(`[proxy] upstream ${upstreamRes.statusCode}: ${errBody.slice(0, 200)}`);
+          console.error(`[proxy] upstream ${upstreamRes.statusCode}: ${errBody.slice(0, 500)}`);
+          // Sanitize error message - log full error server-side but return generic message to client
+          const sanitizedMessage = `Upstream API error (HTTP ${upstreamRes.statusCode})`;
           res.writeHead(upstreamRes.statusCode, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: errBody } }));
+          res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: sanitizedMessage } }));
         });
+        upstreamRes.on('error', () => { /* ignore errors on error response */ });
         return;
       }
 
@@ -325,6 +341,15 @@ const server = http.createServer((req, res) => {
       }
     });
 
+    upstream.on('timeout', () => {
+      console.error('[proxy] upstream request timeout');
+      upstream.destroy();
+      if (!res.headersSent) {
+        res.writeHead(504, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: 'Upstream request timeout' } }));
+      }
+    });
+
     upstream.write(payload);
     upstream.end();
   });
@@ -333,9 +358,31 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, '127.0.0.1', () => {
   try {
-    fs.writeFileSync(PID_FILE, String(process.pid));
+    // Ensure directory exists (create if using /run/sprite/)
+    const pidDir = PID_FILE.substring(0, PID_FILE.lastIndexOf('/'));
+    if (!fs.existsSync(pidDir)) {
+      fs.mkdirSync(pidDir, { recursive: true, mode: 0o755 });
+    }
+    fs.writeFileSync(PID_FILE, String(process.pid), { mode: 0o644 });
     console.log(`[anthropic-proxy] pid=${process.pid} port=${PORT} model=${TARGET_MODEL} pidfile=${PID_FILE}`);
   } catch (err) {
     console.error('[anthropic-proxy] failed to write PID file:', err.message);
   }
 });
+
+// Cleanup PID file on shutdown
+function cleanup() {
+  try {
+    if (fs.existsSync(PID_FILE)) {
+      fs.unlinkSync(PID_FILE);
+      console.log('[anthropic-proxy] cleaned up PID file');
+    }
+  } catch (err) {
+    // Ignore cleanup errors
+  }
+  process.exit(0);
+}
+
+process.on('SIGINT', cleanup);
+process.on('SIGTERM', cleanup);
+process.on('SIGQUIT', cleanup);
