@@ -58,7 +58,7 @@ func Init(ctx context.Context, disco MachineDiscoverer, cfg InitConfig) (*InitRe
 	}
 
 	if len(machines) == 0 {
-		return nil, fmt.Errorf("onboarding: no machines found in app %q — provision sprites first or check your FLY_API_TOKEN", cfg.App)
+		return nil, fmt.Errorf("onboarding: no machines found in app %q — provision sprites first or check FLY_API_TOKEN", cfg.App)
 	}
 
 	// Sort machines by ID for deterministic name assignment.
@@ -82,12 +82,13 @@ func Init(ctx context.Context, disco MachineDiscoverer, cfg InitConfig) (*InitRe
 		regPath = registry.DefaultPath()
 	}
 
-	// Load existing or create empty registry at a temp path to get an initialized struct.
-	// We use a non-existent path to get a fresh registry, then save to the real path.
+	// Load existing registry or start fresh.
 	reg, err := registry.Load(regPath)
 	if err != nil {
-		// If load fails (corrupt file), start fresh with a temp path.
-		reg, _ = registry.Load(regPath + ".init-tmp")
+		// If load fails (corrupt file), log and start fresh.
+		reg = &registry.Registry{
+			Sprites: make(map[string]registry.SpriteEntry),
+		}
 	}
 
 	// Set metadata.

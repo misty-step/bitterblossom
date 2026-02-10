@@ -194,3 +194,43 @@ func TestDefaultPathContainsExpectedSuffix(t *testing.T) {
 	}
 }
 
+func TestValidateRegistryPath_BlocksSystemDirs(t *testing.T) {
+	blocked := []string{
+		"/etc/bb/registry.toml",
+		"/usr/local/registry.toml",
+		"/bin/registry.toml",
+		"/sbin/registry.toml",
+	}
+	for _, path := range blocked {
+		if _, err := validateRegistryPath(path); err == nil {
+			t.Errorf("validateRegistryPath(%q) should be blocked", path)
+		}
+	}
+}
+
+func TestValidateRegistryPath_BlocksTraversal(t *testing.T) {
+	// filepath.Abs resolves ".." so "/home/../etc/x.toml" → "/etc/x.toml" → blocked by system dir rule.
+	if _, err := validateRegistryPath("/home/../etc/passwd.toml"); err == nil {
+		t.Error("should block path traversal that resolves to /etc/")
+	}
+}
+
+func TestValidateRegistryPath_RequiresToml(t *testing.T) {
+	if _, err := validateRegistryPath("/home/user/registry.json"); err == nil {
+		t.Error("should reject non-.toml extension")
+	}
+}
+
+func TestValidateRegistryPath_AllowsValidPaths(t *testing.T) {
+	// Temp dirs should be allowed for testing.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "registry.toml")
+	validated, err := validateRegistryPath(path)
+	if err != nil {
+		t.Fatalf("validateRegistryPath(%q) error = %v", path, err)
+	}
+	if validated == "" {
+		t.Fatal("validated path is empty")
+	}
+}
+
