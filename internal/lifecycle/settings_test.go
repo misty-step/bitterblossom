@@ -38,11 +38,12 @@ func TestRenderSettingsInjectsToken(t *testing.T) {
 	if !ok {
 		t.Fatal("env is not a map")
 	}
-	if env["ANTHROPIC_AUTH_TOKEN"] != "test-token" {
-		t.Fatalf("token = %v, want test-token", env["ANTHROPIC_AUTH_TOKEN"])
+	// Proxy provider uses local proxy - no ANTHROPIC_AUTH_TOKEN or OPENROUTER_API_KEY in settings
+	if env["ANTHROPIC_API_KEY"] != "proxy-mode" {
+		t.Fatalf("ANTHROPIC_API_KEY = %v, want proxy-mode", env["ANTHROPIC_API_KEY"])
 	}
-	if env["OPENROUTER_API_KEY"] != "test-token" {
-		t.Fatalf("OPENROUTER_API_KEY = %v, want test-token", env["OPENROUTER_API_KEY"])
+	if env["ANTHROPIC_BASE_URL"] != "http://127.0.0.1:4000" {
+		t.Fatalf("ANTHROPIC_BASE_URL = %v, want http://127..0.0.1:4000", env["ANTHROPIC_BASE_URL"])
 	}
 	if env["ANTHROPIC_MODEL"] != provider.ModelOpenRouterKimiK25 {
 		t.Fatalf("ANTHROPIC_MODEL = %v, want %s", env["ANTHROPIC_MODEL"], provider.ModelOpenRouterKimiK25)
@@ -107,11 +108,11 @@ func TestRenderSettingsWithProvider(t *testing.T) {
 			wantBaseURL:  "https://openrouter.ai/api",
 		},
 		{
-			name:         "inherited uses base URL",
+			name:         "inherited uses proxy provider",
 			provider:     provider.Config{Provider: provider.ProviderInherit},
-			wantProvider: "openrouter-kimi",
+			wantProvider: "proxy",
 			wantModel:    provider.ModelOpenRouterKimiK25,
-			wantBaseURL:  "https://openrouter.ai/api",
+			wantBaseURL:  "http://127.0.0.1:4000",
 		},
 	}
 
@@ -140,11 +141,6 @@ func TestRenderSettingsWithProvider(t *testing.T) {
 				t.Fatal("env is not a map")
 			}
 
-			// Check token is set
-			if env["ANTHROPIC_AUTH_TOKEN"] != "test-token" {
-				t.Errorf("token = %v, want test-token", env["ANTHROPIC_AUTH_TOKEN"])
-			}
-
 			// Check base URL is overridden correctly
 			if got := env["ANTHROPIC_BASE_URL"]; got != tt.wantBaseURL {
 				t.Errorf("ANTHROPIC_BASE_URL = %v, want %v", got, tt.wantBaseURL)
@@ -164,9 +160,22 @@ func TestRenderSettingsWithProvider(t *testing.T) {
 				if _, ok := env["CLAUDE_CODE_OPENROUTER_COMPAT"]; !ok {
 					t.Error("expected CLAUDE_CODE_OPENROUTER_COMPAT to be set")
 				}
+				// Check token is set
+				if env["ANTHROPIC_AUTH_TOKEN"] != "test-token" {
+					t.Errorf("token = %v, want test-token", env["ANTHROPIC_AUTH_TOKEN"])
+				}
 			case provider.ProviderMoonshot, provider.ProviderMoonshotAnthropic:
 				if _, ok := env["CLAUDE_CODE_OPENROUTER_COMPAT"]; ok {
 					t.Error("did not expect CLAUDE_CODE_OPENROUTER_COMPAT for moonshot providers")
+				}
+				// Check token is set
+				if env["ANTHROPIC_AUTH_TOKEN"] != "test-token" {
+					t.Errorf("token = %v, want test-token", env["ANTHROPIC_AUTH_TOKEN"])
+				}
+			case provider.ProviderInherit:
+				// Inherited now uses proxy provider
+				if env["ANTHROPIC_API_KEY"] != "proxy-mode" {
+					t.Errorf("ANTHROPIC_API_KEY = %v, want proxy-mode", env["ANTHROPIC_API_KEY"])
 				}
 			}
 		})

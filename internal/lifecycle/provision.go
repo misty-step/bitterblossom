@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/misty-step/bitterblossom/internal/proxy"
 	"github.com/misty-step/bitterblossom/internal/sprite"
 )
 
@@ -35,6 +36,7 @@ const (
 	ProvisionStageVerifyGit        ProvisionStage = "verify_git"
 	ProvisionStageUploadBootstrap  ProvisionStage = "upload_bootstrap"
 	ProvisionStageUploadAgent      ProvisionStage = "upload_agent"
+	ProvisionStageUploadProxy      ProvisionStage = "upload_proxy"
 	ProvisionStageRunBootstrap     ProvisionStage = "run_bootstrap"
 	ProvisionStageCheckpoint       ProvisionStage = "checkpoint"
 	ProvisionStageComplete         ProvisionStage = "complete"
@@ -197,6 +199,12 @@ func Provision(ctx context.Context, cli sprite.SpriteCLI, cfg Config, opts Provi
 	if err := cli.UploadFile(ctx, name, cfg.Org, agentScript, "/tmp/sprite-agent.sh"); err != nil {
 		return ProvisionResult{}, err
 	}
+
+	emitProvisionProgress(name, opts.Progress, ProvisionStageUploadProxy, "uploading anthropic proxy script")
+	if err := cli.Upload(ctx, name, proxy.ProxyScriptPath, proxy.ProxyScript); err != nil {
+		return ProvisionResult{}, err
+	}
+
 	emitProvisionProgress(name, opts.Progress, ProvisionStageRunBootstrap, "running bootstrap")
 	if _, err := cli.Exec(ctx, name, "bash /tmp/sprite-bootstrap.sh --agent-source /tmp/sprite-agent.sh", nil); err != nil {
 		return ProvisionResult{}, fmt.Errorf("run bootstrap for %q: %w", name, err)

@@ -36,6 +36,7 @@ func TestProvisionHappyPath(t *testing.T) {
 			uploaded = append(uploaded, remotePath)
 			return nil
 		},
+		UploadFn: func(context.Context, string, string, []byte) error { return nil },
 		CheckpointCreateFn: func(context.Context, string, string) error {
 			checkpointCalled = true
 			return nil
@@ -94,6 +95,7 @@ func TestProvisionSpriteAlreadyExistsSkipsCreate(t *testing.T) {
 			return "", nil
 		},
 		UploadFileFn:       func(context.Context, string, string, string, string) error { return nil },
+		UploadFn:           func(context.Context, string, string, []byte) error { return nil },
 		CheckpointCreateFn: func(context.Context, string, string) error { return nil },
 	}
 
@@ -139,6 +141,7 @@ func TestProvisionReportsProgressStages(t *testing.T) {
 			return "", nil
 		},
 		UploadFileFn:       func(context.Context, string, string, string, string) error { return nil },
+		UploadFn:           func(context.Context, string, string, []byte) error { return nil },
 		CheckpointCreateFn: func(context.Context, string, string) error { return nil },
 	}
 
@@ -173,6 +176,7 @@ func TestProvisionReportsProgressStages(t *testing.T) {
 		ProvisionStageVerifyGit,
 		ProvisionStageUploadBootstrap,
 		ProvisionStageUploadAgent,
+		ProvisionStageUploadProxy,
 		ProvisionStageRunBootstrap,
 		ProvisionStageCheckpoint,
 		ProvisionStageComplete,
@@ -209,6 +213,7 @@ func TestProvisionGitHubAuthFailure(t *testing.T) {
 		CreateFn:           func(context.Context, string, string) error { return nil },
 		ExecFn:             func(context.Context, string, string, []byte) (string, error) { return "", nil },
 		UploadFileFn:       func(context.Context, string, string, string, string) error { return nil },
+		UploadFn:           func(context.Context, string, string, []byte) error { return nil },
 		CheckpointCreateFn: func(context.Context, string, string) error { return nil },
 	}
 
@@ -237,6 +242,7 @@ func TestProvisionGitAuthVerificationFailure(t *testing.T) {
 		ListFn:       func(context.Context) ([]string, error) { return []string{}, nil },
 		CreateFn:     func(context.Context, string, string) error { return nil },
 		UploadFileFn: func(context.Context, string, string, string, string) error { return nil },
+		UploadFn:     func(context.Context, string, string, []byte) error { return nil },
 		ExecFn: func(_ context.Context, _ string, command string, _ []byte) (string, error) {
 			if strings.Contains(command, "git ls-remote") {
 				return "GIT_AUTH_FAIL\n", nil
