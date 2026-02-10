@@ -173,6 +173,10 @@ func runWatchMode(cmd *cobra.Command, deps statusDeps, cli sprite.SpriteCLI, cfg
 	// Clear screen initially
 	_, _ = fmt.Fprint(cmd.OutOrStdout(), "\033[H\033[2J")
 
+	if opts.WatchInterval <= 0 {
+		return errors.New("--watch-interval must be > 0")
+	}
+
 	ticker := time.NewTicker(opts.WatchInterval)
 	defer ticker.Stop()
 
