@@ -131,11 +131,15 @@ func writeFleetStatusText(out io.Writer, status lifecycle.FleetStatus, compositi
 	}
 
 	tw := tabwriter.NewWriter(out, 2, 2, 2, ' ', 0)
-	if _, err := fmt.Fprintln(tw, "SPRITE\tSTATUS\tURL"); err != nil {
+	if _, err := fmt.Fprintln(tw, "SPRITE\tSTATUS\tTASK\tURL"); err != nil {
 		return err
 	}
 	for _, item := range status.Sprites {
-		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\n", item.Name, item.Status, item.URL); err != nil {
+		task := item.Task
+		if task == "" {
+			task = "(none)"
+		}
+		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", item.Name, item.Status, task, item.URL); err != nil {
 			return err
 		}
 	}

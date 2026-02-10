@@ -27,6 +27,7 @@ type SpriteStatus struct {
 	Name   string `json:"name"`
 	Status string `json:"status"`
 	URL    string `json:"url,omitempty"`
+	Task   string `json:"task,omitempty"`
 }
 
 // CompositionEntry maps composition membership to provisioning state.
@@ -49,6 +50,7 @@ type spriteAPIListResponse struct {
 		Name   string `json:"name"`
 		Status string `json:"status"`
 		URL    string `json:"url"`
+		Task   string `json:"task"`
 	} `json:"sprites"`
 }
 
@@ -193,6 +195,7 @@ func fetchLiveSprites(ctx context.Context, cli sprite.SpriteCLI, cfg Config) ([]
 			Name:   item.Name,
 			Status: item.Status,
 			URL:    item.URL,
+			Task:   item.Task,
 		})
 	}
 	sort.Slice(result, func(i, j int) bool {
