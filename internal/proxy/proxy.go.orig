@@ -34,6 +34,9 @@ func StartCommand(model, port string) []string {
 	if model == "" {
 		model = DefaultModel
 	}
+	if port == "" {
+		port = strconv.Itoa(ProxyPort)
+	}
 
 	return []string{
 		"nohup",
@@ -82,7 +85,7 @@ func IsRunning(port string) bool {
 	if err != nil {
 		return false
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer resp.Body.Close()
 
 	return resp.StatusCode == http.StatusOK
 }
