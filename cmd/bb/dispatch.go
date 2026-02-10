@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	dispatchsvc "github.com/misty-step/bitterblossom/internal/dispatch"
 	"github.com/misty-step/bitterblossom/pkg/fly"
@@ -27,6 +28,8 @@ type dispatchOptions struct {
 	SpriteCLI            string
 	CompositionPath      string
 	MaxIterations        int
+	MaxTokens            int
+	MaxTime              time.Duration
 	WebhookURL           string
 	AllowAnthropicDirect bool
 }
@@ -69,6 +72,8 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 		SpriteCLI:       strings.TrimSpace(os.Getenv("SPRITE_CLI")),
 		CompositionPath: "compositions/v1.yaml",
 		MaxIterations:   dispatchsvc.DefaultMaxRalphIterations,
+		MaxTokens:       dispatchsvc.DefaultMaxTokens,
+		MaxTime:         dispatchsvc.DefaultMaxTime,
 		WebhookURL:      strings.TrimSpace(os.Getenv("SPRITE_WEBHOOK_URL")),
 	}
 
@@ -126,6 +131,8 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 				Execute:              opts.Execute,
 				WebhookURL:           opts.WebhookURL,
 				AllowAnthropicDirect: opts.AllowAnthropicDirect,
+				MaxTokens:            opts.MaxTokens,
+				MaxTime:              opts.MaxTime,
 			})
 			if err != nil {
 				return err
@@ -148,6 +155,8 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 	command.Flags().StringVar(&opts.SpriteCLI, "sprite-cli", opts.SpriteCLI, "Sprite CLI binary path")
 	command.Flags().StringVar(&opts.CompositionPath, "composition", opts.CompositionPath, "Composition YAML used for provisioning metadata")
 	command.Flags().IntVar(&opts.MaxIterations, "max-iterations", opts.MaxIterations, "Ralph loop iteration safety cap")
+	command.Flags().IntVar(&opts.MaxTokens, "max-tokens", opts.MaxTokens, "Ralph stuck-loop token safety cap (only with --ralph)")
+	command.Flags().DurationVar(&opts.MaxTime, "max-time", opts.MaxTime, "Ralph stuck-loop runtime safety cap (only with --ralph)")
 	command.Flags().StringVar(&opts.WebhookURL, "webhook-url", opts.WebhookURL, "Optional sprite-agent webhook URL")
 	command.Flags().BoolVar(&opts.AllowAnthropicDirect, "allow-anthropic-direct", false, "Allow dispatch even if sprite has a real ANTHROPIC_API_KEY")
 

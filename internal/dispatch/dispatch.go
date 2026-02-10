@@ -25,6 +25,10 @@ const (
 	DefaultWorkspace = "/home/sprite/workspace"
 	// DefaultMaxRalphIterations mirrors the shell-script safety cap.
 	DefaultMaxRalphIterations = 50
+	// DefaultMaxTokens is the default stuck-loop token safety cap for Ralph loops.
+	DefaultMaxTokens = 200_000
+	// DefaultMaxTime is the default stuck-loop runtime safety cap for Ralph loops.
+	DefaultMaxTime = 30 * time.Minute
 )
 
 var (
@@ -54,6 +58,9 @@ type Request struct {
 	Execute              bool
 	WebhookURL           string
 	AllowAnthropicDirect bool
+	// MaxTokens / MaxTime apply only to Ralph mode (sprite-agent).
+	MaxTokens int
+	MaxTime   time.Duration
 }
 
 // PlanStep is one dry-run/execute step in the dispatch lifecycle.
@@ -442,7 +449,22 @@ func (s *Service) prepare(req Request) (preparedRequest, error) {
 	startedAt := s.now().UTC()
 	startCommand := buildOneShotScript(s.workspace, promptPath)
 	if req.Ralph {
-		startCommand = buildStartRalphScript(s.workspace, sprite, s.maxRalphIterations, req.WebhookURL)
+		maxTokens := req.MaxTokens
+		if maxTokens <= 0 {
+			maxTokens = DefaultMaxTokens
+		}
+		maxTime := req.MaxTime
+		if maxTime <= 0 {
+			maxTime = DefaultMaxTime
+		}
+		startCommand = buildStartRalphScript(
+			s.workspace,
+			sprite,
+			s.maxRalphIterations,
+			req.WebhookURL,
+			maxTokens,
+			int(maxTime.Round(time.Second).Seconds()),
+		)
 	}
 	if !req.Ralph {
 		if err := requireOneShotInvariants(startCommand); err != nil {
@@ -635,7 +657,7 @@ func buildOneShotScript(workspace, promptPath string) string {
 	}, "\n")
 }
 
-func buildStartRalphScript(workspace, sprite string, maxIterations int, webhookURL string) string {
+func buildStartRalphScript(workspace, sprite string, maxIterations int, webhookURL string, maxTokens int, maxTimeSec int) string {
 	lines := []string{
 		"set -euo pipefail",
 		"WORKSPACE_DIR=" + shellQuote(workspace),
@@ -659,13 +681,21 @@ func buildStartRalphScript(workspace, sprite string, maxIterations int, webhookU
 		"cd \"$WORKSPACE_DIR\"",
 		"printf 'bb-%s-%s\\n' \"$(date -u +%Y%m%d-%H%M%S)\" " + shellQuote(sprite) + " > \"$WORKSPACE_DIR/.current-task-id\"",
 	}
+
+	limits := ""
+	if maxTokens > 0 {
+		limits += " MAX_TOKENS=" + strconv.Itoa(maxTokens)
+	}
+	if maxTimeSec > 0 {
+		limits += " MAX_TIME_SEC=" + strconv.Itoa(maxTimeSec)
+	}
 	if strings.TrimSpace(webhookURL) != "" {
 		lines = append(lines,
-			"nohup env SPRITE_NAME="+shellQuote(sprite)+" SPRITE_WEBHOOK_URL="+shellQuote(webhookURL)+" MAX_ITERATIONS="+strconv.Itoa(maxIterations)+" BB_CLAUDE_FLAGS=\"$REQUIRED_CLAUDE_FLAGS\" \"$AGENT_BIN\" >/dev/null 2>&1 &",
+			"nohup env SPRITE_NAME="+shellQuote(sprite)+" SPRITE_WEBHOOK_URL="+shellQuote(webhookURL)+" MAX_ITERATIONS="+strconv.Itoa(maxIterations)+limits+" BB_CLAUDE_FLAGS=\"$REQUIRED_CLAUDE_FLAGS\" \"$AGENT_BIN\" >/dev/null 2>&1 &",
 		)
 	} else {
 		lines = append(lines,
-			"nohup env SPRITE_NAME="+shellQuote(sprite)+" MAX_ITERATIONS="+strconv.Itoa(maxIterations)+" BB_CLAUDE_FLAGS=\"$REQUIRED_CLAUDE_FLAGS\" \"$AGENT_BIN\" >/dev/null 2>&1 &",
+			"nohup env SPRITE_NAME="+shellQuote(sprite)+" MAX_ITERATIONS="+strconv.Itoa(maxIterations)+limits+" BB_CLAUDE_FLAGS=\"$REQUIRED_CLAUDE_FLAGS\" \"$AGENT_BIN\" >/dev/null 2>&1 &",
 		)
 	}
 	lines = append(lines,
