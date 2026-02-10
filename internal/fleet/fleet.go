@@ -33,6 +33,8 @@ type FleetReport struct {
 type Fleet struct {
 	Desired Composition
 	Sprites []*sprite.Sprite
+
+	dispatch *dispatchConfig
 }
 
 // New constructs a fleet handle.
