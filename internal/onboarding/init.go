@@ -95,7 +95,10 @@ func Init(ctx context.Context, disco MachineDiscoverer, cfg InitConfig) (*InitRe
 	reg.Meta.InitAt = time.Now().UTC()
 
 	for i, m := range machines {
-		name := names.PickName(i)
+		name, err := names.PickName(i)
+		if err != nil {
+			return nil, fmt.Errorf("onboarding: assign name at index %d: %w", i, err)
+		}
 		reg.Register(name, m.ID)
 	}
 
