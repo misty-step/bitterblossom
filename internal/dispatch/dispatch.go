@@ -50,6 +50,7 @@ type Request struct {
 	Sprite               string
 	Prompt               string
 	Repo                 string
+	Issue                int
 	Ralph                bool
 	Execute              bool
 	WebhookURL           string
@@ -422,8 +423,11 @@ func (s *Service) prepare(req Request) (preparedRequest, error) {
 	}
 
 	prompt := strings.TrimSpace(req.Prompt)
+	if prompt == "" && req.Issue > 0 {
+		prompt = IssuePrompt(req.Issue, req.Repo)
+	}
 	if prompt == "" {
-		return preparedRequest{}, fmt.Errorf("%w: prompt is required", ErrInvalidRequest)
+		return preparedRequest{}, fmt.Errorf("%w: prompt or --issue is required", ErrInvalidRequest)
 	}
 
 	repo, err := parseRepo(req.Repo)
