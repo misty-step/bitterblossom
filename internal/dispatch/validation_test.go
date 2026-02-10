@@ -10,36 +10,53 @@ import (
 	"github.com/misty-step/bitterblossom/pkg/fly"
 )
 
-func TestValidateNoDirectAnthropic(t *testing.T) {
-	t.Parallel()
-
-	cases := []struct {
-		name    string
-		key     string
-		wantErr bool
-	}{
-		{name: "empty key is allowed", key: "", wantErr: false},
-		{name: "proxy-mode is allowed", key: "proxy-mode", wantErr: false},
-		{name: "arbitrary non-sk-ant value is allowed", key: "some-other-value", wantErr: false},
-		{name: "sk-ant prefix is blocked", key: "sk-ant-abc123", wantErr: true},
-		{name: "sk-ant with whitespace is blocked", key: "  sk-ant-abc123  ", wantErr: true},
-		{name: "sk-ant- exact prefix required", key: "sk-antenna", wantErr: false},
+func TestValidateNoDirectAnthropic_EmptyKey(t *testing.T) {
+	env := map[string]string{"ANTHROPIC_API_KEY": ""}
+	if err := ValidateNoDirectAnthropic(env, false); err != nil {
+		t.Fatalf("expected no error for empty key, got: %v", err)
 	}
+}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			err := ValidateNoDirectAnthropic(tc.key)
-			if tc.wantErr && err == nil {
-				t.Fatal("expected error, got nil")
-			}
-			if !tc.wantErr && err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if tc.wantErr && !errors.Is(err, ErrAnthropicKeyDetected) {
-				t.Fatalf("error = %v, want ErrAnthropicKeyDetected", err)
-			}
-		})
+func TestValidateNoDirectAnthropic_ProxyMode(t *testing.T) {
+	env := map[string]string{"ANTHROPIC_API_KEY": "proxy-mode"}
+	if err := ValidateNoDirectAnthropic(env, false); err != nil {
+		t.Fatalf("expected no error for proxy-mode, got: %v", err)
+	}
+}
+
+func TestValidateNoDirectAnthropic_Unset(t *testing.T) {
+	env := map[string]string{}
+	if err := ValidateNoDirectAnthropic(env, false); err != nil {
+		t.Fatalf("expected no error for unset key, got: %v", err)
+	}
+}
+
+func TestValidateNoDirectAnthropic_RealKey_Blocked(t *testing.T) {
+	env := map[string]string{"ANTHROPIC_API_KEY": "sk-ant-api03-abcdef123456"}
+	err := ValidateNoDirectAnthropic(env, false)
+	if err == nil {
+		t.Fatal("expected error for real sk-ant- key")
+	}
+	var keyErr *ErrDirectAnthropicKey
+	if !errors.As(err, &keyErr) {
+		t.Fatalf("expected ErrDirectAnthropicKey, got %T: %v", err, err)
+	}
+	if keyErr.KeyPrefix != "sk-ant-api03" {
+		t.Fatalf("expected prefix 'sk-ant-api03', got %q", keyErr.KeyPrefix)
+	}
+}
+
+func TestValidateNoDirectAnthropic_RealKey_AllowDirect(t *testing.T) {
+	env := map[string]string{"ANTHROPIC_API_KEY": "sk-ant-api03-abcdef123456"}
+	if err := ValidateNoDirectAnthropic(env, true); err != nil {
+		t.Fatalf("expected no error with allowDirect=true, got: %v", err)
+	}
+}
+
+func TestValidateNoDirectAnthropic_NonAnthropicKey(t *testing.T) {
+	env := map[string]string{"ANTHROPIC_API_KEY": "some-other-value"}
+	if err := ValidateNoDirectAnthropic(env, false); err != nil {
+		t.Fatalf("expected no error for non-anthropic key, got: %v", err)
 	}
 }
 
@@ -72,8 +89,9 @@ func TestRunBlocksDispatchWithRealAnthropicKey(t *testing.T) {
 	if runErr == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !errors.Is(runErr, ErrAnthropicKeyDetected) {
-		t.Fatalf("error = %v, want ErrAnthropicKeyDetected", runErr)
+	var keyErr *ErrDirectAnthropicKey
+	if !errors.As(runErr, &keyErr) {
+		t.Fatalf("error = %v (%T), want *ErrDirectAnthropicKey", runErr, runErr)
 	}
 }
 
@@ -145,7 +163,6 @@ func TestRunAllowsDirectKeyWithEscapeHatch(t *testing.T) {
 	if result.State != StateCompleted {
 		t.Fatalf("state = %q, want %q", result.State, StateCompleted)
 	}
-	// Should not have called printenv
 	for _, call := range remote.execCalls {
 		if strings.Contains(call.command, "printenv ANTHROPIC_API_KEY") {
 			t.Fatal("escape hatch should skip env validation")

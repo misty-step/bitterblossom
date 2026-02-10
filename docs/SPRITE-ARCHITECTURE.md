@@ -1,7 +1,8 @@
 # Bitterblossom Sprite Architecture
 
-> **Decision Record — February 9, 2026**  
-> **Status:** APPROVED — OpenCode is the sole agent harness. Claude Code is deprecated.
+> **Decision Record — Updated February 10, 2026**  
+> **Status:** APPROVED — Claude Code is the canonical sprite harness. OpenCode is deprecated.  
+> **See:** `docs/adr/001-claude-code-canonical-harness.md` for the reversal decision.
 
 ---
 
@@ -19,32 +20,32 @@ Sprites are NOT ephemeral sandbox containers. They are persistent, stateful deve
 
 **Each BB agent personality gets its own sprite.** "Bramble" lives on a sprite named `bramble` with all of Bramble's repos, tools, configs, and env vars. When Bramble finishes a task, the sprite persists. When the next task comes in, Bramble's sprite wakes up and picks up where it left off.
 
-### 2. OpenCode Is the Only Agent Harness
+### 2. Claude Code Is the Canonical Agent Harness
 
-**Claude Code is permanently deprecated for sprite dispatch.**
+**Claude Code is the canonical harness for sprite dispatch.** OpenCode is deprecated.
 
-After extensive experimentation (8 test configurations), Claude Code cannot reliably use non-Anthropic models:
+The Feb 9 experimentation showed Claude Code hanging with non-Anthropic models when pointed directly at OpenRouter. The proxy provider (PR #136) solves this by properly translating requests:
 
 | Config | Result |
 |--------|--------|
-| Claude Code + OpenRouter + Kimi K2.5 | ❌ Silent hang |
-| Claude Code + Moonshot direct + Kimi | ❌ Silent hang |
-| Claude Code + z.ai + GLM 4.7 | ⚠️ Requires z.ai key |
-| **OpenCode + OpenRouter + Kimi K2.5** | **✅ Works** |
-| **OpenCode + OpenRouter + GLM 4.7** | **✅ Works** |
+| Claude Code + direct OpenRouter | ❌ Silent hang (Feb 9 finding) |
+| Claude Code + Moonshot direct | ❌ Silent hang (Feb 9 finding) |
+| **Claude Code + proxy provider + OpenRouter** | **✅ Works (PR #136)** |
+| **Claude Code + Anthropic native** | **✅ Works** |
+| OpenCode + OpenRouter | ✅ Works (but deprecated — stability issues) |
 
-OpenCode has native OpenRouter support with no model validation issues.
+Claude Code has superior tool use, proven PTY dispatch (`--yolo`), and better ecosystem support. The proxy provider eliminates the model limitation that motivated the original OpenCode decision.
 
 ### 3. OpenRouter Is the Provider Layer
 
 All model routing goes through OpenRouter:
 
 ```
-BB → sprite exec → OpenCode → OpenRouter → Model Provider
-                                              ├── Moonshot (Kimi K2.5, K2.5 Thinking)
-                                              ├── z.ai (GLM 4.7)
-                                              ├── Together/DeepInfra (open models)
-                                              └── Anthropic (Claude, if needed)
+BB → sprite exec → Claude Code → Proxy Provider → OpenRouter → Model Provider
+                                                                  ├── Moonshot (Kimi K2.5, K2.5 Thinking)
+                                                                  ├── z.ai (GLM 4.7)
+                                                                  ├── Together/DeepInfra (open models)
+                                                                  └── Anthropic (Claude, if needed)
 ```
 
 Benefits:
@@ -72,9 +73,15 @@ sprite create bramble
 BB injects environment and clones repos:
 
 ```bash
-# Write OpenRouter config
+# Write proxy provider config for Claude Code
 sprite exec -s bramble -- bash -c '
-  echo "export OPENROUTER_API_KEY=sk-or-v1-..." >> ~/.bashrc
+  cat >> ~/.bashrc << EOF
+export ANTHROPIC_BASE_URL="https://openrouter.ai/api"
+export ANTHROPIC_AUTH_TOKEN="$OPENROUTER_API_KEY"
+export ANTHROPIC_MODEL="moonshotai/kimi-k2.5"
+export ANTHROPIC_SMALL_FAST_MODEL="moonshotai/kimi-k2.5"
+export CLAUDE_CODE_SUBAGENT_MODEL="moonshotai/kimi-k2.5"
+EOF
   source ~/.bashrc
 '
 
@@ -82,17 +89,6 @@ sprite exec -s bramble -- bash -c '
 sprite exec -s bramble -- bash -c '
   git clone https://github.com/misty-step/PROJECT.git ~/work
   cd ~/work && go mod download  # or npm install, etc.
-'
-
-# Write opencode.json
-sprite exec -s bramble -- bash -c '
-  cat > ~/work/opencode.json << EOF
-  {
-    "provider": "openrouter",
-    "model": "moonshotai/kimi-k2.5-thinking",
-    "agents": { "coder": ".opencode/agents/coder.md" }
-  }
-  EOF
 '
 ```
 
@@ -111,9 +107,7 @@ sprite exec -s bramble -- sprite-env checkpoints create
 sprite exec -s bramble -- bash -c '
   source ~/.bashrc
   cd ~/work
-  opencode run -m openrouter/moonshotai/kimi-k2.5-thinking \
-    --agent coder \
-    "Implement feature X: <full task description with success criteria>"
+  claude --yolo "Implement feature X: <full task description with success criteria>"
 '
 ```
 
@@ -163,43 +157,43 @@ sprite exec -s bramble -- sprite-env checkpoints restore v1
 | `qwen/qwen3-coder:free` | Free coding model |
 | `deepseek/deepseek-r1-0528:free` | Free reasoning model |
 
-### Configuration in opencode.json
+### Configuration via Environment
 
-```json
-{
-  "provider": "openrouter",
-  "model": "moonshotai/kimi-k2.5-thinking",
-  "agents": {
-    "coder": ".opencode/agents/coder.md"
-  }
-}
+Claude Code uses environment variables for proxy provider configuration:
+
+```bash
+ANTHROPIC_BASE_URL=https://openrouter.ai/api
+ANTHROPIC_AUTH_TOKEN=$OPENROUTER_API_KEY
+ANTHROPIC_MODEL=moonshotai/kimi-k2.5
 ```
 
 ---
 
 ## Environment Variables on Sprites
 
-### Required
+### Required (Proxy Provider Config)
 
 ```bash
-export OPENROUTER_API_KEY="sk-or-v1-..."  # Single key for all models
+export ANTHROPIC_BASE_URL="https://openrouter.ai/api"
+export ANTHROPIC_AUTH_TOKEN="$OPENROUTER_API_KEY"
+export ANTHROPIC_MODEL="moonshotai/kimi-k2.5"
+export ANTHROPIC_SMALL_FAST_MODEL="moonshotai/kimi-k2.5"
+export CLAUDE_CODE_SUBAGENT_MODEL="moonshotai/kimi-k2.5"
 ```
 
 ### DO NOT Set
 
 ```bash
-# NEVER set these on sprites:
-ANTHROPIC_API_KEY    # Risk of accidental Anthropic billing
-ANTHROPIC_BASE_URL   # Claude Code only, not needed for OpenCode
-ANTHROPIC_AUTH_TOKEN  # Claude Code only
+# NEVER set this on sprites:
+ANTHROPIC_API_KEY    # Risk of accidental Anthropic billing — use ANTHROPIC_AUTH_TOKEN with proxy instead
 ```
 
 ---
 
 ## What NOT To Do
 
-### ❌ Never use Claude Code on sprites
-Claude Code cannot reliably use non-Anthropic models. It silently hangs.
+### ❌ Never use OpenCode for sprite dispatch
+OpenCode is deprecated. Use Claude Code with the proxy provider. See ADR-001.
 
 ### ❌ Never destroy sprites after tasks
 Sprites are persistent. They auto-sleep for free. Destroying wastes the bootstrap work.
@@ -207,29 +201,27 @@ Sprites are persistent. They auto-sleep for free. Destroying wastes the bootstra
 ### ❌ Never pass API keys via sprite exec -env flags
 The `-env` flag has unreliable propagation. Write to `.bashrc` or env files instead.
 
-### ❌ Never use Anthropic API keys on sprites
-OpenRouter is the only provider layer. One key, all models, no accidental billing.
+### ❌ Never set ANTHROPIC_API_KEY on sprites
+Use `ANTHROPIC_AUTH_TOKEN` with the proxy provider. Direct API keys risk accidental Anthropic billing.
 
 ### ❌ Never treat sprites as stateless
 They have 100GB persistent storage. Use it. Clone repos once, install deps once, checkpoint.
 
 ---
 
-## Migration Checklist
+## Migration Checklist (Claude Code Restoration)
 
-- [ ] Remove all Claude Code dispatch paths from BB
-- [ ] Remove `AgentClaudeCode` / `AgentKimi` agent kinds (replace with `AgentOpenCode`)
-- [ ] Update `internal/agent/config.go` to only support OpenCode
-- [ ] Update `internal/lifecycle/provision.go` for persistent sprite lifecycle
-- [ ] Add checkpoint support to provision/dispatch flow
-- [ ] Remove `CLAUDE.md` from BB repo
-- [ ] Update `AGENTS.md` to reflect OpenCode-only architecture
-- [ ] Update `OPENCODE.md` with model routing info
-- [ ] Update `opencode.json` with Kimi K2.5 Thinking as default
-- [ ] Add `.opencode/agents/coder.md` anti-analysis-paralysis rules
-- [ ] Update `docs/CLI-REFERENCE.md`
-- [ ] Update `docs/SECRETS.md` — only OPENROUTER_API_KEY needed
-- [ ] File and track all migration issues on GitHub
+> The previous OpenCode migration checklist (Feb 9) is **cancelled**. The following replaces it.
+
+- [x] Write ADR-001 reversing OpenCode-only decision
+- [x] Update `AGENTS.md` to reflect Claude Code as canonical
+- [x] Update `docs/SPRITE-ARCHITECTURE.md` to reflect Claude Code as canonical
+- [ ] Ensure proxy provider (PR #136) is merged
+- [ ] Remove OpenCode-specific config (`opencode.json`) from sprite bootstrap
+- [ ] Update `internal/agent/config.go` to use Claude Code as default harness
+- [ ] Update `internal/lifecycle/provision.go` to bootstrap Claude Code env vars
+- [ ] Update `docs/CLI-REFERENCE.md` with Claude Code dispatch examples
+- [ ] Update `docs/SECRETS.md` with proxy provider env vars
 
 ---
 

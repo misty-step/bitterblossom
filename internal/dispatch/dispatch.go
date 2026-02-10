@@ -243,7 +243,11 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 			result.State = StateFailed
 			return result, fmt.Errorf("dispatch: check sprite env: %w", err)
 		}
-		if err := ValidateNoDirectAnthropic(keyOutput); err != nil {
+		env := map[string]string{}
+		if key := strings.TrimSpace(keyOutput); key != "" {
+			env["ANTHROPIC_API_KEY"] = key
+		}
+		if err := ValidateNoDirectAnthropic(env, false); err != nil {
 			result.State = StateFailed
 			return result, err
 		}
