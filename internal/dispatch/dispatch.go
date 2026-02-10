@@ -42,6 +42,7 @@ var (
 // RemoteClient runs remote commands on sprites and uploads files.
 type RemoteClient interface {
 	Exec(ctx context.Context, sprite, remoteCommand string, stdin []byte) (string, error)
+	ExecWithEnv(ctx context.Context, sprite, remoteCommand string, stdin []byte, env map[string]string) (string, error)
 	Upload(ctx context.Context, sprite, remotePath string, content []byte) error
 	List(ctx context.Context) ([]string, error)
 }
@@ -108,6 +109,9 @@ type Config struct {
 	ProvisionConfig    map[string]any
 	Logger             *slog.Logger
 	Now                func() time.Time
+	// EnvVars are environment variables to pass to sprite exec commands.
+	// These are typically auth tokens like OPENROUTER_API_KEY and ANTHROPIC_AUTH_TOKEN.
+	EnvVars map[string]string
 }
 
 type provisionInfo struct {
@@ -127,6 +131,7 @@ type Service struct {
 	now                func() time.Time
 	ralphTemplate      string
 	provisionHints     map[string]provisionInfo
+	envVars            map[string]string
 }
 
 // NewService constructs a dispatch service.
@@ -181,6 +186,7 @@ func NewService(cfg Config) (*Service, error) {
 		now:                now,
 		ralphTemplate:      template,
 		provisionHints:     hints,
+		envVars:            copyStringMap(cfg.EnvVars),
 	}, nil
 }
 
@@ -289,7 +295,7 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 	}
 
 	s.logger.Info("dispatch start agent", "sprite", prepared.Sprite, "mode", prepared.Mode)
-	output, err := s.remote.Exec(ctx, prepared.Sprite, prepared.StartCommand, nil)
+	output, err := s.remote.ExecWithEnv(ctx, prepared.Sprite, prepared.StartCommand, nil, s.envVars)
 	if err != nil {
 		result.State = StateFailed
 		return result, fmt.Errorf("dispatch: start agent: %w", err)
@@ -729,6 +735,17 @@ func copyMap(in map[string]any) map[string]any {
 	sort.Strings(keys)
 	for _, key := range keys {
 		out[key] = in[key]
+	}
+	return out
+}
+
+func copyStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
 	}
 	return out
 }

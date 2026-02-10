@@ -106,6 +106,23 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 				return err
 			}
 			remote := deps.newRemote(opts.SpriteCLI, opts.Org)
+
+			// Collect auth-related environment variables to pass to sprites
+			envVars := make(map[string]string)
+			for _, key := range []string{
+				"OPENROUTER_API_KEY",
+				"ANTHROPIC_AUTH_TOKEN",
+				"ANTHROPIC_API_KEY",
+				"MOONSHOT_AI_API_KEY",
+				"XAI_API_KEY",
+				"GEMINI_API_KEY",
+				"OPENAI_API_KEY",
+			} {
+				if value := os.Getenv(key); value != "" {
+					envVars[key] = value
+				}
+			}
+
 			service, err := deps.newService(dispatchsvc.Config{
 				Remote:             remote,
 				Fly:                flyClient,
@@ -114,6 +131,7 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 				CompositionPath:    opts.CompositionPath,
 				RalphTemplatePath:  "scripts/ralph-prompt-template.md",
 				MaxRalphIterations: opts.MaxIterations,
+				EnvVars:            envVars,
 			})
 			if err != nil {
 				return err
