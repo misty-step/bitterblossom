@@ -82,7 +82,8 @@ func withOrgArgs(base []string, org string) []string {
 }
 
 func createArgs(name, org string) []string {
-	args := []string{"create", "--skip-console"}
+	// sprite CLI uses single-dash long flags (e.g. -skip-console), not GNU-style --flags.
+	args := []string{"create", "-skip-console"}
 	if org != "" {
 		args = append(args, "-o", org)
 	}
@@ -91,7 +92,8 @@ func createArgs(name, org string) []string {
 }
 
 func destroyArgs(name, org string) []string {
-	args := []string{"destroy", "--force"}
+	// sprite CLI uses single-dash long flags (e.g. -force), not GNU-style --flags.
+	args := []string{"destroy", "-force"}
 	if org != "" {
 		args = append(args, "-o", org)
 	}

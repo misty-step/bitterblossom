@@ -271,13 +271,15 @@ if provider == "moonshot":
     env["ANTHROPIC_MODEL"] = model if model else "kimi-k2.5"
     env["ANTHROPIC_AUTH_TOKEN"] = token
 elif provider == "openrouter-kimi":
-    env["ANTHROPIC_BASE_URL"] = "https://openrouter.ai/api/v1"
+    # Claude Code appends /v1/messages?beta=true; base URL must not include /v1.
+    env["ANTHROPIC_BASE_URL"] = "https://openrouter.ai/api"
     env["ANTHROPIC_MODEL"] = model if model else "kimi-k2.5"
     env["ANTHROPIC_AUTH_TOKEN"] = token
     env["OPENROUTER_API_KEY"] = token
     env["CLAUDE_CODE_OPENROUTER_COMPAT"] = "1"
 elif provider == "openrouter-claude":
-    env["ANTHROPIC_BASE_URL"] = "https://openrouter.ai/api/v1"
+    # Claude Code appends /v1/messages?beta=true; base URL must not include /v1.
+    env["ANTHROPIC_BASE_URL"] = "https://openrouter.ai/api"
     # Ensure model has provider prefix for OpenRouter
     if model and "/" in model:
         env["ANTHROPIC_MODEL"] = model

@@ -97,21 +97,21 @@ func TestRenderSettingsWithProvider(t *testing.T) {
 			provider:     provider.Config{Provider: provider.ProviderOpenRouterKimi, Model: provider.ModelOpenRouterKimiK25},
 			wantProvider: "openrouter-kimi",
 			wantModel:    provider.ModelOpenRouterKimiK25,
-			wantBaseURL:  "https://openrouter.ai/api/v1",
+			wantBaseURL:  "https://openrouter.ai/api",
 		},
 		{
 			name:         "openrouter claude",
 			provider:     provider.Config{Provider: provider.ProviderOpenRouterClaude, Model: provider.ModelClaudeOpus4},
 			wantProvider: "openrouter-claude",
 			wantModel:    provider.ModelClaudeOpus4,
-			wantBaseURL:  "https://openrouter.ai/api/v1",
+			wantBaseURL:  "https://openrouter.ai/api",
 		},
 		{
 			name:         "inherited uses base URL",
 			provider:     provider.Config{Provider: provider.ProviderInherit},
 			wantProvider: "openrouter-kimi",
 			wantModel:    provider.ModelOpenRouterKimiK25,
-			wantBaseURL:  "https://openrouter.ai/api/v1",
+			wantBaseURL:  "https://openrouter.ai/api",
 		},
 	}
 

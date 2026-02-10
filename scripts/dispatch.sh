@@ -269,7 +269,7 @@ dispatch_oneshot() {
 
     "$SPRITE_CLI" exec -o "$ORG" -s "$name" -- bash -c \
         "cd $WORKSPACE && \
-         cat .dispatch-prompt.md | claude -p --permission-mode bypassPermissions 2>&1 | \
+         cat .dispatch-prompt.md | claude -p --permission-mode bypassPermissions --verbose --output-format stream-json 2>&1 | \
          grep -v '^\$'; \
          rm -f .dispatch-prompt.md"
 
