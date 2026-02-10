@@ -444,6 +444,11 @@ func (s *Service) prepare(req Request) (preparedRequest, error) {
 	if req.Ralph {
 		startCommand = buildStartRalphScript(s.workspace, sprite, s.maxRalphIterations, req.WebhookURL)
 	}
+	if !req.Ralph {
+		if err := requireOneShotInvariants(startCommand); err != nil {
+			return preparedRequest{}, err
+		}
+	}
 
 	taskLabel := prompt
 	if repo.Slug != "" {
@@ -611,17 +616,17 @@ func buildOneShotScript(workspace, promptPath string) string {
 		"    if curl -s --max-time 2 " + shellQuote(healthURL) + " >/dev/null 2>&1; then",
 		"      echo '[proxy] proxy is healthy on :" + port + "'",
 		"      export ANTHROPIC_BASE_URL=" + shellQuote(baseURL),
-		"      export ANTHROPIC_API_KEY=proxy-mode",
+		"      export ANTHROPIC_AUTH_TOKEN=proxy-mode",
 		"    else",
 		"      echo '[proxy] warning: proxy failed to start, proceeding with direct connection'",
 		"    fi",
 		"  else",
 		"    echo '[proxy] proxy already running on :" + port + "'",
 		"    export ANTHROPIC_BASE_URL=" + shellQuote(baseURL),
-		"    export ANTHROPIC_API_KEY=proxy-mode",
+		"    export ANTHROPIC_AUTH_TOKEN=proxy-mode",
 		"  fi",
 		"fi",
-		"cat " + shellQuote(promptPath) + " | claude -p --permission-mode bypassPermissions --verbose --output-format stream-json",
+		"cat " + shellQuote(promptPath) + " | claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json",
 		"rm -f " + shellQuote(promptPath),
 	}, "\n")
 }
@@ -637,6 +642,8 @@ func buildStartRalphScript(workspace, sprite string, maxIterations int, webhookU
 		"AGENT_BIN=\"$HOME/.local/bin/sprite-agent\"",
 		"if [ ! -x \"$AGENT_BIN\" ]; then AGENT_BIN=\"$WORKSPACE_DIR/.sprite-agent.sh\"; fi",
 		"if [ ! -x \"$AGENT_BIN\" ]; then echo \"sprite-agent not found\" >&2; exit 1; fi",
+		"if ! grep -q -- '--dangerously-skip-permissions' \"$AGENT_BIN\" 2>/dev/null; then echo \"sprite-agent missing --dangerously-skip-permissions\" >&2; exit 1; fi",
+		"if ! grep -q -- '--verbose --output-format stream-json' \"$AGENT_BIN\" 2>/dev/null; then echo \"sprite-agent missing --verbose --output-format stream-json\" >&2; exit 1; fi",
 		"cd \"$WORKSPACE_DIR\"",
 		"printf 'bb-%s-%s\\n' \"$(date -u +%Y%m%d-%H%M%S)\" " + shellQuote(sprite) + " > \"$WORKSPACE_DIR/.current-task-id\"",
 	}

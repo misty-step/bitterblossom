@@ -211,6 +211,12 @@ func TestRunExecuteProvisionAndStartRalph(t *testing.T) {
 	if !strings.Contains(remote.execCalls[2].command, "sprite-agent") {
 		t.Fatalf("expected ralph start command, got %q", remote.execCalls[2].command)
 	}
+	if !strings.Contains(remote.execCalls[2].command, "--dangerously-skip-permissions") {
+		t.Fatalf("expected ralph start invariants to check dangerously-skip-permissions, got %q", remote.execCalls[2].command)
+	}
+	if !strings.Contains(remote.execCalls[2].command, "--verbose --output-format stream-json") {
+		t.Fatalf("expected ralph start invariants to check stream-json output, got %q", remote.execCalls[2].command)
+	}
 }
 
 func TestRunExecuteOneShotCompletes(t *testing.T) {
@@ -264,17 +270,23 @@ func TestRunExecuteOneShotCompletes(t *testing.T) {
 	if !strings.Contains(remote.execCalls[1].command, "claude -p") {
 		t.Fatalf("expected claude command, got %q", remote.execCalls[1].command)
 	}
+	if !strings.Contains(remote.execCalls[1].command, "--dangerously-skip-permissions") {
+		t.Fatalf("expected claude command to include dangerously-skip-permissions, got %q", remote.execCalls[1].command)
+	}
+	if !strings.Contains(remote.execCalls[1].command, "--verbose --output-format stream-json") {
+		t.Fatalf("expected claude command to include verbose stream-json output, got %q", remote.execCalls[1].command)
+	}
 }
 
 func TestRunExecuteErrorsPreserveFailedState(t *testing.T) {
 	now := time.Date(2026, time.February, 8, 12, 0, 0, 0, time.UTC)
 
 	cases := []struct {
-		name     string
-		req      Request
-		remote   *fakeRemote
-		fly      *fakeFly
-		wantErr  string
+		name    string
+		req     Request
+		remote  *fakeRemote
+		fly     *fakeFly
+		wantErr string
 	}{
 		{
 			name: "provision failure returns failed state",

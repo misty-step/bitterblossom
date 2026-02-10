@@ -329,12 +329,12 @@ run_claude_once() {
 
     # Prefer PTY-backed execution for near-real-time flush behavior.
     if [[ "$HAS_SCRIPT_PTY" == true ]]; then
-        script -qefc "claude -p --permission-mode bypassPermissions --verbose --output-format stream-json < \"$prompt_file\"" \
+        script -qefc "claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json < \"$prompt_file\"" \
             /dev/null >> "$log_file" 2>&1
         return
     fi
 
-    claude -p --permission-mode bypassPermissions --verbose --output-format stream-json < "$prompt_file" >> "$log_file" 2>&1
+    claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json < "$prompt_file" >> "$log_file" 2>&1
 }
 
 on_signal() {
