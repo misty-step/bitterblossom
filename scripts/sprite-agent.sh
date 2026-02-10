@@ -327,14 +327,30 @@ run_claude_once() {
     local prompt_file="$1"
     local log_file="$2"
 
+    local required_flags_default
+    required_flags_default="--dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json"
+
+    # Non-negotiable: do not allow callers to weaken or mutate required flags.
+    # If BB passes BB_CLAUDE_FLAGS, it must match exactly.
+    if [[ -n "${BB_CLAUDE_FLAGS:-}" && "${BB_CLAUDE_FLAGS}" != "$required_flags_default" ]]; then
+        echo "[sprite-agent] BB_CLAUDE_FLAGS must match required invariant flags" >&2
+        return 1
+    fi
+
+    local required_flags
+    required_flags="$required_flags_default"
+    case " $required_flags " in *" --dangerously-skip-permissions "*) ;; *) echo "[sprite-agent] missing --dangerously-skip-permissions" >&2; return 1 ;; esac
+    case " $required_flags " in *" --verbose "*) ;; *) echo "[sprite-agent] missing --verbose" >&2; return 1 ;; esac
+    case " $required_flags " in *" --output-format stream-json "*) ;; *) echo "[sprite-agent] missing --output-format stream-json" >&2; return 1 ;; esac
+
     # Prefer PTY-backed execution for near-real-time flush behavior.
     if [[ "$HAS_SCRIPT_PTY" == true ]]; then
-        script -qefc "claude -p --permission-mode bypassPermissions --verbose --output-format stream-json < \"$prompt_file\"" \
+        script -qefc "claude -p $required_flags < \"$prompt_file\"" \
             /dev/null >> "$log_file" 2>&1
         return
     fi
 
-    claude -p --permission-mode bypassPermissions --verbose --output-format stream-json < "$prompt_file" >> "$log_file" 2>&1
+    claude -p $required_flags < "$prompt_file" >> "$log_file" 2>&1
 }
 
 on_signal() {
