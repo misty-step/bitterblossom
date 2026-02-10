@@ -57,12 +57,12 @@ func TestCreateArgs(t *testing.T) {
 		{
 			name: "with org",
 			org:  "misty-step",
-			want: []string{"create", "--skip-console", "-o", "misty-step", "bramble"},
+			want: []string{"create", "-skip-console", "-o", "misty-step", "bramble"},
 		},
 		{
 			name: "without org",
 			org:  "",
-			want: []string{"create", "--skip-console", "bramble"},
+			want: []string{"create", "-skip-console", "bramble"},
 		},
 	}
 
@@ -89,12 +89,12 @@ func TestDestroyArgs(t *testing.T) {
 		{
 			name: "with org",
 			org:  "misty-step",
-			want: []string{"destroy", "--force", "-o", "misty-step", "bramble"},
+			want: []string{"destroy", "-force", "-o", "misty-step", "bramble"},
 		},
 		{
 			name: "without org",
 			org:  "",
-			want: []string{"destroy", "--force", "bramble"},
+			want: []string{"destroy", "-force", "bramble"},
 		},
 	}
 
