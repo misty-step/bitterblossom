@@ -3,7 +3,9 @@ package lifecycle
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/misty-step/bitterblossom/internal/sprite"
 )
@@ -34,6 +36,7 @@ sprites:
 
 	status, err := FleetOverview(context.Background(), cli, fx.cfg, compositionPath, FleetOverviewOpts{
 		IncludeCheckpoints: true,
+		IncludeTasks:       false,
 	})
 	if err != nil {
 		t.Fatalf("FleetOverview() error = %v", err)
@@ -55,6 +58,14 @@ sprites:
 	}
 	if !status.CheckpointsIncluded {
 		t.Fatalf("CheckpointsIncluded = false, want true")
+	}
+
+	// Check summary
+	if status.Summary.Total != 2 {
+		t.Fatalf("summary.total = %d, want 2", status.Summary.Total)
+	}
+	if status.Summary.Orphaned != 1 {
+		t.Fatalf("summary.orphaned = %d, want 1", status.Summary.Orphaned)
 	}
 }
 
@@ -96,23 +107,83 @@ sprites:
 	}
 }
 
+func TestFleetOverviewWithTasks(t *testing.T) {
+	t.Parallel()
+
+	fx := newFixture(t, "bramble")
+	compositionPath := filepath.Join(fx.rootDir, "compositions", "v1.yaml")
+	writeFixtureFile(t, compositionPath, `version: 1
+name: "test"
+sprites:
+  bramble:
+    definition: sprites/bramble.md
+`)
+	cli := &sprite.MockSpriteCLI{
+		APIFn: func(ctx context.Context, org, endpoint string) (string, error) {
+			if endpoint == "/sprites" {
+				return `{"sprites":[{"name":"bramble","status":"running","url":"https://bramble"}]}`, nil
+			}
+			return "", nil
+		},
+		APISpriteFn: func(ctx context.Context, org, spriteName, endpoint string) (string, error) {
+			return `{"name":"bramble","status":"running","state":"working","uptime":"2h30m","queue_depth":0,"current_task":{"id":"task-123","description":"Implement feature X","repo":"misty-step/bitterblossom","branch":"main","started_at":"2026-02-10T14:00:00Z"},"persona":{"name":"bramble"}}`, nil
+		},
+	}
+
+	status, err := FleetOverview(context.Background(), cli, fx.cfg, compositionPath, FleetOverviewOpts{
+		IncludeTasks: true,
+	})
+	if err != nil {
+		t.Fatalf("FleetOverview() error = %v", err)
+	}
+
+	if len(status.Sprites) != 1 {
+		t.Fatalf("len(Sprites) = %d, want 1", len(status.Sprites))
+	}
+
+	sprite := status.Sprites[0]
+	if sprite.State != StateBusy {
+		t.Fatalf("sprite state = %q, want busy", sprite.State)
+	}
+	if sprite.CurrentTask == nil {
+		t.Fatalf("expected current task, got nil")
+	}
+	if sprite.CurrentTask.ID != "task-123" {
+		t.Fatalf("task ID = %q, want task-123", sprite.CurrentTask.ID)
+	}
+	if sprite.CurrentTask.Description != "Implement feature X" {
+		t.Fatalf("task description = %q", sprite.CurrentTask.Description)
+	}
+	if sprite.Uptime != "2h30m" {
+		t.Fatalf("uptime = %q, want 2h30m", sprite.Uptime)
+	}
+
+	// Check summary reflects busy state
+	if status.Summary.Busy != 1 {
+		t.Fatalf("summary.busy = %d, want 1", status.Summary.Busy)
+	}
+	if status.Summary.WithTasks != 1 {
+		t.Fatalf("summary.with_tasks = %d, want 1", status.Summary.WithTasks)
+	}
+}
+
 func TestSpriteDetail(t *testing.T) {
 	t.Parallel()
 
 	fx := newFixture(t, "bramble")
+	startedAt := time.Date(2026, 2, 10, 14, 0, 0, 0, time.UTC)
 	cli := &sprite.MockSpriteCLI{
 		APISpriteFn: func(context.Context, string, string, string) (string, error) {
-			return `{"name":"bramble","status":"running"}`, nil
+			return `{"name":"bramble","status":"running","state":"working","uptime":"3h45m","queue_depth":1,"current_task":{"id":"task-456","description":"Code review","started_at":"2026-02-10T14:00:00Z"}}`, nil
 		},
 		ExecFn: func(_ context.Context, _ string, command string, _ []byte) (string, error) {
-			switch command {
-			case "ls -la '/home/sprite/workspace'":
+			if strings.Contains(command, "ls -la") && strings.Contains(command, "workspace") {
 				return "workspace listing", nil
-			case "head -20 '/home/sprite/workspace/MEMORY.md'":
-				return "memory lines", nil
-			default:
-				return "", nil
 			}
+			if strings.Contains(command, "head -20") && strings.Contains(command, "MEMORY.md") {
+				return "memory lines", nil
+			}
+			return "", nil
 		},
 		CheckpointListFn: func(context.Context, string, string) (string, error) {
 			return "checkpoint-1", nil
@@ -135,7 +206,140 @@ func TestSpriteDetail(t *testing.T) {
 	if result.Checkpoints != "checkpoint-1" {
 		t.Fatalf("checkpoints = %q", result.Checkpoints)
 	}
-	if result.API["status"] != "running" {
-		t.Fatalf("api = %#v", result.API)
+	if result.State != StateBusy {
+		t.Fatalf("state = %q, want busy", result.State)
+	}
+	if result.QueueDepth != 1 {
+		t.Fatalf("queue_depth = %d, want 1", result.QueueDepth)
+	}
+	if result.Uptime != "3h45m" {
+		t.Fatalf("uptime = %q", result.Uptime)
+	}
+	if result.CurrentTask == nil {
+		t.Fatalf("expected current task")
+	}
+	if result.CurrentTask.ID != "task-456" {
+		t.Fatalf("task ID = %q", result.CurrentTask.ID)
+	}
+	if !result.CurrentTask.StartedAt.Equal(startedAt) {
+		t.Fatalf("task started_at = %v", result.CurrentTask.StartedAt)
+	}
+}
+
+func TestDeriveSpriteState(t *testing.T) {
+	tests := []struct {
+		state    string
+		status   string
+		expected SpriteState
+	}{
+		// Status-based derivation
+		{"", "stopped", StateOffline},
+		{"", "error", StateOffline},
+		{"", "dead", StateOffline},
+		{"", "running", StateIdle},
+		{"", "starting", StateOperational},
+		{"", "provisioning", StateOperational},
+		{"", "unknown", StateUnknown},
+
+		// State-based derivation (takes precedence)
+		{"idle", "running", StateIdle},
+		{"working", "running", StateBusy},
+		{"dead", "running", StateOffline},
+
+		// Case insensitivity
+		{"IDLE", "RUNNING", StateIdle},
+		{"Working", "Running", StateBusy},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.status+"_"+tt.state, func(t *testing.T) {
+			result := deriveSpriteState(tt.state, tt.status)
+			if result != tt.expected {
+				t.Errorf("deriveSpriteState(%q, %q) = %q, want %q", tt.state, tt.status, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestCalculateFleetSummary(t *testing.T) {
+	tests := []struct {
+		name     string
+		sprites  []SpriteStatus
+		orphans  []SpriteStatus
+		expected FleetSummary
+	}{
+		{
+			name: "mixed fleet",
+			sprites: []SpriteStatus{
+				{Name: "s1", State: StateIdle},
+				{Name: "s2", State: StateIdle},
+				{Name: "s3", State: StateBusy, CurrentTask: &TaskInfo{ID: "t1"}},
+				{Name: "s4", State: StateOffline},
+				{Name: "s5", State: StateUnknown},
+			},
+			orphans: []SpriteStatus{{Name: "orphan", State: StateIdle}},
+			expected: FleetSummary{
+				Total:     5,
+				Idle:      2,
+				Busy:      1,
+				Offline:   1,
+				Unknown:   1,
+				Orphaned:  1,
+				WithTasks: 1,
+			},
+		},
+		{
+			name: "all busy with tasks",
+			sprites: []SpriteStatus{
+				{Name: "s1", State: StateBusy, CurrentTask: &TaskInfo{ID: "t1"}},
+				{Name: "s2", State: StateBusy, CurrentTask: &TaskInfo{ID: "t2"}},
+			},
+			orphans: nil,
+			expected: FleetSummary{
+				Total:     2,
+				Busy:      2,
+				WithTasks: 2,
+			},
+		},
+		{
+			name:     "empty fleet",
+			sprites:  []SpriteStatus{},
+			orphans:  nil,
+			expected: FleetSummary{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := calculateFleetSummary(tt.sprites, tt.orphans)
+			if result != tt.expected {
+				t.Errorf("calculateFleetSummary() = %+v, want %+v", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestIsRunningStatus(t *testing.T) {
+	tests := []struct {
+		status   string
+		expected bool
+	}{
+		{"running", true},
+		{"starting", true},
+		{"provisioning", true},
+		{"RUNNING", true},
+		{"stopped", false},
+		{"error", false},
+		{"dead", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.status, func(t *testing.T) {
+			result := isRunningStatus(tt.status)
+			if result != tt.expected {
+				t.Errorf("isRunningStatus(%q) = %v, want %v", tt.status, result, tt.expected)
+			}
+		})
 	}
 }
