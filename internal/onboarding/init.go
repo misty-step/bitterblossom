@@ -45,7 +45,8 @@ type InitResult struct {
 }
 
 // Init discovers existing machines, assigns botanical names, and writes the registry.
-// It is idempotent — re-running detects existing registrations.
+// Re-running overwrites the registry with fresh name assignments based on current machines.
+// Existing name→machine mappings are NOT preserved across re-runs.
 func Init(ctx context.Context, disco MachineDiscoverer, cfg InitConfig) (*InitResult, error) {
 	if cfg.App == "" {
 		return nil, fmt.Errorf("onboarding: app name is required")
@@ -67,7 +68,8 @@ func Init(ctx context.Context, disco MachineDiscoverer, cfg InitConfig) (*InitRe
 	})
 
 	// 2. Limit if requested.
-	limit := len(machines)
+	totalFound := len(machines)
+	limit := totalFound
 	if cfg.MaxSprites > 0 && cfg.MaxSprites < limit {
 		limit = cfg.MaxSprites
 	}
@@ -111,7 +113,7 @@ func Init(ctx context.Context, disco MachineDiscoverer, cfg InitConfig) (*InitRe
 	// 5. Collect results.
 	result := &InitResult{
 		RegistryPath: regPath,
-		SpritesFound: len(machines),
+		SpritesFound: totalFound,
 		Registered:   limit,
 		Names:        reg.Names(),
 	}

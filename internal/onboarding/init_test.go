@@ -88,8 +88,8 @@ func TestInit_MaxSprites(t *testing.T) {
 	if result.Registered != 3 {
 		t.Fatalf("Registered = %d, want 3 (limited by MaxSprites)", result.Registered)
 	}
-	if result.SpritesFound != 3 {
-		t.Fatalf("SpritesFound = %d, want 3", result.SpritesFound)
+	if result.SpritesFound != 5 {
+		t.Fatalf("SpritesFound = %d, want 5 (total machines, not limited)", result.SpritesFound)
 	}
 }
 
