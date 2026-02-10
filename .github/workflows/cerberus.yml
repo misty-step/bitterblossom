@@ -44,15 +44,6 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - name: Fork PRs blocked (no secrets)
-        if: github.event.pull_request.head.repo.full_name != github.repository
-        shell: bash
-        run: |
-          echo "::error::Cerberus Council does not run on fork PRs (secrets safety)."
-          echo "::error::Resolution: open PR from a branch in this repo, or have a maintainer re-home the branch."
-          exit 1
-
       - uses: misty-step/cerberus/verdict@v2
-        if: github.event.pull_request.head.repo.full_name == github.repository
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
