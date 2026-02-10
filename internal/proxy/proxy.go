@@ -15,8 +15,8 @@ const (
 	ProxyScriptPath = "/home/sprite/anthropic-proxy.mjs"
 
 	// ProxyPIDFile is the path to the proxy PID file.
-	// Using /run for better security than world-writable /tmp, fallback to /tmp if needed.
-	ProxyPIDFile = "/run/sprite/anthropic-proxy.pid"
+	// Using /home/sprite for better security than world-writable /tmp.
+	ProxyPIDFile = "/home/sprite/.anthropic-proxy.pid"
 
 	// DefaultModel is the default model used when proxy provider is selected.
 	DefaultModel = "moonshotai/kimi-k2.5"

@@ -21,7 +21,7 @@ import http from 'node:http';
 import https from 'node:https';
 
 const PORT = parseInt(process.env.PROXY_PORT || '4000');
-const PID_FILE = process.env.PROXY_PID_FILE || '/run/sprite/anthropic-proxy.pid';
+const PID_FILE = process.env.PROXY_PID_FILE || '/home/sprite/.anthropic-proxy.pid';
 const UPSTREAM_BASE = process.env.UPSTREAM_BASE || 'https://openrouter.ai';
 const UPSTREAM_PATH = process.env.UPSTREAM_PATH || '/api/v1/chat/completions';
 const API_KEY = process.env.OPENROUTER_API_KEY || '';
