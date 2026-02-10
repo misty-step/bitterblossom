@@ -327,6 +327,12 @@ extract_usage_tokens() {
     local line="$1"
     local tokens
 
+    # Parse token usage from Claude API JSON output.
+    # Handles multiple JSON schemas:
+    #   - Direct usage object: {"usage":{"input_tokens":N,"output_tokens":N}}
+    #   - Nested message object: {"message":{"usage":{...}}}
+    #   - Field name variants: input_tokens/prompt_tokens, output_tokens/completion_tokens
+    # Falls back to 0 if fields are missing. Outputs numeric token count only.
     tokens="$(jq -r '
         if type == "object" then
             if has("usage") then
@@ -350,7 +356,7 @@ update_tokens_from_iteration_output() {
     local usage_line
     local tokens
 
-    usage_line="$(tail -c +$iteration_log_start_byte "$RALPH_LOG" 2>/dev/null | grep '\"usage\"' | tail -n 1 || true)"
+    usage_line="$(tail -c +"$iteration_log_start_byte" "$RALPH_LOG" 2>/dev/null | grep '\"usage\"' | tail -n 1 || true)"
     [[ -z "$usage_line" ]] && return 0
 
     tokens="$(extract_usage_tokens "$usage_line" || true)"
@@ -368,6 +374,11 @@ extract_error_signature() {
     local line="$1"
     local sig
 
+    # Extract error signature from Claude API JSON output for error-loop detection.
+    # Handles multiple JSON schemas:
+    #   - Standard error object: {"error":{"message":"..."}} or {"error":"..."}
+    #   - Typed error: {"type":"error","message":"..."} (case-insensitive)
+    # Normalizes output by collapsing all whitespace to single spaces for consistent comparison.
     sig="$(jq -r '
         if type == "object" then
             if has("error") then
@@ -382,7 +393,8 @@ extract_error_signature() {
         end
     ' <<<"$line" 2>/dev/null || true)"
 
-    sig="$(printf '%s' "$sig" | tr '\r\n' ' ' | sed 's/[[:space:]]\\+/ /g' | sed 's/^ *//; s/ *$//')"
+    # Normalize whitespace: convert newlines to spaces, collapse multiple spaces to one
+    sig="$(printf '%s' "$sig" | tr '\r\n' ' ' | sed -E 's/[[:space:]]+/ /g' | sed 's/^ *//; s/ *$//')"
     if [[ -n "$sig" ]]; then
         printf '%s\n' "$sig"
     fi
