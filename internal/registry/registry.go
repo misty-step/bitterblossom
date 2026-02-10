@@ -54,6 +54,30 @@ func newRegistry() *Registry {
 	}
 }
 
+// validateRegistryPath ensures the resolved path is safe for file operations.
+// Prevents path traversal attacks when paths come from untrusted input.
+func validateRegistryPath(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("registry path: cannot resolve %q: %w", path, err)
+	}
+
+	// Must have .toml extension.
+	if filepath.Ext(abs) != ".toml" {
+		return "", fmt.Errorf("registry path: %q must have .toml extension", abs)
+	}
+
+	// Block obviously dangerous system paths (but allow /tmp, /var/folders for macOS temp).
+	blocked := []string{"/etc/", "/usr/", "/bin/", "/sbin/", "/dev/", "/proc/", "/sys/"}
+	for _, prefix := range blocked {
+		if strings.HasPrefix(abs, prefix) {
+			return "", fmt.Errorf("registry path: %q is in a protected system directory", abs)
+		}
+	}
+
+	return abs, nil
+}
+
 // Load loads a TOML registry file from disk.
 //
 // If the file does not exist, Load returns an empty registry and a nil error.
@@ -64,12 +88,17 @@ func Load(path string) (*Registry, error) {
 		return nil, fmt.Errorf("reading registry: path is empty")
 	}
 
-	raw, err := os.ReadFile(path)
+	validated, err := validateRegistryPath(path)
+	if err != nil {
+		return nil, err
+	}
+
+	raw, err := os.ReadFile(validated)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return newRegistry(), nil
 		}
-		return nil, fmt.Errorf("reading registry %q: %w", path, err)
+		return nil, fmt.Errorf("reading registry %q: %w", validated, err)
 	}
 
 	r := newRegistry()
@@ -88,6 +117,12 @@ func (r *Registry) Save(path string) error {
 	if strings.TrimSpace(path) == "" {
 		return fmt.Errorf("saving registry: path is empty")
 	}
+
+	validated, err := validateRegistryPath(path)
+	if err != nil {
+		return err
+	}
+	path = validated
 
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
