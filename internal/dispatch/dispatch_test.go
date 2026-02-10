@@ -228,6 +228,12 @@ func TestRunExecuteProvisionAndStartRalph(t *testing.T) {
 	if !strings.Contains(remote.execCalls[2].command, "BB_CLAUDE_FLAGS") {
 		t.Fatalf("expected ralph start to pass BB_CLAUDE_FLAGS to sprite-agent, got %q", remote.execCalls[2].command)
 	}
+	if !strings.Contains(remote.execCalls[2].command, "MAX_TOKENS=200000") {
+		t.Fatalf("expected ralph start to pass MAX_TOKENS, got %q", remote.execCalls[2].command)
+	}
+	if !strings.Contains(remote.execCalls[2].command, "MAX_TIME_SEC=1800") {
+		t.Fatalf("expected ralph start to pass MAX_TIME_SEC, got %q", remote.execCalls[2].command)
+	}
 	if !strings.Contains(remote.execCalls[2].command, "--dangerously-skip-permissions") {
 		t.Fatalf("expected ralph start BB_CLAUDE_FLAGS to include dangerously-skip-permissions, got %q", remote.execCalls[2].command)
 	}

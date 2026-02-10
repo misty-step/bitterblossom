@@ -318,3 +318,63 @@ func TestTruncateString(t *testing.T) {
 		})
 	}
 }
+
+func TestWatchModeInvalidInterval(t *testing.T) {
+	t.Parallel()
+
+	deps := statusDeps{
+		getwd:  func() (string, error) { return t.TempDir(), nil },
+		newCLI: func(string, string) sprite.SpriteCLI { return &sprite.MockSpriteCLI{} },
+		fleetOverview: func(context.Context, sprite.SpriteCLI, lifecycle.Config, string, lifecycle.FleetOverviewOpts) (lifecycle.FleetStatus, error) {
+			return lifecycle.FleetStatus{}, nil
+		},
+		spriteDetail: func(context.Context, sprite.SpriteCLI, lifecycle.Config, string) (lifecycle.SpriteDetailResult, error) {
+			return lifecycle.SpriteDetailResult{}, nil
+		},
+	}
+
+	cmd := newStatusCmdWithDeps(deps)
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetArgs([]string{"--watch", "--watch-interval", "0s"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for invalid watch interval")
+	}
+	if !strings.Contains(err.Error(), "--watch-interval must be positive") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestWatchModeNegativeInterval(t *testing.T) {
+	t.Parallel()
+
+	deps := statusDeps{
+		getwd:  func() (string, error) { return t.TempDir(), nil },
+		newCLI: func(string, string) sprite.SpriteCLI { return &sprite.MockSpriteCLI{} },
+		fleetOverview: func(context.Context, sprite.SpriteCLI, lifecycle.Config, string, lifecycle.FleetOverviewOpts) (lifecycle.FleetStatus, error) {
+			return lifecycle.FleetStatus{}, nil
+		},
+		spriteDetail: func(context.Context, sprite.SpriteCLI, lifecycle.Config, string) (lifecycle.SpriteDetailResult, error) {
+			return lifecycle.SpriteDetailResult{}, nil
+		},
+	}
+
+	cmd := newStatusCmdWithDeps(deps)
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetArgs([]string{"--watch", "--watch-interval", "-1s"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for negative watch interval")
+	}
+	if !strings.Contains(err.Error(), "--watch-interval must be positive") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}

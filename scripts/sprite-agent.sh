@@ -23,6 +23,11 @@ Environment:
   SPRITE_WEBHOOK_URL   Optional webhook URL for POSTing events (default: unset)
   WORKSPACE            Workspace root (default: $HOME/workspace)
   MAX_ITERATIONS       Ralph safety cap (default: 50)
+  MAX_TOKENS           Token safety cap across iterations (default: 200000)
+  MAX_TIME_SEC         Runtime safety cap in seconds (default: 1800)
+  ERROR_WINDOW_LINES   Error loop window size (default: 50)
+  ERROR_REPEAT_COUNT   Error loop threshold (default: 3)
+  SHUTDOWN_GRACE_SEC   Seconds to wait after SIGTERM before SIGKILL (default: 10)
   HEARTBEAT_INTERVAL   Seconds between heartbeat events (default: 300)
   PROGRESS_INTERVAL    Seconds between progress events (default: 900)
   PUSH_INTERVAL        Seconds between git auto-push runs (default: 1800)
@@ -48,6 +53,11 @@ EVENT_LOG="$LOG_DIR/agent.jsonl"
 RALPH_LOG="$WORKSPACE/ralph.log"
 
 MAX_ITERATIONS="${MAX_ITERATIONS:-50}"
+MAX_TOKENS="${MAX_TOKENS:-200000}"
+MAX_TIME_SEC="${MAX_TIME_SEC:-1800}"
+ERROR_WINDOW_LINES="${ERROR_WINDOW_LINES:-50}"
+ERROR_REPEAT_COUNT="${ERROR_REPEAT_COUNT:-3}"
+SHUTDOWN_GRACE_SEC="${SHUTDOWN_GRACE_SEC:-10}"
 HEARTBEAT_INTERVAL="${HEARTBEAT_INTERVAL:-300}"
 PROGRESS_INTERVAL="${PROGRESS_INTERVAL:-900}"
 PUSH_INTERVAL="${PUSH_INTERVAL:-1800}"
@@ -61,7 +71,7 @@ if command -v script >/dev/null 2>&1; then
     fi
 fi
 
-for v in MAX_ITERATIONS HEARTBEAT_INTERVAL PROGRESS_INTERVAL PUSH_INTERVAL HEALTH_INTERVAL LOOP_SLEEP_SEC; do
+for v in MAX_ITERATIONS MAX_TOKENS MAX_TIME_SEC ERROR_WINDOW_LINES ERROR_REPEAT_COUNT SHUTDOWN_GRACE_SEC HEARTBEAT_INTERVAL PROGRESS_INTERVAL PUSH_INTERVAL HEALTH_INTERVAL LOOP_SLEEP_SEC; do
     if [[ ! "${!v}" =~ ^[0-9]+$ ]]; then
         echo "[sprite-agent] ERROR: $v must be a non-negative integer (got '${!v}')" >&2
         exit 1
@@ -82,6 +92,8 @@ shutdown_requested=false
 shutdown_signal=""
 terminal_event_emitted=false
 health_json='{"cpu":"unknown","mem":"unknown","disk":"unknown","claude_running":false,"iteration":0}'
+token_total=0
+iteration_log_start_byte=1
 
 current_task_id() {
     if [[ -f "$TASK_ID_FILE" ]]; then
@@ -285,8 +297,137 @@ check_terminal_signals() {
     return 1
 }
 
+fail_task() {
+    local reason="$1"
+    local extra="${2:-}"
+    local extra_json
+
+    if [[ -z "$extra" ]]; then
+        extra='{}'
+    fi
+
+    extra_json="$(jq -cn --arg reason "$reason" --argjson extra "$extra" '$extra + {reason:$reason}')"
+
+    health_json="$(collect_health_json)"
+    emit_terminal_event "task_failed" "$extra_json"
+    shutdown_requested=true
+    stop_runner_if_needed
+    exit 1
+}
+
+check_time_limit() {
+    local now="$1"
+
+    if (( MAX_TIME_SEC > 0 )) && (( now - started_epoch >= MAX_TIME_SEC )); then
+        fail_task "max_time" "$(jq -cn --argjson max_time_sec "$MAX_TIME_SEC" '{max_time_sec:$max_time_sec}')"
+    fi
+}
+
+extract_usage_tokens() {
+    local line="$1"
+    local tokens
+
+    # Parse token usage from Claude API JSON output.
+    # Handles multiple JSON schemas:
+    #   - Direct usage object: {"usage":{"input_tokens":N,"output_tokens":N}}
+    #   - Nested message object: {"message":{"usage":{...}}}
+    #   - Field name variants: input_tokens/prompt_tokens, output_tokens/completion_tokens
+    # Falls back to 0 if fields are missing. Outputs numeric token count only.
+    tokens="$(jq -r '
+        if type == "object" then
+            if has("usage") then
+                ((.usage.input_tokens // .usage.prompt_tokens // 0) + (.usage.output_tokens // .usage.completion_tokens // 0))
+            elif has("message") and (.message|type=="object") and (.message|has("usage")) then
+                ((.message.usage.input_tokens // .message.usage.prompt_tokens // 0) + (.message.usage.output_tokens // .message.usage.completion_tokens // 0))
+            else
+                empty
+            end
+        else
+            empty
+        end
+    ' <<<"$line" 2>/dev/null || true)"
+
+    if [[ "$tokens" =~ ^[0-9]+$ ]]; then
+        printf '%s\n' "$tokens"
+    fi
+}
+
+update_tokens_from_iteration_output() {
+    local usage_line
+    local tokens
+
+    usage_line="$(tail -c +"$iteration_log_start_byte" "$RALPH_LOG" 2>/dev/null | grep '\"usage\"' | tail -n 1 || true)"
+    [[ -z "$usage_line" ]] && return 0
+
+    tokens="$(extract_usage_tokens "$usage_line" || true)"
+    [[ -z "$tokens" ]] && return 0
+
+    token_total=$((token_total + tokens))
+    printf '[agent] tokens_total=%d (+%d)\n' "$token_total" "$tokens" >> "$RALPH_LOG"
+
+    if (( MAX_TOKENS > 0 )) && (( token_total >= MAX_TOKENS )); then
+        fail_task "max_tokens" "$(jq -cn --argjson max_tokens "$MAX_TOKENS" --argjson tokens_total "$token_total" '{max_tokens:$max_tokens,tokens_total:$tokens_total}')"
+    fi
+}
+
+extract_error_signature() {
+    local line="$1"
+    local sig
+
+    # Extract error signature from Claude API JSON output for error-loop detection.
+    # Handles multiple JSON schemas:
+    #   - Standard error object: {"error":{"message":"..."}} or {"error":"..."}
+    #   - Typed error: {"type":"error","message":"..."} (case-insensitive)
+    # Normalizes output by collapsing all whitespace to single spaces for consistent comparison.
+    sig="$(jq -r '
+        if type == "object" then
+            if has("error") then
+                (.error.message // .error // empty) | tostring
+            elif has("type") and ((.type|tostring) | test("error|exception|failed"; "i")) then
+                (.message // .detail // empty) | tostring
+            else
+                empty
+            end
+        else
+            empty
+        end
+    ' <<<"$line" 2>/dev/null || true)"
+
+    # Normalize whitespace: convert newlines to spaces, collapse multiple spaces to one
+    sig="$(printf '%s' "$sig" | tr '\r\n' ' ' | sed -E 's/[[:space:]]+/ /g' | sed 's/^ *//; s/ *$//')"
+    if [[ -n "$sig" ]]; then
+        printf '%s\n' "$sig"
+    fi
+}
+
+check_error_loop() {
+    local worst
+    local count
+    local sig
+
+    (( ERROR_REPEAT_COUNT <= 0 )) && return 0
+    (( ERROR_WINDOW_LINES <= 0 )) && return 0
+
+    worst="$(
+        tail -n "$ERROR_WINDOW_LINES" "$RALPH_LOG" 2>/dev/null | \
+            while IFS= read -r line; do
+                extract_error_signature "$line" || true
+            done | \
+            sort | uniq -c | sort -nr | head -n 1
+    )"
+
+    count="$(printf '%s\n' "$worst" | awk '{print $1}' | tr -d '[:space:]')"
+    sig="$(printf '%s\n' "$worst" | sed 's/^ *[0-9][0-9]* //')"
+
+    if [[ "$count" =~ ^[0-9]+$ ]] && (( count >= ERROR_REPEAT_COUNT )) && [[ -n "$sig" ]]; then
+        fail_task "error_loop" "$(jq -cn --argjson window_lines "$ERROR_WINDOW_LINES" --argjson repeat_count "$ERROR_REPEAT_COUNT" --arg signature "$sig" --argjson hits "$count" '{window_lines:$window_lines,repeat_count:$repeat_count,signature:$signature,hits:$hits}')"
+    fi
+}
+
 run_periodic_tasks() {
     local now="$1"
+
+    check_time_limit "$now"
 
     if (( now - last_health >= HEALTH_INTERVAL )); then
         health_json="$(collect_health_json)"
@@ -317,7 +458,16 @@ run_periodic_tasks() {
 
 stop_runner_if_needed() {
     if [[ -n "$current_runner_pid" ]]; then
-        kill "$current_runner_pid" >/dev/null 2>&1 || true
+        if kill -0 "$current_runner_pid" >/dev/null 2>&1; then
+            kill -TERM "$current_runner_pid" >/dev/null 2>&1 || true
+            deadline=$(( $(date +%s) + SHUTDOWN_GRACE_SEC ))
+            while kill -0 "$current_runner_pid" >/dev/null 2>&1 && (( $(date +%s) < deadline )); do
+                sleep 1
+            done
+            if kill -0 "$current_runner_pid" >/dev/null 2>&1; then
+                kill -KILL "$current_runner_pid" >/dev/null 2>&1 || true
+            fi
+        fi
         wait "$current_runner_pid" 2>/dev/null || true
         current_runner_pid=""
     fi
@@ -326,6 +476,8 @@ stop_runner_if_needed() {
 run_claude_once() {
     local prompt_file="$1"
     local log_file="$2"
+
+    cd "$WORKSPACE"
 
     local required_flags_default
     required_flags_default="--dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json"
@@ -345,12 +497,10 @@ run_claude_once() {
 
     # Prefer PTY-backed execution for near-real-time flush behavior.
     if [[ "$HAS_SCRIPT_PTY" == true ]]; then
-        script -qefc "claude -p $required_flags < \"$prompt_file\"" \
-            /dev/null >> "$log_file" 2>&1
-        return
+        exec script -qefc "claude -p $required_flags < \"$prompt_file\"" /dev/null >> "$log_file" 2>&1
     fi
 
-    claude -p $required_flags < "$prompt_file" >> "$log_file" 2>&1
+    exec claude -p $required_flags < "$prompt_file" >> "$log_file" 2>&1
 }
 
 on_signal() {
@@ -394,11 +544,9 @@ while (( iteration < MAX_ITERATIONS )); do
     iteration=$((iteration + 1))
     printf '\n[agent] iteration=%d started_at=%s\n' \
         "$iteration" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$RALPH_LOG"
+    iteration_log_start_byte=$(( $(wc -c < "$RALPH_LOG") + 1 ))
 
-    (
-        cd "$WORKSPACE"
-        run_claude_once "$PROMPT_FILE" "$RALPH_LOG"
-    ) &
+    run_claude_once "$PROMPT_FILE" "$RALPH_LOG" &
     current_runner_pid="$!"
 
     while kill -0 "$current_runner_pid" >/dev/null 2>&1; do
@@ -429,6 +577,9 @@ while (( iteration < MAX_ITERATIONS )); do
 
     printf '[agent] iteration=%d claude_exit=%s at=%s\n' \
         "$iteration" "$exit_code" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$RALPH_LOG"
+
+    update_tokens_from_iteration_output
+    check_error_loop
 done
 
 if [[ "$terminal_event_emitted" == false ]]; then

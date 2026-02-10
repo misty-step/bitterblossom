@@ -165,8 +165,17 @@ func runSpriteDetail(cmd *cobra.Command, deps statusDeps, cli sprite.SpriteCLI, 
 }
 
 func runWatchMode(cmd *cobra.Command, deps statusDeps, cli sprite.SpriteCLI, cfg lifecycle.Config, opts statusOptions) error {
+	// Validate watch interval to prevent panic from time.NewTicker
+	if opts.WatchInterval <= 0 {
+		return fmt.Errorf("--watch-interval must be positive (got %v)", opts.WatchInterval)
+	}
+
 	// Clear screen initially
 	_, _ = fmt.Fprint(cmd.OutOrStdout(), "\033[H\033[2J")
+
+	if opts.WatchInterval <= 0 {
+		return errors.New("--watch-interval must be > 0")
+	}
 
 	ticker := time.NewTicker(opts.WatchInterval)
 	defer ticker.Stop()

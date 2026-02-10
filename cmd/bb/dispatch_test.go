@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	dispatchsvc "github.com/misty-step/bitterblossom/internal/dispatch"
 	"github.com/misty-step/bitterblossom/pkg/fly"
@@ -62,6 +64,9 @@ func TestDispatchCommandJSONOutput(t *testing.T) {
 		},
 		newService: func(cfg dispatchsvc.Config) (dispatchRunner, error) {
 			return runner, nil
+		},
+		pollSprite: func(ctx context.Context, remote *spriteCLIRemote, sprite string, timeout time.Duration, progress func(string)) (*waitResult, error) {
+			return nil, nil
 		},
 	}
 
@@ -202,6 +207,9 @@ func TestDispatchCommandUsesPromptFile(t *testing.T) {
 		newService: func(cfg dispatchsvc.Config) (dispatchRunner, error) {
 			return runner, nil
 		},
+		pollSprite: func(ctx context.Context, remote *spriteCLIRemote, sprite string, timeout time.Duration, progress func(string)) (*waitResult, error) {
+			return nil, nil
+		},
 	}
 
 	cmd := newDispatchCmdWithDeps(deps)
@@ -223,5 +231,357 @@ func TestDispatchCommandUsesPromptFile(t *testing.T) {
 	}
 	if runner.lastReq.Execute {
 		t.Fatalf("runner.lastReq.Execute = true, want dry-run")
+	}
+}
+
+func TestDispatchCommandWaitRequiresExecute(t *testing.T) {
+	t.Parallel()
+
+	deps := dispatchDeps{
+		readFile:     func(string) ([]byte, error) { return nil, nil },
+		newFlyClient: func(token, apiURL string) (fly.MachineClient, error) { return fakeFlyClient{}, nil },
+		newRemote:    func(binary, org string) *spriteCLIRemote { return &spriteCLIRemote{} },
+		newService:   func(cfg dispatchsvc.Config) (dispatchRunner, error) { return &fakeDispatchRunner{}, nil },
+		pollSprite:   func(ctx context.Context, remote *spriteCLIRemote, sprite string, timeout time.Duration, progress func(string)) (*waitResult, error) { return nil, nil },
+	}
+
+	cmd := newDispatchCmdWithDeps(deps)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{
+		"fern",
+		"Fix bug",
+		"--wait", // --wait without --execute should fail
+		"--app", "bb-app",
+		"--token", "tok",
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for --wait without --execute, got nil")
+	}
+	if !strings.Contains(err.Error(), "--wait requires --execute") {
+		t.Fatalf("expected error about --wait requiring --execute, got: %v", err)
+	}
+}
+
+func TestDispatchCommandWithWait(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeDispatchRunner{
+		result: dispatchsvc.Result{
+			Executed: true,
+			State:    dispatchsvc.StateRunning,
+			AgentPID: 12345,
+			Plan: dispatchsvc.Plan{
+				Sprite: "moss",
+				Mode:   "execute",
+				Steps:  []dispatchsvc.PlanStep{{Kind: dispatchsvc.StepStartAgent, Description: "start"}},
+			},
+		},
+	}
+
+	expectedResult := &waitResult{
+		State:    "completed",
+		Task:     "Implement feature",
+		Complete: true,
+		PRURL:    "https://github.com/misty-step/bitterblossom/pull/123",
+	}
+
+	pollCalled := false
+	deps := dispatchDeps{
+		readFile: func(string) ([]byte, error) { return nil, nil },
+		newFlyClient: func(token, apiURL string) (fly.MachineClient, error) {
+			return fakeFlyClient{}, nil
+		},
+		newRemote: func(binary, org string) *spriteCLIRemote {
+			return &spriteCLIRemote{}
+		},
+		newService: func(cfg dispatchsvc.Config) (dispatchRunner, error) {
+			return runner, nil
+		},
+		pollSprite: func(ctx context.Context, remote *spriteCLIRemote, sprite string, timeout time.Duration, progress func(string)) (*waitResult, error) {
+			pollCalled = true
+			if sprite != "moss" {
+				t.Errorf("expected sprite 'moss', got %q", sprite)
+			}
+			return expectedResult, nil
+		},
+	}
+
+	cmd := newDispatchCmdWithDeps(deps)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{
+		"moss",
+		"Implement feature",
+		"--execute",
+		"--wait",
+		"--timeout", "5m",
+		"--app", "bb-app",
+		"--token", "tok",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cmd.Execute() error = %v", err)
+	}
+
+	if !pollCalled {
+		t.Fatal("expected pollSprite to be called with --wait flag")
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "COMPLETE") {
+		t.Fatalf("expected output to contain completion status, got: %s", output)
+	}
+	if !strings.Contains(output, "https://github.com/misty-step/bitterblossom/pull/123") {
+		t.Fatalf("expected output to contain PR URL, got: %s", output)
+	}
+}
+
+func TestDispatchCommandWaitWithPollingError(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeDispatchRunner{
+		result: dispatchsvc.Result{
+			Executed: true,
+			State:    dispatchsvc.StateRunning,
+			AgentPID: 12345,
+			Plan: dispatchsvc.Plan{
+				Sprite: "moss",
+				Mode:   "execute",
+				Steps:  []dispatchsvc.PlanStep{{Kind: dispatchsvc.StepStartAgent, Description: "start"}},
+			},
+		},
+	}
+
+	deps := dispatchDeps{
+		readFile: func(string) ([]byte, error) { return nil, nil },
+		newFlyClient: func(token, apiURL string) (fly.MachineClient, error) {
+			return fakeFlyClient{}, nil
+		},
+		newRemote: func(binary, org string) *spriteCLIRemote {
+			return &spriteCLIRemote{}
+		},
+		newService: func(cfg dispatchsvc.Config) (dispatchRunner, error) {
+			return runner, nil
+		},
+		pollSprite: func(ctx context.Context, remote *spriteCLIRemote, sprite string, timeout time.Duration, progress func(string)) (*waitResult, error) {
+			return nil, errors.New("polling failed")
+		},
+	}
+
+	cmd := newDispatchCmdWithDeps(deps)
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetArgs([]string{
+		"moss",
+		"Implement feature",
+		"--execute",
+		"--wait",
+		"--app", "bb-app",
+		"--token", "tok",
+	})
+
+	// Should succeed with graceful degradation (just show dispatch result)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cmd.Execute() error = %v", err)
+	}
+
+	// Should have warning in stderr
+	errStr := errOut.String()
+	if !strings.Contains(errStr, "polling failed") {
+		t.Fatalf("expected warning about polling failure, got: %s", errStr)
+	}
+}
+
+func TestDispatchCommandWaitJSONOutput(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeDispatchRunner{
+		result: dispatchsvc.Result{
+			Executed: true,
+			State:    dispatchsvc.StateRunning,
+			Plan: dispatchsvc.Plan{
+				Sprite: "moss",
+				Mode:   "execute",
+			},
+		},
+	}
+
+	expectedResult := &waitResult{
+		State:    "completed",
+		Complete: true,
+		PRURL:    "https://github.com/misty-step/bitterblossom/pull/123",
+	}
+
+	deps := dispatchDeps{
+		readFile: func(string) ([]byte, error) { return nil, nil },
+		newFlyClient: func(token, apiURL string) (fly.MachineClient, error) {
+			return fakeFlyClient{}, nil
+		},
+		newRemote: func(binary, org string) *spriteCLIRemote {
+			return &spriteCLIRemote{}
+		},
+		newService: func(cfg dispatchsvc.Config) (dispatchRunner, error) {
+			return runner, nil
+		},
+		pollSprite: func(ctx context.Context, remote *spriteCLIRemote, sprite string, timeout time.Duration, progress func(string)) (*waitResult, error) {
+			return expectedResult, nil
+		},
+	}
+
+	cmd := newDispatchCmdWithDeps(deps)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{
+		"moss",
+		"Implement feature",
+		"--execute",
+		"--wait",
+		"--json",
+		"--app", "bb-app",
+		"--token", "tok",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cmd.Execute() error = %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, `"wait"`) {
+		t.Fatalf("expected JSON output to contain wait result, got: %s", output)
+	}
+	if !strings.Contains(output, `"pr_url"`) {
+		t.Fatalf("expected JSON output to contain pr_url, got: %s", output)
+	}
+}
+
+func TestParseStatusCheckOutput(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		output   string
+		wantDone bool
+		wantRes  *waitResult
+	}{
+		{
+			name: "completed task",
+			output: "__STATUS_JSON__{\"repo\":\"misty-step/bitterblossom\",\"started\":\"2024-01-15T10:00:00Z\",\"task\":\"Fix bug\"}\n" +
+				"__AGENT_STATE__dead\n" +
+				"__HAS_COMPLETE__yes\n" +
+				"__HAS_BLOCKED__no\n" +
+				"__BLOCKED_B64__\n" +
+				"__PR_URL__https://github.com/misty-step/bitterblossom/pull/42\n",
+			wantDone: true,
+			wantRes: &waitResult{
+				State:    "completed",
+				Task:     "Fix bug",
+				Repo:     "misty-step/bitterblossom",
+				Started:  "2024-01-15T10:00:00Z",
+				PRURL:    "https://github.com/misty-step/bitterblossom/pull/42",
+				Complete: true,
+			},
+		},
+		{
+			name: "blocked task",
+			output: "__STATUS_JSON__{\"task\":\"Refactor auth\"}\n" +
+				"__AGENT_STATE__dead\n" +
+				"__HAS_COMPLETE__no\n" +
+				"__HAS_BLOCKED__yes\n" +
+				"__BLOCKED_B64__QmxvY2tlZDogbmVlZCBwZXJtaXNzaW9ucw==\n" + // "Blocked: need permissions"
+				"__PR_URL__\n",
+			wantDone: true,
+			wantRes: &waitResult{
+				State:         "blocked",
+				Task:          "Refactor auth",
+				Blocked:       true,
+				BlockedReason: "Blocked: need permissions",
+				Complete:      true,
+			},
+		},
+		{
+			name: "running task",
+			output: "__STATUS_JSON__{\"task\":\"Implement feature\"}\n" +
+				"__AGENT_STATE__alive\n" +
+				"__HAS_COMPLETE__no\n" +
+				"__HAS_BLOCKED__no\n" +
+				"__BLOCKED_B64__\n" +
+				"__PR_URL__\n",
+			wantDone: false,
+			wantRes: &waitResult{
+				State:    "running",
+				Task:     "Implement feature",
+				Complete: false,
+			},
+		},
+		{
+			name: "idle - no task",
+			output: "__STATUS_JSON__{}\n" +
+				"__AGENT_STATE__dead\n" +
+				"__HAS_COMPLETE__no\n" +
+				"__HAS_BLOCKED__no\n" +
+				"__BLOCKED_B64__\n" +
+				"__PR_URL__\n",
+			wantDone: false,
+			wantRes: &waitResult{
+				State:    "idle",
+				Complete: false,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res, done, err := parseStatusCheckOutput(tt.output, "/home/sprite/workspace")
+			if err != nil {
+				t.Fatalf("parseStatusCheckOutput() error = %v", err)
+			}
+			if done != tt.wantDone {
+				t.Errorf("done = %v, want %v", done, tt.wantDone)
+			}
+			if res.State != tt.wantRes.State {
+				t.Errorf("State = %q, want %q", res.State, tt.wantRes.State)
+			}
+			if res.Task != tt.wantRes.Task {
+				t.Errorf("Task = %q, want %q", res.Task, tt.wantRes.Task)
+			}
+			if res.Complete != tt.wantRes.Complete {
+				t.Errorf("Complete = %v, want %v", res.Complete, tt.wantRes.Complete)
+			}
+			if res.Blocked != tt.wantRes.Blocked {
+				t.Errorf("Blocked = %v, want %v", res.Blocked, tt.wantRes.Blocked)
+			}
+		})
+	}
+}
+
+func TestBuildStatusCheckScript(t *testing.T) {
+	t.Parallel()
+
+	script := buildStatusCheckScript("/home/sprite/workspace")
+	
+	// Check for expected components
+	expectedComponents := []string{
+		"STATUS_JSON",
+		"AGENT_STATE",
+		"HAS_COMPLETE",
+		"HAS_BLOCKED",
+		"BLOCKED_B64",
+		"PR_URL",
+		"TASK_COMPLETE",
+		"BLOCKED.md",
+	}
+	
+	for _, component := range expectedComponents {
+		if !strings.Contains(script, component) {
+			t.Errorf("script missing expected component: %s", component)
+		}
 	}
 }
