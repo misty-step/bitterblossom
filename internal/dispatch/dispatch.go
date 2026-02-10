@@ -244,7 +244,7 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 			return result, fmt.Errorf("dispatch: check sprite env: %w", err)
 		}
 		env := map[string]string{}
-		if key := strings.TrimSpace(keyOutput); key != "" {
+		if key := lastNonEmptyLine(keyOutput); key != "" {
 			env["ANTHROPIC_API_KEY"] = key
 		}
 		if err := ValidateNoDirectAnthropic(env, false); err != nil {
@@ -545,6 +545,17 @@ func parsePID(output string) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+func lastNonEmptyLine(output string) string {
+	lines := strings.Split(output, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line != "" {
+			return line
+		}
+	}
+	return ""
 }
 
 func buildSetupRepoScript(workspace, cloneURL, repoDir string) string {

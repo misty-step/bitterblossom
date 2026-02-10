@@ -60,6 +60,42 @@ func TestValidateNoDirectAnthropic_NonAnthropicKey(t *testing.T) {
 	}
 }
 
+func TestRunBlocksDispatchWithNoisyShellProfile(t *testing.T) {
+	t.Parallel()
+
+	// Login shell banner text before the actual printenv output
+	remote := &fakeRemote{
+		execResponses: []string{"Welcome to sprite-env v1.2.3\nsk-ant-abc123\n"},
+	}
+	flyClient := &fakeFly{
+		listMachines: []fly.Machine{{Name: "fern", ID: "m1"}},
+	}
+
+	service, err := NewService(Config{
+		Remote:    remote,
+		Fly:       flyClient,
+		App:       "bb-app",
+		Workspace: "/home/sprite/workspace",
+		Now:       func() time.Time { return time.Now() },
+	})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	_, runErr := service.Run(context.Background(), Request{
+		Sprite:  "fern",
+		Prompt:  "Fix tests",
+		Execute: true,
+	})
+	if runErr == nil {
+		t.Fatal("expected error when sk-ant key is masked by banner text, got nil")
+	}
+	var keyErr *ErrDirectAnthropicKey
+	if !errors.As(runErr, &keyErr) {
+		t.Fatalf("error = %v (%T), want *ErrDirectAnthropicKey", runErr, runErr)
+	}
+}
+
 func TestRunBlocksDispatchWithRealAnthropicKey(t *testing.T) {
 	t.Parallel()
 
