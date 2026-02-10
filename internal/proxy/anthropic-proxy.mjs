@@ -330,7 +330,6 @@ const server = http.createServer((req, res) => {
   });
 });
 
-import fs from 'node:fs';
 
 server.listen(PORT, '127.0.0.1', () => {
   try {
