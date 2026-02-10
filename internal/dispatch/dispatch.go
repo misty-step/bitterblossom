@@ -193,6 +193,11 @@ func NewService(cfg Config) (*Service, error) {
 		return nil, err
 	}
 
+	registryPath := strings.TrimSpace(cfg.RegistryPath)
+	if registryPath == "" && cfg.RegistryRequired {
+		registryPath = registry.DefaultPath()
+	}
+
 	return &Service{
 		remote:             cfg.Remote,
 		fly:                cfg.Fly,
@@ -205,7 +210,7 @@ func NewService(cfg Config) (*Service, error) {
 		ralphTemplate:      template,
 		provisionHints:     hints,
 		envVars:            copyStringMap(cfg.EnvVars),
-		registryPath:       cfg.RegistryPath,
+		registryPath:       registryPath,
 		registryRequired:   cfg.RegistryRequired,
 	}, nil
 }
@@ -220,6 +225,11 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 	provisionNeeded, err := s.needsProvision(ctx, prepared.Sprite)
 	if err != nil {
 		return Result{}, fmt.Errorf("dispatch: determine provisioning need: %w", err)
+	}
+
+	remoteSprite := prepared.Sprite
+	if strings.TrimSpace(prepared.MachineID) != "" {
+		remoteSprite = strings.TrimSpace(prepared.MachineID)
 	}
 
 	plan := s.buildPlan(prepared, provisionNeeded)
@@ -251,11 +261,16 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 		if err := transition(EventProvisionRequired); err != nil {
 			return Result{}, err
 		}
-		if err := s.provision(ctx, prepared); err != nil {
+		machineID, err := s.provision(ctx, prepared)
+		if err != nil {
 			if _, failErr := advanceState(state, EventFailure); failErr == nil {
 				result.State = StateFailed
 			}
 			return result, fmt.Errorf("dispatch: provision sprite %q: %w", prepared.Sprite, err)
+		}
+		if strings.TrimSpace(machineID) != "" {
+			prepared.MachineID = machineID
+			remoteSprite = machineID
 		}
 		result.Provisioned = true
 		if err := transition(EventProvisionSucceeded); err != nil {
@@ -267,7 +282,7 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 
 	if !prepared.AllowAnthropicDirect {
 		s.logger.Info("dispatch validate env", "sprite", prepared.Sprite)
-		keyOutput, err := s.remote.Exec(ctx, prepared.Sprite, "printenv ANTHROPIC_API_KEY 2>/dev/null || true", nil)
+		keyOutput, err := s.remote.Exec(ctx, remoteSprite, "printenv ANTHROPIC_API_KEY 2>/dev/null || true", nil)
 		if err != nil {
 			result.State = StateFailed
 			return result, fmt.Errorf("dispatch: check sprite env: %w", err)
@@ -284,14 +299,14 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 
 	if prepared.Repo.CloneURL != "" {
 		s.logger.Info("dispatch setup repo", "sprite", prepared.Sprite, "repo", prepared.Repo.CloneURL)
-		if _, err := s.remote.Exec(ctx, prepared.Sprite, buildSetupRepoScript(s.workspace, prepared.Repo.CloneURL, prepared.Repo.RepoDir), nil); err != nil {
+		if _, err := s.remote.Exec(ctx, remoteSprite, buildSetupRepoScript(s.workspace, prepared.Repo.CloneURL, prepared.Repo.RepoDir), nil); err != nil {
 			result.State = StateFailed
 			return result, fmt.Errorf("dispatch: setup repo: %w", err)
 		}
 	}
 
 	s.logger.Info("dispatch upload prompt", "sprite", prepared.Sprite, "path", prepared.PromptPath)
-	if err := s.remote.Upload(ctx, prepared.Sprite, prepared.PromptPath, []byte(prepared.Prompt)); err != nil {
+	if err := s.remote.Upload(ctx, remoteSprite, prepared.PromptPath, []byte(prepared.Prompt)); err != nil {
 		result.State = StateFailed
 		return result, fmt.Errorf("dispatch: upload prompt: %w", err)
 	}
@@ -309,13 +324,13 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 		result.State = StateFailed
 		return result, fmt.Errorf("dispatch: marshal status: %w", err)
 	}
-	if err := s.remote.Upload(ctx, prepared.Sprite, s.workspace+"/STATUS.json", append(statusBytes, '\n')); err != nil {
+	if err := s.remote.Upload(ctx, remoteSprite, s.workspace+"/STATUS.json", append(statusBytes, '\n')); err != nil {
 		result.State = StateFailed
 		return result, fmt.Errorf("dispatch: upload status: %w", err)
 	}
 
 	s.logger.Info("dispatch start agent", "sprite", prepared.Sprite, "mode", prepared.Mode)
-	output, err := s.remote.ExecWithEnv(ctx, prepared.Sprite, prepared.StartCommand, nil, s.envVars)
+	output, err := s.remote.ExecWithEnv(ctx, remoteSprite, prepared.StartCommand, nil, s.envVars)
 	if err != nil {
 		result.State = StateFailed
 		return result, fmt.Errorf("dispatch: start agent: %w", err)
@@ -343,7 +358,7 @@ type statusFile struct {
 	Task    string `json:"task,omitempty"`
 }
 
-func (s *Service) provision(ctx context.Context, req preparedRequest) error {
+func (s *Service) provision(ctx context.Context, req preparedRequest) (string, error) {
 	metadata := map[string]string{
 		"managed_by": "bb.dispatch",
 	}
@@ -357,7 +372,7 @@ func (s *Service) provision(ctx context.Context, req preparedRequest) error {
 		Metadata: metadata,
 	})
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	// Register the sprite in the registry if a registry path is configured
@@ -370,7 +385,7 @@ func (s *Service) provision(ctx context.Context, req preparedRequest) error {
 		}
 	}
 
-	return nil
+	return machine.ID, nil
 }
 
 // registerSprite adds a sprite to the registry.
@@ -390,19 +405,19 @@ func (s *Service) registerSprite(name, machineID string) error {
 }
 
 func (s *Service) needsProvision(ctx context.Context, sprite string) (bool, error) {
-	// First check registry if configured - this is the fast path
-	if s.registryPath != "" {
+	// Registry is the source of truth when configured.
+	if s.registryPath != "" || s.registryRequired {
 		_, err := ResolveSprite(sprite, s.registryPath)
 		if err == nil {
-			// Sprite found in registry, no provisioning needed
 			s.logger.Debug("sprite found in registry", "sprite", sprite)
 			return false, nil
 		}
-		// Not found in registry or registry error - fall through to list check
 		var notFound *ErrSpriteNotInRegistry
-		if !errors.As(err, &notFound) {
-			s.logger.Debug("registry lookup error, falling back to list", "sprite", sprite, "error", err)
+		if errors.As(err, &notFound) {
+			return true, nil
 		}
+		// Non-lookup errors (corrupt registry, permission issues) fall back to list probing.
+		s.logger.Debug("registry lookup error, falling back to list", "sprite", sprite, "error", err)
 	}
 
 	// Check if sprite exists using sprite CLI instead of Fly API

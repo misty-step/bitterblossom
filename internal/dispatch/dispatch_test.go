@@ -441,3 +441,109 @@ func TestRunValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestRunExecuteUsesMachineIDWhenRegistryResolves(t *testing.T) {
+	registryPath := writeTestRegistry(t, `[sprites.fern]
+machine_id = "m-def456"
+`)
+
+	remote := &fakeRemote{
+		execResponses: []string{
+			"",     // validate env
+			"done", // oneshot
+		},
+	}
+	flyClient := &fakeFly{}
+
+	service, err := NewService(Config{
+		Remote:       remote,
+		Fly:          flyClient,
+		App:          "bb-app",
+		Workspace:    "/home/sprite/workspace",
+		RegistryPath: registryPath,
+	})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	result, err := service.Run(context.Background(), Request{
+		Sprite:  "fern",
+		Prompt:  "Generate release notes",
+		Execute: true,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.State != StateCompleted {
+		t.Fatalf("state = %q, want %q", result.State, StateCompleted)
+	}
+	if len(flyClient.createReqs) != 0 {
+		t.Fatalf("unexpected create calls: %d", len(flyClient.createReqs))
+	}
+	if len(remote.execCalls) != 2 {
+		t.Fatalf("exec calls = %d, want 2", len(remote.execCalls))
+	}
+	if remote.execCalls[0].sprite != "m-def456" {
+		t.Fatalf("exec sprite = %q, want machine id %q", remote.execCalls[0].sprite, "m-def456")
+	}
+	if len(remote.uploads) != 2 {
+		t.Fatalf("upload calls = %d, want 2", len(remote.uploads))
+	}
+	if remote.uploads[0].sprite != "m-def456" {
+		t.Fatalf("upload sprite = %q, want machine id %q", remote.uploads[0].sprite, "m-def456")
+	}
+}
+
+func TestRunExecuteProvisionUsesCreatedMachineIDWhenRegistryEnabled(t *testing.T) {
+	registryPath := writeTestRegistry(t, `[meta]
+app = "bb-app"
+`)
+
+	remote := &fakeRemote{
+		execResponses: []string{
+			"",     // validate env
+			"done", // oneshot
+		},
+	}
+	flyClient := &fakeFly{}
+
+	service, err := NewService(Config{
+		Remote:       remote,
+		Fly:          flyClient,
+		App:          "bb-app",
+		Workspace:    "/home/sprite/workspace",
+		RegistryPath: registryPath,
+	})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	result, err := service.Run(context.Background(), Request{
+		Sprite:  "fern",
+		Prompt:  "Generate release notes",
+		Execute: true,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !result.Provisioned {
+		t.Fatalf("Provisioned = %v, want true", result.Provisioned)
+	}
+	if len(flyClient.createReqs) != 1 {
+		t.Fatalf("create calls = %d, want 1", len(flyClient.createReqs))
+	}
+	if len(remote.execCalls) != 2 {
+		t.Fatalf("exec calls = %d, want 2", len(remote.execCalls))
+	}
+	if remote.execCalls[0].sprite != "m-created" {
+		t.Fatalf("exec sprite = %q, want created machine id %q", remote.execCalls[0].sprite, "m-created")
+	}
+
+	machineID, lookupErr := ResolveSprite("fern", registryPath)
+	if lookupErr != nil {
+		t.Fatalf("ResolveSprite(fern) error = %v", lookupErr)
+	}
+	if machineID != "m-created" {
+		t.Fatalf("ResolveSprite(fern) = %q, want %q", machineID, "m-created")
+	}
+}
