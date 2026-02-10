@@ -399,3 +399,91 @@ func TestRunValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestRunWithTaskDescription(t *testing.T) {
+	remote := &fakeRemote{
+		execResponses: []string{
+			"PID: 12345",
+		},
+	}
+	flyClient := &fakeFly{
+		listMachines: []fly.Machine{{Name: "maple", ID: "m1"}},
+	}
+
+	service, err := NewService(Config{
+		Remote:    remote,
+		Fly:       flyClient,
+		App:       "bb-app",
+		Workspace: "/home/sprite/workspace",
+	})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	result, err := service.Run(context.Background(), Request{
+		Sprite:  "maple",
+		Prompt:  "Detailed investigation of memory leak in request handler",
+		Task:    "Fix memory leak",
+		Execute: true,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if result.Task != "Fix memory leak" {
+		t.Fatalf("result.Task = %q, want 'Fix memory leak'", result.Task)
+	}
+	if len(remote.uploads) < 2 {
+		t.Fatalf("upload calls = %d, want at least 2", len(remote.uploads))
+	}
+
+	// Check that STATUS.json contains the task
+	var statusUpload *uploadCall
+	for i := range remote.uploads {
+		if strings.Contains(remote.uploads[i].path, "STATUS.json") {
+			statusUpload = &remote.uploads[i]
+			break
+		}
+	}
+	if statusUpload == nil {
+		t.Fatal("STATUS.json not uploaded")
+	}
+	if !strings.Contains(statusUpload.body, `"task":"Fix memory leak"`) {
+		t.Fatalf("STATUS.json = %q, expected task field", statusUpload.body)
+	}
+}
+
+func TestRunTaskLabelDefaultsToPrompt(t *testing.T) {
+	remote := &fakeRemote{
+		execResponses: []string{
+			"PID: 54321",
+		},
+	}
+	flyClient := &fakeFly{
+		listMachines: []fly.Machine{{Name: "birch", ID: "m1"}},
+	}
+
+	service, err := NewService(Config{
+		Remote:    remote,
+		Fly:       flyClient,
+		App:       "bb-app",
+		Workspace: "/home/sprite/workspace",
+	})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	result, err := service.Run(context.Background(), Request{
+		Sprite:  "birch",
+		Prompt:  "Quick fix for typo",
+		Execute: true,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	// When no Task is provided, should default to prompt
+	if result.Task != "Quick fix for typo" {
+		t.Fatalf("result.Task = %q, want prompt as fallback", result.Task)
+	}
+}

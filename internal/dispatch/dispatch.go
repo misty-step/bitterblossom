@@ -49,6 +49,7 @@ type Request struct {
 	Sprite     string
 	Prompt     string
 	Repo       string
+	Task       string
 	Ralph      bool
 	Execute    bool
 	WebhookURL string
@@ -418,9 +419,12 @@ func (s *Service) prepare(req Request) (preparedRequest, error) {
 		startCommand = buildStartRalphScript(s.workspace, sprite, s.maxRalphIterations, req.WebhookURL)
 	}
 
-	taskLabel := prompt
-	if repo.Slug != "" {
-		taskLabel = repo.Slug + ": " + prompt
+	taskLabel := strings.TrimSpace(req.Task)
+	if taskLabel == "" {
+		taskLabel = prompt
+		if repo.Slug != "" {
+			taskLabel = repo.Slug + ": " + prompt
+		}
 	}
 	if len(taskLabel) > 220 {
 		taskLabel = taskLabel[:217] + "..."

@@ -149,3 +149,54 @@ func TestDispatchCommandUsesPromptFile(t *testing.T) {
 		t.Fatalf("runner.lastReq.Execute = true, want dry-run")
 	}
 }
+
+func TestDispatchCommandWithTaskFlag(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeDispatchRunner{
+		result: dispatchsvc.Result{
+			Executed: false,
+			State:    dispatchsvc.StatePending,
+			Plan: dispatchsvc.Plan{
+				Sprite: "oak",
+				Mode:   "dry-run",
+			},
+			Task: "Fix authentication bug",
+		},
+	}
+
+	deps := dispatchDeps{
+		readFile: func(string) ([]byte, error) { return nil, nil },
+		newFlyClient: func(token, apiURL string) (fly.MachineClient, error) {
+			return fakeFlyClient{}, nil
+		},
+		newRemote: func(binary, org string) *spriteCLIRemote {
+			return &spriteCLIRemote{}
+		},
+		newService: func(cfg dispatchsvc.Config) (dispatchRunner, error) {
+			return runner, nil
+		},
+	}
+
+	cmd := newDispatchCmdWithDeps(deps)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{
+		"oak",
+		"Detailed prompt about fixing auth bug in the login flow",
+		"--task", "Fix authentication bug",
+		"--app", "bb-app",
+		"--token", "tok",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cmd.Execute() error = %v", err)
+	}
+	if runner.lastReq.Task != "Fix authentication bug" {
+		t.Fatalf("runner.lastReq.Task = %q, want 'Fix authentication bug'", runner.lastReq.Task)
+	}
+	if runner.lastReq.Prompt != "Detailed prompt about fixing auth bug in the login flow" {
+		t.Fatalf("runner.lastReq.Prompt = %q, want full prompt", runner.lastReq.Prompt)
+	}
+}
