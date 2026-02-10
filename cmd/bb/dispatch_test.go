@@ -96,6 +96,82 @@ func TestDispatchCommandJSONOutput(t *testing.T) {
 	}
 }
 
+func TestDispatchCommandMissingFLY_APP(t *testing.T) {
+	t.Parallel()
+
+	deps := dispatchDeps{
+		readFile: func(string) ([]byte, error) { return nil, nil },
+		newFlyClient: func(token, apiURL string) (fly.MachineClient, error) {
+			return fakeFlyClient{}, nil
+		},
+		newRemote: func(binary, org string) *spriteCLIRemote {
+			return &spriteCLIRemote{}
+		},
+		newService: func(cfg dispatchsvc.Config) (dispatchRunner, error) {
+			return &fakeDispatchRunner{}, nil
+		},
+	}
+
+	cmd := newDispatchCmdWithDeps(deps)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{
+		"bramble",
+		"test prompt",
+		"--token", "tok",
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for missing FLY_APP, got nil")
+	}
+	if !strings.Contains(err.Error(), "FLY_APP environment variable is required") {
+		t.Fatalf("error = %q, expected FLY_APP error message", err.Error())
+	}
+	if !strings.Contains(err.Error(), "export FLY_APP=sprites-main") {
+		t.Fatalf("error = %q, expected example export command", err.Error())
+	}
+}
+
+func TestDispatchCommandMissingFLY_API_TOKEN(t *testing.T) {
+	t.Parallel()
+
+	deps := dispatchDeps{
+		readFile: func(string) ([]byte, error) { return nil, nil },
+		newFlyClient: func(token, apiURL string) (fly.MachineClient, error) {
+			return fakeFlyClient{}, nil
+		},
+		newRemote: func(binary, org string) *spriteCLIRemote {
+			return &spriteCLIRemote{}
+		},
+		newService: func(cfg dispatchsvc.Config) (dispatchRunner, error) {
+			return &fakeDispatchRunner{}, nil
+		},
+	}
+
+	cmd := newDispatchCmdWithDeps(deps)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{
+		"bramble",
+		"test prompt",
+		"--app", "bb-app",
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for missing FLY_API_TOKEN, got nil")
+	}
+	if !strings.Contains(err.Error(), "FLY_API_TOKEN environment variable is required") {
+		t.Fatalf("error = %q, expected FLY_API_TOKEN error message", err.Error())
+	}
+	if !strings.Contains(err.Error(), "fly.io/user/personal_access_tokens") {
+		t.Fatalf("error = %q, expected URL to token page", err.Error())
+	}
+}
+
 func TestDispatchCommandUsesPromptFile(t *testing.T) {
 	t.Parallel()
 
