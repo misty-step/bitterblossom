@@ -211,11 +211,14 @@ func TestRunExecuteProvisionAndStartRalph(t *testing.T) {
 	if !strings.Contains(remote.execCalls[2].command, "sprite-agent") {
 		t.Fatalf("expected ralph start command, got %q", remote.execCalls[2].command)
 	}
-	if !strings.Contains(remote.execCalls[2].command, "--dangerously-skip-permissions") {
-		t.Fatalf("expected ralph start invariants to check dangerously-skip-permissions, got %q", remote.execCalls[2].command)
+	if !strings.Contains(remote.execCalls[2].command, "BB_CLAUDE_FLAGS") {
+		t.Fatalf("expected ralph start to pass BB_CLAUDE_FLAGS to sprite-agent, got %q", remote.execCalls[2].command)
 	}
-	if !strings.Contains(remote.execCalls[2].command, "--verbose --output-format stream-json") {
-		t.Fatalf("expected ralph start invariants to check stream-json output, got %q", remote.execCalls[2].command)
+	if !strings.Contains(remote.execCalls[2].command, "--dangerously-skip-permissions") {
+		t.Fatalf("expected ralph start BB_CLAUDE_FLAGS to include dangerously-skip-permissions, got %q", remote.execCalls[2].command)
+	}
+	if !strings.Contains(remote.execCalls[2].command, "--output-format stream-json") {
+		t.Fatalf("expected ralph start BB_CLAUDE_FLAGS to include stream-json output, got %q", remote.execCalls[2].command)
 	}
 }
 

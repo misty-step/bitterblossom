@@ -24,16 +24,6 @@ func newSpriteCLIRemote(binary, org string) *spriteCLIRemote {
 	}
 }
 
-func spriteExecArgs(org, sprite, remoteCommand string) []string {
-	args := []string{"exec"}
-	if strings.TrimSpace(org) != "" {
-		args = append(args, "-o", strings.TrimSpace(org))
-	}
-	// Non-negotiable: PTY-backed execution prevents headless hangs (Claude + long-running tools).
-	args = append(args, "-tty", "-s", sprite, "--", "bash", "-lc", remoteCommand)
-	return args
-}
-
 func (r *spriteCLIRemote) List(ctx context.Context) ([]string, error) {
 	args := []string{"list"}
 	if r.org != "" {
@@ -67,7 +57,11 @@ func (r *spriteCLIRemote) Exec(ctx context.Context, sprite, remoteCommand string
 		return "", fmt.Errorf("sprite exec: sprite is required")
 	}
 
-	args := spriteExecArgs(r.org, sprite, remoteCommand)
+	args := []string{"exec"}
+	if r.org != "" {
+		args = append(args, "-o", r.org)
+	}
+	args = append(args, "-s", sprite, "--", "bash", "-lc", remoteCommand)
 
 	command := exec.CommandContext(ctx, r.binary, args...)
 	if len(stdin) > 0 {

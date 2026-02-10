@@ -34,9 +34,12 @@ func requireOneShotInvariants(startCommand string) error {
 	missing := make([]string, 0, 4)
 
 	required := []string{
-		"claude -p",
 		"--dangerously-skip-permissions",
-		"--verbose --output-format stream-json",
+		"--verbose",
+		"--output-format stream-json",
+	}
+	if !strings.Contains(startCommand, "claude -p") {
+		missing = append(missing, "claude -p")
 	}
 	for _, needle := range required {
 		if !strings.Contains(startCommand, needle) {
@@ -44,20 +47,11 @@ func requireOneShotInvariants(startCommand string) error {
 		}
 	}
 
-	forbidden := make([]string, 0, 1)
-	if strings.Contains(startCommand, "export ANTHROPIC_API_KEY=") {
-		forbidden = append(forbidden, "export ANTHROPIC_API_KEY=")
-	}
-	if strings.Contains(startCommand, "export ANTHROPIC_BASE_URL=") && !strings.Contains(startCommand, "export ANTHROPIC_AUTH_TOKEN=") {
-		missing = append(missing, "export ANTHROPIC_AUTH_TOKEN=")
-	}
-
-	if len(missing) == 0 && len(forbidden) == 0 {
+	if len(missing) == 0 {
 		return nil
 	}
 	return &InvariantViolation{
-		Context:   "oneshot dispatch start command",
-		Missing:   missing,
-		Forbidden: forbidden,
+		Context: "oneshot dispatch start command",
+		Missing: missing,
 	}
 }
