@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	dispatchsvc "github.com/misty-step/bitterblossom/internal/dispatch"
+	"github.com/misty-step/bitterblossom/internal/registry"
 	"github.com/misty-step/bitterblossom/pkg/fly"
 	"github.com/spf13/cobra"
 )
@@ -29,6 +30,11 @@ type dispatchOptions struct {
 	MaxIterations        int
 	WebhookURL           string
 	AllowAnthropicDirect bool
+	Issue                int
+	SkipValidation       bool
+	Strict               bool
+	RegistryPath         string
+	RegistryRequired     bool
 }
 
 type dispatchDeps struct {
@@ -70,6 +76,7 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 		CompositionPath: "compositions/v1.yaml",
 		MaxIterations:   dispatchsvc.DefaultMaxRalphIterations,
 		WebhookURL:      strings.TrimSpace(os.Getenv("SPRITE_WEBHOOK_URL")),
+		RegistryPath:    registry.DefaultPath(),
 	}
 
 	command := &cobra.Command{
@@ -99,6 +106,40 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 			}
 			if strings.TrimSpace(opts.Token) == "" {
 				return errors.New("Error: FLY_API_TOKEN environment variable is required. Get one from https://fly.io/user/personal_access_tokens")
+			}
+
+			// Pre-dispatch issue validation
+			if !opts.SkipValidation && opts.Issue > 0 {
+				validationResult, err := dispatchsvc.ValidateIssueFromRequest(cmd.Context(), dispatchsvc.Request{
+					Sprite:  args[0],
+					Prompt:  prompt,
+					Repo:    opts.Repo,
+					Issue:   opts.Issue,
+					Execute: opts.Execute,
+				}, opts.Strict)
+				if err != nil {
+					return fmt.Errorf("dispatch: issue validation failed: %w", err)
+				}
+
+				// Output validation results if not in JSON mode
+				if !opts.JSON && !validationResult.Valid {
+					fmt.Fprintln(cmd.ErrOrStderr(), "Issue validation failed:")
+					fmt.Fprintln(cmd.ErrOrStderr(), validationResult.FormatValidationOutput())
+				}
+
+				if !validationResult.Valid {
+					if validationErr := validationResult.ToError(); validationErr != nil {
+						return validationErr
+					}
+				}
+
+				// In non-strict mode with warnings, still proceed but log them
+				if len(validationResult.Warnings) > 0 && !opts.JSON {
+					fmt.Fprintln(cmd.ErrOrStderr(), "Issue validation warnings:")
+					for _, w := range validationResult.Warnings {
+						fmt.Fprintf(cmd.ErrOrStderr(), "  ⚠ %s\n", w)
+					}
+				}
 			}
 
 			flyClient, err := deps.newFlyClient(opts.Token, opts.APIURL)
@@ -132,6 +173,8 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 				RalphTemplatePath:  "scripts/ralph-prompt-template.md",
 				MaxRalphIterations: opts.MaxIterations,
 				EnvVars:            envVars,
+				RegistryPath:       opts.RegistryPath,
+				RegistryRequired:   opts.RegistryRequired,
 			})
 			if err != nil {
 				return err
@@ -141,6 +184,7 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 				Sprite:               args[0],
 				Prompt:               prompt,
 				Repo:                 opts.Repo,
+				Issue:                opts.Issue,
 				Ralph:                opts.Ralph,
 				Execute:              opts.Execute,
 				WebhookURL:           opts.WebhookURL,
@@ -169,6 +213,11 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 	command.Flags().IntVar(&opts.MaxIterations, "max-iterations", opts.MaxIterations, "Ralph loop iteration safety cap")
 	command.Flags().StringVar(&opts.WebhookURL, "webhook-url", opts.WebhookURL, "Optional sprite-agent webhook URL")
 	command.Flags().BoolVar(&opts.AllowAnthropicDirect, "allow-anthropic-direct", false, "Allow dispatch even if sprite has a real ANTHROPIC_API_KEY")
+	command.Flags().IntVar(&opts.Issue, "issue", 0, "GitHub issue number to validate before dispatch")
+	command.Flags().BoolVar(&opts.SkipValidation, "skip-validation", false, "Skip pre-dispatch issue validation (emergency bypass)")
+	command.Flags().BoolVar(&opts.Strict, "strict", false, "Fail on any validation warning (strict mode)")
+	command.Flags().StringVar(&opts.RegistryPath, "registry", opts.RegistryPath, "Path to sprite registry file")
+	command.Flags().BoolVar(&opts.RegistryRequired, "registry-required", false, "Require sprites to exist in registry (fail if not found)")
 
 	return command
 }

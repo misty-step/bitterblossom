@@ -17,6 +17,7 @@ import (
 
 	"github.com/misty-step/bitterblossom/internal/fleet"
 	"github.com/misty-step/bitterblossom/internal/proxy"
+	"github.com/misty-step/bitterblossom/internal/registry"
 	"github.com/misty-step/bitterblossom/pkg/fly"
 )
 
@@ -69,12 +70,14 @@ type PlanStep struct {
 type StepKind string
 
 const (
-	StepProvision    StepKind = "provision"
-	StepValidateEnv  StepKind = "validate_env"
-	StepSetupRepo    StepKind = "setup_repo"
-	StepUploadPrompt StepKind = "upload_prompt"
-	StepWriteStatus  StepKind = "write_status"
-	StepStartAgent   StepKind = "start_agent"
+	StepRegistryLookup StepKind = "registry_lookup"
+	StepProvision      StepKind = "provision"
+	StepValidateEnv    StepKind = "validate_env"
+	StepValidateIssue  StepKind = "validate_issue"
+	StepSetupRepo      StepKind = "setup_repo"
+	StepUploadPrompt   StepKind = "upload_prompt"
+	StepWriteStatus    StepKind = "write_status"
+	StepStartAgent     StepKind = "start_agent"
 )
 
 // Plan is the rendered execution plan for dry-run or execute mode.
@@ -112,6 +115,12 @@ type Config struct {
 	// EnvVars are environment variables to pass to sprite exec commands.
 	// These are typically auth tokens like OPENROUTER_API_KEY and ANTHROPIC_AUTH_TOKEN.
 	EnvVars map[string]string
+	// RegistryPath is the path to the sprite registry file.
+	// If empty, the default path (~/.config/bb/registry.toml) is used.
+	RegistryPath string
+	// RegistryRequired enforces that sprites must exist in the registry.
+	// When true, dispatch will fail if the sprite is not found in the registry.
+	RegistryRequired bool
 }
 
 type provisionInfo struct {
@@ -132,6 +141,8 @@ type Service struct {
 	ralphTemplate      string
 	provisionHints     map[string]provisionInfo
 	envVars            map[string]string
+	registryPath       string
+	registryRequired   bool
 }
 
 // NewService constructs a dispatch service.
@@ -187,6 +198,8 @@ func NewService(cfg Config) (*Service, error) {
 		ralphTemplate:      template,
 		provisionHints:     hints,
 		envVars:            copyStringMap(cfg.EnvVars),
+		registryPath:       cfg.RegistryPath,
+		registryRequired:   cfg.RegistryRequired,
 	}, nil
 }
 
@@ -330,16 +343,61 @@ func (s *Service) provision(ctx context.Context, req preparedRequest) error {
 	for key, value := range req.ProvisionMetadata {
 		metadata[key] = value
 	}
-	_, err := s.fly.Create(ctx, fly.CreateRequest{
+	machine, err := s.fly.Create(ctx, fly.CreateRequest{
 		App:      s.app,
 		Name:     req.Sprite,
 		Config:   copyMap(s.provisionConfig),
 		Metadata: metadata,
 	})
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Register the sprite in the registry if a registry path is configured
+	if s.registryPath != "" {
+		if err := s.registerSprite(req.Sprite, machine.ID); err != nil {
+			// Log the error but don't fail the provision - the sprite exists
+			s.logger.Warn("failed to register sprite in registry", "sprite", req.Sprite, "machine_id", machine.ID, "error", err)
+		} else {
+			s.logger.Info("registered sprite in registry", "sprite", req.Sprite, "machine_id", machine.ID)
+		}
+	}
+
+	return nil
+}
+
+// registerSprite adds a sprite to the registry.
+func (s *Service) registerSprite(name, machineID string) error {
+	reg, err := registry.Load(s.registryPath)
+	if err != nil {
+		return fmt.Errorf("load registry: %w", err)
+	}
+
+	reg.Register(name, machineID)
+
+	if err := reg.Save(s.registryPath); err != nil {
+		return fmt.Errorf("save registry: %w", err)
+	}
+
+	return nil
 }
 
 func (s *Service) needsProvision(ctx context.Context, sprite string) (bool, error) {
+	// First check registry if configured - this is the fast path
+	if s.registryPath != "" {
+		_, err := ResolveSprite(sprite, s.registryPath)
+		if err == nil {
+			// Sprite found in registry, no provisioning needed
+			s.logger.Debug("sprite found in registry", "sprite", sprite)
+			return false, nil
+		}
+		// Not found in registry or registry error - fall through to list check
+		var notFound *ErrSpriteNotInRegistry
+		if !errors.As(err, &notFound) {
+			s.logger.Debug("registry lookup error, falling back to list", "sprite", sprite, "error", err)
+		}
+	}
+
 	// Check if sprite exists using sprite CLI instead of Fly API
 	// This avoids 404 errors when the Fly app doesn't exist or API issues occur
 	sprites, err := s.remote.List(ctx)
@@ -355,7 +413,28 @@ func (s *Service) needsProvision(ctx context.Context, sprite string) (bool, erro
 }
 
 func (s *Service) buildPlan(req preparedRequest, provisionNeeded bool) Plan {
-	steps := make([]PlanStep, 0, 5)
+	steps := make([]PlanStep, 0, 7)
+
+	// Add registry lookup step if registry is configured
+	if s.registryPath != "" || s.registryRequired {
+		desc := fmt.Sprintf("lookup sprite %q in registry", req.Sprite)
+		if req.MachineID != "" {
+			desc = fmt.Sprintf("lookup sprite %q in registry (found: %s)", req.Sprite, req.MachineID)
+		} else if s.registryRequired {
+			desc = fmt.Sprintf("lookup sprite %q in registry (required)", req.Sprite)
+		}
+		steps = append(steps, PlanStep{
+			Kind:        StepRegistryLookup,
+			Description: desc,
+		})
+	}
+
+	if req.Issue > 0 {
+		steps = append(steps, PlanStep{
+			Kind:        StepValidateIssue,
+			Description: fmt.Sprintf("validate GitHub issue #%d is ready for dispatch", req.Issue),
+		})
+	}
 	if provisionNeeded {
 		steps = append(steps, PlanStep{
 			Kind:        StepProvision,
@@ -417,6 +496,7 @@ type preparedRequest struct {
 	TaskLabel            string
 	ProvisionMetadata    map[string]string
 	AllowAnthropicDirect bool
+	MachineID            string
 }
 
 type repoTarget struct {
@@ -429,6 +509,22 @@ func (s *Service) prepare(req Request) (preparedRequest, error) {
 	sprite := strings.TrimSpace(req.Sprite)
 	if !spriteNamePattern.MatchString(sprite) {
 		return preparedRequest{}, fmt.Errorf("%w: invalid sprite name %q", ErrInvalidRequest, req.Sprite)
+	}
+
+	// Resolve sprite from registry if registry is configured
+	var machineID string
+	if s.registryPath != "" || s.registryRequired {
+		resolvedID, err := ResolveSprite(sprite, s.registryPath)
+		if err != nil {
+			if s.registryRequired {
+				return preparedRequest{}, fmt.Errorf("dispatch: %w", err)
+			}
+			// Log the error but continue if registry is optional
+			s.logger.Debug("registry lookup failed, proceeding without it", "sprite", sprite, "error", err)
+		} else {
+			machineID = resolvedID
+			s.logger.Info("resolved sprite from registry", "sprite", sprite, "machine_id", machineID)
+		}
 	}
 
 	prompt := strings.TrimSpace(req.Prompt)
@@ -493,6 +589,7 @@ func (s *Service) prepare(req Request) (preparedRequest, error) {
 		TaskLabel:            taskLabel,
 		ProvisionMetadata:    metadata,
 		AllowAnthropicDirect: req.AllowAnthropicDirect,
+		MachineID:            machineID,
 	}, nil
 }
 
