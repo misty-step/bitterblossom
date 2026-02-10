@@ -16,6 +16,7 @@ func TestConfig_IsInherited(t *testing.T) {
 		{"moonshot provider", ProviderMoonshot, false},
 		{"openrouter kimi", ProviderOpenRouterKimi, false},
 		{"openrouter claude", ProviderOpenRouterClaude, false},
+		{"proxy provider", ProviderProxy, false},
 	}
 
 	for _, tt := range tests {
@@ -466,7 +467,7 @@ func TestResolveAuthToken(t *testing.T) {
 
 func TestAvailableProviders(t *testing.T) {
 	providers := AvailableProviders()
-	expected := []string{"moonshot-anthropic", "moonshot", "openrouter-kimi", "openrouter-claude", "inherit"}
+	expected := []string{"proxy", "moonshot-anthropic", "moonshot", "openrouter-kimi", "openrouter-claude", "inherit"}
 
 	if len(providers) != len(expected) {
 		t.Errorf("AvailableProviders() returned %d providers, want %d", len(providers), len(expected))

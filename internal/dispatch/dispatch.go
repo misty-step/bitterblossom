@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/misty-step/bitterblossom/internal/fleet"
+	"github.com/misty-step/bitterblossom/internal/proxy"
 	"github.com/misty-step/bitterblossom/pkg/fly"
 )
 
@@ -562,9 +563,64 @@ func buildSetupRepoScript(workspace, cloneURL, repoDir string) string {
 }
 
 func buildOneShotScript(workspace, promptPath string) string {
+	port := strconv.Itoa(proxy.ProxyPort)
+	env := proxy.StartEnv("", port, "${OPENROUTER_API_KEY}")
+	env["PROXY_PID_FILE"] = proxy.ProxyPIDFile
+
+	// Build env vars for proxy startup
+	envKeys := make([]string, 0, len(env))
+	for k := range env {
+		envKeys = append(envKeys, k)
+	}
+	sort.Strings(envKeys)
+	envStr := ""
+	for _, k := range envKeys {
+		// OPENROUTER_API_KEY uses bash variable expansion, don't quote it
+		if k == "OPENROUTER_API_KEY" && env[k] == "${OPENROUTER_API_KEY}" {
+			envStr += fmt.Sprintf("%s=%s ", k, env[k])
+		} else {
+			envStr += fmt.Sprintf("%s=%s ", k, shellQuote(env[k]))
+		}
+	}
+
+	// Generate health check URL
+	healthURL := proxy.HealthURL(port)
+	// Local address for Claude Code
+	baseURL := fmt.Sprintf("http://127.0.0.1:%s", port)
+
 	return strings.Join([]string{
 		"set -euo pipefail",
 		"cd " + shellQuote(workspace),
+		"# Start anthropic proxy if available",
+		"if [ -f " + shellQuote(proxy.ProxyScriptPath) + " ] && [ -n \"${OPENROUTER_API_KEY:-}\" ] && command -v node >/dev/null 2>&1; then",
+		"  PROXY_PID=\"\"",
+		"  if [ -f " + shellQuote(proxy.ProxyPIDFile) + " ]; then",
+		"    PID_FROM_FILE=\"$(cat " + shellQuote(proxy.ProxyPIDFile) + ")\"",
+		"    if kill -0 \"$PID_FROM_FILE\" 2>/dev/null; then",
+		"      PROXY_PID=\"$PID_FROM_FILE\"",
+		"    fi",
+		"  fi",
+		"  if [ -z \"$PROXY_PID\" ]; then",
+		"    echo '[proxy] starting anthropic-proxy...'",
+		"    nohup env " + envStr + " node " + shellQuote(proxy.ProxyScriptPath) + " >/dev/null 2>&1 &",
+		"    sleep 1",
+		"    for i in 1 2 3 4 5; do",
+		"      if curl -s --max-time 2 " + shellQuote(healthURL) + " >/dev/null 2>&1; then break; fi",
+		"      sleep 0.5",
+		"    done",
+		"    if curl -s --max-time 2 " + shellQuote(healthURL) + " >/dev/null 2>&1; then",
+		"      echo '[proxy] proxy is healthy on :" + port + "'",
+		"      export ANTHROPIC_BASE_URL=" + shellQuote(baseURL),
+		"      export ANTHROPIC_API_KEY=proxy-mode",
+		"    else",
+		"      echo '[proxy] warning: proxy failed to start, proceeding with direct connection'",
+		"    fi",
+		"  else",
+		"    echo '[proxy] proxy already running on :" + port + "'",
+		"    export ANTHROPIC_BASE_URL=" + shellQuote(baseURL),
+		"    export ANTHROPIC_API_KEY=proxy-mode",
+		"  fi",
+		"fi",
 		"cat " + shellQuote(promptPath) + " | claude -p --permission-mode bypassPermissions --verbose --output-format stream-json",
 		"rm -f " + shellQuote(promptPath),
 	}, "\n")

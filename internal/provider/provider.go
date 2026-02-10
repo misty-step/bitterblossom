@@ -28,6 +28,11 @@ const (
 	// ProviderOpenRouterClaude uses Claude models via OpenRouter's unified API.
 	ProviderOpenRouterClaude Provider = "openrouter-claude"
 
+	// ProviderProxy uses a local Node.js proxy to translate Anthropic Messages API
+	// to OpenAI Chat Completions API. This enables Claude Code to use non-Anthropic
+	// models (Kimi K2.5, GLM 4.7, etc.) via OpenRouter.
+	ProviderProxy Provider = "proxy"
+
 	// ProviderInherit means "use the base configuration" (default behavior).
 	ProviderInherit Provider = "inherit"
 )
@@ -47,7 +52,7 @@ const (
 
 // Default provider and model for canonical runtime operation.
 const (
-	DefaultProvider = ProviderOpenRouterKimi
+	DefaultProvider = ProviderProxy
 	DefaultModel    = ModelOpenRouterKimiK25
 )
 
@@ -76,8 +81,8 @@ func (c Config) IsInherited() bool {
 func (c Config) Resolve() ResolvedConfig {
 	if c.IsInherited() {
 		return ResolvedConfig{
-			Provider: DefaultProvider,
-			Model:    DefaultModel,
+			Provider: ProviderProxy,
+			Model:    ModelOpenRouterKimiK25,
 		}
 	}
 
@@ -91,7 +96,7 @@ func (c Config) Resolve() ResolvedConfig {
 			model = ModelKimiK2ThinkingTurbo
 		case ProviderMoonshot:
 			model = ModelKimiK25
-		case ProviderOpenRouterKimi:
+		case ProviderOpenRouterKimi, ProviderProxy:
 			model = ModelOpenRouterKimiK25
 		case ProviderOpenRouterClaude:
 			model = ModelClaudeOpus4
@@ -191,6 +196,24 @@ func (r ResolvedConfig) EnvironmentVars(authToken string) map[string]string {
 			env["OPENROUTER_API_KEY"] = authToken
 		}
 		env["CLAUDE_CODE_OPENROUTER_COMPAT"] = "1"
+
+	case ProviderProxy:
+		// Proxy provider: local Node.js proxy translates Anthropic API to OpenAI
+		// The proxy runs on localhost:4000 and forwards to OpenRouter
+		// Security note: The proxy binds to localhost without authentication.
+		// This is acceptable for single-tenant sprites but should be documented
+		// for multi-tenant deployments where any local process could access the proxy.
+		env["ANTHROPIC_BASE_URL"] = "http://127.0.0.1:4000"
+		env["ANTHROPIC_API_KEY"] = "proxy-mode"
+		// The proxy handles auth via OPENROUTER_API_KEY env var on the sprite
+		// Claude Code doesn't need to know the real API key
+		model := r.Model
+		if model == "" {
+			model = ModelOpenRouterKimiK25
+		}
+		env["ANTHROPIC_MODEL"] = model
+		env["ANTHROPIC_SMALL_FAST_MODEL"] = model
+		env["CLAUDE_CODE_SUBAGENT_MODEL"] = model
 	}
 
 	// Common settings for all providers
@@ -212,10 +235,10 @@ func (c Config) Validate() error {
 	}
 
 	switch c.Provider {
-	case ProviderMoonshotAnthropic, ProviderMoonshot, ProviderOpenRouterKimi, ProviderOpenRouterClaude, ProviderInherit:
+	case ProviderMoonshotAnthropic, ProviderMoonshot, ProviderOpenRouterKimi, ProviderOpenRouterClaude, ProviderProxy, ProviderInherit:
 		// Valid
 	default:
-		return fmt.Errorf("invalid provider: %q (valid: moonshot-anthropic, moonshot, openrouter-kimi, openrouter-claude, inherit)", c.Provider)
+		return fmt.Errorf("invalid provider: %q (valid: moonshot-anthropic, moonshot, openrouter-kimi, openrouter-claude, proxy, inherit)", c.Provider)
 	}
 
 	if c.Model != "" {
@@ -240,6 +263,8 @@ func ParseProvider(s string) (Provider, error) {
 		return ProviderOpenRouterKimi, nil
 	case "openrouter-claude", "openrouter/claude", "claude":
 		return ProviderOpenRouterClaude, nil
+	case "proxy":
+		return ProviderProxy, nil
 	case "inherit", "":
 		return ProviderInherit, nil
 	default:
@@ -250,6 +275,7 @@ func ParseProvider(s string) (Provider, error) {
 // AvailableProviders returns a list of valid provider identifiers.
 func AvailableProviders() []string {
 	return []string{
+		string(ProviderProxy),
 		string(ProviderMoonshotAnthropic),
 		string(ProviderMoonshot),
 		string(ProviderOpenRouterKimi),
@@ -261,6 +287,9 @@ func AvailableProviders() []string {
 // AvailableModels returns a map of provider to available models.
 func AvailableModels() map[string][]string {
 	return map[string][]string{
+		string(ProviderProxy): {
+			ModelOpenRouterKimiK25,
+		},
 		string(ProviderMoonshotAnthropic): {
 			ModelKimiK2ThinkingTurbo,
 		},
@@ -303,8 +332,8 @@ func ResolveAuthToken(provider Provider, getenv func(string) string) string {
 
 	// Check provider-specific env vars first
 	switch provider {
-	case ProviderOpenRouterKimi, ProviderOpenRouterClaude:
-		// OpenRouter providers: check OPENROUTER_API_KEY first, then fall back to ANTHROPIC_AUTH_TOKEN
+	case ProviderOpenRouterKimi, ProviderOpenRouterClaude, ProviderProxy:
+		// OpenRouter providers and proxy: check OPENROUTER_API_KEY first, then fall back to ANTHROPIC_AUTH_TOKEN
 		if token := get("OPENROUTER_API_KEY"); token != "" {
 			return token
 		}

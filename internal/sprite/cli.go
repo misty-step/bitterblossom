@@ -25,6 +25,7 @@ type SpriteCLI interface {
 	CheckpointCreate(ctx context.Context, name, org string) error
 	CheckpointList(ctx context.Context, name, org string) (string, error)
 	UploadFile(ctx context.Context, name, org, localPath, remotePath string) error
+	Upload(ctx context.Context, name, remotePath string, content []byte) error
 	API(ctx context.Context, org, endpoint string) (string, error)
 	APISprite(ctx context.Context, org, sprite, endpoint string) (string, error)
 }
@@ -192,6 +193,18 @@ func (c CLI) UploadFile(ctx context.Context, name, org, localPath, remotePath st
 	return nil
 }
 
+// Upload writes content directly to a sprite path.
+func (c CLI) Upload(ctx context.Context, name, remotePath string, content []byte) error {
+	args := withOrgArgs(
+		[]string{"exec", "-s", name, "--", "cat", ">", remotePath},
+		c.resolvedOrg(""),
+	)
+	if _, err := c.run(ctx, args, content); err != nil {
+		return fmt.Errorf("upload content to sprite %q:%q: %w", name, remotePath, err)
+	}
+	return nil
+}
+
 // API calls sprite API endpoint in one org.
 func (c CLI) API(ctx context.Context, org, endpoint string) (string, error) {
 	out, err := c.run(ctx, withOrgArgs([]string{"api", endpoint}, c.resolvedOrg(org)), nil)
@@ -219,6 +232,7 @@ type MockSpriteCLI struct {
 	CheckpointCreateFn func(ctx context.Context, name, org string) error
 	CheckpointListFn   func(ctx context.Context, name, org string) (string, error)
 	UploadFileFn       func(ctx context.Context, name, org, localPath, remotePath string) error
+	UploadFn           func(ctx context.Context, name, remotePath string, content []byte) error
 	APIFn              func(ctx context.Context, org, endpoint string) (string, error)
 	APISpriteFn        func(ctx context.Context, org, sprite, endpoint string) (string, error)
 }
@@ -270,6 +284,13 @@ func (m *MockSpriteCLI) UploadFile(ctx context.Context, name, org, localPath, re
 		return ErrMockNotImplemented
 	}
 	return m.UploadFileFn(ctx, name, org, localPath, remotePath)
+}
+
+func (m *MockSpriteCLI) Upload(ctx context.Context, name, remotePath string, content []byte) error {
+	if m.UploadFn == nil {
+		return ErrMockNotImplemented
+	}
+	return m.UploadFn(ctx, name, remotePath, content)
 }
 
 func (m *MockSpriteCLI) API(ctx context.Context, org, endpoint string) (string, error) {
