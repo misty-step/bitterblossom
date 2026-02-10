@@ -1,18 +1,27 @@
 # AGENTS.md
 
-Universal project context for all coding agents (OpenCode, Codex, Claude Code, etc.).
+Universal project context for all coding agents working on Bitterblossom.
 
 ## What This Is
 
 Bitterblossom is a Go CLI (`bb`) for managing coding agent sprites on Fly.io. It handles fleet lifecycle, dispatch, monitoring, and composition management. This is infrastructure-as-config for AI agent orchestration.
 
+## Key Decision: OpenCode Only (Feb 9, 2026)
+
+**OpenCode is the sole agent harness.** Claude Code is deprecated.
+
+Claude Code cannot reliably use non-Anthropic models (hangs silently). OpenCode works with any model via OpenRouter. All sprite dispatch MUST use OpenCode.
+
+See `docs/SPRITE-ARCHITECTURE.md` for the full decision record and rationale.
+
 ## Key Concepts
 
-- **Sprites** = Isolated Linux sandboxes with persistent 100GB filesystems, auto-sleep. Standalone service at [sprites.dev](https://sprites.dev) — NOT Fly.io Machines. Use the `sprite` CLI, not `fly machines`.
+- **Sprites** = Persistent Linux development environments with 100GB durable storage, auto-sleep, checkpoint/restore. They are NOT ephemeral containers. Create once, reuse forever.
 - **Compositions** = Team hypotheses. YAML files defining which sprites exist and their preferences.
 - **Base config** = Shared engineering philosophy, hooks, skills inherited by all sprites.
 - **Persona** = Individual sprite identity and specialization (in `sprites/`).
 - **Observations** = Learning journal tracking what works and what doesn't.
+- **Checkpoint** = Instant (~300ms) snapshot of sprite state. Use after bootstrap and successful tasks.
 
 ## Architecture
 
@@ -23,15 +32,14 @@ internal/          → Core packages
   contracts/       → Shared interfaces and types
   dispatch/        → Task dispatch to sprites
   fleet/           → Fleet composition management
-  lifecycle/       → Sprite lifecycle (create, destroy, settings)
-  provider/        → Model provider configuration (OpenRouter, Claude)
+  lifecycle/       → Sprite lifecycle (create, provision, checkpoint, restore)
+  provider/        → Model provider configuration (OpenRouter)
   monitor/         → Fleet monitoring
   watchdog/        → Health checks + auto-recovery
 pkg/               → Shared libraries (fly, events)
 base/              → Shared config pushed to every sprite
 compositions/      → Team hypotheses (YAML)
-scripts/           → Legacy shell scripts (being replaced by Go)
-docs/              → CLI reference, contracts, design docs
+docs/              → CLI reference, architecture, design docs
 ```
 
 ## CLI
@@ -40,7 +48,7 @@ Primary interface is `bb` (Go CLI). See `docs/CLI-REFERENCE.md` for full referen
 
 | Command | Purpose |
 |---------|---------|
-| `bb provision` | Create sprite + upload config |
+| `bb provision` | Create sprite + bootstrap env + checkpoint |
 | `bb sync` | Push config updates to running sprites |
 | `bb teardown` | Export data + destroy sprite |
 | `bb dispatch` | Send a task to a sprite |
@@ -53,18 +61,43 @@ Primary interface is `bb` (Go CLI). See `docs/CLI-REFERENCE.md` for full referen
 
 Build: `go build -o bb ./cmd/bb`
 
-## Agent Kinds
+## Agent Configuration
 
-The supervisor supports multiple coding agent backends:
+### Sole Agent Harness: OpenCode
 
-| Kind | CLI | Notes |
-|------|-----|-------|
-| `codex` | `codex --yolo` | OpenAI Codex CLI |
-| `opencode` | `opencode run -m MODEL --agent coder` | OpenCode with OpenRouter |
-| `claude` | `claude -p` | Claude Code (legacy) |
-| `kimi-code` | `kimi-code` | Kimi Code CLI (legacy) |
+```bash
+opencode run -m openrouter/MODEL --agent coder "TASK"
+```
 
-Default model for OpenCode: `openrouter/moonshotai/kimi-k2.5`
+### Supported Models (via OpenRouter)
+
+| Model | Use Case | Speed |
+|-------|----------|-------|
+| `moonshotai/kimi-k2.5-thinking` | Complex reasoning tasks | Medium |
+| `moonshotai/kimi-k2.5` | Routine coding | Fast |
+| `z-ai/glm-4.7` | Fast iteration | Fast |
+
+### Environment (on sprites)
+
+Only one env var needed:
+```bash
+export OPENROUTER_API_KEY="sk-or-v1-..."
+```
+
+**NEVER set `ANTHROPIC_API_KEY` on sprites.** Risk of accidental billing.
+
+## Sprite Lifecycle
+
+1. **Spawn** — `sprite create <name>` (1-2 seconds)
+2. **Bootstrap** — Clone repos, install deps, write env config
+3. **Checkpoint** — `sprite-env checkpoints create` (instant)
+4. **Task** — `opencode run` with full task description
+5. **Collect** — Check git diff, push changes
+6. **Checkpoint** — Save successful state
+7. **Sleep** — Automatic after 30s idle (near-zero cost)
+8. **Wake** — Instant when next task arrives
+
+**Sprites are persistent.** Don't destroy them. They auto-sleep for free.
 
 ## Coding Standards
 
@@ -75,20 +108,12 @@ Default model for OpenCode: `openrouter/moonshotai/kimi-k2.5`
 - Handle errors explicitly — no `_` for error returns
 - **No bash scripts** — write Go code for automation
 
-## Hooks
-
-Three hooks in `base/hooks/`:
-
-| Hook | Trigger | Purpose |
-|------|---------|---------|
-| `destructive-command-guard.py` | PreToolUse (Bash) | Blocks destructive git ops |
-| `fast-feedback.py` | PostToolUse (Edit/Write) | Auto-runs type checker after file edits |
-| `memory-reminder.py` | Stop | Prompts sprite to update MEMORY.md |
-
 ## Important Rules
 
 - **Sprites, not Machines.** Use `sprite` CLI, not `fly machines` or `flyctl`.
+- **OpenCode, not Claude Code.** Claude Code is deprecated for sprite dispatch.
+- **Persistent, not ephemeral.** Don't destroy sprites after tasks.
+- **Checkpoint aggressively.** After bootstrap, after successful tasks, before risky operations.
 - **Tests required** for all new functionality.
-- **Compositions are hypotheses.** Designed to be cheap to change and test.
-- **Write code within 5 minutes.** Don't spend time analyzing endlessly — read the task, implement, test, commit.
+- **Write code within 5 minutes.** Don't spend time analyzing endlessly.
 - **Commit early, commit often.** Small atomic commits with semantic messages.
