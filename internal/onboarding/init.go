@@ -101,10 +101,7 @@ func Init(ctx context.Context, disco MachineDiscoverer, cfg InitConfig) (*InitRe
 	reg.Sprites = make(map[string]registry.SpriteEntry)
 
 	for i, m := range machines {
-		name, err := names.PickName(i)
-		if err != nil {
-			return nil, fmt.Errorf("onboarding: assign name at index %d: %w", i, err)
-		}
+		name := names.PickName(i)
 		reg.Register(name, m.ID)
 	}
 
