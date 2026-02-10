@@ -16,6 +16,7 @@ import (
 type dispatchOptions struct {
 	Repo                 string
 	PromptFile           string
+	Issue                int
 	Ralph                bool
 	Execute              bool
 	DryRun               bool
@@ -122,6 +123,7 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 				Sprite:               args[0],
 				Prompt:               prompt,
 				Repo:                 opts.Repo,
+				Issue:                opts.Issue,
 				Ralph:                opts.Ralph,
 				Execute:              opts.Execute,
 				WebhookURL:           opts.WebhookURL,
@@ -137,6 +139,7 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 
 	command.Flags().StringVar(&opts.Repo, "repo", "", "Repo to clone/pull before dispatch (org/repo or URL)")
 	command.Flags().StringVar(&opts.PromptFile, "file", "", "Read prompt from a file")
+	command.Flags().IntVar(&opts.Issue, "issue", 0, "GitHub issue number to implement (generates default prompt)")
 	command.Flags().BoolVar(&opts.Ralph, "ralph", false, "Start persistent Ralph loop instead of one-shot")
 	command.Flags().BoolVar(&opts.Execute, "execute", false, "Execute dispatch actions (default is dry-run)")
 	command.Flags().BoolVar(&opts.DryRun, "dry-run", true, "Preview dispatch plan without side effects")
@@ -165,6 +168,11 @@ func resolveDispatchPrompt(args []string, opts dispatchOptions, deps dispatchDep
 			return "", errors.New("dispatch: prompt file is empty")
 		}
 		return prompt, nil
+	}
+
+	if opts.Issue > 0 {
+		// Prompt will be generated from issue number
+		return "", nil
 	}
 
 	if len(args) < 2 {
