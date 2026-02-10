@@ -43,6 +43,7 @@ var (
 type RemoteClient interface {
 	Exec(ctx context.Context, sprite, remoteCommand string, stdin []byte) (string, error)
 	Upload(ctx context.Context, sprite, remotePath string, content []byte) error
+	List(ctx context.Context) ([]string, error)
 }
 
 // Request describes a dispatch operation.
@@ -333,12 +334,14 @@ func (s *Service) provision(ctx context.Context, req preparedRequest) error {
 }
 
 func (s *Service) needsProvision(ctx context.Context, sprite string) (bool, error) {
-	machines, err := s.fly.List(ctx, s.app)
+	// Check if sprite exists using sprite CLI instead of Fly API
+	// This avoids 404 errors when the Fly app doesn't exist or API issues occur
+	sprites, err := s.remote.List(ctx)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("list sprites: %w", err)
 	}
-	for _, machine := range machines {
-		if strings.TrimSpace(machine.Name) == sprite {
+	for _, name := range sprites {
+		if strings.TrimSpace(name) == sprite {
 			return false, nil
 		}
 	}
