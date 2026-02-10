@@ -17,7 +17,7 @@ concurrency:
 jobs:
   review:
     # Never run Cerberus with secrets on fork PRs.
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    # Job still runs to avoid "skipped" required-check bypass.
     name: "${{ matrix.reviewer }}"
     runs-on: ubuntu-latest
     strategy:
@@ -31,7 +31,14 @@ jobs:
       fail-fast: false
     steps:
       - uses: actions/checkout@v4
+        if: github.event.pull_request.head.repo.full_name == github.repository
+      - name: Fork PR (no secrets)
+        if: github.event.pull_request.head.repo.full_name != github.repository
+        shell: bash
+        run: echo "Fork PR detected; Cerberus reviewers disabled."
+
       - uses: misty-step/cerberus@v2
+        if: github.event.pull_request.head.repo.full_name == github.repository
         with:
           perspective: ${{ matrix.perspective }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -44,6 +51,22 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
+      - name: Fork PRs blocked (no secrets)
+        if: github.event.pull_request.head.repo.full_name != github.repository
+        shell: bash
+        run: |
+          echo "::error::Cerberus Council does not run on fork PRs (secrets safety)."
+          echo "::error::Resolution: open PR from a branch in this repo, or have a maintainer re-home the branch."
+          exit 1
+
+      - name: Fail if council did not run
+        if: needs.review.result == 'skipped'
+        shell: bash
+        run: |
+          echo "::error::Cerberus Council review skipped; refusing to pass required check."
+          exit 1
+
       - uses: misty-step/cerberus/verdict@v2
+        if: github.event.pull_request.head.repo.full_name == github.repository
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
