@@ -6,13 +6,13 @@ Universal project context for all coding agents working on Bitterblossom.
 
 Bitterblossom is a Go CLI (`bb`) for managing coding agent sprites on Fly.io. It handles fleet lifecycle, dispatch, monitoring, and composition management. This is infrastructure-as-config for AI agent orchestration.
 
-## Key Decision: OpenCode Only (Feb 9, 2026)
+## Key Decision: Claude Code Is the Canonical Harness (Feb 10, 2026)
 
-**OpenCode is the sole agent harness.** Claude Code is deprecated.
+**Claude Code is the canonical sprite harness.** OpenCode is deprecated for sprite dispatch.
 
-Claude Code cannot reliably use non-Anthropic models (hangs silently). OpenCode works with any model via OpenRouter. All sprite dispatch MUST use OpenCode.
+The Feb 9 OpenCode-only decision has been reversed. The proxy provider (PR #136) enables Claude Code to route through OpenRouter to any model (Kimi K2.5, GLM 4.7, etc.), eliminating the original limitation. Claude Code has superior tool use, proven PTY dispatch, and better ecosystem support.
 
-See `docs/SPRITE-ARCHITECTURE.md` for the full decision record and rationale.
+See `docs/adr/001-claude-code-canonical-harness.md` for the full decision record.
 
 ## Key Concepts
 
@@ -63,13 +63,21 @@ Build: `go build -o bb ./cmd/bb`
 
 ## Agent Configuration
 
-### Sole Agent Harness: OpenCode
+### Canonical Harness: Claude Code (with Proxy Provider)
 
 ```bash
-opencode run -m openrouter/MODEL --agent coder "TASK"
+claude --yolo "TASK"
 ```
 
-### Supported Models (via OpenRouter)
+For non-Anthropic models via OpenRouter proxy:
+```bash
+ANTHROPIC_BASE_URL=https://openrouter.ai/api \
+ANTHROPIC_AUTH_TOKEN="$OPENROUTER_API_KEY" \
+ANTHROPIC_MODEL=moonshotai/kimi-k2.5 \
+claude --yolo "TASK"
+```
+
+### Supported Models (via OpenRouter Proxy)
 
 | Model | Use Case | Speed |
 |-------|----------|-------|
@@ -79,9 +87,10 @@ opencode run -m openrouter/MODEL --agent coder "TASK"
 
 ### Environment (on sprites)
 
-Only one env var needed:
 ```bash
-export OPENROUTER_API_KEY="sk-or-v1-..."
+export ANTHROPIC_BASE_URL="https://openrouter.ai/api"
+export ANTHROPIC_AUTH_TOKEN="$OPENROUTER_API_KEY"
+export ANTHROPIC_MODEL="moonshotai/kimi-k2.5"
 ```
 
 **NEVER set `ANTHROPIC_API_KEY` on sprites.** Risk of accidental billing.
@@ -91,7 +100,7 @@ export OPENROUTER_API_KEY="sk-or-v1-..."
 1. **Spawn** — `sprite create <name>` (1-2 seconds)
 2. **Bootstrap** — Clone repos, install deps, write env config
 3. **Checkpoint** — `sprite-env checkpoints create` (instant)
-4. **Task** — `opencode run` with full task description
+4. **Task** — `claude --yolo` with full task description
 5. **Collect** — Check git diff, push changes
 6. **Checkpoint** — Save successful state
 7. **Sleep** — Automatic after 30s idle (near-zero cost)
@@ -111,7 +120,7 @@ export OPENROUTER_API_KEY="sk-or-v1-..."
 ## Important Rules
 
 - **Sprites, not Machines.** Use `sprite` CLI, not `fly machines` or `flyctl`.
-- **OpenCode, not Claude Code.** Claude Code is deprecated for sprite dispatch.
+- **Claude Code, not OpenCode.** Claude Code is the canonical harness (see ADR-001). Use proxy provider for non-Anthropic models.
 - **Persistent, not ephemeral.** Don't destroy sprites after tasks.
 - **Checkpoint aggressively.** After bootstrap, after successful tasks, before risky operations.
 - **Tests required** for all new functionality.
