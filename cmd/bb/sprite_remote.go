@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strings"
 )
 
@@ -52,6 +53,10 @@ func (r *spriteCLIRemote) List(ctx context.Context) ([]string, error) {
 }
 
 func (r *spriteCLIRemote) Exec(ctx context.Context, sprite, remoteCommand string, stdin []byte) (string, error) {
+	return r.ExecWithEnv(ctx, sprite, remoteCommand, stdin, nil)
+}
+
+func (r *spriteCLIRemote) ExecWithEnv(ctx context.Context, sprite, remoteCommand string, stdin []byte, env map[string]string) (string, error) {
 	sprite = strings.TrimSpace(sprite)
 	if sprite == "" {
 		return "", fmt.Errorf("sprite exec: sprite is required")
@@ -61,6 +66,20 @@ func (r *spriteCLIRemote) Exec(ctx context.Context, sprite, remoteCommand string
 	if r.org != "" {
 		args = append(args, "-o", r.org)
 	}
+
+	// Add environment variables using -e flag
+	// sprite CLI supports: -e KEY=VALUE (can be specified multiple times)
+	if len(env) > 0 {
+		keys := make([]string, 0, len(env))
+		for k := range env {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			args = append(args, "-e", k+"="+env[k])
+		}
+	}
+
 	args = append(args, "-s", sprite, "--", "bash", "-lc", remoteCommand)
 
 	command := exec.CommandContext(ctx, r.binary, args...)

@@ -94,10 +94,11 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 				return err
 			}
 
-			appMissing := strings.TrimSpace(opts.App) == ""
-			tokenMissing := strings.TrimSpace(opts.Token) == ""
-			if appMissing || tokenMissing {
-				return errors.New("Error: FLY_APP and FLY_API_TOKEN are required for sprite operations.\n  export FLY_APP=your-app\n  export FLY_API_TOKEN=your-token")
+			if strings.TrimSpace(opts.App) == "" {
+				return errors.New("Error: FLY_APP environment variable is required. Set it to your Fly.io app name (e.g., export FLY_APP=sprites-main)")
+			}
+			if strings.TrimSpace(opts.Token) == "" {
+				return errors.New("Error: FLY_API_TOKEN environment variable is required. Get one from https://fly.io/user/personal_access_tokens")
 			}
 
 			flyClient, err := deps.newFlyClient(opts.Token, opts.APIURL)
@@ -105,6 +106,23 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 				return err
 			}
 			remote := deps.newRemote(opts.SpriteCLI, opts.Org)
+
+			// Collect auth-related environment variables to pass to sprites
+			envVars := make(map[string]string)
+			for _, key := range []string{
+				"OPENROUTER_API_KEY",
+				"ANTHROPIC_AUTH_TOKEN",
+				"ANTHROPIC_API_KEY",
+				"MOONSHOT_AI_API_KEY",
+				"XAI_API_KEY",
+				"GEMINI_API_KEY",
+				"OPENAI_API_KEY",
+			} {
+				if value := os.Getenv(key); value != "" {
+					envVars[key] = value
+				}
+			}
+
 			service, err := deps.newService(dispatchsvc.Config{
 				Remote:             remote,
 				Fly:                flyClient,
@@ -113,6 +131,7 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 				CompositionPath:    opts.CompositionPath,
 				RalphTemplatePath:  "scripts/ralph-prompt-template.md",
 				MaxRalphIterations: opts.MaxIterations,
+				EnvVars:            envVars,
 			})
 			if err != nil {
 				return err

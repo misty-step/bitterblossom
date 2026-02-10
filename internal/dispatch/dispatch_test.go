@@ -34,6 +34,10 @@ type fakeRemote struct {
 }
 
 func (f *fakeRemote) Exec(_ context.Context, sprite, command string, stdin []byte) (string, error) {
+	return f.ExecWithEnv(context.Background(), sprite, command, stdin, nil)
+}
+
+func (f *fakeRemote) ExecWithEnv(_ context.Context, sprite, command string, stdin []byte, env map[string]string) (string, error) {
 	f.execCalls = append(f.execCalls, execCall{
 		sprite:  sprite,
 		command: command,

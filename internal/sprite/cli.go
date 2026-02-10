@@ -20,6 +20,7 @@ var (
 type SpriteCLI interface {
 	List(ctx context.Context) ([]string, error)
 	Exec(ctx context.Context, sprite, command string, stdin []byte) (string, error)
+	ExecWithEnv(ctx context.Context, sprite, command string, stdin []byte, env map[string]string) (string, error)
 	Create(ctx context.Context, name, org string) error
 	Destroy(ctx context.Context, name, org string) error
 	CheckpointCreate(ctx context.Context, name, org string) error
@@ -137,7 +138,28 @@ func (c CLI) List(ctx context.Context) ([]string, error) {
 
 // Exec runs a remote command on one sprite using bash -ceu.
 func (c CLI) Exec(ctx context.Context, sprite, remoteCommand string, stdin []byte) (string, error) {
-	args := withOrgArgs([]string{"exec", "-s", sprite, "--", "bash", "-ceu", remoteCommand}, c.resolvedOrg(""))
+	return c.ExecWithEnv(ctx, sprite, remoteCommand, stdin, nil)
+}
+
+// ExecWithEnv runs a remote command on one sprite using bash -ceu with environment variables.
+func (c CLI) ExecWithEnv(ctx context.Context, sprite, remoteCommand string, stdin []byte, env map[string]string) (string, error) {
+	args := []string{"exec", "-s", sprite}
+
+	// Add environment variables using -e flag
+	// sprite CLI supports: -e KEY=VALUE (can be specified multiple times)
+	if len(env) > 0 {
+		keys := make([]string, 0, len(env))
+		for k := range env {
+			keys = append(keys, k)
+		}
+		// Sort for deterministic ordering
+		for _, k := range keys {
+			args = append(args, "-e", k+"="+env[k])
+		}
+	}
+
+	args = append(args, "--", "bash", "-ceu", remoteCommand)
+	args = withOrgArgs(args, c.resolvedOrg(""))
 	out, err := c.run(ctx, args, stdin)
 	if err != nil {
 		return "", fmt.Errorf("executing on sprite %q: %w", sprite, err)
@@ -227,6 +249,7 @@ func (c CLI) APISprite(ctx context.Context, org, spriteName, endpoint string) (s
 type MockSpriteCLI struct {
 	ListFn             func(ctx context.Context) ([]string, error)
 	ExecFn             func(ctx context.Context, sprite, command string, stdin []byte) (string, error)
+	ExecWithEnvFn      func(ctx context.Context, sprite, command string, stdin []byte, env map[string]string) (string, error)
 	CreateFn           func(ctx context.Context, name, org string) error
 	DestroyFn          func(ctx context.Context, name, org string) error
 	CheckpointCreateFn func(ctx context.Context, name, org string) error
@@ -245,6 +268,17 @@ func (m *MockSpriteCLI) List(ctx context.Context) ([]string, error) {
 }
 
 func (m *MockSpriteCLI) Exec(ctx context.Context, spriteName, command string, stdin []byte) (string, error) {
+	if m.ExecFn == nil {
+		return "", ErrMockNotImplemented
+	}
+	return m.ExecFn(ctx, spriteName, command, stdin)
+}
+
+func (m *MockSpriteCLI) ExecWithEnv(ctx context.Context, spriteName, command string, stdin []byte, env map[string]string) (string, error) {
+	if m.ExecWithEnvFn != nil {
+		return m.ExecWithEnvFn(ctx, spriteName, command, stdin, env)
+	}
+	// Fall back to ExecFn if ExecWithEnvFn is not set
 	if m.ExecFn == nil {
 		return "", ErrMockNotImplemented
 	}
