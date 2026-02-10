@@ -128,8 +128,8 @@ func TestRunDryRunBuildsPlanWithoutSideEffects(t *testing.T) {
 	if result.Executed {
 		t.Fatalf("Executed = %v, want false", result.Executed)
 	}
-	if len(result.Plan.Steps) != 5 {
-		t.Fatalf("len(plan.steps) = %d, want 5", len(result.Plan.Steps))
+	if len(result.Plan.Steps) != 6 {
+		t.Fatalf("len(plan.steps) = %d, want 6", len(result.Plan.Steps))
 	}
 	if len(flyClient.createReqs) != 0 {
 		t.Fatalf("unexpected create calls: %d", len(flyClient.createReqs))
@@ -145,6 +145,7 @@ func TestRunDryRunBuildsPlanWithoutSideEffects(t *testing.T) {
 func TestRunExecuteProvisionAndStartRalph(t *testing.T) {
 	remote := &fakeRemote{
 		execResponses: []string{
+			"",          // validate env (empty key = ok)
 			"",          // setup repo
 			"PID: 4242", // start ralph
 		},
@@ -201,18 +202,22 @@ func TestRunExecuteProvisionAndStartRalph(t *testing.T) {
 	if !strings.Contains(remote.uploads[0].body, "Implement webhook retries") {
 		t.Fatalf("prompt upload missing task text: %q", remote.uploads[0].body)
 	}
-	if !strings.Contains(remote.execCalls[0].command, "gh repo clone") {
-		t.Fatalf("expected repo setup command, got %q", remote.execCalls[0].command)
+	if !strings.Contains(remote.execCalls[0].command, "printenv ANTHROPIC_API_KEY") {
+		t.Fatalf("expected env validation command, got %q", remote.execCalls[0].command)
 	}
-	if !strings.Contains(remote.execCalls[1].command, "sprite-agent") {
-		t.Fatalf("expected ralph start command, got %q", remote.execCalls[1].command)
+	if !strings.Contains(remote.execCalls[1].command, "gh repo clone") {
+		t.Fatalf("expected repo setup command, got %q", remote.execCalls[1].command)
+	}
+	if !strings.Contains(remote.execCalls[2].command, "sprite-agent") {
+		t.Fatalf("expected ralph start command, got %q", remote.execCalls[2].command)
 	}
 }
 
 func TestRunExecuteOneShotCompletes(t *testing.T) {
 	remote := &fakeRemote{
 		execResponses: []string{
-			"done",
+			"",     // validate env
+			"done", // oneshot agent
 		},
 	}
 	flyClient := &fakeFly{
@@ -250,11 +255,14 @@ func TestRunExecuteOneShotCompletes(t *testing.T) {
 	if remote.uploads[0].path != "/home/sprite/workspace/.dispatch-prompt.md" {
 		t.Fatalf("oneshot prompt path = %q", remote.uploads[0].path)
 	}
-	if len(remote.execCalls) != 1 {
-		t.Fatalf("exec calls = %d, want 1", len(remote.execCalls))
+	if len(remote.execCalls) != 2 {
+		t.Fatalf("exec calls = %d, want 2", len(remote.execCalls))
 	}
-	if !strings.Contains(remote.execCalls[0].command, "claude -p") {
-		t.Fatalf("expected claude command, got %q", remote.execCalls[0].command)
+	if !strings.Contains(remote.execCalls[0].command, "printenv ANTHROPIC_API_KEY") {
+		t.Fatalf("expected env validation command, got %q", remote.execCalls[0].command)
+	}
+	if !strings.Contains(remote.execCalls[1].command, "claude -p") {
+		t.Fatalf("expected claude command, got %q", remote.execCalls[1].command)
 	}
 }
 
@@ -287,7 +295,7 @@ func TestRunExecuteErrorsPreserveFailedState(t *testing.T) {
 				Repo:    "misty-step/heartbeat",
 				Execute: true,
 			},
-			remote:  &fakeRemote{execErrs: []error{errors.New("setup failed")}},
+			remote:  &fakeRemote{execErrs: []error{nil, errors.New("setup failed")}},
 			fly:     &fakeFly{listMachines: []fly.Machine{{Name: "fern", ID: "m1"}}},
 			wantErr: "dispatch: setup repo",
 		},
@@ -320,7 +328,7 @@ func TestRunExecuteErrorsPreserveFailedState(t *testing.T) {
 				Prompt:  "Fix tests",
 				Execute: true,
 			},
-			remote:  &fakeRemote{execErrs: []error{errors.New("start failed")}},
+			remote:  &fakeRemote{execErrs: []error{nil, errors.New("start failed")}},
 			fly:     &fakeFly{listMachines: []fly.Machine{{Name: "fern", ID: "m1"}}},
 			wantErr: "dispatch: start agent",
 		},
