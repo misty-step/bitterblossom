@@ -1,13 +1,31 @@
-# CLAUDE.md — DEPRECATED
+# CLAUDE.md
 
-> ⚠️ **Claude Code is deprecated for Bitterblossom sprite dispatch.**
-> 
-> All agent context is now in `AGENTS.md`.
-> All architecture decisions are in `docs/SPRITE-ARCHITECTURE.md`.
-> 
-> OpenCode is the sole agent harness. See `OPENCODE.md` for configuration.
-> 
-> This file is retained only for backward compatibility with Claude Code
-> sessions that may still reference it.
+Claude-family tools may read this file first. Keep it aligned w `AGENTS.md`.
 
-See `AGENTS.md` for the canonical project context.
+Also read:
+- `AGENTS.md` (canonical repo context)
+- `docs/adr/001-claude-code-canonical-harness.md` (decision record)
+
+## What This Is
+Bitterblossom = Go CLI `bb` for managing Sprites on Fly.io: fleet lifecycle, dispatch, monitoring, compositions.
+
+## Canonical Harness (Feb 10 2026)
+Claude Code is canonical sprite harness.
+OpenCode deprecated for sprite dispatch.
+
+Proxy provider lets Claude Code route thru OpenRouter to any model.
+
+## Claude Code (direct)
+```bash
+claude --yolo "TASK"
+```
+
+## Claude Code via OpenRouter (Anthropic proxy)
+```bash
+ANTHROPIC_BASE_URL=https://openrouter.ai/api \
+ANTHROPIC_AUTH_TOKEN="$OPENROUTER_API_KEY" \
+ANTHROPIC_MODEL=moonshotai/kimi-k2.5 \
+claude --yolo "TASK"
+```
+
+NEVER set `ANTHROPIC_API_KEY` on sprites (billing risk).
