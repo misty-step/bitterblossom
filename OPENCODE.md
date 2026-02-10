@@ -1,61 +1,68 @@
-# OPENCODE.md — Project Context for OpenCode Agents
+# OPENCODE.md — BB OpenCode Configuration
 
-## What This Is
+## Overview
 
-Bitterblossom is a Go CLI (`bb`) for managing coding agent sprites on Fly.io. It handles fleet lifecycle, dispatch, monitoring, and composition management.
+Bitterblossom uses OpenCode as its sole agent harness on sprites. All coding agent tasks run through OpenCode + OpenRouter.
 
-## Quick Start
+## Default Model
+
+**Kimi K2.5 Thinking** (`moonshotai/kimi-k2.5-thinking`)
+
+- 256K context window
+- Multi-step tool use and reasoning
+- Excellent coding capability
+- Cost: ~$0.50/Mtok via OpenRouter
+
+## Alternative Models
+
+| Model | When to Use |
+|-------|-------------|
+| `moonshotai/kimi-k2.5` | Routine tasks, faster speed |
+| `z-ai/glm-4.7` | Fast iteration, simple edits |
+| `moonshotai/kimi-k2.5-thinking-turbo` | Complex tasks, faster output |
+
+## Invocation Pattern
 
 ```bash
-# Build
-go build ./cmd/bb
+# Standard task dispatch
+opencode run -m openrouter/moonshotai/kimi-k2.5-thinking \
+  --agent coder \
+  "Full task description with success criteria"
 
-# Test
-go test ./...
-
-# Lint
-golangci-lint run ./...
+# Fast model for simple tasks
+opencode run -m openrouter/z-ai/glm-4.7 \
+  --agent coder \
+  "Simple edit: add X to Y"
 ```
 
-## Architecture
+## Environment
 
-```
-cmd/bb/           → CLI commands (cobra)
-internal/
-  agent/          → Agent supervisor, heartbeat, progress tracking
-  contracts/      → Shared interfaces and types
-  dispatch/       → Task dispatch to sprites
-  fleet/          → Fleet composition management
-  lifecycle/      → Sprite lifecycle (create, destroy, settings)
-  provider/       → Model provider configuration (OpenRouter, Claude)
-base/             → Base config files pushed to sprites
-compositions/     → YAML fleet composition definitions
-docs/             → Design docs and references
+Only one env var needed on sprites:
+
+```bash
+export OPENROUTER_API_KEY="sk-or-v1-..."
 ```
 
-## Key Patterns
+**Do NOT set:**
+- `ANTHROPIC_API_KEY` — risk of accidental billing
+- `ANTHROPIC_BASE_URL` — Claude Code only, not needed
+- `ANTHROPIC_AUTH_TOKEN` — Claude Code only, not needed
 
-- **Cobra CLI**: All commands in `cmd/bb/`. Use `cobra.Command` with `RunE`.
-- **Table-driven tests**: See `internal/provider/provider_test.go` for examples.
-- **Error handling**: Always check and wrap errors. Use `fmt.Errorf("%w: ...", err)`.
-- **Provider abstraction**: `internal/provider/` maps model strings to env vars and CLI flags.
+## Agent Configuration
 
-## Coding Standards
+The coder agent is defined in `.opencode/agents/coder.md` with:
+- Anti-analysis-paralysis rules (write code within 5 minutes)
+- Git commit patterns (early, often, semantic)
+- Test-first approach when applicable
 
-- Go 1.23+
-- `gofmt` + `golangci-lint`
-- Semantic commit messages: `feat:`, `fix:`, `test:`, `docs:`, `refactor:`
-- Tests required for all new functionality
-- No bash scripts — everything is Go
+## Why NOT Claude Code
 
-## Sprites
+Extensive testing (Feb 9, 2026) confirmed:
+- Claude Code silently hangs with non-Anthropic models via OpenRouter
+- Claude Code's Anthropic skin on OpenRouter only routes to Anthropic providers
+- Claude Code's internal model validation blocks on non-standard model names
+- Direct Moonshot endpoint also hangs in Claude Code's `-p` mode
 
-Sprites are standalone Linux VMs from [sprites.dev](https://sprites.dev). They are NOT Fly.io Machines.
-- CLI: `sprite` (at `~/.local/bin/sprite`)
-- Each sprite has 100GB persistent filesystem
-- Sprites auto-sleep when idle
-- Use `sprite exec -s NAME -- CMD` to run commands on sprites
+OpenCode has none of these issues. It works with any OpenRouter model natively.
 
-## Current Migration
-
-We are migrating from Claude Code (with OpenRouter hack) to OpenCode CLI with native OpenRouter support. The `opencode.json` config and `.opencode/agents/` directory define how OpenCode operates in this repo.
+See `docs/SPRITE-ARCHITECTURE.md` for the full decision record.
