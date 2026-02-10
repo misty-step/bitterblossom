@@ -116,14 +116,14 @@ func TestLoadFleetStateErrors(t *testing.T) {
 	_, _, _, err = loadFleetState(context.Background(), composeOptions{Token: "token"}, composeDeps{
 		parseComposition: func(string) (fleet.Composition, error) { return testComposition(), nil },
 	})
-	if err == nil || !strings.Contains(err.Error(), "--app") {
+	if err == nil || !strings.Contains(err.Error(), "FLY_APP and FLY_API_TOKEN are required") {
 		t.Fatalf("missing app error = %v", err)
 	}
 
 	_, _, _, err = loadFleetState(context.Background(), composeOptions{App: "app"}, composeDeps{
 		parseComposition: func(string) (fleet.Composition, error) { return testComposition(), nil },
 	})
-	if err == nil || !strings.Contains(err.Error(), "--token") {
+	if err == nil || !strings.Contains(err.Error(), "FLY_APP and FLY_API_TOKEN are required") {
 		t.Fatalf("missing token error = %v", err)
 	}
 
