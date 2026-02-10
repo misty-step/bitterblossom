@@ -14,8 +14,17 @@ const (
 	// ProxyScriptPath is where the proxy script is uploaded on the sprite.
 	ProxyScriptPath = "/home/sprite/anthropic-proxy.mjs"
 
+	// ProxyPIDFile is the path to the proxy PID file.
+	ProxyPIDFile = "/tmp/anthropic-proxy.pid"
+
 	// DefaultModel is the default model used when proxy provider is selected.
 	DefaultModel = "moonshotai/kimi-k2.5"
+
+	// DefaultUpstreamBase is the default upstream base URL.
+	DefaultUpstreamBase = "https://openrouter.ai"
+
+	// DefaultUpstreamPath is the default upstream path.
+	DefaultUpstreamPath = "/api/v1/chat/completions"
 )
 
 // StartCommand returns the command to start the proxy on a sprite.

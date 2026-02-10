@@ -16,10 +16,12 @@
 //
 // Zero external dependencies — uses only Node.js builtins.
 
+import fs from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
 
 const PORT = parseInt(process.env.PROXY_PORT || '4000');
+const PID_FILE = process.env.PROXY_PID_FILE || '/tmp/anthropic-proxy.pid';
 const UPSTREAM_BASE = process.env.UPSTREAM_BASE || 'https://openrouter.ai';
 const UPSTREAM_PATH = process.env.UPSTREAM_PATH || '/api/v1/chat/completions';
 const API_KEY = process.env.OPENROUTER_API_KEY || '';
@@ -184,7 +186,10 @@ function streamAnthropicResponse(res, upstream, requestModel) {
       if (data === '[DONE]') return finish();
 
       let parsed;
-      try { parsed = JSON.parse(data); } catch { continue; }
+      try { parsed = JSON.parse(data); } catch (e) {
+        console.error('[proxy] JSON parse error:', e.message);
+        continue;
+      }
 
       if (parsed.usage) {
         inputTokens = parsed.usage.prompt_tokens || inputTokens;
@@ -201,7 +206,7 @@ function streamAnthropicResponse(res, upstream, requestModel) {
           if (tc.function?.name) {
             // End any existing block, start new tool_use block
             endCurrentBlock();
-            currentToolCallId = tc.id || `toolu_${Date.now()}_${tc.index}`;
+            currentToolCallId = tc.id || `toolu_${Date.now()}_${tc.index ?? 0}`;
             inToolBlock = true;
             emit('content_block_start', {
               type: 'content_block_start', index: blockIndex,
@@ -325,6 +330,13 @@ const server = http.createServer((req, res) => {
   });
 });
 
+import fs from 'node:fs';
+
 server.listen(PORT, '127.0.0.1', () => {
-  console.log(`[anthropic-proxy] pid=${process.pid} port=${PORT} model=${TARGET_MODEL}`);
+  try {
+    fs.writeFileSync(PID_FILE, String(process.pid));
+    console.log(`[anthropic-proxy] pid=${process.pid} port=${PORT} model=${TARGET_MODEL} pidfile=${PID_FILE}`);
+  } catch (err) {
+    console.error('[anthropic-proxy] failed to write PID file:', err.message);
+  }
 });
