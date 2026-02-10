@@ -18,6 +18,8 @@ const (
 	DefaultStaleAfter = 2 * time.Hour
 	// DefaultMaxRalphIterations controls redispatched Ralph loops.
 	DefaultMaxRalphIterations = 50
+	// DefaultIdleTimeout marks a sprite as idle when no activity for this duration.
+	DefaultIdleTimeout = 30 * time.Minute
 )
 
 // RemoteClient executes commands on sprites and lists fleet members.
@@ -31,6 +33,7 @@ type Config struct {
 	Remote             RemoteClient
 	Workspace          string
 	StaleAfter         time.Duration
+	IdleTimeout        time.Duration
 	MaxRalphIterations int
 	Logger             *slog.Logger
 	Now                func() time.Time
@@ -52,33 +55,38 @@ type ActionResult struct {
 
 // SpriteReport is one row in the watchdog report.
 type SpriteReport struct {
-	Sprite         string       `json:"sprite"`
-	State          State        `json:"state"`
-	Task           string       `json:"task,omitempty"`
-	StartedAt      string       `json:"started_at,omitempty"`
-	ElapsedMinutes int          `json:"elapsed_minutes,omitempty"`
-	Branch         string       `json:"branch,omitempty"`
-	CommitsLast2h  int          `json:"commits_last_2h"`
-	DirtyRepos     int          `json:"dirty_repos"`
-	AheadCommits   int          `json:"ahead_commits"`
-	AgentRunning   bool         `json:"agent_running"`
-	BlockedReason  string       `json:"blocked_reason,omitempty"`
-	Action         ActionResult `json:"action,omitempty"`
-	Error          string       `json:"error,omitempty"`
+	Sprite          string       `json:"sprite"`
+	State           State        `json:"state"`
+	Task            string       `json:"task,omitempty"`
+	StartedAt       string       `json:"started_at,omitempty"`
+	ElapsedMinutes  int          `json:"elapsed_minutes,omitempty"`
+	Branch          string       `json:"branch,omitempty"`
+	CommitsLast2h   int          `json:"commits_last_2h"`
+	DirtyRepos      int          `json:"dirty_repos"`
+	AheadCommits    int          `json:"ahead_commits"`
+	AgentRunning    bool         `json:"agent_running"`
+	BlockedReason   string       `json:"blocked_reason,omitempty"`
+	Action          ActionResult `json:"action,omitempty"`
+	Error           string       `json:"error,omitempty"`
+	IdleSince       string       `json:"idle_since,omitempty"`
+	IdleMinutes     int          `json:"idle_minutes,omitempty"`
+	LastActivityAt  string       `json:"last_activity_at,omitempty"`
+	LastActivityAge int          `json:"last_activity_age_minutes,omitempty"`
 }
 
 // Summary aggregates fleet-level counters.
 type Summary struct {
-	Total          int `json:"total"`
-	Active         int `json:"active"`
-	Idle           int `json:"idle"`
-	Complete       int `json:"complete"`
-	Blocked        int `json:"blocked"`
-	Dead           int `json:"dead"`
-	Stale          int `json:"stale"`
-	Error          int `json:"error"`
-	Redispatched   int `json:"redispatched"`
-	NeedsAttention int `json:"needs_attention"`
+	Total            int `json:"total"`
+	Active           int `json:"active"`
+	Idle             int `json:"idle"`
+	IdleTimedOut     int `json:"idle_timed_out"`
+	Complete         int `json:"complete"`
+	Blocked          int `json:"blocked"`
+	Dead             int `json:"dead"`
+	Stale            int `json:"stale"`
+	Error            int `json:"error"`
+	Redispatched     int `json:"redispatched"`
+	NeedsAttention   int `json:"needs_attention"`
 }
 
 // Report is returned from Check.
@@ -95,6 +103,7 @@ type Service struct {
 	remote             RemoteClient
 	workspace          string
 	staleAfter         time.Duration
+	idleTimeout        time.Duration
 	maxRalphIterations int
 	logger             *slog.Logger
 	now                func() time.Time
@@ -113,6 +122,10 @@ func NewService(cfg Config) (*Service, error) {
 	if staleAfter <= 0 {
 		staleAfter = DefaultStaleAfter
 	}
+	idleTimeout := cfg.IdleTimeout
+	if idleTimeout < 0 {
+		idleTimeout = DefaultIdleTimeout
+	}
 	maxIterations := cfg.MaxRalphIterations
 	if maxIterations <= 0 {
 		maxIterations = DefaultMaxRalphIterations
@@ -130,6 +143,7 @@ func NewService(cfg Config) (*Service, error) {
 		remote:             cfg.Remote,
 		workspace:          workspace,
 		staleAfter:         staleAfter,
+		idleTimeout:        idleTimeout,
 		maxRalphIterations: maxIterations,
 		logger:             logger,
 		now:                now,
@@ -195,6 +209,18 @@ func (s *Service) inspectSprite(ctx context.Context, sprite string, execute bool
 	startedAt, elapsedMinutes := s.elapsed(probe.Status.Started)
 	task := composeTaskLabel(probe)
 	hasTask := task != "" || strings.TrimSpace(probe.CurrentTaskID) != ""
+
+	// Compute idle time from last activity
+	lastActivityAt, lastActivityAge := s.computeLastActivity(probe)
+	idleSince := ""
+	idleMinutes := 0
+	if !probe.SupervisorState.LastProgressAt.IsZero() && lastActivityAge > 0 {
+		if s.idleTimeout > 0 && time.Duration(lastActivityAge)*time.Minute >= s.idleTimeout {
+			idleSince = probe.SupervisorState.LastProgressAt.UTC().Format(time.RFC3339)
+			idleMinutes = lastActivityAge
+		}
+	}
+
 	input := stateInput{
 		AgentRunning:  probe.AgentRunning || probe.ClaudeCount > 0,
 		HasComplete:   probe.HasComplete,
@@ -225,18 +251,22 @@ func (s *Service) inspectSprite(ctx context.Context, sprite string, execute bool
 	}
 
 	row := SpriteReport{
-		Sprite:         sprite,
-		State:          state,
-		Task:           task,
-		StartedAt:      startedAt,
-		ElapsedMinutes: elapsedMinutes,
-		Branch:         probe.Branch,
-		CommitsLast2h:  probe.CommitsLast2h,
-		DirtyRepos:     probe.DirtyRepos,
-		AheadCommits:   probe.AheadCommits,
-		AgentRunning:   input.AgentRunning,
-		BlockedReason:  probe.BlockedSummary,
-		Action:         action,
+		Sprite:          sprite,
+		State:           state,
+		Task:            task,
+		StartedAt:       startedAt,
+		ElapsedMinutes:  elapsedMinutes,
+		Branch:          probe.Branch,
+		CommitsLast2h:   probe.CommitsLast2h,
+		DirtyRepos:      probe.DirtyRepos,
+		AheadCommits:    probe.AheadCommits,
+		AgentRunning:    input.AgentRunning,
+		BlockedReason:   probe.BlockedSummary,
+		Action:          action,
+		IdleSince:       idleSince,
+		IdleMinutes:     idleMinutes,
+		LastActivityAt:  lastActivityAt,
+		LastActivityAge: lastActivityAge,
 	}
 	s.logger.Info("watchdog sprite", "sprite", sprite, "state", row.State, "task", row.Task, "action", row.Action.Type)
 	return row
@@ -256,6 +286,18 @@ func (s *Service) elapsed(started string) (string, int) {
 		return started, 0
 	}
 	return parsed.UTC().Format(time.RFC3339), int(delta / time.Minute)
+}
+
+func (s *Service) computeLastActivity(probe probe) (string, int) {
+	if probe.SupervisorState.LastProgressAt.IsZero() {
+		return "", 0
+	}
+	lastActivityAt := probe.SupervisorState.LastProgressAt.UTC()
+	delta := s.now().UTC().Sub(lastActivityAt)
+	if delta < 0 {
+		return lastActivityAt.Format(time.RFC3339), 0
+	}
+	return lastActivityAt.Format(time.RFC3339), int(delta / time.Minute)
 }
 
 func composeTaskLabel(probe probe) string {
@@ -293,6 +335,10 @@ func summarize(rows []SpriteReport) Summary {
 			summary.NeedsAttention++
 		case StateError:
 			summary.Error++
+			summary.NeedsAttention++
+		}
+		if row.IdleMinutes > 0 {
+			summary.IdleTimedOut++
 			summary.NeedsAttention++
 		}
 		if row.Action.Type == ActionRedispatch && row.Action.Executed && row.Action.Success {
@@ -340,6 +386,7 @@ func buildProbeScript(workspace string) string {
 		"done",
 		"status_json=\"\"; [ -f \"$WORKSPACE/STATUS.json\" ] && status_json=\"$(tr -d '\\n' < \"$WORKSPACE/STATUS.json\")\"",
 		"task_id=\"$(cat \"$WORKSPACE/.current-task-id\" 2>/dev/null || true)\"",
+		"supervisor_state=\"\"; [ -f \"$WORKSPACE/.sprite-runtime/supervisor-state.json\" ] && supervisor_state=\"$(tr -d '\\n' < \"$WORKSPACE/.sprite-runtime/supervisor-state.json\")\"",
 		"echo \"__CLAUDE_COUNT__${claude_count:-0}\"",
 		"echo \"__AGENT_RUNNING__${agent_running}\"",
 		"echo \"__HAS_COMPLETE__${has_complete}\"",
@@ -352,6 +399,7 @@ func buildProbeScript(workspace string) string {
 		"echo \"__BRANCH_B64__$(printf '%s' \"$branch\" | base64 | tr -d '\\n')\"",
 		"echo \"__STATUS_B64__$(printf '%s' \"$status_json\" | base64 | tr -d '\\n')\"",
 		"echo \"__TASK_ID_B64__$(printf '%s' \"$task_id\" | base64 | tr -d '\\n')\"",
+		"echo \"__SUPERVISOR_STATE_B64__$(printf '%s' \"$supervisor_state\" | base64 | tr -d '\\n')\"",
 	}, "\n")
 }
 

@@ -20,6 +20,7 @@ type watchdogOptions struct {
 	DryRun        bool
 	JSON          bool
 	StaleAfter    time.Duration
+	IdleTimeout   time.Duration
 	MaxIterations int
 	Org           string
 	SpriteCLI     string
@@ -51,6 +52,7 @@ func newWatchdogCmdWithDeps(deps watchdogDeps) *cobra.Command {
 	opts := watchdogOptions{
 		DryRun:        true,
 		StaleAfter:    watchdogsvc.DefaultStaleAfter,
+		IdleTimeout:   watchdogsvc.DefaultIdleTimeout,
 		MaxIterations: watchdogsvc.DefaultMaxRalphIterations,
 		Org:           strings.TrimSpace(os.Getenv("FLY_ORG")),
 		SpriteCLI:     strings.TrimSpace(os.Getenv("SPRITE_CLI")),
@@ -72,6 +74,7 @@ func newWatchdogCmdWithDeps(deps watchdogDeps) *cobra.Command {
 				Remote:             remote,
 				Workspace:          watchdogsvc.DefaultWorkspace,
 				StaleAfter:         opts.StaleAfter,
+				IdleTimeout:        opts.IdleTimeout,
 				MaxRalphIterations: opts.MaxIterations,
 			})
 			if err != nil {
@@ -103,6 +106,7 @@ func newWatchdogCmdWithDeps(deps watchdogDeps) *cobra.Command {
 	command.Flags().BoolVar(&opts.DryRun, "dry-run", true, "Preview watchdog actions (default)")
 	command.Flags().BoolVar(&opts.JSON, "json", false, "Emit JSON output")
 	command.Flags().DurationVar(&opts.StaleAfter, "stale-after", opts.StaleAfter, "Stale threshold duration")
+	command.Flags().DurationVar(&opts.IdleTimeout, "idle-timeout", opts.IdleTimeout, "Idle timeout duration")
 	command.Flags().IntVar(&opts.MaxIterations, "max-iterations", opts.MaxIterations, "MAX_ITERATIONS for redispatch recovery")
 	command.Flags().StringVar(&opts.Org, "org", opts.Org, "Sprite org passed to sprite CLI")
 	command.Flags().StringVar(&opts.SpriteCLI, "sprite-cli", opts.SpriteCLI, "Sprite CLI binary path")
@@ -125,7 +129,7 @@ func renderWatchdogReport(cmd *cobra.Command, report watchdogsvc.Report, jsonMod
 	}
 
 	tw := tabwriter.NewWriter(cmd.OutOrStdout(), 2, 2, 2, ' ', 0)
-	if _, err := fmt.Fprintln(tw, "SPRITE\tSTATE\tTASK\tELAPSED_MIN\tBRANCH\tCOMMITS_2H\tACTION"); err != nil {
+	if _, err := fmt.Fprintln(tw, "SPRITE\tSTATE\tTASK\tELAPSED_MIN\tIDLE_MIN\tBRANCH\tCOMMITS_2H\tACTION"); err != nil {
 		return err
 	}
 	for _, row := range report.Sprites {
@@ -142,13 +146,18 @@ func renderWatchdogReport(cmd *cobra.Command, report watchdogsvc.Report, jsonMod
 		if row.Error != "" {
 			action = row.Error
 		}
+		idleDisplay := ""
+		if row.IdleMinutes > 0 {
+			idleDisplay = fmt.Sprintf("%d", row.IdleMinutes)
+		}
 		if _, err := fmt.Fprintf(
 			tw,
-			"%s\t%s\t%s\t%d\t%s\t%d\t%s\n",
+			"%s\t%s\t%s\t%d\t%s\t%s\t%d\t%s\n",
 			row.Sprite,
 			row.State,
 			row.Task,
 			row.ElapsedMinutes,
+			idleDisplay,
 			row.Branch,
 			row.CommitsLast2h,
 			action,
@@ -163,10 +172,11 @@ func renderWatchdogReport(cmd *cobra.Command, report watchdogsvc.Report, jsonMod
 	summary := report.Summary
 	_, err := fmt.Fprintf(
 		cmd.OutOrStdout(),
-		"\nSummary: total=%d active=%d idle=%d complete=%d blocked=%d dead=%d stale=%d error=%d redispatched=%d needs_attention=%d\n",
+		"\nSummary: total=%d active=%d idle=%d idle_timed_out=%d complete=%d blocked=%d dead=%d stale=%d error=%d redispatched=%d needs_attention=%d\n",
 		summary.Total,
 		summary.Active,
 		summary.Idle,
+		summary.IdleTimedOut,
 		summary.Complete,
 		summary.Blocked,
 		summary.Dead,

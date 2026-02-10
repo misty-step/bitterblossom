@@ -6,21 +6,23 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type probe struct {
-	ClaudeCount    int
-	AgentRunning   bool
-	HasComplete    bool
-	HasBlocked     bool
-	BlockedSummary string
-	Branch         string
-	CommitsLast2h  int
-	DirtyRepos     int
-	AheadCommits   int
-	HasPrompt      bool
-	CurrentTaskID  string
-	Status         statusFile
+	ClaudeCount      int
+	AgentRunning     bool
+	HasComplete      bool
+	HasBlocked       bool
+	BlockedSummary   string
+	Branch           string
+	CommitsLast2h    int
+	DirtyRepos       int
+	AheadCommits     int
+	HasPrompt        bool
+	CurrentTaskID    string
+	Status           statusFile
+	SupervisorState  supervisorState
 }
 
 type statusFile struct {
@@ -29,6 +31,12 @@ type statusFile struct {
 	Started string `json:"started,omitempty"`
 	Mode    string `json:"mode,omitempty"`
 	Task    string `json:"task,omitempty"`
+}
+
+type supervisorState struct {
+	LastProgressAt time.Time `json:"last_progress_at,omitempty"`
+	LastActivity   string    `json:"last_activity,omitempty"`
+	Stalled        bool      `json:"stalled"`
 }
 
 func parseProbeOutput(output string) (probe, error) {
@@ -80,6 +88,10 @@ func parseProbeOutput(output string) (probe, error) {
 	if err != nil {
 		return probe{}, fmt.Errorf("decode status json: %w", err)
 	}
+	supervisorStateJSON, err := decodeB64(values["SUPERVISOR_STATE_B64"])
+	if err != nil {
+		return probe{}, fmt.Errorf("decode supervisor state json: %w", err)
+	}
 
 	status := statusFile{}
 	if strings.TrimSpace(statusJSON) != "" {
@@ -88,19 +100,27 @@ func parseProbeOutput(output string) (probe, error) {
 		}
 	}
 
+	supervisorStateVal := supervisorState{}
+	if strings.TrimSpace(supervisorStateJSON) != "" {
+		if err := json.Unmarshal([]byte(supervisorStateJSON), &supervisorStateVal); err != nil {
+			return probe{}, fmt.Errorf("parse supervisor state: %w", err)
+		}
+	}
+
 	return probe{
-		ClaudeCount:    claudeCount,
-		AgentRunning:   strings.EqualFold(values["AGENT_RUNNING"], "yes"),
-		HasComplete:    strings.EqualFold(values["HAS_COMPLETE"], "yes"),
-		HasBlocked:     strings.EqualFold(values["HAS_BLOCKED"], "yes"),
-		BlockedSummary: strings.TrimSpace(blockedSummary),
-		Branch:         strings.TrimSpace(branch),
-		CommitsLast2h:  commits,
-		DirtyRepos:     dirtyRepos,
-		AheadCommits:   aheadCommits,
-		HasPrompt:      strings.EqualFold(values["HAS_PROMPT"], "yes"),
-		CurrentTaskID:  strings.TrimSpace(taskID),
-		Status:         status,
+		ClaudeCount:      claudeCount,
+		AgentRunning:     strings.EqualFold(values["AGENT_RUNNING"], "yes"),
+		HasComplete:      strings.EqualFold(values["HAS_COMPLETE"], "yes"),
+		HasBlocked:       strings.EqualFold(values["HAS_BLOCKED"], "yes"),
+		BlockedSummary:   strings.TrimSpace(blockedSummary),
+		Branch:           strings.TrimSpace(branch),
+		CommitsLast2h:    commits,
+		DirtyRepos:       dirtyRepos,
+		AheadCommits:     aheadCommits,
+		HasPrompt:        strings.EqualFold(values["HAS_PROMPT"], "yes"),
+		CurrentTaskID:    strings.TrimSpace(taskID),
+		Status:           status,
+		SupervisorState:  supervisorStateVal,
 	}, nil
 }
 
