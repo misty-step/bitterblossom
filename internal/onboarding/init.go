@@ -97,6 +97,9 @@ func Init(ctx context.Context, disco MachineDiscoverer, cfg InitConfig) (*InitRe
 	reg.Meta.App = cfg.App
 	reg.Meta.InitAt = time.Now().UTC()
 
+	// Clear stale entries before registering current machines.
+	reg.Sprites = make(map[string]registry.SpriteEntry)
+
 	for i, m := range machines {
 		name, err := names.PickName(i)
 		if err != nil {
