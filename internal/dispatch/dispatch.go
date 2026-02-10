@@ -43,6 +43,7 @@ var (
 type RemoteClient interface {
 	Exec(ctx context.Context, sprite, remoteCommand string, stdin []byte) (string, error)
 	Upload(ctx context.Context, sprite, remotePath string, content []byte) error
+	List(ctx context.Context) ([]string, error)
 }
 
 // Request describes a dispatch operation.
@@ -333,12 +334,14 @@ func (s *Service) provision(ctx context.Context, req preparedRequest) error {
 }
 
 func (s *Service) needsProvision(ctx context.Context, sprite string) (bool, error) {
-	machines, err := s.fly.List(ctx, s.app)
+	// Check if sprite exists using sprite CLI instead of Fly API
+	// This avoids 404 errors when the Fly app doesn't exist or API issues occur
+	sprites, err := s.remote.List(ctx)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("list sprites: %w", err)
 	}
-	for _, machine := range machines {
-		if strings.TrimSpace(machine.Name) == sprite {
+	for _, name := range sprites {
+		if strings.TrimSpace(name) == sprite {
 			return false, nil
 		}
 	}
@@ -447,6 +450,11 @@ func (s *Service) prepare(req Request) (preparedRequest, error) {
 	startCommand := buildOneShotScript(s.workspace, promptPath)
 	if req.Ralph {
 		startCommand = buildStartRalphScript(s.workspace, sprite, s.maxRalphIterations, req.WebhookURL)
+	}
+	if !req.Ralph {
+		if err := requireOneShotInvariants(startCommand); err != nil {
+			return preparedRequest{}, err
+		}
 	}
 
 	taskLabel := prompt
@@ -625,7 +633,11 @@ func buildOneShotScript(workspace, promptPath string) string {
 		"    export ANTHROPIC_API_KEY=proxy-mode",
 		"  fi",
 		"fi",
-		"cat " + shellQuote(promptPath) + " | claude -p --permission-mode bypassPermissions --verbose --output-format stream-json",
+		"if command -v script >/dev/null 2>&1; then",
+		"  script -qefc " + shellQuote("cat "+shellQuote(promptPath)+" | claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json") + " /dev/null",
+		"else",
+		"  cat " + shellQuote(promptPath) + " | claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json",
+		"fi",
 		"rm -f " + shellQuote(promptPath),
 	}, "\n")
 }
@@ -641,16 +653,26 @@ func buildStartRalphScript(workspace, sprite string, maxIterations int, webhookU
 		"AGENT_BIN=\"$HOME/.local/bin/sprite-agent\"",
 		"if [ ! -x \"$AGENT_BIN\" ]; then AGENT_BIN=\"$WORKSPACE_DIR/.sprite-agent.sh\"; fi",
 		"if [ ! -x \"$AGENT_BIN\" ]; then echo \"sprite-agent not found\" >&2; exit 1; fi",
+		"REQUIRED_CLAUDE_FLAGS=" + shellQuote("--dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json"),
+		"case \" $REQUIRED_CLAUDE_FLAGS \" in *\" --dangerously-skip-permissions \"*) ;; *) echo \"missing --dangerously-skip-permissions\" >&2; exit 1 ;; esac",
+		"case \" $REQUIRED_CLAUDE_FLAGS \" in *\" --verbose \"*) ;; *) echo \"missing --verbose\" >&2; exit 1 ;; esac",
+		"case \" $REQUIRED_CLAUDE_FLAGS \" in *\" --output-format stream-json \"*) ;; *) echo \"missing --output-format stream-json\" >&2; exit 1 ;; esac",
+		// If sprite-agent is a script, validate it contains the required flags.
+		// If it's a compiled binary, we can't introspect; rely on runtime checks in the agent itself.
+		"if [ \"$(head -c 2 \"$AGENT_BIN\" 2>/dev/null || true)\" = \"#!\" ]; then",
+		"  if ! grep -q -- '--dangerously-skip-permissions' \"$AGENT_BIN\" 2>/dev/null; then echo \"sprite-agent missing --dangerously-skip-permissions\" >&2; exit 1; fi",
+		"  if ! grep -q -- '--output-format stream-json' \"$AGENT_BIN\" 2>/dev/null; then echo \"sprite-agent missing --output-format stream-json\" >&2; exit 1; fi",
+		"fi",
 		"cd \"$WORKSPACE_DIR\"",
 		"printf 'bb-%s-%s\\n' \"$(date -u +%Y%m%d-%H%M%S)\" " + shellQuote(sprite) + " > \"$WORKSPACE_DIR/.current-task-id\"",
 	}
 	if strings.TrimSpace(webhookURL) != "" {
 		lines = append(lines,
-			"nohup env SPRITE_NAME="+shellQuote(sprite)+" SPRITE_WEBHOOK_URL="+shellQuote(webhookURL)+" MAX_ITERATIONS="+strconv.Itoa(maxIterations)+" \"$AGENT_BIN\" >/dev/null 2>&1 &",
+			"nohup env SPRITE_NAME="+shellQuote(sprite)+" SPRITE_WEBHOOK_URL="+shellQuote(webhookURL)+" MAX_ITERATIONS="+strconv.Itoa(maxIterations)+" BB_CLAUDE_FLAGS=\"$REQUIRED_CLAUDE_FLAGS\" \"$AGENT_BIN\" >/dev/null 2>&1 &",
 		)
 	} else {
 		lines = append(lines,
-			"nohup env SPRITE_NAME="+shellQuote(sprite)+" MAX_ITERATIONS="+strconv.Itoa(maxIterations)+" \"$AGENT_BIN\" >/dev/null 2>&1 &",
+			"nohup env SPRITE_NAME="+shellQuote(sprite)+" MAX_ITERATIONS="+strconv.Itoa(maxIterations)+" BB_CLAUDE_FLAGS=\"$REQUIRED_CLAUDE_FLAGS\" \"$AGENT_BIN\" >/dev/null 2>&1 &",
 		)
 	}
 	lines = append(lines,
