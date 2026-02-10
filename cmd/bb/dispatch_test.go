@@ -101,6 +101,113 @@ func TestDispatchCommandJSONOutput(t *testing.T) {
 	}
 }
 
+func TestDispatchCommandAllowsIssueWithoutPrompt(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeDispatchRunner{
+		result: dispatchsvc.Result{
+			Executed: false,
+			State:    dispatchsvc.StatePending,
+			Plan: dispatchsvc.Plan{
+				Sprite: "bramble",
+				Mode:   "dry-run",
+			},
+		},
+	}
+
+	deps := dispatchDeps{
+		readFile: func(string) ([]byte, error) { return nil, nil },
+		newFlyClient: func(token, apiURL string) (fly.MachineClient, error) {
+			return fakeFlyClient{}, nil
+		},
+		newRemote: func(binary, org string) *spriteCLIRemote {
+			return &spriteCLIRemote{}
+		},
+		newService: func(cfg dispatchsvc.Config) (dispatchRunner, error) {
+			return runner, nil
+		},
+	}
+
+	cmd := newDispatchCmdWithDeps(deps)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{
+		"bramble",
+		"--issue", "186",
+		"--repo", "misty-step/bitterblossom",
+		"--skip-validation",
+		"--app", "bb-app",
+		"--token", "tok",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cmd.Execute() error = %v", err)
+	}
+	if runner.lastReq.Sprite != "bramble" {
+		t.Fatalf("runner.lastReq.Sprite = %q, want bramble", runner.lastReq.Sprite)
+	}
+	if runner.lastReq.Issue != 186 {
+		t.Fatalf("runner.lastReq.Issue = %d, want 186", runner.lastReq.Issue)
+	}
+	if runner.lastReq.Repo != "misty-step/bitterblossom" {
+		t.Fatalf("runner.lastReq.Repo = %q, want misty-step/bitterblossom", runner.lastReq.Repo)
+	}
+	if runner.lastReq.Prompt != "" {
+		t.Fatalf("runner.lastReq.Prompt = %q, want empty (IssuePrompt synthesized in service)", runner.lastReq.Prompt)
+	}
+}
+
+func TestDispatchCommandAutoAssignWithoutSprite(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeDispatchRunner{
+		result: dispatchsvc.Result{
+			Executed: false,
+			State:    dispatchsvc.StatePending,
+			Plan: dispatchsvc.Plan{
+				Sprite: "moss",
+				Mode:   "dry-run",
+			},
+		},
+	}
+
+	deps := dispatchDeps{
+		readFile: func(string) ([]byte, error) { return nil, nil },
+		newFlyClient: func(token, apiURL string) (fly.MachineClient, error) {
+			return fakeFlyClient{}, nil
+		},
+		newRemote: func(binary, org string) *spriteCLIRemote {
+			return &spriteCLIRemote{}
+		},
+		newService: func(cfg dispatchsvc.Config) (dispatchRunner, error) {
+			return runner, nil
+		},
+		selectSprite: func(ctx context.Context, remote *spriteCLIRemote, opts dispatchOptions) (string, error) {
+			return "moss", nil
+		},
+	}
+
+	cmd := newDispatchCmdWithDeps(deps)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{
+		"--issue", "186",
+		"--repo", "misty-step/bitterblossom",
+		"--skip-validation",
+		"--app", "bb-app",
+		"--token", "tok",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cmd.Execute() error = %v", err)
+	}
+	if runner.lastReq.Sprite != "moss" {
+		t.Fatalf("runner.lastReq.Sprite = %q, want moss", runner.lastReq.Sprite)
+	}
+}
+
 func TestDispatchCommandMissingFLY_APP(t *testing.T) {
 	t.Parallel()
 
@@ -242,7 +349,9 @@ func TestDispatchCommandWaitRequiresExecute(t *testing.T) {
 		newFlyClient: func(token, apiURL string) (fly.MachineClient, error) { return fakeFlyClient{}, nil },
 		newRemote:    func(binary, org string) *spriteCLIRemote { return &spriteCLIRemote{} },
 		newService:   func(cfg dispatchsvc.Config) (dispatchRunner, error) { return &fakeDispatchRunner{}, nil },
-		pollSprite:   func(ctx context.Context, remote *spriteCLIRemote, sprite string, timeout time.Duration, progress func(string)) (*waitResult, error) { return nil, nil },
+		pollSprite: func(ctx context.Context, remote *spriteCLIRemote, sprite string, timeout time.Duration, progress func(string)) (*waitResult, error) {
+			return nil, nil
+		},
 	}
 
 	cmd := newDispatchCmdWithDeps(deps)
@@ -566,7 +675,7 @@ func TestBuildStatusCheckScript(t *testing.T) {
 	t.Parallel()
 
 	script := buildStatusCheckScript("/home/sprite/workspace")
-	
+
 	// Check for expected components
 	expectedComponents := []string{
 		"STATUS_JSON",
@@ -578,7 +687,7 @@ func TestBuildStatusCheckScript(t *testing.T) {
 		"TASK_COMPLETE",
 		"BLOCKED.md",
 	}
-	
+
 	for _, component := range expectedComponents {
 		if !strings.Contains(script, component) {
 			t.Errorf("script missing expected component: %s", component)

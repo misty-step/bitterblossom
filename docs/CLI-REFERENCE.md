@@ -79,7 +79,7 @@ Exit code `0` always. Output includes missing, extra, and drifted sprites.
 Dispatch a task prompt to a sprite. **Dry-run by default.**
 
 ```
-bb dispatch <sprite> [prompt] [flags]
+bb dispatch [sprite] [prompt] [flags]
 ```
 
 ### Examples
@@ -90,6 +90,12 @@ bb dispatch bramble "Build the auth API"
 
 # Execute dispatch
 bb dispatch bramble "Build the auth API" --execute
+
+# Issue-based prompt (no explicit prompt needed)
+bb dispatch bramble --issue 186 --repo misty-step/bitterblossom --execute
+
+# Auto-assign (pick first available sprite from registry)
+bb dispatch --issue 186 --repo misty-step/bitterblossom --execute
 
 # Ralph loop with file prompt
 bb dispatch bramble --ralph --file prompts/refactor.md --execute
@@ -121,6 +127,11 @@ bb dispatch bramble "Fix the bug" --execute --json
 | `--max-tokens` | `200000` | Ralph stuck-loop token safety cap (only with `--ralph`) |
 | `--max-time` | `30m` | Ralph stuck-loop runtime safety cap (only with `--ralph`) |
 | `--webhook-url` | `$SPRITE_WEBHOOK_URL` | Optional webhook URL |
+| `--issue` | | GitHub issue number (also enables IssuePrompt default when no prompt is provided) |
+| `--skip-validation` | `false` | Skip pre-dispatch issue validation |
+| `--strict` | `false` | Fail on any issue validation warning |
+| `--registry` | `~/.config/bb/registry.toml` | Path to sprite registry file |
+| `--registry-required` | `false` | Require sprite to exist in registry (fail if missing) |
 
 ### State Machine
 
