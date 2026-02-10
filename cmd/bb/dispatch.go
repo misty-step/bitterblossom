@@ -51,16 +51,16 @@ type dispatchRunner interface {
 
 // waitResult contains the final result from waiting for a sprite task.
 type waitResult struct {
-	State       string `json:"state"`
-	Task        string `json:"task,omitempty"`
-	Repo        string `json:"repo,omitempty"`
-	Started     string `json:"started,omitempty"`
-	Runtime     string `json:"runtime,omitempty"`
-	PRURL       string `json:"pr_url,omitempty"`
-	Blocked     bool   `json:"blocked,omitempty"`
+	State         string `json:"state"`
+	Task          string `json:"task,omitempty"`
+	Repo          string `json:"repo,omitempty"`
+	Started       string `json:"started,omitempty"`
+	Runtime       string `json:"runtime,omitempty"`
+	PRURL         string `json:"pr_url,omitempty"`
+	Blocked       bool   `json:"blocked,omitempty"`
 	BlockedReason string `json:"blocked_reason,omitempty"`
-	Complete    bool   `json:"complete"`
-	Error       string `json:"error,omitempty"`
+	Complete      bool   `json:"complete"`
+	Error         string `json:"error,omitempty"`
 }
 
 func defaultDispatchDeps() dispatchDeps {
@@ -169,10 +169,12 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 			// If --wait flag is set, poll for completion
 			if opts.Wait && result.Executed {
 				waitRes, waitErr := deps.pollSprite(cmd.Context(), remote, args[0], opts.Timeout, func(msg string) {
+					// Intentionally ignoring write errors for progress output
 					_, _ = fmt.Fprintln(cmd.OutOrStdout(), msg)
 				})
 				if waitErr != nil {
 					// Graceful degradation: return dispatch result with warning
+					// Intentionally ignoring write errors for warning message
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Warning: polling failed: %v\n", waitErr)
 					return renderDispatchResult(cmd, result, opts.JSON)
 				}
@@ -467,12 +469,12 @@ func parseStatusCheckOutput(output, workspace string) (*waitResult, bool, error)
 	}
 
 	var (
-		fileStatus    statusFile
-		agentState    string
-		hasComplete   bool
-		hasBlocked    bool
-		blockedB64    string
-		prURL         string
+		fileStatus  statusFile
+		agentState  string
+		hasComplete bool
+		hasBlocked  bool
+		blockedB64  string
+		prURL       string
 	)
 
 	lines := strings.Split(output, "\n")
@@ -483,7 +485,12 @@ func parseStatusCheckOutput(output, workspace string) (*waitResult, bool, error)
 			if payload == "" {
 				payload = "{}"
 			}
-			_ = json.Unmarshal([]byte(payload), &fileStatus)
+			// Parse errors are intentionally ignored; malformed JSON results in zero values
+			// which is acceptable since these fields are for informational display only
+			if err := json.Unmarshal([]byte(payload), &fileStatus); err != nil {
+				// Reset to empty struct on parse failure to ensure clean state
+				fileStatus = statusFile{}
+			}
 		case strings.HasPrefix(line, "__AGENT_STATE__"):
 			agentState = strings.TrimPrefix(line, "__AGENT_STATE__")
 		case strings.HasPrefix(line, "__HAS_COMPLETE__"):
