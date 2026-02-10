@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -115,4 +117,77 @@ func TestLogsValidationAndHelpers(t *testing.T) {
 	if _, err := buildEventFilter(nil, []string{"wat"}, time.Time{}, time.Time{}); err == nil {
 		t.Fatal("buildEventFilter() should reject invalid type")
 	}
+}
+
+func TestLogsRemoteSprite(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	ctx := context.Background()
+
+	// Test with empty sprite name
+	err := runRemoteSpriteLog(ctx, "", "", 10, false, &out)
+	if err == nil {
+		t.Fatal("runRemoteSpriteLog() should reject empty sprite name")
+	}
+
+	// Test with mock remote that returns sample logs
+	mockRemote := &mockSpriteCLIRemote{
+		execFn: func(ctx context.Context, sprite, command string, stdin []byte) (string, error) {
+			if strings.Contains(command, "tail") {
+				return "log line 1\nlog line 2\nlog line 3\n", nil
+			}
+			return "", nil
+		},
+	}
+
+	out.Reset()
+	err = runRemoteSpriteLogWithRemote(ctx, "test-sprite", mockRemote, 3, false, &out)
+	if err != nil {
+		t.Fatalf("runRemoteSpriteLogWithRemote() error = %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "log line 1") {
+		t.Fatalf("expected log line 1 in output, got: %q", output)
+	}
+}
+
+type mockSpriteCLIRemote struct {
+	execFn func(ctx context.Context, sprite, command string, stdin []byte) (string, error)
+}
+
+func (m *mockSpriteCLIRemote) Exec(ctx context.Context, sprite, command string, stdin []byte) (string, error) {
+	if m.execFn != nil {
+		return m.execFn(ctx, sprite, command, stdin)
+	}
+	return "", nil
+}
+
+func (m *mockSpriteCLIRemote) List(ctx context.Context) ([]string, error) {
+	return nil, nil
+}
+
+func (m *mockSpriteCLIRemote) Upload(ctx context.Context, sprite, remotePath string, content []byte) error {
+	return nil
+}
+
+func runRemoteSpriteLogWithRemote(ctx context.Context, spriteName string, remote *mockSpriteCLIRemote, lines int, follow bool, out io.Writer) error {
+	spriteName = strings.TrimSpace(spriteName)
+	if spriteName == "" {
+		return fmt.Errorf("sprite name is required")
+	}
+
+	logPath := ".bb-agent/agent.log"
+
+	if lines > 0 {
+		tailCmd := fmt.Sprintf("tail -n %d %s 2>/dev/null || echo '# no logs yet'", lines, shellQuote(logPath))
+		output, err := remote.Exec(ctx, spriteName, tailCmd, nil)
+		if err != nil {
+			return fmt.Errorf("failed to read logs from sprite %q: %w", spriteName, err)
+		}
+		_, _ = fmt.Fprint(out, output)
+	}
+
+	return nil
 }

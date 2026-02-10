@@ -28,13 +28,24 @@ func newLogsCmd(stdout, _ io.Writer) *cobra.Command {
 	var follow bool
 	var jsonMode bool
 	var pollInterval time.Duration
+	var org string
+	var lines int
 
 	cmd := &cobra.Command{
-		Use:   "logs",
-		Short: "Query historical JSONL event logs",
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		Use:   "logs [sprite-name]",
+		Short: "Query historical JSONL event logs or stream sprite agent logs",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Mode 1: Remote sprite agent logs
+			if len(args) == 1 {
+				return runRemoteSpriteLog(cmd.Context(), args[0], org, lines, follow, stdout)
+			}
+			if len(args) > 1 {
+				return fmt.Errorf("logs: only one sprite name can be provided")
+			}
+
+			// Mode 2: Local JSONL event logs (original behavior)
 			if len(files) == 0 {
-				return fmt.Errorf("logs: at least one --file path is required")
+				return fmt.Errorf("logs: at least one --file path is required or provide a sprite name")
 			}
 
 			now := time.Now().UTC()
@@ -100,14 +111,16 @@ func newLogsCmd(stdout, _ io.Writer) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringSliceVar(&files, "file", nil, "JSONL event file(s) to read")
-	cmd.Flags().StringSliceVar(&sprites, "sprite", nil, "filter by sprite name")
-	cmd.Flags().StringSliceVar(&kindsRaw, "type", nil, "filter by event type")
-	cmd.Flags().StringVar(&sinceRaw, "since", "", "include events since duration or RFC3339 timestamp")
-	cmd.Flags().StringVar(&untilRaw, "until", "", "include events until RFC3339 timestamp")
-	cmd.Flags().BoolVar(&follow, "follow", false, "follow events as files are appended")
-	cmd.Flags().BoolVar(&jsonMode, "json", false, "emit JSONL output")
-	cmd.Flags().DurationVar(&pollInterval, "poll-interval", events.DefaultWatchPollInterval, "file tail polling interval")
+	cmd.Flags().StringSliceVar(&files, "file", nil, "JSONL event file(s) to read (for local mode)")
+	cmd.Flags().StringSliceVar(&sprites, "sprite", nil, "filter by sprite name (for local mode)")
+	cmd.Flags().StringSliceVar(&kindsRaw, "type", nil, "filter by event type (for local mode)")
+	cmd.Flags().StringVar(&sinceRaw, "since", "", "include events since duration or RFC3339 timestamp (for local mode)")
+	cmd.Flags().StringVar(&untilRaw, "until", "", "include events until RFC3339 timestamp (for local mode)")
+	cmd.Flags().BoolVarP(&follow, "follow", "f", false, "follow log output in real-time")
+	cmd.Flags().BoolVar(&jsonMode, "json", false, "emit JSONL output (for local mode)")
+	cmd.Flags().DurationVar(&pollInterval, "poll-interval", events.DefaultWatchPollInterval, "file tail polling interval (for local mode)")
+	cmd.Flags().StringVar(&org, "org", envOrDefault("FLY_ORG", ""), "Fly.io organization (for remote mode)")
+	cmd.Flags().IntVarP(&lines, "lines", "n", 100, "number of tail lines to show (for remote mode)")
 	return cmd
 }
 
@@ -261,4 +274,87 @@ func splitCSV(value string) []string {
 		}
 	}
 	return out
+}
+
+func runRemoteSpriteLog(ctx context.Context, spriteName, org string, lines int, follow bool, out io.Writer) error {
+	spriteName = strings.TrimSpace(spriteName)
+	if spriteName == "" {
+		return fmt.Errorf("sprite name is required")
+	}
+
+	remote := newSpriteCLIRemote("sprite", org)
+
+	// Default agent log path on sprites
+	logPath := ".bb-agent/agent.log"
+
+	// Read tail lines first
+	if lines > 0 {
+		tailCmd := fmt.Sprintf("tail -n %d %s 2>/dev/null || echo '# no logs yet'", lines, shellQuote(logPath))
+		output, err := remote.Exec(ctx, spriteName, tailCmd, nil)
+		if err != nil {
+			return fmt.Errorf("failed to read logs from sprite %q: %w", spriteName, err)
+		}
+		_, _ = fmt.Fprint(out, output)
+	}
+
+	if !follow {
+		return nil
+	}
+
+	// Follow mode: poll for new log lines
+	return followRemoteLog(ctx, remote, spriteName, logPath, out)
+}
+
+func followRemoteLog(ctx context.Context, remote *spriteCLIRemote, spriteName, logPath string, out io.Writer) error {
+	// Track the last line we've seen to avoid duplicates
+	var lastLines []string
+	pollInterval := 500 * time.Millisecond
+	tailCount := 10 // Read last 10 lines each poll
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+		}
+
+		// Read recent lines
+		tailCmd := fmt.Sprintf("tail -n %d %s 2>/dev/null || true", tailCount, shellQuote(logPath))
+		output, err := remote.Exec(ctx, spriteName, tailCmd, nil)
+		if err != nil {
+			// Don't fail on transient errors during polling
+			time.Sleep(pollInterval)
+			continue
+		}
+
+		if strings.TrimSpace(output) == "" {
+			time.Sleep(pollInterval)
+			continue
+		}
+
+		currentLines := strings.Split(strings.TrimSpace(output), "\n")
+
+		// Find new lines by comparing with last poll
+		if len(lastLines) > 0 {
+			// Find where the overlap ends
+			newStartIdx := 0
+			for i := 0; i < len(currentLines) && i < len(lastLines); i++ {
+				if currentLines[i] == lastLines[len(lastLines)-len(currentLines)+i] {
+					newStartIdx = i + 1
+				} else {
+					break
+				}
+			}
+
+			// Print only new lines
+			for i := newStartIdx; i < len(currentLines); i++ {
+				_, _ = fmt.Fprintln(out, currentLines[i])
+			}
+		} else {
+			// First poll - don't print anything (already shown by tail command above)
+		}
+
+		lastLines = currentLines
+		time.Sleep(pollInterval)
+	}
 }
