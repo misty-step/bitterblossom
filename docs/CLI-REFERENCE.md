@@ -118,6 +118,8 @@ bb dispatch bramble "Fix the bug" --execute --json
 | `--sprite-cli` | `$SPRITE_CLI` | Sprite CLI binary path |
 | `--composition` | `compositions/v1.yaml` | Composition YAML |
 | `--max-iterations` | `50` | Ralph loop iteration safety cap |
+| `--max-tokens` | `200000` | Ralph stuck-loop token safety cap (only with `--ralph`) |
+| `--max-time` | `30m` | Ralph stuck-loop runtime safety cap (only with `--ralph`) |
 | `--webhook-url` | `$SPRITE_WEBHOOK_URL` | Optional webhook URL |
 
 ### State Machine
