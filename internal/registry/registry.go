@@ -207,9 +207,10 @@ const (
 )
 
 type parseState struct {
-	section    registrySection
-	spriteName string
-	lineNo     int
+	section     registrySection
+	spriteName  string
+	lineNo      int
+	sourceLabel string
 }
 
 func parseTOMLRegistry(r io.Reader, reg *Registry) error {
