@@ -17,7 +17,7 @@ func TestStatusCmdFleetJSONDefault(t *testing.T) {
 	deps := statusDeps{
 		getwd:  func() (string, error) { return t.TempDir(), nil },
 		newCLI: func(string, string) sprite.SpriteCLI { return &sprite.MockSpriteCLI{} },
-		fleetOverview: func(context.Context, sprite.SpriteCLI, lifecycle.Config, string) (lifecycle.FleetStatus, error) {
+		fleetOverview: func(context.Context, sprite.SpriteCLI, lifecycle.Config, string, lifecycle.FleetOverviewOpts) (lifecycle.FleetStatus, error) {
 			return lifecycle.FleetStatus{
 				Sprites: []lifecycle.SpriteStatus{{Name: "bramble", Status: "running"}},
 			}, nil
@@ -30,8 +30,9 @@ func TestStatusCmdFleetJSONDefault(t *testing.T) {
 
 	cmd := newStatusCmdWithDeps(deps)
 	var out bytes.Buffer
+	var errOut bytes.Buffer
 	cmd.SetOut(&out)
-	cmd.SetErr(&out)
+	cmd.SetErr(&errOut)
 	cmd.SetArgs(nil)
 
 	if err := cmd.Execute(); err != nil {
@@ -47,6 +48,9 @@ func TestStatusCmdFleetJSONDefault(t *testing.T) {
 	if payload.Command != "status.fleet" {
 		t.Fatalf("command = %q, want status.fleet", payload.Command)
 	}
+	if !strings.Contains(errOut.String(), "status: fetching fleet overview") {
+		t.Fatalf("expected status progress output, got %q", errOut.String())
+	}
 }
 
 func TestStatusCmdSpriteText(t *testing.T) {
@@ -55,7 +59,7 @@ func TestStatusCmdSpriteText(t *testing.T) {
 	deps := statusDeps{
 		getwd:  func() (string, error) { return t.TempDir(), nil },
 		newCLI: func(string, string) sprite.SpriteCLI { return &sprite.MockSpriteCLI{} },
-		fleetOverview: func(context.Context, sprite.SpriteCLI, lifecycle.Config, string) (lifecycle.FleetStatus, error) {
+		fleetOverview: func(context.Context, sprite.SpriteCLI, lifecycle.Config, string, lifecycle.FleetOverviewOpts) (lifecycle.FleetStatus, error) {
 			t.Fatal("fleetOverview should not be called for sprite detail")
 			return lifecycle.FleetStatus{}, nil
 		},
@@ -71,8 +75,9 @@ func TestStatusCmdSpriteText(t *testing.T) {
 
 	cmd := newStatusCmdWithDeps(deps)
 	var out bytes.Buffer
+	var errOut bytes.Buffer
 	cmd.SetOut(&out)
-	cmd.SetErr(&out)
+	cmd.SetErr(&errOut)
 	cmd.SetArgs([]string{"--format", "text", "bramble"})
 
 	if err := cmd.Execute(); err != nil {
@@ -81,5 +86,8 @@ func TestStatusCmdSpriteText(t *testing.T) {
 	text := out.String()
 	if !strings.Contains(text, "=== Sprite: bramble ===") {
 		t.Fatalf("unexpected text output: %q", text)
+	}
+	if !strings.Contains(errOut.String(), "status: fetching detail for bramble") {
+		t.Fatalf("expected detail progress output, got %q", errOut.String())
 	}
 }

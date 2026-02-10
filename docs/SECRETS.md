@@ -50,3 +50,11 @@ trufflehog git file://. --since-commit $(git merge-base HEAD master) --only-veri
 ## Sprite Auth Token Flow
 
 Sprites receive their API key at provision/sync time. The key is never stored in git. `base/settings.json` contains placeholders rendered from `$OPENROUTER_API_KEY` (with `$ANTHROPIC_AUTH_TOKEN` accepted as legacy fallback) at deploy time. At teardown, exported archives redact auth tokens.
+
+## GitHub Actions (Cerberus)
+
+Cerberus PR review runs in GitHub Actions and needs `OPENROUTER_API_KEY` as a repo secret:
+
+```bash
+printf '%s' "$OPENROUTER_API_KEY" | gh secret set OPENROUTER_API_KEY --repo misty-step/bitterblossom
+```

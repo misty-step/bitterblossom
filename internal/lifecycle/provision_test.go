@@ -120,6 +120,73 @@ func TestProvisionSpriteAlreadyExistsSkipsCreate(t *testing.T) {
 	}
 }
 
+func TestProvisionReportsProgressStages(t *testing.T) {
+	t.Parallel()
+
+	fx := newFixture(t, "bramble")
+	stages := make([]ProvisionStage, 0, 16)
+	cli := &sprite.MockSpriteCLI{
+		ListFn: func(context.Context) ([]string, error) {
+			return []string{}, nil
+		},
+		CreateFn: func(context.Context, string, string) error {
+			return nil
+		},
+		ExecFn: func(_ context.Context, _ string, command string, _ []byte) (string, error) {
+			if strings.Contains(command, "git ls-remote") {
+				return "GIT_AUTH_OK\n", nil
+			}
+			return "", nil
+		},
+		UploadFileFn:       func(context.Context, string, string, string, string) error { return nil },
+		CheckpointCreateFn: func(context.Context, string, string) error { return nil },
+	}
+
+	_, err := Provision(context.Background(), cli, fx.cfg, ProvisionOpts{
+		Name:             "bramble",
+		CompositionLabel: "v1",
+		SettingsPath:     fx.settingsPath,
+		GitHubAuth: GitHubAuth{
+			User:  "sprite-user",
+			Email: "sprite@example.com",
+			Token: "sprite-token",
+		},
+		BootstrapScript: fx.rootDir + "/scripts/sprite-bootstrap.sh",
+		AgentScript:     fx.rootDir + "/scripts/sprite-agent.sh",
+		Progress: func(progress ProvisionProgress) {
+			stages = append(stages, progress.Stage)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Provision() error = %v", err)
+	}
+
+	expected := []ProvisionStage{
+		ProvisionStageValidate,
+		ProvisionStageCheckExists,
+		ProvisionStageCreate,
+		ProvisionStagePrepareWorkspace,
+		ProvisionStagePushConfig,
+		ProvisionStageUploadPersona,
+		ProvisionStageWriteMemory,
+		ProvisionStageConfigureGit,
+		ProvisionStageVerifyGit,
+		ProvisionStageUploadBootstrap,
+		ProvisionStageUploadAgent,
+		ProvisionStageRunBootstrap,
+		ProvisionStageCheckpoint,
+		ProvisionStageComplete,
+	}
+	if len(stages) < len(expected) {
+		t.Fatalf("expected at least %d progress stages, got %d (%v)", len(expected), len(stages), stages)
+	}
+	for i, stage := range expected {
+		if stages[i] != stage {
+			t.Fatalf("stage[%d] = %q, want %q (all=%v)", i, stages[i], stage, stages)
+		}
+	}
+}
+
 func TestProvisionInvalidSpriteName(t *testing.T) {
 	t.Parallel()
 

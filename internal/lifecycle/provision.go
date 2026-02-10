@@ -20,6 +20,33 @@ type ProvisionResult struct {
 	Created bool   `json:"created"` // false when sprite already existed
 }
 
+// ProvisionStage identifies a single provisioning step.
+type ProvisionStage string
+
+const (
+	ProvisionStageValidate         ProvisionStage = "validate"
+	ProvisionStageCheckExists      ProvisionStage = "check_exists"
+	ProvisionStageCreate           ProvisionStage = "create"
+	ProvisionStagePrepareWorkspace ProvisionStage = "prepare_workspace"
+	ProvisionStagePushConfig       ProvisionStage = "push_config"
+	ProvisionStageUploadPersona    ProvisionStage = "upload_persona"
+	ProvisionStageWriteMemory      ProvisionStage = "write_memory"
+	ProvisionStageConfigureGit     ProvisionStage = "configure_git"
+	ProvisionStageVerifyGit        ProvisionStage = "verify_git"
+	ProvisionStageUploadBootstrap  ProvisionStage = "upload_bootstrap"
+	ProvisionStageUploadAgent      ProvisionStage = "upload_agent"
+	ProvisionStageRunBootstrap     ProvisionStage = "run_bootstrap"
+	ProvisionStageCheckpoint       ProvisionStage = "checkpoint"
+	ProvisionStageComplete         ProvisionStage = "complete"
+)
+
+// ProvisionProgress reports incremental status for one sprite provision run.
+type ProvisionProgress struct {
+	Name    string         `json:"name"`
+	Stage   ProvisionStage `json:"stage"`
+	Message string         `json:"message"`
+}
+
 // ProvisionOpts configures provisioning for one sprite.
 type ProvisionOpts struct {
 	Name             string
@@ -28,6 +55,18 @@ type ProvisionOpts struct {
 	GitHubAuth       GitHubAuth
 	BootstrapScript  string
 	AgentScript      string
+	Progress         func(ProvisionProgress)
+}
+
+func emitProvisionProgress(name string, progressFn func(ProvisionProgress), stage ProvisionStage, message string) {
+	if progressFn == nil {
+		return
+	}
+	progressFn(ProvisionProgress{
+		Name:    name,
+		Stage:   stage,
+		Message: message,
+	})
 }
 
 // Provision creates or refreshes a sprite and pushes base/persona/bootstrap config.
@@ -37,6 +76,7 @@ func Provision(ctx context.Context, cli sprite.SpriteCLI, cfg Config, opts Provi
 	}
 
 	name := strings.TrimSpace(opts.Name)
+	emitProvisionProgress(name, opts.Progress, ProvisionStageValidate, "validating sprite definition")
 	if err := ValidateSpriteName(name); err != nil {
 		return ProvisionResult{}, err
 	}
@@ -45,6 +85,7 @@ func Provision(ctx context.Context, cli sprite.SpriteCLI, cfg Config, opts Provi
 		return ProvisionResult{}, fmt.Errorf("no sprite definition found at %s: %w", definition, err)
 	}
 
+	emitProvisionProgress(name, opts.Progress, ProvisionStageCheckExists, "checking if sprite already exists")
 	exists, err := spriteExists(ctx, cli, name)
 	if err != nil {
 		return ProvisionResult{}, fmt.Errorf("check sprite existence %q: %w", name, err)
@@ -52,20 +93,24 @@ func Provision(ctx context.Context, cli sprite.SpriteCLI, cfg Config, opts Provi
 
 	created := false
 	if !exists {
+		emitProvisionProgress(name, opts.Progress, ProvisionStageCreate, "creating sprite")
 		if err := cli.Create(ctx, name, cfg.Org); err != nil {
 			return ProvisionResult{}, err
 		}
 		created = true
 	}
 
+	emitProvisionProgress(name, opts.Progress, ProvisionStagePrepareWorkspace, "preparing workspace")
 	if _, err := cli.Exec(ctx, name, "mkdir -p "+shellQuote(cfg.Workspace), nil); err != nil {
 		return ProvisionResult{}, fmt.Errorf("setup workspace for %q: %w", name, err)
 	}
 
+	emitProvisionProgress(name, opts.Progress, ProvisionStagePushConfig, "uploading base config")
 	if err := PushConfig(ctx, cli, cfg, name, opts.SettingsPath); err != nil {
 		return ProvisionResult{}, err
 	}
 
+	emitProvisionProgress(name, opts.Progress, ProvisionStageUploadPersona, "uploading persona")
 	if err := cli.UploadFile(ctx, name, cfg.Org, definition, path.Join(cfg.Workspace, "PERSONA.md")); err != nil {
 		return ProvisionResult{}, err
 	}
@@ -87,6 +132,7 @@ func Provision(ctx context.Context, cli sprite.SpriteCLI, cfg Config, opts Provi
 		timestamp,
 		compositionLabel,
 	)
+	emitProvisionProgress(name, opts.Progress, ProvisionStageWriteMemory, "writing MEMORY.md")
 	if _, err := cli.Exec(ctx, name, "cat > "+shellQuote(path.Join(cfg.Workspace, "MEMORY.md")), []byte(memory)); err != nil {
 		return ProvisionResult{}, fmt.Errorf("write initial MEMORY.md for %q: %w", name, err)
 	}
@@ -105,6 +151,7 @@ func Provision(ctx context.Context, cli sprite.SpriteCLI, cfg Config, opts Provi
 		"printf '%s\\n' " + shellQuote(credentials) + " > " + shellQuote(path.Join(cfg.RemoteHome, ".git-credentials")),
 		"echo " + shellQuote("Git credentials configured for "+auth.User),
 	}, " && ")
+	emitProvisionProgress(name, opts.Progress, ProvisionStageConfigureGit, "configuring git credentials")
 	if _, err := cli.Exec(ctx, name, configureGitCommand, nil); err != nil {
 		return ProvisionResult{}, fmt.Errorf("configure git credentials for %q: %w", name, err)
 	}
@@ -118,6 +165,7 @@ func Provision(ctx context.Context, cli sprite.SpriteCLI, cfg Config, opts Provi
 		"git remote add origin " + shellQuote(gitAuthProbeRepository),
 		"git ls-remote origin HEAD >/dev/null 2>&1 && echo GIT_AUTH_OK || echo GIT_AUTH_FAIL",
 	}, " && ")
+	emitProvisionProgress(name, opts.Progress, ProvisionStageVerifyGit, "verifying git auth")
 	verifyOutput, err := cli.Exec(ctx, name, verifyGitAuthCommand, nil)
 	if err != nil {
 		return ProvisionResult{}, fmt.Errorf("verify git auth for %q: %w", name, err)
@@ -141,18 +189,23 @@ func Provision(ctx context.Context, cli sprite.SpriteCLI, cfg Config, opts Provi
 		return ProvisionResult{}, fmt.Errorf("missing agent script %q: %w", agentScript, err)
 	}
 
+	emitProvisionProgress(name, opts.Progress, ProvisionStageUploadBootstrap, "uploading bootstrap script")
 	if err := cli.UploadFile(ctx, name, cfg.Org, bootstrapScript, "/tmp/sprite-bootstrap.sh"); err != nil {
 		return ProvisionResult{}, err
 	}
+	emitProvisionProgress(name, opts.Progress, ProvisionStageUploadAgent, "uploading agent script")
 	if err := cli.UploadFile(ctx, name, cfg.Org, agentScript, "/tmp/sprite-agent.sh"); err != nil {
 		return ProvisionResult{}, err
 	}
+	emitProvisionProgress(name, opts.Progress, ProvisionStageRunBootstrap, "running bootstrap")
 	if _, err := cli.Exec(ctx, name, "bash /tmp/sprite-bootstrap.sh --agent-source /tmp/sprite-agent.sh", nil); err != nil {
 		return ProvisionResult{}, fmt.Errorf("run bootstrap for %q: %w", name, err)
 	}
 
 	// Preserve shell behavior: checkpoint failure is non-fatal.
+	emitProvisionProgress(name, opts.Progress, ProvisionStageCheckpoint, "creating checkpoint")
 	_ = cli.CheckpointCreate(ctx, name, cfg.Org)
 
+	emitProvisionProgress(name, opts.Progress, ProvisionStageComplete, "provision complete")
 	return ProvisionResult{Name: name, Created: created}, nil
 }

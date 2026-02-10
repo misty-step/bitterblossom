@@ -20,7 +20,7 @@ func TestTaskAssignmentValidate(t *testing.T) {
 func TestAgentKindValid(t *testing.T) {
 	t.Parallel()
 
-	if !AgentCodex.Valid() || !AgentKimi.Valid() || !AgentClaude.Valid() {
+	if !AgentCodex.Valid() || !AgentKimi.Valid() || !AgentClaude.Valid() || !AgentOpenCode.Valid() {
 		t.Fatalf("expected built-in agent kinds to be valid")
 	}
 	if AgentKind("unknown").Valid() {
@@ -55,6 +55,65 @@ func TestAgentConfigCommandAndArgs(t *testing.T) {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("missing %q in args %q", want, joined)
 		}
+	}
+}
+
+func TestAgentConfigCommandAndArgs_OpenCode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		cfg      AgentConfig
+		wantCmd  string
+		wantArgs []string
+	}{
+		{
+			name: "default model",
+			cfg: AgentConfig{
+				Kind: AgentOpenCode,
+				Assignment: TaskAssignment{
+					Prompt: "Fix tests",
+					Repo:   "cerberus",
+				},
+			},
+			wantCmd:  "opencode",
+			wantArgs: []string{"run", "-m", defaultOpenCodeModel, "--agent", "coder", "Fix tests"},
+		},
+		{
+			name: "explicit model",
+			cfg: AgentConfig{
+				Kind:  AgentOpenCode,
+				Model: "openrouter/anthropic/claude-3.5-sonnet",
+				Assignment: TaskAssignment{
+					Prompt: "Fix tests",
+					Repo:   "cerberus",
+				},
+			},
+			wantCmd:  "opencode",
+			wantArgs: []string{"run", "-m", "openrouter/anthropic/claude-3.5-sonnet", "--agent", "coder", "Fix tests"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cmd, args, err := tt.cfg.CommandAndArgs()
+			if err != nil {
+				t.Fatalf("command and args: %v", err)
+			}
+			if cmd != tt.wantCmd {
+				t.Fatalf("command = %q, want %q", cmd, tt.wantCmd)
+			}
+			if len(args) != len(tt.wantArgs) {
+				t.Fatalf("args len = %d, want %d (%v)", len(args), len(tt.wantArgs), args)
+			}
+			for i := range tt.wantArgs {
+				if args[i] != tt.wantArgs[i] {
+					t.Fatalf("args[%d] = %q, want %q (%v)", i, args[i], tt.wantArgs[i], args)
+				}
+			}
+		})
 	}
 }
 

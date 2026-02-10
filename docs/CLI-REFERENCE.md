@@ -212,7 +212,7 @@ bb agent start --agent codex --yolo --task-prompt "Refactor auth" --task-repo or
 |------|-----|---------|-------------|
 | `--sprite` | `BB_SPRITE` | hostname | Sprite name |
 | `--repo-dir` | `BB_REPO_DIR` | `.` | Repository directory |
-| `--agent` | `BB_AGENT` | `codex` | Agent kind: `codex`, `kimi-code`, `claude` |
+| `--agent` | `BB_AGENT` | `codex` | Agent kind: `codex`, `kimi-code`, `claude`, `opencode` |
 | `--agent-command` | `BB_AGENT_COMMAND` | | Explicit agent executable |
 | `--agent-flags` | `BB_AGENT_FLAGS` | | Comma-separated agent flags |
 | `--model` | `BB_AGENT_MODEL` | | Model selection |
@@ -355,6 +355,7 @@ bb status [sprite-name] [flags]
 ```bash
 bb status                           # fleet overview (JSON)
 bb status --format text             # human-readable fleet overview
+bb status --checkpoints             # include checkpoint listings (slower)
 bb status bramble                   # detailed single sprite
 bb status bramble --format text     # human-readable detail
 ```
@@ -367,6 +368,7 @@ bb status bramble --format text     # human-readable detail
 | `--org` | `$FLY_ORG` | Fly.io organization |
 | `--sprite-cli` | `$SPRITE_CLI` | Path to sprite CLI |
 | `--format` | `json` | Output format: `json` or `text` |
+| `--checkpoints` | `false` | Fetch checkpoint listings (slower for large fleets) |
 | `--timeout` | `2m` | Command timeout |
 
 ---
