@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/misty-step/bitterblossom/internal/watchdog/health"
 )
 
 const (
@@ -52,19 +54,21 @@ type ActionResult struct {
 
 // SpriteReport is one row in the watchdog report.
 type SpriteReport struct {
-	Sprite         string       `json:"sprite"`
-	State          State        `json:"state"`
-	Task           string       `json:"task,omitempty"`
-	StartedAt      string       `json:"started_at,omitempty"`
-	ElapsedMinutes int          `json:"elapsed_minutes,omitempty"`
-	Branch         string       `json:"branch,omitempty"`
-	CommitsLast2h  int          `json:"commits_last_2h"`
-	DirtyRepos     int          `json:"dirty_repos"`
-	AheadCommits   int          `json:"ahead_commits"`
-	AgentRunning   bool         `json:"agent_running"`
-	BlockedReason  string       `json:"blocked_reason,omitempty"`
-	Action         ActionResult `json:"action,omitempty"`
-	Error          string       `json:"error,omitempty"`
+	Sprite         string         `json:"sprite"`
+	State          State          `json:"state"`
+	Task           string         `json:"task,omitempty"`
+	StartedAt      string         `json:"started_at,omitempty"`
+	ElapsedMinutes int            `json:"elapsed_minutes,omitempty"`
+	Branch         string         `json:"branch,omitempty"`
+	CommitsLast2h  int            `json:"commits_last_2h"`
+	DirtyRepos     int            `json:"dirty_repos"`
+	AheadCommits   int            `json:"ahead_commits"`
+	AgentRunning   bool           `json:"agent_running"`
+	BlockedReason  string         `json:"blocked_reason,omitempty"`
+	HealthStatus   health.Status  `json:"health_status,omitempty"`
+	HealthReason   string         `json:"health_reason,omitempty"`
+	Action         ActionResult   `json:"action,omitempty"`
+	Error          string         `json:"error,omitempty"`
 }
 
 // Summary aggregates fleet-level counters.
@@ -204,6 +208,25 @@ func (s *Service) inspectSprite(ctx context.Context, sprite string, execute bool
 		CommitsLast2h: probe.CommitsLast2h,
 	}
 	state := evaluateState(input, s.staleAfter)
+
+	// Run health check
+	healthInput := health.Input{
+		PIDExists:     probe.AgentRunning,
+		ProcessCount:  probe.ClaudeCount,
+		HasTask:       input.HasTask,
+		ElapsedTime:   input.Elapsed,
+		CommitsLast2h: probe.CommitsLast2h,
+		HasComplete:   probe.HasComplete,
+		HasBlocked:    probe.HasBlocked,
+		DirtyRepos:    probe.DirtyRepos,
+		AheadCommits:  probe.AheadCommits,
+	}
+	healthCfg := health.Config{
+		StaleThreshold:      s.staleAfter,
+		MinActivityInterval: 30 * time.Minute,
+	}
+	healthCheck := health.Evaluate(healthInput, healthCfg)
+
 	actionType := decideAction(state, probe.HasPrompt)
 	action := ActionResult{Type: actionType}
 
@@ -236,9 +259,16 @@ func (s *Service) inspectSprite(ctx context.Context, sprite string, execute bool
 		AheadCommits:   probe.AheadCommits,
 		AgentRunning:   input.AgentRunning,
 		BlockedReason:  probe.BlockedSummary,
+		HealthStatus:   healthCheck.Status,
+		HealthReason:   healthCheck.Reason,
 		Action:         action,
 	}
-	s.logger.Info("watchdog sprite", "sprite", sprite, "state", row.State, "task", row.Task, "action", row.Action.Type)
+	s.logger.Info("watchdog sprite",
+		"sprite", sprite,
+		"state", row.State,
+		"health", row.HealthStatus,
+		"task", row.Task,
+		"action", row.Action.Type)
 	return row
 }
 
