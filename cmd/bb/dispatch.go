@@ -123,8 +123,8 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 
 				// Output validation results if not in JSON mode
 				if !opts.JSON && !validationResult.Valid {
-					fmt.Fprintln(cmd.ErrOrStderr(), "Issue validation failed:")
-					fmt.Fprintln(cmd.ErrOrStderr(), validationResult.FormatValidationOutput())
+					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Issue validation failed:")
+					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), validationResult.FormatValidationOutput())
 				}
 
 				if !validationResult.Valid {
@@ -135,9 +135,9 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 
 				// In non-strict mode with warnings, still proceed but log them
 				if len(validationResult.Warnings) > 0 && !opts.JSON {
-					fmt.Fprintln(cmd.ErrOrStderr(), "Issue validation warnings:")
+					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Issue validation warnings:")
 					for _, w := range validationResult.Warnings {
-						fmt.Fprintf(cmd.ErrOrStderr(), "  ⚠ %s\n", w)
+						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "  ⚠ %s\n", w)
 					}
 				}
 			}

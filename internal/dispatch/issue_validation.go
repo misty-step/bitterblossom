@@ -297,9 +297,7 @@ func ValidateIssueFromRequest(ctx context.Context, req Request, strict bool) (*V
 
 	// In strict mode, warnings become errors
 	if strict && len(result.Warnings) > 0 {
-		for _, w := range result.Warnings {
-			result.Errors = append(result.Errors, w)
-		}
+		result.Errors = append(result.Errors, result.Warnings...)
 		result.Warnings = nil
 		result.Valid = false
 	}
