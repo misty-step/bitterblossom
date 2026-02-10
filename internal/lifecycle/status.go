@@ -24,9 +24,11 @@ type FleetStatus struct {
 
 // SpriteStatus describes one live sprite from the Sprite API.
 type SpriteStatus struct {
-	Name   string `json:"name"`
-	Status string `json:"status"`
-	URL    string `json:"url,omitempty"`
+	Name            string `json:"name"`
+	Status          string `json:"status"`
+	URL             string `json:"url,omitempty"`
+	CurrentTaskID   string `json:"current_task_id,omitempty"`
+	CurrentTaskDesc string `json:"current_task_desc,omitempty"`
 }
 
 // CompositionEntry maps composition membership to provisioning state.
@@ -46,9 +48,13 @@ type SpriteDetailResult struct {
 
 type spriteAPIListResponse struct {
 	Sprites []struct {
-		Name   string `json:"name"`
-		Status string `json:"status"`
-		URL    string `json:"url"`
+		Name        string `json:"name"`
+		Status      string `json:"status"`
+		URL         string `json:"url"`
+		CurrentTask *struct {
+			ID          string `json:"id,omitempty"`
+			Description string `json:"description"`
+		} `json:"current_task,omitempty"`
 	} `json:"sprites"`
 }
 
@@ -189,11 +195,16 @@ func fetchLiveSprites(ctx context.Context, cli sprite.SpriteCLI, cfg Config) ([]
 		if strings.TrimSpace(item.Name) == "" || strings.TrimSpace(item.Status) == "" {
 			continue
 		}
-		result = append(result, SpriteStatus{
+		status := SpriteStatus{
 			Name:   item.Name,
 			Status: item.Status,
 			URL:    item.URL,
-		})
+		}
+		if item.CurrentTask != nil {
+			status.CurrentTaskID = strings.TrimSpace(item.CurrentTask.ID)
+			status.CurrentTaskDesc = strings.TrimSpace(item.CurrentTask.Description)
+		}
+		result = append(result, status)
 	}
 	sort.Slice(result, func(i, j int) bool {
 		return result[i].Name < result[j].Name

@@ -135,7 +135,15 @@ func writeFleetStatusText(out io.Writer, status lifecycle.FleetStatus, compositi
 		return err
 	}
 	for _, item := range status.Sprites {
-		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\n", item.Name, item.Status, item.URL); err != nil {
+		spriteName := item.Name
+		if item.CurrentTaskDesc != "" {
+			taskLabel := item.CurrentTaskDesc
+			if item.CurrentTaskID != "" {
+				taskLabel = fmt.Sprintf("%s: %s", item.CurrentTaskID, item.CurrentTaskDesc)
+			}
+			spriteName = fmt.Sprintf("%s (%s)", item.Name, taskLabel)
+		}
+		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\n", spriteName, item.Status, item.URL); err != nil {
 			return err
 		}
 	}
@@ -169,7 +177,16 @@ func writeFleetStatusText(out io.Writer, status lifecycle.FleetStatus, compositi
 			return err
 		}
 		for _, item := range status.Orphans {
-			if _, err := fmt.Fprintf(out, "  ? %s (%s)\n", item.Name, item.Status); err != nil {
+			display := item.Name
+			if item.CurrentTaskDesc != "" {
+				taskLabel := item.CurrentTaskDesc
+				if item.CurrentTaskID != "" {
+					taskLabel = fmt.Sprintf("%s: %s", item.CurrentTaskID, item.CurrentTaskDesc)
+				}
+				display = fmt.Sprintf("%s (%s)", item.Name, taskLabel)
+			}
+			statusLabel := item.Status
+			if _, err := fmt.Fprintf(out, "  ? %s (%s)\n", display, statusLabel); err != nil {
 				return err
 			}
 		}
