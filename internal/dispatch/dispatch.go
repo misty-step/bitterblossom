@@ -650,6 +650,12 @@ func buildStartRalphScript(workspace, sprite string, maxIterations int, webhookU
 		"case \" $REQUIRED_CLAUDE_FLAGS \" in *\" --dangerously-skip-permissions \"*) ;; *) echo \"missing --dangerously-skip-permissions\" >&2; exit 1 ;; esac",
 		"case \" $REQUIRED_CLAUDE_FLAGS \" in *\" --verbose \"*) ;; *) echo \"missing --verbose\" >&2; exit 1 ;; esac",
 		"case \" $REQUIRED_CLAUDE_FLAGS \" in *\" --output-format stream-json \"*) ;; *) echo \"missing --output-format stream-json\" >&2; exit 1 ;; esac",
+		// If sprite-agent is a script, validate it contains the required flags.
+		// If it's a compiled binary, we can't introspect; rely on runtime checks in the agent itself.
+		"if [ \"$(head -c 2 \"$AGENT_BIN\" 2>/dev/null || true)\" = \"#!\" ]; then",
+		"  if ! grep -q -- '--dangerously-skip-permissions' \"$AGENT_BIN\" 2>/dev/null; then echo \"sprite-agent missing --dangerously-skip-permissions\" >&2; exit 1; fi",
+		"  if ! grep -q -- '--output-format stream-json' \"$AGENT_BIN\" 2>/dev/null; then echo \"sprite-agent missing --output-format stream-json\" >&2; exit 1; fi",
+		"fi",
 		"cd \"$WORKSPACE_DIR\"",
 		"printf 'bb-%s-%s\\n' \"$(date -u +%Y%m%d-%H%M%S)\" " + shellQuote(sprite) + " > \"$WORKSPACE_DIR/.current-task-id\"",
 	}
