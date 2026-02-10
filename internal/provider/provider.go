@@ -124,6 +124,10 @@ func (r ResolvedConfig) EnvironmentVars(authToken string) map[string]string {
 		env["ANTHROPIC_BASE_URL"] = "https://api.moonshot.ai/anthropic"
 		env["ANTHROPIC_MODEL"] = r.Model
 		env["ANTHROPIC_SMALL_FAST_MODEL"] = r.Model
+		env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = r.Model
+		env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = r.Model
+		env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = r.Model
+		env["CLAUDE_CODE_SUBAGENT_MODEL"] = r.Model
 		if authToken != "" {
 			env["ANTHROPIC_AUTH_TOKEN"] = authToken
 		}
@@ -133,19 +137,29 @@ func (r ResolvedConfig) EnvironmentVars(authToken string) map[string]string {
 		env["ANTHROPIC_BASE_URL"] = "https://api.moonshot.ai/anthropic"
 		env["ANTHROPIC_MODEL"] = r.Model
 		env["ANTHROPIC_SMALL_FAST_MODEL"] = r.Model
+		env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = r.Model
+		env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = r.Model
+		env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = r.Model
+		env["CLAUDE_CODE_SUBAGENT_MODEL"] = r.Model
 		if authToken != "" {
 			env["ANTHROPIC_AUTH_TOKEN"] = authToken
 		}
 
 	case ProviderOpenRouterKimi:
 		// Kimi via OpenRouter
-		env["ANTHROPIC_BASE_URL"] = "https://openrouter.ai/api/v1"
+		// Claude Code appends /v1/messages?beta=true internally.
+		// Base URL must not include /v1 or requests become /v1/v1/... and 404.
+		env["ANTHROPIC_BASE_URL"] = "https://openrouter.ai/api"
 		model := r.Model
 		if !strings.Contains(model, "/") {
 			model = "moonshotai/" + model
 		}
 		env["ANTHROPIC_MODEL"] = model
 		env["ANTHROPIC_SMALL_FAST_MODEL"] = model
+		env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = model
+		env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = model
+		env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = model
+		env["CLAUDE_CODE_SUBAGENT_MODEL"] = model
 		// OpenRouter uses OPENROUTER_API_KEY, but we can also use ANTHROPIC_AUTH_TOKEN
 		// Claude Code will use ANTHROPIC_AUTH_TOKEN if set
 		if authToken != "" {
@@ -157,7 +171,9 @@ func (r ResolvedConfig) EnvironmentVars(authToken string) map[string]string {
 
 	case ProviderOpenRouterClaude:
 		// Claude via OpenRouter
-		env["ANTHROPIC_BASE_URL"] = "https://openrouter.ai/api/v1"
+		// Claude Code appends /v1/messages?beta=true internally.
+		// Base URL must not include /v1 or requests become /v1/v1/... and 404.
+		env["ANTHROPIC_BASE_URL"] = "https://openrouter.ai/api"
 		// OpenRouter model format: provider/model (e.g., "anthropic/claude-opus-4")
 		model := r.Model
 		if !strings.Contains(model, "/") {
@@ -166,6 +182,10 @@ func (r ResolvedConfig) EnvironmentVars(authToken string) map[string]string {
 		}
 		env["ANTHROPIC_MODEL"] = model
 		env["ANTHROPIC_SMALL_FAST_MODEL"] = model
+		env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = model
+		env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = model
+		env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = model
+		env["CLAUDE_CODE_SUBAGENT_MODEL"] = model
 		if authToken != "" {
 			env["ANTHROPIC_AUTH_TOKEN"] = authToken
 			env["OPENROUTER_API_KEY"] = authToken

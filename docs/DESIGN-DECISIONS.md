@@ -119,7 +119,7 @@ Kaylee can review these branches and merge good changes back to main/base.
 All sprites use OpenRouter Kimi K2.5 as the canonical runtime profile:
 ```json
 {
-  "ANTHROPIC_BASE_URL": "https://openrouter.ai/api/v1",
+  "ANTHROPIC_BASE_URL": "https://openrouter.ai/api",
   "ANTHROPIC_MODEL": "moonshotai/kimi-k2.5",
   "ANTHROPIC_AUTH_TOKEN": "<openrouter-key>",
   "OPENROUTER_API_KEY": "<openrouter-key>",
@@ -142,7 +142,7 @@ This can be handled by overriding env vars per-sprite in the composition YAML, t
 
 ### Core Pattern
 ```bash
-while :; do cat PROMPT.md | claude -p --permission-mode bypassPermissions ; done
+while :; do cat PROMPT.md | claude -p --permission-mode bypassPermissions --verbose --output-format stream-json ; done
 ```
 
 ### Enhancements for Bitterblossom

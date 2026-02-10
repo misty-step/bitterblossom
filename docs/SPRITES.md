@@ -168,7 +168,7 @@ Canonical runtime uses OpenRouter Kimi K2.5. Set these environment variables:
 ```bash
 # On the sprite, configure the environment
 sprite exec -s my-sprite -- bash -c 'cat >> ~/.bashrc << EOF
-export ANTHROPIC_BASE_URL=https://openrouter.ai/api/v1
+export ANTHROPIC_BASE_URL=https://openrouter.ai/api
 export OPENROUTER_API_KEY=your-openrouter-api-key
 export ANTHROPIC_AUTH_TOKEN=$OPENROUTER_API_KEY
 export CLAUDE_CODE_OPENROUTER_COMPAT=1
@@ -190,7 +190,7 @@ bb dispatch my-sprite "Refactor authentication" \
 sprite console -s my-sprite
 
 # Then on the sprite:
-export ANTHROPIC_BASE_URL=https://openrouter.ai/api/v1
+export ANTHROPIC_BASE_URL=https://openrouter.ai/api
 export OPENROUTER_API_KEY=your-openrouter-api-key
 export ANTHROPIC_AUTH_TOKEN="$OPENROUTER_API_KEY"
 export CLAUDE_CODE_OPENROUTER_COMPAT=1
@@ -331,7 +331,7 @@ sprite exec -s bb-dev-01 -- git config --global user.name "Bitterblossom"
 
 # Set up Kimi environment
 sprite exec -s bb-dev-01 -- bash -c 'cat >> ~/.bashrc << EOF
-export ANTHROPIC_BASE_URL=https://openrouter.ai/api/v1
+export ANTHROPIC_BASE_URL=https://openrouter.ai/api
 export OPENROUTER_API_KEY='"$OPENROUTER_API_KEY"'
 export ANTHROPIC_AUTH_TOKEN=$OPENROUTER_API_KEY
 export CLAUDE_CODE_OPENROUTER_COMPAT=1

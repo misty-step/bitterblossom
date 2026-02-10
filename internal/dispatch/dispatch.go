@@ -538,7 +538,7 @@ func buildOneShotScript(workspace, promptPath string) string {
 	return strings.Join([]string{
 		"set -euo pipefail",
 		"cd " + shellQuote(workspace),
-		"cat " + shellQuote(promptPath) + " | claude -p --permission-mode bypassPermissions",
+		"cat " + shellQuote(promptPath) + " | claude -p --permission-mode bypassPermissions --verbose --output-format stream-json",
 		"rm -f " + shellQuote(promptPath),
 	}, "\n")
 }

@@ -119,7 +119,7 @@ for sprite in $SPRITES; do
     # Redispatch using existing PROMPT.md
     $SPRITE_CLI exec -s "$sprite" -- bash -c \
       "cd /home/sprite/workspace/${REPO_DIR} 2>/dev/null || cd /home/sprite/workspace; \
-       nohup bash -c 'cat /home/sprite/workspace/PROMPT.md | claude -p --permission-mode bypassPermissions' \
+       nohup bash -c 'cat /home/sprite/workspace/PROMPT.md | claude -p --permission-mode bypassPermissions --verbose --output-format stream-json' \
        > /home/sprite/workspace/watchdog-recovery-\$(date +%s).log 2>&1 &" 2>/dev/null || true
     
     RECOVERED=$((RECOVERED + 1))
