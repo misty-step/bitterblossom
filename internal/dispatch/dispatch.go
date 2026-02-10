@@ -46,12 +46,13 @@ type RemoteClient interface {
 
 // Request describes a dispatch operation.
 type Request struct {
-	Sprite     string
-	Prompt     string
-	Repo       string
-	Ralph      bool
-	Execute    bool
-	WebhookURL string
+	Sprite               string
+	Prompt               string
+	Repo                 string
+	Ralph                bool
+	Execute              bool
+	WebhookURL           string
+	AllowAnthropicDirect bool
 }
 
 // PlanStep is one dry-run/execute step in the dispatch lifecycle.
@@ -65,6 +66,7 @@ type StepKind string
 
 const (
 	StepProvision    StepKind = "provision"
+	StepValidateEnv  StepKind = "validate_env"
 	StepSetupRepo    StepKind = "setup_repo"
 	StepUploadPrompt StepKind = "upload_prompt"
 	StepWriteStatus  StepKind = "write_status"
@@ -234,6 +236,23 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 		return Result{}, err
 	}
 
+	if !prepared.AllowAnthropicDirect {
+		s.logger.Info("dispatch validate env", "sprite", prepared.Sprite)
+		keyOutput, err := s.remote.Exec(ctx, prepared.Sprite, "printenv ANTHROPIC_API_KEY 2>/dev/null || true", nil)
+		if err != nil {
+			result.State = StateFailed
+			return result, fmt.Errorf("dispatch: check sprite env: %w", err)
+		}
+		env := map[string]string{}
+		if key := strings.TrimSpace(keyOutput); key != "" {
+			env["ANTHROPIC_API_KEY"] = key
+		}
+		if err := ValidateNoDirectAnthropic(env, false); err != nil {
+			result.State = StateFailed
+			return result, err
+		}
+	}
+
 	if prepared.Repo.CloneURL != "" {
 		s.logger.Info("dispatch setup repo", "sprite", prepared.Sprite, "repo", prepared.Repo.CloneURL)
 		if _, err := s.remote.Exec(ctx, prepared.Sprite, buildSetupRepoScript(s.workspace, prepared.Repo.CloneURL, prepared.Repo.RepoDir), nil); err != nil {
@@ -332,6 +351,12 @@ func (s *Service) buildPlan(req preparedRequest, provisionNeeded bool) Plan {
 			Description: fmt.Sprintf("create Fly machine for sprite %q", req.Sprite),
 		})
 	}
+	if !req.AllowAnthropicDirect {
+		steps = append(steps, PlanStep{
+			Kind:        StepValidateEnv,
+			Description: "verify ANTHROPIC_API_KEY is not set to a direct key",
+		})
+	}
 	if req.Repo.CloneURL != "" {
 		steps = append(steps, PlanStep{
 			Kind:        StepSetupRepo,
@@ -371,15 +396,16 @@ func (s *Service) buildPlan(req preparedRequest, provisionNeeded bool) Plan {
 
 type preparedRequest struct {
 	Request
-	Sprite            string
-	Repo              repoTarget
-	Prompt            string
-	PromptPath        string
-	StartCommand      string
-	StartedAt         time.Time
-	Mode              string
-	TaskLabel         string
-	ProvisionMetadata map[string]string
+	Sprite               string
+	Repo                 repoTarget
+	Prompt               string
+	PromptPath           string
+	StartCommand         string
+	StartedAt            time.Time
+	Mode                 string
+	TaskLabel            string
+	ProvisionMetadata    map[string]string
+	AllowAnthropicDirect bool
 }
 
 type repoTarget struct {
@@ -437,16 +463,17 @@ func (s *Service) prepare(req Request) (preparedRequest, error) {
 	}
 
 	return preparedRequest{
-		Request:           req,
-		Sprite:            sprite,
-		Repo:              repo,
-		Prompt:            prompt,
-		PromptPath:        promptPath,
-		StartCommand:      startCommand,
-		StartedAt:         startedAt,
-		Mode:              mode,
-		TaskLabel:         taskLabel,
-		ProvisionMetadata: metadata,
+		Request:              req,
+		Sprite:               sprite,
+		Repo:                 repo,
+		Prompt:               prompt,
+		PromptPath:           promptPath,
+		StartCommand:         startCommand,
+		StartedAt:            startedAt,
+		Mode:                 mode,
+		TaskLabel:            taskLabel,
+		ProvisionMetadata:    metadata,
+		AllowAnthropicDirect: req.AllowAnthropicDirect,
 	}, nil
 }
 

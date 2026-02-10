@@ -14,20 +14,21 @@ import (
 )
 
 type dispatchOptions struct {
-	Repo            string
-	PromptFile      string
-	Ralph           bool
-	Execute         bool
-	DryRun          bool
-	JSON            bool
-	App             string
-	Token           string
-	APIURL          string
-	Org             string
-	SpriteCLI       string
-	CompositionPath string
-	MaxIterations   int
-	WebhookURL      string
+	Repo                 string
+	PromptFile           string
+	Ralph                bool
+	Execute              bool
+	DryRun               bool
+	JSON                 bool
+	App                  string
+	Token                string
+	APIURL               string
+	Org                  string
+	SpriteCLI            string
+	CompositionPath      string
+	MaxIterations        int
+	WebhookURL           string
+	AllowAnthropicDirect bool
 }
 
 type dispatchDeps struct {
@@ -119,12 +120,13 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 			}
 
 			result, err := service.Run(contextOrBackground(cmd.Context()), dispatchsvc.Request{
-				Sprite:     args[0],
-				Prompt:     prompt,
-				Repo:       opts.Repo,
-				Ralph:      opts.Ralph,
-				Execute:    opts.Execute,
-				WebhookURL: opts.WebhookURL,
+				Sprite:               args[0],
+				Prompt:               prompt,
+				Repo:                 opts.Repo,
+				Ralph:                opts.Ralph,
+				Execute:              opts.Execute,
+				WebhookURL:           opts.WebhookURL,
+				AllowAnthropicDirect: opts.AllowAnthropicDirect,
 			})
 			if err != nil {
 				return err
@@ -148,6 +150,7 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 	command.Flags().StringVar(&opts.CompositionPath, "composition", opts.CompositionPath, "Composition YAML used for provisioning metadata")
 	command.Flags().IntVar(&opts.MaxIterations, "max-iterations", opts.MaxIterations, "Ralph loop iteration safety cap")
 	command.Flags().StringVar(&opts.WebhookURL, "webhook-url", opts.WebhookURL, "Optional sprite-agent webhook URL")
+	command.Flags().BoolVar(&opts.AllowAnthropicDirect, "allow-anthropic-direct", false, "Allow dispatch even if sprite has a real ANTHROPIC_API_KEY")
 
 	return command
 }
