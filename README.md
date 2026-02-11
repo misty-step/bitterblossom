@@ -37,9 +37,10 @@ bitterblossom/
 1. **Provision:** `bb provision bramble` — creates a sprite, uploads base config + persona, configures Claude Code
 2. **Dispatch:** `bb dispatch bramble "Implement the auth middleware" --execute` — sends work to a sprite
 3. **Monitor:** `bb watchdog` — check fleet health, auto-recover dead sprites
-4. **Observe:** After tasks complete, log patterns in `observations/OBSERVATIONS.md`
-5. **Iterate:** Edit composition YAML, `bb compose apply --execute`, observe again
-6. **Experiment:** Try different compositions, compare observations, evolve
+4. **Fleet:** `bb fleet` — view registered sprites and reconcile fleet state
+5. **Observe:** After tasks complete, log patterns in `observations/OBSERVATIONS.md`
+6. **Iterate:** Edit composition YAML, `bb compose apply --execute`, observe again
+7. **Experiment:** Try different compositions, compare observations, evolve
 
 ## Quick Start
 
@@ -121,6 +122,57 @@ sprite destroy <name>         # Destroy a sprite
 | **Checkpoints** | Point-in-time snapshots and restore |
 | **Networking** | TCP proxy tunneling, DNS-based network policies |
 | **Exec** | WebSocket-based command execution |
+
+## Fleet Management: bb fleet
+
+The `bb fleet` command provides visibility into your registered sprites and supports reconciliation with Fly.io.
+
+### List Fleet Status
+
+```bash
+bb fleet                          # Show all registered sprites with status
+bb fleet --format json            # Machine-readable output
+```
+
+Shows:
+- All sprites from the registry (~/.config/bb/registry.toml)
+- Current status (running, not found, orphaned)
+- Machine IDs and creation time
+- Orphaned sprites (exist in Fly.io but not registered)
+
+### Sync Fleet State
+
+```bash
+bb fleet --sync                   # Create missing sprites from registry
+bb fleet --sync --dry-run         # Preview what would be created
+```
+
+Creates sprites that are registered but don't exist in Fly.io. Uses the standard provisioning flow (base config + persona + bootstrap).
+
+### Prune Orphaned Sprites
+
+```bash
+bb fleet --sync --prune           # Remove sprites not in registry
+bb fleet --sync --prune --dry-run # Preview what would be destroyed
+```
+
+Destroys sprites that exist in Fly.io but aren't in the registry. **Requires confirmation** unless using `--dry-run`. Archives observations before destruction.
+
+### Examples
+
+```bash
+# Check fleet health
+bb fleet
+
+# Reconcile and create missing sprites
+bb fleet --sync
+
+# Full reconciliation with pruning (interactive)
+bb fleet --sync --prune
+
+# Preview destructive operations
+bb fleet --sync --prune --dry-run
+```
 
 ## Experimentation
 

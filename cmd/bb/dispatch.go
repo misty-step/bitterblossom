@@ -100,7 +100,7 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 		Wait:            false,
 		Timeout:         30 * time.Minute,
 		App:             strings.TrimSpace(os.Getenv("FLY_APP")),
-		Token:           defaultFlyToken(),
+		Token:           "", // Token is resolved at runtime from env vars to avoid exposing in help
 		APIURL:          fly.DefaultBaseURL,
 		Org:             strings.TrimSpace(os.Getenv("FLY_ORG")),
 		SpriteCLI:       strings.TrimSpace(os.Getenv("SPRITE_CLI")),
@@ -138,6 +138,9 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 			if err != nil {
 				return err
 			}
+
+			// Resolve token from flag or environment
+			opts.Token = resolveFlyToken(opts.Token)
 
 			if strings.TrimSpace(opts.App) == "" {
 				return errors.New("Error: FLY_APP environment variable is required. Set it to your Fly.io app name (e.g., export FLY_APP=sprites-main)")
@@ -280,7 +283,7 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 	command.Flags().BoolVar(&opts.Wait, "wait", false, "Wait for task completion and stream progress")
 	command.Flags().DurationVar(&opts.Timeout, "timeout", opts.Timeout, "Timeout for --wait (default: 30m)")
 	command.Flags().StringVar(&opts.App, "app", opts.App, "Sprites app name")
-	command.Flags().StringVar(&opts.Token, "token", opts.Token, "API token (or FLY_API_TOKEN/FLY_TOKEN)")
+	command.Flags().StringVar(&opts.Token, "token", opts.Token, "API token (or set FLY_API_TOKEN/FLY_TOKEN env var)")
 	command.Flags().StringVar(&opts.APIURL, "api-url", opts.APIURL, "Sprites API base URL")
 	command.Flags().StringVar(&opts.Org, "org", opts.Org, "Sprite org passed to sprite CLI")
 	command.Flags().StringVar(&opts.SpriteCLI, "sprite-cli", opts.SpriteCLI, "Sprite CLI binary path")

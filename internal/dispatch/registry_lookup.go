@@ -1,7 +1,9 @@
 package dispatch
 
 import (
+	"errors"
 	"fmt"
+	"os"
 
 	"github.com/misty-step/bitterblossom/internal/registry"
 )
@@ -15,11 +17,29 @@ func (e *ErrSpriteNotInRegistry) Error() string {
 	return fmt.Sprintf("sprite %q not found in registry — run 'bb init' to set up your fleet", e.Name)
 }
 
+// ErrRegistryNotFound indicates the registry file does not exist.
+type ErrRegistryNotFound struct {
+	Path string
+}
+
+func (e *ErrRegistryNotFound) Error() string {
+	return fmt.Sprintf("registry file not found at %q — run 'bb init' to create it", e.Path)
+}
+
 // ResolveSprite looks up a sprite name in the registry and returns its Fly.io machine ID.
 // If registryPath is empty, the default path (~/.config/bb/registry.toml) is used.
+// Returns ErrRegistryNotFound if the registry file does not exist.
 func ResolveSprite(name string, registryPath string) (string, error) {
 	if registryPath == "" {
 		registryPath = registry.DefaultPath()
+	}
+
+	// Check if registry file exists before loading
+	if _, err := os.Stat(registryPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", &ErrRegistryNotFound{Path: registryPath}
+		}
+		return "", fmt.Errorf("check registry file: %w", err)
 	}
 
 	reg, err := registry.Load(registryPath)

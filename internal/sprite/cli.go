@@ -145,8 +145,8 @@ func (c CLI) Exec(ctx context.Context, sprite, remoteCommand string, stdin []byt
 func (c CLI) ExecWithEnv(ctx context.Context, sprite, remoteCommand string, stdin []byte, env map[string]string) (string, error) {
 	args := []string{"exec", "-s", sprite}
 
-	// Add environment variables using -e flag
-	// sprite CLI supports: -e KEY=VALUE (can be specified multiple times)
+	// Add environment variables using -env flag
+	// sprite CLI supports: -env KEY=VALUE (can be specified multiple times)
 	if len(env) > 0 {
 		keys := make([]string, 0, len(env))
 		for k := range env {
@@ -154,7 +154,7 @@ func (c CLI) ExecWithEnv(ctx context.Context, sprite, remoteCommand string, stdi
 		}
 		// Sort for deterministic ordering
 		for _, k := range keys {
-			args = append(args, "-e", k+"="+env[k])
+			args = append(args, "-env", k+"="+env[k])
 		}
 	}
 
@@ -204,12 +204,28 @@ func (c CLI) CheckpointList(ctx context.Context, name, org string) (string, erro
 }
 
 // UploadFile uploads one local file to a sprite path.
+// Handles exit code 255 gracefully - the file may have uploaded successfully
+// even if the post-upload command returns 255 (SSH connection issue).
 func (c CLI) UploadFile(ctx context.Context, name, org, localPath, remotePath string) error {
 	args := withOrgArgs(
 		[]string{"exec", "-s", name, "-file", localPath + ":" + remotePath, "--", "echo", "uploaded"},
 		c.resolvedOrg(org),
 	)
 	if _, err := c.run(ctx, args, nil); err != nil {
+		// Check if this is exit code 255 (SSH connection closed), which can
+		// occur after successful file upload due to connection timing.
+		// Verify the file exists before treating it as a failure.
+		if exitErr, ok := err.(interface{ ExitCode() int }); ok && exitErr.ExitCode() == 255 {
+			// Verify file was uploaded by checking its existence
+			checkArgs := withOrgArgs(
+				[]string{"exec", "-s", name, "--", "test", "-f", remotePath},
+				c.resolvedOrg(org),
+			)
+			if _, checkErr := c.run(ctx, checkArgs, nil); checkErr == nil {
+				// File exists, upload succeeded despite exit 255
+				return nil
+			}
+		}
 		return fmt.Errorf("upload %q to sprite %q:%q: %w", localPath, name, remotePath, err)
 	}
 	return nil
