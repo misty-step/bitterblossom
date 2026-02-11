@@ -275,7 +275,7 @@ func TestSpriteAgentExitTrapKillsClaude(t *testing.T) {
 	checkCmd := exec.Command("kill", "-0", claudePID)
 	if checkCmd.Run() == nil {
 		// Process still alive — cleanup failed.
-		exec.Command("kill", "-9", claudePID).Run()
+		_ = exec.Command("kill", "-9", claudePID).Run()
 		t.Fatal("Claude process survived ralph death — EXIT trap failed to kill it")
 	}
 
