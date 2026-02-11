@@ -113,14 +113,59 @@ func TestDestroyArgs(t *testing.T) {
 func TestUploadFileArgs(t *testing.T) {
 	t.Parallel()
 
-	got := uploadFileArgs("thorn", "sprites/thorn.md", "/home/sprite/workspace/PERSONA.md")
-	want := []string{
-		"exec", "-s", "thorn",
-		"-file", "sprites/thorn.md:/home/sprite/workspace/PERSONA.md",
-		"--", "true",
+	cases := []struct {
+		name       string
+		sprite     string
+		localPath  string
+		remotePath string
+		want       []string
+		wantErr    bool
+	}{
+		{
+			name:       "basic",
+			sprite:     "thorn",
+			localPath:  "sprites/thorn.md",
+			remotePath: "/home/sprite/workspace/PERSONA.md",
+			want: []string{
+				"exec", "-s", "thorn",
+				"-file", "sprites/thorn.md:/home/sprite/workspace/PERSONA.md",
+				"--", "true",
+			},
+		},
+		{
+			name:       "colon in local path",
+			sprite:     "thorn",
+			localPath:  "C:\\Users\\file.md",
+			remotePath: "/home/sprite/workspace/PERSONA.md",
+			wantErr:    true,
+		},
+		{
+			name:       "colon in remote path",
+			sprite:     "thorn",
+			localPath:  "sprites/thorn.md",
+			remotePath: "/home/sprite/workspace/file:v2.md",
+			wantErr:    true,
+		},
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("uploadFileArgs() = %v, want %v", got, want)
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := uploadFileArgs(tc.sprite, tc.localPath, tc.remotePath)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("uploadFileArgs() expected error, got %v", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("uploadFileArgs() unexpected error: %v", err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("uploadFileArgs() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
