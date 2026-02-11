@@ -728,8 +728,14 @@ func buildSetupRepoScript(workspace, cloneURL, repoDir string) string {
 		"cd " + shellQuote(workspace),
 		"if [ -d " + shellQuote(repoDir) + " ]; then",
 		"  cd " + shellQuote(repoDir),
+		// Reset to clean state: discard changes, checkout default branch, pull latest.
+		// This prevents stale feature branches from polluting new dispatches.
+		"  git checkout -- . 2>/dev/null || true",
+		"  git clean -fd 2>/dev/null || true",
+		"  DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||' || echo master)",
+		"  git checkout \"$DEFAULT_BRANCH\" 2>/dev/null || git checkout master 2>/dev/null || git checkout main 2>/dev/null || true",
 		"  git fetch origin >/dev/null 2>&1 || true",
-		"  git pull --ff-only >/dev/null 2>&1 || true",
+		"  git reset --hard \"origin/$DEFAULT_BRANCH\" 2>/dev/null || true",
 		"else",
 		"  gh repo clone " + shellQuote(cloneURL) + " " + shellQuote(repoDir) + " >/dev/null 2>&1 || git clone " + shellQuote(cloneURL) + " " + shellQuote(repoDir) + " >/dev/null 2>&1",
 		"fi",

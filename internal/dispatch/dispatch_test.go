@@ -700,3 +700,36 @@ func TestRunExecuteWithoutOpenRouterKey_SkipsProxy(t *testing.T) {
 		t.Error("expected plan to NOT include StepEnsureProxy when no OPENROUTER_API_KEY")
 	}
 }
+
+func TestBuildSetupRepoScriptResetsGitState(t *testing.T) {
+	t.Parallel()
+
+	script := buildSetupRepoScript("/workspace", "https://github.com/org/repo.git", "repo")
+
+	// Must reset working tree before fetching
+	required := []string{
+		"git checkout -- .",
+		"git clean -fd",
+		"DEFAULT_BRANCH=",
+		"git fetch origin",
+		"git reset --hard",
+	}
+	for _, needle := range required {
+		if !strings.Contains(script, needle) {
+			t.Errorf("script missing %q", needle)
+		}
+	}
+}
+
+func TestBuildSetupRepoScriptFreshClone(t *testing.T) {
+	t.Parallel()
+
+	script := buildSetupRepoScript("/workspace", "https://github.com/org/repo.git", "repo")
+
+	if !strings.Contains(script, "gh repo clone") {
+		t.Error("script missing gh repo clone for fresh clone path")
+	}
+	if !strings.Contains(script, "git clone") {
+		t.Error("script missing git clone fallback")
+	}
+}
