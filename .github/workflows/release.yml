@@ -36,4 +36,4 @@ jobs:
         uses: misty-step/landfall@v1
         with:
           github-token: ${{ secrets.GH_RELEASE_TOKEN }}
-          llm-api-key: ${{ secrets.MOONSHOT_API_KEY }}
+          llm-api-key: ${{ secrets.OPENROUTER_API_KEY }}
