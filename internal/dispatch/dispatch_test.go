@@ -464,7 +464,7 @@ assigned_at = "2026-02-10T00:01:00Z"
 		t.Fatalf("NewService() error = %v", err)
 	}
 
-	if err := service.registerSprite("fern", "m-new"); err != nil {
+	if err := service.registerSprite(context.Background(), "fern", "m-new"); err != nil {
 		t.Fatalf("registerSprite() error = %v", err)
 	}
 

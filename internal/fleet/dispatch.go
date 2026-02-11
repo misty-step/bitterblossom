@@ -254,7 +254,7 @@ func (f *Fleet) selectAndMaybeReserve(ctx context.Context, req DispatchRequest, 
 			}, nil
 		}
 
-		assignment, reserveErr := cfg.reserve(name, req)
+		assignment, reserveErr := cfg.reserve(ctx, name, req)
 		if reserveErr == nil {
 			return assignment, nil
 		}
@@ -279,9 +279,9 @@ func (f *Fleet) selectAndMaybeReserve(ctx context.Context, req DispatchRequest, 
 	return nil, &FleetBusyError{Sprites: busy}
 }
 
-func (cfg *dispatchConfig) reserve(sprite string, req DispatchRequest) (*Assignment, error) {
+func (cfg *dispatchConfig) reserve(ctx context.Context, sprite string, req DispatchRequest) (*Assignment, error) {
 	var out Assignment
-	err := registry.WithLockedRegistry(cfg.registryPath, func(reg *registry.Registry) error {
+	err := registry.WithLockedRegistry(ctx, cfg.registryPath, func(reg *registry.Registry) error {
 		machineID, ok := reg.LookupMachine(sprite)
 		if !ok || strings.TrimSpace(machineID) == "" {
 			return fmt.Errorf("fleet dispatch: sprite %q not found in registry (%s) — run 'bb init'", sprite, cfg.registryPath)
