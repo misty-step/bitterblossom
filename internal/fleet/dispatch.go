@@ -256,6 +256,27 @@ func (f *Fleet) selectAndMaybeReserve(ctx context.Context, req DispatchRequest, 
 
 		assignment, reserveErr := cfg.reserve(name, req)
 		if reserveErr == nil {
+			// Re-check live status after reservation to narrow the race window.
+			// Between the initial status check and reserve(), the sprite may
+			// have become busy (e.g. another dispatcher assigned it directly).
+			recheck, recheckErr := cfg.status.Check(ctx, machineID)
+			if recheckErr != nil || isBusyState(recheck.State) {
+				_ = cfg.unreserve(name)
+				busy = append(busy, BusySpriteStatus{
+					Sprite:        name,
+					MachineID:     machineID,
+					State:         strings.TrimSpace(recheck.State),
+					Task:          strings.TrimSpace(recheck.Task),
+					Repo:          strings.TrimSpace(recheck.Repo),
+					Runtime:       strings.TrimSpace(recheck.Runtime),
+					BlockedReason: strings.TrimSpace(recheck.BlockedReason),
+					CheckError:    errString(recheckErr),
+				})
+				if strings.TrimSpace(req.Sprite) != "" {
+					return nil, &FleetBusyError{Sprites: busy}
+				}
+				continue
+			}
 			return assignment, nil
 		}
 		if errors.Is(reserveErr, errReserved) {
@@ -311,6 +332,20 @@ func (cfg *dispatchConfig) reserve(sprite string, req DispatchRequest) (*Assignm
 		return nil, err
 	}
 	return &out, nil
+}
+
+func (cfg *dispatchConfig) unreserve(sprite string) error {
+	return registry.WithLockedRegistry(cfg.registryPath, func(reg *registry.Registry) error {
+		entry, ok := reg.Sprites[sprite]
+		if !ok {
+			return nil
+		}
+		entry.AssignedIssue = 0
+		entry.AssignedRepo = ""
+		entry.AssignedAt = time.Time{}
+		reg.Sprites[sprite] = entry
+		return nil
+	})
 }
 
 func isBusyState(state string) bool {
