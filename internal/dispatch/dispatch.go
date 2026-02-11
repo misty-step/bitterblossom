@@ -222,7 +222,7 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 		return Result{}, err
 	}
 
-	provisionNeeded, err := s.needsProvision(ctx, prepared.Sprite)
+	provisionNeeded, err := s.needsProvision(ctx, prepared.Sprite, prepared.MachineID)
 	if err != nil {
 		return Result{}, fmt.Errorf("dispatch: determine provisioning need: %w", err)
 	}
@@ -396,20 +396,11 @@ func (s *Service) registerSprite(name, machineID string) error {
 	})
 }
 
-func (s *Service) needsProvision(ctx context.Context, sprite string) (bool, error) {
-	// Registry is the source of truth when configured.
-	if s.registryPath != "" || s.registryRequired {
-		_, err := ResolveSprite(sprite, s.registryPath)
-		if err == nil {
-			s.logger.Debug("sprite found in registry", "sprite", sprite)
-			return false, nil
-		}
-		var notFound *ErrSpriteNotInRegistry
-		if errors.As(err, &notFound) {
-			return true, nil
-		}
-		// Non-lookup errors (corrupt registry, permission issues) fall back to list probing.
-		s.logger.Debug("registry lookup error, falling back to list", "sprite", sprite, "error", err)
+func (s *Service) needsProvision(ctx context.Context, sprite string, machineID string) (bool, error) {
+	// prepare() already performed registry resolution. If we have a machine ID, provisioning is not needed.
+	if machineID != "" {
+		s.logger.Debug("sprite found in registry", "sprite", sprite, "machine_id", machineID)
+		return false, nil
 	}
 
 	// Check if sprite exists using sprite CLI instead of Fly API
