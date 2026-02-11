@@ -71,8 +71,13 @@ const (
 // exponential backoff until the lock is acquired or ctx is done.
 func flockWithBackoff(ctx context.Context, f *os.File) error {
 	backoff := lockInitialBackoff
-
 	for {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("registry lock: %w", ctx.Err())
+		default:
+		}
+
 		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 		if err == nil {
 			return nil
@@ -81,10 +86,12 @@ func flockWithBackoff(ctx context.Context, f *os.File) error {
 			return fmt.Errorf("registry lock: flock: %w", err)
 		}
 
+		timer := time.NewTimer(backoff)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return fmt.Errorf("registry lock: %w", ctx.Err())
-		case <-time.After(backoff):
+		case <-timer.C:
 		}
 
 		backoff *= 2
