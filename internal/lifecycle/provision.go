@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/misty-step/bitterblossom/internal/proxy"
 	"github.com/misty-step/bitterblossom/internal/sprite"
 )
 
@@ -200,10 +199,7 @@ func Provision(ctx context.Context, cli sprite.SpriteCLI, cfg Config, opts Provi
 		return ProvisionResult{}, err
 	}
 
-	emitProvisionProgress(name, opts.Progress, ProvisionStageUploadProxy, "uploading anthropic proxy script")
-	if err := cli.Upload(ctx, name, proxy.ProxyScriptPath, proxy.ProxyScript); err != nil {
-		return ProvisionResult{}, err
-	}
+	// Note: anthropic proxy is uploaded by PushConfig() above, no need to duplicate here
 
 	emitProvisionProgress(name, opts.Progress, ProvisionStageRunBootstrap, "running bootstrap")
 	if _, err := cli.Exec(ctx, name, "bash /tmp/sprite-bootstrap.sh --agent-source /tmp/sprite-agent.sh", nil); err != nil {

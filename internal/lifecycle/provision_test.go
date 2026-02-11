@@ -176,7 +176,7 @@ func TestProvisionReportsProgressStages(t *testing.T) {
 		ProvisionStageVerifyGit,
 		ProvisionStageUploadBootstrap,
 		ProvisionStageUploadAgent,
-		ProvisionStageUploadProxy,
+		// Note: ProvisionStageUploadProxy removed - proxy now uploaded by PushConfig
 		ProvisionStageRunBootstrap,
 		ProvisionStageCheckpoint,
 		ProvisionStageComplete,
