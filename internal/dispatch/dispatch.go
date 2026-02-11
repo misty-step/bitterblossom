@@ -734,9 +734,8 @@ func buildSetupRepoScript(workspace, cloneURL, repoDir string) string {
 		"  git clean -fd 2>/dev/null || true",
 		"  DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||' || echo master)",
 		"  git checkout \"$DEFAULT_BRANCH\" 2>/dev/null || git checkout master 2>/dev/null || git checkout main 2>/dev/null || true",
-		"  CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo \"$DEFAULT_BRANCH\")",
 		"  git fetch origin >/dev/null 2>&1 || true",
-		"  git reset --hard \"origin/$CURRENT_BRANCH\" 2>/dev/null || true",
+		`  git reset --hard "origin/$(git rev-parse --abbrev-ref HEAD)" 2>/dev/null || true`,
 		"else",
 		"  gh repo clone " + shellQuote(cloneURL) + " " + shellQuote(repoDir) + " >/dev/null 2>&1 || git clone " + shellQuote(cloneURL) + " " + shellQuote(repoDir) + " >/dev/null 2>&1",
 		"fi",
@@ -771,6 +770,7 @@ func buildOneShotScript(workspace, promptPath string) string {
 
 	return strings.Join([]string{
 		"set -euo pipefail",
+		"mkdir -p " + shellQuote(workspace),
 		"cd " + shellQuote(workspace),
 		"# Start anthropic proxy if available",
 		"if [ -f " + shellQuote(proxy.ProxyScriptPath) + " ] && [ -n \"${OPENROUTER_API_KEY:-}\" ] && command -v node >/dev/null 2>&1; then",
