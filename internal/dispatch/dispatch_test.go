@@ -592,3 +592,111 @@ app = "bb-app"
 		t.Fatalf("ResolveSprite(fern) = %q, want %q", machineID, "m-created")
 	}
 }
+
+func TestRunExecuteWithOpenRouterKey_EnsuresProxy(t *testing.T) {
+	// Test that when OPENROUTER_API_KEY is provided, the proxy is ensured
+	remote := &fakeRemote{
+		execResponses: []string{
+			"",         // validate env
+			"000",      // proxy health check (not running)
+			"",         // mkdir -p
+			"",         // start proxy
+			"200",      // proxy health check (now running)
+			"done",     // oneshot agent
+		},
+	}
+	flyClient := &fakeFly{}
+
+	service, err := NewService(Config{
+		Remote:    remote,
+		Fly:       flyClient,
+		App:       "bb-app",
+		Workspace: "/home/sprite/workspace",
+		EnvVars: map[string]string{
+			"OPENROUTER_API_KEY": "test-api-key",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	// Set a shorter timeout for the test
+	service.proxyLifecycle.SetTimeout(500 * time.Millisecond)
+
+	result, err := service.Run(context.Background(), Request{
+		Sprite:  "fern",
+		Prompt:  "Generate release notes",
+		Execute: true,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	// Oneshot mode transitions to completed immediately after starting agent
+	if result.State != StateCompleted {
+		t.Fatalf("state = %q, want %q", result.State, StateCompleted)
+	}
+
+	// Check that plan includes ensure_proxy step
+	hasProxyStep := false
+	for _, step := range result.Plan.Steps {
+		if step.Kind == StepEnsureProxy {
+			hasProxyStep = true
+			break
+		}
+	}
+	if !hasProxyStep {
+		t.Error("expected plan to include StepEnsureProxy")
+	}
+
+	// Check that the agent exec call happened
+	if len(remote.execCalls) < 1 {
+		t.Fatal("expected at least 1 exec call")
+	}
+}
+
+func TestRunExecuteWithoutOpenRouterKey_SkipsProxy(t *testing.T) {
+	// Test that when OPENROUTER_API_KEY is not provided, the proxy step is skipped
+	remote := &fakeRemote{
+		execResponses: []string{
+			"",     // validate env
+			"done", // oneshot agent
+		},
+	}
+	flyClient := &fakeFly{}
+
+	service, err := NewService(Config{
+		Remote:    remote,
+		Fly:       flyClient,
+		App:       "bb-app",
+		Workspace: "/home/sprite/workspace",
+		EnvVars:   map[string]string{}, // No OPENROUTER_API_KEY
+	})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	result, err := service.Run(context.Background(), Request{
+		Sprite:  "fern",
+		Prompt:  "Generate release notes",
+		Execute: true,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	// Oneshot mode transitions to completed immediately after starting agent
+	if result.State != StateCompleted {
+		t.Fatalf("state = %q, want %q", result.State, StateCompleted)
+	}
+
+	// Check that plan does NOT include ensure_proxy step
+	hasProxyStep := false
+	for _, step := range result.Plan.Steps {
+		if step.Kind == StepEnsureProxy {
+			hasProxyStep = true
+			break
+		}
+	}
+	if hasProxyStep {
+		t.Error("expected plan to NOT include StepEnsureProxy when no OPENROUTER_API_KEY")
+	}
+}
