@@ -84,6 +84,7 @@ const (
 	StepSetupRepo      StepKind = "setup_repo"
 	StepUploadPrompt   StepKind = "upload_prompt"
 	StepWriteStatus    StepKind = "write_status"
+	StepEnsureProxy    StepKind = "ensure_proxy"
 	StepStartAgent     StepKind = "start_agent"
 )
 
@@ -150,6 +151,7 @@ type Service struct {
 	envVars            map[string]string
 	registryPath       string
 	registryRequired   bool
+	proxyLifecycle     *proxy.Lifecycle
 }
 
 // NewService constructs a dispatch service.
@@ -198,7 +200,7 @@ func NewService(cfg Config) (*Service, error) {
 		registryPath = registry.DefaultPath()
 	}
 
-	return &Service{
+	svc := &Service{
 		remote:             cfg.Remote,
 		fly:                cfg.Fly,
 		app:                strings.TrimSpace(cfg.App),
@@ -212,7 +214,12 @@ func NewService(cfg Config) (*Service, error) {
 		envVars:            copyStringMap(cfg.EnvVars),
 		registryPath:       registryPath,
 		registryRequired:   cfg.RegistryRequired,
-	}, nil
+	}
+
+	// Initialize proxy lifecycle manager
+	svc.proxyLifecycle = proxy.NewLifecycle(cfg.Remote)
+
+	return svc, nil
 }
 
 // Run executes a dispatch request or returns the dry-run plan.
@@ -329,8 +336,23 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 		return result, fmt.Errorf("dispatch: upload status: %w", err)
 	}
 
+	// Ensure proxy is running if OPENROUTER_API_KEY is configured
+	execEnvVars := copyStringMap(s.envVars)
+	if openRouterKey, ok := s.envVars["OPENROUTER_API_KEY"]; ok && openRouterKey != "" {
+		s.logger.Info("dispatch ensure proxy", "sprite", prepared.Sprite)
+		proxyURL, err := s.proxyLifecycle.EnsureProxy(ctx, remoteSprite, openRouterKey)
+		if err != nil {
+			result.State = StateFailed
+			return result, fmt.Errorf("dispatch: ensure proxy: %w", err)
+		}
+		s.logger.Info("dispatch proxy ready", "sprite", prepared.Sprite, "url", proxyURL)
+		// Set proxy environment variables for the agent
+		execEnvVars["ANTHROPIC_BASE_URL"] = proxyURL
+		execEnvVars["ANTHROPIC_API_KEY"] = "proxy-mode"
+	}
+
 	s.logger.Info("dispatch start agent", "sprite", prepared.Sprite, "mode", prepared.Mode)
-	output, err := s.remote.ExecWithEnv(ctx, remoteSprite, prepared.StartCommand, nil, s.envVars)
+	output, err := s.remote.ExecWithEnv(ctx, remoteSprite, prepared.StartCommand, nil, execEnvVars)
 	if err != nil {
 		result.State = StateFailed
 		return result, fmt.Errorf("dispatch: start agent: %w", err)
@@ -466,6 +488,22 @@ func (s *Service) buildPlan(req preparedRequest, provisionNeeded bool) Plan {
 		Kind:        StepWriteStatus,
 		Description: fmt.Sprintf("write status marker to %s/STATUS.json", s.workspace),
 	})
+
+	// Add proxy ensure step if we have OPENROUTER_API_KEY
+	hasOpenRouterKey := false
+	for key := range s.envVars {
+		if key == "OPENROUTER_API_KEY" {
+			hasOpenRouterKey = true
+			break
+		}
+	}
+	if hasOpenRouterKey {
+		steps = append(steps, PlanStep{
+			Kind:        StepEnsureProxy,
+			Description: "ensure anthropic proxy is running on sprite",
+		})
+	}
+
 	if req.Ralph {
 		steps = append(steps, PlanStep{
 			Kind:        StepStartAgent,
