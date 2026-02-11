@@ -259,7 +259,7 @@ func (f *Fleet) selectAndMaybeReserve(ctx context.Context, req DispatchRequest, 
 			// Re-check live status after reservation to narrow the race window.
 			// Between the initial status check and reserve(), the sprite may
 			// have become busy (e.g. another dispatcher assigned it directly).
-			recheck, recheckErr := cfg.status.Check(ctx, machineID)
+			recheck, recheckErr := cfg.status.Check(ctx, assignment.MachineID)
 			if recheckErr != nil || isBusyState(recheck.State) {
 				unreserveErr := cfg.unreserve(name, req.Issue, assignment.AssignedAt)
 				checkErr := recheckErr
