@@ -285,3 +285,61 @@ func TestValidateRegistryPath_AllowsValidPaths(t *testing.T) {
 		t.Fatal("validated path is empty")
 	}
 }
+
+func TestValidateRegistryPath_BlocksSymlinkedSystemDirs(t *testing.T) {
+	// Symlink directly to /etc: EvalSymlinks succeeds on the parent.
+	tmpDir := t.TempDir()
+	link := filepath.Join(tmpDir, "sneaky")
+	if err := os.Symlink("/etc", link); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	path := filepath.Join(link, "registry.toml")
+	_, err := validateRegistryPath(path)
+	if err == nil {
+		t.Fatalf("validateRegistryPath(%q) should be blocked (symlink to /etc)", path)
+	}
+	if !strings.Contains(err.Error(), "protected system directory") {
+		t.Fatalf("expected protected system directory error, got: %v", err)
+	}
+}
+
+func TestValidateRegistryPath_BlocksPartiallyExistingSymlinkPath(t *testing.T) {
+	// This is the P1 bypass: symlink to /etc with a non-existing subdirectory.
+	// EvalSymlinks on the full parent fails (subdir doesn't exist under /etc),
+	// so naive code falls back to unresolved path. Ancestor-walking catches it.
+	tmpDir := t.TempDir()
+	link := filepath.Join(tmpDir, "sneaky")
+	if err := os.Symlink("/etc", link); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	// link/nonexistent/registry.toml - "nonexistent" doesn't exist under /etc
+	path := filepath.Join(link, "nonexistent", "registry.toml")
+	_, err := validateRegistryPath(path)
+	if err == nil {
+		t.Fatalf("validateRegistryPath(%q) should be blocked (symlink bypass via partial path)", path)
+	}
+	if !strings.Contains(err.Error(), "protected system directory") {
+		t.Fatalf("expected protected system directory error, got: %v", err)
+	}
+}
+
+func TestValidateRegistryPath_AllowsSymlinkedSafeDirs(t *testing.T) {
+	// Symlink to a safe temp directory should be allowed.
+	target := t.TempDir()
+	tmpDir := t.TempDir()
+	link := filepath.Join(tmpDir, "safe-link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	path := filepath.Join(link, "registry.toml")
+	validated, err := validateRegistryPath(path)
+	if err != nil {
+		t.Fatalf("validateRegistryPath(%q) error = %v (should allow safe symlink)", path, err)
+	}
+	if validated == "" {
+		t.Fatal("validated path is empty")
+	}
+}

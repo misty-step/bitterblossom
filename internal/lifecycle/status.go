@@ -40,6 +40,7 @@ type SpriteStatus struct {
 	Name         string            `json:"name"`
 	Status       string            `json:"status"` // Raw status from API (running, stopped, etc.)
 	State        SpriteState       `json:"state"`  // Derived state (idle, busy, offline)
+	Stale        bool              `json:"stale,omitempty"`
 	URL          string            `json:"url,omitempty"`
 	Persona      string            `json:"persona,omitempty"`
 	CurrentTask  *TaskInfo         `json:"current_task,omitempty"`
@@ -65,6 +66,7 @@ type FleetSummary struct {
 	Offline    int `json:"offline"`
 	Unknown    int `json:"unknown"`
 	Orphaned   int `json:"orphaned"`
+	Stale      int `json:"stale"`
 	WithTasks  int `json:"with_tasks"`
 }
 
@@ -120,10 +122,15 @@ type spriteAPIDetailResponse struct {
 	Metadata     map[string]string `json:"metadata"`
 }
 
+// DefaultStaleThreshold is the default duration after which a sprite with no
+// recent activity is flagged as stale.
+const DefaultStaleThreshold = 2 * time.Hour
+
 // FleetOverviewOpts configures expensive fleet overview features.
 type FleetOverviewOpts struct {
 	IncludeCheckpoints bool
 	IncludeTasks       bool
+	StaleThreshold     time.Duration
 }
 
 // FleetOverview returns live fleet status + composition coverage + checkpoint summaries.
@@ -291,18 +298,35 @@ func fetchLiveSprites(ctx context.Context, cli sprite.SpriteCLI, cfg Config, opt
 		// Derive display state from raw status
 		status.State = deriveSpriteState("", item.Status)
 
-		// Fetch detailed info if requested and sprite is running
-		if opts.IncludeTasks && isRunningStatus(item.Status) {
+		// Compute effective stale threshold once (zero/negative defaults to DefaultStaleThreshold).
+		threshold := opts.StaleThreshold
+		if threshold <= 0 {
+			threshold = DefaultStaleThreshold
+		}
+
+		// Fetch detailed info when sprite is running and we need tasks or stale detection.
+		// LastActivity (required for stale detection) is only available from the detail endpoint.
+		needsDetail := opts.IncludeTasks || threshold > 0
+		if needsDetail && isRunningStatus(item.Status) {
 			detail, err := fetchSpriteDetail(ctx, cli, cfg.Org, item.Name)
 			if err == nil {
 				status.State = detail.State
 				status.Persona = detail.Persona
-				status.CurrentTask = detail.CurrentTask
 				status.QueueDepth = detail.QueueDepth
 				status.Uptime = detail.Uptime
 				status.LastActivity = detail.LastActivity
 				status.Version = detail.Version
 				status.Metadata = detail.Metadata
+				if opts.IncludeTasks {
+					status.CurrentTask = detail.CurrentTask
+				}
+			}
+		}
+
+		// Flag stale sprites: running but no recent activity.
+		if status.LastActivity != nil && isRunningStatus(item.Status) {
+			if time.Since(*status.LastActivity) >= threshold {
+				status.Stale = true
 			}
 		}
 
@@ -409,6 +433,9 @@ func calculateFleetSummary(sprites []SpriteStatus, orphans []SpriteStatus) Fleet
 			summary.Unknown++
 		}
 
+		if s.Stale {
+			summary.Stale++
+		}
 		if s.CurrentTask != nil {
 			summary.WithTasks++
 		}

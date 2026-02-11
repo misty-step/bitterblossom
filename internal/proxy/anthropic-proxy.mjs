@@ -107,9 +107,10 @@ async function forwardWithRetry(res, openaiBody, requestModel) {
         return;
       }
 
-      // Non-200 response
-      const errBody = await readResponseBody(upstreamRes);
-      console.error(`[proxy] attempt ${attempt}/${MAX_RETRIES}: upstream HTTP ${upstreamRes.statusCode}: ${errBody.slice(0, 500)}`);
+      // Non-200 response — drain body but don't log it (may contain PII/prompts)
+      await readResponseBody(upstreamRes);
+      const requestId = upstreamRes.headers['x-request-id'] || upstreamRes.headers['x-openrouter-request-id'];
+      console.error(`[proxy] attempt ${attempt}/${MAX_RETRIES}: upstream HTTP ${upstreamRes.statusCode}${requestId ? ` request_id=${requestId}` : ''}`);
 
       // Non-retryable or final attempt — return error to client
       if (!isRetryableStatus(upstreamRes.statusCode) || attempt === MAX_RETRIES) {
