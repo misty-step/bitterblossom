@@ -74,6 +74,72 @@ Exit code `0` always. Output includes missing, extra, and drifted sprites.
 
 ---
 
+## fleet
+
+View registered sprites and reconcile fleet state with Fly.io.
+
+```
+bb fleet [flags]
+```
+
+### Examples
+
+```bash
+# List all registered sprites with status
+bb fleet
+
+# Machine-readable output
+bb fleet --format json
+
+# Create missing sprites from registry
+bb fleet --sync
+
+# Preview sync without making changes
+bb fleet --sync --dry-run
+
+# Full reconciliation: create missing, remove orphaned
+bb fleet --sync --prune
+
+# Preview destructive operations
+bb fleet --sync --prune --dry-run
+```
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--registry` | `~/.config/bb/registry.toml` | Path to registry TOML file |
+| `--org` | `$FLY_ORG` | Fly.io organization |
+| `--sprite-cli` | `$SPRITE_CLI` | Path to sprite CLI |
+| `--composition` | `compositions/v1.yaml` | Path to composition YAML |
+| `--sync` | `false` | Reconcile fleet state (create missing sprites) |
+| `--prune` | `false` | Remove sprites not in registry (requires `--sync`) |
+| `--dry-run` | `false` | Preview changes without applying them |
+| `--format` | `text` | Output format: `json` or `text` |
+| `--timeout` | `10m` | Command timeout |
+
+### Status Values
+
+| Status | Meaning |
+|--------|---------|
+| `running` | Sprite exists and is running |
+| `not found` | Registered but doesn't exist in Fly.io |
+| `orphaned` | Exists in Fly.io but not in registry |
+
+### Sync Behavior
+
+When `--sync` is enabled:
+1. Compares registry entries against actual sprites in Fly.io
+2. Creates missing sprites using standard provisioning
+3. If `--prune` is set, prompts for confirmation before destroying orphaned sprites
+4. Archives observations before destruction
+
+### Exit Codes
+
+Exit `0` on success. Exit `1` on any error or if sync operations fail.
+
+---
+
 ## dispatch
 
 Dispatch a task prompt to a sprite. **Dry-run by default.**
