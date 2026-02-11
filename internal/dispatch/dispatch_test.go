@@ -721,6 +721,24 @@ func TestBuildSetupRepoScriptResetsGitState(t *testing.T) {
 	}
 }
 
+func TestBuildSetupRepoScriptRecomputesResetTarget(t *testing.T) {
+	t.Parallel()
+
+	script := buildSetupRepoScript("/workspace", "https://github.com/org/repo.git", "repo")
+
+	// After checkout fallback, CURRENT_BRANCH must be recomputed from HEAD
+	// and used as the reset target instead of DEFAULT_BRANCH.
+	if !strings.Contains(script, "CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD") {
+		t.Error("script must recompute CURRENT_BRANCH after checkout fallback")
+	}
+	if !strings.Contains(script, "origin/$CURRENT_BRANCH") {
+		t.Error("git reset --hard must use CURRENT_BRANCH, not DEFAULT_BRANCH")
+	}
+	if strings.Contains(script, "origin/$DEFAULT_BRANCH") {
+		t.Error("git reset --hard must NOT use DEFAULT_BRANCH (stale after checkout fallback)")
+	}
+}
+
 func TestBuildSetupRepoScriptFreshClone(t *testing.T) {
 	t.Parallel()
 
