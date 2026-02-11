@@ -1,58 +1,75 @@
 package main
 
 import (
+	"strings"
 	"testing"
 )
 
-func TestBuildEnvArgs_SingleFlag(t *testing.T) {
+func TestBuildEnvArgs(t *testing.T) {
 	t.Parallel()
 
-	env := map[string]string{
-		"OPENROUTER_API_KEY":  "sk-or-test",
-		"ANTHROPIC_AUTH_TOKEN": "tok-test",
+	cases := []struct {
+		name    string
+		env     map[string]string
+		want    []string
+		wantErr string
+	}{
+		{
+			name: "multiple vars sorted alphabetically",
+			env: map[string]string{
+				"OPENROUTER_API_KEY":  "sk-or-test",
+				"ANTHROPIC_AUTH_TOKEN": "tok-test",
+			},
+			want: []string{"-env", "ANTHROPIC_AUTH_TOKEN=tok-test,OPENROUTER_API_KEY=sk-or-test"},
+		},
+		{
+			name: "nil map returns nil",
+			env:  nil,
+			want: nil,
+		},
+		{
+			name: "empty map returns nil",
+			env:  map[string]string{},
+			want: nil,
+		},
+		{
+			name: "single var",
+			env:  map[string]string{"KEY": "value"},
+			want: []string{"-env", "KEY=value"},
+		},
+		{
+			name:    "comma in value returns error",
+			env:     map[string]string{"KEY": "a,b"},
+			wantErr: "contains a comma",
+		},
 	}
 
-	args := buildEnvArgs(env)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := buildEnvArgs(tc.env)
 
-	// Should produce exactly two args: "-env" and a comma-joined string
-	if len(args) != 2 {
-		t.Fatalf("expected 2 args (-env <pairs>), got %d: %v", len(args), args)
-	}
-	if args[0] != "-env" {
-		t.Fatalf("expected first arg '-env', got %q", args[0])
-	}
+			if tc.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tc.wantErr)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("expected error containing %q, got %q", tc.wantErr, err.Error())
+				}
+				return
+			}
 
-	// Keys are sorted, so ANTHROPIC_AUTH_TOKEN comes first
-	want := "ANTHROPIC_AUTH_TOKEN=tok-test,OPENROUTER_API_KEY=sk-or-test"
-	if args[1] != want {
-		t.Fatalf("expected %q, got %q", want, args[1])
-	}
-}
-
-func TestBuildEnvArgs_Empty(t *testing.T) {
-	t.Parallel()
-
-	args := buildEnvArgs(nil)
-	if len(args) != 0 {
-		t.Fatalf("expected 0 args for nil env, got %d: %v", len(args), args)
-	}
-
-	args = buildEnvArgs(map[string]string{})
-	if len(args) != 0 {
-		t.Fatalf("expected 0 args for empty env, got %d: %v", len(args), args)
-	}
-}
-
-func TestBuildEnvArgs_SingleVar(t *testing.T) {
-	t.Parallel()
-
-	env := map[string]string{"KEY": "value"}
-	args := buildEnvArgs(env)
-
-	if len(args) != 2 {
-		t.Fatalf("expected 2 args, got %d: %v", len(args), args)
-	}
-	if args[1] != "KEY=value" {
-		t.Fatalf("expected %q, got %q", "KEY=value", args[1])
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("expected %d args, got %d: %v", len(tc.want), len(got), got)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Fatalf("arg[%d]: expected %q, got %q", i, tc.want[i], got[i])
+				}
+			}
+		})
 	}
 }

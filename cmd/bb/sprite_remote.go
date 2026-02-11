@@ -67,7 +67,11 @@ func (r *spriteCLIRemote) ExecWithEnv(ctx context.Context, sprite, remoteCommand
 		args = append(args, "-o", r.org)
 	}
 
-	args = append(args, buildEnvArgs(env)...)
+	envArgs, err := buildEnvArgs(env)
+	if err != nil {
+		return "", fmt.Errorf("sprite exec %s: %w", sprite, err)
+	}
+	args = append(args, envArgs...)
 
 	args = append(args, "-s", sprite, "--", "bash", "-lc", remoteCommand)
 
@@ -96,21 +100,21 @@ func (r *spriteCLIRemote) Upload(ctx context.Context, sprite, remotePath string,
 
 // buildEnvArgs returns the CLI args for passing environment variables to the
 // sprite CLI. The sprite CLI expects a single -env flag with comma-separated
-// KEY=VALUE pairs (not repeated -e flags).
-func buildEnvArgs(env map[string]string) []string {
+// KEY=VALUE pairs. Returns an error if any value contains a comma, since the
+// sprite CLI uses commas as delimiters with no escape mechanism.
+func buildEnvArgs(env map[string]string) ([]string, error) {
 	if len(env) == 0 {
-		return nil
+		return nil, nil
 	}
-	keys := make([]string, 0, len(env))
-	for k := range env {
-		keys = append(keys, k)
+	pairs := make([]string, 0, len(env))
+	for k, v := range env {
+		if strings.Contains(v, ",") {
+			return nil, fmt.Errorf("env var %q value contains a comma, which is not supported by the sprite CLI -env flag delimiter", k)
+		}
+		pairs = append(pairs, k+"="+v)
 	}
-	sort.Strings(keys)
-	pairs := make([]string, 0, len(keys))
-	for _, k := range keys {
-		pairs = append(pairs, k+"="+env[k])
-	}
-	return []string{"-env", strings.Join(pairs, ",")}
+	sort.Strings(pairs)
+	return []string{"-env", strings.Join(pairs, ",")}, nil
 }
 
 func shellQuote(value string) string {
