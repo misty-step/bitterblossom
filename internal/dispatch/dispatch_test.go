@@ -593,6 +593,7 @@ app = "bb-app"
 	}
 }
 
+<<<<<<< HEAD
 func TestRunExecuteWithOpenRouterKey_EnsuresProxy(t *testing.T) {
 	// Test that when OPENROUTER_API_KEY is provided, the proxy is ensured
 	remote := &fakeRemote{
@@ -698,5 +699,59 @@ func TestRunExecuteWithoutOpenRouterKey_SkipsProxy(t *testing.T) {
 	}
 	if hasProxyStep {
 		t.Error("expected plan to NOT include StepEnsureProxy when no OPENROUTER_API_KEY")
+	}
+}
+
+func TestBuildSetupRepoScriptMkdirBeforeCD(t *testing.T) {
+	t.Parallel()
+
+	script := buildSetupRepoScript("/home/sprite/workspace", "https://github.com/misty-step/bb.git", "bb")
+	lines := strings.Split(script, "\n")
+
+	mkdirIdx, cdIdx := -1, -1
+	for i, line := range lines {
+		if strings.HasPrefix(line, "mkdir -p ") {
+			mkdirIdx = i
+		}
+		if strings.HasPrefix(line, "cd ") && cdIdx == -1 {
+			cdIdx = i
+		}
+	}
+
+	if mkdirIdx == -1 {
+		t.Fatal("script missing mkdir -p")
+	}
+	if cdIdx == -1 {
+		t.Fatal("script missing cd")
+	}
+	if mkdirIdx >= cdIdx {
+		t.Fatalf("mkdir (line %d) must come before cd (line %d)", mkdirIdx, cdIdx)
+	}
+}
+
+func TestBuildOneShotScriptMkdirBeforeCD(t *testing.T) {
+	t.Parallel()
+
+	script := buildOneShotScript("/home/sprite/workspace", "/home/sprite/workspace/bb/prompt.md")
+	lines := strings.Split(script, "\n")
+
+	mkdirIdx, cdIdx := -1, -1
+	for i, line := range lines {
+		if strings.HasPrefix(line, "mkdir -p ") {
+			mkdirIdx = i
+		}
+		if strings.HasPrefix(line, "cd ") && cdIdx == -1 {
+			cdIdx = i
+		}
+	}
+
+	if mkdirIdx == -1 {
+		t.Fatal("script missing mkdir -p")
+	}
+	if cdIdx == -1 {
+		t.Fatal("script missing cd")
+	}
+	if mkdirIdx >= cdIdx {
+		t.Fatalf("mkdir (line %d) must come before cd (line %d)", mkdirIdx, cdIdx)
 	}
 }
