@@ -294,3 +294,4 @@ func TestSpriteAgentExitTrapKillsClaude(t *testing.T) {
 		t.Fatal("PID file should be removed after EXIT trap")
 	}
 }
+

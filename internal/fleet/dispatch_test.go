@@ -3,6 +3,7 @@ package fleet
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -188,6 +189,132 @@ func TestDispatch_ConcurrentDoesNotDoubleAssign(t *testing.T) {
 	}
 	if got[0].Sprite == got[1].Sprite {
 		t.Fatalf("expected distinct sprite assignments, got %q and %q", got[0].Sprite, got[1].Sprite)
+	}
+}
+
+// racingStatusChecker returns different results on successive calls for the
+// same machine, simulating a sprite becoming busy between check and reserve.
+type racingStatusChecker struct {
+	mu       sync.Mutex
+	calls    map[string]int
+	sequence map[string][]LiveStatus
+}
+
+func (r *racingStatusChecker) Check(_ context.Context, machineID string) (LiveStatus, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.calls == nil {
+		r.calls = make(map[string]int)
+	}
+	idx := r.calls[machineID]
+	r.calls[machineID]++
+	seq, ok := r.sequence[machineID]
+	if !ok || len(seq) == 0 {
+		return LiveStatus{State: "unknown"}, fmt.Errorf("no sequence configured for machine %q", machineID)
+	}
+	if idx < len(seq) {
+		return seq[idx], nil
+	}
+	return seq[len(seq)-1], nil
+}
+
+func TestDispatch_ReserveThenRecheckRace(t *testing.T) {
+	t.Parallel()
+
+	regPath := writeRegistry(t, map[string]string{
+		"bramble": "m-1",
+		"fern":    "m-2",
+	})
+
+	// bramble: first check idle, recheck after reserve returns running (race)
+	// fern: always idle
+	checker := &racingStatusChecker{
+		sequence: map[string][]LiveStatus{
+			"m-1": {{State: "idle"}, {State: "running", Task: "issue #99"}},
+			"m-2": {{State: "idle"}, {State: "idle"}},
+		},
+	}
+
+	f, err := NewDispatchFleet(DispatchConfig{
+		RegistryPath: regPath,
+		Status:       checker,
+		Now:          func() time.Time { return time.Date(2026, time.February, 10, 12, 5, 0, 0, time.UTC) },
+	})
+	if err != nil {
+		t.Fatalf("NewDispatchFleet() error = %v", err)
+	}
+
+	assignment, err := f.Dispatch(context.Background(), DispatchRequest{Issue: 300, Repo: "x/y"})
+	if err != nil {
+		t.Fatalf("Dispatch() error = %v", err)
+	}
+
+	// Should skip bramble (became busy after reserve) and assign fern instead.
+	if assignment.Sprite != "fern" {
+		t.Fatalf("assignment.Sprite = %q, want fern (bramble should have been unreserved)", assignment.Sprite)
+	}
+
+	// Verify bramble's reservation was cleared.
+	reg, loadErr := registry.Load(regPath)
+	if loadErr != nil {
+		t.Fatalf("registry.Load() error = %v", loadErr)
+	}
+	bramble := reg.Sprites["bramble"]
+	if bramble.AssignedIssue != 0 || !bramble.AssignedAt.IsZero() {
+		t.Fatalf("bramble should be unreserved; got issue=%d at=%v", bramble.AssignedIssue, bramble.AssignedAt)
+	}
+
+	// Verify fern is properly reserved.
+	fern := reg.Sprites["fern"]
+	if fern.AssignedIssue != 300 {
+		t.Fatalf("fern.AssignedIssue = %d, want 300", fern.AssignedIssue)
+	}
+}
+
+func TestDispatch_ExplicitSpriteRecheckFails(t *testing.T) {
+	t.Parallel()
+
+	regPath := writeRegistry(t, map[string]string{
+		"bramble": "m-1",
+	})
+
+	// bramble: idle on first check, running on recheck
+	checker := &racingStatusChecker{
+		sequence: map[string][]LiveStatus{
+			"m-1": {{State: "idle"}, {State: "running", Task: "issue #42"}},
+		},
+	}
+
+	f, err := NewDispatchFleet(DispatchConfig{
+		RegistryPath: regPath,
+		Status:       checker,
+		Now:          func() time.Time { return time.Date(2026, time.February, 10, 12, 6, 0, 0, time.UTC) },
+	})
+	if err != nil {
+		t.Fatalf("NewDispatchFleet() error = %v", err)
+	}
+
+	_, dispatchErr := f.Dispatch(context.Background(), DispatchRequest{
+		Sprite: "bramble",
+		Issue:  500,
+		Repo:   "x/y",
+	})
+	if dispatchErr == nil {
+		t.Fatal("expected FleetBusyError when explicit sprite fails recheck")
+	}
+	var busyErr *FleetBusyError
+	if !errors.As(dispatchErr, &busyErr) {
+		t.Fatalf("expected FleetBusyError, got %T: %v", dispatchErr, dispatchErr)
+	}
+
+	// Verify reservation was cleared.
+	reg, loadErr := registry.Load(regPath)
+	if loadErr != nil {
+		t.Fatalf("registry.Load() error = %v", loadErr)
+	}
+	bramble := reg.Sprites["bramble"]
+	if bramble.AssignedIssue != 0 {
+		t.Fatalf("bramble should be unreserved after recheck failure; got issue=%d", bramble.AssignedIssue)
 	}
 }
 
