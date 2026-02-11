@@ -523,8 +523,8 @@ log_exit_reason() {
     fi
     printf '[agent] EXIT detected: code=%d reason=%s at=%s\n' \
         "$exit_code" "$reason" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$RALPH_LOG"
-    # Ensure terminal event is emitted if we haven't already
-    if [[ "$terminal_event_emitted" == false ]]; then
+    # Ensure terminal event is emitted if we haven't already and exit was non-zero
+    if [[ "$exit_code" -ne 0 ]] && [[ "$terminal_event_emitted" == false ]]; then
         health_json="$(collect_health_json)"
         emit_terminal_event "task_failed" "{\"reason\":\"unexpected_exit\",\"exit_code\":$exit_code}"
     fi
@@ -599,11 +599,11 @@ while (( iteration < MAX_ITERATIONS )); do
 
     # Wrap post-iteration tasks to prevent set -e from killing the script
     # on non-fatal errors (Issue #209: ralph dies silently)
-    if ! update_tokens_from_iteration_output 2>/dev/null; then
+    if ! update_tokens_from_iteration_output; then
         printf '[agent] iteration=%d update_tokens_failed at=%s\n' \
             "$iteration" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$RALPH_LOG"
     fi
-    if ! check_error_loop 2>/dev/null; then
+    if ! check_error_loop; then
         printf '[agent] iteration=%d check_error_loop_failed at=%s\n' \
             "$iteration" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$RALPH_LOG"
     fi
