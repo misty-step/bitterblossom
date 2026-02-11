@@ -699,20 +699,49 @@ func TestSelectSpriteFromRegistryMissingFile(t *testing.T) {
 	t.Parallel()
 
 	remote := &spriteCLIRemote{binary: "sprite"}
-	opts := dispatchOptions{
-		Issue:        42,
-		Repo:         "misty-step/bitterblossom",
-		RegistryPath: "/tmp/nonexistent-registry-" + t.Name() + ".toml",
+
+	testCases := []struct {
+		name          string
+		opts          dispatchOptions
+		expectedInErr string
+	}{
+		{
+			name: "with issue",
+			opts: dispatchOptions{
+				Issue: 42,
+				Repo:  "misty-step/bitterblossom",
+			},
+			expectedInErr: "bb dispatch <sprite> --issue 42",
+		},
+		{
+			name: "with file",
+			opts: dispatchOptions{
+				PromptFile: "prompt.md",
+				Repo:       "misty-step/bitterblossom",
+			},
+			expectedInErr: "bb dispatch <sprite> --file <path>",
+		},
 	}
 
-	_, err := selectSpriteFromRegistry(context.Background(), remote, opts)
-	if err == nil {
-		t.Fatal("expected error for missing registry file")
-	}
-	if !strings.Contains(err.Error(), "registry not found") {
-		t.Fatalf("expected 'registry not found' error, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "bb init") {
-		t.Fatalf("expected guidance about 'bb init', got: %v", err)
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			opts := tc.opts
+			opts.RegistryPath = t.TempDir() + "/nonexistent-registry.toml"
+
+			_, err := selectSpriteFromRegistry(context.Background(), remote, opts)
+			if err == nil {
+				t.Fatal("expected error for missing registry file")
+			}
+			if !strings.Contains(err.Error(), "registry not found") {
+				t.Fatalf("expected 'registry not found' error, got: %v", err)
+			}
+			if !strings.Contains(err.Error(), "bb init") {
+				t.Fatalf("expected guidance about 'bb init', got: %v", err)
+			}
+			if !strings.Contains(err.Error(), tc.expectedInErr) {
+				t.Fatalf("error message should contain %q, but it was: %v", tc.expectedInErr, err)
+			}
+		})
 	}
 }

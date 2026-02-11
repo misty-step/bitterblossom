@@ -339,7 +339,11 @@ func selectSpriteFromRegistry(ctx context.Context, remote *spriteCLIRemote, opts
 		regPath = registry.DefaultPath()
 	}
 	if _, err := os.Stat(regPath); os.IsNotExist(err) {
-		return "", fmt.Errorf("dispatch: registry not found at %s\n\n  Run 'bb init' to create it, or specify --registry <path>.\n  Without a registry, provide a sprite name explicitly:\n    bb dispatch <sprite> --issue %d", regPath, opts.Issue)
+		exampleArgs := "--file <path>"
+		if opts.Issue > 0 {
+			exampleArgs = fmt.Sprintf("--issue %d", opts.Issue)
+		}
+		return "", fmt.Errorf("dispatch: registry not found at %s\n\n  Run 'bb init' to create it, or specify --registry <path>.\n  Without a registry, provide a sprite name explicitly:\n    bb dispatch <sprite> %s", regPath, exampleArgs)
 	}
 
 	checker := remoteStatusChecker{
