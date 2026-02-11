@@ -3,6 +3,7 @@ package fleet
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -207,7 +208,10 @@ func (r *racingStatusChecker) Check(_ context.Context, machineID string) (LiveSt
 	}
 	idx := r.calls[machineID]
 	r.calls[machineID]++
-	seq := r.sequence[machineID]
+	seq, ok := r.sequence[machineID]
+	if !ok || len(seq) == 0 {
+		return LiveStatus{State: "unknown"}, fmt.Errorf("no sequence configured for machine %q", machineID)
+	}
 	if idx < len(seq) {
 		return seq[idx], nil
 	}

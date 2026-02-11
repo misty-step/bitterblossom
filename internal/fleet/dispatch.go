@@ -261,7 +261,11 @@ func (f *Fleet) selectAndMaybeReserve(ctx context.Context, req DispatchRequest, 
 			// have become busy (e.g. another dispatcher assigned it directly).
 			recheck, recheckErr := cfg.status.Check(ctx, machineID)
 			if recheckErr != nil || isBusyState(recheck.State) {
-				_ = cfg.unreserve(name)
+				unreserveErr := cfg.unreserve(name, req.Issue, assignment.AssignedAt)
+				checkErr := recheckErr
+				if unreserveErr != nil {
+					checkErr = fmt.Errorf("recheck: %v; unreserve: %v", recheckErr, unreserveErr)
+				}
 				busy = append(busy, BusySpriteStatus{
 					Sprite:        name,
 					MachineID:     machineID,
@@ -270,7 +274,7 @@ func (f *Fleet) selectAndMaybeReserve(ctx context.Context, req DispatchRequest, 
 					Repo:          strings.TrimSpace(recheck.Repo),
 					Runtime:       strings.TrimSpace(recheck.Runtime),
 					BlockedReason: strings.TrimSpace(recheck.BlockedReason),
-					CheckError:    errString(recheckErr),
+					CheckError:    errString(checkErr),
 				})
 				if strings.TrimSpace(req.Sprite) != "" {
 					return nil, &FleetBusyError{Sprites: busy}
@@ -334,11 +338,17 @@ func (cfg *dispatchConfig) reserve(sprite string, req DispatchRequest) (*Assignm
 	return &out, nil
 }
 
-func (cfg *dispatchConfig) unreserve(sprite string) error {
+// unreserve clears a reservation only if it still matches the given issue and
+// timestamp. This prevents accidentally clearing a reservation that another
+// dispatcher legitimately created between our reserve and recheck.
+func (cfg *dispatchConfig) unreserve(sprite string, issue int, assignedAt time.Time) error {
 	return registry.WithLockedRegistry(cfg.registryPath, func(reg *registry.Registry) error {
 		entry, ok := reg.Sprites[sprite]
 		if !ok {
 			return nil
+		}
+		if entry.AssignedIssue != issue || !entry.AssignedAt.Equal(assignedAt) {
+			return nil // reservation belongs to someone else now
 		}
 		entry.AssignedIssue = 0
 		entry.AssignedRepo = ""
