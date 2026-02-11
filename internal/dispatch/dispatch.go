@@ -351,6 +351,12 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 		execEnvVars["ANTHROPIC_API_KEY"] = "proxy-mode"
 	}
 
+	// Pre-dispatch secret scan: ensure no credentials leaked into command args.
+	if err := ValidateCommandNoSecrets(prepared.StartCommand, "start command"); err != nil {
+		result.State = StateFailed
+		return result, err
+	}
+
 	s.logger.Info("dispatch start agent", "sprite", prepared.Sprite, "mode", prepared.Mode)
 	output, err := s.remote.ExecWithEnv(ctx, remoteSprite, prepared.StartCommand, nil, execEnvVars)
 	if err != nil {
