@@ -9,6 +9,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"text/tabwriter"
 	"time"
 
@@ -379,36 +380,74 @@ func runFleetSync(cmd *cobra.Command, deps fleetDeps, cli sprite.SpriteCLI, root
 	}
 	sort.Strings(missing)
 
-	// Create missing sprites
-	for _, name := range missing {
+	// Create missing sprites with concurrent worker pool
+	if len(missing) > 0 {
 		if opts.DryRun {
-			result.Created = append(result.Created, name)
-			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "[dry-run] Would create sprite: %s\n", name)
-			continue
+			for _, name := range missing {
+				result.Created = append(result.Created, name)
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "[dry-run] Would create sprite: %s\n", name)
+			}
+		} else {
+			// Worker pool: 4 workers for optimal throughput without hitting rate limits
+			const numWorkers = 4
+			type workItem struct {
+				name string
+				auth lifecycle.GitHubAuth
+			}
+			type workResult struct {
+				name string
+				err  error
+			}
+
+			workCh := make(chan workItem, len(missing))
+			resultCh := make(chan workResult, len(missing))
+
+			// Start workers
+			var wg sync.WaitGroup
+			for i := 0; i < numWorkers; i++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					for item := range workCh {
+						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Creating sprite: %s\n", item.name)
+						_, err := deps.provision(cmd.Context(), cli, cfg, lifecycle.ProvisionOpts{
+							Name:             item.name,
+							CompositionLabel: "fleet-sync",
+							SettingsPath:     renderedSettings,
+							GitHubAuth:       item.auth,
+						})
+						resultCh <- workResult{name: item.name, err: err}
+					}
+				}()
+			}
+
+			// Queue work (resolve auth in main goroutine to avoid race conditions)
+			go func() {
+				for _, name := range missing {
+					auth, err := deps.resolveGitHubAuth(name, deps.getenv)
+					if err != nil {
+						resultCh <- workResult{name: name, err: fmt.Errorf("auth error: %w", err)}
+						continue
+					}
+					workCh <- workItem{name: name, auth: auth}
+				}
+				close(workCh)
+			}()
+
+			// Collect results
+			go func() {
+				wg.Wait()
+				close(resultCh)
+			}()
+
+			for res := range resultCh {
+				if res.err != nil {
+					result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", res.name, res.err))
+				} else {
+					result.Created = append(result.Created, res.name)
+				}
+			}
 		}
-
-		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Creating sprite: %s\n", name)
-
-		// Get GitHub auth for provisioning
-		auth, err := deps.resolveGitHubAuth(name, deps.getenv)
-		if err != nil {
-			result.Errors = append(result.Errors, fmt.Sprintf("%s: auth error: %v", name, err))
-			continue
-		}
-
-		// Provision the sprite
-		_, err = deps.provision(cmd.Context(), cli, cfg, lifecycle.ProvisionOpts{
-			Name:             name,
-			CompositionLabel: "fleet-sync",
-			SettingsPath:     renderedSettings,
-			GitHubAuth:       auth,
-		})
-		if err != nil {
-			result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", name, err))
-			continue
-		}
-
-		result.Created = append(result.Created, name)
 	}
 
 	// Find orphaned sprites (exist but not registered)
@@ -430,28 +469,63 @@ func runFleetSync(cmd *cobra.Command, deps fleetDeps, cli sprite.SpriteCLI, root
 			}
 		}
 
-		// Destroy orphaned sprites
-		for _, name := range orphaned {
+		// Destroy orphaned sprites with concurrent worker pool
+		if len(orphaned) > 0 {
 			if opts.DryRun {
-				result.Destroyed = append(result.Destroyed, name)
-				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "[dry-run] Would destroy sprite: %s\n", name)
-				continue
+				for _, name := range orphaned {
+					result.Destroyed = append(result.Destroyed, name)
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "[dry-run] Would destroy sprite: %s\n", name)
+				}
+			} else {
+				// Worker pool: 4 workers for teardown
+				const numWorkers = 4
+				type workResult struct {
+					name string
+					err  error
+				}
+
+				workCh := make(chan string, len(orphaned))
+				resultCh := make(chan workResult, len(orphaned))
+
+				var wg sync.WaitGroup
+				for i := 0; i < numWorkers; i++ {
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						for name := range workCh {
+							_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Destroying orphaned sprite: %s\n", name)
+							archiveDir := rootDir + "/observations/archives"
+							_, err := deps.teardown(cmd.Context(), cli, cfg, lifecycle.TeardownOpts{
+								Name:       name,
+								ArchiveDir: archiveDir,
+							})
+							resultCh <- workResult{name: name, err: err}
+						}
+					}()
+				}
+
+				// Queue work
+				go func() {
+					for _, name := range orphaned {
+						workCh <- name
+					}
+					close(workCh)
+				}()
+
+				// Collect results
+				go func() {
+					wg.Wait()
+					close(resultCh)
+				}()
+
+				for res := range resultCh {
+					if res.err != nil {
+						result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", res.name, res.err))
+					} else {
+						result.Destroyed = append(result.Destroyed, res.name)
+					}
+				}
 			}
-
-			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Destroying orphaned sprite: %s\n", name)
-
-			// Create archive directory for teardown
-			archiveDir := rootDir + "/observations/archives"
-			_, err := deps.teardown(cmd.Context(), cli, cfg, lifecycle.TeardownOpts{
-				Name:       name,
-				ArchiveDir: archiveDir,
-			})
-			if err != nil {
-				result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", name, err))
-				continue
-			}
-
-			result.Destroyed = append(result.Destroyed, name)
 		}
 	}
 
