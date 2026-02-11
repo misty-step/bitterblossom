@@ -345,10 +345,16 @@ func selectSpriteFromRegistry(ctx context.Context, remote *spriteCLIRemote, opts
 	if err != nil {
 		return "", err
 	}
-	assignment, err := f.Dispatch(ctx, fleet.DispatchRequest{
+	req := fleet.DispatchRequest{
 		Issue: opts.Issue,
 		Repo:  opts.Repo,
-	})
+	}
+	var assignment *fleet.Assignment
+	if opts.Execute {
+		assignment, err = f.Dispatch(ctx, req)
+	} else {
+		assignment, err = f.PlanDispatch(ctx, req)
+	}
 	if err != nil {
 		return "", err
 	}

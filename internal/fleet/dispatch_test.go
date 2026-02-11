@@ -190,3 +190,42 @@ func TestDispatch_ConcurrentDoesNotDoubleAssign(t *testing.T) {
 		t.Fatalf("expected distinct sprite assignments, got %q and %q", got[0].Sprite, got[1].Sprite)
 	}
 }
+
+func TestPlanDispatch_DoesNotMutateRegistry(t *testing.T) {
+	t.Parallel()
+
+	regPath := writeRegistry(t, map[string]string{
+		"bramble": "m-1",
+	})
+	checker := fakeStatusChecker{
+		statusByMachine: map[string]LiveStatus{
+			"m-1": {State: "idle"},
+		},
+	}
+
+	f, err := NewDispatchFleet(DispatchConfig{
+		RegistryPath: regPath,
+		Status:       checker,
+		Now:          func() time.Time { return time.Date(2026, time.February, 10, 12, 3, 0, 0, time.UTC) },
+	})
+	if err != nil {
+		t.Fatalf("NewDispatchFleet() error = %v", err)
+	}
+
+	a, err := f.PlanDispatch(context.Background(), DispatchRequest{Issue: 186, Repo: "misty-step/bitterblossom"})
+	if err != nil {
+		t.Fatalf("PlanDispatch() error = %v", err)
+	}
+	if a.Sprite != "bramble" {
+		t.Fatalf("assignment.Sprite = %q, want bramble", a.Sprite)
+	}
+
+	reg, loadErr := registry.Load(regPath)
+	if loadErr != nil {
+		t.Fatalf("registry.Load() error = %v", loadErr)
+	}
+	entry := reg.Sprites["bramble"]
+	if entry.AssignedIssue != 0 || entry.AssignedRepo != "" || !entry.AssignedAt.IsZero() {
+		t.Fatalf("expected plan to leave registry unmodified; got issue=%d repo=%q at=%v", entry.AssignedIssue, entry.AssignedRepo, entry.AssignedAt)
+	}
+}

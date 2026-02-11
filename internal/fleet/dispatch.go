@@ -156,10 +156,19 @@ func (e *FleetBusyError) Error() string {
 
 var errReserved = errors.New("fleet: sprite reserved")
 
+// PlanDispatch selects a sprite and returns the would-be assignment, with no side effects.
+func (f *Fleet) PlanDispatch(ctx context.Context, req DispatchRequest) (*Assignment, error) {
+	return f.selectAndMaybeReserve(ctx, req, false)
+}
+
 // Dispatch selects a sprite, reserves it atomically in the registry, and returns the assignment.
 //
 // Selection is deterministic: alphabetical by registry name.
 func (f *Fleet) Dispatch(ctx context.Context, req DispatchRequest) (*Assignment, error) {
+	return f.selectAndMaybeReserve(ctx, req, true)
+}
+
+func (f *Fleet) selectAndMaybeReserve(ctx context.Context, req DispatchRequest, reserve bool) (*Assignment, error) {
 	if f == nil || f.dispatch == nil {
 		return nil, fmt.Errorf("fleet dispatch: not configured (use NewDispatchFleet)")
 	}
@@ -214,12 +223,9 @@ func (f *Fleet) Dispatch(ctx context.Context, req DispatchRequest) (*Assignment,
 			continue
 		}
 
-		assignment, reserveErr := cfg.reserve(name, req)
-		if reserveErr == nil {
-			return assignment, nil
-		}
-		if errors.Is(reserveErr, errReserved) {
-			entry := reg.Sprites[name]
+		entry := reg.Sprites[name]
+		now := cfg.now().UTC()
+		if !entry.AssignedAt.IsZero() && now.Sub(entry.AssignedAt) < cfg.reservationTTL {
 			busy = append(busy, BusySpriteStatus{
 				Sprite:        name,
 				MachineID:     machineID,
@@ -231,6 +237,36 @@ func (f *Fleet) Dispatch(ctx context.Context, req DispatchRequest) (*Assignment,
 				AssignedIssue: entry.AssignedIssue,
 				AssignedRepo:  strings.TrimSpace(entry.AssignedRepo),
 				AssignedAt:    entry.AssignedAt,
+			})
+			if strings.TrimSpace(req.Sprite) != "" {
+				return nil, &FleetBusyError{Sprites: busy}
+			}
+			continue
+		}
+
+		if !reserve {
+			return &Assignment{
+				Sprite:     name,
+				MachineID:  machineID,
+				Issue:      req.Issue,
+				Repo:       strings.TrimSpace(req.Repo),
+				AssignedAt: now,
+			}, nil
+		}
+
+		assignment, reserveErr := cfg.reserve(name, req)
+		if reserveErr == nil {
+			return assignment, nil
+		}
+		if errors.Is(reserveErr, errReserved) {
+			busy = append(busy, BusySpriteStatus{
+				Sprite:        name,
+				MachineID:     machineID,
+				State:         "reserved",
+				Task:          strings.TrimSpace(live.Task),
+				Repo:          strings.TrimSpace(live.Repo),
+				Runtime:       strings.TrimSpace(live.Runtime),
+				BlockedReason: strings.TrimSpace(live.BlockedReason),
 			})
 			if strings.TrimSpace(req.Sprite) != "" {
 				return nil, &FleetBusyError{Sprites: busy}
