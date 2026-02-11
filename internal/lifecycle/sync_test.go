@@ -13,6 +13,7 @@ func TestSyncHappyPath(t *testing.T) {
 
 	fx := newFixture(t, "bramble")
 	uploaded := make([]string, 0, 8)
+	contentUploaded := make([]string, 0, 4)
 
 	cli := &sprite.MockSpriteCLI{
 		ListFn: func(context.Context) ([]string, error) {
@@ -23,6 +24,10 @@ func TestSyncHappyPath(t *testing.T) {
 		},
 		UploadFileFn: func(_ context.Context, _ string, _ string, _ string, remotePath string) error {
 			uploaded = append(uploaded, remotePath)
+			return nil
+		},
+		UploadFn: func(_ context.Context, _ string, remotePath string, _ []byte) error {
+			contentUploaded = append(contentUploaded, remotePath)
 			return nil
 		},
 	}
@@ -36,6 +41,12 @@ func TestSyncHappyPath(t *testing.T) {
 	}
 	if !containsString(uploaded, "/home/sprite/workspace/PERSONA.md") {
 		t.Fatalf("persona upload missing: %#v", uploaded)
+	}
+	if !containsString(uploaded, "/home/sprite/.local/bin/sprite-agent") {
+		t.Fatalf("agent upload missing: %#v", uploaded)
+	}
+	if !containsString(contentUploaded, "/home/sprite/anthropic-proxy.mjs") {
+		t.Fatalf("proxy upload missing: %#v", contentUploaded)
 	}
 }
 
@@ -72,6 +83,9 @@ func TestSyncBaseOnlySkipsPersonaUpload(t *testing.T) {
 		},
 		UploadFileFn: func(_ context.Context, _ string, _ string, _ string, remotePath string) error {
 			uploaded = append(uploaded, remotePath)
+			return nil
+		},
+		UploadFn: func(_ context.Context, _ string, _ string, _ []byte) error {
 			return nil
 		},
 	}

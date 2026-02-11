@@ -700,3 +700,76 @@ func TestRunExecuteWithoutOpenRouterKey_SkipsProxy(t *testing.T) {
 		t.Error("expected plan to NOT include StepEnsureProxy when no OPENROUTER_API_KEY")
 	}
 }
+
+func TestBuildScriptMkdirBeforeCD(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		script string
+	}{
+		{
+			name:   "buildSetupRepoScript",
+			script: buildSetupRepoScript("/home/sprite/workspace", "https://github.com/misty-step/bb.git", "bb"),
+		},
+		{
+			name:   "buildOneShotScript",
+			script: buildOneShotScript("/home/sprite/workspace", "/home/sprite/workspace/bb/prompt.md"),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			lines := strings.Split(tc.script, "\n")
+
+			mkdirIdx, cdIdx := -1, -1
+			for i, line := range lines {
+				if strings.HasPrefix(line, "mkdir -p ") {
+					mkdirIdx = i
+				}
+				if strings.HasPrefix(line, "cd ") && cdIdx == -1 {
+					cdIdx = i
+				}
+			}
+
+			if mkdirIdx == -1 {
+				t.Fatal("script missing mkdir -p")
+			}
+			if cdIdx == -1 {
+				t.Fatal("script missing cd")
+			}
+			if mkdirIdx >= cdIdx {
+				t.Fatalf("mkdir (line %d) must come before cd (line %d)", mkdirIdx, cdIdx)
+			}
+		})
+	}
+}
+
+func TestBuildSetupRepoScriptResetsGitState(t *testing.T) {
+	t.Parallel()
+
+	script := buildSetupRepoScript("/workspace", "https://github.com/org/repo.git", "repo")
+
+	// Must reset working tree before fetching
+	required := []string{
+		"git checkout -- .",
+		"git clean -fd",
+		"DEFAULT_BRANCH=",
+		"git fetch origin",
+		"git reset --hard",
+	}
+	for _, needle := range required {
+		if !strings.Contains(script, needle) {
+			t.Errorf("script missing %q", needle)
+		}
+	}
+
+	// Fresh clone path must include both gh and git fallback
+	if !strings.Contains(script, "gh repo clone") {
+		t.Error("script missing gh repo clone for fresh clone path")
+	}
+	if !strings.Contains(script, "git clone") {
+		t.Error("script missing git clone fallback")
+	}
+}

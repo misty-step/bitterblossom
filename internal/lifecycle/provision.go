@@ -2,6 +2,7 @@ package lifecycle
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path"
@@ -9,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/misty-step/bitterblossom/internal/proxy"
 	"github.com/misty-step/bitterblossom/internal/sprite"
 )
 
@@ -17,8 +17,9 @@ const gitAuthProbeRepository = "https://github.com/misty-step/cerberus.git"
 
 // ProvisionResult reports provisioning outcome for one sprite.
 type ProvisionResult struct {
-	Name    string `json:"name"`
-	Created bool   `json:"created"` // false when sprite already existed
+	Name      string `json:"name"`
+	MachineID string `json:"machine_id,omitempty"` // Fly machine ID, resolved best-effort
+	Created   bool   `json:"created"`              // false when sprite already existed
 }
 
 // ProvisionStage identifies a single provisioning step.
@@ -200,10 +201,7 @@ func Provision(ctx context.Context, cli sprite.SpriteCLI, cfg Config, opts Provi
 		return ProvisionResult{}, err
 	}
 
-	emitProvisionProgress(name, opts.Progress, ProvisionStageUploadProxy, "uploading anthropic proxy script")
-	if err := cli.Upload(ctx, name, proxy.ProxyScriptPath, proxy.ProxyScript); err != nil {
-		return ProvisionResult{}, err
-	}
+	// Note: anthropic proxy is uploaded by PushConfig() above, no need to duplicate here
 
 	emitProvisionProgress(name, opts.Progress, ProvisionStageRunBootstrap, "running bootstrap")
 	if _, err := cli.Exec(ctx, name, "bash /tmp/sprite-bootstrap.sh --agent-source /tmp/sprite-agent.sh", nil); err != nil {
@@ -214,6 +212,29 @@ func Provision(ctx context.Context, cli sprite.SpriteCLI, cfg Config, opts Provi
 	emitProvisionProgress(name, opts.Progress, ProvisionStageCheckpoint, "creating checkpoint")
 	_ = cli.CheckpointCreate(ctx, name, cfg.Org)
 
+	// Best-effort machine ID resolution via sprite API.
+	machineID := resolveMachineID(ctx, cli, cfg.Org, name)
+
 	emitProvisionProgress(name, opts.Progress, ProvisionStageComplete, "provision complete")
-	return ProvisionResult{Name: name, Created: created}, nil
+	return ProvisionResult{Name: name, MachineID: machineID, Created: created}, nil
+}
+
+// resolveMachineID queries the sprite API for the underlying Fly machine ID.
+// Returns empty string on any failure (best-effort, non-fatal).
+func resolveMachineID(ctx context.Context, cli sprite.SpriteCLI, org, name string) string {
+	raw, err := cli.APISprite(ctx, org, name, "/")
+	if err != nil {
+		return ""
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return ""
+	}
+	// Try common field names for machine ID.
+	for _, key := range []string{"machine_id", "id"} {
+		if v, ok := payload[key].(string); ok && v != "" {
+			return v
+		}
+	}
+	return ""
 }

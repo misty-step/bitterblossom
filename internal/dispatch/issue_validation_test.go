@@ -617,6 +617,59 @@ func TestCheckRequiredLabels(t *testing.T) {
 	}
 }
 
+func TestDefaultValidatorRalphReadyIsWarning(t *testing.T) {
+	t.Parallel()
+
+	validator := DefaultIssueValidator()
+	validator.RunGH = func(ctx context.Context, args ...string) ([]byte, error) {
+		json := `{
+			"number": 42,
+			"title": "Test issue without ralph-ready label",
+			"body": "Description with acceptance criteria:\n- [ ] Task 1\n- [ ] Task 2",
+			"state": "open",
+			"labels": [{"name": "bug"}],
+			"url": "https://github.com/misty-step/test/issues/42",
+			"closed": false
+		}`
+		return []byte(json), nil
+	}
+
+	result, err := validator.ValidateIssue(context.Background(), 42, "misty-step/test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Valid {
+		t.Fatalf("expected valid (ralph-ready should be warning, not error), errors: %v", result.Errors)
+	}
+
+	hasWarning := false
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "ralph-ready") {
+			hasWarning = true
+			break
+		}
+	}
+	if !hasWarning {
+		t.Fatalf("expected warning about missing ralph-ready, got warnings: %v", result.Warnings)
+	}
+}
+
+func TestCheckRecommendedLabels(t *testing.T) {
+	t.Parallel()
+
+	v := &IssueValidator{RecommendedLabels: []string{"ralph-ready", "reviewed"}}
+
+	missing := v.checkRecommendedLabels([]string{"bug", "ralph-ready"})
+	if len(missing) != 1 || missing[0] != "reviewed" {
+		t.Fatalf("expected [reviewed], got %v", missing)
+	}
+
+	missing = v.checkRecommendedLabels([]string{"ralph-ready", "reviewed"})
+	if len(missing) != 0 {
+		t.Fatalf("expected no missing, got %v", missing)
+	}
+}
+
 func TestFormatValidationOutput(t *testing.T) {
 	t.Parallel()
 
