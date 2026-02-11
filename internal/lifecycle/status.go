@@ -298,9 +298,15 @@ func fetchLiveSprites(ctx context.Context, cli sprite.SpriteCLI, cfg Config, opt
 		// Derive display state from raw status
 		status.State = deriveSpriteState("", item.Status)
 
+		// Compute effective stale threshold once (zero/negative defaults to DefaultStaleThreshold).
+		threshold := opts.StaleThreshold
+		if threshold <= 0 {
+			threshold = DefaultStaleThreshold
+		}
+
 		// Fetch detailed info when sprite is running and we need tasks or stale detection.
 		// LastActivity (required for stale detection) is only available from the detail endpoint.
-		needsDetail := opts.IncludeTasks || opts.StaleThreshold != 0
+		needsDetail := opts.IncludeTasks || threshold > 0
 		if needsDetail && isRunningStatus(item.Status) {
 			detail, err := fetchSpriteDetail(ctx, cli, cfg.Org, item.Name)
 			if err == nil {
@@ -318,10 +324,6 @@ func fetchLiveSprites(ctx context.Context, cli sprite.SpriteCLI, cfg Config, opt
 		}
 
 		// Flag stale sprites: running but no recent activity.
-		threshold := opts.StaleThreshold
-		if threshold <= 0 {
-			threshold = DefaultStaleThreshold
-		}
 		if status.LastActivity != nil && isRunningStatus(item.Status) {
 			if time.Since(*status.LastActivity) >= threshold {
 				status.Stale = true
