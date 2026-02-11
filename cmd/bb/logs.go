@@ -38,7 +38,7 @@ func newLogsCmd(stdout, stderr io.Writer) *cobra.Command {
 	return newLogsCmdWithDeps(stdout, stderr, defaultLogsDeps())
 }
 
-func newLogsCmdWithDeps(stdout, _ io.Writer, deps logsDeps) *cobra.Command {
+func newLogsCmdWithDeps(stdout, stderr io.Writer, deps logsDeps) *cobra.Command {
 	var files []string
 	var spriteFilter []string
 	var kindsRaw []string
@@ -114,7 +114,7 @@ func newLogsCmdWithDeps(stdout, _ io.Writer, deps logsDeps) *cobra.Command {
 			if !follow {
 				return nil
 			}
-			return followRemoteEvents(ctx, stdout, cli, names, filter, jsonMode, pollInterval, offsets)
+			return followRemoteEvents(ctx, stdout, stderr, cli, names, filter, jsonMode, pollInterval, offsets)
 		},
 	}
 
@@ -216,7 +216,10 @@ func fetchRemoteEvents(ctx context.Context, cli sprite.SpriteCLI, names []string
 	return all, offsets, nil
 }
 
-func followRemoteEvents(ctx context.Context, stdout io.Writer, cli sprite.SpriteCLI, names []string, filter events.Filter, jsonMode bool, interval time.Duration, offsets map[string]int) error {
+func followRemoteEvents(ctx context.Context, stdout, stderr io.Writer, cli sprite.SpriteCLI, names []string, filter events.Filter, jsonMode bool, interval time.Duration, offsets map[string]int) error {
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -229,11 +232,16 @@ func followRemoteEvents(ctx context.Context, stdout io.Writer, cli sprite.Sprite
 				offset := offsets[name]
 				remoteCmd := fmt.Sprintf("tail -n +%d %s 2>/dev/null", offset+1, defaultRemoteEventLog)
 				out, err := cli.Exec(ctx, name, remoteCmd, nil)
-				if err != nil || strings.TrimSpace(out) == "" {
+				if err != nil {
+					fmt.Fprintf(stderr, "logs: exec on sprite %q: %v\n", name, err)
+					continue
+				}
+				if strings.TrimSpace(out) == "" {
 					continue
 				}
 				items, err := events.ReadAll(strings.NewReader(out))
 				if err != nil {
+					fmt.Fprintf(stderr, "logs: parse events from sprite %q: %v\n", name, err)
 					continue
 				}
 				offsets[name] += len(items)

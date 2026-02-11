@@ -202,11 +202,12 @@ func TestFollowRemoteEventsReceivesNewEvents(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	var out bytes.Buffer
+	var errBuf bytes.Buffer
 	offsets := map[string]int{"bramble": 0}
 
 	done := make(chan error, 1)
 	go func() {
-		done <- followRemoteEvents(ctx, &out, cli, []string{"bramble"}, nil, false, 10*time.Millisecond, offsets)
+		done <- followRemoteEvents(ctx, &out, &errBuf, cli, []string{"bramble"}, nil, false, 10*time.Millisecond, offsets)
 	}()
 
 	time.Sleep(50 * time.Millisecond)
@@ -222,6 +223,66 @@ func TestFollowRemoteEventsReceivesNewEvents(t *testing.T) {
 	}
 	if offsets["bramble"] != 1 {
 		t.Fatalf("offsets[bramble] = %d, want 1", offsets["bramble"])
+	}
+}
+
+func TestFollowRemoteEventsLogsErrorsToStderr(t *testing.T) {
+	t.Parallel()
+
+	cli := &sprite.MockSpriteCLI{
+		ExecFn: func(context.Context, string, string, []byte) (string, error) {
+			return "", fmt.Errorf("connection timeout")
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var out bytes.Buffer
+	var errBuf bytes.Buffer
+	offsets := map[string]int{"bramble": 0}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- followRemoteEvents(ctx, &out, &errBuf, cli, []string{"bramble"}, nil, false, 10*time.Millisecond, offsets)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	if err := <-done; err != nil {
+		t.Fatalf("followRemoteEvents() error = %v", err)
+	}
+
+	stderr := errBuf.String()
+	if !strings.Contains(stderr, "connection timeout") {
+		t.Fatalf("stderr = %q, want containing 'connection timeout'", stderr)
+	}
+}
+
+func TestFollowRemoteEventsClampsZeroInterval(t *testing.T) {
+	t.Parallel()
+
+	cli := &sprite.MockSpriteCLI{
+		ExecFn: func(context.Context, string, string, []byte) (string, error) {
+			return "", nil
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var out bytes.Buffer
+	var errBuf bytes.Buffer
+	offsets := map[string]int{"bramble": 0}
+
+	done := make(chan error, 1)
+	go func() {
+		// Zero interval should be clamped to default, not panic
+		done <- followRemoteEvents(ctx, &out, &errBuf, cli, []string{"bramble"}, nil, false, 0, offsets)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	if err := <-done; err != nil {
+		t.Fatalf("followRemoteEvents(interval=0) error = %v", err)
 	}
 }
 
