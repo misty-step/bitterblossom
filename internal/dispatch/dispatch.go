@@ -741,7 +741,7 @@ func buildSetupRepoScript(workspace, cloneURL, repoDir string) string {
 		"  DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||' || echo master)",
 		"  git checkout \"$DEFAULT_BRANCH\" 2>/dev/null || git checkout master 2>/dev/null || git checkout main 2>/dev/null || true",
 		"  git fetch origin >/dev/null 2>&1 || true",
-		"  git reset --hard \"origin/$DEFAULT_BRANCH\" 2>/dev/null || true",
+		`  git reset --hard "origin/$(git rev-parse --abbrev-ref HEAD)" 2>/dev/null || true`,
 		"else",
 		"  gh repo clone " + shellQuote(cloneURL) + " " + shellQuote(repoDir) + " >/dev/null 2>&1 || git clone " + shellQuote(cloneURL) + " " + shellQuote(repoDir) + " >/dev/null 2>&1",
 		"fi",

@@ -746,6 +746,7 @@ func TestBuildScriptMkdirBeforeCD(t *testing.T) {
 	}
 }
 
+
 func TestBuildSetupRepoScriptResetsGitState(t *testing.T) {
 	t.Parallel()
 
@@ -764,6 +765,27 @@ func TestBuildSetupRepoScriptResetsGitState(t *testing.T) {
 			t.Errorf("script missing %q", needle)
 		}
 	}
+}
+
+func TestBuildSetupRepoScriptResetUsesActualBranch(t *testing.T) {
+	t.Parallel()
+
+	script := buildSetupRepoScript("/workspace", "https://github.com/org/repo.git", "repo")
+
+	// After checkout fallback, the reset target must derive from the
+	// actually checked-out branch (via rev-parse), not $DEFAULT_BRANCH.
+	if !strings.Contains(script, `git rev-parse --abbrev-ref HEAD`) {
+		t.Error("script must derive reset target from actual HEAD branch")
+	}
+	if strings.Contains(script, `origin/$DEFAULT_BRANCH`) {
+		t.Error("git reset --hard must NOT use DEFAULT_BRANCH (stale after checkout fallback)")
+	}
+}
+
+func TestBuildSetupRepoScriptFreshClone(t *testing.T) {
+	t.Parallel()
+
+	script := buildSetupRepoScript("/workspace", "https://github.com/org/repo.git", "repo")
 
 	// Fresh clone path must include both gh and git fallback
 	if !strings.Contains(script, "gh repo clone") {

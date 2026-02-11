@@ -157,7 +157,7 @@ func runAdd(cmd *cobra.Command, opts addOptions, deps addDeps) error {
 	}
 
 	// Register all new sprites atomically
-	if err := registry.WithLockedRegistry(regPath, func(reg *registry.Registry) error {
+	if err := registry.WithLockedRegistry(cmd.Context(), regPath, func(reg *registry.Registry) error {
 		for _, r := range results {
 			reg.Register(r.Name, r.MachineID)
 		}

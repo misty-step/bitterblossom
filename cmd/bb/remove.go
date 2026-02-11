@@ -137,7 +137,7 @@ func runRemove(cmd *cobra.Command, name string, opts removeOptions, deps removeD
 	writeStatus(stderr, true)
 
 	// Remove from registry atomically
-	if err := registry.WithLockedRegistry(regPath, func(reg *registry.Registry) error {
+	if err := registry.WithLockedRegistry(cmd.Context(), regPath, func(reg *registry.Registry) error {
 		reg.Unregister(name)
 		return nil
 	}); err != nil {
