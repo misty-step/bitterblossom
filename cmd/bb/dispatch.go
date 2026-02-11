@@ -11,6 +11,7 @@ import (
 	"time"
 
 	dispatchsvc "github.com/misty-step/bitterblossom/internal/dispatch"
+	"github.com/misty-step/bitterblossom/internal/fleet"
 	"github.com/misty-step/bitterblossom/internal/registry"
 	"github.com/misty-step/bitterblossom/pkg/fly"
 	"github.com/spf13/cobra"
@@ -48,6 +49,7 @@ type dispatchDeps struct {
 	newFlyClient func(token, apiURL string) (fly.MachineClient, error)
 	newRemote    func(binary, org string) *spriteCLIRemote
 	newService   func(cfg dispatchsvc.Config) (dispatchRunner, error)
+	selectSprite func(ctx context.Context, remote *spriteCLIRemote, opts dispatchOptions) (string, error)
 	pollSprite   func(ctx context.Context, remote *spriteCLIRemote, sprite string, timeout time.Duration, progress func(string)) (*waitResult, error)
 }
 
@@ -77,6 +79,9 @@ func defaultDispatchDeps() dispatchDeps {
 		},
 		newRemote:  newSpriteCLIRemote,
 		newService: newDispatchService,
+		selectSprite: func(ctx context.Context, remote *spriteCLIRemote, opts dispatchOptions) (string, error) {
+			return selectSpriteFromRegistry(ctx, remote, opts)
+		},
 		pollSprite: pollSpriteStatus,
 	}
 }
@@ -108,14 +113,9 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 	}
 
 	command := &cobra.Command{
-		Use:   "dispatch <sprite> [prompt]",
+		Use:   "dispatch [sprite] [prompt]",
 		Short: "Dispatch a task prompt to a sprite (dry-run by default)",
-		Args: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return errors.New("dispatch: sprite name is required")
-			}
-			return nil
-		},
+		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if opts.Execute {
 				opts.DryRun = false
@@ -127,6 +127,11 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 			// Validate --wait requires --execute
 			if opts.Wait && !opts.Execute {
 				return errors.New("dispatch: --wait requires --execute")
+			}
+
+			spriteArg := ""
+			if len(args) > 0 {
+				spriteArg = args[0]
 			}
 
 			prompt, err := resolveDispatchPrompt(args, opts, deps)
@@ -145,7 +150,7 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 			// Skip validation for dry-run (Execute=false) to keep planning fast and offline.
 			if opts.Execute && !opts.SkipValidation && opts.Issue > 0 {
 				validationResult, err := dispatchsvc.ValidateIssueFromRequest(cmd.Context(), dispatchsvc.Request{
-					Sprite:  args[0],
+					Sprite:  spriteArg,
 					Prompt:  prompt,
 					Repo:    opts.Repo,
 					Issue:   opts.Issue,
@@ -182,6 +187,17 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 			}
 			remote := deps.newRemote(opts.SpriteCLI, opts.Org)
 
+			if strings.TrimSpace(spriteArg) == "" {
+				if deps.selectSprite == nil {
+					return errors.New("dispatch: no sprite provided and auto-assign is not available")
+				}
+				selected, err := deps.selectSprite(cmd.Context(), remote, opts)
+				if err != nil {
+					return err
+				}
+				spriteArg = selected
+			}
+
 			// Collect auth-related environment variables to pass to sprites
 			envVars := make(map[string]string)
 			for _, key := range []string{
@@ -215,7 +231,7 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 			}
 
 			result, err := service.Run(contextOrBackground(cmd.Context()), dispatchsvc.Request{
-				Sprite:               args[0],
+				Sprite:               spriteArg,
 				Prompt:               prompt,
 				Repo:                 opts.Repo,
 				Issue:                opts.Issue,
@@ -232,7 +248,13 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 
 			// If --wait flag is set, poll for completion
 			if opts.Wait && result.Executed {
-				waitRes, waitErr := deps.pollSprite(cmd.Context(), remote, args[0], opts.Timeout, func(msg string) {
+				pollTarget := spriteArg
+				if cmd.Flags().Changed("registry") || opts.RegistryRequired {
+					if resolved, err := dispatchsvc.ResolveSprite(spriteArg, opts.RegistryPath); err == nil && strings.TrimSpace(resolved) != "" {
+						pollTarget = resolved
+					}
+				}
+				waitRes, waitErr := deps.pollSprite(cmd.Context(), remote, pollTarget, opts.Timeout, func(msg string) {
 					// Intentionally ignoring write errors for progress output
 					_, _ = fmt.Fprintln(cmd.OutOrStdout(), msg)
 				})
@@ -291,13 +313,72 @@ func resolveDispatchPrompt(args []string, opts dispatchOptions, deps dispatchDep
 	}
 
 	if len(args) < 2 {
-		return "", errors.New("dispatch: prompt is required when --file is not set")
+		if opts.Issue > 0 {
+			// Allow empty prompt: internal/dispatch will synthesize a default IssuePrompt.
+			return "", nil
+		}
+		return "", errors.New("dispatch: prompt is required when --file is not set (or use --issue)")
 	}
 	prompt := strings.TrimSpace(strings.Join(args[1:], " "))
 	if prompt == "" {
 		return "", errors.New("dispatch: prompt cannot be empty")
 	}
 	return prompt, nil
+}
+
+func selectSpriteFromRegistry(ctx context.Context, remote *spriteCLIRemote, opts dispatchOptions) (string, error) {
+	if opts.Issue <= 0 && strings.TrimSpace(opts.PromptFile) == "" {
+		return "", errors.New("dispatch: auto-assign requires --issue (or --file)")
+	}
+	if remote == nil {
+		return "", errors.New("dispatch: remote is required for auto-assign")
+	}
+
+	checker := remoteStatusChecker{
+		remote:    remote,
+		workspace: "/home/sprite/workspace",
+	}
+	f, err := fleet.NewDispatchFleet(fleet.DispatchConfig{
+		RegistryPath:     opts.RegistryPath,
+		RegistryRequired: true,
+		Status:           checker,
+	})
+	if err != nil {
+		return "", err
+	}
+	req := fleet.DispatchRequest{
+		Issue: opts.Issue,
+		Repo:  opts.Repo,
+	}
+	var assignment *fleet.Assignment
+	if opts.Execute {
+		assignment, err = f.Dispatch(ctx, req)
+	} else {
+		assignment, err = f.PlanDispatch(ctx, req)
+	}
+	if err != nil {
+		return "", err
+	}
+	return assignment.Sprite, nil
+}
+
+type remoteStatusChecker struct {
+	remote    *spriteCLIRemote
+	workspace string
+}
+
+func (c remoteStatusChecker) Check(ctx context.Context, machineID string) (fleet.LiveStatus, error) {
+	res, _, err := checkSpriteStatus(ctx, c.remote, machineID, c.workspace)
+	if res == nil {
+		return fleet.LiveStatus{State: "unknown"}, err
+	}
+	return fleet.LiveStatus{
+		State:         res.State,
+		Task:          res.Task,
+		Repo:          res.Repo,
+		Runtime:       res.Runtime,
+		BlockedReason: res.BlockedReason,
+	}, err
 }
 
 func renderDispatchResult(cmd *cobra.Command, result dispatchsvc.Result, jsonMode bool) error {

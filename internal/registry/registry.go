@@ -34,8 +34,11 @@ type Meta struct {
 }
 
 type SpriteEntry struct {
-	MachineID string    `json:"machine_id"`
-	CreatedAt time.Time `json:"created_at"`
+	MachineID     string    `json:"machine_id"`
+	CreatedAt     time.Time `json:"created_at"`
+	AssignedIssue int       `json:"assigned_issue,omitempty"`
+	AssignedRepo  string    `json:"assigned_repo,omitempty"`
+	AssignedAt    time.Time `json:"assigned_at,omitempty"`
 }
 
 // DefaultPath returns the default registry path: ~/.config/bb/registry.toml.
@@ -406,6 +409,24 @@ func applySpriteKV(entry *SpriteEntry, key, value string) error {
 			return fmt.Errorf("sprites.created_at: %w", err)
 		}
 		entry.CreatedAt = v
+	case "assigned_issue":
+		v, err := parseIntValue(value)
+		if err != nil {
+			return fmt.Errorf("sprites.assigned_issue: %w", err)
+		}
+		entry.AssignedIssue = v
+	case "assigned_repo":
+		v, err := parseStringValue(value)
+		if err != nil {
+			return fmt.Errorf("sprites.assigned_repo: %w", err)
+		}
+		entry.AssignedRepo = v
+	case "assigned_at":
+		v, err := parseTimeValue(value)
+		if err != nil {
+			return fmt.Errorf("sprites.assigned_at: %w", err)
+		}
+		entry.AssignedAt = v
 	default:
 		// Ignore unknown sprite keys for forward-compatibility.
 	}
@@ -429,6 +450,29 @@ func parseStringValue(value string) (string, error) {
 		return value[1 : len(value)-1], nil
 	}
 	return "", fmt.Errorf("expected quoted string, got %q", value)
+}
+
+func parseIntValue(value string) (int, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, fmt.Errorf("empty value")
+	}
+	// Tolerate quoted ints for forward-compat with sloppy writers.
+	if strings.HasPrefix(value, "\"") || strings.HasPrefix(value, "'") {
+		s, err := parseStringValue(value)
+		if err != nil {
+			return 0, err
+		}
+		value = s
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid int %q: %w", value, err)
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("invalid int %q: must be >= 0", value)
+	}
+	return n, nil
 }
 
 func parseTimeValue(value string) (time.Time, error) {
@@ -520,7 +564,21 @@ func writeTOMLRegistry(w io.Writer, reg *Registry) error {
 				return err
 			}
 		}
+		if entry.AssignedIssue > 0 {
+			if _, err := fmt.Fprintf(w, "assigned_issue = %d\n", entry.AssignedIssue); err != nil {
+				return err
+			}
+		}
+		if strings.TrimSpace(entry.AssignedRepo) != "" {
+			if _, err := fmt.Fprintf(w, "assigned_repo = %s\n", strconv.Quote(entry.AssignedRepo)); err != nil {
+				return err
+			}
+		}
+		if !entry.AssignedAt.IsZero() {
+			if _, err := fmt.Fprintf(w, "assigned_at = %s\n", entry.AssignedAt.Format(time.RFC3339Nano)); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
-

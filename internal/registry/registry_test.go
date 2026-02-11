@@ -28,8 +28,11 @@ func TestLoadSaveRoundTrip(t *testing.T) {
 		},
 		Sprites: map[string]SpriteEntry{
 			"bramble": {
-				MachineID: "d8901abc",
-				CreatedAt: mustParseTime(t, "2026-02-09T20:58:01-08:00"),
+				MachineID:      "d8901abc",
+				CreatedAt:      mustParseTime(t, "2026-02-09T20:58:01-08:00"),
+				AssignedIssue:  186,
+				AssignedRepo:   "misty-step/bitterblossom",
+				AssignedAt:     mustParseTime(t, "2026-02-09T21:00:00-08:00"),
 			},
 			"fern": {
 				MachineID: "e7802def",
@@ -70,6 +73,15 @@ func TestLoadSaveRoundTrip(t *testing.T) {
 		}
 		if got.CreatedAt.Format(time.RFC3339Nano) != want.CreatedAt.Format(time.RFC3339Nano) {
 			t.Fatalf("sprite %q CreatedAt mismatch: got %q want %q", name, got.CreatedAt.Format(time.RFC3339Nano), want.CreatedAt.Format(time.RFC3339Nano))
+		}
+		if got.AssignedIssue != want.AssignedIssue {
+			t.Fatalf("sprite %q AssignedIssue mismatch: got %d want %d", name, got.AssignedIssue, want.AssignedIssue)
+		}
+		if got.AssignedRepo != want.AssignedRepo {
+			t.Fatalf("sprite %q AssignedRepo mismatch: got %q want %q", name, got.AssignedRepo, want.AssignedRepo)
+		}
+		if got.AssignedAt.Format(time.RFC3339Nano) != want.AssignedAt.Format(time.RFC3339Nano) {
+			t.Fatalf("sprite %q AssignedAt mismatch: got %q want %q", name, got.AssignedAt.Format(time.RFC3339Nano), want.AssignedAt.Format(time.RFC3339Nano))
 		}
 	}
 }
@@ -233,4 +245,3 @@ func TestValidateRegistryPath_AllowsValidPaths(t *testing.T) {
 		t.Fatal("validated path is empty")
 	}
 }
-
