@@ -66,13 +66,15 @@ func PushConfig(ctx context.Context, cli sprite.SpriteCLI, cfg Config, spriteNam
 
 	// Deploy sprite-agent if present in the repo.
 	agentScript := filepath.Join(cfg.RootDir, "scripts", "sprite-agent.sh")
-	if _, err := os.Stat(agentScript); err == nil {
+	if _, err := os.Stat(agentScript); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("stat agent script %q: %w", agentScript, err)
+	} else if err == nil {
 		agentDest := path.Join(cfg.RemoteHome, ".local", "bin", "sprite-agent")
 		if _, err := cli.Exec(ctx, spriteName, "mkdir -p "+shellQuote(path.Dir(agentDest)), nil); err != nil {
 			return fmt.Errorf("create agent dir: %w", err)
 		}
 		if err := cli.UploadFile(ctx, spriteName, cfg.Org, agentScript, agentDest); err != nil {
-			return err
+			return fmt.Errorf("upload agent script: %w", err)
 		}
 		if _, err := cli.Exec(ctx, spriteName, "chmod +x "+shellQuote(agentDest), nil); err != nil {
 			return fmt.Errorf("chmod agent: %w", err)
@@ -81,7 +83,7 @@ func PushConfig(ctx context.Context, cli sprite.SpriteCLI, cfg Config, spriteNam
 
 	// Deploy anthropic proxy (embedded).
 	if err := cli.Upload(ctx, spriteName, proxy.ProxyScriptPath, proxy.ProxyScript); err != nil {
-		return err
+		return fmt.Errorf("upload anthropic proxy: %w", err)
 	}
 
 	return nil
