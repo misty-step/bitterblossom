@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/misty-step/bitterblossom/internal/registry"
 	"github.com/misty-step/bitterblossom/pkg/fly"
 )
 
@@ -439,6 +440,50 @@ func TestRunValidation(t *testing.T) {
 				t.Fatalf("expected error for case %q", tc.name)
 			}
 		})
+	}
+}
+
+func TestRegisterSpritePreservesAssignmentFields(t *testing.T) {
+	registryPath := writeTestRegistry(t, `[sprites.fern]
+machine_id = "m-old"
+created_at = "2026-02-10T00:00:00Z"
+assigned_issue = 186
+assigned_repo = "misty-step/bitterblossom"
+assigned_at = "2026-02-10T00:01:00Z"
+`)
+
+	remote := &fakeRemote{}
+	flyClient := &fakeFly{}
+	service, err := NewService(Config{
+		Remote:       remote,
+		Fly:          flyClient,
+		App:          "bb-app",
+		RegistryPath: registryPath,
+	})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	if err := service.registerSprite("fern", "m-new"); err != nil {
+		t.Fatalf("registerSprite() error = %v", err)
+	}
+
+	reg, err := registry.Load(registryPath)
+	if err != nil {
+		t.Fatalf("registry.Load() error = %v", err)
+	}
+	entry := reg.Sprites["fern"]
+	if entry.MachineID != "m-new" {
+		t.Fatalf("MachineID = %q, want %q", entry.MachineID, "m-new")
+	}
+	if entry.AssignedIssue != 186 {
+		t.Fatalf("AssignedIssue = %d, want 186", entry.AssignedIssue)
+	}
+	if entry.AssignedRepo != "misty-step/bitterblossom" {
+		t.Fatalf("AssignedRepo = %q, want %q", entry.AssignedRepo, "misty-step/bitterblossom")
+	}
+	if entry.AssignedAt.IsZero() {
+		t.Fatalf("AssignedAt is zero, want preserved")
 	}
 }
 

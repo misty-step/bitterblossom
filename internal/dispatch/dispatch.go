@@ -390,18 +390,10 @@ func (s *Service) provision(ctx context.Context, req preparedRequest) (string, e
 
 // registerSprite adds a sprite to the registry.
 func (s *Service) registerSprite(name, machineID string) error {
-	reg, err := registry.Load(s.registryPath)
-	if err != nil {
-		return fmt.Errorf("load registry: %w", err)
-	}
-
-	reg.Register(name, machineID)
-
-	if err := reg.Save(s.registryPath); err != nil {
-		return fmt.Errorf("save registry: %w", err)
-	}
-
-	return nil
+	return registry.WithLockedRegistry(s.registryPath, func(reg *registry.Registry) error {
+		reg.Register(name, machineID)
+		return nil
+	})
 }
 
 func (s *Service) needsProvision(ctx context.Context, sprite string) (bool, error) {
