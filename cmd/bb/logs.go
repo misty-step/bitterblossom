@@ -233,7 +233,7 @@ func followRemoteEvents(ctx context.Context, stdout, stderr io.Writer, cli sprit
 				remoteCmd := fmt.Sprintf("tail -n +%d %s 2>/dev/null", offset+1, defaultRemoteEventLog)
 				out, err := cli.Exec(ctx, name, remoteCmd, nil)
 				if err != nil {
-					fmt.Fprintf(stderr, "logs: exec on sprite %q: %v\n", name, err)
+					_, _ = fmt.Fprintf(stderr, "logs: exec on sprite %q: %v\n", name, err)
 					continue
 				}
 				if strings.TrimSpace(out) == "" {
@@ -241,7 +241,7 @@ func followRemoteEvents(ctx context.Context, stdout, stderr io.Writer, cli sprit
 				}
 				items, err := events.ReadAll(strings.NewReader(out))
 				if err != nil {
-					fmt.Fprintf(stderr, "logs: parse events from sprite %q: %v\n", name, err)
+					_, _ = fmt.Fprintf(stderr, "logs: parse events from sprite %q: %v\n", name, err)
 					continue
 				}
 				offsets[name] += len(items)
