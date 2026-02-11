@@ -1,3 +1,5 @@
+// Package shellutil provides safe POSIX shell string construction primitives
+// for building remote commands sent to sprites.
 package shellutil
 
 import "strings"
