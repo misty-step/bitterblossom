@@ -461,13 +461,18 @@ run_periodic_tasks() {
 stop_runner_if_needed() {
     if [[ -n "$current_runner_pid" ]]; then
         if kill -0 "$current_runner_pid" >/dev/null 2>&1; then
-            kill -TERM "$current_runner_pid" >/dev/null 2>&1 || true
+            # Kill the entire process group to catch children (e.g. claude
+            # under the PTY `script` wrapper). Fall back to direct PID kill
+            # if the process is not a group leader.
+            kill -TERM -- -"$current_runner_pid" >/dev/null 2>&1 \
+                || kill -TERM "$current_runner_pid" >/dev/null 2>&1 || true
             deadline=$(( $(date +%s) + SHUTDOWN_GRACE_SEC ))
             while kill -0 "$current_runner_pid" >/dev/null 2>&1 && (( $(date +%s) < deadline )); do
                 sleep 1
             done
             if kill -0 "$current_runner_pid" >/dev/null 2>&1; then
-                kill -KILL "$current_runner_pid" >/dev/null 2>&1 || true
+                kill -KILL -- -"$current_runner_pid" >/dev/null 2>&1 \
+                    || kill -KILL "$current_runner_pid" >/dev/null 2>&1 || true
             fi
         fi
         wait "$current_runner_pid" 2>/dev/null || true
@@ -523,7 +528,7 @@ on_exit() {
         fi
         health_json="$(collect_health_json 2>/dev/null)" || health_json='{"error":"cleanup"}'
         emit_terminal_event "task_failed" \
-            "$(jq -cn --arg reason "$exit_reason" '{reason:$reason}')" 2>/dev/null || true
+            "$(jq -cn --arg reason "$exit_reason" '{reason:$reason}' 2>/dev/null)" 2>/dev/null || true
     fi
     rm -f "$RALPH_PID_FILE" 2>/dev/null || true
 }

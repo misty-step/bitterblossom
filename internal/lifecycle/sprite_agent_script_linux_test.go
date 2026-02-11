@@ -268,14 +268,13 @@ func TestSpriteAgentExitTrapKillsClaude(t *testing.T) {
 	_ = cmd.Process.Signal(syscall.SIGTERM)
 	_ = cmd.Wait()
 
-	// Give a moment for cleanup.
-	time.Sleep(500 * time.Millisecond)
+	// cmd.Wait() blocks until the EXIT trap completes, so no sleep needed.
 
 	// Verify Claude process is dead.
 	checkCmd := exec.Command("kill", "-0", claudePID)
 	if checkCmd.Run() == nil {
 		// Process still alive — cleanup failed.
-		_ = exec.Command("kill", "-9", claudePID).Run()
+		_ = exec.Command("kill", "-9", claudePID).Run() // best-effort cleanup; test already failing
 		t.Fatal("Claude process survived ralph death — EXIT trap failed to kill it")
 	}
 
