@@ -512,6 +512,25 @@ on_signal() {
 trap 'on_signal TERM' TERM
 trap 'on_signal INT' INT
 
+# Log exit reason for debugging (Issue #209: ralph dies silently)
+log_exit_reason() {
+    local exit_code=$?
+    local reason="exit"
+    if [[ -n "${shutdown_signal:-}" ]]; then
+        reason="signal_${shutdown_signal}"
+    elif [[ "$exit_code" -ne 0 ]]; then
+        reason="error_exit_${exit_code}"
+    fi
+    printf '[agent] EXIT detected: code=%d reason=%s at=%s\n' \
+        "$exit_code" "$reason" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$RALPH_LOG"
+    # Ensure terminal event is emitted if we haven't already
+    if [[ "$terminal_event_emitted" == false ]]; then
+        health_json="$(collect_health_json)"
+        emit_terminal_event "task_failed" "{\"reason\":\"unexpected_exit\",\"exit_code\":$exit_code}"
+    fi
+}
+trap 'log_exit_reason' EXIT
+
 if [[ ! -f "$PROMPT_FILE" ]]; then
     health_json="$(collect_health_json)"
     emit_terminal_event "task_failed" '{"reason":"PROMPT.md missing"}'
@@ -578,8 +597,16 @@ while (( iteration < MAX_ITERATIONS )); do
     printf '[agent] iteration=%d claude_exit=%s at=%s\n' \
         "$iteration" "$exit_code" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$RALPH_LOG"
 
-    update_tokens_from_iteration_output
-    check_error_loop
+    # Wrap post-iteration tasks to prevent set -e from killing the script
+    # on non-fatal errors (Issue #209: ralph dies silently)
+    if ! update_tokens_from_iteration_output 2>/dev/null; then
+        printf '[agent] iteration=%d update_tokens_failed at=%s\n' \
+            "$iteration" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$RALPH_LOG"
+    fi
+    if ! check_error_loop 2>/dev/null; then
+        printf '[agent] iteration=%d check_error_loop_failed at=%s\n' \
+            "$iteration" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$RALPH_LOG"
+    fi
 done
 
 if [[ "$terminal_event_emitted" == false ]]; then
