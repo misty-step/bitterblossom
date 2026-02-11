@@ -10,7 +10,6 @@ import (
 	"github.com/misty-step/bitterblossom/internal/contracts"
 	"github.com/misty-step/bitterblossom/internal/fleet"
 	"github.com/misty-step/bitterblossom/internal/sprite"
-	"github.com/misty-step/bitterblossom/pkg/fly"
 	"github.com/spf13/cobra"
 )
 
@@ -21,12 +20,12 @@ func TestComposeDiffJSON(t *testing.T) {
 		parseComposition: func(string) (fleet.Composition, error) {
 			return testComposition(), nil
 		},
-		newClient: func(string, string) (fly.MachineClient, error) {
-			return &fly.MockMachineClient{
-				ListFn: func(context.Context, string) ([]fly.Machine, error) {
+		newCLI: func(string, string) sprite.SpriteCLI {
+			return &sprite.MockSpriteCLI{
+				ListFn: func(context.Context) ([]string, error) {
 					return nil, nil
 				},
-			}, nil
+			}
 		},
 	}
 
@@ -34,7 +33,7 @@ func TestComposeDiffJSON(t *testing.T) {
 	var stdout bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&stdout)
-	cmd.SetArgs([]string{"--app", "test-app", "--token", "test-token", "--json", "diff"})
+	cmd.SetArgs([]string{"--json", "diff"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("cmd.Execute() error = %v", err)
@@ -60,16 +59,16 @@ func TestComposeApplyDryRunDefault(t *testing.T) {
 		parseComposition: func(string) (fleet.Composition, error) {
 			return testComposition(), nil
 		},
-		newClient: func(string, string) (fly.MachineClient, error) {
-			return &fly.MockMachineClient{
-				ListFn: func(context.Context, string) ([]fly.Machine, error) {
+		newCLI: func(string, string) sprite.SpriteCLI {
+			return &sprite.MockSpriteCLI{
+				ListFn: func(context.Context) ([]string, error) {
 					return nil, nil
 				},
-				CreateFn: func(context.Context, fly.CreateRequest) (fly.Machine, error) {
+				CreateFn: func(context.Context, string, string) error {
 					createCalls++
-					return fly.Machine{ID: "m1"}, nil
+					return nil
 				},
-			}, nil
+			}
 		},
 	}
 
@@ -77,7 +76,7 @@ func TestComposeApplyDryRunDefault(t *testing.T) {
 	var stdout bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&stdout)
-	cmd.SetArgs([]string{"--app", "test-app", "--token", "test-token", "apply"})
+	cmd.SetArgs([]string{"apply"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("cmd.Execute() error = %v", err)
@@ -98,16 +97,16 @@ func TestComposeApplyExecuteRunsActions(t *testing.T) {
 		parseComposition: func(string) (fleet.Composition, error) {
 			return testComposition(), nil
 		},
-		newClient: func(string, string) (fly.MachineClient, error) {
-			return &fly.MockMachineClient{
-				ListFn: func(context.Context, string) ([]fly.Machine, error) {
+		newCLI: func(string, string) sprite.SpriteCLI {
+			return &sprite.MockSpriteCLI{
+				ListFn: func(context.Context) ([]string, error) {
 					return nil, nil
 				},
-				CreateFn: func(context.Context, fly.CreateRequest) (fly.Machine, error) {
+				CreateFn: func(context.Context, string, string) error {
 					createCalls++
-					return fly.Machine{ID: "m1"}, nil
+					return nil
 				},
-			}, nil
+			}
 		},
 	}
 
@@ -115,7 +114,7 @@ func TestComposeApplyExecuteRunsActions(t *testing.T) {
 	var stdout bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&stdout)
-	cmd.SetArgs([]string{"--app", "test-app", "--token", "test-token", "apply", "--execute"})
+	cmd.SetArgs([]string{"apply", "--execute"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("cmd.Execute() error = %v", err)
@@ -135,22 +134,12 @@ func TestComposeStatusJSON(t *testing.T) {
 		parseComposition: func(string) (fleet.Composition, error) {
 			return testComposition(), nil
 		},
-		newClient: func(string, string) (fly.MachineClient, error) {
-			return &fly.MockMachineClient{
-				ListFn: func(context.Context, string) ([]fly.Machine, error) {
-					return []fly.Machine{
-						{
-							ID:    "m1",
-							Name:  "bramble",
-							State: "running",
-							Metadata: map[string]string{
-								"persona":        "bramble",
-								"config_version": "1",
-							},
-						},
-					}, nil
+		newCLI: func(string, string) sprite.SpriteCLI {
+			return &sprite.MockSpriteCLI{
+				ListFn: func(context.Context) ([]string, error) {
+					return []string{"bramble"}, nil
 				},
-			}, nil
+			}
 		},
 	}
 
@@ -158,7 +147,7 @@ func TestComposeStatusJSON(t *testing.T) {
 	var stdout bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&stdout)
-	cmd.SetArgs([]string{"--app", "test-app", "--token", "test-token", "--json", "status"})
+	cmd.SetArgs([]string{"--json", "status"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("cmd.Execute() error = %v", err)
@@ -205,6 +194,55 @@ func TestRootWiresComposeCommand(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("compose command not wired to root")
+	}
+}
+
+func TestNamesToSpriteStatuses(t *testing.T) {
+	t.Parallel()
+
+	comp := testComposition()
+	statuses := namesToSpriteStatuses([]string{"charlie", "bramble", "alpha"}, comp)
+	if len(statuses) != 3 {
+		t.Fatalf("len = %d, want 3", len(statuses))
+	}
+	// Should be sorted by name
+	if statuses[0].Name != "alpha" {
+		t.Fatalf("statuses[0].Name = %q, want alpha", statuses[0].Name)
+	}
+	if statuses[1].Name != "bramble" {
+		t.Fatalf("statuses[1].Name = %q, want bramble", statuses[1].Name)
+	}
+	if statuses[2].Name != "charlie" {
+		t.Fatalf("statuses[2].Name = %q, want charlie", statuses[2].Name)
+	}
+	// All should have idle state
+	for _, s := range statuses {
+		if s.State != sprite.StateIdle {
+			t.Fatalf("state for %q = %v, want idle", s.Name, s.State)
+		}
+	}
+	// "bramble" matches composition: should have Persona and ConfigVersion
+	if statuses[1].Persona != "bramble" {
+		t.Fatalf("bramble persona = %q, want bramble", statuses[1].Persona)
+	}
+	if statuses[1].ConfigVersion != "1" {
+		t.Fatalf("bramble config = %q, want 1", statuses[1].ConfigVersion)
+	}
+	// "alpha" and "charlie" are extras: no metadata
+	if statuses[0].Persona != "" {
+		t.Fatalf("alpha persona = %q, want empty", statuses[0].Persona)
+	}
+	if statuses[2].Persona != "" {
+		t.Fatalf("charlie persona = %q, want empty", statuses[2].Persona)
+	}
+}
+
+func TestNamesToSpriteStatusesEmpty(t *testing.T) {
+	t.Parallel()
+
+	statuses := namesToSpriteStatuses(nil, fleet.Composition{})
+	if len(statuses) != 0 {
+		t.Fatalf("len = %d, want 0", len(statuses))
 	}
 }
 
