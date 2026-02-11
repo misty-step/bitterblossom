@@ -234,10 +234,10 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 		return Result{}, fmt.Errorf("dispatch: determine provisioning need: %w", err)
 	}
 
+	// Always use the sprite name for remote commands — sprite exec -s
+	// expects names, not machine IDs. The machine ID is only used for
+	// registry-based provisioning checks.
 	remoteSprite := prepared.Sprite
-	if strings.TrimSpace(prepared.MachineID) != "" {
-		remoteSprite = strings.TrimSpace(prepared.MachineID)
-	}
 
 	plan := s.buildPlan(prepared, provisionNeeded)
 	result := Result{
@@ -277,7 +277,6 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 		}
 		if strings.TrimSpace(machineID) != "" {
 			prepared.MachineID = machineID
-			remoteSprite = machineID
 		}
 		result.Provisioned = true
 		if err := transition(EventProvisionSucceeded); err != nil {

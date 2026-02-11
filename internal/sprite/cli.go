@@ -239,16 +239,22 @@ func (c CLI) UploadFile(ctx context.Context, name, org, localPath, remotePath st
 	return nil
 }
 
-// Upload writes content directly to a sprite path.
+// Upload writes content directly to a sprite path via stdin.
 func (c CLI) Upload(ctx context.Context, name, remotePath string, content []byte) error {
-	args := withOrgArgs(
-		[]string{"exec", "-s", name, "--", "cat", ">", remotePath},
-		c.resolvedOrg(""),
-	)
-	if _, err := c.run(ctx, args, content); err != nil {
+	// Use Exec (bash -ceu) so shell redirection works.
+	// Direct args like ["cat", ">", path] fail because sprite exec
+	// doesn't interpret shell metacharacters without a shell wrapper.
+	cmd := "cat > " + shellQuote(remotePath)
+	_, err := c.Exec(ctx, name, cmd, content)
+	if err != nil {
 		return fmt.Errorf("upload content to sprite %q:%q: %w", name, remotePath, err)
 	}
 	return nil
+}
+
+// shellQuote escapes a string for safe use in shell commands.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }
 
 // API calls sprite API endpoint in one org.

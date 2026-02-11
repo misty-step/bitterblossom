@@ -487,7 +487,7 @@ assigned_at = "2026-02-10T00:01:00Z"
 	}
 }
 
-func TestRunExecuteUsesMachineIDWhenRegistryResolves(t *testing.T) {
+func TestRunExecuteUsesNameNotMachineIDForRemoteOps(t *testing.T) {
 	registryPath := writeTestRegistry(t, `[sprites.fern]
 machine_id = "m-def456"
 `)
@@ -525,17 +525,19 @@ machine_id = "m-def456"
 	if len(flyClient.createReqs) != 0 {
 		t.Fatalf("unexpected create calls: %d", len(flyClient.createReqs))
 	}
+	// Remote ops (exec/upload) should use sprite name, not machine ID.
+	// sprite exec -s expects names, not Fly machine IDs.
 	if len(remote.execCalls) != 2 {
 		t.Fatalf("exec calls = %d, want 2", len(remote.execCalls))
 	}
-	if remote.execCalls[0].sprite != "m-def456" {
-		t.Fatalf("exec sprite = %q, want machine id %q", remote.execCalls[0].sprite, "m-def456")
+	if remote.execCalls[0].sprite != "fern" {
+		t.Fatalf("exec sprite = %q, want name %q (not machine ID)", remote.execCalls[0].sprite, "fern")
 	}
 	if len(remote.uploads) != 2 {
 		t.Fatalf("upload calls = %d, want 2", len(remote.uploads))
 	}
-	if remote.uploads[0].sprite != "m-def456" {
-		t.Fatalf("upload sprite = %q, want machine id %q", remote.uploads[0].sprite, "m-def456")
+	if remote.uploads[0].sprite != "fern" {
+		t.Fatalf("upload sprite = %q, want name %q (not machine ID)", remote.uploads[0].sprite, "fern")
 	}
 }
 
@@ -580,8 +582,8 @@ app = "bb-app"
 	if len(remote.execCalls) != 2 {
 		t.Fatalf("exec calls = %d, want 2", len(remote.execCalls))
 	}
-	if remote.execCalls[0].sprite != "m-created" {
-		t.Fatalf("exec sprite = %q, want created machine id %q", remote.execCalls[0].sprite, "m-created")
+	if remote.execCalls[0].sprite != "fern" {
+		t.Fatalf("exec sprite = %q, want name %q (not machine ID)", remote.execCalls[0].sprite, "fern")
 	}
 
 	machineID, lookupErr := ResolveSprite("fern", registryPath)
