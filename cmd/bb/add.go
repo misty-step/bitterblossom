@@ -117,7 +117,11 @@ func runAdd(cmd *cobra.Command, opts addOptions, deps addDeps) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = os.Remove(renderedSettings) }()
+	defer func() {
+		if renderedSettings != "" {
+			_ = os.Remove(renderedSettings)
+		}
+	}()
 
 	runCtx, cancel := context.WithTimeout(cmd.Context(), opts.Timeout)
 	defer cancel()
@@ -149,31 +153,42 @@ func runAdd(cmd *cobra.Command, opts addOptions, deps addDeps) error {
 			return fmt.Errorf("provision %q: %w", name, err)
 		}
 		writeStatus(stderr, true)
-		results = append(results, addResult{Name: name, Created: provResult.Created})
+		results = append(results, addResult{Name: name, MachineID: provResult.MachineID, Created: provResult.Created})
 	}
 
 	// Register all new sprites atomically
 	if err := registry.WithLockedRegistry(regPath, func(reg *registry.Registry) error {
 		for _, r := range results {
-			reg.Register(r.Name, "")
+			reg.Register(r.Name, r.MachineID)
 		}
 		return nil
 	}); err != nil {
 		return fmt.Errorf("update registry: %w", err)
 	}
 
-	_, _ = fmt.Fprintf(stderr, "\nRegistry updated (%d sprites total).\n", reg.Count()+len(results))
+	// Reload registry for accurate count after atomic update.
+	updatedReg, err := registry.Load(regPath)
+	if err != nil {
+		return fmt.Errorf("reload registry: %w", err)
+	}
+
+	_, _ = fmt.Fprintf(stderr, "\nRegistry updated (%d sprites total).\n", updatedReg.Count())
 
 	return contracts.WriteJSON(cmd.OutOrStdout(), "add", map[string]any{
 		"added": results,
-		"total": reg.Count() + len(results),
+		"total": updatedReg.Count(),
 	})
 }
 
 type addResult struct {
-	Name    string `json:"name"`
-	Created bool   `json:"created"`
+	Name      string `json:"name"`
+	MachineID string `json:"machine_id,omitempty"`
+	Created   bool   `json:"created"`
 }
+
+// namePoolScanMultiplier limits how far past the pool size we scan before
+// declaring exhaustion. Keeps the loop bounded even when many names are taken.
+const namePoolScanMultiplier = 10
 
 func pickNewNames(reg *registry.Registry, customName string, count int) ([]string, error) {
 	if customName != "" {
@@ -198,7 +213,7 @@ func pickNewNames(reg *registry.Registry, customName string, count int) ([]strin
 			existing[candidate] = struct{}{}
 		}
 		// Safety: don't loop forever if pool is exhausted
-		if i > names.Count()*10 {
+		if i > names.Count()*namePoolScanMultiplier {
 			return nil, fmt.Errorf("cannot find %d available names (pool exhausted)", count)
 		}
 	}

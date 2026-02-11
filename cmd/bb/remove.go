@@ -96,15 +96,12 @@ func runRemove(cmd *cobra.Command, name string, opts removeOptions, deps removeD
 	cfg := defaultLifecycleConfig(rootDir, opts.Org)
 	cli := deps.newCLI(opts.SpriteCLI, opts.Org)
 
-	runCtx, cancel := context.WithTimeout(cmd.Context(), opts.Timeout)
-	defer cancel()
-
-	// Check if busy (unless --force)
+	// Check if busy and confirm before starting the timeout clock.
 	if !opts.Force {
-		busy, err := deps.isBusy(runCtx, cli, name)
+		busy, err := deps.isBusy(cmd.Context(), cli, name)
 		if err != nil {
 			// Non-fatal: can't determine state, warn but proceed to confirmation
-			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: cannot determine sprite state: %v\n", err)
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: cannot determine sprite state, proceeding as if not busy: %v\n", err)
 		} else if busy {
 			return fmt.Errorf("sprite %q is busy — use --force to remove anyway", name)
 		}
@@ -120,6 +117,10 @@ func runRemove(cmd *cobra.Command, name string, opts removeOptions, deps removeD
 			})
 		}
 	}
+
+	// Start timeout after confirmation so user think-time doesn't consume it.
+	runCtx, cancel := context.WithTimeout(cmd.Context(), opts.Timeout)
+	defer cancel()
 
 	stderr := cmd.ErrOrStderr()
 	_, _ = fmt.Fprintf(stderr, "  Destroying %s... ", name)
@@ -144,11 +145,11 @@ func runRemove(cmd *cobra.Command, name string, opts removeOptions, deps removeD
 	}
 
 	// Reload for accurate count
-	reg, _ = registry.Load(regPath)
-	total := 0
-	if reg != nil {
-		total = reg.Count()
+	reg, err = registry.Load(regPath)
+	if err != nil {
+		return fmt.Errorf("reload registry: %w", err)
 	}
+	total := reg.Count()
 
 	_, _ = fmt.Fprintf(stderr, "Registry updated (%d sprites total).\n", total)
 

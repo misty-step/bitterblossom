@@ -120,7 +120,7 @@ func TestAddCmdWithMockProvision(t *testing.T) {
 		},
 		provision: func(ctx context.Context, cli sprite.SpriteCLI, cfg lifecycle.Config, opts lifecycle.ProvisionOpts) (lifecycle.ProvisionResult, error) {
 			provisioned = append(provisioned, opts.Name)
-			return lifecycle.ProvisionResult{Name: opts.Name, Created: true}, nil
+			return lifecycle.ProvisionResult{Name: opts.Name, MachineID: "m-" + opts.Name, Created: true}, nil
 		},
 		registryPath: func() string { return regPath },
 	}
@@ -148,5 +148,24 @@ func TestAddCmdWithMockProvision(t *testing.T) {
 	}
 	if envelope["command"] != "add" {
 		t.Fatalf("command = %v, want add", envelope["command"])
+	}
+
+	// Verify registry was updated with correct machine IDs
+	updatedReg, err := registry.Load(regPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if updatedReg.Count() != 2 {
+		t.Fatalf("registry count = %d, want 2", updatedReg.Count())
+	}
+	for _, name := range []string{"bramble", "fern"} {
+		machineID, exists := updatedReg.LookupMachine(name)
+		if !exists {
+			t.Fatalf("sprite %q not found in registry", name)
+		}
+		wantID := "m-" + name
+		if machineID != wantID {
+			t.Fatalf("sprite %q machine_id = %q, want %q", name, machineID, wantID)
+		}
 	}
 }
