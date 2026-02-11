@@ -28,8 +28,12 @@ const UPSTREAM_BASE = process.env.UPSTREAM_BASE || 'https://openrouter.ai';
 const UPSTREAM_PATH = process.env.UPSTREAM_PATH || '/api/v1/chat/completions';
 const API_KEY = process.env.OPENROUTER_API_KEY || '';
 const TARGET_MODEL = process.env.TARGET_MODEL || 'moonshotai/kimi-k2.5';
-const MAX_RETRIES = parseInt(process.env.MAX_RETRIES || '3');
-const RETRY_BASE_DELAY_MS = parseInt(process.env.RETRY_BASE_DELAY_MS || '1000');
+// Validate retry configuration with safe defaults
+const MAX_RETRIES_RAW = parseInt(process.env.MAX_RETRIES || '3');
+const MAX_RETRIES = isNaN(MAX_RETRIES_RAW) || MAX_RETRIES_RAW < 1 ? 3 : MAX_RETRIES_RAW;
+
+const RETRY_BASE_DELAY_MS_RAW = parseInt(process.env.RETRY_BASE_DELAY_MS || '1000');
+const RETRY_BASE_DELAY_MS = isNaN(RETRY_BASE_DELAY_MS_RAW) || RETRY_BASE_DELAY_MS_RAW < 0 ? 1000 : RETRY_BASE_DELAY_MS_RAW;
 const UPSTREAM_TIMEOUT_MS = 300000; // 5 minutes
 
 // ── Retry Helpers ────────────────────────────────────────────────────
@@ -43,7 +47,10 @@ function isRetryableStatus(code) {
 }
 
 function retryDelay(attempt) {
-  return Math.min(RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1), 10000);
+  const baseDelay = Math.min(RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1), 10000);
+  // Add jitter (±25%) to prevent thundering herd when upstream recovers
+  const jitter = baseDelay * 0.25 * (Math.random() * 2 - 1);
+  return Math.max(0, Math.floor(baseDelay + jitter));
 }
 
 function attemptUpstreamRequest(url, payload) {
@@ -395,10 +402,19 @@ const server = http.createServer((req, res) => {
       method: 'HEAD',
       timeout: 5000,
     }, (checkRes) => {
-      reply(200, {
-        status: 'ok', model: TARGET_MODEL, port: PORT,
-        upstream: { reachable: true, status: checkRes.statusCode },
-      });
+      // Only consider upstream reachable for 2xx status codes
+      const isReachable = checkRes.statusCode >= 200 && checkRes.statusCode < 300;
+      if (isReachable) {
+        reply(200, {
+          status: 'ok', model: TARGET_MODEL, port: PORT,
+          upstream: { reachable: true, status: checkRes.statusCode },
+        });
+      } else {
+        reply(503, {
+          status: 'degraded', model: TARGET_MODEL, port: PORT,
+          upstream: { reachable: false, status: checkRes.statusCode, error: 'non-2xx response' },
+        });
+      }
     });
     checkReq.on('error', (err) => {
       reply(503, {
