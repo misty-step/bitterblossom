@@ -70,11 +70,27 @@ func validateRegistryPath(path string) (string, error) {
 		return "", fmt.Errorf("registry path: %q must have .toml extension", abs)
 	}
 
-	// Block obviously dangerous system paths (but allow /tmp, /var/folders for macOS temp).
-	blocked := []string{"/etc/", "/usr/", "/bin/", "/sbin/", "/dev/", "/proc/", "/sys/"}
+	// Resolve symlinks on the parent directory so that a symlinked tree
+	// (e.g., /tmp/bb -> /etc) is caught by the blocked-prefix check.
+	dir := filepath.Dir(abs)
+	resolvedDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		// Parent dir may not exist yet (first run). Fall through to
+		// the blocked-prefix check on the unresolved path.
+		resolvedDir = dir
+	}
+	resolved := filepath.Join(resolvedDir, filepath.Base(abs))
+
+	// Block obviously dangerous system paths.
+	// Check both the original and resolved paths to handle platform symlinks
+	// (e.g., macOS: /etc -> /private/etc).
+	blocked := []string{"/etc/", "/usr/", "/bin/", "/sbin/", "/dev/", "/proc/", "/sys/", "/private/etc/", "/private/var/db/"}
 	for _, prefix := range blocked {
 		if strings.HasPrefix(abs, prefix) {
 			return "", fmt.Errorf("registry path: %q is in a protected system directory", abs)
+		}
+		if strings.HasPrefix(resolved, prefix) {
+			return "", fmt.Errorf("registry path: %q resolves to protected system directory %q", abs, resolved)
 		}
 	}
 
