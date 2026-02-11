@@ -8,11 +8,13 @@
 // endpoint.
 //
 // Environment variables:
-//   PROXY_PORT          — listen port (default 4000)
-//   UPSTREAM_BASE       — upstream base URL (default https://openrouter.ai)
-//   UPSTREAM_PATH       — upstream path (default /api/v1/chat/completions)
-//   OPENROUTER_API_KEY  — API key for upstream authentication
-//   TARGET_MODEL        — model ID to request (default moonshotai/kimi-k2.5)
+//   PROXY_PORT             — listen port (default 4000)
+//   UPSTREAM_BASE          — upstream base URL (default https://openrouter.ai)
+//   UPSTREAM_PATH          — upstream path (default /api/v1/chat/completions)
+//   OPENROUTER_API_KEY     — API key for upstream authentication
+//   TARGET_MODEL           — model ID to request (default moonshotai/kimi-k2.5)
+//   MAX_RETRIES            — upstream retry attempts (default 3)
+//   RETRY_BASE_DELAY_MS    — base delay for exponential backoff (default 1000)
 //
 // Zero external dependencies — uses only Node.js builtins.
 
@@ -26,6 +28,126 @@ const UPSTREAM_BASE = process.env.UPSTREAM_BASE || 'https://openrouter.ai';
 const UPSTREAM_PATH = process.env.UPSTREAM_PATH || '/api/v1/chat/completions';
 const API_KEY = process.env.OPENROUTER_API_KEY || '';
 const TARGET_MODEL = process.env.TARGET_MODEL || 'moonshotai/kimi-k2.5';
+// Validate retry configuration with safe defaults
+const MAX_RETRIES_RAW = parseInt(process.env.MAX_RETRIES || '3');
+const MAX_RETRIES = isNaN(MAX_RETRIES_RAW) || MAX_RETRIES_RAW < 1 ? 3 : MAX_RETRIES_RAW;
+
+const RETRY_BASE_DELAY_MS_RAW = parseInt(process.env.RETRY_BASE_DELAY_MS || '1000');
+const RETRY_BASE_DELAY_MS = isNaN(RETRY_BASE_DELAY_MS_RAW) || RETRY_BASE_DELAY_MS_RAW < 0 ? 1000 : RETRY_BASE_DELAY_MS_RAW;
+const UPSTREAM_TIMEOUT_MS = 300000; // 5 minutes
+
+// ── Retry Helpers ────────────────────────────────────────────────────
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function isRetryableStatus(code) {
+  return code === 429 || code >= 500;
+}
+
+function retryDelay(attempt) {
+  const baseDelay = Math.min(RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1), 10000);
+  // Add jitter (±25%) to prevent thundering herd when upstream recovers
+  const jitter = baseDelay * 0.25 * (Math.random() * 2 - 1);
+  return Math.max(0, Math.floor(baseDelay + jitter));
+}
+
+function attemptUpstreamRequest(url, payload) {
+  return new Promise((resolve, reject) => {
+    const upstream = https.request({
+      hostname: url.hostname,
+      port: url.port || 443,
+      path: url.pathname,
+      method: 'POST',
+      timeout: UPSTREAM_TIMEOUT_MS,
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload),
+        'Authorization': `Bearer ${API_KEY}`,
+      },
+    }, resolve);
+
+    upstream.on('error', reject);
+    upstream.on('timeout', () => {
+      upstream.destroy();
+      reject(new Error('upstream timeout (300s)'));
+    });
+    upstream.write(payload);
+    upstream.end();
+  });
+}
+
+function readResponseBody(response) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    response.on('data', (c) => { body += c; });
+    response.on('end', () => resolve(body));
+    response.on('error', (err) => reject(err));
+  });
+}
+
+async function forwardWithRetry(res, openaiBody, requestModel) {
+  const payload = JSON.stringify(openaiBody);
+  const url = new URL(UPSTREAM_BASE + UPSTREAM_PATH);
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    let shouldRetry = false;
+
+    try {
+      const upstreamRes = await attemptUpstreamRequest(url, payload);
+
+      if (upstreamRes.statusCode === 200) {
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+        });
+        streamAnthropicResponse(res, upstreamRes, requestModel);
+        return;
+      }
+
+      // Non-200 response
+      const errBody = await readResponseBody(upstreamRes);
+      console.error(`[proxy] attempt ${attempt}/${MAX_RETRIES}: upstream HTTP ${upstreamRes.statusCode}: ${errBody.slice(0, 500)}`);
+
+      // Non-retryable or final attempt — return error to client
+      if (!isRetryableStatus(upstreamRes.statusCode) || attempt === MAX_RETRIES) {
+        const suffix = attempt > 1 ? ` after ${attempt} attempts` : '';
+        res.writeHead(upstreamRes.statusCode, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          type: 'error',
+          error: { type: 'api_error', message: `Upstream API error (HTTP ${upstreamRes.statusCode})${suffix}` },
+        }));
+        return;
+      }
+
+      shouldRetry = true;
+
+    } catch (err) {
+      console.error(`[proxy] attempt ${attempt}/${MAX_RETRIES}: ${err.message}`);
+
+      if (attempt === MAX_RETRIES) {
+        if (!res.headersSent) {
+          res.writeHead(502, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            type: 'error',
+            error: { type: 'api_error', message: `Upstream connection failed after ${MAX_RETRIES} attempts` },
+          }));
+        }
+        return;
+      }
+
+      shouldRetry = true;
+    }
+
+    if (shouldRetry) {
+      const delay = retryDelay(attempt);
+      console.error(`[proxy] retrying in ${delay}ms...`);
+      await sleep(delay);
+    }
+  }
+}
 
 // ── Request Translation ──────────────────────────────────────────────
 
@@ -248,7 +370,7 @@ function streamAnthropicResponse(res, upstream, requestModel) {
 
   upstream.on('end', () => { if (!res.writableEnded) finish(); });
   upstream.on('error', (err) => {
-    console.error('[proxy] upstream error:', err.message);
+    console.error('[proxy] upstream stream error:', err.message);
     if (!res.writableEnded) res.end();
   });
 }
@@ -256,10 +378,58 @@ function streamAnthropicResponse(res, upstream, requestModel) {
 // ── HTTP Server ──────────────────────────────────────────────────────
 
 const server = http.createServer((req, res) => {
-  // Health check
+  // Health check (shallow — local server only)
   if (req.method === 'GET' && (req.url === '/health' || req.url === '/')) {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'ok', model: TARGET_MODEL, port: PORT }));
+    return;
+  }
+
+  // Deep health check — tests upstream reachability
+  if (req.method === 'GET' && req.url === '/health/deep') {
+    const url = new URL(UPSTREAM_BASE);
+    let replied = false;
+    const reply = (status, body) => {
+      if (replied) return;
+      replied = true;
+      res.writeHead(status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(body));
+    };
+    const checkReq = https.request({
+      hostname: url.hostname,
+      port: url.port || 443,
+      path: '/',
+      method: 'HEAD',
+      timeout: 5000,
+    }, (checkRes) => {
+      // Only consider upstream reachable for 2xx status codes
+      const isReachable = checkRes.statusCode >= 200 && checkRes.statusCode < 300;
+      if (isReachable) {
+        reply(200, {
+          status: 'ok', model: TARGET_MODEL, port: PORT,
+          upstream: { reachable: true, status: checkRes.statusCode },
+        });
+      } else {
+        reply(503, {
+          status: 'degraded', model: TARGET_MODEL, port: PORT,
+          upstream: { reachable: false, status: checkRes.statusCode, error: 'non-2xx response' },
+        });
+      }
+    });
+    checkReq.on('error', (err) => {
+      reply(503, {
+        status: 'degraded', model: TARGET_MODEL, port: PORT,
+        upstream: { reachable: false, error: err.message },
+      });
+    });
+    checkReq.on('timeout', () => {
+      checkReq.destroy();
+      reply(503, {
+        status: 'degraded', model: TARGET_MODEL, port: PORT,
+        upstream: { reachable: false, error: 'timeout' },
+      });
+    });
+    checkReq.end();
     return;
   }
 
@@ -294,64 +464,16 @@ const server = http.createServer((req, res) => {
 
     const openaiBody = translateRequest(anthropicBody);
     const requestModel = anthropicBody.model || TARGET_MODEL;
-    const payload = JSON.stringify(openaiBody);
-    const url = new URL(UPSTREAM_BASE + UPSTREAM_PATH);
 
     console.log(`[proxy] ${requestModel} → ${TARGET_MODEL} | ${openaiBody.messages.length} msgs | ${openaiBody.tools?.length || 0} tools`);
 
-    const upstream = https.request({
-      hostname: url.hostname,
-      port: url.port || 443,
-      path: url.pathname,
-      method: 'POST',
-      timeout: 300000, // 5 minute timeout
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(payload),
-        'Authorization': `Bearer ${API_KEY}`,
-      },
-    }, (upstreamRes) => {
-      if (upstreamRes.statusCode !== 200) {
-        let errBody = '';
-        upstreamRes.on('data', (c) => { errBody += c; });
-        upstreamRes.on('end', () => {
-          console.error(`[proxy] upstream ${upstreamRes.statusCode}: ${errBody.slice(0, 500)}`);
-          // Sanitize error message - log full error server-side but return generic message to client
-          const sanitizedMessage = `Upstream API error (HTTP ${upstreamRes.statusCode})`;
-          res.writeHead(upstreamRes.statusCode, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: sanitizedMessage } }));
-        });
-        upstreamRes.on('error', () => { /* ignore errors on error response */ });
-        return;
-      }
-
-      res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-      });
-      streamAnthropicResponse(res, upstreamRes, requestModel);
-    });
-
-    upstream.on('error', (err) => {
-      console.error('[proxy] connection error:', err.message);
+    forwardWithRetry(res, openaiBody, requestModel).catch((err) => {
+      console.error('[proxy] unhandled forward error:', err.message);
       if (!res.headersSent) {
-        res.writeHead(502, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: err.message } }));
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: 'Internal proxy error' } }));
       }
     });
-
-    upstream.on('timeout', () => {
-      console.error('[proxy] upstream request timeout');
-      upstream.destroy();
-      if (!res.headersSent) {
-        res.writeHead(504, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: 'Upstream request timeout' } }));
-      }
-    });
-
-    upstream.write(payload);
-    upstream.end();
   });
 });
 
@@ -364,7 +486,7 @@ server.listen(PORT, '127.0.0.1', () => {
       fs.mkdirSync(pidDir, { recursive: true, mode: 0o755 });
     }
     fs.writeFileSync(PID_FILE, String(process.pid), { mode: 0o644 });
-    console.log(`[anthropic-proxy] pid=${process.pid} port=${PORT} model=${TARGET_MODEL} pidfile=${PID_FILE}`);
+    console.log(`[anthropic-proxy] pid=${process.pid} port=${PORT} model=${TARGET_MODEL} retries=${MAX_RETRIES} pidfile=${PID_FILE}`);
   } catch (err) {
     console.error('[anthropic-proxy] failed to write PID file:', err.message);
   }
