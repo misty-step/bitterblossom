@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	"os"
 	"path"
 	"path/filepath"
 	"sort"
 
+	"github.com/misty-step/bitterblossom/internal/proxy"
 	"github.com/misty-step/bitterblossom/internal/sprite"
 )
 
@@ -59,6 +61,26 @@ func PushConfig(ctx context.Context, cli sprite.SpriteCLI, cfg Config, spriteNam
 		settingsPath,
 		path.Join(cfg.RemoteHome, ".claude", "settings.json"),
 	); err != nil {
+		return err
+	}
+
+	// Deploy sprite-agent if present in the repo.
+	agentScript := filepath.Join(cfg.RootDir, "scripts", "sprite-agent.sh")
+	if _, err := os.Stat(agentScript); err == nil {
+		agentDest := path.Join(cfg.RemoteHome, ".local", "bin", "sprite-agent")
+		if _, err := cli.Exec(ctx, spriteName, "mkdir -p "+shellQuote(path.Dir(agentDest)), nil); err != nil {
+			return fmt.Errorf("create agent dir: %w", err)
+		}
+		if err := cli.UploadFile(ctx, spriteName, cfg.Org, agentScript, agentDest); err != nil {
+			return err
+		}
+		if _, err := cli.Exec(ctx, spriteName, "chmod +x "+shellQuote(agentDest), nil); err != nil {
+			return fmt.Errorf("chmod agent: %w", err)
+		}
+	}
+
+	// Deploy anthropic proxy (embedded).
+	if err := cli.Upload(ctx, spriteName, proxy.ProxyScriptPath, proxy.ProxyScript); err != nil {
 		return err
 	}
 
