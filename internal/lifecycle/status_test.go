@@ -226,6 +226,58 @@ func TestSpriteDetail(t *testing.T) {
 	}
 }
 
+func TestFleetOverviewStaleDetectionWithoutTasks(t *testing.T) {
+	t.Parallel()
+
+	fx := newFixture(t, "bramble")
+	compositionPath := filepath.Join(fx.rootDir, "compositions", "v1.yaml")
+	writeFixtureFile(t, compositionPath, `version: 1
+name: "test"
+sprites:
+  bramble:
+    definition: sprites/bramble.md
+`)
+
+	// last_activity is 3 hours ago — beyond the 1h threshold
+	staleTime := time.Now().Add(-3 * time.Hour).UTC().Format(time.RFC3339)
+	var detailCalls int
+	cli := &sprite.MockSpriteCLI{
+		APIFn: func(ctx context.Context, org, endpoint string) (string, error) {
+			return `{"sprites":[{"name":"bramble","status":"running","url":"https://bramble"}]}`, nil
+		},
+		APISpriteFn: func(ctx context.Context, org, spriteName, endpoint string) (string, error) {
+			detailCalls++
+			return `{"name":"bramble","status":"running","state":"idle","uptime":"5h","queue_depth":0,"last_activity":"` + staleTime + `","current_task":{"id":"task-99","description":"old task"}}`, nil
+		},
+	}
+
+	status, err := FleetOverview(context.Background(), cli, fx.cfg, compositionPath, FleetOverviewOpts{
+		IncludeTasks:   false,
+		StaleThreshold: 1 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("FleetOverview() error = %v", err)
+	}
+
+	if detailCalls == 0 {
+		t.Fatal("expected detail fetch for stale detection, got 0 calls")
+	}
+
+	s := status.Sprites[0]
+	if !s.Stale {
+		t.Fatal("sprite should be flagged stale")
+	}
+	if s.CurrentTask != nil {
+		t.Fatal("CurrentTask should be nil when IncludeTasks is false")
+	}
+	if s.LastActivity == nil {
+		t.Fatal("LastActivity should be populated for stale detection")
+	}
+	if status.Summary.Stale != 1 {
+		t.Fatalf("summary.stale = %d, want 1", status.Summary.Stale)
+	}
+}
+
 func TestDeriveSpriteState(t *testing.T) {
 	tests := []struct {
 		state    string
