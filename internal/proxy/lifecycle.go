@@ -140,7 +140,8 @@ func (l *Lifecycle) WaitForHealthy(ctx context.Context, sprite string) error {
 		case <-ticker.C:
 			running, err := l.IsRunning(ctx, sprite)
 			if err != nil {
-				// Continue polling on error
+				// Health check errors during startup (connection refused, etc.) are expected
+				// while the proxy is initializing. Continue polling until timeout.
 				continue
 			}
 			if running {
@@ -157,7 +158,9 @@ func (l *Lifecycle) EnsureProxy(ctx context.Context, sprite string, openRouterAP
 	// Check if already running
 	running, err := l.IsRunning(ctx, sprite)
 	if err != nil {
-		// Log but continue - we'll try to start it anyway
+		// Health check errors (connection refused, timeout) mean proxy isn't running
+		// Continue to start the proxy. Other errors will be caught during start.
+		_ = err // explicitly ignore: "not running" is the expected case here
 	}
 
 	if running {
