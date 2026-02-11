@@ -203,14 +203,22 @@ func (c CLI) CheckpointList(ctx context.Context, name, org string) (string, erro
 	return out, nil
 }
 
+func uploadFileArgs(name, localPath, remotePath string) ([]string, error) {
+	if strings.Contains(localPath, ":") || strings.Contains(remotePath, ":") {
+		return nil, fmt.Errorf("colon in path not supported by sprite CLI file transfer protocol: local=%q remote=%q", localPath, remotePath)
+	}
+	return []string{"exec", "-s", name, "-file", localPath + ":" + remotePath, "--", "true"}, nil
+}
+
 // UploadFile uploads one local file to a sprite path.
 // Handles exit code 255 gracefully - the file may have uploaded successfully
 // even if the post-upload command returns 255 (SSH connection issue).
 func (c CLI) UploadFile(ctx context.Context, name, org, localPath, remotePath string) error {
-	args := withOrgArgs(
-		[]string{"exec", "-s", name, "-file", localPath + ":" + remotePath, "--", "echo", "uploaded"},
-		c.resolvedOrg(org),
-	)
+	base, err := uploadFileArgs(name, localPath, remotePath)
+	if err != nil {
+		return err
+	}
+	args := withOrgArgs(base, c.resolvedOrg(org))
 	if _, err := c.run(ctx, args, nil); err != nil {
 		// Check if this is exit code 255 (SSH connection closed), which can
 		// occur after successful file upload due to connection timing.

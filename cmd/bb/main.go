@@ -70,6 +70,8 @@ func newRootCmd(stdout, stderr io.Writer) *cobra.Command {
 		statusFactory:    newStatusCmd,
 		teardownFactory:  newTeardownCmd,
 		fleetFactory:     newFleetCmd,
+		addFactory:       newAddCmd,
+		removeFactory:    newRemoveCmd,
 	})
 }
 
@@ -85,6 +87,8 @@ type rootCommandFactories struct {
 	statusFactory    func() *cobra.Command
 	teardownFactory  func() *cobra.Command
 	fleetFactory     func() *cobra.Command
+	addFactory       func() *cobra.Command
+	removeFactory    func() *cobra.Command
 }
 
 func newRootCmdWithFactories(stdout, stderr io.Writer, factories rootCommandFactories) *cobra.Command {
@@ -134,6 +138,12 @@ func newRootCmdWithFactories(stdout, stderr io.Writer, factories rootCommandFact
 	}
 	if factories.fleetFactory != nil {
 		root.AddCommand(factories.fleetFactory())
+	}
+	if factories.addFactory != nil {
+		root.AddCommand(factories.addFactory())
+	}
+	if factories.removeFactory != nil {
+		root.AddCommand(factories.removeFactory())
 	}
 
 	return root

@@ -28,8 +28,12 @@ const UPSTREAM_BASE = process.env.UPSTREAM_BASE || 'https://openrouter.ai';
 const UPSTREAM_PATH = process.env.UPSTREAM_PATH || '/api/v1/chat/completions';
 const API_KEY = process.env.OPENROUTER_API_KEY || '';
 const TARGET_MODEL = process.env.TARGET_MODEL || 'moonshotai/kimi-k2.5';
-const MAX_RETRIES = Math.max(1, parseInt(process.env.MAX_RETRIES, 10) || 3);
-const RETRY_BASE_DELAY_MS = parseInt(process.env.RETRY_BASE_DELAY_MS || '1000');
+// Validate retry configuration with safe defaults
+const MAX_RETRIES_RAW = parseInt(process.env.MAX_RETRIES || '3');
+const MAX_RETRIES = isNaN(MAX_RETRIES_RAW) || MAX_RETRIES_RAW < 1 ? 3 : MAX_RETRIES_RAW;
+
+const RETRY_BASE_DELAY_MS_RAW = parseInt(process.env.RETRY_BASE_DELAY_MS || '1000');
+const RETRY_BASE_DELAY_MS = isNaN(RETRY_BASE_DELAY_MS_RAW) || RETRY_BASE_DELAY_MS_RAW < 0 ? 1000 : RETRY_BASE_DELAY_MS_RAW;
 const UPSTREAM_TIMEOUT_MS = 300000; // 5 minutes
 
 // ── Retry Helpers ────────────────────────────────────────────────────
@@ -43,7 +47,10 @@ function isRetryableStatus(code) {
 }
 
 function retryDelay(attempt) {
-  return Math.min(RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1), 10000);
+  const baseDelay = Math.min(RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1), 10000);
+  // Add jitter (±25%) to prevent thundering herd when upstream recovers
+  const jitter = baseDelay * 0.25 * (Math.random() * 2 - 1);
+  return Math.max(0, Math.floor(baseDelay + jitter));
 }
 
 function attemptUpstreamRequest(url, payload) {
@@ -72,11 +79,11 @@ function attemptUpstreamRequest(url, payload) {
 }
 
 function readResponseBody(response) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     let body = '';
     response.on('data', (c) => { body += c; });
     response.on('end', () => resolve(body));
-    response.on('error', () => resolve(body));
+    response.on('error', (err) => reject(err));
   });
 }
 
@@ -85,6 +92,8 @@ async function forwardWithRetry(res, openaiBody, requestModel) {
   const url = new URL(UPSTREAM_BASE + UPSTREAM_PATH);
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    let shouldRetry = false;
+
     try {
       const upstreamRes = await attemptUpstreamRequest(url, payload);
 
@@ -98,9 +107,10 @@ async function forwardWithRetry(res, openaiBody, requestModel) {
         return;
       }
 
-      // Non-200 response
-      const errBody = await readResponseBody(upstreamRes);
-      console.error(`[proxy] attempt ${attempt}/${MAX_RETRIES}: upstream HTTP ${upstreamRes.statusCode}: ${errBody.slice(0, 500)}`);
+      // Non-200 response — drain body but don't log it (may contain PII/prompts)
+      await readResponseBody(upstreamRes);
+      const requestId = upstreamRes.headers['x-request-id'] || upstreamRes.headers['x-openrouter-request-id'];
+      console.error(`[proxy] attempt ${attempt}/${MAX_RETRIES}: upstream HTTP ${upstreamRes.statusCode}${requestId ? ` request_id=${requestId}` : ''}`);
 
       // Non-retryable or final attempt — return error to client
       if (!isRetryableStatus(upstreamRes.statusCode) || attempt === MAX_RETRIES) {
@@ -112,6 +122,9 @@ async function forwardWithRetry(res, openaiBody, requestModel) {
         }));
         return;
       }
+
+      shouldRetry = true;
+
     } catch (err) {
       console.error(`[proxy] attempt ${attempt}/${MAX_RETRIES}: ${err.message}`);
 
@@ -120,17 +133,20 @@ async function forwardWithRetry(res, openaiBody, requestModel) {
           res.writeHead(502, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({
             type: 'error',
-            error: { type: 'api_error', message: `Upstream connection failed after ${MAX_RETRIES} attempts: ${err.message}` },
+            error: { type: 'api_error', message: `Upstream connection failed after ${MAX_RETRIES} attempts` },
           }));
         }
         return;
       }
+
+      shouldRetry = true;
     }
 
-    // Retryable error, not final attempt — backoff before next try
-    const delay = retryDelay(attempt);
-    console.error(`[proxy] retrying in ${delay}ms...`);
-    await sleep(delay);
+    if (shouldRetry) {
+      const delay = retryDelay(attempt);
+      console.error(`[proxy] retrying in ${delay}ms...`);
+      await sleep(delay);
+    }
   }
 }
 
@@ -373,6 +389,13 @@ const server = http.createServer((req, res) => {
   // Deep health check — tests upstream reachability
   if (req.method === 'GET' && req.url === '/health/deep') {
     const url = new URL(UPSTREAM_BASE);
+    let replied = false;
+    const reply = (status, body) => {
+      if (replied) return;
+      replied = true;
+      res.writeHead(status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(body));
+    };
     const checkReq = https.request({
       hostname: url.hostname,
       port: url.port || 443,
@@ -380,26 +403,32 @@ const server = http.createServer((req, res) => {
       method: 'HEAD',
       timeout: 5000,
     }, (checkRes) => {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        status: 'ok', model: TARGET_MODEL, port: PORT,
-        upstream: { reachable: true, status: checkRes.statusCode },
-      }));
+      // Only consider upstream reachable for 2xx status codes
+      const isReachable = checkRes.statusCode >= 200 && checkRes.statusCode < 300;
+      if (isReachable) {
+        reply(200, {
+          status: 'ok', model: TARGET_MODEL, port: PORT,
+          upstream: { reachable: true, status: checkRes.statusCode },
+        });
+      } else {
+        reply(503, {
+          status: 'degraded', model: TARGET_MODEL, port: PORT,
+          upstream: { reachable: false, status: checkRes.statusCode, error: 'non-2xx response' },
+        });
+      }
     });
     checkReq.on('error', (err) => {
-      res.writeHead(503, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      reply(503, {
         status: 'degraded', model: TARGET_MODEL, port: PORT,
         upstream: { reachable: false, error: err.message },
-      }));
+      });
     });
     checkReq.on('timeout', () => {
       checkReq.destroy();
-      res.writeHead(503, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      reply(503, {
         status: 'degraded', model: TARGET_MODEL, port: PORT,
         upstream: { reachable: false, error: 'timeout' },
-      }));
+      });
     });
     checkReq.end();
     return;

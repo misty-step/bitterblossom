@@ -204,36 +204,30 @@ func (v *IssueValidator) fetchIssue(ctx context.Context, issue int, repo string)
 	return &issueData, nil
 }
 
-// checkRequiredLabels returns the labels that are missing.
-func (v *IssueValidator) checkRequiredLabels(labels []string) []string {
-	labelSet := make(map[string]bool)
-	for _, l := range labels {
-		labelSet[strings.ToLower(l)] = true
+// findMissingLabels returns which of want are absent from have (case-insensitive).
+func findMissingLabels(have, want []string) []string {
+	set := make(map[string]bool, len(have))
+	for _, l := range have {
+		set[strings.ToLower(l)] = true
 	}
 
 	var missing []string
-	for _, required := range v.RequiredLabels {
-		if !labelSet[strings.ToLower(required)] {
-			missing = append(missing, required)
+	for _, w := range want {
+		if !set[strings.ToLower(w)] {
+			missing = append(missing, w)
 		}
 	}
 	return missing
 }
 
+// checkRequiredLabels returns required labels that are missing.
+func (v *IssueValidator) checkRequiredLabels(labels []string) []string {
+	return findMissingLabels(labels, v.RequiredLabels)
+}
+
 // checkRecommendedLabels returns recommended labels that are missing.
 func (v *IssueValidator) checkRecommendedLabels(labels []string) []string {
-	labelSet := make(map[string]bool)
-	for _, l := range labels {
-		labelSet[strings.ToLower(l)] = true
-	}
-
-	var missing []string
-	for _, rec := range v.RecommendedLabels {
-		if !labelSet[strings.ToLower(rec)] {
-			missing = append(missing, rec)
-		}
-	}
-	return missing
+	return findMissingLabels(labels, v.RecommendedLabels)
 }
 
 // blockingLabelPatterns matches labels that indicate the issue is blocked.
