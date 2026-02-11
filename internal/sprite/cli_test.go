@@ -110,6 +110,20 @@ func TestDestroyArgs(t *testing.T) {
 	}
 }
 
+func TestUploadFileArgs(t *testing.T) {
+	t.Parallel()
+
+	got := uploadFileArgs("thorn", "sprites/thorn.md", "/home/sprite/workspace/PERSONA.md")
+	want := []string{
+		"exec", "-s", "thorn",
+		"-file", "sprites/thorn.md:/home/sprite/workspace/PERSONA.md",
+		"--", "true",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("uploadFileArgs() = %v, want %v", got, want)
+	}
+}
+
 func TestCLIExecWithEnvBuildsCorrectArgs(t *testing.T) {
 	t.Parallel()
 

@@ -203,12 +203,13 @@ func (c CLI) CheckpointList(ctx context.Context, name, org string) (string, erro
 	return out, nil
 }
 
+func uploadFileArgs(name, localPath, remotePath string) []string {
+	return []string{"exec", "-s", name, "-file", localPath + ":" + remotePath, "--", "true"}
+}
+
 // UploadFile uploads one local file to a sprite path.
 func (c CLI) UploadFile(ctx context.Context, name, org, localPath, remotePath string) error {
-	args := withOrgArgs(
-		[]string{"exec", "-s", name, "-file", localPath + ":" + remotePath, "--", "echo", "uploaded"},
-		c.resolvedOrg(org),
-	)
+	args := withOrgArgs(uploadFileArgs(name, localPath, remotePath), c.resolvedOrg(org))
 	if _, err := c.run(ctx, args, nil); err != nil {
 		return fmt.Errorf("upload %q to sprite %q:%q: %w", localPath, name, remotePath, err)
 	}
