@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"path"
 	"sort"
 	"strings"
 )
@@ -90,7 +91,8 @@ func (r *spriteCLIRemote) ExecWithEnv(ctx context.Context, sprite, remoteCommand
 }
 
 func (r *spriteCLIRemote) Upload(ctx context.Context, sprite, remotePath string, content []byte) error {
-	command := "cat > " + shellQuote(remotePath)
+	dir := path.Dir(remotePath)
+	command := "mkdir -p " + shellQuote(dir) + " && cat > " + shellQuote(remotePath)
 	_, err := r.Exec(ctx, sprite, command, content)
 	if err != nil {
 		return fmt.Errorf("sprite upload %s:%s: %w", sprite, remotePath, err)
