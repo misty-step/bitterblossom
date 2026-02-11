@@ -29,7 +29,8 @@ const UPSTREAM_PATH = process.env.UPSTREAM_PATH || '/api/v1/chat/completions';
 const API_KEY = process.env.OPENROUTER_API_KEY || '';
 const TARGET_MODEL = process.env.TARGET_MODEL || 'moonshotai/kimi-k2.5';
 const MAX_RETRIES = Math.max(1, parseInt(process.env.MAX_RETRIES, 10) || 3);
-const RETRY_BASE_DELAY_MS = parseInt(process.env.RETRY_BASE_DELAY_MS || '1000');
+const rawRetryBaseDelay = parseInt(process.env.RETRY_BASE_DELAY_MS || '1000', 10);
+const RETRY_BASE_DELAY_MS = Number.isFinite(rawRetryBaseDelay) ? rawRetryBaseDelay : 1000;
 const UPSTREAM_TIMEOUT_MS = 300000; // 5 minutes
 
 // ── Retry Helpers ────────────────────────────────────────────────────
@@ -99,8 +100,9 @@ async function forwardWithRetry(res, openaiBody, requestModel) {
       }
 
       // Non-200 response
-      const errBody = await readResponseBody(upstreamRes);
-      console.error(`[proxy] attempt ${attempt}/${MAX_RETRIES}: upstream HTTP ${upstreamRes.statusCode}: ${errBody.slice(0, 500)}`);
+      await readResponseBody(upstreamRes); // drain the body
+      const requestId = upstreamRes.headers['x-request-id'] || upstreamRes.headers['x-openrouter-request-id'];
+      console.error(`[proxy] attempt ${attempt}/${MAX_RETRIES}: upstream HTTP ${upstreamRes.statusCode}${requestId ? ` request_id=${requestId}` : ''}`);
 
       // Non-retryable or final attempt — return error to client
       if (!isRetryableStatus(upstreamRes.statusCode) || attempt === MAX_RETRIES) {
