@@ -67,18 +67,7 @@ func (r *spriteCLIRemote) ExecWithEnv(ctx context.Context, sprite, remoteCommand
 		args = append(args, "-o", r.org)
 	}
 
-	// Add environment variables using -e flag
-	// sprite CLI supports: -e KEY=VALUE (can be specified multiple times)
-	if len(env) > 0 {
-		keys := make([]string, 0, len(env))
-		for k := range env {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			args = append(args, "-e", k+"="+env[k])
-		}
-	}
+	args = append(args, buildEnvArgs(env)...)
 
 	args = append(args, "-s", sprite, "--", "bash", "-lc", remoteCommand)
 
@@ -103,6 +92,25 @@ func (r *spriteCLIRemote) Upload(ctx context.Context, sprite, remotePath string,
 		return fmt.Errorf("sprite upload %s:%s: %w", sprite, remotePath, err)
 	}
 	return nil
+}
+
+// buildEnvArgs returns the CLI args for passing environment variables to the
+// sprite CLI. The sprite CLI expects a single -env flag with comma-separated
+// KEY=VALUE pairs (not repeated -e flags).
+func buildEnvArgs(env map[string]string) []string {
+	if len(env) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	pairs := make([]string, 0, len(keys))
+	for _, k := range keys {
+		pairs = append(pairs, k+"="+env[k])
+	}
+	return []string{"-env", strings.Join(pairs, ",")}
 }
 
 func shellQuote(value string) string {
