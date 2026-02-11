@@ -399,7 +399,7 @@ func (s *Service) provision(ctx context.Context, req preparedRequest) (string, e
 
 	// Register the sprite in the registry if a registry path is configured
 	if s.registryPath != "" {
-		if err := s.registerSprite(req.Sprite, machine.ID); err != nil {
+		if err := s.registerSprite(ctx, req.Sprite, machine.ID); err != nil {
 			// Log the error but don't fail the provision - the sprite exists
 			s.logger.Warn("failed to register sprite in registry", "sprite", req.Sprite, "machine_id", machine.ID, "error", err)
 		} else {
@@ -411,8 +411,8 @@ func (s *Service) provision(ctx context.Context, req preparedRequest) (string, e
 }
 
 // registerSprite adds a sprite to the registry.
-func (s *Service) registerSprite(name, machineID string) error {
-	return registry.WithLockedRegistry(s.registryPath, func(reg *registry.Registry) error {
+func (s *Service) registerSprite(ctx context.Context, name, machineID string) error {
+	return registry.WithLockedRegistry(ctx, s.registryPath, func(reg *registry.Registry) error {
 		reg.Register(name, machineID)
 		return nil
 	})
