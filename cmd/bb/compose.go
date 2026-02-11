@@ -50,7 +50,7 @@ func newComposeCmdWithDeps(deps composeDeps) *cobra.Command {
 	opts := composeOptions{
 		CompositionPath: "compositions/v1.yaml",
 		App:             strings.TrimSpace(os.Getenv("FLY_APP")),
-		Token:           defaultFlyToken(),
+		Token:           "", // Token is resolved at runtime from env vars to avoid exposing in help
 		APIURL:          fly.DefaultBaseURL,
 	}
 
@@ -61,7 +61,7 @@ func newComposeCmdWithDeps(deps composeDeps) *cobra.Command {
 
 	cmd.PersistentFlags().StringVar(&opts.CompositionPath, "composition", opts.CompositionPath, "Path to composition YAML")
 	cmd.PersistentFlags().StringVar(&opts.App, "app", opts.App, "Sprites app name")
-	cmd.PersistentFlags().StringVar(&opts.Token, "token", opts.Token, "API token (or FLY_API_TOKEN)")
+	cmd.PersistentFlags().StringVar(&opts.Token, "token", opts.Token, "API token (or set FLY_API_TOKEN/FLY_TOKEN env var)")
 	cmd.PersistentFlags().StringVar(&opts.APIURL, "api-url", opts.APIURL, "Sprites API base URL")
 	cmd.PersistentFlags().BoolVar(&opts.JSON, "json", false, "Emit JSON output")
 
@@ -232,13 +232,16 @@ func loadFleetState(ctx context.Context, opts composeOptions, deps composeDeps) 
 		return fleet.Composition{}, nil, nil, err
 	}
 
+	// Resolve token from flag or environment
+	token := resolveFlyToken(opts.Token)
+
 	appMissing := strings.TrimSpace(opts.App) == ""
-	tokenMissing := strings.TrimSpace(opts.Token) == ""
+	tokenMissing := strings.TrimSpace(token) == ""
 	if appMissing || tokenMissing {
 		return fleet.Composition{}, nil, nil, errors.New("Error: FLY_APP and FLY_API_TOKEN are required for sprite operations.\n  export FLY_APP=your-app\n  export FLY_API_TOKEN=your-token")
 	}
 
-	client, err := deps.newClient(opts.Token, opts.APIURL)
+	client, err := deps.newClient(token, opts.APIURL)
 	if err != nil {
 		return fleet.Composition{}, nil, nil, err
 	}
@@ -323,6 +326,15 @@ func defaultFlyToken() string {
 		return token
 	}
 	return strings.TrimSpace(os.Getenv("FLY_TOKEN"))
+}
+
+// resolveFlyToken returns the token from the flag if set, otherwise from environment.
+// This avoids exposing the token in help text while still supporting env var auth.
+func resolveFlyToken(flagToken string) string {
+	if token := strings.TrimSpace(flagToken); token != "" {
+		return token
+	}
+	return defaultFlyToken()
 }
 
 type composeRuntime struct {
