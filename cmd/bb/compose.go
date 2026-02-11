@@ -3,10 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"net/http"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -15,29 +12,27 @@ import (
 	"github.com/misty-step/bitterblossom/internal/contracts"
 	"github.com/misty-step/bitterblossom/internal/fleet"
 	"github.com/misty-step/bitterblossom/internal/sprite"
-	"github.com/misty-step/bitterblossom/pkg/fly"
 	"github.com/spf13/cobra"
 )
 
 type composeOptions struct {
 	CompositionPath string
-	App             string
-	Token           string
+	Org             string
+	SpriteCLI       string
 	JSON            bool
 	Execute         bool
-	APIURL          string
 }
 
 type composeDeps struct {
 	parseComposition func(path string) (fleet.Composition, error)
-	newClient        func(token, apiURL string) (fly.MachineClient, error)
+	newCLI           func(binary, org string) sprite.SpriteCLI
 }
 
 func defaultComposeDeps() composeDeps {
 	return composeDeps{
 		parseComposition: fleet.ParseComposition,
-		newClient: func(token, apiURL string) (fly.MachineClient, error) {
-			return fly.NewClient(token, fly.WithBaseURL(apiURL))
+		newCLI: func(binary, org string) sprite.SpriteCLI {
+			return sprite.NewCLIWithOrg(binary, org)
 		},
 	}
 }
@@ -48,10 +43,9 @@ func newComposeCmd() *cobra.Command {
 
 func newComposeCmdWithDeps(deps composeDeps) *cobra.Command {
 	opts := composeOptions{
-		CompositionPath: "compositions/v1.yaml",
-		App:             strings.TrimSpace(os.Getenv("FLY_APP")),
-		Token:           "", // Token is resolved at runtime from env vars to avoid exposing in help
-		APIURL:          fly.DefaultBaseURL,
+		CompositionPath: defaultLifecycleComposition,
+		Org:             defaultOrg(),
+		SpriteCLI:       defaultSpriteCLIPath(),
 	}
 
 	cmd := &cobra.Command{
@@ -60,9 +54,8 @@ func newComposeCmdWithDeps(deps composeDeps) *cobra.Command {
 	}
 
 	cmd.PersistentFlags().StringVar(&opts.CompositionPath, "composition", opts.CompositionPath, "Path to composition YAML")
-	cmd.PersistentFlags().StringVar(&opts.App, "app", opts.App, "Sprites app name")
-	cmd.PersistentFlags().StringVar(&opts.Token, "token", opts.Token, "API token (or set FLY_API_TOKEN/FLY_TOKEN env var)")
-	cmd.PersistentFlags().StringVar(&opts.APIURL, "api-url", opts.APIURL, "Sprites API base URL")
+	cmd.PersistentFlags().StringVar(&opts.Org, "org", opts.Org, "Sprites organization")
+	cmd.PersistentFlags().StringVar(&opts.SpriteCLI, "sprite-cli", opts.SpriteCLI, "Path to sprite CLI")
 	cmd.PersistentFlags().BoolVar(&opts.JSON, "json", false, "Emit JSON output")
 
 	diffCmd := &cobra.Command{
@@ -108,7 +101,7 @@ func runComposeDiff(ctx context.Context, cmd *cobra.Command, opts composeOptions
 }
 
 func runComposeApply(ctx context.Context, cmd *cobra.Command, opts composeOptions, deps composeDeps) error {
-	composition, actual, client, err := loadFleetState(ctx, opts, deps)
+	composition, actual, cli, err := loadFleetState(ctx, opts, deps)
 	if err != nil {
 		return err
 	}
@@ -140,7 +133,7 @@ func runComposeApply(ctx context.Context, cmd *cobra.Command, opts composeOption
 		return nil
 	}
 
-	executor.Runtime = newComposeRuntime(opts.App, client, actual)
+	executor.Runtime = newComposeRuntime(cli, opts.Org)
 	if err := executor.Execute(ctx, actions); err != nil {
 		return err
 	}
@@ -226,70 +219,33 @@ func runComposeStatus(ctx context.Context, cmd *cobra.Command, opts composeOptio
 	return tw.Flush()
 }
 
-func loadFleetState(ctx context.Context, opts composeOptions, deps composeDeps) (fleet.Composition, []fleet.SpriteStatus, fly.MachineClient, error) {
+func loadFleetState(ctx context.Context, opts composeOptions, deps composeDeps) (fleet.Composition, []fleet.SpriteStatus, sprite.SpriteCLI, error) {
 	composition, err := deps.parseComposition(opts.CompositionPath)
 	if err != nil {
 		return fleet.Composition{}, nil, nil, err
 	}
 
-	// Resolve token from flag or environment
-	token := resolveFlyToken(opts.Token)
+	cli := deps.newCLI(opts.SpriteCLI, opts.Org)
 
-	appMissing := strings.TrimSpace(opts.App) == ""
-	tokenMissing := strings.TrimSpace(token) == ""
-	if appMissing || tokenMissing {
-		return fleet.Composition{}, nil, nil, errors.New("Error: FLY_APP and FLY_API_TOKEN are required for sprite operations.\n  export FLY_APP=your-app\n  export FLY_API_TOKEN=your-token")
-	}
-
-	client, err := deps.newClient(token, opts.APIURL)
+	names, err := cli.List(ctx)
 	if err != nil {
-		return fleet.Composition{}, nil, nil, err
+		return fleet.Composition{}, nil, nil, fmt.Errorf("listing sprites: %w", err)
 	}
-
-	machines, err := client.List(ctx, opts.App)
-	if err != nil {
-		return fleet.Composition{}, nil, nil, err
-	}
-	return composition, machinesToSpriteStatuses(machines), client, nil
+	return composition, namesToSpriteStatuses(names), cli, nil
 }
 
-func machinesToSpriteStatuses(machines []fly.Machine) []fleet.SpriteStatus {
-	statuses := make([]fleet.SpriteStatus, 0, len(machines))
-	for _, machine := range machines {
+func namesToSpriteStatuses(names []string) []fleet.SpriteStatus {
+	statuses := make([]fleet.SpriteStatus, 0, len(names))
+	for _, name := range names {
 		statuses = append(statuses, fleet.SpriteStatus{
-			Name:          machine.Name,
-			MachineID:     machine.ID,
-			State:         mapMachineState(machine.State),
-			Persona:       machine.Metadata["persona"],
-			ConfigVersion: machine.Metadata["config_version"],
+			Name:  name,
+			State: sprite.StateIdle,
 		})
 	}
 	sort.Slice(statuses, func(i, j int) bool {
-		if statuses[i].Name != statuses[j].Name {
-			return statuses[i].Name < statuses[j].Name
-		}
-		return statuses[i].MachineID < statuses[j].MachineID
+		return statuses[i].Name < statuses[j].Name
 	})
 	return statuses
-}
-
-func mapMachineState(state string) sprite.State {
-	switch strings.ToLower(strings.TrimSpace(state)) {
-	case "started", "running":
-		return sprite.StateWorking
-	case "stopped", "suspended", "idle":
-		return sprite.StateIdle
-	case "failed", "error", "dead":
-		return sprite.StateDead
-	case "blocked", "stuck":
-		return sprite.StateBlocked
-	case "done":
-		return sprite.StateDone
-	case "provisioned":
-		return sprite.StateProvisioned
-	default:
-		return sprite.StateIdle
-	}
 }
 
 func printJSON(cmd *cobra.Command, payload any) error {
@@ -321,123 +277,32 @@ func printActionsHuman(cmd *cobra.Command, actions []fleet.Action) error {
 	return tw.Flush()
 }
 
-func defaultFlyToken() string {
-	if token := strings.TrimSpace(os.Getenv("FLY_API_TOKEN")); token != "" {
-		return token
-	}
-	return strings.TrimSpace(os.Getenv("FLY_TOKEN"))
-}
-
-// resolveFlyToken returns the token from the flag if set, otherwise from environment.
-// This avoids exposing the token in help text while still supporting env var auth.
-func resolveFlyToken(flagToken string) string {
-	if token := strings.TrimSpace(flagToken); token != "" {
-		return token
-	}
-	return defaultFlyToken()
-}
-
 type composeRuntime struct {
-	app        string
-	client     fly.MachineClient
-	machineIDs map[string]string
+	cli sprite.SpriteCLI
+	org string
 }
 
-func newComposeRuntime(app string, client fly.MachineClient, actual []fleet.SpriteStatus) *composeRuntime {
-	machineIDs := make(map[string]string, len(actual))
-	for _, sprite := range actual {
-		if sprite.MachineID == "" {
-			continue
-		}
-		machineIDs[sprite.Name] = sprite.MachineID
-	}
-	return &composeRuntime{app: app, client: client, machineIDs: machineIDs}
+func newComposeRuntime(cli sprite.SpriteCLI, org string) *composeRuntime {
+	return &composeRuntime{cli: cli, org: org}
 }
 
 func (r *composeRuntime) Provision(ctx context.Context, action fleet.ProvisionAction) error {
-	if _, exists := r.machineIDs[action.Sprite.Name]; exists {
-		return nil
-	}
-
-	machine, err := r.client.Create(ctx, fly.CreateRequest{
-		App:  r.app,
-		Name: action.Sprite.Name,
-		Metadata: map[string]string{
-			"persona":        action.Sprite.Persona.Name,
-			"config_version": action.ConfigVersion,
-		},
-	})
-	if err != nil {
-		return err
-	}
-	r.machineIDs[action.Sprite.Name] = machine.ID
-	return nil
+	return r.cli.Create(ctx, action.Sprite.Name, r.org)
 }
 
 func (r *composeRuntime) Teardown(ctx context.Context, action fleet.TeardownAction) error {
-	machineID := action.MachineID
-	if machineID == "" {
-		machineID = r.machineIDs[action.Name]
-	}
-	if machineID == "" {
-		return nil
-	}
-
-	if err := r.client.Destroy(ctx, r.app, machineID); err != nil && !isNotFound(err) {
-		return err
-	}
-	delete(r.machineIDs, action.Name)
-	return nil
+	return r.cli.Destroy(ctx, action.Name, r.org)
 }
 
 func (r *composeRuntime) Update(ctx context.Context, action fleet.UpdateAction) error {
-	if machineID := r.machineIDs[action.Desired.Name]; machineID != "" {
-		if err := r.client.Destroy(ctx, r.app, machineID); err != nil && !isNotFound(err) {
-			return err
-		}
-		delete(r.machineIDs, action.Desired.Name)
-	}
-
-	machine, err := r.client.Create(ctx, fly.CreateRequest{
-		App:  r.app,
-		Name: action.Desired.Name,
-		Metadata: map[string]string{
-			"persona":        action.Desired.Persona.Name,
-			"config_version": action.DesiredConfig,
-		},
-	})
-	if err != nil {
-		return err
-	}
-	r.machineIDs[action.Desired.Name] = machine.ID
-	return nil
+	// Best-effort destroy before recreating; ignore errors (sprite may not exist).
+	_ = r.cli.Destroy(ctx, action.Desired.Name, r.org)
+	return r.cli.Create(ctx, action.Desired.Name, r.org)
 }
 
 func (r *composeRuntime) Redispatch(ctx context.Context, action fleet.RedispatchAction) error {
-	machineID := r.machineIDs[action.Name]
-	if machineID == "" {
-		return nil
-	}
-
-	_, err := r.client.Exec(ctx, r.app, machineID, fly.ExecRequest{
-		Command: []string{"/bin/sh", "-lc", "echo redispatch-requested"},
-	})
-	if isNotFound(err) {
-		delete(r.machineIDs, action.Name)
-		return nil
-	}
+	_, err := r.cli.Exec(ctx, action.Name, "echo redispatch-requested", nil)
 	return err
-}
-
-func isNotFound(err error) bool {
-	if err == nil {
-		return false
-	}
-	var apiErr fly.APIError
-	if !errors.As(err, &apiErr) {
-		return false
-	}
-	return apiErr.StatusCode == http.StatusNotFound
 }
 
 type statusRow struct {
