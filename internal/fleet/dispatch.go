@@ -256,6 +256,31 @@ func (f *Fleet) selectAndMaybeReserve(ctx context.Context, req DispatchRequest, 
 
 		assignment, reserveErr := cfg.reserve(name, req)
 		if reserveErr == nil {
+			// Re-check live status after reservation to narrow the race window.
+			// Between the initial status check and reserve(), the sprite may
+			// have become busy (e.g. another dispatcher assigned it directly).
+			recheck, recheckErr := cfg.status.Check(ctx, assignment.MachineID)
+			if recheckErr != nil || isBusyState(recheck.State) {
+				unreserveErr := cfg.unreserve(name, req.Issue, assignment.AssignedAt)
+				checkErr := recheckErr
+				if unreserveErr != nil {
+					checkErr = fmt.Errorf("recheck: %v; unreserve: %v", recheckErr, unreserveErr)
+				}
+				busy = append(busy, BusySpriteStatus{
+					Sprite:        name,
+					MachineID:     machineID,
+					State:         strings.TrimSpace(recheck.State),
+					Task:          strings.TrimSpace(recheck.Task),
+					Repo:          strings.TrimSpace(recheck.Repo),
+					Runtime:       strings.TrimSpace(recheck.Runtime),
+					BlockedReason: strings.TrimSpace(recheck.BlockedReason),
+					CheckError:    errString(checkErr),
+				})
+				if strings.TrimSpace(req.Sprite) != "" {
+					return nil, &FleetBusyError{Sprites: busy}
+				}
+				continue
+			}
 			return assignment, nil
 		}
 		if errors.Is(reserveErr, errReserved) {
@@ -311,6 +336,26 @@ func (cfg *dispatchConfig) reserve(sprite string, req DispatchRequest) (*Assignm
 		return nil, err
 	}
 	return &out, nil
+}
+
+// unreserve clears a reservation only if it still matches the given issue and
+// timestamp. This prevents accidentally clearing a reservation that another
+// dispatcher legitimately created between our reserve and recheck.
+func (cfg *dispatchConfig) unreserve(sprite string, issue int, assignedAt time.Time) error {
+	return registry.WithLockedRegistry(cfg.registryPath, func(reg *registry.Registry) error {
+		entry, ok := reg.Sprites[sprite]
+		if !ok {
+			return nil
+		}
+		if entry.AssignedIssue != issue || !entry.AssignedAt.Equal(assignedAt) {
+			return nil // reservation belongs to someone else now
+		}
+		entry.AssignedIssue = 0
+		entry.AssignedRepo = ""
+		entry.AssignedAt = time.Time{}
+		reg.Sprites[sprite] = entry
+		return nil
+	})
 }
 
 func isBusyState(state string) bool {
