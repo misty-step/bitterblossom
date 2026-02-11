@@ -57,8 +57,55 @@ func newRegistry() *Registry {
 	}
 }
 
+// blockedDirs are system directories where registry files must never be written.
+var blockedDirs = []string{"/etc", "/usr", "/bin", "/sbin", "/dev", "/proc", "/sys"}
+
+// isBlockedPath checks whether path falls under any blocked system directory,
+// accounting for platform symlinks on the blocked dirs themselves
+// (e.g. macOS /etc -> /private/etc).
+func isBlockedPath(path string) bool {
+	for _, dir := range blockedDirs {
+		if strings.HasPrefix(path, dir+"/") {
+			return true
+		}
+		if resolved, err := filepath.EvalSymlinks(dir); err == nil && resolved != dir {
+			if strings.HasPrefix(path, resolved+"/") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// resolveExistingAncestor walks up the path to find the longest existing
+// ancestor, resolves symlinks on that ancestor, then re-appends the
+// non-existing tail components. This prevents symlink bypass attacks where
+// a symlink in an existing prefix points into a blocked directory but
+// EvalSymlinks fails on the full path because the tail doesn't exist yet.
+func resolveExistingAncestor(path string) (string, error) {
+	current := filepath.Clean(path)
+	var tail []string
+	for {
+		resolved, err := filepath.EvalSymlinks(current)
+		if err == nil {
+			return filepath.Join(append([]string{resolved}, tail...)...), nil
+		}
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			// Hit filesystem root without finding existing ancestor.
+			return filepath.Join(append([]string{current}, tail...)...), nil
+		}
+		tail = append([]string{filepath.Base(current)}, tail...)
+		current = parent
+	}
+}
+
 // validateRegistryPath ensures the resolved path is safe for file operations.
 // Prevents path traversal attacks when paths come from untrusted input.
+// Symlinks are resolved via ancestor-walking before checking blocked prefixes.
 func validateRegistryPath(path string) (string, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -70,31 +117,19 @@ func validateRegistryPath(path string) (string, error) {
 		return "", fmt.Errorf("registry path: %q must have .toml extension", abs)
 	}
 
-	// Resolve symlinks on the parent directory so that a symlinked tree
-	// (e.g., /tmp/bb -> /etc) is caught by the blocked-prefix check.
-	dir := filepath.Dir(abs)
-	resolvedDir, err := filepath.EvalSymlinks(dir)
+	// Resolve symlinks by walking up to the longest existing ancestor.
+	// This prevents bypass via partially-existing paths where EvalSymlinks
+	// on the full parent would fail and fall back to the unresolved path.
+	resolved, err := resolveExistingAncestor(abs)
 	if err != nil {
-		if !os.IsNotExist(err) {
-			return "", fmt.Errorf("registry path: cannot resolve symlinks in %q: %w", dir, err)
-		}
-		// Parent dir does not exist yet (first run). Use the unresolved
-		// path; the blocked-prefix check below still covers abs.
-		resolvedDir = dir
+		return "", fmt.Errorf("registry path: cannot resolve symlinks in %q: %w", abs, err)
 	}
-	resolved := filepath.Join(resolvedDir, filepath.Base(abs))
 
-	// Block obviously dangerous system paths.
-	// Check both the original and resolved paths to handle platform symlinks
-	// (e.g., macOS: /etc -> /private/etc).
-	blocked := []string{"/etc/", "/usr/", "/bin/", "/sbin/", "/dev/", "/proc/", "/sys/", "/private/etc/", "/private/var/db/"}
-	for _, prefix := range blocked {
-		if strings.HasPrefix(abs, prefix) {
-			return "", fmt.Errorf("registry path: %q is in a protected system directory", abs)
-		}
-		if strings.HasPrefix(resolved, prefix) {
-			return "", fmt.Errorf("registry path: %q resolves to protected system directory %q", abs, resolved)
-		}
+	if isBlockedPath(abs) {
+		return "", fmt.Errorf("registry path: %q is in a protected system directory", abs)
+	}
+	if isBlockedPath(resolved) {
+		return "", fmt.Errorf("registry path: %q resolves to protected system directory %q", abs, resolved)
 	}
 
 	return abs, nil
