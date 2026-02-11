@@ -302,6 +302,21 @@ func TestCalculateFleetSummary(t *testing.T) {
 			},
 		},
 		{
+			name: "stale sprites counted",
+			sprites: []SpriteStatus{
+				{Name: "s1", State: StateIdle, Stale: true},
+				{Name: "s2", State: StateBusy, Stale: true},
+				{Name: "s3", State: StateBusy},
+			},
+			orphans: nil,
+			expected: FleetSummary{
+				Total: 3,
+				Idle:  1,
+				Busy:  2,
+				Stale: 2,
+			},
+		},
+		{
 			name:     "empty fleet",
 			sprites:  []SpriteStatus{},
 			orphans:  nil,

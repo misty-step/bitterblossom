@@ -18,15 +18,16 @@ import (
 )
 
 type statusOptions struct {
-	Composition string
-	Org         string
-	SpriteCLI   string
-	Format      string
-	Checkpoints bool
-	Tasks       bool
-	Watch       bool
-	WatchInterval time.Duration
-	Timeout     time.Duration
+	Composition    string
+	Org            string
+	SpriteCLI      string
+	Format         string
+	Checkpoints    bool
+	Tasks          bool
+	Watch          bool
+	WatchInterval  time.Duration
+	Timeout        time.Duration
+	StaleThreshold time.Duration
 }
 
 type statusDeps struct {
@@ -62,7 +63,8 @@ func newStatusCmdWithDeps(deps statusDeps) *cobra.Command {
 		Tasks:         true,
 		Watch:         false,
 		WatchInterval: 5 * time.Second,
-		Timeout:       2 * time.Minute,
+		Timeout:        2 * time.Minute,
+		StaleThreshold: lifecycle.DefaultStaleThreshold,
 	}
 
 	command := &cobra.Command{
@@ -122,6 +124,7 @@ Use --format=json for machine-readable output.`,
 	command.Flags().BoolVarP(&opts.Watch, "watch", "w", opts.Watch, "Watch mode: continuously refresh fleet status")
 	command.Flags().DurationVar(&opts.WatchInterval, "watch-interval", opts.WatchInterval, "Refresh interval for watch mode")
 	command.Flags().DurationVar(&opts.Timeout, "timeout", opts.Timeout, "Command timeout")
+	command.Flags().DurationVar(&opts.StaleThreshold, "stale-threshold", opts.StaleThreshold, "Flag sprites with no activity beyond this duration as stale")
 
 	return command
 }
@@ -138,6 +141,7 @@ func runFleetStatus(cmd *cobra.Command, deps statusDeps, cli sprite.SpriteCLI, c
 	status, err := deps.fleetOverview(ctx, cli, cfg, opts.Composition, lifecycle.FleetOverviewOpts{
 		IncludeCheckpoints: opts.Checkpoints,
 		IncludeTasks:       opts.Tasks,
+		StaleThreshold:     opts.StaleThreshold,
 	})
 	if err != nil {
 		return err
@@ -201,6 +205,7 @@ func runWatchMode(cmd *cobra.Command, deps statusDeps, cli sprite.SpriteCLI, cfg
 		status, err := deps.fleetOverview(runCtx, cli, cfg, opts.Composition, lifecycle.FleetOverviewOpts{
 			IncludeCheckpoints: false, // Skip checkpoints in watch mode for speed
 			IncludeTasks:       opts.Tasks,
+			StaleThreshold:     opts.StaleThreshold,
 		})
 		cancel()
 
@@ -233,6 +238,11 @@ func writeFleetStatusText(out io.Writer, status lifecycle.FleetStatus, compositi
 	}
 	if status.Summary.Offline > 0 {
 		if _, err := fmt.Fprintf(out, " | %d offline", status.Summary.Offline); err != nil {
+			return err
+		}
+	}
+	if status.Summary.Stale > 0 {
+		if _, err := fmt.Fprintf(out, " | %d stale", status.Summary.Stale); err != nil {
 			return err
 		}
 	}
@@ -273,7 +283,7 @@ func writeFleetStatusText(out io.Writer, status lifecycle.FleetStatus, compositi
 
 			if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
 				item.Name,
-				stateWithEmoji(item.State),
+				spriteStateLabel(item),
 				item.Status,
 				taskInfo,
 				uptime,
@@ -463,6 +473,14 @@ func stateWithEmoji(state lifecycle.SpriteState) string {
 	default:
 		return string(state)
 	}
+}
+
+func spriteStateLabel(item lifecycle.SpriteStatus) string {
+	label := stateWithEmoji(item.State)
+	if item.Stale {
+		label += " ⚠ stale"
+	}
+	return label
 }
 
 func truncateString(s string, maxLen int) string {
