@@ -724,6 +724,7 @@ func parsePID(output string) (int, bool) {
 func buildSetupRepoScript(workspace, cloneURL, repoDir string) string {
 	return strings.Join([]string{
 		"set -euo pipefail",
+		"mkdir -p " + shellQuote(workspace),
 		"cd " + shellQuote(workspace),
 		"if [ -d " + shellQuote(repoDir) + " ]; then",
 		"  cd " + shellQuote(repoDir),
