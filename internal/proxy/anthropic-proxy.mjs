@@ -28,7 +28,7 @@ const UPSTREAM_BASE = process.env.UPSTREAM_BASE || 'https://openrouter.ai';
 const UPSTREAM_PATH = process.env.UPSTREAM_PATH || '/api/v1/chat/completions';
 const API_KEY = process.env.OPENROUTER_API_KEY || '';
 const TARGET_MODEL = process.env.TARGET_MODEL || 'moonshotai/kimi-k2.5';
-const MAX_RETRIES = parseInt(process.env.MAX_RETRIES || '3');
+const MAX_RETRIES = Math.max(1, parseInt(process.env.MAX_RETRIES, 10) || 3);
 const RETRY_BASE_DELAY_MS = parseInt(process.env.RETRY_BASE_DELAY_MS || '1000');
 const UPSTREAM_TIMEOUT_MS = 300000; // 5 minutes
 
@@ -112,11 +112,6 @@ async function forwardWithRetry(res, openaiBody, requestModel) {
         }));
         return;
       }
-
-      const delay = retryDelay(attempt);
-      console.error(`[proxy] retrying in ${delay}ms...`);
-      await sleep(delay);
-
     } catch (err) {
       console.error(`[proxy] attempt ${attempt}/${MAX_RETRIES}: ${err.message}`);
 
@@ -130,11 +125,12 @@ async function forwardWithRetry(res, openaiBody, requestModel) {
         }
         return;
       }
-
-      const delay = retryDelay(attempt);
-      console.error(`[proxy] retrying in ${delay}ms...`);
-      await sleep(delay);
     }
+
+    // Retryable error, not final attempt — backoff before next try
+    const delay = retryDelay(attempt);
+    console.error(`[proxy] retrying in ${delay}ms...`);
+    await sleep(delay);
   }
 }
 
