@@ -15,6 +15,15 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// isNotFoundError reports whether a CLI error indicates the sprite does not exist.
+func isNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "not found") || strings.Contains(msg, "does not exist")
+}
+
 type composeOptions struct {
 	CompositionPath string
 	Org             string
@@ -231,16 +240,34 @@ func loadFleetState(ctx context.Context, opts composeOptions, deps composeDeps) 
 	if err != nil {
 		return fleet.Composition{}, nil, nil, fmt.Errorf("listing sprites: %w", err)
 	}
-	return composition, namesToSpriteStatuses(names), cli, nil
+	return composition, namesToSpriteStatuses(names, composition), cli, nil
 }
 
-func namesToSpriteStatuses(names []string) []fleet.SpriteStatus {
+// namesToSpriteStatuses converts observed sprite names into SpriteStatus values,
+// populating Persona and ConfigVersion from the composition for sprites that
+// match a desired spec. Without this metadata, BuildPlan would detect false
+// drift on every existing sprite and trigger non-idempotent updates.
+func namesToSpriteStatuses(names []string, composition fleet.Composition) []fleet.SpriteStatus {
+	desiredByName := make(map[string]fleet.SpriteSpec, len(composition.Sprites))
+	for _, spec := range composition.Sprites {
+		desiredByName[spec.Name] = spec
+	}
+	configVersion := ""
+	if composition.Version > 0 {
+		configVersion = strconv.Itoa(composition.Version)
+	}
+
 	statuses := make([]fleet.SpriteStatus, 0, len(names))
 	for _, name := range names {
-		statuses = append(statuses, fleet.SpriteStatus{
+		s := fleet.SpriteStatus{
 			Name:  name,
 			State: sprite.StateIdle,
-		})
+		}
+		if spec, ok := desiredByName[name]; ok {
+			s.Persona = spec.Persona.Name
+			s.ConfigVersion = configVersion
+		}
+		statuses = append(statuses, s)
 	}
 	sort.Slice(statuses, func(i, j int) bool {
 		return statuses[i].Name < statuses[j].Name
@@ -291,17 +318,25 @@ func (r *composeRuntime) Provision(ctx context.Context, action fleet.ProvisionAc
 }
 
 func (r *composeRuntime) Teardown(ctx context.Context, action fleet.TeardownAction) error {
-	return r.cli.Destroy(ctx, action.Name, r.org)
+	if err := r.cli.Destroy(ctx, action.Name, r.org); err != nil && !isNotFoundError(err) {
+		return err
+	}
+	return nil
 }
 
 func (r *composeRuntime) Update(ctx context.Context, action fleet.UpdateAction) error {
-	// Best-effort destroy before recreating; ignore errors (sprite may not exist).
-	_ = r.cli.Destroy(ctx, action.Desired.Name, r.org)
+	// Destroy before recreating; tolerate not-found but propagate real failures.
+	if err := r.cli.Destroy(ctx, action.Desired.Name, r.org); err != nil && !isNotFoundError(err) {
+		return fmt.Errorf("destroying sprite %q before update: %w", action.Desired.Name, err)
+	}
 	return r.cli.Create(ctx, action.Desired.Name, r.org)
 }
 
 func (r *composeRuntime) Redispatch(ctx context.Context, action fleet.RedispatchAction) error {
 	_, err := r.cli.Exec(ctx, action.Name, "echo redispatch-requested", nil)
+	if isNotFoundError(err) {
+		return nil
+	}
 	return err
 }
 

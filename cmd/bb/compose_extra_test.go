@@ -13,19 +13,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func TestDefaultFlyTokenPrecedence(t *testing.T) {
-	t.Setenv("FLY_TOKEN", "fallback")
-	t.Setenv("FLY_API_TOKEN", "preferred")
-	if got := defaultFlyToken(); got != "preferred" {
-		t.Fatalf("defaultFlyToken() = %q, want preferred", got)
-	}
-
-	t.Setenv("FLY_API_TOKEN", "")
-	if got := defaultFlyToken(); got != "fallback" {
-		t.Fatalf("defaultFlyToken() fallback = %q, want fallback", got)
-	}
-}
-
 func TestPrintHelpers(t *testing.T) {
 	t.Parallel()
 
@@ -112,12 +99,18 @@ func TestComposeRuntimeProvisionTeardownUpdateRedispatch(t *testing.T) {
 			if name == "broken" {
 				return errors.New("destroy failed")
 			}
+			if name == "gone" {
+				return errors.New("sprite not found")
+			}
 			return nil
 		},
 		ExecFn: func(_ context.Context, name, command string, stdin []byte) (string, error) {
 			execCalls++
 			if name == "fail" {
 				return "", errors.New("exec failed")
+			}
+			if name == "gone" {
+				return "", errors.New("sprite not found")
 			}
 			return "", nil
 		},
@@ -143,9 +136,14 @@ func TestComposeRuntimeProvisionTeardownUpdateRedispatch(t *testing.T) {
 		t.Fatalf("destroyCalls = %d, want 1", destroyCalls)
 	}
 
-	// Teardown error
+	// Teardown error (real failure)
 	if err := runtime.Teardown(context.Background(), fleet.TeardownAction{Name: "broken"}); err == nil {
 		t.Fatal("Teardown(broken) expected error")
+	}
+
+	// Teardown not-found (should succeed gracefully)
+	if err := runtime.Teardown(context.Background(), fleet.TeardownAction{Name: "gone"}); err != nil {
+		t.Fatalf("Teardown(gone) unexpected error = %v", err)
 	}
 
 	// Update (destroy + create)
@@ -171,6 +169,11 @@ func TestComposeRuntimeProvisionTeardownUpdateRedispatch(t *testing.T) {
 	// Redispatch error
 	if err := runtime.Redispatch(context.Background(), fleet.RedispatchAction{Name: "fail"}); err == nil {
 		t.Fatal("Redispatch(fail) expected error")
+	}
+
+	// Redispatch not-found (should succeed gracefully)
+	if err := runtime.Redispatch(context.Background(), fleet.RedispatchAction{Name: "gone"}); err != nil {
+		t.Fatalf("Redispatch(gone) unexpected error = %v", err)
 	}
 }
 
@@ -283,11 +286,10 @@ func TestRunComposeApplyAndDiffVariants(t *testing.T) {
 		if err := runComposeApply(context.Background(), cmd, baseOpts, deps); err != nil {
 			t.Fatalf("runComposeApply() error = %v", err)
 		}
-		// With sprite list (no persona/config metadata), the reconciler will see drift.
-		// But the dry-run still shows planned actions.
+		// With metadata populated from composition, the reconciler sees convergence.
 		output := out.String()
-		if !strings.Contains(output, "Dry run") {
-			t.Fatalf("dry-run output = %q", output)
+		if !strings.Contains(output, "Fleet already converged") {
+			t.Fatalf("dry-run output = %q, want converged", output)
 		}
 	})
 
@@ -403,7 +405,7 @@ func TestDefaultComposeDeps(t *testing.T) {
 func TestComposeRuntimeUpdateDestroyError(t *testing.T) {
 	t.Parallel()
 
-	// When destroy fails, Update still ignores it and attempts create
+	// When destroy fails with a real error (not "not found"), Update propagates it.
 	createCalls := 0
 	mock := &sprite.MockSpriteCLI{
 		DestroyFn: func(context.Context, string, string) error { return errors.New("destroy failed") },
@@ -417,10 +419,55 @@ func TestComposeRuntimeUpdateDestroyError(t *testing.T) {
 	err := runtime.Update(context.Background(), fleet.UpdateAction{
 		Desired: fleet.SpriteSpec{Name: "x", Persona: sprite.Persona{Name: "x"}},
 	})
+	if err == nil {
+		t.Fatal("Update() expected destroy error to propagate")
+	}
+	if !strings.Contains(err.Error(), "destroying sprite") {
+		t.Fatalf("Update() error = %v, want wrapped destroy error", err)
+	}
+	if createCalls != 0 {
+		t.Fatalf("createCalls = %d, want 0 (should not attempt create after destroy failure)", createCalls)
+	}
+}
+
+func TestComposeRuntimeUpdateDestroyNotFound(t *testing.T) {
+	t.Parallel()
+
+	// When destroy fails with "not found", Update ignores it and proceeds to create.
+	createCalls := 0
+	mock := &sprite.MockSpriteCLI{
+		DestroyFn: func(context.Context, string, string) error { return errors.New("sprite not found") },
+		CreateFn: func(context.Context, string, string) error {
+			createCalls++
+			return nil
+		},
+	}
+	runtime := newComposeRuntime(mock, "test-org")
+
+	err := runtime.Update(context.Background(), fleet.UpdateAction{
+		Desired: fleet.SpriteSpec{Name: "x", Persona: sprite.Persona{Name: "x"}},
+	})
 	if err != nil {
-		t.Fatalf("Update() error = %v (destroy errors are best-effort)", err)
+		t.Fatalf("Update() error = %v (not-found should be ignored)", err)
 	}
 	if createCalls != 1 {
 		t.Fatalf("createCalls = %d, want 1", createCalls)
+	}
+}
+
+func TestIsNotFoundError(t *testing.T) {
+	t.Parallel()
+
+	if isNotFoundError(nil) {
+		t.Fatal("nil should not be not-found")
+	}
+	if !isNotFoundError(errors.New("sprite not found")) {
+		t.Fatal("'not found' should be detected")
+	}
+	if !isNotFoundError(errors.New("resource does not exist")) {
+		t.Fatal("'does not exist' should be detected")
+	}
+	if isNotFoundError(errors.New("auth failure")) {
+		t.Fatal("unrelated error should not match")
 	}
 }

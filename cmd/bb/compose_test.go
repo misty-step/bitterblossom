@@ -200,7 +200,8 @@ func TestRootWiresComposeCommand(t *testing.T) {
 func TestNamesToSpriteStatuses(t *testing.T) {
 	t.Parallel()
 
-	statuses := namesToSpriteStatuses([]string{"charlie", "alpha", "bravo"})
+	comp := testComposition()
+	statuses := namesToSpriteStatuses([]string{"charlie", "bramble", "alpha"}, comp)
 	if len(statuses) != 3 {
 		t.Fatalf("len = %d, want 3", len(statuses))
 	}
@@ -208,8 +209,8 @@ func TestNamesToSpriteStatuses(t *testing.T) {
 	if statuses[0].Name != "alpha" {
 		t.Fatalf("statuses[0].Name = %q, want alpha", statuses[0].Name)
 	}
-	if statuses[1].Name != "bravo" {
-		t.Fatalf("statuses[1].Name = %q, want bravo", statuses[1].Name)
+	if statuses[1].Name != "bramble" {
+		t.Fatalf("statuses[1].Name = %q, want bramble", statuses[1].Name)
 	}
 	if statuses[2].Name != "charlie" {
 		t.Fatalf("statuses[2].Name = %q, want charlie", statuses[2].Name)
@@ -220,12 +221,26 @@ func TestNamesToSpriteStatuses(t *testing.T) {
 			t.Fatalf("state for %q = %v, want idle", s.Name, s.State)
 		}
 	}
+	// "bramble" matches composition: should have Persona and ConfigVersion
+	if statuses[1].Persona != "bramble" {
+		t.Fatalf("bramble persona = %q, want bramble", statuses[1].Persona)
+	}
+	if statuses[1].ConfigVersion != "1" {
+		t.Fatalf("bramble config = %q, want 1", statuses[1].ConfigVersion)
+	}
+	// "alpha" and "charlie" are extras: no metadata
+	if statuses[0].Persona != "" {
+		t.Fatalf("alpha persona = %q, want empty", statuses[0].Persona)
+	}
+	if statuses[2].Persona != "" {
+		t.Fatalf("charlie persona = %q, want empty", statuses[2].Persona)
+	}
 }
 
 func TestNamesToSpriteStatusesEmpty(t *testing.T) {
 	t.Parallel()
 
-	statuses := namesToSpriteStatuses(nil)
+	statuses := namesToSpriteStatuses(nil, fleet.Composition{})
 	if len(statuses) != 0 {
 		t.Fatalf("len = %d, want 0", len(statuses))
 	}
