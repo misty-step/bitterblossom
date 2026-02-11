@@ -75,8 +75,11 @@ func validateRegistryPath(path string) (string, error) {
 	dir := filepath.Dir(abs)
 	resolvedDir, err := filepath.EvalSymlinks(dir)
 	if err != nil {
-		// Parent dir may not exist yet (first run). Fall through to
-		// the blocked-prefix check on the unresolved path.
+		if !os.IsNotExist(err) {
+			return "", fmt.Errorf("registry path: cannot resolve symlinks in %q: %w", dir, err)
+		}
+		// Parent dir does not exist yet (first run). Use the unresolved
+		// path; the blocked-prefix check below still covers abs.
 		resolvedDir = dir
 	}
 	resolved := filepath.Join(resolvedDir, filepath.Base(abs))
