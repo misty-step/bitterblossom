@@ -694,3 +694,25 @@ func TestBuildStatusCheckScript(t *testing.T) {
 		}
 	}
 }
+
+func TestSelectSpriteFromRegistryMissingFile(t *testing.T) {
+	t.Parallel()
+
+	remote := &spriteCLIRemote{binary: "sprite"}
+	opts := dispatchOptions{
+		Issue:        42,
+		Repo:         "misty-step/bitterblossom",
+		RegistryPath: "/tmp/nonexistent-registry-" + t.Name() + ".toml",
+	}
+
+	_, err := selectSpriteFromRegistry(context.Background(), remote, opts)
+	if err == nil {
+		t.Fatal("expected error for missing registry file")
+	}
+	if !strings.Contains(err.Error(), "registry not found") {
+		t.Fatalf("expected 'registry not found' error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "bb init") {
+		t.Fatalf("expected guidance about 'bb init', got: %v", err)
+	}
+}

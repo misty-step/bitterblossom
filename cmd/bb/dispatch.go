@@ -334,6 +334,14 @@ func selectSpriteFromRegistry(ctx context.Context, remote *spriteCLIRemote, opts
 		return "", errors.New("dispatch: remote is required for auto-assign")
 	}
 
+	regPath := strings.TrimSpace(opts.RegistryPath)
+	if regPath == "" {
+		regPath = registry.DefaultPath()
+	}
+	if _, err := os.Stat(regPath); os.IsNotExist(err) {
+		return "", fmt.Errorf("dispatch: registry not found at %s\n\n  Run 'bb init' to create it, or specify --registry <path>.\n  Without a registry, provide a sprite name explicitly:\n    bb dispatch <sprite> --issue %d", regPath, opts.Issue)
+	}
+
 	checker := remoteStatusChecker{
 		remote:    remote,
 		workspace: "/home/sprite/workspace",
