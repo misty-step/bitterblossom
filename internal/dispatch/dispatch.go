@@ -235,11 +235,6 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 		return Result{}, fmt.Errorf("dispatch: determine provisioning need: %w", err)
 	}
 
-	// Always use the sprite name for remote commands — sprite exec -s
-	// expects names, not machine IDs. The machine ID is only used for
-	// registry-based provisioning checks.
-	remoteSprite := prepared.Sprite
-
 	plan := s.buildPlan(prepared, provisionNeeded)
 	result := Result{
 		Plan:       plan,
@@ -289,7 +284,7 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 
 	if !prepared.AllowAnthropicDirect {
 		s.logger.Info("dispatch validate env", "sprite", prepared.Sprite)
-		keyOutput, err := s.remote.Exec(ctx, remoteSprite, "printenv ANTHROPIC_API_KEY 2>/dev/null || true", nil)
+		keyOutput, err := s.remote.Exec(ctx, prepared.Sprite, "printenv ANTHROPIC_API_KEY 2>/dev/null || true", nil)
 		if err != nil {
 			result.State = StateFailed
 			return result, fmt.Errorf("dispatch: check sprite env: %w", err)
@@ -306,14 +301,14 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 
 	if prepared.Repo.CloneURL != "" {
 		s.logger.Info("dispatch setup repo", "sprite", prepared.Sprite, "repo", prepared.Repo.CloneURL)
-		if _, err := s.remote.Exec(ctx, remoteSprite, buildSetupRepoScript(s.workspace, prepared.Repo.CloneURL, prepared.Repo.RepoDir), nil); err != nil {
+		if _, err := s.remote.Exec(ctx, prepared.Sprite, buildSetupRepoScript(s.workspace, prepared.Repo.CloneURL, prepared.Repo.RepoDir), nil); err != nil {
 			result.State = StateFailed
 			return result, fmt.Errorf("dispatch: setup repo: %w", err)
 		}
 	}
 
 	s.logger.Info("dispatch upload prompt", "sprite", prepared.Sprite, "path", prepared.PromptPath)
-	if err := s.remote.Upload(ctx, remoteSprite, prepared.PromptPath, []byte(prepared.Prompt)); err != nil {
+	if err := s.remote.Upload(ctx, prepared.Sprite, prepared.PromptPath, []byte(prepared.Prompt)); err != nil {
 		result.State = StateFailed
 		return result, fmt.Errorf("dispatch: upload prompt: %w", err)
 	}
@@ -331,7 +326,7 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 		result.State = StateFailed
 		return result, fmt.Errorf("dispatch: marshal status: %w", err)
 	}
-	if err := s.remote.Upload(ctx, remoteSprite, s.workspace+"/STATUS.json", append(statusBytes, '\n')); err != nil {
+	if err := s.remote.Upload(ctx, prepared.Sprite, s.workspace+"/STATUS.json", append(statusBytes, '\n')); err != nil {
 		result.State = StateFailed
 		return result, fmt.Errorf("dispatch: upload status: %w", err)
 	}
@@ -340,7 +335,7 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 	execEnvVars := copyStringMap(s.envVars)
 	if openRouterKey, ok := s.envVars["OPENROUTER_API_KEY"]; ok && openRouterKey != "" {
 		s.logger.Info("dispatch ensure proxy", "sprite", prepared.Sprite)
-		proxyURL, err := s.proxyLifecycle.EnsureProxy(ctx, remoteSprite, openRouterKey)
+		proxyURL, err := s.proxyLifecycle.EnsureProxy(ctx, prepared.Sprite, openRouterKey)
 		if err != nil {
 			result.State = StateFailed
 			return result, fmt.Errorf("dispatch: ensure proxy: %w", err)
@@ -358,7 +353,7 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 	}
 
 	s.logger.Info("dispatch start agent", "sprite", prepared.Sprite, "mode", prepared.Mode)
-	output, err := s.remote.ExecWithEnv(ctx, remoteSprite, prepared.StartCommand, nil, execEnvVars)
+	output, err := s.remote.ExecWithEnv(ctx, prepared.Sprite, prepared.StartCommand, nil, execEnvVars)
 	if err != nil {
 		result.State = StateFailed
 		return result, fmt.Errorf("dispatch: start agent: %w", err)
@@ -495,15 +490,7 @@ func (s *Service) buildPlan(req preparedRequest, provisionNeeded bool) Plan {
 		Description: fmt.Sprintf("write status marker to %s/STATUS.json", s.workspace),
 	})
 
-	// Add proxy ensure step if we have OPENROUTER_API_KEY
-	hasOpenRouterKey := false
-	for key := range s.envVars {
-		if key == "OPENROUTER_API_KEY" {
-			hasOpenRouterKey = true
-			break
-		}
-	}
-	if hasOpenRouterKey {
+	if _, hasOpenRouterKey := s.envVars["OPENROUTER_API_KEY"]; hasOpenRouterKey {
 		steps = append(steps, PlanStep{
 			Kind:        StepEnsureProxy,
 			Description: "ensure anthropic proxy is running on sprite",

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strings"
 
 	"github.com/misty-step/bitterblossom/internal/shellutil"
@@ -154,7 +155,7 @@ func (c CLI) ExecWithEnv(ctx context.Context, sprite, remoteCommand string, stdi
 		for k := range env {
 			keys = append(keys, k)
 		}
-		// Sort for deterministic ordering
+		sort.Strings(keys)
 		for _, k := range keys {
 			args = append(args, "-env", k+"="+env[k])
 		}
