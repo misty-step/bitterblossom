@@ -13,6 +13,7 @@ import (
 	dispatchsvc "github.com/misty-step/bitterblossom/internal/dispatch"
 	"github.com/misty-step/bitterblossom/internal/fleet"
 	"github.com/misty-step/bitterblossom/internal/registry"
+	"github.com/misty-step/bitterblossom/internal/shellutil"
 	"github.com/misty-step/bitterblossom/pkg/fly"
 	"github.com/spf13/cobra"
 )
@@ -573,7 +574,7 @@ func checkSpriteStatus(ctx context.Context, remote *spriteCLIRemote, sprite, wor
 func buildStatusCheckScript(workspace string) string {
 	return strings.Join([]string{
 		"set -euo pipefail",
-		"WORKSPACE=" + shellQuote(workspace),
+		"WORKSPACE=" + shellutil.Quote(workspace),
 		"",
 		"# Check for status file",
 		"STATUS_JSON='{}'",

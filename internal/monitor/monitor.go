@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/misty-step/bitterblossom/internal/shellutil"
 )
 
 const workspace = "/home/sprite/workspace"
@@ -191,8 +193,8 @@ func parseProbeOutput(output string) (statusFile, bool, error) {
 
 func probeScript() string {
 	return strings.Join([]string{
-		"STATUS_PATH=" + shellQuote(workspace+"/STATUS.json"),
-		"PID_PATH=" + shellQuote(workspace+"/AGENT_PID"),
+		"STATUS_PATH=" + shellutil.Quote(workspace+"/STATUS.json"),
+		"PID_PATH=" + shellutil.Quote(workspace+"/AGENT_PID"),
 		"if [ -f \"$STATUS_PATH\" ]; then",
 		"  STATUS_JSON=\"$(tr -d '\\n' < \"$STATUS_PATH\")\"",
 		"else",
@@ -233,6 +235,3 @@ func sortedUnique(values []string) []string {
 	return uniq
 }
 
-func shellQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
-}

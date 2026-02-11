@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/misty-step/bitterblossom/internal/fleet"
+	"github.com/misty-step/bitterblossom/internal/shellutil"
 	"github.com/misty-step/bitterblossom/internal/sprite"
 )
 
@@ -242,7 +243,7 @@ func SpriteDetail(ctx context.Context, cli sprite.SpriteCLI, cfg Config, name st
 		}
 	}
 
-	workspaceCommand := "ls -la " + shellQuote(path.Join(cfg.Workspace, "/"))
+	workspaceCommand := "ls -la " + shellutil.Quote(path.Join(cfg.Workspace, "/"))
 	workspaceOutput, workspaceErr := cli.Exec(ctx, name, workspaceCommand, nil)
 	if workspaceErr != nil {
 		result.Workspace = "(no workspace)"
@@ -250,7 +251,7 @@ func SpriteDetail(ctx context.Context, cli sprite.SpriteCLI, cfg Config, name st
 		result.Workspace = strings.TrimSpace(workspaceOutput)
 	}
 
-	memoryCommand := "head -20 " + shellQuote(path.Join(cfg.Workspace, "MEMORY.md"))
+	memoryCommand := "head -20 " + shellutil.Quote(path.Join(cfg.Workspace, "MEMORY.md"))
 	memoryOutput, memoryErr := cli.Exec(ctx, name, memoryCommand, nil)
 	if memoryErr != nil {
 		result.Memory = "(no MEMORY.md)"

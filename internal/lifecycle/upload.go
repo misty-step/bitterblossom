@@ -10,6 +10,7 @@ import (
 	"sort"
 
 	"github.com/misty-step/bitterblossom/internal/proxy"
+	"github.com/misty-step/bitterblossom/internal/shellutil"
 	"github.com/misty-step/bitterblossom/internal/sprite"
 )
 
@@ -70,13 +71,13 @@ func PushConfig(ctx context.Context, cli sprite.SpriteCLI, cfg Config, spriteNam
 		return fmt.Errorf("stat agent script %q: %w", agentScript, err)
 	} else if err == nil {
 		agentDest := path.Join(cfg.RemoteHome, ".local", "bin", "sprite-agent")
-		if _, err := cli.Exec(ctx, spriteName, "mkdir -p "+shellQuote(path.Dir(agentDest)), nil); err != nil {
+		if _, err := cli.Exec(ctx, spriteName, "mkdir -p "+shellutil.Quote(path.Dir(agentDest)), nil); err != nil {
 			return fmt.Errorf("create agent dir: %w", err)
 		}
 		if err := cli.UploadFile(ctx, spriteName, cfg.Org, agentScript, agentDest); err != nil {
 			return fmt.Errorf("upload agent script: %w", err)
 		}
-		if _, err := cli.Exec(ctx, spriteName, "chmod +x "+shellQuote(agentDest), nil); err != nil {
+		if _, err := cli.Exec(ctx, spriteName, "chmod +x "+shellutil.Quote(agentDest), nil); err != nil {
 			return fmt.Errorf("chmod agent: %w", err)
 		}
 	}
@@ -91,7 +92,7 @@ func PushConfig(ctx context.Context, cli sprite.SpriteCLI, cfg Config, spriteNam
 
 // UploadDir recursively uploads a local directory to a remote path on a sprite.
 func UploadDir(ctx context.Context, cli sprite.SpriteCLI, cfg Config, spriteName, localDir, remoteDir string) error {
-	if _, err := cli.Exec(ctx, spriteName, "mkdir -p "+shellQuote(remoteDir), nil); err != nil {
+	if _, err := cli.Exec(ctx, spriteName, "mkdir -p "+shellutil.Quote(remoteDir), nil); err != nil {
 		return fmt.Errorf("create remote dir %q: %w", remoteDir, err)
 	}
 
@@ -119,7 +120,7 @@ func UploadDir(ctx context.Context, cli sprite.SpriteCLI, cfg Config, spriteName
 		remotePath := path.Join(remoteDir, rel)
 		remoteParent := path.Dir(remotePath)
 
-		if _, err := cli.Exec(ctx, spriteName, "mkdir -p "+shellQuote(remoteParent), nil); err != nil {
+		if _, err := cli.Exec(ctx, spriteName, "mkdir -p "+shellutil.Quote(remoteParent), nil); err != nil {
 			return fmt.Errorf("create remote dir %q: %w", remoteParent, err)
 		}
 		if err := cli.UploadFile(ctx, spriteName, cfg.Org, localPath, remotePath); err != nil {
