@@ -72,11 +72,11 @@ function attemptUpstreamRequest(url, payload) {
 }
 
 function readResponseBody(response) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     let body = '';
     response.on('data', (c) => { body += c; });
     response.on('end', () => resolve(body));
-    response.on('error', () => resolve(body));
+    response.on('error', (err) => reject(err));
   });
 }
 
@@ -85,6 +85,8 @@ async function forwardWithRetry(res, openaiBody, requestModel) {
   const url = new URL(UPSTREAM_BASE + UPSTREAM_PATH);
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    let shouldRetry = false;
+
     try {
       const upstreamRes = await attemptUpstreamRequest(url, payload);
 
@@ -113,9 +115,7 @@ async function forwardWithRetry(res, openaiBody, requestModel) {
         return;
       }
 
-      const delay = retryDelay(attempt);
-      console.error(`[proxy] retrying in ${delay}ms...`);
-      await sleep(delay);
+      shouldRetry = true;
 
     } catch (err) {
       console.error(`[proxy] attempt ${attempt}/${MAX_RETRIES}: ${err.message}`);
@@ -125,12 +125,16 @@ async function forwardWithRetry(res, openaiBody, requestModel) {
           res.writeHead(502, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({
             type: 'error',
-            error: { type: 'api_error', message: `Upstream connection failed after ${MAX_RETRIES} attempts: ${err.message}` },
+            error: { type: 'api_error', message: `Upstream connection failed after ${MAX_RETRIES} attempts` },
           }));
         }
         return;
       }
 
+      shouldRetry = true;
+    }
+
+    if (shouldRetry) {
       const delay = retryDelay(attempt);
       console.error(`[proxy] retrying in ${delay}ms...`);
       await sleep(delay);
@@ -377,6 +381,13 @@ const server = http.createServer((req, res) => {
   // Deep health check — tests upstream reachability
   if (req.method === 'GET' && req.url === '/health/deep') {
     const url = new URL(UPSTREAM_BASE);
+    let replied = false;
+    const reply = (status, body) => {
+      if (replied) return;
+      replied = true;
+      res.writeHead(status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(body));
+    };
     const checkReq = https.request({
       hostname: url.hostname,
       port: url.port || 443,
@@ -384,26 +395,23 @@ const server = http.createServer((req, res) => {
       method: 'HEAD',
       timeout: 5000,
     }, (checkRes) => {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      reply(200, {
         status: 'ok', model: TARGET_MODEL, port: PORT,
         upstream: { reachable: true, status: checkRes.statusCode },
-      }));
+      });
     });
     checkReq.on('error', (err) => {
-      res.writeHead(503, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      reply(503, {
         status: 'degraded', model: TARGET_MODEL, port: PORT,
         upstream: { reachable: false, error: err.message },
-      }));
+      });
     });
     checkReq.on('timeout', () => {
       checkReq.destroy();
-      res.writeHead(503, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      reply(503, {
         status: 'degraded', model: TARGET_MODEL, port: PORT,
         upstream: { reachable: false, error: 'timeout' },
-      }));
+      });
     });
     checkReq.end();
     return;
