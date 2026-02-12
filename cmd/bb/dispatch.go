@@ -213,6 +213,8 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 				"XAI_API_KEY",
 				"GEMINI_API_KEY",
 				"OPENAI_API_KEY",
+				"GH_TOKEN",
+				"GITHUB_TOKEN",
 			} {
 				if value := os.Getenv(key); value != "" {
 					envVars[key] = value

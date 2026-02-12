@@ -750,6 +750,53 @@ func TestBuildStatusCheckScript(t *testing.T) {
 	}
 }
 
+func TestDispatchCollectsGHToken(t *testing.T) {
+	var capturedEnvVars map[string]string
+	runner := &fakeDispatchRunner{
+		result: dispatchsvc.Result{
+			Executed: false,
+			State:    dispatchsvc.StatePending,
+			Plan:     dispatchsvc.Plan{Sprite: "bramble", Mode: "dry-run"},
+		},
+	}
+
+	deps := dispatchDeps{
+		readFile:     func(string) ([]byte, error) { return nil, nil },
+		newFlyClient: func(token, apiURL string) (fly.MachineClient, error) { return fakeFlyClient{}, nil },
+		newRemote:    func(binary, org string) *spriteCLIRemote { return &spriteCLIRemote{} },
+		newService: func(cfg dispatchsvc.Config) (dispatchRunner, error) {
+			capturedEnvVars = cfg.EnvVars
+			return runner, nil
+		},
+	}
+
+	t.Setenv("GH_TOKEN", "gh-test-token")
+	t.Setenv("GITHUB_TOKEN", "github-test-token")
+
+	cmd := newDispatchCmdWithDeps(deps)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{
+		"bramble", "Fix tests",
+		"--app", "bb-app",
+		"--token", "tok",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cmd.Execute() error = %v", err)
+	}
+	if capturedEnvVars == nil {
+		t.Fatal("newService was never called")
+	}
+	if v := capturedEnvVars["GH_TOKEN"]; v != "gh-test-token" {
+		t.Fatalf("GH_TOKEN = %q, want %q", v, "gh-test-token")
+	}
+	if v := capturedEnvVars["GITHUB_TOKEN"]; v != "github-test-token" {
+		t.Fatalf("GITHUB_TOKEN = %q, want %q", v, "github-test-token")
+	}
+}
+
 func TestSelectSpriteFromRegistryMissingFile(t *testing.T) {
 	t.Parallel()
 
