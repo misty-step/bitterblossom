@@ -247,12 +247,12 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 				// GitHub token is required for the agent to push branches and open PRs.
 				hasGitToken := envVars["GH_TOKEN"] != "" || envVars["GITHUB_TOKEN"] != ""
 				if !hasGitToken {
-					missing = append(missing, fmt.Sprintf(
-						"no GitHub token found — set GH_TOKEN or GITHUB_TOKEN (try: export GITHUB_TOKEN=$(gh auth token))"))
+					missing = append(missing,
+						"no GitHub token found — set GH_TOKEN or GITHUB_TOKEN (try: export GITHUB_TOKEN=$(gh auth token))")
 				}
 
 				if len(missing) > 0 {
-					return fmt.Errorf("dispatch: sprite will not be able to complete work — missing credentials:\n\n  ✗ %s\n\nSet the required environment variables and retry.", strings.Join(missing, "\n  ✗ "))
+					return fmt.Errorf("dispatch: missing credentials — sprite cannot complete work\n\n  ✗ %s\n\nset the required environment variables and retry", strings.Join(missing, "\n  ✗ "))
 				}
 			}
 
@@ -390,7 +390,7 @@ func selectSpriteFromRegistry(ctx context.Context, remote *spriteCLIRemote, opts
 		if opts.Issue > 0 {
 			exampleArgs = fmt.Sprintf("--issue %d", opts.Issue)
 		}
-		return "", fmt.Errorf("dispatch: registry not found at %s\n\n  Create a registry by adding a sprite: bb add <sprite>\n  Or provide a sprite name explicitly:\n    bb dispatch <sprite> %s", regPath, exampleArgs)
+		return "", fmt.Errorf("dispatch: registry not found at %s\n\n  Create a registry by adding a sprite: bb add --name <sprite>\n  Or provide a sprite name explicitly:\n    bb dispatch <sprite> %s", regPath, exampleArgs)
 	}
 
 	checker := remoteStatusChecker{
@@ -569,12 +569,11 @@ func pollSpriteStatus(ctx context.Context, remote *spriteCLIRemote, sprite strin
 
 	// Immediate check before any delay — catches already-completed oneshot tasks.
 	result, done, err := checkSpriteStatus(ctx, remote, sprite, workspace)
-	if err == nil && done && result != nil {
-		progress(fmt.Sprintf("Status: %s", result.State))
-		return result, nil
-	}
 	if err == nil && result != nil {
 		progress(fmt.Sprintf("Status: %s", result.State))
+		if done {
+			return result, nil
+		}
 	}
 
 	// Brief delay before starting poll loop

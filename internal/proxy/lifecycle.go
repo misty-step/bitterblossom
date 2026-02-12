@@ -151,13 +151,14 @@ func (l *Lifecycle) WaitForHealthy(ctx context.Context, sprite string) error {
 			if lastErr != nil {
 				msg += fmt.Sprintf(" (last error: %v)", lastErr)
 			}
-			return fmt.Errorf("%s", msg)
+			return fmt.Errorf("%s: %w", msg, ctx.Err())
 		case <-ticker.C:
 			running, err := l.IsRunning(ctx, sprite)
 			if err != nil {
 				lastErr = err
 				continue
 			}
+			lastErr = nil
 			if running {
 				return nil
 			}

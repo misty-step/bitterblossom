@@ -460,7 +460,7 @@ type statusFile struct {
 
 func (s *Service) provision(ctx context.Context, req preparedRequest) (string, error) {
 	if s.fly == nil || strings.TrimSpace(s.app) == "" {
-		return "", errors.New("dispatch: provisioning requires FLY_APP and FLY_API_TOKEN environment variables")
+		return "", errors.New("dispatch: provisioning requires Fly app name and API token (set --app/--token or FLY_APP/FLY_API_TOKEN)")
 	}
 	metadata := map[string]string{
 		"managed_by": "bb.dispatch",
