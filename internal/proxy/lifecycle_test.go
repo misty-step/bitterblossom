@@ -177,7 +177,7 @@ func TestLifecycle_IsRunning(t *testing.T) {
 }
 
 func TestLifecycle_Start(t *testing.T) {
-	t.Run("kills existing process on port before starting", func(t *testing.T) {
+	t.Run("kills existing proxy before starting", func(t *testing.T) {
 		mock := &mockRemoteExecutor{}
 		lifecycle := NewLifecycle(mock)
 
@@ -186,12 +186,12 @@ func TestLifecycle_Start(t *testing.T) {
 			t.Errorf("unexpected error: %v", err)
 		}
 
-		// First exec call should be the port cleanup
+		// First exec call should be Stop()'s cleanup (pgrep-based kill)
 		if len(mock.execCalls) < 1 {
 			t.Fatal("expected at least 1 exec call")
 		}
-		if !strings.Contains(mock.execCalls[0].command, "fuser") || !strings.Contains(mock.execCalls[0].command, "4000") {
-			t.Errorf("expected first exec to kill existing process on port 4000, got: %s", mock.execCalls[0].command)
+		if !strings.Contains(mock.execCalls[0].command, "pgrep") {
+			t.Errorf("expected first exec to kill existing proxy via pgrep, got: %s", mock.execCalls[0].command)
 		}
 	})
 
