@@ -122,8 +122,8 @@ if [ -n "$PID" ]; then
   fi
 fi
 # Clean up PID file if it exists
-rm -f /home/sprite/.anthropic-proxy.pid
-`, SpriteProxyPath)
+rm -f %s
+`, SpriteProxyPath, ProxyPIDFile)
 
 	if _, err := l.executor.Exec(ctx, sprite, stopScript, nil); err != nil {
 		return fmt.Errorf("failed to stop proxy: %w", err)
@@ -206,8 +206,8 @@ set -e
 %s
 # Start proxy in background
 nohup node %s >/dev/null 2>&1 &
-echo $! > /home/sprite/.anthropic-proxy.pid
-`, envExports, shellutil.Quote(proxyPath))
+echo $! > %s
+`, envExports, shellutil.Quote(proxyPath), ProxyPIDFile)
 }
 
 // HTTPClient is used for making HTTP requests (can be mocked in tests).
