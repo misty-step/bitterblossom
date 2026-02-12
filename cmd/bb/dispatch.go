@@ -205,7 +205,8 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 
 			// Collect auth-related environment variables to pass to sprites
 			envVars := make(map[string]string)
-			for _, key := range []string{
+
+			llmKeys := []string{
 				"OPENROUTER_API_KEY",
 				"ANTHROPIC_AUTH_TOKEN",
 				"ANTHROPIC_API_KEY",
@@ -213,11 +214,45 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 				"XAI_API_KEY",
 				"GEMINI_API_KEY",
 				"OPENAI_API_KEY",
+			}
+			gitKeys := []string{
 				"GH_TOKEN",
 				"GITHUB_TOKEN",
-			} {
+			}
+
+			for _, key := range append(llmKeys, gitKeys...) {
 				if value := os.Getenv(key); value != "" {
 					envVars[key] = value
+				}
+			}
+
+			// When executing (not dry-run), validate that the sprite will have
+			// the credentials it needs to actually complete the work.
+			if opts.Execute {
+				var missing []string
+
+				// At least one LLM key is required for the agent to function.
+				hasLLMKey := false
+				for _, key := range llmKeys {
+					if envVars[key] != "" {
+						hasLLMKey = true
+						break
+					}
+				}
+				if !hasLLMKey {
+					missing = append(missing, fmt.Sprintf(
+						"no LLM API key found — set one of: %s", strings.Join(llmKeys, ", ")))
+				}
+
+				// GitHub token is required for the agent to push branches and open PRs.
+				hasGitToken := envVars["GH_TOKEN"] != "" || envVars["GITHUB_TOKEN"] != ""
+				if !hasGitToken {
+					missing = append(missing, fmt.Sprintf(
+						"no GitHub token found — set GH_TOKEN or GITHUB_TOKEN (try: export GITHUB_TOKEN=$(gh auth token))"))
+				}
+
+				if len(missing) > 0 {
+					return fmt.Errorf("dispatch: sprite will not be able to complete work — missing credentials:\n\n  ✗ %s\n\nSet the required environment variables and retry.", strings.Join(missing, "\n  ✗ "))
 				}
 			}
 
