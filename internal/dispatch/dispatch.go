@@ -686,6 +686,14 @@ func (s *Service) prepare(req Request) (preparedRequest, error) {
 func (s *Service) uploadSkills(ctx context.Context, sprite string, skills []preparedSkill) error {
 	for _, skill := range skills {
 		for _, file := range skill.Files {
+			info, err := os.Lstat(file.LocalPath)
+			if err != nil {
+				return fmt.Errorf("stat %q: %w", file.LocalPath, err)
+			}
+			if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+				return fmt.Errorf("read %q: skill file must be a regular non-symlink file", file.LocalPath)
+			}
+
 			content, err := os.ReadFile(file.LocalPath)
 			if err != nil {
 				return fmt.Errorf("read %q: %w", file.LocalPath, err)
@@ -771,6 +779,17 @@ func resolveSkillMounts(paths []string, workspace string) ([]preparedSkill, erro
 			}
 			if entry.IsDir() {
 				return nil
+			}
+			if entry.Type()&fs.ModeSymlink != 0 {
+				return fmt.Errorf("skill %q contains symlink %q", input, filePath)
+			}
+
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("skill %q contains non-regular file %q", input, filePath)
 			}
 
 			relPath, err := filepath.Rel(skillRoot, filePath)

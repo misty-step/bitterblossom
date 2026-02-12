@@ -424,6 +424,90 @@ func TestRunValidationFailsForMissingSkillPath(t *testing.T) {
 	}
 }
 
+func TestRunValidationFailsForSymlinkedSkillFile(t *testing.T) {
+	skillRoot := t.TempDir()
+	skillDir := filepath.Join(skillRoot, "malicious-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# Skill\n"), 0o644); err != nil {
+		t.Fatalf("write SKILL.md: %v", err)
+	}
+
+	target := filepath.Join(skillRoot, "outside-secret.txt")
+	if err := os.WriteFile(target, []byte("secret"), 0o644); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	linkPath := filepath.Join(skillDir, "stolen.txt")
+	if err := os.Symlink(target, linkPath); err != nil {
+		t.Skipf("symlink unsupported in test environment: %v", err)
+	}
+
+	service, err := NewService(Config{
+		Remote: &fakeRemote{},
+		Fly:    &fakeFly{},
+		App:    "bb-app",
+	})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	_, runErr := service.Run(context.Background(), Request{
+		Sprite: "bramble",
+		Prompt: "Fix tests",
+		Skills: []string{skillDir},
+	})
+	if runErr == nil {
+		t.Fatal("expected error for symlinked skill file")
+	}
+	if !strings.Contains(strings.ToLower(runErr.Error()), "symlink") {
+		t.Fatalf("error = %v, want symlink rejection", runErr)
+	}
+}
+
+func TestUploadSkillsRejectsSymlinkFiles(t *testing.T) {
+	tmp := t.TempDir()
+	target := filepath.Join(tmp, "target.txt")
+	if err := os.WriteFile(target, []byte("secret"), 0o644); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	linkPath := filepath.Join(tmp, "link.txt")
+	if err := os.Symlink(target, linkPath); err != nil {
+		t.Skipf("symlink unsupported in test environment: %v", err)
+	}
+
+	remote := &fakeRemote{}
+	service, err := NewService(Config{
+		Remote: remote,
+		Fly:    &fakeFly{},
+		App:    "bb-app",
+	})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	err = service.uploadSkills(context.Background(), "bramble", []preparedSkill{
+		{
+			Name: "test",
+			Files: []skillFile{
+				{
+					LocalPath:  linkPath,
+					RemotePath: "/home/sprite/workspace/skills/test/link.txt",
+				},
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected symlink upload rejection")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "non-symlink") {
+		t.Fatalf("error = %v, want non-symlink validation error", err)
+	}
+	if len(remote.uploads) != 0 {
+		t.Fatalf("unexpected uploads for rejected symlink: %d", len(remote.uploads))
+	}
+}
+
 func TestRunExecuteErrorsPreserveFailedState(t *testing.T) {
 	now := time.Date(2026, time.February, 8, 12, 0, 0, 0, time.UTC)
 
