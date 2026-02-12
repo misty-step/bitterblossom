@@ -185,7 +185,7 @@ bb dispatch bramble "Fix the bug" --execute --json
 |------|---------|-------------|
 | `--repo` | | Repo to clone/pull (`org/repo` or URL) |
 | `--file` | | Read prompt from file |
-| `--skill` | | Path to skill directory or `SKILL.md` (repeatable). Mounted at `./skills/<name>/` on sprite |
+| `--skill` | | Path to skill directory or `SKILL.md` (repeatable). Mounted at `./skills/<name>/` on sprite. **Limits:** max 10 mounts, 100 files/skill, 10MB/skill, 1MB/file |
 | `--ralph` | `false` | Start persistent Ralph loop |
 | `--execute` | `false` | Execute dispatch (default is dry-run) |
 | `--dry-run` | `true` | Preview dispatch plan |
@@ -218,6 +218,20 @@ Any state can transition to `failed` on error.
 ### Exit Codes
 
 Standard (see [contracts](contracts.md)).
+
+### Skill Mount Limits
+
+The `--skill` flag enforces guardrails to prevent accidental performance/pathology cases:
+
+| Limit | Default | Description |
+|-------|---------|-------------|
+| Max mounts | 10 | Maximum number of `--skill` flags per dispatch |
+| Max files/skill | 100 | Maximum files per skill directory |
+| Max bytes/skill | 10 MB | Total size limit per skill |
+| Max file size | 1 MB | Individual file size limit |
+| Skill name pattern | `^[a-z][a-z0-9-]*$` | Valid skill directory names (lowercase alphanumeric with hyphens) |
+
+These limits are configurable programmatically via `resolveSkillLimits`. Violations produce deterministic errors with remediation hints.
 
 ---
 

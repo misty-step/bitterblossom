@@ -35,11 +35,23 @@ const (
 	DefaultMaxTokens = 200_000
 	// DefaultMaxTime is the default stuck-loop runtime safety cap for Ralph loops.
 	DefaultMaxTime = 30 * time.Minute
+
+	// DefaultMaxSkillMounts is the default maximum number of --skill mounts per dispatch.
+	DefaultMaxSkillMounts = 10
+	// DefaultMaxFilesPerSkill is the default maximum number of files per skill.
+	DefaultMaxFilesPerSkill = 100
+	// DefaultMaxBytesPerSkill is the default maximum total bytes per skill (10MB).
+	DefaultMaxBytesPerSkill = 10 * 1024 * 1024
+	// DefaultMaxFileSize is the default maximum size for a single skill file (1MB).
+	DefaultMaxFileSize = 1024 * 1024
 )
 
 var (
 	spriteNamePattern = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 	repoPartPattern   = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+	// skillNamePattern validates skill directory names: lowercase alphanumeric with hyphens.
+	// This is stricter than repoPartPattern and decouples skill naming from repo naming.
+	skillNamePattern = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 )
 
 var (
@@ -792,13 +804,36 @@ func appendSkillInstructions(prompt string, skills []preparedSkill) string {
 	return strings.Join(lines, "\n")
 }
 
+type resolveSkillLimits struct {
+	MaxMounts        int
+	MaxFilesPerSkill int
+	MaxBytesPerSkill int64
+	MaxFileSize      int64
+}
+
+var defaultResolveSkillLimits = resolveSkillLimits{
+	MaxMounts:        DefaultMaxSkillMounts,
+	MaxFilesPerSkill: DefaultMaxFilesPerSkill,
+	MaxBytesPerSkill: DefaultMaxBytesPerSkill,
+	MaxFileSize:      DefaultMaxFileSize,
+}
+
 func resolveSkillMounts(paths []string, workspace string) ([]preparedSkill, error) {
+	return resolveSkillMountsWithLimits(paths, workspace, defaultResolveSkillLimits)
+}
+
+func resolveSkillMountsWithLimits(paths []string, workspace string, limits resolveSkillLimits) ([]preparedSkill, error) {
 	if len(paths) == 0 {
 		return nil, nil
 	}
 
+	if len(paths) > limits.MaxMounts {
+		return nil, fmt.Errorf("%w: too many --skill mounts: %d (max %d)", ErrInvalidRequest, len(paths), limits.MaxMounts)
+	}
+
 	mounts := make([]preparedSkill, 0, len(paths))
-	seen := map[string]string{}
+	seen := map[string]string{}       // skill name -> canonical path
+	seenCanonical := map[string]bool{} // canonical path -> exists (for duplicate detection)
 
 	for _, raw := range paths {
 		input := strings.TrimSpace(raw)
@@ -811,6 +846,14 @@ func resolveSkillMounts(paths []string, workspace string) ([]preparedSkill, erro
 			return nil, fmt.Errorf("%w: resolve skill path %q: %v", ErrInvalidRequest, input, err)
 		}
 
+		// Canonicalize path for duplicate detection (evaluates symlinks)
+		canonicalPath, err := filepath.EvalSymlinks(absPath)
+		if err != nil {
+			// If EvalSymlinks fails, fall back to absolute path but still check for duplicates
+			canonicalPath = absPath
+		}
+		canonicalPath = filepath.Clean(canonicalPath)
+
 		info, err := os.Stat(absPath)
 		if err != nil {
 			return nil, fmt.Errorf("%w: skill path %q: %v", ErrInvalidRequest, input, err)
@@ -822,18 +865,30 @@ func resolveSkillMounts(paths []string, workspace string) ([]preparedSkill, erro
 				return nil, fmt.Errorf("%w: skill path %q must be a directory or SKILL.md file", ErrInvalidRequest, input)
 			}
 			skillRoot = filepath.Dir(absPath)
+			// Re-canonicalize since skillRoot changed
+			canonicalPath, err = filepath.EvalSymlinks(skillRoot)
+			if err != nil {
+				canonicalPath = skillRoot
+			}
+			canonicalPath = filepath.Clean(canonicalPath)
 		}
 
 		skillName := filepath.Base(skillRoot)
-		if !repoPartPattern.MatchString(skillName) {
-			return nil, fmt.Errorf("%w: invalid skill directory name %q", ErrInvalidRequest, skillName)
+		if !skillNamePattern.MatchString(skillName) {
+			return nil, fmt.Errorf("%w: invalid skill directory name %q (must match %s)", ErrInvalidRequest, skillName, skillNamePattern.String())
 		}
 
+		// Check for duplicate skill names
 		if previous, exists := seen[skillName]; exists {
-			if previous == skillRoot {
+			if previous == canonicalPath {
 				continue
 			}
-			return nil, fmt.Errorf("%w: duplicate skill name %q from %q and %q", ErrInvalidRequest, skillName, previous, skillRoot)
+			return nil, fmt.Errorf("%w: duplicate skill name %q from %q and %q", ErrInvalidRequest, skillName, previous, canonicalPath)
+		}
+
+		// Check for canonical path duplicates (same skill mounted via different paths)
+		if seenCanonical[canonicalPath] {
+			return nil, fmt.Errorf("%w: skill at %q already mounted (detected via canonical path)", ErrInvalidRequest, input)
 		}
 
 		skillDoc := filepath.Join(skillRoot, "SKILL.md")
@@ -842,6 +897,7 @@ func resolveSkillMounts(paths []string, workspace string) ([]preparedSkill, erro
 		}
 
 		files := make([]skillFile, 0, 16)
+		var totalBytes int64
 		if err := filepath.WalkDir(skillRoot, func(filePath string, entry fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return walkErr
@@ -861,6 +917,17 @@ func resolveSkillMounts(paths []string, workspace string) ([]preparedSkill, erro
 				return fmt.Errorf("skill %q contains non-regular file %q", input, filePath)
 			}
 
+			// Check individual file size limit
+			if info.Size() > limits.MaxFileSize {
+				return fmt.Errorf("skill %q file %q exceeds max file size: %d bytes (max %d)", input, filePath, info.Size(), limits.MaxFileSize)
+			}
+
+			// Check total bytes limit
+			totalBytes += info.Size()
+			if totalBytes > limits.MaxBytesPerSkill {
+				return fmt.Errorf("skill %q exceeds total size limit: %d bytes (max %d)", input, totalBytes, limits.MaxBytesPerSkill)
+			}
+
 			relPath, err := filepath.Rel(skillRoot, filePath)
 			if err != nil {
 				return err
@@ -871,6 +938,11 @@ func resolveSkillMounts(paths []string, workspace string) ([]preparedSkill, erro
 				LocalPath:  filePath,
 				RemotePath: path.Join(workspace, "skills", skillName, relPath),
 			})
+
+			// Short-circuit file count inside walk to avoid traversing huge directories.
+			if len(files) > limits.MaxFilesPerSkill {
+				return fmt.Errorf("skill %q contains more than %d files", input, limits.MaxFilesPerSkill)
+			}
 			return nil
 		}); err != nil {
 			return nil, fmt.Errorf("%w: scan skill %q: %v", ErrInvalidRequest, input, err)
@@ -887,7 +959,8 @@ func resolveSkillMounts(paths []string, workspace string) ([]preparedSkill, erro
 			PromptPath: "./skills/" + skillName + "/SKILL.md",
 			Files:      files,
 		})
-		seen[skillName] = skillRoot
+		seen[skillName] = canonicalPath
+		seenCanonical[canonicalPath] = true
 	}
 
 	return mounts, nil
