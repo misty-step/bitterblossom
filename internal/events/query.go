@@ -1,6 +1,7 @@
 package events
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gofrs/flock"
 	pkgevents "github.com/misty-step/bitterblossom/pkg/events"
 )
 
@@ -62,18 +64,31 @@ func (q *Query) Read(opts QueryOptions) ([]Event, error) {
 	paths := listDailyEventPaths(entries, q.dir, opts.Since, opts.Until)
 	out := make([]Event, 0, 32)
 
-	readPath := func(path string) error {
+	readPath := func(path string) (retErr error) {
+		lockPath := path + ".lock"
+		lock := flock.New(lockPath)
+		if err := lock.RLock(); err != nil {
+			return fmt.Errorf("events: lock %s: %w", lockPath, err)
+		}
+		defer func() {
+			if unlockErr := lock.Unlock(); unlockErr != nil {
+				retErr = errors.Join(retErr, fmt.Errorf("events: unlock %s: %w", lockPath, unlockErr))
+			}
+		}()
+
 		file, err := os.Open(path)
 		if err != nil {
 			return fmt.Errorf("events: open %s: %w", path, err)
 		}
+		defer func() {
+			if closeErr := file.Close(); closeErr != nil {
+				retErr = errors.Join(retErr, fmt.Errorf("events: close %s: %w", path, closeErr))
+			}
+		}()
+
 		items, readErr := pkgevents.ReadAll(file)
-		closeErr := file.Close()
 		if readErr != nil {
 			return fmt.Errorf("events: read %s: %w", path, readErr)
-		}
-		if closeErr != nil {
-			return fmt.Errorf("events: close %s: %w", path, closeErr)
 		}
 
 		for _, event := range items {
