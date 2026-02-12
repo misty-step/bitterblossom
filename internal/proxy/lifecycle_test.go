@@ -177,6 +177,24 @@ func TestLifecycle_IsRunning(t *testing.T) {
 }
 
 func TestLifecycle_Start(t *testing.T) {
+	t.Run("kills existing process on port before starting", func(t *testing.T) {
+		mock := &mockRemoteExecutor{}
+		lifecycle := NewLifecycle(mock)
+
+		err := lifecycle.Start(context.Background(), "test-sprite", "test-api-key")
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+
+		// First exec call should be the port cleanup
+		if len(mock.execCalls) < 1 {
+			t.Fatal("expected at least 1 exec call")
+		}
+		if !strings.Contains(mock.execCalls[0].command, "fuser") || !strings.Contains(mock.execCalls[0].command, "4000") {
+			t.Errorf("expected first exec to kill existing process on port 4000, got: %s", mock.execCalls[0].command)
+		}
+	})
+
 	t.Run("successful start", func(t *testing.T) {
 		mock := &mockRemoteExecutor{}
 		lifecycle := NewLifecycle(mock)
@@ -186,12 +204,12 @@ func TestLifecycle_Start(t *testing.T) {
 			t.Errorf("unexpected error: %v", err)
 		}
 
-		// Check that mkdir was called
-		if len(mock.execCalls) < 1 {
-			t.Fatal("expected at least 1 exec call")
+		// First call is port cleanup, second is mkdir
+		if len(mock.execCalls) < 2 {
+			t.Fatal("expected at least 2 exec calls")
 		}
-		if !strings.Contains(mock.execCalls[0].command, "mkdir -p") {
-			t.Errorf("expected mkdir command, got: %s", mock.execCalls[0].command)
+		if !strings.Contains(mock.execCalls[1].command, "mkdir -p") {
+			t.Errorf("expected mkdir command, got: %s", mock.execCalls[1].command)
 		}
 
 		// Check that upload was called
@@ -202,19 +220,24 @@ func TestLifecycle_Start(t *testing.T) {
 			t.Errorf("expected upload to %s, got %s", SpriteProxyPath, mock.uploadCalls[0].path)
 		}
 
-		// Check that start script was called
-		if len(mock.execCalls) < 2 {
-			t.Fatal("expected at least 2 exec calls")
+		// Check that start script was called (third exec call)
+		if len(mock.execCalls) < 3 {
+			t.Fatal("expected at least 3 exec calls")
 		}
-		if !strings.Contains(mock.execCalls[1].command, "node") {
-			t.Errorf("expected node command, got: %s", mock.execCalls[1].command)
+		if !strings.Contains(mock.execCalls[2].command, "node") {
+			t.Errorf("expected node command, got: %s", mock.execCalls[2].command)
 		}
 	})
 
 	t.Run("mkdir fails", func(t *testing.T) {
+		callCount := 0
 		mock := &mockRemoteExecutor{
 			execFunc: func(ctx context.Context, sprite, remoteCommand string, stdin []byte) (string, error) {
-				return "", errors.New("permission denied")
+				callCount++
+				if callCount == 1 {
+					return "", nil // cleanup succeeds
+				}
+				return "", errors.New("permission denied") // mkdir fails
 			},
 		}
 		lifecycle := NewLifecycle(mock)
@@ -250,7 +273,7 @@ func TestLifecycle_Start(t *testing.T) {
 		mock := &mockRemoteExecutor{
 			execFunc: func(ctx context.Context, sprite, remoteCommand string, stdin []byte) (string, error) {
 				callCount++
-				if callCount > 1 { // Second exec call (mkdir is first)
+				if callCount > 2 { // Third exec call (cleanup is first, mkdir is second)
 					return "", errors.New("command not found")
 				}
 				return "", nil
@@ -394,9 +417,10 @@ func TestLifecycle_EnsureProxy(t *testing.T) {
 			execFunc: func(ctx context.Context, sprite, remoteCommand string, stdin []byte) (string, error) {
 				callCount++
 				// First call (IsRunning) returns not running
-				// Second call (mkdir) succeeds
-				// Third call (start) succeeds
-				// Fourth+ call (WaitForHealthy) returns healthy
+				// Second call (port cleanup) succeeds
+				// Third call (mkdir) succeeds
+				// Fourth call (start) succeeds
+				// Fifth+ call (WaitForHealthy) returns healthy
 				if callCount == 1 {
 					return "000", nil
 				}

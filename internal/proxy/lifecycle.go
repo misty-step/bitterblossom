@@ -76,8 +76,15 @@ curl -s --max-time 2 -o /dev/null -w "%%{http_code}" %s
 }
 
 // Start starts the proxy on the target sprite in the background.
-// It uploads the proxy script if it doesn't exist, then starts it.
+// It kills any existing process on the proxy port first, then uploads and starts.
 func (l *Lifecycle) Start(ctx context.Context, sprite string, openRouterAPIKey string) error {
+	// Kill any existing process on the proxy port to prevent EADDRINUSE.
+	// Uses fuser for port-based kill — catches zombies regardless of process name.
+	killScript := fmt.Sprintf(`fuser -k %d/tcp 2>/dev/null || true`, l.port)
+	if _, err := l.executor.Exec(ctx, sprite, killScript, nil); err != nil {
+		return fmt.Errorf("failed to clean up existing proxy: %w", err)
+	}
+
 	// Ensure the .bb directory exists
 	mkdirScript := "mkdir -p /home/sprite/.bb"
 	if _, err := l.executor.Exec(ctx, sprite, mkdirScript, nil); err != nil {
