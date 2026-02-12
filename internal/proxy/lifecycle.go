@@ -163,14 +163,9 @@ func (l *Lifecycle) WaitForHealthy(ctx context.Context, sprite string) error {
 // If the proxy is not running, it starts it and waits for it to become healthy.
 // Returns the proxy URL that should be used for ANTHROPIC_BASE_URL.
 func (l *Lifecycle) EnsureProxy(ctx context.Context, sprite string, openRouterAPIKey string) (string, error) {
-	// Check if already running
-	running, err := l.IsRunning(ctx, sprite)
-	if err != nil {
-		// Health check errors (connection refused, timeout) mean proxy isn't running
-		// Continue to start the proxy. Other errors will be caught during start.
-		_ = err // explicitly ignore: "not running" is the expected case here
-	}
-
+	// Health check errors (connection refused, timeout) mean proxy isn't running.
+	// Fall through to start it; real errors surface during Start.
+	running, _ := l.IsRunning(ctx, sprite)
 	if running {
 		return l.ProxyURL(), nil
 	}
@@ -214,7 +209,6 @@ nohup node %s >/dev/null 2>&1 &
 echo $! > /home/sprite/.anthropic-proxy.pid
 `, envExports, shellutil.Quote(proxyPath))
 }
-
 
 // HTTPClient is used for making HTTP requests (can be mocked in tests).
 var HTTPClient = &http.Client{
