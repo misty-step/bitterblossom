@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 
+	"github.com/gofrs/flock"
 	pkgevents "github.com/misty-step/bitterblossom/pkg/events"
 )
 
@@ -54,9 +54,16 @@ func (l *Logger) Log(event Event) error {
 
 	day := event.Timestamp().UTC().Format(dailyLayout)
 	path := filepath.Join(l.dir, day+".jsonl")
+	lockPath := path + ".lock"
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
+	lock := flock.New(lockPath)
+	if err := lock.Lock(); err != nil {
+		return fmt.Errorf("events: lock %s: %w", lockPath, err)
+	}
+	defer func() { _ = lock.Unlock() }()
 
 	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
@@ -64,17 +71,9 @@ func (l *Logger) Log(event Event) error {
 	}
 	defer func() { _ = file.Close() }()
 
-	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
-		return fmt.Errorf("events: lock %s: %w", path, err)
-	}
-	defer func() { _ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN) }()
-
-	if _, err := file.Write(payload); err != nil {
+	line := append(payload, '\n')
+	if _, err := file.Write(line); err != nil {
 		return fmt.Errorf("events: write %s: %w", path, err)
-	}
-	if _, err := file.Write([]byte{'\n'}); err != nil {
-		return fmt.Errorf("events: write newline %s: %w", path, err)
 	}
 	return nil
 }
-

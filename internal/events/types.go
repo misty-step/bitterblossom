@@ -22,6 +22,8 @@ type QueryOptions struct {
 	Since  time.Time
 	Until  time.Time
 	Issue  int
+	// Limit caps the number of events returned. Zero means unlimited.
+	Limit int
 }
 
 // DefaultDir returns the canonical on-operator event store directory.
@@ -36,4 +38,3 @@ func DefaultDir() string {
 	}
 	return filepath.Join(base, "bb", "events")
 }
-

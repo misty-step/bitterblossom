@@ -47,6 +47,9 @@ func (q *Query) Read(opts QueryOptions) ([]Event, error) {
 	if !opts.Since.IsZero() && !opts.Until.IsZero() && opts.Until.Before(opts.Since) {
 		return nil, fmt.Errorf("events: until before since")
 	}
+	if opts.Limit < 0 {
+		return nil, fmt.Errorf("events: limit must be >= 0")
+	}
 
 	entries, err := os.ReadDir(q.dir)
 	if err != nil {
@@ -57,23 +60,30 @@ func (q *Query) Read(opts QueryOptions) ([]Event, error) {
 	}
 
 	paths := listDailyEventPaths(entries, q.dir, opts.Since, opts.Until)
-	out := make([]Event, 0, 128)
-	for _, path := range paths {
+	out := make([]Event, 0, 32)
+
+	readPath := func(path string) error {
 		file, err := os.Open(path)
 		if err != nil {
-			return nil, fmt.Errorf("events: open %s: %w", path, err)
+			return fmt.Errorf("events: open %s: %w", path, err)
 		}
 		items, readErr := pkgevents.ReadAll(file)
 		closeErr := file.Close()
 		if readErr != nil {
-			return nil, fmt.Errorf("events: read %s: %w", path, readErr)
+			return fmt.Errorf("events: read %s: %w", path, readErr)
 		}
 		if closeErr != nil {
-			return nil, fmt.Errorf("events: close %s: %w", path, closeErr)
+			return fmt.Errorf("events: close %s: %w", path, closeErr)
 		}
 
 		for _, event := range items {
-			if opts.Issue > 0 && issueFor(event) != opts.Issue {
+			if !opts.Since.IsZero() && event.Timestamp().Before(opts.Since) {
+				continue
+			}
+			if !opts.Until.IsZero() && event.Timestamp().After(opts.Until) {
+				continue
+			}
+			if opts.Issue > 0 && event.GetIssue() != opts.Issue {
 				continue
 			}
 			if opts.Filter != nil && !opts.Filter(event) {
@@ -81,11 +91,34 @@ func (q *Query) Read(opts QueryOptions) ([]Event, error) {
 			}
 			out = append(out, event)
 		}
+		return nil
+	}
+
+	if opts.Limit > 0 {
+		// Read newest daily files first so limit can stop scanning older history.
+		for i := len(paths) - 1; i >= 0; i-- {
+			if err := readPath(paths[i]); err != nil {
+				return nil, err
+			}
+			if len(out) >= opts.Limit {
+				break
+			}
+		}
+	} else {
+		for _, path := range paths {
+			if err := readPath(path); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].Timestamp().Before(out[j].Timestamp())
 	})
+
+	if opts.Limit > 0 && len(out) > opts.Limit {
+		out = out[len(out)-opts.Limit:]
+	}
 	return out, nil
 }
 
@@ -124,39 +157,3 @@ func truncateUTCDate(ts time.Time) time.Time {
 	t := ts.UTC()
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
 }
-
-func issueFor(event Event) int {
-	switch typed := event.(type) {
-	case pkgevents.DispatchEvent:
-		return typed.Issue
-	case *pkgevents.DispatchEvent:
-		return typed.Issue
-	case pkgevents.DoneEvent:
-		return typed.Issue
-	case *pkgevents.DoneEvent:
-		return typed.Issue
-	case pkgevents.ProgressEvent:
-		return typed.Issue
-	case *pkgevents.ProgressEvent:
-		return typed.Issue
-	case pkgevents.HeartbeatEvent:
-		return typed.Issue
-	case *pkgevents.HeartbeatEvent:
-		return typed.Issue
-	case pkgevents.BlockedEvent:
-		return typed.Issue
-	case *pkgevents.BlockedEvent:
-		return typed.Issue
-	case pkgevents.ErrorEvent:
-		return typed.Issue
-	case *pkgevents.ErrorEvent:
-		return typed.Issue
-	case pkgevents.ProvisionEvent:
-		return typed.Issue
-	case *pkgevents.ProvisionEvent:
-		return typed.Issue
-	default:
-		return 0
-	}
-}
-

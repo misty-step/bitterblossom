@@ -16,6 +16,7 @@ func newEventsCmd() *cobra.Command {
 	var sinceRaw string
 	var untilRaw string
 	var issue int
+	var limit int
 	var jsonMode bool
 
 	cmd := &cobra.Command{
@@ -42,6 +43,7 @@ func newEventsCmd() *cobra.Command {
 				Since:  start,
 				Until:  end,
 				Issue:  issue,
+				Limit:  limit,
 			})
 			if err != nil {
 				return err
@@ -62,6 +64,7 @@ func newEventsCmd() *cobra.Command {
 	cmd.Flags().StringVar(&sinceRaw, "since", "", "include events since duration or RFC3339 timestamp")
 	cmd.Flags().StringVar(&untilRaw, "until", "", "include events until RFC3339 timestamp")
 	cmd.Flags().IntVar(&issue, "issue", 0, "filter by issue number")
+	cmd.Flags().IntVar(&limit, "limit", 1000, "maximum events to return (0 = unlimited)")
 	cmd.Flags().BoolVar(&jsonMode, "json", false, "emit JSONL output")
 
 	cmd.SetFlagErrorFunc(func(c *cobra.Command, err error) error {
@@ -73,4 +76,3 @@ func newEventsCmd() *cobra.Command {
 
 	return cmd
 }
-

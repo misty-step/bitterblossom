@@ -609,6 +609,7 @@ bb events --json
 | `--issue` | | Filter by issue number |
 | `--since` | | Events since duration or RFC3339 |
 | `--until` | | Events until RFC3339 |
+| `--limit` | `1000` | Maximum events to return (0 = unlimited) |
 | `--json` | `false` | Emit JSONL output |
 
 ---

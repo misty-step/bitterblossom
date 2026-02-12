@@ -344,9 +344,6 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 		}
 		machineID, err := s.provision(ctx, prepared)
 		if err != nil {
-			if _, failErr := advanceState(state, EventFailure); failErr == nil {
-				result.State = StateFailed
-			}
 			return fail("provision", fmt.Errorf("dispatch: provision sprite %q: %w", prepared.Sprite, err))
 		}
 		if strings.TrimSpace(machineID) != "" {
