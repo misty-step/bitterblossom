@@ -60,6 +60,7 @@ func newRootCommand() *cobra.Command {
 func newRootCmd(stdout, stderr io.Writer) *cobra.Command {
 	return newRootCmdWithFactories(stdout, stderr, rootCommandFactories{
 		composeFactory:   newComposeCmd,
+		eventsFactory:    newEventsCmd,
 		watchFactory:     newWatchCmd,
 		logsFactory:      newLogsCmd,
 		agentFactory:     newAgentCommand,
@@ -77,6 +78,7 @@ func newRootCmd(stdout, stderr io.Writer) *cobra.Command {
 
 type rootCommandFactories struct {
 	composeFactory   func() *cobra.Command
+	eventsFactory    func() *cobra.Command
 	watchFactory     func(io.Writer, io.Writer) *cobra.Command
 	logsFactory      func(io.Writer, io.Writer) *cobra.Command
 	agentFactory     func() *cobra.Command
@@ -108,6 +110,9 @@ func newRootCmdWithFactories(stdout, stderr io.Writer, factories rootCommandFact
 	root.AddCommand(newVersionCmd())
 	if factories.composeFactory != nil {
 		root.AddCommand(factories.composeFactory())
+	}
+	if factories.eventsFactory != nil {
+		root.AddCommand(factories.eventsFactory())
 	}
 	if factories.watchFactory != nil {
 		root.AddCommand(factories.watchFactory(stdout, stderr))
