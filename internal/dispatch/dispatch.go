@@ -1085,6 +1085,7 @@ func buildOneShotScript(workspace, promptPath string) string {
 	return strings.Join([]string{
 		"set -euo pipefail",
 		"mkdir -p " + shellutil.Quote(workspace),
+		"rm -f " + shellutil.Quote(workspace+"/TASK_COMPLETE") + " " + shellutil.Quote(workspace+"/BLOCKED.md"),
 		"cd " + shellutil.Quote(workspace),
 		"# Start anthropic proxy if available",
 		"if [ -f " + shellutil.Quote(proxy.ProxyScriptPath) + " ] && [ -n \"${OPENROUTER_API_KEY:-}\" ] && command -v node >/dev/null 2>&1; then",
