@@ -269,3 +269,20 @@ func TestCLIExecWithEnvBuildsCorrectArgs(t *testing.T) {
 		})
 	}
 }
+
+func TestArgsForLogRedactsEnvValues(t *testing.T) {
+	t.Parallel()
+
+	args := []string{"exec", "-env", "OPENROUTER_API_KEY=secret", "-env", "ANTHROPIC_AUTH_TOKEN=token", "--", "bash", "-ceu", "echo hi"}
+	want := "exec -env OPENROUTER_API_KEY=<redacted> -env ANTHROPIC_AUTH_TOKEN=<redacted> -- bash -ceu echo hi"
+
+	original := append([]string(nil), args...)
+	got := argsForLog(args)
+
+	if got != want {
+		t.Fatalf("argsForLog() = %q, want %q", got, want)
+	}
+	if !reflect.DeepEqual(args, original) {
+		t.Fatalf("argsForLog mutated args: %v", args)
+	}
+}
