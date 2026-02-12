@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/misty-step/bitterblossom/internal/shellutil"
 	"github.com/misty-step/bitterblossom/internal/sprite"
 )
 
@@ -75,7 +76,7 @@ func Teardown(ctx context.Context, cli sprite.SpriteCLI, cfg Config, opts Teardo
 }
 
 func exportRemoteFile(ctx context.Context, cli sprite.SpriteCLI, spriteName, remotePath, localPath string) error {
-	content, err := cli.Exec(ctx, spriteName, "cat "+shellQuote(remotePath), nil)
+	content, err := cli.Exec(ctx, spriteName, "cat "+shellutil.Quote(remotePath), nil)
 	if err != nil {
 		return err
 	}
@@ -83,7 +84,7 @@ func exportRemoteFile(ctx context.Context, cli sprite.SpriteCLI, spriteName, rem
 }
 
 func exportSettings(ctx context.Context, cli sprite.SpriteCLI, spriteName, remotePath, localPath string) error {
-	content, err := cli.Exec(ctx, spriteName, "cat "+shellQuote(remotePath), nil)
+	content, err := cli.Exec(ctx, spriteName, "cat "+shellutil.Quote(remotePath), nil)
 	if err != nil {
 		return err
 	}

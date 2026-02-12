@@ -18,6 +18,7 @@ import (
 	"github.com/misty-step/bitterblossom/internal/fleet"
 	"github.com/misty-step/bitterblossom/internal/proxy"
 	"github.com/misty-step/bitterblossom/internal/registry"
+	"github.com/misty-step/bitterblossom/internal/shellutil"
 	"github.com/misty-step/bitterblossom/pkg/fly"
 )
 
@@ -234,11 +235,6 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 		return Result{}, fmt.Errorf("dispatch: determine provisioning need: %w", err)
 	}
 
-	remoteSprite := prepared.Sprite
-	if strings.TrimSpace(prepared.MachineID) != "" {
-		remoteSprite = strings.TrimSpace(prepared.MachineID)
-	}
-
 	plan := s.buildPlan(prepared, provisionNeeded)
 	result := Result{
 		Plan:       plan,
@@ -277,7 +273,6 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 		}
 		if strings.TrimSpace(machineID) != "" {
 			prepared.MachineID = machineID
-			remoteSprite = machineID
 		}
 		result.Provisioned = true
 		if err := transition(EventProvisionSucceeded); err != nil {
@@ -289,7 +284,7 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 
 	if !prepared.AllowAnthropicDirect {
 		s.logger.Info("dispatch validate env", "sprite", prepared.Sprite)
-		keyOutput, err := s.remote.Exec(ctx, remoteSprite, "printenv ANTHROPIC_API_KEY 2>/dev/null || true", nil)
+		keyOutput, err := s.remote.Exec(ctx, prepared.Sprite, "printenv ANTHROPIC_API_KEY 2>/dev/null || true", nil)
 		if err != nil {
 			result.State = StateFailed
 			return result, fmt.Errorf("dispatch: check sprite env: %w", err)
@@ -306,14 +301,14 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 
 	if prepared.Repo.CloneURL != "" {
 		s.logger.Info("dispatch setup repo", "sprite", prepared.Sprite, "repo", prepared.Repo.CloneURL)
-		if _, err := s.remote.Exec(ctx, remoteSprite, buildSetupRepoScript(s.workspace, prepared.Repo.CloneURL, prepared.Repo.RepoDir), nil); err != nil {
+		if _, err := s.remote.Exec(ctx, prepared.Sprite, buildSetupRepoScript(s.workspace, prepared.Repo.CloneURL, prepared.Repo.RepoDir), nil); err != nil {
 			result.State = StateFailed
 			return result, fmt.Errorf("dispatch: setup repo: %w", err)
 		}
 	}
 
 	s.logger.Info("dispatch upload prompt", "sprite", prepared.Sprite, "path", prepared.PromptPath)
-	if err := s.remote.Upload(ctx, remoteSprite, prepared.PromptPath, []byte(prepared.Prompt)); err != nil {
+	if err := s.remote.Upload(ctx, prepared.Sprite, prepared.PromptPath, []byte(prepared.Prompt)); err != nil {
 		result.State = StateFailed
 		return result, fmt.Errorf("dispatch: upload prompt: %w", err)
 	}
@@ -331,7 +326,7 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 		result.State = StateFailed
 		return result, fmt.Errorf("dispatch: marshal status: %w", err)
 	}
-	if err := s.remote.Upload(ctx, remoteSprite, s.workspace+"/STATUS.json", append(statusBytes, '\n')); err != nil {
+	if err := s.remote.Upload(ctx, prepared.Sprite, s.workspace+"/STATUS.json", append(statusBytes, '\n')); err != nil {
 		result.State = StateFailed
 		return result, fmt.Errorf("dispatch: upload status: %w", err)
 	}
@@ -340,7 +335,7 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 	execEnvVars := copyStringMap(s.envVars)
 	if openRouterKey, ok := s.envVars["OPENROUTER_API_KEY"]; ok && openRouterKey != "" {
 		s.logger.Info("dispatch ensure proxy", "sprite", prepared.Sprite)
-		proxyURL, err := s.proxyLifecycle.EnsureProxy(ctx, remoteSprite, openRouterKey)
+		proxyURL, err := s.proxyLifecycle.EnsureProxy(ctx, prepared.Sprite, openRouterKey)
 		if err != nil {
 			result.State = StateFailed
 			return result, fmt.Errorf("dispatch: ensure proxy: %w", err)
@@ -358,7 +353,7 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 	}
 
 	s.logger.Info("dispatch start agent", "sprite", prepared.Sprite, "mode", prepared.Mode)
-	output, err := s.remote.ExecWithEnv(ctx, remoteSprite, prepared.StartCommand, nil, execEnvVars)
+	output, err := s.remote.ExecWithEnv(ctx, prepared.Sprite, prepared.StartCommand, nil, execEnvVars)
 	if err != nil {
 		result.State = StateFailed
 		return result, fmt.Errorf("dispatch: start agent: %w", err)
@@ -495,15 +490,7 @@ func (s *Service) buildPlan(req preparedRequest, provisionNeeded bool) Plan {
 		Description: fmt.Sprintf("write status marker to %s/STATUS.json", s.workspace),
 	})
 
-	// Add proxy ensure step if we have OPENROUTER_API_KEY
-	hasOpenRouterKey := false
-	for key := range s.envVars {
-		if key == "OPENROUTER_API_KEY" {
-			hasOpenRouterKey = true
-			break
-		}
-	}
-	if hasOpenRouterKey {
+	if _, hasOpenRouterKey := s.envVars["OPENROUTER_API_KEY"]; hasOpenRouterKey {
 		steps = append(steps, PlanStep{
 			Kind:        StepEnsureProxy,
 			Description: "ensure anthropic proxy is running on sprite",
@@ -730,10 +717,10 @@ func parsePID(output string) (int, bool) {
 func buildSetupRepoScript(workspace, cloneURL, repoDir string) string {
 	return strings.Join([]string{
 		"set -euo pipefail",
-		"mkdir -p " + shellQuote(workspace),
-		"cd " + shellQuote(workspace),
-		"if [ -d " + shellQuote(repoDir) + " ]; then",
-		"  cd " + shellQuote(repoDir),
+		"mkdir -p " + shellutil.Quote(workspace),
+		"cd " + shellutil.Quote(workspace),
+		"if [ -d " + shellutil.Quote(repoDir) + " ]; then",
+		"  cd " + shellutil.Quote(repoDir),
 		// Reset to clean state: discard changes, checkout default branch, pull latest.
 		// This prevents stale feature branches from polluting new dispatches.
 		"  git checkout -- . 2>/dev/null || true",
@@ -743,7 +730,7 @@ func buildSetupRepoScript(workspace, cloneURL, repoDir string) string {
 		"  git fetch origin >/dev/null 2>&1 || true",
 		`  git reset --hard "origin/$(git rev-parse --abbrev-ref HEAD)" 2>/dev/null || true`,
 		"else",
-		"  gh repo clone " + shellQuote(cloneURL) + " " + shellQuote(repoDir) + " >/dev/null 2>&1 || git clone " + shellQuote(cloneURL) + " " + shellQuote(repoDir) + " >/dev/null 2>&1",
+		"  gh repo clone " + shellutil.Quote(cloneURL) + " " + shellutil.Quote(repoDir) + " >/dev/null 2>&1 || git clone " + shellutil.Quote(cloneURL) + " " + shellutil.Quote(repoDir) + " >/dev/null 2>&1",
 		"fi",
 	}, "\n")
 }
@@ -765,7 +752,7 @@ func buildOneShotScript(workspace, promptPath string) string {
 		if k == "OPENROUTER_API_KEY" && env[k] == "${OPENROUTER_API_KEY}" {
 			envStr += fmt.Sprintf("%s=%s ", k, env[k])
 		} else {
-			envStr += fmt.Sprintf("%s=%s ", k, shellQuote(env[k]))
+			envStr += fmt.Sprintf("%s=%s ", k, shellutil.Quote(env[k]))
 		}
 	}
 
@@ -776,51 +763,51 @@ func buildOneShotScript(workspace, promptPath string) string {
 
 	return strings.Join([]string{
 		"set -euo pipefail",
-		"mkdir -p " + shellQuote(workspace),
-		"cd " + shellQuote(workspace),
+		"mkdir -p " + shellutil.Quote(workspace),
+		"cd " + shellutil.Quote(workspace),
 		"# Start anthropic proxy if available",
-		"if [ -f " + shellQuote(proxy.ProxyScriptPath) + " ] && [ -n \"${OPENROUTER_API_KEY:-}\" ] && command -v node >/dev/null 2>&1; then",
+		"if [ -f " + shellutil.Quote(proxy.ProxyScriptPath) + " ] && [ -n \"${OPENROUTER_API_KEY:-}\" ] && command -v node >/dev/null 2>&1; then",
 		"  PROXY_PID=\"\"",
-		"  if [ -f " + shellQuote(proxy.ProxyPIDFile) + " ]; then",
-		"    PID_FROM_FILE=\"$(cat " + shellQuote(proxy.ProxyPIDFile) + ")\"",
+		"  if [ -f " + shellutil.Quote(proxy.ProxyPIDFile) + " ]; then",
+		"    PID_FROM_FILE=\"$(cat " + shellutil.Quote(proxy.ProxyPIDFile) + ")\"",
 		"    if kill -0 \"$PID_FROM_FILE\" 2>/dev/null; then",
 		"      PROXY_PID=\"$PID_FROM_FILE\"",
 		"    fi",
 		"  fi",
 		"  if [ -z \"$PROXY_PID\" ]; then",
 		"    echo '[proxy] starting anthropic-proxy...'",
-		"    nohup env " + envStr + " node " + shellQuote(proxy.ProxyScriptPath) + " >/dev/null 2>&1 &",
+		"    nohup env " + envStr + " node " + shellutil.Quote(proxy.ProxyScriptPath) + " >/dev/null 2>&1 &",
 		"    sleep 1",
 		"    for i in 1 2 3 4 5; do",
-		"      if curl -s --max-time 2 " + shellQuote(healthURL) + " >/dev/null 2>&1; then break; fi",
+		"      if curl -s --max-time 2 " + shellutil.Quote(healthURL) + " >/dev/null 2>&1; then break; fi",
 		"      sleep 0.5",
 		"    done",
-		"    if curl -s --max-time 2 " + shellQuote(healthURL) + " >/dev/null 2>&1; then",
+		"    if curl -s --max-time 2 " + shellutil.Quote(healthURL) + " >/dev/null 2>&1; then",
 		"      echo '[proxy] proxy is healthy on :" + port + "'",
-		"      export ANTHROPIC_BASE_URL=" + shellQuote(baseURL),
+		"      export ANTHROPIC_BASE_URL=" + shellutil.Quote(baseURL),
 		"      export ANTHROPIC_API_KEY=proxy-mode",
 		"    else",
 		"      echo '[proxy] warning: proxy failed to start, proceeding with direct connection'",
 		"    fi",
 		"  else",
 		"    echo '[proxy] proxy already running on :" + port + "'",
-		"    export ANTHROPIC_BASE_URL=" + shellQuote(baseURL),
+		"    export ANTHROPIC_BASE_URL=" + shellutil.Quote(baseURL),
 		"    export ANTHROPIC_API_KEY=proxy-mode",
 		"  fi",
 		"fi",
 		"if command -v script >/dev/null 2>&1; then",
-		"  script -qefc " + shellQuote("cat "+shellQuote(promptPath)+" | claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json") + " /dev/null",
+		"  script -qefc " + shellutil.Quote("cat "+shellutil.Quote(promptPath)+" | claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json") + " /dev/null",
 		"else",
-		"  cat " + shellQuote(promptPath) + " | claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json",
+		"  cat " + shellutil.Quote(promptPath) + " | claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json",
 		"fi",
-		"rm -f " + shellQuote(promptPath),
+		"rm -f " + shellutil.Quote(promptPath),
 	}, "\n")
 }
 
 func buildStartRalphScript(workspace, sprite string, maxIterations int, webhookURL string, maxTokens int, maxTimeSec int) string {
 	lines := []string{
 		"set -euo pipefail",
-		"WORKSPACE_DIR=" + shellQuote(workspace),
+		"WORKSPACE_DIR=" + shellutil.Quote(workspace),
 		"mkdir -p \"$WORKSPACE_DIR/logs\"",
 		"rm -f \"$WORKSPACE_DIR/TASK_COMPLETE\" \"$WORKSPACE_DIR/BLOCKED.md\"",
 		"if [ -f \"$WORKSPACE_DIR/agent.pid\" ] && kill -0 \"$(cat \"$WORKSPACE_DIR/agent.pid\")\" 2>/dev/null; then kill \"$(cat \"$WORKSPACE_DIR/agent.pid\")\" 2>/dev/null || true; fi",
@@ -828,7 +815,7 @@ func buildStartRalphScript(workspace, sprite string, maxIterations int, webhookU
 		"AGENT_BIN=\"$HOME/.local/bin/sprite-agent\"",
 		"if [ ! -x \"$AGENT_BIN\" ]; then AGENT_BIN=\"$WORKSPACE_DIR/.sprite-agent.sh\"; fi",
 		"if [ ! -x \"$AGENT_BIN\" ]; then echo \"sprite-agent not found\" >&2; exit 1; fi",
-		"REQUIRED_CLAUDE_FLAGS=" + shellQuote("--dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json"),
+		"REQUIRED_CLAUDE_FLAGS=" + shellutil.Quote("--dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json"),
 		"case \" $REQUIRED_CLAUDE_FLAGS \" in *\" --dangerously-skip-permissions \"*) ;; *) echo \"missing --dangerously-skip-permissions\" >&2; exit 1 ;; esac",
 		"case \" $REQUIRED_CLAUDE_FLAGS \" in *\" --verbose \"*) ;; *) echo \"missing --verbose\" >&2; exit 1 ;; esac",
 		"case \" $REQUIRED_CLAUDE_FLAGS \" in *\" --output-format stream-json \"*) ;; *) echo \"missing --output-format stream-json\" >&2; exit 1 ;; esac",
@@ -839,7 +826,7 @@ func buildStartRalphScript(workspace, sprite string, maxIterations int, webhookU
 		"  if ! grep -q -- '--output-format stream-json' \"$AGENT_BIN\" 2>/dev/null; then echo \"sprite-agent missing --output-format stream-json\" >&2; exit 1; fi",
 		"fi",
 		"cd \"$WORKSPACE_DIR\"",
-		"printf 'bb-%s-%s\\n' \"$(date -u +%Y%m%d-%H%M%S)\" " + shellQuote(sprite) + " > \"$WORKSPACE_DIR/.current-task-id\"",
+		"printf 'bb-%s-%s\\n' \"$(date -u +%Y%m%d-%H%M%S)\" " + shellutil.Quote(sprite) + " > \"$WORKSPACE_DIR/.current-task-id\"",
 	}
 
 	limits := ""
@@ -851,11 +838,11 @@ func buildStartRalphScript(workspace, sprite string, maxIterations int, webhookU
 	}
 	if strings.TrimSpace(webhookURL) != "" {
 		lines = append(lines,
-			"nohup env SPRITE_NAME="+shellQuote(sprite)+" SPRITE_WEBHOOK_URL="+shellQuote(webhookURL)+" MAX_ITERATIONS="+strconv.Itoa(maxIterations)+limits+" BB_CLAUDE_FLAGS=\"$REQUIRED_CLAUDE_FLAGS\" \"$AGENT_BIN\" >/dev/null 2>&1 &",
+			"nohup env SPRITE_NAME="+shellutil.Quote(sprite)+" SPRITE_WEBHOOK_URL="+shellutil.Quote(webhookURL)+" MAX_ITERATIONS="+strconv.Itoa(maxIterations)+limits+" BB_CLAUDE_FLAGS=\"$REQUIRED_CLAUDE_FLAGS\" \"$AGENT_BIN\" >/dev/null 2>&1 &",
 		)
 	} else {
 		lines = append(lines,
-			"nohup env SPRITE_NAME="+shellQuote(sprite)+" MAX_ITERATIONS="+strconv.Itoa(maxIterations)+limits+" BB_CLAUDE_FLAGS=\"$REQUIRED_CLAUDE_FLAGS\" \"$AGENT_BIN\" >/dev/null 2>&1 &",
+			"nohup env SPRITE_NAME="+shellutil.Quote(sprite)+" MAX_ITERATIONS="+strconv.Itoa(maxIterations)+limits+" BB_CLAUDE_FLAGS=\"$REQUIRED_CLAUDE_FLAGS\" \"$AGENT_BIN\" >/dev/null 2>&1 &",
 		)
 	}
 	lines = append(lines,
@@ -927,6 +914,3 @@ func copyStringMap(in map[string]string) map[string]string {
 	return out
 }
 
-func shellQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
-}

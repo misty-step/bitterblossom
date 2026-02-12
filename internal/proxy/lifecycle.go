@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/misty-step/bitterblossom/internal/shellutil"
 )
 
 const (
@@ -62,7 +64,7 @@ func (l *Lifecycle) IsRunning(ctx context.Context, sprite string) (bool, error) 
 	script := fmt.Sprintf(`
 set -e
 curl -s --max-time 2 -o /dev/null -w "%%{http_code}" %s
-`, shellQuote(l.healthURL()))
+`, shellutil.Quote(l.healthURL()))
 
 	output, err := l.executor.Exec(ctx, sprite, script, nil)
 	if err != nil {
@@ -195,7 +197,7 @@ func buildStartProxyScript(proxyPath string, env map[string]string) string {
 	// Build environment variable exports
 	envExports := ""
 	for k, v := range env {
-		envExports += fmt.Sprintf("export %s=%s\n", k, shellQuote(v))
+		envExports += fmt.Sprintf("export %s=%s\n", k, shellutil.Quote(v))
 	}
 
 	return fmt.Sprintf(`
@@ -204,36 +206,9 @@ set -e
 # Start proxy in background
 nohup node %s >/dev/null 2>&1 &
 echo $! > /home/sprite/.anthropic-proxy.pid
-`, envExports, shellQuote(proxyPath))
+`, envExports, shellutil.Quote(proxyPath))
 }
 
-// shellQuote escapes a string for safe use in shell commands.
-func shellQuote(s string) string {
-	return "'" + stringReplaceAll(s, "'", `'"'"'`) + "'"
-}
-
-// stringReplaceAll replaces all occurrences of old with new in s.
-func stringReplaceAll(s, old, new string) string {
-	result := ""
-	for {
-		idx := 0
-		found := false
-		for i := 0; i <= len(s)-len(old); i++ {
-			if s[i:i+len(old)] == old {
-				idx = i
-				found = true
-				break
-			}
-		}
-		if !found {
-			result += s
-			break
-		}
-		result += s[:idx] + new
-		s = s[idx+len(old):]
-	}
-	return result
-}
 
 // HTTPClient is used for making HTTP requests (can be mocked in tests).
 var HTTPClient = &http.Client{

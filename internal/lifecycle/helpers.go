@@ -10,13 +10,6 @@ import (
 	"github.com/misty-step/bitterblossom/internal/sprite"
 )
 
-func shellQuote(value string) string {
-	if value == "" {
-		return "''"
-	}
-	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
-}
-
 func spriteExists(ctx context.Context, cli sprite.SpriteCLI, name string) (bool, error) {
 	names, err := cli.List(ctx)
 	if err != nil {
