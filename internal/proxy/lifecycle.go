@@ -99,8 +99,8 @@ func (l *Lifecycle) Start(ctx context.Context, sprite string, openRouterAPIKey s
 	port := strconv.Itoa(l.port)
 	env := StartEnv("", port, openRouterAPIKey)
 
-	startScript := buildStartProxyScript(SpriteProxyPath, env)
-	if _, err := l.executor.Exec(ctx, sprite, startScript, nil); err != nil {
+	startScript := buildStartProxyScript(SpriteProxyPath)
+	if _, err := l.executor.ExecWithEnv(ctx, sprite, startScript, nil, env); err != nil {
 		return fmt.Errorf("failed to start proxy: %w", err)
 	}
 
@@ -195,20 +195,13 @@ func (l *Lifecycle) SetTimeout(timeout time.Duration) {
 }
 
 // buildStartProxyScript creates a script to start the proxy in the background.
-func buildStartProxyScript(proxyPath string, env map[string]string) string {
-	// Build environment variable exports
-	envExports := ""
-	for k, v := range env {
-		envExports += fmt.Sprintf("export %s=%s\n", k, shellutil.Quote(v))
-	}
-
+func buildStartProxyScript(proxyPath string) string {
 	return fmt.Sprintf(`
 set -e
-%s
 # Start proxy in background
 nohup node %s >/dev/null 2>&1 &
 echo $! > %s
-`, envExports, shellutil.Quote(proxyPath), ProxyPIDFile)
+`, shellutil.Quote(proxyPath), ProxyPIDFile)
 }
 
 // HTTPClient is used for making HTTP requests (can be mocked in tests).
