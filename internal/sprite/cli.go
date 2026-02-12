@@ -241,8 +241,10 @@ func (c CLI) UploadFile(ctx context.Context, name, org, localPath, remotePath st
 
 // Upload writes content directly to a sprite path.
 func (c CLI) Upload(ctx context.Context, name, remotePath string, content []byte) error {
+	// Use bash -c to properly handle shell redirection
+	// Without this, the ">" is treated as a literal argument to cat
 	args := withOrgArgs(
-		[]string{"exec", "-s", name, "--", "cat", ">", remotePath},
+		[]string{"exec", "-s", name, "--", "bash", "-ceu", fmt.Sprintf("cat > %q", remotePath)},
 		c.resolvedOrg(""),
 	)
 	if _, err := c.run(ctx, args, content); err != nil {
