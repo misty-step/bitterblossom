@@ -6,7 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strings"
+
+	"github.com/misty-step/bitterblossom/internal/shellutil"
 )
 
 const defaultBinary = "sprite"
@@ -152,7 +155,7 @@ func (c CLI) ExecWithEnv(ctx context.Context, sprite, remoteCommand string, stdi
 		for k := range env {
 			keys = append(keys, k)
 		}
-		// Sort for deterministic ordering
+		sort.Strings(keys)
 		for _, k := range keys {
 			args = append(args, "-env", k+"="+env[k])
 		}
@@ -244,17 +247,12 @@ func (c CLI) Upload(ctx context.Context, name, remotePath string, content []byte
 	// Use Exec (bash -ceu) so shell redirection works.
 	// Direct args like ["cat", ">", path] fail because sprite exec
 	// doesn't interpret shell metacharacters without a shell wrapper.
-	cmd := "cat > " + shellQuote(remotePath)
+	cmd := "cat > " + shellutil.Quote(remotePath)
 	_, err := c.Exec(ctx, name, cmd, content)
 	if err != nil {
 		return fmt.Errorf("upload content to sprite %q:%q: %w", name, remotePath, err)
 	}
 	return nil
-}
-
-// shellQuote escapes a string for safe use in shell commands.
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }
 
 // API calls sprite API endpoint in one org.

@@ -8,6 +8,8 @@ import (
 	"path"
 	"sort"
 	"strings"
+
+	"github.com/misty-step/bitterblossom/internal/shellutil"
 )
 
 type spriteCLIRemote struct {
@@ -92,7 +94,7 @@ func (r *spriteCLIRemote) ExecWithEnv(ctx context.Context, sprite, remoteCommand
 
 func (r *spriteCLIRemote) Upload(ctx context.Context, sprite, remotePath string, content []byte) error {
 	dir := path.Dir(remotePath)
-	command := "mkdir -p " + shellQuote(dir) + " && cat > " + shellQuote(remotePath)
+	command := "mkdir -p " + shellutil.Quote(dir) + " && cat > " + shellutil.Quote(remotePath)
 	_, err := r.Exec(ctx, sprite, command, content)
 	if err != nil {
 		return fmt.Errorf("sprite upload %s:%s: %w", sprite, remotePath, err)
@@ -119,6 +121,3 @@ func buildEnvArgs(env map[string]string) ([]string, error) {
 	return []string{"-env", strings.Join(pairs, ",")}, nil
 }
 
-func shellQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
-}

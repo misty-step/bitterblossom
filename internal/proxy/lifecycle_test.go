@@ -3,7 +3,6 @@ package proxy
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -489,48 +488,4 @@ func TestBuildStartProxyScript(t *testing.T) {
 	})
 }
 
-func TestShellQuote(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"simple", "'simple'"},
-		{"with spaces", "'with spaces'"},
-		{"with'quote", `'with'"'"'quote'`}, 
-		{"with\"double", `'with"double'`},
-		{"", "''"},
-	}
 
-	for _, tc := range tests {
-		t.Run(tc.input, func(t *testing.T) {
-			got := shellQuote(tc.input)
-			if got != tc.want {
-				t.Errorf("shellQuote(%q) = %q, want %q", tc.input, got, tc.want)
-			}
-		})
-	}
-}
-
-func TestStringReplaceAll(t *testing.T) {
-	tests := []struct {
-		s   string
-		old string
-		new string
-		want string
-	}{
-		{"hello world", "o", "0", "hell0 w0rld"},
-		{"abcabc", "abc", "xyz", "xyzxyz"},
-		{"no match", "xyz", "abc", "no match"},
-		{"", "a", "b", ""},
-		{"aaa", "a", "b", "bbb"},
-	}
-
-	for _, tc := range tests {
-		t.Run(fmt.Sprintf("%s_replace_%s", tc.s, tc.old), func(t *testing.T) {
-			got := stringReplaceAll(tc.s, tc.old, tc.new)
-			if got != tc.want {
-				t.Errorf("stringReplaceAll(%q, %q, %q) = %q, want %q", tc.s, tc.old, tc.new, got, tc.want)
-			}
-		})
-	}
-}

@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/misty-step/bitterblossom/internal/shellutil"
 )
 
 const (
@@ -305,7 +307,7 @@ func summarize(rows []SpriteReport) Summary {
 func buildProbeScript(workspace string) string {
 	return strings.Join([]string{
 		"set -euo pipefail",
-		"WORKSPACE=" + shellQuote(workspace),
+		"WORKSPACE=" + shellutil.Quote(workspace),
 		"claude_count=\"$(pgrep -fc 'claude -p' 2>/dev/null || echo 0)\"",
 		"claude_count=\"$(echo \"$claude_count\" | tr -d '[:space:]')\"",
 		"agent_running=no",
@@ -358,7 +360,7 @@ func buildProbeScript(workspace string) string {
 func buildRedispatchScript(workspace, sprite string, maxIterations int) string {
 	lines := []string{
 		"set -euo pipefail",
-		"WORKSPACE=" + shellQuote(workspace),
+		"WORKSPACE=" + shellutil.Quote(workspace),
 		"if [ ! -f \"$WORKSPACE/PROMPT.md\" ]; then echo \"missing PROMPT.md\"; exit 0; fi",
 		"if [ -f \"$WORKSPACE/agent.pid\" ] && kill -0 \"$(cat \"$WORKSPACE/agent.pid\")\" 2>/dev/null; then kill \"$(cat \"$WORKSPACE/agent.pid\")\" 2>/dev/null || true; fi",
 		"if [ -f \"$WORKSPACE/ralph.pid\" ] && kill -0 \"$(cat \"$WORKSPACE/ralph.pid\")\" 2>/dev/null; then kill \"$(cat \"$WORKSPACE/ralph.pid\")\" 2>/dev/null || true; fi",
@@ -373,7 +375,7 @@ func buildRedispatchScript(workspace, sprite string, maxIterations int) string {
 
 	lines = append(lines,
 		"if [ -x \"$AGENT_BIN\" ]; then",
-		"  nohup env SPRITE_NAME="+shellQuote(sprite)+" MAX_ITERATIONS="+strconv.Itoa(maxIterations)+" \"$AGENT_BIN\" >/dev/null 2>&1 &",
+		"  nohup env SPRITE_NAME="+shellutil.Quote(sprite)+" MAX_ITERATIONS="+strconv.Itoa(maxIterations)+" \"$AGENT_BIN\" >/dev/null 2>&1 &",
 		"else",
 		"  nohup bash -lc 'cat \"$WORKSPACE/PROMPT.md\" | claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json' > \"$WORKSPACE/watchdog-recovery-$(date +%s).log\" 2>&1 &",
 		"fi",
@@ -406,6 +408,3 @@ func uniqueSorted(values []string) []string {
 	return result
 }
 
-func shellQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
-}
