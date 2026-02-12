@@ -808,6 +808,7 @@ func TestRunExecuteWithOpenRouterKey_EnsuresProxy(t *testing.T) {
 		execResponses: []string{
 			"",     // validate env
 			"000",  // proxy health check (not running)
+			"",     // kill existing process on port (cleanup)
 			"",     // mkdir -p
 			"",     // start proxy
 			"200",  // proxy health check (now running)

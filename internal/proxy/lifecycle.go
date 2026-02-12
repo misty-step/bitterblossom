@@ -76,8 +76,14 @@ curl -s --max-time 2 -o /dev/null -w "%%{http_code}" %s
 }
 
 // Start starts the proxy on the target sprite in the background.
-// It uploads the proxy script if it doesn't exist, then starts it.
+// It kills any existing process on the proxy port first, then uploads and starts.
 func (l *Lifecycle) Start(ctx context.Context, sprite string, openRouterAPIKey string) error {
+	// Kill any existing proxy to prevent EADDRINUSE from zombie processes.
+	// Stop() is idempotent — handles "no process" gracefully via || true.
+	if err := l.Stop(ctx, sprite); err != nil {
+		return fmt.Errorf("failed to clean up existing proxy: %w", err)
+	}
+
 	// Ensure the .bb directory exists
 	mkdirScript := "mkdir -p /home/sprite/.bb"
 	if _, err := l.executor.Exec(ctx, sprite, mkdirScript, nil); err != nil {
@@ -101,7 +107,8 @@ func (l *Lifecycle) Start(ctx context.Context, sprite string, openRouterAPIKey s
 	return nil
 }
 
-// Stop stops the proxy on the target sprite.
+// Stop stops the proxy on the target sprite. Idempotent — safe to call
+// even if no proxy is running (uses || true for graceful no-process handling).
 func (l *Lifecycle) Stop(ctx context.Context, sprite string) error {
 	stopScript := fmt.Sprintf(`
 set -e
@@ -116,8 +123,8 @@ if [ -n "$PID" ]; then
   fi
 fi
 # Clean up PID file if it exists
-rm -f /home/sprite/.anthropic-proxy.pid
-`, SpriteProxyPath)
+rm -f %s
+`, SpriteProxyPath, ProxyPIDFile)
 
 	if _, err := l.executor.Exec(ctx, sprite, stopScript, nil); err != nil {
 		return fmt.Errorf("failed to stop proxy: %w", err)
@@ -157,14 +164,9 @@ func (l *Lifecycle) WaitForHealthy(ctx context.Context, sprite string) error {
 // If the proxy is not running, it starts it and waits for it to become healthy.
 // Returns the proxy URL that should be used for ANTHROPIC_BASE_URL.
 func (l *Lifecycle) EnsureProxy(ctx context.Context, sprite string, openRouterAPIKey string) (string, error) {
-	// Check if already running
-	running, err := l.IsRunning(ctx, sprite)
-	if err != nil {
-		// Health check errors (connection refused, timeout) mean proxy isn't running
-		// Continue to start the proxy. Other errors will be caught during start.
-		_ = err // explicitly ignore: "not running" is the expected case here
-	}
-
+	// Health check errors (connection refused, timeout) mean proxy isn't running.
+	// Fall through to start it; real errors surface during Start.
+	running, _ := l.IsRunning(ctx, sprite)
 	if running {
 		return l.ProxyURL(), nil
 	}
@@ -205,10 +207,9 @@ set -e
 %s
 # Start proxy in background
 nohup node %s >/dev/null 2>&1 &
-echo $! > /home/sprite/.anthropic-proxy.pid
-`, envExports, shellutil.Quote(proxyPath))
+echo $! > %s
+`, envExports, shellutil.Quote(proxyPath), ProxyPIDFile)
 }
-
 
 // HTTPClient is used for making HTTP requests (can be mocked in tests).
 var HTTPClient = &http.Client{
