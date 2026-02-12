@@ -12,7 +12,8 @@ import (
 
 const (
 	// DefaultProxyTimeout is the default timeout for proxy health check operations.
-	DefaultProxyTimeout = 10 * time.Second
+	// 30s accommodates cold/warm sprite startup variance (10s was too tight).
+	DefaultProxyTimeout = 30 * time.Second
 
 	// SpriteProxyPath is where the proxy script is located on the sprite.
 	SpriteProxyPath = "/home/sprite/.bb/proxy.mjs"
@@ -139,20 +140,25 @@ func (l *Lifecycle) WaitForHealthy(ctx context.Context, sprite string) error {
 	ctx, cancel := context.WithTimeout(ctx, l.timeout)
 	defer cancel()
 
-	ticker := time.NewTicker(100 * time.Millisecond)
+	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
+	var lastErr error
 	for {
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("proxy failed to become healthy within %v", l.timeout)
+			msg := fmt.Sprintf("proxy failed to become healthy within %v on port %d", l.timeout, l.port)
+			if lastErr != nil {
+				msg += fmt.Sprintf(" (last error: %v)", lastErr)
+			}
+			return fmt.Errorf("%s: %w", msg, ctx.Err())
 		case <-ticker.C:
 			running, err := l.IsRunning(ctx, sprite)
 			if err != nil {
-				// Health check errors during startup (connection refused, etc.) are expected
-				// while the proxy is initializing. Continue polling until timeout.
+				lastErr = err
 				continue
 			}
+			lastErr = nil
 			if running {
 				return nil
 			}

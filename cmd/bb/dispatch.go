@@ -144,12 +144,9 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 			// Resolve token from flag or environment
 			opts.Token = resolveFlyToken(opts.Token)
 
-			if strings.TrimSpace(opts.App) == "" {
-				return errors.New("Error: FLY_APP environment variable is required. Set it to your Fly.io app name (e.g., export FLY_APP=sprites-main)")
-			}
-			if strings.TrimSpace(opts.Token) == "" {
-				return errors.New("Error: FLY_API_TOKEN environment variable is required. Get one from https://fly.io/user/personal_access_tokens")
-			}
+			// FLY_APP and FLY_API_TOKEN are only needed when provisioning new sprites.
+			// When dispatching to an existing sprite, the sprite CLI handles transport.
+			hasFlyCredentials := strings.TrimSpace(opts.App) != "" && strings.TrimSpace(opts.Token) != ""
 
 			// Pre-dispatch issue validation
 			// Skip validation for dry-run (Execute=false) to keep planning fast and offline.
@@ -186,9 +183,12 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 				}
 			}
 
-			flyClient, err := deps.newFlyClient(opts.Token, opts.APIURL)
-			if err != nil {
-				return err
+			var flyClient fly.MachineClient
+			if hasFlyCredentials {
+				flyClient, err = deps.newFlyClient(opts.Token, opts.APIURL)
+				if err != nil {
+					return err
+				}
 			}
 			remote := deps.newRemote(opts.SpriteCLI, opts.Org)
 
@@ -205,7 +205,8 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 
 			// Collect auth-related environment variables to pass to sprites
 			envVars := make(map[string]string)
-			for _, key := range []string{
+
+			llmKeys := []string{
 				"OPENROUTER_API_KEY",
 				"ANTHROPIC_AUTH_TOKEN",
 				"ANTHROPIC_API_KEY",
@@ -213,11 +214,45 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 				"XAI_API_KEY",
 				"GEMINI_API_KEY",
 				"OPENAI_API_KEY",
+			}
+			gitKeys := []string{
 				"GH_TOKEN",
 				"GITHUB_TOKEN",
-			} {
+			}
+
+			for _, key := range append(llmKeys, gitKeys...) {
 				if value := os.Getenv(key); value != "" {
 					envVars[key] = value
+				}
+			}
+
+			// When executing (not dry-run), validate that the sprite will have
+			// the credentials it needs to actually complete the work.
+			if opts.Execute {
+				var missing []string
+
+				// At least one LLM key is required for the agent to function.
+				hasLLMKey := false
+				for _, key := range llmKeys {
+					if envVars[key] != "" {
+						hasLLMKey = true
+						break
+					}
+				}
+				if !hasLLMKey {
+					missing = append(missing, fmt.Sprintf(
+						"no LLM API key found — set one of: %s", strings.Join(llmKeys, ", ")))
+				}
+
+				// GitHub token is required for the agent to push branches and open PRs.
+				hasGitToken := envVars["GH_TOKEN"] != "" || envVars["GITHUB_TOKEN"] != ""
+				if !hasGitToken {
+					missing = append(missing,
+						"no GitHub token found — set GH_TOKEN or GITHUB_TOKEN (try: export GITHUB_TOKEN=$(gh auth token))")
+				}
+
+				if len(missing) > 0 {
+					return fmt.Errorf("dispatch: missing credentials — sprite cannot complete work\n\n  ✗ %s\n\nset the required environment variables and retry", strings.Join(missing, "\n  ✗ "))
 				}
 			}
 
@@ -355,7 +390,7 @@ func selectSpriteFromRegistry(ctx context.Context, remote *spriteCLIRemote, opts
 		if opts.Issue > 0 {
 			exampleArgs = fmt.Sprintf("--issue %d", opts.Issue)
 		}
-		return "", fmt.Errorf("dispatch: registry not found at %s\n\n  Run 'bb init' to create it, or specify --registry <path>.\n  Without a registry, provide a sprite name explicitly:\n    bb dispatch <sprite> %s", regPath, exampleArgs)
+		return "", fmt.Errorf("dispatch: registry not found at %s\n\n  Create a registry by adding a sprite: bb add --name <sprite>\n  Or provide a sprite name explicitly:\n    bb dispatch <sprite> %s", regPath, exampleArgs)
 	}
 
 	checker := remoteStatusChecker{
@@ -531,17 +566,26 @@ func pollSpriteStatus(ctx context.Context, remote *spriteCLIRemote, sprite strin
 	defer cancel()
 
 	workspace := "/home/sprite/workspace"
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
 
-	// Initial delay to let the task start
-	progress(fmt.Sprintf("Waiting for %s to start...", sprite))
+	// Immediate check before any delay — catches already-completed oneshot tasks.
+	result, done, err := checkSpriteStatus(ctx, remote, sprite, workspace)
+	if err == nil && result != nil {
+		progress(fmt.Sprintf("Status: %s", result.State))
+		if done {
+			return result, nil
+		}
+	}
+
+	// Brief delay before starting poll loop
+	progress(fmt.Sprintf("Waiting for %s to finish...", sprite))
 	select {
 	case <-time.After(2 * time.Second):
-		// Continue
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
 
 	for {
 		select {
@@ -553,7 +597,6 @@ func pollSpriteStatus(ctx context.Context, remote *spriteCLIRemote, sprite strin
 		case <-ticker.C:
 			result, done, err := checkSpriteStatus(ctx, remote, sprite, workspace)
 			if err != nil {
-				// Log error but continue polling (graceful degradation)
 				progress(fmt.Sprintf("Polling error (retrying): %v", err))
 				continue
 			}
@@ -599,7 +642,9 @@ func buildStatusCheckScript(workspace string) string {
 		"  if kill -0 \"$PID\" 2>/dev/null; then",
 		"    AGENT_STATE=alive",
 		"  fi",
-		"elif pgrep -f 'claude -p' >/dev/null 2>&1; then",
+		// pgrep -f self-matches when the search pattern appears in the script text.
+		// Use [c]laude trick to prevent the grep/pgrep from matching itself.
+		"elif pgrep -f '[c]laude -p' >/dev/null 2>&1; then",
 		"  AGENT_STATE=alive",
 		"fi",
 		"echo \"__AGENT_STATE__${AGENT_STATE}\"",

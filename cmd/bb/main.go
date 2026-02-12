@@ -10,7 +10,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var version = "dev"
+var (
+	version = "dev"
+	commit  = "unknown"
+	date    = "unknown"
+)
 
 type exitError struct {
 	Code int
@@ -165,7 +169,7 @@ func newVersionCmd() *cobra.Command {
 		Use:   "version",
 		Short: "Print bb version",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			_, err := fmt.Fprintf(cmd.OutOrStdout(), "bb version %s\n", version)
+			_, err := fmt.Fprintf(cmd.OutOrStdout(), "bb version %s (commit %s, built %s)\n", version, commit, date)
 			return err
 		},
 	}

@@ -40,7 +40,9 @@ func (fakeFlyClient) Exec(context.Context, string, string, fly.ExecRequest) (fly
 }
 
 func TestDispatchCommandJSONOutput(t *testing.T) {
-	t.Parallel()
+	// Cannot use t.Parallel() — t.Setenv modifies process environment.
+	t.Setenv("GITHUB_TOKEN", "ghp-test")
+	t.Setenv("OPENROUTER_API_KEY", "or-test")
 
 	runner := &fakeDispatchRunner{
 		result: dispatchsvc.Result{
@@ -208,9 +210,12 @@ func TestDispatchCommandAutoAssignWithoutSprite(t *testing.T) {
 	}
 }
 
-func TestDispatchCommandMissingFLY_APP(t *testing.T) {
+func TestDispatchCommandWithoutFlyCredentials(t *testing.T) {
 	t.Parallel()
 
+	// Dispatch should succeed in dry-run mode without FLY_APP/FLY_API_TOKEN
+	// since these are only needed for provisioning new sprites.
+	runner := &fakeDispatchRunner{}
 	deps := dispatchDeps{
 		readFile: func(string) ([]byte, error) { return nil, nil },
 		newFlyClient: func(token, apiURL string) (fly.MachineClient, error) {
@@ -220,7 +225,7 @@ func TestDispatchCommandMissingFLY_APP(t *testing.T) {
 			return &spriteCLIRemote{}
 		},
 		newService: func(cfg dispatchsvc.Config) (dispatchRunner, error) {
-			return &fakeDispatchRunner{}, nil
+			return runner, nil
 		},
 	}
 
@@ -231,56 +236,11 @@ func TestDispatchCommandMissingFLY_APP(t *testing.T) {
 	cmd.SetArgs([]string{
 		"bramble",
 		"test prompt",
-		"--token", "tok",
 	})
 
 	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("expected error for missing FLY_APP, got nil")
-	}
-	if !strings.Contains(err.Error(), "FLY_APP environment variable is required") {
-		t.Fatalf("error = %q, expected FLY_APP error message", err.Error())
-	}
-	if !strings.Contains(err.Error(), "export FLY_APP=sprites-main") {
-		t.Fatalf("error = %q, expected example export command", err.Error())
-	}
-}
-
-func TestDispatchCommandMissingFLY_API_TOKEN(t *testing.T) {
-	t.Parallel()
-
-	deps := dispatchDeps{
-		readFile: func(string) ([]byte, error) { return nil, nil },
-		newFlyClient: func(token, apiURL string) (fly.MachineClient, error) {
-			return fakeFlyClient{}, nil
-		},
-		newRemote: func(binary, org string) *spriteCLIRemote {
-			return &spriteCLIRemote{}
-		},
-		newService: func(cfg dispatchsvc.Config) (dispatchRunner, error) {
-			return &fakeDispatchRunner{}, nil
-		},
-	}
-
-	cmd := newDispatchCmdWithDeps(deps)
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(&out)
-	cmd.SetArgs([]string{
-		"bramble",
-		"test prompt",
-		"--app", "bb-app",
-	})
-
-	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("expected error for missing FLY_API_TOKEN, got nil")
-	}
-	if !strings.Contains(err.Error(), "FLY_API_TOKEN environment variable is required") {
-		t.Fatalf("error = %q, expected FLY_API_TOKEN error message", err.Error())
-	}
-	if !strings.Contains(err.Error(), "fly.io/user/personal_access_tokens") {
-		t.Fatalf("error = %q, expected URL to token page", err.Error())
+	if err != nil {
+		t.Fatalf("dry-run dispatch should succeed without Fly credentials, got: %v", err)
 	}
 }
 
@@ -431,7 +391,9 @@ func TestDispatchCommandWaitRequiresExecute(t *testing.T) {
 }
 
 func TestDispatchCommandWithWait(t *testing.T) {
-	t.Parallel()
+	// Cannot use t.Parallel() — t.Setenv modifies process environment.
+	t.Setenv("GITHUB_TOKEN", "ghp-test")
+	t.Setenv("OPENROUTER_API_KEY", "or-test")
 
 	runner := &fakeDispatchRunner{
 		result: dispatchsvc.Result{
@@ -506,7 +468,9 @@ func TestDispatchCommandWithWait(t *testing.T) {
 }
 
 func TestDispatchCommandWaitWithPollingError(t *testing.T) {
-	t.Parallel()
+	// Cannot use t.Parallel() — t.Setenv modifies process environment.
+	t.Setenv("GITHUB_TOKEN", "ghp-test")
+	t.Setenv("OPENROUTER_API_KEY", "or-test")
 
 	runner := &fakeDispatchRunner{
 		result: dispatchsvc.Result{
@@ -564,7 +528,9 @@ func TestDispatchCommandWaitWithPollingError(t *testing.T) {
 }
 
 func TestDispatchCommandWaitJSONOutput(t *testing.T) {
-	t.Parallel()
+	// Cannot use t.Parallel() — t.Setenv modifies process environment.
+	t.Setenv("GITHUB_TOKEN", "ghp-test")
+	t.Setenv("OPENROUTER_API_KEY", "or-test")
 
 	runner := &fakeDispatchRunner{
 		result: dispatchsvc.Result{
@@ -797,6 +763,134 @@ func TestDispatchCollectsGHToken(t *testing.T) {
 	}
 }
 
+func TestDispatchExecuteRequiresGitHubToken(t *testing.T) {
+	// Cannot use t.Parallel() — t.Setenv modifies process environment.
+
+	// Clear all tokens so validation fires.
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "")
+	// Set an LLM key so only the GitHub token check fails.
+	t.Setenv("OPENROUTER_API_KEY", "test-key")
+
+	deps := dispatchDeps{
+		readFile: func(string) ([]byte, error) { return nil, nil },
+		newFlyClient: func(token, apiURL string) (fly.MachineClient, error) {
+			return fakeFlyClient{}, nil
+		},
+		newRemote: func(binary, org string) *spriteCLIRemote {
+			return &spriteCLIRemote{}
+		},
+		newService: func(cfg dispatchsvc.Config) (dispatchRunner, error) {
+			t.Fatal("newService should not be called when credentials are missing")
+			return nil, nil
+		},
+	}
+
+	cmd := newDispatchCmdWithDeps(deps)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{
+		"bramble", "Fix tests",
+		"--execute",
+		"--app", "bb-app",
+		"--token", "fly-tok",
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when GITHUB_TOKEN is missing in --execute mode")
+	}
+	if !strings.Contains(err.Error(), "no GitHub token found") {
+		t.Fatalf("expected 'no GitHub token found' error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "gh auth token") {
+		t.Fatalf("expected remediation hint with 'gh auth token', got: %v", err)
+	}
+}
+
+func TestDispatchExecuteRequiresLLMKey(t *testing.T) {
+	// Cannot use t.Parallel() — t.Setenv modifies process environment.
+
+	// Clear all LLM keys.
+	for _, key := range []string{
+		"OPENROUTER_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY",
+		"MOONSHOT_AI_API_KEY", "XAI_API_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY",
+	} {
+		t.Setenv(key, "")
+	}
+	// Set a GitHub token so only the LLM key check fails.
+	t.Setenv("GITHUB_TOKEN", "ghp-test")
+
+	deps := dispatchDeps{
+		readFile: func(string) ([]byte, error) { return nil, nil },
+		newFlyClient: func(token, apiURL string) (fly.MachineClient, error) {
+			return fakeFlyClient{}, nil
+		},
+		newRemote: func(binary, org string) *spriteCLIRemote {
+			return &spriteCLIRemote{}
+		},
+		newService: func(cfg dispatchsvc.Config) (dispatchRunner, error) {
+			t.Fatal("newService should not be called when credentials are missing")
+			return nil, nil
+		},
+	}
+
+	cmd := newDispatchCmdWithDeps(deps)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{
+		"bramble", "Fix tests",
+		"--execute",
+		"--app", "bb-app",
+		"--token", "fly-tok",
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when all LLM keys are missing in --execute mode")
+	}
+	if !strings.Contains(err.Error(), "no LLM API key found") {
+		t.Fatalf("expected 'no LLM API key found' error, got: %v", err)
+	}
+}
+
+func TestDispatchDryRunSkipsCredentialValidation(t *testing.T) {
+	// Cannot use t.Parallel() — t.Setenv modifies process environment.
+
+	// Clear everything — dry-run should not care.
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("OPENROUTER_API_KEY", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+
+	runner := &fakeDispatchRunner{}
+	deps := dispatchDeps{
+		readFile: func(string) ([]byte, error) { return nil, nil },
+		newFlyClient: func(token, apiURL string) (fly.MachineClient, error) {
+			return fakeFlyClient{}, nil
+		},
+		newRemote: func(binary, org string) *spriteCLIRemote {
+			return &spriteCLIRemote{}
+		},
+		newService: func(cfg dispatchsvc.Config) (dispatchRunner, error) {
+			return runner, nil
+		},
+	}
+
+	cmd := newDispatchCmdWithDeps(deps)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"bramble", "test prompt"})
+
+	err := cmd.Execute()
+	if err != nil {
+		t.Fatalf("dry-run should not validate credentials, got: %v", err)
+	}
+}
+
 func TestSelectSpriteFromRegistryMissingFile(t *testing.T) {
 	t.Parallel()
 
@@ -838,8 +932,8 @@ func TestSelectSpriteFromRegistryMissingFile(t *testing.T) {
 			if !strings.Contains(err.Error(), "registry not found") {
 				t.Fatalf("expected 'registry not found' error, got: %v", err)
 			}
-			if !strings.Contains(err.Error(), "bb init") {
-				t.Fatalf("expected guidance about 'bb init', got: %v", err)
+			if !strings.Contains(err.Error(), "bb add") {
+				t.Fatalf("expected guidance about 'bb add', got: %v", err)
 			}
 			if !strings.Contains(err.Error(), tc.expectedInErr) {
 				t.Fatalf("error message should contain %q, but it was: %v", tc.expectedInErr, err)

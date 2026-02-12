@@ -831,8 +831,8 @@ func TestRunExecuteWithOpenRouterKey_EnsuresProxy(t *testing.T) {
 		t.Fatalf("NewService() error = %v", err)
 	}
 
-	// Set a shorter timeout for the test
-	service.proxyLifecycle.SetTimeout(500 * time.Millisecond)
+	// Set a timeout that accommodates the 1s polling interval.
+	service.proxyLifecycle.SetTimeout(3 * time.Second)
 
 	result, err := service.Run(context.Background(), Request{
 		Sprite:  "fern",
