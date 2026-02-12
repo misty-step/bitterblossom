@@ -178,12 +178,8 @@ func NewService(cfg Config) (*Service, error) {
 	if cfg.Remote == nil {
 		return nil, errors.New("dispatch: remote client is required")
 	}
-	if cfg.Fly == nil {
-		return nil, errors.New("dispatch: fly client is required")
-	}
-	if strings.TrimSpace(cfg.App) == "" {
-		return nil, errors.New("dispatch: fly app is required")
-	}
+	// Fly client and app are optional — only required when provisioning new sprites.
+	// Validated at provisioning time in provision().
 	workspace := strings.TrimSpace(cfg.Workspace)
 	if workspace == "" {
 		workspace = DefaultWorkspace
@@ -463,6 +459,9 @@ type statusFile struct {
 }
 
 func (s *Service) provision(ctx context.Context, req preparedRequest) (string, error) {
+	if s.fly == nil || strings.TrimSpace(s.app) == "" {
+		return "", errors.New("dispatch: provisioning requires FLY_APP and FLY_API_TOKEN environment variables")
+	}
 	metadata := map[string]string{
 		"managed_by": "bb.dispatch",
 	}
