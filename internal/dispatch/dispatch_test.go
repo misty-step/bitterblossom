@@ -3,6 +3,7 @@ package dispatch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1002,5 +1003,230 @@ func TestBuildSetupRepoScriptFreshClone(t *testing.T) {
 	}
 	if !strings.Contains(script, "git clone") {
 		t.Error("script missing git clone fallback")
+	}
+}
+
+func TestResolveSkillMountsEnforcesMaxMounts(t *testing.T) {
+	// Create temp skill directories
+	skillRoot := t.TempDir()
+	skills := make([]string, DefaultMaxSkillMounts+2)
+	for i := 0; i < DefaultMaxSkillMounts+2; i++ {
+		skillDir := filepath.Join(skillRoot, fmt.Sprintf("test-skill-%d", i))
+		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+			t.Fatalf("mkdir skill dir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# Skill\n"), 0o644); err != nil {
+			t.Fatalf("write SKILL.md: %v", err)
+		}
+		skills[i] = skillDir
+	}
+
+	// Should fail with too many mounts
+	_, err := resolveSkillMounts(skills, "/home/sprite/workspace")
+	if err == nil {
+		t.Fatal("expected error for too many skill mounts")
+	}
+	if !strings.Contains(err.Error(), "too many --skill mounts") {
+		t.Fatalf("error = %v, want mention of too many mounts", err)
+	}
+
+	// Should succeed with exactly MaxMounts
+	_, err = resolveSkillMounts(skills[:DefaultMaxSkillMounts], "/home/sprite/workspace")
+	if err != nil {
+		t.Fatalf("unexpected error for max mounts: %v", err)
+	}
+}
+
+func TestResolveSkillMountsEnforcesMaxFilesPerSkill(t *testing.T) {
+	skillRoot := t.TempDir()
+	skillDir := filepath.Join(skillRoot, "test-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# Skill\n"), 0o644); err != nil {
+		t.Fatalf("write SKILL.md: %v", err)
+	}
+
+	// Create files exceeding the limit
+	for i := 0; i < DefaultMaxFilesPerSkill+1; i++ {
+		if err := os.WriteFile(filepath.Join(skillDir, fmt.Sprintf("file-%d.txt", i)), []byte("content\n"), 0o644); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+	}
+
+	_, err := resolveSkillMounts([]string{skillDir}, "/home/sprite/workspace")
+	if err == nil {
+		t.Fatal("expected error for too many files")
+	}
+	if !strings.Contains(err.Error(), "files") {
+		t.Fatalf("error = %v, want mention of file count", err)
+	}
+}
+
+func TestResolveSkillMountsEnforcesMaxBytesPerSkill(t *testing.T) {
+	skillRoot := t.TempDir()
+	skillDir := filepath.Join(skillRoot, "test-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# Skill\n"), 0o644); err != nil {
+		t.Fatalf("write SKILL.md: %v", err)
+	}
+
+	// Create a file that exceeds the total bytes limit
+	largeContent := make([]byte, DefaultMaxBytesPerSkill+1)
+	if err := os.WriteFile(filepath.Join(skillDir, "large-file.bin"), largeContent, 0o644); err != nil {
+		t.Fatalf("write large file: %v", err)
+	}
+
+	_, err := resolveSkillMounts([]string{skillDir}, "/home/sprite/workspace")
+	if err == nil {
+		t.Fatal("expected error for exceeding total bytes")
+	}
+	if !strings.Contains(err.Error(), "size") {
+		t.Fatalf("error = %v, want mention of size limit", err)
+	}
+}
+
+func TestResolveSkillMountsEnforcesMaxFileSize(t *testing.T) {
+	skillRoot := t.TempDir()
+	skillDir := filepath.Join(skillRoot, "test-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# Skill\n"), 0o644); err != nil {
+		t.Fatalf("write SKILL.md: %v", err)
+	}
+
+	// Create a file that exceeds the individual file size limit
+	largeContent := make([]byte, DefaultMaxFileSize+1)
+	if err := os.WriteFile(filepath.Join(skillDir, "large-file.bin"), largeContent, 0o644); err != nil {
+		t.Fatalf("write large file: %v", err)
+	}
+
+	_, err := resolveSkillMounts([]string{skillDir}, "/home/sprite/workspace")
+	if err == nil {
+		t.Fatal("expected error for exceeding max file size")
+	}
+	if !strings.Contains(err.Error(), "max file size") {
+		t.Fatalf("error = %v, want mention of max file size", err)
+	}
+}
+
+func TestResolveSkillMountsEnforcesSkillNamePattern(t *testing.T) {
+	skillRoot := t.TempDir()
+
+	// Invalid skill names that don't match skillNamePattern
+	// Note: "has/slash" is excluded because it can't be created as a directory name on most filesystems
+	invalidNames := []string{"UPPERCASE", "mixedCase", "123-starts-with-number", "has_underscore", "has.space"}
+
+	for _, name := range invalidNames {
+		skillDir := filepath.Join(skillRoot, name)
+		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+			t.Fatalf("mkdir skill dir %q: %v", name, err)
+		}
+		if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# Skill\n"), 0o644); err != nil {
+			t.Fatalf("write SKILL.md: %v", err)
+		}
+
+		_, err := resolveSkillMounts([]string{skillDir}, "/home/sprite/workspace")
+		if err == nil {
+			t.Fatalf("expected error for invalid skill name %q", name)
+		}
+		if !strings.Contains(err.Error(), "invalid skill directory name") {
+			t.Fatalf("error = %v, want mention of invalid skill name", err)
+		}
+	}
+
+	// Valid skill names that match skillNamePattern
+	validNames := []string{"valid-skill", "skill123", "a-b-c", "x1", "test"}
+
+	for _, name := range validNames {
+		skillDir := filepath.Join(skillRoot, name)
+		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+			t.Fatalf("mkdir skill dir %q: %v", name, err)
+		}
+		if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# Skill\n"), 0o644); err != nil {
+			t.Fatalf("write SKILL.md: %v", err)
+		}
+
+		_, err := resolveSkillMounts([]string{skillDir}, "/home/sprite/workspace")
+		if err != nil {
+			t.Fatalf("unexpected error for valid skill name %q: %v", name, err)
+		}
+	}
+}
+
+func TestResolveSkillMountsDetectsCanonicalPathDuplicates(t *testing.T) {
+	skillRoot := t.TempDir()
+	skillDir := filepath.Join(skillRoot, "test-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# Skill\n"), 0o644); err != nil {
+		t.Fatalf("write SKILL.md: %v", err)
+	}
+
+	// Create a subdirectory with a symlink to the same skill
+	subDir := filepath.Join(skillRoot, "subdir")
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatalf("mkdir subdir: %v", err)
+	}
+	linkPath := filepath.Join(subDir, "linked-skill")
+	if err := os.Symlink(skillDir, linkPath); err != nil {
+		t.Skipf("symlink unsupported in test environment: %v", err)
+	}
+
+	// Try to mount both the original and the symlink
+	_, err := resolveSkillMounts([]string{skillDir, linkPath}, "/home/sprite/workspace")
+	if err == nil {
+		t.Fatal("expected error for duplicate skill via canonical path")
+	}
+	if !strings.Contains(err.Error(), "already mounted") && !strings.Contains(err.Error(), "canonical path") {
+		t.Fatalf("error = %v, want mention of canonical path duplicate", err)
+	}
+}
+
+func TestResolveSkillMountsAcceptsCustomLimits(t *testing.T) {
+	skillRoot := t.TempDir()
+	skillDir := filepath.Join(skillRoot, "test-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# Skill\n"), 0o644); err != nil {
+		t.Fatalf("write SKILL.md: %v", err)
+	}
+
+	// Create files that would exceed default limits but pass custom limits
+	for i := 0; i < 5; i++ {
+		if err := os.WriteFile(filepath.Join(skillDir, fmt.Sprintf("file-%d.txt", i)), []byte("content\n"), 0o644); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+	}
+
+	// Should fail with very restrictive limits
+	strictLimits := resolveSkillLimits{
+		MaxMounts:        1,
+		MaxFilesPerSkill: 2,
+		MaxBytesPerSkill: 100,
+		MaxFileSize:      50,
+	}
+
+	_, err := resolveSkillMountsWithLimits([]string{skillDir}, "/home/sprite/workspace", strictLimits)
+	if err == nil {
+		t.Fatal("expected error with strict limits")
+	}
+
+	// Should succeed with generous limits
+	generousLimits := resolveSkillLimits{
+		MaxMounts:        10,
+		MaxFilesPerSkill: 100,
+		MaxBytesPerSkill: 1024 * 1024,
+		MaxFileSize:      1024 * 1024,
+	}
+
+	_, err = resolveSkillMountsWithLimits([]string{skillDir}, "/home/sprite/workspace", generousLimits)
+	if err != nil {
+		t.Fatalf("unexpected error with generous limits: %v", err)
 	}
 }
