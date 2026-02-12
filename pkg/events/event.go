@@ -36,6 +36,7 @@ type Meta struct {
 	TS         time.Time `json:"ts"`
 	SpriteName string    `json:"sprite"`
 	EventKind  Kind      `json:"event"`
+	Issue      int       `json:"issue,omitempty"`
 }
 
 // Timestamp returns the event timestamp.

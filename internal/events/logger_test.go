@@ -1,0 +1,183 @@
+package events
+
+import (
+	"sync"
+	"testing"
+	"time"
+
+	pkgevents "github.com/misty-step/bitterblossom/pkg/events"
+)
+
+func TestLoggerDailyRotation(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	logger, err := NewLogger(LoggerConfig{Dir: dir})
+	if err != nil {
+		t.Fatalf("NewLogger() error = %v", err)
+	}
+
+	firstDay := time.Date(2026, 2, 10, 12, 0, 0, 0, time.UTC)
+	secondDay := firstDay.Add(24 * time.Hour)
+
+	if err := logger.Log(pkgevents.DispatchEvent{
+		Meta: pkgevents.Meta{
+			TS:         firstDay,
+			SpriteName: "bramble",
+			EventKind:  pkgevents.KindDispatch,
+			Issue:      13,
+		},
+		Task: "issue-13",
+		Repo: "misty-step/bitterblossom",
+	}); err != nil {
+		t.Fatalf("Log(first day) error = %v", err)
+	}
+
+	if err := logger.Log(pkgevents.ErrorEvent{
+		Meta: pkgevents.Meta{
+			TS:         secondDay,
+			SpriteName: "bramble",
+			EventKind:  pkgevents.KindError,
+			Issue:      13,
+		},
+		Message: "boom",
+	}); err != nil {
+		t.Fatalf("Log(second day) error = %v", err)
+	}
+
+	query, err := NewQuery(QueryConfig{Dir: dir})
+	if err != nil {
+		t.Fatalf("NewQuery() error = %v", err)
+	}
+	events, err := query.Read(QueryOptions{})
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("Read() count = %d, want 2", len(events))
+	}
+}
+
+func TestQueryFiltersByTypeSpriteIssueAndRange(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	logger, err := NewLogger(LoggerConfig{Dir: dir})
+	if err != nil {
+		t.Fatalf("NewLogger() error = %v", err)
+	}
+
+	base := time.Date(2026, 2, 11, 9, 0, 0, 0, time.UTC)
+	mustLog := func(event Event) {
+		t.Helper()
+		if err := logger.Log(event); err != nil {
+			t.Fatalf("Log() error = %v", err)
+		}
+	}
+
+	mustLog(pkgevents.DispatchEvent{
+		Meta: pkgevents.Meta{
+			TS:         base,
+			SpriteName: "bramble",
+			EventKind:  pkgevents.KindDispatch,
+			Issue:      13,
+		},
+		Task: "issue-13",
+	})
+	mustLog(pkgevents.ProgressEvent{
+		Meta: pkgevents.Meta{
+			TS:         base.Add(1 * time.Minute),
+			SpriteName: "bramble",
+			EventKind:  pkgevents.KindProgress,
+			Issue:      13,
+		},
+		Activity: "tool_call",
+		Detail:   "apply_patch",
+	})
+	mustLog(pkgevents.ProgressEvent{
+		Meta: pkgevents.Meta{
+			TS:         base.Add(2 * time.Minute),
+			SpriteName: "thorn",
+			EventKind:  pkgevents.KindProgress,
+			Issue:      98,
+		},
+		Activity: "tool_call",
+		Detail:   "exec",
+	})
+
+	query, err := NewQuery(QueryConfig{Dir: dir})
+	if err != nil {
+		t.Fatalf("NewQuery() error = %v", err)
+	}
+	filter := pkgevents.Chain(
+		pkgevents.BySprite("bramble"),
+		pkgevents.ByKind(pkgevents.KindProgress),
+	)
+	got, err := query.Read(QueryOptions{
+		Filter: filter,
+		Since:  base.Add(30 * time.Second),
+		Until:  base.Add(90 * time.Second),
+		Issue:  13,
+	})
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("Read() count = %d, want 1", len(got))
+	}
+	if got[0].Kind() != pkgevents.KindProgress {
+		t.Fatalf("event kind = %q, want %q", got[0].Kind(), pkgevents.KindProgress)
+	}
+}
+
+func TestLoggerConcurrentWrites(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	logger, err := NewLogger(LoggerConfig{Dir: dir})
+	if err != nil {
+		t.Fatalf("NewLogger() error = %v", err)
+	}
+
+	const writers = 16
+	const eventsPerWriter = 25
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			for n := 0; n < eventsPerWriter; n++ {
+				ts := time.Date(2026, 2, 12, 10, idx, n, 0, time.UTC)
+				err := logger.Log(pkgevents.ProgressEvent{
+					Meta: pkgevents.Meta{
+						TS:         ts,
+						SpriteName: "bramble",
+						EventKind:  pkgevents.KindProgress,
+						Issue:      13,
+					},
+					Activity: "tool_call",
+					Detail:   "write_file",
+				})
+				if err != nil {
+					t.Errorf("Log() error = %v", err)
+					return
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	query, err := NewQuery(QueryConfig{Dir: dir})
+	if err != nil {
+		t.Fatalf("NewQuery() error = %v", err)
+	}
+	got, err := query.Read(QueryOptions{})
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	want := writers * eventsPerWriter
+	if len(got) != want {
+		t.Fatalf("Read() count = %d, want %d", len(got), want)
+	}
+}
+
