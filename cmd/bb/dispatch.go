@@ -608,7 +608,9 @@ func buildStatusCheckScript(workspace string) string {
 		"  if kill -0 \"$PID\" 2>/dev/null; then",
 		"    AGENT_STATE=alive",
 		"  fi",
-		"elif pgrep -f 'claude -p' >/dev/null 2>&1; then",
+		// pgrep -f self-matches when the search pattern appears in the script text.
+		// Use [c]laude trick to prevent the grep/pgrep from matching itself.
+		"elif pgrep -f '[c]laude -p' >/dev/null 2>&1; then",
 		"  AGENT_STATE=alive",
 		"fi",
 		"echo \"__AGENT_STATE__${AGENT_STATE}\"",
