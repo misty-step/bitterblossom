@@ -64,7 +64,9 @@ func IssuePrompt(issue int, repo string) string {
 	return fmt.Sprintf(
 		"Implement GitHub issue #%d%s. Read the issue for the full spec. "+
 			"Run tests to verify your changes. Commit with a descriptive message "+
-			"referencing the issue number.",
+			"referencing the issue number. Push your branch and open a PR.\n\n"+
+			"When complete, write a summary to TASK_COMPLETE (e.g. echo 'Done: ...' > TASK_COMPLETE).\n"+
+			"If blocked, write the reason to BLOCKED.md and stop.",
 		issue, repoClause,
 	)
 }

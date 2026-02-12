@@ -85,6 +85,12 @@ func TestIssuePrompt_WithRepo(t *testing.T) {
 	if !contains(p, "misty-step/bitterblossom") {
 		t.Fatalf("prompt missing repo: %s", p)
 	}
+	if !contains(p, "TASK_COMPLETE") {
+		t.Fatalf("prompt missing TASK_COMPLETE instruction: %s", p)
+	}
+	if !contains(p, "BLOCKED.md") {
+		t.Fatalf("prompt missing BLOCKED.md instruction: %s", p)
+	}
 }
 
 func TestIssuePrompt_WithoutRepo(t *testing.T) {
