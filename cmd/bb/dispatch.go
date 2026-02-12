@@ -232,6 +232,9 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 				EnvVars:            envVars,
 				RegistryPath:       opts.RegistryPath,
 				RegistryRequired:   opts.RegistryRequired,
+				// Persist dispatch lifecycle events locally for operator visibility.
+				// Best-effort; dispatch continues if the logger cannot be created.
+				EventLogger: nil,
 			})
 			if err != nil {
 				return err

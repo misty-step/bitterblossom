@@ -571,6 +571,48 @@ bb logs --file events.jsonl --sprite bramble --type progress
 
 ---
 
+## events
+
+Query structured event history from the local daily event store (`~/.config/bb/events/`).
+
+```
+bb events [flags]
+```
+
+### Examples
+
+```bash
+# All events from the local store
+bb events
+
+# Filter by sprite and event type
+bb events --sprite bramble --type progress
+
+# Filter by issue number
+bb events --issue 13
+
+# Time window
+bb events --since 1h
+bb events --since 2026-02-12T00:00:00Z --until 2026-02-12T01:00:00Z
+
+# JSONL output
+bb events --json
+```
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--dir` | `~/.config/bb/events` | Event store directory |
+| `--sprite` | all | Filter by sprite name |
+| `--type` | all | Filter by event type |
+| `--issue` | | Filter by issue number |
+| `--since` | | Events since duration or RFC3339 |
+| `--until` | | Events until RFC3339 |
+| `--json` | `false` | Emit JSONL output |
+
+---
+
 ## version
 
 Print `bb` version.
