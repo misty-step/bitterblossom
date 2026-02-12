@@ -17,10 +17,12 @@ import (
 	"strings"
 	"time"
 
+	storeevents "github.com/misty-step/bitterblossom/internal/events"
 	"github.com/misty-step/bitterblossom/internal/fleet"
 	"github.com/misty-step/bitterblossom/internal/proxy"
 	"github.com/misty-step/bitterblossom/internal/registry"
 	"github.com/misty-step/bitterblossom/internal/shellutil"
+	pkgevents "github.com/misty-step/bitterblossom/pkg/events"
 	"github.com/misty-step/bitterblossom/pkg/fly"
 )
 
@@ -54,6 +56,15 @@ type RemoteClient interface {
 	Upload(ctx context.Context, sprite, remotePath string, content []byte) error
 	List(ctx context.Context) ([]string, error)
 }
+
+// EventLogger persists structured lifecycle events.
+type EventLogger interface {
+	Log(event pkgevents.Event) error
+}
+
+type noopEventLogger struct{}
+
+func (noopEventLogger) Log(pkgevents.Event) error { return nil }
 
 // Request describes a dispatch operation.
 type Request struct {
@@ -134,6 +145,8 @@ type Config struct {
 	// RegistryRequired enforces that sprites must exist in the registry.
 	// When true, dispatch will fail if the sprite is not found in the registry.
 	RegistryRequired bool
+	// EventLogger receives dispatch lifecycle events. Nil uses default local logger.
+	EventLogger EventLogger
 }
 
 type provisionInfo struct {
@@ -157,6 +170,7 @@ type Service struct {
 	registryPath       string
 	registryRequired   bool
 	proxyLifecycle     *proxy.Lifecycle
+	eventLogger        EventLogger
 }
 
 // NewService constructs a dispatch service.
@@ -219,6 +233,17 @@ func NewService(cfg Config) (*Service, error) {
 		envVars:            copyStringMap(cfg.EnvVars),
 		registryPath:       registryPath,
 		registryRequired:   cfg.RegistryRequired,
+		eventLogger:        cfg.EventLogger,
+	}
+
+	if svc.eventLogger == nil {
+		defaultLogger, eventErr := storeevents.NewLogger(storeevents.LoggerConfig{})
+		if eventErr != nil {
+			logger.Warn("dispatch events disabled", "error", eventErr)
+			svc.eventLogger = noopEventLogger{}
+		} else {
+			svc.eventLogger = defaultLogger
+		}
 	}
 
 	// Initialize proxy lifecycle manager
@@ -253,7 +278,36 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 	}
 
 	state := StatePending
+	logEvent := func(event pkgevents.Event) {
+		if event == nil || s.eventLogger == nil {
+			return
+		}
+		if err := s.eventLogger.Log(event); err != nil {
+			s.logger.Warn("dispatch event log failed", "sprite", prepared.Sprite, "event", event.Kind(), "error", err)
+		}
+	}
+	logError := func(code string, inErr error) {
+		if inErr == nil {
+			return
+		}
+		logEvent(&pkgevents.ErrorEvent{
+			Meta: pkgevents.Meta{
+				TS:         s.now().UTC(),
+				SpriteName: prepared.Sprite,
+				EventKind:  pkgevents.KindError,
+				Issue:      prepared.Issue,
+			},
+			Code:    code,
+			Message: inErr.Error(),
+		})
+	}
+	fail := func(code string, inErr error) (Result, error) {
+		result.State = StateFailed
+		logError(code, inErr)
+		return result, inErr
+	}
 	transition := func(event DispatchEvent) error {
+		from := state
 		next, err := advanceState(state, event)
 		if err != nil {
 			return fmt.Errorf("%w: %v", ErrInvalidStateTransition, err)
@@ -261,71 +315,83 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 		s.logger.Info("dispatch transition", "sprite", prepared.Sprite, "from", state, "event", event, "to", next)
 		state = next
 		result.State = next
+		logEvent(&pkgevents.ProgressEvent{
+			Meta: pkgevents.Meta{
+				TS:         s.now().UTC(),
+				SpriteName: prepared.Sprite,
+				EventKind:  pkgevents.KindProgress,
+				Issue:      prepared.Issue,
+			},
+			Activity: "dispatch_transition",
+			Detail:   fmt.Sprintf("from=%s event=%s to=%s", from, event, next),
+		})
 		return nil
 	}
+	logEvent(&pkgevents.DispatchEvent{
+		Meta: pkgevents.Meta{
+			TS:         prepared.StartedAt,
+			SpriteName: prepared.Sprite,
+			EventKind:  pkgevents.KindDispatch,
+			Issue:      prepared.Issue,
+		},
+		Task: prepared.TaskLabel,
+		Repo: prepared.Repo.Slug,
+	})
 
 	if provisionNeeded {
 		if err := transition(EventProvisionRequired); err != nil {
-			return Result{}, err
+			return fail("state_transition", err)
 		}
 		machineID, err := s.provision(ctx, prepared)
 		if err != nil {
-			if _, failErr := advanceState(state, EventFailure); failErr == nil {
-				result.State = StateFailed
-			}
-			return result, fmt.Errorf("dispatch: provision sprite %q: %w", prepared.Sprite, err)
+			return fail("provision", fmt.Errorf("dispatch: provision sprite %q: %w", prepared.Sprite, err))
 		}
 		if strings.TrimSpace(machineID) != "" {
 			prepared.MachineID = machineID
 		}
 		result.Provisioned = true
 		if err := transition(EventProvisionSucceeded); err != nil {
-			return Result{}, err
+			return fail("state_transition", err)
 		}
 	} else if err := transition(EventMachineReady); err != nil {
-		return Result{}, err
+		return fail("state_transition", err)
 	}
 
 	if !prepared.AllowAnthropicDirect {
 		s.logger.Info("dispatch validate env", "sprite", prepared.Sprite)
 		keyOutput, err := s.remote.Exec(ctx, prepared.Sprite, "printenv ANTHROPIC_API_KEY 2>/dev/null || true", nil)
 		if err != nil {
-			result.State = StateFailed
-			return result, fmt.Errorf("dispatch: check sprite env: %w", err)
+			return fail("validate_env", fmt.Errorf("dispatch: check sprite env: %w", err))
 		}
 		env := map[string]string{}
 		if key := strings.TrimSpace(keyOutput); key != "" {
 			env["ANTHROPIC_API_KEY"] = key
 		}
 		if err := ValidateNoDirectAnthropic(env, false); err != nil {
-			result.State = StateFailed
-			return result, err
+			return fail("validate_env", err)
 		}
 	}
 
 	if prepared.Repo.CloneURL != "" {
 		s.logger.Info("dispatch setup repo", "sprite", prepared.Sprite, "repo", prepared.Repo.CloneURL)
 		if _, err := s.remote.Exec(ctx, prepared.Sprite, buildSetupRepoScript(s.workspace, prepared.Repo.CloneURL, prepared.Repo.RepoDir), nil); err != nil {
-			result.State = StateFailed
-			return result, fmt.Errorf("dispatch: setup repo: %w", err)
+			return fail("setup_repo", fmt.Errorf("dispatch: setup repo: %w", err))
 		}
 	}
 
 	if len(prepared.Skills) > 0 {
 		s.logger.Info("dispatch upload skills", "sprite", prepared.Sprite, "count", len(prepared.Skills))
 		if err := s.uploadSkills(ctx, prepared.Sprite, prepared.Skills); err != nil {
-			result.State = StateFailed
-			return result, fmt.Errorf("dispatch: upload skills: %w", err)
+			return fail("upload_skills", fmt.Errorf("dispatch: upload skills: %w", err))
 		}
 	}
 
 	s.logger.Info("dispatch upload prompt", "sprite", prepared.Sprite, "path", prepared.PromptPath)
 	if err := s.remote.Upload(ctx, prepared.Sprite, prepared.PromptPath, []byte(prepared.Prompt)); err != nil {
-		result.State = StateFailed
-		return result, fmt.Errorf("dispatch: upload prompt: %w", err)
+		return fail("upload_prompt", fmt.Errorf("dispatch: upload prompt: %w", err))
 	}
 	if err := transition(EventPromptUploaded); err != nil {
-		return Result{}, err
+		return fail("state_transition", err)
 	}
 
 	statusBytes, err := json.Marshal(statusFile{
@@ -335,12 +401,10 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 		Task:    prepared.TaskLabel,
 	})
 	if err != nil {
-		result.State = StateFailed
-		return result, fmt.Errorf("dispatch: marshal status: %w", err)
+		return fail("marshal_status", fmt.Errorf("dispatch: marshal status: %w", err))
 	}
 	if err := s.remote.Upload(ctx, prepared.Sprite, s.workspace+"/STATUS.json", append(statusBytes, '\n')); err != nil {
-		result.State = StateFailed
-		return result, fmt.Errorf("dispatch: upload status: %w", err)
+		return fail("upload_status", fmt.Errorf("dispatch: upload status: %w", err))
 	}
 
 	// Ensure proxy is running if OPENROUTER_API_KEY is configured
@@ -349,8 +413,7 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 		s.logger.Info("dispatch ensure proxy", "sprite", prepared.Sprite)
 		proxyURL, err := s.proxyLifecycle.EnsureProxy(ctx, prepared.Sprite, openRouterKey)
 		if err != nil {
-			result.State = StateFailed
-			return result, fmt.Errorf("dispatch: ensure proxy: %w", err)
+			return fail("ensure_proxy", fmt.Errorf("dispatch: ensure proxy: %w", err))
 		}
 		s.logger.Info("dispatch proxy ready", "sprite", prepared.Sprite, "url", proxyURL)
 		// Set proxy environment variables for the agent
@@ -360,15 +423,13 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 
 	// Pre-dispatch secret scan: ensure no credentials leaked into command args.
 	if err := ValidateCommandNoSecrets(prepared.StartCommand, "start command"); err != nil {
-		result.State = StateFailed
-		return result, err
+		return fail("validate_command", err)
 	}
 
 	s.logger.Info("dispatch start agent", "sprite", prepared.Sprite, "mode", prepared.Mode)
 	output, err := s.remote.ExecWithEnv(ctx, prepared.Sprite, prepared.StartCommand, nil, execEnvVars)
 	if err != nil {
-		result.State = StateFailed
-		return result, fmt.Errorf("dispatch: start agent: %w", err)
+		return fail("start_agent", fmt.Errorf("dispatch: start agent: %w", err))
 	}
 	result.CommandOutput = strings.TrimSpace(output)
 	if pid, ok := parsePID(output); ok {
@@ -376,12 +437,20 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 	}
 
 	if err := transition(EventAgentStarted); err != nil {
-		return Result{}, err
+		return fail("state_transition", err)
 	}
 	if !prepared.Ralph {
 		if err := transition(EventOneShotComplete); err != nil {
-			return Result{}, err
+			return fail("state_transition", err)
 		}
+		logEvent(&pkgevents.DoneEvent{
+			Meta: pkgevents.Meta{
+				TS:         s.now().UTC(),
+				SpriteName: prepared.Sprite,
+				EventKind:  pkgevents.KindDone,
+				Issue:      prepared.Issue,
+			},
+		})
 	}
 	return result, nil
 }

@@ -24,8 +24,8 @@ type execCall struct {
 }
 
 type uploadCall struct {
-	sprite string
-	path   string
+	sprite  string
+	path    string
 	content []byte
 }
 
@@ -208,6 +208,9 @@ func TestLifecycle_Start(t *testing.T) {
 		if !strings.Contains(mock.execCalls[2].command, "node") {
 			t.Errorf("expected node command, got: %s", mock.execCalls[2].command)
 		}
+		if strings.Contains(mock.execCalls[2].command, "test-api-key") {
+			t.Errorf("expected API key to not appear in remote command, got: %s", mock.execCalls[2].command)
+		}
 	})
 
 	t.Run("mkdir fails", func(t *testing.T) {
@@ -250,14 +253,9 @@ func TestLifecycle_Start(t *testing.T) {
 	})
 
 	t.Run("start command fails", func(t *testing.T) {
-		callCount := 0
 		mock := &mockRemoteExecutor{
-			execFunc: func(ctx context.Context, sprite, remoteCommand string, stdin []byte) (string, error) {
-				callCount++
-				if callCount > 2 { // fail on start (after cleanup + mkdir)
-					return "", errors.New("command not found")
-				}
-				return "", nil
+			execWithEnvFunc: func(ctx context.Context, sprite, remoteCommand string, stdin []byte, env map[string]string) (string, error) {
+				return "", errors.New("command not found")
 			},
 		}
 		lifecycle := NewLifecycle(mock)
@@ -453,36 +451,16 @@ func TestLifecycle_SetTimeout(t *testing.T) {
 }
 
 func TestBuildStartProxyScript(t *testing.T) {
-	t.Run("with environment variables", func(t *testing.T) {
-		env := map[string]string{
-			"PROXY_PORT":         "4000",
-			"TARGET_MODEL":       "test-model",
-			"OPENROUTER_API_KEY": "test-key",
-		}
-		script := buildStartProxyScript("/path/to/proxy.mjs", env)
-
-		if !strings.Contains(script, "export PROXY_PORT='4000'") {
-			t.Error("expected PROXY_PORT export")
-		}
-		if !strings.Contains(script, "export TARGET_MODEL='test-model'") {
-			t.Error("expected TARGET_MODEL export")
-		}
-		if !strings.Contains(script, "export OPENROUTER_API_KEY='test-key'") {
-			t.Error("expected OPENROUTER_API_KEY export")
-		}
+	t.Run("starts node in background", func(t *testing.T) {
+		script := buildStartProxyScript("/path/to/proxy.mjs")
 		if !strings.Contains(script, "nohup node '/path/to/proxy.mjs'") {
 			t.Error("expected nohup node command")
 		}
 	})
 
-	t.Run("escapes single quotes", func(t *testing.T) {
-		env := map[string]string{
-			"KEY": "value'with'quotes",
-		}
-		script := buildStartProxyScript("/path/to/proxy.mjs", env)
-
-		// Should properly escape single quotes
-		if !strings.Contains(script, `export KEY='value'"'"'with'"'"'quotes'`) {
+	t.Run("escapes single quotes in path", func(t *testing.T) {
+		script := buildStartProxyScript("/path/to/proxy'with'quotes.mjs")
+		if !strings.Contains(script, `nohup node '/path/to/proxy'"'"'with'"'"'quotes.mjs'`) {
 			t.Errorf("expected proper quote escaping, got: %s", script)
 		}
 	})

@@ -116,9 +116,27 @@ func (c CLI) run(ctx context.Context, args []string, stdin []byte) (string, erro
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("running sprite %s: %w (%s)", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+		return "", fmt.Errorf("running sprite %s: %w (%s)", argsForLog(args), err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.String(), nil
+}
+
+func argsForLog(args []string) string {
+	scrubbed := append([]string(nil), args...)
+	for i := 0; i < len(scrubbed)-1; i++ {
+		if scrubbed[i] == "-env" {
+			scrubbed[i+1] = redactEnvPair(scrubbed[i+1])
+			i++
+		}
+	}
+	return strings.Join(scrubbed, " ")
+}
+
+func redactEnvPair(pair string) string {
+	if idx := strings.Index(pair, "="); idx >= 0 {
+		return pair[:idx+1] + "<redacted>"
+	}
+	return pair
 }
 
 // List returns available sprite names.

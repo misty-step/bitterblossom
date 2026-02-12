@@ -29,6 +29,7 @@ type Event interface {
 	GetTimestamp() time.Time
 	GetSprite() string
 	GetKind() Kind
+	GetIssue() int
 }
 
 // Meta carries shared event fields.
@@ -36,6 +37,7 @@ type Meta struct {
 	TS         time.Time `json:"ts"`
 	SpriteName string    `json:"sprite"`
 	EventKind  Kind      `json:"event"`
+	Issue      int       `json:"issue,omitempty"`
 }
 
 // Timestamp returns the event timestamp.
@@ -55,6 +57,9 @@ func (m Meta) GetSprite() string { return m.Sprite() }
 
 // GetKind returns the event kind.
 func (m Meta) GetKind() Kind { return m.Kind() }
+
+// GetIssue returns the GitHub issue number associated with the event, if any.
+func (m Meta) GetIssue() int { return m.Issue }
 
 // ProvisionEvent reports sprite provisioning.
 type ProvisionEvent struct {
