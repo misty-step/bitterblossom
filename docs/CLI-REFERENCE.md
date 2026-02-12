@@ -169,6 +169,12 @@ bb dispatch bramble --ralph --file prompts/refactor.md --execute
 # With repo clone
 bb dispatch bramble --repo misty-step/heartbeat "Write webhook tests" --execute
 
+# Mount one or more skill directories into sprite workspace
+bb dispatch bramble --issue 252 --repo misty-step/bitterblossom \
+  --skill base/skills/bitterblossom-dispatch \
+  --skill base/skills/bitterblossom-monitoring \
+  --execute --wait
+
 # JSON output for agent consumption
 bb dispatch bramble "Fix the bug" --execute --json
 ```
@@ -179,6 +185,7 @@ bb dispatch bramble "Fix the bug" --execute --json
 |------|---------|-------------|
 | `--repo` | | Repo to clone/pull (`org/repo` or URL) |
 | `--file` | | Read prompt from file |
+| `--skill` | | Path to skill directory or `SKILL.md` (repeatable). Mounted at `./skills/<name>/` on sprite |
 | `--ralph` | `false` | Start persistent Ralph loop |
 | `--execute` | `false` | Execute dispatch (default is dry-run) |
 | `--dry-run` | `true` | Preview dispatch plan |

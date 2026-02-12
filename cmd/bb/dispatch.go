@@ -21,6 +21,7 @@ import (
 type dispatchOptions struct {
 	Repo                 string
 	PromptFile           string
+	Skills               []string
 	Ralph                bool
 	Execute              bool
 	DryRun               bool
@@ -238,6 +239,7 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 				Sprite:               spriteArg,
 				Prompt:               prompt,
 				Repo:                 opts.Repo,
+				Skills:               opts.Skills,
 				Issue:                opts.Issue,
 				Ralph:                opts.Ralph,
 				Execute:              opts.Execute,
@@ -277,6 +279,7 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 
 	command.Flags().StringVar(&opts.Repo, "repo", "", "Repo to clone/pull before dispatch (org/repo or URL)")
 	command.Flags().StringVar(&opts.PromptFile, "file", "", "Read prompt from a file")
+	command.Flags().StringArrayVar(&opts.Skills, "skill", nil, "Path to skill directory or SKILL.md to mount in sprite workspace (repeatable)")
 	command.Flags().BoolVar(&opts.Ralph, "ralph", false, "Start persistent Ralph loop instead of one-shot")
 	command.Flags().BoolVar(&opts.Execute, "execute", false, "Execute dispatch actions (default is dry-run)")
 	command.Flags().BoolVar(&opts.DryRun, "dry-run", true, "Preview dispatch plan without side effects")

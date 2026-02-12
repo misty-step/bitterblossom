@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -58,6 +60,7 @@ type Request struct {
 	Sprite               string
 	Prompt               string
 	Repo                 string
+	Skills               []string
 	Issue                int
 	Ralph                bool
 	Execute              bool
@@ -83,6 +86,7 @@ const (
 	StepValidateEnv    StepKind = "validate_env"
 	StepValidateIssue  StepKind = "validate_issue"
 	StepSetupRepo      StepKind = "setup_repo"
+	StepUploadSkills   StepKind = "upload_skills"
 	StepUploadPrompt   StepKind = "upload_prompt"
 	StepWriteStatus    StepKind = "write_status"
 	StepEnsureProxy    StepKind = "ensure_proxy"
@@ -307,6 +311,14 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 		}
 	}
 
+	if len(prepared.Skills) > 0 {
+		s.logger.Info("dispatch upload skills", "sprite", prepared.Sprite, "count", len(prepared.Skills))
+		if err := s.uploadSkills(ctx, prepared.Sprite, prepared.Skills); err != nil {
+			result.State = StateFailed
+			return result, fmt.Errorf("dispatch: upload skills: %w", err)
+		}
+	}
+
 	s.logger.Info("dispatch upload prompt", "sprite", prepared.Sprite, "path", prepared.PromptPath)
 	if err := s.remote.Upload(ctx, prepared.Sprite, prepared.PromptPath, []byte(prepared.Prompt)); err != nil {
 		result.State = StateFailed
@@ -441,7 +453,7 @@ func (s *Service) needsProvision(ctx context.Context, sprite string, machineID s
 }
 
 func (s *Service) buildPlan(req preparedRequest, provisionNeeded bool) Plan {
-	steps := make([]PlanStep, 0, 7)
+	steps := make([]PlanStep, 0, 8)
 
 	// Add registry lookup step if registry is configured
 	if s.registryPath != "" || s.registryRequired {
@@ -479,6 +491,12 @@ func (s *Service) buildPlan(req preparedRequest, provisionNeeded bool) Plan {
 		steps = append(steps, PlanStep{
 			Kind:        StepSetupRepo,
 			Description: fmt.Sprintf("clone/pull repo %q in %s", req.Repo.CloneURL, s.workspace),
+		})
+	}
+	if len(req.Skills) > 0 {
+		steps = append(steps, PlanStep{
+			Kind:        StepUploadSkills,
+			Description: fmt.Sprintf("upload %d skill package(s) into %s/skills", len(req.Skills), s.workspace),
 		})
 	}
 	steps = append(steps, PlanStep{
@@ -524,6 +542,7 @@ type preparedRequest struct {
 	Request
 	Sprite               string
 	Repo                 repoTarget
+	Skills               []preparedSkill
 	Prompt               string
 	PromptPath           string
 	StartCommand         string
@@ -539,6 +558,19 @@ type repoTarget struct {
 	Slug     string
 	CloneURL string
 	RepoDir  string
+}
+
+type preparedSkill struct {
+	Name       string
+	LocalRoot  string
+	RemoteRoot string
+	PromptPath string
+	Files      []skillFile
+}
+
+type skillFile struct {
+	LocalPath  string
+	RemotePath string
 }
 
 func (s *Service) prepare(req Request) (preparedRequest, error) {
@@ -570,11 +602,17 @@ func (s *Service) prepare(req Request) (preparedRequest, error) {
 	if prompt == "" {
 		return preparedRequest{}, fmt.Errorf("%w: prompt or --issue is required", ErrInvalidRequest)
 	}
+	taskPrompt := prompt
 
 	repo, err := parseRepo(req.Repo)
 	if err != nil {
 		return preparedRequest{}, err
 	}
+	skills, err := resolveSkillMounts(req.Skills, s.workspace)
+	if err != nil {
+		return preparedRequest{}, err
+	}
+	prompt = appendSkillInstructions(prompt, skills)
 
 	mode := "oneshot"
 	promptPath := s.workspace + "/.dispatch-prompt.md"
@@ -610,9 +648,9 @@ func (s *Service) prepare(req Request) (preparedRequest, error) {
 		}
 	}
 
-	taskLabel := prompt
+	taskLabel := taskPrompt
 	if repo.Slug != "" {
-		taskLabel = repo.Slug + ": " + prompt
+		taskLabel = repo.Slug + ": " + taskPrompt
 	}
 	if len(taskLabel) > 220 {
 		taskLabel = taskLabel[:217] + "..."
@@ -632,6 +670,7 @@ func (s *Service) prepare(req Request) (preparedRequest, error) {
 		Request:              req,
 		Sprite:               sprite,
 		Repo:                 repo,
+		Skills:               skills,
 		Prompt:               prompt,
 		PromptPath:           promptPath,
 		StartCommand:         startCommand,
@@ -642,6 +681,128 @@ func (s *Service) prepare(req Request) (preparedRequest, error) {
 		AllowAnthropicDirect: req.AllowAnthropicDirect,
 		MachineID:            machineID,
 	}, nil
+}
+
+func (s *Service) uploadSkills(ctx context.Context, sprite string, skills []preparedSkill) error {
+	for _, skill := range skills {
+		for _, file := range skill.Files {
+			content, err := os.ReadFile(file.LocalPath)
+			if err != nil {
+				return fmt.Errorf("read %q: %w", file.LocalPath, err)
+			}
+			if err := s.remote.Upload(ctx, sprite, file.RemotePath, content); err != nil {
+				return fmt.Errorf("upload %q to %q: %w", file.LocalPath, file.RemotePath, err)
+			}
+		}
+	}
+	return nil
+}
+
+func appendSkillInstructions(prompt string, skills []preparedSkill) string {
+	if len(skills) == 0 {
+		return prompt
+	}
+
+	lines := []string{
+		strings.TrimSpace(prompt),
+		"",
+		"Required skills:",
+	}
+	for _, skill := range skills {
+		lines = append(lines, fmt.Sprintf("- Follow the skill at %s", skill.PromptPath))
+	}
+	lines = append(lines, "Treat these skills as required workflow constraints for this task.")
+	return strings.Join(lines, "\n")
+}
+
+func resolveSkillMounts(paths []string, workspace string) ([]preparedSkill, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+
+	mounts := make([]preparedSkill, 0, len(paths))
+	seen := map[string]string{}
+
+	for _, raw := range paths {
+		input := strings.TrimSpace(raw)
+		if input == "" {
+			continue
+		}
+
+		absPath, err := filepath.Abs(input)
+		if err != nil {
+			return nil, fmt.Errorf("%w: resolve skill path %q: %v", ErrInvalidRequest, input, err)
+		}
+
+		info, err := os.Stat(absPath)
+		if err != nil {
+			return nil, fmt.Errorf("%w: skill path %q: %v", ErrInvalidRequest, input, err)
+		}
+
+		skillRoot := absPath
+		if !info.IsDir() {
+			if filepath.Base(absPath) != "SKILL.md" {
+				return nil, fmt.Errorf("%w: skill path %q must be a directory or SKILL.md file", ErrInvalidRequest, input)
+			}
+			skillRoot = filepath.Dir(absPath)
+		}
+
+		skillName := filepath.Base(skillRoot)
+		if !repoPartPattern.MatchString(skillName) {
+			return nil, fmt.Errorf("%w: invalid skill directory name %q", ErrInvalidRequest, skillName)
+		}
+
+		if previous, exists := seen[skillName]; exists {
+			if previous == skillRoot {
+				continue
+			}
+			return nil, fmt.Errorf("%w: duplicate skill name %q from %q and %q", ErrInvalidRequest, skillName, previous, skillRoot)
+		}
+
+		skillDoc := filepath.Join(skillRoot, "SKILL.md")
+		if _, err := os.Stat(skillDoc); err != nil {
+			return nil, fmt.Errorf("%w: skill %q missing SKILL.md", ErrInvalidRequest, input)
+		}
+
+		files := make([]skillFile, 0, 16)
+		if err := filepath.WalkDir(skillRoot, func(filePath string, entry fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.IsDir() {
+				return nil
+			}
+
+			relPath, err := filepath.Rel(skillRoot, filePath)
+			if err != nil {
+				return err
+			}
+			relPath = filepath.ToSlash(relPath)
+
+			files = append(files, skillFile{
+				LocalPath:  filePath,
+				RemotePath: path.Join(workspace, "skills", skillName, relPath),
+			})
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("%w: scan skill %q: %v", ErrInvalidRequest, input, err)
+		}
+
+		sort.Slice(files, func(i, j int) bool {
+			return files[i].RemotePath < files[j].RemotePath
+		})
+
+		mounts = append(mounts, preparedSkill{
+			Name:       skillName,
+			LocalRoot:  skillRoot,
+			RemoteRoot: path.Join(workspace, "skills", skillName),
+			PromptPath: "./skills/" + skillName + "/SKILL.md",
+			Files:      files,
+		})
+		seen[skillName] = skillRoot
+	}
+
+	return mounts, nil
 }
 
 func parseRepo(input string) (repoTarget, error) {
@@ -913,4 +1074,3 @@ func copyStringMap(in map[string]string) map[string]string {
 	}
 	return out
 }
-
