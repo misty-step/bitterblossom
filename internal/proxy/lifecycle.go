@@ -140,7 +140,7 @@ func (l *Lifecycle) WaitForHealthy(ctx context.Context, sprite string) error {
 	ctx, cancel := context.WithTimeout(ctx, l.timeout)
 	defer cancel()
 
-	ticker := time.NewTicker(100 * time.Millisecond)
+	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	var lastErr error
