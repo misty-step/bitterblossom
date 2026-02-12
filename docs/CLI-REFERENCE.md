@@ -575,7 +575,7 @@ bb logs --file events.jsonl --sprite bramble --type progress
 
 Query structured event history from the local daily event store (`~/.config/bb/events/`).
 
-```
+```bash
 bb events [flags]
 ```
 
