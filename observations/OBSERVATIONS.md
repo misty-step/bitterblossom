@@ -57,3 +57,30 @@ _Begin logging after first dispatched task completes._
 - Log output fully buffered (0 bytes until completion) — need tmux-based observability
 - Still running after PR opened (probably memory-reminder hook or final checks)
 **Action:** Keep routing testing work to Thorn. Fix log observability for next dispatch.
+
+### 2026-02-12 — Bramble — Dispatch UX + Skills Mounting (Issue #252)
+**Task:** Dispatch `misty-step/bitterblossom#252` via `bb dispatch --execute --wait` and verify end-to-end agent workflow.
+**Repo:** misty-step/bitterblossom
+**Outcome:** Partial — local implementation shipped; live sprite run exposed blocking UX/reliability friction.
+**Time:** ~45 minutes
+**Routing decision:** Bramble chosen as default systems sprite. Reasonable choice.
+**Quality notes:**
+- Dry-run plan quality was good and explicit.
+- New `--skill` feature implemented locally with tests and docs.
+
+**Friction observed (detailed):**
+- `gh issue view <n>` failed locally due deprecated `projectCards` GraphQL field; had to use `gh api repos/.../issues/<n>` as workaround.
+- Pre-dispatch issue validation hard-blocked execution because issue `#252` lacked `ralph-ready` label.
+  - Command: `bb dispatch bramble --issue 252 --repo misty-step/bitterblossom --execute --wait`
+  - Required workaround: `--skip-validation`
+- After bypass, dispatch transitioned to `ready` then hung in repo setup step (`sprite exec ... git fetch/pull or clone`) with no further progress output.
+- `bb status bramble` and `bb watchdog --sprite bramble` also hung while waiting on `sprite exec`.
+- Direct fallback `sprite exec` calls hung too, including trivial commands like `pwd`.
+- `sprite --debug exec` showed: `Failed to load sprite tracking for recording: failed to parse tracking file: unexpected end of JSON input` before hanging.
+- `bb fleet --format text` showed `bramble` as `orphaned` while other status surfaces were blocked/hung.
+- Local environment had no `GH_TOKEN`/`GITHUB_TOKEN` exported by default, so sprite GitHub operations are likely fragile unless explicitly configured.
+
+**Action:**
+- Keep improving dispatch ergonomics, but prioritize timeout/telemetry hardening around `sprite exec` and repo setup.
+- Validation gating should distinguish hard safety invariants from advisory issue metadata requirements.
+- Add explicit auth preflight checks (`gh`, OpenRouter, sprite token) with actionable remediation before starting remote ops.

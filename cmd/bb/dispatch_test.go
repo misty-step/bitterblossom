@@ -341,6 +341,61 @@ func TestDispatchCommandUsesPromptFile(t *testing.T) {
 	}
 }
 
+func TestDispatchCommandPassesSkills(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeDispatchRunner{
+		result: dispatchsvc.Result{
+			Executed: false,
+			State:    dispatchsvc.StatePending,
+			Plan: dispatchsvc.Plan{
+				Sprite: "bramble",
+				Mode:   "dry-run",
+			},
+		},
+	}
+
+	deps := dispatchDeps{
+		readFile: func(string) ([]byte, error) { return nil, nil },
+		newFlyClient: func(token, apiURL string) (fly.MachineClient, error) {
+			return fakeFlyClient{}, nil
+		},
+		newRemote: func(binary, org string) *spriteCLIRemote {
+			return &spriteCLIRemote{}
+		},
+		newService: func(cfg dispatchsvc.Config) (dispatchRunner, error) {
+			return runner, nil
+		},
+	}
+
+	cmd := newDispatchCmdWithDeps(deps)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{
+		"bramble",
+		"Fix flaky tests",
+		"--skill", "base/skills/git-mastery",
+		"--skill", "base/skills/testing-philosophy/SKILL.md",
+		"--app", "bb-app",
+		"--token", "tok",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cmd.Execute() error = %v", err)
+	}
+
+	if len(runner.lastReq.Skills) != 2 {
+		t.Fatalf("runner.lastReq.Skills len = %d, want 2", len(runner.lastReq.Skills))
+	}
+	if runner.lastReq.Skills[0] != "base/skills/git-mastery" {
+		t.Fatalf("runner.lastReq.Skills[0] = %q, want %q", runner.lastReq.Skills[0], "base/skills/git-mastery")
+	}
+	if runner.lastReq.Skills[1] != "base/skills/testing-philosophy/SKILL.md" {
+		t.Fatalf("runner.lastReq.Skills[1] = %q, want %q", runner.lastReq.Skills[1], "base/skills/testing-philosophy/SKILL.md")
+	}
+}
+
 func TestDispatchCommandWaitRequiresExecute(t *testing.T) {
 	t.Parallel()
 

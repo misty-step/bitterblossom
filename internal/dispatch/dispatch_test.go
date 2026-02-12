@@ -3,6 +3,8 @@ package dispatch
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -298,6 +300,211 @@ func TestRunExecuteOneShotCompletes(t *testing.T) {
 	}
 	if !strings.Contains(remote.execCalls[1].command, "--verbose --output-format stream-json") {
 		t.Fatalf("expected claude command to include verbose stream-json output, got %q", remote.execCalls[1].command)
+	}
+}
+
+func TestRunExecuteWithSkillsUploadsAndInjectsPrompt(t *testing.T) {
+	skillRoot := t.TempDir()
+
+	dispatchSkill := filepath.Join(skillRoot, "dispatch-loop")
+	if err := os.MkdirAll(filepath.Join(dispatchSkill, "references"), 0o755); err != nil {
+		t.Fatalf("mkdir dispatch skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dispatchSkill, "SKILL.md"), []byte("# Dispatch Loop\n"), 0o644); err != nil {
+		t.Fatalf("write dispatch SKILL.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dispatchSkill, "references", "examples.md"), []byte("example"), 0o644); err != nil {
+		t.Fatalf("write dispatch references: %v", err)
+	}
+
+	statusSkill := filepath.Join(skillRoot, "status-ops")
+	if err := os.MkdirAll(statusSkill, 0o755); err != nil {
+		t.Fatalf("mkdir status skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(statusSkill, "SKILL.md"), []byte("# Status Ops\n"), 0o644); err != nil {
+		t.Fatalf("write status SKILL.md: %v", err)
+	}
+
+	remote := &fakeRemote{
+		execResponses: []string{
+			"",     // validate env
+			"done", // oneshot agent
+		},
+		listSprites: []string{"willow"},
+	}
+	flyClient := &fakeFly{}
+
+	service, err := NewService(Config{
+		Remote:    remote,
+		Fly:       flyClient,
+		App:       "bb-app",
+		Workspace: "/home/sprite/workspace",
+	})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	result, err := service.Run(context.Background(), Request{
+		Sprite:  "willow",
+		Prompt:  "Implement issue #252",
+		Execute: true,
+		Skills: []string{
+			dispatchSkill,
+			filepath.Join(statusSkill, "SKILL.md"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if result.State != StateCompleted {
+		t.Fatalf("state = %q, want %q", result.State, StateCompleted)
+	}
+
+	uploadByPath := map[string]string{}
+	for _, call := range remote.uploads {
+		uploadByPath[call.path] = call.body
+	}
+
+	// Skill directories are uploaded into /skills/<name>/...
+	if _, ok := uploadByPath["/home/sprite/workspace/skills/dispatch-loop/SKILL.md"]; !ok {
+		t.Fatalf("missing uploaded dispatch skill SKILL.md")
+	}
+	if _, ok := uploadByPath["/home/sprite/workspace/skills/dispatch-loop/references/examples.md"]; !ok {
+		t.Fatalf("missing uploaded dispatch skill reference file")
+	}
+	if _, ok := uploadByPath["/home/sprite/workspace/skills/status-ops/SKILL.md"]; !ok {
+		t.Fatalf("missing uploaded status skill SKILL.md")
+	}
+
+	// Prompt includes explicit skill instructions.
+	promptBody, ok := uploadByPath["/home/sprite/workspace/.dispatch-prompt.md"]
+	if !ok {
+		t.Fatalf("missing uploaded prompt at .dispatch-prompt.md")
+	}
+	if !strings.Contains(promptBody, "Follow the skill at ./skills/dispatch-loop/SKILL.md") {
+		t.Fatalf("prompt missing dispatch-loop skill instruction: %q", promptBody)
+	}
+	if !strings.Contains(promptBody, "Follow the skill at ./skills/status-ops/SKILL.md") {
+		t.Fatalf("prompt missing status-ops skill instruction: %q", promptBody)
+	}
+
+	hasSkillStep := false
+	for _, step := range result.Plan.Steps {
+		if step.Kind == StepUploadSkills {
+			hasSkillStep = true
+			break
+		}
+	}
+	if !hasSkillStep {
+		t.Fatalf("plan missing StepUploadSkills when skills are provided")
+	}
+}
+
+func TestRunValidationFailsForMissingSkillPath(t *testing.T) {
+	service, err := NewService(Config{
+		Remote: &fakeRemote{},
+		Fly:    &fakeFly{},
+		App:    "bb-app",
+	})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	_, runErr := service.Run(context.Background(), Request{
+		Sprite: "bramble",
+		Prompt: "Fix tests",
+		Skills: []string{"/definitely/not/a/real/skill/path"},
+	})
+	if runErr == nil {
+		t.Fatal("expected error for missing skill path")
+	}
+	if !strings.Contains(runErr.Error(), "skill") {
+		t.Fatalf("error = %v, want mention of skill path", runErr)
+	}
+}
+
+func TestRunValidationFailsForSymlinkedSkillFile(t *testing.T) {
+	skillRoot := t.TempDir()
+	skillDir := filepath.Join(skillRoot, "malicious-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# Skill\n"), 0o644); err != nil {
+		t.Fatalf("write SKILL.md: %v", err)
+	}
+
+	target := filepath.Join(skillRoot, "outside-secret.txt")
+	if err := os.WriteFile(target, []byte("secret"), 0o644); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	linkPath := filepath.Join(skillDir, "stolen.txt")
+	if err := os.Symlink(target, linkPath); err != nil {
+		t.Skipf("symlink unsupported in test environment: %v", err)
+	}
+
+	service, err := NewService(Config{
+		Remote: &fakeRemote{},
+		Fly:    &fakeFly{},
+		App:    "bb-app",
+	})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	_, runErr := service.Run(context.Background(), Request{
+		Sprite: "bramble",
+		Prompt: "Fix tests",
+		Skills: []string{skillDir},
+	})
+	if runErr == nil {
+		t.Fatal("expected error for symlinked skill file")
+	}
+	if !strings.Contains(strings.ToLower(runErr.Error()), "symlink") {
+		t.Fatalf("error = %v, want symlink rejection", runErr)
+	}
+}
+
+func TestUploadSkillsRejectsSymlinkFiles(t *testing.T) {
+	tmp := t.TempDir()
+	target := filepath.Join(tmp, "target.txt")
+	if err := os.WriteFile(target, []byte("secret"), 0o644); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	linkPath := filepath.Join(tmp, "link.txt")
+	if err := os.Symlink(target, linkPath); err != nil {
+		t.Skipf("symlink unsupported in test environment: %v", err)
+	}
+
+	remote := &fakeRemote{}
+	service, err := NewService(Config{
+		Remote: remote,
+		Fly:    &fakeFly{},
+		App:    "bb-app",
+	})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	err = service.uploadSkills(context.Background(), "bramble", []preparedSkill{
+		{
+			Name: "test",
+			Files: []skillFile{
+				{
+					LocalPath:  linkPath,
+					RemotePath: "/home/sprite/workspace/skills/test/link.txt",
+				},
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected symlink upload rejection")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "non-symlink") {
+		t.Fatalf("error = %v, want non-symlink validation error", err)
+	}
+	if len(remote.uploads) != 0 {
+		t.Fatalf("unexpected uploads for rejected symlink: %d", len(remote.uploads))
 	}
 }
 
@@ -599,12 +806,12 @@ func TestRunExecuteWithOpenRouterKey_EnsuresProxy(t *testing.T) {
 	// Test that when OPENROUTER_API_KEY is provided, the proxy is ensured
 	remote := &fakeRemote{
 		execResponses: []string{
-			"",         // validate env
-			"000",      // proxy health check (not running)
-			"",         // mkdir -p
-			"",         // start proxy
-			"200",      // proxy health check (now running)
-			"done",     // oneshot agent
+			"",     // validate env
+			"000",  // proxy health check (not running)
+			"",     // mkdir -p
+			"",     // start proxy
+			"200",  // proxy health check (now running)
+			"done", // oneshot agent
 		},
 	}
 	flyClient := &fakeFly{}
@@ -747,7 +954,6 @@ func TestBuildScriptMkdirBeforeCD(t *testing.T) {
 		})
 	}
 }
-
 
 func TestBuildSetupRepoScriptResetsGitState(t *testing.T) {
 	t.Parallel()
