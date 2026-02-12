@@ -938,14 +938,14 @@ func resolveSkillMountsWithLimits(paths []string, workspace string, limits resol
 				LocalPath:  filePath,
 				RemotePath: path.Join(workspace, "skills", skillName, relPath),
 			})
+
+			// Short-circuit file count inside walk to avoid traversing huge directories.
+			if len(files) > limits.MaxFilesPerSkill {
+				return fmt.Errorf("skill %q contains more than %d files", input, limits.MaxFilesPerSkill)
+			}
 			return nil
 		}); err != nil {
 			return nil, fmt.Errorf("%w: scan skill %q: %v", ErrInvalidRequest, input, err)
-		}
-
-		// Check file count limit
-		if len(files) > limits.MaxFilesPerSkill {
-			return nil, fmt.Errorf("%w: skill %q contains %d files (max %d)", ErrInvalidRequest, input, len(files), limits.MaxFilesPerSkill)
 		}
 
 		sort.Slice(files, func(i, j int) bool {
