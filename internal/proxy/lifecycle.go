@@ -107,7 +107,8 @@ func (l *Lifecycle) Start(ctx context.Context, sprite string, openRouterAPIKey s
 	return nil
 }
 
-// Stop stops the proxy on the target sprite.
+// Stop stops the proxy on the target sprite. Idempotent — safe to call
+// even if no proxy is running (uses || true for graceful no-process handling).
 func (l *Lifecycle) Stop(ctx context.Context, sprite string) error {
 	stopScript := fmt.Sprintf(`
 set -e
