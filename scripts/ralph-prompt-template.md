@@ -35,7 +35,8 @@ If something is ambiguous, make your best judgment call and document the decisio
 
 ### Completion
 14. When PR is green and either approved or no pending reviews:
-    Create a file called TASK_COMPLETE with a summary of what was done
+    Create a file named exactly TASK_COMPLETE (no file extension) with a summary of what was done.
+    Do NOT use TASK_COMPLETE.md — the detection system expects the extensionless filename.
 15. Update MEMORY.md with learnings from this task
 
 ## When you get stuck
