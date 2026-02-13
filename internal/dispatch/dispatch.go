@@ -1162,7 +1162,9 @@ func buildSetupRepoScript(workspace, cloneURL, repoDir string) string {
 		"set -euo pipefail",
 		"mkdir -p " + shellutil.Quote(workspace),
 		"cd " + shellutil.Quote(workspace),
+		"START_TIME=$(date +%s)",
 		"if [ -d " + shellutil.Quote(repoDir) + " ]; then",
+		"  echo \"[setup] pulling latest for " + shellutil.Quote(repoDir) + "...\"",
 		"  cd " + shellutil.Quote(repoDir),
 		// Reset to clean state: discard changes, checkout default branch, pull latest.
 		// This prevents stale feature branches from polluting new dispatches.
@@ -1173,8 +1175,12 @@ func buildSetupRepoScript(workspace, cloneURL, repoDir string) string {
 		"  git fetch origin >/dev/null 2>&1 || true",
 		`  git reset --hard "origin/$(git rev-parse --abbrev-ref HEAD)" 2>/dev/null || true`,
 		"else",
+		"  echo \"[setup] cloning " + shellutil.Quote(cloneURL) + " (first time, may take a few minutes)...\"",
 		"  gh repo clone " + shellutil.Quote(cloneURL) + " " + shellutil.Quote(repoDir) + " >/dev/null 2>&1 || git clone " + shellutil.Quote(cloneURL) + " " + shellutil.Quote(repoDir) + " >/dev/null 2>&1",
 		"fi",
+		"END_TIME=$(date +%s)",
+		"ELAPSED=$((END_TIME - START_TIME))",
+		"echo \"[setup] repo ready (${ELAPSED}s)\"",
 	}, "\n")
 }
 
