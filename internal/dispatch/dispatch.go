@@ -792,8 +792,11 @@ func (s *Service) prepare(req Request) (preparedRequest, error) {
 }
 
 func (s *Service) cleanSignals(ctx context.Context, sprite string) error {
+	// Only remove signal files, not PID files. The agent start scripts
+	// (buildOneShotScript, buildStartRalphScript) need agent.pid and ralph.pid
+	// to kill stale processes before launching new ones.
 	script := fmt.Sprintf(
-		"rm -f %[1]s/TASK_COMPLETE %[1]s/TASK_COMPLETE.md %[1]s/BLOCKED.md %[1]s/BLOCKED %[1]s/agent.pid %[1]s/ralph.pid %[1]s/.ralph.pid %[1]s/.current-task-id",
+		"rm -f %[1]s/TASK_COMPLETE %[1]s/TASK_COMPLETE.md %[1]s/BLOCKED.md %[1]s/BLOCKED",
 		shellutil.Quote(s.workspace),
 	)
 	_, err := s.remote.Exec(ctx, sprite, script, nil)

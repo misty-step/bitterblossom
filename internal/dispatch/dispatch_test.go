@@ -351,19 +351,17 @@ func TestRunCleanSignalsBeforePromptUpload(t *testing.T) {
 		t.Fatalf("expected at least 2 exec calls, got %d", len(remote.execCalls))
 	}
 
-	// Find the dedicated cleanSignals call (distinct from inline cleanup in buildOneShotScript).
-	// The cleanSignals method also removes agent.pid, so use that as a discriminator.
+	// Find the dedicated cleanSignals call. It's a standalone rm -f that only
+	// removes signal files (not PID files — those are needed by start scripts).
 	cleanSignalsIdx := -1
 
 	for i, call := range remote.execCalls {
-		if strings.Contains(call.command, "rm -f") && strings.Contains(call.command, "TASK_COMPLETE") && strings.Contains(call.command, "agent.pid") {
+		if strings.Contains(call.command, "rm -f") && strings.Contains(call.command, "TASK_COMPLETE") && !strings.Contains(call.command, "agent.pid") {
 			cleanSignalsIdx = i
 			break
 		}
 	}
 
-	// The prompt upload is not an exec call, it's an Upload call
-	// So we just verify the clean signals call exists and uploads happen after
 	if cleanSignalsIdx == -1 {
 		t.Fatal("expected clean signals exec call not found")
 	}
@@ -377,21 +375,23 @@ func TestRunCleanSignalsBeforePromptUpload(t *testing.T) {
 		t.Fatalf("expected prompt upload first, got %q", remote.uploads[0].path)
 	}
 
-	// Verify clean signals removes the expected files
+	// Verify clean signals removes signal files but NOT PID files
 	cleanSignalsCmd := remote.execCalls[cleanSignalsIdx].command
 	expectedFiles := []string{
 		"TASK_COMPLETE",
 		"TASK_COMPLETE.md",
 		"BLOCKED.md",
 		"BLOCKED",
-		"agent.pid",
-		"ralph.pid",
-		".ralph.pid",
-		".current-task-id",
 	}
 	for _, file := range expectedFiles {
 		if !strings.Contains(cleanSignalsCmd, file) {
 			t.Errorf("clean signals command missing %q: %q", file, cleanSignalsCmd)
+		}
+	}
+	// PID files must NOT be in cleanSignals — start scripts need them to kill stale processes
+	for _, file := range []string{"agent.pid", "ralph.pid"} {
+		if strings.Contains(cleanSignalsCmd, file) {
+			t.Errorf("clean signals should not remove %q (needed by start scripts): %q", file, cleanSignalsCmd)
 		}
 	}
 }
