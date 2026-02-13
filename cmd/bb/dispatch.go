@@ -565,6 +565,7 @@ func pollSpriteStatus(ctx context.Context, remote *spriteCLIRemote, sprite strin
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	startTime := time.Now()
 	workspace := "/home/sprite/workspace"
 
 	// Immediate check before any delay — catches already-completed oneshot tasks.
@@ -572,6 +573,7 @@ func pollSpriteStatus(ctx context.Context, remote *spriteCLIRemote, sprite strin
 	if err == nil && result != nil {
 		progress(fmt.Sprintf("Status: %s", result.State))
 		if done {
+			result.Runtime = time.Since(startTime).Round(time.Second).String()
 			return result, nil
 		}
 	}
@@ -581,29 +583,49 @@ func pollSpriteStatus(ctx context.Context, remote *spriteCLIRemote, sprite strin
 	select {
 	case <-time.After(2 * time.Second):
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return &waitResult{
+			State:   "timeout",
+			Error:   fmt.Sprintf("polling timed out after %s", time.Since(startTime).Round(time.Second)),
+			Runtime: time.Since(startTime).Round(time.Second).String(),
+		}, nil
 	}
 
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
+	pollTicker := time.NewTicker(5 * time.Second)
+	defer pollTicker.Stop()
 
+	// Heartbeat ticker for actionable progress during long waits
+	heartbeatTicker := time.NewTicker(10 * time.Second)
+	defer heartbeatTicker.Stop()
+
+	lastState := ""
 	for {
 		select {
 		case <-ctx.Done():
 			return &waitResult{
-				State: "timeout",
-				Error: "polling timed out",
+				State:   "timeout",
+				Error:   fmt.Sprintf("polling timed out after %s", time.Since(startTime).Round(time.Second)),
+				Runtime: time.Since(startTime).Round(time.Second).String(),
 			}, nil
-		case <-ticker.C:
+		case <-heartbeatTicker.C:
+			elapsed := time.Since(startTime).Round(time.Second)
+			stateInfo := ""
+			if lastState != "" {
+				stateInfo = fmt.Sprintf(" [state: %s]", lastState)
+			}
+			progress(fmt.Sprintf("⏳ Still waiting for %s... elapsed: %s%s", sprite, elapsed, stateInfo))
+		case <-pollTicker.C:
 			result, done, err := checkSpriteStatus(ctx, remote, sprite, workspace)
 			if err != nil {
-				progress(fmt.Sprintf("Polling error (retrying): %v", err))
+				elapsed := time.Since(startTime).Round(time.Second)
+				progress(fmt.Sprintf("Polling error at %s (retrying): %v", elapsed, err))
 				continue
 			}
 			if result != nil {
+				lastState = result.State
 				progress(fmt.Sprintf("Status: %s", result.State))
 			}
 			if done && result != nil {
+				result.Runtime = time.Since(startTime).Round(time.Second).String()
 				return result, nil
 			}
 		}
