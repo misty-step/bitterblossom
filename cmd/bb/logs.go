@@ -102,7 +102,7 @@ func newLogsCmdWithDeps(stdout, stderr io.Writer, deps logsDeps) *cobra.Command 
 			// Default to raw logs; use --events for structured event log.
 			// --follow requires events mode (raw tail -f blocks through buffering Exec).
 			if !eventsMode && !follow {
-				return runRemoteRawLogs(ctx, stdout, stderr, cli, names, follow, pollInterval)
+				return runRemoteRawLogs(ctx, stdout, stderr, cli, names)
 			}
 
 			evts, offsets, err := fetchRemoteEvents(ctx, cli, names, filter)
@@ -263,19 +263,13 @@ func followRemoteEvents(ctx context.Context, stdout, stderr io.Writer, cli sprit
 	}
 }
 
-func runRemoteRawLogs(ctx context.Context, stdout, stderr io.Writer, cli sprite.SpriteCLI, names []string, follow bool, pollInterval time.Duration) error {
+func runRemoteRawLogs(ctx context.Context, stdout, stderr io.Writer, cli sprite.SpriteCLI, names []string) error {
 	for _, name := range names {
 		if len(names) > 1 {
 			_, _ = fmt.Fprintf(stdout, "=== %s ===\n", name)
 		}
 
-		var cmd string
-		if follow {
-			cmd = fmt.Sprintf("tail -n 50 -f %s 2>/dev/null", defaultRemoteRalphLog)
-		} else {
-			cmd = fmt.Sprintf("tail -n 100 %s 2>/dev/null", defaultRemoteRalphLog)
-		}
-
+		cmd := fmt.Sprintf("tail -n 100 %s 2>/dev/null", defaultRemoteRalphLog)
 		out, err := cli.Exec(ctx, name, cmd, nil)
 		if err != nil {
 			_, _ = fmt.Fprintf(stderr, "logs: fetch raw logs from %q: %v\n", name, err)

@@ -857,17 +857,16 @@ func (s *Service) scaffold(ctx context.Context, sprite string) error {
 		}
 	}
 
-	// Create MEMORY.md and LEARNINGS.md if they don't exist (preserve across dispatches)
-	for _, name := range []string{"MEMORY.md", "LEARNINGS.md"} {
-		script := fmt.Sprintf(
-			"test -f %s/%s || printf '# %s\\n' > %s/%s",
-			shellutil.Quote(s.workspace), name,
-			strings.TrimSuffix(name, ".md"),
-			shellutil.Quote(s.workspace), name,
-		)
-		if _, err := s.remote.Exec(ctx, sprite, script, nil); err != nil {
-			return fmt.Errorf("init %s: %w", name, err)
-		}
+	// Create MEMORY.md and LEARNINGS.md if they don't exist (preserve across dispatches).
+	// Combined into one remote call to save a network round-trip.
+	ws := shellutil.Quote(s.workspace)
+	initScript := fmt.Sprintf(
+		"test -f %[1]s/MEMORY.md || printf '# MEMORY\\n' > %[1]s/MEMORY.md; "+
+			"test -f %[1]s/LEARNINGS.md || printf '# LEARNINGS\\n' > %[1]s/LEARNINGS.md",
+		ws,
+	)
+	if _, err := s.remote.Exec(ctx, sprite, initScript, nil); err != nil {
+		return fmt.Errorf("init memory/learnings: %w", err)
 	}
 
 	return nil
