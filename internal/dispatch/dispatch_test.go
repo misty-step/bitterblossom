@@ -351,12 +351,14 @@ func TestRunCleanSignalsBeforePromptUpload(t *testing.T) {
 		t.Fatalf("expected at least 2 exec calls, got %d", len(remote.execCalls))
 	}
 
-	// Find the index of clean signals call
+	// Find the dedicated cleanSignals call (distinct from inline cleanup in buildOneShotScript).
+	// The cleanSignals method also removes agent.pid, so use that as a discriminator.
 	cleanSignalsIdx := -1
 
 	for i, call := range remote.execCalls {
-		if strings.Contains(call.command, "rm -f") && strings.Contains(call.command, "TASK_COMPLETE") {
+		if strings.Contains(call.command, "rm -f") && strings.Contains(call.command, "TASK_COMPLETE") && strings.Contains(call.command, "agent.pid") {
 			cleanSignalsIdx = i
+			break
 		}
 	}
 
