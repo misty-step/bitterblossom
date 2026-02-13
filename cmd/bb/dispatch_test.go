@@ -669,7 +669,7 @@ func TestParseStatusCheckOutput(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			res, done, err := parseStatusCheckOutput(tt.output, "/home/sprite/workspace")
+			res, done, err := parseStatusCheckOutput(tt.output)
 			if err != nil {
 				t.Fatalf("parseStatusCheckOutput() error = %v", err)
 			}

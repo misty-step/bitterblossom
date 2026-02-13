@@ -44,6 +44,12 @@ const (
 	DefaultMaxBytesPerSkill = 10 * 1024 * 1024
 	// DefaultMaxFileSize is the default maximum size for a single skill file (1MB).
 	DefaultMaxFileSize = 1024 * 1024
+
+	// Signal file names written by agents to indicate task completion or blocking.
+	// Both extensions are checked because agents may write either variant.
+	SignalTaskComplete   = "TASK_COMPLETE"
+	SignalTaskCompleteMD = "TASK_COMPLETE.md"
+	SignalBlocked        = "BLOCKED.md"
 )
 
 var (
@@ -1086,7 +1092,7 @@ func buildOneShotScript(workspace, promptPath string) string {
 		"set -euo pipefail",
 		"mkdir -p " + shellutil.Quote(workspace),
 		"cd " + shellutil.Quote(workspace),
-		"rm -f TASK_COMPLETE TASK_COMPLETE.md BLOCKED.md",
+		"rm -f " + SignalTaskComplete + " " + SignalTaskCompleteMD + " " + SignalBlocked,
 		"# Start anthropic proxy if available",
 		"if [ -f " + shellutil.Quote(proxy.ProxyScriptPath) + " ] && [ -n \"${OPENROUTER_API_KEY:-}\" ] && command -v node >/dev/null 2>&1; then",
 		"  PROXY_PID=\"\"",
@@ -1131,7 +1137,7 @@ func buildStartRalphScript(workspace, sprite string, maxIterations int, webhookU
 		"set -euo pipefail",
 		"WORKSPACE_DIR=" + shellutil.Quote(workspace),
 		"mkdir -p \"$WORKSPACE_DIR/logs\"",
-		"rm -f \"$WORKSPACE_DIR/TASK_COMPLETE\" \"$WORKSPACE_DIR/TASK_COMPLETE.md\" \"$WORKSPACE_DIR/BLOCKED.md\"",
+		"rm -f \"$WORKSPACE_DIR/" + SignalTaskComplete + "\" \"$WORKSPACE_DIR/" + SignalTaskCompleteMD + "\" \"$WORKSPACE_DIR/" + SignalBlocked + "\"",
 		"if [ -f \"$WORKSPACE_DIR/agent.pid\" ] && kill -0 \"$(cat \"$WORKSPACE_DIR/agent.pid\")\" 2>/dev/null; then kill \"$(cat \"$WORKSPACE_DIR/agent.pid\")\" 2>/dev/null || true; fi",
 		"if [ -f \"$WORKSPACE_DIR/ralph.pid\" ] && kill -0 \"$(cat \"$WORKSPACE_DIR/ralph.pid\")\" 2>/dev/null; then kill \"$(cat \"$WORKSPACE_DIR/ralph.pid\")\" 2>/dev/null || true; fi",
 		"AGENT_BIN=\"$HOME/.local/bin/sprite-agent\"",
@@ -1151,22 +1157,20 @@ func buildStartRalphScript(workspace, sprite string, maxIterations int, webhookU
 		"printf 'bb-%s-%s\\n' \"$(date -u +%Y%m%d-%H%M%S)\" " + shellutil.Quote(sprite) + " > \"$WORKSPACE_DIR/.current-task-id\"",
 	}
 
-	limits := ""
+	envParts := "SPRITE_NAME=" + shellutil.Quote(sprite)
+	if strings.TrimSpace(webhookURL) != "" {
+		envParts += " SPRITE_WEBHOOK_URL=" + shellutil.Quote(webhookURL)
+	}
+	envParts += " MAX_ITERATIONS=" + strconv.Itoa(maxIterations)
 	if maxTokens > 0 {
-		limits += " MAX_TOKENS=" + strconv.Itoa(maxTokens)
+		envParts += " MAX_TOKENS=" + strconv.Itoa(maxTokens)
 	}
 	if maxTimeSec > 0 {
-		limits += " MAX_TIME_SEC=" + strconv.Itoa(maxTimeSec)
+		envParts += " MAX_TIME_SEC=" + strconv.Itoa(maxTimeSec)
 	}
-	if strings.TrimSpace(webhookURL) != "" {
-		lines = append(lines,
-			"nohup env SPRITE_NAME="+shellutil.Quote(sprite)+" SPRITE_WEBHOOK_URL="+shellutil.Quote(webhookURL)+" MAX_ITERATIONS="+strconv.Itoa(maxIterations)+limits+" BB_CLAUDE_FLAGS=\"$REQUIRED_CLAUDE_FLAGS\" \"$AGENT_BIN\" >/dev/null 2>&1 &",
-		)
-	} else {
-		lines = append(lines,
-			"nohup env SPRITE_NAME="+shellutil.Quote(sprite)+" MAX_ITERATIONS="+strconv.Itoa(maxIterations)+limits+" BB_CLAUDE_FLAGS=\"$REQUIRED_CLAUDE_FLAGS\" \"$AGENT_BIN\" >/dev/null 2>&1 &",
-		)
-	}
+	lines = append(lines,
+		"nohup env "+envParts+" BB_CLAUDE_FLAGS=\"$REQUIRED_CLAUDE_FLAGS\" \"$AGENT_BIN\" >/dev/null 2>&1 &",
+	)
 	lines = append(lines,
 		"PID=\"$!\"",
 		"echo \"$PID\" > \"$WORKSPACE_DIR/agent.pid\"",

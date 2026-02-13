@@ -618,7 +618,7 @@ func checkSpriteStatus(ctx context.Context, remote *spriteCLIRemote, sprite, wor
 		return nil, false, err
 	}
 
-	return parseStatusCheckOutput(output, workspace)
+	return parseStatusCheckOutput(output)
 }
 
 // buildStatusCheckScript creates a script to check sprite status.
@@ -651,7 +651,7 @@ func buildStatusCheckScript(workspace string) string {
 		"",
 		"# Check for completion markers",
 		"HAS_COMPLETE=no",
-		"if [ -f \"$WORKSPACE/TASK_COMPLETE\" ] || [ -f \"$WORKSPACE/TASK_COMPLETE.md\" ]; then",
+		"if [ -f \"$WORKSPACE/" + dispatchsvc.SignalTaskComplete + "\" ] || [ -f \"$WORKSPACE/" + dispatchsvc.SignalTaskCompleteMD + "\" ]; then",
 		"  HAS_COMPLETE=yes",
 		"fi",
 		"echo \"__HAS_COMPLETE__${HAS_COMPLETE}\"",
@@ -659,30 +659,28 @@ func buildStatusCheckScript(workspace string) string {
 		"# Check for blocked marker",
 		"HAS_BLOCKED=no",
 		"BLOCKED_SUMMARY=\"\"",
-		"if [ -f \"$WORKSPACE/BLOCKED.md\" ]; then",
+		"if [ -f \"$WORKSPACE/" + dispatchsvc.SignalBlocked + "\" ]; then",
 		"  HAS_BLOCKED=yes",
 		"  BLOCKED_SUMMARY=\"$(head -5 \"$WORKSPACE/BLOCKED.md\" 2>/dev/null | tr '\\n' ' ' | sed 's/[[:space:]]\\+/ /g')\"",
 		"fi",
 		"echo \"__HAS_BLOCKED__${HAS_BLOCKED}\"",
 		"echo \"__BLOCKED_B64__$(printf '%s' \"$BLOCKED_SUMMARY\" | base64 | tr -d '\\n')\"",
 		"",
-		"# Check for PR URL",
+		"# Check for PR URL (try dedicated file, then either signal file variant)",
 		"PR_URL=\"\"",
 		"if [ -f \"$WORKSPACE/PR_URL\" ]; then",
 		"  PR_URL=\"$(cat \"$WORKSPACE/PR_URL\")\"",
-		"elif [ -f \"$WORKSPACE/TASK_COMPLETE\" ]; then",
-		"  # Try to extract PR URL from TASK_COMPLETE",
-		"  PR_URL=\"$(grep -oE 'https://github.com/[^/]+/[^/]+/pull/[0-9]+' \"$WORKSPACE/TASK_COMPLETE\" 2>/dev/null || true)\"",
-		"elif [ -f \"$WORKSPACE/TASK_COMPLETE.md\" ]; then",
-		"  # Try to extract PR URL from TASK_COMPLETE.md as fallback",
-		"  PR_URL=\"$(grep -oE 'https://github.com/[^/]+/[^/]+/pull/[0-9]+' \"$WORKSPACE/TASK_COMPLETE.md\" 2>/dev/null || true)\"",
+		"else",
+		"  for f in \"$WORKSPACE/" + dispatchsvc.SignalTaskComplete + "\" \"$WORKSPACE/" + dispatchsvc.SignalTaskCompleteMD + "\"; do",
+		"    [ -f \"$f\" ] && PR_URL=\"$(grep -oE 'https://github.com/[^/]+/[^/]+/pull/[0-9]+' \"$f\" 2>/dev/null || true)\" && break",
+		"  done",
 		"fi",
 		"echo \"__PR_URL__${PR_URL}\"",
 	}, "\n")
 }
 
 // parseStatusCheckOutput parses the output from the status check script.
-func parseStatusCheckOutput(output, workspace string) (*waitResult, bool, error) {
+func parseStatusCheckOutput(output string) (*waitResult, bool, error) {
 	type statusFile struct {
 		Repo    string `json:"repo"`
 		Started string `json:"started"`
