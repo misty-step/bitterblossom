@@ -1062,6 +1062,18 @@ func buildSetupRepoScript(workspace, cloneURL, repoDir string) string {
 	}, "\n")
 }
 
+// buildOneShotScript generates a shell script for one-shot (non-Ralph) dispatch.
+//
+// Invariants:
+//   - Stale signal files (TASK_COMPLETE, TASK_COMPLETE.md, BLOCKED.md) MUST be
+//     removed before agent start. Without this, the --wait polling loop may detect
+//     markers from a previous dispatch and report false success. (See PR #280.)
+//   - The proxy startup is best-effort: if it fails, the agent runs with direct
+//     connection. This avoids blocking dispatch on proxy infrastructure.
+//   - PTY wrapping (script -qefc) is required because Claude Code expects a TTY.
+//     Falls back to raw pipe on systems without script(1).
+//   - --output-format stream-json enables structured output parsing by the
+//     watchdog and polling systems.
 func buildOneShotScript(workspace, promptPath string) string {
 	port := strconv.Itoa(proxy.ProxyPort)
 	env := proxy.StartEnv("", port, "${OPENROUTER_API_KEY}")
@@ -1132,6 +1144,15 @@ func buildOneShotScript(workspace, promptPath string) string {
 	}, "\n")
 }
 
+// buildStartRalphScript generates a shell script to start the Ralph (multi-iteration) agent loop.
+//
+// Invariants:
+//   - Same stale-signal cleanup as buildOneShotScript (see PR #280).
+//   - Kills any previously running agent/ralph processes to prevent zombie accumulation.
+//   - Claude flags are validated both in this script (via case statements) and in
+//     the agent binary (if it's a shell script, via grep). Belt-and-suspenders because
+//     missing --dangerously-skip-permissions causes a blocking permissions prompt on
+//     a headless sprite, and missing --output-format stream-json breaks structured parsing.
 func buildStartRalphScript(workspace, sprite string, maxIterations int, webhookURL string, maxTokens int, maxTimeSec int) string {
 	lines := []string{
 		"set -euo pipefail",
