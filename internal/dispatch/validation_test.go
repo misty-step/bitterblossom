@@ -257,3 +257,293 @@ func TestRunAllowsProxyModeKey(t *testing.T) {
 		t.Fatalf("state = %q, want %q", result.State, StateCompleted)
 	}
 }
+
+// Validation Profile Tests
+
+func TestValidationProfile_IsValid(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		profile ValidationProfile
+		want    bool
+	}{
+		{ValidationProfileAdvisory, true},
+		{ValidationProfileStrict, true},
+		{ValidationProfileOff, true},
+		{ValidationProfile("unknown"), false},
+		{ValidationProfile(""), false},
+	}
+
+	for _, tc := range tests {
+		t.Run(string(tc.profile), func(t *testing.T) {
+			if got := tc.profile.IsValid(); got != tc.want {
+				t.Errorf("IsValid() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseValidationProfile(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		input    string
+		expected ValidationProfile
+	}{
+		{"advisory", ValidationProfileAdvisory},
+		{"ADVISORY", ValidationProfileAdvisory},
+		{"Advisory", ValidationProfileAdvisory},
+		{"strict", ValidationProfileStrict},
+		{"STRICT", ValidationProfileStrict},
+		{"Strict", ValidationProfileStrict},
+		{"off", ValidationProfileOff},
+		{"OFF", ValidationProfileOff},
+		{"Off", ValidationProfileOff},
+		{"", ValidationProfileAdvisory},
+		{"unknown", ValidationProfileAdvisory},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.input, func(t *testing.T) {
+			result := ParseValidationProfile(tc.input)
+			if result != tc.expected {
+				t.Errorf("ParseValidationProfile(%q) = %q, want %q", tc.input, result, tc.expected)
+			}
+		})
+	}
+}
+
+func TestSafetyValidator_ValidateSafety(t *testing.T) {
+	t.Parallel()
+
+	validator := DefaultSafetyValidator()
+
+	tests := []struct {
+		name     string
+		req      Request
+		wantSafe bool
+	}{
+		{
+			name: "valid request",
+			req: Request{
+				Sprite: "test-sprite",
+				Prompt: "fix the bug",
+				Repo:   "misty-step/test",
+			},
+			wantSafe: true,
+		},
+		{
+			name: "missing sprite",
+			req: Request{
+				Sprite: "",
+				Prompt: "fix the bug",
+				Repo:   "misty-step/test",
+			},
+			wantSafe: false,
+		},
+		{
+			name: "invalid repo format",
+			req: Request{
+				Sprite: "test-sprite",
+				Prompt: "fix the bug",
+				Repo:   "invalid-repo-format",
+			},
+			wantSafe: false,
+		},
+		{
+			name: "prompt with secret",
+			req: Request{
+				Sprite: "test-sprite",
+				Prompt: "use key sk-ant-api03-abcdef123456",
+				Repo:   "misty-step/test",
+			},
+			wantSafe: false,
+		},
+		{
+			name:     "empty repo is valid",
+			req:      Request{Sprite: "test-sprite", Prompt: "fix", Repo: ""},
+			wantSafe: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := validator.ValidateSafety(tc.req)
+			if result.Valid != tc.wantSafe {
+				t.Errorf("ValidateSafety() valid = %v, want %v; errors: %v", result.Valid, tc.wantSafe, result.Errors)
+			}
+		})
+	}
+}
+
+func TestSafetyValidator_ValidateSafetyWithEnv(t *testing.T) {
+	t.Parallel()
+
+	validator := DefaultSafetyValidator()
+
+	tests := []struct {
+		name        string
+		req         Request
+		env         map[string]string
+		allowDirect bool
+		wantSafe    bool
+	}{
+		{
+			name:        "valid with proxy mode",
+			req:         Request{Sprite: "test", Prompt: "fix", Repo: "misty-step/test"},
+			env:         map[string]string{"ANTHROPIC_API_KEY": "proxy-mode"},
+			allowDirect: false,
+			wantSafe:    true,
+		},
+		{
+			name:        "direct key blocked",
+			req:         Request{Sprite: "test", Prompt: "fix", Repo: "misty-step/test"},
+			env:         map[string]string{"ANTHROPIC_API_KEY": "sk-ant-api03-abcdef123456"},
+			allowDirect: false,
+			wantSafe:    false,
+		},
+		{
+			name:        "direct key allowed with escape hatch",
+			req:         Request{Sprite: "test", Prompt: "fix", Repo: "misty-step/test"},
+			env:         map[string]string{"ANTHROPIC_API_KEY": "sk-ant-api03-abcdef123456"},
+			allowDirect: true,
+			wantSafe:    true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := validator.ValidateSafetyWithEnv(context.Background(), tc.req, tc.env, tc.allowDirect)
+			if result.Valid != tc.wantSafe {
+				t.Errorf("ValidateSafetyWithEnv() valid = %v, want %v; errors: %v", result.Valid, tc.wantSafe, result.Errors)
+			}
+		})
+	}
+}
+
+func TestCombinedValidationResult_IsSafe(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		result CombinedValidationResult
+		want   bool
+	}{
+		{
+			name:   "safe and valid",
+			result: CombinedValidationResult{Safety: SafetyCheckResult{Valid: true}},
+			want:   true,
+		},
+		{
+			name:   "unsafe with errors",
+			result: CombinedValidationResult{Safety: SafetyCheckResult{Valid: false, Errors: []string{"error"}}},
+			want:   false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.result.IsSafe(); got != tc.want {
+				t.Errorf("IsSafe() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCombinedValidationResult_IsPolicyCompliant(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		result  CombinedValidationResult
+		profile ValidationProfile
+		want    bool
+	}{
+		{
+			name:    "off profile - always compliant",
+			result:  CombinedValidationResult{Policy: PolicyCheckResult{Errors: []string{"error"}, Warnings: []string{"warning"}}},
+			profile: ValidationProfileOff,
+			want:    true,
+		},
+		{
+			name:    "advisory - errors fail",
+			result:  CombinedValidationResult{Policy: PolicyCheckResult{Errors: []string{"error"}}},
+			profile: ValidationProfileAdvisory,
+			want:    false,
+		},
+		{
+			name:    "advisory - warnings ok",
+			result:  CombinedValidationResult{Policy: PolicyCheckResult{Warnings: []string{"warning"}}},
+			profile: ValidationProfileAdvisory,
+			want:    true,
+		},
+		{
+			name:    "strict - errors fail",
+			result:  CombinedValidationResult{Policy: PolicyCheckResult{Errors: []string{"error"}}},
+			profile: ValidationProfileStrict,
+			want:    false,
+		},
+		{
+			name:    "strict - warnings fail",
+			result:  CombinedValidationResult{Policy: PolicyCheckResult{Warnings: []string{"warning"}}},
+			profile: ValidationProfileStrict,
+			want:    false,
+		},
+		{
+			name:    "strict - clean passes",
+			result:  CombinedValidationResult{Policy: PolicyCheckResult{}},
+			profile: ValidationProfileStrict,
+			want:    true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.result.IsPolicyCompliant(tc.profile); got != tc.want {
+				t.Errorf("IsPolicyCompliant(%q) = %v, want %v", tc.profile, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCombinedValidationResult_ToError(t *testing.T) {
+	t.Parallel()
+
+	// Valid result returns nil
+	validResult := &CombinedValidationResult{
+		Safety: SafetyCheckResult{Valid: true},
+		Policy: PolicyCheckResult{},
+	}
+	if err := validResult.ToError(ValidationProfileAdvisory); err != nil {
+		t.Errorf("ToError() for valid result = %v, want nil", err)
+	}
+
+	// Safety error returns error
+	safetyErrorResult := &CombinedValidationResult{
+		Safety: SafetyCheckResult{Valid: false, Errors: []string{"sprite required"}},
+		Policy: PolicyCheckResult{},
+	}
+	if err := safetyErrorResult.ToError(ValidationProfileAdvisory); err == nil {
+		t.Error("ToError() for safety error = nil, want error")
+	} else if !strings.Contains(err.Error(), "Safety errors") {
+		t.Errorf("error should mention safety errors, got: %v", err)
+	}
+
+	// Policy error in advisory mode returns error
+	policyErrorResult := &CombinedValidationResult{
+		Safety: SafetyCheckResult{Valid: true},
+		Policy: PolicyCheckResult{Errors: []string{"missing label"}},
+	}
+	if err := policyErrorResult.ToError(ValidationProfileAdvisory); err == nil {
+		t.Error("ToError() for policy error = nil, want error")
+	}
+
+	// Policy warning in strict mode returns error
+	strictWarningResult := &CombinedValidationResult{
+		Safety: SafetyCheckResult{Valid: true},
+		Policy: PolicyCheckResult{Warnings: []string{"short description"}},
+	}
+	if err := strictWarningResult.ToError(ValidationProfileStrict); err == nil {
+		t.Error("ToError() for warning in strict mode = nil, want error")
+	}
+}

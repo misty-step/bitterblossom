@@ -320,6 +320,7 @@ func normalizeRepoSlug(repo string) string {
 }
 
 // ValidateIssueFromRequest validates an issue based on a dispatch request.
+// Deprecated: Use ValidateIssueWithProfile instead for profile-based validation.
 func ValidateIssueFromRequest(ctx context.Context, req Request, strict bool) (*ValidationResult, error) {
 	// Only validate if issue number is provided
 	if req.Issue <= 0 {
@@ -337,6 +338,51 @@ func ValidateIssueFromRequest(ctx context.Context, req Request, strict bool) (*V
 		result.Errors = append(result.Errors, result.Warnings...)
 		result.Warnings = nil
 		result.Valid = false
+	}
+
+	return result, nil
+}
+
+// ValidateIssueWithProfile performs full validation (safety + policy) with profile support.
+// Safety checks are always enforced. Policy checks are controlled by the profile.
+func ValidateIssueWithProfile(ctx context.Context, req Request, profile ValidationProfile, env map[string]string, allowDirect bool) (*CombinedValidationResult, error) {
+	// Build combined result
+	result := &CombinedValidationResult{
+		IssueNumber: req.Issue,
+		Repo:        req.Repo,
+	}
+
+	// Always run safety checks (cannot be bypassed)
+	safetyValidator := DefaultSafetyValidator()
+	result.Safety = *safetyValidator.ValidateSafetyWithEnv(ctx, req, env, allowDirect)
+
+	// Run policy checks only if profile is not "off"
+	if profile != ValidationProfileOff && req.Issue > 0 {
+		policyValidator := IssueValidatorForRalphMode(req.Ralph)
+		policyResult, err := policyValidator.ValidateIssue(ctx, req.Issue, req.Repo)
+		if err != nil {
+			return nil, err
+		}
+
+		result.Policy.Warnings = policyResult.Warnings
+		result.Policy.Errors = policyResult.Errors
+		result.Policy.HasBlockingLabel = policyResult.HasBlockingLabel
+		result.Policy.HasDescription = policyResult.HasDescription
+		result.Policy.Labels = policyResult.Labels
+		result.Labels = policyResult.Labels
+	}
+
+	// Compute legacy Valid field based on profile
+	result.Valid = result.IsSafe() && result.IsPolicyCompliant(profile)
+
+	// Populate legacy warnings/errors for backward compatibility
+	if profile == ValidationProfileStrict {
+		// In strict mode, policy warnings become errors
+		result.Errors = append(result.Safety.Errors, result.Policy.Errors...)
+		result.Errors = append(result.Errors, result.Policy.Warnings...)
+	} else {
+		result.Errors = append(result.Safety.Errors, result.Policy.Errors...)
+		result.Warnings = result.Policy.Warnings
 	}
 
 	return result, nil

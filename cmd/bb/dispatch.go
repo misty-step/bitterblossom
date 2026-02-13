@@ -42,6 +42,7 @@ type dispatchOptions struct {
 	Issue                int
 	SkipValidation       bool
 	Strict               bool
+	ValidationProfile    string
 	RegistryPath         string
 	RegistryRequired     bool
 	ScaffoldDir          string
@@ -149,41 +150,6 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 			// When dispatching to an existing sprite, the sprite CLI handles transport.
 			hasFlyCredentials := strings.TrimSpace(opts.App) != "" && strings.TrimSpace(opts.Token) != ""
 
-			// Pre-dispatch issue validation
-			// Skip validation for dry-run (Execute=false) to keep planning fast and offline.
-			if opts.Execute && !opts.SkipValidation && opts.Issue > 0 {
-				validationResult, err := dispatchsvc.ValidateIssueFromRequest(cmd.Context(), dispatchsvc.Request{
-					Sprite:  spriteArg,
-					Prompt:  prompt,
-					Repo:    opts.Repo,
-					Issue:   opts.Issue,
-					Execute: opts.Execute,
-				}, opts.Strict)
-				if err != nil {
-					return fmt.Errorf("dispatch: issue validation failed: %w", err)
-				}
-
-				// Output validation results if not in JSON mode
-				if !opts.JSON && !validationResult.Valid {
-					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Issue validation failed:")
-					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), validationResult.FormatValidationOutput())
-				}
-
-				if !validationResult.Valid {
-					if validationErr := validationResult.ToError(); validationErr != nil {
-						return validationErr
-					}
-				}
-
-				// In non-strict mode with warnings, still proceed but log them
-				if len(validationResult.Warnings) > 0 && !opts.JSON {
-					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Issue validation warnings:")
-					for _, w := range validationResult.Warnings {
-						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "  ⚠ %s\n", w)
-					}
-				}
-			}
-
 			var flyClient fly.MachineClient
 			if hasFlyCredentials {
 				flyClient, err = deps.newFlyClient(opts.Token, opts.APIURL)
@@ -254,6 +220,78 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 
 				if len(missing) > 0 {
 					return fmt.Errorf("dispatch: missing credentials — sprite cannot complete work\n\n  ✗ %s\n\nset the required environment variables and retry", strings.Join(missing, "\n  ✗ "))
+				}
+
+				// Pre-dispatch validation (runs after envVars is populated)
+				// Skip policy validation for dry-run (Execute=false) to keep planning fast and offline.
+				// Safety checks always run when executing.
+				profile := dispatchsvc.ParseValidationProfile(opts.ValidationProfile)
+
+				// --strict is a legacy alias for --validation-profile=strict
+				if opts.Strict && opts.ValidationProfile == "" {
+					profile = dispatchsvc.ValidationProfileStrict
+				}
+
+				// --skip-validation skips the policy layer only; safety checks remain
+				if opts.SkipValidation {
+					profile = dispatchsvc.ValidationProfileOff
+				}
+
+				validationResult, err := dispatchsvc.ValidateIssueWithProfile(
+					cmd.Context(),
+					dispatchsvc.Request{
+						Sprite:  spriteArg,
+						Prompt:  prompt,
+						Repo:    opts.Repo,
+						Issue:   opts.Issue,
+						Execute: opts.Execute,
+						Ralph:   opts.Ralph,
+					},
+					profile,
+					envVars,
+					opts.AllowAnthropicDirect,
+				)
+				if err != nil {
+					return fmt.Errorf("dispatch: validation failed: %w", err)
+				}
+
+				// Output validation results if not in JSON mode and there are issues
+				if !opts.JSON && (!validationResult.IsSafe() || !validationResult.IsPolicyCompliant(profile)) {
+					if !validationResult.IsSafe() {
+						_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Safety validation failed (cannot be bypassed):")
+						for _, e := range validationResult.Safety.Errors {
+							_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "  ✗ %s\n", e)
+						}
+					}
+					if !validationResult.IsPolicyCompliant(profile) {
+						_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Policy validation failed:")
+						for _, e := range validationResult.Policy.Errors {
+							_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "  ✗ %s\n", e)
+						}
+						if profile == dispatchsvc.ValidationProfileStrict {
+							for _, w := range validationResult.Policy.Warnings {
+								_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "  ✗ %s\n", w)
+							}
+						}
+					}
+				}
+
+				// Check if validation failed
+				if !validationResult.IsSafe() {
+					return fmt.Errorf("dispatch: safety validation failed")
+				}
+
+				if !validationResult.IsPolicyCompliant(profile) {
+					if profile == dispatchsvc.ValidationProfileStrict {
+						return fmt.Errorf("dispatch: policy validation failed in strict mode")
+					}
+					// In advisory mode, log warnings and continue
+					if profile == dispatchsvc.ValidationProfileAdvisory && len(validationResult.Policy.Warnings) > 0 && !opts.JSON {
+						_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Issue validation warnings:")
+						for _, w := range validationResult.Policy.Warnings {
+							_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "  ⚠ %s\n", w)
+						}
+					}
 				}
 			}
 
@@ -340,8 +378,9 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 	command.Flags().StringVar(&opts.WebhookURL, "webhook-url", opts.WebhookURL, "Optional sprite-agent webhook URL")
 	command.Flags().BoolVar(&opts.AllowAnthropicDirect, "allow-anthropic-direct", false, "Allow dispatch even if sprite has a real ANTHROPIC_API_KEY")
 	command.Flags().IntVar(&opts.Issue, "issue", 0, "GitHub issue number to validate before dispatch")
-	command.Flags().BoolVar(&opts.SkipValidation, "skip-validation", false, "Skip pre-dispatch issue validation (emergency bypass)")
-	command.Flags().BoolVar(&opts.Strict, "strict", false, "Fail on any validation warning (strict mode)")
+	command.Flags().BoolVar(&opts.SkipValidation, "skip-validation", false, "Skip policy validation (safety checks still run)")
+	command.Flags().BoolVar(&opts.Strict, "strict", false, "Fail on any validation warning (legacy: use --validation-profile=strict)")
+	command.Flags().StringVar(&opts.ValidationProfile, "validation-profile", "advisory", "Validation profile: advisory (default), strict, or off")
 	command.Flags().StringVar(&opts.RegistryPath, "registry", opts.RegistryPath, "Path to sprite registry file")
 	command.Flags().BoolVar(&opts.RegistryRequired, "registry-required", false, "Require sprites to exist in registry (fail if not found)")
 	command.Flags().StringVar(&opts.ScaffoldDir, "scaffold-dir", "", "Path to base/ directory for environment scaffolding")

@@ -785,3 +785,193 @@ func TestFormatValidationOutput(t *testing.T) {
 		t.Error("expected output to contain Warnings section")
 	}
 }
+
+// ValidateIssueWithProfile Tests
+
+func TestValidateIssueWithProfile_AdvisoryMode(t *testing.T) {
+	t.Parallel()
+
+	req := Request{
+		Sprite:  "test-sprite",
+		Prompt:  "fix bug",
+		Repo:    "misty-step/test",
+		Issue:   300,
+		Execute: true,
+		Ralph:   false, // Non-Ralph mode
+	}
+
+	env := map[string]string{"ANTHROPIC_API_KEY": ""}
+	result, err := ValidateIssueWithProfile(context.Background(), req, ValidationProfileAdvisory, env, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should be safe (safety checks pass)
+	if !result.IsSafe() {
+		t.Errorf("expected safe, got safety errors: %v", result.Safety.Errors)
+	}
+
+	// The policy layer behavior depends on actual GitHub API availability
+	// If gh CLI is available and can fetch the issue, we validate
+	// If not, we get an error. Either way, verify the structure is correct.
+	
+	// In advisory mode, warnings don't cause failure
+	if !result.IsPolicyCompliant(ValidationProfileAdvisory) {
+		// If not compliant, it should be due to errors (not warnings)
+		if len(result.Policy.Errors) == 0 {
+			t.Error("expected policy compliant in advisory mode, or have errors explaining why")
+		}
+	}
+}
+
+func TestValidateIssueWithProfile_StrictMode(t *testing.T) {
+	t.Parallel()
+
+	// Test strict mode logic: warnings should be treated as failures
+	combined := &CombinedValidationResult{
+		Safety: SafetyCheckResult{Valid: true},
+		Policy: PolicyCheckResult{
+			Warnings: []string{"short description", "missing label"},
+		},
+		IssueNumber: 301,
+		Repo:        "misty-step/test",
+	}
+
+	// In strict mode, warnings should cause non-compliance
+	if combined.IsPolicyCompliant(ValidationProfileStrict) {
+		t.Error("expected not policy compliant in strict mode when warnings exist")
+	}
+
+	// In advisory mode, warnings should be OK
+	if !combined.IsPolicyCompliant(ValidationProfileAdvisory) {
+		t.Error("expected policy compliant in advisory mode (warnings OK)")
+	}
+}
+
+func TestValidateIssueWithProfile_OffMode(t *testing.T) {
+	t.Parallel()
+
+	req := Request{
+		Sprite:  "test-sprite",
+		Prompt:  "fix bug",
+		Repo:    "misty-step/test",
+		Issue:   302,
+		Execute: true,
+		Ralph:   false,
+	}
+
+	env := map[string]string{"ANTHROPIC_API_KEY": ""}
+	result, err := ValidateIssueWithProfile(context.Background(), req, ValidationProfileOff, env, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should be safe
+	if !result.IsSafe() {
+		t.Errorf("expected safe, got safety errors: %v", result.Safety.Errors)
+	}
+
+	// Should be policy compliant (policy layer skipped)
+	if !result.IsPolicyCompliant(ValidationProfileOff) {
+		t.Error("expected policy compliant in off mode")
+	}
+
+	// Should have no policy warnings or errors
+	if len(result.Policy.Warnings) > 0 || len(result.Policy.Errors) > 0 {
+		t.Error("expected no policy warnings/errors in off mode")
+	}
+}
+
+func TestValidateIssueWithProfile_NoIssue(t *testing.T) {
+	t.Parallel()
+
+	req := Request{
+		Sprite:  "test-sprite",
+		Prompt:  "fix bug",
+		Repo:    "misty-step/test",
+		Issue:   0, // No issue
+		Execute: true,
+		Ralph:   false,
+	}
+
+	env := map[string]string{"ANTHROPIC_API_KEY": ""}
+	result, err := ValidateIssueWithProfile(context.Background(), req, ValidationProfileAdvisory, env, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should be safe
+	if !result.IsSafe() {
+		t.Errorf("expected safe, got safety errors: %v", result.Safety.Errors)
+	}
+
+	// Should have no policy checks (no issue to validate)
+	if len(result.Policy.Warnings) > 0 || len(result.Policy.Errors) > 0 {
+		t.Error("expected no policy checks when no issue provided")
+	}
+}
+
+func TestValidateIssueWithProfile_SafetyFailure(t *testing.T) {
+	t.Parallel()
+
+	req := Request{
+		Sprite:  "", // Missing sprite - safety failure
+		Prompt:  "fix bug",
+		Repo:    "misty-step/test",
+		Issue:   303,
+		Execute: true,
+		Ralph:   false,
+	}
+
+	env := map[string]string{}
+	result, err := ValidateIssueWithProfile(context.Background(), req, ValidationProfileAdvisory, env, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should not be safe
+	if result.IsSafe() {
+		t.Error("expected not safe when sprite is missing")
+	}
+
+	// Should have safety error
+	if len(result.Safety.Errors) == 0 {
+		t.Error("expected safety errors when sprite is missing")
+	}
+
+	// Should fail ToError
+	if err := result.ToError(ValidationProfileAdvisory); err == nil {
+		t.Error("expected ToError to return error for safety failure")
+	}
+}
+
+func TestValidateIssueWithProfile_SafetyFailureCannotBeBypassed(t *testing.T) {
+	t.Parallel()
+
+	req := Request{
+		Sprite:  "", // Missing sprite - safety failure
+		Prompt:  "fix bug",
+		Repo:    "misty-step/test",
+		Issue:   304,
+		Execute: true,
+		Ralph:   false,
+	}
+
+	env := map[string]string{}
+
+	// Even with profile=off, safety failures should persist
+	result, err := ValidateIssueWithProfile(context.Background(), req, ValidationProfileOff, env, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should still not be safe even in off mode
+	if result.IsSafe() {
+		t.Error("expected not safe even in off mode when sprite is missing")
+	}
+
+	// Should still fail ToError even in off mode
+	if err := result.ToError(ValidationProfileOff); err == nil {
+		t.Error("expected ToError to return error even in off mode for safety failure")
+	}
+}
