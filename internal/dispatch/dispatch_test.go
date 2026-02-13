@@ -1356,3 +1356,86 @@ func TestResolveSkillMountsAcceptsCustomLimits(t *testing.T) {
 		t.Fatalf("unexpected error with generous limits: %v", err)
 	}
 }
+
+func TestScaffoldUploadsBaseFiles(t *testing.T) {
+	// Create a temp scaffold directory
+	scaffoldDir := t.TempDir()
+
+	// Create base/CLAUDE.md
+	os.WriteFile(filepath.Join(scaffoldDir, "CLAUDE.md"), []byte("# Base CLAUDE"), 0o644)
+
+	// Create base/settings.json
+	os.WriteFile(filepath.Join(scaffoldDir, "settings.json"), []byte(`{"key":"val"}`), 0o644)
+
+	// Create base/hooks/
+	os.MkdirAll(filepath.Join(scaffoldDir, "hooks"), 0o755)
+	os.WriteFile(filepath.Join(scaffoldDir, "hooks", "guard.py"), []byte("# hook"), 0o644)
+
+	// Create sprites/ dir (sibling of scaffold dir)
+	spritesDir := filepath.Join(filepath.Dir(scaffoldDir), "sprites")
+	os.MkdirAll(spritesDir, 0o755)
+	os.WriteFile(filepath.Join(spritesDir, "fern.md"), []byte("# Fern persona"), 0o644)
+
+	remote := &fakeRemote{
+		execResponses: []string{
+			"",     // validate env
+			"",     // clean signals
+			"",     // MEMORY.md init
+			"",     // LEARNINGS.md init
+			"done", // oneshot agent
+		},
+		listSprites: []string{"fern"},
+	}
+
+	service, err := NewService(Config{
+		Remote:      remote,
+		Fly:         &fakeFly{},
+		App:         "bb-app",
+		Workspace:   "/home/sprite/workspace",
+		ScaffoldDir: scaffoldDir,
+	})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	result, err := service.Run(context.Background(), Request{
+		Sprite:  "fern",
+		Prompt:  "Test scaffolding",
+		Execute: true,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.State != StateCompleted {
+		t.Fatalf("state = %q, want %q", result.State, StateCompleted)
+	}
+
+	// Check uploads include CLAUDE.md, settings.json, hook, and PERSONA.md
+	uploadPaths := make(map[string]bool)
+	for _, u := range remote.uploads {
+		uploadPaths[u.path] = true
+	}
+
+	want := []string{
+		"/home/sprite/workspace/CLAUDE.md",
+		"/home/sprite/workspace/.claude/settings.json",
+		"/home/sprite/workspace/.claude/hooks/guard.py",
+		"/home/sprite/workspace/PERSONA.md",
+	}
+	for _, p := range want {
+		if !uploadPaths[p] {
+			t.Errorf("missing upload: %s", p)
+		}
+	}
+
+	// Check plan includes scaffold step
+	hasScaffold := false
+	for _, step := range result.Plan.Steps {
+		if step.Kind == StepUploadScaffold {
+			hasScaffold = true
+		}
+	}
+	if !hasScaffold {
+		t.Error("plan missing StepUploadScaffold")
+	}
+}
