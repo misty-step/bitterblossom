@@ -107,6 +107,7 @@ const (
 	StepRegistryLookup StepKind = "registry_lookup"
 	StepProvision      StepKind = "provision"
 	StepValidateEnv    StepKind = "validate_env"
+	StepCleanSignals   StepKind = "clean_signals"
 	StepValidateIssue  StepKind = "validate_issue"
 	StepSetupRepo      StepKind = "setup_repo"
 	StepUploadSkills   StepKind = "upload_skills"
@@ -380,6 +381,11 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 		}
 	}
 
+	s.logger.Info("dispatch clean signals", "sprite", prepared.Sprite)
+	if err := s.cleanSignals(ctx, prepared.Sprite); err != nil {
+		return fail("clean_signals", fmt.Errorf("dispatch: clean stale signals: %w", err))
+	}
+
 	if prepared.Repo.CloneURL != "" {
 		s.logger.Info("dispatch setup repo", "sprite", prepared.Sprite, "repo", prepared.Repo.CloneURL)
 		if _, err := s.remote.Exec(ctx, prepared.Sprite, buildSetupRepoScript(s.workspace, prepared.Repo.CloneURL, prepared.Repo.RepoDir), nil); err != nil {
@@ -588,6 +594,11 @@ func (s *Service) buildPlan(req preparedRequest, provisionNeeded bool) Plan {
 		Description: fmt.Sprintf("write status marker to %s/STATUS.json", s.workspace),
 	})
 
+	steps = append(steps, PlanStep{
+		Kind:        StepCleanSignals,
+		Description: fmt.Sprintf("remove stale signal files from %s", s.workspace),
+	})
+
 	if _, hasOpenRouterKey := s.envVars["OPENROUTER_API_KEY"]; hasOpenRouterKey {
 		steps = append(steps, PlanStep{
 			Kind:        StepEnsureProxy,
@@ -761,6 +772,15 @@ func (s *Service) prepare(req Request) (preparedRequest, error) {
 		AllowAnthropicDirect: req.AllowAnthropicDirect,
 		MachineID:            machineID,
 	}, nil
+}
+
+func (s *Service) cleanSignals(ctx context.Context, sprite string) error {
+	script := fmt.Sprintf(
+		"rm -f %[1]s/TASK_COMPLETE %[1]s/TASK_COMPLETE.md %[1]s/BLOCKED.md %[1]s/BLOCKED %[1]s/agent.pid %[1]s/ralph.pid %[1]s/.ralph.pid %[1]s/.current-task-id",
+		shellutil.Quote(s.workspace),
+	)
+	_, err := s.remote.Exec(ctx, sprite, script, nil)
+	return err
 }
 
 func (s *Service) uploadSkills(ctx context.Context, sprite string, skills []preparedSkill) error {
