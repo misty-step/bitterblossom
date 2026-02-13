@@ -651,7 +651,7 @@ func buildStatusCheckScript(workspace string) string {
 		"",
 		"# Check for completion markers",
 		"HAS_COMPLETE=no",
-		"if [ -f \"$WORKSPACE/TASK_COMPLETE\" ]; then",
+		"if [ -f \"$WORKSPACE/TASK_COMPLETE\" ] || [ -f \"$WORKSPACE/TASK_COMPLETE.md\" ]; then",
 		"  HAS_COMPLETE=yes",
 		"fi",
 		"echo \"__HAS_COMPLETE__${HAS_COMPLETE}\"",
@@ -673,6 +673,9 @@ func buildStatusCheckScript(workspace string) string {
 		"elif [ -f \"$WORKSPACE/TASK_COMPLETE\" ]; then",
 		"  # Try to extract PR URL from TASK_COMPLETE",
 		"  PR_URL=\"$(grep -oE 'https://github.com/[^/]+/[^/]+/pull/[0-9]+' \"$WORKSPACE/TASK_COMPLETE\" 2>/dev/null || true)\"",
+		"elif [ -f \"$WORKSPACE/TASK_COMPLETE.md\" ]; then",
+		"  # Try to extract PR URL from TASK_COMPLETE.md as fallback",
+		"  PR_URL=\"$(grep -oE 'https://github.com/[^/]+/[^/]+/pull/[0-9]+' \"$WORKSPACE/TASK_COMPLETE.md\" 2>/dev/null || true)\"",
 		"fi",
 		"echo \"__PR_URL__${PR_URL}\"",
 	}, "\n")

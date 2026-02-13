@@ -706,6 +706,7 @@ func TestBuildStatusCheckScript(t *testing.T) {
 		"BLOCKED_B64",
 		"PR_URL",
 		"TASK_COMPLETE",
+		"TASK_COMPLETE.md",
 		"BLOCKED.md",
 	}
 
