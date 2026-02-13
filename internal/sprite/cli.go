@@ -5,9 +5,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"os/exec"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/misty-step/bitterblossom/internal/shellutil"
 )
@@ -17,6 +19,15 @@ const defaultBinary = "sprite"
 var (
 	// ErrMockNotImplemented indicates no behavior is configured for a mock method.
 	ErrMockNotImplemented = errors.New("sprite: mock method not implemented")
+
+	// ErrTransportFailure indicates a transient network/transport error that may succeed on retry.
+	ErrTransportFailure = errors.New("sprite: transport failure")
+
+	// ErrCommandFailure indicates the command executed but returned a non-zero exit code.
+	ErrCommandFailure = errors.New("sprite: command failure")
+
+	// ErrTimeout indicates the operation timed out.
+	ErrTimeout = errors.New("sprite: operation timed out")
 )
 
 // SpriteCLI abstracts sprite CLI operations for testability.
@@ -289,6 +300,273 @@ func (c CLI) APISprite(ctx context.Context, org, spriteName, endpoint string) (s
 		return "", fmt.Errorf("sprite api %q for %q: %w", endpoint, spriteName, err)
 	}
 	return out, nil
+}
+
+// ClassifyError categorizes a sprite CLI error for handling and retry decisions.
+// Returns the classified error type and a boolean indicating if retry may help.
+func ClassifyError(err error) (class error, retryable bool) {
+	if err == nil {
+		return nil, false
+	}
+
+	// Context errors are not retryable
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%w: %v", ErrTimeout, err), false
+	}
+	if errors.Is(err, context.Canceled) {
+		return err, false
+	}
+
+	msg := strings.ToLower(err.Error())
+
+	// Transport-level errors are retryable
+	transportPatterns := []string{
+		"i/o timeout",
+		"read tcp",
+		"write tcp",
+		"connection refused",
+		"connection reset",
+		"no such host",
+		"temporary failure",
+		"broken pipe",
+		"failed to connect",
+	}
+	for _, pattern := range transportPatterns {
+		if strings.Contains(msg, pattern) {
+			return fmt.Errorf("%w: %v", ErrTransportFailure, err), true
+		}
+	}
+
+	// Exit code errors indicate command failure (not transport failure)
+	if strings.Contains(msg, "exit status") || strings.Contains(msg, "exit code") {
+		return fmt.Errorf("%w: %v", ErrCommandFailure, err), false
+	}
+
+	// Default: unknown error, conservatively non-retryable
+	return err, false
+}
+
+// IsTransientError reports whether an error is a transient transport error
+// that may succeed on retry.
+func IsTransientError(err error) bool {
+	_, retryable := ClassifyError(err)
+	return retryable
+}
+
+// ResilientCLI wraps a SpriteCLI with retry logic for transient transport errors.
+type ResilientCLI struct {
+	inner      SpriteCLI
+	maxRetries int
+	baseDelay  time.Duration
+	maxDelay   time.Duration
+	sleep      func(time.Duration)
+}
+
+// ResilientOption configures a ResilientCLI.
+type ResilientOption func(*ResilientCLI)
+
+// WithMaxRetries sets the maximum number of retry attempts.
+func WithMaxRetries(n int) ResilientOption {
+	return func(r *ResilientCLI) {
+		if n >= 0 {
+			r.maxRetries = n
+		}
+	}
+}
+
+// WithBaseDelay sets the initial retry delay.
+func WithBaseDelay(d time.Duration) ResilientOption {
+	return func(r *ResilientCLI) {
+		if d > 0 {
+			r.baseDelay = d
+		}
+	}
+}
+
+// WithMaxDelay sets the maximum retry delay (cap for exponential backoff).
+func WithMaxDelay(d time.Duration) ResilientOption {
+	return func(r *ResilientCLI) {
+		if d > 0 {
+			r.maxDelay = d
+		}
+	}
+}
+
+// WithSleepFn overrides the sleep function (useful for tests).
+func WithSleepFn(fn func(time.Duration)) ResilientOption {
+	return func(r *ResilientCLI) {
+		if fn != nil {
+			r.sleep = fn
+		}
+	}
+}
+
+// NewResilientCLI wraps the given CLI with retry logic.
+func NewResilientCLI(inner SpriteCLI, opts ...ResilientOption) *ResilientCLI {
+	r := &ResilientCLI{
+		inner:      inner,
+		maxRetries: 3,
+		baseDelay:  250 * time.Millisecond,
+		maxDelay:   4 * time.Second,
+		sleep:      time.Sleep,
+	}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
+}
+
+// jitter adds randomization to backoff to prevent thundering herd.
+func jitter(d time.Duration) time.Duration {
+	jitter := time.Duration(rand.Int63n(int64(d) / 2))
+	return d + jitter
+}
+
+// backoffDelay calculates exponential backoff with cap.
+func (r *ResilientCLI) backoffDelay(attempt int) time.Duration {
+	delay := r.baseDelay
+	for i := 0; i < attempt; i++ {
+		delay *= 2
+		if delay > r.maxDelay {
+			delay = r.maxDelay
+			break
+		}
+	}
+	return jitter(delay)
+}
+
+// runWithRetry executes the given operation with retry logic for transient errors.
+func (r *ResilientCLI) runWithRetry(ctx context.Context, op func() (string, error)) (string, error) {
+	var lastErr error
+	for attempt := 0; attempt <= r.maxRetries; attempt++ {
+		if attempt > 0 {
+			delay := r.backoffDelay(attempt - 1)
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return "", ctx.Err()
+			case <-timer.C:
+			}
+		}
+
+		result, err := op()
+		if err == nil {
+			return result, nil
+		}
+
+		lastErr = err
+		class, retryable := ClassifyError(err)
+		if !retryable || attempt == r.maxRetries {
+			return "", class
+		}
+		_ = class // classified error not used in retry path
+	}
+	return "", lastErr
+}
+
+// List returns available sprite names with retry.
+func (r *ResilientCLI) List(ctx context.Context) ([]string, error) {
+	// List doesn't benefit from simple string retry wrapper
+	var lastErr error
+	for attempt := 0; attempt <= r.maxRetries; attempt++ {
+		if attempt > 0 {
+			delay := r.backoffDelay(attempt - 1)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+
+		result, err := r.inner.List(ctx)
+		if err == nil {
+			return result, nil
+		}
+
+		lastErr = err
+		class, retryable := ClassifyError(err)
+		if !retryable || attempt == r.maxRetries {
+			return nil, class
+		}
+		_ = class
+	}
+	return nil, lastErr
+}
+
+// Exec runs a remote command on one sprite with retry.
+func (r *ResilientCLI) Exec(ctx context.Context, sprite, command string, stdin []byte) (string, error) {
+	return r.runWithRetry(ctx, func() (string, error) {
+		return r.inner.Exec(ctx, sprite, command, stdin)
+	})
+}
+
+// ExecWithEnv runs a remote command with environment variables and retry.
+func (r *ResilientCLI) ExecWithEnv(ctx context.Context, sprite, command string, stdin []byte, env map[string]string) (string, error) {
+	return r.runWithRetry(ctx, func() (string, error) {
+		return r.inner.ExecWithEnv(ctx, sprite, command, stdin, env)
+	})
+}
+
+// Create creates a sprite with retry.
+func (r *ResilientCLI) Create(ctx context.Context, name, org string) error {
+	_, err := r.runWithRetry(ctx, func() (string, error) {
+		return "", r.inner.Create(ctx, name, org)
+	})
+	return err
+}
+
+// Destroy destroys a sprite with retry.
+func (r *ResilientCLI) Destroy(ctx context.Context, name, org string) error {
+	_, err := r.runWithRetry(ctx, func() (string, error) {
+		return "", r.inner.Destroy(ctx, name, org)
+	})
+	return err
+}
+
+// CheckpointCreate creates a checkpoint with retry.
+func (r *ResilientCLI) CheckpointCreate(ctx context.Context, name, org string) error {
+	_, err := r.runWithRetry(ctx, func() (string, error) {
+		return "", r.inner.CheckpointCreate(ctx, name, org)
+	})
+	return err
+}
+
+// CheckpointList lists checkpoints with retry.
+func (r *ResilientCLI) CheckpointList(ctx context.Context, name, org string) (string, error) {
+	return r.runWithRetry(ctx, func() (string, error) {
+		return r.inner.CheckpointList(ctx, name, org)
+	})
+}
+
+// UploadFile uploads a file with retry.
+func (r *ResilientCLI) UploadFile(ctx context.Context, name, org, localPath, remotePath string) error {
+	_, err := r.runWithRetry(ctx, func() (string, error) {
+		return "", r.inner.UploadFile(ctx, name, org, localPath, remotePath)
+	})
+	return err
+}
+
+// Upload writes content directly with retry.
+func (r *ResilientCLI) Upload(ctx context.Context, name, remotePath string, content []byte) error {
+	_, err := r.runWithRetry(ctx, func() (string, error) {
+		return "", r.inner.Upload(ctx, name, remotePath, content)
+	})
+	return err
+}
+
+// API calls sprite API endpoint with retry.
+func (r *ResilientCLI) API(ctx context.Context, org, endpoint string) (string, error) {
+	return r.runWithRetry(ctx, func() (string, error) {
+		return r.inner.API(ctx, org, endpoint)
+	})
+}
+
+// APISprite calls sprite API endpoint scoped to one sprite with retry.
+func (r *ResilientCLI) APISprite(ctx context.Context, org, spriteName, endpoint string) (string, error) {
+	return r.runWithRetry(ctx, func() (string, error) {
+		return r.inner.APISprite(ctx, org, spriteName, endpoint)
+	})
 }
 
 // MockSpriteCLI is an injectable fake for tests.

@@ -1,8 +1,11 @@
 package sprite
 
 import (
+	"context"
+	"errors"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestWithOrgArgs(t *testing.T) {
@@ -284,5 +287,196 @@ func TestArgsForLogRedactsEnvValues(t *testing.T) {
 	}
 	if !reflect.DeepEqual(args, original) {
 		t.Fatalf("argsForLog mutated args: %v", args)
+	}
+}
+
+func TestClassifyError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		err        error
+		wantRetry  bool
+		wantClass  error
+	}{
+		{
+			name:      "nil error",
+			err:       nil,
+			wantRetry: false,
+			wantClass: nil,
+		},
+		{
+			name:      "i/o timeout is transport",
+			err:       errors.New("read tcp 10.0.0.1:443: i/o timeout"),
+			wantRetry: true,
+			wantClass: ErrTransportFailure,
+		},
+		{
+			name:      "failed to connect is transport",
+			err:       errors.New("failed to connect: read tcp ...:443: i/o timeout"),
+			wantRetry: true,
+			wantClass: ErrTransportFailure,
+		},
+		{
+			name:      "connection refused is transport",
+			err:       errors.New("dial tcp: connection refused"),
+			wantRetry: true,
+			wantClass: ErrTransportFailure,
+		},
+		{
+			name:      "exit status is command failure",
+			err:       errors.New("exit status 1"),
+			wantRetry: false,
+			wantClass: ErrCommandFailure,
+		},
+		{
+			name:      "context deadline exceeded is timeout",
+			err:       context.DeadlineExceeded,
+			wantRetry: false,
+			wantClass: ErrTimeout,
+		},
+		{
+			name:      "context canceled not retryable",
+			err:       context.Canceled,
+			wantRetry: false,
+			wantClass: context.Canceled,
+		},
+		{
+			name:      "unknown error not retryable",
+			err:       errors.New("some random error"),
+			wantRetry: false,
+			wantClass: nil, // returns as-is
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			class, retryable := ClassifyError(tc.err)
+			if retryable != tc.wantRetry {
+				t.Errorf("ClassifyError(%v) retryable = %v, want %v", tc.err, retryable, tc.wantRetry)
+			}
+			if tc.wantClass != nil {
+				if class == nil || !errors.Is(class, tc.wantClass) {
+					t.Errorf("ClassifyError(%v) class = %v, want %v wrapped", tc.err, class, tc.wantClass)
+				}
+			} else if tc.err != nil && class == nil {
+				t.Errorf("ClassifyError(%v) class = nil, want non-nil", tc.err)
+			}
+		})
+	}
+}
+
+func TestResilientCLI_RetryOnTransportError(t *testing.T) {
+	t.Parallel()
+
+	callCount := 0
+	mock := &MockSpriteCLI{
+		ExecFn: func(ctx context.Context, sprite, command string, stdin []byte) (string, error) {
+			callCount++
+			if callCount < 3 {
+				return "", errors.New("read tcp 10.0.0.1:443: i/o timeout")
+			}
+			return "success", nil
+		},
+	}
+
+	r := NewResilientCLI(mock,
+		WithMaxRetries(3),
+		WithBaseDelay(1*time.Millisecond),
+	)
+
+	ctx := context.Background()
+	result, err := r.Exec(ctx, "test-sprite", "echo hello", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "success" {
+		t.Errorf("result = %q, want success", result)
+	}
+	if callCount != 3 {
+		t.Errorf("callCount = %d, want 3", callCount)
+	}
+}
+
+func TestResilientCLI_NoRetryOnCommandFailure(t *testing.T) {
+	t.Parallel()
+
+	callCount := 0
+	mock := &MockSpriteCLI{
+		ExecFn: func(ctx context.Context, sprite, command string, stdin []byte) (string, error) {
+			callCount++
+			return "", errors.New("exit status 1: command failed")
+		},
+	}
+
+	r := NewResilientCLI(mock,
+		WithMaxRetries(3),
+		WithBaseDelay(1*time.Millisecond),
+	)
+
+	ctx := context.Background()
+	_, err := r.Exec(ctx, "test-sprite", "false", nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if callCount != 1 {
+		t.Errorf("callCount = %d, want 1 (no retry)", callCount)
+	}
+	if !errors.Is(err, ErrCommandFailure) {
+		t.Errorf("expected ErrCommandFailure, got: %v", err)
+	}
+}
+
+func TestResilientCLI_ExhaustedRetries(t *testing.T) {
+	t.Parallel()
+
+	callCount := 0
+	mock := &MockSpriteCLI{
+		ListFn: func(ctx context.Context) ([]string, error) {
+			callCount++
+			return nil, errors.New("connection refused")
+		},
+	}
+
+	r := NewResilientCLI(mock,
+		WithMaxRetries(2),
+		WithBaseDelay(1*time.Millisecond),
+	)
+
+	ctx := context.Background()
+	_, err := r.List(ctx)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if callCount != 3 { // initial + 2 retries
+		t.Errorf("callCount = %d, want 3", callCount)
+	}
+	if !errors.Is(err, ErrTransportFailure) {
+		t.Errorf("expected ErrTransportFailure, got: %v", err)
+	}
+}
+
+func TestResilientCLI_RespectsContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	mock := &MockSpriteCLI{
+		ExecFn: func(ctx context.Context, sprite, command string, stdin []byte) (string, error) {
+			return "", errors.New("read tcp: i/o timeout")
+		},
+	}
+
+	r := NewResilientCLI(mock,
+		WithMaxRetries(10),
+		WithBaseDelay(1*time.Hour), // Long delay to ensure we can cancel
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	_, err := r.Exec(ctx, "test-sprite", "echo hello", nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got: %v", err)
 	}
 }
