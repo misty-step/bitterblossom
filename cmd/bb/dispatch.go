@@ -18,6 +18,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// Exit codes for dispatch command outcomes.
+const (
+	exitCodeSuccess      = 0
+	exitCodeGeneralError = 1
+	exitCodeSoftFailure  = 2   // completed but missing expected signals
+	exitCodeTimeout      = 124 // timeout reached (following shell timeout convention)
+)
+
 type dispatchOptions struct {
 	Repo                 string
 	PromptFile           string
@@ -312,7 +320,11 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Warning: polling failed: %v\n", waitErr)
 					return renderDispatchResult(cmd, result, opts.JSON)
 				}
-				return renderWaitResult(cmd, result, waitRes, opts.JSON)
+				if err := renderWaitResult(cmd, result, waitRes, opts.JSON); err != nil {
+					return err
+				}
+				// Return appropriate exit code based on wait result
+				return exitCodeFromWaitResult(waitRes)
 			}
 
 			return renderDispatchResult(cmd, result, opts.JSON)
@@ -554,6 +566,60 @@ func renderWaitResult(cmd *cobra.Command, dispatchResult dispatchsvc.Result, wai
 		}
 	}
 	return nil
+}
+
+// exitCodeFromWaitResult returns the appropriate exit code based on wait result.
+//
+// Exit codes:
+//   - 0: dispatch completed successfully (state is "completed" and not blocked)
+//   - 1: general error (infrastructure failure, proxy error, dispatch error)
+//   - 2: soft failure - dispatch completed but agent didn't produce expected signals
+//   - 124: timeout reached while waiting
+func exitCodeFromWaitResult(waitRes *waitResult) error {
+	if waitRes == nil {
+		return &exitError{Code: exitCodeGeneralError, Err: errors.New("dispatch: no wait result")}
+	}
+
+	switch waitRes.State {
+	case "timeout":
+		return &exitError{
+			Code: exitCodeTimeout,
+			Err:  fmt.Errorf("dispatch: timeout reached after %s", waitRes.Runtime),
+		}
+	case "blocked":
+		// Task signaled blocked - this is a soft failure (exit code 2)
+		return &exitError{
+			Code: exitCodeSoftFailure,
+			Err:  fmt.Errorf("dispatch: task blocked - %s", waitRes.BlockedReason),
+		}
+	case "completed":
+		// Check if we have expected signals (PR URL or task completion)
+		// If completed but missing signals, it's a soft failure
+		if waitRes.PRURL == "" && waitRes.Error == "" {
+			// Completed but no PR produced - could be a soft failure depending on task type
+			// For now, treat completed as success even without PR
+			// The caller can check JSON output for details
+		}
+		return nil // success
+	case "running":
+		// Should not happen with --wait (poll should continue until done or timeout)
+		return &exitError{
+			Code: exitCodeGeneralError,
+			Err:  errors.New("dispatch: task still running after wait"),
+		}
+	case "idle":
+		// Task never started or no state found
+		return &exitError{
+			Code: exitCodeSoftFailure,
+			Err:  errors.New("dispatch: task did not produce completion signals"),
+		}
+	default:
+		// Unknown state - treat as general error
+		return &exitError{
+			Code: exitCodeGeneralError,
+			Err:  fmt.Errorf("dispatch: unexpected state %q", waitRes.State),
+		}
+	}
 }
 
 func contextOrBackground(ctx context.Context) context.Context {

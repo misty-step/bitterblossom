@@ -942,3 +942,187 @@ func TestSelectSpriteFromRegistryMissingFile(t *testing.T) {
 		})
 	}
 }
+
+func TestExitCodeFromWaitResult(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		waitRes    *waitResult
+		wantCode   int
+		wantErr    bool
+		wantErrMsg string
+	}{
+		{
+			name:     "completed task returns success",
+			waitRes:  &waitResult{State: "completed", Complete: true, PRURL: "https://github.com/org/repo/pull/1"},
+			wantCode: 0,
+			wantErr:  false,
+		},
+		{
+			name:     "completed without PR still returns success",
+			waitRes:  &waitResult{State: "completed", Complete: true},
+			wantCode: 0,
+			wantErr:  false,
+		},
+		{
+			name:       "blocked returns soft failure (exit code 2)",
+			waitRes:    &waitResult{State: "blocked", Complete: true, Blocked: true, BlockedReason: "needs permissions"},
+			wantCode:   2,
+			wantErr:    true,
+			wantErrMsg: "blocked",
+		},
+		{
+			name:       "timeout returns exit code 124",
+			waitRes:    &waitResult{State: "timeout", Error: "polling timed out"},
+			wantCode:   124,
+			wantErr:    true,
+			wantErrMsg: "timeout",
+		},
+		{
+			name:       "idle returns soft failure (exit code 2)",
+			waitRes:    &waitResult{State: "idle", Complete: false},
+			wantCode:   2,
+			wantErr:    true,
+			wantErrMsg: "did not produce completion signals",
+		},
+		{
+			name:       "running returns general error (exit code 1)",
+			waitRes:    &waitResult{State: "running", Complete: false},
+			wantCode:   1,
+			wantErr:    true,
+			wantErrMsg: "still running",
+		},
+		{
+			name:       "unknown state returns general error (exit code 1)",
+			waitRes:    &waitResult{State: "unknown_state"},
+			wantCode:   1,
+			wantErr:    true,
+			wantErrMsg: "unexpected state",
+		},
+		{
+			name:       "nil result returns general error (exit code 1)",
+			waitRes:    nil,
+			wantCode:   1,
+			wantErr:    true,
+			wantErrMsg: "no wait result",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := exitCodeFromWaitResult(tt.waitRes)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error with code %d, got nil", tt.wantCode)
+				}
+				var exitErr *exitError
+				if !errors.As(err, &exitErr) {
+					t.Fatalf("expected *exitError, got %T: %v", err, err)
+				}
+				if exitErr.Code != tt.wantCode {
+					t.Errorf("exit code = %d, want %d", exitErr.Code, tt.wantCode)
+				}
+				if tt.wantErrMsg != "" && !strings.Contains(err.Error(), tt.wantErrMsg) {
+					t.Errorf("error message = %q, should contain %q", err.Error(), tt.wantErrMsg)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("expected no error, got: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestDispatchWithWaitExitCodes(t *testing.T) {
+	// Cannot use t.Parallel() — t.Setenv modifies process environment.
+	t.Setenv("GITHUB_TOKEN", "ghp-test")
+	t.Setenv("OPENROUTER_API_KEY", "or-test")
+
+	tests := []struct {
+		name     string
+		waitRes  *waitResult
+		wantCode int
+	}{
+		{
+			name:     "completed returns exit code 0",
+			waitRes:  &waitResult{State: "completed", Complete: true, PRURL: "https://github.com/org/repo/pull/1"},
+			wantCode: 0,
+		},
+		{
+			name:     "blocked returns exit code 2",
+			waitRes:  &waitResult{State: "blocked", Complete: true, Blocked: true, BlockedReason: "needs auth"},
+			wantCode: 2,
+		},
+		{
+			name:     "timeout returns exit code 124",
+			waitRes:  &waitResult{State: "timeout", Error: "polling timed out"},
+			wantCode: 124,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &fakeDispatchRunner{
+				result: dispatchsvc.Result{
+					Executed: true,
+					State:    dispatchsvc.StateRunning,
+					AgentPID: 12345,
+					Plan: dispatchsvc.Plan{
+						Sprite: "moss",
+						Mode:   "execute",
+						Steps:  []dispatchsvc.PlanStep{{Kind: dispatchsvc.StepStartAgent, Description: "start"}},
+					},
+				},
+			}
+
+			deps := dispatchDeps{
+				readFile: func(string) ([]byte, error) { return nil, nil },
+				newFlyClient: func(token, apiURL string) (fly.MachineClient, error) {
+					return fakeFlyClient{}, nil
+				},
+				newRemote: func(binary, org string) *spriteCLIRemote {
+					return &spriteCLIRemote{}
+				},
+				newService: func(cfg dispatchsvc.Config) (dispatchRunner, error) {
+					return runner, nil
+				},
+				pollSprite: func(ctx context.Context, remote *spriteCLIRemote, sprite string, timeout time.Duration, progress func(string)) (*waitResult, error) {
+					return tt.waitRes, nil
+				},
+			}
+
+			cmd := newDispatchCmdWithDeps(deps)
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&out)
+			cmd.SetArgs([]string{
+				"moss",
+				"Test task",
+				"--execute",
+				"--wait",
+				"--app", "bb-app",
+				"--token", "tok",
+			})
+
+			err := cmd.Execute()
+			if tt.wantCode == 0 {
+				if err != nil {
+					t.Fatalf("expected success (exit code 0), got error: %v", err)
+				}
+			} else {
+				if err == nil {
+					t.Fatalf("expected error with exit code %d, got nil", tt.wantCode)
+				}
+				var exitErr *exitError
+				if !errors.As(err, &exitErr) {
+					t.Fatalf("expected *exitError, got %T: %v", err, err)
+				}
+				if exitErr.Code != tt.wantCode {
+					t.Errorf("exit code = %d, want %d", exitErr.Code, tt.wantCode)
+				}
+			}
+		})
+	}
+}
