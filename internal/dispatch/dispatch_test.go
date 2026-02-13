@@ -957,6 +957,32 @@ func TestBuildScriptMkdirBeforeCD(t *testing.T) {
 	}
 }
 
+func TestBuildOneShotScriptCapturesLogs(t *testing.T) {
+	t.Parallel()
+
+	script := buildOneShotScript("/home/sprite/workspace", "/home/sprite/workspace/.dispatch-prompt.md")
+
+	// Must create logs directory (path is quoted by shellutil.Quote)
+	if !strings.Contains(script, "mkdir -p '/home/sprite/workspace/logs'") {
+		t.Error("script must create logs directory")
+	}
+
+	// Must define AGENT_LOG variable pointing to oneshot log file (quoted by shellutil.Quote)
+	if !strings.Contains(script, "AGENT_LOG='/home/sprite/workspace/logs/agent-oneshot.log'") {
+		t.Error("script must define AGENT_LOG pointing to agent-oneshot.log")
+	}
+
+	// Must use tee to capture output in both branches (script and non-script)
+	if !strings.Contains(script, `| tee -a "$AGENT_LOG"`) {
+		t.Error("script must pipe output to tee for log capture")
+	}
+
+	// Must redirect stderr to stdout so errors are captured
+	if !strings.Contains(script, "2>&1 | tee") {
+		t.Error("script must redirect stderr to stdout for error capture")
+	}
+}
+
 func TestBuildSetupRepoScriptResetsGitState(t *testing.T) {
 	t.Parallel()
 

@@ -1082,9 +1082,12 @@ func buildOneShotScript(workspace, promptPath string) string {
 	// Local address for Claude Code
 	baseURL := fmt.Sprintf("http://127.0.0.1:%s", port)
 
+	// Log file for agent output capture (issue #278)
+	logFile := shellutil.Quote(workspace + "/logs/agent-oneshot.log")
+
 	return strings.Join([]string{
 		"set -euo pipefail",
-		"mkdir -p " + shellutil.Quote(workspace),
+		"mkdir -p " + shellutil.Quote(workspace+"/logs"),
 		"cd " + shellutil.Quote(workspace),
 		"# Start anthropic proxy if available",
 		"if [ -f " + shellutil.Quote(proxy.ProxyScriptPath) + " ] && [ -n \"${OPENROUTER_API_KEY:-}\" ] && command -v node >/dev/null 2>&1; then",
@@ -1116,10 +1119,12 @@ func buildOneShotScript(workspace, promptPath string) string {
 		"    export ANTHROPIC_API_KEY=proxy-mode",
 		"  fi",
 		"fi",
+		"# Capture agent output to log file for diagnostics (issue #278)",
+		"AGENT_LOG=" + logFile,
 		"if command -v script >/dev/null 2>&1; then",
-		"  script -qefc " + shellutil.Quote("cat "+shellutil.Quote(promptPath)+" | claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json") + " /dev/null",
+		"  script -qefc " + shellutil.Quote("cat "+shellutil.Quote(promptPath)+" | claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json") + " /dev/null 2>&1 | tee -a \"$AGENT_LOG\"",
 		"else",
-		"  cat " + shellutil.Quote(promptPath) + " | claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json",
+		"  cat " + shellutil.Quote(promptPath) + " | claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json 2>&1 | tee -a \"$AGENT_LOG\"",
 		"fi",
 		"rm -f " + shellutil.Quote(promptPath),
 	}, "\n")
