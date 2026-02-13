@@ -665,6 +665,24 @@ func TestParseStatusCheckOutput(t *testing.T) {
 				Complete: false,
 			},
 		},
+		{
+			name: "fallback completion - agent dead with PR URL but no TASK_COMPLETE",
+			output: "__STATUS_JSON__{\"repo\":\"misty-step/bitterblossom\",\"started\":\"2024-01-15T10:00:00Z\",\"task\":\"Fix bug\"}\n" +
+				"__AGENT_STATE__dead\n" +
+				"__HAS_COMPLETE__no\n" +
+				"__HAS_BLOCKED__no\n" +
+				"__BLOCKED_B64__\n" +
+				"__PR_URL__https://github.com/misty-step/bitterblossom/pull/42\n",
+			wantDone: true,
+			wantRes: &waitResult{
+				State:    "completed",
+				Task:     "Fix bug",
+				Repo:     "misty-step/bitterblossom",
+				Started:  "2024-01-15T10:00:00Z",
+				PRURL:    "https://github.com/misty-step/bitterblossom/pull/42",
+				Complete: true,
+			},
+		},
 	}
 
 	for _, tt := range tests {
