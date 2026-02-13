@@ -1183,6 +1183,9 @@ func buildSetupRepoScript(workspace, cloneURL, repoDir string) string {
 //     Falls back to raw pipe on systems without script(1).
 //   - --output-format stream-json enables structured output parsing by the
 //     watchdog and polling systems.
+//   - Agent exit code is captured and output for diagnostic purposes.
+//   - Agent output is logged to agent.log for debugging when the agent produces
+//     no observable changes (issue #294).
 func buildOneShotScript(workspace, promptPath string) string {
 	port := strconv.Itoa(proxy.ProxyPort)
 	env := proxy.StartEnv("", port, "${OPENROUTER_API_KEY}")
@@ -1211,7 +1214,7 @@ func buildOneShotScript(workspace, promptPath string) string {
 
 	return strings.Join([]string{
 		"set -euo pipefail",
-		"mkdir -p " + shellutil.Quote(workspace),
+		"mkdir -p " + shellutil.Quote(workspace) + "/logs",
 		"cd " + shellutil.Quote(workspace),
 		"rm -f " + SignalTaskComplete + " " + SignalTaskCompleteMD + " " + SignalBlocked,
 		"# Start anthropic proxy if available",
@@ -1244,12 +1247,19 @@ func buildOneShotScript(workspace, promptPath string) string {
 		"    export ANTHROPIC_API_KEY=proxy-mode",
 		"  fi",
 		"fi",
+		"# Run agent with output logging and exit code capture (issue #294)",
+		"AGENT_LOG=\"" + workspace + "/logs/agent.log\"",
+		"echo '[dispatch] Starting agent...' | tee -a \"$AGENT_LOG\"",
+		"AGENT_EXIT_CODE=0",
 		"if command -v script >/dev/null 2>&1; then",
-		"  script -qefc " + shellutil.Quote("cat "+shellutil.Quote(promptPath)+" | claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json") + " /dev/null",
+		"  script -qefc " + shellutil.Quote("cat "+shellutil.Quote(promptPath)+" | claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json") + " /dev/null 2>&1 | tee -a \"$AGENT_LOG\" || AGENT_EXIT_CODE=$?",
 		"else",
-		"  cat " + shellutil.Quote(promptPath) + " | claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json",
+		"  cat " + shellutil.Quote(promptPath) + " | claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json 2>&1 | tee -a \"$AGENT_LOG\" || AGENT_EXIT_CODE=$?",
 		"fi",
+		"echo \"EXIT_CODE:$AGENT_EXIT_CODE\"",
+		"echo \"[dispatch] Agent exited with code $AGENT_EXIT_CODE\" | tee -a \"$AGENT_LOG\"",
 		"rm -f " + shellutil.Quote(promptPath),
+		"exit $AGENT_EXIT_CODE",
 	}, "\n")
 }
 
