@@ -233,9 +233,10 @@ check_status() {
 
     # Check for completion/blocked signals
     "$SPRITE_CLI" exec -o "$ORG" -s "$name" -- bash -c \
-        "[ -f $WORKSPACE/TASK_COMPLETE ] && echo 'STATUS: TASK COMPLETE' && cat $WORKSPACE/TASK_COMPLETE; \
+        "{ [ -f $WORKSPACE/TASK_COMPLETE ] && echo 'STATUS: TASK COMPLETE' && cat $WORKSPACE/TASK_COMPLETE; } || \
+         { [ -f $WORKSPACE/TASK_COMPLETE.md ] && echo 'STATUS: TASK COMPLETE' && cat $WORKSPACE/TASK_COMPLETE.md; }; \
          [ -f $WORKSPACE/BLOCKED.md ] && echo 'STATUS: BLOCKED' && cat $WORKSPACE/BLOCKED.md; \
-         [ ! -f $WORKSPACE/TASK_COMPLETE ] && [ ! -f $WORKSPACE/BLOCKED.md ] && echo 'STATUS: Working'" 2>/dev/null || true
+         [ ! -f $WORKSPACE/TASK_COMPLETE ] && [ ! -f $WORKSPACE/TASK_COMPLETE.md ] && [ ! -f $WORKSPACE/BLOCKED.md ] && echo 'STATUS: Working'" 2>/dev/null || true
 
     echo ""
 
