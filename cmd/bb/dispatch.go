@@ -27,6 +27,7 @@ type dispatchOptions struct {
 	DryRun               bool
 	JSON                 bool
 	Wait                 bool
+	StreamLogs           bool
 	Timeout              time.Duration
 	App                  string
 	Token                string
@@ -48,12 +49,14 @@ type dispatchOptions struct {
 }
 
 type dispatchDeps struct {
-	readFile     func(path string) ([]byte, error)
-	newFlyClient func(token, apiURL string) (fly.MachineClient, error)
-	newRemote    func(binary, org string) *spriteCLIRemote
-	newService   func(cfg dispatchsvc.Config) (dispatchRunner, error)
-	selectSprite func(ctx context.Context, remote *spriteCLIRemote, opts dispatchOptions) (string, error)
-	pollSprite   func(ctx context.Context, remote *spriteCLIRemote, sprite string, timeout time.Duration, progress func(string)) (*waitResult, error)
+	readFile       func(path string) ([]byte, error)
+	newFlyClient   func(token, apiURL string) (fly.MachineClient, error)
+	newRemote      func(binary, org string) *spriteCLIRemote
+	newService     func(cfg dispatchsvc.Config) (dispatchRunner, error)
+	selectSprite   func(ctx context.Context, remote *spriteCLIRemote, opts dispatchOptions) (string, error)
+	pollSprite     func(ctx context.Context, remote *spriteCLIRemote, sprite string, timeout time.Duration, progress func(string)) (*waitResult, error)
+	streamLogs     func(ctx context.Context, remote *spriteCLIRemote, sprite string, out func(string)) error
+	stopLogStream  func()
 }
 
 type dispatchRunner interface {
@@ -85,7 +88,9 @@ func defaultDispatchDeps() dispatchDeps {
 		selectSprite: func(ctx context.Context, remote *spriteCLIRemote, opts dispatchOptions) (string, error) {
 			return selectSpriteFromRegistry(ctx, remote, opts)
 		},
-		pollSprite: pollSpriteStatus,
+		pollSprite:    pollSpriteStatus,
+		streamLogs:    noopStreamLogs,
+		stopLogStream: noopStopLogStream,
 	}
 }
 
@@ -130,6 +135,11 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 			// Validate --wait requires --execute
 			if opts.Wait && !opts.Execute {
 				return errors.New("dispatch: --wait requires --execute")
+			}
+
+			// Validate --stream-logs requires --wait
+			if opts.StreamLogs && !opts.Wait {
+				return errors.New("dispatch: --stream-logs requires --wait")
 			}
 
 			spriteArg := ""
@@ -302,10 +312,26 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 						pollTarget = resolved
 					}
 				}
+
+				// Start log streaming if requested
+				if opts.StreamLogs {
+					_, _ = fmt.Fprintf(cmd.OutOrStderr(), "[logs] Streaming logs from %s...\n", pollTarget)
+					go func() {
+						_ = deps.streamLogs(cmd.Context(), remote, pollTarget, func(line string) {
+							_, _ = fmt.Fprintln(cmd.OutOrStdout(), line)
+						})
+					}()
+				}
+
 				waitRes, waitErr := deps.pollSprite(cmd.Context(), remote, pollTarget, opts.Timeout, func(msg string) {
 					// Intentionally ignoring write errors for progress output
 					_, _ = fmt.Fprintln(cmd.OutOrStdout(), msg)
 				})
+
+				if opts.StreamLogs {
+					deps.stopLogStream()
+				}
+
 				if waitErr != nil {
 					// Graceful degradation: return dispatch result with warning
 					// Intentionally ignoring write errors for warning message
@@ -327,6 +353,7 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 	command.Flags().BoolVar(&opts.DryRun, "dry-run", true, "Preview dispatch plan without side effects")
 	command.Flags().BoolVar(&opts.JSON, "json", false, "Emit JSON output")
 	command.Flags().BoolVar(&opts.Wait, "wait", false, "Wait for task completion and stream progress")
+	command.Flags().BoolVar(&opts.StreamLogs, "stream-logs", false, "Stream sprite logs to stdout while waiting (--wait required)")
 	command.Flags().DurationVar(&opts.Timeout, "timeout", opts.Timeout, "Timeout for --wait (default: 30m)")
 	command.Flags().StringVar(&opts.App, "app", opts.App, "Sprites app name")
 	command.Flags().StringVar(&opts.Token, "token", opts.Token, "API token (or set FLY_API_TOKEN/FLY_TOKEN env var)")
@@ -563,7 +590,7 @@ func contextOrBackground(ctx context.Context) context.Context {
 	return ctx
 }
 
-// pollSpriteStatus polls a sprite for task completion.
+// pollSpriteStatus polls a sprite for task completion with enhanced progress reporting.
 func pollSpriteStatus(ctx context.Context, remote *spriteCLIRemote, sprite string, timeout time.Duration, progress func(string)) (*waitResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -573,14 +600,14 @@ func pollSpriteStatus(ctx context.Context, remote *spriteCLIRemote, sprite strin
 	// Immediate check before any delay — catches already-completed oneshot tasks.
 	result, done, err := checkSpriteStatus(ctx, remote, sprite, workspace)
 	if err == nil && result != nil {
-		progress(fmt.Sprintf("Status: %s", result.State))
+		progress(formatStatusLine(result))
 		if done {
 			return result, nil
 		}
 	}
 
 	// Brief delay before starting poll loop
-	progress(fmt.Sprintf("Waiting for %s to finish...", sprite))
+	progress(fmt.Sprintf("⏳ Waiting for %s to finish...", sprite))
 	select {
 	case <-time.After(2 * time.Second):
 	case <-ctx.Done():
@@ -600,17 +627,49 @@ func pollSpriteStatus(ctx context.Context, remote *spriteCLIRemote, sprite strin
 		case <-ticker.C:
 			result, done, err := checkSpriteStatus(ctx, remote, sprite, workspace)
 			if err != nil {
-				progress(fmt.Sprintf("Polling error (retrying): %v", err))
+				progress(fmt.Sprintf("⚠️  Polling error (retrying): %v", err))
 				continue
 			}
 			if result != nil {
-				progress(fmt.Sprintf("Status: %s", result.State))
+				progress(formatStatusLine(result))
 			}
 			if done && result != nil {
 				return result, nil
 			}
 		}
 	}
+}
+
+// formatStatusLine formats a waitResult as a concise status line for progress output.
+func formatStatusLine(r *waitResult) string {
+	var parts []string
+
+	switch r.State {
+	case "running":
+		parts = append(parts, "🔄 Running")
+	case "completed":
+		parts = append(parts, "✅ Completed")
+	case "blocked":
+		parts = append(parts, "🚫 Blocked")
+	case "idle":
+		parts = append(parts, "💤 Idle")
+	default:
+		parts = append(parts, fmt.Sprintf("Status: %s", r.State))
+	}
+
+	if r.Task != "" && r.Task != "-" {
+		parts = append(parts, fmt.Sprintf("task: %s", truncateString(r.Task, 40)))
+	}
+
+	if r.Runtime != "" && r.Runtime != "-" {
+		parts = append(parts, fmt.Sprintf("runtime: %s", r.Runtime))
+	}
+
+	if r.Blocked && r.BlockedReason != "" {
+		parts = append(parts, fmt.Sprintf("reason: %s", truncateString(r.BlockedReason, 30)))
+	}
+
+	return strings.Join(parts, " | ")
 }
 
 // checkSpriteStatus checks the current status of a sprite task.
@@ -777,3 +836,11 @@ func parseStatusCheckOutput(output string) (*waitResult, bool, error) {
 
 	return result, complete, nil
 }
+
+// noopStreamLogs is a no-op log stream function for default deps.
+func noopStreamLogs(ctx context.Context, remote *spriteCLIRemote, sprite string, out func(string)) error {
+	return nil
+}
+
+// noopStopLogStream is a no-op log stream stop function for default deps.
+func noopStopLogStream() {}
