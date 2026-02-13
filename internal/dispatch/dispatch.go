@@ -142,6 +142,8 @@ type Result struct {
 	CommandOutput string        `json:"command_output,omitempty"`
 	StartedAt     time.Time     `json:"started_at,omitempty"`
 	Task          string        `json:"task,omitempty"`
+	// LogPath is the path to the agent output log on the sprite (oneshot mode only).
+	LogPath string `json:"log_path,omitempty"`
 }
 
 // Config wires dependencies for dispatching.
@@ -293,6 +295,7 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 		PromptPath: prepared.PromptPath,
 		StartedAt:  prepared.StartedAt,
 		Task:       prepared.TaskLabel,
+		LogPath:    prepared.LogPath,
 	}
 	if !prepared.Execute {
 		return result, nil
@@ -666,6 +669,8 @@ type preparedRequest struct {
 	ProvisionMetadata    map[string]string
 	AllowAnthropicDirect bool
 	MachineID            string
+	// LogPath is the path to the agent output log on the sprite (oneshot mode only).
+	LogPath string
 }
 
 type repoTarget struct {
@@ -737,7 +742,8 @@ func (s *Service) prepare(req Request) (preparedRequest, error) {
 	}
 
 	startedAt := s.now().UTC()
-	startCommand := buildOneShotScript(s.workspace, promptPath)
+	logPath := s.workspace + "/logs/oneshot-" + startedAt.Format("20060102-150405") + ".log"
+	startCommand := buildOneShotScript(s.workspace, promptPath, logPath)
 	if req.Ralph {
 		maxTokens := req.MaxTokens
 		if maxTokens <= 0 {
@@ -794,6 +800,7 @@ func (s *Service) prepare(req Request) (preparedRequest, error) {
 		ProvisionMetadata:    metadata,
 		AllowAnthropicDirect: req.AllowAnthropicDirect,
 		MachineID:            machineID,
+		LogPath:              logPath,
 	}, nil
 }
 
@@ -1183,7 +1190,9 @@ func buildSetupRepoScript(workspace, cloneURL, repoDir string) string {
 //     Falls back to raw pipe on systems without script(1).
 //   - --output-format stream-json enables structured output parsing by the
 //     watchdog and polling systems.
-func buildOneShotScript(workspace, promptPath string) string {
+//   - Output is captured to logPath for diagnostics. This addresses the "zero effect"
+//     issue where agents exit cleanly but produce no observable changes.
+func buildOneShotScript(workspace, promptPath, logPath string) string {
 	port := strconv.Itoa(proxy.ProxyPort)
 	env := proxy.StartEnv("", port, "${OPENROUTER_API_KEY}")
 	env["PROXY_PID_FILE"] = proxy.ProxyPIDFile
@@ -1212,6 +1221,7 @@ func buildOneShotScript(workspace, promptPath string) string {
 	return strings.Join([]string{
 		"set -euo pipefail",
 		"mkdir -p " + shellutil.Quote(workspace),
+		"mkdir -p " + shellutil.Quote(filepath.Dir(logPath)),
 		"cd " + shellutil.Quote(workspace),
 		"rm -f " + SignalTaskComplete + " " + SignalTaskCompleteMD + " " + SignalBlocked,
 		"# Start anthropic proxy if available",
@@ -1244,12 +1254,18 @@ func buildOneShotScript(workspace, promptPath string) string {
 		"    export ANTHROPIC_API_KEY=proxy-mode",
 		"  fi",
 		"fi",
+		"# Capture output for diagnostics (addresses issue #294 - zero effect debugging)",
+		"echo '[oneshot] starting at '$(date -Iseconds) > " + shellutil.Quote(logPath),
+		"echo '[oneshot] prompt: " + shellutil.Quote(promptPath) + "' >> " + shellutil.Quote(logPath),
 		"if command -v script >/dev/null 2>&1; then",
-		"  script -qefc " + shellutil.Quote("cat "+shellutil.Quote(promptPath)+" | claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json") + " /dev/null",
+		"  script -qefc " + shellutil.Quote("cat "+shellutil.Quote(promptPath)+" | claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json") + " /dev/null 2>&1 | tee -a " + shellutil.Quote(logPath),
 		"else",
-		"  cat " + shellutil.Quote(promptPath) + " | claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json",
+		"  cat " + shellutil.Quote(promptPath) + " | claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json 2>&1 | tee -a " + shellutil.Quote(logPath),
 		"fi",
+		"EXIT_CODE=$?",
+		"echo '[oneshot] exited with code ' $EXIT_CODE ' at ' $(date -Iseconds) >> " + shellutil.Quote(logPath),
 		"rm -f " + shellutil.Quote(promptPath),
+		"exit $EXIT_CODE",
 	}, "\n")
 }
 
