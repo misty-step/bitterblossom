@@ -942,3 +942,122 @@ func TestSelectSpriteFromRegistryMissingFile(t *testing.T) {
 		})
 	}
 }
+
+func TestDispatchWaitSkipsPollingForOneshotCompleted(t *testing.T) {
+	// Cannot use t.Parallel() — t.Setenv modifies process environment.
+	t.Setenv("GITHUB_TOKEN", "ghp-test")
+	t.Setenv("OPENROUTER_API_KEY", "or-test")
+
+	pollCalled := false
+	runner := &fakeDispatchRunner{
+		result: dispatchsvc.Result{
+			Executed: true,
+			State:    dispatchsvc.StateCompleted,
+			Plan: dispatchsvc.Plan{
+				Sprite: "bramble",
+				Mode:   "execute",
+				Steps:  []dispatchsvc.PlanStep{{Kind: dispatchsvc.StepStartAgent, Description: "start"}},
+			},
+		},
+	}
+
+	deps := dispatchDeps{
+		readFile: func(string) ([]byte, error) { return nil, nil },
+		newFlyClient: func(token, apiURL string) (fly.MachineClient, error) {
+			return fakeFlyClient{}, nil
+		},
+		newRemote: func(binary, org string) *spriteCLIRemote {
+			return &spriteCLIRemote{}
+		},
+		newService: func(cfg dispatchsvc.Config) (dispatchRunner, error) {
+			return runner, nil
+		},
+		pollSprite: func(ctx context.Context, remote *spriteCLIRemote, sprite string, timeout time.Duration, progress func(string)) (*waitResult, error) {
+			pollCalled = true
+			return &waitResult{State: "completed", Complete: true}, nil
+		},
+	}
+
+	cmd := newDispatchCmdWithDeps(deps)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{
+		"bramble",
+		"Fix flaky tests",
+		"--execute",
+		"--wait",
+		"--app", "bb-app",
+		"--token", "tok",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cmd.Execute() error = %v", err)
+	}
+
+	if pollCalled {
+		t.Fatal("pollSprite should not be called when oneshot state is already completed")
+	}
+
+	if !strings.Contains(out.String(), "COMPLETE") {
+		t.Fatalf("output should show COMPLETE status, got: %q", out.String())
+	}
+}
+
+func TestDispatchWaitStillPollsForRalphMode(t *testing.T) {
+	// Cannot use t.Parallel() — t.Setenv modifies process environment.
+	t.Setenv("GITHUB_TOKEN", "ghp-test")
+	t.Setenv("OPENROUTER_API_KEY", "or-test")
+
+	pollCalled := false
+	runner := &fakeDispatchRunner{
+		result: dispatchsvc.Result{
+			Executed: true,
+			State:    dispatchsvc.StateCompleted,
+			Plan: dispatchsvc.Plan{
+				Sprite: "bramble",
+				Mode:   "execute",
+				Steps:  []dispatchsvc.PlanStep{{Kind: dispatchsvc.StepStartAgent, Description: "start"}},
+			},
+		},
+	}
+
+	deps := dispatchDeps{
+		readFile: func(string) ([]byte, error) { return nil, nil },
+		newFlyClient: func(token, apiURL string) (fly.MachineClient, error) {
+			return fakeFlyClient{}, nil
+		},
+		newRemote: func(binary, org string) *spriteCLIRemote {
+			return &spriteCLIRemote{}
+		},
+		newService: func(cfg dispatchsvc.Config) (dispatchRunner, error) {
+			return runner, nil
+		},
+		pollSprite: func(ctx context.Context, remote *spriteCLIRemote, sprite string, timeout time.Duration, progress func(string)) (*waitResult, error) {
+			pollCalled = true
+			return &waitResult{State: "completed", Complete: true}, nil
+		},
+	}
+
+	cmd := newDispatchCmdWithDeps(deps)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{
+		"bramble",
+		"Fix flaky tests",
+		"--execute",
+		"--wait",
+		"--ralph",
+		"--app", "bb-app",
+		"--token", "tok",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cmd.Execute() error = %v", err)
+	}
+
+	if !pollCalled {
+		t.Fatal("pollSprite should be called for Ralph mode even when state is completed")
+	}
+}
