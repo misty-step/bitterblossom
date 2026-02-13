@@ -586,6 +586,16 @@ func (s *Service) buildPlan(req preparedRequest, provisionNeeded bool) Plan {
 			Description: "verify ANTHROPIC_API_KEY is not set to a direct key",
 		})
 	}
+	steps = append(steps, PlanStep{
+		Kind:        StepCleanSignals,
+		Description: fmt.Sprintf("remove stale signal files from %s", s.workspace),
+	})
+	if s.scaffoldDir != "" {
+		steps = append(steps, PlanStep{
+			Kind:        StepUploadScaffold,
+			Description: fmt.Sprintf("upload base CLAUDE.md, persona, hooks, settings to %s", s.workspace),
+		})
+	}
 	if req.Repo.CloneURL != "" {
 		steps = append(steps, PlanStep{
 			Kind:        StepSetupRepo,
@@ -606,19 +616,6 @@ func (s *Service) buildPlan(req preparedRequest, provisionNeeded bool) Plan {
 		Kind:        StepWriteStatus,
 		Description: fmt.Sprintf("write status marker to %s/STATUS.json", s.workspace),
 	})
-
-	steps = append(steps, PlanStep{
-		Kind:        StepCleanSignals,
-		Description: fmt.Sprintf("remove stale signal files from %s", s.workspace),
-	})
-
-	if s.scaffoldDir != "" {
-		steps = append(steps, PlanStep{
-			Kind:        StepUploadScaffold,
-			Description: fmt.Sprintf("upload base CLAUDE.md, persona, hooks, settings to %s", s.workspace),
-		})
-	}
-
 	if _, hasOpenRouterKey := s.envVars["OPENROUTER_API_KEY"]; hasOpenRouterKey {
 		steps = append(steps, PlanStep{
 			Kind:        StepEnsureProxy,
@@ -806,6 +803,12 @@ func (s *Service) cleanSignals(ctx context.Context, sprite string) error {
 func (s *Service) scaffold(ctx context.Context, sprite string) error {
 	if s.scaffoldDir == "" {
 		return nil
+	}
+
+	// Ensure target directories exist before uploading
+	mkdirScript := fmt.Sprintf("mkdir -p %s/.claude/hooks", shellutil.Quote(s.workspace))
+	if _, err := s.remote.Exec(ctx, sprite, mkdirScript, nil); err != nil {
+		return fmt.Errorf("scaffold mkdir: %w", err)
 	}
 
 	// Upload base/CLAUDE.md -> $WORKSPACE/CLAUDE.md

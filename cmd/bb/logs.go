@@ -99,8 +99,9 @@ func newLogsCmdWithDeps(stdout, stderr io.Writer, deps logsDeps) *cobra.Command 
 				return fmt.Errorf("logs: no sprites found")
 			}
 
-			// Default to raw logs; use --events for structured event log
-			if !eventsMode {
+			// Default to raw logs; use --events for structured event log.
+			// --follow requires events mode (raw tail -f blocks through buffering Exec).
+			if !eventsMode && !follow {
 				return runRemoteRawLogs(ctx, stdout, stderr, cli, names, follow, pollInterval)
 			}
 
