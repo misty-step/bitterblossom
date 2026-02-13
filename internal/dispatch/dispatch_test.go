@@ -1134,6 +1134,38 @@ func TestBuildSetupRepoScriptFreshClone(t *testing.T) {
 	}
 }
 
+func TestBuildSetupRepoScriptProgressIndicators(t *testing.T) {
+	t.Parallel()
+
+	script := buildSetupRepoScript("/workspace", "https://github.com/org/repo.git", "repo")
+
+	// Must show progress message for existing repo (pull path)
+	if !strings.Contains(script, "[setup] pulling latest for") {
+		t.Error("script missing progress message for existing repo")
+	}
+
+	// Must show progress message for fresh clone
+	if !strings.Contains(script, "[setup] cloning") {
+		t.Error("script missing progress message for fresh clone")
+	}
+	if !strings.Contains(script, "(first time, may take a few minutes)") {
+		t.Error("script missing 'first time' hint for cold start")
+	}
+
+	// Must track timing
+	if !strings.Contains(script, "START_TIME=$(date +%s)") {
+		t.Error("script missing START_TIME")
+	}
+	if !strings.Contains(script, "END_TIME=$(date +%s)") {
+		t.Error("script missing END_TIME")
+	}
+
+	// Must show completion with elapsed time
+	if !strings.Contains(script, "[setup] repo ready (${ELAPSED}s)") {
+		t.Error("script missing completion message with elapsed time")
+	}
+}
+
 func TestResolveSkillMountsEnforcesMaxMounts(t *testing.T) {
 	// Create temp skill directories
 	skillRoot := t.TempDir()
