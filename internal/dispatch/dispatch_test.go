@@ -1364,19 +1364,31 @@ func TestScaffoldUploadsBaseFiles(t *testing.T) {
 	scaffoldDir := t.TempDir()
 
 	// Create base/CLAUDE.md
-	os.WriteFile(filepath.Join(scaffoldDir, "CLAUDE.md"), []byte("# Base CLAUDE"), 0o644)
+	if err := os.WriteFile(filepath.Join(scaffoldDir, "CLAUDE.md"), []byte("# Base CLAUDE"), 0o644); err != nil {
+		t.Fatalf("write CLAUDE.md: %v", err)
+	}
 
 	// Create base/settings.json
-	os.WriteFile(filepath.Join(scaffoldDir, "settings.json"), []byte(`{"key":"val"}`), 0o644)
+	if err := os.WriteFile(filepath.Join(scaffoldDir, "settings.json"), []byte(`{"key":"val"}`), 0o644); err != nil {
+		t.Fatalf("write settings.json: %v", err)
+	}
 
 	// Create base/hooks/
-	os.MkdirAll(filepath.Join(scaffoldDir, "hooks"), 0o755)
-	os.WriteFile(filepath.Join(scaffoldDir, "hooks", "guard.py"), []byte("# hook"), 0o644)
+	if err := os.MkdirAll(filepath.Join(scaffoldDir, "hooks"), 0o755); err != nil {
+		t.Fatalf("mkdir hooks: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(scaffoldDir, "hooks", "guard.py"), []byte("# hook"), 0o644); err != nil {
+		t.Fatalf("write guard.py: %v", err)
+	}
 
 	// Create sprites/ dir (sibling of scaffold dir)
 	spritesDir := filepath.Join(filepath.Dir(scaffoldDir), "sprites")
-	os.MkdirAll(spritesDir, 0o755)
-	os.WriteFile(filepath.Join(spritesDir, "fern.md"), []byte("# Fern persona"), 0o644)
+	if err := os.MkdirAll(spritesDir, 0o755); err != nil {
+		t.Fatalf("mkdir sprites: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(spritesDir, "fern.md"), []byte("# Fern persona"), 0o644); err != nil {
+		t.Fatalf("write fern.md: %v", err)
+	}
 
 	remote := &fakeRemote{
 		execResponses: []string{

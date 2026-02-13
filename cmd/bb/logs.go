@@ -266,7 +266,7 @@ func followRemoteEvents(ctx context.Context, stdout, stderr io.Writer, cli sprit
 func runRemoteRawLogs(ctx context.Context, stdout, stderr io.Writer, cli sprite.SpriteCLI, names []string, follow bool, pollInterval time.Duration) error {
 	for _, name := range names {
 		if len(names) > 1 {
-			fmt.Fprintf(stdout, "=== %s ===\n", name)
+			_, _ = fmt.Fprintf(stdout, "=== %s ===\n", name)
 		}
 
 		var cmd string
@@ -278,13 +278,13 @@ func runRemoteRawLogs(ctx context.Context, stdout, stderr io.Writer, cli sprite.
 
 		out, err := cli.Exec(ctx, name, cmd, nil)
 		if err != nil {
-			fmt.Fprintf(stderr, "logs: fetch raw logs from %q: %v\n", name, err)
+			_, _ = fmt.Fprintf(stderr, "logs: fetch raw logs from %q: %v\n", name, err)
 			continue
 		}
 		if strings.TrimSpace(out) != "" {
-			fmt.Fprintln(stdout, out)
+			_, _ = fmt.Fprintln(stdout, out)
 		} else {
-			fmt.Fprintf(stdout, "(no ralph.log output yet for %s)\n", name)
+			_, _ = fmt.Fprintf(stdout, "(no ralph.log output yet for %s)\n", name)
 		}
 	}
 	return nil
