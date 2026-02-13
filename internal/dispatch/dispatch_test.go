@@ -912,6 +912,38 @@ func TestRunExecuteWithoutOpenRouterKey_SkipsProxy(t *testing.T) {
 	}
 }
 
+func TestBuildOneShotScriptCleansStatusFiles(t *testing.T) {
+	t.Parallel()
+
+	script := buildOneShotScript("/home/sprite/workspace", "/home/sprite/workspace/prompt.md")
+
+	// Must contain cleanup of TASK_COMPLETE and BLOCKED.md
+	if !strings.Contains(script, "rm -f TASK_COMPLETE BLOCKED.md") {
+		t.Errorf("buildOneShotScript missing cleanup of TASK_COMPLETE and BLOCKED.md")
+	}
+
+	// Cleanup must be early in the script (before proxy startup)
+	lines := strings.Split(script, "\n")
+	cleanupIdx, proxyIdx := -1, -1
+	for i, line := range lines {
+		if strings.Contains(line, "rm -f TASK_COMPLETE BLOCKED.md") {
+			cleanupIdx = i
+		}
+		if strings.Contains(line, "Start anthropic proxy") {
+			proxyIdx = i
+		}
+	}
+	if cleanupIdx == -1 {
+		t.Fatal("cleanup command not found in script")
+	}
+	if proxyIdx == -1 {
+		t.Fatal("proxy comment not found in script")
+	}
+	if cleanupIdx >= proxyIdx {
+		t.Errorf("cleanup (line %d) must come before proxy startup (line %d)", cleanupIdx, proxyIdx)
+	}
+}
+
 func TestBuildScriptMkdirBeforeCD(t *testing.T) {
 	t.Parallel()
 
