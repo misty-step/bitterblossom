@@ -145,8 +145,8 @@ func TestRunDryRunBuildsPlanWithoutSideEffects(t *testing.T) {
 	if result.Executed {
 		t.Fatalf("Executed = %v, want false", result.Executed)
 	}
-	if len(result.Plan.Steps) != 6 {
-		t.Fatalf("len(plan.steps) = %d, want 6", len(result.Plan.Steps))
+	if len(result.Plan.Steps) != 7 {
+		t.Fatalf("len(plan.steps) = %d, want 7", len(result.Plan.Steps))
 	}
 	if len(flyClient.createReqs) != 0 {
 		t.Fatalf("unexpected create calls: %d", len(flyClient.createReqs))
@@ -163,6 +163,7 @@ func TestRunExecuteProvisionAndStartRalph(t *testing.T) {
 	remote := &fakeRemote{
 		execResponses: []string{
 			"",          // validate env (empty key = ok)
+			"",          // clean signals
 			"",          // setup repo
 			"PID: 4242", // start ralph
 		},
@@ -223,26 +224,29 @@ func TestRunExecuteProvisionAndStartRalph(t *testing.T) {
 	if !strings.Contains(remote.execCalls[0].command, "printenv ANTHROPIC_API_KEY") {
 		t.Fatalf("expected env validation command, got %q", remote.execCalls[0].command)
 	}
-	if !strings.Contains(remote.execCalls[1].command, "gh repo clone") {
-		t.Fatalf("expected repo setup command, got %q", remote.execCalls[1].command)
+	if !strings.Contains(remote.execCalls[1].command, "rm -f") {
+		t.Fatalf("expected clean signals command, got %q", remote.execCalls[1].command)
 	}
-	if !strings.Contains(remote.execCalls[2].command, "sprite-agent") {
-		t.Fatalf("expected ralph start command, got %q", remote.execCalls[2].command)
+	if !strings.Contains(remote.execCalls[2].command, "gh repo clone") {
+		t.Fatalf("expected repo setup command, got %q", remote.execCalls[2].command)
 	}
-	if !strings.Contains(remote.execCalls[2].command, "BB_CLAUDE_FLAGS") {
-		t.Fatalf("expected ralph start to pass BB_CLAUDE_FLAGS to sprite-agent, got %q", remote.execCalls[2].command)
+	if !strings.Contains(remote.execCalls[3].command, "sprite-agent") {
+		t.Fatalf("expected ralph start command, got %q", remote.execCalls[3].command)
 	}
-	if !strings.Contains(remote.execCalls[2].command, "MAX_TOKENS=200000") {
-		t.Fatalf("expected ralph start to pass MAX_TOKENS, got %q", remote.execCalls[2].command)
+	if !strings.Contains(remote.execCalls[3].command, "BB_CLAUDE_FLAGS") {
+		t.Fatalf("expected ralph start to pass BB_CLAUDE_FLAGS to sprite-agent, got %q", remote.execCalls[3].command)
 	}
-	if !strings.Contains(remote.execCalls[2].command, "MAX_TIME_SEC=1800") {
-		t.Fatalf("expected ralph start to pass MAX_TIME_SEC, got %q", remote.execCalls[2].command)
+	if !strings.Contains(remote.execCalls[3].command, "MAX_TOKENS=200000") {
+		t.Fatalf("expected ralph start to pass MAX_TOKENS, got %q", remote.execCalls[3].command)
 	}
-	if !strings.Contains(remote.execCalls[2].command, "--dangerously-skip-permissions") {
-		t.Fatalf("expected ralph start BB_CLAUDE_FLAGS to include dangerously-skip-permissions, got %q", remote.execCalls[2].command)
+	if !strings.Contains(remote.execCalls[3].command, "MAX_TIME_SEC=1800") {
+		t.Fatalf("expected ralph start to pass MAX_TIME_SEC, got %q", remote.execCalls[3].command)
 	}
-	if !strings.Contains(remote.execCalls[2].command, "--output-format stream-json") {
-		t.Fatalf("expected ralph start BB_CLAUDE_FLAGS to include stream-json output, got %q", remote.execCalls[2].command)
+	if !strings.Contains(remote.execCalls[3].command, "--dangerously-skip-permissions") {
+		t.Fatalf("expected ralph start BB_CLAUDE_FLAGS to include dangerously-skip-permissions, got %q", remote.execCalls[3].command)
+	}
+	if !strings.Contains(remote.execCalls[3].command, "--output-format stream-json") {
+		t.Fatalf("expected ralph start BB_CLAUDE_FLAGS to include stream-json output, got %q", remote.execCalls[3].command)
 	}
 }
 
@@ -250,6 +254,7 @@ func TestRunExecuteOneShotCompletes(t *testing.T) {
 	remote := &fakeRemote{
 		execResponses: []string{
 			"",     // validate env
+			"",     // clean signals
 			"done", // oneshot agent
 		},
 		listSprites: []string{"willow"},
@@ -287,20 +292,107 @@ func TestRunExecuteOneShotCompletes(t *testing.T) {
 	if remote.uploads[0].path != "/home/sprite/workspace/.dispatch-prompt.md" {
 		t.Fatalf("oneshot prompt path = %q", remote.uploads[0].path)
 	}
-	if len(remote.execCalls) != 2 {
-		t.Fatalf("exec calls = %d, want 2", len(remote.execCalls))
+	if len(remote.execCalls) != 3 {
+		t.Fatalf("exec calls = %d, want 3", len(remote.execCalls))
 	}
 	if !strings.Contains(remote.execCalls[0].command, "printenv ANTHROPIC_API_KEY") {
 		t.Fatalf("expected env validation command, got %q", remote.execCalls[0].command)
 	}
-	if !strings.Contains(remote.execCalls[1].command, "claude -p") {
-		t.Fatalf("expected claude command, got %q", remote.execCalls[1].command)
+	if !strings.Contains(remote.execCalls[1].command, "rm -f") {
+		t.Fatalf("expected clean signals command, got %q", remote.execCalls[1].command)
 	}
-	if !strings.Contains(remote.execCalls[1].command, "--dangerously-skip-permissions") {
-		t.Fatalf("expected claude command to include dangerously-skip-permissions, got %q", remote.execCalls[1].command)
+	if !strings.Contains(remote.execCalls[2].command, "claude -p") {
+		t.Fatalf("expected claude command, got %q", remote.execCalls[2].command)
 	}
-	if !strings.Contains(remote.execCalls[1].command, "--verbose --output-format stream-json") {
-		t.Fatalf("expected claude command to include verbose stream-json output, got %q", remote.execCalls[1].command)
+	if !strings.Contains(remote.execCalls[2].command, "--dangerously-skip-permissions") {
+		t.Fatalf("expected claude command to include dangerously-skip-permissions, got %q", remote.execCalls[2].command)
+	}
+	if !strings.Contains(remote.execCalls[2].command, "--verbose --output-format stream-json") {
+		t.Fatalf("expected claude command to include verbose stream-json output, got %q", remote.execCalls[2].command)
+	}
+}
+
+func TestRunCleanSignalsBeforePromptUpload(t *testing.T) {
+	remote := &fakeRemote{
+		execResponses: []string{
+			"",     // validate env
+			"",     // clean signals
+			"done", // oneshot agent
+		},
+		listSprites: []string{"willow"},
+	}
+	flyClient := &fakeFly{}
+
+	service, err := NewService(Config{
+		Remote:    remote,
+		Fly:       flyClient,
+		App:       "bb-app",
+		Workspace: "/home/sprite/workspace",
+	})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	result, err := service.Run(context.Background(), Request{
+		Sprite:  "willow",
+		Prompt:  "Generate release notes",
+		Execute: true,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if result.State != StateCompleted {
+		t.Fatalf("state = %q, want %q", result.State, StateCompleted)
+	}
+
+	// Verify that clean signals exec happens before prompt upload
+	if len(remote.execCalls) < 2 {
+		t.Fatalf("expected at least 2 exec calls, got %d", len(remote.execCalls))
+	}
+
+	// Find the dedicated cleanSignals call. It's a standalone rm -f that only
+	// removes signal files (not PID files — those are needed by start scripts).
+	cleanSignalsIdx := -1
+
+	for i, call := range remote.execCalls {
+		if strings.Contains(call.command, "rm -f") && strings.Contains(call.command, "TASK_COMPLETE") && !strings.Contains(call.command, "agent.pid") {
+			cleanSignalsIdx = i
+			break
+		}
+	}
+
+	if cleanSignalsIdx == -1 {
+		t.Fatal("expected clean signals exec call not found")
+	}
+
+	if len(remote.uploads) != 2 {
+		t.Fatalf("upload calls = %d, want 2", len(remote.uploads))
+	}
+
+	// Verify the first upload is the prompt (after clean signals)
+	if remote.uploads[0].path != "/home/sprite/workspace/.dispatch-prompt.md" {
+		t.Fatalf("expected prompt upload first, got %q", remote.uploads[0].path)
+	}
+
+	// Verify clean signals removes signal files but NOT PID files
+	cleanSignalsCmd := remote.execCalls[cleanSignalsIdx].command
+	expectedFiles := []string{
+		"TASK_COMPLETE",
+		"TASK_COMPLETE.md",
+		"BLOCKED.md",
+		"BLOCKED",
+	}
+	for _, file := range expectedFiles {
+		if !strings.Contains(cleanSignalsCmd, file) {
+			t.Errorf("clean signals command missing %q: %q", file, cleanSignalsCmd)
+		}
+	}
+	// PID files must NOT be in cleanSignals — start scripts need them to kill stale processes
+	for _, file := range []string{"agent.pid", "ralph.pid"} {
+		if strings.Contains(cleanSignalsCmd, file) {
+			t.Errorf("clean signals should not remove %q (needed by start scripts): %q", file, cleanSignalsCmd)
+		}
 	}
 }
 
@@ -329,6 +421,7 @@ func TestRunExecuteWithSkillsUploadsAndInjectsPrompt(t *testing.T) {
 	remote := &fakeRemote{
 		execResponses: []string{
 			"",     // validate env
+			"",     // clean signals
 			"done", // oneshot agent
 		},
 		listSprites: []string{"willow"},
@@ -538,7 +631,7 @@ func TestRunExecuteErrorsPreserveFailedState(t *testing.T) {
 				Repo:    "misty-step/heartbeat",
 				Execute: true,
 			},
-			remote:  &fakeRemote{execErrs: []error{nil, errors.New("setup failed")}, listSprites: []string{"fern"}},
+			remote:  &fakeRemote{execErrs: []error{nil, nil, errors.New("setup failed")}, listSprites: []string{"fern"}},
 			fly:     &fakeFly{},
 			wantErr: "dispatch: setup repo",
 		},
@@ -571,7 +664,7 @@ func TestRunExecuteErrorsPreserveFailedState(t *testing.T) {
 				Prompt:  "Fix tests",
 				Execute: true,
 			},
-			remote:  &fakeRemote{execErrs: []error{nil, errors.New("start failed")}, listSprites: []string{"fern"}},
+			remote:  &fakeRemote{execErrs: []error{nil, nil, errors.New("start failed")}, listSprites: []string{"fern"}},
 			fly:     &fakeFly{},
 			wantErr: "dispatch: start agent",
 		},
@@ -703,6 +796,7 @@ machine_id = "m-def456"
 	remote := &fakeRemote{
 		execResponses: []string{
 			"",     // validate env
+			"",     // clean signals
 			"done", // oneshot
 		},
 	}
@@ -735,8 +829,8 @@ machine_id = "m-def456"
 	}
 	// Remote ops (exec/upload) should use sprite name, not machine ID.
 	// sprite exec -s expects names, not Fly machine IDs.
-	if len(remote.execCalls) != 2 {
-		t.Fatalf("exec calls = %d, want 2", len(remote.execCalls))
+	if len(remote.execCalls) != 3 {
+		t.Fatalf("exec calls = %d, want 3", len(remote.execCalls))
 	}
 	if remote.execCalls[0].sprite != "fern" {
 		t.Fatalf("exec sprite = %q, want name %q (not machine ID)", remote.execCalls[0].sprite, "fern")
@@ -757,6 +851,7 @@ app = "bb-app"
 	remote := &fakeRemote{
 		execResponses: []string{
 			"",     // validate env
+			"",     // clean signals
 			"done", // oneshot
 		},
 	}
@@ -787,8 +882,8 @@ app = "bb-app"
 	if len(flyClient.createReqs) != 1 {
 		t.Fatalf("create calls = %d, want 1", len(flyClient.createReqs))
 	}
-	if len(remote.execCalls) != 2 {
-		t.Fatalf("exec calls = %d, want 2", len(remote.execCalls))
+	if len(remote.execCalls) != 3 {
+		t.Fatalf("exec calls = %d, want 3", len(remote.execCalls))
 	}
 	if remote.execCalls[0].sprite != "fern" {
 		t.Fatalf("exec sprite = %q, want name %q (not machine ID)", remote.execCalls[0].sprite, "fern")
@@ -808,6 +903,7 @@ func TestRunExecuteWithOpenRouterKey_EnsuresProxy(t *testing.T) {
 	remote := &fakeRemote{
 		execResponses: []string{
 			"",     // validate env
+			"",     // clean signals
 			"000",  // proxy health check (not running)
 			"",     // kill existing process on port (cleanup)
 			"",     // mkdir -p
@@ -1260,5 +1356,100 @@ func TestResolveSkillMountsAcceptsCustomLimits(t *testing.T) {
 	_, err = resolveSkillMountsWithLimits([]string{skillDir}, "/home/sprite/workspace", generousLimits)
 	if err != nil {
 		t.Fatalf("unexpected error with generous limits: %v", err)
+	}
+}
+
+func TestScaffoldUploadsBaseFiles(t *testing.T) {
+	// Create a temp scaffold directory
+	scaffoldDir := t.TempDir()
+
+	// Create base/CLAUDE.md
+	if err := os.WriteFile(filepath.Join(scaffoldDir, "CLAUDE.md"), []byte("# Base CLAUDE"), 0o644); err != nil {
+		t.Fatalf("write CLAUDE.md: %v", err)
+	}
+
+	// Create base/settings.json
+	if err := os.WriteFile(filepath.Join(scaffoldDir, "settings.json"), []byte(`{"key":"val"}`), 0o644); err != nil {
+		t.Fatalf("write settings.json: %v", err)
+	}
+
+	// Create base/hooks/
+	if err := os.MkdirAll(filepath.Join(scaffoldDir, "hooks"), 0o755); err != nil {
+		t.Fatalf("mkdir hooks: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(scaffoldDir, "hooks", "guard.py"), []byte("# hook"), 0o644); err != nil {
+		t.Fatalf("write guard.py: %v", err)
+	}
+
+	// Create sprites/ dir (sibling of scaffold dir)
+	spritesDir := filepath.Join(filepath.Dir(scaffoldDir), "sprites")
+	if err := os.MkdirAll(spritesDir, 0o755); err != nil {
+		t.Fatalf("mkdir sprites: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(spritesDir, "fern.md"), []byte("# Fern persona"), 0o644); err != nil {
+		t.Fatalf("write fern.md: %v", err)
+	}
+
+	remote := &fakeRemote{
+		execResponses: []string{
+			"",     // validate env
+			"",     // clean signals
+			"",     // MEMORY.md init
+			"",     // LEARNINGS.md init
+			"done", // oneshot agent
+		},
+		listSprites: []string{"fern"},
+	}
+
+	service, err := NewService(Config{
+		Remote:      remote,
+		Fly:         &fakeFly{},
+		App:         "bb-app",
+		Workspace:   "/home/sprite/workspace",
+		ScaffoldDir: scaffoldDir,
+	})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	result, err := service.Run(context.Background(), Request{
+		Sprite:  "fern",
+		Prompt:  "Test scaffolding",
+		Execute: true,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.State != StateCompleted {
+		t.Fatalf("state = %q, want %q", result.State, StateCompleted)
+	}
+
+	// Check uploads include CLAUDE.md, settings.json, hook, and PERSONA.md
+	uploadPaths := make(map[string]bool)
+	for _, u := range remote.uploads {
+		uploadPaths[u.path] = true
+	}
+
+	want := []string{
+		"/home/sprite/workspace/CLAUDE.md",
+		"/home/sprite/workspace/.claude/settings.json",
+		"/home/sprite/workspace/.claude/hooks/guard.py",
+		"/home/sprite/workspace/PERSONA.md",
+	}
+	for _, p := range want {
+		if !uploadPaths[p] {
+			t.Errorf("missing upload: %s", p)
+		}
+	}
+
+	// Check plan includes scaffold step
+	hasScaffold := false
+	for _, step := range result.Plan.Steps {
+		if step.Kind == StepUploadScaffold {
+			hasScaffold = true
+		}
+	}
+	if !hasScaffold {
+		t.Error("plan missing StepUploadScaffold")
 	}
 }

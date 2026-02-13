@@ -44,6 +44,7 @@ type dispatchOptions struct {
 	Strict               bool
 	RegistryPath         string
 	RegistryRequired     bool
+	ScaffoldDir          string
 }
 
 type dispatchDeps struct {
@@ -270,6 +271,7 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 				// Persist dispatch lifecycle events locally for operator visibility.
 				// Best-effort; dispatch continues if the logger cannot be created.
 				EventLogger: nil,
+				ScaffoldDir: opts.ScaffoldDir,
 			})
 			if err != nil {
 				return err
@@ -342,6 +344,7 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 	command.Flags().BoolVar(&opts.Strict, "strict", false, "Fail on any validation warning (strict mode)")
 	command.Flags().StringVar(&opts.RegistryPath, "registry", opts.RegistryPath, "Path to sprite registry file")
 	command.Flags().BoolVar(&opts.RegistryRequired, "registry-required", false, "Require sprites to exist in registry (fail if not found)")
+	command.Flags().StringVar(&opts.ScaffoldDir, "scaffold-dir", "", "Path to base/ directory for environment scaffolding")
 
 	return command
 }

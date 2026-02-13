@@ -107,6 +107,8 @@ const (
 	StepRegistryLookup StepKind = "registry_lookup"
 	StepProvision      StepKind = "provision"
 	StepValidateEnv    StepKind = "validate_env"
+	StepCleanSignals   StepKind = "clean_signals"
+	StepUploadScaffold StepKind = "upload_scaffold"
 	StepValidateIssue  StepKind = "validate_issue"
 	StepSetupRepo      StepKind = "setup_repo"
 	StepUploadSkills   StepKind = "upload_skills"
@@ -159,6 +161,9 @@ type Config struct {
 	RegistryRequired bool
 	// EventLogger receives dispatch lifecycle events. Nil uses default local logger.
 	EventLogger EventLogger
+	// ScaffoldDir is the local path to the base/ directory containing CLAUDE.md,
+	// settings.json, hooks/, etc. If empty, scaffolding is skipped.
+	ScaffoldDir string
 }
 
 type provisionInfo struct {
@@ -183,6 +188,7 @@ type Service struct {
 	registryRequired   bool
 	proxyLifecycle     *proxy.Lifecycle
 	eventLogger        EventLogger
+	scaffoldDir        string
 }
 
 // NewService constructs a dispatch service.
@@ -242,6 +248,7 @@ func NewService(cfg Config) (*Service, error) {
 		registryPath:       registryPath,
 		registryRequired:   cfg.RegistryRequired,
 		eventLogger:        cfg.EventLogger,
+		scaffoldDir:        strings.TrimSpace(cfg.ScaffoldDir),
 	}
 
 	if svc.eventLogger == nil {
@@ -377,6 +384,18 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 		}
 		if err := ValidateNoDirectAnthropic(env, false); err != nil {
 			return fail("validate_env", err)
+		}
+	}
+
+	s.logger.Info("dispatch clean signals", "sprite", prepared.Sprite)
+	if err := s.cleanSignals(ctx, prepared.Sprite); err != nil {
+		return fail("clean_signals", fmt.Errorf("dispatch: clean stale signals: %w", err))
+	}
+
+	if s.scaffoldDir != "" {
+		s.logger.Info("dispatch scaffold", "sprite", prepared.Sprite, "base", s.scaffoldDir)
+		if err := s.scaffold(ctx, prepared.Sprite); err != nil {
+			return fail("scaffold", fmt.Errorf("dispatch: scaffold environment: %w", err))
 		}
 	}
 
@@ -567,6 +586,16 @@ func (s *Service) buildPlan(req preparedRequest, provisionNeeded bool) Plan {
 			Description: "verify ANTHROPIC_API_KEY is not set to a direct key",
 		})
 	}
+	steps = append(steps, PlanStep{
+		Kind:        StepCleanSignals,
+		Description: fmt.Sprintf("remove stale signal files from %s", s.workspace),
+	})
+	if s.scaffoldDir != "" {
+		steps = append(steps, PlanStep{
+			Kind:        StepUploadScaffold,
+			Description: fmt.Sprintf("upload base CLAUDE.md, persona, hooks, settings to %s", s.workspace),
+		})
+	}
 	if req.Repo.CloneURL != "" {
 		steps = append(steps, PlanStep{
 			Kind:        StepSetupRepo,
@@ -587,7 +616,6 @@ func (s *Service) buildPlan(req preparedRequest, provisionNeeded bool) Plan {
 		Kind:        StepWriteStatus,
 		Description: fmt.Sprintf("write status marker to %s/STATUS.json", s.workspace),
 	})
-
 	if _, hasOpenRouterKey := s.envVars["OPENROUTER_API_KEY"]; hasOpenRouterKey {
 		steps = append(steps, PlanStep{
 			Kind:        StepEnsureProxy,
@@ -761,6 +789,87 @@ func (s *Service) prepare(req Request) (preparedRequest, error) {
 		AllowAnthropicDirect: req.AllowAnthropicDirect,
 		MachineID:            machineID,
 	}, nil
+}
+
+func (s *Service) cleanSignals(ctx context.Context, sprite string) error {
+	// Only remove signal files, not PID files. The agent start scripts
+	// (buildOneShotScript, buildStartRalphScript) need agent.pid and ralph.pid
+	// to kill stale processes before launching new ones.
+	script := fmt.Sprintf(
+		"rm -f %[1]s/TASK_COMPLETE %[1]s/TASK_COMPLETE.md %[1]s/BLOCKED.md %[1]s/BLOCKED",
+		shellutil.Quote(s.workspace),
+	)
+	_, err := s.remote.Exec(ctx, sprite, script, nil)
+	return err
+}
+
+func (s *Service) scaffold(ctx context.Context, sprite string) error {
+	if s.scaffoldDir == "" {
+		return nil
+	}
+
+	// Ensure target directories exist before uploading
+	mkdirScript := fmt.Sprintf("mkdir -p %s/.claude/hooks", shellutil.Quote(s.workspace))
+	if _, err := s.remote.Exec(ctx, sprite, mkdirScript, nil); err != nil {
+		return fmt.Errorf("scaffold mkdir: %w", err)
+	}
+
+	// Upload base/CLAUDE.md -> $WORKSPACE/CLAUDE.md
+	claudeMD := filepath.Join(s.scaffoldDir, "CLAUDE.md")
+	if content, err := os.ReadFile(claudeMD); err == nil {
+		if err := s.remote.Upload(ctx, sprite, s.workspace+"/CLAUDE.md", content); err != nil {
+			return fmt.Errorf("upload CLAUDE.md: %w", err)
+		}
+	}
+
+	// Upload persona: sprites/<sprite-name>.md -> $WORKSPACE/PERSONA.md
+	personaDir := filepath.Join(filepath.Dir(s.scaffoldDir), "sprites")
+	personaMD := filepath.Join(personaDir, sprite+".md")
+	if content, err := os.ReadFile(personaMD); err == nil {
+		if err := s.remote.Upload(ctx, sprite, s.workspace+"/PERSONA.md", content); err != nil {
+			return fmt.Errorf("upload PERSONA.md: %w", err)
+		}
+	}
+
+	// Upload base/settings.json -> $WORKSPACE/.claude/settings.json
+	settingsJSON := filepath.Join(s.scaffoldDir, "settings.json")
+	if content, err := os.ReadFile(settingsJSON); err == nil {
+		if err := s.remote.Upload(ctx, sprite, s.workspace+"/.claude/settings.json", content); err != nil {
+			return fmt.Errorf("upload settings.json: %w", err)
+		}
+	}
+
+	// Upload hooks from base/hooks/ -> $WORKSPACE/.claude/hooks/
+	hooksDir := filepath.Join(s.scaffoldDir, "hooks")
+	if entries, err := os.ReadDir(hooksDir); err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+				continue
+			}
+			content, err := os.ReadFile(filepath.Join(hooksDir, entry.Name()))
+			if err != nil {
+				continue
+			}
+			remotePath := s.workspace + "/.claude/hooks/" + entry.Name()
+			if err := s.remote.Upload(ctx, sprite, remotePath, content); err != nil {
+				return fmt.Errorf("upload hook %s: %w", entry.Name(), err)
+			}
+		}
+	}
+
+	// Create MEMORY.md and LEARNINGS.md if they don't exist (preserve across dispatches).
+	// Combined into one remote call to save a network round-trip.
+	ws := shellutil.Quote(s.workspace)
+	initScript := fmt.Sprintf(
+		"test -f %[1]s/MEMORY.md || printf '# MEMORY\\n' > %[1]s/MEMORY.md; "+
+			"test -f %[1]s/LEARNINGS.md || printf '# LEARNINGS\\n' > %[1]s/LEARNINGS.md",
+		ws,
+	)
+	if _, err := s.remote.Exec(ctx, sprite, initScript, nil); err != nil {
+		return fmt.Errorf("init memory/learnings: %w", err)
+	}
+
+	return nil
 }
 
 func (s *Service) uploadSkills(ctx context.Context, sprite string, skills []preparedSkill) error {
