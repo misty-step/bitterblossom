@@ -14,7 +14,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const defaultRemoteEventLog = "/home/sprite/workspace/logs/agent.jsonl"
+const (
+	defaultRemoteEventLog = "/home/sprite/workspace/logs/agent.jsonl"
+	defaultRemoteRalphLog = "/home/sprite/workspace/ralph.log"
+)
 
 type logsDeps struct {
 	newCLI func(binary, org string) sprite.SpriteCLI
@@ -44,6 +47,7 @@ func newLogsCmdWithDeps(stdout, stderr io.Writer, deps logsDeps) *cobra.Command 
 	var org string
 	var spriteCLIPath string
 	var allSprites bool
+	var eventsMode bool
 
 	cmd := &cobra.Command{
 		Use:   "logs [sprite...]",
@@ -95,6 +99,11 @@ func newLogsCmdWithDeps(stdout, stderr io.Writer, deps logsDeps) *cobra.Command 
 				return fmt.Errorf("logs: no sprites found")
 			}
 
+			// Default to raw logs; use --events for structured event log
+			if !eventsMode {
+				return runRemoteRawLogs(ctx, stdout, stderr, cli, names, follow, pollInterval)
+			}
+
 			evts, offsets, err := fetchRemoteEvents(ctx, cli, names, filter)
 			if err != nil {
 				return err
@@ -123,6 +132,7 @@ func newLogsCmdWithDeps(stdout, stderr io.Writer, deps logsDeps) *cobra.Command 
 	cmd.Flags().StringVar(&org, "org", defaultOrg(), "Fly.io org for remote sprite access")
 	cmd.Flags().StringVar(&spriteCLIPath, "sprite-cli", defaultSpriteCLIPath(), "path to sprite CLI binary")
 	cmd.Flags().BoolVar(&allSprites, "all", false, "fetch from all sprites in the org")
+	cmd.Flags().BoolVar(&eventsMode, "events", false, "show structured event log (agent.jsonl) instead of raw output")
 
 	return cmd
 }
@@ -250,6 +260,33 @@ func followRemoteEvents(ctx context.Context, stdout, stderr io.Writer, cli sprit
 			}
 		}
 	}
+}
+
+func runRemoteRawLogs(ctx context.Context, stdout, stderr io.Writer, cli sprite.SpriteCLI, names []string, follow bool, pollInterval time.Duration) error {
+	for _, name := range names {
+		if len(names) > 1 {
+			fmt.Fprintf(stdout, "=== %s ===\n", name)
+		}
+
+		var cmd string
+		if follow {
+			cmd = fmt.Sprintf("tail -n 50 -f %s 2>/dev/null", defaultRemoteRalphLog)
+		} else {
+			cmd = fmt.Sprintf("tail -n 100 %s 2>/dev/null", defaultRemoteRalphLog)
+		}
+
+		out, err := cli.Exec(ctx, name, cmd, nil)
+		if err != nil {
+			fmt.Fprintf(stderr, "logs: fetch raw logs from %q: %v\n", name, err)
+			continue
+		}
+		if strings.TrimSpace(out) != "" {
+			fmt.Fprintln(stdout, out)
+		} else {
+			fmt.Fprintf(stdout, "(no ralph.log output yet for %s)\n", name)
+		}
+	}
+	return nil
 }
 
 func readHistoricalEvents(paths []string, filter events.Filter) ([]events.Event, error) {
