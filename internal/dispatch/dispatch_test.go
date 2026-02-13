@@ -304,6 +304,44 @@ func TestRunExecuteOneShotCompletes(t *testing.T) {
 	}
 }
 
+func TestRunExecuteOneShotCleansStaleCompletionMarkers(t *testing.T) {
+	remote := &fakeRemote{
+		execResponses: []string{
+			"",     // validate env
+			"done", // oneshot agent
+		},
+		listSprites: []string{"willow"},
+	}
+
+	service, err := NewService(Config{
+		Remote:    remote,
+		Fly:       &fakeFly{},
+		App:       "bb-app",
+		Workspace: "/home/sprite/workspace",
+	})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	_, err = service.Run(context.Background(), Request{
+		Sprite:  "willow",
+		Prompt:  "Implement feature",
+		Execute: true,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	// The oneshot start script (execCalls[1]) must remove stale completion markers
+	startScript := remote.execCalls[1].command
+	if !strings.Contains(startScript, "rm -f") || !strings.Contains(startScript, "TASK_COMPLETE") {
+		t.Fatalf("oneshot script must clean TASK_COMPLETE before starting agent, got:\n%s", startScript)
+	}
+	if !strings.Contains(startScript, "BLOCKED.md") {
+		t.Fatalf("oneshot script must clean BLOCKED.md before starting agent, got:\n%s", startScript)
+	}
+}
+
 func TestRunExecuteWithSkillsUploadsAndInjectsPrompt(t *testing.T) {
 	skillRoot := t.TempDir()
 

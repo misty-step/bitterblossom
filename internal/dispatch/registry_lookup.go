@@ -65,7 +65,8 @@ func IssuePrompt(issue int, repo string) string {
 		"Implement GitHub issue #%d%s. Read the issue for the full spec. "+
 			"Run tests to verify your changes. Commit with a descriptive message "+
 			"referencing the issue number. Push your branch and open a PR.\n\n"+
-			"When complete, write a summary to TASK_COMPLETE (e.g. echo 'Done: ...' > TASK_COMPLETE).\n"+
+			"When complete, write a summary to a file named exactly TASK_COMPLETE with no file extension "+
+			"(e.g. echo 'Done: fixed X' > TASK_COMPLETE). Do NOT use TASK_COMPLETE.md.\n"+
 			"If blocked, write the reason to BLOCKED.md and stop.",
 		issue, repoClause,
 	)
