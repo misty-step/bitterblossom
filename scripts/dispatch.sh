@@ -131,7 +131,7 @@ start_ralph() {
             WORKSPACE_DIR="'"$WORKSPACE"'"
 
             mkdir -p "$WORKSPACE_DIR/logs"
-            rm -f "$WORKSPACE_DIR/TASK_COMPLETE" "$WORKSPACE_DIR/BLOCKED.md"
+            rm -f "$WORKSPACE_DIR/TASK_COMPLETE" "$WORKSPACE_DIR/TASK_COMPLETE.md" "$WORKSPACE_DIR/BLOCKED.md"
             printf "%s\n" "$TASK_ID" > "$WORKSPACE_DIR/.current-task-id"
 
             if [[ -f "$WORKSPACE_DIR/agent.pid" ]] && kill -0 "$(cat "$WORKSPACE_DIR/agent.pid")" 2>/dev/null; then

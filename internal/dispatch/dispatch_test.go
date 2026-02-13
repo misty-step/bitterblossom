@@ -918,7 +918,7 @@ func TestBuildOneShotScriptCleansStatusFiles(t *testing.T) {
 	script := buildOneShotScript("/home/sprite/workspace", "/home/sprite/workspace/prompt.md")
 
 	// Must contain cleanup of TASK_COMPLETE and BLOCKED.md
-	if !strings.Contains(script, "rm -f TASK_COMPLETE BLOCKED.md") {
+	if !strings.Contains(script, "rm -f TASK_COMPLETE TASK_COMPLETE.md BLOCKED.md") {
 		t.Errorf("buildOneShotScript missing cleanup of TASK_COMPLETE and BLOCKED.md")
 	}
 
@@ -926,7 +926,7 @@ func TestBuildOneShotScriptCleansStatusFiles(t *testing.T) {
 	lines := strings.Split(script, "\n")
 	cleanupIdx, proxyIdx := -1, -1
 	for i, line := range lines {
-		if strings.Contains(line, "rm -f TASK_COMPLETE BLOCKED.md") {
+		if strings.Contains(line, "rm -f TASK_COMPLETE TASK_COMPLETE.md BLOCKED.md") {
 			cleanupIdx = i
 		}
 		if strings.Contains(line, "Start anthropic proxy") {

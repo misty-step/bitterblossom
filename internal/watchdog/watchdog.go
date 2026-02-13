@@ -313,7 +313,7 @@ func buildProbeScript(workspace string) string {
 		"agent_running=no",
 		"if [ -f \"$WORKSPACE/agent.pid\" ] && kill -0 \"$(cat \"$WORKSPACE/agent.pid\")\" 2>/dev/null; then agent_running=yes; fi",
 		"if [ \"$agent_running\" = no ] && [ \"${claude_count:-0}\" -gt 0 ] 2>/dev/null; then agent_running=yes; fi",
-		"has_complete=no; [ -f \"$WORKSPACE/TASK_COMPLETE\" ] && has_complete=yes",
+		"has_complete=no; { [ -f \"$WORKSPACE/TASK_COMPLETE\" ] || [ -f \"$WORKSPACE/TASK_COMPLETE.md\" ]; } && has_complete=yes",
 		"has_blocked=no; [ -f \"$WORKSPACE/BLOCKED.md\" ] && has_blocked=yes",
 		"has_prompt=no; [ -f \"$WORKSPACE/PROMPT.md\" ] && has_prompt=yes",
 		"blocked_summary=\"\"",
