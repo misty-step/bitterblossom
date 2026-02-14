@@ -378,7 +378,12 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 				}
 				waitRes, waitErr := deps.pollSprite(cmd.Context(), remote, pollTarget, opts.Timeout, func(msg string) {
 					// Intentionally ignoring write errors for progress output
-					_, _ = fmt.Fprintln(cmd.OutOrStdout(), msg)
+					// When JSON output is requested, progress goes to stderr to keep stdout clean for JSON
+					if opts.JSON {
+						_, _ = fmt.Fprintln(cmd.ErrOrStderr(), msg)
+					} else {
+						_, _ = fmt.Fprintln(cmd.OutOrStdout(), msg)
+					}
 				})
 				if waitErr != nil {
 					// Graceful degradation: return dispatch result with warning
