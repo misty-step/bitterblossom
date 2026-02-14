@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/misty-step/bitterblossom/internal/claude"
 	"github.com/misty-step/bitterblossom/internal/dispatch"
 	"github.com/misty-step/bitterblossom/internal/shellutil"
 )
@@ -378,7 +379,7 @@ func buildRedispatchScript(workspace, sprite string, maxIterations int) string {
 		"if [ -x \"$AGENT_BIN\" ]; then",
 		"  nohup env SPRITE_NAME="+shellutil.Quote(sprite)+" MAX_ITERATIONS="+strconv.Itoa(maxIterations)+" \"$AGENT_BIN\" >/dev/null 2>&1 &",
 		"else",
-		"  nohup bash -lc 'cat \"$WORKSPACE/PROMPT.md\" | claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json' > \"$WORKSPACE/watchdog-recovery-$(date +%s).log\" 2>&1 &",
+		"  nohup bash -lc 'cat \"$WORKSPACE/PROMPT.md\" | claude "+claude.FlagSetWithPrefix()+"' > \"$WORKSPACE/watchdog-recovery-$(date +%s).log\" 2>&1 &",
 		"fi",
 		"PID=\"$!\"",
 		"echo \"$PID\" > \"$WORKSPACE/agent.pid\"",

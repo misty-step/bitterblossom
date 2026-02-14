@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/misty-step/bitterblossom/internal/claude"
 	storeevents "github.com/misty-step/bitterblossom/internal/events"
 	"github.com/misty-step/bitterblossom/internal/fleet"
 	"github.com/misty-step/bitterblossom/internal/proxy"
@@ -887,6 +888,13 @@ func (s *Service) scaffold(ctx context.Context, sprite string) error {
 		}
 	}
 
+	// Upload shell export for Claude flags (single source of truth for shell scripts).
+	// This file can be sourced by sprite-agent.sh and other shell scripts.
+	flagsExport := []byte(claude.ShellExport())
+	if err := s.remote.Upload(ctx, sprite, s.workspace+"/.claude/flags.sh", flagsExport); err != nil {
+		return fmt.Errorf("upload flags.sh: %w", err)
+	}
+
 	// Create MEMORY.md and LEARNINGS.md if they don't exist (preserve across dispatches).
 	// Combined into one remote call to save a network round-trip.
 	ws := shellutil.Quote(s.workspace)
@@ -1409,9 +1417,9 @@ func buildOneShotScript(workspace, promptPath, logPath string) string {
 		"echo '[oneshot] starting at '$(date -Iseconds) > " + shellutil.Quote(logPath),
 		"echo '[oneshot] prompt: " + shellutil.Quote(promptPath) + "' >> " + shellutil.Quote(logPath),
 		"if command -v script >/dev/null 2>&1; then",
-		"  script -qefc " + shellutil.Quote("cat "+shellutil.Quote(promptPath)+" | claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json") + " /dev/null 2>&1 | tee \"$AGENT_LOG\"",
+		"  script -qefc " + shellutil.Quote("cat "+shellutil.Quote(promptPath)+" | claude "+claude.FlagSetWithPrefix()) + " /dev/null 2>&1 | tee \"$AGENT_LOG\"",
 		"else",
-		"  cat " + shellutil.Quote(promptPath) + " | claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json 2>&1 | tee \"$AGENT_LOG\"",
+		"  cat " + shellutil.Quote(promptPath) + " | claude "+claude.FlagSetWithPrefix()+" 2>&1 | tee \"$AGENT_LOG\"",
 		"fi",
 		"EXIT_CODE=$?",
 		"echo '[oneshot] exited with code ' $EXIT_CODE ' at ' $(date -Iseconds) >> " + shellutil.Quote(logPath),
