@@ -212,32 +212,20 @@ func (v *IssueValidator) ValidateIssue(ctx context.Context, issue int, repo stri
 
 // handleFetchError converts fetch errors into user-friendly validation results.
 func (v *IssueValidator) handleFetchError(err error, result *ValidationResult) *ValidationResult {
-	// Handle typed GitHub API errors
-	if errors.Is(err, github.ErrAuth) {
-		result.Errors = append(result.Errors, "GitHub authentication failed - check GITHUB_TOKEN is valid and has required scopes")
-		result.Valid = false
-		return result
+	var msg string
+	switch {
+	case errors.Is(err, github.ErrAuth):
+		msg = "GitHub authentication failed - check GITHUB_TOKEN is valid and has required scopes"
+	case errors.Is(err, github.ErrNotFound):
+		msg = "issue not found - check the issue number and repository"
+	case errors.Is(err, github.ErrRateLimited):
+		msg = "GitHub rate limit exceeded - wait before retrying"
+	case errors.Is(err, exec.ErrNotFound):
+		msg = "gh CLI not found - install GitHub CLI to use issue validation"
+	default:
+		msg = fmt.Sprintf("failed to fetch issue: %v", err)
 	}
-	if errors.Is(err, github.ErrNotFound) {
-		result.Errors = append(result.Errors, "issue not found - check the issue number and repository")
-		result.Valid = false
-		return result
-	}
-	if errors.Is(err, github.ErrRateLimited) {
-		result.Errors = append(result.Errors, "GitHub rate limit exceeded - wait before retrying")
-		result.Valid = false
-		return result
-	}
-
-	// Handle gh CLI not found (fallback case)
-	if errors.Is(err, exec.ErrNotFound) {
-		result.Errors = append(result.Errors, "gh CLI not found - install GitHub CLI to use issue validation")
-		result.Valid = false
-		return result
-	}
-
-	// Generic error case
-	result.Errors = append(result.Errors, fmt.Sprintf("failed to fetch issue: %v", err))
+	result.Errors = append(result.Errors, msg)
 	result.Valid = false
 	return result
 }
@@ -258,7 +246,7 @@ func toIssueData(issue *github.Issue) *IssueData {
 		Body:   issue.Body,
 		State:  issue.State,
 		Labels: labels,
-		URL:    issue.URL,
+		URL:    issue.HTMLURL,
 		Closed: issue.Closed(),
 	}
 }
@@ -286,7 +274,7 @@ func (v *IssueValidator) fetchIssue(ctx context.Context, issueNum int, repoSlug 
 // parseRepoSlug splits "owner/repo" into owner and repo.
 func parseRepoSlug(repo string) (owner, name string, err error) {
 	parts := strings.Split(repo, "/")
-	if len(parts) != 2 {
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return "", "", fmt.Errorf("invalid repo format: %s (expected owner/repo)", repo)
 	}
 	return parts[0], parts[1], nil
@@ -511,4 +499,3 @@ func (r *ValidationResult) FormatValidationOutput() string {
 
 	return strings.Join(lines, "\n")
 }
-		

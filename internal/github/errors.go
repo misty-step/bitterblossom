@@ -14,7 +14,7 @@ var (
 	// ErrNotFound indicates the requested resource was not found (404).
 	ErrNotFound = errors.New("github: resource not found")
 
-	// ErrRateLimited indicates rate limit has been exceeded (429).
+	// ErrRateLimited indicates rate limit has been exceeded (429/403).
 	ErrRateLimited = errors.New("github: rate limit exceeded")
 
 	// ErrServer indicates a server-side error (5xx).
@@ -37,7 +37,7 @@ var (
 type APIError struct {
 	StatusCode int
 	Message    string
-	Type       string // GitHub's error type (e.g., "NOT_FOUND", "RATE_LIMITED")
+	Type       string // Error classification (e.g., "RATE_LIMITED"); set by handleError.
 	URL        string // The request URL for debugging
 }
 
@@ -49,8 +49,9 @@ func (e *APIError) Error() string {
 }
 
 // IsAuth returns true if this error represents an authentication failure.
+// A 403 with Type "RATE_LIMITED" is not an auth error.
 func (e *APIError) IsAuth() bool {
-	return e.StatusCode == 401 || e.StatusCode == 403
+	return e.StatusCode == 401 || (e.StatusCode == 403 && !e.IsRateLimited())
 }
 
 // IsNotFound returns true if this error represents a missing resource.
@@ -60,7 +61,7 @@ func (e *APIError) IsNotFound() bool {
 
 // IsRateLimited returns true if this error represents rate limiting.
 func (e *APIError) IsRateLimited() bool {
-	return e.StatusCode == 429 || e.StatusCode == 403 && e.Type == "RATE_LIMITED"
+	return e.StatusCode == 429 || (e.StatusCode == 403 && e.Type == "RATE_LIMITED")
 }
 
 // IsServerError returns true if this error represents a server-side failure.
@@ -69,14 +70,16 @@ func (e *APIError) IsServerError() bool {
 }
 
 // Unwrap returns an appropriate sentinel error for classification.
+// IsRateLimited is checked before IsAuth because 403 can be either;
+// the more specific condition must come first.
 func (e *APIError) Unwrap() error {
 	switch {
+	case e.IsRateLimited():
+		return ErrRateLimited
 	case e.IsAuth():
 		return ErrAuth
 	case e.IsNotFound():
 		return ErrNotFound
-	case e.IsRateLimited():
-		return ErrRateLimited
 	case e.IsServerError():
 		return ErrServer
 	case e.StatusCode >= 400:

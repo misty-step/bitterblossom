@@ -21,12 +21,14 @@ const (
 )
 
 // Client provides typed access to the GitHub REST API.
+//
+// A Client must not be used concurrently for token mutation (SetToken)
+// and requests. Construct the client with the final token or create
+// separate clients per goroutine.
 type Client struct {
 	token      string
 	baseURL    string
 	httpClient *http.Client
-	maxRetries int
-	baseDelay  time.Duration
 }
 
 // Option configures a Client.
@@ -53,21 +55,11 @@ func WithHTTPClient(httpClient *http.Client) Option {
 	}
 }
 
-// WithRetry configures retry behavior.
-func WithRetry(maxRetries int, baseDelay time.Duration) Option {
-	return func(c *Client) {
-		c.maxRetries = maxRetries
-		c.baseDelay = baseDelay
-	}
-}
-
 // NewClient creates a new GitHub API client.
 func NewClient(opts ...Option) *Client {
 	c := &Client{
 		baseURL:    DefaultBaseURL,
 		httpClient: &http.Client{Timeout: DefaultTimeout},
-		maxRetries: 3,
-		baseDelay:  time.Second,
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -103,60 +95,6 @@ func (c *Client) GetIssue(ctx context.Context, owner, repo string, number int) (
 	}
 
 	return issue, nil
-}
-
-// ListIssues fetches issues matching the provided options.
-func (c *Client) ListIssues(ctx context.Context, owner, repo string, opts *IssueListOptions) ([]Issue, error) {
-	if err := c.validateRepo(owner, repo); err != nil {
-		return nil, err
-	}
-
-	endpoint := fmt.Sprintf("/repos/%s/%s/issues", owner, repo)
-	if opts == nil {
-		opts = &IssueListOptions{}
-	}
-
-	// Build query parameters
-	params := url.Values{}
-	if opts.State != "" {
-		params.Set("state", opts.State)
-	} else {
-		params.Set("state", "open")
-	}
-	if len(opts.Labels) > 0 {
-		params.Set("labels", strings.Join(opts.Labels, ","))
-	}
-	if opts.Assignee != "" {
-		params.Set("assignee", opts.Assignee)
-	}
-	if opts.Sort != "" {
-		params.Set("sort", opts.Sort)
-	}
-	if opts.Direction != "" {
-		params.Set("direction", opts.Direction)
-	}
-	if opts.PerPage > 0 {
-		params.Set("per_page", fmt.Sprintf("%d", opts.PerPage))
-	}
-	if opts.Page > 0 {
-		params.Set("page", fmt.Sprintf("%d", opts.Page))
-	}
-
-	if query := params.Encode(); query != "" {
-		endpoint = endpoint + "?" + query
-	}
-
-	req, err := c.newRequest(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var issues []Issue
-	if err := c.do(req, &issues); err != nil {
-		return nil, err
-	}
-
-	return issues, nil
 }
 
 // validateRepo checks that owner and repo are provided.
@@ -249,10 +187,19 @@ func (c *Client) handleError(resp *http.Response) error {
 		errData.Message = strings.TrimSpace(string(body))
 	}
 
+	// Detect rate limiting from 403 responses via header or message content.
+	// GitHub returns 403 (not 429) for most rate limits, with X-RateLimit-Remaining: 0.
+	errType := ""
+	if resp.StatusCode == http.StatusForbidden &&
+		(resp.Header.Get("X-RateLimit-Remaining") == "0" ||
+			strings.Contains(strings.ToLower(errData.Message), "rate limit")) {
+		errType = "RATE_LIMITED"
+	}
+
 	apiErr := &APIError{
 		StatusCode: resp.StatusCode,
 		Message:    errData.Message,
-		Type:       errData.DocumentationURL,
+		Type:       errType,
 		URL:        resp.Request.URL.String(),
 	}
 

@@ -4,20 +4,20 @@ import "time"
 
 // Issue represents a GitHub issue as returned by the REST API.
 type Issue struct {
-	ID        int64     `json:"id"`
-	Number    int       `json:"number"`
-	Title     string    `json:"title"`
-	Body      string    `json:"body"`
-	State     string    `json:"state"`
-	StateReason string  `json:"state_reason,omitempty"`
-	URL       string    `json:"url"`
-	HTMLURL   string    `json:"html_url"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	ClosedAt  *time.Time `json:"closed_at,omitempty"`
-	Labels    []Label   `json:"labels"`
-	Assignees []User    `json:"assignees"`
-	User      User      `json:"user"`
+	ID          int64      `json:"id"`
+	Number      int        `json:"number"`
+	Title       string     `json:"title"`
+	Body        string     `json:"body"`
+	State       string     `json:"state"`
+	StateReason string     `json:"state_reason,omitempty"`
+	URL         string     `json:"url"`
+	HTMLURL     string     `json:"html_url"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+	ClosedAt    *time.Time `json:"closed_at,omitempty"`
+	Labels      []Label    `json:"labels"`
+	Assignees   []User     `json:"assignees"`
+	User        User       `json:"user"`
 }
 
 // Closed returns whether the issue is closed, derived from State.
@@ -43,30 +43,10 @@ type User struct {
 	HTMLURL   string `json:"html_url,omitempty"`
 }
 
-// Repository represents a GitHub repository (minimal fields).
-type Repository struct {
-	ID       int64  `json:"id"`
-	Name     string `json:"name"`
-	FullName string `json:"full_name"`
-	Private  bool   `json:"private"`
-	HTMLURL  string `json:"html_url"`
-}
-
-// IssueListOptions contains query parameters for listing issues.
-type IssueListOptions struct {
-	State   string // "open", "closed", "all"
-	Labels  []string
-	Assignee string // username or "*" for any, "none" for no assignee
-	Sort    string // "created", "updated", "comments"
-	Direction string // "asc", "desc"
-	PerPage int    // pagination size
-	Page    int
-}
-
 // ErrorResponse represents GitHub's error response structure.
 type ErrorResponse struct {
-	Message         string        `json:"message"`
-	Errors          []FieldError  `json:"errors,omitempty"`
+	Message          string       `json:"message"`
+	Errors           []FieldError `json:"errors,omitempty"`
 	DocumentationURL string       `json:"documentation_url,omitempty"`
 }
 

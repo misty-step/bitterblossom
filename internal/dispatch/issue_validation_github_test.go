@@ -224,6 +224,8 @@ func TestParseRepoSlug(t *testing.T) {
 		{"", "", "", true},
 		{"invalid", "", "", true},
 		{"a/b/c", "", "", true},
+		{"/repo", "", "", true},
+		{"owner/", "", "", true},
 	}
 
 	for _, tc := range tests {
@@ -252,11 +254,12 @@ func TestToIssueData(t *testing.T) {
 	t.Parallel()
 
 	issue := &github.Issue{
-		Number: 123,
-		Title:  "Test Title",
-		Body:   "Test Body",
-		State:  "open",
-		URL:    "https://api.github.com/repos/o/r/issues/123",
+		Number:  123,
+		Title:   "Test Title",
+		Body:    "Test Body",
+		State:   "open",
+		URL:     "https://api.github.com/repos/o/r/issues/123",
+		HTMLURL: "https://github.com/o/r/issues/123",
 		Labels: []github.Label{
 			{Name: "bug", Description: "Something is broken", Color: "d73a4a"},
 		},

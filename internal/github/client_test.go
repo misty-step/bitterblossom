@@ -39,7 +39,6 @@ func TestNewClient_WithOptions(t *testing.T) {
 		WithToken("my-token"),
 		WithBaseURL("https://github.enterprise.com/api/v3"),
 		WithHTTPClient(customHTTP),
-		WithRetry(5, 2*time.Second),
 	)
 
 	if c.token != "my-token" {
@@ -50,9 +49,6 @@ func TestNewClient_WithOptions(t *testing.T) {
 	}
 	if c.httpClient != customHTTP {
 		t.Error("expected custom HTTP client")
-	}
-	if c.maxRetries != 5 {
-		t.Errorf("expected maxRetries 5, got %d", c.maxRetries)
 	}
 }
 
@@ -127,10 +123,10 @@ func TestClient_GetIssue_Closed(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		issue := Issue{
-			Number:  99,
-			Title:   "Closed Issue",
-			State:   "closed",
-			Labels:  []Label{},
+			Number: 99,
+			Title:  "Closed Issue",
+			State:  "closed",
+			Labels: []Label{},
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(issue)
@@ -198,7 +194,7 @@ func TestClient_GetIssue_NotFound(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"message": "Not Found",
+			"message":           "Not Found",
 			"documentation_url": "https://docs.github.com/rest/issues/issues#get-an-issue",
 		})
 	}))
@@ -224,8 +220,9 @@ func TestClient_GetIssue_RateLimited(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusForbidden)
+		// Headers must be set before WriteHeader
 		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.WriteHeader(http.StatusForbidden)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"message": "API rate limit exceeded",
 		})
@@ -243,12 +240,46 @@ func TestClient_GetIssue_RateLimited(t *testing.T) {
 		t.Fatal("expected error for rate limit")
 	}
 
+	if !IsRateLimited(err) {
+		t.Errorf("expected IsRateLimited error, got: %T: %v", err, err)
+	}
+
 	var apiErr *APIError
 	if errors.As(err, &apiErr) {
-		// GitHub returns 403 for rate limits, not 429
 		if apiErr.StatusCode != 403 {
 			t.Errorf("expected status 403, got %d", apiErr.StatusCode)
 		}
+		if apiErr.Type != "RATE_LIMITED" {
+			t.Errorf("expected Type RATE_LIMITED, got %s", apiErr.Type)
+		}
+	}
+}
+
+func TestClient_GetIssue_RateLimited_ByMessage(t *testing.T) {
+	t.Parallel()
+
+	// Test rate limit detection via message content (no header)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"message": "API rate limit exceeded for user",
+		})
+	}))
+	defer server.Close()
+
+	client := NewClient(
+		WithToken("test-token"),
+		WithBaseURL(server.URL),
+		WithHTTPClient(server.Client()),
+	)
+
+	_, err := client.GetIssue(context.Background(), "owner", "repo", 1)
+	if err == nil {
+		t.Fatal("expected error for rate limit")
+	}
+
+	if !IsRateLimited(err) {
+		t.Errorf("expected IsRateLimited error, got: %T: %v", err, err)
 	}
 }
 
@@ -314,84 +345,6 @@ func TestClient_GetIssue_MissingToken(t *testing.T) {
 	}
 }
 
-func TestClient_ListIssues(t *testing.T) {
-	t.Parallel()
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Check query parameters
-		if r.URL.Path != "/repos/owner/repo/issues" {
-			t.Errorf("unexpected path: %s", r.URL.Path)
-		}
-
-		query := r.URL.Query()
-		// Use encoded form since that's how the URL is constructed
-		if query.Get("state") != "open" {
-			t.Errorf("expected state=open, got %s", query.Get("state"))
-		}
-		// URL encoding will produce escaped comma: %2C
-		labelsParam := query.Get("labels")
-		if labelsParam != "bug,enhancement" && labelsParam != "bug%2Cenhancement" {
-			t.Errorf("expected labels=bug,enhancement, got %s", labelsParam)
-		}
-
-		issues := []Issue{
-			{Number: 1, Title: "Issue 1", State: "open"},
-			{Number: 2, Title: "Issue 2", State: "open"},
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(issues)
-	}))
-	defer server.Close()
-
-	client := NewClient(
-		WithToken("test-token"),
-		WithBaseURL(server.URL),
-		WithHTTPClient(server.Client()),
-	)
-
-	opts := &IssueListOptions{
-		State:  "open",
-		Labels: []string{"bug", "enhancement"},
-	}
-	issues, err := client.ListIssues(context.Background(), "owner", "repo", opts)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if len(issues) != 2 {
-		t.Errorf("expected 2 issues, got %d", len(issues))
-	}
-}
-
-func TestClient_ListIssues_Defaults(t *testing.T) {
-	t.Parallel()
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Check the query parameters from RawQuery
-		query := r.URL.Query()
-		// Should default to "open" state
-		state := query.Get("state")
-		if state != "open" {
-			t.Errorf("expected default state=open, got %s", state)
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode([]Issue{})
-	}))
-	defer server.Close()
-
-	client := NewClient(
-		WithToken("test-token"),
-		WithBaseURL(server.URL),
-		WithHTTPClient(server.Client()),
-	)
-
-	_, err := client.ListIssues(context.Background(), "owner", "repo", nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
 func TestAPIError_Error(t *testing.T) {
 	t.Parallel()
 
@@ -415,21 +368,24 @@ func TestAPIError_Unwrap(t *testing.T) {
 
 	tests := []struct {
 		status   int
+		errType  string
 		expected error
 	}{
-		{401, ErrAuth},
-		{404, ErrNotFound},
-		{429, ErrRateLimited},
-		{500, ErrServer},
-		{503, ErrServer},
-		{400, ErrInvalidRequest},
-		{422, ErrInvalidRequest},
-		{200, nil}, // Success codes don't map
+		{401, "", ErrAuth},
+		{403, "", ErrAuth},                    // non-rate-limited 403
+		{403, "RATE_LIMITED", ErrRateLimited}, // rate-limited 403
+		{404, "", ErrNotFound},
+		{429, "", ErrRateLimited},
+		{500, "", ErrServer},
+		{503, "", ErrServer},
+		{400, "", ErrInvalidRequest},
+		{422, "", ErrInvalidRequest},
+		{200, "", nil}, // Success codes don't map
 	}
 
 	for _, tc := range tests {
-		t.Run(fmt.Sprintf("status_%d", tc.status), func(t *testing.T) {
-			err := &APIError{StatusCode: tc.status}
+		t.Run(fmt.Sprintf("status_%d_%s", tc.status, tc.errType), func(t *testing.T) {
+			err := &APIError{StatusCode: tc.status, Type: tc.errType}
 			unwrapped := err.Unwrap()
 			if tc.expected == nil {
 				if unwrapped != nil {
