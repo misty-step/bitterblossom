@@ -235,7 +235,9 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 			if homeDir, err := os.UserHomeDir(); err == nil {
 				secrets, loadErr := dispatchsvc.LoadSecretsFromDir(filepath.Join(homeDir, ".secrets"))
 				if loadErr != nil {
-					if !opts.JSON {
+					// Only warn when the directory exists but is unreadable/malformed.
+					// Silently skip when the directory doesn't exist (common in dev).
+					if !os.IsNotExist(loadErr) && !opts.JSON {
 						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to load secrets from ~/.secrets: %v\n", loadErr)
 					}
 				} else if len(secrets) > 0 {

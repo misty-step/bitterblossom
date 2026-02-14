@@ -168,3 +168,74 @@ func TestDispatchCommand_SecretFlag_EmptyEnvVar(t *testing.T) {
 		t.Errorf("expected error to mention 'UNSET_VAR', got: %v", err)
 	}
 }
+
+func TestDispatchCommand_SecretsDirNotExist_NoWarning(t *testing.T) {
+	// Cannot use t.Parallel() — t.Setenv modifies process environment.
+	t.Setenv("GITHUB_TOKEN", "ghp-test")
+	t.Setenv("OPENROUTER_API_KEY", "or-test")
+
+	// Use a non-existent home directory path to simulate ~/.secrets not existing
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	var capturedEnvVars map[string]string
+	runner := &fakeDispatchRunner{
+		result: dispatchsvc.Result{
+			Executed: true,
+			State:    dispatchsvc.StateCompleted,
+			Plan: dispatchsvc.Plan{
+				Sprite: "bramble",
+				Mode:   "execute",
+				Steps:  []dispatchsvc.PlanStep{{Kind: dispatchsvc.StepStartAgent, Description: "start"}},
+			},
+		},
+	}
+
+	deps := dispatchDeps{
+		readFile: func(string) ([]byte, error) { return nil, nil },
+		newFlyClient: func(token, apiURL string) (fly.MachineClient, error) {
+			return fakeFlyClient{}, nil
+		},
+		newRemote: func(binary, org string) *spriteCLIRemote {
+			return &spriteCLIRemote{}
+		},
+		newService: func(cfg dispatchsvc.Config) (dispatchRunner, error) {
+			capturedEnvVars = cfg.EnvVars
+			return runner, nil
+		},
+		pollSprite: func(ctx context.Context, remote *spriteCLIRemote, sprite string, timeout time.Duration, progress func(string)) (*waitResult, error) {
+			return nil, nil
+		},
+	}
+
+	cmd := newDispatchCmdWithDeps(deps)
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetArgs([]string{
+		"bramble",
+		"Fix flaky tests",
+		"--execute",
+		"--app", "bb-app",
+		"--token", "tok",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cmd.Execute() error = %v", err)
+	}
+
+	// Verify no warning about ~/.secrets was printed
+	errStr := errOut.String()
+	if strings.Contains(errStr, "failed to load secrets from ~/.secrets") {
+		t.Errorf("Expected no warning about ~/.secrets when directory doesn't exist, but got: %s", errStr)
+	}
+
+	// Verify dispatch still worked
+	if capturedEnvVars == nil {
+		t.Fatal("expected env vars to be captured")
+	}
+	if capturedEnvVars["GITHUB_TOKEN"] != "ghp-test" {
+		t.Errorf("GITHUB_TOKEN = %q, want ghp-test", capturedEnvVars["GITHUB_TOKEN"])
+	}
+}
