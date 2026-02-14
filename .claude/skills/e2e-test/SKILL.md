@@ -102,6 +102,22 @@ gh pr list --repo misty-step/bitterblossom --author @me --state open
 
 Review the PR for: meaningful commits, passing CI, correct branch target, clean diff.
 
-### Phase 9: Findings Report
+### Phase 9: Findings Report & Issue Filing
 
-Write the report using `templates/findings-report.md`. Include every friction point, not just failures. File issues for P0-P1 findings.
+Write the report using `templates/findings-report.md`. Include every friction point, not just failures.
+
+**Issue filing is mandatory for failed runs.** If any phase scored FRICTION or FAIL:
+
+1. File a GitHub issue for every finding P0-P2. Use the friction taxonomy category and severity from the report.
+2. Comment on existing issues when a finding confirms a known bug (don't duplicate).
+3. Update the report with issue numbers after filing.
+4. Update `MEMORY.md` filed issues section with new issue numbers.
+
+```bash
+gh issue create --repo misty-step/bitterblossom \
+  --title "fix: <finding title>" \
+  --label "bug,area/dispatch,<priority>" \
+  --body "<context, problem, expected, impact, files, acceptance criteria>"
+```
+
+The report alone is not the deliverable — **filed issues are**. A shakedown that finds problems but doesn't file issues is incomplete.
