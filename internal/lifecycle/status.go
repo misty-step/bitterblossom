@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/misty-step/bitterblossom/internal/fleet"
@@ -338,14 +339,26 @@ func fetchLiveSprites(ctx context.Context, cli sprite.SpriteCLI, cfg Config, opt
 			}
 		}
 
-		// Probe connectivity if requested and sprite appears to be running.
-		if opts.IncludeProbe && isRunningStatus(item.Status) {
-			status.Probed = true
-			status.Reachable = probeSpriteConnectivity(ctx, cli, item.Name, opts.ProbeTimeout)
-		}
-
 		result = append(result, status)
 	}
+
+	// Probe connectivity in parallel to avoid O(N) sequential latency.
+	if opts.IncludeProbe {
+		var wg sync.WaitGroup
+		for i := range result {
+			if !isProbeableStatus(result[i].Status) {
+				continue
+			}
+			result[i].Probed = true
+			wg.Add(1)
+			go func(idx int) {
+				defer wg.Done()
+				result[idx].Reachable = probeSpriteConnectivity(ctx, cli, result[idx].Name, opts.ProbeTimeout)
+			}(i)
+		}
+		wg.Wait()
+	}
+
 	sort.Slice(result, func(i, j int) bool {
 		return result[i].Name < result[j].Name
 	})
@@ -427,6 +440,14 @@ func deriveSpriteState(state, status string) SpriteState {
 func isRunningStatus(status string) bool {
 	s := strings.ToLower(status)
 	return s == "running" || s == "warm" || s == "starting" || s == "provisioning"
+}
+
+// isProbeableStatus returns true for sprites whose transport layer is ready.
+// Excludes transitional states (starting, provisioning) where exec probes
+// would always timeout.
+func isProbeableStatus(status string) bool {
+	s := strings.ToLower(status)
+	return s == "running" || s == "warm"
 }
 
 // probeSpriteConnectivity verifies a sprite is reachable via exec transport.

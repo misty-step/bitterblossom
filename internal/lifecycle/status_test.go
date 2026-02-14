@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -434,6 +435,32 @@ func TestIsRunningStatus(t *testing.T) {
 	}
 }
 
+func TestIsProbeableStatus(t *testing.T) {
+	tests := []struct {
+		status   string
+		expected bool
+	}{
+		{"running", true},
+		{"warm", true},
+		{"RUNNING", true},
+		{"starting", false},     // Transport not ready
+		{"provisioning", false}, // Transport not ready
+		{"stopped", false},
+		{"error", false},
+		{"dead", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.status, func(t *testing.T) {
+			result := isProbeableStatus(tt.status)
+			if result != tt.expected {
+				t.Errorf("isProbeableStatus(%q) = %v, want %v", tt.status, result, tt.expected)
+			}
+		})
+	}
+}
+
 func TestFleetOverviewWithProbe(t *testing.T) {
 	t.Parallel()
 
@@ -446,13 +473,16 @@ sprites:
     definition: sprites/bramble.md
 `)
 
+	var mu sync.Mutex
 	var execCalls int
 	cli := &sprite.MockSpriteCLI{
 		APIFn: func(context.Context, string, string) (string, error) {
-			return `{"sprites":[{"name":"bramble","status":"warm","url":"https://bramble"},{"name":"thorn","status":"warm","url":"https://thorn"},{"name":"fern","status":"stopped","url":""}]}`, nil
+			return `{"sprites":[{"name":"bramble","status":"warm","url":"https://bramble"},{"name":"thorn","status":"warm","url":"https://thorn"},{"name":"fern","status":"stopped","url":""},{"name":"moss","status":"starting","url":"https://moss"}]}`, nil
 		},
 		ExecFn: func(_ context.Context, name, command string, _ []byte) (string, error) {
+			mu.Lock()
 			execCalls++
+			mu.Unlock()
 			if command == "echo ok" {
 				// Simulate: bramble is reachable, thorn is not
 				if name == "bramble" {
@@ -474,27 +504,28 @@ sprites:
 		t.Fatalf("FleetOverview() error = %v", err)
 	}
 
-	// Should have probed the two warm sprites
-	if execCalls != 2 {
-		t.Fatalf("exec calls = %d, want 2 (probed warm sprites only)", execCalls)
+	// Should have probed only the two warm sprites (not stopped fern, not starting moss)
+	mu.Lock()
+	calls := execCalls
+	mu.Unlock()
+	if calls != 2 {
+		t.Fatalf("exec calls = %d, want 2 (probed warm/running sprites only)", calls)
 	}
 
 	// Verify bramble is marked reachable
-	var brambleStatus *SpriteStatus
-	var thornStatus *SpriteStatus
-	var fernStatus *SpriteStatus
-	for i := range status.Sprites {
-		s := &status.Sprites[i]
-		if s.Name == "bramble" {
-			brambleStatus = s
+	findSprite := func(name string) *SpriteStatus {
+		for i := range status.Sprites {
+			if status.Sprites[i].Name == name {
+				return &status.Sprites[i]
+			}
 		}
-		if s.Name == "thorn" {
-			thornStatus = s
-		}
-		if s.Name == "fern" {
-			fernStatus = s
-		}
+		return nil
 	}
+
+	brambleStatus := findSprite("bramble")
+	thornStatus := findSprite("thorn")
+	fernStatus := findSprite("fern")
+	mossStatus := findSprite("moss")
 
 	if brambleStatus == nil {
 		t.Fatal("bramble not found in status")
@@ -504,6 +535,9 @@ sprites:
 	}
 	if fernStatus == nil {
 		t.Fatal("fern not found in status")
+	}
+	if mossStatus == nil {
+		t.Fatal("moss not found in status")
 	}
 
 	// Bramble: probed and reachable
@@ -528,6 +562,14 @@ sprites:
 	}
 	if fernStatus.Reachable {
 		t.Errorf("fern Reachable = %v, want false", fernStatus.Reachable)
+	}
+
+	// Moss: starting, not probed (transitional state, transport not ready)
+	if mossStatus.Probed {
+		t.Errorf("moss Probed = %v, want false (starting sprites aren't probed)", mossStatus.Probed)
+	}
+	if mossStatus.Reachable {
+		t.Errorf("moss Reachable = %v, want false", mossStatus.Reachable)
 	}
 }
 
