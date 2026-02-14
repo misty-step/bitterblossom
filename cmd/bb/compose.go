@@ -274,25 +274,6 @@ func namesToSpriteStatuses(names []string, composition fleet.Composition) []flee
 	return statuses
 }
 
-func mapMachineState(state string) sprite.State {
-	switch strings.ToLower(strings.TrimSpace(state)) {
-	case "started", "running":
-		return sprite.StateWorking
-	case "stopped", "suspended", "idle":
-		return sprite.StateIdle
-	case "failed", "error", "dead":
-		return sprite.StateDead
-	case "blocked", "stuck":
-		return sprite.StateBlocked
-	case "done":
-		return sprite.StateDone
-	case "provisioned":
-		return sprite.StateProvisioned
-	default:
-		return sprite.StateIdle
-	}
-}
-
 func printJSON(cmd *cobra.Command, command string, payload any) error {
 	return contracts.WriteJSON(cmd.OutOrStdout(), command, payload)
 }
