@@ -313,3 +313,20 @@ func ValidateCommandNoSecrets(command, context string) error {
 	}
 	return nil
 }
+
+// ErrOrphanSprite indicates dispatch was attempted to a sprite that exists
+// remotely but is not in the loaded composition. Orphan sprites lack persistent
+// workspace volumes, so dispatches run in void and produce no durable work.
+type ErrOrphanSprite struct {
+	Sprite      string
+	Composition []string
+}
+
+func (e *ErrOrphanSprite) Error() string {
+	return fmt.Sprintf(
+		"sprite %q is not in the loaded composition — it may lack a persistent workspace volume. "+
+			"Dispatch to orphan sprites runs in void and produces no durable work. "+
+			"Use a composition sprite (%s) or pass --allow-orphan to override",
+		e.Sprite, strings.Join(e.Composition, ", "),
+	)
+}
