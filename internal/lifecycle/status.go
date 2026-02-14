@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/misty-step/bitterblossom/internal/fleet"
@@ -42,6 +43,8 @@ type SpriteStatus struct {
 	Status       string            `json:"status"` // Raw status from API (running, stopped, etc.)
 	State        SpriteState       `json:"state"`  // Derived state (idle, busy, offline)
 	Stale        bool              `json:"stale,omitempty"`
+	Probed       bool              `json:"probed,omitempty"`    // Whether connectivity was probed
+	Reachable    bool              `json:"reachable,omitempty"` // Verified via exec probe
 	URL          string            `json:"url,omitempty"`
 	Persona      string            `json:"persona,omitempty"`
 	CurrentTask  *TaskInfo         `json:"current_task,omitempty"`
@@ -127,10 +130,15 @@ type spriteAPIDetailResponse struct {
 // recent activity is flagged as stale.
 const DefaultStaleThreshold = 2 * time.Hour
 
+// DefaultProbeTimeout is the default timeout for connectivity probes.
+const DefaultProbeTimeout = 5 * time.Second
+
 // FleetOverviewOpts configures expensive fleet overview features.
 type FleetOverviewOpts struct {
 	IncludeCheckpoints bool
 	IncludeTasks       bool
+	IncludeProbe       bool          // Probe connectivity via exec
+	ProbeTimeout       time.Duration // Timeout for each probe exec
 	StaleThreshold     time.Duration
 }
 
@@ -333,6 +341,24 @@ func fetchLiveSprites(ctx context.Context, cli sprite.SpriteCLI, cfg Config, opt
 
 		result = append(result, status)
 	}
+
+	// Probe connectivity in parallel to avoid O(N) sequential latency.
+	if opts.IncludeProbe {
+		var wg sync.WaitGroup
+		for i := range result {
+			if !isProbeableStatus(result[i].Status) {
+				continue
+			}
+			result[i].Probed = true
+			wg.Add(1)
+			go func(idx int) {
+				defer wg.Done()
+				result[idx].Reachable = probeSpriteConnectivity(ctx, cli, result[idx].Name, opts.ProbeTimeout)
+			}(i)
+		}
+		wg.Wait()
+	}
+
 	sort.Slice(result, func(i, j int) bool {
 		return result[i].Name < result[j].Name
 	})
@@ -414,6 +440,28 @@ func deriveSpriteState(state, status string) SpriteState {
 func isRunningStatus(status string) bool {
 	s := strings.ToLower(status)
 	return s == "running" || s == "warm" || s == "starting" || s == "provisioning"
+}
+
+// isProbeableStatus returns true for sprites whose transport layer is ready.
+// Excludes transitional states (starting, provisioning) where exec probes
+// would always timeout.
+func isProbeableStatus(status string) bool {
+	s := strings.ToLower(status)
+	return s == "running" || s == "warm"
+}
+
+// probeSpriteConnectivity verifies a sprite is reachable via exec transport.
+// Returns true if the sprite responds to a lightweight echo command.
+func probeSpriteConnectivity(ctx context.Context, cli sprite.SpriteCLI, name string, timeout time.Duration) bool {
+	if timeout <= 0 {
+		timeout = DefaultProbeTimeout
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	// Use a lightweight echo command to verify transport connectivity
+	_, err := cli.Exec(probeCtx, name, "echo ok", nil)
+	return err == nil
 }
 
 func calculateFleetSummary(sprites []SpriteStatus, orphans []SpriteStatus) FleetSummary {
