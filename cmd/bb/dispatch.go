@@ -53,6 +53,7 @@ type dispatchOptions struct {
 	MaxTime              time.Duration
 	WebhookURL           string
 	AllowAnthropicDirect bool
+	AllowOrphan          bool
 	Issue                int
 	SkipValidation       bool
 	Strict               bool
@@ -373,6 +374,7 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 				Execute:              opts.Execute,
 				WebhookURL:           opts.WebhookURL,
 				AllowAnthropicDirect: opts.AllowAnthropicDirect,
+				AllowOrphan:          opts.AllowOrphan,
 				MaxTokens:            opts.MaxTokens,
 				MaxTime:              opts.MaxTime,
 			})
@@ -480,6 +482,7 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 	command.Flags().DurationVar(&opts.MaxTime, "max-time", opts.MaxTime, "Ralph stuck-loop runtime safety cap (only with --ralph)")
 	command.Flags().StringVar(&opts.WebhookURL, "webhook-url", opts.WebhookURL, "Optional sprite-agent webhook URL")
 	command.Flags().BoolVar(&opts.AllowAnthropicDirect, "allow-anthropic-direct", false, "Allow dispatch even if sprite has a real ANTHROPIC_API_KEY")
+	command.Flags().BoolVar(&opts.AllowOrphan, "allow-orphan", false, "Allow dispatch to sprites not in the loaded composition")
 	command.Flags().IntVar(&opts.Issue, "issue", 0, "GitHub issue number to validate before dispatch")
 	command.Flags().BoolVar(&opts.SkipValidation, "skip-validation", false, "Skip policy validation (safety checks still run)")
 	command.Flags().BoolVar(&opts.Strict, "strict", false, "Fail on any validation warning (legacy: use --validation-profile=strict)")

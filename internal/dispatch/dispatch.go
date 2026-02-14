@@ -100,6 +100,9 @@ type Request struct {
 	Execute              bool
 	WebhookURL           string
 	AllowAnthropicDirect bool
+	// AllowOrphan bypasses the orphan sprite check. When false (default),
+	// dispatch to sprites not in the loaded composition is rejected.
+	AllowOrphan bool
 	// MaxTokens / MaxTime apply only to Ralph mode (sprite-agent).
 	MaxTokens int
 	MaxTime   time.Duration
@@ -115,18 +118,19 @@ type PlanStep struct {
 type StepKind string
 
 const (
-	StepRegistryLookup StepKind = "registry_lookup"
-	StepProvision      StepKind = "provision"
-	StepValidateEnv    StepKind = "validate_env"
-	StepCleanSignals   StepKind = "clean_signals"
-	StepUploadScaffold StepKind = "upload_scaffold"
-	StepValidateIssue  StepKind = "validate_issue"
-	StepSetupRepo      StepKind = "setup_repo"
-	StepUploadSkills   StepKind = "upload_skills"
-	StepUploadPrompt   StepKind = "upload_prompt"
-	StepWriteStatus    StepKind = "write_status"
-	StepEnsureProxy    StepKind = "ensure_proxy"
-	StepStartAgent     StepKind = "start_agent"
+	StepRegistryLookup     StepKind = "registry_lookup"
+	StepProvision          StepKind = "provision"
+	StepValidateEnv        StepKind = "validate_env"
+	StepValidateWorkspace  StepKind = "validate_workspace"
+	StepCleanSignals       StepKind = "clean_signals"
+	StepUploadScaffold     StepKind = "upload_scaffold"
+	StepValidateIssue      StepKind = "validate_issue"
+	StepSetupRepo          StepKind = "setup_repo"
+	StepUploadSkills       StepKind = "upload_skills"
+	StepUploadPrompt       StepKind = "upload_prompt"
+	StepWriteStatus        StepKind = "write_status"
+	StepEnsureProxy        StepKind = "ensure_proxy"
+	StepStartAgent         StepKind = "start_agent"
 )
 
 // Plan is the rendered execution plan for dry-run or execute mode.
@@ -316,6 +320,20 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 	provisionNeeded, err := s.needsProvision(ctx, prepared.Sprite, prepared.MachineID)
 	if err != nil {
 		return Result{}, fmt.Errorf("dispatch: determine provisioning need: %w", err)
+	}
+
+	// Orphan sprite check: if a composition is loaded and the sprite exists
+	// remotely but is not in the composition, it's an orphan. Orphan sprites
+	// lack persistent workspace volumes — dispatches run in void. (See #347.)
+	if !provisionNeeded && !prepared.AllowOrphan && len(s.provisionHints) > 0 {
+		if _, inComposition := s.provisionHints[prepared.Sprite]; !inComposition {
+			names := make([]string, 0, len(s.provisionHints))
+			for name := range s.provisionHints {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			return Result{}, &ErrOrphanSprite{Sprite: prepared.Sprite, Composition: names}
+		}
 	}
 
 	plan := s.buildPlan(prepared, provisionNeeded)
@@ -648,6 +666,12 @@ func (s *Service) buildPlan(req preparedRequest, provisionNeeded bool) Plan {
 			Description: "verify ANTHROPIC_API_KEY is not set to a direct key",
 		})
 	}
+	if len(s.provisionHints) > 0 && !req.AllowOrphan {
+		steps = append(steps, PlanStep{
+			Kind:        StepValidateWorkspace,
+			Description: fmt.Sprintf("verify sprite %q is in composition (orphan check)", req.Sprite),
+		})
+	}
 	steps = append(steps, PlanStep{
 		Kind:        StepCleanSignals,
 		Description: fmt.Sprintf("remove stale signal files from %s", s.workspace),
@@ -721,6 +745,7 @@ type preparedRequest struct {
 	TaskLabel            string
 	ProvisionMetadata    map[string]string
 	AllowAnthropicDirect bool
+	AllowOrphan          bool
 	MachineID            string
 	// LogPath is the path to the agent output log on the sprite (oneshot mode only).
 	LogPath string
@@ -852,6 +877,7 @@ func (s *Service) prepare(req Request) (preparedRequest, error) {
 		TaskLabel:            taskLabel,
 		ProvisionMetadata:    metadata,
 		AllowAnthropicDirect: req.AllowAnthropicDirect,
+		AllowOrphan:          req.AllowOrphan,
 		MachineID:            machineID,
 		LogPath:              logPath,
 	}, nil

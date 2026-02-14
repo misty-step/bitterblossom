@@ -1452,6 +1452,289 @@ func TestResolveSkillMountsAcceptsCustomLimits(t *testing.T) {
 	}
 }
 
+func TestRunRejectsOrphanSprite(t *testing.T) {
+	// Create a minimal composition file with only bramble and thorn
+	compositionDir := t.TempDir()
+	spritesDir := filepath.Join(compositionDir, "sprites")
+	compositionsDir := filepath.Join(compositionDir, "compositions")
+	if err := os.MkdirAll(spritesDir, 0o755); err != nil {
+		t.Fatalf("mkdir sprites: %v", err)
+	}
+	if err := os.MkdirAll(compositionsDir, 0o755); err != nil {
+		t.Fatalf("mkdir compositions: %v", err)
+	}
+
+	// Create persona files
+	for _, name := range []string{"systems", "security"} {
+		if err := os.WriteFile(filepath.Join(spritesDir, name+".md"), []byte("# "+name), 0o644); err != nil {
+			t.Fatalf("write persona: %v", err)
+		}
+	}
+
+	// Create composition file
+	compContent := `version: 1
+name: test
+sprites:
+  bramble:
+    definition: ../sprites/systems.md
+  thorn:
+    definition: ../sprites/security.md
+`
+	compPath := filepath.Join(compositionsDir, "test.yaml")
+	if err := os.WriteFile(compPath, []byte(compContent), 0o644); err != nil {
+		t.Fatalf("write composition: %v", err)
+	}
+
+	// "sage" exists remotely but is NOT in the composition
+	remote := &fakeRemote{
+		listSprites: []string{"bramble", "thorn", "sage"},
+	}
+
+	service, err := NewService(Config{
+		Remote:          remote,
+		Fly:             &fakeFly{},
+		App:             "bb-app",
+		Workspace:       "/home/sprite/workspace",
+		CompositionPath: compPath,
+	})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	_, runErr := service.Run(context.Background(), Request{
+		Sprite:  "sage",
+		Prompt:  "Fix tests",
+		Execute: true,
+	})
+	if runErr == nil {
+		t.Fatal("expected error for orphan sprite, got nil")
+	}
+	var orphanErr *ErrOrphanSprite
+	if !errors.As(runErr, &orphanErr) {
+		t.Fatalf("error type = %T, want *ErrOrphanSprite", runErr)
+	}
+	if orphanErr.Sprite != "sage" {
+		t.Fatalf("orphan sprite = %q, want %q", orphanErr.Sprite, "sage")
+	}
+	if !strings.Contains(runErr.Error(), "bramble") || !strings.Contains(runErr.Error(), "thorn") {
+		t.Fatalf("error should list composition sprites, got: %v", runErr)
+	}
+}
+
+func TestRunAllowsOrphanWhenFlagSet(t *testing.T) {
+	// Same setup as TestRunRejectsOrphanSprite but with AllowOrphan=true
+	compositionDir := t.TempDir()
+	spritesDir := filepath.Join(compositionDir, "sprites")
+	compositionsDir := filepath.Join(compositionDir, "compositions")
+	if err := os.MkdirAll(spritesDir, 0o755); err != nil {
+		t.Fatalf("mkdir sprites: %v", err)
+	}
+	if err := os.MkdirAll(compositionsDir, 0o755); err != nil {
+		t.Fatalf("mkdir compositions: %v", err)
+	}
+	for _, name := range []string{"systems", "security"} {
+		if err := os.WriteFile(filepath.Join(spritesDir, name+".md"), []byte("# "+name), 0o644); err != nil {
+			t.Fatalf("write persona: %v", err)
+		}
+	}
+	compContent := `version: 1
+name: test
+sprites:
+  bramble:
+    definition: ../sprites/systems.md
+  thorn:
+    definition: ../sprites/security.md
+`
+	compPath := filepath.Join(compositionsDir, "test.yaml")
+	if err := os.WriteFile(compPath, []byte(compContent), 0o644); err != nil {
+		t.Fatalf("write composition: %v", err)
+	}
+
+	remote := &fakeRemote{
+		execResponses: []string{
+			"",     // validate env
+			"",     // clean signals
+			"done", // oneshot agent
+		},
+		listSprites: []string{"bramble", "thorn", "sage"},
+	}
+
+	service, err := NewService(Config{
+		Remote:          remote,
+		Fly:             &fakeFly{},
+		App:             "bb-app",
+		Workspace:       "/home/sprite/workspace",
+		CompositionPath: compPath,
+	})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	result, runErr := service.Run(context.Background(), Request{
+		Sprite:      "sage",
+		Prompt:      "Fix tests",
+		Execute:     true,
+		AllowOrphan: true,
+	})
+	if runErr != nil {
+		t.Fatalf("Run() error = %v, want nil (AllowOrphan=true)", runErr)
+	}
+	if result.State != StateCompleted {
+		t.Fatalf("state = %q, want %q", result.State, StateCompleted)
+	}
+}
+
+func TestRunOrphanCheckSkippedWithoutComposition(t *testing.T) {
+	// Without composition loaded, orphan check should not fire
+	remote := &fakeRemote{
+		execResponses: []string{
+			"",     // validate env
+			"",     // clean signals
+			"done", // oneshot agent
+		},
+		listSprites: []string{"sage"},
+	}
+
+	service, err := NewService(Config{
+		Remote:    remote,
+		Fly:       &fakeFly{},
+		App:       "bb-app",
+		Workspace: "/home/sprite/workspace",
+		// No CompositionPath — provisionHints will be empty
+	})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	result, runErr := service.Run(context.Background(), Request{
+		Sprite:  "sage",
+		Prompt:  "Fix tests",
+		Execute: true,
+	})
+	if runErr != nil {
+		t.Fatalf("Run() error = %v, want nil (no composition loaded)", runErr)
+	}
+	if result.State != StateCompleted {
+		t.Fatalf("state = %q, want %q", result.State, StateCompleted)
+	}
+}
+
+func TestRunCompositionSpritePasses(t *testing.T) {
+	// Sprite in composition should pass orphan check
+	compositionDir := t.TempDir()
+	spritesDir := filepath.Join(compositionDir, "sprites")
+	compositionsDir := filepath.Join(compositionDir, "compositions")
+	if err := os.MkdirAll(spritesDir, 0o755); err != nil {
+		t.Fatalf("mkdir sprites: %v", err)
+	}
+	if err := os.MkdirAll(compositionsDir, 0o755); err != nil {
+		t.Fatalf("mkdir compositions: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(spritesDir, "systems.md"), []byte("# systems"), 0o644); err != nil {
+		t.Fatalf("write persona: %v", err)
+	}
+	compContent := `version: 1
+name: test
+sprites:
+  bramble:
+    definition: ../sprites/systems.md
+`
+	compPath := filepath.Join(compositionsDir, "test.yaml")
+	if err := os.WriteFile(compPath, []byte(compContent), 0o644); err != nil {
+		t.Fatalf("write composition: %v", err)
+	}
+
+	remote := &fakeRemote{
+		execResponses: []string{
+			"",     // validate env
+			"",     // clean signals
+			"done", // oneshot agent
+		},
+		listSprites: []string{"bramble"},
+	}
+
+	service, err := NewService(Config{
+		Remote:          remote,
+		Fly:             &fakeFly{},
+		App:             "bb-app",
+		Workspace:       "/home/sprite/workspace",
+		CompositionPath: compPath,
+	})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	result, runErr := service.Run(context.Background(), Request{
+		Sprite:  "bramble",
+		Prompt:  "Fix tests",
+		Execute: true,
+	})
+	if runErr != nil {
+		t.Fatalf("Run() error = %v, want nil (sprite is in composition)", runErr)
+	}
+	if result.State != StateCompleted {
+		t.Fatalf("state = %q, want %q", result.State, StateCompleted)
+	}
+}
+
+func TestDryRunPlanIncludesValidateWorkspaceStep(t *testing.T) {
+	compositionDir := t.TempDir()
+	spritesDir := filepath.Join(compositionDir, "sprites")
+	compositionsDir := filepath.Join(compositionDir, "compositions")
+	if err := os.MkdirAll(spritesDir, 0o755); err != nil {
+		t.Fatalf("mkdir sprites: %v", err)
+	}
+	if err := os.MkdirAll(compositionsDir, 0o755); err != nil {
+		t.Fatalf("mkdir compositions: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(spritesDir, "systems.md"), []byte("# systems"), 0o644); err != nil {
+		t.Fatalf("write persona: %v", err)
+	}
+	compContent := `version: 1
+name: test
+sprites:
+  bramble:
+    definition: ../sprites/systems.md
+`
+	compPath := filepath.Join(compositionsDir, "test.yaml")
+	if err := os.WriteFile(compPath, []byte(compContent), 0o644); err != nil {
+		t.Fatalf("write composition: %v", err)
+	}
+
+	service, err := NewService(Config{
+		Remote:          &fakeRemote{},
+		Fly:             &fakeFly{},
+		App:             "bb-app",
+		Workspace:       "/home/sprite/workspace",
+		CompositionPath: compPath,
+	})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	result, runErr := service.Run(context.Background(), Request{
+		Sprite:  "bramble",
+		Prompt:  "Fix tests",
+		Execute: false, // dry-run
+	})
+	if runErr != nil {
+		t.Fatalf("Run() error = %v", runErr)
+	}
+
+	hasValidateWorkspace := false
+	for _, step := range result.Plan.Steps {
+		if step.Kind == StepValidateWorkspace {
+			hasValidateWorkspace = true
+			if !strings.Contains(step.Description, "bramble") {
+				t.Fatalf("validate workspace step should mention sprite name, got: %q", step.Description)
+			}
+		}
+	}
+	if !hasValidateWorkspace {
+		t.Fatal("plan missing StepValidateWorkspace when composition is loaded")
+	}
+}
+
 func TestScaffoldUploadsBaseFiles(t *testing.T) {
 	// Create a temp scaffold directory
 	scaffoldDir := t.TempDir()
