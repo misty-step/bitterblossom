@@ -64,7 +64,12 @@ func IssuePrompt(issue int, repo string) string {
 	return fmt.Sprintf(
 		"Implement GitHub issue #%d%s. Read the issue for the full spec. "+
 			"Run tests to verify your changes. Commit with a descriptive message "+
-			"referencing the issue number.",
+			"referencing the issue number. Push your branch and open a PR.\n\n"+
+			"⚠️  MANDATORY COMPLETION SIGNAL:\n"+
+			"You MUST write a completion signal file before exiting, or the task will appear to hang.\n"+
+			"- If successful: echo 'Done: fixed X. PR: <url>' > TASK_COMPLETE\n"+
+			"- If blocked: write the reason to BLOCKED.md and stop.\n"+
+			"Use the exact filename TASK_COMPLETE with no file extension. Do NOT use TASK_COMPLETE.md.",
 		issue, repoClause,
 	)
 }

@@ -10,7 +10,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var version = "dev"
+var (
+	version = "dev"
+	commit  = "unknown"
+	date    = "unknown"
+)
 
 type exitError struct {
 	Code int
@@ -60,6 +64,7 @@ func newRootCommand() *cobra.Command {
 func newRootCmd(stdout, stderr io.Writer) *cobra.Command {
 	return newRootCmdWithFactories(stdout, stderr, rootCommandFactories{
 		composeFactory:   newComposeCmd,
+		eventsFactory:    newEventsCmd,
 		watchFactory:     newWatchCmd,
 		logsFactory:      newLogsCmd,
 		agentFactory:     newAgentCommand,
@@ -70,11 +75,14 @@ func newRootCmd(stdout, stderr io.Writer) *cobra.Command {
 		statusFactory:    newStatusCmd,
 		teardownFactory:  newTeardownCmd,
 		fleetFactory:     newFleetCmd,
+		addFactory:       newAddCmd,
+		removeFactory:    newRemoveCmd,
 	})
 }
 
 type rootCommandFactories struct {
 	composeFactory   func() *cobra.Command
+	eventsFactory    func() *cobra.Command
 	watchFactory     func(io.Writer, io.Writer) *cobra.Command
 	logsFactory      func(io.Writer, io.Writer) *cobra.Command
 	agentFactory     func() *cobra.Command
@@ -85,6 +93,8 @@ type rootCommandFactories struct {
 	statusFactory    func() *cobra.Command
 	teardownFactory  func() *cobra.Command
 	fleetFactory     func() *cobra.Command
+	addFactory       func() *cobra.Command
+	removeFactory    func() *cobra.Command
 }
 
 func newRootCmdWithFactories(stdout, stderr io.Writer, factories rootCommandFactories) *cobra.Command {
@@ -104,6 +114,9 @@ func newRootCmdWithFactories(stdout, stderr io.Writer, factories rootCommandFact
 	root.AddCommand(newVersionCmd())
 	if factories.composeFactory != nil {
 		root.AddCommand(factories.composeFactory())
+	}
+	if factories.eventsFactory != nil {
+		root.AddCommand(factories.eventsFactory())
 	}
 	if factories.watchFactory != nil {
 		root.AddCommand(factories.watchFactory(stdout, stderr))
@@ -135,6 +148,12 @@ func newRootCmdWithFactories(stdout, stderr io.Writer, factories rootCommandFact
 	if factories.fleetFactory != nil {
 		root.AddCommand(factories.fleetFactory())
 	}
+	if factories.addFactory != nil {
+		root.AddCommand(factories.addFactory())
+	}
+	if factories.removeFactory != nil {
+		root.AddCommand(factories.removeFactory())
+	}
 
 	return root
 }
@@ -150,7 +169,7 @@ func newVersionCmd() *cobra.Command {
 		Use:   "version",
 		Short: "Print bb version",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			_, err := fmt.Fprintf(cmd.OutOrStdout(), "bb version %s\n", version)
+			_, err := fmt.Fprintf(cmd.OutOrStdout(), "bb version %s (commit %s, built %s)\n", version, commit, date)
 			return err
 		},
 	}

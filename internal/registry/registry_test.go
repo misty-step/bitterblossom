@@ -221,7 +221,7 @@ func TestValidateRegistryPath_BlocksSystemDirs(t *testing.T) {
 }
 
 func TestValidateRegistryPath_BlocksTraversal(t *testing.T) {
-	// filepath.Abs resolves ".." so "/home/../etc/x.toml" → "/etc/x.toml" → blocked by system dir rule.
+	// filepath.Abs resolves ".." so "/home/../etc/x.toml" -> "/etc/x.toml" -> blocked by system dir rule.
 	if _, err := validateRegistryPath("/home/../etc/passwd.toml"); err == nil {
 		t.Error("should block path traversal that resolves to /etc/")
 	}
@@ -233,6 +233,46 @@ func TestValidateRegistryPath_RequiresToml(t *testing.T) {
 	}
 }
 
+func TestValidateRegistryPath_BlocksSymlinkToSystemDir(t *testing.T) {
+	// Symlink /tmp/xxx -> /etc, then validate /tmp/xxx/new/registry.toml.
+	// The full path doesn't exist, but the symlink ancestor resolves to /etc.
+	tmp := t.TempDir()
+	link := filepath.Join(tmp, "sneaky-link")
+	if err := os.Symlink("/etc", link); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+	// Partially-existing path: link exists (-> /etc), "new" doesn't.
+	path := filepath.Join(link, "new", "registry.toml")
+	_, err := validateRegistryPath(path)
+	if err == nil {
+		t.Fatalf("validateRegistryPath(%q) should be blocked (symlink to /etc)", path)
+	}
+	if !strings.Contains(err.Error(), "protected system directory") {
+		t.Fatalf("expected 'protected system directory' error, got %q", err.Error())
+	}
+}
+
+func TestValidateRegistryPath_AllowsSymlinkToSafeDir(t *testing.T) {
+	// Symlink within temp dirs should still be allowed.
+	tmp := t.TempDir()
+	target := filepath.Join(tmp, "real-dir")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatalf("MkdirAll error = %v", err)
+	}
+	link := filepath.Join(tmp, "safe-link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+	path := filepath.Join(link, "registry.toml")
+	validated, err := validateRegistryPath(path)
+	if err != nil {
+		t.Fatalf("validateRegistryPath(%q) error = %v", path, err)
+	}
+	if validated == "" {
+		t.Fatal("validated path is empty")
+	}
+}
+
 func TestValidateRegistryPath_AllowsValidPaths(t *testing.T) {
 	// Temp dirs should be allowed for testing.
 	dir := t.TempDir()
@@ -240,6 +280,64 @@ func TestValidateRegistryPath_AllowsValidPaths(t *testing.T) {
 	validated, err := validateRegistryPath(path)
 	if err != nil {
 		t.Fatalf("validateRegistryPath(%q) error = %v", path, err)
+	}
+	if validated == "" {
+		t.Fatal("validated path is empty")
+	}
+}
+
+func TestValidateRegistryPath_BlocksSymlinkedSystemDirs(t *testing.T) {
+	// Symlink directly to /etc: EvalSymlinks succeeds on the parent.
+	tmpDir := t.TempDir()
+	link := filepath.Join(tmpDir, "sneaky")
+	if err := os.Symlink("/etc", link); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	path := filepath.Join(link, "registry.toml")
+	_, err := validateRegistryPath(path)
+	if err == nil {
+		t.Fatalf("validateRegistryPath(%q) should be blocked (symlink to /etc)", path)
+	}
+	if !strings.Contains(err.Error(), "protected system directory") {
+		t.Fatalf("expected protected system directory error, got: %v", err)
+	}
+}
+
+func TestValidateRegistryPath_BlocksPartiallyExistingSymlinkPath(t *testing.T) {
+	// This is the P1 bypass: symlink to /etc with a non-existing subdirectory.
+	// EvalSymlinks on the full parent fails (subdir doesn't exist under /etc),
+	// so naive code falls back to unresolved path. Ancestor-walking catches it.
+	tmpDir := t.TempDir()
+	link := filepath.Join(tmpDir, "sneaky")
+	if err := os.Symlink("/etc", link); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	// link/nonexistent/registry.toml - "nonexistent" doesn't exist under /etc
+	path := filepath.Join(link, "nonexistent", "registry.toml")
+	_, err := validateRegistryPath(path)
+	if err == nil {
+		t.Fatalf("validateRegistryPath(%q) should be blocked (symlink bypass via partial path)", path)
+	}
+	if !strings.Contains(err.Error(), "protected system directory") {
+		t.Fatalf("expected protected system directory error, got: %v", err)
+	}
+}
+
+func TestValidateRegistryPath_AllowsSymlinkedSafeDirs(t *testing.T) {
+	// Symlink to a safe temp directory should be allowed.
+	target := t.TempDir()
+	tmpDir := t.TempDir()
+	link := filepath.Join(tmpDir, "safe-link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	path := filepath.Join(link, "registry.toml")
+	validated, err := validateRegistryPath(path)
+	if err != nil {
+		t.Fatalf("validateRegistryPath(%q) error = %v (should allow safe symlink)", path, err)
 	}
 	if validated == "" {
 		t.Fatal("validated path is empty")

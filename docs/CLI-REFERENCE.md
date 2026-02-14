@@ -169,6 +169,12 @@ bb dispatch bramble --ralph --file prompts/refactor.md --execute
 # With repo clone
 bb dispatch bramble --repo misty-step/heartbeat "Write webhook tests" --execute
 
+# Mount one or more skill directories into sprite workspace
+bb dispatch bramble --issue 252 --repo misty-step/bitterblossom \
+  --skill base/skills/bitterblossom-dispatch \
+  --skill base/skills/bitterblossom-monitoring \
+  --execute --wait
+
 # JSON output for agent consumption
 bb dispatch bramble "Fix the bug" --execute --json
 ```
@@ -179,6 +185,7 @@ bb dispatch bramble "Fix the bug" --execute --json
 |------|---------|-------------|
 | `--repo` | | Repo to clone/pull (`org/repo` or URL) |
 | `--file` | | Read prompt from file |
+| `--skill` | | Path to skill directory or `SKILL.md` (repeatable). Mounted at `./skills/<name>/` on sprite. **Limits:** max 10 mounts, 100 files/skill, 10MB/skill, 1MB/file |
 | `--ralph` | `false` | Start persistent Ralph loop |
 | `--execute` | `false` | Execute dispatch (default is dry-run) |
 | `--dry-run` | `true` | Preview dispatch plan |
@@ -211,6 +218,20 @@ Any state can transition to `failed` on error.
 ### Exit Codes
 
 Standard (see [contracts](contracts.md)).
+
+### Skill Mount Limits
+
+The `--skill` flag enforces guardrails to prevent accidental performance/pathology cases:
+
+| Limit | Default | Description |
+|-------|---------|-------------|
+| Max mounts | 10 | Maximum number of `--skill` flags per dispatch |
+| Max files/skill | 100 | Maximum files per skill directory |
+| Max bytes/skill | 10 MB | Total size limit per skill |
+| Max file size | 1 MB | Individual file size limit |
+| Skill name pattern | `^[a-z][a-z0-9-]*$` | Valid skill directory names (lowercase alphanumeric with hyphens) |
+
+These limits are configurable programmatically via `resolveSkillLimits`. Violations produce deterministic errors with remediation hints.
 
 ---
 
@@ -561,6 +582,49 @@ bb logs --file events.jsonl --sprite bramble --type progress
 | `--follow` | `false` | Follow events as files grow |
 | `--json` | `false` | Emit JSONL output |
 | `--poll-interval` | `250ms` | File tail polling interval |
+
+---
+
+## events
+
+Query structured event history from the local daily event store (`~/.config/bb/events/`).
+
+```bash
+bb events [flags]
+```
+
+### Examples
+
+```bash
+# All events from the local store
+bb events
+
+# Filter by sprite and event type
+bb events --sprite bramble --type progress
+
+# Filter by issue number
+bb events --issue 13
+
+# Time window
+bb events --since 1h
+bb events --since 2026-02-12T00:00:00Z --until 2026-02-12T01:00:00Z
+
+# JSONL output
+bb events --json
+```
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--dir` | `~/.config/bb/events` | Event store directory |
+| `--sprite` | all | Filter by sprite name |
+| `--type` | all | Filter by event type |
+| `--issue` | | Filter by issue number |
+| `--since` | | Events since duration or RFC3339 |
+| `--until` | | Events until RFC3339 |
+| `--limit` | `1000` | Maximum events to return (0 = unlimited) |
+| `--json` | `false` | Emit JSONL output |
 
 ---
 

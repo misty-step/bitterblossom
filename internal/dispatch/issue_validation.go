@@ -5,26 +5,38 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/misty-step/bitterblossom/internal/github"
 )
 
 // IssueValidator validates GitHub issues before dispatch.
 type IssueValidator struct {
-	// RequiredLabels are labels that must be present on the issue.
-	// Default: ["ralph-ready"]
+	// RequiredLabels are labels that must be present on the issue (hard error).
 	RequiredLabels []string
+	// RecommendedLabels are labels that should be present (warning if missing).
+	RecommendedLabels []string
 	// CheckAcceptanceCriteria verifies the issue has a clear description/acceptance criteria.
 	CheckAcceptanceCriteria bool
 	// CheckBlockingDependencies checks for "blocked-by" or similar labels/dependencies.
 	CheckBlockingDependencies bool
 	// MinDescriptionLength is the minimum character count for a valid description.
 	MinDescriptionLength int
-	// RunGH is the function to execute gh CLI commands (for testing).
+	// RunGH is the function to execute gh CLI commands (for testing) - DEPRECATED: Use GitHubClient instead.
 	RunGH func(ctx context.Context, args ...string) ([]byte, error)
+	// GitHubClient is the typed GitHub API client. If nil, falls back to RunGH/gh CLI.
+	GitHubClient GitHubIssueClient
+}
+
+// GitHubIssueClient defines the interface needed for issue validation.
+// This interface is satisfied by *github.Client.
+type GitHubIssueClient interface {
+	GetIssue(ctx context.Context, owner, repo string, number int) (*github.Issue, error)
 }
 
 // ValidationResult contains the outcome of issue validation.
@@ -40,34 +52,60 @@ type ValidationResult struct {
 }
 
 // IssueData represents a GitHub issue fetched via gh CLI.
+// DEPRECATED: Use github.Issue instead.
 type IssueData struct {
-	Number      int      `json:"number"`
-	Title       string   `json:"title"`
-	Body        string   `json:"body"`
-	State       string   `json:"state"`
-	Labels      []Label  `json:"labels"`
-	URL         string   `json:"url"`
-	Closed      bool     `json:"closed"`
-	// These fields are populated from label descriptions or specific labels
+	Number       int     `json:"number"`
+	Title        string  `json:"title"`
+	Body         string  `json:"body"`
+	State        string  `json:"state"`
+	Labels       []Label `json:"labels"`
+	URL          string  `json:"url"`
+	Closed       bool    `json:"closed"`
 	Dependencies []string `json:"-"`
 }
 
 // Label represents a GitHub issue label.
+// DEPRECATED: Use github.Label instead.
 type Label struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
 	Color       string `json:"color,omitempty"`
 }
 
-// DefaultIssueValidator returns a validator with sensible defaults.
-func DefaultIssueValidator() *IssueValidator {
+// NewIssueValidator creates a validator with the specified GitHub client.
+// If client is nil, falls back to gh CLI via GITHUB_TOKEN environment variable.
+func NewIssueValidator(client GitHubIssueClient) *IssueValidator {
 	return &IssueValidator{
-		RequiredLabels:            []string{"ralph-ready"},
+		RequiredLabels:            []string{},
+		RecommendedLabels:         []string{"ralph-ready"},
 		CheckAcceptanceCriteria:   true,
 		CheckBlockingDependencies: true,
 		MinDescriptionLength:      50,
 		RunGH:                     defaultRunGH,
+		GitHubClient:              client,
 	}
+}
+
+// DefaultIssueValidator returns a validator with sensible defaults.
+// Uses typed GitHub client if GITHUB_TOKEN is available, otherwise falls back to gh CLI.
+func DefaultIssueValidator() *IssueValidator {
+	// Try to create a GitHub client from environment token first
+	if token := os.Getenv("GITHUB_TOKEN"); token != "" {
+		client := github.NewClientFromToken(token)
+		return NewIssueValidator(client)
+	}
+	return NewIssueValidator(nil)
+}
+
+// IssueValidatorForRalphMode returns a validator configured for the specified mode.
+// When ralphMode is true, it includes ralph-ready in recommended labels.
+// When ralphMode is false, ralph-ready is not recommended (only relevant for Ralph dispatches).
+func IssueValidatorForRalphMode(ralphMode bool) *IssueValidator {
+	v := DefaultIssueValidator()
+	if !ralphMode {
+		v.RecommendedLabels = nil
+	}
+	return v
 }
 
 // defaultRunGH executes the gh CLI command.
@@ -110,23 +148,15 @@ func (v *IssueValidator) ValidateIssue(ctx context.Context, issue int, repo stri
 		return result, nil
 	}
 
-	// Fetch issue data from GitHub
+	// Fetch issue data from GitHub using typed client first
 	issueData, err := v.fetchIssue(ctx, issue, repoSlug)
 	if err != nil {
-		// If gh is not available or issue doesn't exist, return error
-		if errors.Is(err, exec.ErrNotFound) {
-			result.Errors = append(result.Errors, "gh CLI not found - install GitHub CLI to use issue validation")
-			result.Valid = false
-			return result, nil
-		}
-		// Issue might be private or not accessible
-		result.Errors = append(result.Errors, fmt.Sprintf("failed to fetch issue: %v", err))
-		result.Valid = false
+		result = v.handleFetchError(err, result)
 		return result, nil
 	}
 
 	// Check if issue is closed
-	if issueData.Closed || issueData.State == "closed" {
+	if issueData.State == "closed" {
 		result.Errors = append(result.Errors, "issue is closed")
 		result.Valid = false
 	}
@@ -143,6 +173,12 @@ func (v *IssueValidator) ValidateIssue(ctx context.Context, issue int, repo stri
 	if len(missingLabels) > 0 {
 		result.Errors = append(result.Errors, fmt.Sprintf("missing required labels: %s", strings.Join(missingLabels, ", ")))
 		result.Valid = false
+	}
+
+	// Check for recommended labels
+	missingRecommended := v.checkRecommendedLabels(labelNames)
+	if len(missingRecommended) > 0 {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("missing recommended labels: %s (add for best results)", strings.Join(missingRecommended, ", ")))
 	}
 
 	// Check for blocking labels
@@ -174,9 +210,78 @@ func (v *IssueValidator) ValidateIssue(ctx context.Context, issue int, repo stri
 	return result, nil
 }
 
-// fetchIssue retrieves issue data from GitHub via gh CLI.
-func (v *IssueValidator) fetchIssue(ctx context.Context, issue int, repo string) (*IssueData, error) {
-	// Use gh CLI to fetch issue data as JSON
+// handleFetchError converts fetch errors into user-friendly validation results.
+func (v *IssueValidator) handleFetchError(err error, result *ValidationResult) *ValidationResult {
+	var msg string
+	switch {
+	case errors.Is(err, github.ErrAuth):
+		msg = "GitHub authentication failed - check GITHUB_TOKEN is valid and has required scopes"
+	case errors.Is(err, github.ErrNotFound):
+		msg = "issue not found - check the issue number and repository"
+	case errors.Is(err, github.ErrRateLimited):
+		msg = "GitHub rate limit exceeded - wait before retrying"
+	case errors.Is(err, exec.ErrNotFound):
+		msg = "gh CLI not found - install GitHub CLI to use issue validation"
+	default:
+		msg = fmt.Sprintf("failed to fetch issue: %v", err)
+	}
+	result.Errors = append(result.Errors, msg)
+	result.Valid = false
+	return result
+}
+
+// toIssueData converts github.Issue to legacy IssueData for internal use.
+func toIssueData(issue *github.Issue) *IssueData {
+	labels := make([]Label, len(issue.Labels))
+	for i, l := range issue.Labels {
+		labels[i] = Label{
+			Name:        l.Name,
+			Description: l.Description,
+			Color:       l.Color,
+		}
+	}
+	return &IssueData{
+		Number: issue.Number,
+		Title:  issue.Title,
+		Body:   issue.Body,
+		State:  issue.State,
+		Labels: labels,
+		URL:    issue.HTMLURL,
+		Closed: issue.Closed(),
+	}
+}
+
+// fetchIssue retrieves issue data from GitHub.
+// Uses typed GitHubClient if available, falls back to gh CLI.
+func (v *IssueValidator) fetchIssue(ctx context.Context, issueNum int, repoSlug string) (*IssueData, error) {
+	// First try the typed GitHub client
+	if v.GitHubClient != nil {
+		owner, repo, err := parseRepoSlug(repoSlug)
+		if err != nil {
+			return nil, err
+		}
+		issue, err := v.GitHubClient.GetIssue(ctx, owner, repo, issueNum)
+		if err != nil {
+			return nil, err
+		}
+		return toIssueData(issue), nil
+	}
+
+	// Fall back to gh CLI
+	return v.fetchIssueViaGH(ctx, issueNum, repoSlug)
+}
+
+// parseRepoSlug splits "owner/repo" into owner and repo.
+func parseRepoSlug(repo string) (owner, name string, err error) {
+	parts := strings.Split(repo, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", fmt.Errorf("invalid repo format: %s (expected owner/repo)", repo)
+	}
+	return parts[0], parts[1], nil
+}
+
+// fetchIssueViaGH retrieves issue data via gh CLI (fallback).
+func (v *IssueValidator) fetchIssueViaGH(ctx context.Context, issue int, repo string) (*IssueData, error) {
 	args := []string{
 		"issue", "view", strconv.Itoa(issue),
 		"--repo", repo,
@@ -196,20 +301,30 @@ func (v *IssueValidator) fetchIssue(ctx context.Context, issue int, repo string)
 	return &issueData, nil
 }
 
-// checkRequiredLabels returns the labels that are missing.
-func (v *IssueValidator) checkRequiredLabels(labels []string) []string {
-	labelSet := make(map[string]bool)
-	for _, l := range labels {
-		labelSet[strings.ToLower(l)] = true
+// findMissingLabels returns which of want are absent from have (case-insensitive).
+func findMissingLabels(have, want []string) []string {
+	set := make(map[string]bool, len(have))
+	for _, l := range have {
+		set[strings.ToLower(l)] = true
 	}
 
 	var missing []string
-	for _, required := range v.RequiredLabels {
-		if !labelSet[strings.ToLower(required)] {
-			missing = append(missing, required)
+	for _, w := range want {
+		if !set[strings.ToLower(w)] {
+			missing = append(missing, w)
 		}
 	}
 	return missing
+}
+
+// checkRequiredLabels returns required labels that are missing.
+func (v *IssueValidator) checkRequiredLabels(labels []string) []string {
+	return findMissingLabels(labels, v.RequiredLabels)
+}
+
+// checkRecommendedLabels returns recommended labels that are missing.
+func (v *IssueValidator) checkRecommendedLabels(labels []string) []string {
+	return findMissingLabels(labels, v.RecommendedLabels)
 }
 
 // blockingLabelPatterns matches labels that indicate the issue is blocked.
@@ -291,13 +406,14 @@ func normalizeRepoSlug(repo string) string {
 }
 
 // ValidateIssueFromRequest validates an issue based on a dispatch request.
+// Deprecated: Use ValidateIssueWithProfile instead for profile-based validation.
 func ValidateIssueFromRequest(ctx context.Context, req Request, strict bool) (*ValidationResult, error) {
 	// Only validate if issue number is provided
 	if req.Issue <= 0 {
 		return &ValidationResult{Valid: true}, nil
 	}
 
-	validator := DefaultIssueValidator()
+	validator := IssueValidatorForRalphMode(req.Ralph)
 	result, err := validator.ValidateIssue(ctx, req.Issue, req.Repo)
 	if err != nil {
 		return nil, err
@@ -308,6 +424,51 @@ func ValidateIssueFromRequest(ctx context.Context, req Request, strict bool) (*V
 		result.Errors = append(result.Errors, result.Warnings...)
 		result.Warnings = nil
 		result.Valid = false
+	}
+
+	return result, nil
+}
+
+// ValidateIssueWithProfile performs full validation (safety + policy) with profile support.
+// Safety checks are always enforced. Policy checks are controlled by the profile.
+func ValidateIssueWithProfile(ctx context.Context, req Request, profile ValidationProfile, env map[string]string, allowDirect bool) (*CombinedValidationResult, error) {
+	// Build combined result
+	result := &CombinedValidationResult{
+		IssueNumber: req.Issue,
+		Repo:        req.Repo,
+	}
+
+	// Always run safety checks (cannot be bypassed)
+	safetyValidator := DefaultSafetyValidator()
+	result.Safety = *safetyValidator.ValidateSafetyWithEnv(ctx, req, env, allowDirect)
+
+	// Run policy checks only if profile is not "off"
+	if profile != ValidationProfileOff && req.Issue > 0 {
+		policyValidator := IssueValidatorForRalphMode(req.Ralph)
+		policyResult, err := policyValidator.ValidateIssue(ctx, req.Issue, req.Repo)
+		if err != nil {
+			return nil, err
+		}
+
+		result.Policy.Warnings = policyResult.Warnings
+		result.Policy.Errors = policyResult.Errors
+		result.Policy.HasBlockingLabel = policyResult.HasBlockingLabel
+		result.Policy.HasDescription = policyResult.HasDescription
+		result.Policy.Labels = policyResult.Labels
+		result.Labels = policyResult.Labels
+	}
+
+	// Compute legacy Valid field based on profile
+	result.Valid = result.IsSafe() && result.IsPolicyCompliant(profile)
+
+	// Populate legacy warnings/errors for backward compatibility
+	if profile == ValidationProfileStrict {
+		// In strict mode, policy warnings become errors
+		result.Errors = append(result.Safety.Errors, result.Policy.Errors...)
+		result.Errors = append(result.Errors, result.Policy.Warnings...)
+	} else {
+		result.Errors = append(result.Safety.Errors, result.Policy.Errors...)
+		result.Warnings = result.Policy.Warnings
 	}
 
 	return result, nil

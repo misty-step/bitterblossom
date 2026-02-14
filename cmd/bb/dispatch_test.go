@@ -40,7 +40,9 @@ func (fakeFlyClient) Exec(context.Context, string, string, fly.ExecRequest) (fly
 }
 
 func TestDispatchCommandJSONOutput(t *testing.T) {
-	t.Parallel()
+	// Cannot use t.Parallel() — t.Setenv modifies process environment.
+	t.Setenv("GITHUB_TOKEN", "ghp-test")
+	t.Setenv("OPENROUTER_API_KEY", "or-test")
 
 	runner := &fakeDispatchRunner{
 		result: dispatchsvc.Result{
@@ -208,9 +210,12 @@ func TestDispatchCommandAutoAssignWithoutSprite(t *testing.T) {
 	}
 }
 
-func TestDispatchCommandMissingFLY_APP(t *testing.T) {
+func TestDispatchCommandWithoutFlyCredentials(t *testing.T) {
 	t.Parallel()
 
+	// Dispatch should succeed in dry-run mode without FLY_APP/FLY_API_TOKEN
+	// since these are only needed for provisioning new sprites.
+	runner := &fakeDispatchRunner{}
 	deps := dispatchDeps{
 		readFile: func(string) ([]byte, error) { return nil, nil },
 		newFlyClient: func(token, apiURL string) (fly.MachineClient, error) {
@@ -220,7 +225,7 @@ func TestDispatchCommandMissingFLY_APP(t *testing.T) {
 			return &spriteCLIRemote{}
 		},
 		newService: func(cfg dispatchsvc.Config) (dispatchRunner, error) {
-			return &fakeDispatchRunner{}, nil
+			return runner, nil
 		},
 	}
 
@@ -231,56 +236,11 @@ func TestDispatchCommandMissingFLY_APP(t *testing.T) {
 	cmd.SetArgs([]string{
 		"bramble",
 		"test prompt",
-		"--token", "tok",
 	})
 
 	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("expected error for missing FLY_APP, got nil")
-	}
-	if !strings.Contains(err.Error(), "FLY_APP environment variable is required") {
-		t.Fatalf("error = %q, expected FLY_APP error message", err.Error())
-	}
-	if !strings.Contains(err.Error(), "export FLY_APP=sprites-main") {
-		t.Fatalf("error = %q, expected example export command", err.Error())
-	}
-}
-
-func TestDispatchCommandMissingFLY_API_TOKEN(t *testing.T) {
-	t.Parallel()
-
-	deps := dispatchDeps{
-		readFile: func(string) ([]byte, error) { return nil, nil },
-		newFlyClient: func(token, apiURL string) (fly.MachineClient, error) {
-			return fakeFlyClient{}, nil
-		},
-		newRemote: func(binary, org string) *spriteCLIRemote {
-			return &spriteCLIRemote{}
-		},
-		newService: func(cfg dispatchsvc.Config) (dispatchRunner, error) {
-			return &fakeDispatchRunner{}, nil
-		},
-	}
-
-	cmd := newDispatchCmdWithDeps(deps)
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(&out)
-	cmd.SetArgs([]string{
-		"bramble",
-		"test prompt",
-		"--app", "bb-app",
-	})
-
-	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("expected error for missing FLY_API_TOKEN, got nil")
-	}
-	if !strings.Contains(err.Error(), "FLY_API_TOKEN environment variable is required") {
-		t.Fatalf("error = %q, expected FLY_API_TOKEN error message", err.Error())
-	}
-	if !strings.Contains(err.Error(), "fly.io/user/personal_access_tokens") {
-		t.Fatalf("error = %q, expected URL to token page", err.Error())
+	if err != nil {
+		t.Fatalf("dry-run dispatch should succeed without Fly credentials, got: %v", err)
 	}
 }
 
@@ -341,6 +301,61 @@ func TestDispatchCommandUsesPromptFile(t *testing.T) {
 	}
 }
 
+func TestDispatchCommandPassesSkills(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeDispatchRunner{
+		result: dispatchsvc.Result{
+			Executed: false,
+			State:    dispatchsvc.StatePending,
+			Plan: dispatchsvc.Plan{
+				Sprite: "bramble",
+				Mode:   "dry-run",
+			},
+		},
+	}
+
+	deps := dispatchDeps{
+		readFile: func(string) ([]byte, error) { return nil, nil },
+		newFlyClient: func(token, apiURL string) (fly.MachineClient, error) {
+			return fakeFlyClient{}, nil
+		},
+		newRemote: func(binary, org string) *spriteCLIRemote {
+			return &spriteCLIRemote{}
+		},
+		newService: func(cfg dispatchsvc.Config) (dispatchRunner, error) {
+			return runner, nil
+		},
+	}
+
+	cmd := newDispatchCmdWithDeps(deps)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{
+		"bramble",
+		"Fix flaky tests",
+		"--skill", "base/skills/git-mastery",
+		"--skill", "base/skills/testing-philosophy/SKILL.md",
+		"--app", "bb-app",
+		"--token", "tok",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cmd.Execute() error = %v", err)
+	}
+
+	if len(runner.lastReq.Skills) != 2 {
+		t.Fatalf("runner.lastReq.Skills len = %d, want 2", len(runner.lastReq.Skills))
+	}
+	if runner.lastReq.Skills[0] != "base/skills/git-mastery" {
+		t.Fatalf("runner.lastReq.Skills[0] = %q, want %q", runner.lastReq.Skills[0], "base/skills/git-mastery")
+	}
+	if runner.lastReq.Skills[1] != "base/skills/testing-philosophy/SKILL.md" {
+		t.Fatalf("runner.lastReq.Skills[1] = %q, want %q", runner.lastReq.Skills[1], "base/skills/testing-philosophy/SKILL.md")
+	}
+}
+
 func TestDispatchCommandWaitRequiresExecute(t *testing.T) {
 	t.Parallel()
 
@@ -376,7 +391,9 @@ func TestDispatchCommandWaitRequiresExecute(t *testing.T) {
 }
 
 func TestDispatchCommandWithWait(t *testing.T) {
-	t.Parallel()
+	// Cannot use t.Parallel() — t.Setenv modifies process environment.
+	t.Setenv("GITHUB_TOKEN", "ghp-test")
+	t.Setenv("OPENROUTER_API_KEY", "or-test")
 
 	runner := &fakeDispatchRunner{
 		result: dispatchsvc.Result{
@@ -451,7 +468,9 @@ func TestDispatchCommandWithWait(t *testing.T) {
 }
 
 func TestDispatchCommandWaitWithPollingError(t *testing.T) {
-	t.Parallel()
+	// Cannot use t.Parallel() — t.Setenv modifies process environment.
+	t.Setenv("GITHUB_TOKEN", "ghp-test")
+	t.Setenv("OPENROUTER_API_KEY", "or-test")
 
 	runner := &fakeDispatchRunner{
 		result: dispatchsvc.Result{
@@ -496,9 +515,17 @@ func TestDispatchCommandWaitWithPollingError(t *testing.T) {
 		"--token", "tok",
 	})
 
-	// Should succeed with graceful degradation (just show dispatch result)
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("cmd.Execute() error = %v", err)
+	// Should return exit code 1 for polling/infrastructure failure
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for polling failure, got nil")
+	}
+	var coded *exitError
+	if !errors.As(err, &coded) {
+		t.Fatalf("expected exitError, got %T: %v", err, err)
+	}
+	if coded.Code != exitCodeDispatchFailure {
+		t.Fatalf("expected exit code %d, got %d", exitCodeDispatchFailure, coded.Code)
 	}
 
 	// Should have warning in stderr
@@ -509,7 +536,9 @@ func TestDispatchCommandWaitWithPollingError(t *testing.T) {
 }
 
 func TestDispatchCommandWaitJSONOutput(t *testing.T) {
-	t.Parallel()
+	// Cannot use t.Parallel() — t.Setenv modifies process environment.
+	t.Setenv("GITHUB_TOKEN", "ghp-test")
+	t.Setenv("OPENROUTER_API_KEY", "or-test")
 
 	runner := &fakeDispatchRunner{
 		result: dispatchsvc.Result{
@@ -644,11 +673,29 @@ func TestParseStatusCheckOutput(t *testing.T) {
 				Complete: false,
 			},
 		},
+		{
+			name: "fallback completion - agent dead with PR URL but no TASK_COMPLETE",
+			output: "__STATUS_JSON__{\"repo\":\"misty-step/bitterblossom\",\"started\":\"2024-01-15T10:00:00Z\",\"task\":\"Fix bug\"}\n" +
+				"__AGENT_STATE__dead\n" +
+				"__HAS_COMPLETE__no\n" +
+				"__HAS_BLOCKED__no\n" +
+				"__BLOCKED_B64__\n" +
+				"__PR_URL__https://github.com/misty-step/bitterblossom/pull/42\n",
+			wantDone: true,
+			wantRes: &waitResult{
+				State:    "completed",
+				Task:     "Fix bug",
+				Repo:     "misty-step/bitterblossom",
+				Started:  "2024-01-15T10:00:00Z",
+				PRURL:    "https://github.com/misty-step/bitterblossom/pull/42",
+				Complete: true,
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			res, done, err := parseStatusCheckOutput(tt.output, "/home/sprite/workspace")
+			res, done, err := parseStatusCheckOutput(tt.output)
 			if err != nil {
 				t.Fatalf("parseStatusCheckOutput() error = %v", err)
 			}
@@ -685,6 +732,7 @@ func TestBuildStatusCheckScript(t *testing.T) {
 		"BLOCKED_B64",
 		"PR_URL",
 		"TASK_COMPLETE",
+		"TASK_COMPLETE.md",
 		"BLOCKED.md",
 	}
 
@@ -692,5 +740,535 @@ func TestBuildStatusCheckScript(t *testing.T) {
 		if !strings.Contains(script, component) {
 			t.Errorf("script missing expected component: %s", component)
 		}
+	}
+}
+
+func TestDispatchCollectsGHToken(t *testing.T) {
+	var capturedEnvVars map[string]string
+	runner := &fakeDispatchRunner{
+		result: dispatchsvc.Result{
+			Executed: false,
+			State:    dispatchsvc.StatePending,
+			Plan:     dispatchsvc.Plan{Sprite: "bramble", Mode: "dry-run"},
+		},
+	}
+
+	deps := dispatchDeps{
+		readFile:     func(string) ([]byte, error) { return nil, nil },
+		newFlyClient: func(token, apiURL string) (fly.MachineClient, error) { return fakeFlyClient{}, nil },
+		newRemote:    func(binary, org string) *spriteCLIRemote { return &spriteCLIRemote{} },
+		newService: func(cfg dispatchsvc.Config) (dispatchRunner, error) {
+			capturedEnvVars = cfg.EnvVars
+			return runner, nil
+		},
+	}
+
+	t.Setenv("GH_TOKEN", "gh-test-token")
+	t.Setenv("GITHUB_TOKEN", "github-test-token")
+
+	cmd := newDispatchCmdWithDeps(deps)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{
+		"bramble", "Fix tests",
+		"--app", "bb-app",
+		"--token", "tok",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cmd.Execute() error = %v", err)
+	}
+	if capturedEnvVars == nil {
+		t.Fatal("newService was never called")
+	}
+	if v := capturedEnvVars["GH_TOKEN"]; v != "gh-test-token" {
+		t.Fatalf("GH_TOKEN = %q, want %q", v, "gh-test-token")
+	}
+	if v := capturedEnvVars["GITHUB_TOKEN"]; v != "github-test-token" {
+		t.Fatalf("GITHUB_TOKEN = %q, want %q", v, "github-test-token")
+	}
+}
+
+func TestDispatchExecuteRequiresGitHubToken(t *testing.T) {
+	// Cannot use t.Parallel() — t.Setenv modifies process environment.
+
+	// Clear all tokens so validation fires.
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "")
+	// Set an LLM key so only the GitHub token check fails.
+	t.Setenv("OPENROUTER_API_KEY", "test-key")
+
+	deps := dispatchDeps{
+		readFile: func(string) ([]byte, error) { return nil, nil },
+		newFlyClient: func(token, apiURL string) (fly.MachineClient, error) {
+			return fakeFlyClient{}, nil
+		},
+		newRemote: func(binary, org string) *spriteCLIRemote {
+			return &spriteCLIRemote{}
+		},
+		newService: func(cfg dispatchsvc.Config) (dispatchRunner, error) {
+			t.Fatal("newService should not be called when credentials are missing")
+			return nil, nil
+		},
+	}
+
+	cmd := newDispatchCmdWithDeps(deps)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{
+		"bramble", "Fix tests",
+		"--execute",
+		"--app", "bb-app",
+		"--token", "fly-tok",
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when GITHUB_TOKEN is missing in --execute mode")
+	}
+	if !strings.Contains(err.Error(), "no GitHub token found") {
+		t.Fatalf("expected 'no GitHub token found' error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "gh auth token") {
+		t.Fatalf("expected remediation hint with 'gh auth token', got: %v", err)
+	}
+}
+
+func TestDispatchExecuteRequiresLLMKey(t *testing.T) {
+	// Cannot use t.Parallel() — t.Setenv modifies process environment.
+
+	// Clear all LLM keys.
+	for _, key := range []string{
+		"OPENROUTER_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY",
+		"MOONSHOT_AI_API_KEY", "XAI_API_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY",
+	} {
+		t.Setenv(key, "")
+	}
+	// Set a GitHub token so only the LLM key check fails.
+	t.Setenv("GITHUB_TOKEN", "ghp-test")
+
+	deps := dispatchDeps{
+		readFile: func(string) ([]byte, error) { return nil, nil },
+		newFlyClient: func(token, apiURL string) (fly.MachineClient, error) {
+			return fakeFlyClient{}, nil
+		},
+		newRemote: func(binary, org string) *spriteCLIRemote {
+			return &spriteCLIRemote{}
+		},
+		newService: func(cfg dispatchsvc.Config) (dispatchRunner, error) {
+			t.Fatal("newService should not be called when credentials are missing")
+			return nil, nil
+		},
+	}
+
+	cmd := newDispatchCmdWithDeps(deps)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{
+		"bramble", "Fix tests",
+		"--execute",
+		"--app", "bb-app",
+		"--token", "fly-tok",
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when all LLM keys are missing in --execute mode")
+	}
+	if !strings.Contains(err.Error(), "no LLM API key found") {
+		t.Fatalf("expected 'no LLM API key found' error, got: %v", err)
+	}
+}
+
+func TestDispatchDryRunSkipsCredentialValidation(t *testing.T) {
+	// Cannot use t.Parallel() — t.Setenv modifies process environment.
+
+	// Clear everything — dry-run should not care.
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("OPENROUTER_API_KEY", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+
+	runner := &fakeDispatchRunner{}
+	deps := dispatchDeps{
+		readFile: func(string) ([]byte, error) { return nil, nil },
+		newFlyClient: func(token, apiURL string) (fly.MachineClient, error) {
+			return fakeFlyClient{}, nil
+		},
+		newRemote: func(binary, org string) *spriteCLIRemote {
+			return &spriteCLIRemote{}
+		},
+		newService: func(cfg dispatchsvc.Config) (dispatchRunner, error) {
+			return runner, nil
+		},
+	}
+
+	cmd := newDispatchCmdWithDeps(deps)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"bramble", "test prompt"})
+
+	err := cmd.Execute()
+	if err != nil {
+		t.Fatalf("dry-run should not validate credentials, got: %v", err)
+	}
+}
+
+func TestSelectSpriteFromRegistryMissingFile(t *testing.T) {
+	t.Parallel()
+
+	remote := newSpriteCLIRemote("sprite", "")
+
+	testCases := []struct {
+		name          string
+		opts          dispatchOptions
+		expectedInErr string
+	}{
+		{
+			name: "with issue",
+			opts: dispatchOptions{
+				Issue: 42,
+				Repo:  "misty-step/bitterblossom",
+			},
+			expectedInErr: "bb dispatch <sprite> --issue 42",
+		},
+		{
+			name: "with file",
+			opts: dispatchOptions{
+				PromptFile: "prompt.md",
+				Repo:       "misty-step/bitterblossom",
+			},
+			expectedInErr: "bb dispatch <sprite> --file <path>",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			opts := tc.opts
+			opts.RegistryPath = t.TempDir() + "/nonexistent-registry.toml"
+
+			_, err := selectSpriteFromRegistry(context.Background(), remote, opts)
+			if err == nil {
+				t.Fatal("expected error for missing registry file")
+			}
+			if !strings.Contains(err.Error(), "registry not found") {
+				t.Fatalf("expected 'registry not found' error, got: %v", err)
+			}
+			if !strings.Contains(err.Error(), "bb add") {
+				t.Fatalf("expected guidance about 'bb add', got: %v", err)
+			}
+			if !strings.Contains(err.Error(), tc.expectedInErr) {
+				t.Fatalf("error message should contain %q, but it was: %v", tc.expectedInErr, err)
+			}
+		})
+	}
+}
+
+func TestDispatchCommandWaitExitCodes(t *testing.T) {
+	// Cannot use t.Parallel() — t.Setenv modifies process environment.
+	tests := []struct {
+		name         string
+		waitResult   *waitResult
+		wantExitCode int
+		wantErr      bool
+	}{
+		{
+			name: "completed state returns exit 0",
+			waitResult: &waitResult{
+				State:    "completed",
+				Complete: true,
+				PRURL:    "https://github.com/misty-step/bitterblossom/pull/123",
+			},
+			wantExitCode: exitCodeSuccess,
+			wantErr:      false,
+		},
+		{
+			name: "blocked state returns exit 0",
+			waitResult: &waitResult{
+				State:         "blocked",
+				Complete:      true,
+				Blocked:       true,
+				BlockedReason: "needs permissions",
+			},
+			wantExitCode: exitCodeSuccess,
+			wantErr:      false,
+		},
+		{
+			name: "timeout state returns exit 124",
+			waitResult: &waitResult{
+				State: "timeout",
+				Error: "polling timed out",
+			},
+			wantExitCode: exitCodeTimeout,
+			wantErr:      true,
+		},
+		{
+			name: "idle state returns exit 2 (no signals)",
+			waitResult: &waitResult{
+				State:    "idle",
+				Complete: false,
+			},
+			wantExitCode: exitCodeAgentNoSignals,
+			wantErr:      true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("GITHUB_TOKEN", "ghp-test")
+			t.Setenv("OPENROUTER_API_KEY", "or-test")
+
+			runner := &fakeDispatchRunner{
+				result: dispatchsvc.Result{
+					Executed: true,
+					State:    dispatchsvc.StateRunning,
+					Plan: dispatchsvc.Plan{
+						Sprite: "moss",
+						Mode:   "execute",
+					},
+				},
+			}
+
+			deps := dispatchDeps{
+				readFile:     func(string) ([]byte, error) { return nil, nil },
+				newFlyClient: func(token, apiURL string) (fly.MachineClient, error) { return fakeFlyClient{}, nil },
+				newRemote:    func(binary, org string) *spriteCLIRemote { return &spriteCLIRemote{} },
+				newService:   func(cfg dispatchsvc.Config) (dispatchRunner, error) { return runner, nil },
+				pollSprite: func(ctx context.Context, remote *spriteCLIRemote, sprite string, timeout time.Duration, progress func(string)) (*waitResult, error) {
+					return tt.waitResult, nil
+				},
+			}
+
+			cmd := newDispatchCmdWithDeps(deps)
+			var out bytes.Buffer
+			var errOut bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&errOut)
+			cmd.SetArgs([]string{
+				"moss",
+				"Test task",
+				"--execute",
+				"--wait",
+				"--app", "bb-app",
+				"--token", "tok",
+			})
+
+			err := cmd.Execute()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error with exit code %d, got nil", tt.wantExitCode)
+				}
+				var coded *exitError
+				if !errors.As(err, &coded) {
+					t.Fatalf("expected exitError, got %T: %v", err, err)
+				}
+				if coded.Code != tt.wantExitCode {
+					t.Fatalf("expected exit code %d, got %d", tt.wantExitCode, coded.Code)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("expected no error (exit 0), got: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestWaitExitError(t *testing.T) {
+	tests := []struct {
+		name         string
+		waitRes      *waitResult
+		wantErr      bool
+		wantExitCode int
+	}{
+		{
+			name:         "completed returns nil (exit 0)",
+			waitRes:      &waitResult{State: "completed", Complete: true},
+			wantErr:      false,
+			wantExitCode: exitCodeSuccess,
+		},
+		{
+			name:         "blocked returns nil (exit 0)",
+			waitRes:      &waitResult{State: "blocked", Complete: true, Blocked: true},
+			wantErr:      false,
+			wantExitCode: exitCodeSuccess,
+		},
+		{
+			name:         "timeout returns exit 124",
+			waitRes:      &waitResult{State: "timeout", Error: "polling timed out"},
+			wantErr:      true,
+			wantExitCode: exitCodeTimeout,
+		},
+		{
+			name:         "idle returns exit 2",
+			waitRes:      &waitResult{State: "idle", Complete: false},
+			wantErr:      true,
+			wantExitCode: exitCodeAgentNoSignals,
+		},
+		{
+			name:         "running returns exit 2 (unexpected state)",
+			waitRes:      &waitResult{State: "running"},
+			wantErr:      true,
+			wantExitCode: exitCodeAgentNoSignals,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := waitExitError(tt.waitRes)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error with exit code %d, got nil", tt.wantExitCode)
+				}
+				var coded *exitError
+				if !errors.As(err, &coded) {
+					t.Fatalf("expected exitError, got %T: %v", err, err)
+				}
+				if coded.Code != tt.wantExitCode {
+					t.Fatalf("expected exit code %d, got %d", tt.wantExitCode, coded.Code)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("expected nil error (exit 0), got: %v", err)
+				}
+			}
+		})
+	}
+}
+
+// TestDispatchWaitSkipsPollingWhenOneshotCompleted verifies that when an oneshot
+// dispatch completes successfully (StateCompleted) and --wait is set, the polling
+// loop is skipped entirely because the local state machine already knows the task
+// is done. This addresses issue #293.
+func TestDispatchWaitSkipsPollingWhenOneshotCompleted(t *testing.T) {
+	// Cannot use t.Parallel() — t.Setenv modifies process environment.
+	t.Setenv("GITHUB_TOKEN", "ghp-test")
+	t.Setenv("OPENROUTER_API_KEY", "or-test")
+
+	runner := &fakeDispatchRunner{
+		result: dispatchsvc.Result{
+			Executed: true,
+			State:    dispatchsvc.StateCompleted, // Key: oneshot already completed
+			Plan: dispatchsvc.Plan{
+				Sprite: "moss",
+				Mode:   "execute",
+				Steps:  []dispatchsvc.PlanStep{{Kind: dispatchsvc.StepStartAgent, Description: "start"}},
+			},
+		},
+	}
+
+	pollCalled := false
+	deps := dispatchDeps{
+		readFile: func(string) ([]byte, error) { return nil, nil },
+		newFlyClient: func(token, apiURL string) (fly.MachineClient, error) {
+			return fakeFlyClient{}, nil
+		},
+		newRemote: func(binary, org string) *spriteCLIRemote {
+			return &spriteCLIRemote{}
+		},
+		newService: func(cfg dispatchsvc.Config) (dispatchRunner, error) {
+			return runner, nil
+		},
+		pollSprite: func(ctx context.Context, remote *spriteCLIRemote, sprite string, timeout time.Duration, progress func(string)) (*waitResult, error) {
+			pollCalled = true
+			return nil, errors.New("polling should not be called for oneshot completed state")
+		},
+	}
+
+	cmd := newDispatchCmdWithDeps(deps)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{
+		"moss",
+		"Implement feature",
+		"--execute",
+		"--wait",
+		"--timeout", "5m",
+		"--app", "bb-app",
+		"--token", "tok",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cmd.Execute() error = %v", err)
+	}
+
+	if pollCalled {
+		t.Fatal("expected pollSprite to be SKIPPED when oneshot dispatch completes with StateCompleted")
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "COMPLETE") {
+		t.Fatalf("expected output to contain COMPLETE status, got: %s", output)
+	}
+}
+
+// TestDispatchWaitPollsWhenRalphMode verifies that when Ralph mode is used,
+// polling still occurs even if the exec returns, because the agent may continue
+// running in the background.
+func TestDispatchWaitPollsWhenRalphMode(t *testing.T) {
+	// Cannot use t.Parallel() — t.Setenv modifies process environment.
+	t.Setenv("GITHUB_TOKEN", "ghp-test")
+	t.Setenv("OPENROUTER_API_KEY", "or-test")
+
+	runner := &fakeDispatchRunner{
+		result: dispatchsvc.Result{
+			Executed: true,
+			State:    dispatchsvc.StateRunning, // Ralph mode: agent may still be running
+			Plan: dispatchsvc.Plan{
+				Sprite: "moss",
+				Mode:   "execute",
+				Steps:  []dispatchsvc.PlanStep{{Kind: dispatchsvc.StepStartAgent, Description: "start"}},
+			},
+		},
+	}
+
+	pollCalled := false
+	deps := dispatchDeps{
+		readFile: func(string) ([]byte, error) { return nil, nil },
+		newFlyClient: func(token, apiURL string) (fly.MachineClient, error) {
+			return fakeFlyClient{}, nil
+		},
+		newRemote: func(binary, org string) *spriteCLIRemote {
+			return &spriteCLIRemote{}
+		},
+		newService: func(cfg dispatchsvc.Config) (dispatchRunner, error) {
+			return runner, nil
+		},
+		pollSprite: func(ctx context.Context, remote *spriteCLIRemote, sprite string, timeout time.Duration, progress func(string)) (*waitResult, error) {
+			pollCalled = true
+			return &waitResult{
+				State:    "completed",
+				Complete: true,
+			}, nil
+		},
+	}
+
+	cmd := newDispatchCmdWithDeps(deps)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{
+		"moss",
+		"Implement feature",
+		"--execute",
+		"--wait",
+		"--ralph", // Ralph mode: polling should still happen
+		"--timeout", "5m",
+		"--app", "bb-app",
+		"--token", "tok",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cmd.Execute() error = %v", err)
+	}
+
+	if !pollCalled {
+		t.Fatal("expected pollSprite to be called for Ralph mode even if StateRunning")
 	}
 }

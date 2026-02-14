@@ -3,7 +3,6 @@ package proxy
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -25,8 +24,8 @@ type execCall struct {
 }
 
 type uploadCall struct {
-	sprite string
-	path   string
+	sprite  string
+	path    string
 	content []byte
 }
 
@@ -187,12 +186,15 @@ func TestLifecycle_Start(t *testing.T) {
 			t.Errorf("unexpected error: %v", err)
 		}
 
-		// Check that mkdir was called
-		if len(mock.execCalls) < 1 {
-			t.Fatal("expected at least 1 exec call")
+		// Exec sequence: cleanup (pgrep kill) -> mkdir -> start node
+		if len(mock.execCalls) < 3 {
+			t.Fatalf("expected at least 3 exec calls, got %d", len(mock.execCalls))
 		}
-		if !strings.Contains(mock.execCalls[0].command, "mkdir -p") {
-			t.Errorf("expected mkdir command, got: %s", mock.execCalls[0].command)
+		if !strings.Contains(mock.execCalls[0].command, "pgrep") {
+			t.Errorf("expected first exec to kill existing proxy, got: %s", mock.execCalls[0].command)
+		}
+		if !strings.Contains(mock.execCalls[1].command, "mkdir -p") {
+			t.Errorf("expected second exec to be mkdir, got: %s", mock.execCalls[1].command)
 		}
 
 		// Check that upload was called
@@ -203,19 +205,23 @@ func TestLifecycle_Start(t *testing.T) {
 			t.Errorf("expected upload to %s, got %s", SpriteProxyPath, mock.uploadCalls[0].path)
 		}
 
-		// Check that start script was called
-		if len(mock.execCalls) < 2 {
-			t.Fatal("expected at least 2 exec calls")
+		if !strings.Contains(mock.execCalls[2].command, "node") {
+			t.Errorf("expected node command, got: %s", mock.execCalls[2].command)
 		}
-		if !strings.Contains(mock.execCalls[1].command, "node") {
-			t.Errorf("expected node command, got: %s", mock.execCalls[1].command)
+		if strings.Contains(mock.execCalls[2].command, "test-api-key") {
+			t.Errorf("expected API key to not appear in remote command, got: %s", mock.execCalls[2].command)
 		}
 	})
 
 	t.Run("mkdir fails", func(t *testing.T) {
+		callCount := 0
 		mock := &mockRemoteExecutor{
 			execFunc: func(ctx context.Context, sprite, remoteCommand string, stdin []byte) (string, error) {
-				return "", errors.New("permission denied")
+				callCount++
+				if callCount == 1 {
+					return "", nil // cleanup succeeds
+				}
+				return "", errors.New("permission denied") // mkdir fails
 			},
 		}
 		lifecycle := NewLifecycle(mock)
@@ -247,14 +253,9 @@ func TestLifecycle_Start(t *testing.T) {
 	})
 
 	t.Run("start command fails", func(t *testing.T) {
-		callCount := 0
 		mock := &mockRemoteExecutor{
-			execFunc: func(ctx context.Context, sprite, remoteCommand string, stdin []byte) (string, error) {
-				callCount++
-				if callCount > 1 { // Second exec call (mkdir is first)
-					return "", errors.New("command not found")
-				}
-				return "", nil
+			execWithEnvFunc: func(ctx context.Context, sprite, remoteCommand string, stdin []byte, env map[string]string) (string, error) {
+				return "", errors.New("command not found")
 			},
 		}
 		lifecycle := NewLifecycle(mock)
@@ -339,8 +340,12 @@ func TestLifecycle_WaitForHealthy(t *testing.T) {
 		if err == nil {
 			t.Error("expected timeout error, got nil")
 		}
-		if !strings.Contains(err.Error(), "failed to become healthy") {
-			t.Errorf("unexpected error message: %v", err)
+		// Should include diagnostics in error message
+		if !strings.Contains(err.Error(), "Diagnostics") {
+			t.Errorf("expected diagnostics in error message, got: %v", err)
+		}
+		if !strings.Contains(err.Error(), "Next steps") {
+			t.Errorf("expected next steps hint in error message, got: %v", err)
 		}
 		if elapsed < 200*time.Millisecond {
 			t.Errorf("returned too early: %v", elapsed)
@@ -394,11 +399,7 @@ func TestLifecycle_EnsureProxy(t *testing.T) {
 		mock := &mockRemoteExecutor{
 			execFunc: func(ctx context.Context, sprite, remoteCommand string, stdin []byte) (string, error) {
 				callCount++
-				// First call (IsRunning) returns not running
-				// Second call (mkdir) succeeds
-				// Third call (start) succeeds
-				// Fourth+ call (WaitForHealthy) returns healthy
-				if callCount == 1 {
+				if callCount == 1 { // IsRunning: not running
 					return "000", nil
 				}
 				return "200", nil
@@ -454,83 +455,120 @@ func TestLifecycle_SetTimeout(t *testing.T) {
 }
 
 func TestBuildStartProxyScript(t *testing.T) {
-	t.Run("with environment variables", func(t *testing.T) {
-		env := map[string]string{
-			"PROXY_PORT":         "4000",
-			"TARGET_MODEL":       "test-model",
-			"OPENROUTER_API_KEY": "test-key",
-		}
-		script := buildStartProxyScript("/path/to/proxy.mjs", env)
-
-		if !strings.Contains(script, "export PROXY_PORT='4000'") {
-			t.Error("expected PROXY_PORT export")
-		}
-		if !strings.Contains(script, "export TARGET_MODEL='test-model'") {
-			t.Error("expected TARGET_MODEL export")
-		}
-		if !strings.Contains(script, "export OPENROUTER_API_KEY='test-key'") {
-			t.Error("expected OPENROUTER_API_KEY export")
-		}
+	t.Run("starts node in background", func(t *testing.T) {
+		script := buildStartProxyScript("/path/to/proxy.mjs")
 		if !strings.Contains(script, "nohup node '/path/to/proxy.mjs'") {
 			t.Error("expected nohup node command")
 		}
 	})
 
-	t.Run("escapes single quotes", func(t *testing.T) {
-		env := map[string]string{
-			"KEY": "value'with'quotes",
-		}
-		script := buildStartProxyScript("/path/to/proxy.mjs", env)
-
-		// Should properly escape single quotes
-		if !strings.Contains(script, `export KEY='value'"'"'with'"'"'quotes'`) {
+	t.Run("escapes single quotes in path", func(t *testing.T) {
+		script := buildStartProxyScript("/path/to/proxy'with'quotes.mjs")
+		if !strings.Contains(script, `nohup node '/path/to/proxy'"'"'with'"'"'quotes.mjs'`) {
 			t.Errorf("expected proper quote escaping, got: %s", script)
+		}
+	})
+
+	t.Run("captures stderr to log file", func(t *testing.T) {
+		script := buildStartProxyScript("/path/to/proxy.mjs")
+		if !strings.Contains(script, "2>>") {
+			t.Error("expected stderr redirection to log file")
+		}
+		if !strings.Contains(script, ProxyLogPath) {
+			t.Errorf("expected log path %s in script, got: %s", ProxyLogPath, script)
+		}
+	})
+
+	t.Run("creates log directory", func(t *testing.T) {
+		script := buildStartProxyScript("/path/to/proxy.mjs")
+		if !strings.Contains(script, "mkdir -p") {
+			t.Error("expected mkdir command for log directory")
 		}
 	})
 }
 
-func TestShellQuote(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"simple", "'simple'"},
-		{"with spaces", "'with spaces'"},
-		{"with'quote", `'with'"'"'quote'`}, 
-		{"with\"double", `'with"double'`},
-		{"", "''"},
-	}
+func TestLifecycle_CollectDiagnostics(t *testing.T) {
+	t.Run("collects all diagnostics", func(t *testing.T) {
+		execCount := 0
+		mock := &mockRemoteExecutor{
+			execFunc: func(ctx context.Context, sprite, remoteCommand string, stdin []byte) (string, error) {
+				execCount++
+				switch execCount {
+				case 1:
+					return "Mem: 1Gi available", nil
+				case 2:
+					return "PID USER COMMAND\n123 sprite node proxy.mjs", nil
+				case 3:
+					return "Error: Cannot find module 'express'", nil
+				default:
+					return "", nil
+				}
+			},
+		}
+		lifecycle := NewLifecycle(mock)
 
-	for _, tc := range tests {
-		t.Run(tc.input, func(t *testing.T) {
-			got := shellQuote(tc.input)
-			if got != tc.want {
-				t.Errorf("shellQuote(%q) = %q, want %q", tc.input, got, tc.want)
-			}
-		})
-	}
+		diagnostics, err := lifecycle.CollectDiagnostics(context.Background(), "test-sprite")
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if diagnostics.MemoryAvailable != "Mem: 1Gi available" {
+			t.Errorf("unexpected memory: %s", diagnostics.MemoryAvailable)
+		}
+		if diagnostics.ProcessList != "PID USER COMMAND\n123 sprite node proxy.mjs" {
+			t.Errorf("unexpected processes: %s", diagnostics.ProcessList)
+		}
+		if diagnostics.ProxyLogTail != "Error: Cannot find module 'express'" {
+			t.Errorf("unexpected log tail: %s", diagnostics.ProxyLogTail)
+		}
+	})
+
+	t.Run("handles exec errors gracefully", func(t *testing.T) {
+		mock := &mockRemoteExecutor{
+			execFunc: func(ctx context.Context, sprite, remoteCommand string, stdin []byte) (string, error) {
+				return "", errors.New("command failed")
+			},
+		}
+		lifecycle := NewLifecycle(mock)
+
+		diagnostics, err := lifecycle.CollectDiagnostics(context.Background(), "test-sprite")
+		if err != nil {
+			t.Errorf("expected nil error but got: %v", err)
+		}
+		if diagnostics == nil {
+			t.Error("expected diagnostics even when commands fail")
+		}
+	})
 }
 
-func TestStringReplaceAll(t *testing.T) {
-	tests := []struct {
-		s   string
-		old string
-		new string
-		want string
-	}{
-		{"hello world", "o", "0", "hell0 w0rld"},
-		{"abcabc", "abc", "xyz", "xyzxyz"},
-		{"no match", "xyz", "abc", "no match"},
-		{"", "a", "b", ""},
-		{"aaa", "a", "b", "bbb"},
+func TestDiagnostics_FormatError(t *testing.T) {
+	d := &Diagnostics{
+		MemoryAvailable: "Mem: 512M available",
+		ProcessList:     "123 sprite node",
+		ProxyLogTail:    "Error: port already in use",
 	}
 
-	for _, tc := range tests {
-		t.Run(fmt.Sprintf("%s_replace_%s", tc.s, tc.old), func(t *testing.T) {
-			got := stringReplaceAll(tc.s, tc.old, tc.new)
-			if got != tc.want {
-				t.Errorf("stringReplaceAll(%q, %q, %q) = %q, want %q", tc.s, tc.old, tc.new, got, tc.want)
-			}
-		})
+	err := errors.New("connection refused")
+	formatted := d.FormatError(err, "bramble")
+
+	if !strings.Contains(formatted, "proxy health check failed") {
+		t.Error("expected 'proxy health check failed' in error")
+	}
+	if !strings.Contains(formatted, "Diagnostics") {
+		t.Error("expected 'Diagnostics' section")
+	}
+	if !strings.Contains(formatted, "Next steps") {
+		t.Error("expected 'Next steps' section")
+	}
+	if !strings.Contains(formatted, "bramble") {
+		t.Error("expected sprite name in error")
+	}
+	if !strings.Contains(formatted, "bb status bramble") {
+		t.Error("expected bb status hint")
+	}
+	if !strings.Contains(formatted, "512M available") {
+		t.Error("expected memory info")
+	}
+	if !strings.Contains(formatted, "port already in use") {
+		t.Error("expected log tail")
 	}
 }

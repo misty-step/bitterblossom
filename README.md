@@ -70,6 +70,23 @@ printf '%s' "$OPENROUTER_API_KEY" | gh secret set OPENROUTER_API_KEY --repo mist
 
 See [docs/CLI-REFERENCE.md](docs/CLI-REFERENCE.md) for the complete command reference.
 
+## Agent Skills
+
+Bitterblossom ships task-oriented skill files in `base/skills/` so agents can load workflow guidance directly instead of inferring from CLI help text.
+
+Current Bitterblossom-specific skills:
+- `base/skills/bitterblossom-dispatch/SKILL.md` — dispatching issues/tasks with mounted skills
+- `base/skills/bitterblossom-monitoring/SKILL.md` — monitoring, status checks, and recovery triage
+
+Example using explicit skill mounting during dispatch:
+
+```bash
+bb dispatch bramble --issue 252 --repo misty-step/bitterblossom \
+  --skill base/skills/bitterblossom-dispatch \
+  --skill base/skills/bitterblossom-monitoring \
+  --execute --wait
+```
+
 ## Runtime Profile
 
 Bitterblossom ships one canonical runtime profile out of the box:

@@ -5,8 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"os/exec"
+	"sort"
 	"strings"
+	"time"
+
+	"github.com/misty-step/bitterblossom/internal/shellutil"
 )
 
 const defaultBinary = "sprite"
@@ -14,6 +19,15 @@ const defaultBinary = "sprite"
 var (
 	// ErrMockNotImplemented indicates no behavior is configured for a mock method.
 	ErrMockNotImplemented = errors.New("sprite: mock method not implemented")
+
+	// ErrTransportFailure indicates a transient network/transport error that may succeed on retry.
+	ErrTransportFailure = errors.New("sprite: transport failure")
+
+	// ErrCommandFailure indicates the command executed but returned a non-zero exit code.
+	ErrCommandFailure = errors.New("sprite: command failure")
+
+	// ErrTimeout indicates the operation timed out.
+	ErrTimeout = errors.New("sprite: operation timed out")
 )
 
 // SpriteCLI abstracts sprite CLI operations for testability.
@@ -113,9 +127,27 @@ func (c CLI) run(ctx context.Context, args []string, stdin []byte) (string, erro
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("running sprite %s: %w (%s)", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+		return "", fmt.Errorf("running sprite %s: %w (%s)", argsForLog(args), err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.String(), nil
+}
+
+func argsForLog(args []string) string {
+	scrubbed := append([]string(nil), args...)
+	for i := 0; i < len(scrubbed)-1; i++ {
+		if scrubbed[i] == "-env" {
+			scrubbed[i+1] = redactEnvPair(scrubbed[i+1])
+			i++
+		}
+	}
+	return strings.Join(scrubbed, " ")
+}
+
+func redactEnvPair(pair string) string {
+	if idx := strings.Index(pair, "="); idx >= 0 {
+		return pair[:idx+1] + "<redacted>"
+	}
+	return pair
 }
 
 // List returns available sprite names.
@@ -152,7 +184,7 @@ func (c CLI) ExecWithEnv(ctx context.Context, sprite, remoteCommand string, stdi
 		for k := range env {
 			keys = append(keys, k)
 		}
-		// Sort for deterministic ordering
+		sort.Strings(keys)
 		for _, k := range keys {
 			args = append(args, "-env", k+"="+env[k])
 		}
@@ -203,14 +235,22 @@ func (c CLI) CheckpointList(ctx context.Context, name, org string) (string, erro
 	return out, nil
 }
 
+func uploadFileArgs(name, localPath, remotePath string) ([]string, error) {
+	if strings.Contains(localPath, ":") || strings.Contains(remotePath, ":") {
+		return nil, fmt.Errorf("colon in path not supported by sprite CLI file transfer protocol: local=%q remote=%q", localPath, remotePath)
+	}
+	return []string{"exec", "-s", name, "-file", localPath + ":" + remotePath, "--", "true"}, nil
+}
+
 // UploadFile uploads one local file to a sprite path.
 // Handles exit code 255 gracefully - the file may have uploaded successfully
 // even if the post-upload command returns 255 (SSH connection issue).
 func (c CLI) UploadFile(ctx context.Context, name, org, localPath, remotePath string) error {
-	args := withOrgArgs(
-		[]string{"exec", "-s", name, "-file", localPath + ":" + remotePath, "--", "echo", "uploaded"},
-		c.resolvedOrg(org),
-	)
+	base, err := uploadFileArgs(name, localPath, remotePath)
+	if err != nil {
+		return err
+	}
+	args := withOrgArgs(base, c.resolvedOrg(org))
 	if _, err := c.run(ctx, args, nil); err != nil {
 		// Check if this is exit code 255 (SSH connection closed), which can
 		// occur after successful file upload due to connection timing.
@@ -231,13 +271,14 @@ func (c CLI) UploadFile(ctx context.Context, name, org, localPath, remotePath st
 	return nil
 }
 
-// Upload writes content directly to a sprite path.
+// Upload writes content directly to a sprite path via stdin.
 func (c CLI) Upload(ctx context.Context, name, remotePath string, content []byte) error {
-	args := withOrgArgs(
-		[]string{"exec", "-s", name, "--", "cat", ">", remotePath},
-		c.resolvedOrg(""),
-	)
-	if _, err := c.run(ctx, args, content); err != nil {
+	// Use Exec (bash -ceu) so shell redirection works.
+	// Direct args like ["cat", ">", path] fail because sprite exec
+	// doesn't interpret shell metacharacters without a shell wrapper.
+	cmd := "cat > " + shellutil.Quote(remotePath)
+	_, err := c.Exec(ctx, name, cmd, content)
+	if err != nil {
 		return fmt.Errorf("upload content to sprite %q:%q: %w", name, remotePath, err)
 	}
 	return nil
@@ -259,6 +300,266 @@ func (c CLI) APISprite(ctx context.Context, org, spriteName, endpoint string) (s
 		return "", fmt.Errorf("sprite api %q for %q: %w", endpoint, spriteName, err)
 	}
 	return out, nil
+}
+
+// ClassifyError categorizes a sprite CLI error for handling and retry decisions.
+// Returns the classified error type and a boolean indicating if retry may help.
+//
+// Transport pattern matching uses the unwrapped root error to avoid
+// misclassifying command failures whose stderr mentions network strings.
+func ClassifyError(err error) (class error, retryable bool) {
+	if err == nil {
+		return nil, false
+	}
+
+	// Context errors are not retryable
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%w: %w", ErrTimeout, err), false
+	}
+	if errors.Is(err, context.Canceled) {
+		return err, false
+	}
+
+	// Unwrap to root cause so we classify the exec/network error itself,
+	// not the full message which may include command stderr output.
+	root := err
+	for u := errors.Unwrap(root); u != nil; u = errors.Unwrap(root) {
+		root = u
+	}
+	msg := strings.ToLower(root.Error())
+
+	// Transport-level errors are retryable
+	transportPatterns := []string{
+		"i/o timeout",
+		"read tcp",
+		"write tcp",
+		"connection refused",
+		"connection reset",
+		"no such host",
+		"temporary failure",
+		"broken pipe",
+		"failed to connect",
+	}
+	for _, pattern := range transportPatterns {
+		if strings.Contains(msg, pattern) {
+			return fmt.Errorf("%w: %w", ErrTransportFailure, err), true
+		}
+	}
+
+	// Exit code errors indicate command failure (not transport failure)
+	if strings.Contains(msg, "exit status") || strings.Contains(msg, "exit code") {
+		return fmt.Errorf("%w: %w", ErrCommandFailure, err), false
+	}
+
+	// Default: unknown error, conservatively non-retryable
+	return err, false
+}
+
+// IsTransientError reports whether an error is a transient transport error
+// that may succeed on retry.
+func IsTransientError(err error) bool {
+	_, retryable := ClassifyError(err)
+	return retryable
+}
+
+// ResilientCLI wraps a SpriteCLI with retry logic for transient transport errors.
+type ResilientCLI struct {
+	inner      SpriteCLI
+	maxRetries int
+	baseDelay  time.Duration
+	maxDelay   time.Duration
+}
+
+// ResilientOption configures a ResilientCLI.
+type ResilientOption func(*ResilientCLI)
+
+// WithMaxRetries sets the maximum number of retry attempts.
+func WithMaxRetries(n int) ResilientOption {
+	return func(r *ResilientCLI) {
+		if n >= 0 {
+			r.maxRetries = n
+		}
+	}
+}
+
+// WithBaseDelay sets the initial retry delay.
+func WithBaseDelay(d time.Duration) ResilientOption {
+	return func(r *ResilientCLI) {
+		if d > 0 {
+			r.baseDelay = d
+		}
+	}
+}
+
+// WithMaxDelay sets the maximum retry delay (cap for exponential backoff).
+func WithMaxDelay(d time.Duration) ResilientOption {
+	return func(r *ResilientCLI) {
+		if d > 0 {
+			r.maxDelay = d
+		}
+	}
+}
+
+// NewResilientCLI wraps the given CLI with retry logic.
+func NewResilientCLI(inner SpriteCLI, opts ...ResilientOption) *ResilientCLI {
+	r := &ResilientCLI{
+		inner:      inner,
+		maxRetries: 3,
+		baseDelay:  250 * time.Millisecond,
+		maxDelay:   4 * time.Second,
+	}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
+}
+
+// jitter adds randomization to backoff to prevent thundering herd.
+func jitter(d time.Duration) time.Duration {
+	half := int64(d) / 2
+	if half <= 0 {
+		return d
+	}
+	return d + time.Duration(rand.Int63n(half))
+}
+
+// backoffDelay calculates exponential backoff with cap.
+func (r *ResilientCLI) backoffDelay(attempt int) time.Duration {
+	delay := r.baseDelay
+	for i := 0; i < attempt; i++ {
+		delay *= 2
+		if delay > r.maxDelay {
+			delay = r.maxDelay
+			break
+		}
+	}
+	return jitter(delay)
+}
+
+// runWithRetry executes the given operation with retry logic for transient errors.
+func (r *ResilientCLI) runWithRetry(ctx context.Context, op func() (string, error)) (string, error) {
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	default:
+	}
+
+	for attempt := 0; attempt <= r.maxRetries; attempt++ {
+		if attempt > 0 {
+			delay := r.backoffDelay(attempt - 1)
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return "", ctx.Err()
+			case <-timer.C:
+			}
+		}
+
+		result, err := op()
+		if err == nil {
+			return result, nil
+		}
+
+		class, retryable := ClassifyError(err)
+		if !retryable || attempt == r.maxRetries {
+			return "", class
+		}
+	}
+	// Unreachable: loop always returns via the retryable/maxRetries check.
+	return "", nil
+}
+
+// List returns available sprite names with retry.
+func (r *ResilientCLI) List(ctx context.Context) ([]string, error) {
+	var result []string
+	_, err := r.runWithRetry(ctx, func() (string, error) {
+		var listErr error
+		result, listErr = r.inner.List(ctx)
+		if listErr != nil {
+			return "", listErr
+		}
+		return "", nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// Exec runs a remote command on one sprite with retry.
+func (r *ResilientCLI) Exec(ctx context.Context, sprite, command string, stdin []byte) (string, error) {
+	return r.runWithRetry(ctx, func() (string, error) {
+		return r.inner.Exec(ctx, sprite, command, stdin)
+	})
+}
+
+// ExecWithEnv runs a remote command with environment variables and retry.
+func (r *ResilientCLI) ExecWithEnv(ctx context.Context, sprite, command string, stdin []byte, env map[string]string) (string, error) {
+	return r.runWithRetry(ctx, func() (string, error) {
+		return r.inner.ExecWithEnv(ctx, sprite, command, stdin, env)
+	})
+}
+
+// Create creates a sprite with retry.
+func (r *ResilientCLI) Create(ctx context.Context, name, org string) error {
+	_, err := r.runWithRetry(ctx, func() (string, error) {
+		return "", r.inner.Create(ctx, name, org)
+	})
+	return err
+}
+
+// Destroy destroys a sprite with retry.
+func (r *ResilientCLI) Destroy(ctx context.Context, name, org string) error {
+	_, err := r.runWithRetry(ctx, func() (string, error) {
+		return "", r.inner.Destroy(ctx, name, org)
+	})
+	return err
+}
+
+// CheckpointCreate creates a checkpoint with retry.
+func (r *ResilientCLI) CheckpointCreate(ctx context.Context, name, org string) error {
+	_, err := r.runWithRetry(ctx, func() (string, error) {
+		return "", r.inner.CheckpointCreate(ctx, name, org)
+	})
+	return err
+}
+
+// CheckpointList lists checkpoints with retry.
+func (r *ResilientCLI) CheckpointList(ctx context.Context, name, org string) (string, error) {
+	return r.runWithRetry(ctx, func() (string, error) {
+		return r.inner.CheckpointList(ctx, name, org)
+	})
+}
+
+// UploadFile uploads a file with retry.
+func (r *ResilientCLI) UploadFile(ctx context.Context, name, org, localPath, remotePath string) error {
+	_, err := r.runWithRetry(ctx, func() (string, error) {
+		return "", r.inner.UploadFile(ctx, name, org, localPath, remotePath)
+	})
+	return err
+}
+
+// Upload writes content directly with retry.
+func (r *ResilientCLI) Upload(ctx context.Context, name, remotePath string, content []byte) error {
+	_, err := r.runWithRetry(ctx, func() (string, error) {
+		return "", r.inner.Upload(ctx, name, remotePath, content)
+	})
+	return err
+}
+
+// API calls sprite API endpoint with retry.
+func (r *ResilientCLI) API(ctx context.Context, org, endpoint string) (string, error) {
+	return r.runWithRetry(ctx, func() (string, error) {
+		return r.inner.API(ctx, org, endpoint)
+	})
+}
+
+// APISprite calls sprite API endpoint scoped to one sprite with retry.
+func (r *ResilientCLI) APISprite(ctx context.Context, org, spriteName, endpoint string) (string, error) {
+	return r.runWithRetry(ctx, func() (string, error) {
+		return r.inner.APISprite(ctx, org, spriteName, endpoint)
+	})
 }
 
 // MockSpriteCLI is an injectable fake for tests.

@@ -60,3 +60,18 @@ func resolveCompositionSprites(path string) ([]string, error) {
 func resolveLifecycleAuthToken(getenv func(string) string) string {
 	return provider.ResolveAuthToken(provider.DefaultProvider, getenv)
 }
+
+func defaultFlyToken() string {
+	if token := strings.TrimSpace(os.Getenv("FLY_API_TOKEN")); token != "" {
+		return token
+	}
+	return strings.TrimSpace(os.Getenv("FLY_TOKEN"))
+}
+
+// resolveFlyToken returns the token from the flag if set, otherwise from environment.
+func resolveFlyToken(flagToken string) string {
+	if token := strings.TrimSpace(flagToken); token != "" {
+		return token
+	}
+	return defaultFlyToken()
+}

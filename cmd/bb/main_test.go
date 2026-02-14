@@ -110,6 +110,7 @@ func TestRootWiresCoreCommands(t *testing.T) {
 		"agent",
 		"compose",
 		"dispatch",
+		"events",
 		"logs",
 		"provision",
 		"status",

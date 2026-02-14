@@ -24,6 +24,10 @@ type stateInput struct {
 	CommitsLast2h int
 }
 
+// evaluateState classifies a sprite's health from probe data.
+// Priority order is load-bearing: complete > blocked > dead/idle > stale > active.
+// Complete beats blocked because if both files exist, the agent finished after
+// hitting a block (the block is stale context from an earlier attempt).
 func evaluateState(input stateInput, staleAfter time.Duration) State {
 	switch {
 	case input.HasComplete:

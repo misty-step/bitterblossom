@@ -51,6 +51,7 @@ BLOCKED_FILE="$WORKSPACE/BLOCKED.md"
 LOG_DIR="$WORKSPACE/logs"
 EVENT_LOG="$LOG_DIR/agent.jsonl"
 RALPH_LOG="$WORKSPACE/ralph.log"
+RALPH_PID_FILE="$WORKSPACE/.ralph.pid"
 
 MAX_ITERATIONS="${MAX_ITERATIONS:-50}"
 MAX_TOKENS="${MAX_TOKENS:-200000}"
@@ -80,6 +81,7 @@ done
 
 mkdir -p "$LOG_DIR"
 touch "$EVENT_LOG" "$RALPH_LOG"
+printf '%d\n' "$$" > "$RALPH_PID_FILE"
 
 started_epoch="$(date +%s)"
 last_heartbeat=0
@@ -280,7 +282,7 @@ emit_terminal_event() {
 }
 
 check_terminal_signals() {
-    if [[ -f "$TASK_COMPLETE_FILE" ]]; then
+    if [[ -f "$TASK_COMPLETE_FILE" ]] || [[ -f "${TASK_COMPLETE_FILE}.md" ]]; then
         emit_terminal_event "task_complete" '{"reason":"TASK_COMPLETE file detected"}'
         return 0
     fi
@@ -459,13 +461,18 @@ run_periodic_tasks() {
 stop_runner_if_needed() {
     if [[ -n "$current_runner_pid" ]]; then
         if kill -0 "$current_runner_pid" >/dev/null 2>&1; then
-            kill -TERM "$current_runner_pid" >/dev/null 2>&1 || true
+            # Kill the entire process group to catch children (e.g. claude
+            # under the PTY `script` wrapper). Fall back to direct PID kill
+            # if the process is not a group leader.
+            kill -TERM -- -"$current_runner_pid" >/dev/null 2>&1 \
+                || kill -TERM "$current_runner_pid" >/dev/null 2>&1 || true
             deadline=$(( $(date +%s) + SHUTDOWN_GRACE_SEC ))
             while kill -0 "$current_runner_pid" >/dev/null 2>&1 && (( $(date +%s) < deadline )); do
                 sleep 1
             done
             if kill -0 "$current_runner_pid" >/dev/null 2>&1; then
-                kill -KILL "$current_runner_pid" >/dev/null 2>&1 || true
+                kill -KILL -- -"$current_runner_pid" >/dev/null 2>&1 \
+                    || kill -KILL "$current_runner_pid" >/dev/null 2>&1 || true
             fi
         fi
         wait "$current_runner_pid" 2>/dev/null || true
@@ -509,6 +516,24 @@ on_signal() {
     stop_runner_if_needed
 }
 
+on_exit() {
+    # Ensure Claude is killed if ralph dies for any reason (set -e, signal, bug).
+    # This is the last line of defense against zombie Claude processes.
+    set +e
+    stop_runner_if_needed
+    if [[ "$terminal_event_emitted" == false ]]; then
+        local exit_reason="ralph died unexpectedly"
+        if [[ "$shutdown_requested" == true ]]; then
+            exit_reason="agent interrupted by ${shutdown_signal:-signal}"
+        fi
+        health_json="$(collect_health_json 2>/dev/null)" || health_json='{"error":"cleanup"}'
+        emit_terminal_event "task_failed" \
+            "$(jq -cn --arg reason "$exit_reason" '{reason:$reason}' 2>/dev/null)" 2>/dev/null || true
+    fi
+    rm -f "$RALPH_PID_FILE" 2>/dev/null || true
+}
+
+trap on_exit EXIT
 trap 'on_signal TERM' TERM
 trap 'on_signal INT' INT
 
@@ -535,7 +560,7 @@ while (( iteration < MAX_ITERATIONS )); do
     fi
 
     now_epoch="$(date +%s)"
-    run_periodic_tasks "$now_epoch"
+    run_periodic_tasks "$now_epoch" || true
 
     if [[ "$shutdown_requested" == true ]]; then
         break
@@ -551,7 +576,7 @@ while (( iteration < MAX_ITERATIONS )); do
 
     while kill -0 "$current_runner_pid" >/dev/null 2>&1; do
         local_now="$(date +%s)"
-        run_periodic_tasks "$local_now"
+        run_periodic_tasks "$local_now" || true
 
         if check_terminal_signals; then
             stop_runner_if_needed
@@ -573,7 +598,7 @@ while (( iteration < MAX_ITERATIONS )); do
     current_runner_pid=""
 
     now_epoch="$(date +%s)"
-    run_periodic_tasks "$now_epoch"
+    run_periodic_tasks "$now_epoch" || true
 
     printf '[agent] iteration=%d claude_exit=%s at=%s\n' \
         "$iteration" "$exit_code" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$RALPH_LOG"

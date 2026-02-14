@@ -5,18 +5,25 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
+
+	"github.com/misty-step/bitterblossom/internal/shellutil"
 )
 
 const (
 	// DefaultProxyTimeout is the default timeout for proxy health check operations.
-	DefaultProxyTimeout = 10 * time.Second
+	// 30s accommodates cold/warm sprite startup variance (10s was too tight).
+	DefaultProxyTimeout = 30 * time.Second
 
 	// SpriteProxyPath is where the proxy script is located on the sprite.
 	SpriteProxyPath = "/home/sprite/.bb/proxy.mjs"
 
 	// SpriteProxyPort is the port the proxy listens on (on the sprite).
 	SpriteProxyPort = 4000
+
+	// ProxyLogPath is where proxy stderr is captured for diagnostics.
+	ProxyLogPath = "/home/sprite/.bb/proxy.log"
 )
 
 // RemoteExecutor executes commands on a remote sprite.
@@ -62,7 +69,7 @@ func (l *Lifecycle) IsRunning(ctx context.Context, sprite string) (bool, error) 
 	script := fmt.Sprintf(`
 set -e
 curl -s --max-time 2 -o /dev/null -w "%%{http_code}" %s
-`, shellQuote(l.healthURL()))
+`, shellutil.Quote(l.healthURL()))
 
 	output, err := l.executor.Exec(ctx, sprite, script, nil)
 	if err != nil {
@@ -74,8 +81,14 @@ curl -s --max-time 2 -o /dev/null -w "%%{http_code}" %s
 }
 
 // Start starts the proxy on the target sprite in the background.
-// It uploads the proxy script if it doesn't exist, then starts it.
+// It kills any existing process on the proxy port first, then uploads and starts.
 func (l *Lifecycle) Start(ctx context.Context, sprite string, openRouterAPIKey string) error {
+	// Kill any existing proxy to prevent EADDRINUSE from zombie processes.
+	// Stop() is idempotent — handles "no process" gracefully via || true.
+	if err := l.Stop(ctx, sprite); err != nil {
+		return fmt.Errorf("failed to clean up existing proxy: %w", err)
+	}
+
 	// Ensure the .bb directory exists
 	mkdirScript := "mkdir -p /home/sprite/.bb"
 	if _, err := l.executor.Exec(ctx, sprite, mkdirScript, nil); err != nil {
@@ -91,15 +104,16 @@ func (l *Lifecycle) Start(ctx context.Context, sprite string, openRouterAPIKey s
 	port := strconv.Itoa(l.port)
 	env := StartEnv("", port, openRouterAPIKey)
 
-	startScript := buildStartProxyScript(SpriteProxyPath, env)
-	if _, err := l.executor.Exec(ctx, sprite, startScript, nil); err != nil {
+	startScript := buildStartProxyScript(SpriteProxyPath)
+	if _, err := l.executor.ExecWithEnv(ctx, sprite, startScript, nil, env); err != nil {
 		return fmt.Errorf("failed to start proxy: %w", err)
 	}
 
 	return nil
 }
 
-// Stop stops the proxy on the target sprite.
+// Stop stops the proxy on the target sprite. Idempotent — safe to call
+// even if no proxy is running (uses || true for graceful no-process handling).
 func (l *Lifecycle) Stop(ctx context.Context, sprite string) error {
 	stopScript := fmt.Sprintf(`
 set -e
@@ -114,8 +128,8 @@ if [ -n "$PID" ]; then
   fi
 fi
 # Clean up PID file if it exists
-rm -f /home/sprite/.anthropic-proxy.pid
-`, SpriteProxyPath)
+rm -f %s
+`, SpriteProxyPath, ProxyPIDFile)
 
 	if _, err := l.executor.Exec(ctx, sprite, stopScript, nil); err != nil {
 		return fmt.Errorf("failed to stop proxy: %w", err)
@@ -126,24 +140,36 @@ rm -f /home/sprite/.anthropic-proxy.pid
 
 // WaitForHealthy waits for the proxy to become healthy within the timeout.
 // It polls the health endpoint until it responds with 200 or the timeout is reached.
+// On timeout, collects diagnostics from the sprite to aid troubleshooting.
 func (l *Lifecycle) WaitForHealthy(ctx context.Context, sprite string) error {
 	ctx, cancel := context.WithTimeout(ctx, l.timeout)
 	defer cancel()
 
-	ticker := time.NewTicker(100 * time.Millisecond)
+	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
+	var lastErr error
 	for {
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("proxy failed to become healthy within %v", l.timeout)
+			// Collect diagnostics to help troubleshoot the failure
+			diagnostics, diagErr := l.CollectDiagnostics(context.Background(), sprite)
+			if diagErr == nil {
+				return fmt.Errorf("%s", diagnostics.FormatError(lastErr, sprite))
+			}
+			// Fallback to simple error if diagnostics collection fails
+			msg := fmt.Sprintf("proxy failed to become healthy within %v on port %d", l.timeout, l.port)
+			if lastErr != nil {
+				msg += fmt.Sprintf(" (last error: %v)", lastErr)
+			}
+			return fmt.Errorf("%s: %w", msg, ctx.Err())
 		case <-ticker.C:
 			running, err := l.IsRunning(ctx, sprite)
 			if err != nil {
-				// Health check errors during startup (connection refused, etc.) are expected
-				// while the proxy is initializing. Continue polling until timeout.
+				lastErr = err
 				continue
 			}
+			lastErr = nil
 			if running {
 				return nil
 			}
@@ -155,14 +181,9 @@ func (l *Lifecycle) WaitForHealthy(ctx context.Context, sprite string) error {
 // If the proxy is not running, it starts it and waits for it to become healthy.
 // Returns the proxy URL that should be used for ANTHROPIC_BASE_URL.
 func (l *Lifecycle) EnsureProxy(ctx context.Context, sprite string, openRouterAPIKey string) (string, error) {
-	// Check if already running
-	running, err := l.IsRunning(ctx, sprite)
-	if err != nil {
-		// Health check errors (connection refused, timeout) mean proxy isn't running
-		// Continue to start the proxy. Other errors will be caught during start.
-		_ = err // explicitly ignore: "not running" is the expected case here
-	}
-
+	// Health check errors (connection refused, timeout) mean proxy isn't running.
+	// Fall through to start it; real errors surface during Start.
+	running, _ := l.IsRunning(ctx, sprite)
 	if running {
 		return l.ProxyURL(), nil
 	}
@@ -191,51 +212,70 @@ func (l *Lifecycle) SetTimeout(timeout time.Duration) {
 }
 
 // buildStartProxyScript creates a script to start the proxy in the background.
-func buildStartProxyScript(proxyPath string, env map[string]string) string {
-	// Build environment variable exports
-	envExports := ""
-	for k, v := range env {
-		envExports += fmt.Sprintf("export %s=%s\n", k, shellQuote(v))
-	}
-
+// Captures stderr to ProxyLogPath for diagnostic visibility.
+func buildStartProxyScript(proxyPath string) string {
 	return fmt.Sprintf(`
 set -e
-%s
-# Start proxy in background
-nohup node %s >/dev/null 2>&1 &
-echo $! > /home/sprite/.anthropic-proxy.pid
-`, envExports, shellQuote(proxyPath))
-}
-
-// shellQuote escapes a string for safe use in shell commands.
-func shellQuote(s string) string {
-	return "'" + stringReplaceAll(s, "'", `'"'"'`) + "'"
-}
-
-// stringReplaceAll replaces all occurrences of old with new in s.
-func stringReplaceAll(s, old, new string) string {
-	result := ""
-	for {
-		idx := 0
-		found := false
-		for i := 0; i <= len(s)-len(old); i++ {
-			if s[i:i+len(old)] == old {
-				idx = i
-				found = true
-				break
-			}
-		}
-		if !found {
-			result += s
-			break
-		}
-		result += s[:idx] + new
-		s = s[idx+len(old):]
-	}
-	return result
+# Ensure log directory exists
+mkdir -p $(dirname %s)
+# Start proxy in background, capturing stderr for diagnostics
+nohup node %s >/dev/null 2>>%s &
+echo $! > %s
+`, shellutil.Quote(ProxyLogPath), shellutil.Quote(proxyPath), shellutil.Quote(ProxyLogPath), ProxyPIDFile)
 }
 
 // HTTPClient is used for making HTTP requests (can be mocked in tests).
 var HTTPClient = &http.Client{
 	Timeout: 2 * time.Second,
+}
+
+// Diagnostics collects diagnostic information from a sprite when proxy health checks fail.
+type Diagnostics struct {
+	MemoryAvailable string
+	ProcessList     string
+	ProxyLogTail    string
+}
+
+// CollectDiagnostics gathers resource and log information from the sprite.
+func (l *Lifecycle) CollectDiagnostics(ctx context.Context, sprite string) (*Diagnostics, error) {
+	d := &Diagnostics{}
+
+	// Get available memory
+	memOutput, err := l.executor.Exec(ctx, sprite, "free -h 2>/dev/null || echo 'free not available'", nil)
+	if err == nil {
+		d.MemoryAvailable = strings.TrimSpace(memOutput)
+	}
+
+	// Get process list filtered to node processes
+	procOutput, err := l.executor.Exec(ctx, sprite, "ps aux | grep -E 'node|PID' | grep -v grep || echo 'no node processes'", nil)
+	if err == nil {
+		d.ProcessList = strings.TrimSpace(procOutput)
+	}
+
+	// Get recent proxy log entries (last 50 lines)
+	logOutput, err := l.executor.Exec(ctx, sprite, fmt.Sprintf("tail -n 50 %s 2>/dev/null || echo 'no proxy log available'", ProxyLogPath), nil)
+	if err == nil {
+		d.ProxyLogTail = strings.TrimSpace(logOutput)
+	}
+
+	return d, nil
+}
+
+// FormatError formats an error message with diagnostics and actionable hints.
+func (d *Diagnostics) FormatError(baseErr error, sprite string) string {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("proxy health check failed: %v\n\n", baseErr))
+
+	b.WriteString("=== Diagnostics ===\n")
+	b.WriteString(fmt.Sprintf("Memory:\n%s\n\n", d.MemoryAvailable))
+	b.WriteString(fmt.Sprintf("Processes:\n%s\n\n", d.ProcessList))
+	b.WriteString(fmt.Sprintf("Proxy log (last 50 lines):\n%s\n\n", d.ProxyLogTail))
+
+	b.WriteString("=== Next steps ===\n")
+	b.WriteString(fmt.Sprintf("• Check sprite status: bb status %s\n", sprite))
+	b.WriteString(fmt.Sprintf("• View full proxy log: sprite exec %s -- tail -f %s\n", sprite, ProxyLogPath))
+	b.WriteString(fmt.Sprintf("• Check system logs: sprite exec %s -- journalctl -u proxy 2>/dev/null || dmesg | tail\n", sprite))
+	b.WriteString(fmt.Sprintf("• Restart sprite if OOM suspected: bb stop %s && bb start %s\n", sprite, sprite))
+
+	return b.String()
 }
