@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	storeevents "github.com/misty-step/bitterblossom/internal/events"
@@ -44,6 +45,9 @@ const (
 	DefaultMaxBytesPerSkill = 10 * 1024 * 1024
 	// DefaultMaxFileSize is the default maximum size for a single skill file (1MB).
 	DefaultMaxFileSize = 1024 * 1024
+	// DefaultMaxConcurrentUploads is the default number of concurrent skill file uploads.
+	// Conservative default to avoid overwhelming the remote host while providing throughput benefits.
+	DefaultMaxConcurrentUploads = 3
 
 	// Signal file names written by agents to indicate task completion or blocking.
 	// Both extensions are checked because agents may write either variant.
@@ -142,6 +146,8 @@ type Result struct {
 	CommandOutput string        `json:"command_output,omitempty"`
 	StartedAt     time.Time     `json:"started_at,omitempty"`
 	Task          string        `json:"task,omitempty"`
+	// LogPath is the path to the agent output log on the sprite (oneshot mode only).
+	LogPath string `json:"log_path,omitempty"`
 }
 
 // Config wires dependencies for dispatching.
@@ -170,6 +176,10 @@ type Config struct {
 	// ScaffoldDir is the local path to the base/ directory containing CLAUDE.md,
 	// settings.json, hooks/, etc. If empty, scaffolding is skipped.
 	ScaffoldDir string
+	// MaxConcurrentUploads controls the number of concurrent skill file uploads.
+	// 0 or negative uses DefaultMaxConcurrentUploads (3). Higher values increase
+	// throughput but may overwhelm the remote host.
+	MaxConcurrentUploads int
 }
 
 type provisionInfo struct {
@@ -179,22 +189,23 @@ type provisionInfo struct {
 
 // Service executes dispatch plans.
 type Service struct {
-	remote             RemoteClient
-	fly                fly.MachineClient
-	app                string
-	workspace          string
-	maxRalphIterations int
-	provisionConfig    map[string]any
-	logger             *slog.Logger
-	now                func() time.Time
-	ralphTemplate      string
-	provisionHints     map[string]provisionInfo
-	envVars            map[string]string
-	registryPath       string
-	registryRequired   bool
-	proxyLifecycle     *proxy.Lifecycle
-	eventLogger        EventLogger
-	scaffoldDir        string
+	remote               RemoteClient
+	fly                  fly.MachineClient
+	app                  string
+	workspace            string
+	maxRalphIterations   int
+	provisionConfig      map[string]any
+	logger               *slog.Logger
+	now                  func() time.Time
+	ralphTemplate        string
+	provisionHints       map[string]provisionInfo
+	envVars              map[string]string
+	registryPath         string
+	registryRequired     bool
+	proxyLifecycle       *proxy.Lifecycle
+	eventLogger          EventLogger
+	scaffoldDir          string
+	maxConcurrentUploads int
 }
 
 // NewService constructs a dispatch service.
@@ -239,22 +250,28 @@ func NewService(cfg Config) (*Service, error) {
 		registryPath = registry.DefaultPath()
 	}
 
+	maxConcurrentUploads := cfg.MaxConcurrentUploads
+	if maxConcurrentUploads <= 0 {
+		maxConcurrentUploads = DefaultMaxConcurrentUploads
+	}
+
 	svc := &Service{
-		remote:             cfg.Remote,
-		fly:                cfg.Fly,
-		app:                strings.TrimSpace(cfg.App),
-		workspace:          workspace,
-		maxRalphIterations: maxIterations,
-		provisionConfig:    copyMap(cfg.ProvisionConfig),
-		logger:             logger,
-		now:                now,
-		ralphTemplate:      template,
-		provisionHints:     hints,
-		envVars:            copyStringMap(cfg.EnvVars),
-		registryPath:       registryPath,
-		registryRequired:   cfg.RegistryRequired,
-		eventLogger:        cfg.EventLogger,
-		scaffoldDir:        strings.TrimSpace(cfg.ScaffoldDir),
+		remote:               cfg.Remote,
+		fly:                  cfg.Fly,
+		app:                  strings.TrimSpace(cfg.App),
+		workspace:            workspace,
+		maxRalphIterations:   maxIterations,
+		provisionConfig:      copyMap(cfg.ProvisionConfig),
+		logger:               logger,
+		now:                  now,
+		ralphTemplate:        template,
+		provisionHints:       hints,
+		envVars:              copyStringMap(cfg.EnvVars),
+		registryPath:         registryPath,
+		registryRequired:     cfg.RegistryRequired,
+		eventLogger:          cfg.EventLogger,
+		scaffoldDir:          strings.TrimSpace(cfg.ScaffoldDir),
+		maxConcurrentUploads: maxConcurrentUploads,
 	}
 
 	if svc.eventLogger == nil {
@@ -293,6 +310,7 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 		PromptPath: prepared.PromptPath,
 		StartedAt:  prepared.StartedAt,
 		Task:       prepared.TaskLabel,
+		LogPath:    prepared.LogPath,
 	}
 	if !prepared.Execute {
 		return result, nil
@@ -666,6 +684,8 @@ type preparedRequest struct {
 	ProvisionMetadata    map[string]string
 	AllowAnthropicDirect bool
 	MachineID            string
+	// LogPath is the path to the agent output log on the sprite (oneshot mode only).
+	LogPath string
 }
 
 type repoTarget struct {
@@ -737,7 +757,8 @@ func (s *Service) prepare(req Request) (preparedRequest, error) {
 	}
 
 	startedAt := s.now().UTC()
-	startCommand := buildOneShotScript(s.workspace, promptPath)
+	logPath := s.workspace + "/logs/oneshot-" + startedAt.Format("20060102-150405") + ".log"
+	startCommand := buildOneShotScript(s.workspace, promptPath, logPath)
 	if req.Ralph {
 		maxTokens := req.MaxTokens
 		if maxTokens <= 0 {
@@ -794,6 +815,7 @@ func (s *Service) prepare(req Request) (preparedRequest, error) {
 		ProvisionMetadata:    metadata,
 		AllowAnthropicDirect: req.AllowAnthropicDirect,
 		MachineID:            machineID,
+		LogPath:              logPath,
 	}, nil
 }
 
@@ -878,25 +900,148 @@ func (s *Service) scaffold(ctx context.Context, sprite string) error {
 	return nil
 }
 
+// uploadWork represents a single file upload task.
+type uploadWork struct {
+	index      int
+	localPath  string
+	remotePath string
+}
+
+// uploadResult captures the outcome of a single upload.
+type uploadResult struct {
+	index int
+	err   error
+}
+
 func (s *Service) uploadSkills(ctx context.Context, sprite string, skills []preparedSkill) error {
+	// Collect all files to upload with their original index for deterministic ordering.
+	var total int
+	for _, skill := range skills {
+		total += len(skill.Files)
+	}
+	if total == 0 {
+		return nil
+	}
+
+	work := make([]uploadWork, 0, total)
+	idx := 0
 	for _, skill := range skills {
 		for _, file := range skill.Files {
-			info, err := os.Lstat(file.LocalPath)
-			if err != nil {
-				return fmt.Errorf("stat %q: %w", file.LocalPath, err)
-			}
-			if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-				return fmt.Errorf("read %q: skill file must be a regular non-symlink file", file.LocalPath)
-			}
+			work = append(work, uploadWork{
+				index:      idx,
+				localPath:  file.LocalPath,
+				remotePath: file.RemotePath,
+			})
+			idx++
+		}
+	}
 
-			content, err := os.ReadFile(file.LocalPath)
-			if err != nil {
-				return fmt.Errorf("read %q: %w", file.LocalPath, err)
+	// Pre-validate all files (symlink check) before starting uploads.
+	// This ensures we fail fast on validation errors before any network operations.
+	for _, w := range work {
+		info, err := os.Lstat(w.localPath)
+		if err != nil {
+			return fmt.Errorf("stat %q: %w", w.localPath, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return fmt.Errorf("read %q: skill file must be a regular non-symlink file", w.localPath)
+		}
+	}
+
+	// Use bounded concurrency for uploads.
+	// Sequential execution when maxConcurrentUploads == 1 for simplicity.
+	if s.maxConcurrentUploads <= 1 {
+		return s.uploadSkillsSequential(ctx, sprite, work)
+	}
+
+	return s.uploadSkillsConcurrent(ctx, sprite, work)
+}
+
+// uploadSkillsSequential performs uploads one at a time.
+// Used when concurrency is disabled or for fallback.
+func (s *Service) uploadSkillsSequential(ctx context.Context, sprite string, work []uploadWork) error {
+	for _, w := range work {
+		if err := s.doUpload(ctx, sprite, w); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// uploadSkillsConcurrent performs uploads with bounded concurrency.
+// Uses worker pool pattern with fail-fast behavior on first error.
+func (s *Service) uploadSkillsConcurrent(ctx context.Context, sprite string, work []uploadWork) error {
+	numWorkers := s.maxConcurrentUploads
+	if numWorkers > len(work) {
+		numWorkers = len(work)
+	}
+
+	// Create cancellable context for fail-fast.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	workCh := make(chan uploadWork, len(work))
+	resultCh := make(chan uploadResult, len(work))
+
+	// Start workers.
+	var wg sync.WaitGroup
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for w := range workCh {
+				err := s.doUpload(ctx, sprite, w)
+				resultCh <- uploadResult{index: w.index, err: err}
+				// Fail-fast: stop processing if context is cancelled.
+				if err != nil {
+					return
+				}
 			}
-			if err := s.remote.Upload(ctx, sprite, file.RemotePath, content); err != nil {
-				return fmt.Errorf("upload %q to %q: %w", file.LocalPath, file.RemotePath, err)
+		}()
+	}
+
+	// Queue work.
+	go func() {
+		for _, w := range work {
+			select {
+			case workCh <- w:
+			case <-ctx.Done():
+				close(workCh)
+				return
 			}
 		}
+		close(workCh)
+	}()
+
+	// Close result channel when all workers exit.
+	go func() {
+		wg.Wait()
+		close(resultCh)
+	}()
+
+	// Collect results, maintaining deterministic ordering by index.
+	var firstErr error
+
+	for result := range resultCh {
+		if result.err != nil && firstErr == nil {
+			firstErr = result.err
+			// Cancel remaining work by cancelling context.
+			// Note: We continue reading results to ensure clean worker exit.
+			cancel()
+		}
+	}
+
+	return firstErr
+}
+
+// doUpload performs a single file upload.
+func (s *Service) doUpload(ctx context.Context, sprite string, w uploadWork) error {
+	content, err := os.ReadFile(w.localPath)
+	if err != nil {
+		return fmt.Errorf("read %q: %w", w.localPath, err)
+	}
+	if err := s.remote.Upload(ctx, sprite, w.remotePath, content); err != nil {
+		return fmt.Errorf("upload %q to %q: %w", w.localPath, w.remotePath, err)
 	}
 	return nil
 }
@@ -946,7 +1091,7 @@ func resolveSkillMountsWithLimits(paths []string, workspace string, limits resol
 	}
 
 	mounts := make([]preparedSkill, 0, len(paths))
-	seen := map[string]string{}       // skill name -> canonical path
+	seen := map[string]string{}        // skill name -> canonical path
 	seenCanonical := map[string]bool{} // canonical path -> exists (for duplicate detection)
 
 	for _, raw := range paths {
@@ -1155,7 +1300,9 @@ func buildSetupRepoScript(workspace, cloneURL, repoDir string) string {
 		"set -euo pipefail",
 		"mkdir -p " + shellutil.Quote(workspace),
 		"cd " + shellutil.Quote(workspace),
+		"START_TIME=$(date +%s)",
 		"if [ -d " + shellutil.Quote(repoDir) + " ]; then",
+		"  echo \"[setup] pulling latest for " + shellutil.Quote(repoDir) + "...\"",
 		"  cd " + shellutil.Quote(repoDir),
 		// Reset to clean state: discard changes, checkout default branch, pull latest.
 		// This prevents stale feature branches from polluting new dispatches.
@@ -1166,8 +1313,12 @@ func buildSetupRepoScript(workspace, cloneURL, repoDir string) string {
 		"  git fetch origin >/dev/null 2>&1 || true",
 		`  git reset --hard "origin/$(git rev-parse --abbrev-ref HEAD)" 2>/dev/null || true`,
 		"else",
+		"  echo \"[setup] cloning " + shellutil.Quote(cloneURL) + " (first time, may take a few minutes)...\"",
 		"  gh repo clone " + shellutil.Quote(cloneURL) + " " + shellutil.Quote(repoDir) + " >/dev/null 2>&1 || git clone " + shellutil.Quote(cloneURL) + " " + shellutil.Quote(repoDir) + " >/dev/null 2>&1",
 		"fi",
+		"END_TIME=$(date +%s)",
+		"ELAPSED=$((END_TIME - START_TIME))",
+		"echo \"[setup] repo ready (${ELAPSED}s)\"",
 	}, "\n")
 }
 
@@ -1183,7 +1334,9 @@ func buildSetupRepoScript(workspace, cloneURL, repoDir string) string {
 //     Falls back to raw pipe on systems without script(1).
 //   - --output-format stream-json enables structured output parsing by the
 //     watchdog and polling systems.
-func buildOneShotScript(workspace, promptPath string) string {
+//   - Output is captured to logPath for diagnostics. This addresses the "zero effect"
+//     issue where agents exit cleanly but produce no observable changes.
+func buildOneShotScript(workspace, promptPath, logPath string) string {
 	port := strconv.Itoa(proxy.ProxyPort)
 	env := proxy.StartEnv("", port, "${OPENROUTER_API_KEY}")
 	env["PROXY_PID_FILE"] = proxy.ProxyPIDFile
@@ -1212,6 +1365,7 @@ func buildOneShotScript(workspace, promptPath string) string {
 	return strings.Join([]string{
 		"set -euo pipefail",
 		"mkdir -p " + shellutil.Quote(workspace),
+		"mkdir -p " + shellutil.Quote(filepath.Dir(logPath)),
 		"cd " + shellutil.Quote(workspace),
 		"rm -f " + SignalTaskComplete + " " + SignalTaskCompleteMD + " " + SignalBlocked,
 		"# Start anthropic proxy if available",
@@ -1244,12 +1398,18 @@ func buildOneShotScript(workspace, promptPath string) string {
 		"    export ANTHROPIC_API_KEY=proxy-mode",
 		"  fi",
 		"fi",
+		"# Capture output for diagnostics (addresses issue #278, #294 - zero effect debugging)",
+		"echo '[oneshot] starting at '$(date -Iseconds) > " + shellutil.Quote(logPath),
+		"echo '[oneshot] prompt: " + shellutil.Quote(promptPath) + "' >> " + shellutil.Quote(logPath),
 		"if command -v script >/dev/null 2>&1; then",
-		"  script -qefc " + shellutil.Quote("cat "+shellutil.Quote(promptPath)+" | claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json") + " /dev/null",
+		"  script -qefc " + shellutil.Quote("cat "+shellutil.Quote(promptPath)+" | claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json") + " /dev/null 2>&1 | tee -a " + shellutil.Quote(logPath),
 		"else",
-		"  cat " + shellutil.Quote(promptPath) + " | claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json",
+		"  cat " + shellutil.Quote(promptPath) + " | claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json 2>&1 | tee -a " + shellutil.Quote(logPath),
 		"fi",
+		"EXIT_CODE=$?",
+		"echo '[oneshot] exited with code ' $EXIT_CODE ' at ' $(date -Iseconds) >> " + shellutil.Quote(logPath),
 		"rm -f " + shellutil.Quote(promptPath),
+		"exit $EXIT_CODE",
 	}, "\n")
 }
 

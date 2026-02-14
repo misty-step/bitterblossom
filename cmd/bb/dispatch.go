@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -30,6 +31,7 @@ type dispatchOptions struct {
 	Repo                 string
 	PromptFile           string
 	Skills               []string
+	Secrets              []string
 	Ralph                bool
 	Execute              bool
 	DryRun               bool
@@ -50,6 +52,7 @@ type dispatchOptions struct {
 	Issue                int
 	SkipValidation       bool
 	Strict               bool
+	ValidationProfile    string
 	RegistryPath         string
 	RegistryRequired     bool
 	ScaffoldDir          string
@@ -157,41 +160,6 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 			// When dispatching to an existing sprite, the sprite CLI handles transport.
 			hasFlyCredentials := strings.TrimSpace(opts.App) != "" && strings.TrimSpace(opts.Token) != ""
 
-			// Pre-dispatch issue validation
-			// Skip validation for dry-run (Execute=false) to keep planning fast and offline.
-			if opts.Execute && !opts.SkipValidation && opts.Issue > 0 {
-				validationResult, err := dispatchsvc.ValidateIssueFromRequest(cmd.Context(), dispatchsvc.Request{
-					Sprite:  spriteArg,
-					Prompt:  prompt,
-					Repo:    opts.Repo,
-					Issue:   opts.Issue,
-					Execute: opts.Execute,
-				}, opts.Strict)
-				if err != nil {
-					return fmt.Errorf("dispatch: issue validation failed: %w", err)
-				}
-
-				// Output validation results if not in JSON mode
-				if !opts.JSON && !validationResult.Valid {
-					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Issue validation failed:")
-					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), validationResult.FormatValidationOutput())
-				}
-
-				if !validationResult.Valid {
-					if validationErr := validationResult.ToError(); validationErr != nil {
-						return validationErr
-					}
-				}
-
-				// In non-strict mode with warnings, still proceed but log them
-				if len(validationResult.Warnings) > 0 && !opts.JSON {
-					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Issue validation warnings:")
-					for _, w := range validationResult.Warnings {
-						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "  ⚠ %s\n", w)
-					}
-				}
-			}
-
 			var flyClient fly.MachineClient
 			if hasFlyCredentials {
 				flyClient, err = deps.newFlyClient(opts.Token, opts.APIURL)
@@ -235,6 +203,45 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 				}
 			}
 
+			// Resolve and inject secrets passed via --secret flags
+			if len(opts.Secrets) > 0 {
+				resolver := dispatchsvc.DefaultSecretResolver()
+				resolvedSecrets, placeholders, err := resolver.ResolveAll(opts.Secrets)
+				if err != nil {
+					return fmt.Errorf("dispatch: failed to resolve secrets: %w", err)
+				}
+				// Merge resolved secrets into env vars (these will be injected at container level)
+				for name, value := range resolvedSecrets {
+					envVars[name] = value
+				}
+				// Log placeholders for visibility (not actual values)
+				if !opts.JSON {
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Injecting secrets: %v\n", placeholders)
+				}
+			}
+
+			// Load additional secrets from ~/.secrets directory if it exists
+			if homeDir, err := os.UserHomeDir(); err == nil {
+				secrets, loadErr := dispatchsvc.LoadSecretsFromDir(filepath.Join(homeDir, ".secrets"))
+				if loadErr != nil {
+					if !opts.JSON {
+						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to load secrets from ~/.secrets: %v\n", loadErr)
+					}
+				} else if len(secrets) > 0 {
+					loadedNames := make([]string, 0, len(secrets))
+					for name, value := range secrets {
+						// Only add if not already set via --secret flag or env var
+						if _, exists := envVars[name]; !exists {
+							envVars[name] = value
+							loadedNames = append(loadedNames, "$"+name)
+						}
+					}
+					if !opts.JSON && len(loadedNames) > 0 {
+						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Loaded secrets from ~/.secrets: %v\n", loadedNames)
+					}
+				}
+			}
+
 			// When executing (not dry-run), validate that the sprite will have
 			// the credentials it needs to actually complete the work.
 			if opts.Execute {
@@ -262,6 +269,52 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 
 				if len(missing) > 0 {
 					return fmt.Errorf("dispatch: missing credentials — sprite cannot complete work\n\n  ✗ %s\n\nset the required environment variables and retry", strings.Join(missing, "\n  ✗ "))
+				}
+
+				// Pre-dispatch validation (runs after envVars is populated)
+				// Skip policy validation for dry-run (Execute=false) to keep planning fast and offline.
+				// Safety checks always run when executing.
+				profile := dispatchsvc.ParseValidationProfile(opts.ValidationProfile)
+
+				// --strict is a legacy alias for --validation-profile=strict, and should only apply
+				// if the new --validation-profile flag is not explicitly set.
+				if opts.Strict && !cmd.Flags().Changed("validation-profile") {
+					profile = dispatchsvc.ValidationProfileStrict
+				}
+
+				// --skip-validation skips the policy layer only; safety checks remain.
+				// Only apply if the user didn't explicitly set --validation-profile.
+				if opts.SkipValidation && !cmd.Flags().Changed("validation-profile") {
+					profile = dispatchsvc.ValidationProfileOff
+				}
+
+				validationResult, err := dispatchsvc.ValidateIssueWithProfile(
+					cmd.Context(),
+					dispatchsvc.Request{
+						Sprite:  spriteArg,
+						Prompt:  prompt,
+						Repo:    opts.Repo,
+						Issue:   opts.Issue,
+						Execute: opts.Execute,
+						Ralph:   opts.Ralph,
+					},
+					profile,
+					envVars,
+					opts.AllowAnthropicDirect,
+				)
+				if err != nil {
+					return fmt.Errorf("dispatch: validation failed: %w", err)
+				}
+
+				// Always display validation report when there are any issues
+				// (safety errors, policy errors, or policy warnings)
+				if !opts.JSON && validationResult.HasIssues() {
+					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), validationResult.FormatReport(profile))
+				}
+
+				// Use ToError for consistent blocking/error behavior
+				if validationErr := validationResult.ToError(profile); validationErr != nil {
+					return validationErr
 				}
 			}
 
@@ -304,6 +357,18 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 
 			// If --wait flag is set, poll for completion
 			if opts.Wait && result.Executed {
+				// Oneshot mode: if the local dispatch state machine is already completed,
+				// skip remote polling entirely. The task finished before we started polling.
+				// Ralph mode still polls because the agent continues running in the background.
+				if result.State == dispatchsvc.StateCompleted && !opts.Ralph {
+					waitRes := &waitResult{
+						State:    "completed",
+						Task:     result.Task,
+						Complete: true,
+					}
+					return renderWaitResult(cmd, result, waitRes, opts.JSON)
+				}
+
 				pollTarget := spriteArg
 				if cmd.Flags().Changed("registry") || opts.RegistryRequired {
 					if resolved, err := dispatchsvc.ResolveSprite(spriteArg, opts.RegistryPath); err == nil && strings.TrimSpace(resolved) != "" {
@@ -337,6 +402,7 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 	command.Flags().StringVar(&opts.Repo, "repo", "", "Repo to clone/pull before dispatch (org/repo or URL)")
 	command.Flags().StringVar(&opts.PromptFile, "file", "", "Read prompt from a file")
 	command.Flags().StringArrayVar(&opts.Skills, "skill", nil, "Path to skill directory or SKILL.md to mount in sprite workspace (repeatable)")
+	command.Flags().StringArrayVar(&opts.Secrets, "secret", nil, "Secret to inject as env var (NAME=VALUE or NAME=op://vault/item/field, repeatable)")
 	command.Flags().BoolVar(&opts.Ralph, "ralph", false, "Start persistent Ralph loop instead of one-shot")
 	command.Flags().BoolVar(&opts.Execute, "execute", false, "Execute dispatch actions (default is dry-run)")
 	command.Flags().BoolVar(&opts.DryRun, "dry-run", true, "Preview dispatch plan without side effects")
@@ -355,8 +421,9 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 	command.Flags().StringVar(&opts.WebhookURL, "webhook-url", opts.WebhookURL, "Optional sprite-agent webhook URL")
 	command.Flags().BoolVar(&opts.AllowAnthropicDirect, "allow-anthropic-direct", false, "Allow dispatch even if sprite has a real ANTHROPIC_API_KEY")
 	command.Flags().IntVar(&opts.Issue, "issue", 0, "GitHub issue number to validate before dispatch")
-	command.Flags().BoolVar(&opts.SkipValidation, "skip-validation", false, "Skip pre-dispatch issue validation (emergency bypass)")
-	command.Flags().BoolVar(&opts.Strict, "strict", false, "Fail on any validation warning (strict mode)")
+	command.Flags().BoolVar(&opts.SkipValidation, "skip-validation", false, "Skip policy validation (safety checks still run)")
+	command.Flags().BoolVar(&opts.Strict, "strict", false, "Fail on any validation warning (legacy: use --validation-profile=strict)")
+	command.Flags().StringVar(&opts.ValidationProfile, "validation-profile", "advisory", "Validation profile: advisory (default), strict, or off")
 	command.Flags().StringVar(&opts.RegistryPath, "registry", opts.RegistryPath, "Path to sprite registry file")
 	command.Flags().BoolVar(&opts.RegistryRequired, "registry-required", false, "Require sprites to exist in registry (fail if not found)")
 	command.Flags().StringVar(&opts.ScaffoldDir, "scaffold-dir", "", "Path to base/ directory for environment scaffolding")

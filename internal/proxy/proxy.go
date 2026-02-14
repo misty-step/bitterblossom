@@ -19,7 +19,7 @@ const (
 	ProxyPIDFile = "/home/sprite/.anthropic-proxy.pid"
 
 	// DefaultModel is the default model used when proxy provider is selected.
-	DefaultModel = "moonshotai/kimi-k2.5"
+	DefaultModel = "minimax/minimax-m2.5"
 
 	// DefaultUpstreamBase is the default upstream base URL.
 	DefaultUpstreamBase = "https://openrouter.ai"

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/misty-step/bitterblossom/internal/shellutil"
@@ -20,6 +21,9 @@ const (
 
 	// SpriteProxyPort is the port the proxy listens on (on the sprite).
 	SpriteProxyPort = 4000
+
+	// ProxyLogPath is where proxy stderr is captured for diagnostics.
+	ProxyLogPath = "/home/sprite/.bb/proxy.log"
 )
 
 // RemoteExecutor executes commands on a remote sprite.
@@ -136,6 +140,7 @@ rm -f %s
 
 // WaitForHealthy waits for the proxy to become healthy within the timeout.
 // It polls the health endpoint until it responds with 200 or the timeout is reached.
+// On timeout, collects diagnostics from the sprite to aid troubleshooting.
 func (l *Lifecycle) WaitForHealthy(ctx context.Context, sprite string) error {
 	ctx, cancel := context.WithTimeout(ctx, l.timeout)
 	defer cancel()
@@ -147,6 +152,12 @@ func (l *Lifecycle) WaitForHealthy(ctx context.Context, sprite string) error {
 	for {
 		select {
 		case <-ctx.Done():
+			// Collect diagnostics to help troubleshoot the failure
+			diagnostics, diagErr := l.CollectDiagnostics(context.Background(), sprite)
+			if diagErr == nil {
+				return fmt.Errorf("%s", diagnostics.FormatError(lastErr, sprite))
+			}
+			// Fallback to simple error if diagnostics collection fails
 			msg := fmt.Sprintf("proxy failed to become healthy within %v on port %d", l.timeout, l.port)
 			if lastErr != nil {
 				msg += fmt.Sprintf(" (last error: %v)", lastErr)
@@ -201,16 +212,70 @@ func (l *Lifecycle) SetTimeout(timeout time.Duration) {
 }
 
 // buildStartProxyScript creates a script to start the proxy in the background.
+// Captures stderr to ProxyLogPath for diagnostic visibility.
 func buildStartProxyScript(proxyPath string) string {
 	return fmt.Sprintf(`
 set -e
-# Start proxy in background
-nohup node %s >/dev/null 2>&1 &
+# Ensure log directory exists
+mkdir -p $(dirname %s)
+# Start proxy in background, capturing stderr for diagnostics
+nohup node %s >/dev/null 2>>%s &
 echo $! > %s
-`, shellutil.Quote(proxyPath), ProxyPIDFile)
+`, shellutil.Quote(ProxyLogPath), shellutil.Quote(proxyPath), shellutil.Quote(ProxyLogPath), ProxyPIDFile)
 }
 
 // HTTPClient is used for making HTTP requests (can be mocked in tests).
 var HTTPClient = &http.Client{
 	Timeout: 2 * time.Second,
+}
+
+// Diagnostics collects diagnostic information from a sprite when proxy health checks fail.
+type Diagnostics struct {
+	MemoryAvailable string
+	ProcessList     string
+	ProxyLogTail    string
+}
+
+// CollectDiagnostics gathers resource and log information from the sprite.
+func (l *Lifecycle) CollectDiagnostics(ctx context.Context, sprite string) (*Diagnostics, error) {
+	d := &Diagnostics{}
+
+	// Get available memory
+	memOutput, err := l.executor.Exec(ctx, sprite, "free -h 2>/dev/null || echo 'free not available'", nil)
+	if err == nil {
+		d.MemoryAvailable = strings.TrimSpace(memOutput)
+	}
+
+	// Get process list filtered to node processes
+	procOutput, err := l.executor.Exec(ctx, sprite, "ps aux | grep -E 'node|PID' | grep -v grep || echo 'no node processes'", nil)
+	if err == nil {
+		d.ProcessList = strings.TrimSpace(procOutput)
+	}
+
+	// Get recent proxy log entries (last 50 lines)
+	logOutput, err := l.executor.Exec(ctx, sprite, fmt.Sprintf("tail -n 50 %s 2>/dev/null || echo 'no proxy log available'", ProxyLogPath), nil)
+	if err == nil {
+		d.ProxyLogTail = strings.TrimSpace(logOutput)
+	}
+
+	return d, nil
+}
+
+// FormatError formats an error message with diagnostics and actionable hints.
+func (d *Diagnostics) FormatError(baseErr error, sprite string) string {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("proxy health check failed: %v\n\n", baseErr))
+
+	b.WriteString("=== Diagnostics ===\n")
+	b.WriteString(fmt.Sprintf("Memory:\n%s\n\n", d.MemoryAvailable))
+	b.WriteString(fmt.Sprintf("Processes:\n%s\n\n", d.ProcessList))
+	b.WriteString(fmt.Sprintf("Proxy log (last 50 lines):\n%s\n\n", d.ProxyLogTail))
+
+	b.WriteString("=== Next steps ===\n")
+	b.WriteString(fmt.Sprintf("• Check sprite status: bb status %s\n", sprite))
+	b.WriteString(fmt.Sprintf("• View full proxy log: sprite exec %s -- tail -f %s\n", sprite, ProxyLogPath))
+	b.WriteString(fmt.Sprintf("• Check system logs: sprite exec %s -- journalctl -u proxy 2>/dev/null || dmesg | tail\n", sprite))
+	b.WriteString(fmt.Sprintf("• Restart sprite if OOM suspected: bb stop %s && bb start %s\n", sprite, sprite))
+
+	return b.String()
 }
