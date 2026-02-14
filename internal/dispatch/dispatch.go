@@ -136,6 +136,16 @@ type Plan struct {
 	Steps  []PlanStep `json:"steps"`
 }
 
+// WorkDelta captures the work produced by an agent execution.
+type WorkDelta struct {
+	// Commits is the number of new commits created.
+	Commits int `json:"commits,omitempty"`
+	// PRs is the number of pull requests created.
+	PRs int `json:"prs,omitempty"`
+	// HasChanges is true if any work was produced (commits or PRs).
+	HasChanges bool `json:"has_changes,omitempty"`
+}
+
 // Result is returned from Run.
 type Result struct {
 	Plan          Plan          `json:"plan"`
@@ -149,6 +159,8 @@ type Result struct {
 	Task          string        `json:"task,omitempty"`
 	// LogPath is the path to the agent output log on the sprite (oneshot mode only).
 	LogPath string `json:"log_path,omitempty"`
+	// Work captures the work delta produced by the agent (commits, PRs).
+	Work WorkDelta `json:"work,omitempty"`
 }
 
 // Config wires dependencies for dispatching.
@@ -478,6 +490,18 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 		return fail("validate_command", err)
 	}
 
+	// Capture HEAD SHA before agent starts for work delta tracking
+	var preExecSHA string
+	if prepared.Repo.RepoDir != "" {
+		sha, err := s.captureHeadSHA(ctx, prepared.Sprite, prepared.Repo.RepoDir)
+		if err != nil {
+			s.logger.Warn("failed to capture pre-exec HEAD SHA", "sprite", prepared.Sprite, "error", err)
+		} else {
+			preExecSHA = sha
+			s.logger.Info("captured pre-exec HEAD SHA", "sprite", prepared.Sprite, "sha", preExecSHA)
+		}
+	}
+
 	s.logger.Info("dispatch start agent", "sprite", prepared.Sprite, "mode", prepared.Mode)
 	output, err := s.remote.ExecWithEnv(ctx, prepared.Sprite, prepared.StartCommand, nil, execEnvVars)
 	if err != nil {
@@ -494,6 +518,16 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 	if !prepared.Ralph {
 		if err := transition(EventOneShotComplete); err != nil {
 			return fail("state_transition", err)
+		}
+		// Calculate work delta for oneshot mode
+		if prepared.Repo.RepoDir != "" && preExecSHA != "" {
+			work, err := s.calculateWorkDelta(ctx, prepared.Sprite, prepared.Repo.RepoDir, preExecSHA)
+			if err != nil {
+				s.logger.Warn("failed to calculate work delta", "sprite", prepared.Sprite, "error", err)
+			} else {
+				result.Work = work
+				s.logger.Info("calculated work delta", "sprite", prepared.Sprite, "commits", work.Commits, "prs", work.PRs, "has_changes", work.HasChanges)
+			}
 		}
 		logEvent(&pkgevents.DoneEvent{
 			Meta: pkgevents.Meta{
@@ -1543,4 +1577,79 @@ func copyStringMap(in map[string]string) map[string]string {
 		out[key] = value
 	}
 	return out
+}
+
+// captureHeadSHA captures the current HEAD SHA of the repo on the sprite.
+func (s *Service) captureHeadSHA(ctx context.Context, sprite, repoDir string) (string, error) {
+	script := fmt.Sprintf(
+		"cd %s && git rev-parse HEAD 2>/dev/null || echo ''",
+		shellutil.Quote(s.workspace+"/"+repoDir),
+	)
+	output, err := s.remote.Exec(ctx, sprite, script, nil)
+	if err != nil {
+		return "", fmt.Errorf("capture HEAD SHA: %w", err)
+	}
+	sha := strings.TrimSpace(output)
+	// Validate SHA format (40 hex characters for git SHA)
+	if sha == "" || len(sha) != 40 {
+		return "", fmt.Errorf("invalid HEAD SHA format: %q", sha)
+	}
+	return sha, nil
+}
+
+// calculateWorkDelta calculates the work produced by comparing pre and post SHAs.
+func (s *Service) calculateWorkDelta(ctx context.Context, sprite, repoDir, preExecSHA string) (WorkDelta, error) {
+	repoPath := s.workspace + "/" + repoDir
+	quotedPath := shellutil.Quote(repoPath)
+
+	// Capture post-exec SHA
+	postScript := fmt.Sprintf("cd %s && git rev-parse HEAD 2>/dev/null || echo ''", quotedPath)
+	postOutput, err := s.remote.Exec(ctx, sprite, postScript, nil)
+	if err != nil {
+		return WorkDelta{}, fmt.Errorf("capture post-exec HEAD SHA: %w", err)
+	}
+	postExecSHA := strings.TrimSpace(postOutput)
+	if postExecSHA == "" {
+		return WorkDelta{}, errors.New("empty post-exec HEAD SHA")
+	}
+
+	// If SHA hasn't changed, no new commits
+	if preExecSHA == postExecSHA {
+		return WorkDelta{Commits: 0, PRs: 0, HasChanges: false}, nil
+	}
+
+	// Count commits between pre and post SHAs
+	countScript := fmt.Sprintf(
+		"cd %s && git rev-list --count %s..%s 2>/dev/null || echo '0'",
+		quotedPath, preExecSHA, postExecSHA,
+	)
+	countOutput, err := s.remote.Exec(ctx, sprite, countScript, nil)
+	if err != nil {
+		return WorkDelta{}, fmt.Errorf("count commits: %w", err)
+	}
+	commitCount, _ := strconv.Atoi(strings.TrimSpace(countOutput))
+
+	// Check for PR_URL file to detect PR creation
+	prScript := fmt.Sprintf(
+		"cat %s/PR_URL 2>/dev/null | tr -d '[:space:]' || echo ''",
+		shellutil.Quote(s.workspace),
+	)
+	prOutput, err := s.remote.Exec(ctx, sprite, prScript, nil)
+	prURL := ""
+	if err == nil {
+		prURL = strings.TrimSpace(prOutput)
+	}
+
+	return WorkDelta{
+		Commits:    commitCount,
+		PRs:        boolToInt(prURL != ""),
+		HasChanges: commitCount > 0 || prURL != "",
+	}, nil
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

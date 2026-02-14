@@ -162,10 +162,11 @@ func TestRunDryRunBuildsPlanWithoutSideEffects(t *testing.T) {
 func TestRunExecuteProvisionAndStartRalph(t *testing.T) {
 	remote := &fakeRemote{
 		execResponses: []string{
-			"",          // validate env (empty key = ok)
-			"",          // clean signals
-			"",          // setup repo
-			"PID: 4242", // start ralph
+			"",              // validate env (empty key = ok)
+			"",              // clean signals
+			"",              // setup repo
+			"not-a-valid-sha", // capture HEAD SHA (will fail validation)
+			"PID: 4242",     // start ralph
 		},
 		listSprites: []string{},
 	}
@@ -230,23 +231,26 @@ func TestRunExecuteProvisionAndStartRalph(t *testing.T) {
 	if !strings.Contains(remote.execCalls[2].command, "gh repo clone") {
 		t.Fatalf("expected repo setup command, got %q", remote.execCalls[2].command)
 	}
-	if !strings.Contains(remote.execCalls[3].command, "sprite-agent") {
-		t.Fatalf("expected ralph start command, got %q", remote.execCalls[3].command)
+	if !strings.Contains(remote.execCalls[3].command, "git rev-parse HEAD") {
+		t.Fatalf("expected capture HEAD SHA command, got %q", remote.execCalls[3].command)
 	}
-	if !strings.Contains(remote.execCalls[3].command, "BB_CLAUDE_FLAGS") {
-		t.Fatalf("expected ralph start to pass BB_CLAUDE_FLAGS to sprite-agent, got %q", remote.execCalls[3].command)
+	if !strings.Contains(remote.execCalls[4].command, "sprite-agent") {
+		t.Fatalf("expected ralph start command, got %q", remote.execCalls[4].command)
 	}
-	if !strings.Contains(remote.execCalls[3].command, "MAX_TOKENS=200000") {
-		t.Fatalf("expected ralph start to pass MAX_TOKENS, got %q", remote.execCalls[3].command)
+	if !strings.Contains(remote.execCalls[4].command, "BB_CLAUDE_FLAGS") {
+		t.Fatalf("expected ralph start to pass BB_CLAUDE_FLAGS to sprite-agent, got %q", remote.execCalls[4].command)
 	}
-	if !strings.Contains(remote.execCalls[3].command, "MAX_TIME_SEC=1800") {
-		t.Fatalf("expected ralph start to pass MAX_TIME_SEC, got %q", remote.execCalls[3].command)
+	if !strings.Contains(remote.execCalls[4].command, "MAX_TOKENS=200000") {
+		t.Fatalf("expected ralph start to pass MAX_TOKENS, got %q", remote.execCalls[4].command)
 	}
-	if !strings.Contains(remote.execCalls[3].command, "--dangerously-skip-permissions") {
-		t.Fatalf("expected ralph start BB_CLAUDE_FLAGS to include dangerously-skip-permissions, got %q", remote.execCalls[3].command)
+	if !strings.Contains(remote.execCalls[4].command, "MAX_TIME_SEC=1800") {
+		t.Fatalf("expected ralph start to pass MAX_TIME_SEC, got %q", remote.execCalls[4].command)
 	}
-	if !strings.Contains(remote.execCalls[3].command, "--output-format stream-json") {
-		t.Fatalf("expected ralph start BB_CLAUDE_FLAGS to include stream-json output, got %q", remote.execCalls[3].command)
+	if !strings.Contains(remote.execCalls[4].command, "--dangerously-skip-permissions") {
+		t.Fatalf("expected ralph start BB_CLAUDE_FLAGS to include dangerously-skip-permissions, got %q", remote.execCalls[4].command)
+	}
+	if !strings.Contains(remote.execCalls[4].command, "--output-format stream-json") {
+		t.Fatalf("expected ralph start BB_CLAUDE_FLAGS to include stream-json output, got %q", remote.execCalls[4].command)
 	}
 }
 
