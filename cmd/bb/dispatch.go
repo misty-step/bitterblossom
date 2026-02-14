@@ -227,13 +227,15 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 				// Safety checks always run when executing.
 				profile := dispatchsvc.ParseValidationProfile(opts.ValidationProfile)
 
-				// --strict is a legacy alias for --validation-profile=strict
-				if opts.Strict && opts.ValidationProfile == "" {
+				// --strict is a legacy alias for --validation-profile=strict, and should only apply
+				// if the new --validation-profile flag is not explicitly set.
+				if opts.Strict && !cmd.Flags().Changed("validation-profile") {
 					profile = dispatchsvc.ValidationProfileStrict
 				}
 
-				// --skip-validation skips the policy layer only; safety checks remain
-				if opts.SkipValidation {
+				// --skip-validation skips the policy layer only; safety checks remain.
+				// Only apply if the user didn't explicitly set --validation-profile.
+				if opts.SkipValidation && !cmd.Flags().Changed("validation-profile") {
 					profile = dispatchsvc.ValidationProfileOff
 				}
 
@@ -255,43 +257,15 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 					return fmt.Errorf("dispatch: validation failed: %w", err)
 				}
 
-				// Output validation results if not in JSON mode and there are issues
-				if !opts.JSON && (!validationResult.IsSafe() || !validationResult.IsPolicyCompliant(profile)) {
-					if !validationResult.IsSafe() {
-						_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Safety validation failed (cannot be bypassed):")
-						for _, e := range validationResult.Safety.Errors {
-							_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "  ✗ %s\n", e)
-						}
-					}
-					if !validationResult.IsPolicyCompliant(profile) {
-						_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Policy validation failed:")
-						for _, e := range validationResult.Policy.Errors {
-							_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "  ✗ %s\n", e)
-						}
-						if profile == dispatchsvc.ValidationProfileStrict {
-							for _, w := range validationResult.Policy.Warnings {
-								_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "  ✗ %s\n", w)
-							}
-						}
-					}
+				// Always display validation report when there are any issues
+				// (safety errors, policy errors, or policy warnings)
+				if !opts.JSON && validationResult.HasIssues() {
+					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), validationResult.FormatReport(profile))
 				}
 
-				// Check if validation failed
-				if !validationResult.IsSafe() {
-					return fmt.Errorf("dispatch: safety validation failed")
-				}
-
-				if !validationResult.IsPolicyCompliant(profile) {
-					if profile == dispatchsvc.ValidationProfileStrict {
-						return fmt.Errorf("dispatch: policy validation failed in strict mode")
-					}
-					// In advisory mode, log warnings and continue
-					if profile == dispatchsvc.ValidationProfileAdvisory && len(validationResult.Policy.Warnings) > 0 && !opts.JSON {
-						_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Issue validation warnings:")
-						for _, w := range validationResult.Policy.Warnings {
-							_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "  ⚠ %s\n", w)
-						}
-					}
+				// Use ToError for consistent blocking/error behavior
+				if validationErr := validationResult.ToError(profile); validationErr != nil {
+					return validationErr
 				}
 			}
 
