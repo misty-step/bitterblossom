@@ -126,11 +126,11 @@ func TestDispatchCommand_SecretFlag_InvalidFormat(t *testing.T) {
 	}
 }
 
-func TestDispatchCommand_SecretFlag_UnsetEnvVar(t *testing.T) {
+func TestDispatchCommand_SecretFlag_EmptyEnvVar(t *testing.T) {
 	// Cannot use t.Parallel() — t.Setenv modifies process environment.
 	t.Setenv("GITHUB_TOKEN", "ghp-test")
 	t.Setenv("OPENROUTER_API_KEY", "or-test")
-	// Ensure UNSET_VAR is not set
+	// Set to empty string — os.LookupEnv will find it but value is empty
 	t.Setenv("UNSET_VAR", "")
 
 	deps := dispatchDeps{

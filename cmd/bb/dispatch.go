@@ -248,19 +248,22 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 
 			// Load additional secrets from ~/.secrets directory if it exists
 			if homeDir, err := os.UserHomeDir(); err == nil {
-				if secrets, err := dispatchsvc.LoadSecretsFromDir(filepath.Join(homeDir, ".secrets")); err == nil && len(secrets) > 0 {
+				secrets, loadErr := dispatchsvc.LoadSecretsFromDir(filepath.Join(homeDir, ".secrets"))
+				if loadErr != nil {
+					if !opts.JSON {
+						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to load secrets from ~/.secrets: %v\n", loadErr)
+					}
+				} else if len(secrets) > 0 {
+					loadedNames := make([]string, 0, len(secrets))
 					for name, value := range secrets {
 						// Only add if not already set via --secret flag or env var
 						if _, exists := envVars[name]; !exists {
 							envVars[name] = value
+							loadedNames = append(loadedNames, "$"+name)
 						}
 					}
-					if !opts.JSON {
-						secretNames := make([]string, 0, len(secrets))
-						for name := range secrets {
-							secretNames = append(secretNames, "$"+name)
-						}
-						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Loaded secrets from ~/.secrets: %v\n", secretNames)
+					if !opts.JSON && len(loadedNames) > 0 {
+						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Loaded secrets from ~/.secrets: %v\n", loadedNames)
 					}
 				}
 			}

@@ -9,6 +9,13 @@ import (
 	"strings"
 )
 
+const (
+	// maxSecretFileSize limits individual secret files to 128KB.
+	maxSecretFileSize = 128 * 1024
+	// maxSecretsFromDir limits the number of files loaded from ~/.secrets.
+	maxSecretsFromDir = 64
+)
+
 // SecretResolver resolves secret references from various sources (1Password, env vars, files).
 type SecretResolver struct {
 	// ResolveOP resolves 1Password references (op://vault/item/field).
@@ -67,9 +74,9 @@ func (r *SecretResolver) Resolve(reference string) (string, error) {
 	// Environment variable reference: ${env:VAR_NAME}
 	if strings.HasPrefix(reference, "${env:") && strings.HasSuffix(reference, "}") {
 		varName := reference[len("${env:") : len(reference)-1]
-		value := os.Getenv(varName)
-		if value == "" {
-			return "", fmt.Errorf("environment variable %q is not set", varName)
+		value, ok := os.LookupEnv(varName)
+		if !ok || value == "" {
+			return "", fmt.Errorf("environment variable %q is not set or is empty", varName)
 		}
 		return value, nil
 	}
@@ -77,6 +84,13 @@ func (r *SecretResolver) Resolve(reference string) (string, error) {
 	// File reference: ${file:/path/to/file}
 	if strings.HasPrefix(reference, "${file:") && strings.HasSuffix(reference, "}") {
 		filePath := reference[len("${file:") : len(reference)-1]
+		info, err := os.Stat(filePath)
+		if err != nil {
+			return "", fmt.Errorf("read secret file %q: %w", filePath, err)
+		}
+		if info.Size() > maxSecretFileSize {
+			return "", fmt.Errorf("secret file %q exceeds maximum size (%d bytes)", filePath, maxSecretFileSize)
+		}
 		content, err := os.ReadFile(filePath)
 		if err != nil {
 			return "", fmt.Errorf("read secret file %q: %w", filePath, err)
@@ -159,8 +173,18 @@ func LoadSecretsFromDir(dir string) (map[string]string, error) {
 		if entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
 			continue
 		}
+		if len(secrets) >= maxSecretsFromDir {
+			return nil, fmt.Errorf("too many secret files in %q (max %d)", dir, maxSecretsFromDir)
+		}
 
 		path := filepath.Join(dir, entry.Name())
+		info, err := entry.Info()
+		if err != nil {
+			return nil, fmt.Errorf("stat secret file %q: %w", entry.Name(), err)
+		}
+		if info.Size() > maxSecretFileSize {
+			return nil, fmt.Errorf("secret file %q exceeds maximum size (%d bytes)", entry.Name(), maxSecretFileSize)
+		}
 		content, err := os.ReadFile(path)
 		if err != nil {
 			return nil, fmt.Errorf("read secret file %q: %w", entry.Name(), err)
