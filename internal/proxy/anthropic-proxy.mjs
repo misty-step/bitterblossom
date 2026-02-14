@@ -14,13 +14,14 @@
 //   reasoning, the model's actual content and tool calls are forwarded normally.
 //
 // Environment variables:
-//   PROXY_PORT             — listen port (default 4000)
-//   UPSTREAM_BASE          — upstream base URL (default https://openrouter.ai)
-//   UPSTREAM_PATH          — upstream path (default /api/v1/chat/completions)
-//   OPENROUTER_API_KEY     — API key for upstream authentication
-//   TARGET_MODEL           — model ID to request (default minimax/minimax-m2.5)
-//   MAX_RETRIES            — upstream retry attempts (default 3)
-//   RETRY_BASE_DELAY_MS    — base delay for exponential backoff (default 1000)
+//   PROXY_PORT              — listen port (default 4000)
+//   UPSTREAM_BASE           — upstream base URL (default https://openrouter.ai)
+//   UPSTREAM_PATH           — upstream path (default /api/v1/chat/completions)
+//   OPENROUTER_API_KEY_FILE — path to file containing API key (recommended)
+//   OPENROUTER_API_KEY      — API key for upstream authentication (fallback)
+//   TARGET_MODEL            — model ID to request (default minimax/minimax-m2.5)
+//   MAX_RETRIES             — upstream retry attempts (default 3)
+//   RETRY_BASE_DELAY_MS     — base delay for exponential backoff (default 1000)
 //
 // Zero external dependencies — uses only Node.js builtins.
 
@@ -32,7 +33,20 @@ const PORT = parseInt(process.env.PROXY_PORT || '4000');
 const PID_FILE = process.env.PROXY_PID_FILE || '/home/sprite/.anthropic-proxy.pid';
 const UPSTREAM_BASE = process.env.UPSTREAM_BASE || 'https://openrouter.ai';
 const UPSTREAM_PATH = process.env.UPSTREAM_PATH || '/api/v1/chat/completions';
-const API_KEY = process.env.OPENROUTER_API_KEY || '';
+// Read API key from secure file if provided, otherwise fall back to env var.
+// This avoids exposing the key in /proc/<pid>/environ.
+const API_KEY_FILE = process.env.OPENROUTER_API_KEY_FILE || '';
+let API_KEY = '';
+if (API_KEY_FILE) {
+  try {
+    API_KEY = fs.readFileSync(API_KEY_FILE, 'utf-8').trim();
+  } catch (e) {
+    console.error(`Failed to read API key from ${API_KEY_FILE}:`, e.message);
+    process.exit(1);
+  }
+} else {
+  API_KEY = process.env.OPENROUTER_API_KEY || '';
+}
 const TARGET_MODEL = process.env.TARGET_MODEL || 'minimax/minimax-m2.5';
 // Validate retry configuration with safe defaults
 const MAX_RETRIES_RAW = parseInt(process.env.MAX_RETRIES || '3');

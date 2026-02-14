@@ -10,17 +10,25 @@ import (
 
 // mockRemoteExecutor is a mock implementation of RemoteExecutor for testing.
 type mockRemoteExecutor struct {
-	execFunc        func(ctx context.Context, sprite, remoteCommand string, stdin []byte) (string, error)
-	execWithEnvFunc func(ctx context.Context, sprite, remoteCommand string, stdin []byte, env map[string]string) (string, error)
-	uploadFunc      func(ctx context.Context, sprite, remotePath string, content []byte) error
-	execCalls       []execCall
-	uploadCalls     []uploadCall
+	execFunc          func(ctx context.Context, sprite, remoteCommand string, stdin []byte) (string, error)
+	execWithEnvFunc   func(ctx context.Context, sprite, remoteCommand string, stdin []byte, env map[string]string) (string, error)
+	uploadFunc        func(ctx context.Context, sprite, remotePath string, content []byte) error
+	execCalls         []execCall
+	execWithEnvCalls  []execWithEnvCall
+	uploadCalls       []uploadCall
 }
 
 type execCall struct {
 	sprite  string
 	command string
 	stdin   []byte
+}
+
+type execWithEnvCall struct {
+	sprite  string
+	command string
+	stdin   []byte
+	env     map[string]string
 }
 
 type uploadCall struct {
@@ -39,6 +47,7 @@ func (m *mockRemoteExecutor) Exec(ctx context.Context, sprite, remoteCommand str
 
 func (m *mockRemoteExecutor) ExecWithEnv(ctx context.Context, sprite, remoteCommand string, stdin []byte, env map[string]string) (string, error) {
 	m.execCalls = append(m.execCalls, execCall{sprite: sprite, command: remoteCommand, stdin: stdin})
+	m.execWithEnvCalls = append(m.execWithEnvCalls, execWithEnvCall{sprite: sprite, command: remoteCommand, stdin: stdin, env: env})
 	if m.execWithEnvFunc != nil {
 		return m.execWithEnvFunc(ctx, sprite, remoteCommand, stdin, env)
 	}
@@ -186,15 +195,23 @@ func TestLifecycle_Start(t *testing.T) {
 			t.Errorf("unexpected error: %v", err)
 		}
 
-		// Exec sequence: cleanup (pgrep kill) -> mkdir -> start node
-		if len(mock.execCalls) < 3 {
-			t.Fatalf("expected at least 3 exec calls, got %d", len(mock.execCalls))
+		// Exec sequence: cleanup (pgrep kill) -> mkdir -> write key file -> start node
+		if len(mock.execCalls) < 4 {
+			t.Fatalf("expected at least 4 exec calls, got %d", len(mock.execCalls))
 		}
 		if !strings.Contains(mock.execCalls[0].command, "pgrep") {
 			t.Errorf("expected first exec to kill existing proxy, got: %s", mock.execCalls[0].command)
 		}
 		if !strings.Contains(mock.execCalls[1].command, "mkdir -p") {
 			t.Errorf("expected second exec to be mkdir, got: %s", mock.execCalls[1].command)
+		}
+
+		// Third call should write the API key to a secure file
+		if !strings.Contains(mock.execCalls[2].command, "openrouter.key") {
+			t.Errorf("expected third exec to write API key file, got: %s", mock.execCalls[2].command)
+		}
+		if !strings.Contains(mock.execCalls[2].command, "chmod 600") {
+			t.Errorf("expected third exec to set file permissions, got: %s", mock.execCalls[2].command)
 		}
 
 		// Check that upload was called
@@ -205,11 +222,25 @@ func TestLifecycle_Start(t *testing.T) {
 			t.Errorf("expected upload to %s, got %s", SpriteProxyPath, mock.uploadCalls[0].path)
 		}
 
-		if !strings.Contains(mock.execCalls[2].command, "node") {
-			t.Errorf("expected node command, got: %s", mock.execCalls[2].command)
+		// Fourth call should start the node proxy
+		if !strings.Contains(mock.execCalls[3].command, "node") {
+			t.Errorf("expected fourth exec to be node command, got: %s", mock.execCalls[3].command)
 		}
-		if strings.Contains(mock.execCalls[2].command, "test-api-key") {
-			t.Errorf("expected API key to not appear in remote command, got: %s", mock.execCalls[2].command)
+		// The API key should not appear in the node command itself
+		if strings.Contains(mock.execCalls[3].command, "test-api-key") {
+			t.Errorf("expected API key to not appear in remote command, got: %s", mock.execCalls[3].command)
+		}
+
+		// Check that ExecWithEnv was called with the key file path
+		if len(mock.execWithEnvCalls) != 1 {
+			t.Fatalf("expected 1 execWithEnv call, got %d", len(mock.execWithEnvCalls))
+		}
+		env := mock.execWithEnvCalls[0].env
+		if env["OPENROUTER_API_KEY_FILE"] != APIKeyFilePath {
+			t.Errorf("expected OPENROUTER_API_KEY_FILE env var, got: %s", env["OPENROUTER_API_KEY_FILE"])
+		}
+		if env["OPENROUTER_API_KEY"] != "" {
+			t.Errorf("expected OPENROUTER_API_KEY env var to be empty, got: %s", env["OPENROUTER_API_KEY"])
 		}
 	})
 
