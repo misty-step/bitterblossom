@@ -515,9 +515,17 @@ func TestDispatchCommandWaitWithPollingError(t *testing.T) {
 		"--token", "tok",
 	})
 
-	// Should succeed with graceful degradation (just show dispatch result)
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("cmd.Execute() error = %v", err)
+	// Should return exit code 1 for polling/infrastructure failure
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for polling failure, got nil")
+	}
+	var coded *exitError
+	if !errors.As(err, &coded) {
+		t.Fatalf("expected exitError, got %T: %v", err, err)
+	}
+	if coded.Code != exitCodeDispatchFailure {
+		t.Fatalf("expected exit code %d, got %d", exitCodeDispatchFailure, coded.Code)
 	}
 
 	// Should have warning in stderr
@@ -663,6 +671,24 @@ func TestParseStatusCheckOutput(t *testing.T) {
 			wantRes: &waitResult{
 				State:    "idle",
 				Complete: false,
+			},
+		},
+		{
+			name: "fallback completion - agent dead with PR URL but no TASK_COMPLETE",
+			output: "__STATUS_JSON__{\"repo\":\"misty-step/bitterblossom\",\"started\":\"2024-01-15T10:00:00Z\",\"task\":\"Fix bug\"}\n" +
+				"__AGENT_STATE__dead\n" +
+				"__HAS_COMPLETE__no\n" +
+				"__HAS_BLOCKED__no\n" +
+				"__BLOCKED_B64__\n" +
+				"__PR_URL__https://github.com/misty-step/bitterblossom/pull/42\n",
+			wantDone: true,
+			wantRes: &waitResult{
+				State:    "completed",
+				Task:     "Fix bug",
+				Repo:     "misty-step/bitterblossom",
+				Started:  "2024-01-15T10:00:00Z",
+				PRURL:    "https://github.com/misty-step/bitterblossom/pull/42",
+				Complete: true,
 			},
 		},
 	}
@@ -938,6 +964,178 @@ func TestSelectSpriteFromRegistryMissingFile(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.expectedInErr) {
 				t.Fatalf("error message should contain %q, but it was: %v", tc.expectedInErr, err)
+			}
+		})
+	}
+}
+
+func TestDispatchCommandWaitExitCodes(t *testing.T) {
+	// Cannot use t.Parallel() — t.Setenv modifies process environment.
+	tests := []struct {
+		name         string
+		waitResult   *waitResult
+		wantExitCode int
+		wantErr      bool
+	}{
+		{
+			name: "completed state returns exit 0",
+			waitResult: &waitResult{
+				State:    "completed",
+				Complete: true,
+				PRURL:    "https://github.com/misty-step/bitterblossom/pull/123",
+			},
+			wantExitCode: exitCodeSuccess,
+			wantErr:      false,
+		},
+		{
+			name: "blocked state returns exit 0",
+			waitResult: &waitResult{
+				State:         "blocked",
+				Complete:      true,
+				Blocked:       true,
+				BlockedReason: "needs permissions",
+			},
+			wantExitCode: exitCodeSuccess,
+			wantErr:      false,
+		},
+		{
+			name: "timeout state returns exit 124",
+			waitResult: &waitResult{
+				State: "timeout",
+				Error: "polling timed out",
+			},
+			wantExitCode: exitCodeTimeout,
+			wantErr:      true,
+		},
+		{
+			name: "idle state returns exit 2 (no signals)",
+			waitResult: &waitResult{
+				State:    "idle",
+				Complete: false,
+			},
+			wantExitCode: exitCodeAgentNoSignals,
+			wantErr:      true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("GITHUB_TOKEN", "ghp-test")
+			t.Setenv("OPENROUTER_API_KEY", "or-test")
+
+			runner := &fakeDispatchRunner{
+				result: dispatchsvc.Result{
+					Executed: true,
+					State:    dispatchsvc.StateRunning,
+					Plan: dispatchsvc.Plan{
+						Sprite: "moss",
+						Mode:   "execute",
+					},
+				},
+			}
+
+			deps := dispatchDeps{
+				readFile:     func(string) ([]byte, error) { return nil, nil },
+				newFlyClient: func(token, apiURL string) (fly.MachineClient, error) { return fakeFlyClient{}, nil },
+				newRemote:    func(binary, org string) *spriteCLIRemote { return &spriteCLIRemote{} },
+				newService:   func(cfg dispatchsvc.Config) (dispatchRunner, error) { return runner, nil },
+				pollSprite: func(ctx context.Context, remote *spriteCLIRemote, sprite string, timeout time.Duration, progress func(string)) (*waitResult, error) {
+					return tt.waitResult, nil
+				},
+			}
+
+			cmd := newDispatchCmdWithDeps(deps)
+			var out bytes.Buffer
+			var errOut bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&errOut)
+			cmd.SetArgs([]string{
+				"moss",
+				"Test task",
+				"--execute",
+				"--wait",
+				"--app", "bb-app",
+				"--token", "tok",
+			})
+
+			err := cmd.Execute()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error with exit code %d, got nil", tt.wantExitCode)
+				}
+				var coded *exitError
+				if !errors.As(err, &coded) {
+					t.Fatalf("expected exitError, got %T: %v", err, err)
+				}
+				if coded.Code != tt.wantExitCode {
+					t.Fatalf("expected exit code %d, got %d", tt.wantExitCode, coded.Code)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("expected no error (exit 0), got: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestWaitExitError(t *testing.T) {
+	tests := []struct {
+		name         string
+		waitRes      *waitResult
+		wantErr      bool
+		wantExitCode int
+	}{
+		{
+			name:         "completed returns nil (exit 0)",
+			waitRes:      &waitResult{State: "completed", Complete: true},
+			wantErr:      false,
+			wantExitCode: exitCodeSuccess,
+		},
+		{
+			name:         "blocked returns nil (exit 0)",
+			waitRes:      &waitResult{State: "blocked", Complete: true, Blocked: true},
+			wantErr:      false,
+			wantExitCode: exitCodeSuccess,
+		},
+		{
+			name:         "timeout returns exit 124",
+			waitRes:      &waitResult{State: "timeout", Error: "polling timed out"},
+			wantErr:      true,
+			wantExitCode: exitCodeTimeout,
+		},
+		{
+			name:         "idle returns exit 2",
+			waitRes:      &waitResult{State: "idle", Complete: false},
+			wantErr:      true,
+			wantExitCode: exitCodeAgentNoSignals,
+		},
+		{
+			name:         "running returns exit 2 (unexpected state)",
+			waitRes:      &waitResult{State: "running"},
+			wantErr:      true,
+			wantExitCode: exitCodeAgentNoSignals,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := waitExitError(tt.waitRes)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error with exit code %d, got nil", tt.wantExitCode)
+				}
+				var coded *exitError
+				if !errors.As(err, &coded) {
+					t.Fatalf("expected exitError, got %T: %v", err, err)
+				}
+				if coded.Code != tt.wantExitCode {
+					t.Fatalf("expected exit code %d, got %d", tt.wantExitCode, coded.Code)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("expected nil error (exit 0), got: %v", err)
+				}
 			}
 		})
 	}

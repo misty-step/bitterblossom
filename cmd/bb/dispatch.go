@@ -19,6 +19,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// Exit codes for dispatch --wait command
+const (
+	exitCodeSuccess          = 0
+	exitCodeDispatchFailure  = 1
+	exitCodeAgentNoSignals   = 2
+	exitCodeTimeout          = 124
+)
+
 type dispatchOptions struct {
 	Repo                 string
 	PromptFile           string
@@ -375,9 +383,16 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 					// Graceful degradation: return dispatch result with warning
 					// Intentionally ignoring write errors for warning message
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Warning: polling failed: %v\n", waitErr)
-					return renderDispatchResult(cmd, result, opts.JSON)
+					if err := renderDispatchResult(cmd, result, opts.JSON); err != nil {
+						return err
+					}
+					// Return exit code 1 for infrastructure/polling failure
+					return &exitError{Code: exitCodeDispatchFailure, Err: waitErr}
 				}
-				return renderWaitResult(cmd, result, waitRes, opts.JSON)
+				if err := renderWaitResult(cmd, result, waitRes, opts.JSON); err != nil {
+					return err
+				}
+				return waitExitError(waitRes)
 			}
 
 			return renderDispatchResult(cmd, result, opts.JSON)
@@ -640,6 +655,28 @@ func newTimeoutResult(startTime time.Time) (*waitResult, error) {
 	}, nil
 }
 
+// waitExitError returns an exitError based on the wait result state.
+// Exit codes:
+//   0: dispatch completed successfully (completed or blocked state)
+//   2: dispatch completed but agent didn't produce expected signals (idle without completion)
+//   124: timeout reached while waiting
+func waitExitError(waitRes *waitResult) error {
+	switch waitRes.State {
+	case "timeout":
+		return &exitError{Code: exitCodeTimeout, Err: errors.New("timeout reached while waiting for task completion")}
+	case "completed", "blocked":
+		// Success: dispatch completed (even if blocked is a form of completion)
+		return nil
+	case "idle":
+		// Soft failure: agent didn't produce expected signals
+		return &exitError{Code: exitCodeAgentNoSignals, Err: errors.New("dispatch completed but agent did not produce expected signals")}
+	default:
+		// For running or other states, this shouldn't happen as polling should continue
+		// until completion or timeout, but treat as soft failure just in case
+		return &exitError{Code: exitCodeAgentNoSignals, Err: fmt.Errorf("unexpected final state: %s", waitRes.State)}
+	}
+}
+
 // pollSpriteStatus polls a sprite for task completion with heartbeat progress.
 func pollSpriteStatus(ctx context.Context, remote *spriteCLIRemote, sprite string, timeout time.Duration, progress func(string)) (*waitResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
@@ -851,6 +888,11 @@ func parseStatusCheckOutput(output string) (*waitResult, bool, error) {
 		complete = true
 	case agentState == "alive":
 		state = "running"
+	case agentState == "dead" && prURL != "":
+		// Fallback: agent exited without TASK_COMPLETE but PR exists → likely completed
+		// This handles agents that forget to write the completion signal
+		state = "completed"
+		complete = true
 	}
 
 	// Decode blocked reason
