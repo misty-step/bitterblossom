@@ -1280,6 +1280,12 @@ func TestWaitExitError(t *testing.T) {
 			wantExitCode: exitCodeNoNewWork,
 		},
 		{
+			name:         "completed with dirty files returns exit 4",
+			waitRes:      &waitResult{State: "completed", Complete: true, HasChanges: false, DirtyFiles: 2},
+			wantErr:      true,
+			wantExitCode: exitCodePartialWork,
+		},
+		{
 			name:         "blocked returns nil (exit 0)",
 			waitRes:      &waitResult{State: "blocked", Complete: true, Blocked: true},
 			wantErr:      false,
@@ -1397,6 +1403,83 @@ func TestDispatchWaitSkipsPollingWhenOneshotCompleted(t *testing.T) {
 	output := out.String()
 	if !strings.Contains(output, "COMPLETE") {
 		t.Fatalf("expected output to contain COMPLETE status, got: %s", output)
+	}
+}
+
+// TestDispatchWaitPartialWorkDirtyFiles verifies that when an oneshot dispatch
+// completes with uncommitted changes (DirtyFiles > 0), the output shows PARTIAL
+// status and exits with code 4.
+func TestDispatchWaitPartialWorkDirtyFiles(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "ghp-test")
+	t.Setenv("OPENROUTER_API_KEY", "or-test")
+
+	runner := &fakeDispatchRunner{
+		result: dispatchsvc.Result{
+			Executed: true,
+			State:    dispatchsvc.StateCompleted,
+			Plan: dispatchsvc.Plan{
+				Sprite: "bramble",
+				Mode:   "execute",
+				Steps:  []dispatchsvc.PlanStep{{Kind: dispatchsvc.StepStartAgent, Description: "start"}},
+			},
+			Work: dispatchsvc.WorkDelta{
+				HasChanges: false,
+				Commits:    0,
+				PRs:        0,
+				DirtyFiles: 3,
+			},
+		},
+	}
+
+	deps := dispatchDeps{
+		readFile: func(string) ([]byte, error) { return nil, nil },
+		newFlyClient: func(token, apiURL string) (fly.MachineClient, error) {
+			return fakeFlyClient{}, nil
+		},
+		newRemote: func(binary, org string) *spriteCLIRemote {
+			return &spriteCLIRemote{}
+		},
+		newService: func(cfg dispatchsvc.Config) (dispatchRunner, error) {
+			return runner, nil
+		},
+		pollSprite: func(ctx context.Context, remote *spriteCLIRemote, sprite string, timeout time.Duration, progress func(string)) (*waitResult, error) {
+			t.Fatal("pollSprite should not be called for oneshot completed state")
+			return nil, nil
+		},
+	}
+
+	cmd := newDispatchCmdWithDeps(deps)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{
+		"bramble",
+		"Fix issue",
+		"--execute",
+		"--wait",
+		"--timeout", "5m",
+		"--app", "bb-app",
+		"--token", "tok",
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for partial work exit code")
+	}
+	var coded *exitError
+	if !errors.As(err, &coded) {
+		t.Fatalf("expected exitError, got %T: %v", err, err)
+	}
+	if coded.Code != exitCodePartialWork {
+		t.Fatalf("expected exit code %d, got %d", exitCodePartialWork, coded.Code)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "PARTIAL") {
+		t.Fatalf("expected output to contain PARTIAL status, got: %s", output)
+	}
+	if !strings.Contains(output, "3 file(s)") {
+		t.Fatalf("expected output to contain dirty file count, got: %s", output)
 	}
 }
 

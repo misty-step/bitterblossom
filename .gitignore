@@ -19,3 +19,5 @@ __pycache__/
 *.pyc
 base/hooks/__pycache__/
 bin/
+
+e2e-reports/
