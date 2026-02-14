@@ -486,21 +486,33 @@ run_claude_once() {
 
     cd "$WORKSPACE"
 
-    local required_flags_default
-    required_flags_default="--dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json"
-
-    # Non-negotiable: do not allow callers to weaken or mutate required flags.
-    # If BB passes BB_CLAUDE_FLAGS, it must match exactly.
-    if [[ -n "${BB_CLAUDE_FLAGS:-}" && "${BB_CLAUDE_FLAGS}" != "$required_flags_default" ]]; then
-        echo "[sprite-agent] BB_CLAUDE_FLAGS must match required invariant flags" >&2
-        return 1
+    # Source the single source of truth for Claude flags (uploaded by BB dispatch).
+    # This ensures shell scripts use the same flags as Go code.
+    # Fall back to defaults if the file doesn't exist (e.g., legacy sprites).
+    if [[ -f "$WORKSPACE/.claude/flags.sh" ]]; then
+        source "$WORKSPACE/.claude/flags.sh"
+    else
+        BB_CLAUDE_FLAGS="--dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json"
+        BB_CLAUDE_FLAGS_WITH_PROMPT="-p $BB_CLAUDE_FLAGS"
     fi
 
-    local required_flags
-    required_flags="$required_flags_default"
-    case " $required_flags " in *" --dangerously-skip-permissions "*) ;; *) echo "[sprite-agent] missing --dangerously-skip-permissions" >&2; return 1 ;; esac
-    case " $required_flags " in *" --verbose "*) ;; *) echo "[sprite-agent] missing --verbose" >&2; return 1 ;; esac
-    case " $required_flags " in *" --output-format stream-json "*) ;; *) echo "[sprite-agent] missing --output-format stream-json" >&2; return 1 ;; esac
+    # Non-negotiable: validate that required flags are present.
+    # Each flag is checked individually so the Go source of truth can evolve
+    # without requiring manual shell-side string updates.
+    local required_individual_flags=(
+        "--dangerously-skip-permissions"
+        "--permission-mode"
+        "--verbose"
+        "--output-format"
+    )
+    for flag in "${required_individual_flags[@]}"; do
+        if [[ "${BB_CLAUDE_FLAGS:-}" != *"$flag"* ]]; then
+            echo "[sprite-agent] BB_CLAUDE_FLAGS missing required flag: $flag" >&2
+            return 1
+        fi
+    done
+
+    local required_flags="$BB_CLAUDE_FLAGS"
 
     # Prefer PTY-backed execution for near-real-time flush behavior.
     if [[ "$HAS_SCRIPT_PTY" == true ]]; then
