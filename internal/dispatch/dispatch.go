@@ -823,8 +823,10 @@ func (s *Service) cleanSignals(ctx context.Context, sprite string) error {
 	// Only remove signal files, not PID files. The agent start scripts
 	// (buildOneShotScript, buildStartRalphScript) need agent.pid and ralph.pid
 	// to kill stale processes before launching new ones.
+	// Also remove PR_URL to prevent stale URLs from causing false positive completion
+	// detection (see PR #318).
 	script := fmt.Sprintf(
-		"rm -f %[1]s/TASK_COMPLETE %[1]s/TASK_COMPLETE.md %[1]s/BLOCKED.md %[1]s/BLOCKED",
+		"rm -f %[1]s/TASK_COMPLETE %[1]s/TASK_COMPLETE.md %[1]s/BLOCKED.md %[1]s/BLOCKED %[1]s/PR_URL",
 		shellutil.Quote(s.workspace),
 	)
 	_, err := s.remote.Exec(ctx, sprite, script, nil)

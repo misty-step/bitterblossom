@@ -382,6 +382,7 @@ func TestRunCleanSignalsBeforePromptUpload(t *testing.T) {
 		"TASK_COMPLETE.md",
 		"BLOCKED.md",
 		"BLOCKED",
+		"PR_URL",
 	}
 	for _, file := range expectedFiles {
 		if !strings.Contains(cleanSignalsCmd, file) {
