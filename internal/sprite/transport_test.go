@@ -7,107 +7,11 @@ import (
 	"testing"
 )
 
-// mockSpriteCLI is a test double for SpriteCLI.
-type mockSpriteCLI struct {
-	ListFn             func(ctx context.Context) ([]string, error)
-	ExecFn             func(ctx context.Context, sprite, command string, stdin []byte) (string, error)
-	ExecWithEnvFn      func(ctx context.Context, sprite, command string, stdin []byte, env map[string]string) (string, error)
-	CreateFn           func(ctx context.Context, name, org string) error
-	DestroyFn          func(ctx context.Context, name, org string) error
-	CheckpointCreateFn func(ctx context.Context, name, org string) error
-	CheckpointListFn   func(ctx context.Context, name, org string) (string, error)
-	UploadFileFn       func(ctx context.Context, name, org, localPath, remotePath string) error
-	UploadFn           func(ctx context.Context, name, remotePath string, content []byte) error
-	APIFn              func(ctx context.Context, org, endpoint string) (string, error)
-	APISpriteFn        func(ctx context.Context, org, sprite, endpoint string) (string, error)
-}
-
-func (m *mockSpriteCLI) List(ctx context.Context) ([]string, error) {
-	if m.ListFn != nil {
-		return m.ListFn(ctx)
-	}
-	return nil, ErrMockNotImplemented
-}
-
-func (m *mockSpriteCLI) Exec(ctx context.Context, sprite, command string, stdin []byte) (string, error) {
-	if m.ExecFn != nil {
-		return m.ExecFn(ctx, sprite, command, stdin)
-	}
-	return "", ErrMockNotImplemented
-}
-
-func (m *mockSpriteCLI) ExecWithEnv(ctx context.Context, sprite, command string, stdin []byte, env map[string]string) (string, error) {
-	if m.ExecWithEnvFn != nil {
-		return m.ExecWithEnvFn(ctx, sprite, command, stdin, env)
-	}
-	// Fall back to ExecFn if ExecWithEnvFn is not set
-	if m.ExecFn != nil {
-		return m.ExecFn(ctx, sprite, command, stdin)
-	}
-	return "", ErrMockNotImplemented
-}
-
-func (m *mockSpriteCLI) Create(ctx context.Context, name, org string) error {
-	if m.CreateFn != nil {
-		return m.CreateFn(ctx, name, org)
-	}
-	return ErrMockNotImplemented
-}
-
-func (m *mockSpriteCLI) Destroy(ctx context.Context, name, org string) error {
-	if m.DestroyFn != nil {
-		return m.DestroyFn(ctx, name, org)
-	}
-	return ErrMockNotImplemented
-}
-
-func (m *mockSpriteCLI) CheckpointCreate(ctx context.Context, name, org string) error {
-	if m.CheckpointCreateFn != nil {
-		return m.CheckpointCreateFn(ctx, name, org)
-	}
-	return ErrMockNotImplemented
-}
-
-func (m *mockSpriteCLI) CheckpointList(ctx context.Context, name, org string) (string, error) {
-	if m.CheckpointListFn != nil {
-		return m.CheckpointListFn(ctx, name, org)
-	}
-	return "", ErrMockNotImplemented
-}
-
-func (m *mockSpriteCLI) UploadFile(ctx context.Context, name, org, localPath, remotePath string) error {
-	if m.UploadFileFn != nil {
-		return m.UploadFileFn(ctx, name, org, localPath, remotePath)
-	}
-	return ErrMockNotImplemented
-}
-
-func (m *mockSpriteCLI) Upload(ctx context.Context, name, remotePath string, content []byte) error {
-	if m.UploadFn != nil {
-		return m.UploadFn(ctx, name, remotePath, content)
-	}
-	return ErrMockNotImplemented
-}
-
-func (m *mockSpriteCLI) API(ctx context.Context, org, endpoint string) (string, error) {
-	if m.APIFn != nil {
-		return m.APIFn(ctx, org, endpoint)
-	}
-	return "", ErrMockNotImplemented
-}
-
-func (m *mockSpriteCLI) APISprite(ctx context.Context, org, sprite, endpoint string) (string, error) {
-	if m.APISpriteFn != nil {
-		return m.APISpriteFn(ctx, org, sprite, endpoint)
-	}
-	return "", ErrMockNotImplemented
-}
-
 func TestNewFallbackTransport(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	mockCLI := &mockSpriteCLI{
+	mockCLI := &MockSpriteCLI{
 		ListFn: func(ctx context.Context) ([]string, error) {
 			return []string{"sprite1", "sprite2"}, nil
 		},
@@ -159,7 +63,7 @@ func TestFallbackTransportMetrics(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	mockCLI := &mockSpriteCLI{
+	mockCLI := &MockSpriteCLI{
 		ListFn: func(ctx context.Context) ([]string, error) {
 			return []string{"sprite1"}, nil
 		},
@@ -198,7 +102,7 @@ func TestFallbackTransportErrorRecording(t *testing.T) {
 
 	ctx := context.Background()
 	testErr := errors.New("test error")
-	mockCLI := &mockSpriteCLI{
+	mockCLI := &MockSpriteCLI{
 		ListFn: func(ctx context.Context) ([]string, error) {
 			return nil, testErr
 		},
@@ -220,7 +124,7 @@ func TestFallbackTransportMethodUpdates(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	mockCLI := &mockSpriteCLI{
+	mockCLI := &MockSpriteCLI{
 		ListFn: func(ctx context.Context) ([]string, error) {
 			return nil, nil
 		},
@@ -254,7 +158,7 @@ func TestFallbackTransportExecWithEnv(t *testing.T) {
 
 	ctx := context.Background()
 	var capturedEnv map[string]string
-	mockCLI := &mockSpriteCLI{
+	mockCLI := &MockSpriteCLI{
 		ExecWithEnvFn: func(ctx context.Context, sprite, command string, stdin []byte, env map[string]string) (string, error) {
 			capturedEnv = env
 			return "output", nil
@@ -278,7 +182,7 @@ func TestFallbackTransportAllMethods(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	mockCLI := &mockSpriteCLI{
+	mockCLI := &MockSpriteCLI{
 		DestroyFn: func(ctx context.Context, name, org string) error {
 			return nil
 		},

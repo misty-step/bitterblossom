@@ -74,13 +74,11 @@ type Transport interface {
 type FallbackTransport struct {
 	cli   SpriteCLI
 	org   string
-	app   string // Fly app name for API calls
 	logger *slog.Logger
 
 	mu           sync.RWMutex
 	lastMethod   TransportMethod
 	metrics      TransportMetrics
-	apiAvailable bool
 }
 
 // FallbackOption configures FallbackTransport.
@@ -95,13 +93,6 @@ func WithLogger(logger *slog.Logger) FallbackOption {
 	}
 }
 
-// WithApp sets the Fly app name for API operations.
-func WithApp(app string) FallbackOption {
-	return func(t *FallbackTransport) {
-		t.app = strings.TrimSpace(app)
-	}
-}
-
 // NewFallbackTransport creates a transport with CLI fallback.
 // The CLI is used as primary; future iterations will add API-first.
 // This implements the transport interface defined in issue #262.
@@ -111,10 +102,9 @@ func NewFallbackTransport(cli SpriteCLI, org string, opts ...FallbackOption) (*F
 	}
 
 	t := &FallbackTransport{
-		cli:          cli,
-		org:          strings.TrimSpace(org),
-		logger:       slog.Default(),
-		apiAvailable: false, // Start with CLI-only; API integration in future phase
+		cli:    cli,
+		org:    strings.TrimSpace(org),
+		logger: slog.Default(),
 	}
 	for _, opt := range opts {
 		opt(t)
@@ -138,21 +128,6 @@ func (t *FallbackTransport) setMethod(m TransportMethod) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.lastMethod = m
-}
-
-// isAPIAvailable returns whether the API transport is available.
-func (t *FallbackTransport) isAPIAvailable() bool {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	return t.apiAvailable
-}
-
-// markAPIUnavailable marks the API as unavailable (fallback to CLI).
-func (t *FallbackTransport) markAPIUnavailable() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.apiAvailable = false
-	t.logger.Warn("API transport marked unavailable, using CLI fallback")
 }
 
 // List returns available sprite names.
