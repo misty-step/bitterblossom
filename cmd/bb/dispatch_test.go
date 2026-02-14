@@ -895,7 +895,7 @@ func TestDispatchDryRunSkipsCredentialValidation(t *testing.T) {
 func TestSelectSpriteFromRegistryMissingFile(t *testing.T) {
 	t.Parallel()
 
-	remote := &spriteCLIRemote{binary: "sprite"}
+	remote := newSpriteCLIRemote("sprite", "")
 
 	testCases := []struct {
 		name          string
@@ -1052,5 +1052,137 @@ func TestFormatStatusLine(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestDispatchWaitSkipsPollingWhenOneshotCompleted verifies that when an oneshot
+// dispatch completes successfully (StateCompleted) and --wait is set, the polling
+// loop is skipped entirely because the local state machine already knows the task
+// is done. This addresses issue #293.
+func TestDispatchWaitSkipsPollingWhenOneshotCompleted(t *testing.T) {
+	// Cannot use t.Parallel() — t.Setenv modifies process environment.
+	t.Setenv("GITHUB_TOKEN", "ghp-test")
+	t.Setenv("OPENROUTER_API_KEY", "or-test")
+
+	runner := &fakeDispatchRunner{
+		result: dispatchsvc.Result{
+			Executed: true,
+			State:    dispatchsvc.StateCompleted, // Key: oneshot already completed
+			Plan: dispatchsvc.Plan{
+				Sprite: "moss",
+				Mode:   "execute",
+				Steps:  []dispatchsvc.PlanStep{{Kind: dispatchsvc.StepStartAgent, Description: "start"}},
+			},
+		},
+	}
+
+	pollCalled := false
+	deps := dispatchDeps{
+		readFile: func(string) ([]byte, error) { return nil, nil },
+		newFlyClient: func(token, apiURL string) (fly.MachineClient, error) {
+			return fakeFlyClient{}, nil
+		},
+		newRemote: func(binary, org string) *spriteCLIRemote {
+			return &spriteCLIRemote{}
+		},
+		newService: func(cfg dispatchsvc.Config) (dispatchRunner, error) {
+			return runner, nil
+		},
+		pollSprite: func(ctx context.Context, remote *spriteCLIRemote, sprite string, timeout time.Duration, progress func(string)) (*waitResult, error) {
+			pollCalled = true
+			return nil, errors.New("polling should not be called for oneshot completed state")
+		},
+	}
+
+	cmd := newDispatchCmdWithDeps(deps)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{
+		"moss",
+		"Implement feature",
+		"--execute",
+		"--wait",
+		"--timeout", "5m",
+		"--app", "bb-app",
+		"--token", "tok",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cmd.Execute() error = %v", err)
+	}
+
+	if pollCalled {
+		t.Fatal("expected pollSprite to be SKIPPED when oneshot dispatch completes with StateCompleted")
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "COMPLETE") {
+		t.Fatalf("expected output to contain COMPLETE status, got: %s", output)
+	}
+}
+
+// TestDispatchWaitPollsWhenRalphMode verifies that when Ralph mode is used,
+// polling still occurs even if the exec returns, because the agent may continue
+// running in the background.
+func TestDispatchWaitPollsWhenRalphMode(t *testing.T) {
+	// Cannot use t.Parallel() — t.Setenv modifies process environment.
+	t.Setenv("GITHUB_TOKEN", "ghp-test")
+	t.Setenv("OPENROUTER_API_KEY", "or-test")
+
+	runner := &fakeDispatchRunner{
+		result: dispatchsvc.Result{
+			Executed: true,
+			State:    dispatchsvc.StateRunning, // Ralph mode: agent may still be running
+			Plan: dispatchsvc.Plan{
+				Sprite: "moss",
+				Mode:   "execute",
+				Steps:  []dispatchsvc.PlanStep{{Kind: dispatchsvc.StepStartAgent, Description: "start"}},
+			},
+		},
+	}
+
+	pollCalled := false
+	deps := dispatchDeps{
+		readFile: func(string) ([]byte, error) { return nil, nil },
+		newFlyClient: func(token, apiURL string) (fly.MachineClient, error) {
+			return fakeFlyClient{}, nil
+		},
+		newRemote: func(binary, org string) *spriteCLIRemote {
+			return &spriteCLIRemote{}
+		},
+		newService: func(cfg dispatchsvc.Config) (dispatchRunner, error) {
+			return runner, nil
+		},
+		pollSprite: func(ctx context.Context, remote *spriteCLIRemote, sprite string, timeout time.Duration, progress func(string)) (*waitResult, error) {
+			pollCalled = true
+			return &waitResult{
+				State:    "completed",
+				Complete: true,
+			}, nil
+		},
+	}
+
+	cmd := newDispatchCmdWithDeps(deps)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{
+		"moss",
+		"Implement feature",
+		"--execute",
+		"--wait",
+		"--ralph", // Ralph mode: polling should still happen
+		"--timeout", "5m",
+		"--app", "bb-app",
+		"--token", "tok",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cmd.Execute() error = %v", err)
+	}
+
+	if !pollCalled {
+		t.Fatal("expected pollSprite to be called for Ralph mode even if StateRunning")
 	}
 }

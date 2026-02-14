@@ -45,8 +45,8 @@ func TestRenderSettingsInjectsToken(t *testing.T) {
 	if env["ANTHROPIC_BASE_URL"] != "http://127.0.0.1:4000" {
 		t.Fatalf("ANTHROPIC_BASE_URL = %v, want http://127.0.0.1:4000", env["ANTHROPIC_BASE_URL"])
 	}
-	if env["ANTHROPIC_MODEL"] != provider.ModelOpenRouterKimiK25 {
-		t.Fatalf("ANTHROPIC_MODEL = %v, want %s", env["ANTHROPIC_MODEL"], provider.ModelOpenRouterKimiK25)
+	if env["ANTHROPIC_MODEL"] != provider.DefaultModel {
+		t.Fatalf("ANTHROPIC_MODEL = %v, want %s", env["ANTHROPIC_MODEL"], provider.DefaultModel)
 	}
 }
 
@@ -111,7 +111,7 @@ func TestRenderSettingsWithProvider(t *testing.T) {
 			name:         "inherited uses proxy provider",
 			provider:     provider.Config{Provider: provider.ProviderInherit},
 			wantProvider: "proxy",
-			wantModel:    provider.ModelOpenRouterKimiK25,
+			wantModel:    provider.DefaultModel,
 			wantBaseURL:  "http://127.0.0.1:4000",
 		},
 	}

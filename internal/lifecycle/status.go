@@ -401,8 +401,8 @@ func deriveSpriteState(state, status string) SpriteState {
 
 	// Derive from status
 	switch status {
-	case "running":
-		// If running but no explicit state, assume idle (conservative)
+	case "running", "warm":
+		// "warm" = API status for running+idle; "running" = generic running
 		return StateIdle
 	case "starting", "provisioning":
 		return StateOperational
@@ -413,7 +413,7 @@ func deriveSpriteState(state, status string) SpriteState {
 
 func isRunningStatus(status string) bool {
 	s := strings.ToLower(status)
-	return s == "running" || s == "starting" || s == "provisioning"
+	return s == "running" || s == "warm" || s == "starting" || s == "provisioning"
 }
 
 func calculateFleetSummary(sprites []SpriteStatus, orphans []SpriteStatus) FleetSummary {
