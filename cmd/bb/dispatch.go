@@ -25,6 +25,7 @@ const (
 	exitCodeSuccess          = 0
 	exitCodeDispatchFailure  = 1
 	exitCodeAgentNoSignals   = 2
+	exitCodeNoNewWork        = 3 // Agent completed but produced no new commits/PRs
 	exitCodeTimeout          = 124
 )
 
@@ -87,6 +88,10 @@ type waitResult struct {
 	BlockedReason string `json:"blocked_reason,omitempty"`
 	Complete      bool   `json:"complete"`
 	Error         string `json:"error,omitempty"`
+	// Work delta tracking
+	Commits    int  `json:"commits,omitempty"`
+	PRs        int  `json:"prs,omitempty"`
+	HasChanges bool `json:"has_changes,omitempty"`
 }
 
 func defaultDispatchDeps() dispatchDeps {
@@ -373,11 +378,17 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 				// Ralph mode still polls because the agent continues running in the background.
 				if result.State == dispatchsvc.StateCompleted && !opts.Ralph {
 					waitRes := &waitResult{
-						State:    "completed",
-						Task:     result.Task,
-						Complete: true,
+						State:      "completed",
+						Task:       result.Task,
+						Complete:   true,
+						Commits:    result.Work.Commits,
+						PRs:        result.Work.PRs,
+						HasChanges: result.Work.HasChanges,
 					}
-					return renderWaitResult(cmd, result, waitRes, opts.JSON)
+					if err := renderWaitResult(cmd, result, waitRes, opts.JSON); err != nil {
+						return err
+					}
+					return waitExitError(waitRes)
 				}
 
 				pollTarget := spriteArg
@@ -650,8 +661,20 @@ func renderWaitResult(cmd *cobra.Command, dispatchResult dispatchsvc.Result, wai
 			}
 		}
 	} else if waitRes.Complete {
-		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Status: COMPLETE\n"); err != nil {
-			return err
+		if waitRes.HasChanges {
+			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Status: COMPLETE\n"); err != nil {
+				return err
+			}
+		} else {
+			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Status: COMPLETE (no new work)\n"); err != nil {
+				return err
+			}
+		}
+		// Show work delta
+		if waitRes.Commits > 0 || waitRes.PRs > 0 {
+			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Work: %d commit(s), %d PR(s)\n", waitRes.Commits, waitRes.PRs); err != nil {
+				return err
+			}
 		}
 	}
 	if waitRes.PRURL != "" {
@@ -686,15 +709,23 @@ func newTimeoutResult(startTime time.Time) (*waitResult, error) {
 
 // waitExitError returns an exitError based on the wait result state.
 // Exit codes:
-//   0: dispatch completed successfully (completed or blocked state)
-//   2: dispatch completed but agent didn't produce expected signals (idle without completion)
-//   124: timeout reached while waiting
+//
+//	0: dispatch completed successfully with new work (completed with changes or blocked)
+//	2: dispatch completed but agent didn't produce expected signals (idle without completion)
+//	3: dispatch completed but produced no new work (completed without changes)
+//	124: timeout reached while waiting
 func waitExitError(waitRes *waitResult) error {
 	switch waitRes.State {
 	case "timeout":
 		return &exitError{Code: exitCodeTimeout, Err: errors.New("timeout reached while waiting for task completion")}
-	case "completed", "blocked":
-		// Success: dispatch completed (even if blocked is a form of completion)
+	case "completed":
+		// Distinguish between completed with changes and completed without changes
+		if waitRes.HasChanges {
+			return nil // Success: new work was produced
+		}
+		return &exitError{Code: exitCodeNoNewWork, Err: errors.New("dispatch completed but produced no new work")}
+	case "blocked":
+		// Blocked is a form of completion (agent intentionally stopped)
 		return nil
 	case "idle":
 		// Soft failure: agent didn't produce expected signals

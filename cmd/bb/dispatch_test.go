@@ -409,10 +409,13 @@ func TestDispatchCommandWithWait(t *testing.T) {
 	}
 
 	expectedResult := &waitResult{
-		State:    "completed",
-		Task:     "Implement feature",
-		Complete: true,
-		PRURL:    "https://github.com/misty-step/bitterblossom/pull/123",
+		State:      "completed",
+		Task:       "Implement feature",
+		Complete:   true,
+		PRURL:      "https://github.com/misty-step/bitterblossom/pull/123",
+		HasChanges: true,
+		Commits:    1,
+		PRs:        1,
 	}
 
 	pollCalled := false
@@ -552,9 +555,12 @@ func TestDispatchCommandWaitJSONOutput(t *testing.T) {
 	}
 
 	expectedResult := &waitResult{
-		State:    "completed",
-		Complete: true,
-		PRURL:    "https://github.com/misty-step/bitterblossom/pull/123",
+		State:      "completed",
+		Complete:   true,
+		PRURL:      "https://github.com/misty-step/bitterblossom/pull/123",
+		HasChanges: true,
+		Commits:    1,
+		PRs:        1,
 	}
 
 	deps := dispatchDeps{
@@ -1098,9 +1104,12 @@ func TestDispatchCommandWaitExitCodes(t *testing.T) {
 		{
 			name: "completed state returns exit 0",
 			waitResult: &waitResult{
-				State:    "completed",
-				Complete: true,
-				PRURL:    "https://github.com/misty-step/bitterblossom/pull/123",
+				State:      "completed",
+				Complete:   true,
+				PRURL:      "https://github.com/misty-step/bitterblossom/pull/123",
+				HasChanges: true,
+				Commits:    1,
+				PRs:        1,
 			},
 			wantExitCode: exitCodeSuccess,
 			wantErr:      false,
@@ -1205,10 +1214,16 @@ func TestWaitExitError(t *testing.T) {
 		wantExitCode int
 	}{
 		{
-			name:         "completed returns nil (exit 0)",
-			waitRes:      &waitResult{State: "completed", Complete: true},
+			name:         "completed with changes returns nil (exit 0)",
+			waitRes:      &waitResult{State: "completed", Complete: true, HasChanges: true},
 			wantErr:      false,
 			wantExitCode: exitCodeSuccess,
+		},
+		{
+			name:         "completed without changes returns exit 3",
+			waitRes:      &waitResult{State: "completed", Complete: true, HasChanges: false},
+			wantErr:      true,
+			wantExitCode: exitCodeNoNewWork,
 		},
 		{
 			name:         "blocked returns nil (exit 0)",
@@ -1276,6 +1291,11 @@ func TestDispatchWaitSkipsPollingWhenOneshotCompleted(t *testing.T) {
 				Sprite: "moss",
 				Mode:   "execute",
 				Steps:  []dispatchsvc.PlanStep{{Kind: dispatchsvc.StepStartAgent, Description: "start"}},
+			},
+			Work: dispatchsvc.WorkDelta{
+				HasChanges: true,
+				Commits:    1,
+				PRs:        1,
 			},
 		},
 	}
@@ -1361,8 +1381,11 @@ func TestDispatchWaitPollsWhenRalphMode(t *testing.T) {
 		pollSprite: func(ctx context.Context, remote *spriteCLIRemote, sprite string, timeout time.Duration, progress func(string)) (*waitResult, error) {
 			pollCalled = true
 			return &waitResult{
-				State:    "completed",
-				Complete: true,
+				State:      "completed",
+				Complete:   true,
+				HasChanges: true,
+				Commits:    1,
+				PRs:        1,
 			}, nil
 		},
 	}
