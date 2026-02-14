@@ -91,6 +91,7 @@ func (r *CombinedValidationResult) HasIssues() bool {
 	return len(r.Safety.Errors) > 0 || len(r.Policy.Errors) > 0 || len(r.Policy.Warnings) > 0
 }
 
+
 // IsPolicyCompliant returns true based on the validation profile.
 func (r *CombinedValidationResult) IsPolicyCompliant(profile ValidationProfile) bool {
 	switch profile {
@@ -171,6 +172,7 @@ func (r *CombinedValidationResult) FormatReport(profile ValidationProfile) strin
 
 	return strings.Join(lines, "\n")
 }
+
 
 // SafetyValidator performs safety checks that cannot be bypassed.
 type SafetyValidator struct {
