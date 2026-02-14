@@ -6,8 +6,8 @@ Bitterblossom has one canonical runtime profile for sprite operation.
 
 | Field | Value |
 |------|-------|
-| Provider | `openrouter-kimi` |
-| Model | `moonshotai/kimi-k2.5` |
+| Provider | `proxy` |
+| Model | `minimax/minimax-m2.5` |
 | Base URL | `https://openrouter.ai/api` |
 | Required auth env | `OPENROUTER_API_KEY` |
 
@@ -34,8 +34,8 @@ export ANTHROPIC_AUTH_TOKEN="legacy-token"
 Canonical rendering injects:
 
 - `ANTHROPIC_BASE_URL=https://openrouter.ai/api`
-- `ANTHROPIC_MODEL=moonshotai/kimi-k2.5`
-- `ANTHROPIC_SMALL_FAST_MODEL=moonshotai/kimi-k2.5`
+- `ANTHROPIC_MODEL=minimax/minimax-m2.5`
+- `ANTHROPIC_SMALL_FAST_MODEL=minimax/minimax-m2.5`
 - `ANTHROPIC_AUTH_TOKEN=<token>`
 - `OPENROUTER_API_KEY=<token>`
 - `CLAUDE_CODE_OPENROUTER_COMPAT=1`
