@@ -857,6 +857,11 @@ func parseStatusCheckOutput(output string) (*waitResult, bool, error) {
 		complete = true
 	case agentState == "alive":
 		state = "running"
+	case agentState == "dead" && prURL != "":
+		// Fallback: agent exited without TASK_COMPLETE but PR exists → likely completed
+		// This handles agents that forget to write the completion signal
+		state = "completed"
+		complete = true
 	}
 
 	// Decode blocked reason
