@@ -621,6 +621,7 @@ func TestDefaultValidatorRalphReadyIsWarning(t *testing.T) {
 	t.Parallel()
 
 	validator := DefaultIssueValidator()
+	validator.GitHubClient = nil // Force CLI fallback path for testing
 	validator.RunGH = func(ctx context.Context, args ...string) ([]byte, error) {
 		json := `{
 			"number": 42,
@@ -689,6 +690,7 @@ func TestValidateIssueFromRequest_NonRalphMode_SuppressesRalphReadyWarning(t *te
 
 	// Test non-Ralph mode: should NOT warn about missing ralph-ready label
 	nonRalphValidator := IssueValidatorForRalphMode(false)
+	nonRalphValidator.GitHubClient = nil // Force CLI fallback path for testing
 	nonRalphValidator.RunGH = mockRunGH
 
 	result, err := nonRalphValidator.ValidateIssue(context.Background(), 200, "misty-step/test")
@@ -709,6 +711,7 @@ func TestValidateIssueFromRequest_NonRalphMode_SuppressesRalphReadyWarning(t *te
 
 	// Test Ralph mode: should still warn about missing ralph-ready label
 	ralphValidator := IssueValidatorForRalphMode(true)
+	ralphValidator.GitHubClient = nil // Force CLI fallback path for testing
 	ralphValidator.RunGH = mockRunGH
 
 	result2, err := ralphValidator.ValidateIssue(context.Background(), 200, "misty-step/test")
