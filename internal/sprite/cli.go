@@ -368,6 +368,7 @@ type ResilientCLI struct {
 	maxRetries int
 	baseDelay  time.Duration
 	maxDelay   time.Duration
+	rng        *rand.Rand
 }
 
 // ResilientOption configures a ResilientCLI.
@@ -407,6 +408,7 @@ func NewResilientCLI(inner SpriteCLI, opts ...ResilientOption) *ResilientCLI {
 		maxRetries: 3,
 		baseDelay:  250 * time.Millisecond,
 		maxDelay:   4 * time.Second,
+		rng:        rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -415,12 +417,12 @@ func NewResilientCLI(inner SpriteCLI, opts ...ResilientOption) *ResilientCLI {
 }
 
 // jitter adds randomization to backoff to prevent thundering herd.
-func jitter(d time.Duration) time.Duration {
+func (r *ResilientCLI) jitter(d time.Duration) time.Duration {
 	half := int64(d) / 2
 	if half <= 0 {
 		return d
 	}
-	return d + time.Duration(rand.Int63n(half))
+	return d + time.Duration(r.rng.Int63n(half))
 }
 
 // backoffDelay calculates exponential backoff with cap.
@@ -433,7 +435,7 @@ func (r *ResilientCLI) backoffDelay(attempt int) time.Duration {
 			break
 		}
 	}
-	return jitter(delay)
+	return r.jitter(delay)
 }
 
 // runWithRetry executes the given operation with retry logic for transient errors.
