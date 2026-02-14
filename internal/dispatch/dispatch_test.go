@@ -1011,7 +1011,7 @@ func TestRunExecuteWithoutOpenRouterKey_SkipsProxy(t *testing.T) {
 func TestBuildOneShotScriptCleansStatusFiles(t *testing.T) {
 	t.Parallel()
 
-	script := buildOneShotScript("/home/sprite/workspace", "/home/sprite/workspace/prompt.md")
+	script := buildOneShotScript("/home/sprite/workspace", "/home/sprite/workspace/prompt.md", "/home/sprite/workspace/logs/oneshot.log")
 
 	// Must contain cleanup of TASK_COMPLETE and BLOCKED.md
 	if !strings.Contains(script, "rm -f TASK_COMPLETE TASK_COMPLETE.md BLOCKED.md") {
@@ -1040,6 +1040,33 @@ func TestBuildOneShotScriptCleansStatusFiles(t *testing.T) {
 	}
 }
 
+func TestBuildOneShotScriptCapturesOutput(t *testing.T) {
+	t.Parallel()
+
+	logPath := "/home/sprite/workspace/logs/oneshot-20260212-120000.log"
+	script := buildOneShotScript("/home/sprite/workspace", "/home/sprite/workspace/prompt.md", logPath)
+
+	// Must create logs directory before cd (path is quoted by shellutil.Quote)
+	if !strings.Contains(script, "mkdir -p '/home/sprite/workspace/logs'") {
+		t.Errorf("buildOneShotScript missing logs directory creation")
+	}
+
+	// Must use tee to capture output to log file
+	if !strings.Contains(script, "tee -a") {
+		t.Errorf("buildOneShotScript missing tee for output capture")
+	}
+
+	// Must capture exit code
+	if !strings.Contains(script, "EXIT_CODE=$?") {
+		t.Errorf("buildOneShotScript missing exit code capture")
+	}
+
+	// Log path must appear in script (quoted)
+	if !strings.Contains(script, "'"+logPath+"'") {
+		t.Errorf("buildOneShotScript does not contain log path")
+	}
+}
+
 func TestBuildScriptMkdirBeforeCD(t *testing.T) {
 	t.Parallel()
 
@@ -1053,7 +1080,7 @@ func TestBuildScriptMkdirBeforeCD(t *testing.T) {
 		},
 		{
 			name:   "buildOneShotScript",
-			script: buildOneShotScript("/home/sprite/workspace", "/home/sprite/workspace/bb/prompt.md"),
+			script: buildOneShotScript("/home/sprite/workspace", "/home/sprite/workspace/bb/prompt.md", "/home/sprite/workspace/logs/oneshot.log"),
 		},
 	}
 
@@ -1131,6 +1158,38 @@ func TestBuildSetupRepoScriptFreshClone(t *testing.T) {
 	}
 	if !strings.Contains(script, "git clone") {
 		t.Error("script missing git clone fallback")
+	}
+}
+
+func TestBuildSetupRepoScriptProgressIndicators(t *testing.T) {
+	t.Parallel()
+
+	script := buildSetupRepoScript("/workspace", "https://github.com/org/repo.git", "repo")
+
+	// Must show progress message for existing repo (pull path)
+	if !strings.Contains(script, "[setup] pulling latest for") {
+		t.Error("script missing progress message for existing repo")
+	}
+
+	// Must show progress message for fresh clone
+	if !strings.Contains(script, "[setup] cloning") {
+		t.Error("script missing progress message for fresh clone")
+	}
+	if !strings.Contains(script, "(first time, may take a few minutes)") {
+		t.Error("script missing 'first time' hint for cold start")
+	}
+
+	// Must track timing
+	if !strings.Contains(script, "START_TIME=$(date +%s)") {
+		t.Error("script missing START_TIME")
+	}
+	if !strings.Contains(script, "END_TIME=$(date +%s)") {
+		t.Error("script missing END_TIME")
+	}
+
+	// Must show completion with elapsed time
+	if !strings.Contains(script, "[setup] repo ready (${ELAPSED}s)") {
+		t.Error("script missing completion message with elapsed time")
 	}
 }
 

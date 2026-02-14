@@ -296,6 +296,18 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 
 			// If --wait flag is set, poll for completion
 			if opts.Wait && result.Executed {
+				// Oneshot mode: if the local dispatch state machine is already completed,
+				// skip remote polling entirely. The task finished before we started polling.
+				// Ralph mode still polls because the agent continues running in the background.
+				if result.State == dispatchsvc.StateCompleted && !opts.Ralph {
+					waitRes := &waitResult{
+						State:    "completed",
+						Task:     result.Task,
+						Complete: true,
+					}
+					return renderWaitResult(cmd, result, waitRes, opts.JSON)
+				}
+
 				pollTarget := spriteArg
 				if cmd.Flags().Changed("registry") || opts.RegistryRequired {
 					if resolved, err := dispatchsvc.ResolveSprite(spriteArg, opts.RegistryPath); err == nil && strings.TrimSpace(resolved) != "" {
