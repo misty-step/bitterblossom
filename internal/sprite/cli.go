@@ -304,6 +304,9 @@ func (c CLI) APISprite(ctx context.Context, org, spriteName, endpoint string) (s
 
 // ClassifyError categorizes a sprite CLI error for handling and retry decisions.
 // Returns the classified error type and a boolean indicating if retry may help.
+//
+// Transport pattern matching uses the unwrapped root error to avoid
+// misclassifying command failures whose stderr mentions network strings.
 func ClassifyError(err error) (class error, retryable bool) {
 	if err == nil {
 		return nil, false
@@ -311,13 +314,19 @@ func ClassifyError(err error) (class error, retryable bool) {
 
 	// Context errors are not retryable
 	if errors.Is(err, context.DeadlineExceeded) {
-		return fmt.Errorf("%w: %v", ErrTimeout, err), false
+		return fmt.Errorf("%w: %w", ErrTimeout, err), false
 	}
 	if errors.Is(err, context.Canceled) {
 		return err, false
 	}
 
-	msg := strings.ToLower(err.Error())
+	// Unwrap to root cause so we classify the exec/network error itself,
+	// not the full message which may include command stderr output.
+	root := err
+	for u := errors.Unwrap(root); u != nil; u = errors.Unwrap(root) {
+		root = u
+	}
+	msg := strings.ToLower(root.Error())
 
 	// Transport-level errors are retryable
 	transportPatterns := []string{
@@ -333,13 +342,13 @@ func ClassifyError(err error) (class error, retryable bool) {
 	}
 	for _, pattern := range transportPatterns {
 		if strings.Contains(msg, pattern) {
-			return fmt.Errorf("%w: %v", ErrTransportFailure, err), true
+			return fmt.Errorf("%w: %w", ErrTransportFailure, err), true
 		}
 	}
 
 	// Exit code errors indicate command failure (not transport failure)
 	if strings.Contains(msg, "exit status") || strings.Contains(msg, "exit code") {
-		return fmt.Errorf("%w: %v", ErrCommandFailure, err), false
+		return fmt.Errorf("%w: %w", ErrCommandFailure, err), false
 	}
 
 	// Default: unknown error, conservatively non-retryable
@@ -359,7 +368,6 @@ type ResilientCLI struct {
 	maxRetries int
 	baseDelay  time.Duration
 	maxDelay   time.Duration
-	sleep      func(time.Duration)
 }
 
 // ResilientOption configures a ResilientCLI.
@@ -392,15 +400,6 @@ func WithMaxDelay(d time.Duration) ResilientOption {
 	}
 }
 
-// WithSleepFn overrides the sleep function (useful for tests).
-func WithSleepFn(fn func(time.Duration)) ResilientOption {
-	return func(r *ResilientCLI) {
-		if fn != nil {
-			r.sleep = fn
-		}
-	}
-}
-
 // NewResilientCLI wraps the given CLI with retry logic.
 func NewResilientCLI(inner SpriteCLI, opts ...ResilientOption) *ResilientCLI {
 	r := &ResilientCLI{
@@ -408,7 +407,6 @@ func NewResilientCLI(inner SpriteCLI, opts ...ResilientOption) *ResilientCLI {
 		maxRetries: 3,
 		baseDelay:  250 * time.Millisecond,
 		maxDelay:   4 * time.Second,
-		sleep:      time.Sleep,
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -418,8 +416,11 @@ func NewResilientCLI(inner SpriteCLI, opts ...ResilientOption) *ResilientCLI {
 
 // jitter adds randomization to backoff to prevent thundering herd.
 func jitter(d time.Duration) time.Duration {
-	jitter := time.Duration(rand.Int63n(int64(d) / 2))
-	return d + jitter
+	half := int64(d) / 2
+	if half <= 0 {
+		return d
+	}
+	return d + time.Duration(rand.Int63n(half))
 }
 
 // backoffDelay calculates exponential backoff with cap.
@@ -437,7 +438,12 @@ func (r *ResilientCLI) backoffDelay(attempt int) time.Duration {
 
 // runWithRetry executes the given operation with retry logic for transient errors.
 func (r *ResilientCLI) runWithRetry(ctx context.Context, op func() (string, error)) (string, error) {
-	var lastErr error
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	default:
+	}
+
 	for attempt := 0; attempt <= r.maxRetries; attempt++ {
 		if attempt > 0 {
 			delay := r.backoffDelay(attempt - 1)
@@ -455,43 +461,30 @@ func (r *ResilientCLI) runWithRetry(ctx context.Context, op func() (string, erro
 			return result, nil
 		}
 
-		lastErr = err
 		class, retryable := ClassifyError(err)
 		if !retryable || attempt == r.maxRetries {
 			return "", class
 		}
-		_ = class // classified error not used in retry path
 	}
-	return "", lastErr
+	// Unreachable: loop always returns via the retryable/maxRetries check.
+	return "", nil
 }
 
 // List returns available sprite names with retry.
 func (r *ResilientCLI) List(ctx context.Context) ([]string, error) {
-	// List doesn't benefit from simple string retry wrapper
-	var lastErr error
-	for attempt := 0; attempt <= r.maxRetries; attempt++ {
-		if attempt > 0 {
-			delay := r.backoffDelay(attempt - 1)
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(delay):
-			}
+	var result []string
+	_, err := r.runWithRetry(ctx, func() (string, error) {
+		var listErr error
+		result, listErr = r.inner.List(ctx)
+		if listErr != nil {
+			return "", listErr
 		}
-
-		result, err := r.inner.List(ctx)
-		if err == nil {
-			return result, nil
-		}
-
-		lastErr = err
-		class, retryable := ClassifyError(err)
-		if !retryable || attempt == r.maxRetries {
-			return nil, class
-		}
-		_ = class
+		return "", nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	return nil, lastErr
+	return result, nil
 }
 
 // Exec runs a remote command on one sprite with retry.

@@ -3,6 +3,7 @@ package sprite
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -345,7 +346,7 @@ func TestClassifyError(t *testing.T) {
 			name:      "unknown error not retryable",
 			err:       errors.New("some random error"),
 			wantRetry: false,
-			wantClass: nil, // returns as-is
+			wantClass: nil, // returns original error as-is
 		},
 	}
 
@@ -361,10 +362,30 @@ func TestClassifyError(t *testing.T) {
 				if class == nil || !errors.Is(class, tc.wantClass) {
 					t.Errorf("ClassifyError(%v) class = %v, want %v wrapped", tc.err, class, tc.wantClass)
 				}
-			} else if tc.err != nil && class == nil {
-				t.Errorf("ClassifyError(%v) class = nil, want non-nil", tc.err)
+			} else if tc.err != nil {
+				if class == nil {
+					t.Errorf("ClassifyError(%v) class = nil, want non-nil", tc.err)
+				} else if class.Error() != tc.err.Error() {
+					t.Errorf("ClassifyError(%v) class = %v, want original error", tc.err, class)
+				}
 			}
 		})
+	}
+}
+
+func TestClassifyError_StderrTransportString(t *testing.T) {
+	t.Parallel()
+
+	// A command error whose stderr output mentions "connection refused"
+	// should NOT be classified as a transport failure.
+	inner := errors.New("exit status 1")
+	wrapped := fmt.Errorf("running sprite exec: %w (stderr: connection refused)", inner)
+	class, retryable := ClassifyError(wrapped)
+	if retryable {
+		t.Errorf("ClassifyError(%v) retryable = true, want false (stderr transport string should not trigger retry)", wrapped)
+	}
+	if !errors.Is(class, ErrCommandFailure) {
+		t.Errorf("ClassifyError(%v) class = %v, want ErrCommandFailure", wrapped, class)
 	}
 }
 
