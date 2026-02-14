@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/misty-step/bitterblossom/internal/contracts"
 	dispatchsvc "github.com/misty-step/bitterblossom/internal/dispatch"
 	"github.com/misty-step/bitterblossom/internal/fleet"
 	"github.com/misty-step/bitterblossom/internal/registry"
@@ -383,12 +384,7 @@ func (c remoteStatusChecker) Check(ctx context.Context, machineID string) (fleet
 
 func renderDispatchResult(cmd *cobra.Command, result dispatchsvc.Result, jsonMode bool) error {
 	if jsonMode {
-		encoded, err := json.MarshalIndent(result, "", "  ")
-		if err != nil {
-			return err
-		}
-		_, err = fmt.Fprintln(cmd.OutOrStdout(), string(encoded))
-		return err
+		return contracts.WriteJSON(cmd.OutOrStdout(), "dispatch", result)
 	}
 
 	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Sprite: %s\n", result.Plan.Sprite); err != nil {
@@ -439,12 +435,7 @@ func renderWaitResult(cmd *cobra.Command, dispatchResult dispatchsvc.Result, wai
 			Dispatch: dispatchResult,
 			Wait:     waitRes,
 		}
-		encoded, err := json.MarshalIndent(combined, "", "  ")
-		if err != nil {
-			return err
-		}
-		_, err = fmt.Fprintln(cmd.OutOrStdout(), string(encoded))
-		return err
+		return contracts.WriteJSON(cmd.OutOrStdout(), "dispatch.wait", combined)
 	}
 
 	// Print dispatch result summary

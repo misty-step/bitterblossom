@@ -40,15 +40,31 @@ func TestComposeDiffJSON(t *testing.T) {
 		t.Fatalf("cmd.Execute() error = %v", err)
 	}
 
-	var payload []map[string]any
-	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+	// Parse the envelope format
+	var resp contracts.Response
+	if err := json.Unmarshal(stdout.Bytes(), &resp); err != nil {
 		t.Fatalf("json.Unmarshal() error = %v, output=%q", err, stdout.String())
 	}
-	if len(payload) != 1 {
-		t.Fatalf("len(payload) = %d, want 1", len(payload))
+	if resp.Version != "v1" {
+		t.Fatalf("resp.Version = %v, want v1", resp.Version)
 	}
-	if payload[0]["kind"] != "provision" {
-		t.Fatalf("payload[0].kind = %v, want provision", payload[0]["kind"])
+	if resp.Command != "compose.diff" {
+		t.Fatalf("resp.Command = %v, want compose.diff", resp.Command)
+	}
+	data, ok := resp.Data.([]any)
+	if !ok {
+		t.Fatalf("resp.Data type = %T, want []any", resp.Data)
+	}
+	if len(data) != 1 {
+		t.Fatalf("len(data) = %d, want 1", len(data))
+	}
+	// Check the first item has expected fields
+	item, ok := data[0].(map[string]any)
+	if !ok {
+		t.Fatalf("data[0] type = %T, want map[string]any", data[0])
+	}
+	if item["kind"] != "provision" {
+		t.Fatalf("data[0].kind = %v, want provision", item["kind"])
 	}
 }
 

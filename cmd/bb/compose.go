@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -102,7 +101,7 @@ func runComposeDiff(ctx context.Context, cmd *cobra.Command, opts composeOptions
 
 	actions := fleet.Reconcile(composition, actual)
 	if opts.JSON {
-		return printJSON(cmd, fleet.ActionsView(actions))
+		return printJSON(cmd, "compose.diff", fleet.ActionsView(actions))
 	}
 	return printActionsHuman(cmd, actions)
 }
@@ -122,7 +121,7 @@ func runComposeApply(ctx context.Context, cmd *cobra.Command, opts composeOption
 				"execute": false,
 				"actions": fleet.ActionsView(actions),
 			}
-			return printJSON(cmd, payload)
+			return printJSON(cmd, "compose.apply", payload)
 		}
 
 		if _, err := fmt.Fprintln(cmd.OutOrStdout(), "Dry run (pass --execute to apply):"); err != nil {
@@ -151,7 +150,7 @@ func runComposeApply(ctx context.Context, cmd *cobra.Command, opts composeOption
 			"executed": len(actions),
 			"actions":  fleet.ActionsView(actions),
 		}
-		return printJSON(cmd, payload)
+		return printJSON(cmd, "compose.apply", payload)
 	}
 
 	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Executed %d action(s).\n", len(actions)); err != nil {
@@ -289,15 +288,8 @@ func mapMachineState(state string) sprite.State {
 	}
 }
 
-func printJSON(cmd *cobra.Command, payload any) error {
-	encoded, err := json.MarshalIndent(payload, "", "  ")
-	if err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintln(cmd.OutOrStdout(), string(encoded)); err != nil {
-		return err
-	}
-	return nil
+func printJSON(cmd *cobra.Command, command string, payload any) error {
+	return contracts.WriteJSON(cmd.OutOrStdout(), command, payload)
 }
 
 func printActionsHuman(cmd *cobra.Command, actions []fleet.Action) error {
