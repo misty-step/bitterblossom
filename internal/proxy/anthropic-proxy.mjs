@@ -4,15 +4,21 @@
 // Translates Claude Code's Anthropic Messages API format into OpenAI Chat
 // Completions requests, forwarding them to OpenRouter (or any OpenAI-compatible
 // endpoint). This enables Claude Code to use non-Anthropic models (Kimi K2.5,
-// GLM 4.7, etc.) that are only available via OpenRouter's /chat/completions
+// MiniMax M2.5, etc.) that are only available via OpenRouter's /chat/completions
 // endpoint.
+//
+// Reasoning model support:
+//   Models like Kimi K2.5 send thinking tokens via delta.reasoning (with
+//   delta.content="" during the thinking phase). These are forwarded as text
+//   content blocks so Claude Code sees the model producing output. After
+//   reasoning, the model's actual content and tool calls are forwarded normally.
 //
 // Environment variables:
 //   PROXY_PORT             — listen port (default 4000)
 //   UPSTREAM_BASE          — upstream base URL (default https://openrouter.ai)
 //   UPSTREAM_PATH          — upstream path (default /api/v1/chat/completions)
 //   OPENROUTER_API_KEY     — API key for upstream authentication
-//   TARGET_MODEL           — model ID to request (default moonshotai/kimi-k2.5)
+//   TARGET_MODEL           — model ID to request (default minimax/minimax-m2.5)
 //   MAX_RETRIES            — upstream retry attempts (default 3)
 //   RETRY_BASE_DELAY_MS    — base delay for exponential backoff (default 1000)
 //
@@ -27,7 +33,7 @@ const PID_FILE = process.env.PROXY_PID_FILE || '/home/sprite/.anthropic-proxy.pi
 const UPSTREAM_BASE = process.env.UPSTREAM_BASE || 'https://openrouter.ai';
 const UPSTREAM_PATH = process.env.UPSTREAM_PATH || '/api/v1/chat/completions';
 const API_KEY = process.env.OPENROUTER_API_KEY || '';
-const TARGET_MODEL = process.env.TARGET_MODEL || 'moonshotai/kimi-k2.5';
+const TARGET_MODEL = process.env.TARGET_MODEL || 'minimax/minimax-m2.5';
 // Validate retry configuration with safe defaults
 const MAX_RETRIES_RAW = parseInt(process.env.MAX_RETRIES || '3');
 const MAX_RETRIES = isNaN(MAX_RETRIES_RAW) || MAX_RETRIES_RAW < 1 ? 3 : MAX_RETRIES_RAW;
@@ -351,7 +357,19 @@ function streamAnthropicResponse(res, upstream, requestModel) {
         continue;
       }
 
-      // Text content (skip empty strings from reasoning-model thinking phase)
+      // Reasoning tokens from reasoning models (Kimi K2.5, etc.)
+      // These arrive in delta.reasoning while delta.content is empty.
+      // Forward as text so Claude Code sees the model is producing output.
+      if (delta.reasoning != null && delta.reasoning !== '') {
+        if (inToolBlock) endCurrentBlock();
+        startTextBlock();
+        emit('content_block_delta', {
+          type: 'content_block_delta', index: blockIndex,
+          delta: { type: 'text_delta', text: delta.reasoning },
+        });
+      }
+
+      // Text content
       if (delta.content != null && delta.content !== '') {
         if (inToolBlock) endCurrentBlock();
         startTextBlock();

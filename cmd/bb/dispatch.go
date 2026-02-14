@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -18,10 +19,19 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// Exit codes for dispatch --wait command
+const (
+	exitCodeSuccess          = 0
+	exitCodeDispatchFailure  = 1
+	exitCodeAgentNoSignals   = 2
+	exitCodeTimeout          = 124
+)
+
 type dispatchOptions struct {
 	Repo                 string
 	PromptFile           string
 	Skills               []string
+	Secrets              []string
 	Ralph                bool
 	Execute              bool
 	DryRun               bool
@@ -193,6 +203,45 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 				}
 			}
 
+			// Resolve and inject secrets passed via --secret flags
+			if len(opts.Secrets) > 0 {
+				resolver := dispatchsvc.DefaultSecretResolver()
+				resolvedSecrets, placeholders, err := resolver.ResolveAll(opts.Secrets)
+				if err != nil {
+					return fmt.Errorf("dispatch: failed to resolve secrets: %w", err)
+				}
+				// Merge resolved secrets into env vars (these will be injected at container level)
+				for name, value := range resolvedSecrets {
+					envVars[name] = value
+				}
+				// Log placeholders for visibility (not actual values)
+				if !opts.JSON {
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Injecting secrets: %v\n", placeholders)
+				}
+			}
+
+			// Load additional secrets from ~/.secrets directory if it exists
+			if homeDir, err := os.UserHomeDir(); err == nil {
+				secrets, loadErr := dispatchsvc.LoadSecretsFromDir(filepath.Join(homeDir, ".secrets"))
+				if loadErr != nil {
+					if !opts.JSON {
+						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to load secrets from ~/.secrets: %v\n", loadErr)
+					}
+				} else if len(secrets) > 0 {
+					loadedNames := make([]string, 0, len(secrets))
+					for name, value := range secrets {
+						// Only add if not already set via --secret flag or env var
+						if _, exists := envVars[name]; !exists {
+							envVars[name] = value
+							loadedNames = append(loadedNames, "$"+name)
+						}
+					}
+					if !opts.JSON && len(loadedNames) > 0 {
+						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Loaded secrets from ~/.secrets: %v\n", loadedNames)
+					}
+				}
+			}
+
 			// When executing (not dry-run), validate that the sprite will have
 			// the credentials it needs to actually complete the work.
 			if opts.Execute {
@@ -227,13 +276,15 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 				// Safety checks always run when executing.
 				profile := dispatchsvc.ParseValidationProfile(opts.ValidationProfile)
 
-				// --strict is a legacy alias for --validation-profile=strict
-				if opts.Strict && opts.ValidationProfile == "" {
+				// --strict is a legacy alias for --validation-profile=strict, and should only apply
+				// if the new --validation-profile flag is not explicitly set.
+				if opts.Strict && !cmd.Flags().Changed("validation-profile") {
 					profile = dispatchsvc.ValidationProfileStrict
 				}
 
-				// --skip-validation skips the policy layer only; safety checks remain
-				if opts.SkipValidation {
+				// --skip-validation skips the policy layer only; safety checks remain.
+				// Only apply if the user didn't explicitly set --validation-profile.
+				if opts.SkipValidation && !cmd.Flags().Changed("validation-profile") {
 					profile = dispatchsvc.ValidationProfileOff
 				}
 
@@ -255,43 +306,15 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 					return fmt.Errorf("dispatch: validation failed: %w", err)
 				}
 
-				// Output validation results if not in JSON mode and there are issues
-				if !opts.JSON && (!validationResult.IsSafe() || !validationResult.IsPolicyCompliant(profile)) {
-					if !validationResult.IsSafe() {
-						_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Safety validation failed (cannot be bypassed):")
-						for _, e := range validationResult.Safety.Errors {
-							_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "  ✗ %s\n", e)
-						}
-					}
-					if !validationResult.IsPolicyCompliant(profile) {
-						_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Policy validation failed:")
-						for _, e := range validationResult.Policy.Errors {
-							_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "  ✗ %s\n", e)
-						}
-						if profile == dispatchsvc.ValidationProfileStrict {
-							for _, w := range validationResult.Policy.Warnings {
-								_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "  ✗ %s\n", w)
-							}
-						}
-					}
+				// Always display validation report when there are any issues
+				// (safety errors, policy errors, or policy warnings)
+				if !opts.JSON && validationResult.HasIssues() {
+					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), validationResult.FormatReport(profile))
 				}
 
-				// Check if validation failed
-				if !validationResult.IsSafe() {
-					return fmt.Errorf("dispatch: safety validation failed")
-				}
-
-				if !validationResult.IsPolicyCompliant(profile) {
-					if profile == dispatchsvc.ValidationProfileStrict {
-						return fmt.Errorf("dispatch: policy validation failed in strict mode")
-					}
-					// In advisory mode, log warnings and continue
-					if profile == dispatchsvc.ValidationProfileAdvisory && len(validationResult.Policy.Warnings) > 0 && !opts.JSON {
-						_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Issue validation warnings:")
-						for _, w := range validationResult.Policy.Warnings {
-							_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "  ⚠ %s\n", w)
-						}
-					}
+				// Use ToError for consistent blocking/error behavior
+				if validationErr := validationResult.ToError(profile); validationErr != nil {
+					return validationErr
 				}
 			}
 
@@ -334,6 +357,18 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 
 			// If --wait flag is set, poll for completion
 			if opts.Wait && result.Executed {
+				// Oneshot mode: if the local dispatch state machine is already completed,
+				// skip remote polling entirely. The task finished before we started polling.
+				// Ralph mode still polls because the agent continues running in the background.
+				if result.State == dispatchsvc.StateCompleted && !opts.Ralph {
+					waitRes := &waitResult{
+						State:    "completed",
+						Task:     result.Task,
+						Complete: true,
+					}
+					return renderWaitResult(cmd, result, waitRes, opts.JSON)
+				}
+
 				pollTarget := spriteArg
 				if cmd.Flags().Changed("registry") || opts.RegistryRequired {
 					if resolved, err := dispatchsvc.ResolveSprite(spriteArg, opts.RegistryPath); err == nil && strings.TrimSpace(resolved) != "" {
@@ -348,9 +383,16 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 					// Graceful degradation: return dispatch result with warning
 					// Intentionally ignoring write errors for warning message
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Warning: polling failed: %v\n", waitErr)
-					return renderDispatchResult(cmd, result, opts.JSON)
+					if err := renderDispatchResult(cmd, result, opts.JSON); err != nil {
+						return err
+					}
+					// Return exit code 1 for infrastructure/polling failure
+					return &exitError{Code: exitCodeDispatchFailure, Err: waitErr}
 				}
-				return renderWaitResult(cmd, result, waitRes, opts.JSON)
+				if err := renderWaitResult(cmd, result, waitRes, opts.JSON); err != nil {
+					return err
+				}
+				return waitExitError(waitRes)
 			}
 
 			return renderDispatchResult(cmd, result, opts.JSON)
@@ -360,6 +402,7 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 	command.Flags().StringVar(&opts.Repo, "repo", "", "Repo to clone/pull before dispatch (org/repo or URL)")
 	command.Flags().StringVar(&opts.PromptFile, "file", "", "Read prompt from a file")
 	command.Flags().StringArrayVar(&opts.Skills, "skill", nil, "Path to skill directory or SKILL.md to mount in sprite workspace (repeatable)")
+	command.Flags().StringArrayVar(&opts.Secrets, "secret", nil, "Secret to inject as env var (NAME=VALUE or NAME=op://vault/item/field, repeatable)")
 	command.Flags().BoolVar(&opts.Ralph, "ralph", false, "Start persistent Ralph loop instead of one-shot")
 	command.Flags().BoolVar(&opts.Execute, "execute", false, "Execute dispatch actions (default is dry-run)")
 	command.Flags().BoolVar(&opts.DryRun, "dry-run", true, "Preview dispatch plan without side effects")
@@ -600,6 +643,28 @@ func contextOrBackground(ctx context.Context) context.Context {
 		return context.Background()
 	}
 	return ctx
+}
+
+// waitExitError returns an exitError based on the wait result state.
+// Exit codes:
+//   0: dispatch completed successfully (completed or blocked state)
+//   2: dispatch completed but agent didn't produce expected signals (idle without completion)
+//   124: timeout reached while waiting
+func waitExitError(waitRes *waitResult) error {
+	switch waitRes.State {
+	case "timeout":
+		return &exitError{Code: exitCodeTimeout, Err: errors.New("timeout reached while waiting for task completion")}
+	case "completed", "blocked":
+		// Success: dispatch completed (even if blocked is a form of completion)
+		return nil
+	case "idle":
+		// Soft failure: agent didn't produce expected signals
+		return &exitError{Code: exitCodeAgentNoSignals, Err: errors.New("dispatch completed but agent did not produce expected signals")}
+	default:
+		// For running or other states, this shouldn't happen as polling should continue
+		// until completion or timeout, but treat as soft failure just in case
+		return &exitError{Code: exitCodeAgentNoSignals, Err: fmt.Errorf("unexpected final state: %s", waitRes.State)}
+	}
 }
 
 // pollSpriteStatus polls a sprite for task completion.

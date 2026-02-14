@@ -42,7 +42,8 @@ func defaultStatusDeps() statusDeps {
 		getwd: os.Getwd,
 		newCLI: func(binary, org string) sprite.SpriteCLI {
 			cli := sprite.NewCLIWithOrg(binary, org)
-			return cli
+			// Wrap with resilient CLI to handle transient transport errors
+			return sprite.NewResilientCLI(cli)
 		},
 		fleetOverview: lifecycle.FleetOverview,
 		spriteDetail:  lifecycle.SpriteDetail,

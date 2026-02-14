@@ -506,44 +506,157 @@ func TestCombinedValidationResult_IsPolicyCompliant(t *testing.T) {
 	}
 }
 
+func TestCombinedValidationResult_HasIssues(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		result CombinedValidationResult
+		want   bool
+	}{
+		{
+			name:   "no issues",
+			result: CombinedValidationResult{Safety: SafetyCheckResult{Valid: true}},
+			want:   false,
+		},
+		{
+			name:   "safety errors",
+			result: CombinedValidationResult{Safety: SafetyCheckResult{Errors: []string{"err"}}},
+			want:   true,
+		},
+		{
+			name:   "policy warnings only",
+			result: CombinedValidationResult{Safety: SafetyCheckResult{Valid: true}, Policy: PolicyCheckResult{Warnings: []string{"warn"}}},
+			want:   true,
+		},
+		{
+			name:   "policy errors only",
+			result: CombinedValidationResult{Safety: SafetyCheckResult{Valid: true}, Policy: PolicyCheckResult{Errors: []string{"err"}}},
+			want:   true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.result.HasIssues(); got != tc.want {
+				t.Errorf("HasIssues() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCombinedValidationResult_ToError(t *testing.T) {
 	t.Parallel()
 
-	// Valid result returns nil
-	validResult := &CombinedValidationResult{
-		Safety: SafetyCheckResult{Valid: true},
-		Policy: PolicyCheckResult{},
-	}
-	if err := validResult.ToError(ValidationProfileAdvisory); err != nil {
-		t.Errorf("ToError() for valid result = %v, want nil", err)
+	tests := []struct {
+		name      string
+		result    CombinedValidationResult
+		profile   ValidationProfile
+		wantErr   bool
+		wantInErr string
+	}{
+		{
+			name:    "valid result",
+			result:  CombinedValidationResult{Safety: SafetyCheckResult{Valid: true}},
+			profile: ValidationProfileAdvisory,
+			wantErr: false,
+		},
+		{
+			name:      "safety error",
+			result:    CombinedValidationResult{Safety: SafetyCheckResult{Valid: false, Errors: []string{"sprite required"}}},
+			profile:   ValidationProfileAdvisory,
+			wantErr:   true,
+			wantInErr: "Safety errors",
+		},
+		{
+			name:    "advisory - warnings only - no error",
+			result:  CombinedValidationResult{Safety: SafetyCheckResult{Valid: true}, Policy: PolicyCheckResult{Warnings: []string{"short description"}}},
+			profile: ValidationProfileAdvisory,
+			wantErr: false,
+		},
+		{
+			name:    "advisory - policy error",
+			result:  CombinedValidationResult{Safety: SafetyCheckResult{Valid: true}, Policy: PolicyCheckResult{Errors: []string{"missing label"}}},
+			profile: ValidationProfileAdvisory,
+			wantErr: true,
+		},
+		{
+			name:    "strict - warnings fail",
+			result:  CombinedValidationResult{Safety: SafetyCheckResult{Valid: true}, Policy: PolicyCheckResult{Warnings: []string{"short description"}}},
+			profile: ValidationProfileStrict,
+			wantErr: true,
+		},
+		{
+			name:    "off - errors ignored",
+			result:  CombinedValidationResult{Safety: SafetyCheckResult{Valid: true}, Policy: PolicyCheckResult{Errors: []string{"closed issue"}}},
+			profile: ValidationProfileOff,
+			wantErr: false,
+		},
+		{
+			name:      "off - safety still enforced",
+			result:    CombinedValidationResult{Safety: SafetyCheckResult{Valid: false, Errors: []string{"missing sprite"}}},
+			profile:   ValidationProfileOff,
+			wantErr:   true,
+			wantInErr: "Safety errors",
+		},
 	}
 
-	// Safety error returns error
-	safetyErrorResult := &CombinedValidationResult{
-		Safety: SafetyCheckResult{Valid: false, Errors: []string{"sprite required"}},
-		Policy: PolicyCheckResult{},
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.result.ToError(tc.profile)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("ToError(%q) error = %v, wantErr %v", tc.profile, err, tc.wantErr)
+			}
+			if tc.wantInErr != "" && err != nil && !strings.Contains(err.Error(), tc.wantInErr) {
+				t.Errorf("error should contain %q, got: %v", tc.wantInErr, err)
+			}
+		})
 	}
-	if err := safetyErrorResult.ToError(ValidationProfileAdvisory); err == nil {
-		t.Error("ToError() for safety error = nil, want error")
-	} else if !strings.Contains(err.Error(), "Safety errors") {
-		t.Errorf("error should mention safety errors, got: %v", err)
+}
+
+func TestCombinedValidationResult_FormatReport(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		result  CombinedValidationResult
+		profile ValidationProfile
+		want    []string
+		notWant []string
+	}{
+		{
+			name:    "safety errors shown",
+			result:  CombinedValidationResult{Safety: SafetyCheckResult{Errors: []string{"sprite required"}}},
+			profile: ValidationProfileAdvisory,
+			want:    []string{"Safety validation failed", "sprite required"},
+		},
+		{
+			name:    "advisory warnings shown with warning marker",
+			result:  CombinedValidationResult{Safety: SafetyCheckResult{Valid: true}, Policy: PolicyCheckResult{Warnings: []string{"short desc"}}},
+			profile: ValidationProfileAdvisory,
+			want:    []string{"Policy warnings:", "⚠ short desc"},
+		},
+		{
+			name:    "strict warnings shown as errors",
+			result:  CombinedValidationResult{Safety: SafetyCheckResult{Valid: true}, Policy: PolicyCheckResult{Warnings: []string{"short desc"}}},
+			profile: ValidationProfileStrict,
+			want:    []string{"strict mode", "✗ short desc"},
+		},
 	}
 
-	// Policy error in advisory mode returns error
-	policyErrorResult := &CombinedValidationResult{
-		Safety: SafetyCheckResult{Valid: true},
-		Policy: PolicyCheckResult{Errors: []string{"missing label"}},
-	}
-	if err := policyErrorResult.ToError(ValidationProfileAdvisory); err == nil {
-		t.Error("ToError() for policy error = nil, want error")
-	}
-
-	// Policy warning in strict mode returns error
-	strictWarningResult := &CombinedValidationResult{
-		Safety: SafetyCheckResult{Valid: true},
-		Policy: PolicyCheckResult{Warnings: []string{"short description"}},
-	}
-	if err := strictWarningResult.ToError(ValidationProfileStrict); err == nil {
-		t.Error("ToError() for warning in strict mode = nil, want error")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			report := tc.result.FormatReport(tc.profile)
+			for _, s := range tc.want {
+				if !strings.Contains(report, s) {
+					t.Errorf("FormatReport() should contain %q, got:\n%s", s, report)
+				}
+			}
+			for _, s := range tc.notWant {
+				if strings.Contains(report, s) {
+					t.Errorf("FormatReport() should not contain %q, got:\n%s", s, report)
+				}
+			}
+		})
 	}
 }

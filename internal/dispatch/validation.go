@@ -86,6 +86,12 @@ func (r *CombinedValidationResult) IsSafe() bool {
 	return r.Safety.Valid && len(r.Safety.Errors) == 0
 }
 
+// HasIssues returns true if there are any safety errors, policy errors, or policy warnings.
+func (r *CombinedValidationResult) HasIssues() bool {
+	return len(r.Safety.Errors) > 0 || len(r.Policy.Errors) > 0 || len(r.Policy.Warnings) > 0
+}
+
+
 // IsPolicyCompliant returns true based on the validation profile.
 func (r *CombinedValidationResult) IsPolicyCompliant(profile ValidationProfile) bool {
 	switch profile {
@@ -130,6 +136,43 @@ func (r *CombinedValidationResult) ToError(profile ValidationProfile) error {
 		Reason: strings.Join(parts, "\n"),
 	}
 }
+
+// FormatReport returns a human-readable validation report for CLI output.
+func (r *CombinedValidationResult) FormatReport(profile ValidationProfile) string {
+	var lines []string
+
+	if !r.IsSafe() {
+		lines = append(lines, "Safety validation failed (cannot be bypassed):")
+		for _, e := range r.Safety.Errors {
+			lines = append(lines, "  ✗ "+e)
+		}
+	}
+
+	if len(r.Policy.Errors) > 0 {
+		lines = append(lines, "Policy validation failed:")
+		for _, e := range r.Policy.Errors {
+			lines = append(lines, "  ✗ "+e)
+		}
+	}
+
+	if len(r.Policy.Warnings) > 0 {
+		if profile == ValidationProfileStrict {
+			lines = append(lines, "Policy warnings (strict mode — treated as errors):")
+		} else {
+			lines = append(lines, "Policy warnings:")
+		}
+		for _, w := range r.Policy.Warnings {
+			if profile == ValidationProfileStrict {
+				lines = append(lines, "  ✗ "+w)
+			} else {
+				lines = append(lines, "  ⚠ "+w)
+			}
+		}
+	}
+
+	return strings.Join(lines, "\n")
+}
+
 
 // SafetyValidator performs safety checks that cannot be bypassed.
 type SafetyValidator struct {

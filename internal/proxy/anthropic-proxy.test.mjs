@@ -55,9 +55,9 @@ test('default port is 4000', () => {
 });
 
 // Test 3: Check TARGET_MODEL default
-test('default target model is moonshotai/kimi-k2.5', () => {
-  const TARGET_MODEL = process.env.TARGET_MODEL || 'moonshotai/kimi-k2.5';
-  assert.strictEqual(TARGET_MODEL, 'moonshotai/kimi-k2.5');
+test('default target model is minimax/minimax-m2.5', () => {
+  const TARGET_MODEL = process.env.TARGET_MODEL || 'minimax/minimax-m2.5';
+  assert.strictEqual(TARGET_MODEL, 'minimax/minimax-m2.5');
 });
 
 // Test 4: Verify environment variable handling
@@ -71,14 +71,14 @@ test('PROXY_PORT environment variable is respected', () => {
 // Test 5: Verify TARGET_MODEL environment variable
 test('TARGET_MODEL environment variable is respected', () => {
   process.env.TARGET_MODEL = 'custom-model';
-  const TARGET_MODEL = process.env.TARGET_MODEL || 'moonshotai/kimi-k2.5';
+  const TARGET_MODEL = process.env.TARGET_MODEL || 'minimax/minimax-m2.5';
   assert.strictEqual(TARGET_MODEL, 'custom-model');
   delete process.env.TARGET_MODEL;
 });
 
 // Test translateRequest function logic manually
 function translateRequest(body) {
-  const TARGET_MODEL = 'moonshotai/kimi-k2.5';
+  const TARGET_MODEL = 'minimax/minimax-m2.5';
   const messages = [];
 
   // System message(s)
