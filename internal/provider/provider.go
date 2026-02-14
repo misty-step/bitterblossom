@@ -215,7 +215,7 @@ func (r ResolvedConfig) EnvironmentVars(authToken string) map[string]string {
 		// Claude Code doesn't need to know the real API key
 		model := r.Model
 		if model == "" {
-			model = ModelOpenRouterKimiK25
+			model = DefaultModel
 		}
 		env["ANTHROPIC_MODEL"] = model
 		env["ANTHROPIC_SMALL_FAST_MODEL"] = model
@@ -294,6 +294,7 @@ func AvailableProviders() []string {
 func AvailableModels() map[string][]string {
 	return map[string][]string{
 		string(ProviderProxy): {
+			ModelOpenRouterMiniMaxM25,
 			ModelOpenRouterKimiK25,
 		},
 		string(ProviderMoonshotAnthropic): {
