@@ -670,12 +670,13 @@ func buildStatusCheckScript(workspace string) string {
 		"echo \"__BLOCKED_B64__$(printf '%s' \"$BLOCKED_SUMMARY\" | base64 | tr -d '\\n')\"",
 		"",
 		"# Check for PR URL (try dedicated file, then either signal file variant)",
+		"# Trim whitespace to avoid false positive completion from whitespace-only PR_URL",
 		"PR_URL=\"\"",
 		"if [ -f \"$WORKSPACE/PR_URL\" ]; then",
-		"  PR_URL=\"$(cat \"$WORKSPACE/PR_URL\")\"",
+		"  PR_URL=\"$(cat \"$WORKSPACE/PR_URL\" | tr -d '[:space:]')\"",
 		"else",
 		"  for f in \"$WORKSPACE/" + dispatchsvc.SignalTaskComplete + "\" \"$WORKSPACE/" + dispatchsvc.SignalTaskCompleteMD + "\"; do",
-		"    [ -f \"$f\" ] && PR_URL=\"$(grep -oE 'https://github.com/[^/]+/[^/]+/pull/[0-9]+' \"$f\" 2>/dev/null || true)\" && break",
+		"    [ -f \"$f\" ] && PR_URL=\"$(grep -oE 'https://github.com/[^/]+/[^/]+/pull/[0-9]+' \"$f\" 2>/dev/null | tr -d '[:space:]' || true)\" && break",
 		"  done",
 		"fi",
 		"echo \"__PR_URL__${PR_URL}\"",
@@ -723,7 +724,7 @@ func parseStatusCheckOutput(output string) (*waitResult, bool, error) {
 		case strings.HasPrefix(line, "__BLOCKED_B64__"):
 			blockedB64 = strings.TrimPrefix(line, "__BLOCKED_B64__")
 		case strings.HasPrefix(line, "__PR_URL__"):
-			prURL = strings.TrimPrefix(line, "__PR_URL__")
+			prURL = strings.TrimSpace(strings.TrimPrefix(line, "__PR_URL__"))
 		}
 	}
 
