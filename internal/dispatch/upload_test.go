@@ -12,16 +12,30 @@ import (
 	"time"
 )
 
-// concurrentFakeRemote tracks concurrent upload operations and can simulate delays/failures
+// concurrentFakeRemote tracks concurrent upload operations and can simulate delays/failures.
+// All fields use atomic operations for thread safety under concurrent uploads.
 type concurrentFakeRemote struct {
-	fakeRemote
 	uploadDelay    time.Duration
+	uploadErrs     []error // read-only after init; indexed by atomic uploadCount
+	uploadErr      error   // read-only after init; default error when uploadErrs exhausted
 	uploadCount    atomic.Int32
 	maxConcurrent  atomic.Int32
 	currentUploads atomic.Int32
 }
 
-func (f *concurrentFakeRemote) Upload(ctx context.Context, sprite, remotePath string, content []byte) error {
+func (f *concurrentFakeRemote) Exec(_ context.Context, _, _ string, _ []byte) (string, error) {
+	return "", nil
+}
+
+func (f *concurrentFakeRemote) ExecWithEnv(_ context.Context, _, _ string, _ []byte, _ map[string]string) (string, error) {
+	return "", nil
+}
+
+func (f *concurrentFakeRemote) List(_ context.Context) ([]string, error) {
+	return nil, nil
+}
+
+func (f *concurrentFakeRemote) Upload(ctx context.Context, _, _ string, _ []byte) error {
 	current := f.currentUploads.Add(1)
 	defer f.currentUploads.Add(-1)
 
@@ -33,7 +47,8 @@ func (f *concurrentFakeRemote) Upload(ctx context.Context, sprite, remotePath st
 		}
 	}
 
-	f.uploadCount.Add(1)
+	// Use atomic counter for thread-safe error indexing.
+	index := int(f.uploadCount.Add(1)) - 1
 
 	if f.uploadDelay > 0 {
 		select {
@@ -43,7 +58,10 @@ func (f *concurrentFakeRemote) Upload(ctx context.Context, sprite, remotePath st
 		}
 	}
 
-	return f.fakeRemote.Upload(ctx, sprite, remotePath, content)
+	if index < len(f.uploadErrs) {
+		return f.uploadErrs[index]
+	}
+	return f.uploadErr
 }
 
 func TestUploadSkillsConcurrent_BoundedConcurrency(t *testing.T) {
@@ -152,8 +170,8 @@ func TestUploadSkillsConcurrent_FailFast(t *testing.T) {
 		Files:      files,
 	}}
 
-	// Make the 5th upload fail
-	remote := &fakeRemote{
+	// Make the 5th upload fail (concurrentFakeRemote is thread-safe)
+	remote := &concurrentFakeRemote{
 		uploadErrs: []error{
 			nil, nil, nil, nil,
 			errors.New("upload failed"),
@@ -211,8 +229,8 @@ func TestUploadSkillsConcurrent_PreservesFileOrderInErrors(t *testing.T) {
 		Files:      files,
 	}}
 
-	// Make all uploads fail
-	remote := &fakeRemote{
+	// Make all uploads fail (concurrentFakeRemote is thread-safe)
+	remote := &concurrentFakeRemote{
 		uploadErr: errors.New("connection reset"),
 	}
 

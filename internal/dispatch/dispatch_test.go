@@ -429,10 +429,11 @@ func TestRunExecuteWithSkillsUploadsAndInjectsPrompt(t *testing.T) {
 	flyClient := &fakeFly{}
 
 	service, err := NewService(Config{
-		Remote:    remote,
-		Fly:       flyClient,
-		App:       "bb-app",
-		Workspace: "/home/sprite/workspace",
+		Remote:               remote,
+		Fly:                  flyClient,
+		App:                  "bb-app",
+		Workspace:            "/home/sprite/workspace",
+		MaxConcurrentUploads: 1, // sequential to avoid data race on fakeRemote
 	})
 	if err != nil {
 		t.Fatalf("NewService() error = %v", err)
