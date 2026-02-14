@@ -496,13 +496,21 @@ run_claude_once() {
         BB_CLAUDE_FLAGS_WITH_PROMPT="-p $BB_CLAUDE_FLAGS"
     fi
 
-    # Non-negotiable: do not allow callers to weaken or mutate required flags.
-    # If BB passes BB_CLAUDE_FLAGS, it must match exactly the required flags.
-    local required_flags_default="--dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json"
-    if [[ -n "${BB_CLAUDE_FLAGS:-}" && "${BB_CLAUDE_FLAGS}" != "$required_flags_default" ]]; then
-        echo "[sprite-agent] BB_CLAUDE_FLAGS must match required invariant flags" >&2
-        return 1
-    fi
+    # Non-negotiable: validate that required flags are present.
+    # Each flag is checked individually so the Go source of truth can evolve
+    # without requiring manual shell-side string updates.
+    local required_individual_flags=(
+        "--dangerously-skip-permissions"
+        "--permission-mode"
+        "--verbose"
+        "--output-format"
+    )
+    for flag in "${required_individual_flags[@]}"; do
+        if [[ "${BB_CLAUDE_FLAGS:-}" != *"$flag"* ]]; then
+            echo "[sprite-agent] BB_CLAUDE_FLAGS missing required flag: $flag" >&2
+            return 1
+        fi
+    done
 
     local required_flags="$BB_CLAUDE_FLAGS"
 

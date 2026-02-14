@@ -1,7 +1,10 @@
 // Package claude provides shared constants and utilities for Claude Code invocation.
 package claude
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // RequiredFlags returns the list of required flags for sprite agent execution.
 // These flags are mandatory because:
@@ -30,12 +33,13 @@ func FlagSetWithPrefix() string {
 
 // ShellExport returns a shell script that exports BB_CLAUDE_FLAGS and BB_CLAUDE_FLAGS_WITH_PROMPT.
 // This can be sourced by shell scripts to use the same flags as the Go code.
+// Derives values from RequiredFlags so there is exactly one source of truth.
 func ShellExport() string {
-	return `# Auto-generated from internal/claude/flags.go - do not edit
-BB_CLAUDE_FLAGS="--dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json"
+	return fmt.Sprintf(`# Auto-generated from internal/claude/flags.go - do not edit
+BB_CLAUDE_FLAGS="%s"
 BB_CLAUDE_FLAGS_WITH_PROMPT="-p $BB_CLAUDE_FLAGS"
 export BB_CLAUDE_FLAGS BB_CLAUDE_FLAGS_WITH_PROMPT
-`
+`, FlagSet())
 }
 
 // HasRequiredFlag checks if the given flag is in RequiredFlags.
