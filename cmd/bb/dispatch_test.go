@@ -706,6 +706,12 @@ func TestParseStatusCheckOutput(t *testing.T) {
 			if res.Blocked != tt.wantRes.Blocked {
 				t.Errorf("Blocked = %v, want %v", res.Blocked, tt.wantRes.Blocked)
 			}
+			if res.PRURL != tt.wantRes.PRURL {
+				t.Errorf("PRURL = %q, want %q", res.PRURL, tt.wantRes.PRURL)
+			}
+			if res.Repo != tt.wantRes.Repo {
+				t.Errorf("Repo = %q, want %q", res.Repo, tt.wantRes.Repo)
+			}
 		})
 	}
 }
