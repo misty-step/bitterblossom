@@ -26,7 +26,6 @@ func TestNewFallbackTransport(t *testing.T) {
 		t.Fatal("transport should not be nil")
 	}
 
-	// Test that it delegates to CLI
 	names, err := transport.List(ctx)
 	if err != nil {
 		t.Fatalf("List() error = %v", err)
@@ -35,12 +34,10 @@ func TestNewFallbackTransport(t *testing.T) {
 		t.Errorf("List() = %v, want [sprite1 sprite2]", names)
 	}
 
-	// Check method was recorded
 	if transport.Method() != TransportCLI {
 		t.Errorf("Method() = %v, want %v", transport.Method(), TransportCLI)
 	}
 
-	// Check metrics were recorded
 	metrics := transport.Metrics()
 	if metrics.CLICalls != 1 {
 		t.Errorf("CLICalls = %d, want 1", metrics.CLICalls)
@@ -75,9 +72,11 @@ func TestFallbackTransportMetrics(t *testing.T) {
 		},
 	}
 
-	transport, _ := NewFallbackTransport(mockCLI, "misty-step")
+	transport, err := NewFallbackTransport(mockCLI, "misty-step")
+	if err != nil {
+		t.Fatalf("NewFallbackTransport() error = %v", err)
+	}
 
-	// Execute several operations
 	_, _ = transport.List(ctx)
 	_, _ = transport.Exec(ctx, "sprite1", "echo hello", nil)
 	_ = transport.Create(ctx, "newsprite", "misty-step")
@@ -108,7 +107,10 @@ func TestFallbackTransportErrorRecording(t *testing.T) {
 		},
 	}
 
-	transport, _ := NewFallbackTransport(mockCLI, "misty-step")
+	transport, err := NewFallbackTransport(mockCLI, "misty-step")
+	if err != nil {
+		t.Fatalf("NewFallbackTransport() error = %v", err)
+	}
 	_, _ = transport.List(ctx)
 
 	metrics := transport.Metrics()
@@ -133,20 +135,20 @@ func TestFallbackTransportMethodUpdates(t *testing.T) {
 		},
 	}
 
-	transport, _ := NewFallbackTransport(mockCLI, "misty-step")
+	transport, err := NewFallbackTransport(mockCLI, "misty-step")
+	if err != nil {
+		t.Fatalf("NewFallbackTransport() error = %v", err)
+	}
 
-	// Initially no method set
 	if transport.Method() != "" {
 		t.Errorf("initial Method() = %v, want empty", transport.Method())
 	}
 
-	// List sets method to CLI
 	_, _ = transport.List(ctx)
 	if transport.Method() != TransportCLI {
 		t.Errorf("after List, Method() = %v, want %v", transport.Method(), TransportCLI)
 	}
 
-	// Upload sets method to CLI
 	_ = transport.Upload(ctx, "sprite1", "/tmp/test", []byte("content"))
 	if transport.Method() != TransportCLI {
 		t.Errorf("after Upload, Method() = %v, want %v", transport.Method(), TransportCLI)
@@ -165,10 +167,13 @@ func TestFallbackTransportExecWithEnv(t *testing.T) {
 		},
 	}
 
-	transport, _ := NewFallbackTransport(mockCLI, "misty-step")
+	transport, err := NewFallbackTransport(mockCLI, "misty-step")
+	if err != nil {
+		t.Fatalf("NewFallbackTransport() error = %v", err)
+	}
 
 	env := map[string]string{"KEY": "value"}
-	_, err := transport.ExecWithEnv(ctx, "sprite1", "echo hello", nil, env)
+	_, err = transport.ExecWithEnv(ctx, "sprite1", "echo hello", nil, env)
 	if err != nil {
 		t.Fatalf("ExecWithEnv() error = %v", err)
 	}
@@ -203,34 +208,56 @@ func TestFallbackTransportAllMethods(t *testing.T) {
 		},
 	}
 
-	transport, _ := NewFallbackTransport(mockCLI, "misty-step")
-
-	// Test all methods
-	if err := transport.Destroy(ctx, "sprite1", "misty-step"); err != nil {
-		t.Errorf("Destroy() error = %v", err)
+	transport, err := NewFallbackTransport(mockCLI, "misty-step")
+	if err != nil {
+		t.Fatalf("NewFallbackTransport() error = %v", err)
 	}
 
-	if err := transport.CheckpointCreate(ctx, "sprite1", "misty-step"); err != nil {
-		t.Errorf("CheckpointCreate() error = %v", err)
+	tests := []struct {
+		name    string
+		fn      func() error
+		wantOut string
+	}{
+		{"Destroy", func() error {
+			return transport.Destroy(ctx, "sprite1", "misty-step")
+		}, ""},
+		{"CheckpointCreate", func() error {
+			return transport.CheckpointCreate(ctx, "sprite1", "misty-step")
+		}, ""},
+		{"CheckpointList", func() error {
+			out, err := transport.CheckpointList(ctx, "sprite1", "misty-step")
+			if out != "checkpoints" {
+				t.Errorf("CheckpointList() output = %q, want %q", out, "checkpoints")
+			}
+			return err
+		}, "checkpoints"},
+		{"UploadFile", func() error {
+			return transport.UploadFile(ctx, "sprite1", "misty-step", "local", "remote")
+		}, ""},
+		{"API", func() error {
+			out, err := transport.API(ctx, "misty-step", "/test")
+			if out != "api response" {
+				t.Errorf("API() output = %q, want %q", out, "api response")
+			}
+			return err
+		}, "api response"},
+		{"APISprite", func() error {
+			out, err := transport.APISprite(ctx, "misty-step", "sprite1", "/test")
+			if out != "sprite api response" {
+				t.Errorf("APISprite() output = %q, want %q", out, "sprite api response")
+			}
+			return err
+		}, "sprite api response"},
 	}
 
-	if out, err := transport.CheckpointList(ctx, "sprite1", "misty-step"); err != nil || out != "checkpoints" {
-		t.Errorf("CheckpointList() = %v, %v, want checkpoints, nil", out, err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.fn(); err != nil {
+				t.Errorf("%s() error = %v", tt.name, err)
+			}
+		})
 	}
 
-	if err := transport.UploadFile(ctx, "sprite1", "misty-step", "local", "remote"); err != nil {
-		t.Errorf("UploadFile() error = %v", err)
-	}
-
-	if out, err := transport.API(ctx, "misty-step", "/test"); err != nil || out != "api response" {
-		t.Errorf("API() = %v, %v, want api response, nil", out, err)
-	}
-
-	if out, err := transport.APISprite(ctx, "misty-step", "sprite1", "/test"); err != nil || out != "sprite api response" {
-		t.Errorf("APISprite() = %v, %v, want sprite api response, nil", out, err)
-	}
-
-	// Verify all counted as CLI calls
 	metrics := transport.Metrics()
 	if metrics.CLICalls != 6 {
 		t.Errorf("CLICalls = %d, want 6", metrics.CLICalls)

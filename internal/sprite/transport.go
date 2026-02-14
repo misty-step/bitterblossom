@@ -72,13 +72,13 @@ type Transport interface {
 
 // FallbackTransport implements Transport with API-first strategy and CLI fallback.
 type FallbackTransport struct {
-	cli   SpriteCLI
-	org   string
+	cli    SpriteCLI
+	org    string
 	logger *slog.Logger
 
-	mu           sync.RWMutex
-	lastMethod   TransportMethod
-	metrics      TransportMetrics
+	mu         sync.RWMutex
+	lastMethod TransportMethod
+	metrics    TransportMetrics
 }
 
 // FallbackOption configures FallbackTransport.
@@ -130,15 +130,12 @@ func (t *FallbackTransport) setMethod(m TransportMethod) {
 	t.lastMethod = m
 }
 
-// List returns available sprite names.
-// Uses CLI because the API returns machine names, not sprite registry names.
-// Rationale: The registry is the source of truth for sprite names.
-// Related: #262 - API-first transport with CLI fallback.
-func (t *FallbackTransport) List(ctx context.Context) ([]string, error) {
+// instrumentCLI wraps a CLI operation with timing, method tracking, and metrics.
+func (t *FallbackTransport) instrumentCLI(op func() error) error {
 	start := time.Now()
 	t.setMethod(TransportCLI)
 
-	names, err := t.cli.List(ctx)
+	err := op()
 
 	duration := time.Since(start)
 	t.metrics.mu.Lock()
@@ -149,8 +146,22 @@ func (t *FallbackTransport) List(ctx context.Context) ([]string, error) {
 	}
 	t.metrics.mu.Unlock()
 
-	if err != nil {
-		return nil, fmt.Errorf("transport: list sprites: %w", err)
+	return err
+}
+
+// List returns available sprite names.
+// Uses CLI because the API returns machine names, not sprite registry names.
+// Rationale: The registry is the source of truth for sprite names.
+// Related: #262 - API-first transport with CLI fallback.
+func (t *FallbackTransport) List(ctx context.Context) ([]string, error) {
+	var names []string
+	var err error
+	opErr := t.instrumentCLI(func() error {
+		names, err = t.cli.List(ctx)
+		return err
+	})
+	if opErr != nil {
+		return nil, fmt.Errorf("transport: list sprites: %w", opErr)
 	}
 	return names, nil
 }
@@ -161,50 +172,26 @@ func (t *FallbackTransport) Exec(ctx context.Context, sprite, command string, st
 }
 
 // ExecWithEnv runs a remote command with environment variables.
-// Uses CLI as the transport mechanism.
-// Future: API exec will be used when environment variable support is added.
 // Related: #262 - API-first transport with CLI fallback.
 func (t *FallbackTransport) ExecWithEnv(ctx context.Context, sprite, command string, stdin []byte, env map[string]string) (string, error) {
-	start := time.Now()
-	t.setMethod(TransportCLI)
-
-	output, err := t.cli.ExecWithEnv(ctx, sprite, command, stdin, env)
-
-	duration := time.Since(start)
-	t.metrics.mu.Lock()
-	t.metrics.CLICalls++
-	t.metrics.CLILatency += duration
-	if err != nil {
-		t.metrics.CLIErrors++
-	}
-	t.metrics.mu.Unlock()
-
-	if err != nil {
-		return output, fmt.Errorf("transport: exec: %w", err)
+	var output string
+	var err error
+	opErr := t.instrumentCLI(func() error {
+		output, err = t.cli.ExecWithEnv(ctx, sprite, command, stdin, env)
+		return err
+	})
+	if opErr != nil {
+		return output, fmt.Errorf("transport: exec: %w", opErr)
 	}
 	return output, nil
 }
 
 // Upload writes content to a sprite path.
-// Uses CLI as the transport mechanism.
-// Future: API upload will be used when direct file upload support is added.
 // Related: #262 - API-first transport with CLI fallback.
 func (t *FallbackTransport) Upload(ctx context.Context, sprite, remotePath string, content []byte) error {
-	start := time.Now()
-	t.setMethod(TransportCLI)
-
-	err := t.cli.Upload(ctx, sprite, remotePath, content)
-
-	duration := time.Since(start)
-	t.metrics.mu.Lock()
-	t.metrics.CLICalls++
-	t.metrics.CLILatency += duration
-	if err != nil {
-		t.metrics.CLIErrors++
-	}
-	t.metrics.mu.Unlock()
-
-	if err != nil {
+	if err := t.instrumentCLI(func() error {
+		return t.cli.Upload(ctx, sprite, remotePath, content)
+	}); err != nil {
 		return fmt.Errorf("transport: upload: %w", err)
 	}
 	return nil
@@ -212,21 +199,9 @@ func (t *FallbackTransport) Upload(ctx context.Context, sprite, remotePath strin
 
 // Create creates a sprite.
 func (t *FallbackTransport) Create(ctx context.Context, name, org string) error {
-	start := time.Now()
-	t.setMethod(TransportCLI)
-
-	err := t.cli.Create(ctx, name, org)
-
-	duration := time.Since(start)
-	t.metrics.mu.Lock()
-	t.metrics.CLICalls++
-	t.metrics.CLILatency += duration
-	if err != nil {
-		t.metrics.CLIErrors++
-	}
-	t.metrics.mu.Unlock()
-
-	if err != nil {
+	if err := t.instrumentCLI(func() error {
+		return t.cli.Create(ctx, name, org)
+	}); err != nil {
 		return fmt.Errorf("transport: create: %w", err)
 	}
 	return nil
@@ -234,21 +209,9 @@ func (t *FallbackTransport) Create(ctx context.Context, name, org string) error 
 
 // Destroy destroys a sprite.
 func (t *FallbackTransport) Destroy(ctx context.Context, name, org string) error {
-	start := time.Now()
-	t.setMethod(TransportCLI)
-
-	err := t.cli.Destroy(ctx, name, org)
-
-	duration := time.Since(start)
-	t.metrics.mu.Lock()
-	t.metrics.CLICalls++
-	t.metrics.CLILatency += duration
-	if err != nil {
-		t.metrics.CLIErrors++
-	}
-	t.metrics.mu.Unlock()
-
-	if err != nil {
+	if err := t.instrumentCLI(func() error {
+		return t.cli.Destroy(ctx, name, org)
+	}); err != nil {
 		return fmt.Errorf("transport: destroy: %w", err)
 	}
 	return nil
@@ -256,21 +219,9 @@ func (t *FallbackTransport) Destroy(ctx context.Context, name, org string) error
 
 // CheckpointCreate creates a checkpoint for one sprite.
 func (t *FallbackTransport) CheckpointCreate(ctx context.Context, name, org string) error {
-	start := time.Now()
-	t.setMethod(TransportCLI)
-
-	err := t.cli.CheckpointCreate(ctx, name, org)
-
-	duration := time.Since(start)
-	t.metrics.mu.Lock()
-	t.metrics.CLICalls++
-	t.metrics.CLILatency += duration
-	if err != nil {
-		t.metrics.CLIErrors++
-	}
-	t.metrics.mu.Unlock()
-
-	if err != nil {
+	if err := t.instrumentCLI(func() error {
+		return t.cli.CheckpointCreate(ctx, name, org)
+	}); err != nil {
 		return fmt.Errorf("transport: checkpoint create: %w", err)
 	}
 	return nil
@@ -278,43 +229,23 @@ func (t *FallbackTransport) CheckpointCreate(ctx context.Context, name, org stri
 
 // CheckpointList lists checkpoints for one sprite.
 func (t *FallbackTransport) CheckpointList(ctx context.Context, name, org string) (string, error) {
-	start := time.Now()
-	t.setMethod(TransportCLI)
-
-	out, err := t.cli.CheckpointList(ctx, name, org)
-
-	duration := time.Since(start)
-	t.metrics.mu.Lock()
-	t.metrics.CLICalls++
-	t.metrics.CLILatency += duration
-	if err != nil {
-		t.metrics.CLIErrors++
-	}
-	t.metrics.mu.Unlock()
-
-	if err != nil {
-		return out, fmt.Errorf("transport: checkpoint list: %w", err)
+	var out string
+	var err error
+	opErr := t.instrumentCLI(func() error {
+		out, err = t.cli.CheckpointList(ctx, name, org)
+		return err
+	})
+	if opErr != nil {
+		return out, fmt.Errorf("transport: checkpoint list: %w", opErr)
 	}
 	return out, nil
 }
 
 // UploadFile uploads one local file to a sprite path.
 func (t *FallbackTransport) UploadFile(ctx context.Context, name, org, localPath, remotePath string) error {
-	start := time.Now()
-	t.setMethod(TransportCLI)
-
-	err := t.cli.UploadFile(ctx, name, org, localPath, remotePath)
-
-	duration := time.Since(start)
-	t.metrics.mu.Lock()
-	t.metrics.CLICalls++
-	t.metrics.CLILatency += duration
-	if err != nil {
-		t.metrics.CLIErrors++
-	}
-	t.metrics.mu.Unlock()
-
-	if err != nil {
+	if err := t.instrumentCLI(func() error {
+		return t.cli.UploadFile(ctx, name, org, localPath, remotePath)
+	}); err != nil {
 		return fmt.Errorf("transport: upload file: %w", err)
 	}
 	return nil
@@ -322,44 +253,28 @@ func (t *FallbackTransport) UploadFile(ctx context.Context, name, org, localPath
 
 // API calls sprite API endpoint in one org.
 func (t *FallbackTransport) API(ctx context.Context, org, endpoint string) (string, error) {
-	start := time.Now()
-	t.setMethod(TransportCLI)
-
-	out, err := t.cli.API(ctx, org, endpoint)
-
-	duration := time.Since(start)
-	t.metrics.mu.Lock()
-	t.metrics.CLICalls++
-	t.metrics.CLILatency += duration
-	if err != nil {
-		t.metrics.CLIErrors++
-	}
-	t.metrics.mu.Unlock()
-
-	if err != nil {
-		return out, fmt.Errorf("transport: api: %w", err)
+	var out string
+	var err error
+	opErr := t.instrumentCLI(func() error {
+		out, err = t.cli.API(ctx, org, endpoint)
+		return err
+	})
+	if opErr != nil {
+		return out, fmt.Errorf("transport: api: %w", opErr)
 	}
 	return out, nil
 }
 
 // APISprite calls sprite API endpoint scoped to one sprite.
 func (t *FallbackTransport) APISprite(ctx context.Context, org, spriteName, endpoint string) (string, error) {
-	start := time.Now()
-	t.setMethod(TransportCLI)
-
-	out, err := t.cli.APISprite(ctx, org, spriteName, endpoint)
-
-	duration := time.Since(start)
-	t.metrics.mu.Lock()
-	t.metrics.CLICalls++
-	t.metrics.CLILatency += duration
-	if err != nil {
-		t.metrics.CLIErrors++
-	}
-	t.metrics.mu.Unlock()
-
-	if err != nil {
-		return out, fmt.Errorf("transport: api sprite: %w", err)
+	var out string
+	var err error
+	opErr := t.instrumentCLI(func() error {
+		out, err = t.cli.APISprite(ctx, org, spriteName, endpoint)
+		return err
+	})
+	if opErr != nil {
+		return out, fmt.Errorf("transport: api sprite: %w", opErr)
 	}
 	return out, nil
 }
