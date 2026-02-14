@@ -796,6 +796,60 @@ func TestDispatchCollectsGHToken(t *testing.T) {
 	}
 }
 
+func TestDispatchStripsAnthropicAPIKey(t *testing.T) {
+	// Cannot use t.Parallel() — t.Setenv modifies process environment.
+
+	var capturedEnvVars map[string]string
+	runner := &fakeDispatchRunner{
+		result: dispatchsvc.Result{
+			Executed: false,
+			State:    dispatchsvc.StatePending,
+			Plan:     dispatchsvc.Plan{Sprite: "bramble", Mode: "dry-run"},
+		},
+	}
+
+	deps := dispatchDeps{
+		readFile:     func(string) ([]byte, error) { return nil, nil },
+		newFlyClient: func(token, apiURL string) (fly.MachineClient, error) { return fakeFlyClient{}, nil },
+		newRemote:    func(binary, org string) *spriteCLIRemote { return &spriteCLIRemote{} },
+		newService: func(cfg dispatchsvc.Config) (dispatchRunner, error) {
+			capturedEnvVars = cfg.EnvVars
+			return runner, nil
+		},
+	}
+
+	// Set ANTHROPIC_API_KEY like Claude Code would
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-api03-test-key")
+	// Also set OpenRouter key so dispatch has a valid LLM key
+	t.Setenv("OPENROUTER_API_KEY", "sk-or-v1-test-key")
+	t.Setenv("GITHUB_TOKEN", "ghp-test-token")
+
+	cmd := newDispatchCmdWithDeps(deps)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{
+		"bramble", "Fix tests",
+		"--app", "bb-app",
+		"--token", "tok",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cmd.Execute() error = %v", err)
+	}
+	if capturedEnvVars == nil {
+		t.Fatal("newService was never called")
+	}
+	// ANTHROPIC_API_KEY should be stripped to prevent bypassing the proxy
+	if _, exists := capturedEnvVars["ANTHROPIC_API_KEY"]; exists {
+		t.Fatal("ANTHROPIC_API_KEY should be stripped from envVars to prevent proxy bypass")
+	}
+	// OpenRouter key should still be present
+	if v := capturedEnvVars["OPENROUTER_API_KEY"]; v != "sk-or-v1-test-key" {
+		t.Fatalf("OPENROUTER_API_KEY = %q, want %q", v, "sk-or-v1-test-key")
+	}
+}
+
 func TestDispatchExecuteRequiresGitHubToken(t *testing.T) {
 	// Cannot use t.Parallel() — t.Setenv modifies process environment.
 

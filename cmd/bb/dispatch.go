@@ -214,6 +214,13 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 				}
 			}
 
+			// Strip ANTHROPIC_API_KEY to prevent proxy bypass.
+			// The sprite should only receive ANTHROPIC_AUTH_TOKEN (OpenRouter key)
+			// and ANTHROPIC_BASE_URL (set by the proxy lifecycle manager).
+			// This fixes the issue where Claude Code's ANTHROPIC_API_KEY would
+			// trigger safety validation failures when dispatching to sprites.
+			delete(envVars, "ANTHROPIC_API_KEY")
+
 			// Resolve and inject secrets passed via --secret flags
 			if len(opts.Secrets) > 0 {
 				resolver := dispatchsvc.DefaultSecretResolver()
