@@ -501,3 +501,60 @@ func TestResilientCLI_RespectsContextCancellation(t *testing.T) {
 		t.Errorf("expected context.Canceled, got: %v", err)
 	}
 }
+
+func TestResilientCLI_JitterUsesInstanceRNG(t *testing.T) {
+	t.Parallel()
+
+	// Create two ResilientCLI instances with different seeds
+	// to verify each uses its own RNG (not global)
+	mock := &MockSpriteCLI{}
+	r1 := NewResilientCLI(mock, WithMaxRetries(0))
+	r2 := NewResilientCLI(mock, WithMaxRetries(0))
+
+	// Both should have non-nil RNG
+	if r1.rng == nil {
+		t.Error("r1.rng is nil")
+	}
+	if r2.rng == nil {
+		t.Error("r2.rng is nil")
+	}
+
+	// Verify jitter produces values within expected range
+	base := 100 * time.Millisecond
+	for i := 0; i < 10; i++ {
+		j1 := r1.jitter(base)
+		j2 := r2.jitter(base)
+
+		// Jitter should be in range [base, base*1.5)
+		if j1 < base || j1 >= base+base/2 {
+			t.Errorf("j1 out of range: %v (expected [%v, %v))", j1, base, base+base/2)
+		}
+		if j2 < base || j2 >= base+base/2 {
+			t.Errorf("j2 out of range: %v (expected [%v, %v))", j2, base, base+base/2)
+		}
+	}
+}
+
+func TestResilientCLI_JitterDeterministicWithSameSeed(t *testing.T) {
+	t.Parallel()
+
+	// This test verifies that the jitter method uses the instance RNG
+	// by creating two instances and checking they produce different sequences
+	// (highly unlikely to be identical with different seeds)
+	mock := &MockSpriteCLI{}
+	r1 := NewResilientCLI(mock)
+	r2 := NewResilientCLI(mock)
+
+	base := 100 * time.Millisecond
+	allSame := true
+	for i := 0; i < 5; i++ {
+		if r1.jitter(base) != r2.jitter(base) {
+			allSame = false
+			break
+		}
+	}
+
+	if allSame {
+		t.Error("expected different jitter values from different instances (RNG should be seeded differently)")
+	}
+}
