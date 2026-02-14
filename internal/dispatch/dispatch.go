@@ -1398,7 +1398,7 @@ func buildOneShotScript(workspace, promptPath, logPath string) string {
 		"    export ANTHROPIC_API_KEY=proxy-mode",
 		"  fi",
 		"fi",
-		"# Capture output for diagnostics (addresses issue #294 - zero effect debugging)",
+		"# Capture output for diagnostics (addresses issue #278, #294 - zero effect debugging)",
 		"echo '[oneshot] starting at '$(date -Iseconds) > " + shellutil.Quote(logPath),
 		"echo '[oneshot] prompt: " + shellutil.Quote(promptPath) + "' >> " + shellutil.Quote(logPath),
 		"if command -v script >/dev/null 2>&1; then",
