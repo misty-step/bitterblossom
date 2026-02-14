@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -22,6 +23,7 @@ type dispatchOptions struct {
 	Repo                 string
 	PromptFile           string
 	Skills               []string
+	Secrets              []string
 	Ralph                bool
 	Execute              bool
 	DryRun               bool
@@ -227,6 +229,45 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 				}
 			}
 
+			// Resolve and inject secrets passed via --secret flags
+			if len(opts.Secrets) > 0 {
+				resolver := dispatchsvc.DefaultSecretResolver()
+				resolvedSecrets, placeholders, err := resolver.ResolveAll(opts.Secrets)
+				if err != nil {
+					return fmt.Errorf("dispatch: failed to resolve secrets: %w", err)
+				}
+				// Merge resolved secrets into env vars (these will be injected at container level)
+				for name, value := range resolvedSecrets {
+					envVars[name] = value
+				}
+				// Log placeholders for visibility (not actual values)
+				if !opts.JSON {
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Injecting secrets: %v\n", placeholders)
+				}
+			}
+
+			// Load additional secrets from ~/.secrets directory if it exists
+			if homeDir, err := os.UserHomeDir(); err == nil {
+				secrets, loadErr := dispatchsvc.LoadSecretsFromDir(filepath.Join(homeDir, ".secrets"))
+				if loadErr != nil {
+					if !opts.JSON {
+						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to load secrets from ~/.secrets: %v\n", loadErr)
+					}
+				} else if len(secrets) > 0 {
+					loadedNames := make([]string, 0, len(secrets))
+					for name, value := range secrets {
+						// Only add if not already set via --secret flag or env var
+						if _, exists := envVars[name]; !exists {
+							envVars[name] = value
+							loadedNames = append(loadedNames, "$"+name)
+						}
+					}
+					if !opts.JSON && len(loadedNames) > 0 {
+						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Loaded secrets from ~/.secrets: %v\n", loadedNames)
+					}
+				}
+			}
+
 			// When executing (not dry-run), validate that the sprite will have
 			// the credentials it needs to actually complete the work.
 			if opts.Execute {
@@ -334,6 +375,7 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 	command.Flags().StringVar(&opts.Repo, "repo", "", "Repo to clone/pull before dispatch (org/repo or URL)")
 	command.Flags().StringVar(&opts.PromptFile, "file", "", "Read prompt from a file")
 	command.Flags().StringArrayVar(&opts.Skills, "skill", nil, "Path to skill directory or SKILL.md to mount in sprite workspace (repeatable)")
+	command.Flags().StringArrayVar(&opts.Secrets, "secret", nil, "Secret to inject as env var (NAME=VALUE or NAME=op://vault/item/field, repeatable)")
 	command.Flags().BoolVar(&opts.Ralph, "ralph", false, "Start persistent Ralph loop instead of one-shot")
 	command.Flags().BoolVar(&opts.Execute, "execute", false, "Execute dispatch actions (default is dry-run)")
 	command.Flags().BoolVar(&opts.DryRun, "dry-run", true, "Preview dispatch plan without side effects")
