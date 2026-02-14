@@ -160,11 +160,19 @@ func resolveOnePassword(ref string) (string, error) {
 // LoadSecretsFromDir loads secrets from files in a directory.
 // Each file's name becomes the secret name, and its content becomes the value.
 func LoadSecretsFromDir(dir string) (map[string]string, error) {
-	entries, err := os.ReadDir(dir)
+	info, err := os.Stat(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil // Empty if directory doesn't exist
+			return nil, nil
 		}
+		return nil, fmt.Errorf("read secrets directory: %w", err)
+	}
+	if !info.IsDir() {
+		return nil, nil // Path exists but is not a directory — skip silently
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
 		return nil, fmt.Errorf("read secrets directory: %w", err)
 	}
 

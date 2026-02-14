@@ -214,6 +214,72 @@ func TestSecretResolver_ResolveAll_Error(t *testing.T) {
 	}
 }
 
+func TestLoadSecretsFromDir(t *testing.T) {
+	t.Run("nonexistent directory returns nil", func(t *testing.T) {
+		secrets, err := LoadSecretsFromDir("/nonexistent/path/that/does/not/exist")
+		if err != nil {
+			t.Fatalf("expected nil error, got %v", err)
+		}
+		if secrets != nil {
+			t.Fatalf("expected nil secrets, got %v", secrets)
+		}
+	})
+
+	t.Run("regular file (not directory) returns nil", func(t *testing.T) {
+		// Create a regular file where a directory is expected
+		tmpFile := t.TempDir() + "/not-a-dir"
+		if err := os.WriteFile(tmpFile, []byte("I am a file"), 0644); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		secrets, err := LoadSecretsFromDir(tmpFile)
+		if err != nil {
+			t.Fatalf("expected nil error, got %v", err)
+		}
+		if secrets != nil {
+			t.Fatalf("expected nil secrets, got %v", secrets)
+		}
+	})
+
+	t.Run("valid directory loads secrets", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(dir+"/API_KEY", []byte("secret-value\n"), 0644); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		if err := os.WriteFile(dir+"/DB_PASS", []byte("  db-pass  "), 0644); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		// Hidden files should be skipped
+		if err := os.WriteFile(dir+"/.hidden", []byte("skip-me"), 0644); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+
+		secrets, err := LoadSecretsFromDir(dir)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(secrets) != 2 {
+			t.Fatalf("expected 2 secrets, got %d", len(secrets))
+		}
+		if secrets["API_KEY"] != "secret-value" {
+			t.Errorf("API_KEY = %q, want %q", secrets["API_KEY"], "secret-value")
+		}
+		if secrets["DB_PASS"] != "db-pass" {
+			t.Errorf("DB_PASS = %q, want %q", secrets["DB_PASS"], "db-pass")
+		}
+	})
+
+	t.Run("empty directory returns empty map", func(t *testing.T) {
+		dir := t.TempDir()
+		secrets, err := LoadSecretsFromDir(dir)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(secrets) != 0 {
+			t.Fatalf("expected 0 secrets, got %d", len(secrets))
+		}
+	})
+}
+
 // Helper function to write files for tests
 func writeFile(path string, content []byte) error {
 	f, err := os.Create(path)
