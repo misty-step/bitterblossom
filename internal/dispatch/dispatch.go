@@ -969,6 +969,10 @@ func (s *Service) uploadSkillsConcurrent(ctx context.Context, sprite string, wor
 		numWorkers = len(work)
 	}
 
+	// Create cancellable context for fail-fast.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	workCh := make(chan uploadWork, len(work))
 	resultCh := make(chan uploadResult, len(work))
 
@@ -995,7 +999,8 @@ func (s *Service) uploadSkillsConcurrent(ctx context.Context, sprite string, wor
 			select {
 			case workCh <- w:
 			case <-ctx.Done():
-				break
+				close(workCh)
+				return
 			}
 		}
 		close(workCh)
@@ -1008,18 +1013,15 @@ func (s *Service) uploadSkillsConcurrent(ctx context.Context, sprite string, wor
 	}()
 
 	// Collect results, maintaining deterministic ordering by index.
-	results := make([]error, len(work))
 	var firstErr error
-	done := 0
 
 	for result := range resultCh {
-		results[result.index] = result.err
 		if result.err != nil && firstErr == nil {
 			firstErr = result.err
 			// Cancel remaining work by cancelling context.
 			// Note: We continue reading results to ensure clean worker exit.
+			cancel()
 		}
-		done++
 	}
 
 	return firstErr
