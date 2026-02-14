@@ -144,6 +144,9 @@ type WorkDelta struct {
 	PRs int `json:"prs,omitempty"`
 	// HasChanges is true if any work was produced (commits or PRs).
 	HasChanges bool `json:"has_changes,omitempty"`
+	// DirtyFiles is the number of uncommitted changed files (staged + unstaged).
+	// Non-zero when the agent modified files but didn't commit.
+	DirtyFiles int `json:"dirty_files,omitempty"`
 }
 
 // Result is returned from Run.
@@ -526,7 +529,7 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 				s.logger.Warn("failed to calculate work delta", "sprite", prepared.Sprite, "error", err)
 			} else {
 				result.Work = work
-				s.logger.Info("calculated work delta", "sprite", prepared.Sprite, "commits", work.Commits, "prs", work.PRs, "has_changes", work.HasChanges)
+				s.logger.Info("calculated work delta", "sprite", prepared.Sprite, "commits", work.Commits, "prs", work.PRs, "has_changes", work.HasChanges, "dirty_files", work.DirtyFiles)
 			}
 		}
 		logEvent(&pkgevents.DoneEvent{
@@ -1613,9 +1616,15 @@ func (s *Service) calculateWorkDelta(ctx context.Context, sprite, repoDir, preEx
 		return WorkDelta{}, errors.New("empty post-exec HEAD SHA")
 	}
 
-	// If SHA hasn't changed, no new commits
+	// If SHA hasn't changed, no new commits — but check for uncommitted changes.
 	if preExecSHA == postExecSHA {
-		return WorkDelta{Commits: 0, PRs: 0, HasChanges: false}, nil
+		dirtyScript := fmt.Sprintf("cd %s && git status --porcelain 2>/dev/null | wc -l", quotedPath)
+		dirtyOutput, dirtyErr := s.remote.Exec(ctx, sprite, dirtyScript, nil)
+		dirtyFiles := 0
+		if dirtyErr == nil {
+			dirtyFiles, _ = strconv.Atoi(strings.TrimSpace(dirtyOutput))
+		}
+		return WorkDelta{Commits: 0, PRs: 0, HasChanges: false, DirtyFiles: dirtyFiles}, nil
 	}
 
 	// Count commits between pre and post SHAs

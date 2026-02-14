@@ -26,6 +26,7 @@ const (
 	exitCodeDispatchFailure  = 1
 	exitCodeAgentNoSignals   = 2
 	exitCodeNoNewWork        = 3 // Agent completed but produced no new commits/PRs
+	exitCodePartialWork      = 4 // Agent modified files but didn't commit
 	exitCodeTimeout          = 124
 )
 
@@ -92,6 +93,7 @@ type waitResult struct {
 	Commits    int  `json:"commits,omitempty"`
 	PRs        int  `json:"prs,omitempty"`
 	HasChanges bool `json:"has_changes,omitempty"`
+	DirtyFiles int  `json:"dirty_files,omitempty"`
 }
 
 func defaultDispatchDeps() dispatchDeps {
@@ -391,6 +393,7 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 						Commits:    result.Work.Commits,
 						PRs:        result.Work.PRs,
 						HasChanges: result.Work.HasChanges,
+						DirtyFiles: result.Work.DirtyFiles,
 					}
 					if err := renderWaitResult(cmd, result, waitRes, opts.JSON); err != nil {
 						return err
@@ -672,6 +675,10 @@ func renderWaitResult(cmd *cobra.Command, dispatchResult dispatchsvc.Result, wai
 			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Status: COMPLETE\n"); err != nil {
 				return err
 			}
+		} else if waitRes.DirtyFiles > 0 {
+			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Status: PARTIAL (uncommitted changes in %d file(s))\n", waitRes.DirtyFiles); err != nil {
+				return err
+			}
 		} else {
 			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Status: COMPLETE (no new work)\n"); err != nil {
 				return err
@@ -720,15 +727,18 @@ func newTimeoutResult(startTime time.Time) (*waitResult, error) {
 //	0: dispatch completed successfully with new work (completed with changes or blocked)
 //	2: dispatch completed but agent didn't produce expected signals (idle without completion)
 //	3: dispatch completed but produced no new work (completed without changes)
+//	4: dispatch completed with uncommitted changes (agent modified files but didn't commit)
 //	124: timeout reached while waiting
 func waitExitError(waitRes *waitResult) error {
 	switch waitRes.State {
 	case "timeout":
 		return &exitError{Code: exitCodeTimeout, Err: errors.New("timeout reached while waiting for task completion")}
 	case "completed":
-		// Distinguish between completed with changes and completed without changes
 		if waitRes.HasChanges {
 			return nil // Success: new work was produced
+		}
+		if waitRes.DirtyFiles > 0 {
+			return &exitError{Code: exitCodePartialWork, Err: fmt.Errorf("dispatch completed with uncommitted changes in %d file(s)", waitRes.DirtyFiles)}
 		}
 		return &exitError{Code: exitCodeNoNewWork, Err: errors.New("dispatch completed but produced no new work")}
 	case "blocked":
