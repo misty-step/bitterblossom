@@ -1052,8 +1052,8 @@ func TestBuildOneShotScriptCapturesOutput(t *testing.T) {
 		t.Errorf("buildOneShotScript missing logs directory creation")
 	}
 
-	// Must use tee to capture output to log file
-	if !strings.Contains(script, "tee -a") {
+	// Must use tee to capture output to log file (without -a; truncated each dispatch)
+	if !strings.Contains(script, "| tee ") {
 		t.Errorf("buildOneShotScript missing tee for output capture")
 	}
 
@@ -1129,8 +1129,8 @@ func TestBuildOneShotScriptCapturesLogs(t *testing.T) {
 		t.Error("script must write start timestamp to log")
 	}
 
-	// Must use tee to capture output in both branches (script and non-script)
-	if !strings.Contains(script, "| tee -a '"+logPath+"'") {
+	// Must use tee (without -a) to truncate and capture output each dispatch
+	if !strings.Contains(script, `| tee "$AGENT_LOG"`) {
 		t.Error("script must pipe output to tee for log capture")
 	}
 
