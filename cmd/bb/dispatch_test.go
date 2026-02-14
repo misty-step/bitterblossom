@@ -984,9 +984,10 @@ func TestFormatStatusLine(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		result   *waitResult
-		contains []string
+		name        string
+		result      *waitResult
+		contains    []string
+		notContains []string
 	}{
 		{
 			name: "running with task and runtime",
@@ -1032,7 +1033,8 @@ func TestFormatStatusLine(t *testing.T) {
 				Task:    "This is a very long task description that should be truncated to fit within the display limits",
 				Runtime: "2m0s",
 			},
-			contains: []string{"🔄 Running", "task: This is a very long task description", "runtime: 2m0s"},
+			contains:    []string{"🔄 Running", "task: This is a very long task description ...", "runtime: 2m0s"},
+			notContains: []string{"truncated to fit within the display limits"},
 		},
 	}
 
@@ -1042,6 +1044,11 @@ func TestFormatStatusLine(t *testing.T) {
 			for _, want := range tc.contains {
 				if !strings.Contains(got, want) {
 					t.Errorf("formatStatusLine() = %q, should contain %q", got, want)
+				}
+			}
+			for _, reject := range tc.notContains {
+				if strings.Contains(got, reject) {
+					t.Errorf("formatStatusLine() = %q, should NOT contain %q", got, reject)
 				}
 			}
 		})

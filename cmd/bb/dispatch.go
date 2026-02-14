@@ -314,12 +314,17 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 				}
 
 				// Start log streaming if requested
+				var logsDone chan struct{}
 				if opts.StreamLogs {
 					_, _ = fmt.Fprintf(cmd.OutOrStderr(), "[logs] Streaming logs from %s...\n", pollTarget)
+					logsDone = make(chan struct{})
 					go func() {
-						_ = deps.streamLogs(cmd.Context(), remote, pollTarget, func(line string) {
+						defer close(logsDone)
+						if err := deps.streamLogs(cmd.Context(), remote, pollTarget, func(line string) {
 							_, _ = fmt.Fprintln(cmd.OutOrStdout(), line)
-						})
+						}); err != nil {
+							_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "[logs] Stream error: %v\n", err)
+						}
 					}()
 				}
 
@@ -330,6 +335,7 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 
 				if opts.StreamLogs {
 					deps.stopLogStream()
+					<-logsDone
 				}
 
 				if waitErr != nil {
