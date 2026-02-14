@@ -975,6 +975,118 @@ func TestSelectSpriteFromRegistryMissingFile(t *testing.T) {
 	}
 }
 
+func TestDispatchCommandStreamLogsRequiresWait(t *testing.T) {
+	// Cannot use t.Parallel() — t.Setenv modifies process environment.
+	t.Setenv("GITHUB_TOKEN", "ghp-test")
+	t.Setenv("OPENROUTER_API_KEY", "or-test")
+
+	deps := dispatchDeps{
+		readFile: func(string) ([]byte, error) { return nil, nil },
+		newFlyClient: func(token, apiURL string) (fly.MachineClient, error) {
+			return fakeFlyClient{}, nil
+		},
+		newRemote: func(binary, org string) *spriteCLIRemote {
+			return &spriteCLIRemote{}
+		},
+	}
+
+	cmd := newDispatchCmdWithDeps(deps)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{
+		"moss",
+		"Implement feature",
+		"--execute",
+		"--stream-logs", // Without --wait
+		"--app", "bb-app",
+		"--token", "tok",
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when --stream-logs is used without --wait")
+	}
+	if !strings.Contains(err.Error(), "--stream-logs requires --wait") {
+		t.Fatalf("expected '--stream-logs requires --wait' error, got: %v", err)
+	}
+}
+
+func TestFormatStatusLine(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		result      *waitResult
+		contains    []string
+		notContains []string
+	}{
+		{
+			name: "running with task and runtime",
+			result: &waitResult{
+				State:   "running",
+				Task:    "Fix authentication bug",
+				Runtime: "5m30s",
+			},
+			contains: []string{"🔄 Running", "task: Fix authentication bug", "runtime: 5m30s"},
+		},
+		{
+			name: "completed with PR",
+			result: &waitResult{
+				State:    "completed",
+				Task:     "Add new feature",
+				Runtime:  "10m0s",
+				Complete: true,
+				PRURL:    "https://github.com/misty-step/bitterblossom/pull/42",
+			},
+			contains: []string{"✅ Completed", "task: Add new feature", "runtime: 10m0s"},
+		},
+		{
+			name: "blocked with reason",
+			result: &waitResult{
+				State:         "blocked",
+				Task:          "Update dependencies",
+				Blocked:       true,
+				BlockedReason: "Missing API credentials for external service",
+			},
+			contains: []string{"🚫 Blocked", "task: Update dependencies", "reason: Missing API credentials"},
+		},
+		{
+			name: "idle state",
+			result: &waitResult{
+				State: "idle",
+			},
+			contains: []string{"💤 Idle"},
+		},
+		{
+			name: "long task truncated",
+			result: &waitResult{
+				State:   "running",
+				Task:    "This is a very long task description that should be truncated to fit within the display limits",
+				Runtime: "2m0s",
+			},
+			contains:    []string{"🔄 Running", "task: This is a very long task description ...", "runtime: 2m0s"},
+			notContains: []string{"truncated to fit within the display limits"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := formatStatusLine(tc.result)
+			for _, want := range tc.contains {
+				if !strings.Contains(got, want) {
+					t.Errorf("formatStatusLine() = %q, should contain %q", got, want)
+				}
+			}
+			for _, reject := range tc.notContains {
+				if strings.Contains(got, reject) {
+					t.Errorf("formatStatusLine() = %q, should NOT contain %q", got, reject)
+				}
+			}
+		})
+	}
+}
+
 func TestDispatchCommandWaitExitCodes(t *testing.T) {
 	// Cannot use t.Parallel() — t.Setenv modifies process environment.
 	tests := []struct {
