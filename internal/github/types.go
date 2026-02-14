@@ -12,13 +12,17 @@ type Issue struct {
 	StateReason string  `json:"state_reason,omitempty"`
 	URL       string    `json:"url"`
 	HTMLURL   string    `json:"html_url"`
-	Closed    bool      `json:"closed"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	ClosedAt  *time.Time `json:"closed_at,omitempty"`
 	Labels    []Label   `json:"labels"`
 	Assignees []User    `json:"assignees"`
 	User      User      `json:"user"`
+}
+
+// Closed returns whether the issue is closed, derived from State.
+func (i *Issue) Closed() bool {
+	return i.State == "closed"
 }
 
 // Label represents a GitHub issue label.
@@ -61,9 +65,9 @@ type IssueListOptions struct {
 
 // ErrorResponse represents GitHub's error response structure.
 type ErrorResponse struct {
-	Message string        `json:"message"`
-	Errors  []FieldError  `json:"errors,omitempty"`
-	Type    string        `json:"documentation_url,omitempty"`
+	Message         string        `json:"message"`
+	Errors          []FieldError  `json:"errors,omitempty"`
+	DocumentationURL string       `json:"documentation_url,omitempty"`
 }
 
 // FieldError represents field-level validation errors.

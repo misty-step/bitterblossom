@@ -156,7 +156,7 @@ func (v *IssueValidator) ValidateIssue(ctx context.Context, issue int, repo stri
 	}
 
 	// Check if issue is closed
-	if issueData.Closed || issueData.State == "closed" {
+	if issueData.State == "closed" {
 		result.Errors = append(result.Errors, "issue is closed")
 		result.Valid = false
 	}
@@ -259,7 +259,7 @@ func toIssueData(issue *github.Issue) *IssueData {
 		State:  issue.State,
 		Labels: labels,
 		URL:    issue.URL,
-		Closed: issue.Closed,
+		Closed: issue.Closed(),
 	}
 }
 

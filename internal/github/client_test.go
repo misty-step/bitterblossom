@@ -79,7 +79,6 @@ func TestClient_GetIssue_HappyPath(t *testing.T) {
 			Title:   "Test Issue",
 			Body:    "This is a test issue body",
 			State:   "open",
-			Closed:  false,
 			URL:     "https://api.github.com/repos/owner/repo/issues/42",
 			HTMLURL: "https://github.com/owner/repo/issues/42",
 			Labels: []Label{
@@ -131,7 +130,6 @@ func TestClient_GetIssue_Closed(t *testing.T) {
 			Number:  99,
 			Title:   "Closed Issue",
 			State:   "closed",
-			Closed:  true,
 			Labels:  []Label{},
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -150,7 +148,7 @@ func TestClient_GetIssue_Closed(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !issue.Closed {
+	if !issue.Closed() {
 		t.Error("expected issue to be closed")
 	}
 	if issue.State != "closed" {

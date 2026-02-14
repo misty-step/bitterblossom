@@ -50,7 +50,7 @@ func (e *APIError) Error() string {
 
 // IsAuth returns true if this error represents an authentication failure.
 func (e *APIError) IsAuth() bool {
-	return e.StatusCode == 401
+	return e.StatusCode == 401 || e.StatusCode == 403
 }
 
 // IsNotFound returns true if this error represents a missing resource.

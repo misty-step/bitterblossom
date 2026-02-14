@@ -252,6 +252,7 @@ func (c *Client) handleError(resp *http.Response) error {
 	apiErr := &APIError{
 		StatusCode: resp.StatusCode,
 		Message:    errData.Message,
+		Type:       errData.DocumentationURL,
 		URL:        resp.Request.URL.String(),
 	}
 

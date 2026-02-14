@@ -78,7 +78,6 @@ func TestValidateIssue_WithGitHubClient(t *testing.T) {
 				Title:  "Test Issue with good title",
 				Body:   "This has acceptance criteria:\n\n## Tasks\n- [ ] Task 1",
 				State:  "open",
-				Closed: false,
 				Labels: []github.Label{{Name: "bug"}},
 			},
 			mockErr:       nil,
@@ -91,7 +90,6 @@ func TestValidateIssue_WithGitHubClient(t *testing.T) {
 				Title:  "Closed Issue",
 				Body:   "Description",
 				State:  "closed",
-				Closed: true,
 				Labels: []github.Label{},
 			},
 			mockErr:       nil,
@@ -179,7 +177,6 @@ func TestValidateIssue_GitHubClientWithBlockingLabels(t *testing.T) {
 			Title:  "Test Issue with good title",
 			Body:   "Description with acceptance criteria:\n- [ ] Task 1",
 			State:  "open",
-			Closed: false,
 			Labels: []github.Label{
 				{Name: "blocked-by-dependency"},
 				{Name: "bug"},
@@ -259,7 +256,6 @@ func TestToIssueData(t *testing.T) {
 		Title:  "Test Title",
 		Body:   "Test Body",
 		State:  "open",
-		Closed: false,
 		URL:    "https://api.github.com/repos/o/r/issues/123",
 		Labels: []github.Label{
 			{Name: "bug", Description: "Something is broken", Color: "d73a4a"},
