@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	storeevents "github.com/misty-step/bitterblossom/internal/events"
@@ -44,6 +45,15 @@ const (
 	DefaultMaxBytesPerSkill = 10 * 1024 * 1024
 	// DefaultMaxFileSize is the default maximum size for a single skill file (1MB).
 	DefaultMaxFileSize = 1024 * 1024
+	// DefaultMaxConcurrentUploads is the default number of concurrent skill file uploads.
+	// Conservative default to avoid overwhelming the remote host while providing throughput benefits.
+	DefaultMaxConcurrentUploads = 3
+
+	// Signal file names written by agents to indicate task completion or blocking.
+	// Both extensions are checked because agents may write either variant.
+	SignalTaskComplete   = "TASK_COMPLETE"
+	SignalTaskCompleteMD = "TASK_COMPLETE.md"
+	SignalBlocked        = "BLOCKED.md"
 )
 
 var (
@@ -107,6 +117,8 @@ const (
 	StepRegistryLookup StepKind = "registry_lookup"
 	StepProvision      StepKind = "provision"
 	StepValidateEnv    StepKind = "validate_env"
+	StepCleanSignals   StepKind = "clean_signals"
+	StepUploadScaffold StepKind = "upload_scaffold"
 	StepValidateIssue  StepKind = "validate_issue"
 	StepSetupRepo      StepKind = "setup_repo"
 	StepUploadSkills   StepKind = "upload_skills"
@@ -134,6 +146,8 @@ type Result struct {
 	CommandOutput string        `json:"command_output,omitempty"`
 	StartedAt     time.Time     `json:"started_at,omitempty"`
 	Task          string        `json:"task,omitempty"`
+	// LogPath is the path to the agent output log on the sprite (oneshot mode only).
+	LogPath string `json:"log_path,omitempty"`
 }
 
 // Config wires dependencies for dispatching.
@@ -159,6 +173,13 @@ type Config struct {
 	RegistryRequired bool
 	// EventLogger receives dispatch lifecycle events. Nil uses default local logger.
 	EventLogger EventLogger
+	// ScaffoldDir is the local path to the base/ directory containing CLAUDE.md,
+	// settings.json, hooks/, etc. If empty, scaffolding is skipped.
+	ScaffoldDir string
+	// MaxConcurrentUploads controls the number of concurrent skill file uploads.
+	// 0 or negative uses DefaultMaxConcurrentUploads (3). Higher values increase
+	// throughput but may overwhelm the remote host.
+	MaxConcurrentUploads int
 }
 
 type provisionInfo struct {
@@ -168,21 +189,23 @@ type provisionInfo struct {
 
 // Service executes dispatch plans.
 type Service struct {
-	remote             RemoteClient
-	fly                fly.MachineClient
-	app                string
-	workspace          string
-	maxRalphIterations int
-	provisionConfig    map[string]any
-	logger             *slog.Logger
-	now                func() time.Time
-	ralphTemplate      string
-	provisionHints     map[string]provisionInfo
-	envVars            map[string]string
-	registryPath       string
-	registryRequired   bool
-	proxyLifecycle     *proxy.Lifecycle
-	eventLogger        EventLogger
+	remote               RemoteClient
+	fly                  fly.MachineClient
+	app                  string
+	workspace            string
+	maxRalphIterations   int
+	provisionConfig      map[string]any
+	logger               *slog.Logger
+	now                  func() time.Time
+	ralphTemplate        string
+	provisionHints       map[string]provisionInfo
+	envVars              map[string]string
+	registryPath         string
+	registryRequired     bool
+	proxyLifecycle       *proxy.Lifecycle
+	eventLogger          EventLogger
+	scaffoldDir          string
+	maxConcurrentUploads int
 }
 
 // NewService constructs a dispatch service.
@@ -227,21 +250,28 @@ func NewService(cfg Config) (*Service, error) {
 		registryPath = registry.DefaultPath()
 	}
 
+	maxConcurrentUploads := cfg.MaxConcurrentUploads
+	if maxConcurrentUploads <= 0 {
+		maxConcurrentUploads = DefaultMaxConcurrentUploads
+	}
+
 	svc := &Service{
-		remote:             cfg.Remote,
-		fly:                cfg.Fly,
-		app:                strings.TrimSpace(cfg.App),
-		workspace:          workspace,
-		maxRalphIterations: maxIterations,
-		provisionConfig:    copyMap(cfg.ProvisionConfig),
-		logger:             logger,
-		now:                now,
-		ralphTemplate:      template,
-		provisionHints:     hints,
-		envVars:            copyStringMap(cfg.EnvVars),
-		registryPath:       registryPath,
-		registryRequired:   cfg.RegistryRequired,
-		eventLogger:        cfg.EventLogger,
+		remote:               cfg.Remote,
+		fly:                  cfg.Fly,
+		app:                  strings.TrimSpace(cfg.App),
+		workspace:            workspace,
+		maxRalphIterations:   maxIterations,
+		provisionConfig:      copyMap(cfg.ProvisionConfig),
+		logger:               logger,
+		now:                  now,
+		ralphTemplate:        template,
+		provisionHints:       hints,
+		envVars:              copyStringMap(cfg.EnvVars),
+		registryPath:         registryPath,
+		registryRequired:     cfg.RegistryRequired,
+		eventLogger:          cfg.EventLogger,
+		scaffoldDir:          strings.TrimSpace(cfg.ScaffoldDir),
+		maxConcurrentUploads: maxConcurrentUploads,
 	}
 
 	if svc.eventLogger == nil {
@@ -280,6 +310,7 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 		PromptPath: prepared.PromptPath,
 		StartedAt:  prepared.StartedAt,
 		Task:       prepared.TaskLabel,
+		LogPath:    prepared.LogPath,
 	}
 	if !prepared.Execute {
 		return result, nil
@@ -377,6 +408,18 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 		}
 		if err := ValidateNoDirectAnthropic(env, false); err != nil {
 			return fail("validate_env", err)
+		}
+	}
+
+	s.logger.Info("dispatch clean signals", "sprite", prepared.Sprite)
+	if err := s.cleanSignals(ctx, prepared.Sprite); err != nil {
+		return fail("clean_signals", fmt.Errorf("dispatch: clean stale signals: %w", err))
+	}
+
+	if s.scaffoldDir != "" {
+		s.logger.Info("dispatch scaffold", "sprite", prepared.Sprite, "base", s.scaffoldDir)
+		if err := s.scaffold(ctx, prepared.Sprite); err != nil {
+			return fail("scaffold", fmt.Errorf("dispatch: scaffold environment: %w", err))
 		}
 	}
 
@@ -567,6 +610,16 @@ func (s *Service) buildPlan(req preparedRequest, provisionNeeded bool) Plan {
 			Description: "verify ANTHROPIC_API_KEY is not set to a direct key",
 		})
 	}
+	steps = append(steps, PlanStep{
+		Kind:        StepCleanSignals,
+		Description: fmt.Sprintf("remove stale signal files from %s", s.workspace),
+	})
+	if s.scaffoldDir != "" {
+		steps = append(steps, PlanStep{
+			Kind:        StepUploadScaffold,
+			Description: fmt.Sprintf("upload base CLAUDE.md, persona, hooks, settings to %s", s.workspace),
+		})
+	}
 	if req.Repo.CloneURL != "" {
 		steps = append(steps, PlanStep{
 			Kind:        StepSetupRepo,
@@ -587,7 +640,6 @@ func (s *Service) buildPlan(req preparedRequest, provisionNeeded bool) Plan {
 		Kind:        StepWriteStatus,
 		Description: fmt.Sprintf("write status marker to %s/STATUS.json", s.workspace),
 	})
-
 	if _, hasOpenRouterKey := s.envVars["OPENROUTER_API_KEY"]; hasOpenRouterKey {
 		steps = append(steps, PlanStep{
 			Kind:        StepEnsureProxy,
@@ -632,6 +684,8 @@ type preparedRequest struct {
 	ProvisionMetadata    map[string]string
 	AllowAnthropicDirect bool
 	MachineID            string
+	// LogPath is the path to the agent output log on the sprite (oneshot mode only).
+	LogPath string
 }
 
 type repoTarget struct {
@@ -703,7 +757,8 @@ func (s *Service) prepare(req Request) (preparedRequest, error) {
 	}
 
 	startedAt := s.now().UTC()
-	startCommand := buildOneShotScript(s.workspace, promptPath)
+	logPath := s.workspace + "/logs/oneshot-" + startedAt.Format("20060102-150405") + ".log"
+	startCommand := buildOneShotScript(s.workspace, promptPath, logPath)
 	if req.Ralph {
 		maxTokens := req.MaxTokens
 		if maxTokens <= 0 {
@@ -760,28 +815,233 @@ func (s *Service) prepare(req Request) (preparedRequest, error) {
 		ProvisionMetadata:    metadata,
 		AllowAnthropicDirect: req.AllowAnthropicDirect,
 		MachineID:            machineID,
+		LogPath:              logPath,
 	}, nil
 }
 
-func (s *Service) uploadSkills(ctx context.Context, sprite string, skills []preparedSkill) error {
-	for _, skill := range skills {
-		for _, file := range skill.Files {
-			info, err := os.Lstat(file.LocalPath)
-			if err != nil {
-				return fmt.Errorf("stat %q: %w", file.LocalPath, err)
-			}
-			if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-				return fmt.Errorf("read %q: skill file must be a regular non-symlink file", file.LocalPath)
-			}
+func (s *Service) cleanSignals(ctx context.Context, sprite string) error {
+	// Only remove signal files, not PID files. The agent start scripts
+	// (buildOneShotScript, buildStartRalphScript) need agent.pid and ralph.pid
+	// to kill stale processes before launching new ones.
+	script := fmt.Sprintf(
+		"rm -f %[1]s/TASK_COMPLETE %[1]s/TASK_COMPLETE.md %[1]s/BLOCKED.md %[1]s/BLOCKED",
+		shellutil.Quote(s.workspace),
+	)
+	_, err := s.remote.Exec(ctx, sprite, script, nil)
+	return err
+}
 
-			content, err := os.ReadFile(file.LocalPath)
-			if err != nil {
-				return fmt.Errorf("read %q: %w", file.LocalPath, err)
+func (s *Service) scaffold(ctx context.Context, sprite string) error {
+	if s.scaffoldDir == "" {
+		return nil
+	}
+
+	// Ensure target directories exist before uploading
+	mkdirScript := fmt.Sprintf("mkdir -p %s/.claude/hooks", shellutil.Quote(s.workspace))
+	if _, err := s.remote.Exec(ctx, sprite, mkdirScript, nil); err != nil {
+		return fmt.Errorf("scaffold mkdir: %w", err)
+	}
+
+	// Upload base/CLAUDE.md -> $WORKSPACE/CLAUDE.md
+	claudeMD := filepath.Join(s.scaffoldDir, "CLAUDE.md")
+	if content, err := os.ReadFile(claudeMD); err == nil {
+		if err := s.remote.Upload(ctx, sprite, s.workspace+"/CLAUDE.md", content); err != nil {
+			return fmt.Errorf("upload CLAUDE.md: %w", err)
+		}
+	}
+
+	// Upload persona: sprites/<sprite-name>.md -> $WORKSPACE/PERSONA.md
+	personaDir := filepath.Join(filepath.Dir(s.scaffoldDir), "sprites")
+	personaMD := filepath.Join(personaDir, sprite+".md")
+	if content, err := os.ReadFile(personaMD); err == nil {
+		if err := s.remote.Upload(ctx, sprite, s.workspace+"/PERSONA.md", content); err != nil {
+			return fmt.Errorf("upload PERSONA.md: %w", err)
+		}
+	}
+
+	// Upload base/settings.json -> $WORKSPACE/.claude/settings.json
+	settingsJSON := filepath.Join(s.scaffoldDir, "settings.json")
+	if content, err := os.ReadFile(settingsJSON); err == nil {
+		if err := s.remote.Upload(ctx, sprite, s.workspace+"/.claude/settings.json", content); err != nil {
+			return fmt.Errorf("upload settings.json: %w", err)
+		}
+	}
+
+	// Upload hooks from base/hooks/ -> $WORKSPACE/.claude/hooks/
+	hooksDir := filepath.Join(s.scaffoldDir, "hooks")
+	if entries, err := os.ReadDir(hooksDir); err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+				continue
 			}
-			if err := s.remote.Upload(ctx, sprite, file.RemotePath, content); err != nil {
-				return fmt.Errorf("upload %q to %q: %w", file.LocalPath, file.RemotePath, err)
+			content, err := os.ReadFile(filepath.Join(hooksDir, entry.Name()))
+			if err != nil {
+				continue
+			}
+			remotePath := s.workspace + "/.claude/hooks/" + entry.Name()
+			if err := s.remote.Upload(ctx, sprite, remotePath, content); err != nil {
+				return fmt.Errorf("upload hook %s: %w", entry.Name(), err)
 			}
 		}
+	}
+
+	// Create MEMORY.md and LEARNINGS.md if they don't exist (preserve across dispatches).
+	// Combined into one remote call to save a network round-trip.
+	ws := shellutil.Quote(s.workspace)
+	initScript := fmt.Sprintf(
+		"test -f %[1]s/MEMORY.md || printf '# MEMORY\\n' > %[1]s/MEMORY.md; "+
+			"test -f %[1]s/LEARNINGS.md || printf '# LEARNINGS\\n' > %[1]s/LEARNINGS.md",
+		ws,
+	)
+	if _, err := s.remote.Exec(ctx, sprite, initScript, nil); err != nil {
+		return fmt.Errorf("init memory/learnings: %w", err)
+	}
+
+	return nil
+}
+
+// uploadWork represents a single file upload task.
+type uploadWork struct {
+	index      int
+	localPath  string
+	remotePath string
+}
+
+// uploadResult captures the outcome of a single upload.
+type uploadResult struct {
+	index int
+	err   error
+}
+
+func (s *Service) uploadSkills(ctx context.Context, sprite string, skills []preparedSkill) error {
+	// Collect all files to upload with their original index for deterministic ordering.
+	var total int
+	for _, skill := range skills {
+		total += len(skill.Files)
+	}
+	if total == 0 {
+		return nil
+	}
+
+	work := make([]uploadWork, 0, total)
+	idx := 0
+	for _, skill := range skills {
+		for _, file := range skill.Files {
+			work = append(work, uploadWork{
+				index:      idx,
+				localPath:  file.LocalPath,
+				remotePath: file.RemotePath,
+			})
+			idx++
+		}
+	}
+
+	// Pre-validate all files (symlink check) before starting uploads.
+	// This ensures we fail fast on validation errors before any network operations.
+	for _, w := range work {
+		info, err := os.Lstat(w.localPath)
+		if err != nil {
+			return fmt.Errorf("stat %q: %w", w.localPath, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return fmt.Errorf("read %q: skill file must be a regular non-symlink file", w.localPath)
+		}
+	}
+
+	// Use bounded concurrency for uploads.
+	// Sequential execution when maxConcurrentUploads == 1 for simplicity.
+	if s.maxConcurrentUploads <= 1 {
+		return s.uploadSkillsSequential(ctx, sprite, work)
+	}
+
+	return s.uploadSkillsConcurrent(ctx, sprite, work)
+}
+
+// uploadSkillsSequential performs uploads one at a time.
+// Used when concurrency is disabled or for fallback.
+func (s *Service) uploadSkillsSequential(ctx context.Context, sprite string, work []uploadWork) error {
+	for _, w := range work {
+		if err := s.doUpload(ctx, sprite, w); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// uploadSkillsConcurrent performs uploads with bounded concurrency.
+// Uses worker pool pattern with fail-fast behavior on first error.
+func (s *Service) uploadSkillsConcurrent(ctx context.Context, sprite string, work []uploadWork) error {
+	numWorkers := s.maxConcurrentUploads
+	if numWorkers > len(work) {
+		numWorkers = len(work)
+	}
+
+	// Create cancellable context for fail-fast.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	workCh := make(chan uploadWork, len(work))
+	resultCh := make(chan uploadResult, len(work))
+
+	// Start workers.
+	var wg sync.WaitGroup
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for w := range workCh {
+				err := s.doUpload(ctx, sprite, w)
+				resultCh <- uploadResult{index: w.index, err: err}
+				// Fail-fast: stop processing if context is cancelled.
+				if err != nil {
+					return
+				}
+			}
+		}()
+	}
+
+	// Queue work.
+	go func() {
+		for _, w := range work {
+			select {
+			case workCh <- w:
+			case <-ctx.Done():
+				close(workCh)
+				return
+			}
+		}
+		close(workCh)
+	}()
+
+	// Close result channel when all workers exit.
+	go func() {
+		wg.Wait()
+		close(resultCh)
+	}()
+
+	// Collect results, maintaining deterministic ordering by index.
+	var firstErr error
+
+	for result := range resultCh {
+		if result.err != nil && firstErr == nil {
+			firstErr = result.err
+			// Cancel remaining work by cancelling context.
+			// Note: We continue reading results to ensure clean worker exit.
+			cancel()
+		}
+	}
+
+	return firstErr
+}
+
+// doUpload performs a single file upload.
+func (s *Service) doUpload(ctx context.Context, sprite string, w uploadWork) error {
+	content, err := os.ReadFile(w.localPath)
+	if err != nil {
+		return fmt.Errorf("read %q: %w", w.localPath, err)
+	}
+	if err := s.remote.Upload(ctx, sprite, w.remotePath, content); err != nil {
+		return fmt.Errorf("upload %q to %q: %w", w.localPath, w.remotePath, err)
 	}
 	return nil
 }
@@ -831,7 +1091,7 @@ func resolveSkillMountsWithLimits(paths []string, workspace string, limits resol
 	}
 
 	mounts := make([]preparedSkill, 0, len(paths))
-	seen := map[string]string{}       // skill name -> canonical path
+	seen := map[string]string{}        // skill name -> canonical path
 	seenCanonical := map[string]bool{} // canonical path -> exists (for duplicate detection)
 
 	for _, raw := range paths {
@@ -1040,7 +1300,9 @@ func buildSetupRepoScript(workspace, cloneURL, repoDir string) string {
 		"set -euo pipefail",
 		"mkdir -p " + shellutil.Quote(workspace),
 		"cd " + shellutil.Quote(workspace),
+		"START_TIME=$(date +%s)",
 		"if [ -d " + shellutil.Quote(repoDir) + " ]; then",
+		"  echo \"[setup] pulling latest for " + shellutil.Quote(repoDir) + "...\"",
 		"  cd " + shellutil.Quote(repoDir),
 		// Reset to clean state: discard changes, checkout default branch, pull latest.
 		// This prevents stale feature branches from polluting new dispatches.
@@ -1051,12 +1313,30 @@ func buildSetupRepoScript(workspace, cloneURL, repoDir string) string {
 		"  git fetch origin >/dev/null 2>&1 || true",
 		`  git reset --hard "origin/$(git rev-parse --abbrev-ref HEAD)" 2>/dev/null || true`,
 		"else",
+		"  echo \"[setup] cloning " + shellutil.Quote(cloneURL) + " (first time, may take a few minutes)...\"",
 		"  gh repo clone " + shellutil.Quote(cloneURL) + " " + shellutil.Quote(repoDir) + " >/dev/null 2>&1 || git clone " + shellutil.Quote(cloneURL) + " " + shellutil.Quote(repoDir) + " >/dev/null 2>&1",
 		"fi",
+		"END_TIME=$(date +%s)",
+		"ELAPSED=$((END_TIME - START_TIME))",
+		"echo \"[setup] repo ready (${ELAPSED}s)\"",
 	}, "\n")
 }
 
-func buildOneShotScript(workspace, promptPath string) string {
+// buildOneShotScript generates a shell script for one-shot (non-Ralph) dispatch.
+//
+// Invariants:
+//   - Stale signal files (TASK_COMPLETE, TASK_COMPLETE.md, BLOCKED.md) MUST be
+//     removed before agent start. Without this, the --wait polling loop may detect
+//     markers from a previous dispatch and report false success. (See PR #280.)
+//   - The proxy startup is best-effort: if it fails, the agent runs with direct
+//     connection. This avoids blocking dispatch on proxy infrastructure.
+//   - PTY wrapping (script -qefc) is required because Claude Code expects a TTY.
+//     Falls back to raw pipe on systems without script(1).
+//   - --output-format stream-json enables structured output parsing by the
+//     watchdog and polling systems.
+//   - Output is captured to logPath for diagnostics. This addresses the "zero effect"
+//     issue where agents exit cleanly but produce no observable changes.
+func buildOneShotScript(workspace, promptPath, logPath string) string {
 	port := strconv.Itoa(proxy.ProxyPort)
 	env := proxy.StartEnv("", port, "${OPENROUTER_API_KEY}")
 	env["PROXY_PID_FILE"] = proxy.ProxyPIDFile
@@ -1082,13 +1362,12 @@ func buildOneShotScript(workspace, promptPath string) string {
 	// Local address for Claude Code
 	baseURL := fmt.Sprintf("http://127.0.0.1:%s", port)
 
-	// Log file for agent output capture (issue #278)
-	logFile := shellutil.Quote(workspace + "/logs/agent-oneshot.log")
-
 	return strings.Join([]string{
 		"set -euo pipefail",
-		"mkdir -p " + shellutil.Quote(workspace+"/logs"),
+		"mkdir -p " + shellutil.Quote(workspace),
+		"mkdir -p " + shellutil.Quote(filepath.Dir(logPath)),
 		"cd " + shellutil.Quote(workspace),
+		"rm -f " + SignalTaskComplete + " " + SignalTaskCompleteMD + " " + SignalBlocked,
 		"# Start anthropic proxy if available",
 		"if [ -f " + shellutil.Quote(proxy.ProxyScriptPath) + " ] && [ -n \"${OPENROUTER_API_KEY:-}\" ] && command -v node >/dev/null 2>&1; then",
 		"  PROXY_PID=\"\"",
@@ -1119,23 +1398,36 @@ func buildOneShotScript(workspace, promptPath string) string {
 		"    export ANTHROPIC_API_KEY=proxy-mode",
 		"  fi",
 		"fi",
-		"# Capture agent output to log file for diagnostics (issue #278)",
-		"AGENT_LOG=" + logFile,
+		"# Capture output for diagnostics (addresses issue #278, #294 - zero effect debugging)",
+		"echo '[oneshot] starting at '$(date -Iseconds) > " + shellutil.Quote(logPath),
+		"echo '[oneshot] prompt: " + shellutil.Quote(promptPath) + "' >> " + shellutil.Quote(logPath),
 		"if command -v script >/dev/null 2>&1; then",
-		"  script -qefc " + shellutil.Quote("cat "+shellutil.Quote(promptPath)+" | claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json") + " /dev/null 2>&1 | tee -a \"$AGENT_LOG\"",
+		"  script -qefc " + shellutil.Quote("cat "+shellutil.Quote(promptPath)+" | claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json") + " /dev/null 2>&1 | tee -a " + shellutil.Quote(logPath),
 		"else",
-		"  cat " + shellutil.Quote(promptPath) + " | claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json 2>&1 | tee -a \"$AGENT_LOG\"",
+		"  cat " + shellutil.Quote(promptPath) + " | claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json 2>&1 | tee -a " + shellutil.Quote(logPath),
 		"fi",
+		"EXIT_CODE=$?",
+		"echo '[oneshot] exited with code ' $EXIT_CODE ' at ' $(date -Iseconds) >> " + shellutil.Quote(logPath),
 		"rm -f " + shellutil.Quote(promptPath),
+		"exit $EXIT_CODE",
 	}, "\n")
 }
 
+// buildStartRalphScript generates a shell script to start the Ralph (multi-iteration) agent loop.
+//
+// Invariants:
+//   - Same stale-signal cleanup as buildOneShotScript (see PR #280).
+//   - Kills any previously running agent/ralph processes to prevent zombie accumulation.
+//   - Claude flags are validated both in this script (via case statements) and in
+//     the agent binary (if it's a shell script, via grep). Belt-and-suspenders because
+//     missing --dangerously-skip-permissions causes a blocking permissions prompt on
+//     a headless sprite, and missing --output-format stream-json breaks structured parsing.
 func buildStartRalphScript(workspace, sprite string, maxIterations int, webhookURL string, maxTokens int, maxTimeSec int) string {
 	lines := []string{
 		"set -euo pipefail",
 		"WORKSPACE_DIR=" + shellutil.Quote(workspace),
 		"mkdir -p \"$WORKSPACE_DIR/logs\"",
-		"rm -f \"$WORKSPACE_DIR/TASK_COMPLETE\" \"$WORKSPACE_DIR/BLOCKED.md\"",
+		"rm -f \"$WORKSPACE_DIR/" + SignalTaskComplete + "\" \"$WORKSPACE_DIR/" + SignalTaskCompleteMD + "\" \"$WORKSPACE_DIR/" + SignalBlocked + "\"",
 		"if [ -f \"$WORKSPACE_DIR/agent.pid\" ] && kill -0 \"$(cat \"$WORKSPACE_DIR/agent.pid\")\" 2>/dev/null; then kill \"$(cat \"$WORKSPACE_DIR/agent.pid\")\" 2>/dev/null || true; fi",
 		"if [ -f \"$WORKSPACE_DIR/ralph.pid\" ] && kill -0 \"$(cat \"$WORKSPACE_DIR/ralph.pid\")\" 2>/dev/null; then kill \"$(cat \"$WORKSPACE_DIR/ralph.pid\")\" 2>/dev/null || true; fi",
 		"AGENT_BIN=\"$HOME/.local/bin/sprite-agent\"",
@@ -1155,22 +1447,20 @@ func buildStartRalphScript(workspace, sprite string, maxIterations int, webhookU
 		"printf 'bb-%s-%s\\n' \"$(date -u +%Y%m%d-%H%M%S)\" " + shellutil.Quote(sprite) + " > \"$WORKSPACE_DIR/.current-task-id\"",
 	}
 
-	limits := ""
+	envParts := "SPRITE_NAME=" + shellutil.Quote(sprite)
+	if strings.TrimSpace(webhookURL) != "" {
+		envParts += " SPRITE_WEBHOOK_URL=" + shellutil.Quote(webhookURL)
+	}
+	envParts += " MAX_ITERATIONS=" + strconv.Itoa(maxIterations)
 	if maxTokens > 0 {
-		limits += " MAX_TOKENS=" + strconv.Itoa(maxTokens)
+		envParts += " MAX_TOKENS=" + strconv.Itoa(maxTokens)
 	}
 	if maxTimeSec > 0 {
-		limits += " MAX_TIME_SEC=" + strconv.Itoa(maxTimeSec)
+		envParts += " MAX_TIME_SEC=" + strconv.Itoa(maxTimeSec)
 	}
-	if strings.TrimSpace(webhookURL) != "" {
-		lines = append(lines,
-			"nohup env SPRITE_NAME="+shellutil.Quote(sprite)+" SPRITE_WEBHOOK_URL="+shellutil.Quote(webhookURL)+" MAX_ITERATIONS="+strconv.Itoa(maxIterations)+limits+" BB_CLAUDE_FLAGS=\"$REQUIRED_CLAUDE_FLAGS\" \"$AGENT_BIN\" >/dev/null 2>&1 &",
-		)
-	} else {
-		lines = append(lines,
-			"nohup env SPRITE_NAME="+shellutil.Quote(sprite)+" MAX_ITERATIONS="+strconv.Itoa(maxIterations)+limits+" BB_CLAUDE_FLAGS=\"$REQUIRED_CLAUDE_FLAGS\" \"$AGENT_BIN\" >/dev/null 2>&1 &",
-		)
-	}
+	lines = append(lines,
+		"nohup env "+envParts+" BB_CLAUDE_FLAGS=\"$REQUIRED_CLAUDE_FLAGS\" \"$AGENT_BIN\" >/dev/null 2>&1 &",
+	)
 	lines = append(lines,
 		"PID=\"$!\"",
 		"echo \"$PID\" > \"$WORKSPACE_DIR/agent.pid\"",

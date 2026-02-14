@@ -21,7 +21,7 @@ func TestPollSpriteStatus_ProgressMessages(t *testing.T) {
 	defer cancel()
 
 	// Create a fake remote that never completes
-	remote := &spriteCLIRemote{binary: "fake"}
+	remote := newSpriteCLIRemote("fake", "")
 
 	// This should timeout and return
 	_, _ = pollSpriteStatus(ctx, remote, "test-sprite", 1*time.Hour, progress)
@@ -52,7 +52,7 @@ func TestPollSpriteStatus_TimeoutResult(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	remote := &spriteCLIRemote{binary: "fake"}
+	remote := newSpriteCLIRemote("fake", "")
 	result, err := pollSpriteStatus(ctx, remote, "test-sprite", 1*time.Hour, progress)
 
 	// Should get a timeout result, not a nil result

@@ -148,7 +148,7 @@ func TestLogsRemoteSingleSprite(t *testing.T) {
 
 	var out bytes.Buffer
 	cmd := newLogsCmdWithDeps(&out, &bytes.Buffer{}, deps)
-	cmd.SetArgs([]string{"bramble"})
+	cmd.SetArgs([]string{"bramble", "--events"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
@@ -203,7 +203,7 @@ func TestLogsRemoteAllSprites(t *testing.T) {
 
 	var out bytes.Buffer
 	cmd := newLogsCmdWithDeps(&out, &bytes.Buffer{}, deps)
-	cmd.SetArgs([]string{"--all"})
+	cmd.SetArgs([]string{"--all", "--events"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
@@ -244,7 +244,7 @@ func TestLogsRemoteJSON(t *testing.T) {
 
 	var out bytes.Buffer
 	cmd := newLogsCmdWithDeps(&out, &bytes.Buffer{}, deps)
-	cmd.SetArgs([]string{"bramble", "--json"})
+	cmd.SetArgs([]string{"bramble", "--events", "--json"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
@@ -285,7 +285,7 @@ func TestLogsRemoteWithTypeFilter(t *testing.T) {
 
 	var out bytes.Buffer
 	cmd := newLogsCmdWithDeps(&out, &bytes.Buffer{}, deps)
-	cmd.SetArgs([]string{"bramble", "--type", "error"})
+	cmd.SetArgs([]string{"bramble", "--events", "--type", "error"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
@@ -314,7 +314,8 @@ func TestLogsRemoteEmptyLog(t *testing.T) {
 
 	var out bytes.Buffer
 	cmd := newLogsCmdWithDeps(&out, &bytes.Buffer{}, deps)
-	cmd.SetArgs([]string{"bramble"})
+	// --events mode: empty log should produce empty output
+	cmd.SetArgs([]string{"bramble", "--events"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
@@ -388,4 +389,42 @@ func marshalEventsToJSONL(t *testing.T, evts ...events.Event) string {
 		buf.WriteByte('\n')
 	}
 	return buf.String()
+}
+
+func TestLogsCmdRawDefault(t *testing.T) {
+	t.Parallel()
+
+	// By default, remote logs should read ralph.log, not agent.jsonl
+	// The mock should return raw log content when the command contains "ralph.log"
+	expectedLogContent := "Claude is working on the task...\nProcessing complete.\n"
+
+	deps := logsDeps{
+		newCLI: func(string, string) sprite.SpriteCLI {
+			return &sprite.MockSpriteCLI{
+				ExecFn: func(_ context.Context, name, cmd string, _ []byte) (string, error) {
+					if name == "bramble" && strings.Contains(cmd, "ralph.log") {
+						return expectedLogContent, nil
+					}
+					// Should NOT be called with agent.jsonl in default mode
+					if strings.Contains(cmd, "agent.jsonl") {
+						t.Fatalf("unexpected agent.jsonl fetch in default mode: %s", cmd)
+					}
+					return "", nil
+				},
+			}
+		},
+	}
+
+	var out bytes.Buffer
+	cmd := newLogsCmdWithDeps(&out, &bytes.Buffer{}, deps)
+	// No --events flag - should default to raw logs
+	cmd.SetArgs([]string{"bramble"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, expectedLogContent) {
+		t.Fatalf("output = %q, want containing %q", output, expectedLogContent)
+	}
 }

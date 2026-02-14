@@ -340,8 +340,12 @@ func TestLifecycle_WaitForHealthy(t *testing.T) {
 		if err == nil {
 			t.Error("expected timeout error, got nil")
 		}
-		if !strings.Contains(err.Error(), "failed to become healthy") {
-			t.Errorf("unexpected error message: %v", err)
+		// Should include diagnostics in error message
+		if !strings.Contains(err.Error(), "Diagnostics") {
+			t.Errorf("expected diagnostics in error message, got: %v", err)
+		}
+		if !strings.Contains(err.Error(), "Next steps") {
+			t.Errorf("expected next steps hint in error message, got: %v", err)
 		}
 		if elapsed < 200*time.Millisecond {
 			t.Errorf("returned too early: %v", elapsed)
@@ -464,4 +468,107 @@ func TestBuildStartProxyScript(t *testing.T) {
 			t.Errorf("expected proper quote escaping, got: %s", script)
 		}
 	})
+
+	t.Run("captures stderr to log file", func(t *testing.T) {
+		script := buildStartProxyScript("/path/to/proxy.mjs")
+		if !strings.Contains(script, "2>>") {
+			t.Error("expected stderr redirection to log file")
+		}
+		if !strings.Contains(script, ProxyLogPath) {
+			t.Errorf("expected log path %s in script, got: %s", ProxyLogPath, script)
+		}
+	})
+
+	t.Run("creates log directory", func(t *testing.T) {
+		script := buildStartProxyScript("/path/to/proxy.mjs")
+		if !strings.Contains(script, "mkdir -p") {
+			t.Error("expected mkdir command for log directory")
+		}
+	})
+}
+
+func TestLifecycle_CollectDiagnostics(t *testing.T) {
+	t.Run("collects all diagnostics", func(t *testing.T) {
+		execCount := 0
+		mock := &mockRemoteExecutor{
+			execFunc: func(ctx context.Context, sprite, remoteCommand string, stdin []byte) (string, error) {
+				execCount++
+				switch execCount {
+				case 1:
+					return "Mem: 1Gi available", nil
+				case 2:
+					return "PID USER COMMAND\n123 sprite node proxy.mjs", nil
+				case 3:
+					return "Error: Cannot find module 'express'", nil
+				default:
+					return "", nil
+				}
+			},
+		}
+		lifecycle := NewLifecycle(mock)
+
+		diagnostics, err := lifecycle.CollectDiagnostics(context.Background(), "test-sprite")
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if diagnostics.MemoryAvailable != "Mem: 1Gi available" {
+			t.Errorf("unexpected memory: %s", diagnostics.MemoryAvailable)
+		}
+		if diagnostics.ProcessList != "PID USER COMMAND\n123 sprite node proxy.mjs" {
+			t.Errorf("unexpected processes: %s", diagnostics.ProcessList)
+		}
+		if diagnostics.ProxyLogTail != "Error: Cannot find module 'express'" {
+			t.Errorf("unexpected log tail: %s", diagnostics.ProxyLogTail)
+		}
+	})
+
+	t.Run("handles exec errors gracefully", func(t *testing.T) {
+		mock := &mockRemoteExecutor{
+			execFunc: func(ctx context.Context, sprite, remoteCommand string, stdin []byte) (string, error) {
+				return "", errors.New("command failed")
+			},
+		}
+		lifecycle := NewLifecycle(mock)
+
+		diagnostics, err := lifecycle.CollectDiagnostics(context.Background(), "test-sprite")
+		if err != nil {
+			t.Errorf("expected nil error but got: %v", err)
+		}
+		if diagnostics == nil {
+			t.Error("expected diagnostics even when commands fail")
+		}
+	})
+}
+
+func TestDiagnostics_FormatError(t *testing.T) {
+	d := &Diagnostics{
+		MemoryAvailable: "Mem: 512M available",
+		ProcessList:     "123 sprite node",
+		ProxyLogTail:    "Error: port already in use",
+	}
+
+	err := errors.New("connection refused")
+	formatted := d.FormatError(err, "bramble")
+
+	if !strings.Contains(formatted, "proxy health check failed") {
+		t.Error("expected 'proxy health check failed' in error")
+	}
+	if !strings.Contains(formatted, "Diagnostics") {
+		t.Error("expected 'Diagnostics' section")
+	}
+	if !strings.Contains(formatted, "Next steps") {
+		t.Error("expected 'Next steps' section")
+	}
+	if !strings.Contains(formatted, "bramble") {
+		t.Error("expected sprite name in error")
+	}
+	if !strings.Contains(formatted, "bb status bramble") {
+		t.Error("expected bb status hint")
+	}
+	if !strings.Contains(formatted, "512M available") {
+		t.Error("expected memory info")
+	}
+	if !strings.Contains(formatted, "port already in use") {
+		t.Error("expected log tail")
+	}
 }

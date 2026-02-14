@@ -310,6 +310,7 @@ func TestDeriveSpriteState(t *testing.T) {
 		{"", "error", StateOffline},
 		{"", "dead", StateOffline},
 		{"", "running", StateIdle},
+		{"", "warm", StateIdle},     // API returns "warm" for idle sprites
 		{"", "starting", StateOperational},
 		{"", "provisioning", StateOperational},
 		{"", "unknown", StateUnknown},
@@ -413,6 +414,7 @@ func TestIsRunningStatus(t *testing.T) {
 		expected bool
 	}{
 		{"running", true},
+		{"warm", true},        // API "warm" status indicates running sprite
 		{"starting", true},
 		{"provisioning", true},
 		{"RUNNING", true},

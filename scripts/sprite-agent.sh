@@ -282,7 +282,7 @@ emit_terminal_event() {
 }
 
 check_terminal_signals() {
-    if [[ -f "$TASK_COMPLETE_FILE" ]]; then
+    if [[ -f "$TASK_COMPLETE_FILE" ]] || [[ -f "${TASK_COMPLETE_FILE}.md" ]]; then
         emit_terminal_event "task_complete" '{"reason":"TASK_COMPLETE file detected"}'
         return 0
     fi
