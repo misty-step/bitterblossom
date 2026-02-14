@@ -895,7 +895,7 @@ func TestDispatchDryRunSkipsCredentialValidation(t *testing.T) {
 func TestSelectSpriteFromRegistryMissingFile(t *testing.T) {
 	t.Parallel()
 
-	remote := &spriteCLIRemote{binary: "sprite"}
+	remote := newSpriteCLIRemote("sprite", "")
 
 	testCases := []struct {
 		name          string
