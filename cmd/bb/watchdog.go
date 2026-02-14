@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +9,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/misty-step/bitterblossom/internal/contracts"
 	watchdogsvc "github.com/misty-step/bitterblossom/internal/watchdog"
 	"github.com/spf13/cobra"
 )
@@ -112,12 +112,7 @@ func newWatchdogCmdWithDeps(deps watchdogDeps) *cobra.Command {
 
 func renderWatchdogReport(cmd *cobra.Command, report watchdogsvc.Report, jsonMode bool) error {
 	if jsonMode {
-		encoded, err := json.MarshalIndent(report, "", "  ")
-		if err != nil {
-			return err
-		}
-		_, err = fmt.Fprintln(cmd.OutOrStdout(), string(encoded))
-		return err
+		return contracts.WriteJSON(cmd.OutOrStdout(), "watchdog", report)
 	}
 
 	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Watchdog %s (execute=%t stale_after=%s)\n", report.GeneratedAt.Format(time.RFC3339), report.Execute, report.StaleAfter); err != nil {

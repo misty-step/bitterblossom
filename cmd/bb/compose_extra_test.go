@@ -19,7 +19,7 @@ func TestPrintHelpers(t *testing.T) {
 	cmd := &cobra.Command{}
 	var out bytes.Buffer
 	cmd.SetOut(&out)
-	if err := printJSON(cmd, map[string]string{"ok": "yes"}); err != nil {
+	if err := printJSON(cmd, "compose.test", map[string]string{"ok": "yes"}); err != nil {
 		t.Fatalf("printJSON() error = %v", err)
 	}
 	if !strings.Contains(out.String(), `"ok": "yes"`) {
@@ -47,7 +47,7 @@ func TestPrintHelpers(t *testing.T) {
 	}
 
 	cmd.SetOut(errorWriter{})
-	if err := printJSON(cmd, map[string]string{"x": "y"}); err == nil {
+	if err := printJSON(cmd, "compose.test", map[string]string{"x": "y"}); err == nil {
 		t.Fatal("printJSON() expected write error")
 	}
 }
