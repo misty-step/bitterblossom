@@ -85,6 +85,7 @@ If the result is `CONFLICTING`:
 
 ### Step 6: Completion
 When CI passes AND no unaddressed critical/high comments AND no merge conflicts:
+- Create a file named exactly `TASK_COMPLETE` (no `.md` extension) containing: `PR #{{PR_NUMBER}} is merge-ready`
 - Print: `TASK_COMPLETE: PR #{{PR_NUMBER}} is merge-ready`
 - Print: `SUMMARY: {{one-line description of what was done}}`
 

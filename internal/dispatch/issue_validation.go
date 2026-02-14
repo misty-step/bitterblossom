@@ -72,6 +72,17 @@ func DefaultIssueValidator() *IssueValidator {
 	}
 }
 
+// IssueValidatorForRalphMode returns a validator configured for the specified mode.
+// When ralphMode is true, it includes ralph-ready in recommended labels.
+// When ralphMode is false, ralph-ready is not recommended (only relevant for Ralph dispatches).
+func IssueValidatorForRalphMode(ralphMode bool) *IssueValidator {
+	v := DefaultIssueValidator()
+	if !ralphMode {
+		v.RecommendedLabels = nil
+	}
+	return v
+}
+
 // defaultRunGH executes the gh CLI command.
 func defaultRunGH(ctx context.Context, args ...string) ([]byte, error) {
 	// Add a safety timeout if the caller didn't set one.
@@ -315,7 +326,7 @@ func ValidateIssueFromRequest(ctx context.Context, req Request, strict bool) (*V
 		return &ValidationResult{Valid: true}, nil
 	}
 
-	validator := DefaultIssueValidator()
+	validator := IssueValidatorForRalphMode(req.Ralph)
 	result, err := validator.ValidateIssue(ctx, req.Issue, req.Repo)
 	if err != nil {
 		return nil, err

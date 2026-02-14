@@ -44,6 +44,7 @@ type dispatchOptions struct {
 	Strict               bool
 	RegistryPath         string
 	RegistryRequired     bool
+	ScaffoldDir          string
 }
 
 type dispatchDeps struct {
@@ -270,6 +271,7 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 				// Persist dispatch lifecycle events locally for operator visibility.
 				// Best-effort; dispatch continues if the logger cannot be created.
 				EventLogger: nil,
+				ScaffoldDir: opts.ScaffoldDir,
 			})
 			if err != nil {
 				return err
@@ -294,6 +296,18 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 
 			// If --wait flag is set, poll for completion
 			if opts.Wait && result.Executed {
+				// Oneshot mode: if the local dispatch state machine is already completed,
+				// skip remote polling entirely. The task finished before we started polling.
+				// Ralph mode still polls because the agent continues running in the background.
+				if result.State == dispatchsvc.StateCompleted && !opts.Ralph {
+					waitRes := &waitResult{
+						State:    "completed",
+						Task:     result.Task,
+						Complete: true,
+					}
+					return renderWaitResult(cmd, result, waitRes, opts.JSON)
+				}
+
 				pollTarget := spriteArg
 				if cmd.Flags().Changed("registry") || opts.RegistryRequired {
 					if resolved, err := dispatchsvc.ResolveSprite(spriteArg, opts.RegistryPath); err == nil && strings.TrimSpace(resolved) != "" {
@@ -342,6 +356,7 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 	command.Flags().BoolVar(&opts.Strict, "strict", false, "Fail on any validation warning (strict mode)")
 	command.Flags().StringVar(&opts.RegistryPath, "registry", opts.RegistryPath, "Path to sprite registry file")
 	command.Flags().BoolVar(&opts.RegistryRequired, "registry-required", false, "Require sprites to exist in registry (fail if not found)")
+	command.Flags().StringVar(&opts.ScaffoldDir, "scaffold-dir", "", "Path to base/ directory for environment scaffolding")
 
 	return command
 }
@@ -618,7 +633,7 @@ func checkSpriteStatus(ctx context.Context, remote *spriteCLIRemote, sprite, wor
 		return nil, false, err
 	}
 
-	return parseStatusCheckOutput(output, workspace)
+	return parseStatusCheckOutput(output)
 }
 
 // buildStatusCheckScript creates a script to check sprite status.
@@ -651,7 +666,7 @@ func buildStatusCheckScript(workspace string) string {
 		"",
 		"# Check for completion markers",
 		"HAS_COMPLETE=no",
-		"if [ -f \"$WORKSPACE/TASK_COMPLETE\" ]; then",
+		"if [ -f \"$WORKSPACE/" + dispatchsvc.SignalTaskComplete + "\" ] || [ -f \"$WORKSPACE/" + dispatchsvc.SignalTaskCompleteMD + "\" ]; then",
 		"  HAS_COMPLETE=yes",
 		"fi",
 		"echo \"__HAS_COMPLETE__${HAS_COMPLETE}\"",
@@ -659,27 +674,28 @@ func buildStatusCheckScript(workspace string) string {
 		"# Check for blocked marker",
 		"HAS_BLOCKED=no",
 		"BLOCKED_SUMMARY=\"\"",
-		"if [ -f \"$WORKSPACE/BLOCKED.md\" ]; then",
+		"if [ -f \"$WORKSPACE/" + dispatchsvc.SignalBlocked + "\" ]; then",
 		"  HAS_BLOCKED=yes",
 		"  BLOCKED_SUMMARY=\"$(head -5 \"$WORKSPACE/BLOCKED.md\" 2>/dev/null | tr '\\n' ' ' | sed 's/[[:space:]]\\+/ /g')\"",
 		"fi",
 		"echo \"__HAS_BLOCKED__${HAS_BLOCKED}\"",
 		"echo \"__BLOCKED_B64__$(printf '%s' \"$BLOCKED_SUMMARY\" | base64 | tr -d '\\n')\"",
 		"",
-		"# Check for PR URL",
+		"# Check for PR URL (try dedicated file, then either signal file variant)",
 		"PR_URL=\"\"",
 		"if [ -f \"$WORKSPACE/PR_URL\" ]; then",
 		"  PR_URL=\"$(cat \"$WORKSPACE/PR_URL\")\"",
-		"elif [ -f \"$WORKSPACE/TASK_COMPLETE\" ]; then",
-		"  # Try to extract PR URL from TASK_COMPLETE",
-		"  PR_URL=\"$(grep -oE 'https://github.com/[^/]+/[^/]+/pull/[0-9]+' \"$WORKSPACE/TASK_COMPLETE\" 2>/dev/null || true)\"",
+		"else",
+		"  for f in \"$WORKSPACE/" + dispatchsvc.SignalTaskComplete + "\" \"$WORKSPACE/" + dispatchsvc.SignalTaskCompleteMD + "\"; do",
+		"    [ -f \"$f\" ] && PR_URL=\"$(grep -oE 'https://github.com/[^/]+/[^/]+/pull/[0-9]+' \"$f\" 2>/dev/null || true)\" && break",
+		"  done",
 		"fi",
 		"echo \"__PR_URL__${PR_URL}\"",
 	}, "\n")
 }
 
 // parseStatusCheckOutput parses the output from the status check script.
-func parseStatusCheckOutput(output, workspace string) (*waitResult, bool, error) {
+func parseStatusCheckOutput(output string) (*waitResult, bool, error) {
 	type statusFile struct {
 		Repo    string `json:"repo"`
 		Started string `json:"started"`

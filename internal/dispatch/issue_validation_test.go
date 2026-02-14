@@ -670,6 +670,92 @@ func TestCheckRecommendedLabels(t *testing.T) {
 	}
 }
 
+func TestValidateIssueFromRequest_NonRalphMode_SuppressesRalphReadyWarning(t *testing.T) {
+	t.Parallel()
+
+	// Mock RunGH to return an issue without ralph-ready label
+	mockRunGH := func(ctx context.Context, args ...string) ([]byte, error) {
+		json := `{
+			"number": 200,
+			"title": "Test issue without ralph-ready label",
+			"body": "Description with acceptance criteria:\n- [ ] Task 1",
+			"state": "open",
+			"labels": [{"name": "bug"}],
+			"url": "https://github.com/misty-step/test/issues/200",
+			"closed": false
+		}`
+		return []byte(json), nil
+	}
+
+	// Test non-Ralph mode: should NOT warn about missing ralph-ready label
+	nonRalphValidator := IssueValidatorForRalphMode(false)
+	nonRalphValidator.RunGH = mockRunGH
+
+	result, err := nonRalphValidator.ValidateIssue(context.Background(), 200, "misty-step/test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should be valid with no warnings about ralph-ready
+	if !result.Valid {
+		t.Fatalf("expected valid result, got errors: %v", result.Errors)
+	}
+
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "ralph-ready") {
+			t.Fatalf("non-Ralph mode should not warn about ralph-ready label, got warning: %s", w)
+		}
+	}
+
+	// Test Ralph mode: should still warn about missing ralph-ready label
+	ralphValidator := IssueValidatorForRalphMode(true)
+	ralphValidator.RunGH = mockRunGH
+
+	result2, err := ralphValidator.ValidateIssue(context.Background(), 200, "misty-step/test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should have warning about ralph-ready
+	hasRalphWarning := false
+	for _, w := range result2.Warnings {
+		if strings.Contains(w, "ralph-ready") {
+			hasRalphWarning = true
+			break
+		}
+	}
+	if !hasRalphWarning {
+		t.Fatalf("Ralph mode should warn about missing ralph-ready label, got warnings: %v", result2.Warnings)
+	}
+}
+
+func TestIssueValidatorForRalphMode(t *testing.T) {
+	t.Parallel()
+
+	// Non-Ralph mode should have empty RecommendedLabels
+	nonRalphValidator := IssueValidatorForRalphMode(false)
+	if len(nonRalphValidator.RecommendedLabels) != 0 {
+		t.Fatalf("expected empty RecommendedLabels for non-Ralph mode, got %v", nonRalphValidator.RecommendedLabels)
+	}
+
+	// Ralph mode should have ralph-ready in RecommendedLabels
+	ralphValidator := IssueValidatorForRalphMode(true)
+	if len(ralphValidator.RecommendedLabels) != 1 || ralphValidator.RecommendedLabels[0] != "ralph-ready" {
+		t.Fatalf("expected ['ralph-ready'] RecommendedLabels for Ralph mode, got %v", ralphValidator.RecommendedLabels)
+	}
+
+	// Both should still have other settings preserved
+	if len(nonRalphValidator.RequiredLabels) != 0 {
+		t.Fatal("non-Ralph validator should have empty RequiredLabels")
+	}
+	if !nonRalphValidator.CheckAcceptanceCriteria {
+		t.Fatal("non-Ralph validator should check acceptance criteria")
+	}
+	if !ralphValidator.CheckAcceptanceCriteria {
+		t.Fatal("Ralph validator should check acceptance criteria")
+	}
+}
+
 func TestFormatValidationOutput(t *testing.T) {
 	t.Parallel()
 
