@@ -785,3 +785,137 @@ func TestFormatValidationOutput(t *testing.T) {
 		t.Error("expected output to contain Warnings section")
 	}
 }
+
+// ValidateIssueWithProfile Tests — table-driven, no real GitHub API calls.
+// Tests that need issue validation use profile=Off or issue=0 to avoid network calls.
+
+func TestValidateIssueWithProfile(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		req             Request
+		profile         ValidationProfile
+		env             map[string]string
+		allowDirect     bool
+		wantSafe        bool
+		wantCompliant   bool
+		wantPolicyEmpty bool // no policy warnings or errors
+		wantToErr       bool
+	}{
+		{
+			name:            "off mode skips policy",
+			req:             Request{Sprite: "test-sprite", Prompt: "fix bug", Repo: "misty-step/test", Issue: 302, Execute: true},
+			profile:         ValidationProfileOff,
+			env:             map[string]string{"ANTHROPIC_API_KEY": ""},
+			wantSafe:        true,
+			wantCompliant:   true,
+			wantPolicyEmpty: true,
+			wantToErr:       false,
+		},
+		{
+			name:            "no issue skips policy checks",
+			req:             Request{Sprite: "test-sprite", Prompt: "fix bug", Repo: "misty-step/test", Issue: 0, Execute: true},
+			profile:         ValidationProfileAdvisory,
+			env:             map[string]string{"ANTHROPIC_API_KEY": ""},
+			wantSafe:        true,
+			wantCompliant:   true,
+			wantPolicyEmpty: true,
+			wantToErr:       false,
+		},
+		{
+			name:          "safety failure - missing sprite",
+			req:           Request{Sprite: "", Prompt: "fix bug", Repo: "misty-step/test", Issue: 0, Execute: true},
+			profile:       ValidationProfileAdvisory,
+			env:           map[string]string{},
+			wantSafe:      false,
+			wantCompliant: true,
+			wantToErr:     true,
+		},
+		{
+			name:          "safety failure cannot be bypassed with off",
+			req:           Request{Sprite: "", Prompt: "fix bug", Repo: "misty-step/test", Issue: 0, Execute: true},
+			profile:       ValidationProfileOff,
+			env:           map[string]string{},
+			wantSafe:      false,
+			wantCompliant: true,
+			wantToErr:     true,
+		},
+		{
+			name:          "safety failure - direct anthropic key",
+			req:           Request{Sprite: "test-sprite", Prompt: "fix", Repo: "misty-step/test", Issue: 0, Execute: true},
+			profile:       ValidationProfileAdvisory,
+			env:           map[string]string{"ANTHROPIC_API_KEY": "sk-ant-api03-abcdef123456"},
+			allowDirect:   false,
+			wantSafe:      false,
+			wantCompliant: true,
+			wantToErr:     true,
+		},
+		{
+			name:          "safety ok with escape hatch",
+			req:           Request{Sprite: "test-sprite", Prompt: "fix", Repo: "misty-step/test", Issue: 0, Execute: true},
+			profile:       ValidationProfileAdvisory,
+			env:           map[string]string{"ANTHROPIC_API_KEY": "sk-ant-api03-abcdef123456"},
+			allowDirect:   true,
+			wantSafe:      true,
+			wantCompliant: true,
+			wantToErr:     false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := ValidateIssueWithProfile(context.Background(), tc.req, tc.profile, tc.env, tc.allowDirect)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if result.IsSafe() != tc.wantSafe {
+				t.Errorf("IsSafe() = %v, want %v; errors: %v", result.IsSafe(), tc.wantSafe, result.Safety.Errors)
+			}
+
+			if result.IsPolicyCompliant(tc.profile) != tc.wantCompliant {
+				t.Errorf("IsPolicyCompliant(%q) = %v, want %v", tc.profile, result.IsPolicyCompliant(tc.profile), tc.wantCompliant)
+			}
+
+			if tc.wantPolicyEmpty {
+				if len(result.Policy.Warnings) > 0 || len(result.Policy.Errors) > 0 {
+					t.Errorf("expected no policy issues, got warnings=%v errors=%v", result.Policy.Warnings, result.Policy.Errors)
+				}
+			}
+
+			toErr := result.ToError(tc.profile)
+			if (toErr != nil) != tc.wantToErr {
+				t.Errorf("ToError(%q) = %v, wantErr %v", tc.profile, toErr, tc.wantToErr)
+			}
+		})
+	}
+}
+
+func TestValidateIssueWithProfile_StrictMode(t *testing.T) {
+	t.Parallel()
+
+	// Test strict mode compliance logic directly on CombinedValidationResult
+	// (no API calls needed — construct the result directly)
+	combined := &CombinedValidationResult{
+		Safety: SafetyCheckResult{Valid: true},
+		Policy: PolicyCheckResult{
+			Warnings: []string{"short description", "missing label"},
+		},
+		IssueNumber: 301,
+		Repo:        "misty-step/test",
+	}
+
+	if combined.IsPolicyCompliant(ValidationProfileStrict) {
+		t.Error("expected not policy compliant in strict mode when warnings exist")
+	}
+
+	if !combined.IsPolicyCompliant(ValidationProfileAdvisory) {
+		t.Error("expected policy compliant in advisory mode (warnings OK)")
+	}
+
+	// HasIssues should return true for warnings
+	if !combined.HasIssues() {
+		t.Error("expected HasIssues() = true when warnings exist")
+	}
+}
