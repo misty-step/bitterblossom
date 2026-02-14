@@ -24,10 +24,12 @@ type statusOptions struct {
 	Format         string
 	Checkpoints    bool
 	Tasks          bool
+	Probe          bool
 	Watch          bool
 	WatchInterval  time.Duration
 	Timeout        time.Duration
 	StaleThreshold time.Duration
+	ProbeTimeout   time.Duration
 }
 
 type statusDeps struct {
@@ -62,10 +64,12 @@ func newStatusCmdWithDeps(deps statusDeps) *cobra.Command {
 		Format:        "text",
 		Checkpoints:   false,
 		Tasks:         true,
+		Probe:         false,
 		Watch:         false,
 		WatchInterval: 5 * time.Second,
-		Timeout:        2 * time.Minute,
+		Timeout:       2 * time.Minute,
 		StaleThreshold: lifecycle.DefaultStaleThreshold,
+		ProbeTimeout:  lifecycle.DefaultProbeTimeout,
 	}
 
 	command := &cobra.Command{
@@ -122,10 +126,12 @@ Use --format=json for machine-readable output.`,
 	command.Flags().StringVar(&opts.Format, "format", opts.Format, "Output format: json|text")
 	command.Flags().BoolVar(&opts.Checkpoints, "checkpoints", opts.Checkpoints, "Fetch checkpoint listings (slower for large fleets)")
 	command.Flags().BoolVar(&opts.Tasks, "tasks", opts.Tasks, "Fetch current task information for running sprites")
+	command.Flags().BoolVar(&opts.Probe, "probe", opts.Probe, "Probe connectivity via exec (slower, verifies transport reachability)")
 	command.Flags().BoolVarP(&opts.Watch, "watch", "w", opts.Watch, "Watch mode: continuously refresh fleet status")
 	command.Flags().DurationVar(&opts.WatchInterval, "watch-interval", opts.WatchInterval, "Refresh interval for watch mode")
 	command.Flags().DurationVar(&opts.Timeout, "timeout", opts.Timeout, "Command timeout")
 	command.Flags().DurationVar(&opts.StaleThreshold, "stale-threshold", opts.StaleThreshold, "Flag sprites with no activity beyond this duration as stale")
+	command.Flags().DurationVar(&opts.ProbeTimeout, "probe-timeout", opts.ProbeTimeout, "Timeout for each connectivity probe")
 
 	return command
 }
@@ -138,10 +144,15 @@ func runFleetStatus(cmd *cobra.Command, deps statusDeps, cli sprite.SpriteCLI, c
 	if opts.Tasks {
 		_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "status: fetching task assignments")
 	}
+	if opts.Probe {
+		_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "status: probing connectivity (slower)")
+	}
 
 	status, err := deps.fleetOverview(ctx, cli, cfg, opts.Composition, lifecycle.FleetOverviewOpts{
 		IncludeCheckpoints: opts.Checkpoints,
 		IncludeTasks:       opts.Tasks,
+		IncludeProbe:       opts.Probe,
+		ProbeTimeout:       opts.ProbeTimeout,
 		StaleThreshold:     opts.StaleThreshold,
 	})
 	if err != nil {
@@ -206,6 +217,8 @@ func runWatchMode(cmd *cobra.Command, deps statusDeps, cli sprite.SpriteCLI, cfg
 		status, err := deps.fleetOverview(runCtx, cli, cfg, opts.Composition, lifecycle.FleetOverviewOpts{
 			IncludeCheckpoints: false, // Skip checkpoints in watch mode for speed
 			IncludeTasks:       opts.Tasks,
+			IncludeProbe:       opts.Probe,
+			ProbeTimeout:       opts.ProbeTimeout,
 			StaleThreshold:     opts.StaleThreshold,
 		})
 		cancel()
@@ -476,10 +489,20 @@ func stateWithEmoji(state lifecycle.SpriteState) string {
 	}
 }
 
+// spriteStateLabel formats the state with optional stale and reachability indicators.
+// Reachability is only shown when --probe was used (indicated by Probed=true).
 func spriteStateLabel(item lifecycle.SpriteStatus) string {
 	label := stateWithEmoji(item.State)
 	if item.Stale {
 		label += " ⚠ stale"
+	}
+	// Only show reachability when we actually performed a probe
+	if item.Probed {
+		if item.Reachable {
+			label += " ✓ reachable"
+		} else {
+			label += " ✗ unreachable"
+		}
 	}
 	return label
 }

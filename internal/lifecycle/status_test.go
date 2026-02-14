@@ -414,7 +414,7 @@ func TestIsRunningStatus(t *testing.T) {
 		expected bool
 	}{
 		{"running", true},
-		{"warm", true},        // API "warm" status indicates running sprite
+		{"warm", true}, // API "warm" status indicates running sprite
 		{"starting", true},
 		{"provisioning", true},
 		{"RUNNING", true},
@@ -431,5 +431,150 @@ func TestIsRunningStatus(t *testing.T) {
 				t.Errorf("isRunningStatus(%q) = %v, want %v", tt.status, result, tt.expected)
 			}
 		})
+	}
+}
+
+func TestFleetOverviewWithProbe(t *testing.T) {
+	t.Parallel()
+
+	fx := newFixture(t, "bramble")
+	compositionPath := filepath.Join(fx.rootDir, "compositions", "v1.yaml")
+	writeFixtureFile(t, compositionPath, `version: 1
+name: "test"
+sprites:
+  bramble:
+    definition: sprites/bramble.md
+`)
+
+	var execCalls int
+	cli := &sprite.MockSpriteCLI{
+		APIFn: func(context.Context, string, string) (string, error) {
+			return `{"sprites":[{"name":"bramble","status":"warm","url":"https://bramble"},{"name":"thorn","status":"warm","url":"https://thorn"},{"name":"fern","status":"stopped","url":""}]}`, nil
+		},
+		ExecFn: func(_ context.Context, name, command string, _ []byte) (string, error) {
+			execCalls++
+			if command == "echo ok" {
+				// Simulate: bramble is reachable, thorn is not
+				if name == "bramble" {
+					return "ok", nil
+				}
+				if name == "thorn" {
+					return "", sprite.ErrTransportFailure
+				}
+			}
+			return "", nil
+		},
+	}
+
+	status, err := FleetOverview(context.Background(), cli, fx.cfg, compositionPath, FleetOverviewOpts{
+		IncludeProbe: true,
+		ProbeTimeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("FleetOverview() error = %v", err)
+	}
+
+	// Should have probed the two warm sprites
+	if execCalls != 2 {
+		t.Fatalf("exec calls = %d, want 2 (probed warm sprites only)", execCalls)
+	}
+
+	// Verify bramble is marked reachable
+	var brambleStatus *SpriteStatus
+	var thornStatus *SpriteStatus
+	var fernStatus *SpriteStatus
+	for i := range status.Sprites {
+		s := &status.Sprites[i]
+		if s.Name == "bramble" {
+			brambleStatus = s
+		}
+		if s.Name == "thorn" {
+			thornStatus = s
+		}
+		if s.Name == "fern" {
+			fernStatus = s
+		}
+	}
+
+	if brambleStatus == nil {
+		t.Fatal("bramble not found in status")
+	}
+	if thornStatus == nil {
+		t.Fatal("thorn not found in status")
+	}
+	if fernStatus == nil {
+		t.Fatal("fern not found in status")
+	}
+
+	// Bramble: probed and reachable
+	if !brambleStatus.Probed {
+		t.Errorf("bramble Probed = %v, want true", brambleStatus.Probed)
+	}
+	if !brambleStatus.Reachable {
+		t.Errorf("bramble Reachable = %v, want true", brambleStatus.Reachable)
+	}
+
+	// Thorn: probed but not reachable
+	if !thornStatus.Probed {
+		t.Errorf("thorn Probed = %v, want true", thornStatus.Probed)
+	}
+	if thornStatus.Reachable {
+		t.Errorf("thorn Reachable = %v, want false", thornStatus.Reachable)
+	}
+
+	// Fern: stopped, not probed
+	if fernStatus.Probed {
+		t.Errorf("fern Probed = %v, want false (stopped sprites aren't probed)", fernStatus.Probed)
+	}
+	if fernStatus.Reachable {
+		t.Errorf("fern Reachable = %v, want false", fernStatus.Reachable)
+	}
+}
+
+func TestFleetOverviewWithoutProbe(t *testing.T) {
+	t.Parallel()
+
+	fx := newFixture(t, "bramble")
+	compositionPath := filepath.Join(fx.rootDir, "compositions", "v1.yaml")
+	writeFixtureFile(t, compositionPath, `version: 1
+name: "test"
+sprites:
+  bramble:
+    definition: sprites/bramble.md
+`)
+
+	var execCalls int
+	cli := &sprite.MockSpriteCLI{
+		APIFn: func(context.Context, string, string) (string, error) {
+			return `{"sprites":[{"name":"bramble","status":"warm","url":"https://bramble"}]}`, nil
+		},
+		ExecFn: func(_ context.Context, name, command string, _ []byte) (string, error) {
+			execCalls++
+			return "", nil
+		},
+	}
+
+	status, err := FleetOverview(context.Background(), cli, fx.cfg, compositionPath, FleetOverviewOpts{
+		IncludeProbe: false, // Probing disabled
+	})
+	if err != nil {
+		t.Fatalf("FleetOverview() error = %v", err)
+	}
+
+	// Should not have made any exec calls
+	if execCalls != 0 {
+		t.Fatalf("exec calls = %d, want 0 (probe disabled)", execCalls)
+	}
+
+	if len(status.Sprites) != 1 {
+		t.Fatalf("len(Sprites) = %d, want 1", len(status.Sprites))
+	}
+
+	s := status.Sprites[0]
+	if s.Probed {
+		t.Errorf("Probed = %v, want false", s.Probed)
+	}
+	if s.Reachable {
+		t.Errorf("Reachable = %v, want false", s.Reachable)
 	}
 }
