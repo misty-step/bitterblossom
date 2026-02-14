@@ -972,8 +972,8 @@ func TestBuildOneShotScriptCapturesLogs(t *testing.T) {
 		t.Error("script must define AGENT_LOG pointing to agent-oneshot.log")
 	}
 
-	// Must use tee to capture output in both branches (script and non-script)
-	if !strings.Contains(script, `| tee -a "$AGENT_LOG"`) {
+	// Must use tee (without -a) to truncate and capture output each dispatch
+	if !strings.Contains(script, `| tee "$AGENT_LOG"`) {
 		t.Error("script must pipe output to tee for log capture")
 	}
 

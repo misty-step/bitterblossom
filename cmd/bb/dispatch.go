@@ -560,7 +560,17 @@ func contextOrBackground(ctx context.Context) context.Context {
 	return ctx
 }
 
-// pollSpriteStatus polls a sprite for task completion.
+// newTimeoutResult creates a timeout waitResult with elapsed duration info.
+func newTimeoutResult(startTime time.Time) (*waitResult, error) {
+	elapsed := time.Since(startTime).Round(time.Second)
+	return &waitResult{
+		State:   "timeout",
+		Error:   fmt.Sprintf("polling timed out after %s", elapsed),
+		Runtime: elapsed.String(),
+	}, nil
+}
+
+// pollSpriteStatus polls a sprite for task completion with heartbeat progress.
 func pollSpriteStatus(ctx context.Context, remote *spriteCLIRemote, sprite string, timeout time.Duration, progress func(string)) (*waitResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -573,7 +583,10 @@ func pollSpriteStatus(ctx context.Context, remote *spriteCLIRemote, sprite strin
 	if err == nil && result != nil {
 		progress(fmt.Sprintf("Status: %s", result.State))
 		if done {
-			result.Runtime = time.Since(startTime).Round(time.Second).String()
+			// Preserve runtime from remote STATUS.json if available.
+			if result.Runtime == "" {
+				result.Runtime = time.Since(startTime).Round(time.Second).String()
+			}
 			return result, nil
 		}
 	}
@@ -583,36 +596,29 @@ func pollSpriteStatus(ctx context.Context, remote *spriteCLIRemote, sprite strin
 	select {
 	case <-time.After(2 * time.Second):
 	case <-ctx.Done():
-		return &waitResult{
-			State:   "timeout",
-			Error:   fmt.Sprintf("polling timed out after %s", time.Since(startTime).Round(time.Second)),
-			Runtime: time.Since(startTime).Round(time.Second).String(),
-		}, nil
+		return newTimeoutResult(startTime)
 	}
 
 	pollTicker := time.NewTicker(5 * time.Second)
 	defer pollTicker.Stop()
 
-	// Heartbeat ticker for actionable progress during long waits
-	heartbeatTicker := time.NewTicker(10 * time.Second)
+	// Heartbeat ticker for progress during long waits (30s avoids redundant
+	// output from overlapping with the 5s poll ticker).
+	heartbeatTicker := time.NewTicker(30 * time.Second)
 	defer heartbeatTicker.Stop()
 
 	lastState := ""
 	for {
 		select {
 		case <-ctx.Done():
-			return &waitResult{
-				State:   "timeout",
-				Error:   fmt.Sprintf("polling timed out after %s", time.Since(startTime).Round(time.Second)),
-				Runtime: time.Since(startTime).Round(time.Second).String(),
-			}, nil
+			return newTimeoutResult(startTime)
 		case <-heartbeatTicker.C:
 			elapsed := time.Since(startTime).Round(time.Second)
 			stateInfo := ""
 			if lastState != "" {
 				stateInfo = fmt.Sprintf(" [state: %s]", lastState)
 			}
-			progress(fmt.Sprintf("⏳ Still waiting for %s... elapsed: %s%s", sprite, elapsed, stateInfo))
+			progress(fmt.Sprintf("Still waiting for %s... elapsed: %s%s", sprite, elapsed, stateInfo))
 		case <-pollTicker.C:
 			result, done, err := checkSpriteStatus(ctx, remote, sprite, workspace)
 			if err != nil {
@@ -625,7 +631,10 @@ func pollSpriteStatus(ctx context.Context, remote *spriteCLIRemote, sprite strin
 				progress(fmt.Sprintf("Status: %s", result.State))
 			}
 			if done && result != nil {
-				result.Runtime = time.Since(startTime).Round(time.Second).String()
+				// Preserve runtime from remote STATUS.json if available.
+				if result.Runtime == "" {
+					result.Runtime = time.Since(startTime).Round(time.Second).String()
+				}
 				return result, nil
 			}
 		}

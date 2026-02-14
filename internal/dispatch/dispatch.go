@@ -1082,7 +1082,8 @@ func buildOneShotScript(workspace, promptPath string) string {
 	// Local address for Claude Code
 	baseURL := fmt.Sprintf("http://127.0.0.1:%s", port)
 
-	// Log file for agent output capture (issue #278)
+	// Log file for agent output capture (issue #278).
+	// Truncated each dispatch so only the latest run's output is kept.
 	logFile := shellutil.Quote(workspace + "/logs/agent-oneshot.log")
 
 	return strings.Join([]string{
@@ -1122,9 +1123,9 @@ func buildOneShotScript(workspace, promptPath string) string {
 		"# Capture agent output to log file for diagnostics (issue #278)",
 		"AGENT_LOG=" + logFile,
 		"if command -v script >/dev/null 2>&1; then",
-		"  script -qefc " + shellutil.Quote("cat "+shellutil.Quote(promptPath)+" | claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json") + " /dev/null 2>&1 | tee -a \"$AGENT_LOG\"",
+		"  script -qefc " + shellutil.Quote("cat "+shellutil.Quote(promptPath)+" | claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json") + " /dev/null 2>&1 | tee \"$AGENT_LOG\"",
 		"else",
-		"  cat " + shellutil.Quote(promptPath) + " | claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json 2>&1 | tee -a \"$AGENT_LOG\"",
+		"  cat " + shellutil.Quote(promptPath) + " | claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json 2>&1 | tee \"$AGENT_LOG\"",
 		"fi",
 		"rm -f " + shellutil.Quote(promptPath),
 	}, "\n")
