@@ -80,6 +80,10 @@ curl -s --max-time 2 -o /dev/null -w "%%{http_code}" %s
 	return output == "200", nil
 }
 
+// APIKeyFilePath is where the OpenRouter API key is stored on the sprite.
+// Stored in /home/sprite/.bb (not world-writable /tmp) with 600 permissions.
+const APIKeyFilePath = "/home/sprite/.bb/openrouter.key"
+
 // Start starts the proxy on the target sprite in the background.
 // It kills any existing process on the proxy port first, then uploads and starts.
 func (l *Lifecycle) Start(ctx context.Context, sprite string, openRouterAPIKey string) error {
@@ -95,6 +99,16 @@ func (l *Lifecycle) Start(ctx context.Context, sprite string, openRouterAPIKey s
 		return fmt.Errorf("failed to create .bb directory: %w", err)
 	}
 
+	// Write API key to a secure file with 600 permissions (owner read/write only).
+	// This prevents exposure via /proc/<pid>/environ.
+	writeKeyScript := fmt.Sprintf(`printf '%%s' %s > %s && chmod 600 %s`,
+		shellutil.Quote(openRouterAPIKey),
+		APIKeyFilePath,
+		APIKeyFilePath)
+	if _, err := l.executor.Exec(ctx, sprite, writeKeyScript, nil); err != nil {
+		return fmt.Errorf("failed to write API key file: %w", err)
+	}
+
 	// Upload the proxy script
 	if err := l.executor.Upload(ctx, sprite, SpriteProxyPath, ProxyScript); err != nil {
 		return fmt.Errorf("failed to upload proxy script: %w", err)
@@ -102,7 +116,7 @@ func (l *Lifecycle) Start(ctx context.Context, sprite string, openRouterAPIKey s
 
 	// Start the proxy in the background
 	port := strconv.Itoa(l.port)
-	env := StartEnv("", port, openRouterAPIKey)
+	env := StartEnvWithKeyFile("", port, APIKeyFilePath)
 
 	startScript := buildStartProxyScript(SpriteProxyPath)
 	if _, err := l.executor.ExecWithEnv(ctx, sprite, startScript, nil, env); err != nil {

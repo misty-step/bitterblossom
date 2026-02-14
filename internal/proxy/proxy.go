@@ -44,6 +44,7 @@ func StartCommand(model, port string) []string {
 }
 
 // StartEnv returns the environment variables needed to run the proxy.
+// Deprecated: Use StartEnvWithKeyFile instead to avoid exposing API keys in process environment.
 func StartEnv(model, port, openRouterAPIKey string) map[string]string {
 	if model == "" {
 		model = DefaultModel
@@ -58,6 +59,26 @@ func StartEnv(model, port, openRouterAPIKey string) map[string]string {
 		"UPSTREAM_BASE":      "https://openrouter.ai",
 		"UPSTREAM_PATH":      "/api/v1/chat/completions",
 		"OPENROUTER_API_KEY": openRouterAPIKey,
+	}
+}
+
+// StartEnvWithKeyFile returns the environment variables needed to run the proxy.
+// The API key is passed via a file path instead of the key itself to avoid
+// exposure in /proc/<pid>/environ.
+func StartEnvWithKeyFile(model, port, keyFilePath string) map[string]string {
+	if model == "" {
+		model = DefaultModel
+	}
+	if port == "" {
+		port = strconv.Itoa(ProxyPort)
+	}
+
+	return map[string]string{
+		"PROXY_PORT":              port,
+		"TARGET_MODEL":            model,
+		"UPSTREAM_BASE":           "https://openrouter.ai",
+		"UPSTREAM_PATH":           "/api/v1/chat/completions",
+		"OPENROUTER_API_KEY_FILE": keyFilePath,
 	}
 }
 
