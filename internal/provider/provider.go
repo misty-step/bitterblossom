@@ -39,7 +39,11 @@ const (
 
 // Model identifiers for known providers.
 const (
-	// Kimi models
+	// MiniMax models
+	ModelMiniMaxM25            = "minimax-m2.5"
+	ModelOpenRouterMiniMaxM25  = "minimax/minimax-m2.5"
+
+	// Kimi models (legacy — Kimi K2.5 doesn't produce tool calls reliably)
 	ModelKimiK25             = "kimi-k2.5"
 	ModelKimiK2ThinkingTurbo = "kimi-k2-thinking-turbo"
 	ModelOpenRouterKimiK25   = "moonshotai/kimi-k2.5"
@@ -53,7 +57,7 @@ const (
 // Default provider and model for canonical runtime operation.
 const (
 	DefaultProvider = ProviderProxy
-	DefaultModel    = ModelOpenRouterKimiK25
+	DefaultModel    = ModelOpenRouterMiniMaxM25
 )
 
 // Config holds provider-specific configuration for a sprite.
@@ -81,8 +85,8 @@ func (c Config) IsInherited() bool {
 func (c Config) Resolve() ResolvedConfig {
 	if c.IsInherited() {
 		return ResolvedConfig{
-			Provider: ProviderProxy,
-			Model:    ModelOpenRouterKimiK25,
+			Provider: DefaultProvider,
+			Model:    DefaultModel,
 		}
 	}
 
@@ -96,8 +100,10 @@ func (c Config) Resolve() ResolvedConfig {
 			model = ModelKimiK2ThinkingTurbo
 		case ProviderMoonshot:
 			model = ModelKimiK25
-		case ProviderOpenRouterKimi, ProviderProxy:
+		case ProviderOpenRouterKimi:
 			model = ModelOpenRouterKimiK25
+		case ProviderProxy:
+			model = DefaultModel
 		case ProviderOpenRouterClaude:
 			model = ModelClaudeOpus4
 		}
