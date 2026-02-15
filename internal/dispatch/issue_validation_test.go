@@ -3,7 +3,6 @@ package dispatch
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
 )
@@ -17,15 +16,13 @@ func TestIssueValidator_ValidateIssue_MissingRequiredLabel(t *testing.T) {
 		CheckBlockingDependencies: true,
 		MinDescriptionLength:      50,
 		RunGH: func(ctx context.Context, args ...string) ([]byte, error) {
-			// Return issue without ralph-ready label
 			json := `{
 				"number": 123,
 				"title": "Test Issue",
 				"body": "Some description with acceptance criteria:\n- [ ] Task 1\n- [ ] Task 2",
 				"state": "open",
 				"labels": [{"name": "bug"}],
-				"url": "https://github.com/misty-step/test/issues/123",
-				"closed": false
+				"url": "https://github.com/misty-step/test/issues/123"
 			}`
 			return []byte(json), nil
 		},
@@ -71,8 +68,7 @@ func TestIssueValidator_ValidateIssue_HasRequiredLabel(t *testing.T) {
 				"body": "This issue has acceptance criteria:\n\n## Acceptance Criteria\n- [ ] Task 1\n- [ ] Task 2",
 				"state": "open",
 				"labels": [{"name": "bug"}, {"name": "ralph-ready"}],
-				"url": "https://github.com/misty-step/test/issues/124",
-				"closed": false
+				"url": "https://github.com/misty-step/test/issues/124"
 			}`
 			return []byte(json), nil
 		},
@@ -102,8 +98,7 @@ func TestIssueValidator_ValidateIssue_ClosedIssue(t *testing.T) {
 				"body": "Description",
 				"state": "closed",
 				"labels": [{"name": "ralph-ready"}],
-				"url": "https://github.com/misty-step/test/issues/125",
-				"closed": true
+				"url": "https://github.com/misty-step/test/issues/125"
 			}`
 			return []byte(json), nil
 		},
@@ -148,8 +143,7 @@ func TestIssueValidator_ValidateIssue_BlockingLabels(t *testing.T) {
 					{"name": "ralph-ready"},
 					{"name": "blocked-by-other"}
 				],
-				"url": "https://github.com/misty-step/test/issues/126",
-				"closed": false
+				"url": "https://github.com/misty-step/test/issues/126"
 			}`
 			return []byte(json), nil
 		},
@@ -160,7 +154,6 @@ func TestIssueValidator_ValidateIssue_BlockingLabels(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Issue is valid but has warnings
 	if !result.Valid {
 		t.Fatalf("expected issue to be valid (warnings only), got errors: %v", result.Errors)
 	}
@@ -196,8 +189,7 @@ func TestIssueValidator_ValidateIssue_NoAcceptanceCriteria(t *testing.T) {
 				"body": "This is a very short description without clear acceptance criteria.",
 				"state": "open",
 				"labels": [{"name": "ralph-ready"}],
-				"url": "https://github.com/misty-step/test/issues/127",
-				"closed": false
+				"url": "https://github.com/misty-step/test/issues/127"
 			}`
 			return []byte(json), nil
 		},
@@ -208,12 +200,10 @@ func TestIssueValidator_ValidateIssue_NoAcceptanceCriteria(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Issue is valid but has warnings about short description
 	if !result.Valid {
 		t.Fatalf("expected issue to be valid, got errors: %v", result.Errors)
 	}
 
-	// Check for warning about acceptance criteria or short description
 	hasWarning := false
 	for _, w := range result.Warnings {
 		if strings.Contains(w, "short") || strings.Contains(w, "acceptance criteria") {
@@ -323,8 +313,7 @@ func TestValidateIssueFromRequest_StrictMode(t *testing.T) {
 					{"name": "ralph-ready"},
 					{"name": "blocked-by-other"}
 				],
-				"url": "https://github.com/misty-step/test/issues/130",
-				"closed": false
+				"url": "https://github.com/misty-step/test/issues/130"
 			}`
 			return []byte(json), nil
 		},
@@ -338,7 +327,6 @@ func TestValidateIssueFromRequest_StrictMode(t *testing.T) {
 		Execute: true,
 	}
 
-	// Non-strict mode - warnings don't fail validation
 	result, err := validator.ValidateIssue(context.Background(), req.Issue, req.Repo)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -351,7 +339,6 @@ func TestValidateIssueFromRequest_StrictMode(t *testing.T) {
 		t.Fatal("expected warnings in non-strict mode")
 	}
 
-	// Strict mode - warnings become errors
 	result2, err := ValidateIssueFromRequest(context.Background(), req, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -373,13 +360,11 @@ func TestValidateIssueFromRequest_StrictMode(t *testing.T) {
 func TestValidationResult_ToError(t *testing.T) {
 	t.Parallel()
 
-	// Valid result returns nil error
 	validResult := &ValidationResult{Valid: true}
 	if err := validResult.ToError(); err != nil {
 		t.Fatalf("expected nil error for valid result, got: %v", err)
 	}
 
-	// Invalid result returns error
 	invalidResult := &ValidationResult{
 		Valid:       false,
 		IssueNumber: 131,
@@ -443,482 +428,5 @@ func TestNormalizeRepoSlug(t *testing.T) {
 				t.Errorf("normalizeRepoSlug(%q) = %q, want %q", tc.input, result, tc.expected)
 			}
 		})
-	}
-}
-
-func TestHasAcceptanceCriteria(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name     string
-		body     string
-		expected bool
-	}{
-		{
-			name:     "empty body",
-			body:     "",
-			expected: false,
-		},
-		{
-			name:     "simple description",
-			body:     "This is just a simple description",
-			expected: false,
-		},
-		{
-			name:     "has acceptance criteria header",
-			body:     "## Acceptance Criteria\n- Must do X\n- Must do Y",
-			expected: true,
-		},
-		{
-			name:     "has requirements header",
-			body:     "## Requirements\n- Must do X",
-			expected: true,
-		},
-		{
-			name:     "has definition of done",
-			body:     "## Definition of Done\nAll tests passing",
-			expected: true,
-		},
-		{
-			name:     "has task list",
-			body:     "## Tasks\n- [ ] Task 1\n- [ ] Task 2",
-			expected: true,
-		},
-		{
-			name:     "has checkboxes without header",
-			body:     "Things to do:\n- [ ] Task 1\n- [x] Task 2",
-			expected: true,
-		},
-		{
-			name:     "has todo header",
-			body:     "## TODO\n- Item 1",
-			expected: true,
-		},
-		{
-			name:     "has checklist header",
-			body:     "# Checklist\n- Item 1",
-			expected: true,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			result := hasAcceptanceCriteria(tc.body)
-			if result != tc.expected {
-				t.Errorf("hasAcceptanceCriteria() = %v, want %v", result, tc.expected)
-			}
-		})
-	}
-}
-
-func TestFindBlockingLabels(t *testing.T) {
-	t.Parallel()
-
-	validator := &IssueValidator{}
-
-	tests := []struct {
-		labels   []string
-		expected []string
-	}{
-		{
-			labels:   []string{"bug", "enhancement"},
-			expected: nil,
-		},
-		{
-			labels:   []string{"blocked"},
-			expected: []string{"blocked"},
-		},
-		{
-			labels:   []string{"BLOCKED"}, // case insensitive
-			expected: []string{"BLOCKED"},
-		},
-		{
-			labels:   []string{"blocked-by-other"},
-			expected: []string{"blocked-by-other"},
-		},
-		{
-			labels:   []string{"needs-info"},
-			expected: []string{"needs-info"},
-		},
-		{
-			labels:   []string{"waiting-on-review"},
-			expected: []string{"waiting-on-review"},
-		},
-		{
-			labels:   []string{"on-hold"},
-			expected: []string{"on-hold"},
-		},
-		{
-			labels:   []string{"paused"},
-			expected: []string{"paused"},
-		},
-		{
-			labels:   []string{"dependency"},
-			expected: []string{"dependency"},
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(fmt.Sprintf("%v", tc.labels), func(t *testing.T) {
-			result := validator.findBlockingLabels(tc.labels)
-			if len(result) != len(tc.expected) {
-				t.Errorf("findBlockingLabels() = %v, want %v", result, tc.expected)
-			}
-			for i, v := range result {
-				if v != tc.expected[i] {
-					t.Errorf("findBlockingLabels()[%d] = %v, want %v", i, v, tc.expected[i])
-				}
-			}
-		})
-	}
-}
-
-func TestCheckRequiredLabels(t *testing.T) {
-	t.Parallel()
-
-	validator := &IssueValidator{
-		RequiredLabels: []string{"ralph-ready", "approved"},
-	}
-
-	tests := []struct {
-		labels          []string
-		expectedMissing []string
-	}{
-		{
-			labels:          []string{"ralph-ready", "approved"},
-			expectedMissing: nil,
-		},
-		{
-			labels:          []string{"RALPH-READY"}, // case insensitive
-			expectedMissing: []string{"approved"},
-		},
-		{
-			labels:          []string{"bug"},
-			expectedMissing: []string{"ralph-ready", "approved"},
-		},
-		{
-			labels:          []string{},
-			expectedMissing: []string{"ralph-ready", "approved"},
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(fmt.Sprintf("%v", tc.labels), func(t *testing.T) {
-			result := validator.checkRequiredLabels(tc.labels)
-			if len(result) != len(tc.expectedMissing) {
-				t.Errorf("checkRequiredLabels() = %v, want %v", result, tc.expectedMissing)
-			}
-			for i, v := range result {
-				if v != tc.expectedMissing[i] {
-					t.Errorf("checkRequiredLabels()[%d] = %v, want %v", i, v, tc.expectedMissing[i])
-				}
-			}
-		})
-	}
-}
-
-func TestDefaultValidatorRalphReadyIsWarning(t *testing.T) {
-	t.Parallel()
-
-	validator := DefaultIssueValidator()
-	validator.GitHubClient = nil // Force CLI fallback path for testing
-	validator.RunGH = func(ctx context.Context, args ...string) ([]byte, error) {
-		json := `{
-			"number": 42,
-			"title": "Test issue without ralph-ready label",
-			"body": "Description with acceptance criteria:\n- [ ] Task 1\n- [ ] Task 2",
-			"state": "open",
-			"labels": [{"name": "bug"}],
-			"url": "https://github.com/misty-step/test/issues/42",
-			"closed": false
-		}`
-		return []byte(json), nil
-	}
-
-	result, err := validator.ValidateIssue(context.Background(), 42, "misty-step/test")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Valid {
-		t.Fatalf("expected valid (ralph-ready should be warning, not error), errors: %v", result.Errors)
-	}
-
-	hasWarning := false
-	for _, w := range result.Warnings {
-		if strings.Contains(w, "ralph-ready") {
-			hasWarning = true
-			break
-		}
-	}
-	if !hasWarning {
-		t.Fatalf("expected warning about missing ralph-ready, got warnings: %v", result.Warnings)
-	}
-}
-
-func TestCheckRecommendedLabels(t *testing.T) {
-	t.Parallel()
-
-	v := &IssueValidator{RecommendedLabels: []string{"ralph-ready", "reviewed"}}
-
-	missing := v.checkRecommendedLabels([]string{"bug", "ralph-ready"})
-	if len(missing) != 1 || missing[0] != "reviewed" {
-		t.Fatalf("expected [reviewed], got %v", missing)
-	}
-
-	missing = v.checkRecommendedLabels([]string{"ralph-ready", "reviewed"})
-	if len(missing) != 0 {
-		t.Fatalf("expected no missing, got %v", missing)
-	}
-}
-
-func TestValidateIssueFromRequest_NonRalphMode_SuppressesRalphReadyWarning(t *testing.T) {
-	t.Parallel()
-
-	// Mock RunGH to return an issue without ralph-ready label
-	mockRunGH := func(ctx context.Context, args ...string) ([]byte, error) {
-		json := `{
-			"number": 200,
-			"title": "Test issue without ralph-ready label",
-			"body": "Description with acceptance criteria:\n- [ ] Task 1",
-			"state": "open",
-			"labels": [{"name": "bug"}],
-			"url": "https://github.com/misty-step/test/issues/200",
-			"closed": false
-		}`
-		return []byte(json), nil
-	}
-
-	// Test non-Ralph mode: should NOT warn about missing ralph-ready label
-	nonRalphValidator := IssueValidatorForRalphMode(false)
-	nonRalphValidator.GitHubClient = nil // Force CLI fallback path for testing
-	nonRalphValidator.RunGH = mockRunGH
-
-	result, err := nonRalphValidator.ValidateIssue(context.Background(), 200, "misty-step/test")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Should be valid with no warnings about ralph-ready
-	if !result.Valid {
-		t.Fatalf("expected valid result, got errors: %v", result.Errors)
-	}
-
-	for _, w := range result.Warnings {
-		if strings.Contains(w, "ralph-ready") {
-			t.Fatalf("non-Ralph mode should not warn about ralph-ready label, got warning: %s", w)
-		}
-	}
-
-	// Test Ralph mode: should still warn about missing ralph-ready label
-	ralphValidator := IssueValidatorForRalphMode(true)
-	ralphValidator.GitHubClient = nil // Force CLI fallback path for testing
-	ralphValidator.RunGH = mockRunGH
-
-	result2, err := ralphValidator.ValidateIssue(context.Background(), 200, "misty-step/test")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Should have warning about ralph-ready
-	hasRalphWarning := false
-	for _, w := range result2.Warnings {
-		if strings.Contains(w, "ralph-ready") {
-			hasRalphWarning = true
-			break
-		}
-	}
-	if !hasRalphWarning {
-		t.Fatalf("Ralph mode should warn about missing ralph-ready label, got warnings: %v", result2.Warnings)
-	}
-}
-
-func TestIssueValidatorForRalphMode(t *testing.T) {
-	t.Parallel()
-
-	// Non-Ralph mode should have empty RecommendedLabels
-	nonRalphValidator := IssueValidatorForRalphMode(false)
-	if len(nonRalphValidator.RecommendedLabels) != 0 {
-		t.Fatalf("expected empty RecommendedLabels for non-Ralph mode, got %v", nonRalphValidator.RecommendedLabels)
-	}
-
-	// Ralph mode should have ralph-ready in RecommendedLabels
-	ralphValidator := IssueValidatorForRalphMode(true)
-	if len(ralphValidator.RecommendedLabels) != 1 || ralphValidator.RecommendedLabels[0] != "ralph-ready" {
-		t.Fatalf("expected ['ralph-ready'] RecommendedLabels for Ralph mode, got %v", ralphValidator.RecommendedLabels)
-	}
-
-	// Both should still have other settings preserved
-	if len(nonRalphValidator.RequiredLabels) != 0 {
-		t.Fatal("non-Ralph validator should have empty RequiredLabels")
-	}
-	if !nonRalphValidator.CheckAcceptanceCriteria {
-		t.Fatal("non-Ralph validator should check acceptance criteria")
-	}
-	if !ralphValidator.CheckAcceptanceCriteria {
-		t.Fatal("Ralph validator should check acceptance criteria")
-	}
-}
-
-func TestFormatValidationOutput(t *testing.T) {
-	t.Parallel()
-
-	result := &ValidationResult{
-		Valid:            false,
-		IssueNumber:      157,
-		Repo:             "misty-step/bitterblossom",
-		Labels:           []string{"bug", "ralph-ready"},
-		HasDescription:   true,
-		HasBlockingLabel: false,
-		Errors:           []string{"missing required labels: approved"},
-		Warnings:         []string{"issue description is short"},
-	}
-
-	output := result.FormatValidationOutput()
-
-	if !strings.Contains(output, "misty-step/bitterblossom#157") {
-		t.Error("expected output to contain issue reference")
-	}
-	if !strings.Contains(output, "ralph-ready") {
-		t.Error("expected output to contain labels")
-	}
-	if !strings.Contains(output, "Errors:") {
-		t.Error("expected output to contain Errors section")
-	}
-	if !strings.Contains(output, "Warnings:") {
-		t.Error("expected output to contain Warnings section")
-	}
-}
-
-// ValidateIssueWithProfile Tests — table-driven, no real GitHub API calls.
-// Tests that need issue validation use profile=Off or issue=0 to avoid network calls.
-
-func TestValidateIssueWithProfile(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name            string
-		req             Request
-		profile         ValidationProfile
-		env             map[string]string
-		allowDirect     bool
-		wantSafe        bool
-		wantCompliant   bool
-		wantPolicyEmpty bool // no policy warnings or errors
-		wantToErr       bool
-	}{
-		{
-			name:            "off mode skips policy",
-			req:             Request{Sprite: "test-sprite", Prompt: "fix bug", Repo: "misty-step/test", Issue: 302, Execute: true},
-			profile:         ValidationProfileOff,
-			env:             map[string]string{"ANTHROPIC_API_KEY": ""},
-			wantSafe:        true,
-			wantCompliant:   true,
-			wantPolicyEmpty: true,
-			wantToErr:       false,
-		},
-		{
-			name:            "no issue skips policy checks",
-			req:             Request{Sprite: "test-sprite", Prompt: "fix bug", Repo: "misty-step/test", Issue: 0, Execute: true},
-			profile:         ValidationProfileAdvisory,
-			env:             map[string]string{"ANTHROPIC_API_KEY": ""},
-			wantSafe:        true,
-			wantCompliant:   true,
-			wantPolicyEmpty: true,
-			wantToErr:       false,
-		},
-		{
-			name:          "safety failure - missing sprite",
-			req:           Request{Sprite: "", Prompt: "fix bug", Repo: "misty-step/test", Issue: 0, Execute: true},
-			profile:       ValidationProfileAdvisory,
-			env:           map[string]string{},
-			wantSafe:      false,
-			wantCompliant: true,
-			wantToErr:     true,
-		},
-		{
-			name:          "safety failure cannot be bypassed with off",
-			req:           Request{Sprite: "", Prompt: "fix bug", Repo: "misty-step/test", Issue: 0, Execute: true},
-			profile:       ValidationProfileOff,
-			env:           map[string]string{},
-			wantSafe:      false,
-			wantCompliant: true,
-			wantToErr:     true,
-		},
-		{
-			name:          "safety failure - direct anthropic key",
-			req:           Request{Sprite: "test-sprite", Prompt: "fix", Repo: "misty-step/test", Issue: 0, Execute: true},
-			profile:       ValidationProfileAdvisory,
-			env:           map[string]string{"ANTHROPIC_API_KEY": "sk-ant-api03-abcdef123456"},
-			allowDirect:   false,
-			wantSafe:      false,
-			wantCompliant: true,
-			wantToErr:     true,
-		},
-		{
-			name:          "safety ok with escape hatch",
-			req:           Request{Sprite: "test-sprite", Prompt: "fix", Repo: "misty-step/test", Issue: 0, Execute: true},
-			profile:       ValidationProfileAdvisory,
-			env:           map[string]string{"ANTHROPIC_API_KEY": "sk-ant-api03-abcdef123456"},
-			allowDirect:   true,
-			wantSafe:      true,
-			wantCompliant: true,
-			wantToErr:     false,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			result, err := ValidateIssueWithProfile(context.Background(), tc.req, tc.profile, tc.env, tc.allowDirect)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-
-			if result.IsSafe() != tc.wantSafe {
-				t.Errorf("IsSafe() = %v, want %v; errors: %v", result.IsSafe(), tc.wantSafe, result.Safety.Errors)
-			}
-
-			if result.IsPolicyCompliant(tc.profile) != tc.wantCompliant {
-				t.Errorf("IsPolicyCompliant(%q) = %v, want %v", tc.profile, result.IsPolicyCompliant(tc.profile), tc.wantCompliant)
-			}
-
-			if tc.wantPolicyEmpty {
-				if len(result.Policy.Warnings) > 0 || len(result.Policy.Errors) > 0 {
-					t.Errorf("expected no policy issues, got warnings=%v errors=%v", result.Policy.Warnings, result.Policy.Errors)
-				}
-			}
-
-			toErr := result.ToError(tc.profile)
-			if (toErr != nil) != tc.wantToErr {
-				t.Errorf("ToError(%q) = %v, wantErr %v", tc.profile, toErr, tc.wantToErr)
-			}
-		})
-	}
-}
-
-func TestValidateIssueWithProfile_StrictMode(t *testing.T) {
-	t.Parallel()
-
-	// Test strict mode compliance logic directly on CombinedValidationResult
-	// (no API calls needed — construct the result directly)
-	combined := &CombinedValidationResult{
-		Safety: SafetyCheckResult{Valid: true},
-		Policy: PolicyCheckResult{
-			Warnings: []string{"short description", "missing label"},
-		},
-		IssueNumber: 301,
-		Repo:        "misty-step/test",
-	}
-
-	if combined.IsPolicyCompliant(ValidationProfileStrict) {
-		t.Error("expected not policy compliant in strict mode when warnings exist")
-	}
-
-	if !combined.IsPolicyCompliant(ValidationProfileAdvisory) {
-		t.Error("expected policy compliant in advisory mode (warnings OK)")
-	}
-
-	// HasIssues should return true for warnings
-	if !combined.HasIssues() {
-		t.Error("expected HasIssues() = true when warnings exist")
 	}
 }

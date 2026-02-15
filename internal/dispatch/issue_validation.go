@@ -285,7 +285,7 @@ func (v *IssueValidator) fetchIssueViaGH(ctx context.Context, issue int, repo st
 	args := []string{
 		"issue", "view", strconv.Itoa(issue),
 		"--repo", repo,
-		"--json", "number,title,body,state,labels,url,closed",
+		"--json", "number,title,body,state,labels,url,html_url,created_at,updated_at,closed_at",
 	}
 
 	output, err := v.RunGH(ctx, args...)
@@ -297,6 +297,9 @@ func (v *IssueValidator) fetchIssueViaGH(ctx context.Context, issue int, repo st
 	if err := json.Unmarshal(output, &issueData); err != nil {
 		return nil, fmt.Errorf("parse issue JSON: %w", err)
 	}
+
+	// Derive closed status from state (GitHub API doesn't have a boolean 'closed' field)
+	issueData.Closed = issueData.State == "closed"
 
 	return &issueData, nil
 }
