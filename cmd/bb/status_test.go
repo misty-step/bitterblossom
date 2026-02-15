@@ -378,3 +378,73 @@ func TestWatchModeNegativeInterval(t *testing.T) {
 		t.Fatalf("unexpected error message: %v", err)
 	}
 }
+
+func TestStatusCmdSpriteTimeout(t *testing.T) {
+	t.Parallel()
+
+	// Simulate a timeout by returning context.DeadlineExceeded
+	deps := statusDeps{
+		getwd:  func() (string, error) { return t.TempDir(), nil },
+		newCLI: func(string, string) sprite.SpriteCLI { return &sprite.MockSpriteCLI{} },
+		fleetOverview: func(context.Context, sprite.SpriteCLI, lifecycle.Config, string, lifecycle.FleetOverviewOpts) (lifecycle.FleetStatus, error) {
+			t.Fatal("fleetOverview should not be called for sprite detail")
+			return lifecycle.FleetStatus{}, nil
+		},
+		spriteDetail: func(ctx context.Context, cli sprite.SpriteCLI, cfg lifecycle.Config, name string) (lifecycle.SpriteDetailResult, error) {
+			return lifecycle.SpriteDetailResult{}, context.DeadlineExceeded
+		},
+	}
+
+	cmd := newStatusCmdWithDeps(deps)
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetArgs([]string{"--format", "text", "--sprite-timeout", "100ms", "fern"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for timeout")
+	}
+	if !strings.Contains(err.Error(), "unreachable") {
+		t.Fatalf("expected error to contain 'unreachable', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("expected error to contain 'timed out', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "100ms") {
+		t.Fatalf("expected error to contain timeout duration, got: %v", err)
+	}
+}
+
+func TestStatusCmdSpriteTimeoutJSON(t *testing.T) {
+	t.Parallel()
+
+	// Simulate a timeout with JSON format
+	deps := statusDeps{
+		getwd:  func() (string, error) { return t.TempDir(), nil },
+		newCLI: func(string, string) sprite.SpriteCLI { return &sprite.MockSpriteCLI{} },
+		fleetOverview: func(context.Context, sprite.SpriteCLI, lifecycle.Config, string, lifecycle.FleetOverviewOpts) (lifecycle.FleetStatus, error) {
+			t.Fatal("fleetOverview should not be called for sprite detail")
+			return lifecycle.FleetStatus{}, nil
+		},
+		spriteDetail: func(ctx context.Context, cli sprite.SpriteCLI, cfg lifecycle.Config, name string) (lifecycle.SpriteDetailResult, error) {
+			return lifecycle.SpriteDetailResult{}, context.DeadlineExceeded
+		},
+	}
+
+	cmd := newStatusCmdWithDeps(deps)
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetArgs([]string{"--format", "json", "--sprite-timeout", "250ms", "thorn"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for timeout")
+	}
+	if !strings.Contains(err.Error(), "unreachable") {
+		t.Fatalf("expected error to contain 'unreachable', got: %v", err)
+	}
+}
