@@ -24,6 +24,7 @@ import (
 	"github.com/misty-step/bitterblossom/internal/proxy"
 	"github.com/misty-step/bitterblossom/internal/registry"
 	"github.com/misty-step/bitterblossom/internal/shellutil"
+	"github.com/misty-step/bitterblossom/internal/signals"
 	pkgevents "github.com/misty-step/bitterblossom/pkg/events"
 	"github.com/misty-step/bitterblossom/pkg/fly"
 )
@@ -55,11 +56,15 @@ const (
 	// wake takes several seconds). Short enough to fail fast vs the old 45s-per-step cascade.
 	ProbeTimeout = 15 * time.Second
 
-	// Signal file names written by agents to indicate task completion or blocking.
-	// Both extensions are checked because agents may write either variant.
-	SignalTaskComplete   = "TASK_COMPLETE"
-	SignalTaskCompleteMD = "TASK_COMPLETE.md"
-	SignalBlocked        = "BLOCKED.md"
+	// SignalTaskComplete is re-exported from internal/signals for backward compatibility.
+	// Deprecated: Use signals.TaskComplete instead.
+	SignalTaskComplete = signals.TaskComplete
+	// SignalTaskCompleteMD is re-exported from internal/signals for backward compatibility.
+	// Deprecated: Use signals.TaskCompleteMD instead.
+	SignalTaskCompleteMD = signals.TaskCompleteMD
+	// SignalBlocked is re-exported from internal/signals for backward compatibility.
+	// Deprecated: Use signals.Blocked instead.
+	SignalBlocked = signals.Blocked
 )
 
 var (
@@ -968,10 +973,7 @@ func (s *Service) cleanSignals(ctx context.Context, sprite string) error {
 	// to kill stale processes before launching new ones.
 	// Also remove PR_URL to prevent stale URLs from causing false positive completion
 	// detection (see PR #318).
-	script := fmt.Sprintf(
-		"rm -f %[1]s/TASK_COMPLETE %[1]s/TASK_COMPLETE.md %[1]s/BLOCKED.md %[1]s/BLOCKED %[1]s/PR_URL",
-		shellutil.Quote(s.workspace),
-	)
+	script := signals.CleanScript(s.workspace)
 	_, err := s.remote.Exec(ctx, sprite, script, nil)
 	return err
 }
@@ -1556,7 +1558,7 @@ func buildOneShotScript(workspace, promptPath, logPath string) string {
 		"mkdir -p " + shellutil.Quote(workspace),
 		"mkdir -p " + shellutil.Quote(filepath.Dir(logPath)),
 		"cd " + shellutil.Quote(workspace),
-		"rm -f " + SignalTaskComplete + " " + SignalTaskCompleteMD + " " + SignalBlocked,
+		signals.CleanOnlySignalsScript(workspace),
 		"# Start anthropic proxy if available",
 		"if [ -f " + shellutil.Quote(proxy.ProxyScriptPath) + " ] && [ -n \"${OPENROUTER_API_KEY:-}\" ] && command -v node >/dev/null 2>&1; then",
 		"  PROXY_PID=\"\"",
@@ -1617,7 +1619,7 @@ func buildStartRalphScript(workspace, sprite string, maxIterations int, webhookU
 		"set -euo pipefail",
 		"WORKSPACE_DIR=" + shellutil.Quote(workspace),
 		"mkdir -p \"$WORKSPACE_DIR/logs\"",
-		"rm -f \"$WORKSPACE_DIR/" + SignalTaskComplete + "\" \"$WORKSPACE_DIR/" + SignalTaskCompleteMD + "\" \"$WORKSPACE_DIR/" + SignalBlocked + "\"",
+		signals.CleanOnlySignalsScript(workspace),
 		"if [ -f \"$WORKSPACE_DIR/agent.pid\" ] && kill -0 \"$(cat \"$WORKSPACE_DIR/agent.pid\")\" 2>/dev/null; then kill \"$(cat \"$WORKSPACE_DIR/agent.pid\")\" 2>/dev/null || true; fi",
 		"if [ -f \"$WORKSPACE_DIR/ralph.pid\" ] && kill -0 \"$(cat \"$WORKSPACE_DIR/ralph.pid\")\" 2>/dev/null; then kill \"$(cat \"$WORKSPACE_DIR/ralph.pid\")\" 2>/dev/null || true; fi",
 		"AGENT_BIN=\"$HOME/.local/bin/sprite-agent\"",

@@ -16,6 +16,7 @@ import (
 	"github.com/misty-step/bitterblossom/internal/fleet"
 	"github.com/misty-step/bitterblossom/internal/registry"
 	"github.com/misty-step/bitterblossom/internal/shellutil"
+	"github.com/misty-step/bitterblossom/internal/signals"
 	"github.com/misty-step/bitterblossom/pkg/fly"
 	"github.com/spf13/cobra"
 )
@@ -921,32 +922,17 @@ func buildStatusCheckScript(workspace string) string {
 		"echo \"__AGENT_STATE__${AGENT_STATE}\"",
 		"",
 		"# Check for completion markers",
-		"HAS_COMPLETE=no",
-		"if [ -f \"$WORKSPACE/" + dispatchsvc.SignalTaskComplete + "\" ] || [ -f \"$WORKSPACE/" + dispatchsvc.SignalTaskCompleteMD + "\" ]; then",
-		"  HAS_COMPLETE=yes",
-		"fi",
+		signals.DetectCompleteScript(workspace),
 		"echo \"__HAS_COMPLETE__${HAS_COMPLETE}\"",
 		"",
 		"# Check for blocked marker",
-		"HAS_BLOCKED=no",
-		"BLOCKED_SUMMARY=\"\"",
-		"if [ -f \"$WORKSPACE/" + dispatchsvc.SignalBlocked + "\" ]; then",
-		"  HAS_BLOCKED=yes",
-		"  BLOCKED_SUMMARY=\"$(head -5 \"$WORKSPACE/BLOCKED.md\" 2>/dev/null | tr '\\n' ' ' | sed 's/[[:space:]]\\+/ /g')\"",
-		"fi",
+		signals.DetectBlockedScript(workspace),
 		"echo \"__HAS_BLOCKED__${HAS_BLOCKED}\"",
 		"echo \"__BLOCKED_B64__$(printf '%s' \"$BLOCKED_SUMMARY\" | base64 | tr -d '\\n')\"",
 		"",
 		"# Check for PR URL (try dedicated file, then either signal file variant)",
 		"# Trim whitespace to avoid false positive completion from whitespace-only PR_URL",
-		"PR_URL=\"\"",
-		"if [ -f \"$WORKSPACE/PR_URL\" ]; then",
-		"  PR_URL=\"$(cat \"$WORKSPACE/PR_URL\" | tr -d '[:space:]')\"",
-		"else",
-		"  for f in \"$WORKSPACE/" + dispatchsvc.SignalTaskComplete + "\" \"$WORKSPACE/" + dispatchsvc.SignalTaskCompleteMD + "\"; do",
-		"    [ -f \"$f\" ] && PR_URL=\"$(grep -oE 'https://github.com/[^/]+/[^/]+/pull/[0-9]+' \"$f\" 2>/dev/null | tr -d '[:space:]' || true)\" && break",
-		"  done",
-		"fi",
+		signals.ExtractPRURLScript(workspace),
 		"echo \"__PR_URL__${PR_URL}\"",
 	}, "\n")
 }

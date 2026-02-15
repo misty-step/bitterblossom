@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/misty-step/bitterblossom/internal/claude"
-	"github.com/misty-step/bitterblossom/internal/dispatch"
 	"github.com/misty-step/bitterblossom/internal/shellutil"
+	"github.com/misty-step/bitterblossom/internal/signals"
 )
 
 const (
@@ -316,11 +316,12 @@ func buildProbeScript(workspace string) string {
 		"agent_running=no",
 		"if [ -f \"$WORKSPACE/agent.pid\" ] && kill -0 \"$(cat \"$WORKSPACE/agent.pid\")\" 2>/dev/null; then agent_running=yes; fi",
 		"if [ \"$agent_running\" = no ] && [ \"${claude_count:-0}\" -gt 0 ] 2>/dev/null; then agent_running=yes; fi",
-		"has_complete=no; { [ -f \"$WORKSPACE/" + dispatch.SignalTaskComplete + "\" ] || [ -f \"$WORKSPACE/" + dispatch.SignalTaskCompleteMD + "\" ]; } && has_complete=yes",
-		"has_blocked=no; [ -f \"$WORKSPACE/" + dispatch.SignalBlocked + "\" ] && has_blocked=yes",
+		signals.DetectCompleteScript(workspace),
+		"has_complete=$HAS_COMPLETE",
+		signals.DetectBlockedScript(workspace),
+		"has_blocked=$HAS_BLOCKED",
+		"blocked_summary=\"$BLOCKED_SUMMARY\"",
 		"has_prompt=no; [ -f \"$WORKSPACE/PROMPT.md\" ] && has_prompt=yes",
-		"blocked_summary=\"\"",
-		"if [ \"$has_blocked\" = yes ]; then blocked_summary=\"$(head -5 \"$WORKSPACE/BLOCKED.md\" 2>/dev/null | tr '\\n' ' ' | sed 's/[[:space:]]\\+/ /g')\"; fi",
 		"branch=\"\"; commits=0; dirty_repos=0; ahead_commits=0",
 		"for dir in \"$WORKSPACE\"/*/; do",
 		"  [ -d \"$dir/.git\" ] || continue",
