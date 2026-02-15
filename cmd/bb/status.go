@@ -28,6 +28,7 @@ type statusOptions struct {
 	Watch          bool
 	WatchInterval  time.Duration
 	Timeout        time.Duration
+	SpriteTimeout  time.Duration
 	StaleThreshold time.Duration
 	ProbeTimeout   time.Duration
 }
@@ -68,6 +69,7 @@ func newStatusCmdWithDeps(deps statusDeps) *cobra.Command {
 		Watch:         false,
 		WatchInterval: 5 * time.Second,
 		Timeout:       2 * time.Minute,
+		SpriteTimeout: 15 * time.Second,
 		StaleThreshold: lifecycle.DefaultStaleThreshold,
 		ProbeTimeout:  lifecycle.DefaultProbeTimeout,
 	}
@@ -132,6 +134,7 @@ Use --format=json for machine-readable output.`,
 	command.Flags().DurationVar(&opts.Timeout, "timeout", opts.Timeout, "Command timeout")
 	command.Flags().DurationVar(&opts.StaleThreshold, "stale-threshold", opts.StaleThreshold, "Flag sprites with no activity beyond this duration as stale")
 	command.Flags().DurationVar(&opts.ProbeTimeout, "probe-timeout", opts.ProbeTimeout, "Timeout for each connectivity probe")
+	command.Flags().DurationVar(&opts.SpriteTimeout, "sprite-timeout", opts.SpriteTimeout, "Timeout for single-sprite status queries (default 15s)")
 
 	return command
 }
@@ -168,8 +171,17 @@ func runFleetStatus(cmd *cobra.Command, deps statusDeps, cli sprite.SpriteCLI, c
 
 func runSpriteDetail(cmd *cobra.Command, deps statusDeps, cli sprite.SpriteCLI, cfg lifecycle.Config, opts statusOptions, ctx context.Context, format, spriteName string) error {
 	_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "status: fetching detail for %s\n", spriteName)
-	detail, err := deps.spriteDetail(ctx, cli, cfg, spriteName)
+
+	// Use sprite-specific timeout to avoid hanging indefinitely on unreachable sprites
+	spriteCtx, cancel := context.WithTimeout(ctx, opts.SpriteTimeout)
+	defer cancel()
+
+	detail, err := deps.spriteDetail(spriteCtx, cli, cfg, spriteName)
 	if err != nil {
+		// Check for timeout specifically to give actionable error message
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(spriteCtx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("sprite %s unreachable (timed out after %v)", spriteName, opts.SpriteTimeout)
+		}
 		return err
 	}
 	_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "status: detail loaded for %s\n", spriteName)
