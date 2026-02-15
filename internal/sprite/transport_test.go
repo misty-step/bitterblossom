@@ -187,79 +187,215 @@ func TestFallbackTransportAllMethods(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	mockCLI := &MockSpriteCLI{
-		DestroyFn: func(ctx context.Context, name, org string) error {
-			return nil
-		},
-		CheckpointCreateFn: func(ctx context.Context, name, org string) error {
-			return nil
-		},
-		CheckpointListFn: func(ctx context.Context, name, org string) (string, error) {
-			return "checkpoints", nil
-		},
-		UploadFileFn: func(ctx context.Context, name, org, localPath, remotePath string) error {
-			return nil
-		},
-		APIFn: func(ctx context.Context, org, endpoint string) (string, error) {
-			return "api response", nil
-		},
-		APISpriteFn: func(ctx context.Context, org, sprite, endpoint string) (string, error) {
-			return "sprite api response", nil
-		},
+	testErr := errors.New("test error")
+
+	// Helper to create a mock CLI with all methods succeeding
+	newSuccessMock := func() *MockSpriteCLI {
+		return &MockSpriteCLI{
+			DestroyFn: func(ctx context.Context, name, org string) error {
+				return nil
+			},
+			CheckpointCreateFn: func(ctx context.Context, name, org string) error {
+				return nil
+			},
+			CheckpointListFn: func(ctx context.Context, name, org string) (string, error) {
+				return "checkpoints", nil
+			},
+			UploadFileFn: func(ctx context.Context, name, org, localPath, remotePath string) error {
+				return nil
+			},
+			APIFn: func(ctx context.Context, org, endpoint string) (string, error) {
+				return "api response", nil
+			},
+			APISpriteFn: func(ctx context.Context, org, sprite, endpoint string) (string, error) {
+				return "sprite api response", nil
+			},
+		}
 	}
 
-	transport, err := NewFallbackTransport(mockCLI, "misty-step")
-	if err != nil {
-		t.Fatalf("NewFallbackTransport() error = %v", err)
+	// Helper to create a mock CLI with all methods failing
+	newErrorMock := func() *MockSpriteCLI {
+		return &MockSpriteCLI{
+			DestroyFn: func(ctx context.Context, name, org string) error {
+				return testErr
+			},
+			CheckpointCreateFn: func(ctx context.Context, name, org string) error {
+				return testErr
+			},
+			CheckpointListFn: func(ctx context.Context, name, org string) (string, error) {
+				return "", testErr
+			},
+			UploadFileFn: func(ctx context.Context, name, org, localPath, remotePath string) error {
+				return testErr
+			},
+			APIFn: func(ctx context.Context, org, endpoint string) (string, error) {
+				return "", testErr
+			},
+			APISpriteFn: func(ctx context.Context, org, sprite, endpoint string) (string, error) {
+				return "", testErr
+			},
+		}
 	}
 
 	tests := []struct {
-		name    string
-		fn      func() error
-		wantOut string
+		name           string
+		mockCLI        *MockSpriteCLI
+		wantCalls      int64
+		wantErrors     int64
+		methodTest     func(*FallbackTransport) (string, error)
+		wantOutput     string
+		wantErr        bool
+		wantErrContain string
 	}{
-		{"Destroy", func() error {
-			return transport.Destroy(ctx, "sprite1", "misty-step")
-		}, ""},
-		{"CheckpointCreate", func() error {
-			return transport.CheckpointCreate(ctx, "sprite1", "misty-step")
-		}, ""},
-		{"CheckpointList", func() error {
-			out, err := transport.CheckpointList(ctx, "sprite1", "misty-step")
-			if out != "checkpoints" {
-				t.Errorf("CheckpointList() output = %q, want %q", out, "checkpoints")
-			}
-			return err
-		}, "checkpoints"},
-		{"UploadFile", func() error {
-			return transport.UploadFile(ctx, "sprite1", "misty-step", "local", "remote")
-		}, ""},
-		{"API", func() error {
-			out, err := transport.API(ctx, "misty-step", "/test")
-			if out != "api response" {
-				t.Errorf("API() output = %q, want %q", out, "api response")
-			}
-			return err
-		}, "api response"},
-		{"APISprite", func() error {
-			out, err := transport.APISprite(ctx, "misty-step", "sprite1", "/test")
-			if out != "sprite api response" {
-				t.Errorf("APISprite() output = %q, want %q", out, "sprite api response")
-			}
-			return err
-		}, "sprite api response"},
+		{
+			name:       "Destroy_success",
+			mockCLI:    newSuccessMock(),
+			wantCalls:  1,
+			wantErrors: 0,
+			methodTest: func(tr *FallbackTransport) (string, error) {
+				return "", tr.Destroy(ctx, "sprite1", "misty-step")
+			},
+			wantOutput: "",
+			wantErr:    false,
+		},
+		{
+			name:           "Destroy_error",
+			mockCLI:        newErrorMock(),
+			wantCalls:      1,
+			wantErrors:     1,
+			methodTest:     func(tr *FallbackTransport) (string, error) { return "", tr.Destroy(ctx, "sprite1", "misty-step") },
+			wantErr:        true,
+			wantErrContain: "transport: destroy",
+		},
+		{
+			name:       "CheckpointCreate_success",
+			mockCLI:    newSuccessMock(),
+			wantCalls:  1,
+			wantErrors: 0,
+			methodTest: func(tr *FallbackTransport) (string, error) {
+				return "", tr.CheckpointCreate(ctx, "sprite1", "misty-step")
+			},
+			wantOutput: "",
+			wantErr:    false,
+		},
+		{
+			name:           "CheckpointCreate_error",
+			mockCLI:        newErrorMock(),
+			wantCalls:      1,
+			wantErrors:     1,
+			methodTest:     func(tr *FallbackTransport) (string, error) { return "", tr.CheckpointCreate(ctx, "sprite1", "misty-step") },
+			wantErr:        true,
+			wantErrContain: "transport: checkpoint create",
+		},
+		{
+			name:       "CheckpointList_success",
+			mockCLI:    newSuccessMock(),
+			wantCalls:  1,
+			wantErrors: 0,
+			methodTest: func(tr *FallbackTransport) (string, error) {
+				return tr.CheckpointList(ctx, "sprite1", "misty-step")
+			},
+			wantOutput: "checkpoints",
+			wantErr:    false,
+		},
+		{
+			name:           "CheckpointList_error",
+			mockCLI:        newErrorMock(),
+			wantCalls:      1,
+			wantErrors:     1,
+			methodTest:     func(tr *FallbackTransport) (string, error) { return tr.CheckpointList(ctx, "sprite1", "misty-step") },
+			wantErr:        true,
+			wantErrContain: "transport: checkpoint list",
+		},
+		{
+			name:       "UploadFile_success",
+			mockCLI:    newSuccessMock(),
+			wantCalls:  1,
+			wantErrors: 0,
+			methodTest: func(tr *FallbackTransport) (string, error) {
+				return "", tr.UploadFile(ctx, "sprite1", "misty-step", "local", "remote")
+			},
+			wantOutput: "",
+			wantErr:    false,
+		},
+		{
+			name:           "UploadFile_error",
+			mockCLI:        newErrorMock(),
+			wantCalls:      1,
+			wantErrors:     1,
+			methodTest:     func(tr *FallbackTransport) (string, error) { return "", tr.UploadFile(ctx, "sprite1", "misty-step", "local", "remote") },
+			wantErr:        true,
+			wantErrContain: "transport: upload file",
+		},
+		{
+			name:       "API_success",
+			mockCLI:    newSuccessMock(),
+			wantCalls:  1,
+			wantErrors: 0,
+			methodTest: func(tr *FallbackTransport) (string, error) {
+				return tr.API(ctx, "misty-step", "/test")
+			},
+			wantOutput: "api response",
+			wantErr:    false,
+		},
+		{
+			name:           "API_error",
+			mockCLI:        newErrorMock(),
+			wantCalls:      1,
+			wantErrors:     1,
+			methodTest:     func(tr *FallbackTransport) (string, error) { return tr.API(ctx, "misty-step", "/test") },
+			wantErr:        true,
+			wantErrContain: "transport: api",
+		},
+		{
+			name:       "APISprite_success",
+			mockCLI:    newSuccessMock(),
+			wantCalls:  1,
+			wantErrors: 0,
+			methodTest: func(tr *FallbackTransport) (string, error) {
+				return tr.APISprite(ctx, "misty-step", "sprite1", "/test")
+			},
+			wantOutput: "sprite api response",
+			wantErr:    false,
+		},
+		{
+			name:           "APISprite_error",
+			mockCLI:        newErrorMock(),
+			wantCalls:      1,
+			wantErrors:     1,
+			methodTest:     func(tr *FallbackTransport) (string, error) { return tr.APISprite(ctx, "misty-step", "sprite1", "/test") },
+			wantErr:        true,
+			wantErrContain: "transport: api sprite",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if err := tt.fn(); err != nil {
-				t.Errorf("%s() error = %v", tt.name, err)
+			transport, err := NewFallbackTransport(tt.mockCLI, "misty-step")
+			if err != nil {
+				t.Fatalf("NewFallbackTransport() error = %v", err)
+			}
+
+			got, err := tt.methodTest(transport)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErrContain != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErrContain)) {
+				t.Errorf("error = %v, want error containing %q", err, tt.wantErrContain)
+			}
+			if got != tt.wantOutput {
+				t.Errorf("output = %q, want %q", got, tt.wantOutput)
+			}
+
+			metrics := transport.Metrics()
+			if metrics.CLICalls != tt.wantCalls {
+				t.Errorf("CLICalls = %d, want %d", metrics.CLICalls, tt.wantCalls)
+			}
+			if metrics.CLIErrors != tt.wantErrors {
+				t.Errorf("CLIErrors = %d, want %d", metrics.CLIErrors, tt.wantErrors)
 			}
 		})
-	}
-
-	metrics := transport.Metrics()
-	if metrics.CLICalls != 6 {
-		t.Errorf("CLICalls = %d, want 6", metrics.CLICalls)
 	}
 }
