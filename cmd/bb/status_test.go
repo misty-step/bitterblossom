@@ -319,6 +319,65 @@ func TestTruncateString(t *testing.T) {
 	}
 }
 
+func TestFormatSpriteStatus(t *testing.T) {
+	tests := []struct {
+		name        string
+		status      string
+		currentTask *lifecycle.TaskInfo
+		want        string
+	}{
+		{
+			name:        "running with task shows running",
+			status:      "running",
+			currentTask: &lifecycle.TaskInfo{Description: "Implement feature"},
+			want:        "running",
+		},
+		{
+			name:        "running without task shows warm",
+			status:      "running",
+			currentTask: nil,
+			want:        "warm",
+		},
+		{
+			name:        "warm status unchanged",
+			status:      "warm",
+			currentTask: nil,
+			want:        "warm",
+		},
+		{
+			name:        "stopped status unchanged",
+			status:      "stopped",
+			currentTask: nil,
+			want:        "stopped",
+		},
+		{
+			name:        "error status unchanged",
+			status:      "error",
+			currentTask: &lifecycle.TaskInfo{Description: "Failed task"},
+			want:        "error",
+		},
+		{
+			name:        "starting status unchanged even without task",
+			status:      "starting",
+			currentTask: nil,
+			want:        "starting",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			item := lifecycle.SpriteStatus{
+				Status:      tt.status,
+				CurrentTask: tt.currentTask,
+			}
+			got := formatSpriteStatus(item)
+			if got != tt.want {
+				t.Errorf("formatSpriteStatus() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestWatchModeInvalidInterval(t *testing.T) {
 	t.Parallel()
 
