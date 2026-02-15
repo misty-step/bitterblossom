@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/misty-step/bitterblossom/internal/registry"
+	"github.com/misty-step/bitterblossom/internal/shellutil"
 	"github.com/misty-step/bitterblossom/pkg/fly"
 )
 
@@ -1118,9 +1119,10 @@ func TestBuildOneShotScriptCapturesOutput(t *testing.T) {
 	logPath := "/home/sprite/workspace/logs/oneshot-20260212-120000.log"
 	script := buildOneShotScript("/home/sprite/workspace", "/home/sprite/workspace/prompt.md", logPath)
 
-	// Must create logs directory before cd (path is quoted by shellutil.Quote)
-	if !strings.Contains(script, "mkdir -p '/home/sprite/workspace/logs'") {
-		t.Errorf("buildOneShotScript missing logs directory creation")
+	// Must create logs directory before cd (derived from logPath, not hardcoded)
+	expectedDir := filepath.Dir(logPath)
+	if !strings.Contains(script, "mkdir -p "+shellutil.Quote(expectedDir)) {
+		t.Errorf("buildOneShotScript missing logs directory creation for %q", expectedDir)
 	}
 
 	// Must use tee to capture output to log file (without -a; truncated each dispatch)
@@ -1136,6 +1138,43 @@ func TestBuildOneShotScriptCapturesOutput(t *testing.T) {
 	// Log path must appear in script (quoted)
 	if !strings.Contains(script, "'"+logPath+"'") {
 		t.Errorf("buildOneShotScript does not contain log path")
+	}
+
+	// Must write timestamp header to log file
+	if !strings.Contains(script, "[oneshot] starting at") {
+		t.Error("script must write start timestamp to log")
+	}
+
+	// Must redirect stderr to stdout so errors are captured (both branches)
+	if !strings.Contains(script, "2>&1 | tee") {
+		t.Error("script must redirect stderr to stdout for error capture")
+	}
+
+	// Verify both branches of the 'if command -v script' conditional include logging
+	// Extract the conditional block to verify both branches
+	scriptLines := strings.Split(script, "\n")
+	inConditional := false
+	conditionalStart := -1
+	conditionalEnd := -1
+	for i, line := range scriptLines {
+		if strings.Contains(line, "if command -v script >/dev/null 2>&1; then") {
+			inConditional = true
+			conditionalStart = i
+		}
+		if inConditional && line == "fi" {
+			conditionalEnd = i
+			break
+		}
+	}
+	if conditionalStart == -1 || conditionalEnd == -1 {
+		t.Fatal("could not find 'if command -v script' conditional block")
+	}
+
+	// Check that both branches (script and fallback) include tee for logging
+	conditionalBlock := strings.Join(scriptLines[conditionalStart:conditionalEnd+1], "\n")
+	// Both branches should have 2>&1 and tee
+	if !strings.Contains(conditionalBlock, "2>&1 | tee \"$AGENT_LOG\"") {
+		t.Error("both branches of 'if command -v script' must include '2>&1 | tee \"$AGENT_LOG\"' for output capture")
 	}
 }
 
@@ -1181,33 +1220,6 @@ func TestBuildScriptMkdirBeforeCD(t *testing.T) {
 				t.Fatalf("mkdir (line %d) must come before cd (line %d)", mkdirIdx, cdIdx)
 			}
 		})
-	}
-}
-
-func TestBuildOneShotScriptCapturesLogs(t *testing.T) {
-	t.Parallel()
-
-	logPath := "/home/sprite/workspace/logs/agent-oneshot.log"
-	script := buildOneShotScript("/home/sprite/workspace", "/home/sprite/workspace/.dispatch-prompt.md", logPath)
-
-	// Must create log directory
-	if !strings.Contains(script, "mkdir -p '/home/sprite/workspace/logs'") {
-		t.Error("script must create logs directory")
-	}
-
-	// Must write timestamp header to log file
-	if !strings.Contains(script, "[oneshot] starting at") {
-		t.Error("script must write start timestamp to log")
-	}
-
-	// Must use tee (without -a) to truncate and capture output each dispatch
-	if !strings.Contains(script, `| tee "$AGENT_LOG"`) {
-		t.Error("script must pipe output to tee for log capture")
-	}
-
-	// Must redirect stderr to stdout so errors are captured
-	if !strings.Contains(script, "2>&1 | tee") {
-		t.Error("script must redirect stderr to stdout for error capture")
 	}
 }
 
