@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/misty-step/bitterblossom/internal/contracts"
 	"github.com/misty-step/bitterblossom/internal/fleet"
 	"github.com/misty-step/bitterblossom/internal/shellutil"
 	"github.com/misty-step/bitterblossom/internal/sprite"
@@ -248,6 +249,49 @@ func SpriteDetail(ctx context.Context, cli sprite.SpriteCLI, cfg Config, name st
 				}
 			}
 			result.Metadata = detail.Metadata
+		}
+	}
+
+	// Check if sprite is actively running an agent by verifying PID files.
+	// This ensures we don't report "busy" for stale STATUS.json left behind after
+	// a dispatch completes (the "sticky busy" problem).
+	dispatchStateCmd := `agent_pid=""; [ -f "$HOME/agent.pid" ] && agent_pid="$(cat "$HOME/agent.pid" 2>/dev/null || true)"; ralph_pid=""; [ -f "$HOME/ralph.pid" ] && ralph_pid="$(cat "$HOME/ralph.pid" 2>/dev/null || true)"; running="no"; if [ -n "$agent_pid" ] && kill -0 "$agent_pid" 2>/dev/null; then running="yes"; elif [ -n "$ralph_pid" ] && kill -0 "$ralph_pid" 2>/dev/null; then running="yes"; fi; status_json=""; [ -f "$HOME/workspace/STATUS.json" ] && status_json="$(cat "$HOME/workspace/STATUS.json" 2>/dev/null || true)"; echo "AGENT_RUNNING=$running"; echo "STATUS_JSON=$status_json"`
+	dispatchStateOutput, dispatchStateErr := cli.Exec(ctx, name, dispatchStateCmd, nil)
+	agentRunning := false
+	var dispatchTask, dispatchRepo string
+	if dispatchStateErr == nil && dispatchStateOutput != "" {
+		for _, line := range strings.Split(dispatchStateOutput, "\n") {
+			if strings.HasPrefix(line, "AGENT_RUNNING=") {
+				agentRunning = strings.TrimSpace(strings.TrimPrefix(line, "AGENT_RUNNING=")) == "yes"
+			} else if strings.HasPrefix(line, "STATUS_JSON=") {
+				statusJSON := strings.TrimSpace(strings.TrimPrefix(line, "STATUS_JSON="))
+				if statusJSON != "" {
+					var dispatch contracts.StatusFile
+					if decodeErr := json.Unmarshal([]byte(statusJSON), &dispatch); decodeErr == nil {
+						dispatchTask = strings.TrimSpace(dispatch.Task)
+						dispatchRepo = dispatch.Repo
+					}
+				}
+			}
+		}
+	}
+
+	// Only report busy if agent is actually running AND has a task
+	if agentRunning && dispatchTask != "" {
+		result.State = StateBusy
+		if result.CurrentTask == nil {
+			result.CurrentTask = &TaskInfo{
+				Description: dispatchTask,
+				Repo:        dispatchRepo,
+			}
+		} else {
+			// Enhance existing task info if missing
+			if result.CurrentTask.Description == "" {
+				result.CurrentTask.Description = dispatchTask
+			}
+			if result.CurrentTask.Repo == "" {
+				result.CurrentTask.Repo = dispatchRepo
+			}
 		}
 	}
 
