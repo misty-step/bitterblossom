@@ -5,6 +5,7 @@ package contracts
 import (
 	"encoding/json"
 	"io"
+	"time"
 )
 
 // SchemaVersion is the current contract version.
@@ -94,4 +95,58 @@ func writeResponse(w io.Writer, resp Response) error {
 	enc.SetIndent("", "  ")
 	enc.SetEscapeHTML(false)
 	return enc.Encode(resp)
+}
+
+// TaskState represents the state of a task in the ledger.
+type TaskState string
+
+const (
+	TaskStatePending    TaskState = "pending"
+	TaskStateSettingUp  TaskState = "setting_up"
+	TaskStateRunning    TaskState = "running"
+	TaskStateBlocked    TaskState = "blocked"
+	TaskStateCompleted  TaskState = "completed"
+	TaskStateFailed     TaskState = "failed"
+	TaskStateUnknown    TaskState = "unknown"
+	TaskStateStale      TaskState = "stale"
+)
+
+// ProbeStatus represents the result of a remote probe.
+type ProbeStatus string
+
+const (
+	ProbeStatusUnknown  ProbeStatus = "unknown"
+	ProbeStatusSuccess  ProbeStatus = "success"
+	ProbeStatusFailed   ProbeStatus = "failed"
+	ProbeStatusDegraded ProbeStatus = "degraded"
+)
+
+// TaskSnapshot is the materialized latest-state snapshot for a sprite/task.
+// This is returned by the ledger for non-blocking status queries.
+type TaskSnapshot struct {
+	Sprite        string      `json:"sprite"`
+	TaskID        string      `json:"task_id"`
+	Repo          string      `json:"repo,omitempty"`
+	Branch        string      `json:"branch,omitempty"`
+	Issue         int         `json:"issue,omitempty"`
+	State         TaskState   `json:"state"`
+	LastSeenAt    *time.Time  `json:"last_seen_at,omitempty"`
+	FreshnessAge  time.Duration `json:"freshness_age_ns,omitempty"`
+	ProbeStatus   ProbeStatus `json:"probe_status"`
+	Error         string      `json:"error,omitempty"`
+	BlockedReason string      `json:"blocked_reason,omitempty"`
+	EventCount    int         `json:"event_count"`
+	StartedAt     *time.Time  `json:"started_at,omitempty"`
+	CompletedAt   *time.Time  `json:"completed_at,omitempty"`
+}
+
+// FleetLedgerStatus represents the fleet status derived from the ledger.
+// This is used for non-blocking status queries.
+type FleetLedgerStatus struct {
+	Sprites      []TaskSnapshot `json:"sprites"`
+	Total        int            `json:"total"`
+	FromCache    bool           `json:"from_cache"`
+	GeneratedAt  time.Time      `json:"generated_at"`
+	StaleCount   int            `json:"stale_count"`
+	UnknownCount int            `json:"unknown_count"`
 }

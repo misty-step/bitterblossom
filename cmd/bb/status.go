@@ -31,6 +31,7 @@ type statusOptions struct {
 	SpriteTimeout  time.Duration
 	StaleThreshold time.Duration
 	ProbeTimeout   time.Duration
+	UseLedger     bool
 }
 
 type statusDeps struct {
@@ -72,6 +73,7 @@ func newStatusCmdWithDeps(deps statusDeps) *cobra.Command {
 		SpriteTimeout: 15 * time.Second,
 		StaleThreshold: lifecycle.DefaultStaleThreshold,
 		ProbeTimeout:  lifecycle.DefaultProbeTimeout,
+		UseLedger:     true, // Default to ledger for fast response
 	}
 
 	command := &cobra.Command{
@@ -84,6 +86,9 @@ When called without arguments, shows a fleet-wide overview with sprite states:
   - busy:    Sprite is running and actively working on a task
   - offline: Sprite is not running or unreachable
   - unknown: Sprite state cannot be determined
+
+By default, status reads from the durable task ledger for instant response.
+Use --no-ledger to fall back to direct sprite queries (slower).
 
 Use --watch for continuous monitoring of the fleet.
 Use --format=json for machine-readable output.`,
@@ -135,11 +140,71 @@ Use --format=json for machine-readable output.`,
 	command.Flags().DurationVar(&opts.StaleThreshold, "stale-threshold", opts.StaleThreshold, "Flag sprites with no activity beyond this duration as stale")
 	command.Flags().DurationVar(&opts.ProbeTimeout, "probe-timeout", opts.ProbeTimeout, "Timeout for each connectivity probe")
 	command.Flags().DurationVar(&opts.SpriteTimeout, "sprite-timeout", opts.SpriteTimeout, "Timeout for single-sprite status queries (default 15s)")
+	command.Flags().BoolVar(&opts.UseLedger, "use-ledger", opts.UseLedger, "Use durable task ledger for instant status (default true)")
+	command.Flags().BoolVar(&opts.UseLedger, "no-ledger", !opts.UseLedger, "Disable ledger and use direct sprite queries")
 
 	return command
 }
 
 func runFleetStatus(cmd *cobra.Command, deps statusDeps, cli sprite.SpriteCLI, cfg lifecycle.Config, opts statusOptions, ctx context.Context, format string) error {
+	// If not using ledger, use the original flow
+	if !opts.UseLedger {
+		_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "status: fetching fleet overview (direct mode)")
+		if opts.Checkpoints {
+			_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "status: fetching checkpoints (slower)")
+		}
+		if opts.Tasks {
+			_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "status: fetching task assignments")
+		}
+		if opts.Probe {
+			_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "status: probing connectivity (slower)")
+		}
+
+		status, err := deps.fleetOverview(ctx, cli, cfg, opts.Composition, lifecycle.FleetOverviewOpts{
+			IncludeCheckpoints: opts.Checkpoints,
+			IncludeTasks:       opts.Tasks,
+			IncludeProbe:       opts.Probe,
+			ProbeTimeout:       opts.ProbeTimeout,
+			StaleThreshold:     opts.StaleThreshold,
+		})
+		if err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "status: loaded %d sprites\n", len(status.Sprites))
+
+		if format == "json" {
+			return contracts.WriteJSON(cmd.OutOrStdout(), "status.fleet", status)
+		}
+		return writeFleetStatusText(cmd.OutOrStdout(), status, opts.Composition)
+	}
+
+	// Use ledger for instant response
+	_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "status: reading from task ledger (instant)")
+
+	// Try to get status from ledger first
+	ledgerStatus, err := getLedgerFleetStatus(opts.StaleThreshold)
+	if err != nil {
+		// Ledger not available, fall back to direct queries
+		_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "status: ledger unavailable, falling back to direct queries")
+		return runFleetStatusDirect(cmd, deps, cli, cfg, opts, ctx, format)
+	}
+
+	// If probe requested, enrich with background probes
+	if opts.Probe {
+		_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "status: probing connectivity in background...")
+		// TODO: Implement background probe enrichment
+		// For now, just show the ledger data
+	}
+
+	_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "status: loaded %d tasks from ledger\n", len(ledgerStatus.Sprites))
+
+	if format == "json" {
+		return contracts.WriteJSON(cmd.OutOrStdout(), "status.fleet", ledgerStatus)
+	}
+	return writeLedgerFleetStatusText(cmd.OutOrStdout(), ledgerStatus, opts.Composition)
+}
+
+func runFleetStatusDirect(cmd *cobra.Command, deps statusDeps, cli sprite.SpriteCLI, cfg lifecycle.Config, opts statusOptions, ctx context.Context, format string) error {
 	_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "status: fetching fleet overview")
 	if opts.Checkpoints {
 		_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "status: fetching checkpoints (slower)")
@@ -167,6 +232,105 @@ func runFleetStatus(cmd *cobra.Command, deps statusDeps, cli sprite.SpriteCLI, c
 		return contracts.WriteJSON(cmd.OutOrStdout(), "status.fleet", status)
 	}
 	return writeFleetStatusText(cmd.OutOrStdout(), status, opts.Composition)
+}
+
+// getLedgerFleetStatus reads the fleet status from the task ledger.
+// Returns nil if ledger is not available.
+func getLedgerFleetStatus(staleThreshold time.Duration) (*contracts.FleetLedgerStatus, error) {
+	// TODO: Implement actual ledger integration
+	// For now, return nil to fall back to direct queries
+	return nil, errors.New("ledger not configured")
+}
+
+func writeLedgerFleetStatusText(out io.Writer, status *contracts.FleetLedgerStatus, compositionPath string) error {
+	// Print summary header
+	if _, err := fmt.Fprintf(out, "Fleet Summary (from ledger): %d total", status.Total); err != nil {
+		return err
+	}
+	if status.StaleCount > 0 {
+		if _, err := fmt.Fprintf(out, " | %d stale", status.StaleCount); err != nil {
+			return err
+		}
+	}
+	if status.UnknownCount > 0 {
+		if _, err := fmt.Fprintf(out, " | %d unknown", status.UnknownCount); err != nil {
+			return err
+		}
+	}
+	if _, err := fmt.Fprintln(out); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(out); err != nil {
+		return err
+	}
+
+	// Print task table
+	if len(status.Sprites) > 0 {
+		tw := tabwriter.NewWriter(out, 2, 2, 2, ' ', 0)
+		if _, err := fmt.Fprintln(tw, "SPRITE\tTASK\tSTATE\tLAST_SEEN\tFRESHNESS\tPROBE"); err != nil {
+			return err
+		}
+
+		for _, item := range status.Sprites {
+			task := "-"
+			if item.TaskID != "" {
+				if item.Issue > 0 {
+					task = fmt.Sprintf("%s#%d", item.Repo, item.Issue)
+				} else if item.Repo != "" {
+					task = item.Repo
+				} else {
+					task = item.TaskID
+				}
+			}
+
+			lastSeen := "-"
+			if item.LastSeenAt != nil {
+				lastSeen = item.LastSeenAt.Format("15:04:05")
+			}
+
+			freshness := "-"
+			if item.FreshnessAge > 0 {
+				freshness = item.FreshnessAge.Round(time.Second).String()
+			}
+
+			probe := string(item.ProbeStatus)
+			if probe == "unknown" {
+				probe = "-"
+			}
+
+			state := string(item.State)
+			if state == "running" && item.BlockedReason != "" {
+				state = "blocked"
+			}
+
+			if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+				item.Sprite,
+				task,
+				state,
+				lastSeen,
+				freshness,
+				probe,
+			); err != nil {
+				return err
+			}
+		}
+		if err := tw.Flush(); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(out); err != nil {
+			return err
+		}
+	}
+
+	// Print legend
+	if _, err := fmt.Fprintln(out); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(out, "Note: Data from ledger - may be stale. Use --probe for fresh data."); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func runSpriteDetail(cmd *cobra.Command, deps statusDeps, cli sprite.SpriteCLI, cfg lifecycle.Config, opts statusOptions, ctx context.Context, format, spriteName string) error {

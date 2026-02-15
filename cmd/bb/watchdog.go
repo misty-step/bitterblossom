@@ -15,14 +15,17 @@ import (
 )
 
 type watchdogOptions struct {
-	Sprites       []string
-	Execute       bool
-	DryRun        bool
-	JSON          bool
-	StaleAfter    time.Duration
-	MaxIterations int
-	Org           string
-	SpriteCLI     string
+	Sprites        []string
+	Execute        bool
+	DryRun         bool
+	JSON           bool
+	StaleAfter     time.Duration
+	MaxIterations  int
+	Org            string
+	SpriteCLI      string
+	UseLedger     bool
+	FreshnessSLO   time.Duration
+	ProbeTimeout   time.Duration
 }
 
 type watchdogDeps struct {
@@ -54,17 +57,32 @@ func newWatchdogCmdWithDeps(deps watchdogDeps) *cobra.Command {
 		MaxIterations: watchdogsvc.DefaultMaxRalphIterations,
 		Org:           strings.TrimSpace(os.Getenv("FLY_ORG")),
 		SpriteCLI:     strings.TrimSpace(os.Getenv("SPRITE_CLI")),
+		UseLedger:     false, // Default to direct mode for watchdog to ensure accurate state
+		FreshnessSLO:  5 * time.Minute, // Default SLO for freshness
+		ProbeTimeout:  10 * time.Second,
 	}
 
 	command := &cobra.Command{
 		Use:   "watchdog",
 		Short: "Run fleet health checks and optionally redispatch dead sprites",
+		Long: `Run fleet health checks and optionally redispatch dead sprites.
+
+By default, watchdog probes sprites directly to determine state. Use --use-ledger
+to read from the durable task ledger for faster, non-blocking operation. The ledger
+mode uses freshness SLOs to classify stale/unknown/degraded sprites without blocking.
+
+Freshness SLO (--freshness-slo) defines the maximum acceptable age for task state.
+Sprites exceeding this threshold are flagged as stale or unknown.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if opts.Execute {
 				opts.DryRun = false
 			}
 			if !opts.Execute && cmd.Flags().Changed("dry-run") && !opts.DryRun {
 				return errors.New("watchdog: --dry-run=false requires --execute")
+			}
+
+			if opts.UseLedger {
+				return runWatchdogWithLedger(cmd, opts)
 			}
 
 			remote := deps.newRemote(opts.SpriteCLI, opts.Org)
@@ -106,8 +124,20 @@ func newWatchdogCmdWithDeps(deps watchdogDeps) *cobra.Command {
 	command.Flags().IntVar(&opts.MaxIterations, "max-iterations", opts.MaxIterations, "MAX_ITERATIONS for redispatch recovery")
 	command.Flags().StringVar(&opts.Org, "org", opts.Org, "Sprite org passed to sprite CLI")
 	command.Flags().StringVar(&opts.SpriteCLI, "sprite-cli", opts.SpriteCLI, "Sprite CLI binary path")
+	command.Flags().BoolVar(&opts.UseLedger, "use-ledger", opts.UseLedger, "Use ledger for non-blocking status (faster)")
+	command.Flags().DurationVar(&opts.FreshnessSLO, "freshness-slo", opts.FreshnessSLO, "Freshness SLO threshold for ledger mode")
+	command.Flags().DurationVar(&opts.ProbeTimeout, "probe-timeout", opts.ProbeTimeout, "Timeout for connectivity probes")
 
 	return command
+}
+
+// runWatchdogWithLedger runs watchdog using the ledger for non-blocking operation.
+func runWatchdogWithLedger(cmd *cobra.Command, opts watchdogOptions) error {
+	_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "watchdog: reading from task ledger (non-blocking)")
+
+	// TODO: Implement actual ledger integration
+	// For now, return an error indicating ledger mode is not yet implemented
+	return errors.New("watchdog: ledger mode not yet implemented - use direct mode")
 }
 
 func renderWatchdogReport(cmd *cobra.Command, report watchdogsvc.Report, jsonMode bool) error {
