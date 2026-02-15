@@ -22,12 +22,13 @@ import (
 
 // Exit codes for dispatch --wait command
 const (
-	exitCodeSuccess          = 0
-	exitCodeDispatchFailure  = 1
-	exitCodeAgentNoSignals   = 2
-	exitCodeNoNewWork        = 3 // Agent completed but produced no new commits/PRs
-	exitCodePartialWork      = 4 // Agent modified files but didn't commit
-	exitCodeTimeout          = 124
+	exitCodeSuccess             = 0
+	exitCodeDispatchFailure     = 1
+	exitCodeAgentNoSignals      = 2
+	exitCodeNoNewWork           = 3 // Agent completed but produced no new commits/PRs
+	exitCodePartialWork         = 4 // Agent modified files but didn't commit
+	exitCodeWorkDeltaFailed     = 5 // Work delta verification failed (e.g., I/O timeout)
+	exitCodeTimeout             = 124
 )
 
 type dispatchOptions struct {
@@ -91,10 +92,12 @@ type waitResult struct {
 	Complete      bool   `json:"complete"`
 	Error         string `json:"error,omitempty"`
 	// Work delta tracking
-	Commits    int  `json:"commits,omitempty"`
-	PRs        int  `json:"prs,omitempty"`
-	HasChanges bool `json:"has_changes,omitempty"`
-	DirtyFiles int  `json:"dirty_files,omitempty"`
+	Commits         int    `json:"commits,omitempty"`
+	PRs             int    `json:"prs,omitempty"`
+	HasChanges      bool   `json:"has_changes,omitempty"`
+	DirtyFiles      int    `json:"dirty_files,omitempty"`
+	WorkDeltaFailed bool   `json:"work_delta_failed,omitempty"`
+	WorkDeltaError  string `json:"work_delta_error,omitempty"`
 }
 
 func defaultDispatchDeps() dispatchDeps {
@@ -389,13 +392,15 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 				// Ralph mode still polls because the agent continues running in the background.
 				if result.State == dispatchsvc.StateCompleted && !opts.Ralph {
 					waitRes := &waitResult{
-						State:      "completed",
-						Task:       result.Task,
-						Complete:   true,
-						Commits:    result.Work.Commits,
-						PRs:        result.Work.PRs,
-						HasChanges: result.Work.HasChanges,
-						DirtyFiles: result.Work.DirtyFiles,
+						State:           "completed",
+						Task:            result.Task,
+						Complete:        true,
+						Commits:         result.Work.Commits,
+						PRs:             result.Work.PRs,
+						HasChanges:      result.Work.HasChanges,
+						DirtyFiles:      result.Work.DirtyFiles,
+						WorkDeltaFailed: result.Work.VerificationFailed,
+						WorkDeltaError:  result.Work.VerificationError,
 					}
 					if err := renderWaitResult(cmd, result, waitRes, opts.JSON); err != nil {
 						return err
@@ -674,7 +679,16 @@ func renderWaitResult(cmd *cobra.Command, dispatchResult dispatchsvc.Result, wai
 			}
 		}
 	} else if waitRes.Complete {
-		if waitRes.HasChanges {
+		if waitRes.WorkDeltaFailed {
+			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Status: VERIFICATION FAILED (could not verify work outcome)\n"); err != nil {
+				return err
+			}
+			if waitRes.WorkDeltaError != "" {
+				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Error: %s\n", waitRes.WorkDeltaError); err != nil {
+					return err
+				}
+			}
+		} else if waitRes.HasChanges {
 			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Status: COMPLETE\n"); err != nil {
 				return err
 			}
@@ -731,12 +745,19 @@ func newTimeoutResult(startTime time.Time) (*waitResult, error) {
 //	2: dispatch completed but agent didn't produce expected signals (idle without completion)
 //	3: dispatch completed but produced no new work (completed without changes)
 //	4: dispatch completed with uncommitted changes (agent modified files but didn't commit)
+//	5: work delta verification failed (e.g., I/O timeout checking outcome)
 //	124: timeout reached while waiting
 func waitExitError(waitRes *waitResult) error {
 	switch waitRes.State {
 	case "timeout":
 		return &exitError{Code: exitCodeTimeout, Err: errors.New("timeout reached while waiting for task completion")}
 	case "completed":
+		// Check for work delta verification failure FIRST — this is distinct from
+		// "verified zero work" (exit 3) or "verified partial work" (exit 4).
+		// Verification failure means we couldn't check the outcome, not that there was no work.
+		if waitRes.WorkDeltaFailed {
+			return &exitError{Code: exitCodeWorkDeltaFailed, Err: fmt.Errorf("work delta check failed: could not verify outcome: %s", waitRes.WorkDeltaError)}
+		}
 		if waitRes.HasChanges {
 			return nil // Success: new work was produced
 		}

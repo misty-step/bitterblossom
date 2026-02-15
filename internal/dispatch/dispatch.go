@@ -151,6 +151,11 @@ type WorkDelta struct {
 	// DirtyFiles is the number of uncommitted changed files (staged + unstaged).
 	// Non-zero when the agent modified files but didn't commit.
 	DirtyFiles int `json:"dirty_files,omitempty"`
+	// VerificationFailed is true when work delta calculation failed (e.g., I/O timeout).
+	// This is distinct from HasChanges=false — it means we couldn't verify the outcome.
+	VerificationFailed bool `json:"verification_failed,omitempty"`
+	// VerificationError holds the error message when VerificationFailed is true.
+	VerificationError string `json:"verification_error,omitempty"`
 }
 
 // Result is returned from Run.
@@ -544,7 +549,11 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 		if prepared.Repo.RepoDir != "" && preExecSHA != "" {
 			work, err := s.calculateWorkDelta(ctx, prepared.Sprite, prepared.Repo.RepoDir, preExecSHA)
 			if err != nil {
-				s.logger.Warn("failed to calculate work delta", "sprite", prepared.Sprite, "error", err)
+				s.logger.Error("work delta verification failed", "sprite", prepared.Sprite, "error", err)
+				result.Work = WorkDelta{
+					VerificationFailed: true,
+					VerificationError:  err.Error(),
+				}
 			} else {
 				result.Work = work
 				s.logger.Info("calculated work delta", "sprite", prepared.Sprite, "commits", work.Commits, "prs", work.PRs, "has_changes", work.HasChanges, "dirty_files", work.DirtyFiles)

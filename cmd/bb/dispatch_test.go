@@ -1550,3 +1550,85 @@ func TestDispatchWaitPollsWhenRalphMode(t *testing.T) {
 		t.Fatal("expected pollSprite to be called for Ralph mode even if StateRunning")
 	}
 }
+
+// TestDispatchWaitWorkDeltaVerificationFailed verifies that when work delta
+// calculation fails (e.g., I/O timeout), the output shows VERIFICATION FAILED
+// status and exits with code 5 (not code 3 which would indicate "no new work").
+// This addresses issue #356.
+func TestDispatchWaitWorkDeltaVerificationFailed(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "ghp-test")
+	t.Setenv("OPENROUTER_API_KEY", "or-test")
+
+	runner := &fakeDispatchRunner{
+		result: dispatchsvc.Result{
+			Executed: true,
+			State:    dispatchsvc.StateCompleted,
+			Plan: dispatchsvc.Plan{
+				Sprite: "fern",
+				Mode:   "execute",
+				Steps:  []dispatchsvc.PlanStep{{Kind: dispatchsvc.StepStartAgent, Description: "start"}},
+			},
+			Work: dispatchsvc.WorkDelta{
+				VerificationFailed: true,
+				VerificationError:  "capture post-exec HEAD SHA: exec timeout: i/o timeout",
+			},
+		},
+	}
+
+	deps := dispatchDeps{
+		readFile: func(string) ([]byte, error) { return nil, nil },
+		newFlyClient: func(token, apiURL string) (fly.MachineClient, error) {
+			return fakeFlyClient{}, nil
+		},
+		newRemote: func(binary, org string) *spriteCLIRemote {
+			return &spriteCLIRemote{}
+		},
+		newService: func(cfg dispatchsvc.Config) (dispatchRunner, error) {
+			return runner, nil
+		},
+		pollSprite: func(ctx context.Context, remote *spriteCLIRemote, sprite string, timeout time.Duration, progress func(string)) (*waitResult, error) {
+			t.Fatal("pollSprite should not be called for oneshot completed state")
+			return nil, nil
+		},
+	}
+
+	cmd := newDispatchCmdWithDeps(deps)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{
+		"fern",
+		"Fix issue",
+		"--execute",
+		"--wait",
+		"--timeout", "5m",
+		"--app", "bb-app",
+		"--token", "tok",
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for work delta verification failure, got nil")
+	}
+
+	// Verify exit code 5 (not 3 which would mean "no new work")
+	exitErr, ok := err.(*exitError)
+	if !ok {
+		t.Fatalf("expected exitError, got: %T", err)
+	}
+	if exitErr.Code != 5 {
+		t.Fatalf("expected exit code 5 (work delta verification failed), got: %d", exitErr.Code)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "VERIFICATION FAILED") {
+		t.Fatalf("expected output to contain 'VERIFICATION FAILED', got: %s", output)
+	}
+	if !strings.Contains(output, "i/o timeout") {
+		t.Fatalf("expected output to contain error message 'i/o timeout', got: %s", output)
+	}
+	// Ensure we don't show "no new work" which would be misleading
+	if strings.Contains(output, "no new work") {
+		t.Fatalf("output should NOT contain 'no new work' for verification failure, got: %s", output)
+	}
+}
