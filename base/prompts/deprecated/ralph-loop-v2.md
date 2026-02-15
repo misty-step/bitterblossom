@@ -1,4 +1,17 @@
-# Ralph Loop v2 — Self-Healing PR Workflow
+# [DEPRECATED] Ralph Loop v2 — Self-Healing PR Workflow
+
+> ⚠️ **DEPRECATED**: This template contains stale patterns that no longer match current Bitterblossom behavior.
+>
+> Use the canonical template instead: `scripts/ralph-prompt-template.md`
+>
+> Known issues in this file:
+> - Step 6 references `TASK_COMPLETE` print to stdout — completion detection expects a **file**, not stdout
+> - Git config references outdated `kaylee-mistystep` identity (superseded by per-sprite credentials)
+> - Missing required flags: `--dangerously-skip-permissions` and `--output-format stream-json`
+>
+> This file is preserved for historical reference only. Do not use for new dispatches.
+
+---
 
 ## Overview
 Sprites don't just open PRs — they **shepherd them to merge-ready**.
