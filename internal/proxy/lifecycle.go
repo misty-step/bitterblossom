@@ -274,7 +274,11 @@ func (l *Lifecycle) CollectDiagnostics(ctx context.Context, sprite string) (*Dia
 	}
 
 	// For other errors, return diagnostics with error annotations
-	return d, nil
+	return &Diagnostics{
+		MemoryAvailable: fmt.Sprintf("diagnostics failed: %v", err),
+		ProcessList:     fmt.Sprintf("diagnostics failed: %v", err),
+		ProxyLogTail:    fmt.Sprintf("diagnostics failed: %v", err),
+	}, nil
 }
 
 // collectDiagnosticsAtomic gathers all diagnostics in a single exec call.
@@ -340,7 +344,8 @@ func (l *Lifecycle) collectDiagnosticsFresh(ctx context.Context, sprite string) 
 	}
 
 	// Create a fresh context with shorter timeout for recovery attempt
-	freshCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Use parent ctx to respect any existing deadline
+	freshCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	// Try each diagnostic individually with the fresh context
