@@ -237,15 +237,15 @@ func TestSpriteDetailIncorporatesDispatchStatus(t *testing.T) {
 			return `{"name":"fern","status":"running","state":"idle","uptime":"1h30m","queue_depth":0}`, nil
 		},
 		ExecFn: func(_ context.Context, _ string, command string, _ []byte) (string, error) {
+			if strings.Contains(command, "AGENT_RUNNING=") {
+				// Agent is running and has a task
+				return "AGENT_RUNNING=yes\nSTATUS_JSON={\"repo\":\"misty-step/bitterblossom\",\"task\":\"Fix bug #368\"}", nil
+			}
 			if strings.Contains(command, "ls -la") && strings.Contains(command, "workspace") {
 				return "workspace listing", nil
 			}
 			if strings.Contains(command, "head -20") && strings.Contains(command, "MEMORY.md") {
 				return "memory lines", nil
-			}
-			if strings.Contains(command, "STATUS.json") {
-				// STATUS.json shows active dispatch (like watchdog sees)
-				return `{"repo":"misty-step/bitterblossom","started":"2026-02-14T21:30:00Z","mode":"oneshot","task":"Fix bug #368"}`, nil
 			}
 			return "", nil
 		},
@@ -286,15 +286,15 @@ func TestSpriteDetailHandlesMissingStatusJSON(t *testing.T) {
 			return `{"name":"fern","status":"running","state":"idle","uptime":"1h30m","queue_depth":0}`, nil
 		},
 		ExecFn: func(_ context.Context, _ string, command string, _ []byte) (string, error) {
+			if strings.Contains(command, "AGENT_RUNNING=") {
+				// Agent is not running, so state should remain idle even with STATUS.json
+				return "AGENT_RUNNING=no\nSTATUS_JSON={\"repo\":\"misty-step/bitterblossom\",\"task\":\"Old task\"}", nil
+			}
 			if strings.Contains(command, "ls -la") && strings.Contains(command, "workspace") {
 				return "workspace listing", nil
 			}
 			if strings.Contains(command, "head -20") && strings.Contains(command, "MEMORY.md") {
 				return "memory lines", nil
-			}
-			if strings.Contains(command, "STATUS.json") {
-				// STATUS.json doesn't exist (empty output from cat)
-				return "", nil
 			}
 			return "", nil
 		},
