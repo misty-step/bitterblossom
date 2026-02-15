@@ -310,7 +310,7 @@ func writeFleetStatusText(out io.Writer, status lifecycle.FleetStatus, compositi
 			if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
 				item.Name,
 				spriteStateLabel(item),
-				item.Status,
+				formatSpriteStatus(item),
 				taskInfo,
 				uptime,
 				truncateString(url, 35),
@@ -557,4 +557,19 @@ func truncateString(s string, maxLen int) string {
 func isRunningStatus(state string) bool {
 	s := strings.ToLower(state)
 	return s == "idle" || s == "busy" || s == "operational"
+}
+
+// formatSpriteStatus reconciles the API status with the task state.
+// If the API reports "running" but no task is assigned, display "warm"
+// to accurately reflect the operational state (idle but warm).
+func formatSpriteStatus(item lifecycle.SpriteStatus) string {
+	status := strings.ToLower(item.Status)
+
+	// If status is "running" but no task is assigned, show "warm" instead
+	if status == "running" && item.CurrentTask == nil {
+		return "warm"
+	}
+
+	return item.Status
+}
 }
