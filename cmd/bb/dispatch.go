@@ -22,13 +22,13 @@ import (
 
 // Exit codes for dispatch --wait command
 const (
-	exitCodeSuccess             = 0
-	exitCodeDispatchFailure     = 1
-	exitCodeAgentNoSignals      = 2
-	exitCodeNoNewWork           = 3 // Agent completed but produced no new commits/PRs
-	exitCodePartialWork         = 4 // Agent modified files but didn't commit
-	exitCodeWorkDeltaFailed     = 5 // Work delta verification failed (e.g., I/O timeout)
-	exitCodeTimeout             = 124
+	exitCodeSuccess         = 0
+	exitCodeDispatchFailure = 1
+	exitCodeAgentNoSignals  = 2
+	exitCodeNoNewWork       = 3 // Agent completed but produced no new commits/PRs
+	exitCodePartialWork     = 4 // Agent modified files but didn't commit
+	exitCodeWorkDeltaFailed = 5 // Work delta verification failed (e.g., I/O timeout)
+	exitCodeTimeout         = 124
 )
 
 type dispatchOptions struct {
@@ -65,14 +65,14 @@ type dispatchOptions struct {
 }
 
 type dispatchDeps struct {
-	readFile       func(path string) ([]byte, error)
-	newFlyClient   func(token, apiURL string) (fly.MachineClient, error)
-	newRemote      func(binary, org string) *spriteCLIRemote
-	newService     func(cfg dispatchsvc.Config) (dispatchRunner, error)
-	selectSprite   func(ctx context.Context, remote *spriteCLIRemote, opts dispatchOptions) (string, error)
-	pollSprite     func(ctx context.Context, remote *spriteCLIRemote, sprite string, timeout time.Duration, progress func(string)) (*waitResult, error)
-	streamLogs     func(ctx context.Context, remote *spriteCLIRemote, sprite string, out func(string)) error
-	stopLogStream  func()
+	readFile      func(path string) ([]byte, error)
+	newFlyClient  func(token, apiURL string) (fly.MachineClient, error)
+	newRemote     func(binary, org string) *spriteCLIRemote
+	newService    func(cfg dispatchsvc.Config) (dispatchRunner, error)
+	selectSprite  func(ctx context.Context, remote *spriteCLIRemote, opts dispatchOptions) (string, error)
+	pollSprite    func(ctx context.Context, remote *spriteCLIRemote, sprite string, timeout time.Duration, progress func(string)) (*waitResult, error)
+	streamLogs    func(ctx context.Context, remote *spriteCLIRemote, sprite string, out func(string)) error
+	stopLogStream func()
 }
 
 type dispatchRunner interface {

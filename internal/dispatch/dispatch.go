@@ -143,20 +143,20 @@ type PlanStep struct {
 type StepKind string
 
 const (
-	StepRegistryLookup     StepKind = "registry_lookup"
-	StepProvision          StepKind = "provision"
-	StepProbeConnectivity  StepKind = "probe_connectivity" // preflight: fast check sprite reachable
-	StepValidateEnv        StepKind = "validate_env"
-	StepValidateWorkspace  StepKind = "validate_workspace"
-	StepCleanSignals       StepKind = "clean_signals"
-	StepUploadScaffold     StepKind = "upload_scaffold"
-	StepValidateIssue      StepKind = "validate_issue"
-	StepSetupRepo          StepKind = "setup_repo"
-	StepUploadSkills       StepKind = "upload_skills"
-	StepUploadPrompt       StepKind = "upload_prompt"
-	StepWriteStatus        StepKind = "write_status"
-	StepEnsureProxy        StepKind = "ensure_proxy"
-	StepStartAgent         StepKind = "start_agent"
+	StepRegistryLookup    StepKind = "registry_lookup"
+	StepProvision         StepKind = "provision"
+	StepProbeConnectivity StepKind = "probe_connectivity" // preflight: fast check sprite reachable
+	StepValidateEnv       StepKind = "validate_env"
+	StepValidateWorkspace StepKind = "validate_workspace"
+	StepCleanSignals      StepKind = "clean_signals"
+	StepUploadScaffold    StepKind = "upload_scaffold"
+	StepValidateIssue     StepKind = "validate_issue"
+	StepSetupRepo         StepKind = "setup_repo"
+	StepUploadSkills      StepKind = "upload_skills"
+	StepUploadPrompt      StepKind = "upload_prompt"
+	StepWriteStatus       StepKind = "write_status"
+	StepEnsureProxy       StepKind = "ensure_proxy"
+	StepStartAgent        StepKind = "start_agent"
 )
 
 // Plan is the rendered execution plan for dry-run or execute mode.
@@ -1594,7 +1594,7 @@ func buildOneShotScript(workspace, promptPath, logPath string) string {
 		"if command -v script >/dev/null 2>&1; then",
 		"  script -qefc " + shellutil.Quote("cat "+shellutil.Quote(promptPath)+" | claude "+claude.FlagSetWithPrefix()) + " /dev/null 2>&1 | tee \"$AGENT_LOG\"",
 		"else",
-		"  cat " + shellutil.Quote(promptPath) + " | claude "+claude.FlagSetWithPrefix()+" 2>&1 | tee \"$AGENT_LOG\"",
+		"  cat " + shellutil.Quote(promptPath) + " | claude " + claude.FlagSetWithPrefix() + " 2>&1 | tee \"$AGENT_LOG\"",
 		"fi",
 		"EXIT_CODE=$?",
 		"echo '[oneshot] exited with code ' $EXIT_CODE ' at ' $(date -Iseconds) >> " + shellutil.Quote(logPath),

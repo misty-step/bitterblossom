@@ -130,10 +130,10 @@ func TestStatusCmdSpriteJSON(t *testing.T) {
 		},
 		spriteDetail: func(context.Context, sprite.SpriteCLI, lifecycle.Config, string) (lifecycle.SpriteDetailResult, error) {
 			return lifecycle.SpriteDetailResult{
-				Name:      "bramble",
-				State:     lifecycle.StateBusy,
-				Workspace: "workspace",
-				Memory:    "memory",
+				Name:        "bramble",
+				State:       lifecycle.StateBusy,
+				Workspace:   "workspace",
+				Memory:      "memory",
 				Checkpoints: "cp-1",
 				CurrentTask: &lifecycle.TaskInfo{
 					ID:          "task-123",
@@ -157,7 +157,7 @@ func TestStatusCmdSpriteJSON(t *testing.T) {
 	}
 
 	var payload struct {
-		Command string                      `json:"command"`
+		Command string                       `json:"command"`
 		Data    lifecycle.SpriteDetailResult `json:"data"`
 	}
 	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
@@ -221,8 +221,8 @@ func TestStatusCmdInvalidFormat(t *testing.T) {
 	t.Parallel()
 
 	deps := statusDeps{
-		getwd:       func() (string, error) { return t.TempDir(), nil },
-		newCLI:      func(string, string) sprite.SpriteCLI { return &sprite.MockSpriteCLI{} },
+		getwd:  func() (string, error) { return t.TempDir(), nil },
+		newCLI: func(string, string) sprite.SpriteCLI { return &sprite.MockSpriteCLI{} },
 		fleetOverview: func(context.Context, sprite.SpriteCLI, lifecycle.Config, string, lifecycle.FleetOverviewOpts) (lifecycle.FleetStatus, error) {
 			return lifecycle.FleetStatus{}, nil
 		},

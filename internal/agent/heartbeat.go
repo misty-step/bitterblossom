@@ -99,7 +99,7 @@ func (h *Heartbeat) Run(ctx context.Context, wg *sync.WaitGroup) {
 
 // ProcessUsage captures a process resource sample.
 type ProcessUsage struct {
-	CPUPercent float64
+	CPUPercent  float64
 	MemoryBytes uint64
 }
 

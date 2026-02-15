@@ -295,10 +295,10 @@ func TestClassifyError(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		err        error
-		wantRetry  bool
-		wantClass  error
+		name      string
+		err       error
+		wantRetry bool
+		wantClass error
 	}{
 		{
 			name:      "nil error",

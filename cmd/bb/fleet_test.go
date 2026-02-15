@@ -372,7 +372,7 @@ func TestFleetCmdInvalidFormat(t *testing.T) {
 	t.Parallel()
 
 	deps := fleetDeps{
-		getwd:       func() (string, error) { return t.TempDir(), nil },
+		getwd: func() (string, error) { return t.TempDir(), nil },
 		loadRegistry: func(path string) (*registry.Registry, error) {
 			return &registry.Registry{Sprites: map[string]registry.SpriteEntry{}}, nil
 		},
@@ -475,8 +475,8 @@ func TestStatusWithEmoji(t *testing.T) {
 
 func TestFormatDuration(t *testing.T) {
 	tests := []struct {
-		d      time.Duration
-		want   string
+		d    time.Duration
+		want string
 	}{
 		{30 * time.Second, "30s"},
 		{5 * time.Minute, "5m"},

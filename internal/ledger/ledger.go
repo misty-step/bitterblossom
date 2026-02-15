@@ -92,14 +92,14 @@ type TaskSnapshot struct {
 type TaskState string
 
 const (
-	TaskStatePending    TaskState = "pending"    // dispatch_started received
-	TaskStateSettingUp  TaskState = "setting_up" // repo_setup_started
-	TaskStateRunning    TaskState = "running"    // agent_started, heartbeat
-	TaskStateBlocked    TaskState = "blocked"    // blocked event
-	TaskStateCompleted  TaskState = "completed"  // completed event
-	TaskStateFailed     TaskState = "failed"     // failed event
-	TaskStateUnknown    TaskState = "unknown"    // no events or stale
-	TaskStateStale      TaskState = "stale"      // no recent events
+	TaskStatePending   TaskState = "pending"    // dispatch_started received
+	TaskStateSettingUp TaskState = "setting_up" // repo_setup_started
+	TaskStateRunning   TaskState = "running"    // agent_started, heartbeat
+	TaskStateBlocked   TaskState = "blocked"    // blocked event
+	TaskStateCompleted TaskState = "completed"  // completed event
+	TaskStateFailed    TaskState = "failed"     // failed event
+	TaskStateUnknown   TaskState = "unknown"    // no events or stale
+	TaskStateStale     TaskState = "stale"      // no recent events
 )
 
 // ProbeStatus represents the result of a remote probe.
@@ -552,9 +552,9 @@ func truncateUTCDate(ts time.Time) time.Time {
 
 // InMemoryStore is a thread-safe in-memory store for testing.
 type InMemoryStore struct {
-	mu      sync.RWMutex
-	events  []TaskEvent
-	now     func() time.Time
+	mu        sync.RWMutex
+	events    []TaskEvent
+	now       func() time.Time
 	snapshots map[string]TaskSnapshot
 }
 
@@ -564,8 +564,8 @@ func NewInMemoryStore(now func() time.Time) *InMemoryStore {
 		now = time.Now
 	}
 	return &InMemoryStore{
-		events:   make([]TaskEvent, 0),
-		now:      now,
+		events:    make([]TaskEvent, 0),
+		now:       now,
 		snapshots: make(map[string]TaskSnapshot),
 	}
 }

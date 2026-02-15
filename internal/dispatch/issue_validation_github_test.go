@@ -11,12 +11,12 @@ import (
 
 // mockGitHubClient is a test implementation of GitHubIssueClient.
 type mockGitHubClient struct {
-	issue   *github.Issue
-	err     error
+	issue          *github.Issue
+	err            error
 	getIssueCalled bool
-	lastOwner string
-	lastRepo  string
-	lastNumber int
+	lastOwner      string
+	lastRepo       string
+	lastNumber     int
 }
 
 func (m *mockGitHubClient) GetIssue(ctx context.Context, owner, repo string, number int) (*github.Issue, error) {
@@ -82,11 +82,11 @@ func TestValidateIssue_WithGitHubClient(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name           string
-		mockIssue      *github.Issue
-		mockErr        error
-		expectedValid  bool
-		expectedError  string
+		name            string
+		mockIssue       *github.Issue
+		mockErr         error
+		expectedValid   bool
+		expectedError   string
 		expectedWarning string
 	}{
 		{
@@ -232,10 +232,10 @@ func TestParseRepoSlug(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		repo          string
-		wantOwner     string
-		wantRepo      string
-		wantErr       bool
+		repo      string
+		wantOwner string
+		wantRepo  string
+		wantErr   bool
 	}{
 		{"owner/repo", "owner", "repo", false},
 		{"misty-step/bitterblossom", "misty-step", "bitterblossom", false},

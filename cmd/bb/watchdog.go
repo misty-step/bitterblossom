@@ -15,17 +15,17 @@ import (
 )
 
 type watchdogOptions struct {
-	Sprites        []string
-	Execute        bool
-	DryRun         bool
-	JSON           bool
-	StaleAfter     time.Duration
-	MaxIterations  int
-	Org            string
-	SpriteCLI      string
+	Sprites       []string
+	Execute       bool
+	DryRun        bool
+	JSON          bool
+	StaleAfter    time.Duration
+	MaxIterations int
+	Org           string
+	SpriteCLI     string
 	UseLedger     bool
-	FreshnessSLO   time.Duration
-	ProbeTimeout   time.Duration
+	FreshnessSLO  time.Duration
+	ProbeTimeout  time.Duration
 }
 
 type watchdogDeps struct {
@@ -57,7 +57,7 @@ func newWatchdogCmdWithDeps(deps watchdogDeps) *cobra.Command {
 		MaxIterations: watchdogsvc.DefaultMaxRalphIterations,
 		Org:           strings.TrimSpace(os.Getenv("FLY_ORG")),
 		SpriteCLI:     strings.TrimSpace(os.Getenv("SPRITE_CLI")),
-		UseLedger:     false, // Default to direct mode for watchdog to ensure accurate state
+		UseLedger:     false,           // Default to direct mode for watchdog to ensure accurate state
 		FreshnessSLO:  5 * time.Minute, // Default SLO for freshness
 		ProbeTimeout:  10 * time.Second,
 	}

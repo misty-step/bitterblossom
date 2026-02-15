@@ -60,14 +60,14 @@ func ValidateFlags(flags []string) error {
 	for _, f := range flags {
 		present[f] = true
 	}
-	
+
 	var missing []string
 	for _, required := range RequiredFlags {
 		if !present[required] {
 			missing = append(missing, required)
 		}
 	}
-	
+
 	if len(missing) > 0 {
 		return &ValidationError{Missing: missing}
 	}

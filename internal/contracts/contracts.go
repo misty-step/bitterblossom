@@ -101,14 +101,14 @@ func writeResponse(w io.Writer, resp Response) error {
 type TaskState string
 
 const (
-	TaskStatePending    TaskState = "pending"
-	TaskStateSettingUp  TaskState = "setting_up"
-	TaskStateRunning    TaskState = "running"
-	TaskStateBlocked    TaskState = "blocked"
-	TaskStateCompleted  TaskState = "completed"
-	TaskStateFailed     TaskState = "failed"
-	TaskStateUnknown    TaskState = "unknown"
-	TaskStateStale      TaskState = "stale"
+	TaskStatePending   TaskState = "pending"
+	TaskStateSettingUp TaskState = "setting_up"
+	TaskStateRunning   TaskState = "running"
+	TaskStateBlocked   TaskState = "blocked"
+	TaskStateCompleted TaskState = "completed"
+	TaskStateFailed    TaskState = "failed"
+	TaskStateUnknown   TaskState = "unknown"
+	TaskStateStale     TaskState = "stale"
 )
 
 // ProbeStatus represents the result of a remote probe.
@@ -124,20 +124,20 @@ const (
 // TaskSnapshot is the materialized latest-state snapshot for a sprite/task.
 // This is returned by the ledger for non-blocking status queries.
 type TaskSnapshot struct {
-	Sprite        string      `json:"sprite"`
-	TaskID        string      `json:"task_id"`
-	Repo          string      `json:"repo,omitempty"`
-	Branch        string      `json:"branch,omitempty"`
-	Issue         int         `json:"issue,omitempty"`
-	State         TaskState   `json:"state"`
-	LastSeenAt    *time.Time  `json:"last_seen_at,omitempty"`
+	Sprite        string        `json:"sprite"`
+	TaskID        string        `json:"task_id"`
+	Repo          string        `json:"repo,omitempty"`
+	Branch        string        `json:"branch,omitempty"`
+	Issue         int           `json:"issue,omitempty"`
+	State         TaskState     `json:"state"`
+	LastSeenAt    *time.Time    `json:"last_seen_at,omitempty"`
 	FreshnessAge  time.Duration `json:"freshness_age_ns,omitempty"`
-	ProbeStatus   ProbeStatus `json:"probe_status"`
-	Error         string      `json:"error,omitempty"`
-	BlockedReason string      `json:"blocked_reason,omitempty"`
-	EventCount    int         `json:"event_count"`
-	StartedAt     *time.Time  `json:"started_at,omitempty"`
-	CompletedAt   *time.Time  `json:"completed_at,omitempty"`
+	ProbeStatus   ProbeStatus   `json:"probe_status"`
+	Error         string        `json:"error,omitempty"`
+	BlockedReason string        `json:"blocked_reason,omitempty"`
+	EventCount    int           `json:"event_count"`
+	StartedAt     *time.Time    `json:"started_at,omitempty"`
+	CompletedAt   *time.Time    `json:"completed_at,omitempty"`
 }
 
 // FleetLedgerStatus represents the fleet status derived from the ledger.

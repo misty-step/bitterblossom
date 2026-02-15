@@ -17,7 +17,7 @@ func TestBuildEnvArgs(t *testing.T) {
 		{
 			name: "multiple vars sorted alphabetically",
 			env: map[string]string{
-				"OPENROUTER_API_KEY":  "sk-or-test",
+				"OPENROUTER_API_KEY":   "sk-or-test",
 				"ANTHROPIC_AUTH_TOKEN": "tok-test",
 			},
 			want: []string{"-env", "ANTHROPIC_AUTH_TOKEN=tok-test,OPENROUTER_API_KEY=sk-or-test"},

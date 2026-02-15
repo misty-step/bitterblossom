@@ -52,10 +52,10 @@ func ParseValidationProfile(s string) ValidationProfile {
 // SafetyCheckResult contains the result of safety layer validation.
 // These checks cannot be bypassed by any validation profile.
 type SafetyCheckResult struct {
-	Valid    bool     `json:"valid"`
-	Errors   []string `json:"errors,omitempty"`
-	Sprite   string   `json:"sprite,omitempty"`
-	Repo     string   `json:"repo,omitempty"`
+	Valid  bool     `json:"valid"`
+	Errors []string `json:"errors,omitempty"`
+	Sprite string   `json:"sprite,omitempty"`
+	Repo   string   `json:"repo,omitempty"`
 }
 
 // PolicyCheckResult contains the result of policy layer validation.
@@ -90,7 +90,6 @@ func (r *CombinedValidationResult) IsSafe() bool {
 func (r *CombinedValidationResult) HasIssues() bool {
 	return len(r.Safety.Errors) > 0 || len(r.Policy.Errors) > 0 || len(r.Policy.Warnings) > 0
 }
-
 
 // IsPolicyCompliant returns true based on the validation profile.
 func (r *CombinedValidationResult) IsPolicyCompliant(profile ValidationProfile) bool {
@@ -173,7 +172,6 @@ func (r *CombinedValidationResult) FormatReport(profile ValidationProfile) strin
 	return strings.Join(lines, "\n")
 }
 
-
 // SafetyValidator performs safety checks that cannot be bypassed.
 type SafetyValidator struct {
 	// SecretChecker validates commands don't contain secrets
@@ -240,8 +238,8 @@ func (v *SafetyValidator) ValidateSafetyWithEnv(ctx context.Context, req Request
 // distinguish real keys from innocent strings like "sk-ants-are-cool".
 var secretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`sk-ant-api[a-zA-Z0-9]`), // Anthropic API keys
-	regexp.MustCompile(`sk-or-v1-[a-f0-9]{8}`),   // OpenRouter API keys
-	regexp.MustCompile(`ghp_[A-Za-z0-9]{4}`),      // GitHub personal access tokens
+	regexp.MustCompile(`sk-or-v1-[a-f0-9]{8}`),  // OpenRouter API keys
+	regexp.MustCompile(`ghp_[A-Za-z0-9]{4}`),    // GitHub personal access tokens
 }
 
 // ContainsSecret reports whether s contains a string matching known API key

@@ -28,11 +28,11 @@ func TestLoadSaveRoundTrip(t *testing.T) {
 		},
 		Sprites: map[string]SpriteEntry{
 			"bramble": {
-				MachineID:      "d8901abc",
-				CreatedAt:      mustParseTime(t, "2026-02-09T20:58:01-08:00"),
-				AssignedIssue:  186,
-				AssignedRepo:   "misty-step/bitterblossom",
-				AssignedAt:     mustParseTime(t, "2026-02-09T21:00:00-08:00"),
+				MachineID:     "d8901abc",
+				CreatedAt:     mustParseTime(t, "2026-02-09T20:58:01-08:00"),
+				AssignedIssue: 186,
+				AssignedRepo:  "misty-step/bitterblossom",
+				AssignedAt:    mustParseTime(t, "2026-02-09T21:00:00-08:00"),
 			},
 			"fern": {
 				MachineID: "e7802def",

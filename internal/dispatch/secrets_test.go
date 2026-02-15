@@ -89,11 +89,11 @@ func TestSecretResolver_Resolve(t *testing.T) {
 
 func TestSecretResolver_ParseFlag(t *testing.T) {
 	tests := []struct {
-		name      string
-		flag      string
-		wantName  string
-		wantRef   string
-		wantErr   bool
+		name     string
+		flag     string
+		wantName string
+		wantRef  string
+		wantErr  bool
 	}{
 		{
 			name:     "simple key=value",

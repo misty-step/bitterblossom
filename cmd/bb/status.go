@@ -31,7 +31,7 @@ type statusOptions struct {
 	SpriteTimeout  time.Duration
 	StaleThreshold time.Duration
 	ProbeTimeout   time.Duration
-	UseLedger     bool
+	UseLedger      bool
 }
 
 type statusDeps struct {
@@ -60,20 +60,20 @@ func newStatusCmd() *cobra.Command {
 
 func newStatusCmdWithDeps(deps statusDeps) *cobra.Command {
 	opts := statusOptions{
-		Composition:   defaultLifecycleComposition,
-		Org:           defaultOrg(),
-		SpriteCLI:     defaultSpriteCLIPath(),
-		Format:        "text",
-		Checkpoints:   false,
-		Tasks:         true,
-		Probe:         false,
-		Watch:         false,
-		WatchInterval: 5 * time.Second,
-		Timeout:       2 * time.Minute,
-		SpriteTimeout: 15 * time.Second,
+		Composition:    defaultLifecycleComposition,
+		Org:            defaultOrg(),
+		SpriteCLI:      defaultSpriteCLIPath(),
+		Format:         "text",
+		Checkpoints:    false,
+		Tasks:          true,
+		Probe:          false,
+		Watch:          false,
+		WatchInterval:  5 * time.Second,
+		Timeout:        2 * time.Minute,
+		SpriteTimeout:  15 * time.Second,
 		StaleThreshold: lifecycle.DefaultStaleThreshold,
-		ProbeTimeout:  lifecycle.DefaultProbeTimeout,
-		UseLedger:     true, // Default to ledger for fast response
+		ProbeTimeout:   lifecycle.DefaultProbeTimeout,
+		UseLedger:      true, // Default to ledger for fast response
 	}
 
 	command := &cobra.Command{

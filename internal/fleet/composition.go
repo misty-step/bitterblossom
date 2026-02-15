@@ -43,8 +43,8 @@ type rawSpriteSpec struct {
 	Preference     string
 	Philosophy     string
 	Fallback       bool
-	Provider       string // Provider identifier (e.g., "moonshot", "openrouter-claude")
-	Model          string // Model identifier (e.g., "kimi-k2.5", "anthropic/claude-opus-4")
+	Provider       string            // Provider identifier (e.g., "moonshot", "openrouter-claude")
+	Model          string            // Model identifier (e.g., "kimi-k2.5", "anthropic/claude-opus-4")
 	ProviderConfig map[string]string // Additional provider env vars
 }
 

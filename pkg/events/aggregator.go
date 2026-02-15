@@ -31,15 +31,15 @@ type ActivityGap struct {
 
 // SpriteStats is an aggregation summary for one sprite.
 type SpriteStats struct {
-	Sprite         string         `json:"sprite"`
-	TotalEvents    int            `json:"total_events"`
-	ByType         map[Kind]int   `json:"by_type"`
-	EventsPerMin   float64        `json:"events_per_min"`
-	ErrorRate      float64        `json:"error_rate"`
-	Uptime         float64        `json:"uptime"`
-	LastEventAt    time.Time      `json:"last_event_at"`
-	ActivityGaps   []ActivityGap  `json:"activity_gaps,omitempty"`
-	MaxActivityGap time.Duration  `json:"max_activity_gap,omitempty"`
+	Sprite         string        `json:"sprite"`
+	TotalEvents    int           `json:"total_events"`
+	ByType         map[Kind]int  `json:"by_type"`
+	EventsPerMin   float64       `json:"events_per_min"`
+	ErrorRate      float64       `json:"error_rate"`
+	Uptime         float64       `json:"uptime"`
+	LastEventAt    time.Time     `json:"last_event_at"`
+	ActivityGaps   []ActivityGap `json:"activity_gaps,omitempty"`
+	MaxActivityGap time.Duration `json:"max_activity_gap,omitempty"`
 }
 
 // Snapshot is a full aggregation result for a time window.
@@ -323,4 +323,3 @@ func ratioFloat(numerator, denominator float64) float64 {
 	}
 	return numerator / denominator
 }
-

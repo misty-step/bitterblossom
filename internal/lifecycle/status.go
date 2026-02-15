@@ -65,14 +65,14 @@ type CompositionEntry struct {
 
 // FleetSummary provides aggregated statistics about the fleet.
 type FleetSummary struct {
-	Total      int `json:"total"`
-	Idle       int `json:"idle"`
-	Busy       int `json:"busy"`
-	Offline    int `json:"offline"`
-	Unknown    int `json:"unknown"`
-	Orphaned   int `json:"orphaned"`
-	Stale      int `json:"stale"`
-	WithTasks  int `json:"with_tasks"`
+	Total     int `json:"total"`
+	Idle      int `json:"idle"`
+	Busy      int `json:"busy"`
+	Offline   int `json:"offline"`
+	Unknown   int `json:"unknown"`
+	Orphaned  int `json:"orphaned"`
+	Stale     int `json:"stale"`
+	WithTasks int `json:"with_tasks"`
 }
 
 // FleetStatus contains fleet and composition state with enhanced visibility.
@@ -421,15 +421,15 @@ func fetchSpriteDetail(ctx context.Context, cli sprite.SpriteCLI, org, name stri
 	}
 
 	status := SpriteStatus{
-		Name:        detail.Name,
-		Status:      detail.Status,
-		State:       deriveSpriteState(detail.State, detail.Status),
-		QueueDepth:  detail.QueueDepth,
-		Uptime:      detail.Uptime,
+		Name:         detail.Name,
+		Status:       detail.Status,
+		State:        deriveSpriteState(detail.State, detail.Status),
+		QueueDepth:   detail.QueueDepth,
+		Uptime:       detail.Uptime,
 		LastActivity: detail.LastActivity,
-		Version:     detail.Version,
-		Metadata:    detail.Metadata,
-		Provisioned: true,
+		Version:      detail.Version,
+		Metadata:     detail.Metadata,
+		Provisioned:  true,
 	}
 
 	if detail.Persona != nil {

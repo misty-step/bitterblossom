@@ -28,15 +28,15 @@ type uploadCall struct {
 }
 
 type fakeRemote struct {
-	execCalls      []execCall
-	execResponses  []string
-	execErrs       []error
-	uploads        []uploadCall
-	uploadErrs     []error
-	uploadErr      error
-	listSprites    []string
-	listErr        error
-	probeErr       error // for testing probe connectivity failures
+	execCalls     []execCall
+	execResponses []string
+	execErrs      []error
+	uploads       []uploadCall
+	uploadErrs    []error
+	uploadErr     error
+	listSprites   []string
+	listErr       error
+	probeErr      error // for testing probe connectivity failures
 }
 
 func (f *fakeRemote) Exec(_ context.Context, sprite, command string, stdin []byte) (string, error) {
@@ -228,11 +228,11 @@ func TestRunDryRunBuildsPlanWithoutSideEffects(t *testing.T) {
 func TestRunExecuteProvisionAndStartRalph(t *testing.T) {
 	remote := &fakeRemote{
 		execResponses: []string{
-			"",              // validate env (empty key = ok)
-			"",              // clean signals
-			"",              // setup repo
+			"",                // validate env (empty key = ok)
+			"",                // clean signals
+			"",                // setup repo
 			"not-a-valid-sha", // capture HEAD SHA (will fail validation)
-			"PID: 4242",     // start ralph
+			"PID: 4242",       // start ralph
 		},
 		listSprites: []string{},
 	}

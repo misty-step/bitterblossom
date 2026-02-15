@@ -398,7 +398,7 @@ func TestDeriveSpriteState(t *testing.T) {
 		{"", "error", StateOffline},
 		{"", "dead", StateOffline},
 		{"", "running", StateIdle},
-		{"", "warm", StateIdle},     // API returns "warm" for idle sprites
+		{"", "warm", StateIdle}, // API returns "warm" for idle sprites
 		{"", "starting", StateOperational},
 		{"", "provisioning", StateOperational},
 		{"", "unknown", StateUnknown},

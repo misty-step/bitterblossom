@@ -71,4 +71,3 @@ func buildEnvArgs(env map[string]string) ([]string, error) {
 	sort.Strings(pairs)
 	return []string{"-env", strings.Join(pairs, ",")}, nil
 }
-

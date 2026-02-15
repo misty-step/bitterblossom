@@ -28,13 +28,13 @@ type addOptions struct {
 }
 
 type addDeps struct {
-	getwd              func() (string, error)
-	getenv             func(string) string
-	newCLI             func(binary, org string) sprite.SpriteCLI
-	resolveGitHubAuth  func(spriteName string, getenv func(string) string) (lifecycle.GitHubAuth, error)
-	renderSettings     func(settingsPath, authToken string) (string, error)
-	provision          func(ctx context.Context, cli sprite.SpriteCLI, cfg lifecycle.Config, opts lifecycle.ProvisionOpts) (lifecycle.ProvisionResult, error)
-	registryPath       func() string
+	getwd             func() (string, error)
+	getenv            func(string) string
+	newCLI            func(binary, org string) sprite.SpriteCLI
+	resolveGitHubAuth func(spriteName string, getenv func(string) string) (lifecycle.GitHubAuth, error)
+	renderSettings    func(settingsPath, authToken string) (string, error)
+	provision         func(ctx context.Context, cli sprite.SpriteCLI, cfg lifecycle.Config, opts lifecycle.ProvisionOpts) (lifecycle.ProvisionResult, error)
+	registryPath      func() string
 }
 
 func defaultAddDeps() addDeps {

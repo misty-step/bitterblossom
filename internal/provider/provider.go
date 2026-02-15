@@ -40,8 +40,8 @@ const (
 // Model identifiers for known providers.
 const (
 	// MiniMax models
-	ModelMiniMaxM25            = "minimax-m2.5"
-	ModelOpenRouterMiniMaxM25  = "minimax/minimax-m2.5"
+	ModelMiniMaxM25           = "minimax-m2.5"
+	ModelOpenRouterMiniMaxM25 = "minimax/minimax-m2.5"
 
 	// Kimi models (legacy — Kimi K2.5 doesn't produce tool calls reliably)
 	ModelKimiK25             = "kimi-k2.5"

@@ -83,16 +83,16 @@ func TestSpriteAgentMaxTokensTerminates(t *testing.T) {
 	}
 
 	out, code := runSpriteAgent(t, workspace, "#!/usr/bin/env bash\nset -euo pipefail\ncat >/dev/null\n# usage line the parser understands\nprintf '%s\\n' '{\"usage\":{\"input_tokens\":0,\"output_tokens\":20}}'\n", map[string]string{
-		"MAX_ITERATIONS":      "50",
-		"MAX_TOKENS":          "10",
-		"MAX_TIME_SEC":        "9999",
-		"ERROR_REPEAT_COUNT":  "0",
-		"HEALTH_INTERVAL":     "9999",
-		"HEARTBEAT_INTERVAL":  "9999",
-		"PROGRESS_INTERVAL":   "9999",
-		"PUSH_INTERVAL":       "9999",
-		"LOOP_SLEEP_SEC":      "0",
-		"SHUTDOWN_GRACE_SEC":  "1",
+		"MAX_ITERATIONS":     "50",
+		"MAX_TOKENS":         "10",
+		"MAX_TIME_SEC":       "9999",
+		"ERROR_REPEAT_COUNT": "0",
+		"HEALTH_INTERVAL":    "9999",
+		"HEARTBEAT_INTERVAL": "9999",
+		"PROGRESS_INTERVAL":  "9999",
+		"PUSH_INTERVAL":      "9999",
+		"LOOP_SLEEP_SEC":     "0",
+		"SHUTDOWN_GRACE_SEC": "1",
 	})
 	if code == 0 {
 		t.Fatalf("exit code = 0, want non-zero\noutput:\n%s", out)
@@ -118,17 +118,17 @@ func TestSpriteAgentErrorLoopTerminates(t *testing.T) {
 	}
 
 	out, code := runSpriteAgent(t, workspace, "#!/usr/bin/env bash\nset -euo pipefail\ncat >/dev/null\nprintf '%s\\n' '{\"type\":\"error\",\"message\":\"boom\"}'\n", map[string]string{
-		"MAX_ITERATIONS":      "10",
-		"MAX_TOKENS":          "999999",
-		"MAX_TIME_SEC":        "9999",
-		"ERROR_REPEAT_COUNT":  "3",
-		"ERROR_WINDOW_LINES":  "50",
-		"HEALTH_INTERVAL":     "9999",
-		"HEARTBEAT_INTERVAL":  "9999",
-		"PROGRESS_INTERVAL":   "9999",
-		"PUSH_INTERVAL":       "9999",
-		"LOOP_SLEEP_SEC":      "0",
-		"SHUTDOWN_GRACE_SEC":  "1",
+		"MAX_ITERATIONS":     "10",
+		"MAX_TOKENS":         "999999",
+		"MAX_TIME_SEC":       "9999",
+		"ERROR_REPEAT_COUNT": "3",
+		"ERROR_WINDOW_LINES": "50",
+		"HEALTH_INTERVAL":    "9999",
+		"HEARTBEAT_INTERVAL": "9999",
+		"PROGRESS_INTERVAL":  "9999",
+		"PUSH_INTERVAL":      "9999",
+		"LOOP_SLEEP_SEC":     "0",
+		"SHUTDOWN_GRACE_SEC": "1",
 	})
 	if code == 0 {
 		t.Fatalf("exit code = 0, want non-zero\noutput:\n%s", out)
@@ -151,16 +151,16 @@ func TestSpriteAgentMaxTimeTerminates(t *testing.T) {
 	}
 
 	out, code := runSpriteAgent(t, workspace, "#!/usr/bin/env bash\nset -euo pipefail\ncat >/dev/null\nsleep 5\nprintf '%s\\n' '{\"usage\":{\"input_tokens\":0,\"output_tokens\":1}}'\n", map[string]string{
-		"MAX_ITERATIONS":      "50",
-		"MAX_TOKENS":          "999999",
-		"MAX_TIME_SEC":        "1",
-		"ERROR_REPEAT_COUNT":  "0",
-		"HEALTH_INTERVAL":     "0",
-		"HEARTBEAT_INTERVAL":  "9999",
-		"PROGRESS_INTERVAL":   "9999",
-		"PUSH_INTERVAL":       "9999",
-		"LOOP_SLEEP_SEC":      "1",
-		"SHUTDOWN_GRACE_SEC":  "1",
+		"MAX_ITERATIONS":     "50",
+		"MAX_TOKENS":         "999999",
+		"MAX_TIME_SEC":       "1",
+		"ERROR_REPEAT_COUNT": "0",
+		"HEALTH_INTERVAL":    "0",
+		"HEARTBEAT_INTERVAL": "9999",
+		"PROGRESS_INTERVAL":  "9999",
+		"PUSH_INTERVAL":      "9999",
+		"LOOP_SLEEP_SEC":     "1",
+		"SHUTDOWN_GRACE_SEC": "1",
 	})
 	if code == 0 {
 		t.Fatalf("exit code = 0, want non-zero\noutput:\n%s", out)
@@ -294,4 +294,3 @@ func TestSpriteAgentExitTrapKillsClaude(t *testing.T) {
 		t.Fatal("PID file should be removed after EXIT trap")
 	}
 }
-

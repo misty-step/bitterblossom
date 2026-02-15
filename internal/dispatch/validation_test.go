@@ -64,9 +64,9 @@ func TestContainsSecret(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name string
+		name  string
 		input string
-		want bool
+		want  bool
 	}{
 		{"anthropic key", "FOO=sk-ant-api03-abcdef123456 bar", true},
 		{"anthropic key inline", "export ANTHROPIC_API_KEY=sk-ant-api03-xyz", true},

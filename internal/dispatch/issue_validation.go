@@ -54,13 +54,13 @@ type ValidationResult struct {
 // IssueData represents a GitHub issue fetched via gh CLI.
 // DEPRECATED: Use github.Issue instead.
 type IssueData struct {
-	Number       int     `json:"number"`
-	Title        string  `json:"title"`
-	Body         string  `json:"body"`
-	State        string  `json:"state"`
-	Labels       []Label `json:"labels"`
-	URL          string  `json:"url"`
-	Closed       bool    `json:"closed"`
+	Number       int      `json:"number"`
+	Title        string   `json:"title"`
+	Body         string   `json:"body"`
+	State        string   `json:"state"`
+	Labels       []Label  `json:"labels"`
+	URL          string   `json:"url"`
+	Closed       bool     `json:"closed"`
 	Dependencies []string `json:"-"`
 }
 

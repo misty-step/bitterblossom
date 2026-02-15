@@ -234,4 +234,3 @@ func sortedUnique(values []string) []string {
 	sort.Strings(uniq)
 	return uniq
 }
-

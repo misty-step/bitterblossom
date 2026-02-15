@@ -404,4 +404,3 @@ func (d *RepeatedErrorDetector) Observe(event Event) []Signal {
 
 // Tick is a no-op for repeated-error detection.
 func (d *RepeatedErrorDetector) Tick(time.Time) []Signal { return nil }
-

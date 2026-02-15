@@ -151,29 +151,29 @@ Use --dry-run to preview changes without applying them:
 
 // FleetStatus represents the status of all registered sprites
 type FleetStatus struct {
-	Sprites      []SpriteInfo      `json:"sprites"`
+	Sprites      []SpriteInfo       `json:"sprites"`
 	Summary      FleetStatusSummary `json:"summary"`
-	RegistryPath string            `json:"registry_path"`
+	RegistryPath string             `json:"registry_path"`
 }
 
 // SpriteInfo represents one sprite's status
 type SpriteInfo struct {
-	Name       string    `json:"name"`
-	MachineID  string    `json:"machine_id"`
-	Status     string    `json:"status"`
-	CreatedAt  time.Time `json:"created_at"`
-	LastSeen   time.Time `json:"last_seen,omitempty"`
-	Issue      int       `json:"issue,omitempty"`
-	IssueRepo  string    `json:"issue_repo,omitempty"`
+	Name      string    `json:"name"`
+	MachineID string    `json:"machine_id"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
+	LastSeen  time.Time `json:"last_seen,omitempty"`
+	Issue     int       `json:"issue,omitempty"`
+	IssueRepo string    `json:"issue_repo,omitempty"`
 }
 
 // FleetStatusSummary provides aggregated statistics
 type FleetStatusSummary struct {
-	Total     int `json:"total"`
-	Running   int `json:"running"`
-	Stopped   int `json:"stopped"`
-	NotFound  int `json:"not_found"`
-	Orphaned  int `json:"orphaned"`
+	Total    int `json:"total"`
+	Running  int `json:"running"`
+	Stopped  int `json:"stopped"`
+	NotFound int `json:"not_found"`
+	Orphaned int `json:"orphaned"`
 }
 
 // SyncResult reports the outcome of a sync operation

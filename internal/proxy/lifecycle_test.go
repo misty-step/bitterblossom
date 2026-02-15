@@ -10,12 +10,12 @@ import (
 
 // mockRemoteExecutor is a mock implementation of RemoteExecutor for testing.
 type mockRemoteExecutor struct {
-	execFunc          func(ctx context.Context, sprite, remoteCommand string, stdin []byte) (string, error)
-	execWithEnvFunc   func(ctx context.Context, sprite, remoteCommand string, stdin []byte, env map[string]string) (string, error)
-	uploadFunc        func(ctx context.Context, sprite, remotePath string, content []byte) error
-	execCalls         []execCall
-	execWithEnvCalls  []execWithEnvCall
-	uploadCalls       []uploadCall
+	execFunc         func(ctx context.Context, sprite, remoteCommand string, stdin []byte) (string, error)
+	execWithEnvFunc  func(ctx context.Context, sprite, remoteCommand string, stdin []byte, env map[string]string) (string, error)
+	uploadFunc       func(ctx context.Context, sprite, remotePath string, content []byte) error
+	execCalls        []execCall
+	execWithEnvCalls []execWithEnvCall
+	uploadCalls      []uploadCall
 }
 
 type execCall struct {
@@ -676,11 +676,11 @@ func TestDiagnostics_FormatError(t *testing.T) {
 
 func TestExtractSection(t *testing.T) {
 	tests := []struct {
-		name     string
-		output   string
-		section  string
-		want     string
-		wantOk   bool
+		name    string
+		output  string
+		section string
+		want    string
+		wantOk  bool
 	}{
 		{
 			name: "extracts memory section",
@@ -712,8 +712,8 @@ Error: Cannot find module
 			wantOk:  true,
 		},
 		{
-			name:    "missing section",
-			output:  `---MEMORY---
+			name: "missing section",
+			output: `---MEMORY---
 Mem: 1Gi
 ---END_MEMORY---`,
 			section: "PROXY_LOG",
@@ -721,8 +721,8 @@ Mem: 1Gi
 			wantOk:  false,
 		},
 		{
-			name:    "missing end marker",
-			output:  `---MEMORY---
+			name: "missing end marker",
+			output: `---MEMORY---
 Mem: 1Gi`,
 			section: "MEMORY",
 			want:    "",
