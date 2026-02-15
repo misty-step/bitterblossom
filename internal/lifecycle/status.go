@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/misty-step/bitterblossom/internal/contracts"
 	"github.com/misty-step/bitterblossom/internal/fleet"
 	"github.com/misty-step/bitterblossom/internal/shellutil"
 	"github.com/misty-step/bitterblossom/internal/sprite"
@@ -213,13 +214,6 @@ func FleetOverview(ctx context.Context, cli sprite.SpriteCLI, cfg Config, compos
 	}, nil
 }
 
-type statusFile struct {
-	Repo    string `json:"repo,omitempty"`
-	Started string `json:"started,omitempty"`
-	Mode    string `json:"mode,omitempty"`
-	Task    string `json:"task,omitempty"`
-}
-
 // SpriteDetail returns API + workspace + memory + checkpoint status for one sprite.
 func SpriteDetail(ctx context.Context, cli sprite.SpriteCLI, cfg Config, name string) (SpriteDetailResult, error) {
 	if err := requireConfig(cfg); err != nil {
@@ -272,7 +266,7 @@ func SpriteDetail(ctx context.Context, cli sprite.SpriteCLI, cfg Config, name st
 			} else if strings.HasPrefix(line, "STATUS_JSON=") {
 				statusJSON := strings.TrimSpace(strings.TrimPrefix(line, "STATUS_JSON="))
 				if statusJSON != "" {
-					var dispatch statusFile
+					var dispatch contracts.StatusFile
 					if decodeErr := json.Unmarshal([]byte(statusJSON), &dispatch); decodeErr == nil {
 						dispatchTask = strings.TrimSpace(dispatch.Task)
 						dispatchRepo = dispatch.Repo

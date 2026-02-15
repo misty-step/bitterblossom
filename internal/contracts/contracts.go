@@ -55,6 +55,15 @@ type Error struct {
 	TraceID     string `json:"trace_id,omitempty"`
 }
 
+// StatusFile represents the STATUS.json file written by the dispatch pipeline.
+// This schema is used across multiple components (dispatch, watchdog, monitor, lifecycle).
+type StatusFile struct {
+	Repo    string `json:"repo,omitempty"`
+	Started string `json:"started,omitempty"`
+	Mode    string `json:"mode,omitempty"`
+	Task    string `json:"task,omitempty"`
+}
+
 // ExitCodeForError returns the exit code for an error code string.
 func ExitCodeForError(code string) int {
 	if c, ok := exitCodeByErrorCode[code]; ok {
