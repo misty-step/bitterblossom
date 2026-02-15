@@ -572,4 +572,3 @@ func formatSpriteStatus(item lifecycle.SpriteStatus) string {
 
 	return item.Status
 }
-}
