@@ -50,6 +50,10 @@ const (
 	// Conservative default to avoid overwhelming the remote host while providing throughput benefits.
 	DefaultMaxConcurrentUploads = 3
 
+	// DefaultMaxLogRetention is the default number of oneshot log files to retain.
+	// Older logs are automatically cleaned up to prevent disk space exhaustion.
+	DefaultMaxLogRetention = 50
+
 	// ProbeTimeout is how long to wait for a sprite connectivity probe.
 	// 15 seconds accommodates sleeping sprites (Fly.io auto-sleeps after 30s idle,
 	// wake takes several seconds). Short enough to fail fast vs the old 45s-per-step cascade.
@@ -231,6 +235,10 @@ type Config struct {
 	// 0 or negative uses DefaultMaxConcurrentUploads (3). Higher values increase
 	// throughput but may overwhelm the remote host.
 	MaxConcurrentUploads int
+	// MaxLogRetention is the maximum number of oneshot log files to retain.
+	// 0 or negative uses DefaultMaxLogRetention (50). Older logs are cleaned up
+	// automatically after each dispatch to prevent unbounded accumulation.
+	MaxLogRetention int
 }
 
 type provisionInfo struct {
@@ -257,6 +265,7 @@ type Service struct {
 	eventLogger          EventLogger
 	scaffoldDir          string
 	maxConcurrentUploads int
+	maxLogRetention      int
 }
 
 // NewService constructs a dispatch service.
@@ -306,6 +315,11 @@ func NewService(cfg Config) (*Service, error) {
 		maxConcurrentUploads = DefaultMaxConcurrentUploads
 	}
 
+	maxLogRetention := cfg.MaxLogRetention
+	if maxLogRetention <= 0 {
+		maxLogRetention = DefaultMaxLogRetention
+	}
+
 	svc := &Service{
 		remote:               cfg.Remote,
 		fly:                  cfg.Fly,
@@ -323,6 +337,7 @@ func NewService(cfg Config) (*Service, error) {
 		eventLogger:          cfg.EventLogger,
 		scaffoldDir:          strings.TrimSpace(cfg.ScaffoldDir),
 		maxConcurrentUploads: maxConcurrentUploads,
+		maxLogRetention:      maxLogRetention,
 	}
 
 	if svc.eventLogger == nil {
@@ -900,7 +915,7 @@ func (s *Service) prepare(req Request) (preparedRequest, error) {
 
 	startedAt := s.now().UTC()
 	logPath := s.workspace + "/logs/oneshot-" + startedAt.Format("20060102-150405") + ".log"
-	startCommand := buildOneShotScript(s.workspace, promptPath, logPath)
+	startCommand := buildOneShotScript(s.workspace, promptPath, logPath, s.maxLogRetention)
 	if req.Ralph {
 		maxTokens := req.MaxTokens
 		if maxTokens <= 0 {
@@ -1521,7 +1536,11 @@ func buildSetupRepoScriptWithGitConfig(workspace, cloneURL, repoDir string) stri
 //     watchdog and polling systems.
 //   - Output is captured to logPath for diagnostics. This addresses the "zero effect"
 //     issue where agents exit cleanly but produce no observable changes.
-func buildOneShotScript(workspace, promptPath, logPath string) string {
+func buildOneShotScript(workspace, promptPath, logPath string, maxLogRetention int) string {
+	if maxLogRetention <= 0 {
+		maxLogRetention = DefaultMaxLogRetention
+	}
+
 	port := strconv.Itoa(proxy.ProxyPort)
 	env := proxy.StartEnv("", port, "${OPENROUTER_API_KEY}")
 	env["PROXY_PID_FILE"] = proxy.ProxyPIDFile
@@ -1550,6 +1569,7 @@ func buildOneShotScript(workspace, promptPath, logPath string) string {
 	// Log file for agent output capture (issue #278).
 	// Truncated each dispatch so only the latest run's output is kept.
 	logFile := shellutil.Quote(workspace + "/logs/agent-oneshot.log")
+	logsDir := shellutil.Quote(workspace + "/logs")
 
 	return strings.Join([]string{
 		"set -euo pipefail",
@@ -1599,6 +1619,11 @@ func buildOneShotScript(workspace, promptPath, logPath string) string {
 		"EXIT_CODE=$?",
 		"echo '[oneshot] exited with code ' $EXIT_CODE ' at ' $(date -Iseconds) >> " + shellutil.Quote(logPath),
 		"rm -f " + shellutil.Quote(promptPath),
+		"# Clean up old oneshot logs (issue #332) - retain most recent " + strconv.Itoa(maxLogRetention) + " files",
+		"if [ -d " + logsDir + " ]; then",
+		"  cd " + logsDir,
+		"  ls -t oneshot-*.log 2>/dev/null | tail -n +" + strconv.Itoa(maxLogRetention+1) + " | while read f; do rm -f \"$f\"; done",
+		"fi",
 		"exit $EXIT_CODE",
 	}, "\n")
 }

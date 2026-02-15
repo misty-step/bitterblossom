@@ -1092,7 +1092,7 @@ func TestRunExecuteWithoutOpenRouterKey_SkipsProxy(t *testing.T) {
 func TestBuildOneShotScriptCleansStatusFiles(t *testing.T) {
 	t.Parallel()
 
-	script := buildOneShotScript("/home/sprite/workspace", "/home/sprite/workspace/prompt.md", "/home/sprite/workspace/logs/oneshot.log")
+	script := buildOneShotScript("/home/sprite/workspace", "/home/sprite/workspace/prompt.md", "/home/sprite/workspace/logs/oneshot.log", 50)
 
 	// Must contain cleanup of TASK_COMPLETE and BLOCKED.md
 	if !strings.Contains(script, "rm -f TASK_COMPLETE TASK_COMPLETE.md BLOCKED.md") {
@@ -1125,7 +1125,7 @@ func TestBuildOneShotScriptCapturesOutput(t *testing.T) {
 	t.Parallel()
 
 	logPath := "/home/sprite/workspace/logs/oneshot-20260212-120000.log"
-	script := buildOneShotScript("/home/sprite/workspace", "/home/sprite/workspace/prompt.md", logPath)
+	script := buildOneShotScript("/home/sprite/workspace", "/home/sprite/workspace/prompt.md", logPath, 50)
 
 	// Must create logs directory before cd (derived from logPath, not hardcoded)
 	expectedDir := filepath.Dir(logPath)
@@ -1183,6 +1183,14 @@ func TestBuildOneShotScriptCapturesOutput(t *testing.T) {
 	// Both branches should have 2>&1 and tee
 	if !strings.Contains(conditionalBlock, "2>&1 | tee \"$AGENT_LOG\"") {
 		t.Error("both branches of 'if command -v script' must include '2>&1 | tee \"$AGENT_LOG\"' for output capture")
+=======
+	// Must contain log cleanup (issue #332)
+	if !strings.Contains(script, "ls -t oneshot-*.log") {
+		t.Errorf("buildOneShotScript missing log cleanup")
+	}
+	if !strings.Contains(script, "tail -n +51") {
+		t.Errorf("buildOneShotScript should retain 50 logs (tail -n +51)")
+>>>>>>> a671f95 (fix: implement log rotation for oneshot dispatches (fixes #332))
 	}
 }
 
@@ -1199,7 +1207,7 @@ func TestBuildScriptMkdirBeforeCD(t *testing.T) {
 		},
 		{
 			name:   "buildOneShotScript",
-			script: buildOneShotScript("/home/sprite/workspace", "/home/sprite/workspace/bb/prompt.md", "/home/sprite/workspace/logs/oneshot.log"),
+			script: buildOneShotScript("/home/sprite/workspace", "/home/sprite/workspace/bb/prompt.md", "/home/sprite/workspace/logs/oneshot.log", 50),
 		},
 	}
 
@@ -1231,6 +1239,74 @@ func TestBuildScriptMkdirBeforeCD(t *testing.T) {
 	}
 }
 
+func TestBuildOneShotScriptCapturesLogs(t *testing.T) {
+	t.Parallel()
+
+	logPath := "/home/sprite/workspace/logs/agent-oneshot.log"
+	script := buildOneShotScript("/home/sprite/workspace", "/home/sprite/workspace/.dispatch-prompt.md", logPath, 50)
+
+	// Must create log directory
+	if !strings.Contains(script, "mkdir -p '/home/sprite/workspace/logs'") {
+		t.Error("script must create logs directory")
+	}
+
+	// Must write timestamp header to log file
+	if !strings.Contains(script, "[oneshot] starting at") {
+		t.Error("script must write start timestamp to log")
+	}
+
+	// Must use tee (without -a) to truncate and capture output each dispatch
+	if !strings.Contains(script, `| tee "$AGENT_LOG"`) {
+		t.Error("script must pipe output to tee for log capture")
+	}
+
+	// Must redirect stderr to stdout so errors are captured
+	if !strings.Contains(script, "2>&1 | tee") {
+		t.Error("script must redirect stderr to stdout for error capture")
+	}
+}
+
+func TestBuildOneShotScriptLogCleanupRetention(t *testing.T) {
+	t.Parallel()
+
+	// Test default retention (50)
+	script := buildOneShotScript("/home/sprite/workspace", "/home/sprite/workspace/prompt.md", "/home/sprite/workspace/logs/oneshot.log", 0)
+	if !strings.Contains(script, "ls -t oneshot-*.log") {
+		t.Error("script must list oneshot log files for cleanup")
+	}
+	if !strings.Contains(script, "tail -n +51") {
+		t.Error("default retention should be 50 (tail -n +51)")
+	}
+
+	// Test custom retention
+	script = buildOneShotScript("/home/sprite/workspace", "/home/sprite/workspace/prompt.md", "/home/sprite/workspace/logs/oneshot.log", 10)
+	if !strings.Contains(script, "tail -n +11") {
+		t.Error("custom retention of 10 should use tail -n +11")
+	}
+
+	// Test cleanup happens before exit
+	lines := strings.Split(script, "\n")
+	cleanupIdx, exitIdx := -1, -1
+	for i, line := range lines {
+		if strings.Contains(line, "ls -t oneshot-*.log") {
+			cleanupIdx = i
+		}
+		if strings.TrimSpace(line) == "exit $EXIT_CODE" {
+			exitIdx = i
+		}
+	}
+	if cleanupIdx == -1 {
+		t.Fatal("log cleanup not found in script")
+	}
+	if exitIdx == -1 {
+		t.Fatal("exit command not found in script")
+	}
+	if cleanupIdx >= exitIdx {
+		t.Errorf("log cleanup (line %d) must come before exit (line %d)", cleanupIdx, exitIdx)
+	}
+}
+
+>>>>>>> a671f95 (fix: implement log rotation for oneshot dispatches (fixes #332))
 func TestBuildSetupRepoScriptResetsGitState(t *testing.T) {
 	t.Parallel()
 
