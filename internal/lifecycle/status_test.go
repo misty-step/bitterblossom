@@ -227,6 +227,93 @@ func TestSpriteDetail(t *testing.T) {
 	}
 }
 
+func TestSpriteDetailIncorporatesDispatchStatus(t *testing.T) {
+	t.Parallel()
+
+	fx := newFixture(t, "fern")
+	cli := &sprite.MockSpriteCLI{
+		APISpriteFn: func(context.Context, string, string, string) (string, error) {
+			// API returns idle state (like Fly.io machine state)
+			return `{"name":"fern","status":"running","state":"idle","uptime":"1h30m","queue_depth":0}`, nil
+		},
+		ExecFn: func(_ context.Context, _ string, command string, _ []byte) (string, error) {
+			if strings.Contains(command, "ls -la") && strings.Contains(command, "workspace") {
+				return "workspace listing", nil
+			}
+			if strings.Contains(command, "head -20") && strings.Contains(command, "MEMORY.md") {
+				return "memory lines", nil
+			}
+			if strings.Contains(command, "STATUS.json") {
+				// STATUS.json shows active dispatch (like watchdog sees)
+				return `{"repo":"misty-step/bitterblossom","started":"2026-02-14T21:30:00Z","mode":"oneshot","task":"Fix bug #368"}`, nil
+			}
+			return "", nil
+		},
+		CheckpointListFn: func(context.Context, string, string) (string, error) {
+			return "checkpoint-1", nil
+		},
+	}
+
+	result, err := SpriteDetail(context.Background(), cli, fx.cfg, "fern")
+	if err != nil {
+		t.Fatalf("SpriteDetail() error = %v", err)
+	}
+
+	// State should be busy because STATUS.json indicates active dispatch
+	if result.State != StateBusy {
+		t.Fatalf("state = %q, want busy (should reflect STATUS.json dispatch state, not just API state)", result.State)
+	}
+
+	// Task info should be populated from STATUS.json
+	if result.CurrentTask == nil {
+		t.Fatalf("expected current task from STATUS.json, got nil")
+	}
+	if result.CurrentTask.Description != "Fix bug #368" {
+		t.Fatalf("task description = %q, want 'Fix bug #368'", result.CurrentTask.Description)
+	}
+	if result.CurrentTask.Repo != "misty-step/bitterblossom" {
+		t.Fatalf("task repo = %q, want 'misty-step/bitterblossom'", result.CurrentTask.Repo)
+	}
+}
+
+func TestSpriteDetailHandlesMissingStatusJSON(t *testing.T) {
+	t.Parallel()
+
+	fx := newFixture(t, "fern")
+	cli := &sprite.MockSpriteCLI{
+		APISpriteFn: func(context.Context, string, string, string) (string, error) {
+			// API returns idle state
+			return `{"name":"fern","status":"running","state":"idle","uptime":"1h30m","queue_depth":0}`, nil
+		},
+		ExecFn: func(_ context.Context, _ string, command string, _ []byte) (string, error) {
+			if strings.Contains(command, "ls -la") && strings.Contains(command, "workspace") {
+				return "workspace listing", nil
+			}
+			if strings.Contains(command, "head -20") && strings.Contains(command, "MEMORY.md") {
+				return "memory lines", nil
+			}
+			if strings.Contains(command, "STATUS.json") {
+				// STATUS.json doesn't exist (empty output from cat)
+				return "", nil
+			}
+			return "", nil
+		},
+		CheckpointListFn: func(context.Context, string, string) (string, error) {
+			return "checkpoint-1", nil
+		},
+	}
+
+	result, err := SpriteDetail(context.Background(), cli, fx.cfg, "fern")
+	if err != nil {
+		t.Fatalf("SpriteDetail() error = %v", err)
+	}
+
+	// State should remain idle when no STATUS.json exists
+	if result.State != StateIdle {
+		t.Fatalf("state = %q, want idle (no STATUS.json means no active dispatch)", result.State)
+	}
+}
+
 func TestFleetOverviewStaleDetectionWithoutTasks(t *testing.T) {
 	t.Parallel()
 

@@ -213,6 +213,14 @@ func FleetOverview(ctx context.Context, cli sprite.SpriteCLI, cfg Config, compos
 	}, nil
 }
 
+// dispatchStatus represents the STATUS.json file written by the dispatch pipeline.
+type dispatchStatus struct {
+	Repo    string `json:"repo,omitempty"`
+	Started string `json:"started,omitempty"`
+	Mode    string `json:"mode,omitempty"`
+	Task    string `json:"task,omitempty"`
+}
+
 // SpriteDetail returns API + workspace + memory + checkpoint status for one sprite.
 func SpriteDetail(ctx context.Context, cli sprite.SpriteCLI, cfg Config, name string) (SpriteDetailResult, error) {
 	if err := requireConfig(cfg); err != nil {
@@ -248,6 +256,36 @@ func SpriteDetail(ctx context.Context, cli sprite.SpriteCLI, cfg Config, name st
 				}
 			}
 			result.Metadata = detail.Metadata
+		}
+	}
+
+	// Read dispatch STATUS.json to incorporate active dispatch state.
+	// This ensures bb status agrees with bb watchdog during active execution.
+	statusJSON, statusErr := cli.Exec(ctx, name, "cat "+shellutil.Quote(path.Join(cfg.Workspace, "STATUS.json"))+" 2>/dev/null || true", nil)
+	if statusErr == nil {
+		statusJSON = strings.TrimSpace(statusJSON)
+		if statusJSON != "" {
+			var dispatch dispatchStatus
+			if decodeErr := json.Unmarshal([]byte(statusJSON), &dispatch); decodeErr == nil {
+				// If STATUS.json has a task, the sprite is actively executing a dispatch
+				if strings.TrimSpace(dispatch.Task) != "" {
+					result.State = StateBusy
+					if result.CurrentTask == nil {
+						result.CurrentTask = &TaskInfo{
+							Description: dispatch.Task,
+							Repo:        dispatch.Repo,
+						}
+					} else {
+						// Enhance existing task info with dispatch data if missing
+						if result.CurrentTask.Description == "" {
+							result.CurrentTask.Description = dispatch.Task
+						}
+						if result.CurrentTask.Repo == "" {
+							result.CurrentTask.Repo = dispatch.Repo
+						}
+					}
+				}
+			}
 		}
 	}
 
