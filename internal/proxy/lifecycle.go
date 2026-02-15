@@ -251,6 +251,8 @@ type Diagnostics struct {
 }
 
 // CollectDiagnostics gathers resource and log information from the sprite.
+// When collection fails (e.g., sprite unreachable), errors are surfaced in the
+// diagnostic fields rather than leaving them empty (fixes issue #358).
 func (l *Lifecycle) CollectDiagnostics(ctx context.Context, sprite string) (*Diagnostics, error) {
 	d := &Diagnostics{}
 
@@ -258,18 +260,24 @@ func (l *Lifecycle) CollectDiagnostics(ctx context.Context, sprite string) (*Dia
 	memOutput, err := l.executor.Exec(ctx, sprite, "free -h 2>/dev/null || echo 'free not available'", nil)
 	if err == nil {
 		d.MemoryAvailable = strings.TrimSpace(memOutput)
+	} else {
+		d.MemoryAvailable = fmt.Sprintf("failed (%v)", err)
 	}
 
 	// Get process list filtered to node processes
 	procOutput, err := l.executor.Exec(ctx, sprite, "ps aux | grep -E 'node|PID' | grep -v grep || echo 'no node processes'", nil)
 	if err == nil {
 		d.ProcessList = strings.TrimSpace(procOutput)
+	} else {
+		d.ProcessList = fmt.Sprintf("failed (%v)", err)
 	}
 
 	// Get recent proxy log entries (last 50 lines)
 	logOutput, err := l.executor.Exec(ctx, sprite, fmt.Sprintf("tail -n 50 %s 2>/dev/null || echo 'no proxy log available'", ProxyLogPath), nil)
 	if err == nil {
 		d.ProxyLogTail = strings.TrimSpace(logOutput)
+	} else {
+		d.ProxyLogTail = fmt.Sprintf("failed (%v)", err)
 	}
 
 	return d, nil
