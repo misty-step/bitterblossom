@@ -166,8 +166,11 @@ func (l *Lifecycle) WaitForHealthy(ctx context.Context, sprite string) error {
 	for {
 		select {
 		case <-ctx.Done():
-			// Collect diagnostics to help troubleshoot the failure
-			diagnostics, diagErr := l.CollectDiagnostics(context.Background(), sprite)
+			// Collect diagnostics with a bounded timeout so unreachable sprites
+			// don't hang indefinitely (3 sequential remote calls × timeout each).
+			diagCtx, diagCancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer diagCancel()
+			diagnostics, diagErr := l.CollectDiagnostics(diagCtx, sprite)
 			if diagErr == nil {
 				return fmt.Errorf("%s", diagnostics.FormatError(lastErr, sprite))
 			}
@@ -251,6 +254,8 @@ type Diagnostics struct {
 }
 
 // CollectDiagnostics gathers resource and log information from the sprite.
+// When collection fails (e.g., sprite unreachable), errors are surfaced in the
+// diagnostic fields rather than leaving them empty (fixes issue #358).
 func (l *Lifecycle) CollectDiagnostics(ctx context.Context, sprite string) (*Diagnostics, error) {
 	d := &Diagnostics{}
 
@@ -258,18 +263,24 @@ func (l *Lifecycle) CollectDiagnostics(ctx context.Context, sprite string) (*Dia
 	memOutput, err := l.executor.Exec(ctx, sprite, "free -h 2>/dev/null || echo 'free not available'", nil)
 	if err == nil {
 		d.MemoryAvailable = strings.TrimSpace(memOutput)
+	} else {
+		d.MemoryAvailable = fmt.Sprintf("failed (%v)", err)
 	}
 
 	// Get process list filtered to node processes
 	procOutput, err := l.executor.Exec(ctx, sprite, "ps aux | grep -E 'node|PID' | grep -v grep || echo 'no node processes'", nil)
 	if err == nil {
 		d.ProcessList = strings.TrimSpace(procOutput)
+	} else {
+		d.ProcessList = fmt.Sprintf("failed (%v)", err)
 	}
 
 	// Get recent proxy log entries (last 50 lines)
 	logOutput, err := l.executor.Exec(ctx, sprite, fmt.Sprintf("tail -n 50 %s 2>/dev/null || echo 'no proxy log available'", ProxyLogPath), nil)
 	if err == nil {
 		d.ProxyLogTail = strings.TrimSpace(logOutput)
+	} else {
+		d.ProxyLogTail = fmt.Sprintf("failed (%v)", err)
 	}
 
 	return d, nil
@@ -278,7 +289,11 @@ func (l *Lifecycle) CollectDiagnostics(ctx context.Context, sprite string) (*Dia
 // FormatError formats an error message with diagnostics and actionable hints.
 func (d *Diagnostics) FormatError(baseErr error, sprite string) string {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("proxy health check failed: %v\n\n", baseErr))
+	if baseErr != nil {
+		b.WriteString(fmt.Sprintf("proxy health check failed: %v\n\n", baseErr))
+	} else {
+		b.WriteString("proxy health check failed: proxy not responding\n\n")
+	}
 
 	b.WriteString("=== Diagnostics ===\n")
 	b.WriteString(fmt.Sprintf("Memory:\n%s\n\n", d.MemoryAvailable))

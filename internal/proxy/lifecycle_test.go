@@ -569,6 +569,67 @@ func TestLifecycle_CollectDiagnostics(t *testing.T) {
 			t.Error("expected diagnostics even when commands fail")
 		}
 	})
+
+	t.Run("surfaces errors for unreachable sprite (issue #358)", func(t *testing.T) {
+		mock := &mockRemoteExecutor{
+			execFunc: func(ctx context.Context, sprite, remoteCommand string, stdin []byte) (string, error) {
+				return "", errors.New("i/o timeout: sprite unreachable")
+			},
+		}
+		lifecycle := NewLifecycle(mock)
+
+		diagnostics, err := lifecycle.CollectDiagnostics(context.Background(), "unreachable-sprite")
+		if err != nil {
+			t.Errorf("expected nil error but got: %v", err)
+		}
+		if diagnostics == nil {
+			t.Fatal("expected diagnostics even when commands fail")
+		}
+
+		// Check that errors are surfaced in the diagnostic fields
+		if diagnostics.MemoryAvailable == "" {
+			t.Error("expected MemoryAvailable to contain error, got empty string")
+		}
+		if !strings.Contains(diagnostics.MemoryAvailable, "failed") {
+			t.Errorf("expected MemoryAvailable to contain 'failed', got: %s", diagnostics.MemoryAvailable)
+		}
+		if !strings.Contains(diagnostics.MemoryAvailable, "i/o timeout") {
+			t.Errorf("expected MemoryAvailable to contain original error, got: %s", diagnostics.MemoryAvailable)
+		}
+
+		if diagnostics.ProcessList == "" {
+			t.Error("expected ProcessList to contain error, got empty string")
+		}
+		if !strings.Contains(diagnostics.ProcessList, "failed") {
+			t.Errorf("expected ProcessList to contain 'failed', got: %s", diagnostics.ProcessList)
+		}
+
+		if diagnostics.ProxyLogTail == "" {
+			t.Error("expected ProxyLogTail to contain error, got empty string")
+		}
+		if !strings.Contains(diagnostics.ProxyLogTail, "failed") {
+			t.Errorf("expected ProxyLogTail to contain 'failed', got: %s", diagnostics.ProxyLogTail)
+		}
+
+		// Test that FormatError shows these error messages instead of blank output
+		baseErr := errors.New("proxy health check failed after 30s")
+		formatted := diagnostics.FormatError(baseErr, "unreachable-sprite")
+
+		if strings.Contains(formatted, "Memory:\n\n") {
+			t.Error("FormatError should not show empty Memory section - issue #358 regression")
+		}
+		if strings.Contains(formatted, "Processes:\n\n") {
+			t.Error("FormatError should not show empty Processes section - issue #358 regression")
+		}
+		if strings.Contains(formatted, "Proxy log (last 50 lines):\n\n") {
+			t.Error("FormatError should not show empty Proxy log section - issue #358 regression")
+		}
+
+		// Each field should show error info - check for "failed" in the formatted output
+		if !strings.Contains(formatted, "failed") {
+			t.Errorf("FormatError should show failure indicators, got:\n%s", formatted)
+		}
+	})
 }
 
 func TestDiagnostics_FormatError(t *testing.T) {
