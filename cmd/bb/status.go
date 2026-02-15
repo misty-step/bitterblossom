@@ -326,8 +326,28 @@ func writeFleetStatusText(out io.Writer, status lifecycle.FleetStatus, compositi
 		}
 	}
 
+	// Print legend explaining status indicators
+	if _, err := fmt.Fprintln(out); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(out, "Status indicators:"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(out, "  ⚠ unverified = reported by Fly.io API, connectivity not verified (use --probe to verify)"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(out, "  ✓ reachable = connectivity verified via exec probe"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(out, "  ✗ unreachable = connectivity probe failed (sprite may be stuck)"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(out, "  ⚠ stale = no activity detected for configured threshold"); err != nil {
+		return err
+	}
+
 	// Print composition status
-	if _, err := fmt.Fprintf(out, "Composition sprites (%s):\n", compositionPath); err != nil {
+	if _, err := fmt.Fprintf(out, "\nComposition sprites (%s):\n", compositionPath); err != nil {
 		return err
 	}
 	for _, item := range status.Composition {
@@ -503,6 +523,7 @@ func stateWithEmoji(state lifecycle.SpriteState) string {
 
 // spriteStateLabel formats the state with optional stale and reachability indicators.
 // Reachability is only shown when --probe was used (indicated by Probed=true).
+// For running sprites that haven't been probed, shows an unverified warning.
 func spriteStateLabel(item lifecycle.SpriteStatus) string {
 	label := stateWithEmoji(item.State)
 	if item.Stale {
@@ -515,6 +536,9 @@ func spriteStateLabel(item lifecycle.SpriteStatus) string {
 		} else {
 			label += " ✗ unreachable"
 		}
+	} else if isRunningStatus(string(item.State)) {
+		// Sprite appears running but connectivity hasn't been verified
+		label += " ⚠ unverified"
 	}
 	return label
 }
@@ -527,4 +551,10 @@ func truncateString(s string, maxLen int) string {
 		return s[:maxLen]
 	}
 	return s[:maxLen-3] + "..."
+}
+
+// isRunningStatus returns true for states that indicate the sprite should be reachable.
+func isRunningStatus(state string) bool {
+	s := strings.ToLower(state)
+	return s == "idle" || s == "busy" || s == "operational"
 }
