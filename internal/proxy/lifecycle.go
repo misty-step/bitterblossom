@@ -166,8 +166,11 @@ func (l *Lifecycle) WaitForHealthy(ctx context.Context, sprite string) error {
 	for {
 		select {
 		case <-ctx.Done():
-			// Collect diagnostics to help troubleshoot the failure
-			diagnostics, diagErr := l.CollectDiagnostics(context.Background(), sprite)
+			// Collect diagnostics with a bounded timeout so unreachable sprites
+			// don't hang indefinitely (3 sequential remote calls × timeout each).
+			diagCtx, diagCancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer diagCancel()
+			diagnostics, diagErr := l.CollectDiagnostics(diagCtx, sprite)
 			if diagErr == nil {
 				return fmt.Errorf("%s", diagnostics.FormatError(lastErr, sprite))
 			}
@@ -286,7 +289,11 @@ func (l *Lifecycle) CollectDiagnostics(ctx context.Context, sprite string) (*Dia
 // FormatError formats an error message with diagnostics and actionable hints.
 func (d *Diagnostics) FormatError(baseErr error, sprite string) string {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("proxy health check failed: %v\n\n", baseErr))
+	if baseErr != nil {
+		b.WriteString(fmt.Sprintf("proxy health check failed: %v\n\n", baseErr))
+	} else {
+		b.WriteString("proxy health check failed: proxy not responding\n\n")
+	}
 
 	b.WriteString("=== Diagnostics ===\n")
 	b.WriteString(fmt.Sprintf("Memory:\n%s\n\n", d.MemoryAvailable))
