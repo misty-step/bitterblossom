@@ -35,6 +35,10 @@ func (f *concurrentFakeRemote) List(_ context.Context) ([]string, error) {
 	return nil, nil
 }
 
+func (f *concurrentFakeRemote) ProbeConnectivity(_ context.Context, _ string) error {
+	return nil
+}
+
 func (f *concurrentFakeRemote) Upload(ctx context.Context, _, _ string, _ []byte) error {
 	current := f.currentUploads.Add(1)
 	defer f.currentUploads.Add(-1)

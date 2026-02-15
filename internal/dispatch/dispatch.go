@@ -72,12 +72,29 @@ var (
 	ErrInvalidStateTransition = errors.New("dispatch: invalid state transition")
 )
 
+// ErrSpriteUnreachable indicates the sprite is not responding to connectivity probes.
+type ErrSpriteUnreachable struct {
+	Sprite string
+	Cause  error
+}
+
+func (e *ErrSpriteUnreachable) Error() string {
+	return fmt.Sprintf("sprite %q is unreachable — try `bb start %s` first", e.Sprite, e.Sprite)
+}
+
+func (e *ErrSpriteUnreachable) Unwrap() error {
+	return e.Cause
+}
+
 // RemoteClient runs remote commands on sprites and uploads files.
 type RemoteClient interface {
 	Exec(ctx context.Context, sprite, remoteCommand string, stdin []byte) (string, error)
 	ExecWithEnv(ctx context.Context, sprite, remoteCommand string, stdin []byte, env map[string]string) (string, error)
 	Upload(ctx context.Context, sprite, remotePath string, content []byte) error
 	List(ctx context.Context) ([]string, error)
+	// ProbeConnectivity checks if a sprite is reachable with a short timeout.
+	// Returns nil if the sprite responds, or an error if unreachable.
+	ProbeConnectivity(ctx context.Context, sprite string) error
 }
 
 // EventLogger persists structured lifecycle events.
@@ -120,6 +137,7 @@ type StepKind string
 const (
 	StepRegistryLookup     StepKind = "registry_lookup"
 	StepProvision          StepKind = "provision"
+	StepProbeConnectivity  StepKind = "probe_connectivity" // preflight: fast check sprite reachable
 	StepValidateEnv        StepKind = "validate_env"
 	StepValidateWorkspace  StepKind = "validate_workspace"
 	StepCleanSignals       StepKind = "clean_signals"
@@ -430,6 +448,12 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 		return fail("state_transition", err)
 	}
 
+	// Preflight: fast connectivity probe before entering pipeline (see #357)
+	// This catches unreachable sprites quickly instead of burning 45s per step.
+	if err := s.remote.ProbeConnectivity(ctx, prepared.Sprite); err != nil {
+		return fail("probe_connectivity", &ErrSpriteUnreachable{Sprite: prepared.Sprite, Cause: err})
+	}
+
 	if !prepared.AllowAnthropicDirect {
 		s.logger.Info("dispatch validate env", "sprite", prepared.Sprite)
 		keyOutput, err := s.remote.Exec(ctx, prepared.Sprite, "printenv ANTHROPIC_API_KEY 2>/dev/null || true", nil)
@@ -660,6 +684,11 @@ func (s *Service) buildPlan(req preparedRequest, provisionNeeded bool) Plan {
 			Description: fmt.Sprintf("create Fly machine for sprite %q", req.Sprite),
 		})
 	}
+	// Preflight connectivity probe before entering pipeline (see #357)
+	steps = append(steps, PlanStep{
+		Kind:        StepProbeConnectivity,
+		Description: fmt.Sprintf("probe connectivity to sprite %q (5s timeout)", req.Sprite),
+	})
 	if !req.AllowAnthropicDirect {
 		steps = append(steps, PlanStep{
 			Kind:        StepValidateEnv,

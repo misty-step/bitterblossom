@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/misty-step/bitterblossom/internal/sprite"
 )
@@ -39,6 +40,18 @@ func (r *spriteCLIRemote) ExecWithEnv(ctx context.Context, spriteName, remoteCom
 
 func (r *spriteCLIRemote) Upload(ctx context.Context, spriteName, remotePath string, content []byte) error {
 	return r.inner.Upload(ctx, spriteName, remotePath, content)
+}
+
+// ProbeConnectivity checks if a sprite is reachable with a short timeout.
+// Uses a 5-second timeout to fail fast on unreachable sprites.
+func (r *spriteCLIRemote) ProbeConnectivity(ctx context.Context, spriteName string) error {
+	// Create a 5-second timeout context for the probe
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	// Simple echo command to test connectivity
+	_, err := r.inner.Exec(probeCtx, spriteName, "echo ok", nil)
+	return err
 }
 
 // buildEnvArgs returns the CLI args for passing environment variables to the
