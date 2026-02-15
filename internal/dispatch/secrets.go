@@ -75,8 +75,11 @@ func (r *SecretResolver) Resolve(reference string) (string, error) {
 	if strings.HasPrefix(reference, "${env:") && strings.HasSuffix(reference, "}") {
 		varName := reference[len("${env:") : len(reference)-1]
 		value, ok := os.LookupEnv(varName)
-		if !ok || value == "" {
-			return "", fmt.Errorf("environment variable %q is not set or is empty", varName)
+		if !ok {
+			return "", fmt.Errorf("environment variable %q is not set", varName)
+		}
+		if value == "" {
+			return "", fmt.Errorf("environment variable %q is set but empty", varName)
 		}
 		return value, nil
 	}
