@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
+	"github.com/misty-step/bitterblossom/internal/dispatch"
 	"github.com/misty-step/bitterblossom/internal/sprite"
 )
 
@@ -43,13 +43,12 @@ func (r *spriteCLIRemote) Upload(ctx context.Context, spriteName, remotePath str
 }
 
 // ProbeConnectivity checks if a sprite is reachable with a short timeout.
-// Uses a 5-second timeout to fail fast on unreachable sprites.
+// Uses a 15-second timeout to accommodate sleeping sprites that need wake-up
+// time (Fly.io auto-sleeps after 30s idle, wake takes several seconds).
 func (r *spriteCLIRemote) ProbeConnectivity(ctx context.Context, spriteName string) error {
-	// Create a 5-second timeout context for the probe
-	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	probeCtx, cancel := context.WithTimeout(ctx, dispatch.ProbeTimeout)
 	defer cancel()
 
-	// Simple echo command to test connectivity
 	_, err := r.inner.Exec(probeCtx, spriteName, "echo ok", nil)
 	return err
 }

@@ -50,6 +50,11 @@ const (
 	// Conservative default to avoid overwhelming the remote host while providing throughput benefits.
 	DefaultMaxConcurrentUploads = 3
 
+	// ProbeTimeout is how long to wait for a sprite connectivity probe.
+	// 15 seconds accommodates sleeping sprites (Fly.io auto-sleeps after 30s idle,
+	// wake takes several seconds). Short enough to fail fast vs the old 45s-per-step cascade.
+	ProbeTimeout = 15 * time.Second
+
 	// Signal file names written by agents to indicate task completion or blocking.
 	// Both extensions are checked because agents may write either variant.
 	SignalTaskComplete   = "TASK_COMPLETE"
@@ -79,7 +84,10 @@ type ErrSpriteUnreachable struct {
 }
 
 func (e *ErrSpriteUnreachable) Error() string {
-	return fmt.Sprintf("sprite %q is unreachable — try `bb start %s` first", e.Sprite, e.Sprite)
+	if e.Cause != nil {
+		return fmt.Sprintf("sprite %q is not responding (%v)", e.Sprite, e.Cause)
+	}
+	return fmt.Sprintf("sprite %q is not responding", e.Sprite)
 }
 
 func (e *ErrSpriteUnreachable) Unwrap() error {
@@ -456,6 +464,10 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 	// Preflight: fast connectivity probe before entering pipeline (see #357)
 	// This catches unreachable sprites quickly instead of burning 45s per step.
 	if err := s.remote.ProbeConnectivity(ctx, prepared.Sprite); err != nil {
+		// Don't wrap user cancellation as unreachable sprite
+		if errors.Is(err, context.Canceled) {
+			return fail("probe_connectivity", fmt.Errorf("dispatch: cancelled during connectivity probe: %w", err))
+		}
 		return fail("probe_connectivity", &ErrSpriteUnreachable{Sprite: prepared.Sprite, Cause: err})
 	}
 
@@ -696,7 +708,7 @@ func (s *Service) buildPlan(req preparedRequest, provisionNeeded bool) Plan {
 	// Preflight connectivity probe before entering pipeline (see #357)
 	steps = append(steps, PlanStep{
 		Kind:        StepProbeConnectivity,
-		Description: fmt.Sprintf("probe connectivity to sprite %q (5s timeout)", req.Sprite),
+		Description: fmt.Sprintf("probe connectivity to sprite %q (%s timeout)", req.Sprite, ProbeTimeout),
 	})
 	if !req.AllowAnthropicDirect {
 		steps = append(steps, PlanStep{
