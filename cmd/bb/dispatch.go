@@ -22,13 +22,22 @@ import (
 
 // Exit codes for dispatch --wait command
 const (
-	exitCodeSuccess             = 0
-	exitCodeDispatchFailure     = 1
-	exitCodeAgentNoSignals      = 2
-	exitCodeNoNewWork           = 3 // Agent completed but produced no new commits/PRs
-	exitCodePartialWork         = 4 // Agent modified files but didn't commit
-	exitCodeWorkDeltaFailed     = 5 // Work delta verification failed (e.g., I/O timeout)
-	exitCodeTimeout             = 124
+	exitCodeSuccess          = 0
+	exitCodeDispatchFailure  = 1
+	exitCodeAgentNoSignals   = 2
+	exitCodeNoNewWork        = 3 // Agent completed but produced no new commits/PRs
+	exitCodePartialWork     = 4 // Agent modified files but didn't commit
+	exitCodeWorkDeltaFailed  = 5 // Work delta verification failed (e.g., I/O timeout)
+	exitCodeTimeout          = 124
+)
+
+// waitState constants for wait result states
+const (
+	waitStateCompleted = "completed"
+	waitStateBlocked   = "blocked"
+	waitStateTimeout   = "timeout"
+	waitStateIdle      = "idle"
+	waitStateRunning   = "running"
 )
 
 type dispatchOptions struct {
@@ -392,7 +401,7 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 				// Ralph mode still polls because the agent continues running in the background.
 				if result.State == dispatchsvc.StateCompleted && !opts.Ralph {
 					waitRes := &waitResult{
-						State:           "completed",
+						State:           waitStateCompleted,
 						Task:            result.Task,
 						Complete:        true,
 						Commits:         result.Work.Commits,
@@ -452,7 +461,11 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 					if err := renderDispatchResult(cmd, result, opts.JSON); err != nil {
 						return err
 					}
-					// Return exit code 1 for infrastructure/polling failure
+					// Return exit code 124 for timeout (context.DeadlineExceeded),
+					// 1 for other infrastructure/polling failures
+					if errors.Is(waitErr, context.DeadlineExceeded) {
+						return &exitError{Code: exitCodeTimeout, Err: waitErr}
+					}
 					return &exitError{Code: exitCodeDispatchFailure, Err: waitErr}
 				}
 				if err := renderWaitResult(cmd, result, waitRes, opts.JSON); err != nil {
@@ -732,7 +745,7 @@ func contextOrBackground(ctx context.Context) context.Context {
 func newTimeoutResult(startTime time.Time) (*waitResult, error) {
 	elapsed := time.Since(startTime).Round(time.Second)
 	return &waitResult{
-		State:   "timeout",
+		State:   waitStateTimeout,
 		Error:   fmt.Sprintf("polling timed out after %s", elapsed),
 		Runtime: elapsed.String(),
 	}, nil
@@ -748,10 +761,15 @@ func newTimeoutResult(startTime time.Time) (*waitResult, error) {
 //	5: work delta verification failed (e.g., I/O timeout checking outcome)
 //	124: timeout reached while waiting
 func waitExitError(waitRes *waitResult) error {
+	// Defensive nil guard
+	if waitRes == nil {
+		return &exitError{Code: exitCodeDispatchFailure, Err: errors.New("wait result is nil")}
+	}
+
 	switch waitRes.State {
-	case "timeout":
+	case waitStateTimeout:
 		return &exitError{Code: exitCodeTimeout, Err: errors.New("timeout reached while waiting for task completion")}
-	case "completed":
+	case waitStateCompleted:
 		// Check for work delta verification failure FIRST — this is distinct from
 		// "verified zero work" (exit 3) or "verified partial work" (exit 4).
 		// Verification failure means we couldn't check the outcome, not that there was no work.
@@ -765,10 +783,10 @@ func waitExitError(waitRes *waitResult) error {
 			return &exitError{Code: exitCodePartialWork, Err: fmt.Errorf("dispatch completed with uncommitted changes in %d file(s)", waitRes.DirtyFiles)}
 		}
 		return &exitError{Code: exitCodeNoNewWork, Err: errors.New("dispatch completed but produced no new work")}
-	case "blocked":
+	case waitStateBlocked:
 		// Blocked is a form of completion (agent intentionally stopped)
 		return nil
-	case "idle":
+	case waitStateIdle:
 		// Soft failure: agent didn't produce expected signals
 		return &exitError{Code: exitCodeAgentNoSignals, Err: errors.New("dispatch completed but agent did not produce expected signals")}
 	default:
@@ -854,13 +872,13 @@ func formatStatusLine(r *waitResult) string {
 	var parts []string
 
 	switch r.State {
-	case "running":
+	case waitStateRunning:
 		parts = append(parts, "🔄 Running")
-	case "completed":
+	case waitStateCompleted:
 		parts = append(parts, "✅ Completed")
-	case "blocked":
+	case waitStateBlocked:
 		parts = append(parts, "🚫 Blocked")
-	case "idle":
+	case waitStateIdle:
 		parts = append(parts, "💤 Idle")
 	default:
 		parts = append(parts, fmt.Sprintf("Status: %s", r.State))
@@ -1008,24 +1026,24 @@ func parseStatusCheckOutput(output string) (*waitResult, bool, error) {
 	}
 
 	// Determine state
-	state := "idle"
+	state := waitStateIdle
 	complete := false
 	blocked := false
 
 	switch {
 	case hasBlocked:
-		state = "blocked"
+		state = waitStateBlocked
 		blocked = true
 		complete = true
 	case hasComplete:
-		state = "completed"
+		state = waitStateCompleted
 		complete = true
 	case agentState == "alive":
-		state = "running"
+		state = waitStateRunning
 	case agentState == "dead" && prURL != "":
 		// Fallback: agent exited without TASK_COMPLETE but PR exists → likely completed
 		// This handles agents that forget to write the completion signal
-		state = "completed"
+		state = waitStateCompleted
 		complete = true
 	}
 

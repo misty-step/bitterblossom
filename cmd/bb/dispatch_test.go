@@ -538,6 +538,67 @@ func TestDispatchCommandWaitWithPollingError(t *testing.T) {
 	}
 }
 
+func TestDispatchCommandWaitWithContextDeadlineExceeded(t *testing.T) {
+	// Cannot use t.Parallel() — t.Setenv modifies process environment.
+	t.Setenv("GITHUB_TOKEN", "ghp-test")
+	t.Setenv("OPENROUTER_API_KEY", "or-test")
+
+	runner := &fakeDispatchRunner{
+		result: dispatchsvc.Result{
+			Executed: true,
+			State:    dispatchsvc.StateRunning,
+			Plan: dispatchsvc.Plan{
+				Sprite: "moss",
+				Mode:   "execute",
+			},
+		},
+	}
+
+	deps := dispatchDeps{
+		readFile: func(string) ([]byte, error) { return nil, nil },
+		newFlyClient: func(token, apiURL string) (fly.MachineClient, error) {
+			return fakeFlyClient{}, nil
+		},
+		newRemote: func(binary, org string) *spriteCLIRemote {
+			return &spriteCLIRemote{}
+		},
+		newService: func(cfg dispatchsvc.Config) (dispatchRunner, error) {
+			return runner, nil
+		},
+		pollSprite: func(ctx context.Context, remote *spriteCLIRemote, sprite string, timeout time.Duration, progress func(string)) (*waitResult, error) {
+			// Simulate context.DeadlineExceeded - happens during initial delay
+			return nil, context.DeadlineExceeded
+		},
+	}
+
+	cmd := newDispatchCmdWithDeps(deps)
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetArgs([]string{
+		"moss",
+		"Implement feature",
+		"--execute",
+		"--wait",
+		"--app", "bb-app",
+		"--token", "tok",
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for context.DeadlineExceeded, got nil")
+	}
+	var coded *exitError
+	if !errors.As(err, &coded) {
+		t.Fatalf("expected exitError, got %T: %v", err, err)
+	}
+	// Should return exit code 124 (timeout), NOT 1 (dispatch failure)
+	if coded.Code != exitCodeTimeout {
+		t.Fatalf("expected exit code %d (timeout), got %d (dispatch failure)", exitCodeTimeout, coded.Code)
+	}
+}
+
 func TestDispatchCommandWaitJSONOutput(t *testing.T) {
 	// Cannot use t.Parallel() — t.Setenv modifies process environment.
 	t.Setenv("GITHUB_TOKEN", "ghp-test")
@@ -1308,6 +1369,12 @@ func TestWaitExitError(t *testing.T) {
 			waitRes:      &waitResult{State: "running"},
 			wantErr:      true,
 			wantExitCode: exitCodeAgentNoSignals,
+		},
+		{
+			name:         "nil waitResult returns error",
+			waitRes:      nil,
+			wantErr:      true,
+			wantExitCode: exitCodeDispatchFailure,
 		},
 	}
 
