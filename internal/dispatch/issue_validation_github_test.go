@@ -45,19 +45,37 @@ func TestNewIssueValidator_WithClient(t *testing.T) {
 }
 
 func TestNewIssueValidator_CreatesClientFromEnv(t *testing.T) {
-	t.Parallel()
+	// Note: Cannot use t.Parallel() with t.Setenv
 
-	// This test verifies behavior when GITHUB_TOKEN is not set
-	// In that case, the validator should fall back to gh CLI
-	validator := DefaultIssueValidator()
+	// Test 1: GITHUB_TOKEN not set - should fall back to gh CLI (GitHubClient should be nil)
+	t.Run("no_token", func(t *testing.T) {
+		t.Setenv("GITHUB_TOKEN", "")
+		validator := DefaultIssueValidator()
 
-	if validator == nil {
-		t.Fatal("expected validator to be created")
-	}
+		if validator == nil {
+			t.Fatal("expected validator to be created")
+		}
 
-	// If GITHUB_TOKEN is set, GitHubClient should be non-nil
-	// If not set, it should be nil (we'll use fallback)
-	// Either is valid behavior depending on environment
+		// Without token, GitHubClient should be nil (fallback to gh CLI)
+		if validator.GitHubClient != nil {
+			t.Error("expected GitHubClient to be nil when GITHUB_TOKEN is not set")
+		}
+	})
+
+	// Test 2: GITHUB_TOKEN set - should create GitHubClient
+	t.Run("with_token", func(t *testing.T) {
+		t.Setenv("GITHUB_TOKEN", "test-token-123")
+		validator := DefaultIssueValidator()
+
+		if validator == nil {
+			t.Fatal("expected validator to be created")
+		}
+
+		// With token, GitHubClient should be non-nil
+		if validator.GitHubClient == nil {
+			t.Error("expected GitHubClient to be non-nil when GITHUB_TOKEN is set")
+		}
+	})
 }
 
 func TestValidateIssue_WithGitHubClient(t *testing.T) {
