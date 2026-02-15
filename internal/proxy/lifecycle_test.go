@@ -519,21 +519,20 @@ func TestBuildStartProxyScript(t *testing.T) {
 }
 
 func TestLifecycle_CollectDiagnostics(t *testing.T) {
-	t.Run("collects all diagnostics", func(t *testing.T) {
-		execCount := 0
+	t.Run("collects all diagnostics via atomic collection", func(t *testing.T) {
 		mock := &mockRemoteExecutor{
 			execFunc: func(ctx context.Context, sprite, remoteCommand string, stdin []byte) (string, error) {
-				execCount++
-				switch execCount {
-				case 1:
-					return "Mem: 1Gi available", nil
-				case 2:
-					return "PID USER COMMAND\n123 sprite node proxy.mjs", nil
-				case 3:
-					return "Error: Cannot find module 'express'", nil
-				default:
-					return "", nil
-				}
+				// Return atomic output format with all sections
+				return `---MEMORY---
+Mem: 1Gi available
+---END_MEMORY---
+---PROCESSES---
+PID USER COMMAND
+123 sprite node proxy.mjs
+---END_PROCESSES---
+---PROXY_LOG---
+Error: Cannot find module 'express'
+---END_PROXY_LOG---`, nil
 			},
 		}
 		lifecycle := NewLifecycle(mock)
@@ -553,27 +552,49 @@ func TestLifecycle_CollectDiagnostics(t *testing.T) {
 		}
 	})
 
-	t.Run("handles exec errors gracefully", func(t *testing.T) {
+	t.Run("falls back to fresh collection on transport error", func(t *testing.T) {
+		callCount := 0
 		mock := &mockRemoteExecutor{
 			execFunc: func(ctx context.Context, sprite, remoteCommand string, stdin []byte) (string, error) {
-				return "", errors.New("command failed")
+				callCount++
+				// First call (atomic) fails with transport error
+				if strings.Contains(remoteCommand, "---MEMORY---") {
+					return "", errors.New("signal: killed")
+				}
+				// Fallback calls succeed
+				if strings.Contains(remoteCommand, "free") {
+					return "Mem: 2Gi available", nil
+				}
+				if strings.Contains(remoteCommand, "ps aux") {
+					return "PID 123 node proxy", nil
+				}
+				if strings.Contains(remoteCommand, "tail") {
+					return "Proxy log line", nil
+				}
+				return "", nil
 			},
 		}
 		lifecycle := NewLifecycle(mock)
 
 		diagnostics, err := lifecycle.CollectDiagnostics(context.Background(), "test-sprite")
 		if err != nil {
-			t.Errorf("expected nil error but got: %v", err)
+			t.Errorf("unexpected error: %v", err)
 		}
-		if diagnostics == nil {
-			t.Error("expected diagnostics even when commands fail")
+		if diagnostics.MemoryAvailable != "Mem: 2Gi available" {
+			t.Errorf("unexpected memory: %s", diagnostics.MemoryAvailable)
+		}
+		if diagnostics.ProcessList != "PID 123 node proxy" {
+			t.Errorf("unexpected processes: %s", diagnostics.ProcessList)
+		}
+		if diagnostics.ProxyLogTail != "Proxy log line" {
+			t.Errorf("unexpected log tail: %s", diagnostics.ProxyLogTail)
 		}
 	})
 
-	t.Run("surfaces errors for unreachable sprite (issue #358)", func(t *testing.T) {
+	t.Run("reports transport failure when both collection methods fail (issue #350)", func(t *testing.T) {
 		mock := &mockRemoteExecutor{
 			execFunc: func(ctx context.Context, sprite, remoteCommand string, stdin []byte) (string, error) {
-				return "", errors.New("i/o timeout: sprite unreachable")
+				return "", errors.New("signal: killed")
 			},
 		}
 		lifecycle := NewLifecycle(mock)
@@ -586,48 +607,34 @@ func TestLifecycle_CollectDiagnostics(t *testing.T) {
 			t.Fatal("expected diagnostics even when commands fail")
 		}
 
-		// Check that errors are surfaced in the diagnostic fields
-		if diagnostics.MemoryAvailable == "" {
-			t.Error("expected MemoryAvailable to contain error, got empty string")
+		// Should report transport failure instead of empty fields (issue #350 fix)
+		if !strings.Contains(diagnostics.MemoryAvailable, "diagnostics unavailable") {
+			t.Errorf("expected 'diagnostics unavailable' message, got: %s", diagnostics.MemoryAvailable)
 		}
-		if !strings.Contains(diagnostics.MemoryAvailable, "failed") {
-			t.Errorf("expected MemoryAvailable to contain 'failed', got: %s", diagnostics.MemoryAvailable)
+		if !strings.Contains(diagnostics.ProcessList, "diagnostics unavailable") {
+			t.Errorf("expected 'diagnostics unavailable' message, got: %s", diagnostics.ProcessList)
 		}
-		if !strings.Contains(diagnostics.MemoryAvailable, "i/o timeout") {
-			t.Errorf("expected MemoryAvailable to contain original error, got: %s", diagnostics.MemoryAvailable)
-		}
-
-		if diagnostics.ProcessList == "" {
-			t.Error("expected ProcessList to contain error, got empty string")
-		}
-		if !strings.Contains(diagnostics.ProcessList, "failed") {
-			t.Errorf("expected ProcessList to contain 'failed', got: %s", diagnostics.ProcessList)
+		if !strings.Contains(diagnostics.ProxyLogTail, "diagnostics unavailable") {
+			t.Errorf("expected 'diagnostics unavailable' message, got: %s", diagnostics.ProxyLogTail)
 		}
 
-		if diagnostics.ProxyLogTail == "" {
-			t.Error("expected ProxyLogTail to contain error, got empty string")
-		}
-		if !strings.Contains(diagnostics.ProxyLogTail, "failed") {
-			t.Errorf("expected ProxyLogTail to contain 'failed', got: %s", diagnostics.ProxyLogTail)
-		}
-
-		// Test that FormatError shows these error messages instead of blank output
+		// Test that FormatError shows informative message instead of blank output
 		baseErr := errors.New("proxy health check failed after 30s")
 		formatted := diagnostics.FormatError(baseErr, "unreachable-sprite")
 
 		if strings.Contains(formatted, "Memory:\n\n") {
-			t.Error("FormatError should not show empty Memory section - issue #358 regression")
+			t.Error("FormatError should not show empty Memory section - issue #350 regression")
 		}
 		if strings.Contains(formatted, "Processes:\n\n") {
-			t.Error("FormatError should not show empty Processes section - issue #358 regression")
+			t.Error("FormatError should not show empty Processes section - issue #350 regression")
 		}
 		if strings.Contains(formatted, "Proxy log (last 50 lines):\n\n") {
-			t.Error("FormatError should not show empty Proxy log section - issue #358 regression")
+			t.Error("FormatError should not show empty Proxy log section - issue #350 regression")
 		}
 
-		// Each field should show error info - check for "failed" in the formatted output
-		if !strings.Contains(formatted, "failed") {
-			t.Errorf("FormatError should show failure indicators, got:\n%s", formatted)
+		// Should show transport failure message
+		if !strings.Contains(formatted, "diagnostics unavailable") {
+			t.Errorf("FormatError should show 'diagnostics unavailable', got:\n%s", formatted)
 		}
 	})
 }
@@ -663,4 +670,421 @@ func TestDiagnostics_FormatError(t *testing.T) {
 	if !strings.Contains(formatted, "port already in use") {
 		t.Error("expected log tail")
 	}
+}
+
+// Tests for issue #350 fix: atomic diagnostics collection and transport failure handling
+
+func TestExtractSection(t *testing.T) {
+	tests := []struct {
+		name     string
+		output   string
+		section  string
+		want     string
+		wantOk   bool
+	}{
+		{
+			name: "extracts memory section",
+			output: `---MEMORY---
+Mem: 1Gi available
+---END_MEMORY---`,
+			section: "MEMORY",
+			want:    "Mem: 1Gi available",
+			wantOk:  true,
+		},
+		{
+			name: "extracts processes section",
+			output: `---PROCESSES---
+PID USER COMMAND
+123 sprite node
+---END_PROCESSES---`,
+			section: "PROCESSES",
+			want:    "PID USER COMMAND\n123 sprite node",
+			wantOk:  true,
+		},
+		{
+			name: "extracts proxy log section",
+			output: `---PROXY_LOG---
+Error: Cannot find module
+    at require
+---END_PROXY_LOG---`,
+			section: "PROXY_LOG",
+			want:    "Error: Cannot find module\n    at require",
+			wantOk:  true,
+		},
+		{
+			name:    "missing section",
+			output:  `---MEMORY---
+Mem: 1Gi
+---END_MEMORY---`,
+			section: "PROXY_LOG",
+			want:    "",
+			wantOk:  false,
+		},
+		{
+			name:    "missing end marker",
+			output:  `---MEMORY---
+Mem: 1Gi`,
+			section: "MEMORY",
+			want:    "",
+			wantOk:  false,
+		},
+		{
+			name: "multiple sections extracts correct one",
+			output: `---MEMORY---
+Mem: 1Gi
+---END_MEMORY---
+---PROCESSES---
+node proxy
+---END_PROCESSES---`,
+			section: "PROCESSES",
+			want:    "node proxy",
+			wantOk:  true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := extractSection(tc.output, tc.section)
+			if ok != tc.wantOk {
+				t.Errorf("extractSection() ok = %v, want %v", ok, tc.wantOk)
+			}
+			if got != tc.want {
+				t.Errorf("extractSection() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsTransportError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "nil error",
+			err:  nil,
+			want: false,
+		},
+		{
+			name: "signal killed",
+			err:  errors.New("signal: killed"),
+			want: true,
+		},
+		{
+			name: "context deadline exceeded",
+			err:  errors.New("context deadline exceeded"),
+			want: true,
+		},
+		{
+			name: "connection refused",
+			err:  errors.New("connection refused"),
+			want: true,
+		},
+		{
+			name: "i/o timeout",
+			err:  errors.New("read tcp: i/o timeout"),
+			want: true,
+		},
+		{
+			name: "network unreachable",
+			err:  errors.New("network is unreachable"),
+			want: true,
+		},
+		{
+			name: "no such host",
+			err:  errors.New("lookup: no such host"),
+			want: true,
+		},
+		{
+			name: "generic error not transport",
+			err:  errors.New("command not found"),
+			want: false,
+		},
+		{
+			name: "wrapped transport error",
+			err:  errors.New("exec failed: signal: killed during operation"),
+			want: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isTransportError(tc.err)
+			if got != tc.want {
+				t.Errorf("isTransportError(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLifecycle_collectDiagnosticsAtomic(t *testing.T) {
+	t.Run("successful atomic collection", func(t *testing.T) {
+		mock := &mockRemoteExecutor{
+			execFunc: func(ctx context.Context, sprite, remoteCommand string, stdin []byte) (string, error) {
+				// Verify it's an atomic script (contains all sections)
+				if !strings.Contains(remoteCommand, "---MEMORY---") {
+					t.Error("expected atomic script to contain MEMORY section marker")
+				}
+				if !strings.Contains(remoteCommand, "---PROCESSES---") {
+					t.Error("expected atomic script to contain PROCESSES section marker")
+				}
+				if !strings.Contains(remoteCommand, "---PROXY_LOG---") {
+					t.Error("expected atomic script to contain PROXY_LOG section marker")
+				}
+
+				// Return valid output with all sections
+				return `---MEMORY---
+Mem: 2Gi available
+---END_MEMORY---
+---PROCESSES---
+123 sprite node proxy.mjs
+---END_PROCESSES---
+---PROXY_LOG---
+Error: port in use
+---END_PROXY_LOG---`, nil
+			},
+		}
+		lifecycle := NewLifecycle(mock)
+
+		d, err := lifecycle.collectDiagnosticsAtomic(context.Background(), "test-sprite")
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+
+		if d.MemoryAvailable != "Mem: 2Gi available" {
+			t.Errorf("unexpected memory: %s", d.MemoryAvailable)
+		}
+		if d.ProcessList != "123 sprite node proxy.mjs" {
+			t.Errorf("unexpected processes: %s", d.ProcessList)
+		}
+		if d.ProxyLogTail != "Error: port in use" {
+			t.Errorf("unexpected log tail: %s", d.ProxyLogTail)
+		}
+	})
+
+	t.Run("returns error on exec failure", func(t *testing.T) {
+		mock := &mockRemoteExecutor{
+			execFunc: func(ctx context.Context, sprite, remoteCommand string, stdin []byte) (string, error) {
+				return "", errors.New("signal: killed")
+			},
+		}
+		lifecycle := NewLifecycle(mock)
+
+		_, err := lifecycle.collectDiagnosticsAtomic(context.Background(), "test-sprite")
+		if err == nil {
+			t.Error("expected error for exec failure")
+		}
+		if !strings.Contains(err.Error(), "atomic diagnostics collection failed") {
+			t.Errorf("unexpected error message: %v", err)
+		}
+	})
+
+	t.Run("returns parse error for malformed output", func(t *testing.T) {
+		mock := &mockRemoteExecutor{
+			execFunc: func(ctx context.Context, sprite, remoteCommand string, stdin []byte) (string, error) {
+				return "malformed output without markers", nil
+			},
+		}
+		lifecycle := NewLifecycle(mock)
+
+		d, err := lifecycle.collectDiagnosticsAtomic(context.Background(), "test-sprite")
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+
+		if !strings.Contains(d.MemoryAvailable, "parse error") {
+			t.Errorf("expected parse error in MemoryAvailable, got: %s", d.MemoryAvailable)
+		}
+		if !strings.Contains(d.ProcessList, "parse error") {
+			t.Errorf("expected parse error in ProcessList, got: %s", d.ProcessList)
+		}
+		if !strings.Contains(d.ProxyLogTail, "parse error") {
+			t.Errorf("expected parse error in ProxyLogTail, got: %s", d.ProxyLogTail)
+		}
+	})
+}
+
+func TestLifecycle_collectDiagnosticsFresh(t *testing.T) {
+	t.Run("successful fresh collection", func(t *testing.T) {
+		callCount := 0
+		mock := &mockRemoteExecutor{
+			execFunc: func(ctx context.Context, sprite, remoteCommand string, stdin []byte) (string, error) {
+				callCount++
+				switch {
+				case strings.Contains(remoteCommand, "free"):
+					return "Mem: 4Gi total", nil
+				case strings.Contains(remoteCommand, "ps aux"):
+					return "456 sprite node", nil
+				case strings.Contains(remoteCommand, "tail"):
+					return "Proxy started on port 4000", nil
+				}
+				return "", nil
+			},
+		}
+		lifecycle := NewLifecycle(mock)
+
+		d, err := lifecycle.collectDiagnosticsFresh(context.Background(), "test-sprite")
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+
+		if d.MemoryAvailable != "Mem: 4Gi total" {
+			t.Errorf("unexpected memory: %s", d.MemoryAvailable)
+		}
+		if d.ProcessList != "456 sprite node" {
+			t.Errorf("unexpected processes: %s", d.ProcessList)
+		}
+		if d.ProxyLogTail != "Proxy started on port 4000" {
+			t.Errorf("unexpected log tail: %s", d.ProxyLogTail)
+		}
+	})
+
+	t.Run("returns transport failure message when all calls fail", func(t *testing.T) {
+		mock := &mockRemoteExecutor{
+			execFunc: func(ctx context.Context, sprite, remoteCommand string, stdin []byte) (string, error) {
+				return "", errors.New("connection refused")
+			},
+		}
+		lifecycle := NewLifecycle(mock)
+
+		d, err := lifecycle.collectDiagnosticsFresh(context.Background(), "test-sprite")
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+
+		if d.MemoryAvailable != "diagnostics unavailable — transport failure" {
+			t.Errorf("expected transport failure message, got: %s", d.MemoryAvailable)
+		}
+		if d.ProcessList != "diagnostics unavailable — transport failure" {
+			t.Errorf("expected transport failure message, got: %s", d.ProcessList)
+		}
+		if d.ProxyLogTail != "diagnostics unavailable — transport failure" {
+			t.Errorf("expected transport failure message, got: %s", d.ProxyLogTail)
+		}
+	})
+
+	t.Run("partial success shows available data", func(t *testing.T) {
+		callCount := 0
+		mock := &mockRemoteExecutor{
+			execFunc: func(ctx context.Context, sprite, remoteCommand string, stdin []byte) (string, error) {
+				callCount++
+				if callCount == 1 { // Memory succeeds
+					return "Mem: 8Gi", nil
+				}
+				return "", errors.New("timeout") // Others fail
+			},
+		}
+		lifecycle := NewLifecycle(mock)
+
+		d, err := lifecycle.collectDiagnosticsFresh(context.Background(), "test-sprite")
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+
+		if d.MemoryAvailable != "Mem: 8Gi" {
+			t.Errorf("expected memory data, got: %s", d.MemoryAvailable)
+		}
+		if d.ProcessList != "diagnostics unavailable — transport failure" {
+			t.Errorf("expected transport failure for processes, got: %s", d.ProcessList)
+		}
+	})
+}
+
+func TestLifecycle_CollectDiagnostics_Integration(t *testing.T) {
+	t.Run("uses atomic collection when available", func(t *testing.T) {
+		callCount := 0
+		mock := &mockRemoteExecutor{
+			execFunc: func(ctx context.Context, sprite, remoteCommand string, stdin []byte) (string, error) {
+				callCount++
+				// First call is atomic (has all section markers)
+				if strings.Contains(remoteCommand, "---MEMORY---") {
+					return `---MEMORY---
+Mem: 1Gi
+---END_MEMORY---
+---PROCESSES---
+node
+---END_PROCESSES---
+---PROXY_LOG---
+log
+---END_PROXY_LOG---`, nil
+				}
+				return "", nil
+			},
+		}
+		lifecycle := NewLifecycle(mock)
+
+		d, err := lifecycle.CollectDiagnostics(context.Background(), "test-sprite")
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if d.MemoryAvailable != "Mem: 1Gi" {
+			t.Errorf("unexpected result: %s", d.MemoryAvailable)
+		}
+		// Should only make 1 exec call (atomic)
+		if callCount != 1 {
+			t.Errorf("expected 1 exec call for atomic collection, got %d", callCount)
+		}
+	})
+
+	t.Run("falls back to fresh collection on transport error", func(t *testing.T) {
+		callCount := 0
+		mock := &mockRemoteExecutor{
+			execFunc: func(ctx context.Context, sprite, remoteCommand string, stdin []byte) (string, error) {
+				callCount++
+				// First call (atomic) fails with transport error
+				if strings.Contains(remoteCommand, "---MEMORY---") {
+					return "", errors.New("signal: killed")
+				}
+				// Fallback calls succeed
+				if strings.Contains(remoteCommand, "free") {
+					return "Mem: 2Gi", nil
+				}
+				if strings.Contains(remoteCommand, "ps aux") {
+					return "node proxy", nil
+				}
+				if strings.Contains(remoteCommand, "tail") {
+					return "proxy log", nil
+				}
+				return "", nil
+			},
+		}
+		lifecycle := NewLifecycle(mock)
+
+		d, err := lifecycle.CollectDiagnostics(context.Background(), "test-sprite")
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if d.MemoryAvailable != "Mem: 2Gi" {
+			t.Errorf("expected fallback memory data, got: %s", d.MemoryAvailable)
+		}
+		if d.ProcessList != "node proxy" {
+			t.Errorf("expected fallback process data, got: %s", d.ProcessList)
+		}
+		if d.ProxyLogTail != "proxy log" {
+			t.Errorf("expected fallback log data, got: %s", d.ProxyLogTail)
+		}
+		// Should make 4 calls: 1 atomic (fails) + 3 individual fresh calls
+		if callCount != 4 {
+			t.Errorf("expected 4 exec calls (1 failed atomic + 3 fresh), got %d", callCount)
+		}
+	})
+
+	t.Run("reports transport failure when both methods fail", func(t *testing.T) {
+		mock := &mockRemoteExecutor{
+			execFunc: func(ctx context.Context, sprite, remoteCommand string, stdin []byte) (string, error) {
+				return "", errors.New("signal: killed")
+			},
+		}
+		lifecycle := NewLifecycle(mock)
+
+		d, err := lifecycle.CollectDiagnostics(context.Background(), "test-sprite")
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		// Should report transport failure message
+		if !strings.Contains(d.MemoryAvailable, "diagnostics unavailable") {
+			t.Errorf("expected transport failure message, got: %s", d.MemoryAvailable)
+		}
+	})
 }
