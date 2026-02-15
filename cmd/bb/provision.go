@@ -15,12 +15,15 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var provisionJSON bool
+
 type provisionOptions struct {
 	Composition string
 	All         bool
 	Org         string
 	SpriteCLI   string
 	Timeout     time.Duration
+	Format      string
 }
 
 type provisionDeps struct {
@@ -58,6 +61,7 @@ func newProvisionCmdWithDeps(deps provisionDeps) *cobra.Command {
 		Org:         defaultOrg(),
 		SpriteCLI:   defaultSpriteCLIPath(),
 		Timeout:     30 * time.Minute,
+		Format:      "json",
 	}
 
 	command := &cobra.Command{

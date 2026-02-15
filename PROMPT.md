@@ -1,100 +1,67 @@
-# Task: Fix bb logs to show actual agent output during dispatch
+Implement format flag standardization for issue #321:
 
-You are working on `/Users/yawgmoth/repos/bitterblossom` (Go project). Branch: `kaylee/dispatch-reliability-scaffolding`.
+Modify ALL bb commands to use --format=json|text with hidden --json alias.
 
-## Problem
+FILES TO MODIFY:
+1. cmd/bb/dispatch.go - Replace --json bool with --format string + hidden --json alias (default text)
+2. cmd/bb/logs.go - Same pattern (default text)
+3. cmd/bb/events.go - Same pattern (default text)
+4. cmd/bb/compose.go - Same pattern (default text)
+5. cmd/bb/watchdog.go - Same pattern (default text)
+6. cmd/bb/agent.go - Same pattern (default text)
+7. cmd/bb/provision.go - Add --format, default json
+8. cmd/bb/teardown.go - Add --format, default json
+9. cmd/bb/add.go - Add --format, default text
+10. cmd/bb/remove.go - Add --format, default text
 
-`bb logs <sprite>` reads from `logs/agent.jsonl` (structured events only), but the actual agent output goes to `ralph.log`. During an active dispatch, `bb logs` returns empty because the JSONL events are sparse — only heartbeats and progress. Users need to see what the agent is actually doing.
+Use fleet.go as reference implementation for the pattern:
+- Add opts.Format field with default value
+- Validate format is 'json' or 'text' in RunE
+- Add deprecated --json as hidden alias via MarkHidden
+- Map deprecated --json usage to format='json' when Changed
 
-## Changes needed
+TDD APPROACH:
+1. First update tests for each command
+2. Then implement the format handling
+3. Run make test to verify all pass
+4. Run make lint to verify no style issues
 
-### 1. Add `--raw` flag to `cmd/bb/logs.go`
+Specific implementation details:
 
-Add a new `--raw` boolean flag. When set, `bb logs --raw <sprite>` reads `ralph.log` instead of `agent.jsonl`. This shows the actual Claude output.
-
-In `newLogsCmdWithDeps`, add:
-
+For dispatch.go (currently has --json bool, default text):
 ```go
-var rawMode bool
-```
-
-Add the flag:
-```go
-cmd.Flags().BoolVar(&rawMode, "raw", false, "show raw agent output (ralph.log) instead of structured events")
-```
-
-### 2. Add raw log fetch mode
-
-When `rawMode` is true and we're in remote mode, change the behavior:
-
-```go
-if rawMode {
-    return runRemoteRawLogs(ctx, stdout, stderr, cli, names, follow, pollInterval)
+type dispatchOptions struct {
+    // ... other fields
+    Format string  // Add this
+    JSON   bool    // Keep as hidden alias, mark deprecated
+}
+// In command setup:
+command.Flags().StringVar(&opts.Format, "format", "text", "Output format: json|text")
+command.Flags().BolVar(&opts.JSON, "json", false, "Deprecated: use --format=json")
+command.Flags().MarkHidden("json")
+// In RunE validation:
+if cmd.Flags().Changed("json") {
+    opts.Format = "json"
+}
+format := strings.ToLower(strings.TrimSpace(opts.Format))
+if format != "json" && format != "text" {
+    return errors.New("--format must be json or text")
 }
 ```
 
-Add the implementation:
-
+For provision.go (currently always JSON, default json):
 ```go
-const defaultRemoteRalphLog = "/home/sprite/workspace/ralph.log"
-
-func runRemoteRawLogs(ctx context.Context, stdout, stderr io.Writer, cli sprite.SpriteCLI, names []string, follow bool, pollInterval time.Duration) error {
-    for _, name := range names {
-        if len(names) > 1 {
-            fmt.Fprintf(stdout, "=== %s ===\n", name)
-        }
-
-        var cmd string
-        if follow {
-            cmd = fmt.Sprintf("tail -n 50 -f %s 2>/dev/null", defaultRemoteRalphLog)
-        } else {
-            cmd = fmt.Sprintf("tail -n 100 %s 2>/dev/null", defaultRemoteRalphLog)
-        }
-
-        out, err := cli.Exec(ctx, name, cmd, nil)
-        if err != nil {
-            fmt.Fprintf(stderr, "logs: fetch raw logs from %q: %v\n", name, err)
-            continue
-        }
-        if strings.TrimSpace(out) != "" {
-            fmt.Fprintln(stdout, out)
-        } else {
-            fmt.Fprintf(stdout, "(no ralph.log output yet for %s)\n", name)
-        }
-    }
-    return nil
-}
+// In opts:
+Format string  // default "json"
+// Validate same pattern
+// Change output to respect format: contracts.WriteJSON for json, fmt.Fprint for text
 ```
 
-### 3. Make `--raw` the default behavior
+Follow the exact pattern in fleet.go lines 50-60 and status.go lines 60-70.
 
-Actually, since most users want to see what the agent is doing (not structured events), make raw the default and add `--events` for structured mode:
-
-- Remove the `--raw` flag
-- Add `--events` flag instead: `cmd.Flags().BoolVar(&eventsMode, "events", false, "show structured event log (agent.jsonl) instead of raw output")`
-- Default behavior (no flag): show ralph.log
-- `--events`: show agent.jsonl (current behavior)
-
-This means the RunE function routes like:
-
-```go
-if isRemote && !eventsMode {
-    return runRemoteRawLogs(ctx, stdout, stderr, cli, names, follow, pollInterval)
-}
-```
-
-### 4. Add a test in `cmd/bb/logs_test.go` or `cmd/bb/logs_extra_test.go`
-
-Add `TestLogsCmdRawDefault` that verifies the default remote mode reads ralph.log, not agent.jsonl.
-
-Look at existing test patterns in `cmd/bb/logs_test.go` for the fake CLI setup.
-
-## Instructions
-
-1. Make changes to cmd/bb/logs.go
-2. Run `go test ./cmd/bb/...` to see what breaks
-3. Fix test failures
-4. Add new test
-5. Run full `go test ./...`
-6. Commit: `feat(logs): default to raw agent output, add --events for structured logs`
-7. Push to origin
+ACCEPTANCE:
+- All commands accept --format=json|text
+- --json is deprecated hidden alias that still works
+- Tests pass
+- Lint passes
+- Build passes

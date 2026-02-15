@@ -32,6 +32,7 @@ const (
 )
 
 type dispatchOptions struct {
+	Format              string
 	Repo                 string
 	PromptFile           string
 	Skills               []string
@@ -39,7 +40,7 @@ type dispatchOptions struct {
 	Ralph                bool
 	Execute              bool
 	DryRun               bool
-	JSON                 bool
+	JSON                 bool // Deprecated: use --format=json
 	Wait                 bool
 	StreamLogs           bool
 	Timeout              time.Duration
@@ -127,6 +128,7 @@ func newDispatchCmd() *cobra.Command {
 
 func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 	opts := dispatchOptions{
+		Format:          "text",
 		DryRun:          true,
 		Wait:            false,
 		Timeout:         30 * time.Minute,
@@ -148,6 +150,16 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 		Short: "Dispatch a task prompt to a sprite (dry-run by default)",
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Handle deprecated --json flag
+			if cmd.Flags().Changed("json") && opts.JSON {
+				opts.Format = "json"
+			}
+			format := strings.ToLower(strings.TrimSpace(opts.Format))
+			if format != "json" && format != "text" {
+				return errors.New("--format must be json or text")
+			}
+			jsonMode := format == "json"
+
 			if opts.Execute {
 				opts.DryRun = false
 			}
@@ -244,7 +256,7 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 					envVars[name] = value
 				}
 				// Log placeholders for visibility (not actual values)
-				if !opts.JSON {
+				if !jsonMode {
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Injecting secrets: %v\n", placeholders)
 				}
 			}
@@ -253,7 +265,7 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 			if homeDir, err := os.UserHomeDir(); err == nil {
 				secrets, loadErr := dispatchsvc.LoadSecretsFromDir(filepath.Join(homeDir, ".secrets"))
 				if loadErr != nil {
-					if !opts.JSON {
+					if !jsonMode {
 						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to load secrets from ~/.secrets: %v\n", loadErr)
 					}
 				} else if len(secrets) > 0 {
@@ -265,7 +277,7 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 							loadedNames = append(loadedNames, "$"+name)
 						}
 					}
-					if !opts.JSON && len(loadedNames) > 0 {
+					if !jsonMode && len(loadedNames) > 0 {
 						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Loaded secrets from ~/.secrets: %v\n", loadedNames)
 					}
 				}
@@ -337,7 +349,7 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 
 				// Always display validation report when there are any issues
 				// (safety errors, policy errors, or policy warnings)
-				if !opts.JSON && validationResult.HasIssues() {
+				if !jsonMode && validationResult.HasIssues() {
 					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), validationResult.FormatReport(profile))
 				}
 
@@ -402,7 +414,7 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 						WorkDeltaFailed: result.Work.VerificationFailed,
 						WorkDeltaError:  result.Work.VerificationError,
 					}
-					if err := renderWaitResult(cmd, result, waitRes, opts.JSON); err != nil {
+					if err := renderWaitResult(cmd, result, waitRes, jsonMode); err != nil {
 						return err
 					}
 					return waitExitError(waitRes)
@@ -433,7 +445,7 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 				waitRes, waitErr := deps.pollSprite(cmd.Context(), remote, pollTarget, opts.Timeout, func(msg string) {
 					// Intentionally ignoring write errors for progress output
 					// When JSON output is requested, progress goes to stderr to keep stdout clean for JSON
-					if opts.JSON {
+					if jsonMode {
 						_, _ = fmt.Fprintln(cmd.ErrOrStderr(), msg)
 					} else {
 						_, _ = fmt.Fprintln(cmd.OutOrStdout(), msg)
@@ -449,19 +461,19 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 					// Graceful degradation: return dispatch result with warning
 					// Intentionally ignoring write errors for warning message
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Warning: polling failed: %v\n", waitErr)
-					if err := renderDispatchResult(cmd, result, opts.JSON); err != nil {
+					if err := renderDispatchResult(cmd, result, jsonMode); err != nil {
 						return err
 					}
 					// Return exit code 1 for infrastructure/polling failure
 					return &exitError{Code: exitCodeDispatchFailure, Err: waitErr}
 				}
-				if err := renderWaitResult(cmd, result, waitRes, opts.JSON); err != nil {
+				if err := renderWaitResult(cmd, result, waitRes, jsonMode); err != nil {
 					return err
 				}
 				return waitExitError(waitRes)
 			}
 
-			return renderDispatchResult(cmd, result, opts.JSON)
+			return renderDispatchResult(cmd, result, jsonMode)
 		},
 	}
 
@@ -472,7 +484,9 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 	command.Flags().BoolVar(&opts.Ralph, "ralph", false, "Start persistent Ralph loop instead of one-shot")
 	command.Flags().BoolVar(&opts.Execute, "execute", false, "Execute dispatch actions (default is dry-run)")
 	command.Flags().BoolVar(&opts.DryRun, "dry-run", true, "Preview dispatch plan without side effects")
-	command.Flags().BoolVar(&opts.JSON, "json", false, "Emit JSON output")
+	command.Flags().StringVar(&opts.Format, "format", opts.Format, "Output format: json|text")
+	command.Flags().BoolVar(&opts.JSON, "json", false, "Deprecated: use --format=json")
+	command.Flags().MarkHidden("json")
 	command.Flags().BoolVar(&opts.Wait, "wait", false, "Wait for task completion and stream progress")
 	command.Flags().BoolVar(&opts.StreamLogs, "stream-logs", false, "Stream sprite logs to stdout while waiting (--wait required)")
 	command.Flags().DurationVar(&opts.Timeout, "timeout", opts.Timeout, "Timeout for --wait (default: 30m)")

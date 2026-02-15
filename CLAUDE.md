@@ -1,31 +1,65 @@
-# CLAUDE.md
+# Bitterblossom CLAUDE.md
 
-Claude-family tools may read this file first. Keep it aligned w `AGENTS.md`.
+## Output Format Standardization
 
-Also read:
-- `AGENTS.md` (canonical repo context)
-- `docs/adr/001-claude-code-canonical-harness.md` (decision record)
+Issue #321: Unify output format flag to `--format=json|text` everywhere
 
-## What This Is
-Bitterblossom = Go CLI `bb` for managing Sprites on Fly.io: fleet lifecycle, dispatch, monitoring, compositions.
+### Current State
 
-## Canonical Harness (Feb 10 2026)
-Claude Code is canonical sprite harness.
-OpenCode deprecated for sprite dispatch.
+Commands with `--json` boolean flag (need migration):
+- dispatch
+- logs
+- events
+- compose
+- watchdog
+- agent
 
-Proxy provider lets Claude Code route thru OpenRouter to any model.
+Commands with `--format` string flag (already correct):
+- fleet
+- status
 
-## Claude Code (direct)
-```bash
-claude --yolo "TASK"
+Commands always emitting JSON (need `--format` with default json):
+- provision
+- teardown
+
+Interactive commands (default text):
+- add
+- remove
+
+### Migration Pattern
+
+Reference implementations in fleet.go and status.go:
+- Fleet uses `--format` with validation: format must be `json` or `text`
+- Status uses same pattern
+- Both default to `text`
+
+For programmatic commands (provision, teardown), default to `json`.
+
+### Hidden Alias Pattern
+
+For backward compatibility, add deprecated `--json` as hidden alias:
+```go
+command.Flags().Bool("json", false, "Deprecated: use --format=json")
+command.Flags().MarkHidden("json")
 ```
 
-## Claude Code via OpenRouter (Anthropic proxy)
-```bash
-ANTHROPIC_BASE_URL=https://openrouter.ai/api \
-ANTHROPIC_AUTH_TOKEN="$OPENROUTER_API_KEY" \
-ANTHROPIC_MODEL=moonshotai/kimi-k2.5 \
-claude --yolo "TASK"
-```
+In the RunE function, check if `--json` was explicitly set and map it to `format="json"`.
 
-NEVER set `ANTHROPIC_API_KEY` on sprites (billing risk).
+### Default Format Rules
+
+- Interactive commands (dispatch, logs, events, compose, watchdog, agent, add, remove): default to `text`
+- Programmatic commands (provision, teardown): default to `json`
+
+### Testing Requirements
+
+Each command file has corresponding `_test.go` files:
+- dispatch_test.go
+- fleet_test.go
+- status_test.go
+- etc.
+
+Tests should verify:
+1. `--format=text` produces text output
+2. `--format=json` produces valid JSON
+3. `--json` (deprecated) still works and maps to json
+4. Unknown format values return error

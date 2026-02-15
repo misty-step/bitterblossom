@@ -103,6 +103,71 @@ func TestDispatchCommandJSONOutput(t *testing.T) {
 	}
 }
 
+func TestDispatchCommandFormatFlag(t *testing.T) {
+	tests := []struct {
+		name   string
+		format string
+		wantOK bool
+	}{
+		{"format=text", "text", true},
+		{"format=json", "json", true},
+		{"format=unknown", "xml", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Cannot use t.Parallel() — t.Setenv modifies process environment.
+			t.Setenv("GITHUB_TOKEN", "ghp-test")
+			t.Setenv("OPENROUTER_API_KEY", "or-test")
+
+			runner := &fakeDispatchRunner{
+				result: dispatchsvc.Result{
+					Executed: true,
+					State:    dispatchsvc.StateCompleted,
+					Plan: dispatchsvc.Plan{
+						Sprite: "bramble",
+						Mode:   "execute",
+					},
+				},
+			}
+
+			deps := dispatchDeps{
+				readFile: func(string) ([]byte, error) { return nil, nil },
+				newFlyClient: func(token, apiURL string) (fly.MachineClient, error) {
+					return fakeFlyClient{}, nil
+				},
+				newRemote: func(binary, org string) *spriteCLIRemote {
+					return &spriteCLIRemote{}
+				},
+				newService: func(cfg dispatchsvc.Config) (dispatchRunner, error) {
+					return runner, nil
+				},
+			}
+
+			cmd := newDispatchCmdWithDeps(deps)
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&out)
+			cmd.SetArgs([]string{
+				"bramble",
+				"Fix flaky tests",
+				"--execute",
+				"--format", tt.format,
+				"--app", "bb-app",
+				"--token", "tok",
+			})
+
+			err := cmd.Execute()
+			if tt.wantOK && err != nil {
+				t.Fatalf("cmd.Execute() error = %v", err)
+			}
+			if !tt.wantOK && err == nil {
+				t.Fatalf("expected error for format=%s, got nil", tt.format)
+			}
+		})
+	}
+}
+
 func TestDispatchCommandAllowsIssueWithoutPrompt(t *testing.T) {
 	t.Parallel()
 
