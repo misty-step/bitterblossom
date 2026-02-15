@@ -17,6 +17,7 @@ import (
 	"github.com/misty-step/bitterblossom/internal/registry"
 	"github.com/misty-step/bitterblossom/internal/shellutil"
 	"github.com/misty-step/bitterblossom/pkg/fly"
+	"github.com/misty-step/bitterblossom/pkg/spriteconst"
 	"github.com/spf13/cobra"
 )
 
@@ -351,7 +352,7 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 				Remote:             remote,
 				Fly:                flyClient,
 				App:                opts.App,
-				Workspace:          dispatchsvc.DefaultWorkspace,
+				Workspace:          spriteconst.DefaultWorkspace,
 				CompositionPath:    opts.CompositionPath,
 				RalphTemplatePath:  "scripts/ralph-prompt-template.md",
 				MaxRalphIterations: opts.MaxIterations,
@@ -548,7 +549,7 @@ func selectSpriteFromRegistry(ctx context.Context, remote *spriteCLIRemote, opts
 
 	checker := remoteStatusChecker{
 		remote:    remote,
-		workspace: "/home/sprite/workspace",
+		workspace: spriteconst.DefaultWorkspace,
 	}
 	f, err := fleet.NewDispatchFleet(fleet.DispatchConfig{
 		RegistryPath:     opts.RegistryPath,
@@ -784,7 +785,7 @@ func pollSpriteStatus(ctx context.Context, remote *spriteCLIRemote, sprite strin
 	defer cancel()
 
 	startTime := time.Now()
-	workspace := "/home/sprite/workspace"
+	workspace := spriteconst.DefaultWorkspace
 
 	// Immediate check before any delay — catches already-completed oneshot tasks.
 	result, done, err := checkSpriteStatus(ctx, remote, sprite, workspace)
@@ -953,15 +954,8 @@ func buildStatusCheckScript(workspace string) string {
 
 // parseStatusCheckOutput parses the output from the status check script.
 func parseStatusCheckOutput(output string) (*waitResult, bool, error) {
-	type statusFile struct {
-		Repo    string `json:"repo"`
-		Started string `json:"started"`
-		Mode    string `json:"mode"`
-		Task    string `json:"task"`
-	}
-
 	var (
-		fileStatus  statusFile
+		fileStatus  spriteconst.StatusFile
 		agentState  string
 		hasComplete bool
 		hasBlocked  bool
@@ -981,7 +975,7 @@ func parseStatusCheckOutput(output string) (*waitResult, bool, error) {
 			// which is acceptable since these fields are for informational display only
 			if err := json.Unmarshal([]byte(payload), &fileStatus); err != nil {
 				// Reset to empty struct on parse failure to ensure clean state
-				fileStatus = statusFile{}
+				fileStatus = spriteconst.StatusFile{}
 			}
 		case strings.HasPrefix(line, "__AGENT_STATE__"):
 			agentState = strings.TrimPrefix(line, "__AGENT_STATE__")

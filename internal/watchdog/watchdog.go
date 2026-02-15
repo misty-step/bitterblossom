@@ -13,11 +13,10 @@ import (
 	"github.com/misty-step/bitterblossom/internal/claude"
 	"github.com/misty-step/bitterblossom/internal/dispatch"
 	"github.com/misty-step/bitterblossom/internal/shellutil"
+	"github.com/misty-step/bitterblossom/pkg/spriteconst"
 )
 
 const (
-	// DefaultWorkspace is where on-sprite status files live.
-	DefaultWorkspace = "/home/sprite/workspace"
 	// DefaultStaleAfter marks a sprite as stale when no commits were made in this window.
 	DefaultStaleAfter = 2 * time.Hour
 	// DefaultMaxRalphIterations controls redispatched Ralph loops.
@@ -111,7 +110,7 @@ func NewService(cfg Config) (*Service, error) {
 	}
 	workspace := strings.TrimSpace(cfg.Workspace)
 	if workspace == "" {
-		workspace = DefaultWorkspace
+		workspace = spriteconst.DefaultWorkspace
 	}
 	staleAfter := cfg.StaleAfter
 	if staleAfter <= 0 {

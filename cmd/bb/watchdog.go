@@ -11,6 +11,7 @@ import (
 
 	"github.com/misty-step/bitterblossom/internal/contracts"
 	watchdogsvc "github.com/misty-step/bitterblossom/internal/watchdog"
+	"github.com/misty-step/bitterblossom/pkg/spriteconst"
 	"github.com/spf13/cobra"
 )
 
@@ -70,7 +71,7 @@ func newWatchdogCmdWithDeps(deps watchdogDeps) *cobra.Command {
 			remote := deps.newRemote(opts.SpriteCLI, opts.Org)
 			service, err := deps.newService(watchdogsvc.Config{
 				Remote:             remote,
-				Workspace:          watchdogsvc.DefaultWorkspace,
+				Workspace:          spriteconst.DefaultWorkspace,
 				StaleAfter:         opts.StaleAfter,
 				MaxRalphIterations: opts.MaxIterations,
 			})

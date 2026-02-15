@@ -6,7 +6,13 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/misty-step/bitterblossom/pkg/spriteconst"
 )
+
+// statusFile is an alias for backward compatibility.
+// Deprecated: Use spriteconst.StatusFile directly.
+type statusFile = spriteconst.StatusFile
 
 type probe struct {
 	ClaudeCount    int
@@ -21,17 +27,6 @@ type probe struct {
 	HasPrompt      bool
 	CurrentTaskID  string
 	Status         statusFile
-}
-
-type statusFile struct {
-	Repo      string `json:"repo,omitempty"`
-	Issue     int    `json:"issue,omitempty"`
-	Started   string `json:"started,omitempty"`
-	Completed string `json:"completed,omitempty"`
-	Mode      string `json:"mode,omitempty"`
-	Task      string `json:"task,omitempty"`
-	Status    string `json:"status,omitempty"`
-	ExitCode  int    `json:"exit_code,omitempty"`
 }
 
 func parseProbeOutput(output string) (probe, error) {

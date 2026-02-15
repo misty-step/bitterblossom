@@ -9,9 +9,8 @@ import (
 	"time"
 
 	"github.com/misty-step/bitterblossom/internal/shellutil"
+	"github.com/misty-step/bitterblossom/pkg/spriteconst"
 )
-
-const workspace = "/home/sprite/workspace"
 
 // Executor reads remote state from sprites.
 type Executor interface {
@@ -159,11 +158,9 @@ func (s *Service) querySprite(ctx context.Context, sprite string) TaskStatus {
 	}
 }
 
-type statusFile struct {
-	Repo    string `json:"repo"`
-	Issue   int    `json:"issue"`
-	Started string `json:"started"`
-}
+// statusFile is an alias for backward compatibility.
+// Deprecated: Use spriteconst.StatusFile directly.
+type statusFile = spriteconst.StatusFile
 
 func parseProbeOutput(output string) (statusFile, bool, error) {
 	var (
@@ -193,8 +190,8 @@ func parseProbeOutput(output string) (statusFile, bool, error) {
 
 func probeScript() string {
 	return strings.Join([]string{
-		"STATUS_PATH=" + shellutil.Quote(workspace+"/STATUS.json"),
-		"PID_PATH=" + shellutil.Quote(workspace+"/AGENT_PID"),
+		"STATUS_PATH=" + shellutil.Quote(spriteconst.DefaultWorkspace+"/STATUS.json"),
+		"PID_PATH=" + shellutil.Quote(spriteconst.DefaultWorkspace+"/AGENT_PID"),
 		"if [ -f \"$STATUS_PATH\" ]; then",
 		"  STATUS_JSON=\"$(tr -d '\\n' < \"$STATUS_PATH\")\"",
 		"else",

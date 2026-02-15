@@ -26,11 +26,10 @@ import (
 	"github.com/misty-step/bitterblossom/internal/shellutil"
 	pkgevents "github.com/misty-step/bitterblossom/pkg/events"
 	"github.com/misty-step/bitterblossom/pkg/fly"
+	"github.com/misty-step/bitterblossom/pkg/spriteconst"
 )
 
 const (
-	// DefaultWorkspace is where prompts and status artifacts are written on sprites.
-	DefaultWorkspace = "/home/sprite/workspace"
 	// DefaultMaxRalphIterations mirrors the shell-script safety cap.
 	DefaultMaxRalphIterations = 50
 	// DefaultMaxTokens is the default stuck-loop token safety cap for Ralph loops.
@@ -268,7 +267,7 @@ func NewService(cfg Config) (*Service, error) {
 	// Validated at provisioning time in provision().
 	workspace := strings.TrimSpace(cfg.Workspace)
 	if workspace == "" {
-		workspace = DefaultWorkspace
+		workspace = spriteconst.DefaultWorkspace
 	}
 	maxIterations := cfg.MaxRalphIterations
 	if maxIterations <= 0 {
@@ -520,7 +519,7 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 		return fail("state_transition", err)
 	}
 
-	statusBytes, err := json.Marshal(statusFile{
+	statusBytes, err := json.Marshal(spriteconst.StatusFile{
 		Repo:    prepared.Repo.Slug,
 		Started: prepared.StartedAt.Format(time.RFC3339),
 		Mode:    prepared.Mode,
@@ -603,45 +602,13 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 				Issue:      prepared.Issue,
 			},
 		})
-		// Update STATUS.json to reflect completion (fixes #367 - stale status)
-		if err := s.writeFinalStatus(ctx, prepared, result, "completed", 0); err != nil {
-			s.logger.Warn("failed to write final status", "sprite", prepared.Sprite, "error", err)
-		}
 	}
 	return result, nil
 }
 
-type statusFile struct {
-	Repo      string `json:"repo,omitempty"`
-	Started   string `json:"started,omitempty"`
-	Completed string `json:"completed,omitempty"`
-	Mode      string `json:"mode,omitempty"`
-	Task      string `json:"task,omitempty"`
-	Status    string `json:"status,omitempty"`
-	ExitCode  int    `json:"exit_code,omitempty"`
-}
-
-// writeFinalStatus updates STATUS.json with completion information.
-// This ensures watchdog reports the correct state after dispatch finishes (#367).
-func (s *Service) writeFinalStatus(ctx context.Context, prepared preparedRequest, result Result, status string, exitCode int) error {
-	finalStatus := statusFile{
-		Repo:      prepared.Repo.Slug,
-		Started:   prepared.StartedAt.Format(time.RFC3339),
-		Completed: s.now().UTC().Format(time.RFC3339),
-		Mode:      prepared.Mode,
-		Task:      prepared.TaskLabel,
-		Status:    status,
-		ExitCode:  exitCode,
-	}
-	statusBytes, err := json.Marshal(finalStatus)
-	if err != nil {
-		return fmt.Errorf("marshal final status: %w", err)
-	}
-	if err := s.remote.Upload(ctx, prepared.Sprite, s.workspace+"/STATUS.json", append(statusBytes, '\n')); err != nil {
-		return fmt.Errorf("upload final status: %w", err)
-	}
-	return nil
-}
+// StatusFile is an alias to spriteconst.StatusFile for backward compatibility.
+// Deprecated: Use spriteconst.StatusFile directly.
+type StatusFile = spriteconst.StatusFile
 
 func (s *Service) provision(ctx context.Context, req preparedRequest) (string, error) {
 	if s.fly == nil || strings.TrimSpace(s.app) == "" {
@@ -1452,8 +1419,6 @@ func buildSetupRepoScript(workspace, cloneURL, repoDir string) string {
 		"set -euo pipefail",
 		"mkdir -p " + shellutil.Quote(workspace),
 		"cd " + shellutil.Quote(workspace),
-		// Configure git credentials BEFORE any git operations that need auth
-		buildGitConfigScript(workspace),
 		"START_TIME=$(date +%s)",
 		"if [ -d " + shellutil.Quote(repoDir) + " ]; then",
 		"  echo \"[setup] pulling latest for " + shellutil.Quote(repoDir) + "...\"",
@@ -1474,37 +1439,6 @@ func buildSetupRepoScript(workspace, cloneURL, repoDir string) string {
 		"ELAPSED=$((END_TIME - START_TIME))",
 		"echo \"[setup] repo ready (${ELAPSED}s)\"",
 	}, "\n")
-}
-
-// buildGitConfigScript generates a script to configure git credentials using GITHUB_TOKEN.
-// This allows agents to commit and push without interactive authentication.
-// The token is stored in git's credential store so subsequent git operations use it automatically.
-func buildGitConfigScript(workspace string) string {
-	return strings.Join([]string{
-		"# Configure git credentials for non-interactive push/commit",
-		"GITHUB_TOKEN=\"${GITHUB_TOKEN:-${GH_TOKEN:-}}\"",
-		"if [ -n \"$GITHUB_TOKEN\" ]; then",
-		"  # Extract GitHub user from gh CLI if available, otherwise use 'sprite'",
-		"  GH_USER=\"$(gh api user -q .login 2>/dev/null || echo 'sprite')\"",
-		"  # Ensure credential store directory exists",
-		"  mkdir -p \"$HOME/.config/git\"",
-		"  # Store credentials for github.com",
-		"  printf 'protocol=https\\nhost=github.com\\nusername=%s\\npassword=%s\\n\\n' \"$GH_USER\" \"$GITHUB_TOKEN\" | git credential-store --file=\"$HOME/.git-credentials\" store",
-		"  # Configure git to use the credential store",
-		"  git config --global credential.helper 'store --file=\"$HOME/.git-credentials\"'",
-		"  git config --global user.email \"${GH_USER}@sprites.dev\"",
-		"  git config --global user.name \"${GH_USER}\"",
-		"  echo \"[setup] git credentials configured for $GH_USER\"",
-		"else",
-		"  echo \"[setup] warning: GITHUB_TOKEN not set, git push may fail\"",
-		"fi",
-	}, "\n")
-}
-
-// buildSetupRepoScriptWithGitConfig is a variant that explicitly includes git credential setup.
-// This is used for testing and ensures the git config is always included.
-func buildSetupRepoScriptWithGitConfig(workspace, cloneURL, repoDir string) string {
-	return buildSetupRepoScript(workspace, cloneURL, repoDir)
 }
 
 // buildOneShotScript generates a shell script for one-shot (non-Ralph) dispatch.
