@@ -200,12 +200,13 @@ func (s *Service) inspectSprite(ctx context.Context, sprite string, execute bool
 	task := composeTaskLabel(probe)
 	hasTask := task != "" || strings.TrimSpace(probe.CurrentTaskID) != ""
 	input := stateInput{
-		AgentRunning:  probe.AgentRunning || probe.ClaudeCount > 0,
-		HasComplete:   probe.HasComplete,
-		HasBlocked:    probe.HasBlocked,
-		HasTask:       hasTask || probe.HasPrompt,
-		Elapsed:       time.Duration(elapsedMinutes) * time.Minute,
-		CommitsLast2h: probe.CommitsLast2h,
+		AgentRunning:   probe.AgentRunning || probe.ClaudeCount > 0,
+		HasComplete:    probe.HasComplete,
+		HasBlocked:     probe.HasBlocked,
+		HasTask:        hasTask || probe.HasPrompt,
+		Elapsed:        time.Duration(elapsedMinutes) * time.Minute,
+		CommitsLast2h:  probe.CommitsLast2h,
+		StatusComplete: strings.TrimSpace(probe.Status.Completed) != "", // dispatch finished (#367)
 	}
 	state := evaluateState(input, s.staleAfter)
 	actionType := decideAction(state, probe.HasPrompt)

@@ -355,11 +355,14 @@ func TestRunExecuteOneShotCompletes(t *testing.T) {
 	if len(flyClient.createReqs) != 0 {
 		t.Fatalf("unexpected create calls: %d", len(flyClient.createReqs))
 	}
-	if len(remote.uploads) != 2 {
-		t.Fatalf("upload calls = %d, want 2", len(remote.uploads))
+	if len(remote.uploads) != 3 {
+		t.Fatalf("upload calls = %d, want 3", len(remote.uploads))
 	}
 	if remote.uploads[0].path != "/home/sprite/workspace/.dispatch-prompt.md" {
 		t.Fatalf("oneshot prompt path = %q", remote.uploads[0].path)
+	}
+	if remote.uploads[2].path != "/home/sprite/workspace/STATUS.json" {
+		t.Fatalf("final status path = %q", remote.uploads[2].path)
 	}
 	if len(remote.execCalls) != 3 {
 		t.Fatalf("exec calls = %d, want 3", len(remote.execCalls))
@@ -435,13 +438,18 @@ func TestRunCleanSignalsBeforePromptUpload(t *testing.T) {
 		t.Fatal("expected clean signals exec call not found")
 	}
 
-	if len(remote.uploads) != 2 {
-		t.Fatalf("upload calls = %d, want 2", len(remote.uploads))
+	if len(remote.uploads) != 3 {
+		t.Fatalf("upload calls = %d, want 3", len(remote.uploads))
 	}
 
 	// Verify the first upload is the prompt (after clean signals)
 	if remote.uploads[0].path != "/home/sprite/workspace/.dispatch-prompt.md" {
 		t.Fatalf("expected prompt upload first, got %q", remote.uploads[0].path)
+	}
+
+	// Verify the final upload is the updated STATUS.json
+	if remote.uploads[2].path != "/home/sprite/workspace/STATUS.json" {
+		t.Fatalf("expected final status upload, got %q", remote.uploads[2].path)
 	}
 
 	// Verify clean signals removes signal files but NOT PID files
@@ -906,8 +914,8 @@ machine_id = "m-def456"
 	if remote.execCalls[0].sprite != "fern" {
 		t.Fatalf("exec sprite = %q, want name %q (not machine ID)", remote.execCalls[0].sprite, "fern")
 	}
-	if len(remote.uploads) != 2 {
-		t.Fatalf("upload calls = %d, want 2", len(remote.uploads))
+	if len(remote.uploads) != 3 {
+		t.Fatalf("upload calls = %d, want 3", len(remote.uploads))
 	}
 	if remote.uploads[0].sprite != "fern" {
 		t.Fatalf("upload sprite = %q, want name %q (not machine ID)", remote.uploads[0].sprite, "fern")

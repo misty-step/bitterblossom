@@ -16,12 +16,13 @@ const (
 )
 
 type stateInput struct {
-	AgentRunning  bool
-	HasComplete   bool
-	HasBlocked    bool
-	HasTask       bool
-	Elapsed       time.Duration
-	CommitsLast2h int
+	AgentRunning   bool
+	HasComplete    bool
+	HasBlocked     bool
+	HasTask        bool
+	Elapsed        time.Duration
+	CommitsLast2h  int
+	StatusComplete bool // true if STATUS.json has Completed timestamp (dispatch finished)
 }
 
 // evaluateState classifies a sprite's health from probe data.
@@ -30,7 +31,8 @@ type stateInput struct {
 // hitting a block (the block is stale context from an earlier attempt).
 func evaluateState(input stateInput, staleAfter time.Duration) State {
 	switch {
-	case input.HasComplete:
+	case input.HasComplete || input.StatusComplete:
+		// STATUS.json Completed field indicates dispatch finished (#367)
 		return StateComplete
 	case input.HasBlocked:
 		return StateBlocked
