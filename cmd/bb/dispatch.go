@@ -486,7 +486,7 @@ func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
 	command.Flags().BoolVar(&opts.DryRun, "dry-run", true, "Preview dispatch plan without side effects")
 	command.Flags().StringVar(&opts.Format, "format", opts.Format, "Output format: json|text")
 	command.Flags().BoolVar(&opts.JSON, "json", false, "Deprecated: use --format=json")
-	command.Flags().MarkHidden("json")
+	_ = command.Flags().MarkHidden("json")
 	command.Flags().BoolVar(&opts.Wait, "wait", false, "Wait for task completion and stream progress")
 	command.Flags().BoolVar(&opts.StreamLogs, "stream-logs", false, "Stream sprite logs to stdout while waiting (--wait required)")
 	command.Flags().DurationVar(&opts.Timeout, "timeout", opts.Timeout, "Timeout for --wait (default: 30m)")

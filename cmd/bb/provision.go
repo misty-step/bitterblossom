@@ -15,8 +15,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var provisionJSON bool
-
 type provisionOptions struct {
 	Composition string
 	All         bool
@@ -68,6 +66,11 @@ func newProvisionCmdWithDeps(deps provisionDeps) *cobra.Command {
 		Use:   "provision <sprite-name>",
 		Short: "Provision one sprite or the full composition",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			format := strings.ToLower(strings.TrimSpace(opts.Format))
+			if format != "json" && format != "text" {
+				return errors.New("--format must be json or text")
+			}
+
 			names, err := resolveProvisionTargets(args, opts.All, opts.Composition, deps.resolveComposition)
 			if err != nil {
 				return err
@@ -132,9 +135,20 @@ func newProvisionCmdWithDeps(deps provisionDeps) *cobra.Command {
 				results = append(results, result)
 			}
 
-			return contracts.WriteJSON(cmd.OutOrStdout(), "provision", map[string]any{
-				"results": results,
-			})
+			if format == "json" {
+				return contracts.WriteJSON(cmd.OutOrStdout(), "provision", map[string]any{
+					"results": results,
+				})
+			}
+			// Text output
+			for _, r := range results {
+				created := "updated"
+				if r.Created {
+					created = "created"
+				}
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s: %s\n", r.Name, created)
+			}
+			return nil
 		},
 	}
 
@@ -143,6 +157,7 @@ func newProvisionCmdWithDeps(deps provisionDeps) *cobra.Command {
 	command.Flags().StringVar(&opts.Org, "org", opts.Org, "Sprites organization")
 	command.Flags().StringVar(&opts.SpriteCLI, "sprite-cli", opts.SpriteCLI, "Path to sprite CLI")
 	command.Flags().DurationVar(&opts.Timeout, "timeout", opts.Timeout, "Command timeout")
+	command.Flags().StringVar(&opts.Format, "format", opts.Format, "Output format: json|text")
 
 	return command
 }

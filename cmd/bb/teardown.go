@@ -23,6 +23,7 @@ type teardownOptions struct {
 	Org        string
 	SpriteCLI  string
 	Timeout    time.Duration
+	Format     string
 }
 
 type teardownDeps struct {
@@ -53,6 +54,7 @@ func newTeardownCmdWithDeps(deps teardownDeps) *cobra.Command {
 		Org:        defaultOrg(),
 		SpriteCLI:  defaultSpriteCLIPath(),
 		Timeout:    5 * time.Minute,
+		Format:     "json",
 	}
 
 	command := &cobra.Command{
