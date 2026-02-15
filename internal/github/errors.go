@@ -4,6 +4,7 @@ package github
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // Common errors for GitHub API operations.
@@ -61,7 +62,17 @@ func (e *APIError) IsNotFound() bool {
 
 // IsRateLimited returns true if this error represents rate limiting.
 func (e *APIError) IsRateLimited() bool {
-	return e.StatusCode == 429 || (e.StatusCode == 403 && e.Type == "RATE_LIMITED")
+	if e.StatusCode == 429 {
+		return true
+	}
+	if e.StatusCode == 403 && e.Type == "RATE_LIMITED" {
+		return true
+	}
+	// Also check message content for "rate limit" substring
+	if e.StatusCode == 403 && strings.Contains(strings.ToLower(e.Message), "rate limit") {
+		return true
+	}
+	return false
 }
 
 // IsServerError returns true if this error represents a server-side failure.
