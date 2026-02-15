@@ -27,14 +27,15 @@ type uploadCall struct {
 }
 
 type fakeRemote struct {
-	execCalls     []execCall
-	execResponses []string
-	execErrs      []error
-	uploads       []uploadCall
-	uploadErrs    []error
-	uploadErr     error
-	listSprites   []string
-	listErr       error
+	execCalls      []execCall
+	execResponses  []string
+	execErrs       []error
+	uploads        []uploadCall
+	uploadErrs     []error
+	uploadErr      error
+	listSprites    []string
+	listErr        error
+	probeErr       error // for testing probe connectivity failures
 }
 
 func (f *fakeRemote) Exec(_ context.Context, sprite, command string, stdin []byte) (string, error) {
@@ -77,6 +78,70 @@ func (f *fakeRemote) List(_ context.Context) ([]string, error) {
 		return nil, f.listErr
 	}
 	return f.listSprites, nil
+}
+
+func (f *fakeRemote) ProbeConnectivity(_ context.Context, _ string) error {
+	return f.probeErr
+}
+
+func TestRunExecuteFailsFastOnUnreachableSprite(t *testing.T) {
+	probeErr := errors.New("connection timeout")
+	remote := &fakeRemote{
+		probeErr: probeErr,
+	}
+
+	service, err := NewService(Config{
+		Remote:    remote,
+		Fly:       &fakeFly{},
+		App:       "bb-app",
+		Workspace: "/home/sprite/workspace",
+	})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	start := time.Now()
+	result, runErr := service.Run(context.Background(), Request{
+		Sprite:  "unreachable-sprite",
+		Prompt:  "Do some work",
+		Execute: true,
+	})
+	elapsed := time.Since(start)
+
+	if runErr == nil {
+		t.Fatal("Run() expected error for unreachable sprite, got nil")
+	}
+
+	// Should fail fast (within probe timeout + overhead, not minutes)
+	if elapsed > 10*time.Second {
+		t.Fatalf("elapsed = %v, want < 10s (should fail fast)", elapsed)
+	}
+
+	// Error should be ErrSpriteUnreachable
+	var unreachableErr *ErrSpriteUnreachable
+	if !errors.As(runErr, &unreachableErr) {
+		t.Fatalf("error = %v, want ErrSpriteUnreachable", runErr)
+	}
+	if unreachableErr.Sprite != "unreachable-sprite" {
+		t.Fatalf("unreachableErr.Sprite = %q, want %q", unreachableErr.Sprite, "unreachable-sprite")
+	}
+
+	// Result state should be failed
+	if result.State != StateFailed {
+		t.Fatalf("state = %q, want %q", result.State, StateFailed)
+	}
+
+	// Should have probe step in plan
+	hasProbe := false
+	for _, step := range result.Plan.Steps {
+		if step.Kind == StepProbeConnectivity {
+			hasProbe = true
+			break
+		}
+	}
+	if !hasProbe {
+		t.Fatal("plan missing StepProbeConnectivity")
+	}
 }
 
 type fakeFly struct {
@@ -145,8 +210,8 @@ func TestRunDryRunBuildsPlanWithoutSideEffects(t *testing.T) {
 	if result.Executed {
 		t.Fatalf("Executed = %v, want false", result.Executed)
 	}
-	if len(result.Plan.Steps) != 7 {
-		t.Fatalf("len(plan.steps) = %d, want 7", len(result.Plan.Steps))
+	if len(result.Plan.Steps) != 8 {
+		t.Fatalf("len(plan.steps) = %d, want 8", len(result.Plan.Steps))
 	}
 	if len(flyClient.createReqs) != 0 {
 		t.Fatalf("unexpected create calls: %d", len(flyClient.createReqs))
