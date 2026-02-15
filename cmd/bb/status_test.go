@@ -296,6 +296,85 @@ func TestStateWithEmoji(t *testing.T) {
 	}
 }
 
+func TestSpriteStateLabel(t *testing.T) {
+	tests := []struct {
+		name     string
+		item     lifecycle.SpriteStatus
+		expected string
+	}{
+		{
+			name:     "idle without probe shows unverified",
+			item:     lifecycle.SpriteStatus{Name: "s1", State: lifecycle.StateIdle, Status: "warm"},
+			expected: "🟢 idle ⚠ unverified",
+		},
+		{
+			name:     "busy without probe shows unverified",
+			item:     lifecycle.SpriteStatus{Name: "s1", State: lifecycle.StateBusy, Status: "running"},
+			expected: "🔴 busy ⚠ unverified",
+		},
+		{
+			name:     "probed and reachable",
+			item:     lifecycle.SpriteStatus{Name: "s1", State: lifecycle.StateIdle, Status: "warm", Probed: true, Reachable: true},
+			expected: "🟢 idle ✓ reachable",
+		},
+		{
+			name:     "probed but unreachable",
+			item:     lifecycle.SpriteStatus{Name: "s1", State: lifecycle.StateIdle, Status: "warm", Probed: true, Reachable: false},
+			expected: "🟢 idle ✗ unreachable",
+		},
+		{
+			name:     "offline doesn't show unverified",
+			item:     lifecycle.SpriteStatus{Name: "s1", State: lifecycle.StateOffline, Status: "stopped"},
+			expected: "⚫ offline",
+		},
+		{
+			name:     "idle with stale and unverified",
+			item:     lifecycle.SpriteStatus{Name: "s1", State: lifecycle.StateIdle, Status: "warm", Stale: true},
+			expected: "🟢 idle ⚠ stale ⚠ unverified",
+		},
+		{
+			name:     "probed and reachable with stale",
+			item:     lifecycle.SpriteStatus{Name: "s1", State: lifecycle.StateIdle, Status: "warm", Probed: true, Reachable: true, Stale: true},
+			expected: "🟢 idle ⚠ stale ✓ reachable",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := spriteStateLabel(tt.item)
+			if result != tt.expected {
+				t.Errorf("spriteStateLabel() = %q, want %q", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestIsRunningStatus(t *testing.T) {
+	tests := []struct {
+		state    string
+		expected bool
+	}{
+		{"idle", true},
+		{"busy", true},
+		{"operational", true},
+		{"IDLE", true},
+		{"Busy", true},
+		{"offline", false},
+		{"stopped", false},
+		{"unknown", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.state, func(t *testing.T) {
+			result := isRunningStatus(tt.state)
+			if result != tt.expected {
+				t.Errorf("isRunningStatus(%q) = %v, want %v", tt.state, result, tt.expected)
+			}
+		})
+	}
+}
+
 func TestTruncateString(t *testing.T) {
 	tests := []struct {
 		input  string
