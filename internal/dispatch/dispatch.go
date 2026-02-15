@@ -603,15 +603,44 @@ func (s *Service) Run(ctx context.Context, req Request) (Result, error) {
 				Issue:      prepared.Issue,
 			},
 		})
+		// Update STATUS.json to reflect completion (fixes #367 - stale status)
+		if err := s.writeFinalStatus(ctx, prepared, result, "completed", 0); err != nil {
+			s.logger.Warn("failed to write final status", "sprite", prepared.Sprite, "error", err)
+		}
 	}
 	return result, nil
 }
 
 type statusFile struct {
-	Repo    string `json:"repo,omitempty"`
-	Started string `json:"started,omitempty"`
-	Mode    string `json:"mode,omitempty"`
-	Task    string `json:"task,omitempty"`
+	Repo      string `json:"repo,omitempty"`
+	Started   string `json:"started,omitempty"`
+	Completed string `json:"completed,omitempty"`
+	Mode      string `json:"mode,omitempty"`
+	Task      string `json:"task,omitempty"`
+	Status    string `json:"status,omitempty"`
+	ExitCode  int    `json:"exit_code,omitempty"`
+}
+
+// writeFinalStatus updates STATUS.json with completion information.
+// This ensures watchdog reports the correct state after dispatch finishes (#367).
+func (s *Service) writeFinalStatus(ctx context.Context, prepared preparedRequest, result Result, status string, exitCode int) error {
+	finalStatus := statusFile{
+		Repo:      prepared.Repo.Slug,
+		Started:   prepared.StartedAt.Format(time.RFC3339),
+		Completed: s.now().UTC().Format(time.RFC3339),
+		Mode:      prepared.Mode,
+		Task:      prepared.TaskLabel,
+		Status:    status,
+		ExitCode:  exitCode,
+	}
+	statusBytes, err := json.Marshal(finalStatus)
+	if err != nil {
+		return fmt.Errorf("marshal final status: %w", err)
+	}
+	if err := s.remote.Upload(ctx, prepared.Sprite, s.workspace+"/STATUS.json", append(statusBytes, '\n')); err != nil {
+		return fmt.Errorf("upload final status: %w", err)
+	}
+	return nil
 }
 
 func (s *Service) provision(ctx context.Context, req preparedRequest) (string, error) {

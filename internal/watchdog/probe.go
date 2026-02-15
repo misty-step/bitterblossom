@@ -24,11 +24,14 @@ type probe struct {
 }
 
 type statusFile struct {
-	Repo    string `json:"repo,omitempty"`
-	Issue   int    `json:"issue,omitempty"`
-	Started string `json:"started,omitempty"`
-	Mode    string `json:"mode,omitempty"`
-	Task    string `json:"task,omitempty"`
+	Repo      string `json:"repo,omitempty"`
+	Issue     int    `json:"issue,omitempty"`
+	Started   string `json:"started,omitempty"`
+	Completed string `json:"completed,omitempty"`
+	Mode      string `json:"mode,omitempty"`
+	Task      string `json:"task,omitempty"`
+	Status    string `json:"status,omitempty"`
+	ExitCode  int    `json:"exit_code,omitempty"`
 }
 
 func parseProbeOutput(output string) (probe, error) {
