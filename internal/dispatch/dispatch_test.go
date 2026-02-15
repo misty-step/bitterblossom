@@ -1183,14 +1183,14 @@ func TestBuildOneShotScriptCapturesOutput(t *testing.T) {
 	// Both branches should have 2>&1 and tee
 	if !strings.Contains(conditionalBlock, "2>&1 | tee \"$AGENT_LOG\"") {
 		t.Error("both branches of 'if command -v script' must include '2>&1 | tee \"$AGENT_LOG\"' for output capture")
-=======
+	}
+
 	// Must contain log cleanup (issue #332)
 	if !strings.Contains(script, "ls -t oneshot-*.log") {
 		t.Errorf("buildOneShotScript missing log cleanup")
 	}
 	if !strings.Contains(script, "tail -n +51") {
 		t.Errorf("buildOneShotScript should retain 50 logs (tail -n +51)")
->>>>>>> a671f95 (fix: implement log rotation for oneshot dispatches (fixes #332))
 	}
 }
 
@@ -1306,7 +1306,6 @@ func TestBuildOneShotScriptLogCleanupRetention(t *testing.T) {
 	}
 }
 
->>>>>>> a671f95 (fix: implement log rotation for oneshot dispatches (fixes #332))
 func TestBuildSetupRepoScriptResetsGitState(t *testing.T) {
 	t.Parallel()
 
