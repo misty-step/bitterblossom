@@ -167,10 +167,12 @@ func (l *Lifecycle) WaitForHealthy(ctx context.Context, sprite string) error {
 		select {
 		case <-ctx.Done():
 			// Collect diagnostics with a bounded timeout so unreachable sprites
-			// don't hang indefinitely (3 sequential remote calls × timeout each).
+			// don't hang indefinitely. Use fresh background context to avoid
+			// cancellation from parent context (fixes issue #350).
 			diagCtx, diagCancel := context.WithTimeout(context.Background(), 15*time.Second)
-			defer diagCancel()
 			diagnostics, diagErr := l.CollectDiagnostics(diagCtx, sprite)
+			diagCancel()
+
 			if diagErr == nil {
 				return fmt.Errorf("%s", diagnostics.FormatError(lastErr, sprite))
 			}
@@ -256,34 +258,152 @@ type Diagnostics struct {
 // CollectDiagnostics gathers resource and log information from the sprite.
 // When collection fails (e.g., sprite unreachable), errors are surfaced in the
 // diagnostic fields rather than leaving them empty (fixes issue #358).
+// Uses atomic collection to avoid empty results on transport failure (fixes issue #350).
 func (l *Lifecycle) CollectDiagnostics(ctx context.Context, sprite string) (*Diagnostics, error) {
+	// Try atomic collection first - all diagnostics in a single exec call.
+	// This avoids partial failures when transport is unstable.
+	d, err := l.collectDiagnosticsAtomic(ctx, sprite)
+	if err == nil {
+		return d, nil
+	}
+
+	// If atomic collection failed due to transport issues, try fresh connection.
+	// This gives us a second chance to get diagnostics via a new transport session.
+	if isTransportError(err) {
+		return l.collectDiagnosticsFresh(ctx, sprite)
+	}
+
+	// For other errors, return diagnostics with error annotations
+	return d, nil
+}
+
+// collectDiagnosticsAtomic gathers all diagnostics in a single exec call.
+// This ensures we either get all data or a clear failure, avoiding partial/empty results.
+func (l *Lifecycle) collectDiagnosticsAtomic(ctx context.Context, sprite string) (*Diagnostics, error) {
+	// Single script that collects everything atomically
+	script := fmt.Sprintf(`
+set -e
+
+# Memory info
+echo "---MEMORY---"
+free -h 2>/dev/null || echo "free not available"
+
+echo "---END_MEMORY---"
+
+# Process list
+echo "---PROCESSES---"
+ps aux | grep -E 'node|PID' | grep -v grep || echo 'no node processes'
+echo "---END_PROCESSES---"
+
+# Proxy log tail
+echo "---PROXY_LOG---"
+tail -n 50 %s 2>/dev/null || echo 'no proxy log available'
+echo "---END_PROXY_LOG---"
+`, shellutil.Quote(ProxyLogPath))
+
+	output, err := l.executor.Exec(ctx, sprite, script, nil)
+	if err != nil {
+		return nil, fmt.Errorf("atomic diagnostics collection failed: %w", err)
+	}
+
 	d := &Diagnostics{}
 
-	// Get available memory
-	memOutput, err := l.executor.Exec(ctx, sprite, "free -h 2>/dev/null || echo 'free not available'", nil)
-	if err == nil {
-		d.MemoryAvailable = strings.TrimSpace(memOutput)
+	// Parse the atomic output
+	if mem, ok := extractSection(output, "MEMORY"); ok {
+		d.MemoryAvailable = mem
 	} else {
-		d.MemoryAvailable = fmt.Sprintf("failed (%v)", err)
+		d.MemoryAvailable = "parse error: no MEMORY section"
 	}
 
-	// Get process list filtered to node processes
-	procOutput, err := l.executor.Exec(ctx, sprite, "ps aux | grep -E 'node|PID' | grep -v grep || echo 'no node processes'", nil)
-	if err == nil {
-		d.ProcessList = strings.TrimSpace(procOutput)
+	if procs, ok := extractSection(output, "PROCESSES"); ok {
+		d.ProcessList = procs
 	} else {
-		d.ProcessList = fmt.Sprintf("failed (%v)", err)
+		d.ProcessList = "parse error: no PROCESSES section"
 	}
 
-	// Get recent proxy log entries (last 50 lines)
-	logOutput, err := l.executor.Exec(ctx, sprite, fmt.Sprintf("tail -n 50 %s 2>/dev/null || echo 'no proxy log available'", ProxyLogPath), nil)
-	if err == nil {
-		d.ProxyLogTail = strings.TrimSpace(logOutput)
+	if logs, ok := extractSection(output, "PROXY_LOG"); ok {
+		d.ProxyLogTail = logs
 	} else {
-		d.ProxyLogTail = fmt.Sprintf("failed (%v)", err)
+		d.ProxyLogTail = "parse error: no PROXY_LOG section"
 	}
 
 	return d, nil
+}
+
+// collectDiagnosticsFresh attempts diagnostics collection with a fresh connection.
+// Used as fallback when the primary transport session is failing.
+func (l *Lifecycle) collectDiagnosticsFresh(ctx context.Context, sprite string) (*Diagnostics, error) {
+	d := &Diagnostics{
+		MemoryAvailable: "diagnostics unavailable — transport failure",
+		ProcessList:     "diagnostics unavailable — transport failure",
+		ProxyLogTail:    "diagnostics unavailable — transport failure",
+	}
+
+	// Create a fresh context with shorter timeout for recovery attempt
+	freshCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Try each diagnostic individually with the fresh context
+	memOutput, err := l.executor.Exec(freshCtx, sprite, "free -h 2>/dev/null || echo 'free not available'", nil)
+	if err == nil {
+		d.MemoryAvailable = strings.TrimSpace(memOutput)
+	}
+
+	procOutput, err := l.executor.Exec(freshCtx, sprite, "ps aux | grep -E 'node|PID' | grep -v grep || echo 'no node processes'", nil)
+	if err == nil {
+		d.ProcessList = strings.TrimSpace(procOutput)
+	}
+
+	logOutput, err := l.executor.Exec(freshCtx, sprite, fmt.Sprintf("tail -n 50 %s 2>/dev/null || echo 'no proxy log available'", ProxyLogPath), nil)
+	if err == nil {
+		d.ProxyLogTail = strings.TrimSpace(logOutput)
+	}
+
+	return d, nil
+}
+
+// extractSection extracts content between ---SECTION--- and ---END_SECTION--- markers.
+func extractSection(output, section string) (string, bool) {
+	startMarker := "---" + section + "---"
+	endMarker := "---END_" + section + "---"
+
+	startIdx := strings.Index(output, startMarker)
+	if startIdx == -1 {
+		return "", false
+	}
+	startIdx += len(startMarker)
+
+	endIdx := strings.Index(output[startIdx:], endMarker)
+	if endIdx == -1 {
+		return "", false
+	}
+
+	content := strings.TrimSpace(output[startIdx : startIdx+endIdx])
+	return content, true
+}
+
+// isTransportError checks if an error indicates a transport-level failure.
+func isTransportError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	transportIndicators := []string{
+		"signal: killed",
+		"context deadline exceeded",
+		"connection refused",
+		"transport",
+		"timeout",
+		"i/o timeout",
+		"no such host",
+		"network is unreachable",
+	}
+	for _, indicator := range transportIndicators {
+		if strings.Contains(errStr, indicator) {
+			return true
+		}
+	}
+	return false
 }
 
 // FormatError formats an error message with diagnostics and actionable hints.
