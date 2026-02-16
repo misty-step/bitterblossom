@@ -63,7 +63,7 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 	// Dispatch only validates that GITHUB_TOKEN is set for git operations.
 
 	client := sprites.New(token)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	s := client.Sprite(spriteName)
 
 	// 1. Probe connectivity (15s)

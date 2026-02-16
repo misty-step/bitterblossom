@@ -33,7 +33,7 @@ func fleetStatus(ctx context.Context) error {
 	}
 
 	client := sprites.New(token)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	all, err := client.ListAllSprites(ctx, "")
 	if err != nil {
@@ -75,7 +75,7 @@ func spriteStatus(ctx context.Context, spriteName string) error {
 	}
 
 	client := sprites.New(token)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	s := client.Sprite(spriteName)
 
 	// Probe

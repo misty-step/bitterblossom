@@ -46,7 +46,7 @@ func runSetup(ctx context.Context, spriteName, repo string, force bool) error {
 	}
 
 	client := sprites.New(token)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	s := client.Sprite(spriteName)
 
 	// 1. Probe
