@@ -4,25 +4,25 @@ Universal project context for all coding agents working on Bitterblossom.
 
 ## What This Is
 
-Bitterblossom is a Go CLI (`bb`) that dispatches coding tasks to AI sprites on [Sprites.dev](https://sprites.dev). Four commands, one 52-line ralph loop. Thin deterministic transport in Go; intelligence in Claude Code skills.
+Bitterblossom is a Go CLI (`bb`) that dispatches coding tasks to AI sprites on [Sprites.dev](https://sprites.dev). Four commands, one small ralph loop. Thin deterministic transport in Go; intelligence in Claude Code skills.
 
 See [ADR-002](docs/adr/002-architecture-minimalism.md) for why.
 
 ## Architecture
 
-```
+```text
 cmd/bb/
-  main.go          120 LOC  Cobra root, token exchange, helpers
-  dispatch.go      195 LOC  Probe → sync → upload prompt → run ralph
-  logs.go          120 LOC  Tail + render ralph.log (pretty or --json)
-  setup.go         289 LOC  Configure sprite: configs, persona, ralph, git auth
-  status.go        129 LOC  Fleet overview or single sprite detail
-  stream_json.go   200 LOC  stream-json renderer (shared by dispatch/logs)
-  sprite_workspace.go        Find workspace on-sprite
+  main.go               Cobra root, token exchange, helpers
+  dispatch.go           Probe -> sync -> upload prompt -> run ralph
+  logs.go               Tail + render ralph.log (pretty or --json)
+  setup.go              Configure sprite: configs, persona, ralph, git auth
+  status.go             Fleet overview or single sprite detail
+  stream_json.go        stream-json renderer (shared by dispatch/logs)
+  sprite_workspace.go   Find workspace on-sprite
 
 scripts/
-  ralph.sh          52 LOC  The ralph loop: invoke agent, check signals, enforce limits
-  ralph-prompt-template.md   Prompt template with {{TASK_DESCRIPTION}}, {{REPO}}, {{SPRITE_NAME}}
+  ralph.sh                  The ralph loop: invoke agent, check signals, enforce limits
+  ralph-prompt-template.md  Prompt template with {{TASK_DESCRIPTION}}, {{REPO}}, {{SPRITE_NAME}}
 
 base/               Shared config pushed to every sprite (CLAUDE.md, hooks, skills, settings.json)
 sprites/            Persona files per sprite (e.g. bramble.md, fern.md)
@@ -168,5 +168,5 @@ Sprites are persistent. Don't destroy them.
 - **Sprites, not Machines.** Use sprites-go SDK, not Fly CLI.
 - **Claude Code is canonical.** OpenCode is the alternative harness, not deprecated (see ADR-001).
 - **Persistent, not ephemeral.** Setup once, dispatch forever.
-- **Don't add Go commands.** If it needs judgment, write a skill (see ADR-002).
-- **Ralph loop is sacred.** The 52-line script is core. Changes require careful review.
+- **Avoid new Go commands.** If it needs judgment, write a skill (see ADR-002).
+- **Ralph loop is sacred.** It's the core value proposition. Changes require careful review.

@@ -2,7 +2,7 @@
 
 ## One-Liner
 
-Bitterblossom dispatches coding tasks to persistent AI sprites. Three commands, 785 lines of Go, one 52-line bash loop.
+Bitterblossom dispatches coding tasks to persistent AI sprites. Four core commands, ~800 LOC Go, one small bash loop.
 
 ## North Star
 
@@ -10,7 +10,7 @@ Reliable dispatch. An operator (human or agent) says "sprite X, do Y on repo Z" 
 
 ## Key Differentiators
 
-- **785 LOC is the feature.** Thin deterministic CLI for transport, thick Claude Code skills for intelligence. Complexity lives where it can be iterated cheaply (skills), not where it's expensive to change (compiled Go).
+- **Small LOC is the feature.** Thin deterministic CLI for transport, thick Claude Code skills for intelligence. Complexity lives where it can be iterated cheaply (skills), not where it's expensive to change (compiled Go).
 - **Model diversity is proven.** GLM-5 and Minimax M2.5 created real PRs via OpenRouter at 10-30x lower cost than Sonnet 4.5. Claude Code canonical, OpenCode available as alternative harness.
 - **Constructive-only agents.** Sprites open PRs but never merge or destroy. Judgment stays with the operator.
 - **Persistent environments.** Sprites auto-sleep at near-zero cost, wake instantly. Setup once, dispatch forever.
@@ -39,5 +39,5 @@ These were explored in v1 and intentionally dropped:
 If any of these become needed again, they'll be implemented as skills, not Go code.
 
 ---
-*Last updated: 2026-02-15*
+*Last updated: 2026-02-16*
 *Updated during: SDK v2 rewrite codification*

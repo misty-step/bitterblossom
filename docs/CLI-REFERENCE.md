@@ -1,6 +1,6 @@
 # CLI Reference
 
-`bb` is the Bitterblossom sprite dispatch CLI. Three commands.
+`bb` is the Bitterblossom sprite dispatch CLI. Four core commands (+ version).
 
 ## Environment
 
@@ -141,6 +141,42 @@ bb status fern
 ```
 
 Shows signal files, git branch, dirty files, recent commits, and open PRs.
+
+---
+
+## logs
+
+Stream a sprite's agent output (reads `${WORKSPACE}/ralph.log` on-sprite).
+
+```
+bb logs <sprite> [--follow] [--lines N] [--json]
+```
+
+### Examples
+
+```bash
+# Dump all output
+bb logs bramble
+
+# Follow live output (Ctrl+C to stop)
+bb logs bramble --follow
+
+# Last 50 lines
+bb logs bramble --lines 50
+
+# Raw Claude Code stream-json events
+bb logs bramble --follow --json
+```
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--follow` | `false` | Tail live output |
+| `--lines` | `0` | Last N lines (0 = all; follow defaults to 50) |
+| `--json` | `false` | Raw Claude Code `stream-json` events |
+
+If you upgraded `bb`, re-run `bb setup <sprite>` once to upload the updated `ralph.sh` (it creates/appends `ralph.log`).
 
 ---
 

@@ -8,7 +8,7 @@
 
 Bitterblossom v1 grew to ~42K LOC across 8 internal packages (`agent`, `dispatch`, `fleet`, `lifecycle`, `provider`, `monitor`, `watchdog`, `contracts`), plus `pkg/fly` and `pkg/events`. The CLI surface had 10+ commands. Most of this complexity existed to work around limitations of running agents via SSH on Fly Machines.
 
-The Sprites Go SDK (`github.com/superfly/sprites-go`) eliminated those limitations: native filesystem access, streaming command execution, token exchange, and first-class Go types. With the SDK, the entire dispatch pipeline collapsed from ~2,500 LOC across 4 packages to ~195 LOC in a single function.
+The Sprites Go SDK (`github.com/superfly/sprites-go`) eliminated those limitations: native filesystem access, streaming command execution, token exchange, and first-class Go types. With the SDK, the entire dispatch pipeline collapsed from ~2,500 LOC across 4 packages to a single function.
 
 Three architectures were evaluated:
 
@@ -20,18 +20,19 @@ Three architectures were evaluated:
 
 ## Decision
 
-**Keep `bb` as thin deterministic transport (~785 LOC).** Intelligence lives in Claude Code skills and the ralph loop script. Don't add features to `bb` — if logic requires judgment, it belongs in a skill.
+**Keep `bb` as thin deterministic transport (<1k LOC).** Intelligence lives in Claude Code skills and the ralph loop script. Don't add features to `bb` — if logic requires judgment, it belongs in a skill.
 
-The CLI has exactly four commands:
+The CLI stays small:
 
-| Command | Purpose | LOC |
-|---------|---------|-----|
-| `dispatch` | Probe, sync, upload prompt, run ralph loop | 195 |
-| `setup` | Configure sprite with configs, persona, ralph script | 289 |
-| `status` | Fleet overview or single sprite detail | 129 |
-| `version` | Print version | 10 |
+| Command | Purpose |
+|---------|---------|
+| `dispatch` | Probe, sync, upload prompt, run ralph loop |
+| `setup` | Configure sprite with configs, persona, ralph script |
+| `logs` | Stream agent output from the sprite |
+| `status` | Fleet overview or single sprite detail |
+| `version` | Print version |
 
-Plus `scripts/ralph.sh` (52 lines): the iteration loop that invokes the agent harness, checks signal files, enforces time/iteration limits.
+Plus `scripts/ralph.sh`: the iteration loop that invokes the agent harness, checks signal files, enforces time/iteration limits.
 
 ## Rationale
 
@@ -48,7 +49,7 @@ Plus `scripts/ralph.sh` (52 lines): the iteration loop that invokes the agent ha
 ## Consequences
 
 - **Don't add Go packages.** No `internal/` directory. All logic lives in `cmd/bb/`.
-- **Don't add commands.** If you're tempted to add `bb foo`, write a skill instead.
+- **Avoid new commands.** If you're tempted to add `bb foo`, write a skill instead.
 - **Skills own intelligence.** Prompt rendering, persona selection, task decomposition, PR review — these belong in Claude Code skills, not Go code.
-- **Ralph loop is sacred.** The 52-line bash script is the core value proposition. Changes require careful review.
-- **Test at integration level.** With 785 LOC and no internal packages, unit tests add less value than e2e dispatch tests against real sprites.
+- **Ralph loop is sacred.** The bash script is the core value proposition. Changes require careful review.
+- **Test at integration level.** With a <1k LOC CLI and no internal packages, unit tests add less value than e2e dispatch tests against real sprites.
