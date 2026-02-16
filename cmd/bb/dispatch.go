@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -291,7 +292,20 @@ func (m *dispatchOutputMonitor) loop() {
 
 func newDispatchTextMessageHandler(stdout, stderr io.Writer) func([]byte) {
 	return func(data []byte) {
-		if len(data) == 0 || strings.HasPrefix(string(data), "control:") {
+		if len(data) == 0 || bytes.HasPrefix(data, []byte("control:")) {
+			return
+		}
+
+		trim := bytes.TrimSpace(data)
+		if len(trim) == 0 {
+			return
+		}
+
+		if trim[0] != '{' {
+			_, _ = stdout.Write(trim)
+			if trim[len(trim)-1] != '\n' {
+				_, _ = stdout.Write([]byte{'\n'})
+			}
 			return
 		}
 
@@ -304,7 +318,7 @@ func newDispatchTextMessageHandler(stdout, stderr io.Writer) func([]byte) {
 		if err := json.Unmarshal(data, &msg); err != nil {
 			_, _ = stdout.Write(data)
 			if data[len(data)-1] != '\n' {
-				_, _ = stdout.Write([]byte("\n"))
+				_, _ = stdout.Write([]byte{'\n'})
 			}
 			return
 		}

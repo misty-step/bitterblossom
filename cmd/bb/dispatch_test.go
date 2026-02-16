@@ -3,8 +3,27 @@ package main
 import (
 	"bytes"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
+
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.String()
+}
 
 func TestDispatchTextMessageHandlerWritesStructuredOutput(t *testing.T) {
 	t.Parallel()
@@ -87,4 +106,23 @@ func TestActivityWriterMarksWrites(t *testing.T) {
 	if !strings.Contains(out.String(), "ok") {
 		t.Fatalf("output = %q, want to contain %q", out.String(), "ok")
 	}
+}
+
+func TestDispatchOutputMonitorEmitsKeepaliveOnSilence(t *testing.T) {
+	t.Parallel()
+
+	var out lockedBuffer
+	monitor := newDispatchOutputMonitor(&out, 10*time.Millisecond)
+	monitor.start()
+	defer monitor.stop()
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if strings.Contains(out.String(), "[dispatch] no remote output for") {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	t.Fatalf("expected keepalive line, got %q", out.String())
 }
