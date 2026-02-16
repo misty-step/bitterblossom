@@ -1,9 +1,0 @@
-{
-  "version": "v1",
-  "command": "compose.status",
-  "data": {
-    "composition": "v1",
-    "desired": 2,
-    "actual": 1
-  }
-}
