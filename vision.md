@@ -1,35 +1,43 @@
 # Vision
 
 ## One-Liner
-Bitterblossom is an autonomous software factory — the assembly line that lets supervisor agents spawn, manage, and iterate on high-quality AI sprites.
+
+Bitterblossom dispatches coding tasks to persistent AI sprites. Three commands, 785 lines of Go, one 52-line bash loop.
 
 ## North Star
-A stable, resilient, extensible sprite factory where a high-level orchestrator (Opus 4.6 via OpenClaw/Pi) can declaratively spin up specialized sprites on Fly.io, assign them tasks via Ralph loops, and scientifically iterate on which configs/personas perform best for which tasks. Each sprite is constructive-only — opens PRs, never merges — with judgment left to the supervisor.
+
+Reliable dispatch. An operator (human or agent) says "sprite X, do Y on repo Z" and gets back a PR or a clear explanation of why not. The ralph loop runs the agent, checks for completion signals, enforces time/iteration limits, and exits with a meaningful code. Everything else is plumbing.
 
 ## Key Differentiators
-- **Declarative sprite provisioning** — config-as-code for AI agent fleets
-- **Scientific config iteration** — A/B test sprite configs against identical tasks, grade results
-- **Constructive-only agents** — sprites open PRs but can't merge or destroy; supervisor retains judgment
-- **Model-agnostic harness** — Claude Code harness today, but pluggable (Kimi Code 2.5 thinking via Moonshot for cost efficiency)
-- **Beyond coding** — sprites for growth hacking, marketing, design, not just engineering
+
+- **785 LOC is the feature.** Thin deterministic CLI for transport, thick Claude Code skills for intelligence. Complexity lives where it can be iterated cheaply (skills), not where it's expensive to change (compiled Go).
+- **Model diversity is proven.** GLM-5 and Minimax M2.5 created real PRs via OpenRouter at 10-30x lower cost than Sonnet 4.5. Claude Code canonical, OpenCode available as alternative harness.
+- **Constructive-only agents.** Sprites open PRs but never merge or destroy. Judgment stays with the operator.
+- **Persistent environments.** Sprites auto-sleep at near-zero cost, wake instantly. Setup once, dispatch forever.
 
 ## Target User
-An orchestrator agent (or human) that needs to manage a fleet of specialized AI workers. The primary interface is another AI (Opus 4.6), not a human dashboard.
+
+An operator (human or coding agent) dispatching tasks to sprites. The primary interface is `bb dispatch` from a terminal or CI pipeline.
 
 ## Current Focus
-Exploratory/experimental phase. Priorities:
-1. Stable, resilient sprite lifecycle (provision → sync → dispatch → teardown)
-2. Strong base configs and hooks that produce effective Ralph loops
-3. Safe GitHub credential sharing (bot accounts per sprite, audit trail)
-4. Experimentability — easy to tweak configs and compare results
-5. Extensibility — non-coding personas (growth, marketing, design)
 
-## Open Questions
-- Opinionated defaults vs. fully configurable by users?
-- GitHub bot account provisioning strategy
-- Evaluation framework for config A/B testing
-- OpenClaw routing intelligence vs. explicit task assignment
+Dispatch reliability. The rewrite achieved architectural simplicity; now we harden the pipeline:
+1. 5/5 dispatch success rate on warm sprites
+2. Clear signal protocol (TASK_COMPLETE, BLOCKED.md)
+3. Accurate status reporting with connectivity verification
+4. Ralph loop resilience (iteration limits, timeouts, stale process cleanup)
+
+## Non-Goals
+
+These were explored in v1 and intentionally dropped:
+- Fleet composition YAML reconciliation
+- A/B sprite configuration testing
+- Event streaming / JSONL dashboards
+- Watchdog auto-recovery
+- On-sprite agent supervisor daemon
+
+If any of these become needed again, they'll be implemented as skills, not Go code.
 
 ---
-*Last updated: 2026-02-05*
-*Updated during: /groom session*
+*Last updated: 2026-02-15*
+*Updated during: SDK v2 rewrite codification*

@@ -13,7 +13,6 @@ build:
 
 test:
 	go test ./...
-	./scripts/test_legacy_wrappers.sh
 
 lint:
 	golangci-lint run

@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
+	"strings"
+	"time"
+
+	sprites "github.com/superfly/sprites-go"
 
 	"github.com/spf13/cobra"
 )
@@ -36,7 +39,21 @@ func (e *exitError) Unwrap() error {
 }
 
 func main() {
-	root := newRootCommand()
+	root := &cobra.Command{
+		Use:           "bb",
+		Short:         "Bitterblossom — sprite dispatch CLI",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		Version:       version,
+	}
+
+	root.AddCommand(
+		newVersionCmd(),
+		newDispatchCmd(),
+		newSetupCmd(),
+		newStatusCmd(),
+	)
+
 	if err := root.Execute(); err != nil {
 		var coded *exitError
 		if errors.As(err, &coded) {
@@ -50,127 +67,57 @@ func main() {
 	}
 }
 
-func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	cmd := newRootCmd(stdout, stderr)
-	cmd.SetArgs(args)
-	cmd.SetContext(ctx)
-	return cmd.Execute()
-}
-
-func newRootCommand() *cobra.Command {
-	return newRootCmd(os.Stdout, os.Stderr)
-}
-
-func newRootCmd(stdout, stderr io.Writer) *cobra.Command {
-	return newRootCmdWithFactories(stdout, stderr, rootCommandFactories{
-		composeFactory:   newComposeCmd,
-		eventsFactory:    newEventsCmd,
-		watchFactory:     newWatchCmd,
-		logsFactory:      newLogsCmd,
-		agentFactory:     newAgentCommand,
-		dispatchFactory:  newDispatchCmd,
-		watchdogFactory:  newWatchdogCmd,
-		provisionFactory: newProvisionCmd,
-		syncFactory:      newSyncCmd,
-		statusFactory:    newStatusCmd,
-		teardownFactory:  newTeardownCmd,
-		fleetFactory:     newFleetCmd,
-		addFactory:       newAddCmd,
-		removeFactory:    newRemoveCmd,
-	})
-}
-
-type rootCommandFactories struct {
-	composeFactory   func() *cobra.Command
-	eventsFactory    func() *cobra.Command
-	watchFactory     func(io.Writer, io.Writer) *cobra.Command
-	logsFactory      func(io.Writer, io.Writer) *cobra.Command
-	agentFactory     func() *cobra.Command
-	dispatchFactory  func() *cobra.Command
-	watchdogFactory  func() *cobra.Command
-	provisionFactory func() *cobra.Command
-	syncFactory      func() *cobra.Command
-	statusFactory    func() *cobra.Command
-	teardownFactory  func() *cobra.Command
-	fleetFactory     func() *cobra.Command
-	addFactory       func() *cobra.Command
-	removeFactory    func() *cobra.Command
-}
-
-func newRootCmdWithFactories(stdout, stderr io.Writer, factories rootCommandFactories) *cobra.Command {
-	root := &cobra.Command{
-		Use:           "bb",
-		Short:         "Bitterblossom fleet CLI",
-		SilenceUsage:  true,
-		SilenceErrors: true,
-		Version:       version,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			return cmd.Help()
-		},
-	}
-	root.SetOut(stdout)
-	root.SetErr(stderr)
-
-	root.AddCommand(newVersionCmd())
-	if factories.composeFactory != nil {
-		root.AddCommand(factories.composeFactory())
-	}
-	if factories.eventsFactory != nil {
-		root.AddCommand(factories.eventsFactory())
-	}
-	if factories.watchFactory != nil {
-		root.AddCommand(factories.watchFactory(stdout, stderr))
-	}
-	if factories.logsFactory != nil {
-		root.AddCommand(factories.logsFactory(stdout, stderr))
-	}
-	if factories.agentFactory != nil {
-		root.AddCommand(factories.agentFactory())
-	}
-	if factories.dispatchFactory != nil {
-		root.AddCommand(factories.dispatchFactory())
-	}
-	if factories.watchdogFactory != nil {
-		root.AddCommand(factories.watchdogFactory())
-	}
-	if factories.provisionFactory != nil {
-		root.AddCommand(factories.provisionFactory())
-	}
-	if factories.syncFactory != nil {
-		root.AddCommand(factories.syncFactory())
-	}
-	if factories.statusFactory != nil {
-		root.AddCommand(factories.statusFactory())
-	}
-	if factories.teardownFactory != nil {
-		root.AddCommand(factories.teardownFactory())
-	}
-	if factories.fleetFactory != nil {
-		root.AddCommand(factories.fleetFactory())
-	}
-	if factories.addFactory != nil {
-		root.AddCommand(factories.addFactory())
-	}
-	if factories.removeFactory != nil {
-		root.AddCommand(factories.removeFactory())
-	}
-
-	return root
-}
-
-func newRootCmdWithComposeFactory(composeFactory func() *cobra.Command) *cobra.Command {
-	return newRootCmdWithFactories(os.Stdout, os.Stderr, rootCommandFactories{
-		composeFactory: composeFactory,
-	})
-}
-
 func newVersionCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
 		Short: "Print bb version",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			_, err := fmt.Fprintf(cmd.OutOrStdout(), "bb version %s (commit %s, built %s)\n", version, commit, date)
+			_, err := fmt.Fprintf(cmd.OutOrStdout(), "bb %s (%s, %s)\n", version, commit, date)
 			return err
 		},
 	}
+}
+
+// spriteToken returns a bearer token for the Sprites API.
+// Uses SPRITE_TOKEN directly if set, otherwise exchanges FLY_API_TOKEN.
+func spriteToken() (string, error) {
+	if t := os.Getenv("SPRITE_TOKEN"); t != "" {
+		return t, nil
+	}
+
+	flyToken := os.Getenv("FLY_API_TOKEN")
+	if flyToken == "" {
+		return "", fmt.Errorf("SPRITE_TOKEN or FLY_API_TOKEN must be set")
+	}
+
+	// Strip "FlyV1 " prefix — CreateToken prepends it
+	macaroon := strings.TrimPrefix(flyToken, "FlyV1 ")
+
+	org := os.Getenv("SPRITES_ORG")
+	if org == "" {
+		org = os.Getenv("FLY_ORG") // fall back to FLY_ORG from .env.bb
+	}
+	if org == "" {
+		org = "personal"
+	}
+
+	_, _ = fmt.Fprintf(os.Stderr, "exchanging fly token for sprites token (org=%s)...\n", org)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	token, err := sprites.CreateToken(ctx, macaroon, org, "")
+	if err != nil {
+		return "", fmt.Errorf("token exchange failed: %w (set SPRITES_ORG if not 'personal')", err)
+	}
+
+	return token, nil
+}
+
+// requireEnv returns the value of an environment variable or an error.
+func requireEnv(name string) (string, error) {
+	v := os.Getenv(name)
+	if v == "" {
+		return "", fmt.Errorf("%s must be set", name)
+	}
+	return v, nil
 }

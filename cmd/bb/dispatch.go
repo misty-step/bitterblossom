@@ -2,1060 +2,199 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
+	"path"
 	"strings"
 	"time"
 
-	"github.com/misty-step/bitterblossom/internal/contracts"
-	dispatchsvc "github.com/misty-step/bitterblossom/internal/dispatch"
-	"github.com/misty-step/bitterblossom/internal/fleet"
-	"github.com/misty-step/bitterblossom/internal/registry"
-	"github.com/misty-step/bitterblossom/internal/shellutil"
-	"github.com/misty-step/bitterblossom/pkg/fly"
+	sprites "github.com/superfly/sprites-go"
+
 	"github.com/spf13/cobra"
 )
 
-// Exit codes for dispatch --wait command
-const (
-	exitCodeSuccess             = 0
-	exitCodeDispatchFailure     = 1
-	exitCodeAgentNoSignals      = 2
-	exitCodeNoNewWork           = 3 // Agent completed but produced no new commits/PRs
-	exitCodePartialWork         = 4 // Agent modified files but didn't commit
-	exitCodeWorkDeltaFailed     = 5 // Work delta verification failed (e.g., I/O timeout)
-	exitCodeTimeout             = 124
-)
-
-type dispatchOptions struct {
-	Repo                 string
-	PromptFile           string
-	Skills               []string
-	Secrets              []string
-	Ralph                bool
-	Execute              bool
-	DryRun               bool
-	JSON                 bool
-	Wait                 bool
-	StreamLogs           bool
-	Timeout              time.Duration
-	App                  string
-	Token                string
-	APIURL               string
-	Org                  string
-	SpriteCLI            string
-	CompositionPath      string
-	MaxIterations        int
-	MaxTokens            int
-	MaxTime              time.Duration
-	WebhookURL           string
-	AllowAnthropicDirect bool
-	AllowOrphan          bool
-	Issue                int
-	SkipValidation       bool
-	Strict               bool
-	ValidationProfile    string
-	RegistryPath         string
-	RegistryRequired     bool
-	ScaffoldDir          string
-}
-
-type dispatchDeps struct {
-	readFile       func(path string) ([]byte, error)
-	newFlyClient   func(token, apiURL string) (fly.MachineClient, error)
-	newRemote      func(binary, org string) *spriteCLIRemote
-	newService     func(cfg dispatchsvc.Config) (dispatchRunner, error)
-	selectSprite   func(ctx context.Context, remote *spriteCLIRemote, opts dispatchOptions) (string, error)
-	pollSprite     func(ctx context.Context, remote *spriteCLIRemote, sprite string, timeout time.Duration, progress func(string)) (*waitResult, error)
-	streamLogs     func(ctx context.Context, remote *spriteCLIRemote, sprite string, out func(string)) error
-	stopLogStream  func()
-}
-
-type dispatchRunner interface {
-	Run(ctx context.Context, req dispatchsvc.Request) (dispatchsvc.Result, error)
-}
-
-// waitResult contains the final result from waiting for a sprite task.
-type waitResult struct {
-	State         string `json:"state"`
-	Task          string `json:"task,omitempty"`
-	Repo          string `json:"repo,omitempty"`
-	Started       string `json:"started,omitempty"`
-	Runtime       string `json:"runtime,omitempty"`
-	PRURL         string `json:"pr_url,omitempty"`
-	Blocked       bool   `json:"blocked,omitempty"`
-	BlockedReason string `json:"blocked_reason,omitempty"`
-	Complete      bool   `json:"complete"`
-	Error         string `json:"error,omitempty"`
-	// Work delta tracking
-	Commits         int    `json:"commits,omitempty"`
-	PRs             int    `json:"prs,omitempty"`
-	HasChanges      bool   `json:"has_changes,omitempty"`
-	DirtyFiles      int    `json:"dirty_files,omitempty"`
-	WorkDeltaFailed bool   `json:"work_delta_failed,omitempty"`
-	WorkDeltaError  string `json:"work_delta_error,omitempty"`
-}
-
-func defaultDispatchDeps() dispatchDeps {
-	return dispatchDeps{
-		readFile: os.ReadFile,
-		newFlyClient: func(token, apiURL string) (fly.MachineClient, error) {
-			return fly.NewClient(token, fly.WithBaseURL(apiURL))
-		},
-		newRemote:  newSpriteCLIRemote,
-		newService: newDispatchService,
-		selectSprite: func(ctx context.Context, remote *spriteCLIRemote, opts dispatchOptions) (string, error) {
-			return selectSpriteFromRegistry(ctx, remote, opts)
-		},
-		pollSprite:    pollSpriteStatus,
-		streamLogs:    noopStreamLogs,
-		stopLogStream: noopStopLogStream,
-	}
-}
-
-func newDispatchService(cfg dispatchsvc.Config) (dispatchRunner, error) {
-	return dispatchsvc.NewService(cfg)
-}
-
 func newDispatchCmd() *cobra.Command {
-	return newDispatchCmdWithDeps(defaultDispatchDeps())
-}
-
-func newDispatchCmdWithDeps(deps dispatchDeps) *cobra.Command {
-	opts := dispatchOptions{
-		DryRun:          true,
-		Wait:            false,
-		Timeout:         30 * time.Minute,
-		App:             strings.TrimSpace(os.Getenv("FLY_APP")),
-		Token:           "", // Token is resolved at runtime from env vars to avoid exposing in help
-		APIURL:          fly.DefaultBaseURL,
-		Org:             strings.TrimSpace(os.Getenv("FLY_ORG")),
-		SpriteCLI:       strings.TrimSpace(os.Getenv("SPRITE_CLI")),
-		CompositionPath: "compositions/v1.yaml",
-		MaxIterations:   dispatchsvc.DefaultMaxRalphIterations,
-		MaxTokens:       dispatchsvc.DefaultMaxTokens,
-		MaxTime:         dispatchsvc.DefaultMaxTime,
-		WebhookURL:      strings.TrimSpace(os.Getenv("SPRITE_WEBHOOK_URL")),
-		RegistryPath:    registry.DefaultPath(),
-	}
-
-	command := &cobra.Command{
-		Use:   "dispatch [sprite] [prompt]",
-		Short: "Dispatch a task prompt to a sprite (dry-run by default)",
-		Args:  cobra.ArbitraryArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if opts.Execute {
-				opts.DryRun = false
-			}
-			if !opts.Execute && cmd.Flags().Changed("dry-run") && !opts.DryRun {
-				return errors.New("dispatch: --dry-run=false requires --execute")
-			}
-
-			// Validate --wait requires --execute
-			if opts.Wait && !opts.Execute {
-				return errors.New("dispatch: --wait requires --execute")
-			}
-
-			// Validate --stream-logs requires --wait
-			if opts.StreamLogs && !opts.Wait {
-				return errors.New("dispatch: --stream-logs requires --wait")
-			}
-
-			spriteArg := ""
-			if len(args) > 0 {
-				spriteArg = args[0]
-			}
-
-			prompt, err := resolveDispatchPrompt(args, opts, deps)
-			if err != nil {
-				return err
-			}
-
-			// Resolve token from flag or environment
-			opts.Token = resolveFlyToken(opts.Token)
-
-			// FLY_APP and FLY_API_TOKEN are only needed when provisioning new sprites.
-			// When dispatching to an existing sprite, the sprite CLI handles transport.
-			hasFlyCredentials := strings.TrimSpace(opts.App) != "" && strings.TrimSpace(opts.Token) != ""
-
-			var flyClient fly.MachineClient
-			if hasFlyCredentials {
-				flyClient, err = deps.newFlyClient(opts.Token, opts.APIURL)
-				if err != nil {
-					return err
-				}
-			}
-			remote := deps.newRemote(opts.SpriteCLI, opts.Org)
-
-			if strings.TrimSpace(spriteArg) == "" {
-				if deps.selectSprite == nil {
-					return errors.New("dispatch: no sprite provided and auto-assign is not available")
-				}
-				selected, err := deps.selectSprite(cmd.Context(), remote, opts)
-				if err != nil {
-					return err
-				}
-				spriteArg = selected
-			}
-
-			// Collect auth-related environment variables to pass to sprites
-			envVars := make(map[string]string)
-
-			llmKeys := []string{
-				"OPENROUTER_API_KEY",
-				"ANTHROPIC_AUTH_TOKEN",
-				"ANTHROPIC_API_KEY",
-				"MOONSHOT_AI_API_KEY",
-				"XAI_API_KEY",
-				"GEMINI_API_KEY",
-				"OPENAI_API_KEY",
-			}
-			gitKeys := []string{
-				"GH_TOKEN",
-				"GITHUB_TOKEN",
-			}
-
-			for _, key := range append(llmKeys, gitKeys...) {
-				if value := os.Getenv(key); value != "" {
-					envVars[key] = value
-				}
-			}
-
-			// Strip ANTHROPIC_API_KEY to prevent proxy bypass.
-			// The sprite should only receive ANTHROPIC_AUTH_TOKEN (OpenRouter key)
-			// and ANTHROPIC_BASE_URL (set by the proxy lifecycle manager).
-			// This fixes the issue where Claude Code's ANTHROPIC_API_KEY would
-			// trigger safety validation failures when dispatching to sprites.
-			delete(envVars, "ANTHROPIC_API_KEY")
-
-			// Resolve and inject secrets passed via --secret flags
-			if len(opts.Secrets) > 0 {
-				resolver := dispatchsvc.DefaultSecretResolver()
-				resolvedSecrets, placeholders, err := resolver.ResolveAll(opts.Secrets)
-				if err != nil {
-					return fmt.Errorf("dispatch: failed to resolve secrets: %w", err)
-				}
-				// Merge resolved secrets into env vars (these will be injected at container level)
-				for name, value := range resolvedSecrets {
-					envVars[name] = value
-				}
-				// Log placeholders for visibility (not actual values)
-				if !opts.JSON {
-					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Injecting secrets: %v\n", placeholders)
-				}
-			}
-
-			// Load additional secrets from ~/.secrets directory if it exists
-			if homeDir, err := os.UserHomeDir(); err == nil {
-				secrets, loadErr := dispatchsvc.LoadSecretsFromDir(filepath.Join(homeDir, ".secrets"))
-				if loadErr != nil {
-					if !opts.JSON {
-						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to load secrets from ~/.secrets: %v\n", loadErr)
-					}
-				} else if len(secrets) > 0 {
-					loadedNames := make([]string, 0, len(secrets))
-					for name, value := range secrets {
-						// Only add if not already set via --secret flag or env var
-						if _, exists := envVars[name]; !exists {
-							envVars[name] = value
-							loadedNames = append(loadedNames, "$"+name)
-						}
-					}
-					if !opts.JSON && len(loadedNames) > 0 {
-						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Loaded secrets from ~/.secrets: %v\n", loadedNames)
-					}
-				}
-			}
-
-			// When executing (not dry-run), validate that the sprite will have
-			// the credentials it needs to actually complete the work.
-			if opts.Execute {
-				var missing []string
-
-				// At least one LLM key is required for the agent to function.
-				hasLLMKey := false
-				for _, key := range llmKeys {
-					if envVars[key] != "" {
-						hasLLMKey = true
-						break
-					}
-				}
-				if !hasLLMKey {
-					missing = append(missing, fmt.Sprintf(
-						"no LLM API key found — set one of: %s", strings.Join(llmKeys, ", ")))
-				}
-
-				// GitHub token is required for the agent to push branches and open PRs.
-				hasGitToken := envVars["GH_TOKEN"] != "" || envVars["GITHUB_TOKEN"] != ""
-				if !hasGitToken {
-					missing = append(missing,
-						"no GitHub token found — set GH_TOKEN or GITHUB_TOKEN (try: export GITHUB_TOKEN=$(gh auth token))")
-				}
-
-				if len(missing) > 0 {
-					return fmt.Errorf("dispatch: missing credentials — sprite cannot complete work\n\n  ✗ %s\n\nset the required environment variables and retry", strings.Join(missing, "\n  ✗ "))
-				}
-
-				// Pre-dispatch validation (runs after envVars is populated)
-				// Skip policy validation for dry-run (Execute=false) to keep planning fast and offline.
-				// Safety checks always run when executing.
-				profile := dispatchsvc.ParseValidationProfile(opts.ValidationProfile)
-
-				// --strict is a legacy alias for --validation-profile=strict, and should only apply
-				// if the new --validation-profile flag is not explicitly set.
-				if opts.Strict && !cmd.Flags().Changed("validation-profile") {
-					profile = dispatchsvc.ValidationProfileStrict
-				}
-
-				// --skip-validation skips the policy layer only; safety checks remain.
-				// Only apply if the user didn't explicitly set --validation-profile.
-				if opts.SkipValidation && !cmd.Flags().Changed("validation-profile") {
-					profile = dispatchsvc.ValidationProfileOff
-				}
-
-				validationResult, err := dispatchsvc.ValidateIssueWithProfile(
-					cmd.Context(),
-					dispatchsvc.Request{
-						Sprite:  spriteArg,
-						Prompt:  prompt,
-						Repo:    opts.Repo,
-						Issue:   opts.Issue,
-						Execute: opts.Execute,
-						Ralph:   opts.Ralph,
-					},
-					profile,
-					envVars,
-					opts.AllowAnthropicDirect,
-				)
-				if err != nil {
-					return fmt.Errorf("dispatch: validation failed: %w", err)
-				}
-
-				// Always display validation report when there are any issues
-				// (safety errors, policy errors, or policy warnings)
-				if !opts.JSON && validationResult.HasIssues() {
-					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), validationResult.FormatReport(profile))
-				}
-
-				// Use ToError for consistent blocking/error behavior
-				if validationErr := validationResult.ToError(profile); validationErr != nil {
-					return validationErr
-				}
-			}
-
-			service, err := deps.newService(dispatchsvc.Config{
-				Remote:             remote,
-				Fly:                flyClient,
-				App:                opts.App,
-				Workspace:          dispatchsvc.DefaultWorkspace,
-				CompositionPath:    opts.CompositionPath,
-				RalphTemplatePath:  "scripts/ralph-prompt-template.md",
-				MaxRalphIterations: opts.MaxIterations,
-				EnvVars:            envVars,
-				RegistryPath:       opts.RegistryPath,
-				RegistryRequired:   opts.RegistryRequired,
-				// Persist dispatch lifecycle events locally for operator visibility.
-				// Best-effort; dispatch continues if the logger cannot be created.
-				EventLogger: nil,
-				ScaffoldDir: opts.ScaffoldDir,
-			})
-			if err != nil {
-				return err
-			}
-
-			result, err := service.Run(contextOrBackground(cmd.Context()), dispatchsvc.Request{
-				Sprite:               spriteArg,
-				Prompt:               prompt,
-				Repo:                 opts.Repo,
-				Skills:               opts.Skills,
-				Issue:                opts.Issue,
-				Ralph:                opts.Ralph,
-				Execute:              opts.Execute,
-				WebhookURL:           opts.WebhookURL,
-				AllowAnthropicDirect: opts.AllowAnthropicDirect,
-				AllowOrphan:          opts.AllowOrphan,
-				MaxTokens:            opts.MaxTokens,
-				MaxTime:              opts.MaxTime,
-			})
-			if err != nil {
-				return err
-			}
-
-			// If --wait flag is set, poll for completion
-			if opts.Wait && result.Executed {
-				// Oneshot mode: if the local dispatch state machine is already completed,
-				// skip remote polling entirely. The task finished before we started polling.
-				// Ralph mode still polls because the agent continues running in the background.
-				if result.State == dispatchsvc.StateCompleted && !opts.Ralph {
-					waitRes := &waitResult{
-						State:           "completed",
-						Task:            result.Task,
-						Complete:        true,
-						Commits:         result.Work.Commits,
-						PRs:             result.Work.PRs,
-						HasChanges:      result.Work.HasChanges,
-						DirtyFiles:      result.Work.DirtyFiles,
-						WorkDeltaFailed: result.Work.VerificationFailed,
-						WorkDeltaError:  result.Work.VerificationError,
-					}
-					if err := renderWaitResult(cmd, result, waitRes, opts.JSON); err != nil {
-						return err
-					}
-					return waitExitError(waitRes)
-				}
-
-				pollTarget := spriteArg
-				if cmd.Flags().Changed("registry") || opts.RegistryRequired {
-					if resolved, err := dispatchsvc.ResolveSprite(spriteArg, opts.RegistryPath); err == nil && strings.TrimSpace(resolved) != "" {
-						pollTarget = resolved
-					}
-				}
-
-				// Start log streaming if requested
-				var logsDone chan struct{}
-				if opts.StreamLogs {
-					_, _ = fmt.Fprintf(cmd.OutOrStderr(), "[logs] Streaming logs from %s...\n", pollTarget)
-					logsDone = make(chan struct{})
-					go func() {
-						defer close(logsDone)
-						if err := deps.streamLogs(cmd.Context(), remote, pollTarget, func(line string) {
-							_, _ = fmt.Fprintln(cmd.OutOrStdout(), line)
-						}); err != nil {
-							_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "[logs] Stream error: %v\n", err)
-						}
-					}()
-				}
-
-				waitRes, waitErr := deps.pollSprite(cmd.Context(), remote, pollTarget, opts.Timeout, func(msg string) {
-					// Intentionally ignoring write errors for progress output
-					// When JSON output is requested, progress goes to stderr to keep stdout clean for JSON
-					if opts.JSON {
-						_, _ = fmt.Fprintln(cmd.ErrOrStderr(), msg)
-					} else {
-						_, _ = fmt.Fprintln(cmd.OutOrStdout(), msg)
-					}
-				})
-
-				if opts.StreamLogs {
-					deps.stopLogStream()
-					<-logsDone
-				}
-
-				if waitErr != nil {
-					// Graceful degradation: return dispatch result with warning
-					// Intentionally ignoring write errors for warning message
-					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Warning: polling failed: %v\n", waitErr)
-					if err := renderDispatchResult(cmd, result, opts.JSON); err != nil {
-						return err
-					}
-					// Return exit code 1 for infrastructure/polling failure
-					return &exitError{Code: exitCodeDispatchFailure, Err: waitErr}
-				}
-				if err := renderWaitResult(cmd, result, waitRes, opts.JSON); err != nil {
-					return err
-				}
-				return waitExitError(waitRes)
-			}
-
-			return renderDispatchResult(cmd, result, opts.JSON)
-		},
-	}
-
-	command.Flags().StringVar(&opts.Repo, "repo", "", "Repo to clone/pull before dispatch (org/repo or URL)")
-	command.Flags().StringVar(&opts.PromptFile, "file", "", "Read prompt from a file")
-	command.Flags().StringArrayVar(&opts.Skills, "skill", nil, "Path to skill directory or SKILL.md to mount in sprite workspace (repeatable)")
-	command.Flags().StringArrayVar(&opts.Secrets, "secret", nil, "Secret to inject as env var (NAME=VALUE or NAME=op://vault/item/field, repeatable)")
-	command.Flags().BoolVar(&opts.Ralph, "ralph", false, "Start persistent Ralph loop instead of one-shot")
-	command.Flags().BoolVar(&opts.Execute, "execute", false, "Execute dispatch actions (default is dry-run)")
-	command.Flags().BoolVar(&opts.DryRun, "dry-run", true, "Preview dispatch plan without side effects")
-	command.Flags().BoolVar(&opts.JSON, "json", false, "Emit JSON output")
-	command.Flags().BoolVar(&opts.Wait, "wait", false, "Wait for task completion and stream progress")
-	command.Flags().BoolVar(&opts.StreamLogs, "stream-logs", false, "Stream sprite logs to stdout while waiting (--wait required)")
-	command.Flags().DurationVar(&opts.Timeout, "timeout", opts.Timeout, "Timeout for --wait (default: 30m)")
-	command.Flags().StringVar(&opts.App, "app", opts.App, "Sprites app name")
-	command.Flags().StringVar(&opts.Token, "token", opts.Token, "API token (or set FLY_API_TOKEN/FLY_TOKEN env var)")
-	command.Flags().StringVar(&opts.APIURL, "api-url", opts.APIURL, "Sprites API base URL")
-	command.Flags().StringVar(&opts.Org, "org", opts.Org, "Sprite org passed to sprite CLI")
-	command.Flags().StringVar(&opts.SpriteCLI, "sprite-cli", opts.SpriteCLI, "Sprite CLI binary path")
-	command.Flags().StringVar(&opts.CompositionPath, "composition", opts.CompositionPath, "Composition YAML used for provisioning metadata")
-	command.Flags().IntVar(&opts.MaxIterations, "max-iterations", opts.MaxIterations, "Ralph loop iteration safety cap")
-	command.Flags().IntVar(&opts.MaxTokens, "max-tokens", opts.MaxTokens, "Ralph stuck-loop token safety cap (only with --ralph)")
-	command.Flags().DurationVar(&opts.MaxTime, "max-time", opts.MaxTime, "Ralph stuck-loop runtime safety cap (only with --ralph)")
-	command.Flags().StringVar(&opts.WebhookURL, "webhook-url", opts.WebhookURL, "Optional sprite-agent webhook URL")
-	command.Flags().BoolVar(&opts.AllowAnthropicDirect, "allow-anthropic-direct", false, "Allow dispatch even if sprite has a real ANTHROPIC_API_KEY")
-	command.Flags().BoolVar(&opts.AllowOrphan, "allow-orphan", false, "Allow dispatch to sprites not in the loaded composition")
-	command.Flags().IntVar(&opts.Issue, "issue", 0, "GitHub issue number to validate before dispatch")
-	command.Flags().BoolVar(&opts.SkipValidation, "skip-validation", false, "Skip policy validation (safety checks still run)")
-	command.Flags().BoolVar(&opts.Strict, "strict", false, "Fail on any validation warning (legacy: use --validation-profile=strict)")
-	command.Flags().StringVar(&opts.ValidationProfile, "validation-profile", "advisory", "Validation profile: advisory (default), strict, or off")
-	command.Flags().StringVar(&opts.RegistryPath, "registry", opts.RegistryPath, "Path to sprite registry file")
-	command.Flags().BoolVar(&opts.RegistryRequired, "registry-required", false, "Require sprites to exist in registry (fail if not found)")
-	command.Flags().StringVar(&opts.ScaffoldDir, "scaffold-dir", "", "Path to base/ directory for environment scaffolding")
-
-	return command
-}
-
-func resolveDispatchPrompt(args []string, opts dispatchOptions, deps dispatchDeps) (string, error) {
-	if strings.TrimSpace(opts.PromptFile) != "" {
-		content, err := deps.readFile(opts.PromptFile)
-		if err != nil {
-			return "", err
-		}
-		prompt := strings.TrimSpace(string(content))
-		if prompt == "" {
-			return "", errors.New("dispatch: prompt file is empty")
-		}
-		return prompt, nil
-	}
-
-	if len(args) < 2 {
-		if opts.Issue > 0 {
-			// Allow empty prompt: internal/dispatch will synthesize a default IssuePrompt.
-			return "", nil
-		}
-		return "", errors.New("dispatch: prompt is required when --file is not set (or use --issue)")
-	}
-	prompt := strings.TrimSpace(strings.Join(args[1:], " "))
-	if prompt == "" {
-		return "", errors.New("dispatch: prompt cannot be empty")
-	}
-	return prompt, nil
-}
-
-func selectSpriteFromRegistry(ctx context.Context, remote *spriteCLIRemote, opts dispatchOptions) (string, error) {
-	if opts.Issue <= 0 && strings.TrimSpace(opts.PromptFile) == "" {
-		return "", errors.New("dispatch: auto-assign requires --issue (or --file)")
-	}
-	if remote == nil {
-		return "", errors.New("dispatch: remote is required for auto-assign")
-	}
-
-	regPath := strings.TrimSpace(opts.RegistryPath)
-	if regPath == "" {
-		regPath = registry.DefaultPath()
-	}
-	if _, err := os.Stat(regPath); os.IsNotExist(err) {
-		exampleArgs := "--file <path>"
-		if opts.Issue > 0 {
-			exampleArgs = fmt.Sprintf("--issue %d", opts.Issue)
-		}
-		return "", fmt.Errorf("dispatch: registry not found at %s\n\n  Create a registry by adding a sprite: bb add --name <sprite>\n  Or provide a sprite name explicitly:\n    bb dispatch <sprite> %s", regPath, exampleArgs)
-	}
-
-	checker := remoteStatusChecker{
-		remote:    remote,
-		workspace: "/home/sprite/workspace",
-	}
-	f, err := fleet.NewDispatchFleet(fleet.DispatchConfig{
-		RegistryPath:     opts.RegistryPath,
-		RegistryRequired: true,
-		Status:           checker,
-	})
-	if err != nil {
-		return "", err
-	}
-	req := fleet.DispatchRequest{
-		Issue: opts.Issue,
-		Repo:  opts.Repo,
-	}
-	var assignment *fleet.Assignment
-	if opts.Execute {
-		assignment, err = f.Dispatch(ctx, req)
-	} else {
-		assignment, err = f.PlanDispatch(ctx, req)
-	}
-	if err != nil {
-		return "", err
-	}
-	return assignment.Sprite, nil
-}
-
-type remoteStatusChecker struct {
-	remote    *spriteCLIRemote
-	workspace string
-}
-
-func (c remoteStatusChecker) Check(ctx context.Context, machineID string) (fleet.LiveStatus, error) {
-	res, _, err := checkSpriteStatus(ctx, c.remote, machineID, c.workspace)
-	if res == nil {
-		return fleet.LiveStatus{State: "unknown"}, err
-	}
-	return fleet.LiveStatus{
-		State:         res.State,
-		Task:          res.Task,
-		Repo:          res.Repo,
-		Runtime:       res.Runtime,
-		BlockedReason: res.BlockedReason,
-	}, err
-}
-
-func renderDispatchResult(cmd *cobra.Command, result dispatchsvc.Result, jsonMode bool) error {
-	if jsonMode {
-		return contracts.WriteJSON(cmd.OutOrStdout(), "dispatch", result)
-	}
-
-	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Sprite: %s\n", result.Plan.Sprite); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Mode: %s\n", result.Plan.Mode); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintln(cmd.OutOrStdout(), "Plan:"); err != nil {
-		return err
-	}
-	for _, step := range result.Plan.Steps {
-		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "- [%s] %s\n", step.Kind, step.Description); err != nil {
-			return err
-		}
-	}
-
-	if !result.Executed {
-		_, err := fmt.Fprintln(cmd.OutOrStdout(), "Dry run only. Re-run with --execute to apply.")
-		return err
-	}
-
-	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "State: %s\n", result.State); err != nil {
-		return err
-	}
-	if result.AgentPID > 0 {
-		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Agent PID: %d\n", result.AgentPID); err != nil {
-			return err
-		}
-	}
-	if strings.TrimSpace(result.CommandOutput) != "" {
-		if _, err := fmt.Fprintln(cmd.OutOrStdout(), "Output:"); err != nil {
-			return err
-		}
-		if _, err := fmt.Fprintln(cmd.OutOrStdout(), strings.TrimSpace(result.CommandOutput)); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func renderWaitResult(cmd *cobra.Command, dispatchResult dispatchsvc.Result, waitRes *waitResult, jsonMode bool) error {
-	if jsonMode {
-		combined := struct {
-			Dispatch dispatchsvc.Result `json:"dispatch"`
-			Wait     *waitResult        `json:"wait,omitempty"`
-		}{
-			Dispatch: dispatchResult,
-			Wait:     waitRes,
-		}
-		return contracts.WriteJSON(cmd.OutOrStdout(), "dispatch.wait", combined)
-	}
-
-	// Print dispatch result summary
-	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "\n=== Task Complete ===\n"); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Sprite: %s\n", dispatchResult.Plan.Sprite); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "State: %s\n", waitRes.State); err != nil {
-		return err
-	}
-	if waitRes.Task != "" && waitRes.Task != "-" {
-		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Task: %s\n", waitRes.Task); err != nil {
-			return err
-		}
-	}
-	if waitRes.Runtime != "" && waitRes.Runtime != "-" {
-		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Runtime: %s\n", waitRes.Runtime); err != nil {
-			return err
-		}
-	}
-	if waitRes.Blocked {
-		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Status: BLOCKED\n"); err != nil {
-			return err
-		}
-		if waitRes.BlockedReason != "" {
-			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Reason: %s\n", waitRes.BlockedReason); err != nil {
-				return err
-			}
-		}
-	} else if waitRes.Complete {
-		if waitRes.WorkDeltaFailed {
-			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Status: VERIFICATION FAILED (could not verify work outcome)\n"); err != nil {
-				return err
-			}
-			if waitRes.WorkDeltaError != "" {
-				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Error: %s\n", waitRes.WorkDeltaError); err != nil {
-					return err
-				}
-			}
-		} else if waitRes.HasChanges {
-			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Status: COMPLETE\n"); err != nil {
-				return err
-			}
-		} else if waitRes.DirtyFiles > 0 {
-			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Status: PARTIAL (uncommitted changes in %d file(s))\n", waitRes.DirtyFiles); err != nil {
-				return err
-			}
-		} else {
-			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Status: COMPLETE (no new work)\n"); err != nil {
-				return err
-			}
-		}
-		// Show work delta
-		if waitRes.Commits > 0 || waitRes.PRs > 0 {
-			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Work: %d commit(s), %d PR(s)\n", waitRes.Commits, waitRes.PRs); err != nil {
-				return err
-			}
-		}
-	}
-	if waitRes.PRURL != "" {
-		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "PR URL: %s\n", waitRes.PRURL); err != nil {
-			return err
-		}
-	}
-	if waitRes.Error != "" {
-		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Error: %s\n", waitRes.Error); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func contextOrBackground(ctx context.Context) context.Context {
-	if ctx == nil {
-		return context.Background()
-	}
-	return ctx
-}
-
-// newTimeoutResult creates a timeout waitResult with elapsed duration info.
-func newTimeoutResult(startTime time.Time) (*waitResult, error) {
-	elapsed := time.Since(startTime).Round(time.Second)
-	return &waitResult{
-		State:   "timeout",
-		Error:   fmt.Sprintf("polling timed out after %s", elapsed),
-		Runtime: elapsed.String(),
-	}, nil
-}
-
-// waitExitError returns an exitError based on the wait result state.
-// Exit codes:
-//
-//	0: dispatch completed successfully with new work (completed with changes or blocked)
-//	2: dispatch completed but agent didn't produce expected signals (idle without completion)
-//	3: dispatch completed but produced no new work (completed without changes)
-//	4: dispatch completed with uncommitted changes (agent modified files but didn't commit)
-//	5: work delta verification failed (e.g., I/O timeout checking outcome)
-//	124: timeout reached while waiting
-func waitExitError(waitRes *waitResult) error {
-	switch waitRes.State {
-	case "timeout":
-		return &exitError{Code: exitCodeTimeout, Err: errors.New("timeout reached while waiting for task completion")}
-	case "completed":
-		// Check for work delta verification failure FIRST — this is distinct from
-		// "verified zero work" (exit 3) or "verified partial work" (exit 4).
-		// Verification failure means we couldn't check the outcome, not that there was no work.
-		if waitRes.WorkDeltaFailed {
-			return &exitError{Code: exitCodeWorkDeltaFailed, Err: fmt.Errorf("work delta check failed: could not verify outcome: %s", waitRes.WorkDeltaError)}
-		}
-		if waitRes.HasChanges {
-			return nil // Success: new work was produced
-		}
-		if waitRes.DirtyFiles > 0 {
-			return &exitError{Code: exitCodePartialWork, Err: fmt.Errorf("dispatch completed with uncommitted changes in %d file(s)", waitRes.DirtyFiles)}
-		}
-		return &exitError{Code: exitCodeNoNewWork, Err: errors.New("dispatch completed but produced no new work")}
-	case "blocked":
-		// Blocked is a form of completion (agent intentionally stopped)
-		return nil
-	case "idle":
-		// Soft failure: agent didn't produce expected signals
-		return &exitError{Code: exitCodeAgentNoSignals, Err: errors.New("dispatch completed but agent did not produce expected signals")}
-	default:
-		// For running or other states, this shouldn't happen as polling should continue
-		// until completion or timeout, but treat as soft failure just in case
-		return &exitError{Code: exitCodeAgentNoSignals, Err: fmt.Errorf("unexpected final state: %s", waitRes.State)}
-	}
-}
-
-// pollSpriteStatus polls a sprite for task completion with heartbeat progress and enhanced reporting.
-func pollSpriteStatus(ctx context.Context, remote *spriteCLIRemote, sprite string, timeout time.Duration, progress func(string)) (*waitResult, error) {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	startTime := time.Now()
-	workspace := "/home/sprite/workspace"
-
-	// Immediate check before any delay — catches already-completed oneshot tasks.
-	result, done, err := checkSpriteStatus(ctx, remote, sprite, workspace)
-	if err == nil && result != nil {
-		progress(formatStatusLine(result))
-		if done {
-			// Preserve runtime from remote STATUS.json if available.
-			if result.Runtime == "" {
-				result.Runtime = time.Since(startTime).Round(time.Second).String()
-			}
-			return result, nil
-		}
-	}
-
-	// Brief delay before starting poll loop
-	progress(fmt.Sprintf("⏳ Waiting for %s to finish...", sprite))
-	select {
-	case <-time.After(2 * time.Second):
-	case <-ctx.Done():
-		return newTimeoutResult(startTime)
-	}
-
-	pollTicker := time.NewTicker(5 * time.Second)
-	defer pollTicker.Stop()
-
-	// Heartbeat ticker for progress during long waits (30s avoids redundant
-	// output from overlapping with the 5s poll ticker).
-	heartbeatTicker := time.NewTicker(30 * time.Second)
-	defer heartbeatTicker.Stop()
-
-	lastState := ""
-	for {
-		select {
-		case <-ctx.Done():
-			return newTimeoutResult(startTime)
-		case <-heartbeatTicker.C:
-			elapsed := time.Since(startTime).Round(time.Second)
-			stateInfo := ""
-			if lastState != "" {
-				stateInfo = fmt.Sprintf(" [state: %s]", lastState)
-			}
-			progress(fmt.Sprintf("Still waiting for %s... elapsed: %s%s", sprite, elapsed, stateInfo))
-		case <-pollTicker.C:
-			result, done, err := checkSpriteStatus(ctx, remote, sprite, workspace)
-			if err != nil {
-				elapsed := time.Since(startTime).Round(time.Second)
-				progress(fmt.Sprintf("Polling error at %s (retrying): %v", elapsed, err))
-				continue
-			}
-			if result != nil {
-				lastState = result.State
-				progress(formatStatusLine(result))
-			}
-			if done && result != nil {
-				// Preserve runtime from remote STATUS.json if available.
-				if result.Runtime == "" {
-					result.Runtime = time.Since(startTime).Round(time.Second).String()
-				}
-				return result, nil
-			}
-		}
-	}
-}
-
-// formatStatusLine formats a waitResult as a concise status line for progress output.
-func formatStatusLine(r *waitResult) string {
-	var parts []string
-
-	switch r.State {
-	case "running":
-		parts = append(parts, "🔄 Running")
-	case "completed":
-		parts = append(parts, "✅ Completed")
-	case "blocked":
-		parts = append(parts, "🚫 Blocked")
-	case "idle":
-		parts = append(parts, "💤 Idle")
-	default:
-		parts = append(parts, fmt.Sprintf("Status: %s", r.State))
-	}
-
-	if r.Task != "" && r.Task != "-" {
-		parts = append(parts, fmt.Sprintf("task: %s", truncateString(r.Task, 40)))
-	}
-
-	if r.Runtime != "" && r.Runtime != "-" {
-		parts = append(parts, fmt.Sprintf("runtime: %s", r.Runtime))
-	}
-
-	if r.Blocked && r.BlockedReason != "" {
-		parts = append(parts, fmt.Sprintf("reason: %s", truncateString(r.BlockedReason, 30)))
-	}
-
-	return strings.Join(parts, " | ")
-}
-
-// checkSpriteStatus checks the current status of a sprite task.
-func checkSpriteStatus(ctx context.Context, remote *spriteCLIRemote, sprite, workspace string) (*waitResult, bool, error) {
-	script := buildStatusCheckScript(workspace)
-	output, err := remote.Exec(ctx, sprite, script, nil)
-	if err != nil {
-		return nil, false, err
-	}
-
-	return parseStatusCheckOutput(output)
-}
-
-// buildStatusCheckScript creates a script to check sprite status.
-func buildStatusCheckScript(workspace string) string {
-	return strings.Join([]string{
-		"set -euo pipefail",
-		"WORKSPACE=" + shellutil.Quote(workspace),
-		"",
-		"# Check for status file",
-		"STATUS_JSON='{}'",
-		"if [ -f \"$WORKSPACE/STATUS.json\" ]; then",
-		"  STATUS_JSON=\"$(tr -d '\\n' < \"$WORKSPACE/STATUS.json\")\"",
-		"fi",
-		"echo \"__STATUS_JSON__${STATUS_JSON}\"",
-		"",
-		"# Check agent state",
-		"AGENT_STATE=dead",
-		"PID_PATH=\"$WORKSPACE/agent.pid\"",
-		"if [ -f \"$PID_PATH\" ]; then",
-		"  PID=\"$(cat \"$PID_PATH\")\"",
-		"  if kill -0 \"$PID\" 2>/dev/null; then",
-		"    AGENT_STATE=alive",
-		"  fi",
-		// pgrep -f self-matches when the search pattern appears in the script text.
-		// Use [c]laude trick to prevent the grep/pgrep from matching itself.
-		"elif pgrep -f '[c]laude -p' >/dev/null 2>&1; then",
-		"  AGENT_STATE=alive",
-		"fi",
-		"echo \"__AGENT_STATE__${AGENT_STATE}\"",
-		"",
-		"# Check for completion markers",
-		"HAS_COMPLETE=no",
-		"if [ -f \"$WORKSPACE/" + dispatchsvc.SignalTaskComplete + "\" ] || [ -f \"$WORKSPACE/" + dispatchsvc.SignalTaskCompleteMD + "\" ]; then",
-		"  HAS_COMPLETE=yes",
-		"fi",
-		"echo \"__HAS_COMPLETE__${HAS_COMPLETE}\"",
-		"",
-		"# Check for blocked marker",
-		"HAS_BLOCKED=no",
-		"BLOCKED_SUMMARY=\"\"",
-		"if [ -f \"$WORKSPACE/" + dispatchsvc.SignalBlocked + "\" ]; then",
-		"  HAS_BLOCKED=yes",
-		"  BLOCKED_SUMMARY=\"$(head -5 \"$WORKSPACE/BLOCKED.md\" 2>/dev/null | tr '\\n' ' ' | sed 's/[[:space:]]\\+/ /g')\"",
-		"fi",
-		"echo \"__HAS_BLOCKED__${HAS_BLOCKED}\"",
-		"echo \"__BLOCKED_B64__$(printf '%s' \"$BLOCKED_SUMMARY\" | base64 | tr -d '\\n')\"",
-		"",
-		"# Check for PR URL (try dedicated file, then either signal file variant)",
-		"# Trim whitespace to avoid false positive completion from whitespace-only PR_URL",
-		"PR_URL=\"\"",
-		"if [ -f \"$WORKSPACE/PR_URL\" ]; then",
-		"  PR_URL=\"$(cat \"$WORKSPACE/PR_URL\" | tr -d '[:space:]')\"",
-		"else",
-		"  for f in \"$WORKSPACE/" + dispatchsvc.SignalTaskComplete + "\" \"$WORKSPACE/" + dispatchsvc.SignalTaskCompleteMD + "\"; do",
-		"    [ -f \"$f\" ] && PR_URL=\"$(grep -oE 'https://github.com/[^/]+/[^/]+/pull/[0-9]+' \"$f\" 2>/dev/null | tr -d '[:space:]' || true)\" && break",
-		"  done",
-		"fi",
-		"echo \"__PR_URL__${PR_URL}\"",
-	}, "\n")
-}
-
-// parseStatusCheckOutput parses the output from the status check script.
-func parseStatusCheckOutput(output string) (*waitResult, bool, error) {
-	type statusFile struct {
-		Repo    string `json:"repo"`
-		Started string `json:"started"`
-		Mode    string `json:"mode"`
-		Task    string `json:"task"`
-	}
-
 	var (
-		fileStatus  statusFile
-		agentState  string
-		hasComplete bool
-		hasBlocked  bool
-		blockedB64  string
-		prURL       string
+		repo          string
+		timeout       time.Duration
+		maxIterations int
+		harness       string
+		model         string
 	)
 
-	lines := strings.Split(output, "\n")
-	for _, line := range lines {
-		switch {
-		case strings.HasPrefix(line, "__STATUS_JSON__"):
-			payload := strings.TrimPrefix(line, "__STATUS_JSON__")
-			if payload == "" {
-				payload = "{}"
+	cmd := &cobra.Command{
+		Use:   "dispatch <sprite> <prompt>",
+		Short: "Dispatch a task to a sprite via the ralph loop",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			spriteName := args[0]
+			prompt := args[1]
+
+			if harness != "claude" && harness != "opencode" {
+				return fmt.Errorf("--harness must be 'claude' or 'opencode', got %q", harness)
 			}
-			// Parse errors are intentionally ignored; malformed JSON results in zero values
-			// which is acceptable since these fields are for informational display only
-			if err := json.Unmarshal([]byte(payload), &fileStatus); err != nil {
-				// Reset to empty struct on parse failure to ensure clean state
-				fileStatus = statusFile{}
-			}
-		case strings.HasPrefix(line, "__AGENT_STATE__"):
-			agentState = strings.TrimPrefix(line, "__AGENT_STATE__")
-		case strings.HasPrefix(line, "__HAS_COMPLETE__"):
-			hasComplete = strings.TrimPrefix(line, "__HAS_COMPLETE__") == "yes"
-		case strings.HasPrefix(line, "__HAS_BLOCKED__"):
-			hasBlocked = strings.TrimPrefix(line, "__HAS_BLOCKED__") == "yes"
-		case strings.HasPrefix(line, "__BLOCKED_B64__"):
-			blockedB64 = strings.TrimPrefix(line, "__BLOCKED_B64__")
-		case strings.HasPrefix(line, "__PR_URL__"):
-			prURL = strings.TrimSpace(strings.TrimPrefix(line, "__PR_URL__"))
-		}
+
+			return runDispatch(cmd.Context(), spriteName, prompt, repo, maxIterations, timeout, harness, model)
+		},
 	}
 
-	// Calculate runtime
-	var runtime string
-	if fileStatus.Started != "" {
-		if parsed, err := time.Parse(time.RFC3339, fileStatus.Started); err == nil {
-			delta := time.Since(parsed)
-			if delta > 0 {
-				runtime = delta.Round(time.Second).String()
-			}
-		}
-	}
+	cmd.Flags().StringVar(&repo, "repo", "", "GitHub repo (owner/repo)")
+	cmd.Flags().DurationVar(&timeout, "timeout", 30*time.Minute, "Max wall-clock time for the ralph loop")
+	cmd.Flags().IntVar(&maxIterations, "max-iterations", 50, "Max ralph loop iterations")
+	cmd.Flags().StringVar(&harness, "harness", "claude", "Agent harness: claude or opencode")
+	cmd.Flags().StringVar(&model, "model", "", "Model for opencode harness (e.g. moonshotai/kimi-k2.5)")
+	_ = cmd.MarkFlagRequired("repo")
 
-	// Determine state
-	state := "idle"
-	complete := false
-	blocked := false
-
-	switch {
-	case hasBlocked:
-		state = "blocked"
-		blocked = true
-		complete = true
-	case hasComplete:
-		state = "completed"
-		complete = true
-	case agentState == "alive":
-		state = "running"
-	case agentState == "dead" && prURL != "":
-		// Fallback: agent exited without TASK_COMPLETE but PR exists → likely completed
-		// This handles agents that forget to write the completion signal
-		state = "completed"
-		complete = true
-	}
-
-	// Decode blocked reason
-	var blockedReason string
-	if blocked && blockedB64 != "" {
-		if decoded, err := base64.StdEncoding.DecodeString(blockedB64); err == nil {
-			blockedReason = strings.TrimSpace(string(decoded))
-		}
-	}
-
-	result := &waitResult{
-		State:         state,
-		Task:          fileStatus.Task,
-		Repo:          fileStatus.Repo,
-		Started:       fileStatus.Started,
-		Runtime:       runtime,
-		PRURL:         prURL,
-		Blocked:       blocked,
-		BlockedReason: blockedReason,
-		Complete:      complete,
-	}
-
-	return result, complete, nil
+	return cmd
 }
 
-// noopStreamLogs is a no-op log stream function for default deps.
-func noopStreamLogs(ctx context.Context, remote *spriteCLIRemote, sprite string, out func(string)) error {
+func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter int, timeout time.Duration, harness, model string) error {
+	// Validate credentials
+	token, err := spriteToken()
+	if err != nil {
+		return err
+	}
+	ghToken, err := requireEnv("GITHUB_TOKEN")
+	if err != nil {
+		return err
+	}
+
+	// LLM auth is handled by settings.json on the sprite (baked in during setup).
+	// Dispatch only validates that GITHUB_TOKEN is set for git operations.
+
+	client := sprites.New(token)
+	defer func() { _ = client.Close() }()
+	s := client.Sprite(spriteName)
+
+	// 1. Probe connectivity (15s)
+	_, _ = fmt.Fprintf(os.Stderr, "probing %s...\n", spriteName)
+	probeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	if _, err := s.CommandContext(probeCtx, "echo", "ok").Output(); err != nil {
+		return fmt.Errorf("sprite %q unreachable: %w", spriteName, err)
+	}
+
+	// 2. Check that setup was run (ralph.sh must exist)
+	ralphScript := "/home/sprite/workspace/.ralph.sh"
+	checkCtx, checkCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer checkCancel()
+	if _, err := s.CommandContext(checkCtx, "test", "-f", ralphScript).Output(); err != nil {
+		return fmt.Errorf("sprite %q not configured — run: bb setup %s --repo %s", spriteName, spriteName, repo)
+	}
+
+	// 3. Kill stale agent processes from prior dispatches
+	// Without this, concurrent claude processes compete for resources and hang.
+	killCtx, killCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer killCancel()
+	_, _ = s.CommandContext(killCtx, "bash", "-c", "pkill -9 -f 'ralph\\.sh|claude|opencode' 2>/dev/null; sleep 1").Output()
+
+	// 4. Repo sync (pull latest on default branch)
+	repoName := path.Base(repo)
+	workspace := "/home/sprite/workspace/" + repoName
+
+	_, _ = fmt.Fprintf(os.Stderr, "syncing repo %s...\n", repo)
+	syncScript := fmt.Sprintf(
+		`git config --global --add safe.directory %s 2>/dev/null; export GH_TOKEN=%q && cd %s && git checkout master 2>/dev/null || git checkout main 2>/dev/null; git pull --ff-only 2>&1`,
+		workspace, ghToken, workspace,
+	)
+	syncCmd := s.CommandContext(ctx, "bash", "-c", syncScript)
+	if out, err := syncCmd.Output(); err != nil {
+		return fmt.Errorf("repo sync failed: %w\n%s", err, out)
+	}
+
+	// 5. Clean stale signals
+	cleanScript := fmt.Sprintf(
+		"rm -f %s/TASK_COMPLETE %s/TASK_COMPLETE.md %s/BLOCKED.md",
+		workspace, workspace, workspace,
+	)
+	_, _ = s.CommandContext(ctx, "bash", "-c", cleanScript).Output()
+
+	// 6. Render and upload prompt
+	rendered, err := renderPrompt(prompt, repo, spriteName)
+	if err != nil {
+		return fmt.Errorf("render prompt: %w", err)
+	}
+
+	promptPath := workspace + "/.dispatch-prompt.md"
+	if err := s.Filesystem().WriteFileContext(ctx, promptPath, []byte(rendered), 0644); err != nil {
+		return fmt.Errorf("upload prompt: %w", err)
+	}
+
+	// 7. Run ralph loop — foreground, streaming
+	_, _ = fmt.Fprintf(os.Stderr, "starting ralph loop (max %d iterations, %s timeout, harness=%s)...\n", maxIter, timeout, harness)
+
+	// Only pass operational env vars — LLM auth comes from settings.json (claude) or env var (opencode).
+	totalSec := int(timeout.Seconds())
+	iterSec := 900 // default per-iteration timeout
+	if totalSec < iterSec {
+		iterSec = totalSec // cap per-iteration at total timeout (#389)
+	}
+	ralphEnv := fmt.Sprintf(
+		`export MAX_ITERATIONS=%d MAX_TIME_SEC=%d ITER_TIMEOUT_SEC=%d WORKSPACE=%q GH_TOKEN=%q AGENT_HARNESS=%q AGENT_MODEL=%q LEFTHOOK=0`,
+		maxIter, totalSec, iterSec, workspace, ghToken, harness, model,
+	)
+
+	// OpenCode needs OPENROUTER_API_KEY in env; Claude Code uses settings.json on sprite.
+	if harness == "opencode" {
+		orKey := os.Getenv("OPENROUTER_API_KEY")
+		if orKey == "" {
+			return fmt.Errorf("OPENROUTER_API_KEY must be set for opencode harness")
+		}
+		ralphEnv += fmt.Sprintf(` OPENROUTER_API_KEY=%q`, orKey)
+	}
+
+	ralphEnv += fmt.Sprintf(` && exec bash %s`, ralphScript)
+
+	ralphCtx, ralphCancel := context.WithTimeout(ctx, timeout+5*time.Minute) // grace period beyond ralph's own timeout
+	defer ralphCancel()
+
+	ralphCmd := s.CommandContext(ralphCtx, "bash", "-c", ralphEnv)
+	ralphCmd.Dir = workspace
+	ralphCmd.Stdout = os.Stdout
+	ralphCmd.Stderr = os.Stderr
+	ralphErr := ralphCmd.Run()
+
+	// 8. Verify work produced
+	_, _ = fmt.Fprintf(os.Stderr, "\n=== work produced ===\n")
+	verifyScript := fmt.Sprintf(
+		`cd %s && echo "--- commits ---" && git log --oneline origin/master..HEAD 2>/dev/null || git log --oneline origin/main..HEAD 2>/dev/null; echo "--- PRs ---" && gh pr list --json url,title 2>/dev/null || echo "(gh not available)"`,
+		workspace,
+	)
+	verifyScript = fmt.Sprintf(`export GH_TOKEN=%q && %s`, ghToken, verifyScript)
+	verifyCmd := s.CommandContext(ctx, "bash", "-c", verifyScript)
+	verifyCmd.Stdout = os.Stderr
+	verifyCmd.Stderr = os.Stderr
+	_ = verifyCmd.Run()
+
+	// 9. Return appropriate exit code
+	if ralphErr != nil {
+		if exitErr, ok := ralphErr.(*sprites.ExitError); ok {
+			code := exitErr.ExitCode()
+			switch code {
+			case 0:
+				return nil
+			case 2:
+				return &exitError{Code: 2, Err: fmt.Errorf("agent blocked — check BLOCKED.md on sprite")}
+			default:
+				return &exitError{Code: code, Err: fmt.Errorf("ralph exited %d", code)}
+			}
+		}
+		return fmt.Errorf("ralph failed: %w", ralphErr)
+	}
 	return nil
 }
 
-// noopStopLogStream is a no-op log stream stop function for default deps.
-func noopStopLogStream() {}
+// renderPrompt reads the local ralph-prompt-template.md and substitutes placeholders.
+func renderPrompt(taskDescription, repo, spriteName string) (string, error) {
+	tmpl, err := os.ReadFile("scripts/ralph-prompt-template.md")
+	if err != nil {
+		return "", fmt.Errorf("read template: %w (are you running from the repo root?)", err)
+	}
+
+	rendered := string(tmpl)
+	rendered = strings.ReplaceAll(rendered, "{{TASK_DESCRIPTION}}", taskDescription)
+	rendered = strings.ReplaceAll(rendered, "{{REPO}}", repo)
+	rendered = strings.ReplaceAll(rendered, "{{SPRITE_NAME}}", spriteName)
+
+	return rendered, nil
+}
