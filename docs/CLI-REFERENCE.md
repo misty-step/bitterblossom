@@ -22,6 +22,7 @@ fly tokens create org -o personal -n bb-cli -x 720h
 ## dispatch
 
 Send a task to a sprite via the ralph loop. Runs foreground with streaming stdout/stderr.
+If no remote output arrives for ~45s, dispatch emits a keepalive line (`[dispatch] no remote output...`) so operators can distinguish silence from a hung CLI.
 
 ```
 bb dispatch <sprite> <prompt> --repo <owner/repo> [flags]
