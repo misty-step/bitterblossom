@@ -59,7 +59,10 @@ func runLogs(ctx context.Context, stdout, stderr io.Writer, spriteName string, f
 		return fmt.Errorf("sprite %q unreachable: %w", spriteName, err)
 	}
 
-	workspace := findSpriteWorkspace(ctx, s)
+	workspace, err := findSpriteWorkspace(ctx, s)
+	if err != nil {
+		return fmt.Errorf("find workspace: %w", err)
+	}
 	if workspace == "" {
 		return fmt.Errorf("sprite %q has no workspace repo (run: bb setup %s --repo owner/repo)", spriteName, spriteName)
 	}
@@ -79,7 +82,11 @@ func runLogs(ctx context.Context, stdout, stderr io.Writer, spriteName string, f
 	}
 
 	logWriter := newStreamJSONWriter(stdout, jsonMode)
-	defer logWriter.Flush()
+	defer func() {
+		if err := logWriter.Flush(); err != nil {
+			_, _ = fmt.Fprintf(stderr, "logs: flush: %v\n", err)
+		}
+	}()
 
 	remote := s.CommandContext(ctx, "bash", "-c", remoteCmd)
 	remote.Stdout = logWriter
@@ -110,7 +117,7 @@ func logsRemoteCommand(logPath string, follow bool, lines int) (string, error) {
 }
 
 func spriteHasRunningAgent(ctx context.Context, s *sprites.Sprite) bool {
-	check := `pgrep -f 'ralph\.sh|claude|opencode' >/dev/null 2>&1`
+	check := `pgrep -f '[r]alph\.sh|[c]laude|[o]pencode' >/dev/null 2>&1`
 	return s.CommandContext(ctx, "bash", "-c", check).Run() == nil
 }
 

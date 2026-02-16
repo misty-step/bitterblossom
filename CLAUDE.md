@@ -13,7 +13,7 @@ Bitterblossom = Go CLI `bb` that dispatches coding tasks to persistent AI sprite
 
 ## Architecture
 
-```
+```text
 cmd/bb/
   main.go          120 LOC  Cobra root, token exchange, helpers
   dispatch.go      195 LOC  Probe → sync → upload prompt → run ralph

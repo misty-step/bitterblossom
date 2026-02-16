@@ -163,8 +163,16 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 
 	prettyStdout := newStreamJSONWriter(os.Stdout, false)
 	prettyStderr := newStreamJSONWriter(os.Stderr, false)
-	defer prettyStdout.Flush()
-	defer prettyStderr.Flush()
+	defer func() {
+		if err := prettyStdout.Flush(); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "dispatch: flush stdout: %v\n", err)
+		}
+	}()
+	defer func() {
+		if err := prettyStderr.Flush(); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "dispatch: flush stderr: %v\n", err)
+		}
+	}()
 
 	stdout := monitor.wrap(prettyStdout)
 	stderr := monitor.wrap(prettyStderr)

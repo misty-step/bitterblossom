@@ -102,13 +102,16 @@ if [ -d "$WS" ]; then
   git log --oneline -5 2>/dev/null || echo "(no commits)"
   echo ""
   echo "=== PRs ==="
-	gh pr list --json url,title,state --jq '.[] | "\(.state): \(.title) \(.url)"' 2>/dev/null || echo "(gh not available)"
+  gh pr list --json url,title,state --jq '.[] | "\(.state): \(.title) \(.url)"' 2>/dev/null || echo "(gh not available)"
 else
   echo "(no repo found at $WS)"
 fi
 `
 
-	workspace := findSpriteWorkspace(ctx, s)
+	workspace, err := findSpriteWorkspace(ctx, s)
+	if err != nil {
+		return fmt.Errorf("find workspace: %w", err)
+	}
 
 	if workspace == "" {
 		fmt.Printf("sprite: %s\nstatus: reachable\nworkspace: empty (run bb setup)\n", spriteName)

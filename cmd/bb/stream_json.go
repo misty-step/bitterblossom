@@ -17,6 +17,7 @@ type streamJSONWriter struct {
 
 	mu  sync.Mutex
 	buf []byte
+	err error
 }
 
 func newStreamJSONWriter(out io.Writer, jsonMode bool) *streamJSONWriter {
@@ -27,6 +28,10 @@ func (w *streamJSONWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	if w.err != nil {
+		return 0, w.err
+	}
+
 	w.buf = append(w.buf, p...)
 	for {
 		i := bytes.IndexByte(w.buf, '\n')
@@ -36,64 +41,107 @@ func (w *streamJSONWriter) Write(p []byte) (int, error) {
 
 		line := bytes.TrimRight(w.buf[:i], "\r")
 		w.buf = w.buf[i+1:]
-		w.writeLine(line)
+		if err := w.writeLine(line); err != nil {
+			w.err = err
+			return len(p), err
+		}
 	}
 
 	return len(p), nil
 }
 
-func (w *streamJSONWriter) Flush() {
+func (w *streamJSONWriter) Flush() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	if w.err != nil {
+		return w.err
+	}
 	if len(w.buf) == 0 {
-		return
+		return nil
 	}
 	line := bytes.TrimRight(w.buf, "\r\n")
 	w.buf = nil
-	w.writeLine(line)
+	if err := w.writeLine(line); err != nil {
+		w.err = err
+		return err
+	}
+	return nil
 }
 
-func (w *streamJSONWriter) writeLine(line []byte) {
+func (w *streamJSONWriter) writeLine(line []byte) error {
 	if len(line) == 0 {
-		return
+		return nil
 	}
 
 	trim := bytes.TrimSpace(line)
 	if len(trim) == 0 {
-		return
+		return nil
 	}
 
 	if w.jsonMode {
 		if isJSONObject(trim) {
-			_, _ = w.out.Write(trim)
-			_, _ = w.out.Write([]byte{'\n'})
+			if _, err := w.out.Write(trim); err != nil {
+				return err
+			}
+			if _, err := w.out.Write([]byte{'\n'}); err != nil {
+				return err
+			}
 		}
-		return
+		return nil
 	}
 
 	if trim[0] != '{' {
-		_, _ = w.out.Write(line)
-		_, _ = w.out.Write([]byte{'\n'})
-		return
+		if _, err := w.out.Write(line); err != nil {
+			return err
+		}
+		if _, err := w.out.Write([]byte{'\n'}); err != nil {
+			return err
+		}
+		return nil
 	}
 
 	var ev claudeStreamEvent
 	if err := json.Unmarshal(trim, &ev); err != nil {
-		_, _ = w.out.Write(line)
-		_, _ = w.out.Write([]byte{'\n'})
-		return
+		if _, err := w.out.Write(line); err != nil {
+			return err
+		}
+		if _, err := w.out.Write([]byte{'\n'}); err != nil {
+			return err
+		}
+		return nil
 	}
 
-	for _, s := range formatClaudeStreamEvent(ev) {
+	formatted := formatClaudeStreamEvent(ev)
+	if len(formatted) == 0 {
+		switch ev.Type {
+		case "system", "result":
+			return nil
+		default:
+			if _, err := w.out.Write(line); err != nil {
+				return err
+			}
+			if _, err := w.out.Write([]byte{'\n'}); err != nil {
+				return err
+			}
+			return nil
+		}
+	}
+
+	for _, s := range formatted {
 		if s == "" {
 			continue
 		}
-		_, _ = io.WriteString(w.out, s)
+		if _, err := io.WriteString(w.out, s); err != nil {
+			return err
+		}
 		if !strings.HasSuffix(s, "\n") {
-			_, _ = io.WriteString(w.out, "\n")
+			if _, err := io.WriteString(w.out, "\n"); err != nil {
+				return err
+			}
 		}
 	}
+	return nil
 }
 
 func isJSONObject(line []byte) bool {
