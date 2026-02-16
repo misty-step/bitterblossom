@@ -9,7 +9,7 @@ Also read:
 
 ## What This Is
 
-Bitterblossom = Go CLI `bb` that dispatches coding tasks to persistent AI sprites. Three commands, ~785 LOC, one 52-line ralph loop. Thin deterministic transport in Go; intelligence in Claude Code skills.
+Bitterblossom = Go CLI `bb` that dispatches coding tasks to persistent AI sprites. Four commands, one 52-line ralph loop. Thin deterministic transport in Go; intelligence in Claude Code skills.
 
 ## Architecture
 
@@ -17,8 +17,11 @@ Bitterblossom = Go CLI `bb` that dispatches coding tasks to persistent AI sprite
 cmd/bb/
   main.go          120 LOC  Cobra root, token exchange, helpers
   dispatch.go      195 LOC  Probe → sync → upload prompt → run ralph
+  logs.go          120 LOC  Tail + render ralph.log (pretty or --json)
   setup.go         289 LOC  Configure sprite: configs, persona, ralph, git auth
   status.go        129 LOC  Fleet overview or single sprite detail
+  stream_json.go   200 LOC  stream-json renderer (shared by dispatch/logs)
+  sprite_workspace.go        Find workspace on-sprite
 
 scripts/
   ralph.sh          52 LOC  The ralph loop: invoke agent, check signals, enforce limits

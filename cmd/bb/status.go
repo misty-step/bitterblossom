@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	sprites "github.com/superfly/sprites-go"
@@ -103,16 +102,13 @@ if [ -d "$WS" ]; then
   git log --oneline -5 2>/dev/null || echo "(no commits)"
   echo ""
   echo "=== PRs ==="
-  gh pr list --json url,title,state --jq '.[] | "\(.state): \(.title) \(.url)"' 2>/dev/null || echo "(gh not available)"
+	gh pr list --json url,title,state --jq '.[] | "\(.state): \(.title) \(.url)"' 2>/dev/null || echo "(gh not available)"
 else
   echo "(no repo found at $WS)"
 fi
 `
 
-	// Find the workspace — check for any repo directory
-	findWS := `ls -d /home/sprite/workspace/*/ 2>/dev/null | head -1 | tr -d '\n'`
-	wsOut, _ := s.CommandContext(ctx, "bash", "-c", findWS).Output()
-	workspace := strings.TrimSpace(string(wsOut))
+	workspace := findSpriteWorkspace(ctx, s)
 
 	if workspace == "" {
 		fmt.Printf("sprite: %s\nstatus: reachable\nworkspace: empty (run bb setup)\n", spriteName)

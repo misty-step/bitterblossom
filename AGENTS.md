@@ -4,7 +4,7 @@ Universal project context for all coding agents working on Bitterblossom.
 
 ## What This Is
 
-Bitterblossom is a Go CLI (`bb`) that dispatches coding tasks to AI sprites on [Sprites.dev](https://sprites.dev). Three commands, ~785 lines of Go, one 52-line ralph loop. Thin deterministic transport in Go; intelligence in Claude Code skills.
+Bitterblossom is a Go CLI (`bb`) that dispatches coding tasks to AI sprites on [Sprites.dev](https://sprites.dev). Four commands, one 52-line ralph loop. Thin deterministic transport in Go; intelligence in Claude Code skills.
 
 See [ADR-002](docs/adr/002-architecture-minimalism.md) for why.
 
@@ -14,8 +14,11 @@ See [ADR-002](docs/adr/002-architecture-minimalism.md) for why.
 cmd/bb/
   main.go          120 LOC  Cobra root, token exchange, helpers
   dispatch.go      195 LOC  Probe → sync → upload prompt → run ralph
+  logs.go          120 LOC  Tail + render ralph.log (pretty or --json)
   setup.go         289 LOC  Configure sprite: configs, persona, ralph, git auth
   status.go        129 LOC  Fleet overview or single sprite detail
+  stream_json.go   200 LOC  stream-json renderer (shared by dispatch/logs)
+  sprite_workspace.go        Find workspace on-sprite
 
 scripts/
   ralph.sh          52 LOC  The ralph loop: invoke agent, check signals, enforce limits
@@ -76,6 +79,20 @@ bb status [sprite]
 ```
 
 No flags. Fleet mode probes all sprites concurrently (3s timeout each). Single sprite mode shows signals, git state, and recent PRs.
+
+### logs
+
+Stream a sprite's agent output (reads `${WORKSPACE}/ralph.log` on-sprite).
+
+```bash
+bb logs <sprite> [--follow] [--lines N] [--json]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--follow` | `false` | Tail live output |
+| `--lines` | `0` | Last N lines (0 = all; follow defaults to 50) |
+| `--json` | `false` | Raw Claude Code `stream-json` events |
 
 ## Agent Configuration
 

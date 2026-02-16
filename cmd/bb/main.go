@@ -51,6 +51,7 @@ func main() {
 		newVersionCmd(),
 		newDispatchCmd(),
 		newSetupCmd(),
+		newLogsCmd(),
 		newStatusCmd(),
 	)
 
