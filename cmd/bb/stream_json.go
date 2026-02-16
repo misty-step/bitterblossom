@@ -148,8 +148,7 @@ func isJSONObject(line []byte) bool {
 	if len(line) == 0 || line[0] != '{' {
 		return false
 	}
-	var v any
-	return json.Unmarshal(line, &v) == nil
+	return json.Valid(line)
 }
 
 type claudeStreamEvent struct {

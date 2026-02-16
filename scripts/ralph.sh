@@ -16,6 +16,7 @@ AGENT_MODEL="${AGENT_MODEL:-}"           # opencode model (e.g. moonshotai/kimi-
 log() { printf '%s\n' "$*" | tee -a "$RALPH_LOG"; }
 log_err() { printf '%s\n' "$*" | tee -a "$RALPH_LOG" >&2; }
 
+mkdir -p "$WS"
 touch "$RALPH_LOG"
 
 [ ! -f "$PROMPT" ] && log_err "[ralph] no prompt file at $PROMPT" && exit 1
@@ -46,7 +47,7 @@ while (( i < MAX_ITERATIONS )); do
     claude)
       timeout "$ITER_TIMEOUT_SEC" \
         claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json \
-        < "$PROMPT" 2>&1 | grep -F -v '"type":"system","subtype":"init"' | tee -a "$RALPH_LOG" || true
+        < "$PROMPT" 2>&1 | grep --line-buffered -F -v '"type":"system","subtype":"init"' | tee -a "$RALPH_LOG" || true
       ;;
     opencode)
       timeout "$ITER_TIMEOUT_SEC" \

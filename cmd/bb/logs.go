@@ -76,10 +76,7 @@ func runLogs(ctx context.Context, stdout, stderr io.Writer, spriteName string, f
 		return nil
 	}
 
-	remoteCmd, err := logsRemoteCommand(logPath, follow, lines)
-	if err != nil {
-		return err
-	}
+	remoteCmd := logsRemoteCommand(logPath, follow, lines)
 
 	logWriter := newStreamJSONWriter(stdout, jsonMode)
 	defer func() {
@@ -101,19 +98,19 @@ func runLogs(ctx context.Context, stdout, stderr io.Writer, spriteName string, f
 	return nil
 }
 
-func logsRemoteCommand(logPath string, follow bool, lines int) (string, error) {
+func logsRemoteCommand(logPath string, follow bool, lines int) string {
 	if follow {
 		n := lines
 		if n == 0 {
 			n = 50
 		}
-		return fmt.Sprintf("touch %q && tail -n %d -f %q", logPath, n, logPath), nil
+		return fmt.Sprintf("touch %q && tail -n %d -f %q", logPath, n, logPath)
 	}
 
 	if lines > 0 {
-		return fmt.Sprintf("touch %q && tail -n %d %q", logPath, lines, logPath), nil
+		return fmt.Sprintf("touch %q && tail -n %d %q", logPath, lines, logPath)
 	}
-	return fmt.Sprintf("touch %q && cat %q", logPath, logPath), nil
+	return fmt.Sprintf("touch %q && cat %q", logPath, logPath)
 }
 
 func spriteHasRunningAgent(ctx context.Context, s *sprites.Sprite) bool {
