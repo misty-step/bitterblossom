@@ -88,6 +88,8 @@ Stream a sprite's agent output (reads `${WORKSPACE}/ralph.log` on-sprite).
 bb logs <sprite> [--follow] [--lines N] [--json]
 ```
 
+If you upgraded `bb`, re-run `bb setup <sprite>` once to upload the updated `ralph.sh` (it creates/appends `ralph.log`).
+
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--follow` | `false` | Tail live output |
