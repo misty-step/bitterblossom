@@ -46,7 +46,7 @@ while (( i < MAX_ITERATIONS )); do
     claude)
       timeout "$ITER_TIMEOUT_SEC" \
         claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json \
-        < "$PROMPT" 2>&1 | tee -a "$RALPH_LOG" || true
+        < "$PROMPT" 2>&1 | grep -F -v '"type":"system","subtype":"init"' | tee -a "$RALPH_LOG" || true
       ;;
     opencode)
       timeout "$ITER_TIMEOUT_SEC" \
