@@ -98,7 +98,7 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 		workspace, ghToken, workspace,
 	)
 	syncCmd := s.CommandContext(ctx, "bash", "-c", syncScript)
-	if out, err := syncCmd.CombinedOutput(); err != nil {
+	if out, err := syncCmd.Output(); err != nil {
 		return fmt.Errorf("repo sync failed: %w\n%s", err, out)
 	}
 
@@ -124,9 +124,14 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 	_, _ = fmt.Fprintf(os.Stderr, "starting ralph loop (max %d iterations, %s timeout, harness=%s)...\n", maxIter, timeout, harness)
 
 	// Only pass operational env vars — LLM auth comes from settings.json (claude) or env var (opencode).
+	totalSec := int(timeout.Seconds())
+	iterSec := 900 // default per-iteration timeout
+	if totalSec < iterSec {
+		iterSec = totalSec // cap per-iteration at total timeout (#389)
+	}
 	ralphEnv := fmt.Sprintf(
-		`export MAX_ITERATIONS=%d MAX_TIME_SEC=%d WORKSPACE=%q GH_TOKEN=%q AGENT_HARNESS=%q AGENT_MODEL=%q LEFTHOOK=0`,
-		maxIter, int(timeout.Seconds()), workspace, ghToken, harness, model,
+		`export MAX_ITERATIONS=%d MAX_TIME_SEC=%d ITER_TIMEOUT_SEC=%d WORKSPACE=%q GH_TOKEN=%q AGENT_HARNESS=%q AGENT_MODEL=%q LEFTHOOK=0`,
+		maxIter, totalSec, iterSec, workspace, ghToken, harness, model,
 	)
 
 	// OpenCode needs OPENROUTER_API_KEY in env; Claude Code uses settings.json on sprite.

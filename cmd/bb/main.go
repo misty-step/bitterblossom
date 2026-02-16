@@ -95,7 +95,10 @@ func spriteToken() (string, error) {
 
 	org := os.Getenv("SPRITES_ORG")
 	if org == "" {
-		org = "personal" // default org slug
+		org = os.Getenv("FLY_ORG") // fall back to FLY_ORG from .env.bb
+	}
+	if org == "" {
+		org = "personal"
 	}
 
 	_, _ = fmt.Fprintf(os.Stderr, "exchanging fly token for sprites token (org=%s)...\n", org)
