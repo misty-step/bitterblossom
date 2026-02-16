@@ -302,8 +302,8 @@ func newDispatchTextMessageHandler(stdout, stderr io.Writer) func([]byte) {
 		}
 
 		if trim[0] != '{' {
-			_, _ = stdout.Write(trim)
-			if trim[len(trim)-1] != '\n' {
+			_, _ = stdout.Write(data)
+			if data[len(data)-1] != '\n' {
 				_, _ = stdout.Write([]byte{'\n'})
 			}
 			return
