@@ -2,10 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	sprites "github.com/superfly/sprites-go"
@@ -150,8 +154,18 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 
 	ralphCmd := s.CommandContext(ralphCtx, "bash", "-c", ralphEnv)
 	ralphCmd.Dir = workspace
-	ralphCmd.Stdout = os.Stdout
-	ralphCmd.Stderr = os.Stderr
+	ralphCmd.SetTTY(true)
+
+	monitor := newDispatchOutputMonitor(os.Stderr, 45*time.Second)
+	defer monitor.stop()
+	monitor.start()
+
+	stdout := monitor.wrap(os.Stdout)
+	stderr := monitor.wrap(os.Stderr)
+	ralphCmd.Stdout = stdout
+	ralphCmd.Stderr = stderr
+	ralphCmd.TextMessageHandler = newDispatchTextMessageHandler(stdout, stderr)
+
 	ralphErr := ralphCmd.Run()
 
 	// 8. Verify work produced
@@ -197,4 +211,121 @@ func renderPrompt(taskDescription, repo, spriteName string) (string, error) {
 	rendered = strings.ReplaceAll(rendered, "{{SPRITE_NAME}}", spriteName)
 
 	return rendered, nil
+}
+
+type activityWriter struct {
+	out  io.Writer
+	mark func()
+}
+
+func (w *activityWriter) Write(p []byte) (int, error) {
+	n, err := w.out.Write(p)
+	if n > 0 && w.mark != nil {
+		w.mark()
+	}
+	return n, err
+}
+
+type dispatchOutputMonitor struct {
+	out             io.Writer
+	silentThreshold time.Duration
+
+	lastActivityUnixNano atomic.Int64
+	stopCh               chan struct{}
+	stopOnce             sync.Once
+}
+
+func newDispatchOutputMonitor(out io.Writer, silentThreshold time.Duration) *dispatchOutputMonitor {
+	if silentThreshold <= 0 {
+		silentThreshold = 45 * time.Second
+	}
+
+	m := &dispatchOutputMonitor{
+		out:             out,
+		silentThreshold: silentThreshold,
+		stopCh:          make(chan struct{}),
+	}
+	m.lastActivityUnixNano.Store(time.Now().UnixNano())
+	return m
+}
+
+func (m *dispatchOutputMonitor) wrap(out io.Writer) io.Writer {
+	return &activityWriter{
+		out:  out,
+		mark: m.markActivity,
+	}
+}
+
+func (m *dispatchOutputMonitor) markActivity() {
+	m.lastActivityUnixNano.Store(time.Now().UnixNano())
+}
+
+func (m *dispatchOutputMonitor) start() {
+	go m.loop()
+}
+
+func (m *dispatchOutputMonitor) stop() {
+	m.stopOnce.Do(func() {
+		close(m.stopCh)
+	})
+}
+
+func (m *dispatchOutputMonitor) loop() {
+	ticker := time.NewTicker(m.silentThreshold)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-m.stopCh:
+			return
+		case <-ticker.C:
+			last := time.Unix(0, m.lastActivityUnixNano.Load())
+			silentFor := time.Since(last)
+			if silentFor < m.silentThreshold {
+				continue
+			}
+			_, _ = fmt.Fprintf(m.out, "[dispatch] no remote output for %s; still running...\n", silentFor.Round(time.Second))
+		}
+	}
+}
+
+func newDispatchTextMessageHandler(stdout, stderr io.Writer) func([]byte) {
+	return func(data []byte) {
+		if len(data) == 0 || strings.HasPrefix(string(data), "control:") {
+			return
+		}
+
+		var msg struct {
+			Type  string `json:"type"`
+			Data  string `json:"data,omitempty"`
+			Error string `json:"error,omitempty"`
+		}
+
+		if err := json.Unmarshal(data, &msg); err != nil {
+			_, _ = stdout.Write(data)
+			if data[len(data)-1] != '\n' {
+				_, _ = stdout.Write([]byte("\n"))
+			}
+			return
+		}
+
+		switch msg.Type {
+		case "stdout", "info":
+			if msg.Data != "" {
+				_, _ = io.WriteString(stdout, msg.Data)
+			}
+		case "stderr":
+			if msg.Data != "" {
+				_, _ = io.WriteString(stderr, msg.Data)
+			}
+		case "error":
+			payload := msg.Error
+			if payload == "" {
+				payload = msg.Data
+			}
+			if payload != "" {
+				_, _ = io.WriteString(stderr, payload)
+			}
+		}
+	}
 }
