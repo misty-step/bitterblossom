@@ -88,13 +88,20 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 		return fmt.Errorf("sprite %q not configured — run: bb setup %s --repo %s", spriteName, spriteName, repo)
 	}
 
-	// 3. Kill stale agent processes from prior dispatches
+	// 3. Refuse overlapping dispatches against an active ralph loop
+	if err := ensureNoActiveDispatchLoop(ctx, s); err != nil {
+		return fmt.Errorf("sprite %q is currently working: %w", spriteName, err)
+	}
+
+	// 4. Kill stale agent processes from prior dispatches
+	// We intentionally only treat an active ralph loop as "busy" to allow self-healing
+	// orphaned agent processes (claude/opencode) from prior dispatch attempts.
 	// Without this, concurrent claude processes compete for resources and hang.
 	killCtx, killCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer killCancel()
 	_, _ = s.CommandContext(killCtx, "bash", "-c", "pkill -9 -f 'ralph\\.sh|claude|opencode' 2>/dev/null; sleep 1").Output()
 
-	// 4. Repo sync (pull latest on default branch)
+	// 5. Repo sync (pull latest on default branch)
 	repoName := path.Base(repo)
 	workspace := "/home/sprite/workspace/" + repoName
 
@@ -108,14 +115,14 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 		return fmt.Errorf("repo sync failed: %w\n%s", err, out)
 	}
 
-	// 5. Clean stale signals
+	// 6. Clean stale signals
 	cleanScript := fmt.Sprintf(
 		"rm -f %s/TASK_COMPLETE %s/TASK_COMPLETE.md %s/BLOCKED.md",
 		workspace, workspace, workspace,
 	)
 	_, _ = s.CommandContext(ctx, "bash", "-c", cleanScript).Output()
 
-	// 6. Render and upload prompt
+	// 7. Render and upload prompt
 	rendered, err := renderPrompt(prompt, repo, spriteName)
 	if err != nil {
 		return fmt.Errorf("render prompt: %w", err)
@@ -126,7 +133,7 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 		return fmt.Errorf("upload prompt: %w", err)
 	}
 
-	// 7. Run ralph loop — foreground, streaming
+	// 8. Run ralph loop — foreground, streaming
 	_, _ = fmt.Fprintf(os.Stderr, "starting ralph loop (max %d iterations, %s timeout, harness=%s)...\n", maxIter, timeout, harness)
 
 	// Only pass operational env vars — LLM auth comes from settings.json (claude) or env var (opencode).
@@ -192,7 +199,7 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 
 	ralphErr := ralphCmd.Run()
 
-	// 8. Verify work produced
+	// 9. Verify work produced
 	_, _ = fmt.Fprintf(os.Stderr, "\n=== work produced ===\n")
 	verifyScript := fmt.Sprintf(
 		`cd %s && echo "--- commits ---" && git log --oneline origin/master..HEAD 2>/dev/null || git log --oneline origin/main..HEAD 2>/dev/null; echo "--- PRs ---" && gh pr list --json url,title 2>/dev/null || echo "(gh not available)"`,
@@ -204,7 +211,7 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 	verifyCmd.Stderr = os.Stderr
 	_ = verifyCmd.Run()
 
-	// 9. Return appropriate exit code
+	// 10. Return appropriate exit code
 	// Check if off-rails detector killed the dispatch
 	if cause := context.Cause(ralphCtx); cause != nil && errors.Is(cause, errOffRails) {
 		_, _ = fmt.Fprintf(os.Stderr, "\n=== off-rails detected: %v ===\n", cause)
@@ -226,6 +233,73 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 		return fmt.Errorf("ralph failed: %w", ralphErr)
 	}
 	return nil
+}
+
+// activeRalphLoopCheckScript checks for an in-flight ralph loop process.
+//
+// Use the bracket trick to avoid self-matching under `pgrep -f` (pattern appears in argv).
+const activeRalphLoopCheckScript = `if ! command -v pgrep >/dev/null 2>&1; then
+  echo "pgrep missing" >&2
+  exit 2
+fi
+
+busy="$(pgrep -af '/home/sprite/workspace/\.[r]alph\.sh' 2>&1)"
+status=$?
+if [ "$status" -eq 0 ]; then
+  echo "$busy"
+  exit 1
+fi
+if [ "$status" -eq 1 ]; then
+  exit 0
+fi
+echo "$busy" >&2
+exit "$status"`
+
+type spriteScriptRunner func(ctx context.Context, script string) ([]byte, int, error)
+
+func ensureNoActiveDispatchLoop(ctx context.Context, s *sprites.Sprite) error {
+	return ensureNoActiveDispatchLoopWithRunner(ctx, func(ctx context.Context, script string) ([]byte, int, error) {
+		out, err := s.CommandContext(ctx, "bash", "-c", script).CombinedOutput()
+		if err == nil {
+			return out, 0, nil
+		}
+
+		var exitErr *sprites.ExitError
+		if errors.As(err, &exitErr) {
+			return out, exitErr.ExitCode(), nil
+		}
+
+		return out, 0, err
+	})
+}
+
+func ensureNoActiveDispatchLoopWithRunner(ctx context.Context, run spriteScriptRunner) error {
+	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	out, exitCode, err := run(checkCtx, activeRalphLoopCheckScript)
+	if err != nil {
+		return fmt.Errorf("check dispatch loop: %w", err)
+	}
+
+	trim := strings.TrimSpace(string(out))
+	switch exitCode {
+	case 0:
+		if trim != "" {
+			return fmt.Errorf("active dispatch loop detected:\n%s", trim)
+		}
+		return nil
+	case 1:
+		if trim == "" {
+			trim = "(process list empty)"
+		}
+		return fmt.Errorf("active dispatch loop detected:\n%s", trim)
+	default:
+		if trim == "" {
+			return fmt.Errorf("check dispatch loop exited %d", exitCode)
+		}
+		return fmt.Errorf("check dispatch loop exited %d:\n%s", exitCode, trim)
+	}
 }
 
 // renderPrompt reads the local ralph-prompt-template.md and substitutes placeholders.

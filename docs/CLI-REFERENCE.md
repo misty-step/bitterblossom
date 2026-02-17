@@ -55,12 +55,13 @@ bb dispatch bramble "Write tests" --repo misty-step/api --harness opencode --mod
 
 1. Probe connectivity (15s timeout)
 2. Verify setup (`ralph.sh` exists)
-3. Kill stale agent processes
-4. Repo sync (pull latest on default branch)
-5. Clean stale signal files
-6. Render and upload prompt
-7. Run ralph loop (foreground, streaming)
-8. Verify work produced (commits, PRs)
+3. Refuse overlapping dispatch if ralph loop already running
+4. Kill stale agent processes
+5. Repo sync (pull latest on default branch)
+6. Clean stale signal files
+7. Render and upload prompt
+8. Run ralph loop (foreground, streaming)
+9. Verify work produced (commits, PRs)
 
 ### Exit Codes
 
