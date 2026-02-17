@@ -232,3 +232,42 @@ func TestEnsureNoActiveDispatchLoop_ErrorsOnUnexpectedExitCode(t *testing.T) {
 		t.Fatalf("err = %q, want to contain %q", err.Error(), "syntax error")
 	}
 }
+
+func TestHasTaskCompleteSignalReturnsTrue(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: nil, err: nil}
+	completed, err := hasTaskCompleteSignalWithRunner(context.Background(), r.run, "/tmp/ws")
+	if err != nil {
+		t.Fatalf("hasTaskCompleteSignalWithRunner() error = %v", err)
+	}
+	if !completed {
+		t.Fatal("expected completion signal to be present")
+	}
+}
+
+func TestHasTaskCompleteSignalReturnsFalseWhenMissing(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 1, out: nil, err: nil}
+	completed, err := hasTaskCompleteSignalWithRunner(context.Background(), r.run, "/tmp/ws")
+	if err != nil {
+		t.Fatalf("hasTaskCompleteSignalWithRunner() error = %v", err)
+	}
+	if completed {
+		t.Fatal("expected completion signal to be missing")
+	}
+}
+
+func TestHasTaskCompleteSignalReturnsErrorOnUnexpectedExitCode(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 2, out: []byte("failed"), err: nil}
+	_, err := hasTaskCompleteSignalWithRunner(context.Background(), r.run, "/tmp/ws")
+	if err == nil {
+		t.Fatal("expected error for unexpected completion check exit code")
+	}
+	if !strings.Contains(err.Error(), "completion signal check exited 2") {
+		t.Fatalf("err = %q, want to contain %q", err.Error(), "completion signal check exited 2")
+	}
+}
