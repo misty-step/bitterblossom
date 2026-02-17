@@ -160,11 +160,11 @@ func (r *fakeSpriteScriptRunner) run(ctx context.Context, script string) ([]byte
 	return r.out, r.exitCode, r.err
 }
 
-func TestEnsureNoActiveAgent_AllowsIdle(t *testing.T) {
+func TestEnsureNoActiveDispatchLoop_AllowsIdle(t *testing.T) {
 	t.Parallel()
 
 	r := &fakeSpriteScriptRunner{out: nil, exitCode: 0, err: nil}
-	if err := ensureNoActiveAgentWithRunner(context.Background(), r.run); err != nil {
+	if err := ensureNoActiveDispatchLoopWithRunner(context.Background(), r.run); err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
 	if !r.called {
@@ -184,44 +184,44 @@ func TestEnsureNoActiveAgent_AllowsIdle(t *testing.T) {
 	}
 }
 
-func TestEnsureNoActiveAgent_BlocksWhenBusy(t *testing.T) {
+func TestEnsureNoActiveDispatchLoop_BlocksWhenBusy(t *testing.T) {
 	t.Parallel()
 
 	const busy = "1234 bash /home/sprite/workspace/.ralph.sh\n"
 	r := &fakeSpriteScriptRunner{out: []byte(busy), exitCode: 1, err: nil}
-	err := ensureNoActiveAgentWithRunner(context.Background(), r.run)
+	err := ensureNoActiveDispatchLoopWithRunner(context.Background(), r.run)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !strings.Contains(err.Error(), "active agent process detected:") {
-		t.Fatalf("err = %q, want to contain %q", err.Error(), "active agent process detected:")
+	if !strings.Contains(err.Error(), "active dispatch loop detected:") {
+		t.Fatalf("err = %q, want to contain %q", err.Error(), "active dispatch loop detected:")
 	}
 	if !strings.Contains(err.Error(), strings.TrimSpace(busy)) {
 		t.Fatalf("err = %q, want to contain %q", err.Error(), strings.TrimSpace(busy))
 	}
 }
 
-func TestEnsureNoActiveAgent_WrapsRunnerError(t *testing.T) {
+func TestEnsureNoActiveDispatchLoop_WrapsRunnerError(t *testing.T) {
 	t.Parallel()
 
 	r := &fakeSpriteScriptRunner{out: nil, exitCode: 0, err: errors.New("network")}
-	err := ensureNoActiveAgentWithRunner(context.Background(), r.run)
+	err := ensureNoActiveDispatchLoopWithRunner(context.Background(), r.run)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !strings.Contains(err.Error(), "check active agent") {
-		t.Fatalf("err = %q, want to contain %q", err.Error(), "check active agent")
+	if !strings.Contains(err.Error(), "check dispatch loop") {
+		t.Fatalf("err = %q, want to contain %q", err.Error(), "check dispatch loop")
 	}
 	if !strings.Contains(err.Error(), "network") {
 		t.Fatalf("err = %q, want to contain %q", err.Error(), "network")
 	}
 }
 
-func TestEnsureNoActiveAgent_ErrorsOnUnexpectedExitCode(t *testing.T) {
+func TestEnsureNoActiveDispatchLoop_ErrorsOnUnexpectedExitCode(t *testing.T) {
 	t.Parallel()
 
 	r := &fakeSpriteScriptRunner{out: []byte("syntax error"), exitCode: 2, err: nil}
-	err := ensureNoActiveAgentWithRunner(context.Background(), r.run)
+	err := ensureNoActiveDispatchLoopWithRunner(context.Background(), r.run)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
