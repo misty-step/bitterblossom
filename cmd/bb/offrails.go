@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -16,6 +17,10 @@ const (
 	defaultErrorRepeatThreshold  = 3
 	defaultCheckInterval         = 30 * time.Second
 )
+
+// errOffRails is the sentinel error used as context.CancelCause when the
+// detector kills a dispatch. Check with errors.Is, not string matching.
+var errOffRails = errors.New("off-rails")
 
 // offRailsConfig configures the off-rails detector.
 type offRailsConfig struct {
@@ -41,6 +46,8 @@ type offRailsDetector struct {
 
 	lastActivityNano atomic.Int64
 
+	// mu guards errorCounts. Lock ordering: streamJSONWriter.mu → offRailsDetector.mu
+	// (recordError is called from streamJSONWriter.writeLine under its lock).
 	mu          sync.Mutex
 	errorCounts map[string]int
 
@@ -88,7 +95,8 @@ func (d *offRailsDetector) recordError(errText string) {
 		return
 	}
 
-	key := normalizeError(errText)
+	// Truncate for map key grouping (exact match only; smarter normalization in #398).
+	key := truncateError(errText)
 	if key == "" {
 		return
 	}
@@ -100,8 +108,9 @@ func (d *offRailsDetector) recordError(errText string) {
 
 	if count >= d.errorRepeatN {
 		msg := fmt.Sprintf("same error repeated %d times", count)
+		// Truncate shorter for display in alert output.
 		_, _ = fmt.Fprintf(d.alert, "[off-rails] %s: %s\n", msg, truncateStr(key, 120))
-		d.cancel(fmt.Errorf("off-rails: error loop — %s", msg))
+		d.cancel(fmt.Errorf("%w: error loop — %s", errOffRails, msg))
 	}
 }
 
@@ -114,12 +123,6 @@ func (d *offRailsDetector) stop() {
 }
 
 func (d *offRailsDetector) loop() {
-	if d.silenceAbort <= 0 {
-		// Silence abort disabled; still run for warnings
-		d.warnLoop()
-		return
-	}
-
 	ticker := time.NewTicker(d.checkInterval)
 	defer ticker.Stop()
 
@@ -133,44 +136,29 @@ func (d *offRailsDetector) loop() {
 			silent := time.Since(last)
 
 			if !warned && silent >= d.silenceWarn {
-				remaining := d.silenceAbort - silent
-				if remaining < 0 {
-					remaining = 0
+				if d.silenceAbort > 0 {
+					remaining := d.silenceAbort - silent
+					if remaining < 0 {
+						remaining = 0
+					}
+					_, _ = fmt.Fprintf(d.alert, "[off-rails] no output for %s (abort in %s)\n",
+						silent.Round(time.Second), remaining.Round(time.Second))
+				} else {
+					_, _ = fmt.Fprintf(d.alert, "[off-rails] no output for %s; still running...\n",
+						silent.Round(time.Second))
 				}
-				_, _ = fmt.Fprintf(d.alert, "[off-rails] no output for %s (abort in %s)\n",
-					silent.Round(time.Second), remaining.Round(time.Second))
 				warned = true
 			}
 
-			if silent >= d.silenceAbort {
+			if d.silenceAbort > 0 && silent >= d.silenceAbort {
 				_, _ = fmt.Fprintf(d.alert, "[off-rails] aborting: no output for %s (threshold %s)\n",
 					silent.Round(time.Second), d.silenceAbort)
-				d.cancel(fmt.Errorf("off-rails: no output for %s", silent.Round(time.Second)))
+				d.cancel(fmt.Errorf("%w: no output for %s", errOffRails, silent.Round(time.Second)))
 				return
 			}
 
 			if silent < d.silenceWarn {
 				warned = false
-			}
-		}
-	}
-}
-
-// warnLoop runs when silence abort is disabled but we still want periodic warnings.
-func (d *offRailsDetector) warnLoop() {
-	ticker := time.NewTicker(d.silenceWarn)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-d.stopCh:
-			return
-		case <-ticker.C:
-			last := time.Unix(0, d.lastActivityNano.Load())
-			silent := time.Since(last)
-			if silent >= d.silenceWarn {
-				_, _ = fmt.Fprintf(d.alert, "[off-rails] no output for %s; still running...\n",
-					silent.Round(time.Second))
 			}
 		}
 	}
@@ -190,8 +178,10 @@ func (w *activityWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// normalizeError strips whitespace and truncates for grouping logically similar errors.
-func normalizeError(s string) string {
+// truncateError trims whitespace and caps length for exact-match error grouping.
+// Does not strip paths, line numbers, or timestamps — real normalization is a
+// follow-up (see issue tracking smarter error deduplication).
+func truncateError(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return ""

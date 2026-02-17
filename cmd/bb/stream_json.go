@@ -15,6 +15,8 @@ type streamJSONWriter struct {
 	out      io.Writer
 	jsonMode bool
 
+	// mu guards buf/scan/err. Lock ordering: streamJSONWriter.mu → offRailsDetector.mu
+	// (onToolError callback may acquire the detector's lock from within writeLine).
 	mu   sync.Mutex
 	buf  []byte
 	scan int

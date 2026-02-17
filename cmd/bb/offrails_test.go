@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -26,8 +27,8 @@ func TestOffRailsDetector_SilenceAbort(t *testing.T) {
 	select {
 	case <-ctx.Done():
 		cause := context.Cause(ctx)
-		if cause == nil || !strings.Contains(cause.Error(), "off-rails") {
-			t.Fatalf("expected off-rails cause, got: %v", cause)
+		if !errors.Is(cause, errOffRails) {
+			t.Fatalf("expected errOffRails, got: %v", cause)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for silence abort")
@@ -88,8 +89,8 @@ func TestOffRailsDetector_ErrorLoop(t *testing.T) {
 	select {
 	case <-ctx.Done():
 		cause := context.Cause(ctx)
-		if cause == nil || !strings.Contains(cause.Error(), "error loop") {
-			t.Fatalf("expected error loop cause, got: %v", cause)
+		if !errors.Is(cause, errOffRails) {
+			t.Fatalf("expected errOffRails, got: %v", cause)
 		}
 	default:
 		t.Fatal("expected context to be cancelled after 3 repeated errors")
@@ -173,7 +174,7 @@ func TestOffRailsDetector_SilenceDisabled(t *testing.T) {
 	}
 }
 
-func TestNormalizeError(t *testing.T) {
+func TestTruncateError(t *testing.T) {
 	tests := []struct {
 		input string
 		want  string
@@ -184,9 +185,9 @@ func TestNormalizeError(t *testing.T) {
 		{strings.Repeat("x", 300), strings.Repeat("x", 200)},
 	}
 	for _, tt := range tests {
-		got := normalizeError(tt.input)
+		got := truncateError(tt.input)
 		if got != tt.want {
-			t.Errorf("normalizeError(%q) = %q, want %q", tt.input, got, tt.want)
+			t.Errorf("truncateError(%q) = %q, want %q", tt.input, got, tt.want)
 		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -205,7 +206,7 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 
 	// 9. Return appropriate exit code
 	// Check if off-rails detector killed the dispatch
-	if cause := context.Cause(ralphCtx); cause != nil && strings.Contains(cause.Error(), "off-rails") {
+	if cause := context.Cause(ralphCtx); cause != nil && errors.Is(cause, errOffRails) {
 		_, _ = fmt.Fprintf(os.Stderr, "\n=== off-rails detected: %v ===\n", cause)
 		return &exitError{Code: 4, Err: cause}
 	}
