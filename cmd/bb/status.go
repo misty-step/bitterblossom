@@ -25,13 +25,18 @@ func newStatusCmd() *cobra.Command {
 	}
 }
 
+func statusClient(token string) *sprites.Client {
+	client := sprites.New(token, sprites.WithDisableControl())
+	return client
+}
+
 func fleetStatus(ctx context.Context) error {
 	token, err := spriteToken()
 	if err != nil {
 		return err
 	}
 
-	client := sprites.New(token)
+	client := statusClient(token)
 	defer func() { _ = client.Close() }()
 
 	all, err := client.ListAllSprites(ctx, "")
@@ -73,7 +78,7 @@ func spriteStatus(ctx context.Context, spriteName string) error {
 		return err
 	}
 
-	client := sprites.New(token)
+	client := statusClient(token)
 	defer func() { _ = client.Close() }()
 	s := client.Sprite(spriteName)
 
