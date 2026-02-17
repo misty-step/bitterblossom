@@ -233,29 +233,57 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 	return nil
 }
 
-func ensureNoActiveAgent(ctx context.Context, s *sprites.Sprite) error {
-	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	check := `busy="$(pgrep -af '([c]laude|[o]pencode|/home/sprite/workspace/\.ralph\.sh)' || true)
+const activeRalphCheckScript = `busy="$(pgrep -af '/home/sprite/workspace/\.ralph\.sh' || true)"
 if [ -n "$busy" ]; then
   echo "$busy"
   exit 1
 fi`
 
-	out, err := s.CommandContext(checkCtx, "bash", "-c", check).Output()
-	if err != nil {
-		var exitErr *sprites.ExitError
-		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
-			return fmt.Errorf("active agent process detected:\n%s", strings.TrimSpace(string(out)))
+type spriteScriptRunner func(ctx context.Context, script string) ([]byte, int, error)
+
+func ensureNoActiveAgent(ctx context.Context, s *sprites.Sprite) error {
+	return ensureNoActiveAgentWithRunner(ctx, func(ctx context.Context, script string) ([]byte, int, error) {
+		out, err := s.CommandContext(ctx, "bash", "-c", script).Output()
+		if err == nil {
+			return out, 0, nil
 		}
+
+		var exitErr *sprites.ExitError
+		if errors.As(err, &exitErr) {
+			return out, exitErr.ExitCode(), nil
+		}
+
+		return out, 0, err
+	})
+}
+
+func ensureNoActiveAgentWithRunner(ctx context.Context, run spriteScriptRunner) error {
+	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	out, exitCode, err := run(checkCtx, activeRalphCheckScript)
+	if err != nil {
 		return fmt.Errorf("check active agent: %w", err)
 	}
-	if strings.TrimSpace(string(out)) != "" {
-		return fmt.Errorf("active agent process detected:\n%s", strings.TrimSpace(string(out)))
-	}
 
-	return nil
+	trim := strings.TrimSpace(string(out))
+	switch exitCode {
+	case 0:
+		if trim != "" {
+			return fmt.Errorf("active agent process detected:\n%s", trim)
+		}
+		return nil
+	case 1:
+		if trim == "" {
+			trim = "(process list empty)"
+		}
+		return fmt.Errorf("active agent process detected:\n%s", trim)
+	default:
+		if trim == "" {
+			return fmt.Errorf("check active agent exited %d", exitCode)
+		}
+		return fmt.Errorf("check active agent exited %d:\n%s", exitCode, trim)
+	}
 }
 
 // renderPrompt reads the local ralph-prompt-template.md and substitutes placeholders.
