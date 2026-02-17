@@ -215,6 +215,15 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 	// Check if off-rails detector killed the dispatch
 	if cause := context.Cause(ralphCtx); cause != nil && errors.Is(cause, errOffRails) {
 		_, _ = fmt.Fprintf(os.Stderr, "\n=== off-rails detected: %v ===\n", cause)
+
+		completed, completeErr := hasTaskCompleteSignalWithRunner(ctx, spriteBashRunner(s), workspace)
+		if completeErr != nil {
+			return &exitError{Code: 4, Err: fmt.Errorf("off-rails completion check failed: %w", completeErr)}
+		}
+		if completed {
+			_, _ = fmt.Fprintf(os.Stderr, "\n=== task completed: TASK_COMPLETE signal found ===\n")
+			return nil
+		}
 		return &exitError{Code: 4, Err: cause}
 	}
 
@@ -255,10 +264,19 @@ fi
 echo "$busy" >&2
 exit "$status"`
 
+const taskCompleteSignalCheckScript = `if [ -f "$WORKSPACE/TASK_COMPLETE" ] || [ -f "$WORKSPACE/TASK_COMPLETE.md" ]; then
+  exit 0
+fi
+exit 1`
+
 type spriteScriptRunner func(ctx context.Context, script string) ([]byte, int, error)
 
 func ensureNoActiveDispatchLoop(ctx context.Context, s *sprites.Sprite) error {
-	return ensureNoActiveDispatchLoopWithRunner(ctx, func(ctx context.Context, script string) ([]byte, int, error) {
+	return ensureNoActiveDispatchLoopWithRunner(ctx, spriteBashRunner(s))
+}
+
+func spriteBashRunner(s *sprites.Sprite) spriteScriptRunner {
+	return func(ctx context.Context, script string) ([]byte, int, error) {
 		out, err := s.CommandContext(ctx, "bash", "-c", script).CombinedOutput()
 		if err == nil {
 			return out, 0, nil
@@ -270,7 +288,27 @@ func ensureNoActiveDispatchLoop(ctx context.Context, s *sprites.Sprite) error {
 		}
 
 		return out, 0, err
-	})
+	}
+}
+
+func hasTaskCompleteSignalWithRunner(ctx context.Context, run spriteScriptRunner, workspace string) (bool, error) {
+	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	checkScript := fmt.Sprintf("export WORKSPACE=%q\n%s", workspace, taskCompleteSignalCheckScript)
+	out, exitCode, err := run(checkCtx, checkScript)
+	if err != nil {
+		return false, fmt.Errorf("check completion signal command failed: %w", err)
+	}
+
+	switch exitCode {
+	case 0:
+		return true, nil
+	case 1:
+		return false, nil
+	default:
+		return false, fmt.Errorf("completion signal check exited %d: %s", exitCode, strings.TrimSpace(string(out)))
+	}
 }
 
 func ensureNoActiveDispatchLoopWithRunner(ctx context.Context, run spriteScriptRunner) error {
