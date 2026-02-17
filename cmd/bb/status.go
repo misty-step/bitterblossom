@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	sprites "github.com/superfly/sprites-go"
@@ -109,10 +108,10 @@ else
 fi
 `
 
-	// Find the workspace — check for any repo directory
-	findWS := `ls -d /home/sprite/workspace/*/ 2>/dev/null | head -1 | tr -d '\n'`
-	wsOut, _ := s.CommandContext(ctx, "bash", "-c", findWS).Output()
-	workspace := strings.TrimSpace(string(wsOut))
+	workspace, err := findSpriteWorkspace(ctx, s)
+	if err != nil {
+		return fmt.Errorf("find workspace: %w", err)
+	}
 
 	if workspace == "" {
 		fmt.Printf("sprite: %s\nstatus: reachable\nworkspace: empty (run bb setup)\n", spriteName)

@@ -4,22 +4,25 @@ Universal project context for all coding agents working on Bitterblossom.
 
 ## What This Is
 
-Bitterblossom is a Go CLI (`bb`) that dispatches coding tasks to AI sprites on [Sprites.dev](https://sprites.dev). Three commands, ~785 lines of Go, one 52-line ralph loop. Thin deterministic transport in Go; intelligence in Claude Code skills.
+Bitterblossom is a Go CLI (`bb`) that dispatches coding tasks to AI sprites on [Sprites.dev](https://sprites.dev). Four commands, one small ralph loop. Thin deterministic transport in Go; intelligence in Claude Code skills.
 
 See [ADR-002](docs/adr/002-architecture-minimalism.md) for why.
 
 ## Architecture
 
-```
+```text
 cmd/bb/
-  main.go          120 LOC  Cobra root, token exchange, helpers
-  dispatch.go      195 LOC  Probe → sync → upload prompt → run ralph
-  setup.go         289 LOC  Configure sprite: configs, persona, ralph, git auth
-  status.go        129 LOC  Fleet overview or single sprite detail
+  main.go               Cobra root, token exchange, helpers
+  dispatch.go           Probe -> sync -> upload prompt -> run ralph
+  logs.go               Tail + render ralph.log (pretty or --json)
+  setup.go              Configure sprite: configs, persona, ralph, git auth
+  status.go             Fleet overview or single sprite detail
+  stream_json.go        stream-json renderer (shared by dispatch/logs)
+  sprite_workspace.go   Find workspace on-sprite
 
 scripts/
-  ralph.sh          52 LOC  The ralph loop: invoke agent, check signals, enforce limits
-  ralph-prompt-template.md   Prompt template with {{TASK_DESCRIPTION}}, {{REPO}}, {{SPRITE_NAME}}
+  ralph.sh                  The ralph loop: invoke agent, check signals, enforce limits
+  ralph-prompt-template.md  Prompt template with {{TASK_DESCRIPTION}}, {{REPO}}, {{SPRITE_NAME}}
 
 base/               Shared config pushed to every sprite (CLAUDE.md, hooks, skills, settings.json)
 sprites/            Persona files per sprite (e.g. bramble.md, fern.md)
@@ -76,6 +79,22 @@ bb status [sprite]
 ```
 
 No flags. Fleet mode probes all sprites concurrently (3s timeout each). Single sprite mode shows signals, git state, and recent PRs.
+
+### logs
+
+Stream a sprite's agent output (reads `${WORKSPACE}/ralph.log` on-sprite).
+
+```bash
+bb logs <sprite> [--follow] [--lines N] [--json]
+```
+
+If you upgraded `bb`, re-run `bb setup <sprite>` once to upload the updated `ralph.sh` (it creates/appends `ralph.log`).
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--follow` | `false` | Tail live output |
+| `--lines` | `0` | Last N lines (0 = all; follow defaults to 50) |
+| `--json` | `false` | Raw Claude Code `stream-json` events |
 
 ## Agent Configuration
 
@@ -149,5 +168,5 @@ Sprites are persistent. Don't destroy them.
 - **Sprites, not Machines.** Use sprites-go SDK, not Fly CLI.
 - **Claude Code is canonical.** OpenCode is the alternative harness, not deprecated (see ADR-001).
 - **Persistent, not ephemeral.** Setup once, dispatch forever.
-- **Don't add Go commands.** If it needs judgment, write a skill (see ADR-002).
-- **Ralph loop is sacred.** The 52-line script is core. Changes require careful review.
+- **Avoid new Go commands.** If it needs judgment, write a skill (see ADR-002).
+- **Ralph loop is sacred.** It's the core value proposition. Changes require careful review.

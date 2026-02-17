@@ -161,8 +161,21 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 	defer monitor.stop()
 	monitor.start()
 
-	stdout := monitor.wrap(os.Stdout)
-	stderr := monitor.wrap(os.Stderr)
+	prettyStdout := newStreamJSONWriter(os.Stdout, false)
+	prettyStderr := newStreamJSONWriter(os.Stderr, false)
+	defer func() {
+		if err := prettyStdout.Flush(); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "dispatch: flush stdout: %v\n", err)
+		}
+	}()
+	defer func() {
+		if err := prettyStderr.Flush(); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "dispatch: flush stderr: %v\n", err)
+		}
+	}()
+
+	stdout := monitor.wrap(prettyStdout)
+	stderr := monitor.wrap(prettyStderr)
 	ralphCmd.Stdout = stdout
 	ralphCmd.Stderr = stderr
 	ralphCmd.TextMessageHandler = newDispatchTextMessageHandler(stdout, stderr)
