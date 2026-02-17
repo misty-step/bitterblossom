@@ -78,6 +78,24 @@ func TestStreamJSONWriterPrettyIgnoresSystemEvents(t *testing.T) {
 	}
 }
 
+func TestStreamJSONWriterPrettyFormatsSystemEventWithContent(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	w := newStreamJSONWriter(&out, false)
+	_, err := w.Write([]byte(`{"type":"system","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]}}` + "\n"))
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	if got := out.String(); got != "hello\n" {
+		t.Fatalf("out = %q, want %q", got, "hello\n")
+	}
+}
+
 func TestStreamJSONWriterJSONModeEmitsOnlyJSONObjects(t *testing.T) {
 	t.Parallel()
 

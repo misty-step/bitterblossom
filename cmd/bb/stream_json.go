@@ -115,6 +115,7 @@ func (w *streamJSONWriter) shouldKeepOversizeLine(buf []byte) bool {
 	if !w.jsonMode {
 		return true
 	}
+	// Oversize mode only buffers a prefix; json.Valid would require the full line.
 	trim := bytes.TrimSpace(buf)
 	return len(trim) > 0 && trim[0] == '{'
 }
@@ -263,7 +264,11 @@ func formatClaudeStreamEvent(ev claudeStreamEvent) []string {
 	case "user":
 		return formatUserEvent(ev)
 	case "system", "result":
-		return nil
+		out := append(formatAssistantEvent(ev), formatUserEvent(ev)...)
+		if len(out) == 0 {
+			return nil
+		}
+		return out
 	default:
 		return nil
 	}
