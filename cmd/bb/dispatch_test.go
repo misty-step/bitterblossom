@@ -271,3 +271,19 @@ func TestHasTaskCompleteSignalReturnsErrorOnUnexpectedExitCode(t *testing.T) {
 		t.Fatalf("err = %q, want to contain %q", err.Error(), "completion signal check exited 2")
 	}
 }
+
+func TestHasTaskCompleteSignalReturnsErrorOnRunnerError(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: nil, err: errors.New("network")}
+	_, err := hasTaskCompleteSignalWithRunner(context.Background(), r.run, "/tmp/ws")
+	if err == nil {
+		t.Fatal("expected error for runner failure")
+	}
+	if !strings.Contains(err.Error(), "check completion signal command failed") {
+		t.Fatalf("err = %q, want to contain %q", err.Error(), "check completion signal command failed")
+	}
+	if !strings.Contains(err.Error(), "network") {
+		t.Fatalf("err = %q, want to contain %q", err.Error(), "network")
+	}
+}
