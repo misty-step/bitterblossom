@@ -15,14 +15,20 @@ type streamJSONWriter struct {
 	out      io.Writer
 	jsonMode bool
 
-	mu  sync.Mutex
-	buf []byte
-	err error
+	mu   sync.Mutex
+	buf  []byte
+	scan int
+	err  error
+
+	oversize     bool
+	oversizeKeep bool
 }
 
 func newStreamJSONWriter(out io.Writer, jsonMode bool) *streamJSONWriter {
 	return &streamJSONWriter{out: out, jsonMode: jsonMode}
 }
+
+const maxStreamJSONLineBytes = 1 << 20 // 1 MiB
 
 func (w *streamJSONWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
@@ -32,21 +38,19 @@ func (w *streamJSONWriter) Write(p []byte) (int, error) {
 		return 0, w.err
 	}
 
-	w.buf = append(w.buf, p...)
-	for {
-		i := bytes.IndexByte(w.buf, '\n')
-		if i < 0 {
-			break
-		}
-
-		line := bytes.TrimRight(w.buf[:i], "\r")
-		w.buf = w.buf[i+1:]
-		if err := w.writeLine(line); err != nil {
+	if w.oversize {
+		if err := w.writeOversize(p); err != nil {
 			w.err = err
 			return len(p), err
 		}
+		return len(p), nil
 	}
 
+	w.buf = append(w.buf, p...)
+	if err := w.drainBuffer(); err != nil {
+		w.err = err
+		return len(p), err
+	}
 	return len(p), nil
 }
 
@@ -57,16 +61,90 @@ func (w *streamJSONWriter) Flush() error {
 	if w.err != nil {
 		return w.err
 	}
+	if w.oversize {
+		return nil
+	}
 	if len(w.buf) == 0 {
 		return nil
 	}
 	line := bytes.TrimRight(w.buf, "\r\n")
 	w.buf = nil
+	w.scan = 0
 	if err := w.writeLine(line); err != nil {
 		w.err = err
 		return err
 	}
 	return nil
+}
+
+func (w *streamJSONWriter) drainBuffer() error {
+	for {
+		i := bytes.IndexByte(w.buf[w.scan:], '\n')
+		if i < 0 {
+			w.scan = len(w.buf)
+			break
+		}
+		i += w.scan
+
+		line := bytes.TrimRight(w.buf[:i], "\r")
+		w.buf = w.buf[i+1:]
+		w.scan = 0
+		if err := w.writeLine(line); err != nil {
+			return err
+		}
+	}
+
+	if len(w.buf) <= maxStreamJSONLineBytes {
+		return nil
+	}
+
+	// Give up on formatting this line; stream it raw (or drop it in json mode).
+	w.oversize = true
+	w.oversizeKeep = w.shouldKeepOversizeLine(w.buf)
+	if w.oversizeKeep {
+		if _, err := w.out.Write(w.buf); err != nil {
+			return err
+		}
+	}
+	w.buf = nil
+	w.scan = 0
+	return nil
+}
+
+func (w *streamJSONWriter) shouldKeepOversizeLine(buf []byte) bool {
+	if !w.jsonMode {
+		return true
+	}
+	trim := bytes.TrimSpace(buf)
+	return len(trim) > 0 && trim[0] == '{'
+}
+
+func (w *streamJSONWriter) writeOversize(p []byte) error {
+	i := bytes.IndexByte(p, '\n')
+	if i < 0 {
+		if w.oversizeKeep {
+			_, err := w.out.Write(p)
+			return err
+		}
+		return nil
+	}
+
+	if w.oversizeKeep {
+		if _, err := w.out.Write(p[:i+1]); err != nil {
+			return err
+		}
+	}
+
+	w.oversize = false
+	w.oversizeKeep = false
+
+	rest := p[i+1:]
+	if len(rest) == 0 {
+		return nil
+	}
+
+	w.buf = append(w.buf, rest...)
+	return w.drainBuffer()
 }
 
 func (w *streamJSONWriter) writeLine(line []byte) error {
