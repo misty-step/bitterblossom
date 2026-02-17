@@ -144,6 +144,34 @@ func TestStreamJSONWriterHandlesSplitWrites(t *testing.T) {
 	}
 }
 
+func TestStreamJSONWriterCallsOnToolErrorForErrorResults(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	var errors []string
+	w := newStreamJSONWriter(&out, false)
+	w.onToolError = func(s string) { errors = append(errors, s) }
+
+	// Tool result with is_error=true
+	_, err := w.Write([]byte(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"Error: command not found: foobar","tool_use_id":"toolu_1","is_error":true}]}}` + "\n"))
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// Tool result with is_error=false (should NOT trigger)
+	_, err = w.Write([]byte(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"success","tool_use_id":"toolu_2","is_error":false}]}}` + "\n"))
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	if len(errors) != 1 {
+		t.Fatalf("expected 1 error callback, got %d: %v", len(errors), errors)
+	}
+	if errors[0] != "Error: command not found: foobar" {
+		t.Fatalf("error = %q, want %q", errors[0], "Error: command not found: foobar")
+	}
+}
+
 func TestStreamJSONWriterPrettyFallsBackToRawForUnknownJSON(t *testing.T) {
 	t.Parallel()
 
