@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"strings"
 	"sync"
 	"testing"
@@ -108,21 +109,36 @@ func TestActivityWriterMarksWrites(t *testing.T) {
 	}
 }
 
-func TestDispatchOutputMonitorEmitsKeepaliveOnSilence(t *testing.T) {
+func TestOffRailsDetectorEmitsWarningOnSilence(t *testing.T) {
 	t.Parallel()
 
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+
 	var out lockedBuffer
-	monitor := newDispatchOutputMonitor(&out, 10*time.Millisecond)
-	monitor.start()
-	defer monitor.stop()
+	d := newOffRailsDetector(offRailsConfig{
+		SilenceAbort:  time.Hour,
+		SilenceWarn:   10 * time.Millisecond,
+		CheckInterval: 10 * time.Millisecond,
+		Cancel:        cancel,
+		Alert:         &out,
+	})
+	d.start()
+	defer d.stop()
 
 	deadline := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
-		if strings.Contains(out.String(), "[dispatch] no remote output for") {
+		if strings.Contains(out.String(), "[off-rails] no output for") {
+			// Ensure dispatch context was NOT cancelled (warn, not abort)
+			select {
+			case <-ctx.Done():
+				t.Fatal("context should not be cancelled for warning")
+			default:
+			}
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
 
-	t.Fatalf("expected keepalive line, got %q", out.String())
+	t.Fatalf("expected warning line, got %q", out.String())
 }

@@ -22,6 +22,8 @@ type streamJSONWriter struct {
 
 	oversize     bool
 	oversizeKeep bool
+
+	onToolError func(string) // called when a tool_result error is detected
 }
 
 func newStreamJSONWriter(out io.Writer, jsonMode bool) *streamJSONWriter {
@@ -191,6 +193,11 @@ func (w *streamJSONWriter) writeLine(line []byte) error {
 		return nil
 	}
 
+	// Notify off-rails detector of tool errors
+	if w.onToolError != nil {
+		w.extractToolErrors(ev)
+	}
+
 	formatted := formatClaudeStreamEvent(ev)
 	if len(formatted) == 0 {
 		switch ev.Type {
@@ -221,6 +228,17 @@ func (w *streamJSONWriter) writeLine(line []byte) error {
 		}
 	}
 	return nil
+}
+
+func (w *streamJSONWriter) extractToolErrors(ev claudeStreamEvent) {
+	if ev.Message == nil {
+		return
+	}
+	for _, block := range ev.Message.Content {
+		if block.Type == "tool_result" && block.IsError && strings.TrimSpace(block.Content) != "" {
+			w.onToolError(block.Content)
+		}
+	}
 }
 
 func isJSONObject(line []byte) bool {

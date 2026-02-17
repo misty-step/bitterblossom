@@ -9,8 +9,6 @@ import (
 	"os"
 	"path"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	sprites "github.com/superfly/sprites-go"
@@ -20,11 +18,12 @@ import (
 
 func newDispatchCmd() *cobra.Command {
 	var (
-		repo          string
-		timeout       time.Duration
-		maxIterations int
-		harness       string
-		model         string
+		repo            string
+		timeout         time.Duration
+		maxIterations   int
+		harness         string
+		model           string
+		noOutputTimeout time.Duration
 	)
 
 	cmd := &cobra.Command{
@@ -39,7 +38,7 @@ func newDispatchCmd() *cobra.Command {
 				return fmt.Errorf("--harness must be 'claude' or 'opencode', got %q", harness)
 			}
 
-			return runDispatch(cmd.Context(), spriteName, prompt, repo, maxIterations, timeout, harness, model)
+			return runDispatch(cmd.Context(), spriteName, prompt, repo, maxIterations, timeout, harness, model, noOutputTimeout)
 		},
 	}
 
@@ -48,12 +47,13 @@ func newDispatchCmd() *cobra.Command {
 	cmd.Flags().IntVar(&maxIterations, "max-iterations", 50, "Max ralph loop iterations")
 	cmd.Flags().StringVar(&harness, "harness", "claude", "Agent harness: claude or opencode")
 	cmd.Flags().StringVar(&model, "model", "", "Model for opencode harness (e.g. moonshotai/kimi-k2.5)")
+	cmd.Flags().DurationVar(&noOutputTimeout, "no-output-timeout", defaultSilenceAbortThreshold, "Abort if no output for this duration (0 to disable)")
 	_ = cmd.MarkFlagRequired("repo")
 
 	return cmd
 }
 
-func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter int, timeout time.Duration, harness, model string) error {
+func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter int, timeout time.Duration, harness, model string, noOutputTimeout time.Duration) error {
 	// Validate credentials
 	token, err := spriteToken()
 	if err != nil {
@@ -150,19 +150,28 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 
 	ralphEnv += fmt.Sprintf(` && exec bash %s`, ralphScript)
 
-	ralphCtx, ralphCancel := context.WithTimeout(ctx, timeout+5*time.Minute) // grace period beyond ralph's own timeout
-	defer ralphCancel()
+	timeoutCtx, timeoutCancel := context.WithTimeout(ctx, timeout+5*time.Minute) // grace period beyond ralph's own timeout
+	defer timeoutCancel()
+
+	ralphCtx, ralphCancel := context.WithCancelCause(timeoutCtx)
+	defer ralphCancel(nil)
+
+	detector := newOffRailsDetector(offRailsConfig{
+		SilenceAbort: noOutputTimeout,
+		Cancel:       ralphCancel,
+		Alert:        os.Stderr,
+	})
+	defer detector.stop()
+	detector.start()
 
 	ralphCmd := s.CommandContext(ralphCtx, "bash", "-c", ralphEnv)
 	ralphCmd.Dir = workspace
 	ralphCmd.SetTTY(true)
 
-	monitor := newDispatchOutputMonitor(os.Stderr, 45*time.Second)
-	defer monitor.stop()
-	monitor.start()
-
 	prettyStdout := newStreamJSONWriter(os.Stdout, false)
+	prettyStdout.onToolError = detector.recordError
 	prettyStderr := newStreamJSONWriter(os.Stderr, false)
+	prettyStderr.onToolError = detector.recordError
 	defer func() {
 		if err := prettyStdout.Flush(); err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "dispatch: flush stdout: %v\n", err)
@@ -174,8 +183,8 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 		}
 	}()
 
-	stdout := monitor.wrap(prettyStdout)
-	stderr := monitor.wrap(prettyStderr)
+	stdout := detector.wrap(prettyStdout)
+	stderr := detector.wrap(prettyStderr)
 	ralphCmd.Stdout = stdout
 	ralphCmd.Stderr = stderr
 	ralphCmd.TextMessageHandler = newDispatchTextMessageHandler(stdout, stderr)
@@ -195,6 +204,12 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 	_ = verifyCmd.Run()
 
 	// 9. Return appropriate exit code
+	// Check if off-rails detector killed the dispatch
+	if cause := context.Cause(ralphCtx); cause != nil && strings.Contains(cause.Error(), "off-rails") {
+		_, _ = fmt.Fprintf(os.Stderr, "\n=== off-rails detected: %v ===\n", cause)
+		return &exitError{Code: 4, Err: cause}
+	}
+
 	if ralphErr != nil {
 		if exitErr, ok := ralphErr.(*sprites.ExitError); ok {
 			code := exitErr.ExitCode()
@@ -225,82 +240,6 @@ func renderPrompt(taskDescription, repo, spriteName string) (string, error) {
 	rendered = strings.ReplaceAll(rendered, "{{SPRITE_NAME}}", spriteName)
 
 	return rendered, nil
-}
-
-type activityWriter struct {
-	out  io.Writer
-	mark func()
-}
-
-func (w *activityWriter) Write(p []byte) (int, error) {
-	n, err := w.out.Write(p)
-	if n > 0 && w.mark != nil {
-		w.mark()
-	}
-	return n, err
-}
-
-type dispatchOutputMonitor struct {
-	out             io.Writer
-	silentThreshold time.Duration
-
-	lastActivityUnixNano atomic.Int64
-	stopCh               chan struct{}
-	stopOnce             sync.Once
-}
-
-func newDispatchOutputMonitor(out io.Writer, silentThreshold time.Duration) *dispatchOutputMonitor {
-	if silentThreshold <= 0 {
-		silentThreshold = 45 * time.Second
-	}
-
-	m := &dispatchOutputMonitor{
-		out:             out,
-		silentThreshold: silentThreshold,
-		stopCh:          make(chan struct{}),
-	}
-	m.lastActivityUnixNano.Store(time.Now().UnixNano())
-	return m
-}
-
-func (m *dispatchOutputMonitor) wrap(out io.Writer) io.Writer {
-	return &activityWriter{
-		out:  out,
-		mark: m.markActivity,
-	}
-}
-
-func (m *dispatchOutputMonitor) markActivity() {
-	m.lastActivityUnixNano.Store(time.Now().UnixNano())
-}
-
-func (m *dispatchOutputMonitor) start() {
-	go m.loop()
-}
-
-func (m *dispatchOutputMonitor) stop() {
-	m.stopOnce.Do(func() {
-		close(m.stopCh)
-	})
-}
-
-func (m *dispatchOutputMonitor) loop() {
-	ticker := time.NewTicker(m.silentThreshold)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-m.stopCh:
-			return
-		case <-ticker.C:
-			last := time.Unix(0, m.lastActivityUnixNano.Load())
-			silentFor := time.Since(last)
-			if silentFor < m.silentThreshold {
-				continue
-			}
-			_, _ = fmt.Fprintf(m.out, "[dispatch] no remote output for %s; still running...\n", silentFor.Round(time.Second))
-		}
-	}
 }
 
 func newDispatchTextMessageHandler(stdout, stderr io.Writer) func([]byte) {
