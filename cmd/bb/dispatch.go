@@ -216,18 +216,7 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 	if cause := context.Cause(ralphCtx); cause != nil && errors.Is(cause, errOffRails) {
 		_, _ = fmt.Fprintf(os.Stderr, "\n=== off-rails detected: %v ===\n", cause)
 
-		completed, completeErr := hasTaskCompleteSignalWithRunner(ctx, func(ctx context.Context, script string) ([]byte, int, error) {
-			out, err := s.CommandContext(ctx, "bash", "-c", script).CombinedOutput()
-			if err == nil {
-				return out, 0, nil
-			}
-
-			var exitErr *sprites.ExitError
-			if errors.As(err, &exitErr) {
-				return out, exitErr.ExitCode(), nil
-			}
-			return out, 0, err
-		}, workspace)
+		completed, completeErr := hasTaskCompleteSignalWithRunner(ctx, spriteBashRunner(s), workspace)
 		if completeErr != nil {
 			return &exitError{Code: 4, Err: fmt.Errorf("off-rails completion check failed: %w", completeErr)}
 		}
@@ -283,7 +272,11 @@ exit 1`
 type spriteScriptRunner func(ctx context.Context, script string) ([]byte, int, error)
 
 func ensureNoActiveDispatchLoop(ctx context.Context, s *sprites.Sprite) error {
-	return ensureNoActiveDispatchLoopWithRunner(ctx, func(ctx context.Context, script string) ([]byte, int, error) {
+	return ensureNoActiveDispatchLoopWithRunner(ctx, spriteBashRunner(s))
+}
+
+func spriteBashRunner(s *sprites.Sprite) spriteScriptRunner {
+	return func(ctx context.Context, script string) ([]byte, int, error) {
 		out, err := s.CommandContext(ctx, "bash", "-c", script).CombinedOutput()
 		if err == nil {
 			return out, 0, nil
@@ -295,7 +288,7 @@ func ensureNoActiveDispatchLoop(ctx context.Context, s *sprites.Sprite) error {
 		}
 
 		return out, 0, err
-	})
+	}
 }
 
 func hasTaskCompleteSignalWithRunner(ctx context.Context, run spriteScriptRunner, workspace string) (bool, error) {
