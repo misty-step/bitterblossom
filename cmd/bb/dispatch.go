@@ -88,13 +88,18 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 		return fmt.Errorf("sprite %q not configured — run: bb setup %s --repo %s", spriteName, spriteName, repo)
 	}
 
-	// 3. Kill stale agent processes from prior dispatches
+	// 3. Refuse overlapping dispatches against an active agent
+	if err := ensureNoActiveAgent(ctx, s); err != nil {
+		return fmt.Errorf("sprite %q is currently working: %w", spriteName, err)
+	}
+
+	// 4. Kill stale agent processes from prior dispatches
 	// Without this, concurrent claude processes compete for resources and hang.
 	killCtx, killCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer killCancel()
 	_, _ = s.CommandContext(killCtx, "bash", "-c", "pkill -9 -f 'ralph\\.sh|claude|opencode' 2>/dev/null; sleep 1").Output()
 
-	// 4. Repo sync (pull latest on default branch)
+	// 5. Repo sync (pull latest on default branch)
 	repoName := path.Base(repo)
 	workspace := "/home/sprite/workspace/" + repoName
 
@@ -108,14 +113,14 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 		return fmt.Errorf("repo sync failed: %w\n%s", err, out)
 	}
 
-	// 5. Clean stale signals
+	// 6. Clean stale signals
 	cleanScript := fmt.Sprintf(
 		"rm -f %s/TASK_COMPLETE %s/TASK_COMPLETE.md %s/BLOCKED.md",
 		workspace, workspace, workspace,
 	)
 	_, _ = s.CommandContext(ctx, "bash", "-c", cleanScript).Output()
 
-	// 6. Render and upload prompt
+	// 7. Render and upload prompt
 	rendered, err := renderPrompt(prompt, repo, spriteName)
 	if err != nil {
 		return fmt.Errorf("render prompt: %w", err)
@@ -126,7 +131,7 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 		return fmt.Errorf("upload prompt: %w", err)
 	}
 
-	// 7. Run ralph loop — foreground, streaming
+	// 8. Run ralph loop — foreground, streaming
 	_, _ = fmt.Fprintf(os.Stderr, "starting ralph loop (max %d iterations, %s timeout, harness=%s)...\n", maxIter, timeout, harness)
 
 	// Only pass operational env vars — LLM auth comes from settings.json (claude) or env var (opencode).
@@ -192,7 +197,7 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 
 	ralphErr := ralphCmd.Run()
 
-	// 8. Verify work produced
+	// 9. Verify work produced
 	_, _ = fmt.Fprintf(os.Stderr, "\n=== work produced ===\n")
 	verifyScript := fmt.Sprintf(
 		`cd %s && echo "--- commits ---" && git log --oneline origin/master..HEAD 2>/dev/null || git log --oneline origin/main..HEAD 2>/dev/null; echo "--- PRs ---" && gh pr list --json url,title 2>/dev/null || echo "(gh not available)"`,
@@ -204,7 +209,7 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 	verifyCmd.Stderr = os.Stderr
 	_ = verifyCmd.Run()
 
-	// 9. Return appropriate exit code
+	// 10. Return appropriate exit code
 	// Check if off-rails detector killed the dispatch
 	if cause := context.Cause(ralphCtx); cause != nil && errors.Is(cause, errOffRails) {
 		_, _ = fmt.Fprintf(os.Stderr, "\n=== off-rails detected: %v ===\n", cause)
@@ -225,6 +230,31 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 		}
 		return fmt.Errorf("ralph failed: %w", ralphErr)
 	}
+	return nil
+}
+
+func ensureNoActiveAgent(ctx context.Context, s *sprites.Sprite) error {
+	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	check := `busy="$(pgrep -af '([c]laude|[o]pencode|/home/sprite/workspace/\.ralph\.sh)' || true)
+if [ -n "$busy" ]; then
+  echo "$busy"
+  exit 1
+fi`
+
+	out, err := s.CommandContext(checkCtx, "bash", "-c", check).Output()
+	if err != nil {
+		var exitErr *sprites.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return fmt.Errorf("active agent process detected:\n%s", strings.TrimSpace(string(out)))
+		}
+		return fmt.Errorf("check active agent: %w", err)
+	}
+	if strings.TrimSpace(string(out)) != "" {
+		return fmt.Errorf("active agent process detected:\n%s", strings.TrimSpace(string(out)))
+	}
+
 	return nil
 }
 
