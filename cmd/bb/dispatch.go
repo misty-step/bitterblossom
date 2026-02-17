@@ -235,17 +235,31 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 	return nil
 }
 
-const activeRalphLoopCheckScript = `busy="$(pgrep -af '/home/sprite/workspace/\.ralph\.sh' || true)"
-if [ -n "$busy" ]; then
+// activeRalphLoopCheckScript checks for an in-flight ralph loop process.
+//
+// Use the bracket trick to avoid self-matching under `pgrep -f` (pattern appears in argv).
+const activeRalphLoopCheckScript = `if ! command -v pgrep >/dev/null 2>&1; then
+  echo "pgrep missing" >&2
+  exit 2
+fi
+
+busy="$(pgrep -af '/home/sprite/workspace/\.[r]alph\.sh' 2>&1)"
+status=$?
+if [ "$status" -eq 0 ]; then
   echo "$busy"
   exit 1
-fi`
+fi
+if [ "$status" -eq 1 ]; then
+  exit 0
+fi
+echo "$busy" >&2
+exit "$status"`
 
 type spriteScriptRunner func(ctx context.Context, script string) ([]byte, int, error)
 
 func ensureNoActiveDispatchLoop(ctx context.Context, s *sprites.Sprite) error {
 	return ensureNoActiveDispatchLoopWithRunner(ctx, func(ctx context.Context, script string) ([]byte, int, error) {
-		out, err := s.CommandContext(ctx, "bash", "-c", script).Output()
+		out, err := s.CommandContext(ctx, "bash", "-c", script).CombinedOutput()
 		if err == nil {
 			return out, 0, nil
 		}

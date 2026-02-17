@@ -176,8 +176,8 @@ func TestEnsureNoActiveDispatchLoop_AllowsIdle(t *testing.T) {
 	if !strings.Contains(r.script, "pgrep -af") {
 		t.Fatalf("script = %q, want to contain %q", r.script, "pgrep -af")
 	}
-	if !strings.Contains(r.script, "ralph") {
-		t.Fatalf("script = %q, want to contain %q", r.script, "ralph")
+	if !strings.Contains(r.script, "[r]alph") {
+		t.Fatalf("script = %q, want to contain %q", r.script, "[r]alph")
 	}
 	if strings.Contains(r.script, "claude") || strings.Contains(r.script, "opencode") {
 		t.Fatalf("script = %q, want ralph-only busy check", r.script)
