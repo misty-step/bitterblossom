@@ -53,6 +53,7 @@ func main() {
 		newSetupCmd(),
 		newLogsCmd(),
 		newStatusCmd(),
+		newKillCmd(),
 	)
 
 	if err := root.Execute(); err != nil {
