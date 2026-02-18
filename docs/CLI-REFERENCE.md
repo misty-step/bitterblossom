@@ -1,6 +1,6 @@
 # CLI Reference
 
-`bb` is the Bitterblossom sprite dispatch CLI. Four core commands (+ version).
+`bb` is the Bitterblossom sprite dispatch CLI. Five core commands (+ version).
 
 ## Environment
 
@@ -16,6 +16,33 @@ Token creation:
 ```bash
 fly tokens create org -o personal -n bb-cli -x 720h
 ```
+
+---
+
+## kill
+
+Terminate stale agent processes on a sprite so a blocked/aborted dispatch can be recovered.
+
+```
+bb kill <sprite>
+```
+
+### Examples
+
+```bash
+bb kill fern
+```
+
+### Behavior
+
+1. Connects to the sprite.
+2. Kills the ralph loop (`/home/sprite/workspace/.ralph.sh`) plus `claude` and `opencode` processes matching known stale patterns.
+3. Verifies those processes are gone before exiting.
+
+### Exit
+
+- `0` on success, including clean state.
+- Non-zero if the sprite is unreachable or cleanup verification fails.
 
 ---
 
