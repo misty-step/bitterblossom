@@ -43,7 +43,10 @@ func runKill(ctx context.Context, out io.Writer, spriteName string) error {
 	defer killCancel()
 	outBytes, err := s.CommandContext(killCtx, "bash", "-c", killAgentProcessesScript).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to cleanup sprite %q: %w (%s)", spriteName, err, strings.TrimSpace(string(outBytes)))
+		if msg := strings.TrimSpace(string(outBytes)); msg != "" {
+			return fmt.Errorf("failed to cleanup sprite %q: %w (%s)", spriteName, err, msg)
+		}
+		return fmt.Errorf("failed to cleanup sprite %q: %w", spriteName, err)
 	}
 
 	if len(outBytes) == 0 {
@@ -65,7 +68,7 @@ if ! command -v pkill >/dev/null 2>&1; then
   exit 1
 fi
 
-agents='[r]alph\\.sh|[c]laude|[o]pencode'
+agents='/home/sprite/workspace/\.[r]alph\.sh|[c]laude|[o]pencode'
 
 match=$(pgrep -af "$agents" 2>&1 || true)
 if [ -z "$match" ]; then
@@ -73,7 +76,7 @@ if [ -z "$match" ]; then
   exit 0
 fi
 
-echo "killed stale agent processes:"
+echo "found agent processes:"
 echo "$match"
 
 pkill -9 -f "$agents" 2>/dev/null || true

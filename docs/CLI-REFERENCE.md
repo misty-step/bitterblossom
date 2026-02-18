@@ -36,7 +36,7 @@ bb kill fern
 ### Behavior
 
 1. Connects to the sprite.
-2. Kills `ralph.sh`, `claude`, and `opencode` processes matching known stale patterns.
+2. Kills the ralph loop (`/home/sprite/workspace/.ralph.sh`) plus `claude` and `opencode` processes matching known stale patterns.
 3. Verifies those processes are gone before exiting.
 
 ### Exit
