@@ -287,3 +287,62 @@ func TestHasTaskCompleteSignalReturnsErrorOnRunnerError(t *testing.T) {
 		t.Fatalf("err = %q, want to contain %q", err.Error(), "network")
 	}
 }
+
+func TestGracePeriodCalculation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		timeout      time.Duration
+		wantGrace    time.Duration
+		wantTotal    time.Duration
+	}{
+		{
+			name:      "short timeout uses minimum grace",
+			timeout:   1 * time.Second,
+			wantGrace: 30 * time.Second,
+			wantTotal: 31 * time.Second,
+		},
+		{
+			name:      "small timeout below min uses minimum grace",
+			timeout:   2 * time.Minute,
+			wantGrace: 30 * time.Second,
+			wantTotal: 2*time.Minute + 30*time.Second,
+		},
+		{
+			name:      "medium timeout uses quarter of timeout",
+			timeout:   20 * time.Minute,
+			wantGrace: 5 * time.Minute,
+			wantTotal: 25 * time.Minute,
+		},
+		{
+			name:      "large timeout uses quarter of timeout",
+			timeout:   2 * time.Hour,
+			wantGrace: 30 * time.Minute,
+			wantTotal: 2*time.Hour + 30*time.Minute,
+		},
+		{
+			name:      "default timeout uses quarter",
+			timeout:   30 * time.Minute,
+			wantGrace: 7*time.Minute + 30*time.Second,
+			wantTotal: 37*time.Minute + 30*time.Second,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			gotGrace := max(30*time.Second, tc.timeout/4)
+			if gotGrace != tc.wantGrace {
+				t.Fatalf("grace period = %v, want %v", gotGrace, tc.wantGrace)
+			}
+
+			gotTotal := tc.timeout + gotGrace
+			if gotTotal != tc.wantTotal {
+				t.Fatalf("total timeout = %v, want %v", gotTotal, tc.wantTotal)
+			}
+		})
+	}
+}
