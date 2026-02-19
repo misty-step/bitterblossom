@@ -109,10 +109,19 @@ func spriteToken() (string, error) {
 
 	token, err := sprites.CreateToken(ctx, macaroon, org, "")
 	if err != nil {
-		return "", fmt.Errorf("token exchange failed: %w (set SPRITES_ORG if not 'personal')", err)
+		return "", wrapTokenExchangeErr(err)
 	}
 
 	return token, nil
+}
+
+// wrapTokenExchangeErr wraps a token exchange error with an actionable hint
+// when the underlying cause is an expired or invalid FLY_API_TOKEN.
+func wrapTokenExchangeErr(err error) error {
+	if strings.Contains(err.Error(), "unauthorized") {
+		return fmt.Errorf("token exchange failed: %w\nHint: FLY_API_TOKEN may be expired. Try: export FLY_API_TOKEN=$(fly tokens create)", err)
+	}
+	return fmt.Errorf("token exchange failed: %w (set SPRITES_ORG if not 'personal')", err)
 }
 
 // requireEnv returns the value of an environment variable or an error.
