@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -150,7 +151,8 @@ func spriteBashRunnerForStatus(s *sprites.Sprite) func(ctx context.Context, scri
 		}
 
 		// Try to get exit code
-		if exitErr, ok := err.(*sprites.ExitError); ok {
+		var exitErr *sprites.ExitError
+		if errors.As(err, &exitErr) {
 			return out, exitErr.ExitCode(), nil
 		}
 
