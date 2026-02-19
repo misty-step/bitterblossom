@@ -67,14 +67,16 @@ func fleetStatus(ctx context.Context) error {
 		}
 		cancel()
 
-		// Check for active dispatch loop (busy state)
+		// Check for active dispatch loop (busy state); skip when unreachable.
 		status := sprite.Status
-		busyCtx, busyCancel := context.WithTimeout(ctx, 5*time.Second)
-		busy, busyErr := checkActiveDispatchLoop(busyCtx, spriteBashRunnerForStatus(sprite))
-		busyCancel()
-		if busyErr == nil && busy {
-			status = "busy"
-			note = "active dispatch loop"
+		if reach == "ok" {
+			busyCtx, busyCancel := context.WithTimeout(ctx, 5*time.Second)
+			busy, busyErr := checkActiveDispatchLoop(busyCtx, spriteBashRunnerForStatus(sprite))
+			busyCancel()
+			if busyErr == nil && busy {
+				status = "busy"
+				note = "active dispatch loop"
+			}
 		}
 
 		fmt.Printf("%-15s %-10s %-8s %s\n", sprite.Name(), status, reach, note)
