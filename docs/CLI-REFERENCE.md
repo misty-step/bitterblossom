@@ -36,7 +36,7 @@ bb kill fern
 ### Behavior
 
 1. Connects to the sprite.
-2. Kills the ralph loop (`/home/sprite/workspace/.ralph.sh`) plus `claude` and `opencode` processes matching known stale patterns.
+2. Kills the ralph loop (`/home/sprite/workspace/.ralph.sh`) plus `claude` processes matching known stale patterns.
 3. Verifies those processes are gone before exiting.
 
 ### Exit
@@ -64,8 +64,8 @@ bb dispatch fern "Fix the login bug" --repo misty-step/webapp
 # With timeout and iteration limit
 bb dispatch bramble "Add user search" --repo misty-step/api --timeout 20m --max-iterations 30
 
-# OpenCode harness with specific model
-bb dispatch bramble "Write tests" --repo misty-step/api --harness opencode --model z-ai/glm-5
+# Claude Sonnet 4.6 runtime (default)
+bb dispatch bramble "Write tests" --repo misty-step/api
 ```
 
 ### Flags
@@ -75,8 +75,6 @@ bb dispatch bramble "Write tests" --repo misty-step/api --harness opencode --mod
 | `--repo` | (required) | GitHub repo (`owner/repo`) |
 | `--timeout` | `30m` | Max wall-clock time |
 | `--max-iterations` | `50` | Max ralph loop iterations |
-| `--harness` | `claude` | Agent harness: `claude` or `opencode` |
-| `--model` | | Model for opencode harness |
 
 ### Pipeline
 
@@ -132,9 +130,8 @@ bb setup fern --repo misty-step/webapp --force
 3. Upload base configs (CLAUDE.md, settings.json with OpenRouter key, hooks, skills, commands)
 4. Upload persona file (`sprites/<name>.md` → `PERSONA.md`)
 5. Upload ralph.sh and prompt template
-6. Install OpenCode (non-fatal if fails)
-7. Configure git auth (credential helper, user identity)
-8. Clone repo (if `--repo` provided)
+6. Configure git auth (credential helper, user identity)
+7. Clone repo (if `--repo` provided)
 
 ---
 
