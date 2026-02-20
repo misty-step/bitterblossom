@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	sprites "github.com/superfly/sprites-go"
@@ -49,37 +50,53 @@ func fleetStatus(ctx context.Context) error {
 		return nil
 	}
 
+	// Probe all sprites concurrently to avoid O(n) sequential latency.
+	type probeResult struct {
+		name   string
+		status string
+		reach  string
+		avail  string
+		note   string
+	}
+
+	results := make([]probeResult, len(all))
+	var wg sync.WaitGroup
+
+	for i, sprite := range all {
+		wg.Add(1)
+		go func(idx int, s *sprites.Sprite) {
+			defer wg.Done()
+			r := probeResult{name: s.Name(), status: s.Status, reach: "?", avail: "?"}
+
+			probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			_, probeErr := s.CommandContext(probeCtx, "echo", "ok").Output()
+			cancel()
+
+			if probeErr != nil {
+				r.reach = "no"
+				r.note = "unreachable"
+			} else {
+				r.reach = "ok"
+				busy, busyErr := isDispatchLoopActive(ctx, s)
+				if busyErr != nil {
+					r.note = "busy-check failed"
+				} else if busy {
+					r.avail = "busy"
+				} else {
+					r.avail = "idle"
+				}
+			}
+
+			results[idx] = r
+		}(i, sprite)
+	}
+
+	wg.Wait()
+
 	fmt.Printf("%-15s %-10s %-8s %-6s %s\n", "SPRITE", "STATUS", "REACH", "AVAIL", "NOTE")
 	fmt.Printf("%-15s %-10s %-8s %-6s %s\n", "------", "------", "-----", "-----", "----")
-
-	for _, sprite := range all {
-		reach := "?"
-		avail := "?"
-		note := ""
-
-		// Quick probe (3s timeout)
-		probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		_, probeErr := sprite.CommandContext(probeCtx, "echo", "ok").Output()
-		cancel()
-
-		if probeErr != nil {
-			reach = "no"
-			avail = "?"
-			note = "unreachable"
-		} else {
-			reach = "ok"
-			busy, busyErr := isDispatchLoopActive(ctx, sprite)
-			if busyErr != nil {
-				avail = "?"
-				note = "busy-check failed"
-			} else if busy {
-				avail = "busy"
-			} else {
-				avail = "idle"
-			}
-		}
-
-		fmt.Printf("%-15s %-10s %-8s %-6s %s\n", sprite.Name(), sprite.Status, reach, avail, note)
+	for _, r := range results {
+		fmt.Printf("%-15s %-10s %-8s %-6s %s\n", r.name, r.status, r.reach, r.avail, r.note)
 	}
 
 	return nil
