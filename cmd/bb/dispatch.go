@@ -144,7 +144,9 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 
 	ralphEnv += fmt.Sprintf(` && exec bash %s`, ralphScript)
 
-	timeoutCtx, timeoutCancel := context.WithTimeout(ctx, timeout+5*time.Minute) // grace period beyond ralph's own timeout
+	// Calculate proportional grace period: min 30s, max ~25% of timeout
+	gracePeriod := max(30*time.Second, timeout/4)
+	timeoutCtx, timeoutCancel := context.WithTimeout(ctx, timeout+gracePeriod)
 	defer timeoutCancel()
 
 	ralphCtx, ralphCancel := context.WithCancelCause(timeoutCtx)
