@@ -54,16 +54,15 @@ func TestWrapTokenExchangeErrOther(t *testing.T) {
 
 // TestSpriteTokenMissingEnv verifies the error when neither token env var is set.
 func TestSpriteTokenMissingEnv(t *testing.T) {
-	t.Parallel()
-
-	orig := os.Getenv("FLY_API_TOKEN")
-	origSprite := os.Getenv("SPRITE_TOKEN")
-	t.Cleanup(func() {
-		os.Setenv("FLY_API_TOKEN", orig)
-		os.Setenv("SPRITE_TOKEN", origSprite)
-	})
-	os.Unsetenv("SPRITE_TOKEN")
-	os.Unsetenv("FLY_API_TOKEN")
+	// Not parallel: mutates process environment.
+	t.Setenv("FLY_API_TOKEN", "")  // registers cleanup to restore original
+	t.Setenv("SPRITE_TOKEN", "")   // registers cleanup to restore original
+	if err := os.Unsetenv("SPRITE_TOKEN"); err != nil {
+		t.Fatalf("unsetenv SPRITE_TOKEN: %v", err)
+	}
+	if err := os.Unsetenv("FLY_API_TOKEN"); err != nil {
+		t.Fatalf("unsetenv FLY_API_TOKEN: %v", err)
+	}
 
 	_, err := spriteToken()
 	if err == nil {
