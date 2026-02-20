@@ -25,6 +25,7 @@ func newDispatchCmd() *cobra.Command {
 		harness         string
 		model           string
 		noOutputTimeout time.Duration
+		dryRun          bool
 	)
 
 	cmd := &cobra.Command{
@@ -39,7 +40,7 @@ func newDispatchCmd() *cobra.Command {
 				return fmt.Errorf("--harness must be 'claude' or 'opencode', got %q", harness)
 			}
 
-			return runDispatch(cmd.Context(), spriteName, prompt, repo, maxIterations, timeout, harness, model, noOutputTimeout)
+			return runDispatch(cmd.Context(), spriteName, prompt, repo, maxIterations, timeout, harness, model, noOutputTimeout, dryRun)
 		},
 	}
 
@@ -49,12 +50,13 @@ func newDispatchCmd() *cobra.Command {
 	cmd.Flags().StringVar(&harness, "harness", "claude", "Agent harness: claude or opencode")
 	cmd.Flags().StringVar(&model, "model", "", "Model for opencode harness (e.g. moonshotai/kimi-k2.5)")
 	cmd.Flags().DurationVar(&noOutputTimeout, "no-output-timeout", defaultSilenceAbortThreshold, "Abort if no output for this duration (0 to disable)")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Validate credentials and sprite readiness without starting the agent")
 	_ = cmd.MarkFlagRequired("repo")
 
 	return cmd
 }
 
-func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter int, timeout time.Duration, harness, model string, noOutputTimeout time.Duration) error {
+func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter int, timeout time.Duration, harness, model string, noOutputTimeout time.Duration, dryRun bool) error {
 	// Validate credentials
 	token, err := spriteToken()
 	if err != nil {
@@ -91,6 +93,12 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 	// 3. Refuse overlapping dispatches against an active ralph loop
 	if err := ensureNoActiveDispatchLoop(ctx, s); err != nil {
 		return fmt.Errorf("sprite %q is currently working: %w", spriteName, err)
+	}
+
+	// Dry-run: all pre-flight checks passed — do not start the agent.
+	if dryRun {
+		_, _ = fmt.Fprintf(os.Stderr, "dry-run: sprite %q is ready to dispatch\n", spriteName)
+		return nil
 	}
 
 	// 4. Kill stale agent processes from prior dispatches

@@ -287,3 +287,32 @@ func TestHasTaskCompleteSignalReturnsErrorOnRunnerError(t *testing.T) {
 		t.Fatalf("err = %q, want to contain %q", err.Error(), "network")
 	}
 }
+
+func TestDispatchCmdHasDryRunFlag(t *testing.T) {
+	t.Parallel()
+
+	cmd := newDispatchCmd()
+	f := cmd.Flags().Lookup("dry-run")
+	if f == nil {
+		t.Fatal("--dry-run flag not registered on dispatch command")
+	}
+	if f.DefValue != "false" {
+		t.Fatalf("--dry-run default = %q, want %q", f.DefValue, "false")
+	}
+}
+
+func TestDispatchCmdDryRunFlagCanBeSet(t *testing.T) {
+	t.Parallel()
+
+	cmd := newDispatchCmd()
+	if err := cmd.Flags().Set("dry-run", "true"); err != nil {
+		t.Fatalf("failed to set --dry-run: %v", err)
+	}
+	got, err := cmd.Flags().GetBool("dry-run")
+	if err != nil {
+		t.Fatalf("GetBool(dry-run) error: %v", err)
+	}
+	if !got {
+		t.Fatal("expected --dry-run to be true after Set")
+	}
+}
