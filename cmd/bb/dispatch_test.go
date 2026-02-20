@@ -287,3 +287,299 @@ func TestHasTaskCompleteSignalReturnsErrorOnRunnerError(t *testing.T) {
 		t.Fatalf("err = %q, want to contain %q", err.Error(), "network")
 	}
 }
+
+func TestDispatchGracePeriodBounds(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		timeout time.Duration
+		want    time.Duration
+	}{
+		{name: "min floor", timeout: 1 * time.Minute, want: 30 * time.Second},
+		{name: "proportional", timeout: 20 * time.Minute, want: 5 * time.Minute},
+		{name: "max cap", timeout: 2 * time.Hour, want: 5 * time.Minute},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := dispatchGracePeriod(tc.timeout); got != tc.want {
+				t.Fatalf("dispatchGracePeriod(%s) = %s, want %s", tc.timeout, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseKVOutput(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte("a=1\nb = two \ninvalid\n c=3 \n")
+	got := parseKVOutput(raw)
+	if got["a"] != "1" {
+		t.Fatalf("a = %q, want %q", got["a"], "1")
+	}
+	if got["b"] != "two" {
+		t.Fatalf("b = %q, want %q", got["b"], "two")
+	}
+	if got["c"] != "3" {
+		t.Fatalf("c = %q, want %q", got["c"], "3")
+	}
+}
+
+func TestParseKVInt(t *testing.T) {
+	t.Parallel()
+
+	n, err := parseKVInt("dirty_files", "12")
+	if err != nil {
+		t.Fatalf("parseKVInt returned error: %v", err)
+	}
+	if n != 12 {
+		t.Fatalf("parseKVInt returned %d, want 12", n)
+	}
+
+	if _, err := parseKVInt("dirty_files", ""); err == nil {
+		t.Fatal("expected error for missing int")
+	}
+	if _, err := parseKVInt("dirty_files", "x"); err == nil {
+		t.Fatal("expected error for invalid int")
+	}
+	if _, err := parseKVInt("dirty_files", "-1"); err == nil {
+		t.Fatal("expected error for negative int")
+	}
+}
+
+func TestHasSuccessfulDispatchArtifacts(t *testing.T) {
+	t.Parallel()
+
+	if !hasSuccessfulDispatchArtifacts(dispatchOutcome{OpenPRCount: 1, DirtyFiles: 0}) {
+		t.Fatal("expected successful artifacts to be true with open PR and clean workspace")
+	}
+	if hasSuccessfulDispatchArtifacts(dispatchOutcome{OpenPRCount: 0, DirtyFiles: 0}) {
+		t.Fatal("expected false when no open PR")
+	}
+	if hasSuccessfulDispatchArtifacts(dispatchOutcome{OpenPRCount: 1, DirtyFiles: 2}) {
+		t.Fatal("expected false when workspace is dirty")
+	}
+}
+
+func TestInspectDispatchOutcome(t *testing.T) {
+	t.Parallel()
+
+	out := strings.Join([]string{
+		"task_complete=1",
+		"blocked=0",
+		"branch=feat/test",
+		"dirty_files=0",
+		"commits_ahead=2",
+		"open_pr_count=1",
+		"pr_number=417",
+		"pr_query_state=ok",
+		"",
+	}, "\n")
+	r := &fakeSpriteScriptRunner{out: []byte(out), exitCode: 0, err: nil}
+
+	got, err := inspectDispatchOutcome(context.Background(), r.run, "/tmp/ws", "gh-token")
+	if err != nil {
+		t.Fatalf("inspectDispatchOutcome() error = %v", err)
+	}
+	if !r.called {
+		t.Fatal("runner should be called")
+	}
+	if !r.gotDeadline {
+		t.Fatal("runner ctx should have a deadline (timeout)")
+	}
+	if !strings.Contains(r.script, "open_pr_count") {
+		t.Fatalf("script = %q, want to contain %q", r.script, "open_pr_count")
+	}
+	if !strings.Contains(r.script, "GH_TOKEN=") {
+		t.Fatalf("script = %q, want to contain %q", r.script, "GH_TOKEN=")
+	}
+
+	if !got.TaskComplete {
+		t.Fatal("TaskComplete should be true")
+	}
+	if got.Blocked {
+		t.Fatal("Blocked should be false")
+	}
+	if got.Branch != "feat/test" {
+		t.Fatalf("Branch = %q, want %q", got.Branch, "feat/test")
+	}
+	if got.DirtyFiles != 0 || got.CommitsAhead != 2 || got.OpenPRCount != 1 || got.PRNumber != 417 {
+		t.Fatalf("unexpected parsed outcome: %+v", got)
+	}
+	if got.PRQueryState != prQueryStateOK {
+		t.Fatalf("PRQueryState = %q, want %q", got.PRQueryState, prQueryStateOK)
+	}
+}
+
+func TestInspectPRCheckOutcome(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{
+		out:      []byte("status=pass\nchecks_exit=0\n"),
+		exitCode: 0,
+		err:      nil,
+	}
+
+	got, err := inspectPRCheckOutcome(context.Background(), r.run, 417, "gh-token")
+	if err != nil {
+		t.Fatalf("inspectPRCheckOutcome() error = %v", err)
+	}
+	if got.Status != prCheckStatusPass {
+		t.Fatalf("Status = %q, want %q", got.Status, prCheckStatusPass)
+	}
+	if got.ChecksExit != 0 {
+		t.Fatalf("ChecksExit = %d, want 0", got.ChecksExit)
+	}
+	if got.TimedOut {
+		t.Fatal("TimedOut should be false")
+	}
+}
+
+func TestWaitForPRChecks_StopsOnPassAfterPending(t *testing.T) {
+	t.Parallel()
+
+	call := 0
+	run := func(ctx context.Context, script string) ([]byte, int, error) {
+		call++
+		if call == 1 {
+			return []byte("status=pending\nchecks_exit=1\n"), 0, nil
+		}
+		return []byte("status=pass\nchecks_exit=0\n"), 0, nil
+	}
+
+	got, err := waitForPRChecks(context.Background(), run, 417, "gh-token", 100*time.Millisecond, 1*time.Millisecond, nil)
+	if err != nil {
+		t.Fatalf("waitForPRChecks() error = %v", err)
+	}
+	if got.Status != prCheckStatusPass {
+		t.Fatalf("Status = %q, want %q", got.Status, prCheckStatusPass)
+	}
+	if got.TimedOut {
+		t.Fatal("TimedOut should be false")
+	}
+	if call < 2 {
+		t.Fatalf("runner calls = %d, want at least 2", call)
+	}
+}
+
+func TestWaitForPRChecks_ReportsPendingProgress(t *testing.T) {
+	t.Parallel()
+
+	call := 0
+	run := func(ctx context.Context, script string) ([]byte, int, error) {
+		call++
+		if call == 1 {
+			return []byte("status=pending\nchecks_exit=1\n"), 0, nil
+		}
+		return []byte("status=pass\nchecks_exit=0\n"), 0, nil
+	}
+
+	progressCalls := 0
+	_, err := waitForPRChecks(context.Background(), run, 417, "gh-token", 100*time.Millisecond, 1*time.Millisecond, func(elapsed time.Duration) {
+		progressCalls++
+	})
+	if err != nil {
+		t.Fatalf("waitForPRChecks() error = %v", err)
+	}
+	if progressCalls == 0 {
+		t.Fatal("expected pending progress callback to be called")
+	}
+}
+
+func TestWaitForPRChecks_TimesOutWhenStillPending(t *testing.T) {
+	t.Parallel()
+
+	run := func(ctx context.Context, script string) ([]byte, int, error) {
+		return []byte("status=pending\nchecks_exit=1\n"), 0, nil
+	}
+
+	got, err := waitForPRChecks(context.Background(), run, 417, "gh-token", 5*time.Millisecond, 1*time.Millisecond, nil)
+	if err != nil {
+		t.Fatalf("waitForPRChecks() error = %v", err)
+	}
+	if got.Status != prCheckStatusPending {
+		t.Fatalf("Status = %q, want %q", got.Status, prCheckStatusPending)
+	}
+	if !got.TimedOut {
+		t.Fatal("TimedOut should be true")
+	}
+}
+
+func TestPRCheckStatusScriptDefaultsUnknownNonZeroToPending(t *testing.T) {
+	t.Parallel()
+
+	if !strings.Contains(prCheckStatusScript, "status=pending") {
+		t.Fatalf("prCheckStatusScript = %q, want to contain %q", prCheckStatusScript, "status=pending")
+	}
+	if !strings.Contains(prCheckStatusScript, "timed[- ]?out") {
+		t.Fatalf("prCheckStatusScript = %q, want to contain %q", prCheckStatusScript, "timed[- ]?out")
+	}
+}
+
+func TestEnforceDispatchPRReadiness_AllowsPassingChecks(t *testing.T) {
+	t.Parallel()
+
+	outcome := dispatchOutcome{
+		CommitsAhead: 2,
+		OpenPRCount:  1,
+		PRNumber:     417,
+		PRQueryState: prQueryStateOK,
+	}
+	prChecks := prCheckOutcome{Status: prCheckStatusPass}
+	if err := enforceDispatchPRReadiness(outcome, true, prChecks, nil, 4*time.Minute); err != nil {
+		t.Fatalf("enforceDispatchPRReadiness() error = %v, want nil", err)
+	}
+}
+
+func TestEnforceDispatchPRReadiness_BlocksUnknownPRStateWithCommits(t *testing.T) {
+	t.Parallel()
+
+	outcome := dispatchOutcome{
+		CommitsAhead: 2,
+		PRQueryState: prQueryStateQueryErr,
+	}
+	err := enforceDispatchPRReadiness(outcome, true, prCheckOutcome{}, nil, 4*time.Minute)
+	if err == nil {
+		t.Fatal("expected error for query failure with commits ahead")
+	}
+	var coded *exitError
+	if !errors.As(err, &coded) {
+		t.Fatalf("expected exitError, got %T", err)
+	}
+	if coded.Code != 1 {
+		t.Fatalf("exit code = %d, want 1", coded.Code)
+	}
+}
+
+func TestEnforceDispatchPRReadiness_BlocksPendingChecks(t *testing.T) {
+	t.Parallel()
+
+	outcome := dispatchOutcome{
+		OpenPRCount:  1,
+		PRNumber:     417,
+		PRQueryState: prQueryStateOK,
+	}
+	prChecks := prCheckOutcome{Status: prCheckStatusPending}
+	err := enforceDispatchPRReadiness(outcome, true, prChecks, nil, 4*time.Minute)
+	if err == nil {
+		t.Fatal("expected error for pending checks")
+	}
+	if !strings.Contains(err.Error(), "pending") {
+		t.Fatalf("err = %q, want to contain %q", err.Error(), "pending")
+	}
+}
+
+func TestEnforceDispatchPRReadiness_SkipsWhenRequireGreenDisabled(t *testing.T) {
+	t.Parallel()
+
+	outcome := dispatchOutcome{
+		CommitsAhead: 5,
+		PRQueryState: prQueryStateQueryErr,
+	}
+	if err := enforceDispatchPRReadiness(outcome, false, prCheckOutcome{}, errors.New("boom"), 4*time.Minute); err != nil {
+		t.Fatalf("enforceDispatchPRReadiness() error = %v, want nil", err)
+	}
+}
