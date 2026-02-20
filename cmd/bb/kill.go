@@ -68,7 +68,7 @@ if ! command -v pkill >/dev/null 2>&1; then
   exit 1
 fi
 
-agents='/home/sprite/workspace/\.[r]alph\.sh|[c]laude|[o]pencode'
+agents='/home/sprite/workspace/\.[r]alph\.sh|[c]laude'
 
 match=$(pgrep -af "$agents" 2>&1 || true)
 if [ -z "$match" ]; then

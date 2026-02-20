@@ -17,54 +17,40 @@ Run this skill when you want a sprite to execute a coding task through `bb dispa
 
 ```bash
 source .env.bb
-bb status --format text
+bb status
 ```
 
 Confirm:
-- `FLY_APP`, `FLY_API_TOKEN`, and `FLY_ORG` are set.
-- Target sprite exists (or let dispatch provision it).
+- `GITHUB_TOKEN` is set.
+- Sprite is reachable from `bb status`.
 
 ## Workflow
 
-1. Plan first (dry-run default):
+1. Select a sprite that is reachable and not busy.
+2. Fetch issue context locally and embed it in the prompt body.
+3. Dispatch:
 
 ```bash
-bb dispatch <sprite> --issue <number> --repo <owner/repo>
+bb dispatch <sprite> "<prompt with embedded issue context>" --repo <owner/repo> --timeout 25m
 ```
 
-2. Execute with explicit skill(s):
+4. Monitor while running:
 
 ```bash
-bb dispatch <sprite> --issue <number> --repo <owner/repo> \
-  --skill base/skills/bitterblossom-dispatch \
-  --execute --wait
+bb logs <sprite> --follow --lines 100
 ```
 
-3. For multiple skills, repeat `--skill`:
+5. If the run is stalled:
 
 ```bash
-bb dispatch <sprite> "Implement feature X" \
-  --repo <owner/repo> \
-  --skill base/skills/bitterblossom-dispatch \
-  --skill base/skills/bitterblossom-monitoring \
-  --execute --wait
+bb status <sprite>
+bb kill <sprite>
 ```
-
-## Skill Mount Semantics
-
-- Each `--skill` path may be a skill directory or `SKILL.md`.
-- Bitterblossom mounts the full skill directory under `./skills/<name>/` on sprite.
-- Prompt is augmented with required instructions:
-  - `Follow the skill at ./skills/<name>/SKILL.md`
 
 ## Failure Handling
 
-- Validation blocked by labels/readiness:
-  - Use `--skip-validation` only for intentional bypasses.
-- If `--wait` shows no progress, run:
-
-```bash
-bb status <sprite> --format text
-bb watchdog --sprite <sprite>
-```
-
+- If dispatch exits non-zero, capture stderr and classify whether it is:
+  - credential/env failure
+  - reachability failure
+  - active-loop/busy guard
+  - off-rails or agent failure

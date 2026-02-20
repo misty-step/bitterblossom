@@ -9,46 +9,32 @@ If something is ambiguous, make your best judgment call and document the decisio
 
 ## Workflow
 
-### Phase 1: Implementation
-1. Read MEMORY.md and CLAUDE.md for context from previous iterations
-2. Assess current state: what's done, what's left, what's broken
-3. Work on the highest-priority remaining item
-4. Run tests after every meaningful change
-5. Commit working changes with descriptive messages (conventional commits)
-6. Push frequently — don't accumulate uncommitted work
+### 1) Implement
+1. Read `MEMORY.md` and `CLAUDE.md`.
+2. Implement the issue directly.
+3. Run relevant tests/lint after meaningful changes.
+4. Commit and push with conventional commits.
 
-### Phase 2: PR and CI
-7. When implementation is complete, open a PR if you haven't already:
+### 2) Open PR
+1. Open or update a PR for your branch:
    `gh pr create --title "<type>: <description>" --body "<details>"`
-8. After opening or pushing to the PR, check CI status:
-   `gh pr checks $(gh pr view --json number --jq .number) --watch --fail-fast`
-   Or poll: `gh pr checks $(gh pr view --json number --jq .number)`
-9. If CI fails: read the failure logs, fix the issue, commit, push
-10. Repeat steps 8-9 until CI is green
+2. Include a clear summary of files changed and verification run.
 
-### Phase 3: Review Response
-11. Check for review comments:
-    `gh pr view --json reviews,comments --jq '.reviews[] | "\(.state): \(.body)"'`
-    `gh api repos/{{REPO}}/pulls/$(gh pr view --json number --jq .number)/comments --jq '.[] | "\(.path):\(.line) \(.body)"'`
-12. If there are review comments requesting changes: address them, commit, push
-13. Repeat steps 8-12 until CI is green and no pending review requests
+### 3) Complete (do not wait in long loops)
+1. Do NOT wait for full CI completion or review rounds in this run.
+2. Do NOT run long polling loops (`sleep 300`, repeated `gh pr checks`, etc.).
+3. As soon as implementation is pushed and PR exists, write `TASK_COMPLETE` with:
+   - branch name
+   - PR URL
+   - tests run
+   - short summary of changes
+4. `TASK_COMPLETE` must be extensionless. Do NOT use `TASK_COMPLETE.md`.
 
-### Completion
-14. When PR is green and either approved or no pending reviews:
-    Create a file named exactly TASK_COMPLETE (no file extension) with a summary of what was done.
-    Do NOT use TASK_COMPLETE.md — the detection system expects the extensionless filename.
-15. Update MEMORY.md with learnings from this task
+### 4) Blocked path
+If you cannot proceed (missing credentials, hard permission errors, repeated reproducible infra failures), write `BLOCKED.md` with exact blocker details and stop.
 
-## When you get stuck
-- If genuinely blocked (missing credentials, permission error, external dependency):
-  Write BLOCKED.md explaining exactly what you need, then stop
-- If CI keeps failing on the same issue after 3 attempts:
-  Write BLOCKED.md with the persistent failure details
-- Otherwise: KEEP WORKING. Don't stop for cosmetic concerns or hypothetical questions.
-
-## Git workflow
+## Git
 - Work on a feature branch (never main/master)
 - Commit frequently with conventional commit messages
 - Include `Co-Authored-By: {{SPRITE_NAME}} <noreply@anthropic.com>` in commits
 - Push to origin after each meaningful commit
-- Open PR early (can be draft) so CI runs sooner

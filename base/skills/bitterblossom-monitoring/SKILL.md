@@ -1,7 +1,7 @@
 ---
 name: bitterblossom-monitoring
 user-invocable: true
-description: "Monitor and recover Bitterblossom sprite tasks using status, watchdog, wait mode, and targeted diagnostics when dispatch appears stalled."
+description: "Monitor and recover Bitterblossom sprite tasks using status, logs, kill, and targeted diagnostics when dispatch appears stalled."
 allowed-tools:
   - Read
   - Grep
@@ -17,9 +17,9 @@ Use when a dispatched task might be stuck, blocked, or silent.
 
 ```bash
 source .env.bb
-bb status --format text
-bb status <sprite> --format text
-bb watchdog --sprite <sprite>
+bb status
+bb status <sprite>
+bb logs <sprite> --lines 100
 ```
 
 ## During Active Dispatch
@@ -27,22 +27,22 @@ bb watchdog --sprite <sprite>
 Prefer:
 
 ```bash
-bb dispatch <sprite> ... --execute --wait
+bb logs <sprite> --follow --lines 100
 ```
 
-If wait mode is silent for too long:
+If output is silent for too long:
 
 ```bash
-bb status <sprite> --format text
-bb watchdog --sprite <sprite> --json
+bb status <sprite>
+bb kill <sprite>
 ```
 
 ## Fast Triage Heuristics
 
-- `running`: task active; continue waiting.
-- `blocked`: inspect `/home/sprite/workspace/BLOCKED.md`.
-- `complete`: pull PR URL or branch changes from sprite workspace.
-- `dead` or `stale`: re-dispatch with same prompt and capture logs.
+- `active dispatch loop`: sprite is busy; avoid overlapping dispatch.
+- `unreachable`: infrastructure/transport problem; retry later or pick another sprite.
+- `TASK_COMPLETE present`: task completed.
+- `BLOCKED.md present`: agent cannot proceed without intervention.
 
 ## Direct Sprite Probe (Fallback)
 
@@ -57,4 +57,3 @@ Add timeout for unstable exec calls:
 ```bash
 timeout 20 sprite exec -o "$FLY_ORG" -s <sprite> -- pwd
 ```
-

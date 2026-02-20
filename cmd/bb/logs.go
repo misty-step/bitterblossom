@@ -114,7 +114,7 @@ func logsRemoteCommand(logPath string, follow bool, lines int) string {
 }
 
 func spriteHasRunningAgent(ctx context.Context, s *sprites.Sprite) bool {
-	check := `pgrep -f '[r]alph\.sh|[c]laude|[o]pencode' >/dev/null 2>&1`
+	check := `pgrep -f '[r]alph\.sh|[c]laude' >/dev/null 2>&1`
 	return s.CommandContext(ctx, "bash", "-c", check).Run() == nil
 }
 

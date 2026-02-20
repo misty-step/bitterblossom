@@ -61,11 +61,14 @@ bb dispatch <sprite> <prompt> --repo <owner/repo> [flags]
 # Basic dispatch
 bb dispatch fern "Fix the login bug" --repo misty-step/webapp
 
-# With timeout and iteration limit
-bb dispatch bramble "Add user search" --repo misty-step/api --timeout 20m --max-iterations 30
+# With timeout and stricter no-output abort
+bb dispatch bramble "Add user search" --repo misty-step/api --timeout 20m --no-output-timeout 3m
 
 # Claude Sonnet 4.6 runtime (default)
 bb dispatch bramble "Write tests" --repo misty-step/api
+
+# Enforce merge-ready completion (default true)
+bb dispatch bramble "Fix flaky test" --repo misty-step/api --require-green-pr --pr-check-timeout 6m
 ```
 
 ### Flags
@@ -74,7 +77,9 @@ bb dispatch bramble "Write tests" --repo misty-step/api
 |------|---------|-------------|
 | `--repo` | (required) | GitHub repo (`owner/repo`) |
 | `--timeout` | `30m` | Max wall-clock time |
-| `--max-iterations` | `50` | Max ralph loop iterations |
+| `--no-output-timeout` | `5m` | Abort if no output for this duration (`0` disables) |
+| `--require-green-pr` | `true` | Require open PR checks to be green before success |
+| `--pr-check-timeout` | `4m` | Max wait for PR checks when green checks are required (`0` = snapshot only) |
 
 ### Pipeline
 
@@ -93,7 +98,7 @@ bb dispatch bramble "Write tests" --repo misty-step/api
 | Code | Meaning |
 |------|---------|
 | 0 | Success |
-| 1 | Failure (timeout, error, max iterations) |
+| 1 | Failure (timeout, runtime error, CI gate failure) |
 | 2 | Blocked (BLOCKED.md written by agent) |
 
 ---
@@ -122,13 +127,14 @@ bb setup fern --repo misty-step/webapp --force
 |------|---------|-------------|
 | `--repo` | | GitHub repo to clone |
 | `--force` | `false` | Re-clone repo, overwrite configs |
+| `--persona` | auto | Persona file/name override (e.g. `bramble` or `sprites/bramble.md`) |
 
 ### What It Does
 
 1. Probe connectivity
 2. Create directory structure (`~/.claude/`, workspace)
 3. Upload base configs (CLAUDE.md, settings.json with OpenRouter key, hooks, skills, commands)
-4. Upload persona file (`sprites/<name>.md` → `PERSONA.md`)
+4. Upload persona file (`--persona` override, else `sprites/<name>.md`, else fallback `sprites/bramble.md`)
 5. Upload ralph.sh and prompt template
 6. Configure git auth (credential helper, user identity)
 7. Clone repo (if `--repo` provided)
