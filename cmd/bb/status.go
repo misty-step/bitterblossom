@@ -66,7 +66,7 @@ func fleetStatus(ctx context.Context) error {
 		wg.Add(1)
 		go func(idx int, s *sprites.Sprite) {
 			defer wg.Done()
-			r := probeResult{name: s.Name(), status: s.Status, reach: "?", avail: "?"}
+			r := probeResult{name: s.Name(), status: s.Status, reach: "?", avail: "-"}
 
 			probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 			_, probeErr := s.CommandContext(probeCtx, "echo", "ok").Output()
@@ -79,6 +79,7 @@ func fleetStatus(ctx context.Context) error {
 				r.reach = "ok"
 				busy, busyErr := isDispatchLoopActive(ctx, s)
 				if busyErr != nil {
+					r.avail = "?"
 					r.note = "busy-check failed"
 				} else if busy {
 					r.avail = "busy"

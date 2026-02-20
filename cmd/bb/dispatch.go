@@ -290,14 +290,13 @@ func isDispatchLoopActiveWithRunner(ctx context.Context, run spriteScriptRunner)
 		return false, fmt.Errorf("check dispatch loop: %w", err)
 	}
 
-	trim := strings.TrimSpace(string(out))
 	switch exitCode {
 	case 0:
-		// exit 0 with output = busy (shouldn't happen per script, but guard it)
-		return trim != "", nil
+		return false, nil // pgrep found no ralph loop
 	case 1:
-		return true, nil
+		return true, nil // active ralph loop detected
 	default:
+		trim := strings.TrimSpace(string(out))
 		if trim == "" {
 			return false, fmt.Errorf("check dispatch loop exited %d", exitCode)
 		}
