@@ -56,7 +56,7 @@ source .env.bb
 fly tokens create org -o misty-step -n bb-cli -x 720h
 # then paste token into .env.bb and source again
 
-# 3) Set model key
+# 3) Set auth key
 export OPENROUTER_API_KEY="<openrouter-key>"
 
 # 3.1) Required for Cerberus PR review (GitHub Actions)
@@ -91,8 +91,9 @@ bb dispatch bramble --issue 252 --repo misty-step/bitterblossom \
 
 Bitterblossom ships one canonical runtime profile out of the box:
 
-- Provider: `openrouter-kimi`
-- Model: `moonshotai/kimi-k2.5`
+- Provider: `openrouter-claude`
+- Model: `anthropic/claude-sonnet-4-6`
+- Plugin: `ralph-loop@claude-plugins-official`
 - Auth: `OPENROUTER_API_KEY`
 
 Legacy provider variants are still parseable for compatibility, but they are not the default path. See [docs/PROVIDERS.md](docs/PROVIDERS.md) for compatibility notes.

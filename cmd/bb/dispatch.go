@@ -22,8 +22,6 @@ func newDispatchCmd() *cobra.Command {
 		repo            string
 		timeout         time.Duration
 		maxIterations   int
-		harness         string
-		model           string
 		noOutputTimeout time.Duration
 		dryRun          bool
 	)
@@ -36,19 +34,13 @@ func newDispatchCmd() *cobra.Command {
 			spriteName := args[0]
 			prompt := args[1]
 
-			if harness != "claude" && harness != "opencode" {
-				return fmt.Errorf("--harness must be 'claude' or 'opencode', got %q", harness)
-			}
-
-			return runDispatch(cmd.Context(), spriteName, prompt, repo, maxIterations, timeout, harness, model, noOutputTimeout, dryRun)
+			return runDispatch(cmd.Context(), spriteName, prompt, repo, maxIterations, timeout, noOutputTimeout, dryRun)
 		},
 	}
 
 	cmd.Flags().StringVar(&repo, "repo", "", "GitHub repo (owner/repo)")
 	cmd.Flags().DurationVar(&timeout, "timeout", 30*time.Minute, "Max wall-clock time for the ralph loop")
 	cmd.Flags().IntVar(&maxIterations, "max-iterations", 50, "Max ralph loop iterations")
-	cmd.Flags().StringVar(&harness, "harness", "claude", "Agent harness: claude or opencode")
-	cmd.Flags().StringVar(&model, "model", "", "Model for opencode harness (e.g. moonshotai/kimi-k2.5)")
 	cmd.Flags().DurationVar(&noOutputTimeout, "no-output-timeout", defaultSilenceAbortThreshold, "Abort if no output for this duration (0 to disable)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Validate credentials and sprite readiness without starting the agent")
 	_ = cmd.MarkFlagRequired("repo")
@@ -56,7 +48,7 @@ func newDispatchCmd() *cobra.Command {
 	return cmd
 }
 
-func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter int, timeout time.Duration, harness, model string, noOutputTimeout time.Duration, dryRun bool) error {
+func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter int, timeout time.Duration, noOutputTimeout time.Duration, dryRun bool) error {
 	// Validate credentials
 	token, err := spriteToken()
 	if err != nil {
@@ -103,11 +95,11 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 
 	// 4. Kill stale agent processes from prior dispatches
 	// We intentionally only treat an active ralph loop as "busy" to allow self-healing
-	// orphaned agent processes (claude/opencode) from prior dispatch attempts.
+	// orphaned agent processes from prior dispatch attempts.
 	// Without this, concurrent claude processes compete for resources and hang.
 	killCtx, killCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer killCancel()
-	_, _ = s.CommandContext(killCtx, "bash", "-c", "pkill -9 -f 'ralph\\.sh|claude|opencode' 2>/dev/null; sleep 1").Output()
+	_, _ = s.CommandContext(killCtx, "bash", "-c", "pkill -9 -f 'ralph\\.sh|claude' 2>/dev/null; sleep 1").Output()
 
 	// 5. Repo sync (pull latest on default branch)
 	repoName := path.Base(repo)
@@ -142,27 +134,21 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 	}
 
 	// 8. Run ralph loop — foreground, streaming
-	_, _ = fmt.Fprintf(os.Stderr, "starting ralph loop (max %d iterations, %s timeout, harness=%s)...\n", maxIter, timeout, harness)
+	_, _ = fmt.Fprintf(os.Stderr, "starting ralph loop (max %d iterations, %s timeout, harness=claude)...\n", maxIter, timeout)
 
-	// Only pass operational env vars — LLM auth comes from settings.json (claude) or env var (opencode).
+	// Only pass operational env vars — LLM auth/model come from settings.json.
 	totalSec := int(timeout.Seconds())
 	iterSec := 900 // default per-iteration timeout
 	if totalSec < iterSec {
 		iterSec = totalSec // cap per-iteration at total timeout (#389)
 	}
 	ralphEnv := fmt.Sprintf(
-		`export MAX_ITERATIONS=%d MAX_TIME_SEC=%d ITER_TIMEOUT_SEC=%d WORKSPACE=%q GH_TOKEN=%q AGENT_HARNESS=%q AGENT_MODEL=%q LEFTHOOK=0`,
-		maxIter, totalSec, iterSec, workspace, ghToken, harness, model,
+		`export MAX_ITERATIONS=%d MAX_TIME_SEC=%d ITER_TIMEOUT_SEC=%d WORKSPACE=%q GH_TOKEN=%q LEFTHOOK=0 ANTHROPIC_MODEL=%q ANTHROPIC_DEFAULT_SONNET_MODEL=%q CLAUDE_CODE_SUBAGENT_MODEL=%q`,
+		maxIter, totalSec, iterSec, workspace, ghToken,
+		"anthropic/claude-sonnet-4-6",
+		"anthropic/claude-sonnet-4-6",
+		"anthropic/claude-sonnet-4-6",
 	)
-
-	// OpenCode needs OPENROUTER_API_KEY in env; Claude Code uses settings.json on sprite.
-	if harness == "opencode" {
-		orKey := os.Getenv("OPENROUTER_API_KEY")
-		if orKey == "" {
-			return fmt.Errorf("OPENROUTER_API_KEY must be set for opencode harness")
-		}
-		ralphEnv += fmt.Sprintf(` OPENROUTER_API_KEY=%q`, orKey)
-	}
 
 	ralphEnv += fmt.Sprintf(` && exec bash %s`, ralphScript)
 

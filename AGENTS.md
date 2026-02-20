@@ -48,8 +48,6 @@ bb dispatch <sprite> "<prompt>" --repo owner/repo [flags]
 | `--repo` | (required) | GitHub repo (owner/repo) |
 | `--timeout` | `30m` | Max wall-clock time for ralph loop |
 | `--max-iterations` | `50` | Max ralph loop iterations |
-| `--harness` | `claude` | Agent harness: `claude` or `opencode` |
-| `--model` | | Model for opencode harness (e.g. `moonshotai/kimi-k2.5`) |
 
 Pipeline: probe (15s) → verify setup → kill stale processes → repo sync → clean signals → upload prompt → run ralph → verify work → exit code.
 
@@ -68,7 +66,7 @@ bb setup <sprite> [--repo owner/repo] [--force]
 | `--repo` | | GitHub repo to clone |
 | `--force` | `false` | Re-clone repo, overwrite configs |
 
-Uploads: CLAUDE.md, settings.json (with OpenRouter key patched in), hooks, skills, commands, persona, ralph.sh, prompt template. Configures git auth. Installs OpenCode (non-fatal if fails).
+Uploads: CLAUDE.md, settings.json (with OpenRouter key patched in), hooks, skills, commands, persona, ralph.sh, prompt template. Configures git auth.
 
 ### status
 
@@ -104,22 +102,19 @@ If you upgraded `bb`, re-run `bb setup <sprite>` once to upload the updated `ral
 claude -p --dangerously-skip-permissions --verbose < prompt.md
 ```
 
-For non-Anthropic models via OpenRouter proxy (configured in `settings.json` during setup):
+Canonical sprite runtime is pinned to Sonnet 4.6 via settings.json:
 ```bash
 ANTHROPIC_BASE_URL=https://openrouter.ai/api \
 ANTHROPIC_AUTH_TOKEN="$OPENROUTER_API_KEY" \
-ANTHROPIC_MODEL=moonshotai/kimi-k2.5 \
+ANTHROPIC_MODEL=anthropic/claude-sonnet-4-6 \
 claude -p --dangerously-skip-permissions --verbose < prompt.md
 ```
 
-### Tested Models (via OpenRouter)
+### Pinned Model
 
 | Model | Harness | Result | Cost vs Sonnet |
 |-------|---------|--------|----------------|
-| claude-sonnet-4-5 | claude | SUCCESS | 1x (baseline) |
-| z-ai/glm-5 | opencode | SUCCESS (PR #143) | ~10x cheaper |
-| minimax/minimax-m2.5 | opencode | SUCCESS (PR #142) | ~30x cheaper |
-| moonshotai/kimi-k2.5 | opencode | PARTIAL (hung before commit) | ~10x cheaper |
+| anthropic/claude-sonnet-4-6 | claude | CANONICAL | 1x (baseline) |
 
 ### Environment
 
@@ -166,7 +161,7 @@ Sprites are persistent. Don't destroy them.
 ## Important Rules
 
 - **Sprites, not Machines.** Use sprites-go SDK, not Fly CLI.
-- **Claude Code is canonical.** OpenCode is the alternative harness, not deprecated (see ADR-001).
+- **Claude Code only.** Dispatch runs Claude with Sonnet 4.6 + official `ralph-loop` plugin.
 - **Persistent, not ephemeral.** Setup once, dispatch forever.
 - **Avoid new Go commands.** If it needs judgment, write a skill (see ADR-002).
 - **Ralph loop is sacred.** It's the core value proposition. Changes require careful review.
