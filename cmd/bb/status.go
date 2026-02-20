@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -66,10 +67,55 @@ func fleetStatus(ctx context.Context) error {
 		}
 		cancel()
 
-		fmt.Printf("%-15s %-10s %-8s %s\n", sprite.Name(), sprite.Status, reach, note)
+		status := sprite.Status
+		if reach == "ok" {
+			// Reuse the dispatch loop check so fleet status reflects dispatch availability.
+			busyCtx, busyCancel := context.WithTimeout(ctx, 5*time.Second)
+			busy, busyErr := checkActiveDispatchLoop(busyCtx, spriteBashRunnerForStatus(sprite))
+			busyCancel()
+			if busyErr == nil && busy {
+				status = "busy"
+				note = "active dispatch loop"
+			}
+		}
+
+		fmt.Printf("%-15s %-10s %-8s %s\n", sprite.Name(), status, reach, note)
 	}
 
 	return nil
+}
+
+func spriteBashRunnerForStatus(s *sprites.Sprite) func(ctx context.Context, script string) ([]byte, int, error) {
+	return func(ctx context.Context, script string) ([]byte, int, error) {
+		out, err := s.CommandContext(ctx, "bash", "-c", script).CombinedOutput()
+		if err == nil {
+			return out, 0, nil
+		}
+
+		var exitErr *sprites.ExitError
+		if errors.As(err, &exitErr) {
+			return out, exitErr.ExitCode(), nil
+		}
+
+		return out, 0, err
+	}
+}
+
+func checkActiveDispatchLoop(ctx context.Context, run func(ctx context.Context, script string) ([]byte, int, error)) (bool, error) {
+	_, exitCode, err := run(ctx, activeRalphLoopCheckScript)
+	if err != nil {
+		return false, fmt.Errorf("check dispatch loop: %w", err)
+	}
+
+	switch exitCode {
+	case 0:
+		return false, nil
+	case 1:
+		return true, nil
+	default:
+		// Treat unknown check exit as "not busy" to keep status resilient.
+		return false, nil
+	}
 }
 
 func spriteStatus(ctx context.Context, spriteName string) error {

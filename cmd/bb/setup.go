@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -16,8 +17,9 @@ import (
 
 func newSetupCmd() *cobra.Command {
 	var (
-		repo  string
-		force bool
+		repo    string
+		force   bool
+		persona string
 	)
 
 	cmd := &cobra.Command{
@@ -25,17 +27,18 @@ func newSetupCmd() *cobra.Command {
 		Short: "Configure a sprite with base configs, persona, and ralph loop",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSetup(cmd.Context(), args[0], repo, force)
+			return runSetup(cmd.Context(), args[0], repo, force, persona)
 		},
 	}
 
 	cmd.Flags().StringVar(&repo, "repo", "", "GitHub repo to clone (owner/repo)")
 	cmd.Flags().BoolVar(&force, "force", false, "Re-clone repo and overwrite configs")
+	cmd.Flags().StringVar(&persona, "persona", "", "Persona file or name (e.g. bramble or sprites/bramble.md)")
 
 	return cmd
 }
 
-func runSetup(ctx context.Context, spriteName, repo string, force bool) error {
+func runSetup(ctx context.Context, spriteName, repo string, force bool, persona string) error {
 	token, err := spriteToken()
 	if err != nil {
 		return err
@@ -117,9 +120,12 @@ func runSetup(ctx context.Context, spriteName, repo string, force bool) error {
 	}
 
 	// 4. Upload persona
-	personaFile := "sprites/" + spriteName + ".md"
-	if _, err := os.Stat(personaFile); err != nil {
-		return fmt.Errorf("persona not found: %s", personaFile)
+	personaFile, fallbackUsed, err := resolvePersonaFile(spriteName, persona)
+	if err != nil {
+		return err
+	}
+	if fallbackUsed {
+		_, _ = fmt.Fprintf(os.Stderr, "persona for %s not found; using %s (override with --persona)\n", spriteName, personaFile)
 	}
 	if err := uploadFile(ctx, s, personaFile, "/home/sprite/workspace/PERSONA.md"); err != nil {
 		return fmt.Errorf("upload persona: %w", err)
@@ -190,6 +196,60 @@ git config --global --add safe.directory '*'
 
 	_, _ = fmt.Fprintf(os.Stderr, "setup complete: %s\n", spriteName)
 	return nil
+}
+
+func resolvePersonaFile(spriteName, explicitPersona string) (path string, usedFallback bool, err error) {
+	return resolvePersonaFileFromRoot(".", spriteName, explicitPersona)
+}
+
+func resolvePersonaFileFromRoot(rootDir, spriteName, explicitPersona string) (path string, usedFallback bool, err error) {
+	if explicitPersona != "" {
+		p, err := resolveExplicitPersonaPath(rootDir, explicitPersona)
+		if err != nil {
+			return "", false, err
+		}
+		return p, false, nil
+	}
+
+	spritePersona := filepath.Join(rootDir, "sprites", spriteName+".md")
+	if isRegularFile(spritePersona) {
+		return spritePersona, false, nil
+	}
+
+	defaultPersona := filepath.Join(rootDir, "sprites", "bramble.md")
+	if isRegularFile(defaultPersona) {
+		return defaultPersona, true, nil
+	}
+
+	available, _ := filepath.Glob(filepath.Join(rootDir, "sprites", "*.md"))
+	sort.Strings(available)
+	if len(available) > 0 {
+		return available[0], true, nil
+	}
+
+	return "", false, fmt.Errorf("persona not found for %q and no defaults available (expected sprites/<name>.md or pass --persona)", spriteName)
+}
+
+func resolveExplicitPersonaPath(rootDir, input string) (string, error) {
+	candidates := []string{
+		input,
+		filepath.Join(rootDir, "sprites", input),
+		filepath.Join(rootDir, "sprites", input+".md"),
+	}
+	for _, candidate := range candidates {
+		if isRegularFile(candidate) {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("persona not found: %q (try --persona bramble or --persona sprites/bramble.md)", input)
+}
+
+func isRegularFile(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return info.Mode().IsRegular()
 }
 
 // uploadFile reads a local file and writes it to the sprite filesystem.
