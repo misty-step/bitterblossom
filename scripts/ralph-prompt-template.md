@@ -48,6 +48,16 @@ If something is ambiguous, make your best judgment call and document the decisio
 
 ## Git workflow
 - Work on a feature branch (never main/master)
+- **Branch naming**: append the current date to avoid collisions with prior runs:
+  `git checkout -b fix/NNN-short-description-$(date +%Y%m%d)`
+  Example: `fix/406-timeout-grace-20250220`
+- **Before pushing**: if a remote branch with the same name already exists, delete it first:
+  ```
+  git push origin --delete <branch-name> 2>/dev/null || true
+  git push -u origin <branch-name>
+  ```
+  This avoids non-fast-forward push failures. **Never rebase** — repo policy hooks block it.
+- If you already have a local branch from a previous iteration, reuse it (don't create a new one).
 - Commit frequently with conventional commit messages
 - Include `Co-Authored-By: {{SPRITE_NAME}} <noreply@anthropic.com>` in commits
 - Push to origin after each meaningful commit
