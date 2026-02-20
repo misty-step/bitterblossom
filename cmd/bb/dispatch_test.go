@@ -144,6 +144,28 @@ func TestOffRailsDetectorEmitsWarningOnSilence(t *testing.T) {
 	t.Fatalf("expected warning line, got %q", out.String())
 }
 
+func TestGraceFor(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		timeout time.Duration
+		want    time.Duration
+	}{
+		{1 * time.Second, 30 * time.Second},   // floor: 1s/4 = 250ms < 30s
+		{2 * time.Minute, 30 * time.Second},   // floor: 2m/4 = 30s = 30s
+		{4 * time.Minute, 1 * time.Minute},    // proportional: 4m/4 = 1m
+		{20 * time.Minute, 5 * time.Minute},   // cap: 20m/4 = 5m = cap
+		{2 * time.Hour, 5 * time.Minute},      // cap: 2h/4 = 30m > 5m cap
+		{24 * time.Hour, 5 * time.Minute},     // cap: 24h/4 = 6h > 5m cap
+	}
+	for _, tt := range tests {
+		got := graceFor(tt.timeout)
+		if got != tt.want {
+			t.Errorf("graceFor(%v) = %v, want %v", tt.timeout, got, tt.want)
+		}
+	}
+}
+
 type fakeSpriteScriptRunner struct {
 	out         []byte
 	exitCode    int
