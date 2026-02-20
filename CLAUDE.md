@@ -32,16 +32,16 @@ No `internal/` directory. No `pkg/`. All Go logic lives in `cmd/bb/`.
 
 ## Canonical Harness
 
-Claude Code is canonical sprite harness (ADR-001). OpenCode available as alternative via `--harness opencode`.
+Claude Code is the only supported sprite harness (ADR-001). Runtime is pinned to Sonnet 4.6 with official `ralph-loop` plugin enabled in settings.
 
 ```bash
 # Direct
 claude -p --dangerously-skip-permissions --verbose < prompt.md
 
-# Via OpenRouter proxy
+# Via OpenRouter proxy (default sprite runtime)
 ANTHROPIC_BASE_URL=https://openrouter.ai/api \
 ANTHROPIC_AUTH_TOKEN="$OPENROUTER_API_KEY" \
-ANTHROPIC_MODEL=moonshotai/kimi-k2.5 \
+ANTHROPIC_MODEL=anthropic/claude-sonnet-4-6 \
 claude -p --dangerously-skip-permissions --verbose < prompt.md
 ```
 
