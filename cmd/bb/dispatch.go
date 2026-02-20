@@ -275,6 +275,36 @@ func ensureNoActiveDispatchLoop(ctx context.Context, s *sprites.Sprite) error {
 	return ensureNoActiveDispatchLoopWithRunner(ctx, spriteBashRunner(s))
 }
 
+// isDispatchLoopActive returns true when a ralph loop is running on s.
+// It uses the same pgrep check as ensureNoActiveDispatchLoop.
+func isDispatchLoopActive(ctx context.Context, s *sprites.Sprite) (bool, error) {
+	return isDispatchLoopActiveWithRunner(ctx, spriteBashRunner(s))
+}
+
+func isDispatchLoopActiveWithRunner(ctx context.Context, run spriteScriptRunner) (bool, error) {
+	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	out, exitCode, err := run(checkCtx, activeRalphLoopCheckScript)
+	if err != nil {
+		return false, fmt.Errorf("check dispatch loop: %w", err)
+	}
+
+	trim := strings.TrimSpace(string(out))
+	switch exitCode {
+	case 0:
+		// exit 0 with output = busy (shouldn't happen per script, but guard it)
+		return trim != "", nil
+	case 1:
+		return true, nil
+	default:
+		if trim == "" {
+			return false, fmt.Errorf("check dispatch loop exited %d", exitCode)
+		}
+		return false, fmt.Errorf("check dispatch loop exited %d:\n%s", exitCode, trim)
+	}
+}
+
 func spriteBashRunner(s *sprites.Sprite) spriteScriptRunner {
 	return func(ctx context.Context, script string) ([]byte, int, error) {
 		out, err := s.CommandContext(ctx, "bash", "-c", script).CombinedOutput()

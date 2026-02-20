@@ -49,24 +49,37 @@ func fleetStatus(ctx context.Context) error {
 		return nil
 	}
 
-	fmt.Printf("%-15s %-10s %-8s %s\n", "SPRITE", "STATUS", "REACH", "NOTE")
-	fmt.Printf("%-15s %-10s %-8s %s\n", "------", "------", "-----", "----")
+	fmt.Printf("%-15s %-10s %-8s %-6s %s\n", "SPRITE", "STATUS", "REACH", "AVAIL", "NOTE")
+	fmt.Printf("%-15s %-10s %-8s %-6s %s\n", "------", "------", "-----", "-----", "----")
 
 	for _, sprite := range all {
 		reach := "?"
+		avail := "?"
 		note := ""
 
 		// Quick probe (3s timeout)
 		probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		if _, probeErr := sprite.CommandContext(probeCtx, "echo", "ok").Output(); probeErr == nil {
-			reach = "ok"
-		} else {
-			reach = "no"
-			note = "unreachable"
-		}
+		_, probeErr := sprite.CommandContext(probeCtx, "echo", "ok").Output()
 		cancel()
 
-		fmt.Printf("%-15s %-10s %-8s %s\n", sprite.Name(), sprite.Status, reach, note)
+		if probeErr != nil {
+			reach = "no"
+			avail = "?"
+			note = "unreachable"
+		} else {
+			reach = "ok"
+			busy, busyErr := isDispatchLoopActive(ctx, sprite)
+			if busyErr != nil {
+				avail = "?"
+				note = "busy-check failed"
+			} else if busy {
+				avail = "busy"
+			} else {
+				avail = "idle"
+			}
+		}
+
+		fmt.Printf("%-15s %-10s %-8s %-6s %s\n", sprite.Name(), sprite.Status, reach, avail, note)
 	}
 
 	return nil
