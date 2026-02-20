@@ -19,6 +19,7 @@ Run this skill to exercise the full `bb dispatch` pipeline against a real issue.
 - **Timestamp everything.** Record wall-clock time at each phase boundary.
 - **Known failure modes.** Watch for: stale TASK_COMPLETE (#277), polling loops (#293), zero-effect oneshot (#294), proxy health failures (#296), stdout pollution (#320).
 - **Friction counts.** A confusing message or 90-second silence is a finding, not "working as expected."
+- **Credential safety.** Never enumerate local keychains or brute-force credential stores. If auth is missing/broken, mark FAIL + file issue; do not probe secrets.
 
 ## References
 
@@ -40,7 +41,7 @@ Record: exit code, duration, any warnings.
 
 ```bash
 source .env.bb
-bb status --format text
+bb status
 ```
 
 Pick a sprite showing `warm` API status. Record which sprite and its state.
@@ -69,7 +70,7 @@ Dry-run confirms credentials resolve. Record any validation errors or warnings.
 ```bash
 bb dispatch <sprite> "<prompt with embedded issue context>" \
   --repo misty-step/bitterblossom \
-  --execute --wait --timeout 25m
+  --timeout 25m
 ```
 
 Record: dispatch confirmation output, any immediate errors.
@@ -84,8 +85,9 @@ While `--wait` is active, observe:
 If wait appears stalled:
 
 ```bash
-bb status <sprite> --format text
-bb watchdog --sprite <sprite>
+bb status <sprite>
+bb logs <sprite> --follow --lines 100
+bb kill <sprite>
 ```
 
 ### Phase 7: Completion

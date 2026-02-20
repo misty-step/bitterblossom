@@ -21,7 +21,7 @@ cmd/bb/
   sprite_workspace.go   Find workspace on-sprite
 
 scripts/
-  ralph.sh                  The ralph loop: invoke agent, check signals, enforce limits
+  ralph.sh                  Thin Claude runner: invoke plugin-driven flow, check completion signals
   ralph-prompt-template.md  Prompt template with {{TASK_DESCRIPTION}}, {{REPO}}, {{SPRITE_NAME}}
 
 base/               Shared config pushed to every sprite (CLAUDE.md, hooks, skills, settings.json)
@@ -47,9 +47,11 @@ bb dispatch <sprite> "<prompt>" --repo owner/repo [flags]
 |------|---------|-------------|
 | `--repo` | (required) | GitHub repo (owner/repo) |
 | `--timeout` | `30m` | Max wall-clock time for ralph loop |
-| `--max-iterations` | `50` | Max ralph loop iterations |
+| `--no-output-timeout` | `5m` | Abort if no output for this duration (0 disables) |
+| `--require-green-pr` | `true` | Require open PR checks to be green before success |
+| `--pr-check-timeout` | `4m` | Max wait for PR checks when green checks are required |
 
-Pipeline: probe (15s) → verify setup → kill stale processes → repo sync → clean signals → upload prompt → run ralph → verify work → exit code.
+Pipeline: probe (15s) → verify setup → kill stale processes → repo sync → clean signals → upload prompt → run Claude/plugin wrapper → verify work → exit code.
 
 Exit codes: 0 = success, 1 = failure, 2 = blocked.
 
@@ -58,13 +60,14 @@ Exit codes: 0 = success, 1 = failure, 2 = blocked.
 Configure a sprite with base configs, persona, and ralph loop.
 
 ```bash
-bb setup <sprite> [--repo owner/repo] [--force]
+bb setup <sprite> [--repo owner/repo] [--force] [--persona bramble]
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--repo` | | GitHub repo to clone |
 | `--force` | `false` | Re-clone repo, overwrite configs |
+| `--persona` | auto | Persona file/name override (defaults to `sprites/<sprite>.md`, falls back to `sprites/bramble.md`) |
 
 Uploads: CLAUDE.md, settings.json (with OpenRouter key patched in), hooks, skills, commands, persona, ralph.sh, prompt template. Configures git auth.
 
@@ -165,3 +168,10 @@ Sprites are persistent. Don't destroy them.
 - **Persistent, not ephemeral.** Setup once, dispatch forever.
 - **Avoid new Go commands.** If it needs judgment, write a skill (see ADR-002).
 - **Ralph loop is sacred.** It's the core value proposition. Changes require careful review.
+
+## Operator Safety Guardrail
+
+- **Never scrape or enumerate keychain entries.** Do not run commands like `security dump-keychain`, broad `security find-generic-password` loops, or any brute-force keychain probing.
+- **No repeated keychain prompts.** Any approach that can trigger repeated OS credential popups is prohibited.
+- **Fail fast on auth gaps.** If `SPRITE_TOKEN` / `FLY_API_TOKEN` is missing or invalid, stop and ask for explicit user action (`sprite login` / refresh token) instead of probing local secrets.
+- **Use documented auth paths only.** Environment variables and first-party CLI login flows are allowed; keychain spelunking is not.
