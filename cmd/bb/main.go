@@ -116,12 +116,14 @@ func spriteToken() (string, error) {
 }
 
 // tokenExchangeErr wraps a CreateToken error with an actionable hint.
-// "unauthorized" almost always means an expired FLY_API_TOKEN.
+// Matches "unauthorized" case-insensitively — sprites-go doesn't expose typed
+// errors, so string matching is the only detection path. If the SDK changes
+// its error text, this degrades to the generic message (not silently wrong).
 func tokenExchangeErr(err error) error {
-	if strings.Contains(err.Error(), "unauthorized") {
+	if strings.Contains(strings.ToLower(err.Error()), "unauthorized") {
 		return fmt.Errorf("token exchange failed: %w\nHint: FLY_API_TOKEN may be expired. Try: export FLY_API_TOKEN=$(fly tokens create)", err)
 	}
-	return fmt.Errorf("token exchange failed: %w (set SPRITES_ORG if not 'personal')", err)
+	return fmt.Errorf("token exchange failed: %w", err)
 }
 
 // requireEnv returns the value of an environment variable or an error.
