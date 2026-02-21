@@ -12,11 +12,13 @@ However, this limitation was discovered to be solvable. PR #136 (`feat/proxy-pro
 
 Additionally, during the brief OpenCode-only period, several stability and usability issues with OpenCode were encountered that required workarounds.
 
+On February 19, 2026, Bitterblossom intentionally removed OpenCode support from runtime paths to reduce operational branching and harden dispatch reliability. The canonical runtime is now Claude Code pinned to Sonnet 4.6 with the official `ralph-loop` plugin.
+
 ## Decision
 
-**Claude Code is the canonical agent harness for Bitterblossom sprite dispatch.** OpenCode remains available as an alternative harness, but is not the default path.
+**Claude Code is the only supported harness for Bitterblossom sprite dispatch.**
 
-All sprite dispatch flows, documentation, and tooling should assume Claude Code as the default harness, using the proxy provider for non-Anthropic model routing when needed.
+All sprite dispatch flows, documentation, and tooling assume Claude-only execution with Sonnet 4.6 runtime defaults.
 
 ## Rationale
 
@@ -32,8 +34,8 @@ All sprite dispatch flows, documentation, and tooling should assume Claude Code 
 
 ## Consequences
 
-- All Bitterblossom documentation (`AGENTS.md`, `docs/SPRITE-ARCHITECTURE.md`) updated to reflect Claude Code as canonical.
+- All Bitterblossom documentation (`AGENTS.md`, `docs/SPRITE-ARCHITECTURE.md`) updated to reflect Claude-only runtime.
 - The OpenCode-only migration checklist in `docs/SPRITE-ARCHITECTURE.md` is cancelled.
 - Cerberus Council reviewers should accept Claude Code references in PRs — they are not deprecated.
 - Sprite environment configuration uses `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` for proxy routing (not `OPENROUTER_API_KEY` alone).
-- OpenCode remains available as an alternative harness but is not the canonical dispatch path.
+- OpenCode-specific setup/dispatch/runtime branches are removed from production paths.
