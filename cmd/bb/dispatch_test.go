@@ -696,28 +696,28 @@ func TestSnapshotPRChecksReturnsPassOnExitCode0(t *testing.T) {
 	}
 }
 
-func TestSnapshotPRChecksReturnsFailOnExitCode1(t *testing.T) {
+func TestSnapshotPRChecksReturnsPendingOnExitCode1(t *testing.T) {
 	t.Parallel()
 
-	r := &fakeSpriteScriptRunner{exitCode: 1, out: []byte("failing check\n"), err: nil}
+	r := &fakeSpriteScriptRunner{exitCode: 1, out: []byte("check in progress\n"), err: nil}
 	got := snapshotPRChecksWithRunner(context.Background(), r.run, "/tmp/ws", "token")
 
-	if got.Status != "fail" {
-		t.Fatalf("status = %q, want %q", got.Status, "fail")
+	if got.Status != "pending" {
+		t.Fatalf("status = %q, want %q", got.Status, "pending")
 	}
 	if got.ChecksExit != 1 {
 		t.Fatalf("checks_exit = %d, want %d", got.ChecksExit, 1)
 	}
 }
 
-func TestSnapshotPRChecksReturnsNoPROnExitCode2(t *testing.T) {
+func TestSnapshotPRChecksReturnsErrorOnExitCode2(t *testing.T) {
 	t.Parallel()
 
-	r := &fakeSpriteScriptRunner{exitCode: 2, out: []byte("no pr\n"), err: nil}
+	r := &fakeSpriteScriptRunner{exitCode: 2, out: []byte("no pr found\n"), err: nil}
 	got := snapshotPRChecksWithRunner(context.Background(), r.run, "/tmp/ws", "token")
 
-	if got.Status != "no-pr" {
-		t.Fatalf("status = %q, want %q", got.Status, "no-pr")
+	if got.Status != "error" {
+		t.Fatalf("status = %q, want %q", got.Status, "error")
 	}
 	if got.ChecksExit != 2 {
 		t.Fatalf("checks_exit = %d, want %d", got.ChecksExit, 2)
@@ -776,18 +776,19 @@ func TestSnapshotPRChecksHasDeadline(t *testing.T) {
 	}
 }
 
-// TestSnapshotPRChecksTaskCompleteWithFailingChecks verifies that a failing CI
-// state (exit 1 from prChecksScript) is correctly captured and labeled "fail".
+// TestSnapshotPRChecksTaskCompleteWithPendingChecks verifies that a non-passing CI
+// state (exit 1 from prChecksScript) is captured and labeled "pending", consistent
+// with prChecksScript's documented semantics and waitForPRChecksWithRunner.
 // This is the regression path from #420: agent signals TASK_COMPLETE while
-// PR CI checks are failing.
-func TestSnapshotPRChecksTaskCompleteWithFailingChecks(t *testing.T) {
+// PR CI checks have not yet passed.
+func TestSnapshotPRChecksTaskCompleteWithPendingChecks(t *testing.T) {
 	t.Parallel()
 
 	r := &fakeSpriteScriptRunner{exitCode: 1, out: []byte("required check failed\n"), err: nil}
 	got := snapshotPRChecksWithRunner(context.Background(), r.run, "/tmp/ws", "token")
 
-	if got.Status != "fail" {
-		t.Fatalf("status = %q, want %q", got.Status, "fail")
+	if got.Status != "pending" {
+		t.Fatalf("status = %q, want %q", got.Status, "pending")
 	}
 	if got.ChecksExit != 1 {
 		t.Fatalf("checks_exit = %d, want %d", got.ChecksExit, 1)

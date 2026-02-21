@@ -456,9 +456,9 @@ func snapshotPRChecksWithRunner(ctx context.Context, run spriteScriptRunner, wor
 	case 0:
 		return prCheckSummary{Status: "pass", ChecksExit: exitCode}
 	case 1:
-		return prCheckSummary{Status: "fail", ChecksExit: exitCode}
+		return prCheckSummary{Status: "pending", ChecksExit: exitCode}
 	case 2:
-		return prCheckSummary{Status: "no-pr", ChecksExit: exitCode}
+		return prCheckSummary{Status: "error", ChecksExit: exitCode}
 	default:
 		return prCheckSummary{Status: "error", ChecksExit: exitCode}
 	}
