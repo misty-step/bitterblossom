@@ -4,6 +4,7 @@ set -euo pipefail
 MAX_ITERATIONS="${MAX_ITERATIONS:-50}"
 MAX_TIME_SEC="${MAX_TIME_SEC:-1800}"
 ITER_TIMEOUT_SEC="${ITER_TIMEOUT_SEC:-900}"  # per-invocation timeout (15 min default)
+HEARTBEAT_INTERVAL_SEC="${HEARTBEAT_INTERVAL_SEC:-120}"  # 2 min; must be < off-rails silence threshold
 WS="${WORKSPACE:-$HOME/workspace/repo}"
 PROMPT="$WS/.dispatch-prompt.md"
 RALPH_LOG="$WS/ralph.log"
@@ -59,9 +60,17 @@ while (( i < MAX_ITERATIONS )); do
   i=$((i+1))
   log "[ralph] iteration $i / $MAX_ITERATIONS at $(date -Iseconds)"
 
+  # Heartbeat: emit progress every HEARTBEAT_INTERVAL_SEC so the off-rails silence
+  # detector on the dispatch side does not fire during legitimate long waits (e.g. CI polling).
+  { while sleep "$HEARTBEAT_INTERVAL_SEC"; do log "[ralph] heartbeat: $(date -Iseconds)"; done; } &
+  HB_PID=$!
+
   timeout "$ITER_TIMEOUT_SEC" \
     claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json \
     < "$PROMPT" 2>&1 | grep --line-buffered -F -v '"type":"system","subtype":"init"' | tee -a "$RALPH_LOG" || true
+
+  kill "$HB_PID" 2>/dev/null || true
+  wait "$HB_PID" 2>/dev/null || true
   trim_log
 
   sleep 2

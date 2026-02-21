@@ -219,6 +219,15 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 			_, _ = fmt.Fprintf(os.Stderr, "\n=== task completed: TASK_COMPLETE signal found ===\n")
 			return nil
 		}
+
+		// Secondary check: if new commits exist the agent was mid-task (e.g. waiting for CI).
+		// Treat as success with a warning — the work landed, the loop just couldn't signal cleanly.
+		hasWork, _ := hasNewCommitsWithRunner(ctx, spriteBashRunner(s), workspace)
+		if hasWork {
+			_, _ = fmt.Fprintf(os.Stderr, "\n=== off-rails fired mid-task: new commits found — treating as success ===\n")
+			return nil
+		}
+
 		return &exitError{Code: 4, Err: cause}
 	}
 
@@ -260,6 +269,18 @@ echo "$busy" >&2
 exit "$status"`
 
 const taskCompleteSignalCheckScript = `if [ -f "$WORKSPACE/TASK_COMPLETE" ] || [ -f "$WORKSPACE/TASK_COMPLETE.md" ]; then
+  exit 0
+fi
+exit 1`
+
+// newCommitsCheckScript checks if any commits on HEAD are not yet on origin/master or
+// origin/main. Exits 0 with commit list on stdout when new commits exist, exits 1 when
+// the branch is flush with upstream (no new work). Exits 2 when not a git repo.
+const newCommitsCheckScript = `
+cd "$WORKSPACE" 2>/dev/null || exit 2
+commits="$(git log origin/master..HEAD --oneline 2>/dev/null || git log origin/main..HEAD --oneline 2>/dev/null || true)"
+if [ -n "$commits" ]; then
+  printf '%s\n' "$commits"
   exit 0
 fi
 exit 1`
@@ -328,6 +349,30 @@ func graceFor(timeout time.Duration) time.Duration {
 		grace = 5 * time.Minute
 	}
 	return grace
+}
+
+// hasNewCommitsWithRunner returns true when commits exist on HEAD that are not
+// present on origin/master or origin/main. This is used as a secondary off-rails
+// backstop: if the detector fired while the agent was mid-task (e.g. waiting for CI),
+// and work exists on the branch, dispatch succeeds with a warning rather than failing.
+func hasNewCommitsWithRunner(ctx context.Context, run spriteScriptRunner, workspace string) (bool, error) {
+	checkCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	checkScript := fmt.Sprintf("export WORKSPACE=%q\n%s", workspace, newCommitsCheckScript)
+	out, exitCode, err := run(checkCtx, checkScript)
+	if err != nil {
+		return false, fmt.Errorf("check new commits: %w", err)
+	}
+
+	switch exitCode {
+	case 0:
+		return true, nil
+	case 1:
+		return false, nil
+	default:
+		return false, fmt.Errorf("new commits check exited %d: %s", exitCode, strings.TrimSpace(string(out)))
+	}
 }
 
 func hasTaskCompleteSignalWithRunner(ctx context.Context, run spriteScriptRunner, workspace string) (bool, error) {
