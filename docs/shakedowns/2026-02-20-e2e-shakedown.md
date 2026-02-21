@@ -6,7 +6,7 @@
 |-------|-------|
 | Date | 2026-02-20 |
 | Sprite | fern |
-| Issue | #406 — timeout grace period is fixed 5min regardless of --timeout value |
+| Issue | #406 — timeout grace period is fixed 5 min regardless of --timeout value |
 | Total Duration | ~5 min (17:12:04Z dispatch → 17:16:23Z all CI green) |
 | Overall Grade | B |
 | Findings Count | P0: 0 / P1: 1 / P2: 3 / P3: 1 |
@@ -153,7 +153,7 @@
 <details>
 <summary>Dispatch command and output</summary>
 
-```
+```text
 Dispatching at 17:12:04Z
 exchanging fly token for sprites token (org=misty-step)...
 probing fern...
