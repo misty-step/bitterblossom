@@ -688,11 +688,11 @@ func TestSnapshotPRChecksReturnsPassOnExitCode0(t *testing.T) {
 	r := &fakeSpriteScriptRunner{exitCode: 0, out: []byte("pass\n"), err: nil}
 	got := snapshotPRChecksWithRunner(context.Background(), r.run, "/tmp/ws", "token")
 
-	if got.Status != "pass" {
-		t.Fatalf("status = %q, want %q", got.Status, "pass")
+	if got.status != "pass" {
+		t.Fatalf("status = %q, want %q", got.status, "pass")
 	}
-	if got.ChecksExit != 0 {
-		t.Fatalf("checks_exit = %d, want %d", got.ChecksExit, 0)
+	if got.checksExit != 0 {
+		t.Fatalf("checks_exit = %d, want %d", got.checksExit, 0)
 	}
 }
 
@@ -702,11 +702,11 @@ func TestSnapshotPRChecksReturnsPendingOnExitCode1(t *testing.T) {
 	r := &fakeSpriteScriptRunner{exitCode: 1, out: []byte("check in progress\n"), err: nil}
 	got := snapshotPRChecksWithRunner(context.Background(), r.run, "/tmp/ws", "token")
 
-	if got.Status != "pending" {
-		t.Fatalf("status = %q, want %q", got.Status, "pending")
+	if got.status != "pending" {
+		t.Fatalf("status = %q, want %q", got.status, "pending")
 	}
-	if got.ChecksExit != 1 {
-		t.Fatalf("checks_exit = %d, want %d", got.ChecksExit, 1)
+	if got.checksExit != 1 {
+		t.Fatalf("checks_exit = %d, want %d", got.checksExit, 1)
 	}
 }
 
@@ -716,11 +716,11 @@ func TestSnapshotPRChecksReturnsErrorOnExitCode2(t *testing.T) {
 	r := &fakeSpriteScriptRunner{exitCode: 2, out: []byte("no pr found\n"), err: nil}
 	got := snapshotPRChecksWithRunner(context.Background(), r.run, "/tmp/ws", "token")
 
-	if got.Status != "error" {
-		t.Fatalf("status = %q, want %q", got.Status, "error")
+	if got.status != "error" {
+		t.Fatalf("status = %q, want %q", got.status, "error")
 	}
-	if got.ChecksExit != 2 {
-		t.Fatalf("checks_exit = %d, want %d", got.ChecksExit, 2)
+	if got.checksExit != 2 {
+		t.Fatalf("checks_exit = %d, want %d", got.checksExit, 2)
 	}
 }
 
@@ -730,11 +730,11 @@ func TestSnapshotPRChecksReturnsErrorOnRunnerError(t *testing.T) {
 	r := &fakeSpriteScriptRunner{exitCode: 0, out: nil, err: errors.New("network")}
 	got := snapshotPRChecksWithRunner(context.Background(), r.run, "/tmp/ws", "token")
 
-	if got.Status != "error" {
-		t.Fatalf("status = %q, want %q", got.Status, "error")
+	if got.status != "error" {
+		t.Fatalf("status = %q, want %q", got.status, "error")
 	}
-	if got.ChecksExit != -1 {
-		t.Fatalf("checks_exit = %d, want %d", got.ChecksExit, -1)
+	if got.checksExit != -1 {
+		t.Fatalf("checks_exit = %d, want %d", got.checksExit, -1)
 	}
 }
 
@@ -787,10 +787,61 @@ func TestSnapshotPRChecksTaskCompleteWithPendingChecks(t *testing.T) {
 	r := &fakeSpriteScriptRunner{exitCode: 1, out: []byte("required check failed\n"), err: nil}
 	got := snapshotPRChecksWithRunner(context.Background(), r.run, "/tmp/ws", "token")
 
-	if got.Status != "pending" {
-		t.Fatalf("status = %q, want %q", got.Status, "pending")
+	if got.status != "pending" {
+		t.Fatalf("status = %q, want %q", got.status, "pending")
 	}
-	if got.ChecksExit != 1 {
-		t.Fatalf("checks_exit = %d, want %d", got.ChecksExit, 1)
+	if got.checksExit != 1 {
+		t.Fatalf("checks_exit = %d, want %d", got.checksExit, 1)
+	}
+}
+
+func TestSnapshotPRChecksReturnsErrorOnCancelledContext(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel
+
+	runner := func(ctx context.Context, _ string) ([]byte, int, error) {
+		return nil, 0, ctx.Err()
+	}
+
+	got := snapshotPRChecksWithRunner(ctx, runner, "/tmp/ws", "token")
+
+	if got.status != "error" {
+		t.Fatalf("status = %q, want %q", got.status, "error")
+	}
+	if got.checksExit != -1 {
+		t.Fatalf("checks_exit = %d, want %d", got.checksExit, -1)
+	}
+}
+
+func TestSnapshotPRChecksReturnsErrorOnUnexpectedExitCode(t *testing.T) {
+	t.Parallel()
+
+	// Exit 127 = command not found (gh missing on sprite)
+	r := &fakeSpriteScriptRunner{exitCode: 127, out: []byte("bash: gh: command not found\n"), err: nil}
+	got := snapshotPRChecksWithRunner(context.Background(), r.run, "/tmp/ws", "token")
+
+	if got.status != "error" {
+		t.Fatalf("status = %q, want %q", got.status, "error")
+	}
+	if got.checksExit != 127 {
+		t.Fatalf("checks_exit = %d, want %d", got.checksExit, 127)
+	}
+}
+
+func TestPRChecksScriptForIncludesWorkspaceAndToken(t *testing.T) {
+	t.Parallel()
+
+	script := prChecksScriptFor("/home/sprite/workspace/myrepo", "ghtoken123")
+
+	if !strings.Contains(script, "/home/sprite/workspace/myrepo") {
+		t.Fatalf("script = %q, want to contain workspace path", script)
+	}
+	if !strings.Contains(script, "ghtoken123") {
+		t.Fatalf("script = %q, want to contain GH token", script)
+	}
+	if !strings.Contains(script, "gh pr checks HEAD") {
+		t.Fatalf("script = %q, want to contain gh pr checks command", script)
 	}
 }
