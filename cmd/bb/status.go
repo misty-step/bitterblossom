@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -11,6 +12,23 @@ import (
 
 	"github.com/spf13/cobra"
 )
+
+// parsePorcelainStatus parses `git status --porcelain=v1` output and returns
+// a slice of human-readable file-status lines (e.g. " M cmd/bb/status.go",
+// "?? newfile.go"). An empty input returns nil. This mirrors git status --short
+// output and is the stable v1 format: two-character XY code + space + path.
+func parsePorcelainStatus(porcelain string) []string {
+	if porcelain == "" {
+		return nil
+	}
+	var lines []string
+	for _, line := range strings.Split(strings.TrimRight(porcelain, "\n"), "\n") {
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
 
 func newStatusCmd() *cobra.Command {
 	return &cobra.Command{
@@ -123,7 +141,9 @@ func spriteStatus(ctx context.Context, spriteName string) error {
 		return fmt.Errorf("sprite %q unreachable: %w", spriteName, err)
 	}
 
-	// Gather status info
+	// Gather status info.
+	// Uses --porcelain=v1 for stable machine-readable output. When dirty files
+	// are present, they are listed below the count line (like git status --short).
 	statusScript := `
 echo "=== signals ==="
 for f in TASK_COMPLETE TASK_COMPLETE.md BLOCKED.md; do
@@ -135,7 +155,13 @@ echo "=== git ==="
 if [ -d "$WS" ]; then
   cd "$WS"
   echo "branch: $(git branch --show-current 2>/dev/null || echo 'n/a')"
-  echo "status: $(git status --porcelain 2>/dev/null | wc -l | tr -d ' ') dirty files"
+  _dirty=$(git status --porcelain=v1 2>/dev/null)
+  _dirty_count=$(printf '%s' "$_dirty" | grep -c '' 2>/dev/null || echo 0)
+  [ -z "$_dirty" ] && _dirty_count=0
+  echo "status: $_dirty_count dirty files"
+  if [ -n "$_dirty" ]; then
+    printf '%s\n' "$_dirty" | sed 's/^/  /'
+  fi
   echo ""
   echo "recent commits:"
   git log --oneline -5 2>/dev/null || echo "(no commits)"
