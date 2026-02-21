@@ -1,0 +1,11 @@
+The `git-mastery` directory defines a specialized operational "skill" designed to enforce rigorous version control standards and automated quality gates. It serves as a policy framework for distributed-first, asynchronous Git workflows, emphasizing linear history and semantic versioning triggers through standardized commit and branch management.
+
+The architecture is centered around `SKILL.md`, which functions as both a metadata definition for the execution environment and a comprehensive rule set for Git interactions. This file establishes the skill's identity, restricts its toolset to fundamental shell and search utilities (`Bash`, `Grep`, `Glob`, `Read`), and outlines the logic for automated enforcement.
+
+Key components of the workflow defined in this directory include:
+*   **Commit Standards:** Enforcement of the Conventional Commits specification (`type(scope): subject`) and atomic commit principles. It mandates that every commit represents a single logical change that is independently buildable and testable.
+*   **Branching Strategy:** A typed naming convention (`feature/`, `fix/`, `hotfix/`) with a strict three-day lifecycle limit to prevent long-lived branches and integration debt.
+*   **Merge Strategy Decision Tree:** A conditional logic framework that dictates the use of Rebase (for linear history), Merge (for preserving external context), or Squash (for cleaning experimental history) based on authorship and commit volume.
+*   **PR Quality Gates:** A structured process requiring successful CI passes (linting, type-checking, testing), `CODEOWNERS` auto-assignment, and the elimination of "fixup" commits prior to merging.
+
+Important dependencies include the availability of standard Unix utilities for script execution and a compatible CI environment. A critical technical detail is the `user-invocable: false` configuration, indicating that this skill is intended to be managed by an automated orchestrator or triggered by system events rather than direct user execution. The workflow relies on the presence of a `CODEOWNERS` file and a CI pipeline to fulfill its enforcement requirements.

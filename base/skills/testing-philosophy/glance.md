@@ -1,0 +1,11 @@
+The `/testing-philosophy` directory serves as a specialized skill module within the `bitterblossom` framework, designed to codify and enforce a standardized, language-agnostic approach to automated testing. Its primary purpose is to provide a prescriptive guide for developing test suites that prioritize behavioral verification over implementation details, ensuring long-term maintainability and code quality.
+
+The architecture of this directory is centered on a single manifest, `SKILL.md`, which defines both the operational constraints and the philosophical tenets of the skill. The file includes YAML frontmatter that specifies metadata for integration with automated agents, including a restricted set of `allowed-tools` (Read, Grep, Glob, Bash) and a `user-invocable: false` flag, indicating that this skill is intended as an internal reference or heuristic for an LLM rather than a direct user command.
+
+Key technical components and roles within `SKILL.md` include:
+*   **Workflow Definition:** A five-step Test-First (TDD) cycle focusing on interface design and iterative refactoring.
+*   **Mocking Policy:** A strict boundary-based mocking strategy that mandates mocking for external APIs and non-deterministic behavior while prohibiting the mocking of internal domain logic or collaborators.
+*   **Structural Standards:** Enforcement of the AAA (Arrange, Act, Assert) pattern and behavior-driven naming conventions ("should [behavior] when [condition]").
+*   **Test Categorization:** Definitions for Unit, Integration, and E2E boundaries, emphasizing the testing of the public API over private internals.
+
+Important technical constraints and gotchas include the "three-mock limit," where exceeding three mocks is explicitly flagged as a design smell indicating architectural coupling. The philosophy also prioritizes "confidence over percentage," meaning that high code coverage is not accepted as a proxy for test quality if critical paths or edge cases are neglected. The skill is designed to be language-agnostic, making its application dependent on the specific implementation patterns of the surrounding codebase.
