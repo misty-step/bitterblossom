@@ -144,6 +144,28 @@ func TestOffRailsDetectorEmitsWarningOnSilence(t *testing.T) {
 	t.Fatalf("expected warning line, got %q", out.String())
 }
 
+func TestGraceFor(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		timeout time.Duration
+		want    time.Duration
+	}{
+		{1 * time.Second, 30 * time.Second},   // floor: 1s/4 = 250ms < 30s
+		{2 * time.Minute, 30 * time.Second},   // floor: 2m/4 = 30s = 30s
+		{4 * time.Minute, 1 * time.Minute},    // proportional: 4m/4 = 1m
+		{20 * time.Minute, 5 * time.Minute},   // cap: 20m/4 = 5m = cap
+		{2 * time.Hour, 5 * time.Minute},      // cap: 2h/4 = 30m > 5m cap
+		{24 * time.Hour, 5 * time.Minute},     // cap: 24h/4 = 6h > 5m cap
+	}
+	for _, tt := range tests {
+		got := graceFor(tt.timeout)
+		if got != tt.want {
+			t.Errorf("graceFor(%v) = %v, want %v", tt.timeout, got, tt.want)
+		}
+	}
+}
+
 type fakeSpriteScriptRunner struct {
 	out         []byte
 	exitCode    int
@@ -338,5 +360,34 @@ func TestIsDispatchLoopActive_ErrorsOnUnexpectedExitCode(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "exited 2") {
 		t.Fatalf("err = %q, want to contain %q", err.Error(), "exited 2")
+	}
+}
+
+func TestDispatchCmdHasDryRunFlag(t *testing.T) {
+	t.Parallel()
+
+	cmd := newDispatchCmd()
+	f := cmd.Flags().Lookup("dry-run")
+	if f == nil {
+		t.Fatal("--dry-run flag not registered on dispatch command")
+	}
+	if f.DefValue != "false" {
+		t.Fatalf("--dry-run default = %q, want %q", f.DefValue, "false")
+	}
+}
+
+func TestDispatchCmdDryRunFlagCanBeSet(t *testing.T) {
+	t.Parallel()
+
+	cmd := newDispatchCmd()
+	if err := cmd.Flags().Set("dry-run", "true"); err != nil {
+		t.Fatalf("failed to set --dry-run: %v", err)
+	}
+	got, err := cmd.Flags().GetBool("dry-run")
+	if err != nil {
+		t.Fatalf("GetBool(dry-run) error: %v", err)
+	}
+	if !got {
+		t.Fatal("expected --dry-run to be true after Set")
 	}
 }
