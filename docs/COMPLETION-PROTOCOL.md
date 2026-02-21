@@ -32,6 +32,17 @@ Always uses the `.md` extension. Contents: explanation of what's blocking progre
 
 4. **Status check** (`cmd/bb/status.go`): Single sprite status reports which signal files are present.
 
+## Off-Rails Recovery
+
+When the off-rails detector fires (silence abort), dispatch performs a two-step recovery check before reporting failure:
+
+1. **Signal check**: Look for `TASK_COMPLETE` / `TASK_COMPLETE.md`. If found, treat as success.
+2. **Commit check**: Compare current HEAD against the pre-dispatch HEAD SHA to detect commits produced during this dispatch. If new commits exist, treat as success with a warning (agent was mid-task but couldn't signal cleanly).
+
+The commit check is scoped to the current dispatch by capturing HEAD SHA before the ralph loop starts. This prevents stale commits from a prior failed dispatch from triggering false successes. When SHA capture fails, the check falls back to comparing HEAD against `origin/master`/`origin/main` with a warning.
+
+Exit code 4 indicates an off-rails abort where neither signal files nor new commits were found.
+
 ## Where Signal Knowledge Lives
 
 Signal filenames are checked as string literals in two places:
