@@ -606,3 +606,41 @@ func TestWaitForPRChecksUsesWorkspaceAndToken(t *testing.T) {
 		t.Fatalf("script = %q, want to contain GH token", r.script)
 	}
 }
+
+func TestWaitForPRChecksFatalErrorStopsImmediately(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	runner := func(_ context.Context, _ string) ([]byte, int, error) {
+		calls++
+		return []byte("gh: command not found\n"), 2, nil // fatal error
+	}
+	var progress bytes.Buffer
+	err := waitForPRChecksWithRunner(context.Background(), runner, "/tmp/ws", "token",
+		time.Minute, 10*time.Millisecond, &progress)
+	if err == nil {
+		t.Fatal("expected error on fatal exit code 2, got nil")
+	}
+	if calls > 1 {
+		t.Fatalf("expected only 1 call on fatal error, got %d", calls)
+	}
+}
+
+func TestWaitForPRChecksInitialCheckBeforeTicker(t *testing.T) {
+	t.Parallel()
+
+	// pollInterval is longer than prCheckTimeout; without an initial check
+	// the function would always time out without ever calling the runner.
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: []byte("pass\n"), err: nil}
+	var progress bytes.Buffer
+	err := waitForPRChecksWithRunner(context.Background(), r.run, "/tmp/ws", "token",
+		50*time.Millisecond, // prCheckTimeout
+		time.Hour,           // pollInterval (ticker never fires)
+		&progress)
+	if err != nil {
+		t.Fatalf("expected nil (immediate pass before ticker), got %v", err)
+	}
+	if !r.called {
+		t.Fatal("runner should be called even when pollInterval > prCheckTimeout")
+	}
+}

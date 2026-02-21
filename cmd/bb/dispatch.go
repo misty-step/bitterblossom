@@ -319,11 +319,10 @@ export GH_TOKEN="$GH_TOKEN"
 cd "$WORKSPACE" 2>/dev/null || exit 2
 gh pr checks HEAD --exit-status 2>&1
 exit_code=$?
-if [ "$exit_code" -eq 0 ]; then
-  exit 0
+if [ "$exit_code" -eq 0 ] || [ "$exit_code" -eq 1 ]; then
+  exit $exit_code
 fi
-# exit code 1 = pending or failing; surface as pending so caller retries
-exit 1`
+exit 2`
 
 type spriteScriptRunner func(ctx context.Context, script string) ([]byte, int, error)
 
@@ -452,7 +451,28 @@ func waitForPRChecksWithRunner(ctx context.Context, run spriteScriptRunner, work
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
+	script := fmt.Sprintf("export WORKSPACE=%q GH_TOKEN=%q\n%s", workspace, ghToken, prChecksScript)
+
 	for {
+		checkCtx, checkCancel := context.WithTimeout(pollCtx, 30*time.Second)
+		_, exitCode, err := run(checkCtx, script)
+		checkCancel()
+
+		if err != nil {
+			_, _ = fmt.Fprintf(progress, "[dispatch] PR checks: runner error: %v\n", err)
+		} else {
+			switch exitCode {
+			case 0:
+				return nil // all checks passed
+			case 1:
+				_, _ = fmt.Fprintf(progress, "[dispatch] PR checks: pending — next poll in %s\n", pollInterval)
+			case 2:
+				return fmt.Errorf("pr checks error (gh unavailable, no PR for HEAD, or auth failure)")
+			default:
+				_, _ = fmt.Fprintf(progress, "[dispatch] PR checks: unexpected exit %d — retrying\n", exitCode)
+			}
+		}
+
 		select {
 		case <-pollCtx.Done():
 			if ctx.Err() != nil {
@@ -460,23 +480,6 @@ func waitForPRChecksWithRunner(ctx context.Context, run spriteScriptRunner, work
 			}
 			return fmt.Errorf("pr-check-timeout (%s) elapsed: CI checks did not pass in time", prCheckTimeout)
 		case <-ticker.C:
-			checkCtx, checkCancel := context.WithTimeout(pollCtx, 30*time.Second)
-			script := fmt.Sprintf("export WORKSPACE=%q GH_TOKEN=%q\n%s", workspace, ghToken, prChecksScript)
-			_, exitCode, err := run(checkCtx, script)
-			checkCancel()
-
-			if err != nil {
-				_, _ = fmt.Fprintf(progress, "[dispatch] PR checks: runner error: %v\n", err)
-				continue
-			}
-			switch exitCode {
-			case 0:
-				return nil // all checks passed
-			case 1:
-				_, _ = fmt.Fprintf(progress, "[dispatch] PR checks: pending — next poll in %s\n", pollInterval)
-			default:
-				_, _ = fmt.Fprintf(progress, "[dispatch] PR checks: unexpected exit %d — retrying\n", exitCode)
-			}
 		}
 	}
 }
