@@ -151,12 +151,12 @@ func TestGraceFor(t *testing.T) {
 		timeout time.Duration
 		want    time.Duration
 	}{
-		{1 * time.Second, 30 * time.Second},   // floor: 1s/4 = 250ms < 30s
-		{2 * time.Minute, 30 * time.Second},   // floor: 2m/4 = 30s = 30s
-		{4 * time.Minute, 1 * time.Minute},    // proportional: 4m/4 = 1m
-		{20 * time.Minute, 5 * time.Minute},   // cap: 20m/4 = 5m = cap
-		{2 * time.Hour, 5 * time.Minute},      // cap: 2h/4 = 30m > 5m cap
-		{24 * time.Hour, 5 * time.Minute},     // cap: 24h/4 = 6h > 5m cap
+		{1 * time.Second, 30 * time.Second}, // floor: 1s/4 = 250ms < 30s
+		{2 * time.Minute, 30 * time.Second}, // floor: 2m/4 = 30s = 30s
+		{4 * time.Minute, 1 * time.Minute},  // proportional: 4m/4 = 1m
+		{20 * time.Minute, 5 * time.Minute}, // cap: 20m/4 = 5m = cap
+		{2 * time.Hour, 5 * time.Minute},    // cap: 2h/4 = 30m > 5m cap
+		{24 * time.Hour, 5 * time.Minute},   // cap: 24h/4 = 6h > 5m cap
 	}
 	for _, tt := range tests {
 		got := graceFor(tt.timeout)
@@ -679,5 +679,169 @@ func TestWaitForPRChecksInitialCheckBeforeTicker(t *testing.T) {
 	}
 	if !r.called {
 		t.Fatal("runner should be called even when pollInterval > prCheckTimeout")
+	}
+}
+
+func TestSnapshotPRChecksReturnsPassOnExitCode0(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: []byte("pass\n"), err: nil}
+	got := snapshotPRChecksWithRunner(context.Background(), r.run, "/tmp/ws", "token")
+
+	if got.status != "pass" {
+		t.Fatalf("status = %q, want %q", got.status, "pass")
+	}
+	if got.checksExit != 0 {
+		t.Fatalf("checks_exit = %d, want %d", got.checksExit, 0)
+	}
+}
+
+func TestSnapshotPRChecksReturnsPendingOnExitCode1(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 1, out: []byte("check in progress\n"), err: nil}
+	got := snapshotPRChecksWithRunner(context.Background(), r.run, "/tmp/ws", "token")
+
+	if got.status != "pending" {
+		t.Fatalf("status = %q, want %q", got.status, "pending")
+	}
+	if got.checksExit != 1 {
+		t.Fatalf("checks_exit = %d, want %d", got.checksExit, 1)
+	}
+}
+
+func TestSnapshotPRChecksReturnsErrorOnExitCode2(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 2, out: []byte("no pr found\n"), err: nil}
+	got := snapshotPRChecksWithRunner(context.Background(), r.run, "/tmp/ws", "token")
+
+	if got.status != "error" {
+		t.Fatalf("status = %q, want %q", got.status, "error")
+	}
+	if got.checksExit != 2 {
+		t.Fatalf("checks_exit = %d, want %d", got.checksExit, 2)
+	}
+}
+
+func TestSnapshotPRChecksReturnsErrorOnRunnerError(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: nil, err: errors.New("network")}
+	got := snapshotPRChecksWithRunner(context.Background(), r.run, "/tmp/ws", "token")
+
+	if got.status != "error" {
+		t.Fatalf("status = %q, want %q", got.status, "error")
+	}
+	if got.checksExit != -1 {
+		t.Fatalf("checks_exit = %d, want %d", got.checksExit, -1)
+	}
+}
+
+func TestSnapshotPRChecksUsesWorkspaceAndToken(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: []byte("pass\n"), err: nil}
+	_ = snapshotPRChecksWithRunner(context.Background(), r.run, "/home/sprite/workspace/myrepo", "ghtoken123")
+
+	if !strings.Contains(r.script, "/home/sprite/workspace/myrepo") {
+		t.Fatalf("script = %q, want to contain workspace path", r.script)
+	}
+	if !strings.Contains(r.script, "ghtoken123") {
+		t.Fatalf("script = %q, want to contain GH token", r.script)
+	}
+}
+
+func TestSnapshotPRChecksHasDeadline(t *testing.T) {
+	t.Parallel()
+
+	var deadlineSet bool
+	var until time.Duration
+	runner := func(ctx context.Context, _ string) ([]byte, int, error) {
+		var dl time.Time
+		dl, deadlineSet = ctx.Deadline()
+		if deadlineSet {
+			until = time.Until(dl)
+		}
+		return []byte("pass\n"), 0, nil
+	}
+
+	_ = snapshotPRChecksWithRunner(context.Background(), runner, "/tmp/ws", "token")
+
+	if !deadlineSet {
+		t.Fatal("expected context to carry a deadline (30s timeout)")
+	}
+	if until <= 0 || until > 30*time.Second {
+		t.Fatalf("deadline window = %s, want (0s,30s]", until)
+	}
+}
+
+// TestSnapshotPRChecksTaskCompleteWithPendingChecks verifies that a non-passing CI
+// state (exit 1 from prChecksScript) is captured and labeled "pending", consistent
+// with prChecksScript's documented semantics and waitForPRChecksWithRunner.
+// This is the regression path from #420: agent signals TASK_COMPLETE while
+// PR CI checks have not yet passed.
+func TestSnapshotPRChecksTaskCompleteWithPendingChecks(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 1, out: []byte("required check failed\n"), err: nil}
+	got := snapshotPRChecksWithRunner(context.Background(), r.run, "/tmp/ws", "token")
+
+	if got.status != "pending" {
+		t.Fatalf("status = %q, want %q", got.status, "pending")
+	}
+	if got.checksExit != 1 {
+		t.Fatalf("checks_exit = %d, want %d", got.checksExit, 1)
+	}
+}
+
+func TestSnapshotPRChecksReturnsErrorOnCancelledContext(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel
+
+	runner := func(ctx context.Context, _ string) ([]byte, int, error) {
+		return nil, 0, ctx.Err()
+	}
+
+	got := snapshotPRChecksWithRunner(ctx, runner, "/tmp/ws", "token")
+
+	if got.status != "error" {
+		t.Fatalf("status = %q, want %q", got.status, "error")
+	}
+	if got.checksExit != -1 {
+		t.Fatalf("checks_exit = %d, want %d", got.checksExit, -1)
+	}
+}
+
+func TestSnapshotPRChecksReturnsErrorOnUnexpectedExitCode(t *testing.T) {
+	t.Parallel()
+
+	// Exit 127 = command not found (gh missing on sprite)
+	r := &fakeSpriteScriptRunner{exitCode: 127, out: []byte("bash: gh: command not found\n"), err: nil}
+	got := snapshotPRChecksWithRunner(context.Background(), r.run, "/tmp/ws", "token")
+
+	if got.status != "error" {
+		t.Fatalf("status = %q, want %q", got.status, "error")
+	}
+	if got.checksExit != 127 {
+		t.Fatalf("checks_exit = %d, want %d", got.checksExit, 127)
+	}
+}
+
+func TestPRChecksScriptForIncludesWorkspaceAndToken(t *testing.T) {
+	t.Parallel()
+
+	script := prChecksScriptFor("/home/sprite/workspace/myrepo", "ghtoken123")
+
+	if !strings.Contains(script, "/home/sprite/workspace/myrepo") {
+		t.Fatalf("script = %q, want to contain workspace path", script)
+	}
+	if !strings.Contains(script, "ghtoken123") {
+		t.Fatalf("script = %q, want to contain GH token", script)
+	}
+	if !strings.Contains(script, "gh pr checks HEAD") {
+		t.Fatalf("script = %q, want to contain gh pr checks command", script)
 	}
 }

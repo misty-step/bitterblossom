@@ -218,7 +218,11 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 	verifyCmd.Stderr = os.Stderr
 	_ = verifyCmd.Run()
 
-	// 10. Return appropriate exit code
+	// 10. Snapshot PR CI status (informational; gating is controlled by --pr-check-timeout).
+	prs := snapshotPRChecksWithRunner(ctx, spriteBashRunner(s), workspace, ghToken)
+	_, _ = fmt.Fprintf(os.Stderr, "dispatch pr-checks: status=%s checks_exit=%d\n", prs.status, prs.checksExit)
+
+	// 11. Return appropriate exit code
 	// Check if off-rails detector killed the dispatch
 	if cause := context.Cause(ralphCtx); cause != nil && errors.Is(cause, errOffRails) {
 		_, _ = fmt.Fprintf(os.Stderr, "\n=== off-rails detected: %v ===\n", cause)
@@ -261,7 +265,7 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 		}
 	}
 
-	// 11. Optionally wait for PR CI checks to pass.
+	// 12. Optionally wait for PR CI checks to pass.
 	if prCheckTimeout > 0 {
 		_, _ = fmt.Fprintf(os.Stderr, "\n=== waiting for PR checks (timeout %s) ===\n", prCheckTimeout)
 		pollInterval := 30 * time.Second
@@ -324,6 +328,11 @@ fi
 exit 2`
 
 type spriteScriptRunner func(ctx context.Context, script string) ([]byte, int, error)
+
+type prCheckSummary struct {
+	status     string
+	checksExit int
+}
 
 func ensureNoActiveDispatchLoop(ctx context.Context, s *sprites.Sprite) error {
 	return ensureNoActiveDispatchLoopWithRunner(ctx, spriteBashRunner(s))
@@ -433,6 +442,31 @@ func hasTaskCompleteSignalWithRunner(ctx context.Context, run spriteScriptRunner
 	}
 }
 
+// prChecksScriptFor builds the shell snippet that runs prChecksScript with
+// the given workspace and GitHub token. Shared by snapshot and wait-for-checks.
+func prChecksScriptFor(workspace, ghToken string) string {
+	return fmt.Sprintf("export WORKSPACE=%q GH_TOKEN=%q\n%s", workspace, ghToken, prChecksScript)
+}
+
+func snapshotPRChecksWithRunner(ctx context.Context, run spriteScriptRunner, workspace, ghToken string) prCheckSummary {
+	checkCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	_, exitCode, err := run(checkCtx, prChecksScriptFor(workspace, ghToken))
+	if err != nil {
+		return prCheckSummary{status: "error", checksExit: -1}
+	}
+
+	switch exitCode {
+	case 0:
+		return prCheckSummary{status: "pass", checksExit: exitCode}
+	case 1:
+		return prCheckSummary{status: "pending", checksExit: exitCode}
+	default:
+		return prCheckSummary{status: "error", checksExit: exitCode}
+	}
+}
+
 // waitForPRChecksWithRunner polls the sprite for PR CI check status until all
 // checks pass, prCheckTimeout elapses, or ctx is cancelled. It emits a progress
 // line to progress on every poll interval so operators can see activity.
@@ -450,7 +484,7 @@ func waitForPRChecksWithRunner(ctx context.Context, run spriteScriptRunner, work
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
-	script := fmt.Sprintf("export WORKSPACE=%q GH_TOKEN=%q\n%s", workspace, ghToken, prChecksScript)
+	script := prChecksScriptFor(workspace, ghToken)
 
 	for {
 		checkCtx, checkCancel := context.WithTimeout(pollCtx, 30*time.Second)
