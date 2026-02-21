@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -93,6 +94,8 @@ func TestSpriteTokenMissingEnv(t *testing.T) {
 func TestSpriteTokenDirectEnv(t *testing.T) {
 	// Not parallel: mutates process environment.
 	t.Setenv("SPRITE_TOKEN", "direct-token-value")
+	t.Setenv("FLY_API_TOKEN", "")
+	t.Setenv("SPRITES_DIR", t.TempDir())
 
 	token, err := spriteToken()
 	if err != nil {
@@ -183,31 +186,96 @@ func TestSpriteTokenFallbackToSpritesJSON(t *testing.T) {
 	}
 }
 
+// TestKeyringKeyToPath verifies the key-to-path transformation used by readKeyringFile.
+func TestKeyringKeyToPath(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		key  string
+		want string
+	}{
+		{
+			key:  "sprites:org:https://api.sprites.dev:personal",
+			want: "sprites-org-https-/api.sprites.dev-personal",
+		},
+		{
+			key:  "sprites:org:https://custom.example.com:myorg",
+			want: "sprites-org-https-/custom.example.com-myorg",
+		},
+		// Key without protocol separator — colons still become dashes
+		{
+			key:  "sprites:org:api.sprites.dev:personal",
+			want: "sprites-org-api.sprites.dev-personal",
+		},
+		// Key that already contains a dash — dashes pass through unchanged
+		{
+			key:  "sprites:org:https://api.sprites.dev:my-org",
+			want: "sprites-org-https-/api.sprites.dev-my-org",
+		},
+		// Multiple "://" sequences
+		{
+			key:  "a:b://c://d:e",
+			want: "a-b-/c-/d-e",
+		},
+		// Empty key
+		{
+			key:  "",
+			want: "",
+		},
+	}
+
+	for _, tc := range cases {
+		got := keyringKeyToPath(tc.key)
+		if got != tc.want {
+			t.Errorf("keyringKeyToPath(%q) = %q, want %q", tc.key, got, tc.want)
+		}
+	}
+}
+
 // writeSpritesFixture creates a minimal sprites.json + keyring structure for tests.
+// It uses json.Marshal to safely encode URL and org values.
 func writeSpritesFixture(t *testing.T, dir, apiURL, org, token string) {
 	t.Helper()
 
-	cfg := fmt.Sprintf(`{
-  "version": "1",
-  "current_selection": {"url": %q, "org": %q},
-  "urls": {
-    %q: {
-      "orgs": {
-        %q: {"keyring_key": "sprites:org:%s:%s"}
-      }
-    }
-  }
-}`, apiURL, org, apiURL, org, apiURL, org)
+	keyringKey := fmt.Sprintf("sprites:org:%s:%s", apiURL, org)
 
-	if err := os.WriteFile(filepath.Join(dir, "sprites.json"), []byte(cfg), 0o600); err != nil {
+	type orgEntry struct {
+		KeyringKey string `json:"keyring_key"`
+	}
+	type urlEntry struct {
+		Orgs map[string]orgEntry `json:"orgs"`
+	}
+	type selection struct {
+		URL string `json:"url"`
+		Org string `json:"org"`
+	}
+	type config struct {
+		Version          string               `json:"version"`
+		CurrentSelection selection            `json:"current_selection"`
+		URLs             map[string]urlEntry  `json:"urls"`
+	}
+
+	cfg := config{
+		Version:          "1",
+		CurrentSelection: selection{URL: apiURL, Org: org},
+		URLs: map[string]urlEntry{
+			apiURL: {
+				Orgs: map[string]orgEntry{
+					org: {KeyringKey: keyringKey},
+				},
+			},
+		},
+	}
+
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "sprites.json"), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	// Derive keyring file path from key: ":" → "-", "//" → "/"
-	keyringKey := fmt.Sprintf("sprites:org:%s:%s", apiURL, org)
-	keyPath := strings.ReplaceAll(keyringKey, ":", "-")
-	keyPath = strings.ReplaceAll(keyPath, "//", "/")
-
+	keyPath := keyringKeyToPath(keyringKey)
 	keyringPath := filepath.Join(dir, "keyring", "sprites-cli-manual-tokens", keyPath)
 	if err := os.MkdirAll(filepath.Dir(keyringPath), 0o700); err != nil {
 		t.Fatal(err)

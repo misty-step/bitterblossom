@@ -212,22 +212,37 @@ func spritesJSONToken(dir string) (string, error) {
 	return strings.TrimSpace(token), nil
 }
 
+// keyringKeyToPath converts a keyring key to its file-system path component.
+// sprite-cli encodes keys by replacing ":" with "-" and "//" with "/".
+//
+// Example:
+//
+//	sprites:org:https://api.sprites.dev:personal
+//	→ sprites-org-https-/api.sprites.dev-personal
+func keyringKeyToPath(key string) string {
+	p := strings.ReplaceAll(key, ":", "-")
+	return strings.ReplaceAll(p, "//", "/")
+}
+
 // readKeyringFile reads a token from the file-backed keyring.
 // The sprite-cli stores tokens as files under:
 //
 //	<spritesDir>/keyring/sprites-cli-manual-tokens/<key-as-path>
 //
-// where the key path is derived from the keyring_key by replacing ":" with "-"
-// and "//" with "/". Example:
-//
-//	sprites:org:https://api.sprites.dev:personal
-//	→ sprites-org-https-/api.sprites.dev-personal
+// The key-as-path is produced by keyringKeyToPath.
 func readKeyringFile(dir, keyringKey string) (string, error) {
-	// Convert keyring key to file path: ":" → "-", then "//" → "/"
-	keyPath := strings.ReplaceAll(keyringKey, ":", "-")
-	keyPath = strings.ReplaceAll(keyPath, "//", "/")
+	keyPath := keyringKeyToPath(keyringKey)
+	keyringBase := filepath.Join(dir, "keyring", "sprites-cli-manual-tokens")
+	path := filepath.Join(keyringBase, keyPath)
 
-	path := filepath.Join(dir, "keyring", "sprites-cli-manual-tokens", keyPath)
+	// Guard against path traversal: keyringKey comes from sprites.json which
+	// lives under the user's home dir, so the threat is low — but reject it
+	// explicitly so a crafted config cannot escape the keyring directory.
+	rel, err := filepath.Rel(keyringBase, path)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return "", fmt.Errorf("keyring key %q resolves outside keyring dir", keyringKey)
+	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("keyring token not found at %s: %w", path, err)
