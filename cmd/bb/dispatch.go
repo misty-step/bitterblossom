@@ -218,7 +218,11 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 	verifyCmd.Stderr = os.Stderr
 	_ = verifyCmd.Run()
 
-	// 10. Return appropriate exit code
+	// 10. Snapshot PR CI status (informational; gating is controlled by --pr-check-timeout).
+	prs := snapshotPRChecksWithRunner(ctx, spriteBashRunner(s), workspace, ghToken)
+	_, _ = fmt.Fprintf(os.Stderr, "dispatch pr-checks: status=%s checks_exit=%d\n", prs.Status, prs.ChecksExit)
+
+	// 11. Return appropriate exit code
 	// Check if off-rails detector killed the dispatch
 	if cause := context.Cause(ralphCtx); cause != nil && errors.Is(cause, errOffRails) {
 		_, _ = fmt.Fprintf(os.Stderr, "\n=== off-rails detected: %v ===\n", cause)
@@ -261,7 +265,7 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 		}
 	}
 
-	// 11. Optionally wait for PR CI checks to pass.
+	// 12. Optionally wait for PR CI checks to pass.
 	if prCheckTimeout > 0 {
 		_, _ = fmt.Fprintf(os.Stderr, "\n=== waiting for PR checks (timeout %s) ===\n", prCheckTimeout)
 		pollInterval := 30 * time.Second
@@ -324,6 +328,11 @@ fi
 exit 2`
 
 type spriteScriptRunner func(ctx context.Context, script string) ([]byte, int, error)
+
+type prCheckSummary struct {
+	Status     string
+	ChecksExit int
+}
 
 func ensureNoActiveDispatchLoop(ctx context.Context, s *sprites.Sprite) error {
 	return ensureNoActiveDispatchLoopWithRunner(ctx, spriteBashRunner(s))
@@ -430,6 +439,28 @@ func hasTaskCompleteSignalWithRunner(ctx context.Context, run spriteScriptRunner
 		return false, nil
 	default:
 		return false, fmt.Errorf("completion signal check exited %d: %s", exitCode, strings.TrimSpace(string(out)))
+	}
+}
+
+func snapshotPRChecksWithRunner(ctx context.Context, run spriteScriptRunner, workspace, ghToken string) prCheckSummary {
+	checkCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	script := fmt.Sprintf("export WORKSPACE=%q GH_TOKEN=%q\n%s", workspace, ghToken, prChecksScript)
+	_, exitCode, err := run(checkCtx, script)
+	if err != nil {
+		return prCheckSummary{Status: "error", ChecksExit: -1}
+	}
+
+	switch exitCode {
+	case 0:
+		return prCheckSummary{Status: "pass", ChecksExit: exitCode}
+	case 1:
+		return prCheckSummary{Status: "fail", ChecksExit: exitCode}
+	case 2:
+		return prCheckSummary{Status: "no-pr", ChecksExit: exitCode}
+	default:
+		return prCheckSummary{Status: "error", ChecksExit: exitCode}
 	}
 }
 
