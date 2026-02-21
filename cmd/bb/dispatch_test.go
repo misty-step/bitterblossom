@@ -376,6 +376,95 @@ func TestIsDispatchLoopActive_ErrorsOnUnexpectedExitCode(t *testing.T) {
 	}
 }
 
+func TestHasNewCommitsReturnsTrue(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: []byte("abc123 feat: something\n"), err: nil}
+	hasWork, err := hasNewCommitsWithRunner(context.Background(), r.run, "/tmp/ws")
+	if err != nil {
+		t.Fatalf("hasNewCommitsWithRunner() error = %v", err)
+	}
+	if !hasWork {
+		t.Fatal("expected new commits to be present")
+	}
+}
+
+func TestHasNewCommitsReturnsFalseWhenNone(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 1, out: nil, err: nil}
+	hasWork, err := hasNewCommitsWithRunner(context.Background(), r.run, "/tmp/ws")
+	if err != nil {
+		t.Fatalf("hasNewCommitsWithRunner() error = %v", err)
+	}
+	if hasWork {
+		t.Fatal("expected no new commits")
+	}
+}
+
+func TestHasNewCommitsReturnsErrorOnRunnerFailure(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: nil, err: errors.New("network")}
+	_, err := hasNewCommitsWithRunner(context.Background(), r.run, "/tmp/ws")
+	if err == nil {
+		t.Fatal("expected error for runner failure")
+	}
+	if !strings.Contains(err.Error(), "check new commits") {
+		t.Fatalf("err = %q, want to contain %q", err.Error(), "check new commits")
+	}
+	if !strings.Contains(err.Error(), "network") {
+		t.Fatalf("err = %q, want to contain %q", err.Error(), "network")
+	}
+}
+
+func TestHasNewCommitsReturnsErrorOnUnexpectedExitCode(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 2, out: []byte("fatal: not a git repo"), err: nil}
+	_, err := hasNewCommitsWithRunner(context.Background(), r.run, "/tmp/ws")
+	if err == nil {
+		t.Fatal("expected error for unexpected exit code")
+	}
+	if !strings.Contains(err.Error(), "new commits check exited 2") {
+		t.Fatalf("err = %q, want to contain %q", err.Error(), "new commits check exited 2")
+	}
+}
+
+func TestHasNewCommitsUsesWorkspace(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: []byte("abc123\n"), err: nil}
+	if _, err := hasNewCommitsWithRunner(context.Background(), r.run, "/home/sprite/workspace/myrepo"); err != nil {
+		t.Fatalf("hasNewCommitsWithRunner() error = %v", err)
+	}
+	if !strings.Contains(r.script, "/home/sprite/workspace/myrepo") {
+		t.Fatalf("script = %q, want to contain workspace path", r.script)
+	}
+}
+
+func TestHasNewCommitsHasDeadline(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: []byte("abc123\n"), err: nil}
+	_, _ = hasNewCommitsWithRunner(context.Background(), r.run, "/tmp/ws")
+	if !r.gotDeadline {
+		t.Fatal("expected context to carry a deadline (15s timeout)")
+	}
+}
+
+func TestHasTaskCompleteSignalUsesWorkspace(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: nil, err: nil}
+	if _, err := hasTaskCompleteSignalWithRunner(context.Background(), r.run, "/home/sprite/workspace/myrepo"); err != nil {
+		t.Fatalf("hasTaskCompleteSignalWithRunner() error = %v", err)
+	}
+	if !strings.Contains(r.script, "/home/sprite/workspace/myrepo") {
+		t.Fatalf("script = %q, want to contain workspace path", r.script)
+	}
+}
+
 func TestDispatchCmdHasDryRunFlag(t *testing.T) {
 	t.Parallel()
 
