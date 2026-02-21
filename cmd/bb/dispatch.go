@@ -152,7 +152,8 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 
 	ralphEnv += fmt.Sprintf(` && exec bash %s`, ralphScript)
 
-	timeoutCtx, timeoutCancel := context.WithTimeout(ctx, timeout+5*time.Minute) // grace period beyond ralph's own timeout
+	gracePeriod := graceFor(timeout)
+	timeoutCtx, timeoutCancel := context.WithTimeout(ctx, timeout+gracePeriod)
 	defer timeoutCancel()
 
 	ralphCtx, ralphCancel := context.WithCancelCause(timeoutCtx)
@@ -283,6 +284,17 @@ func spriteBashRunner(s *sprites.Sprite) spriteScriptRunner {
 
 		return out, 0, err
 	}
+}
+
+// graceFor returns a proportional grace period: at least 30s, otherwise 25%
+// of the dispatch timeout, capped at 5 minutes. This gives the ralph loop
+// time to write TASK_COMPLETE/BLOCKED signals after its own timeout fires.
+func graceFor(timeout time.Duration) time.Duration {
+	grace := max(30*time.Second, timeout/4)
+	if grace > 5*time.Minute {
+		grace = 5 * time.Minute
+	}
+	return grace
 }
 
 func hasTaskCompleteSignalWithRunner(ctx context.Context, run spriteScriptRunner, workspace string) (bool, error) {
