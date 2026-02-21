@@ -76,12 +76,11 @@ func TestLogsRemoteCommandTouchesLogPath(t *testing.T) {
 func TestLogsNoActiveTaskGoesToStderr(t *testing.T) {
 	t.Parallel()
 
-	var stdout, stderr bytes.Buffer
-	writeLogsNoTaskMsg(&stdout, &stderr)
-
-	if stdout.Len() != 0 {
-		t.Errorf("stdout must be empty, got %q", stdout.String())
+	var stderr bytes.Buffer
+	if err := writeLogsNoTaskMsg(&stderr); err != nil {
+		t.Fatalf("writeLogsNoTaskMsg: %v", err)
 	}
+
 	if !strings.Contains(stderr.String(), "No active task") {
 		t.Errorf("stderr = %q, want to contain %q", stderr.String(), "No active task")
 	}
