@@ -215,8 +215,8 @@ func TestEnsureNoActiveDispatchLoop_BlocksWhenBusy(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !strings.Contains(err.Error(), "active dispatch loop detected:") {
-		t.Fatalf("err = %q, want to contain %q", err.Error(), "active dispatch loop detected:")
+	if !strings.Contains(err.Error(), "active dispatch loop detected") {
+		t.Fatalf("err = %q, want to contain %q", err.Error(), "active dispatch loop detected")
 	}
 	if !strings.Contains(err.Error(), strings.TrimSpace(busy)) {
 		t.Fatalf("err = %q, want to contain %q", err.Error(), strings.TrimSpace(busy))
@@ -236,6 +236,19 @@ func TestEnsureNoActiveDispatchLoop_WrapsRunnerError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "network") {
 		t.Fatalf("err = %q, want to contain %q", err.Error(), "network")
+	}
+}
+
+func TestEnsureNoActiveDispatchLoop_ErrorsOnUnexpectedOutputWhenIdle(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{out: []byte("unexpected garbage"), exitCode: 0, err: nil}
+	err := ensureNoActiveDispatchLoopWithRunner(context.Background(), r.run)
+	if err == nil {
+		t.Fatal("expected error for exit 0 with output, got nil")
+	}
+	if !strings.Contains(err.Error(), "unexpected output from idle check") {
+		t.Fatalf("err = %q, want to contain %q", err.Error(), "unexpected output from idle check")
 	}
 }
 

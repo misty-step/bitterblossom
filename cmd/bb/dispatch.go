@@ -359,7 +359,7 @@ func ensureNoActiveDispatchLoopWithRunner(ctx context.Context, run spriteScriptR
 	switch exitCode {
 	case 0:
 		if output != "" {
-			return fmt.Errorf("active dispatch loop detected:\n%s", output)
+			return fmt.Errorf("unexpected output from idle check:\n%s", output)
 		}
 		return nil
 	case 1:

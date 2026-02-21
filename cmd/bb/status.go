@@ -61,10 +61,13 @@ func fleetStatus(ctx context.Context) error {
 
 	results := make([]probeResult, len(all))
 	var wg sync.WaitGroup
+	sem := make(chan struct{}, 10) // Bound concurrent sprite probes
 
 	for i, sprite := range all {
 		wg.Add(1)
+		sem <- struct{}{}
 		go func(idx int, s *sprites.Sprite) {
+			defer func() { <-sem }()
 			defer wg.Done()
 			r := probeResult{name: s.Name(), status: s.Status, reach: "?", avail: "-"}
 
