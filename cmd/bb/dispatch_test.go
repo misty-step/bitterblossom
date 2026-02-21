@@ -443,6 +443,28 @@ func TestHasNewCommitsUsesWorkspace(t *testing.T) {
 	}
 }
 
+func TestHasNewCommitsHasDeadline(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: []byte("abc123\n"), err: nil}
+	_, _ = hasNewCommitsWithRunner(context.Background(), r.run, "/tmp/ws")
+	if !r.gotDeadline {
+		t.Fatal("expected context to carry a deadline (15s timeout)")
+	}
+}
+
+func TestHasTaskCompleteSignalUsesWorkspace(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: nil, err: nil}
+	if _, err := hasTaskCompleteSignalWithRunner(context.Background(), r.run, "/home/sprite/workspace/myrepo"); err != nil {
+		t.Fatalf("hasTaskCompleteSignalWithRunner() error = %v", err)
+	}
+	if !strings.Contains(r.script, "/home/sprite/workspace/myrepo") {
+		t.Fatalf("script = %q, want to contain workspace path", r.script)
+	}
+}
+
 func TestDispatchCmdHasDryRunFlag(t *testing.T) {
 	t.Parallel()
 

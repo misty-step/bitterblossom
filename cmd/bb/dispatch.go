@@ -142,9 +142,14 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 	if totalSec < iterSec {
 		iterSec = totalSec // cap per-iteration at total timeout (#389)
 	}
+	// Heartbeat must fire well before the silence-abort threshold.
+	heartbeatSec := int(noOutputTimeout.Seconds() / 3)
+	if heartbeatSec < 30 {
+		heartbeatSec = 30
+	}
 	ralphEnv := fmt.Sprintf(
-		`export MAX_ITERATIONS=%d MAX_TIME_SEC=%d ITER_TIMEOUT_SEC=%d WORKSPACE=%q GH_TOKEN=%q LEFTHOOK=0 ANTHROPIC_MODEL=%q ANTHROPIC_DEFAULT_SONNET_MODEL=%q CLAUDE_CODE_SUBAGENT_MODEL=%q`,
-		maxIter, totalSec, iterSec, workspace, ghToken,
+		`export MAX_ITERATIONS=%d MAX_TIME_SEC=%d ITER_TIMEOUT_SEC=%d HEARTBEAT_INTERVAL_SEC=%d WORKSPACE=%q GH_TOKEN=%q LEFTHOOK=0 ANTHROPIC_MODEL=%q ANTHROPIC_DEFAULT_SONNET_MODEL=%q CLAUDE_CODE_SUBAGENT_MODEL=%q`,
+		maxIter, totalSec, iterSec, heartbeatSec, workspace, ghToken,
 		"anthropic/claude-sonnet-4-6",
 		"anthropic/claude-sonnet-4-6",
 		"anthropic/claude-sonnet-4-6",
