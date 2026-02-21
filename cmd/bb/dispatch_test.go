@@ -556,7 +556,6 @@ func TestWaitForPRChecksEmitsProgress(t *testing.T) {
 	t.Parallel()
 
 	calls := 0
-	r := &fakeSpriteScriptRunner{}
 	// First call: pending. Second call: pass.
 	customRunner := func(ctx context.Context, script string) ([]byte, int, error) {
 		calls++
@@ -565,7 +564,6 @@ func TestWaitForPRChecksEmitsProgress(t *testing.T) {
 		}
 		return []byte("pass\n"), 0, nil // pass
 	}
-	_ = r
 
 	var progress bytes.Buffer
 	err := waitForPRChecksWithRunner(context.Background(), customRunner, "/tmp/ws", "token", 5*time.Second, 10*time.Millisecond, &progress)
@@ -623,6 +621,45 @@ func TestWaitForPRChecksFatalErrorStopsImmediately(t *testing.T) {
 	}
 	if calls > 1 {
 		t.Fatalf("expected only 1 call on fatal error, got %d", calls)
+	}
+}
+
+func TestWaitForPRChecksRetriesOnRunnerError(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	runner := func(_ context.Context, _ string) ([]byte, int, error) {
+		calls++
+		if calls == 1 {
+			return nil, 0, errors.New("websocket closed")
+		}
+		return []byte("pass\n"), 0, nil // second call succeeds
+	}
+	var progress bytes.Buffer
+	err := waitForPRChecksWithRunner(context.Background(), runner, "/tmp/ws", "token",
+		5*time.Second, 10*time.Millisecond, &progress)
+	if err != nil {
+		t.Fatalf("expected nil after retry success, got %v", err)
+	}
+	if calls < 2 {
+		t.Fatalf("expected at least 2 calls (error + retry), got %d", calls)
+	}
+	if !strings.Contains(progress.String(), "runner error") {
+		t.Fatalf("progress = %q, want to contain %q", progress.String(), "runner error")
+	}
+}
+
+func TestPRChecksScriptContainsExpectedCommands(t *testing.T) {
+	t.Parallel()
+
+	if !strings.Contains(prChecksScript, "gh pr checks HEAD") {
+		t.Fatalf("prChecksScript missing 'gh pr checks HEAD':\n%s", prChecksScript)
+	}
+	if !strings.Contains(prChecksScript, "--exit-status") {
+		t.Fatalf("prChecksScript missing '--exit-status':\n%s", prChecksScript)
+	}
+	if !strings.Contains(prChecksScript, "exit 2") {
+		t.Fatalf("prChecksScript missing fatal exit code 2:\n%s", prChecksScript)
 	}
 }
 

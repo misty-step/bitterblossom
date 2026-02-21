@@ -315,7 +315,6 @@ exit 1`
 // prChecksScript checks whether all PR CI checks for the current HEAD have passed.
 // Exits 0 when all checks pass, 1 when checks are still pending, 2 on error (no PR, no git, etc.).
 const prChecksScript = `
-export GH_TOKEN="$GH_TOKEN"
 cd "$WORKSPACE" 2>/dev/null || exit 2
 gh pr checks HEAD --exit-status 2>&1
 exit_code=$?
