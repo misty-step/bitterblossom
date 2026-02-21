@@ -453,6 +453,148 @@ func TestHasNewCommitsHasDeadline(t *testing.T) {
 	}
 }
 
+// captureHeadSHA tests
+
+func TestCaptureHeadSHAReturnsHEAD(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: []byte("abc1234567890abcdef\n"), err: nil}
+	sha, err := captureHeadSHAWithRunner(context.Background(), r.run, "/tmp/ws")
+	if err != nil {
+		t.Fatalf("captureHeadSHAWithRunner() error = %v", err)
+	}
+	if sha != "abc1234567890abcdef" {
+		t.Fatalf("sha = %q, want %q", sha, "abc1234567890abcdef")
+	}
+}
+
+func TestCaptureHeadSHAReturnsErrorOnRunnerFailure(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: nil, err: errors.New("network")}
+	_, err := captureHeadSHAWithRunner(context.Background(), r.run, "/tmp/ws")
+	if err == nil {
+		t.Fatal("expected error for runner failure")
+	}
+	if !strings.Contains(err.Error(), "capture HEAD SHA") {
+		t.Fatalf("err = %q, want to contain %q", err.Error(), "capture HEAD SHA")
+	}
+}
+
+func TestCaptureHeadSHAReturnsErrorOnBadExitCode(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 1, out: []byte("fatal: not a git repo"), err: nil}
+	_, err := captureHeadSHAWithRunner(context.Background(), r.run, "/tmp/ws")
+	if err == nil {
+		t.Fatal("expected error for non-zero exit")
+	}
+	if !strings.Contains(err.Error(), "exited 1") {
+		t.Fatalf("err = %q, want to contain %q", err.Error(), "exited 1")
+	}
+}
+
+func TestCaptureHeadSHAUsesWorkspace(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: []byte("abc123\n"), err: nil}
+	if _, err := captureHeadSHAWithRunner(context.Background(), r.run, "/home/sprite/workspace/myrepo"); err != nil {
+		t.Fatalf("captureHeadSHAWithRunner() error = %v", err)
+	}
+	if !strings.Contains(r.script, "/home/sprite/workspace/myrepo") {
+		t.Fatalf("script = %q, want to contain workspace path", r.script)
+	}
+}
+
+func TestCaptureHeadSHAHasDeadline(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: []byte("abc123\n"), err: nil}
+	_, _ = captureHeadSHAWithRunner(context.Background(), r.run, "/tmp/ws")
+	if !r.gotDeadline {
+		t.Fatal("expected context to carry a deadline")
+	}
+}
+
+// hasNewCommitsSinceSHA tests
+
+func TestHasNewCommitsSinceSHAReturnsTrueWhenNewWork(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: []byte("def456 feat: new work\n"), err: nil}
+	hasWork, err := hasNewCommitsSinceSHAWithRunner(context.Background(), r.run, "/tmp/ws", "abc123")
+	if err != nil {
+		t.Fatalf("hasNewCommitsSinceSHAWithRunner() error = %v", err)
+	}
+	if !hasWork {
+		t.Fatal("expected new commits to be present")
+	}
+}
+
+func TestHasNewCommitsSinceSHAReturnsFalseWhenNoNewWork(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 1, out: nil, err: nil}
+	hasWork, err := hasNewCommitsSinceSHAWithRunner(context.Background(), r.run, "/tmp/ws", "abc123")
+	if err != nil {
+		t.Fatalf("hasNewCommitsSinceSHAWithRunner() error = %v", err)
+	}
+	if hasWork {
+		t.Fatal("expected no new commits")
+	}
+}
+
+func TestHasNewCommitsSinceSHAReturnsErrorOnRunnerFailure(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: nil, err: errors.New("network")}
+	_, err := hasNewCommitsSinceSHAWithRunner(context.Background(), r.run, "/tmp/ws", "abc123")
+	if err == nil {
+		t.Fatal("expected error for runner failure")
+	}
+	if !strings.Contains(err.Error(), "check new commits since SHA") {
+		t.Fatalf("err = %q, want to contain %q", err.Error(), "check new commits since SHA")
+	}
+}
+
+func TestHasNewCommitsSinceSHAReturnsErrorOnUnexpectedExitCode(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 2, out: []byte("fatal: not a git repo"), err: nil}
+	_, err := hasNewCommitsSinceSHAWithRunner(context.Background(), r.run, "/tmp/ws", "abc123")
+	if err == nil {
+		t.Fatal("expected error for unexpected exit code")
+	}
+	if !strings.Contains(err.Error(), "new commits since SHA check exited 2") {
+		t.Fatalf("err = %q, want to contain %q", err.Error(), "new commits since SHA check exited 2")
+	}
+}
+
+func TestHasNewCommitsSinceSHAUsesWorkspaceAndSHA(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: []byte("def456\n"), err: nil}
+	if _, err := hasNewCommitsSinceSHAWithRunner(context.Background(), r.run, "/home/sprite/workspace/myrepo", "deadbeef"); err != nil {
+		t.Fatalf("hasNewCommitsSinceSHAWithRunner() error = %v", err)
+	}
+	if !strings.Contains(r.script, "/home/sprite/workspace/myrepo") {
+		t.Fatalf("script = %q, want to contain workspace path", r.script)
+	}
+	if !strings.Contains(r.script, "deadbeef") {
+		t.Fatalf("script = %q, want to contain base SHA", r.script)
+	}
+}
+
+func TestHasNewCommitsSinceSHAHasDeadline(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: []byte("abc123\n"), err: nil}
+	_, _ = hasNewCommitsSinceSHAWithRunner(context.Background(), r.run, "/tmp/ws", "abc123")
+	if !r.gotDeadline {
+		t.Fatal("expected context to carry a deadline")
+	}
+}
+
 func TestHasTaskCompleteSignalUsesWorkspace(t *testing.T) {
 	t.Parallel()
 

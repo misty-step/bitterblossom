@@ -124,6 +124,13 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 	)
 	_, _ = s.CommandContext(ctx, "bash", "-c", cleanScript).Output()
 
+	// Record HEAD SHA before the ralph loop so the off-rails commit check is
+	// scoped to work produced by this dispatch, not prior stale commits.
+	preSHA, shaErr := captureHeadSHAWithRunner(ctx, spriteBashRunner(s), workspace)
+	if shaErr != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "warning: could not capture pre-dispatch HEAD SHA: %v\n", shaErr)
+	}
+
 	// 7. Render and upload prompt
 	rendered, err := renderPrompt(prompt, repo, spriteName)
 	if err != nil {
@@ -238,7 +245,16 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 
 		// Secondary check: if new commits exist the agent was mid-task (e.g. waiting for CI).
 		// Treat as success with a warning — the work landed, the loop just couldn't signal cleanly.
-		hasWork, checkErr := hasNewCommitsWithRunner(ctx, spriteBashRunner(s), workspace)
+		// Use pre-dispatch HEAD SHA when available to scope the check to this dispatch only,
+		// preventing stale commits from a prior run from triggering a false success.
+		var hasWork bool
+		var checkErr error
+		if preSHA != "" {
+			hasWork, checkErr = hasNewCommitsSinceSHAWithRunner(ctx, spriteBashRunner(s), workspace, preSHA)
+		} else {
+			_, _ = fmt.Fprintf(os.Stderr, "\n=== off-rails: no pre-dispatch SHA — falling back to origin baseline check ===\n")
+			hasWork, checkErr = hasNewCommitsWithRunner(ctx, spriteBashRunner(s), workspace)
+		}
 		if checkErr != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "\n=== off-rails: new commits check failed: %v — treating as failure ===\n", checkErr)
 		} else if hasWork {
@@ -310,6 +326,25 @@ exit 1`
 const newCommitsCheckScript = `
 cd "$WORKSPACE" 2>/dev/null || exit 2
 commits="$(git log origin/master..HEAD --oneline 2>/dev/null || git log origin/main..HEAD --oneline 2>/dev/null)" || exit 2
+if [ -n "$commits" ]; then
+  printf '%s\n' "$commits"
+  exit 0
+fi
+exit 1`
+
+// captureHeadSHAScript records the current HEAD commit SHA.
+// Exits 0 with SHA on stdout; exits non-zero when not in a git repo.
+const captureHeadSHAScript = `
+cd "$WORKSPACE" 2>/dev/null || exit 2
+git rev-parse HEAD 2>/dev/null || exit 2`
+
+// newCommitsSinceSHACheckScript checks whether new commits exist since BASE_SHA.
+// Exits 0 with commit list when commits exist, exits 1 when HEAD == BASE_SHA (no new
+// work), exits 2 when not a git repo or BASE_SHA is not a valid ref.
+const newCommitsSinceSHACheckScript = `
+cd "$WORKSPACE" 2>/dev/null || exit 2
+git rev-parse --verify "$BASE_SHA" >/dev/null 2>&1 || exit 2
+commits="$(git log "$BASE_SHA"..HEAD --oneline 2>/dev/null)" || exit 2
 if [ -n "$commits" ]; then
   printf '%s\n' "$commits"
   exit 0
@@ -419,6 +454,47 @@ func hasNewCommitsWithRunner(ctx context.Context, run spriteScriptRunner, worksp
 		return false, nil
 	default:
 		return false, fmt.Errorf("new commits check exited %d: %s", exitCode, strings.TrimSpace(string(out)))
+	}
+}
+
+// captureHeadSHAWithRunner records the current HEAD SHA in workspace before the ralph
+// loop starts. The returned SHA is used by hasNewCommitsSinceSHAWithRunner to scope
+// the off-rails secondary commit check to the current dispatch.
+func captureHeadSHAWithRunner(ctx context.Context, run spriteScriptRunner, workspace string) (string, error) {
+	captureCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	script := fmt.Sprintf("export WORKSPACE=%q\n%s", workspace, captureHeadSHAScript)
+	out, exitCode, err := run(captureCtx, script)
+	if err != nil {
+		return "", fmt.Errorf("capture HEAD SHA: %w", err)
+	}
+	if exitCode != 0 {
+		return "", fmt.Errorf("capture HEAD SHA: exited %d: %s", exitCode, strings.TrimSpace(string(out)))
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// hasNewCommitsSinceSHAWithRunner returns true when commits exist on HEAD that were
+// not present at baseSHA. This scopes the off-rails secondary commit check to work
+// produced during the current dispatch, ignoring stale commits from prior runs.
+func hasNewCommitsSinceSHAWithRunner(ctx context.Context, run spriteScriptRunner, workspace, baseSHA string) (bool, error) {
+	checkCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	script := fmt.Sprintf("export WORKSPACE=%q BASE_SHA=%q\n%s", workspace, baseSHA, newCommitsSinceSHACheckScript)
+	out, exitCode, err := run(checkCtx, script)
+	if err != nil {
+		return false, fmt.Errorf("check new commits since SHA: %w", err)
+	}
+
+	switch exitCode {
+	case 0:
+		return true, nil
+	case 1:
+		return false, nil
+	default:
+		return false, fmt.Errorf("new commits since SHA check exited %d: %s", exitCode, strings.TrimSpace(string(out)))
 	}
 }
 
