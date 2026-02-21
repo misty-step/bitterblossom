@@ -220,7 +220,7 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 
 	// 10. Snapshot PR CI status (informational; gating is controlled by --pr-check-timeout).
 	prs := snapshotPRChecksWithRunner(ctx, spriteBashRunner(s), workspace, ghToken)
-	_, _ = fmt.Fprintf(os.Stderr, "dispatch pr-checks: status=%s checks_exit=%d\n", prs.Status, prs.ChecksExit)
+	_, _ = fmt.Fprintf(os.Stderr, "dispatch pr-checks: status=%s checks_exit=%d\n", prs.status, prs.checksExit)
 
 	// 11. Return appropriate exit code
 	// Check if off-rails detector killed the dispatch
@@ -330,8 +330,8 @@ exit 2`
 type spriteScriptRunner func(ctx context.Context, script string) ([]byte, int, error)
 
 type prCheckSummary struct {
-	Status     string
-	ChecksExit int
+	status     string
+	checksExit int
 }
 
 func ensureNoActiveDispatchLoop(ctx context.Context, s *sprites.Sprite) error {
@@ -442,25 +442,28 @@ func hasTaskCompleteSignalWithRunner(ctx context.Context, run spriteScriptRunner
 	}
 }
 
+// prChecksScriptFor builds the shell snippet that runs prChecksScript with
+// the given workspace and GitHub token. Shared by snapshot and wait-for-checks.
+func prChecksScriptFor(workspace, ghToken string) string {
+	return fmt.Sprintf("export WORKSPACE=%q GH_TOKEN=%q\n%s", workspace, ghToken, prChecksScript)
+}
+
 func snapshotPRChecksWithRunner(ctx context.Context, run spriteScriptRunner, workspace, ghToken string) prCheckSummary {
 	checkCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	script := fmt.Sprintf("export WORKSPACE=%q GH_TOKEN=%q\n%s", workspace, ghToken, prChecksScript)
-	_, exitCode, err := run(checkCtx, script)
+	_, exitCode, err := run(checkCtx, prChecksScriptFor(workspace, ghToken))
 	if err != nil {
-		return prCheckSummary{Status: "error", ChecksExit: -1}
+		return prCheckSummary{status: "error", checksExit: -1}
 	}
 
 	switch exitCode {
 	case 0:
-		return prCheckSummary{Status: "pass", ChecksExit: exitCode}
+		return prCheckSummary{status: "pass", checksExit: exitCode}
 	case 1:
-		return prCheckSummary{Status: "pending", ChecksExit: exitCode}
-	case 2:
-		return prCheckSummary{Status: "error", ChecksExit: exitCode}
+		return prCheckSummary{status: "pending", checksExit: exitCode}
 	default:
-		return prCheckSummary{Status: "error", ChecksExit: exitCode}
+		return prCheckSummary{status: "error", checksExit: exitCode}
 	}
 }
 
@@ -481,7 +484,7 @@ func waitForPRChecksWithRunner(ctx context.Context, run spriteScriptRunner, work
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
-	script := fmt.Sprintf("export WORKSPACE=%q GH_TOKEN=%q\n%s", workspace, ghToken, prChecksScript)
+	script := prChecksScriptFor(workspace, ghToken)
 
 	for {
 		checkCtx, checkCancel := context.WithTimeout(pollCtx, 30*time.Second)
