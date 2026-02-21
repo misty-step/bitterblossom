@@ -16,26 +16,35 @@ import (
 
 func newSetupCmd() *cobra.Command {
 	var (
-		repo  string
-		force bool
+		repo    string
+		force   bool
+		persona string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "setup <sprite>",
 		Short: "Configure a sprite with base configs, persona, and ralph loop",
-		Args:  cobra.ExactArgs(1),
+		Long: `Configure a sprite with base configs, persona, and ralph loop.
+
+If no persona file exists for the sprite name, use --persona to specify one:
+  bb setup worker-1 --persona bramble      # use sprites/bramble.md
+  bb setup worker-1 --persona sprites/bramble.md  # explicit path
+
+Without --persona, bb falls back to the first available file in sprites/.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSetup(cmd.Context(), args[0], repo, force)
+			return runSetup(cmd.Context(), args[0], repo, force, persona)
 		},
 	}
 
 	cmd.Flags().StringVar(&repo, "repo", "", "GitHub repo to clone (owner/repo)")
 	cmd.Flags().BoolVar(&force, "force", false, "Re-clone repo and overwrite configs")
+	cmd.Flags().StringVar(&persona, "persona", "", "Persona sprite name or file path (falls back to first available in sprites/ if unset)")
 
 	return cmd
 }
 
-func runSetup(ctx context.Context, spriteName, repo string, force bool) error {
+func runSetup(ctx context.Context, spriteName, repo string, force bool, persona string) error {
 	token, err := spriteToken()
 	if err != nil {
 		return err
@@ -117,10 +126,11 @@ func runSetup(ctx context.Context, spriteName, repo string, force bool) error {
 	}
 
 	// 4. Upload persona
-	personaFile := "sprites/" + spriteName + ".md"
-	if _, err := os.Stat(personaFile); err != nil {
-		return fmt.Errorf("persona not found: %s", personaFile)
+	personaFile, err := resolvePersona(spriteName, persona)
+	if err != nil {
+		return err
 	}
+	_, _ = fmt.Fprintf(os.Stderr, "uploading persona from %s...\n", personaFile)
 	if err := uploadFile(ctx, s, personaFile, "/home/sprite/workspace/PERSONA.md"); err != nil {
 		return fmt.Errorf("upload persona: %w", err)
 	}
@@ -190,6 +200,44 @@ git config --global --add safe.directory '*'
 
 	_, _ = fmt.Fprintf(os.Stderr, "setup complete: %s\n", spriteName)
 	return nil
+}
+
+// resolvePersona returns the local path to the persona file to use for setup.
+// Resolution order:
+//  1. Explicit --persona flag: treat as sprite name (sprites/<persona>.md) or direct path
+//  2. Matching sprite name: sprites/<spriteName>.md
+//  3. Fallback: first .md file found in sprites/ (alphabetical)
+//
+// Returns an actionable error if no persona can be resolved.
+func resolvePersona(spriteName, persona string) (string, error) {
+	// Explicit persona flag takes priority
+	if persona != "" {
+		// Check if it's a direct file path
+		if _, err := os.Stat(persona); err == nil {
+			return persona, nil
+		}
+		// Treat as sprite name: sprites/<persona>.md
+		candidate := "sprites/" + strings.TrimSuffix(persona, ".md") + ".md"
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
+		}
+		return "", fmt.Errorf("persona %q not found (tried %s); run 'ls sprites/' to see available personas", persona, candidate)
+	}
+
+	// Try exact match for sprite name
+	exact := "sprites/" + spriteName + ".md"
+	if _, err := os.Stat(exact); err == nil {
+		return exact, nil
+	}
+
+	// Fallback: first available persona in sprites/
+	entries, err := filepath.Glob("sprites/*.md")
+	if err != nil || len(entries) == 0 {
+		return "", fmt.Errorf("no persona file found for %q and no fallback available in sprites/; use --persona <name>", spriteName)
+	}
+	fallback := entries[0]
+	_, _ = fmt.Fprintf(os.Stderr, "warning: no persona for %q, using fallback %s (use --persona to override)\n", spriteName, fallback)
+	return fallback, nil
 }
 
 // uploadFile reads a local file and writes it to the sprite filesystem.
