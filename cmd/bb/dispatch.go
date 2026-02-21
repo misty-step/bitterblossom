@@ -472,7 +472,11 @@ func captureHeadSHAWithRunner(ctx context.Context, run spriteScriptRunner, works
 	if exitCode != 0 {
 		return "", fmt.Errorf("capture HEAD SHA: exited %d: %s", exitCode, strings.TrimSpace(string(out)))
 	}
-	return strings.TrimSpace(string(out)), nil
+	sha := strings.TrimSpace(string(out))
+	if sha == "" {
+		return "", fmt.Errorf("capture HEAD SHA: git returned empty output")
+	}
+	return sha, nil
 }
 
 // hasNewCommitsSinceSHAWithRunner returns true when commits exist on HEAD that were

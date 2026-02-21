@@ -506,6 +506,33 @@ func TestCaptureHeadSHAUsesWorkspace(t *testing.T) {
 	}
 }
 
+func TestCaptureHeadSHAReturnsErrorOnEmptyOutput(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: []byte("\n"), err: nil}
+	_, err := captureHeadSHAWithRunner(context.Background(), r.run, "/tmp/ws")
+	if err == nil {
+		t.Fatal("expected error for empty SHA output")
+	}
+	if !strings.Contains(err.Error(), "empty output") {
+		t.Fatalf("err = %q, want to contain %q", err.Error(), "empty output")
+	}
+}
+
+func TestCaptureHeadSHAReturnsErrorOnScriptExitCode2(t *testing.T) {
+	t.Parallel()
+
+	// Exit code 2 is what the actual captureHeadSHAScript uses for "not a git repo"
+	r := &fakeSpriteScriptRunner{exitCode: 2, out: nil, err: nil}
+	_, err := captureHeadSHAWithRunner(context.Background(), r.run, "/tmp/ws")
+	if err == nil {
+		t.Fatal("expected error for exit code 2")
+	}
+	if !strings.Contains(err.Error(), "exited 2") {
+		t.Fatalf("err = %q, want to contain %q", err.Error(), "exited 2")
+	}
+}
+
 func TestCaptureHeadSHAHasDeadline(t *testing.T) {
 	t.Parallel()
 
