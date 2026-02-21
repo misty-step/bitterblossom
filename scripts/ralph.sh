@@ -5,6 +5,7 @@ MAX_ITERATIONS="${MAX_ITERATIONS:-50}"
 MAX_TIME_SEC="${MAX_TIME_SEC:-1800}"
 ITER_TIMEOUT_SEC="${ITER_TIMEOUT_SEC:-900}"  # per-invocation timeout (15 min default)
 HEARTBEAT_INTERVAL_SEC="${HEARTBEAT_INTERVAL_SEC:-120}"  # 2 min; must be < off-rails silence threshold
+[[ "$HEARTBEAT_INTERVAL_SEC" =~ ^[1-9][0-9]*$ ]] || HEARTBEAT_INTERVAL_SEC=120  # coerce invalid/zero to default
 WS="${WORKSPACE:-$HOME/workspace/repo}"
 PROMPT="$WS/.dispatch-prompt.md"
 RALPH_LOG="$WS/ralph.log"

@@ -222,8 +222,10 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 
 		// Secondary check: if new commits exist the agent was mid-task (e.g. waiting for CI).
 		// Treat as success with a warning — the work landed, the loop just couldn't signal cleanly.
-		hasWork, _ := hasNewCommitsWithRunner(ctx, spriteBashRunner(s), workspace)
-		if hasWork {
+		hasWork, checkErr := hasNewCommitsWithRunner(ctx, spriteBashRunner(s), workspace)
+		if checkErr != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "\n=== off-rails: new commits check failed: %v — treating as failure ===\n", checkErr)
+		} else if hasWork {
 			_, _ = fmt.Fprintf(os.Stderr, "\n=== off-rails fired mid-task: new commits found — treating as success ===\n")
 			return nil
 		}
@@ -275,10 +277,11 @@ exit 1`
 
 // newCommitsCheckScript checks if any commits on HEAD are not yet on origin/master or
 // origin/main. Exits 0 with commit list on stdout when new commits exist, exits 1 when
-// the branch is flush with upstream (no new work). Exits 2 when not a git repo.
+// the branch is flush with upstream (no new work). Exits 2 when not a git repo or when
+// neither origin/master nor origin/main exists (no valid upstream baseline).
 const newCommitsCheckScript = `
 cd "$WORKSPACE" 2>/dev/null || exit 2
-commits="$(git log origin/master..HEAD --oneline 2>/dev/null || git log origin/main..HEAD --oneline 2>/dev/null || true)"
+commits="$(git log origin/master..HEAD --oneline 2>/dev/null || git log origin/main..HEAD --oneline 2>/dev/null)" || exit 2
 if [ -n "$commits" ]; then
   printf '%s\n' "$commits"
   exit 0

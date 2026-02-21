@@ -435,7 +435,9 @@ func TestHasNewCommitsUsesWorkspace(t *testing.T) {
 	t.Parallel()
 
 	r := &fakeSpriteScriptRunner{exitCode: 0, out: []byte("abc123\n"), err: nil}
-	_, _ = hasNewCommitsWithRunner(context.Background(), r.run, "/home/sprite/workspace/myrepo")
+	if _, err := hasNewCommitsWithRunner(context.Background(), r.run, "/home/sprite/workspace/myrepo"); err != nil {
+		t.Fatalf("hasNewCommitsWithRunner() error = %v", err)
+	}
 	if !strings.Contains(r.script, "/home/sprite/workspace/myrepo") {
 		t.Fatalf("script = %q, want to contain workspace path", r.script)
 	}
