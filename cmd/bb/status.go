@@ -135,7 +135,12 @@ echo "=== git ==="
 if [ -d "$WS" ]; then
   cd "$WS"
   echo "branch: $(git branch --show-current 2>/dev/null || echo 'n/a')"
-  echo "status: $(git status --porcelain 2>/dev/null | wc -l | tr -d ' ') dirty files"
+  dirty=$(git status --porcelain 2>/dev/null)
+  dirty_count=$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+  echo "status: $dirty_count dirty files"
+  if [ -n "$dirty" ]; then
+    printf '%s\n' "$dirty" | sed 's/^/  /'
+  fi
   echo ""
   echo "recent commits:"
   git log --oneline -5 2>/dev/null || echo "(no commits)"
