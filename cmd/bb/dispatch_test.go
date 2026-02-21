@@ -493,3 +493,191 @@ func TestDispatchCmdDryRunFlagCanBeSet(t *testing.T) {
 		t.Fatal("expected --dry-run to be true after Set")
 	}
 }
+
+func TestDispatchCmdHasPRCheckTimeoutFlag(t *testing.T) {
+	t.Parallel()
+
+	cmd := newDispatchCmd()
+	f := cmd.Flags().Lookup("pr-check-timeout")
+	if f == nil {
+		t.Fatal("--pr-check-timeout flag not registered on dispatch command")
+	}
+	if f.DefValue != "0s" {
+		t.Fatalf("--pr-check-timeout default = %q, want %q", f.DefValue, "0s")
+	}
+}
+
+func TestWaitForPRChecksReturnsNilWhenDisabled(t *testing.T) {
+	t.Parallel()
+
+	// When prCheckTimeout == 0, waitForPRChecks should return nil immediately
+	// without calling the runner.
+	r := &fakeSpriteScriptRunner{exitCode: 1, out: nil, err: nil}
+	var progress bytes.Buffer
+	err := waitForPRChecksWithRunner(context.Background(), r.run, "/tmp/ws", "token", 0, 30*time.Second, &progress)
+	if err != nil {
+		t.Fatalf("expected nil error when disabled, got %v", err)
+	}
+	if r.called {
+		t.Fatal("runner should not be called when pr-check-timeout is 0")
+	}
+}
+
+func TestWaitForPRChecksReturnsNilOnImmediatePass(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: []byte("all checks pass\n"), err: nil}
+	var progress bytes.Buffer
+	err := waitForPRChecksWithRunner(context.Background(), r.run, "/tmp/ws", "token", time.Minute, time.Second, &progress)
+	if err != nil {
+		t.Fatalf("expected nil error on immediate pass, got %v", err)
+	}
+	if !r.called {
+		t.Fatal("runner should be called")
+	}
+}
+
+func TestWaitForPRChecksTimesOut(t *testing.T) {
+	t.Parallel()
+
+	// Script always returns pending (exit 1).
+	r := &fakeSpriteScriptRunner{exitCode: 1, out: nil, err: nil}
+	var progress bytes.Buffer
+	err := waitForPRChecksWithRunner(context.Background(), r.run, "/tmp/ws", "token", 50*time.Millisecond, 10*time.Millisecond, &progress)
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), "pr-check-timeout") {
+		t.Fatalf("err = %q, want to contain %q", err.Error(), "pr-check-timeout")
+	}
+}
+
+func TestWaitForPRChecksEmitsProgress(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	// First call: pending. Second call: pass.
+	customRunner := func(ctx context.Context, script string) ([]byte, int, error) {
+		calls++
+		if calls == 1 {
+			return nil, 1, nil // pending
+		}
+		return []byte("pass\n"), 0, nil // pass
+	}
+
+	var progress bytes.Buffer
+	err := waitForPRChecksWithRunner(context.Background(), customRunner, "/tmp/ws", "token", 5*time.Second, 10*time.Millisecond, &progress)
+	if err != nil {
+		t.Fatalf("expected nil on second pass, got %v", err)
+	}
+	if !strings.Contains(progress.String(), "[dispatch]") {
+		t.Fatalf("progress = %q, want to contain %q", progress.String(), "[dispatch]")
+	}
+}
+
+func TestWaitForPRChecksContextCancelled(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	r := &fakeSpriteScriptRunner{exitCode: 1, out: nil, err: nil}
+	var progress bytes.Buffer
+	err := waitForPRChecksWithRunner(ctx, r.run, "/tmp/ws", "token", time.Minute, time.Second, &progress)
+	if err == nil {
+		t.Fatal("expected error on cancelled context, got nil")
+	}
+}
+
+func TestWaitForPRChecksUsesWorkspaceAndToken(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: []byte("pass\n"), err: nil}
+	var progress bytes.Buffer
+	if err := waitForPRChecksWithRunner(context.Background(), r.run, "/home/sprite/workspace/myrepo", "ghtoken123", time.Minute, time.Second, &progress); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(r.script, "/home/sprite/workspace/myrepo") {
+		t.Fatalf("script = %q, want to contain workspace path", r.script)
+	}
+	if !strings.Contains(r.script, "ghtoken123") {
+		t.Fatalf("script = %q, want to contain GH token", r.script)
+	}
+}
+
+func TestWaitForPRChecksFatalErrorStopsImmediately(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	runner := func(_ context.Context, _ string) ([]byte, int, error) {
+		calls++
+		return []byte("gh: command not found\n"), 2, nil // fatal error
+	}
+	var progress bytes.Buffer
+	err := waitForPRChecksWithRunner(context.Background(), runner, "/tmp/ws", "token",
+		time.Minute, 10*time.Millisecond, &progress)
+	if err == nil {
+		t.Fatal("expected error on fatal exit code 2, got nil")
+	}
+	if calls > 1 {
+		t.Fatalf("expected only 1 call on fatal error, got %d", calls)
+	}
+}
+
+func TestWaitForPRChecksRetriesOnRunnerError(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	runner := func(_ context.Context, _ string) ([]byte, int, error) {
+		calls++
+		if calls == 1 {
+			return nil, 0, errors.New("websocket closed")
+		}
+		return []byte("pass\n"), 0, nil // second call succeeds
+	}
+	var progress bytes.Buffer
+	err := waitForPRChecksWithRunner(context.Background(), runner, "/tmp/ws", "token",
+		5*time.Second, 10*time.Millisecond, &progress)
+	if err != nil {
+		t.Fatalf("expected nil after retry success, got %v", err)
+	}
+	if calls < 2 {
+		t.Fatalf("expected at least 2 calls (error + retry), got %d", calls)
+	}
+	if !strings.Contains(progress.String(), "runner error") {
+		t.Fatalf("progress = %q, want to contain %q", progress.String(), "runner error")
+	}
+}
+
+func TestPRChecksScriptContainsExpectedCommands(t *testing.T) {
+	t.Parallel()
+
+	if !strings.Contains(prChecksScript, "gh pr checks HEAD") {
+		t.Fatalf("prChecksScript missing 'gh pr checks HEAD':\n%s", prChecksScript)
+	}
+	if !strings.Contains(prChecksScript, "--exit-status") {
+		t.Fatalf("prChecksScript missing '--exit-status':\n%s", prChecksScript)
+	}
+	if !strings.Contains(prChecksScript, "exit 2") {
+		t.Fatalf("prChecksScript missing fatal exit code 2:\n%s", prChecksScript)
+	}
+}
+
+func TestWaitForPRChecksInitialCheckBeforeTicker(t *testing.T) {
+	t.Parallel()
+
+	// pollInterval is longer than prCheckTimeout; without an initial check
+	// the function would always time out without ever calling the runner.
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: []byte("pass\n"), err: nil}
+	var progress bytes.Buffer
+	err := waitForPRChecksWithRunner(context.Background(), r.run, "/tmp/ws", "token",
+		50*time.Millisecond, // prCheckTimeout
+		time.Hour,           // pollInterval (ticker never fires)
+		&progress)
+	if err != nil {
+		t.Fatalf("expected nil (immediate pass before ticker), got %v", err)
+	}
+	if !r.called {
+		t.Fatal("runner should be called even when pollInterval > prCheckTimeout")
+	}
+}

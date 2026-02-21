@@ -24,6 +24,7 @@ func newDispatchCmd() *cobra.Command {
 		maxIterations   int
 		noOutputTimeout time.Duration
 		dryRun          bool
+		prCheckTimeout  time.Duration
 	)
 
 	cmd := &cobra.Command{
@@ -34,7 +35,7 @@ func newDispatchCmd() *cobra.Command {
 			spriteName := args[0]
 			prompt := args[1]
 
-			return runDispatch(cmd.Context(), spriteName, prompt, repo, maxIterations, timeout, noOutputTimeout, dryRun)
+			return runDispatch(cmd.Context(), spriteName, prompt, repo, maxIterations, timeout, noOutputTimeout, dryRun, prCheckTimeout)
 		},
 	}
 
@@ -43,12 +44,13 @@ func newDispatchCmd() *cobra.Command {
 	cmd.Flags().IntVar(&maxIterations, "max-iterations", 50, "Max ralph loop iterations")
 	cmd.Flags().DurationVar(&noOutputTimeout, "no-output-timeout", defaultSilenceAbortThreshold, "Abort if no output for this duration (0 to disable)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Validate credentials and sprite readiness without starting the agent")
+	cmd.Flags().DurationVar(&prCheckTimeout, "pr-check-timeout", 0, "After task complete, wait up to this long for PR CI checks to pass (0 to skip)")
 	_ = cmd.MarkFlagRequired("repo")
 
 	return cmd
 }
 
-func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter int, timeout time.Duration, noOutputTimeout time.Duration, dryRun bool) error {
+func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter int, timeout time.Duration, noOutputTimeout time.Duration, dryRun bool, prCheckTimeout time.Duration) error {
 	// Validate credentials
 	token, err := spriteToken()
 	if err != nil {
@@ -199,6 +201,11 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 
 	ralphErr := ralphCmd.Run()
 
+	// Stop off-rails immediately — the agent has finished. Any post-ralph work
+	// (PR check polling, verify) is intentional and must not trigger the silence
+	// detector.
+	detector.stop()
+
 	// 9. Verify work produced
 	_, _ = fmt.Fprintf(os.Stderr, "\n=== work produced ===\n")
 	verifyScript := fmt.Sprintf(
@@ -243,15 +250,27 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 			code := exitErr.ExitCode()
 			switch code {
 			case 0:
-				return nil
+				// fall through to optional PR check polling
 			case 2:
 				return &exitError{Code: 2, Err: fmt.Errorf("agent blocked — check BLOCKED.md on sprite")}
 			default:
 				return &exitError{Code: code, Err: fmt.Errorf("ralph exited %d", code)}
 			}
+		} else {
+			return fmt.Errorf("ralph failed: %w", ralphErr)
 		}
-		return fmt.Errorf("ralph failed: %w", ralphErr)
 	}
+
+	// 11. Optionally wait for PR CI checks to pass.
+	if prCheckTimeout > 0 {
+		_, _ = fmt.Fprintf(os.Stderr, "\n=== waiting for PR checks (timeout %s) ===\n", prCheckTimeout)
+		pollInterval := 30 * time.Second
+		if err := waitForPRChecksWithRunner(ctx, spriteBashRunner(s), workspace, ghToken, prCheckTimeout, pollInterval, os.Stderr); err != nil {
+			return fmt.Errorf("PR checks: %w", err)
+		}
+		_, _ = fmt.Fprintf(os.Stderr, "=== PR checks passed ===\n")
+	}
+
 	return nil
 }
 
@@ -292,6 +311,17 @@ if [ -n "$commits" ]; then
   exit 0
 fi
 exit 1`
+
+// prChecksScript checks whether all PR CI checks for the current HEAD have passed.
+// Exits 0 when all checks pass, 1 when checks are still pending, 2 on error (no PR, no git, etc.).
+const prChecksScript = `
+cd "$WORKSPACE" 2>/dev/null || exit 2
+gh pr checks HEAD --exit-status 2>&1
+exit_code=$?
+if [ "$exit_code" -eq 0 ] || [ "$exit_code" -eq 1 ]; then
+  exit $exit_code
+fi
+exit 2`
 
 type spriteScriptRunner func(ctx context.Context, script string) ([]byte, int, error)
 
@@ -400,6 +430,56 @@ func hasTaskCompleteSignalWithRunner(ctx context.Context, run spriteScriptRunner
 		return false, nil
 	default:
 		return false, fmt.Errorf("completion signal check exited %d: %s", exitCode, strings.TrimSpace(string(out)))
+	}
+}
+
+// waitForPRChecksWithRunner polls the sprite for PR CI check status until all
+// checks pass, prCheckTimeout elapses, or ctx is cancelled. It emits a progress
+// line to progress on every poll interval so operators can see activity.
+//
+// prCheckTimeout == 0 is a no-op (returns nil immediately without calling run).
+func waitForPRChecksWithRunner(ctx context.Context, run spriteScriptRunner, workspace, ghToken string, prCheckTimeout, pollInterval time.Duration, progress io.Writer) error {
+	if prCheckTimeout == 0 {
+		return nil
+	}
+
+	deadline := time.Now().Add(prCheckTimeout)
+	pollCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	script := fmt.Sprintf("export WORKSPACE=%q GH_TOKEN=%q\n%s", workspace, ghToken, prChecksScript)
+
+	for {
+		checkCtx, checkCancel := context.WithTimeout(pollCtx, 30*time.Second)
+		_, exitCode, err := run(checkCtx, script)
+		checkCancel()
+
+		if err != nil {
+			_, _ = fmt.Fprintf(progress, "[dispatch] PR checks: runner error: %v\n", err)
+		} else {
+			switch exitCode {
+			case 0:
+				return nil // all checks passed
+			case 1:
+				_, _ = fmt.Fprintf(progress, "[dispatch] PR checks: pending — next poll in %s\n", pollInterval)
+			case 2:
+				return fmt.Errorf("pr checks error (gh unavailable, no PR for HEAD, or auth failure)")
+			default:
+				_, _ = fmt.Fprintf(progress, "[dispatch] PR checks: unexpected exit %d — retrying\n", exitCode)
+			}
+		}
+
+		select {
+		case <-pollCtx.Done():
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return fmt.Errorf("pr-check-timeout (%s) elapsed: CI checks did not pass in time", prCheckTimeout)
+		case <-ticker.C:
+		}
 	}
 }
 
