@@ -48,6 +48,15 @@ If something is ambiguous, make your best judgment call and document the decisio
 
 ## Git workflow
 - Work on a feature branch (never main/master)
+- **Branch naming**: append a timestamp to avoid collisions with prior dispatch runs:
+  `git checkout -b fix/NNN-short-description-$(date +%Y%m%d-%H%M)`
+  Example: `fix/406-timeout-grace-20260220-1730`
+- **Before pushing**: use `--force-with-lease` on non-fast-forward failure:
+  ```bash
+  git push -u origin <branch-name> || git push --force-with-lease -u origin <branch-name>
+  ```
+  **Never rebase** — repo policy hooks (`destructive-command-guard.py`) block it.
+- If you already have a local branch from a prior iteration of *this dispatch run*, reuse it.
 - Commit frequently with conventional commit messages
 - Include `Co-Authored-By: {{SPRITE_NAME}} <noreply@anthropic.com>` in commits
 - Push to origin after each meaningful commit
