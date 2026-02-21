@@ -267,13 +267,21 @@ func isDispatchLoopActive(ctx context.Context, s *sprites.Sprite) (bool, error) 
 	return isDispatchLoopActiveWithRunner(ctx, spriteBashRunner(s))
 }
 
-func isDispatchLoopActiveWithRunner(ctx context.Context, run spriteScriptRunner) (bool, error) {
+// runRalphLoopCheck executes the pgrep check and returns the raw result.
+func runRalphLoopCheck(ctx context.Context, run spriteScriptRunner) (output string, exitCode int, err error) {
 	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+	out, code, runErr := run(checkCtx, activeRalphLoopCheckScript)
+	if runErr != nil {
+		return "", 0, fmt.Errorf("check dispatch loop: %w", runErr)
+	}
+	return strings.TrimSpace(string(out)), code, nil
+}
 
-	out, exitCode, err := run(checkCtx, activeRalphLoopCheckScript)
+func isDispatchLoopActiveWithRunner(ctx context.Context, run spriteScriptRunner) (bool, error) {
+	_, exitCode, err := runRalphLoopCheck(ctx, run)
 	if err != nil {
-		return false, fmt.Errorf("check dispatch loop: %w", err)
+		return false, err
 	}
 
 	switch exitCode {
@@ -282,11 +290,7 @@ func isDispatchLoopActiveWithRunner(ctx context.Context, run spriteScriptRunner)
 	case 1:
 		return true, nil // active ralph loop detected
 	default:
-		trim := strings.TrimSpace(string(out))
-		if trim == "" {
-			return false, fmt.Errorf("check dispatch loop exited %d", exitCode)
-		}
-		return false, fmt.Errorf("check dispatch loop exited %d:\n%s", exitCode, trim)
+		return false, fmt.Errorf("check dispatch loop exited %d", exitCode)
 	}
 }
 
@@ -327,31 +331,27 @@ func hasTaskCompleteSignalWithRunner(ctx context.Context, run spriteScriptRunner
 }
 
 func ensureNoActiveDispatchLoopWithRunner(ctx context.Context, run spriteScriptRunner) error {
-	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	out, exitCode, err := run(checkCtx, activeRalphLoopCheckScript)
+	output, exitCode, err := runRalphLoopCheck(ctx, run)
 	if err != nil {
-		return fmt.Errorf("check dispatch loop: %w", err)
+		return err
 	}
 
-	trim := strings.TrimSpace(string(out))
 	switch exitCode {
 	case 0:
-		if trim != "" {
-			return fmt.Errorf("active dispatch loop detected:\n%s", trim)
+		if output != "" {
+			return fmt.Errorf("active dispatch loop detected:\n%s", output)
 		}
 		return nil
 	case 1:
-		if trim == "" {
-			trim = "(process list empty)"
+		if output == "" {
+			output = "(process list empty)"
 		}
-		return fmt.Errorf("active dispatch loop detected:\n%s", trim)
+		return fmt.Errorf("active dispatch loop detected:\n%s", output)
 	default:
-		if trim == "" {
+		if output == "" {
 			return fmt.Errorf("check dispatch loop exited %d", exitCode)
 		}
-		return fmt.Errorf("check dispatch loop exited %d:\n%s", exitCode, trim)
+		return fmt.Errorf("check dispatch loop exited %d:\n%s", exitCode, output)
 	}
 }
 
