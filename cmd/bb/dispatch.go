@@ -23,6 +23,7 @@ func newDispatchCmd() *cobra.Command {
 		timeout         time.Duration
 		maxIterations   int
 		noOutputTimeout time.Duration
+		dryRun          bool
 	)
 
 	cmd := &cobra.Command{
@@ -33,7 +34,7 @@ func newDispatchCmd() *cobra.Command {
 			spriteName := args[0]
 			prompt := args[1]
 
-			return runDispatch(cmd.Context(), spriteName, prompt, repo, maxIterations, timeout, noOutputTimeout)
+			return runDispatch(cmd.Context(), spriteName, prompt, repo, maxIterations, timeout, noOutputTimeout, dryRun)
 		},
 	}
 
@@ -41,12 +42,13 @@ func newDispatchCmd() *cobra.Command {
 	cmd.Flags().DurationVar(&timeout, "timeout", 30*time.Minute, "Max wall-clock time for the ralph loop")
 	cmd.Flags().IntVar(&maxIterations, "max-iterations", 50, "Max ralph loop iterations")
 	cmd.Flags().DurationVar(&noOutputTimeout, "no-output-timeout", defaultSilenceAbortThreshold, "Abort if no output for this duration (0 to disable)")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Validate credentials and sprite readiness without starting the agent")
 	_ = cmd.MarkFlagRequired("repo")
 
 	return cmd
 }
 
-func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter int, timeout time.Duration, noOutputTimeout time.Duration) error {
+func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter int, timeout time.Duration, noOutputTimeout time.Duration, dryRun bool) error {
 	// Validate credentials
 	token, err := spriteToken()
 	if err != nil {
@@ -83,6 +85,12 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 	// 3. Refuse overlapping dispatches against an active ralph loop
 	if err := ensureNoActiveDispatchLoop(ctx, s); err != nil {
 		return fmt.Errorf("sprite %q is currently working: %w", spriteName, err)
+	}
+
+	// Dry-run: all pre-flight checks passed — do not start the agent.
+	if dryRun {
+		_, _ = fmt.Fprintf(os.Stderr, "dry-run: sprite %q is ready to dispatch\n", spriteName)
+		return nil
 	}
 
 	// 4. Kill stale agent processes from prior dispatches
