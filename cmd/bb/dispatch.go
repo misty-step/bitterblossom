@@ -25,6 +25,7 @@ func newDispatchCmd() *cobra.Command {
 		noOutputTimeout time.Duration
 		dryRun          bool
 		prCheckTimeout  time.Duration
+		waitForComplete bool
 	)
 
 	cmd := &cobra.Command{
@@ -35,7 +36,7 @@ func newDispatchCmd() *cobra.Command {
 			spriteName := args[0]
 			prompt := args[1]
 
-			return runDispatch(cmd.Context(), spriteName, prompt, repo, maxIterations, timeout, noOutputTimeout, dryRun, prCheckTimeout)
+			return runDispatch(cmd.Context(), spriteName, prompt, repo, maxIterations, timeout, noOutputTimeout, dryRun, prCheckTimeout, waitForComplete)
 		},
 	}
 
@@ -45,12 +46,13 @@ func newDispatchCmd() *cobra.Command {
 	cmd.Flags().DurationVar(&noOutputTimeout, "no-output-timeout", defaultSilenceAbortThreshold, "Abort if no output for this duration (0 to disable)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Validate credentials and sprite readiness without starting the agent")
 	cmd.Flags().DurationVar(&prCheckTimeout, "pr-check-timeout", 0, "After task complete, wait up to this long for PR CI checks to pass (0 to skip)")
+	cmd.Flags().BoolVar(&waitForComplete, "wait", false, "Wait for task completion signal after dispatch")
 	_ = cmd.MarkFlagRequired("repo")
 
 	return cmd
 }
 
-func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter int, timeout time.Duration, noOutputTimeout time.Duration, dryRun bool, prCheckTimeout time.Duration) error {
+func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter int, timeout time.Duration, noOutputTimeout time.Duration, dryRun bool, prCheckTimeout time.Duration, waitForComplete bool) error {
 	// Validate credentials
 	token, err := spriteToken()
 	if err != nil {
@@ -289,6 +291,15 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 			return fmt.Errorf("PR checks: %w", err)
 		}
 		_, _ = fmt.Fprintf(os.Stderr, "=== PR checks passed ===\n")
+	}
+
+	if waitForComplete {
+		_, _ = fmt.Fprintf(os.Stderr, "\n=== waiting for task complete (timeout %s) ===\n", timeout)
+		pollInterval := 30 * time.Second
+		if err := waitForTaskCompleteWithRunner(ctx, spriteBashRunner(s), workspace, timeout, pollInterval, os.Stderr); err != nil {
+			return fmt.Errorf("wait for task complete: %w", err)
+		}
+		_, _ = fmt.Fprintf(os.Stderr, "=== task completed ===\n")
 	}
 
 	return nil
@@ -592,6 +603,53 @@ func waitForPRChecksWithRunner(ctx context.Context, run spriteScriptRunner, work
 				return ctx.Err()
 			}
 			return fmt.Errorf("pr-check-timeout (%s) elapsed: CI checks did not pass in time", prCheckTimeout)
+		case <-ticker.C:
+		}
+	}
+}
+
+// waitForTaskCompleteWithRunner polls the sprite for the TASK_COMPLETE signal
+// status until found, timeout elapses, or ctx is cancelled. It emits a progress
+// line to progress on every poll interval so operators can see activity.
+// If the signal is found immediately, returns nil without polling.
+func waitForTaskCompleteWithRunner(ctx context.Context, run spriteScriptRunner, workspace string, waitTimeout, pollInterval time.Duration, progress io.Writer) error {
+	if waitTimeout == 0 {
+		return nil
+	}
+
+	deadline := time.Now().Add(waitTimeout)
+	pollCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	taskCheckScript := fmt.Sprintf("WORKSPACE=%q\n%s", workspace, taskCompleteSignalCheckScript)
+
+	for {
+		checkCtx, checkCancel := context.WithTimeout(pollCtx, 30*time.Second)
+		_, exitCode, err := run(checkCtx, taskCheckScript)
+		checkCancel()
+
+		if err != nil {
+			_, _ = fmt.Fprintf(progress, "[dispatch] task complete check: runner error: %v\n", err)
+		} else {
+			switch exitCode {
+			case 0:
+				return nil // task completed
+			case 1:
+				_, _ = fmt.Fprintf(progress, "[dispatch] task complete: not yet complete — next poll in %s\n", pollInterval)
+			default:
+				return fmt.Errorf("task complete check error (unexpected exit %d)", exitCode)
+			}
+		}
+
+		select {
+		case <-pollCtx.Done():
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return fmt.Errorf("wait-timeout (%s) elapsed: task did not complete in time", waitTimeout)
 		case <-ticker.C:
 		}
 	}

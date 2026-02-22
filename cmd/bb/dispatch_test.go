@@ -851,6 +851,123 @@ func TestWaitForPRChecksInitialCheckBeforeTicker(t *testing.T) {
 	}
 }
 
+func TestWaitForTaskCompleteReturnsNilWhenDisabled(t *testing.T) {
+	t.Parallel()
+
+	// When waitTimeout == 0, waitForTaskComplete should return nil immediately
+	// without calling the runner.
+	r := &fakeSpriteScriptRunner{exitCode: 1, out: nil, err: nil}
+	var progress bytes.Buffer
+	err := waitForTaskCompleteWithRunner(context.Background(), r.run, "/tmp/ws", 0, 30*time.Second, &progress)
+	if err != nil {
+		t.Fatalf("expected nil error when disabled, got %v", err)
+	}
+	if r.called {
+		t.Fatal("runner should not be called when wait-timeout is 0")
+	}
+}
+
+func TestWaitForTaskCompleteReturnsNilOnImmediateComplete(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: []byte("complete\n"), err: nil}
+	var progress bytes.Buffer
+	err := waitForTaskCompleteWithRunner(context.Background(), r.run, "/tmp/ws", time.Minute, time.Second, &progress)
+	if err != nil {
+		t.Fatalf("expected nil error on immediate complete, got %v", err)
+	}
+	if !r.called {
+		t.Fatal("runner should be called")
+	}
+}
+
+func TestWaitForTaskCompleteTimesOut(t *testing.T) {
+	t.Parallel()
+
+	// Script always returns not complete (exit 1).
+	r := &fakeSpriteScriptRunner{exitCode: 1, out: nil, err: nil}
+	var progress bytes.Buffer
+	err := waitForTaskCompleteWithRunner(context.Background(), r.run, "/tmp/ws", 50*time.Millisecond, 10*time.Millisecond, &progress)
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), "wait-timeout") {
+		t.Fatalf("err = %q, want to contain %q", err.Error(), "wait-timeout")
+	}
+}
+
+func TestWaitForTaskCompleteEmitsProgress(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	// First call: not complete. Second call: complete.
+	customRunner := func(ctx context.Context, script string) ([]byte, int, error) {
+		calls++
+		if calls == 1 {
+			return nil, 1, nil // not complete
+		}
+		return []byte("task complete\n"), 0, nil // complete
+	}
+
+	var progress bytes.Buffer
+	err := waitForTaskCompleteWithRunner(context.Background(), customRunner, "/tmp/ws", 5*time.Second, 10*time.Millisecond, &progress)
+	if err != nil {
+		t.Fatalf("expected nil on second complete, got %v", err)
+	}
+	if !strings.Contains(progress.String(), "[dispatch] task complete: not yet complete") {
+		t.Fatalf("progress = %q, want to contain %q", progress.String(), "[dispatch] task complete: not yet complete")
+	}
+}
+
+func TestWaitForTaskCompleteContextCancelled(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	r := &fakeSpriteScriptRunner{exitCode: 1, out: nil, err: nil}
+	var progress bytes.Buffer
+	err := waitForTaskCompleteWithRunner(ctx, r.run, "/tmp/ws", time.Minute, time.Second, &progress)
+	if err == nil {
+		t.Fatal("expected error on cancelled context, got nil")
+	}
+}
+
+func TestWaitForTaskCompleteUsesWorkspace(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: []byte("complete\n"), err: nil}
+	var progress bytes.Buffer
+	if err := waitForTaskCompleteWithRunner(context.Background(), r.run, "/home/sprite/workspace/myrepo", time.Minute, time.Second, &progress); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(r.script, "/home/sprite/workspace/myrepo") {
+		t.Fatalf("script = %q, want to contain workspace path", r.script)
+	}
+	if !strings.Contains(r.script, "TASK_COMPLETE") {
+		t.Fatalf("script = %q, want to contain TASK_COMPLETE check", r.script)
+	}
+}
+
+func TestWaitForTaskCompleteInitialCheckBeforeTicker(t *testing.T) {
+	t.Parallel()
+
+	// pollInterval is longer than waitTimeout; without an initial check
+	// the function would always time out without ever calling the runner.
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: []byte("task complete\n"), err: nil}
+	var progress bytes.Buffer
+	err := waitForTaskCompleteWithRunner(context.Background(), r.run, "/tmp/ws",
+		50*time.Millisecond, // waitTimeout
+		time.Hour,           // pollInterval (ticker never fires)
+		&progress)
+	if err != nil {
+		t.Fatalf("expected nil (immediate complete before ticker), got %v", err)
+	}
+	if !r.called {
+		t.Fatal("runner should be called even when pollInterval > waitTimeout")
+	}
+}
+
 func TestSnapshotPRChecksReturnsPassOnExitCode0(t *testing.T) {
 	t.Parallel()
 
