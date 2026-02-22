@@ -22,7 +22,10 @@ func setupSpritesDir(t *testing.T, files []string) string {
 			t.Fatal(err)
 		}
 	}
-	orig, _ := os.Getwd()
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd failed: %v", err)
+	}
 	if err := os.Chdir(dir); err != nil {
 		t.Fatal(err)
 	}
@@ -118,5 +121,24 @@ func TestResolvePersonaErrorWhenExplicitPersonaNotFound(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "nonexistent") {
 		t.Errorf("error should mention the missing persona name, got: %v", err)
+	}
+}
+
+func TestResolvePersonaErrorWhenPersonaContainsSlashButNotFound(t *testing.T) {
+	setupSpritesDir(t, []string{"bramble.md"})
+
+	// A path-style persona that doesn't exist should fail cleanly without
+	// building a garbled double-prefixed candidate like sprites/sprites/...
+	_, err := resolvePersona("worker-1", "sprites/nonexistent")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	// Error should reference the exact path the user supplied
+	if !strings.Contains(err.Error(), "sprites/nonexistent") {
+		t.Errorf("error should mention the persona path, got: %v", err)
+	}
+	// Should NOT expose a double-prefixed path
+	if strings.Contains(err.Error(), "sprites/sprites/") {
+		t.Errorf("error must not expose a double-prefixed path, got: %v", err)
 	}
 }

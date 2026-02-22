@@ -204,7 +204,8 @@ git config --global --add safe.directory '*'
 
 // resolvePersona returns the local path to the persona file to use for setup.
 // Resolution order:
-//  1. Explicit --persona flag: treat as sprite name (sprites/<persona>.md) or direct path
+//  1. Explicit --persona flag: use as a direct path if it exists on disk;
+//     otherwise treat as a sprite name and map to sprites/<persona>.md
 //  2. Matching sprite name: sprites/<spriteName>.md
 //  3. Fallback: first .md file found in sprites/ (alphabetical)
 //
@@ -215,6 +216,11 @@ func resolvePersona(spriteName, persona string) (string, error) {
 		// Check if it's a direct file path
 		if _, err := os.Stat(persona); err == nil {
 			return persona, nil
+		}
+		// If the value looks like a path (contains '/') but doesn't exist on disk,
+		// don't mangle it into a double-prefixed candidate like sprites/sprites/...
+		if strings.ContainsRune(persona, '/') {
+			return "", fmt.Errorf("persona path %q not found; run 'ls sprites/' to see available personas", persona)
 		}
 		// Treat as sprite name: sprites/<persona>.md
 		candidate := "sprites/" + strings.TrimSuffix(persona, ".md") + ".md"
