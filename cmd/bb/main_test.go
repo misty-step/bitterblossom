@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 )
@@ -66,7 +67,9 @@ func TestTokenExchangeErrOtherErrorNoOrgHint(t *testing.T) {
 	}
 }
 
-// TestSpriteTokenMissingEnv verifies the error when neither token env var is set.
+// TestSpriteTokenMissingEnv verifies the error when neither token env var is set
+// and sprite CLI fallback also fails. The new fallback path surfaces a clear error
+// that mentions the three auth paths tried.
 func TestSpriteTokenMissingEnv(t *testing.T) {
 	// Not parallel: mutates process environment.
 	t.Setenv("FLY_API_TOKEN", "")
@@ -76,7 +79,80 @@ func TestSpriteTokenMissingEnv(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !strings.Contains(err.Error(), "FLY_API_TOKEN must be set") {
-		t.Errorf("err = %q, want to contain %q", err.Error(), "FLY_API_TOKEN must be set")
+	// The new error message covers all three auth paths (SPRITE_TOKEN, FLY_API_TOKEN, sprite CLI).
+	if !strings.Contains(err.Error(), "SPRITE_TOKEN, FLY_API_TOKEN, or sprite CLI auth required") {
+		t.Errorf("err = %q, want to contain %q", err.Error(), "SPRITE_TOKEN, FLY_API_TOKEN, or sprite CLI auth required")
+	}
+}
+
+// TestGetSpriteCLIFlyToken_MissingHome verifies the error when HOME is unset.
+func TestGetSpriteCLIFlyToken_MissingHome(t *testing.T) {
+	t.Setenv("HOME", "")
+
+	_, _, err := getSpriteCLIFlyToken()
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "HOME unset") {
+		t.Errorf("err = %q, want to contain %q", err.Error(), "HOME unset")
+	}
+}
+
+// TestGetSpriteCLIFlyToken_MissingFile verifies the error when sprites.json doesn't exist.
+func TestGetSpriteCLIFlyToken_MissingFile(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	_, _, err := getSpriteCLIFlyToken()
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "read sprites.json") {
+		t.Errorf("err = %q, want to contain %q", err.Error(), "read sprites.json")
+	}
+}
+
+// TestGetSpriteCLIFlyToken_MalformedJSON verifies the error on bad JSON in sprites.json.
+func TestGetSpriteCLIFlyToken_MalformedJSON(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	dir := tmp + "/.sprites"
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dir+"/sprites.json", []byte("{bad json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := getSpriteCLIFlyToken()
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "parse sprites.json") {
+		t.Errorf("err = %q, want to contain %q", err.Error(), "parse sprites.json")
+	}
+}
+
+// TestGetSpriteCLIFlyToken_MissingCurrentSelection verifies error when current_selection is empty.
+func TestGetSpriteCLIFlyToken_MissingCurrentSelection(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	dir := tmp + "/.sprites"
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := `{"current_selection":{"url":"","org":""},"urls":{}}`
+	if err := os.WriteFile(dir+"/sprites.json", []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := getSpriteCLIFlyToken()
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "missing current_selection") {
+		t.Errorf("err = %q, want to contain %q", err.Error(), "missing current_selection")
 	}
 }
