@@ -72,7 +72,9 @@ func runLogs(ctx context.Context, stdout, stderr io.Writer, spriteName string, f
 	active := spriteHasRunningAgent(ctx, s)
 	hasLog := spriteFileHasContent(ctx, s, logPath)
 	if !active && !hasLog {
-		_, _ = fmt.Fprintln(stdout, "No active task")
+		if err := writeLogsNoTaskMsg(stderr); err != nil {
+			return fmt.Errorf("logs: %w", err)
+		}
 		return nil
 	}
 
@@ -96,6 +98,14 @@ func runLogs(ctx context.Context, stdout, stderr io.Writer, spriteName string, f
 		return fmt.Errorf("logs failed: %w", err)
 	}
 	return nil
+}
+
+// writeLogsNoTaskMsg writes the "No active task" status message to stderr.
+// This is an operational message, not log data, so it must never appear on
+// stdout — stdout must remain parseable JSON in --json mode.
+func writeLogsNoTaskMsg(stderr io.Writer) error {
+	_, err := fmt.Fprintf(stderr, "No active task\n")
+	return err
 }
 
 func logsRemoteCommand(logPath string, follow bool, lines int) string {
