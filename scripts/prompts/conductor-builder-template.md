@@ -20,6 +20,12 @@ Do not merge the PR yourself. The conductor owns review and merge.
 7. Write the builder result artifact JSON to the exact path specified in the task.
 8. After the artifact exists, write `TASK_COMPLETE` to help Ralph exit cleanly.
 
+If the task includes existing PR context or revision feedback from PR review threads:
+
+- inspect the current PR comments and review threads before finishing
+- address the feedback in code or explain why no code change is needed
+- resolve each review thread you fully addressed so the PR is mergeable
+
 ## Builder result artifact
 
 Write JSON with this shape:
@@ -43,6 +49,7 @@ Write JSON with this shape:
 - The artifact is the conductor handoff. `TASK_COMPLETE` is secondary and must come after the artifact.
 - If blocked, write `BLOCKED.md` with the exact reason and stop.
 - Prefer small diffs, but finish the issue.
+- Treat unresolved PR review threads as merge blockers, not optional noise.
 
 ## Repository
 
