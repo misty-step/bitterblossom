@@ -26,6 +26,18 @@ DEFAULT_LEASE_BUFFER_SECONDS = 300
 SUCCESSFUL_CHECK_CONCLUSIONS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 FAILED_CHECK_CONCLUSIONS = {"FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STALE", "STARTUP_FAILURE"}
 FAILED_STATUS_CONTEXTS = {"FAILURE", "ERROR"}
+TRUSTED_REVIEW_AUTHOR_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
+# GitHub App reviewers show up with weak authorAssociation values, so trust them by login.
+TRUSTED_REVIEW_BOT_LOGINS = {
+    "chatgpt-codex-connector",
+    "coderabbitai",
+    "coderabbitai[bot]",
+    "gemini-code-assist",
+    "github-actions",
+    "github-actions[bot]",
+    "greptile-apps",
+    "greptile-apps[bot]",
+}
 
 
 @dataclass(slots=True)
@@ -64,6 +76,7 @@ class ReviewThread:
     author_login: str
     body: str
     url: str
+    author_association: str = ""
 
 
 @dataclass(slots=True)
@@ -748,7 +761,7 @@ def checks_complete(payload: dict[str, Any], required: set[str]) -> tuple[bool, 
             continue
         saw_any = True
         state, terminal, failed = rollup_item_state(item)
-        if failed:
+        if failed and (not required or name in required):
             return False, True
         if required:
             if name in required_remaining and terminal and state in SUCCESSFUL_CHECK_CONCLUSIONS:
@@ -853,6 +866,7 @@ query($owner:String!, $repo:String!, $number:Int!) {
           comments(first:20) {
             nodes {
               author { login }
+              authorAssociation
               body
               url
             }
@@ -901,12 +915,14 @@ query($owner:String!, $repo:String!, $number:Int!) {
             author_login = str(author_node.get("login") or "unknown")
         else:
             raise CmdError(f"invalid review thread payload for PR #{pr_number}: author is not an object")
+        author_association = str(comment.get("authorAssociation") or "").upper()
         threads.append(
             ReviewThread(
                 id=str(node.get("id", "")),
                 path=str(node.get("path") or ""),
                 line=thread_line,
                 author_login=author_login,
+                author_association=author_association,
                 body=str(comment.get("body") or ""),
                 url=str(comment.get("url") or ""),
             )
@@ -930,8 +946,7 @@ def summarize_review_threads(threads: list[ReviewThread]) -> str:
     return "\n".join(lines)
 
 
-def resolve_review_threads(runner: Runner, repo: str, pr_number: int, thread_ids: list[str]) -> None:
-    _ = (repo, pr_number)
+def resolve_review_threads(runner: Runner, thread_ids: list[str]) -> None:
     query = """
 mutation($threadId:ID!) {
   resolveReviewThread(input:{threadId:$threadId}) {
@@ -943,6 +958,12 @@ mutation($threadId:ID!) {
 """.strip()
     for thread_id in thread_ids:
         gh_graphql(runner, query, {"threadId": thread_id})
+
+
+def is_trusted_review_author(thread: ReviewThread) -> bool:
+    if thread.author_association in TRUSTED_REVIEW_AUTHOR_ASSOCIATIONS:
+        return True
+    return thread.author_login.lower() in TRUSTED_REVIEW_BOT_LOGINS
 
 
 def present_pr_status_checks(runner: Runner, repo: str, pr_number: int) -> tuple[str, set[str]]:
@@ -1111,6 +1132,7 @@ def start_dispatch_session(
     repo: str,
     prompt_template: pathlib.Path,
     timeout_minutes: int,
+    artifact_path: str,
 ) -> DispatchSession:
     argv = dispatch_command(sprite, prompt, repo, prompt_template, timeout_minutes)
     with tempfile.NamedTemporaryFile(prefix="bb-dispatch-", suffix=".log", delete=False) as fh:
@@ -1123,7 +1145,7 @@ def start_dispatch_session(
             stderr=fh,
         )
     return DispatchSession(
-        task=DispatchTask(sprite=sprite, prompt=prompt, artifact_path=""),
+        task=DispatchTask(sprite=sprite, prompt=prompt, artifact_path=artifact_path),
         argv=argv,
         proc=proc,
         log_path=log_path,
@@ -1157,11 +1179,15 @@ def session_exit_error(session: DispatchSession, artifact_error: str) -> CmdErro
     )
 
 
-def artifact_timeout_error(session: DispatchSession, timeout_seconds: int) -> CmdError:
+def artifact_timeout_error(sessions: list[DispatchSession], timeout_seconds: int) -> CmdError:
+    details = "\n---\n".join(
+        f"{session.task.sprite}: {session.last_error or '(no error)'}" for session in sessions
+    )
+    first = sessions[0]
     return CmdError(
-        f"artifact not available after {timeout_seconds}s: {session.task.artifact_path} on {session.task.sprite}\n"
-        f"last error:\n{session.last_error}\n"
-        f"dispatch log:\n{read_log_tail(session.log_path)}"
+        f"artifact not available after {timeout_seconds}s for {[session.task.sprite for session in sessions]}\n"
+        f"session errors:\n{details}\n"
+        f"dispatch log ({first.task.sprite}):\n{read_log_tail(first.log_path)}"
     )
 
 
@@ -1183,8 +1209,14 @@ def dispatch_tasks_until_artifacts(
 
     try:
         for task in tasks:
-            session = start_dispatch_session(task.sprite, task.prompt, repo, prompt_template, timeout_minutes)
-            session.task.artifact_path = task.artifact_path
+            session = start_dispatch_session(
+                task.sprite,
+                task.prompt,
+                repo,
+                prompt_template,
+                timeout_minutes,
+                task.artifact_path,
+            )
             sessions[task.sprite] = session
 
         while sessions and time.time() < deadline:
@@ -1234,7 +1266,7 @@ def dispatch_tasks_until_artifacts(
 
         if sessions:
             pending = list(sessions.values())
-            raise artifact_timeout_error(pending[0], artifact_timeout)
+            raise artifact_timeout_error(pending, artifact_timeout)
 
         return payloads
     finally:
@@ -1547,18 +1579,58 @@ def run_once(args: argparse.Namespace) -> int:
                 ensure_required_checks_present(runner, args.repo, builder.pr_number)
                 unresolved_threads = list_unresolved_review_threads(runner, args.repo, builder.pr_number)
                 if unresolved_threads:
-                    thread_ids = tuple(sorted(thread.id for thread in unresolved_threads))
-                    if pr_feedback_rounds > 0 and thread_ids == last_pr_feedback_thread_ids:
-                        resolve_review_threads(runner, args.repo, builder.pr_number, list(thread_ids))
+                    trusted_threads = [thread for thread in unresolved_threads if is_trusted_review_author(thread)]
+                    untrusted_threads = [thread for thread in unresolved_threads if not is_trusted_review_author(thread)]
+                    thread_ids = tuple(sorted(thread.id for thread in trusted_threads))
+                    if untrusted_threads:
+                        update_run(conn, run_id, phase="blocked", status="blocked")
                         record_event(
                             conn,
                             event_log,
                             run_id,
-                            "review_threads_resolved",
-                            {"pr_number": builder.pr_number, "thread_ids": list(thread_ids), "reason": "unchanged_after_revision"},
+                            "pr_feedback_blocked",
+                            {
+                                "pr_number": builder.pr_number,
+                                "reason": "untrusted_author",
+                                "threads": [asdict(thread) for thread in untrusted_threads],
+                            },
                         )
-                        unresolved_threads = list_unresolved_review_threads(runner, args.repo, builder.pr_number)
-                    if unresolved_threads:
+                        best_effort_issue_comment(
+                            runner,
+                            conn,
+                            event_log,
+                            run_id,
+                            args.repo,
+                            issue.number,
+                            f"Bitterblossom blocked `{run_id}` because an untrusted PR review thread requires manual maintainer review.",
+                            event_type="issue_comment_failed",
+                        )
+                        return 2
+                    if pr_feedback_rounds > 0 and thread_ids == last_pr_feedback_thread_ids:
+                        update_run(conn, run_id, phase="blocked", status="blocked")
+                        record_event(
+                            conn,
+                            event_log,
+                            run_id,
+                            "pr_feedback_blocked",
+                            {
+                                "pr_number": builder.pr_number,
+                                "reason": "unchanged_after_revision",
+                                "threads": [asdict(thread) for thread in trusted_threads],
+                            },
+                        )
+                        best_effort_issue_comment(
+                            runner,
+                            conn,
+                            event_log,
+                            run_id,
+                            args.repo,
+                            issue.number,
+                            f"Bitterblossom blocked `{run_id}` because PR review threads remained unresolved after revision and need human confirmation.",
+                            event_type="issue_comment_failed",
+                        )
+                        return 2
+                    if trusted_threads:
                         if pr_feedback_rounds >= max_pr_feedback_rounds:
                             update_run(conn, run_id, phase="blocked", status="blocked")
                             record_event(
@@ -1568,7 +1640,8 @@ def run_once(args: argparse.Namespace) -> int:
                                 "pr_feedback_blocked",
                                 {
                                     "pr_number": builder.pr_number,
-                                    "threads": [asdict(thread) for thread in unresolved_threads],
+                                    "reason": "max_rounds",
+                                    "threads": [asdict(thread) for thread in trusted_threads],
                                 },
                             )
                             best_effort_issue_comment(
@@ -1583,7 +1656,7 @@ def run_once(args: argparse.Namespace) -> int:
                             )
                             return 2
 
-                        feedback = summarize_review_threads(unresolved_threads)
+                        feedback = summarize_review_threads(trusted_threads)
                         update_run(conn, run_id, phase="revising")
                         record_event(
                             conn,
@@ -1594,7 +1667,7 @@ def run_once(args: argparse.Namespace) -> int:
                                 "feedback": feedback,
                                 "reason": "pr_feedback",
                                 "pr_number": builder.pr_number,
-                                "threads": [asdict(thread) for thread in unresolved_threads],
+                                "threads": [asdict(thread) for thread in trusted_threads],
                             },
                         )
                         last_pr_feedback_thread_ids = thread_ids
