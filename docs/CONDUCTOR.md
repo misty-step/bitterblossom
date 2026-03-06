@@ -93,6 +93,10 @@ This repo now publishes `merge-gate` in GitHub Actions. The conductor also check
 
 This repo also requires resolved PR conversations. After CI turns green, the conductor queries unresolved review threads, routes that feedback back to the builder on the existing PR, and only proceeds once the conversation gate is clear. If the same threads still block after a revision pass, the conductor resolves those stale threads explicitly so GitHub can finish the merge.
 
+## Review Council
+
+Reviewer dispatches now run in parallel, not serially. Each reviewer writes its own artifact, the conductor persists that result immediately, and `review_complete` events land as each artifact arrives. One slow reviewer no longer hides the rest of the council's progress.
+
 ## MVP Limits
 
 - one builder per issue

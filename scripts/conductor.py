@@ -13,7 +13,7 @@ import tempfile
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -64,6 +64,22 @@ class ReviewThread:
     author_login: str
     body: str
     url: str
+
+
+@dataclass(slots=True)
+class DispatchTask:
+    sprite: str
+    prompt: str
+    artifact_path: str
+
+
+@dataclass(slots=True)
+class DispatchSession:
+    task: DispatchTask
+    argv: list[str]
+    proc: Any
+    log_path: pathlib.Path
+    last_error: str = ""
 
 
 class CmdError(RuntimeError):
@@ -1060,18 +1076,14 @@ def read_log_tail(path: pathlib.Path, *, max_chars: int = 4000) -> str:
     return text[-max_chars:]
 
 
-def dispatch_until_artifact(
-    runner: Runner,
+def start_dispatch_session(
     sprite: str,
     prompt: str,
     repo: str,
     prompt_template: pathlib.Path,
     timeout_minutes: int,
-    artifact_path: str,
-) -> dict[str, Any]:
+) -> DispatchSession:
     argv = dispatch_command(sprite, prompt, repo, prompt_template, timeout_minutes)
-    artifact_timeout = max(90, timeout_minutes * 60 + 60)
-
     with tempfile.NamedTemporaryFile(prefix="bb-dispatch-", suffix=".log", delete=False) as fh:
         log_path = pathlib.Path(fh.name)
         proc = subprocess.Popen(
@@ -1081,73 +1093,144 @@ def dispatch_until_artifact(
             stdout=fh,
             stderr=fh,
         )
+    return DispatchSession(
+        task=DispatchTask(sprite=sprite, prompt=prompt, artifact_path=""),
+        argv=argv,
+        proc=proc,
+        log_path=log_path,
+    )
 
-    start = time.time()
-    last_error = ""
+
+def stop_dispatch_session(runner: Runner, session: DispatchSession, *, reap_sprite: bool) -> None:
     try:
-        while time.time() - start < artifact_timeout:
+        if reap_sprite:
+            cleanup_sprite_processes(runner, session.task.sprite)
+        if session.proc.poll() is None:
+            session.proc.terminate()
             try:
-                payload = fetch_json_artifact(runner, sprite, artifact_path)
-                if proc.poll() is None:
-                    cleanup_sprite_processes(runner, sprite)
-                    try:
-                        proc.wait(timeout=30)
-                    except subprocess.TimeoutExpired:
-                        proc.terminate()
-                        try:
-                            proc.wait(timeout=15)
-                        except subprocess.TimeoutExpired:
-                            proc.kill()
-                            proc.wait(timeout=15)
-                return payload
-            except (CmdError, json.JSONDecodeError) as exc:
-                last_error = stringify_exc(exc)
+                session.proc.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                session.proc.kill()
+                session.proc.wait(timeout=15)
+    finally:
+        try:
+            session.log_path.unlink()
+        except FileNotFoundError:
+            pass
 
-            if proc.poll() is not None:
-                if proc.returncode == 0:
+
+def session_exit_error(session: DispatchSession, artifact_error: str) -> CmdError:
+    return CmdError(
+        f"dispatch exited before artifact was ready ({session.proc.returncode}): "
+        f"{' '.join(shlex.quote(a) for a in session.argv)}\n"
+        f"artifact error:\n{artifact_error}\n"
+        f"dispatch log:\n{read_log_tail(session.log_path)}"
+    )
+
+
+def artifact_timeout_error(session: DispatchSession, timeout_seconds: int) -> CmdError:
+    return CmdError(
+        f"artifact not available after {timeout_seconds}s: {session.task.artifact_path} on {session.task.sprite}\n"
+        f"last error:\n{session.last_error}\n"
+        f"dispatch log:\n{read_log_tail(session.log_path)}"
+    )
+
+
+def dispatch_tasks_until_artifacts(
+    runner: Runner,
+    tasks: list[DispatchTask],
+    repo: str,
+    prompt_template: pathlib.Path,
+    timeout_minutes: int,
+    *,
+    poll_seconds: int = 5,
+    on_artifact: Callable[[str, dict[str, Any]], None] | None = None,
+    on_tick: Callable[[], None] | None = None,
+) -> dict[str, dict[str, Any]]:
+    artifact_timeout = max(90, timeout_minutes * 60 + 60)
+    deadline = time.time() + artifact_timeout
+    sessions: dict[str, DispatchSession] = {}
+    payloads: dict[str, dict[str, Any]] = {}
+
+    for task in tasks:
+        session = start_dispatch_session(task.sprite, task.prompt, repo, prompt_template, timeout_minutes)
+        session.task.artifact_path = task.artifact_path
+        sessions[task.sprite] = session
+
+    try:
+        while sessions and time.time() < deadline:
+            if on_tick is not None:
+                on_tick()
+
+            for sprite in list(sessions):
+                session = sessions[sprite]
+                try:
+                    payload = fetch_json_artifact(runner, sprite, session.task.artifact_path)
+                except (CmdError, json.JSONDecodeError) as exc:
+                    session.last_error = stringify_exc(exc)
+                else:
+                    payloads[sprite] = payload
+                    stop_dispatch_session(runner, session, reap_sprite=True)
+                    if on_artifact is not None:
+                        on_artifact(sprite, payload)
+                    del sessions[sprite]
+                    continue
+
+                if session.proc.poll() is None:
+                    continue
+
+                if session.proc.returncode == 0:
                     try:
-                        return wait_for_json_artifact(
+                        payload = wait_for_json_artifact(
                             runner,
                             sprite,
-                            artifact_path,
+                            session.task.artifact_path,
                             timeout_seconds=5,
                             poll_seconds=1,
                         )
                     except CmdError as exc:
-                        last_error = stringify_exc(exc)
-                raise CmdError(
-                    f"dispatch exited before artifact was ready ({proc.returncode}): {' '.join(shlex.quote(a) for a in argv)}\n"
-                    f"artifact error:\n{last_error}\n"
-                    f"dispatch log:\n{read_log_tail(log_path)}"
-                )
+                        session.last_error = stringify_exc(exc)
+                    else:
+                        payloads[sprite] = payload
+                        stop_dispatch_session(runner, session, reap_sprite=False)
+                        if on_artifact is not None:
+                            on_artifact(sprite, payload)
+                        del sessions[sprite]
+                        continue
 
-            time.sleep(5)
+                raise session_exit_error(session, session.last_error)
 
-        cleanup_sprite_processes(runner, sprite)
-        if proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=15)
-        raise CmdError(
-            f"artifact not available after {artifact_timeout}s: {artifact_path} on {sprite}\n"
-            f"last error:\n{last_error}\n"
-            f"dispatch log:\n{read_log_tail(log_path)}"
-        )
+            if sessions:
+                time.sleep(poll_seconds)
+
+        if sessions:
+            pending = list(sessions.values())
+            raise artifact_timeout_error(pending[0], artifact_timeout)
+
+        return payloads
     finally:
-        if proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=15)
-        try:
-            log_path.unlink()
-        except FileNotFoundError:
-            pass
+        for sprite in list(sessions):
+            stop_dispatch_session(runner, sessions[sprite], reap_sprite=True)
+            del sessions[sprite]
+
+
+def dispatch_until_artifact(
+    runner: Runner,
+    sprite: str,
+    prompt: str,
+    repo: str,
+    prompt_template: pathlib.Path,
+    timeout_minutes: int,
+    artifact_path: str,
+) -> dict[str, Any]:
+    payloads = dispatch_tasks_until_artifacts(
+        runner,
+        [DispatchTask(sprite=sprite, prompt=prompt, artifact_path=artifact_path)],
+        repo,
+        prompt_template,
+        timeout_minutes,
+    )
+    return payloads[sprite]
 
 
 def run_builder(
@@ -1163,6 +1246,7 @@ def run_builder(
     pr_number: int | None = None,
     pr_url: str | None = None,
 ) -> tuple[BuilderResult, dict[str, Any]]:
+    cleanup_sprite_processes(runner, worker)
     builder_rel = artifact_rel(run_id, "builder-result.json")
     builder_prompt = build_builder_task(
         issue,
@@ -1190,6 +1274,7 @@ def run_builder(
 def run_review_round(
     runner: Runner,
     conn: sqlite3.Connection,
+    event_log: pathlib.Path,
     repo: str,
     issue: Issue,
     run_id: str,
@@ -1198,24 +1283,39 @@ def run_review_round(
     reviewers: list[str],
     prompt_template: pathlib.Path,
     timeout_minutes: int,
+    *,
+    on_tick: Callable[[], None] | None = None,
 ) -> list[ReviewResult]:
-    reviews: list[ReviewResult] = []
+    reviews: dict[str, ReviewResult] = {}
+    tasks: list[DispatchTask] = []
     for reviewer in reviewers:
+        cleanup_sprite_processes(runner, reviewer)
         review_rel = artifact_rel(run_id, f"review-{reviewer}.json")
         review_prompt = build_review_task(issue, run_id, pr_number, pr_url, review_rel)
-        payload = dispatch_until_artifact(
-            runner,
-            reviewer,
-            review_prompt,
-            repo,
-            prompt_template,
-            timeout_minutes,
-            artifact_abs(repo, review_rel),
+        tasks.append(
+            DispatchTask(
+                sprite=reviewer,
+                prompt=review_prompt,
+                artifact_path=artifact_abs(repo, review_rel),
+            )
         )
+
+    def handle_artifact(reviewer: str, payload: dict[str, Any]) -> None:
         review = parse_review_result(reviewer, payload)
         persist_review(conn, run_id, review)
-        reviews.append(review)
-    return reviews
+        reviews[reviewer] = review
+        record_event(conn, event_log, run_id, "review_complete", {"reviewer": review.reviewer, "verdict": review.verdict})
+
+    dispatch_tasks_until_artifacts(
+        runner,
+        tasks,
+        repo,
+        prompt_template,
+        timeout_minutes,
+        on_artifact=handle_artifact,
+        on_tick=on_tick,
+    )
+    return [reviews[reviewer] for reviewer in reviewers]
 
 
 def summarize_reviews(reviews: list[ReviewResult]) -> str:
@@ -1339,6 +1439,7 @@ def run_once(args: argparse.Namespace) -> int:
             reviews = run_review_round(
                 runner,
                 conn,
+                event_log,
                 args.repo,
                 issue,
                 run_id,
@@ -1347,9 +1448,14 @@ def run_once(args: argparse.Namespace) -> int:
                 args.reviewer,
                 pathlib.Path(args.reviewer_template),
                 args.review_timeout,
+                on_tick=lambda: touch_run(
+                    conn,
+                    args.repo,
+                    issue.number,
+                    run_id,
+                    args.review_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
+                ),
             )
-            for review in reviews:
-                record_event(conn, event_log, run_id, "review_complete", {"reviewer": review.reviewer, "verdict": review.verdict})
 
             best_effort_pr_comment(
                 runner,

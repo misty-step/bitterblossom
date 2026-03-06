@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import pathlib
 import sys
 
@@ -157,6 +158,170 @@ def test_wait_for_json_artifact_times_out(monkeypatch: pytest.MonkeyPatch) -> No
 
     with pytest.raises(conductor.CmdError, match="artifact not available"):
         conductor.wait_for_json_artifact(object(), "fern", "/tmp/artifact.json", timeout_seconds=1, poll_seconds=0)
+
+
+def test_dispatch_tasks_until_artifacts_runs_tasks_in_parallel(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
+    started: list[str] = []
+    stopped: list[tuple[str, bool]] = []
+    artifact_order: list[str] = []
+    attempts = {"fern": 0, "sage": 0, "thorn": 0}
+    payloads = {
+        "fern": {"reviewer": "fern"},
+        "sage": {"reviewer": "sage"},
+        "thorn": {"reviewer": "thorn"},
+    }
+
+    def fake_start(sprite: str, prompt: str, repo: str, prompt_template: pathlib.Path, timeout_minutes: int) -> conductor.DispatchSession:
+        _ = (prompt, repo, prompt_template, timeout_minutes)
+        started.append(sprite)
+        return conductor.DispatchSession(
+            task=conductor.DispatchTask(sprite=sprite, prompt="", artifact_path=f"/tmp/{sprite}.json"),
+            argv=[sprite],
+            proc=_ProcStub([None]),
+            log_path=tmp_path / f"{sprite}.log",
+        )
+
+    def fake_fetch(_runner: object, sprite: str, path: str) -> dict[str, object]:
+        _ = path
+        attempts[sprite] += 1
+        if sprite == "sage" and attempts[sprite] == 1:
+            return payloads[sprite]
+        if sprite == "fern" and attempts[sprite] == 2:
+            return payloads[sprite]
+        if sprite == "thorn" and attempts[sprite] == 3:
+            return payloads[sprite]
+        raise conductor.CmdError("not ready")
+
+    monkeypatch.setattr(conductor, "start_dispatch_session", fake_start)
+    monkeypatch.setattr(conductor, "fetch_json_artifact", fake_fetch)
+    monkeypatch.setattr(conductor, "stop_dispatch_session", lambda _runner, session, *, reap_sprite: stopped.append((session.task.sprite, reap_sprite)))
+    monkeypatch.setattr(conductor.time, "sleep", lambda _seconds: None)
+
+    got = conductor.dispatch_tasks_until_artifacts(
+        _RunnerSpy(),
+        [
+            conductor.DispatchTask(sprite="fern", prompt="p1", artifact_path="/tmp/fern.json"),
+            conductor.DispatchTask(sprite="sage", prompt="p2", artifact_path="/tmp/sage.json"),
+            conductor.DispatchTask(sprite="thorn", prompt="p3", artifact_path="/tmp/thorn.json"),
+        ],
+        "misty-step/bitterblossom",
+        pathlib.Path("scripts/prompts/conductor-reviewer-template.md"),
+        10,
+        on_artifact=lambda sprite, _payload: artifact_order.append(sprite),
+    )
+
+    assert started == ["fern", "sage", "thorn"]
+    assert artifact_order == ["sage", "fern", "thorn"]
+    assert stopped == [("sage", True), ("fern", True), ("thorn", True)]
+    assert got == payloads
+
+
+def test_run_review_round_persists_reviews_as_they_arrive(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=447, title="test", body="body", url="https://example.com/447", labels=["autopilot"])
+    ticked: list[str] = []
+    cleaned: list[str] = []
+
+    def fake_dispatch_many(
+        _runner: object,
+        _tasks: list[conductor.DispatchTask],
+        _repo: str,
+        _prompt_template: pathlib.Path,
+        _timeout_minutes: int,
+        *,
+        poll_seconds: int = 5,
+        on_artifact: object | None = None,
+        on_tick: object | None = None,
+    ) -> dict[str, dict[str, object]]:
+        _ = poll_seconds
+        assert on_tick is not None
+        assert on_artifact is not None
+        on_tick()
+        on_artifact("sage", {"verdict": "pass", "summary": "ok", "findings": []})
+        on_artifact("fern", {"verdict": "fix", "summary": "needs tweak", "findings": [{"severity": "important", "path": "README.md", "line": 10, "message": "tighten copy"}]})
+        on_artifact("thorn", {"verdict": "pass", "summary": "ok", "findings": []})
+        return {
+            "sage": {"verdict": "pass", "summary": "ok", "findings": []},
+            "fern": {"verdict": "fix", "summary": "needs tweak", "findings": [{"severity": "important", "path": "README.md", "line": 10, "message": "tighten copy"}]},
+            "thorn": {"verdict": "pass", "summary": "ok", "findings": []},
+        }
+
+    monkeypatch.setattr(conductor, "dispatch_tasks_until_artifacts", fake_dispatch_many)
+    monkeypatch.setattr(conductor, "cleanup_sprite_processes", lambda _runner, sprite: cleaned.append(sprite))
+
+    reviews = conductor.run_review_round(
+        _RunnerSpy(),
+        conn,
+        tmp_path / "events.jsonl",
+        "misty-step/bitterblossom",
+        issue,
+        "run-447-1",
+        463,
+        "https://github.com/misty-step/bitterblossom/pull/463",
+        ["fern", "sage", "thorn"],
+        pathlib.Path("scripts/prompts/conductor-reviewer-template.md"),
+        10,
+        on_tick=lambda: ticked.append("tick"),
+    )
+
+    assert [review.reviewer for review in reviews] == ["fern", "sage", "thorn"]
+    assert [review.verdict for review in reviews] == ["fix", "pass", "pass"]
+    assert ticked == ["tick"]
+    assert cleaned == ["fern", "sage", "thorn"]
+
+    rows = conn.execute(
+        "select reviewer_sprite, verdict from reviews where run_id = 'run-447-1' order by reviewer_sprite"
+    ).fetchall()
+    assert [(row["reviewer_sprite"], row["verdict"]) for row in rows] == [
+        ("fern", "fix"),
+        ("sage", "pass"),
+        ("thorn", "pass"),
+    ]
+
+    events = conn.execute(
+        "select event_type, payload_json from events where run_id = 'run-447-1' order by id"
+    ).fetchall()
+    assert [row["event_type"] for row in events] == ["review_complete", "review_complete", "review_complete"]
+    assert json.loads(events[0]["payload_json"]) == {"reviewer": "sage", "verdict": "pass"}
+    assert json.loads(events[1]["payload_json"]) == {"reviewer": "fern", "verdict": "fix"}
+
+
+def test_run_builder_precleans_worker(monkeypatch: pytest.MonkeyPatch) -> None:
+    issue = conductor.Issue(number=464, title="docs", body="body", url="https://example.com/464", labels=["autopilot"])
+    cleaned: list[str] = []
+
+    monkeypatch.setattr(conductor, "cleanup_sprite_processes", lambda _runner, sprite: cleaned.append(sprite))
+    monkeypatch.setattr(
+        conductor,
+        "dispatch_until_artifact",
+        lambda *_args, **_kwargs: {
+            "status": "ready_for_review",
+            "branch": "factory/464-docs-1",
+            "pr_number": 465,
+            "pr_url": "https://github.com/misty-step/bitterblossom/pull/465",
+            "summary": "done",
+            "tests": [],
+        },
+    )
+    monkeypatch.setattr(
+        conductor,
+        "verify_builder_pr",
+        lambda *_args, **_kwargs: (465, "https://github.com/misty-step/bitterblossom/pull/465"),
+    )
+
+    builder, _payload = conductor.run_builder(
+        _RunnerSpy(),
+        "misty-step/bitterblossom",
+        "noble-blue-serpent",
+        issue,
+        "run-464-1",
+        "factory/464-docs-1",
+        pathlib.Path("scripts/prompts/conductor-builder-template.md"),
+        10,
+    )
+
+    assert cleaned == ["noble-blue-serpent"]
+    assert builder.pr_number == 465
 
 
 class _RunnerSpy:
