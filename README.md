@@ -223,6 +223,18 @@ Safety-critical hooks in `base/hooks/` are covered with pytest:
 python3 -m pytest -q
 ```
 
+## Troubleshooting
+
+### Dispatch blocked by a stale Ralph loop
+
+If a previous dispatch was interrupted (Ctrl-C, network drop, timeout), the Ralph loop may still be running on the sprite. A live Ralph process blocks the next dispatch.
+
+```bash
+bb kill <sprite>
+```
+
+This terminates the Ralph loop and any associated agent processes, clearing the way for a fresh dispatch. Stale Claude-only processes (no active Ralph loop) are cleaned automatically by dispatch and don't require `bb kill`.
+
 ## Constraints
 
 - PR review is a separate GitHub Action (multi-model council), not done by sprites
