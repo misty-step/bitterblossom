@@ -4,6 +4,7 @@ import argparse
 import json
 import pathlib
 import sys
+from typing import Any
 
 import pytest
 
@@ -727,6 +728,43 @@ def test_wait_for_pr_checks_ignores_optional_failed_checks_when_required_pass(mo
     assert "review / Cerberus: FAILURE" in output
 
 
+def test_wait_for_pr_checks_retries_transient_cmd_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = _RunnerSpy()
+    gh_calls = iter(
+        [
+            conductor.CmdError("github api down"),
+            {
+                "baseRefName": "master",
+                "statusCheckRollup": [
+                    {
+                        "__typename": "CheckRun",
+                        "name": "merge-gate",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "startedAt": "2026-03-06T18:00:00Z",
+                        "completedAt": "2026-03-06T18:00:05Z",
+                    }
+                ],
+            },
+        ]
+    )
+
+    def fake_gh_json(_runner: Any, _args: list[str]) -> dict[str, Any]:
+        result = next(gh_calls)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(conductor.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(conductor, "gh_json", fake_gh_json)
+    monkeypatch.setattr(conductor, "required_status_checks", lambda *_args, **_kwargs: ["merge-gate"])
+
+    ok, output = conductor.wait_for_pr_checks(runner, "misty-step/bitterblossom", 42, 5)
+
+    assert ok is True
+    assert "merge-gate: SUCCESS" in output
+
+
 def test_ensure_required_checks_present_accepts_matching_contexts() -> None:
     runner = _RunnerSpy(
         [
@@ -926,7 +964,7 @@ def test_run_once_routes_unresolved_pr_threads_back_to_builder(monkeypatch: pyte
     assert merge_calls == [460]
 
 
-def test_run_once_resolves_stale_pr_threads_after_revision(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
+def test_run_once_blocks_when_stale_pr_threads_persist_after_revision(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
     issue = conductor.Issue(number=447, title="test", body="body", url="https://example.com/447", labels=["autopilot"])
     builder = conductor.BuilderResult(
         status="ready_for_review",

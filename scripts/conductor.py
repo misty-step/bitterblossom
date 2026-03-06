@@ -782,11 +782,18 @@ def wait_for_pr_checks(runner: Runner, repo: str, pr_number: int, timeout_minute
     deadline = time.time() + max(60, timeout_minutes * 60)
     payload: dict[str, Any] = {}
     required: set[str] | None = None
+    last_error = ""
 
     while time.time() < deadline:
-        payload = gh_json(runner, ["pr", "view", str(pr_number), "--repo", repo, "--json", "baseRefName,statusCheckRollup"])
-        if required is None:
-            required = set(required_status_checks(runner, repo, str(payload.get("baseRefName", ""))))
+        try:
+            payload = gh_json(runner, ["pr", "view", str(pr_number), "--repo", repo, "--json", "baseRefName,statusCheckRollup"])
+            if required is None:
+                required = set(required_status_checks(runner, repo, str(payload.get("baseRefName", ""))))
+            last_error = ""
+        except CmdError as exc:
+            last_error = str(exc)
+            time.sleep(10)
+            continue
 
         summary = summarize_status_check_rollup(payload)
         complete, failed = checks_complete(payload, required or set())
@@ -796,7 +803,10 @@ def wait_for_pr_checks(runner: Runner, repo: str, pr_number: int, timeout_minute
             return False, summary
         time.sleep(10)
 
-    return False, f"timed out waiting for PR #{pr_number} checks after {timeout_minutes}m\n{summarize_status_check_rollup(payload)}"
+    detail = summarize_status_check_rollup(payload)
+    if last_error and not payload:
+        detail = f"{detail}\nlast polling error: {last_error}"
+    return False, f"timed out waiting for PR #{pr_number} checks after {timeout_minutes}m\n{detail}"
 
 
 def status_check_snapshot(payload: dict[str, Any]) -> tuple[tuple[str, str, str, str], ...]:

@@ -91,7 +91,7 @@ The target repo currently requires a `merge-gate` status on `master`.
 
 This repo now publishes `merge-gate` in GitHub Actions. The conductor also checks for missing required statuses before it attempts merge, so policy mismatches fail loudly instead of pretending CI is complete.
 
-This repo also requires resolved PR conversations. After CI turns green, the conductor queries unresolved review threads, routes that feedback back to the builder on the existing PR, and only proceeds once the conversation gate is clear. If the same threads still block after a revision pass, the conductor resolves those stale threads explicitly so GitHub can finish the merge.
+This repo also requires resolved PR conversations. After CI turns green, the conductor queries unresolved review threads, routes that feedback back to the builder on the existing PR, and only proceeds once the conversation gate is clear. If the same threads still block after a revision pass, the conductor stops with `pr_feedback_blocked` and escalates to a human for confirmation.
 
 ## Review Council
 
