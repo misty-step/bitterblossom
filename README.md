@@ -53,6 +53,11 @@ source .env.bb
 export GITHUB_TOKEN="$(gh auth token)"
 export OPENROUTER_API_KEY="..."
 
+# Local auth: prefer SPRITE_TOKEN when available — it skips the
+# FLY_API_TOKEN → Sprites token exchange that commonly fails locally.
+# export SPRITE_TOKEN="..."   # direct; no token exchange needed
+# FLY_API_TOKEN is the fallback if SPRITE_TOKEN is not set.
+
 # 2) Bootstrap one builder + three reviewers
 ./bin/bb setup noble-blue-serpent --repo misty-step/bitterblossom
 ./bin/bb setup council-fern-20260306 --repo misty-step/bitterblossom
