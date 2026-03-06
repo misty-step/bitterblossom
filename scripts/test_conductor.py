@@ -374,6 +374,7 @@ def test_run_once_keeps_merged_truth_when_issue_comment_fails(monkeypatch: pytes
     monkeypatch.setattr(conductor, "run_review_round", lambda *_args, **_kwargs: reviews)
     monkeypatch.setattr(conductor, "ensure_pr_ready", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(conductor, "wait_for_pr_checks", lambda *_args, **_kwargs: (True, "green"))
+    monkeypatch.setattr(conductor, "ensure_required_checks_present", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(conductor, "merge_pr", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(conductor, "comment_pr", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(conductor, "comment_issue", lambda *_args, **_kwargs: (_ for _ in ()).throw(conductor.CmdError("comment down")))
