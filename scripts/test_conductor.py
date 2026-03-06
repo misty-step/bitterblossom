@@ -302,6 +302,69 @@ def test_dispatch_tasks_until_artifacts_stops_started_sessions_when_startup_fail
     assert stopped == [("fern", True)]
 
 
+def test_stop_dispatch_session_terminates_proc_even_when_cleanup_fails(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    proc = _ProcStub([None])
+    session = conductor.DispatchSession(
+        task=conductor.DispatchTask(sprite="fern", prompt="", artifact_path="/tmp/fern.json"),
+        argv=["fern"],
+        proc=proc,
+        log_path=tmp_path / "fern.log",
+    )
+    session.log_path.write_text("dispatch log", encoding="utf-8")
+
+    monkeypatch.setattr(conductor, "cleanup_sprite_processes", lambda *_args, **_kwargs: (_ for _ in ()).throw(conductor.CmdError("kill failed")))
+
+    with pytest.raises(conductor.CmdError, match="kill failed"):
+        conductor.stop_dispatch_session(_RunnerSpy(), session, reap_sprite=True)
+
+    assert proc.terminated is True
+    assert session.log_path.exists() is False
+
+
+def test_dispatch_tasks_until_artifacts_timeout_reports_all_pending_sessions(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    ticks = iter([0.0, 0.0, 661.0])
+
+    def fake_start(
+        sprite: str, prompt: str, repo: str, prompt_template: pathlib.Path, timeout_minutes: int, artifact_path: str
+    ) -> conductor.DispatchSession:
+        _ = (prompt, repo, prompt_template, timeout_minutes)
+        log_path = tmp_path / f"{sprite}.log"
+        log_path.write_text(f"{sprite} pending", encoding="utf-8")
+        return conductor.DispatchSession(
+            task=conductor.DispatchTask(sprite=sprite, prompt="", artifact_path=artifact_path),
+            argv=[sprite],
+            proc=_ProcStub([None]),
+            log_path=log_path,
+            last_error=f"{sprite} missing",
+        )
+
+    monkeypatch.setattr(conductor, "start_dispatch_session", fake_start)
+    monkeypatch.setattr(conductor, "fetch_json_artifact", lambda *_args, **_kwargs: (_ for _ in ()).throw(conductor.CmdError("missing")))
+    monkeypatch.setattr(conductor.time, "time", lambda: next(ticks))
+    monkeypatch.setattr(conductor.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(conductor.CmdError, match="\\['fern', 'sage'\\]"):
+        conductor.dispatch_tasks_until_artifacts(
+            _RunnerSpy(),
+            [
+                conductor.DispatchTask(sprite="fern", prompt="p1", artifact_path="/tmp/fern.json"),
+                conductor.DispatchTask(sprite="sage", prompt="p2", artifact_path="/tmp/sage.json"),
+            ],
+            "misty-step/bitterblossom",
+            pathlib.Path("scripts/prompts/conductor-reviewer-template.md"),
+            10,
+        )
+
+
+def test_resolve_review_threads_propagates_graphql_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(conductor, "gh_graphql", lambda *_args, **_kwargs: (_ for _ in ()).throw(conductor.CmdError("boom")))
+
+    with pytest.raises(conductor.CmdError, match="boom"):
+        conductor.resolve_review_threads(_RunnerSpy(), ["thread-1"])
+
+
 def test_run_review_round_persists_reviews_as_they_arrive(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
     conn = conductor.open_db(tmp_path / "conductor.db")
     issue = conductor.Issue(number=447, title="test", body="body", url="https://example.com/447", labels=["autopilot"])

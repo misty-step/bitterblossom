@@ -1153,16 +1153,24 @@ def start_dispatch_session(
 
 
 def stop_dispatch_session(runner: Runner, session: DispatchSession, *, reap_sprite: bool) -> None:
+    cleanup_error: CmdError | None = None
     try:
         if reap_sprite:
-            cleanup_sprite_processes(runner, session.task.sprite)
-        if session.proc.poll() is None:
-            session.proc.terminate()
             try:
-                session.proc.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                session.proc.kill()
-                session.proc.wait(timeout=15)
+                cleanup_sprite_processes(runner, session.task.sprite)
+            except CmdError as exc:
+                cleanup_error = exc
+        try:
+            if session.proc.poll() is None:
+                session.proc.terminate()
+                try:
+                    session.proc.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    session.proc.kill()
+                    session.proc.wait(timeout=15)
+        finally:
+            if cleanup_error is not None:
+                raise cleanup_error
     finally:
         try:
             session.log_path.unlink()
