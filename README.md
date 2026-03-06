@@ -55,7 +55,17 @@ source .env.bb
 # 2) If FLY_API_TOKEN is empty in .env.bb, create one (fly auth token is deprecated)
 fly tokens create org -o misty-step -n bb-cli -x 720h
 # then paste token into .env.bb and source again
+```
 
+> **Local auth note:** If you have a `SPRITE_TOKEN`, prefer it over `FLY_API_TOKEN`.
+> `SPRITE_TOKEN` authenticates directly with the Sprites API, bypassing the
+> Fly-to-Sprites token exchange that can time out or return misleading errors.
+>
+> ```bash
+> export SPRITE_TOKEN="<your-sprite-token>"
+> ```
+
+```bash
 # 3) Set auth key
 export OPENROUTER_API_KEY="<openrouter-key>"
 
