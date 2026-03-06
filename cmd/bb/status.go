@@ -167,7 +167,11 @@ if [ -d "$WS" ]; then
   git log --oneline -5 2>/dev/null || echo "(no commits)"
   echo ""
   echo "=== PRs ==="
-  gh pr list --json url,title,state --jq '.[] | "\(.state): \(.title) \(.url)"' 2>/dev/null || echo "(gh not available)"
+  if ! command -v gh >/dev/null 2>&1; then
+    echo "(gh not installed)"
+  elif ! gh pr list --json url,title,state --jq '.[] | "\(.state): \(.title) \(.url)"' 2>/dev/null; then
+    echo "(gh auth unavailable or repo inaccessible)"
+  fi
 else
   echo "(no repo found at $WS)"
 fi

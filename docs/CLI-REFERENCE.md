@@ -6,13 +6,18 @@
 
 | Variable | Required | Purpose |
 |----------|----------|---------|
-| `FLY_API_TOKEN` | Always | Fly.io token for Sprites API auth |
-| `SPRITE_TOKEN` | Alternative | Direct sprites token (skips FLY_API_TOKEN exchange) |
+| `SPRITE_TOKEN` | Preferred | Direct sprites token (skips FLY_API_TOKEN exchange) |
+| `FLY_API_TOKEN` | Alternative | Fly.io token for Sprites API auth |
 | `SPRITES_ORG` | If not `personal` | Sprites org slug for token exchange |
 | `GITHUB_TOKEN` | For dispatch | Git operations on sprite |
 | `OPENROUTER_API_KEY` | For setup | Baked into sprite settings.json |
 
-Token creation:
+Preferred token setup:
+```bash
+export SPRITE_TOKEN="..."
+```
+
+Fallback Fly token creation:
 ```bash
 fly tokens create org -o personal -n bb-cli -x 720h
 ```
@@ -122,6 +127,7 @@ bb setup fern --repo misty-step/webapp --force
 |------|---------|-------------|
 | `--repo` | | GitHub repo to clone |
 | `--force` | `false` | Re-clone repo, overwrite configs |
+| `--persona` | first available in `sprites/` | Persona sprite name or file path |
 
 ### What It Does
 
@@ -132,6 +138,7 @@ bb setup fern --repo misty-step/webapp --force
 5. Upload ralph.sh and prompt template
 6. Configure git auth (credential helper, user identity)
 7. Clone repo (if `--repo` provided)
+8. Write workspace metadata at `.bb/workspace.json`
 
 ---
 
@@ -165,7 +172,7 @@ thorn           started    no       unreachable
 bb status fern
 ```
 
-Shows signal files, git branch, dirty files, recent commits, and open PRs.
+Shows signal files, git branch, dirty files, recent commits, and PR visibility.
 
 ---
 
