@@ -53,6 +53,11 @@ source .env.bb
 export GITHUB_TOKEN="$(gh auth token)"
 export OPENROUTER_API_KEY="..."
 
+# Prefer SPRITE_TOKEN for local auth. It connects directly to Sprites,
+# avoiding token exchange failures.
+# FLY_API_TOKEN is a more fragile fallback.
+export SPRITE_TOKEN="..."  # from https://sprites.dev/settings
+
 # 2) Bootstrap one builder + three reviewers
 ./bin/bb setup noble-blue-serpent --repo misty-step/bitterblossom
 ./bin/bb setup council-fern-20260306 --repo misty-step/bitterblossom
@@ -174,12 +179,13 @@ GitHub Actions CI runs on pull requests and pushes to `master` with:
 - `ruff` + `pytest` for `base/hooks/`
 - `yamllint` for `compositions/`
 
-## Hook Testing
+## Python Testing (Hooks + Conductor)
 
-Safety-critical hooks in `base/hooks/` are covered with pytest:
+Safety-critical hooks in `base/hooks/` and the conductor script are covered with pytest and ruff. Use the Makefile targets:
 
 ```bash
-python3 -m pytest -q
+make test-python   # pytest: base/hooks + scripts/test_conductor.py
+make lint-python   # ruff:   base/hooks + scripts/conductor.py + tests
 ```
 
 ## Troubleshooting
