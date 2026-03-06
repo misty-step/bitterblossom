@@ -78,7 +78,7 @@ func TestWorkspaceDiscoveryScriptPrefersMetadata(t *testing.T) {
 	if metaIdx == -1 || promptIdx == -1 || logIdx == -1 {
 		t.Fatalf("script missing expected discovery checks")
 	}
-	if !(metaIdx < promptIdx && promptIdx < logIdx) {
+	if metaIdx >= promptIdx || promptIdx >= logIdx {
 		t.Fatalf("expected metadata -> prompt -> log order, got script:\n%s", script)
 	}
 }
