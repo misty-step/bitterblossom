@@ -79,12 +79,14 @@ jobs:
 
   merge_gate:
     name: merge-gate
-    if: github.event_name == 'pull_request'
-    needs: [shellcheck, python, yaml, go]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: ${{ github.event_name == 'pull_request' && always() }}
+    needs: [shellcheck, python, yaml, go]
     steps:
       - name: Require green merge inputs
         env:
+          # Keep this list aligned with `needs`; merge-gate is the single PR check to require.
           SHELLCHECK_RESULT: ${{ needs.shellcheck.result }}
           PYTHON_RESULT: ${{ needs.python.result }}
           YAML_RESULT: ${{ needs.yaml.result }}
