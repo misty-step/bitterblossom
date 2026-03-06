@@ -6,6 +6,7 @@ import json
 import os
 import pathlib
 import shlex
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -395,6 +396,53 @@ def require_runtime_env() -> None:
         missing.append("SPRITE_TOKEN|FLY_API_TOKEN")
     if missing:
         raise CmdError(f"missing required environment: {', '.join(missing)}")
+
+
+def check_env(args: argparse.Namespace) -> int:  # noqa: ARG001
+    passed: list[str] = []
+    failed: list[tuple[str, str]] = []
+
+    if os.environ.get("GITHUB_TOKEN"):
+        passed.append("GITHUB_TOKEN")
+    else:
+        failed.append(("GITHUB_TOKEN", 'export GITHUB_TOKEN="$(gh auth token)"'))
+
+    if os.environ.get("SPRITE_TOKEN"):
+        passed.append("SPRITE_TOKEN")
+    elif os.environ.get("FLY_API_TOKEN"):
+        passed.append("FLY_API_TOKEN (SPRITE_TOKEN preferred)")
+    else:
+        failed.append(("SPRITE_TOKEN", "export SPRITE_TOKEN=... (https://sprites.dev/settings)"))
+
+    bb_bin = ROOT / "bin" / "bb"
+    if bb_bin.exists():
+        passed.append(f"bb: {bb_bin}")
+    else:
+        failed.append(("bb", f"not found at {bb_bin} — run: make build"))
+
+    gh_path = shutil.which("gh")
+    if gh_path:
+        passed.append(f"gh: {gh_path}")
+    else:
+        failed.append(("gh", "not found in PATH — install from https://cli.github.com"))
+
+    sprite_path = shutil.which("sprite")
+    if sprite_path:
+        passed.append(f"sprite: {sprite_path}")
+    else:
+        failed.append(("sprite", "not found in PATH — install from https://sprites.dev/docs/cli"))
+
+    for item in passed:
+        print(f"  ok  {item}")
+    for name, fix in failed:
+        print(f"FAIL  {name}: {fix}", file=sys.stderr)
+
+    if not failed:
+        print("all checks passed")
+        return 0
+
+    print(f"\n{len(failed)} check(s) failed", file=sys.stderr)
+    return 1
 
 
 def gh_json(runner: Runner, args: list[str]) -> Any:
@@ -1843,10 +1891,10 @@ def run_once(args: argparse.Namespace) -> int:
 def loop(args: argparse.Namespace) -> int:
     while True:
         rc = run_once(args)
-        if rc not in (0,):
-            return rc
         if args.issue:
-            return 0
+            return rc
+        if rc != 0:
+            print(f"conductor: run ended with rc={rc}, continuing in {args.poll_seconds}s", file=sys.stderr)
         time.sleep(args.poll_seconds)
 
 
@@ -2004,14 +2052,25 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     reconcile_p.add_argument("--run-id", required=True)
     reconcile_p.set_defaults(func=reconcile_run)
 
+    check_p = sub.add_parser("check-env", help="Validate coordinator runtime environment and tools")
+    check_p.set_defaults(func=check_env)
+
     return parser.parse_args(argv)
 
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     if args.cmd in {"run-once", "loop", "reconcile-run"}:
-        require_runtime_env()
-    return int(args.func(args))
+        try:
+            require_runtime_env()
+        except CmdError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+    try:
+        return int(args.func(args))
+    except CmdError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
