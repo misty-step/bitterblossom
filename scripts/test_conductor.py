@@ -202,14 +202,55 @@ def test_dispatch_does_not_depend_on_wait_flag() -> None:
 
 
 def test_ensure_pr_ready_only_marks_drafts_ready() -> None:
-    runner = _RunnerSpy(['{"isDraft": true}', ""])
+    runner = _RunnerSpy(
+        [
+            '{"isDraft": true, "statusCheckRollup": [{"__typename": "CheckRun", "name": "merge-gate", "status": "COMPLETED", "startedAt": "2026-03-06T18:00:00Z", "completedAt": "2026-03-06T18:01:00Z"}]}',
+            "",
+            '{"statusCheckRollup": [{"__typename": "CheckRun", "name": "merge-gate", "status": "IN_PROGRESS", "startedAt": "2026-03-06T18:02:00Z", "completedAt": null}]}',
+        ]
+    )
 
-    conductor.ensure_pr_ready(runner, "misty-step/bitterblossom", 42)
+    changed = conductor.ensure_pr_ready(runner, "misty-step/bitterblossom", 42)
+
+    assert changed is True
 
     assert runner.calls == [
-        ["gh", "pr", "view", "42", "--repo", "misty-step/bitterblossom", "--json", "isDraft"],
+        ["gh", "pr", "view", "42", "--repo", "misty-step/bitterblossom", "--json", "isDraft,statusCheckRollup"],
         ["gh", "pr", "ready", "42", "--repo", "misty-step/bitterblossom"],
+        ["gh", "pr", "view", "42", "--repo", "misty-step/bitterblossom", "--json", "statusCheckRollup"],
     ]
+
+
+def test_ensure_pr_ready_skips_non_drafts() -> None:
+    runner = _RunnerSpy(['{"isDraft": false, "statusCheckRollup": []}'])
+
+    changed = conductor.ensure_pr_ready(runner, "misty-step/bitterblossom", 42)
+
+    assert changed is False
+    assert runner.calls == [
+        ["gh", "pr", "view", "42", "--repo", "misty-step/bitterblossom", "--json", "isDraft,statusCheckRollup"],
+    ]
+
+
+def test_wait_for_check_refresh_times_out_when_rollup_never_changes(monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = _RunnerSpy(
+        [
+            '{"statusCheckRollup": [{"__typename": "CheckRun", "name": "merge-gate", "status": "COMPLETED", "startedAt": "2026-03-06T18:00:00Z", "completedAt": "2026-03-06T18:01:00Z"}]}',
+            '{"statusCheckRollup": [{"__typename": "CheckRun", "name": "merge-gate", "status": "COMPLETED", "startedAt": "2026-03-06T18:00:00Z", "completedAt": "2026-03-06T18:01:00Z"}]}',
+        ]
+    )
+    ticks = iter([0.0, 30.0, 61.0])
+
+    monkeypatch.setattr(conductor.time, "time", lambda: next(ticks))
+    monkeypatch.setattr(conductor.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(conductor.CmdError, match="timed out waiting for PR #42 checks to refresh"):
+        conductor.wait_for_check_refresh(
+            runner,
+            "misty-step/bitterblossom",
+            42,
+            (("merge-gate", "COMPLETED", "2026-03-06T18:00:00Z", "2026-03-06T18:01:00Z"),),
+        )
 
 
 def test_dispatch_until_artifact_reaps_sprite_when_artifact_arrives_first(monkeypatch: pytest.MonkeyPatch) -> None:

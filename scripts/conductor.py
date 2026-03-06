@@ -636,6 +636,44 @@ def wait_for_pr_checks(runner: Runner, repo: str, pr_number: int, timeout_minute
     return (proc.returncode == 0, output.strip())
 
 
+def status_check_snapshot(payload: dict[str, Any]) -> tuple[tuple[str, str, str, str], ...]:
+    snapshot: list[tuple[str, str, str, str]] = []
+    for item in payload.get("statusCheckRollup", []):
+        typename = str(item.get("__typename", ""))
+        if typename == "CheckRun":
+            name = str(item.get("name", ""))
+            status = str(item.get("status", ""))
+            started = str(item.get("startedAt", ""))
+            completed = str(item.get("completedAt", ""))
+        elif typename == "StatusContext":
+            name = str(item.get("context", ""))
+            status = str(item.get("state", ""))
+            started = str(item.get("startedAt", ""))
+            completed = ""
+        else:
+            continue
+        snapshot.append((name, status, started, completed))
+    return tuple(sorted(snapshot))
+
+
+def wait_for_check_refresh(
+    runner: Runner,
+    repo: str,
+    pr_number: int,
+    before: tuple[tuple[str, str, str, str], ...],
+    *,
+    timeout_seconds: int = 60,
+) -> None:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        pr = gh_json(runner, ["pr", "view", str(pr_number), "--repo", repo, "--json", "statusCheckRollup"])
+        after = status_check_snapshot(pr)
+        if after != before:
+            return
+        time.sleep(5)
+    raise CmdError(f"timed out waiting for PR #{pr_number} checks to refresh after marking ready")
+
+
 def required_status_checks(runner: Runner, repo: str, base_branch: str) -> list[str]:
     try:
         payload = json.loads(runner.run(["gh", "api", f"repos/{repo}/branches/{base_branch}/protection"], timeout=60))
@@ -714,11 +752,14 @@ def merge_pr(runner: Runner, repo: str, pr_number: int) -> None:
     wait_for_pr_merged(runner, repo, pr_number)
 
 
-def ensure_pr_ready(runner: Runner, repo: str, pr_number: int) -> None:
-    pr = gh_json(runner, ["pr", "view", str(pr_number), "--repo", repo, "--json", "isDraft"])
+def ensure_pr_ready(runner: Runner, repo: str, pr_number: int) -> bool:
+    pr = gh_json(runner, ["pr", "view", str(pr_number), "--repo", repo, "--json", "isDraft,statusCheckRollup"])
     if not pr["isDraft"]:
-        return
+        return False
+    before = status_check_snapshot(pr)
     runner.run(["gh", "pr", "ready", str(pr_number), "--repo", repo], timeout=60)
+    wait_for_check_refresh(runner, repo, pr_number, before)
+    return True
 
 
 def best_effort_issue_comment(
