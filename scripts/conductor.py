@@ -531,6 +531,7 @@ def build_builder_task(
     artifact_path: str,
     feedback: str | None = None,
     *,
+    feedback_source: str = "review",
     pr_number: int | None = None,
     pr_url: str | None = None,
 ) -> str:
@@ -559,7 +560,7 @@ def build_builder_task(
             ]
         )
     if feedback:
-        lines.extend(["", format_untrusted_feedback(feedback)])
+        lines.extend(["", format_builder_feedback(feedback, source=feedback_source)])
     return "\n".join(lines)
 
 
@@ -583,8 +584,11 @@ def build_review_task(issue: Issue, run_id: str, pr_number: int, pr_url: str, ar
     )
 
 
-def format_untrusted_feedback(feedback: str) -> str:
-    payload = json.dumps({"source": "pr_review_threads", "feedback": feedback}, indent=2)
+def format_builder_feedback(feedback: str, *, source: str) -> str:
+    if source != "pr_review_threads":
+        return "\n".join(["Revision feedback to address:", feedback])
+
+    payload = json.dumps({"source": source, "feedback": feedback}, indent=2)
     return "\n".join(
         [
             "Revision feedback to address:",
@@ -864,16 +868,16 @@ def required_status_checks(runner: Runner, repo: str, base_branch: str) -> list[
 def list_unresolved_review_threads(runner: Runner, repo: str, pr_number: int) -> list[ReviewThread]:
     owner, name = split_repo(repo)
     query = """
-query($owner:String!, $repo:String!, $number:Int!) {
+query($owner:String!, $repo:String!, $number:Int!, $after:String) {
   repository(owner:$owner, name:$repo) {
     pullRequest(number:$number) {
-      reviewThreads(first:100) {
+      reviewThreads(first:100, after:$after) {
         nodes {
           id
           isResolved
           path
           line
-          comments(first:20) {
+          comments(first:1) {
             nodes {
               author { login }
               authorAssociation
@@ -882,61 +886,77 @@ query($owner:String!, $repo:String!, $number:Int!) {
             }
           }
         }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
       }
     }
   }
 }
 """.strip()
-    payload = gh_graphql(
-        runner,
-        query,
-        {"owner": owner, "repo": name, "number": pr_number},
-    )
-    try:
-        nodes = payload["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]
-    except (KeyError, TypeError) as exc:
-        raise CmdError(f"invalid review thread payload for PR #{pr_number}") from exc
-    if not isinstance(nodes, list):
-        raise CmdError(f"invalid review thread payload for PR #{pr_number}: nodes is not a list")
     threads: list[ReviewThread] = []
-    for node in nodes:
-        if not isinstance(node, dict):
-            raise CmdError(f"invalid review thread payload for PR #{pr_number}: thread is not an object")
-        if node.get("isResolved"):
-            continue
-        comments_node = node.get("comments", {})
-        if not isinstance(comments_node, dict):
-            raise CmdError(f"invalid review thread payload for PR #{pr_number}: comments is not an object")
-        comments = comments_node.get("nodes", [])
-        if not isinstance(comments, list):
-            raise CmdError(f"invalid review thread payload for PR #{pr_number}: comments.nodes is not a list")
-        comment = comments[-1] if comments else {}
-        if comment and not isinstance(comment, dict):
-            raise CmdError(f"invalid review thread payload for PR #{pr_number}: comment is not an object")
-        line = node.get("line")
+    after = ""
+    while True:
+        variables: dict[str, str | int] = {"owner": owner, "repo": name, "number": pr_number}
+        if after:
+            variables["after"] = after
+        payload = gh_graphql(runner, query, variables)
         try:
-            thread_line = int(line) if line is not None else None
-        except (TypeError, ValueError):
-            thread_line = None
-        author_node = comment.get("author", {})
-        if author_node is None:
-            author_login = "unknown"
-        elif isinstance(author_node, dict):
-            author_login = str(author_node.get("login") or "unknown")
-        else:
-            raise CmdError(f"invalid review thread payload for PR #{pr_number}: author is not an object")
-        author_association = str(comment.get("authorAssociation") or "").upper()
-        threads.append(
-            ReviewThread(
-                id=str(node.get("id", "")),
-                path=str(node.get("path") or ""),
-                line=thread_line,
-                author_login=author_login,
-                author_association=author_association,
-                body=str(comment.get("body") or ""),
-                url=str(comment.get("url") or ""),
+            review_threads = payload["data"]["repository"]["pullRequest"]["reviewThreads"]
+            nodes = review_threads["nodes"]
+            page_info = review_threads["pageInfo"]
+        except (KeyError, TypeError) as exc:
+            raise CmdError(f"invalid review thread payload for PR #{pr_number}") from exc
+        if not isinstance(nodes, list):
+            raise CmdError(f"invalid review thread payload for PR #{pr_number}: nodes is not a list")
+        if not isinstance(page_info, dict):
+            raise CmdError(f"invalid review thread payload for PR #{pr_number}: pageInfo is not an object")
+
+        for node in nodes:
+            if not isinstance(node, dict):
+                raise CmdError(f"invalid review thread payload for PR #{pr_number}: thread is not an object")
+            if node.get("isResolved"):
+                continue
+            comments_node = node.get("comments", {})
+            if not isinstance(comments_node, dict):
+                raise CmdError(f"invalid review thread payload for PR #{pr_number}: comments is not an object")
+            comments = comments_node.get("nodes", [])
+            if not isinstance(comments, list):
+                raise CmdError(f"invalid review thread payload for PR #{pr_number}: comments.nodes is not a list")
+            comment = comments[0] if comments else {}
+            if comment and not isinstance(comment, dict):
+                raise CmdError(f"invalid review thread payload for PR #{pr_number}: comment is not an object")
+            line = node.get("line")
+            try:
+                thread_line = int(line) if line is not None else None
+            except (TypeError, ValueError):
+                thread_line = None
+            author_node = comment.get("author", {})
+            if author_node is None:
+                author_login = "unknown"
+            elif isinstance(author_node, dict):
+                author_login = str(author_node.get("login") or "unknown")
+            else:
+                raise CmdError(f"invalid review thread payload for PR #{pr_number}: author is not an object")
+            author_association = str(comment.get("authorAssociation") or "").upper()
+            threads.append(
+                ReviewThread(
+                    id=str(node.get("id", "")),
+                    path=str(node.get("path") or ""),
+                    line=thread_line,
+                    author_login=author_login,
+                    author_association=author_association,
+                    body=str(comment.get("body") or ""),
+                    url=str(comment.get("url") or ""),
+                )
             )
-        )
+
+        if page_info.get("hasNextPage") is not True:
+            break
+        after = str(page_info.get("endCursor") or "")
+        if not after:
+            raise CmdError(f"invalid review thread payload for PR #{pr_number}: missing endCursor")
     return [thread for thread in threads if thread.id]
 
 
@@ -966,8 +986,14 @@ mutation($threadId:ID!) {
   }
 }
 """.strip()
+    failures: list[str] = []
     for thread_id in thread_ids:
-        gh_graphql(runner, query, {"threadId": thread_id})
+        try:
+            gh_graphql(runner, query, {"threadId": thread_id})
+        except CmdError as exc:
+            failures.append(f"{thread_id}: {exc}")
+    if failures:
+        raise CmdError("failed to resolve review threads:\n" + "\n".join(failures))
 
 
 def is_trusted_review_author(thread: ReviewThread) -> bool:
@@ -1121,10 +1147,7 @@ def dispatch_command(sprite: str, prompt: str, repo: str, prompt_template: pathl
 
 def cleanup_sprite_processes(runner: Runner, sprite: str) -> None:
     bb_bin = str(ROOT / "bin" / "bb")
-    try:
-        runner.run([bb_bin, "kill", sprite], timeout=120)
-    except CmdError:
-        return
+    runner.run([bb_bin, "kill", sprite], timeout=120)
 
 
 def read_log_tail(path: pathlib.Path, *, max_chars: int = 4000) -> str:
@@ -1250,9 +1273,9 @@ def dispatch_tasks_until_artifacts(
                 else:
                     payloads[sprite] = payload
                     stop_dispatch_session(runner, session, reap_sprite=True)
+                    del sessions[sprite]
                     if on_artifact is not None:
                         on_artifact(sprite, payload)
-                    del sessions[sprite]
                     continue
 
                 if session.proc.poll() is None:
@@ -1272,9 +1295,9 @@ def dispatch_tasks_until_artifacts(
                     else:
                         payloads[sprite] = payload
                         stop_dispatch_session(runner, session, reap_sprite=False)
+                        del sessions[sprite]
                         if on_artifact is not None:
                             on_artifact(sprite, payload)
-                        del sessions[sprite]
                         continue
 
                 raise session_exit_error(session, session.last_error)
@@ -1324,8 +1347,12 @@ def run_builder(
     feedback: str | None = None,
     pr_number: int | None = None,
     pr_url: str | None = None,
+    feedback_source: str = "review",
 ) -> tuple[BuilderResult, dict[str, Any]]:
-    cleanup_sprite_processes(runner, worker)
+    try:
+        cleanup_sprite_processes(runner, worker)
+    except CmdError:
+        pass
     builder_rel = artifact_rel(run_id, "builder-result.json")
     builder_prompt = build_builder_task(
         issue,
@@ -1333,6 +1360,7 @@ def run_builder(
         branch,
         builder_rel,
         feedback=feedback,
+        feedback_source=feedback_source,
         pr_number=pr_number,
         pr_url=pr_url,
     )
@@ -1368,7 +1396,10 @@ def run_review_round(
     reviews: dict[str, ReviewResult] = {}
     tasks: list[DispatchTask] = []
     for reviewer in reviewers:
-        cleanup_sprite_processes(runner, reviewer)
+        try:
+            cleanup_sprite_processes(runner, reviewer)
+        except CmdError:
+            pass
         review_rel = artifact_rel(run_id, f"review-{reviewer}.json")
         review_prompt = build_review_task(issue, run_id, pr_number, pr_url, review_rel)
         tasks.append(
@@ -1580,6 +1611,7 @@ def run_once(args: argparse.Namespace) -> int:
                     pathlib.Path(args.builder_template),
                     args.builder_timeout,
                     feedback=feedback,
+                    feedback_source="review",
                     pr_number=builder.pr_number,
                     pr_url=builder.pr_url,
                 )
@@ -1699,6 +1731,7 @@ def run_once(args: argparse.Namespace) -> int:
                             pathlib.Path(args.builder_template),
                             args.builder_timeout,
                             feedback=feedback,
+                            feedback_source="pr_review_threads",
                             pr_number=builder.pr_number,
                             pr_url=builder.pr_url,
                         )
@@ -1742,6 +1775,7 @@ def run_once(args: argparse.Namespace) -> int:
                 pathlib.Path(args.builder_template),
                 args.builder_timeout,
                 feedback=feedback,
+                feedback_source="ci",
                 pr_number=builder.pr_number,
                 pr_url=builder.pr_url,
             )
