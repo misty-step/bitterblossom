@@ -1,4 +1,4 @@
-name: CI
+name: Quality Checks
 
 on:
   pull_request:
@@ -76,3 +76,15 @@ jobs:
           version: v2.8.0
       - name: Build
         run: make build
+
+  merge-gate:
+    name: merge-gate
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [shellcheck, python-hooks, yaml, go]
+    steps:
+      - run: |
+          if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" ]] || \
+             [[ "${{ contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
+            exit 1
+          fi
