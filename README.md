@@ -229,3 +229,17 @@ python3 -m pytest -q
 - Sprite GitHub identity is env-configurable (shared bot by default, per-sprite overrides supported)
 - Human approval required for composition changes
 - Fae/fairy naming convention throughout
+
+## Troubleshooting
+
+### Dispatch fails with stale Ralph or Claude processes
+
+If a previous dispatch was interrupted (Ctrl+C, timeout, crash), the sprite may still have a running ralph loop or claude process. The next dispatch will refuse to start until these are cleared.
+
+Run:
+
+```bash
+bb kill <sprite>
+```
+
+This terminates any stale ralph loop and agent processes on the sprite, freeing it for a fresh dispatch.
