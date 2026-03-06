@@ -53,9 +53,9 @@ source .env.bb
 export GITHUB_TOKEN="$(gh auth token)"
 export OPENROUTER_API_KEY="..."
 
-# Local auth: prefer SPRITE_TOKEN when available.
-# It authenticates directly with Sprites and avoids Fly-to-Sprites
-# token exchange failures. FLY_API_TOKEN still works but is more fragile.
+# Prefer SPRITE_TOKEN for local auth. It connects directly to Sprites,
+# avoiding token exchange failures.
+# FLY_API_TOKEN is a more fragile fallback.
 export SPRITE_TOKEN="..."  # from https://sprites.dev/settings
 
 # 2) Bootstrap one builder + three reviewers
