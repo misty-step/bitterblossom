@@ -894,12 +894,19 @@ query($owner:String!, $repo:String!, $number:Int!) {
             thread_line = int(line) if line is not None else None
         except (TypeError, ValueError):
             thread_line = None
+        author_node = comment.get("author", {})
+        if author_node is None:
+            author_login = "unknown"
+        elif isinstance(author_node, dict):
+            author_login = str(author_node.get("login") or "unknown")
+        else:
+            raise CmdError(f"invalid review thread payload for PR #{pr_number}: author is not an object")
         threads.append(
             ReviewThread(
                 id=str(node.get("id", "")),
                 path=str(node.get("path") or ""),
                 line=thread_line,
-                author_login=str(comment.get("author", {}).get("login") or "unknown"),
+                author_login=author_login,
                 body=str(comment.get("body") or ""),
                 url=str(comment.get("url") or ""),
             )
@@ -1174,12 +1181,12 @@ def dispatch_tasks_until_artifacts(
     sessions: dict[str, DispatchSession] = {}
     payloads: dict[str, dict[str, Any]] = {}
 
-    for task in tasks:
-        session = start_dispatch_session(task.sprite, task.prompt, repo, prompt_template, timeout_minutes)
-        session.task.artifact_path = task.artifact_path
-        sessions[task.sprite] = session
-
     try:
+        for task in tasks:
+            session = start_dispatch_session(task.sprite, task.prompt, repo, prompt_template, timeout_minutes)
+            session.task.artifact_path = task.artifact_path
+            sessions[task.sprite] = session
+
         while sessions and time.time() < deadline:
             if on_tick is not None:
                 on_tick()

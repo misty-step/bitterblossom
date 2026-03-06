@@ -138,6 +138,23 @@ def test_list_unresolved_review_threads_rejects_malformed_payload() -> None:
         conductor.list_unresolved_review_threads(runner, "misty-step/bitterblossom", 460)
 
 
+def test_list_unresolved_review_threads_rejects_non_object_author() -> None:
+    runner = _RunnerSpy(
+        [
+            """
+            {"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[
+              {"id":"thread-1","isResolved":false,"path":"README.md","line":59,"comments":{"nodes":[
+                {"author":"oops","body":"please keep this copy-pastable","url":"https://example.com/thread-1"}
+              ]}}
+            ]}}}}}
+            """
+        ]
+    )
+
+    with pytest.raises(conductor.CmdError, match="author is not an object"):
+        conductor.list_unresolved_review_threads(runner, "misty-step/bitterblossom", 460)
+
+
 def test_build_builder_task_wraps_untrusted_feedback() -> None:
     issue = conductor.Issue(number=447, title="test", body="body", url="https://example.com/447", labels=["autopilot"])
 
@@ -242,6 +259,43 @@ def test_dispatch_tasks_until_artifacts_runs_tasks_in_parallel(monkeypatch: pyte
     assert artifact_order == ["sage", "fern", "thorn"]
     assert stopped == [("sage", True), ("fern", True), ("thorn", True)]
     assert got == payloads
+
+
+def test_dispatch_tasks_until_artifacts_stops_started_sessions_when_startup_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    stopped: list[tuple[str, bool]] = []
+    started = 0
+
+    def fake_start(sprite: str, prompt: str, repo: str, prompt_template: pathlib.Path, timeout_minutes: int) -> conductor.DispatchSession:
+        nonlocal started
+        _ = (prompt, repo, prompt_template, timeout_minutes)
+        started += 1
+        if started == 2:
+            raise conductor.CmdError("boom")
+        return conductor.DispatchSession(
+            task=conductor.DispatchTask(sprite=sprite, prompt="", artifact_path=f"/tmp/{sprite}.json"),
+            argv=[sprite],
+            proc=_ProcStub([None]),
+            log_path=tmp_path / f"{sprite}.log",
+        )
+
+    monkeypatch.setattr(conductor, "start_dispatch_session", fake_start)
+    monkeypatch.setattr(conductor, "stop_dispatch_session", lambda _runner, session, *, reap_sprite: stopped.append((session.task.sprite, reap_sprite)))
+
+    with pytest.raises(conductor.CmdError, match="boom"):
+        conductor.dispatch_tasks_until_artifacts(
+            _RunnerSpy(),
+            [
+                conductor.DispatchTask(sprite="fern", prompt="p1", artifact_path="/tmp/fern.json"),
+                conductor.DispatchTask(sprite="sage", prompt="p2", artifact_path="/tmp/sage.json"),
+            ],
+            "misty-step/bitterblossom",
+            pathlib.Path("scripts/prompts/conductor-reviewer-template.md"),
+            10,
+        )
+
+    assert stopped == [("fern", True)]
 
 
 def test_run_review_round_persists_reviews_as_they_arrive(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
