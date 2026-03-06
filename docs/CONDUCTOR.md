@@ -38,6 +38,13 @@ source .env.bb
 export GITHUB_TOKEN="$(gh auth token)"
 ```
 
+## Makefile Targets
+
+```bash
+make test-python   # python3 -m pytest -q base/hooks scripts/test_conductor.py
+make lint-python   # ruff check base/hooks scripts/conductor.py scripts/test_conductor.py
+```
+
 ## Commands
 
 Run one issue:
