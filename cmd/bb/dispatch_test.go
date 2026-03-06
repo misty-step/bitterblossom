@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -516,6 +518,44 @@ func TestCaptureHeadSHAReturnsErrorOnEmptyOutput(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "empty output") {
 		t.Fatalf("err = %q, want to contain %q", err.Error(), "empty output")
+	}
+}
+
+func TestDispatchFlagPromptTemplate_Default(t *testing.T) {
+	t.Parallel()
+
+	cmd := newDispatchCmd()
+	f := cmd.Flags().Lookup("prompt-template")
+	if f == nil {
+		t.Fatal("--prompt-template flag not registered on dispatch command")
+	}
+	if f.DefValue != "scripts/ralph-prompt-template.md" {
+		t.Fatalf("--prompt-template default = %q, want %q", f.DefValue, "scripts/ralph-prompt-template.md")
+	}
+}
+
+func TestRenderPromptUsesCustomTemplate(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "prompt.md")
+	if err := os.WriteFile(path, []byte("Task={{TASK_DESCRIPTION}}\nRepo={{REPO}}\nSprite={{SPRITE_NAME}}\n"), 0644); err != nil {
+		t.Fatalf("write template: %v", err)
+	}
+
+	got, err := renderPrompt(path, "implement issue 123", "misty-step/bitterblossom", "bramble")
+	if err != nil {
+		t.Fatalf("renderPrompt() error = %v", err)
+	}
+
+	for _, want := range []string{
+		"Task=implement issue 123",
+		"Repo=misty-step/bitterblossom",
+		"Sprite=bramble",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("rendered prompt missing %q in %q", want, got)
+		}
 	}
 }
 

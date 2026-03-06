@@ -28,8 +28,8 @@ jobs:
           find scripts -type f -name "*.sh" -print0 \
             | xargs -0 shellcheck -x -S error
 
-  python-hooks:
-    name: Hook Python Checks
+  python:
+    name: Python Checks
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -42,9 +42,9 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install pytest==8.4.1 ruff==0.15.0
       - name: Ruff
-        run: ruff check base/hooks
+        run: ruff check base/hooks scripts/conductor.py scripts/test_conductor.py
       - name: Pytest
-        run: python -m pytest -q base/hooks
+        run: python -m pytest -q base/hooks scripts/test_conductor.py
 
   yaml:
     name: YAML Lint
@@ -76,3 +76,24 @@ jobs:
           version: v2.8.0
       - name: Build
         run: make build
+
+  merge_gate:
+    name: merge-gate
+    if: github.event_name == 'pull_request'
+    needs: [shellcheck, python, yaml, go]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require green merge inputs
+        env:
+          SHELLCHECK_RESULT: ${{ needs.shellcheck.result }}
+          PYTHON_RESULT: ${{ needs.python.result }}
+          YAML_RESULT: ${{ needs.yaml.result }}
+          GO_RESULT: ${{ needs.go.result }}
+        run: |
+          set -euo pipefail
+          for result in "$SHELLCHECK_RESULT" "$PYTHON_RESULT" "$YAML_RESULT" "$GO_RESULT"; do
+            if [ "$result" != "success" ]; then
+              echo "merge-gate blocked by dependency result: $result"
+              exit 1
+            fi
+          done

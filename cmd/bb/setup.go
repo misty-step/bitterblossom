@@ -196,6 +196,15 @@ git config --global --add safe.directory '*'
 		// Create skill directories in repo workspace
 		skillDirs := fmt.Sprintf("mkdir -p %s/.claude/skills %s/.claude/commands", repoDir, repoDir)
 		_, _ = s.CommandContext(ctx, "bash", "-c", skillDirs).Output()
+
+		meta := newWorkspaceMetadata(spriteName, repo, repoDir, personaFile, time.Now())
+		metaBytes, err := marshalWorkspaceMetadata(meta)
+		if err != nil {
+			return err
+		}
+		if err := s.Filesystem().WriteFileContext(ctx, workspaceMetadataPath(repoDir), metaBytes, 0644); err != nil {
+			return fmt.Errorf("write workspace metadata: %w", err)
+		}
 	}
 
 	_, _ = fmt.Fprintf(os.Stderr, "setup complete: %s\n", spriteName)
