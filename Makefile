@@ -1,4 +1,4 @@
-.PHONY: build test lint clean
+.PHONY: build test lint clean test-python lint-python
 
 BINARY := bb
 BIN_DIR := bin
@@ -19,3 +19,9 @@ lint:
 
 clean:
 	rm -rf $(BIN_DIR)
+
+test-python:
+	python3 -m pytest -q base/hooks scripts/test_conductor.py
+
+lint-python:
+	ruff check base/hooks scripts/conductor.py scripts/test_conductor.py
