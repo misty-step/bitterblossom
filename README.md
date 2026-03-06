@@ -179,12 +179,13 @@ GitHub Actions CI runs on pull requests and pushes to `master` with:
 - `ruff` + `pytest` for `base/hooks/`
 - `yamllint` for `compositions/`
 
-## Hook Testing
+## Python Testing (Hooks + Conductor)
 
-Safety-critical hooks in `base/hooks/` are covered with pytest:
+Safety-critical hooks in `base/hooks/` and the conductor script are covered with pytest and ruff. Use the Makefile targets:
 
 ```bash
-python3 -m pytest -q
+make test-python   # pytest: base/hooks + scripts/test_conductor.py
+make lint-python   # ruff:   base/hooks + scripts/conductor.py + tests
 ```
 
 ## Troubleshooting
