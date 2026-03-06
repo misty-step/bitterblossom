@@ -9,6 +9,7 @@ It is not another transport CLI. It owns:
 - builder dispatch
 - reviewer council dispatch
 - CI wait
+- PR feedback / thread reconciliation
 - merge
 - run/event persistence
 
@@ -90,10 +91,13 @@ The target repo currently requires a `merge-gate` status on `master`.
 
 This repo now publishes `merge-gate` in GitHub Actions. The conductor also checks for missing required statuses before it attempts merge, so policy mismatches fail loudly instead of pretending CI is complete.
 
+This repo also requires resolved PR conversations. After CI turns green, the conductor queries unresolved review threads, routes that feedback back to the builder on the existing PR, and only proceeds once the conversation gate is clear. If the same threads still block after a revision pass, the conductor resolves those stale threads explicitly so GitHub can finish the merge.
+
 ## MVP Limits
 
 - one builder per issue
 - one review council round loop
+- one PR-feedback revision loop
 - SQLite only
 - single-tenant worker assumption
 - deterministic issue filtering, heuristic ranking for now

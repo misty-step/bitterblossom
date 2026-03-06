@@ -11,7 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -23,6 +23,9 @@ DEFAULT_BUILDER_TEMPLATE = ROOT / "scripts" / "prompts" / "conductor-builder-tem
 DEFAULT_REVIEWER_TEMPLATE = ROOT / "scripts" / "prompts" / "conductor-reviewer-template.md"
 DEFAULT_LABEL = "autopilot"
 DEFAULT_LEASE_BUFFER_SECONDS = 300
+SUCCESSFUL_CHECK_CONCLUSIONS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
+FAILED_CHECK_CONCLUSIONS = {"FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STALE", "STARTUP_FAILURE"}
+FAILED_STATUS_CONTEXTS = {"FAILURE", "ERROR"}
 
 
 @dataclass(slots=True)
@@ -51,6 +54,16 @@ class ReviewResult:
     verdict: str
     summary: str
     findings: list[dict[str, Any]]
+
+
+@dataclass(slots=True)
+class ReviewThread:
+    id: str
+    path: str
+    line: int | None
+    author_login: str
+    body: str
+    url: str
 
 
 class CmdError(RuntimeError):
@@ -360,6 +373,21 @@ def gh_json(runner: Runner, args: list[str]) -> Any:
     return json.loads(out)
 
 
+def split_repo(repo: str) -> tuple[str, str]:
+    owner, _, name = repo.partition("/")
+    if not owner or not name:
+        raise CmdError(f"invalid repo slug: {repo!r}")
+    return owner, name
+
+
+def gh_graphql(runner: Runner, query: str, variables: dict[str, str | int]) -> Any:
+    argv = ["gh", "api", "graphql", "-f", f"query={query}"]
+    for key, value in variables.items():
+        argv.extend(["-F", f"{key}={value}"])
+    out = runner.run(argv, timeout=60)
+    return json.loads(out)
+
+
 def list_candidate_issues(runner: Runner, repo: str, label: str, limit: int) -> list[Issue]:
     issues = gh_json(
         runner,
@@ -467,7 +495,16 @@ def select_worker(runner: Runner, repo: str, workers: list[str], prompt_template
     raise CmdError(f"no available worker in {workers}: {last_error}")
 
 
-def build_builder_task(issue: Issue, run_id: str, branch: str, artifact_path: str, feedback: str | None = None) -> str:
+def build_builder_task(
+    issue: Issue,
+    run_id: str,
+    branch: str,
+    artifact_path: str,
+    feedback: str | None = None,
+    *,
+    pr_number: int | None = None,
+    pr_url: str | None = None,
+) -> str:
     lines = [
         f"Run ID: {run_id}",
         f"Issue: #{issue.number} - {issue.title}",
@@ -483,6 +520,15 @@ def build_builder_task(issue: Issue, run_id: str, branch: str, artifact_path: st
         "- Open a draft PR as soon as the branch is pushed.",
         "- Stop after the PR is ready for reviewer council.",
     ]
+    if pr_number and pr_url:
+        lines.extend(
+            [
+                "",
+                "Existing PR context:",
+                f"- PR: #{pr_number}",
+                f"- PR URL: {pr_url}",
+            ]
+        )
     if feedback:
         lines.extend(["", "Revision feedback to address:", feedback])
     return "\n".join(lines)
@@ -619,21 +665,95 @@ def comment_pr(runner: Runner, repo: str, pr_number: int, body: str) -> None:
     runner.run(["gh", "pr", "comment", str(pr_number), "--repo", repo, "--body", body], timeout=60)
 
 
+def rollup_item_name(item: dict[str, Any]) -> str:
+    typename = str(item.get("__typename", ""))
+    if typename == "CheckRun":
+        return str(item.get("name", ""))
+    if typename == "StatusContext":
+        return str(item.get("context", ""))
+    return ""
+
+
+def rollup_item_state(item: dict[str, Any]) -> tuple[str, bool, bool]:
+    typename = str(item.get("__typename", ""))
+    if typename == "CheckRun":
+        status = str(item.get("status", "")).upper()
+        if status != "COMPLETED":
+            return status or "PENDING", False, False
+        conclusion = str(item.get("conclusion", "")).upper()
+        if conclusion in FAILED_CHECK_CONCLUSIONS:
+            return conclusion or "FAILURE", True, True
+        return conclusion or "SUCCESS", True, False
+
+    if typename == "StatusContext":
+        state = str(item.get("state", "")).upper()
+        if state in FAILED_STATUS_CONTEXTS:
+            return state, True, True
+        if state == "SUCCESS":
+            return state, True, False
+        return state or "PENDING", False, False
+
+    return "", False, False
+
+
+def summarize_status_check_rollup(payload: dict[str, Any]) -> str:
+    lines: list[str] = []
+    for item in payload.get("statusCheckRollup", []):
+        name = rollup_item_name(item)
+        if not name:
+            continue
+        state, _terminal, _failed = rollup_item_state(item)
+        lines.append(f"{name}: {state}")
+    return "\n".join(lines) or "(no checks reported)"
+
+
+def checks_complete(payload: dict[str, Any], required: set[str]) -> tuple[bool, bool]:
+    required_remaining = set(required)
+    all_present_terminal = True
+    saw_any = False
+
+    for item in payload.get("statusCheckRollup", []):
+        name = rollup_item_name(item)
+        if not name:
+            continue
+        saw_any = True
+        state, terminal, failed = rollup_item_state(item)
+        if failed:
+            return False, True
+        if required:
+            if name in required_remaining and terminal and state in SUCCESSFUL_CHECK_CONCLUSIONS | {"SUCCESS"}:
+                required_remaining.discard(name)
+            elif name in required and not terminal:
+                all_present_terminal = False
+            elif name in required and terminal and state not in SUCCESSFUL_CHECK_CONCLUSIONS | {"SUCCESS"}:
+                return False, True
+        elif not terminal:
+            all_present_terminal = False
+
+    if required:
+        return not required_remaining and all_present_terminal, False
+    return saw_any and all_present_terminal, False
+
+
 def wait_for_pr_checks(runner: Runner, repo: str, pr_number: int, timeout_minutes: int) -> tuple[bool, str]:
-    argv = ["gh", "pr", "checks", str(pr_number), "--repo", repo, "--watch", "--fail-fast", "--interval", "10"]
-    try:
-        proc = subprocess.run(
-            argv,
-            cwd=ROOT,
-            text=True,
-            capture_output=True,
-            timeout=max(60, timeout_minutes * 60),
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return False, f"timed out waiting for PR #{pr_number} checks after {timeout_minutes}m"
-    output = (proc.stdout or "") + (proc.stderr or "")
-    return (proc.returncode == 0, output.strip())
+    deadline = time.time() + max(60, timeout_minutes * 60)
+    payload: dict[str, Any] = {}
+    required: set[str] | None = None
+
+    while time.time() < deadline:
+        payload = gh_json(runner, ["pr", "view", str(pr_number), "--repo", repo, "--json", "baseRefName,statusCheckRollup"])
+        if required is None:
+            required = set(required_status_checks(runner, repo, str(payload.get("baseRefName", ""))))
+
+        summary = summarize_status_check_rollup(payload)
+        complete, failed = checks_complete(payload, required or set())
+        if complete:
+            return True, summary
+        if failed:
+            return False, summary
+        time.sleep(10)
+
+    return False, f"timed out waiting for PR #{pr_number} checks after {timeout_minutes}m\n{summarize_status_check_rollup(payload)}"
 
 
 def status_check_snapshot(payload: dict[str, Any]) -> tuple[tuple[str, str, str, str], ...]:
@@ -686,6 +806,98 @@ def required_status_checks(runner: Runner, repo: str, base_branch: str) -> list[
     checks = payload.get("required_status_checks") or {}
     contexts = checks.get("contexts") or []
     return [str(context) for context in contexts if context]
+
+
+def list_unresolved_review_threads(runner: Runner, repo: str, pr_number: int) -> list[ReviewThread]:
+    owner, name = split_repo(repo)
+    query = """
+query($owner:String!, $repo:String!, $number:Int!) {
+  repository(owner:$owner, name:$repo) {
+    pullRequest(number:$number) {
+      reviewThreads(first:100) {
+        nodes {
+          id
+          isResolved
+          path
+          line
+          comments(first:20) {
+            nodes {
+              author { login }
+              body
+              url
+            }
+          }
+        }
+      }
+    }
+  }
+}
+""".strip()
+    payload = gh_graphql(
+        runner,
+        query,
+        {"owner": owner, "repo": name, "number": pr_number},
+    )
+    nodes = (
+        payload.get("data", {})
+        .get("repository", {})
+        .get("pullRequest", {})
+        .get("reviewThreads", {})
+        .get("nodes", [])
+    )
+    threads: list[ReviewThread] = []
+    for node in nodes:
+        if node.get("isResolved"):
+            continue
+        comments = node.get("comments", {}).get("nodes", [])
+        comment = comments[-1] if comments else {}
+        line = node.get("line")
+        try:
+            thread_line = int(line) if line is not None else None
+        except (TypeError, ValueError):
+            thread_line = None
+        threads.append(
+            ReviewThread(
+                id=str(node.get("id", "")),
+                path=str(node.get("path") or ""),
+                line=thread_line,
+                author_login=str(comment.get("author", {}).get("login") or "unknown"),
+                body=str(comment.get("body") or ""),
+                url=str(comment.get("url") or ""),
+            )
+        )
+    return [thread for thread in threads if thread.id]
+
+
+def summarize_review_threads(threads: list[ReviewThread]) -> str:
+    lines = [
+        "Unresolved PR review threads are blocking merge.",
+        "Address the feedback on the existing PR, push any needed updates, then resolve each addressed thread before handing back to the conductor.",
+    ]
+    for thread in threads:
+        location = thread.path or "(unknown path)"
+        if thread.line is not None:
+            location = f"{location}:{thread.line}"
+        body = " ".join(thread.body.split())
+        if len(body) > 280:
+            body = body[:277].rstrip() + "..."
+        lines.append(f"- {location} by @{thread.author_login}: {body} ({thread.url})")
+    return "\n".join(lines)
+
+
+def resolve_review_threads(runner: Runner, repo: str, pr_number: int, thread_ids: list[str]) -> None:
+    _ = (repo, pr_number)
+    query = """
+mutation($threadId:ID!) {
+  resolveReviewThread(input:{threadId:$threadId}) {
+    thread {
+      isResolved
+    }
+  }
+}
+""".strip()
+    for thread_id in thread_ids:
+        gh_graphql(runner, query, {"threadId": thread_id})
 
 
 def present_pr_status_checks(runner: Runner, repo: str, pr_number: int) -> tuple[str, set[str]]:
@@ -948,9 +1160,19 @@ def run_builder(
     prompt_template: pathlib.Path,
     timeout_minutes: int,
     feedback: str | None = None,
+    pr_number: int | None = None,
+    pr_url: str | None = None,
 ) -> tuple[BuilderResult, dict[str, Any]]:
     builder_rel = artifact_rel(run_id, "builder-result.json")
-    builder_prompt = build_builder_task(issue, run_id, branch, builder_rel, feedback=feedback)
+    builder_prompt = build_builder_task(
+        issue,
+        run_id,
+        branch,
+        builder_rel,
+        feedback=feedback,
+        pr_number=pr_number,
+        pr_url=pr_url,
+    )
     payload = dispatch_until_artifact(
         runner,
         worker,
@@ -1062,6 +1284,7 @@ def run_once(args: argparse.Namespace) -> int:
 
     create_run(conn, run_id, args.repo, issue, args.builder_profile)
     merged = False
+    max_pr_feedback_rounds = getattr(args, "max_pr_feedback_rounds", 1)
 
     try:
         record_event(conn, event_log, run_id, "lease_acquired", {"issue": issue.number})
@@ -1103,6 +1326,8 @@ def run_once(args: argparse.Namespace) -> int:
 
         review_rounds = 0
         ci_rounds = 0
+        pr_feedback_rounds = 0
+        last_pr_feedback_thread_ids: tuple[str, ...] = ()
         while True:
             touch_run(
                 conn,
@@ -1144,7 +1369,7 @@ def run_once(args: argparse.Namespace) -> int:
             if blocks or passes < args.review_quorum:
                 if review_rounds >= args.max_revision_rounds:
                     update_run(conn, run_id, phase="blocked", status="blocked")
-                    record_event(conn, event_log, run_id, "council_blocked", {"reviews": [review.__dict__ for review in reviews]})
+                    record_event(conn, event_log, run_id, "council_blocked", {"reviews": [asdict(review) for review in reviews]})
                     best_effort_issue_comment(
                         runner,
                         conn,
@@ -1170,6 +1395,8 @@ def run_once(args: argparse.Namespace) -> int:
                     pathlib.Path(args.builder_template),
                     args.builder_timeout,
                     feedback=feedback,
+                    pr_number=builder.pr_number,
+                    pr_url=builder.pr_url,
                 )
                 update_run(conn, run_id, phase="reviewing", branch=builder.branch, pr_number=builder.pr_number, pr_url=builder.pr_url)
                 record_event(conn, event_log, run_id, "builder_revised", builder_payload)
@@ -1183,6 +1410,83 @@ def run_once(args: argparse.Namespace) -> int:
             record_event(conn, event_log, run_id, "ci_wait_complete", {"passed": ok, "output": checks_output})
             if ok:
                 ensure_required_checks_present(runner, args.repo, builder.pr_number)
+                unresolved_threads = list_unresolved_review_threads(runner, args.repo, builder.pr_number)
+                if unresolved_threads:
+                    thread_ids = tuple(sorted(thread.id for thread in unresolved_threads))
+                    if pr_feedback_rounds > 0 and thread_ids == last_pr_feedback_thread_ids:
+                        resolve_review_threads(runner, args.repo, builder.pr_number, list(thread_ids))
+                        record_event(
+                            conn,
+                            event_log,
+                            run_id,
+                            "review_threads_resolved",
+                            {"pr_number": builder.pr_number, "thread_ids": list(thread_ids), "reason": "unchanged_after_revision"},
+                        )
+                        unresolved_threads = list_unresolved_review_threads(runner, args.repo, builder.pr_number)
+                    if unresolved_threads:
+                        if pr_feedback_rounds >= max_pr_feedback_rounds:
+                            update_run(conn, run_id, phase="blocked", status="blocked")
+                            record_event(
+                                conn,
+                                event_log,
+                                run_id,
+                                "pr_feedback_blocked",
+                                {
+                                    "pr_number": builder.pr_number,
+                                    "threads": [asdict(thread) for thread in unresolved_threads],
+                                },
+                            )
+                            best_effort_issue_comment(
+                                runner,
+                                conn,
+                                event_log,
+                                run_id,
+                                args.repo,
+                                issue.number,
+                                f"Bitterblossom blocked `{run_id}` because PR review threads still require resolution.",
+                                event_type="issue_comment_failed",
+                            )
+                            return 2
+
+                        feedback = summarize_review_threads(unresolved_threads)
+                        update_run(conn, run_id, phase="revising")
+                        record_event(
+                            conn,
+                            event_log,
+                            run_id,
+                            "revision_requested",
+                            {
+                                "feedback": feedback,
+                                "reason": "pr_feedback",
+                                "pr_number": builder.pr_number,
+                                "threads": [asdict(thread) for thread in unresolved_threads],
+                            },
+                        )
+                        last_pr_feedback_thread_ids = thread_ids
+                        builder, builder_payload = run_builder(
+                            runner,
+                            args.repo,
+                            worker,
+                            issue,
+                            run_id,
+                            branch,
+                            pathlib.Path(args.builder_template),
+                            args.builder_timeout,
+                            feedback=feedback,
+                            pr_number=builder.pr_number,
+                            pr_url=builder.pr_url,
+                        )
+                        update_run(
+                            conn,
+                            run_id,
+                            phase="reviewing",
+                            branch=builder.branch,
+                            pr_number=builder.pr_number,
+                            pr_url=builder.pr_url,
+                        )
+                        record_event(conn, event_log, run_id, "builder_revised", builder_payload)
+                        pr_feedback_rounds += 1
+                        continue
                 break
 
             if ci_rounds >= args.max_ci_rounds:
@@ -1212,6 +1516,8 @@ def run_once(args: argparse.Namespace) -> int:
                 pathlib.Path(args.builder_template),
                 args.builder_timeout,
                 feedback=feedback,
+                pr_number=builder.pr_number,
+                pr_url=builder.pr_url,
             )
             update_run(conn, run_id, phase="reviewing", branch=builder.branch, pr_number=builder.pr_number, pr_url=builder.pr_url)
             record_event(conn, event_log, run_id, "builder_revised", builder_payload)
@@ -1409,6 +1715,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         p.add_argument("--max-ci-rounds", type=int, default=1)
         p.add_argument("--review-quorum", type=int, default=2)
         p.add_argument("--max-revision-rounds", type=int, default=1)
+        p.add_argument("--max-pr-feedback-rounds", type=int, default=1)
         p.add_argument("--builder-profile", default="claude-sonnet")
 
     once_p = sub.add_parser("run-once", help="Run one conductor cycle")

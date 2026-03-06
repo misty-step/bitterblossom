@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import pathlib
-import subprocess
 import sys
 
 import pytest
@@ -97,6 +96,38 @@ def test_summarize_reviews_includes_findings() -> None:
     summary = conductor.summarize_reviews(reviews)
     assert "fern: verdict=fix summary=missing test" in summary
     assert "important cmd/bb/status.go:10 add coverage" in summary
+
+
+def test_list_unresolved_review_threads_returns_open_threads() -> None:
+    runner = _RunnerSpy(
+        [
+            """
+            {"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[
+              {"id":"thread-1","isResolved":false,"isOutdated":false,"path":"README.md","line":59,"comments":{"nodes":[
+                {"author":{"login":"gemini-code-assist"},"body":"please keep this copy-pastable","url":"https://example.com/thread-1"}
+              ]}},
+              {"id":"thread-2","isResolved":true,"isOutdated":false,"path":"docs/CONDUCTOR.md","line":12,"comments":{"nodes":[
+                {"author":{"login":"coderabbitai"},"body":"resolved","url":"https://example.com/thread-2"}
+              ]}}
+            ]}}}}}
+            """
+        ]
+    )
+
+    threads = conductor.list_unresolved_review_threads(runner, "misty-step/bitterblossom", 460)
+
+    assert threads == [
+        conductor.ReviewThread(
+            id="thread-1",
+            path="README.md",
+            line=59,
+            author_login="gemini-code-assist",
+            body="please keep this copy-pastable",
+            url="https://example.com/thread-1",
+        )
+    ]
+    assert runner.calls[0][:4] == ["gh", "api", "graphql", "-f"]
+    assert runner.calls[0][-6:] == ["-F", "owner=misty-step", "-F", "repo=bitterblossom", "-F", "number=460"]
 
 
 def test_wait_for_json_artifact_retries_until_available(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -314,16 +345,56 @@ def test_parse_builder_result_rejects_branch_mismatch() -> None:
         )
 
 
+def test_wait_for_pr_checks_succeeds_when_required_checks_pass_even_with_optional_pending(monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = _RunnerSpy(
+        [
+            '{"baseRefName":"master","statusCheckRollup":[{"__typename":"CheckRun","name":"merge-gate","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-03-06T18:00:00Z","completedAt":"2026-03-06T18:00:05Z"},{"__typename":"StatusContext","context":"CodeRabbit","state":"PENDING","startedAt":"2026-03-06T18:00:00Z"}]}',
+            '{"required_status_checks":{"contexts":["merge-gate"]}}',
+        ]
+    )
+
+    monkeypatch.setattr(conductor.time, "sleep", lambda _seconds: None)
+
+    ok, output = conductor.wait_for_pr_checks(runner, "misty-step/bitterblossom", 42, 5)
+
+    assert ok is True
+    assert "merge-gate" in output
+    assert "CodeRabbit" in output
+
+
 def test_wait_for_pr_checks_timeout_returns_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_run(*_args: object, **_kwargs: object) -> object:
-        raise subprocess.TimeoutExpired(cmd=["gh"], timeout=60)
+    runner = _RunnerSpy(
+        [
+            '{"baseRefName":"master","statusCheckRollup":[{"__typename":"CheckRun","name":"merge-gate","status":"IN_PROGRESS","conclusion":"","startedAt":"2026-03-06T18:00:00Z","completedAt":null}]}',
+            '{"required_status_checks":{"contexts":["merge-gate"]}}',
+            '{"baseRefName":"master","statusCheckRollup":[{"__typename":"CheckRun","name":"merge-gate","status":"IN_PROGRESS","conclusion":"","startedAt":"2026-03-06T18:00:00Z","completedAt":null}]}',
+        ]
+    )
+    ticks = iter([0.0, 0.0, 301.0])
 
-    monkeypatch.setattr(conductor.subprocess, "run", fake_run)
+    monkeypatch.setattr(conductor.time, "time", lambda: next(ticks))
+    monkeypatch.setattr(conductor.time, "sleep", lambda _seconds: None)
 
-    ok, output = conductor.wait_for_pr_checks(_RunnerSpy(), "misty-step/bitterblossom", 42, 5)
+    ok, output = conductor.wait_for_pr_checks(runner, "misty-step/bitterblossom", 42, 5)
 
     assert ok is False
     assert "timed out waiting for PR #42 checks" in output
+
+
+def test_wait_for_pr_checks_fails_when_a_check_reports_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = _RunnerSpy(
+        [
+            '{"baseRefName":"master","statusCheckRollup":[{"__typename":"CheckRun","name":"merge-gate","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-03-06T18:00:00Z","completedAt":"2026-03-06T18:00:05Z"}]}',
+            '{"required_status_checks":{"contexts":["merge-gate"]}}',
+        ]
+    )
+
+    monkeypatch.setattr(conductor.time, "sleep", lambda _seconds: None)
+
+    ok, output = conductor.wait_for_pr_checks(runner, "misty-step/bitterblossom", 42, 5)
+
+    assert ok is False
+    assert "FAILURE" in output
 
 
 def test_ensure_required_checks_present_accepts_matching_contexts() -> None:
@@ -416,6 +487,7 @@ def test_run_once_keeps_merged_truth_when_issue_comment_fails(monkeypatch: pytes
     monkeypatch.setattr(conductor, "ensure_pr_ready", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(conductor, "wait_for_pr_checks", lambda *_args, **_kwargs: (True, "green"))
     monkeypatch.setattr(conductor, "ensure_required_checks_present", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(conductor, "list_unresolved_review_threads", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(conductor, "merge_pr", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(conductor, "comment_pr", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(conductor, "comment_issue", lambda *_args, **_kwargs: (_ for _ in ()).throw(conductor.CmdError("comment down")))
@@ -448,6 +520,146 @@ def test_run_once_keeps_merged_truth_when_issue_comment_fails(monkeypatch: pytes
     assert run is not None
     assert run["status"] == "merged"
     assert run["phase"] == "merged"
+
+
+def test_run_once_routes_unresolved_pr_threads_back_to_builder(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
+    issue = conductor.Issue(number=447, title="test", body="body", url="https://example.com/447", labels=["autopilot"])
+    builder = conductor.BuilderResult(
+        status="ready_for_review",
+        branch="factory/447-test-123",
+        pr_number=460,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/460",
+        summary="done",
+        tests=[],
+    )
+    reviews = [
+        conductor.ReviewResult(reviewer="fern", verdict="pass", summary="ok", findings=[]),
+        conductor.ReviewResult(reviewer="sage", verdict="pass", summary="ok", findings=[]),
+        conductor.ReviewResult(reviewer="thorn", verdict="pass", summary="ok", findings=[]),
+    ]
+    feedbacks: list[str | None] = []
+    merge_calls: list[int] = []
+    thread_reads = iter(
+        [
+            [conductor.ReviewThread(id="thread-1", path="README.md", line=59, author_login="gemini-code-assist", body="please keep this copy-pastable", url="https://example.com/thread-1")],
+            [],
+        ]
+    )
+    check_results = iter([(True, "green"), (True, "green")])
+
+    monkeypatch.setattr(conductor, "get_issue", lambda *_args, **_kwargs: issue)
+    monkeypatch.setattr(conductor, "select_worker", lambda *_args, **_kwargs: "noble-blue-serpent")
+
+    def fake_run_builder(*_args: object, **kwargs: object) -> tuple[conductor.BuilderResult, dict[str, object]]:
+        feedbacks.append(kwargs.get("feedback"))  # type: ignore[arg-type]
+        return builder, {"status": "ready_for_review"}
+
+    monkeypatch.setattr(conductor, "run_builder", fake_run_builder)
+    monkeypatch.setattr(conductor, "run_review_round", lambda *_args, **_kwargs: reviews)
+    monkeypatch.setattr(conductor, "ensure_pr_ready", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(conductor, "wait_for_pr_checks", lambda *_args, **_kwargs: next(check_results))
+    monkeypatch.setattr(conductor, "ensure_required_checks_present", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(conductor, "list_unresolved_review_threads", lambda *_args, **_kwargs: next(thread_reads))
+    monkeypatch.setattr(conductor, "resolve_review_threads", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected auto-resolve")))
+    monkeypatch.setattr(conductor, "merge_pr", lambda _runner, _repo, pr_number: merge_calls.append(pr_number))
+    monkeypatch.setattr(conductor, "comment_pr", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(conductor, "comment_issue", lambda *_args, **_kwargs: None)
+
+    args = argparse.Namespace(
+        repo="misty-step/bitterblossom",
+        issue=447,
+        label="autopilot",
+        limit=20,
+        db=str(tmp_path / "conductor.db"),
+        event_log=str(tmp_path / "events.jsonl"),
+        builder_profile="default",
+        worker=["noble-blue-serpent"],
+        builder_template=str(pathlib.Path("scripts/prompts/conductor-builder-template.md")),
+        reviewer=["fern", "sage", "thorn"],
+        reviewer_template=str(pathlib.Path("scripts/prompts/conductor-reviewer-template.md")),
+        builder_timeout=10,
+        review_timeout=10,
+        ci_timeout=10,
+        review_quorum=2,
+        max_revision_rounds=1,
+        max_ci_rounds=1,
+        max_pr_feedback_rounds=1,
+    )
+
+    rc = conductor.run_once(args)
+
+    assert rc == 0
+    assert feedbacks[0] is None
+    assert feedbacks[1] is not None
+    assert "Unresolved PR review threads are blocking merge" in feedbacks[1]
+    assert "README.md:59" in feedbacks[1]
+    assert merge_calls == [460]
+
+
+def test_run_once_resolves_stale_pr_threads_after_revision(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
+    issue = conductor.Issue(number=447, title="test", body="body", url="https://example.com/447", labels=["autopilot"])
+    builder = conductor.BuilderResult(
+        status="ready_for_review",
+        branch="factory/447-test-123",
+        pr_number=460,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/460",
+        summary="done",
+        tests=[],
+    )
+    reviews = [
+        conductor.ReviewResult(reviewer="fern", verdict="pass", summary="ok", findings=[]),
+        conductor.ReviewResult(reviewer="sage", verdict="pass", summary="ok", findings=[]),
+        conductor.ReviewResult(reviewer="thorn", verdict="pass", summary="ok", findings=[]),
+    ]
+    thread = conductor.ReviewThread(
+        id="thread-1",
+        path="README.md",
+        line=59,
+        author_login="gemini-code-assist",
+        body="please keep this copy-pastable",
+        url="https://example.com/thread-1",
+    )
+    thread_reads = iter([[thread], [thread], []])
+    resolved_ids: list[list[str]] = []
+
+    monkeypatch.setattr(conductor, "get_issue", lambda *_args, **_kwargs: issue)
+    monkeypatch.setattr(conductor, "select_worker", lambda *_args, **_kwargs: "noble-blue-serpent")
+    monkeypatch.setattr(conductor, "run_builder", lambda *_args, **_kwargs: (builder, {"status": "ready_for_review"}))
+    monkeypatch.setattr(conductor, "run_review_round", lambda *_args, **_kwargs: reviews)
+    monkeypatch.setattr(conductor, "ensure_pr_ready", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(conductor, "wait_for_pr_checks", lambda *_args, **_kwargs: (True, "green"))
+    monkeypatch.setattr(conductor, "ensure_required_checks_present", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(conductor, "list_unresolved_review_threads", lambda *_args, **_kwargs: next(thread_reads))
+    monkeypatch.setattr(conductor, "resolve_review_threads", lambda _runner, _repo, _pr_number, thread_ids: resolved_ids.append(thread_ids))
+    monkeypatch.setattr(conductor, "merge_pr", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(conductor, "comment_pr", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(conductor, "comment_issue", lambda *_args, **_kwargs: None)
+
+    args = argparse.Namespace(
+        repo="misty-step/bitterblossom",
+        issue=447,
+        label="autopilot",
+        limit=20,
+        db=str(tmp_path / "conductor.db"),
+        event_log=str(tmp_path / "events.jsonl"),
+        builder_profile="default",
+        worker=["noble-blue-serpent"],
+        builder_template=str(pathlib.Path("scripts/prompts/conductor-builder-template.md")),
+        reviewer=["fern", "sage", "thorn"],
+        reviewer_template=str(pathlib.Path("scripts/prompts/conductor-reviewer-template.md")),
+        builder_timeout=10,
+        review_timeout=10,
+        ci_timeout=10,
+        review_quorum=2,
+        max_revision_rounds=1,
+        max_ci_rounds=1,
+        max_pr_feedback_rounds=1,
+    )
+
+    rc = conductor.run_once(args)
+
+    assert rc == 0
+    assert resolved_ids == [["thread-1"]]
 
 
 def test_reconcile_run_marks_merged(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
