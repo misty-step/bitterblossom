@@ -1,4 +1,4 @@
-.PHONY: build test lint clean test-python lint-python
+.PHONY: build test lint clean test-python lint-python conductor-check
 
 BINARY := bb
 BIN_DIR := bin
@@ -25,3 +25,6 @@ test-python:
 
 lint-python:
 	ruff check base/hooks scripts/conductor.py scripts/test_conductor.py
+
+conductor-check:
+	python3 scripts/conductor.py check-env
