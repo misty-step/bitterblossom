@@ -1,74 +1,75 @@
 # Bitterblossom
 
-Declarative sprite factory for provisioning and managing a fleet of [Sprites](https://sprites.dev) running Claude Code.
+Remote conductor and thin transport for a [Sprites](https://sprites.dev) software factory.
 
 ## What This Is
 
-Bitterblossom is how OpenClaw (Kaylee) provisions, manages, experiments with, and iterates on sprite team compositions. Compositions are **hypotheses** — cheap to change, designed to be tested. The goal is continuous experimentation: what configurations are most effective, which specializations matter, what's most productive.
+Bitterblossom has two surfaces:
 
-**v1:** Declarative config + real provisioning + observation journal + experimentation infrastructure.
+- `bb`: thin Go transport for sprite setup, dispatch, status, logs, and recovery
+- `scripts/conductor.py`: remote control plane that leases GitHub issues, dispatches builders, runs a review council, waits for CI, and merges
+
+The design is intentional:
+
+- `bb` stays deterministic and small
+- the conductor owns workflow judgment and durable state
+- GitHub is the human-facing work ledger
+- SQLite + JSONL event logs are the machine-facing run ledger
+
+Read [ADR-002](docs/adr/002-architecture-minimalism.md) for the thin-CLI boundary and [ADR-003](docs/adr/003-conductor-control-plane.md) for the remote conductor design.
 
 ## Architecture
 
-```
-bitterblossom/
-├── cmd/bb/                # Go CLI control plane
-├── internal/              # Core packages (dispatch, watchdog, agent, lifecycle, fleet)
-├── pkg/                   # Shared libraries (fly, events)
-├── base/                  # Shared config all sprites inherit
-│   ├── CLAUDE.md          # Base engineering philosophy (prompt)
-│   ├── settings.json      # Claude Code config (env, hooks)
-│   ├── hooks/             # Safety hooks (git guards, fast-feedback)
-│   ├── skills/            # Portable reference skills
-│   └── commands/          # Workflow commands (commit)
-├── compositions/          # Team hypotheses (YAML)
-│   ├── v1.yaml            # Current active composition
-│   └── archive/           # Previous compositions for comparison
-├── sprites/               # Individual sprite identity + persona
-├── observations/          # Learning journal + experiment results
-│   └── archives/          # Exported data from decommissioned sprites
-├── scripts/               # Legacy shell scripts (deprecated, see docs/MIGRATION.md)
-├── docs/                  # CLI reference, contracts, migration guide
-└── openclaw/              # Integration docs for Kaylee
+```text
+cmd/bb/                  thin sprite transport CLI
+scripts/conductor.py     conductor MVP with SQLite run store
+scripts/prompts/         builder + reviewer prompt templates
+base/                    shared CLAUDE/settings/hooks/skills pushed to sprites
+sprites/                 per-sprite personas
+docs/adr/                architecture decisions
+docs/                    operator docs and contracts
 ```
 
 ## How It Works
 
-1. **Provision:** `bb provision bramble` — creates a sprite, uploads base config + persona, configures Claude Code
-2. **Dispatch:** `bb dispatch bramble "Implement the auth middleware" --execute` — sends work to a sprite
-3. **Monitor:** `bb watchdog` — check fleet health, auto-recover dead sprites
-4. **Fleet:** `bb fleet` — view registered sprites and reconcile fleet state
-5. **Observe:** After tasks complete, log patterns in `observations/OBSERVATIONS.md`
-6. **Iterate:** Edit composition YAML, `bb compose apply --execute`, observe again
-7. **Experiment:** Try different compositions, compare observations, evolve
+1. `bb setup <sprite> --repo owner/repo` bootstraps persistent worker sprites
+2. `scripts/conductor.py run-once|loop` reads GitHub issues and acquires a lease
+3. the conductor dispatches a builder sprite with a branch + artifact contract
+4. the builder opens a PR and writes `builder-result.json`
+5. three reviewer sprites run adversarial reviews and write review artifacts
+6. the conductor requests revisions until quorum passes
+7. the conductor waits for green CI, satisfies merge policy, merges, and records the run
+
+The default human workflow is not "dispatch ad hoc prompts forever." It is "operate the conductor, inspect runs, recover when needed."
 
 ## Quick Start
 
 ```bash
-# 0) Build CLI
-go build -o bb ./cmd/bb
+# 0) Build bb
+make build
 
-# 1) Generate env exports (auto-detects org/app where possible)
-./scripts/onboard.sh --app bitterblossom-dash --write .env.bb
+# 1) Load env
 source .env.bb
+export GITHUB_TOKEN="$(gh auth token)"
+export OPENROUTER_API_KEY="..."
 
-# 2) If FLY_API_TOKEN is empty in .env.bb, create one (fly auth token is deprecated)
-fly tokens create org -o misty-step -n bb-cli -x 720h
-# then paste token into .env.bb and source again
+# 2) Bootstrap one builder + three reviewers
+./bin/bb setup noble-blue-serpent --repo misty-step/bitterblossom
+./bin/bb setup council-fern-20260306 --repo misty-step/bitterblossom
+./bin/bb setup council-sage-20260306 --repo misty-step/bitterblossom
+./bin/bb setup council-thorn-20260306 --repo misty-step/bitterblossom
 
-# 3) Set auth key
-export OPENROUTER_API_KEY="<openrouter-key>"
-
-# 3.1) Required for Cerberus PR review (GitHub Actions)
-printf '%s' "$OPENROUTER_API_KEY" | gh secret set OPENROUTER_API_KEY --repo misty-step/bitterblossom
-
-# 4) Launch a Ralph loop
-./bb provision bramble
-./bb dispatch bramble --repo misty-step/bitterblossom --ralph --file /tmp/task.md --execute
-./bb watchdog --sprite bramble
+# 3) Run one conductor cycle against an issue or backlog label
+python3 scripts/conductor.py run-once \
+  --repo misty-step/bitterblossom \
+  --label autopilot \
+  --worker noble-blue-serpent \
+  --reviewer council-fern-20260306 \
+  --reviewer council-sage-20260306 \
+  --reviewer council-thorn-20260306
 ```
 
-See [docs/CLI-REFERENCE.md](docs/CLI-REFERENCE.md) for the complete command reference.
+See [docs/CLI-REFERENCE.md](docs/CLI-REFERENCE.md) for `bb`, and [docs/CONDUCTOR.md](docs/CONDUCTOR.md) for the conductor loop.
 
 ## Agent Skills
 
@@ -141,56 +142,14 @@ sprite destroy <name>         # Destroy a sprite
 | **Networking** | TCP proxy tunneling, DNS-based network policies |
 | **Exec** | WebSocket-based command execution |
 
-## Fleet Management: bb fleet
+## Operating Model
 
-The `bb fleet` command provides visibility into your registered sprites and supports reconciliation with Fly.io.
-
-### List Fleet Status
-
-```bash
-bb fleet                          # Show all registered sprites with status
-bb fleet --format json            # Machine-readable output
-```
-
-Shows:
-- All sprites from the registry (~/.config/bb/registry.toml)
-- Current status (running, not found, orphaned)
-- Machine IDs and creation time
-- Orphaned sprites (exist in Fly.io but not registered)
-
-### Sync Fleet State
-
-```bash
-bb fleet --sync                   # Create missing sprites from registry
-bb fleet --sync --dry-run         # Preview what would be created
-```
-
-Creates sprites that are registered but don't exist in Fly.io. Uses the standard provisioning flow (base config + persona + bootstrap).
-
-### Prune Orphaned Sprites
-
-```bash
-bb fleet --sync --prune           # Remove sprites not in registry
-bb fleet --sync --prune --dry-run # Preview what would be destroyed
-```
-
-Destroys sprites that exist in Fly.io but aren't in the registry. **Requires confirmation** unless using `--dry-run`. Archives observations before destruction.
-
-### Examples
-
-```bash
-# Check fleet health
-bb fleet
-
-# Reconcile and create missing sprites
-bb fleet --sync
-
-# Full reconciliation with pruning (interactive)
-bb fleet --sync --prune
-
-# Preview destructive operations
-bb fleet --sync --prune --dry-run
-```
+- Workers are persistent sprites with warm repos and toolchains.
+- Runs are tracked by `run_id` in `.bb/conductor.db`.
+- Builder and reviewer artifacts live under `.bb/conductor/<run_id>/`.
+- GitHub issues are the intake queue.
+- GitHub PRs are the merge surface.
+- `bb kill <sprite>` is the recovery path when a sprite gets stuck.
 
 ## Experimentation
 

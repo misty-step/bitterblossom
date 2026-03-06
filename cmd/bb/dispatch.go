@@ -20,6 +20,7 @@ import (
 func newDispatchCmd() *cobra.Command {
 	var (
 		repo            string
+		promptTemplate  string
 		timeout         time.Duration
 		maxIterations   int
 		noOutputTimeout time.Duration
@@ -36,11 +37,12 @@ func newDispatchCmd() *cobra.Command {
 			spriteName := args[0]
 			prompt := args[1]
 
-			return runDispatch(cmd.Context(), spriteName, prompt, repo, maxIterations, timeout, noOutputTimeout, dryRun, prCheckTimeout, waitForComplete)
+			return runDispatch(cmd.Context(), spriteName, prompt, repo, promptTemplate, maxIterations, timeout, noOutputTimeout, dryRun, prCheckTimeout, waitForComplete)
 		},
 	}
 
 	cmd.Flags().StringVar(&repo, "repo", "", "GitHub repo (owner/repo)")
+	cmd.Flags().StringVar(&promptTemplate, "prompt-template", "scripts/ralph-prompt-template.md", "Local prompt template to render before upload")
 	cmd.Flags().DurationVar(&timeout, "timeout", 30*time.Minute, "Max wall-clock time for the ralph loop")
 	cmd.Flags().IntVar(&maxIterations, "max-iterations", 50, "Max ralph loop iterations")
 	cmd.Flags().DurationVar(&noOutputTimeout, "no-output-timeout", defaultSilenceAbortThreshold, "Abort if no output for this duration (0 to disable)")
@@ -52,7 +54,7 @@ func newDispatchCmd() *cobra.Command {
 	return cmd
 }
 
-func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter int, timeout time.Duration, noOutputTimeout time.Duration, dryRun bool, prCheckTimeout time.Duration, waitForComplete bool) error {
+func runDispatch(ctx context.Context, spriteName, prompt, repo, promptTemplate string, maxIter int, timeout time.Duration, noOutputTimeout time.Duration, dryRun bool, prCheckTimeout time.Duration, waitForComplete bool) error {
 	// Validate credentials
 	token, err := spriteToken()
 	if err != nil {
@@ -134,7 +136,7 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo string, maxIter i
 	}
 
 	// 7. Render and upload prompt
-	rendered, err := renderPrompt(prompt, repo, spriteName)
+	rendered, err := renderPrompt(promptTemplate, prompt, repo, spriteName)
 	if err != nil {
 		return fmt.Errorf("render prompt: %w", err)
 	}
@@ -680,11 +682,11 @@ func ensureNoActiveDispatchLoopWithRunner(ctx context.Context, run spriteScriptR
 	}
 }
 
-// renderPrompt reads the local ralph-prompt-template.md and substitutes placeholders.
-func renderPrompt(taskDescription, repo, spriteName string) (string, error) {
-	tmpl, err := os.ReadFile("scripts/ralph-prompt-template.md")
+// renderPrompt reads a local prompt template and substitutes placeholders.
+func renderPrompt(templatePath, taskDescription, repo, spriteName string) (string, error) {
+	tmpl, err := os.ReadFile(templatePath)
 	if err != nil {
-		return "", fmt.Errorf("read template: %w (are you running from the repo root?)", err)
+		return "", fmt.Errorf("read template %q: %w (are you running from the repo root?)", templatePath, err)
 	}
 
 	rendered := string(tmpl)

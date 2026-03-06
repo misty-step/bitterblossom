@@ -1,6 +1,6 @@
 # CLI Reference
 
-`bb` is the Bitterblossom sprite dispatch CLI. Five core commands (+ version).
+`bb` is the Bitterblossom sprite transport CLI. Workflow orchestration lives in [docs/CONDUCTOR.md](./CONDUCTOR.md), not in `bb`.
 
 ## Environment
 

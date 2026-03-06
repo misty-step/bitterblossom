@@ -12,6 +12,7 @@ observations/archives/*/settings.json
 
 # Runtime state files
 .bb-agent/
+.bb/
 
 # OS
 .DS_Store
