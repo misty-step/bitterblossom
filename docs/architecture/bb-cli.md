@@ -17,6 +17,7 @@ flowchart TD
     Root --> Dispatch["dispatch\nrun Ralph loop"]
     Root --> Status["status\nshow fleet or sprite truth"]
     Root --> Logs["logs\nstream remote ralph.log"]
+    Root --> Kill["kill\nterminate active ralph loop"]
 ```
 
 ## Dispatch Pipeline
