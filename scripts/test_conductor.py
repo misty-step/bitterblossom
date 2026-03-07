@@ -286,6 +286,9 @@ def test_build_review_task_wraps_issue_body_as_untrusted() -> None:
     assert '"title": "do stuff"' in prompt
     assert "Fix the thing." in prompt
     assert "Issue: #485 - do stuff" not in prompt
+    fence_start = prompt.index("```json")
+    assert prompt.index("Fix the thing.") > fence_start
+    assert prompt.index('"title": "do stuff"') > fence_start
 
 
 def test_adversarial_issue_body_is_fenced_in_builder_prompt() -> None:
