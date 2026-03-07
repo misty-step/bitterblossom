@@ -1138,18 +1138,58 @@ def ensure_required_checks_present(runner: Runner, repo: str, pr_number: int) ->
 
 
 def trusted_surfaces_pending(payload: dict[str, Any], trusted_surfaces: list[str]) -> list[str]:
-    """Return names of trusted check surfaces that are still in a non-terminal state."""
-    pending: list[str] = []
-    for item in payload.get("statusCheckRollup", []):
-        name = rollup_item_name(item)
-        if not name:
-            continue
-        if not any(pat in name for pat in trusted_surfaces):
-            continue
-        _, terminal, _ = rollup_item_state(item)
-        if not terminal:
-            pending.append(name)
-    return pending
+    """Return trusted surfaces that still block merge.
+
+    A configured trusted surface blocks merge until it is observed at least once.
+    After it is observed, it continues to block while pending or failed.
+    """
+    blocking: list[str] = []
+    rollup = payload.get("statusCheckRollup", [])
+    if not isinstance(rollup, list):
+        return list(trusted_surfaces)
+
+    for pattern in trusted_surfaces:
+        matched = False
+        for item in rollup:
+            if not isinstance(item, dict):
+                continue
+            name = rollup_item_name(item)
+            if not name or pattern not in name:
+                continue
+            matched = True
+            _state, terminal, failed = rollup_item_state(item)
+            if not terminal or failed:
+                blocking.append(name)
+        if not matched:
+            blocking.append(pattern)
+    return blocking
+
+
+def trusted_surface_snapshot(payload: dict[str, Any], trusted_surfaces: list[str]) -> tuple[tuple[str, tuple[tuple[str, str, str, str], ...]], ...]:
+    """Capture the observed state of all watched trusted surfaces.
+
+    The snapshot is keyed by configured pattern so unseen surfaces are represented
+    explicitly instead of disappearing from the comparison set.
+    """
+    rollup = payload.get("statusCheckRollup", [])
+    if not isinstance(rollup, list):
+        return tuple((pattern, ()) for pattern in trusted_surfaces)
+
+    snapshots: list[tuple[str, tuple[tuple[str, str, str, str], ...]]] = []
+    for pattern in trusted_surfaces:
+        matches: list[tuple[str, str, str, str]] = []
+        for item in rollup:
+            if not isinstance(item, dict):
+                continue
+            name = rollup_item_name(item)
+            if not name or pattern not in name:
+                continue
+            state, _terminal, _failed = rollup_item_state(item)
+            started = str(item.get("startedAt") or "")
+            completed = str(item.get("completedAt") or "")
+            matches.append((name, state, started, completed))
+        snapshots.append((pattern, tuple(sorted(matches))))
+    return tuple(snapshots)
 
 
 def wait_for_external_reviews(
@@ -1162,8 +1202,8 @@ def wait_for_external_reviews(
     timeout_minutes: int = 30,
 ) -> tuple[bool, str]:
     """
-    Wait until all trusted external review surfaces have reached terminal states,
-    then enforce a quiet window before declaring them settled.
+    Wait until all trusted external review surfaces have been observed, reached
+    non-failed terminal states, and stayed unchanged for the quiet window.
 
     Returns (True, summary) when all surfaces are settled and quiet.
     Returns (False, reason) if the timeout expires first.
@@ -1174,6 +1214,7 @@ def wait_for_external_reviews(
     deadline = time.time() + timeout_minutes * 60
     quiet_since: float | None = None
     last_payload: dict[str, Any] = {}
+    last_snapshot: tuple[tuple[str, tuple[tuple[str, str, str, str], ...]], ...] | None = None
 
     while time.time() < deadline:
         try:
@@ -1184,6 +1225,11 @@ def wait_for_external_reviews(
         except CmdError:
             time.sleep(10)
             continue
+
+        current_snapshot = trusted_surface_snapshot(last_payload, trusted_surfaces)
+        if current_snapshot != last_snapshot:
+            quiet_since = None
+            last_snapshot = current_snapshot
 
         pending = trusted_surfaces_pending(last_payload, trusted_surfaces)
         if pending:
@@ -1210,6 +1256,122 @@ def wait_for_external_reviews(
         f"timed out waiting for trusted external reviews to settle on PR #{pr_number} "
         f"after {timeout_minutes}m: {pending_str}",
     )
+
+
+def handle_pr_review_threads(
+    runner: Runner,
+    conn: sqlite3.Connection,
+    event_log: pathlib.Path,
+    run_id: str,
+    repo: str,
+    issue_number: int,
+    pr_number: int,
+    *,
+    pr_feedback_rounds: int,
+    max_pr_feedback_rounds: int,
+    last_pr_feedback_thread_ids: tuple[str, ...],
+) -> tuple[str, str | None, tuple[str, ...]]:
+    unresolved_threads = list_unresolved_review_threads(runner, repo, pr_number)
+    if not unresolved_threads:
+        return "clear", None, last_pr_feedback_thread_ids
+
+    trusted_threads = [thread for thread in unresolved_threads if is_trusted_review_author(thread)]
+    untrusted_threads = [thread for thread in unresolved_threads if not is_trusted_review_author(thread)]
+    thread_ids = tuple(sorted(thread.id for thread in trusted_threads))
+
+    if untrusted_threads:
+        update_run(conn, run_id, phase="blocked", status="blocked")
+        record_event(
+            conn,
+            event_log,
+            run_id,
+            "pr_feedback_blocked",
+            {
+                "pr_number": pr_number,
+                "reason": "untrusted_author",
+                "threads": [asdict(thread) for thread in untrusted_threads],
+            },
+        )
+        best_effort_issue_comment(
+            runner,
+            conn,
+            event_log,
+            run_id,
+            repo,
+            issue_number,
+            f"Bitterblossom blocked `{run_id}` because an untrusted PR review thread requires manual maintainer review.",
+            event_type="issue_comment_failed",
+        )
+        return "blocked", None, thread_ids
+
+    if pr_feedback_rounds > 0 and thread_ids == last_pr_feedback_thread_ids:
+        update_run(conn, run_id, phase="blocked", status="blocked")
+        record_event(
+            conn,
+            event_log,
+            run_id,
+            "pr_feedback_blocked",
+            {
+                "pr_number": pr_number,
+                "reason": "unchanged_after_revision",
+                "threads": [asdict(thread) for thread in trusted_threads],
+            },
+        )
+        best_effort_issue_comment(
+            runner,
+            conn,
+            event_log,
+            run_id,
+            repo,
+            issue_number,
+            f"Bitterblossom blocked `{run_id}` because PR review threads remained unresolved after revision and need human confirmation.",
+            event_type="issue_comment_failed",
+        )
+        return "blocked", None, thread_ids
+
+    if trusted_threads:
+        if pr_feedback_rounds >= max_pr_feedback_rounds:
+            update_run(conn, run_id, phase="blocked", status="blocked")
+            record_event(
+                conn,
+                event_log,
+                run_id,
+                "pr_feedback_blocked",
+                {
+                    "pr_number": pr_number,
+                    "reason": "max_rounds",
+                    "threads": [asdict(thread) for thread in trusted_threads],
+                },
+            )
+            best_effort_issue_comment(
+                runner,
+                conn,
+                event_log,
+                run_id,
+                repo,
+                issue_number,
+                f"Bitterblossom blocked `{run_id}` because PR review threads still require resolution.",
+                event_type="issue_comment_failed",
+            )
+            return "blocked", None, thread_ids
+
+        feedback = summarize_review_threads(trusted_threads)
+        update_run(conn, run_id, phase="revising")
+        record_event(
+            conn,
+            event_log,
+            run_id,
+            "revision_requested",
+            {
+                "feedback": feedback,
+                "reason": "pr_feedback",
+                "pr_number": pr_number,
+                "threads": [asdict(thread) for thread in trusted_threads],
+            },
+        )
+        return "revise", feedback, thread_ids
+
+    return "clear", None, thread_ids
 
 
 def wait_for_pr_merged(runner: Runner, repo: str, pr_number: int, *, timeout_seconds: int = 600) -> None:
@@ -1815,102 +1977,105 @@ def run_once(args: argparse.Namespace) -> int:
             record_event(conn, event_log, run_id, "ci_wait_complete", {"passed": ok, "output": checks_output})
             if ok:
                 ensure_required_checks_present(runner, args.repo, builder.pr_number)
-                unresolved_threads = list_unresolved_review_threads(runner, args.repo, builder.pr_number)
-                if unresolved_threads:
-                    trusted_threads = [thread for thread in unresolved_threads if is_trusted_review_author(thread)]
-                    untrusted_threads = [thread for thread in unresolved_threads if not is_trusted_review_author(thread)]
-                    thread_ids = tuple(sorted(thread.id for thread in trusted_threads))
-                    if untrusted_threads:
-                        update_run(conn, run_id, phase="blocked", status="blocked")
-                        record_event(
-                            conn,
-                            event_log,
-                            run_id,
-                            "pr_feedback_blocked",
-                            {
-                                "pr_number": builder.pr_number,
-                                "reason": "untrusted_author",
-                                "threads": [asdict(thread) for thread in untrusted_threads],
-                            },
-                        )
-                        best_effort_issue_comment(
-                            runner,
-                            conn,
-                            event_log,
-                            run_id,
-                            args.repo,
-                            issue.number,
-                            f"Bitterblossom blocked `{run_id}` because an untrusted PR review thread requires manual maintainer review.",
-                            event_type="issue_comment_failed",
-                        )
-                        block_on_release = True
-                        return 2
-                    if pr_feedback_rounds > 0 and thread_ids == last_pr_feedback_thread_ids:
-                        update_run(conn, run_id, phase="blocked", status="blocked")
-                        record_event(
-                            conn,
-                            event_log,
-                            run_id,
-                            "pr_feedback_blocked",
-                            {
-                                "pr_number": builder.pr_number,
-                                "reason": "unchanged_after_revision",
-                                "threads": [asdict(thread) for thread in trusted_threads],
-                            },
-                        )
-                        best_effort_issue_comment(
-                            runner,
-                            conn,
-                            event_log,
-                            run_id,
-                            args.repo,
-                            issue.number,
-                            f"Bitterblossom blocked `{run_id}` because PR review threads remained unresolved after revision and need human confirmation.",
-                            event_type="issue_comment_failed",
-                        )
-                        block_on_release = True
-                        return 2
-                    if trusted_threads:
-                        if pr_feedback_rounds >= max_pr_feedback_rounds:
-                            update_run(conn, run_id, phase="blocked", status="blocked")
-                            record_event(
-                                conn,
-                                event_log,
-                                run_id,
-                                "pr_feedback_blocked",
-                                {
-                                    "pr_number": builder.pr_number,
-                                    "reason": "max_rounds",
-                                    "threads": [asdict(thread) for thread in trusted_threads],
-                                },
-                            )
-                            best_effort_issue_comment(
-                                runner,
-                                conn,
-                                event_log,
-                                run_id,
-                                args.repo,
-                                issue.number,
-                                f"Bitterblossom blocked `{run_id}` because PR review threads still require resolution.",
-                                event_type="issue_comment_failed",
-                            )
-                            block_on_release = True
-                            return 2
+                thread_action, feedback, thread_ids = handle_pr_review_threads(
+                    runner,
+                    conn,
+                    event_log,
+                    run_id,
+                    args.repo,
+                    issue.number,
+                    builder.pr_number,
+                    pr_feedback_rounds=pr_feedback_rounds,
+                    max_pr_feedback_rounds=max_pr_feedback_rounds,
+                    last_pr_feedback_thread_ids=last_pr_feedback_thread_ids,
+                )
+                if thread_action == "blocked":
+                    block_on_release = True
+                    return 2
+                if thread_action == "revise" and feedback is not None:
+                    last_pr_feedback_thread_ids = thread_ids
+                    builder, builder_payload = run_builder(
+                        runner,
+                        args.repo,
+                        worker,
+                        issue,
+                        run_id,
+                        branch,
+                        pathlib.Path(args.builder_template),
+                        args.builder_timeout,
+                        feedback=feedback,
+                        feedback_source="pr_review_threads",
+                        pr_number=builder.pr_number,
+                        pr_url=builder.pr_url,
+                    )
+                    update_run(
+                        conn,
+                        run_id,
+                        phase="reviewing",
+                        branch=builder.branch,
+                        pr_number=builder.pr_number,
+                        pr_url=builder.pr_url,
+                    )
+                    record_event(conn, event_log, run_id, "builder_revised", builder_payload)
+                    pr_feedback_rounds += 1
+                    continue
 
-                        feedback = summarize_review_threads(trusted_threads)
-                        update_run(conn, run_id, phase="revising")
-                        record_event(
+                trusted_surfaces = getattr(args, "trusted_external_surfaces", [])
+                if trusted_surfaces:
+                    external_review_timeout = getattr(args, "external_review_timeout", 30)
+                    external_review_quiet_window = getattr(args, "external_review_quiet_window", 60)
+                    touch_run(
+                        conn,
+                        args.repo,
+                        issue.number,
+                        run_id,
+                        external_review_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
+                    )
+                    ext_ok, ext_output = wait_for_external_reviews(
+                        runner,
+                        args.repo,
+                        builder.pr_number,
+                        trusted_surfaces,
+                        quiet_window_seconds=external_review_quiet_window,
+                        timeout_minutes=external_review_timeout,
+                    )
+                    record_event(
+                        conn,
+                        event_log,
+                        run_id,
+                        "external_review_wait_complete",
+                        {"passed": ext_ok, "output": ext_output},
+                    )
+                    if not ext_ok:
+                        update_run(conn, run_id, phase="blocked", status="blocked")
+                        best_effort_issue_comment(
+                            runner,
                             conn,
                             event_log,
                             run_id,
-                            "revision_requested",
-                            {
-                                "feedback": feedback,
-                                "reason": "pr_feedback",
-                                "pr_number": builder.pr_number,
-                                "threads": [asdict(thread) for thread in trusted_threads],
-                            },
+                            args.repo,
+                            issue.number,
+                            f"Bitterblossom blocked `{run_id}` because trusted external reviews did not settle: {ext_output[:500]}",
+                            event_type="issue_comment_failed",
                         )
+                        block_on_release = True
+                        return 2
+                    thread_action, feedback, thread_ids = handle_pr_review_threads(
+                        runner,
+                        conn,
+                        event_log,
+                        run_id,
+                        args.repo,
+                        issue.number,
+                        builder.pr_number,
+                        pr_feedback_rounds=pr_feedback_rounds,
+                        max_pr_feedback_rounds=max_pr_feedback_rounds,
+                        last_pr_feedback_thread_ids=last_pr_feedback_thread_ids,
+                    )
+                    if thread_action == "blocked":
+                        block_on_release = True
+                        return 2
+                    if thread_action == "revise" and feedback is not None:
                         last_pr_feedback_thread_ids = thread_ids
                         builder, builder_payload = run_builder(
                             runner,
@@ -1937,45 +2102,6 @@ def run_once(args: argparse.Namespace) -> int:
                         record_event(conn, event_log, run_id, "builder_revised", builder_payload)
                         pr_feedback_rounds += 1
                         continue
-
-                trusted_surfaces = getattr(args, "trusted_external_surfaces", [])
-                if trusted_surfaces:
-                    touch_run(
-                        conn,
-                        args.repo,
-                        issue.number,
-                        run_id,
-                        getattr(args, "external_review_timeout", 30) * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
-                    )
-                    ext_ok, ext_output = wait_for_external_reviews(
-                        runner,
-                        args.repo,
-                        builder.pr_number,
-                        trusted_surfaces,
-                        quiet_window_seconds=getattr(args, "external_review_quiet_window", 60),
-                        timeout_minutes=getattr(args, "external_review_timeout", 30),
-                    )
-                    record_event(
-                        conn,
-                        event_log,
-                        run_id,
-                        "external_review_wait_complete",
-                        {"passed": ext_ok, "output": ext_output},
-                    )
-                    if not ext_ok:
-                        update_run(conn, run_id, phase="blocked", status="blocked")
-                        best_effort_issue_comment(
-                            runner,
-                            conn,
-                            event_log,
-                            run_id,
-                            args.repo,
-                            issue.number,
-                            f"Bitterblossom blocked `{run_id}` because trusted external reviews did not settle: {ext_output[:500]}",
-                            event_type="issue_comment_failed",
-                        )
-                        block_on_release = True
-                        return 2
                 break
 
             if ci_rounds >= args.max_ci_rounds:

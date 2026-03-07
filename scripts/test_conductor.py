@@ -1828,6 +1828,26 @@ def test_trusted_surfaces_pending_empty_when_all_settled() -> None:
     assert pending == []
 
 
+def test_trusted_surfaces_pending_blocks_when_configured_surface_not_observed() -> None:
+    pending = conductor.trusted_surfaces_pending({"statusCheckRollup": []}, ["CodeRabbit"])
+    assert pending == ["CodeRabbit"]
+
+
+def test_trusted_surfaces_pending_blocks_failed_trusted_surface() -> None:
+    rollup = [
+        {
+            "__typename": "CheckRun",
+            "name": "Greptile Review",
+            "status": "COMPLETED",
+            "conclusion": "FAILURE",
+            "startedAt": "2026-03-07T00:20:00Z",
+            "completedAt": "2026-03-07T00:21:00Z",
+        },
+    ]
+    pending = conductor.trusted_surfaces_pending({"statusCheckRollup": rollup}, ["Greptile Review"])
+    assert pending == ["Greptile Review"]
+
+
 def test_wait_for_external_reviews_passes_immediately_when_no_surfaces() -> None:
     ok, summary = conductor.wait_for_external_reviews(
         _RunnerSpy(), "misty-step/bitterblossom", 42, [], quiet_window_seconds=60, timeout_minutes=1
@@ -1887,7 +1907,7 @@ def test_wait_for_external_reviews_reports_fetch_failures(monkeypatch: pytest.Mo
 
 
 def test_wait_for_external_reviews_passes_after_surfaces_settle(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Surfaces that start pending but settle within the timeout should pass."""
+    """Surfaces that stay settled through the quiet window should pass."""
     settled_rollup = [
         {"__typename": "StatusContext", "context": "CodeRabbit", "state": "SUCCESS", "startedAt": "2026-03-07T00:20:00Z"},
         {"__typename": "CheckRun", "name": "Greptile Review", "status": "COMPLETED", "conclusion": "SUCCESS", "startedAt": "2026-03-07T00:20:00Z", "completedAt": "2026-03-07T00:21:00Z"},
@@ -1911,6 +1931,50 @@ def test_wait_for_external_reviews_passes_after_surfaces_settle(monkeypatch: pyt
         "misty-step/bitterblossom",
         483,
         ["CodeRabbit", "Greptile Review"],
+        quiet_window_seconds=60,
+        timeout_minutes=5,
+    )
+
+    assert ok is True
+    assert "CodeRabbit" in summary
+
+
+def test_wait_for_external_reviews_resets_quiet_window_when_surface_changes(monkeypatch: pytest.MonkeyPatch) -> None:
+    settled_v1 = [
+        {
+            "__typename": "StatusContext",
+            "context": "CodeRabbit",
+            "state": "SUCCESS",
+            "startedAt": "2026-03-07T00:20:00Z",
+        },
+    ]
+    settled_v2 = [
+        {
+            "__typename": "StatusContext",
+            "context": "CodeRabbit",
+            "state": "SUCCESS",
+            "startedAt": "2026-03-07T00:21:30Z",
+        },
+    ]
+    gh_responses = iter(
+        [
+            {"statusCheckRollup": settled_v1},
+            {"statusCheckRollup": settled_v1},
+            {"statusCheckRollup": settled_v2},
+            {"statusCheckRollup": settled_v2},
+        ]
+    )
+    ticks = iter([0.0, 0.0, 10.0, 70.0, 75.0, 136.0])
+
+    monkeypatch.setattr(conductor.time, "time", lambda: next(ticks))
+    monkeypatch.setattr(conductor.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(conductor, "gh_json", lambda *_args, **_kwargs: next(gh_responses))
+
+    ok, summary = conductor.wait_for_external_reviews(
+        _RunnerSpy(),
+        "misty-step/bitterblossom",
+        483,
+        ["CodeRabbit"],
         quiet_window_seconds=60,
         timeout_minutes=5,
     )
@@ -2036,6 +2100,73 @@ def test_run_once_merges_when_trusted_surfaces_settle(
     rc = conductor.run_once(args)
 
     assert rc == 0
+    assert merge_calls == [485]
+
+
+def test_run_once_rechecks_pr_threads_after_external_reviews_settle(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    issue = conductor.Issue(number=484, title="gov", body="", url="https://example.com/484", labels=["autopilot"])
+    builder = conductor.BuilderResult(
+        status="ready_for_review",
+        branch="factory/484-gov-1",
+        pr_number=485,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/485",
+        summary="done",
+        tests=[],
+    )
+    reviews = [
+        conductor.ReviewResult(reviewer="fern", verdict="pass", summary="ok", findings=[]),
+        conductor.ReviewResult(reviewer="sage", verdict="pass", summary="ok", findings=[]),
+        conductor.ReviewResult(reviewer="thorn", verdict="pass", summary="ok", findings=[]),
+    ]
+    feedbacks: list[str | None] = []
+    merge_calls: list[int] = []
+    trusted_thread = conductor.ReviewThread(
+        id="thread-1",
+        path="scripts/conductor.py",
+        line=2034,
+        author_login="coderabbitai",
+        body="A new trusted thread appeared after external reviews settled.",
+        url="https://example.com/thread-1",
+    )
+    thread_reads = iter([[], [trusted_thread], [], []])
+    check_results = iter([(True, "green"), (True, "green")])
+
+    monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
+    monkeypatch.setattr(conductor, "select_worker", lambda *_a, **_kw: "noble-blue-serpent")
+    monkeypatch.setattr(conductor, "ensure_reviewers_ready", lambda *_a, **_kw: None)
+
+    def fake_run_builder(*_args: object, **kwargs: object) -> tuple[conductor.BuilderResult, dict[str, object]]:
+        feedbacks.append(kwargs.get("feedback"))  # type: ignore[arg-type]
+        return builder, {"status": "ready_for_review"}
+
+    monkeypatch.setattr(conductor, "run_builder", fake_run_builder)
+    monkeypatch.setattr(conductor, "run_review_round", lambda *_a, **_kw: reviews)
+    monkeypatch.setattr(conductor, "ensure_pr_ready", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "wait_for_pr_checks", lambda *_a, **_kw: next(check_results))
+    monkeypatch.setattr(conductor, "ensure_required_checks_present", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "list_unresolved_review_threads", lambda *_a, **_kw: next(thread_reads))
+    monkeypatch.setattr(conductor, "wait_for_external_reviews", lambda *_a, **_kw: (True, "CodeRabbit: SUCCESS"))
+    monkeypatch.setattr(conductor, "merge_pr", lambda _r, _repo, pr_num: merge_calls.append(pr_num))
+    monkeypatch.setattr(conductor, "comment_pr", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "comment_issue", lambda *_a, **_kw: None)
+
+    args = _make_run_once_args(
+        tmp_path,
+        issue_number=484,
+        trusted_external_surfaces=["CodeRabbit"],
+        external_review_quiet_window=0,
+        external_review_timeout=5,
+    )
+
+    rc = conductor.run_once(args)
+
+    assert rc == 0
+    assert feedbacks[0] is None
+    assert feedbacks[1] is not None
+    assert "Unresolved PR review threads are blocking merge" in feedbacks[1]
+    assert "scripts/conductor.py:2034" in feedbacks[1]
     assert merge_calls == [485]
 
 
