@@ -731,6 +731,48 @@ def test_ensure_sprite_ready_raises_when_repair_does_not_restore_readiness(monke
     ]
 
 
+def test_probe_sprite_readiness_wraps_non_timeout_subprocess_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_subprocess_run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise OSError("bb missing")
+
+    monkeypatch.setattr(conductor.subprocess, "run", fake_subprocess_run)
+
+    with pytest.raises(conductor.CmdError, match="readiness probe failed for noble-blue-serpent: bb missing"):
+        conductor.probe_sprite_readiness(
+            "noble-blue-serpent",
+            "misty-step/bitterblossom",
+            pathlib.Path("scripts/prompts/conductor-builder-template.md"),
+        )
+
+
+def test_select_worker_skips_failed_probes_without_auto_repair(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    probe_results = iter(
+        [
+            conductor.CmdError("first worker unavailable"),
+            None,
+        ]
+    )
+
+    def fake_probe(worker: str, _repo: str, _prompt_template: pathlib.Path) -> None:
+        calls.append(worker)
+        result = next(probe_results)
+        if isinstance(result, Exception):
+            raise result
+
+    monkeypatch.setattr(conductor, "probe_sprite_readiness", fake_probe)
+
+    selected = conductor.select_worker(
+        _RunnerSpy(),
+        "misty-step/bitterblossom",
+        ["thorn", "sage"],
+        pathlib.Path("scripts/prompts/conductor-builder-template.md"),
+    )
+
+    assert selected == "sage"
+    assert calls == ["thorn", "sage"]
+
+
 class _RunnerSpy:
     def __init__(self, responses: list[str] | None = None) -> None:
         self.responses = responses or []
@@ -1920,7 +1962,7 @@ def test_wait_for_external_reviews_passes_after_surfaces_settle(monkeypatch: pyt
         {"statusCheckRollup": settled_rollup},   # fourth poll: quiet window elapsed
     ])
 
-    ticks = iter([0.0, 0.0, 10.0, 20.0, 30.0, 95.0])  # 95 > 20 (third poll time) + 60 (quiet window)
+    ticks = iter([0.0, 0.0, 0.0, 10.0, 10.0, 20.0, 20.0, 20.0, 80.0, 80.0, 80.0])
 
     monkeypatch.setattr(conductor.time, "time", lambda: next(ticks))
     monkeypatch.setattr(conductor.time, "sleep", lambda _s: None)
@@ -1981,6 +2023,33 @@ def test_wait_for_external_reviews_resets_quiet_window_when_surface_changes(monk
 
     assert ok is True
     assert "CodeRabbit" in summary
+
+
+def test_wait_for_external_reviews_caps_sleep_at_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    ticks = iter([0.0, 0.0, 4.0, 5.0])
+    sleeps: list[float] = []
+
+    monkeypatch.setattr(conductor.time, "time", lambda: next(ticks))
+    monkeypatch.setattr(conductor.time, "sleep", lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr(
+        conductor,
+        "gh_json",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(conductor.CmdError("github unavailable")),
+    )
+
+    ok, reason = conductor.wait_for_external_reviews(
+        _RunnerSpy(),
+        "misty-step/bitterblossom",
+        483,
+        ["Greptile Review"],
+        quiet_window_seconds=10,
+        timeout_minutes=5 / 60,
+    )
+
+    assert ok is False
+    assert reason.startswith("timed out waiting for trusted external reviews to settle on PR #483 after ")
+    assert reason.endswith("failed to fetch PR status from GitHub")
+    assert sleeps == [1.0]
 
 
 def test_run_once_withholds_merge_while_trusted_surfaces_pending(

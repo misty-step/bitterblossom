@@ -586,6 +586,8 @@ def probe_sprite_readiness(sprite: str, repo: str, prompt_template: pathlib.Path
         )
     except subprocess.TimeoutExpired as exc:
         raise CmdError(f"readiness probe timed out for {sprite}") from exc
+    except (OSError, ValueError) as exc:
+        raise CmdError(f"readiness probe failed for {sprite}: {exc}") from exc
     if proc.returncode == 0:
         return
     output = (proc.stderr or proc.stdout).strip()
@@ -621,15 +623,24 @@ def ensure_reviewers_ready(runner: Runner, repo: str, reviewers: list[str], prom
 
 
 def select_worker(runner: Runner, repo: str, workers: list[str], prompt_template: pathlib.Path) -> str:
+    _ = runner
     last_error = ""
     for worker in workers:
         try:
-            ensure_sprite_ready(runner, worker, repo, prompt_template)
+            probe_sprite_readiness(worker, repo, prompt_template)
         except CmdError as exc:
             last_error = stringify_exc(exc)
             continue
         return worker
     raise CmdError(f"no available worker in {workers}: {last_error}")
+
+
+def sleep_until(deadline: float, seconds: int) -> bool:
+    remaining = deadline - time.time()
+    if remaining <= 0:
+        return False
+    time.sleep(min(seconds, remaining))
+    return True
 
 
 def build_builder_task(
@@ -1223,7 +1234,8 @@ def wait_for_external_reviews(
                 ["pr", "view", str(pr_number), "--repo", repo, "--json", "statusCheckRollup"],
             )
         except CmdError:
-            time.sleep(10)
+            if not sleep_until(deadline, 10):
+                break
             continue
 
         current_snapshot = trusted_surface_snapshot(last_payload, trusted_surfaces)
@@ -1234,7 +1246,8 @@ def wait_for_external_reviews(
         pending = trusted_surfaces_pending(last_payload, trusted_surfaces)
         if pending:
             quiet_since = None
-            time.sleep(10)
+            if not sleep_until(deadline, 10):
+                break
             continue
 
         # All trusted surfaces are in terminal states.
@@ -1244,7 +1257,8 @@ def wait_for_external_reviews(
         if time.time() - quiet_since >= quiet_window_seconds:
             return True, summarize_status_check_rollup(last_payload)
 
-        time.sleep(5)
+        if not sleep_until(deadline, 5):
+            break
 
     if not last_payload:
         pending_str = "failed to fetch PR status from GitHub"
@@ -1990,6 +2004,7 @@ def run_once(args: argparse.Namespace) -> int:
                     last_pr_feedback_thread_ids=last_pr_feedback_thread_ids,
                 )
                 if thread_action == "blocked":
+                    last_pr_feedback_thread_ids = thread_ids
                     block_on_release = True
                     return 2
                 if thread_action == "revise" and feedback is not None:
@@ -2073,6 +2088,7 @@ def run_once(args: argparse.Namespace) -> int:
                         last_pr_feedback_thread_ids=last_pr_feedback_thread_ids,
                     )
                     if thread_action == "blocked":
+                        last_pr_feedback_thread_ids = thread_ids
                         block_on_release = True
                         return 2
                     if thread_action == "revise" and feedback is not None:

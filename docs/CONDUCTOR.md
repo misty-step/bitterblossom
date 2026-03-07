@@ -26,9 +26,12 @@ Remote run artifacts live on the worker sprite under:
 - `${WORKSPACE}/.bb/conductor/<run_id>/review-<sprite>.json`
 
 Before builder or reviewer dispatch, the conductor probes sprite readiness with
-`bb dispatch --dry-run`. If the probe fails, it attempts one forced repair with
-`bb setup <sprite> --repo <owner/repo> --force`, then re-probes. Runs fail fast
-before builder work if the reviewer pool cannot be made dispatch-ready.
+`bb dispatch --dry-run`. Builder selection is probe-only: unhealthy workers are
+skipped immediately so the conductor can fall through the pool quickly. Reviewer
+readiness is stricter: if a probe fails, the conductor attempts one forced
+repair with `bb setup <sprite> --repo <owner/repo> --force`, then re-probes.
+Runs fail fast before builder work if the reviewer pool cannot be made
+dispatch-ready.
 
 ## Environment
 
