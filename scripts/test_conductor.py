@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
+import subprocess
 import sys
 from typing import Any
 
@@ -589,6 +590,7 @@ def test_run_review_round_persists_reviews_as_they_arrive(monkeypatch: pytest.Mo
 
     monkeypatch.setattr(conductor, "dispatch_tasks_until_artifacts", fake_dispatch_many)
     monkeypatch.setattr(conductor, "cleanup_sprite_processes", lambda _runner, sprite: cleaned.append(sprite))
+    monkeypatch.setattr(conductor, "ensure_sprite_ready", lambda *_args, **_kwargs: None)
 
     reviews = conductor.run_review_round(
         _RunnerSpy(),
@@ -663,6 +665,70 @@ def test_run_builder_precleans_worker(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert cleaned == ["noble-blue-serpent"]
     assert builder.pr_number == 465
+
+
+def test_ensure_sprite_ready_repairs_after_failed_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+    probe_results = iter(
+        [
+            subprocess.CompletedProcess(args=["bb"], returncode=1, stdout="", stderr="fatal: not a git repository"),
+            subprocess.CompletedProcess(args=["bb"], returncode=0, stdout="", stderr=""),
+        ]
+    )
+    runner = _RunnerSpy()
+
+    def fake_subprocess_run(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return next(probe_results)
+
+    monkeypatch.setattr(conductor.subprocess, "run", fake_subprocess_run)
+
+    conductor.ensure_sprite_ready(
+        runner,
+        "council-thorn-20260306",
+        "misty-step/bitterblossom",
+        pathlib.Path("scripts/prompts/conductor-reviewer-template.md"),
+    )
+
+    assert calls == [
+        conductor.dispatch_probe_command(
+            "council-thorn-20260306",
+            "misty-step/bitterblossom",
+            pathlib.Path("scripts/prompts/conductor-reviewer-template.md"),
+        ),
+        conductor.dispatch_probe_command(
+            "council-thorn-20260306",
+            "misty-step/bitterblossom",
+            pathlib.Path("scripts/prompts/conductor-reviewer-template.md"),
+        ),
+    ]
+    assert runner.calls == [
+        conductor.repair_sprite_command("council-thorn-20260306", "misty-step/bitterblossom"),
+    ]
+
+
+def test_ensure_sprite_ready_raises_when_repair_does_not_restore_readiness(monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = _RunnerSpy()
+    probe_results = iter(
+        [
+            subprocess.CompletedProcess(args=["bb"], returncode=1, stdout="", stderr="fatal: not a git repository"),
+            subprocess.CompletedProcess(args=["bb"], returncode=1, stdout="", stderr="still broken"),
+        ]
+    )
+
+    monkeypatch.setattr(conductor.subprocess, "run", lambda *args, **kwargs: next(probe_results))
+
+    with pytest.raises(conductor.CmdError, match="auto-heal ran, but readiness still failed"):
+        conductor.ensure_sprite_ready(
+            runner,
+            "council-thorn-20260306",
+            "misty-step/bitterblossom",
+            pathlib.Path("scripts/prompts/conductor-reviewer-template.md"),
+        )
+
+    assert runner.calls == [
+        conductor.repair_sprite_command("council-thorn-20260306", "misty-step/bitterblossom"),
+    ]
 
 
 class _RunnerSpy:
@@ -1041,6 +1107,7 @@ def test_run_once_keeps_merged_truth_when_issue_comment_fails(monkeypatch: pytes
 
     monkeypatch.setattr(conductor, "get_issue", lambda *_args, **_kwargs: issue)
     monkeypatch.setattr(conductor, "select_worker", lambda *_args, **_kwargs: "noble-blue-serpent")
+    monkeypatch.setattr(conductor, "ensure_reviewers_ready", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(conductor, "run_builder", lambda *_args, **_kwargs: (builder, {"status": "ready_for_review"}))
     monkeypatch.setattr(conductor, "run_review_round", lambda *_args, **_kwargs: reviews)
     monkeypatch.setattr(conductor, "ensure_pr_ready", lambda *_args, **_kwargs: None)
@@ -1108,6 +1175,7 @@ def test_run_once_routes_unresolved_pr_threads_back_to_builder(monkeypatch: pyte
 
     monkeypatch.setattr(conductor, "get_issue", lambda *_args, **_kwargs: issue)
     monkeypatch.setattr(conductor, "select_worker", lambda *_args, **_kwargs: "noble-blue-serpent")
+    monkeypatch.setattr(conductor, "ensure_reviewers_ready", lambda *_args, **_kwargs: None)
 
     def fake_run_builder(*_args: object, **kwargs: object) -> tuple[conductor.BuilderResult, dict[str, object]]:
         feedbacks.append(kwargs.get("feedback"))  # type: ignore[arg-type]
@@ -1183,6 +1251,7 @@ def test_run_once_blocks_when_stale_pr_threads_persist_after_revision(monkeypatc
 
     monkeypatch.setattr(conductor, "get_issue", lambda *_args, **_kwargs: issue)
     monkeypatch.setattr(conductor, "select_worker", lambda *_args, **_kwargs: "noble-blue-serpent")
+    monkeypatch.setattr(conductor, "ensure_reviewers_ready", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(conductor, "run_builder", lambda *_args, **_kwargs: (builder, {"status": "ready_for_review"}))
     monkeypatch.setattr(conductor, "run_review_round", lambda *_args, **_kwargs: reviews)
     monkeypatch.setattr(conductor, "ensure_pr_ready", lambda *_args, **_kwargs: None)
@@ -1249,6 +1318,7 @@ def test_run_once_blocks_on_untrusted_pr_thread(monkeypatch: pytest.MonkeyPatch,
 
     monkeypatch.setattr(conductor, "get_issue", lambda *_args, **_kwargs: issue)
     monkeypatch.setattr(conductor, "select_worker", lambda *_args, **_kwargs: "noble-blue-serpent")
+    monkeypatch.setattr(conductor, "ensure_reviewers_ready", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(conductor, "run_builder", lambda *_args, **_kwargs: (builder, {"status": "ready_for_review"}))
     monkeypatch.setattr(conductor, "run_review_round", lambda *_args, **_kwargs: reviews)
     monkeypatch.setattr(conductor, "ensure_pr_ready", lambda *_args, **_kwargs: None)
@@ -1589,6 +1659,7 @@ def test_run_once_blocks_issue_so_next_poll_cannot_re_lease(monkeypatch: pytest.
 
     monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
     monkeypatch.setattr(conductor, "select_worker", lambda *_a, **_kw: "noble-blue-serpent")
+    monkeypatch.setattr(conductor, "ensure_reviewers_ready", lambda *_a, **_kw: None)
     monkeypatch.setattr(conductor, "run_builder", lambda *_a, **_kw: (builder, {"status": "ready_for_review"}))
     monkeypatch.setattr(conductor, "run_review_round", lambda *_a, **_kw: reviews_all_block)
     monkeypatch.setattr(conductor, "comment_pr", lambda *_a, **_kw: None)
@@ -1614,6 +1685,7 @@ def test_run_once_normal_failure_does_release_lease(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
     monkeypatch.setattr(conductor, "comment_issue", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "ensure_reviewers_ready", lambda *_a, **_kw: None)
     monkeypatch.setattr(conductor, "select_worker", lambda *_a, **_kw: (_ for _ in ()).throw(conductor.CmdError("worker gone")))
 
     args = _make_run_once_args(tmp_path)
@@ -1630,6 +1702,40 @@ def test_run_once_normal_failure_does_release_lease(monkeypatch: pytest.MonkeyPa
     assert lease is not None
     assert lease["released_at"] is not None
     assert lease["blocked_at"] is None
+
+
+def test_run_once_fails_before_builder_when_reviewer_pool_is_not_ready(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    issue = conductor.Issue(number=447, title="test", body="body", url="https://example.com/447", labels=["autopilot"])
+
+    monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
+    monkeypatch.setattr(conductor, "comment_issue", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        conductor,
+        "ensure_reviewers_ready",
+        lambda *_a, **_kw: (_ for _ in ()).throw(conductor.CmdError("reviewer pool unhealthy")),
+    )
+    monkeypatch.setattr(
+        conductor,
+        "select_worker",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("builder selection must not run")),
+    )
+    monkeypatch.setattr(
+        conductor,
+        "run_builder",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("builder must not run when reviewers are unready")),
+    )
+
+    args = _make_run_once_args(tmp_path)
+    rc = conductor.run_once(args)
+
+    assert rc == 1
+    conn = conductor.open_db(pathlib.Path(args.db))
+    run = conn.execute("select phase, status from runs limit 1").fetchone()
+    assert run is not None
+    assert run["phase"] == "failed"
+    assert run["status"] == "failed"
 
 
 # --- Trusted external review surface governance tests (issue #484) ---
@@ -1817,6 +1923,7 @@ def test_run_once_withholds_merge_while_trusted_surfaces_pending(
 
     monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
     monkeypatch.setattr(conductor, "select_worker", lambda *_a, **_kw: "noble-blue-serpent")
+    monkeypatch.setattr(conductor, "ensure_reviewers_ready", lambda *_a, **_kw: None)
     monkeypatch.setattr(conductor, "run_builder", lambda *_a, **_kw: (builder, {"status": "ready_for_review"}))
     monkeypatch.setattr(conductor, "run_review_round", lambda *_a, **_kw: reviews)
     monkeypatch.setattr(conductor, "ensure_pr_ready", lambda *_a, **_kw: None)
@@ -1879,6 +1986,7 @@ def test_run_once_merges_when_trusted_surfaces_settle(
 
     monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
     monkeypatch.setattr(conductor, "select_worker", lambda *_a, **_kw: "noble-blue-serpent")
+    monkeypatch.setattr(conductor, "ensure_reviewers_ready", lambda *_a, **_kw: None)
     monkeypatch.setattr(conductor, "run_builder", lambda *_a, **_kw: (builder, {"status": "ready_for_review"}))
     monkeypatch.setattr(conductor, "run_review_round", lambda *_a, **_kw: reviews)
     monkeypatch.setattr(conductor, "ensure_pr_ready", lambda *_a, **_kw: None)
@@ -1930,6 +2038,7 @@ def test_run_once_merges_normally_when_no_trusted_surfaces_configured(
 
     monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
     monkeypatch.setattr(conductor, "select_worker", lambda *_a, **_kw: "noble-blue-serpent")
+    monkeypatch.setattr(conductor, "ensure_reviewers_ready", lambda *_a, **_kw: None)
     monkeypatch.setattr(conductor, "run_builder", lambda *_a, **_kw: (builder, {"status": "ready_for_review"}))
     monkeypatch.setattr(conductor, "run_review_round", lambda *_a, **_kw: reviews)
     monkeypatch.setattr(conductor, "ensure_pr_ready", lambda *_a, **_kw: None)

@@ -555,35 +555,81 @@ def pick_issue(conn: sqlite3.Connection, issues: list[Issue], repo: str) -> Issu
     return sorted(eligible, key=key)[0]
 
 
-def select_worker(runner: Runner, repo: str, workers: list[str], prompt_template: pathlib.Path) -> str:
+def dispatch_probe_command(sprite: str, repo: str, prompt_template: pathlib.Path) -> list[str]:
     bb_bin = str(ROOT / "bin" / "bb")
+    return [
+        bb_bin,
+        "dispatch",
+        sprite,
+        "conductor availability probe",
+        "--repo",
+        repo,
+        "--dry-run",
+        "--prompt-template",
+        str(prompt_template),
+    ]
+
+
+def repair_sprite_command(sprite: str, repo: str) -> list[str]:
+    bb_bin = str(ROOT / "bin" / "bb")
+    return [bb_bin, "setup", sprite, "--repo", repo, "--force"]
+
+
+def probe_sprite_readiness(sprite: str, repo: str, prompt_template: pathlib.Path) -> None:
+    try:
+        proc = subprocess.run(
+            dispatch_probe_command(sprite, repo, prompt_template),
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            timeout=120,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise CmdError(f"readiness probe timed out for {sprite}") from exc
+    if proc.returncode == 0:
+        return
+    output = (proc.stderr or proc.stdout).strip()
+    raise CmdError(output or f"readiness probe failed for {sprite}")
+
+
+def ensure_sprite_ready(runner: Runner, sprite: str, repo: str, prompt_template: pathlib.Path) -> None:
+    try:
+        probe_sprite_readiness(sprite, repo, prompt_template)
+        return
+    except CmdError as exc:
+        initial_error = stringify_exc(exc)
+
+    try:
+        runner.run(repair_sprite_command(sprite, repo), timeout=900)
+    except CmdError as exc:
+        raise CmdError(
+            f"sprite {sprite} failed readiness probe and auto-heal failed: {initial_error}; repair: {stringify_exc(exc)}"
+        ) from exc
+
+    try:
+        probe_sprite_readiness(sprite, repo, prompt_template)
+    except CmdError as exc:
+        raise CmdError(
+            f"sprite {sprite} failed readiness probe, auto-heal ran, but readiness still failed: "
+            f"{initial_error}; reprobe: {stringify_exc(exc)}"
+        ) from exc
+
+
+def ensure_reviewers_ready(runner: Runner, repo: str, reviewers: list[str], prompt_template: pathlib.Path) -> None:
+    for reviewer in reviewers:
+        ensure_sprite_ready(runner, reviewer, repo, prompt_template)
+
+
+def select_worker(runner: Runner, repo: str, workers: list[str], prompt_template: pathlib.Path) -> str:
     last_error = ""
     for worker in workers:
         try:
-            proc = subprocess.run(
-                [
-                    bb_bin,
-                    "dispatch",
-                    worker,
-                    "conductor availability probe",
-                    "--repo",
-                    repo,
-                    "--dry-run",
-                    "--prompt-template",
-                    str(prompt_template),
-                ],
-                cwd=ROOT,
-                text=True,
-                capture_output=True,
-                timeout=120,
-                check=False,
-            )
-        except subprocess.TimeoutExpired:
-            last_error = f"worker probe timed out for {worker}"
+            ensure_sprite_ready(runner, worker, repo, prompt_template)
+        except CmdError as exc:
+            last_error = stringify_exc(exc)
             continue
-        if proc.returncode == 0:
-            return worker
-        last_error = proc.stderr or proc.stdout
+        return worker
     raise CmdError(f"no available worker in {workers}: {last_error}")
 
 
@@ -1535,6 +1581,7 @@ def run_review_round(
             cleanup_sprite_processes(runner, reviewer)
         except CmdError:
             pass
+        ensure_sprite_ready(runner, reviewer, repo, prompt_template)
         review_rel = artifact_rel(run_id, f"review-{reviewer}.json")
         review_prompt = build_review_task(issue, run_id, pr_number, pr_url, review_rel)
         tasks.append(
@@ -1644,6 +1691,8 @@ def run_once(args: argparse.Namespace) -> int:
             f"Bitterblossom lease acquired for `{run_id}`.",
             event_type="issue_comment_failed",
         )
+        ensure_reviewers_ready(runner, args.repo, args.reviewer, pathlib.Path(args.reviewer_template))
+        record_event(conn, event_log, run_id, "reviewers_ready", {"reviewers": args.reviewer})
         worker = select_worker(runner, args.repo, args.worker, pathlib.Path(args.builder_template))
         update_run(conn, run_id, phase="building", builder_sprite=worker)
         touch_run(conn, args.repo, issue.number, run_id, args.builder_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS)

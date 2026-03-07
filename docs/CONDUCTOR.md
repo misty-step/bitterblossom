@@ -25,6 +25,11 @@ Remote run artifacts live on the worker sprite under:
 - `${WORKSPACE}/.bb/conductor/<run_id>/builder-result.json`
 - `${WORKSPACE}/.bb/conductor/<run_id>/review-<sprite>.json`
 
+Before builder or reviewer dispatch, the conductor probes sprite readiness with
+`bb dispatch --dry-run`. If the probe fails, it attempts one forced repair with
+`bb setup <sprite> --repo <owner/repo> --force`, then re-probes. Runs fail fast
+before builder work if the reviewer pool cannot be made dispatch-ready.
+
 ## Environment
 
 Required:
