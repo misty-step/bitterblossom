@@ -1863,6 +1863,29 @@ def test_wait_for_external_reviews_times_out_when_surfaces_stay_pending(monkeypa
     assert "483" in reason
 
 
+def test_wait_for_external_reviews_reports_fetch_failures(monkeypatch: pytest.MonkeyPatch) -> None:
+    ticks = iter([0.0, 0.0, 10.0, 20.0, 61.0])
+    monkeypatch.setattr(conductor.time, "time", lambda: next(ticks))
+    monkeypatch.setattr(conductor.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(
+        conductor,
+        "gh_json",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(conductor.CmdError("github unavailable")),
+    )
+
+    ok, reason = conductor.wait_for_external_reviews(
+        _RunnerSpy(),
+        "misty-step/bitterblossom",
+        483,
+        ["Greptile Review"],
+        quiet_window_seconds=10,
+        timeout_minutes=1,
+    )
+
+    assert ok is False
+    assert "failed to fetch PR status from GitHub" in reason
+
+
 def test_wait_for_external_reviews_passes_after_surfaces_settle(monkeypatch: pytest.MonkeyPatch) -> None:
     """Surfaces that start pending but settle within the timeout should pass."""
     settled_rollup = [

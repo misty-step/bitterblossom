@@ -27,7 +27,6 @@ DEFAULT_LEASE_BUFFER_SECONDS = 300
 SUCCESSFUL_CHECK_CONCLUSIONS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 FAILED_CHECK_CONCLUSIONS = {"FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STALE", "STARTUP_FAILURE"}
 FAILED_STATUS_CONTEXTS = {"FAILURE", "ERROR"}
-PENDING_EXTERNAL_STATES = {"QUEUED", "IN_PROGRESS", "PENDING"}
 TRUSTED_REVIEW_AUTHOR_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
 # GitHub App reviewers show up with weak authorAssociation values, so trust them by login.
 TRUSTED_REVIEW_BOT_LOGINS = {
@@ -1201,8 +1200,11 @@ def wait_for_external_reviews(
 
         time.sleep(5)
 
-    pending = trusted_surfaces_pending(last_payload, trusted_surfaces)
-    pending_str = ", ".join(pending) if pending else "(settled but quiet window did not elapse)"
+    if not last_payload:
+        pending_str = "failed to fetch PR status from GitHub"
+    else:
+        pending = trusted_surfaces_pending(last_payload, trusted_surfaces)
+        pending_str = ", ".join(pending) if pending else "(settled but quiet window did not elapse)"
     return (
         False,
         f"timed out waiting for trusted external reviews to settle on PR #{pr_number} "
