@@ -6,7 +6,7 @@ Purpose: visual, durable architecture artifacts for Bitterblossom.
 
 - [`README.md`](./README.md) — top-level system map, trace bullet, and navigation
 - [`conductor.md`](./conductor.md) — control-plane drill down: run state, governance, worker readiness
-- [`bb-cli.md`](./bb-cli.md) — transport drill down: setup, dispatch, status, logs
+- [`bb-cli.md`](./bb-cli.md) — transport drill down: setup, dispatch, status, logs, kill
 
 ## Read Order
 
