@@ -66,4 +66,4 @@ Run one Bitterblossom issue as a supervised conductor exercise. Treat the run as
 
 ## Scripts
 
-- `scripts/collect_run_snapshot.py` - collect run, event, PR, thread, and issue state into one JSON snapshot
+- `./.claude/skills/factory-audit/scripts/collect_run_snapshot.py` - collect run, event, PR, thread, and issue state into one JSON snapshot

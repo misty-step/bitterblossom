@@ -87,33 +87,7 @@ def graphql_review_threads(repo: str, pr_number: int) -> dict:
     cursor: str | None = None
 
     while True:
-        payload = run_json(
-            [
-                "gh",
-                "api",
-                "graphql",
-                "-f",
-                f"query={oneline_query}",
-                "-F",
-                f"owner={owner}",
-                "-F",
-                f"repo={name}",
-                "-F",
-                f"number={pr_number}",
-                "-F",
-                f"cursor={cursor or ''}",
-            ]
-        )
-        request = payload["data"]["repository"]["pullRequest"]["reviewThreads"]
-        all_nodes.extend(request["nodes"])
-        page_info = request["pageInfo"]
-        if not page_info["hasNextPage"]:
-            break
-        cursor = page_info["endCursor"]
-
-    return {"reviewThreads": {"nodes": all_nodes}}
-    return run_json(
-        [
+        args = [
             "gh",
             "api",
             "graphql",
@@ -126,7 +100,18 @@ def graphql_review_threads(repo: str, pr_number: int) -> dict:
             "-F",
             f"number={pr_number}",
         ]
-    )
+        if cursor is not None:
+            args.extend(["-F", f"cursor={cursor}"])
+
+        payload = run_json(args)
+        request = payload["data"]["repository"]["pullRequest"]["reviewThreads"]
+        all_nodes.extend(request["nodes"])
+        page_info = request["pageInfo"]
+        if not page_info["hasNextPage"]:
+            break
+        cursor = page_info["endCursor"]
+
+    return {"reviewThreads": {"nodes": all_nodes}}
 
 
 def main() -> int:
