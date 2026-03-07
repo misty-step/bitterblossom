@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -51,6 +53,34 @@ def test_run_jsonl_wraps_decode_error(monkeypatch: pytest.MonkeyPatch) -> None:
 
     with pytest.raises(collect_run_snapshot.SnapshotError, match="non-JSONL line"):
         collect_run_snapshot.run_jsonl(["python", "scripts/conductor.py"])
+
+
+def test_run_raises_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        collect_run_snapshot.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            subprocess.TimeoutExpired(cmd=["simulate"], timeout=120),
+        ),
+    )
+
+    with pytest.raises(collect_run_snapshot.SnapshotError, match="command timed out"):
+        collect_run_snapshot.run(["simulate"])
+
+
+def test_run_raises_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        collect_run_snapshot.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="fatal: command failed",
+        ),
+    )
+
+    with pytest.raises(collect_run_snapshot.SnapshotError, match="fatal: command failed"):
+        collect_run_snapshot.run(["simulate"])
 
 
 def test_graphql_review_threads_rejects_graphql_errors(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -111,8 +141,8 @@ def test_graphql_review_threads_paginates(monkeypatch: pytest.MonkeyPatch) -> No
     result = collect_run_snapshot.graphql_review_threads("misty-step/bitterblossom", 491)
 
     assert result == {"reviewThreads": {"nodes": [{"id": "thread-1"}, {"id": "thread-2"}]}}
-    assert not any(part == "cursor=" for part in calls[0])
-    assert any(part == "cursor=cursor-1" for part in calls[1])
+    assert not any(part.startswith("cursor=") for part in calls[0])
+    assert calls[1][-2:] == ["-F", "cursor=cursor-1"]
 
 
 def test_main_builds_snapshot_with_pr(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -160,3 +190,97 @@ def test_main_builds_snapshot_with_pr(monkeypatch: pytest.MonkeyPatch, tmp_path:
     assert payload["pr"]["number"] == 77
     assert payload["review_threads"] == {"reviewThreads": {"nodes": [{"id": "thread-for-77"}]}}
     assert payload["issue"]["number"] == 10
+
+
+def test_main_builds_snapshot_without_pr(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    output = tmp_path / "snapshot.json"
+
+    monkeypatch.setattr(
+        argparse.ArgumentParser,
+        "parse_args",
+        lambda self: argparse.Namespace(
+            run_id="run-1",
+            repo="misty-step/bitterblossom",
+            limit=25,
+            out=str(output),
+        ),
+    )
+    monkeypatch.setattr(
+        collect_run_snapshot,
+        "run_jsonl",
+        lambda argv: (
+            [{"run_id": "run-1", "issue_number": 10}]
+            if "show-runs" in argv
+            else [{"type": "event", "name": "built"}]
+        ),
+    )
+    monkeypatch.setattr(
+        collect_run_snapshot,
+        "run_json",
+        lambda argv: {"number": 10, "title": "Issue", "url": "https://example.com/issues/10"},
+    )
+
+    rc = collect_run_snapshot.main()
+
+    assert rc == 0
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["run"]["run_id"] == "run-1"
+    assert payload["events"][0]["name"] == "built"
+    assert payload["pr"] is None
+    assert payload["review_threads"] is None
+
+
+def test_main_raises_when_run_id_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        collect_run_snapshot,
+        "run_jsonl",
+        lambda _argv: [{"run_id": "run-2", "issue_number": 10}],
+    )
+    monkeypatch.setattr(
+        argparse.ArgumentParser,
+        "parse_args",
+        lambda self: argparse.Namespace(
+            run_id="run-1",
+            repo="misty-step/bitterblossom",
+            limit=25,
+            out=None,
+        ),
+    )
+
+    with pytest.raises(collect_run_snapshot.SnapshotError, match="run not found in show-runs output: run-1"):
+        collect_run_snapshot.main()
+
+
+def test_main_raises_when_issue_number_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        collect_run_snapshot,
+        "run_jsonl",
+        lambda argv: (
+            [{"run_id": "run-1", "pr_number": 77}]
+            if "show-runs" in argv
+            else [{"type": "event", "name": "built"}]
+        ),
+    )
+    monkeypatch.setattr(
+        argparse.ArgumentParser,
+        "parse_args",
+        lambda self: argparse.Namespace(
+            run_id="run-1",
+            repo="misty-step/bitterblossom",
+            limit=25,
+            out=None,
+        ),
+    )
+    monkeypatch.setattr(
+        collect_run_snapshot,
+        "run_json",
+        lambda argv: {"number": 77, "title": "PR", "url": "https://example.com/pr/77"},
+    )
+    monkeypatch.setattr(
+        collect_run_snapshot,
+        "graphql_review_threads",
+        lambda _repo, pr_number: {"reviewThreads": {"nodes": [{"id": "thread-for-missing-issue-number"}]}},
+    )
+
+    with pytest.raises(collect_run_snapshot.SnapshotError, match="run snapshot missing issue_number: run-1"):
+        collect_run_snapshot.main()
