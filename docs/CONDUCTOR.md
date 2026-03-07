@@ -25,6 +25,14 @@ Remote run artifacts live on the worker sprite under:
 - `${WORKSPACE}/.bb/conductor/<run_id>/builder-result.json`
 - `${WORKSPACE}/.bb/conductor/<run_id>/review-<sprite>.json`
 
+Before builder or reviewer dispatch, the conductor probes sprite readiness with
+`bb dispatch --dry-run`. Builder selection is probe-only: unhealthy workers are
+skipped immediately so the conductor can fall through the pool quickly. Reviewer
+readiness is stricter: if a probe fails, the conductor attempts one forced
+repair with `bb setup <sprite> --repo <owner/repo> --force`, then re-probes.
+Runs fail fast before builder work if the reviewer pool cannot be made
+dispatch-ready.
+
 ## Environment
 
 Required:
@@ -66,6 +74,10 @@ python3 scripts/conductor.py run-once \
   --reviewer council-sage-20260306 \
   --reviewer council-thorn-20260306
 ```
+
+`--trusted-external-surface` is exact, not substring-based. Use exact status
+context names such as `CodeRabbit` / `Greptile Review`, or an exact workflow
+name such as `Cerberus` when you want to wait on a whole check-run family.
 
 Run continuously against the backlog:
 

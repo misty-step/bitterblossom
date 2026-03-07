@@ -554,36 +554,92 @@ def pick_issue(conn: sqlite3.Connection, issues: list[Issue], repo: str) -> Issu
     return sorted(eligible, key=key)[0]
 
 
-def select_worker(runner: Runner, repo: str, workers: list[str], prompt_template: pathlib.Path) -> str:
+def dispatch_probe_command(sprite: str, repo: str, prompt_template: pathlib.Path) -> list[str]:
     bb_bin = str(ROOT / "bin" / "bb")
+    return [
+        bb_bin,
+        "dispatch",
+        sprite,
+        "conductor availability probe",
+        "--repo",
+        repo,
+        "--dry-run",
+        "--prompt-template",
+        str(prompt_template),
+    ]
+
+
+def repair_sprite_command(sprite: str, repo: str) -> list[str]:
+    bb_bin = str(ROOT / "bin" / "bb")
+    return [bb_bin, "setup", sprite, "--repo", repo, "--force"]
+
+
+def probe_sprite_readiness(sprite: str, repo: str, prompt_template: pathlib.Path) -> None:
+    try:
+        proc = subprocess.run(
+            dispatch_probe_command(sprite, repo, prompt_template),
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            timeout=120,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise CmdError(f"readiness probe timed out for {sprite}") from exc
+    except (OSError, ValueError) as exc:
+        raise CmdError(f"readiness probe failed for {sprite}: {exc}") from exc
+    if proc.returncode == 0:
+        return
+    output = (proc.stderr or proc.stdout).strip()
+    raise CmdError(output or f"readiness probe failed for {sprite}")
+
+
+def ensure_sprite_ready(runner: Runner, sprite: str, repo: str, prompt_template: pathlib.Path) -> None:
+    try:
+        probe_sprite_readiness(sprite, repo, prompt_template)
+        return
+    except CmdError as exc:
+        initial_error = stringify_exc(exc)
+
+    try:
+        runner.run(repair_sprite_command(sprite, repo), timeout=900)
+    except CmdError as exc:
+        raise CmdError(
+            f"sprite {sprite} failed readiness probe and auto-heal failed: {initial_error}; repair: {stringify_exc(exc)}"
+        ) from exc
+
+    try:
+        probe_sprite_readiness(sprite, repo, prompt_template)
+    except CmdError as exc:
+        raise CmdError(
+            f"sprite {sprite} failed readiness probe, auto-heal ran, but readiness still failed: "
+            f"{initial_error}; reprobe: {stringify_exc(exc)}"
+        ) from exc
+
+
+def ensure_reviewers_ready(runner: Runner, repo: str, reviewers: list[str], prompt_template: pathlib.Path) -> None:
+    for reviewer in reviewers:
+        ensure_sprite_ready(runner, reviewer, repo, prompt_template)
+
+
+def select_worker(repo: str, workers: list[str], prompt_template: pathlib.Path) -> str:
     last_error = ""
     for worker in workers:
         try:
-            proc = subprocess.run(
-                [
-                    bb_bin,
-                    "dispatch",
-                    worker,
-                    "conductor availability probe",
-                    "--repo",
-                    repo,
-                    "--dry-run",
-                    "--prompt-template",
-                    str(prompt_template),
-                ],
-                cwd=ROOT,
-                text=True,
-                capture_output=True,
-                timeout=120,
-                check=False,
-            )
-        except subprocess.TimeoutExpired:
-            last_error = f"worker probe timed out for {worker}"
+            probe_sprite_readiness(worker, repo, prompt_template)
+        except CmdError as exc:
+            last_error = stringify_exc(exc)
             continue
-        if proc.returncode == 0:
-            return worker
-        last_error = proc.stderr or proc.stdout
+        return worker
     raise CmdError(f"no available worker in {workers}: {last_error}")
+
+
+def sleep_until(deadline: float, seconds: int) -> bool:
+    remaining = deadline - time.time()
+    if remaining <= 0:
+        return False
+    time.sleep(min(seconds, remaining))
+    return True
 
 
 def build_builder_task(
@@ -783,6 +839,12 @@ def rollup_item_name(item: dict[str, Any]) -> str:
     return ""
 
 
+def rollup_item_workflow_name(item: dict[str, Any]) -> str:
+    if str(item.get("__typename", "")) != "CheckRun":
+        return ""
+    return str(item.get("workflowName", ""))
+
+
 def rollup_item_state(item: dict[str, Any]) -> tuple[str, bool, bool]:
     typename = str(item.get("__typename", ""))
     if typename == "CheckRun":
@@ -803,6 +865,15 @@ def rollup_item_state(item: dict[str, Any]) -> tuple[str, bool, bool]:
         return state or "PENDING", False, False
 
     return "", False, False
+
+
+def trusted_surface_matches(item: dict[str, Any], trusted_surface: str) -> bool:
+    names = {rollup_item_name(item)}
+    workflow_name = rollup_item_workflow_name(item)
+    if workflow_name:
+        names.add(workflow_name)
+    names.discard("")
+    return trusted_surface in names
 
 
 def summarize_status_check_rollup(payload: dict[str, Any]) -> str:
@@ -1089,6 +1160,251 @@ def ensure_required_checks_present(runner: Runner, repo: str, pr_number: int) ->
         raise CmdError(
             f"required status checks missing for PR #{pr_number} on {base_branch}: {joined}"
         )
+
+
+SurfaceMatchSnapshot = tuple[str, str, str, str, str]
+TrustedSurfaceSnapshot = tuple[tuple[str, tuple[SurfaceMatchSnapshot, ...]], ...]
+
+
+def trusted_surfaces_pending(payload: dict[str, Any], trusted_surfaces: list[str]) -> list[str]:
+    """Return trusted surfaces that still block merge.
+
+    A configured trusted surface blocks merge until it is observed at least once.
+    After it is observed, it continues to block while pending or failed.
+    """
+    blocking: list[str] = []
+    rollup = payload.get("statusCheckRollup", [])
+    if not isinstance(rollup, list):
+        return list(trusted_surfaces)
+
+    for pattern in trusted_surfaces:
+        matched = False
+        for item in rollup:
+            if not isinstance(item, dict):
+                continue
+            if not trusted_surface_matches(item, pattern):
+                continue
+            matched = True
+            name = rollup_item_name(item)
+            _state, terminal, failed = rollup_item_state(item)
+            if not terminal or failed:
+                blocking.append(name)
+        if not matched:
+            blocking.append(pattern)
+    return blocking
+
+
+def trusted_surface_snapshot(payload: dict[str, Any], trusted_surfaces: list[str]) -> TrustedSurfaceSnapshot:
+    """Capture the observed state of all watched trusted surfaces.
+
+    The snapshot is keyed by configured trusted surface so unseen surfaces are represented
+    explicitly instead of disappearing from the comparison set.
+    """
+    rollup = payload.get("statusCheckRollup", [])
+    if not isinstance(rollup, list):
+        return tuple((pattern, ()) for pattern in trusted_surfaces)
+
+    snapshots: list[tuple[str, tuple[SurfaceMatchSnapshot, ...]]] = []
+    for pattern in trusted_surfaces:
+        matches: list[SurfaceMatchSnapshot] = []
+        for item in rollup:
+            if not isinstance(item, dict):
+                continue
+            if not trusted_surface_matches(item, pattern):
+                continue
+            name = rollup_item_name(item)
+            workflow_name = rollup_item_workflow_name(item)
+            state, _terminal, _failed = rollup_item_state(item)
+            started = str(item.get("startedAt") or "")
+            completed = str(item.get("completedAt") or "")
+            matches.append((name, workflow_name, state, started, completed))
+        snapshots.append((pattern, tuple(sorted(matches))))
+    return tuple(snapshots)
+
+
+def wait_for_external_reviews(
+    runner: Runner,
+    repo: str,
+    pr_number: int,
+    trusted_surfaces: list[str],
+    *,
+    quiet_window_seconds: int = 60,
+    timeout_minutes: int = 30,
+) -> tuple[bool, str]:
+    """
+    Wait until all trusted external review surfaces have been observed, reached
+    non-failed terminal states, and stayed unchanged for the quiet window.
+
+    Returns (True, summary) when all surfaces are settled and quiet.
+    Returns (False, reason) if the timeout expires first.
+    """
+    if not trusted_surfaces:
+        return True, ""
+
+    deadline = time.time() + timeout_minutes * 60
+    quiet_since: float | None = None
+    last_payload: dict[str, Any] = {}
+    last_snapshot: TrustedSurfaceSnapshot | None = None
+
+    while time.time() < deadline:
+        try:
+            last_payload = gh_json(
+                runner,
+                ["pr", "view", str(pr_number), "--repo", repo, "--json", "statusCheckRollup"],
+            )
+        except CmdError:
+            if not sleep_until(deadline, 10):
+                break
+            continue
+
+        current_snapshot = trusted_surface_snapshot(last_payload, trusted_surfaces)
+        if current_snapshot != last_snapshot:
+            quiet_since = None
+            last_snapshot = current_snapshot
+
+        pending = trusted_surfaces_pending(last_payload, trusted_surfaces)
+        if pending:
+            quiet_since = None
+            if not sleep_until(deadline, 10):
+                break
+            continue
+
+        # All trusted surfaces are in terminal states.
+        if quiet_since is None:
+            quiet_since = time.time()
+
+        if time.time() - quiet_since >= quiet_window_seconds:
+            return True, summarize_status_check_rollup(last_payload)
+
+        if not sleep_until(deadline, 5):
+            break
+
+    if not last_payload:
+        pending_str = "failed to fetch PR status from GitHub"
+    else:
+        pending = trusted_surfaces_pending(last_payload, trusted_surfaces)
+        pending_str = ", ".join(pending) if pending else "(settled but quiet window did not elapse)"
+    return (
+        False,
+        f"timed out waiting for trusted external reviews to settle on PR #{pr_number} "
+        f"after {timeout_minutes}m: {pending_str}",
+    )
+
+
+def handle_pr_review_threads(
+    runner: Runner,
+    conn: sqlite3.Connection,
+    event_log: pathlib.Path,
+    run_id: str,
+    repo: str,
+    issue_number: int,
+    pr_number: int,
+    *,
+    pr_feedback_rounds: int,
+    max_pr_feedback_rounds: int,
+    last_pr_feedback_thread_ids: tuple[str, ...],
+) -> tuple[str, str | None, tuple[str, ...]]:
+    unresolved_threads = list_unresolved_review_threads(runner, repo, pr_number)
+    if not unresolved_threads:
+        return "clear", None, last_pr_feedback_thread_ids
+
+    trusted_threads = [thread for thread in unresolved_threads if is_trusted_review_author(thread)]
+    untrusted_threads = [thread for thread in unresolved_threads if not is_trusted_review_author(thread)]
+    thread_ids = tuple(sorted(thread.id for thread in trusted_threads))
+
+    if untrusted_threads:
+        update_run(conn, run_id, phase="blocked", status="blocked")
+        record_event(
+            conn,
+            event_log,
+            run_id,
+            "pr_feedback_blocked",
+            {
+                "pr_number": pr_number,
+                "reason": "untrusted_author",
+                "threads": [asdict(thread) for thread in untrusted_threads],
+            },
+        )
+        best_effort_issue_comment(
+            runner,
+            conn,
+            event_log,
+            run_id,
+            repo,
+            issue_number,
+            f"Bitterblossom blocked `{run_id}` because an untrusted PR review thread requires manual maintainer review.",
+            event_type="issue_comment_failed",
+        )
+        return "blocked", None, thread_ids
+
+    if pr_feedback_rounds > 0 and thread_ids == last_pr_feedback_thread_ids:
+        update_run(conn, run_id, phase="blocked", status="blocked")
+        record_event(
+            conn,
+            event_log,
+            run_id,
+            "pr_feedback_blocked",
+            {
+                "pr_number": pr_number,
+                "reason": "unchanged_after_revision",
+                "threads": [asdict(thread) for thread in trusted_threads],
+            },
+        )
+        best_effort_issue_comment(
+            runner,
+            conn,
+            event_log,
+            run_id,
+            repo,
+            issue_number,
+            f"Bitterblossom blocked `{run_id}` because PR review threads remained unresolved after revision and need human confirmation.",
+            event_type="issue_comment_failed",
+        )
+        return "blocked", None, thread_ids
+
+    if trusted_threads:
+        if pr_feedback_rounds >= max_pr_feedback_rounds:
+            update_run(conn, run_id, phase="blocked", status="blocked")
+            record_event(
+                conn,
+                event_log,
+                run_id,
+                "pr_feedback_blocked",
+                {
+                    "pr_number": pr_number,
+                    "reason": "max_rounds",
+                    "threads": [asdict(thread) for thread in trusted_threads],
+                },
+            )
+            best_effort_issue_comment(
+                runner,
+                conn,
+                event_log,
+                run_id,
+                repo,
+                issue_number,
+                f"Bitterblossom blocked `{run_id}` because PR review threads still require resolution.",
+                event_type="issue_comment_failed",
+            )
+            return "blocked", None, thread_ids
+
+        feedback = summarize_review_threads(trusted_threads)
+        update_run(conn, run_id, phase="revising")
+        record_event(
+            conn,
+            event_log,
+            run_id,
+            "revision_requested",
+            {
+                "feedback": feedback,
+                "reason": "pr_feedback",
+                "pr_number": pr_number,
+                "threads": [asdict(thread) for thread in trusted_threads],
+            },
+        )
+        return "revise", feedback, thread_ids
+
+    return "clear", None, thread_ids
 
 
 def wait_for_pr_merged(runner: Runner, repo: str, pr_number: int, *, timeout_seconds: int = 600) -> None:
@@ -1462,6 +1778,7 @@ def run_review_round(
             cleanup_sprite_processes(runner, reviewer)
         except CmdError:
             pass
+        ensure_sprite_ready(runner, reviewer, repo, prompt_template)
         review_rel = artifact_rel(run_id, f"review-{reviewer}.json")
         review_prompt = build_review_task(issue, run_id, pr_number, pr_url, review_rel)
         tasks.append(
@@ -1571,7 +1888,9 @@ def run_once(args: argparse.Namespace) -> int:
             f"Bitterblossom lease acquired for `{run_id}`.",
             event_type="issue_comment_failed",
         )
-        worker = select_worker(runner, args.repo, args.worker, pathlib.Path(args.builder_template))
+        ensure_reviewers_ready(runner, args.repo, args.reviewer, pathlib.Path(args.reviewer_template))
+        record_event(conn, event_log, run_id, "reviewers_ready", {"reviewers": args.reviewer})
+        worker = select_worker(args.repo, args.worker, pathlib.Path(args.builder_template))
         update_run(conn, run_id, phase="building", builder_sprite=worker)
         touch_run(conn, args.repo, issue.number, run_id, args.builder_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS)
         record_event(conn, event_log, run_id, "builder_selected", {"sprite": worker})
@@ -1691,102 +2010,107 @@ def run_once(args: argparse.Namespace) -> int:
             record_event(conn, event_log, run_id, "ci_wait_complete", {"passed": ok, "output": checks_output})
             if ok:
                 ensure_required_checks_present(runner, args.repo, builder.pr_number)
-                unresolved_threads = list_unresolved_review_threads(runner, args.repo, builder.pr_number)
-                if unresolved_threads:
-                    trusted_threads = [thread for thread in unresolved_threads if is_trusted_review_author(thread)]
-                    untrusted_threads = [thread for thread in unresolved_threads if not is_trusted_review_author(thread)]
-                    thread_ids = tuple(sorted(thread.id for thread in trusted_threads))
-                    if untrusted_threads:
-                        update_run(conn, run_id, phase="blocked", status="blocked")
-                        record_event(
-                            conn,
-                            event_log,
-                            run_id,
-                            "pr_feedback_blocked",
-                            {
-                                "pr_number": builder.pr_number,
-                                "reason": "untrusted_author",
-                                "threads": [asdict(thread) for thread in untrusted_threads],
-                            },
-                        )
-                        best_effort_issue_comment(
-                            runner,
-                            conn,
-                            event_log,
-                            run_id,
-                            args.repo,
-                            issue.number,
-                            f"Bitterblossom blocked `{run_id}` because an untrusted PR review thread requires manual maintainer review.",
-                            event_type="issue_comment_failed",
-                        )
-                        block_on_release = True
-                        return 2
-                    if pr_feedback_rounds > 0 and thread_ids == last_pr_feedback_thread_ids:
-                        update_run(conn, run_id, phase="blocked", status="blocked")
-                        record_event(
-                            conn,
-                            event_log,
-                            run_id,
-                            "pr_feedback_blocked",
-                            {
-                                "pr_number": builder.pr_number,
-                                "reason": "unchanged_after_revision",
-                                "threads": [asdict(thread) for thread in trusted_threads],
-                            },
-                        )
-                        best_effort_issue_comment(
-                            runner,
-                            conn,
-                            event_log,
-                            run_id,
-                            args.repo,
-                            issue.number,
-                            f"Bitterblossom blocked `{run_id}` because PR review threads remained unresolved after revision and need human confirmation.",
-                            event_type="issue_comment_failed",
-                        )
-                        block_on_release = True
-                        return 2
-                    if trusted_threads:
-                        if pr_feedback_rounds >= max_pr_feedback_rounds:
-                            update_run(conn, run_id, phase="blocked", status="blocked")
-                            record_event(
-                                conn,
-                                event_log,
-                                run_id,
-                                "pr_feedback_blocked",
-                                {
-                                    "pr_number": builder.pr_number,
-                                    "reason": "max_rounds",
-                                    "threads": [asdict(thread) for thread in trusted_threads],
-                                },
-                            )
-                            best_effort_issue_comment(
-                                runner,
-                                conn,
-                                event_log,
-                                run_id,
-                                args.repo,
-                                issue.number,
-                                f"Bitterblossom blocked `{run_id}` because PR review threads still require resolution.",
-                                event_type="issue_comment_failed",
-                            )
-                            block_on_release = True
-                            return 2
+                thread_action, feedback, thread_ids = handle_pr_review_threads(
+                    runner,
+                    conn,
+                    event_log,
+                    run_id,
+                    args.repo,
+                    issue.number,
+                    builder.pr_number,
+                    pr_feedback_rounds=pr_feedback_rounds,
+                    max_pr_feedback_rounds=max_pr_feedback_rounds,
+                    last_pr_feedback_thread_ids=last_pr_feedback_thread_ids,
+                )
+                if thread_action == "blocked":
+                    last_pr_feedback_thread_ids = thread_ids
+                    block_on_release = True
+                    return 2
+                if thread_action == "revise" and feedback is not None:
+                    last_pr_feedback_thread_ids = thread_ids
+                    builder, builder_payload = run_builder(
+                        runner,
+                        args.repo,
+                        worker,
+                        issue,
+                        run_id,
+                        branch,
+                        pathlib.Path(args.builder_template),
+                        args.builder_timeout,
+                        feedback=feedback,
+                        feedback_source="pr_review_threads",
+                        pr_number=builder.pr_number,
+                        pr_url=builder.pr_url,
+                    )
+                    update_run(
+                        conn,
+                        run_id,
+                        phase="reviewing",
+                        branch=builder.branch,
+                        pr_number=builder.pr_number,
+                        pr_url=builder.pr_url,
+                    )
+                    record_event(conn, event_log, run_id, "builder_revised", builder_payload)
+                    pr_feedback_rounds += 1
+                    continue
 
-                        feedback = summarize_review_threads(trusted_threads)
-                        update_run(conn, run_id, phase="revising")
-                        record_event(
+                trusted_surfaces = args.trusted_external_surfaces
+                if trusted_surfaces:
+                    external_review_timeout = args.external_review_timeout
+                    external_review_quiet_window = args.external_review_quiet_window
+                    touch_run(
+                        conn,
+                        args.repo,
+                        issue.number,
+                        run_id,
+                        external_review_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
+                    )
+                    ext_ok, ext_output = wait_for_external_reviews(
+                        runner,
+                        args.repo,
+                        builder.pr_number,
+                        trusted_surfaces,
+                        quiet_window_seconds=external_review_quiet_window,
+                        timeout_minutes=external_review_timeout,
+                    )
+                    record_event(
+                        conn,
+                        event_log,
+                        run_id,
+                        "external_review_wait_complete",
+                        {"passed": ext_ok, "output": ext_output},
+                    )
+                    if not ext_ok:
+                        update_run(conn, run_id, phase="blocked", status="blocked")
+                        best_effort_issue_comment(
+                            runner,
                             conn,
                             event_log,
                             run_id,
-                            "revision_requested",
-                            {
-                                "feedback": feedback,
-                                "reason": "pr_feedback",
-                                "pr_number": builder.pr_number,
-                                "threads": [asdict(thread) for thread in trusted_threads],
-                            },
+                            args.repo,
+                            issue.number,
+                            f"Bitterblossom blocked `{run_id}` because trusted external reviews did not settle: {ext_output[:500]}",
+                            event_type="issue_comment_failed",
                         )
+                        block_on_release = True
+                        return 2
+                    thread_action, feedback, thread_ids = handle_pr_review_threads(
+                        runner,
+                        conn,
+                        event_log,
+                        run_id,
+                        args.repo,
+                        issue.number,
+                        builder.pr_number,
+                        pr_feedback_rounds=pr_feedback_rounds,
+                        max_pr_feedback_rounds=max_pr_feedback_rounds,
+                        last_pr_feedback_thread_ids=last_pr_feedback_thread_ids,
+                    )
+                    if thread_action == "blocked":
+                        last_pr_feedback_thread_ids = thread_ids
+                        block_on_release = True
+                        return 2
+                    if thread_action == "revise" and feedback is not None:
                         last_pr_feedback_thread_ids = thread_ids
                         builder, builder_payload = run_builder(
                             runner,
@@ -2078,6 +2402,25 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         p.add_argument("--max-revision-rounds", type=int, default=1)
         p.add_argument("--max-pr-feedback-rounds", type=int, default=1)
         p.add_argument("--builder-profile", default="claude-sonnet")
+        p.add_argument(
+            "--trusted-external-surface",
+            dest="trusted_external_surfaces",
+            action="append",
+            default=[],
+            help="Exact trusted surface name or exact workflow name to wait for before merge (repeatable)",
+        )
+        p.add_argument(
+            "--external-review-quiet-window",
+            type=int,
+            default=60,
+            help="Seconds of no activity from trusted surfaces required before merge",
+        )
+        p.add_argument(
+            "--external-review-timeout",
+            type=int,
+            default=30,
+            help="Minutes to wait for trusted external reviews to settle before blocking",
+        )
 
     once_p = sub.add_parser("run-once", help="Run one conductor cycle")
     add_common(once_p)
