@@ -57,9 +57,12 @@ def run_jsonl(argv: list[str]) -> list[dict]:
         if not line:
             continue
         try:
-            items.append(json.loads(line))
+            item = json.loads(line)
         except json.JSONDecodeError as exc:
             raise SnapshotError(f"command produced non-JSONL line: {line[:200]}") from exc
+        if not isinstance(item, dict):
+            raise SnapshotError(f"command produced non-object JSONL line: {line[:200]}")
+        items.append(item)
     return items
 
 

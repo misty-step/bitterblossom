@@ -55,6 +55,13 @@ def test_run_jsonl_wraps_decode_error(monkeypatch: pytest.MonkeyPatch) -> None:
         collect_run_snapshot.run_jsonl(["python", "scripts/conductor.py"])
 
 
+def test_run_jsonl_rejects_non_object_rows(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(collect_run_snapshot, "run", lambda _argv: "[1,2,3]\n")
+
+    with pytest.raises(collect_run_snapshot.SnapshotError, match="non-object JSONL line"):
+        collect_run_snapshot.run_jsonl(["python", "scripts/conductor.py"])
+
+
 def test_run_raises_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         collect_run_snapshot.subprocess,
