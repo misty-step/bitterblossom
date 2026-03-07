@@ -42,11 +42,18 @@ export GITHUB_TOKEN="$(gh auth token)"
 ## Makefile Targets
 
 ```bash
-make test-python   # python3 -m pytest -q base/hooks scripts/test_conductor.py
-make lint-python   # ruff check base/hooks scripts/conductor.py scripts/test_conductor.py
+make test-python      # python3 -m pytest -q base/hooks scripts/test_conductor.py
+make lint-python      # ruff check base/hooks scripts/conductor.py scripts/test_conductor.py
+make conductor-check  # validate coordinator runtime environment
 ```
 
 ## Commands
+
+Validate coordinator environment before starting:
+
+```bash
+python3 scripts/conductor.py check-env
+```
 
 Run one issue:
 
@@ -83,6 +90,126 @@ Reconcile a run after out-of-band merge or manual recovery:
 
 ```bash
 python3 scripts/conductor.py reconcile-run --run-id run-450-1772813415
+```
+
+## Remote Deployment
+
+The conductor is designed to run on a dedicated coordinator sprite, not a developer laptop. Laptops sleep, shells drift, and tokens expire silently. The coordinator is always-on.
+
+### Bootstrap
+
+1. Create the coordinator sprite (one-time):
+
+```bash
+sprite create coordinator
+```
+
+2. Push the repo and toolchain:
+
+```bash
+bb setup coordinator --repo misty-step/bitterblossom
+```
+
+3. Set required secrets on the coordinator:
+
+```bash
+sprite exec coordinator -- bash -lc '
+  echo "export GITHUB_TOKEN=..." >> ~/.bashrc
+  echo "export SPRITE_TOKEN=..." >> ~/.bashrc
+'
+```
+
+4. Validate the environment:
+
+```bash
+sprite exec coordinator -- bash -lc '
+  cd /home/sprite/workspace/bitterblossom
+  make build
+  python3 scripts/conductor.py check-env
+'
+```
+
+All checks must pass before starting the loop.
+
+### Starting the Loop
+
+Run the conductor in the background on the coordinator. Use `nohup` so it survives session disconnects:
+
+```bash
+sprite exec coordinator -- bash -lc '
+  cd /home/sprite/workspace/bitterblossom
+  nohup python3 scripts/conductor.py loop \
+    --repo misty-step/bitterblossom \
+    --label autopilot \
+    --worker noble-blue-serpent \
+    --reviewer council-fern-20260306 \
+    --reviewer council-sage-20260306 \
+    --reviewer council-thorn-20260306 \
+    >> ~/.bb/conductor.log 2>&1 &
+  echo "conductor pid: $!"
+'
+```
+
+The loop polls for eligible issues every 60 seconds (configurable with `--poll-seconds`). Transient failures log and continue; blocked runs (requiring human review) are noted in the issue and the loop moves on.
+
+### Verifying the Loop
+
+Check run state:
+
+```bash
+sprite exec coordinator -- bash -lc '
+  cd /home/sprite/workspace/bitterblossom
+  python3 scripts/conductor.py show-runs --limit 5
+'
+```
+
+Tail conductor logs:
+
+```bash
+sprite exec coordinator -- bash -lc 'tail -f ~/.bb/conductor.log'
+```
+
+### Durable Run State
+
+Every run writes immediately to `.bb/conductor.db` and `.bb/events.jsonl` on the coordinator. State survives loop restarts. If the conductor process dies, restart it — already-completed runs won't be re-processed because their leases have been released.
+
+## Operator Recovery
+
+### Loop Died
+
+Check why:
+
+```bash
+sprite exec coordinator -- bash -lc 'tail -50 ~/.bb/conductor.log'
+```
+
+Fix the root cause, then restart the loop as documented above.
+
+### Stuck or Stale Issue
+
+If a run is stuck (sprite unresponsive, lease expired), the conductor reclaims expired leases automatically on the next poll cycle. To force-release a lease manually:
+
+```bash
+sprite connect coordinator
+cd /home/sprite/workspace/bitterblossom
+sqlite3 .bb/conductor.db \
+  "update leases set released_at = datetime('now') where issue_number = <N> and released_at is null"
+```
+
+### Worker Sprite Stuck
+
+Kill the stuck ralph loop and let the conductor retry:
+
+```bash
+bb kill noble-blue-serpent
+```
+
+### Reconcile After Manual Merge
+
+If a PR was merged out-of-band, sync the run store:
+
+```bash
+python3 scripts/conductor.py reconcile-run --run-id <run-id>
 ```
 
 ## Merge Policy

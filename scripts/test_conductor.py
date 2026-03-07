@@ -1334,3 +1334,116 @@ def test_show_events_prints_recent_events(tmp_path: pathlib.Path, capsys: pytest
     lines = [line for line in capsys.readouterr().out.splitlines() if line]
     assert len(lines) == 2
     assert '"event_type": "builder_selected"' in lines[0]
+
+
+def test_check_env_passes_when_all_present(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_test")
+    monkeypatch.setenv("SPRITE_TOKEN", "sprite_test")
+    monkeypatch.setattr(conductor.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    bb_bin = tmp_path / "bin" / "bb"
+    bb_bin.parent.mkdir()
+    bb_bin.touch()
+    monkeypatch.setattr(conductor, "ROOT", tmp_path)
+
+    rc = conductor.check_env(argparse.Namespace())
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "all checks passed" in out
+
+
+def test_check_env_fails_loudly_on_missing_tokens(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("SPRITE_TOKEN", raising=False)
+    monkeypatch.delenv("FLY_API_TOKEN", raising=False)
+    monkeypatch.setattr(conductor.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    bb_bin = tmp_path / "bin" / "bb"
+    bb_bin.parent.mkdir()
+    bb_bin.touch()
+    monkeypatch.setattr(conductor, "ROOT", tmp_path)
+
+    rc = conductor.check_env(argparse.Namespace())
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "GITHUB_TOKEN" in err
+    assert "SPRITE_TOKEN" in err
+
+
+def test_check_env_fails_when_bb_binary_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_test")
+    monkeypatch.setenv("SPRITE_TOKEN", "sprite_test")
+    monkeypatch.setattr(conductor.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(conductor, "ROOT", tmp_path)  # no bin/bb here
+
+    rc = conductor.check_env(argparse.Namespace())
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "bb" in err
+    assert "make build" in err
+
+
+def test_check_env_fails_when_tools_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_test")
+    monkeypatch.setenv("SPRITE_TOKEN", "sprite_test")
+    monkeypatch.setattr(conductor.shutil, "which", lambda _name: None)
+
+    bb_bin = tmp_path / "bin" / "bb"
+    bb_bin.parent.mkdir()
+    bb_bin.touch()
+    monkeypatch.setattr(conductor, "ROOT", tmp_path)
+
+    rc = conductor.check_env(argparse.Namespace())
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "gh" in err
+    assert "sprite" in err
+
+
+def test_loop_continues_on_failure_in_backlog_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    return_codes = iter([1, 0, 0])
+    calls: list[int] = []
+
+    def fake_run_once(_args: argparse.Namespace) -> int:
+        rc = next(return_codes)
+        calls.append(rc)
+        if len(calls) >= 3:
+            raise StopIteration
+        return rc
+
+    monkeypatch.setattr(conductor, "run_once", fake_run_once)
+    monkeypatch.setattr(conductor.time, "sleep", lambda _s: None)
+
+    args = argparse.Namespace(issue=None, poll_seconds=0)
+
+    with pytest.raises(StopIteration):
+        conductor.loop(args)
+
+    assert calls == [1, 0, 0]
+
+
+def test_loop_returns_rc_when_issue_specified(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(conductor, "run_once", lambda _args: 1)
+    monkeypatch.setattr(conductor.time, "sleep", lambda _s: None)
+
+    args = argparse.Namespace(issue=42, poll_seconds=60)
+    rc = conductor.loop(args)
+
+    assert rc == 1
+
+
+def test_main_prints_clean_error_on_missing_env(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("SPRITE_TOKEN", raising=False)
+    monkeypatch.delenv("FLY_API_TOKEN", raising=False)
+
+    rc = conductor.main(["run-once", "--repo", "misty-step/bitterblossom", "--worker", "w", "--reviewer", "r"])
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "error:" in err
+    assert "GITHUB_TOKEN" in err
