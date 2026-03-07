@@ -111,6 +111,6 @@ sequenceDiagram
 
 [bb CLI Transport](./bb-cli.md) covers:
 
-- setup / dispatch / status / logs responsibilities
+- setup / dispatch / status / logs / kill responsibilities
 - what `dispatch` actually does on-sprite
 - how the conductor uses `bb` as a runtime adapter

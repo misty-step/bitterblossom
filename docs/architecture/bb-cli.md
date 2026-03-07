@@ -8,6 +8,7 @@ Files:
 - [`cmd/bb/dispatch.go`](../../cmd/bb/dispatch.go)
 - [`cmd/bb/status.go`](../../cmd/bb/status.go)
 - [`cmd/bb/logs.go`](../../cmd/bb/logs.go)
+- [`cmd/bb/kill.go`](../../cmd/bb/kill.go)
 
 ## Command Map
 
