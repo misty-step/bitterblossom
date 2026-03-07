@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import json
 from pathlib import Path
@@ -112,3 +113,50 @@ def test_graphql_review_threads_paginates(monkeypatch: pytest.MonkeyPatch) -> No
     assert result == {"reviewThreads": {"nodes": [{"id": "thread-1"}, {"id": "thread-2"}]}}
     assert not any(part == "cursor=" for part in calls[0])
     assert any(part == "cursor=cursor-1" for part in calls[1])
+
+
+def test_main_builds_snapshot_with_pr(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    output = tmp_path / "snapshot.json"
+
+    monkeypatch.setattr(
+        argparse.ArgumentParser,
+        "parse_args",
+        lambda self: argparse.Namespace(
+            run_id="run-1",
+            repo="misty-step/bitterblossom",
+            limit=25,
+            out=str(output),
+        ),
+    )
+    monkeypatch.setattr(
+        collect_run_snapshot,
+        "run_jsonl",
+        lambda argv: (
+            [{"run_id": "run-1", "issue_number": 10, "pr_number": 77}]
+            if "show-runs" in argv
+            else [{"type": "event", "name": "built"}]
+        ),
+    )
+    monkeypatch.setattr(
+        collect_run_snapshot,
+        "run_json",
+        lambda argv: (
+            {"number": 77, "title": "PR", "url": "https://example.com/pr/77"}
+            if argv[:3] == ["gh", "pr", "view"]
+            else {"number": 10, "title": "Issue", "url": "https://example.com/issues/10"}
+        ),
+    )
+    monkeypatch.setattr(
+        collect_run_snapshot,
+        "graphql_review_threads",
+        lambda _repo, pr_number: {"reviewThreads": {"nodes": [{"id": f"thread-for-{pr_number}"}]}},
+    )
+
+    rc = collect_run_snapshot.main()
+
+    assert rc == 0
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["run"]["pr_number"] == 77
+    assert payload["pr"]["number"] == 77
+    assert payload["review_threads"] == {"reviewThreads": {"nodes": [{"id": "thread-for-77"}]}}
+    assert payload["issue"]["number"] == 10
