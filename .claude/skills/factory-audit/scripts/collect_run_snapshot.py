@@ -64,6 +64,8 @@ def run_jsonl(argv: list[str]) -> list[dict]:
 
 
 def graphql_review_threads(repo: str, pr_number: int) -> dict:
+    if "/" not in repo:
+        raise SnapshotError(f"--repo must be in 'owner/name' format, got: {repo!r}")
     owner, name = repo.split("/", 1)
     query = """
     query($owner:String!, $repo:String!, $number:Int!, $cursor:String){

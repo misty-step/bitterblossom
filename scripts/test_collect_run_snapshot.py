@@ -94,6 +94,14 @@ def test_graphql_review_threads_rejects_graphql_errors(monkeypatch: pytest.Monke
         collect_run_snapshot.graphql_review_threads("misty-step/bitterblossom", 491)
 
 
+def test_graphql_review_threads_rejects_invalid_repo_format() -> None:
+    with pytest.raises(
+        collect_run_snapshot.SnapshotError,
+        match="--repo must be in 'owner/name' format",
+    ):
+        collect_run_snapshot.graphql_review_threads("misty-step", 491)
+
+
 def test_graphql_review_threads_rejects_missing_data(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(collect_run_snapshot, "run_json", lambda _argv: {"data": None})
 
