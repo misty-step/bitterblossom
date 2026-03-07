@@ -27,6 +27,12 @@ Bitterblossom is the conductor for a single-repo software factory: it routes Git
 - **Key Issues:** [#470](https://github.com/misty-step/bitterblossom/issues/470), [#468](https://github.com/misty-step/bitterblossom/issues/468), [#469](https://github.com/misty-step/bitterblossom/issues/469), [#98](https://github.com/misty-step/bitterblossom/issues/98), [#102](https://github.com/misty-step/bitterblossom/issues/102)
 - **Theme:** Always-on control plane, isolated execution, truthful observability, and proof of the full trace bullet.
 
+## Architecture Artifacts
+
+- [Architecture Overview](docs/architecture/README.md)
+- [Conductor Drill Down](docs/architecture/conductor.md)
+- [bb CLI Transport Drill Down](docs/architecture/bb-cli.md)
+
 ## Quality Bar
 
 - [ ] Every issue the conductor can lease is runnable by sprites without clarification loops.
