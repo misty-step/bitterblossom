@@ -1,0 +1,471 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bitterblossom Groom Dashboard - 2026-03-06</title>
+  <style>
+    :root {
+      --bg: #f5f1e8;
+      --panel: #fffaf0;
+      --ink: #1f1f1a;
+      --muted: #6b665c;
+      --line: #d8cfbf;
+      --p1: #b54708;
+      --p2: #b7791f;
+      --p3: #2f855a;
+      --accent: #0f766e;
+      --accent-soft: #dff5f2;
+      --now: #7f1d1d;
+      --next: #9a3412;
+      --later: #365314;
+      --shadow: 0 14px 40px rgba(31, 31, 26, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, #fffdf6 0, transparent 28%),
+        radial-gradient(circle at bottom right, #eef7f5 0, transparent 35%),
+        var(--bg);
+    }
+
+    .wrap {
+      width: min(1180px, calc(100vw - 48px));
+      margin: 32px auto 48px;
+    }
+
+    .hero,
+    .panel {
+      background: color-mix(in srgb, var(--panel) 92%, white 8%);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+    }
+
+    .hero {
+      padding: 28px 30px 24px;
+      margin-bottom: 18px;
+    }
+
+    .eyebrow {
+      margin: 0 0 10px;
+      font-size: 12px;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(34px, 5vw, 54px);
+      line-height: 0.95;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      max-width: 10ch;
+    }
+
+    .hero p {
+      margin: 16px 0 0;
+      max-width: 70ch;
+      font-size: 18px;
+      line-height: 1.5;
+      color: var(--muted);
+    }
+
+    .grid {
+      display: grid;
+      gap: 18px;
+    }
+
+    .metrics {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      margin-bottom: 18px;
+    }
+
+    .metric {
+      padding: 18px 20px;
+      min-height: 124px;
+    }
+
+    .metric h2 {
+      margin: 0 0 6px;
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .metric .value {
+      font-size: 46px;
+      line-height: 1;
+      font-weight: 700;
+      letter-spacing: -0.04em;
+    }
+
+    .metric .note {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.4;
+    }
+
+    .value.p1 { color: var(--p1); }
+    .value.p2 { color: var(--p2); }
+    .value.p3 { color: var(--p3); }
+    .value.ready { color: var(--accent); }
+
+    .two-up {
+      grid-template-columns: 1.05fr 0.95fr;
+      margin-bottom: 18px;
+    }
+
+    .panel {
+      padding: 22px 24px 24px;
+    }
+
+    .panel h2 {
+      margin: 0 0 6px;
+      font-size: 24px;
+      line-height: 1.05;
+      letter-spacing: -0.03em;
+    }
+
+    .panel .sub {
+      margin: 0 0 18px;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.5;
+    }
+
+    .theme-list,
+    .sequence,
+    .issue-list,
+    .notes {
+      display: grid;
+      gap: 12px;
+    }
+
+    .theme {
+      padding: 14px 16px;
+      border-radius: 16px;
+      border: 1px solid var(--line);
+      background: #fffdfa;
+    }
+
+    .theme strong {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 16px;
+    }
+
+    .theme span,
+    .sequence div,
+    .notes div {
+      color: var(--muted);
+      line-height: 1.45;
+      font-size: 14px;
+    }
+
+    .graph {
+      display: grid;
+      gap: 14px;
+    }
+
+    .graph-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .node {
+      padding: 10px 14px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: #fffdfa;
+      font-size: 14px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    .arrow {
+      color: var(--muted);
+      font-weight: 700;
+      font-size: 16px;
+    }
+
+    .milestones {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      margin-bottom: 18px;
+    }
+
+    .milestone {
+      padding: 20px;
+    }
+
+    .milestone h3 {
+      margin: 0 0 12px;
+      font-size: 20px;
+      line-height: 1.1;
+    }
+
+    .milestone.now h3 { color: var(--now); }
+    .milestone.next h3 { color: var(--next); }
+    .milestone.later h3 { color: var(--later); }
+
+    .issue {
+      padding: 10px 0;
+      border-top: 1px solid var(--line);
+    }
+
+    .issue:first-child { border-top: 0; padding-top: 0; }
+
+    .issue .title {
+      font-size: 15px;
+      line-height: 1.35;
+      font-weight: 600;
+    }
+
+    .issue .title a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    .issue .title a:hover {
+      text-decoration: underline;
+    }
+
+    .issue .meta {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.4;
+    }
+
+    .footer {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+      padding: 2px 4px;
+    }
+
+    @media (max-width: 960px) {
+      .metrics,
+      .two-up,
+      .milestones {
+        grid-template-columns: 1fr;
+      }
+
+      .wrap {
+        width: min(100vw - 24px, 1180px);
+        margin: 16px auto 28px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="hero">
+      <p class="eyebrow">Bitterblossom Grooming Snapshot · 2026-03-06</p>
+      <h1>Backlog reset around the conductor.</h1>
+      <p>
+        The backlog is now pointed at one goal: Bitterblossom clears Bitterblossom.
+        Every open issue is labeled `autopilot`, has a milestone, carries an executable
+        issue contract, and maps back to the accepted control-plane architecture.
+      </p>
+    </section>
+
+    <section class="grid metrics">
+      <article class="panel metric">
+        <h2>Open issues</h2>
+        <div class="value ready">12</div>
+        <div class="note">No stale registry-era work left open. All open issues pass a basic agent-contract check.</div>
+      </article>
+      <article class="panel metric">
+        <h2>P1 foundation</h2>
+        <div class="value p1">6</div>
+        <div class="note">Reliability, isolation, observability, remote deployment, acceptance proof.</div>
+      </article>
+      <article class="panel metric">
+        <h2>P2 expansion</h2>
+        <div class="value p2">4</div>
+        <div class="note">Routing quality, Sentry intake, experiments, tune-repo refresh.</div>
+      </article>
+      <article class="panel metric">
+        <h2>P3 polish</h2>
+        <div class="value p3">2</div>
+        <div class="note">Direct dispatch hardening remains, but no longer drives the architecture.</div>
+      </article>
+    </section>
+
+    <section class="grid two-up">
+      <article class="panel">
+        <h2>Strategic themes</h2>
+        <p class="sub">The backlog condenses into five compounding tracks. The first three are the actual MVP spine.</p>
+        <div class="theme-list">
+          <div class="theme">
+            <strong>Remote control-plane reliability</strong>
+            <span>Run the conductor away from the operator shell and make lease ownership self-healing.</span>
+          </div>
+          <div class="theme">
+            <strong>Isolated execution + truthful observability</strong>
+            <span>Per-run worktrees and run-centric status surfaces keep state explainable and recoverable.</span>
+          </div>
+          <div class="theme">
+            <strong>Intake and routing quality</strong>
+            <span>Only machine-runnable issues enter the factory; ranking uses semantic reasoning, not brittle heuristics.</span>
+          </div>
+          <div class="theme">
+            <strong>Experimental breadth</strong>
+            <span>Parallel variants stay explicit and measurable rather than becoming default chaos.</span>
+          </div>
+          <div class="theme">
+            <strong>Direct dispatch hardening</strong>
+            <span>Legacy `bb dispatch` improvements stay in the backlog but no longer define system direction.</span>
+          </div>
+        </div>
+      </article>
+
+      <article class="panel">
+        <h2>Theme graph</h2>
+        <p class="sub">Dependency shape after the reset.</p>
+        <div class="graph">
+          <div class="graph-row">
+            <span class="node">Remote Control Plane</span>
+            <span class="arrow">→</span>
+            <span class="node">Run Isolation</span>
+            <span class="arrow">→</span>
+            <span class="node">Parallel Variants</span>
+          </div>
+          <div class="graph-row">
+            <span class="node">Remote Control Plane</span>
+            <span class="arrow">→</span>
+            <span class="node">Run Observability</span>
+            <span class="arrow">→</span>
+            <span class="node">Trace Bullet Acceptance</span>
+          </div>
+          <div class="graph-row">
+            <span class="node">Issue Contracts</span>
+            <span class="arrow">→</span>
+            <span class="node">Semantic Routing</span>
+            <span class="arrow">→</span>
+            <span class="node">Lease + Run</span>
+          </div>
+          <div class="graph-row">
+            <span class="node">Issue Contracts</span>
+            <span class="arrow">→</span>
+            <span class="node">Sentry Intake</span>
+          </div>
+          <div class="graph-row">
+            <span class="node">Dispatch Hardening</span>
+            <span class="arrow">→</span>
+            <span class="node">Operator Quality</span>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <section class="grid milestones">
+      <article class="panel milestone now">
+        <h3>Now · current sprint</h3>
+        <div class="issue-list">
+          <div class="issue">
+            <div class="title"><a href="https://github.com/misty-step/bitterblossom/issues/470">#470</a> Deploy the conductor as an always-on remote control plane</div>
+            <div class="meta">P1 · task · effort/l</div>
+          </div>
+          <div class="issue">
+            <div class="title"><a href="https://github.com/misty-step/bitterblossom/issues/468">#468</a> Add lease heartbeats and stale-lease reclaim to the conductor</div>
+            <div class="meta">P1 · task · effort/m</div>
+          </div>
+          <div class="issue">
+            <div class="title"><a href="https://github.com/misty-step/bitterblossom/issues/469">#469</a> Isolate builder and reviewer runs with per-run git worktrees</div>
+            <div class="meta">P1 · task · effort/l</div>
+          </div>
+          <div class="issue">
+            <div class="title"><a href="https://github.com/misty-step/bitterblossom/issues/98">#98</a> Observability: add run-centric status and event surfaces</div>
+            <div class="meta">P1 · feature · effort/m</div>
+          </div>
+          <div class="issue">
+            <div class="title"><a href="https://github.com/misty-step/bitterblossom/issues/102">#102</a> Testing: prove the full single-repo factory trace bullet end-to-end</div>
+            <div class="meta">P1 · task · effort/l</div>
+          </div>
+        </div>
+      </article>
+
+      <article class="panel milestone next">
+        <h3>Next · up next</h3>
+        <div class="issue-list">
+          <div class="issue">
+            <div class="title"><a href="https://github.com/misty-step/bitterblossom/issues/474">#474</a> Route issues semantically and enforce autopilot-ready issue contracts</div>
+            <div class="meta">P1 · feature · effort/l</div>
+          </div>
+          <div class="issue">
+            <div class="title"><a href="https://github.com/misty-step/bitterblossom/issues/471">#471</a> Plumb Sentry incidents into GitHub issues for conductor intake</div>
+            <div class="meta">P2 · feature · effort/m</div>
+          </div>
+          <div class="issue">
+            <div class="title"><a href="https://github.com/misty-step/bitterblossom/issues/472">#472</a> Run parallel implementation variants and log experiment outcomes</div>
+            <div class="meta">P2 · feature · effort/l</div>
+          </div>
+          <div class="issue">
+            <div class="title"><a href="https://github.com/misty-step/bitterblossom/issues/475">#475</a> Refresh tune-repo context artifacts for the conductor architecture</div>
+            <div class="meta">P2 · task · effort/s</div>
+          </div>
+          <div class="issue">
+            <div class="title"><a href="https://github.com/misty-step/bitterblossom/issues/285">#285</a> Dispatch: succeed when work is verifiably done even if Ralph misses TASK_COMPLETE</div>
+            <div class="meta">P2 · bug · effort/m</div>
+          </div>
+        </div>
+      </article>
+
+      <article class="panel milestone later">
+        <h3>Later · backlog</h3>
+        <div class="issue-list">
+          <div class="issue">
+            <div class="title"><a href="https://github.com/misty-step/bitterblossom/issues/398">#398</a> Dispatch: normalize repeated off-rails errors before loop detection</div>
+            <div class="meta">P3 · task · effort/s</div>
+          </div>
+          <div class="issue">
+            <div class="title"><a href="https://github.com/misty-step/bitterblossom/issues/432">#432</a> Refactor: centralize default-branch detection for dispatch sync and verification</div>
+            <div class="meta">P3 · refactor · effort/s</div>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <section class="grid two-up">
+      <article class="panel">
+        <h2>Execution sequence</h2>
+        <p class="sub">If Bitterblossom is going to clear the backlog itself, this is the right order.</p>
+        <div class="sequence">
+          <div><strong>1.</strong> Stand up the remote conductor and make leases recoverable.</div>
+          <div><strong>2.</strong> Isolate every run and expose truthful run events.</div>
+          <div><strong>3.</strong> Prove the trace bullet end-to-end on a target repo.</div>
+          <div><strong>4.</strong> Tighten intake and semantic routing so only runnable issues flow in.</div>
+          <div><strong>5.</strong> Expand with Sentry intake and parallel variants after the core loop is trustworthy.</div>
+        </div>
+      </article>
+
+      <article class="panel">
+        <h2>Repo notes</h2>
+        <p class="sub">Local context changes written during grooming.</p>
+        <div class="notes">
+          <div><strong>Added</strong> `project.md` to carry the new conductor-first product context.</div>
+          <div><strong>Added</strong> `.groom/plan-2026-03-06.md` as the backlog reset record.</div>
+          <div><strong>Removed</strong> `vision.md` because it described the wrong architecture.</div>
+          <div><strong>Flagged</strong> tune-repo context artifacts as stale or missing, then turned that into issue <a href="https://github.com/misty-step/bitterblossom/issues/475">#475</a>.</div>
+        </div>
+      </article>
+    </section>
+
+    <p class="footer">
+      Generated during `/groom`. Canonical product context: `project.md`. Supporting references: GitHub issue backlog, ADR-003, and `docs/CONDUCTOR.md`.
+    </p>
+  </main>
+</body>
+</html>
