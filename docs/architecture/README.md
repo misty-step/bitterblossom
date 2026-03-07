@@ -9,9 +9,10 @@ This stack is intentionally small. The overview explains the full software-facto
 
 ## Map
 
-- [System Overview](./README.md)
+- [System Overview](#system-overview)
 - [Conductor](./conductor.md)
 - [bb CLI Transport](./bb-cli.md)
+- [Architecture Glance](./glance.md)
 
 ## System Overview
 

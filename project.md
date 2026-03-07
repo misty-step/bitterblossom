@@ -30,6 +30,7 @@ Bitterblossom is the conductor for a single-repo software factory: it routes Git
 ## Architecture Artifacts
 
 - [Architecture Overview](docs/architecture/README.md)
+- [Architecture Glance](docs/architecture/glance.md)
 - [Conductor Drill Down](docs/architecture/conductor.md)
 - [bb CLI Transport Drill Down](docs/architecture/bb-cli.md)
 

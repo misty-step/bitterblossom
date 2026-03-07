@@ -2,7 +2,7 @@
 
 The conductor is the workflow brain. It decides when work starts, when it is blocked, when it needs revision, and when it is safe to merge.
 
-File: [`scripts/conductor.py`](/Users/phaedrus/Development/bitterblossom/scripts/conductor.py)
+File: [`scripts/conductor.py`](../../scripts/conductor.py)
 
 ## Module Shape
 

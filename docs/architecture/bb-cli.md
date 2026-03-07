@@ -4,10 +4,10 @@
 
 Files:
 
-- [`cmd/bb/setup.go`](/Users/phaedrus/Development/bitterblossom/cmd/bb/setup.go)
-- [`cmd/bb/dispatch.go`](/Users/phaedrus/Development/bitterblossom/cmd/bb/dispatch.go)
-- [`cmd/bb/status.go`](/Users/phaedrus/Development/bitterblossom/cmd/bb/status.go)
-- [`cmd/bb/logs.go`](/Users/phaedrus/Development/bitterblossom/cmd/bb/logs.go)
+- [`cmd/bb/setup.go`](../../cmd/bb/setup.go)
+- [`cmd/bb/dispatch.go`](../../cmd/bb/dispatch.go)
+- [`cmd/bb/status.go`](../../cmd/bb/status.go)
+- [`cmd/bb/logs.go`](../../cmd/bb/logs.go)
 
 ## Command Map
 
