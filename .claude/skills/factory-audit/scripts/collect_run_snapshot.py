@@ -141,11 +141,21 @@ def graphql_review_threads(repo: str, pr_number: int) -> dict:
         request = pull_request.get("reviewThreads")
         if not isinstance(request, dict):
             raise SnapshotError(f"GraphQL returned no review thread data for PR {pr_number}")
-        all_nodes.extend(request["nodes"])
-        page_info = request["pageInfo"]
-        if not page_info["hasNextPage"]:
+        nodes = request.get("nodes")
+        if not isinstance(nodes, list):
+            raise SnapshotError(f"GraphQL returned no review thread nodes for PR {pr_number}")
+        all_nodes.extend(nodes)
+        page_info = request.get("pageInfo")
+        if not isinstance(page_info, dict):
+            raise SnapshotError(f"GraphQL returned no pageInfo in reviewThreads for PR {pr_number}")
+        has_next_page = page_info.get("hasNextPage")
+        if not isinstance(has_next_page, bool):
+            raise SnapshotError(f"GraphQL returned invalid hasNextPage in reviewThreads for PR {pr_number}")
+        if not has_next_page:
             break
-        cursor = page_info["endCursor"]
+        cursor = page_info.get("endCursor")
+        if not isinstance(cursor, str) or not cursor:
+            raise SnapshotError(f"GraphQL returned invalid endCursor in reviewThreads for PR {pr_number}")
 
     return {"reviewThreads": {"nodes": all_nodes}}
 

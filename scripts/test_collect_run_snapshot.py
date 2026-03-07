@@ -101,6 +101,42 @@ def test_graphql_review_threads_rejects_missing_data(monkeypatch: pytest.MonkeyP
         collect_run_snapshot.graphql_review_threads("misty-step/bitterblossom", 491)
 
 
+@pytest.mark.parametrize(
+    ("review_threads", "message"),
+    [
+        ({}, "GraphQL returned no review thread nodes for PR 491"),
+        ({"nodes": []}, "GraphQL returned no pageInfo in reviewThreads for PR 491"),
+        (
+            {"nodes": [], "pageInfo": {"endCursor": None}},
+            "GraphQL returned invalid hasNextPage in reviewThreads for PR 491",
+        ),
+        (
+            {"nodes": [], "pageInfo": {"hasNextPage": True, "endCursor": None}},
+            "GraphQL returned invalid endCursor in reviewThreads for PR 491",
+        ),
+    ],
+)
+def test_graphql_review_threads_rejects_missing_terminal_review_thread_fields(
+    monkeypatch: pytest.MonkeyPatch, review_threads: dict[str, object], message: str
+) -> None:
+    monkeypatch.setattr(
+        collect_run_snapshot,
+        "run_json",
+        lambda _argv: {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": review_threads,
+                    }
+                }
+            }
+        },
+    )
+
+    with pytest.raises(collect_run_snapshot.SnapshotError, match=message):
+        collect_run_snapshot.graphql_review_threads("misty-step/bitterblossom", 491)
+
+
 def test_graphql_review_threads_paginates(monkeypatch: pytest.MonkeyPatch) -> None:
     payloads = iter(
         [
