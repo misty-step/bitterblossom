@@ -173,6 +173,42 @@ sprite exec coordinator -- bash -lc 'tail -f ~/.bb/conductor.log'
 
 Every run writes immediately to `.bb/conductor.db` and `.bb/events.jsonl` on the coordinator. State survives loop restarts. If the conductor process dies, restart it — already-completed runs won't be re-processed because their leases have been released.
 
+## Blocked Runs
+
+A run exits with `rc=2` (blocked) when the conductor cannot proceed without human input — examples:
+
+- reviewer council blocked after max revision rounds
+- an untrusted PR review thread requires maintainer review
+- PR review threads remain unresolved after a revision pass
+
+When a run is blocked the conductor **does not release the issue's lease**. Instead it marks the lease as blocked (`blocked_at` in the leases table and `lease_expires_at = null`). The blocked issue is excluded from backlog selection on all subsequent polls — it will not be re-tried automatically.
+
+### Identifying blocked issues
+
+```bash
+python3 scripts/conductor.py show-runs --limit 20
+```
+
+Blocked runs show `phase=blocked` and `status=blocked`. The associated issue also has a GitHub comment from Bitterblossom explaining why it was blocked.
+
+### Re-queuing a blocked issue
+
+After reviewing the blocking reason and making any necessary adjustments (e.g., resolving the PR thread manually, updating the issue body), re-queue the issue:
+
+```bash
+python3 scripts/conductor.py requeue-issue \
+  --repo misty-step/bitterblossom \
+  --issue-number <N>
+```
+
+This clears the blocked state and releases the lease. The issue becomes eligible on the next backlog poll.
+
+To inspect the blocked run's events before re-queuing:
+
+```bash
+python3 scripts/conductor.py show-events --run-id <run-id>
+```
+
 ## Operator Recovery
 
 ### Loop Died

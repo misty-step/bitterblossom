@@ -1447,3 +1447,176 @@ def test_main_prints_clean_error_on_missing_env(monkeypatch: pytest.MonkeyPatch,
     err = capsys.readouterr().err
     assert "error:" in err
     assert "GITHUB_TOKEN" in err
+
+
+# --- Blocked issue suppression tests (issue #478) ---
+
+
+def test_block_lease_prevents_acquire(tmp_path: pathlib.Path) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    assert conductor.acquire_lease(conn, "misty-step/bitterblossom", 42, "run-42-1") is True
+
+    conductor.block_lease(conn, "misty-step/bitterblossom", 42)
+
+    assert conductor.acquire_lease(conn, "misty-step/bitterblossom", 42, "run-42-2") is False
+
+
+def test_block_lease_prevents_pick_issue(tmp_path: pathlib.Path) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    assert conductor.acquire_lease(conn, "misty-step/bitterblossom", 42, "run-42-1") is True
+    conductor.block_lease(conn, "misty-step/bitterblossom", 42)
+
+    issues = [
+        conductor.Issue(number=42, title="blocked", body="", url="u42", labels=["autopilot"], updated_at="2026-03-06T00:00:00Z"),
+    ]
+
+    picked = conductor.pick_issue(conn, issues, "misty-step/bitterblossom")
+    assert picked is None
+
+
+def test_block_lease_not_reaped_as_expired(tmp_path: pathlib.Path) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    assert conductor.acquire_lease(conn, "misty-step/bitterblossom", 42, "run-42-1") is True
+    conductor.block_lease(conn, "misty-step/bitterblossom", 42)
+
+    # Reaping should not touch blocked leases (lease_expires_at is null)
+    reaped = conductor.reap_expired_leases(conn)
+    assert reaped == 0
+
+    # Still blocked
+    assert conductor.acquire_lease(conn, "misty-step/bitterblossom", 42, "run-42-2") is False
+
+
+def test_requeue_issue_makes_blocked_issue_eligible(tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=42, title="test", body="", url="u42", labels=["autopilot"], updated_at="2026-03-06T00:00:00Z")
+
+    assert conductor.acquire_lease(conn, "misty-step/bitterblossom", 42, "run-42-1") is True
+    conductor.create_run(conn, "run-42-1", "misty-step/bitterblossom", issue, "default")
+    conductor.block_lease(conn, "misty-step/bitterblossom", 42)
+
+    # Blocked: should not be pickable
+    assert conductor.pick_issue(conn, [issue], "misty-step/bitterblossom") is None
+
+    args = argparse.Namespace(
+        repo="misty-step/bitterblossom",
+        issue_number=42,
+        db=str(tmp_path / "conductor.db"),
+        event_log=str(tmp_path / "events.jsonl"),
+    )
+    rc = conductor.requeue_issue(args)
+
+    assert rc == 0
+    assert "re-queued" in capsys.readouterr().out
+
+    # Now issue is eligible again
+    picked = conductor.pick_issue(conn, [issue], "misty-step/bitterblossom")
+    assert picked is not None
+    assert picked.number == 42
+
+    # And the event was recorded
+    event_rows = conn.execute(
+        "select event_type from events where run_id = 'run-42-1' order by id"
+    ).fetchall()
+    assert any(row["event_type"] == "requeued" for row in event_rows)
+
+
+def test_requeue_issue_fails_when_not_blocked(tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")  # noqa: F841
+
+    args = argparse.Namespace(
+        repo="misty-step/bitterblossom",
+        issue_number=99,
+        db=str(tmp_path / "conductor.db"),
+        event_log=str(tmp_path / "events.jsonl"),
+    )
+    rc = conductor.requeue_issue(args)
+
+    assert rc == 1
+    assert "not currently blocked" in capsys.readouterr().err
+
+
+def _make_run_once_args(tmp_path: pathlib.Path, *, issue_number: int = 447) -> argparse.Namespace:
+    return argparse.Namespace(
+        repo="misty-step/bitterblossom",
+        issue=issue_number,
+        label="autopilot",
+        limit=20,
+        db=str(tmp_path / "conductor.db"),
+        event_log=str(tmp_path / "events.jsonl"),
+        builder_profile="default",
+        worker=["noble-blue-serpent"],
+        builder_template=str(pathlib.Path("scripts/prompts/conductor-builder-template.md")),
+        reviewer=["fern", "sage", "thorn"],
+        reviewer_template=str(pathlib.Path("scripts/prompts/conductor-reviewer-template.md")),
+        builder_timeout=10,
+        review_timeout=10,
+        ci_timeout=10,
+        review_quorum=2,
+        max_revision_rounds=1,
+        max_ci_rounds=1,
+        max_pr_feedback_rounds=1,
+    )
+
+
+def test_run_once_blocks_issue_so_next_poll_cannot_re_lease(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
+    """AC1: Given rc=2, the same issue must not be immediately re-leaseable."""
+    issue = conductor.Issue(number=447, title="test", body="body", url="https://example.com/447", labels=["autopilot"])
+    builder = conductor.BuilderResult(
+        status="ready_for_review",
+        branch="factory/447-test-123",
+        pr_number=448,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/448",
+        summary="done",
+        tests=[],
+    )
+    # All reviewers block: triggers council_blocked path after max_revision_rounds
+    reviews_all_block = [
+        conductor.ReviewResult(reviewer="fern", verdict="block", summary="no", findings=[]),
+        conductor.ReviewResult(reviewer="sage", verdict="block", summary="no", findings=[]),
+        conductor.ReviewResult(reviewer="thorn", verdict="block", summary="no", findings=[]),
+    ]
+
+    monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
+    monkeypatch.setattr(conductor, "select_worker", lambda *_a, **_kw: "noble-blue-serpent")
+    monkeypatch.setattr(conductor, "run_builder", lambda *_a, **_kw: (builder, {"status": "ready_for_review"}))
+    monkeypatch.setattr(conductor, "run_review_round", lambda *_a, **_kw: reviews_all_block)
+    monkeypatch.setattr(conductor, "comment_pr", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "comment_issue", lambda *_a, **_kw: None)
+
+    args = _make_run_once_args(tmp_path)
+    rc = conductor.run_once(args)
+
+    assert rc == 2
+
+    # Next poll: same issue must not be pickable
+    conn = conductor.open_db(pathlib.Path(args.db))
+    picked = conductor.pick_issue(conn, [issue], args.repo)
+    assert picked is None, "blocked issue must not be re-picked on next backlog poll"
+
+    # Explicit re-lease also fails
+    assert conductor.acquire_lease(conn, args.repo, issue.number, "run-447-new") is False
+
+
+def test_run_once_normal_failure_does_release_lease(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
+    """rc=1 (failure) must still release the lease so it can be retried."""
+    issue = conductor.Issue(number=447, title="test", body="body", url="https://example.com/447", labels=["autopilot"])
+
+    monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
+    monkeypatch.setattr(conductor, "comment_issue", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "select_worker", lambda *_a, **_kw: (_ for _ in ()).throw(conductor.CmdError("worker gone")))
+
+    args = _make_run_once_args(tmp_path)
+    rc = conductor.run_once(args)
+
+    assert rc == 1
+
+    # Lease must be released so the issue can be retried
+    conn = conductor.open_db(pathlib.Path(args.db))
+    lease = conn.execute(
+        "select released_at, blocked_at from leases where repo = ? and issue_number = ?",
+        (args.repo, issue.number),
+    ).fetchone()
+    assert lease is not None
+    assert lease["released_at"] is not None
+    assert lease["blocked_at"] is None

@@ -187,6 +187,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     ensure_column(conn, "runs", "heartbeat_at", "text")
     ensure_column(conn, "leases", "heartbeat_at", "text")
     ensure_column(conn, "leases", "lease_expires_at", "text")
+    ensure_column(conn, "leases", "blocked_at", "text")
     conn.commit()
 
 
@@ -278,6 +279,19 @@ def acquire_lease(conn: sqlite3.Connection, repo: str, issue_number: int, run_id
 def release_lease(conn: sqlite3.Connection, repo: str, issue_number: int) -> None:
     conn.execute(
         "update leases set released_at = ? where repo = ? and issue_number = ? and released_at is null",
+        (now_utc(), repo, issue_number),
+    )
+    conn.commit()
+
+
+def block_lease(conn: sqlite3.Connection, repo: str, issue_number: int) -> None:
+    """Mark a lease as blocked, preventing immediate re-pick until explicitly re-queued."""
+    conn.execute(
+        """
+        update leases
+        set blocked_at = ?, lease_expires_at = null
+        where repo = ? and issue_number = ? and released_at is null
+        """,
         (now_utc(), repo, issue_number),
     )
     conn.commit()
@@ -1542,6 +1556,7 @@ def run_once(args: argparse.Namespace) -> int:
 
     create_run(conn, run_id, args.repo, issue, args.builder_profile)
     merged = False
+    block_on_release = False
     max_pr_feedback_rounds = getattr(args, "max_pr_feedback_rounds", 1)
 
     try:
@@ -1644,6 +1659,7 @@ def run_once(args: argparse.Namespace) -> int:
                         f"Bitterblossom blocked `{run_id}` after review.",
                         event_type="issue_comment_failed",
                     )
+                    block_on_release = True
                     return 2
 
                 feedback = summarize_reviews(blocks + fixes)
@@ -1703,6 +1719,7 @@ def run_once(args: argparse.Namespace) -> int:
                             f"Bitterblossom blocked `{run_id}` because an untrusted PR review thread requires manual maintainer review.",
                             event_type="issue_comment_failed",
                         )
+                        block_on_release = True
                         return 2
                     if pr_feedback_rounds > 0 and thread_ids == last_pr_feedback_thread_ids:
                         update_run(conn, run_id, phase="blocked", status="blocked")
@@ -1727,6 +1744,7 @@ def run_once(args: argparse.Namespace) -> int:
                             f"Bitterblossom blocked `{run_id}` because PR review threads remained unresolved after revision and need human confirmation.",
                             event_type="issue_comment_failed",
                         )
+                        block_on_release = True
                         return 2
                     if trusted_threads:
                         if pr_feedback_rounds >= max_pr_feedback_rounds:
@@ -1752,6 +1770,7 @@ def run_once(args: argparse.Namespace) -> int:
                                 f"Bitterblossom blocked `{run_id}` because PR review threads still require resolution.",
                                 event_type="issue_comment_failed",
                             )
+                            block_on_release = True
                             return 2
 
                         feedback = summarize_review_threads(trusted_threads)
@@ -1885,7 +1904,10 @@ def run_once(args: argparse.Namespace) -> int:
         )
         return 1
     finally:
-        release_lease(conn, args.repo, issue.number)
+        if block_on_release:
+            block_lease(conn, args.repo, issue.number)
+        else:
+            release_lease(conn, args.repo, issue.number)
 
 
 def loop(args: argparse.Namespace) -> int:
@@ -2002,6 +2024,37 @@ def reconcile_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def requeue_issue(args: argparse.Namespace) -> int:
+    conn = open_db(pathlib.Path(args.db))
+    event_log = pathlib.Path(args.event_log)
+    row = conn.execute(
+        """
+        select run_id from leases
+        where repo = ? and issue_number = ? and blocked_at is not null and released_at is null
+        """,
+        (args.repo, args.issue_number),
+    ).fetchone()
+    if row is None:
+        print(
+            f"issue #{args.issue_number} in {args.repo} is not currently blocked",
+            file=sys.stderr,
+        )
+        return 1
+    run_id = row["run_id"]
+    conn.execute(
+        """
+        update leases
+        set blocked_at = null, released_at = ?
+        where repo = ? and issue_number = ? and blocked_at is not null
+        """,
+        (now_utc(), args.repo, args.issue_number),
+    )
+    conn.commit()
+    record_event(conn, event_log, run_id, "requeued", {"issue_number": args.issue_number, "repo": args.repo})
+    print(f"issue #{args.issue_number} re-queued: eligible for new run on next backlog poll")
+    return 0
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Bitterblossom conductor MVP")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -2051,6 +2104,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     reconcile_p.add_argument("--event-log", default=str(DEFAULT_EVENT_LOG))
     reconcile_p.add_argument("--run-id", required=True)
     reconcile_p.set_defaults(func=reconcile_run)
+
+    requeue_p = sub.add_parser("requeue-issue", help="Re-queue a blocked issue for retry")
+    requeue_p.add_argument("--repo", required=True)
+    requeue_p.add_argument("--issue-number", type=int, required=True)
+    requeue_p.add_argument("--db", default=str(DEFAULT_DB))
+    requeue_p.add_argument("--event-log", default=str(DEFAULT_EVENT_LOG))
+    requeue_p.set_defaults(func=requeue_issue)
 
     check_p = sub.add_parser("check-env", help="Validate coordinator runtime environment and tools")
     check_p.set_defaults(func=check_env)
