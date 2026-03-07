@@ -272,6 +272,21 @@ This repo also requires resolved PR conversations. After CI turns green, the con
 
 Reviewer dispatches now run in parallel, not serially. Each reviewer writes its own artifact, the conductor persists that result immediately, and `review_complete` events land as each artifact arrives. One slow reviewer no longer hides the rest of the council's progress.
 
+## Prompt Input Trust Model
+
+The conductor constructs prompts from several sources. Not all of them are trusted.
+
+| Input | Source | Trusted? | Handling |
+|---|---|---|---|
+| `issue.title`, `issue.body` | GitHub Issues (public, user-controlled) | **No** | JSON-fenced + untrusted-data header via `wrap_untrusted_issue_content` |
+| PR review thread comments (`source=pr_review_threads`) | External GitHub reviewers / bots | **No** | JSON-fenced + untrusted-data header via `format_builder_feedback` |
+| Internal sprite review summary (`source=review`) | Trusted conductor-owned sprites | Yes | Embedded plain-text |
+| Run metadata (run ID, branch, artifact path) | Conductor internals | Yes | Embedded plain-text |
+
+**Rule:** any string that originates outside the conductor (GitHub, external review bots) is wrapped in a JSON code-fence before being placed in a prompt. The wrapper includes an explicit instruction telling the agent to treat the block as data, not as executable guidance.
+
+The `wrap_untrusted_issue_content` helper (conductor.py) implements this for issue content. `format_builder_feedback` implements the same pattern for PR review thread feedback.
+
 ## MVP Limits
 
 - one builder per issue
