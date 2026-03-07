@@ -678,7 +678,7 @@ def build_builder_task(
 ) -> str:
     lines = [
         f"Run ID: {run_id}",
-        f"Issue: #{issue.number} - {issue.title}",
+        f"Issue: #{issue.number}",
         f"Issue URL: {issue.url}",
         f"Branch: {branch}",
         f"Builder artifact path: {artifact_path}",
@@ -709,7 +709,7 @@ def build_review_task(issue: Issue, run_id: str, pr_number: int, pr_url: str, ar
     return "\n".join(
         [
             f"Run ID: {run_id}",
-            f"Issue: #{issue.number} - {issue.title}",
+            f"Issue: #{issue.number}",
             f"Issue URL: {issue.url}",
             f"PR: #{pr_number}",
             f"PR URL: {pr_url}",

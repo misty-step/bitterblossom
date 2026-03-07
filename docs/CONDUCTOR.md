@@ -285,7 +285,7 @@ The conductor constructs prompts from several sources. Not all of them are trust
 
 **Rule:** any string that originates outside the conductor (GitHub, external review bots) is wrapped in a JSON code-fence before being placed in a prompt. The wrapper includes an explicit instruction telling the agent to treat the block as data, not as executable guidance.
 
-The `wrap_untrusted_issue_content` helper (conductor.py) implements this for issue content. `format_builder_feedback` implements the same pattern for PR review thread feedback.
+The `wrap_untrusted_issue_content` helper ([`scripts/conductor.py`](../scripts/conductor.py)) implements this for issue content. `format_builder_feedback` implements the same pattern for PR review thread feedback.
 
 ## MVP Limits
 
