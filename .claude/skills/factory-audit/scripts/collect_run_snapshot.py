@@ -6,16 +6,23 @@ import sys
 from pathlib import Path
 
 
-ROOT = next(p for p in Path(__file__).resolve().parents if (p / ".git").exists())
+class SnapshotError(RuntimeError):
+    pass
+
+
+def find_repo_root(start: Path) -> Path:
+    root = next((p for p in start.resolve().parents if (p / ".git").exists()), None)
+    if root is None:
+        raise SnapshotError(f"could not locate repository root above {start}")
+    return root
+
+
+ROOT = find_repo_root(Path(__file__))
 TIMEOUT_SECONDS = 120
 
 
 def snapshot_python() -> str:
     return sys.executable
-
-
-class SnapshotError(RuntimeError):
-    pass
 
 
 def run(argv: list[str]) -> str:
@@ -36,7 +43,11 @@ def run(argv: list[str]) -> str:
 
 
 def run_json(argv: list[str]) -> object:
-    return json.loads(run(argv))
+    output = run(argv)
+    try:
+        return json.loads(output)
+    except json.JSONDecodeError as exc:
+        raise SnapshotError(f"command produced non-JSON output: {' '.join(argv)}\n{output[:200]}") from exc
 
 
 def run_jsonl(argv: list[str]) -> list[dict]:
@@ -45,7 +56,10 @@ def run_jsonl(argv: list[str]) -> list[dict]:
         line = line.strip()
         if not line:
             continue
-        items.append(json.loads(line))
+        try:
+            items.append(json.loads(line))
+        except json.JSONDecodeError as exc:
+            raise SnapshotError(f"command produced non-JSONL line: {line[:200]}") from exc
     return items
 
 
@@ -104,7 +118,29 @@ def graphql_review_threads(repo: str, pr_number: int) -> dict:
             args.extend(["-F", f"cursor={cursor}"])
 
         payload = run_json(args)
-        request = payload["data"]["repository"]["pullRequest"]["reviewThreads"]
+        if not isinstance(payload, dict):
+            raise SnapshotError(f"GraphQL returned unexpected payload type for PR {pr_number}")
+        if payload.get("errors"):
+            errors = payload["errors"]
+            if isinstance(errors, list):
+                messages = "; ".join(
+                    str(error.get("message") if isinstance(error, dict) else error) for error in errors
+                )
+            else:
+                messages = str(errors)
+            raise SnapshotError(f"GraphQL error fetching review threads: {messages}")
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise SnapshotError(f"GraphQL returned no data for PR {pr_number}")
+        repository = data.get("repository")
+        if not isinstance(repository, dict):
+            raise SnapshotError(f"GraphQL returned no repository data for PR {pr_number}")
+        pull_request = repository.get("pullRequest")
+        if not isinstance(pull_request, dict):
+            raise SnapshotError(f"GraphQL returned no pull request data for PR {pr_number}")
+        request = pull_request.get("reviewThreads")
+        if not isinstance(request, dict):
+            raise SnapshotError(f"GraphQL returned no review thread data for PR {pr_number}")
         all_nodes.extend(request["nodes"])
         page_info = request["pageInfo"]
         if not page_info["hasNextPage"]:

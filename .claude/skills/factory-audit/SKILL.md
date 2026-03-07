@@ -25,7 +25,7 @@ Run one Bitterblossom issue as a supervised conductor exercise. Treat the run as
 ### 2. Launch a deliberate run
 
 - Prefer the highest-priority open `autopilot` issue unless the operator specifies one.
-- Use `python3 scripts/conductor.py run-once ...` rather than `loop` so the run has a crisp boundary.
+- Use `$(python3 -c 'import sys; print(sys.executable)') scripts/conductor.py run-once ...` rather than bare `python3` or `loop` so the run has a crisp boundary without interpreter drift.
 - Record the start timestamp, chosen worker, issue number, and reviewers up front.
 
 ### 3. Watch the run continuously
