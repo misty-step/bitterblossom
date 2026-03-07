@@ -379,11 +379,9 @@ def run_id_for(issue_number: int) -> str:
     return f"run-{issue_number}-{int(time.time())}"
 
 
-def branch_name(issue_number: int, title: str, run_id: str) -> str:
-    slug = "".join(ch.lower() if ch.isalnum() else "-" for ch in title).strip("-")
-    slug = "-".join(part for part in slug.split("-") if part)[:32] or "issue"
+def branch_name(issue_number: int, run_id: str) -> str:
     suffix = run_id.rsplit("-", 1)[-1]
-    return f"factory/{issue_number}-{slug}-{suffix}"
+    return f"factory/{issue_number}-{suffix}"
 
 
 def repo_dir(repo: str) -> str:
@@ -1918,7 +1916,7 @@ def run_once(args: argparse.Namespace) -> int:
         touch_run(conn, args.repo, issue.number, run_id, args.builder_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS)
         record_event(conn, event_log, run_id, "builder_selected", {"sprite": worker})
 
-        branch = branch_name(issue.number, issue.title, run_id)
+        branch = branch_name(issue.number, run_id)
         builder, builder_payload = run_builder(
             runner,
             args.repo,
