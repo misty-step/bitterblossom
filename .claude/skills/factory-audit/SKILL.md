@@ -30,7 +30,7 @@ Run one Bitterblossom issue as a supervised conductor exercise. Treat the run as
 
 ### 3. Watch the run continuously
 
-- Poll the run with `scripts/collect_run_snapshot.py` instead of guessing from one surface.
+- Poll the run with `.claude/skills/factory-audit/scripts/collect_run_snapshot.py` instead of guessing from one surface.
 - Check builder, council, PR, CI, external review, and merge policy transitions.
 - Treat silence, lag, stale state, skipped reviews, dirty workspaces, or misleading output as findings even when the run eventually succeeds.
 

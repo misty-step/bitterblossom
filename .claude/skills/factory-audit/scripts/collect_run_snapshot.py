@@ -6,7 +6,12 @@ import sys
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[4]
+ROOT = next(p for p in Path(__file__).resolve().parents if (p / ".git").exists())
+TIMEOUT_SECONDS = 120
+
+
+def snapshot_python() -> str:
+    return sys.executable
 
 
 class SnapshotError(RuntimeError):
@@ -14,13 +19,17 @@ class SnapshotError(RuntimeError):
 
 
 def run(argv: list[str]) -> str:
-    proc = subprocess.run(
-        argv,
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    try:
+        proc = subprocess.run(
+            argv,
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise SnapshotError(f"command timed out: {' '.join(argv)}") from exc
     if proc.returncode != 0:
         raise SnapshotError((proc.stderr or proc.stdout).strip() or f"command failed: {' '.join(argv)}")
     return proc.stdout
@@ -42,22 +51,74 @@ def run_jsonl(argv: list[str]) -> list[dict]:
 
 def graphql_review_threads(repo: str, pr_number: int) -> dict:
     owner, name = repo.split("/", 1)
+    query = """
+    query($owner:String!, $repo:String!, $number:Int!, $cursor:String){
+        repository(owner:$owner,name:$repo){
+            pullRequest(number:$number){
+                reviewThreads(first:100, after:$cursor){
+                    nodes{
+                        id
+                        isResolved
+                        isOutdated
+                        path
+                        line
+                        comments(first:100){
+                            nodes{
+                                author{
+                                    login
+                                }
+                                body
+                                url
+                                createdAt
+                            }
+                        }
+                    }
+                    pageInfo{
+                        hasNextPage
+                        endCursor
+                    }
+                }
+            }
+        }
+    }
+    """
+    oneline_query = " ".join(line.strip() for line in query.splitlines())
+    all_nodes = []
+    cursor: str | None = None
+
+    while True:
+        payload = run_json(
+            [
+                "gh",
+                "api",
+                "graphql",
+                "-f",
+                f"query={oneline_query}",
+                "-F",
+                f"owner={owner}",
+                "-F",
+                f"repo={name}",
+                "-F",
+                f"number={pr_number}",
+                "-F",
+                f"cursor={cursor or ''}",
+            ]
+        )
+        request = payload["data"]["repository"]["pullRequest"]["reviewThreads"]
+        all_nodes.extend(request["nodes"])
+        page_info = request["pageInfo"]
+        if not page_info["hasNextPage"]:
+            break
+        cursor = page_info["endCursor"]
+
+    return {"reviewThreads": {"nodes": all_nodes}}
     return run_json(
         [
             "gh",
             "api",
             "graphql",
             "-f",
-            (
-                "query="
-                "query($owner:String!,$repo:String!,$number:Int!){"
-                "repository(owner:$owner,name:$repo){"
-                "pullRequest(number:$number){"
-                "reviewThreads(first:100){nodes{"
-                "id isResolved isOutdated path line "
-                "comments(first:20){nodes{author{login}body url createdAt}}"
-                "}}}}}"
-            ),
+            f"query={oneline_query}",
             "-F",
             f"owner={owner}",
             "-F",
@@ -78,7 +139,7 @@ def main() -> int:
 
     runs = run_jsonl(
         [
-            "python3",
+            snapshot_python(),
             "scripts/conductor.py",
             "show-runs",
             "--limit",
@@ -91,7 +152,7 @@ def main() -> int:
 
     events = run_jsonl(
         [
-            "python3",
+            snapshot_python(),
             "scripts/conductor.py",
             "show-events",
             "--run-id",
@@ -123,12 +184,16 @@ def main() -> int:
         )
         review_threads = graphql_review_threads(args.repo, int(pr_number))
 
+    issue_number = run_row.get("issue_number")
+    if issue_number is None:
+        raise SnapshotError(f"run snapshot missing issue_number: {args.run_id}")
+
     issue = run_json(
         [
             "gh",
             "issue",
             "view",
-            str(run_row["issue_number"]),
+            str(issue_number),
             "--repo",
             args.repo,
             "--json",
