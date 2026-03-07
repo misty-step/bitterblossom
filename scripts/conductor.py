@@ -27,6 +27,7 @@ DEFAULT_LEASE_BUFFER_SECONDS = 300
 SUCCESSFUL_CHECK_CONCLUSIONS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 FAILED_CHECK_CONCLUSIONS = {"FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STALE", "STARTUP_FAILURE"}
 FAILED_STATUS_CONTEXTS = {"FAILURE", "ERROR"}
+PENDING_EXTERNAL_STATES = {"QUEUED", "IN_PROGRESS", "PENDING"}
 TRUSTED_REVIEW_AUTHOR_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
 # GitHub App reviewers show up with weak authorAssociation values, so trust them by login.
 TRUSTED_REVIEW_BOT_LOGINS = {
@@ -1091,6 +1092,78 @@ def ensure_required_checks_present(runner: Runner, repo: str, pr_number: int) ->
         )
 
 
+def trusted_surfaces_pending(payload: dict[str, Any], trusted_surfaces: list[str]) -> list[str]:
+    """Return names of trusted check surfaces that are still in a non-terminal state."""
+    pending: list[str] = []
+    for item in payload.get("statusCheckRollup", []):
+        name = rollup_item_name(item)
+        if not name:
+            continue
+        if not any(pat in name for pat in trusted_surfaces):
+            continue
+        _, terminal, _ = rollup_item_state(item)
+        if not terminal:
+            pending.append(name)
+    return pending
+
+
+def wait_for_external_reviews(
+    runner: Runner,
+    repo: str,
+    pr_number: int,
+    trusted_surfaces: list[str],
+    *,
+    quiet_window_seconds: int = 60,
+    timeout_minutes: int = 30,
+) -> tuple[bool, str]:
+    """
+    Wait until all trusted external review surfaces have reached terminal states,
+    then enforce a quiet window before declaring them settled.
+
+    Returns (True, summary) when all surfaces are settled and quiet.
+    Returns (False, reason) if the timeout expires first.
+    """
+    if not trusted_surfaces:
+        return True, ""
+
+    deadline = time.time() + timeout_minutes * 60
+    quiet_since: float | None = None
+    last_payload: dict[str, Any] = {}
+
+    while time.time() < deadline:
+        try:
+            last_payload = gh_json(
+                runner,
+                ["pr", "view", str(pr_number), "--repo", repo, "--json", "statusCheckRollup"],
+            )
+        except CmdError:
+            time.sleep(10)
+            continue
+
+        pending = trusted_surfaces_pending(last_payload, trusted_surfaces)
+        if pending:
+            quiet_since = None
+            time.sleep(10)
+            continue
+
+        # All trusted surfaces are in terminal states.
+        if quiet_since is None:
+            quiet_since = time.time()
+
+        if time.time() - quiet_since >= quiet_window_seconds:
+            return True, summarize_status_check_rollup(last_payload)
+
+        time.sleep(5)
+
+    pending = trusted_surfaces_pending(last_payload, trusted_surfaces)
+    pending_str = ", ".join(pending) if pending else "(settled but quiet window did not elapse)"
+    return (
+        False,
+        f"timed out waiting for trusted external reviews to settle on PR #{pr_number} "
+        f"after {timeout_minutes}m: {pending_str}",
+    )
+
+
 def wait_for_pr_merged(runner: Runner, repo: str, pr_number: int, *, timeout_seconds: int = 600) -> None:
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
@@ -1813,6 +1886,45 @@ def run_once(args: argparse.Namespace) -> int:
                         record_event(conn, event_log, run_id, "builder_revised", builder_payload)
                         pr_feedback_rounds += 1
                         continue
+
+                trusted_surfaces = getattr(args, "trusted_external_surfaces", [])
+                if trusted_surfaces:
+                    touch_run(
+                        conn,
+                        args.repo,
+                        issue.number,
+                        run_id,
+                        getattr(args, "external_review_timeout", 30) * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
+                    )
+                    ext_ok, ext_output = wait_for_external_reviews(
+                        runner,
+                        args.repo,
+                        builder.pr_number,
+                        trusted_surfaces,
+                        quiet_window_seconds=getattr(args, "external_review_quiet_window", 60),
+                        timeout_minutes=getattr(args, "external_review_timeout", 30),
+                    )
+                    record_event(
+                        conn,
+                        event_log,
+                        run_id,
+                        "external_review_wait_complete",
+                        {"passed": ext_ok, "output": ext_output},
+                    )
+                    if not ext_ok:
+                        update_run(conn, run_id, phase="blocked", status="blocked")
+                        best_effort_issue_comment(
+                            runner,
+                            conn,
+                            event_log,
+                            run_id,
+                            args.repo,
+                            issue.number,
+                            f"Bitterblossom blocked `{run_id}` because trusted external reviews did not settle: {ext_output[:500]}",
+                            event_type="issue_comment_failed",
+                        )
+                        block_on_release = True
+                        return 2
                 break
 
             if ci_rounds >= args.max_ci_rounds:
@@ -2078,6 +2190,25 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         p.add_argument("--max-revision-rounds", type=int, default=1)
         p.add_argument("--max-pr-feedback-rounds", type=int, default=1)
         p.add_argument("--builder-profile", default="claude-sonnet")
+        p.add_argument(
+            "--trusted-external-surface",
+            dest="trusted_external_surfaces",
+            action="append",
+            default=[],
+            help="Name substring of a trusted external review surface to wait for before merge (repeatable)",
+        )
+        p.add_argument(
+            "--external-review-quiet-window",
+            type=int,
+            default=60,
+            help="Seconds of no activity from trusted surfaces required before merge",
+        )
+        p.add_argument(
+            "--external-review-timeout",
+            type=int,
+            default=30,
+            help="Minutes to wait for trusted external reviews to settle before blocking",
+        )
 
     once_p = sub.add_parser("run-once", help="Run one conductor cycle")
     add_common(once_p)
