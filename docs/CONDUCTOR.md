@@ -279,11 +279,12 @@ The conductor constructs prompts from several sources. Not all of them are trust
 | Input | Source | Trusted? | Handling |
 |---|---|---|---|
 | `issue.title`, `issue.body` | GitHub Issues (public, user-controlled) | **No** | JSON-fenced + untrusted-data header via `wrap_untrusted_issue_content` |
+| `issue.url` | GitHub Issues (system-generated from repo + issue number) | Yes | Embedded plain-text |
 | PR review thread comments (`source=pr_review_threads`) | External GitHub reviewers / bots | **No** | JSON-fenced + untrusted-data header via `format_builder_feedback` |
 | Internal sprite review summary (`source=review`) | Trusted conductor-owned sprites | Yes | Embedded plain-text |
 | Run metadata (run ID, branch, artifact path) | Conductor internals | Yes | Embedded plain-text |
 
-**Rule:** any string that originates outside the conductor (GitHub, external review bots) is wrapped in a JSON code-fence before being placed in a prompt. The wrapper includes an explicit instruction telling the agent to treat the block as data, not as executable guidance.
+**Rule:** any user-authored string that originates outside the conductor (GitHub issue text, external review bot feedback) is wrapped in a JSON code-fence before being placed in a prompt. The wrapper includes an explicit instruction telling the agent to treat the block as data, not as executable guidance.
 
 The `wrap_untrusted_issue_content` helper ([`scripts/conductor.py`](../scripts/conductor.py)) implements this for issue content. `format_builder_feedback` implements the same pattern for PR review thread feedback.
 
