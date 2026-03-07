@@ -75,6 +75,10 @@ python3 scripts/conductor.py run-once \
   --reviewer council-thorn-20260306
 ```
 
+`--trusted-external-surface` is exact, not substring-based. Use exact status
+context names such as `CodeRabbit` / `Greptile Review`, or an exact workflow
+name such as `Cerberus` when you want to wait on a whole check-run family.
+
 Run continuously against the backlog:
 
 ```bash

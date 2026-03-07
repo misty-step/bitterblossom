@@ -622,8 +622,7 @@ def ensure_reviewers_ready(runner: Runner, repo: str, reviewers: list[str], prom
         ensure_sprite_ready(runner, reviewer, repo, prompt_template)
 
 
-def select_worker(runner: Runner, repo: str, workers: list[str], prompt_template: pathlib.Path) -> str:
-    _ = runner
+def select_worker(repo: str, workers: list[str], prompt_template: pathlib.Path) -> str:
     last_error = ""
     for worker in workers:
         try:
@@ -840,6 +839,12 @@ def rollup_item_name(item: dict[str, Any]) -> str:
     return ""
 
 
+def rollup_item_workflow_name(item: dict[str, Any]) -> str:
+    if str(item.get("__typename", "")) != "CheckRun":
+        return ""
+    return str(item.get("workflowName", ""))
+
+
 def rollup_item_state(item: dict[str, Any]) -> tuple[str, bool, bool]:
     typename = str(item.get("__typename", ""))
     if typename == "CheckRun":
@@ -860,6 +865,15 @@ def rollup_item_state(item: dict[str, Any]) -> tuple[str, bool, bool]:
         return state or "PENDING", False, False
 
     return "", False, False
+
+
+def trusted_surface_matches(item: dict[str, Any], trusted_surface: str) -> bool:
+    names = {rollup_item_name(item)}
+    workflow_name = rollup_item_workflow_name(item)
+    if workflow_name:
+        names.add(workflow_name)
+    names.discard("")
+    return trusted_surface in names
 
 
 def summarize_status_check_rollup(payload: dict[str, Any]) -> str:
@@ -1148,6 +1162,10 @@ def ensure_required_checks_present(runner: Runner, repo: str, pr_number: int) ->
         )
 
 
+SurfaceMatchSnapshot = tuple[str, str, str, str, str]
+TrustedSurfaceSnapshot = tuple[tuple[str, tuple[SurfaceMatchSnapshot, ...]], ...]
+
+
 def trusted_surfaces_pending(payload: dict[str, Any], trusted_surfaces: list[str]) -> list[str]:
     """Return trusted surfaces that still block merge.
 
@@ -1164,10 +1182,10 @@ def trusted_surfaces_pending(payload: dict[str, Any], trusted_surfaces: list[str
         for item in rollup:
             if not isinstance(item, dict):
                 continue
-            name = rollup_item_name(item)
-            if not name or pattern not in name:
+            if not trusted_surface_matches(item, pattern):
                 continue
             matched = True
+            name = rollup_item_name(item)
             _state, terminal, failed = rollup_item_state(item)
             if not terminal or failed:
                 blocking.append(name)
@@ -1176,29 +1194,30 @@ def trusted_surfaces_pending(payload: dict[str, Any], trusted_surfaces: list[str
     return blocking
 
 
-def trusted_surface_snapshot(payload: dict[str, Any], trusted_surfaces: list[str]) -> tuple[tuple[str, tuple[tuple[str, str, str, str], ...]], ...]:
+def trusted_surface_snapshot(payload: dict[str, Any], trusted_surfaces: list[str]) -> TrustedSurfaceSnapshot:
     """Capture the observed state of all watched trusted surfaces.
 
-    The snapshot is keyed by configured pattern so unseen surfaces are represented
+    The snapshot is keyed by configured trusted surface so unseen surfaces are represented
     explicitly instead of disappearing from the comparison set.
     """
     rollup = payload.get("statusCheckRollup", [])
     if not isinstance(rollup, list):
         return tuple((pattern, ()) for pattern in trusted_surfaces)
 
-    snapshots: list[tuple[str, tuple[tuple[str, str, str, str], ...]]] = []
+    snapshots: list[tuple[str, tuple[SurfaceMatchSnapshot, ...]]] = []
     for pattern in trusted_surfaces:
-        matches: list[tuple[str, str, str, str]] = []
+        matches: list[SurfaceMatchSnapshot] = []
         for item in rollup:
             if not isinstance(item, dict):
                 continue
-            name = rollup_item_name(item)
-            if not name or pattern not in name:
+            if not trusted_surface_matches(item, pattern):
                 continue
+            name = rollup_item_name(item)
+            workflow_name = rollup_item_workflow_name(item)
             state, _terminal, _failed = rollup_item_state(item)
             started = str(item.get("startedAt") or "")
             completed = str(item.get("completedAt") or "")
-            matches.append((name, state, started, completed))
+            matches.append((name, workflow_name, state, started, completed))
         snapshots.append((pattern, tuple(sorted(matches))))
     return tuple(snapshots)
 
@@ -1225,7 +1244,7 @@ def wait_for_external_reviews(
     deadline = time.time() + timeout_minutes * 60
     quiet_since: float | None = None
     last_payload: dict[str, Any] = {}
-    last_snapshot: tuple[tuple[str, tuple[tuple[str, str, str, str], ...]], ...] | None = None
+    last_snapshot: TrustedSurfaceSnapshot | None = None
 
     while time.time() < deadline:
         try:
@@ -1871,7 +1890,7 @@ def run_once(args: argparse.Namespace) -> int:
         )
         ensure_reviewers_ready(runner, args.repo, args.reviewer, pathlib.Path(args.reviewer_template))
         record_event(conn, event_log, run_id, "reviewers_ready", {"reviewers": args.reviewer})
-        worker = select_worker(runner, args.repo, args.worker, pathlib.Path(args.builder_template))
+        worker = select_worker(args.repo, args.worker, pathlib.Path(args.builder_template))
         update_run(conn, run_id, phase="building", builder_sprite=worker)
         touch_run(conn, args.repo, issue.number, run_id, args.builder_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS)
         record_event(conn, event_log, run_id, "builder_selected", {"sprite": worker})
@@ -2035,10 +2054,10 @@ def run_once(args: argparse.Namespace) -> int:
                     pr_feedback_rounds += 1
                     continue
 
-                trusted_surfaces = getattr(args, "trusted_external_surfaces", [])
+                trusted_surfaces = args.trusted_external_surfaces
                 if trusted_surfaces:
-                    external_review_timeout = getattr(args, "external_review_timeout", 30)
-                    external_review_quiet_window = getattr(args, "external_review_quiet_window", 60)
+                    external_review_timeout = args.external_review_timeout
+                    external_review_quiet_window = args.external_review_quiet_window
                     touch_run(
                         conn,
                         args.repo,
@@ -2388,7 +2407,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             dest="trusted_external_surfaces",
             action="append",
             default=[],
-            help="Name substring of a trusted external review surface to wait for before merge (repeatable)",
+            help="Exact trusted surface name or exact workflow name to wait for before merge (repeatable)",
         )
         p.add_argument(
             "--external-review-quiet-window",
