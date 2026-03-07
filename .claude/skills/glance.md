@@ -3,6 +3,7 @@ This directory contains project-local Claude Code skills for Bitterblossom. Skil
 ### Skills
 
 *   **`e2e-test/`**: The end-to-end dispatch shakedown skill. Exercises the full `bb dispatch` pipeline against a real sprite and issue, acting as adversarial QA. Documents every friction point — not just outright failures — and mandates filing GitHub issues for any P0-P2 findings.
+*   **`factory-audit/`**: The supervised conductor-run audit skill. Runs one Bitterblossom issue as a live factory test, continuously inspects run/PR state, and converts friction into backlog updates.
 
 ### Structure Convention
 
