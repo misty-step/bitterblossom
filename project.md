@@ -24,7 +24,7 @@ Bitterblossom is the conductor for a single-repo software factory: it routes Git
 ## Active Focus
 
 - **Milestone:** `Now: Current Sprint` — harden the accepted conductor MVP into a reliable single-repo factory.
-- **Key Issues:** #470, #468, #469, #98, #102
+- **Key Issues:** [#470](https://github.com/misty-step/bitterblossom/issues/470), [#468](https://github.com/misty-step/bitterblossom/issues/468), [#469](https://github.com/misty-step/bitterblossom/issues/469), [#98](https://github.com/misty-step/bitterblossom/issues/98), [#102](https://github.com/misty-step/bitterblossom/issues/102)
 - **Theme:** Always-on control plane, isolated execution, truthful observability, and proof of the full trace bullet.
 
 ## Quality Bar

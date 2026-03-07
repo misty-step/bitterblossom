@@ -231,6 +231,15 @@
       font-weight: 600;
     }
 
+    .issue .title a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    .issue .title a:hover {
+      text-decoration: underline;
+    }
+
     .issue .meta {
       margin-top: 4px;
       color: var(--muted);
@@ -366,23 +375,23 @@
         <h3>Now · current sprint</h3>
         <div class="issue-list">
           <div class="issue">
-            <div class="title">#470 Deploy the conductor as an always-on remote control plane</div>
+            <div class="title"><a href="https://github.com/misty-step/bitterblossom/issues/470">#470</a> Deploy the conductor as an always-on remote control plane</div>
             <div class="meta">P1 · task · effort/l</div>
           </div>
           <div class="issue">
-            <div class="title">#468 Add lease heartbeats and stale-lease reclaim to the conductor</div>
+            <div class="title"><a href="https://github.com/misty-step/bitterblossom/issues/468">#468</a> Add lease heartbeats and stale-lease reclaim to the conductor</div>
             <div class="meta">P1 · task · effort/m</div>
           </div>
           <div class="issue">
-            <div class="title">#469 Isolate builder and reviewer runs with per-run git worktrees</div>
+            <div class="title"><a href="https://github.com/misty-step/bitterblossom/issues/469">#469</a> Isolate builder and reviewer runs with per-run git worktrees</div>
             <div class="meta">P1 · task · effort/l</div>
           </div>
           <div class="issue">
-            <div class="title">#98 Observability: add run-centric status and event surfaces</div>
+            <div class="title"><a href="https://github.com/misty-step/bitterblossom/issues/98">#98</a> Observability: add run-centric status and event surfaces</div>
             <div class="meta">P1 · feature · effort/m</div>
           </div>
           <div class="issue">
-            <div class="title">#102 Testing: prove the full single-repo factory trace bullet end-to-end</div>
+            <div class="title"><a href="https://github.com/misty-step/bitterblossom/issues/102">#102</a> Testing: prove the full single-repo factory trace bullet end-to-end</div>
             <div class="meta">P1 · task · effort/l</div>
           </div>
         </div>
@@ -392,23 +401,23 @@
         <h3>Next · up next</h3>
         <div class="issue-list">
           <div class="issue">
-            <div class="title">#474 Route issues semantically and enforce autopilot-ready issue contracts</div>
+            <div class="title"><a href="https://github.com/misty-step/bitterblossom/issues/474">#474</a> Route issues semantically and enforce autopilot-ready issue contracts</div>
             <div class="meta">P1 · feature · effort/l</div>
           </div>
           <div class="issue">
-            <div class="title">#471 Plumb Sentry incidents into GitHub issues for conductor intake</div>
+            <div class="title"><a href="https://github.com/misty-step/bitterblossom/issues/471">#471</a> Plumb Sentry incidents into GitHub issues for conductor intake</div>
             <div class="meta">P2 · feature · effort/m</div>
           </div>
           <div class="issue">
-            <div class="title">#472 Run parallel implementation variants and log experiment outcomes</div>
+            <div class="title"><a href="https://github.com/misty-step/bitterblossom/issues/472">#472</a> Run parallel implementation variants and log experiment outcomes</div>
             <div class="meta">P2 · feature · effort/l</div>
           </div>
           <div class="issue">
-            <div class="title">#475 Refresh tune-repo context artifacts for the conductor architecture</div>
+            <div class="title"><a href="https://github.com/misty-step/bitterblossom/issues/475">#475</a> Refresh tune-repo context artifacts for the conductor architecture</div>
             <div class="meta">P2 · task · effort/s</div>
           </div>
           <div class="issue">
-            <div class="title">#285 Dispatch: succeed when work is verifiably done even if Ralph misses TASK_COMPLETE</div>
+            <div class="title"><a href="https://github.com/misty-step/bitterblossom/issues/285">#285</a> Dispatch: succeed when work is verifiably done even if Ralph misses TASK_COMPLETE</div>
             <div class="meta">P2 · bug · effort/m</div>
           </div>
         </div>
@@ -418,11 +427,11 @@
         <h3>Later · backlog</h3>
         <div class="issue-list">
           <div class="issue">
-            <div class="title">#398 Dispatch: normalize repeated off-rails errors before loop detection</div>
+            <div class="title"><a href="https://github.com/misty-step/bitterblossom/issues/398">#398</a> Dispatch: normalize repeated off-rails errors before loop detection</div>
             <div class="meta">P3 · task · effort/s</div>
           </div>
           <div class="issue">
-            <div class="title">#432 Refactor: centralize default-branch detection for dispatch sync and verification</div>
+            <div class="title"><a href="https://github.com/misty-step/bitterblossom/issues/432">#432</a> Refactor: centralize default-branch detection for dispatch sync and verification</div>
             <div class="meta">P3 · refactor · effort/s</div>
           </div>
         </div>
@@ -449,13 +458,13 @@
           <div><strong>Added</strong> `project.md` to carry the new conductor-first product context.</div>
           <div><strong>Added</strong> `.groom/plan-2026-03-06.md` as the backlog reset record.</div>
           <div><strong>Removed</strong> `vision.md` because it described the wrong architecture.</div>
-          <div><strong>Flagged</strong> tune-repo context artifacts as stale or missing, then turned that into issue `#475`.</div>
+          <div><strong>Flagged</strong> tune-repo context artifacts as stale or missing, then turned that into issue <a href="https://github.com/misty-step/bitterblossom/issues/475">#475</a>.</div>
         </div>
       </article>
     </section>
 
     <p class="footer">
-      Generated during `/groom`. Source of truth: GitHub issue backlog, `project.md`, ADR-003, and `docs/CONDUCTOR.md`.
+      Generated during `/groom`. Canonical product context: `project.md`. Supporting references: GitHub issue backlog, ADR-003, and `docs/CONDUCTOR.md`.
     </p>
   </main>
 </body>

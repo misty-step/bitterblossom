@@ -9,7 +9,12 @@ Also read:
 
 ## What This Is
 
-Bitterblossom = Go CLI `bb` that dispatches coding tasks to persistent AI sprites. Four core commands, one small ralph loop. Thin deterministic transport in Go; intelligence in Claude Code skills.
+Bitterblossom has two surfaces:
+
+- `bb`: thin Go transport for sprite setup, dispatch, status, logs, and recovery
+- `scripts/conductor.py`: the run-centric control plane for GitHub issue intake, leases, builder/reviewer dispatch, CI waits, PR reconciliation, and merge
+
+`bb` stays deterministic and small. The conductor owns workflow judgment and durable run state.
 
 ## Architecture
 
@@ -24,11 +29,18 @@ cmd/bb/
   sprite_workspace.go   Find workspace on-sprite
 
 scripts/
+  conductor.py              GitHub issue -> PR -> review -> merge control plane
   ralph.sh                  The ralph loop: invoke agent, check signals, enforce limits
   ralph-prompt-template.md  Prompt template with {{TASK_DESCRIPTION}}, {{REPO}}, {{SPRITE_NAME}}
 ```
 
 No `internal/` directory. No `pkg/`. All Go logic lives in `cmd/bb/`.
+
+Default operating model:
+
+1. `bb setup` bootstraps persistent worker sprites
+2. `scripts/conductor.py run-once|loop` operates the factory
+3. `bb status` / `bb logs` / conductor run surfaces are the operator recovery path
 
 ## Canonical Harness
 
