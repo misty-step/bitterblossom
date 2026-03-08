@@ -2937,3 +2937,103 @@ def test_run_once_merges_normally_when_no_trusted_surfaces_configured(
 
     assert rc == 0
     assert merge_calls == [500]
+
+
+def test_dispatch_until_artifact_cleanup_failure_returns_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression: verified artifact must not be discarded when bb kill fails after delivery."""
+    proc = _ProcStub([None, 0])
+
+    monkeypatch.setattr(conductor.subprocess, "Popen", lambda *args, **kwargs: proc)
+    monkeypatch.setattr(conductor, "fetch_json_artifact", lambda *_args, **_kwargs: {"status": "ready_for_review", "pr_number": 495})
+
+    def failing_cleanup(runner: object, sprite: str) -> None:
+        raise conductor.CmdError("failed to send operation start message: use of closed network connection")
+
+    monkeypatch.setattr(conductor, "cleanup_sprite_processes", failing_cleanup)
+
+    payload = conductor.dispatch_until_artifact(
+        _RunnerSpy(),
+        "pr83-e2e2-20260306-001",
+        "build it",
+        "misty-step/bitterblossom",
+        pathlib.Path("scripts/prompts/conductor-builder-template.md"),
+        10,
+        "/tmp/builder-result.json",
+    )
+
+    assert payload == {"status": "ready_for_review", "pr_number": 495}
+
+
+def test_dispatch_until_artifact_cleanup_failure_warns_to_stderr(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Cleanup transport errors after artifact arrival must surface as stderr warnings, not propagated exceptions."""
+    proc = _ProcStub([None, 0])
+
+    monkeypatch.setattr(conductor.subprocess, "Popen", lambda *args, **kwargs: proc)
+    monkeypatch.setattr(conductor, "fetch_json_artifact", lambda *_args, **_kwargs: {"status": "ready_for_review"})
+    monkeypatch.setattr(
+        conductor,
+        "cleanup_sprite_processes",
+        lambda _runner, _sprite: (_ for _ in ()).throw(conductor.CmdError("use of closed network connection")),
+    )
+
+    conductor.dispatch_until_artifact(
+        _RunnerSpy(),
+        "fern",
+        "ship it",
+        "misty-step/bitterblossom",
+        pathlib.Path("scripts/prompts/conductor-builder-template.md"),
+        10,
+        "/tmp/builder-result.json",
+    )
+
+    captured = capsys.readouterr()
+    assert "warning" in captured.err
+    assert "fern" in captured.err
+    assert "use of closed network connection" in captured.err
+
+
+def test_run_once_cleanup_error_after_builder_handoff_does_not_record_false_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """Regression: a CmdError raised after builder_handoff_recorded must not overwrite run to phase=failed."""
+    issue = conductor.Issue(number=485, title="fix thing", body="body", url="https://example.com/485", labels=["autopilot"])
+    builder = conductor.BuilderResult(
+        status="ready_for_review",
+        branch="factory/485-1772912018",
+        pr_number=495,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/495",
+        summary="done",
+        tests=[],
+    )
+
+    monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
+    monkeypatch.setattr(conductor, "select_worker", lambda *_a, **_kw: "pr83-e2e2-20260306-001")
+    monkeypatch.setattr(conductor, "ensure_reviewers_ready", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "run_builder", lambda *_a, **_kw: (builder, {"status": "ready_for_review"}))
+
+    # Simulate a transport error during the review round (post-handoff)
+    monkeypatch.setattr(
+        conductor,
+        "run_review_round",
+        lambda *_a, **_kw: (_ for _ in ()).throw(conductor.CmdError("use of closed network connection")),
+    )
+    monkeypatch.setattr(conductor, "comment_issue", lambda *_a, **_kw: None)
+
+    args = _make_run_once_args(tmp_path, issue_number=485)
+    rc = conductor.run_once(args)
+
+    # Run should return 0 — handoff was proven, cleanup error is a warning
+    assert rc == 0
+
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    row = conn.execute("select phase, status, pr_number from runs where run_id like 'run-485-%'").fetchone()
+    assert row is not None
+    assert row["phase"] == "reviewing"
+    assert row["status"] == "active"
+    assert row["pr_number"] == 495
+
+    event_types = [r[0] for r in conn.execute("select event_type from events where run_id like 'run-485-%'").fetchall()]
+    assert "cleanup_warning" in event_types
+    assert "command_failed" not in event_types
