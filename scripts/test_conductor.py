@@ -2137,6 +2137,36 @@ def test_show_runs_includes_heartbeat_age_and_blocking_reason(
     assert rows["run-blocked"]["latest_event"]["event_type"] == "issue_comment_failed"
 
 
+def test_render_run_row_fetches_recent_events_once(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=1, title="test", body="body", url="https://example.com/1", labels=["autopilot"])
+    conductor.create_run(conn, "run-1", "misty-step/bitterblossom", issue, "default")
+    conductor.record_event(conn, tmp_path / "events.jsonl", "run-1", "builder_selected", {"sprite": "fern"})
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-1",
+        "pr_feedback_blocked",
+        {"pr_number": 1, "reason": "unchanged_after_revision", "threads": []},
+    )
+    row = conductor.fetch_run_row(conn, "run-1")
+    assert row is not None
+
+    original = conductor.recent_event_rows
+    calls: list[int] = []
+
+    def counting_recent_event_rows(db: sqlite3.Connection, run_id: str, limit: int) -> list[sqlite3.Row]:
+        calls.append(limit)
+        return original(db, run_id, limit)
+
+    monkeypatch.setattr(conductor, "recent_event_rows", counting_recent_event_rows)
+
+    rendered = conductor.render_run_row(conn, row)
+
+    assert rendered["blocking_reason"] == "pr feedback blocked (unchanged_after_revision)"
+    assert calls == [conductor.BLOCKING_REASON_SCAN_LIMIT]
+
+
 def test_show_events_prints_run_metadata_and_recent_events(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: pathlib.Path,

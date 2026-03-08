@@ -425,7 +425,7 @@ def blocking_reason_from_event(event_type: str, payload: dict[str, Any]) -> str 
                 verdict = review.get("verdict") or "unknown"
                 verdicts.append(f"{reviewer}:{verdict}")
             if verdicts:
-                return "review council blocked (" + ", ".join(verdicts) + ")"
+                return f"review council blocked ({', '.join(verdicts)})"
         return "review council blocked"
     if event_type == "external_review_wait_complete" and payload.get("passed") is False:
         output = str(payload.get("output") or "").strip()
@@ -468,13 +468,11 @@ def render_run_row(conn: sqlite3.Connection, row: sqlite3.Row, *, include_events
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
-    event_rows = recent_event_rows(conn, row["run_id"], max(include_events, 1))
+    fetch_limit = max(max(include_events, BLOCKING_REASON_SCAN_LIMIT), 1)
+    event_rows = recent_event_rows(conn, row["run_id"], fetch_limit)
     if event_rows:
         rendered["latest_event"] = render_event_row(event_rows[0])
-    reason_rows = event_rows
-    if len(reason_rows) < BLOCKING_REASON_SCAN_LIMIT:
-        reason_rows = recent_event_rows(conn, row["run_id"], BLOCKING_REASON_SCAN_LIMIT)
-    for event_row in reason_rows:
+    for event_row in event_rows:
         reason = blocking_reason_from_event(event_row["event_type"], json.loads(event_row["payload_json"]))
         if reason:
             rendered["blocking_reason"] = reason
