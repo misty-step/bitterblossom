@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import pathlib
@@ -39,6 +40,10 @@ TRUSTED_REVIEW_BOT_LOGINS = {
     "greptile-apps",
     "greptile-apps[bot]",
 }
+FINDING_CLASSIFICATIONS = {"bug", "risk", "style", "question", "unspecified"}
+FINDING_SEVERITIES = {"critical", "high", "medium", "low", "unknown"}
+FINDING_DECISIONS = {"fix_now", "defer", "reject", "noise", "pending"}
+FINDING_STATUSES = {"open", "addressed", "deferred", "rejected", "duplicate", "pending"}
 
 
 @dataclass(slots=True)
@@ -78,6 +83,51 @@ class ReviewThread:
     body: str
     url: str
     author_association: str = ""
+
+
+@dataclass(slots=True)
+class ReviewWave:
+    id: int
+    run_id: str
+    kind: str
+    ordinal: int
+    pr_number: int | None
+    status: str
+    reviewer_count: int
+    started_at: str
+    completed_at: str | None
+
+
+@dataclass(slots=True)
+class ReviewWaveReview:
+    wave_id: int
+    reviewer: str
+    verdict: str
+    summary: str
+    source_kind: str
+    payload: dict[str, Any]
+    created_at: str
+
+
+@dataclass(slots=True)
+class ReviewFinding:
+    id: int | None
+    run_id: str
+    wave_id: int
+    reviewer: str
+    source_kind: str
+    source_id: str
+    fingerprint: str
+    classification: str
+    severity: str
+    decision: str
+    status: str
+    path: str
+    line: int | None
+    message: str
+    raw: dict[str, Any]
+    created_at: str | None = None
+    updated_at: str | None = None
 
 
 @dataclass(slots=True)
@@ -182,6 +232,52 @@ def init_db(conn: sqlite3.Connection) -> None:
             payload_json text not null,
             created_at text not null
         );
+
+        create table if not exists review_waves (
+            id integer primary key autoincrement,
+            run_id text not null,
+            kind text not null,
+            ordinal integer not null,
+            pr_number integer,
+            status text not null,
+            reviewer_count integer not null default 0,
+            started_at text not null,
+            completed_at text,
+            unique (run_id, kind, ordinal)
+        );
+
+        create table if not exists review_wave_reviews (
+            wave_id integer not null,
+            reviewer text not null,
+            verdict text not null,
+            summary text not null,
+            source_kind text not null,
+            payload_json text not null,
+            created_at text not null,
+            primary key (wave_id, reviewer)
+        );
+
+        create table if not exists review_findings (
+            id integer primary key autoincrement,
+            run_id text not null,
+            wave_id integer not null,
+            reviewer text not null,
+            source_kind text not null,
+            source_id text not null,
+            fingerprint text not null,
+            classification text not null,
+            severity text not null,
+            decision text not null,
+            status text not null,
+            path text not null,
+            line integer,
+            message text not null,
+            raw_json text not null,
+            created_at text not null,
+            updated_at text not null
+        );
+        create unique index if not exists idx_review_findings_identity
+            on review_findings (wave_id, reviewer, source_kind, source_id);
         """
     )
     ensure_column(conn, "runs", "heartbeat_at", "text")
@@ -825,6 +921,346 @@ def parse_review_result(reviewer: str, payload: dict[str, Any]) -> ReviewResult:
     )
 
 
+def normalized_text(value: Any, default: str) -> str:
+    if value is None:
+        return default
+    text = str(value).strip()
+    return text or default
+
+
+def normalized_choice(value: Any, default: str, allowed: set[str]) -> str:
+    text = normalized_text(value, default).lower()
+    return text if text in allowed else default
+
+
+def normalized_line(value: Any) -> int | None:
+    if value in ("", None):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def review_finding_fingerprint(*, classification: str, severity: str, path: str, line: int | None, message: str) -> str:
+    material = json.dumps(
+        {
+            "classification": classification,
+            "severity": severity,
+            "path": path,
+            "line": line,
+            "message": message,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def normalize_review_finding(
+    run_id: str,
+    wave_id: int,
+    review: ReviewResult,
+    raw_finding: Any,
+    index: int,
+) -> ReviewFinding:
+    if not isinstance(raw_finding, dict):
+        raise CmdError(f"invalid review finding from {review.reviewer}: finding {index} is not an object")
+    classification = normalized_choice(raw_finding.get("classification"), "unspecified", FINDING_CLASSIFICATIONS)
+    severity = normalized_choice(raw_finding.get("severity"), "unknown", FINDING_SEVERITIES)
+    decision = normalized_choice(raw_finding.get("decision"), "pending", FINDING_DECISIONS)
+    status = normalized_choice(raw_finding.get("status"), "open", FINDING_STATUSES)
+    path = normalized_text(raw_finding.get("path"), "")
+    line = normalized_line(raw_finding.get("line"))
+    message = normalized_text(raw_finding.get("message"), "")
+    fingerprint = review_finding_fingerprint(
+        classification=classification,
+        severity=severity,
+        path=path,
+        line=line,
+        message=message,
+    )
+    source_id = normalized_text(raw_finding.get("source_id"), fingerprint)
+    return ReviewFinding(
+        id=None,
+        run_id=run_id,
+        wave_id=wave_id,
+        reviewer=review.reviewer,
+        source_kind="review_artifact",
+        source_id=source_id,
+        fingerprint=fingerprint,
+        classification=classification,
+        severity=severity,
+        decision=decision,
+        status=status,
+        path=path,
+        line=line,
+        message=message,
+        raw=raw_finding,
+    )
+
+
+def normalize_review_thread_finding(run_id: str, wave_id: int, thread: ReviewThread) -> ReviewFinding:
+    return ReviewFinding(
+        id=None,
+        run_id=run_id,
+        wave_id=wave_id,
+        reviewer=thread.author_login,
+        source_kind="pr_review_thread",
+        source_id=thread.id,
+        fingerprint=review_finding_fingerprint(
+            classification="unspecified",
+            severity="unknown",
+            path=thread.path,
+            line=thread.line,
+            message=thread.body,
+        ),
+        classification="unspecified",
+        severity="unknown",
+        decision="pending",
+        status="open",
+        path=thread.path,
+        line=thread.line,
+        message=thread.body,
+        raw=asdict(thread),
+    )
+
+
+def next_review_wave_ordinal(conn: sqlite3.Connection, run_id: str, kind: str) -> int:
+    row = conn.execute(
+        "select coalesce(max(ordinal), 0) as ordinal from review_waves where run_id = ? and kind = ?",
+        (run_id, kind),
+    ).fetchone()
+    return int(row["ordinal"]) + 1
+
+
+def start_review_wave(
+    conn: sqlite3.Connection,
+    run_id: str,
+    kind: str,
+    *,
+    pr_number: int | None,
+    reviewer_count: int = 0,
+) -> int:
+    ts = now_utc()
+    ordinal = next_review_wave_ordinal(conn, run_id, kind)
+    cursor = conn.execute(
+        """
+        insert into review_waves (
+            run_id, kind, ordinal, pr_number, status, reviewer_count, started_at
+        ) values (?, ?, ?, ?, 'open', ?, ?)
+        """,
+        (run_id, kind, ordinal, pr_number, reviewer_count, ts),
+    )
+    conn.commit()
+    return int(cursor.lastrowid)
+
+
+def finish_review_wave(conn: sqlite3.Connection, wave_id: int, status: str, *, commit: bool = True) -> None:
+    conn.execute(
+        "update review_waves set status = ?, completed_at = ? where id = ?",
+        (status, now_utc(), wave_id),
+    )
+    if commit:
+        conn.commit()
+
+
+def persist_review_wave_review(
+    conn: sqlite3.Connection,
+    wave_id: int,
+    review: ReviewResult,
+    payload: dict[str, Any],
+    *,
+    source_kind: str,
+    commit: bool = True,
+) -> None:
+    conn.execute(
+        """
+        insert or ignore into review_wave_reviews (
+            wave_id, reviewer, verdict, summary, source_kind, payload_json, created_at
+        ) values (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            wave_id,
+            review.reviewer,
+            review.verdict,
+            review.summary,
+            source_kind,
+            json.dumps(payload, separators=(",", ":")),
+            now_utc(),
+        ),
+    )
+    if commit:
+        conn.commit()
+
+
+def persist_review_findings(conn: sqlite3.Connection, findings: list[ReviewFinding], *, commit: bool = True) -> None:
+    ts = now_utc()
+    rows = [
+        (
+            finding.run_id,
+            finding.wave_id,
+            finding.reviewer,
+            finding.source_kind,
+            finding.source_id,
+            finding.fingerprint,
+            finding.classification,
+            finding.severity,
+            finding.decision,
+            finding.status,
+            finding.path,
+            finding.line,
+            finding.message,
+            json.dumps(finding.raw, separators=(",", ":")),
+            ts,
+            ts,
+        )
+        for finding in findings
+    ]
+    if not rows:
+        return
+    conn.executemany(
+        """
+        insert or ignore into review_findings (
+            run_id, wave_id, reviewer, source_kind, source_id, fingerprint,
+            classification, severity, decision, status, path, line, message,
+            raw_json, created_at, updated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        rows,
+    )
+    if commit:
+        conn.commit()
+
+
+def record_review_artifact(
+    conn: sqlite3.Connection,
+    run_id: str,
+    wave_id: int,
+    reviewer: str,
+    payload: dict[str, Any],
+) -> ReviewResult:
+    review = parse_review_result(reviewer, payload)
+    findings = [
+        normalize_review_finding(run_id, wave_id, review, raw_finding, index)
+        for index, raw_finding in enumerate(review.findings, start=1)
+    ]
+    with conn:
+        persist_review(conn, run_id, review, commit=False)
+        persist_review_wave_review(conn, wave_id, review, payload, source_kind="review_artifact", commit=False)
+        persist_review_findings(conn, findings, commit=False)
+    return review
+
+
+def record_pr_thread_scan(
+    conn: sqlite3.Connection,
+    run_id: str,
+    pr_number: int,
+    threads: list[ReviewThread],
+) -> int:
+    wave_id = start_review_wave(
+        conn,
+        run_id,
+        "pr_thread_scan",
+        pr_number=pr_number,
+        reviewer_count=len({thread.author_login for thread in threads}),
+    )
+    try:
+        findings = [normalize_review_thread_finding(run_id, wave_id, thread) for thread in threads]
+        with conn:
+            persist_review_findings(conn, findings, commit=False)
+            finish_review_wave(conn, wave_id, "clear" if not findings else "findings_present", commit=False)
+    except Exception:
+        finish_review_wave(conn, wave_id, "failed")
+        raise
+    return wave_id
+
+
+def load_review_waves(conn: sqlite3.Connection, run_id: str) -> list[ReviewWave]:
+    rows = conn.execute(
+        """
+        select id, run_id, kind, ordinal, pr_number, status, reviewer_count, started_at, completed_at
+        from review_waves
+        where run_id = ?
+        order by id
+        """,
+        (run_id,),
+    ).fetchall()
+    return [
+        ReviewWave(
+            id=int(row["id"]),
+            run_id=str(row["run_id"]),
+            kind=str(row["kind"]),
+            ordinal=int(row["ordinal"]),
+            pr_number=int(row["pr_number"]) if row["pr_number"] is not None else None,
+            status=str(row["status"]),
+            reviewer_count=int(row["reviewer_count"]),
+            started_at=str(row["started_at"]),
+            completed_at=str(row["completed_at"]) if row["completed_at"] is not None else None,
+        )
+        for row in rows
+    ]
+
+
+def load_review_wave_reviews(conn: sqlite3.Connection, wave_id: int) -> list[ReviewWaveReview]:
+    rows = conn.execute(
+        """
+        select wave_id, reviewer, verdict, summary, source_kind, payload_json, created_at
+        from review_wave_reviews
+        where wave_id = ?
+        order by reviewer
+        """,
+        (wave_id,),
+    ).fetchall()
+    return [
+        ReviewWaveReview(
+            wave_id=int(row["wave_id"]),
+            reviewer=str(row["reviewer"]),
+            verdict=str(row["verdict"]),
+            summary=str(row["summary"]),
+            source_kind=str(row["source_kind"]),
+            payload=json.loads(row["payload_json"]),
+            created_at=str(row["created_at"]),
+        )
+        for row in rows
+    ]
+
+
+def load_review_findings(conn: sqlite3.Connection, run_id: str) -> list[ReviewFinding]:
+    rows = conn.execute(
+        """
+        select id, run_id, wave_id, reviewer, source_kind, source_id, fingerprint, classification,
+               severity, decision, status, path, line, message, raw_json, created_at, updated_at
+        from review_findings
+        where run_id = ?
+        order by id
+        """,
+        (run_id,),
+    ).fetchall()
+    return [
+        ReviewFinding(
+            id=int(row["id"]),
+            run_id=str(row["run_id"]),
+            wave_id=int(row["wave_id"]),
+            reviewer=str(row["reviewer"]),
+            source_kind=str(row["source_kind"]),
+            source_id=str(row["source_id"]),
+            fingerprint=str(row["fingerprint"]),
+            classification=str(row["classification"]),
+            severity=str(row["severity"]),
+            decision=str(row["decision"]),
+            status=str(row["status"]),
+            path=str(row["path"]),
+            line=int(row["line"]) if row["line"] is not None else None,
+            message=str(row["message"]),
+            raw=json.loads(row["raw_json"]),
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+        )
+        for row in rows
+    ]
+
+
 def verify_builder_pr(runner: Runner, repo: str, pr_number: int, expected_branch: str) -> tuple[int, str]:
     pr = gh_json(runner, ["pr", "view", str(pr_number), "--repo", repo, "--json", "number,url,headRefName,state"])
     if int(pr["number"]) != pr_number:
@@ -1321,8 +1757,9 @@ def handle_pr_review_threads(
     last_pr_feedback_thread_ids: tuple[str, ...],
 ) -> tuple[str, str | None, tuple[str, ...]]:
     unresolved_threads = list_unresolved_review_threads(runner, repo, pr_number)
+    record_pr_thread_scan(conn, run_id, pr_number, unresolved_threads)
     if not unresolved_threads:
-        return "clear", None, last_pr_feedback_thread_ids
+        return "clear", None, ()
 
     trusted_threads = [thread for thread in unresolved_threads if is_trusted_review_author(thread)]
     untrusted_threads = [thread for thread in unresolved_threads if not is_trusted_review_author(thread)]
@@ -1788,39 +2225,51 @@ def run_review_round(
     on_tick: Callable[[], None] | None = None,
 ) -> list[ReviewResult]:
     reviews: dict[str, ReviewResult] = {}
-    tasks: list[DispatchTask] = []
-    for reviewer in reviewers:
-        try:
-            cleanup_sprite_processes(runner, reviewer)
-        except CmdError:
-            pass
-        ensure_sprite_ready(runner, reviewer, repo, prompt_template)
-        review_rel = artifact_rel(run_id, f"review-{reviewer}.json")
-        review_prompt = build_review_task(issue, run_id, pr_number, pr_url, review_rel)
-        tasks.append(
-            DispatchTask(
-                sprite=reviewer,
-                prompt=review_prompt,
-                artifact_path=artifact_abs(repo, review_rel),
-            )
-        )
-
-    def handle_artifact(reviewer: str, payload: dict[str, Any]) -> None:
-        review = parse_review_result(reviewer, payload)
-        persist_review(conn, run_id, review)
-        reviews[reviewer] = review
-        record_event(conn, event_log, run_id, "review_complete", {"reviewer": review.reviewer, "verdict": review.verdict})
-
-    dispatch_tasks_until_artifacts(
-        runner,
-        tasks,
-        repo,
-        prompt_template,
-        timeout_minutes,
-        on_artifact=handle_artifact,
-        on_tick=on_tick,
+    wave_id = start_review_wave(
+        conn,
+        run_id,
+        "review_round",
+        pr_number=pr_number,
+        reviewer_count=len(reviewers),
     )
-    return [reviews[reviewer] for reviewer in reviewers]
+    try:
+        tasks: list[DispatchTask] = []
+        for reviewer in reviewers:
+            try:
+                cleanup_sprite_processes(runner, reviewer)
+            except CmdError:
+                pass
+            ensure_sprite_ready(runner, reviewer, repo, prompt_template)
+            review_rel = artifact_rel(run_id, f"review-{reviewer}.json")
+            review_prompt = build_review_task(issue, run_id, pr_number, pr_url, review_rel)
+            tasks.append(
+                DispatchTask(
+                    sprite=reviewer,
+                    prompt=review_prompt,
+                    artifact_path=artifact_abs(repo, review_rel),
+                )
+            )
+
+        def handle_artifact(reviewer: str, payload: dict[str, Any]) -> None:
+            review = record_review_artifact(conn, run_id, wave_id, reviewer, payload)
+            reviews[reviewer] = review
+            record_event(conn, event_log, run_id, "review_complete", {"reviewer": review.reviewer, "verdict": review.verdict})
+
+        dispatch_tasks_until_artifacts(
+            runner,
+            tasks,
+            repo,
+            prompt_template,
+            timeout_minutes,
+            on_artifact=handle_artifact,
+            on_tick=on_tick,
+        )
+        ordered_reviews = [reviews[reviewer] for reviewer in reviewers]
+        finish_review_wave(conn, wave_id, "completed")
+    except Exception:
+        finish_review_wave(conn, wave_id, "partial" if reviews else "failed")
+        raise
+    return ordered_reviews
 
 
 def summarize_reviews(reviews: list[ReviewResult]) -> str:
@@ -1839,16 +2288,22 @@ def summarize_reviews(reviews: list[ReviewResult]) -> str:
     return "\n".join(chunks)
 
 
-def persist_review(conn: sqlite3.Connection, run_id: str, review: ReviewResult) -> None:
+def persist_review(conn: sqlite3.Connection, run_id: str, review: ReviewResult, *, commit: bool = True) -> None:
+    created_at = now_utc()
     conn.execute(
         """
-        insert or replace into reviews (
+        insert into reviews (
             run_id, reviewer_sprite, verdict, summary, findings_json, created_at
         ) values (?, ?, ?, ?, ?, ?)
+        on conflict(run_id, reviewer_sprite) do update set
+            verdict = excluded.verdict,
+            summary = excluded.summary,
+            findings_json = excluded.findings_json
         """,
-        (run_id, review.reviewer, review.verdict, review.summary, json.dumps(review.findings), now_utc()),
+        (run_id, review.reviewer, review.verdict, review.summary, json.dumps(review.findings), created_at),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def format_council_comment(reviews: list[ReviewResult]) -> str:

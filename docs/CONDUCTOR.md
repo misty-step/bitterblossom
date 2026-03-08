@@ -185,6 +185,17 @@ sprite exec coordinator -- bash -lc 'tail -f ~/.bb/conductor.log'
 
 Every run writes immediately to `.bb/conductor.db` and `.bb/events.jsonl` on the coordinator. State survives loop restarts. If the conductor process dies, restart it — already-completed runs won't be re-processed because their leases have been released.
 
+Review state is now split deliberately:
+
+- `reviews` keeps the latest per-reviewer council snapshot for compatibility with existing run logic.
+- `review_waves` is append-only wave history for council rounds and PR-thread scans.
+- `review_wave_reviews` stores per-wave reviewer verdicts and raw payloads.
+- `review_findings` stores normalized findings with reviewer, wave, source id, fingerprint, classification, severity, decision, and status.
+
+Council artifact writes are atomic at the storage boundary: the compatibility snapshot, per-wave reviewer payload, and normalized findings land together for each artifact, and PR-thread scans only finalize their wave after the finding write succeeds.
+
+That split keeps merge policy and GitHub thread mechanics out of the storage contract. Future governance changes can reason over the ledger without losing prior review history.
+
 ## Blocked Runs
 
 A run exits with `rc=2` (blocked) when the conductor cannot proceed without human input — examples:
@@ -266,7 +277,7 @@ The target repo currently requires a `merge-gate` status on `master`.
 
 This repo now publishes `merge-gate` in GitHub Actions. The conductor also checks for missing required statuses before it attempts merge, so policy mismatches fail loudly instead of pretending CI is complete.
 
-This repo also requires resolved PR conversations. After CI turns green, the conductor queries unresolved review threads, routes that feedback back to the builder on the existing PR, and only proceeds once the conversation gate is clear. If the same threads still block after a revision pass, the conductor stops with `pr_feedback_blocked` and escalates to a human for confirmation.
+After CI turns green, the conductor queries unresolved review threads, records that scan in the review ledger, routes trusted feedback back to the builder on the existing PR, and only proceeds once the thread gate is clear. If the same threads still block after a revision pass, the conductor stops with `pr_feedback_blocked` and escalates to a human for confirmation.
 
 ## Review Council
 

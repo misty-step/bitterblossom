@@ -6,9 +6,10 @@ The architecture follows a "Thin CLI, Thick Skills" philosophy. It bifurcates th
 *   **Execution Layer (Claude Code):** Agentic intelligence, task decomposition, and repository analysis are delegated to Claude Code skills and the `ralph-loop` plugin.
 
 ### Key File Roles
-*   **`001-claude-code-canonical-harness.md`**: Establishes Claude Code as the sole supported harness for sprite dispatch. It details the deprecation of OpenCode due to stability issues and outlines the use of a proxy provider to route requests through OpenRouter to non-Anthropic models.
-*   **`002-architecture-minimalism.md`**: Codifies the reduction of the Go codebase from ~42K LOC to <1K LOC by leveraging the `sprites-go` SDK. It defines the specific responsibilities of the `bb` CLI (dispatch, setup, logs, status) versus the intelligence residing in agent skills.
-*   **`scripts/ralph.sh`**: Referenced as the "sacred" core iteration loop that invokes the harness, manages signal files, and enforces execution limits.
+*   **[`001-claude-code-canonical-harness.md`](001-claude-code-canonical-harness.md)**: Establishes Claude Code as the sole supported harness for sprite dispatch. It details the deprecation of OpenCode due to stability issues and outlines the use of a proxy provider to route requests through OpenRouter to non-Anthropic models.
+*   **[`002-architecture-minimalism.md`](002-architecture-minimalism.md)**: Codifies the reduction of the Go codebase from ~42K LOC to <1K LOC by leveraging the `sprites-go` SDK. It defines the specific responsibilities of the `bb` CLI (dispatch, setup, logs, status) versus the intelligence residing in agent skills.
+*   **[`004-bounded-review-governance.md`](004-bounded-review-governance.md)**: Proposes bounded review waves and a conductor-owned review ledger so merge decisions depend on semantic blocking findings, not raw GitHub conversation counts. It explicitly rejects enabling branch protection's `conversation_resolution` setting until the conductor can prove convergence under noisy multi-bot review.
+*   **[`scripts/ralph.sh`](../scripts/ralph.sh)**: Referenced as the "sacred" core iteration loop that invokes the harness, manages signal files, and enforces execution limits.
 
 ### Dependencies and Technical Constraints
 *   **Harness:** Claude Code pinned to the Sonnet 4.6 runtime with the `ralph-loop` plugin.
