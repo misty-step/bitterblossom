@@ -1009,13 +1009,13 @@ def normalize_review_thread_finding(run_id: str, wave_id: int, thread: ReviewThr
         source_kind="pr_review_thread",
         source_id=thread.id,
         fingerprint=review_finding_fingerprint(
-            classification="pr_review_thread",
+            classification="unspecified",
             severity="unknown",
             path=thread.path,
             line=thread.line,
             message=thread.body,
         ),
-        classification="pr_review_thread",
+        classification="unspecified",
         severity="unknown",
         decision="pending",
         status="open",
@@ -1031,7 +1031,7 @@ def next_review_wave_ordinal(conn: sqlite3.Connection, run_id: str, kind: str) -
         "select coalesce(max(ordinal), 0) as ordinal from review_waves where run_id = ? and kind = ?",
         (run_id, kind),
     ).fetchone()
-    return int(row["ordinal"]) + 1 if row is not None else 1
+    return int(row["ordinal"]) + 1
 
 
 def start_review_wave(
@@ -2289,6 +2289,7 @@ def summarize_reviews(reviews: list[ReviewResult]) -> str:
 
 
 def persist_review(conn: sqlite3.Connection, run_id: str, review: ReviewResult, *, commit: bool = True) -> None:
+    created_at = now_utc()
     conn.execute(
         """
         insert into reviews (
@@ -2297,10 +2298,9 @@ def persist_review(conn: sqlite3.Connection, run_id: str, review: ReviewResult, 
         on conflict(run_id, reviewer_sprite) do update set
             verdict = excluded.verdict,
             summary = excluded.summary,
-            findings_json = excluded.findings_json,
-            created_at = excluded.created_at
+            findings_json = excluded.findings_json
         """,
-        (run_id, review.reviewer, review.verdict, review.summary, json.dumps(review.findings), now_utc()),
+        (run_id, review.reviewer, review.verdict, review.summary, json.dumps(review.findings), created_at),
     )
     if commit:
         conn.commit()

@@ -251,6 +251,33 @@ def test_normalize_review_finding_canonicalizes_semantic_fields_before_fingerpri
     assert left.source_id == right.source_id
 
 
+def test_persist_review_preserves_created_at_on_refresh(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    stamps = iter(["2026-03-07T00:00:00Z", "2026-03-07T00:05:00Z"])
+    monkeypatch.setattr(conductor, "now_utc", lambda: next(stamps))
+
+    conductor.persist_review(
+        conn,
+        "run-12-1",
+        conductor.ReviewResult(reviewer="fern", verdict="fix", summary="first", findings=[]),
+    )
+    conductor.persist_review(
+        conn,
+        "run-12-1",
+        conductor.ReviewResult(reviewer="fern", verdict="pass", summary="second", findings=[]),
+    )
+
+    row = conn.execute(
+        "select verdict, summary, created_at from reviews where run_id = 'run-12-1' and reviewer_sprite = 'fern'"
+    ).fetchone()
+    assert row is not None
+    assert row["verdict"] == "pass"
+    assert row["summary"] == "second"
+    assert row["created_at"] == "2026-03-07T00:00:00Z"
+
+
 def test_list_unresolved_review_threads_returns_open_threads() -> None:
     runner = _RunnerSpy(
         [
@@ -1953,7 +1980,7 @@ def test_handle_pr_review_threads_persists_thread_scan_wave(
     assert findings[0].reviewer == "gemini-code-assist"
     assert findings[0].source_kind == "pr_review_thread"
     assert findings[0].source_id == "thread-1"
-    assert findings[0].classification == "pr_review_thread"
+    assert findings[0].classification == "unspecified"
     assert findings[0].path == "README.md"
     assert findings[0].line == 59
 
