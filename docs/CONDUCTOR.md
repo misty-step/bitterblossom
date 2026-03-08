@@ -192,6 +192,8 @@ Review state is now split deliberately:
 - `review_wave_reviews` stores per-wave reviewer verdicts and raw payloads.
 - `review_findings` stores normalized findings with reviewer, wave, source id, fingerprint, classification, severity, decision, and status.
 
+Council artifact writes are atomic at the storage boundary: the compatibility snapshot, per-wave reviewer payload, and normalized findings land together for each artifact, and PR-thread scans only finalize their wave after the finding write succeeds.
+
 That split keeps merge policy and GitHub thread mechanics out of the storage contract. Future governance changes can reason over the ledger without losing prior review history.
 
 ## Blocked Runs

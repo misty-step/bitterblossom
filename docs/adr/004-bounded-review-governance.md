@@ -2,13 +2,13 @@
 
 - **Status:** Proposed
 - **Date:** 2026-03-07
-- **Related:** ADR-003 (Remote Conductor Control Plane), issue #102, issue #498
+- **Related:** [ADR-003](003-remote-conductor-control-plane.md) (Remote Conductor Control Plane), [issue #102](https://github.com/misty-step/bitterblossom/issues/102), [issue #498](https://github.com/misty-step/bitterblossom/issues/498)
 
 ## Context
 
 Bitterblossom currently merges through a semantic gate, not through GitHub's raw "all conversations resolved" setting.
 
-That is intentional. Recent review cycles on PR #495 exposed the core tradeoff:
+That is intentional. Recent review cycles on [PR #495](https://github.com/misty-step/bitterblossom/pull/495) exposed the core tradeoff:
 
 - multiple bot reviewers can emit fresh conversations after each fix
 - late low-severity comments can reopen a PR that is already locally correct

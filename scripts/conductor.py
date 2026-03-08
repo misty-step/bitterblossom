@@ -40,6 +40,10 @@ TRUSTED_REVIEW_BOT_LOGINS = {
     "greptile-apps",
     "greptile-apps[bot]",
 }
+FINDING_CLASSIFICATIONS = {"bug", "risk", "style", "question", "unspecified"}
+FINDING_SEVERITIES = {"critical", "high", "medium", "low", "unknown"}
+FINDING_DECISIONS = {"fix_now", "defer", "reject", "noise", "pending"}
+FINDING_STATUSES = {"open", "addressed", "deferred", "rejected", "duplicate", "pending"}
 
 
 @dataclass(slots=True)
@@ -924,6 +928,11 @@ def normalized_text(value: Any, default: str) -> str:
     return text or default
 
 
+def normalized_choice(value: Any, default: str, allowed: set[str]) -> str:
+    text = normalized_text(value, default).lower()
+    return text if text in allowed else default
+
+
 def normalized_line(value: Any) -> int | None:
     if value in ("", None):
         return None
@@ -957,14 +966,21 @@ def normalize_review_finding(
 ) -> ReviewFinding:
     if not isinstance(raw_finding, dict):
         raise CmdError(f"invalid review finding from {review.reviewer}: finding {index} is not an object")
-    classification = normalized_text(raw_finding.get("classification"), "unspecified")
-    severity = normalized_text(raw_finding.get("severity"), "unknown")
-    decision = normalized_text(raw_finding.get("decision"), "pending")
-    status = normalized_text(raw_finding.get("status"), "open")
+    classification = normalized_choice(raw_finding.get("classification"), "unspecified", FINDING_CLASSIFICATIONS)
+    severity = normalized_choice(raw_finding.get("severity"), "unknown", FINDING_SEVERITIES)
+    decision = normalized_choice(raw_finding.get("decision"), "pending", FINDING_DECISIONS)
+    status = normalized_choice(raw_finding.get("status"), "open", FINDING_STATUSES)
     path = normalized_text(raw_finding.get("path"), "")
     line = normalized_line(raw_finding.get("line"))
     message = normalized_text(raw_finding.get("message"), "")
-    source_id = normalized_text(raw_finding.get("source_id"), f"{review.reviewer}:{index}")
+    fingerprint = review_finding_fingerprint(
+        classification=classification,
+        severity=severity,
+        path=path,
+        line=line,
+        message=message,
+    )
+    source_id = normalized_text(raw_finding.get("source_id"), fingerprint)
     return ReviewFinding(
         id=None,
         run_id=run_id,
@@ -972,13 +988,7 @@ def normalize_review_finding(
         reviewer=review.reviewer,
         source_kind="review_artifact",
         source_id=source_id,
-        fingerprint=review_finding_fingerprint(
-            classification=classification,
-            severity=severity,
-            path=path,
-            line=line,
-            message=message,
-        ),
+        fingerprint=fingerprint,
         classification=classification,
         severity=severity,
         decision=decision,
@@ -1046,12 +1056,13 @@ def start_review_wave(
     return int(cursor.lastrowid)
 
 
-def finish_review_wave(conn: sqlite3.Connection, wave_id: int, status: str) -> None:
+def finish_review_wave(conn: sqlite3.Connection, wave_id: int, status: str, *, commit: bool = True) -> None:
     conn.execute(
         "update review_waves set status = ?, completed_at = ? where id = ?",
         (status, now_utc(), wave_id),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def persist_review_wave_review(
@@ -1061,10 +1072,11 @@ def persist_review_wave_review(
     payload: dict[str, Any],
     *,
     source_kind: str,
+    commit: bool = True,
 ) -> None:
     conn.execute(
         """
-        insert or replace into review_wave_reviews (
+        insert or ignore into review_wave_reviews (
             wave_id, reviewer, verdict, summary, source_kind, payload_json, created_at
         ) values (?, ?, ?, ?, ?, ?, ?)
         """,
@@ -1078,10 +1090,11 @@ def persist_review_wave_review(
             now_utc(),
         ),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
-def persist_review_findings(conn: sqlite3.Connection, findings: list[ReviewFinding]) -> None:
+def persist_review_findings(conn: sqlite3.Connection, findings: list[ReviewFinding], *, commit: bool = True) -> None:
     ts = now_utc()
     rows = [
         (
@@ -1108,7 +1121,7 @@ def persist_review_findings(conn: sqlite3.Connection, findings: list[ReviewFindi
         return
     conn.executemany(
         """
-        insert or replace into review_findings (
+        insert or ignore into review_findings (
             run_id, wave_id, reviewer, source_kind, source_id, fingerprint,
             classification, severity, decision, status, path, line, message,
             raw_json, created_at, updated_at
@@ -1116,7 +1129,8 @@ def persist_review_findings(conn: sqlite3.Connection, findings: list[ReviewFindi
         """,
         rows,
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def record_review_artifact(
@@ -1127,12 +1141,14 @@ def record_review_artifact(
     payload: dict[str, Any],
 ) -> ReviewResult:
     review = parse_review_result(reviewer, payload)
-    persist_review(conn, run_id, review)
-    persist_review_wave_review(conn, wave_id, review, payload, source_kind="review_artifact")
-    persist_review_findings(
-        conn,
-        [normalize_review_finding(run_id, wave_id, review, raw_finding, index) for index, raw_finding in enumerate(review.findings, start=1)],
-    )
+    findings = [
+        normalize_review_finding(run_id, wave_id, review, raw_finding, index)
+        for index, raw_finding in enumerate(review.findings, start=1)
+    ]
+    with conn:
+        persist_review(conn, run_id, review, commit=False)
+        persist_review_wave_review(conn, wave_id, review, payload, source_kind="review_artifact", commit=False)
+        persist_review_findings(conn, findings, commit=False)
     return review
 
 
@@ -1149,8 +1165,14 @@ def record_pr_thread_scan(
         pr_number=pr_number,
         reviewer_count=len({thread.author_login for thread in threads}),
     )
-    persist_review_findings(conn, [normalize_review_thread_finding(run_id, wave_id, thread) for thread in threads])
-    finish_review_wave(conn, wave_id, "clear" if not threads else "findings_present")
+    try:
+        findings = [normalize_review_thread_finding(run_id, wave_id, thread) for thread in threads]
+        with conn:
+            persist_review_findings(conn, findings, commit=False)
+            finish_review_wave(conn, wave_id, "clear" if not findings else "findings_present", commit=False)
+    except Exception:
+        finish_review_wave(conn, wave_id, "failed")
+        raise
     return wave_id
 
 
@@ -2210,29 +2232,29 @@ def run_review_round(
         pr_number=pr_number,
         reviewer_count=len(reviewers),
     )
-    tasks: list[DispatchTask] = []
-    for reviewer in reviewers:
-        try:
-            cleanup_sprite_processes(runner, reviewer)
-        except CmdError:
-            pass
-        ensure_sprite_ready(runner, reviewer, repo, prompt_template)
-        review_rel = artifact_rel(run_id, f"review-{reviewer}.json")
-        review_prompt = build_review_task(issue, run_id, pr_number, pr_url, review_rel)
-        tasks.append(
-            DispatchTask(
-                sprite=reviewer,
-                prompt=review_prompt,
-                artifact_path=artifact_abs(repo, review_rel),
-            )
-        )
-
-    def handle_artifact(reviewer: str, payload: dict[str, Any]) -> None:
-        review = record_review_artifact(conn, run_id, wave_id, reviewer, payload)
-        reviews[reviewer] = review
-        record_event(conn, event_log, run_id, "review_complete", {"reviewer": review.reviewer, "verdict": review.verdict})
-
     try:
+        tasks: list[DispatchTask] = []
+        for reviewer in reviewers:
+            try:
+                cleanup_sprite_processes(runner, reviewer)
+            except CmdError:
+                pass
+            ensure_sprite_ready(runner, reviewer, repo, prompt_template)
+            review_rel = artifact_rel(run_id, f"review-{reviewer}.json")
+            review_prompt = build_review_task(issue, run_id, pr_number, pr_url, review_rel)
+            tasks.append(
+                DispatchTask(
+                    sprite=reviewer,
+                    prompt=review_prompt,
+                    artifact_path=artifact_abs(repo, review_rel),
+                )
+            )
+
+        def handle_artifact(reviewer: str, payload: dict[str, Any]) -> None:
+            review = record_review_artifact(conn, run_id, wave_id, reviewer, payload)
+            reviews[reviewer] = review
+            record_event(conn, event_log, run_id, "review_complete", {"reviewer": review.reviewer, "verdict": review.verdict})
+
         dispatch_tasks_until_artifacts(
             runner,
             tasks,
@@ -2242,11 +2264,12 @@ def run_review_round(
             on_artifact=handle_artifact,
             on_tick=on_tick,
         )
+        ordered_reviews = [reviews[reviewer] for reviewer in reviewers]
+        finish_review_wave(conn, wave_id, "completed")
     except Exception:
-        finish_review_wave(conn, wave_id, "failed")
+        finish_review_wave(conn, wave_id, "partial" if reviews else "failed")
         raise
-    finish_review_wave(conn, wave_id, "completed")
-    return [reviews[reviewer] for reviewer in reviewers]
+    return ordered_reviews
 
 
 def summarize_reviews(reviews: list[ReviewResult]) -> str:
@@ -2265,16 +2288,22 @@ def summarize_reviews(reviews: list[ReviewResult]) -> str:
     return "\n".join(chunks)
 
 
-def persist_review(conn: sqlite3.Connection, run_id: str, review: ReviewResult) -> None:
+def persist_review(conn: sqlite3.Connection, run_id: str, review: ReviewResult, *, commit: bool = True) -> None:
     conn.execute(
         """
-        insert or replace into reviews (
+        insert into reviews (
             run_id, reviewer_sprite, verdict, summary, findings_json, created_at
         ) values (?, ?, ?, ?, ?, ?)
+        on conflict(run_id, reviewer_sprite) do update set
+            verdict = excluded.verdict,
+            summary = excluded.summary,
+            findings_json = excluded.findings_json,
+            created_at = excluded.created_at
         """,
         (run_id, review.reviewer, review.verdict, review.summary, json.dumps(review.findings), now_utc()),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def format_council_comment(reviews: list[ReviewResult]) -> str:

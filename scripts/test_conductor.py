@@ -192,7 +192,7 @@ def test_normalize_review_finding_defaults_and_fingerprint() -> None:
     assert finding.wave_id == 7
     assert finding.reviewer == "fern"
     assert finding.source_kind == "review_artifact"
-    assert finding.source_id == "fern:1"
+    assert finding.source_id == finding.fingerprint
     assert finding.classification == "unspecified"
     assert finding.severity == "high"
     assert finding.decision == "pending"
@@ -207,6 +207,48 @@ def test_normalize_review_finding_defaults_and_fingerprint() -> None:
         {"severity": "high", "path": "README.md", "line": 10, "message": "tighten copy"},
         2,
     ).fingerprint
+
+
+def test_normalize_review_finding_canonicalizes_semantic_fields_before_fingerprinting() -> None:
+    review = conductor.ReviewResult(reviewer="fern", verdict="fix", summary="needs tweak", findings=[])
+
+    left = conductor.normalize_review_finding(
+        "run-12-1",
+        7,
+        review,
+        {
+            "classification": "BUG",
+            "severity": "HIGH",
+            "decision": "FIX_NOW",
+            "status": "OPEN",
+            "path": "README.md",
+            "line": 10,
+            "message": "tighten copy",
+        },
+        1,
+    )
+    right = conductor.normalize_review_finding(
+        "run-12-1",
+        7,
+        review,
+        {
+            "classification": "bug",
+            "severity": "high",
+            "decision": "fix_now",
+            "status": "open",
+            "path": "README.md",
+            "line": 10,
+            "message": "tighten copy",
+        },
+        2,
+    )
+
+    assert left.classification == "bug"
+    assert left.severity == "high"
+    assert left.decision == "fix_now"
+    assert left.status == "open"
+    assert left.fingerprint == right.fingerprint
+    assert left.source_id == right.source_id
 
 
 def test_list_unresolved_review_threads_returns_open_threads() -> None:
@@ -952,6 +994,134 @@ def test_run_review_round_preserves_prior_wave_state(monkeypatch: pytest.MonkeyP
     ).fetchone()
     assert latest_review is not None
     assert latest_review["summary"] == "second"
+
+
+def test_record_review_artifact_is_atomic_on_invalid_finding(tmp_path: pathlib.Path) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    wave_id = conductor.start_review_wave(conn, "run-447-1", "review_round", pr_number=463, reviewer_count=1)
+
+    with pytest.raises(conductor.CmdError):
+        conductor.record_review_artifact(
+            conn,
+            "run-447-1",
+            wave_id,
+            "fern",
+            {
+                "verdict": "fix",
+                "summary": "needs tweak",
+                "findings": [
+                    {"severity": "high", "path": "README.md", "line": 10, "message": "valid"},
+                    "not-a-finding",
+                ],
+            },
+        )
+
+    assert conn.execute("select count(*) from reviews where run_id = 'run-447-1'").fetchone()[0] == 0
+    assert conn.execute("select count(*) from review_wave_reviews where wave_id = ?", (wave_id,)).fetchone()[0] == 0
+    assert conn.execute("select count(*) from review_findings where wave_id = ?", (wave_id,)).fetchone()[0] == 0
+
+
+def test_run_review_round_marks_wave_failed_when_reviewer_prep_raises(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=447, title="test", body="body", url="https://example.com/447", labels=["autopilot"])
+
+    monkeypatch.setattr(conductor, "cleanup_sprite_processes", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        conductor,
+        "ensure_sprite_ready",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(conductor.CmdError("prep failed")),
+    )
+
+    with pytest.raises(conductor.CmdError, match="prep failed"):
+        conductor.run_review_round(
+            _RunnerSpy(),
+            conn,
+            tmp_path / "events.jsonl",
+            "misty-step/bitterblossom",
+            issue,
+            "run-447-1",
+            463,
+            "https://github.com/misty-step/bitterblossom/pull/463",
+            ["fern"],
+            pathlib.Path("scripts/prompts/conductor-reviewer-template.md"),
+            10,
+        )
+
+    waves = conductor.load_review_waves(conn, "run-447-1")
+    assert [(wave.kind, wave.status) for wave in waves] == [("review_round", "failed")]
+
+
+def test_run_review_round_marks_wave_partial_when_not_all_reviews_arrive(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=447, title="test", body="body", url="https://example.com/447", labels=["autopilot"])
+
+    def fake_dispatch_many(
+        _runner: object,
+        _tasks: list[conductor.DispatchTask],
+        _repo: str,
+        _prompt_template: pathlib.Path,
+        _timeout_minutes: int,
+        *,
+        poll_seconds: int = 5,
+        on_artifact: object | None = None,
+        on_tick: object | None = None,
+    ) -> dict[str, dict[str, object]]:
+        _ = (poll_seconds, on_tick)
+        assert on_artifact is not None
+        on_artifact("fern", {"verdict": "pass", "summary": "ok", "findings": []})
+        return {"fern": {"verdict": "pass", "summary": "ok", "findings": []}}
+
+    monkeypatch.setattr(conductor, "dispatch_tasks_until_artifacts", fake_dispatch_many)
+    monkeypatch.setattr(conductor, "cleanup_sprite_processes", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(conductor, "ensure_sprite_ready", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(KeyError):
+        conductor.run_review_round(
+            _RunnerSpy(),
+            conn,
+            tmp_path / "events.jsonl",
+            "misty-step/bitterblossom",
+            issue,
+            "run-447-1",
+            463,
+            "https://github.com/misty-step/bitterblossom/pull/463",
+            ["fern", "sage"],
+            pathlib.Path("scripts/prompts/conductor-reviewer-template.md"),
+            10,
+        )
+
+    waves = conductor.load_review_waves(conn, "run-447-1")
+    assert [(wave.kind, wave.status) for wave in waves] == [("review_round", "partial")]
+
+
+def test_record_pr_thread_scan_marks_wave_failed_on_persist_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    thread = conductor.ReviewThread(
+        id="thread-1",
+        path="README.md",
+        line=59,
+        author_login="gemini-code-assist",
+        author_association="NONE",
+        body="please keep this copy-pastable",
+        url="https://example.com/thread-1",
+    )
+
+    def fail_persist(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(conductor, "persist_review_findings", fail_persist)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        conductor.record_pr_thread_scan(conn, "run-447-1", 460, [thread])
+
+    waves = conductor.load_review_waves(conn, "run-447-1")
+    assert [(wave.kind, wave.status) for wave in waves] == [("pr_thread_scan", "failed")]
 
 
 def test_run_builder_precleans_worker(monkeypatch: pytest.MonkeyPatch) -> None:

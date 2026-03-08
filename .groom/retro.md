@@ -1,6 +1,6 @@
 # Retro
 
-## 2026-03-07 issue #499
+## 2026-03-07 [issue #499](https://github.com/misty-step/bitterblossom/issues/499)
 
 - predicted: M
 - actual: M
