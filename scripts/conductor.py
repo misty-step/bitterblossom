@@ -180,6 +180,22 @@ def now_utc() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def parse_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def seconds_since(value: str | None) -> int | None:
+    ts = parse_timestamp(value)
+    if ts is None:
+        return None
+    return max(0, int((datetime.now(timezone.utc) - ts).total_seconds()))
+
+
 def ensure_parent(path: pathlib.Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -469,6 +485,98 @@ def issue_priority(labels: list[str]) -> tuple[int, str]:
             best = order[upper]
             matched = upper
     return best, matched
+
+
+def recent_events(conn: sqlite3.Connection, run_id: str, limit: int) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        select run_id, event_type, payload_json, created_at
+        from events
+        where run_id = ?
+        order by id desc
+        limit ?
+        """,
+        (run_id, limit),
+    ).fetchall()
+
+
+def summarize_run_reason(row: sqlite3.Row, events: list[sqlite3.Row]) -> dict[str, Any] | None:
+    if row["phase"] not in {"blocked", "failed"} and row["status"] not in {"blocked", "failed"}:
+        return None
+
+    for event in events:
+        payload = json.loads(event["payload_json"])
+        event_type = event["event_type"]
+        reason = payload.get("reason")
+        if isinstance(reason, str) and reason:
+            return {
+                "event_type": event_type,
+                "reason": reason,
+                "summary": f"{event_type}: {reason}",
+            }
+        if event_type == "council_blocked":
+            return {
+                "event_type": event_type,
+                "reason": "review_council_blocked",
+                "summary": "council_blocked: review_council_blocked",
+            }
+        if event_type == "command_failed":
+            error = payload.get("error")
+            return {
+                "event_type": event_type,
+                "reason": "command_failed",
+                "summary": error if isinstance(error, str) and error else "command_failed",
+            }
+        if event_type == "unexpected_error":
+            error = payload.get("error")
+            return {
+                "event_type": event_type,
+                "reason": "unexpected_error",
+                "summary": error if isinstance(error, str) and error else "unexpected_error",
+            }
+        if event_type == "ci_wait_complete" and payload.get("passed") is False:
+            return {
+                "event_type": event_type,
+                "reason": "checks_failed",
+                "summary": "ci_wait_complete: checks_failed",
+            }
+        if event_type == "external_review_wait_complete" and payload.get("passed") is False:
+            return {
+                "event_type": event_type,
+                "reason": "external_reviews_unsettled",
+                "summary": "external_review_wait_complete: external_reviews_unsettled",
+            }
+
+    return None
+
+
+def serialize_event_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "run_id": row["run_id"],
+        "event_type": row["event_type"],
+        "payload": json.loads(row["payload_json"]),
+        "created_at": row["created_at"],
+    }
+
+
+def serialize_run_row(row: sqlite3.Row, events: list[sqlite3.Row]) -> dict[str, Any]:
+    return {
+        "run_id": row["run_id"],
+        "repo": row["repo"],
+        "issue_number": row["issue_number"],
+        "issue_title": row["issue_title"],
+        "phase": row["phase"],
+        "status": row["status"],
+        "builder_sprite": row["builder_sprite"],
+        "builder_profile": row["builder_profile"],
+        "branch": row["branch"],
+        "pr_number": row["pr_number"],
+        "pr_url": row["pr_url"],
+        "heartbeat_at": row["heartbeat_at"],
+        "heartbeat_age_seconds": seconds_since(row["heartbeat_at"]),
+        "updated_at": row["updated_at"],
+        "blocking_reason": summarize_run_reason(row, events),
+    }
 
 
 def run_id_for(issue_number: int) -> str:
@@ -2719,7 +2827,8 @@ def show_runs(args: argparse.Namespace) -> int:
     conn = open_db(pathlib.Path(args.db))
     rows = conn.execute(
         """
-        select run_id, issue_number, issue_title, phase, status, builder_sprite, pr_number, updated_at
+        select run_id, repo, issue_number, issue_title, phase, status, builder_sprite, builder_profile,
+               branch, pr_number, pr_url, heartbeat_at, updated_at
         from runs
         order by created_at desc
         limit ?
@@ -2727,46 +2836,27 @@ def show_runs(args: argparse.Namespace) -> int:
         (args.limit,),
     ).fetchall()
     for row in rows:
-        print(
-            json.dumps(
-                {
-                    "run_id": row["run_id"],
-                    "issue_number": row["issue_number"],
-                    "issue_title": row["issue_title"],
-                    "phase": row["phase"],
-                    "status": row["status"],
-                    "builder_sprite": row["builder_sprite"],
-                    "pr_number": row["pr_number"],
-                    "updated_at": row["updated_at"],
-                }
-            )
-        )
+        print(json.dumps(serialize_run_row(row, recent_events(conn, row["run_id"], 10))))
     return 0
 
 
 def show_events(args: argparse.Namespace) -> int:
     conn = open_db(pathlib.Path(args.db))
-    rows = conn.execute(
+    run = conn.execute(
         """
-        select run_id, event_type, payload_json, created_at
-        from events
+        select run_id, repo, issue_number, issue_title, phase, status, builder_sprite, builder_profile,
+               branch, pr_number, pr_url, heartbeat_at, updated_at
+        from runs
         where run_id = ?
-        order by id desc
-        limit ?
         """,
-        (args.run_id, args.limit),
-    ).fetchall()
-    for row in rows:
-        print(
-            json.dumps(
-                {
-                    "run_id": row["run_id"],
-                    "event_type": row["event_type"],
-                    "payload": json.loads(row["payload_json"]),
-                    "created_at": row["created_at"],
-                }
-            )
-        )
+        (args.run_id,),
+    ).fetchone()
+    rows = recent_events(conn, args.run_id, args.limit)
+    payload = {
+        "run": serialize_run_row(run, rows) if run is not None else None,
+        "events": [serialize_event_row(row) for row in rows],
+    }
+    print(json.dumps(payload))
     return 0
 
 

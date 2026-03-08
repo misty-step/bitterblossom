@@ -98,6 +98,15 @@ python3 scripts/conductor.py show-runs --limit 20
 python3 scripts/conductor.py show-events --run-id run-450-1772813415
 ```
 
+`show-runs` emits one JSON object per run. Each row includes the stable run header (`run_id`, issue, phase, status, PR fields), `heartbeat_at`, computed `heartbeat_age_seconds`, and `blocking_reason` when the run is blocked or failed.
+
+`show-events` emits one JSON object with:
+
+- `run`: machine-readable run metadata using the same surface as `show-runs`
+- `events`: most recent events for that run in reverse chronological order
+
+That keeps routine inspection run-centric: operators can see the current state and the recent event context without opening SQLite directly.
+
 Reconcile a run after out-of-band merge or manual recovery:
 
 ```bash
@@ -212,7 +221,7 @@ When a run is blocked the conductor **does not release the issue's lease**. Inst
 python3 scripts/conductor.py show-runs --limit 20
 ```
 
-Blocked runs show `phase=blocked` and `status=blocked`. The associated issue also has a GitHub comment from Bitterblossom explaining why it was blocked.
+Blocked runs show `phase=blocked`, `status=blocked`, and a `blocking_reason` object summarizing the most recent blocking event (for example `pr_feedback_blocked: max_rounds`). `heartbeat_age_seconds` tells you whether the run is still being touched or is stale. The associated issue also has a GitHub comment from Bitterblossom explaining why it was blocked.
 
 ### Re-queuing a blocked issue
 
@@ -231,6 +240,8 @@ To inspect the blocked run's events before re-queuing:
 ```bash
 python3 scripts/conductor.py show-events --run-id <run-id>
 ```
+
+That output now includes both the run header and the recent event tail, so the operator can verify the current blocked reason and the lead-up events in one response.
 
 ## Operator Recovery
 
