@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
+import sqlite3
 import subprocess
 import sys
 from typing import Any
@@ -38,6 +39,77 @@ def test_db_init_and_lease_cycle(tmp_path: pathlib.Path) -> None:
 
     conductor.release_lease(conn, "misty-step/bitterblossom", 12)
     assert conductor.acquire_lease(conn, "misty-step/bitterblossom", 12, "run-12-3") is True
+
+
+def test_open_db_migrates_review_governance_tables_without_losing_existing_rows(tmp_path: pathlib.Path) -> None:
+    db_path = tmp_path / "conductor.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        create table runs (
+            run_id text primary key,
+            repo text not null,
+            issue_number integer not null,
+            issue_title text not null,
+            phase text not null,
+            status text not null,
+            builder_sprite text,
+            builder_profile text,
+            branch text,
+            pr_number integer,
+            pr_url text,
+            created_at text not null,
+            updated_at text not null
+        );
+        create table leases (
+            repo text not null,
+            issue_number integer not null,
+            run_id text not null,
+            leased_at text not null,
+            released_at text,
+            primary key (repo, issue_number)
+        );
+        create table reviews (
+            run_id text not null,
+            reviewer_sprite text not null,
+            verdict text not null,
+            summary text not null,
+            findings_json text not null,
+            created_at text not null,
+            primary key (run_id, reviewer_sprite)
+        );
+        create table events (
+            id integer primary key autoincrement,
+            run_id text not null,
+            event_type text not null,
+            payload_json text not null,
+            created_at text not null
+        );
+        """
+    )
+    conn.execute(
+        """
+        insert into reviews (run_id, reviewer_sprite, verdict, summary, findings_json, created_at)
+        values ('run-12-1', 'fern', 'pass', 'ok', '[]', '2026-03-07T00:00:00Z')
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    migrated = conductor.open_db(db_path)
+
+    tables = {
+        row["name"]
+        for row in migrated.execute(
+            "select name from sqlite_master where type = 'table' and name like 'review_%' order by name"
+        ).fetchall()
+    }
+    assert {"review_findings", "review_wave_reviews", "review_waves"} <= tables
+    legacy_review = migrated.execute(
+        "select reviewer_sprite, verdict from reviews where run_id = 'run-12-1'"
+    ).fetchone()
+    assert legacy_review is not None
+    assert (legacy_review["reviewer_sprite"], legacy_review["verdict"]) == ("fern", "pass")
 
 
 def test_acquire_lease_reclaims_expired_active_lease(tmp_path: pathlib.Path) -> None:
@@ -103,6 +175,38 @@ def test_summarize_reviews_includes_findings() -> None:
     summary = conductor.summarize_reviews(reviews)
     assert "fern: verdict=fix summary=missing test" in summary
     assert "important cmd/bb/status.go:10 add coverage" in summary
+
+
+def test_normalize_review_finding_defaults_and_fingerprint() -> None:
+    review = conductor.ReviewResult(reviewer="fern", verdict="fix", summary="needs tweak", findings=[])
+
+    finding = conductor.normalize_review_finding(
+        "run-12-1",
+        7,
+        review,
+        {"severity": "high", "path": "README.md", "line": "10", "message": "tighten copy"},
+        1,
+    )
+
+    assert finding.run_id == "run-12-1"
+    assert finding.wave_id == 7
+    assert finding.reviewer == "fern"
+    assert finding.source_kind == "review_artifact"
+    assert finding.source_id == "fern:1"
+    assert finding.classification == "unspecified"
+    assert finding.severity == "high"
+    assert finding.decision == "pending"
+    assert finding.status == "open"
+    assert finding.path == "README.md"
+    assert finding.line == 10
+    assert finding.message == "tighten copy"
+    assert finding.fingerprint == conductor.normalize_review_finding(
+        "run-12-1",
+        8,
+        review,
+        {"severity": "high", "path": "README.md", "line": 10, "message": "tighten copy"},
+        2,
+    ).fingerprint
 
 
 def test_list_unresolved_review_threads_returns_open_threads() -> None:
@@ -748,6 +852,106 @@ def test_run_review_round_persists_reviews_as_they_arrive(monkeypatch: pytest.Mo
     assert [row["event_type"] for row in events] == ["review_complete", "review_complete", "review_complete"]
     assert json.loads(events[0]["payload_json"]) == {"reviewer": "sage", "verdict": "pass"}
     assert json.loads(events[1]["payload_json"]) == {"reviewer": "fern", "verdict": "fix"}
+
+    waves = conductor.load_review_waves(conn, "run-447-1")
+    assert len(waves) == 1
+    assert waves[0].kind == "review_round"
+    assert waves[0].ordinal == 1
+    assert waves[0].status == "completed"
+    assert waves[0].reviewer_count == 3
+
+    wave_reviews = conductor.load_review_wave_reviews(conn, waves[0].id)
+    assert [(row.reviewer, row.verdict) for row in wave_reviews] == [
+        ("fern", "fix"),
+        ("sage", "pass"),
+        ("thorn", "pass"),
+    ]
+
+    findings = conductor.load_review_findings(conn, "run-447-1")
+    assert len(findings) == 1
+    assert findings[0].wave_id == waves[0].id
+    assert findings[0].reviewer == "fern"
+    assert findings[0].source_kind == "review_artifact"
+    assert findings[0].path == "README.md"
+    assert findings[0].line == 10
+    assert findings[0].message == "tighten copy"
+
+
+def test_run_review_round_preserves_prior_wave_state(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=447, title="test", body="body", url="https://example.com/447", labels=["autopilot"])
+    payloads = iter(
+        [
+            {"fern": {"verdict": "fix", "summary": "first", "findings": [{"path": "README.md", "line": 10, "message": "first finding"}]}},
+            {"fern": {"verdict": "fix", "summary": "second", "findings": [{"path": "README.md", "line": 11, "message": "second finding"}]}},
+        ]
+    )
+
+    def fake_dispatch_many(
+        _runner: object,
+        _tasks: list[conductor.DispatchTask],
+        _repo: str,
+        _prompt_template: pathlib.Path,
+        _timeout_minutes: int,
+        *,
+        poll_seconds: int = 5,
+        on_artifact: object | None = None,
+        on_tick: object | None = None,
+    ) -> dict[str, dict[str, object]]:
+        _ = (poll_seconds, on_tick)
+        payload = next(payloads)
+        assert on_artifact is not None
+        on_artifact("fern", payload["fern"])
+        return payload
+
+    monkeypatch.setattr(conductor, "dispatch_tasks_until_artifacts", fake_dispatch_many)
+    monkeypatch.setattr(conductor, "cleanup_sprite_processes", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(conductor, "ensure_sprite_ready", lambda *_args, **_kwargs: None)
+
+    conductor.run_review_round(
+        _RunnerSpy(),
+        conn,
+        tmp_path / "events.jsonl",
+        "misty-step/bitterblossom",
+        issue,
+        "run-447-1",
+        463,
+        "https://github.com/misty-step/bitterblossom/pull/463",
+        ["fern"],
+        pathlib.Path("scripts/prompts/conductor-reviewer-template.md"),
+        10,
+    )
+    conductor.run_review_round(
+        _RunnerSpy(),
+        conn,
+        tmp_path / "events.jsonl",
+        "misty-step/bitterblossom",
+        issue,
+        "run-447-1",
+        463,
+        "https://github.com/misty-step/bitterblossom/pull/463",
+        ["fern"],
+        pathlib.Path("scripts/prompts/conductor-reviewer-template.md"),
+        10,
+    )
+
+    waves = conductor.load_review_waves(conn, "run-447-1")
+    assert [(wave.kind, wave.ordinal, wave.status) for wave in waves] == [
+        ("review_round", 1, "completed"),
+        ("review_round", 2, "completed"),
+    ]
+    assert [review.summary for review in conductor.load_review_wave_reviews(conn, waves[0].id)] == ["first"]
+    assert [review.summary for review in conductor.load_review_wave_reviews(conn, waves[1].id)] == ["second"]
+    findings = conductor.load_review_findings(conn, "run-447-1")
+    assert [(finding.wave_id, finding.line, finding.message) for finding in findings] == [
+        (waves[0].id, 10, "first finding"),
+        (waves[1].id, 11, "second finding"),
+    ]
+    latest_review = conn.execute(
+        "select summary from reviews where run_id = 'run-447-1' and reviewer_sprite = 'fern'"
+    ).fetchone()
+    assert latest_review is not None
+    assert latest_review["summary"] == "second"
 
 
 def test_run_builder_precleans_worker(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1533,6 +1737,55 @@ def test_run_once_blocks_on_untrusted_pr_thread(monkeypatch: pytest.MonkeyPatch,
 
     assert rc == 2
     assert any("untrusted PR review thread" in body for body in issue_comments)
+
+
+def test_handle_pr_review_threads_persists_thread_scan_wave(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    thread = conductor.ReviewThread(
+        id="thread-1",
+        path="README.md",
+        line=59,
+        author_login="gemini-code-assist",
+        author_association="NONE",
+        body="please keep this copy-pastable",
+        url="https://example.com/thread-1",
+    )
+
+    monkeypatch.setattr(conductor, "list_unresolved_review_threads", lambda *_args, **_kwargs: [thread])
+    monkeypatch.setattr(conductor, "comment_issue", lambda *_args, **_kwargs: None)
+
+    action, feedback, thread_ids = conductor.handle_pr_review_threads(
+        _RunnerSpy(),
+        conn,
+        tmp_path / "events.jsonl",
+        "run-447-1",
+        "misty-step/bitterblossom",
+        447,
+        460,
+        pr_feedback_rounds=0,
+        max_pr_feedback_rounds=1,
+        last_pr_feedback_thread_ids=(),
+    )
+
+    assert action == "revise"
+    assert feedback is not None
+    assert thread_ids == ("thread-1",)
+
+    waves = conductor.load_review_waves(conn, "run-447-1")
+    assert len(waves) == 1
+    assert waves[0].kind == "pr_thread_scan"
+    assert waves[0].status == "findings_present"
+    findings = conductor.load_review_findings(conn, "run-447-1")
+    assert len(findings) == 1
+    assert findings[0].wave_id == waves[0].id
+    assert findings[0].reviewer == "gemini-code-assist"
+    assert findings[0].source_kind == "pr_review_thread"
+    assert findings[0].source_id == "thread-1"
+    assert findings[0].classification == "pr_review_thread"
+    assert findings[0].path == "README.md"
+    assert findings[0].line == 59
 
 
 def test_reconcile_run_marks_merged(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
