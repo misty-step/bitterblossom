@@ -1442,6 +1442,42 @@ def test_dispatch_until_artifact_reaps_sprite_when_artifact_arrives_first(monkey
     assert proc.wait_calls
 
 
+def test_dispatch_until_artifact_forwards_on_tick(monkeypatch: pytest.MonkeyPatch) -> None:
+    ticks: list[str] = []
+
+    def fake_dispatch_many(
+        _runner: object,
+        _tasks: list[conductor.DispatchTask],
+        _repo: str,
+        _prompt_template: pathlib.Path,
+        _timeout_minutes: int,
+        *,
+        poll_seconds: int = 5,
+        on_artifact: object | None = None,
+        on_tick: object | None = None,
+    ) -> dict[str, dict[str, str]]:
+        _ = (poll_seconds, on_artifact)
+        assert on_tick is not None
+        on_tick()
+        return {"fern": {"status": "ready"}}
+
+    monkeypatch.setattr(conductor, "dispatch_tasks_until_artifacts", fake_dispatch_many)
+
+    payload = conductor.dispatch_until_artifact(
+        _RunnerSpy(),
+        "fern",
+        "ship it",
+        "misty-step/bitterblossom",
+        pathlib.Path("scripts/prompts/conductor-builder-template.md"),
+        10,
+        "/tmp/artifact.json",
+        on_tick=lambda: ticks.append("tick"),
+    )
+
+    assert payload == {"status": "ready"}
+    assert ticks == ["tick"]
+
+
 def test_merge_pr_falls_back_to_auto_when_required() -> None:
     runner = _MergeRunner()
 
@@ -2046,18 +2082,102 @@ def test_reconcile_run_marks_merged(monkeypatch: pytest.MonkeyPatch, tmp_path: p
     assert run["pr_url"] == "https://github.com/misty-step/bitterblossom/pull/452"
 
 
-def test_show_events_prints_recent_events(tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_show_runs_includes_heartbeat_age_and_blocking_reason(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     conn = conductor.open_db(tmp_path / "conductor.db")
-    conductor.record_event(conn, tmp_path / "events.jsonl", "run-1", "lease_acquired", {"issue": 1})
-    conductor.record_event(conn, tmp_path / "events.jsonl", "run-1", "builder_selected", {"sprite": "fern"})
+    monkeypatch.setattr(conductor, "now_utc", lambda: "2026-03-08T13:30:00Z")
 
-    args = argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-1", limit=2)
+    active_issue = conductor.Issue(number=1, title="active", body="body", url="https://example.com/1", labels=["autopilot"])
+    blocked_issue = conductor.Issue(number=2, title="blocked", body="body", url="https://example.com/2", labels=["autopilot"])
+    conductor.create_run(conn, "run-active", "misty-step/bitterblossom", active_issue, "default")
+    conductor.create_run(conn, "run-blocked", "misty-step/bitterblossom", blocked_issue, "default")
+    conductor.update_run(conn, "run-active", phase="building", builder_sprite="fern")
+    conductor.update_run(conn, "run-blocked", phase="blocked", status="blocked", builder_sprite="thorn")
+    conn.execute(
+        "update runs set heartbeat_at = ?, created_at = ?, updated_at = ? where run_id = ?",
+        ("2026-03-08T13:29:00Z", "2026-03-08T13:20:00Z", "2026-03-08T13:29:00Z", "run-active"),
+    )
+    conn.execute(
+        "update runs set heartbeat_at = ?, created_at = ?, updated_at = ? where run_id = ?",
+        ("2026-03-08T13:25:00Z", "2026-03-08T13:21:00Z", "2026-03-08T13:25:00Z", "run-blocked"),
+    )
+    conn.commit()
+    conductor.record_event(conn, tmp_path / "events.jsonl", "run-active", "builder_selected", {"sprite": "fern"})
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-blocked",
+        "pr_feedback_blocked",
+        {"pr_number": 42, "reason": "untrusted_author", "threads": []},
+    )
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-blocked",
+        "issue_comment_failed",
+        {"error": "github unavailable"},
+    )
+
+    args = argparse.Namespace(db=str(tmp_path / "conductor.db"), limit=2)
+    rc = conductor.show_runs(args)
+
+    assert rc == 0
+    rows = {
+        row["run_id"]: row
+        for row in (json.loads(line) for line in capsys.readouterr().out.splitlines() if line)
+    }
+    assert rows["run-active"]["phase"] == "building"
+    assert rows["run-active"]["heartbeat_age_seconds"] == 60
+    assert rows["run-active"]["latest_event"]["summary"] == "builder selected: fern"
+    assert rows["run-blocked"]["blocking_reason"] == "pr feedback blocked (untrusted_author)"
+    assert rows["run-blocked"]["heartbeat_age_seconds"] == 300
+    assert rows["run-blocked"]["latest_event"]["event_type"] == "issue_comment_failed"
+
+
+def test_show_events_prints_run_metadata_and_recent_events(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    monkeypatch.setattr(conductor, "now_utc", lambda: "2026-03-08T13:40:00Z")
+    issue = conductor.Issue(number=1, title="test", body="body", url="https://example.com/1", labels=["autopilot"])
+    conductor.create_run(conn, "run-1", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(conn, "run-1", phase="blocked", status="blocked", builder_sprite="fern")
+    conn.execute(
+        "update runs set heartbeat_at = ?, updated_at = ? where run_id = ?",
+        ("2026-03-08T13:35:00Z", "2026-03-08T13:35:00Z", "run-1"),
+    )
+    conn.commit()
+    conductor.record_event(conn, tmp_path / "events.jsonl", "run-1", "review_complete", {"reviewer": "fern", "verdict": "pass"})
+    conductor.record_event(conn, tmp_path / "events.jsonl", "run-1", "ci_wait_complete", {"passed": True, "output": "merge-gate: SUCCESS"})
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-1",
+        "pr_feedback_blocked",
+        {"pr_number": 1, "reason": "unchanged_after_revision", "threads": []},
+    )
+
+    args = argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-1", limit=3)
     rc = conductor.show_events(args)
 
     assert rc == 0
-    lines = [line for line in capsys.readouterr().out.splitlines() if line]
-    assert len(lines) == 2
-    assert '"event_type": "builder_selected"' in lines[0]
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["run"]["run_id"] == "run-1"
+    assert payload["run"]["heartbeat_age_seconds"] == 300
+    assert payload["run"]["blocking_reason"] == "pr feedback blocked (unchanged_after_revision)"
+    assert [event["event_type"] for event in payload["events"]] == [
+        "pr_feedback_blocked",
+        "ci_wait_complete",
+        "review_complete",
+    ]
+    assert payload["events"][0]["summary"] == "pr feedback blocked: unchanged_after_revision"
+    assert payload["events"][1]["summary"] == "ci checks passed"
+    assert payload["events"][2]["summary"] == "review complete: fern -> pass"
 
 
 def test_check_env_passes_when_all_present(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:

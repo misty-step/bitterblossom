@@ -28,6 +28,7 @@ DEFAULT_LEASE_BUFFER_SECONDS = 300
 SUCCESSFUL_CHECK_CONCLUSIONS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 FAILED_CHECK_CONCLUSIONS = {"FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STALE", "STARTUP_FAILURE"}
 FAILED_STATUS_CONTEXTS = {"FAILURE", "ERROR"}
+BLOCKING_REASON_SCAN_LIMIT = 20
 TRUSTED_REVIEW_AUTHOR_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
 # GitHub App reviewers show up with weak authorAssociation values, so trust them by login.
 TRUSTED_REVIEW_BOT_LOGINS = {
@@ -180,6 +181,24 @@ def now_utc() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def parse_utc(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def age_seconds(value: str | None, *, now_value: str | None = None) -> int | None:
+    current = parse_utc(now_value or now_utc())
+    observed = parse_utc(value)
+    if current is None or observed is None:
+        return None
+    delta = int((current - observed).total_seconds())
+    return max(delta, 0)
+
+
 def ensure_parent(path: pathlib.Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -313,6 +332,156 @@ def record_event(conn: sqlite3.Connection, event_log: pathlib.Path, run_id: str,
     ensure_parent(event_log)
     with event_log.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps({"run_id": run_id, "event": event_type, "ts": ts, "payload": payload}, separators=(",", ":")) + "\n")
+
+
+def fetch_run_row(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        select run_id, repo, issue_number, issue_title, phase, status, builder_sprite,
+               builder_profile, branch, pr_number, pr_url, heartbeat_at, created_at, updated_at
+        from runs
+        where run_id = ?
+        """,
+        (run_id,),
+    ).fetchone()
+
+
+def recent_event_rows(conn: sqlite3.Connection, run_id: str, limit: int) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        select run_id, event_type, payload_json, created_at
+        from events
+        where run_id = ?
+        order by id desc
+        limit ?
+        """,
+        (run_id, limit),
+    ).fetchall()
+
+
+def event_summary(event_type: str, payload: dict[str, Any]) -> str:
+    if event_type == "lease_acquired":
+        issue = payload.get("issue")
+        return f"lease acquired for issue #{issue}" if issue else "lease acquired"
+    if event_type == "reviewers_ready":
+        reviewers = payload.get("reviewers") or []
+        if isinstance(reviewers, list):
+            return f"reviewers ready: {', '.join(str(reviewer) for reviewer in reviewers)}"
+        return "reviewers ready"
+    if event_type == "builder_selected":
+        sprite = payload.get("sprite")
+        return f"builder selected: {sprite}" if sprite else "builder selected"
+    if event_type in {"builder_complete", "builder_revised"}:
+        pr_number = payload.get("pr_number")
+        branch = payload.get("branch")
+        if pr_number and branch:
+            return f"{event_type}: PR #{pr_number} on {branch}"
+        if pr_number:
+            return f"{event_type}: PR #{pr_number}"
+        return event_type
+    if event_type == "review_complete":
+        reviewer = payload.get("reviewer")
+        verdict = payload.get("verdict")
+        if reviewer and verdict:
+            return f"review complete: {reviewer} -> {verdict}"
+        return "review complete"
+    if event_type == "revision_requested":
+        reason = payload.get("reason")
+        return f"revision requested: {reason}" if reason else "revision requested"
+    if event_type == "ci_wait_complete":
+        return "ci checks passed" if payload.get("passed") else "ci checks failed"
+    if event_type == "external_review_wait_complete":
+        return "external reviews settled" if payload.get("passed") else "external reviews timed out"
+    if event_type == "pr_feedback_blocked":
+        reason = payload.get("reason")
+        return f"pr feedback blocked: {reason}" if reason else "pr feedback blocked"
+    if event_type == "council_blocked":
+        return "review council blocked the run"
+    if event_type == "merged":
+        pr_number = payload.get("pr_number")
+        return f"merged PR #{pr_number}" if pr_number else "merged"
+    if event_type in {"command_failed", "unexpected_error", "post_merge_warning"}:
+        error = payload.get("error")
+        return f"{event_type}: {error}" if error else event_type
+    fields: list[str] = []
+    for key in ("reason", "sprite", "reviewer", "verdict", "issue", "pr_number", "branch"):
+        if payload.get(key) is not None:
+            fields.append(f"{key}={payload[key]}")
+    return f"{event_type}: {', '.join(fields)}" if fields else event_type
+
+
+def blocking_reason_from_event(event_type: str, payload: dict[str, Any]) -> str | None:
+    if event_type == "pr_feedback_blocked":
+        reason = payload.get("reason")
+        return f"pr feedback blocked ({reason})" if reason else "pr feedback blocked"
+    if event_type == "council_blocked":
+        reviews = payload.get("reviews") or []
+        if isinstance(reviews, list) and reviews:
+            verdicts = []
+            for review in reviews:
+                if not isinstance(review, dict):
+                    continue
+                reviewer = review.get("reviewer") or "unknown"
+                verdict = review.get("verdict") or "unknown"
+                verdicts.append(f"{reviewer}:{verdict}")
+            if verdicts:
+                return "review council blocked (" + ", ".join(verdicts) + ")"
+        return "review council blocked"
+    if event_type == "external_review_wait_complete" and payload.get("passed") is False:
+        output = str(payload.get("output") or "").strip()
+        return output or "trusted external reviews did not settle"
+    if event_type in {"command_failed", "unexpected_error"}:
+        error = str(payload.get("error") or "").strip()
+        return error or event_type
+    if event_type == "ci_wait_complete" and payload.get("passed") is False:
+        output = str(payload.get("output") or "").strip()
+        return output or "ci checks failed"
+    return None
+
+
+def render_event_row(row: sqlite3.Row) -> dict[str, Any]:
+    payload = json.loads(row["payload_json"])
+    return {
+        "run_id": row["run_id"],
+        "event_type": row["event_type"],
+        "summary": event_summary(row["event_type"], payload),
+        "payload": payload,
+        "created_at": row["created_at"],
+    }
+
+
+def render_run_row(conn: sqlite3.Connection, row: sqlite3.Row, *, include_events: int = 0) -> dict[str, Any]:
+    rendered = {
+        "run_id": row["run_id"],
+        "repo": row["repo"],
+        "issue_number": row["issue_number"],
+        "issue_title": row["issue_title"],
+        "phase": row["phase"],
+        "status": row["status"],
+        "builder_sprite": row["builder_sprite"],
+        "builder_profile": row["builder_profile"],
+        "branch": row["branch"],
+        "pr_number": row["pr_number"],
+        "pr_url": row["pr_url"],
+        "heartbeat_at": row["heartbeat_at"],
+        "heartbeat_age_seconds": age_seconds(row["heartbeat_at"]),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+    event_rows = recent_event_rows(conn, row["run_id"], max(include_events, 1))
+    if event_rows:
+        rendered["latest_event"] = render_event_row(event_rows[0])
+    reason_rows = event_rows
+    if len(reason_rows) < BLOCKING_REASON_SCAN_LIMIT:
+        reason_rows = recent_event_rows(conn, row["run_id"], BLOCKING_REASON_SCAN_LIMIT)
+    for event_row in reason_rows:
+        reason = blocking_reason_from_event(event_row["event_type"], json.loads(event_row["payload_json"]))
+        if reason:
+            rendered["blocking_reason"] = reason
+            break
+    if include_events > 0:
+        rendered["recent_events"] = [render_event_row(event_row) for event_row in event_rows[:include_events]]
+    return rendered
 
 
 def create_run(conn: sqlite3.Connection, run_id: str, repo: str, issue: Issue, builder_profile: str) -> None:
@@ -1367,13 +1536,22 @@ def checks_complete(payload: dict[str, Any], required: set[str]) -> tuple[bool, 
     return saw_any and all_present_terminal, False
 
 
-def wait_for_pr_checks(runner: Runner, repo: str, pr_number: int, timeout_minutes: int) -> tuple[bool, str]:
+def wait_for_pr_checks(
+    runner: Runner,
+    repo: str,
+    pr_number: int,
+    timeout_minutes: int,
+    *,
+    on_tick: Callable[[], None] | None = None,
+) -> tuple[bool, str]:
     deadline = time.time() + max(60, timeout_minutes * 60)
     payload: dict[str, Any] = {}
     required: set[str] | None = None
     last_error = ""
 
     while time.time() < deadline:
+        if on_tick is not None:
+            on_tick()
         try:
             payload = gh_json(runner, ["pr", "view", str(pr_number), "--repo", repo, "--json", "baseRefName,statusCheckRollup"])
             if required is None:
@@ -1682,6 +1860,7 @@ def wait_for_external_reviews(
     *,
     quiet_window_seconds: int = 60,
     timeout_minutes: int = 30,
+    on_tick: Callable[[], None] | None = None,
 ) -> tuple[bool, str]:
     """
     Wait until all trusted external review surfaces have been observed, reached
@@ -1699,6 +1878,8 @@ def wait_for_external_reviews(
     last_snapshot: TrustedSurfaceSnapshot | None = None
 
     while time.time() < deadline:
+        if on_tick is not None:
+            on_tick()
         try:
             last_payload = gh_json(
                 runner,
@@ -2155,6 +2336,8 @@ def dispatch_until_artifact(
     prompt_template: pathlib.Path,
     timeout_minutes: int,
     artifact_path: str,
+    *,
+    on_tick: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     payloads = dispatch_tasks_until_artifacts(
         runner,
@@ -2162,6 +2345,7 @@ def dispatch_until_artifact(
         repo,
         prompt_template,
         timeout_minutes,
+        on_tick=on_tick,
     )
     return payloads[sprite]
 
@@ -2179,6 +2363,7 @@ def run_builder(
     pr_number: int | None = None,
     pr_url: str | None = None,
     feedback_source: str = "review",
+    on_tick: Callable[[], None] | None = None,
 ) -> tuple[BuilderResult, dict[str, Any]]:
     try:
         cleanup_sprite_processes(runner, worker)
@@ -2203,6 +2388,7 @@ def run_builder(
         prompt_template,
         timeout_minutes,
         artifact_abs(repo, builder_rel),
+        on_tick=on_tick,
     )
     builder = parse_builder_result(payload, branch)
     builder.pr_number, builder.pr_url = verify_builder_pr(runner, repo, builder.pr_number, branch)
@@ -2376,6 +2562,13 @@ def run_once(args: argparse.Namespace) -> int:
             branch,
             pathlib.Path(args.builder_template),
             args.builder_timeout,
+            on_tick=lambda: touch_run(
+                conn,
+                args.repo,
+                issue.number,
+                run_id,
+                args.builder_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
+            ),
         )
         update_run(
             conn,
@@ -2468,6 +2661,13 @@ def run_once(args: argparse.Namespace) -> int:
                     feedback_source="review",
                     pr_number=builder.pr_number,
                     pr_url=builder.pr_url,
+                    on_tick=lambda: touch_run(
+                        conn,
+                        args.repo,
+                        issue.number,
+                        run_id,
+                        args.builder_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
+                    ),
                 )
                 update_run(conn, run_id, phase="reviewing", branch=builder.branch, pr_number=builder.pr_number, pr_url=builder.pr_url)
                 record_event(conn, event_log, run_id, "builder_revised", builder_payload)
@@ -2476,8 +2676,21 @@ def run_once(args: argparse.Namespace) -> int:
 
             update_run(conn, run_id, phase="ci_wait")
             touch_run(conn, args.repo, issue.number, run_id, args.ci_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS)
+            record_event(conn, event_log, run_id, "ci_wait_started", {"pr_number": builder.pr_number})
             ensure_pr_ready(runner, args.repo, builder.pr_number)
-            ok, checks_output = wait_for_pr_checks(runner, args.repo, builder.pr_number, args.ci_timeout)
+            ok, checks_output = wait_for_pr_checks(
+                runner,
+                args.repo,
+                builder.pr_number,
+                args.ci_timeout,
+                on_tick=lambda: touch_run(
+                    conn,
+                    args.repo,
+                    issue.number,
+                    run_id,
+                    args.ci_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
+                ),
+            )
             record_event(conn, event_log, run_id, "ci_wait_complete", {"passed": ok, "output": checks_output})
             if ok:
                 ensure_required_checks_present(runner, args.repo, builder.pr_number)
@@ -2512,6 +2725,13 @@ def run_once(args: argparse.Namespace) -> int:
                         feedback_source="pr_review_threads",
                         pr_number=builder.pr_number,
                         pr_url=builder.pr_url,
+                        on_tick=lambda: touch_run(
+                            conn,
+                            args.repo,
+                            issue.number,
+                            run_id,
+                            args.builder_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
+                        ),
                     )
                     update_run(
                         conn,
@@ -2536,6 +2756,13 @@ def run_once(args: argparse.Namespace) -> int:
                         run_id,
                         external_review_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
                     )
+                    record_event(
+                        conn,
+                        event_log,
+                        run_id,
+                        "external_review_wait_started",
+                        {"pr_number": builder.pr_number, "surfaces": trusted_surfaces},
+                    )
                     ext_ok, ext_output = wait_for_external_reviews(
                         runner,
                         args.repo,
@@ -2543,6 +2770,13 @@ def run_once(args: argparse.Namespace) -> int:
                         trusted_surfaces,
                         quiet_window_seconds=external_review_quiet_window,
                         timeout_minutes=external_review_timeout,
+                        on_tick=lambda: touch_run(
+                            conn,
+                            args.repo,
+                            issue.number,
+                            run_id,
+                            external_review_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
+                        ),
                     )
                     record_event(
                         conn,
@@ -2596,6 +2830,13 @@ def run_once(args: argparse.Namespace) -> int:
                             feedback_source="pr_review_threads",
                             pr_number=builder.pr_number,
                             pr_url=builder.pr_url,
+                            on_tick=lambda: touch_run(
+                                conn,
+                                args.repo,
+                                issue.number,
+                                run_id,
+                                args.builder_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
+                            ),
                         )
                         update_run(
                             conn,
@@ -2640,6 +2881,13 @@ def run_once(args: argparse.Namespace) -> int:
                 feedback_source="ci",
                 pr_number=builder.pr_number,
                 pr_url=builder.pr_url,
+                on_tick=lambda: touch_run(
+                    conn,
+                    args.repo,
+                    issue.number,
+                    run_id,
+                    args.builder_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
+                ),
             )
             update_run(conn, run_id, phase="reviewing", branch=builder.branch, pr_number=builder.pr_number, pr_url=builder.pr_url)
             record_event(conn, event_log, run_id, "builder_revised", builder_payload)
@@ -2719,7 +2967,8 @@ def show_runs(args: argparse.Namespace) -> int:
     conn = open_db(pathlib.Path(args.db))
     rows = conn.execute(
         """
-        select run_id, issue_number, issue_title, phase, status, builder_sprite, pr_number, updated_at
+        select run_id, repo, issue_number, issue_title, phase, status, builder_sprite,
+               builder_profile, branch, pr_number, pr_url, heartbeat_at, created_at, updated_at
         from runs
         order by created_at desc
         limit ?
@@ -2727,46 +2976,24 @@ def show_runs(args: argparse.Namespace) -> int:
         (args.limit,),
     ).fetchall()
     for row in rows:
-        print(
-            json.dumps(
-                {
-                    "run_id": row["run_id"],
-                    "issue_number": row["issue_number"],
-                    "issue_title": row["issue_title"],
-                    "phase": row["phase"],
-                    "status": row["status"],
-                    "builder_sprite": row["builder_sprite"],
-                    "pr_number": row["pr_number"],
-                    "updated_at": row["updated_at"],
-                }
-            )
-        )
+        print(json.dumps(render_run_row(conn, row)))
     return 0
 
 
 def show_events(args: argparse.Namespace) -> int:
     conn = open_db(pathlib.Path(args.db))
-    rows = conn.execute(
-        """
-        select run_id, event_type, payload_json, created_at
-        from events
-        where run_id = ?
-        order by id desc
-        limit ?
-        """,
-        (args.run_id, args.limit),
-    ).fetchall()
-    for row in rows:
-        print(
-            json.dumps(
-                {
-                    "run_id": row["run_id"],
-                    "event_type": row["event_type"],
-                    "payload": json.loads(row["payload_json"]),
-                    "created_at": row["created_at"],
-                }
-            )
+    run = fetch_run_row(conn, args.run_id)
+    if run is None:
+        raise CmdError(f"unknown run_id: {args.run_id}")
+    payload = render_run_row(conn, run, include_events=args.limit)
+    print(
+        json.dumps(
+            {
+                "run": {key: value for key, value in payload.items() if key != "recent_events"},
+                "events": payload.get("recent_events", []),
+            }
         )
+    )
     return 0
 
 

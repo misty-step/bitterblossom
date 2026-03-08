@@ -98,6 +98,16 @@ python3 scripts/conductor.py show-runs --limit 20
 python3 scripts/conductor.py show-events --run-id run-450-1772813415
 ```
 
+`show-runs` emits one JSON object per run. Each row includes the durable run
+metadata plus derived operator fields such as `heartbeat_age_seconds`,
+`blocking_reason`, and `latest_event`.
+
+`show-events` emits one JSON object with:
+
+- `run`: the same run metadata/derived state for the requested `run_id`
+- `events`: recent event context in reverse chronological order, each with a
+  stable `event_type`, `summary`, raw `payload`, and `created_at`
+
 Reconcile a run after out-of-band merge or manual recovery:
 
 ```bash
