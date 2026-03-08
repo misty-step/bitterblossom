@@ -2915,15 +2915,15 @@ def show_runs(args: argparse.Namespace) -> int:
 
 def show_events(args: argparse.Namespace) -> int:
     conn = open_db(pathlib.Path(args.db))
-    run = fetch_run_row(conn, args.run_id)
-    if run is None:
-        print(f"conductor: unknown run_id: {args.run_id}", file=sys.stderr)
-        return 1
     rows = recent_events(conn, args.run_id, args.limit)
     if getattr(args, "jsonl", False):
         for row in rows:
             print(json.dumps(serialize_event_row(row)))
         return 0
+    run = fetch_run_row(conn, args.run_id)
+    if run is None:
+        print(f"conductor: unknown run_id: {args.run_id}", file=sys.stderr)
+        return 1
     reasons = load_run_reasons(conn, [args.run_id] if terminal_run_state(run) else [])
     payload = {
         "run": serialize_run_row(run, blocking_reason=reasons.get(args.run_id)),

@@ -2211,6 +2211,23 @@ def test_show_events_jsonl_preserves_legacy_event_rows(
     assert '"event_type": "builder_selected"' in lines[0]
 
 
+def test_show_events_jsonl_still_streams_events_without_run_row(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    conductor.record_event(conn, tmp_path / "events.jsonl", "run-legacy", "lease_acquired", {"issue": 1})
+    conductor.record_event(conn, tmp_path / "events.jsonl", "run-legacy", "builder_selected", {"sprite": "fern"})
+
+    args = argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-legacy", limit=2, jsonl=True)
+    rc = conductor.show_events(args)
+
+    assert rc == 0
+    lines = [line for line in capsys.readouterr().out.splitlines() if line]
+    assert len(lines) == 2
+    assert '"event_type": "builder_selected"' in lines[0]
+
+
 def test_show_events_fails_for_unknown_run_id(
     tmp_path: pathlib.Path,
     capsys: pytest.CaptureFixture[str],
