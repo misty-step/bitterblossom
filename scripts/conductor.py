@@ -2103,8 +2103,18 @@ def dispatch_tasks_until_artifacts(
                     session.last_error = stringify_exc(exc)
                 else:
                     payloads[sprite] = payload
-                    stop_dispatch_session(runner, session, reap_sprite=True)
+                    # Remove from sessions before stopping so the finally block
+                    # does not attempt a second cleanup on the same session.
                     del sessions[sprite]
+                    try:
+                        stop_dispatch_session(runner, session, reap_sprite=True)
+                    except CmdError as exc:
+                        # Artifact is already captured — cleanup failure is a
+                        # warning, not a reason to discard the proven handoff.
+                        print(
+                            f"warning: post-artifact cleanup failed for {sprite}: {exc}",
+                            file=sys.stderr,
+                        )
                     if on_artifact is not None:
                         on_artifact(sprite, payload)
                     continue
@@ -2345,6 +2355,7 @@ def run_once(args: argparse.Namespace) -> int:
     create_run(conn, run_id, args.repo, issue, args.builder_profile)
     merged = False
     block_on_release = False
+    builder_handoff_recorded = False
     max_pr_feedback_rounds = getattr(args, "max_pr_feedback_rounds", 1)
 
     try:
@@ -2386,6 +2397,7 @@ def run_once(args: argparse.Namespace) -> int:
             pr_url=builder.pr_url,
         )
         record_event(conn, event_log, run_id, "builder_complete", builder_payload)
+        builder_handoff_recorded = True
 
         review_rounds = 0
         ci_rounds = 0
@@ -2667,6 +2679,11 @@ def run_once(args: argparse.Namespace) -> int:
         if merged:
             record_event(conn, event_log, run_id, "post_merge_warning", {"error": stringify_exc(exc)})
             return 0
+        if builder_handoff_recorded:
+            # Builder artifact and PR were durably persisted before this error.
+            # Do not overwrite the verified handoff with a false failure.
+            record_event(conn, event_log, run_id, "cleanup_warning", {"error": str(exc)})
+            return 0
         update_run(conn, run_id, phase="failed", status="failed")
         record_event(conn, event_log, run_id, "command_failed", {"error": str(exc)})
         best_effort_issue_comment(
@@ -2683,6 +2700,11 @@ def run_once(args: argparse.Namespace) -> int:
     except Exception as exc:  # noqa: BLE001
         if merged:
             record_event(conn, event_log, run_id, "post_merge_warning", {"error": stringify_exc(exc)})
+            return 0
+        if builder_handoff_recorded:
+            # Builder handoff is durable; demote unexpected post-handoff errors.
+            message = f"unexpected post-handoff error: {stringify_exc(exc)}"
+            record_event(conn, event_log, run_id, "cleanup_warning", {"error": message})
             return 0
         update_run(conn, run_id, phase="failed", status="failed")
         message = f"unexpected conductor error: {stringify_exc(exc)}"

@@ -185,6 +185,14 @@ sprite exec coordinator -- bash -lc 'tail -f ~/.bb/conductor.log'
 
 Every run writes immediately to `.bb/conductor.db` and `.bb/events.jsonl` on the coordinator. State survives loop restarts. If the conductor process dies, restart it — already-completed runs won't be re-processed because their leases have been released.
 
+### Builder handoff boundary
+
+Once a builder writes its artifact and the referenced PR is verified, the conductor persists `phase=reviewing` and `pr_number` immediately. That write is the durable boundary between builder work and control-plane cleanup.
+
+Post-artifact sprite cleanup (`bb kill <sprite>`) is then best-effort. Transport failures during cleanup (e.g., `use of closed network connection`) are downgraded to `cleanup_warning` events in the event log and printed to stderr. They do **not** overwrite the run to `phase=failed` or clear `pr_number`.
+
+If a run shows `phase=reviewing` with a valid `pr_number` and a `cleanup_warning` event, the builder delivered its handoff correctly. The operator can reconcile the run or let the next conductor loop pick up the issue normally after the lease is released.
+
 Review state is now split deliberately:
 
 - `reviews` keeps the latest per-reviewer council snapshot for compatibility with existing run logic.
