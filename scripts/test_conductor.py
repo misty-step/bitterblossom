@@ -2139,6 +2139,53 @@ def test_show_events_prints_run_metadata_and_recent_events(
     assert payload["events"][1]["payload"] == {"passed": True, "output": "all green"}
 
 
+def test_show_events_keeps_blocking_reason_when_recent_tail_is_short(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=1, title="observability", body="", url="u1", labels=["autopilot"])
+    conductor.create_run(conn, "run-1", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(conn, "run-1", phase="blocked", status="blocked")
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-1",
+        "pr_feedback_blocked",
+        {"pr_number": 101, "reason": "max_rounds", "threads": [{"id": "thread-1"}]},
+    )
+    conductor.record_event(conn, tmp_path / "events.jsonl", "run-1", "issue_comment_failed", {"error": "rate limited"})
+
+    args = argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-1", limit=1, jsonl=False)
+    rc = conductor.show_events(args)
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert [event["event_type"] for event in payload["events"]] == ["issue_comment_failed"]
+    assert payload["run"]["blocking_reason"] == {
+        "event_type": "pr_feedback_blocked",
+        "reason": "max_rounds",
+        "summary": "pr_feedback_blocked: max_rounds",
+    }
+
+
+def test_show_events_jsonl_preserves_legacy_event_rows(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    conductor.record_event(conn, tmp_path / "events.jsonl", "run-1", "lease_acquired", {"issue": 1})
+    conductor.record_event(conn, tmp_path / "events.jsonl", "run-1", "builder_selected", {"sprite": "fern"})
+
+    args = argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-1", limit=2, jsonl=True)
+    rc = conductor.show_events(args)
+
+    assert rc == 0
+    lines = [line for line in capsys.readouterr().out.splitlines() if line]
+    assert len(lines) == 2
+    assert '"event_type": "builder_selected"' in lines[0]
+
+
 def test_check_env_passes_when_all_present(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
     monkeypatch.setenv("GITHUB_TOKEN", "ghp_test")
     monkeypatch.setenv("SPRITE_TOKEN", "sprite_test")

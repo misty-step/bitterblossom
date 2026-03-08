@@ -107,6 +107,8 @@ python3 scripts/conductor.py show-events --run-id run-450-1772813415
 
 That keeps routine inspection run-centric: operators can see the current state and the recent event context without opening SQLite directly.
 
+If an existing script still expects one JSON object per event row, pass `--jsonl` to `show-events` for the legacy NDJSON stream.
+
 Reconcile a run after out-of-band merge or manual recovery:
 
 ```bash

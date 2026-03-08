@@ -196,6 +196,12 @@ def seconds_since(value: str | None) -> int | None:
     return max(0, int((datetime.now(timezone.utc) - ts).total_seconds()))
 
 
+def clip_summary(value: str, limit: int = 200) -> str:
+    if len(value) <= limit:
+        return value
+    return value[: limit - 3] + "..."
+
+
 def ensure_parent(path: pathlib.Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -500,53 +506,65 @@ def recent_events(conn: sqlite3.Connection, run_id: str, limit: int) -> list[sql
     ).fetchall()
 
 
-def summarize_run_reason(row: sqlite3.Row, events: list[sqlite3.Row]) -> dict[str, Any] | None:
+def summarize_reason_event(event_type: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    reason = payload.get("reason")
+    if isinstance(reason, str) and reason:
+        return {
+            "event_type": event_type,
+            "reason": reason,
+            "summary": f"{event_type}: {reason}",
+        }
+    if event_type == "council_blocked":
+        return {
+            "event_type": event_type,
+            "reason": "review_council_blocked",
+            "summary": "council_blocked: review_council_blocked",
+        }
+    if event_type == "command_failed":
+        error = payload.get("error")
+        return {
+            "event_type": event_type,
+            "reason": "command_failed",
+            "summary": clip_summary(error) if isinstance(error, str) and error else "command_failed",
+        }
+    if event_type == "unexpected_error":
+        error = payload.get("error")
+        return {
+            "event_type": event_type,
+            "reason": "unexpected_error",
+            "summary": clip_summary(error) if isinstance(error, str) and error else "unexpected_error",
+        }
+    if event_type == "ci_wait_complete" and payload.get("passed") is False:
+        return {
+            "event_type": event_type,
+            "reason": "checks_failed",
+            "summary": "ci_wait_complete: checks_failed",
+        }
+    if event_type == "external_review_wait_complete" and payload.get("passed") is False:
+        return {
+            "event_type": event_type,
+            "reason": "external_reviews_unsettled",
+            "summary": "external_review_wait_complete: external_reviews_unsettled",
+        }
+    return None
+
+
+def summarize_run_reason(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any] | None:
     if row["phase"] not in {"blocked", "failed"} and row["status"] not in {"blocked", "failed"}:
         return None
 
-    for event in events:
-        payload = json.loads(event["payload_json"])
-        event_type = event["event_type"]
-        reason = payload.get("reason")
-        if isinstance(reason, str) and reason:
-            return {
-                "event_type": event_type,
-                "reason": reason,
-                "summary": f"{event_type}: {reason}",
-            }
-        if event_type == "council_blocked":
-            return {
-                "event_type": event_type,
-                "reason": "review_council_blocked",
-                "summary": "council_blocked: review_council_blocked",
-            }
-        if event_type == "command_failed":
-            error = payload.get("error")
-            return {
-                "event_type": event_type,
-                "reason": "command_failed",
-                "summary": error if isinstance(error, str) and error else "command_failed",
-            }
-        if event_type == "unexpected_error":
-            error = payload.get("error")
-            return {
-                "event_type": event_type,
-                "reason": "unexpected_error",
-                "summary": error if isinstance(error, str) and error else "unexpected_error",
-            }
-        if event_type == "ci_wait_complete" and payload.get("passed") is False:
-            return {
-                "event_type": event_type,
-                "reason": "checks_failed",
-                "summary": "ci_wait_complete: checks_failed",
-            }
-        if event_type == "external_review_wait_complete" and payload.get("passed") is False:
-            return {
-                "event_type": event_type,
-                "reason": "external_reviews_unsettled",
-                "summary": "external_review_wait_complete: external_reviews_unsettled",
-            }
-
+    for event in conn.execute(
+        """
+        select event_type, payload_json
+        from events
+        where run_id = ?
+        order by id desc
+        """,
+        (row["run_id"],),
+    ):
+        summary = summarize_reason_event(event["event_type"], json.loads(event["payload_json"]))
+        if summary is not None:
+            return summary
     return None
 
 
@@ -559,7 +577,7 @@ def serialize_event_row(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
-def serialize_run_row(row: sqlite3.Row, events: list[sqlite3.Row]) -> dict[str, Any]:
+def serialize_run_row(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
     return {
         "run_id": row["run_id"],
         "repo": row["repo"],
@@ -575,7 +593,7 @@ def serialize_run_row(row: sqlite3.Row, events: list[sqlite3.Row]) -> dict[str, 
         "heartbeat_at": row["heartbeat_at"],
         "heartbeat_age_seconds": seconds_since(row["heartbeat_at"]),
         "updated_at": row["updated_at"],
-        "blocking_reason": summarize_run_reason(row, events),
+        "blocking_reason": summarize_run_reason(conn, row),
     }
 
 
@@ -2836,7 +2854,7 @@ def show_runs(args: argparse.Namespace) -> int:
         (args.limit,),
     ).fetchall()
     for row in rows:
-        print(json.dumps(serialize_run_row(row, recent_events(conn, row["run_id"], 10))))
+        print(json.dumps(serialize_run_row(conn, row)))
     return 0
 
 
@@ -2852,8 +2870,12 @@ def show_events(args: argparse.Namespace) -> int:
         (args.run_id,),
     ).fetchone()
     rows = recent_events(conn, args.run_id, args.limit)
+    if getattr(args, "jsonl", False):
+        for row in rows:
+            print(json.dumps(serialize_event_row(row)))
+        return 0
     payload = {
-        "run": serialize_run_row(run, rows) if run is not None else None,
+        "run": serialize_run_row(conn, run) if run is not None else None,
         "events": [serialize_event_row(row) for row in rows],
     }
     print(json.dumps(payload))
@@ -3001,6 +3023,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     events_p.add_argument("--db", default=str(DEFAULT_DB))
     events_p.add_argument("--run-id", required=True)
     events_p.add_argument("--limit", type=int, default=20)
+    events_p.add_argument("--jsonl", action="store_true", help="Emit legacy NDJSON event rows only")
     events_p.set_defaults(func=show_events)
 
     reconcile_p = sub.add_parser("reconcile-run", help="Reconcile a run against GitHub PR state")
