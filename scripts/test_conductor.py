@@ -2169,11 +2169,36 @@ def test_show_events_keeps_blocking_reason_when_recent_tail_is_short(
     }
 
 
+def test_show_runs_prints_failed_reason(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=3, title="failed", body="", url="u3", labels=["autopilot"])
+    conductor.create_run(conn, "run-3", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(conn, "run-3", phase="failed", status="failed")
+    conductor.record_event(conn, tmp_path / "events.jsonl", "run-3", "command_failed", {"error": "sprite unreachable"})
+
+    args = argparse.Namespace(db=str(tmp_path / "conductor.db"), limit=1)
+    rc = conductor.show_runs(args)
+
+    assert rc == 0
+    row = json.loads(capsys.readouterr().out)
+    assert row["run_id"] == "run-3"
+    assert row["blocking_reason"] == {
+        "event_type": "command_failed",
+        "reason": "command_failed",
+        "summary": "sprite unreachable",
+    }
+
+
 def test_show_events_jsonl_preserves_legacy_event_rows(
     tmp_path: pathlib.Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=1, title="jsonl", body="", url="u1", labels=["autopilot"])
+    conductor.create_run(conn, "run-1", "misty-step/bitterblossom", issue, "default")
     conductor.record_event(conn, tmp_path / "events.jsonl", "run-1", "lease_acquired", {"issue": 1})
     conductor.record_event(conn, tmp_path / "events.jsonl", "run-1", "builder_selected", {"sprite": "fern"})
 
@@ -2184,6 +2209,86 @@ def test_show_events_jsonl_preserves_legacy_event_rows(
     lines = [line for line in capsys.readouterr().out.splitlines() if line]
     assert len(lines) == 2
     assert '"event_type": "builder_selected"' in lines[0]
+
+
+def test_show_events_fails_for_unknown_run_id(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")  # noqa: F841
+
+    args = argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-missing", limit=2, jsonl=False)
+    rc = conductor.show_events(args)
+
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "unknown run_id: run-missing" in captured.err
+
+
+@pytest.mark.parametrize(
+    ("event_type", "payload", "expected"),
+    [
+        (
+            "council_blocked",
+            {"reviews": []},
+            {
+                "event_type": "council_blocked",
+                "reason": "review_council_blocked",
+                "summary": "council_blocked: review_council_blocked",
+            },
+        ),
+        (
+            "command_failed",
+            {"error": "worker gone"},
+            {
+                "event_type": "command_failed",
+                "reason": "command_failed",
+                "summary": "worker gone",
+            },
+        ),
+        (
+            "unexpected_error",
+            {"error": "boom"},
+            {
+                "event_type": "unexpected_error",
+                "reason": "unexpected_error",
+                "summary": "boom",
+            },
+        ),
+        (
+            "ci_wait_complete",
+            {"passed": False, "output": "red"},
+            {
+                "event_type": "ci_wait_complete",
+                "reason": "checks_failed",
+                "summary": "ci_wait_complete: checks_failed",
+            },
+        ),
+        (
+            "external_review_wait_complete",
+            {"passed": False, "output": "pending"},
+            {
+                "event_type": "external_review_wait_complete",
+                "reason": "external_reviews_unsettled",
+                "summary": "external_review_wait_complete: external_reviews_unsettled",
+            },
+        ),
+    ],
+)
+def test_summarize_reason_event_covers_terminal_variants(
+    event_type: str,
+    payload: dict[str, Any],
+    expected: dict[str, str],
+) -> None:
+    assert conductor.summarize_reason_event(event_type, payload) == expected
+
+
+def test_parse_timestamp_normalizes_naive_values() -> None:
+    parsed = conductor.parse_timestamp("2026-03-08T21:00:00")
+
+    assert parsed is not None
+    assert parsed.tzinfo == timezone.utc
 
 
 def test_check_env_passes_when_all_present(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:

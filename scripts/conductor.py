@@ -44,6 +44,19 @@ FINDING_CLASSIFICATIONS = {"bug", "risk", "style", "question", "unspecified"}
 FINDING_SEVERITIES = {"critical", "high", "medium", "low", "unknown"}
 FINDING_DECISIONS = {"fix_now", "defer", "reject", "noise", "pending"}
 FINDING_STATUSES = {"open", "addressed", "deferred", "rejected", "duplicate", "pending"}
+RUN_SURFACE_COLUMNS = """
+run_id, repo, issue_number, issue_title, phase, status, builder_sprite, builder_profile,
+branch, pr_number, pr_url, heartbeat_at, updated_at
+"""
+RUN_REASON_EVENT_TYPES = (
+    "pr_feedback_blocked",
+    "council_blocked",
+    "command_failed",
+    "unexpected_error",
+    "ci_wait_complete",
+    "external_review_wait_complete",
+)
+RUN_REASON_LOOKBACK = 20
 
 
 @dataclass(slots=True)
@@ -184,9 +197,12 @@ def parse_timestamp(value: str | None) -> datetime | None:
     if not value:
         return None
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        ts = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+    if ts.tzinfo is None:
+        return ts.replace(tzinfo=timezone.utc)
+    return ts.astimezone(timezone.utc)
 
 
 def seconds_since(value: str | None) -> int | None:
@@ -254,6 +270,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             payload_json text not null,
             created_at text not null
         );
+        create index if not exists idx_events_run_id_id on events (run_id, id desc);
 
         create table if not exists review_waves (
             id integer primary key autoincrement,
@@ -506,14 +523,14 @@ def recent_events(conn: sqlite3.Connection, run_id: str, limit: int) -> list[sql
     ).fetchall()
 
 
+def decode_payload(raw: str) -> Any:
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return {"malformed_payload": raw}
+
+
 def summarize_reason_event(event_type: str, payload: dict[str, Any]) -> dict[str, Any] | None:
-    reason = payload.get("reason")
-    if isinstance(reason, str) and reason:
-        return {
-            "event_type": event_type,
-            "reason": reason,
-            "summary": f"{event_type}: {reason}",
-        }
     if event_type == "council_blocked":
         return {
             "event_type": event_type,
@@ -546,38 +563,65 @@ def summarize_reason_event(event_type: str, payload: dict[str, Any]) -> dict[str
             "reason": "external_reviews_unsettled",
             "summary": "external_review_wait_complete: external_reviews_unsettled",
         }
+    reason = payload.get("reason")
+    if isinstance(reason, str) and reason:
+        return {
+            "event_type": event_type,
+            "reason": reason,
+            "summary": f"{event_type}: {reason}",
+        }
     return None
 
 
-def summarize_run_reason(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any] | None:
-    if row["phase"] not in {"blocked", "failed"} and row["status"] not in {"blocked", "failed"}:
-        return None
+def terminal_run_state(row: sqlite3.Row) -> bool:
+    return row["phase"] in {"blocked", "failed"} or row["status"] in {"blocked", "failed"}
 
-    for event in conn.execute(
-        """
-        select event_type, payload_json
-        from events
-        where run_id = ?
-        order by id desc
+
+def load_run_reasons(conn: sqlite3.Connection, run_ids: list[str]) -> dict[str, dict[str, Any]]:
+    if not run_ids:
+        return {}
+
+    run_placeholders = ", ".join("?" for _ in run_ids)
+    event_placeholders = ", ".join("?" for _ in RUN_REASON_EVENT_TYPES)
+    rows = conn.execute(
+        f"""
+        select run_id, event_type, payload_json
+        from (
+            select run_id, event_type, payload_json,
+                   row_number() over (partition by run_id order by id desc) as row_num
+            from events
+            where run_id in ({run_placeholders})
+              and event_type in ({event_placeholders})
+        )
+        where row_num <= ?
+        order by run_id asc, row_num asc
         """,
-        (row["run_id"],),
-    ):
-        summary = summarize_reason_event(event["event_type"], json.loads(event["payload_json"]))
+        (*run_ids, *RUN_REASON_EVENT_TYPES, RUN_REASON_LOOKBACK),
+    ).fetchall()
+
+    reasons: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if row["run_id"] in reasons:
+            continue
+        payload = decode_payload(row["payload_json"])
+        if not isinstance(payload, dict):
+            continue
+        summary = summarize_reason_event(row["event_type"], payload)
         if summary is not None:
-            return summary
-    return None
+            reasons[row["run_id"]] = summary
+    return reasons
 
 
 def serialize_event_row(row: sqlite3.Row) -> dict[str, Any]:
     return {
         "run_id": row["run_id"],
         "event_type": row["event_type"],
-        "payload": json.loads(row["payload_json"]),
+        "payload": decode_payload(row["payload_json"]),
         "created_at": row["created_at"],
     }
 
 
-def serialize_run_row(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
+def serialize_run_row(row: sqlite3.Row, *, blocking_reason: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
         "run_id": row["run_id"],
         "repo": row["repo"],
@@ -593,7 +637,7 @@ def serialize_run_row(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, A
         "heartbeat_at": row["heartbeat_at"],
         "heartbeat_age_seconds": seconds_since(row["heartbeat_at"]),
         "updated_at": row["updated_at"],
-        "blocking_reason": summarize_run_reason(conn, row),
+        "blocking_reason": blocking_reason,
     }
 
 
@@ -2841,41 +2885,48 @@ def loop(args: argparse.Namespace) -> int:
         time.sleep(args.poll_seconds)
 
 
+def fetch_run_row(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row | None:
+    return conn.execute(
+        f"""
+        select {RUN_SURFACE_COLUMNS}
+        from runs
+        where run_id = ?
+        """,
+        (run_id,),
+    ).fetchone()
+
+
 def show_runs(args: argparse.Namespace) -> int:
     conn = open_db(pathlib.Path(args.db))
     rows = conn.execute(
-        """
-        select run_id, repo, issue_number, issue_title, phase, status, builder_sprite, builder_profile,
-               branch, pr_number, pr_url, heartbeat_at, updated_at
+        f"""
+        select {RUN_SURFACE_COLUMNS}
         from runs
         order by created_at desc
         limit ?
         """,
         (args.limit,),
     ).fetchall()
+    reasons = load_run_reasons(conn, [row["run_id"] for row in rows if terminal_run_state(row)])
     for row in rows:
-        print(json.dumps(serialize_run_row(conn, row)))
+        print(json.dumps(serialize_run_row(row, blocking_reason=reasons.get(row["run_id"]))))
     return 0
 
 
 def show_events(args: argparse.Namespace) -> int:
     conn = open_db(pathlib.Path(args.db))
-    run = conn.execute(
-        """
-        select run_id, repo, issue_number, issue_title, phase, status, builder_sprite, builder_profile,
-               branch, pr_number, pr_url, heartbeat_at, updated_at
-        from runs
-        where run_id = ?
-        """,
-        (args.run_id,),
-    ).fetchone()
+    run = fetch_run_row(conn, args.run_id)
+    if run is None:
+        print(f"conductor: unknown run_id: {args.run_id}", file=sys.stderr)
+        return 1
     rows = recent_events(conn, args.run_id, args.limit)
     if getattr(args, "jsonl", False):
         for row in rows:
             print(json.dumps(serialize_event_row(row)))
         return 0
+    reasons = load_run_reasons(conn, [args.run_id] if terminal_run_state(run) else [])
     payload = {
-        "run": serialize_run_row(conn, run) if run is not None else None,
+        "run": serialize_run_row(run, blocking_reason=reasons.get(args.run_id)),
         "events": [serialize_event_row(row) for row in rows],
     }
     print(json.dumps(payload))
