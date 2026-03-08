@@ -1985,6 +1985,31 @@ def test_handle_pr_review_threads_persists_thread_scan_wave(
     assert findings[0].line == 59
 
 
+def test_handle_pr_review_threads_clears_tracked_thread_ids_when_threads_are_clear(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+
+    monkeypatch.setattr(conductor, "list_unresolved_review_threads", lambda *_args, **_kwargs: [])
+
+    action, feedback, thread_ids = conductor.handle_pr_review_threads(
+        _RunnerSpy(),
+        conn,
+        tmp_path / "events.jsonl",
+        "run-447-1",
+        "misty-step/bitterblossom",
+        447,
+        460,
+        pr_feedback_rounds=1,
+        max_pr_feedback_rounds=2,
+        last_pr_feedback_thread_ids=("thread-1",),
+    )
+
+    assert action == "clear"
+    assert feedback is None
+    assert thread_ids == ()
+
+
 def test_reconcile_run_marks_merged(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
     conn = conductor.open_db(tmp_path / "conductor.db")
     issue = conductor.Issue(number=450, title="test", body="body", url="https://example.com/450", labels=["autopilot"])

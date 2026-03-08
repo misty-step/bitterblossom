@@ -1759,7 +1759,7 @@ def handle_pr_review_threads(
     unresolved_threads = list_unresolved_review_threads(runner, repo, pr_number)
     record_pr_thread_scan(conn, run_id, pr_number, unresolved_threads)
     if not unresolved_threads:
-        return "clear", None, last_pr_feedback_thread_ids
+        return "clear", None, ()
 
     trusted_threads = [thread for thread in unresolved_threads if is_trusted_review_author(thread)]
     untrusted_threads = [thread for thread in unresolved_threads if not is_trusted_review_author(thread)]
