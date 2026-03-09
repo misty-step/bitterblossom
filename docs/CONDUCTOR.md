@@ -107,6 +107,54 @@ timestamp, a computed `heartbeat_age_seconds`, and when applicable a
 envelope, `latest_event_type`, `latest_event_at`, and an `events` array. Use it
 when you need recent event context without joining SQLite tables by hand.
 
+## Acceptance Proof
+
+Issue [#102](https://github.com/misty-step/bitterblossom/issues/102) is the bounded-governance
+acceptance path for the current conductor architecture.
+
+Run the acceptance-focused regression slice first:
+
+```bash
+python3 -m pytest -q scripts/test_conductor.py -k 'acceptance_trace_bullet_run or duplicate_trusted_findings or low_severity_nit or novel_high_severity'
+```
+
+Expected:
+
+- the trace bullet path reaches `merged`
+- duplicate findings across review surfaces are recorded without reopening the loop
+- late low-severity nits are recorded without reopening the loop
+- late novel high-severity findings still reopen the loop
+
+Then run the full conductor test file:
+
+```bash
+python3 -m pytest -q scripts/test_conductor.py
+```
+
+For an operator-visible proof on a prepared environment, execute one run and inspect the run store:
+
+```bash
+python3 scripts/conductor.py run-once \
+  --repo misty-step/bitterblossom \
+  --issue 102 \
+  --worker noble-blue-serpent \
+  --reviewer council-fern-20260306 \
+  --reviewer council-sage-20260306 \
+  --reviewer council-thorn-20260306
+
+python3 scripts/conductor.py show-runs --limit 5
+python3 scripts/conductor.py show-events --run-id <run-id>
+```
+
+The acceptance run is only valid if `show-runs` and `show-events` expose the full path:
+
+- lease acquired
+- builder handoff
+- review evidence
+- CI wait completion
+- external review settle or block evidence
+- final merge or blocked state
+
 Reconcile a run after out-of-band merge or manual recovery:
 
 ```bash

@@ -1151,6 +1151,76 @@ def test_record_pr_thread_scan_marks_wave_failed_on_persist_error(
     assert [(wave.kind, wave.status) for wave in waves] == [("pr_thread_scan", "failed")]
 
 
+def test_normalize_review_thread_finding_reads_embedded_metadata() -> None:
+    thread = conductor.ReviewThread(
+        id="thread-1",
+        path="scripts/conductor.py",
+        line=59,
+        author_login="coderabbitai",
+        author_association="NONE",
+        body=(
+            "late style nit\n\n"
+            "<!-- bitterblossom: {\"classification\":\"style\",\"severity\":\"low\",\"decision\":\"defer\"} -->"
+        ),
+        url="https://example.com/thread-1",
+    )
+
+    finding = conductor.normalize_review_thread_finding("run-447-1", 1, thread)
+
+    assert finding.classification == "style"
+    assert finding.severity == "low"
+    assert finding.decision == "defer"
+    assert finding.message == "late style nit"
+
+
+def test_record_pr_thread_scan_marks_duplicate_fingerprint_across_waves(tmp_path: pathlib.Path) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    review = conductor.ReviewResult(
+        reviewer="fern",
+        verdict="fix",
+        summary="needs revision",
+        findings=[
+            {
+                "classification": "bug",
+                "severity": "high",
+                "path": "scripts/conductor.py",
+                "line": 59,
+                "message": "guard the stale lease check",
+            }
+        ],
+    )
+    review_wave = conductor.start_review_wave(conn, "run-447-1", "review_round", pr_number=460, reviewer_count=1)
+    conductor.record_review_artifact(
+        conn,
+        "run-447-1",
+        review_wave,
+        "fern",
+        {
+            "verdict": review.verdict,
+            "summary": review.summary,
+            "findings": review.findings,
+        },
+    )
+
+    thread = conductor.ReviewThread(
+        id="thread-1",
+        path="scripts/conductor.py",
+        line=59,
+        author_login="coderabbitai",
+        author_association="NONE",
+        body=(
+            "guard the stale lease check\n\n"
+            "<!-- bitterblossom: {\"classification\":\"bug\",\"severity\":\"high\",\"decision\":\"fix_now\"} -->"
+        ),
+        url="https://example.com/thread-1",
+    )
+
+    conductor.record_pr_thread_scan(conn, "run-447-1", 460, [thread])
+
+    findings = conductor.load_review_findings(conn, "run-447-1")
+    assert [finding.status for finding in findings] == ["open", "duplicate"]
+
+
 def test_run_builder_precleans_worker(monkeypatch: pytest.MonkeyPatch) -> None:
     issue = conductor.Issue(number=464, title="docs", body="body", url="https://example.com/464", labels=["autopilot"])
     cleaned: list[str] = []
@@ -1983,6 +2053,144 @@ def test_handle_pr_review_threads_persists_thread_scan_wave(
     assert findings[0].classification == "unspecified"
     assert findings[0].path == "README.md"
     assert findings[0].line == 59
+
+
+def test_handle_pr_review_threads_ignores_duplicate_trusted_findings(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    review_wave = conductor.start_review_wave(conn, "run-447-1", "review_round", pr_number=460, reviewer_count=1)
+    conductor.record_review_artifact(
+        conn,
+        "run-447-1",
+        review_wave,
+        "fern",
+        {
+            "verdict": "fix",
+            "summary": "needs revision",
+            "findings": [
+                {
+                    "classification": "bug",
+                    "severity": "high",
+                    "path": "scripts/conductor.py",
+                    "line": 59,
+                    "message": "guard the stale lease check",
+                }
+            ],
+        },
+    )
+    thread = conductor.ReviewThread(
+        id="thread-1",
+        path="scripts/conductor.py",
+        line=59,
+        author_login="coderabbitai",
+        author_association="NONE",
+        body=(
+            "guard the stale lease check\n\n"
+            "<!-- bitterblossom: {\"classification\":\"bug\",\"severity\":\"high\",\"decision\":\"fix_now\"} -->"
+        ),
+        url="https://example.com/thread-1",
+    )
+
+    monkeypatch.setattr(conductor, "list_unresolved_review_threads", lambda *_args, **_kwargs: [thread])
+
+    action, feedback, thread_ids = conductor.handle_pr_review_threads(
+        _RunnerSpy(),
+        conn,
+        tmp_path / "events.jsonl",
+        "run-447-1",
+        "misty-step/bitterblossom",
+        447,
+        460,
+        pr_feedback_rounds=0,
+        max_pr_feedback_rounds=1,
+        last_pr_feedback_thread_ids=(),
+    )
+
+    assert action == "clear"
+    assert feedback is None
+    assert thread_ids == ()
+
+
+def test_handle_pr_review_threads_ignores_late_low_severity_nit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    thread = conductor.ReviewThread(
+        id="thread-1",
+        path="README.md",
+        line=59,
+        author_login="coderabbitai",
+        author_association="NONE",
+        body=(
+            "nit: tighten the copy\n\n"
+            "<!-- bitterblossom: {\"classification\":\"style\",\"severity\":\"low\",\"decision\":\"defer\"} -->"
+        ),
+        url="https://example.com/thread-1",
+    )
+
+    monkeypatch.setattr(conductor, "list_unresolved_review_threads", lambda *_args, **_kwargs: [thread])
+
+    action, feedback, thread_ids = conductor.handle_pr_review_threads(
+        _RunnerSpy(),
+        conn,
+        tmp_path / "events.jsonl",
+        "run-447-1",
+        "misty-step/bitterblossom",
+        447,
+        460,
+        pr_feedback_rounds=0,
+        max_pr_feedback_rounds=1,
+        last_pr_feedback_thread_ids=(),
+    )
+
+    assert action == "clear"
+    assert feedback is None
+    assert thread_ids == ()
+
+    findings = conductor.load_review_findings(conn, "run-447-1")
+    assert len(findings) == 1
+    assert findings[0].severity == "low"
+    assert findings[0].status == "open"
+
+
+def test_handle_pr_review_threads_reopens_for_novel_high_severity_finding(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    thread = conductor.ReviewThread(
+        id="thread-1",
+        path="scripts/conductor.py",
+        line=59,
+        author_login="coderabbitai",
+        author_association="NONE",
+        body=(
+            "missing stale lease guard\n\n"
+            "<!-- bitterblossom: {\"classification\":\"bug\",\"severity\":\"high\",\"decision\":\"fix_now\"} -->"
+        ),
+        url="https://example.com/thread-1",
+    )
+
+    monkeypatch.setattr(conductor, "list_unresolved_review_threads", lambda *_args, **_kwargs: [thread])
+    monkeypatch.setattr(conductor, "comment_issue", lambda *_args, **_kwargs: None)
+
+    action, feedback, thread_ids = conductor.handle_pr_review_threads(
+        _RunnerSpy(),
+        conn,
+        tmp_path / "events.jsonl",
+        "run-447-1",
+        "misty-step/bitterblossom",
+        447,
+        460,
+        pr_feedback_rounds=0,
+        max_pr_feedback_rounds=1,
+        last_pr_feedback_thread_ids=(),
+    )
+
+    assert action == "revise"
+    assert feedback is not None
+    assert "scripts/conductor.py:59" in feedback
+    assert thread_ids == ("thread-1",)
 
 
 def test_handle_pr_review_threads_clears_tracked_thread_ids_when_threads_are_clear(
@@ -2917,6 +3125,67 @@ def test_run_once_merges_when_trusted_surfaces_settle(
 
     assert rc == 0
     assert merge_calls == [485]
+
+
+def test_acceptance_trace_bullet_run_is_inspectable_from_run_store(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    issue = conductor.Issue(number=102, title="acceptance", body="", url="https://example.com/102", labels=["autopilot"])
+    builder = conductor.BuilderResult(
+        status="ready_for_review",
+        branch="factory/102-acceptance-1",
+        pr_number=486,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/486",
+        summary="done",
+        tests=[{"name": "scripts/test_conductor.py", "status": "passed"}],
+    )
+    reviews = [
+        conductor.ReviewResult(reviewer="fern", verdict="pass", summary="ok", findings=[]),
+        conductor.ReviewResult(reviewer="sage", verdict="pass", summary="ok", findings=[]),
+        conductor.ReviewResult(reviewer="thorn", verdict="pass", summary="ok", findings=[]),
+    ]
+
+    monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
+    monkeypatch.setattr(conductor, "select_worker", lambda *_a, **_kw: "noble-blue-serpent")
+    monkeypatch.setattr(conductor, "ensure_reviewers_ready", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "run_builder", lambda *_a, **_kw: (builder, {"status": "ready_for_review", "tests": builder.tests}))
+    monkeypatch.setattr(conductor, "run_review_round", lambda *_a, **_kw: reviews)
+    monkeypatch.setattr(conductor, "ensure_pr_ready", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "wait_for_pr_checks", lambda *_a, **_kw: (True, "merge-gate: SUCCESS"))
+    monkeypatch.setattr(conductor, "ensure_required_checks_present", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "list_unresolved_review_threads", lambda *_a, **_kw: [])
+    monkeypatch.setattr(conductor, "wait_for_external_reviews", lambda *_a, **_kw: (True, "CodeRabbit: SUCCESS"))
+    monkeypatch.setattr(conductor, "merge_pr", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "comment_pr", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "comment_issue", lambda *_a, **_kw: None)
+
+    args = _make_run_once_args(
+        tmp_path,
+        issue_number=102,
+        trusted_external_surfaces=["CodeRabbit"],
+        external_review_quiet_window=0,
+        external_review_timeout=5,
+    )
+
+    rc = conductor.run_once(args)
+
+    assert rc == 0
+
+    show_runs_rc = conductor.show_runs(argparse.Namespace(db=args.db, limit=5))
+    show_runs_lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line]
+    assert show_runs_rc == 0
+    assert show_runs_lines[0]["issue_number"] == 102
+    assert show_runs_lines[0]["phase"] == "merged"
+    run_id = show_runs_lines[0]["run_id"]
+
+    show_events_rc = conductor.show_events(argparse.Namespace(db=args.db, run_id=run_id, limit=20))
+    show_events_lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line]
+    event_types = [line["event_type"] for line in show_events_lines]
+
+    assert show_events_rc == 0
+    assert "merged" in event_types
+    assert "ci_wait_complete" in event_types
+    assert "builder_complete" in event_types
 
 
 def test_run_once_rechecks_pr_threads_after_external_reviews_settle(

@@ -1046,6 +1046,28 @@ def normalized_line(value: Any) -> int | None:
         return None
 
 
+def parse_embedded_finding_metadata(body: str) -> tuple[str, dict[str, Any]]:
+    marker = "<!-- bitterblossom:"
+    text = str(body or "")
+    start = text.find(marker)
+    if start < 0:
+        return text.strip(), {}
+    end = text.find("-->", start)
+    if end < 0:
+        return text.strip(), {}
+
+    metadata_text = text[start + len(marker):end].strip()
+    try:
+        metadata = json.loads(metadata_text)
+    except json.JSONDecodeError:
+        metadata = {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    visible_body = (text[:start] + text[end + 3:]).strip()
+    return visible_body, metadata
+
+
 def review_finding_fingerprint(*, classification: str, severity: str, path: str, line: int | None, message: str) -> str:
     material = json.dumps(
         {
@@ -1105,6 +1127,12 @@ def normalize_review_finding(
 
 
 def normalize_review_thread_finding(run_id: str, wave_id: int, thread: ReviewThread) -> ReviewFinding:
+    visible_body, metadata = parse_embedded_finding_metadata(thread.body)
+    classification = normalized_choice(metadata.get("classification"), "unspecified", FINDING_CLASSIFICATIONS)
+    severity = normalized_choice(metadata.get("severity"), "unknown", FINDING_SEVERITIES)
+    decision = normalized_choice(metadata.get("decision"), "pending", FINDING_DECISIONS)
+    status = normalized_choice(metadata.get("status"), "open", FINDING_STATUSES)
+    message = normalized_text(visible_body, "")
     return ReviewFinding(
         id=None,
         run_id=run_id,
@@ -1113,19 +1141,19 @@ def normalize_review_thread_finding(run_id: str, wave_id: int, thread: ReviewThr
         source_kind="pr_review_thread",
         source_id=thread.id,
         fingerprint=review_finding_fingerprint(
-            classification="unspecified",
-            severity="unknown",
+            classification=classification,
+            severity=severity,
             path=thread.path,
             line=thread.line,
-            message=thread.body,
+            message=message,
         ),
-        classification="unspecified",
-        severity="unknown",
-        decision="pending",
-        status="open",
+        classification=classification,
+        severity=severity,
+        decision=decision,
+        status=status,
         path=thread.path,
         line=thread.line,
-        message=thread.body,
+        message=message,
         raw=asdict(thread),
     )
 
@@ -1200,41 +1228,66 @@ def persist_review_wave_review(
 
 def persist_review_findings(conn: sqlite3.Connection, findings: list[ReviewFinding], *, commit: bool = True) -> None:
     ts = now_utc()
-    rows = [
-        (
-            finding.run_id,
-            finding.wave_id,
-            finding.reviewer,
-            finding.source_kind,
-            finding.source_id,
-            finding.fingerprint,
-            finding.classification,
-            finding.severity,
-            finding.decision,
-            finding.status,
-            finding.path,
-            finding.line,
-            finding.message,
-            json.dumps(finding.raw, separators=(",", ":")),
-            ts,
-            ts,
-        )
-        for finding in findings
-    ]
-    if not rows:
+    if not findings:
         return
-    conn.executemany(
-        """
-        insert or ignore into review_findings (
-            run_id, wave_id, reviewer, source_kind, source_id, fingerprint,
-            classification, severity, decision, status, path, line, message,
-            raw_json, created_at, updated_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        rows,
-    )
+    for finding in findings:
+        status = finding.status
+        prior = conn.execute(
+            """
+            select 1
+            from review_findings
+            where run_id = ?
+              and fingerprint = ?
+              and not (source_kind = ? and source_id = ?)
+            limit 1
+            """,
+            (finding.run_id, finding.fingerprint, finding.source_kind, finding.source_id),
+        ).fetchone()
+        if prior is not None and status not in {"addressed", "deferred", "rejected", "duplicate"}:
+            status = "duplicate"
+        conn.execute(
+            """
+            insert or ignore into review_findings (
+                run_id, wave_id, reviewer, source_kind, source_id, fingerprint,
+                classification, severity, decision, status, path, line, message,
+                raw_json, created_at, updated_at
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                finding.run_id,
+                finding.wave_id,
+                finding.reviewer,
+                finding.source_kind,
+                finding.source_id,
+                finding.fingerprint,
+                finding.classification,
+                finding.severity,
+                finding.decision,
+                status,
+                finding.path,
+                finding.line,
+                finding.message,
+                json.dumps(finding.raw, separators=(",", ":")),
+                ts,
+                ts,
+            ),
+        )
     if commit:
         conn.commit()
+
+
+def finding_blocks_merge(finding: ReviewFinding) -> bool:
+    if finding.status in {"addressed", "deferred", "rejected", "duplicate"}:
+        return False
+    if finding.classification == "style":
+        return False
+    if finding.severity in {"critical", "high"}:
+        return finding.decision not in {"reject", "noise"}
+    if finding.severity == "medium":
+        return finding.decision == "fix_now"
+    if finding.severity == "low":
+        return False
+    return finding.decision not in {"defer", "reject", "noise"}
 
 
 def record_review_artifact(
@@ -1861,13 +1914,23 @@ def handle_pr_review_threads(
     last_pr_feedback_thread_ids: tuple[str, ...],
 ) -> tuple[str, str | None, tuple[str, ...]]:
     unresolved_threads = list_unresolved_review_threads(runner, repo, pr_number)
-    record_pr_thread_scan(conn, run_id, pr_number, unresolved_threads)
+    wave_id = record_pr_thread_scan(conn, run_id, pr_number, unresolved_threads)
     if not unresolved_threads:
         return "clear", None, ()
 
     trusted_threads = [thread for thread in unresolved_threads if is_trusted_review_author(thread)]
     untrusted_threads = [thread for thread in unresolved_threads if not is_trusted_review_author(thread)]
-    thread_ids = tuple(sorted(thread.id for thread in trusted_threads))
+    trusted_findings = {
+        finding.source_id: finding
+        for finding in load_review_findings(conn, run_id)
+        if finding.wave_id == wave_id and finding.source_kind == "pr_review_thread"
+    }
+    blocking_threads = [
+        thread
+        for thread in trusted_threads
+        if finding_blocks_merge(trusted_findings.get(thread.id, normalize_review_thread_finding(run_id, wave_id, thread)))
+    ]
+    thread_ids = tuple(sorted(thread.id for thread in blocking_threads))
 
     if untrusted_threads:
         update_run(conn, run_id, phase="blocked", status="blocked")
@@ -1894,6 +1957,9 @@ def handle_pr_review_threads(
         )
         return "blocked", None, thread_ids
 
+    if not blocking_threads:
+        return "clear", None, ()
+
     if pr_feedback_rounds > 0 and thread_ids == last_pr_feedback_thread_ids:
         update_run(conn, run_id, phase="blocked", status="blocked")
         record_event(
@@ -1904,7 +1970,7 @@ def handle_pr_review_threads(
             {
                 "pr_number": pr_number,
                 "reason": "unchanged_after_revision",
-                "threads": [asdict(thread) for thread in trusted_threads],
+                "threads": [asdict(thread) for thread in blocking_threads],
             },
         )
         best_effort_issue_comment(
@@ -1919,7 +1985,7 @@ def handle_pr_review_threads(
         )
         return "blocked", None, thread_ids
 
-    if trusted_threads:
+    if blocking_threads:
         if pr_feedback_rounds >= max_pr_feedback_rounds:
             update_run(conn, run_id, phase="blocked", status="blocked")
             record_event(
@@ -1930,7 +1996,7 @@ def handle_pr_review_threads(
                 {
                     "pr_number": pr_number,
                     "reason": "max_rounds",
-                    "threads": [asdict(thread) for thread in trusted_threads],
+                    "threads": [asdict(thread) for thread in blocking_threads],
                 },
             )
             best_effort_issue_comment(
@@ -1945,7 +2011,7 @@ def handle_pr_review_threads(
             )
             return "blocked", None, thread_ids
 
-        feedback = summarize_review_threads(trusted_threads)
+        feedback = summarize_review_threads(blocking_threads)
         update_run(conn, run_id, phase="revising")
         record_event(
             conn,
@@ -1956,7 +2022,7 @@ def handle_pr_review_threads(
                 "feedback": feedback,
                 "reason": "pr_feedback",
                 "pr_number": pr_number,
-                "threads": [asdict(thread) for thread in trusted_threads],
+                "threads": [asdict(thread) for thread in blocking_threads],
             },
         )
         return "revise", feedback, thread_ids

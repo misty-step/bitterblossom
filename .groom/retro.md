@@ -15,3 +15,11 @@
 - scope: tightened the existing run surfaces instead of adding a new operator path, and promoted blocking reasons into stable JSON output
 - blocker: none
 - pattern: when observability already has durable state, ship the operator contract by shaping one serializer and testing against it
+
+## 2026-03-09 [issue #102](https://github.com/misty-step/bitterblossom/issues/102)
+
+- predicted: L
+- actual: M
+- scope: proved the trace bullet with acceptance-focused run-store assertions and tightened late trusted-review handling so duplicates and low-severity nits no longer cause churn
+- blocker: none
+- pattern: acceptance proofs stay durable when the operator-visible commands read the same ledger states the tests assert
