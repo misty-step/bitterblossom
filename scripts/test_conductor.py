@@ -1673,6 +1673,42 @@ def test_wait_for_pr_checks_calls_on_tick_each_poll(monkeypatch: pytest.MonkeyPa
     assert on_tick_calls == ["tick", "tick"]
 
 
+def test_wait_for_pr_checks_ignores_on_tick_failures(monkeypatch: pytest.MonkeyPatch) -> None:
+    ticks = iter([0.0, 0.0, 10.0, 10.0, 20.0])
+
+    monkeypatch.setattr(conductor.time, "time", lambda: next(ticks))
+    monkeypatch.setattr(conductor.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        conductor,
+        "gh_json",
+        lambda *_args, **_kwargs: {
+            "baseRefName": "master",
+            "statusCheckRollup": [
+                {
+                    "__typename": "CheckRun",
+                    "name": "merge-gate",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-03-06T18:00:00Z",
+                    "completedAt": "2026-03-06T18:00:05Z",
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(conductor, "required_status_checks", lambda *_args, **_kwargs: ["merge-gate"])
+
+    ok, output = conductor.wait_for_pr_checks(
+        _RunnerSpy(),
+        "misty-step/bitterblossom",
+        42,
+        5,
+        on_tick=lambda: (_ for _ in ()).throw(sqlite3.OperationalError("database is locked")),
+    )
+
+    assert ok is True
+    assert "merge-gate" in output
+
+
 def test_ensure_required_checks_present_accepts_matching_contexts() -> None:
     runner = _RunnerSpy(
         [
@@ -2220,6 +2256,41 @@ def test_render_run_row_fetches_recent_events_once(monkeypatch: pytest.MonkeyPat
     assert calls == [conductor.BLOCKING_REASON_SCAN_LIMIT]
 
 
+def test_show_runs_prefetches_recent_events_in_one_batch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=1, title="test", body="body", url="https://example.com/1", labels=["autopilot"])
+    conductor.create_run(conn, "run-1", "misty-step/bitterblossom", issue, "default")
+    conductor.record_event(conn, tmp_path / "events.jsonl", "run-1", "builder_selected", {"sprite": "fern"})
+
+    original_batch = conductor.recent_event_rows_by_run
+    calls: list[tuple[tuple[str, ...], int]] = []
+
+    def counting_recent_event_rows_by_run(
+        db: sqlite3.Connection,
+        run_ids: list[str],
+        limit: int,
+    ) -> dict[str, list[sqlite3.Row]]:
+        calls.append((tuple(run_ids), limit))
+        return original_batch(db, run_ids, limit)
+
+    monkeypatch.setattr(conductor, "recent_event_rows_by_run", counting_recent_event_rows_by_run)
+    monkeypatch.setattr(
+        conductor,
+        "recent_event_rows",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("show_runs should use batched event prefetch")),
+    )
+
+    rc = conductor.show_runs(argparse.Namespace(db=str(tmp_path / "conductor.db"), limit=10))
+
+    assert rc == 0
+    assert calls == [(("run-1",), conductor.BLOCKING_REASON_SCAN_LIMIT)]
+    assert json.loads(capsys.readouterr().out)["latest_event"]["summary"] == "builder selected: fern"
+
+
 @pytest.mark.parametrize(
     ("event_type", "payload", "expected"),
     [
@@ -2348,6 +2419,20 @@ def test_show_events_prints_run_metadata_and_recent_events(
     assert payload["events"][0]["summary"] == "pr feedback blocked: unchanged_after_revision"
     assert payload["events"][1]["summary"] == "ci checks passed"
     assert payload["events"][2]["summary"] == "review complete: fern -> pass"
+
+
+def test_show_runs_rejects_negative_limit(tmp_path: pathlib.Path) -> None:
+    with pytest.raises(conductor.CmdError, match="--limit must be non-negative"):
+        conductor.show_runs(argparse.Namespace(db=str(tmp_path / "conductor.db"), limit=-1))
+
+
+def test_show_events_rejects_negative_limit(tmp_path: pathlib.Path) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=1, title="test", body="body", url="https://example.com/1", labels=["autopilot"])
+    conductor.create_run(conn, "run-1", "misty-step/bitterblossom", issue, "default")
+
+    with pytest.raises(conductor.CmdError, match="--limit must be non-negative"):
+        conductor.show_events(argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-1", limit=-1))
 
 
 def test_check_env_passes_when_all_present(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -3036,6 +3121,36 @@ def test_wait_for_external_reviews_calls_on_tick_each_poll(monkeypatch: pytest.M
     assert ok is True
     assert "CodeRabbit" in summary
     assert on_tick_calls == ["tick", "tick", "tick"]
+
+
+def test_wait_for_external_reviews_ignores_on_tick_failures(monkeypatch: pytest.MonkeyPatch) -> None:
+    settled_rollup = [
+        {
+            "__typename": "StatusContext",
+            "context": "CodeRabbit",
+            "state": "SUCCESS",
+            "startedAt": "2026-03-07T00:20:00Z",
+        },
+    ]
+    ticks = iter([0.0, 0.0, 70.0, 70.0, 130.0, 130.0])
+
+    monkeypatch.setattr(conductor.time, "time", lambda: next(ticks))
+    monkeypatch.setattr(conductor.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(conductor, "sleep_until", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(conductor, "gh_json", lambda *_args, **_kwargs: {"statusCheckRollup": settled_rollup})
+
+    ok, summary = conductor.wait_for_external_reviews(
+        _RunnerSpy(),
+        "misty-step/bitterblossom",
+        483,
+        ["CodeRabbit"],
+        quiet_window_seconds=60,
+        timeout_minutes=5,
+        on_tick=lambda: (_ for _ in ()).throw(sqlite3.OperationalError("database is locked")),
+    )
+
+    assert ok is True
+    assert "CodeRabbit" in summary
 
 
 def test_run_once_withholds_merge_while_trusted_surfaces_pending(

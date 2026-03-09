@@ -360,6 +360,30 @@ def recent_event_rows(conn: sqlite3.Connection, run_id: str, limit: int) -> list
     ).fetchall()
 
 
+def recent_event_rows_by_run(conn: sqlite3.Connection, run_ids: list[str], limit: int) -> dict[str, list[sqlite3.Row]]:
+    if not run_ids:
+        return {}
+    placeholders = ",".join("?" for _ in run_ids)
+    rows = conn.execute(
+        f"""
+        select run_id, event_type, payload_json, created_at
+        from (
+            select run_id, event_type, payload_json, created_at,
+                   row_number() over (partition by run_id order by id desc) as ordinal
+            from events
+            where run_id in ({placeholders})
+        )
+        where ordinal <= ?
+        order by run_id, ordinal
+        """,
+        [*run_ids, limit],
+    ).fetchall()
+    grouped: dict[str, list[sqlite3.Row]] = {}
+    for row in rows:
+        grouped.setdefault(row["run_id"], []).append(row)
+    return grouped
+
+
 def event_summary(event_type: str, payload: dict[str, Any]) -> str:
     if event_type == "lease_acquired":
         issue = payload.get("issue")
@@ -461,7 +485,13 @@ def render_event_row(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
-def render_run_row(conn: sqlite3.Connection, row: sqlite3.Row, *, include_events: int = 0) -> dict[str, Any]:
+def render_run_row(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    include_events: int = 0,
+    event_rows: list[sqlite3.Row] | None = None,
+) -> dict[str, Any]:
     rendered = {
         "run_id": row["run_id"],
         "repo": row["repo"],
@@ -479,8 +509,8 @@ def render_run_row(conn: sqlite3.Connection, row: sqlite3.Row, *, include_events
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
-    fetch_limit = max(max(include_events, BLOCKING_REASON_SCAN_LIMIT), 1)
-    event_rows = recent_event_rows(conn, row["run_id"], fetch_limit)
+    fetch_limit = max(include_events, BLOCKING_REASON_SCAN_LIMIT if row["status"] in {"blocked", "failed"} else 1)
+    event_rows = recent_event_rows(conn, row["run_id"], fetch_limit) if event_rows is None else event_rows[:fetch_limit]
     if event_rows:
         rendered["latest_event"] = render_event_row(event_rows[0])
     if row["status"] in {"blocked", "failed"}:
@@ -1561,7 +1591,10 @@ def wait_for_pr_checks(
 
     while time.time() < deadline:
         if on_tick is not None:
-            on_tick()
+            try:
+                on_tick()
+            except Exception:
+                pass
         try:
             payload = gh_json(runner, ["pr", "view", str(pr_number), "--repo", repo, "--json", "baseRefName,statusCheckRollup"])
             if required is None:
@@ -1889,7 +1922,10 @@ def wait_for_external_reviews(
 
     while time.time() < deadline:
         if on_tick is not None:
-            on_tick()
+            try:
+                on_tick()
+            except Exception:
+                pass
         try:
             last_payload = gh_json(
                 runner,
@@ -2926,6 +2962,8 @@ def loop(args: argparse.Namespace) -> int:
 
 def show_runs(args: argparse.Namespace) -> int:
     conn = open_db(pathlib.Path(args.db))
+    if args.limit < 0:
+        raise CmdError("--limit must be non-negative")
     rows = conn.execute(
         """
         select run_id, repo, issue_number, issue_title, phase, status, builder_sprite,
@@ -2936,13 +2974,16 @@ def show_runs(args: argparse.Namespace) -> int:
         """,
         (args.limit,),
     ).fetchall()
+    event_rows_by_run = recent_event_rows_by_run(conn, [row["run_id"] for row in rows], BLOCKING_REASON_SCAN_LIMIT)
     for row in rows:
-        print(json.dumps(render_run_row(conn, row)))
+        print(json.dumps(render_run_row(conn, row, event_rows=event_rows_by_run.get(row["run_id"]))))
     return 0
 
 
 def show_events(args: argparse.Namespace) -> int:
     conn = open_db(pathlib.Path(args.db))
+    if args.limit < 0:
+        raise CmdError("--limit must be non-negative")
     run = fetch_run_row(conn, args.run_id)
     if run is None:
         raise CmdError(f"unknown run_id: {args.run_id}")
