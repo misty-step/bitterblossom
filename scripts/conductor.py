@@ -1052,7 +1052,26 @@ def parse_embedded_finding_metadata(body: str) -> tuple[str, dict[str, Any]]:
     start = text.find(marker)
     if start < 0:
         return text.strip(), {}
-    end = text.rfind("-->")
+    cursor = start + len(marker)
+    in_string = False
+    escaped = False
+    end = -1
+    while cursor < len(text) - 2:
+        char = text[cursor]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+        else:
+            if char == '"':
+                in_string = True
+            elif text[cursor:cursor + 3] == "-->":
+                end = cursor
+                break
+        cursor += 1
     if end < 0:
         return text.strip(), {}
 
@@ -1284,15 +1303,17 @@ def persist_review_findings(conn: sqlite3.Connection, findings: list[ReviewFindi
 def finding_blocks_merge(finding: ReviewFinding) -> bool:
     if finding.status in {"addressed", "deferred", "rejected", "duplicate"}:
         return False
+    if finding.decision in {"defer", "reject", "noise"}:
+        return False
     if finding.classification == "style":
         return False
     if finding.severity in {"critical", "high"}:
-        return finding.decision not in {"reject", "noise"}
+        return True
     if finding.severity == "medium":
         return finding.decision == "fix_now"
     if finding.severity == "low":
         return False
-    return finding.decision not in {"defer", "reject", "noise"}
+    return True
 
 
 def record_review_artifact(

@@ -1191,6 +1191,20 @@ def test_parse_embedded_finding_metadata_uses_last_comment_close() -> None:
     assert metadata["message"] == "rewrite --> this"
 
 
+def test_parse_embedded_finding_metadata_ignores_later_html_comments() -> None:
+    body = (
+        "keep this visible\n\n"
+        "<!-- bitterblossom: {\"classification\":\"bug\",\"severity\":\"high\"} -->\n"
+        "<!-- later comment -->"
+    )
+
+    visible_body, metadata = conductor.parse_embedded_finding_metadata(body)
+
+    assert visible_body.startswith("keep this visible")
+    assert visible_body.endswith("<!-- later comment -->")
+    assert metadata["classification"] == "bug"
+
+
 def test_record_pr_thread_scan_marks_duplicate_fingerprint_across_waves(tmp_path: pathlib.Path) -> None:
     conn = conductor.open_db(tmp_path / "conductor.db")
     review = conductor.ReviewResult(
@@ -1298,6 +1312,7 @@ def test_finding_blocks_merge_policy() -> None:
     )
 
     assert conductor.finding_blocks_merge(conductor.ReviewFinding(**base, classification="bug", severity="high", decision="pending", status="open")) is True
+    assert conductor.finding_blocks_merge(conductor.ReviewFinding(**base, classification="bug", severity="high", decision="defer", status="open")) is False
     assert conductor.finding_blocks_merge(conductor.ReviewFinding(**base, classification="bug", severity="medium", decision="pending", status="open")) is False
     assert conductor.finding_blocks_merge(conductor.ReviewFinding(**base, classification="bug", severity="medium", decision="fix_now", status="open")) is True
     assert conductor.finding_blocks_merge(conductor.ReviewFinding(**base, classification="style", severity="high", decision="fix_now", status="open")) is False
