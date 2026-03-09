@@ -98,6 +98,15 @@ python3 scripts/conductor.py show-runs --limit 20
 python3 scripts/conductor.py show-events --run-id run-450-1772813415
 ```
 
+`show-runs` emits one JSON object per run. The operator contract is that each
+row includes the current `phase` and `status`, the raw `heartbeat_at`
+timestamp, a computed `heartbeat_age_seconds`, and when applicable a
+`blocking_reason` plus the source `blocking_event_type`.
+
+`show-events` emits one JSON object for the requested run with a `run` metadata
+envelope and an `events` array. Use it when you need recent event context
+without joining SQLite tables by hand.
+
 Reconcile a run after out-of-band merge or manual recovery:
 
 ```bash
@@ -221,6 +230,8 @@ python3 scripts/conductor.py show-runs --limit 20
 ```
 
 Blocked runs show `phase=blocked` and `status=blocked`. The associated issue also has a GitHub comment from Bitterblossom explaining why it was blocked.
+The same `show-runs` row also includes `blocking_reason` so operators can see
+the immediate cause without digging through raw events first.
 
 ### Re-queuing a blocked issue
 
