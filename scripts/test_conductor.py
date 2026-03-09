@@ -2192,6 +2192,42 @@ def test_show_runs_prints_failed_reason(
     }
 
 
+def test_show_runs_skips_successful_wait_reason_payloads(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=4, title="blocked", body="", url="u4", labels=["autopilot"])
+    conductor.create_run(conn, "run-4", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(conn, "run-4", phase="blocked", status="blocked")
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-4",
+        "pr_feedback_blocked",
+        {"threads": [{"id": "thread-1"}]},
+    )
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-4",
+        "ci_wait_complete",
+        {"passed": True, "reason": "all_checks_green"},
+    )
+
+    args = argparse.Namespace(db=str(tmp_path / "conductor.db"), limit=1)
+    rc = conductor.show_runs(args)
+
+    assert rc == 0
+    row = json.loads(capsys.readouterr().out)
+    assert row["run_id"] == "run-4"
+    assert row["blocking_reason"] == {
+        "event_type": "pr_feedback_blocked",
+        "reason": "pr_feedback_blocked",
+        "summary": "pr_feedback_blocked: pr_feedback_blocked",
+    }
+
+
 def test_show_events_jsonl_preserves_legacy_event_rows(
     tmp_path: pathlib.Path,
     capsys: pytest.CaptureFixture[str],
@@ -2291,6 +2327,15 @@ def test_show_events_fails_for_unknown_run_id(
                 "summary": "external_review_wait_complete: external_reviews_unsettled",
             },
         ),
+        (
+            "pr_feedback_blocked",
+            {"threads": [{"id": "thread-1"}]},
+            {
+                "event_type": "pr_feedback_blocked",
+                "reason": "pr_feedback_blocked",
+                "summary": "pr_feedback_blocked: pr_feedback_blocked",
+            },
+        ),
     ],
 )
 def test_summarize_reason_event_covers_terminal_variants(
@@ -2299,6 +2344,20 @@ def test_summarize_reason_event_covers_terminal_variants(
     expected: dict[str, str],
 ) -> None:
     assert conductor.summarize_reason_event(event_type, payload) == expected
+
+
+@pytest.mark.parametrize(
+    ("event_type", "payload"),
+    [
+        ("ci_wait_complete", {"passed": True, "reason": "all_checks_green"}),
+        ("external_review_wait_complete", {"passed": True, "reason": "all_reviews_settled"}),
+    ],
+)
+def test_summarize_reason_event_ignores_successful_wait_completions(
+    event_type: str,
+    payload: dict[str, Any],
+) -> None:
+    assert conductor.summarize_reason_event(event_type, payload) is None
 
 
 def test_parse_timestamp_normalizes_naive_values() -> None:

@@ -551,18 +551,30 @@ def summarize_reason_event(event_type: str, payload: dict[str, Any]) -> dict[str
             "reason": "unexpected_error",
             "summary": clip_summary(error) if isinstance(error, str) and error else "unexpected_error",
         }
-    if event_type == "ci_wait_complete" and payload.get("passed") is False:
+    if event_type == "pr_feedback_blocked":
+        reason = payload.get("reason")
+        label = str(reason) if isinstance(reason, str) and reason else "pr_feedback_blocked"
         return {
             "event_type": event_type,
-            "reason": "checks_failed",
-            "summary": "ci_wait_complete: checks_failed",
+            "reason": label,
+            "summary": f"pr_feedback_blocked: {label}",
         }
-    if event_type == "external_review_wait_complete" and payload.get("passed") is False:
-        return {
-            "event_type": event_type,
-            "reason": "external_reviews_unsettled",
-            "summary": "external_review_wait_complete: external_reviews_unsettled",
-        }
+    if event_type == "ci_wait_complete":
+        if payload.get("passed") is False:
+            return {
+                "event_type": event_type,
+                "reason": "checks_failed",
+                "summary": "ci_wait_complete: checks_failed",
+            }
+        return None
+    if event_type == "external_review_wait_complete":
+        if payload.get("passed") is False:
+            return {
+                "event_type": event_type,
+                "reason": "external_reviews_unsettled",
+                "summary": "external_review_wait_complete: external_reviews_unsettled",
+            }
+        return None
     reason = payload.get("reason")
     if isinstance(reason, str) and reason:
         return {
