@@ -2277,6 +2277,35 @@ def test_parse_utc_and_age_seconds_handle_invalid_inputs() -> None:
     assert conductor.age_seconds("not-a-timestamp") is None
 
 
+def test_age_seconds_treats_naive_timestamps_as_utc() -> None:
+    assert conductor.age_seconds("2026-03-08T13:35:00", now_value="2026-03-08T13:40:00Z") == 300
+
+
+def test_render_run_row_handles_malformed_event_payload_json(tmp_path: pathlib.Path) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=1, title="test", body="body", url="https://example.com/1", labels=["autopilot"])
+    conductor.create_run(conn, "run-1", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(conn, "run-1", phase="blocked", status="blocked")
+    conn.execute(
+        "insert into events (run_id, event_type, payload_json, created_at) values (?, ?, ?, ?)",
+        ("run-1", "pr_feedback_blocked", json.dumps({"reason": "unchanged_after_revision"}), "2026-03-08T13:35:00Z"),
+    )
+    conn.execute(
+        "insert into events (run_id, event_type, payload_json, created_at) values (?, ?, ?, ?)",
+        ("run-1", "builder_selected", "{", "2026-03-08T13:36:00Z"),
+    )
+    conn.commit()
+    row = conductor.fetch_run_row(conn, "run-1")
+    assert row is not None
+
+    rendered = conductor.render_run_row(conn, row, include_events=2)
+
+    assert rendered["latest_event"]["summary"] == "builder selected"
+    assert rendered["latest_event"]["payload"]["_payload_error"] == "invalid_json"
+    assert rendered["blocking_reason"] == "pr feedback blocked (unchanged_after_revision)"
+    assert rendered["recent_events"][0]["payload"]["_raw_payload_json"] == "{"
+
+
 def test_show_events_prints_run_metadata_and_recent_events(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: pathlib.Path,

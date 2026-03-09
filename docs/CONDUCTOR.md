@@ -100,7 +100,8 @@ python3 scripts/conductor.py show-events --run-id run-450-1772813415
 
 `show-runs` emits one JSON object per run. Each row includes the durable run
 metadata plus derived operator fields such as `heartbeat_age_seconds`,
-`blocking_reason`, and `latest_event`.
+`blocking_reason`, and `latest_event`. `blocking_reason` is only emitted when
+the current run status is `blocked` or `failed`.
 
 `show-events` emits one JSON object with:
 

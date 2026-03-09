@@ -185,9 +185,10 @@ def parse_utc(value: str | None) -> datetime | None:
     if not value:
         return None
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
 
 
 def age_seconds(value: str | None, *, now_value: str | None = None) -> int | None:
@@ -439,8 +440,18 @@ def blocking_reason_from_event(event_type: str, payload: dict[str, Any]) -> str 
     return None
 
 
+def parse_event_payload(payload_json: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(payload_json)
+    except json.JSONDecodeError:
+        return {"_payload_error": "invalid_json", "_raw_payload_json": payload_json}
+    if isinstance(payload, dict):
+        return payload
+    return {"_payload_error": "non_object_payload", "_raw_payload": payload}
+
+
 def render_event_row(row: sqlite3.Row) -> dict[str, Any]:
-    payload = json.loads(row["payload_json"])
+    payload = parse_event_payload(row["payload_json"])
     return {
         "run_id": row["run_id"],
         "event_type": row["event_type"],
@@ -474,7 +485,7 @@ def render_run_row(conn: sqlite3.Connection, row: sqlite3.Row, *, include_events
         rendered["latest_event"] = render_event_row(event_rows[0])
     if row["status"] in {"blocked", "failed"}:
         for event_row in event_rows:
-            reason = blocking_reason_from_event(event_row["event_type"], json.loads(event_row["payload_json"]))
+            reason = blocking_reason_from_event(event_row["event_type"], parse_event_payload(event_row["payload_json"]))
             if reason:
                 rendered["blocking_reason"] = reason
                 break
@@ -2532,6 +2543,12 @@ def run_once(args: argparse.Namespace) -> int:
     block_on_release = False
     max_pr_feedback_rounds = getattr(args, "max_pr_feedback_rounds", 1)
 
+    def refresh_run(ttl_seconds: int) -> None:
+        touch_run(conn, args.repo, issue.number, run_id, ttl_seconds)
+
+    def heartbeat_callback(ttl_seconds: int) -> Callable[[], None]:
+        return lambda: refresh_run(ttl_seconds)
+
     try:
         record_event(conn, event_log, run_id, "lease_acquired", {"issue": issue.number})
         best_effort_issue_comment(
@@ -2548,7 +2565,11 @@ def run_once(args: argparse.Namespace) -> int:
         record_event(conn, event_log, run_id, "reviewers_ready", {"reviewers": args.reviewer})
         worker = select_worker(args.repo, args.worker, pathlib.Path(args.builder_template))
         update_run(conn, run_id, phase="building", builder_sprite=worker)
-        touch_run(conn, args.repo, issue.number, run_id, args.builder_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS)
+        builder_ttl = args.builder_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS
+        review_round_ttl = args.review_timeout * 60 * max(1, len(args.reviewer)) + DEFAULT_LEASE_BUFFER_SECONDS
+        review_wait_ttl = args.review_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS
+        ci_ttl = args.ci_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS
+        refresh_run(builder_ttl)
         record_event(conn, event_log, run_id, "builder_selected", {"sprite": worker})
 
         branch = branch_name(issue.number, run_id_suffix(run_id))
@@ -2561,13 +2582,7 @@ def run_once(args: argparse.Namespace) -> int:
             branch,
             pathlib.Path(args.builder_template),
             args.builder_timeout,
-            on_tick=lambda: touch_run(
-                conn,
-                args.repo,
-                issue.number,
-                run_id,
-                args.builder_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
-            ),
+            on_tick=heartbeat_callback(builder_ttl),
         )
         update_run(
             conn,
@@ -2584,13 +2599,7 @@ def run_once(args: argparse.Namespace) -> int:
         pr_feedback_rounds = 0
         last_pr_feedback_thread_ids: tuple[str, ...] = ()
         while True:
-            touch_run(
-                conn,
-                args.repo,
-                issue.number,
-                run_id,
-                args.review_timeout * 60 * max(1, len(args.reviewer)) + DEFAULT_LEASE_BUFFER_SECONDS,
-            )
+            refresh_run(review_round_ttl)
             reviews = run_review_round(
                 runner,
                 conn,
@@ -2603,13 +2612,7 @@ def run_once(args: argparse.Namespace) -> int:
                 args.reviewer,
                 pathlib.Path(args.reviewer_template),
                 args.review_timeout,
-                on_tick=lambda: touch_run(
-                    conn,
-                    args.repo,
-                    issue.number,
-                    run_id,
-                    args.review_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
-                ),
+                on_tick=heartbeat_callback(review_wait_ttl),
             )
 
             best_effort_pr_comment(
@@ -2660,13 +2663,7 @@ def run_once(args: argparse.Namespace) -> int:
                     feedback_source="review",
                     pr_number=builder.pr_number,
                     pr_url=builder.pr_url,
-                    on_tick=lambda: touch_run(
-                        conn,
-                        args.repo,
-                        issue.number,
-                        run_id,
-                        args.builder_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
-                    ),
+                    on_tick=heartbeat_callback(builder_ttl),
                 )
                 update_run(conn, run_id, phase="reviewing", branch=builder.branch, pr_number=builder.pr_number, pr_url=builder.pr_url)
                 record_event(conn, event_log, run_id, "builder_revised", builder_payload)
@@ -2674,7 +2671,7 @@ def run_once(args: argparse.Namespace) -> int:
                 continue
 
             update_run(conn, run_id, phase="ci_wait")
-            touch_run(conn, args.repo, issue.number, run_id, args.ci_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS)
+            refresh_run(ci_ttl)
             record_event(conn, event_log, run_id, "ci_wait_started", {"pr_number": builder.pr_number})
             ensure_pr_ready(runner, args.repo, builder.pr_number)
             ok, checks_output = wait_for_pr_checks(
@@ -2682,13 +2679,7 @@ def run_once(args: argparse.Namespace) -> int:
                 args.repo,
                 builder.pr_number,
                 args.ci_timeout,
-                on_tick=lambda: touch_run(
-                    conn,
-                    args.repo,
-                    issue.number,
-                    run_id,
-                    args.ci_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
-                ),
+                on_tick=heartbeat_callback(ci_ttl),
             )
             record_event(conn, event_log, run_id, "ci_wait_complete", {"passed": ok, "output": checks_output})
             if ok:
@@ -2724,13 +2715,7 @@ def run_once(args: argparse.Namespace) -> int:
                         feedback_source="pr_review_threads",
                         pr_number=builder.pr_number,
                         pr_url=builder.pr_url,
-                        on_tick=lambda: touch_run(
-                            conn,
-                            args.repo,
-                            issue.number,
-                            run_id,
-                            args.builder_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
-                        ),
+                        on_tick=heartbeat_callback(builder_ttl),
                     )
                     update_run(
                         conn,
@@ -2748,13 +2733,8 @@ def run_once(args: argparse.Namespace) -> int:
                 if trusted_surfaces:
                     external_review_timeout = args.external_review_timeout
                     external_review_quiet_window = args.external_review_quiet_window
-                    touch_run(
-                        conn,
-                        args.repo,
-                        issue.number,
-                        run_id,
-                        external_review_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
-                    )
+                    external_review_ttl = external_review_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS
+                    refresh_run(external_review_ttl)
                     record_event(
                         conn,
                         event_log,
@@ -2769,13 +2749,7 @@ def run_once(args: argparse.Namespace) -> int:
                         trusted_surfaces,
                         quiet_window_seconds=external_review_quiet_window,
                         timeout_minutes=external_review_timeout,
-                        on_tick=lambda: touch_run(
-                            conn,
-                            args.repo,
-                            issue.number,
-                            run_id,
-                            external_review_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
-                        ),
+                        on_tick=heartbeat_callback(external_review_ttl),
                     )
                     record_event(
                         conn,
@@ -2829,13 +2803,7 @@ def run_once(args: argparse.Namespace) -> int:
                             feedback_source="pr_review_threads",
                             pr_number=builder.pr_number,
                             pr_url=builder.pr_url,
-                            on_tick=lambda: touch_run(
-                                conn,
-                                args.repo,
-                                issue.number,
-                                run_id,
-                                args.builder_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
-                            ),
+                            on_tick=heartbeat_callback(builder_ttl),
                         )
                         update_run(
                             conn,
@@ -2880,13 +2848,7 @@ def run_once(args: argparse.Namespace) -> int:
                 feedback_source="ci",
                 pr_number=builder.pr_number,
                 pr_url=builder.pr_url,
-                on_tick=lambda: touch_run(
-                    conn,
-                    args.repo,
-                    issue.number,
-                    run_id,
-                    args.builder_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
-                ),
+                on_tick=heartbeat_callback(builder_ttl),
             )
             update_run(conn, run_id, phase="reviewing", branch=builder.branch, pr_number=builder.pr_number, pr_url=builder.pr_url)
             record_event(conn, event_log, run_id, "builder_revised", builder_payload)
