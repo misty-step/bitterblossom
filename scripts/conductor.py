@@ -418,6 +418,139 @@ def lease_expired(lease_expires_at: str | None) -> bool:
     return datetime.now(timezone.utc) >= expires
 
 
+def parse_utc_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def age_seconds(value: str | None) -> int | None:
+    ts = parse_utc_timestamp(value)
+    if ts is None:
+        return None
+    return max(0, int((datetime.now(timezone.utc) - ts).total_seconds()))
+
+
+def summarize_blocking_event(event_type: str | None, payload_json: str | None) -> str | None:
+    if not event_type:
+        return None
+    payload: dict[str, Any] = {}
+    if payload_json:
+        try:
+            raw_payload = json.loads(payload_json)
+            if isinstance(raw_payload, dict):
+                payload = raw_payload
+        except json.JSONDecodeError:
+            payload = {}
+
+    if event_type == "pr_feedback_blocked":
+        reason = str(payload.get("reason", "")).strip()
+        mapping = {
+            "untrusted_author": "untrusted PR review thread requires maintainer review",
+            "unchanged_after_revision": "PR review threads stayed unresolved after revision",
+            "max_rounds": "PR review feedback exhausted the allowed revision rounds",
+        }
+        if reason:
+            return mapping.get(reason, reason.replace("_", " "))
+        return "PR review feedback blocked the run"
+    if event_type == "council_blocked":
+        reviews = payload.get("reviews")
+        if isinstance(reviews, list):
+            return f"review council blocked the run ({len(reviews)} review(s))"
+        return "review council blocked the run"
+    if event_type == "issue_comment_failed":
+        error = str(payload.get("error", "")).strip()
+        return f"failed to post issue comment: {error}" if error else "failed to post issue comment"
+    if event_type in {"command_failed", "unexpected_error", "post_merge_warning", "cleanup_warning"}:
+        error = str(payload.get("error", "")).strip()
+        return error or event_type.replace("_", " ")
+    return None
+
+
+def get_run_row(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        select
+            runs.run_id,
+            runs.repo,
+            runs.issue_number,
+            runs.issue_title,
+            runs.phase,
+            runs.status,
+            runs.builder_sprite,
+            runs.builder_profile,
+            runs.branch,
+            runs.pr_number,
+            runs.pr_url,
+            runs.heartbeat_at,
+            runs.created_at,
+            runs.updated_at,
+            leases.heartbeat_at as lease_heartbeat_at,
+            leases.lease_expires_at,
+            leases.blocked_at,
+            leases.released_at
+        from runs
+        left join leases
+          on leases.repo = runs.repo
+         and leases.issue_number = runs.issue_number
+         and leases.run_id = runs.run_id
+        where runs.run_id = ?
+        """,
+        (run_id,),
+    ).fetchone()
+
+
+def serialize_run_surface(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
+    blocking_event = conn.execute(
+        """
+        select event_type, payload_json, created_at
+        from events
+        where run_id = ? and event_type in (
+            'pr_feedback_blocked',
+            'council_blocked',
+            'command_failed',
+            'unexpected_error',
+            'issue_comment_failed',
+            'cleanup_warning',
+            'post_merge_warning'
+        )
+        order by id desc
+        limit 1
+        """,
+        (row["run_id"],),
+    ).fetchone()
+    blocking_event_type = str(blocking_event["event_type"]) if blocking_event else None
+    blocking_payload = str(blocking_event["payload_json"]) if blocking_event else None
+    return {
+        "run_id": row["run_id"],
+        "repo": row["repo"],
+        "issue_number": row["issue_number"],
+        "issue_title": row["issue_title"],
+        "phase": row["phase"],
+        "status": row["status"],
+        "builder_sprite": row["builder_sprite"],
+        "builder_profile": row["builder_profile"],
+        "branch": row["branch"],
+        "pr_number": row["pr_number"],
+        "pr_url": row["pr_url"],
+        "heartbeat_at": row["heartbeat_at"],
+        "heartbeat_age_seconds": age_seconds(row["heartbeat_at"]),
+        "lease_heartbeat_at": row["lease_heartbeat_at"],
+        "lease_heartbeat_age_seconds": age_seconds(row["lease_heartbeat_at"]),
+        "lease_expires_at": row["lease_expires_at"],
+        "blocked_at": row["blocked_at"],
+        "released_at": row["released_at"],
+        "updated_at": row["updated_at"],
+        "created_at": row["created_at"],
+        "blocking_event_type": blocking_event_type,
+        "blocking_reason": summarize_blocking_event(blocking_event_type, blocking_payload),
+        "blocking_event_at": blocking_event["created_at"] if blocking_event else None,
+    }
+
+
 def reap_expired_leases(conn: sqlite3.Connection) -> int:
     rows = conn.execute(
         "select repo, issue_number, lease_expires_at from leases where released_at is null"
@@ -2741,33 +2874,45 @@ def show_runs(args: argparse.Namespace) -> int:
     conn = open_db(pathlib.Path(args.db))
     rows = conn.execute(
         """
-        select run_id, issue_number, issue_title, phase, status, builder_sprite, pr_number, updated_at
+        select
+            runs.run_id,
+            runs.repo,
+            runs.issue_number,
+            runs.issue_title,
+            runs.phase,
+            runs.status,
+            runs.builder_sprite,
+            runs.builder_profile,
+            runs.branch,
+            runs.pr_number,
+            runs.pr_url,
+            runs.heartbeat_at,
+            runs.created_at,
+            runs.updated_at,
+            leases.heartbeat_at as lease_heartbeat_at,
+            leases.lease_expires_at,
+            leases.blocked_at,
+            leases.released_at
         from runs
+        left join leases
+          on leases.repo = runs.repo
+         and leases.issue_number = runs.issue_number
+         and leases.run_id = runs.run_id
         order by created_at desc
         limit ?
         """,
         (args.limit,),
     ).fetchall()
     for row in rows:
-        print(
-            json.dumps(
-                {
-                    "run_id": row["run_id"],
-                    "issue_number": row["issue_number"],
-                    "issue_title": row["issue_title"],
-                    "phase": row["phase"],
-                    "status": row["status"],
-                    "builder_sprite": row["builder_sprite"],
-                    "pr_number": row["pr_number"],
-                    "updated_at": row["updated_at"],
-                }
-            )
-        )
+        print(json.dumps(serialize_run_surface(conn, row)))
     return 0
 
 
 def show_events(args: argparse.Namespace) -> int:
     conn = open_db(pathlib.Path(args.db))
+    run = get_run_row(conn, args.run_id)
+    if run is None:
+        raise CmdError(f"unknown run_id: {args.run_id}")
     rows = conn.execute(
         """
         select run_id, event_type, payload_json, created_at
@@ -2778,17 +2923,22 @@ def show_events(args: argparse.Namespace) -> int:
         """,
         (args.run_id, args.limit),
     ).fetchall()
-    for row in rows:
-        print(
-            json.dumps(
-                {
-                    "run_id": row["run_id"],
-                    "event_type": row["event_type"],
-                    "payload": json.loads(row["payload_json"]),
-                    "created_at": row["created_at"],
-                }
-            )
+    print(
+        json.dumps(
+            {
+                "run": serialize_run_surface(conn, run),
+                "events": [
+                    {
+                        "run_id": row["run_id"],
+                        "event_type": row["event_type"],
+                        "payload": json.loads(row["payload_json"]),
+                        "created_at": row["created_at"],
+                    }
+                    for row in rows
+                ],
+            }
         )
+    )
     return 0
 
 

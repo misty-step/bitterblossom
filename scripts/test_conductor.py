@@ -2046,8 +2046,46 @@ def test_reconcile_run_marks_merged(monkeypatch: pytest.MonkeyPatch, tmp_path: p
     assert run["pr_url"] == "https://github.com/misty-step/bitterblossom/pull/452"
 
 
-def test_show_events_prints_recent_events(tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_show_runs_includes_heartbeat_and_blocking_reason(tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
     conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=1, title="run surface", body="body", url="https://example.com/1", labels=["autopilot"])
+    conductor.create_run(conn, "run-1", "misty-step/bitterblossom", issue, "default")
+    assert conductor.acquire_lease(conn, "misty-step/bitterblossom", 1, "run-1") is True
+    conductor.update_run(conn, "run-1", phase="blocked", status="blocked", builder_sprite="fern")
+    conductor.block_lease(conn, "misty-step/bitterblossom", 1)
+    conductor.record_event(conn, tmp_path / "events.jsonl", "run-1", "lease_acquired", {"issue": 1})
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-1",
+        "pr_feedback_blocked",
+        {"reason": "unchanged_after_revision", "threads": []},
+    )
+
+    args = argparse.Namespace(db=str(tmp_path / "conductor.db"), limit=5)
+    rc = conductor.show_runs(args)
+
+    assert rc == 0
+    lines = [line for line in capsys.readouterr().out.splitlines() if line]
+    assert len(lines) == 1
+    payload = json.loads(lines[0])
+    assert payload["run_id"] == "run-1"
+    assert payload["phase"] == "blocked"
+    assert payload["status"] == "blocked"
+    assert payload["builder_sprite"] == "fern"
+    assert payload["heartbeat_at"]
+    assert isinstance(payload["heartbeat_age_seconds"], int)
+    assert payload["blocked_at"]
+    assert payload["blocking_event_type"] == "pr_feedback_blocked"
+    assert payload["blocking_reason"] == "PR review threads stayed unresolved after revision"
+
+
+def test_show_events_prints_run_metadata_and_recent_events(tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=1, title="run surface", body="body", url="https://example.com/1", labels=["autopilot"])
+    conductor.create_run(conn, "run-1", "misty-step/bitterblossom", issue, "default")
+    assert conductor.acquire_lease(conn, "misty-step/bitterblossom", 1, "run-1") is True
+    conductor.update_run(conn, "run-1", builder_sprite="fern")
     conductor.record_event(conn, tmp_path / "events.jsonl", "run-1", "lease_acquired", {"issue": 1})
     conductor.record_event(conn, tmp_path / "events.jsonl", "run-1", "builder_selected", {"sprite": "fern"})
 
@@ -2055,9 +2093,12 @@ def test_show_events_prints_recent_events(tmp_path: pathlib.Path, capsys: pytest
     rc = conductor.show_events(args)
 
     assert rc == 0
-    lines = [line for line in capsys.readouterr().out.splitlines() if line]
-    assert len(lines) == 2
-    assert '"event_type": "builder_selected"' in lines[0]
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["run"]["run_id"] == "run-1"
+    assert payload["run"]["builder_sprite"] == "fern"
+    assert len(payload["events"]) == 2
+    assert payload["events"][0]["event_type"] == "builder_selected"
+    assert payload["events"][1]["event_type"] == "lease_acquired"
 
 
 def test_check_env_passes_when_all_present(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:

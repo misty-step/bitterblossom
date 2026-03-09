@@ -98,6 +98,10 @@ python3 scripts/conductor.py show-runs --limit 20
 python3 scripts/conductor.py show-events --run-id run-450-1772813415
 ```
 
+`show-runs` emits one JSON object per run with run metadata plus operator-facing recovery fields: `heartbeat_at`, `heartbeat_age_seconds`, lease heartbeat details, `blocked_at`, and a normalized `blocking_reason` when the run is blocked or failed.
+
+`show-events` emits one JSON document with a top-level `run` object (the same run surface used by `show-runs`) and an `events` array containing the most recent event context for that `run_id`.
+
 Reconcile a run after out-of-band merge or manual recovery:
 
 ```bash
@@ -220,7 +224,7 @@ When a run is blocked the conductor **does not release the issue's lease**. Inst
 python3 scripts/conductor.py show-runs --limit 20
 ```
 
-Blocked runs show `phase=blocked` and `status=blocked`. The associated issue also has a GitHub comment from Bitterblossom explaining why it was blocked.
+Blocked runs show `phase=blocked`, `status=blocked`, `blocked_at`, and a machine-readable `blocking_reason`. The associated issue also has a GitHub comment from Bitterblossom explaining why it was blocked.
 
 ### Re-queuing a blocked issue
 
@@ -239,6 +243,8 @@ To inspect the blocked run's events before re-queuing:
 ```bash
 python3 scripts/conductor.py show-events --run-id <run-id>
 ```
+
+That payload includes both the run metadata envelope and the recent event trail, so operators do not need to inspect raw SQLite tables during recovery.
 
 ## Operator Recovery
 
