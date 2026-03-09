@@ -2360,6 +2360,21 @@ def test_summarize_reason_event_ignores_successful_wait_completions(
     assert conductor.summarize_reason_event(event_type, payload) is None
 
 
+def test_decode_payload_preserves_malformed_json() -> None:
+    raw = '{"unterminated": true'
+
+    assert conductor.decode_payload(raw) == {"malformed_payload": raw}
+
+
+def test_summarize_reason_event_clips_long_error_messages() -> None:
+    summary = conductor.summarize_reason_event("command_failed", {"error": "x" * 250})
+
+    assert summary is not None
+    assert summary["reason"] == "command_failed"
+    assert summary["summary"] == ("x" * 197) + "..."
+    assert len(summary["summary"]) == 200
+
+
 def test_parse_timestamp_normalizes_naive_values() -> None:
     parsed = conductor.parse_timestamp("2026-03-08T21:00:00")
 
