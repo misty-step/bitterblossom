@@ -138,6 +138,7 @@ python3 scripts/conductor.py run-once \
   --repo misty-step/bitterblossom \
   --issue 102 \
   --worker noble-blue-serpent \
+  --trusted-external-surface CodeRabbit \
   --reviewer council-fern-20260306 \
   --reviewer council-sage-20260306 \
   --reviewer council-thorn-20260306

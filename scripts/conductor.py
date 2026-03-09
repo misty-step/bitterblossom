@@ -1052,7 +1052,7 @@ def parse_embedded_finding_metadata(body: str) -> tuple[str, dict[str, Any]]:
     start = text.find(marker)
     if start < 0:
         return text.strip(), {}
-    end = text.find("-->", start)
+    end = text.rfind("-->")
     if end < 0:
         return text.strip(), {}
 
@@ -1234,16 +1234,21 @@ def persist_review_findings(conn: sqlite3.Connection, findings: list[ReviewFindi
         status = finding.status
         prior = conn.execute(
             """
-            select 1
+            select status
             from review_findings
             where run_id = ?
               and fingerprint = ?
+              and status not in ('addressed', 'deferred', 'rejected', 'duplicate')
               and not (source_kind = ? and source_id = ?)
             limit 1
             """,
             (finding.run_id, finding.fingerprint, finding.source_kind, finding.source_id),
         ).fetchone()
-        if prior is not None and status not in {"addressed", "deferred", "rejected", "duplicate"}:
+        if (
+            prior is not None
+            and finding.source_kind == "pr_review_thread"
+            and status not in {"addressed", "deferred", "rejected", "duplicate"}
+        ):
             status = "duplicate"
         conn.execute(
             """
@@ -1383,17 +1388,19 @@ def load_review_wave_reviews(conn: sqlite3.Connection, wave_id: int) -> list[Rev
     ]
 
 
-def load_review_findings(conn: sqlite3.Connection, run_id: str) -> list[ReviewFinding]:
-    rows = conn.execute(
-        """
+def load_review_findings(conn: sqlite3.Connection, run_id: str, *, wave_id: int | None = None) -> list[ReviewFinding]:
+    query = """
         select id, run_id, wave_id, reviewer, source_kind, source_id, fingerprint, classification,
                severity, decision, status, path, line, message, raw_json, created_at, updated_at
         from review_findings
         where run_id = ?
-        order by id
-        """,
-        (run_id,),
-    ).fetchall()
+    """
+    params: list[Any] = [run_id]
+    if wave_id is not None:
+        query += " and wave_id = ?"
+        params.append(wave_id)
+    query += " order by id"
+    rows = conn.execute(query, tuple(params)).fetchall()
     return [
         ReviewFinding(
             id=int(row["id"]),
@@ -1922,13 +1929,13 @@ def handle_pr_review_threads(
     untrusted_threads = [thread for thread in unresolved_threads if not is_trusted_review_author(thread)]
     trusted_findings = {
         finding.source_id: finding
-        for finding in load_review_findings(conn, run_id)
-        if finding.wave_id == wave_id and finding.source_kind == "pr_review_thread"
+        for finding in load_review_findings(conn, run_id, wave_id=wave_id)
+        if finding.source_kind == "pr_review_thread"
     }
     blocking_threads = [
         thread
         for thread in trusted_threads
-        if finding_blocks_merge(trusted_findings.get(thread.id, normalize_review_thread_finding(run_id, wave_id, thread)))
+        if finding_blocks_merge(trusted_findings[thread.id])
     ]
     thread_ids = tuple(sorted(thread.id for thread in blocking_threads))
 
@@ -1985,49 +1992,46 @@ def handle_pr_review_threads(
         )
         return "blocked", None, thread_ids
 
-    if blocking_threads:
-        if pr_feedback_rounds >= max_pr_feedback_rounds:
-            update_run(conn, run_id, phase="blocked", status="blocked")
-            record_event(
-                conn,
-                event_log,
-                run_id,
-                "pr_feedback_blocked",
-                {
-                    "pr_number": pr_number,
-                    "reason": "max_rounds",
-                    "threads": [asdict(thread) for thread in blocking_threads],
-                },
-            )
-            best_effort_issue_comment(
-                runner,
-                conn,
-                event_log,
-                run_id,
-                repo,
-                issue_number,
-                f"Bitterblossom blocked `{run_id}` because PR review threads still require resolution.",
-                event_type="issue_comment_failed",
-            )
-            return "blocked", None, thread_ids
-
-        feedback = summarize_review_threads(blocking_threads)
-        update_run(conn, run_id, phase="revising")
+    if pr_feedback_rounds >= max_pr_feedback_rounds:
+        update_run(conn, run_id, phase="blocked", status="blocked")
         record_event(
             conn,
             event_log,
             run_id,
-            "revision_requested",
+            "pr_feedback_blocked",
             {
-                "feedback": feedback,
-                "reason": "pr_feedback",
                 "pr_number": pr_number,
+                "reason": "max_rounds",
                 "threads": [asdict(thread) for thread in blocking_threads],
             },
         )
-        return "revise", feedback, thread_ids
+        best_effort_issue_comment(
+            runner,
+            conn,
+            event_log,
+            run_id,
+            repo,
+            issue_number,
+            f"Bitterblossom blocked `{run_id}` because PR review threads still require resolution.",
+            event_type="issue_comment_failed",
+        )
+        return "blocked", None, thread_ids
 
-    return "clear", None, thread_ids
+    feedback = summarize_review_threads(blocking_threads)
+    update_run(conn, run_id, phase="revising")
+    record_event(
+        conn,
+        event_log,
+        run_id,
+        "revision_requested",
+        {
+            "feedback": feedback,
+            "reason": "pr_feedback",
+            "pr_number": pr_number,
+            "threads": [asdict(thread) for thread in blocking_threads],
+        },
+    )
+    return "revise", feedback, thread_ids
 
 
 def wait_for_pr_merged(runner: Runner, repo: str, pr_number: int, *, timeout_seconds: int = 600) -> None:

@@ -1173,6 +1173,24 @@ def test_normalize_review_thread_finding_reads_embedded_metadata() -> None:
     assert finding.message == "late style nit"
 
 
+def test_parse_embedded_finding_metadata_handles_missing_and_invalid_payloads() -> None:
+    assert conductor.parse_embedded_finding_metadata("plain text") == ("plain text", {})
+    assert conductor.parse_embedded_finding_metadata("<!-- bitterblossom: {oops} -->") == ("", {})
+    assert conductor.parse_embedded_finding_metadata("<!-- bitterblossom: [1,2,3] -->") == ("", {})
+
+
+def test_parse_embedded_finding_metadata_uses_last_comment_close() -> None:
+    body = (
+        "keep this visible\n\n"
+        "<!-- bitterblossom: {\"classification\":\"bug\",\"severity\":\"high\",\"message\":\"rewrite --> this\"} -->"
+    )
+
+    visible_body, metadata = conductor.parse_embedded_finding_metadata(body)
+
+    assert visible_body == "keep this visible"
+    assert metadata["message"] == "rewrite --> this"
+
+
 def test_record_pr_thread_scan_marks_duplicate_fingerprint_across_waves(tmp_path: pathlib.Path) -> None:
     conn = conductor.open_db(tmp_path / "conductor.db")
     review = conductor.ReviewResult(
@@ -1219,6 +1237,71 @@ def test_record_pr_thread_scan_marks_duplicate_fingerprint_across_waves(tmp_path
 
     findings = conductor.load_review_findings(conn, "run-447-1")
     assert [finding.status for finding in findings] == ["open", "duplicate"]
+
+
+def test_record_pr_thread_scan_does_not_collapse_against_closed_prior_finding(tmp_path: pathlib.Path) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    review_wave = conductor.start_review_wave(conn, "run-447-1", "review_round", pr_number=460, reviewer_count=1)
+    conductor.record_review_artifact(
+        conn,
+        "run-447-1",
+        review_wave,
+        "fern",
+        {
+            "verdict": "fix",
+            "summary": "needs revision",
+            "findings": [
+                {
+                    "classification": "bug",
+                    "severity": "high",
+                    "status": "addressed",
+                    "path": "scripts/conductor.py",
+                    "line": 59,
+                    "message": "guard the stale lease check",
+                }
+            ],
+        },
+    )
+
+    thread = conductor.ReviewThread(
+        id="thread-2",
+        path="scripts/conductor.py",
+        line=59,
+        author_login="coderabbitai",
+        author_association="NONE",
+        body=(
+            "guard the stale lease check\n\n"
+            "<!-- bitterblossom: {\"classification\":\"bug\",\"severity\":\"high\",\"decision\":\"fix_now\"} -->"
+        ),
+        url="https://example.com/thread-2",
+    )
+
+    conductor.record_pr_thread_scan(conn, "run-447-1", 460, [thread])
+
+    findings = conductor.load_review_findings(conn, "run-447-1")
+    assert [finding.status for finding in findings] == ["addressed", "open"]
+
+
+def test_finding_blocks_merge_policy() -> None:
+    base = dict(
+        id=None,
+        run_id="run-447-1",
+        wave_id=1,
+        reviewer="fern",
+        source_kind="pr_review_thread",
+        source_id="thread-1",
+        fingerprint="fp",
+        path="scripts/conductor.py",
+        line=59,
+        message="msg",
+        raw={},
+    )
+
+    assert conductor.finding_blocks_merge(conductor.ReviewFinding(**base, classification="bug", severity="high", decision="pending", status="open")) is True
+    assert conductor.finding_blocks_merge(conductor.ReviewFinding(**base, classification="bug", severity="medium", decision="pending", status="open")) is False
+    assert conductor.finding_blocks_merge(conductor.ReviewFinding(**base, classification="bug", severity="medium", decision="fix_now", status="open")) is True
+    assert conductor.finding_blocks_merge(conductor.ReviewFinding(**base, classification="style", severity="high", decision="fix_now", status="open")) is False
+    assert conductor.finding_blocks_merge(conductor.ReviewFinding(**base, classification="bug", severity="high", decision="pending", status="duplicate")) is False
 
 
 def test_run_builder_precleans_worker(monkeypatch: pytest.MonkeyPatch) -> None:
