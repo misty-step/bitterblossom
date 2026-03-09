@@ -472,11 +472,12 @@ def render_run_row(conn: sqlite3.Connection, row: sqlite3.Row, *, include_events
     event_rows = recent_event_rows(conn, row["run_id"], fetch_limit)
     if event_rows:
         rendered["latest_event"] = render_event_row(event_rows[0])
-    for event_row in event_rows:
-        reason = blocking_reason_from_event(event_row["event_type"], json.loads(event_row["payload_json"]))
-        if reason:
-            rendered["blocking_reason"] = reason
-            break
+    if row["status"] in {"blocked", "failed"}:
+        for event_row in event_rows:
+            reason = blocking_reason_from_event(event_row["event_type"], json.loads(event_row["payload_json"]))
+            if reason:
+                rendered["blocking_reason"] = reason
+                break
     if include_events > 0:
         rendered["recent_events"] = [render_event_row(event_row) for event_row in event_rows[:include_events]]
     return rendered
@@ -2984,10 +2985,11 @@ def show_events(args: argparse.Namespace) -> int:
     if run is None:
         raise CmdError(f"unknown run_id: {args.run_id}")
     payload = render_run_row(conn, run, include_events=args.limit)
+    run_fields = {key: value for key, value in payload.items() if key not in {"recent_events", "latest_event"}}
     print(
         json.dumps(
             {
-                "run": {key: value for key, value in payload.items() if key != "recent_events"},
+                "run": run_fields,
                 "events": payload.get("recent_events", []),
             }
         )

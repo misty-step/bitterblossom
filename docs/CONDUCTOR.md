@@ -108,6 +108,9 @@ metadata plus derived operator fields such as `heartbeat_age_seconds`,
 - `events`: recent event context in reverse chronological order, each with a
   stable `event_type`, `summary`, raw `payload`, and `created_at`
 
+`show-events` does not duplicate `latest_event` inside `run`; use `events[0]`
+as the canonical latest timeline entry when the array is non-empty.
+
 Reconcile a run after out-of-band merge or manual recovery:
 
 ```bash

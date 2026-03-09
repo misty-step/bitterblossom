@@ -1621,6 +1621,58 @@ def test_wait_for_pr_checks_retries_transient_cmd_errors(monkeypatch: pytest.Mon
     assert "merge-gate: SUCCESS" in output
 
 
+def test_wait_for_pr_checks_calls_on_tick_each_poll(monkeypatch: pytest.MonkeyPatch) -> None:
+    gh_responses = iter(
+        [
+            {
+                "baseRefName": "master",
+                "statusCheckRollup": [
+                    {
+                        "__typename": "CheckRun",
+                        "name": "merge-gate",
+                        "status": "IN_PROGRESS",
+                        "conclusion": "",
+                        "startedAt": "2026-03-06T18:00:00Z",
+                        "completedAt": None,
+                    }
+                ],
+            },
+            {
+                "baseRefName": "master",
+                "statusCheckRollup": [
+                    {
+                        "__typename": "CheckRun",
+                        "name": "merge-gate",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "startedAt": "2026-03-06T18:00:00Z",
+                        "completedAt": "2026-03-06T18:00:05Z",
+                    }
+                ],
+            },
+        ]
+    )
+    ticks = iter([0.0, 0.0, 10.0, 10.0, 20.0])
+    on_tick_calls: list[str] = []
+
+    monkeypatch.setattr(conductor.time, "time", lambda: next(ticks))
+    monkeypatch.setattr(conductor.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(conductor, "gh_json", lambda *_args, **_kwargs: next(gh_responses))
+    monkeypatch.setattr(conductor, "required_status_checks", lambda *_args, **_kwargs: ["merge-gate"])
+
+    ok, output = conductor.wait_for_pr_checks(
+        _RunnerSpy(),
+        "misty-step/bitterblossom",
+        42,
+        5,
+        on_tick=lambda: on_tick_calls.append("tick"),
+    )
+
+    assert ok is True
+    assert "merge-gate" in output
+    assert on_tick_calls == ["tick", "tick"]
+
+
 def test_ensure_required_checks_present_accepts_matching_contexts() -> None:
     runner = _RunnerSpy(
         [
@@ -2141,6 +2193,7 @@ def test_render_run_row_fetches_recent_events_once(monkeypatch: pytest.MonkeyPat
     conn = conductor.open_db(tmp_path / "conductor.db")
     issue = conductor.Issue(number=1, title="test", body="body", url="https://example.com/1", labels=["autopilot"])
     conductor.create_run(conn, "run-1", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(conn, "run-1", phase="blocked", status="blocked")
     conductor.record_event(conn, tmp_path / "events.jsonl", "run-1", "builder_selected", {"sprite": "fern"})
     conductor.record_event(
         conn,
@@ -2165,6 +2218,63 @@ def test_render_run_row_fetches_recent_events_once(monkeypatch: pytest.MonkeyPat
 
     assert rendered["blocking_reason"] == "pr feedback blocked (unchanged_after_revision)"
     assert calls == [conductor.BLOCKING_REASON_SCAN_LIMIT]
+
+
+@pytest.mark.parametrize(
+    ("event_type", "payload", "expected"),
+    [
+        ("council_blocked", {"reviews": [{"reviewer": "fern", "verdict": "fix"}]}, "review council blocked (fern:fix)"),
+        ("external_review_wait_complete", {"passed": False, "output": "Greptile timed out"}, "Greptile timed out"),
+        ("command_failed", {"error": "boom"}, "boom"),
+        ("ci_wait_complete", {"passed": False, "output": "merge-gate: FAILURE"}, "merge-gate: FAILURE"),
+    ],
+)
+def test_blocking_reason_from_event_covers_non_primary_paths(
+    event_type: str,
+    payload: dict[str, Any],
+    expected: str,
+) -> None:
+    assert conductor.blocking_reason_from_event(event_type, payload) == expected
+
+
+def test_render_run_row_omits_blocking_reason_for_active_run(tmp_path: pathlib.Path) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=1, title="test", body="body", url="https://example.com/1", labels=["autopilot"])
+    conductor.create_run(conn, "run-1", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(conn, "run-1", phase="reviewing", status="active")
+    conductor.record_event(conn, tmp_path / "events.jsonl", "run-1", "ci_wait_complete", {"passed": False, "output": "merge-gate: FAILURE"})
+    row = conductor.fetch_run_row(conn, "run-1")
+    assert row is not None
+
+    rendered = conductor.render_run_row(conn, row)
+
+    assert rendered["status"] == "active"
+    assert "blocking_reason" not in rendered
+
+
+@pytest.mark.parametrize(
+    ("event_type", "payload", "expected"),
+    [
+        ("reviewers_ready", {"reviewers": ["fern", "sage"]}, "reviewers ready: fern, sage"),
+        ("revision_requested", {"reason": "ci"}, "revision requested: ci"),
+        ("external_review_wait_complete", {"passed": False}, "external reviews timed out"),
+        ("merged", {"pr_number": 12}, "merged PR #12"),
+        ("custom", {"sprite": "fern", "pr_number": 12}, "custom: sprite=fern, pr_number=12"),
+    ],
+)
+def test_event_summary_covers_additional_paths(
+    event_type: str,
+    payload: dict[str, Any],
+    expected: str,
+) -> None:
+    assert conductor.event_summary(event_type, payload) == expected
+
+
+def test_parse_utc_and_age_seconds_handle_invalid_inputs() -> None:
+    assert conductor.parse_utc(None) is None
+    assert conductor.parse_utc("not-a-timestamp") is None
+    assert conductor.age_seconds(None) is None
+    assert conductor.age_seconds("not-a-timestamp") is None
 
 
 def test_show_events_prints_run_metadata_and_recent_events(
@@ -2200,6 +2310,7 @@ def test_show_events_prints_run_metadata_and_recent_events(
     assert payload["run"]["run_id"] == "run-1"
     assert payload["run"]["heartbeat_age_seconds"] == 300
     assert payload["run"]["blocking_reason"] == "pr feedback blocked (unchanged_after_revision)"
+    assert "latest_event" not in payload["run"]
     assert [event["event_type"] for event in payload["events"]] == [
         "pr_feedback_blocked",
         "ci_wait_complete",
@@ -2858,6 +2969,44 @@ def test_wait_for_external_reviews_caps_sleep_at_deadline(monkeypatch: pytest.Mo
     assert reason.startswith("timed out waiting for trusted external reviews to settle on PR #483 after ")
     assert reason.endswith("failed to fetch PR status from GitHub")
     assert sleeps == [1.0]
+
+
+def test_wait_for_external_reviews_calls_on_tick_each_poll(monkeypatch: pytest.MonkeyPatch) -> None:
+    settled_rollup = [
+        {
+            "__typename": "StatusContext",
+            "context": "CodeRabbit",
+            "state": "SUCCESS",
+            "startedAt": "2026-03-07T00:20:00Z",
+        },
+    ]
+    gh_responses = iter(
+        [
+            {"statusCheckRollup": _pr483_rollup()},
+            {"statusCheckRollup": settled_rollup},
+            {"statusCheckRollup": settled_rollup},
+        ]
+    )
+    ticks = iter([0.0, 0.0, 10.0, 10.0, 20.0, 20.0, 20.0, 80.0, 80.0])
+    on_tick_calls: list[str] = []
+
+    monkeypatch.setattr(conductor.time, "time", lambda: next(ticks))
+    monkeypatch.setattr(conductor.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(conductor, "gh_json", lambda *_args, **_kwargs: next(gh_responses))
+
+    ok, summary = conductor.wait_for_external_reviews(
+        _RunnerSpy(),
+        "misty-step/bitterblossom",
+        483,
+        ["CodeRabbit"],
+        quiet_window_seconds=60,
+        timeout_minutes=5,
+        on_tick=lambda: on_tick_calls.append("tick"),
+    )
+
+    assert ok is True
+    assert "CodeRabbit" in summary
+    assert on_tick_calls == ["tick", "tick", "tick"]
 
 
 def test_run_once_withholds_merge_while_trusted_surfaces_pending(
