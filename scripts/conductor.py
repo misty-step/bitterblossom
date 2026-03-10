@@ -2330,7 +2330,6 @@ def dispatch(
     *,
     workspace: str | None = None,
 ) -> None:
-    bb_bin = str(ROOT / "bin" / "bb")
     runner.run(
         dispatch_command(sprite, prompt, repo, prompt_template, timeout_minutes, workspace=workspace),
         timeout=max(300, timeout_minutes * 60 + 120),
