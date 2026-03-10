@@ -13,6 +13,8 @@ This stack is intentionally small. The overview explains the full software-facto
 - [Conductor](./conductor.md)
 - [bb CLI Transport](./bb-cli.md)
 - [Architecture Glance](./glance.md)
+- [Codebase Map](../CODEBASE_MAP.md)
+- [Context Index](../context/INDEX.md)
 
 ## System Overview
 
@@ -20,7 +22,6 @@ This stack is intentionally small. The overview explains the full software-facto
 flowchart LR
     subgraph Inputs["Work Intake"]
         GH["GitHub Issues"]
-        Sentry["Sentry Incidents"]
         Ops["Human Operator"]
     end
 
@@ -44,7 +45,6 @@ flowchart LR
     end
 
     GH --> Conductor
-    Sentry --> GH
     Ops --> GH
     Ops --> Conductor
     Conductor --> DB

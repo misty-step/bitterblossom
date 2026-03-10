@@ -33,6 +33,10 @@ Bitterblossom is the conductor for a single-repo software factory: it routes Git
 - [Architecture Glance](docs/architecture/glance.md)
 - [Conductor Drill Down](docs/architecture/conductor.md)
 - [bb CLI Transport Drill Down](docs/architecture/bb-cli.md)
+- [Codebase Map](docs/CODEBASE_MAP.md)
+- [Context Index](docs/context/INDEX.md)
+- [Routing Guide](docs/context/ROUTING.md)
+- [Drift Watchlist](docs/context/DRIFT-WATCHLIST.md)
 
 ## Quality Bar
 
