@@ -104,8 +104,8 @@ timestamp, a computed `heartbeat_age_seconds`, and when applicable a
 `blocking_reason` plus the source `blocking_event_type`.
 
 `show-events` emits one JSON object for the requested run with a `run` metadata
-envelope and an `events` array. Use it when you need recent event context
-without joining SQLite tables by hand.
+envelope, `latest_event_type`, `latest_event_at`, and an `events` array. Use it
+when you need recent event context without joining SQLite tables by hand.
 
 Reconcile a run after out-of-band merge or manual recovery:
 

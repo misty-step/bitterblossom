@@ -487,6 +487,9 @@ def summarize_blocking_reason(event_type: str | None, payload: dict[str, Any]) -
         return mapping.get(reason, reason or "PR feedback blocked merge")
     if event_type == "council_blocked":
         return "review council blocked the run"
+    if event_type == "ci_wait_complete" and payload.get("passed") is False:
+        output = str(payload.get("output", "")).strip()
+        return output or "CI checks did not pass"
     if event_type == "external_review_wait_complete" and payload.get("passed") is False:
         output = str(payload.get("output", "")).strip()
         return output or "trusted external reviews did not settle"
@@ -518,6 +521,7 @@ def blocking_event_for_run(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row
         where run_id = ?
           and (
             event_type in ('pr_feedback_blocked', 'council_blocked', 'command_failed', 'unexpected_error')
+            or (event_type = 'ci_wait_complete' and json_extract(payload_json, '$.passed') = 0)
             or (event_type = 'external_review_wait_complete' and json_extract(payload_json, '$.passed') = 0)
           )
         order by id desc
@@ -546,15 +550,15 @@ def serialize_run_surface(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[st
         "updated_at": row["updated_at"],
     }
     blocking_reason = None
-    blocking_event = blocking_event_for_run(conn, row["run_id"])
-    if blocking_event is not None:
-        blocking_payload = json.loads(blocking_event["payload_json"])
-        blocking_reason = summarize_blocking_reason(blocking_event["event_type"], blocking_payload)
-        payload["blocking_event_type"] = blocking_event["event_type"]
-        payload["blocking_event_at"] = blocking_event["created_at"]
-    else:
-        payload["blocking_event_type"] = None
-        payload["blocking_event_at"] = None
+    payload["blocking_event_type"] = None
+    payload["blocking_event_at"] = None
+    if row["status"] in {"blocked", "failed"}:
+        blocking_event = blocking_event_for_run(conn, row["run_id"])
+        if blocking_event is not None:
+            blocking_payload = json.loads(blocking_event["payload_json"])
+            blocking_reason = summarize_blocking_reason(blocking_event["event_type"], blocking_payload)
+            payload["blocking_event_type"] = blocking_event["event_type"]
+            payload["blocking_event_at"] = blocking_event["created_at"]
     payload["blocking_reason"] = blocking_reason
     return payload
 
