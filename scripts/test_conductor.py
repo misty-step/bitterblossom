@@ -1205,22 +1205,39 @@ def test_parse_embedded_finding_metadata_ignores_later_html_comments() -> None:
     assert metadata["classification"] == "bug"
 
 
-def test_record_pr_thread_scan_marks_duplicate_fingerprint_across_waves(tmp_path: pathlib.Path) -> None:
+def test_record_pr_thread_scan_marks_duplicate_fingerprint_across_thread_waves(tmp_path: pathlib.Path) -> None:
     conn = conductor.open_db(tmp_path / "conductor.db")
-    review = conductor.ReviewResult(
-        reviewer="fern",
-        verdict="fix",
-        summary="needs revision",
-        findings=[
-            {
-                "classification": "bug",
-                "severity": "high",
-                "path": "scripts/conductor.py",
-                "line": 59,
-                "message": "guard the stale lease check",
-            }
-        ],
+    first_thread = conductor.ReviewThread(
+        id="thread-1",
+        path="scripts/conductor.py",
+        line=59,
+        author_login="***",
+        author_association="***",
+        body=(
+            "guard the stale lease check\n\n"
+            "<!-- bitterblossom: {\"classification\":\"bug\",\"severity\":\"high\",\"decision\":\"fix_now\"} -->"
+        ),
+        url="https://example.com/thread-1",
     )
+    second_thread = conductor.ReviewThread(
+        id="thread-2",
+        path="scripts/conductor.py",
+        line=59,
+        author_login="***",
+        author_association="***",
+        body=first_thread.body,
+        url="https://example.com/thread-2",
+    )
+
+    conductor.record_pr_thread_scan(conn, "run-447-1", 460, [first_thread])
+    conductor.record_pr_thread_scan(conn, "run-447-1", 460, [second_thread])
+
+    findings = conductor.load_review_findings(conn, "run-447-1")
+    assert [finding.status for finding in findings] == ["open", "duplicate"]
+
+
+def test_record_pr_thread_scan_keeps_live_thread_open_when_review_artifact_matches(tmp_path: pathlib.Path) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
     review_wave = conductor.start_review_wave(conn, "run-447-1", "review_round", pr_number=460, reviewer_count=1)
     conductor.record_review_artifact(
         conn,
@@ -1228,9 +1245,17 @@ def test_record_pr_thread_scan_marks_duplicate_fingerprint_across_waves(tmp_path
         review_wave,
         "fern",
         {
-            "verdict": review.verdict,
-            "summary": review.summary,
-            "findings": review.findings,
+            "verdict": "fix",
+            "summary": "needs revision",
+            "findings": [
+                {
+                    "classification": "bug",
+                    "severity": "high",
+                    "path": "scripts/conductor.py",
+                    "line": 59,
+                    "message": "guard the stale lease check",
+                }
+            ],
         },
     )
 
@@ -1238,8 +1263,8 @@ def test_record_pr_thread_scan_marks_duplicate_fingerprint_across_waves(tmp_path
         id="thread-1",
         path="scripts/conductor.py",
         line=59,
-        author_login="coderabbitai",
-        author_association="NONE",
+        author_login="***",
+        author_association="***",
         body=(
             "guard the stale lease check\n\n"
             "<!-- bitterblossom: {\"classification\":\"bug\",\"severity\":\"high\",\"decision\":\"fix_now\"} -->"
@@ -1250,7 +1275,8 @@ def test_record_pr_thread_scan_marks_duplicate_fingerprint_across_waves(tmp_path
     conductor.record_pr_thread_scan(conn, "run-447-1", 460, [thread])
 
     findings = conductor.load_review_findings(conn, "run-447-1")
-    assert [finding.status for finding in findings] == ["open", "duplicate"]
+    assert [finding.source_kind for finding in findings] == ["review_artifact", "pr_review_thread"]
+    assert [finding.status for finding in findings] == ["open", "open"]
 
 
 def test_record_pr_thread_scan_does_not_collapse_against_closed_prior_finding(tmp_path: pathlib.Path) -> None:
@@ -2153,7 +2179,7 @@ def test_handle_pr_review_threads_persists_thread_scan_wave(
     assert findings[0].line == 59
 
 
-def test_handle_pr_review_threads_ignores_duplicate_trusted_findings(
+def test_handle_pr_review_threads_reopens_for_trusted_thread_even_when_review_artifact_matches(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
 ) -> None:
     conn = conductor.open_db(tmp_path / "conductor.db")
@@ -2181,7 +2207,7 @@ def test_handle_pr_review_threads_ignores_duplicate_trusted_findings(
         id="thread-1",
         path="scripts/conductor.py",
         line=59,
-        author_login="coderabbitai",
+        author_login="gemini-code-assist",
         author_association="NONE",
         body=(
             "guard the stale lease check\n\n"
@@ -2205,9 +2231,10 @@ def test_handle_pr_review_threads_ignores_duplicate_trusted_findings(
         last_pr_feedback_thread_ids=(),
     )
 
-    assert action == "clear"
-    assert feedback is None
-    assert thread_ids == ()
+    assert action == "revise"
+    assert feedback is not None
+    assert "scripts/conductor.py:59" in feedback
+    assert thread_ids == ("thread-1",)
 
 
 def test_handle_pr_review_threads_ignores_late_low_severity_nit(
@@ -3351,6 +3378,86 @@ def test_run_once_rechecks_pr_threads_after_external_reviews_settle(
     assert "Unresolved PR review threads are blocking merge" in feedbacks[1]
     assert "scripts/conductor.py:2034" in feedbacks[1]
     assert merge_calls == [485]
+
+
+def test_run_once_clears_last_pr_feedback_thread_ids_after_threads_clear(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    issue = conductor.Issue(number=486, title="gov", body="", url="https://example.com/486", labels=["autopilot"])
+    builder = conductor.BuilderResult(
+        status="ready_for_review",
+        branch="factory/486-gov-1",
+        pr_number=487,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/487",
+        summary="done",
+        tests=[],
+    )
+    reviews = [
+        conductor.ReviewResult(reviewer="fern", verdict="pass", summary="ok", findings=[]),
+        conductor.ReviewResult(reviewer="sage", verdict="pass", summary="ok", findings=[]),
+        conductor.ReviewResult(reviewer="thorn", verdict="pass", summary="ok", findings=[]),
+    ]
+    feedbacks: list[str | None] = []
+    merge_calls: list[int] = []
+    issue_comments: list[str] = []
+    trusted_thread = conductor.ReviewThread(
+        id="thread-1",
+        path="scripts/conductor.py",
+        line=2034,
+        author_login="review-bot",
+        author_association="MEMBER",
+        body=(
+            "This thread reopened after the earlier clear.\n\n"
+            "<!-- bitterblossom: {\"classification\":\"bug\",\"severity\":\"high\",\"decision\":\"fix_now\"} -->"
+        ),
+        url="https://example.com/thread-1",
+    )
+    thread_reads = iter([[trusted_thread], [], [trusted_thread], [], []])
+    check_results = iter([(True, "green"), (True, "green"), (True, "green")])
+
+    monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
+    monkeypatch.setattr(conductor, "select_worker", lambda *_a, **_kw: "noble-blue-serpent")
+    monkeypatch.setattr(conductor, "ensure_reviewers_ready", lambda *_a, **_kw: None)
+
+    def fake_run_builder(*_args: object, **kwargs: object) -> tuple[conductor.BuilderResult, dict[str, object]]:
+        feedbacks.append(kwargs.get("feedback"))  # type: ignore[arg-type]
+        return builder, {"status": "ready_for_review"}
+
+    monkeypatch.setattr(conductor, "run_builder", fake_run_builder)
+    monkeypatch.setattr(conductor, "run_review_round", lambda *_a, **_kw: reviews)
+    monkeypatch.setattr(conductor, "ensure_pr_ready", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "wait_for_pr_checks", lambda *_a, **_kw: next(check_results))
+    monkeypatch.setattr(conductor, "ensure_required_checks_present", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "list_unresolved_review_threads", lambda *_a, **_kw: next(thread_reads))
+    monkeypatch.setattr(conductor, "wait_for_external_reviews", lambda *_a, **_kw: (True, "CodeRabbit: SUCCESS"))
+    monkeypatch.setattr(conductor, "merge_pr", lambda _r, _repo, pr_num: merge_calls.append(pr_num))
+    monkeypatch.setattr(conductor, "comment_pr", lambda *_a, **_kw: None)
+
+    def fake_comment_issue(*args: object, **_kwargs: object) -> None:
+        issue_comments.append(args[3])
+
+    monkeypatch.setattr(conductor, "comment_issue", fake_comment_issue)
+
+    args = _make_run_once_args(
+        tmp_path,
+        issue_number=486,
+        trusted_external_surfaces=["CodeRabbit"],
+        external_review_quiet_window=0,
+        external_review_timeout=5,
+    )
+    args.max_pr_feedback_rounds = 2
+
+    rc = conductor.run_once(args)
+
+    assert rc == 0
+    assert len(feedbacks) == 3
+    assert feedbacks[0] is None
+    assert feedbacks[1] is not None
+    assert feedbacks[2] is not None
+    assert "scripts/conductor.py:2034" in feedbacks[1]
+    assert "scripts/conductor.py:2034" in feedbacks[2]
+    assert merge_calls == [487]
+    assert all("need human confirmation" not in body for body in issue_comments)
 
 
 def test_run_once_merges_normally_when_no_trusted_surfaces_configured(

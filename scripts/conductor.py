@@ -44,6 +44,7 @@ FINDING_CLASSIFICATIONS = {"bug", "risk", "style", "question", "unspecified"}
 FINDING_SEVERITIES = {"critical", "high", "medium", "low", "unknown"}
 FINDING_DECISIONS = {"fix_now", "defer", "reject", "noise", "pending"}
 FINDING_STATUSES = {"open", "addressed", "deferred", "rejected", "duplicate", "pending"}
+INACTIVE_FINDING_STATUSES = {"addressed", "deferred", "rejected", "duplicate"}
 
 
 @dataclass(slots=True)
@@ -1245,28 +1246,33 @@ def persist_review_wave_review(
         conn.commit()
 
 
+def has_prior_active_duplicate_finding(conn: sqlite3.Connection, finding: ReviewFinding) -> bool:
+    query = """
+        select 1
+        from review_findings
+        where run_id = ?
+          and fingerprint = ?
+          and status not in ('addressed', 'deferred', 'rejected', 'duplicate')
+          and not (source_kind = ? and source_id = ?)
+    """
+    params: list[Any] = [finding.run_id, finding.fingerprint, finding.source_kind, finding.source_id]
+    if finding.source_kind == "pr_review_thread":
+        query += "\n          and source_kind = 'pr_review_thread'"
+    query += "\n        limit 1"
+    prior = conn.execute(query, tuple(params)).fetchone()
+    return prior is not None
+
+
 def persist_review_findings(conn: sqlite3.Connection, findings: list[ReviewFinding], *, commit: bool = True) -> None:
     ts = now_utc()
     if not findings:
         return
     for finding in findings:
         status = finding.status
-        prior = conn.execute(
-            """
-            select status
-            from review_findings
-            where run_id = ?
-              and fingerprint = ?
-              and status not in ('addressed', 'deferred', 'rejected', 'duplicate')
-              and not (source_kind = ? and source_id = ?)
-            limit 1
-            """,
-            (finding.run_id, finding.fingerprint, finding.source_kind, finding.source_id),
-        ).fetchone()
         if (
-            prior is not None
-            and finding.source_kind == "pr_review_thread"
-            and status not in {"addressed", "deferred", "rejected", "duplicate"}
+            finding.source_kind == "pr_review_thread"
+            and status not in INACTIVE_FINDING_STATUSES
+            and has_prior_active_duplicate_finding(conn, finding)
         ):
             status = "duplicate"
         conn.execute(
@@ -2700,6 +2706,8 @@ def run_once(args: argparse.Namespace) -> int:
                     max_pr_feedback_rounds=max_pr_feedback_rounds,
                     last_pr_feedback_thread_ids=last_pr_feedback_thread_ids,
                 )
+                if thread_action == "clear":
+                    last_pr_feedback_thread_ids = ()
                 if thread_action == "blocked":
                     last_pr_feedback_thread_ids = thread_ids
                     block_on_release = True
@@ -2784,6 +2792,8 @@ def run_once(args: argparse.Namespace) -> int:
                         max_pr_feedback_rounds=max_pr_feedback_rounds,
                         last_pr_feedback_thread_ids=last_pr_feedback_thread_ids,
                     )
+                    if thread_action == "clear":
+                        last_pr_feedback_thread_ids = ()
                     if thread_action == "blocked":
                         last_pr_feedback_thread_ids = thread_ids
                         block_on_release = True
