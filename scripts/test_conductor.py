@@ -2048,6 +2048,8 @@ def test_reconcile_run_marks_merged(monkeypatch: pytest.MonkeyPatch, tmp_path: p
 
 def test_show_events_prints_recent_events(tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
     conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=1, title="test", body="body", url="https://example.com/1", labels=["autopilot"])
+    conductor.create_run(conn, "run-1", "misty-step/bitterblossom", issue, "claude-sonnet")
     conductor.record_event(conn, tmp_path / "events.jsonl", "run-1", "lease_acquired", {"issue": 1})
     conductor.record_event(conn, tmp_path / "events.jsonl", "run-1", "builder_selected", {"sprite": "fern"})
 
@@ -2055,9 +2057,96 @@ def test_show_events_prints_recent_events(tmp_path: pathlib.Path, capsys: pytest
     rc = conductor.show_events(args)
 
     assert rc == 0
-    lines = [line for line in capsys.readouterr().out.splitlines() if line]
-    assert len(lines) == 2
-    assert '"event_type": "builder_selected"' in lines[0]
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["run"]["run_id"] == "run-1"
+    assert payload["latest_event_type"] == "builder_selected"
+    assert len(payload["events"]) == 2
+    assert payload["events"][0]["event_type"] == "builder_selected"
+
+
+def test_show_events_rejects_unknown_run_id(tmp_path: pathlib.Path) -> None:
+    args = argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-missing", limit=2)
+
+    with pytest.raises(conductor.CmdError, match="unknown run_id: run-missing"):
+        conductor.show_events(args)
+
+
+def test_show_runs_surfaces_heartbeat_and_blocking_reason(tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=42, title="blocked", body="body", url="https://example.com/42", labels=["autopilot"])
+    conductor.create_run(conn, "run-42", "misty-step/bitterblossom", issue, "claude-sonnet")
+    conductor.update_run(conn, "run-42", phase="blocked", status="blocked", builder_sprite="fern")
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-42",
+        "pr_feedback_blocked",
+        {"reason": "unchanged_after_revision", "threads": [{"id": "thread-1"}]},
+    )
+
+    args = argparse.Namespace(db=str(tmp_path / "conductor.db"), limit=5)
+    rc = conductor.show_runs(args)
+
+    assert rc == 0
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line]
+    assert len(lines) == 1
+    assert lines[0]["run_id"] == "run-42"
+    assert lines[0]["phase"] == "blocked"
+    assert lines[0]["heartbeat_at"] is not None
+    assert isinstance(lines[0]["heartbeat_age_seconds"], int)
+    assert lines[0]["blocking_event_type"] == "pr_feedback_blocked"
+    assert lines[0]["blocking_reason"] == "PR review threads remained unresolved after revision"
+
+
+def test_show_runs_surfaces_failed_ci_blocking_reason(tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=43, title="failed", body="body", url="https://example.com/43", labels=["autopilot"])
+    conductor.create_run(conn, "run-43", "misty-step/bitterblossom", issue, "claude-sonnet")
+    conductor.update_run(conn, "run-43", phase="waiting_ci", status="failed", builder_sprite="fern")
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-43",
+        "ci_wait_complete",
+        {"passed": False, "output": "merge-gate failed"},
+    )
+
+    args = argparse.Namespace(db=str(tmp_path / "conductor.db"), limit=5)
+    rc = conductor.show_runs(args)
+
+    assert rc == 0
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line]
+    assert len(lines) == 1
+    assert lines[0]["run_id"] == "run-43"
+    assert lines[0]["blocking_event_type"] == "ci_wait_complete"
+    assert lines[0]["blocking_reason"] == "merge-gate failed"
+
+
+def test_show_runs_hides_stale_blocking_reason_after_merge(tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=44, title="merged", body="body", url="https://example.com/44", labels=["autopilot"])
+    conductor.create_run(conn, "run-44", "misty-step/bitterblossom", issue, "claude-sonnet")
+    conductor.update_run(conn, "run-44", phase="blocked", status="blocked", builder_sprite="fern")
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-44",
+        "pr_feedback_blocked",
+        {"reason": "unchanged_after_revision", "threads": [{"id": "thread-1"}]},
+    )
+    conductor.update_run(conn, "run-44", phase="merged", status="merged")
+
+    args = argparse.Namespace(db=str(tmp_path / "conductor.db"), limit=5)
+    rc = conductor.show_runs(args)
+
+    assert rc == 0
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line]
+    assert len(lines) == 1
+    assert lines[0]["run_id"] == "run-44"
+    assert lines[0]["status"] == "merged"
+    assert lines[0]["blocking_event_type"] is None
+    assert lines[0]["blocking_event_at"] is None
+    assert lines[0]["blocking_reason"] is None
 
 
 def test_check_env_passes_when_all_present(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:

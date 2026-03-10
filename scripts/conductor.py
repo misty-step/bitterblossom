@@ -459,6 +459,110 @@ def touch_run(conn: sqlite3.Connection, repo: str, issue_number: int, run_id: st
     renew_lease(conn, repo, issue_number, run_id, ttl_seconds)
 
 
+def parse_utc_ts(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def age_seconds_from_now(value: str | None) -> int | None:
+    parsed = parse_utc_ts(value)
+    if parsed is None:
+        return None
+    delta = datetime.now(timezone.utc) - parsed
+    return max(0, int(delta.total_seconds()))
+
+
+def summarize_blocking_reason(event_type: str | None, payload: dict[str, Any]) -> str | None:
+    if event_type == "pr_feedback_blocked":
+        reason = str(payload.get("reason", "")).strip()
+        mapping = {
+            "untrusted_author": "untrusted PR review thread requires maintainer review",
+            "unchanged_after_revision": "PR review threads remained unresolved after revision",
+            "max_rounds": "PR review threads still require resolution after max rounds",
+        }
+        return mapping.get(reason, reason or "PR feedback blocked merge")
+    if event_type == "council_blocked":
+        return "review council blocked the run"
+    if event_type == "ci_wait_complete" and payload.get("passed") is False:
+        output = str(payload.get("output", "")).strip()
+        return output or "CI checks did not pass"
+    if event_type == "external_review_wait_complete" and payload.get("passed") is False:
+        output = str(payload.get("output", "")).strip()
+        return output or "trusted external reviews did not settle"
+    if event_type == "command_failed":
+        return str(payload.get("error", "")).strip() or "command failed"
+    if event_type == "unexpected_error":
+        return str(payload.get("error", "")).strip() or "unexpected conductor error"
+    return None
+
+
+def latest_event_for_run(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        select event_type, payload_json, created_at
+        from events
+        where run_id = ?
+        order by id desc
+        limit 1
+        """,
+        (run_id,),
+    ).fetchone()
+
+
+def blocking_event_for_run(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        select event_type, payload_json, created_at
+        from events
+        where run_id = ?
+          and (
+            event_type in ('pr_feedback_blocked', 'council_blocked', 'command_failed', 'unexpected_error')
+            or (event_type = 'ci_wait_complete' and json_extract(payload_json, '$.passed') = 0)
+            or (event_type = 'external_review_wait_complete' and json_extract(payload_json, '$.passed') = 0)
+          )
+        order by id desc
+        limit 1
+        """,
+        (run_id,),
+    ).fetchone()
+
+
+def serialize_run_surface(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
+    heartbeat_at = row["heartbeat_at"]
+    payload: dict[str, Any] = {
+        "run_id": row["run_id"],
+        "repo": row["repo"],
+        "issue_number": row["issue_number"],
+        "issue_title": row["issue_title"],
+        "phase": row["phase"],
+        "status": row["status"],
+        "builder_sprite": row["builder_sprite"],
+        "builder_profile": row["builder_profile"],
+        "branch": row["branch"],
+        "pr_number": row["pr_number"],
+        "pr_url": row["pr_url"],
+        "heartbeat_at": heartbeat_at,
+        "heartbeat_age_seconds": age_seconds_from_now(heartbeat_at),
+        "updated_at": row["updated_at"],
+    }
+    blocking_reason = None
+    payload["blocking_event_type"] = None
+    payload["blocking_event_at"] = None
+    if row["status"] in {"blocked", "failed"}:
+        blocking_event = blocking_event_for_run(conn, row["run_id"])
+        if blocking_event is not None:
+            blocking_payload = json.loads(blocking_event["payload_json"])
+            blocking_reason = summarize_blocking_reason(blocking_event["event_type"], blocking_payload)
+            payload["blocking_event_type"] = blocking_event["event_type"]
+            payload["blocking_event_at"] = blocking_event["created_at"]
+    payload["blocking_reason"] = blocking_reason
+    return payload
+
+
 def issue_priority(labels: list[str]) -> tuple[int, str]:
     order = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
     best = 9
@@ -2741,7 +2845,8 @@ def show_runs(args: argparse.Namespace) -> int:
     conn = open_db(pathlib.Path(args.db))
     rows = conn.execute(
         """
-        select run_id, issue_number, issue_title, phase, status, builder_sprite, pr_number, updated_at
+        select run_id, repo, issue_number, issue_title, phase, status, builder_sprite, builder_profile,
+               branch, pr_number, pr_url, heartbeat_at, updated_at
         from runs
         order by created_at desc
         limit ?
@@ -2749,25 +2854,23 @@ def show_runs(args: argparse.Namespace) -> int:
         (args.limit,),
     ).fetchall()
     for row in rows:
-        print(
-            json.dumps(
-                {
-                    "run_id": row["run_id"],
-                    "issue_number": row["issue_number"],
-                    "issue_title": row["issue_title"],
-                    "phase": row["phase"],
-                    "status": row["status"],
-                    "builder_sprite": row["builder_sprite"],
-                    "pr_number": row["pr_number"],
-                    "updated_at": row["updated_at"],
-                }
-            )
-        )
+        print(json.dumps(serialize_run_surface(conn, row)))
     return 0
 
 
 def show_events(args: argparse.Namespace) -> int:
     conn = open_db(pathlib.Path(args.db))
+    run_row = conn.execute(
+        """
+        select run_id, repo, issue_number, issue_title, phase, status, builder_sprite, builder_profile,
+               branch, pr_number, pr_url, heartbeat_at, updated_at
+        from runs
+        where run_id = ?
+        """,
+        (args.run_id,),
+    ).fetchone()
+    if run_row is None:
+        raise CmdError(f"unknown run_id: {args.run_id}")
     rows = conn.execute(
         """
         select run_id, event_type, payload_json, created_at
@@ -2778,17 +2881,22 @@ def show_events(args: argparse.Namespace) -> int:
         """,
         (args.run_id, args.limit),
     ).fetchall()
-    for row in rows:
-        print(
-            json.dumps(
-                {
-                    "run_id": row["run_id"],
-                    "event_type": row["event_type"],
-                    "payload": json.loads(row["payload_json"]),
-                    "created_at": row["created_at"],
-                }
-            )
-        )
+    latest_event = latest_event_for_run(conn, args.run_id)
+    payload = {
+        "run": serialize_run_surface(conn, run_row),
+        "latest_event_type": latest_event["event_type"] if latest_event is not None else None,
+        "latest_event_at": latest_event["created_at"] if latest_event is not None else None,
+        "events": [
+            {
+                "run_id": row["run_id"],
+                "event_type": row["event_type"],
+                "payload": json.loads(row["payload_json"]),
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ],
+    }
+    print(json.dumps(payload))
     return 0
 
 
