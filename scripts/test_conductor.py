@@ -3304,10 +3304,11 @@ def test_acceptance_trace_bullet_run_is_inspectable_from_run_store(
     run_id = show_runs_lines[0]["run_id"]
 
     show_events_rc = conductor.show_events(argparse.Namespace(db=args.db, run_id=run_id, limit=20))
-    show_events_lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line]
-    event_types = [line["event_type"] for line in show_events_lines]
+    show_events_payload = json.loads(capsys.readouterr().out)
+    event_types = [event["event_type"] for event in show_events_payload["events"]]
 
     assert show_events_rc == 0
+    assert show_events_payload["run"]["run_id"] == run_id
     assert "merged" in event_types
     assert "ci_wait_complete" in event_types
     assert "builder_complete" in event_types
