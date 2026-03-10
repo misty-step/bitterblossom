@@ -746,7 +746,7 @@ def prepare_run_workspace(runner: Runner, sprite: str, repo: str, run_id: str, l
         ]
     )
     output = sprite_bash(runner, sprite, script, timeout=300).strip()
-    if output and output != workspace:
+    if output != workspace:
         raise CmdError(f"unexpected workspace prepare output for {sprite}: {output!r}")
     return workspace
 
@@ -2814,6 +2814,10 @@ def run_once(args: argparse.Namespace) -> int:
         record_event(conn, event_log, run_id, "builder_selected", {"sprite": worker})
 
         branch = branch_name(issue.number, run_id_suffix(run_id))
+        builder_workspace = prepare_run_workspace(runner, worker, args.repo, run_id, "builder")
+        builder_workspace_prepared = True
+        update_run(conn, run_id, worktree_path=builder_workspace)
+        record_event(conn, event_log, run_id, "builder_workspace_prepared", {"workspace": builder_workspace})
         builder, builder_payload = run_builder(
             runner,
             args.repo,
@@ -2823,11 +2827,8 @@ def run_once(args: argparse.Namespace) -> int:
             branch,
             pathlib.Path(args.builder_template),
             args.builder_timeout,
+            workspace=builder_workspace,
         )
-        builder_workspace = run_workspace(args.repo, run_id, "builder")
-        builder_workspace_prepared = True
-        update_run(conn, run_id, worktree_path=builder_workspace)
-        record_event(conn, event_log, run_id, "builder_workspace_prepared", {"workspace": builder_workspace})
         update_run(
             conn,
             run_id,

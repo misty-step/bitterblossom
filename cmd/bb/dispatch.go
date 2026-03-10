@@ -76,6 +76,20 @@ func dispatchWorkspace(repo, override string) string {
 	return "/home/sprite/workspace/" + path.Base(repo)
 }
 
+func cleanSignalsScriptFor(workspace string) string {
+	return fmt.Sprintf(
+		`export WORKSPACE=%q; rm -f "$WORKSPACE"/TASK_COMPLETE "$WORKSPACE"/TASK_COMPLETE.md "$WORKSPACE"/BLOCKED.md`,
+		workspace,
+	)
+}
+
+func verifyWorkScriptFor(workspace, ghToken string) string {
+	return fmt.Sprintf(
+		`export GH_TOKEN=%q WORKSPACE=%q; cd "$WORKSPACE" && echo "--- commits ---" && git log --oneline origin/master..HEAD 2>/dev/null || git log --oneline origin/main..HEAD 2>/dev/null; echo "--- PRs ---" && gh pr list --json url,title 2>/dev/null || echo "(gh not available)"`,
+		ghToken, workspace,
+	)
+}
+
 func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverride, promptTemplate string, maxIter int, timeout time.Duration, noOutputTimeout time.Duration, dryRun bool, prCheckTimeout time.Duration, waitForComplete bool) error {
 	// Validate credentials
 	token, err := spriteToken()
@@ -144,17 +158,18 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverrid
 			return fmt.Errorf("repo sync failed: %w\n%s", err, out)
 		}
 	} else {
-		checkWorkspaceCmd := s.CommandContext(ctx, "test", "-d", workspace)
-		if _, err := checkWorkspaceCmd.Output(); err != nil {
+		checkWorkspaceCmd := s.CommandContext(ctx, "git", "-C", workspace, "rev-parse", "--is-inside-work-tree")
+		out, err := checkWorkspaceCmd.Output()
+		if err != nil {
 			return fmt.Errorf("workspace override %q is not ready on sprite %q: %w", workspace, spriteName, err)
+		}
+		if strings.TrimSpace(string(out)) != "true" {
+			return fmt.Errorf("workspace override %q is not ready on sprite %q: git rev-parse returned %q", workspace, spriteName, strings.TrimSpace(string(out)))
 		}
 	}
 
 	// 6. Clean stale signals
-	cleanScript := fmt.Sprintf(
-		"rm -f %s/TASK_COMPLETE %s/TASK_COMPLETE.md %s/BLOCKED.md",
-		workspace, workspace, workspace,
-	)
+	cleanScript := cleanSignalsScriptFor(workspace)
 	_, _ = s.CommandContext(ctx, "bash", "-c", cleanScript).Output()
 
 	// Record HEAD SHA before the ralph loop so the off-rails commit check is
@@ -248,11 +263,7 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverrid
 
 	// 9. Verify work produced
 	_, _ = fmt.Fprintf(os.Stderr, "\n=== work produced ===\n")
-	verifyScript := fmt.Sprintf(
-		`cd %s && echo "--- commits ---" && git log --oneline origin/master..HEAD 2>/dev/null || git log --oneline origin/main..HEAD 2>/dev/null; echo "--- PRs ---" && gh pr list --json url,title 2>/dev/null || echo "(gh not available)"`,
-		workspace,
-	)
-	verifyScript = fmt.Sprintf(`export GH_TOKEN=%q && %s`, ghToken, verifyScript)
+	verifyScript := verifyWorkScriptFor(workspace, ghToken)
 	verifyCmd := s.CommandContext(ctx, "bash", "-c", verifyScript)
 	verifyCmd.Stdout = os.Stderr
 	verifyCmd.Stderr = os.Stderr

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -14,6 +15,19 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 import conductor  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _stub_run_once_worktrees(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> None:
+    node_name = request.node.name
+    if "run_once" not in node_name and node_name != "test_acceptance_trace_bullet_run_is_inspectable_from_run_store":
+        return
+    monkeypatch.setattr(
+        conductor,
+        "prepare_run_workspace",
+        lambda _runner, _sprite, repo, run_id, lane: conductor.run_workspace(repo, run_id, lane),
+    )
+    monkeypatch.setattr(conductor, "cleanup_run_workspace", lambda *_a, **_kw: None)
 
 
 def test_issue_priority_prefers_explicit_priority_labels() -> None:
@@ -1635,6 +1649,11 @@ class _RunnerSpy:
         self.calls.append(argv)
         if self.responses:
             return self.responses.pop(0)
+        script = argv[-1] if argv else ""
+        if 'printf "%s\\n" "$workspace"' in script:
+            for line in script.splitlines():
+                if line.startswith("workspace="):
+                    return shlex.split(line.split("=", 1)[1])[0]
         return ""
 
 
@@ -4249,8 +4268,10 @@ def test_run_once_records_builder_worktree_path(monkeypatch: pytest.MonkeyPatch,
         lambda _runner, sprite, _repo, _run_id, lane: cleaned.append((sprite, lane)),
     )
 
-    def fake_run_builder(_runner: object, repo: str, sprite: str, _issue: object, run_id: str, *_args: object, **_kwargs: object) -> tuple[conductor.BuilderResult, dict[str, object]]:
-        conductor.prepare_run_workspace(_runner, sprite, repo, run_id, "builder")
+    def fake_run_builder(
+        _runner: object, _repo: str, _sprite: str, _issue: object, _run_id: str, *_args: object, **_kwargs: object
+    ) -> tuple[conductor.BuilderResult, dict[str, object]]:
+        assert _kwargs["workspace"] == conductor.run_workspace("misty-step/bitterblossom", "run-469-1", "builder")
         return builder, {"status": "ready_for_review"}
 
     monkeypatch.setattr(conductor, "run_builder", fake_run_builder)
@@ -4275,6 +4296,56 @@ def test_run_once_records_builder_worktree_path(monkeypatch: pytest.MonkeyPatch,
     row = conn.execute("select worktree_path from runs where run_id = 'run-469-1'").fetchone()
     assert row is not None
     assert row["worktree_path"] == conductor.run_workspace(args.repo, "run-469-1", "builder")
+
+
+def test_run_once_cleans_builder_worktree_when_run_builder_raises(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    issue = conductor.Issue(number=469, title="worktrees", body="body", url="https://example.com/469", labels=["autopilot"])
+    prepared: list[tuple[str, str]] = []
+    cleaned: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
+    monkeypatch.setattr(conductor, "select_worker", lambda *_a, **_kw: "noble-blue-serpent")
+    monkeypatch.setattr(conductor, "ensure_reviewers_ready", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        conductor,
+        "prepare_run_workspace",
+        lambda _runner, sprite, _repo, _run_id, lane: prepared.append((sprite, lane))
+        or conductor.run_workspace("misty-step/bitterblossom", "run-469-1", lane),
+    )
+    monkeypatch.setattr(
+        conductor,
+        "cleanup_run_workspace",
+        lambda _runner, sprite, _repo, _run_id, lane: cleaned.append((sprite, lane)),
+    )
+    monkeypatch.setattr(
+        conductor,
+        "run_builder",
+        lambda *_a, **_kw: (_ for _ in ()).throw(conductor.CmdError("dispatch timed out")),
+    )
+    monkeypatch.setattr(conductor, "comment_issue", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "run_id_for", lambda _issue_number: "run-469-1")
+
+    args = _make_run_once_args(tmp_path, issue_number=469)
+    rc = conductor.run_once(args)
+
+    assert rc == 1
+    assert ("noble-blue-serpent", "builder") in prepared
+    assert ("noble-blue-serpent", "builder") in cleaned
+
+
+def test_prepare_run_workspace_rejects_empty_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(conductor, "sprite_bash", lambda *_a, **_kw: "")
+
+    with pytest.raises(conductor.CmdError, match="unexpected workspace prepare output"):
+        conductor.prepare_run_workspace(
+            object(),
+            "noble-blue-serpent",
+            "misty-step/bitterblossom",
+            "run-469-1",
+            "builder",
+        )
 
 
 def test_show_runs_includes_worktree_path(tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:

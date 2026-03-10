@@ -565,6 +565,34 @@ func TestDispatchWorkspaceFallsBackToRepoCheckout(t *testing.T) {
 	}
 }
 
+func TestCleanSignalsScriptForQuotesWorkspace(t *testing.T) {
+	t.Parallel()
+
+	workspace := `/tmp/run 123; touch /tmp/pwned`
+	script := cleanSignalsScriptFor(workspace)
+
+	if !strings.Contains(script, `export WORKSPACE="/tmp/run 123; touch /tmp/pwned"`) {
+		t.Fatalf("cleanSignalsScriptFor() missing quoted workspace: %q", script)
+	}
+	if !strings.Contains(script, `"$WORKSPACE"/TASK_COMPLETE`) {
+		t.Fatalf("cleanSignalsScriptFor() should use WORKSPACE env var: %q", script)
+	}
+}
+
+func TestVerifyWorkScriptForQuotesWorkspace(t *testing.T) {
+	t.Parallel()
+
+	workspace := `/tmp/run 123; touch /tmp/pwned`
+	script := verifyWorkScriptFor(workspace, "ghtoken123")
+
+	if !strings.Contains(script, `WORKSPACE="/tmp/run 123; touch /tmp/pwned"`) {
+		t.Fatalf("verifyWorkScriptFor() missing quoted workspace: %q", script)
+	}
+	if !strings.Contains(script, `cd "$WORKSPACE"`) {
+		t.Fatalf("verifyWorkScriptFor() should cd via WORKSPACE env var: %q", script)
+	}
+}
+
 func TestRenderPromptUsesCustomTemplate(t *testing.T) {
 	t.Parallel()
 
