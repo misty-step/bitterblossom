@@ -127,6 +127,24 @@ def test_acquire_lease_reclaims_expired_active_lease(tmp_path: pathlib.Path) -> 
     assert conductor.acquire_lease(conn, "misty-step/bitterblossom", 12, "run-12-2") is True
 
 
+def test_acquire_lease_result_reports_reclaimed_run_id_for_stale_lease(tmp_path: pathlib.Path) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    assert conductor.acquire_lease(conn, "misty-step/bitterblossom", 12, "run-12-1") is True
+    conn.execute(
+        """
+        update leases
+        set released_at = null, lease_expires_at = '2000-01-01T00:00:00Z'
+        where repo = 'misty-step/bitterblossom' and issue_number = 12
+        """
+    )
+    conn.commit()
+
+    result = conductor.acquire_lease_result(conn, "misty-step/bitterblossom", 12, "run-12-2")
+
+    assert result.acquired is True
+    assert result.reclaimed_run_id == "run-12-1"
+
+
 def test_touch_run_refreshes_run_heartbeat_and_lease_expiry(tmp_path: pathlib.Path) -> None:
     conn = conductor.open_db(tmp_path / "conductor.db")
     issue = conductor.Issue(number=12, title="test", body="", url="u12", labels=["autopilot"])
@@ -161,6 +179,25 @@ def test_touch_run_refreshes_run_heartbeat_and_lease_expiry(tmp_path: pathlib.Pa
     assert lease["heartbeat_at"] != "2000-01-01T00:00:00Z"
     assert lease["lease_expires_at"] != "2000-01-01T00:00:00Z"
     assert run["heartbeat_at"] != "2000-01-01T00:00:00Z"
+
+
+def test_touch_run_raises_when_lease_moves_to_another_run(tmp_path: pathlib.Path) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=12, title="test", body="", url="u12", labels=["autopilot"])
+
+    assert conductor.acquire_lease(conn, "misty-step/bitterblossom", 12, "run-12-1") is True
+    conductor.create_run(conn, "run-12-1", "misty-step/bitterblossom", issue, "default")
+    conn.execute(
+        """
+        update leases
+        set run_id = 'run-12-2', heartbeat_at = '2026-03-09T00:00:00Z', lease_expires_at = '2026-03-09T00:10:00Z'
+        where repo = 'misty-step/bitterblossom' and issue_number = 12
+        """
+    )
+    conn.commit()
+
+    with pytest.raises(conductor.LeaseLostError, match="run-12-1"):
+        conductor.touch_run(conn, "misty-step/bitterblossom", 12, "run-12-1", 600)
 
 
 def test_pick_issue_skips_leased_and_prefers_higher_priority(tmp_path: pathlib.Path) -> None:
@@ -1679,7 +1716,7 @@ def test_wait_for_pr_checks_calls_on_tick_each_poll(monkeypatch: pytest.MonkeyPa
     assert touched == ["tick", "tick"]
 
 
-def test_wait_for_pr_checks_ignores_on_tick_failures(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_wait_for_pr_checks_propagates_on_tick_failures(monkeypatch: pytest.MonkeyPatch) -> None:
     runner = _RunnerSpy()
     monkeypatch.setattr(
         conductor,
@@ -1701,16 +1738,14 @@ def test_wait_for_pr_checks_ignores_on_tick_failures(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(conductor, "required_status_checks", lambda *_args, **_kwargs: ["merge-gate"])
     monkeypatch.setattr(conductor.time, "sleep", lambda _seconds: None)
 
-    ok, output = conductor.wait_for_pr_checks(
-        runner,
-        "misty-step/bitterblossom",
-        42,
-        5,
-        on_tick=lambda: (_ for _ in ()).throw(RuntimeError("tick failed")),
-    )
-
-    assert ok is True
-    assert "merge-gate: SUCCESS" in output
+    with pytest.raises(RuntimeError, match="tick failed"):
+        conductor.wait_for_pr_checks(
+            runner,
+            "misty-step/bitterblossom",
+            42,
+            5,
+            on_tick=lambda: (_ for _ in ()).throw(RuntimeError("tick failed")),
+        )
 
 
 def test_ensure_required_checks_present_accepts_matching_contexts() -> None:
@@ -2575,6 +2610,90 @@ def test_run_once_normal_failure_does_release_lease(monkeypatch: pytest.MonkeyPa
     assert lease["blocked_at"] is None
 
 
+def test_run_once_stops_when_ci_heartbeat_loses_lease(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
+    issue = conductor.Issue(number=447, title="test", body="body", url="https://example.com/447", labels=["autopilot"])
+    builder = conductor.BuilderResult(
+        status="ready_for_review",
+        branch="factory/447-test-123",
+        pr_number=448,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/448",
+        summary="done",
+        tests=[],
+    )
+    reviews = [
+        conductor.ReviewResult(reviewer="fern", verdict="pass", summary="ok", findings=[]),
+        conductor.ReviewResult(reviewer="sage", verdict="pass", summary="ok", findings=[]),
+        conductor.ReviewResult(reviewer="thorn", verdict="pass", summary="ok", findings=[]),
+    ]
+    replacement_run_id = "run-447-replacement"
+
+    monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
+    monkeypatch.setattr(conductor, "select_worker", lambda *_a, **_kw: "noble-blue-serpent")
+    monkeypatch.setattr(conductor, "ensure_reviewers_ready", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "run_builder", lambda *_a, **_kw: (builder, {"status": "ready_for_review"}))
+    monkeypatch.setattr(conductor, "run_review_round", lambda *_a, **_kw: reviews)
+    monkeypatch.setattr(conductor, "ensure_pr_ready", lambda *_a, **_kw: None)
+
+    def fake_wait_for_pr_checks(
+        _runner: conductor.Runner,
+        repo: str,
+        _pr_number: int,
+        _timeout_minutes: int,
+        *,
+        on_tick: Any | None = None,
+    ) -> tuple[bool, str]:
+        assert on_tick is not None
+        conn = conductor.open_db(tmp_path / "conductor.db")
+        conn.execute(
+            """
+            update leases
+            set run_id = ?, leased_at = ?, heartbeat_at = ?, lease_expires_at = ?, released_at = null, blocked_at = null
+            where repo = ? and issue_number = ?
+            """,
+            (
+                replacement_run_id,
+                "2026-03-09T00:00:00Z",
+                "2026-03-09T00:00:00Z",
+                "2026-03-09T00:10:00Z",
+                repo,
+                issue.number,
+            ),
+        )
+        conn.commit()
+        on_tick()
+        return True, "merge-gate: SUCCESS"
+
+    monkeypatch.setattr(conductor, "wait_for_pr_checks", fake_wait_for_pr_checks)
+    monkeypatch.setattr(conductor, "ensure_required_checks_present", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "list_unresolved_review_threads", lambda *_a, **_kw: [])
+    monkeypatch.setattr(conductor, "comment_pr", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "comment_issue", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "merge_pr", lambda *_a, **_kw: None)
+
+    args = _make_run_once_args(tmp_path)
+    rc = conductor.run_once(args)
+
+    assert rc == 1
+    conn = conductor.open_db(pathlib.Path(args.db))
+    lease = conn.execute(
+        "select run_id, released_at from leases where repo = ? and issue_number = ?",
+        (args.repo, issue.number),
+    ).fetchone()
+    assert lease is not None
+    assert lease["run_id"] == replacement_run_id
+    assert lease["released_at"] is None
+
+    run = conn.execute("select run_id, phase, status from runs where issue_number = ?", (issue.number,)).fetchone()
+    assert run is not None
+    assert (run["phase"], run["status"]) == ("failed", "failed")
+
+    events = conn.execute(
+        "select event_type from events where run_id = ? order by id",
+        (run["run_id"],),
+    ).fetchall()
+    assert "lease_lost" in [row["event_type"] for row in events]
+
+
 def test_run_once_records_stale_lease_reclaim_events(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
     issue = conductor.Issue(number=468, title="lease", body="body", url="https://example.com/468", labels=["autopilot", "P1"])
     old_run_id = "run-468-stale"
@@ -3042,7 +3161,7 @@ def test_wait_for_external_reviews_calls_on_tick_each_poll(monkeypatch: pytest.M
     assert touched == ["tick", "tick"]
 
 
-def test_wait_for_external_reviews_ignores_on_tick_failures(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_wait_for_external_reviews_propagates_on_tick_failures(monkeypatch: pytest.MonkeyPatch) -> None:
     pending_rollup = [
         {
             "__typename": "StatusContext",
@@ -3071,18 +3190,16 @@ def test_wait_for_external_reviews_ignores_on_tick_failures(monkeypatch: pytest.
     monkeypatch.setattr(conductor.time, "sleep", lambda _s: None)
     monkeypatch.setattr(conductor, "gh_json", lambda *_args, **_kwargs: next(gh_responses))
 
-    ok, summary = conductor.wait_for_external_reviews(
-        _RunnerSpy(),
-        "misty-step/bitterblossom",
-        483,
-        ["CodeRabbit"],
-        quiet_window_seconds=0,
-        timeout_minutes=5,
-        on_tick=lambda: (_ for _ in ()).throw(RuntimeError("tick failed")),
-    )
-
-    assert ok is True
-    assert "CodeRabbit" in summary
+    with pytest.raises(RuntimeError, match="tick failed"):
+        conductor.wait_for_external_reviews(
+            _RunnerSpy(),
+            "misty-step/bitterblossom",
+            483,
+            ["CodeRabbit"],
+            quiet_window_seconds=0,
+            timeout_minutes=5,
+            on_tick=lambda: (_ for _ in ()).throw(RuntimeError("tick failed")),
+        )
 
 
 def test_run_once_withholds_merge_while_trusted_surfaces_pending(
