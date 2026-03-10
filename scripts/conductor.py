@@ -1151,7 +1151,8 @@ def normalize_review_thread_finding(run_id: str, wave_id: int, thread: ReviewThr
     classification = normalized_choice(metadata.get("classification"), "unspecified", FINDING_CLASSIFICATIONS)
     severity = normalized_choice(metadata.get("severity"), "unknown", FINDING_SEVERITIES)
     decision = normalized_choice(metadata.get("decision"), "pending", FINDING_DECISIONS)
-    status = normalized_choice(metadata.get("status"), "open", FINDING_STATUSES)
+    # PR-thread metadata may shape reviewer intent, but finding lifecycle status remains conductor-owned.
+    status = "open"
     message = normalized_text(visible_body, "")
     return ReviewFinding(
         id=None,

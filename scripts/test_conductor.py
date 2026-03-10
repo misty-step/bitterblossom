@@ -1156,11 +1156,11 @@ def test_normalize_review_thread_finding_reads_embedded_metadata() -> None:
         id="thread-1",
         path="scripts/conductor.py",
         line=59,
-        author_login="coderabbitai",
-        author_association="NONE",
+        author_login="***",
+        author_association="***",
         body=(
             "late style nit\n\n"
-            "<!-- bitterblossom: {\"classification\":\"style\",\"severity\":\"low\",\"decision\":\"defer\"} -->"
+            "<!-- bitterblossom: {\"classification\":\"style\",\"severity\":\"low\",\"decision\":\"defer\",\"status\":\"duplicate\"} -->"
         ),
         url="https://example.com/thread-1",
     )
@@ -1170,6 +1170,7 @@ def test_normalize_review_thread_finding_reads_embedded_metadata() -> None:
     assert finding.classification == "style"
     assert finding.severity == "low"
     assert finding.decision == "defer"
+    assert finding.status == "open"
     assert finding.message == "late style nit"
 
 
