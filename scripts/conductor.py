@@ -187,8 +187,12 @@ def stringify_exc(exc: BaseException) -> str:
     return str(exc) or exc.__class__.__name__
 
 
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc).replace(microsecond=0)
+
+
 def now_utc() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return utc_now().isoformat().replace("+00:00", "Z")
 
 
 def ensure_parent(path: pathlib.Path) -> None:
@@ -436,7 +440,7 @@ def block_lease(conn: sqlite3.Connection, repo: str, issue_number: int, run_id: 
 
 
 def ts_plus(seconds: int) -> str:
-    value = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(seconds=seconds)
+    value = utc_now() + timedelta(seconds=seconds)
     return value.isoformat().replace("+00:00", "Z")
 
 
@@ -457,7 +461,34 @@ def lease_expired(lease_expires_at: str | None) -> bool:
         expires = datetime.fromisoformat(lease_expires_at.replace("Z", "+00:00"))
     except ValueError:
         return False
-    return datetime.now(timezone.utc) >= expires
+    return utc_now() >= expires
+
+
+def event_row_payload(row: sqlite3.Row) -> dict[str, Any]:
+    return json.loads(str(row["payload_json"]))
+
+
+def format_event_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "run_id": row["run_id"],
+        "event_type": row["event_type"],
+        "payload": event_row_payload(row),
+        "created_at": row["created_at"],
+    }
+
+
+def recent_events(conn: sqlite3.Connection, run_id: str, limit: int) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        select run_id, event_type, payload_json, created_at
+        from events
+        where run_id = ?
+        order by id desc
+        limit ?
+        """,
+        (run_id, limit),
+    ).fetchall()
+    return [format_event_row(row) for row in rows]
 
 
 def lease_missing_or_expired(lease_expires_at: str | None) -> bool:
@@ -544,7 +575,7 @@ def age_seconds_from_now(value: str | None) -> int | None:
     parsed = parse_utc_ts(value)
     if parsed is None:
         return None
-    delta = datetime.now(timezone.utc) - parsed
+    delta = utc_now() - parsed
     return max(0, int(delta.total_seconds()))
 
 
@@ -3125,17 +3156,33 @@ def show_events(args: argparse.Namespace) -> int:
         "run": serialize_run_surface(conn, run_row),
         "latest_event_type": latest_event["event_type"] if latest_event is not None else None,
         "latest_event_at": latest_event["created_at"] if latest_event is not None else None,
-        "events": [
-            {
-                "run_id": row["run_id"],
-                "event_type": row["event_type"],
-                "payload": json.loads(row["payload_json"]),
-                "created_at": row["created_at"],
-            }
-            for row in rows
-        ],
+        "events": [format_event_row(row) for row in rows],
     }
     print(json.dumps(payload))
+    return 0
+
+
+def show_run(args: argparse.Namespace) -> int:
+    conn = open_db(pathlib.Path(args.db))
+    row = conn.execute(
+        """
+        select run_id, repo, issue_number, issue_title, phase, status, builder_sprite, builder_profile,
+               branch, pr_number, pr_url, heartbeat_at, updated_at
+        from runs
+        where run_id = ?
+        """,
+        (args.run_id,),
+    ).fetchone()
+    if row is None:
+        raise CmdError(f"unknown run_id: {args.run_id}")
+    print(
+        json.dumps(
+            {
+                "run": serialize_run_surface(conn, row),
+                "recent_events": recent_events(conn, args.run_id, args.event_limit),
+            }
+        )
+    )
     return 0
 
 
@@ -3281,6 +3328,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     events_p.add_argument("--run-id", required=True)
     events_p.add_argument("--limit", type=int, default=20)
     events_p.set_defaults(func=show_events)
+
+    run_p = sub.add_parser("show-run", help="Show one run plus recent event context")
+    run_p.add_argument("--db", default=str(DEFAULT_DB))
+    run_p.add_argument("--run-id", required=True)
+    run_p.add_argument("--event-limit", type=int, default=10)
+    run_p.set_defaults(func=show_run)
 
     reconcile_p = sub.add_parser("reconcile-run", help="Reconcile a run against GitHub PR state")
     reconcile_p.add_argument("--db", default=str(DEFAULT_DB))

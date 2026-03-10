@@ -95,22 +95,19 @@ Inspect runs:
 
 ```bash
 python3 scripts/conductor.py show-runs --limit 20
+python3 scripts/conductor.py show-run --run-id run-450-1772813415
 python3 scripts/conductor.py show-events --run-id run-450-1772813415
 ```
 
-`show-runs` emits one JSON object per run. The operator contract is that each
-row includes the current `phase` and `status`, the raw `heartbeat_at`
-timestamp, a computed `heartbeat_age_seconds`, and when applicable a
-`blocking_reason` plus the source `blocking_event_type`.
+`show-runs` emits one JSON object per run. The operator contract is that each row includes the current `phase` and `status`, the raw `heartbeat_at` timestamp, a computed `heartbeat_age_seconds`, and when applicable a `blocking_reason` plus the source `blocking_event_type`.
 
-`show-events` emits one JSON object for the requested run with a `run` metadata
-envelope, `latest_event_type`, `latest_event_at`, and an `events` array. Use it
-when you need recent event context without joining SQLite tables by hand.
+`show-events` emits one JSON object for the requested run with a `run` metadata envelope, `latest_event_type`, `latest_event_at`, and an `events` array. Use it when you need recent event context without joining SQLite tables by hand.
+
+`show-run` is the narrower single-run inspection surface: it returns the same run metadata together with a `recent_events` array keyed by `run_id`.
 
 ## Acceptance Proof
 
-Issue [#102](https://github.com/misty-step/bitterblossom/issues/102) is the bounded-governance
-acceptance path for the current conductor architecture.
+Issue [#102](https://github.com/misty-step/bitterblossom/issues/102) is the bounded-governance acceptance path for the current conductor architecture.
 
 Run the acceptance-focused regression slice first:
 
@@ -144,10 +141,11 @@ python3 scripts/conductor.py run-once \
   --reviewer council-thorn-20260306
 
 python3 scripts/conductor.py show-runs --limit 5
+python3 scripts/conductor.py show-run --run-id <run-id>
 python3 scripts/conductor.py show-events --run-id <run-id>
 ```
 
-The acceptance run is only valid if `show-runs` and `show-events` expose the full path:
+The acceptance run is only valid if the operator surfaces expose the full path:
 
 - lease acquired
 - builder handoff
@@ -299,6 +297,7 @@ This clears the blocked state and releases the lease. The issue becomes eligible
 To inspect the blocked run's events before re-queuing:
 
 ```bash
+python3 scripts/conductor.py show-run --run-id <run-id>
 python3 scripts/conductor.py show-events --run-id <run-id>
 ```
 
