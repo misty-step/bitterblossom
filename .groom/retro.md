@@ -23,3 +23,11 @@
 - scope: proved the trace bullet with acceptance-focused run-store assertions and tightened late trusted-review handling so duplicates and low-severity nits no longer cause churn
 - blocker: none
 - pattern: acceptance proofs stay durable when the operator-visible commands read the same ledger states the tests assert
+
+## 2026-03-09 [issue #468](https://github.com/misty-step/bitterblossom/issues/468)
+
+- predicted: M
+- actual: M
+- scope: moved stale reclaim from silent backlog cleanup into explicit lease acquisition, added heartbeat refresh during long polling, and documented the new operator-visible reclaim events
+- blocker: none
+- pattern: when a control-plane recovery path matters to operators, record it as an explicit run event instead of hiding it inside queue hygiene
