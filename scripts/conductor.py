@@ -2112,6 +2112,56 @@ def wait_for_external_reviews(
     )
 
 
+def wait_for_pr_minimum_age(
+    runner: Runner,
+    repo: str,
+    pr_number: int,
+    *,
+    minimum_age_seconds: int,
+    timeout_minutes: int = 30,
+    on_tick: Callable[[], None] | None = None,
+) -> tuple[bool, str]:
+    if minimum_age_seconds <= 0:
+        return True, ""
+
+    deadline = time.time() + timeout_minutes * 60
+    last_age_seconds = 0
+
+    while time.time() < deadline:
+        if on_tick is not None:
+            on_tick()
+        pr = gh_json(runner, ["pr", "view", str(pr_number), "--repo", repo, "--json", "createdAt"])
+        created_at = str(pr.get("createdAt", ""))
+        try:
+            created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise CmdError(f"invalid PR createdAt for #{pr_number}: {created_at!r}") from exc
+
+        last_age_seconds = max(0, int((utc_now() - created).total_seconds()))
+        if last_age_seconds >= minimum_age_seconds:
+            return True, f"PR #{pr_number} age {last_age_seconds}s satisfies minimum age {minimum_age_seconds}s"
+
+        if not sleep_until(deadline, min(10, max(1, minimum_age_seconds - last_age_seconds))):
+            break
+
+    return (
+        False,
+        f"timed out waiting for PR #{pr_number} to reach minimum age {minimum_age_seconds}s "
+        f"(current age {last_age_seconds}s)",
+    )
+
+
+def final_polish_feedback(pr_number: int) -> str:
+    return "\n".join(
+        [
+            f"Final polish pass for PR #{pr_number}:",
+            "- Simplify the implementation and remove unnecessary complexity.",
+            "- Tighten docs or tests if the current branch leaves the merge story unclear.",
+            "- Avoid speculative changes; keep the PR focused and ready for final merge checks.",
+        ]
+    )
+
+
 def handle_pr_review_threads(
     runner: Runner,
     conn: sqlite3.Connection,
@@ -2750,6 +2800,474 @@ def format_council_comment(reviews: list[ReviewResult]) -> str:
     return "\n".join(lines)
 
 
+def ensure_governance_run(
+    runner: Runner,
+    conn: sqlite3.Connection,
+    event_log: pathlib.Path,
+    args: argparse.Namespace,
+) -> tuple[Issue, str, str, str, int, str, str]:
+    existing_run = None
+    if getattr(args, "run_id", None):
+        existing_run = conn.execute(
+            """
+            select run_id, repo, issue_number, builder_sprite, branch, pr_number, pr_url, worktree_path
+            from runs
+            where run_id = ?
+            """,
+            (args.run_id,),
+        ).fetchone()
+        if existing_run is None:
+            raise CmdError(f"unknown run_id: {args.run_id}")
+    elif getattr(args, "pr_number", None) is not None:
+        existing_run = conn.execute(
+            """
+            select run_id, repo, issue_number, builder_sprite, branch, pr_number, pr_url, worktree_path
+            from runs
+            where repo = ? and pr_number = ?
+            order by created_at desc
+            limit 1
+            """,
+            (args.repo, args.pr_number),
+        ).fetchone()
+
+    issue_number = int(existing_run["issue_number"]) if existing_run is not None else int(args.issue)
+    issue = get_issue(runner, args.repo, issue_number)
+    run_id = str(existing_run["run_id"]) if existing_run is not None else run_id_for(issue.number)
+
+    acquire_result = acquire_lease_result(conn, args.repo, issue.number, run_id)
+    if not acquire_result.acquired:
+        raise CmdError(f"issue #{issue.number} already leased")
+
+    if existing_run is None:
+        create_run(conn, run_id, args.repo, issue, args.builder_profile)
+        record_event(conn, event_log, run_id, "lease_acquired", {"issue": issue.number})
+    else:
+        record_event(
+            conn,
+            event_log,
+            run_id,
+            "governance_reacquired",
+            {"issue": issue.number, "pr_number": existing_run["pr_number"]},
+        )
+
+    worker = str(existing_run["builder_sprite"] or "") if existing_run is not None else ""
+    if not worker:
+        worker = select_worker(args.repo, args.worker, pathlib.Path(args.builder_template))
+        update_run(conn, run_id, builder_sprite=worker)
+
+    builder_workspace = str(existing_run["worktree_path"] or "") if existing_run is not None else ""
+    if not builder_workspace:
+        builder_workspace = prepare_run_workspace(runner, worker, args.repo, run_id, "builder")
+        update_run(conn, run_id, worktree_path=builder_workspace)
+        record_event(conn, event_log, run_id, "builder_workspace_prepared", {"workspace": builder_workspace})
+
+    pr_number = int(existing_run["pr_number"]) if existing_run is not None and existing_run["pr_number"] is not None else int(args.pr_number)
+    pr = gh_json(
+        runner,
+        ["pr", "view", str(pr_number), "--repo", args.repo, "--json", "number,url,headRefName,state"],
+    )
+    if pr["state"] != "OPEN":
+        raise CmdError(f"PR #{pr_number} is not open")
+
+    branch = str(pr["headRefName"])
+    pr_url = str(pr["url"])
+    update_run(
+        conn,
+        run_id,
+        phase="awaiting_governance",
+        branch=branch,
+        pr_number=pr_number,
+        pr_url=pr_url,
+        builder_sprite=worker,
+    )
+    record_event(
+        conn,
+        event_log,
+        run_id,
+        "governance_adopted",
+        {"issue": issue.number, "pr_number": pr_number, "pr_url": pr_url, "branch": branch},
+    )
+    return issue, run_id, worker, branch, pr_number, pr_url, builder_workspace
+
+
+def govern_pr_flow(
+    runner: Runner,
+    conn: sqlite3.Connection,
+    event_log: pathlib.Path,
+    args: argparse.Namespace,
+    *,
+    issue: Issue,
+    run_id: str,
+    worker: str,
+    branch: str,
+    pr_number: int,
+    pr_url: str,
+    builder_workspace: str,
+) -> int:
+    builder = BuilderResult(
+        status="ready_for_review",
+        branch=branch,
+        pr_number=pr_number,
+        pr_url=pr_url,
+        summary="governance adoption",
+        tests=[],
+    )
+    review_rounds = 0
+    ci_rounds = 0
+    pr_feedback_rounds = 0
+    last_pr_feedback_thread_ids: tuple[str, ...] = ()
+    polish_completed = False
+
+    minimum_age_seconds = getattr(args, "pr_minimum_age_seconds", 0)
+    if minimum_age_seconds > 0:
+        update_run(conn, run_id, phase="governance_wait")
+        touch_run(conn, args.repo, issue.number, run_id, args.ci_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS)
+        age_ok, age_output = wait_for_pr_minimum_age(
+            runner,
+            args.repo,
+            pr_number,
+            minimum_age_seconds=minimum_age_seconds,
+            timeout_minutes=max(1, args.ci_timeout),
+            on_tick=lambda: touch_run(
+                conn,
+                args.repo,
+                issue.number,
+                run_id,
+                args.ci_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
+            ),
+        )
+        record_event(
+            conn,
+            event_log,
+            run_id,
+            "pr_freshness_wait_complete",
+            {
+                "passed": age_ok,
+                "output": age_output,
+                "pr_number": pr_number,
+                "minimum_age_seconds": minimum_age_seconds,
+            },
+        )
+        if not age_ok:
+            update_run(conn, run_id, phase="blocked", status="blocked")
+            best_effort_issue_comment(
+                runner,
+                conn,
+                event_log,
+                run_id,
+                args.repo,
+                issue.number,
+                f"Bitterblossom blocked `{run_id}` because governance freshness did not settle: {age_output}",
+                event_type="issue_comment_failed",
+            )
+            return 2
+
+    while True:
+        update_run(conn, run_id, phase="governing")
+        touch_run(
+            conn,
+            args.repo,
+            issue.number,
+            run_id,
+            args.review_timeout * 60 * max(1, len(args.reviewer)) + DEFAULT_LEASE_BUFFER_SECONDS,
+        )
+        reviews = run_review_round(
+            runner,
+            conn,
+            event_log,
+            args.repo,
+            issue,
+            run_id,
+            builder.pr_number,
+            builder.pr_url,
+            args.reviewer,
+            pathlib.Path(args.reviewer_template),
+            args.review_timeout,
+            on_tick=lambda: touch_run(
+                conn,
+                args.repo,
+                issue.number,
+                run_id,
+                args.review_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
+            ),
+        )
+
+        best_effort_pr_comment(
+            runner,
+            conn,
+            event_log,
+            run_id,
+            args.repo,
+            builder.pr_number,
+            format_council_comment(reviews),
+            event_type="pr_comment_failed",
+        )
+
+        passes = sum(1 for review in reviews if review.verdict == "pass")
+        blocks = [review for review in reviews if review.verdict == "block"]
+        fixes = [review for review in reviews if review.verdict == "fix"]
+
+        if blocks or passes < args.review_quorum:
+            if review_rounds >= args.max_revision_rounds:
+                update_run(conn, run_id, phase="blocked", status="blocked")
+                record_event(conn, event_log, run_id, "council_blocked", {"reviews": [asdict(review) for review in reviews]})
+                best_effort_issue_comment(
+                    runner,
+                    conn,
+                    event_log,
+                    run_id,
+                    args.repo,
+                    issue.number,
+                    f"Bitterblossom blocked `{run_id}` after review.",
+                    event_type="issue_comment_failed",
+                )
+                return 2
+
+            feedback = summarize_reviews(blocks + fixes)
+            update_run(conn, run_id, phase="revising")
+            record_event(conn, event_log, run_id, "revision_requested", {"feedback": feedback, "reason": "review"})
+            builder, builder_payload = run_builder(
+                runner,
+                args.repo,
+                worker,
+                issue,
+                run_id,
+                branch,
+                pathlib.Path(args.builder_template),
+                args.builder_timeout,
+                workspace=builder_workspace,
+                feedback=feedback,
+                feedback_source="review",
+                pr_number=builder.pr_number,
+                pr_url=builder.pr_url,
+            )
+            update_run(conn, run_id, phase="awaiting_governance", branch=builder.branch, pr_number=builder.pr_number, pr_url=builder.pr_url)
+            record_event(conn, event_log, run_id, "builder_revised", builder_payload)
+            review_rounds += 1
+            last_pr_feedback_thread_ids = ()
+            continue
+
+        update_run(conn, run_id, phase="ci_wait")
+        touch_run(conn, args.repo, issue.number, run_id, args.ci_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS)
+        ensure_pr_ready(runner, args.repo, builder.pr_number)
+        ok, checks_output = wait_for_pr_checks(
+            runner,
+            args.repo,
+            builder.pr_number,
+            args.ci_timeout,
+            on_tick=lambda: touch_run(
+                conn,
+                args.repo,
+                issue.number,
+                run_id,
+                args.ci_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
+            ),
+        )
+        record_event(conn, event_log, run_id, "ci_wait_complete", {"passed": ok, "output": checks_output})
+        if not ok:
+            if ci_rounds >= args.max_ci_rounds:
+                update_run(conn, run_id, phase="failed", status="failed")
+                best_effort_issue_comment(
+                    runner,
+                    conn,
+                    event_log,
+                    run_id,
+                    args.repo,
+                    issue.number,
+                    f"Bitterblossom failed `{run_id}` because PR checks did not pass.",
+                    event_type="issue_comment_failed",
+                )
+                return 1
+
+            feedback = f"CI checks failed for PR #{builder.pr_number}:\n{checks_output}"
+            update_run(conn, run_id, phase="revising")
+            record_event(conn, event_log, run_id, "revision_requested", {"feedback": feedback, "reason": "ci"})
+            builder, builder_payload = run_builder(
+                runner,
+                args.repo,
+                worker,
+                issue,
+                run_id,
+                branch,
+                pathlib.Path(args.builder_template),
+                args.builder_timeout,
+                workspace=builder_workspace,
+                feedback=feedback,
+                feedback_source="ci",
+                pr_number=builder.pr_number,
+                pr_url=builder.pr_url,
+            )
+            update_run(conn, run_id, phase="awaiting_governance", branch=builder.branch, pr_number=builder.pr_number, pr_url=builder.pr_url)
+            record_event(conn, event_log, run_id, "builder_revised", builder_payload)
+            ci_rounds += 1
+            last_pr_feedback_thread_ids = ()
+            continue
+
+        ensure_required_checks_present(runner, args.repo, builder.pr_number)
+        thread_action, feedback, thread_ids = handle_pr_review_threads(
+            runner,
+            conn,
+            event_log,
+            run_id,
+            args.repo,
+            issue.number,
+            builder.pr_number,
+            pr_feedback_rounds=pr_feedback_rounds,
+            max_pr_feedback_rounds=args.max_pr_feedback_rounds,
+            last_pr_feedback_thread_ids=last_pr_feedback_thread_ids,
+        )
+        if thread_action == "clear":
+            last_pr_feedback_thread_ids = ()
+        if thread_action == "blocked":
+            return 2
+        if thread_action == "revise" and feedback is not None:
+            last_pr_feedback_thread_ids = thread_ids
+            builder, builder_payload = run_builder(
+                runner,
+                args.repo,
+                worker,
+                issue,
+                run_id,
+                branch,
+                pathlib.Path(args.builder_template),
+                args.builder_timeout,
+                workspace=builder_workspace,
+                feedback=feedback,
+                feedback_source="pr_review_threads",
+                pr_number=builder.pr_number,
+                pr_url=builder.pr_url,
+            )
+            update_run(conn, run_id, phase="awaiting_governance", branch=builder.branch, pr_number=builder.pr_number, pr_url=builder.pr_url)
+            record_event(conn, event_log, run_id, "builder_revised", builder_payload)
+            pr_feedback_rounds += 1
+            continue
+
+        trusted_surfaces = args.trusted_external_surfaces
+        if trusted_surfaces:
+            external_review_timeout = args.external_review_timeout
+            external_review_quiet_window = args.external_review_quiet_window
+            touch_run(
+                conn,
+                args.repo,
+                issue.number,
+                run_id,
+                external_review_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
+            )
+            ext_ok, ext_output = wait_for_external_reviews(
+                runner,
+                args.repo,
+                builder.pr_number,
+                trusted_surfaces,
+                quiet_window_seconds=external_review_quiet_window,
+                timeout_minutes=external_review_timeout,
+                on_tick=lambda: touch_run(
+                    conn,
+                    args.repo,
+                    issue.number,
+                    run_id,
+                    external_review_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
+                ),
+            )
+            record_event(
+                conn,
+                event_log,
+                run_id,
+                "external_review_wait_complete",
+                {"passed": ext_ok, "output": ext_output},
+            )
+            if not ext_ok:
+                update_run(conn, run_id, phase="blocked", status="blocked")
+                best_effort_issue_comment(
+                    runner,
+                    conn,
+                    event_log,
+                    run_id,
+                    args.repo,
+                    issue.number,
+                    f"Bitterblossom blocked `{run_id}` because trusted external reviews did not settle: {ext_output[:500]}",
+                    event_type="issue_comment_failed",
+                )
+                return 2
+            thread_action, feedback, thread_ids = handle_pr_review_threads(
+                runner,
+                conn,
+                event_log,
+                run_id,
+                args.repo,
+                issue.number,
+                builder.pr_number,
+                pr_feedback_rounds=pr_feedback_rounds,
+                max_pr_feedback_rounds=args.max_pr_feedback_rounds,
+                last_pr_feedback_thread_ids=last_pr_feedback_thread_ids,
+            )
+            if thread_action == "clear":
+                last_pr_feedback_thread_ids = ()
+            if thread_action == "blocked":
+                return 2
+            if thread_action == "revise" and feedback is not None:
+                last_pr_feedback_thread_ids = thread_ids
+                builder, builder_payload = run_builder(
+                    runner,
+                    args.repo,
+                    worker,
+                    issue,
+                    run_id,
+                    branch,
+                    pathlib.Path(args.builder_template),
+                    args.builder_timeout,
+                    workspace=builder_workspace,
+                    feedback=feedback,
+                    feedback_source="pr_review_threads",
+                    pr_number=builder.pr_number,
+                    pr_url=builder.pr_url,
+                )
+                update_run(conn, run_id, phase="awaiting_governance", branch=builder.branch, pr_number=builder.pr_number, pr_url=builder.pr_url)
+                record_event(conn, event_log, run_id, "builder_revised", builder_payload)
+                pr_feedback_rounds += 1
+                continue
+
+        if not polish_completed:
+            update_run(conn, run_id, phase="polishing")
+            record_event(conn, event_log, run_id, "final_polish_requested", {"pr_number": builder.pr_number})
+            builder, builder_payload = run_builder(
+                runner,
+                args.repo,
+                worker,
+                issue,
+                run_id,
+                branch,
+                pathlib.Path(args.builder_template),
+                args.builder_timeout,
+                workspace=builder_workspace,
+                feedback=final_polish_feedback(builder.pr_number),
+                feedback_source="review",
+                pr_number=builder.pr_number,
+                pr_url=builder.pr_url,
+            )
+            update_run(conn, run_id, phase="awaiting_governance", branch=builder.branch, pr_number=builder.pr_number, pr_url=builder.pr_url)
+            record_event(conn, event_log, run_id, "final_polish_complete", builder_payload)
+            polish_completed = True
+            last_pr_feedback_thread_ids = ()
+            continue
+
+        update_run(conn, run_id, phase="merge_ready")
+        touch_run(conn, args.repo, issue.number, run_id, 600)
+        merge_pr(runner, args.repo, builder.pr_number)
+        update_run(conn, run_id, phase="merged", status="merged")
+        record_event(conn, event_log, run_id, "merged", {"pr_number": builder.pr_number, "pr_url": builder.pr_url})
+        best_effort_issue_comment(
+            runner,
+            conn,
+            event_log,
+            run_id,
+            args.repo,
+            issue.number,
+            f"Bitterblossom merged `{run_id}` via PR #{builder.pr_number}.",
+            event_type="issue_comment_failed",
+        )
+        return 0
+
+
 def run_once(args: argparse.Namespace) -> int:
     runner = Runner(ROOT)
     conn = open_db(pathlib.Path(args.db))
@@ -2775,8 +3293,6 @@ def run_once(args: argparse.Namespace) -> int:
     block_on_release = False
     builder_handoff_recorded = False
     builder_workspace_prepared = False
-    max_pr_feedback_rounds = getattr(args, "max_pr_feedback_rounds", 1)
-
     try:
         create_run(conn, run_id, args.repo, issue, args.builder_profile)
         if reclaimed_run_id:
@@ -2833,317 +3349,41 @@ def run_once(args: argparse.Namespace) -> int:
         update_run(
             conn,
             run_id,
-            phase="reviewing",
+            phase="awaiting_governance",
             branch=builder.branch,
             pr_number=builder.pr_number,
             pr_url=builder.pr_url,
         )
         record_event(conn, event_log, run_id, "builder_complete", builder_payload)
         builder_handoff_recorded = True
-
-        review_rounds = 0
-        ci_rounds = 0
-        pr_feedback_rounds = 0
-        last_pr_feedback_thread_ids: tuple[str, ...] = ()
-        while True:
-            touch_run(
-                conn,
-                args.repo,
-                issue.number,
-                run_id,
-                args.review_timeout * 60 * max(1, len(args.reviewer)) + DEFAULT_LEASE_BUFFER_SECONDS,
-            )
-            reviews = run_review_round(
-                runner,
-                conn,
-                event_log,
-                args.repo,
-                issue,
-                run_id,
-                builder.pr_number,
-                builder.pr_url,
-                args.reviewer,
-                pathlib.Path(args.reviewer_template),
-                args.review_timeout,
-                on_tick=lambda: touch_run(
-                    conn,
-                    args.repo,
-                    issue.number,
-                    run_id,
-                    args.review_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
-                ),
-            )
-
-            best_effort_pr_comment(
-                runner,
+        if getattr(args, "stop_after_pr", False):
+            record_event(
                 conn,
                 event_log,
                 run_id,
-                args.repo,
-                builder.pr_number,
-                format_council_comment(reviews),
-                event_type="pr_comment_failed",
+                "builder_handoff_ready",
+                {"pr_number": builder.pr_number, "pr_url": builder.pr_url, "branch": builder.branch},
             )
+            return 0
 
-            passes = sum(1 for review in reviews if review.verdict == "pass")
-            blocks = [review for review in reviews if review.verdict == "block"]
-            fixes = [review for review in reviews if review.verdict == "fix"]
-
-            if blocks or passes < args.review_quorum:
-                if review_rounds >= args.max_revision_rounds:
-                    update_run(conn, run_id, phase="blocked", status="blocked")
-                    record_event(conn, event_log, run_id, "council_blocked", {"reviews": [asdict(review) for review in reviews]})
-                    best_effort_issue_comment(
-                        runner,
-                        conn,
-                        event_log,
-                        run_id,
-                        args.repo,
-                        issue.number,
-                        f"Bitterblossom blocked `{run_id}` after review.",
-                        event_type="issue_comment_failed",
-                    )
-                    block_on_release = True
-                    return 2
-
-                feedback = summarize_reviews(blocks + fixes)
-                update_run(conn, run_id, phase="revising")
-                record_event(conn, event_log, run_id, "revision_requested", {"feedback": feedback, "reason": "review"})
-                builder, builder_payload = run_builder(
-                    runner,
-                    args.repo,
-                    worker,
-                    issue,
-                    run_id,
-                    branch,
-                    pathlib.Path(args.builder_template),
-                    args.builder_timeout,
-                    workspace=builder_workspace,
-                    feedback=feedback,
-                    feedback_source="review",
-                    pr_number=builder.pr_number,
-                    pr_url=builder.pr_url,
-                )
-                update_run(conn, run_id, phase="reviewing", branch=builder.branch, pr_number=builder.pr_number, pr_url=builder.pr_url)
-                record_event(conn, event_log, run_id, "builder_revised", builder_payload)
-                review_rounds += 1
-                continue
-
-            update_run(conn, run_id, phase="ci_wait")
-            touch_run(conn, args.repo, issue.number, run_id, args.ci_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS)
-            ensure_pr_ready(runner, args.repo, builder.pr_number)
-            ok, checks_output = wait_for_pr_checks(
-                runner,
-                args.repo,
-                builder.pr_number,
-                args.ci_timeout,
-                on_tick=lambda: touch_run(
-                    conn,
-                    args.repo,
-                    issue.number,
-                    run_id,
-                    args.ci_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
-                ),
-            )
-            record_event(conn, event_log, run_id, "ci_wait_complete", {"passed": ok, "output": checks_output})
-            if ok:
-                ensure_required_checks_present(runner, args.repo, builder.pr_number)
-                thread_action, feedback, thread_ids = handle_pr_review_threads(
-                    runner,
-                    conn,
-                    event_log,
-                    run_id,
-                    args.repo,
-                    issue.number,
-                    builder.pr_number,
-                    pr_feedback_rounds=pr_feedback_rounds,
-                    max_pr_feedback_rounds=max_pr_feedback_rounds,
-                    last_pr_feedback_thread_ids=last_pr_feedback_thread_ids,
-                )
-                if thread_action == "clear":
-                    last_pr_feedback_thread_ids = ()
-                if thread_action == "blocked":
-                    last_pr_feedback_thread_ids = thread_ids
-                    block_on_release = True
-                    return 2
-                if thread_action == "revise" and feedback is not None:
-                    last_pr_feedback_thread_ids = thread_ids
-                    builder, builder_payload = run_builder(
-                        runner,
-                        args.repo,
-                        worker,
-                        issue,
-                        run_id,
-                        branch,
-                        pathlib.Path(args.builder_template),
-                        args.builder_timeout,
-                        workspace=builder_workspace,
-                        feedback=feedback,
-                        feedback_source="pr_review_threads",
-                        pr_number=builder.pr_number,
-                        pr_url=builder.pr_url,
-                    )
-                    update_run(
-                        conn,
-                        run_id,
-                        phase="reviewing",
-                        branch=builder.branch,
-                        pr_number=builder.pr_number,
-                        pr_url=builder.pr_url,
-                    )
-                    record_event(conn, event_log, run_id, "builder_revised", builder_payload)
-                    pr_feedback_rounds += 1
-                    continue
-
-                trusted_surfaces = args.trusted_external_surfaces
-                if trusted_surfaces:
-                    external_review_timeout = args.external_review_timeout
-                    external_review_quiet_window = args.external_review_quiet_window
-                    touch_run(
-                        conn,
-                        args.repo,
-                        issue.number,
-                        run_id,
-                        external_review_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
-                    )
-                    ext_ok, ext_output = wait_for_external_reviews(
-                        runner,
-                        args.repo,
-                        builder.pr_number,
-                        trusted_surfaces,
-                        quiet_window_seconds=external_review_quiet_window,
-                        timeout_minutes=external_review_timeout,
-                        on_tick=lambda: touch_run(
-                            conn,
-                            args.repo,
-                            issue.number,
-                            run_id,
-                            external_review_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
-                        ),
-                    )
-                    record_event(
-                        conn,
-                        event_log,
-                        run_id,
-                        "external_review_wait_complete",
-                        {"passed": ext_ok, "output": ext_output},
-                    )
-                    if not ext_ok:
-                        update_run(conn, run_id, phase="blocked", status="blocked")
-                        best_effort_issue_comment(
-                            runner,
-                            conn,
-                            event_log,
-                            run_id,
-                            args.repo,
-                            issue.number,
-                            f"Bitterblossom blocked `{run_id}` because trusted external reviews did not settle: {ext_output[:500]}",
-                            event_type="issue_comment_failed",
-                        )
-                        block_on_release = True
-                        return 2
-                    thread_action, feedback, thread_ids = handle_pr_review_threads(
-                        runner,
-                        conn,
-                        event_log,
-                        run_id,
-                        args.repo,
-                        issue.number,
-                        builder.pr_number,
-                        pr_feedback_rounds=pr_feedback_rounds,
-                        max_pr_feedback_rounds=max_pr_feedback_rounds,
-                        last_pr_feedback_thread_ids=last_pr_feedback_thread_ids,
-                    )
-                    if thread_action == "clear":
-                        last_pr_feedback_thread_ids = ()
-                    if thread_action == "blocked":
-                        last_pr_feedback_thread_ids = thread_ids
-                        block_on_release = True
-                        return 2
-                    if thread_action == "revise" and feedback is not None:
-                        last_pr_feedback_thread_ids = thread_ids
-                        builder, builder_payload = run_builder(
-                            runner,
-                            args.repo,
-                            worker,
-                            issue,
-                            run_id,
-                            branch,
-                            pathlib.Path(args.builder_template),
-                            args.builder_timeout,
-                            workspace=builder_workspace,
-                            feedback=feedback,
-                            feedback_source="pr_review_threads",
-                            pr_number=builder.pr_number,
-                            pr_url=builder.pr_url,
-                        )
-                        update_run(
-                            conn,
-                            run_id,
-                            phase="reviewing",
-                            branch=builder.branch,
-                            pr_number=builder.pr_number,
-                            pr_url=builder.pr_url,
-                        )
-                        record_event(conn, event_log, run_id, "builder_revised", builder_payload)
-                        pr_feedback_rounds += 1
-                        continue
-                break
-
-            if ci_rounds >= args.max_ci_rounds:
-                update_run(conn, run_id, phase="failed", status="failed")
-                best_effort_issue_comment(
-                    runner,
-                    conn,
-                    event_log,
-                    run_id,
-                    args.repo,
-                    issue.number,
-                    f"Bitterblossom failed `{run_id}` because PR checks did not pass.",
-                    event_type="issue_comment_failed",
-                )
-                return 1
-
-            feedback = f"CI checks failed for PR #{builder.pr_number}:\n{checks_output}"
-            update_run(conn, run_id, phase="revising")
-            record_event(conn, event_log, run_id, "revision_requested", {"feedback": feedback, "reason": "ci"})
-            builder, builder_payload = run_builder(
-                runner,
-                args.repo,
-                worker,
-                issue,
-                run_id,
-                branch,
-                pathlib.Path(args.builder_template),
-                args.builder_timeout,
-                workspace=builder_workspace,
-                feedback=feedback,
-                feedback_source="ci",
-                pr_number=builder.pr_number,
-                pr_url=builder.pr_url,
-            )
-            update_run(conn, run_id, phase="reviewing", branch=builder.branch, pr_number=builder.pr_number, pr_url=builder.pr_url)
-            record_event(conn, event_log, run_id, "builder_revised", builder_payload)
-            ci_rounds += 1
-            continue
-
-        update_run(conn, run_id, phase="merge_ready")
-        touch_run(conn, args.repo, issue.number, run_id, 600)
-        merge_pr(runner, args.repo, builder.pr_number)
-        update_run(conn, run_id, phase="merged", status="merged")
-        merged = True
-        record_event(conn, event_log, run_id, "merged", {"pr_number": builder.pr_number, "pr_url": builder.pr_url})
-        best_effort_issue_comment(
+        rc = govern_pr_flow(
             runner,
             conn,
             event_log,
-            run_id,
-            args.repo,
-            issue.number,
-            f"Bitterblossom merged `{run_id}` via PR #{builder.pr_number}.",
-            event_type="issue_comment_failed",
+            args,
+            issue=issue,
+            run_id=run_id,
+            worker=worker,
+            branch=branch,
+            pr_number=builder.pr_number,
+            pr_url=builder.pr_url,
+            builder_workspace=builder_workspace,
         )
-        return 0
+        if rc == 0:
+            merged = True
+        if rc == 2:
+            block_on_release = True
+        return rc
     except LeaseLostError as exc:
         update_run(conn, run_id, phase="failed", status="failed")
         message = f"lease lost: {stringify_exc(exc)}"
@@ -3221,6 +3461,60 @@ def run_once(args: argparse.Namespace) -> int:
             block_lease(conn, args.repo, issue.number, run_id)
         else:
             release_lease(conn, args.repo, issue.number, run_id)
+
+
+def govern_pr(args: argparse.Namespace) -> int:
+    runner = Runner(ROOT)
+    conn = open_db(pathlib.Path(args.db))
+    event_log = pathlib.Path(args.event_log)
+
+    block_on_release = False
+    issue: Issue | None = None
+    run_id = ""
+    worker = ""
+    builder_workspace = ""
+
+    try:
+        issue, run_id, worker, branch, pr_number, pr_url, builder_workspace = ensure_governance_run(
+            runner,
+            conn,
+            event_log,
+            args,
+        )
+        rc = govern_pr_flow(
+            runner,
+            conn,
+            event_log,
+            args,
+            issue=issue,
+            run_id=run_id,
+            worker=worker,
+            branch=branch,
+            pr_number=pr_number,
+            pr_url=pr_url,
+            builder_workspace=builder_workspace,
+        )
+        if rc == 2:
+            block_on_release = True
+        return rc
+    finally:
+        if issue is not None and run_id and worker and builder_workspace:
+            try:
+                cleanup_run_workspace(runner, worker, args.repo, run_id, "builder")
+                record_event(conn, event_log, run_id, "builder_workspace_cleaned", {"workspace": run_workspace(args.repo, run_id, "builder")})
+            except Exception as exc:  # noqa: BLE001
+                record_event(
+                    conn,
+                    event_log,
+                    run_id,
+                    "cleanup_warning",
+                    {"error": f"builder workspace cleanup failed: {stringify_exc(exc)}"},
+                )
+        if issue is not None and run_id:
+            if block_on_release:
+                block_lease(conn, args.repo, issue.number, run_id)
+            else:
+                release_lease(conn, args.repo, issue.number, run_id)
 
 
 def loop(args: argparse.Namespace) -> int:
@@ -3412,6 +3706,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         p.add_argument("--max-pr-feedback-rounds", type=int, default=1)
         p.add_argument("--builder-profile", default="claude-sonnet")
         p.add_argument(
+            "--pr-minimum-age-seconds",
+            type=int,
+            default=300,
+            help="Minimum PR age before governance may merge",
+        )
+        p.add_argument(
+            "--stop-after-pr",
+            action="store_true",
+            help="Stop after the builder lane has opened and verified the PR handoff",
+        )
+        p.add_argument(
             "--trusted-external-surface",
             dest="trusted_external_surfaces",
             action="append",
@@ -3434,6 +3739,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     once_p = sub.add_parser("run-once", help="Run one conductor cycle")
     add_common(once_p)
     once_p.set_defaults(func=run_once)
+
+    govern_p = sub.add_parser("govern-pr", help="Adopt an existing PR into the governor lane")
+    add_common(govern_p)
+    govern_p.add_argument("--pr-number", type=int, required=True)
+    govern_p.add_argument("--run-id")
+    govern_p.set_defaults(func=govern_pr)
 
     loop_p = sub.add_parser("loop", help="Run conductor continuously")
     add_common(loop_p)
@@ -3478,7 +3789,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
-    if args.cmd in {"run-once", "loop", "reconcile-run"}:
+    if args.cmd in {"run-once", "govern-pr", "loop", "reconcile-run"}:
         try:
             require_runtime_env()
         except CmdError as exc:

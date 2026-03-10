@@ -47,3 +47,11 @@
 - scope: moved builder and reviewer execution off the shared checkout by threading run-scoped worktrees through conductor dispatch, run state, and operator docs
 - blocker: walkthrough and PR packaging took longer than the implementation because the repo had no existing walkthrough artifact convention
 - pattern: keep transport generic with one `--workspace` override, then let the conductor own run isolation and cleanup policy
+
+## 2026-03-10 [issue #479](https://github.com/misty-step/bitterblossom/issues/479)
+
+- predicted: L
+- actual: M
+- scope: split the conductor into an explicit builder handoff plus governor adoption path, added a minimum-age merge freshness gate, and forced one final polish pass before merge
+- blocker: none
+- pattern: when one loop owns both production and governance, carve out the adoption boundary in persisted state first so delayed-merge policy can evolve without forking the ledger
