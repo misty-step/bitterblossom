@@ -146,7 +146,17 @@ class DispatchSession:
     last_error: str = ""
 
 
+@dataclass(slots=True)
+class LeaseAcquireResult:
+    acquired: bool
+    reclaimed_run_id: str | None = None
+
+
 class CmdError(RuntimeError):
+    pass
+
+
+class LeaseLostError(RuntimeError):
     pass
 
 
@@ -339,57 +349,88 @@ def update_run(conn: sqlite3.Connection, run_id: str, **fields: Any) -> None:
     conn.commit()
 
 
-def acquire_lease(conn: sqlite3.Connection, repo: str, issue_number: int, run_id: str) -> bool:
-    row = conn.execute(
-        "select run_id, released_at, lease_expires_at from leases where repo = ? and issue_number = ?",
-        (repo, issue_number),
-    ).fetchone()
+def acquire_lease_result(conn: sqlite3.Connection, repo: str, issue_number: int, run_id: str) -> LeaseAcquireResult:
     ts = now_utc()
     expires_at = ts_plus(lease_ttl_seconds())
-    if row is None:
+
+    try:
+        conn.execute("begin immediate")
+        row = conn.execute(
+            "select run_id, released_at, blocked_at, lease_expires_at from leases where repo = ? and issue_number = ?",
+            (repo, issue_number),
+        ).fetchone()
+        if row is None:
+            conn.execute(
+                """
+                insert into leases (repo, issue_number, run_id, leased_at, heartbeat_at, lease_expires_at)
+                values (?, ?, ?, ?, ?, ?)
+                """,
+                (repo, issue_number, run_id, ts, ts, expires_at),
+            )
+            conn.commit()
+            return LeaseAcquireResult(acquired=True)
+
+        reclaimed_run_id: str | None = None
+        if row["released_at"] is None:
+            if row["blocked_at"] is not None or not lease_missing_or_expired(row["lease_expires_at"]):
+                conn.rollback()
+                return LeaseAcquireResult(acquired=False)
+            reclaimed_run_id = str(row["run_id"])
+
         conn.execute(
             """
-            insert into leases (repo, issue_number, run_id, leased_at, heartbeat_at, lease_expires_at)
-            values (?, ?, ?, ?, ?, ?)
+            update leases
+            set run_id = ?, leased_at = ?, heartbeat_at = ?, lease_expires_at = ?, released_at = null, blocked_at = null
+            where repo = ? and issue_number = ?
             """,
-            (repo, issue_number, run_id, ts, ts, expires_at),
+            (run_id, ts, ts, expires_at, repo, issue_number),
         )
         conn.commit()
-        return True
+        return LeaseAcquireResult(acquired=True, reclaimed_run_id=reclaimed_run_id)
+    except BaseException:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
 
-    if row["released_at"] is None and not lease_expired(row["lease_expires_at"]):
-        return False
 
-    conn.execute(
-        """
-        update leases
-        set run_id = ?, leased_at = ?, heartbeat_at = ?, lease_expires_at = ?, released_at = null
-        where repo = ? and issue_number = ?
-        """,
-        (run_id, ts, ts, expires_at, repo, issue_number),
-    )
+def acquire_lease(conn: sqlite3.Connection, repo: str, issue_number: int, run_id: str) -> bool:
+    return acquire_lease_result(conn, repo, issue_number, run_id).acquired
+
+
+def release_lease(conn: sqlite3.Connection, repo: str, issue_number: int, run_id: str | None = None) -> None:
+    if run_id is None:
+        conn.execute(
+            "update leases set released_at = ? where repo = ? and issue_number = ? and released_at is null",
+            (now_utc(), repo, issue_number),
+        )
+    else:
+        conn.execute(
+            "update leases set released_at = ? where repo = ? and issue_number = ? and run_id = ? and released_at is null",
+            (now_utc(), repo, issue_number, run_id),
+        )
     conn.commit()
-    return True
 
 
-def release_lease(conn: sqlite3.Connection, repo: str, issue_number: int) -> None:
-    conn.execute(
-        "update leases set released_at = ? where repo = ? and issue_number = ? and released_at is null",
-        (now_utc(), repo, issue_number),
-    )
-    conn.commit()
-
-
-def block_lease(conn: sqlite3.Connection, repo: str, issue_number: int) -> None:
+def block_lease(conn: sqlite3.Connection, repo: str, issue_number: int, run_id: str | None = None) -> None:
     """Mark a lease as blocked, preventing immediate re-pick until explicitly re-queued."""
-    conn.execute(
-        """
-        update leases
-        set blocked_at = ?, lease_expires_at = null
-        where repo = ? and issue_number = ? and released_at is null
-        """,
-        (now_utc(), repo, issue_number),
-    )
+    if run_id is None:
+        conn.execute(
+            """
+            update leases
+            set blocked_at = ?, lease_expires_at = null
+            where repo = ? and issue_number = ? and released_at is null
+            """,
+            (now_utc(), repo, issue_number),
+        )
+    else:
+        conn.execute(
+            """
+            update leases
+            set blocked_at = ?, lease_expires_at = null
+            where repo = ? and issue_number = ? and run_id = ? and released_at is null
+            """,
+            (now_utc(), repo, issue_number, run_id),
+        )
     conn.commit()
 
 
@@ -418,11 +459,19 @@ def lease_expired(lease_expires_at: str | None) -> bool:
     return datetime.now(timezone.utc) >= expires
 
 
+def lease_missing_or_expired(lease_expires_at: str | None) -> bool:
+    return lease_expires_at is None or lease_expired(lease_expires_at)
+
+
 def reap_expired_leases(conn: sqlite3.Connection) -> int:
     rows = conn.execute(
-        "select repo, issue_number, lease_expires_at from leases where released_at is null"
+        "select repo, issue_number, blocked_at, lease_expires_at from leases where released_at is null"
     ).fetchall()
-    expired = [(row["repo"], row["issue_number"]) for row in rows if lease_expired(row["lease_expires_at"])]
+    expired = [
+        (row["repo"], row["issue_number"])
+        for row in rows
+        if row["blocked_at"] is None and lease_missing_or_expired(row["lease_expires_at"])
+    ]
     for repo, issue_number in expired:
         conn.execute(
             "update leases set released_at = ? where repo = ? and issue_number = ? and released_at is null",
@@ -432,25 +481,47 @@ def reap_expired_leases(conn: sqlite3.Connection) -> int:
     return len(expired)
 
 
+def stale_lease_run_id(conn: sqlite3.Connection, repo: str, issue_number: int) -> str | None:
+    row = conn.execute(
+        "select run_id, released_at, blocked_at, lease_expires_at from leases where repo = ? and issue_number = ?",
+        (repo, issue_number),
+    ).fetchone()
+    if row is None or row["released_at"] is not None or row["blocked_at"] is not None:
+        return None
+    if not lease_missing_or_expired(row["lease_expires_at"]):
+        return None
+    return str(row["run_id"])
+
+
+def run_exists(conn: sqlite3.Connection, run_id: str) -> bool:
+    return conn.execute("select 1 from runs where run_id = ?", (run_id,)).fetchone() is not None
+
+
 def heartbeat_run(conn: sqlite3.Connection, run_id: str) -> None:
     ts = now_utc()
-    conn.execute(
+    cursor = conn.execute(
         "update runs set heartbeat_at = ?, updated_at = ? where run_id = ?",
         (ts, ts, run_id),
     )
+    if cursor.rowcount != 1:
+        conn.rollback()
+        raise LeaseLostError(f"run {run_id} is no longer active")
     conn.commit()
 
 
 def renew_lease(conn: sqlite3.Connection, repo: str, issue_number: int, run_id: str, ttl_seconds: int) -> None:
     ts = now_utc()
-    conn.execute(
+    cursor = conn.execute(
         """
         update leases
         set heartbeat_at = ?, lease_expires_at = ?
-        where repo = ? and issue_number = ? and run_id = ? and released_at is null
+        where repo = ? and issue_number = ? and run_id = ? and released_at is null and blocked_at is null
         """,
         (ts, ts_plus(ttl_seconds), repo, issue_number, run_id),
     )
+    if cursor.rowcount != 1:
+        conn.rollback()
+        raise LeaseLostError(f"run {run_id} lost lease for {repo}#{issue_number}")
     conn.commit()
 
 
@@ -736,14 +807,15 @@ def get_issue(runner: Runner, repo: str, issue_number: int) -> Issue:
 
 
 def pick_issue(conn: sqlite3.Connection, issues: list[Issue], repo: str) -> Issue | None:
-    reap_expired_leases(conn)
     eligible: list[Issue] = []
     for issue in issues:
         leased = conn.execute(
-            "select 1 from leases where repo = ? and issue_number = ? and released_at is null",
+            "select blocked_at, lease_expires_at from leases where repo = ? and issue_number = ? and released_at is null",
             (repo, issue.number),
         ).fetchone()
-        if leased is None:
+        if leased is None or (
+            leased["blocked_at"] is None and lease_missing_or_expired(leased["lease_expires_at"])
+        ):
             eligible.append(issue)
 
     if not eligible:
@@ -1471,13 +1543,22 @@ def checks_complete(payload: dict[str, Any], required: set[str]) -> tuple[bool, 
     return saw_any and all_present_terminal, False
 
 
-def wait_for_pr_checks(runner: Runner, repo: str, pr_number: int, timeout_minutes: int) -> tuple[bool, str]:
+def wait_for_pr_checks(
+    runner: Runner,
+    repo: str,
+    pr_number: int,
+    timeout_minutes: int,
+    *,
+    on_tick: Callable[[], None] | None = None,
+) -> tuple[bool, str]:
     deadline = time.time() + max(60, timeout_minutes * 60)
     payload: dict[str, Any] = {}
     required: set[str] | None = None
     last_error = ""
 
     while time.time() < deadline:
+        if on_tick is not None:
+            on_tick()
         try:
             payload = gh_json(runner, ["pr", "view", str(pr_number), "--repo", repo, "--json", "baseRefName,statusCheckRollup"])
             if required is None:
@@ -1786,6 +1867,7 @@ def wait_for_external_reviews(
     *,
     quiet_window_seconds: int = 60,
     timeout_minutes: int = 30,
+    on_tick: Callable[[], None] | None = None,
 ) -> tuple[bool, str]:
     """
     Wait until all trusted external review surfaces have been observed, reached
@@ -1803,6 +1885,8 @@ def wait_for_external_reviews(
     last_snapshot: TrustedSurfaceSnapshot | None = None
 
     while time.time() < deadline:
+        if on_tick is not None:
+            on_tick()
         try:
             last_payload = gh_json(
                 runner,
@@ -2452,17 +2536,36 @@ def run_once(args: argparse.Namespace) -> int:
             return 0
 
     run_id = run_id_for(issue.number)
-    if not acquire_lease(conn, args.repo, issue.number, run_id):
+    acquire_result = acquire_lease_result(conn, args.repo, issue.number, run_id)
+    if not acquire_result.acquired:
         print(f"issue #{issue.number} already leased")
         return 0
+    reclaimed_run_id = acquire_result.reclaimed_run_id
 
-    create_run(conn, run_id, args.repo, issue, args.builder_profile)
     merged = False
     block_on_release = False
     builder_handoff_recorded = False
     max_pr_feedback_rounds = getattr(args, "max_pr_feedback_rounds", 1)
 
     try:
+        create_run(conn, run_id, args.repo, issue, args.builder_profile)
+        if reclaimed_run_id:
+            if run_exists(conn, reclaimed_run_id):
+                update_run(conn, reclaimed_run_id, phase="failed", status="failed")
+                record_event(
+                    conn,
+                    event_log,
+                    reclaimed_run_id,
+                    "lease_stale_reclaimed",
+                    {"issue": issue.number, "replacement_run_id": run_id},
+                )
+            record_event(
+                conn,
+                event_log,
+                run_id,
+                "lease_reclaimed",
+                {"issue": issue.number, "previous_run_id": reclaimed_run_id},
+            )
         record_event(conn, event_log, run_id, "lease_acquired", {"issue": issue.number})
         best_effort_issue_comment(
             runner,
@@ -2593,7 +2696,19 @@ def run_once(args: argparse.Namespace) -> int:
             update_run(conn, run_id, phase="ci_wait")
             touch_run(conn, args.repo, issue.number, run_id, args.ci_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS)
             ensure_pr_ready(runner, args.repo, builder.pr_number)
-            ok, checks_output = wait_for_pr_checks(runner, args.repo, builder.pr_number, args.ci_timeout)
+            ok, checks_output = wait_for_pr_checks(
+                runner,
+                args.repo,
+                builder.pr_number,
+                args.ci_timeout,
+                on_tick=lambda: touch_run(
+                    conn,
+                    args.repo,
+                    issue.number,
+                    run_id,
+                    args.ci_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
+                ),
+            )
             record_event(conn, event_log, run_id, "ci_wait_complete", {"passed": ok, "output": checks_output})
             if ok:
                 ensure_required_checks_present(runner, args.repo, builder.pr_number)
@@ -2659,6 +2774,13 @@ def run_once(args: argparse.Namespace) -> int:
                         trusted_surfaces,
                         quiet_window_seconds=external_review_quiet_window,
                         timeout_minutes=external_review_timeout,
+                        on_tick=lambda: touch_run(
+                            conn,
+                            args.repo,
+                            issue.number,
+                            run_id,
+                            external_review_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
+                        ),
                     )
                     record_event(
                         conn,
@@ -2779,6 +2901,21 @@ def run_once(args: argparse.Namespace) -> int:
             event_type="issue_comment_failed",
         )
         return 0
+    except LeaseLostError as exc:
+        update_run(conn, run_id, phase="failed", status="failed")
+        message = f"lease lost: {stringify_exc(exc)}"
+        record_event(conn, event_log, run_id, "lease_lost", {"error": message})
+        best_effort_issue_comment(
+            runner,
+            conn,
+            event_log,
+            run_id,
+            args.repo,
+            issue.number,
+            f"Bitterblossom stopped `{run_id}` after losing its lease.\n\n```\n{message[:1500]}\n```",
+            event_type="issue_comment_failed",
+        )
+        return 1
     except CmdError as exc:
         if merged:
             record_event(conn, event_log, run_id, "post_merge_warning", {"error": stringify_exc(exc)})
@@ -2826,9 +2963,9 @@ def run_once(args: argparse.Namespace) -> int:
         return 1
     finally:
         if block_on_release:
-            block_lease(conn, args.repo, issue.number)
+            block_lease(conn, args.repo, issue.number, run_id)
         else:
-            release_lease(conn, args.repo, issue.number)
+            release_lease(conn, args.repo, issue.number, run_id)
 
 
 def loop(args: argparse.Namespace) -> int:

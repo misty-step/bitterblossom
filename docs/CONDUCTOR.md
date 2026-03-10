@@ -194,6 +194,8 @@ sprite exec coordinator -- bash -lc 'tail -f ~/.bb/conductor.log'
 
 Every run writes immediately to `.bb/conductor.db` and `.bb/events.jsonl` on the coordinator. State survives loop restarts. If the conductor process dies, restart it — already-completed runs won't be re-processed because their leases have been released.
 
+Long waits are heartbeat-backed. During review dispatch, PR-check polling, and trusted external review polling, the conductor refreshes both the run heartbeat and the lease expiry so a healthy run does not look stale just because GitHub or reviewers are slow.
+
 ### Builder handoff boundary
 
 Once a builder writes its artifact and the referenced PR is verified, the conductor persists `phase=reviewing` and `pr_number` immediately. That write is the durable boundary between builder work and control-plane cleanup.
@@ -265,7 +267,7 @@ Fix the root cause, then restart the loop as documented above.
 
 ### Stuck or Stale Issue
 
-If a run is stuck (sprite unresponsive, lease expired), the conductor reclaims expired leases automatically on the next poll cycle. To force-release a lease manually:
+If a run is stuck (sprite unresponsive, lease expired), the conductor reclaims the expired lease when that issue is selected again. The previous run records a `lease_stale_reclaimed` event and the replacement run records `lease_reclaimed`, so `show-events` tells you exactly why the issue restarted. To force-release a lease manually:
 
 ```bash
 sprite connect coordinator
