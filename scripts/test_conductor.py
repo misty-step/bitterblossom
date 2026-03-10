@@ -4348,6 +4348,64 @@ def test_prepare_run_workspace_rejects_empty_output(monkeypatch: pytest.MonkeyPa
         )
 
 
+def test_prepare_run_workspace_uses_remote_tracking_refs(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, str] = {}
+    expected_workspace = conductor.run_workspace("misty-step/bitterblossom", "run-469-1", "builder")
+
+    def fake_sprite_bash(_runner: object, _sprite: str, script: str, *, timeout: int) -> str:
+        _ = timeout
+        captured["script"] = script
+        return expected_workspace
+
+    monkeypatch.setattr(conductor, "sprite_bash", fake_sprite_bash)
+
+    workspace = conductor.prepare_run_workspace(
+        object(),
+        "noble-blue-serpent",
+        "misty-step/bitterblossom",
+        "run-469-1",
+        "builder",
+    )
+
+    assert workspace == expected_workspace
+    assert 'refs/remotes/origin/master' in captured["script"]
+    assert 'base_ref="origin/master"' in captured["script"]
+    assert 'refs/remotes/origin/HEAD' in captured["script"]
+
+
+def test_dispatch_until_artifact_passes_workspace_to_dispatch_task(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_dispatch_tasks_until_artifacts(
+        _runner: object,
+        tasks: list[conductor.DispatchTask],
+        _repo: str,
+        _prompt_template: pathlib.Path,
+        _timeout_minutes: int,
+        **_kwargs: object,
+    ) -> dict[str, dict[str, object]]:
+        captured["tasks"] = tasks
+        return {"fern": {"ok": True}}
+
+    monkeypatch.setattr(conductor, "dispatch_tasks_until_artifacts", fake_dispatch_tasks_until_artifacts)
+
+    payload = conductor.dispatch_until_artifact(
+        object(),
+        "fern",
+        "prompt",
+        "misty-step/bitterblossom",
+        pathlib.Path("scripts/prompts/conductor-builder-template.md"),
+        10,
+        "/tmp/artifact.json",
+        workspace="/tmp/worktree",
+    )
+
+    assert payload == {"ok": True}
+    tasks = captured["tasks"]
+    assert isinstance(tasks, list)
+    assert tasks[0].workspace == "/tmp/worktree"
+
+
 def test_show_runs_includes_worktree_path(tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
     conn = conductor.open_db(tmp_path / "conductor.db")
     issue = conductor.Issue(number=469, title="worktrees", body="", url="u469", labels=["autopilot"])
