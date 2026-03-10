@@ -6,6 +6,7 @@ import pathlib
 import sqlite3
 import subprocess
 import sys
+from datetime import datetime, timezone
 from typing import Any
 
 import pytest
@@ -2672,6 +2673,104 @@ def test_show_runs_hides_stale_blocking_reason_after_merge(tmp_path: pathlib.Pat
     assert lines[0]["blocking_event_type"] is None
     assert lines[0]["blocking_event_at"] is None
     assert lines[0]["blocking_reason"] is None
+
+
+def test_show_runs_surfaces_heartbeat_age_and_blocking_reason(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fixed_now = datetime(2026, 3, 10, 12, 5, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(conductor, "utc_now", lambda: fixed_now)
+
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    active_issue = conductor.Issue(number=101, title="active", body="", url="https://example.com/101", labels=["autopilot"])
+    blocked_issue = conductor.Issue(number=102, title="blocked", body="", url="https://example.com/102", labels=["autopilot"])
+    conductor.create_run(conn, "run-101-1", "misty-step/bitterblossom", active_issue, "default")
+    conductor.create_run(conn, "run-102-1", "misty-step/bitterblossom", blocked_issue, "default")
+    conductor.update_run(
+        conn,
+        "run-101-1",
+        phase="ci_wait",
+        status="running",
+        builder_sprite="fern",
+        heartbeat_at="2026-03-10T12:04:30Z",
+        created_at="2026-03-10T12:01:00Z",
+        updated_at="2026-03-10T12:04:30Z",
+    )
+    conductor.update_run(
+        conn,
+        "run-102-1",
+        phase="blocked",
+        status="blocked",
+        builder_sprite="sage",
+        heartbeat_at="2026-03-10T12:00:00Z",
+        created_at="2026-03-10T12:02:00Z",
+        updated_at="2026-03-10T12:03:00Z",
+    )
+    conductor.record_event(conn, tmp_path / "events.jsonl", "run-101-1", "ci_wait_complete", {"passed": True})
+    conductor.record_event(conn, tmp_path / "events.jsonl", "run-102-1", "pr_feedback_blocked", {"reason": "max_rounds"})
+
+    rc = conductor.show_runs(argparse.Namespace(db=str(tmp_path / "conductor.db"), limit=10))
+
+    assert rc == 0
+    rows = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line]
+    assert len(rows) == 2
+    by_run_id = {row["run_id"]: row for row in rows}
+    assert by_run_id["run-101-1"]["heartbeat_age_seconds"] == 30
+    assert by_run_id["run-101-1"]["blocking_event_type"] is None
+    assert by_run_id["run-101-1"]["blocking_reason"] is None
+    assert by_run_id["run-102-1"]["heartbeat_age_seconds"] == 300
+    assert by_run_id["run-102-1"]["blocking_event_type"] == "pr_feedback_blocked"
+    assert by_run_id["run-102-1"]["blocking_event_at"] == "2026-03-10T12:05:00Z"
+    assert by_run_id["run-102-1"]["blocking_reason"] == "PR review threads still require resolution after max rounds"
+
+
+def test_show_run_prints_run_metadata_and_recent_event_context(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fixed_now = datetime(2026, 3, 10, 12, 5, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(conductor, "utc_now", lambda: fixed_now)
+
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=447, title="inspect", body="", url="https://example.com/447", labels=["autopilot"])
+    conductor.create_run(conn, "run-447-1", "misty-step/bitterblossom", issue, "claude-sonnet")
+    conductor.update_run(
+        conn,
+        "run-447-1",
+        phase="blocked",
+        status="blocked",
+        builder_sprite="fern",
+        pr_number=460,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/460",
+        heartbeat_at="2026-03-10T12:00:00Z",
+    )
+    conductor.record_event(conn, tmp_path / "events.jsonl", "run-447-1", "review_complete", {"reviewer": "sage", "verdict": "pass"})
+    conductor.record_event(conn, tmp_path / "events.jsonl", "run-447-1", "ci_wait_complete", {"passed": True})
+    conductor.record_event(conn, tmp_path / "events.jsonl", "run-447-1", "pr_feedback_blocked", {"reason": "unchanged_after_revision"})
+
+    rc = conductor.show_run(
+        argparse.Namespace(
+            db=str(tmp_path / "conductor.db"),
+            run_id="run-447-1",
+            event_limit=2,
+        )
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["run"]["run_id"] == "run-447-1"
+    assert payload["run"]["heartbeat_age_seconds"] == 300
+    assert payload["run"]["blocking_event_type"] == "pr_feedback_blocked"
+    assert payload["run"]["blocking_event_at"] == "2026-03-10T12:05:00Z"
+    assert payload["run"]["blocking_reason"] == "PR review threads remained unresolved after revision"
+    assert [event["event_type"] for event in payload["recent_events"]] == [
+        "pr_feedback_blocked",
+        "ci_wait_complete",
+    ]
+    assert payload["recent_events"][0]["payload"]["reason"] == "unchanged_after_revision"
 
 
 def test_check_env_passes_when_all_present(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
