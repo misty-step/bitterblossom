@@ -93,6 +93,12 @@ def test_open_db_migrates_review_governance_tables_without_losing_existing_rows(
         values ('run-12-1', 'fern', 'pass', 'ok', '[]', '2026-03-07T00:00:00Z')
         """
     )
+    conn.execute(
+        """
+        insert into leases (repo, issue_number, run_id, leased_at, released_at)
+        values ('some-repo', 1, 'run-12-1', '2026-03-07T00:00:00Z', null)
+        """
+    )
     conn.commit()
     conn.close()
 
@@ -110,6 +116,9 @@ def test_open_db_migrates_review_governance_tables_without_losing_existing_rows(
     ).fetchone()
     assert legacy_review is not None
     assert (legacy_review["reviewer_sprite"], legacy_review["verdict"]) == ("fern", "pass")
+    result = conductor.acquire_lease_result(migrated, "some-repo", 1, "run-12-2")
+    assert result.acquired is True
+    assert result.reclaimed_run_id == "run-12-1"
 
 
 def test_acquire_lease_reclaims_expired_active_lease(tmp_path: pathlib.Path) -> None:
@@ -240,6 +249,25 @@ def test_pick_issue_treats_expired_leases_as_eligible(tmp_path: pathlib.Path) ->
     ).fetchone()
     assert lease is not None
     assert lease["released_at"] is None
+
+
+def test_pick_issue_treats_missing_lease_expiry_as_eligible(tmp_path: pathlib.Path) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    conn.execute(
+        """
+        insert into leases (repo, issue_number, run_id, leased_at, released_at, heartbeat_at, lease_expires_at, blocked_at)
+        values ('misty-step/bitterblossom', 2, 'run-2-1', '2026-03-07T00:00:00Z', null, null, null, null)
+        """
+    )
+    conn.commit()
+
+    issues = [
+        conductor.Issue(number=2, title="legacy lease", body="", url="u2", labels=["autopilot", "P1"], updated_at="2026-03-06T00:00:00Z"),
+    ]
+
+    picked = conductor.pick_issue(conn, issues, "misty-step/bitterblossom")
+    assert picked is not None
+    assert picked.number == 2
 
 
 def test_summarize_reviews_includes_findings() -> None:
@@ -2762,6 +2790,60 @@ def test_run_once_records_stale_lease_reclaim_events(monkeypatch: pytest.MonkeyP
     payload = json.loads(new_run_events[0]["payload_json"])
     assert payload["issue"] == 468
     assert payload["previous_run_id"] == old_run_id
+
+
+def test_run_once_releases_reclaimed_lease_when_reclaim_bookkeeping_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    issue = conductor.Issue(number=468, title="lease", body="body", url="https://example.com/468", labels=["autopilot", "P1"])
+    old_run_id = "run-468-stale"
+
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    assert conductor.acquire_lease(conn, "misty-step/bitterblossom", 468, old_run_id) is True
+    conductor.create_run(conn, old_run_id, "misty-step/bitterblossom", issue, "default")
+    conn.execute(
+        """
+        update leases
+        set heartbeat_at = '2000-01-01T00:00:00Z', lease_expires_at = '2000-01-01T00:00:00Z'
+        where repo = 'misty-step/bitterblossom' and issue_number = 468
+        """
+    )
+    conn.commit()
+
+    real_record_event = conductor.record_event
+
+    def flaky_record_event(
+        conn: sqlite3.Connection,
+        event_log: pathlib.Path,
+        run_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> None:
+        if event_type == "lease_stale_reclaimed":
+            raise RuntimeError("boom")
+        real_record_event(conn, event_log, run_id, event_type, payload)
+
+    monkeypatch.setattr(conductor, "record_event", flaky_record_event)
+    monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
+    monkeypatch.setattr(conductor, "comment_issue", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        conductor,
+        "ensure_reviewers_ready",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("should fail before reviewer setup")),
+    )
+
+    args = _make_run_once_args(tmp_path, issue_number=468)
+    rc = conductor.run_once(args)
+
+    assert rc == 1
+    conn = conductor.open_db(pathlib.Path(args.db))
+    lease = conn.execute(
+        "select run_id, released_at from leases where repo = ? and issue_number = ?",
+        ("misty-step/bitterblossom", 468),
+    ).fetchone()
+    assert lease is not None
+    assert lease["run_id"] != old_run_id
+    assert lease["released_at"] is not None
 
 
 def test_run_once_fails_before_builder_when_reviewer_pool_is_not_ready(

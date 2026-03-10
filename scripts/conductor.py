@@ -372,7 +372,7 @@ def acquire_lease_result(conn: sqlite3.Connection, repo: str, issue_number: int,
 
         reclaimed_run_id: str | None = None
         if row["released_at"] is None:
-            if row["blocked_at"] is not None or not lease_expired(row["lease_expires_at"]):
+            if row["blocked_at"] is not None or not lease_missing_or_expired(row["lease_expires_at"]):
                 conn.rollback()
                 return LeaseAcquireResult(acquired=False)
             reclaimed_run_id = str(row["run_id"])
@@ -459,11 +459,19 @@ def lease_expired(lease_expires_at: str | None) -> bool:
     return datetime.now(timezone.utc) >= expires
 
 
+def lease_missing_or_expired(lease_expires_at: str | None) -> bool:
+    return lease_expires_at is None or lease_expired(lease_expires_at)
+
+
 def reap_expired_leases(conn: sqlite3.Connection) -> int:
     rows = conn.execute(
-        "select repo, issue_number, lease_expires_at from leases where released_at is null"
+        "select repo, issue_number, blocked_at, lease_expires_at from leases where released_at is null"
     ).fetchall()
-    expired = [(row["repo"], row["issue_number"]) for row in rows if lease_expired(row["lease_expires_at"])]
+    expired = [
+        (row["repo"], row["issue_number"])
+        for row in rows
+        if row["blocked_at"] is None and lease_missing_or_expired(row["lease_expires_at"])
+    ]
     for repo, issue_number in expired:
         conn.execute(
             "update leases set released_at = ? where repo = ? and issue_number = ? and released_at is null",
@@ -480,7 +488,7 @@ def stale_lease_run_id(conn: sqlite3.Connection, repo: str, issue_number: int) -
     ).fetchone()
     if row is None or row["released_at"] is not None or row["blocked_at"] is not None:
         return None
-    if not lease_expired(row["lease_expires_at"]):
+    if not lease_missing_or_expired(row["lease_expires_at"]):
         return None
     return str(row["run_id"])
 
@@ -805,7 +813,9 @@ def pick_issue(conn: sqlite3.Connection, issues: list[Issue], repo: str) -> Issu
             "select blocked_at, lease_expires_at from leases where repo = ? and issue_number = ? and released_at is null",
             (repo, issue.number),
         ).fetchone()
-        if leased is None or (leased["blocked_at"] is None and lease_expired(leased["lease_expires_at"])):
+        if leased is None or (
+            leased["blocked_at"] is None and lease_missing_or_expired(leased["lease_expires_at"])
+        ):
             eligible.append(issue)
 
     if not eligible:
@@ -2532,30 +2542,30 @@ def run_once(args: argparse.Namespace) -> int:
         return 0
     reclaimed_run_id = acquire_result.reclaimed_run_id
 
-    create_run(conn, run_id, args.repo, issue, args.builder_profile)
-    if reclaimed_run_id:
-        if run_exists(conn, reclaimed_run_id):
-            update_run(conn, reclaimed_run_id, phase="failed", status="failed")
-            record_event(
-                conn,
-                event_log,
-                reclaimed_run_id,
-                "lease_stale_reclaimed",
-                {"issue": issue.number, "replacement_run_id": run_id},
-            )
-        record_event(
-            conn,
-            event_log,
-            run_id,
-            "lease_reclaimed",
-            {"issue": issue.number, "previous_run_id": reclaimed_run_id},
-        )
     merged = False
     block_on_release = False
     builder_handoff_recorded = False
     max_pr_feedback_rounds = getattr(args, "max_pr_feedback_rounds", 1)
 
     try:
+        create_run(conn, run_id, args.repo, issue, args.builder_profile)
+        if reclaimed_run_id:
+            if run_exists(conn, reclaimed_run_id):
+                update_run(conn, reclaimed_run_id, phase="failed", status="failed")
+                record_event(
+                    conn,
+                    event_log,
+                    reclaimed_run_id,
+                    "lease_stale_reclaimed",
+                    {"issue": issue.number, "replacement_run_id": run_id},
+                )
+            record_event(
+                conn,
+                event_log,
+                run_id,
+                "lease_reclaimed",
+                {"issue": issue.number, "previous_run_id": reclaimed_run_id},
+            )
         record_event(conn, event_log, run_id, "lease_acquired", {"issue": issue.number})
         best_effort_issue_comment(
             runner,
