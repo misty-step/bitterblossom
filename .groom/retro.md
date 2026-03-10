@@ -1,5 +1,13 @@
 # Retro
 
+## 2026-03-10 [issue #474](https://github.com/misty-step/bitterblossom/issues/474)
+
+- predicted: L
+- actual: M
+- scope: replaced heuristic backlog sorting with a minimal readiness gate plus Claude-backed semantic routing, added a machine-readable route preview command, and tightened the issue contract/docs around autopilot-ready work
+- blocker: live Claude CLI JSON mode returned an event stream envelope rather than a plain object, so the router needed a real-format parser fix before command verification passed
+- pattern: when a control-plane decision is judgment-heavy, keep the deterministic boundary tiny and test the real structured-output envelope instead of rebuilding semantics with labels and timestamps
+
 ## 2026-03-10 [issue #98](https://github.com/misty-step/bitterblossom/issues/98)
 
 - predicted: M

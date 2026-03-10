@@ -91,6 +91,17 @@ python3 scripts/conductor.py loop \
   --reviewer council-thorn-20260306
 ```
 
+Preview the next routed issue and profile:
+
+```bash
+python3 scripts/conductor.py route-issue \
+  --repo misty-step/bitterblossom \
+  --label autopilot \
+  --limit 25
+```
+
+`route-issue` emits JSON with the selected issue, chosen profile, semantic rationale, and any skipped issue numbers keyed to explicit readiness failures. Auto-pick in `run-once`/`loop` uses the same readiness + routing path.
+
 Inspect runs:
 
 ```bash
@@ -391,6 +402,7 @@ The `wrap_untrusted_issue_content` helper ([`scripts/conductor.py`](../scripts/c
 - one PR-feedback revision loop
 - SQLite only
 - single-tenant worker assumption
-- deterministic issue filtering, heuristic ranking for now
+- issue readiness requires `## Product Spec` and `### Intent Contract`
+- deterministic lease safety plus Claude-backed semantic ranking
 
-The accepted next cuts are in [ADR-003](./adr/003-conductor-control-plane.md): stale-lease reclaim, resume-first reconciliation, semantic routing, and parallel variants.
+The accepted next cuts are in [ADR-003](./adr/003-conductor-control-plane.md): stale-lease reclaim, resume-first reconciliation, and parallel variants.

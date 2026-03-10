@@ -233,11 +233,12 @@ def test_touch_run_raises_when_lease_moves_to_another_run(tmp_path: pathlib.Path
 def test_pick_issue_skips_leased_and_prefers_higher_priority(tmp_path: pathlib.Path) -> None:
     conn = conductor.open_db(tmp_path / "conductor.db")
     assert conductor.acquire_lease(conn, "misty-step/bitterblossom", 2, "run-2-1") is True
+    ready_body = "## Product Spec\n### Intent Contract\n- good\n"
 
     issues = [
-        conductor.Issue(number=2, title="leased p0", body="", url="u2", labels=["autopilot", "P0"], updated_at="2026-03-06T00:00:00Z"),
-        conductor.Issue(number=3, title="free p1", body="", url="u3", labels=["autopilot", "P1"], updated_at="2026-03-06T00:00:00Z"),
-        conductor.Issue(number=4, title="free p2", body="", url="u4", labels=["autopilot", "P2"], updated_at="2026-03-05T00:00:00Z"),
+        conductor.Issue(number=2, title="leased p0", body=ready_body, url="u2", labels=["autopilot", "P0"], updated_at="2026-03-06T00:00:00Z"),
+        conductor.Issue(number=3, title="free p1", body=ready_body, url="u3", labels=["autopilot", "P1"], updated_at="2026-03-06T00:00:00Z"),
+        conductor.Issue(number=4, title="free p2", body=ready_body, url="u4", labels=["autopilot", "P2"], updated_at="2026-03-05T00:00:00Z"),
     ]
 
     picked = conductor.pick_issue(conn, issues, "misty-step/bitterblossom")
@@ -258,7 +259,7 @@ def test_pick_issue_treats_expired_leases_as_eligible(tmp_path: pathlib.Path) ->
     conn.commit()
 
     issues = [
-        conductor.Issue(number=2, title="expired lease", body="", url="u2", labels=["autopilot", "P1"], updated_at="2026-03-06T00:00:00Z"),
+        conductor.Issue(number=2, title="expired lease", body="## Product Spec\n### Intent Contract\n- good\n", url="u2", labels=["autopilot", "P1"], updated_at="2026-03-06T00:00:00Z"),
     ]
 
     picked = conductor.pick_issue(conn, issues, "misty-step/bitterblossom")
@@ -283,13 +284,12 @@ def test_pick_issue_treats_missing_lease_expiry_as_eligible(tmp_path: pathlib.Pa
     conn.commit()
 
     issues = [
-        conductor.Issue(number=2, title="legacy lease", body="", url="u2", labels=["autopilot", "P1"], updated_at="2026-03-06T00:00:00Z"),
+        conductor.Issue(number=2, title="legacy lease", body="## Product Spec\n### Intent Contract\n- good\n", url="u2", labels=["autopilot", "P1"], updated_at="2026-03-06T00:00:00Z"),
     ]
 
     picked = conductor.pick_issue(conn, issues, "misty-step/bitterblossom")
     assert picked is not None
     assert picked.number == 2
-
 
 def test_dispatch_command_passes_workspace_override() -> None:
     command = conductor.dispatch_command(
@@ -303,6 +303,158 @@ def test_dispatch_command_passes_workspace_override() -> None:
 
     assert "--workspace" in command
     assert "/tmp/run-42/builder-worktree" in command
+
+def test_validate_issue_readiness_requires_product_spec_and_intent_contract() -> None:
+    invalid = conductor.Issue(
+        number=7,
+        title="missing spec",
+        body="## Problem\nrouting is vague\n",
+        url="u7",
+        labels=["autopilot", "p1"],
+    )
+
+    readiness = conductor.validate_issue_readiness(invalid)
+
+    assert readiness.ready is False
+    assert "missing `## Product Spec` section" in readiness.reasons
+    assert "missing `### Intent Contract` section" in readiness.reasons
+
+
+def test_invoke_claude_json_reads_structured_output_event(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = [
+        {"type": "system"},
+        {
+            "type": "result",
+            "structured_output": {
+                "issue_number": 474,
+                "profile": "claude-sonnet",
+                "rationale": "best match",
+            },
+        },
+    ]
+    monkeypatch.setattr(
+        conductor.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args=["claude"], returncode=0, stdout=json.dumps(payload), stderr=""),
+    )
+
+    result = conductor.invoke_claude_json("pick one", {"type": "object"})
+
+    assert result == {
+        "issue_number": 474,
+        "profile": "claude-sonnet",
+        "rationale": "best match",
+    }
+
+
+def test_pick_issue_skips_unready_issues_and_uses_semantic_router(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issues = [
+        conductor.Issue(
+            number=2,
+            title="invalid",
+            body="## Problem\nmissing spec\n",
+            url="u2",
+            labels=["autopilot", "P0"],
+            updated_at="2026-03-06T00:00:00Z",
+        ),
+        conductor.Issue(
+            number=3,
+            title="ready one",
+            body="## Product Spec\n### Intent Contract\n- good\n",
+            url="u3",
+            labels=["autopilot", "P2"],
+            updated_at="2026-03-06T00:00:00Z",
+        ),
+        conductor.Issue(
+            number=4,
+            title="ready two",
+            body="## Product Spec\n### Intent Contract\n- better\n",
+            url="u4",
+            labels=["autopilot", "P2"],
+            updated_at="2026-03-05T00:00:00Z",
+        ),
+    ]
+    seen: dict[str, object] = {}
+
+    def fake_route(_runner: object, _repo: str, eligible: list[conductor.Issue], builder_profile: str) -> conductor.RouteDecision:
+        seen["eligible"] = [issue.number for issue in eligible]
+        seen["builder_profile"] = builder_profile
+        return conductor.RouteDecision(
+            issue=eligible[1],
+            profile="claude-sonnet",
+            rationale="issue #4 is the best fit for the current sprint",
+            readiness_failures={},
+        )
+
+    monkeypatch.setattr(conductor, "route_issues_semantically", fake_route)
+
+    decision = conductor.pick_issue(conductor.Runner(conductor.ROOT), conn, issues, "misty-step/bitterblossom", "claude-sonnet")
+
+    assert decision is not None
+    assert decision.issue.number == 4
+    assert decision.profile == "claude-sonnet"
+    assert seen == {"eligible": [3, 4], "builder_profile": "claude-sonnet"}
+    assert decision.readiness_failures == {2: ["missing `## Product Spec` section", "missing `### Intent Contract` section"]}
+
+
+def test_route_issue_command_emits_machine_readable_explanation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    issue = conductor.Issue(
+        number=4,
+        title="ready two",
+        body="## Product Spec\n### Intent Contract\n- better\n",
+        url="https://example.com/issues/4",
+        labels=["autopilot", "P1"],
+        updated_at="2026-03-05T00:00:00Z",
+    )
+    invalid = conductor.Issue(
+        number=2,
+        title="invalid",
+        body="## Problem\nmissing spec\n",
+        url="https://example.com/issues/2",
+        labels=["autopilot", "P0"],
+        updated_at="2026-03-06T00:00:00Z",
+    )
+    monkeypatch.setattr(conductor, "list_candidate_issues", lambda *_a, **_kw: [invalid, issue])
+    monkeypatch.setattr(
+        conductor,
+        "pick_issue",
+        lambda _runner, _conn, issues, _repo, builder_profile: conductor.RouteDecision(
+            issue=issues[1],
+            profile=builder_profile,
+            rationale="the issue is ready and aligns with the requested profile",
+            readiness_failures={2: ["missing `## Product Spec` section", "missing `### Intent Contract` section"]},
+        ),
+    )
+
+    rc = conductor.route_issue(
+        argparse.Namespace(
+            repo="misty-step/bitterblossom",
+            db=str(tmp_path / "conductor.db"),
+            label="autopilot",
+            limit=20,
+            builder_profile="claude-sonnet",
+            issue=None,
+            json=True,
+        )
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "issue_number": 4,
+        "issue_title": "ready two",
+        "issue_url": "https://example.com/issues/4",
+        "profile": "claude-sonnet",
+        "rationale": "the issue is ready and aligns with the requested profile",
+        "readiness_failures": {
+            "2": ["missing `## Product Spec` section", "missing `### Intent Contract` section"]
+        },
+    }
 
 
 def test_summarize_reviews_includes_findings() -> None:
@@ -3040,7 +3192,7 @@ def test_block_lease_prevents_pick_issue(tmp_path: pathlib.Path) -> None:
     conductor.block_lease(conn, "misty-step/bitterblossom", 42)
 
     issues = [
-        conductor.Issue(number=42, title="blocked", body="", url="u42", labels=["autopilot"], updated_at="2026-03-06T00:00:00Z"),
+        conductor.Issue(number=42, title="blocked", body="## Product Spec\n### Intent Contract\n- good\n", url="u42", labels=["autopilot"], updated_at="2026-03-06T00:00:00Z"),
     ]
 
     picked = conductor.pick_issue(conn, issues, "misty-step/bitterblossom")
@@ -3062,7 +3214,7 @@ def test_block_lease_not_reaped_as_expired(tmp_path: pathlib.Path) -> None:
 
 def test_requeue_issue_makes_blocked_issue_eligible(tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
     conn = conductor.open_db(tmp_path / "conductor.db")
-    issue = conductor.Issue(number=42, title="test", body="", url="u42", labels=["autopilot"], updated_at="2026-03-06T00:00:00Z")
+    issue = conductor.Issue(number=42, title="test", body="## Product Spec\n### Intent Contract\n- good\n", url="u42", labels=["autopilot"], updated_at="2026-03-06T00:00:00Z")
 
     assert conductor.acquire_lease(conn, "misty-step/bitterblossom", 42, "run-42-1") is True
     conductor.create_run(conn, "run-42-1", "misty-step/bitterblossom", issue, "default")
@@ -3144,7 +3296,13 @@ def _make_run_once_args(
 
 def test_run_once_blocks_issue_so_next_poll_cannot_re_lease(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
     """AC1: Given rc=2, the same issue must not be immediately re-leaseable."""
-    issue = conductor.Issue(number=447, title="test", body="body", url="https://example.com/447", labels=["autopilot"])
+    issue = conductor.Issue(
+        number=447,
+        title="test",
+        body="## Product Spec\n### Intent Contract\n- good\n",
+        url="https://example.com/447",
+        labels=["autopilot"],
+    )
     builder = conductor.BuilderResult(
         status="ready_for_review",
         branch="factory/447-test-123",

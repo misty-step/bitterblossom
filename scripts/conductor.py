@@ -58,6 +58,20 @@ class Issue:
 
 
 @dataclass(slots=True)
+class ReadinessResult:
+    ready: bool
+    reasons: list[str]
+
+
+@dataclass(slots=True)
+class RouteDecision:
+    issue: Issue
+    profile: str
+    rationale: str
+    readiness_failures: dict[int, list[str]]
+
+
+@dataclass(slots=True)
 class BuilderResult:
     status: str
     branch: str
@@ -900,26 +914,156 @@ def get_issue(runner: Runner, repo: str, issue_number: int) -> Issue:
     )
 
 
-def pick_issue(conn: sqlite3.Connection, issues: list[Issue], repo: str) -> Issue | None:
+def validate_issue_readiness(issue: Issue) -> ReadinessResult:
+    reasons: list[str] = []
+    for marker in ("## Product Spec", "### Intent Contract"):
+        if marker not in issue.body:
+            reasons.append(f"missing `{marker}` section")
+    return ReadinessResult(ready=not reasons, reasons=reasons)
+
+
+def invoke_claude_json(prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
+    argv = [
+        shutil.which("claude") or "claude",
+        "--print",
+        "--output-format",
+        "json",
+        "--json-schema",
+        json.dumps(schema),
+        "--permission-mode",
+        "bypassPermissions",
+        "--tools",
+        "",
+        "--model",
+        "sonnet",
+        prompt,
+    ]
+    proc = subprocess.run(argv, cwd=ROOT, text=True, capture_output=True, check=False)
+    if proc.returncode != 0:
+        raise CmdError(
+            "semantic router failed to get a Claude decision:\n"
+            f"stdout:\n{proc.stdout}\n"
+            f"stderr:\n{proc.stderr}"
+        )
+    try:
+        payload = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise CmdError(f"semantic router returned invalid JSON: {exc}") from exc
+    if isinstance(payload, list):
+        for event in reversed(payload):
+            if isinstance(event, dict) and isinstance(event.get("structured_output"), dict):
+                return event["structured_output"]
+    if isinstance(payload, dict) and "result" in payload and isinstance(payload["result"], str):
+        try:
+            return json.loads(payload["result"])
+        except json.JSONDecodeError:
+            pass
+    if not isinstance(payload, dict):
+        raise CmdError("semantic router returned a non-object payload")
+    return payload
+
+
+def route_issues_semantically(runner: Runner, repo: str, eligible: list[Issue], builder_profile: str) -> RouteDecision:
+    _ = runner
+    if not eligible:
+        raise CmdError("semantic routing requires at least one eligible issue")
+    if len(eligible) == 1:
+        return RouteDecision(
+            issue=eligible[0],
+            profile=builder_profile,
+            rationale="only one issue satisfied the autopilot readiness contract",
+            readiness_failures={},
+        )
+
+    issue_payload = [
+        {
+            "number": issue.number,
+            "title": issue.title,
+            "labels": issue.labels,
+            "updated_at": issue.updated_at,
+            "body": issue.body,
+        }
+        for issue in eligible
+    ]
+    schema = {
+        "type": "object",
+        "properties": {
+            "issue_number": {"type": "integer"},
+            "profile": {"type": "string"},
+            "rationale": {"type": "string"},
+        },
+        "required": ["issue_number", "profile", "rationale"],
+        "additionalProperties": False,
+    }
+    prompt = "\n".join(
+        [
+            "You are Bitterblossom's router.",
+            "Choose the single best issue to run next from the eligible set.",
+            "Use semantic reasoning across the problem, intent contract, and acceptance criteria.",
+            "Do not use label priority as the primary reason unless the issue content is otherwise tied.",
+            f"Repository: {repo}",
+            f"Default builder profile: {builder_profile}",
+            "Return valid JSON matching the provided schema.",
+            json.dumps({"eligible_issues": issue_payload}, indent=2),
+        ]
+    )
+    routed = invoke_claude_json(prompt, schema)
+    chosen_number = routed.get("issue_number")
+    chosen_issue = next((issue for issue in eligible if issue.number == chosen_number), None)
+    if chosen_issue is None:
+        raise CmdError(f"semantic router chose unknown issue #{chosen_number}")
+    profile = str(routed.get("profile") or builder_profile).strip() or builder_profile
+    rationale = str(routed.get("rationale") or "").strip()
+    if not rationale:
+        raise CmdError("semantic router returned an empty rationale")
+    return RouteDecision(
+        issue=chosen_issue,
+        profile=profile,
+        rationale=rationale,
+        readiness_failures={},
+    )
+
+
+def pick_issue(*args: Any) -> RouteDecision | Issue | None:
+    if len(args) == 3:
+        runner = Runner(ROOT)
+        conn, issues, repo = args
+        builder_profile = "claude-sonnet"
+        legacy_shape = True
+    elif len(args) == 5:
+        runner, conn, issues, repo, builder_profile = args
+        legacy_shape = False
+    else:
+        raise TypeError("pick_issue expects either (conn, issues, repo) or (runner, conn, issues, repo, builder_profile)")
+
     eligible: list[Issue] = []
+    readiness_failures: dict[int, list[str]] = {}
     for issue in issues:
         leased = conn.execute(
             "select blocked_at, lease_expires_at from leases where repo = ? and issue_number = ? and released_at is null",
             (repo, issue.number),
         ).fetchone()
-        if leased is None or (
+        if leased is not None and not (
             leased["blocked_at"] is None and lease_missing_or_expired(leased["lease_expires_at"])
         ):
+            continue
+        readiness = validate_issue_readiness(issue)
+        if readiness.ready:
             eligible.append(issue)
+        else:
+            readiness_failures[issue.number] = readiness.reasons
 
     if not eligible:
         return None
+    if legacy_shape:
+        def key(issue: Issue) -> tuple[int, str, int]:
+            priority, _matched = issue_priority(issue.labels)
+            return (priority, issue.updated_at or "", issue.number)
 
-    def key(issue: Issue) -> tuple[int, str, int]:
-        priority, matched = issue_priority(issue.labels)
-        return (priority, issue.updated_at or "", issue.number)
-
-    return sorted(eligible, key=key)[0]
+        return sorted(eligible, key=key)[0]
+    decision = route_issues_semantically(runner, repo, eligible, builder_profile)
+    decision.readiness_failures.update(readiness_failures)
+    return decision
 
 
 def dispatch_probe_command(sprite: str, repo: str, prompt_template: pathlib.Path) -> list[str]:
@@ -2754,15 +2898,18 @@ def run_once(args: argparse.Namespace) -> int:
     runner = Runner(ROOT)
     conn = open_db(pathlib.Path(args.db))
     event_log = pathlib.Path(args.event_log)
+    builder_profile = args.builder_profile
 
     if args.issue:
         issue = get_issue(runner, args.repo, args.issue)
     else:
         issues = list_candidate_issues(runner, args.repo, args.label, args.limit)
-        issue = pick_issue(conn, issues, args.repo)
-        if issue is None:
+        decision = pick_issue(runner, conn, issues, args.repo, builder_profile)
+        if decision is None:
             print("no eligible issues")
             return 0
+        issue = decision.issue
+        builder_profile = decision.profile
 
     run_id = run_id_for(issue.number)
     acquire_result = acquire_lease_result(conn, args.repo, issue.number, run_id)
@@ -2778,7 +2925,7 @@ def run_once(args: argparse.Namespace) -> int:
     max_pr_feedback_rounds = getattr(args, "max_pr_feedback_rounds", 1)
 
     try:
-        create_run(conn, run_id, args.repo, issue, args.builder_profile)
+        create_run(conn, run_id, args.repo, issue, builder_profile)
         if reclaimed_run_id:
             if run_exists(conn, reclaimed_run_id):
                 update_run(conn, reclaimed_run_id, phase="failed", status="failed")
@@ -3388,6 +3535,40 @@ def requeue_issue(args: argparse.Namespace) -> int:
     return 0
 
 
+def route_issue(args: argparse.Namespace) -> int:
+    runner = Runner(ROOT)
+    conn = open_db(pathlib.Path(args.db))
+    if args.issue:
+        issue = get_issue(runner, args.repo, args.issue)
+        decision = RouteDecision(
+            issue=issue,
+            profile=args.builder_profile,
+            rationale="explicit issue requested; semantic ranking bypassed",
+            readiness_failures={},
+        )
+        readiness = validate_issue_readiness(issue)
+        if not readiness.ready:
+            decision.readiness_failures[issue.number] = readiness.reasons
+    else:
+        issues = list_candidate_issues(runner, args.repo, args.label, args.limit)
+        decision = pick_issue(runner, conn, issues, args.repo, args.builder_profile)
+        if decision is None:
+            payload = {"issue_number": None, "profile": args.builder_profile, "rationale": "no eligible issues", "readiness_failures": {}}
+            print(json.dumps(payload))
+            return 0
+
+    payload = {
+        "issue_number": decision.issue.number,
+        "issue_title": decision.issue.title,
+        "issue_url": decision.issue.url,
+        "profile": decision.profile,
+        "rationale": decision.rationale,
+        "readiness_failures": {str(k): v for k, v in decision.readiness_failures.items()},
+    }
+    print(json.dumps(payload))
+    return 0
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Bitterblossom conductor MVP")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -3439,6 +3620,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     add_common(loop_p)
     loop_p.add_argument("--poll-seconds", type=int, default=60)
     loop_p.set_defaults(func=loop)
+
+    route_p = sub.add_parser("route-issue", help="Preview the next routed issue and profile")
+    route_p.add_argument("--repo", required=True)
+    route_p.add_argument("--db", default=str(DEFAULT_DB))
+    route_p.add_argument("--issue", type=int)
+    route_p.add_argument("--label", default=DEFAULT_LABEL)
+    route_p.add_argument("--limit", type=int, default=25)
+    route_p.add_argument("--builder-profile", default="claude-sonnet")
+    route_p.add_argument("--json", action="store_true", default=True)
+    route_p.set_defaults(func=route_issue)
 
     show_p = sub.add_parser("show-runs", help="Show recent runs")
     show_p.add_argument("--db", default=str(DEFAULT_DB))

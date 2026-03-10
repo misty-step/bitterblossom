@@ -37,6 +37,7 @@ Bitterblossom is the conductor for a single-repo software factory: it routes Git
 ## Quality Bar
 
 - [ ] Every issue the conductor can lease is runnable by sprites without clarification loops.
+- [ ] Autopilot-ready issues carry `## Product Spec` and `### Intent Contract`, and routing surfaces explicit reasons when an issue is not ready.
 - [ ] Run state tells the truth: phase, heartbeat, blocking reason, review status, and merge outcome are inspectable.
 - [ ] Builder and reviewer execution is isolated per run; stale workspace state cannot leak forward.
 - [ ] The full trace bullet can be reproduced on demand against a target repository.
