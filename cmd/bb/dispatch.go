@@ -20,6 +20,7 @@ import (
 func newDispatchCmd() *cobra.Command {
 	var (
 		repo            string
+		workspace       string
 		promptTemplate  string
 		timeout         time.Duration
 		maxIterations   int
@@ -37,11 +38,25 @@ func newDispatchCmd() *cobra.Command {
 			spriteName := args[0]
 			prompt := args[1]
 
-			return runDispatch(cmd.Context(), spriteName, prompt, repo, promptTemplate, maxIterations, timeout, noOutputTimeout, dryRun, prCheckTimeout, waitForComplete)
+			return runDispatch(
+				cmd.Context(),
+				spriteName,
+				prompt,
+				repo,
+				workspace,
+				promptTemplate,
+				maxIterations,
+				timeout,
+				noOutputTimeout,
+				dryRun,
+				prCheckTimeout,
+				waitForComplete,
+			)
 		},
 	}
 
 	cmd.Flags().StringVar(&repo, "repo", "", "GitHub repo (owner/repo)")
+	cmd.Flags().StringVar(&workspace, "workspace", "", "Remote workspace path override (skip default repo sync)")
 	cmd.Flags().StringVar(&promptTemplate, "prompt-template", "scripts/ralph-prompt-template.md", "Local prompt template to render before upload")
 	cmd.Flags().DurationVar(&timeout, "timeout", 30*time.Minute, "Max wall-clock time for the ralph loop")
 	cmd.Flags().IntVar(&maxIterations, "max-iterations", 50, "Max ralph loop iterations")
@@ -54,7 +69,14 @@ func newDispatchCmd() *cobra.Command {
 	return cmd
 }
 
-func runDispatch(ctx context.Context, spriteName, prompt, repo, promptTemplate string, maxIter int, timeout time.Duration, noOutputTimeout time.Duration, dryRun bool, prCheckTimeout time.Duration, waitForComplete bool) error {
+func dispatchWorkspace(repo, override string) string {
+	if override != "" {
+		return override
+	}
+	return "/home/sprite/workspace/" + path.Base(repo)
+}
+
+func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverride, promptTemplate string, maxIter int, timeout time.Duration, noOutputTimeout time.Duration, dryRun bool, prCheckTimeout time.Duration, waitForComplete bool) error {
 	// Validate credentials
 	token, err := spriteToken()
 	if err != nil {
@@ -107,18 +129,25 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo, promptTemplate s
 	defer killCancel()
 	_, _ = s.CommandContext(killCtx, "bash", "-c", "pkill -9 -f 'ralph\\.sh|claude' 2>/dev/null; sleep 1").Output()
 
-	// 5. Repo sync (pull latest on default branch)
-	repoName := path.Base(repo)
-	workspace := "/home/sprite/workspace/" + repoName
+	// 5. Resolve workspace. Default dispatch syncs the shared repo checkout.
+	// Conductor-owned worktrees pass --workspace and handle preparation separately.
+	workspace := dispatchWorkspace(repo, workspaceOverride)
 
-	_, _ = fmt.Fprintf(os.Stderr, "syncing repo %s...\n", repo)
-	syncScript := fmt.Sprintf(
-		`git config --global --add safe.directory %s 2>/dev/null; export GH_TOKEN=%q && cd %s && git checkout master 2>/dev/null || git checkout main 2>/dev/null; git pull --ff-only 2>&1`,
-		workspace, ghToken, workspace,
-	)
-	syncCmd := s.CommandContext(ctx, "bash", "-c", syncScript)
-	if out, err := syncCmd.Output(); err != nil {
-		return fmt.Errorf("repo sync failed: %w\n%s", err, out)
+	if workspaceOverride == "" {
+		_, _ = fmt.Fprintf(os.Stderr, "syncing repo %s...\n", repo)
+		syncScript := fmt.Sprintf(
+			`git config --global --add safe.directory %q 2>/dev/null; export GH_TOKEN=%q && cd %q && git checkout master 2>/dev/null || git checkout main 2>/dev/null; git pull --ff-only 2>&1`,
+			workspace, ghToken, workspace,
+		)
+		syncCmd := s.CommandContext(ctx, "bash", "-c", syncScript)
+		if out, err := syncCmd.Output(); err != nil {
+			return fmt.Errorf("repo sync failed: %w\n%s", err, out)
+		}
+	} else {
+		checkWorkspaceCmd := s.CommandContext(ctx, "test", "-d", workspace)
+		if _, err := checkWorkspaceCmd.Output(); err != nil {
+			return fmt.Errorf("workspace override %q is not ready on sprite %q: %w", workspace, spriteName, err)
+		}
 	}
 
 	// 6. Clean stale signals

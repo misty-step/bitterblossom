@@ -534,6 +534,37 @@ func TestDispatchFlagPromptTemplate_Default(t *testing.T) {
 	}
 }
 
+func TestDispatchFlagWorkspace_Default(t *testing.T) {
+	t.Parallel()
+
+	cmd := newDispatchCmd()
+	f := cmd.Flags().Lookup("workspace")
+	if f == nil {
+		t.Fatal("--workspace flag not registered on dispatch command")
+	}
+	if f.DefValue != "" {
+		t.Fatalf("--workspace default = %q, want empty", f.DefValue)
+	}
+}
+
+func TestDispatchWorkspaceUsesOverrideWhenPresent(t *testing.T) {
+	t.Parallel()
+
+	got := dispatchWorkspace("misty-step/bitterblossom", "/tmp/run-123/worktree")
+	if got != "/tmp/run-123/worktree" {
+		t.Fatalf("dispatchWorkspace override = %q, want %q", got, "/tmp/run-123/worktree")
+	}
+}
+
+func TestDispatchWorkspaceFallsBackToRepoCheckout(t *testing.T) {
+	t.Parallel()
+
+	got := dispatchWorkspace("misty-step/bitterblossom", "")
+	if got != "/home/sprite/workspace/bitterblossom" {
+		t.Fatalf("dispatchWorkspace fallback = %q", got)
+	}
+}
+
 func TestRenderPromptUsesCustomTemplate(t *testing.T) {
 	t.Parallel()
 

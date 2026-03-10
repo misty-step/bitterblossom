@@ -31,6 +31,13 @@ def test_branch_name_is_stable() -> None:
     assert got == "factory/42-1777"
 
 
+def test_run_workspace_uses_run_root_and_lane_suffix() -> None:
+    assert (
+        conductor.run_workspace("misty-step/bitterblossom", "run-42-1777", "builder")
+        == "/home/sprite/workspace/bitterblossom/.bb/conductor/run-42-1777/builder-worktree"
+    )
+
+
 def test_db_init_and_lease_cycle(tmp_path: pathlib.Path) -> None:
     db_path = tmp_path / "conductor.db"
     conn = conductor.open_db(db_path)
@@ -269,6 +276,20 @@ def test_pick_issue_treats_missing_lease_expiry_as_eligible(tmp_path: pathlib.Pa
     picked = conductor.pick_issue(conn, issues, "misty-step/bitterblossom")
     assert picked is not None
     assert picked.number == 2
+
+
+def test_dispatch_command_passes_workspace_override() -> None:
+    command = conductor.dispatch_command(
+        "fern",
+        "ship it",
+        "misty-step/bitterblossom",
+        pathlib.Path("scripts/prompts/conductor-builder-template.md"),
+        10,
+        workspace="/tmp/run-42/builder-worktree",
+    )
+
+    assert "--workspace" in command
+    assert "/tmp/run-42/builder-worktree" in command
 
 
 def test_summarize_reviews_includes_findings() -> None:
@@ -1026,7 +1047,14 @@ def test_run_review_round_persists_reviews_as_they_arrive(monkeypatch: pytest.Mo
     events = conn.execute(
         "select event_type, payload_json from events where run_id = 'run-447-1' order by id"
     ).fetchall()
-    assert [row["event_type"] for row in events] == ["review_complete", "review_complete", "review_complete"]
+    assert [row["event_type"] for row in events] == [
+        "review_complete",
+        "review_complete",
+        "review_complete",
+        "reviewer_workspace_cleaned",
+        "reviewer_workspace_cleaned",
+        "reviewer_workspace_cleaned",
+    ]
     assert json.loads(events[0]["payload_json"]) == {"reviewer": "sage", "verdict": "pass"}
     assert json.loads(events[1]["payload_json"]) == {"reviewer": "fern", "verdict": "fix"}
 
@@ -4186,3 +4214,77 @@ def test_run_once_cleanup_error_after_builder_handoff_does_not_record_false_fail
     event_types = [r[0] for r in conn.execute("select event_type from events where run_id like 'run-485-%'").fetchall()]
     assert "cleanup_warning" in event_types
     assert "command_failed" not in event_types
+
+
+def test_run_once_records_builder_worktree_path(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
+    issue = conductor.Issue(number=469, title="worktrees", body="body", url="https://example.com/469", labels=["autopilot"])
+    builder = conductor.BuilderResult(
+        status="ready_for_review",
+        branch="factory/469-1",
+        pr_number=470,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/470",
+        summary="done",
+        tests=[],
+    )
+    reviews = [
+        conductor.ReviewResult(reviewer="fern", verdict="pass", summary="ok", findings=[]),
+        conductor.ReviewResult(reviewer="sage", verdict="pass", summary="ok", findings=[]),
+        conductor.ReviewResult(reviewer="thorn", verdict="pass", summary="ok", findings=[]),
+    ]
+    prepared: list[tuple[str, str]] = []
+    cleaned: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
+    monkeypatch.setattr(conductor, "select_worker", lambda *_a, **_kw: "noble-blue-serpent")
+    monkeypatch.setattr(conductor, "ensure_reviewers_ready", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        conductor,
+        "prepare_run_workspace",
+        lambda _runner, sprite, _repo, _run_id, lane: prepared.append((sprite, lane))
+        or conductor.run_workspace("misty-step/bitterblossom", "run-469-1", lane),
+    )
+    monkeypatch.setattr(
+        conductor,
+        "cleanup_run_workspace",
+        lambda _runner, sprite, _repo, _run_id, lane: cleaned.append((sprite, lane)),
+    )
+
+    def fake_run_builder(_runner: object, repo: str, sprite: str, _issue: object, run_id: str, *_args: object, **_kwargs: object) -> tuple[conductor.BuilderResult, dict[str, object]]:
+        conductor.prepare_run_workspace(_runner, sprite, repo, run_id, "builder")
+        return builder, {"status": "ready_for_review"}
+
+    monkeypatch.setattr(conductor, "run_builder", fake_run_builder)
+    monkeypatch.setattr(conductor, "run_review_round", lambda *_a, **_kw: reviews)
+    monkeypatch.setattr(conductor, "ensure_pr_ready", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "wait_for_pr_checks", lambda *_a, **_kw: (True, "merge-gate: SUCCESS"))
+    monkeypatch.setattr(conductor, "ensure_required_checks_present", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "list_unresolved_review_threads", lambda *_a, **_kw: [])
+    monkeypatch.setattr(conductor, "merge_pr", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "comment_pr", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "comment_issue", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "run_id_for", lambda _issue_number: "run-469-1")
+
+    args = _make_run_once_args(tmp_path, issue_number=469)
+    rc = conductor.run_once(args)
+
+    assert rc == 0
+    assert ("noble-blue-serpent", "builder") in prepared
+    assert ("noble-blue-serpent", "builder") in cleaned
+
+    conn = conductor.open_db(pathlib.Path(args.db))
+    row = conn.execute("select worktree_path from runs where run_id = 'run-469-1'").fetchone()
+    assert row is not None
+    assert row["worktree_path"] == conductor.run_workspace(args.repo, "run-469-1", "builder")
+
+
+def test_show_runs_includes_worktree_path(tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=469, title="worktrees", body="", url="u469", labels=["autopilot"])
+    conductor.create_run(conn, "run-469-1", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(conn, "run-469-1", worktree_path="/tmp/run-469-1/builder-worktree")
+
+    rc = conductor.show_runs(argparse.Namespace(db=str(tmp_path / "conductor.db"), limit=5))
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload["worktree_path"] == "/tmp/run-469-1/builder-worktree"
