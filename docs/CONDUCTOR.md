@@ -95,8 +95,11 @@ Inspect runs:
 
 ```bash
 python3 scripts/conductor.py show-runs --limit 20
+python3 scripts/conductor.py show-run --run-id run-450-1772813415
 python3 scripts/conductor.py show-events --run-id run-450-1772813415
 ```
+
+`show-runs` emits JSON lines with run metadata plus `heartbeat_age_seconds` and the latest blocking or failure context when one exists. `show-run` returns one JSON object for a known `run_id`, combining the run metadata with a `recent_events` array so operators can debug or recover a run without querying SQLite directly.
 
 Reconcile a run after out-of-band merge or manual recovery:
 
@@ -220,7 +223,7 @@ When a run is blocked the conductor **does not release the issue's lease**. Inst
 python3 scripts/conductor.py show-runs --limit 20
 ```
 
-Blocked runs show `phase=blocked` and `status=blocked`. The associated issue also has a GitHub comment from Bitterblossom explaining why it was blocked.
+Blocked runs show `phase=blocked` and `status=blocked`. The JSON line also includes `heartbeat_age_seconds` plus a `blocker` object derived from the latest blocking or failure event. The associated issue also has a GitHub comment from Bitterblossom explaining why it was blocked.
 
 ### Re-queuing a blocked issue
 
@@ -237,6 +240,7 @@ This clears the blocked state and releases the lease. The issue becomes eligible
 To inspect the blocked run's events before re-queuing:
 
 ```bash
+python3 scripts/conductor.py show-run --run-id <run-id>
 python3 scripts/conductor.py show-events --run-id <run-id>
 ```
 

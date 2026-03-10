@@ -44,6 +44,12 @@ FINDING_CLASSIFICATIONS = {"bug", "risk", "style", "question", "unspecified"}
 FINDING_SEVERITIES = {"critical", "high", "medium", "low", "unknown"}
 FINDING_DECISIONS = {"fix_now", "defer", "reject", "noise", "pending"}
 FINDING_STATUSES = {"open", "addressed", "deferred", "rejected", "duplicate", "pending"}
+RUN_STOP_EVENT_TYPES = {
+    "pr_feedback_blocked",
+    "council_blocked",
+    "command_failed",
+    "unexpected_error",
+}
 
 
 @dataclass(slots=True)
@@ -176,8 +182,12 @@ def stringify_exc(exc: BaseException) -> str:
     return str(exc) or exc.__class__.__name__
 
 
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc).replace(microsecond=0)
+
+
 def now_utc() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return utc_now().isoformat().replace("+00:00", "Z")
 
 
 def ensure_parent(path: pathlib.Path) -> None:
@@ -394,7 +404,7 @@ def block_lease(conn: sqlite3.Connection, repo: str, issue_number: int) -> None:
 
 
 def ts_plus(seconds: int) -> str:
-    value = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(seconds=seconds)
+    value = utc_now() + timedelta(seconds=seconds)
     return value.isoformat().replace("+00:00", "Z")
 
 
@@ -415,7 +425,86 @@ def lease_expired(lease_expires_at: str | None) -> bool:
         expires = datetime.fromisoformat(lease_expires_at.replace("Z", "+00:00"))
     except ValueError:
         return False
-    return datetime.now(timezone.utc) >= expires
+    return utc_now() >= expires
+
+
+def parse_iso8601(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def age_seconds(value: str | None) -> int | None:
+    ts = parse_iso8601(value)
+    if ts is None:
+        return None
+    return max(0, int((utc_now() - ts).total_seconds()))
+
+
+def event_row_payload(row: sqlite3.Row) -> dict[str, Any]:
+    return json.loads(str(row["payload_json"]))
+
+
+def format_event_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "run_id": row["run_id"],
+        "event_type": row["event_type"],
+        "payload": event_row_payload(row),
+        "created_at": row["created_at"],
+    }
+
+
+def recent_events(conn: sqlite3.Connection, run_id: str, limit: int) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        select run_id, event_type, payload_json, created_at
+        from events
+        where run_id = ?
+        order by id desc
+        limit ?
+        """,
+        (run_id, limit),
+    ).fetchall()
+    return [format_event_row(row) for row in rows]
+
+
+def blocker_summary(events: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for event in events:
+        if event["event_type"] not in RUN_STOP_EVENT_TYPES:
+            continue
+        payload = event["payload"]
+        summary: dict[str, Any] = {
+            "event_type": event["event_type"],
+            "created_at": event["created_at"],
+        }
+        if isinstance(payload, dict):
+            reason = payload.get("reason")
+            error = payload.get("error")
+            if reason is not None:
+                summary["reason"] = reason
+            elif error is not None:
+                summary["reason"] = error
+        return summary
+    return None
+
+
+def format_run_row(conn: sqlite3.Connection, row: sqlite3.Row, *, event_limit: int) -> dict[str, Any]:
+    events = recent_events(conn, str(row["run_id"]), event_limit)
+    return {
+        "run_id": row["run_id"],
+        "repo": row["repo"],
+        "issue_number": row["issue_number"],
+        "issue_title": row["issue_title"],
+        "phase": row["phase"],
+        "status": row["status"],
+        "builder_sprite": row["builder_sprite"],
+        "pr_number": row["pr_number"],
+        "pr_url": row["pr_url"],
+        "heartbeat_at": row["heartbeat_at"],
+        "heartbeat_age_seconds": age_seconds(row["heartbeat_at"]),
+        "updated_at": row["updated_at"],
+        "blocker": blocker_summary(events),
+    }
 
 
 def reap_expired_leases(conn: sqlite3.Connection) -> int:
@@ -2741,7 +2830,7 @@ def show_runs(args: argparse.Namespace) -> int:
     conn = open_db(pathlib.Path(args.db))
     rows = conn.execute(
         """
-        select run_id, issue_number, issue_title, phase, status, builder_sprite, pr_number, updated_at
+        select run_id, repo, issue_number, issue_title, phase, status, builder_sprite, pr_number, pr_url, heartbeat_at, updated_at
         from runs
         order by created_at desc
         limit ?
@@ -2749,46 +2838,37 @@ def show_runs(args: argparse.Namespace) -> int:
         (args.limit,),
     ).fetchall()
     for row in rows:
-        print(
-            json.dumps(
-                {
-                    "run_id": row["run_id"],
-                    "issue_number": row["issue_number"],
-                    "issue_title": row["issue_title"],
-                    "phase": row["phase"],
-                    "status": row["status"],
-                    "builder_sprite": row["builder_sprite"],
-                    "pr_number": row["pr_number"],
-                    "updated_at": row["updated_at"],
-                }
-            )
-        )
+        print(json.dumps(format_run_row(conn, row, event_limit=10)))
     return 0
 
 
 def show_events(args: argparse.Namespace) -> int:
     conn = open_db(pathlib.Path(args.db))
-    rows = conn.execute(
+    for event in recent_events(conn, args.run_id, args.limit):
+        print(json.dumps(event))
+    return 0
+
+
+def show_run(args: argparse.Namespace) -> int:
+    conn = open_db(pathlib.Path(args.db))
+    row = conn.execute(
         """
-        select run_id, event_type, payload_json, created_at
-        from events
+        select run_id, repo, issue_number, issue_title, phase, status, builder_sprite, pr_number, pr_url, heartbeat_at, updated_at
+        from runs
         where run_id = ?
-        order by id desc
-        limit ?
         """,
-        (args.run_id, args.limit),
-    ).fetchall()
-    for row in rows:
-        print(
-            json.dumps(
-                {
-                    "run_id": row["run_id"],
-                    "event_type": row["event_type"],
-                    "payload": json.loads(row["payload_json"]),
-                    "created_at": row["created_at"],
-                }
-            )
+        (args.run_id,),
+    ).fetchone()
+    if row is None:
+        raise CmdError(f"unknown run_id: {args.run_id}")
+    print(
+        json.dumps(
+            {
+                "run": format_run_row(conn, row, event_limit=args.event_limit),
+                "recent_events": recent_events(conn, args.run_id, args.event_limit),
+            }
         )
+    )
     return 0
 
 
@@ -2934,6 +3014,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     events_p.add_argument("--run-id", required=True)
     events_p.add_argument("--limit", type=int, default=20)
     events_p.set_defaults(func=show_events)
+
+    run_p = sub.add_parser("show-run", help="Show one run plus recent event context")
+    run_p.add_argument("--db", default=str(DEFAULT_DB))
+    run_p.add_argument("--run-id", required=True)
+    run_p.add_argument("--event-limit", type=int, default=10)
+    run_p.set_defaults(func=show_run)
 
     reconcile_p = sub.add_parser("reconcile-run", help="Reconcile a run against GitHub PR state")
     reconcile_p.add_argument("--db", default=str(DEFAULT_DB))
