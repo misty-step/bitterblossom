@@ -6,10 +6,10 @@ These are the places most likely to drift away from the current conductor-first 
 
 ### Skill docs that still imply old `bb` surfaces
 
-- `base/skills/bitterblossom-dispatch/SKILL.md`
-- `base/skills/bitterblossom-dispatch/glance.md`
-- `base/skills/bitterblossom-monitoring/SKILL.md`
-- `base/skills/bitterblossom-monitoring/glance.md`
+- [`base/skills/bitterblossom-dispatch/SKILL.md`](../../base/skills/bitterblossom-dispatch/SKILL.md)
+- [`base/skills/bitterblossom-dispatch/glance.md`](../../base/skills/bitterblossom-dispatch/glance.md)
+- [`base/skills/bitterblossom-monitoring/SKILL.md`](../../base/skills/bitterblossom-monitoring/SKILL.md)
+- [`base/skills/bitterblossom-monitoring/glance.md`](../../base/skills/bitterblossom-monitoring/glance.md)
 
 Risk:
 
@@ -18,12 +18,12 @@ Risk:
 
 ### Glance docs that describe older architecture shapes
 
-- `glance.md`
-- `docs/glance.md`
-- `cmd/bb/glance.md`
-- `scripts/glance.md`
-- `base/glance.md`
-- `reports/glance.md`
+- [`glance.md`](../../glance.md)
+- [`docs/glance.md`](../glance.md)
+- [`cmd/bb/glance.md`](../../cmd/bb/glance.md)
+- [`scripts/glance.md`](../../scripts/glance.md)
+- [`base/glance.md`](../../base/glance.md)
+- [`reports/glance.md`](../../reports/glance.md)
 
 Risk:
 
@@ -34,12 +34,12 @@ Risk:
 
 Examples:
 
-- `scripts/provision.sh`
-- `scripts/teardown.sh`
-- `scripts/status.sh`
-- `scripts/watchdog.sh`
-- `scripts/watchdog-v2.sh`
-- `scripts/test_legacy_wrappers.sh`
+- [`scripts/provision.sh`](../../scripts/provision.sh)
+- [`scripts/teardown.sh`](../../scripts/teardown.sh)
+- [`scripts/status.sh`](../../scripts/status.sh)
+- [`scripts/watchdog.sh`](../../scripts/watchdog.sh)
+- [`scripts/watchdog-v2.sh`](../../scripts/watchdog-v2.sh)
+- [`scripts/test_legacy_wrappers.sh`](../../scripts/test_legacy_wrappers.sh)
 
 Risk:
 
@@ -48,8 +48,8 @@ Risk:
 
 ### README and general repo framing docs
 
-- `README.md`
-- `QA.md`
+- [`README.md`](../../README.md)
+- [`QA.md`](../../QA.md)
 
 Risk:
 
@@ -90,4 +90,4 @@ rg -n "conductor.db|events.jsonl|run_id|blocking_reason|heartbeat_age_seconds" d
 
 ## Rule Of Thumb
 
-If a file makes a strong claim about current behavior and it is not code, an ADR, `docs/CONDUCTOR.md`, `docs/CLI-REFERENCE.md`, or `docs/architecture/*`, verify it before trusting it.
+If a file makes a strong claim about current behavior and it is not code, an ADR, [`docs/CONDUCTOR.md`](../CONDUCTOR.md), [`docs/CLI-REFERENCE.md`](../CLI-REFERENCE.md), [`docs/CODEBASE_MAP.md`](../CODEBASE_MAP.md), [`docs/context/*`](./), or [`docs/architecture/*`](../architecture/), verify it before trusting it.

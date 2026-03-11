@@ -12,9 +12,9 @@ If you are trying to understand how the repo works today, start from those three
 
 | Path | Role |
 |---|---|
-| `scripts/conductor.py` | Intake, leasing, builder/reviewer orchestration, CI wait, review-thread handling, trusted external review settling, merge, durable run state |
-| `cmd/bb/main.go` + `cmd/bb/*.go` | Sprite auth, setup, repo sync, prompt upload, PTY execution, logs, status, kill |
-| `scripts/ralph.sh` | On-sprite execution loop, heartbeat output, signal-file protocol, bounded agent iterations |
+| [`scripts/conductor.py`](../scripts/conductor.py) | Intake, leasing, builder/reviewer orchestration, CI wait, review-thread handling, trusted external review settling, merge, durable run state |
+| [`cmd/bb/main.go`](../cmd/bb/main.go) + [`cmd/bb/*.go`](../cmd/bb/) | Sprite auth, setup, repo sync, prompt upload, PTY execution, logs, status, kill |
+| [`scripts/ralph.sh`](../scripts/ralph.sh) | On-sprite execution loop, heartbeat output, signal-file protocol, bounded agent iterations |
 
 ## Trace Bullet
 
@@ -23,21 +23,21 @@ sequenceDiagram
     participant GH as GitHub
     participant C as Conductor
     participant BB as bb
-    participant B as Builder Sprite
+    participant W as Builder Sprite
     participant R as Reviewer Sprites
 
     GH->>C: eligible issue exists
     C->>C: acquire lease + create run
-    C->>BB: probe + dispatch builder
-    BB->>B: sync repo + run Ralph
-    B-->>GH: push branch + open draft PR
-    B-->>C: builder-result.json
-    C->>BB: dispatch reviewers
-    BB->>R: independent reviews
+    C->>BB: dry-run probe + dispatch builder
+    BB->>W: sync repo + run Ralph
+    W-->>GH: push branch + open draft PR
+    W-->>C: builder artifact
+    C->>BB: dispatch reviewer council
+    BB->>R: review PR independently
     R-->>C: review artifacts
-    C->>GH: request revision or continue
-    C->>GH: wait for CI + trusted external reviews
-    GH-->>C: checks settled
+    C->>GH: council comment / request revision
+    C->>GH: mark ready + wait for CI and trusted reviews
+    GH-->>C: checks green + conversations resolved
     C->>GH: squash merge
     C->>C: release lease + finalize run
 ```
@@ -46,7 +46,7 @@ sequenceDiagram
 
 ### Control Plane
 
-- `scripts/conductor.py`
+- [`scripts/conductor.py`](../scripts/conductor.py)
   - SQLite-backed run ledger
   - lease acquisition/reclaim/release
   - issue intake and prioritization
@@ -54,72 +54,72 @@ sequenceDiagram
   - reviewer council dispatch
   - governance loop: CI, review threads, trusted external reviews, quiet-window settling
   - merge / reconcile / operator inspection surfaces
-- `scripts/test_conductor.py`
+- [`scripts/test_conductor.py`](../scripts/test_conductor.py)
   - acceptance proof and governance regression coverage
-- `docs/CONDUCTOR.md`
+- [`docs/CONDUCTOR.md`](CONDUCTOR.md)
   - operator-facing contract for the conductor loop
-- `docs/architecture/conductor.md`
+- [`docs/architecture/conductor.md`](architecture/conductor.md)
   - fast architecture drill-down for this module
 
 ### Transport Edge
 
-- `cmd/bb/main.go`
+- [`cmd/bb/main.go`](../cmd/bb/main.go)
   - root Cobra command, auth resolution, top-level command registration
-- `cmd/bb/setup.go`
+- [`cmd/bb/setup.go`](../cmd/bb/setup.go)
   - uploads `base/`, repo bootstrap/repair, workspace metadata
-- `cmd/bb/dispatch.go`
+- [`cmd/bb/dispatch.go`](../cmd/bb/dispatch.go)
   - probe, stale-process cleanup, repo sync, prompt upload, Ralph exec, result verification
-- `cmd/bb/status.go`
+- [`cmd/bb/status.go`](../cmd/bb/status.go)
   - sprite truth and operator status surface
-- `cmd/bb/logs.go`
+- [`cmd/bb/logs.go`](../cmd/bb/logs.go)
   - remote `ralph.log` streaming
-- `cmd/bb/kill.go`
+- [`cmd/bb/kill.go`](../cmd/bb/kill.go)
   - recovery path for stuck Ralph/agent processes
-- `cmd/bb/offrails.go`, `cmd/bb/stream_json.go`
+- [`cmd/bb/offrails.go`](../cmd/bb/offrails.go), [`cmd/bb/stream_json.go`](../cmd/bb/stream_json.go)
   - silence/error-loop detection and stream-json parsing
-- `docs/CLI-REFERENCE.md`
+- [`docs/CLI-REFERENCE.md`](CLI-REFERENCE.md)
   - operator reference for the current `bb` command surface
-- `docs/architecture/bb-cli.md`
+- [`docs/architecture/bb-cli.md`](architecture/bb-cli.md)
   - architecture drill-down for transport responsibilities
 
 ### Runtime + Prompt Contracts
 
-- `scripts/ralph.sh`
+- [`scripts/ralph.sh`](../scripts/ralph.sh)
   - bounded remote agent loop and signal-file exit contract
-- `scripts/prompts/`
+- [`scripts/prompts/`](../scripts/prompts/)
   - builder/reviewer prompt templates and artifact expectations
-- `docs/COMPLETION-PROTOCOL.md`
+- [`docs/COMPLETION-PROTOCOL.md`](COMPLETION-PROTOCOL.md)
   - signal files, artifact expectations, and completion semantics
 
 ### Base Runtime Surface
 
-- `base/settings.json`
+- [`base/settings.json`](../base/settings.json)
   - canonical runtime configuration pushed to sprites
-- `base/hooks/`
+- [`base/hooks/`](../base/hooks/)
   - destructive-command guard and fast-feedback hooks
-- `base/CLAUDE.md`
+- [`base/CLAUDE.md`](../base/CLAUDE.md)
   - shared operating instructions for dispatched agents
-- `base/skills/`
+- [`base/skills/`](../base/skills/)
   - reusable guidance shipped onto sprites; useful, but not authoritative for current CLI flags
 
 ### Personas + Factory Inputs
 
-- `sprites/*.md`
+- [`sprites/*.md`](../sprites/)
   - per-sprite personas / specializations
-- `compositions/`
+- [`compositions/`](../compositions/)
   - experimental team hypotheses and historical input, not current conductor scheduler truth
-- `project.md`
+- [`project.md`](../project.md)
   - current repo vision, glossary, active focus, and quality bar
-- `AGENTS.md`
+- [`AGENTS.md`](../AGENTS.md)
   - coding-agent context and working conventions for this repo
 
 ### History / Reports / Archive
 
-- `observations/`
+- [`observations/`](../observations/)
   - learning journal and experiments
-- `reports/`
+- [`reports/`](../reports/)
   - generated reports and snapshots
-- `docs/archive/`
+- [`docs/archive/`](archive/)
   - historical docs; not the source of truth for current architecture
 
 ## Durable State and Contracts
@@ -173,9 +173,9 @@ These absences matter because old docs still sometimes imply otherwise:
 
 ## Read Next
 
-1. `docs/context/INDEX.md`
-2. `docs/architecture/README.md`
-3. `docs/CONDUCTOR.md`
-4. `docs/CLI-REFERENCE.md`
-5. `AGENTS.md`
-6. `project.md`
+1. [`docs/architecture/README.md`](architecture/README.md)
+2. [`docs/CONDUCTOR.md`](CONDUCTOR.md)
+3. [`docs/CLI-REFERENCE.md`](CLI-REFERENCE.md)
+4. [`AGENTS.md`](../AGENTS.md)
+5. [`project.md`](../project.md)
+6. [`docs/context/INDEX.md`](context/INDEX.md)

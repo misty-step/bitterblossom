@@ -75,5 +75,5 @@ Keep transport logic thin and deterministic. Put workflow judgment and orchestra
 | Generic status strings and hidden failure modes | Erode operator trust | Surface explicit run phases, review outcomes, and blocking reasons. |
 
 ---
-*Last updated: 2026-03-06*
+*Last updated: 2026-03-11*
 *Updated during: /groom session*

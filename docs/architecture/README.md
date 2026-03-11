@@ -22,6 +22,7 @@ This stack is intentionally small. The overview explains the full software-facto
 flowchart LR
     subgraph Inputs["Work Intake"]
         GH["GitHub Issues"]
+        Sentry["Sentry Incidents"]
         Ops["Human Operator"]
     end
 
@@ -44,6 +45,7 @@ flowchart LR
         External["Trusted External Reviews"]
     end
 
+    Sentry --> GH
     GH --> Conductor
     Ops --> GH
     Ops --> Conductor
