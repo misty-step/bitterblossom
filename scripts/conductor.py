@@ -16,7 +16,7 @@ import tempfile
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, overload
+from typing import Any, Callable
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -917,14 +917,19 @@ def get_issue(runner: Runner, repo: str, issue_number: int) -> Issue:
 
 
 def has_markdown_heading(body: str, marker: str) -> bool:
-    in_fence = False
+    active_fence: str | None = None
     for raw_line in body.splitlines():
         line = raw_line.rstrip()
         stripped = line.lstrip()
-        if re.match(r"^(```|~~~)", stripped):
-            in_fence = not in_fence
+        match = re.match(r"^(`{3,}|~{3,})", stripped)
+        if match:
+            fence_type = match.group(1)[0]
+            if active_fence is None:
+                active_fence = fence_type
+            elif fence_type == active_fence:
+                active_fence = None
             continue
-        if not in_fence and line == marker:
+        if active_fence is None and line == marker:
             return True
     return False
 
@@ -1001,9 +1006,12 @@ def invoke_claude_json(prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
     except json.JSONDecodeError as exc:
         raise CmdError(f"semantic router returned invalid JSON: {exc}") from exc
     if isinstance(payload, list):
-        for event in reversed(payload):
+        structured_output: dict[str, Any] | None = None
+        for event in payload:
             if isinstance(event, dict) and isinstance(event.get("structured_output"), dict):
-                return event["structured_output"]
+                structured_output = event["structured_output"]
+        if structured_output is not None:
+            return structured_output
         raise CmdError("semantic router returned an event-stream list with no structured_output event")
     if isinstance(payload, dict) and "result" in payload and isinstance(payload["result"], str):
         try:
@@ -1101,37 +1109,25 @@ def route_issues_semantically(repo: str, eligible: list[Issue], builder_profile:
     )
 
 
-@overload
-def pick_issue(conn: sqlite3.Connection, issues: list[Issue], repo: str) -> Issue | None: ...
-
-
-@overload
-def pick_issue(
-    conn: sqlite3.Connection, issues: list[Issue], repo: str, builder_profile: str
-) -> RouteDecision | None: ...
-
-
-def pick_issue(*args: Any) -> RouteDecision | Issue | None:
-    if len(args) == 3:
-        conn, issues, repo = args
-        builder_profile = "claude-sonnet"
-        legacy_shape = True
-    elif len(args) == 4:
-        conn, issues, repo, builder_profile = args
-        legacy_shape = False
-    else:
-        raise TypeError("pick_issue expects either (conn, issues, repo) or (conn, issues, repo, builder_profile)")
-
+def pick_issue(conn: sqlite3.Connection, issues: list[Issue], repo: str) -> Issue | None:
     eligible, readiness_failures = collect_routable_issues(conn, issues, repo)
+    _ = readiness_failures
 
     if not eligible:
         return None
-    if legacy_shape:
-        def key(issue: Issue) -> tuple[int, str, int]:
-            priority, _matched = issue_priority(issue.labels)
-            return (priority, issue.updated_at or "", issue.number)
+    def key(issue: Issue) -> tuple[int, str, int]:
+        priority, _matched = issue_priority(issue.labels)
+        return (priority, issue.updated_at or "", issue.number)
 
-        return sorted(eligible, key=key)[0]
+    return sorted(eligible, key=key)[0]
+
+
+def pick_issue_semantically(
+    conn: sqlite3.Connection, issues: list[Issue], repo: str, builder_profile: str
+) -> RouteDecision | None:
+    eligible, readiness_failures = collect_routable_issues(conn, issues, repo)
+    if not eligible:
+        return None
     decision = route_issues_semantically(repo, eligible, builder_profile)
     decision.readiness_failures.update(readiness_failures)
     return decision
@@ -2976,7 +2972,7 @@ def run_once(args: argparse.Namespace) -> int:
     else:
         issues = list_candidate_issues(runner, args.repo, args.label, args.limit)
         try:
-            decision = pick_issue(conn, issues, args.repo, builder_profile)
+            decision = pick_issue_semantically(conn, issues, args.repo, builder_profile)
         except CmdError as exc:
             print(f"semantic router failed: {exc}")
             return 1
@@ -3613,21 +3609,25 @@ def requeue_issue(args: argparse.Namespace) -> int:
 def route_issue(args: argparse.Namespace) -> int:
     runner = Runner(ROOT)
     conn = open_db(pathlib.Path(args.db))
-    def emit_payload(issue_number: int | None, profile: str, rationale: str, readiness_failures: dict[int, list[str]]) -> int:
+    def emit_payload(
+        issue: Issue | None, profile: str, rationale: str, readiness_failures: dict[int, list[str]], code: int
+    ) -> int:
         payload = {
-            "issue_number": issue_number,
+            "issue_number": issue.number if issue is not None else None,
+            "issue_title": issue.title if issue is not None else None,
+            "issue_url": issue.url if issue is not None else None,
             "profile": profile,
             "rationale": rationale,
             "readiness_failures": {str(k): v for k, v in readiness_failures.items()},
         }
         print(json.dumps(payload))
-        return 1
+        return code
 
     if args.issue:
         try:
             issue = get_issue(runner, args.repo, args.issue)
         except CmdError as exc:
-            return emit_payload(None, args.builder_profile, f"failed to fetch issue #{args.issue}: {exc}", {})
+            return emit_payload(None, args.builder_profile, f"failed to fetch issue #{args.issue}: {exc}", {}, 1)
         decision = RouteDecision(
             issue=issue,
             profile=args.builder_profile,
@@ -3644,33 +3644,17 @@ def route_issue(args: argparse.Namespace) -> int:
         try:
             issues = list_candidate_issues(runner, args.repo, args.label, args.limit)
         except CmdError as exc:
-            return emit_payload(None, args.builder_profile, f"failed to list candidate issues: {exc}", {})
+            return emit_payload(None, args.builder_profile, f"failed to list candidate issues: {exc}", {}, 1)
         eligible, readiness_failures = collect_routable_issues(conn, issues, args.repo)
         if not eligible:
-            payload = {
-                "issue_number": None,
-                "profile": args.builder_profile,
-                "rationale": "no eligible issues",
-                "readiness_failures": {str(k): v for k, v in readiness_failures.items()},
-            }
-            print(json.dumps(payload))
-            return 0
+            return emit_payload(None, args.builder_profile, "no eligible issues", readiness_failures, 0)
         try:
             decision = route_issues_semantically(args.repo, eligible, args.builder_profile)
         except CmdError as exc:
-            return emit_payload(None, args.builder_profile, f"semantic router failed: {exc}", readiness_failures)
+            return emit_payload(None, args.builder_profile, f"semantic router failed: {exc}", readiness_failures, 1)
         decision.readiness_failures.update(readiness_failures)
 
-    payload = {
-        "issue_number": decision.issue.number,
-        "issue_title": decision.issue.title,
-        "issue_url": decision.issue.url,
-        "profile": decision.profile,
-        "rationale": decision.rationale,
-        "readiness_failures": {str(k): v for k, v in decision.readiness_failures.items()},
-    }
-    print(json.dumps(payload))
-    return 0
+    return emit_payload(decision.issue, decision.profile, decision.rationale, decision.readiness_failures, 0)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:

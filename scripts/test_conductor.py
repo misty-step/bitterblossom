@@ -380,6 +380,22 @@ def test_validate_issue_readiness_ignores_fenced_heading_markers() -> None:
     assert "missing `### Intent Contract` section" in readiness.reasons
 
 
+def test_validate_issue_readiness_does_not_close_fence_on_different_marker_type() -> None:
+    invalid = conductor.Issue(
+        number=16,
+        title="mixed fence markers",
+        body="~~~\nThis is a tilde fence.\n```\n## Product Spec\n### Intent Contract\n```\n~~~\n",
+        url="u16",
+        labels=["autopilot", "p1"],
+    )
+
+    readiness = conductor.validate_issue_readiness(invalid)
+
+    assert readiness.ready is False
+    assert "missing `## Product Spec` section" in readiness.reasons
+    assert "missing `### Intent Contract` section" in readiness.reasons
+
+
 def test_validate_issue_readiness_allows_trailing_whitespace_but_rejects_indent_and_case() -> None:
     trailing = conductor.Issue(
         number=12,
@@ -634,7 +650,7 @@ def test_route_issues_semantically_rejects_unsupported_profile(monkeypatch: pyte
         conductor.route_issues_semantically("misty-step/bitterblossom", eligible, "claude-sonnet")
 
 
-def test_pick_issue_skips_unready_issues_and_uses_semantic_router(
+def test_pick_issue_semantically_skips_unready_issues_and_uses_semantic_router(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
 ) -> None:
     conn = conductor.open_db(tmp_path / "conductor.db")
@@ -678,7 +694,7 @@ def test_pick_issue_skips_unready_issues_and_uses_semantic_router(
 
     monkeypatch.setattr(conductor, "route_issues_semantically", fake_route)
 
-    decision = conductor.pick_issue(conn, issues, "misty-step/bitterblossom", "claude-sonnet")
+    decision = conductor.pick_issue_semantically(conn, issues, "misty-step/bitterblossom", "claude-sonnet")
 
     assert decision is not None
     assert decision.issue.number == 4
@@ -772,6 +788,8 @@ def test_route_issue_command_reports_readiness_failures_when_none_are_eligible(
     payload = json.loads(capsys.readouterr().out)
     assert payload == {
         "issue_number": None,
+        "issue_title": None,
+        "issue_url": None,
         "profile": "claude-sonnet",
         "rationale": "no eligible issues",
         "readiness_failures": {
@@ -928,6 +946,8 @@ def test_route_issue_returns_json_error_when_semantic_router_fails(
     payload = json.loads(capsys.readouterr().out)
     assert payload == {
         "issue_number": None,
+        "issue_title": None,
+        "issue_url": None,
         "profile": "claude-sonnet",
         "rationale": "semantic router failed: router down",
         "readiness_failures": {
@@ -960,6 +980,8 @@ def test_route_issue_returns_json_error_when_fetching_explicit_issue_fails(
     payload = json.loads(capsys.readouterr().out)
     assert payload == {
         "issue_number": None,
+        "issue_title": None,
+        "issue_url": None,
         "profile": "claude-sonnet",
         "rationale": "failed to fetch issue #42: github unavailable",
         "readiness_failures": {},
@@ -990,6 +1012,8 @@ def test_route_issue_returns_json_error_when_listing_candidates_fails(
     payload = json.loads(capsys.readouterr().out)
     assert payload == {
         "issue_number": None,
+        "issue_title": None,
+        "issue_url": None,
         "profile": "claude-sonnet",
         "rationale": "failed to list candidate issues: github unavailable",
         "readiness_failures": {},
