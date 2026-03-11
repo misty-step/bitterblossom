@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import shlex
 import shutil
 import sqlite3
@@ -914,10 +915,15 @@ def get_issue(runner: Runner, repo: str, issue_number: int) -> Issue:
     )
 
 
+def has_markdown_heading(body: str, marker: str) -> bool:
+    pattern = rf"(?m)^{re.escape(marker)}(?:\s*)$"
+    return re.search(pattern, body) is not None
+
+
 def validate_issue_readiness(issue: Issue) -> ReadinessResult:
     reasons: list[str] = []
     for marker in ("## Product Spec", "### Intent Contract"):
-        if marker not in issue.body:
+        if not has_markdown_heading(issue.body, marker):
             reasons.append(f"missing `{marker}` section")
     return ReadinessResult(ready=not reasons, reasons=reasons)
 
@@ -1023,7 +1029,7 @@ def route_issues_semantically(runner: Runner, repo: str, eligible: list[Issue], 
         "type": "object",
         "properties": {
             "issue_number": {"type": "integer"},
-            "profile": {"type": "string"},
+            "profile": {"type": "string", "enum": [builder_profile]},
             "rationale": {"type": "string"},
         },
         "required": ["issue_number", "profile", "rationale"],
@@ -3584,9 +3590,8 @@ def route_issue(args: argparse.Namespace) -> int:
             decision.readiness_failures[issue.number] = readiness.reasons
     else:
         issues = list_candidate_issues(runner, args.repo, args.label, args.limit)
-        _eligible, readiness_failures = collect_routable_issues(conn, issues, args.repo)
-        decision = pick_issue(runner, conn, issues, args.repo, args.builder_profile)
-        if decision is None:
+        eligible, readiness_failures = collect_routable_issues(conn, issues, args.repo)
+        if not eligible:
             payload = {
                 "issue_number": None,
                 "profile": args.builder_profile,
@@ -3595,6 +3600,8 @@ def route_issue(args: argparse.Namespace) -> int:
             }
             print(json.dumps(payload))
             return 0
+        decision = route_issues_semantically(runner, args.repo, eligible, args.builder_profile)
+        decision.readiness_failures.update(readiness_failures)
 
     payload = {
         "issue_number": decision.issue.number,

@@ -349,6 +349,21 @@ def test_validate_issue_readiness_reports_single_missing_marker() -> None:
     assert readiness.reasons == ["missing `### Intent Contract` section"]
 
 
+def test_validate_issue_readiness_requires_exact_heading_match() -> None:
+    invalid = conductor.Issue(
+        number=10,
+        title="similar heading only",
+        body="## Product Specification\n### Intent Contract\n- close but not exact\n",
+        url="u10",
+        labels=["autopilot", "p1"],
+    )
+
+    readiness = conductor.validate_issue_readiness(invalid)
+
+    assert readiness.ready is False
+    assert readiness.reasons == ["missing `## Product Spec` section"]
+
+
 def test_invoke_claude_json_reads_structured_output_event(monkeypatch: pytest.MonkeyPatch) -> None:
     payload = [
         {"type": "system"},
@@ -574,12 +589,12 @@ def test_route_issue_command_emits_machine_readable_explanation(
     monkeypatch.setattr(conductor, "list_candidate_issues", lambda *_a, **_kw: [invalid, issue])
     monkeypatch.setattr(
         conductor,
-        "pick_issue",
-        lambda _runner, _conn, issues, _repo, builder_profile: conductor.RouteDecision(
-            issue=issues[1],
+        "route_issues_semantically",
+        lambda _runner, _repo, eligible, builder_profile: conductor.RouteDecision(
+            issue=eligible[0],
             profile=builder_profile,
             rationale="the issue is ready and aligns with the requested profile",
-            readiness_failures={2: ["missing `## Product Spec` section", "missing `### Intent Contract` section"]},
+            readiness_failures={},
         ),
     )
 
