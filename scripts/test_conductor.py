@@ -4478,6 +4478,60 @@ def test_govern_pr_marks_run_failed_on_unexpected_error(
     assert "unexpected conductor error" in issue_comments[0]
 
 
+def test_govern_pr_marks_run_failed_on_command_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    issue = conductor.Issue(number=479, title="govern", body="", url="https://example.com/479", labels=["autopilot"])
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    conductor.create_run(conn, "run-479-1", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(
+        conn,
+        "run-479-1",
+        phase="awaiting_governance",
+        status="active",
+        builder_sprite="noble-blue-serpent",
+        worktree_path="/tmp/run-479-1-builder",
+        branch="factory/479-handoff-1",
+        pr_number=490,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/490",
+    )
+
+    issue_comments: list[str] = []
+    monkeypatch.setattr(conductor, "cleanup_run_workspace", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        conductor,
+        "ensure_governance_run",
+        lambda *_a, **_kw: (
+            issue,
+            "run-479-1",
+            "noble-blue-serpent",
+            "factory/479-handoff-1",
+            490,
+            "https://github.com/misty-step/bitterblossom/pull/490",
+            "/tmp/run-479-1-builder",
+        ),
+    )
+    monkeypatch.setattr(
+        conductor,
+        "govern_pr_flow",
+        lambda *_a, **_kw: (_ for _ in ()).throw(conductor.CmdError("boom")),
+    )
+
+    def fake_comment_issue(*args: object, **_kwargs: object) -> None:
+        issue_comments.append(args[3])
+
+    monkeypatch.setattr(conductor, "comment_issue", fake_comment_issue)
+
+    rc = conductor.govern_pr(_make_govern_pr_args(tmp_path, issue_number=479, pr_number=490, run_id="run-479-1"))
+
+    assert rc == 1
+    run = conn.execute("select phase, status from runs where run_id = 'run-479-1'").fetchone()
+    assert run is not None
+    assert (run["phase"], run["status"]) == ("failed", "failed")
+    assert issue_comments
+    assert "Bitterblossom failed `run-479-1`." in issue_comments[0]
+
+
 def test_acceptance_trace_bullet_run_is_inspectable_from_run_store(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

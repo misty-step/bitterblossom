@@ -3584,8 +3584,23 @@ def govern_pr(args: argparse.Namespace) -> int:
             event_type="issue_comment_failed",
         )
         return 1
-    except CmdError:
-        raise
+    except CmdError as exc:
+        if issue is None or not run_id:
+            print(f"conductor: {exc}", file=sys.stderr)
+            return 1
+        update_run(conn, run_id, phase="failed", status="failed")
+        record_event(conn, event_log, run_id, "command_failed", {"error": str(exc)})
+        best_effort_issue_comment(
+            runner,
+            conn,
+            event_log,
+            run_id,
+            args.repo,
+            issue.number,
+            f"Bitterblossom failed `{run_id}`.\n\n```\n{str(exc)[:1500]}\n```",
+            event_type="issue_comment_failed",
+        )
+        return 1
     except Exception as exc:  # noqa: BLE001
         if issue is None or not run_id:
             print(f"conductor: unexpected governor error: {stringify_exc(exc)}", file=sys.stderr)
