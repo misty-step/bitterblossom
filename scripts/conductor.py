@@ -2389,6 +2389,29 @@ def best_effort_pr_comment(
         record_event(conn, event_log, run_id, event_type, {"error": stringify_exc(exc), "body": body})
 
 
+def cleanup_builder_workspace(
+    runner: Runner,
+    conn: sqlite3.Connection,
+    event_log: pathlib.Path,
+    run_id: str,
+    repo: str,
+    worker: str,
+    workspace: str,
+) -> None:
+    try:
+        cleanup_run_workspace(runner, worker, repo, run_id, "builder")
+        update_run(conn, run_id, worktree_path=None)
+        record_event(conn, event_log, run_id, "builder_workspace_cleaned", {"workspace": workspace})
+    except Exception as exc:  # noqa: BLE001
+        record_event(
+            conn,
+            event_log,
+            run_id,
+            "cleanup_warning",
+            {"error": f"builder workspace cleanup failed: {stringify_exc(exc)}"},
+        )
+
+
 def dispatch(
     runner: Runner,
     sprite: str,
@@ -2880,6 +2903,7 @@ def ensure_governance_run(
     acquire_result = acquire_lease_result(conn, args.repo, issue.number, run_id)
     if not acquire_result.acquired:
         raise CmdError(f"issue #{issue.number} already leased")
+    reclaimed_run_id = acquire_result.reclaimed_run_id
 
     try:
         if existing_run is None:
@@ -2892,6 +2916,23 @@ def ensure_governance_run(
                 run_id,
                 "governance_reacquired",
                 {"issue": issue.number, "pr_number": existing_run["pr_number"]},
+            )
+
+        if reclaimed_run_id and reclaimed_run_id != run_id and run_exists(conn, reclaimed_run_id):
+            update_run(conn, reclaimed_run_id, phase="failed", status="failed")
+            record_event(
+                conn,
+                event_log,
+                reclaimed_run_id,
+                "lease_stale_reclaimed",
+                {"issue": issue.number, "replacement_run_id": run_id},
+            )
+            record_event(
+                conn,
+                event_log,
+                run_id,
+                "lease_reclaimed",
+                {"issue": issue.number, "previous_run_id": reclaimed_run_id},
             )
 
         if not existing_run or not existing_run["builder_sprite"]:
@@ -3276,7 +3317,7 @@ def govern_pr_flow(
                 args.builder_timeout,
                 workspace=builder_workspace,
                 feedback=final_polish_feedback(builder.pr_number),
-                feedback_source="review",
+                feedback_source="polish",
                 pr_number=builder.pr_number,
                 pr_url=builder.pr_url,
             )
@@ -3484,18 +3525,7 @@ def run_once(args: argparse.Namespace) -> int:
         return 1
     finally:
         if builder_workspace_prepared:
-            try:
-                cleanup_run_workspace(runner, worker, args.repo, run_id, "builder")
-                update_run(conn, run_id, worktree_path=None)
-                record_event(conn, event_log, run_id, "builder_workspace_cleaned", {"workspace": builder_workspace})
-            except Exception as exc:  # noqa: BLE001
-                record_event(
-                    conn,
-                    event_log,
-                    run_id,
-                    "cleanup_warning",
-                    {"error": f"builder workspace cleanup failed: {stringify_exc(exc)}"},
-                )
+            cleanup_builder_workspace(runner, conn, event_log, run_id, args.repo, worker, builder_workspace)
         if block_on_release:
             block_lease(conn, args.repo, issue.number, run_id)
         else:
@@ -3536,20 +3566,47 @@ def govern_pr(args: argparse.Namespace) -> int:
         if rc == 2:
             block_on_release = True
         return rc
+    except LeaseLostError as exc:
+        if issue is None or not run_id:
+            print(f"conductor: lease lost before governance state was established: {stringify_exc(exc)}", file=sys.stderr)
+            return 1
+        update_run(conn, run_id, phase="failed", status="failed")
+        message = f"lease lost: {stringify_exc(exc)}"
+        record_event(conn, event_log, run_id, "lease_lost", {"error": message})
+        best_effort_issue_comment(
+            runner,
+            conn,
+            event_log,
+            run_id,
+            args.repo,
+            issue.number,
+            f"Bitterblossom stopped `{run_id}` after losing its lease.\n\n```\n{message[:1500]}\n```",
+            event_type="issue_comment_failed",
+        )
+        return 1
+    except CmdError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        if issue is None or not run_id:
+            print(f"conductor: unexpected governor error: {stringify_exc(exc)}", file=sys.stderr)
+            return 1
+        update_run(conn, run_id, phase="failed", status="failed")
+        message = f"unexpected conductor error: {stringify_exc(exc)}"
+        record_event(conn, event_log, run_id, "unexpected_error", {"error": message})
+        best_effort_issue_comment(
+            runner,
+            conn,
+            event_log,
+            run_id,
+            args.repo,
+            issue.number,
+            f"Bitterblossom failed `{run_id}`.\n\n```\n{message[:1500]}\n```",
+            event_type="issue_comment_failed",
+        )
+        return 1
     finally:
         if issue is not None and run_id and worker and builder_workspace:
-            try:
-                cleanup_run_workspace(runner, worker, args.repo, run_id, "builder")
-                update_run(conn, run_id, worktree_path=None)
-                record_event(conn, event_log, run_id, "builder_workspace_cleaned", {"workspace": builder_workspace})
-            except Exception as exc:  # noqa: BLE001
-                record_event(
-                    conn,
-                    event_log,
-                    run_id,
-                    "cleanup_warning",
-                    {"error": f"builder workspace cleanup failed: {stringify_exc(exc)}"},
-                )
+            cleanup_builder_workspace(runner, conn, event_log, run_id, args.repo, worker, builder_workspace)
         if issue is not None and run_id:
             if block_on_release:
                 block_lease(conn, args.repo, issue.number, run_id)
