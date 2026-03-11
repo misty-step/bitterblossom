@@ -734,9 +734,16 @@ def test_dispatch_tasks_until_artifacts_runs_tasks_in_parallel(monkeypatch: pyte
     }
 
     def fake_start(
-        sprite: str, prompt: str, repo: str, prompt_template: pathlib.Path, timeout_minutes: int, artifact_path: str
+        sprite: str,
+        prompt: str,
+        repo: str,
+        prompt_template: pathlib.Path,
+        timeout_minutes: int,
+        artifact_path: str,
+        *,
+        workspace: str | None = None,
     ) -> conductor.DispatchSession:
-        _ = (prompt, repo, prompt_template, timeout_minutes)
+        _ = (prompt, repo, prompt_template, timeout_minutes, workspace)
         started.append(sprite)
         return conductor.DispatchSession(
             task=conductor.DispatchTask(sprite=sprite, prompt="", artifact_path=artifact_path),
@@ -784,9 +791,16 @@ def test_dispatch_tasks_until_artifacts_removes_session_before_on_artifact(monke
     stopped: list[tuple[str, bool]] = []
 
     def fake_start(
-        sprite: str, prompt: str, repo: str, prompt_template: pathlib.Path, timeout_minutes: int, artifact_path: str
+        sprite: str,
+        prompt: str,
+        repo: str,
+        prompt_template: pathlib.Path,
+        timeout_minutes: int,
+        artifact_path: str,
+        *,
+        workspace: str | None = None,
     ) -> conductor.DispatchSession:
-        _ = (prompt, repo, prompt_template, timeout_minutes)
+        _ = (prompt, repo, prompt_template, timeout_minutes, workspace)
         return conductor.DispatchSession(
             task=conductor.DispatchTask(sprite=sprite, prompt="", artifact_path=artifact_path),
             argv=[sprite],
@@ -820,10 +834,17 @@ def test_dispatch_tasks_until_artifacts_stops_started_sessions_when_startup_fail
     started = 0
 
     def fake_start(
-        sprite: str, prompt: str, repo: str, prompt_template: pathlib.Path, timeout_minutes: int, artifact_path: str
+        sprite: str,
+        prompt: str,
+        repo: str,
+        prompt_template: pathlib.Path,
+        timeout_minutes: int,
+        artifact_path: str,
+        *,
+        workspace: str | None = None,
     ) -> conductor.DispatchSession:
         nonlocal started
-        _ = (prompt, repo, prompt_template, timeout_minutes, artifact_path)
+        _ = (prompt, repo, prompt_template, timeout_minutes, artifact_path, workspace)
         started += 1
         if started == 2:
             raise conductor.CmdError("boom")
@@ -877,9 +898,16 @@ def test_dispatch_tasks_until_artifacts_timeout_reports_all_pending_sessions(
     ticks = iter([0.0, 0.0, 661.0])
 
     def fake_start(
-        sprite: str, prompt: str, repo: str, prompt_template: pathlib.Path, timeout_minutes: int, artifact_path: str
+        sprite: str,
+        prompt: str,
+        repo: str,
+        prompt_template: pathlib.Path,
+        timeout_minutes: int,
+        artifact_path: str,
+        *,
+        workspace: str | None = None,
     ) -> conductor.DispatchSession:
-        _ = (prompt, repo, prompt_template, timeout_minutes)
+        _ = (prompt, repo, prompt_template, timeout_minutes, workspace)
         log_path = tmp_path / f"{sprite}.log"
         log_path.write_text(f"{sprite} pending", encoding="utf-8")
         return conductor.DispatchSession(

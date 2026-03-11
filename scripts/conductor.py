@@ -2468,9 +2468,6 @@ def dispatch_tasks_until_artifacts(
 
     try:
         for task in tasks:
-            kwargs: dict[str, Any] = {}
-            if task.workspace is not None:
-                kwargs["workspace"] = task.workspace
             session = start_dispatch_session(
                 task.sprite,
                 task.prompt,
@@ -2478,7 +2475,7 @@ def dispatch_tasks_until_artifacts(
                 prompt_template,
                 timeout_minutes,
                 task.artifact_path,
-                **kwargs,
+                workspace=task.workspace,
             )
             sessions[task.sprite] = session
 
@@ -2921,7 +2918,7 @@ def run_once(args: argparse.Namespace) -> int:
                     branch,
                     pathlib.Path(args.builder_template),
                     args.builder_timeout,
-                    builder_workspace,
+                    workspace=builder_workspace,
                     feedback=feedback,
                     feedback_source="review",
                     pr_number=builder.pr_number,
@@ -2980,7 +2977,7 @@ def run_once(args: argparse.Namespace) -> int:
                         branch,
                         pathlib.Path(args.builder_template),
                         args.builder_timeout,
-                        builder_workspace,
+                        workspace=builder_workspace,
                         feedback=feedback,
                         feedback_source="pr_review_threads",
                         pr_number=builder.pr_number,
@@ -3074,7 +3071,7 @@ def run_once(args: argparse.Namespace) -> int:
                             branch,
                             pathlib.Path(args.builder_template),
                             args.builder_timeout,
-                            builder_workspace,
+                            workspace=builder_workspace,
                             feedback=feedback,
                             feedback_source="pr_review_threads",
                             pr_number=builder.pr_number,
@@ -3119,7 +3116,7 @@ def run_once(args: argparse.Namespace) -> int:
                 branch,
                 pathlib.Path(args.builder_template),
                 args.builder_timeout,
-                builder_workspace,
+                workspace=builder_workspace,
                 feedback=feedback,
                 feedback_source="ci",
                 pr_number=builder.pr_number,
