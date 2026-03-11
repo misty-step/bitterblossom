@@ -81,16 +81,15 @@ See [docs/CLI-REFERENCE.md](docs/CLI-REFERENCE.md) for `bb`, and [docs/CONDUCTOR
 Bitterblossom ships task-oriented skill files in `base/skills/` so agents can load workflow guidance directly instead of inferring from CLI help text.
 
 Current Bitterblossom-specific skills:
-- `base/skills/bitterblossom-dispatch/SKILL.md` — dispatching issues/tasks with mounted skills
+- `base/skills/bitterblossom-dispatch/SKILL.md` — dry-run probing plus prompt dispatch through `bb`
 - `base/skills/bitterblossom-monitoring/SKILL.md` — monitoring, status checks, and recovery triage
 
-Example using explicit skill mounting during dispatch:
+Example workflow using the current transport surface:
 
 ```bash
-bb dispatch bramble --issue 252 --repo misty-step/bitterblossom \
-  --skill base/skills/bitterblossom-dispatch \
-  --skill base/skills/bitterblossom-monitoring \
-  --execute --wait
+bb dispatch bramble "dry-run readiness probe" --repo misty-step/bitterblossom --dry-run
+bb dispatch bramble "Implement issue 252" --repo misty-step/bitterblossom
+bb logs bramble --follow
 ```
 
 ## Runtime Profile
