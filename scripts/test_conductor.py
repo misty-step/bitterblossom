@@ -514,6 +514,23 @@ def test_invoke_claude_json_raises_on_invalid_result_field(monkeypatch: pytest.M
         conductor.invoke_claude_json("pick one", {"type": "object"})
 
 
+def test_invoke_claude_json_reads_json_result_field(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = {
+        "result": json.dumps(
+            {"issue_number": 474, "profile": "claude-sonnet", "rationale": "best match"}
+        )
+    }
+    monkeypatch.setattr(
+        conductor.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args=["claude"], returncode=0, stdout=json.dumps(payload), stderr=""),
+    )
+
+    result = conductor.invoke_claude_json("pick one", {"type": "object"})
+
+    assert result == {"issue_number": 474, "profile": "claude-sonnet", "rationale": "best match"}
+
+
 def test_invoke_claude_json_raises_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     def timeout(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
         raise subprocess.TimeoutExpired(cmd=["claude"], timeout=conductor.ROUTER_TIMEOUT_SECONDS, output="slow", stderr="hang")
@@ -540,7 +557,7 @@ def test_invoke_claude_json_raises_when_event_stream_has_no_structured_output(
 
 def test_route_issues_semantically_rejects_empty_eligible_list() -> None:
     with pytest.raises(conductor.CmdError, match="semantic routing requires at least one eligible issue"):
-        conductor.route_issues_semantically(conductor.Runner(conductor.ROOT), "misty-step/bitterblossom", [], "claude-sonnet")
+        conductor.route_issues_semantically("misty-step/bitterblossom", [], "claude-sonnet")
 
 
 def test_route_issues_semantically_rejects_unknown_issue_from_model(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -560,7 +577,7 @@ def test_route_issues_semantically_rejects_unknown_issue_from_model(monkeypatch:
     )
 
     with pytest.raises(conductor.CmdError, match="semantic router chose unknown issue #99"):
-        conductor.route_issues_semantically(conductor.Runner(conductor.ROOT), "misty-step/bitterblossom", eligible * 2, "claude-sonnet")
+        conductor.route_issues_semantically("misty-step/bitterblossom", eligible * 2, "claude-sonnet")
 
 
 def test_route_issues_semantically_rejects_empty_rationale(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -587,7 +604,7 @@ def test_route_issues_semantically_rejects_empty_rationale(monkeypatch: pytest.M
     )
 
     with pytest.raises(conductor.CmdError, match="semantic router returned an empty rationale"):
-        conductor.route_issues_semantically(conductor.Runner(conductor.ROOT), "misty-step/bitterblossom", eligible, "claude-sonnet")
+        conductor.route_issues_semantically("misty-step/bitterblossom", eligible, "claude-sonnet")
 
 
 def test_route_issues_semantically_rejects_unsupported_profile(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -614,7 +631,7 @@ def test_route_issues_semantically_rejects_unsupported_profile(monkeypatch: pyte
     )
 
     with pytest.raises(conductor.CmdError, match="semantic router chose unsupported profile"):
-        conductor.route_issues_semantically(conductor.Runner(conductor.ROOT), "misty-step/bitterblossom", eligible, "claude-sonnet")
+        conductor.route_issues_semantically("misty-step/bitterblossom", eligible, "claude-sonnet")
 
 
 def test_pick_issue_skips_unready_issues_and_uses_semantic_router(
@@ -649,7 +666,7 @@ def test_pick_issue_skips_unready_issues_and_uses_semantic_router(
     ]
     seen: dict[str, object] = {}
 
-    def fake_route(_runner: object, _repo: str, eligible: list[conductor.Issue], builder_profile: str) -> conductor.RouteDecision:
+    def fake_route(_repo: str, eligible: list[conductor.Issue], builder_profile: str) -> conductor.RouteDecision:
         seen["eligible"] = [issue.number for issue in eligible]
         seen["builder_profile"] = builder_profile
         return conductor.RouteDecision(
@@ -661,7 +678,7 @@ def test_pick_issue_skips_unready_issues_and_uses_semantic_router(
 
     monkeypatch.setattr(conductor, "route_issues_semantically", fake_route)
 
-    decision = conductor.pick_issue(conductor.Runner(conductor.ROOT), conn, issues, "misty-step/bitterblossom", "claude-sonnet")
+    decision = conductor.pick_issue(conn, issues, "misty-step/bitterblossom", "claude-sonnet")
 
     assert decision is not None
     assert decision.issue.number == 4
@@ -693,7 +710,7 @@ def test_route_issue_command_emits_machine_readable_explanation(
     monkeypatch.setattr(
         conductor,
         "route_issues_semantically",
-        lambda _runner, _repo, eligible, builder_profile: conductor.RouteDecision(
+        lambda _repo, eligible, builder_profile: conductor.RouteDecision(
             issue=eligible[0],
             profile=builder_profile,
             rationale="the issue is ready and aligns with the requested profile",
@@ -865,6 +882,14 @@ def test_route_issue_explicit_issue_reports_structural_readiness_failures(
 def test_route_issue_returns_json_error_when_semantic_router_fails(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    invalid = conductor.Issue(
+        number=1,
+        title="invalid",
+        body="## Problem\nmissing spec\n",
+        url="https://example.com/issues/1",
+        labels=["autopilot", "P2"],
+        updated_at="2026-03-06T00:00:00Z",
+    )
     issue_a = conductor.Issue(
         number=2,
         title="ready",
@@ -881,7 +906,7 @@ def test_route_issue_returns_json_error_when_semantic_router_fails(
         labels=["autopilot", "P1"],
         updated_at="2026-03-06T00:00:00Z",
     )
-    monkeypatch.setattr(conductor, "list_candidate_issues", lambda *_a, **_kw: [issue_a, issue_b])
+    monkeypatch.setattr(conductor, "list_candidate_issues", lambda *_a, **_kw: [invalid, issue_a, issue_b])
     monkeypatch.setattr(
         conductor,
         "route_issues_semantically",
@@ -905,6 +930,68 @@ def test_route_issue_returns_json_error_when_semantic_router_fails(
         "issue_number": None,
         "profile": "claude-sonnet",
         "rationale": "semantic router failed: router down",
+        "readiness_failures": {
+            "1": ["missing `## Product Spec` section", "missing `### Intent Contract` section"]
+        },
+    }
+
+
+def test_route_issue_returns_json_error_when_fetching_explicit_issue_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        conductor,
+        "get_issue",
+        lambda *_a, **_kw: (_ for _ in ()).throw(conductor.CmdError("github unavailable")),
+    )
+
+    rc = conductor.route_issue(
+        argparse.Namespace(
+            repo="misty-step/bitterblossom",
+            db=str(tmp_path / "conductor.db"),
+            label="autopilot",
+            limit=20,
+            builder_profile="claude-sonnet",
+            issue=42,
+        )
+    )
+
+    assert rc == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "issue_number": None,
+        "profile": "claude-sonnet",
+        "rationale": "failed to fetch issue #42: github unavailable",
+        "readiness_failures": {},
+    }
+
+
+def test_route_issue_returns_json_error_when_listing_candidates_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        conductor,
+        "list_candidate_issues",
+        lambda *_a, **_kw: (_ for _ in ()).throw(conductor.CmdError("github unavailable")),
+    )
+
+    rc = conductor.route_issue(
+        argparse.Namespace(
+            repo="misty-step/bitterblossom",
+            db=str(tmp_path / "conductor.db"),
+            label="autopilot",
+            limit=20,
+            builder_profile="claude-sonnet",
+            issue=None,
+        )
+    )
+
+    assert rc == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "issue_number": None,
+        "profile": "claude-sonnet",
+        "rationale": "failed to list candidate issues: github unavailable",
         "readiness_failures": {},
     }
 

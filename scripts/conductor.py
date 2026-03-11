@@ -1029,8 +1029,7 @@ def lease_warnings(conn: sqlite3.Connection, repo: str, issue_number: int) -> li
     return []
 
 
-def route_issues_semantically(runner: Runner, repo: str, eligible: list[Issue], builder_profile: str) -> RouteDecision:
-    _ = runner
+def route_issues_semantically(repo: str, eligible: list[Issue], builder_profile: str) -> RouteDecision:
     if not eligible:
         raise CmdError("semantic routing requires at least one eligible issue")
     if len(eligible) == 1:
@@ -1108,21 +1107,20 @@ def pick_issue(conn: sqlite3.Connection, issues: list[Issue], repo: str) -> Issu
 
 @overload
 def pick_issue(
-    runner: Runner, conn: sqlite3.Connection, issues: list[Issue], repo: str, builder_profile: str
+    conn: sqlite3.Connection, issues: list[Issue], repo: str, builder_profile: str
 ) -> RouteDecision | None: ...
 
 
 def pick_issue(*args: Any) -> RouteDecision | Issue | None:
     if len(args) == 3:
-        runner = Runner(ROOT)
         conn, issues, repo = args
         builder_profile = "claude-sonnet"
         legacy_shape = True
-    elif len(args) == 5:
-        runner, conn, issues, repo, builder_profile = args
+    elif len(args) == 4:
+        conn, issues, repo, builder_profile = args
         legacy_shape = False
     else:
-        raise TypeError("pick_issue expects either (conn, issues, repo) or (runner, conn, issues, repo, builder_profile)")
+        raise TypeError("pick_issue expects either (conn, issues, repo) or (conn, issues, repo, builder_profile)")
 
     eligible, readiness_failures = collect_routable_issues(conn, issues, repo)
 
@@ -1134,7 +1132,7 @@ def pick_issue(*args: Any) -> RouteDecision | Issue | None:
             return (priority, issue.updated_at or "", issue.number)
 
         return sorted(eligible, key=key)[0]
-    decision = route_issues_semantically(runner, repo, eligible, builder_profile)
+    decision = route_issues_semantically(repo, eligible, builder_profile)
     decision.readiness_failures.update(readiness_failures)
     return decision
 
@@ -2978,7 +2976,7 @@ def run_once(args: argparse.Namespace) -> int:
     else:
         issues = list_candidate_issues(runner, args.repo, args.label, args.limit)
         try:
-            decision = pick_issue(runner, conn, issues, args.repo, builder_profile)
+            decision = pick_issue(conn, issues, args.repo, builder_profile)
         except CmdError as exc:
             print(f"semantic router failed: {exc}")
             return 1
@@ -3615,8 +3613,21 @@ def requeue_issue(args: argparse.Namespace) -> int:
 def route_issue(args: argparse.Namespace) -> int:
     runner = Runner(ROOT)
     conn = open_db(pathlib.Path(args.db))
+    def emit_payload(issue_number: int | None, profile: str, rationale: str, readiness_failures: dict[int, list[str]]) -> int:
+        payload = {
+            "issue_number": issue_number,
+            "profile": profile,
+            "rationale": rationale,
+            "readiness_failures": {str(k): v for k, v in readiness_failures.items()},
+        }
+        print(json.dumps(payload))
+        return 1
+
     if args.issue:
-        issue = get_issue(runner, args.repo, args.issue)
+        try:
+            issue = get_issue(runner, args.repo, args.issue)
+        except CmdError as exc:
+            return emit_payload(None, args.builder_profile, f"failed to fetch issue #{args.issue}: {exc}", {})
         decision = RouteDecision(
             issue=issue,
             profile=args.builder_profile,
@@ -3630,7 +3641,10 @@ def route_issue(args: argparse.Namespace) -> int:
         if lease_messages:
             decision.readiness_failures.setdefault(issue.number, []).extend(lease_messages)
     else:
-        issues = list_candidate_issues(runner, args.repo, args.label, args.limit)
+        try:
+            issues = list_candidate_issues(runner, args.repo, args.label, args.limit)
+        except CmdError as exc:
+            return emit_payload(None, args.builder_profile, f"failed to list candidate issues: {exc}", {})
         eligible, readiness_failures = collect_routable_issues(conn, issues, args.repo)
         if not eligible:
             payload = {
@@ -3642,16 +3656,9 @@ def route_issue(args: argparse.Namespace) -> int:
             print(json.dumps(payload))
             return 0
         try:
-            decision = route_issues_semantically(runner, args.repo, eligible, args.builder_profile)
+            decision = route_issues_semantically(args.repo, eligible, args.builder_profile)
         except CmdError as exc:
-            payload = {
-                "issue_number": None,
-                "profile": args.builder_profile,
-                "rationale": f"semantic router failed: {exc}",
-                "readiness_failures": {str(k): v for k, v in readiness_failures.items()},
-            }
-            print(json.dumps(payload))
-            return 1
+            return emit_payload(None, args.builder_profile, f"semantic router failed: {exc}", readiness_failures)
         decision.readiness_failures.update(readiness_failures)
 
     payload = {
