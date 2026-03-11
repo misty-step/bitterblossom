@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import pathlib
 import shlex
@@ -2125,29 +2126,47 @@ def wait_for_pr_minimum_age(
         return True, ""
 
     deadline = time.time() + timeout_minutes * 60
-    last_age_seconds = 0
+    last_error = ""
+    created: datetime | None = None
+
+    while time.time() < deadline and created is None:
+        if on_tick is not None:
+            on_tick()
+        try:
+            pr = gh_json(runner, ["pr", "view", str(pr_number), "--repo", repo, "--json", "createdAt"])
+            created_at = pr.get("createdAt")
+            if not isinstance(created_at, str) or not created_at:
+                raise CmdError(f"PR #{pr_number} missing or has invalid createdAt value from API: {pr!r}")
+            created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            last_error = ""
+        except CmdError as exc:
+            last_error = stringify_exc(exc)
+            if not sleep_until(deadline, 10):
+                break
+        except ValueError as exc:
+            raise CmdError(f"invalid PR createdAt for #{pr_number}: {created_at!r}") from exc
+
+    if created is None:
+        suffix = f"\nlast polling error: {last_error}" if last_error else ""
+        return False, f"timed out waiting for PR #{pr_number} metadata before minimum-age evaluation{suffix}"
 
     while time.time() < deadline:
         if on_tick is not None:
             on_tick()
-        pr = gh_json(runner, ["pr", "view", str(pr_number), "--repo", repo, "--json", "createdAt"])
-        created_at = str(pr.get("createdAt", ""))
-        try:
-            created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-        except ValueError as exc:
-            raise CmdError(f"invalid PR createdAt for #{pr_number}: {created_at!r}") from exc
-
         last_age_seconds = max(0, int((utc_now() - created).total_seconds()))
         if last_age_seconds >= minimum_age_seconds:
             return True, f"PR #{pr_number} age {last_age_seconds}s satisfies minimum age {minimum_age_seconds}s"
 
-        if not sleep_until(deadline, min(10, max(1, minimum_age_seconds - last_age_seconds))):
+        sleep_seconds = min(30, max(1, minimum_age_seconds - last_age_seconds))
+        if not sleep_until(deadline, sleep_seconds):
             break
 
+    last_age_seconds = max(0, int((utc_now() - created).total_seconds()))
     return (
         False,
         f"timed out waiting for PR #{pr_number} to reach minimum age {minimum_age_seconds}s "
-        f"(current age {last_age_seconds}s)",
+        f"(current age {last_age_seconds}s)"
+        + (f"\nlast polling error: {last_error}" if last_error else ""),
     )
 
 
@@ -2830,38 +2849,24 @@ def ensure_governance_run(
             (args.repo, args.pr_number),
         ).fetchone()
 
+    if existing_run is None and args.issue is None:
+        raise CmdError(f"could not determine issue number for PR #{args.pr_number}: pass --issue or adopt an existing run")
+
     issue_number = int(existing_run["issue_number"]) if existing_run is not None else int(args.issue)
     issue = get_issue(runner, args.repo, issue_number)
     run_id = str(existing_run["run_id"]) if existing_run is not None else run_id_for(issue.number)
 
-    acquire_result = acquire_lease_result(conn, args.repo, issue.number, run_id)
-    if not acquire_result.acquired:
-        raise CmdError(f"issue #{issue.number} already leased")
-
-    if existing_run is None:
-        create_run(conn, run_id, args.repo, issue, args.builder_profile)
-        record_event(conn, event_log, run_id, "lease_acquired", {"issue": issue.number})
-    else:
-        record_event(
-            conn,
-            event_log,
-            run_id,
-            "governance_reacquired",
-            {"issue": issue.number, "pr_number": existing_run["pr_number"]},
-        )
-
     worker = str(existing_run["builder_sprite"] or "") if existing_run is not None else ""
     if not worker:
         worker = select_worker(args.repo, args.worker, pathlib.Path(args.builder_template))
-        update_run(conn, run_id, builder_sprite=worker)
 
     builder_workspace = str(existing_run["worktree_path"] or "") if existing_run is not None else ""
-    if not builder_workspace:
-        builder_workspace = prepare_run_workspace(runner, worker, args.repo, run_id, "builder")
-        update_run(conn, run_id, worktree_path=builder_workspace)
-        record_event(conn, event_log, run_id, "builder_workspace_prepared", {"workspace": builder_workspace})
 
     pr_number = int(existing_run["pr_number"]) if existing_run is not None and existing_run["pr_number"] is not None else int(args.pr_number)
+    if existing_run is not None and getattr(args, "pr_number", None) is not None and pr_number != int(args.pr_number):
+        raise CmdError(
+            f"run {run_id} is linked to PR #{pr_number}, but --pr-number {args.pr_number} was requested"
+        )
     pr = gh_json(
         runner,
         ["pr", "view", str(pr_number), "--repo", args.repo, "--json", "number,url,headRefName,state"],
@@ -2871,23 +2876,53 @@ def ensure_governance_run(
 
     branch = str(pr["headRefName"])
     pr_url = str(pr["url"])
-    update_run(
-        conn,
-        run_id,
-        phase="awaiting_governance",
-        branch=branch,
-        pr_number=pr_number,
-        pr_url=pr_url,
-        builder_sprite=worker,
-    )
-    record_event(
-        conn,
-        event_log,
-        run_id,
-        "governance_adopted",
-        {"issue": issue.number, "pr_number": pr_number, "pr_url": pr_url, "branch": branch},
-    )
-    return issue, run_id, worker, branch, pr_number, pr_url, builder_workspace
+
+    acquire_result = acquire_lease_result(conn, args.repo, issue.number, run_id)
+    if not acquire_result.acquired:
+        raise CmdError(f"issue #{issue.number} already leased")
+
+    try:
+        if existing_run is None:
+            create_run(conn, run_id, args.repo, issue, args.builder_profile)
+            record_event(conn, event_log, run_id, "lease_acquired", {"issue": issue.number})
+        else:
+            record_event(
+                conn,
+                event_log,
+                run_id,
+                "governance_reacquired",
+                {"issue": issue.number, "pr_number": existing_run["pr_number"]},
+            )
+
+        if not existing_run or not existing_run["builder_sprite"]:
+            update_run(conn, run_id, builder_sprite=worker)
+
+        if not builder_workspace:
+            builder_workspace = prepare_run_workspace(runner, worker, args.repo, run_id, "builder")
+            update_run(conn, run_id, worktree_path=builder_workspace)
+            record_event(conn, event_log, run_id, "builder_workspace_prepared", {"workspace": builder_workspace})
+
+        update_run(
+            conn,
+            run_id,
+            phase="awaiting_governance",
+            status="active",
+            branch=branch,
+            pr_number=pr_number,
+            pr_url=pr_url,
+            builder_sprite=worker,
+        )
+        record_event(
+            conn,
+            event_log,
+            run_id,
+            "governance_adopted",
+            {"issue": issue.number, "pr_number": pr_number, "pr_url": pr_url, "branch": branch},
+        )
+        return issue, run_id, worker, branch, pr_number, pr_url, builder_workspace
+    except Exception:
+        release_lease(conn, args.repo, issue.number, run_id)
+        raise
 
 
 def govern_pr_flow(
@@ -2922,18 +2957,19 @@ def govern_pr_flow(
     if minimum_age_seconds > 0:
         update_run(conn, run_id, phase="governance_wait")
         touch_run(conn, args.repo, issue.number, run_id, args.ci_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS)
+        age_timeout_minutes = max(1, args.ci_timeout, math.ceil(minimum_age_seconds / 60) + 1)
         age_ok, age_output = wait_for_pr_minimum_age(
             runner,
             args.repo,
             pr_number,
             minimum_age_seconds=minimum_age_seconds,
-            timeout_minutes=max(1, args.ci_timeout),
+            timeout_minutes=age_timeout_minutes,
             on_tick=lambda: touch_run(
                 conn,
                 args.repo,
                 issue.number,
                 run_id,
-                args.ci_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
+                age_timeout_minutes * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
             ),
         )
         record_event(
@@ -3248,6 +3284,8 @@ def govern_pr_flow(
             record_event(conn, event_log, run_id, "final_polish_complete", builder_payload)
             polish_completed = True
             last_pr_feedback_thread_ids = ()
+            # Re-enter the full governor loop so any polish changes re-run review,
+            # CI, thread, and external-review gates before merge.
             continue
 
         update_run(conn, run_id, phase="merge_ready")
@@ -3712,11 +3750,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             help="Minimum PR age before governance may merge",
         )
         p.add_argument(
-            "--stop-after-pr",
-            action="store_true",
-            help="Stop after the builder lane has opened and verified the PR handoff",
-        )
-        p.add_argument(
             "--trusted-external-surface",
             dest="trusted_external_surfaces",
             action="append",
@@ -3738,6 +3771,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
     once_p = sub.add_parser("run-once", help="Run one conductor cycle")
     add_common(once_p)
+    once_p.add_argument(
+        "--stop-after-pr",
+        action="store_true",
+        help="Stop after the builder lane has opened and verified the PR handoff",
+    )
     once_p.set_defaults(func=run_once)
 
     govern_p = sub.add_parser("govern-pr", help="Adopt an existing PR into the governor lane")

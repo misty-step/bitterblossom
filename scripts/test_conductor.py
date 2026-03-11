@@ -3183,6 +3183,105 @@ def _make_govern_pr_args(
     )
 
 
+def test_ensure_governance_run_requires_issue_when_pr_is_unknown(tmp_path: pathlib.Path) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    args = _make_govern_pr_args(tmp_path, issue_number=None, pr_number=490)
+
+    with pytest.raises(conductor.CmdError, match="pass --issue or adopt an existing run"):
+        conductor.ensure_governance_run(_RunnerSpy(), conn, tmp_path / "events.jsonl", args)
+
+
+def test_ensure_governance_run_reactivates_existing_run_status(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    issue = conductor.Issue(number=479, title="govern", body="", url="https://example.com/479", labels=["autopilot"])
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    conductor.create_run(conn, "run-479-1", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(
+        conn,
+        "run-479-1",
+        phase="blocked",
+        status="blocked",
+        builder_sprite="noble-blue-serpent",
+        branch="factory/479-handoff-1",
+        pr_number=490,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/490",
+    )
+
+    monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
+    monkeypatch.setattr(
+        conductor,
+        "gh_json",
+        lambda *_a, **_kw: {
+            "number": 490,
+            "url": "https://github.com/misty-step/bitterblossom/pull/490",
+            "headRefName": "factory/479-handoff-1",
+            "state": "OPEN",
+        },
+    )
+    monkeypatch.setattr(conductor, "prepare_run_workspace", lambda *_a, **_kw: "/tmp/run-479-1-builder")
+
+    issue_result, run_id, worker, branch, pr_number, pr_url, workspace = conductor.ensure_governance_run(
+        _RunnerSpy(),
+        conn,
+        tmp_path / "events.jsonl",
+        _make_govern_pr_args(tmp_path, issue_number=479, pr_number=490, run_id="run-479-1"),
+    )
+
+    assert issue_result == issue
+    assert run_id == "run-479-1"
+    assert worker == "noble-blue-serpent"
+    assert branch == "factory/479-handoff-1"
+    assert pr_number == 490
+    assert pr_url == "https://github.com/misty-step/bitterblossom/pull/490"
+    assert workspace == "/tmp/run-479-1-builder"
+
+    run = conn.execute("select phase, status from runs where run_id = 'run-479-1'").fetchone()
+    assert run is not None
+    assert (run["phase"], run["status"]) == ("awaiting_governance", "active")
+
+
+def test_ensure_governance_run_releases_lease_when_workspace_prepare_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    issue = conductor.Issue(number=479, title="govern", body="", url="https://example.com/479", labels=["autopilot"])
+    conn = conductor.open_db(tmp_path / "conductor.db")
+
+    monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
+    monkeypatch.setattr(conductor, "select_worker", lambda *_a, **_kw: "noble-blue-serpent")
+    monkeypatch.setattr(
+        conductor,
+        "gh_json",
+        lambda *_a, **_kw: {
+            "number": 490,
+            "url": "https://github.com/misty-step/bitterblossom/pull/490",
+            "headRefName": "factory/479-handoff-1",
+            "state": "OPEN",
+        },
+    )
+    monkeypatch.setattr(
+        conductor,
+        "prepare_run_workspace",
+        lambda *_a, **_kw: (_ for _ in ()).throw(conductor.CmdError("workspace prepare failed")),
+    )
+
+    with pytest.raises(conductor.CmdError, match="workspace prepare failed"):
+        conductor.ensure_governance_run(
+            _RunnerSpy(),
+            conn,
+            tmp_path / "events.jsonl",
+            _make_govern_pr_args(tmp_path, issue_number=479, pr_number=490),
+        )
+
+    lease = conn.execute(
+        "select released_at from leases where repo = ? and issue_number = ?",
+        ("misty-step/bitterblossom", 479),
+    ).fetchone()
+    assert lease is not None
+    assert lease["released_at"] is not None
+    assert conductor.acquire_lease(conn, "misty-step/bitterblossom", 479, "run-479-2") is True
+
+
 def test_run_once_blocks_issue_so_next_poll_cannot_re_lease(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
     """AC1: Given rc=2, the same issue must not be immediately re-leaseable."""
     issue = conductor.Issue(number=447, title="test", body="body", url="https://example.com/447", labels=["autopilot"])
@@ -3949,6 +4048,43 @@ def test_wait_for_pr_minimum_age_times_out_when_pr_stays_too_fresh(monkeypatch: 
     assert "minimum age 120s" in reason
 
 
+def test_wait_for_pr_minimum_age_retries_transient_fetch_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    created_at = "2026-03-10T11:58:00Z"
+    current = datetime(2026, 3, 10, 12, 0, 0, tzinfo=timezone.utc)
+    sleeps: list[int] = []
+    attempts = {"count": 0}
+
+    monkeypatch.setattr(conductor, "utc_now", lambda: current)
+
+    def fake_gh_json(*_args: object, **_kwargs: object) -> dict[str, str]:
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise conductor.CmdError("transient gh failure")
+        return {"createdAt": created_at}
+
+    def fake_sleep(seconds: float) -> None:
+        nonlocal current
+        sleeps.append(int(seconds))
+        current = current + timedelta(seconds=int(seconds))
+
+    monkeypatch.setattr(conductor, "gh_json", fake_gh_json)
+    monkeypatch.setattr(conductor.time, "sleep", fake_sleep)
+    monkeypatch.setattr(conductor.time, "time", lambda: current.timestamp())
+
+    ok, summary = conductor.wait_for_pr_minimum_age(
+        _RunnerSpy(),
+        "misty-step/bitterblossom",
+        448,
+        minimum_age_seconds=60,
+        timeout_minutes=1,
+    )
+
+    assert ok is True
+    assert "satisfies minimum age 60s" in summary
+    assert attempts["count"] == 3
+    assert sleeps == [10, 10]
+
+
 def test_run_once_withholds_merge_while_trusted_surfaces_pending(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
 ) -> None:
@@ -4272,6 +4408,8 @@ def test_run_once_rechecks_pr_threads_after_external_reviews_settle(
         body="A new trusted thread appeared after external reviews settled.",
         url="https://example.com/thread-1",
     )
+    # The governor reads once before external reviews settle, once after they settle,
+    # then once more after the final polish round re-verifies merge gates.
     thread_reads = iter([[], [trusted_thread], [], [], [], []])
     check_results = iter([(True, "green"), (True, "green"), (True, "green")])
 
@@ -4344,6 +4482,8 @@ def test_run_once_clears_last_pr_feedback_thread_ids_after_threads_clear(
         ),
         url="https://example.com/thread-1",
     )
+    # The reopened thread is seen before revision, after revision clears it, and
+    # again after the final polish round re-checks the same trusted surfaces.
     thread_reads = iter([[trusted_thread], [], [trusted_thread], [], [], [], []])
     check_results = iter([(True, "green"), (True, "green"), (True, "green"), (True, "green")])
 
