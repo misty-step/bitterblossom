@@ -67,6 +67,7 @@ sequenceDiagram
   - root Cobra command, auth resolution, top-level command registration
 - [`cmd/bb/setup.go`](../cmd/bb/setup.go)
   - uploads `base/`, repo bootstrap/repair, workspace metadata
+  - see also: [`cmd/bb/sprite_workspace.go`](../cmd/bb/sprite_workspace.go), [`cmd/bb/workspace_metadata.go`](../cmd/bb/workspace_metadata.go)
 - [`cmd/bb/dispatch.go`](../cmd/bb/dispatch.go)
   - probe, stale-process cleanup, repo sync, prompt upload, Ralph exec, result verification
 - [`cmd/bb/status.go`](../cmd/bb/status.go)
@@ -169,7 +170,7 @@ These absences matter because old docs still sometimes imply otherwise:
 - There is no current `internal/` package tree.
 - There is no current `pkg/` package tree.
 - There is no separate legacy orchestration stack outside the conductor + `bb` split.
-- The active `bb` surface is small: setup, dispatch, status, logs, kill, version.
+- The primary operator-facing `bb` surface is small: setup, dispatch, status, logs, kill, version.
 
 ## Read Next
 

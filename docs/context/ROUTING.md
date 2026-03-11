@@ -11,7 +11,8 @@ Start with:
 - [`scripts/conductor.py`](../../scripts/conductor.py)
 - [`docs/CONDUCTOR.md`](../CONDUCTOR.md)
 - [`docs/architecture/conductor.md`](../architecture/conductor.md)
-- [`ADR-003`](../adr/003-conductor-control-plane.md) and [`ADR-004`](../adr/004-bounded-review-governance.md) *(proposed direction, not current behavior)*
+- [`ADR-003`](../adr/003-conductor-control-plane.md)
+- [`ADR-004`](../adr/004-bounded-review-governance.md) *(proposed direction, not current behavior)*
 
 Typical changes here:
 
@@ -80,7 +81,7 @@ Start with:
 - [`base/settings.json`](../../base/settings.json)
 - [`base/hooks/*`](../../base/hooks/)
 - [`base/CLAUDE.md`](../../base/CLAUDE.md)
-- [`base/skills/*`](../../base/skills/)
+- [`base/skills/*`](../../base/skills/) — guidance only; not authoritative for live CLI flags or command behavior
 
 Typical changes here:
 

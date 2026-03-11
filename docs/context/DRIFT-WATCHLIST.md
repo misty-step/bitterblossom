@@ -37,6 +37,7 @@ Examples:
 - [`scripts/provision.sh`](../../scripts/provision.sh)
 - [`scripts/teardown.sh`](../../scripts/teardown.sh)
 - [`scripts/status.sh`](../../scripts/status.sh)
+- [`scripts/fleet-status.sh`](../../scripts/fleet-status.sh)
 - [`scripts/watchdog.sh`](../../scripts/watchdog.sh)
 - [`scripts/watchdog-v2.sh`](../../scripts/watchdog-v2.sh)
 - [`scripts/test_legacy_wrappers.sh`](../../scripts/test_legacy_wrappers.sh)
@@ -84,7 +85,7 @@ Refresh `docs/CODEBASE_MAP.md` and `docs/context/*` when any of these change:
 Use these when you suspect drift:
 
 ```bash
-rg -n "watchdog|provision|teardown|Fly Machines|--issue|--skill|--execute" README.md QA.md base/skills docs scripts
+rg -n "watchdog|provision|teardown|Fly Machines|--issue|--skill|--execute|fleet|proxy|registry" README.md QA.md base/skills docs scripts
 rg -n "conductor.db|events.jsonl|run_id|blocking_reason|heartbeat_age_seconds" docs project.md scripts/conductor.py
 ```
 
