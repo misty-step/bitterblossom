@@ -391,6 +391,23 @@ def test_invoke_claude_json_reads_structured_output_event(monkeypatch: pytest.Mo
     }
 
 
+def test_invoke_claude_json_uses_default_permission_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, list[str]] = {}
+
+    def fake_run(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        seen["argv"] = argv
+        payload = {"issue_number": 474, "profile": "claude-sonnet", "rationale": "best match"}
+        return subprocess.CompletedProcess(args=["claude"], returncode=0, stdout=json.dumps(payload), stderr="")
+
+    monkeypatch.setattr(conductor.subprocess, "run", fake_run)
+
+    conductor.invoke_claude_json("pick one", {"type": "object"})
+
+    argv = seen["argv"]
+    mode_index = argv.index("--permission-mode")
+    assert argv[mode_index + 1] == "default"
+
+
 def test_invoke_claude_json_raises_on_launch_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     def fail(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
         raise OSError("claude missing")
@@ -432,6 +449,20 @@ def test_invoke_claude_json_raises_on_invalid_result_field(monkeypatch: pytest.M
     )
 
     with pytest.raises(conductor.CmdError, match="semantic router returned invalid JSON in result field"):
+        conductor.invoke_claude_json("pick one", {"type": "object"})
+
+
+def test_invoke_claude_json_raises_when_event_stream_has_no_structured_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = [{"type": "system"}]
+    monkeypatch.setattr(
+        conductor.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args=["claude"], returncode=0, stdout=json.dumps(payload), stderr=""),
+    )
+
+    with pytest.raises(conductor.CmdError, match="event-stream list with no structured_output event"):
         conductor.invoke_claude_json("pick one", {"type": "object"})
 
 
@@ -657,6 +688,40 @@ def test_route_issue_command_reports_readiness_failures_when_none_are_eligible(
         "readiness_failures": {
             "2": ["missing `## Product Spec` section", "missing `### Intent Contract` section"]
         },
+    }
+
+
+def test_route_issue_explicit_issue_reports_active_lease_warning(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(
+        number=42,
+        title="ready",
+        body="## Product Spec\n### Intent Contract\n- good\n",
+        url="https://example.com/issues/42",
+        labels=["autopilot"],
+        updated_at="2026-03-06T00:00:00Z",
+    )
+    assert conductor.acquire_lease(conn, "misty-step/bitterblossom", 42, "run-42-1") is True
+    monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
+
+    rc = conductor.route_issue(
+        argparse.Namespace(
+            repo="misty-step/bitterblossom",
+            db=str(tmp_path / "conductor.db"),
+            label="autopilot",
+            limit=20,
+            builder_profile="claude-sonnet",
+            issue=42,
+            json=True,
+        )
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["readiness_failures"] == {
+        "42": ["issue has an active lease and cannot be re-leased"]
     }
 
 

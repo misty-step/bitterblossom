@@ -934,15 +934,8 @@ def collect_routable_issues(
     eligible: list[Issue] = []
     readiness_failures: dict[int, list[str]] = {}
     for issue in issues:
-        leased = conn.execute(
-            "select blocked_at, lease_expires_at from leases where repo = ? and issue_number = ? and released_at is null",
-            (repo, issue.number),
-        ).fetchone()
-        if leased is not None:
-            is_blocked = leased["blocked_at"] is not None
-            is_active_lease = not lease_missing_or_expired(leased["lease_expires_at"])
-            if is_blocked or is_active_lease:
-                continue
+        if lease_warnings(conn, repo, issue.number):
+            continue
         readiness = validate_issue_readiness(issue)
         if readiness.ready:
             eligible.append(issue)
@@ -960,7 +953,7 @@ def invoke_claude_json(prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
         "--json-schema",
         json.dumps(schema),
         "--permission-mode",
-        "bypassPermissions",
+        "default",
         "--tools",
         "",
         "--model",
@@ -985,6 +978,7 @@ def invoke_claude_json(prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
         for event in reversed(payload):
             if isinstance(event, dict) and isinstance(event.get("structured_output"), dict):
                 return event["structured_output"]
+        raise CmdError("semantic router returned an event-stream list with no structured_output event")
     if isinstance(payload, dict) and "result" in payload and isinstance(payload["result"], str):
         try:
             return json.loads(payload["result"])
@@ -993,6 +987,20 @@ def invoke_claude_json(prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise CmdError("semantic router returned a non-object payload")
     return payload
+
+
+def lease_warnings(conn: sqlite3.Connection, repo: str, issue_number: int) -> list[str]:
+    leased = conn.execute(
+        "select blocked_at, lease_expires_at from leases where repo = ? and issue_number = ? and released_at is null",
+        (repo, issue_number),
+    ).fetchone()
+    if leased is None:
+        return []
+    if leased["blocked_at"] is not None:
+        return ["issue is blocked and cannot be leased"]
+    if not lease_missing_or_expired(leased["lease_expires_at"]):
+        return ["issue has an active lease and cannot be re-leased"]
+    return []
 
 
 def route_issues_semantically(runner: Runner, repo: str, eligible: list[Issue], builder_profile: str) -> RouteDecision:
@@ -3588,6 +3596,9 @@ def route_issue(args: argparse.Namespace) -> int:
         readiness = validate_issue_readiness(issue)
         if not readiness.ready:
             decision.readiness_failures[issue.number] = readiness.reasons
+        lease_messages = lease_warnings(conn, args.repo, issue.number)
+        if lease_messages:
+            decision.readiness_failures.setdefault(issue.number, []).extend(lease_messages)
     else:
         issues = list_candidate_issues(runner, args.repo, args.label, args.limit)
         eligible, readiness_failures = collect_routable_issues(conn, issues, args.repo)
