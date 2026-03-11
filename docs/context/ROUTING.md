@@ -105,7 +105,7 @@ Do **not** start from these when you need the current architecture contract:
 - [`base/skills/*`](../../base/skills/) for exact live CLI flags
 - [`glance.md`](../../glance.md) files for exact current behavior
 - [`docs/archive/`](../archive/) for implementation truth
-- shell wrapper scripts in [`scripts/`](../../scripts/) as if they define the live control plane
+- legacy shell wrappers in [`scripts/`](../../scripts/) (for example `provision.sh`, `watchdog.sh`, `fleet-status.sh`) as if they define the live control plane; [`scripts/ralph.sh`](../../scripts/ralph.sh) and [`scripts/conductor.py`](../../scripts/conductor.py) remain authoritative for their subsystems
 - [`compositions/`](../../compositions/) as if they are the current scheduler state model
 
 ## Verify Against Code

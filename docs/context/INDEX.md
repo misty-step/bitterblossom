@@ -67,6 +67,7 @@ These files and areas are still useful context, but they are not reliable truth 
 - [`QA.md`](../../QA.md)
 - [`base/skills/*`](../../base/skills/) when you need exact live CLI flags or command behavior
 - shell wrappers in [`scripts/`](../../scripts/) that preserve older workflows
+- [`compositions/`](../../compositions/) — experimental hypotheses; not the authoritative scheduler input for the conductor loop
 
 ## Current Questions → Where To Look
 
