@@ -3486,7 +3486,8 @@ def run_once(args: argparse.Namespace) -> int:
         if builder_workspace_prepared:
             try:
                 cleanup_run_workspace(runner, worker, args.repo, run_id, "builder")
-                record_event(conn, event_log, run_id, "builder_workspace_cleaned", {"workspace": run_workspace(args.repo, run_id, "builder")})
+                update_run(conn, run_id, worktree_path=None)
+                record_event(conn, event_log, run_id, "builder_workspace_cleaned", {"workspace": builder_workspace})
             except Exception as exc:  # noqa: BLE001
                 record_event(
                     conn,
@@ -3539,7 +3540,8 @@ def govern_pr(args: argparse.Namespace) -> int:
         if issue is not None and run_id and worker and builder_workspace:
             try:
                 cleanup_run_workspace(runner, worker, args.repo, run_id, "builder")
-                record_event(conn, event_log, run_id, "builder_workspace_cleaned", {"workspace": run_workspace(args.repo, run_id, "builder")})
+                update_run(conn, run_id, worktree_path=None)
+                record_event(conn, event_log, run_id, "builder_workspace_cleaned", {"workspace": builder_workspace})
             except Exception as exc:  # noqa: BLE001
                 record_event(
                     conn,

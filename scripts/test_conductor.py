@@ -4231,10 +4231,11 @@ def test_run_once_can_stop_after_builder_handoff(monkeypatch: pytest.MonkeyPatch
 
     assert rc == 0
     conn = conductor.open_db(tmp_path / "conductor.db")
-    run = conn.execute("select phase, pr_number from runs limit 1").fetchone()
+    run = conn.execute("select phase, pr_number, worktree_path from runs limit 1").fetchone()
     assert run is not None
     assert run["phase"] == "awaiting_governance"
     assert run["pr_number"] == 490
+    assert run["worktree_path"] is None
     events = conn.execute("select event_type from events order by id").fetchall()
     assert "builder_handoff_ready" in [row["event_type"] for row in events]
 
@@ -4290,6 +4291,7 @@ def test_govern_pr_adopts_existing_pr_and_runs_final_polish(
     monkeypatch.setattr(conductor, "wait_for_pr_checks", lambda *_a, **_kw: (True, "merge-gate: SUCCESS"))
     monkeypatch.setattr(conductor, "ensure_required_checks_present", lambda *_a, **_kw: None)
     monkeypatch.setattr(conductor, "list_unresolved_review_threads", lambda *_a, **_kw: [])
+    monkeypatch.setattr(conductor, "cleanup_run_workspace", lambda *_a, **_kw: None)
     monkeypatch.setattr(conductor, "comment_pr", lambda *_a, **_kw: None)
     monkeypatch.setattr(conductor, "comment_issue", lambda *_a, **_kw: None)
     monkeypatch.setattr(conductor, "merge_pr", lambda _r, _repo, pr_num: merge_calls.append(pr_num))
@@ -4309,9 +4311,10 @@ def test_govern_pr_adopts_existing_pr_and_runs_final_polish(
     assert "Final polish pass" in polish_calls[0]
 
     conn = conductor.open_db(tmp_path / "conductor.db")
-    run = conn.execute("select phase, status from runs where run_id = 'run-479-1'").fetchone()
+    run = conn.execute("select phase, status, worktree_path from runs where run_id = 'run-479-1'").fetchone()
     assert run is not None
     assert (run["phase"], run["status"]) == ("merged", "merged")
+    assert run["worktree_path"] is None
     events = conn.execute("select event_type from events where run_id = 'run-479-1' order by id").fetchall()
     event_types = [row["event_type"] for row in events]
     assert "governance_adopted" in event_types
@@ -4674,7 +4677,9 @@ def test_run_once_cleanup_error_after_builder_handoff_does_not_record_false_fail
     assert "command_failed" not in event_types
 
 
-def test_run_once_records_builder_worktree_path(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
+def test_run_once_clears_builder_worktree_path_after_cleanup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
     issue = conductor.Issue(number=469, title="worktrees", body="body", url="https://example.com/469", labels=["autopilot"])
     builder = conductor.BuilderResult(
         status="ready_for_review",
@@ -4734,7 +4739,7 @@ def test_run_once_records_builder_worktree_path(monkeypatch: pytest.MonkeyPatch,
     conn = conductor.open_db(pathlib.Path(args.db))
     row = conn.execute("select worktree_path from runs where run_id = 'run-469-1'").fetchone()
     assert row is not None
-    assert row["worktree_path"] == conductor.run_workspace(args.repo, "run-469-1", "builder")
+    assert row["worktree_path"] is None
 
 
 def test_run_once_cleans_builder_worktree_when_run_builder_raises(
