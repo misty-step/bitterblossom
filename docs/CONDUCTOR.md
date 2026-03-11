@@ -6,7 +6,8 @@ It is not another transport CLI. It owns:
 
 - GitHub issue intake
 - issue leasing
-- builder dispatch
+- builder lane dispatch
+- governor lane adoption
 - reviewer council dispatch
 - CI wait
 - PR feedback / thread reconciliation
@@ -75,9 +76,39 @@ python3 scripts/conductor.py run-once \
   --reviewer council-thorn-20260306
 ```
 
+Stop after PR handoff and let governance pick the PR up later:
+
+```bash
+python3 scripts/conductor.py run-once \
+  --repo misty-step/bitterblossom \
+  --issue 479 \
+  --worker noble-blue-serpent \
+  --reviewer council-fern-20260306 \
+  --reviewer council-sage-20260306 \
+  --reviewer council-thorn-20260306 \
+  --stop-after-pr
+```
+
+Adopt a known PR into the governor lane:
+
+```bash
+python3 scripts/conductor.py govern-pr \
+  --repo misty-step/bitterblossom \
+  --issue 479 \
+  --pr-number 490 \
+  --worker noble-blue-serpent \
+  --reviewer council-fern-20260306 \
+  --reviewer council-sage-20260306 \
+  --reviewer council-thorn-20260306
+```
+
 `--trusted-external-surface` is exact, not substring-based. Use exact status
 context names such as `CodeRabbit` / `Greptile Review`, or an exact workflow
 name such as `Cerberus` when you want to wait on a whole check-run family.
+
+`--pr-minimum-age-seconds` delays governance until a PR is old enough for async
+review surfaces to show up. After review and CI go green, governance also runs
+one final polish/simplification builder pass before merge.
 
 Run continuously against the backlog:
 
@@ -148,7 +179,8 @@ python3 scripts/conductor.py show-events --run-id <run-id>
 The acceptance run is only valid if the operator surfaces expose the full path:
 
 - lease acquired
-- builder handoff
+- builder handoff (`phase=awaiting_governance`)
+- governance freshness wait / adoption
 - review evidence
 - CI wait completion
 - external review settle or block evidence
@@ -241,7 +273,7 @@ sprite exec coordinator -- bash -lc 'tail -f ~/.bb/conductor.log'
 
 Every run writes immediately to `.bb/conductor.db` and `.bb/events.jsonl` on the coordinator. State survives loop restarts. If the conductor process dies, restart it — already-completed runs won't be re-processed because their leases have been released.
 
-Long waits are heartbeat-backed. During review dispatch, PR-check polling, and trusted external review polling, the conductor refreshes both the run heartbeat and the lease expiry so a healthy run does not look stale just because GitHub or reviewers are slow.
+Long waits are heartbeat-backed. During governance freshness waits, review dispatch, PR-check polling, and trusted external review polling, the conductor refreshes both the run heartbeat and the lease expiry so a healthy run does not look stale just because GitHub or reviewers are slow.
 
 Builder runs now execute in a run-scoped Git worktree under the warm mirror:
 
@@ -261,11 +293,11 @@ The JSON row now includes `worktree_path`. That path is preserved in the run sto
 
 ### Builder handoff boundary
 
-Once a builder writes its artifact and the referenced PR is verified, the conductor persists `phase=reviewing` and `pr_number` immediately. That write is the durable boundary between builder work and control-plane cleanup.
+Once a builder writes its artifact and the referenced PR is verified, the conductor persists `phase=awaiting_governance` and `pr_number` immediately. That write is the durable boundary between builder work and control-plane cleanup.
 
 Post-artifact sprite cleanup (`bb kill <sprite>`) is then best-effort. Transport failures during cleanup (e.g., `use of closed network connection`) are downgraded to `cleanup_warning` events in the event log and printed to stderr. They do **not** overwrite the run to `phase=failed` or clear `pr_number`.
 
-If a run shows `phase=reviewing` with a valid `pr_number` and a `cleanup_warning` event, the builder delivered its handoff correctly. The operator can reconcile the run or let the next conductor loop pick up the issue normally after the lease is released.
+If a run shows `phase=awaiting_governance` with a valid `pr_number` and a `cleanup_warning` event, the builder delivered its handoff correctly. The operator can run `govern-pr`, reconcile the run, or let a later conductor invocation adopt the PR.
 
 Review state is now split deliberately:
 
@@ -362,7 +394,9 @@ The target repo currently requires a `merge-gate` status on `master`.
 
 This repo now publishes `merge-gate` in GitHub Actions. The conductor also checks for missing required statuses before it attempts merge, so policy mismatches fail loudly instead of pretending CI is complete.
 
-After CI turns green, the conductor queries unresolved review threads, records that scan in the review ledger, routes trusted feedback back to the builder on the existing PR, and only proceeds once the thread gate is clear. If the same threads still block after a revision pass, the conductor stops with `pr_feedback_blocked` and escalates to a human for confirmation.
+The governor lane does not merge on the first green snapshot. It waits for the configured minimum PR age, ensures required checks are present, queries unresolved review threads before and after trusted external review settlement, routes trusted feedback back to the builder on the existing PR, and only proceeds once the thread gate is clear.
+
+After the PR is green and thread-clear, the governor runs one final polish/simplification pass on the existing PR and re-verifies the review + CI path before squash merge. If the same threads still block after a revision pass, the conductor stops with `pr_feedback_blocked` and escalates to a human for confirmation.
 
 ## Review Council
 

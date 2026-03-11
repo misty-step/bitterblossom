@@ -6,7 +6,7 @@ import pathlib
 import sqlite3
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
@@ -2263,9 +2263,10 @@ def test_run_once_routes_unresolved_pr_threads_back_to_builder(monkeypatch: pyte
         [
             [conductor.ReviewThread(id="thread-1", path="README.md", line=59, author_login="gemini-code-assist", body="please keep this copy-pastable", url="https://example.com/thread-1")],
             [],
+            [],
         ]
     )
-    check_results = iter([(True, "green"), (True, "green")])
+    check_results = iter([(True, "green"), (True, "green"), (True, "green")])
 
     monkeypatch.setattr(conductor, "get_issue", lambda *_args, **_kwargs: issue)
     monkeypatch.setattr(conductor, "select_worker", lambda *_args, **_kwargs: "noble-blue-serpent")
@@ -3116,6 +3117,8 @@ def _make_run_once_args(
     trusted_external_surfaces: list[str] | None = None,
     external_review_quiet_window: int = 0,
     external_review_timeout: int = 30,
+    pr_minimum_age_seconds: int = 0,
+    stop_after_pr: bool = False,
 ) -> argparse.Namespace:
     return argparse.Namespace(
         repo="misty-step/bitterblossom",
@@ -3136,10 +3139,194 @@ def _make_run_once_args(
         max_revision_rounds=1,
         max_ci_rounds=1,
         max_pr_feedback_rounds=1,
+        pr_minimum_age_seconds=pr_minimum_age_seconds,
+        stop_after_pr=stop_after_pr,
         trusted_external_surfaces=trusted_external_surfaces if trusted_external_surfaces is not None else [],
         external_review_quiet_window=external_review_quiet_window,
         external_review_timeout=external_review_timeout,
     )
+
+
+def _make_govern_pr_args(
+    tmp_path: pathlib.Path,
+    *,
+    issue_number: int = 447,
+    pr_number: int = 448,
+    run_id: str | None = None,
+) -> argparse.Namespace:
+    return argparse.Namespace(
+        repo="misty-step/bitterblossom",
+        issue=issue_number,
+        pr_number=pr_number,
+        run_id=run_id,
+        label="autopilot",
+        limit=20,
+        db=str(tmp_path / "conductor.db"),
+        event_log=str(tmp_path / "events.jsonl"),
+        builder_profile="default",
+        worker=["noble-blue-serpent"],
+        builder_template=str(pathlib.Path("scripts/prompts/conductor-builder-template.md")),
+        reviewer=["fern", "sage", "thorn"],
+        reviewer_template=str(pathlib.Path("scripts/prompts/conductor-reviewer-template.md")),
+        builder_timeout=10,
+        review_timeout=10,
+        ci_timeout=10,
+        review_quorum=2,
+        max_revision_rounds=1,
+        max_ci_rounds=1,
+        max_pr_feedback_rounds=1,
+        pr_minimum_age_seconds=0,
+        stop_after_pr=False,
+        trusted_external_surfaces=[],
+        external_review_quiet_window=0,
+        external_review_timeout=30,
+    )
+
+
+def test_ensure_governance_run_requires_issue_when_pr_is_unknown(tmp_path: pathlib.Path) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    args = _make_govern_pr_args(tmp_path, issue_number=None, pr_number=490)
+
+    with pytest.raises(conductor.CmdError, match="pass --issue or adopt an existing run"):
+        conductor.ensure_governance_run(_RunnerSpy(), conn, tmp_path / "events.jsonl", args)
+
+
+def test_ensure_governance_run_reactivates_existing_run_status(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    issue = conductor.Issue(number=479, title="govern", body="", url="https://example.com/479", labels=["autopilot"])
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    conductor.create_run(conn, "run-479-1", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(
+        conn,
+        "run-479-1",
+        phase="blocked",
+        status="blocked",
+        builder_sprite="noble-blue-serpent",
+        branch="factory/479-handoff-1",
+        pr_number=490,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/490",
+    )
+
+    monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
+    monkeypatch.setattr(
+        conductor,
+        "gh_json",
+        lambda *_a, **_kw: {
+            "number": 490,
+            "url": "https://github.com/misty-step/bitterblossom/pull/490",
+            "headRefName": "factory/479-handoff-1",
+            "state": "OPEN",
+        },
+    )
+    monkeypatch.setattr(conductor, "prepare_run_workspace", lambda *_a, **_kw: "/tmp/run-479-1-builder")
+
+    issue_result, run_id, worker, branch, pr_number, pr_url, workspace = conductor.ensure_governance_run(
+        _RunnerSpy(),
+        conn,
+        tmp_path / "events.jsonl",
+        _make_govern_pr_args(tmp_path, issue_number=479, pr_number=490, run_id="run-479-1"),
+    )
+
+    assert issue_result == issue
+    assert run_id == "run-479-1"
+    assert worker == "noble-blue-serpent"
+    assert branch == "factory/479-handoff-1"
+    assert pr_number == 490
+    assert pr_url == "https://github.com/misty-step/bitterblossom/pull/490"
+    assert workspace == "/tmp/run-479-1-builder"
+
+    run = conn.execute("select phase, status from runs where run_id = 'run-479-1'").fetchone()
+    assert run is not None
+    assert (run["phase"], run["status"]) == ("awaiting_governance", "active")
+
+
+def test_ensure_governance_run_releases_lease_when_workspace_prepare_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    issue = conductor.Issue(number=479, title="govern", body="", url="https://example.com/479", labels=["autopilot"])
+    conn = conductor.open_db(tmp_path / "conductor.db")
+
+    monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
+    monkeypatch.setattr(conductor, "select_worker", lambda *_a, **_kw: "noble-blue-serpent")
+    monkeypatch.setattr(
+        conductor,
+        "gh_json",
+        lambda *_a, **_kw: {
+            "number": 490,
+            "url": "https://github.com/misty-step/bitterblossom/pull/490",
+            "headRefName": "factory/479-handoff-1",
+            "state": "OPEN",
+        },
+    )
+    monkeypatch.setattr(
+        conductor,
+        "prepare_run_workspace",
+        lambda *_a, **_kw: (_ for _ in ()).throw(conductor.CmdError("workspace prepare failed")),
+    )
+
+    with pytest.raises(conductor.CmdError, match="workspace prepare failed"):
+        conductor.ensure_governance_run(
+            _RunnerSpy(),
+            conn,
+            tmp_path / "events.jsonl",
+            _make_govern_pr_args(tmp_path, issue_number=479, pr_number=490),
+        )
+
+    lease = conn.execute(
+        "select released_at from leases where repo = ? and issue_number = ?",
+        ("misty-step/bitterblossom", 479),
+    ).fetchone()
+    assert lease is not None
+    assert lease["released_at"] is not None
+    assert conductor.acquire_lease(conn, "misty-step/bitterblossom", 479, "run-479-2") is True
+
+
+def test_ensure_governance_run_marks_displaced_stale_run_failed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    issue = conductor.Issue(number=479, title="govern", body="", url="https://example.com/479", labels=["autopilot"])
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    conductor.create_run(conn, "run-479-old", "misty-step/bitterblossom", issue, "default")
+    assert conductor.acquire_lease(conn, "misty-step/bitterblossom", 479, "run-479-old") is True
+    conn.execute(
+        """
+        update leases
+        set released_at = null, lease_expires_at = '2000-01-01T00:00:00Z'
+        where repo = 'misty-step/bitterblossom' and issue_number = 479
+        """
+    )
+    conn.commit()
+
+    monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
+    monkeypatch.setattr(conductor, "run_id_for", lambda _issue_number: "run-479-new")
+    monkeypatch.setattr(conductor, "select_worker", lambda *_a, **_kw: "noble-blue-serpent")
+    monkeypatch.setattr(
+        conductor,
+        "gh_json",
+        lambda *_a, **_kw: {
+            "number": 490,
+            "url": "https://github.com/misty-step/bitterblossom/pull/490",
+            "headRefName": "factory/479-handoff-1",
+            "state": "OPEN",
+        },
+    )
+    monkeypatch.setattr(conductor, "prepare_run_workspace", lambda *_a, **_kw: "/tmp/run-479-new-builder")
+
+    conductor.ensure_governance_run(
+        _RunnerSpy(),
+        conn,
+        tmp_path / "events.jsonl",
+        _make_govern_pr_args(tmp_path, issue_number=479, pr_number=490),
+    )
+
+    old_run = conn.execute("select phase, status from runs where run_id = 'run-479-old'").fetchone()
+    assert old_run is not None
+    assert (old_run["phase"], old_run["status"]) == ("failed", "failed")
+    reclaimed_events = conn.execute(
+        "select event_type from events where run_id = 'run-479-new' order by id"
+    ).fetchall()
+    assert "lease_reclaimed" in [row["event_type"] for row in reclaimed_events]
 
 
 def test_run_once_blocks_issue_so_next_poll_cannot_re_lease(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
@@ -3853,6 +4040,98 @@ def test_wait_for_external_reviews_propagates_on_tick_failures(monkeypatch: pyte
         )
 
 
+def test_wait_for_pr_minimum_age_waits_until_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
+    created_at = "2026-03-10T11:59:10Z"
+    current = datetime(2026, 3, 10, 12, 0, 0, tzinfo=timezone.utc)
+    sleeps: list[int] = []
+
+    monkeypatch.setattr(conductor, "utc_now", lambda: current)
+    monkeypatch.setattr(conductor, "gh_json", lambda *_a, **_kw: {"createdAt": created_at})
+
+    def fake_sleep(seconds: float) -> None:
+        nonlocal current
+        sleeps.append(int(seconds))
+        current = current + timedelta(seconds=int(seconds))
+
+    monkeypatch.setattr(conductor.time, "sleep", fake_sleep)
+    monkeypatch.setattr(conductor.time, "time", lambda: current.timestamp())
+
+    ok, summary = conductor.wait_for_pr_minimum_age(
+        _RunnerSpy(),
+        "misty-step/bitterblossom",
+        448,
+        minimum_age_seconds=60,
+        timeout_minutes=1,
+    )
+
+    assert ok is True
+    assert "satisfies minimum age 60s" in summary
+    assert sleeps == [10]
+
+
+def test_wait_for_pr_minimum_age_times_out_when_pr_stays_too_fresh(monkeypatch: pytest.MonkeyPatch) -> None:
+    created_at = "2026-03-10T11:59:50Z"
+    current = datetime(2026, 3, 10, 12, 0, 0, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(conductor, "utc_now", lambda: current)
+    monkeypatch.setattr(conductor, "gh_json", lambda *_a, **_kw: {"createdAt": created_at})
+
+    def fake_sleep(seconds: float) -> None:
+        nonlocal current
+        current = current + timedelta(seconds=int(seconds))
+
+    monkeypatch.setattr(conductor.time, "sleep", fake_sleep)
+    monkeypatch.setattr(conductor.time, "time", lambda: current.timestamp())
+
+    ok, reason = conductor.wait_for_pr_minimum_age(
+        _RunnerSpy(),
+        "misty-step/bitterblossom",
+        448,
+        minimum_age_seconds=120,
+        timeout_minutes=1,
+    )
+
+    assert ok is False
+    assert "minimum age 120s" in reason
+
+
+def test_wait_for_pr_minimum_age_retries_transient_fetch_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    created_at = "2026-03-10T11:58:00Z"
+    current = datetime(2026, 3, 10, 12, 0, 0, tzinfo=timezone.utc)
+    sleeps: list[int] = []
+    attempts = {"count": 0}
+
+    monkeypatch.setattr(conductor, "utc_now", lambda: current)
+
+    def fake_gh_json(*_args: object, **_kwargs: object) -> dict[str, str]:
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise conductor.CmdError("transient gh failure")
+        return {"createdAt": created_at}
+
+    def fake_sleep(seconds: float) -> None:
+        nonlocal current
+        sleeps.append(int(seconds))
+        current = current + timedelta(seconds=int(seconds))
+
+    monkeypatch.setattr(conductor, "gh_json", fake_gh_json)
+    monkeypatch.setattr(conductor.time, "sleep", fake_sleep)
+    monkeypatch.setattr(conductor.time, "time", lambda: current.timestamp())
+
+    ok, summary = conductor.wait_for_pr_minimum_age(
+        _RunnerSpy(),
+        "misty-step/bitterblossom",
+        448,
+        minimum_age_seconds=60,
+        timeout_minutes=1,
+    )
+
+    assert ok is True
+    assert "satisfies minimum age 60s" in summary
+    assert attempts["count"] == 3
+    assert sleeps == [10, 10]
+
+
 def test_run_once_withholds_merge_while_trusted_surfaces_pending(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
 ) -> None:
@@ -3973,6 +4252,286 @@ def test_run_once_merges_when_trusted_surfaces_settle(
     assert merge_calls == [485]
 
 
+def test_run_once_can_stop_after_builder_handoff(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
+    issue = conductor.Issue(number=479, title="handoff", body="", url="https://example.com/479", labels=["autopilot"])
+    builder = conductor.BuilderResult(
+        status="ready_for_review",
+        branch="factory/479-handoff-1",
+        pr_number=490,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/490",
+        summary="done",
+        tests=[],
+    )
+
+    monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
+    monkeypatch.setattr(conductor, "select_worker", lambda *_a, **_kw: "noble-blue-serpent")
+    monkeypatch.setattr(conductor, "ensure_reviewers_ready", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "run_builder", lambda *_a, **_kw: (builder, {"status": "ready_for_review"}))
+    monkeypatch.setattr(
+        conductor,
+        "govern_pr_flow",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("governor lane must not run")),
+    )
+    monkeypatch.setattr(conductor, "comment_issue", lambda *_a, **_kw: None)
+
+    rc = conductor.run_once(_make_run_once_args(tmp_path, issue_number=479, stop_after_pr=True))
+
+    assert rc == 0
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    run = conn.execute("select phase, pr_number, worktree_path from runs limit 1").fetchone()
+    assert run is not None
+    assert run["phase"] == "awaiting_governance"
+    assert run["pr_number"] == 490
+    assert run["worktree_path"] is None
+    events = conn.execute("select event_type from events order by id").fetchall()
+    assert "builder_handoff_ready" in [row["event_type"] for row in events]
+
+
+def test_govern_pr_adopts_existing_pr_and_runs_final_polish(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    issue = conductor.Issue(number=479, title="govern", body="", url="https://example.com/479", labels=["autopilot"])
+    review_passes = [
+        conductor.ReviewResult(reviewer="fern", verdict="pass", summary="ok", findings=[]),
+        conductor.ReviewResult(reviewer="sage", verdict="pass", summary="ok", findings=[]),
+        conductor.ReviewResult(reviewer="thorn", verdict="pass", summary="ok", findings=[]),
+    ]
+    initial_builder = conductor.BuilderResult(
+        status="ready_for_review",
+        branch="factory/479-handoff-1",
+        pr_number=490,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/490",
+        summary="done",
+        tests=[],
+    )
+    polish_calls: list[tuple[str | None, str | None]] = []
+    merge_calls: list[int] = []
+
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    conductor.create_run(conn, "run-479-1", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(
+        conn,
+        "run-479-1",
+        phase="awaiting_governance",
+        status="active",
+        builder_sprite="noble-blue-serpent",
+        worktree_path="/tmp/run-479-1-builder",
+        branch=initial_builder.branch,
+        pr_number=initial_builder.pr_number,
+        pr_url=initial_builder.pr_url,
+    )
+
+    monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
+    monkeypatch.setattr(
+        conductor,
+        "gh_json",
+        lambda *_a, **_kw: {
+            "number": 490,
+            "url": "https://github.com/misty-step/bitterblossom/pull/490",
+            "headRefName": "factory/479-handoff-1",
+            "state": "OPEN",
+        },
+    )
+    monkeypatch.setattr(conductor, "wait_for_pr_minimum_age", lambda *_a, **_kw: (True, "old enough"))
+    monkeypatch.setattr(conductor, "run_review_round", lambda *_a, **_kw: review_passes)
+    monkeypatch.setattr(conductor, "ensure_pr_ready", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "wait_for_pr_checks", lambda *_a, **_kw: (True, "merge-gate: SUCCESS"))
+    monkeypatch.setattr(conductor, "ensure_required_checks_present", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "list_unresolved_review_threads", lambda *_a, **_kw: [])
+    monkeypatch.setattr(conductor, "cleanup_run_workspace", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "comment_pr", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "comment_issue", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "merge_pr", lambda _r, _repo, pr_num: merge_calls.append(pr_num))
+
+    def fake_run_builder(*_args: object, **kwargs: object) -> tuple[conductor.BuilderResult, dict[str, object]]:
+        polish_calls.append((kwargs.get("feedback"), kwargs.get("feedback_source")))  # type: ignore[arg-type]
+        return initial_builder, {"status": "ready_for_review"}
+
+    monkeypatch.setattr(conductor, "run_builder", fake_run_builder)
+
+    rc = conductor.govern_pr(_make_govern_pr_args(tmp_path, issue_number=479, pr_number=490, run_id="run-479-1"))
+
+    assert rc == 0
+    assert merge_calls == [490]
+    assert len(polish_calls) == 1
+    assert polish_calls[0][0] is not None
+    assert "Final polish pass" in polish_calls[0][0]
+    assert polish_calls[0][1] == "polish"
+
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    run = conn.execute("select phase, status, worktree_path from runs where run_id = 'run-479-1'").fetchone()
+    assert run is not None
+    assert (run["phase"], run["status"]) == ("merged", "merged")
+    assert run["worktree_path"] is None
+    events = conn.execute("select event_type from events where run_id = 'run-479-1' order by id").fetchall()
+    event_types = [row["event_type"] for row in events]
+    assert "governance_adopted" in event_types
+    assert "final_polish_requested" in event_types
+    assert "final_polish_complete" in event_types
+
+
+def test_govern_pr_marks_run_failed_when_lease_is_lost(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    issue = conductor.Issue(number=479, title="govern", body="", url="https://example.com/479", labels=["autopilot"])
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    conductor.create_run(conn, "run-479-1", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(
+        conn,
+        "run-479-1",
+        phase="awaiting_governance",
+        status="active",
+        builder_sprite="noble-blue-serpent",
+        worktree_path="/tmp/run-479-1-builder",
+        branch="factory/479-handoff-1",
+        pr_number=490,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/490",
+    )
+
+    issue_comments: list[str] = []
+    monkeypatch.setattr(conductor, "cleanup_run_workspace", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        conductor,
+        "ensure_governance_run",
+        lambda *_a, **_kw: (
+            issue,
+            "run-479-1",
+            "noble-blue-serpent",
+            "factory/479-handoff-1",
+            490,
+            "https://github.com/misty-step/bitterblossom/pull/490",
+            "/tmp/run-479-1-builder",
+        ),
+    )
+    monkeypatch.setattr(
+        conductor,
+        "govern_pr_flow",
+        lambda *_a, **_kw: (_ for _ in ()).throw(conductor.LeaseLostError("governor lost lease")),
+    )
+
+    def fake_comment_issue(*args: object, **_kwargs: object) -> None:
+        issue_comments.append(args[3])
+
+    monkeypatch.setattr(conductor, "comment_issue", fake_comment_issue)
+
+    rc = conductor.govern_pr(_make_govern_pr_args(tmp_path, issue_number=479, pr_number=490, run_id="run-479-1"))
+
+    assert rc == 1
+    run = conn.execute("select phase, status from runs where run_id = 'run-479-1'").fetchone()
+    assert run is not None
+    assert (run["phase"], run["status"]) == ("failed", "failed")
+    assert issue_comments
+    assert "losing its lease" in issue_comments[0]
+
+
+def test_govern_pr_marks_run_failed_on_unexpected_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    issue = conductor.Issue(number=479, title="govern", body="", url="https://example.com/479", labels=["autopilot"])
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    conductor.create_run(conn, "run-479-1", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(
+        conn,
+        "run-479-1",
+        phase="awaiting_governance",
+        status="active",
+        builder_sprite="noble-blue-serpent",
+        worktree_path="/tmp/run-479-1-builder",
+        branch="factory/479-handoff-1",
+        pr_number=490,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/490",
+    )
+
+    issue_comments: list[str] = []
+    monkeypatch.setattr(conductor, "cleanup_run_workspace", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        conductor,
+        "ensure_governance_run",
+        lambda *_a, **_kw: (
+            issue,
+            "run-479-1",
+            "noble-blue-serpent",
+            "factory/479-handoff-1",
+            490,
+            "https://github.com/misty-step/bitterblossom/pull/490",
+            "/tmp/run-479-1-builder",
+        ),
+    )
+    monkeypatch.setattr(
+        conductor,
+        "govern_pr_flow",
+        lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    def fake_comment_issue(*args: object, **_kwargs: object) -> None:
+        issue_comments.append(args[3])
+
+    monkeypatch.setattr(conductor, "comment_issue", fake_comment_issue)
+
+    rc = conductor.govern_pr(_make_govern_pr_args(tmp_path, issue_number=479, pr_number=490, run_id="run-479-1"))
+
+    assert rc == 1
+    run = conn.execute("select phase, status from runs where run_id = 'run-479-1'").fetchone()
+    assert run is not None
+    assert (run["phase"], run["status"]) == ("failed", "failed")
+    assert issue_comments
+    assert "unexpected conductor error" in issue_comments[0]
+
+
+def test_govern_pr_marks_run_failed_on_command_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    issue = conductor.Issue(number=479, title="govern", body="", url="https://example.com/479", labels=["autopilot"])
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    conductor.create_run(conn, "run-479-1", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(
+        conn,
+        "run-479-1",
+        phase="awaiting_governance",
+        status="active",
+        builder_sprite="noble-blue-serpent",
+        worktree_path="/tmp/run-479-1-builder",
+        branch="factory/479-handoff-1",
+        pr_number=490,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/490",
+    )
+
+    issue_comments: list[str] = []
+    monkeypatch.setattr(conductor, "cleanup_run_workspace", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        conductor,
+        "ensure_governance_run",
+        lambda *_a, **_kw: (
+            issue,
+            "run-479-1",
+            "noble-blue-serpent",
+            "factory/479-handoff-1",
+            490,
+            "https://github.com/misty-step/bitterblossom/pull/490",
+            "/tmp/run-479-1-builder",
+        ),
+    )
+    monkeypatch.setattr(
+        conductor,
+        "govern_pr_flow",
+        lambda *_a, **_kw: (_ for _ in ()).throw(conductor.CmdError("boom")),
+    )
+
+    def fake_comment_issue(*args: object, **_kwargs: object) -> None:
+        issue_comments.append(args[3])
+
+    monkeypatch.setattr(conductor, "comment_issue", fake_comment_issue)
+
+    rc = conductor.govern_pr(_make_govern_pr_args(tmp_path, issue_number=479, pr_number=490, run_id="run-479-1"))
+
+    assert rc == 1
+    run = conn.execute("select phase, status from runs where run_id = 'run-479-1'").fetchone()
+    assert run is not None
+    assert (run["phase"], run["status"]) == ("failed", "failed")
+    assert issue_comments
+    assert "Bitterblossom failed `run-479-1`." in issue_comments[0]
+
+
 def test_acceptance_trace_bullet_run_is_inspectable_from_run_store(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -4062,8 +4621,10 @@ def test_run_once_rechecks_pr_threads_after_external_reviews_settle(
         body="A new trusted thread appeared after external reviews settled.",
         url="https://example.com/thread-1",
     )
-    thread_reads = iter([[], [trusted_thread], [], []])
-    check_results = iter([(True, "green"), (True, "green")])
+    # The governor reads once before external reviews settle, once after they settle,
+    # then once more after the final polish round re-verifies merge gates.
+    thread_reads = iter([[], [trusted_thread], [], [], [], []])
+    check_results = iter([(True, "green"), (True, "green"), (True, "green")])
 
     monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
     monkeypatch.setattr(conductor, "select_worker", lambda *_a, **_kw: "noble-blue-serpent")
@@ -4134,8 +4695,10 @@ def test_run_once_clears_last_pr_feedback_thread_ids_after_threads_clear(
         ),
         url="https://example.com/thread-1",
     )
-    thread_reads = iter([[trusted_thread], [], [trusted_thread], [], []])
-    check_results = iter([(True, "green"), (True, "green"), (True, "green")])
+    # The reopened thread is seen before revision, after revision clears it, and
+    # again after the final polish round re-checks the same trusted surfaces.
+    thread_reads = iter([[trusted_thread], [], [trusted_thread], [], [], [], []])
+    check_results = iter([(True, "green"), (True, "green"), (True, "green"), (True, "green")])
 
     monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
     monkeypatch.setattr(conductor, "select_worker", lambda *_a, **_kw: "noble-blue-serpent")
@@ -4172,7 +4735,7 @@ def test_run_once_clears_last_pr_feedback_thread_ids_after_threads_clear(
     rc = conductor.run_once(args)
 
     assert rc == 0
-    assert len(feedbacks) == 3
+    assert len(feedbacks) == 4
     assert feedbacks[0] is None
     assert feedbacks[1] is not None
     assert feedbacks[2] is not None
@@ -4315,7 +4878,7 @@ def test_run_once_cleanup_error_after_builder_handoff_does_not_record_false_fail
     conn = conductor.open_db(tmp_path / "conductor.db")
     row = conn.execute("select phase, status, pr_number from runs where run_id like 'run-485-%'").fetchone()
     assert row is not None
-    assert row["phase"] == "reviewing"
+    assert row["phase"] == "governing"
     assert row["status"] == "active"
     assert row["pr_number"] == 495
 
@@ -4324,7 +4887,9 @@ def test_run_once_cleanup_error_after_builder_handoff_does_not_record_false_fail
     assert "command_failed" not in event_types
 
 
-def test_run_once_records_builder_worktree_path(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
+def test_run_once_clears_builder_worktree_path_after_cleanup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
     issue = conductor.Issue(number=469, title="worktrees", body="body", url="https://example.com/469", labels=["autopilot"])
     builder = conductor.BuilderResult(
         status="ready_for_review",
@@ -4384,7 +4949,7 @@ def test_run_once_records_builder_worktree_path(monkeypatch: pytest.MonkeyPatch,
     conn = conductor.open_db(pathlib.Path(args.db))
     row = conn.execute("select worktree_path from runs where run_id = 'run-469-1'").fetchone()
     assert row is not None
-    assert row["worktree_path"] == conductor.run_workspace(args.repo, "run-469-1", "builder")
+    assert row["worktree_path"] is None
 
 
 def test_run_once_cleans_builder_worktree_when_run_builder_raises(
