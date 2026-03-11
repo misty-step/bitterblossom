@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
-import shlex
 import sqlite3
 import subprocess
 import sys
@@ -1028,6 +1027,11 @@ def test_run_review_round_persists_reviews_as_they_arrive(monkeypatch: pytest.Mo
     monkeypatch.setattr(conductor, "dispatch_tasks_until_artifacts", fake_dispatch_many)
     monkeypatch.setattr(conductor, "cleanup_sprite_processes", lambda _runner, sprite: cleaned.append(sprite))
     monkeypatch.setattr(conductor, "ensure_sprite_ready", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        conductor,
+        "prepare_run_workspace",
+        lambda _runner, _sprite, repo, run_id, lane: conductor.run_workspace(repo, run_id, lane),
+    )
 
     reviews = conductor.run_review_round(
         _RunnerSpy(),
@@ -1096,6 +1100,53 @@ def test_run_review_round_persists_reviews_as_they_arrive(monkeypatch: pytest.Mo
     assert findings[0].message == "tighten copy"
 
 
+def test_run_review_round_cleans_only_prepared_reviewers(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=447, title="test", body="body", url="https://example.com/447", labels=["autopilot"])
+    cleaned_workspaces: list[str] = []
+
+    monkeypatch.setattr(conductor, "cleanup_sprite_processes", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(conductor, "ensure_sprite_ready", lambda *_args, **_kwargs: None)
+
+    def fake_prepare(_runner: object, reviewer: str, repo: str, run_id: str, lane: str) -> str:
+        if reviewer == "sage":
+            raise conductor.CmdError("sprite transport failed")
+        return conductor.run_workspace(repo, run_id, lane)
+
+    monkeypatch.setattr(conductor, "prepare_run_workspace", fake_prepare)
+    monkeypatch.setattr(
+        conductor,
+        "cleanup_run_workspace",
+        lambda _runner, reviewer, _repo, _run_id, _lane: cleaned_workspaces.append(reviewer),
+    )
+
+    with pytest.raises(conductor.CmdError, match="sprite transport failed"):
+        conductor.run_review_round(
+            _RunnerSpy(),
+            conn,
+            tmp_path / "events.jsonl",
+            "misty-step/bitterblossom",
+            issue,
+            "run-447-1",
+            463,
+            "https://github.com/misty-step/bitterblossom/pull/463",
+            ["fern", "sage", "thorn"],
+            pathlib.Path("scripts/prompts/conductor-reviewer-template.md"),
+            10,
+        )
+
+    assert cleaned_workspaces == ["fern"]
+
+    events = conn.execute(
+        "select event_type, payload_json from events where run_id = 'run-447-1' order by id"
+    ).fetchall()
+    assert [row["event_type"] for row in events] == ["reviewer_workspace_cleaned"]
+    assert json.loads(events[0]["payload_json"]) == {
+        "reviewer": "fern",
+        "workspace": conductor.run_workspace("misty-step/bitterblossom", "run-447-1", "review-fern"),
+    }
+
+
 def test_run_review_round_preserves_prior_wave_state(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
     conn = conductor.open_db(tmp_path / "conductor.db")
     issue = conductor.Issue(number=447, title="test", body="body", url="https://example.com/447", labels=["autopilot"])
@@ -1126,6 +1177,11 @@ def test_run_review_round_preserves_prior_wave_state(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(conductor, "dispatch_tasks_until_artifacts", fake_dispatch_many)
     monkeypatch.setattr(conductor, "cleanup_sprite_processes", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(conductor, "ensure_sprite_ready", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        conductor,
+        "prepare_run_workspace",
+        lambda _runner, _sprite, repo, run_id, lane: conductor.run_workspace(repo, run_id, lane),
+    )
 
     conductor.run_review_round(
         _RunnerSpy(),
@@ -1255,6 +1311,11 @@ def test_run_review_round_marks_wave_partial_when_not_all_reviews_arrive(
     monkeypatch.setattr(conductor, "dispatch_tasks_until_artifacts", fake_dispatch_many)
     monkeypatch.setattr(conductor, "cleanup_sprite_processes", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(conductor, "ensure_sprite_ready", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        conductor,
+        "prepare_run_workspace",
+        lambda _runner, _sprite, repo, run_id, lane: conductor.run_workspace(repo, run_id, lane),
+    )
 
     with pytest.raises(KeyError):
         conductor.run_review_round(
@@ -1518,6 +1579,11 @@ def test_run_builder_precleans_worker(monkeypatch: pytest.MonkeyPatch) -> None:
         "verify_builder_pr",
         lambda *_args, **_kwargs: (465, "https://github.com/misty-step/bitterblossom/pull/465"),
     )
+    monkeypatch.setattr(
+        conductor,
+        "prepare_run_workspace",
+        lambda _runner, _sprite, repo, run_id, lane: conductor.run_workspace(repo, run_id, lane),
+    )
 
     builder, _payload = conductor.run_builder(
         _RunnerSpy(),
@@ -1649,11 +1715,6 @@ class _RunnerSpy:
         self.calls.append(argv)
         if self.responses:
             return self.responses.pop(0)
-        script = argv[-1] if argv else ""
-        if 'printf "%s\\n" "$workspace"' in script:
-            for line in script.splitlines():
-                if line.startswith("workspace="):
-                    return shlex.split(line.split("=", 1)[1])[0]
         return ""
 
 

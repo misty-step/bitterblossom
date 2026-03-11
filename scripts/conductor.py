@@ -2632,6 +2632,7 @@ def run_review_round(
     on_tick: Callable[[], None] | None = None,
 ) -> list[ReviewResult]:
     reviews: dict[str, ReviewResult] = {}
+    prepared_reviewers: list[str] = []
     wave_id = start_review_wave(
         conn,
         run_id,
@@ -2648,6 +2649,7 @@ def run_review_round(
                 pass
             ensure_sprite_ready(runner, reviewer, repo, prompt_template)
             workspace = prepare_run_workspace(runner, reviewer, repo, run_id, f"review-{reviewer}")
+            prepared_reviewers.append(reviewer)
             review_rel = artifact_rel(run_id, f"review-{reviewer}.json")
             review_prompt = build_review_task(issue, run_id, pr_number, pr_url, review_rel)
             tasks.append(
@@ -2679,7 +2681,7 @@ def run_review_round(
         finish_review_wave(conn, wave_id, "partial" if reviews else "failed")
         raise
     finally:
-        for reviewer in reviewers:
+        for reviewer in prepared_reviewers:
             try:
                 cleanup_run_workspace(runner, reviewer, repo, run_id, f"review-{reviewer}")
                 record_event(
