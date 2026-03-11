@@ -13,6 +13,8 @@ This stack is intentionally small. The overview explains the full software-facto
 - [Conductor](./conductor.md)
 - [bb CLI Transport](./bb-cli.md)
 - [Architecture Glance](./glance.md)
+- [Codebase Map](../CODEBASE_MAP.md)
+- [Context Index](../context/INDEX.md)
 
 ## System Overview
 
@@ -43,8 +45,8 @@ flowchart LR
         External["Trusted External Reviews"]
     end
 
-    GH --> Conductor
     Sentry --> GH
+    GH --> Conductor
     Ops --> GH
     Ops --> Conductor
     Conductor --> DB
