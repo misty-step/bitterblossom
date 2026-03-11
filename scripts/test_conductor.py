@@ -364,6 +364,68 @@ def test_validate_issue_readiness_requires_exact_heading_match() -> None:
     assert readiness.reasons == ["missing `## Product Spec` section"]
 
 
+def test_validate_issue_readiness_ignores_fenced_heading_markers() -> None:
+    invalid = conductor.Issue(
+        number=11,
+        title="headings only in code fence",
+        body="```\n## Product Spec\n### Intent Contract\n```\n",
+        url="u11",
+        labels=["autopilot", "p1"],
+    )
+
+    readiness = conductor.validate_issue_readiness(invalid)
+
+    assert readiness.ready is False
+    assert "missing `## Product Spec` section" in readiness.reasons
+    assert "missing `### Intent Contract` section" in readiness.reasons
+
+
+def test_validate_issue_readiness_allows_trailing_whitespace_but_rejects_indent_and_case() -> None:
+    trailing = conductor.Issue(
+        number=12,
+        title="trailing whitespace",
+        body="## Product Spec   \n### Intent Contract\t\n",
+        url="u12",
+        labels=["autopilot", "p1"],
+    )
+    indented = conductor.Issue(
+        number=13,
+        title="indented heading",
+        body="  ## Product Spec\n### Intent Contract\n",
+        url="u13",
+        labels=["autopilot", "p1"],
+    )
+    lowercase = conductor.Issue(
+        number=14,
+        title="lowercase heading",
+        body="## product spec\n### intent contract\n",
+        url="u14",
+        labels=["autopilot", "p1"],
+    )
+
+    assert conductor.validate_issue_readiness(trailing) == conductor.ReadinessResult(ready=True, reasons=[])
+    assert conductor.validate_issue_readiness(indented).reasons == ["missing `## Product Spec` section"]
+    assert conductor.validate_issue_readiness(lowercase).reasons == [
+        "missing `## Product Spec` section",
+        "missing `### Intent Contract` section",
+    ]
+
+
+def test_validate_issue_readiness_requires_exact_intent_contract_heading() -> None:
+    invalid = conductor.Issue(
+        number=15,
+        title="similar contract heading only",
+        body="## Product Spec\n### Intent Contracts\n- close but not exact\n",
+        url="u15",
+        labels=["autopilot", "p1"],
+    )
+
+    readiness = conductor.validate_issue_readiness(invalid)
+
+    assert readiness.ready is False
+    assert readiness.reasons == ["missing `### Intent Contract` section"]
+
+
 def test_invoke_claude_json_reads_structured_output_event(monkeypatch: pytest.MonkeyPatch) -> None:
     payload = [
         {"type": "system"},
@@ -449,6 +511,16 @@ def test_invoke_claude_json_raises_on_invalid_result_field(monkeypatch: pytest.M
     )
 
     with pytest.raises(conductor.CmdError, match="semantic router returned invalid JSON in result field"):
+        conductor.invoke_claude_json("pick one", {"type": "object"})
+
+
+def test_invoke_claude_json_raises_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    def timeout(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(cmd=["claude"], timeout=conductor.ROUTER_TIMEOUT_SECONDS, output="slow", stderr="hang")
+
+    monkeypatch.setattr(conductor.subprocess, "run", timeout)
+
+    with pytest.raises(conductor.CmdError, match="semantic router timed out waiting for Claude"):
         conductor.invoke_claude_json("pick one", {"type": "object"})
 
 
@@ -691,6 +763,39 @@ def test_route_issue_command_reports_readiness_failures_when_none_are_eligible(
     }
 
 
+def test_route_issue_command_reports_lease_failures_when_none_are_eligible(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    assert conductor.acquire_lease(conn, "misty-step/bitterblossom", 2, "run-2-1") is True
+    ready = conductor.Issue(
+        number=2,
+        title="ready but leased",
+        body="## Product Spec\n### Intent Contract\n- good\n",
+        url="https://example.com/issues/2",
+        labels=["autopilot", "P0"],
+        updated_at="2026-03-06T00:00:00Z",
+    )
+    monkeypatch.setattr(conductor, "list_candidate_issues", lambda *_a, **_kw: [ready])
+
+    rc = conductor.route_issue(
+        argparse.Namespace(
+            repo="misty-step/bitterblossom",
+            db=str(tmp_path / "conductor.db"),
+            label="autopilot",
+            limit=20,
+            builder_profile="claude-sonnet",
+            issue=None,
+        )
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["readiness_failures"] == {
+        "2": ["issue has an active lease and cannot be re-leased"]
+    }
+
+
 def test_route_issue_explicit_issue_reports_active_lease_warning(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -722,6 +827,85 @@ def test_route_issue_explicit_issue_reports_active_lease_warning(
     payload = json.loads(capsys.readouterr().out)
     assert payload["readiness_failures"] == {
         "42": ["issue has an active lease and cannot be re-leased"]
+    }
+
+
+def test_route_issue_explicit_issue_reports_structural_readiness_failures(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    invalid = conductor.Issue(
+        number=42,
+        title="invalid",
+        body="## Problem\nmissing spec\n",
+        url="https://example.com/issues/42",
+        labels=["autopilot"],
+        updated_at="2026-03-06T00:00:00Z",
+    )
+    monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: invalid)
+
+    rc = conductor.route_issue(
+        argparse.Namespace(
+            repo="misty-step/bitterblossom",
+            db=str(tmp_path / "conductor.db"),
+            label="autopilot",
+            limit=20,
+            builder_profile="claude-sonnet",
+            issue=42,
+            json=True,
+        )
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["readiness_failures"] == {
+        "42": ["missing `## Product Spec` section", "missing `### Intent Contract` section"]
+    }
+
+
+def test_route_issue_returns_json_error_when_semantic_router_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    issue_a = conductor.Issue(
+        number=2,
+        title="ready",
+        body="## Product Spec\n### Intent Contract\n- good\n",
+        url="https://example.com/issues/2",
+        labels=["autopilot", "P0"],
+        updated_at="2026-03-06T00:00:00Z",
+    )
+    issue_b = conductor.Issue(
+        number=3,
+        title="ready too",
+        body="## Product Spec\n### Intent Contract\n- also good\n",
+        url="https://example.com/issues/3",
+        labels=["autopilot", "P1"],
+        updated_at="2026-03-06T00:00:00Z",
+    )
+    monkeypatch.setattr(conductor, "list_candidate_issues", lambda *_a, **_kw: [issue_a, issue_b])
+    monkeypatch.setattr(
+        conductor,
+        "route_issues_semantically",
+        lambda *_a, **_kw: (_ for _ in ()).throw(conductor.CmdError("router down")),
+    )
+
+    rc = conductor.route_issue(
+        argparse.Namespace(
+            repo="misty-step/bitterblossom",
+            db=str(tmp_path / "conductor.db"),
+            label="autopilot",
+            limit=20,
+            builder_profile="claude-sonnet",
+            issue=None,
+        )
+    )
+
+    assert rc == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "issue_number": None,
+        "profile": "claude-sonnet",
+        "rationale": "semantic router failed: router down",
+        "readiness_failures": {},
     }
 
 

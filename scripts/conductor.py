@@ -26,6 +26,7 @@ DEFAULT_BUILDER_TEMPLATE = ROOT / "scripts" / "prompts" / "conductor-builder-tem
 DEFAULT_REVIEWER_TEMPLATE = ROOT / "scripts" / "prompts" / "conductor-reviewer-template.md"
 DEFAULT_LABEL = "autopilot"
 DEFAULT_LEASE_BUFFER_SECONDS = 300
+ROUTER_TIMEOUT_SECONDS = 120
 SUCCESSFUL_CHECK_CONCLUSIONS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 FAILED_CHECK_CONCLUSIONS = {"FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STALE", "STARTUP_FAILURE"}
 FAILED_STATUS_CONTEXTS = {"FAILURE", "ERROR"}
@@ -916,8 +917,16 @@ def get_issue(runner: Runner, repo: str, issue_number: int) -> Issue:
 
 
 def has_markdown_heading(body: str, marker: str) -> bool:
-    pattern = rf"(?m)^{re.escape(marker)}(?:\s*)$"
-    return re.search(pattern, body) is not None
+    in_fence = False
+    for raw_line in body.splitlines():
+        line = raw_line.rstrip()
+        stripped = line.lstrip()
+        if re.match(r"^(```|~~~)", stripped):
+            in_fence = not in_fence
+            continue
+        if not in_fence and line == marker:
+            return True
+    return False
 
 
 def validate_issue_readiness(issue: Issue) -> ReadinessResult:
@@ -934,7 +943,9 @@ def collect_routable_issues(
     eligible: list[Issue] = []
     readiness_failures: dict[int, list[str]] = {}
     for issue in issues:
-        if lease_warnings(conn, repo, issue.number):
+        lease_messages = lease_warnings(conn, repo, issue.number)
+        if lease_messages:
+            readiness_failures[issue.number] = lease_messages
             continue
         readiness = validate_issue_readiness(issue)
         if readiness.ready:
@@ -961,7 +972,22 @@ def invoke_claude_json(prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
         prompt,
     ]
     try:
-        proc = subprocess.run(argv, cwd=ROOT, text=True, capture_output=True, check=False)
+        proc = subprocess.run(
+            argv,
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=ROUTER_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = getattr(exc, "stdout", None) or getattr(exc, "output", "") or ""
+        stderr = getattr(exc, "stderr", "") or ""
+        raise CmdError(
+            "semantic router timed out waiting for Claude:\n"
+            f"stdout:\n{stdout}\n"
+            f"stderr:\n{stderr}"
+        ) from exc
     except OSError as exc:
         raise CmdError(f"semantic router failed to launch Claude: {exc}") from exc
     if proc.returncode != 0:
@@ -2951,7 +2977,11 @@ def run_once(args: argparse.Namespace) -> int:
         issue = get_issue(runner, args.repo, args.issue)
     else:
         issues = list_candidate_issues(runner, args.repo, args.label, args.limit)
-        decision = pick_issue(runner, conn, issues, args.repo, builder_profile)
+        try:
+            decision = pick_issue(runner, conn, issues, args.repo, builder_profile)
+        except CmdError as exc:
+            print(f"semantic router failed: {exc}")
+            return 1
         if decision is None:
             print("no eligible issues")
             return 0
@@ -3611,7 +3641,17 @@ def route_issue(args: argparse.Namespace) -> int:
             }
             print(json.dumps(payload))
             return 0
-        decision = route_issues_semantically(runner, args.repo, eligible, args.builder_profile)
+        try:
+            decision = route_issues_semantically(runner, args.repo, eligible, args.builder_profile)
+        except CmdError as exc:
+            payload = {
+                "issue_number": None,
+                "profile": args.builder_profile,
+                "rationale": f"semantic router failed: {exc}",
+                "readiness_failures": {str(k): v for k, v in readiness_failures.items()},
+            }
+            print(json.dumps(payload))
+            return 1
         decision.readiness_failures.update(readiness_failures)
 
     payload = {
