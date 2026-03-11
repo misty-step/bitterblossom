@@ -243,6 +243,22 @@ Every run writes immediately to `.bb/conductor.db` and `.bb/events.jsonl` on the
 
 Long waits are heartbeat-backed. During review dispatch, PR-check polling, and trusted external review polling, the conductor refreshes both the run heartbeat and the lease expiry so a healthy run does not look stale just because GitHub or reviewers are slow.
 
+Builder runs now execute in a run-scoped Git worktree under the warm mirror:
+
+- mirror: `/home/sprite/workspace/<repo>`
+- builder worktree: `/home/sprite/workspace/<repo>/.bb/conductor/<run-id>/builder-worktree`
+- reviewer worktrees: `/home/sprite/workspace/<repo>/.bb/conductor/<run-id>/review-<reviewer>-worktree`
+
+The shared checkout stays warm for fetches and object reuse, but the conductor no longer reuses it as the execution surface for builder or reviewer runs.
+
+To inspect which worktree a completed run used on the worker:
+
+```bash
+python3 scripts/conductor.py show-runs --limit 5
+```
+
+The JSON row now includes `worktree_path`. That path is preserved in the run store even after the worktree has been cleaned up.
+
 ### Builder handoff boundary
 
 Once a builder writes its artifact and the referenced PR is verified, the conductor persists `phase=reviewing` and `pr_number` immediately. That write is the durable boundary between builder work and control-plane cleanup.
@@ -376,6 +392,5 @@ The `wrap_untrusted_issue_content` helper ([`scripts/conductor.py`](../scripts/c
 - SQLite only
 - single-tenant worker assumption
 - deterministic issue filtering, heuristic ranking for now
-- shared repo checkout on workers for now
 
-The accepted next cuts are in [ADR-003](./adr/003-conductor-control-plane.md): lease heartbeats, stale-lease reclaim, resume-first reconciliation, semantic routing, per-run worktrees, and parallel variants.
+The accepted next cuts are in [ADR-003](./adr/003-conductor-control-plane.md): stale-lease reclaim, resume-first reconciliation, semantic routing, and parallel variants.

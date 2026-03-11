@@ -534,6 +534,65 @@ func TestDispatchFlagPromptTemplate_Default(t *testing.T) {
 	}
 }
 
+func TestDispatchFlagWorkspace_Default(t *testing.T) {
+	t.Parallel()
+
+	cmd := newDispatchCmd()
+	f := cmd.Flags().Lookup("workspace")
+	if f == nil {
+		t.Fatal("--workspace flag not registered on dispatch command")
+	}
+	if f.DefValue != "" {
+		t.Fatalf("--workspace default = %q, want empty", f.DefValue)
+	}
+}
+
+func TestDispatchWorkspaceUsesOverrideWhenPresent(t *testing.T) {
+	t.Parallel()
+
+	got := dispatchWorkspace("misty-step/bitterblossom", "/tmp/run-123/worktree")
+	if got != "/tmp/run-123/worktree" {
+		t.Fatalf("dispatchWorkspace override = %q, want %q", got, "/tmp/run-123/worktree")
+	}
+}
+
+func TestDispatchWorkspaceFallsBackToRepoCheckout(t *testing.T) {
+	t.Parallel()
+
+	got := dispatchWorkspace("misty-step/bitterblossom", "")
+	if got != "/home/sprite/workspace/bitterblossom" {
+		t.Fatalf("dispatchWorkspace fallback = %q", got)
+	}
+}
+
+func TestCleanSignalsScriptForQuotesWorkspace(t *testing.T) {
+	t.Parallel()
+
+	workspace := `/tmp/run 123; touch /tmp/pwned`
+	script := cleanSignalsScriptFor(workspace)
+
+	if !strings.Contains(script, `export WORKSPACE="/tmp/run 123; touch /tmp/pwned"`) {
+		t.Fatalf("cleanSignalsScriptFor() missing quoted workspace: %q", script)
+	}
+	if !strings.Contains(script, `"$WORKSPACE"/TASK_COMPLETE`) {
+		t.Fatalf("cleanSignalsScriptFor() should use WORKSPACE env var: %q", script)
+	}
+}
+
+func TestVerifyWorkScriptForQuotesWorkspace(t *testing.T) {
+	t.Parallel()
+
+	workspace := `/tmp/run 123; touch /tmp/pwned`
+	script := verifyWorkScriptFor(workspace, "ghtoken123")
+
+	if !strings.Contains(script, `WORKSPACE="/tmp/run 123; touch /tmp/pwned"`) {
+		t.Fatalf("verifyWorkScriptFor() missing quoted workspace: %q", script)
+	}
+	if !strings.Contains(script, `cd "$WORKSPACE"`) {
+		t.Fatalf("verifyWorkScriptFor() should cd via WORKSPACE env var: %q", script)
+	}
+}
+
 func TestRenderPromptUsesCustomTemplate(t *testing.T) {
 	t.Parallel()
 

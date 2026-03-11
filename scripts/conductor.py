@@ -136,6 +136,7 @@ class DispatchTask:
     sprite: str
     prompt: str
     artifact_path: str
+    workspace: str | None = None
 
 
 @dataclass(slots=True)
@@ -296,6 +297,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         """
     )
     ensure_column(conn, "runs", "heartbeat_at", "text")
+    ensure_column(conn, "runs", "worktree_path", "text")
     ensure_column(conn, "leases", "heartbeat_at", "text")
     ensure_column(conn, "leases", "lease_expires_at", "text")
     ensure_column(conn, "leases", "blocked_at", "text")
@@ -636,6 +638,7 @@ def blocking_event_for_run(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row
 
 def serialize_run_surface(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
     heartbeat_at = row["heartbeat_at"]
+    worktree_path = row["worktree_path"] if "worktree_path" in row.keys() else None
     payload: dict[str, Any] = {
         "run_id": row["run_id"],
         "repo": row["repo"],
@@ -648,6 +651,7 @@ def serialize_run_surface(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[st
         "branch": row["branch"],
         "pr_number": row["pr_number"],
         "pr_url": row["pr_url"],
+        "worktree_path": worktree_path,
         "heartbeat_at": heartbeat_at,
         "heartbeat_age_seconds": age_seconds_from_now(heartbeat_at),
         "updated_at": row["updated_at"],
@@ -695,12 +699,70 @@ def repo_dir(repo: str) -> str:
     return f"/home/sprite/workspace/{repo.split('/')[-1]}"
 
 
+def run_root(repo: str, run_id: str) -> str:
+    return f"{repo_dir(repo)}/.bb/conductor/{run_id}"
+
+
+def run_workspace(repo: str, run_id: str, lane: str) -> str:
+    return f"{run_root(repo, run_id)}/{lane}-worktree"
+
+
 def artifact_rel(run_id: str, name: str) -> str:
     return f".bb/conductor/{run_id}/{name}"
 
 
 def artifact_abs(repo: str, rel_path: str) -> str:
     return f"{repo_dir(repo)}/{rel_path}"
+
+
+def sprite_bash(runner: Runner, sprite: str, script: str, *, timeout: int = 120) -> str:
+    return runner.run(
+        ["sprite", "-o", resolve_org(), "-s", sprite, "exec", "bash", "-lc", script],
+        timeout=timeout,
+    )
+
+
+def prepare_run_workspace(runner: Runner, sprite: str, repo: str, run_id: str, lane: str) -> str:
+    mirror = repo_dir(repo)
+    workspace = run_workspace(repo, run_id, lane)
+    script = "\n".join(
+        [
+            "set -euo pipefail",
+            f"mirror={shlex.quote(mirror)}",
+            f"workspace={shlex.quote(workspace)}",
+            'git -C "$mirror" fetch --all --prune',
+            'if git -C "$mirror" show-ref --verify --quiet refs/remotes/origin/master; then',
+            '  base_ref="origin/master"',
+            'elif git -C "$mirror" show-ref --verify --quiet refs/remotes/origin/main; then',
+            '  base_ref="origin/main"',
+            "else",
+            '  base_ref=$(git -C "$mirror" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || git -C "$mirror" rev-parse HEAD)',
+            "fi",
+            'mkdir -p "$(dirname "$workspace")"',
+            'rm -rf "$workspace"',
+            'git -C "$mirror" worktree prune',
+            'git -C "$mirror" worktree add --detach "$workspace" "$base_ref"',
+            'printf "%s\\n" "$workspace"',
+        ]
+    )
+    output = sprite_bash(runner, sprite, script, timeout=300).strip()
+    if output != workspace:
+        raise CmdError(f"unexpected workspace prepare output for {sprite}: {output!r}")
+    return workspace
+
+
+def cleanup_run_workspace(runner: Runner, sprite: str, repo: str, run_id: str, lane: str) -> None:
+    workspace = run_workspace(repo, run_id, lane)
+    script = "\n".join(
+        [
+            "set -euo pipefail",
+            f"mirror={shlex.quote(repo_dir(repo))}",
+            f"workspace={shlex.quote(workspace)}",
+            'git -C "$mirror" worktree remove --force "$workspace" 2>/dev/null || rm -rf "$workspace"',
+            'git -C "$mirror" worktree prune',
+        ]
+    )
+    sprite_bash(runner, sprite, script, timeout=180)
 
 
 def resolve_org() -> str:
@@ -2258,28 +2320,32 @@ def best_effort_pr_comment(
         record_event(conn, event_log, run_id, event_type, {"error": stringify_exc(exc), "body": body})
 
 
-def dispatch(runner: Runner, sprite: str, prompt: str, repo: str, prompt_template: pathlib.Path, timeout_minutes: int) -> None:
-    bb_bin = str(ROOT / "bin" / "bb")
+def dispatch(
+    runner: Runner,
+    sprite: str,
+    prompt: str,
+    repo: str,
+    prompt_template: pathlib.Path,
+    timeout_minutes: int,
+    *,
+    workspace: str | None = None,
+) -> None:
     runner.run(
-        [
-            bb_bin,
-            "dispatch",
-            sprite,
-            prompt,
-            "--repo",
-            repo,
-            "--prompt-template",
-            str(prompt_template),
-            "--timeout",
-            f"{timeout_minutes}m",
-        ],
+        dispatch_command(sprite, prompt, repo, prompt_template, timeout_minutes, workspace=workspace),
         timeout=max(300, timeout_minutes * 60 + 120),
     )
 
 
-def dispatch_command(sprite: str, prompt: str, repo: str, prompt_template: pathlib.Path, timeout_minutes: int) -> list[str]:
+def dispatch_command(
+    sprite: str,
+    prompt: str,
+    repo: str,
+    prompt_template: pathlib.Path,
+    timeout_minutes: int,
+    workspace: str | None = None,
+) -> list[str]:
     bb_bin = str(ROOT / "bin" / "bb")
-    return [
+    argv = [
         bb_bin,
         "dispatch",
         sprite,
@@ -2291,6 +2357,9 @@ def dispatch_command(sprite: str, prompt: str, repo: str, prompt_template: pathl
         "--timeout",
         f"{timeout_minutes}m",
     ]
+    if workspace:
+        argv.extend(["--workspace", workspace])
+    return argv
 
 
 def cleanup_sprite_processes(runner: Runner, sprite: str) -> None:
@@ -2314,8 +2383,9 @@ def start_dispatch_session(
     prompt_template: pathlib.Path,
     timeout_minutes: int,
     artifact_path: str,
+    workspace: str | None = None,
 ) -> DispatchSession:
-    argv = dispatch_command(sprite, prompt, repo, prompt_template, timeout_minutes)
+    argv = dispatch_command(sprite, prompt, repo, prompt_template, timeout_minutes, workspace=workspace)
     with tempfile.NamedTemporaryFile(prefix="bb-dispatch-", suffix=".log", delete=False) as fh:
         log_path = pathlib.Path(fh.name)
         proc = subprocess.Popen(
@@ -2326,7 +2396,7 @@ def start_dispatch_session(
             stderr=fh,
         )
     return DispatchSession(
-        task=DispatchTask(sprite=sprite, prompt=prompt, artifact_path=artifact_path),
+        task=DispatchTask(sprite=sprite, prompt=prompt, artifact_path=artifact_path, workspace=workspace),
         argv=argv,
         proc=proc,
         log_path=log_path,
@@ -2405,6 +2475,7 @@ def dispatch_tasks_until_artifacts(
                 prompt_template,
                 timeout_minutes,
                 task.artifact_path,
+                workspace=task.workspace,
             )
             sessions[task.sprite] = session
 
@@ -2482,10 +2553,12 @@ def dispatch_until_artifact(
     prompt_template: pathlib.Path,
     timeout_minutes: int,
     artifact_path: str,
+    *,
+    workspace: str | None = None,
 ) -> dict[str, Any]:
     payloads = dispatch_tasks_until_artifacts(
         runner,
-        [DispatchTask(sprite=sprite, prompt=prompt, artifact_path=artifact_path)],
+        [DispatchTask(sprite=sprite, prompt=prompt, artifact_path=artifact_path, workspace=workspace)],
         repo,
         prompt_template,
         timeout_minutes,
@@ -2502,6 +2575,7 @@ def run_builder(
     branch: str,
     prompt_template: pathlib.Path,
     timeout_minutes: int,
+    workspace: str | None = None,
     feedback: str | None = None,
     pr_number: int | None = None,
     pr_url: str | None = None,
@@ -2511,6 +2585,8 @@ def run_builder(
         cleanup_sprite_processes(runner, worker)
     except CmdError:
         pass
+    if workspace is None:
+        workspace = prepare_run_workspace(runner, worker, repo, run_id, "builder")
     builder_rel = artifact_rel(run_id, "builder-result.json")
     builder_prompt = build_builder_task(
         issue,
@@ -2530,6 +2606,7 @@ def run_builder(
         prompt_template,
         timeout_minutes,
         artifact_abs(repo, builder_rel),
+        workspace=workspace,
     )
     builder = parse_builder_result(payload, branch)
     builder.pr_number, builder.pr_url = verify_builder_pr(runner, repo, builder.pr_number, branch)
@@ -2552,6 +2629,7 @@ def run_review_round(
     on_tick: Callable[[], None] | None = None,
 ) -> list[ReviewResult]:
     reviews: dict[str, ReviewResult] = {}
+    prepared_reviewers: list[str] = []
     wave_id = start_review_wave(
         conn,
         run_id,
@@ -2567,6 +2645,8 @@ def run_review_round(
             except CmdError:
                 pass
             ensure_sprite_ready(runner, reviewer, repo, prompt_template)
+            workspace = prepare_run_workspace(runner, reviewer, repo, run_id, f"review-{reviewer}")
+            prepared_reviewers.append(reviewer)
             review_rel = artifact_rel(run_id, f"review-{reviewer}.json")
             review_prompt = build_review_task(issue, run_id, pr_number, pr_url, review_rel)
             tasks.append(
@@ -2574,6 +2654,7 @@ def run_review_round(
                     sprite=reviewer,
                     prompt=review_prompt,
                     artifact_path=artifact_abs(repo, review_rel),
+                    workspace=workspace,
                 )
             )
 
@@ -2596,6 +2677,25 @@ def run_review_round(
     except Exception:
         finish_review_wave(conn, wave_id, "partial" if reviews else "failed")
         raise
+    finally:
+        for reviewer in prepared_reviewers:
+            try:
+                cleanup_run_workspace(runner, reviewer, repo, run_id, f"review-{reviewer}")
+                record_event(
+                    conn,
+                    event_log,
+                    run_id,
+                    "reviewer_workspace_cleaned",
+                    {"reviewer": reviewer, "workspace": run_workspace(repo, run_id, f"review-{reviewer}")},
+                )
+            except Exception as exc:  # noqa: BLE001
+                record_event(
+                    conn,
+                    event_log,
+                    run_id,
+                    "cleanup_warning",
+                    {"error": f"reviewer workspace cleanup failed for {reviewer}: {stringify_exc(exc)}"},
+                )
     return ordered_reviews
 
 
@@ -2674,6 +2774,7 @@ def run_once(args: argparse.Namespace) -> int:
     merged = False
     block_on_release = False
     builder_handoff_recorded = False
+    builder_workspace_prepared = False
     max_pr_feedback_rounds = getattr(args, "max_pr_feedback_rounds", 1)
 
     try:
@@ -2714,6 +2815,10 @@ def run_once(args: argparse.Namespace) -> int:
         record_event(conn, event_log, run_id, "builder_selected", {"sprite": worker})
 
         branch = branch_name(issue.number, run_id_suffix(run_id))
+        builder_workspace = prepare_run_workspace(runner, worker, args.repo, run_id, "builder")
+        builder_workspace_prepared = True
+        update_run(conn, run_id, worktree_path=builder_workspace)
+        record_event(conn, event_log, run_id, "builder_workspace_prepared", {"workspace": builder_workspace})
         builder, builder_payload = run_builder(
             runner,
             args.repo,
@@ -2723,6 +2828,7 @@ def run_once(args: argparse.Namespace) -> int:
             branch,
             pathlib.Path(args.builder_template),
             args.builder_timeout,
+            workspace=builder_workspace,
         )
         update_run(
             conn,
@@ -2812,6 +2918,7 @@ def run_once(args: argparse.Namespace) -> int:
                     branch,
                     pathlib.Path(args.builder_template),
                     args.builder_timeout,
+                    workspace=builder_workspace,
                     feedback=feedback,
                     feedback_source="review",
                     pr_number=builder.pr_number,
@@ -2870,6 +2977,7 @@ def run_once(args: argparse.Namespace) -> int:
                         branch,
                         pathlib.Path(args.builder_template),
                         args.builder_timeout,
+                        workspace=builder_workspace,
                         feedback=feedback,
                         feedback_source="pr_review_threads",
                         pr_number=builder.pr_number,
@@ -2963,6 +3071,7 @@ def run_once(args: argparse.Namespace) -> int:
                             branch,
                             pathlib.Path(args.builder_template),
                             args.builder_timeout,
+                            workspace=builder_workspace,
                             feedback=feedback,
                             feedback_source="pr_review_threads",
                             pr_number=builder.pr_number,
@@ -3007,6 +3116,7 @@ def run_once(args: argparse.Namespace) -> int:
                 branch,
                 pathlib.Path(args.builder_template),
                 args.builder_timeout,
+                workspace=builder_workspace,
                 feedback=feedback,
                 feedback_source="ci",
                 pr_number=builder.pr_number,
@@ -3095,6 +3205,18 @@ def run_once(args: argparse.Namespace) -> int:
         )
         return 1
     finally:
+        if builder_workspace_prepared:
+            try:
+                cleanup_run_workspace(runner, worker, args.repo, run_id, "builder")
+                record_event(conn, event_log, run_id, "builder_workspace_cleaned", {"workspace": run_workspace(args.repo, run_id, "builder")})
+            except Exception as exc:  # noqa: BLE001
+                record_event(
+                    conn,
+                    event_log,
+                    run_id,
+                    "cleanup_warning",
+                    {"error": f"builder workspace cleanup failed: {stringify_exc(exc)}"},
+                )
         if block_on_release:
             block_lease(conn, args.repo, issue.number, run_id)
         else:
@@ -3116,7 +3238,7 @@ def show_runs(args: argparse.Namespace) -> int:
     rows = conn.execute(
         """
         select run_id, repo, issue_number, issue_title, phase, status, builder_sprite, builder_profile,
-               branch, pr_number, pr_url, heartbeat_at, updated_at
+               branch, pr_number, pr_url, heartbeat_at, updated_at, worktree_path
         from runs
         order by created_at desc
         limit ?

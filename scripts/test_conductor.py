@@ -16,6 +16,19 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent))
 import conductor  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _stub_run_once_worktrees(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> None:
+    node_name = request.node.name
+    if "run_once" not in node_name and node_name != "test_acceptance_trace_bullet_run_is_inspectable_from_run_store":
+        return
+    monkeypatch.setattr(
+        conductor,
+        "prepare_run_workspace",
+        lambda _runner, _sprite, repo, run_id, lane: conductor.run_workspace(repo, run_id, lane),
+    )
+    monkeypatch.setattr(conductor, "cleanup_run_workspace", lambda *_a, **_kw: None)
+
+
 def test_issue_priority_prefers_explicit_priority_labels() -> None:
     assert conductor.issue_priority(["bug", "P2"]) == (2, "P2")
     assert conductor.issue_priority(["enhancement", "P0"]) == (0, "P0")
@@ -29,6 +42,13 @@ def test_run_id_suffix_uses_trailing_token() -> None:
 def test_branch_name_is_stable() -> None:
     got = conductor.branch_name(42, "1777")
     assert got == "factory/42-1777"
+
+
+def test_run_workspace_uses_run_root_and_lane_suffix() -> None:
+    assert (
+        conductor.run_workspace("misty-step/bitterblossom", "run-42-1777", "builder")
+        == "/home/sprite/workspace/bitterblossom/.bb/conductor/run-42-1777/builder-worktree"
+    )
 
 
 def test_db_init_and_lease_cycle(tmp_path: pathlib.Path) -> None:
@@ -269,6 +289,20 @@ def test_pick_issue_treats_missing_lease_expiry_as_eligible(tmp_path: pathlib.Pa
     picked = conductor.pick_issue(conn, issues, "misty-step/bitterblossom")
     assert picked is not None
     assert picked.number == 2
+
+
+def test_dispatch_command_passes_workspace_override() -> None:
+    command = conductor.dispatch_command(
+        "fern",
+        "ship it",
+        "misty-step/bitterblossom",
+        pathlib.Path("scripts/prompts/conductor-builder-template.md"),
+        10,
+        workspace="/tmp/run-42/builder-worktree",
+    )
+
+    assert "--workspace" in command
+    assert "/tmp/run-42/builder-worktree" in command
 
 
 def test_summarize_reviews_includes_findings() -> None:
@@ -700,9 +734,16 @@ def test_dispatch_tasks_until_artifacts_runs_tasks_in_parallel(monkeypatch: pyte
     }
 
     def fake_start(
-        sprite: str, prompt: str, repo: str, prompt_template: pathlib.Path, timeout_minutes: int, artifact_path: str
+        sprite: str,
+        prompt: str,
+        repo: str,
+        prompt_template: pathlib.Path,
+        timeout_minutes: int,
+        artifact_path: str,
+        *,
+        workspace: str | None = None,
     ) -> conductor.DispatchSession:
-        _ = (prompt, repo, prompt_template, timeout_minutes)
+        _ = (prompt, repo, prompt_template, timeout_minutes, workspace)
         started.append(sprite)
         return conductor.DispatchSession(
             task=conductor.DispatchTask(sprite=sprite, prompt="", artifact_path=artifact_path),
@@ -750,9 +791,16 @@ def test_dispatch_tasks_until_artifacts_removes_session_before_on_artifact(monke
     stopped: list[tuple[str, bool]] = []
 
     def fake_start(
-        sprite: str, prompt: str, repo: str, prompt_template: pathlib.Path, timeout_minutes: int, artifact_path: str
+        sprite: str,
+        prompt: str,
+        repo: str,
+        prompt_template: pathlib.Path,
+        timeout_minutes: int,
+        artifact_path: str,
+        *,
+        workspace: str | None = None,
     ) -> conductor.DispatchSession:
-        _ = (prompt, repo, prompt_template, timeout_minutes)
+        _ = (prompt, repo, prompt_template, timeout_minutes, workspace)
         return conductor.DispatchSession(
             task=conductor.DispatchTask(sprite=sprite, prompt="", artifact_path=artifact_path),
             argv=[sprite],
@@ -786,10 +834,17 @@ def test_dispatch_tasks_until_artifacts_stops_started_sessions_when_startup_fail
     started = 0
 
     def fake_start(
-        sprite: str, prompt: str, repo: str, prompt_template: pathlib.Path, timeout_minutes: int, artifact_path: str
+        sprite: str,
+        prompt: str,
+        repo: str,
+        prompt_template: pathlib.Path,
+        timeout_minutes: int,
+        artifact_path: str,
+        *,
+        workspace: str | None = None,
     ) -> conductor.DispatchSession:
         nonlocal started
-        _ = (prompt, repo, prompt_template, timeout_minutes, artifact_path)
+        _ = (prompt, repo, prompt_template, timeout_minutes, artifact_path, workspace)
         started += 1
         if started == 2:
             raise conductor.CmdError("boom")
@@ -843,9 +898,16 @@ def test_dispatch_tasks_until_artifacts_timeout_reports_all_pending_sessions(
     ticks = iter([0.0, 0.0, 661.0])
 
     def fake_start(
-        sprite: str, prompt: str, repo: str, prompt_template: pathlib.Path, timeout_minutes: int, artifact_path: str
+        sprite: str,
+        prompt: str,
+        repo: str,
+        prompt_template: pathlib.Path,
+        timeout_minutes: int,
+        artifact_path: str,
+        *,
+        workspace: str | None = None,
     ) -> conductor.DispatchSession:
-        _ = (prompt, repo, prompt_template, timeout_minutes)
+        _ = (prompt, repo, prompt_template, timeout_minutes, workspace)
         log_path = tmp_path / f"{sprite}.log"
         log_path.write_text(f"{sprite} pending", encoding="utf-8")
         return conductor.DispatchSession(
@@ -993,6 +1055,11 @@ def test_run_review_round_persists_reviews_as_they_arrive(monkeypatch: pytest.Mo
     monkeypatch.setattr(conductor, "dispatch_tasks_until_artifacts", fake_dispatch_many)
     monkeypatch.setattr(conductor, "cleanup_sprite_processes", lambda _runner, sprite: cleaned.append(sprite))
     monkeypatch.setattr(conductor, "ensure_sprite_ready", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        conductor,
+        "prepare_run_workspace",
+        lambda _runner, _sprite, repo, run_id, lane: conductor.run_workspace(repo, run_id, lane),
+    )
 
     reviews = conductor.run_review_round(
         _RunnerSpy(),
@@ -1026,7 +1093,14 @@ def test_run_review_round_persists_reviews_as_they_arrive(monkeypatch: pytest.Mo
     events = conn.execute(
         "select event_type, payload_json from events where run_id = 'run-447-1' order by id"
     ).fetchall()
-    assert [row["event_type"] for row in events] == ["review_complete", "review_complete", "review_complete"]
+    assert [row["event_type"] for row in events] == [
+        "review_complete",
+        "review_complete",
+        "review_complete",
+        "reviewer_workspace_cleaned",
+        "reviewer_workspace_cleaned",
+        "reviewer_workspace_cleaned",
+    ]
     assert json.loads(events[0]["payload_json"]) == {"reviewer": "sage", "verdict": "pass"}
     assert json.loads(events[1]["payload_json"]) == {"reviewer": "fern", "verdict": "fix"}
 
@@ -1052,6 +1126,53 @@ def test_run_review_round_persists_reviews_as_they_arrive(monkeypatch: pytest.Mo
     assert findings[0].path == "README.md"
     assert findings[0].line == 10
     assert findings[0].message == "tighten copy"
+
+
+def test_run_review_round_cleans_only_prepared_reviewers(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=447, title="test", body="body", url="https://example.com/447", labels=["autopilot"])
+    cleaned_workspaces: list[str] = []
+
+    monkeypatch.setattr(conductor, "cleanup_sprite_processes", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(conductor, "ensure_sprite_ready", lambda *_args, **_kwargs: None)
+
+    def fake_prepare(_runner: object, reviewer: str, repo: str, run_id: str, lane: str) -> str:
+        if reviewer == "sage":
+            raise conductor.CmdError("sprite transport failed")
+        return conductor.run_workspace(repo, run_id, lane)
+
+    monkeypatch.setattr(conductor, "prepare_run_workspace", fake_prepare)
+    monkeypatch.setattr(
+        conductor,
+        "cleanup_run_workspace",
+        lambda _runner, reviewer, _repo, _run_id, _lane: cleaned_workspaces.append(reviewer),
+    )
+
+    with pytest.raises(conductor.CmdError, match="sprite transport failed"):
+        conductor.run_review_round(
+            _RunnerSpy(),
+            conn,
+            tmp_path / "events.jsonl",
+            "misty-step/bitterblossom",
+            issue,
+            "run-447-1",
+            463,
+            "https://github.com/misty-step/bitterblossom/pull/463",
+            ["fern", "sage", "thorn"],
+            pathlib.Path("scripts/prompts/conductor-reviewer-template.md"),
+            10,
+        )
+
+    assert cleaned_workspaces == ["fern"]
+
+    events = conn.execute(
+        "select event_type, payload_json from events where run_id = 'run-447-1' order by id"
+    ).fetchall()
+    assert [row["event_type"] for row in events] == ["reviewer_workspace_cleaned"]
+    assert json.loads(events[0]["payload_json"]) == {
+        "reviewer": "fern",
+        "workspace": conductor.run_workspace("misty-step/bitterblossom", "run-447-1", "review-fern"),
+    }
 
 
 def test_run_review_round_preserves_prior_wave_state(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
@@ -1084,6 +1205,11 @@ def test_run_review_round_preserves_prior_wave_state(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(conductor, "dispatch_tasks_until_artifacts", fake_dispatch_many)
     monkeypatch.setattr(conductor, "cleanup_sprite_processes", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(conductor, "ensure_sprite_ready", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        conductor,
+        "prepare_run_workspace",
+        lambda _runner, _sprite, repo, run_id, lane: conductor.run_workspace(repo, run_id, lane),
+    )
 
     conductor.run_review_round(
         _RunnerSpy(),
@@ -1213,6 +1339,11 @@ def test_run_review_round_marks_wave_partial_when_not_all_reviews_arrive(
     monkeypatch.setattr(conductor, "dispatch_tasks_until_artifacts", fake_dispatch_many)
     monkeypatch.setattr(conductor, "cleanup_sprite_processes", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(conductor, "ensure_sprite_ready", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        conductor,
+        "prepare_run_workspace",
+        lambda _runner, _sprite, repo, run_id, lane: conductor.run_workspace(repo, run_id, lane),
+    )
 
     with pytest.raises(KeyError):
         conductor.run_review_round(
@@ -1475,6 +1606,11 @@ def test_run_builder_precleans_worker(monkeypatch: pytest.MonkeyPatch) -> None:
         conductor,
         "verify_builder_pr",
         lambda *_args, **_kwargs: (465, "https://github.com/misty-step/bitterblossom/pull/465"),
+    )
+    monkeypatch.setattr(
+        conductor,
+        "prepare_run_workspace",
+        lambda _runner, _sprite, repo, run_id, lane: conductor.run_workspace(repo, run_id, lane),
     )
 
     builder, _payload = conductor.run_builder(
@@ -4186,3 +4322,187 @@ def test_run_once_cleanup_error_after_builder_handoff_does_not_record_false_fail
     event_types = [r[0] for r in conn.execute("select event_type from events where run_id like 'run-485-%'").fetchall()]
     assert "cleanup_warning" in event_types
     assert "command_failed" not in event_types
+
+
+def test_run_once_records_builder_worktree_path(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
+    issue = conductor.Issue(number=469, title="worktrees", body="body", url="https://example.com/469", labels=["autopilot"])
+    builder = conductor.BuilderResult(
+        status="ready_for_review",
+        branch="factory/469-1",
+        pr_number=470,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/470",
+        summary="done",
+        tests=[],
+    )
+    reviews = [
+        conductor.ReviewResult(reviewer="fern", verdict="pass", summary="ok", findings=[]),
+        conductor.ReviewResult(reviewer="sage", verdict="pass", summary="ok", findings=[]),
+        conductor.ReviewResult(reviewer="thorn", verdict="pass", summary="ok", findings=[]),
+    ]
+    prepared: list[tuple[str, str]] = []
+    cleaned: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
+    monkeypatch.setattr(conductor, "select_worker", lambda *_a, **_kw: "noble-blue-serpent")
+    monkeypatch.setattr(conductor, "ensure_reviewers_ready", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        conductor,
+        "prepare_run_workspace",
+        lambda _runner, sprite, _repo, _run_id, lane: prepared.append((sprite, lane))
+        or conductor.run_workspace("misty-step/bitterblossom", "run-469-1", lane),
+    )
+    monkeypatch.setattr(
+        conductor,
+        "cleanup_run_workspace",
+        lambda _runner, sprite, _repo, _run_id, lane: cleaned.append((sprite, lane)),
+    )
+
+    def fake_run_builder(
+        _runner: object, _repo: str, _sprite: str, _issue: object, _run_id: str, *_args: object, **_kwargs: object
+    ) -> tuple[conductor.BuilderResult, dict[str, object]]:
+        assert _kwargs["workspace"] == conductor.run_workspace("misty-step/bitterblossom", "run-469-1", "builder")
+        return builder, {"status": "ready_for_review"}
+
+    monkeypatch.setattr(conductor, "run_builder", fake_run_builder)
+    monkeypatch.setattr(conductor, "run_review_round", lambda *_a, **_kw: reviews)
+    monkeypatch.setattr(conductor, "ensure_pr_ready", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "wait_for_pr_checks", lambda *_a, **_kw: (True, "merge-gate: SUCCESS"))
+    monkeypatch.setattr(conductor, "ensure_required_checks_present", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "list_unresolved_review_threads", lambda *_a, **_kw: [])
+    monkeypatch.setattr(conductor, "merge_pr", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "comment_pr", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "comment_issue", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "run_id_for", lambda _issue_number: "run-469-1")
+
+    args = _make_run_once_args(tmp_path, issue_number=469)
+    rc = conductor.run_once(args)
+
+    assert rc == 0
+    assert ("noble-blue-serpent", "builder") in prepared
+    assert ("noble-blue-serpent", "builder") in cleaned
+
+    conn = conductor.open_db(pathlib.Path(args.db))
+    row = conn.execute("select worktree_path from runs where run_id = 'run-469-1'").fetchone()
+    assert row is not None
+    assert row["worktree_path"] == conductor.run_workspace(args.repo, "run-469-1", "builder")
+
+
+def test_run_once_cleans_builder_worktree_when_run_builder_raises(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    issue = conductor.Issue(number=469, title="worktrees", body="body", url="https://example.com/469", labels=["autopilot"])
+    prepared: list[tuple[str, str]] = []
+    cleaned: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
+    monkeypatch.setattr(conductor, "select_worker", lambda *_a, **_kw: "noble-blue-serpent")
+    monkeypatch.setattr(conductor, "ensure_reviewers_ready", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        conductor,
+        "prepare_run_workspace",
+        lambda _runner, sprite, _repo, _run_id, lane: prepared.append((sprite, lane))
+        or conductor.run_workspace("misty-step/bitterblossom", "run-469-1", lane),
+    )
+    monkeypatch.setattr(
+        conductor,
+        "cleanup_run_workspace",
+        lambda _runner, sprite, _repo, _run_id, lane: cleaned.append((sprite, lane)),
+    )
+    monkeypatch.setattr(
+        conductor,
+        "run_builder",
+        lambda *_a, **_kw: (_ for _ in ()).throw(conductor.CmdError("dispatch timed out")),
+    )
+    monkeypatch.setattr(conductor, "comment_issue", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "run_id_for", lambda _issue_number: "run-469-1")
+
+    args = _make_run_once_args(tmp_path, issue_number=469)
+    rc = conductor.run_once(args)
+
+    assert rc == 1
+    assert ("noble-blue-serpent", "builder") in prepared
+    assert ("noble-blue-serpent", "builder") in cleaned
+
+
+def test_prepare_run_workspace_rejects_empty_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(conductor, "sprite_bash", lambda *_a, **_kw: "")
+
+    with pytest.raises(conductor.CmdError, match="unexpected workspace prepare output"):
+        conductor.prepare_run_workspace(
+            object(),
+            "noble-blue-serpent",
+            "misty-step/bitterblossom",
+            "run-469-1",
+            "builder",
+        )
+
+
+def test_prepare_run_workspace_uses_remote_tracking_refs(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, str] = {}
+    expected_workspace = conductor.run_workspace("misty-step/bitterblossom", "run-469-1", "builder")
+
+    def fake_sprite_bash(_runner: object, _sprite: str, script: str, *, timeout: int) -> str:
+        _ = timeout
+        captured["script"] = script
+        return expected_workspace
+
+    monkeypatch.setattr(conductor, "sprite_bash", fake_sprite_bash)
+
+    workspace = conductor.prepare_run_workspace(
+        object(),
+        "noble-blue-serpent",
+        "misty-step/bitterblossom",
+        "run-469-1",
+        "builder",
+    )
+
+    assert workspace == expected_workspace
+    assert 'refs/remotes/origin/master' in captured["script"]
+    assert 'base_ref="origin/master"' in captured["script"]
+    assert 'refs/remotes/origin/HEAD' in captured["script"]
+
+
+def test_dispatch_until_artifact_passes_workspace_to_dispatch_task(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_dispatch_tasks_until_artifacts(
+        _runner: object,
+        tasks: list[conductor.DispatchTask],
+        _repo: str,
+        _prompt_template: pathlib.Path,
+        _timeout_minutes: int,
+        **_kwargs: object,
+    ) -> dict[str, dict[str, object]]:
+        captured["tasks"] = tasks
+        return {"fern": {"ok": True}}
+
+    monkeypatch.setattr(conductor, "dispatch_tasks_until_artifacts", fake_dispatch_tasks_until_artifacts)
+
+    payload = conductor.dispatch_until_artifact(
+        object(),
+        "fern",
+        "prompt",
+        "misty-step/bitterblossom",
+        pathlib.Path("scripts/prompts/conductor-builder-template.md"),
+        10,
+        "/tmp/artifact.json",
+        workspace="/tmp/worktree",
+    )
+
+    assert payload == {"ok": True}
+    tasks = captured["tasks"]
+    assert isinstance(tasks, list)
+    assert tasks[0].workspace == "/tmp/worktree"
+
+
+def test_show_runs_includes_worktree_path(tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=469, title="worktrees", body="", url="u469", labels=["autopilot"])
+    conductor.create_run(conn, "run-469-1", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(conn, "run-469-1", worktree_path="/tmp/run-469-1/builder-worktree")
+
+    rc = conductor.show_runs(argparse.Namespace(db=str(tmp_path / "conductor.db"), limit=5))
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload["worktree_path"] == "/tmp/run-469-1/builder-worktree"

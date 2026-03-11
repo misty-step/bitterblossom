@@ -39,3 +39,11 @@
 - scope: moved stale reclaim from silent backlog cleanup into explicit lease acquisition, added heartbeat refresh during long polling, and documented the new operator-visible reclaim events
 - blocker: none
 - pattern: when a control-plane recovery path matters to operators, record it as an explicit run event instead of hiding it inside queue hygiene
+
+## 2026-03-10 [issue #469](https://github.com/misty-step/bitterblossom/issues/469)
+
+- predicted: L
+- actual: M
+- scope: moved builder and reviewer execution off the shared checkout by threading run-scoped worktrees through conductor dispatch, run state, and operator docs
+- blocker: walkthrough and PR packaging took longer than the implementation because the repo had no existing walkthrough artifact convention
+- pattern: keep transport generic with one `--workspace` override, then let the conductor own run isolation and cleanup policy
