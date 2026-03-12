@@ -1663,7 +1663,7 @@ def prepare_run_workspace_with_retry(
         assert_run_still_leased(conn, repo, run_id)
         try:
             return prepare_run_workspace(runner, sprite, repo, run_id, lane)
-        except (CmdError, subprocess.TimeoutExpired) as exc:
+        except (CmdError, subprocess.TimeoutExpired, OSError) as exc:
             last_exc = exc
             payload = {
                 "sprite": sprite,
