@@ -2,12 +2,14 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONDUCTOR_PY="$SCRIPT_DIR/conductor.py"
 STATE_DIR="${BB_CONDUCTOR_STATE_DIR:-$HOME/.bb/conductor-supervisor}"
 LOG_FILE="$STATE_DIR/current.log"
 SUPERVISOR_PID_FILE="$STATE_DIR/supervisor.pid"
 CHILD_PID_FILE="$STATE_DIR/child.pid"
-LOCK_DIR="$STATE_DIR/lock"
 LAUNCHER_FILE="$STATE_DIR/launch.sh"
+ENV_FILE="${BB_CONDUCTOR_ENV_FILE:-$HOME/.bb/conductor-supervisor.env}"
 LOG_MAX_BYTES="${BB_CONDUCTOR_LOG_MAX_BYTES:-10485760}"
 LOG_KEEP_FILES="${BB_CONDUCTOR_LOG_KEEP_FILES:-10}"
 RESTART_DELAY_SECONDS="${BB_CONDUCTOR_RESTART_DELAY_SECONDS:-5}"
@@ -82,26 +84,34 @@ ensure_not_running() {
       echo "supervisor already running with pid $existing_pid" >&2
       exit 1
     fi
-    rm -f "$SUPERVISOR_PID_FILE"
   fi
 }
 
 acquire_lock() {
-  if mkdir "$LOCK_DIR" 2>/dev/null; then
+  if (set -o noclobber; printf '%s\n' "$$" > "$SUPERVISOR_PID_FILE") 2>/dev/null; then
     return 0
   fi
 
+  local existing_pid=""
   if [[ -f "$SUPERVISOR_PID_FILE" ]]; then
-    local existing_pid
     existing_pid="$(cat "$SUPERVISOR_PID_FILE")"
-    if kill -0 "$existing_pid" 2>/dev/null; then
+    if [[ -n "$existing_pid" ]] && kill -0 "$existing_pid" 2>/dev/null; then
       echo "supervisor already running with pid $existing_pid" >&2
       exit 1
     fi
+  else
+    echo "supervisor start already in progress" >&2
+    exit 1
   fi
 
-  rm -rf "$LOCK_DIR"
-  mkdir "$LOCK_DIR"
+  rm -f "$SUPERVISOR_PID_FILE"
+  if (set -o noclobber; printf '%s\n' "$$" > "$SUPERVISOR_PID_FILE") 2>/dev/null; then
+    append_log "recovered stale supervisor pid file for pid ${existing_pid:-unknown}"
+    return 0
+  fi
+
+  echo "supervisor lock acquisition raced; try again" >&2
+  exit 1
 }
 
 cleanup_supervisor() {
@@ -113,12 +123,24 @@ cleanup_supervisor() {
       wait "$child_pid" 2>/dev/null || true
     fi
   fi
-  rm -f "$SUPERVISOR_PID_FILE" "$CHILD_PID_FILE"
-  rm -rf "$LOCK_DIR"
+  if [[ -f "$SUPERVISOR_PID_FILE" ]] && [[ "$(cat "$SUPERVISOR_PID_FILE")" == "$$" ]]; then
+    rm -f "$SUPERVISOR_PID_FILE"
+  fi
+  rm -f "$CHILD_PID_FILE"
 }
 
 stop_supervisor() {
   if [[ ! -f "$SUPERVISOR_PID_FILE" ]]; then
+    if [[ -f "$CHILD_PID_FILE" ]]; then
+      local orphan_child_pid
+      orphan_child_pid="$(cat "$CHILD_PID_FILE")"
+      if kill -0 "$orphan_child_pid" 2>/dev/null; then
+        kill "$orphan_child_pid" 2>/dev/null || true
+      fi
+      rm -f "$CHILD_PID_FILE"
+      echo "supervisor pid file missing; cleaned orphaned child pid $orphan_child_pid"
+      return 0
+    fi
     echo "supervisor not running"
     return 0
   fi
@@ -127,6 +149,13 @@ stop_supervisor() {
   supervisor_pid="$(cat "$SUPERVISOR_PID_FILE")"
   if ! kill -0 "$supervisor_pid" 2>/dev/null; then
     echo "supervisor pid file is stale"
+    if [[ -f "$CHILD_PID_FILE" ]]; then
+      local child_pid
+      child_pid="$(cat "$CHILD_PID_FILE")"
+      if kill -0 "$child_pid" 2>/dev/null; then
+        kill "$child_pid" 2>/dev/null || true
+      fi
+    fi
     rm -f "$SUPERVISOR_PID_FILE" "$CHILD_PID_FILE"
     return 0
   fi
@@ -140,6 +169,10 @@ stop_supervisor() {
   fi
 
   kill "$supervisor_pid"
+  local deadline=$(( $(date +%s) + 10 ))
+  while kill -0 "$supervisor_pid" 2>/dev/null && (( $(date +%s) < deadline )); do
+    sleep 0.1
+  done
   echo "stopped supervisor pid $supervisor_pid"
 }
 
@@ -185,6 +218,9 @@ write_launcher() {
   {
     echo '#!/usr/bin/env bash'
     echo 'set -euo pipefail'
+    printf 'if [[ -f %q ]]; then\n' "$ENV_FILE"
+    printf '  source %q\n' "$ENV_FILE"
+    printf 'fi\n'
     printf 'cd %q\n' "$repo_root"
     printf 'exec %q run' "$repo_root/scripts/conductor-supervise.sh"
     local arg
@@ -239,7 +275,7 @@ run_child_once() {
   fifo="$fifo_dir/output"
   mkfifo "$fifo"
 
-  python3 scripts/conductor.py loop "$@" > "$fifo" 2>&1 &
+  python3 "$CONDUCTOR_PY" loop "$@" > "$fifo" 2>&1 &
   local child_pid=$!
   echo "$child_pid" > "$CHILD_PID_FILE"
 
@@ -248,9 +284,7 @@ run_child_once() {
   done < "$fifo"
 
   local rc=0
-  if ! wait "$child_pid"; then
-    rc=$?
-  fi
+  wait "$child_pid" || rc=$?
 
   rm -f "$fifo" "$CHILD_PID_FILE"
   rmdir "$fifo_dir"
@@ -261,25 +295,37 @@ run_supervisor() {
   acquire_lock
   trap 'exit 0' TERM INT HUP
   trap cleanup_supervisor EXIT
-  echo "$$" > "$SUPERVISOR_PID_FILE"
   append_log "supervisor starting"
 
   while true; do
     if run_child_once "$@"; then
       append_log "conductor loop exited cleanly; restarting in ${RESTART_DELAY_SECONDS}s"
     else
-      local rc=$?
+      local rc
+      rc=$?
       append_log "conductor loop exited with code ${rc}; restarting in ${RESTART_DELAY_SECONDS}s"
     fi
-    sleep "$RESTART_DELAY_SECONDS"
+    sleep "$RESTART_DELAY_SECONDS" & wait $!
   done
 }
 
 start_supervisor() {
   ensure_not_running
   nohup "$0" run "$@" >/dev/null 2>&1 &
-  local launcher_pid=$!
-  echo "started supervisor pid $launcher_pid"
+  local deadline=$(( $(date +%s) + 5 ))
+  while (( $(date +%s) < deadline )); do
+    if [[ -f "$SUPERVISOR_PID_FILE" ]]; then
+      local supervisor_pid
+      supervisor_pid="$(cat "$SUPERVISOR_PID_FILE")"
+      if [[ -n "$supervisor_pid" ]] && kill -0 "$supervisor_pid" 2>/dev/null; then
+        echo "started supervisor pid $supervisor_pid"
+        return 0
+      fi
+    fi
+    sleep 0.1
+  done
+  echo "supervisor launch did not publish a live pid within 5s" >&2
+  return 1
 }
 
 main() {

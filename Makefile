@@ -29,6 +29,8 @@ lint-python:
 conductor-check:
 	python3 scripts/conductor.py check-env
 
+# CONDUCTOR_SUPERVISOR_ARGS is an operator shell passthrough. It is only for
+# trusted local invocation, not untrusted input.
 conductor-start:
 	./scripts/conductor-supervise.sh start $(CONDUCTOR_SUPERVISOR_ARGS)
 

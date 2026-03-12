@@ -214,8 +214,12 @@ bb setup coordinator --repo misty-step/bitterblossom
 
 ```bash
 sprite exec coordinator -- bash -lc '
-  echo "export GITHUB_TOKEN=..." >> ~/.bashrc
-  echo "export SPRITE_TOKEN=..." >> ~/.bashrc
+  mkdir -p ~/.bb
+  cat > ~/.bb/conductor-supervisor.env <<EOF
+export GITHUB_TOKEN=...
+export SPRITE_TOKEN=...
+EOF
+  chmod 600 ~/.bb/conductor-supervisor.env
 '
 ```
 
@@ -239,6 +243,7 @@ The supported coordinator contract is:
 
 - `scripts/conductor-supervise.sh run ...` owns the long-lived process and restarts `python3 scripts/conductor.py loop ...` after both clean exits and crashes.
 - `scripts/conductor-supervise.sh install-cron ...` installs a user `@reboot` entry that relaunches the supervisor after coordinator reboot.
+- The reboot launcher sources `~/.bb/conductor-supervisor.env` before starting the supervisor, so tokens are available to cron's non-interactive shell.
 - Supervisor state lives under `~/.bb/conductor-supervisor/` with a stable `current.log`, `supervisor.pid`, `child.pid`, and `launch.sh`.
 - Logs are bounded locally: when `current.log` reaches `10 MiB` (override with `BB_CONDUCTOR_LOG_MAX_BYTES`), the supervisor rotates it to `conductor-YYYYmmdd-HHMMSS.log` and keeps the newest `10` archived files (override with `BB_CONDUCTOR_LOG_KEEP_FILES`).
 
@@ -411,7 +416,7 @@ Fix the root cause, then restart the supervisor:
 ```bash
 sprite exec coordinator -- bash -lc '
   cd /home/sprite/workspace/bitterblossom
-  ./scripts/conductor-supervise.sh stop || true
+  ./scripts/conductor-supervise.sh stop
   ./scripts/conductor-supervise.sh start \
     --repo misty-step/bitterblossom \
     --label autopilot \

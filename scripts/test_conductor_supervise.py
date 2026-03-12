@@ -62,6 +62,7 @@ cat > "{crontab_stdin}"
     assert launcher.exists()
     assert os.access(launcher, os.X_OK)
     launcher_text = launcher.read_text(encoding="utf-8")
+    assert "conductor-supervisor.env" in launcher_text
     assert f"cd {repo_root}" in launcher_text
     assert "scripts/conductor-supervise.sh run" in launcher_text
     assert "--repo misty-step/bitterblossom" in launcher_text
@@ -102,6 +103,102 @@ def test_rotate_logs_archives_current_log_and_prunes_old_entries(tmp_path: Path)
     assert any(log.read_text(encoding="utf-8") == "x" * 128 for log in archived_logs)
 
 
+def test_rotate_logs_force_rotates_small_file(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    state_dir = home / ".bb" / "conductor-supervisor"
+    state_dir.mkdir(parents=True)
+    current_log = state_dir / "current.log"
+    current_log.write_text("small", encoding="utf-8")
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["BB_CONDUCTOR_LOG_MAX_BYTES"] = "1024"
+
+    subprocess.run(
+        [str(SCRIPT), "rotate-logs", "--force"],
+        check=True,
+        env=env,
+        cwd=ROOT,
+        text=True,
+    )
+
+    archived_logs = sorted(state_dir.glob("conductor-*.log"))
+    assert len(archived_logs) == 1
+    assert archived_logs[0].read_text(encoding="utf-8") == "small"
+    assert not current_log.exists()
+
+
+def test_status_reports_operator_state(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+
+    write_executable(
+        fake_bin / "crontab",
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "-l" ]]; then
+  echo "@reboot /tmp/launch.sh >/dev/null 2>&1"
+  exit 0
+fi
+exit 0
+""",
+    )
+
+    home = tmp_path / "home"
+    state_dir = home / ".bb" / "conductor-supervisor"
+    state_dir.mkdir(parents=True)
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+
+    result = subprocess.run(
+        [str(SCRIPT), "status"],
+        check=True,
+        env=env,
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+    )
+
+    assert "state_dir=" in result.stdout
+    assert "supervisor_status=stopped" in result.stdout
+    assert "child_status=stopped" in result.stdout
+    assert "cron_status=missing" in result.stdout
+
+
+def test_stop_cleans_stale_supervisor_pid_and_live_child(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    state_dir = home / ".bb" / "conductor-supervisor"
+    state_dir.mkdir(parents=True)
+
+    sleeper = subprocess.Popen(["/bin/sh", "-c", "sleep 30"])
+    (state_dir / "supervisor.pid").write_text("999999\n", encoding="utf-8")
+    (state_dir / "child.pid").write_text(f"{sleeper.pid}\n", encoding="utf-8")
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+
+    subprocess.run(
+        [str(SCRIPT), "stop"],
+        check=True,
+        env=env,
+        cwd=ROOT,
+        text=True,
+    )
+
+    for _ in range(40):
+        if sleeper.poll() is not None:
+            break
+        time.sleep(0.1)
+    else:
+        sleeper.kill()
+        raise AssertionError("stop did not kill the stale child process")
+
+    assert not (state_dir / "supervisor.pid").exists()
+    assert not (state_dir / "child.pid").exists()
+
+
 def test_stop_terminates_supervisor_and_child(tmp_path: Path) -> None:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -126,12 +223,13 @@ done
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
     env["BB_CONDUCTOR_RESTART_DELAY_SECONDS"] = "1"
 
-    subprocess.run(
+    start = subprocess.run(
         [str(SCRIPT), "start", "--repo", "misty-step/bitterblossom"],
         check=True,
         env=env,
         cwd=ROOT,
         text=True,
+        capture_output=True,
     )
 
     state_dir = home / ".bb" / "conductor-supervisor"
@@ -147,6 +245,7 @@ done
 
     supervisor_pid = int(supervisor_pid_path.read_text(encoding="utf-8").strip())
     child_pid = int(child_pid_file.read_text(encoding="utf-8").strip())
+    assert f"started supervisor pid {supervisor_pid}" in start.stdout
 
     subprocess.run(
         [str(SCRIPT), "stop"],
