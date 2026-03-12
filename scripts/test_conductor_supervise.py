@@ -199,6 +199,55 @@ def test_stop_cleans_stale_supervisor_pid_and_live_child(tmp_path: Path) -> None
     assert not (state_dir / "child.pid").exists()
 
 
+def test_stop_returns_error_when_supervisor_survives_timeout(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    clock_file = tmp_path / "clock.txt"
+    clock_file.write_text("0\n", encoding="utf-8")
+
+    write_executable(
+        fake_bin / "date",
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+current="$(cat "{clock_file}")"
+printf '%s\\n' "$current"
+printf '%s\\n' "$((current + 1))" > "{clock_file}"
+""",
+    )
+    write_executable(
+        fake_bin / "sleep",
+        """#!/usr/bin/env bash
+set -euo pipefail
+exit 0
+""",
+    )
+
+    home = tmp_path / "home"
+    state_dir = home / ".bb" / "conductor-supervisor"
+    state_dir.mkdir(parents=True)
+
+    supervisor = subprocess.Popen(["/bin/sh", "-c", "trap '' TERM; while true; do sleep 30; done"])
+    (state_dir / "supervisor.pid").write_text(f"{supervisor.pid}\n", encoding="utf-8")
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+
+    result = subprocess.run(
+        [str(SCRIPT), "stop"],
+        env=env,
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 1
+    assert "did not stop within 10s" in result.stderr
+
+    supervisor.kill()
+    supervisor.wait(timeout=5)
+
+
 def test_stop_terminates_supervisor_and_child(tmp_path: Path) -> None:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -235,6 +284,8 @@ done
     state_dir = home / ".bb" / "conductor-supervisor"
     supervisor_pid_path = state_dir / "supervisor.pid"
     child_state_pid_path = state_dir / "child.pid"
+    stale_fifo_dir = state_dir / "fifo.stale00"
+    stale_fifo_dir.mkdir(parents=True, exist_ok=True)
 
     for _ in range(40):
         if supervisor_pid_path.exists() and child_state_pid_path.exists() and child_pid_file.exists():
@@ -271,3 +322,46 @@ done
         time.sleep(0.1)
     else:
         raise AssertionError("stop did not terminate the supervised processes")
+
+    assert not stale_fifo_dir.exists()
+
+
+def test_run_logs_nonzero_child_exit_code(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+
+    write_executable(
+        fake_bin / "python3",
+        """#!/usr/bin/env bash
+set -euo pipefail
+echo boom
+exit 7
+""",
+    )
+
+    home = tmp_path / "home"
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["BB_CONDUCTOR_RESTART_DELAY_SECONDS"] = "1"
+
+    supervisor = subprocess.Popen(
+        [str(SCRIPT), "run", "--repo", "misty-step/bitterblossom"],
+        env=env,
+        cwd=ROOT,
+        text=True,
+    )
+
+    log_file = home / ".bb" / "conductor-supervisor" / "current.log"
+    try:
+        for _ in range(40):
+            if log_file.exists():
+                log_text = log_file.read_text(encoding="utf-8")
+                if "conductor loop exited with code 7" in log_text:
+                    break
+            time.sleep(0.1)
+        else:
+            raise AssertionError("supervisor did not log the child exit code")
+    finally:
+        supervisor.terminate()
+        supervisor.wait(timeout=5)

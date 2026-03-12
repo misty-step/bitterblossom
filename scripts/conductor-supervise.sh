@@ -54,7 +54,8 @@ rotate_logs_if_needed() {
     return 0
   fi
 
-  local archive="$STATE_DIR/conductor-$(date +"%Y%m%d-%H%M%S")"
+  local archive
+  archive="$STATE_DIR/conductor-$(date +"%Y%m%d-%H%M%S")"
   if [[ -e "${archive}.log" ]]; then
     archive="${archive}-$$"
   fi
@@ -115,6 +116,7 @@ acquire_lock() {
 }
 
 cleanup_supervisor() {
+  rm -rf "$STATE_DIR"/fifo.*
   if [[ -f "$CHILD_PID_FILE" ]]; then
     local child_pid
     child_pid="$(cat "$CHILD_PID_FILE")"
@@ -173,6 +175,10 @@ stop_supervisor() {
   while kill -0 "$supervisor_pid" 2>/dev/null && (( $(date +%s) < deadline )); do
     sleep 0.1
   done
+  if kill -0 "$supervisor_pid" 2>/dev/null; then
+    echo "supervisor did not stop within 10s; pid $supervisor_pid may still be running" >&2
+    return 1
+  fi
   echo "stopped supervisor pid $supervisor_pid"
 }
 
@@ -297,11 +303,11 @@ run_supervisor() {
   trap cleanup_supervisor EXIT
   append_log "supervisor starting"
 
+  local rc=0
   while true; do
     if run_child_once "$@"; then
       append_log "conductor loop exited cleanly; restarting in ${RESTART_DELAY_SECONDS}s"
     else
-      local rc
       rc=$?
       append_log "conductor loop exited with code ${rc}; restarting in ${RESTART_DELAY_SECONDS}s"
     fi
