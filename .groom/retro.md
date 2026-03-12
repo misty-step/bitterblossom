@@ -64,6 +64,14 @@
 - blocker: none
 - pattern: when one loop owns both production and governance, carve out the adoption boundary in persisted state first so delayed-merge policy can evolve without forking the ledger
 
+## 2026-03-11 [issue #500](https://github.com/misty-step/bitterblossom/issues/500)
+
+- predicted: L
+- actual: M
+- scope: extended duplicate suppression from PR-thread-only handling to all review findings and emitted explicit review-wave events so settlement becomes inspectable from the run store
+- blocker: none
+- pattern: if convergence is part of the product contract, record it directly in the ledger and event stream instead of inferring it from helper control flow
+
 ## 2026-03-11 [issue #482](https://github.com/misty-step/bitterblossom/issues/482)
 
 - predicted: M
