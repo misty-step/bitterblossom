@@ -27,8 +27,11 @@ Remote run artifacts live on the worker sprite under:
 - `${WORKSPACE}/.bb/conductor/<run_id>/review-<sprite>.json`
 
 Before builder or reviewer dispatch, the conductor probes sprite readiness with
-`bb dispatch --dry-run`. Builder selection is probe-only: unhealthy workers are
-skipped immediately so the conductor can fall through the pool quickly. Reviewer
+`bb dispatch --dry-run`. Builder workers are now modeled as logical slots:
+`--worker fern:2 --worker sage` means two builder slots on `fern` and one on
+`sage`. Unhealthy builder slots accrue probe failures in SQLite and drain
+themselves after repeated failures so the conductor falls through to healthy
+capacity instead of retrying the same broken slot immediately. Reviewer
 readiness is stricter: if a probe fails, the conductor attempts one forced
 repair with `bb setup <sprite> --repo <owner/repo> --force`, then re-probes.
 Runs fail fast before builder work if the reviewer pool cannot be made
@@ -139,6 +142,15 @@ Inspect runs:
 python3 scripts/conductor.py show-runs --limit 20
 python3 scripts/conductor.py show-run --run-id run-450-1772813415
 python3 scripts/conductor.py show-events --run-id run-450-1772813415
+python3 scripts/conductor.py show-workers \
+  --repo misty-step/bitterblossom \
+  --worker noble-blue-serpent:2 \
+  --worker moss \
+  --desired-concurrency 2
+python3 scripts/conductor.py reset-worker-slots \
+  --repo misty-step/bitterblossom \
+  --worker noble-blue-serpent \
+  --worker moss
 ```
 
 `show-runs` emits one JSON object per run. The operator contract is that each row includes the current `phase` and `status`, the raw `heartbeat_at` timestamp, a computed `heartbeat_age_seconds`, and when applicable a `blocking_reason` plus the source `blocking_event_type`.
@@ -146,6 +158,19 @@ python3 scripts/conductor.py show-events --run-id run-450-1772813415
 `show-events` emits one JSON object for the requested run with a `run` metadata envelope, `latest_event_type`, `latest_event_at`, and an `events` array. Review convergence is now explicit in that stream: `review_wave_started`, `review_wave_completed`, and `external_review_wait_complete` events let operators inspect when a council round began, when a PR-thread scan or external-review wait settled, and why governance advanced or stopped.
 
 `show-run` is the narrower single-run inspection surface: it returns the same run metadata together with a `recent_events` array keyed by `run_id`.
+
+`show-workers` is the worker-pool admin surface. It returns slot-level health,
+current assignments, computed backfill demand against `--desired-concurrency`,
+and recent slot-drain / selection events so operators can see which capacity is
+healthy before touching sprites manually. On a fresh database it still reports
+the configured slots from `--worker ...` even before any run has materialized
+those slot rows in SQLite, so the inspection surface stays truthful without
+seeding state as a side effect.
+
+`reset-worker-slots` is the recovery surface for drained capacity. It resets the
+matching workers back to `active`, clears probe failures, and removes stale
+slot assignment state so transient probe failures do not strand worker capacity
+forever.
 
 ## Acceptance Proof
 
