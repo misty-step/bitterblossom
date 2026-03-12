@@ -46,6 +46,11 @@ FINDING_SEVERITIES = {"critical", "high", "medium", "low", "unknown"}
 FINDING_DECISIONS = {"fix_now", "defer", "reject", "noise", "pending"}
 FINDING_STATUSES = {"open", "addressed", "deferred", "rejected", "duplicate", "pending"}
 INACTIVE_FINDING_STATUSES = {"addressed", "deferred", "rejected", "duplicate"}
+WORKER_SLOT_ACTIVE = "active"
+WORKER_SLOT_DRAINED = "drained"
+WORKER_SLOT_MAINTENANCE = "maintenance"
+WORKER_SLOT_STATES = {WORKER_SLOT_ACTIVE, WORKER_SLOT_DRAINED, WORKER_SLOT_MAINTENANCE}
+WORKER_DRAIN_FAILURE_THRESHOLD = 2
 
 
 @dataclass(slots=True)
@@ -153,6 +158,20 @@ class DispatchSession:
 class LeaseAcquireResult:
     acquired: bool
     reclaimed_run_id: str | None = None
+
+
+@dataclass(slots=True)
+class WorkerSlot:
+    id: int
+    repo: str
+    worker: str
+    slot_index: int
+    state: str
+    consecutive_failures: int
+    current_run_id: str | None
+    last_probe_at: str | None
+    last_error: str | None
+    updated_at: str
 
 
 class CmdError(RuntimeError):
@@ -295,10 +314,25 @@ def init_db(conn: sqlite3.Connection) -> None:
         );
         create unique index if not exists idx_review_findings_identity
             on review_findings (wave_id, reviewer, source_kind, source_id);
+
+        create table if not exists worker_slots (
+            id integer primary key autoincrement,
+            repo text not null,
+            worker text not null,
+            slot_index integer not null,
+            state text not null default 'active',
+            consecutive_failures integer not null default 0,
+            current_run_id text,
+            last_probe_at text,
+            last_error text,
+            updated_at text not null,
+            unique (repo, worker, slot_index)
+        );
         """
     )
     ensure_column(conn, "runs", "heartbeat_at", "text")
     ensure_column(conn, "runs", "worktree_path", "text")
+    ensure_column(conn, "runs", "builder_slot_id", "integer")
     ensure_column(conn, "leases", "heartbeat_at", "text")
     ensure_column(conn, "leases", "lease_expires_at", "text")
     ensure_column(conn, "leases", "blocked_at", "text")
@@ -486,7 +520,7 @@ def recent_events(conn: sqlite3.Connection, run_id: str, limit: int) -> list[dic
         select run_id, event_type, payload_json, created_at
         from events
         where run_id = ?
-        order by id desc
+        order by events.id desc
         limit ?
         """,
         (run_id, limit),
@@ -648,6 +682,7 @@ def serialize_run_surface(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[st
         "phase": row["phase"],
         "status": row["status"],
         "builder_sprite": row["builder_sprite"],
+        "builder_slot_id": row["builder_slot_id"] if "builder_slot_id" in row.keys() else None,
         "builder_profile": row["builder_profile"],
         "branch": row["branch"],
         "pr_number": row["pr_number"],
@@ -694,6 +729,192 @@ def run_id_suffix(run_id: str) -> str:
 def branch_name(issue_number: int, run_suffix: str) -> str:
     """Build a trusted branch name from conductor-owned identifiers only."""
     return f"factory/{issue_number}-{run_suffix}"
+
+
+def parse_worker_capacity(spec: str) -> tuple[str, int]:
+    worker, sep, raw_slots = spec.rpartition(":")
+    if not sep:
+        return spec, 1
+    if not worker:
+        raise CmdError(f"invalid worker spec {spec!r}")
+    try:
+        slots = int(raw_slots)
+    except ValueError:
+        return spec, 1
+    if slots <= 0:
+        raise CmdError(f"invalid worker slot count in {spec!r}")
+    return worker, slots
+
+
+def worker_capacities(workers: list[str]) -> dict[str, int]:
+    capacities: dict[str, int] = {}
+    for spec in workers:
+        worker, slots = parse_worker_capacity(spec)
+        capacities[worker] = max(capacities.get(worker, 0), slots)
+    return capacities
+
+
+def uses_explicit_worker_capacity(workers: list[str]) -> bool:
+    for spec in workers:
+        worker, slots = parse_worker_capacity(spec)
+        if worker != spec or slots != 1:
+            return True
+    return False
+
+
+def load_worker_slots(conn: sqlite3.Connection, repo: str, workers: list[str]) -> list[WorkerSlot]:
+    capacities = worker_capacities(workers)
+    if not capacities:
+        return []
+    placeholders = ",".join("?" for _ in capacities)
+    rows = conn.execute(
+        f"""
+        select id, repo, worker, slot_index, state, consecutive_failures, current_run_id, last_probe_at, last_error, updated_at
+        from worker_slots
+        where repo = ? and worker in ({placeholders})
+        """,
+        (repo, *capacities.keys()),
+    ).fetchall()
+    order = {worker: index for index, worker in enumerate(capacities.keys())}
+    slots = [
+        WorkerSlot(
+            id=int(row["id"]),
+            repo=str(row["repo"]),
+            worker=str(row["worker"]),
+            slot_index=int(row["slot_index"]),
+            state=str(row["state"]),
+            consecutive_failures=int(row["consecutive_failures"]),
+            current_run_id=str(row["current_run_id"]) if row["current_run_id"] is not None else None,
+            last_probe_at=str(row["last_probe_at"]) if row["last_probe_at"] is not None else None,
+            last_error=str(row["last_error"]) if row["last_error"] is not None else None,
+            updated_at=str(row["updated_at"]),
+        )
+        for row in rows
+    ]
+    return sorted(
+        slots,
+        key=lambda slot: (
+            slot.consecutive_failures,
+            0 if slot.last_probe_at is None else 1,
+            slot.last_probe_at or "",
+            order.get(slot.worker, len(order)),
+            slot.slot_index,
+        ),
+    )
+
+
+def seed_worker_slots(conn: sqlite3.Connection, repo: str, workers: list[str]) -> None:
+    ts = now_utc()
+    for worker, slots in worker_capacities(workers).items():
+        for slot_index in range(1, slots + 1):
+            conn.execute(
+                """
+                insert into worker_slots (repo, worker, slot_index, state, consecutive_failures, updated_at)
+                values (?, ?, ?, ?, 0, ?)
+                on conflict(repo, worker, slot_index) do nothing
+                """,
+                (repo, worker, slot_index, WORKER_SLOT_ACTIVE, ts),
+            )
+    conn.commit()
+
+
+def update_worker_slot(conn: sqlite3.Connection, slot_id: int, **fields: Any) -> None:
+    if not fields:
+        return
+    if "state" in fields and fields["state"] not in WORKER_SLOT_STATES:
+        raise CmdError(f"invalid worker slot state: {fields['state']!r}")
+    fields["updated_at"] = now_utc()
+    cols = ", ".join(f"{key} = ?" for key in fields)
+    conn.execute(f"update worker_slots set {cols} where id = ?", [*fields.values(), slot_id])
+    conn.commit()
+
+
+def assign_worker_slot(conn: sqlite3.Connection, slot_id: int, run_id: str) -> None:
+    update_worker_slot(conn, slot_id, current_run_id=run_id)
+
+
+def acquire_named_worker_slot(conn: sqlite3.Connection, repo: str, workers: list[str], worker: str, run_id: str) -> WorkerSlot:
+    seed_worker_slots(conn, repo, workers)
+    for slot in load_worker_slots(conn, repo, workers):
+        if slot.worker != worker or slot.state != WORKER_SLOT_ACTIVE or slot.current_run_id is not None:
+            continue
+        assign_worker_slot(conn, slot.id, run_id)
+        slot.current_run_id = run_id
+        return slot
+    ts = now_utc()
+    conn.execute(
+        """
+        insert into worker_slots (repo, worker, slot_index, state, consecutive_failures, current_run_id, updated_at)
+        values (?, ?, 1, ?, 0, ?, ?)
+        on conflict(repo, worker, slot_index) do nothing
+        """,
+        (repo, worker, WORKER_SLOT_ACTIVE, run_id, ts),
+    )
+    conn.commit()
+    slot = conn.execute(
+        """
+        select id, repo, worker, slot_index, state, consecutive_failures, current_run_id, last_probe_at, last_error, updated_at
+        from worker_slots
+        where repo = ? and worker = ? and slot_index = 1
+        """,
+        (repo, worker),
+    ).fetchone()
+    if slot is None:
+        raise CmdError(f"worker {worker} has no free active slot")
+    if slot["current_run_id"] not in {None, run_id}:
+        raise CmdError(f"worker {worker} has no free active slot")
+    return WorkerSlot(
+        id=int(slot["id"]),
+        repo=str(slot["repo"]),
+        worker=str(slot["worker"]),
+        slot_index=int(slot["slot_index"]),
+        state=str(slot["state"]),
+        consecutive_failures=int(slot["consecutive_failures"]),
+        current_run_id=str(slot["current_run_id"]) if slot["current_run_id"] is not None else None,
+        last_probe_at=str(slot["last_probe_at"]) if slot["last_probe_at"] is not None else None,
+        last_error=str(slot["last_error"]) if slot["last_error"] is not None else None,
+        updated_at=str(slot["updated_at"]),
+    )
+
+
+def release_worker_slot(conn: sqlite3.Connection, slot_id: int, *, run_id: str | None = None) -> None:
+    if run_id is None:
+        update_worker_slot(conn, slot_id, current_run_id=None)
+        return
+    row = conn.execute("select current_run_id from worker_slots where id = ?", (slot_id,)).fetchone()
+    if row is None or row["current_run_id"] != run_id:
+        return
+    update_worker_slot(conn, slot_id, current_run_id=None)
+
+
+def record_worker_probe_success(conn: sqlite3.Connection, slot_id: int) -> None:
+    update_worker_slot(conn, slot_id, consecutive_failures=0, last_probe_at=now_utc(), last_error=None)
+
+
+def record_worker_probe_failure(conn: sqlite3.Connection, slot: WorkerSlot, reason: str) -> tuple[WorkerSlot, bool]:
+    failures = slot.consecutive_failures + 1
+    drained = failures >= WORKER_DRAIN_FAILURE_THRESHOLD
+    state = WORKER_SLOT_DRAINED if drained else slot.state
+    update_worker_slot(
+        conn,
+        slot.id,
+        consecutive_failures=failures,
+        last_probe_at=now_utc(),
+        last_error=reason,
+        state=state,
+    )
+    return WorkerSlot(
+        id=slot.id,
+        repo=slot.repo,
+        worker=slot.worker,
+        slot_index=slot.slot_index,
+        state=state,
+        consecutive_failures=failures,
+        current_run_id=slot.current_run_id,
+        last_probe_at=now_utc(),
+        last_error=reason,
+        updated_at=now_utc(),
+    ), drained
 
 
 def repo_dir(repo: str) -> str:
@@ -991,9 +1212,62 @@ def ensure_reviewers_ready(runner: Runner, repo: str, reviewers: list[str], prom
         ensure_sprite_ready(runner, reviewer, repo, prompt_template)
 
 
-def select_worker(repo: str, workers: list[str], prompt_template: pathlib.Path) -> str:
+def select_worker_slot(
+    conn: sqlite3.Connection,
+    repo: str,
+    workers: list[str],
+    prompt_template: pathlib.Path,
+    run_id: str,
+    *,
+    on_drained: Callable[[WorkerSlot, str], None] | None = None,
+) -> WorkerSlot:
+    seed_worker_slots(conn, repo, workers)
     last_error = ""
-    for worker in workers:
+    for slot in load_worker_slots(conn, repo, workers):
+        if slot.state != WORKER_SLOT_ACTIVE or slot.current_run_id is not None:
+            continue
+        try:
+            probe_sprite_readiness(slot.worker, repo, prompt_template)
+        except CmdError as exc:
+            last_error = stringify_exc(exc)
+            updated_slot, drained = record_worker_probe_failure(conn, slot, last_error)
+            slot = updated_slot
+            if drained:
+                if on_drained is not None:
+                    on_drained(slot, last_error)
+                last_error = f"{slot.worker} slot {slot.slot_index} drained after repeated failures: {last_error}"
+            continue
+        record_worker_probe_success(conn, slot.id)
+        assign_worker_slot(conn, slot.id, run_id)
+        refreshed = conn.execute(
+            """
+            select id, repo, worker, slot_index, state, consecutive_failures, current_run_id, last_probe_at, last_error, updated_at
+            from worker_slots
+            where id = ?
+            """,
+            (slot.id,),
+        ).fetchone()
+        if refreshed is None:
+            raise CmdError(f"selected worker slot disappeared for {slot.worker}")
+        return WorkerSlot(
+            id=int(refreshed["id"]),
+            repo=str(refreshed["repo"]),
+            worker=str(refreshed["worker"]),
+            slot_index=int(refreshed["slot_index"]),
+            state=str(refreshed["state"]),
+            consecutive_failures=int(refreshed["consecutive_failures"]),
+            current_run_id=str(refreshed["current_run_id"]) if refreshed["current_run_id"] is not None else None,
+            last_probe_at=str(refreshed["last_probe_at"]) if refreshed["last_probe_at"] is not None else None,
+            last_error=str(refreshed["last_error"]) if refreshed["last_error"] is not None else None,
+            updated_at=str(refreshed["updated_at"]),
+        )
+    raise CmdError(f"no available worker in {workers}: {last_error}")
+
+
+def select_worker(conn: sqlite3.Connection, repo: str, workers: list[str], prompt_template: pathlib.Path, run_id: str) -> str:
+    _ = (conn, run_id)
+    last_error = ""
+    for worker in worker_capacities(workers):
         try:
             probe_sprite_readiness(worker, repo, prompt_template)
         except CmdError as exc:
@@ -2881,7 +3155,7 @@ def ensure_governance_run(
 
     worker = str(existing_run["builder_sprite"] or "") if existing_run is not None else ""
     if not worker:
-        worker = select_worker(args.repo, args.worker, pathlib.Path(args.builder_template))
+        worker = select_worker(conn, args.repo, args.worker, pathlib.Path(args.builder_template), run_id)
 
     builder_workspace = str(existing_run["worktree_path"] or "") if existing_run is not None else ""
 
@@ -3372,6 +3646,7 @@ def run_once(args: argparse.Namespace) -> int:
     block_on_release = False
     builder_handoff_recorded = False
     builder_workspace_prepared = False
+    worker_slot: WorkerSlot | None = None
     try:
         create_run(conn, run_id, args.repo, issue, args.builder_profile)
         if reclaimed_run_id:
@@ -3404,10 +3679,34 @@ def run_once(args: argparse.Namespace) -> int:
         )
         ensure_reviewers_ready(runner, args.repo, args.reviewer, pathlib.Path(args.reviewer_template))
         record_event(conn, event_log, run_id, "reviewers_ready", {"reviewers": args.reviewer})
-        worker = select_worker(args.repo, args.worker, pathlib.Path(args.builder_template))
-        update_run(conn, run_id, phase="building", builder_sprite=worker)
+        if uses_explicit_worker_capacity(args.worker):
+            worker_slot = select_worker_slot(
+                conn,
+                args.repo,
+                args.worker,
+                pathlib.Path(args.builder_template),
+                run_id,
+                on_drained=lambda slot, reason: record_event(
+                    conn,
+                    event_log,
+                    run_id,
+                    "worker_slot_drained",
+                    {"worker": slot.worker, "slot_id": slot.id, "slot_index": slot.slot_index, "reason": reason},
+                ),
+            )
+            worker = worker_slot.worker
+        else:
+            worker = select_worker(conn, args.repo, args.worker, pathlib.Path(args.builder_template), run_id)
+            worker_slot = acquire_named_worker_slot(conn, args.repo, args.worker, worker, run_id)
+        update_run(conn, run_id, phase="building", builder_sprite=worker, builder_slot_id=worker_slot.id)
         touch_run(conn, args.repo, issue.number, run_id, args.builder_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS)
-        record_event(conn, event_log, run_id, "builder_selected", {"sprite": worker})
+        record_event(
+            conn,
+            event_log,
+            run_id,
+            "builder_selected",
+            {"sprite": worker, "slot_id": worker_slot.id, "slot_index": worker_slot.slot_index},
+        )
 
         branch = branch_name(issue.number, run_id_suffix(run_id))
         builder_workspace = prepare_run_workspace(runner, worker, args.repo, run_id, "builder")
@@ -3524,6 +3823,8 @@ def run_once(args: argparse.Namespace) -> int:
         )
         return 1
     finally:
+        if worker_slot is not None:
+            release_worker_slot(conn, worker_slot.id, run_id=run_id)
         if builder_workspace_prepared:
             cleanup_builder_workspace(runner, conn, event_log, run_id, args.repo, worker, builder_workspace)
         if block_on_release:
@@ -3639,11 +3940,53 @@ def loop(args: argparse.Namespace) -> int:
         time.sleep(args.poll_seconds)
 
 
+def show_workers(args: argparse.Namespace) -> int:
+    conn = open_db(pathlib.Path(args.db))
+    seed_worker_slots(conn, args.repo, args.worker)
+    slots = load_worker_slots(conn, args.repo, args.worker)
+    active_assignments = sum(1 for slot in slots if slot.current_run_id)
+    recent_actions = conn.execute(
+        """
+        select events.run_id, events.event_type, events.payload_json, events.created_at
+        from events
+        join runs on runs.run_id = events.run_id
+        where event_type in ('builder_selected', 'worker_slot_drained')
+          and runs.repo = ?
+        order by id desc
+        limit ?
+        """,
+        (args.repo, args.event_limit),
+    ).fetchall()
+    payload = {
+        "repo": args.repo,
+        "target_concurrency": args.desired_concurrency,
+        "active_assignments": active_assignments,
+        "backfill_needed": max(0, args.desired_concurrency - active_assignments),
+        "slots": [
+            {
+                "id": slot.id,
+                "worker": slot.worker,
+                "slot_index": slot.slot_index,
+                "state": slot.state,
+                "consecutive_failures": slot.consecutive_failures,
+                "current_run_id": slot.current_run_id,
+                "last_probe_at": slot.last_probe_at,
+                "last_error": slot.last_error,
+                "updated_at": slot.updated_at,
+            }
+            for slot in slots
+        ],
+        "recent_replacement_actions": [format_event_row(row) for row in recent_actions],
+    }
+    print(json.dumps(payload))
+    return 0
+
+
 def show_runs(args: argparse.Namespace) -> int:
     conn = open_db(pathlib.Path(args.db))
     rows = conn.execute(
         """
-        select run_id, repo, issue_number, issue_title, phase, status, builder_sprite, builder_profile,
+        select run_id, repo, issue_number, issue_title, phase, status, builder_sprite, builder_slot_id, builder_profile,
                branch, pr_number, pr_url, heartbeat_at, updated_at, worktree_path
         from runs
         order by created_at desc
@@ -3660,7 +4003,7 @@ def show_events(args: argparse.Namespace) -> int:
     conn = open_db(pathlib.Path(args.db))
     run_row = conn.execute(
         """
-        select run_id, repo, issue_number, issue_title, phase, status, builder_sprite, builder_profile,
+        select run_id, repo, issue_number, issue_title, phase, status, builder_sprite, builder_slot_id, builder_profile,
                branch, pr_number, pr_url, heartbeat_at, updated_at
         from runs
         where run_id = ?
@@ -3694,7 +4037,7 @@ def show_run(args: argparse.Namespace) -> int:
     conn = open_db(pathlib.Path(args.db))
     row = conn.execute(
         """
-        select run_id, repo, issue_number, issue_title, phase, status, builder_sprite, builder_profile,
+        select run_id, repo, issue_number, issue_title, phase, status, builder_sprite, builder_slot_id, builder_profile,
                branch, pr_number, pr_url, heartbeat_at, updated_at
         from runs
         where run_id = ?
@@ -3802,7 +4145,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         p.add_argument("--repo", required=True)
         p.add_argument("--db", default=str(DEFAULT_DB))
         p.add_argument("--event-log", default=str(DEFAULT_EVENT_LOG))
-        p.add_argument("--worker", action="append", required=True)
+        p.add_argument("--worker", action="append", required=True, help="Builder worker or worker:slots")
         p.add_argument("--reviewer", action="append", required=True)
         p.add_argument("--issue", type=int)
         p.add_argument("--label", default=DEFAULT_LABEL)
@@ -3879,6 +4222,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     run_p.add_argument("--run-id", required=True)
     run_p.add_argument("--event-limit", type=int, default=10)
     run_p.set_defaults(func=show_run)
+
+    workers_p = sub.add_parser("show-workers", help="Show worker slot health and assignments")
+    workers_p.add_argument("--repo", required=True)
+    workers_p.add_argument("--db", default=str(DEFAULT_DB))
+    workers_p.add_argument("--worker", action="append", required=True, help="Builder worker or worker:slots")
+    workers_p.add_argument("--desired-concurrency", type=int, default=1)
+    workers_p.add_argument("--event-limit", type=int, default=10)
+    workers_p.set_defaults(func=show_workers)
 
     reconcile_p = sub.add_parser("reconcile-run", help="Reconcile a run against GitHub PR state")
     reconcile_p.add_argument("--db", default=str(DEFAULT_DB))

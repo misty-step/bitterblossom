@@ -55,3 +55,11 @@
 - scope: split the conductor into an explicit builder handoff plus governor adoption path, added a minimum-age merge freshness gate, and forced one final polish pass before merge
 - blocker: none
 - pattern: when one loop owns both production and governance, carve out the adoption boundary in persisted state first so delayed-merge policy can evolve without forking the ledger
+
+## 2026-03-12 [issue #480](https://github.com/misty-step/bitterblossom/issues/480)
+
+- predicted: L
+- actual: M
+- scope: added slot-aware worker capacity state to the conductor ledger, preserved the legacy single-slot routing seam for existing lanes, and shipped an operator-visible `show-workers` surface instead of inventing a separate dashboard
+- blocker: true concurrent repo backfill remains a follow-up because the current conductor loop still executes one lane per process
+- pattern: when a scheduler needs more depth, first persist the capacity model and operator truth in the existing control plane before attempting concurrent orchestration
