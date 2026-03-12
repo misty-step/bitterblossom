@@ -7,3 +7,7 @@ All checks passed!
 == Governance regression slice ==
 ..................................                                       [100%]
 34 passed, 209 deselected in 0.55s
+
+== External-only regression slice ==
+...                                                                      [100%]
+3 passed, 240 deselected in 0.35s

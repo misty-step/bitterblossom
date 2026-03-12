@@ -67,6 +67,7 @@ Observable improvements:
 - the governor lane now hides its bookkeeping state behind one boundary
 - revision requests follow one internal path instead of five hand-built call sites
 - PR-thread revisions preserve the pre-refactor event log shape instead of introducing a new `pr_review_threads` revision event path
+- external-only governance still re-enters the `"governing"` phase before each pass, matching the base-branch run contract
 - tests still exercise the same operator-visible run contract
 
 ## Verification
@@ -82,6 +83,8 @@ Persistent protecting check:
 Supporting checks:
 
 - `python3 -m ruff check scripts/conductor.py scripts/test_conductor.py`
+- targeted external-only regression:
+  - `python3 -m pytest -q scripts/test_conductor.py -k 'govern_pr_uses_external_authority_without_internal_reviewers or run_once_uses_external_authority_without_internal_reviewers or run_once_thread_revision_keeps_original_event_log_shape'`
 - AST shape check captured in the transcript:
   - base branch `govern_pr_flow`: `434` lines
   - this branch `govern_pr_flow`: `27` lines

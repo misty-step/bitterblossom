@@ -6828,6 +6828,7 @@ def test_govern_pr_uses_external_authority_without_internal_reviewers(
 ) -> None:
     issue = conductor.Issue(number=494, title="govern", body="", url="https://example.com/494", labels=["autopilot"])
     events: list[tuple[str, int | tuple[str, ...]]] = []
+    phase_updates: list[str] = []
     merge_calls: list[int] = []
     conn = conductor.open_db(tmp_path / "conductor.db")
     assert conductor.acquire_lease(conn, "misty-step/bitterblossom", issue.number, "run-479-1") is True
@@ -6844,6 +6845,14 @@ def test_govern_pr_uses_external_authority_without_internal_reviewers(
         pr_url="https://github.com/misty-step/bitterblossom/pull/490",
     )
 
+    original_update_run = conductor.update_run
+
+    def tracking_update_run(conn: sqlite3.Connection, run_id: str, **kwargs: object) -> None:
+        if run_id == "run-479-1" and "phase" in kwargs:
+            phase_updates.append(str(kwargs["phase"]))
+        original_update_run(conn, run_id, **kwargs)
+
+    monkeypatch.setattr(conductor, "update_run", tracking_update_run)
     monkeypatch.setattr(conductor, "cleanup_builder_workspace", lambda *_a, **_kw: None)
     monkeypatch.setattr(conductor, "ensure_governance_run", lambda *_a, **_kw: _make_governance_run(issue))
     monkeypatch.setattr(
@@ -6855,15 +6864,19 @@ def test_govern_pr_uses_external_authority_without_internal_reviewers(
     monkeypatch.setattr(conductor, "wait_for_pr_checks", lambda *_a, **_kw: (True, "merge-gate: SUCCESS"))
     monkeypatch.setattr(conductor, "ensure_required_checks_present", lambda *_a, **_kw: None)
     monkeypatch.setattr(conductor, "list_unresolved_review_threads", lambda *_a, **_kw: [])
-    monkeypatch.setattr(
-        conductor,
-        "wait_for_external_reviews",
-        lambda _runner, _repo, pr_number, surfaces, **_kw: (
-            events.append(("external_wait", pr_number)),
-            events.append(("surfaces", tuple(surfaces))),
-            (True, "Cerberus: SUCCESS"),
-        )[-1],
-    )
+
+    def fake_wait_for_external_reviews(
+        _runner: object,
+        _repo: str,
+        pr_number: int,
+        surfaces: list[str],
+        **_kw: object,
+    ) -> tuple[bool, str]:
+        events.append(("external_wait", pr_number))
+        events.append(("surfaces", tuple(surfaces)))
+        return True, "Cerberus: SUCCESS"
+
+    monkeypatch.setattr(conductor, "wait_for_external_reviews", fake_wait_for_external_reviews)
     monkeypatch.setattr(
         conductor,
         "run_builder",
@@ -6904,6 +6917,7 @@ def test_govern_pr_uses_external_authority_without_internal_reviewers(
     assert ("merge", 490) in events
     assert events.index(("external_wait", 490)) < events.index(("merge", 490))
     assert merge_calls == [490]
+    assert phase_updates.count("governing") >= events.count(("external_wait", 490))
 
 
 def test_govern_pr_marks_run_failed_when_lease_is_lost(

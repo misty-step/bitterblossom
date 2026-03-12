@@ -4443,6 +4443,7 @@ class GovernanceSession:
             return 2
 
         while True:
+            update_run(self.conn, self.run_id, phase="governing")
             if self.internal_reviewers:
                 reviews = self._run_review_round()
                 review_decision = self._review_decision(reviews)
@@ -4520,7 +4521,6 @@ class GovernanceSession:
         return True
 
     def _run_review_round(self) -> list[ReviewResult]:
-        update_run(self.conn, self.run_id, phase="governing")
         self._touch_run(
             self.args.review_timeout * 60 * max(1, len(self.internal_reviewers)) + DEFAULT_LEASE_BUFFER_SECONDS
         )
