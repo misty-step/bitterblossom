@@ -382,21 +382,22 @@ Workspace preparation now retries transient sprite/git failures up to three atte
 specific workspace/lane that exhausted retries, including reviewer and governance preparation paths, not as a generic
 command failure.
 
-To inspect which worktree a completed run used on the worker:
+To inspect which builder worktree a completed run used on the worker:
 
 ```bash
 python3 scripts/conductor.py show-runs --limit 5
 python3 scripts/conductor.py show-run --run-id <run-id>
 ```
 
-The JSON row now includes `worktree_path` plus explicit recovery fields:
+The JSON row now includes the persisted builder `worktree_path` plus explicit recovery fields:
 
 - `worktree_recovery_status` — `cleaned`, `cleanup_failed`, or `prepare_failed`
 - `worktree_recovery_error` — the last cleanup/preparation error when recovery degraded
 - `worktree_recovery_event_type` / `worktree_recovery_event_at` — the event that established that recovery state
 
-If cleanup fails, `worktree_path` remains populated so the surviving worktree can be inspected and recovered without reading
-the sprite filesystem first.
+If builder cleanup fails, `worktree_path` remains populated so the surviving builder worktree can be inspected and recovered
+without reading the sprite filesystem first. Reviewer cleanup and reviewer workspace-preparation failures stay in the event
+ledger rather than the top-level run row.
 
 Manual cleanup on the sprite:
 

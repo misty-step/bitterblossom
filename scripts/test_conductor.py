@@ -6891,6 +6891,7 @@ def test_run_once_workspace_preparation_error_after_builder_handoff_does_not_rec
 
     event_types = [r[0] for r in conn.execute("select event_type from events where run_id like 'run-486-%'").fetchall()]
     assert "cleanup_warning" in event_types
+    assert "command_failed" not in event_types
 
 
 def test_run_once_clears_builder_worktree_path_after_cleanup(
