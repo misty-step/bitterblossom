@@ -40,11 +40,11 @@ All checks passed!
 
 ### Targeted Regression Added
 
-- `scripts/test_conductor.py:2932`
-- `scripts/test_conductor.py:4382`
-- `scripts/test_conductor.py:4845`
-- `scripts/test_conductor.py:5255`
-- `scripts/test_conductor.py:6753`
+- `test_select_worker_slot_supports_default_single_slot_workers`
+- `test_reap_terminal_worker_slots_clears_only_terminal_or_missing_assignments`
+- `test_ensure_governance_run_does_not_claim_worker_slot_before_lease`
+- `test_run_once_reclaims_stale_lease_and_reuses_terminal_worker_slot`
+- `test_run_once_workspace_preparation_error_after_builder_handoff_does_not_record_false_failure`
 
 These tests prove the slot selector handles the plain single-slot worker case directly, stale terminal or orphaned slot owners are reaped before fresh selection, governance adoption does not claim a worker slot before lease acquisition succeeds, reclaimed stale leases can reuse the freed slot, and post-handoff workspace-preparation failures still avoid false failure reporting on the current merge surface.
 

@@ -5042,6 +5042,7 @@ def _select_named_worker_slot(worker: str):
         workers: list[str],
         _prompt_template: pathlib.Path,
         run_id: str,
+        *,
         on_drained: Any | None = None,
     ) -> conductor.WorkerSlot:
         configured_workers = {conductor.parse_worker_capacity(spec)[0] for spec in workers}
@@ -5066,15 +5067,23 @@ def test_ensure_governance_run_does_not_claim_worker_slot_before_lease(tmp_path:
 
     assert conductor.acquire_lease(conn, "misty-step/bitterblossom", 479, "run-479-existing") is True
     select_calls = 0
+    claim_calls = 0
 
     def fail_if_selected(*_a: object, **_kw: object) -> conductor.WorkerSlot:
         nonlocal select_calls
         select_calls += 1
         raise AssertionError("select_worker_slot should not run before lease acquisition")
 
+    def fail_if_claimed(*_a: object, **_kw: object) -> conductor.WorkerSlot:
+        nonlocal claim_calls
+        claim_calls += 1
+        raise AssertionError("worker slot should not be claimed before lease acquisition")
+
     monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
     monkeypatch.setattr(conductor, "probe_sprite_readiness", lambda *_a, **_kw: None)
     monkeypatch.setattr(conductor, "select_worker_slot", fail_if_selected)
+    monkeypatch.setattr(conductor, "acquire_named_worker_slot", fail_if_claimed)
+    monkeypatch.setattr(conductor, "assign_worker_slot", fail_if_claimed)
     monkeypatch.setattr(
         conductor,
         "gh_json",
@@ -5095,6 +5104,7 @@ def test_ensure_governance_run_does_not_claim_worker_slot_before_lease(tmp_path:
         )
 
     assert select_calls == 0
+    assert claim_calls == 0
     slots = conductor.load_worker_slots(conn, "misty-step/bitterblossom", ["noble-blue-serpent"])
     assert all(slot.current_run_id is None for slot in slots)
 
