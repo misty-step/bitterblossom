@@ -59,7 +59,8 @@ The conductor should expose explicit state transitions instead of inferring trut
 ### Thin Edge, Rich Control Plane
 ```python
 # cmd/bb stays transport; orchestration lives in scripts/conductor.py
-worker = select_worker(runner, args.repo, args.worker, pathlib.Path(args.builder_template))
+worker_slot = select_worker_slot(conn, args.repo, args.worker, pathlib.Path(args.builder_template), run_id)
+worker = worker_slot.worker
 builder, builder_payload = run_builder(...)
 reviews = run_review_round(...)
 ```

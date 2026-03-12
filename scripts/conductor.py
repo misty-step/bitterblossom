@@ -884,14 +884,6 @@ def worker_capacities(workers: list[str]) -> dict[str, int]:
     return capacities
 
 
-def uses_explicit_worker_capacity(workers: list[str]) -> bool:
-    for spec in workers:
-        worker, slots = parse_worker_capacity(spec)
-        if worker != spec or slots != 1:
-            return True
-    return False
-
-
 def load_worker_slots(conn: sqlite3.Connection, repo: str, workers: list[str]) -> list[WorkerSlot]:
     capacities = worker_capacities(workers)
     if not capacities:
@@ -1081,6 +1073,27 @@ def release_worker_slot(conn: sqlite3.Connection, slot_id: int, *, run_id: str |
     run = conn.execute("select status from runs where run_id = ?", (current_run_id,)).fetchone()
     if run is not None and str(run["status"]) in TERMINAL_RUN_STATUSES:
         update_worker_slot(conn, slot_id, current_run_id=None)
+
+
+def reap_terminal_worker_slots(conn: sqlite3.Connection, repo: str, workers: list[str]) -> None:
+    for slot in load_worker_slots(conn, repo, workers):
+        if slot.current_run_id is None:
+            continue
+        run = conn.execute("select status from runs where run_id = ?", (slot.current_run_id,)).fetchone()
+        if run is not None and str(run["status"]) not in TERMINAL_RUN_STATUSES:
+            continue
+        cursor = conn.execute(
+            """
+            update worker_slots
+            set current_run_id = null, updated_at = ?
+            where id = ? and current_run_id = ?
+            """,
+            (now_utc(), slot.id, slot.current_run_id),
+        )
+        if cursor.rowcount:
+            conn.commit()
+        else:
+            conn.rollback()
 
 
 def record_worker_probe_success(conn: sqlite3.Connection, slot_id: int) -> None:
@@ -1714,23 +1727,6 @@ def select_worker_slot(
         if refreshed is None:
             raise CmdError(f"selected worker slot disappeared for {slot.worker}")
         return WorkerSlot.from_row(refreshed)
-    raise CmdError(f"no available worker in {workers}: {last_error}")
-
-
-def select_worker(conn: sqlite3.Connection, repo: str, workers: list[str], prompt_template: pathlib.Path) -> str:
-    seed_worker_slots(conn, repo, workers)
-    last_error = ""
-    for slot in load_worker_slots(conn, repo, workers):
-        if slot.state != WORKER_SLOT_ACTIVE or slot.current_run_id is not None:
-            continue
-        try:
-            probe_sprite_readiness(slot.worker, repo, prompt_template)
-        except CmdError as exc:
-            last_error = stringify_exc(exc)
-            record_worker_probe_failure(conn, slot, last_error)
-            continue
-        record_worker_probe_success(conn, slot.id)
-        return slot.worker
     raise CmdError(f"no available worker in {workers}: {last_error}")
 
 
@@ -3807,9 +3803,6 @@ def ensure_governance_run(
     run_id = str(existing_run["run_id"]) if existing_run is not None else run_id_for(issue.number)
 
     worker = str(existing_run["builder_sprite"] or "") if existing_run is not None else ""
-    if not worker:
-        worker = select_worker(conn, args.repo, args.worker, pathlib.Path(args.builder_template))
-
     builder_workspace = str(existing_run["worktree_path"] or "") if existing_run is not None else ""
 
     pr_number = int(existing_run["pr_number"]) if existing_run is not None and existing_run["pr_number"] is not None else int(args.pr_number)
@@ -3863,7 +3856,26 @@ def ensure_governance_run(
                 {"issue": issue.number, "previous_run_id": reclaimed_run_id},
             )
 
-        worker_slot = acquire_named_worker_slot(conn, args.repo, args.worker, worker, run_id)
+        if worker:
+            worker_slot = acquire_named_worker_slot(conn, args.repo, args.worker, worker, run_id)
+        else:
+            reap_terminal_worker_slots(conn, args.repo, args.worker)
+            worker_slot = select_worker_slot(
+                conn,
+                args.repo,
+                args.worker,
+                pathlib.Path(args.builder_template),
+                run_id,
+                on_drained=lambda slot, reason: record_event(
+                    conn,
+                    event_log,
+                    run_id,
+                    "worker_slot_drained",
+                    {"worker": slot.worker, "slot_id": slot.id, "slot_index": slot.slot_index, "reason": reason},
+                ),
+            )
+            worker = worker_slot.worker
+
         record_event(
             conn,
             event_log,
@@ -4413,25 +4425,22 @@ def run_once(args: argparse.Namespace) -> int:
         )
         ensure_reviewers_ready(runner, args.repo, args.reviewer, pathlib.Path(args.reviewer_template))
         record_event(conn, event_log, run_id, "reviewers_ready", {"reviewers": args.reviewer})
-        if uses_explicit_worker_capacity(args.worker):
-            worker_slot = select_worker_slot(
+        reap_terminal_worker_slots(conn, args.repo, args.worker)
+        worker_slot = select_worker_slot(
+            conn,
+            args.repo,
+            args.worker,
+            pathlib.Path(args.builder_template),
+            run_id,
+            on_drained=lambda slot, reason: record_event(
                 conn,
-                args.repo,
-                args.worker,
-                pathlib.Path(args.builder_template),
+                event_log,
                 run_id,
-                on_drained=lambda slot, reason: record_event(
-                    conn,
-                    event_log,
-                    run_id,
-                    "worker_slot_drained",
-                    {"worker": slot.worker, "slot_id": slot.id, "slot_index": slot.slot_index, "reason": reason},
-                ),
-            )
-            worker = worker_slot.worker
-        else:
-            worker = select_worker(conn, args.repo, args.worker, pathlib.Path(args.builder_template))
-            worker_slot = acquire_named_worker_slot(conn, args.repo, args.worker, worker, run_id)
+                "worker_slot_drained",
+                {"worker": slot.worker, "slot_id": slot.id, "slot_index": slot.slot_index, "reason": reason},
+            ),
+        )
+        worker = worker_slot.worker
         update_run(conn, run_id, phase="building", builder_sprite=worker, builder_slot_id=worker_slot.id)
         touch_run(conn, args.repo, issue.number, run_id, args.builder_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS)
         record_event(
