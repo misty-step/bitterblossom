@@ -394,14 +394,14 @@ python3 scripts/conductor.py show-runs --limit 5
 python3 scripts/conductor.py show-run --run-id <run-id>
 ```
 
-Both commands include `worktree_path` plus four builder cleanup recovery fields in the JSON output:
+Both commands include the persisted builder `worktree_path` plus four explicit recovery fields in the JSON output:
 
-- `worktree_recovery_status`: `cleaned`, `cleanup_failed`, or `null`
-- `worktree_recovery_error`: cleanup failure message when status is `cleanup_failed`
-- `worktree_recovery_event_type`: the builder lifecycle event that established the recovery state
-- `worktree_recovery_event_at`: when that lifecycle event was recorded
+- `worktree_recovery_status` — `cleaned`, `cleanup_failed`, `prepare_failed`, or `null`
+- `worktree_recovery_error` — the last cleanup/preparation error when recovery degraded
+- `worktree_recovery_event_type` — the builder recovery event that established the current state
+- `worktree_recovery_event_at` — when that recovery event was recorded
 
-A non-null `worktree_path` on a terminal run (merged, failed) still means cleanup may not have completed, but operators no longer need to infer that only from raw events: `worktree_recovery_status=cleanup_failed` tells you the last persisted builder cleanup failed, while `cleaned` tells you the builder cleanup completed successfully. If the physical cleanup succeeded but a later run-state write failed, the run can still raise and leave a stale `worktree_path`; in that case the recovery fields surface the last persisted builder cleanup event directly, and `show-events` remains the deeper history/debug view rather than the primary cleanup-status surface.
+A non-null `worktree_path` on a terminal run (`merged`, `failed`, `blocked`, `closed`) still means cleanup may not have completed, but operators no longer need to infer that only from raw events. `worktree_recovery_status=cleanup_failed` tells you the last persisted builder cleanup failed, `prepare_failed` means the builder workspace never prepared successfully, and `cleaned` tells you the builder cleanup completed successfully. If the physical cleanup succeeded but a later run-state write failed, the run can still raise and leave a stale `worktree_path`; in that case the recovery fields surface the last persisted builder recovery event directly, and `show-events` remains the deeper history/debug view rather than the primary cleanup-status surface. Reviewer cleanup and reviewer workspace-preparation failures stay in the event ledger rather than the top-level run row.
 
 Manual cleanup on the sprite:
 

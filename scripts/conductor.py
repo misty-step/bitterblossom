@@ -716,6 +716,8 @@ def summarize_blocking_reason(event_type: str | None, payload: dict[str, Any]) -
     if event_type == "external_review_wait_complete" and payload.get("passed") is False:
         output = str(payload.get("output", "")).strip()
         return output or "trusted external reviews did not settle"
+    if event_type == "workspace_preparation_failed":
+        return str(payload.get("error", "")).strip() or "workspace preparation failed"
     if event_type == "command_failed":
         return str(payload.get("error", "")).strip() or "command failed"
     if event_type == "unexpected_error":
@@ -740,6 +742,12 @@ BLOCKING_EVENT_PREDICATE = """
 (
   event_type in ('pr_feedback_blocked', 'council_blocked', 'command_failed', 'unexpected_error')
   or (
+    event_type = 'workspace_preparation_failed'
+    and json_valid(payload_json)
+    and json_type(payload_json) = 'object'
+    and json_extract(payload_json, '$.lane') = 'builder'
+  )
+  or (
     event_type = 'ci_wait_complete'
     and json_valid(payload_json)
     and json_extract(payload_json, '$.passed') = 0
@@ -757,10 +765,22 @@ BUILDER_WORKSPACE_LIFECYCLE_PREDICATE = """
 (
   event_type = 'builder_workspace_cleaned'
   or (
+    event_type = 'workspace_preparation_failed'
+    and json_valid(payload_json)
+    and json_type(payload_json) = 'object'
+    and json_extract(payload_json, '$.lane') = 'builder'
+  )
+  or (
     event_type = 'workspace_cleanup_failed'
     and json_valid(payload_json)
     and json_type(payload_json) = 'object'
     and json_extract(payload_json, '$.reviewer') is null
+  )
+  or (
+    event_type = 'cleanup_warning'
+    and json_valid(payload_json)
+    and json_type(payload_json) = 'object'
+    and json_extract(payload_json, '$.kind') = 'builder_workspace_cleanup'
   )
 )
 """
@@ -783,8 +803,8 @@ def blocking_event_for_run(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row
 def builder_workspace_lifecycle_event(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row | None:
     """Return the most recent builder-workspace lifecycle event for a run.
 
-    Returns a ``builder_workspace_cleaned`` row on success or a
-    ``workspace_cleanup_failed`` row (without a ``reviewer`` field) on failure.
+    This includes successful cleanup, builder-lane preparation failures,
+    builder cleanup warnings/failures, and excludes reviewer-lane cleanup rows.
     Reviewer cleanup failures use the same event name but always carry a
     ``reviewer`` field, so filtering on its absence isolates the builder lane.
 
@@ -866,7 +886,7 @@ def serialize_run_surface(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[st
         "updated_at": row["updated_at"],
     }
     # Recovery fields stay mutually exclusive: all null without a lifecycle event;
-    # ``worktree_recovery_error`` is only populated for ``cleanup_failed``.
+    # ``worktree_recovery_error`` is only populated for degraded prepare/cleanup states.
     payload["worktree_recovery_status"] = None
     payload["worktree_recovery_error"] = None
     payload["worktree_recovery_event_type"] = None
@@ -886,8 +906,15 @@ def serialize_run_surface(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[st
         payload["worktree_recovery_event_at"] = lifecycle_event_at
         if lifecycle_event_type == "builder_workspace_cleaned":
             payload["worktree_recovery_status"] = "cleaned"
-        elif lifecycle_event_type == "workspace_cleanup_failed":
+        elif lifecycle_event_type in {"workspace_cleanup_failed", "cleanup_warning"}:
             payload["worktree_recovery_status"] = "cleanup_failed"
+            recovery_payload = payload_object_or_none(lifecycle_payload_json)
+            if recovery_payload is None:
+                payload["worktree_recovery_error"] = "(recovery event data corrupted)"
+            else:
+                payload["worktree_recovery_error"] = recovery_payload.get("error")
+        elif lifecycle_event_type == "workspace_preparation_failed":
+            payload["worktree_recovery_status"] = "prepare_failed"
             recovery_payload = payload_object_or_none(lifecycle_payload_json)
             if recovery_payload is None:
                 payload["worktree_recovery_error"] = "(recovery event data corrupted)"

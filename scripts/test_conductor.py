@@ -4620,6 +4620,52 @@ def test_show_run_treats_non_object_blocking_payload_as_corrupted(
     }
 
 
+def test_show_run_surfaces_workspace_preparation_failure_reason(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=448, title="prepare", body="", url="https://example.com/448", labels=["autopilot"])
+    conductor.create_run(conn, "run-448-1", "misty-step/bitterblossom", issue, "claude-sonnet")
+    conductor.update_run(
+        conn,
+        "run-448-1",
+        phase="failed",
+        status="failed",
+        builder_sprite="fern",
+        worktree_path="/tmp/run-448-1/builder-worktree",
+    )
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-448-1",
+        "workspace_preparation_failed",
+        {
+            "sprite": "fern",
+            "lane": "builder",
+            "workspace": "/tmp/run-448-1/builder-worktree",
+            "attempt": 3,
+            "attempts": 3,
+            "error": "workspace prepare failed: transient network",
+        },
+    )
+
+    rc = conductor.show_run(
+        argparse.Namespace(
+            db=str(tmp_path / "conductor.db"),
+            run_id="run-448-1",
+            event_limit=2,
+        )
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["run"]["blocking_event_type"] == "workspace_preparation_failed"
+    assert payload["run"]["blocking_reason"] == "workspace prepare failed: transient network"
+    assert payload["run"]["worktree_path"] == "/tmp/run-448-1/builder-worktree"
+    assert payload["run"]["worktree_recovery_status"] == "prepare_failed"
+    assert payload["run"]["worktree_recovery_error"] == "workspace prepare failed: transient network"
+
+
 def test_check_env_passes_when_all_present(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
     monkeypatch.setenv("GITHUB_TOKEN", "ghp_test")
     monkeypatch.setenv("SPRITE_TOKEN", "sprite_test")
