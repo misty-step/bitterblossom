@@ -1890,6 +1890,64 @@ def test_run_review_round_cleans_only_prepared_reviewers(monkeypatch: pytest.Mon
     }
 
 
+def test_run_review_round_records_workspace_cleanup_failed_for_reviewer_cleanup_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=447, title="test", body="body", url="https://example.com/447", labels=["autopilot"])
+
+    monkeypatch.setattr(conductor, "cleanup_sprite_processes", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(conductor, "ensure_sprite_ready", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        conductor,
+        "prepare_run_workspace",
+        lambda _runner, reviewer, repo, run_id, lane: conductor.run_workspace(repo, run_id, lane),
+    )
+    monkeypatch.setattr(
+        conductor,
+        "dispatch_tasks_until_artifacts",
+        lambda _runner, tasks, *_args, on_artifact=None, **_kwargs: on_artifact(
+            tasks[0].sprite,
+            {
+                "verdict": "pass",
+                "summary": "ok",
+                "findings": [],
+            },
+        ),
+    )
+
+    def fake_cleanup_run_workspace(_runner: object, reviewer: str, _repo: str, _run_id: str, _lane: str) -> None:
+        if reviewer == "fern":
+            raise conductor.CmdError("stale worktree")
+
+    monkeypatch.setattr(conductor, "cleanup_run_workspace", fake_cleanup_run_workspace)
+
+    reviews = conductor.run_review_round(
+        _RunnerSpy(),
+        conn,
+        tmp_path / "events.jsonl",
+        "misty-step/bitterblossom",
+        issue,
+        "run-447-1",
+        463,
+        "https://github.com/misty-step/bitterblossom/pull/463",
+        ["fern"],
+        pathlib.Path("scripts/prompts/conductor-reviewer-template.md"),
+        10,
+    )
+
+    assert [review.reviewer for review in reviews] == ["fern"]
+    events = conn.execute(
+        "select event_type, payload_json from events where run_id = 'run-447-1' order by id"
+    ).fetchall()
+    assert [row["event_type"] for row in events] == ["review_complete", "workspace_cleanup_failed"]
+    payload = json.loads(events[-1]["payload_json"])
+    assert payload["reviewer"] == "fern"
+    assert payload["surviving_path"] == conductor.run_workspace("misty-step/bitterblossom", "run-447-1", "review-fern")
+    assert "cleanup_warning" not in [row["event_type"] for row in events]
+
+
 def test_run_review_round_preserves_prior_wave_state(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
     conn = conductor.open_db(tmp_path / "conductor.db")
     issue = conductor.Issue(number=447, title="test", body="body", url="https://example.com/447", labels=["autopilot"])

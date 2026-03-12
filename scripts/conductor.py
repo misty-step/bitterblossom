@@ -3033,6 +3033,7 @@ def run_review_round(
         raise
     finally:
         for reviewer in prepared_reviewers:
+            workspace = run_workspace(repo, run_id, f"review-{reviewer}")
             try:
                 cleanup_run_workspace(runner, reviewer, repo, run_id, f"review-{reviewer}")
                 record_event(
@@ -3040,15 +3041,19 @@ def run_review_round(
                     event_log,
                     run_id,
                     "reviewer_workspace_cleaned",
-                    {"reviewer": reviewer, "workspace": run_workspace(repo, run_id, f"review-{reviewer}")},
+                    {"reviewer": reviewer, "workspace": workspace},
                 )
             except Exception as exc:  # noqa: BLE001
                 record_event(
                     conn,
                     event_log,
                     run_id,
-                    "cleanup_warning",
-                    {"error": f"reviewer workspace cleanup failed for {reviewer}: {stringify_exc(exc)}"},
+                    "workspace_cleanup_failed",
+                    {
+                        "error": f"reviewer workspace cleanup failed for {reviewer}: {stringify_exc(exc)}",
+                        "reviewer": reviewer,
+                        "surviving_path": workspace,
+                    },
                 )
     return ordered_reviews
 
