@@ -3670,8 +3670,8 @@ def test_show_runs_surfaces_corrupted_blocking_event_without_crashing(
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line]
     assert len(lines) == 1
     assert lines[0]["run_id"] == "run-44-corrupt"
-    assert lines[0]["blocking_event_type"] == "ci_wait_complete"
-    assert lines[0]["blocking_reason"] == "(blocking event data corrupted)"
+    assert lines[0]["blocking_event_type"] is None
+    assert lines[0]["blocking_reason"] is None
 
 
 def test_show_runs_surfaces_heartbeat_age_and_blocking_reason(
@@ -3795,11 +3795,42 @@ def test_show_run_surfaces_corrupted_blocking_event_without_crashing(
 
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["run"]["blocking_event_type"] == "ci_wait_complete"
-    assert payload["run"]["blocking_reason"] == "(blocking event data corrupted)"
+    assert payload["run"]["blocking_event_type"] is None
+    assert payload["run"]["blocking_reason"] is None
     assert payload["recent_events"][0]["payload"] == {
         "_error": "(event payload corrupted)",
         "_raw_payload_json": "{not-json",
+    }
+
+
+def test_show_run_treats_non_object_blocking_payload_as_corrupted(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=449, title="inspect", body="", url="https://example.com/449", labels=["autopilot"])
+    conductor.create_run(conn, "run-449-scalar", "misty-step/bitterblossom", issue, "claude-sonnet")
+    conductor.update_run(conn, "run-449-scalar", phase="blocked", status="blocked", builder_sprite="fern")
+    conn.execute(
+        "insert into events (run_id, event_type, payload_json, created_at) values (?, ?, ?, ?)",
+        ("run-449-scalar", "pr_feedback_blocked", "[]", conductor.now_utc()),
+    )
+    conn.commit()
+
+    rc = conductor.show_run(
+        argparse.Namespace(
+            db=str(tmp_path / "conductor.db"),
+            run_id="run-449-scalar",
+            event_limit=1,
+        )
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["run"]["blocking_event_type"] == "pr_feedback_blocked"
+    assert payload["run"]["blocking_reason"] == "(blocking event data corrupted)"
+    assert payload["recent_events"][0]["payload"] == {
+        "_error": "(event payload corrupted)",
+        "_raw_payload_json": "[]",
     }
 
 
@@ -6655,10 +6686,10 @@ def test_show_run_exposes_corrupted_builder_cleanup_failure_without_crashing(
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     run = payload["run"]
-    assert run["worktree_recovery_status"] == "cleanup_failed"
-    assert run["worktree_recovery_error"] == "(recovery event data corrupted)"
-    assert run["worktree_recovery_event_type"] == "workspace_cleanup_failed"
-    assert run["worktree_recovery_event_at"] is not None
+    assert run["worktree_recovery_status"] is None
+    assert run["worktree_recovery_error"] is None
+    assert run["worktree_recovery_event_type"] is None
+    assert run["worktree_recovery_event_at"] is None
     assert payload["recent_events"][0]["payload"] == {
         "_error": "(event payload corrupted)",
         "_raw_payload_json": "{not-json",
@@ -6765,10 +6796,10 @@ def test_show_runs_handles_corrupted_builder_cleanup_failure_without_crashing(
     rows = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line]
     assert len(rows) == 1
     run = rows[0]
-    assert run["worktree_recovery_status"] == "cleanup_failed"
-    assert run["worktree_recovery_error"] == "(recovery event data corrupted)"
-    assert run["worktree_recovery_event_type"] == "workspace_cleanup_failed"
-    assert run["worktree_recovery_event_at"] is not None
+    assert run["worktree_recovery_status"] is None
+    assert run["worktree_recovery_error"] is None
+    assert run["worktree_recovery_event_type"] is None
+    assert run["worktree_recovery_event_at"] is None
 
 
 def test_reviewer_cleanup_failure_does_not_set_builder_recovery_status(

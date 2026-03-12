@@ -502,15 +502,26 @@ def lease_expired(lease_expires_at: str | None) -> bool:
     return utc_now() >= expires
 
 
-def event_row_payload(row: sqlite3.Row) -> dict[str, Any]:
-    raw_payload = str(row["payload_json"])
+def payload_object_or_none(raw_payload: object) -> dict[str, Any] | None:
     try:
-        return json.loads(raw_payload)
+        payload = json.loads(str(raw_payload))
     except (TypeError, ValueError):
-        return {
-            "_error": "(event payload corrupted)",
-            "_raw_payload_json": raw_payload,
-        }
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def corrupted_payload_stub(raw_payload: object) -> dict[str, Any]:
+    return {
+        "_error": "(event payload corrupted)",
+        "_raw_payload_json": str(raw_payload),
+    }
+
+
+def event_row_payload(row: sqlite3.Row) -> dict[str, Any]:
+    payload = payload_object_or_none(row["payload_json"])
+    if payload is not None:
+        return payload
+    return corrupted_payload_stub(row["payload_json"])
 
 
 def format_event_row(row: sqlite3.Row) -> dict[str, Any]:
@@ -661,29 +672,43 @@ def latest_event_for_run(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row |
     ).fetchone()
 
 
+BLOCKING_EVENT_PREDICATE = """
+(
+  event_type in ('pr_feedback_blocked', 'council_blocked', 'command_failed', 'unexpected_error')
+  or (
+    event_type = 'ci_wait_complete'
+    and json_valid(payload_json)
+    and json_extract(payload_json, '$.passed') = 0
+  )
+  or (
+    event_type = 'external_review_wait_complete'
+    and json_valid(payload_json)
+    and json_extract(payload_json, '$.passed') = 0
+  )
+)
+"""
+
+
+BUILDER_WORKSPACE_LIFECYCLE_PREDICATE = """
+(
+  event_type = 'builder_workspace_cleaned'
+  or (
+    event_type = 'workspace_cleanup_failed'
+    and json_valid(payload_json)
+    and json_type(payload_json) = 'object'
+    and json_extract(payload_json, '$.reviewer') is null
+  )
+)
+"""
+
+
 def blocking_event_for_run(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row | None:
     return conn.execute(
-        """
+        f"""
         select event_type, payload_json, created_at
         from events
         where run_id = ?
-          and (
-            event_type in ('pr_feedback_blocked', 'council_blocked', 'command_failed', 'unexpected_error')
-            or (
-              event_type = 'ci_wait_complete'
-              and (
-                (case when json_valid(payload_json) then json_extract(payload_json, '$.passed') end) = 0
-                or not json_valid(payload_json)
-              )
-            )
-            or (
-              event_type = 'external_review_wait_complete'
-              and (
-                (case when json_valid(payload_json) then json_extract(payload_json, '$.passed') end) = 0
-                or not json_valid(payload_json)
-              )
-            )
-          )
+          and {BLOCKING_EVENT_PREDICATE}
         order by id desc
         limit 1
         """,
@@ -699,30 +724,52 @@ def builder_workspace_lifecycle_event(conn: sqlite3.Connection, run_id: str) -> 
     Reviewer cleanup failures use the same event name but always carry a
     ``reviewer`` field, so filtering on its absence isolates the builder lane.
 
-    Corrupted JSON payloads are still surfaced so inspection can degrade
-    gracefully instead of crashing when a cleanup failure row is malformed.
+    Ambiguous or corrupted JSON payloads are excluded here so the inspection
+    surface prefers omission over falsely attributing reviewer cleanup failures
+    to the builder lane.
     """
     return conn.execute(
-        """
+        f"""
         select event_type, payload_json, created_at
         from events
         where run_id = ?
-          and (
-            event_type = 'builder_workspace_cleaned'
-            or (
-              event_type = 'workspace_cleanup_failed'
-              and (
-                case
-                  when json_valid(payload_json) then json_extract(payload_json, '$.reviewer')
-                end
-              ) is null
-            )
-          )
+          and {BUILDER_WORKSPACE_LIFECYCLE_PREDICATE}
         order by id desc
         limit 1
         """,
         (run_id,),
     ).fetchone()
+
+
+def run_surface_query(where_sql: str = "", limit_sql: str = "") -> str:
+    return f"""
+        with blocking_events as (
+            select run_id, event_type, payload_json, created_at,
+                   row_number() over (partition by run_id order by id desc) as rn
+            from events
+            where {BLOCKING_EVENT_PREDICATE}
+        ),
+        builder_lifecycle_events as (
+            select run_id, event_type, payload_json, created_at,
+                   row_number() over (partition by run_id order by id desc) as rn
+            from events
+            where {BUILDER_WORKSPACE_LIFECYCLE_PREDICATE}
+        )
+        select r.run_id, r.repo, r.issue_number, r.issue_title, r.phase, r.status, r.builder_sprite, r.builder_profile,
+               r.branch, r.pr_number, r.pr_url, r.heartbeat_at, r.updated_at, r.worktree_path,
+               be.event_type as blocking_event_type_prefetched,
+               be.payload_json as blocking_payload_json_prefetched,
+               be.created_at as blocking_event_at_prefetched,
+               ble.event_type as lifecycle_event_type_prefetched,
+               ble.payload_json as lifecycle_payload_json_prefetched,
+               ble.created_at as lifecycle_event_at_prefetched
+        from runs r
+        left join blocking_events be on be.run_id = r.run_id and be.rn = 1
+        left join builder_lifecycle_events ble on ble.run_id = r.run_id and ble.rn = 1
+        {where_sql}
+        order by r.created_at desc
+        {limit_sql}
+    """
 
 
 def serialize_run_surface(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
@@ -751,34 +798,50 @@ def serialize_run_surface(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[st
     payload["worktree_recovery_error"] = None
     payload["worktree_recovery_event_type"] = None
     payload["worktree_recovery_event_at"] = None
-    lifecycle_event = builder_workspace_lifecycle_event(conn, row["run_id"])
-    if lifecycle_event is not None:
-        payload["worktree_recovery_event_type"] = lifecycle_event["event_type"]
-        payload["worktree_recovery_event_at"] = lifecycle_event["created_at"]
-        if lifecycle_event["event_type"] == "builder_workspace_cleaned":
+
+    lifecycle_event_type = row["lifecycle_event_type_prefetched"] if "lifecycle_event_type_prefetched" in row.keys() else None
+    lifecycle_payload_json = row["lifecycle_payload_json_prefetched"] if "lifecycle_payload_json_prefetched" in row.keys() else None
+    lifecycle_event_at = row["lifecycle_event_at_prefetched"] if "lifecycle_event_at_prefetched" in row.keys() else None
+    if lifecycle_event_type is None and "lifecycle_event_type_prefetched" not in row.keys():
+        lifecycle_event = builder_workspace_lifecycle_event(conn, row["run_id"])
+        if lifecycle_event is not None:
+            lifecycle_event_type = lifecycle_event["event_type"]
+            lifecycle_payload_json = lifecycle_event["payload_json"]
+            lifecycle_event_at = lifecycle_event["created_at"]
+    if lifecycle_event_type is not None:
+        payload["worktree_recovery_event_type"] = lifecycle_event_type
+        payload["worktree_recovery_event_at"] = lifecycle_event_at
+        if lifecycle_event_type == "builder_workspace_cleaned":
             payload["worktree_recovery_status"] = "cleaned"
-        elif lifecycle_event["event_type"] == "workspace_cleanup_failed":
+        elif lifecycle_event_type == "workspace_cleanup_failed":
             payload["worktree_recovery_status"] = "cleanup_failed"
-            try:
-                recovery_payload = json.loads(str(lifecycle_event["payload_json"]))
-            except (TypeError, ValueError):
+            recovery_payload = payload_object_or_none(lifecycle_payload_json)
+            if recovery_payload is None:
                 payload["worktree_recovery_error"] = "(recovery event data corrupted)"
             else:
                 payload["worktree_recovery_error"] = recovery_payload.get("error")
+
     blocking_reason = None
     payload["blocking_event_type"] = None
     payload["blocking_event_at"] = None
     if row["status"] in {"blocked", "failed"}:
-        blocking_event = blocking_event_for_run(conn, row["run_id"])
-        if blocking_event is not None:
-            payload["blocking_event_type"] = blocking_event["event_type"]
-            payload["blocking_event_at"] = blocking_event["created_at"]
-            try:
-                blocking_payload = json.loads(str(blocking_event["payload_json"]))
-            except (TypeError, ValueError):
+        blocking_event_type = row["blocking_event_type_prefetched"] if "blocking_event_type_prefetched" in row.keys() else None
+        blocking_payload_json = row["blocking_payload_json_prefetched"] if "blocking_payload_json_prefetched" in row.keys() else None
+        blocking_event_at = row["blocking_event_at_prefetched"] if "blocking_event_at_prefetched" in row.keys() else None
+        if blocking_event_type is None and "blocking_event_type_prefetched" not in row.keys():
+            blocking_event = blocking_event_for_run(conn, row["run_id"])
+            if blocking_event is not None:
+                blocking_event_type = blocking_event["event_type"]
+                blocking_payload_json = blocking_event["payload_json"]
+                blocking_event_at = blocking_event["created_at"]
+        if blocking_event_type is not None:
+            payload["blocking_event_type"] = blocking_event_type
+            payload["blocking_event_at"] = blocking_event_at
+            blocking_payload = payload_object_or_none(blocking_payload_json)
+            if blocking_payload is None:
                 blocking_reason = "(blocking event data corrupted)"
             else:
-                blocking_reason = summarize_blocking_reason(blocking_event["event_type"], blocking_payload)
+                blocking_reason = summarize_blocking_reason(blocking_event_type, blocking_payload)
     payload["blocking_reason"] = blocking_reason
     return payload
 
@@ -3996,16 +4059,7 @@ def loop(args: argparse.Namespace) -> int:
 
 def show_runs(args: argparse.Namespace) -> int:
     conn = open_db(pathlib.Path(args.db))
-    rows = conn.execute(
-        """
-        select run_id, repo, issue_number, issue_title, phase, status, builder_sprite, builder_profile,
-               branch, pr_number, pr_url, heartbeat_at, updated_at, worktree_path
-        from runs
-        order by created_at desc
-        limit ?
-        """,
-        (args.limit,),
-    ).fetchall()
+    rows = conn.execute(run_surface_query(limit_sql="limit ?"), (args.limit,)).fetchall()
     for row in rows:
         print(json.dumps(serialize_run_surface(conn, row)))
     return 0
@@ -4013,15 +4067,7 @@ def show_runs(args: argparse.Namespace) -> int:
 
 def show_events(args: argparse.Namespace) -> int:
     conn = open_db(pathlib.Path(args.db))
-    run_row = conn.execute(
-        """
-        select run_id, repo, issue_number, issue_title, phase, status, builder_sprite, builder_profile,
-               branch, pr_number, pr_url, heartbeat_at, updated_at
-        from runs
-        where run_id = ?
-        """,
-        (args.run_id,),
-    ).fetchone()
+    run_row = conn.execute(run_surface_query(where_sql="where r.run_id = ?"), (args.run_id,)).fetchone()
     if run_row is None:
         raise CmdError(f"unknown run_id: {args.run_id}")
     rows = conn.execute(
@@ -4047,15 +4093,7 @@ def show_events(args: argparse.Namespace) -> int:
 
 def show_run(args: argparse.Namespace) -> int:
     conn = open_db(pathlib.Path(args.db))
-    row = conn.execute(
-        """
-        select run_id, repo, issue_number, issue_title, phase, status, builder_sprite, builder_profile,
-               branch, pr_number, pr_url, heartbeat_at, updated_at, worktree_path
-        from runs
-        where run_id = ?
-        """,
-        (args.run_id,),
-    ).fetchone()
+    row = conn.execute(run_surface_query(where_sql="where r.run_id = ?"), (args.run_id,)).fetchone()
     if row is None:
         raise CmdError(f"unknown run_id: {args.run_id}")
     print(
