@@ -2815,6 +2815,7 @@ def test_run_builder_precleans_worker(monkeypatch: pytest.MonkeyPatch) -> None:
         "factory/464-docs-1",
         pathlib.Path("scripts/prompts/conductor-builder-template.md"),
         10,
+        workspace=conductor.run_workspace("misty-step/bitterblossom", "run-464-1", "builder"),
     )
 
     assert cleaned == ["noble-blue-serpent"]
