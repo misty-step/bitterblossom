@@ -1949,6 +1949,71 @@ def test_run_review_round_records_workspace_cleanup_failed_for_reviewer_cleanup_
     assert "cleanup_warning" not in [row["event_type"] for row in events]
 
 
+def test_run_review_round_does_not_mislabel_reviewer_cleanup_event_write_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=447, title="test", body="body", url="https://example.com/447", labels=["autopilot"])
+    event_log = tmp_path / "events.jsonl"
+
+    monkeypatch.setattr(conductor, "cleanup_sprite_processes", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(conductor, "ensure_sprite_ready", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        conductor,
+        "prepare_run_workspace",
+        lambda _runner, reviewer, repo, run_id, lane: conductor.run_workspace(repo, run_id, lane),
+    )
+    monkeypatch.setattr(
+        conductor,
+        "dispatch_tasks_until_artifacts",
+        lambda _runner, tasks, *_args, on_artifact=None, **_kwargs: on_artifact(
+            tasks[0].sprite,
+            {
+                "verdict": "pass",
+                "summary": "ok",
+                "findings": [],
+            },
+        ),
+    )
+    monkeypatch.setattr(conductor, "cleanup_run_workspace", lambda *_args, **_kwargs: None)
+
+    original_path_open = pathlib.Path.open
+    event_log_opens = 0
+
+    def fake_path_open(self: pathlib.Path, *args: object, **kwargs: object):
+        nonlocal event_log_opens
+        if self == event_log:
+            event_log_opens += 1
+            if event_log_opens == 2:
+                raise OSError("event log failed")
+        return original_path_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "open", fake_path_open)
+
+    with pytest.raises(OSError, match="event log failed"):
+        conductor.run_review_round(
+            _RunnerSpy(),
+            conn,
+            event_log,
+            "misty-step/bitterblossom",
+            issue,
+            "run-447-1",
+            463,
+            "https://github.com/misty-step/bitterblossom/pull/463",
+            ["fern"],
+            pathlib.Path("scripts/prompts/conductor-reviewer-template.md"),
+            10,
+        )
+
+    event_types = [
+        row[0]
+        for row in conn.execute("select event_type from events where run_id = 'run-447-1' order by id").fetchall()
+    ]
+    assert event_types == ["review_complete", "reviewer_workspace_cleaned"]
+    assert "workspace_cleanup_failed" not in event_types
+
+
 def test_run_review_round_preserves_prior_wave_state(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
     conn = conductor.open_db(tmp_path / "conductor.db")
     issue = conductor.Issue(number=447, title="test", body="body", url="https://example.com/447", labels=["autopilot"])

@@ -3037,13 +3037,6 @@ def run_review_round(
             workspace = run_workspace(repo, run_id, f"review-{reviewer}")
             try:
                 cleanup_run_workspace(runner, reviewer, repo, run_id, f"review-{reviewer}")
-                record_event(
-                    conn,
-                    event_log,
-                    run_id,
-                    "reviewer_workspace_cleaned",
-                    {"reviewer": reviewer, "workspace": workspace},
-                )
             except Exception as exc:  # noqa: BLE001
                 record_event(
                     conn,
@@ -3056,6 +3049,14 @@ def run_review_round(
                         "surviving_path": workspace,
                     },
                 )
+                continue
+            record_event(
+                conn,
+                event_log,
+                run_id,
+                "reviewer_workspace_cleaned",
+                {"reviewer": reviewer, "workspace": workspace},
+            )
     return ordered_reviews
 
 
