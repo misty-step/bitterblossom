@@ -1,0 +1,26 @@
+$ git rev-parse --abbrev-ref HEAD
+codex/issue-529-trusted-thread-metadata-contract
+
+$ git diff --stat
+ docs/CONDUCTOR.md         |   8 +++
+ scripts/conductor.py      | 133 ++++++++++++++++++++++++++++++++++++++--------
+ scripts/test_conductor.py |  51 ++++++++++++++++--
+ 3 files changed, 167 insertions(+), 25 deletions(-)
+
+$ python3 -m pytest -q scripts/test_conductor.py -k "trusted or metadata or pr_review_thread"
+...........................                                              [100%]
+27 passed, 217 deselected in 0.16s
+
+$ python3 -m pytest -q scripts/test_conductor.py -k "prepare_run_workspace_waits_for_lock_release or cleanup_run_workspace_waits_for_lock_release or cleanup_run_workspace_reports_lock_timeout"
+...                                                                      [100%]
+3 passed, 241 deselected in 7.17s
+
+$ python3 -m ruff check scripts/conductor.py scripts/test_conductor.py
+All checks passed!
+
+$ python3 -m pytest -q scripts/test_conductor.py
+........................................................................ [ 29%]
+........................................................................ [ 59%]
+........................................................................ [ 88%]
+............................                                             [100%]
+244 passed in 10.92s

@@ -590,6 +590,14 @@ The conductor constructs prompts from several sources. Not all of them are trust
 
 The `wrap_untrusted_issue_content` helper ([`scripts/conductor.py`](../scripts/conductor.py)) implements this for issue content. `format_builder_feedback` implements the same pattern for PR review thread feedback.
 
+Trusted PR-thread metadata is a narrower contract than the visible comment body. When a trusted thread embeds Bitterblossom metadata, the conductor only accepts reviewer-owned semantic fields:
+
+- `classification`
+- `severity`
+- `decision`
+
+Lifecycle and settlement state remain conductor-owned. Embedded keys such as `status`, wave bookkeeping, or any other internal-only field are ignored even when the thread author is trusted. The raw thread payload is still retained for audit, but merge-blocking evaluation only reads the documented allowlist above.
+
 ## MVP Limits
 
 - one builder per issue

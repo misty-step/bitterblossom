@@ -2584,6 +2584,48 @@ def test_normalize_review_thread_finding_reads_embedded_metadata() -> None:
     assert finding.message == "late style nit"
 
 
+def test_normalize_trusted_thread_metadata_allows_only_reviewer_owned_fields() -> None:
+    normalized = conductor.normalize_trusted_thread_metadata(
+        {
+            "classification": "bug",
+            "severity": "high",
+            "decision": "fix_now",
+            "status": "duplicate",
+            "wave_id": 9,
+            "internal_note": "should not leak into governance state",
+        }
+    )
+
+    assert normalized == {
+        "classification": "bug",
+        "severity": "high",
+        "decision": "fix_now",
+    }
+
+
+def test_normalize_review_thread_finding_ignores_conductor_owned_metadata_fields() -> None:
+    thread = conductor.ReviewThread(
+        id="thread-1",
+        path="scripts/conductor.py",
+        line=59,
+        author_login="***",
+        author_association="***",
+        body=(
+            "late bug report\n\n"
+            "<!-- bitterblossom: {\"classification\":\"bug\",\"severity\":\"high\",\"decision\":\"fix_now\",\"status\":\"duplicate\",\"wave_id\":99} -->"
+        ),
+        url="https://example.com/thread-1",
+    )
+
+    finding = conductor.normalize_review_thread_finding("run-447-1", 1, thread)
+
+    assert finding.classification == "bug"
+    assert finding.severity == "high"
+    assert finding.decision == "fix_now"
+    assert finding.status == "open"
+    assert finding.raw["body"].endswith("\"wave_id\":99} -->")
+
+
 def test_parse_embedded_finding_metadata_handles_missing_and_invalid_payloads() -> None:
     assert conductor.parse_embedded_finding_metadata("plain text") == ("plain text", {})
     assert conductor.parse_embedded_finding_metadata("<!-- bitterblossom: {oops} -->") == ("", {})
@@ -7750,10 +7792,10 @@ def test_prepare_run_workspace_uses_remote_tracking_refs(monkeypatch: pytest.Mon
 
     assert workspace == expected_workspace
     assert "lockfile=/home/sprite/workspace/bitterblossom/.bb/conductor/mirror.lock" in captured["script"]
-    assert 'exec 9>"$lockfile"' in captured["script"]
-    assert f'flock -w {conductor.WORKSPACE_PREPARE_LOCK_WAIT_SECONDS} 9' in captured["script"]
+    assert 'export BB_MIRROR="$mirror" BB_WORKSPACE="$workspace" BB_LOCKFILE="$lockfile"' in captured["script"]
+    assert "fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)" in captured["script"]
     assert 'refs/remotes/origin/master' in captured["script"]
-    assert 'base_ref="origin/master"' in captured["script"]
+    assert "base_ref = 'origin/master'" in captured["script"]
     assert 'refs/remotes/origin/HEAD' in captured["script"]
     assert "mirror lock acquisition timed out" in captured["script"]
 
@@ -7796,7 +7838,8 @@ def test_cleanup_run_workspace_uses_bounded_lock_wait(monkeypatch: pytest.Monkey
         "builder",
     )
 
-    assert f'flock -w {conductor.WORKSPACE_CLEANUP_LOCK_WAIT_SECONDS} 9' in captured["script"]
+    assert 'export BB_MIRROR="$mirror" BB_WORKSPACE="$workspace" BB_LOCKFILE="$lockfile"' in captured["script"]
+    assert "fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)" in captured["script"]
     assert "mirror lock acquisition timed out during cleanup" in captured["script"]
 
 

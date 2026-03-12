@@ -52,6 +52,7 @@ FINDING_SEVERITIES = {"critical", "high", "medium", "low", "unknown"}
 FINDING_DECISIONS = {"fix_now", "defer", "reject", "noise", "pending"}
 FINDING_STATUSES = {"open", "addressed", "deferred", "rejected", "duplicate", "pending"}
 INACTIVE_FINDING_STATUSES = {"addressed", "deferred", "rejected", "duplicate"}
+TRUSTED_THREAD_METADATA_FIELDS = frozenset({"classification", "severity", "decision"})
 WORKER_SLOT_ACTIVE = "active"
 WORKER_SLOT_DRAINED = "drained"
 WORKER_SLOT_STATES = {WORKER_SLOT_ACTIVE, WORKER_SLOT_DRAINED}
@@ -1606,20 +1607,62 @@ def prepare_run_workspace(runner: Runner, sprite: str, repo: str, run_id: str, l
             f"workspace={shlex.quote(workspace)}",
             f"lockfile={shlex.quote(lockfile)}",
             'mkdir -p "$(dirname "$workspace")" "$(dirname "$lockfile")"',
-            'exec 9>"$lockfile"',
-            f'flock -w {WORKSPACE_PREPARE_LOCK_WAIT_SECONDS} 9 || {{ echo "mirror lock acquisition timed out" >&2; exit 1; }}',
-            'git -C "$mirror" fetch --all --prune',
-            'if git -C "$mirror" show-ref --verify --quiet refs/remotes/origin/master; then',
-            '  base_ref="origin/master"',
-            'elif git -C "$mirror" show-ref --verify --quiet refs/remotes/origin/main; then',
-            '  base_ref="origin/main"',
-            "else",
-            '  base_ref=$(git -C "$mirror" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || git -C "$mirror" rev-parse HEAD)',
-            "fi",
-            'rm -rf "$workspace"',
-            'git -C "$mirror" worktree prune',
-            'git -C "$mirror" worktree add --detach "$workspace" "$base_ref"',
-            'printf "%s\\n" "$workspace"',
+            'export BB_MIRROR="$mirror" BB_WORKSPACE="$workspace" BB_LOCKFILE="$lockfile"',
+            "python3 - <<'PY'\n"
+            "import fcntl\n"
+            "import os\n"
+            "import shutil\n"
+            "import subprocess\n"
+            "import sys\n"
+            "import time\n"
+            "\n"
+            "mirror = os.environ['BB_MIRROR']\n"
+            "workspace = os.environ['BB_WORKSPACE']\n"
+            "lockfile = os.environ['BB_LOCKFILE']\n"
+            "deadline = time.monotonic() + "
+            f"{WORKSPACE_PREPARE_LOCK_WAIT_SECONDS}\n"
+            "\n"
+            "def git(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:\n"
+            "    return subprocess.run(\n"
+            "        ['git', '-c', 'gc.auto=0', '-c', 'maintenance.auto=false', '-C', mirror, *args],\n"
+            "        check=check,\n"
+            "        capture_output=True,\n"
+            "        text=True,\n"
+            "    )\n"
+            "\n"
+            "with open(lockfile, 'w', encoding='utf-8') as lock:\n"
+            "    while True:\n"
+            "        try:\n"
+            "            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+            "            break\n"
+            "        except BlockingIOError:\n"
+            "            if time.monotonic() >= deadline:\n"
+            "                sys.stderr.write('mirror lock acquisition timed out\\n')\n"
+            "                raise SystemExit(1)\n"
+            "            time.sleep(0.01)\n"
+            "\n"
+            "    try:\n"
+            "        git('fetch', '--all', '--prune')\n"
+            "        if git('show-ref', '--verify', '--quiet', 'refs/remotes/origin/master', check=False).returncode == 0:\n"
+            "            base_ref = 'origin/master'\n"
+            "        elif git('show-ref', '--verify', '--quiet', 'refs/remotes/origin/main', check=False).returncode == 0:\n"
+            "            base_ref = 'origin/main'\n"
+            "        else:\n"
+            "            head_ref = git('symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD', check=False)\n"
+            "            if head_ref.returncode == 0:\n"
+            "                base_ref = head_ref.stdout.strip()\n"
+            "            else:\n"
+            "                base_ref = git('rev-parse', 'HEAD').stdout.strip()\n"
+            "        shutil.rmtree(workspace, ignore_errors=True)\n"
+            "        git('worktree', 'prune')\n"
+            "        git('worktree', 'add', '--detach', workspace, base_ref)\n"
+            "    except subprocess.CalledProcessError as exc:\n"
+            "        output = (exc.stderr or exc.stdout or str(exc)).strip()\n"
+            "        sys.stderr.write(output + ('\\n' if output else ''))\n"
+            "        raise SystemExit(exc.returncode)\n"
+            "\n"
+            "    print(workspace)\n"
+            "PY",
         ]
     )
     output = sprite_bash(runner, sprite, script, timeout=300)
@@ -1637,13 +1680,50 @@ def cleanup_run_workspace(runner: Runner, sprite: str, repo: str, run_id: str, l
             f"workspace={shlex.quote(workspace)}",
             f"lockfile={shlex.quote(lockfile)}",
             'mkdir -p "$(dirname "$lockfile")"',
-            'exec 9>"$lockfile"',
-            (
-                f'flock -w {WORKSPACE_CLEANUP_LOCK_WAIT_SECONDS} 9 '
-                '|| { echo "mirror lock acquisition timed out during cleanup" >&2; exit 1; }'
-            ),
-            'git -C "$mirror" worktree remove --force "$workspace" 2>/dev/null || rm -rf "$workspace"',
-            'git -C "$mirror" worktree prune',
+            'export BB_MIRROR="$mirror" BB_WORKSPACE="$workspace" BB_LOCKFILE="$lockfile"',
+            "python3 - <<'PY'\n"
+            "import fcntl\n"
+            "import os\n"
+            "import shutil\n"
+            "import subprocess\n"
+            "import sys\n"
+            "import time\n"
+            "\n"
+            "mirror = os.environ['BB_MIRROR']\n"
+            "workspace = os.environ['BB_WORKSPACE']\n"
+            "lockfile = os.environ['BB_LOCKFILE']\n"
+            "deadline = time.monotonic() + "
+            f"{WORKSPACE_CLEANUP_LOCK_WAIT_SECONDS}\n"
+            "\n"
+            "def git(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:\n"
+            "    return subprocess.run(\n"
+            "        ['git', '-c', 'gc.auto=0', '-c', 'maintenance.auto=false', '-C', mirror, *args],\n"
+            "        check=check,\n"
+            "        capture_output=True,\n"
+            "        text=True,\n"
+            "    )\n"
+            "\n"
+            "with open(lockfile, 'w', encoding='utf-8') as lock:\n"
+            "    while True:\n"
+            "        try:\n"
+            "            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+            "            break\n"
+            "        except BlockingIOError:\n"
+            "            if time.monotonic() >= deadline:\n"
+            "                sys.stderr.write('mirror lock acquisition timed out during cleanup\\n')\n"
+            "                raise SystemExit(1)\n"
+            "            time.sleep(0.01)\n"
+            "\n"
+            "    try:\n"
+            "        removed = git('worktree', 'remove', '--force', workspace, check=False)\n"
+            "        if removed.returncode != 0:\n"
+            "            shutil.rmtree(workspace, ignore_errors=True)\n"
+            "        git('worktree', 'prune')\n"
+            "    except subprocess.CalledProcessError as exc:\n"
+            "        output = (exc.stderr or exc.stdout or str(exc)).strip()\n"
+            "        sys.stderr.write(output + ('\\n' if output else ''))\n"
+            "        raise SystemExit(exc.returncode)\n"
+            "PY",
         ]
     )
     sprite_bash(runner, sprite, script, timeout=180)
@@ -2425,6 +2505,16 @@ def parse_embedded_finding_metadata(body: str) -> tuple[str, dict[str, Any]]:
     return visible_body, metadata
 
 
+def normalize_trusted_thread_metadata(metadata: Any) -> dict[str, Any]:
+    if not isinstance(metadata, dict):
+        return {}
+    return {
+        field: metadata[field]
+        for field in TRUSTED_THREAD_METADATA_FIELDS
+        if field in metadata
+    }
+
+
 def review_finding_fingerprint(*, classification: str, severity: str, path: str, line: int | None, message: str) -> str:
     material = json.dumps(
         {
@@ -2485,6 +2575,7 @@ def normalize_review_finding(
 
 def normalize_review_thread_finding(run_id: str, wave_id: int, thread: ReviewThread) -> ReviewFinding:
     visible_body, metadata = parse_embedded_finding_metadata(thread.body)
+    metadata = normalize_trusted_thread_metadata(metadata)
     classification = normalized_choice(metadata.get("classification"), "unspecified", FINDING_CLASSIFICATIONS)
     severity = normalized_choice(metadata.get("severity"), "unknown", FINDING_SEVERITIES)
     decision = normalized_choice(metadata.get("decision"), "pending", FINDING_DECISIONS)
