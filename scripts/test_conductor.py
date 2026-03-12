@@ -3651,6 +3651,29 @@ def test_show_runs_hides_stale_blocking_reason_after_merge(tmp_path: pathlib.Pat
     assert lines[0]["blocking_reason"] is None
 
 
+def test_show_runs_surfaces_corrupted_blocking_event_without_crashing(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=44, title="failed", body="body", url="https://example.com/44", labels=["autopilot"])
+    conductor.create_run(conn, "run-44-corrupt", "misty-step/bitterblossom", issue, "claude-sonnet")
+    conductor.update_run(conn, "run-44-corrupt", phase="waiting_ci", status="failed", builder_sprite="fern")
+    conn.execute(
+        "insert into events (run_id, event_type, payload_json, created_at) values (?, ?, ?, ?)",
+        ("run-44-corrupt", "ci_wait_complete", "{not-json", conductor.now_utc()),
+    )
+    conn.commit()
+
+    rc = conductor.show_runs(argparse.Namespace(db=str(tmp_path / "conductor.db"), limit=5))
+
+    assert rc == 0
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line]
+    assert len(lines) == 1
+    assert lines[0]["run_id"] == "run-44-corrupt"
+    assert lines[0]["blocking_event_type"] == "ci_wait_complete"
+    assert lines[0]["blocking_reason"] == "(blocking event data corrupted)"
+
+
 def test_show_runs_surfaces_heartbeat_age_and_blocking_reason(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: pathlib.Path,
@@ -3747,6 +3770,37 @@ def test_show_run_prints_run_metadata_and_recent_event_context(
         "ci_wait_complete",
     ]
     assert payload["recent_events"][0]["payload"]["reason"] == "unchanged_after_revision"
+
+
+def test_show_run_surfaces_corrupted_blocking_event_without_crashing(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=448, title="inspect", body="", url="https://example.com/448", labels=["autopilot"])
+    conductor.create_run(conn, "run-448-corrupt", "misty-step/bitterblossom", issue, "claude-sonnet")
+    conductor.update_run(conn, "run-448-corrupt", phase="waiting_ci", status="failed", builder_sprite="fern")
+    conn.execute(
+        "insert into events (run_id, event_type, payload_json, created_at) values (?, ?, ?, ?)",
+        ("run-448-corrupt", "ci_wait_complete", "{not-json", conductor.now_utc()),
+    )
+    conn.commit()
+
+    rc = conductor.show_run(
+        argparse.Namespace(
+            db=str(tmp_path / "conductor.db"),
+            run_id="run-448-corrupt",
+            event_limit=1,
+        )
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["run"]["blocking_event_type"] == "ci_wait_complete"
+    assert payload["run"]["blocking_reason"] == "(blocking event data corrupted)"
+    assert payload["recent_events"][0]["payload"] == {
+        "_error": "(event payload corrupted)",
+        "_raw_payload_json": "{not-json",
+    }
 
 
 def test_check_env_passes_when_all_present(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -6579,6 +6633,38 @@ def test_show_run_exposes_worktree_recovery_status_cleanup_failed(
     assert run["worktree_recovery_event_at"] is not None
 
 
+def test_show_run_exposes_corrupted_builder_cleanup_failure_without_crashing(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """show-run degrades gracefully when a builder cleanup failure payload is malformed JSON."""
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="recovery", body="", url="u538", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-rec-2b", "misty-step/bitterblossom", issue, "default")
+    workspace = conductor.run_workspace("misty-step/bitterblossom", "run-538-rec-2b", "builder")
+    conductor.update_run(conn, "run-538-rec-2b", worktree_path=workspace)
+    conn.execute(
+        "insert into events (run_id, event_type, payload_json, created_at) values (?, ?, ?, ?)",
+        ("run-538-rec-2b", "workspace_cleanup_failed", "{not-json", conductor.now_utc()),
+    )
+    conn.commit()
+
+    rc = conductor.show_run(
+        argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-538-rec-2b", event_limit=5)
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    run = payload["run"]
+    assert run["worktree_recovery_status"] == "cleanup_failed"
+    assert run["worktree_recovery_error"] == "(recovery event data corrupted)"
+    assert run["worktree_recovery_event_type"] == "workspace_cleanup_failed"
+    assert run["worktree_recovery_event_at"] is not None
+    assert payload["recent_events"][0]["payload"] == {
+        "_error": "(event payload corrupted)",
+        "_raw_payload_json": "{not-json",
+    }
+
+
 def test_show_run_worktree_recovery_status_null_when_no_lifecycle_event(
     tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -6598,6 +6684,35 @@ def test_show_run_worktree_recovery_status_null_when_no_lifecycle_event(
     assert run["worktree_recovery_error"] is None
     assert run["worktree_recovery_event_type"] is None
     assert run["worktree_recovery_event_at"] is None
+
+
+def test_show_runs_exposes_worktree_recovery_status_cleaned(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """show-runs includes the builder cleanup recovery fields for successful cleanup."""
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="recovery", body="", url="u538", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-rec-4a", "misty-step/bitterblossom", issue, "default")
+    workspace = conductor.run_workspace("misty-step/bitterblossom", "run-538-rec-4a", "builder")
+    conductor.update_run(conn, "run-538-rec-4a", worktree_path=workspace)
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-538-rec-4a",
+        "builder_workspace_cleaned",
+        {"workspace": workspace},
+    )
+
+    rc = conductor.show_runs(argparse.Namespace(db=str(tmp_path / "conductor.db"), limit=5))
+
+    assert rc == 0
+    rows = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line]
+    assert len(rows) == 1
+    run = rows[0]
+    assert run["worktree_recovery_status"] == "cleaned"
+    assert run["worktree_recovery_error"] is None
+    assert run["worktree_recovery_event_type"] == "builder_workspace_cleaned"
+    assert run["worktree_recovery_event_at"] is not None
 
 
 def test_show_runs_exposes_worktree_recovery_status_cleanup_failed(
@@ -6625,6 +6740,33 @@ def test_show_runs_exposes_worktree_recovery_status_cleanup_failed(
     run = rows[0]
     assert run["worktree_recovery_status"] == "cleanup_failed"
     assert run["worktree_recovery_error"] == "git locked"
+    assert run["worktree_recovery_event_type"] == "workspace_cleanup_failed"
+    assert run["worktree_recovery_event_at"] is not None
+
+
+def test_show_runs_handles_corrupted_builder_cleanup_failure_without_crashing(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """show-runs keeps listing runs when a builder cleanup failure payload is malformed JSON."""
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="recovery", body="", url="u538", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-rec-4b", "misty-step/bitterblossom", issue, "default")
+    workspace = conductor.run_workspace("misty-step/bitterblossom", "run-538-rec-4b", "builder")
+    conductor.update_run(conn, "run-538-rec-4b", worktree_path=workspace)
+    conn.execute(
+        "insert into events (run_id, event_type, payload_json, created_at) values (?, ?, ?, ?)",
+        ("run-538-rec-4b", "workspace_cleanup_failed", "{not-json", conductor.now_utc()),
+    )
+    conn.commit()
+
+    rc = conductor.show_runs(argparse.Namespace(db=str(tmp_path / "conductor.db"), limit=5))
+
+    assert rc == 0
+    rows = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line]
+    assert len(rows) == 1
+    run = rows[0]
+    assert run["worktree_recovery_status"] == "cleanup_failed"
+    assert run["worktree_recovery_error"] == "(recovery event data corrupted)"
     assert run["worktree_recovery_event_type"] == "workspace_cleanup_failed"
     assert run["worktree_recovery_event_at"] is not None
 

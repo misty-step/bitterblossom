@@ -282,6 +282,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             payload_json text not null,
             created_at text not null
         );
+        create index if not exists idx_events_run_id_event_type_id
+            on events (run_id, event_type, id desc);
 
         create table if not exists review_waves (
             id integer primary key autoincrement,
@@ -501,7 +503,14 @@ def lease_expired(lease_expires_at: str | None) -> bool:
 
 
 def event_row_payload(row: sqlite3.Row) -> dict[str, Any]:
-    return json.loads(str(row["payload_json"]))
+    raw_payload = str(row["payload_json"])
+    try:
+        return json.loads(raw_payload)
+    except (TypeError, ValueError):
+        return {
+            "_error": "(event payload corrupted)",
+            "_raw_payload_json": raw_payload,
+        }
 
 
 def format_event_row(row: sqlite3.Row) -> dict[str, Any]:
@@ -660,8 +669,20 @@ def blocking_event_for_run(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row
         where run_id = ?
           and (
             event_type in ('pr_feedback_blocked', 'council_blocked', 'command_failed', 'unexpected_error')
-            or (event_type = 'ci_wait_complete' and json_extract(payload_json, '$.passed') = 0)
-            or (event_type = 'external_review_wait_complete' and json_extract(payload_json, '$.passed') = 0)
+            or (
+              event_type = 'ci_wait_complete'
+              and (
+                (case when json_valid(payload_json) then json_extract(payload_json, '$.passed') end) = 0
+                or not json_valid(payload_json)
+              )
+            )
+            or (
+              event_type = 'external_review_wait_complete'
+              and (
+                (case when json_valid(payload_json) then json_extract(payload_json, '$.passed') end) = 0
+                or not json_valid(payload_json)
+              )
+            )
           )
         order by id desc
         limit 1
@@ -677,6 +698,9 @@ def builder_workspace_lifecycle_event(conn: sqlite3.Connection, run_id: str) -> 
     ``workspace_cleanup_failed`` row (without a ``reviewer`` field) on failure.
     Reviewer cleanup failures use the same event name but always carry a
     ``reviewer`` field, so filtering on its absence isolates the builder lane.
+
+    Corrupted JSON payloads are still surfaced so inspection can degrade
+    gracefully instead of crashing when a cleanup failure row is malformed.
     """
     return conn.execute(
         """
@@ -687,7 +711,11 @@ def builder_workspace_lifecycle_event(conn: sqlite3.Connection, run_id: str) -> 
             event_type = 'builder_workspace_cleaned'
             or (
               event_type = 'workspace_cleanup_failed'
-              and json_extract(payload_json, '$.reviewer') is null
+              and (
+                case
+                  when json_valid(payload_json) then json_extract(payload_json, '$.reviewer')
+                end
+              ) is null
             )
           )
         order by id desc
@@ -717,6 +745,8 @@ def serialize_run_surface(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[st
         "heartbeat_age_seconds": age_seconds_from_now(heartbeat_at),
         "updated_at": row["updated_at"],
     }
+    # Recovery fields stay mutually exclusive: all null without a lifecycle event;
+    # ``worktree_recovery_error`` is only populated for ``cleanup_failed``.
     payload["worktree_recovery_status"] = None
     payload["worktree_recovery_error"] = None
     payload["worktree_recovery_event_type"] = None
@@ -728,19 +758,27 @@ def serialize_run_surface(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[st
         if lifecycle_event["event_type"] == "builder_workspace_cleaned":
             payload["worktree_recovery_status"] = "cleaned"
         elif lifecycle_event["event_type"] == "workspace_cleanup_failed":
-            recovery_payload = json.loads(lifecycle_event["payload_json"])
             payload["worktree_recovery_status"] = "cleanup_failed"
-            payload["worktree_recovery_error"] = recovery_payload.get("error")
+            try:
+                recovery_payload = json.loads(str(lifecycle_event["payload_json"]))
+            except (TypeError, ValueError):
+                payload["worktree_recovery_error"] = "(recovery event data corrupted)"
+            else:
+                payload["worktree_recovery_error"] = recovery_payload.get("error")
     blocking_reason = None
     payload["blocking_event_type"] = None
     payload["blocking_event_at"] = None
     if row["status"] in {"blocked", "failed"}:
         blocking_event = blocking_event_for_run(conn, row["run_id"])
         if blocking_event is not None:
-            blocking_payload = json.loads(blocking_event["payload_json"])
-            blocking_reason = summarize_blocking_reason(blocking_event["event_type"], blocking_payload)
             payload["blocking_event_type"] = blocking_event["event_type"]
             payload["blocking_event_at"] = blocking_event["created_at"]
+            try:
+                blocking_payload = json.loads(str(blocking_event["payload_json"]))
+            except (TypeError, ValueError):
+                blocking_reason = "(blocking event data corrupted)"
+            else:
+                blocking_reason = summarize_blocking_reason(blocking_event["event_type"], blocking_payload)
     payload["blocking_reason"] = blocking_reason
     return payload
 
