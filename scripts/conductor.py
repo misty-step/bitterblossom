@@ -1399,6 +1399,11 @@ def load_review_wave(conn: sqlite3.Connection, wave_id: int) -> ReviewWave:
     )
 
 
+def review_wave_is_terminal(conn: sqlite3.Connection, wave_id: int) -> bool:
+    wave = load_review_wave(conn, wave_id)
+    return wave.completed_at is not None and wave.status != "open"
+
+
 def finish_review_wave(conn: sqlite3.Connection, wave_id: int, status: str, *, commit: bool = True) -> None:
     conn.execute(
         "update review_waves set status = ?, completed_at = ? where id = ?",
@@ -2877,15 +2882,16 @@ def run_review_round(
             extra={"reviews_recorded": len(ordered_reviews)},
         )
     except Exception:
-        complete_review_wave(
-            conn,
-            event_log,
-            run_id,
-            wave_id,
-            "partial" if reviews else "failed",
-            extra={"reviews_recorded": len(reviews)},
-            preserve_primary_error=True,
-        )
+        if not review_wave_is_terminal(conn, wave_id):
+            complete_review_wave(
+                conn,
+                event_log,
+                run_id,
+                wave_id,
+                "partial" if reviews else "failed",
+                extra={"reviews_recorded": len(reviews)},
+                preserve_primary_error=True,
+            )
         raise
     finally:
         for reviewer in prepared_reviewers:

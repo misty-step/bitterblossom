@@ -1370,6 +1370,70 @@ def test_run_review_round_marks_wave_partial_when_not_all_reviews_arrive(
     assert [(wave.kind, wave.status) for wave in waves] == [("review_round", "partial")]
 
 
+def test_run_review_round_keeps_completed_wave_when_completion_event_recording_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=447, title="test", body="body", url="https://example.com/447", labels=["autopilot"])
+
+    def fake_dispatch_many(
+        _runner: object,
+        _tasks: list[conductor.DispatchTask],
+        _repo: str,
+        _prompt_template: pathlib.Path,
+        _timeout_minutes: int,
+        *,
+        poll_seconds: int = 5,
+        on_artifact: object | None = None,
+        on_tick: object | None = None,
+    ) -> dict[str, dict[str, object]]:
+        _ = (poll_seconds, on_tick)
+        assert on_artifact is not None
+        on_artifact("fern", {"verdict": "pass", "summary": "ok", "findings": []})
+        return {"fern": {"verdict": "pass", "summary": "ok", "findings": []}}
+
+    def fail_completed_event(
+        conn: sqlite3.Connection,
+        event_log: pathlib.Path,
+        run_id: str,
+        wave_id: int,
+        event_type: str,
+        *,
+        extra: dict[str, object] | None = None,
+    ) -> None:
+        _ = (conn, event_log, run_id, wave_id, extra)
+        if event_type == "review_wave_completed":
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(conductor, "dispatch_tasks_until_artifacts", fake_dispatch_many)
+    monkeypatch.setattr(conductor, "cleanup_sprite_processes", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(conductor, "ensure_sprite_ready", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        conductor,
+        "prepare_run_workspace",
+        lambda _runner, _sprite, repo, run_id, lane: conductor.run_workspace(repo, run_id, lane),
+    )
+    monkeypatch.setattr(conductor, "record_review_wave_event", fail_completed_event)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        conductor.run_review_round(
+            _RunnerSpy(),
+            conn,
+            tmp_path / "events.jsonl",
+            "misty-step/bitterblossom",
+            issue,
+            "run-447-1",
+            463,
+            "https://github.com/misty-step/bitterblossom/pull/463",
+            ["fern"],
+            pathlib.Path("scripts/prompts/conductor-reviewer-template.md"),
+            10,
+        )
+
+    waves = conductor.load_review_waves(conn, "run-447-1")
+    assert [(wave.kind, wave.status) for wave in waves] == [("review_round", "completed")]
+
+
 def test_record_pr_thread_scan_marks_wave_failed_on_persist_error(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
 ) -> None:
