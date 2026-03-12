@@ -8050,6 +8050,7 @@ def test_cleanup_run_workspace_waits_for_lock_release(
         holder.wait(timeout=5)
 
     assert time.monotonic() - started >= 1.0
+    assert not pathlib.Path(workspace).exists()
 
 
 def test_cleanup_builder_workspace_records_cleanup_warning_on_error(
