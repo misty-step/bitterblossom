@@ -6512,3 +6512,117 @@ def test_cleanup_run_workspace_serializes_with_prepare(monkeypatch: pytest.Monke
     assert "cleanup" in active_ops, "cleanup never reached sprite_bash"
     # If overlap was detected, cleanup entered while prepare was still active — the lock failed.
     assert not concurrent_overlap.is_set(), "prepare and cleanup ran concurrently; lock did not serialize them"
+
+
+# ---------------------------------------------------------------------------
+# worktree_recovery_status in run surface (issue #538)
+# ---------------------------------------------------------------------------
+
+
+def test_show_run_exposes_worktree_recovery_status_cleaned(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """show-run includes worktree_recovery_status=cleaned after successful cleanup."""
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="recovery", body="", url="u538", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-rec-1", "misty-step/bitterblossom", issue, "default")
+    workspace = conductor.run_workspace("misty-step/bitterblossom", "run-538-rec-1", "builder")
+    conductor.update_run(conn, "run-538-rec-1", worktree_path=workspace)
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-538-rec-1",
+        "builder_workspace_cleaned",
+        {"workspace": workspace},
+    )
+
+    rc = conductor.show_run(
+        argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-538-rec-1", event_limit=5)
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    run = payload["run"]
+    assert run["worktree_recovery_status"] == "cleaned"
+    assert run["worktree_recovery_error"] is None
+    assert run["worktree_recovery_event_type"] == "builder_workspace_cleaned"
+    assert run["worktree_recovery_event_at"] is not None
+
+
+def test_show_run_exposes_worktree_recovery_status_cleanup_failed(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """show-run reports cleanup_failed with the error when builder workspace cleanup fails."""
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="recovery", body="", url="u538", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-rec-2", "misty-step/bitterblossom", issue, "default")
+    workspace = conductor.run_workspace("misty-step/bitterblossom", "run-538-rec-2", "builder")
+    conductor.update_run(conn, "run-538-rec-2", worktree_path=workspace)
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-538-rec-2",
+        "workspace_cleanup_failed",
+        {"error": "git locked", "surviving_path": workspace},
+    )
+
+    rc = conductor.show_run(
+        argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-538-rec-2", event_limit=5)
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    run = payload["run"]
+    assert run["worktree_recovery_status"] == "cleanup_failed"
+    assert run["worktree_recovery_error"] == "git locked"
+    assert run["worktree_recovery_event_type"] == "workspace_cleanup_failed"
+    assert run["worktree_recovery_event_at"] is not None
+
+
+def test_show_run_worktree_recovery_status_null_when_no_lifecycle_event(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """show-run emits null recovery fields when no builder workspace lifecycle event exists."""
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="recovery", body="", url="u538", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-rec-3", "misty-step/bitterblossom", issue, "default")
+
+    rc = conductor.show_run(
+        argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-538-rec-3", event_limit=5)
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    run = payload["run"]
+    assert run["worktree_recovery_status"] is None
+    assert run["worktree_recovery_error"] is None
+    assert run["worktree_recovery_event_type"] is None
+    assert run["worktree_recovery_event_at"] is None
+
+
+def test_reviewer_cleanup_failure_does_not_set_builder_recovery_status(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Reviewer workspace_cleanup_failed events must not pollute builder worktree_recovery_status."""
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="recovery", body="", url="u538", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-rec-4", "misty-step/bitterblossom", issue, "default")
+    reviewer_workspace = conductor.run_workspace("misty-step/bitterblossom", "run-538-rec-4", "review-fern")
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-538-rec-4",
+        "workspace_cleanup_failed",
+        {"error": "stale worktree", "reviewer": "fern", "surviving_path": reviewer_workspace},
+    )
+
+    rc = conductor.show_run(
+        argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-538-rec-4", event_limit=5)
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    run = payload["run"]
+    # Reviewer failure must not set the builder recovery status
+    assert run["worktree_recovery_status"] is None
+    assert run["worktree_recovery_error"] is None

@@ -670,6 +670,33 @@ def blocking_event_for_run(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row
     ).fetchone()
 
 
+def builder_workspace_lifecycle_event(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row | None:
+    """Return the most recent builder-workspace lifecycle event for a run.
+
+    Returns a ``builder_workspace_cleaned`` row on success or a
+    ``workspace_cleanup_failed`` row (without a ``reviewer`` field) on failure.
+    Reviewer cleanup failures use the same event name but always carry a
+    ``reviewer`` field, so filtering on its absence isolates the builder lane.
+    """
+    return conn.execute(
+        """
+        select event_type, payload_json, created_at
+        from events
+        where run_id = ?
+          and (
+            event_type = 'builder_workspace_cleaned'
+            or (
+              event_type = 'workspace_cleanup_failed'
+              and json_extract(payload_json, '$.reviewer') is null
+            )
+          )
+        order by id desc
+        limit 1
+        """,
+        (run_id,),
+    ).fetchone()
+
+
 def serialize_run_surface(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
     heartbeat_at = row["heartbeat_at"]
     worktree_path = row["worktree_path"] if "worktree_path" in row.keys() else None
@@ -690,6 +717,20 @@ def serialize_run_surface(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[st
         "heartbeat_age_seconds": age_seconds_from_now(heartbeat_at),
         "updated_at": row["updated_at"],
     }
+    payload["worktree_recovery_status"] = None
+    payload["worktree_recovery_error"] = None
+    payload["worktree_recovery_event_type"] = None
+    payload["worktree_recovery_event_at"] = None
+    lifecycle_event = builder_workspace_lifecycle_event(conn, row["run_id"])
+    if lifecycle_event is not None:
+        recovery_payload = json.loads(lifecycle_event["payload_json"])
+        payload["worktree_recovery_event_type"] = lifecycle_event["event_type"]
+        payload["worktree_recovery_event_at"] = lifecycle_event["created_at"]
+        if lifecycle_event["event_type"] == "builder_workspace_cleaned":
+            payload["worktree_recovery_status"] = "cleaned"
+        else:
+            payload["worktree_recovery_status"] = "cleanup_failed"
+            payload["worktree_recovery_error"] = recovery_payload.get("error")
     blocking_reason = None
     payload["blocking_event_type"] = None
     payload["blocking_event_at"] = None
