@@ -6077,6 +6077,36 @@ def test_prepare_run_workspace_retries_on_timeout(monkeypatch: pytest.MonkeyPatc
     assert sleeps == [conductor.WORKSPACE_PREP_RETRY_DELAY_SECONDS]
 
 
+def test_prepare_run_workspace_retries_on_os_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Transport-level OSError (e.g. broken pipe) is treated as transient and retried."""
+    call_count = 0
+    expected_workspace = conductor.run_workspace("misty-step/bitterblossom", "run-538-1", "builder")
+    sleeps: list[float] = []
+
+    def fake_sprite_bash(_runner: object, _sprite: str, _script: str, *, timeout: int) -> str:
+        nonlocal call_count
+        _ = timeout
+        call_count += 1
+        if call_count < 2:
+            raise OSError("Connection reset by peer")
+        return expected_workspace
+
+    monkeypatch.setattr(conductor, "sprite_bash", fake_sprite_bash)
+    monkeypatch.setattr(conductor.time, "sleep", lambda s: sleeps.append(s))
+
+    workspace = conductor.prepare_run_workspace(
+        object(),
+        "noble-blue-serpent",
+        "misty-step/bitterblossom",
+        "run-538-1",
+        "builder",
+    )
+
+    assert workspace == expected_workspace
+    assert call_count == 2
+    assert sleeps == [conductor.WORKSPACE_PREP_RETRY_DELAY_SECONDS]
+
+
 def test_prepare_run_workspace_serializes_overlapping_calls(monkeypatch: pytest.MonkeyPatch) -> None:
     """Concurrent calls for the same sprite+repo must not interleave mirror operations."""
     import threading as _threading
