@@ -78,7 +78,7 @@ Refresh `docs/CODEBASE_MAP.md` and `docs/context/*` when any of these change:
 - completion protocol signal files
 - worker selection / readiness / repair flow
 - actual move to worktree isolation
-- actual move to a durable repository activation / pause-state / desired-concurrency control plane
+- repository-registry state machine semantics (`active` / `paused` / `draining`) or `show-repos` / `set-repo-state` surfaces
 
 ## Quick Audit Commands
 

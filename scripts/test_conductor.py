@@ -261,6 +261,61 @@ def test_open_db_migrates_worker_slot_schema(tmp_path: pathlib.Path) -> None:
     assert {"repo", "worker", "slot_index", "state", "consecutive_failures", "current_run_id"} <= slot_cols
 
 
+def test_open_db_migrates_repository_registry_schema(tmp_path: pathlib.Path) -> None:
+    db_path = tmp_path / "conductor.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        create table runs (
+            run_id text primary key,
+            repo text not null,
+            issue_number integer not null,
+            issue_title text not null,
+            phase text not null,
+            status text not null,
+            builder_sprite text,
+            builder_profile text,
+            branch text,
+            pr_number integer,
+            pr_url text,
+            created_at text not null,
+            updated_at text not null
+        );
+        create table leases (
+            repo text not null,
+            issue_number integer not null,
+            run_id text not null,
+            leased_at text not null,
+            released_at text,
+            primary key (repo, issue_number)
+        );
+        create table reviews (
+            run_id text not null,
+            reviewer_sprite text not null,
+            verdict text not null,
+            summary text not null,
+            findings_json text not null,
+            created_at text not null,
+            primary key (run_id, reviewer_sprite)
+        );
+        create table events (
+            id integer primary key autoincrement,
+            run_id text not null,
+            event_type text not null,
+            payload_json text not null,
+            created_at text not null
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    migrated = conductor.open_db(db_path)
+    registry_cols = {row[1] for row in migrated.execute("pragma table_info(repository_registry)").fetchall()}
+
+    assert {"repo", "state", "desired_concurrency", "updated_at"} <= registry_cols
+
+
 def test_seed_worker_slots_supports_explicit_capacity(tmp_path: pathlib.Path) -> None:
     conn = conductor.open_db(tmp_path / "conductor.db")
 
@@ -1336,6 +1391,45 @@ def test_route_issue_command_reports_readiness_failures_when_none_are_eligible(
         "readiness_failures": {
             "2": ["missing `## Product Spec` section", "missing `### Intent Contract` section"]
         },
+    }
+
+
+def test_route_issue_reports_repo_when_scheduling_is_blocked(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    conductor.upsert_repository_record(
+        conn,
+        "misty-step/bitterblossom",
+        state=conductor.REPOSITORY_STATE_PAUSED,
+        desired_concurrency=1,
+    )
+    monkeypatch.setattr(
+        conductor,
+        "list_candidate_issues",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("should not list issues for paused repo")),
+    )
+
+    rc = conductor.route_issue(
+        argparse.Namespace(
+            repo="misty-step/bitterblossom",
+            db=str(tmp_path / "conductor.db"),
+            label="autopilot",
+            limit=20,
+            builder_profile="claude-sonnet",
+            issue=None,
+        )
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "issue_number": None,
+        "issue_title": None,
+        "issue_url": None,
+        "profile": "claude-sonnet",
+        "rationale": "repository is paused",
+        "readiness_failures": {},
     }
 
 
@@ -5091,6 +5185,86 @@ def test_show_workers_reports_configured_slots_on_fresh_db(
     assert all(slot["state"] == conductor.WORKER_SLOT_ACTIVE for slot in payload["slots"])
 
 
+def test_repository_scheduling_view_blocks_paused_and_draining_repos(tmp_path: pathlib.Path) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+
+    conductor.upsert_repository_record(
+        conn,
+        "misty-step/bitterblossom",
+        state=conductor.REPOSITORY_STATE_PAUSED,
+        desired_concurrency=2,
+    )
+    paused = conductor.repository_scheduling_view(conn, "misty-step/bitterblossom")
+    assert paused.scheduling_allowed is False
+    assert paused.available_capacity == 0
+    assert paused.scheduling_reason == "repository is paused"
+
+    conductor.upsert_repository_record(
+        conn,
+        "misty-step/bitterblossom",
+        state=conductor.REPOSITORY_STATE_DRAINING,
+        desired_concurrency=2,
+    )
+    draining = conductor.repository_scheduling_view(conn, "misty-step/bitterblossom")
+    assert draining.scheduling_allowed is False
+    assert draining.available_capacity == 0
+    assert draining.scheduling_reason == "repository is draining"
+
+
+def test_repository_scheduling_view_uses_persisted_desired_concurrency(tmp_path: pathlib.Path) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    conductor.upsert_repository_record(
+        conn,
+        "misty-step/bitterblossom",
+        state=conductor.REPOSITORY_STATE_ACTIVE,
+        desired_concurrency=2,
+    )
+    issue = conductor.Issue(number=447, title="inspect", body="", url="https://example.com/447", labels=["autopilot"])
+    conductor.create_run(conn, "run-447-1", "misty-step/bitterblossom", issue, "claude-sonnet")
+    conductor.create_run(conn, "run-447-2", "misty-step/bitterblossom", issue, "claude-sonnet")
+
+    view = conductor.repository_scheduling_view(conn, "misty-step/bitterblossom")
+
+    assert view.active_runs == 2
+    assert view.available_capacity == 0
+    assert view.scheduling_allowed is False
+    assert view.scheduling_reason == "repository is at desired concurrency"
+
+
+def test_set_repo_state_and_show_repos_emit_machine_readable_registry(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rc = conductor.set_repo_state(
+        argparse.Namespace(
+            db=str(tmp_path / "conductor.db"),
+            repo="misty-step/bitterblossom",
+            state="active",
+            desired_concurrency=3,
+        )
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["repo"] == "misty-step/bitterblossom"
+    assert payload["state"] == "active"
+    assert payload["desired_concurrency"] == 3
+    assert payload["active_runs"] == 0
+    assert payload["available_capacity"] == 3
+    assert payload["scheduling_allowed"] is True
+
+    rc = conductor.show_repos(
+        argparse.Namespace(
+            db=str(tmp_path / "conductor.db"),
+            repo=[],
+        )
+    )
+
+    assert rc == 0
+    rows = json.loads(capsys.readouterr().out)
+    assert rows == [payload]
+
+
 def test_release_worker_slot_clears_terminal_stale_assignment(tmp_path: pathlib.Path) -> None:
     conn = conductor.open_db(tmp_path / "conductor.db")
     issue = conductor.Issue(number=449, title="release", body="", url="https://example.com/449", labels=["autopilot"])
@@ -5938,6 +6112,28 @@ def _make_governance_run(issue: conductor.Issue) -> conductor.GovernanceRun:
         pr_url="https://github.com/misty-step/bitterblossom/pull/490",
         builder_workspace="/tmp/run-479-1-builder",
     )
+
+
+def test_run_once_skips_unschedulable_repository_before_issue_lookup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    conductor.upsert_repository_record(
+        conn,
+        "misty-step/bitterblossom",
+        state=conductor.REPOSITORY_STATE_DRAINING,
+        desired_concurrency=2,
+    )
+    monkeypatch.setattr(
+        conductor,
+        "get_issue",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("should not fetch issue for draining repo")),
+    )
+
+    rc = conductor.run_once(_make_run_once_args(tmp_path, issue_number=447))
+
+    assert rc == 0
+    assert capsys.readouterr().out.strip() == "repository is draining"
 
 
 def _select_named_worker_slot(worker: str):
@@ -8564,29 +8760,22 @@ def _local_sprite_bash(bin_dir: pathlib.Path) -> Any:
 def _hold_lock(lockfile: pathlib.Path, hold_seconds: float, bin_dir: pathlib.Path) -> subprocess.Popen[str]:
     ready = lockfile.with_suffix(".ready")
     ready.unlink(missing_ok=True)
-    env = os.environ.copy()
-    env["PATH"] = f"{bin_dir}:{env['PATH']}"
     proc = subprocess.Popen(
         [
-            "python3",
+            sys.executable,
             "-c",
-            "\n".join(
-                [
-                    "import fcntl",
-                    "import pathlib",
-                    "import time",
-                    f"lockfile = {str(lockfile)!r}",
-                    f"ready = {str(ready)!r}",
-                    "pathlib.Path(lockfile).parent.mkdir(parents=True, exist_ok=True)",
-                    "with open(lockfile, 'w', encoding='utf-8') as handle:",
-                    "    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)",
-                    "    pathlib.Path(ready).write_text('ready', encoding='utf-8')",
-                    f"    time.sleep({hold_seconds})",
-                ]
+            (
+                "import fcntl, pathlib, time; "
+                f'lock_path = pathlib.Path(r"{lockfile}"); '
+                f'ready_path = pathlib.Path(r"{ready}"); '
+                'lock_path.parent.mkdir(parents=True, exist_ok=True); '
+                'fh = lock_path.open("a+"); '
+                "fcntl.flock(fh.fileno(), fcntl.LOCK_EX); "
+                'ready_path.write_text("ready", encoding="utf-8"); '
+                f"time.sleep({hold_seconds})"
             ),
         ],
         text=True,
-        env=env,
     )
     deadline = time.monotonic() + 5
     while not ready.exists():
@@ -9001,14 +9190,8 @@ def test_cleanup_run_workspace_waits_for_lock_release(
     )
     monkeypatch.setattr(conductor, "sprite_bash", _local_sprite_bash(bin_dir))
 
-    # Create the worktree first so cleanup has something to remove.
-    workspace = conductor.prepare_run_workspace(
-        object(),
-        "noble-blue-serpent",
-        "misty-step/bitterblossom",
-        "run-480-1",
-        "builder",
-    )
+    workspace = conductor.run_workspace("misty-step/bitterblossom", "run-480-1", "builder")
+    pathlib.Path(workspace).mkdir(parents=True)
     assert pathlib.Path(workspace).exists()
 
     # Hold the lock (simulating a concurrent prepare or fetch on the same sprite mirror).

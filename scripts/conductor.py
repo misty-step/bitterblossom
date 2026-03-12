@@ -56,6 +56,11 @@ INACTIVE_FINDING_STATUSES = {"addressed", "deferred", "rejected", "duplicate"}
 WORKER_SLOT_ACTIVE = "active"
 WORKER_SLOT_DRAINED = "drained"
 WORKER_SLOT_STATES = {WORKER_SLOT_ACTIVE, WORKER_SLOT_DRAINED}
+REPOSITORY_STATE_ACTIVE = "active"
+REPOSITORY_STATE_PAUSED = "paused"
+REPOSITORY_STATE_DRAINING = "draining"
+REPOSITORY_STATES = {REPOSITORY_STATE_ACTIVE, REPOSITORY_STATE_PAUSED, REPOSITORY_STATE_DRAINING}
+DEFAULT_REPOSITORY_DESIRED_CONCURRENCY = 1
 WORKER_DRAIN_FAILURE_THRESHOLD = 2
 MAX_WORKER_SLOT_COUNT = 1000
 TERMINAL_RUN_STATUSES = {"merged", "failed", "blocked", "closed"}
@@ -225,6 +230,35 @@ class WorkerSlot:
             last_error=str(row["last_error"]) if row["last_error"] is not None else None,
             updated_at=str(row["updated_at"]),
         )
+
+
+@dataclass(slots=True)
+class RepositoryRecord:
+    repo: str
+    state: str
+    desired_concurrency: int
+    updated_at: str
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> "RepositoryRecord":
+        return cls(
+            repo=str(row["repo"]),
+            state=str(row["state"]),
+            desired_concurrency=int(row["desired_concurrency"]),
+            updated_at=str(row["updated_at"]),
+        )
+
+
+@dataclass(slots=True)
+class RepositorySchedulingView:
+    repo: str
+    state: str
+    desired_concurrency: int
+    active_runs: int
+    available_capacity: int
+    scheduling_allowed: bool
+    scheduling_reason: str | None
+    updated_at: str | None = None
 
 
 @dataclass(slots=True)
@@ -420,6 +454,13 @@ def init_db(conn: sqlite3.Connection) -> None:
         );
         create index if not exists idx_worker_slots_repo_worker_state
             on worker_slots (repo, worker, state);
+
+        create table if not exists repository_registry (
+            repo text primary key,
+            state text not null,
+            desired_concurrency integer not null,
+            updated_at text not null
+        );
         """
     )
     ensure_column(conn, "runs", "heartbeat_at", "text")
@@ -1518,6 +1559,140 @@ def load_worker_slots(conn: sqlite3.Connection, repo: str, workers: list[str]) -
             slot.slot_index,
         ),
     )
+
+
+def validate_repository_state(state: str) -> str:
+    normalized = state.strip().lower()
+    if normalized not in REPOSITORY_STATES:
+        raise CmdError(f"invalid repository state: {state!r}")
+    return normalized
+
+
+def validate_desired_concurrency(value: int) -> int:
+    if value <= 0:
+        raise CmdError("desired concurrency must be positive")
+    if value > MAX_WORKER_SLOT_COUNT:
+        raise CmdError(f"desired concurrency exceeds maximum ({MAX_WORKER_SLOT_COUNT})")
+    return value
+
+
+def upsert_repository_record(
+    conn: sqlite3.Connection,
+    repo: str,
+    *,
+    state: str,
+    desired_concurrency: int,
+) -> RepositoryRecord:
+    normalized_state = validate_repository_state(state)
+    normalized_concurrency = validate_desired_concurrency(desired_concurrency)
+    ts = now_utc()
+    conn.execute(
+        """
+        insert into repository_registry (repo, state, desired_concurrency, updated_at)
+        values (?, ?, ?, ?)
+        on conflict(repo) do update set
+            state = excluded.state,
+            desired_concurrency = excluded.desired_concurrency,
+            updated_at = excluded.updated_at
+        """,
+        (repo, normalized_state, normalized_concurrency, ts),
+    )
+    conn.commit()
+    return RepositoryRecord(repo=repo, state=normalized_state, desired_concurrency=normalized_concurrency, updated_at=ts)
+
+
+def load_repository_record(conn: sqlite3.Connection, repo: str) -> RepositoryRecord | None:
+    row = conn.execute(
+        "select repo, state, desired_concurrency, updated_at from repository_registry where repo = ?",
+        (repo,),
+    ).fetchone()
+    if row is None:
+        return None
+    return RepositoryRecord.from_row(row)
+
+
+def repository_record_or_default(conn: sqlite3.Connection, repo: str) -> RepositoryRecord:
+    record = load_repository_record(conn, repo)
+    if record is not None:
+        return record
+    return RepositoryRecord(
+        repo=repo,
+        state=REPOSITORY_STATE_ACTIVE,
+        desired_concurrency=DEFAULT_REPOSITORY_DESIRED_CONCURRENCY,
+        updated_at="",
+    )
+
+
+def list_repository_records(conn: sqlite3.Connection) -> list[RepositoryRecord]:
+    rows = conn.execute(
+        """
+        select repo, state, desired_concurrency, updated_at
+        from repository_registry
+        order by repo
+        """
+    ).fetchall()
+    return [RepositoryRecord.from_row(row) for row in rows]
+
+
+def active_run_count_for_repo(conn: sqlite3.Connection, repo: str) -> int:
+    active_statuses = sorted(TERMINAL_RUN_STATUSES)
+    now = now_utc()
+    row = conn.execute(
+        f"""
+        select count(*) as count
+        from runs
+        left join leases
+          on leases.repo = runs.repo
+         and leases.issue_number = runs.issue_number
+         and leases.run_id = runs.run_id
+        where runs.repo = ?
+          and runs.status not in ({",".join("?" for _ in active_statuses)})
+          and (
+            leases.run_id is null
+            or (
+              leases.released_at is null
+              and leases.blocked_at is null
+              and (leases.lease_expires_at is null or leases.lease_expires_at > ?)
+            )
+          )
+        """,
+        (repo, *active_statuses, now),
+    ).fetchone()
+    return int(row["count"]) if row is not None else 0
+
+
+def repository_scheduling_view(conn: sqlite3.Connection, repo: str) -> RepositorySchedulingView:
+    record = repository_record_or_default(conn, repo)
+    active_runs = active_run_count_for_repo(conn, repo)
+    if record.state == REPOSITORY_STATE_PAUSED:
+        reason = "repository is paused"
+        available_capacity = 0
+        allowed = False
+    elif record.state == REPOSITORY_STATE_DRAINING:
+        reason = "repository is draining"
+        available_capacity = 0
+        allowed = False
+    else:
+        available_capacity = max(0, record.desired_concurrency - active_runs)
+        allowed = available_capacity > 0
+        reason = None if allowed else "repository is at desired concurrency"
+    return RepositorySchedulingView(
+        repo=record.repo,
+        state=record.state,
+        desired_concurrency=record.desired_concurrency,
+        active_runs=active_runs,
+        available_capacity=available_capacity,
+        scheduling_allowed=allowed,
+        scheduling_reason=reason,
+        updated_at=record.updated_at or None,
+    )
+
+
+def list_repository_scheduling_views(conn: sqlite3.Connection, repos: list[str] | None = None) -> list[RepositorySchedulingView]:
+    if repos:
+        ordered = list(dict.fromkeys(repos))
+        return [repository_scheduling_view(conn, repo) for repo in ordered]
+    return [repository_scheduling_view(conn, record.repo) for record in list_repository_records(conn)]
 
 
 def worker_slot_payload(slot: WorkerSlot | None, *, worker: str, slot_index: int) -> dict[str, Any]:
@@ -5325,6 +5500,10 @@ def run_once(args: argparse.Namespace) -> int:
     conn = open_db(pathlib.Path(args.db))
     event_log = pathlib.Path(args.event_log)
     builder_profile = args.builder_profile
+    repo_view = repository_scheduling_view(conn, args.repo)
+    if not repo_view.scheduling_allowed:
+        print(repo_view.scheduling_reason or f"repository {args.repo} is not schedulable")
+        return 0
 
     if args.issue:
         issue = get_issue(runner, args.repo, args.issue)
@@ -5724,6 +5903,24 @@ def show_workers(args: argparse.Namespace) -> int:
     return 0
 
 
+def set_repo_state(args: argparse.Namespace) -> int:
+    conn = open_db(pathlib.Path(args.db))
+    upsert_repository_record(
+        conn,
+        args.repo,
+        state=args.state,
+        desired_concurrency=args.desired_concurrency,
+    )
+    print(json.dumps(asdict(repository_scheduling_view(conn, args.repo))))
+    return 0
+
+
+def show_repos(args: argparse.Namespace) -> int:
+    conn = open_db(pathlib.Path(args.db))
+    print(json.dumps([asdict(view) for view in list_repository_scheduling_views(conn, args.repo)]))
+    return 0
+
+
 def reset_worker_slots(args: argparse.Namespace) -> int:
     conn = open_db(pathlib.Path(args.db))
     capacities = worker_capacities(args.worker)
@@ -6028,6 +6225,7 @@ def requeue_issue(args: argparse.Namespace) -> int:
 def route_issue(args: argparse.Namespace) -> int:
     runner = Runner(ROOT)
     conn = open_db(pathlib.Path(args.db))
+
     def emit_payload(
         issue: Issue | None, profile: str, rationale: str, readiness_failures: dict[int, list[str]], code: int
     ) -> int:
@@ -6041,6 +6239,10 @@ def route_issue(args: argparse.Namespace) -> int:
         }
         print(json.dumps(payload))
         return code
+
+    repo_view = repository_scheduling_view(conn, args.repo)
+    if not repo_view.scheduling_allowed:
+        return emit_payload(None, args.builder_profile, repo_view.scheduling_reason or "repository is not schedulable", {}, 0)
 
     if args.issue:
         try:
@@ -6216,6 +6418,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     workers_p.add_argument("--desired-concurrency", type=int, default=1)
     workers_p.add_argument("--event-limit", type=int, default=10)
     workers_p.set_defaults(func=show_workers)
+
+    set_repo_p = sub.add_parser("set-repo-state", help="Persist repository activation state and desired concurrency")
+    set_repo_p.add_argument("--repo", required=True)
+    set_repo_p.add_argument("--db", default=str(DEFAULT_DB))
+    set_repo_p.add_argument("--state", required=True, choices=sorted(REPOSITORY_STATES))
+    set_repo_p.add_argument("--desired-concurrency", type=int, required=True)
+    set_repo_p.set_defaults(func=set_repo_state)
+
+    repos_p = sub.add_parser("show-repos", help="Show repository scheduling state and utilization")
+    repos_p.add_argument("--db", default=str(DEFAULT_DB))
+    repos_p.add_argument("--repo", action="append", default=[])
+    repos_p.set_defaults(func=show_repos)
 
     reset_workers_p = sub.add_parser("reset-worker-slots", help="Reset drained worker slots back to active")
     reset_workers_p.add_argument("--repo", required=True)
