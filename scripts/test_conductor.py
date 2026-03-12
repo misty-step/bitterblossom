@@ -1919,6 +1919,40 @@ def test_select_worker_slot_continues_after_assignment_conflict(
     assert slot.current_run_id == "run-55"
 
 
+def test_acquire_named_worker_slot_falls_back_to_alternate_slot(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    conductor.seed_worker_slots(conn, "misty-step/bitterblossom", ["fern:2"])
+    slots = conductor.load_worker_slots(conn, "misty-step/bitterblossom", ["fern:2"])
+    conductor.assign_worker_slot(conn, slots[0].id, "run-stale")
+    real_load = conductor.load_worker_slots
+    load_calls = 0
+
+    def stale_then_fresh(conn_: sqlite3.Connection, repo: str, workers: list[str]) -> list[conductor.WorkerSlot]:
+        nonlocal load_calls
+        load_calls += 1
+        current = real_load(conn_, repo, workers)
+        if load_calls == 1:
+            return [slot for slot in current if slot.slot_index == 1]
+        return current
+
+    monkeypatch.setattr(conductor, "load_worker_slots", stale_then_fresh)
+
+    slot = conductor.acquire_named_worker_slot(
+        conn,
+        "misty-step/bitterblossom",
+        ["fern:2"],
+        "fern",
+        "run-56",
+    )
+
+    assert slot.id == slots[1].id
+    assert slot.slot_index == 2
+    assert slot.current_run_id == "run-56"
+
+
 class _RunnerSpy:
     def __init__(self, responses: list[str] | None = None) -> None:
         self.responses = responses or []
@@ -3174,6 +3208,21 @@ def test_show_workers_reports_configured_slots_on_fresh_db(
     ]
     assert all(slot["id"] is None for slot in payload["slots"])
     assert all(slot["state"] == conductor.WORKER_SLOT_ACTIVE for slot in payload["slots"])
+
+
+def test_release_worker_slot_clears_terminal_stale_assignment(tmp_path: pathlib.Path) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=449, title="release", body="", url="https://example.com/449", labels=["autopilot"])
+    conductor.create_run(conn, "run-449-1", "misty-step/bitterblossom", issue, "claude-sonnet")
+    conductor.update_run(conn, "run-449-1", status="merged")
+    conductor.seed_worker_slots(conn, "misty-step/bitterblossom", ["fern"])
+    slot = conductor.load_worker_slots(conn, "misty-step/bitterblossom", ["fern"])[0]
+    conductor.assign_worker_slot(conn, slot.id, "run-449-1")
+
+    conductor.release_worker_slot(conn, slot.id, run_id="run-other")
+
+    refreshed = conductor.load_worker_slots(conn, "misty-step/bitterblossom", ["fern"])[0]
+    assert refreshed.current_run_id is None
 
 
 def test_reset_worker_slots_restores_drained_capacity(
