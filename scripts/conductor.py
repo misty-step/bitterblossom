@@ -796,14 +796,14 @@ def prepare_run_workspace(runner: Runner, sprite: str, repo: str, run_id: str, l
     mirror = repo_dir(repo)
     workspace = run_workspace(repo, run_id, lane)
     last_exc: CmdError | None = None
-    with _mirror_lock(mirror):
-        for attempt in range(1 + WORKSPACE_PREP_RETRIES):
-            try:
+    for attempt in range(1 + WORKSPACE_PREP_RETRIES):
+        try:
+            with _mirror_lock(mirror):
                 return _prepare_run_workspace_once(runner, sprite, mirror, workspace)
-            except CmdError as exc:
-                last_exc = exc
-                if attempt < WORKSPACE_PREP_RETRIES:
-                    time.sleep(WORKSPACE_PREP_RETRY_DELAY_SECONDS * (attempt + 1))
+        except CmdError as exc:
+            last_exc = exc
+            if attempt < WORKSPACE_PREP_RETRIES:
+                time.sleep(WORKSPACE_PREP_RETRY_DELAY_SECONDS * (attempt + 1))
     raise CmdError(
         f"workspace preparation failed after {1 + WORKSPACE_PREP_RETRIES} attempts: {last_exc}"
     ) from last_exc

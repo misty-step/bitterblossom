@@ -6044,6 +6044,59 @@ def test_prepare_run_workspace_serializes_overlapping_calls(monkeypatch: pytest.
     assert max_concurrent == 1, f"lock did not serialize: max_concurrent={max_concurrent}"
 
 
+def test_prepare_run_workspace_releases_lock_before_retry_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    import threading as _threading
+
+    first_failed = _threading.Event()
+    second_entered = _threading.Event()
+    attempts: dict[str, int] = {}
+
+    def fake_prepare_once(_runner: object, _sprite: str, _mirror: str, workspace: str) -> str:
+        attempts[workspace] = attempts.get(workspace, 0) + 1
+        if workspace.endswith("run-538-a/builder-worktree") and attempts[workspace] == 1:
+            first_failed.set()
+            raise conductor.CmdError("transient failure")
+        if workspace.endswith("run-538-b/builder-worktree"):
+            second_entered.set()
+        return workspace
+
+    def fake_sleep(_seconds: float) -> None:
+        assert second_entered.wait(timeout=1), "retry sleep held the mirror lock"
+
+    monkeypatch.setattr(conductor, "_prepare_run_workspace_once", fake_prepare_once)
+    monkeypatch.setattr(conductor.time, "sleep", fake_sleep)
+
+    results: dict[str, str] = {}
+    errors: list[Exception] = []
+
+    def call_prepare(name: str) -> None:
+        try:
+            results[name] = conductor.prepare_run_workspace(
+                object(),
+                "noble-blue-serpent",
+                "misty-step/bitterblossom",
+                f"run-538-{name}",
+                "builder",
+            )
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    thread_a = _threading.Thread(target=call_prepare, args=("a",))
+    thread_a.start()
+    assert first_failed.wait(timeout=1), "first attempt never failed"
+
+    thread_b = _threading.Thread(target=call_prepare, args=("b",))
+    thread_b.start()
+
+    thread_a.join(timeout=5)
+    thread_b.join(timeout=5)
+
+    assert not errors, errors
+    assert second_entered.is_set()
+    assert results["a"].endswith("run-538-a/builder-worktree")
+    assert results["b"].endswith("run-538-b/builder-worktree")
+
+
 def test_cleanup_builder_workspace_records_workspace_cleanup_failed_on_error(
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
