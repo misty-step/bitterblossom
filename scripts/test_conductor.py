@@ -4340,6 +4340,45 @@ def test_show_runs_ignores_reviewer_workspace_cleanup_warnings(
     assert payload["worktree_recovery_error"] is None
 
 
+def test_show_runs_ignores_reviewer_workspace_preparation_failures(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=47, title="cleanup", body="body", url="https://example.com/47", labels=["autopilot"])
+    conductor.create_run(conn, "run-47b", "misty-step/bitterblossom", issue, "claude-sonnet")
+    conductor.update_run(
+        conn,
+        "run-47b",
+        phase="awaiting_governance",
+        status="active",
+        builder_sprite="fern",
+        worktree_path="/tmp/run-47b/builder-worktree",
+    )
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-47b",
+        "workspace_preparation_failed",
+        {
+            "sprite": "sage",
+            "lane": "review-sage",
+            "workspace": "/tmp/run-47b/review-sage-worktree",
+            "attempt": 3,
+            "attempts": 3,
+            "error": "reviewer workspace prepare failed",
+        },
+    )
+
+    rc = conductor.show_runs(argparse.Namespace(db=str(tmp_path / "conductor.db"), limit=5))
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload["blocking_event_type"] is None
+    assert payload["blocking_reason"] is None
+    assert payload["worktree_recovery_status"] is None
+    assert payload["worktree_recovery_error"] is None
+
+
 def test_show_runs_hides_stale_blocking_reason_after_merge(tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
     conn = conductor.open_db(tmp_path / "conductor.db")
     issue = conductor.Issue(number=44, title="merged", body="body", url="https://example.com/44", labels=["autopilot"])
@@ -6203,6 +6242,57 @@ def test_govern_pr_marks_run_failed_when_lease_is_lost(
     assert "losing its lease" in issue_comments[0]
 
 
+def test_govern_pr_workspace_preparation_error_after_adoption_records_warning(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    issue = conductor.Issue(number=479, title="govern", body="", url="https://example.com/479", labels=["autopilot"])
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    conductor.create_run(conn, "run-479-1", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(
+        conn,
+        "run-479-1",
+        phase="awaiting_governance",
+        status="active",
+        builder_sprite="noble-blue-serpent",
+        worktree_path="/tmp/run-479-1-builder",
+        branch="factory/479-handoff-1",
+        pr_number=490,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/490",
+    )
+
+    issue_comments: list[str] = []
+    monkeypatch.setattr(conductor, "cleanup_run_workspace", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        conductor,
+        "ensure_governance_run",
+        lambda *_a, **_kw: (
+            issue,
+            "run-479-1",
+            "noble-blue-serpent",
+            "factory/479-handoff-1",
+            490,
+            "https://github.com/misty-step/bitterblossom/pull/490",
+            "/tmp/run-479-1-builder",
+        ),
+    )
+    monkeypatch.setattr(
+        conductor,
+        "govern_pr_flow",
+        lambda *_a, **_kw: (_ for _ in ()).throw(conductor.WorkspacePreparationError("review workspace failed")),
+    )
+    monkeypatch.setattr(conductor, "comment_issue", lambda *_a, **_kw: issue_comments.append(str(_a[3])))
+
+    rc = conductor.govern_pr(_make_govern_pr_args(tmp_path, issue_number=479, pr_number=490, run_id="run-479-1"))
+
+    assert rc == 0
+    run = conn.execute("select phase, status from runs where run_id = 'run-479-1'").fetchone()
+    assert run is not None
+    assert (run["phase"], run["status"]) == ("awaiting_governance", "active")
+    assert issue_comments == []
+    events = conn.execute("select event_type from events where run_id = 'run-479-1' order by id").fetchall()
+    assert "cleanup_warning" in [row["event_type"] for row in events]
+
+
 def test_govern_pr_marks_run_failed_on_unexpected_error(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
 ) -> None:
@@ -7116,6 +7206,11 @@ def test_prepare_run_workspace_waits_for_lock_release(
     lockfile = mirror / ".bb" / "conductor" / "mirror.lock"
     lockfile.parent.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(conductor, "repo_dir", lambda _repo: str(mirror))
+    monkeypatch.setattr(
+        conductor,
+        "run_workspace",
+        lambda _repo, run_id, lane: str(tmp_path / ".bb" / "conductor" / run_id / f"{lane}-worktree"),
+    )
     monkeypatch.setattr(conductor, "sprite_bash", _local_sprite_bash(bin_dir))
 
     holder = _hold_lock(lockfile, hold_seconds=1.2, bin_dir=bin_dir)
@@ -7144,6 +7239,11 @@ def test_prepare_run_workspace_reports_lock_timeout(
     lockfile = mirror / ".bb" / "conductor" / "mirror.lock"
     lockfile.parent.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(conductor, "repo_dir", lambda _repo: str(mirror))
+    monkeypatch.setattr(
+        conductor,
+        "run_workspace",
+        lambda _repo, run_id, lane: str(tmp_path / ".bb" / "conductor" / run_id / f"{lane}-worktree"),
+    )
     monkeypatch.setattr(conductor, "sprite_bash", _local_sprite_bash(bin_dir))
     monkeypatch.setattr(conductor, "WORKSPACE_PREPARE_LOCK_WAIT_SECONDS", 1)
 
@@ -7169,6 +7269,11 @@ def test_cleanup_run_workspace_reports_lock_timeout(
     lockfile = mirror / ".bb" / "conductor" / "mirror.lock"
     lockfile.parent.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(conductor, "repo_dir", lambda _repo: str(mirror))
+    monkeypatch.setattr(
+        conductor,
+        "run_workspace",
+        lambda _repo, run_id, lane: str(tmp_path / ".bb" / "conductor" / run_id / f"{lane}-worktree"),
+    )
     monkeypatch.setattr(conductor, "sprite_bash", _local_sprite_bash(bin_dir))
     monkeypatch.setattr(conductor, "WORKSPACE_CLEANUP_LOCK_WAIT_SECONDS", 1)
 
@@ -7259,6 +7364,42 @@ def test_prepare_run_workspace_with_retry_retries_timeout_expired(
     payload = json.loads(events[0]["payload_json"])
     assert payload["attempt"] == 1
     assert "timed out" in payload["error"].lower()
+
+
+def test_prepare_run_workspace_with_retry_stops_after_lease_loss(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=4710, title="worktrees", body="", url="u4710", labels=["autopilot"])
+    conductor.create_run(conn, "run-4710-1", "misty-step/bitterblossom", issue, "default")
+    acquire_result = conductor.acquire_lease_result(conn, "misty-step/bitterblossom", issue.number, "run-4710-1")
+    assert acquire_result.acquired is True
+    attempts = {"count": 0}
+
+    def always_fail(*_args: object, **_kwargs: object) -> str:
+        attempts["count"] += 1
+        raise conductor.CmdError("sprite transport failed")
+
+    def release_during_retry(_seconds: float) -> None:
+        conductor.release_lease(conn, "misty-step/bitterblossom", issue.number, "run-4710-1")
+
+    monkeypatch.setattr(conductor, "prepare_run_workspace", always_fail)
+    monkeypatch.setattr(conductor.time, "sleep", release_during_retry)
+
+    with pytest.raises(conductor.LeaseLostError, match="lost lease"):
+        conductor.prepare_run_workspace_with_retry(
+            object(),
+            conn,
+            tmp_path / "events.jsonl",
+            "run-4710-1",
+            "noble-blue-serpent",
+            "misty-step/bitterblossom",
+            "builder",
+        )
+
+    assert attempts["count"] == 1
+    events = conn.execute("select event_type from events where run_id = 'run-4710-1' order by id").fetchall()
+    assert [row["event_type"] for row in events] == ["workspace_preparation_retry"]
 
 
 def test_prepare_run_workspace_with_retry_records_explicit_failure(

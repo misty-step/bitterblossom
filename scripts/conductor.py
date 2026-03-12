@@ -621,6 +621,30 @@ def run_exists(conn: sqlite3.Connection, run_id: str) -> bool:
     return conn.execute("select 1 from runs where run_id = ?", (run_id,)).fetchone() is not None
 
 
+def assert_run_still_leased(conn: sqlite3.Connection, repo: str, run_id: str) -> None:
+    row = conn.execute("select issue_number from runs where run_id = ? and repo = ?", (run_id, repo)).fetchone()
+    if row is None:
+        return
+    issue_number = int(row["issue_number"])
+    lease = conn.execute(
+        """
+        select run_id, released_at, blocked_at, lease_expires_at
+        from leases
+        where repo = ? and issue_number = ?
+        """,
+        (repo, issue_number),
+    ).fetchone()
+    if lease is None:
+        return
+    if (
+        str(lease["run_id"]) != run_id
+        or lease["released_at"] is not None
+        or lease["blocked_at"] is not None
+        or lease_missing_or_expired(lease["lease_expires_at"])
+    ):
+        raise LeaseLostError(f"run {run_id} lost lease for {repo}#{issue_number}")
+
+
 def heartbeat_run(conn: sqlite3.Connection, run_id: str) -> None:
     ts = now_utc()
     cursor = conn.execute(
@@ -704,7 +728,11 @@ def latest_worktree_recovery_event(conn: sqlite3.Connection, run_id: str) -> sql
         from events
         where run_id = ?
           and (
-            event_type in ('builder_workspace_cleaned', 'workspace_preparation_failed')
+            event_type = 'builder_workspace_cleaned'
+            or (
+              event_type = 'workspace_preparation_failed'
+              and json_extract(payload_json, '$.lane') = 'builder'
+            )
             or (
               event_type = 'cleanup_warning'
               and json_extract(payload_json, '$.kind') = ?
@@ -737,7 +765,11 @@ def blocking_event_for_run(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row
         from events
         where run_id = ?
           and (
-            event_type in ('pr_feedback_blocked', 'council_blocked', 'command_failed', 'workspace_preparation_failed', 'unexpected_error')
+            event_type in ('pr_feedback_blocked', 'council_blocked', 'command_failed', 'unexpected_error')
+            or (
+              event_type = 'workspace_preparation_failed'
+              and json_extract(payload_json, '$.lane') = 'builder'
+            )
             or (event_type = 'ci_wait_complete' and json_extract(payload_json, '$.passed') = 0)
             or (event_type = 'external_review_wait_complete' and json_extract(payload_json, '$.passed') = 0)
           )
@@ -1086,6 +1118,10 @@ def repo_dir(repo: str) -> str:
     return f"/home/sprite/workspace/{repo.split('/')[-1]}"
 
 
+def mirror_lock_path(repo: str) -> str:
+    return f"{repo_dir(repo)}/.bb/conductor/mirror.lock"
+
+
 def run_root(repo: str, run_id: str) -> str:
     return f"{repo_dir(repo)}/.bb/conductor/{run_id}"
 
@@ -1119,7 +1155,7 @@ def parse_workspace_prepare_output(output: str, workspace: str, sprite: str) -> 
 def prepare_run_workspace(runner: Runner, sprite: str, repo: str, run_id: str, lane: str) -> str:
     mirror = repo_dir(repo)
     workspace = run_workspace(repo, run_id, lane)
-    lockfile = f"{mirror}/.bb/conductor/mirror.lock"
+    lockfile = mirror_lock_path(repo)
     script = "\n".join(
         [
             "set -euo pipefail",
@@ -1148,12 +1184,13 @@ def prepare_run_workspace(runner: Runner, sprite: str, repo: str, run_id: str, l
 
 
 def cleanup_run_workspace(runner: Runner, sprite: str, repo: str, run_id: str, lane: str) -> None:
+    mirror = repo_dir(repo)
     workspace = run_workspace(repo, run_id, lane)
-    lockfile = f"{repo_dir(repo)}/.bb/conductor/mirror.lock"
+    lockfile = mirror_lock_path(repo)
     script = "\n".join(
         [
             "set -euo pipefail",
-            f"mirror={shlex.quote(repo_dir(repo))}",
+            f"mirror={shlex.quote(mirror)}",
             f"workspace={shlex.quote(workspace)}",
             f"lockfile={shlex.quote(lockfile)}",
             'mkdir -p "$(dirname "$lockfile")"',
@@ -1180,6 +1217,7 @@ def prepare_run_workspace_with_retry(
 ) -> str:
     last_exc: Exception | None = None
     for attempt in range(1, WORKSPACE_PREPARE_ATTEMPTS + 1):
+        assert_run_still_leased(conn, repo, run_id)
         try:
             return prepare_run_workspace(runner, sprite, repo, run_id, lane)
         except (CmdError, subprocess.TimeoutExpired) as exc:
@@ -1193,6 +1231,7 @@ def prepare_run_workspace_with_retry(
                 "error": stringify_exc(exc),
             }
             if attempt < WORKSPACE_PREPARE_ATTEMPTS:
+                assert_run_still_leased(conn, repo, run_id)
                 payload["retry_in_seconds"] = WORKSPACE_PREPARE_RETRY_DELAY_SECONDS
                 record_event(conn, event_log, run_id, "workspace_preparation_retry", payload)
                 time.sleep(WORKSPACE_PREPARE_RETRY_DELAY_SECONDS)
@@ -4404,6 +4443,7 @@ def run_once(args: argparse.Namespace) -> int:
         )
 
         branch = branch_name(issue.number, run_id_suffix(run_id))
+        builder_template = pathlib.Path(args.builder_template)
         builder_workspace = prepare_run_workspace_with_retry(
             runner,
             conn,
@@ -4558,6 +4598,7 @@ def govern_pr(args: argparse.Namespace) -> int:
 
     block_on_release = False
     governance_run: GovernanceRun | None = None
+    handoff_established = False
 
     try:
         governance_run = ensure_governance_run(
@@ -4566,6 +4607,7 @@ def govern_pr(args: argparse.Namespace) -> int:
             event_log,
             args,
         )
+        handoff_established = True
         rc = govern_pr_flow(
             runner,
             conn,
@@ -4601,18 +4643,21 @@ def govern_pr(args: argparse.Namespace) -> int:
         )
         return 1
     except WorkspacePreparationError as exc:
-        if issue is None or not run_id:
+        if governance_run is None:
             print(f"conductor: {exc}", file=sys.stderr)
             return 1
-        update_run(conn, run_id, phase="failed", status="failed")
+        if handoff_established:
+            record_event(conn, event_log, governance_run.run_id, "cleanup_warning", {"error": str(exc)})
+            return 0
+        update_run(conn, governance_run.run_id, phase="failed", status="failed")
         best_effort_issue_comment(
             runner,
             conn,
             event_log,
-            run_id,
+            governance_run.run_id,
             args.repo,
-            issue.number,
-            f"Bitterblossom failed `{run_id}`.\n\n```\n{str(exc)[:1500]}\n```",
+            governance_run.issue.number,
+            f"Bitterblossom failed `{governance_run.run_id}`.\n\n```\n{str(exc)[:1500]}\n```",
             event_type="issue_comment_failed",
         )
         return 1
