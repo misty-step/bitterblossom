@@ -19,11 +19,13 @@ but not the Python-level lock shared between prepare and cleanup.
 ## Steps
 
 - [x] Audit existing implementation and tests
-- [ ] Add `test_cleanup_run_workspace_serializes_with_prepare` to `test_conductor.py`
-- [ ] Run `python3 -m pytest -q scripts/test_conductor.py -k "worktree or workspace or cleanup"`
-- [ ] Push branch, open draft PR with `Closes #538`
-- [ ] Write builder artifact
+- [x] Add `test_cleanup_run_workspace_serializes_with_prepare` to `test_conductor.py`
+- [x] Run `python3 -m pytest -q scripts/test_conductor.py -k "worktree or workspace or cleanup"`
+- [x] Push branch, open draft PR with `Closes #538`
+- [x] Write builder artifact
 
 ## Review
 
-(To be filled after implementation)
+- Targeted pytest (`worktree or workspace or cleanup`) and the full `scripts/test_conductor.py` suite passed in the builder lane.
+- Initial review found that the first draft of the cross-operation serialization test could pass vacuously without proving cleanup actually contended for the shared lock.
+- This branch now tightens the synchronization so cleanup must demonstrably block on the shared mirror lock before prepare is released, and it asserts thread completion plus cleanup execution.
