@@ -2,7 +2,7 @@
 
 ## Merge Claim
 
-The conductor now chooses builders through one slot-claiming path, so default single-slot workers and explicit-capacity workers share the same readiness probe and reservation behavior.
+The conductor now chooses builders through one slot-claiming path, and governance adoption only claims that slot after the lease is confirmed, so default single-slot workers and explicit-capacity workers share the same readiness and reservation behavior without leaking slots on lease contention.
 
 ## Why This Matters
 
@@ -31,7 +31,7 @@ That split meant callers had to remember two selection contracts, and the defaul
 
 ```text
 $ python3 -m pytest -q scripts/test_conductor.py
-222 passed in 2.31s
+223 passed in 1.05s
 
 $ python3 -m ruff check scripts/conductor.py scripts/test_conductor.py
 All checks passed!
@@ -40,8 +40,9 @@ All checks passed!
 ### Targeted Regression Added
 
 - `scripts/test_conductor.py:2932`
+- `scripts/test_conductor.py:4814`
 
-This test proves the slot selector now handles the plain single-slot worker case directly.
+These tests prove the slot selector handles the plain single-slot worker case directly and that governance adoption does not claim a worker slot before lease acquisition succeeds.
 
 ## Persistent Verification
 

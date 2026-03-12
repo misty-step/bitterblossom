@@ -2957,7 +2957,12 @@ def test_select_worker_slot_supports_default_single_slot_workers(monkeypatch: py
     )
 
     assert selected.worker == "sage"
+    assert selected.slot_index == 1
     assert selected.current_run_id == "run-42"
+    persisted = conductor.load_worker_slots(conn, "misty-step/bitterblossom", ["thorn", "sage"])
+    asserted_slot = next(slot for slot in persisted if slot.worker == "sage")
+    assert asserted_slot.slot_index == 1
+    assert asserted_slot.current_run_id == "run-42"
     assert calls == ["thorn", "sage"]
 
 
@@ -4806,6 +4811,36 @@ def test_ensure_governance_run_requires_issue_when_pr_is_unknown(tmp_path: pathl
 
     with pytest.raises(conductor.CmdError, match="pass --issue or adopt an existing run"):
         conductor.ensure_governance_run(_RunnerSpy(), conn, tmp_path / "events.jsonl", args)
+
+
+def test_ensure_governance_run_does_not_claim_worker_slot_before_lease(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    issue = conductor.Issue(number=479, title="govern", body="", url="https://example.com/479", labels=["autopilot"])
+    conn = conductor.open_db(tmp_path / "conductor.db")
+
+    assert conductor.acquire_lease(conn, "misty-step/bitterblossom", 479, "run-479-existing") is True
+    monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
+    monkeypatch.setattr(conductor, "probe_sprite_readiness", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        conductor,
+        "gh_json",
+        lambda *_a, **_kw: {
+            "number": 490,
+            "url": "https://github.com/misty-step/bitterblossom/pull/490",
+            "headRefName": "factory/479-handoff-1",
+            "state": "OPEN",
+        },
+    )
+
+    with pytest.raises(conductor.CmdError, match="already leased"):
+        conductor.ensure_governance_run(
+            _RunnerSpy(),
+            conn,
+            tmp_path / "events.jsonl",
+            _make_govern_pr_args(tmp_path, issue_number=479, pr_number=490),
+        )
+
+    slots = conductor.load_worker_slots(conn, "misty-step/bitterblossom", ["noble-blue-serpent"])
+    assert all(slot.current_run_id is None for slot in slots)
 
 
 def test_ensure_governance_run_reactivates_existing_run_status(

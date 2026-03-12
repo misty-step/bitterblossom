@@ -3676,26 +3676,6 @@ def ensure_governance_run(
     run_id = str(existing_run["run_id"]) if existing_run is not None else run_id_for(issue.number)
 
     worker = str(existing_run["builder_sprite"] or "") if existing_run is not None else ""
-    worker_slot: WorkerSlot | None = None
-    if worker:
-        worker_slot = acquire_named_worker_slot(conn, args.repo, args.worker, worker, run_id)
-    else:
-        worker_slot = select_worker_slot(
-            conn,
-            args.repo,
-            args.worker,
-            pathlib.Path(args.builder_template),
-            run_id,
-            on_drained=lambda slot, reason: record_event(
-                conn,
-                event_log,
-                run_id,
-                "worker_slot_drained",
-                {"worker": slot.worker, "slot_id": slot.id, "slot_index": slot.slot_index, "reason": reason},
-            ),
-        )
-        worker = worker_slot.worker
-
     builder_workspace = str(existing_run["worktree_path"] or "") if existing_run is not None else ""
 
     pr_number = int(existing_run["pr_number"]) if existing_run is not None and existing_run["pr_number"] is not None else int(args.pr_number)
@@ -3717,6 +3697,7 @@ def ensure_governance_run(
     if not acquire_result.acquired:
         raise CmdError(f"issue #{issue.number} already leased")
     reclaimed_run_id = acquire_result.reclaimed_run_id
+    worker_slot: WorkerSlot | None = None
 
     try:
         if existing_run is None:
@@ -3747,6 +3728,26 @@ def ensure_governance_run(
                 "lease_reclaimed",
                 {"issue": issue.number, "previous_run_id": reclaimed_run_id},
             )
+
+        if worker:
+            worker_slot = acquire_named_worker_slot(conn, args.repo, args.worker, worker, run_id)
+        else:
+            worker_slot = select_worker_slot(
+                conn,
+                args.repo,
+                args.worker,
+                pathlib.Path(args.builder_template),
+                run_id,
+                on_drained=lambda slot, reason: record_event(
+                    conn,
+                    event_log,
+                    run_id,
+                    "worker_slot_drained",
+                    {"worker": slot.worker, "slot_id": slot.id, "slot_index": slot.slot_index, "reason": reason},
+                ),
+            )
+            worker = worker_slot.worker
+
         record_event(
             conn,
             event_log,
