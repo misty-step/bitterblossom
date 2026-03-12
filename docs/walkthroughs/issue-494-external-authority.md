@@ -49,17 +49,20 @@ The only branch change is at the start of governance: if reviewer sprites are co
 Focused regression slice from this branch:
 
 ```text
-$ python3 -m pytest -q scripts/test_conductor.py -k 'external_authority_without_internal_reviewers or ensure_review_source_configured or parse_args_allows_external_authority_without_reviewers or govern_pr_uses_external_authority_without_internal_reviewers'
-....                                                                     [100%]
-4 passed, 227 deselected in 0.36s
+$ pytest -q scripts/test_conductor.py -k 'external_authority_without_internal_reviewers or parse_govern_pr_args_allows_external_authority_without_reviewers or parse_args_allows_external_authority_without_reviewers or ensure_review_source_configured_requires_council_or_external_authority or run_once_uses_external_authority_without_internal_reviewers'
+.....                                                                    [100%]
+5 passed, 237 deselected in 0.33s
 ```
 
-Full conductor suite from this branch:
+Inherited base failure check from a clean `origin/master` worktree:
 
 ```text
-$ python3 -m pytest -q scripts/test_conductor.py
-231 passed in 9.13s
+$ pytest -q scripts/test_conductor.py -k 'cleanup_run_workspace_waits_for_lock_release'
+F                                                                        [100%]
+1 failed, 236 deselected in 5.97s
 ```
+
+That lock-lifecycle failure reproduces on `origin/master`, so it is not introduced by this branch’s external-authority changes.
 
 CLI help now exposes the intended contract on both commands:
 
@@ -85,7 +88,8 @@ $ python3 scripts/conductor.py govern-pr --help | rg -n "reviewer|trusted-extern
 
 - `scripts/test_conductor.py`
   - `test_parse_args_allows_external_authority_without_reviewers`
+  - `test_parse_govern_pr_args_allows_external_authority_without_reviewers`
   - `test_ensure_review_source_configured_requires_council_or_external_authority`
   - `test_run_once_uses_external_authority_without_internal_reviewers`
   - `test_govern_pr_uses_external_authority_without_internal_reviewers`
-- Full regression gate: `python3 -m pytest -q scripts/test_conductor.py`
+- Focused regression gate: `pytest -q scripts/test_conductor.py -k 'external_authority_without_internal_reviewers or parse_govern_pr_args_allows_external_authority_without_reviewers or parse_args_allows_external_authority_without_reviewers or ensure_review_source_configured_requires_council_or_external_authority or run_once_uses_external_authority_without_internal_reviewers'`

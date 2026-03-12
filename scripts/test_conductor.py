@@ -7370,7 +7370,23 @@ def test_run_once_uses_external_authority_without_internal_reviewers(
     merge_calls: list[int] = []
 
     monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
-    monkeypatch.setattr(conductor, "select_worker", lambda *_a, **_kw: "noble-blue-serpent")
+    monkeypatch.setattr(conductor, "reap_terminal_worker_slots", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        conductor,
+        "select_worker_slot",
+        lambda *_a, **_kw: conductor.WorkerSlot(
+            id=7,
+            repo="misty-step/bitterblossom",
+            worker="noble-blue-serpent",
+            slot_index=1,
+            state=conductor.WORKER_SLOT_ACTIVE,
+            consecutive_failures=0,
+            current_run_id="run-494-1",
+            last_probe_at=None,
+            last_error=None,
+            updated_at="2026-03-12T12:00:00Z",
+        ),
+    )
     monkeypatch.setattr(
         conductor,
         "ensure_reviewers_ready",
