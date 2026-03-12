@@ -3905,6 +3905,71 @@ def test_run_once_blocks_when_stale_pr_threads_persist_after_revision(monkeypatc
     assert any("need human confirmation" in body for body in issue_comments)
 
 
+def test_run_once_thread_revision_keeps_original_event_log_shape(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    issue = conductor.Issue(number=447, title="test", body="body", url="https://example.com/447", labels=["autopilot"])
+    builder = conductor.BuilderResult(
+        status="ready_for_review",
+        branch="factory/447-test-123",
+        pr_number=460,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/460",
+        summary="done",
+        tests=[],
+    )
+    reviews = [
+        conductor.ReviewResult(reviewer="fern", verdict="pass", summary="ok", findings=[]),
+        conductor.ReviewResult(reviewer="sage", verdict="pass", summary="ok", findings=[]),
+        conductor.ReviewResult(reviewer="thorn", verdict="pass", summary="ok", findings=[]),
+    ]
+    thread = conductor.ReviewThread(
+        id="thread-1",
+        path="README.md",
+        line=59,
+        author_login="gemini-code-assist",
+        body="please keep this copy-pastable",
+        url="https://example.com/thread-1",
+    )
+    thread_reads = iter([[thread], [], [], []])
+
+    monkeypatch.setattr(conductor, "get_issue", lambda *_args, **_kwargs: issue)
+    monkeypatch.setattr(conductor, "select_worker_slot", _select_named_worker_slot("noble-blue-serpent"))
+    monkeypatch.setattr(conductor, "ensure_reviewers_ready", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(conductor, "run_builder", lambda *_args, **_kwargs: (builder, {"status": "ready_for_review"}))
+    monkeypatch.setattr(conductor, "run_review_round", lambda *_args, **_kwargs: reviews)
+    monkeypatch.setattr(conductor, "ensure_pr_ready", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(conductor, "wait_for_pr_checks", lambda *_args, **_kwargs: (True, "green"))
+    monkeypatch.setattr(conductor, "ensure_required_checks_present", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(conductor, "list_unresolved_review_threads", lambda *_args, **_kwargs: next(thread_reads))
+    monkeypatch.setattr(
+        conductor,
+        "resolve_review_threads",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected auto-resolve")),
+    )
+    monkeypatch.setattr(conductor, "merge_pr", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(conductor, "comment_pr", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(conductor, "comment_issue", lambda *_args, **_kwargs: None)
+
+    rc = conductor.run_once(_make_run_once_args(tmp_path, issue_number=447))
+
+    assert rc == 0
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    run_row = conn.execute("select run_id from runs where issue_number = ?", (447,)).fetchone()
+    assert run_row is not None
+    events = conn.execute(
+        "select event_type, payload_json from events where run_id = ? order by id",
+        (run_row["run_id"],),
+    ).fetchall()
+    event_types = [row["event_type"] for row in events]
+    assert event_types.count("builder_revised") == 1
+    revision_events = [
+        json.loads(row["payload_json"])
+        for row in events
+        if row["event_type"] == "revision_requested"
+    ]
+    assert [payload["reason"] for payload in revision_events] == ["pr_feedback"]
+
+
 def test_run_once_blocks_on_untrusted_pr_thread(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
     issue = conductor.Issue(number=447, title="test", body="body", url="https://example.com/447", labels=["autopilot"])
     builder = conductor.BuilderResult(

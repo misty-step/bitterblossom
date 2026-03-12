@@ -1,12 +1,9 @@
 == Governance shape delta ==
-{'base': {'govern_pr_flow': 426}, 'current': {'GovernanceSession': 445, 'govern_pr_flow': 27}}
+{'base': {'govern_pr_flow': 434}, 'current': {'GovernanceSession': 448, 'govern_pr_flow': 27}}
 
 == Ruff ==
 All checks passed!
 
-== Pytest ==
-........................................................................ [ 31%]
-........................................................................ [ 63%]
-........................................................................ [ 95%]
-...........                                                              [100%]
-227 passed in 9.52s
+== Governance regression slice ==
+..................................                                       [100%]
+34 passed, 209 deselected in 0.55s

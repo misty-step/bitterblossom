@@ -66,6 +66,7 @@ Observable improvements:
 
 - the governor lane now hides its bookkeeping state behind one boundary
 - revision requests follow one internal path instead of five hand-built call sites
+- PR-thread revisions preserve the pre-refactor event log shape instead of introducing a new `pr_review_threads` revision event path
 - tests still exercise the same operator-visible run contract
 
 ## Verification
@@ -76,20 +77,22 @@ Primary walkthrough artifact:
 
 Persistent protecting check:
 
-- `python3 -m pytest -q scripts/test_conductor.py`
+- `python3 -m pytest -q scripts/test_conductor.py -k 'govern_pr or run_once or external_review_wait or pr_threads or final_polish or thread_revision_keeps_original_event_log_shape'`
 
 Supporting checks:
 
 - `python3 -m ruff check scripts/conductor.py scripts/test_conductor.py`
 - AST shape check captured in the transcript:
-  - base branch `govern_pr_flow`: `426` lines
+  - base branch `govern_pr_flow`: `434` lines
   - this branch `govern_pr_flow`: `27` lines
-  - this branch `GovernanceSession`: `445` lines
+  - this branch `GovernanceSession`: `448` lines
+- branch CI: `Python Checks`, `merge-gate`, and the review surfaces on PR #571
 
 ## Residual Risk
 
 - This is still one large conductor module; the simplification is inside the governor seam, not a full conductor split.
 - The session object reduces parameter-threading, but future work could still extract shared run-lifecycle policy from `run_once` and `govern_pr`.
+- The full local `scripts/test_conductor.py` run is currently noisy on this macOS host because `test_cleanup_run_workspace_waits_for_lock_release` flakes in the lock-holder setup. Whole-file confidence for this branch therefore relies on GitHub CI rather than the local whole-suite run alone.
 
 ## Merge Case
 

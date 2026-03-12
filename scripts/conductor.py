@@ -4742,11 +4742,10 @@ class GovernanceSession:
             return "block"
         if thread_action == "revise" and feedback is not None:
             self.last_pr_feedback_thread_ids = thread_ids
-            self._request_builder_turn(
-                feedback,
-                reason="pr_review_threads",
-                feedback_source="pr_review_threads",
+            self.builder = self._run_builder_turn(
                 event_type="builder_revised",
+                feedback=feedback,
+                feedback_source="pr_review_threads",
             )
             self.pr_feedback_rounds += 1
             return "continue"
