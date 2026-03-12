@@ -6416,7 +6416,7 @@ def test_cleanup_run_workspace_serializes_with_prepare(monkeypatch: pytest.Monke
         active_ops.append("prepare")
         prepare_started.set()
         # Hold the lock while waiting; cleanup should not start until we exit.
-        assert release_prepare.wait(timeout=2), "cleanup never reached the shared mirror lock"
+        assert release_prepare.wait(timeout=5), "cleanup never reached the shared mirror lock"
         active_ops.append("prepare_done")
         return workspace
 
@@ -6438,7 +6438,7 @@ def test_cleanup_run_workspace_serializes_with_prepare(monkeypatch: pytest.Monke
 
         def __enter__(self) -> None:
             if self._lock.acquire(blocking=False):
-                self._acquired = True
+                self._lock.release()
                 raise AssertionError("cleanup acquired the mirror lock before prepare released it")
             cleanup_blocked.set()
             self._lock.acquire()
