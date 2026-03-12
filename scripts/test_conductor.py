@@ -4690,6 +4690,353 @@ def test_show_run_prints_run_metadata_and_recent_event_context(
     ]
     assert payload["recent_events"][0]["payload"]["reason"] == "unchanged_after_revision"
 
+def test_show_run_rolls_up_builder_and_reviewer_telemetry(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=481, title="telemetry", body="", url="https://example.com/481", labels=["autopilot"])
+    conductor.create_run(conn, "run-481-1", "misty-step/bitterblossom", issue, "claude-sonnet")
+
+    builder = conductor.BuilderResult(
+        status="ready_for_review",
+        branch="factory/481-1",
+        pr_number=481,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/481",
+        summary="done",
+        tests=[],
+    )
+    builder_payload = {
+        "status": "ready_for_review",
+        "branch": builder.branch,
+        "pr_number": builder.pr_number,
+        "pr_url": builder.pr_url,
+        "summary": builder.summary,
+        "model": "anthropic/claude-sonnet-4-6",
+        "provider": "openrouter",
+        "reasoning_effort": "high",
+        "estimated_cost_usd": 0.42,
+        "usage": {"input_tokens": 1200, "output_tokens": 300, "total_tokens": 1500},
+    }
+    monkeypatch.setattr(conductor, "run_builder", lambda *_a, **_kw: (builder, builder_payload))
+
+    conductor.run_builder_turn(
+        object(),
+        conn,
+        tmp_path / "events.jsonl",
+        "misty-step/bitterblossom",
+        "fern",
+        issue,
+        "run-481-1",
+        builder.branch,
+        pathlib.Path("prompt.md"),
+        10,
+        workspace="/tmp/run-481-1",
+        event_type="builder_complete",
+    )
+
+    wave_id = conductor.start_review_wave(conn, "run-481-1", "review_round", pr_number=481, reviewer_count=1)
+    conductor.record_review_artifact(
+        conn,
+        "run-481-1",
+        wave_id,
+        "sage",
+        {
+            "verdict": "pass",
+            "summary": "ok",
+            "findings": [],
+            "model": "gpt-5-mini",
+            "provider": "openai",
+            "reasoning_budget": "medium",
+            "estimated_cost_usd": 0.11,
+            "usage": {"prompt_tokens": 200, "completion_tokens": 50},
+        },
+    )
+    conductor.update_run(conn, "run-481-1", phase="merged", status="merged")
+
+    rc = conductor.show_run(argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-481-1", event_limit=5))
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["run"]["turn_count"] == 1
+    assert payload["run"]["input_tokens"] == 1400
+    assert payload["run"]["output_tokens"] == 350
+    assert payload["run"]["total_tokens"] == 1750
+    assert payload["run"]["estimated_cost_usd"] == pytest.approx(0.53)
+    assert [entry["model"] for entry in payload["run"]["model_usage"]] == [
+        "anthropic/claude-sonnet-4-6",
+        "gpt-5-mini",
+    ]
+    assert [entry["provider"] for entry in payload["run"]["provider_usage"]] == ["openai", "openrouter"]
+    assert payload["run"]["reasoning_budget_usage"] == [
+        {"reasoning_budget": "high", "calls": 1},
+        {"reasoning_budget": "medium", "calls": 1},
+    ]
+    assert len(payload["telemetry_samples"]) == 2
+    assert payload["telemetry_samples"][0]["lane"] == "builder"
+    assert payload["telemetry_samples"][0]["source_event"] == "builder_complete"
+    assert payload["telemetry_samples"][0]["reasoning_budget"] == "high"
+    assert payload["telemetry_samples"][1]["lane"] == "reviewer"
+    assert payload["telemetry_samples"][1]["reasoning_budget"] == "medium"
+
+
+def test_show_metrics_returns_summary_recent_runs_and_timeline(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fixed_now = datetime(2026, 3, 12, 12, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(conductor, "utc_now", lambda: fixed_now)
+
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue_a = conductor.Issue(number=481, title="telemetry", body="", url="u481", labels=["autopilot"])
+    issue_b = conductor.Issue(number=482, title="blocked", body="", url="u482", labels=["autopilot"])
+    issue_old = conductor.Issue(number=300, title="old", body="", url="u300", labels=["autopilot"])
+    conductor.create_run(conn, "run-481-1", "misty-step/bitterblossom", issue_a, "claude-sonnet")
+    conductor.create_run(conn, "run-482-1", "misty-step/bitterblossom", issue_b, "claude-sonnet")
+    conductor.create_run(conn, "run-300-1", "misty-step/bitterblossom", issue_old, "claude-sonnet")
+    conductor.update_run(
+        conn,
+        "run-481-1",
+        phase="merged",
+        status="merged",
+        picked_at="2026-03-11T09:00:00Z",
+        completed_at="2026-03-11T09:30:00Z",
+        updated_at="2026-03-11T09:30:00Z",
+    )
+    conductor.update_run(
+        conn,
+        "run-482-1",
+        phase="blocked",
+        status="blocked",
+        picked_at="2026-03-12T08:00:00Z",
+        completed_at="2026-03-12T08:10:00Z",
+        updated_at="2026-03-12T08:10:00Z",
+    )
+    conductor.update_run(
+        conn,
+        "run-300-1",
+        phase="merged",
+        status="merged",
+        picked_at="2026-03-01T08:00:00Z",
+        completed_at="2026-03-01T08:15:00Z",
+        updated_at="2026-03-01T08:15:00Z",
+        created_at="2026-03-01T08:00:00Z",
+    )
+    conductor.persist_run_telemetry_sample(
+        conn,
+        "run-481-1",
+        lane="builder",
+        actor="fern",
+        source_event="builder_complete",
+        payload={
+            "model": "anthropic/claude-sonnet-4-6",
+            "provider": "openrouter",
+            "reasoning_budget": "high",
+            "estimated_cost_usd": 0.40,
+            "usage": {"input_tokens": 1000, "output_tokens": 300, "total_tokens": 1300},
+        },
+    )
+    conductor.persist_run_telemetry_sample(
+        conn,
+        "run-482-1",
+        lane="builder",
+        actor="sage",
+        source_event="builder_complete",
+        payload={
+            "model": "anthropic/claude-sonnet-4-6",
+            "provider": "openrouter",
+            "reasoning_effort": "medium",
+            "estimated_cost_usd": 0.10,
+            "usage": {"input_tokens": 200, "output_tokens": 50, "total_tokens": 250},
+        },
+    )
+    conductor.persist_run_telemetry_sample(
+        conn,
+        "run-300-1",
+        lane="builder",
+        actor="fern",
+        source_event="builder_complete",
+        payload={
+            "model": "old-model",
+            "provider": "legacy",
+            "estimated_cost_usd": 1.25,
+            "usage": {"input_tokens": 999, "output_tokens": 1, "total_tokens": 1000},
+        },
+    )
+    conn.commit()
+
+    rc = conductor.show_metrics(argparse.Namespace(db=str(tmp_path / "conductor.db"), window="2d", limit=10))
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["summary"]["run_count"] == 2
+    assert payload["summary"]["merged_runs"] == 1
+    assert payload["summary"]["blocked_runs"] == 1
+    assert payload["summary"]["success_rate"] == 0.5
+    assert payload["summary"]["average_duration_seconds"] == 1200
+    assert payload["summary"]["total_estimated_cost_usd"] == pytest.approx(0.5)
+    assert payload["summary"]["total_tokens"] == 1550
+    assert [run["run_id"] for run in payload["recent_runs"]] == ["run-482-1", "run-481-1"]
+    assert payload["recent_runs"][0]["reasoning_budget_usage"] == [{"reasoning_budget": "medium", "calls": 1}]
+    assert payload["recent_runs"][1]["reasoning_budget_usage"] == [{"reasoning_budget": "high", "calls": 1}]
+    assert [bucket["bucket"] for bucket in payload["timeline"]] == ["2026-03-11", "2026-03-12"]
+    assert payload["timeline"][0]["merged_runs"] == 1
+    assert payload["timeline"][1]["blocked_runs"] == 1
+
+
+def test_show_metrics_rejects_invalid_window(tmp_path: pathlib.Path) -> None:
+    with pytest.raises(conductor.CmdError, match="invalid window"):
+        conductor.show_metrics(argparse.Namespace(db=str(tmp_path / "conductor.db"), window="weekly", limit=5))
+
+
+def test_persist_run_telemetry_sample_keeps_reasoning_budget_without_usage(tmp_path: pathlib.Path) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=481, title="telemetry", body="", url="u481", labels=["autopilot"])
+    conductor.create_run(conn, "run-481-1", "misty-step/bitterblossom", issue, "claude-sonnet")
+
+    conductor.persist_run_telemetry_sample(
+        conn,
+        "run-481-1",
+        lane="builder",
+        actor="fern",
+        source_event="builder_complete",
+        payload={"reasoning_budget": "high"},
+    )
+    conn.commit()
+
+    payload = conductor.run_telemetry_rollup(conn, "run-481-1")
+
+    assert len(payload["samples"]) == 1
+    sample = payload["samples"][0]
+    assert sample["lane"] == "builder"
+    assert sample["actor"] == "fern"
+    assert sample["source_event"] == "builder_complete"
+    assert sample["reasoning_budget"] == "high"
+    assert sample["model"] is None
+    assert sample["provider"] is None
+    assert sample["input_tokens"] is None
+    assert sample["output_tokens"] is None
+    assert sample["total_tokens"] is None
+    assert sample["estimated_cost_usd"] is None
+    assert payload["reasoning_budget_usage"] == [{"reasoning_budget": "high", "calls": 1}]
+    assert payload["total_tokens"] is None
+    assert payload["estimated_cost_usd"] is None
+
+
+def test_show_metrics_bulk_rolls_up_telemetry_once(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fixed_now = datetime(2026, 3, 12, 12, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(conductor, "utc_now", lambda: fixed_now)
+
+    db_path = tmp_path / "conductor.db"
+    conn = conductor.open_db(db_path)
+    issue_a = conductor.Issue(number=481, title="telemetry", body="", url="u481", labels=["autopilot"])
+    issue_b = conductor.Issue(number=482, title="blocked", body="", url="u482", labels=["autopilot"])
+    conductor.create_run(conn, "run-481-1", "misty-step/bitterblossom", issue_a, "claude-sonnet")
+    conductor.create_run(conn, "run-482-1", "misty-step/bitterblossom", issue_b, "claude-sonnet")
+    conductor.update_run(
+        conn,
+        "run-481-1",
+        phase="merged",
+        status="merged",
+        picked_at="2026-03-11T09:00:00Z",
+        completed_at="2026-03-11T09:30:00Z",
+        updated_at="2026-03-11T09:30:00Z",
+    )
+    conductor.update_run(
+        conn,
+        "run-482-1",
+        phase="blocked",
+        status="blocked",
+        picked_at="2026-03-12T08:00:00Z",
+        completed_at="2026-03-12T08:10:00Z",
+        updated_at="2026-03-12T08:10:00Z",
+    )
+    for run_id in ("run-481-1", "run-482-1"):
+        conductor.persist_run_telemetry_sample(
+            conn,
+            run_id,
+            lane="builder",
+            actor="fern",
+            source_event="builder_complete",
+            payload={
+                "model": "anthropic/claude-sonnet-4-6",
+                "provider": "openrouter",
+                "usage": {"input_tokens": 100, "output_tokens": 25, "total_tokens": 125},
+            },
+        )
+    conn.commit()
+
+    queries: list[str] = []
+    conn.set_trace_callback(queries.append)
+    monkeypatch.setattr(conductor, "open_db", lambda _path: conn)
+
+    rc = conductor.show_metrics(argparse.Namespace(db=str(db_path), window="2d", limit=10))
+
+    conn.set_trace_callback(None)
+    assert rc == 0
+    json.loads(capsys.readouterr().out)
+    telemetry_queries = [query for query in queries if "from run_telemetry_samples" in query.lower()]
+    assert len(telemetry_queries) == 1
+
+
+def test_init_db_backfills_completed_at_for_legacy_terminal_runs(tmp_path: pathlib.Path) -> None:
+    db_path = tmp_path / "legacy-conductor.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        create table runs (
+            run_id text primary key,
+            repo text not null,
+            issue_number integer not null,
+            issue_title text not null,
+            phase text not null,
+            status text not null,
+            builder_sprite text,
+            builder_profile text,
+            branch text,
+            pr_number integer,
+            pr_url text,
+            heartbeat_at text,
+            created_at text not null,
+            updated_at text not null
+        )
+        """
+    )
+    conn.execute(
+        """
+        insert into runs (
+            run_id, repo, issue_number, issue_title, phase, status,
+            builder_profile, created_at, updated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "run-legacy-1",
+            "misty-step/bitterblossom",
+            481,
+            "legacy",
+            "merged",
+            "merged",
+            "claude-sonnet",
+            "2026-03-01T10:00:00Z",
+            "2026-03-01T10:15:00Z",
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    upgraded = conductor.open_db(db_path)
+    row = upgraded.execute("select picked_at, completed_at, turn_count from runs where run_id = 'run-legacy-1'").fetchone()
+
+    assert row["picked_at"] == "2026-03-01T10:00:00Z"
+    assert row["completed_at"] == "2026-03-01T10:15:00Z"
+    assert row["turn_count"] == 0
+
 
 def test_show_run_surfaces_workspace_preparation_failure_reason(
     tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
