@@ -11,7 +11,7 @@ The conductor now persists per-run telemetry samples from builder and reviewer a
 3. Show `show-run` returning the new per-run telemetry contract:
    - `picked_at`, `completed_at`, `duration_seconds`, `outcome`, `turn_count`
    - aggregate token totals and `estimated_cost_usd`
-   - `model_usage`, `provider_usage`, and raw `telemetry_samples`
+   - `model_usage`, `provider_usage`, `reasoning_budget_usage`, and raw `telemetry_samples`
 4. Show `show-metrics` returning the aggregate read model:
    - `summary`
    - `recent_runs`

@@ -59,6 +59,7 @@ WORKER_DRAIN_FAILURE_THRESHOLD = 2
 MAX_WORKER_SLOT_COUNT = 1000
 TERMINAL_RUN_STATUSES = {"merged", "failed", "blocked", "closed"}
 BUILDER_WORKSPACE_CLEANUP_KIND = "builder_workspace_cleanup"
+UNSET = object()
 
 
 @dataclass(slots=True)
@@ -301,6 +302,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             source_event text not null,
             model text,
             provider text,
+            reasoning_budget text,
             input_tokens integer,
             output_tokens integer,
             total_tokens integer,
@@ -409,6 +411,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     ensure_column(conn, "runs", "picked_at", "text")
     ensure_column(conn, "runs", "completed_at", "text")
     ensure_column(conn, "runs", "turn_count", "integer")
+    ensure_column(conn, "run_telemetry_samples", "reasoning_budget", "text")
     ensure_column(conn, "leases", "heartbeat_at", "text")
     ensure_column(conn, "leases", "lease_expires_at", "text")
     ensure_column(conn, "leases", "blocked_at", "text")
@@ -782,6 +785,10 @@ def extract_usage_sample(payload: dict[str, Any]) -> dict[str, Any] | None:
     usage_dict = usage if isinstance(usage, dict) else {}
     cost = payload.get("cost")
     cost_dict = cost if isinstance(cost, dict) else {}
+    reasoning = payload.get("reasoning")
+    reasoning_dict = reasoning if isinstance(reasoning, dict) else {}
+    budget = payload.get("budget")
+    budget_dict = budget if isinstance(budget, dict) else {}
     input_tokens = first_present_value(
         usage_dict.get("input_tokens"),
         usage_dict.get("prompt_tokens"),
@@ -826,11 +833,25 @@ def extract_usage_sample(payload: dict[str, Any]) -> dict[str, Any] | None:
         usage_dict.get("provider"),
         caster=normalized_string,
     )
-    if all(value is None for value in (model, provider, input_tokens, output_tokens, total_tokens, estimated_cost_usd)):
+    reasoning_budget = first_present_value(
+        payload.get("reasoning_budget"),
+        payload.get("reasoning_effort"),
+        usage_dict.get("reasoning_budget"),
+        usage_dict.get("reasoning_effort"),
+        reasoning_dict.get("budget"),
+        reasoning_dict.get("effort"),
+        budget_dict.get("reasoning"),
+        caster=normalized_string,
+    )
+    if all(
+        value is None
+        for value in (model, provider, reasoning_budget, input_tokens, output_tokens, total_tokens, estimated_cost_usd)
+    ):
         return None
     return {
         "model": model,
         "provider": provider,
+        "reasoning_budget": reasoning_budget,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "total_tokens": total_tokens,
@@ -853,9 +874,9 @@ def persist_run_telemetry_sample(
     conn.execute(
         """
         insert into run_telemetry_samples (
-            run_id, lane, actor, source_event, model, provider, input_tokens, output_tokens,
-            total_tokens, estimated_cost_usd, sample_json, created_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            run_id, lane, actor, source_event, model, provider, reasoning_budget, input_tokens,
+            output_tokens, total_tokens, estimated_cost_usd, sample_json, created_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             run_id,
@@ -864,6 +885,7 @@ def persist_run_telemetry_sample(
             source_event,
             sample["model"],
             sample["provider"],
+            sample["reasoning_budget"],
             sample["input_tokens"],
             sample["output_tokens"],
             sample["total_tokens"],
@@ -882,17 +904,8 @@ def increment_run_turn_count(conn: sqlite3.Connection, run_id: str) -> None:
     conn.commit()
 
 
-def run_telemetry_rollup(conn: sqlite3.Connection, run_id: str) -> dict[str, Any]:
-    rows = conn.execute(
-        """
-        select lane, actor, source_event, model, provider, input_tokens, output_tokens, total_tokens, estimated_cost_usd, created_at
-        from run_telemetry_samples
-        where run_id = ?
-        order by id
-        """,
-        (run_id,),
-    ).fetchall()
-    summary: dict[str, Any] = {
+def empty_run_telemetry_rollup() -> dict[str, Any]:
+    return {
         "input_tokens": 0,
         "output_tokens": 0,
         "total_tokens": 0,
@@ -900,7 +913,26 @@ def run_telemetry_rollup(conn: sqlite3.Connection, run_id: str) -> dict[str, Any
         "samples": [],
         "model_usage": {},
         "provider_usage": {},
+        "reasoning_budget_usage": {},
     }
+
+
+def finalize_run_telemetry_rollup(summary: dict[str, Any], *, saw_any_tokens: bool, saw_any_cost: bool) -> dict[str, Any]:
+    summary["input_tokens"] = summary["input_tokens"] if saw_any_tokens else None
+    summary["output_tokens"] = summary["output_tokens"] if saw_any_tokens else None
+    summary["total_tokens"] = summary["total_tokens"] if saw_any_tokens else None
+    summary["estimated_cost_usd"] = round(summary["estimated_cost_usd"], 6) if saw_any_cost else None
+    summary["model_usage"] = sorted(summary["model_usage"].values(), key=lambda item: (-item["calls"], item["model"]))
+    summary["provider_usage"] = sorted(summary["provider_usage"].values(), key=lambda item: (-item["calls"], item["provider"]))
+    summary["reasoning_budget_usage"] = sorted(
+        summary["reasoning_budget_usage"].values(),
+        key=lambda item: (-item["calls"], item["reasoning_budget"]),
+    )
+    return summary
+
+
+def run_telemetry_rollup_from_rows(rows: list[sqlite3.Row]) -> dict[str, Any]:
+    summary = empty_run_telemetry_rollup()
     saw_any_tokens = False
     saw_any_cost = False
     for row in rows:
@@ -910,6 +942,7 @@ def run_telemetry_rollup(conn: sqlite3.Connection, run_id: str) -> dict[str, Any
             "source_event": row["source_event"],
             "model": row["model"],
             "provider": row["provider"],
+            "reasoning_budget": row["reasoning_budget"] if "reasoning_budget" in row.keys() else None,
             "input_tokens": row["input_tokens"],
             "output_tokens": row["output_tokens"],
             "total_tokens": row["total_tokens"],
@@ -959,13 +992,49 @@ def run_telemetry_rollup(conn: sqlite3.Connection, run_id: str) -> dict[str, Any
                     provider_entry[field] += int(value)
             if cost_value is not None:
                 provider_entry["estimated_cost_usd"] += float(cost_value)
-    summary["input_tokens"] = summary["input_tokens"] if saw_any_tokens else None
-    summary["output_tokens"] = summary["output_tokens"] if saw_any_tokens else None
-    summary["total_tokens"] = summary["total_tokens"] if saw_any_tokens else None
-    summary["estimated_cost_usd"] = round(summary["estimated_cost_usd"], 6) if saw_any_cost else None
-    summary["model_usage"] = sorted(summary["model_usage"].values(), key=lambda item: (-item["calls"], item["model"]))
-    summary["provider_usage"] = sorted(summary["provider_usage"].values(), key=lambda item: (-item["calls"], item["provider"]))
-    return summary
+        reasoning_budget = normalized_string(row["reasoning_budget"] if "reasoning_budget" in row.keys() else None)
+        if reasoning_budget is not None:
+            budget_entry = summary["reasoning_budget_usage"].setdefault(
+                reasoning_budget,
+                {"reasoning_budget": reasoning_budget, "calls": 0},
+            )
+            budget_entry["calls"] += 1
+    return finalize_run_telemetry_rollup(summary, saw_any_tokens=saw_any_tokens, saw_any_cost=saw_any_cost)
+
+
+def run_telemetry_rollup(conn: sqlite3.Connection, run_id: str) -> dict[str, Any]:
+    rows = conn.execute(
+        """
+        select lane, actor, source_event, model, provider, reasoning_budget,
+               input_tokens, output_tokens, total_tokens, estimated_cost_usd, created_at
+        from run_telemetry_samples
+        where run_id = ?
+        order by id
+        """,
+        (run_id,),
+    ).fetchall()
+    return run_telemetry_rollup_from_rows(rows)
+
+
+def run_telemetry_rollup_bulk(conn: sqlite3.Connection, run_ids: list[str]) -> dict[str, dict[str, Any]]:
+    ordered_run_ids = list(dict.fromkeys(run_ids))
+    if not ordered_run_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in ordered_run_ids)
+    rows = conn.execute(
+        f"""
+        select run_id, lane, actor, source_event, model, provider, reasoning_budget,
+               input_tokens, output_tokens, total_tokens, estimated_cost_usd, created_at
+        from run_telemetry_samples
+        where run_id in ({placeholders})
+        order by run_id, id
+        """,
+        ordered_run_ids,
+    ).fetchall()
+    rows_by_run: dict[str, list[sqlite3.Row]] = {run_id: [] for run_id in ordered_run_ids}
+    for row in rows:
+        rows_by_run[row["run_id"]].append(row)
+    return {run_id: run_telemetry_rollup_from_rows(rows_by_run[run_id]) for run_id in ordered_run_ids}
 
 
 def summarize_blocking_reason(event_type: str | None, payload: dict[str, Any]) -> str | None:
@@ -1018,6 +1087,37 @@ def latest_worktree_recovery_event(conn: sqlite3.Connection, run_id: str) -> sql
     ).fetchone()
 
 
+def latest_worktree_recovery_events(conn: sqlite3.Connection, run_ids: list[str]) -> dict[str, sqlite3.Row]:
+    ordered_run_ids = list(dict.fromkeys(run_ids))
+    if not ordered_run_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in ordered_run_ids)
+    rows = conn.execute(
+        f"""
+        select run_id, event_type, payload_json, created_at
+        from events
+        where run_id in ({placeholders})
+          and (
+            event_type = 'builder_workspace_cleaned'
+            or (
+              event_type = 'workspace_preparation_failed'
+              and json_extract(payload_json, '$.lane') = 'builder'
+            )
+            or (
+              event_type = 'cleanup_warning'
+              and json_extract(payload_json, '$.kind') = ?
+            )
+          )
+        order by run_id, id desc
+        """,
+        [*ordered_run_ids, BUILDER_WORKSPACE_CLEANUP_KIND],
+    ).fetchall()
+    events: dict[str, sqlite3.Row] = {}
+    for row in rows:
+        events.setdefault(row["run_id"], row)
+    return events
+
+
 def latest_event_for_run(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row | None:
     return conn.execute(
         """
@@ -1053,11 +1153,42 @@ def blocking_event_for_run(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row
     ).fetchone()
 
 
+def blocking_events_for_runs(conn: sqlite3.Connection, run_ids: list[str]) -> dict[str, sqlite3.Row]:
+    ordered_run_ids = list(dict.fromkeys(run_ids))
+    if not ordered_run_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in ordered_run_ids)
+    rows = conn.execute(
+        f"""
+        select run_id, event_type, payload_json, created_at
+        from events
+        where run_id in ({placeholders})
+          and (
+            event_type in ('pr_feedback_blocked', 'council_blocked', 'command_failed', 'unexpected_error')
+            or (
+              event_type = 'workspace_preparation_failed'
+              and json_extract(payload_json, '$.lane') = 'builder'
+            )
+            or (event_type = 'ci_wait_complete' and json_extract(payload_json, '$.passed') = 0)
+            or (event_type = 'external_review_wait_complete' and json_extract(payload_json, '$.passed') = 0)
+          )
+        order by run_id, id desc
+        """,
+        ordered_run_ids,
+    ).fetchall()
+    events: dict[str, sqlite3.Row] = {}
+    for row in rows:
+        events.setdefault(row["run_id"], row)
+    return events
+
+
 def serialize_run_surface(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
     *,
     telemetry: dict[str, Any] | None = None,
+    worktree_recovery_event: sqlite3.Row | None | object = UNSET,
+    blocking_event: sqlite3.Row | None | object = UNSET,
 ) -> dict[str, Any]:
     heartbeat_at = row["heartbeat_at"]
     worktree_path = row["worktree_path"] if "worktree_path" in row.keys() else None
@@ -1090,6 +1221,7 @@ def serialize_run_surface(
         "estimated_cost_usd": telemetry["estimated_cost_usd"],
         "model_usage": telemetry["model_usage"],
         "provider_usage": telemetry["provider_usage"],
+        "reasoning_budget_usage": telemetry["reasoning_budget_usage"],
         "heartbeat_at": heartbeat_at,
         "heartbeat_age_seconds": age_seconds_from_now(heartbeat_at),
         "updated_at": row["updated_at"],
@@ -1098,7 +1230,7 @@ def serialize_run_surface(
     payload["worktree_recovery_error"] = None
     payload["worktree_recovery_event_type"] = None
     payload["worktree_recovery_event_at"] = None
-    recovery_event = latest_worktree_recovery_event(conn, row["run_id"])
+    recovery_event = latest_worktree_recovery_event(conn, row["run_id"]) if worktree_recovery_event is UNSET else worktree_recovery_event
     if recovery_event is not None:
         recovery_payload = json.loads(recovery_event["payload_json"])
         payload["worktree_recovery_event_type"] = recovery_event["event_type"]
@@ -1116,12 +1248,12 @@ def serialize_run_surface(
     payload["blocking_event_type"] = None
     payload["blocking_event_at"] = None
     if row["status"] in {"blocked", "failed"}:
-        blocking_event = blocking_event_for_run(conn, row["run_id"])
-        if blocking_event is not None:
-            blocking_payload = json.loads(blocking_event["payload_json"])
-            blocking_reason = summarize_blocking_reason(blocking_event["event_type"], blocking_payload)
-            payload["blocking_event_type"] = blocking_event["event_type"]
-            payload["blocking_event_at"] = blocking_event["created_at"]
+        resolved_blocking_event = blocking_event_for_run(conn, row["run_id"]) if blocking_event is UNSET else blocking_event
+        if resolved_blocking_event is not None:
+            blocking_payload = json.loads(resolved_blocking_event["payload_json"])
+            blocking_reason = summarize_blocking_reason(resolved_blocking_event["event_type"], blocking_payload)
+            payload["blocking_event_type"] = resolved_blocking_event["event_type"]
+            payload["blocking_event_at"] = resolved_blocking_event["created_at"]
     payload["blocking_reason"] = blocking_reason
     return payload
 
@@ -5191,8 +5323,21 @@ def show_metrics(args: argparse.Namespace) -> int:
         """,
         (window_start.isoformat().replace("+00:00", "Z"),),
     ).fetchall()
+    run_ids = [row["run_id"] for row in rows]
+    telemetry_by_run = run_telemetry_rollup_bulk(conn, run_ids)
+    recovery_by_run = latest_worktree_recovery_events(conn, run_ids)
+    blocking_by_run = blocking_events_for_runs(conn, run_ids)
     runs = sorted(
-        [serialize_run_surface(conn, row) for row in rows],
+        [
+            serialize_run_surface(
+                conn,
+                row,
+                telemetry=telemetry_by_run.get(row["run_id"], empty_run_telemetry_rollup()),
+                worktree_recovery_event=recovery_by_run.get(row["run_id"]),
+                blocking_event=blocking_by_run.get(row["run_id"]),
+            )
+            for row in rows
+        ],
         key=lambda run: (run["picked_at"] or run["updated_at"] or "", run["run_id"]),
         reverse=True,
     )

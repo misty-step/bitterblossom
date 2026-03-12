@@ -155,7 +155,7 @@ python3 scripts/conductor.py reset-worker-slots \
 ```
 
 `show-runs` emits one JSON object per run. The operator contract is that each row includes the current `phase` and `status`, the raw `heartbeat_at` timestamp, a computed `heartbeat_age_seconds`, and when applicable a `blocking_reason` plus the source `blocking_event_type`.
-Completed and in-flight telemetry now ride on the same surface: each row also includes `picked_at`, `completed_at`, `duration_seconds`, `outcome`, `turn_count`, aggregate token totals, `estimated_cost_usd`, plus `model_usage` and `provider_usage` rollups.
+Completed and in-flight telemetry now ride on the same surface: each row also includes `picked_at`, `completed_at`, `duration_seconds`, `outcome`, `turn_count`, aggregate token totals, `estimated_cost_usd`, plus `model_usage`, `provider_usage`, and `reasoning_budget_usage` rollups.
 
 `show-events` emits one JSON object for the requested run with a `run` metadata envelope, `latest_event_type`, `latest_event_at`, and an `events` array. Review convergence is now explicit in that stream: `review_wave_started`, `review_wave_completed`, and `external_review_wait_complete` events let operators inspect when a council round began, when a PR-thread scan or external-review wait settled, and why governance advanced or stopped.
 
