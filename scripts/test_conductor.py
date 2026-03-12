@@ -7,7 +7,7 @@ import sqlite3
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
 
 import pytest
 
@@ -24,7 +24,7 @@ def _stub_run_once_worktrees(monkeypatch: pytest.MonkeyPatch, request: pytest.Fi
     monkeypatch.setattr(
         conductor,
         "prepare_run_workspace",
-        lambda _runner, _sprite, repo, run_id, lane: conductor.run_workspace(repo, run_id, lane),
+        lambda _runner, _sprite, repo, run_id, lane, **_kw: conductor.run_workspace(repo, run_id, lane),
     )
     monkeypatch.setattr(conductor, "cleanup_run_workspace", lambda *_a, **_kw: None)
 
@@ -1862,7 +1862,7 @@ def test_run_review_round_persists_reviews_as_they_arrive(monkeypatch: pytest.Mo
     monkeypatch.setattr(
         conductor,
         "prepare_run_workspace",
-        lambda _runner, _sprite, repo, run_id, lane: conductor.run_workspace(repo, run_id, lane),
+        lambda _runner, _sprite, repo, run_id, lane, **_kw: conductor.run_workspace(repo, run_id, lane),
     )
 
     reviews = conductor.run_review_round(
@@ -1942,7 +1942,15 @@ def test_run_review_round_cleans_only_prepared_reviewers(monkeypatch: pytest.Mon
     monkeypatch.setattr(conductor, "cleanup_sprite_processes", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(conductor, "ensure_sprite_ready", lambda *_args, **_kwargs: None)
 
-    def fake_prepare(_runner: object, reviewer: str, repo: str, run_id: str, lane: str) -> str:
+    def fake_prepare(
+        _runner: object,
+        reviewer: str,
+        repo: str,
+        run_id: str,
+        lane: str,
+        on_exhausted: Callable[[dict[str, object]], None] | None = None,
+    ) -> str:
+        _ = on_exhausted
         if reviewer == "sage":
             raise conductor.CmdError("sprite transport failed")
         return conductor.run_workspace(repo, run_id, lane)
@@ -1997,7 +2005,7 @@ def test_run_review_round_records_workspace_cleanup_failed_for_reviewer_cleanup_
     monkeypatch.setattr(
         conductor,
         "prepare_run_workspace",
-        lambda _runner, reviewer, repo, run_id, lane: conductor.run_workspace(repo, run_id, lane),
+        lambda _runner, reviewer, repo, run_id, lane, **_kw: conductor.run_workspace(repo, run_id, lane),
     )
     monkeypatch.setattr(
         conductor,
@@ -2062,7 +2070,7 @@ def test_run_review_round_does_not_mislabel_reviewer_cleanup_event_write_failure
     monkeypatch.setattr(
         conductor,
         "prepare_run_workspace",
-        lambda _runner, reviewer, repo, run_id, lane: conductor.run_workspace(repo, run_id, lane),
+        lambda _runner, reviewer, repo, run_id, lane, **_kw: conductor.run_workspace(repo, run_id, lane),
     )
     monkeypatch.setattr(
         conductor,
@@ -2152,7 +2160,7 @@ def test_run_review_round_preserves_prior_wave_state(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(
         conductor,
         "prepare_run_workspace",
-        lambda _runner, _sprite, repo, run_id, lane: conductor.run_workspace(repo, run_id, lane),
+        lambda _runner, _sprite, repo, run_id, lane, **_kw: conductor.run_workspace(repo, run_id, lane),
     )
 
     conductor.run_review_round(
@@ -2286,7 +2294,7 @@ def test_run_review_round_marks_wave_partial_when_not_all_reviews_arrive(
     monkeypatch.setattr(
         conductor,
         "prepare_run_workspace",
-        lambda _runner, _sprite, repo, run_id, lane: conductor.run_workspace(repo, run_id, lane),
+        lambda _runner, _sprite, repo, run_id, lane, **_kw: conductor.run_workspace(repo, run_id, lane),
     )
 
     with pytest.raises(KeyError):
@@ -2349,7 +2357,7 @@ def test_run_review_round_keeps_completed_wave_when_completion_event_recording_f
     monkeypatch.setattr(
         conductor,
         "prepare_run_workspace",
-        lambda _runner, _sprite, repo, run_id, lane: conductor.run_workspace(repo, run_id, lane),
+        lambda _runner, _sprite, repo, run_id, lane, **_kw: conductor.run_workspace(repo, run_id, lane),
     )
     monkeypatch.setattr(conductor, "record_review_wave_event", fail_completed_event)
 
@@ -2396,7 +2404,7 @@ def test_run_review_round_marks_wave_failed_when_started_event_recording_fails(
     monkeypatch.setattr(
         conductor,
         "prepare_run_workspace",
-        lambda _runner, _sprite, repo, run_id, lane: conductor.run_workspace(repo, run_id, lane),
+        lambda _runner, _sprite, repo, run_id, lane, **_kw: conductor.run_workspace(repo, run_id, lane),
     )
     monkeypatch.setattr(conductor, "record_review_wave_event", fail_started_event)
 
@@ -2435,7 +2443,7 @@ def test_run_review_round_preserves_primary_error_when_terminal_check_fails(
     monkeypatch.setattr(
         conductor,
         "prepare_run_workspace",
-        lambda _runner, _sprite, repo, run_id, lane: conductor.run_workspace(repo, run_id, lane),
+        lambda _runner, _sprite, repo, run_id, lane, **_kw: conductor.run_workspace(repo, run_id, lane),
     )
     monkeypatch.setattr(
         conductor,
@@ -2770,7 +2778,7 @@ def test_run_builder_precleans_worker(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         conductor,
         "prepare_run_workspace",
-        lambda _runner, _sprite, repo, run_id, lane: conductor.run_workspace(repo, run_id, lane),
+        lambda _runner, _sprite, repo, run_id, lane, **_kw: conductor.run_workspace(repo, run_id, lane),
     )
 
     builder, _payload = conductor.run_builder(
@@ -3536,6 +3544,91 @@ def test_run_once_releases_lease_on_failure_after_comment_error(monkeypatch: pyt
     ).fetchone()
     assert lease is not None
     assert lease["released_at"] is not None
+
+
+def test_builder_workspace_preparation_failure_surface_is_persisted(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    issue = conductor.Issue(number=448, title="prep failure", body="body", url="https://example.com/448", labels=["autopilot"])
+
+    monkeypatch.setattr(conductor, "get_issue", lambda *_args, **_kwargs: issue)
+    monkeypatch.setattr(conductor, "ensure_reviewers_ready", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(conductor, "comment_issue", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(conductor, "select_worker", lambda *_args, **_kwargs: "noble-blue-serpent")
+    monkeypatch.setattr(
+        conductor,
+        "sprite_bash",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(conductor.CmdError("git fetch failed")),
+    )
+    monkeypatch.setattr(conductor.time, "sleep", lambda *_args, **_kwargs: None)
+
+    args = argparse.Namespace(
+        repo="misty-step/bitterblossom",
+        issue=448,
+        label="autopilot",
+        limit=20,
+        db=str(tmp_path / "conductor.db"),
+        event_log=str(tmp_path / "events.jsonl"),
+        builder_profile="default",
+        worker=["noble-blue-serpent"],
+        builder_template=str(pathlib.Path("scripts/prompts/conductor-builder-template.md")),
+        reviewer=[],
+        reviewer_template=str(pathlib.Path("scripts/prompts/conductor-reviewer-template.md")),
+        builder_timeout=10,
+        review_timeout=10,
+        ci_timeout=10,
+        review_quorum=0,
+        max_revision_rounds=1,
+        max_ci_rounds=1,
+        max_pr_feedback_rounds=1,
+        trusted_external_surfaces=[],
+        external_review_quiet_window=0,
+        external_review_timeout=30,
+    )
+
+    rc = conductor.run_once(args)
+
+    assert rc == 1
+    conn = conductor.open_db(pathlib.Path(args.db))
+    run_row = conn.execute("select run_id from runs where issue_number = ?", (issue.number,)).fetchone()
+    assert run_row is not None
+    run_id = str(run_row["run_id"])
+    events = conn.execute(
+        "select event_type, payload_json from events where run_id = ? order by id",
+        (run_id,),
+    ).fetchall()
+    assert [row["event_type"] for row in events] == [
+        "lease_acquired",
+        "reviewers_ready",
+        "builder_selected",
+        "workspace_preparation_failed",
+    ]
+    prep_payload = json.loads(str(events[-1]["payload_json"]))
+    assert prep_payload == {
+        "sprite": "noble-blue-serpent",
+        "lane": "builder",
+        "workspace": conductor.run_workspace(args.repo, run_id, "builder"),
+        "attempt": 3,
+        "attempts": 3,
+        "error": "workspace preparation failed after 3 attempts: git fetch failed",
+    }
+
+    show_rc = conductor.show_run(
+        argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id=run_id, event_limit=5)
+    )
+
+    assert show_rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    run = payload["run"]
+    assert run["blocking_event_type"] == "workspace_preparation_failed"
+    assert run["blocking_reason"] == "workspace preparation failed after 3 attempts: git fetch failed"
+    assert run["worktree_path"] is None
+    assert run["worktree_recovery_status"] == "prepare_failed"
+    assert run["worktree_recovery_error"] == "workspace preparation failed after 3 attempts: git fetch failed"
+    assert run["worktree_recovery_event_type"] == "workspace_preparation_failed"
+    assert run["worktree_recovery_event_at"] is not None
 
 
 def test_run_once_records_builder_slot_and_releases_assignment(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
@@ -6800,7 +6893,7 @@ def test_run_once_clears_builder_worktree_path_after_cleanup(
     monkeypatch.setattr(
         conductor,
         "prepare_run_workspace",
-        lambda _runner, sprite, _repo, _run_id, lane: prepared.append((sprite, lane))
+        lambda _runner, sprite, _repo, _run_id, lane, **_kw: prepared.append((sprite, lane))
         or conductor.run_workspace("misty-step/bitterblossom", "run-469-1", lane),
     )
     monkeypatch.setattr(
@@ -6852,7 +6945,7 @@ def test_run_once_cleans_builder_worktree_when_run_builder_raises(
     monkeypatch.setattr(
         conductor,
         "prepare_run_workspace",
-        lambda _runner, sprite, _repo, _run_id, lane: prepared.append((sprite, lane))
+        lambda _runner, sprite, _repo, _run_id, lane, **_kw: prepared.append((sprite, lane))
         or conductor.run_workspace("misty-step/bitterblossom", "run-469-1", lane),
     )
     monkeypatch.setattr(
@@ -7577,6 +7670,7 @@ def test_show_run_exposes_worktree_recovery_status_cleaned(
         "builder_workspace_cleaned",
         {"workspace": workspace},
     )
+    conductor.update_run(conn, "run-538-rec-1", worktree_path=None)
 
     rc = conductor.show_run(
         argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-538-rec-1", event_limit=5)
@@ -7585,6 +7679,7 @@ def test_show_run_exposes_worktree_recovery_status_cleaned(
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     run = payload["run"]
+    assert run["worktree_path"] is None
     assert run["worktree_recovery_status"] == "cleaned"
     assert run["worktree_recovery_error"] is None
     assert run["worktree_recovery_event_type"] == "builder_workspace_cleaned"
@@ -7690,6 +7785,7 @@ def test_show_runs_exposes_worktree_recovery_status_cleaned(
         "builder_workspace_cleaned",
         {"workspace": workspace},
     )
+    conductor.update_run(conn, "run-538-rec-4a", worktree_path=None)
 
     rc = conductor.show_runs(argparse.Namespace(db=str(tmp_path / "conductor.db"), limit=5))
 
@@ -7697,6 +7793,7 @@ def test_show_runs_exposes_worktree_recovery_status_cleaned(
     rows = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line]
     assert len(rows) == 1
     run = rows[0]
+    assert run["worktree_path"] is None
     assert run["worktree_recovery_status"] == "cleaned"
     assert run["worktree_recovery_error"] is None
     assert run["worktree_recovery_event_type"] == "builder_workspace_cleaned"

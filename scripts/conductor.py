@@ -825,6 +825,13 @@ def builder_workspace_lifecycle_event(conn: sqlite3.Connection, run_id: str) -> 
     ).fetchone()
 
 
+def is_builder_workspace_preparation_failure_event(event_row: sqlite3.Row | None) -> bool:
+    if event_row is None or event_row["event_type"] != "workspace_preparation_failed":
+        return False
+    payload = payload_object_or_none(event_row["payload_json"])
+    return payload is not None and payload.get("lane") == "builder"
+
+
 def run_surface_query(where_sql: str = "", limit_sql: str = "") -> str:
     return f"""
         with candidate_runs as (
@@ -1292,7 +1299,32 @@ def _prepare_run_workspace_once(runner: Runner, sprite: str, mirror: str, worksp
     return parse_workspace_prepare_output(output, workspace, sprite)
 
 
-def prepare_run_workspace(runner: Runner, sprite: str, repo: str, run_id: str, lane: str) -> str:
+def workspace_preparation_failure_payload(
+    sprite: str,
+    repo: str,
+    run_id: str,
+    lane: str,
+    error: str,
+) -> dict[str, Any]:
+    attempts = 1 + WORKSPACE_PREP_RETRIES
+    return {
+        "sprite": sprite,
+        "lane": lane,
+        "workspace": run_workspace(repo, run_id, lane),
+        "attempt": attempts,
+        "attempts": attempts,
+        "error": error,
+    }
+
+
+def prepare_run_workspace(
+    runner: Runner,
+    sprite: str,
+    repo: str,
+    run_id: str,
+    lane: str,
+    on_exhausted: Callable[[dict[str, Any]], None] | None = None,
+) -> str:
     mirror = repo_dir(repo)
     workspace = run_workspace(repo, run_id, lane)
     last_exc: Exception | None = None
@@ -1304,9 +1336,10 @@ def prepare_run_workspace(runner: Runner, sprite: str, repo: str, run_id: str, l
             last_exc = exc
             if attempt < WORKSPACE_PREP_RETRIES:
                 time.sleep(WORKSPACE_PREP_RETRY_DELAY_SECONDS * (attempt + 1))
-    raise CmdError(
-        f"workspace preparation failed after {1 + WORKSPACE_PREP_RETRIES} attempts: {last_exc}"
-    ) from last_exc
+    message = f"workspace preparation failed after {1 + WORKSPACE_PREP_RETRIES} attempts: {last_exc}"
+    if on_exhausted is not None:
+        on_exhausted(workspace_preparation_failure_payload(sprite, repo, run_id, lane, message))
+    raise CmdError(message) from last_exc
 
 
 def cleanup_run_workspace(runner: Runner, sprite: str, repo: str, run_id: str, lane: str) -> None:
@@ -3713,7 +3746,14 @@ def run_review_round(
             except CmdError:
                 pass
             ensure_sprite_ready(runner, reviewer, repo, prompt_template)
-            workspace = prepare_run_workspace(runner, reviewer, repo, run_id, f"review-{reviewer}")
+            workspace = prepare_run_workspace(
+                runner,
+                reviewer,
+                repo,
+                run_id,
+                f"review-{reviewer}",
+                on_exhausted=lambda payload: record_event(conn, event_log, run_id, "workspace_preparation_failed", payload),
+            )
             prepared_reviewers.append(reviewer)
             review_rel = artifact_rel(run_id, f"review-{reviewer}.json")
             review_prompt = build_review_task(issue, run_id, pr_number, pr_url, review_rel)
@@ -3944,7 +3984,14 @@ def ensure_governance_run(
         )
 
         if not builder_workspace:
-            builder_workspace = prepare_run_workspace(runner, worker, args.repo, run_id, "builder")
+            builder_workspace = prepare_run_workspace(
+                runner,
+                worker,
+                args.repo,
+                run_id,
+                "builder",
+                on_exhausted=lambda payload: record_event(conn, event_log, run_id, "workspace_preparation_failed", payload),
+            )
             update_run(conn, run_id, worktree_path=builder_workspace)
             record_event(conn, event_log, run_id, "builder_workspace_prepared", {"workspace": builder_workspace})
 
@@ -4507,7 +4554,14 @@ def run_once(args: argparse.Namespace) -> int:
 
         branch = branch_name(issue.number, run_id_suffix(run_id))
         builder_template = pathlib.Path(args.builder_template)
-        builder_workspace = prepare_run_workspace(runner, worker, args.repo, run_id, "builder")
+        builder_workspace = prepare_run_workspace(
+            runner,
+            worker,
+            args.repo,
+            run_id,
+            "builder",
+            on_exhausted=lambda payload: record_event(conn, event_log, run_id, "workspace_preparation_failed", payload),
+        )
         builder_workspace_prepared = True
         update_run(conn, run_id, worktree_path=builder_workspace)
         record_event(conn, event_log, run_id, "builder_workspace_prepared", {"workspace": builder_workspace})
@@ -4579,6 +4633,18 @@ def run_once(args: argparse.Namespace) -> int:
             record_event(conn, event_log, run_id, "cleanup_warning", {"error": str(exc)})
             return 0
         update_run(conn, run_id, phase="failed", status="failed")
+        if is_builder_workspace_preparation_failure_event(latest_event_for_run(conn, run_id)):
+            best_effort_issue_comment(
+                runner,
+                conn,
+                event_log,
+                run_id,
+                args.repo,
+                issue.number,
+                f"Bitterblossom failed `{run_id}`.\n\n```\n{str(exc)[:1500]}\n```",
+                event_type="issue_comment_failed",
+            )
+            return 1
         record_event(conn, event_log, run_id, "command_failed", {"error": str(exc)})
         best_effort_issue_comment(
             runner,
