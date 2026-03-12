@@ -413,6 +413,13 @@ def init_db(conn: sqlite3.Connection) -> None:
     ensure_column(conn, "leases", "lease_expires_at", "text")
     ensure_column(conn, "leases", "blocked_at", "text")
     conn.execute("update runs set picked_at = created_at where picked_at is null")
+    conn.execute(
+        """
+        update runs
+        set completed_at = updated_at
+        where completed_at is null and status in ('merged', 'failed', 'blocked', 'closed')
+        """
+    )
     conn.execute("update runs set turn_count = 0 where turn_count is null")
     conn.commit()
 
@@ -1046,12 +1053,18 @@ def blocking_event_for_run(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row
     ).fetchone()
 
 
-def serialize_run_surface(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
+def serialize_run_surface(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    telemetry: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     heartbeat_at = row["heartbeat_at"]
     worktree_path = row["worktree_path"] if "worktree_path" in row.keys() else None
     picked_at = row["picked_at"] if "picked_at" in row.keys() else row["created_at"]
     completed_at = row["completed_at"] if "completed_at" in row.keys() else None
-    telemetry = run_telemetry_rollup(conn, row["run_id"])
+    if telemetry is None:
+        telemetry = run_telemetry_rollup(conn, row["run_id"])
     payload: dict[str, Any] = {
         "run_id": row["run_id"],
         "repo": row["repo"],
@@ -5091,7 +5104,6 @@ def show_events(args: argparse.Namespace) -> int:
         """
         select run_id, repo, issue_number, issue_title, phase, status, builder_sprite, builder_slot_id, builder_profile,
                branch, pr_number, pr_url, heartbeat_at, updated_at, worktree_path, picked_at, completed_at, turn_count
-               branch, pr_number, pr_url, heartbeat_at, updated_at, worktree_path, picked_at, completed_at, turn_count
         from runs
         where run_id = ?
         """,
@@ -5133,11 +5145,12 @@ def show_run(args: argparse.Namespace) -> int:
     ).fetchone()
     if row is None:
         raise CmdError(f"unknown run_id: {args.run_id}")
+    telemetry = run_telemetry_rollup(conn, args.run_id)
     print(
         json.dumps(
             {
-                "run": serialize_run_surface(conn, row),
-                "telemetry_samples": run_telemetry_rollup(conn, args.run_id)["samples"],
+                "run": serialize_run_surface(conn, row, telemetry=telemetry),
+                "telemetry_samples": telemetry["samples"],
                 "recent_events": recent_events(conn, args.run_id, args.event_limit),
             }
         )

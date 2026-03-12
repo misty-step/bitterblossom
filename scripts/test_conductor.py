@@ -4841,6 +4841,59 @@ def test_show_metrics_rejects_invalid_window(tmp_path: pathlib.Path) -> None:
         conductor.show_metrics(argparse.Namespace(db=str(tmp_path / "conductor.db"), window="weekly", limit=5))
 
 
+def test_init_db_backfills_completed_at_for_legacy_terminal_runs(tmp_path: pathlib.Path) -> None:
+    db_path = tmp_path / "legacy-conductor.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        create table runs (
+            run_id text primary key,
+            repo text not null,
+            issue_number integer not null,
+            issue_title text not null,
+            phase text not null,
+            status text not null,
+            builder_sprite text,
+            builder_profile text,
+            branch text,
+            pr_number integer,
+            pr_url text,
+            heartbeat_at text,
+            created_at text not null,
+            updated_at text not null
+        )
+        """
+    )
+    conn.execute(
+        """
+        insert into runs (
+            run_id, repo, issue_number, issue_title, phase, status,
+            builder_profile, created_at, updated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "run-legacy-1",
+            "misty-step/bitterblossom",
+            481,
+            "legacy",
+            "merged",
+            "merged",
+            "claude-sonnet",
+            "2026-03-01T10:00:00Z",
+            "2026-03-01T10:15:00Z",
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    upgraded = conductor.open_db(db_path)
+    row = upgraded.execute("select picked_at, completed_at, turn_count from runs where run_id = 'run-legacy-1'").fetchone()
+
+    assert row["picked_at"] == "2026-03-01T10:00:00Z"
+    assert row["completed_at"] == "2026-03-01T10:15:00Z"
+    assert row["turn_count"] == 0
+
+
 def test_show_run_surfaces_workspace_preparation_failure_reason(
     tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
