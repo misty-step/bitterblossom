@@ -4471,6 +4471,14 @@ def run_once(args: argparse.Namespace) -> int:
         )
         return 1
     except WorkspacePreparationError as exc:
+        if merged:
+            record_event(conn, event_log, run_id, "post_merge_warning", {"error": stringify_exc(exc)})
+            return 0
+        if builder_handoff_recorded:
+            # Builder artifact and PR were durably persisted before this error.
+            # Do not overwrite the verified handoff with a false failure.
+            record_event(conn, event_log, run_id, "cleanup_warning", {"error": str(exc)})
+            return 0
         update_run(conn, run_id, phase="failed", status="failed")
         best_effort_issue_comment(
             runner,
