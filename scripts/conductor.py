@@ -2115,6 +2115,20 @@ def ensure_reviewers_ready(runner: Runner, repo: str, reviewers: list[str], prom
         ensure_sprite_ready(runner, reviewer, repo, prompt_template)
 
 
+def has_internal_reviewers(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "reviewer", []))
+
+
+def has_external_review_authority(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "trusted_external_surfaces", []))
+
+
+def ensure_review_source_configured(args: argparse.Namespace) -> None:
+    if has_internal_reviewers(args) or has_external_review_authority(args):
+        return
+    raise CmdError("configure at least one --reviewer or one --trusted-external-surface")
+
+
 def select_worker_slot(
     conn: sqlite3.Connection,
     repo: str,
@@ -4395,6 +4409,7 @@ def govern_pr_flow(
     builder_workspace: str,
 ) -> int:
     builder_template = pathlib.Path(args.builder_template)
+    internal_reviewers = list(getattr(args, "reviewer", []))
     builder = BuilderResult(
         status="ready_for_review",
         branch=branch,
@@ -4456,92 +4471,99 @@ def govern_pr_flow(
 
     while True:
         update_run(conn, run_id, phase="governing")
-        touch_run(
-            conn,
-            args.repo,
-            issue.number,
-            run_id,
-            args.review_timeout * 60 * max(1, len(args.reviewer)) + DEFAULT_LEASE_BUFFER_SECONDS,
-        )
-        reviews = run_review_round(
-            runner,
-            conn,
-            event_log,
-            args.repo,
-            issue,
-            run_id,
-            builder.pr_number,
-            builder.pr_url,
-            args.reviewer,
-            pathlib.Path(args.reviewer_template),
-            args.review_timeout,
-            on_tick=lambda: touch_run(
+        if internal_reviewers:
+            touch_run(
                 conn,
                 args.repo,
                 issue.number,
                 run_id,
-                args.review_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
-            ),
-        )
-
-        best_effort_pr_comment(
-            runner,
-            conn,
-            event_log,
-            run_id,
-            args.repo,
-            builder.pr_number,
-            format_council_comment(reviews),
-            event_type="pr_comment_failed",
-        )
-
-        passes = sum(1 for review in reviews if review.verdict == "pass")
-        blocks = [review for review in reviews if review.verdict == "block"]
-        fixes = [review for review in reviews if review.verdict == "fix"]
-
-        if blocks or passes < args.review_quorum:
-            if review_rounds >= args.max_revision_rounds:
-                update_run(conn, run_id, phase="blocked", status="blocked")
-                record_event(conn, event_log, run_id, "council_blocked", {"reviews": [asdict(review) for review in reviews]})
-                best_effort_issue_comment(
-                    runner,
-                    conn,
-                    event_log,
-                    run_id,
-                    args.repo,
-                    issue.number,
-                    f"Bitterblossom blocked `{run_id}` after review.",
-                    event_type="issue_comment_failed",
-                )
-                return 2
-
-            feedback = summarize_reviews(blocks + fixes)
-            update_run(conn, run_id, phase="revising")
-            record_event(conn, event_log, run_id, "revision_requested", {"feedback": feedback, "reason": "review"})
-            builder = run_builder_turn(
+                args.review_timeout * 60 * max(1, len(internal_reviewers)) + DEFAULT_LEASE_BUFFER_SECONDS,
+            )
+            reviews = run_review_round(
                 runner,
                 conn,
                 event_log,
                 args.repo,
-                worker,
                 issue,
                 run_id,
-                branch,
-                builder_template,
-                args.builder_timeout,
-                workspace=builder_workspace,
-                event_type="builder_revised",
-                feedback=feedback,
-                feedback_source="review",
-                pr_number=builder.pr_number,
-                pr_url=builder.pr_url,
+                builder.pr_number,
+                builder.pr_url,
+                internal_reviewers,
+                pathlib.Path(args.reviewer_template),
+                args.review_timeout,
+                on_tick=lambda: touch_run(
+                    conn,
+                    args.repo,
+                    issue.number,
+                    run_id,
+                    args.review_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
+                ),
             )
-            review_rounds += 1
-            last_pr_feedback_thread_ids = ()
-            continue
 
-        update_run(conn, run_id, phase="ci_wait")
+            best_effort_pr_comment(
+                runner,
+                conn,
+                event_log,
+                run_id,
+                args.repo,
+                builder.pr_number,
+                format_council_comment(reviews),
+                event_type="pr_comment_failed",
+            )
+
+            passes = sum(1 for review in reviews if review.verdict == "pass")
+            blocks = [review for review in reviews if review.verdict == "block"]
+            fixes = [review for review in reviews if review.verdict == "fix"]
+
+            if blocks or passes < args.review_quorum:
+                if review_rounds >= args.max_revision_rounds:
+                    update_run(conn, run_id, phase="blocked", status="blocked")
+                    record_event(
+                        conn,
+                        event_log,
+                        run_id,
+                        "council_blocked",
+                        {"reviews": [asdict(review) for review in reviews]},
+                    )
+                    best_effort_issue_comment(
+                        runner,
+                        conn,
+                        event_log,
+                        run_id,
+                        args.repo,
+                        issue.number,
+                        f"Bitterblossom blocked `{run_id}` after review.",
+                        event_type="issue_comment_failed",
+                    )
+                    return 2
+
+                feedback = summarize_reviews(blocks + fixes)
+                update_run(conn, run_id, phase="revising")
+                record_event(conn, event_log, run_id, "revision_requested", {"feedback": feedback, "reason": "review"})
+                builder = run_builder_turn(
+                    runner,
+                    conn,
+                    event_log,
+                    args.repo,
+                    worker,
+                    issue,
+                    run_id,
+                    branch,
+                    builder_template,
+                    args.builder_timeout,
+                    workspace=builder_workspace,
+                    event_type="builder_revised",
+                    feedback=feedback,
+                    feedback_source="review",
+                    pr_number=builder.pr_number,
+                    pr_url=builder.pr_url,
+                )
+                review_rounds += 1
+                last_pr_feedback_thread_ids = ()
+                continue
+
         touch_run(conn, args.repo, issue.number, run_id, args.ci_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS)
+        update_run(conn, run_id, phase="ci_wait")
         ensure_pr_ready(runner, args.repo, builder.pr_number)
         ok, checks_output = wait_for_pr_checks(
             runner,
@@ -4809,6 +4831,7 @@ def govern_pr_flow(
 
 
 def run_once(args: argparse.Namespace) -> int:
+    ensure_review_source_configured(args)
     runner = Runner(ROOT)
     conn = open_db(pathlib.Path(args.db))
     event_log = pathlib.Path(args.event_log)
@@ -4871,8 +4894,9 @@ def run_once(args: argparse.Namespace) -> int:
             f"Bitterblossom lease acquired for `{run_id}`.",
             event_type="issue_comment_failed",
         )
-        ensure_reviewers_ready(runner, args.repo, args.reviewer, pathlib.Path(args.reviewer_template))
-        record_event(conn, event_log, run_id, "reviewers_ready", {"reviewers": args.reviewer})
+        if has_internal_reviewers(args):
+            ensure_reviewers_ready(runner, args.repo, args.reviewer, pathlib.Path(args.reviewer_template))
+            record_event(conn, event_log, run_id, "reviewers_ready", {"reviewers": args.reviewer})
         reap_terminal_worker_slots(conn, args.repo, args.worker)
         worker_slot = select_worker_slot(
             conn,
@@ -5049,6 +5073,7 @@ def run_once(args: argparse.Namespace) -> int:
 
 
 def govern_pr(args: argparse.Namespace) -> int:
+    ensure_review_source_configured(args)
     runner = Runner(ROOT)
     conn = open_db(pathlib.Path(args.db))
     event_log = pathlib.Path(args.event_log)
@@ -5559,7 +5584,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         p.add_argument("--db", default=str(DEFAULT_DB))
         p.add_argument("--event-log", default=str(DEFAULT_EVENT_LOG))
         p.add_argument("--worker", action="append", required=True, help="Builder worker or worker:slots")
-        p.add_argument("--reviewer", action="append", required=True)
+        p.add_argument(
+            "--reviewer",
+            action="append",
+            default=[],
+            help="Reviewer sprite. Required unless --trusted-external-surface is configured.",
+        )
         p.add_argument("--issue", type=int)
         p.add_argument("--label", default=DEFAULT_LABEL)
         p.add_argument("--limit", type=int, default=25)

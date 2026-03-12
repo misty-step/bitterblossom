@@ -105,9 +105,34 @@ python3 scripts/conductor.py govern-pr \
   --reviewer council-thorn-20260306
 ```
 
+Run with external review authority only, without reviewer sprites:
+
+```bash
+python3 scripts/conductor.py run-once \
+  --repo misty-step/bitterblossom \
+  --issue 494 \
+  --worker noble-blue-serpent \
+  --trusted-external-surface Cerberus
+```
+
+Adopt a known PR in external-authority mode:
+
+```bash
+python3 scripts/conductor.py govern-pr \
+  --repo misty-step/bitterblossom \
+  --issue 494 \
+  --pr-number 495 \
+  --worker noble-blue-serpent \
+  --trusted-external-surface Cerberus
+```
+
 `--trusted-external-surface` is exact, not substring-based. Use exact status
 context names such as `CodeRabbit` / `Greptile Review`, or an exact workflow
 name such as `Cerberus` when you want to wait on a whole check-run family.
+
+Configure at least one review source for every run: one or more `--reviewer`
+sprites, one or more `--trusted-external-surface` values, or both. If trusted
+external surfaces are configured, reviewer sprites are optional.
 
 `--pr-minimum-age-seconds` delays governance until a PR is old enough for async
 review surfaces to show up. After review and CI go green, governance also runs
