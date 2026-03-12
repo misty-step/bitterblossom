@@ -2,30 +2,36 @@
 
 ## Status
 
-The core hardening is already implemented (PRs #549 and #555):
-- `_mirror_locks` / `_mirror_lock()` — Python-level per-(sprite, mirror) serialization
-- `prepare_run_workspace` with `WORKSPACE_PREP_RETRIES=2` retry policy
-- `cleanup_builder_workspace` records `workspace_cleanup_failed` + `surviving_path`
-- `show-runs` / `show-run` expose `worktree_path` in JSON output
-- `docs/CONDUCTOR.md` documents all of the above under "Worktree Lifecycle and Serialization"
+The core hardening is already in master (PR #545):
+- Bash-level `flock` per-repo mirror lock serializing fetch, worktree add/remove, and prune
+- `prepare_run_workspace_with_retry` with 3 attempts and explicit `workspace_preparation_failed` events
+- `cleanup_builder_workspace` records `cleanup_warning` + preserves `worktree_path` for operator recovery
+- `show-runs` / `show-run` expose `worktree_path` and `worktree_recovery_*` fields
+- `docs/CONDUCTOR.md` documents worktree lifecycle semantics and operator recovery
 
 ## Gap Identified
 
-No test covers the cross-operation lock contention case: a concurrent
-`prepare_run_workspace` and `cleanup_run_workspace` hitting the same
-`_mirror_lock`. Existing tests cover prepare+prepare and cleanup bash-side flock,
-but not the Python-level lock shared between prepare and cleanup.
+No test explicitly verified the cross-operation lock contention case: that
+`cleanup_run_workspace` must wait when the per-repo mirror lock is held by a
+concurrent `prepare_run_workspace` (or any other mirror mutation). The existing
+tests covered prepare+external-lock-holder and cleanup+lock-timeout, but not
+the symmetric case that proves cleanup and prepare share and respect the same flock.
 
 ## Steps
 
 - [x] Audit existing implementation and tests
-- [x] Add `test_cleanup_run_workspace_serializes_with_prepare` to `test_conductor.py`
-- [x] Run `python3 -m pytest -q scripts/test_conductor.py -k "worktree or workspace or cleanup"`
+- [x] Add `test_cleanup_run_workspace_waits_for_lock_release` to `scripts/test_conductor.py`
+- [x] Run `python3 -m pytest -q scripts/test_conductor.py -k "worktree or workspace or cleanup"` — 36 passed
+- [x] Run full `python3 -m pytest -q scripts/test_conductor.py` — 237 passed
 - [x] Push branch, open draft PR with `Closes #538`
 - [x] Write builder artifact
 
 ## Review
 
-- Targeted pytest (`worktree or workspace or cleanup`) and the full `scripts/test_conductor.py` suite passed in the builder lane.
-- Initial review found that the first draft of the cross-operation serialization test could pass vacuously without proving cleanup actually contended for the shared lock.
-- This branch now tightens the synchronization so cleanup must demonstrably block on the shared mirror lock before prepare is released, and it asserts thread completion plus cleanup execution.
+- New test `test_cleanup_run_workspace_waits_for_lock_release` reuses the `_init_local_worktree_mirror`,
+  `_install_flock_shim`, `_local_sprite_bash`, and `_hold_lock` helpers already in place for the
+  prepare+lock tests.
+- Cleanup first creates a real worktree via prepare, then a lock holder simulates a concurrent
+  prepare on the same sprite mirror. Cleanup must demonstrably block for ≥1 second before the
+  lock holder releases and cleanup completes.
+- All 237 tests pass.

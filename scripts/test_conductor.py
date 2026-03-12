@@ -8004,6 +8004,54 @@ def test_show_runs_includes_worktree_path(tmp_path: pathlib.Path, capsys: pytest
 # ---------------------------------------------------------------------------
 
 
+def test_cleanup_run_workspace_waits_for_lock_release(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """cleanup_run_workspace serializes with prepare via the shared per-repo flock.
+
+    Both prepare and cleanup acquire the same mirror.lock file.  When a
+    concurrent prepare (or any other mirror mutation) holds the lock,
+    cleanup must block rather than race against it.
+    """
+    mirror = _init_local_worktree_mirror(tmp_path)
+    bin_dir = _install_flock_shim(tmp_path)
+    lockfile = mirror / ".bb" / "conductor" / "mirror.lock"
+    lockfile.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(conductor, "repo_dir", lambda _repo: str(mirror))
+    monkeypatch.setattr(
+        conductor,
+        "run_workspace",
+        lambda _repo, run_id, lane: str(tmp_path / ".bb" / "conductor" / run_id / f"{lane}-worktree"),
+    )
+    monkeypatch.setattr(conductor, "sprite_bash", _local_sprite_bash(bin_dir))
+
+    # Create the worktree first so cleanup has something to remove.
+    workspace = conductor.prepare_run_workspace(
+        object(),
+        "noble-blue-serpent",
+        "misty-step/bitterblossom",
+        "run-480-1",
+        "builder",
+    )
+    assert pathlib.Path(workspace).exists()
+
+    # Hold the lock (simulating a concurrent prepare or fetch on the same sprite mirror).
+    holder = _hold_lock(lockfile, hold_seconds=1.2, bin_dir=bin_dir)
+    try:
+        started = time.monotonic()
+        conductor.cleanup_run_workspace(
+            object(),
+            "noble-blue-serpent",
+            "misty-step/bitterblossom",
+            "run-480-1",
+            "builder",
+        )
+    finally:
+        holder.wait(timeout=5)
+
+    assert time.monotonic() - started >= 1.0
+
+
 def test_cleanup_builder_workspace_records_cleanup_warning_on_error(
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
