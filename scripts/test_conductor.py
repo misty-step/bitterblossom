@@ -1943,6 +1943,7 @@ def test_run_review_round_records_workspace_cleanup_failed_for_reviewer_cleanup_
     ).fetchall()
     assert [row["event_type"] for row in events] == ["review_complete", "workspace_cleanup_failed"]
     payload = json.loads(events[-1]["payload_json"])
+    assert payload["error"] == "stale worktree"
     assert payload["reviewer"] == "fern"
     assert payload["surviving_path"] == conductor.run_workspace("misty-step/bitterblossom", "run-447-1", "review-fern")
     assert "cleanup_warning" not in [row["event_type"] for row in events]
@@ -6042,6 +6043,60 @@ def test_prepare_run_workspace_serializes_overlapping_calls(monkeypatch: pytest.
     assert len(results) == 2
     # The lock guarantees at most one call to _prepare_run_workspace_once at a time
     assert max_concurrent == 1, f"lock did not serialize: max_concurrent={max_concurrent}"
+
+
+def test_prepare_run_workspace_does_not_serialize_different_sprites(monkeypatch: pytest.MonkeyPatch) -> None:
+    import threading as _threading
+
+    active_count = 0
+    max_concurrent = 0
+    active_mu = _threading.Lock()
+    entered = _threading.Event()
+    release = _threading.Event()
+
+    def fake_prepare_once(_runner: object, _sprite: str, _mirror: str, workspace: str) -> str:
+        nonlocal active_count, max_concurrent
+        with active_mu:
+            active_count += 1
+            max_concurrent = max(max_concurrent, active_count)
+            if active_count == 2:
+                entered.set()
+        release.wait(timeout=2)
+        with active_mu:
+            active_count -= 1
+        return workspace
+
+    monkeypatch.setattr(conductor, "_prepare_run_workspace_once", fake_prepare_once)
+
+    results: dict[str, str] = {}
+    errors: list[Exception] = []
+
+    def call_prepare(sprite: str, name: str) -> None:
+        try:
+            results[name] = conductor.prepare_run_workspace(
+                object(),
+                sprite,
+                "misty-step/bitterblossom",
+                f"run-538-{name}",
+                "builder",
+            )
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    thread_a = _threading.Thread(target=call_prepare, args=("noble-blue-serpent", "a"))
+    thread_b = _threading.Thread(target=call_prepare, args=("fern", "b"))
+    thread_a.start()
+    thread_b.start()
+
+    assert entered.wait(timeout=1), "different sprites should not share the same in-process mirror lock"
+    release.set()
+    thread_a.join(timeout=5)
+    thread_b.join(timeout=5)
+
+    assert not errors, errors
+    assert max_concurrent == 2
+    assert results["a"].endswith("run-538-a/builder-worktree")
+    assert results["b"].endswith("run-538-b/builder-worktree")
 
 
 def test_prepare_run_workspace_releases_lock_before_retry_sleep(monkeypatch: pytest.MonkeyPatch) -> None:

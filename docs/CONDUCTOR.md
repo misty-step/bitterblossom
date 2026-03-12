@@ -298,7 +298,7 @@ The shared checkout stays warm for fetches and object reuse, but the conductor n
 
 Mirror mutation — `git fetch`, `git worktree add/remove`, `git worktree prune` — is serialized at two levels:
 
-1. **Python-level lock**: a `threading.Lock` per `(sprite, repo)` pair serializes calls within a single conductor process. This protects reviewer and builder lanes that happen to use the same sprite concurrently.
+1. **Python-level lock**: a `threading.Lock` per `(sprite, mirror)` pair serializes calls within a single conductor process. This protects reviewer and builder lanes that happen to use the same sprite concurrently without stalling independent sprites that have their own mirrors.
 2. **Filesystem flock**: the bash script wraps all git mirror operations in `flock --exclusive` on a `.conductor_lock` file inside the mirror directory. This serializes concurrent *processes* (e.g., two supervisors running against the same sprite).
 
 **Prepare retries**: `prepare_run_workspace` retries up to `WORKSPACE_PREP_RETRIES` times (default 2) on transient `CmdError`. A run that cannot prepare its workspace after all retries fails with an explicit `workspace preparation failed after N attempts: <root cause>` message rather than leaving ambiguous state.

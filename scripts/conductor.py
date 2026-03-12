@@ -53,17 +53,18 @@ INACTIVE_FINDING_STATUSES = {"addressed", "deferred", "rejected", "duplicate"}
 WORKSPACE_PREP_RETRIES = 2
 WORKSPACE_PREP_RETRY_DELAY_SECONDS = 5
 
-# Per-mirror locks to serialize mirror mutation within a process.
+# Per-(sprite, mirror) locks to serialize mirror mutation within a process.
 # Cross-process serialization is handled by flock on the sprite filesystem.
 _mirror_locks: dict[str, threading.Lock] = {}
 _mirror_locks_mu = threading.Lock()
 
 
-def _mirror_lock(mirror: str) -> threading.Lock:
+def _mirror_lock(sprite: str, mirror: str) -> threading.Lock:
+    key = f"{sprite}:{mirror}"
     with _mirror_locks_mu:
-        if mirror not in _mirror_locks:
-            _mirror_locks[mirror] = threading.Lock()
-        return _mirror_locks[mirror]
+        if key not in _mirror_locks:
+            _mirror_locks[key] = threading.Lock()
+        return _mirror_locks[key]
 
 
 @dataclass(slots=True)
@@ -798,7 +799,7 @@ def prepare_run_workspace(runner: Runner, sprite: str, repo: str, run_id: str, l
     last_exc: CmdError | None = None
     for attempt in range(1 + WORKSPACE_PREP_RETRIES):
         try:
-            with _mirror_lock(mirror):
+            with _mirror_lock(sprite, mirror):
                 return _prepare_run_workspace_once(runner, sprite, mirror, workspace)
         except CmdError as exc:
             last_exc = exc
@@ -826,7 +827,7 @@ def cleanup_run_workspace(runner: Runner, sprite: str, repo: str, run_id: str, l
             ') 9>>"$lock_file"',
         ]
     )
-    with _mirror_lock(mirror):
+    with _mirror_lock(sprite, mirror):
         sprite_bash(runner, sprite, script, timeout=180)
 
 
@@ -3050,7 +3051,7 @@ def run_review_round(
                     run_id,
                     "workspace_cleanup_failed",
                     {
-                        "error": f"reviewer workspace cleanup failed for {reviewer}: {stringify_exc(exc)}",
+                        "error": stringify_exc(exc),
                         "reviewer": reviewer,
                         "surviving_path": workspace,
                     },
