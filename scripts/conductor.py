@@ -810,6 +810,52 @@ def load_worker_slots(conn: sqlite3.Connection, repo: str, workers: list[str]) -
     )
 
 
+def worker_slot_payload(slot: WorkerSlot | None, *, worker: str, slot_index: int) -> dict[str, Any]:
+    if slot is None:
+        return {
+            "id": None,
+            "worker": worker,
+            "slot_index": slot_index,
+            "state": WORKER_SLOT_ACTIVE,
+            "consecutive_failures": 0,
+            "current_run_id": None,
+            "last_probe_at": None,
+            "last_error": None,
+            "updated_at": None,
+        }
+    return {
+        "id": slot.id,
+        "worker": slot.worker,
+        "slot_index": slot.slot_index,
+        "state": slot.state,
+        "consecutive_failures": slot.consecutive_failures,
+        "current_run_id": slot.current_run_id,
+        "last_probe_at": slot.last_probe_at,
+        "last_error": slot.last_error,
+        "updated_at": slot.updated_at,
+    }
+
+
+def configured_worker_slot_payloads(
+    conn: sqlite3.Connection,
+    repo: str,
+    workers: list[str],
+) -> list[dict[str, Any]]:
+    capacities = worker_capacities(workers)
+    persisted = {(slot.worker, slot.slot_index): slot for slot in load_worker_slots(conn, repo, workers)}
+    payloads: list[dict[str, Any]] = []
+    for worker, slots in capacities.items():
+        for slot_index in range(1, slots + 1):
+            payloads.append(
+                worker_slot_payload(
+                    persisted.get((worker, slot_index)),
+                    worker=worker,
+                    slot_index=slot_index,
+                )
+            )
+    return payloads
+
+
 def seed_worker_slots(conn: sqlite3.Connection, repo: str, workers: list[str]) -> None:
     ts = now_utc()
     for worker, slots in worker_capacities(workers).items():
@@ -1277,7 +1323,11 @@ def select_worker_slot(
                 last_error = f"{slot.worker} slot {slot.slot_index} drained after repeated failures: {last_error}"
             continue
         record_worker_probe_success(conn, slot.id)
-        assign_worker_slot(conn, slot.id, run_id)
+        try:
+            assign_worker_slot(conn, slot.id, run_id)
+        except CmdError as exc:
+            last_error = stringify_exc(exc)
+            continue
         refreshed = conn.execute(
             """
             select id, repo, worker, slot_index, state, consecutive_failures, current_run_id, last_probe_at, last_error, updated_at
@@ -1288,18 +1338,7 @@ def select_worker_slot(
         ).fetchone()
         if refreshed is None:
             raise CmdError(f"selected worker slot disappeared for {slot.worker}")
-        return WorkerSlot(
-            id=int(refreshed["id"]),
-            repo=str(refreshed["repo"]),
-            worker=str(refreshed["worker"]),
-            slot_index=int(refreshed["slot_index"]),
-            state=str(refreshed["state"]),
-            consecutive_failures=int(refreshed["consecutive_failures"]),
-            current_run_id=str(refreshed["current_run_id"]) if refreshed["current_run_id"] is not None else None,
-            last_probe_at=str(refreshed["last_probe_at"]) if refreshed["last_probe_at"] is not None else None,
-            last_error=str(refreshed["last_error"]) if refreshed["last_error"] is not None else None,
-            updated_at=str(refreshed["updated_at"]),
-        )
+        return WorkerSlot.from_row(refreshed)
     raise CmdError(f"no available worker in {workers}: {last_error}")
 
 
@@ -3985,8 +4024,8 @@ def loop(args: argparse.Namespace) -> int:
 
 def show_workers(args: argparse.Namespace) -> int:
     conn = open_db(pathlib.Path(args.db))
-    slots = load_worker_slots(conn, args.repo, args.worker)
-    active_assignments = sum(1 for slot in slots if slot.current_run_id)
+    slots = configured_worker_slot_payloads(conn, args.repo, args.worker)
+    active_assignments = sum(1 for slot in slots if slot["current_run_id"])
     recent_actions = conn.execute(
         """
         select events.run_id, events.event_type, events.payload_json, events.created_at
@@ -4004,20 +4043,7 @@ def show_workers(args: argparse.Namespace) -> int:
         "target_concurrency": args.desired_concurrency,
         "active_assignments": active_assignments,
         "backfill_needed": max(0, args.desired_concurrency - active_assignments),
-        "slots": [
-            {
-                "id": slot.id,
-                "worker": slot.worker,
-                "slot_index": slot.slot_index,
-                "state": slot.state,
-                "consecutive_failures": slot.consecutive_failures,
-                "current_run_id": slot.current_run_id,
-                "last_probe_at": slot.last_probe_at,
-                "last_error": slot.last_error,
-                "updated_at": slot.updated_at,
-            }
-            for slot in slots
-        ],
+        "slots": slots,
         "recent_replacement_actions": [format_event_row(row) for row in recent_actions],
     }
     print(json.dumps(payload))

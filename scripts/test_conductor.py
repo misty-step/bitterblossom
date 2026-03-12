@@ -1885,6 +1885,40 @@ def test_select_worker_slot_drains_after_repeated_probe_failures(tmp_path: pathl
     assert second.state == "drained"
 
 
+def test_select_worker_slot_continues_after_assignment_conflict(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    conductor.seed_worker_slots(conn, "misty-step/bitterblossom", ["fern:2"])
+    slots = conductor.load_worker_slots(conn, "misty-step/bitterblossom", ["fern:2"])
+    real_assign = conductor.assign_worker_slot
+    assign_calls: list[int] = []
+
+    monkeypatch.setattr(conductor, "probe_sprite_readiness", lambda *_args, **_kwargs: None)
+
+    def flaky_assign(conn_: sqlite3.Connection, slot_id: int, run_id: str) -> None:
+        assign_calls.append(slot_id)
+        if len(assign_calls) == 1:
+            raise conductor.CmdError(f"worker slot {slot_id} is no longer available")
+        real_assign(conn_, slot_id, run_id)
+
+    monkeypatch.setattr(conductor, "assign_worker_slot", flaky_assign)
+
+    slot = conductor.select_worker_slot(
+        conn,
+        "misty-step/bitterblossom",
+        ["fern:2"],
+        pathlib.Path("scripts/prompts/conductor-builder-template.md"),
+        "run-55",
+    )
+
+    assert assign_calls == [slots[0].id, slots[1].id]
+    assert slot.id == slots[1].id
+    assert slot.slot_index == 2
+    assert slot.current_run_id == "run-55"
+
+
 class _RunnerSpy:
     def __init__(self, responses: list[str] | None = None) -> None:
         self.responses = responses or []
@@ -3113,6 +3147,33 @@ def test_show_workers_reports_slot_health_assignments_and_backfill(
     assert len(payload["slots"]) == 2
     assert payload["slots"][0]["current_run_id"] == "run-447-1"
     assert payload["recent_replacement_actions"][0]["event_type"] == "worker_slot_drained"
+
+
+def test_show_workers_reports_configured_slots_on_fresh_db(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rc = conductor.show_workers(
+        argparse.Namespace(
+            db=str(tmp_path / "conductor.db"),
+            repo="misty-step/bitterblossom",
+            worker=["fern:2", "sage"],
+            desired_concurrency=2,
+            event_limit=5,
+        )
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["active_assignments"] == 0
+    assert payload["backfill_needed"] == 2
+    assert [(slot["worker"], slot["slot_index"]) for slot in payload["slots"]] == [
+        ("fern", 1),
+        ("fern", 2),
+        ("sage", 1),
+    ]
+    assert all(slot["id"] is None for slot in payload["slots"])
+    assert all(slot["state"] == conductor.WORKER_SLOT_ACTIVE for slot in payload["slots"])
 
 
 def test_reset_worker_slots_restores_drained_capacity(
