@@ -55,3 +55,11 @@
 - scope: split the conductor into an explicit builder handoff plus governor adoption path, added a minimum-age merge freshness gate, and forced one final polish pass before merge
 - blocker: none
 - pattern: when one loop owns both production and governance, carve out the adoption boundary in persisted state first so delayed-merge policy can evolve without forking the ledger
+
+## 2026-03-11 [issue #482](https://github.com/misty-step/bitterblossom/issues/482)
+
+- predicted: M
+- actual: M
+- scope: replaced the unsupported `nohup` coordinator story with one repo-owned supervisor script, a reboot launcher contract, bounded local log rotation, and explicit operator docs
+- blocker: none
+- pattern: when "always-on" behavior matters, ship a narrow supported runtime contract in code and docs instead of leaving operators to improvise shell folklore

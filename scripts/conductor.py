@@ -814,6 +814,12 @@ def check_env(args: argparse.Namespace) -> int:  # noqa: ARG001
     else:
         failed.append(("sprite", "not found in PATH — install from https://sprites.dev/docs/cli"))
 
+    crontab_path = shutil.which("crontab")
+    if crontab_path:
+        passed.append(f"crontab: {crontab_path}")
+    else:
+        failed.append(("crontab", "not found in PATH — required for coordinator reboot bootstrap"))
+
     for item in passed:
         print(f"  ok  {item}")
     for name, fix in failed:

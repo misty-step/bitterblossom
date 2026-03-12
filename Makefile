@@ -1,4 +1,4 @@
-.PHONY: build test lint clean test-python lint-python conductor-check
+.PHONY: build test lint clean test-python lint-python conductor-check conductor-start conductor-install-cron conductor-status conductor-stop
 
 BINARY := bb
 BIN_DIR := bin
@@ -21,10 +21,22 @@ clean:
 	rm -rf $(BIN_DIR)
 
 test-python:
-	python3 -m pytest -q base/hooks scripts/test_conductor.py
+	python3 -m pytest -q base/hooks scripts/test_conductor.py scripts/test_conductor_supervise.py
 
 lint-python:
-	ruff check base/hooks scripts/conductor.py scripts/test_conductor.py
+	ruff check base/hooks scripts/conductor.py scripts/test_conductor.py scripts/test_conductor_supervise.py
 
 conductor-check:
 	python3 scripts/conductor.py check-env
+
+conductor-start:
+	./scripts/conductor-supervise.sh start $(CONDUCTOR_SUPERVISOR_ARGS)
+
+conductor-install-cron:
+	./scripts/conductor-supervise.sh install-cron $(CONDUCTOR_SUPERVISOR_ARGS)
+
+conductor-status:
+	./scripts/conductor-supervise.sh status
+
+conductor-stop:
+	./scripts/conductor-supervise.sh stop

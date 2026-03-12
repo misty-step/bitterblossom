@@ -2976,6 +2976,7 @@ def test_check_env_fails_when_tools_missing(monkeypatch: pytest.MonkeyPatch, tmp
     err = capsys.readouterr().err
     assert "gh" in err
     assert "sprite" in err
+    assert "crontab" in err
 
 
 def test_loop_continues_on_failure_in_backlog_mode(monkeypatch: pytest.MonkeyPatch) -> None:
