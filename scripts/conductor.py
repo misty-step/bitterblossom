@@ -1437,6 +1437,21 @@ def persist_review_wave_review(
         conn.commit()
 
 
+def duplicate_finding_identity_filter(finding: ReviewFinding) -> tuple[str, list[Any]]:
+    if finding.source_kind == "pr_review_thread":
+        # A live PR thread should remain authoritative across scans until that same
+        # thread closes; only other threads or review artifacts collapse into it.
+        return "and not (source_kind = ? and source_id = ?)", [finding.source_kind, finding.source_id]
+
+    # Review artifacts default source_id to the fingerprint when the reviewer does
+    # not provide a stable id, so excluding only source_kind/source_id would erase
+    # legitimate cross-reviewer dedupe inside one wave.
+    return (
+        "and not (wave_id = ? and reviewer = ? and source_kind = ? and source_id = ?)",
+        [finding.wave_id, finding.reviewer, finding.source_kind, finding.source_id],
+    )
+
+
 def has_prior_active_duplicate_finding(conn: sqlite3.Connection, finding: ReviewFinding) -> bool:
     query = """
         select 1
@@ -1446,12 +1461,9 @@ def has_prior_active_duplicate_finding(conn: sqlite3.Connection, finding: Review
           and status not in ('addressed', 'deferred', 'rejected', 'duplicate')
     """
     params: list[Any] = [finding.run_id, finding.fingerprint]
-    if finding.source_kind == "pr_review_thread":
-        query += "\n          and not (source_kind = ? and source_id = ?)"
-        params.extend([finding.source_kind, finding.source_id])
-    else:
-        query += "\n          and not (wave_id = ? and reviewer = ? and source_kind = ? and source_id = ?)"
-        params.extend([finding.wave_id, finding.reviewer, finding.source_kind, finding.source_id])
+    filter_sql, filter_params = duplicate_finding_identity_filter(finding)
+    query += f"\n          {filter_sql}"
+    params.extend(filter_params)
     query += "\n        limit 1"
     prior = conn.execute(query, tuple(params)).fetchone()
     return prior is not None
@@ -1480,6 +1492,32 @@ def record_review_wave_event(
     if extra:
         payload.update(extra)
     record_event(conn, event_log, run_id, event_type, payload)
+
+
+def complete_review_wave(
+    conn: sqlite3.Connection,
+    event_log: pathlib.Path,
+    run_id: str,
+    wave_id: int,
+    status: str,
+    *,
+    extra: dict[str, Any] | None = None,
+    preserve_primary_error: bool = False,
+) -> None:
+    try:
+        finish_review_wave(conn, wave_id, status)
+        record_review_wave_event(
+            conn,
+            event_log,
+            run_id,
+            wave_id,
+            "review_wave_completed",
+            extra=extra,
+        )
+    except Exception as exc:  # noqa: BLE001
+        if not preserve_primary_error:
+            raise
+        print(f"warning: failed to record review wave completion for wave {wave_id}: {exc}", file=sys.stderr)
 
 
 def persist_review_findings(conn: sqlite3.Connection, findings: list[ReviewFinding], *, commit: bool = True) -> None:
@@ -2784,6 +2822,7 @@ def run_review_round(
     on_tick: Callable[[], None] | None = None,
 ) -> list[ReviewResult]:
     reviews: dict[str, ReviewResult] = {}
+    ordered_reviews: list[ReviewResult] = []
     prepared_reviewers: list[str] = []
     wave_id = start_review_wave(
         conn,
@@ -2829,24 +2868,23 @@ def run_review_round(
             on_tick=on_tick,
         )
         ordered_reviews = [reviews[reviewer] for reviewer in reviewers]
-        finish_review_wave(conn, wave_id, "completed")
-        record_review_wave_event(
+        complete_review_wave(
             conn,
             event_log,
             run_id,
             wave_id,
-            "review_wave_completed",
+            "completed",
             extra={"reviews_recorded": len(ordered_reviews)},
         )
     except Exception:
-        finish_review_wave(conn, wave_id, "partial" if reviews else "failed")
-        record_review_wave_event(
+        complete_review_wave(
             conn,
             event_log,
             run_id,
             wave_id,
-            "review_wave_completed",
+            "partial" if reviews else "failed",
             extra={"reviews_recorded": len(reviews)},
+            preserve_primary_error=True,
         )
         raise
     finally:
@@ -3356,13 +3394,12 @@ def govern_pr_flow(
                     "quiet_window_seconds": external_review_quiet_window,
                 },
             )
-            finish_review_wave(conn, wave_id, "settled" if ext_ok else "failed")
-            record_review_wave_event(
+            complete_review_wave(
                 conn,
                 event_log,
                 run_id,
                 wave_id,
-                "review_wave_completed",
+                "settled" if ext_ok else "failed",
                 extra={
                     "trusted_surfaces": trusted_surfaces,
                     "quiet_window_seconds": external_review_quiet_window,

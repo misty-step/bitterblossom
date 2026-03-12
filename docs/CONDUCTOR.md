@@ -311,6 +311,16 @@ Council artifact writes are atomic at the storage boundary: the compatibility sn
 
 That split keeps merge policy and GitHub thread mechanics out of the storage contract. Future governance changes can reason over the ledger without losing prior review history.
 
+### Migration Note: Trusted Duplicate Threads
+
+Issue [#500](https://github.com/misty-step/bitterblossom/issues/500) changes one trusted-review behavior deliberately: if a trusted PR thread restates a finding that is already active in the review ledger, the new thread finding is recorded as `duplicate` instead of reopening the full governance loop by itself.
+
+Operator verification:
+
+- inspect `show-events` for the matching `review_wave_completed` PR-thread scan event
+- inspect `review_findings` or run acceptance-focused tests to confirm the repeated thread is stored as `duplicate`
+- monitor runs that used to reopen on trusted restatements and confirm they now reopen only for genuinely novel or still-unresolved threads
+
 ## Blocked Runs
 
 A run exits with `rc=2` (blocked) when the conductor cannot proceed without human input — examples:
