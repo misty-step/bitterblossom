@@ -63,3 +63,27 @@
 - scope: split the conductor into an explicit builder handoff plus governor adoption path, added a minimum-age merge freshness gate, and forced one final polish pass before merge
 - blocker: none
 - pattern: when one loop owns both production and governance, carve out the adoption boundary in persisted state first so delayed-merge policy can evolve without forking the ledger
+
+## 2026-03-12 [issue #480](https://github.com/misty-step/bitterblossom/issues/480)
+
+- predicted: L
+- actual: M
+- scope: added slot-aware worker capacity state to the conductor ledger, preserved the legacy single-slot routing seam for existing lanes, and shipped an operator-visible `show-workers` surface instead of inventing a separate dashboard
+- blocker: true concurrent repo backfill remains a follow-up because the current conductor loop still executes one lane per process
+- pattern: when a scheduler needs more depth, first persist the capacity model and operator truth in the existing control plane before attempting concurrent orchestration
+
+## 2026-03-11 [issue #500](https://github.com/misty-step/bitterblossom/issues/500)
+
+- predicted: L
+- actual: M
+- scope: extended duplicate suppression from PR-thread-only handling to all review findings and emitted explicit review-wave events so settlement becomes inspectable from the run store
+- blocker: none
+- pattern: if convergence is part of the product contract, record it directly in the ledger and event stream instead of inferring it from helper control flow
+
+## 2026-03-11 [issue #482](https://github.com/misty-step/bitterblossom/issues/482)
+
+- predicted: M
+- actual: M
+- scope: replaced the unsupported `nohup` coordinator story with one repo-owned supervisor script, a reboot launcher contract, bounded local log rotation, and explicit operator docs
+- blocker: none
+- pattern: when "always-on" behavior matters, ship a narrow supported runtime contract in code and docs instead of leaving operators to improvise shell folklore

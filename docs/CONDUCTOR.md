@@ -27,8 +27,11 @@ Remote run artifacts live on the worker sprite under:
 - `${WORKSPACE}/.bb/conductor/<run_id>/review-<sprite>.json`
 
 Before builder or reviewer dispatch, the conductor probes sprite readiness with
-`bb dispatch --dry-run`. Builder selection is probe-only: unhealthy workers are
-skipped immediately so the conductor can fall through the pool quickly. Reviewer
+`bb dispatch --dry-run`. Builder workers are now modeled as logical slots:
+`--worker fern:2 --worker sage` means two builder slots on `fern` and one on
+`sage`. Unhealthy builder slots accrue probe failures in SQLite and drain
+themselves after repeated failures so the conductor falls through to healthy
+capacity instead of retrying the same broken slot immediately. Reviewer
 readiness is stricter: if a probe fails, the conductor attempts one forced
 repair with `bb setup <sprite> --repo <owner/repo> --force`, then re-probes.
 Runs fail fast before builder work if the reviewer pool cannot be made
@@ -139,13 +142,35 @@ Inspect runs:
 python3 scripts/conductor.py show-runs --limit 20
 python3 scripts/conductor.py show-run --run-id run-450-1772813415
 python3 scripts/conductor.py show-events --run-id run-450-1772813415
+python3 scripts/conductor.py show-workers \
+  --repo misty-step/bitterblossom \
+  --worker noble-blue-serpent:2 \
+  --worker moss \
+  --desired-concurrency 2
+python3 scripts/conductor.py reset-worker-slots \
+  --repo misty-step/bitterblossom \
+  --worker noble-blue-serpent \
+  --worker moss
 ```
 
 `show-runs` emits one JSON object per run. The operator contract is that each row includes the current `phase` and `status`, the raw `heartbeat_at` timestamp, a computed `heartbeat_age_seconds`, and when applicable a `blocking_reason` plus the source `blocking_event_type`.
 
-`show-events` emits one JSON object for the requested run with a `run` metadata envelope, `latest_event_type`, `latest_event_at`, and an `events` array. Use it when you need recent event context without joining SQLite tables by hand.
+`show-events` emits one JSON object for the requested run with a `run` metadata envelope, `latest_event_type`, `latest_event_at`, and an `events` array. Review convergence is now explicit in that stream: `review_wave_started`, `review_wave_completed`, and `external_review_wait_complete` events let operators inspect when a council round began, when a PR-thread scan or external-review wait settled, and why governance advanced or stopped.
 
 `show-run` is the narrower single-run inspection surface: it returns the same run metadata together with a `recent_events` array keyed by `run_id`.
+
+`show-workers` is the worker-pool admin surface. It returns slot-level health,
+current assignments, computed backfill demand against `--desired-concurrency`,
+and recent slot-drain / selection events so operators can see which capacity is
+healthy before touching sprites manually. On a fresh database it still reports
+the configured slots from `--worker ...` even before any run has materialized
+those slot rows in SQLite, so the inspection surface stays truthful without
+seeding state as a side effect.
+
+`reset-worker-slots` is the recovery surface for drained capacity. It resets the
+matching workers back to `active`, clears probe failures, and removes stale
+slot assignment state so transient probe failures do not strand worker capacity
+forever.
 
 ## Acceptance Proof
 
@@ -154,13 +179,13 @@ Issue [#102](https://github.com/misty-step/bitterblossom/issues/102) is the boun
 Run the acceptance-focused regression slice first:
 
 ```bash
-python3 -m pytest -q scripts/test_conductor.py -k 'acceptance_trace_bullet_run or duplicate_trusted_findings or low_severity_nit or novel_high_severity'
+python3 -m pytest -q scripts/test_conductor.py -k 'acceptance_trace_bullet_run or duplicate_fingerprint or low_severity_nit or novel_high_severity or trusted_thread'
 ```
 
 Expected:
 
 - the trace bullet path reaches `merged`
-- duplicate findings across review surfaces are recorded without reopening the loop
+- duplicate findings across reviewers, review waves, and trusted PR-thread surfaces are recorded without reopening the loop
 - late low-severity nits are recorded without reopening the loop
 - late novel high-severity findings still reopen the loop
 
@@ -192,6 +217,7 @@ The acceptance run is only valid if the operator surfaces expose the full path:
 - lease acquired
 - builder handoff (`phase=awaiting_governance`)
 - governance freshness wait / adoption
+- explicit review-wave start/finish events for council rounds, PR-thread scans, and trusted external-review settlement
 - review evidence
 - CI wait completion
 - external review settle or block evidence
@@ -225,8 +251,12 @@ bb setup coordinator --repo misty-step/bitterblossom
 
 ```bash
 sprite exec coordinator -- bash -lc '
-  echo "export GITHUB_TOKEN=..." >> ~/.bashrc
-  echo "export SPRITE_TOKEN=..." >> ~/.bashrc
+  mkdir -p ~/.bb
+  cat > ~/.bb/conductor-supervisor.env <<EOF
+export GITHUB_TOKEN=...
+export SPRITE_TOKEN=...
+EOF
+  chmod 600 ~/.bb/conductor-supervisor.env
 '
 ```
 
@@ -242,28 +272,76 @@ sprite exec coordinator -- bash -lc '
 
 All checks must pass before starting the loop.
 
+### Supported Supervisor Contract
+
+`nohup python3 scripts/conductor.py loop ...` is **not** the supported always-on contract. It survives a disconnected shell, but it does not restart after a crash and it does not come back after a host reboot.
+
+The supported coordinator contract is:
+
+- `scripts/conductor-supervise.sh run ...` owns the long-lived process and restarts `python3 scripts/conductor.py loop ...` after both clean exits and crashes.
+- `scripts/conductor-supervise.sh install-cron ...` installs a user `@reboot` entry that relaunches the supervisor after coordinator reboot.
+- The reboot launcher sources `~/.bb/conductor-supervisor.env` before starting the supervisor, so tokens are available to cron's non-interactive shell.
+- Supervisor state lives under `~/.bb/conductor-supervisor/` with a stable `current.log`, `supervisor.pid`, `child.pid`, and `launch.sh`.
+- Logs are bounded locally: when `current.log` reaches `10 MiB` (override with `BB_CONDUCTOR_LOG_MAX_BYTES`), the supervisor rotates it to `conductor-YYYYmmdd-HHMMSS.log` and keeps the newest `10` archived files (override with `BB_CONDUCTOR_LOG_KEEP_FILES`).
+
+This keeps the deployment lightweight: one shell supervisor plus cron, no Kubernetes, no separate daemon framework.
+
 ### Starting the Loop
 
-Run the conductor in the background on the coordinator. Use `nohup` so it survives session disconnects:
+Start the supported supervisor on the coordinator:
 
 ```bash
 sprite exec coordinator -- bash -lc '
   cd /home/sprite/workspace/bitterblossom
-  nohup python3 scripts/conductor.py loop \
+  ./scripts/conductor-supervise.sh start \
     --repo misty-step/bitterblossom \
     --label autopilot \
     --worker noble-blue-serpent \
     --reviewer council-fern-20260306 \
     --reviewer council-sage-20260306 \
-    --reviewer council-thorn-20260306 \
-    >> ~/.bb/conductor.log 2>&1 &
-  echo "conductor pid: $!"
+    --reviewer council-thorn-20260306
 '
 ```
 
-The loop polls for eligible issues every 60 seconds (configurable with `--poll-seconds`). Transient failures log and continue; blocked runs (requiring human review) are noted in the issue and the loop moves on.
+The supervisor keeps the loop alive across crashes. The conductor still polls for eligible issues every 60 seconds (configurable with `--poll-seconds`). Transient failures log and continue; blocked runs (requiring human review) are noted in the issue and the loop moves on.
+
+### Reboot Bootstrap
+
+Install the reboot hook once on the coordinator:
+
+```bash
+sprite exec coordinator -- bash -lc '
+  cd /home/sprite/workspace/bitterblossom
+  ./scripts/conductor-supervise.sh install-cron \
+    --repo-root /home/sprite/workspace/bitterblossom \
+    --repo misty-step/bitterblossom \
+    --label autopilot \
+    --worker noble-blue-serpent \
+    --reviewer council-fern-20260306 \
+    --reviewer council-sage-20260306 \
+    --reviewer council-thorn-20260306
+'
+```
+
+Equivalent local entrypoints exist through `make conductor-start`, `make conductor-install-cron`, `make conductor-status`, and `make conductor-stop` with `CONDUCTOR_SUPERVISOR_ARGS='...'`.
+
+### Sleep and Lifecycle Assumptions
+
+- The coordinator should run on a dedicated remote sprite, not on a laptop shell. Laptop sleep is out of path once the remote supervisor is started.
+- Worker sprites may sleep when idle. The conductor coordinator should not depend on an attached interactive session.
+- If the coordinator host reboots, cron relaunches `launch.sh`, which restarts the supervisor, which restarts the conductor loop.
 
 ### Verifying the Loop
+
+Check the supervisor and reboot hook:
+
+```bash
+sprite exec coordinator -- bash -lc '
+  cd /home/sprite/workspace/bitterblossom
+  ./scripts/conductor-supervise.sh status
+  crontab -l | grep conductor-supervisor/launch.sh
+'
+```
 
 Check run state:
 
@@ -274,15 +352,15 @@ sprite exec coordinator -- bash -lc '
 '
 ```
 
-Tail conductor logs:
+Tail the bounded supervisor log:
 
 ```bash
-sprite exec coordinator -- bash -lc 'tail -f ~/.bb/conductor.log'
+sprite exec coordinator -- bash -lc 'tail -f ~/.bb/conductor-supervisor/current.log'
 ```
 
 ### Durable Run State
 
-Every run writes immediately to `.bb/conductor.db` and `.bb/events.jsonl` on the coordinator. State survives loop restarts. If the conductor process dies, restart it — already-completed runs won't be re-processed because their leases have been released.
+Every run writes immediately to `.bb/conductor.db` and `.bb/events.jsonl` on the coordinator. State survives supervisor restarts and coordinator reboots. Already-completed runs will not be re-processed just because the loop was restarted because their leases have been released.
 
 Long waits are heartbeat-backed. During governance freshness waits, review dispatch, PR-check polling, and trusted external review polling, the conductor refreshes both the run heartbeat and the lease expiry so a healthy run does not look stale just because GitHub or reviewers are slow.
 
@@ -342,13 +420,23 @@ If a run shows `phase=awaiting_governance` with a valid `pr_number`, the builder
 Review state is now split deliberately:
 
 - `reviews` keeps the latest per-reviewer council snapshot for compatibility with existing run logic.
-- `review_waves` is append-only wave history for council rounds and PR-thread scans.
+- `review_waves` is append-only wave history for council rounds, PR-thread scans, and trusted external-review settlement waits.
 - `review_wave_reviews` stores per-wave reviewer verdicts and raw payloads.
-- `review_findings` stores normalized findings with reviewer, wave, source id, fingerprint, classification, severity, decision, and status.
+- `review_findings` stores normalized findings with reviewer, wave, source id, fingerprint, classification, severity, decision, and status. Duplicate fingerprints now collapse across review surfaces so a repeated blocker is recorded once semantically instead of reopening the run on every restatement.
 
 Council artifact writes are atomic at the storage boundary: the compatibility snapshot, per-wave reviewer payload, and normalized findings land together for each artifact, and PR-thread scans only finalize their wave after the finding write succeeds.
 
 That split keeps merge policy and GitHub thread mechanics out of the storage contract. Future governance changes can reason over the ledger without losing prior review history.
+
+### Migration Note: Trusted Duplicate Threads
+
+Issue [#500](https://github.com/misty-step/bitterblossom/issues/500) changes one trusted-review behavior deliberately: if a trusted PR thread restates a finding that is already active in the review ledger, the new thread finding is recorded as `duplicate` instead of reopening the full governance loop by itself.
+
+Operator verification:
+
+- inspect `show-events` for the matching `review_wave_completed` PR-thread scan event
+- inspect `review_findings` or run acceptance-focused tests to confirm the repeated thread is stored as `duplicate`
+- monitor runs that used to reopen on trusted restatements and confirm they now reopen only for genuinely novel or still-unresolved threads
 
 ## Blocked Runs
 
@@ -396,10 +484,24 @@ python3 scripts/conductor.py show-events --run-id <run-id>
 Check why:
 
 ```bash
-sprite exec coordinator -- bash -lc 'tail -50 ~/.bb/conductor.log'
+sprite exec coordinator -- bash -lc 'tail -50 ~/.bb/conductor-supervisor/current.log'
 ```
 
-Fix the root cause, then restart the loop as documented above.
+Fix the root cause, then restart the supervisor:
+
+```bash
+sprite exec coordinator -- bash -lc '
+  cd /home/sprite/workspace/bitterblossom
+  ./scripts/conductor-supervise.sh stop
+  ./scripts/conductor-supervise.sh start \
+    --repo misty-step/bitterblossom \
+    --label autopilot \
+    --worker noble-blue-serpent \
+    --reviewer council-fern-20260306 \
+    --reviewer council-sage-20260306 \
+    --reviewer council-thorn-20260306
+'
+```
 
 ### Stuck or Stale Issue
 
