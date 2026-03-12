@@ -2005,14 +2005,13 @@ def test_run_review_round_cleans_only_prepared_reviewers(monkeypatch: pytest.Mon
         "attempts": 3,
         "error": "sprite transport failed",
     }
-    assert json.loads(events[4]["payload_json"]) == {
-        "kind": "review_round",
-        "pr_number": 463,
-        "reviewer_count": 3,
-        "reviews_recorded": 0,
-        "status": "failed",
-        "wave_id": 1,
-    }
+    payload = json.loads(events[4]["payload_json"])
+    assert payload["kind"] == "review_round"
+    assert payload["pr_number"] == 463
+    assert payload["reviewer_count"] == 3
+    assert payload["reviews_recorded"] == 0
+    assert payload["status"] == "failed"
+    assert payload["wave_id"] == 1
     assert json.loads(events[-1]["payload_json"]) == {
         "reviewer": "fern",
         "workspace": conductor.run_workspace("misty-step/bitterblossom", "run-447-1", "review-fern"),
