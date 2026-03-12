@@ -1,5 +1,18 @@
 # MEMORY
 
+## Resolved Issues
+
+### 2026-03-12 issue #538 — worktree lifecycle hardening
+
+All acceptance criteria from #538 landed across PRs #549, #555, and #557:
+
+- Mirror mutation serialized via `_mirror_lock` (Python) + `flock` (bash)
+- `prepare_run_workspace` retries up to 2× on `CmdError`, `OSError`, `TimeoutExpired`
+- Cleanup failures emit `workspace_cleanup_failed` event with `surviving_path`; `worktree_path` column not cleared so operators can recover
+- `show-runs` / `show-run` surface `worktree_path` in JSON output
+- `docs/CONDUCTOR.md` documents the lifecycle under "Worktree Lifecycle and Serialization"
+- 30 regression tests cover all acceptance criteria paths
+
 ## Filed Issues
 
 ### 2026-02-18 e2e-test shakedown
