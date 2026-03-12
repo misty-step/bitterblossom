@@ -6400,3 +6400,115 @@ def test_show_run_includes_worktree_path(
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["run"]["worktree_path"] == "/home/sprite/workspace/bitterblossom/.bb/conductor/run-538-1/builder-worktree"
+
+
+def test_cleanup_run_workspace_serializes_with_prepare(monkeypatch: pytest.MonkeyPatch) -> None:
+    """prepare and cleanup must hold the same per-(sprite, mirror) lock; they must not race."""
+    import threading as _threading
+
+    active_ops: list[str] = []
+    concurrent_overlap = _threading.Event()
+    prepare_started = _threading.Event()
+    release_prepare = _threading.Event()
+    cleanup_blocked = _threading.Event()
+
+    def fake_prepare_once(_runner: object, _sprite: str, _mirror: str, workspace: str) -> str:
+        active_ops.append("prepare")
+        prepare_started.set()
+        # Hold the lock while waiting; cleanup should not start until we exit.
+        assert release_prepare.wait(timeout=5), "cleanup never reached the shared mirror lock"
+        active_ops.append("prepare_done")
+        return workspace
+
+    def fake_sprite_bash_cleanup(_runner: object, _sprite: str, script: str, *, timeout: int) -> str:
+        _ = (script, timeout)
+        if "prepare" in active_ops and "prepare_done" not in active_ops:
+            concurrent_overlap.set()
+        active_ops.append("cleanup")
+        return ""
+
+    monkeypatch.setattr(conductor, "_prepare_run_workspace_once", fake_prepare_once)
+
+    original_mirror_lock = conductor._mirror_lock
+
+    class CleanupProbeLock:
+        def __init__(self, lock: _threading.Lock) -> None:
+            self._lock = lock
+            self._acquired = False
+
+        def __enter__(self) -> None:
+            if self._lock.acquire(blocking=False):
+                self._lock.release()
+                raise AssertionError("cleanup acquired the mirror lock before prepare released it")
+            cleanup_blocked.set()
+            self._lock.acquire()
+            self._acquired = True
+            return None
+
+        def __exit__(self, _exc_type: object, _exc: object, _tb: object) -> bool:
+            if self._acquired:
+                self._lock.release()
+            return False
+
+    def patched_mirror_lock(sprite: str, mirror: str) -> object:
+        lock = original_mirror_lock(sprite, mirror)
+        if _threading.current_thread().name == "cleanup":
+            return CleanupProbeLock(lock)
+        return lock
+
+    monkeypatch.setattr(conductor, "_mirror_lock", patched_mirror_lock)
+
+    original_sprite_bash = conductor.sprite_bash
+
+    def patched_sprite_bash(runner: object, sprite: str, script: str, *, timeout: int) -> str:
+        if "worktree remove" in script or "worktree prune" in script:
+            return fake_sprite_bash_cleanup(runner, sprite, script, timeout=timeout)
+        return original_sprite_bash(runner, sprite, script, timeout=timeout)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(conductor, "sprite_bash", patched_sprite_bash)
+
+    errors: list[Exception] = []
+
+    def run_prepare() -> None:
+        try:
+            conductor.prepare_run_workspace(
+                object(),
+                "noble-blue-serpent",
+                "misty-step/bitterblossom",
+                "run-538-lock-a",
+                "builder",
+            )
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    def run_cleanup() -> None:
+        assert prepare_started.wait(timeout=2), "prepare never acquired the shared mirror lock"
+        try:
+            conductor.cleanup_run_workspace(
+                object(),
+                "noble-blue-serpent",
+                "misty-step/bitterblossom",
+                "run-538-lock-b",
+                "builder",
+            )
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    t_prepare = _threading.Thread(target=run_prepare, name="prepare")
+    t_cleanup = _threading.Thread(target=run_cleanup, name="cleanup")
+    t_prepare.start()
+    t_cleanup.start()
+
+    assert prepare_started.wait(timeout=2), "prepare never entered the shared mirror lock"
+    assert cleanup_blocked.wait(timeout=2), "cleanup never contended for the shared mirror lock"
+    release_prepare.set()
+
+    t_prepare.join(timeout=5)
+    t_cleanup.join(timeout=5)
+
+    assert not t_prepare.is_alive(), "prepare thread did not finish in time (possible deadlock)"
+    assert not t_cleanup.is_alive(), "cleanup thread did not finish in time (possible deadlock)"
+    assert not errors, errors
+    assert "cleanup" in active_ops, "cleanup never reached sprite_bash"
+    # If overlap was detected, cleanup entered while prepare was still active — the lock failed.
+    assert not concurrent_overlap.is_set(), "prepare and cleanup ran concurrently; lock did not serialize them"

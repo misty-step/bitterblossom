@@ -1,53 +1,31 @@
-# PLAN: Issue #478 — Prevent blocked issues from immediate retry in backlog loop
+# PLAN: Issue #538 — Harden conductor worktree lifecycle
 
-## Problem
+## Status
 
-When `run_once` exits with `rc=2` (blocked), the `finally` block calls
-`release_lease`, which frees the issue for immediate re-pick on the next poll.
-A blocked issue gets re-leased, re-run, and spams repeated blocker comments.
+The core hardening is already implemented (PRs #549 and #555):
+- `_mirror_locks` / `_mirror_lock()` — Python-level per-(sprite, mirror) serialization
+- `prepare_run_workspace` with `WORKSPACE_PREP_RETRIES=2` retry policy
+- `cleanup_builder_workspace` records `workspace_cleanup_failed` + `surviving_path`
+- `show-runs` / `show-run` expose `worktree_path` in JSON output
+- `docs/CONDUCTOR.md` documents all of the above under "Worktree Lifecycle and Serialization"
 
-## Root Cause
+## Gap Identified
 
-`release_lease` is called unconditionally in `run_once`'s `finally` block.
-Blocked runs need their lease kept active (not released) until an operator
-explicitly re-queues the issue.
-
-## Solution
-
-Treat `blocked` as a scheduler state in the lease table:
-
-1. Add `blocked_at` column to `leases`.
-2. New `block_lease()` sets `blocked_at = now, lease_expires_at = null`.
-3. `run_once` tracks `block_on_release = True` at each `return 2` point,
-   and the `finally` calls `block_lease` instead of `release_lease`.
-4. `pick_issue` already skips issues where `released_at is null` — so blocked
-   issues (with `released_at = null`) are excluded automatically.
-5. `acquire_lease` already returns False for active leases — blocked leases
-   have `released_at = null`, `lease_expires_at = null`, so they block re-acquisition.
-6. `reap_expired_leases` skips `lease_expires_at = null` leases — no change needed.
-7. New `requeue-issue` command clears `blocked_at`, sets `released_at = now`.
-
-## Affected Files
-
-- `scripts/conductor.py`
-- `scripts/test_conductor.py`
-- `docs/CONDUCTOR.md`
+No test covers the cross-operation lock contention case: a concurrent
+`prepare_run_workspace` and `cleanup_run_workspace` hitting the same
+`_mirror_lock`. Existing tests cover prepare+prepare and cleanup bash-side flock,
+but not the Python-level lock shared between prepare and cleanup.
 
 ## Steps
 
-- [x] Plan written and verified
-- [x] Create branch `factory/478-p1-conductor-prevent-blocked-iss-1772842172`
-- [ ] `init_db`: add `ensure_column(conn, "leases", "blocked_at", "text")`
-- [ ] Add `block_lease(conn, repo, issue_number)` function
-- [ ] Modify `run_once`: track `block_on_release`, conditional finally
-- [ ] Add `requeue_issue(args)` function
-- [ ] Add `requeue-issue` subparser
-- [ ] Write tests (AC1: not re-picked, AC3: re-queue, unit tests for block_lease)
-- [ ] Update `docs/CONDUCTOR.md`
-- [ ] Run `python3 -m pytest -q scripts/test_conductor.py`
-- [ ] Push branch, open draft PR
-- [ ] Write builder artifact
+- [x] Audit existing implementation and tests
+- [x] Add `test_cleanup_run_workspace_serializes_with_prepare` to `test_conductor.py`
+- [x] Run `python3 -m pytest -q scripts/test_conductor.py -k "worktree or workspace or cleanup"`
+- [x] Push branch, open draft PR with `Closes #538`
+- [x] Write builder artifact
 
 ## Review
 
-(To be filled in after implementation)
+- Targeted pytest (`worktree or workspace or cleanup`) and the full `scripts/test_conductor.py` suite passed in the builder lane.
+- Initial review found that the first draft of the cross-operation serialization test could pass vacuously without proving cleanup actually contended for the shared lock.
+- This branch now tightens the synchronization so cleanup must demonstrably block on the shared mirror lock before prepare is released, and it asserts thread completion plus cleanup execution.
