@@ -141,6 +141,7 @@ Inspect runs:
 ```bash
 python3 scripts/conductor.py show-runs --limit 20
 python3 scripts/conductor.py show-run --run-id run-450-1772813415
+python3 scripts/conductor.py show-metrics --window 7d --limit 20
 python3 scripts/conductor.py show-events --run-id run-450-1772813415
 python3 scripts/conductor.py show-workers \
   --repo misty-step/bitterblossom \
@@ -154,10 +155,17 @@ python3 scripts/conductor.py reset-worker-slots \
 ```
 
 `show-runs` emits one JSON object per run. The operator contract is that each row includes the current `phase` and `status`, the raw `heartbeat_at` timestamp, a computed `heartbeat_age_seconds`, and when applicable a `blocking_reason` plus the source `blocking_event_type`.
+Completed and in-flight telemetry now ride on the same surface: each row also includes `picked_at`, `completed_at`, `duration_seconds`, `outcome`, `turn_count`, aggregate token totals, `estimated_cost_usd`, plus `model_usage` and `provider_usage` rollups.
 
 `show-events` emits one JSON object for the requested run with a `run` metadata envelope, `latest_event_type`, `latest_event_at`, and an `events` array. Review convergence is now explicit in that stream: `review_wave_started`, `review_wave_completed`, and `external_review_wait_complete` events let operators inspect when a council round began, when a PR-thread scan or external-review wait settled, and why governance advanced or stopped.
 
-`show-run` is the narrower single-run inspection surface: it returns the same run metadata together with a `recent_events` array keyed by `run_id`.
+`show-run` is the narrower single-run inspection surface: it returns the same run metadata together with a `telemetry_samples` array and a `recent_events` array keyed by `run_id`.
+
+`show-metrics` is the aggregate telemetry read model. It accepts `--window <Nd|Nh|Nm>` and `--limit N`, then returns one JSON object with:
+
+- `summary` — throughput, completion/success counts, average duration, token totals, and estimated cost over the chosen window
+- `recent_runs` — the same run rows exposed by `show-runs`, already filtered to the window
+- `timeline` — day-bucketed run volume, completion rate, duration, and cost trend data for dashboards or sidecars
 
 `show-workers` is the worker-pool admin surface. It returns slot-level health,
 current assignments, computed backfill demand against `--desired-concurrency`,
@@ -209,6 +217,7 @@ python3 scripts/conductor.py run-once \
 
 python3 scripts/conductor.py show-runs --limit 5
 python3 scripts/conductor.py show-run --run-id <run-id>
+python3 scripts/conductor.py show-metrics --window 7d --limit 20
 python3 scripts/conductor.py show-events --run-id <run-id>
 ```
 

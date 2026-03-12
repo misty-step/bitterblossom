@@ -4482,6 +4482,194 @@ def test_show_run_prints_run_metadata_and_recent_event_context(
     assert payload["recent_events"][0]["payload"]["reason"] == "unchanged_after_revision"
 
 
+def test_show_run_rolls_up_builder_and_reviewer_telemetry(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=481, title="telemetry", body="", url="https://example.com/481", labels=["autopilot"])
+    conductor.create_run(conn, "run-481-1", "misty-step/bitterblossom", issue, "claude-sonnet")
+
+    builder = conductor.BuilderResult(
+        status="ready_for_review",
+        branch="factory/481-1",
+        pr_number=481,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/481",
+        summary="done",
+        tests=[],
+    )
+    builder_payload = {
+        "status": "ready_for_review",
+        "branch": builder.branch,
+        "pr_number": builder.pr_number,
+        "pr_url": builder.pr_url,
+        "summary": builder.summary,
+        "model": "anthropic/claude-sonnet-4-6",
+        "provider": "openrouter",
+        "estimated_cost_usd": 0.42,
+        "usage": {"input_tokens": 1200, "output_tokens": 300, "total_tokens": 1500},
+    }
+    monkeypatch.setattr(conductor, "run_builder", lambda *_a, **_kw: (builder, builder_payload))
+
+    conductor.run_builder_turn(
+        object(),
+        conn,
+        tmp_path / "events.jsonl",
+        "misty-step/bitterblossom",
+        "fern",
+        issue,
+        "run-481-1",
+        builder.branch,
+        pathlib.Path("prompt.md"),
+        10,
+        workspace="/tmp/run-481-1",
+        event_type="builder_ready",
+    )
+
+    wave_id = conductor.start_review_wave(conn, "run-481-1", "review_round", pr_number=481, reviewer_count=1)
+    conductor.record_review_artifact(
+        conn,
+        "run-481-1",
+        wave_id,
+        "sage",
+        {
+            "verdict": "pass",
+            "summary": "ok",
+            "findings": [],
+            "model": "gpt-5-mini",
+            "provider": "openai",
+            "estimated_cost_usd": 0.11,
+            "usage": {"prompt_tokens": 200, "completion_tokens": 50},
+        },
+    )
+    conductor.update_run(conn, "run-481-1", phase="merged", status="merged")
+
+    rc = conductor.show_run(argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-481-1", event_limit=5))
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["run"]["turn_count"] == 1
+    assert payload["run"]["input_tokens"] == 1400
+    assert payload["run"]["output_tokens"] == 350
+    assert payload["run"]["total_tokens"] == 1750
+    assert payload["run"]["estimated_cost_usd"] == 0.53
+    assert [entry["model"] for entry in payload["run"]["model_usage"]] == [
+        "anthropic/claude-sonnet-4-6",
+        "gpt-5-mini",
+    ]
+    assert [entry["provider"] for entry in payload["run"]["provider_usage"]] == ["openai", "openrouter"]
+    assert len(payload["telemetry_samples"]) == 2
+    assert payload["telemetry_samples"][0]["lane"] == "builder"
+    assert payload["telemetry_samples"][1]["lane"] == "reviewer"
+
+
+def test_show_metrics_returns_summary_recent_runs_and_timeline(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fixed_now = datetime(2026, 3, 12, 12, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(conductor, "utc_now", lambda: fixed_now)
+
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue_a = conductor.Issue(number=481, title="telemetry", body="", url="u481", labels=["autopilot"])
+    issue_b = conductor.Issue(number=482, title="blocked", body="", url="u482", labels=["autopilot"])
+    issue_old = conductor.Issue(number=300, title="old", body="", url="u300", labels=["autopilot"])
+    conductor.create_run(conn, "run-481-1", "misty-step/bitterblossom", issue_a, "claude-sonnet")
+    conductor.create_run(conn, "run-482-1", "misty-step/bitterblossom", issue_b, "claude-sonnet")
+    conductor.create_run(conn, "run-300-1", "misty-step/bitterblossom", issue_old, "claude-sonnet")
+    conductor.update_run(
+        conn,
+        "run-481-1",
+        phase="merged",
+        status="merged",
+        picked_at="2026-03-11T09:00:00Z",
+        completed_at="2026-03-11T09:30:00Z",
+        updated_at="2026-03-11T09:30:00Z",
+    )
+    conductor.update_run(
+        conn,
+        "run-482-1",
+        phase="blocked",
+        status="blocked",
+        picked_at="2026-03-12T08:00:00Z",
+        completed_at="2026-03-12T08:10:00Z",
+        updated_at="2026-03-12T08:10:00Z",
+    )
+    conductor.update_run(
+        conn,
+        "run-300-1",
+        phase="merged",
+        status="merged",
+        picked_at="2026-03-01T08:00:00Z",
+        completed_at="2026-03-01T08:15:00Z",
+        updated_at="2026-03-01T08:15:00Z",
+        created_at="2026-03-01T08:00:00Z",
+    )
+    conductor.persist_run_telemetry_sample(
+        conn,
+        "run-481-1",
+        lane="builder",
+        actor="fern",
+        source_event="builder_ready",
+        payload={
+            "model": "anthropic/claude-sonnet-4-6",
+            "provider": "openrouter",
+            "estimated_cost_usd": 0.40,
+            "usage": {"input_tokens": 1000, "output_tokens": 300, "total_tokens": 1300},
+        },
+    )
+    conductor.persist_run_telemetry_sample(
+        conn,
+        "run-482-1",
+        lane="builder",
+        actor="sage",
+        source_event="builder_ready",
+        payload={
+            "model": "anthropic/claude-sonnet-4-6",
+            "provider": "openrouter",
+            "estimated_cost_usd": 0.10,
+            "usage": {"input_tokens": 200, "output_tokens": 50, "total_tokens": 250},
+        },
+    )
+    conductor.persist_run_telemetry_sample(
+        conn,
+        "run-300-1",
+        lane="builder",
+        actor="fern",
+        source_event="builder_ready",
+        payload={
+            "model": "old-model",
+            "provider": "legacy",
+            "estimated_cost_usd": 1.25,
+            "usage": {"input_tokens": 999, "output_tokens": 1, "total_tokens": 1000},
+        },
+    )
+    conn.commit()
+
+    rc = conductor.show_metrics(argparse.Namespace(db=str(tmp_path / "conductor.db"), window="2d", limit=10))
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["summary"]["run_count"] == 2
+    assert payload["summary"]["merged_runs"] == 1
+    assert payload["summary"]["blocked_runs"] == 1
+    assert payload["summary"]["success_rate"] == 0.5
+    assert payload["summary"]["average_duration_seconds"] == 1200
+    assert payload["summary"]["total_estimated_cost_usd"] == 0.5
+    assert payload["summary"]["total_tokens"] == 1550
+    assert [run["run_id"] for run in payload["recent_runs"]] == ["run-482-1", "run-481-1"]
+    assert [bucket["bucket"] for bucket in payload["timeline"]] == ["2026-03-11", "2026-03-12"]
+    assert payload["timeline"][0]["merged_runs"] == 1
+    assert payload["timeline"][1]["blocked_runs"] == 1
+
+
+def test_show_metrics_rejects_invalid_window(tmp_path: pathlib.Path) -> None:
+    with pytest.raises(conductor.CmdError, match="invalid window"):
+        conductor.show_metrics(argparse.Namespace(db=str(tmp_path / "conductor.db"), window="weekly", limit=5))
+
+
 def test_check_env_passes_when_all_present(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
     monkeypatch.setenv("GITHUB_TOKEN", "ghp_test")
     monkeypatch.setenv("SPRITE_TOKEN", "sprite_test")
