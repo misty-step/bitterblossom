@@ -225,8 +225,12 @@ bb setup coordinator --repo misty-step/bitterblossom
 
 ```bash
 sprite exec coordinator -- bash -lc '
-  echo "export GITHUB_TOKEN=..." >> ~/.bashrc
-  echo "export SPRITE_TOKEN=..." >> ~/.bashrc
+  mkdir -p ~/.bb
+  cat > ~/.bb/conductor-supervisor.env <<EOF
+export GITHUB_TOKEN=...
+export SPRITE_TOKEN=...
+EOF
+  chmod 600 ~/.bb/conductor-supervisor.env
 '
 ```
 
@@ -242,28 +246,76 @@ sprite exec coordinator -- bash -lc '
 
 All checks must pass before starting the loop.
 
+### Supported Supervisor Contract
+
+`nohup python3 scripts/conductor.py loop ...` is **not** the supported always-on contract. It survives a disconnected shell, but it does not restart after a crash and it does not come back after a host reboot.
+
+The supported coordinator contract is:
+
+- `scripts/conductor-supervise.sh run ...` owns the long-lived process and restarts `python3 scripts/conductor.py loop ...` after both clean exits and crashes.
+- `scripts/conductor-supervise.sh install-cron ...` installs a user `@reboot` entry that relaunches the supervisor after coordinator reboot.
+- The reboot launcher sources `~/.bb/conductor-supervisor.env` before starting the supervisor, so tokens are available to cron's non-interactive shell.
+- Supervisor state lives under `~/.bb/conductor-supervisor/` with a stable `current.log`, `supervisor.pid`, `child.pid`, and `launch.sh`.
+- Logs are bounded locally: when `current.log` reaches `10 MiB` (override with `BB_CONDUCTOR_LOG_MAX_BYTES`), the supervisor rotates it to `conductor-YYYYmmdd-HHMMSS.log` and keeps the newest `10` archived files (override with `BB_CONDUCTOR_LOG_KEEP_FILES`).
+
+This keeps the deployment lightweight: one shell supervisor plus cron, no Kubernetes, no separate daemon framework.
+
 ### Starting the Loop
 
-Run the conductor in the background on the coordinator. Use `nohup` so it survives session disconnects:
+Start the supported supervisor on the coordinator:
 
 ```bash
 sprite exec coordinator -- bash -lc '
   cd /home/sprite/workspace/bitterblossom
-  nohup python3 scripts/conductor.py loop \
+  ./scripts/conductor-supervise.sh start \
     --repo misty-step/bitterblossom \
     --label autopilot \
     --worker noble-blue-serpent \
     --reviewer council-fern-20260306 \
     --reviewer council-sage-20260306 \
-    --reviewer council-thorn-20260306 \
-    >> ~/.bb/conductor.log 2>&1 &
-  echo "conductor pid: $!"
+    --reviewer council-thorn-20260306
 '
 ```
 
-The loop polls for eligible issues every 60 seconds (configurable with `--poll-seconds`). Transient failures log and continue; blocked runs (requiring human review) are noted in the issue and the loop moves on.
+The supervisor keeps the loop alive across crashes. The conductor still polls for eligible issues every 60 seconds (configurable with `--poll-seconds`). Transient failures log and continue; blocked runs (requiring human review) are noted in the issue and the loop moves on.
+
+### Reboot Bootstrap
+
+Install the reboot hook once on the coordinator:
+
+```bash
+sprite exec coordinator -- bash -lc '
+  cd /home/sprite/workspace/bitterblossom
+  ./scripts/conductor-supervise.sh install-cron \
+    --repo-root /home/sprite/workspace/bitterblossom \
+    --repo misty-step/bitterblossom \
+    --label autopilot \
+    --worker noble-blue-serpent \
+    --reviewer council-fern-20260306 \
+    --reviewer council-sage-20260306 \
+    --reviewer council-thorn-20260306
+'
+```
+
+Equivalent local entrypoints exist through `make conductor-start`, `make conductor-install-cron`, `make conductor-status`, and `make conductor-stop` with `CONDUCTOR_SUPERVISOR_ARGS='...'`.
+
+### Sleep and Lifecycle Assumptions
+
+- The coordinator should run on a dedicated remote sprite, not on a laptop shell. Laptop sleep is out of path once the remote supervisor is started.
+- Worker sprites may sleep when idle. The conductor coordinator should not depend on an attached interactive session.
+- If the coordinator host reboots, cron relaunches `launch.sh`, which restarts the supervisor, which restarts the conductor loop.
 
 ### Verifying the Loop
+
+Check the supervisor and reboot hook:
+
+```bash
+sprite exec coordinator -- bash -lc '
+  cd /home/sprite/workspace/bitterblossom
+  ./scripts/conductor-supervise.sh status
+  crontab -l | grep conductor-supervisor/launch.sh
+'
+```
 
 Check run state:
 
@@ -274,15 +326,15 @@ sprite exec coordinator -- bash -lc '
 '
 ```
 
-Tail conductor logs:
+Tail the bounded supervisor log:
 
 ```bash
-sprite exec coordinator -- bash -lc 'tail -f ~/.bb/conductor.log'
+sprite exec coordinator -- bash -lc 'tail -f ~/.bb/conductor-supervisor/current.log'
 ```
 
 ### Durable Run State
 
-Every run writes immediately to `.bb/conductor.db` and `.bb/events.jsonl` on the coordinator. State survives loop restarts. If the conductor process dies, restart it — already-completed runs won't be re-processed because their leases have been released.
+Every run writes immediately to `.bb/conductor.db` and `.bb/events.jsonl` on the coordinator. State survives supervisor restarts and coordinator reboots. Already-completed runs will not be re-processed just because the loop was restarted because their leases have been released.
 
 Long waits are heartbeat-backed. During governance freshness waits, review dispatch, PR-check polling, and trusted external review polling, the conductor refreshes both the run heartbeat and the lease expiry so a healthy run does not look stale just because GitHub or reviewers are slow.
 
@@ -389,10 +441,24 @@ python3 scripts/conductor.py show-events --run-id <run-id>
 Check why:
 
 ```bash
-sprite exec coordinator -- bash -lc 'tail -50 ~/.bb/conductor.log'
+sprite exec coordinator -- bash -lc 'tail -50 ~/.bb/conductor-supervisor/current.log'
 ```
 
-Fix the root cause, then restart the loop as documented above.
+Fix the root cause, then restart the supervisor:
+
+```bash
+sprite exec coordinator -- bash -lc '
+  cd /home/sprite/workspace/bitterblossom
+  ./scripts/conductor-supervise.sh stop
+  ./scripts/conductor-supervise.sh start \
+    --repo misty-step/bitterblossom \
+    --label autopilot \
+    --worker noble-blue-serpent \
+    --reviewer council-fern-20260306 \
+    --reviewer council-sage-20260306 \
+    --reviewer council-thorn-20260306
+'
+```
 
 ### Stuck or Stale Issue
 
