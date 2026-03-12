@@ -2,52 +2,41 @@
 
 ## Claim
 
-This branch removes a dead compatibility layer that advertised `bb` commands and flags the binary does not implement, then aligns repo-local docs and shipped skills to the real transport surface.
+This branch turns a successful conductor builder pass into one explicit operation. The governor no longer has to remember, in six separate branches, to both restore `phase=awaiting_governance` and record the matching builder event.
 
 ## Before
 
-- `scripts/provision.sh`, `scripts/sync.sh`, `scripts/status.sh`, and `scripts/teardown.sh` pretended to preserve an old wrapper API.
-- `scripts/test_legacy_wrappers.sh` only asserted argument forwarding, not that the forwarded commands existed.
-- `go run ./cmd/bb provision fern` failed with `unknown command "provision" for "bb"`.
-- `go run ./cmd/bb status --format text` failed with `unknown flag: --format`.
-- Multiple docs and Bitterblossom skills still taught those stale commands and flags.
+- `scripts/conductor.py` duplicated the same `run_builder(...) -> update_run(...) -> record_event(...)` sequence in the initial builder path, review revisions, CI revisions, PR-thread revisions, external-review revisions, and final polish.
+- Any future change to builder handoff semantics needed to touch every copy in the governor loop.
+- The invariant "a successful builder turn returns control to governance with fresh PR metadata and an event log entry" lived in call-site convention instead of one module boundary.
 
 ## After
 
-- The dead wrapper scripts and their wrapper-only test are gone.
-- `cmd/bb/main_test.go` now codifies the real CLI boundary by asserting that legacy entrypoints are rejected.
-- Repo-local docs and Bitterblossom skills now point to the supported commands: `setup`, `dispatch`, `status`, `logs`, `kill`, and `version`.
+- `run_builder_turn(...)` now owns the successful handoff contract for governance-managed builder work.
+- `run_once(...)` and `govern_pr_flow(...)` call that boundary instead of re-spelling the postconditions.
+- `scripts/test_conductor.py` now includes a focused regression test proving that a builder turn updates run state and emits the expected event.
 
 ## Why This Matters
 
-The repo’s ADRs say `bb` is a thin, deterministic transport. Leaving a fake compatibility surface in place made the operator boundary shallower and more confusing: readers had to know which docs were real, which wrappers were dead, and which flags only existed in history. This branch collapses that split-brain surface back to one truth.
+The conductor is the judgment-heavy part of Bitterblossom, so its hot path should hide repeated sequencing details, not leak them into every branch. This refactor removes change amplification from the most central loop without changing behavior or broadening the transport surface.
+
+## Artifact
+
+- Walkthrough notes: `docs/walkthroughs/builder-turn-handoff.md`
+- Renderer: diagram + terminal evidence
 
 ## Evidence Bundle
 
-### Files that prove the boundary
-
-- `cmd/bb/main.go`
-- `cmd/bb/main_test.go`
-- `docs/CLI-REFERENCE.md`
-- `README.md`
-- `QA.md`
-- `base/skills/bitterblossom-dispatch/SKILL.md`
-- `base/skills/bitterblossom-monitoring/SKILL.md`
-
-### Deleted surface
-
-- `scripts/lib_bb.sh`
-- `scripts/provision.sh`
-- `scripts/sync.sh`
-- `scripts/status.sh`
-- `scripts/teardown.sh`
-- `scripts/test_legacy_wrappers.sh`
+- `scripts/conductor.py`
+- `scripts/test_conductor.py`
+- `docs/walkthroughs/builder-turn-handoff.md`
 
 ## Protecting Checks
 
-- `go test ./cmd/bb/...`
-- `python3 -m pytest -q base/hooks scripts/test_conductor.py`
+- `pytest -q scripts/test_conductor.py`
+- Targeted governance slice:
+  `pytest -q scripts/test_conductor.py -k 'run_once or govern_pr'`
 
 ## Residual Gap
 
-Older historical reports in `docs/shakedowns/` and `observations/` still mention now-removed commands as part of their historical narrative. They were left intact because they are evidence, not current operator guidance.
+`scripts/conductor.py` is still a large single module. This branch removes one high-churn seam inside it; it does not attempt the riskier multi-file conductor split.
