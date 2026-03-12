@@ -4302,6 +4302,40 @@ def test_show_runs_ignores_non_workspace_cleanup_warnings(
     assert payload["worktree_recovery_error"] is None
 
 
+def test_show_runs_ignores_reviewer_workspace_cleanup_warnings(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=47, title="cleanup", body="body", url="https://example.com/47", labels=["autopilot"])
+    conductor.create_run(conn, "run-47", "misty-step/bitterblossom", issue, "claude-sonnet")
+    conductor.update_run(
+        conn,
+        "run-47",
+        phase="awaiting_governance",
+        status="active",
+        builder_sprite="fern",
+        worktree_path="/tmp/run-47/builder-worktree",
+    )
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-47",
+        "cleanup_warning",
+        {
+            "kind": "reviewer_workspace_cleanup",
+            "workspace": "/tmp/run-47/review-fern-worktree",
+            "error": "reviewer workspace cleanup failed for fern: permission denied",
+        },
+    )
+
+    rc = conductor.show_runs(argparse.Namespace(db=str(tmp_path / "conductor.db"), limit=5))
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload["worktree_recovery_status"] is None
+    assert payload["worktree_recovery_error"] is None
+
+
 def test_show_runs_hides_stale_blocking_reason_after_merge(tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
     conn = conductor.open_db(tmp_path / "conductor.db")
     issue = conductor.Issue(number=44, title="merged", body="body", url="https://example.com/44", labels=["autopilot"])

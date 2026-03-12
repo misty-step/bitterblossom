@@ -781,7 +781,7 @@ def serialize_run_surface(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[st
         if recovery_event["event_type"] == "builder_workspace_cleaned":
             payload["worktree_recovery_status"] = "cleaned"
         elif recovery_event["event_type"] == "cleanup_warning":
-            if recovery_payload.get("kind") in {"builder_workspace_cleanup", "reviewer_workspace_cleanup"}:
+            if recovery_payload.get("kind") == "builder_workspace_cleanup":
                 payload["worktree_recovery_status"] = "cleanup_failed"
                 payload["worktree_recovery_error"] = recovery_payload.get("error")
         elif recovery_event["event_type"] == "workspace_preparation_failed":
