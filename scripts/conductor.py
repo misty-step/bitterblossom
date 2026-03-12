@@ -223,6 +223,18 @@ class WorkerSlot:
         )
 
 
+@dataclass(slots=True)
+class GovernanceRun:
+    issue: Issue
+    run_id: str
+    worker: str
+    worker_slot: WorkerSlot
+    branch: str
+    pr_number: int
+    pr_url: str
+    builder_workspace: str
+
+
 class CmdError(RuntimeError):
     pass
 
@@ -783,6 +795,8 @@ def branch_name(issue_number: int, run_suffix: str) -> str:
 
 
 def parse_worker_capacity(spec: str) -> tuple[str, int]:
+    if spec.count(":") > 1:
+        raise CmdError(f"invalid worker spec {spec!r}")
     worker, sep, raw_slots = spec.rpartition(":")
     if not sep:
         return spec, 1
@@ -930,6 +944,9 @@ def assign_worker_slot(conn: sqlite3.Connection, slot_id: int, run_id: str) -> N
 
 def acquire_named_worker_slot(conn: sqlite3.Connection, repo: str, workers: list[str], worker: str, run_id: str) -> WorkerSlot:
     seed_worker_slots(conn, repo, workers)
+    for slot in load_worker_slots(conn, repo, workers):
+        if slot.worker == worker and slot.state == WORKER_SLOT_ACTIVE and slot.current_run_id == run_id:
+            return slot
     for slot in load_worker_slots(conn, repo, workers):
         if slot.worker != worker or slot.state != WORKER_SLOT_ACTIVE or slot.current_run_id is not None:
             continue
@@ -3471,12 +3488,12 @@ def ensure_governance_run(
     conn: sqlite3.Connection,
     event_log: pathlib.Path,
     args: argparse.Namespace,
-) -> tuple[Issue, str, str, str, int, str, str]:
+) -> GovernanceRun:
     existing_run = None
     if getattr(args, "run_id", None):
         existing_run = conn.execute(
             """
-            select run_id, repo, issue_number, builder_sprite, branch, pr_number, pr_url, worktree_path
+            select run_id, repo, issue_number, builder_sprite, builder_slot_id, branch, pr_number, pr_url, worktree_path
             from runs
             where run_id = ?
             """,
@@ -3487,7 +3504,7 @@ def ensure_governance_run(
     elif getattr(args, "pr_number", None) is not None:
         existing_run = conn.execute(
             """
-            select run_id, repo, issue_number, builder_sprite, branch, pr_number, pr_url, worktree_path
+            select run_id, repo, issue_number, builder_sprite, builder_slot_id, branch, pr_number, pr_url, worktree_path
             from runs
             where repo = ? and pr_number = ?
             order by created_at desc
@@ -3528,6 +3545,7 @@ def ensure_governance_run(
     if not acquire_result.acquired:
         raise CmdError(f"issue #{issue.number} already leased")
     reclaimed_run_id = acquire_result.reclaimed_run_id
+    worker_slot: WorkerSlot | None = None
 
     try:
         if existing_run is None:
@@ -3559,8 +3577,14 @@ def ensure_governance_run(
                 {"issue": issue.number, "previous_run_id": reclaimed_run_id},
             )
 
-        if not existing_run or not existing_run["builder_sprite"]:
-            update_run(conn, run_id, builder_sprite=worker)
+        worker_slot = acquire_named_worker_slot(conn, args.repo, args.worker, worker, run_id)
+        record_event(
+            conn,
+            event_log,
+            run_id,
+            "builder_selected",
+            {"sprite": worker, "slot_id": worker_slot.id, "slot_index": worker_slot.slot_index},
+        )
 
         if not builder_workspace:
             builder_workspace = prepare_run_workspace(runner, worker, args.repo, run_id, "builder")
@@ -3576,6 +3600,7 @@ def ensure_governance_run(
             pr_number=pr_number,
             pr_url=pr_url,
             builder_sprite=worker,
+            builder_slot_id=worker_slot.id,
         )
         record_event(
             conn,
@@ -3584,8 +3609,19 @@ def ensure_governance_run(
             "governance_adopted",
             {"issue": issue.number, "pr_number": pr_number, "pr_url": pr_url, "branch": branch},
         )
-        return issue, run_id, worker, branch, pr_number, pr_url, builder_workspace
+        return GovernanceRun(
+            issue=issue,
+            run_id=run_id,
+            worker=worker,
+            worker_slot=worker_slot,
+            branch=branch,
+            pr_number=pr_number,
+            pr_url=pr_url,
+            builder_workspace=builder_workspace,
+        )
     except Exception:
+        if worker_slot is not None:
+            release_worker_slot(conn, worker_slot.id, run_id=run_id)
         release_lease(conn, args.repo, issue.number, run_id)
         raise
 
@@ -4196,13 +4232,10 @@ def govern_pr(args: argparse.Namespace) -> int:
     event_log = pathlib.Path(args.event_log)
 
     block_on_release = False
-    issue: Issue | None = None
-    run_id = ""
-    worker = ""
-    builder_workspace = ""
+    governance_run: GovernanceRun | None = None
 
     try:
-        issue, run_id, worker, branch, pr_number, pr_url, builder_workspace = ensure_governance_run(
+        governance_run = ensure_governance_run(
             runner,
             conn,
             event_log,
@@ -4213,78 +4246,87 @@ def govern_pr(args: argparse.Namespace) -> int:
             conn,
             event_log,
             args,
-            issue=issue,
-            run_id=run_id,
-            worker=worker,
-            branch=branch,
-            pr_number=pr_number,
-            pr_url=pr_url,
-            builder_workspace=builder_workspace,
+            issue=governance_run.issue,
+            run_id=governance_run.run_id,
+            worker=governance_run.worker,
+            branch=governance_run.branch,
+            pr_number=governance_run.pr_number,
+            pr_url=governance_run.pr_url,
+            builder_workspace=governance_run.builder_workspace,
         )
         if rc == 2:
             block_on_release = True
         return rc
     except LeaseLostError as exc:
-        if issue is None or not run_id:
+        if governance_run is None:
             print(f"conductor: lease lost before governance state was established: {stringify_exc(exc)}", file=sys.stderr)
             return 1
-        update_run(conn, run_id, phase="failed", status="failed")
+        update_run(conn, governance_run.run_id, phase="failed", status="failed")
         message = f"lease lost: {stringify_exc(exc)}"
-        record_event(conn, event_log, run_id, "lease_lost", {"error": message})
+        record_event(conn, event_log, governance_run.run_id, "lease_lost", {"error": message})
         best_effort_issue_comment(
             runner,
             conn,
             event_log,
-            run_id,
+            governance_run.run_id,
             args.repo,
-            issue.number,
-            f"Bitterblossom stopped `{run_id}` after losing its lease.\n\n```\n{message[:1500]}\n```",
+            governance_run.issue.number,
+            f"Bitterblossom stopped `{governance_run.run_id}` after losing its lease.\n\n```\n{message[:1500]}\n```",
             event_type="issue_comment_failed",
         )
         return 1
     except CmdError as exc:
-        if issue is None or not run_id:
+        if governance_run is None:
             print(f"conductor: {exc}", file=sys.stderr)
             return 1
-        update_run(conn, run_id, phase="failed", status="failed")
-        record_event(conn, event_log, run_id, "command_failed", {"error": str(exc)})
+        update_run(conn, governance_run.run_id, phase="failed", status="failed")
+        record_event(conn, event_log, governance_run.run_id, "command_failed", {"error": str(exc)})
         best_effort_issue_comment(
             runner,
             conn,
             event_log,
-            run_id,
+            governance_run.run_id,
             args.repo,
-            issue.number,
-            f"Bitterblossom failed `{run_id}`.\n\n```\n{str(exc)[:1500]}\n```",
+            governance_run.issue.number,
+            f"Bitterblossom failed `{governance_run.run_id}`.\n\n```\n{str(exc)[:1500]}\n```",
             event_type="issue_comment_failed",
         )
         return 1
     except Exception as exc:  # noqa: BLE001
-        if issue is None or not run_id:
+        if governance_run is None:
             print(f"conductor: unexpected governor error: {stringify_exc(exc)}", file=sys.stderr)
             return 1
-        update_run(conn, run_id, phase="failed", status="failed")
+        update_run(conn, governance_run.run_id, phase="failed", status="failed")
         message = f"unexpected conductor error: {stringify_exc(exc)}"
-        record_event(conn, event_log, run_id, "unexpected_error", {"error": message})
+        record_event(conn, event_log, governance_run.run_id, "unexpected_error", {"error": message})
         best_effort_issue_comment(
             runner,
             conn,
             event_log,
-            run_id,
+            governance_run.run_id,
             args.repo,
-            issue.number,
-            f"Bitterblossom failed `{run_id}`.\n\n```\n{message[:1500]}\n```",
+            governance_run.issue.number,
+            f"Bitterblossom failed `{governance_run.run_id}`.\n\n```\n{message[:1500]}\n```",
             event_type="issue_comment_failed",
         )
         return 1
     finally:
-        if issue is not None and run_id and worker and builder_workspace:
-            cleanup_builder_workspace(runner, conn, event_log, run_id, args.repo, worker, builder_workspace)
-        if issue is not None and run_id:
+        if governance_run is not None:
+            release_worker_slot(conn, governance_run.worker_slot.id, run_id=governance_run.run_id)
+            if governance_run.builder_workspace:
+                cleanup_builder_workspace(
+                    runner,
+                    conn,
+                    event_log,
+                    governance_run.run_id,
+                    args.repo,
+                    governance_run.worker,
+                    governance_run.builder_workspace,
+                )
             if block_on_release:
-                block_lease(conn, args.repo, issue.number, run_id)
+                block_lease(conn, args.repo, governance_run.issue.number, governance_run.run_id)
             else:
-                release_lease(conn, args.repo, issue.number, run_id)
+                release_lease(conn, args.repo, governance_run.issue.number, governance_run.run_id)
 
 
 def loop(args: argparse.Namespace) -> int:
@@ -4332,8 +4374,8 @@ def reset_worker_slots(args: argparse.Namespace) -> int:
     params: list[Any] = [args.repo, *capacities.keys()]
     query = f"""
         update worker_slots
-        set state = ?, consecutive_failures = 0, last_error = null, current_run_id = null, updated_at = ?
-        where repo = ? and worker in ({placeholders})
+        set state = ?, consecutive_failures = 0, last_error = null, updated_at = ?
+        where repo = ? and worker in ({placeholders}) and current_run_id is null
     """
     cursor = conn.execute(query, (WORKER_SLOT_ACTIVE, now_utc(), *params))
     conn.commit()
