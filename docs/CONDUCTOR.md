@@ -316,7 +316,7 @@ python3 scripts/conductor.py show-runs --limit 5
 python3 scripts/conductor.py show-run --run-id <run-id>
 ```
 
-Both commands include `worktree_path` in the JSON output. A non-null `worktree_path` on a terminal run (merged, failed) indicates cleanup did not complete — use `show-events` to see the `workspace_cleanup_failed` event.
+Both commands include `worktree_path` in the JSON output. A non-null `worktree_path` on a terminal run (merged, failed) usually indicates cleanup did not complete — use `show-events` to see the `workspace_cleanup_failed` event. If the physical cleanup succeeded but a later run-state write failed, the run raises and the last persisted `worktree_path` can be stale until an operator reconciles it.
 
 Manual cleanup on the sprite:
 

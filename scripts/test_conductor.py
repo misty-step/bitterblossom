@@ -5971,7 +5971,10 @@ def test_prepare_run_workspace_exhausts_retries_with_explicit_message(
     )
     monkeypatch.setattr(conductor.time, "sleep", lambda _: None)
 
-    with pytest.raises(conductor.CmdError, match="workspace preparation failed after"):
+    with pytest.raises(
+        conductor.CmdError,
+        match=r"workspace preparation failed after 3 attempts: git fetch failed",
+    ):
         conductor.prepare_run_workspace(
             object(),
             "noble-blue-serpent",
@@ -5979,6 +5982,34 @@ def test_prepare_run_workspace_exhausts_retries_with_explicit_message(
             "run-538-1",
             "builder",
         )
+
+
+def test_prepare_run_workspace_retries_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    call_count = 0
+    expected_workspace = conductor.run_workspace("misty-step/bitterblossom", "run-538-1", "builder")
+    sleeps: list[float] = []
+
+    def fake_sprite_bash(_runner: object, _sprite: str, _script: str, *, timeout: int) -> str:
+        nonlocal call_count
+        call_count += 1
+        if call_count < 2:
+            raise subprocess.TimeoutExpired(["sprite", "exec"], timeout)
+        return expected_workspace
+
+    monkeypatch.setattr(conductor, "sprite_bash", fake_sprite_bash)
+    monkeypatch.setattr(conductor.time, "sleep", lambda s: sleeps.append(s))
+
+    workspace = conductor.prepare_run_workspace(
+        object(),
+        "noble-blue-serpent",
+        "misty-step/bitterblossom",
+        "run-538-1",
+        "builder",
+    )
+
+    assert workspace == expected_workspace
+    assert call_count == 2
+    assert sleeps == [conductor.WORKSPACE_PREP_RETRY_DELAY_SECONDS]
 
 
 def test_prepare_run_workspace_serializes_overlapping_calls(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -796,12 +796,12 @@ def _prepare_run_workspace_once(runner: Runner, sprite: str, mirror: str, worksp
 def prepare_run_workspace(runner: Runner, sprite: str, repo: str, run_id: str, lane: str) -> str:
     mirror = repo_dir(repo)
     workspace = run_workspace(repo, run_id, lane)
-    last_exc: CmdError | None = None
+    last_exc: Exception | None = None
     for attempt in range(1 + WORKSPACE_PREP_RETRIES):
         try:
             with _mirror_lock(sprite, mirror):
                 return _prepare_run_workspace_once(runner, sprite, mirror, workspace)
-        except CmdError as exc:
+        except (CmdError, OSError, subprocess.TimeoutExpired) as exc:
             last_exc = exc
             if attempt < WORKSPACE_PREP_RETRIES:
                 time.sleep(WORKSPACE_PREP_RETRY_DELAY_SECONDS * (attempt + 1))
