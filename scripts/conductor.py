@@ -2916,6 +2916,53 @@ def run_builder(
     return builder, payload
 
 
+def run_builder_turn(
+    runner: Runner,
+    conn: sqlite3.Connection,
+    event_log: pathlib.Path,
+    repo: str,
+    worker: str,
+    issue: Issue,
+    run_id: str,
+    branch: str,
+    prompt_template: pathlib.Path,
+    timeout_minutes: int,
+    *,
+    workspace: str,
+    event_type: str,
+    feedback: str | None = None,
+    pr_number: int | None = None,
+    pr_url: str | None = None,
+    feedback_source: str = "review",
+) -> BuilderResult:
+    """Run one builder turn and publish the validated handoff to governance."""
+    builder, payload = run_builder(
+        runner,
+        repo,
+        worker,
+        issue,
+        run_id,
+        branch,
+        prompt_template,
+        timeout_minutes,
+        workspace=workspace,
+        feedback=feedback,
+        pr_number=pr_number,
+        pr_url=pr_url,
+        feedback_source=feedback_source,
+    )
+    update_run(
+        conn,
+        run_id,
+        phase="awaiting_governance",
+        branch=builder.branch,
+        pr_number=builder.pr_number,
+        pr_url=builder.pr_url,
+    )
+    record_event(conn, event_log, run_id, event_type, payload)
+    return builder
+
+
 def run_review_round(
     runner: Runner,
     conn: sqlite3.Connection,
@@ -3191,6 +3238,7 @@ def govern_pr_flow(
     pr_url: str,
     builder_workspace: str,
 ) -> int:
+    builder_template = pathlib.Path(args.builder_template)
     builder = BuilderResult(
         status="ready_for_review",
         branch=branch,
@@ -3314,23 +3362,24 @@ def govern_pr_flow(
             feedback = summarize_reviews(blocks + fixes)
             update_run(conn, run_id, phase="revising")
             record_event(conn, event_log, run_id, "revision_requested", {"feedback": feedback, "reason": "review"})
-            builder, builder_payload = run_builder(
+            builder = run_builder_turn(
                 runner,
+                conn,
+                event_log,
                 args.repo,
                 worker,
                 issue,
                 run_id,
                 branch,
-                pathlib.Path(args.builder_template),
+                builder_template,
                 args.builder_timeout,
                 workspace=builder_workspace,
+                event_type="builder_revised",
                 feedback=feedback,
                 feedback_source="review",
                 pr_number=builder.pr_number,
                 pr_url=builder.pr_url,
             )
-            update_run(conn, run_id, phase="awaiting_governance", branch=builder.branch, pr_number=builder.pr_number, pr_url=builder.pr_url)
-            record_event(conn, event_log, run_id, "builder_revised", builder_payload)
             review_rounds += 1
             last_pr_feedback_thread_ids = ()
             continue
@@ -3370,23 +3419,24 @@ def govern_pr_flow(
             feedback = f"CI checks failed for PR #{builder.pr_number}:\n{checks_output}"
             update_run(conn, run_id, phase="revising")
             record_event(conn, event_log, run_id, "revision_requested", {"feedback": feedback, "reason": "ci"})
-            builder, builder_payload = run_builder(
+            builder = run_builder_turn(
                 runner,
+                conn,
+                event_log,
                 args.repo,
                 worker,
                 issue,
                 run_id,
                 branch,
-                pathlib.Path(args.builder_template),
+                builder_template,
                 args.builder_timeout,
                 workspace=builder_workspace,
+                event_type="builder_revised",
                 feedback=feedback,
                 feedback_source="ci",
                 pr_number=builder.pr_number,
                 pr_url=builder.pr_url,
             )
-            update_run(conn, run_id, phase="awaiting_governance", branch=builder.branch, pr_number=builder.pr_number, pr_url=builder.pr_url)
-            record_event(conn, event_log, run_id, "builder_revised", builder_payload)
             ci_rounds += 1
             last_pr_feedback_thread_ids = ()
             continue
@@ -3410,23 +3460,24 @@ def govern_pr_flow(
             return 2
         if thread_action == "revise" and feedback is not None:
             last_pr_feedback_thread_ids = thread_ids
-            builder, builder_payload = run_builder(
+            builder = run_builder_turn(
                 runner,
+                conn,
+                event_log,
                 args.repo,
                 worker,
                 issue,
                 run_id,
                 branch,
-                pathlib.Path(args.builder_template),
+                builder_template,
                 args.builder_timeout,
                 workspace=builder_workspace,
+                event_type="builder_revised",
                 feedback=feedback,
                 feedback_source="pr_review_threads",
                 pr_number=builder.pr_number,
                 pr_url=builder.pr_url,
             )
-            update_run(conn, run_id, phase="awaiting_governance", branch=builder.branch, pr_number=builder.pr_number, pr_url=builder.pr_url)
-            record_event(conn, event_log, run_id, "builder_revised", builder_payload)
             pr_feedback_rounds += 1
             continue
 
@@ -3494,46 +3545,48 @@ def govern_pr_flow(
                 return 2
             if thread_action == "revise" and feedback is not None:
                 last_pr_feedback_thread_ids = thread_ids
-                builder, builder_payload = run_builder(
+                builder = run_builder_turn(
                     runner,
+                    conn,
+                    event_log,
                     args.repo,
                     worker,
                     issue,
                     run_id,
                     branch,
-                    pathlib.Path(args.builder_template),
+                    builder_template,
                     args.builder_timeout,
                     workspace=builder_workspace,
+                    event_type="builder_revised",
                     feedback=feedback,
                     feedback_source="pr_review_threads",
                     pr_number=builder.pr_number,
                     pr_url=builder.pr_url,
                 )
-                update_run(conn, run_id, phase="awaiting_governance", branch=builder.branch, pr_number=builder.pr_number, pr_url=builder.pr_url)
-                record_event(conn, event_log, run_id, "builder_revised", builder_payload)
                 pr_feedback_rounds += 1
                 continue
 
         if not polish_completed:
             update_run(conn, run_id, phase="polishing")
             record_event(conn, event_log, run_id, "final_polish_requested", {"pr_number": builder.pr_number})
-            builder, builder_payload = run_builder(
+            builder = run_builder_turn(
                 runner,
+                conn,
+                event_log,
                 args.repo,
                 worker,
                 issue,
                 run_id,
                 branch,
-                pathlib.Path(args.builder_template),
+                builder_template,
                 args.builder_timeout,
                 workspace=builder_workspace,
+                event_type="final_polish_complete",
                 feedback=final_polish_feedback(builder.pr_number),
                 feedback_source="polish",
                 pr_number=builder.pr_number,
                 pr_url=builder.pr_url,
             )
-            update_run(conn, run_id, phase="awaiting_governance", branch=builder.branch, pr_number=builder.pr_number, pr_url=builder.pr_url)
-            record_event(conn, event_log, run_id, "final_polish_complete", builder_payload)
             polish_completed = True
             last_pr_feedback_thread_ids = ()
             # Re-enter the full governor loop so any polish changes re-run review,
@@ -3628,30 +3681,25 @@ def run_once(args: argparse.Namespace) -> int:
         record_event(conn, event_log, run_id, "builder_selected", {"sprite": worker})
 
         branch = branch_name(issue.number, run_id_suffix(run_id))
+        builder_template = pathlib.Path(args.builder_template)
         builder_workspace = prepare_run_workspace(runner, worker, args.repo, run_id, "builder")
         builder_workspace_prepared = True
         update_run(conn, run_id, worktree_path=builder_workspace)
         record_event(conn, event_log, run_id, "builder_workspace_prepared", {"workspace": builder_workspace})
-        builder, builder_payload = run_builder(
+        builder = run_builder_turn(
             runner,
+            conn,
+            event_log,
             args.repo,
             worker,
             issue,
             run_id,
             branch,
-            pathlib.Path(args.builder_template),
+            builder_template,
             args.builder_timeout,
             workspace=builder_workspace,
+            event_type="builder_complete",
         )
-        update_run(
-            conn,
-            run_id,
-            phase="awaiting_governance",
-            branch=builder.branch,
-            pr_number=builder.pr_number,
-            pr_url=builder.pr_url,
-        )
-        record_event(conn, event_log, run_id, "builder_complete", builder_payload)
         builder_handoff_recorded = True
         if getattr(args, "stop_after_pr", False):
             record_event(
