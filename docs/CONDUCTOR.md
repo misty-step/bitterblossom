@@ -162,7 +162,10 @@ python3 scripts/conductor.py reset-worker-slots \
 `show-workers` is the worker-pool admin surface. It returns slot-level health,
 current assignments, computed backfill demand against `--desired-concurrency`,
 and recent slot-drain / selection events so operators can see which capacity is
-healthy before touching sprites manually.
+healthy before touching sprites manually. On a fresh database it still reports
+the configured slots from `--worker ...` even before any run has materialized
+those slot rows in SQLite, so the inspection surface stays truthful without
+seeding state as a side effect.
 
 `reset-worker-slots` is the recovery surface for drained capacity. It resets the
 matching workers back to `active`, clears probe failures, and removes stale
