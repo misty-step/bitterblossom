@@ -14,7 +14,6 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
@@ -59,6 +58,7 @@ WORKER_SLOT_STATES = {WORKER_SLOT_ACTIVE, WORKER_SLOT_DRAINED}
 WORKER_DRAIN_FAILURE_THRESHOLD = 2
 MAX_WORKER_SLOT_COUNT = 1000
 TERMINAL_RUN_STATUSES = {"merged", "failed", "blocked", "closed"}
+BUILDER_WORKSPACE_CLEANUP_KIND = "builder_workspace_cleanup"
 
 
 @dataclass(slots=True)
@@ -707,13 +707,13 @@ def latest_worktree_recovery_event(conn: sqlite3.Connection, run_id: str) -> sql
             event_type in ('builder_workspace_cleaned', 'workspace_preparation_failed')
             or (
               event_type = 'cleanup_warning'
-              and json_extract(payload_json, '$.kind') = 'builder_workspace_cleanup'
+              and json_extract(payload_json, '$.kind') = ?
             )
           )
         order by id desc
         limit 1
         """,
-        (run_id,),
+        (run_id, BUILDER_WORKSPACE_CLEANUP_KIND),
     ).fetchone()
 
 
@@ -750,7 +750,6 @@ def blocking_event_for_run(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row
 
 def serialize_run_surface(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
     heartbeat_at = row["heartbeat_at"]
-    worktree_path = row["worktree_path"] if "worktree_path" in row.keys() else None
     payload: dict[str, Any] = {
         "run_id": row["run_id"],
         "repo": row["repo"],
@@ -764,7 +763,7 @@ def serialize_run_surface(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[st
         "branch": row["branch"],
         "pr_number": row["pr_number"],
         "pr_url": row["pr_url"],
-        "worktree_path": worktree_path,
+        "worktree_path": row["worktree_path"],
         "heartbeat_at": heartbeat_at,
         "heartbeat_age_seconds": age_seconds_from_now(heartbeat_at),
         "updated_at": row["updated_at"],
@@ -781,7 +780,7 @@ def serialize_run_surface(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[st
         if recovery_event["event_type"] == "builder_workspace_cleaned":
             payload["worktree_recovery_status"] = "cleaned"
         elif recovery_event["event_type"] == "cleanup_warning":
-            if recovery_payload.get("kind") == "builder_workspace_cleanup":
+            if recovery_payload.get("kind") == BUILDER_WORKSPACE_CLEANUP_KIND:
                 payload["worktree_recovery_status"] = "cleanup_failed"
                 payload["worktree_recovery_error"] = recovery_payload.get("error")
         elif recovery_event["event_type"] == "workspace_preparation_failed":
@@ -1110,6 +1109,13 @@ def sprite_bash(runner: Runner, sprite: str, script: str, *, timeout: int = 120)
     )
 
 
+def parse_workspace_prepare_output(output: str, workspace: str, sprite: str) -> str:
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    if lines and lines[-1] == workspace:
+        return workspace
+    raise CmdError(f"unexpected workspace prepare output for {sprite}: {output!r}")
+
+
 def prepare_run_workspace(runner: Runner, sprite: str, repo: str, run_id: str, lane: str) -> str:
     mirror = repo_dir(repo)
     workspace = run_workspace(repo, run_id, lane)
@@ -1137,10 +1143,8 @@ def prepare_run_workspace(runner: Runner, sprite: str, repo: str, run_id: str, l
             'printf "%s\\n" "$workspace"',
         ]
     )
-    output = sprite_bash(runner, sprite, script, timeout=300).strip()
-    if output != workspace:
-        raise CmdError(f"unexpected workspace prepare output for {sprite}: {output!r}")
-    return workspace
+    output = sprite_bash(runner, sprite, script, timeout=300)
+    return parse_workspace_prepare_output(output, workspace, sprite)
 
 
 def cleanup_run_workspace(runner: Runner, sprite: str, repo: str, run_id: str, lane: str) -> None:
@@ -3205,7 +3209,7 @@ def cleanup_builder_workspace(
             run_id,
             "cleanup_warning",
             {
-                "kind": "builder_workspace_cleanup",
+                "kind": BUILDER_WORKSPACE_CLEANUP_KIND,
                 "workspace": workspace,
                 "error": f"builder workspace cleanup failed: {stringify_exc(exc)}",
             },
@@ -4742,7 +4746,7 @@ def show_events(args: argparse.Namespace) -> int:
     run_row = conn.execute(
         """
         select run_id, repo, issue_number, issue_title, phase, status, builder_sprite, builder_slot_id, builder_profile,
-               branch, pr_number, pr_url, heartbeat_at, updated_at
+               branch, pr_number, pr_url, heartbeat_at, updated_at, worktree_path
         from runs
         where run_id = ?
         """,
