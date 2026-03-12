@@ -1434,6 +1434,46 @@ def test_run_review_round_keeps_completed_wave_when_completion_event_recording_f
     assert [(wave.kind, wave.status) for wave in waves] == [("review_round", "completed")]
 
 
+def test_run_review_round_preserves_primary_error_when_terminal_check_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=447, title="test", body="body", url="https://example.com/447", labels=["autopilot"])
+
+    monkeypatch.setattr(
+        conductor,
+        "dispatch_tasks_until_artifacts",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("primary boom")),
+    )
+    monkeypatch.setattr(conductor, "cleanup_sprite_processes", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(conductor, "ensure_sprite_ready", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        conductor,
+        "prepare_run_workspace",
+        lambda _runner, _sprite, repo, run_id, lane: conductor.run_workspace(repo, run_id, lane),
+    )
+    monkeypatch.setattr(
+        conductor,
+        "review_wave_is_terminal",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(sqlite3.OperationalError("secondary boom")),
+    )
+
+    with pytest.raises(RuntimeError, match="primary boom"):
+        conductor.run_review_round(
+            _RunnerSpy(),
+            conn,
+            tmp_path / "events.jsonl",
+            "misty-step/bitterblossom",
+            issue,
+            "run-447-1",
+            463,
+            "https://github.com/misty-step/bitterblossom/pull/463",
+            ["fern"],
+            pathlib.Path("scripts/prompts/conductor-reviewer-template.md"),
+            10,
+        )
+
+
 def test_record_pr_thread_scan_marks_wave_failed_on_persist_error(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
 ) -> None:
@@ -4729,6 +4769,59 @@ def test_acceptance_trace_bullet_run_is_inspectable_from_run_store(
     assert "external_review_wait_complete" in event_types
     assert "review_wave_started" in event_types
     assert "review_wave_completed" in event_types
+
+
+def test_run_once_marks_external_review_wait_failed_when_wait_raises(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    issue = conductor.Issue(number=482, title="gov", body="", url="https://example.com/482", labels=["autopilot"])
+    builder = conductor.BuilderResult(
+        status="ready_for_review",
+        branch="factory/482-gov-1",
+        pr_number=483,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/483",
+        summary="done",
+        tests=[],
+    )
+    reviews = [
+        conductor.ReviewResult(reviewer="fern", verdict="pass", summary="ok", findings=[]),
+        conductor.ReviewResult(reviewer="sage", verdict="pass", summary="ok", findings=[]),
+        conductor.ReviewResult(reviewer="thorn", verdict="pass", summary="ok", findings=[]),
+    ]
+
+    monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
+    monkeypatch.setattr(conductor, "select_worker", lambda *_a, **_kw: "noble-blue-serpent")
+    monkeypatch.setattr(conductor, "ensure_reviewers_ready", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "run_builder", lambda *_a, **_kw: (builder, {"status": "ready_for_review"}))
+    monkeypatch.setattr(conductor, "run_review_round", lambda *_a, **_kw: reviews)
+    monkeypatch.setattr(conductor, "ensure_pr_ready", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "wait_for_pr_checks", lambda *_a, **_kw: (True, "merge-gate: SUCCESS"))
+    monkeypatch.setattr(conductor, "ensure_required_checks_present", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "list_unresolved_review_threads", lambda *_a, **_kw: [])
+    monkeypatch.setattr(
+        conductor,
+        "wait_for_external_reviews",
+        lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("external wait boom")),
+    )
+    monkeypatch.setattr(conductor, "comment_pr", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "comment_issue", lambda *_a, **_kw: None)
+
+    args = _make_run_once_args(
+        tmp_path,
+        issue_number=482,
+        trusted_external_surfaces=["CodeRabbit"],
+        external_review_quiet_window=0,
+        external_review_timeout=5,
+    )
+
+    rc = conductor.run_once(args)
+
+    assert rc == 0
+    conn = conductor.open_db(pathlib.Path(args.db))
+    run_row = conn.execute("select run_id from runs where issue_number = ?", (482,)).fetchone()
+    assert run_row is not None
+    waves = conductor.load_review_waves(conn, run_row["run_id"])
+    assert ("external_review_wait", "failed") in [(wave.kind, wave.status) for wave in waves]
 
 
 def test_run_once_rechecks_pr_threads_after_external_reviews_settle(

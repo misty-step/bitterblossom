@@ -1508,8 +1508,11 @@ def complete_review_wave(
     *,
     extra: dict[str, Any] | None = None,
     preserve_primary_error: bool = False,
+    skip_if_terminal: bool = False,
 ) -> None:
     try:
+        if skip_if_terminal and review_wave_is_terminal(conn, wave_id):
+            return
         finish_review_wave(conn, wave_id, status)
         record_review_wave_event(
             conn,
@@ -2882,16 +2885,16 @@ def run_review_round(
             extra={"reviews_recorded": len(ordered_reviews)},
         )
     except Exception:
-        if not review_wave_is_terminal(conn, wave_id):
-            complete_review_wave(
-                conn,
-                event_log,
-                run_id,
-                wave_id,
-                "partial" if reviews else "failed",
-                extra={"reviews_recorded": len(reviews)},
-                preserve_primary_error=True,
-            )
+        complete_review_wave(
+            conn,
+            event_log,
+            run_id,
+            wave_id,
+            "partial" if reviews else "failed",
+            extra={"reviews_recorded": len(reviews)},
+            preserve_primary_error=True,
+            skip_if_terminal=True,
+        )
         raise
     finally:
         for reviewer in prepared_reviewers:
@@ -3347,6 +3350,10 @@ def govern_pr_flow(
         if trusted_surfaces:
             external_review_timeout = args.external_review_timeout
             external_review_quiet_window = args.external_review_quiet_window
+            wave_extra = {
+                "trusted_surfaces": trusted_surfaces,
+                "quiet_window_seconds": external_review_quiet_window,
+            }
             wave_id = start_review_wave(
                 conn,
                 run_id,
@@ -3360,57 +3367,59 @@ def govern_pr_flow(
                 run_id,
                 wave_id,
                 "review_wave_started",
-                extra={
-                    "trusted_surfaces": trusted_surfaces,
-                    "quiet_window_seconds": external_review_quiet_window,
-                },
+                extra=wave_extra,
             )
-            touch_run(
-                conn,
-                args.repo,
-                issue.number,
-                run_id,
-                external_review_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
-            )
-            ext_ok, ext_output = wait_for_external_reviews(
-                runner,
-                args.repo,
-                builder.pr_number,
-                trusted_surfaces,
-                quiet_window_seconds=external_review_quiet_window,
-                timeout_minutes=external_review_timeout,
-                on_tick=lambda: touch_run(
+            ext_ok: bool | None = None
+            try:
+                touch_run(
                     conn,
                     args.repo,
                     issue.number,
                     run_id,
                     external_review_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
-                ),
-            )
-            record_event(
-                conn,
-                event_log,
-                run_id,
-                "external_review_wait_complete",
-                {
-                    "wave_id": wave_id,
-                    "passed": ext_ok,
-                    "output": ext_output,
-                    "trusted_surfaces": trusted_surfaces,
-                    "quiet_window_seconds": external_review_quiet_window,
-                },
-            )
-            complete_review_wave(
-                conn,
-                event_log,
-                run_id,
-                wave_id,
-                "settled" if ext_ok else "failed",
-                extra={
-                    "trusted_surfaces": trusted_surfaces,
-                    "quiet_window_seconds": external_review_quiet_window,
-                },
-            )
+                )
+                ext_ok, ext_output = wait_for_external_reviews(
+                    runner,
+                    args.repo,
+                    builder.pr_number,
+                    trusted_surfaces,
+                    quiet_window_seconds=external_review_quiet_window,
+                    timeout_minutes=external_review_timeout,
+                    on_tick=lambda: touch_run(
+                        conn,
+                        args.repo,
+                        issue.number,
+                        run_id,
+                        external_review_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
+                    ),
+                )
+                record_event(
+                    conn,
+                    event_log,
+                    run_id,
+                    "external_review_wait_complete",
+                    {"wave_id": wave_id, "passed": ext_ok, "output": ext_output, **wave_extra},
+                )
+                complete_review_wave(
+                    conn,
+                    event_log,
+                    run_id,
+                    wave_id,
+                    "settled" if ext_ok else "failed",
+                    extra=wave_extra,
+                )
+            except Exception:
+                complete_review_wave(
+                    conn,
+                    event_log,
+                    run_id,
+                    wave_id,
+                    "settled" if ext_ok else "failed",
+                    extra=wave_extra,
+                    preserve_primary_error=True,
+                    skip_if_terminal=True,
+                )
+                raise
             if not ext_ok:
                 update_run(conn, run_id, phase="blocked", status="blocked")
                 best_effort_issue_comment(
