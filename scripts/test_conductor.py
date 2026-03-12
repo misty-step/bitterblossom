@@ -2699,6 +2699,69 @@ def test_run_builder_precleans_worker(monkeypatch: pytest.MonkeyPatch) -> None:
     assert builder.pr_number == 465
 
 
+def test_run_builder_turn_records_governance_handoff(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=464, title="docs", body="body", url="https://example.com/464", labels=["autopilot"])
+    conductor.create_run(conn, "run-464-1", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(conn, "run-464-1", phase="revising")
+
+    builder = conductor.BuilderResult(
+        status="ready_for_review",
+        branch="factory/464-docs-1",
+        pr_number=465,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/465",
+        summary="done",
+        tests=[],
+    )
+    payload = {
+        "status": "ready_for_review",
+        "branch": builder.branch,
+        "pr_number": builder.pr_number,
+        "pr_url": builder.pr_url,
+        "summary": builder.summary,
+        "tests": builder.tests,
+    }
+
+    monkeypatch.setattr(conductor, "run_builder", lambda *_args, **_kwargs: (builder, payload))
+
+    got = conductor.run_builder_turn(
+        _RunnerSpy(),
+        conn,
+        tmp_path / "events.jsonl",
+        "misty-step/bitterblossom",
+        "noble-blue-serpent",
+        issue,
+        "run-464-1",
+        "factory/464-docs-1",
+        pathlib.Path("scripts/prompts/conductor-builder-template.md"),
+        10,
+        workspace="/tmp/run-464-1-builder",
+        event_type="builder_revised",
+        feedback="fix it",
+        pr_number=465,
+        pr_url=builder.pr_url,
+    )
+
+    assert got == builder
+    run = conn.execute(
+        "select phase, branch, pr_number, pr_url from runs where run_id = ?",
+        ("run-464-1",),
+    ).fetchone()
+    assert run is not None
+    assert run["phase"] == "awaiting_governance"
+    assert run["branch"] == builder.branch
+    assert run["pr_number"] == builder.pr_number
+    assert run["pr_url"] == builder.pr_url
+
+    event = conn.execute(
+        "select event_type, payload_json from events where run_id = ? order by id desc limit 1",
+        ("run-464-1",),
+    ).fetchone()
+    assert event is not None
+    assert event["event_type"] == "builder_revised"
+    assert json.loads(event["payload_json"]) == payload
+
+
 def test_ensure_sprite_ready_repairs_after_failed_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[list[str]] = []
     probe_results = iter(
@@ -4046,6 +4109,7 @@ def test_check_env_fails_when_tools_missing(monkeypatch: pytest.MonkeyPatch, tmp
     err = capsys.readouterr().err
     assert "gh" in err
     assert "sprite" in err
+    assert "crontab" in err
 
 
 def test_loop_continues_on_failure_in_backlog_mode(monkeypatch: pytest.MonkeyPatch) -> None:

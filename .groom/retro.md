@@ -71,3 +71,11 @@
 - scope: extended duplicate suppression from PR-thread-only handling to all review findings and emitted explicit review-wave events so settlement becomes inspectable from the run store
 - blocker: none
 - pattern: if convergence is part of the product contract, record it directly in the ledger and event stream instead of inferring it from helper control flow
+
+## 2026-03-11 [issue #482](https://github.com/misty-step/bitterblossom/issues/482)
+
+- predicted: M
+- actual: M
+- scope: replaced the unsupported `nohup` coordinator story with one repo-owned supervisor script, a reboot launcher contract, bounded local log rotation, and explicit operator docs
+- blocker: none
+- pattern: when "always-on" behavior matters, ship a narrow supported runtime contract in code and docs instead of leaving operators to improvise shell folklore
