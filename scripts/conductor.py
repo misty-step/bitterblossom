@@ -703,7 +703,13 @@ def latest_worktree_recovery_event(conn: sqlite3.Connection, run_id: str) -> sql
         select event_type, payload_json, created_at
         from events
         where run_id = ?
-          and event_type in ('builder_workspace_cleaned', 'cleanup_warning', 'workspace_preparation_failed')
+          and (
+            event_type in ('builder_workspace_cleaned', 'workspace_preparation_failed')
+            or (
+              event_type = 'cleanup_warning'
+              and json_extract(payload_json, '$.kind') = 'builder_workspace_cleanup'
+            )
+          )
         order by id desc
         limit 1
         """,
@@ -1168,11 +1174,11 @@ def prepare_run_workspace_with_retry(
     repo: str,
     lane: str,
 ) -> str:
-    last_exc: CmdError | None = None
+    last_exc: Exception | None = None
     for attempt in range(1, WORKSPACE_PREPARE_ATTEMPTS + 1):
         try:
             return prepare_run_workspace(runner, sprite, repo, run_id, lane)
-        except CmdError as exc:
+        except (CmdError, subprocess.TimeoutExpired) as exc:
             last_exc = exc
             payload = {
                 "sprite": sprite,

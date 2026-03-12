@@ -4272,6 +4272,36 @@ def test_show_runs_surfaces_worktree_recovery_context(tmp_path: pathlib.Path, ca
     assert payload["worktree_recovery_error"] == "builder workspace cleanup failed: permission denied"
 
 
+def test_show_runs_ignores_non_workspace_cleanup_warnings(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=46, title="cleanup", body="body", url="https://example.com/46", labels=["autopilot"])
+    conductor.create_run(conn, "run-46", "misty-step/bitterblossom", issue, "claude-sonnet")
+    conductor.update_run(
+        conn,
+        "run-46",
+        phase="awaiting_governance",
+        status="active",
+        builder_sprite="fern",
+        worktree_path="/tmp/run-46/builder-worktree",
+    )
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-46",
+        "cleanup_warning",
+        {"error": "post-artifact cleanup failed: use of closed network connection"},
+    )
+
+    rc = conductor.show_runs(argparse.Namespace(db=str(tmp_path / "conductor.db"), limit=5))
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload["worktree_recovery_status"] is None
+    assert payload["worktree_recovery_error"] is None
+
+
 def test_show_runs_hides_stale_blocking_reason_after_merge(tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
     conn = conductor.open_db(tmp_path / "conductor.db")
     issue = conductor.Issue(number=44, title="merged", body="body", url="https://example.com/44", labels=["autopilot"])
@@ -4554,7 +4584,14 @@ def test_show_run_surfaces_workspace_preparation_failure_reason(
     conn = conductor.open_db(tmp_path / "conductor.db")
     issue = conductor.Issue(number=448, title="prepare", body="", url="https://example.com/448", labels=["autopilot"])
     conductor.create_run(conn, "run-448-1", "misty-step/bitterblossom", issue, "claude-sonnet")
-    conductor.update_run(conn, "run-448-1", phase="failed", status="failed", builder_sprite="fern")
+    conductor.update_run(
+        conn,
+        "run-448-1",
+        phase="failed",
+        status="failed",
+        builder_sprite="fern",
+        worktree_path="/tmp/run-448-1/builder-worktree",
+    )
     conductor.record_event(
         conn,
         tmp_path / "events.jsonl",
@@ -4582,6 +4619,7 @@ def test_show_run_surfaces_workspace_preparation_failure_reason(
     payload = json.loads(capsys.readouterr().out)
     assert payload["run"]["blocking_event_type"] == "workspace_preparation_failed"
     assert payload["run"]["blocking_reason"] == "workspace prepare failed: transient network"
+    assert payload["run"]["worktree_path"] == "/tmp/run-448-1/builder-worktree"
     assert payload["run"]["worktree_recovery_status"] == "prepare_failed"
     assert payload["run"]["worktree_recovery_error"] == "workspace prepare failed: transient network"
 
@@ -6832,7 +6870,7 @@ def test_prepare_run_workspace_uses_remote_tracking_refs(monkeypatch: pytest.Mon
     assert workspace == expected_workspace
     assert "lockfile=/home/sprite/workspace/bitterblossom/.bb/conductor/mirror.lock" in captured["script"]
     assert 'exec 9>"$lockfile"' in captured["script"]
-    assert 'flock 9' in captured["script"]
+    assert f'flock -w {conductor.WORKSPACE_PREPARE_LOCK_WAIT_SECONDS} 9' in captured["script"]
     assert 'refs/remotes/origin/master' in captured["script"]
     assert 'base_ref="origin/master"' in captured["script"]
     assert 'refs/remotes/origin/HEAD' in captured["script"]
@@ -6857,6 +6895,28 @@ def test_prepare_run_workspace_accepts_workspace_as_last_output_line(monkeypatch
     )
 
     assert workspace == expected_workspace
+
+
+def test_cleanup_run_workspace_uses_bounded_lock_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, str] = {}
+
+    def fake_sprite_bash(_runner: object, _sprite: str, script: str, *, timeout: int) -> str:
+        _ = timeout
+        captured["script"] = script
+        return ""
+
+    monkeypatch.setattr(conductor, "sprite_bash", fake_sprite_bash)
+
+    conductor.cleanup_run_workspace(
+        object(),
+        "noble-blue-serpent",
+        "misty-step/bitterblossom",
+        "run-469-1",
+        "builder",
+    )
+
+    assert f'flock -w {conductor.WORKSPACE_CLEANUP_LOCK_WAIT_SECONDS} 9' in captured["script"]
+    assert "mirror lock acquisition timed out during cleanup" in captured["script"]
 
 
 def test_prepare_run_workspace_with_retry_recovers_after_transient_failure(
@@ -6893,6 +6953,42 @@ def test_prepare_run_workspace_with_retry_recovers_after_transient_failure(
     payload = json.loads(events[0]["payload_json"])
     assert payload["attempt"] == 1
     assert payload["error"] == "transient fetch failure"
+
+
+def test_prepare_run_workspace_with_retry_retries_timeout_expired(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=471, title="worktrees", body="", url="u471", labels=["autopilot"])
+    conductor.create_run(conn, "run-471-1", "misty-step/bitterblossom", issue, "default")
+    attempts = {"count": 0}
+
+    def flaky_prepare(*_args: object, **_kwargs: object) -> str:
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise subprocess.TimeoutExpired(cmd=["sprite"], timeout=300)
+        return "/tmp/run-471-1/builder-worktree"
+
+    monkeypatch.setattr(conductor, "prepare_run_workspace", flaky_prepare)
+    monkeypatch.setattr(conductor.time, "sleep", lambda *_args, **_kwargs: None)
+
+    workspace = conductor.prepare_run_workspace_with_retry(
+        object(),
+        conn,
+        tmp_path / "events.jsonl",
+        "run-471-1",
+        "noble-blue-serpent",
+        "misty-step/bitterblossom",
+        "builder",
+    )
+
+    assert workspace == "/tmp/run-471-1/builder-worktree"
+    assert attempts["count"] == 2
+    events = conn.execute("select event_type, payload_json from events where run_id = 'run-471-1' order by id").fetchall()
+    assert [row["event_type"] for row in events] == ["workspace_preparation_retry"]
+    payload = json.loads(events[0]["payload_json"])
+    assert payload["attempt"] == 1
+    assert "timed out" in payload["error"].lower()
 
 
 def test_prepare_run_workspace_with_retry_records_explicit_failure(

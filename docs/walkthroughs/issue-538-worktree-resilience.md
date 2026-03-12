@@ -39,7 +39,9 @@ flowchart TD
 ```
 
 - `scripts/conductor.py` now serializes mirror mutation on-sprite with `.bb/conductor/mirror.lock`
+- lock acquisition is now bounded so timed-out sprite sessions fail explicitly instead of leaving later callers hanging on the same lock
 - builder and reviewer workspace preparation now retries bounded transient failures before failing with `workspace_preparation_failed`
+- `subprocess.TimeoutExpired` now follows the same retry/failure path as other workspace preparation errors
 - run inspection surfaces now expose `worktree_recovery_status`, `worktree_recovery_error`, and the event that established that state
 - workspace cleanup warnings now persist the surviving worktree path in explicit recovery context
 
@@ -79,7 +81,9 @@ Primary protecting checks:
 Evidence covered by those checks:
 
 - lock-based serialization is present in the workspace shell contract
+- lock acquisition timeouts fail explicitly in both prepare and cleanup paths
 - transient workspace preparation retries are recorded and recover correctly
+- timed-out sprite exec calls are retried and surfaced explicitly when retries exhaust
 - repeated preparation failure emits `workspace_preparation_failed`
 - `show-runs` / `show-run` surface cleanup and preparation recovery context
 
