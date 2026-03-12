@@ -6649,6 +6649,49 @@ def test_run_once_cleanup_error_after_builder_handoff_does_not_record_false_fail
     assert "command_failed" not in event_types
 
 
+def test_run_once_workspace_preparation_error_after_builder_handoff_does_not_record_false_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    issue = conductor.Issue(number=486, title="fix thing", body="body", url="https://example.com/486", labels=["autopilot"])
+    builder = conductor.BuilderResult(
+        status="ready_for_review",
+        branch="factory/486-1772912018",
+        pr_number=496,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/496",
+        summary="done",
+        tests=[],
+    )
+
+    issue_comments: list[str] = []
+    monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
+    monkeypatch.setattr(conductor, "select_worker_slot", _select_named_worker_slot("pr83-e2e2-20260306-001"))
+    monkeypatch.setattr(conductor, "ensure_reviewers_ready", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "run_builder", lambda *_a, **_kw: (builder, {"status": "ready_for_review"}))
+    monkeypatch.setattr(
+        conductor,
+        "run_review_round",
+        lambda *_a, **_kw: (_ for _ in ()).throw(conductor.WorkspacePreparationError("reviewer workspace prepare failed")),
+    )
+    monkeypatch.setattr(conductor, "comment_issue", lambda *_a, **_kw: issue_comments.append(str(_a[3])))
+
+    args = _make_run_once_args(tmp_path, issue_number=486)
+    rc = conductor.run_once(args)
+
+    assert rc == 0
+    assert not any("Bitterblossom failed" in comment for comment in issue_comments)
+
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    row = conn.execute("select phase, status, pr_number from runs where run_id like 'run-486-%'").fetchone()
+    assert row is not None
+    assert row["phase"] == "governing"
+    assert row["status"] == "active"
+    assert row["pr_number"] == 496
+
+    event_types = [r[0] for r in conn.execute("select event_type from events where run_id like 'run-486-%'").fetchall()]
+    assert "cleanup_warning" in event_types
+    assert "command_failed" not in event_types
+
+
 def test_run_once_clears_builder_worktree_path_after_cleanup(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
 ) -> None:

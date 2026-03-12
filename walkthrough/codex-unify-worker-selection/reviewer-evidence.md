@@ -30,10 +30,10 @@ That split meant callers had to remember two selection contracts, and the defaul
 ### Real Execution
 
 ```text
-$ python3 -m pytest -q scripts/test_conductor.py
-223 passed in 1.05s
+$ python3 -m pytest -q base/hooks scripts/test_conductor.py
+335 passed in 1.37s
 
-$ python3 -m ruff check scripts/conductor.py scripts/test_conductor.py
+$ python3 -m ruff check base/hooks scripts/conductor.py scripts/test_conductor.py
 All checks passed!
 ```
 
@@ -41,12 +41,13 @@ All checks passed!
 
 - `scripts/test_conductor.py:2932`
 - `scripts/test_conductor.py:4814`
+- `scripts/test_conductor.py:6652`
 
-These tests prove the slot selector handles the plain single-slot worker case directly and that governance adoption does not claim a worker slot before lease acquisition succeeds.
+These tests prove the slot selector handles the plain single-slot worker case directly, governance adoption does not claim a worker slot before lease acquisition succeeds, and post-handoff workspace-preparation failures still avoid false failure reporting on the current merge surface.
 
 ## Persistent Verification
 
-- `python3 -m pytest -q scripts/test_conductor.py`
+- `python3 -m pytest -q base/hooks scripts/test_conductor.py`
 
 ## Residual Risk
 
