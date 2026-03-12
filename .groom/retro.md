@@ -1,5 +1,13 @@
 # Retro
 
+## 2026-03-12 [issue #481](https://github.com/misty-step/bitterblossom/issues/481)
+
+- predicted: L
+- actual: M
+- scope: added a narrow telemetry sample ledger for builder/reviewer artifacts, rolled the data into the existing run inspection surfaces, and shipped one aggregate `show-metrics` read model instead of introducing a separate analytics service or dashboard backend
+- blocker: walkthrough packaging needed a branch-scoped terminal artifact because the repo had no existing convention for internal PR evidence bundles
+- pattern: when observability needs both per-run detail and trend reporting, append one deeper telemetry table to the existing ledger and derive operator read models from it instead of scattering metrics into ad hoc JSON blobs
+
 ## 2026-03-10 [issue #474](https://github.com/misty-step/bitterblossom/issues/474)
 
 - predicted: L

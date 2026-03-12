@@ -55,9 +55,16 @@ WORKER_SLOT_STATES = {WORKER_SLOT_ACTIVE, WORKER_SLOT_DRAINED}
 WORKER_DRAIN_FAILURE_THRESHOLD = 2
 MAX_WORKER_SLOT_COUNT = 1000
 TERMINAL_RUN_STATUSES = {"merged", "failed", "blocked", "closed"}
-
-WORKSPACE_PREP_RETRIES = 2
-WORKSPACE_PREP_RETRY_DELAY_SECONDS = 5
+WORKSPACE_PREPARE_LOCK_WAIT_SECONDS = 240
+WORKSPACE_CLEANUP_LOCK_WAIT_SECONDS = 120
+WORKSPACE_PREPARE_ATTEMPTS = 3
+WORKSPACE_PREPARE_RETRY_DELAY_SECONDS = 2
+# Back-compat aliases while the workspace lifecycle helpers still use the
+# original retry constant names internally.
+WORKSPACE_PREP_RETRIES = WORKSPACE_PREPARE_ATTEMPTS - 1
+WORKSPACE_PREP_RETRY_DELAY_SECONDS = WORKSPACE_PREPARE_RETRY_DELAY_SECONDS
+BUILDER_WORKSPACE_CLEANUP_KIND = "builder_workspace_cleanup"
+UNSET = object()
 
 # Per-(sprite, mirror) locks to serialize mirror mutation within a process.
 # Cross-process serialization is handled by flock on the sprite filesystem.
@@ -301,6 +308,25 @@ def init_db(conn: sqlite3.Connection) -> None:
             updated_at text not null
         );
 
+        create table if not exists run_telemetry_samples (
+            id integer primary key autoincrement,
+            run_id text not null,
+            lane text not null,
+            actor text not null,
+            source_event text not null,
+            model text,
+            provider text,
+            reasoning_budget text,
+            input_tokens integer,
+            output_tokens integer,
+            total_tokens integer,
+            estimated_cost_usd real,
+            sample_json text not null,
+            created_at text not null
+        );
+        create index if not exists idx_run_telemetry_samples_run_id
+            on run_telemetry_samples (run_id, created_at);
+
         create table if not exists leases (
             repo text not null,
             issue_number integer not null,
@@ -398,18 +424,35 @@ def init_db(conn: sqlite3.Connection) -> None:
     ensure_column(conn, "runs", "heartbeat_at", "text")
     ensure_column(conn, "runs", "worktree_path", "text")
     ensure_column(conn, "runs", "builder_slot_id", "integer")
+    picked_at_added = ensure_column(conn, "runs", "picked_at", "text")
+    completed_at_added = ensure_column(conn, "runs", "completed_at", "text")
+    turn_count_added = ensure_column(conn, "runs", "turn_count", "integer")
+    ensure_column(conn, "run_telemetry_samples", "reasoning_budget", "text")
     ensure_column(conn, "leases", "heartbeat_at", "text")
     ensure_column(conn, "leases", "lease_expires_at", "text")
     ensure_column(conn, "leases", "blocked_at", "text")
+    if picked_at_added:
+        conn.execute("update runs set picked_at = created_at where picked_at is null")
+    if completed_at_added:
+        conn.execute(
+            """
+            update runs
+            set completed_at = updated_at
+            where completed_at is null and status in ('merged', 'failed', 'blocked', 'closed')
+            """
+        )
+    if turn_count_added:
+        conn.execute("update runs set turn_count = 0 where turn_count is null")
     conn.commit()
 
 
-def ensure_column(conn: sqlite3.Connection, table: str, column: str, decl: str) -> None:
+def ensure_column(conn: sqlite3.Connection, table: str, column: str, decl: str) -> bool:
     cols = conn.execute(f"pragma table_info({table})").fetchall()
     names = {row[1] for row in cols}
     if column in names:
-        return
+        return False
     conn.execute(f"alter table {table} add column {column} {decl}")
+    return True
 
 
 def open_db(path: pathlib.Path) -> sqlite3.Connection:
@@ -438,10 +481,10 @@ def create_run(conn: sqlite3.Connection, run_id: str, repo: str, issue: Issue, b
         """
         insert into runs (
             run_id, repo, issue_number, issue_title, phase, status,
-            builder_profile, heartbeat_at, created_at, updated_at
-        ) values (?, ?, ?, ?, 'leased', 'active', ?, ?, ?, ?)
+            builder_profile, heartbeat_at, created_at, updated_at, picked_at, turn_count
+        ) values (?, ?, ?, ?, 'leased', 'active', ?, ?, ?, ?, ?, 0)
         """,
-        (run_id, repo, issue.number, issue.title, builder_profile, ts, ts, ts),
+        (run_id, repo, issue.number, issue.title, builder_profile, ts, ts, ts, ts),
     )
     conn.commit()
 
@@ -449,6 +492,11 @@ def create_run(conn: sqlite3.Connection, run_id: str, repo: str, issue: Issue, b
 def update_run(conn: sqlite3.Connection, run_id: str, **fields: Any) -> None:
     if not fields:
         return
+    row = conn.execute("select picked_at, completed_at from runs where run_id = ?", (run_id,)).fetchone()
+    if row is None:
+        return
+    if fields.get("status") in TERMINAL_RUN_STATUSES and "completed_at" not in fields and row["completed_at"] is None:
+        fields["completed_at"] = now_utc()
     fields["updated_at"] = now_utc()
     cols = ", ".join(f"{key} = ?" for key in fields)
     values = list(fields.values()) + [run_id]
@@ -699,6 +747,310 @@ def age_seconds_from_now(value: str | None) -> int | None:
     return max(0, int(delta.total_seconds()))
 
 
+def duration_seconds(started_at: str | None, completed_at: str | None = None) -> int | None:
+    start = parse_utc_ts(started_at)
+    if start is None:
+        return None
+    end = parse_utc_ts(completed_at) if completed_at else utc_now()
+    if end is None:
+        return None
+    return max(0, int((end - start).total_seconds()))
+
+
+def normalized_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def int_value(value: Any) -> int | None:
+    if value in ("", None):
+        return None
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def float_value(value: Any) -> float | None:
+    if value in ("", None):
+        return None
+    if isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def first_present_value(*values: Any, caster: Callable[[Any], Any | None]) -> Any | None:
+    for value in values:
+        parsed = caster(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def extract_usage_sample(payload: dict[str, Any]) -> dict[str, Any] | None:
+    usage = payload.get("usage")
+    usage_dict = usage if isinstance(usage, dict) else {}
+    cost = payload.get("cost")
+    cost_dict = cost if isinstance(cost, dict) else {}
+    reasoning = payload.get("reasoning")
+    reasoning_dict = reasoning if isinstance(reasoning, dict) else {}
+    budget = payload.get("budget")
+    budget_dict = budget if isinstance(budget, dict) else {}
+    input_tokens = first_present_value(
+        usage_dict.get("input_tokens"),
+        usage_dict.get("prompt_tokens"),
+        payload.get("input_tokens"),
+        payload.get("prompt_tokens"),
+        caster=int_value,
+    )
+    output_tokens = first_present_value(
+        usage_dict.get("output_tokens"),
+        usage_dict.get("completion_tokens"),
+        payload.get("output_tokens"),
+        payload.get("completion_tokens"),
+        caster=int_value,
+    )
+    total_tokens = first_present_value(
+        usage_dict.get("total_tokens"),
+        payload.get("total_tokens"),
+        caster=int_value,
+    )
+    if total_tokens is None and input_tokens is not None and output_tokens is not None:
+        total_tokens = input_tokens + output_tokens
+    estimated_cost_usd = first_present_value(
+        payload.get("estimated_cost_usd"),
+        payload.get("cost_usd"),
+        usage_dict.get("estimated_cost_usd"),
+        usage_dict.get("cost_usd"),
+        cost_dict.get("usd"),
+        cost_dict.get("estimated_usd"),
+        cost_dict.get("value_usd"),
+        cost_dict.get("total_usd"),
+        caster=float_value,
+    )
+    model = first_present_value(
+        payload.get("model"),
+        payload.get("model_name"),
+        usage_dict.get("model"),
+        caster=normalized_string,
+    )
+    provider = first_present_value(
+        payload.get("provider"),
+        payload.get("provider_name"),
+        usage_dict.get("provider"),
+        caster=normalized_string,
+    )
+    reasoning_budget = first_present_value(
+        payload.get("reasoning_budget"),
+        payload.get("reasoning_effort"),
+        usage_dict.get("reasoning_budget"),
+        usage_dict.get("reasoning_effort"),
+        reasoning_dict.get("budget"),
+        reasoning_dict.get("effort"),
+        budget_dict.get("reasoning"),
+        caster=normalized_string,
+    )
+    if all(
+        value is None
+        for value in (model, provider, reasoning_budget, input_tokens, output_tokens, total_tokens, estimated_cost_usd)
+    ):
+        return None
+    return {
+        "model": model,
+        "provider": provider,
+        "reasoning_budget": reasoning_budget,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "estimated_cost_usd": estimated_cost_usd,
+    }
+
+
+def persist_run_telemetry_sample(
+    conn: sqlite3.Connection,
+    run_id: str,
+    *,
+    lane: str,
+    actor: str,
+    source_event: str,
+    payload: dict[str, Any],
+) -> None:
+    sample = extract_usage_sample(payload)
+    if sample is None:
+        return
+    conn.execute(
+        """
+        insert into run_telemetry_samples (
+            run_id, lane, actor, source_event, model, provider, reasoning_budget, input_tokens,
+            output_tokens, total_tokens, estimated_cost_usd, sample_json, created_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            run_id,
+            lane,
+            actor,
+            source_event,
+            sample["model"],
+            sample["provider"],
+            sample["reasoning_budget"],
+            sample["input_tokens"],
+            sample["output_tokens"],
+            sample["total_tokens"],
+            sample["estimated_cost_usd"],
+            json.dumps(sample, sort_keys=True, separators=(",", ":")),
+            now_utc(),
+        ),
+    )
+
+
+def increment_run_turn_count(conn: sqlite3.Connection, run_id: str) -> None:
+    conn.execute(
+        "update runs set turn_count = coalesce(turn_count, 0) + 1, updated_at = ? where run_id = ?",
+        (now_utc(), run_id),
+    )
+    conn.commit()
+
+
+def empty_run_telemetry_rollup() -> dict[str, Any]:
+    return {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "estimated_cost_usd": 0.0,
+        "samples": [],
+        "model_usage": {},
+        "provider_usage": {},
+        "reasoning_budget_usage": {},
+    }
+
+
+def finalize_run_telemetry_rollup(summary: dict[str, Any], *, saw_any_tokens: bool, saw_any_cost: bool) -> dict[str, Any]:
+    summary["input_tokens"] = summary["input_tokens"] if saw_any_tokens else None
+    summary["output_tokens"] = summary["output_tokens"] if saw_any_tokens else None
+    summary["total_tokens"] = summary["total_tokens"] if saw_any_tokens else None
+    summary["estimated_cost_usd"] = round(summary["estimated_cost_usd"], 6) if saw_any_cost else None
+    summary["model_usage"] = sorted(summary["model_usage"].values(), key=lambda item: (-item["calls"], item["model"]))
+    summary["provider_usage"] = sorted(summary["provider_usage"].values(), key=lambda item: (-item["calls"], item["provider"]))
+    summary["reasoning_budget_usage"] = sorted(
+        summary["reasoning_budget_usage"].values(),
+        key=lambda item: (-item["calls"], item["reasoning_budget"]),
+    )
+    return summary
+
+
+def run_telemetry_rollup_from_rows(rows: list[sqlite3.Row]) -> dict[str, Any]:
+    summary = empty_run_telemetry_rollup()
+    saw_any_tokens = False
+    saw_any_cost = False
+    for row in rows:
+        sample = {
+            "lane": row["lane"],
+            "actor": row["actor"],
+            "source_event": row["source_event"],
+            "model": row["model"],
+            "provider": row["provider"],
+            "reasoning_budget": row["reasoning_budget"] if "reasoning_budget" in row.keys() else None,
+            "input_tokens": row["input_tokens"],
+            "output_tokens": row["output_tokens"],
+            "total_tokens": row["total_tokens"],
+            "estimated_cost_usd": row["estimated_cost_usd"],
+            "created_at": row["created_at"],
+        }
+        summary["samples"].append(sample)
+        for field in ("input_tokens", "output_tokens", "total_tokens"):
+            value = row[field]
+            if value is not None:
+                summary[field] += int(value)
+                saw_any_tokens = True
+        cost_value = row["estimated_cost_usd"]
+        if cost_value is not None:
+            summary["estimated_cost_usd"] += float(cost_value)
+            saw_any_cost = True
+        model = normalized_string(row["model"])
+        if model is not None:
+            model_entry = summary["model_usage"].setdefault(
+                model,
+                {"model": model, "calls": 0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "estimated_cost_usd": 0.0},
+            )
+            model_entry["calls"] += 1
+            for field in ("input_tokens", "output_tokens", "total_tokens"):
+                value = row[field]
+                if value is not None:
+                    model_entry[field] += int(value)
+            if cost_value is not None:
+                model_entry["estimated_cost_usd"] += float(cost_value)
+        provider = normalized_string(row["provider"])
+        if provider is not None:
+            provider_entry = summary["provider_usage"].setdefault(
+                provider,
+                {
+                    "provider": provider,
+                    "calls": 0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "total_tokens": 0,
+                    "estimated_cost_usd": 0.0,
+                },
+            )
+            provider_entry["calls"] += 1
+            for field in ("input_tokens", "output_tokens", "total_tokens"):
+                value = row[field]
+                if value is not None:
+                    provider_entry[field] += int(value)
+            if cost_value is not None:
+                provider_entry["estimated_cost_usd"] += float(cost_value)
+        reasoning_budget = normalized_string(row["reasoning_budget"] if "reasoning_budget" in row.keys() else None)
+        if reasoning_budget is not None:
+            budget_entry = summary["reasoning_budget_usage"].setdefault(
+                reasoning_budget,
+                {"reasoning_budget": reasoning_budget, "calls": 0},
+            )
+            budget_entry["calls"] += 1
+    return finalize_run_telemetry_rollup(summary, saw_any_tokens=saw_any_tokens, saw_any_cost=saw_any_cost)
+
+
+def run_telemetry_rollup(conn: sqlite3.Connection, run_id: str) -> dict[str, Any]:
+    rows = conn.execute(
+        """
+        select lane, actor, source_event, model, provider, reasoning_budget,
+               input_tokens, output_tokens, total_tokens, estimated_cost_usd, created_at
+        from run_telemetry_samples
+        where run_id = ?
+        order by id
+        """,
+        (run_id,),
+    ).fetchall()
+    return run_telemetry_rollup_from_rows(rows)
+
+
+def run_telemetry_rollup_bulk(conn: sqlite3.Connection, run_ids: list[str]) -> dict[str, dict[str, Any]]:
+    ordered_run_ids = list(dict.fromkeys(run_ids))
+    if not ordered_run_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in ordered_run_ids)
+    rows = conn.execute(
+        f"""
+        select run_id, lane, actor, source_event, model, provider, reasoning_budget,
+               input_tokens, output_tokens, total_tokens, estimated_cost_usd, created_at
+        from run_telemetry_samples
+        where run_id in ({placeholders})
+        order by run_id, id
+        """,
+        ordered_run_ids,
+    ).fetchall()
+    rows_by_run: dict[str, list[sqlite3.Row]] = {run_id: [] for run_id in ordered_run_ids}
+    for row in rows:
+        rows_by_run[row["run_id"]].append(row)
+    return {run_id: run_telemetry_rollup_from_rows(rows_by_run[run_id]) for run_id in ordered_run_ids}
+
+
 def summarize_blocking_reason(event_type: str | None, payload: dict[str, Any]) -> str | None:
     if event_type == "pr_feedback_blocked":
         reason = str(payload.get("reason", "")).strip()
@@ -723,6 +1075,41 @@ def summarize_blocking_reason(event_type: str | None, payload: dict[str, Any]) -
     if event_type == "unexpected_error":
         return str(payload.get("error", "")).strip() or "unexpected conductor error"
     return None
+
+
+def latest_worktree_recovery_event(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row | None:
+    return conn.execute(
+        f"""
+        select event_type, payload_json, created_at
+        from events
+        where run_id = ?
+          and {BUILDER_WORKSPACE_LIFECYCLE_PREDICATE}
+        order by id desc
+        limit 1
+        """,
+        (run_id,),
+    ).fetchone()
+
+
+def latest_worktree_recovery_events(conn: sqlite3.Connection, run_ids: list[str]) -> dict[str, sqlite3.Row]:
+    ordered_run_ids = list(dict.fromkeys(run_ids))
+    if not ordered_run_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in ordered_run_ids)
+    rows = conn.execute(
+        f"""
+        select run_id, event_type, payload_json, created_at
+        from events
+        where run_id in ({placeholders})
+          and {BUILDER_WORKSPACE_LIFECYCLE_PREDICATE}
+        order by run_id, id desc
+        """,
+        ordered_run_ids,
+    ).fetchall()
+    events: dict[str, sqlite3.Row] = {}
+    for row in rows:
+        events.setdefault(row["run_id"], row)
+    return events
 
 
 def latest_event_for_run(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row | None:
@@ -801,28 +1188,7 @@ def blocking_event_for_run(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row
 
 
 def builder_workspace_lifecycle_event(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row | None:
-    """Return the most recent builder-workspace lifecycle event for a run.
-
-    This includes successful cleanup, builder-lane preparation failures,
-    builder cleanup warnings/failures, and excludes reviewer-lane cleanup rows.
-    Reviewer cleanup failures use the same event name but always carry a
-    ``reviewer`` field, so filtering on its absence isolates the builder lane.
-
-    Ambiguous or corrupted JSON payloads are excluded here so the inspection
-    surface prefers omission over falsely attributing reviewer cleanup failures
-    to the builder lane.
-    """
-    return conn.execute(
-        f"""
-        select event_type, payload_json, created_at
-        from events
-        where run_id = ?
-          and {BUILDER_WORKSPACE_LIFECYCLE_PREDICATE}
-        order by id desc
-        limit 1
-        """,
-        (run_id,),
-    ).fetchone()
+    return latest_worktree_recovery_event(conn, run_id)
 
 
 def is_builder_workspace_preparation_failure_event(event_row: sqlite3.Row | None) -> bool:
@@ -832,48 +1198,41 @@ def is_builder_workspace_preparation_failure_event(event_row: sqlite3.Row | None
     return payload is not None and payload.get("lane") == "builder"
 
 
-def run_surface_query(where_sql: str = "", limit_sql: str = "") -> str:
-    return f"""
-        with candidate_runs as (
-            select run_id, repo, issue_number, issue_title, phase, status, builder_sprite, builder_slot_id, builder_profile,
-                   branch, pr_number, pr_url, heartbeat_at, updated_at, worktree_path, created_at
-            from runs
-            {where_sql}
-            order by created_at desc
-            {limit_sql}
-        ),
-        blocking_events as (
-            select e.run_id, e.event_type, e.payload_json, e.created_at,
-                   row_number() over (partition by e.run_id order by e.id desc) as rn
-            from events e
-            join candidate_runs r on r.run_id = e.run_id
-            where {BLOCKING_EVENT_PREDICATE.replace('payload_json', 'e.payload_json').replace('event_type', 'e.event_type')}
-        ),
-        builder_lifecycle_events as (
-            select e.run_id, e.event_type, e.payload_json, e.created_at,
-                   row_number() over (partition by e.run_id order by e.id desc) as rn
-            from events e
-            join candidate_runs r on r.run_id = e.run_id
-            where {BUILDER_WORKSPACE_LIFECYCLE_PREDICATE.replace('payload_json', 'e.payload_json').replace('event_type', 'e.event_type')}
-        )
-        select r.run_id, r.repo, r.issue_number, r.issue_title, r.phase, r.status, r.builder_sprite, r.builder_slot_id,
-               r.builder_profile, r.branch, r.pr_number, r.pr_url, r.heartbeat_at, r.updated_at, r.worktree_path,
-               be.event_type as blocking_event_type_prefetched,
-               be.payload_json as blocking_payload_json_prefetched,
-               be.created_at as blocking_event_at_prefetched,
-               ble.event_type as lifecycle_event_type_prefetched,
-               ble.payload_json as lifecycle_payload_json_prefetched,
-               ble.created_at as lifecycle_event_at_prefetched
-        from candidate_runs r
-        left join blocking_events be on be.run_id = r.run_id and be.rn = 1
-        left join builder_lifecycle_events ble on ble.run_id = r.run_id and ble.rn = 1
-        order by r.created_at desc
-    """
+def blocking_events_for_runs(conn: sqlite3.Connection, run_ids: list[str]) -> dict[str, sqlite3.Row]:
+    ordered_run_ids = list(dict.fromkeys(run_ids))
+    if not ordered_run_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in ordered_run_ids)
+    rows = conn.execute(
+        f"""
+        select run_id, event_type, payload_json, created_at
+        from events
+        where run_id in ({placeholders})
+          and {BLOCKING_EVENT_PREDICATE}
+        order by run_id, id desc
+        """,
+        ordered_run_ids,
+    ).fetchall()
+    events: dict[str, sqlite3.Row] = {}
+    for row in rows:
+        events.setdefault(row["run_id"], row)
+    return events
 
 
-def serialize_run_surface(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
+def serialize_run_surface(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    telemetry: dict[str, Any] | None = None,
+    worktree_recovery_event: sqlite3.Row | None | object = UNSET,
+    blocking_event: sqlite3.Row | None | object = UNSET,
+) -> dict[str, Any]:
     heartbeat_at = row["heartbeat_at"]
     worktree_path = row["worktree_path"] if "worktree_path" in row.keys() else None
+    picked_at = row["picked_at"] if "picked_at" in row.keys() else row["created_at"]
+    completed_at = row["completed_at"] if "completed_at" in row.keys() else None
+    if telemetry is None:
+        telemetry = run_telemetry_rollup(conn, row["run_id"])
     payload: dict[str, Any] = {
         "run_id": row["run_id"],
         "repo": row["repo"],
@@ -888,6 +1247,18 @@ def serialize_run_surface(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[st
         "pr_number": row["pr_number"],
         "pr_url": row["pr_url"],
         "worktree_path": worktree_path,
+        "picked_at": picked_at,
+        "completed_at": completed_at,
+        "duration_seconds": duration_seconds(picked_at, completed_at),
+        "outcome": row["status"],
+        "turn_count": row["turn_count"] if "turn_count" in row.keys() else 0,
+        "input_tokens": telemetry["input_tokens"],
+        "output_tokens": telemetry["output_tokens"],
+        "total_tokens": telemetry["total_tokens"],
+        "estimated_cost_usd": telemetry["estimated_cost_usd"],
+        "model_usage": telemetry["model_usage"],
+        "provider_usage": telemetry["provider_usage"],
+        "reasoning_budget_usage": telemetry["reasoning_budget_usage"],
         "heartbeat_at": heartbeat_at,
         "heartbeat_age_seconds": age_seconds_from_now(heartbeat_at),
         "updated_at": row["updated_at"],
@@ -898,31 +1269,22 @@ def serialize_run_surface(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[st
     payload["worktree_recovery_error"] = None
     payload["worktree_recovery_event_type"] = None
     payload["worktree_recovery_event_at"] = None
-
-    lifecycle_event_type = row["lifecycle_event_type_prefetched"] if "lifecycle_event_type_prefetched" in row.keys() else None
-    lifecycle_payload_json = row["lifecycle_payload_json_prefetched"] if "lifecycle_payload_json_prefetched" in row.keys() else None
-    lifecycle_event_at = row["lifecycle_event_at_prefetched"] if "lifecycle_event_at_prefetched" in row.keys() else None
-    if lifecycle_event_type is None and "lifecycle_event_type_prefetched" not in row.keys():
-        lifecycle_event = builder_workspace_lifecycle_event(conn, row["run_id"])
-        if lifecycle_event is not None:
-            lifecycle_event_type = lifecycle_event["event_type"]
-            lifecycle_payload_json = lifecycle_event["payload_json"]
-            lifecycle_event_at = lifecycle_event["created_at"]
-    if lifecycle_event_type is not None:
-        payload["worktree_recovery_event_type"] = lifecycle_event_type
-        payload["worktree_recovery_event_at"] = lifecycle_event_at
-        if lifecycle_event_type == "builder_workspace_cleaned":
+    recovery_event = latest_worktree_recovery_event(conn, row["run_id"]) if worktree_recovery_event is UNSET else worktree_recovery_event
+    if recovery_event is not None:
+        recovery_event_type = recovery_event["event_type"]
+        recovery_payload = payload_object_or_none(recovery_event["payload_json"])
+        payload["worktree_recovery_event_type"] = recovery_event_type
+        payload["worktree_recovery_event_at"] = recovery_event["created_at"]
+        if recovery_event_type == "builder_workspace_cleaned":
             payload["worktree_recovery_status"] = "cleaned"
-        elif lifecycle_event_type in {"workspace_cleanup_failed", "cleanup_warning"}:
+        elif recovery_event_type in {"workspace_cleanup_failed", "cleanup_warning"}:
             payload["worktree_recovery_status"] = "cleanup_failed"
-            recovery_payload = payload_object_or_none(lifecycle_payload_json)
             if recovery_payload is None:
                 payload["worktree_recovery_error"] = "(recovery event data corrupted)"
             else:
                 payload["worktree_recovery_error"] = recovery_payload.get("error")
-        elif lifecycle_event_type == "workspace_preparation_failed":
+        elif recovery_event_type == "workspace_preparation_failed":
             payload["worktree_recovery_status"] = "prepare_failed"
-            recovery_payload = payload_object_or_none(lifecycle_payload_json)
             if recovery_payload is None:
                 payload["worktree_recovery_error"] = "(recovery event data corrupted)"
             else:
@@ -932,23 +1294,15 @@ def serialize_run_surface(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[st
     payload["blocking_event_type"] = None
     payload["blocking_event_at"] = None
     if row["status"] in {"blocked", "failed"}:
-        blocking_event_type = row["blocking_event_type_prefetched"] if "blocking_event_type_prefetched" in row.keys() else None
-        blocking_payload_json = row["blocking_payload_json_prefetched"] if "blocking_payload_json_prefetched" in row.keys() else None
-        blocking_event_at = row["blocking_event_at_prefetched"] if "blocking_event_at_prefetched" in row.keys() else None
-        if blocking_event_type is None and "blocking_event_type_prefetched" not in row.keys():
-            blocking_event = blocking_event_for_run(conn, row["run_id"])
-            if blocking_event is not None:
-                blocking_event_type = blocking_event["event_type"]
-                blocking_payload_json = blocking_event["payload_json"]
-                blocking_event_at = blocking_event["created_at"]
-        if blocking_event_type is not None:
-            payload["blocking_event_type"] = blocking_event_type
-            payload["blocking_event_at"] = blocking_event_at
-            blocking_payload = payload_object_or_none(blocking_payload_json)
+        resolved_blocking_event = blocking_event_for_run(conn, row["run_id"]) if blocking_event is UNSET else blocking_event
+        if resolved_blocking_event is not None:
+            payload["blocking_event_type"] = resolved_blocking_event["event_type"]
+            payload["blocking_event_at"] = resolved_blocking_event["created_at"]
+            blocking_payload = payload_object_or_none(resolved_blocking_event["payload_json"])
             if blocking_payload is None:
                 blocking_reason = "(blocking event data corrupted)"
             else:
-                blocking_reason = summarize_blocking_reason(blocking_event_type, blocking_payload)
+                blocking_reason = summarize_blocking_reason(resolved_blocking_event["event_type"], blocking_payload)
     payload["blocking_reason"] = blocking_reason
     return payload
 
@@ -1003,14 +1357,6 @@ def worker_capacities(workers: list[str]) -> dict[str, int]:
         worker, slots = parse_worker_capacity(spec)
         capacities[worker] = max(capacities.get(worker, 0), slots)
     return capacities
-
-
-def uses_explicit_worker_capacity(workers: list[str]) -> bool:
-    for spec in workers:
-        worker, slots = parse_worker_capacity(spec)
-        if worker != spec or slots != 1:
-            return True
-    return False
 
 
 def load_worker_slots(conn: sqlite3.Connection, repo: str, workers: list[str]) -> list[WorkerSlot]:
@@ -1202,6 +1548,27 @@ def release_worker_slot(conn: sqlite3.Connection, slot_id: int, *, run_id: str |
     run = conn.execute("select status from runs where run_id = ?", (current_run_id,)).fetchone()
     if run is not None and str(run["status"]) in TERMINAL_RUN_STATUSES:
         update_worker_slot(conn, slot_id, current_run_id=None)
+
+
+def reap_terminal_worker_slots(conn: sqlite3.Connection, repo: str, workers: list[str]) -> None:
+    for slot in load_worker_slots(conn, repo, workers):
+        if slot.current_run_id is None:
+            continue
+        run = conn.execute("select status from runs where run_id = ?", (slot.current_run_id,)).fetchone()
+        if run is not None and str(run["status"]) not in TERMINAL_RUN_STATUSES:
+            continue
+        cursor = conn.execute(
+            """
+            update worker_slots
+            set current_run_id = null, updated_at = ?
+            where id = ? and current_run_id = ?
+            """,
+            (now_utc(), slot.id, slot.current_run_id),
+        )
+        if cursor.rowcount:
+            conn.commit()
+        else:
+            conn.rollback()
 
 
 def record_worker_probe_success(conn: sqlite3.Connection, slot_id: int) -> None:
@@ -1834,23 +2201,6 @@ def select_worker_slot(
     raise CmdError(f"no available worker in {workers}: {last_error}")
 
 
-def select_worker(conn: sqlite3.Connection, repo: str, workers: list[str], prompt_template: pathlib.Path) -> str:
-    seed_worker_slots(conn, repo, workers)
-    last_error = ""
-    for slot in load_worker_slots(conn, repo, workers):
-        if slot.state != WORKER_SLOT_ACTIVE or slot.current_run_id is not None:
-            continue
-        try:
-            probe_sprite_readiness(slot.worker, repo, prompt_template)
-        except CmdError as exc:
-            last_error = stringify_exc(exc)
-            record_worker_probe_failure(conn, slot, last_error)
-            continue
-        record_worker_probe_success(conn, slot.id)
-        return slot.worker
-    raise CmdError(f"no available worker in {workers}: {last_error}")
-
-
 def sleep_until(deadline: float, seconds: int) -> bool:
     remaining = deadline - time.time()
     if remaining <= 0:
@@ -2447,6 +2797,14 @@ def record_review_artifact(
         persist_review(conn, run_id, review, commit=False)
         persist_review_wave_review(conn, wave_id, review, payload, source_kind="review_artifact", commit=False)
         persist_review_findings(conn, findings, commit=False)
+        persist_run_telemetry_sample(
+            conn,
+            run_id,
+            lane="reviewer",
+            actor=reviewer,
+            source_event="review_complete",
+            payload=payload,
+        )
     return review
 
 
@@ -3700,14 +4058,24 @@ def run_builder_turn(
         pr_url=pr_url,
         feedback_source=feedback_source,
     )
-    update_run(
-        conn,
-        run_id,
-        phase="awaiting_governance",
-        branch=builder.branch,
-        pr_number=builder.pr_number,
-        pr_url=builder.pr_url,
-    )
+    with conn:
+        conn.execute(
+            """
+            update runs
+            set phase = ?, branch = ?, pr_number = ?, pr_url = ?, turn_count = coalesce(turn_count, 0) + 1, updated_at = ?
+            where run_id = ?
+            """,
+            ("awaiting_governance", builder.branch, builder.pr_number, builder.pr_url, now_utc(), run_id),
+        )
+        persist_run_telemetry_sample(
+            conn,
+            run_id,
+            lane="builder",
+            actor=worker,
+            source_event=event_type,
+            payload=payload,
+        )
+    heartbeat_run(conn, run_id)
     record_event(conn, event_log, run_id, event_type, payload)
     return builder
 
@@ -3918,9 +4286,6 @@ def ensure_governance_run(
     run_id = str(existing_run["run_id"]) if existing_run is not None else run_id_for(issue.number)
 
     worker = str(existing_run["builder_sprite"] or "") if existing_run is not None else ""
-    if not worker:
-        worker = select_worker(conn, args.repo, args.worker, pathlib.Path(args.builder_template))
-
     builder_workspace = str(existing_run["worktree_path"] or "") if existing_run is not None else ""
 
     pr_number = int(existing_run["pr_number"]) if existing_run is not None and existing_run["pr_number"] is not None else int(args.pr_number)
@@ -3974,7 +4339,26 @@ def ensure_governance_run(
                 {"issue": issue.number, "previous_run_id": reclaimed_run_id},
             )
 
-        worker_slot = acquire_named_worker_slot(conn, args.repo, args.worker, worker, run_id)
+        if worker:
+            worker_slot = acquire_named_worker_slot(conn, args.repo, args.worker, worker, run_id)
+        else:
+            reap_terminal_worker_slots(conn, args.repo, args.worker)
+            worker_slot = select_worker_slot(
+                conn,
+                args.repo,
+                args.worker,
+                pathlib.Path(args.builder_template),
+                run_id,
+                on_drained=lambda slot, reason: record_event(
+                    conn,
+                    event_log,
+                    run_id,
+                    "worker_slot_drained",
+                    {"worker": slot.worker, "slot_id": slot.id, "slot_index": slot.slot_index, "reason": reason},
+                ),
+            )
+            worker = worker_slot.worker
+
         record_event(
             conn,
             event_log,
@@ -4523,25 +4907,22 @@ def run_once(args: argparse.Namespace) -> int:
         )
         ensure_reviewers_ready(runner, args.repo, args.reviewer, pathlib.Path(args.reviewer_template))
         record_event(conn, event_log, run_id, "reviewers_ready", {"reviewers": args.reviewer})
-        if uses_explicit_worker_capacity(args.worker):
-            worker_slot = select_worker_slot(
+        reap_terminal_worker_slots(conn, args.repo, args.worker)
+        worker_slot = select_worker_slot(
+            conn,
+            args.repo,
+            args.worker,
+            pathlib.Path(args.builder_template),
+            run_id,
+            on_drained=lambda slot, reason: record_event(
                 conn,
-                args.repo,
-                args.worker,
-                pathlib.Path(args.builder_template),
+                event_log,
                 run_id,
-                on_drained=lambda slot, reason: record_event(
-                    conn,
-                    event_log,
-                    run_id,
-                    "worker_slot_drained",
-                    {"worker": slot.worker, "slot_id": slot.id, "slot_index": slot.slot_index, "reason": reason},
-                ),
-            )
-            worker = worker_slot.worker
-        else:
-            worker = select_worker(conn, args.repo, args.worker, pathlib.Path(args.builder_template))
-            worker_slot = acquire_named_worker_slot(conn, args.repo, args.worker, worker, run_id)
+                "worker_slot_drained",
+                {"worker": slot.worker, "slot_id": slot.id, "slot_index": slot.slot_index, "reason": reason},
+            ),
+        )
+        worker = worker_slot.worker
         update_run(conn, run_id, phase="building", builder_sprite=worker, builder_slot_id=worker_slot.id)
         touch_run(conn, args.repo, issue.number, run_id, args.builder_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS)
         record_event(
@@ -4850,9 +5231,32 @@ def reset_worker_slots(args: argparse.Namespace) -> int:
 
 def show_runs(args: argparse.Namespace) -> int:
     conn = open_db(pathlib.Path(args.db))
-    rows = conn.execute(run_surface_query(limit_sql="limit ?"), (args.limit,)).fetchall()
+    rows = conn.execute(
+        """
+        select run_id, repo, issue_number, issue_title, phase, status, builder_sprite, builder_slot_id, builder_profile,
+               branch, pr_number, pr_url, heartbeat_at, updated_at, worktree_path, picked_at, completed_at, turn_count
+        from runs
+        order by created_at desc
+        limit ?
+        """,
+        (args.limit,),
+    ).fetchall()
+    run_ids = [row["run_id"] for row in rows]
+    telemetry_by_run = run_telemetry_rollup_bulk(conn, run_ids)
+    recovery_by_run = latest_worktree_recovery_events(conn, run_ids)
+    blocking_by_run = blocking_events_for_runs(conn, run_ids)
     for row in rows:
-        print(json.dumps(serialize_run_surface(conn, row)))
+        print(
+            json.dumps(
+                serialize_run_surface(
+                    conn,
+                    row,
+                    telemetry=telemetry_by_run.get(row["run_id"], empty_run_telemetry_rollup()),
+                    worktree_recovery_event=recovery_by_run.get(row["run_id"]),
+                    blocking_event=blocking_by_run.get(row["run_id"]),
+                )
+            )
+        )
     return 0
 
 
@@ -4861,7 +5265,7 @@ def show_events(args: argparse.Namespace) -> int:
     run_row = conn.execute(
         """
         select run_id, repo, issue_number, issue_title, phase, status, builder_sprite, builder_slot_id, builder_profile,
-               branch, pr_number, pr_url, heartbeat_at, updated_at, worktree_path
+               branch, pr_number, pr_url, heartbeat_at, updated_at, worktree_path, picked_at, completed_at, turn_count
         from runs
         where run_id = ?
         """,
@@ -4895,7 +5299,7 @@ def show_run(args: argparse.Namespace) -> int:
     row = conn.execute(
         """
         select run_id, repo, issue_number, issue_title, phase, status, builder_sprite, builder_slot_id, builder_profile,
-               branch, pr_number, pr_url, heartbeat_at, updated_at, worktree_path
+               branch, pr_number, pr_url, heartbeat_at, updated_at, worktree_path, picked_at, completed_at, turn_count
         from runs
         where run_id = ?
         """,
@@ -4903,14 +5307,132 @@ def show_run(args: argparse.Namespace) -> int:
     ).fetchone()
     if row is None:
         raise CmdError(f"unknown run_id: {args.run_id}")
+    telemetry = run_telemetry_rollup(conn, args.run_id)
     print(
         json.dumps(
             {
-                "run": serialize_run_surface(conn, row),
+                "run": serialize_run_surface(conn, row, telemetry=telemetry),
+                "telemetry_samples": telemetry["samples"],
                 "recent_events": recent_events(conn, args.run_id, args.event_limit),
             }
         )
     )
+    return 0
+
+
+def parse_window_start(window: str) -> tuple[str, datetime]:
+    match = re.fullmatch(r"(\d+)([dhm])", window.strip().lower())
+    if match is None:
+        raise CmdError(f"invalid window {window!r}; use <number>d, <number>h, or <number>m")
+    amount = int(match.group(1))
+    unit = match.group(2)
+    if amount <= 0:
+        raise CmdError(f"invalid window {window!r}; amount must be positive")
+    delta_map = {"d": timedelta(days=amount), "h": timedelta(hours=amount), "m": timedelta(minutes=amount)}
+    end = utc_now()
+    return end.isoformat().replace("+00:00", "Z"), end - delta_map[unit]
+
+
+def timeline_bucket_for(timestamp: str) -> str:
+    parsed = parse_utc_ts(timestamp)
+    if parsed is None:
+        return "unknown"
+    return parsed.date().isoformat()
+
+
+def show_metrics(args: argparse.Namespace) -> int:
+    conn = open_db(pathlib.Path(args.db))
+    generated_at, window_start = parse_window_start(args.window)
+    rows = conn.execute(
+        """
+        select run_id, repo, issue_number, issue_title, phase, status, builder_sprite, builder_slot_id, builder_profile,
+               branch, pr_number, pr_url, heartbeat_at, updated_at, worktree_path, picked_at, completed_at, turn_count, created_at
+        from runs
+        where created_at >= ?
+        order by created_at desc
+        """,
+        (window_start.isoformat().replace("+00:00", "Z"),),
+    ).fetchall()
+    run_ids = [row["run_id"] for row in rows]
+    telemetry_by_run = run_telemetry_rollup_bulk(conn, run_ids)
+    recovery_by_run = latest_worktree_recovery_events(conn, run_ids)
+    blocking_by_run = blocking_events_for_runs(conn, run_ids)
+    runs = sorted(
+        [
+            serialize_run_surface(
+                conn,
+                row,
+                telemetry=telemetry_by_run.get(row["run_id"], empty_run_telemetry_rollup()),
+                worktree_recovery_event=recovery_by_run.get(row["run_id"]),
+                blocking_event=blocking_by_run.get(row["run_id"]),
+            )
+            for row in rows
+        ],
+        key=lambda run: (run["picked_at"] or run["updated_at"] or "", run["run_id"]),
+        reverse=True,
+    )
+    terminal_runs = [run for run in runs if run["completed_at"] is not None]
+    successful_runs = [run for run in terminal_runs if run["status"] == "merged"]
+    duration_values = [run["duration_seconds"] for run in terminal_runs if run["duration_seconds"] is not None]
+    cost_values = [run["estimated_cost_usd"] for run in runs if run["estimated_cost_usd"] is not None]
+    token_values = [run["total_tokens"] for run in runs if run["total_tokens"] is not None]
+    timeline: dict[str, dict[str, Any]] = {}
+    for run in runs:
+        bucket = timeline.setdefault(
+            timeline_bucket_for(run["picked_at"] or run["updated_at"]),
+            {
+                "bucket": timeline_bucket_for(run["picked_at"] or run["updated_at"]),
+                "run_count": 0,
+                "completed_runs": 0,
+                "merged_runs": 0,
+                "blocked_runs": 0,
+                "failed_runs": 0,
+                "total_estimated_cost_usd": 0.0,
+                "average_duration_seconds": None,
+                "_durations": [],
+            },
+        )
+        bucket["run_count"] += 1
+        if run["completed_at"] is not None:
+            bucket["completed_runs"] += 1
+            if run["duration_seconds"] is not None:
+                bucket["_durations"].append(run["duration_seconds"])
+        if run["status"] == "merged":
+            bucket["merged_runs"] += 1
+        elif run["status"] == "blocked":
+            bucket["blocked_runs"] += 1
+        elif run["status"] in {"failed", "closed"}:
+            bucket["failed_runs"] += 1
+        if run["estimated_cost_usd"] is not None:
+            bucket["total_estimated_cost_usd"] += run["estimated_cost_usd"]
+    for bucket in timeline.values():
+        durations = bucket.pop("_durations")
+        bucket["average_duration_seconds"] = int(sum(durations) / len(durations)) if durations else None
+        bucket["total_estimated_cost_usd"] = round(bucket["total_estimated_cost_usd"], 6)
+        bucket["completion_rate"] = round(bucket["completed_runs"] / bucket["run_count"], 4) if bucket["run_count"] else None
+    payload = {
+        "window": {
+            "requested": args.window,
+            "generated_at": generated_at,
+            "since": window_start.isoformat().replace("+00:00", "Z"),
+        },
+        "summary": {
+            "run_count": len(runs),
+            "completed_runs": len(terminal_runs),
+            "merged_runs": len(successful_runs),
+            "blocked_runs": len([run for run in terminal_runs if run["status"] == "blocked"]),
+            "failed_runs": len([run for run in terminal_runs if run["status"] in {"failed", "closed"}]),
+            "throughput_runs_per_day": round(len(runs) / max((utc_now() - window_start).total_seconds() / 86400, 1 / 86400), 4),
+            "success_rate": round(len(successful_runs) / len(terminal_runs), 4) if terminal_runs else None,
+            "average_duration_seconds": int(sum(duration_values) / len(duration_values)) if duration_values else None,
+            "total_estimated_cost_usd": round(sum(cost_values), 6) if cost_values else None,
+            "average_estimated_cost_usd": round(sum(cost_values) / len(cost_values), 6) if cost_values else None,
+            "total_tokens": sum(token_values) if token_values else None,
+        },
+        "recent_runs": runs[: args.limit],
+        "timeline": [timeline[key] for key in sorted(timeline.keys())],
+    }
+    print(json.dumps(payload))
     return 0
 
 
@@ -5139,6 +5661,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     run_p.add_argument("--run-id", required=True)
     run_p.add_argument("--event-limit", type=int, default=10)
     run_p.set_defaults(func=show_run)
+
+    metrics_p = sub.add_parser("show-metrics", help="Show telemetry summary, recent runs, and timeline")
+    metrics_p.add_argument("--db", default=str(DEFAULT_DB))
+    metrics_p.add_argument("--window", default="7d")
+    metrics_p.add_argument("--limit", type=int, default=20)
+    metrics_p.set_defaults(func=show_metrics)
 
     workers_p = sub.add_parser("show-workers", help="Show worker slot health and assignments")
     workers_p.add_argument("--repo", required=True)

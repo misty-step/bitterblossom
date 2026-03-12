@@ -9,7 +9,7 @@ File: [`scripts/conductor.py`](../../scripts/conductor.py)
 ```mermaid
 flowchart TD
     Intake["Intake\nget_issue / list_candidate_issues"] --> Lease["Lease\nacquire_lease / touch_run / release_lease"]
-    Lease --> Route["Routing\npick_issue / select_worker"]
+    Lease --> Route["Routing\npick_issue / select_worker_slot"]
     Route --> Build["Builder Dispatch\nrun_builder"]
     Build --> Review["Reviewer Council\nrun_review_round"]
     Review --> Gate["Governance\nCI, threads, trusted external reviews"]
@@ -116,7 +116,7 @@ GitHub is still the operator-facing conversation surface, but the run store is w
 
 ### Runtime
 
-- `select_worker(...)`
+- `select_worker_slot(...)`
 - `run_builder(...)`
 - `run_review_round(...)`
 
