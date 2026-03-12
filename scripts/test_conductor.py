@@ -6400,3 +6400,82 @@ def test_show_run_includes_worktree_path(
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["run"]["worktree_path"] == "/home/sprite/workspace/bitterblossom/.bb/conductor/run-538-1/builder-worktree"
+
+
+def test_cleanup_run_workspace_serializes_with_prepare(monkeypatch: pytest.MonkeyPatch) -> None:
+    """prepare and cleanup must hold the same per-(sprite, mirror) lock; they must not race."""
+    import threading as _threading
+
+    active_ops: list[str] = []
+    concurrent_overlap = _threading.Event()
+    prepare_started = _threading.Event()
+    allow_cleanup = _threading.Event()
+
+    def fake_prepare_once(_runner: object, _sprite: str, _mirror: str, workspace: str) -> str:
+        active_ops.append("prepare")
+        prepare_started.set()
+        # Hold the lock while waiting; cleanup should not start until we exit.
+        allow_cleanup.wait(timeout=2)
+        active_ops.append("prepare_done")
+        return workspace
+
+    def fake_sprite_bash_cleanup(_runner: object, _sprite: str, script: str, *, timeout: int) -> str:
+        _ = (script, timeout)
+        if "prepare" in active_ops and "prepare_done" not in active_ops:
+            concurrent_overlap.set()
+        active_ops.append("cleanup")
+        return ""
+
+    monkeypatch.setattr(conductor, "_prepare_run_workspace_once", fake_prepare_once)
+
+    original_sprite_bash = conductor.sprite_bash
+
+    def patched_sprite_bash(runner: object, sprite: str, script: str, *, timeout: int) -> str:
+        if "worktree remove" in script or "worktree prune" in script:
+            return fake_sprite_bash_cleanup(runner, sprite, script, timeout=timeout)
+        return original_sprite_bash(runner, sprite, script, timeout=timeout)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(conductor, "sprite_bash", patched_sprite_bash)
+
+    errors: list[Exception] = []
+
+    def run_prepare() -> None:
+        try:
+            conductor.prepare_run_workspace(
+                object(),
+                "noble-blue-serpent",
+                "misty-step/bitterblossom",
+                "run-538-lock-a",
+                "builder",
+            )
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    def run_cleanup() -> None:
+        prepare_started.wait(timeout=2)
+        try:
+            conductor.cleanup_run_workspace(
+                object(),
+                "noble-blue-serpent",
+                "misty-step/bitterblossom",
+                "run-538-lock-b",
+                "builder",
+            )
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    t_prepare = _threading.Thread(target=run_prepare)
+    t_cleanup = _threading.Thread(target=run_cleanup)
+    t_prepare.start()
+    t_cleanup.start()
+
+    # Let prepare hold the lock briefly, then release it.
+    prepare_started.wait(timeout=2)
+    allow_cleanup.set()
+
+    t_prepare.join(timeout=5)
+    t_cleanup.join(timeout=5)
+
+    assert not errors, errors
+    # If overlap was detected, cleanup entered while prepare was still active — the lock failed.
+    assert not concurrent_overlap.is_set(), "prepare and cleanup ran concurrently; lock did not serialize them"
