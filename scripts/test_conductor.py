@@ -7999,14 +7999,16 @@ def test_prepare_run_workspace_with_retry_records_explicit_failure_on_os_error(
     issue = conductor.Issue(number=538, title="worktrees", body="", url="u538", labels=["autopilot"])
     conductor.create_run(conn, "run-538-2", "misty-step/bitterblossom", issue, "default")
 
-    monkeypatch.setattr(
-        conductor,
-        "prepare_run_workspace",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("broken pipe")),
-    )
+    def always_fail(*_args: object, **_kwargs: object) -> None:
+        raise OSError("broken pipe")
+
+    monkeypatch.setattr(conductor, "prepare_run_workspace", always_fail)
     monkeypatch.setattr(conductor.time, "sleep", lambda *_args, **_kwargs: None)
 
-    with pytest.raises(conductor.WorkspacePreparationError, match="workspace preparation failed"):
+    with pytest.raises(
+        conductor.WorkspacePreparationError,
+        match="workspace preparation failed for builder on noble-blue-serpent after 3 attempts: broken pipe",
+    ):
         conductor.prepare_run_workspace_with_retry(
             object(),
             conn,
@@ -8023,10 +8025,16 @@ def test_prepare_run_workspace_with_retry_records_explicit_failure_on_os_error(
         "workspace_preparation_retry",
         "workspace_preparation_failed",
     ]
+    retry_payloads = [json.loads(row["payload_json"]) for row in events[:-1]]
+    assert [payload["attempt"] for payload in retry_payloads] == [1, 2]
+    assert all(payload["attempts"] == 3 for payload in retry_payloads)
     payload = json.loads(events[-1]["payload_json"])
     assert payload["sprite"] == "noble-blue-serpent"
     assert payload["lane"] == "builder"
-    assert "broken pipe" in payload["error"]
+    assert payload["workspace"] == conductor.run_workspace("misty-step/bitterblossom", "run-538-2", "builder")
+    assert payload["attempt"] == 3
+    assert payload["attempts"] == 3
+    assert payload["error"] == "broken pipe"
 
 
 def test_dispatch_until_artifact_passes_workspace_to_dispatch_task(monkeypatch: pytest.MonkeyPatch) -> None:
