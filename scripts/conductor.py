@@ -3102,8 +3102,8 @@ def run_review_round(
         pr_number=pr_number,
         reviewer_count=len(reviewers),
     )
-    record_review_wave_event(conn, event_log, run_id, wave_id, "review_wave_started")
     try:
+        record_review_wave_event(conn, event_log, run_id, wave_id, "review_wave_started")
         tasks: list[DispatchTask] = []
         for reviewer in reviewers:
             try:
@@ -3630,16 +3630,16 @@ def govern_pr_flow(
                 pr_number=builder.pr_number,
                 reviewer_count=len(trusted_surfaces),
             )
-            record_review_wave_event(
-                conn,
-                event_log,
-                run_id,
-                wave_id,
-                "review_wave_started",
-                extra=wave_extra,
-            )
             ext_ok: bool | None = None
             try:
+                record_review_wave_event(
+                    conn,
+                    event_log,
+                    run_id,
+                    wave_id,
+                    "review_wave_started",
+                    extra=wave_extra,
+                )
                 touch_run(
                     conn,
                     args.repo,
