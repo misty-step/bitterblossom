@@ -408,31 +408,35 @@ def init_db(conn: sqlite3.Connection) -> None:
     ensure_column(conn, "runs", "heartbeat_at", "text")
     ensure_column(conn, "runs", "worktree_path", "text")
     ensure_column(conn, "runs", "builder_slot_id", "integer")
-    ensure_column(conn, "runs", "picked_at", "text")
-    ensure_column(conn, "runs", "completed_at", "text")
-    ensure_column(conn, "runs", "turn_count", "integer")
+    picked_at_added = ensure_column(conn, "runs", "picked_at", "text")
+    completed_at_added = ensure_column(conn, "runs", "completed_at", "text")
+    turn_count_added = ensure_column(conn, "runs", "turn_count", "integer")
     ensure_column(conn, "run_telemetry_samples", "reasoning_budget", "text")
     ensure_column(conn, "leases", "heartbeat_at", "text")
     ensure_column(conn, "leases", "lease_expires_at", "text")
     ensure_column(conn, "leases", "blocked_at", "text")
-    conn.execute("update runs set picked_at = created_at where picked_at is null")
-    conn.execute(
-        """
-        update runs
-        set completed_at = updated_at
-        where completed_at is null and status in ('merged', 'failed', 'blocked', 'closed')
-        """
-    )
-    conn.execute("update runs set turn_count = 0 where turn_count is null")
+    if picked_at_added:
+        conn.execute("update runs set picked_at = created_at where picked_at is null")
+    if completed_at_added:
+        conn.execute(
+            """
+            update runs
+            set completed_at = updated_at
+            where completed_at is null and status in ('merged', 'failed', 'blocked', 'closed')
+            """
+        )
+    if turn_count_added:
+        conn.execute("update runs set turn_count = 0 where turn_count is null")
     conn.commit()
 
 
-def ensure_column(conn: sqlite3.Connection, table: str, column: str, decl: str) -> None:
+def ensure_column(conn: sqlite3.Connection, table: str, column: str, decl: str) -> bool:
     cols = conn.execute(f"pragma table_info({table})").fetchall()
     names = {row[1] for row in cols}
     if column in names:
-        return
+        return False
     conn.execute(f"alter table {table} add column {column} {decl}")
+    return True
 
 
 def open_db(path: pathlib.Path) -> sqlite3.Connection:
