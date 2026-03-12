@@ -1947,7 +1947,12 @@ def test_run_review_round_records_workspace_cleanup_failed_for_reviewer_cleanup_
     events = conn.execute(
         "select event_type, payload_json from events where run_id = 'run-447-1' order by id"
     ).fetchall()
-    assert [row["event_type"] for row in events] == ["review_complete", "workspace_cleanup_failed"]
+    assert [row["event_type"] for row in events] == [
+        "review_wave_started",
+        "review_complete",
+        "review_wave_completed",
+        "workspace_cleanup_failed",
+    ]
     payload = json.loads(events[-1]["payload_json"])
     assert payload["error"] == "stale worktree"
     assert payload["reviewer"] == "fern"
@@ -2016,7 +2021,12 @@ def test_run_review_round_does_not_mislabel_reviewer_cleanup_event_write_failure
         row[0]
         for row in conn.execute("select event_type from events where run_id = 'run-447-1' order by id").fetchall()
     ]
-    assert event_types == ["review_complete", "reviewer_workspace_cleaned"]
+    assert event_types == [
+        "review_wave_started",
+        "review_complete",
+        "review_wave_completed",
+        "reviewer_workspace_cleaned",
+    ]
     assert "workspace_cleanup_failed" not in event_types
 
 
