@@ -87,6 +87,20 @@ class RouteDecision:
 
 
 @dataclass(slots=True)
+class QAFinding:
+    title: str
+    summary: str
+    severity: str
+    target_url: str
+    environment: str
+    repro_steps: list[str]
+    evidence: list[dict[str, str]]
+    dedupe_key: str
+    priority_label: str
+    labels: list[str]
+
+
+@dataclass(slots=True)
 class BuilderResult:
     status: str
     branch: str
@@ -1274,6 +1288,101 @@ def issue_priority(labels: list[str]) -> tuple[int, str]:
     return best, matched
 
 
+def is_qa_origin_issue(labels: list[str]) -> bool:
+    return any(label.lower() == "source/qa" for label in labels)
+
+
+def qa_priority_rank(issue: Issue) -> int:
+    return 0 if is_qa_origin_issue(issue.labels) else 1
+
+
+def qa_priority_label(severity: str) -> str:
+    order = {
+        "critical": "p0",
+        "high": "p1",
+        "medium": "p2",
+        "low": "p3",
+    }
+    return order.get(severity.lower(), "p2")
+
+
+def qa_dedupe_key(
+    title: str,
+    summary: str,
+    target_url: str,
+    environment: str,
+    repro_steps: list[str],
+) -> str:
+    seed = "\n".join(
+        [
+            title.strip().lower(),
+            summary.strip().lower(),
+            target_url.strip().lower(),
+            environment.strip().lower(),
+            "\n".join(step.strip().lower() for step in repro_steps),
+        ]
+    )
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:12]
+
+
+def parse_qa_intake_payload(payload: dict[str, Any]) -> list[QAFinding]:
+    target = str(payload.get("target") or "").strip()
+    environment = str(payload.get("environment") or "").strip()
+    raw_findings = payload.get("findings")
+    if not target:
+        raise CmdError("qa intake payload missing target")
+    if not environment:
+        raise CmdError("qa intake payload missing environment")
+    if not isinstance(raw_findings, list) or not raw_findings:
+        raise CmdError("qa intake payload must include a non-empty findings list")
+
+    findings: list[QAFinding] = []
+    for item in raw_findings:
+        if not isinstance(item, dict):
+            raise CmdError("qa finding must be an object")
+        title = str(item.get("title") or "").strip()
+        summary = str(item.get("summary") or "").strip()
+        severity = str(item.get("severity") or "").strip().lower()
+        repro_steps = item.get("repro_steps") or []
+        evidence = item.get("evidence") or []
+        finding_target = str(item.get("target_url") or target).strip()
+        finding_environment = str(item.get("environment") or environment).strip()
+        if not title:
+            raise CmdError("qa finding missing title")
+        if not summary:
+            raise CmdError(f"qa finding {title!r} missing summary")
+        if severity not in {"critical", "high", "medium", "low"}:
+            raise CmdError(f"qa finding {title!r} has unsupported severity {severity!r}")
+        if not isinstance(repro_steps, list) or not repro_steps:
+            raise CmdError(f"qa finding {title!r} must include repro_steps")
+        if not isinstance(evidence, list):
+            raise CmdError(f"qa finding {title!r} evidence must be a list")
+        normalized_steps = [str(step).strip() for step in repro_steps if str(step).strip()]
+        if not normalized_steps:
+            raise CmdError(f"qa finding {title!r} must include non-empty repro_steps")
+        normalized_evidence: list[dict[str, str]] = []
+        for entry in evidence:
+            if not isinstance(entry, dict):
+                raise CmdError(f"qa finding {title!r} evidence entries must be objects")
+            normalized_evidence.append({str(key): str(value) for key, value in entry.items()})
+        priority = qa_priority_label(severity)
+        findings.append(
+            QAFinding(
+                title=title,
+                summary=summary,
+                severity=severity,
+                target_url=finding_target,
+                environment=finding_environment,
+                repro_steps=normalized_steps,
+                evidence=normalized_evidence,
+                dedupe_key=str(item.get("dedupe_key") or qa_dedupe_key(title, summary, finding_target, finding_environment, normalized_steps)),
+                priority_label=priority,
+                labels=["autopilot", "bug", "domain/infra", priority, "source/qa"],
+            )
+        )
+    return findings
+
+
 def run_id_for(issue_number: int) -> str:
     return f"run-{issue_number}-{int(time.time())}"
 
@@ -1595,32 +1704,101 @@ def parse_workspace_prepare_output(output: str, workspace: str, sprite: str) -> 
     raise CmdError(f"unexpected workspace prepare output for {sprite}: {output!r}")
 
 
+def workspace_lock_python(
+    *,
+    mirror: str,
+    workspace: str,
+    lockfile: str,
+    wait_seconds: int,
+    timeout_message: str,
+    lane: str,
+) -> str:
+    return "\n".join(
+        [
+            "set -euo pipefail",
+            "python3 - <<'PY'",
+            "import fcntl",
+            "import pathlib",
+            "import shutil",
+            "import subprocess",
+            "import sys",
+            "import time",
+            f"mirror = {mirror!r}",
+            f"workspace = {workspace!r}",
+            f"lockfile = {lockfile!r}",
+            f"wait_seconds = {wait_seconds}",
+            f"timeout_message = {timeout_message!r}",
+            f"lane = {lane!r}",
+            'pathlib.Path(lockfile).parent.mkdir(parents=True, exist_ok=True)',
+            'pathlib.Path(workspace).parent.mkdir(parents=True, exist_ok=True)',
+            "with open(lockfile, 'w', encoding='utf-8') as lock_handle:",
+            "    deadline = time.monotonic() + wait_seconds",
+            "    while True:",
+            "        try:",
+            "            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)",
+            "            break",
+            "        except BlockingIOError:",
+            "            if time.monotonic() >= deadline:",
+            "                print(timeout_message, file=sys.stderr)",
+            "                raise SystemExit(1)",
+            "            time.sleep(0.01)",
+            "    subprocess.run(['git', '-C', mirror, 'fetch', '--all', '--prune'], check=True)",
+            "    master = subprocess.run(['git', '-C', mirror, 'show-ref', '--verify', '--quiet', 'refs/remotes/origin/master'])",
+            "    if master.returncode == 0:",
+            "        base_ref = 'origin/master'",
+            "    else:",
+            "        main = subprocess.run(['git', '-C', mirror, 'show-ref', '--verify', '--quiet', 'refs/remotes/origin/main'])",
+            "        if main.returncode == 0:",
+            "            base_ref = 'origin/main'",
+            "        else:",
+            "            symbolic = subprocess.run(",
+            "                ['git', '-C', mirror, 'symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'],",
+            "                check=False,",
+            "                capture_output=True,",
+            "                text=True,",
+            "            )",
+            "            if symbolic.returncode == 0 and symbolic.stdout.strip():",
+            "                base_ref = symbolic.stdout.strip()",
+            "            else:",
+            "                head = subprocess.run(",
+            "                    ['git', '-C', mirror, 'rev-parse', 'HEAD'],",
+            "                    check=True,",
+            "                    capture_output=True,",
+            "                    text=True,",
+            "                )",
+            "                base_ref = head.stdout.strip()",
+            "    if pathlib.Path(workspace).exists():",
+            "        shutil.rmtree(workspace)",
+            "    subprocess.run(['git', '-C', mirror, 'worktree', 'prune'], check=True)",
+            "    if lane == 'prepare':",
+            "        subprocess.run(['git', '-C', mirror, 'worktree', 'add', '--detach', workspace, base_ref], check=True)",
+            "        print(workspace)",
+            "    else:",
+            "        remove = subprocess.run(",
+            "            ['git', '-C', mirror, 'worktree', 'remove', '--force', workspace],",
+            "            check=False,",
+            "            capture_output=True,",
+            "            text=True,",
+            "        )",
+            "        if remove.returncode != 0:",
+            "            shutil.rmtree(workspace, ignore_errors=True)",
+            "        subprocess.run(['git', '-C', mirror, 'worktree', 'prune'], check=True)",
+            "PY",
+        ]
+    )
+
+
 def prepare_run_workspace(runner: Runner, sprite: str, repo: str, run_id: str, lane: str) -> str:
     mirror = repo_dir(repo)
     workspace = run_workspace(repo, run_id, lane)
     lockfile = mirror_lock_path(repo)
-    script = "\n".join(
-        [
-            "set -euo pipefail",
-            f"mirror={shlex.quote(mirror)}",
-            f"workspace={shlex.quote(workspace)}",
-            f"lockfile={shlex.quote(lockfile)}",
-            'mkdir -p "$(dirname "$workspace")" "$(dirname "$lockfile")"',
-            'exec 9>"$lockfile"',
-            f'flock -w {WORKSPACE_PREPARE_LOCK_WAIT_SECONDS} 9 || {{ echo "mirror lock acquisition timed out" >&2; exit 1; }}',
-            'git -C "$mirror" fetch --all --prune',
-            'if git -C "$mirror" show-ref --verify --quiet refs/remotes/origin/master; then',
-            '  base_ref="origin/master"',
-            'elif git -C "$mirror" show-ref --verify --quiet refs/remotes/origin/main; then',
-            '  base_ref="origin/main"',
-            "else",
-            '  base_ref=$(git -C "$mirror" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || git -C "$mirror" rev-parse HEAD)',
-            "fi",
-            'rm -rf "$workspace"',
-            'git -C "$mirror" worktree prune',
-            'git -C "$mirror" worktree add --detach "$workspace" "$base_ref"',
-            'printf "%s\\n" "$workspace"',
-        ]
+    script = workspace_lock_python(
+        mirror=mirror,
+        workspace=workspace,
+        lockfile=lockfile,
+        wait_seconds=WORKSPACE_PREPARE_LOCK_WAIT_SECONDS,
+        timeout_message="mirror lock acquisition timed out",
+        lane="prepare",
     )
     output = sprite_bash(runner, sprite, script, timeout=300)
     return parse_workspace_prepare_output(output, workspace, sprite)
@@ -1630,21 +1808,13 @@ def cleanup_run_workspace(runner: Runner, sprite: str, repo: str, run_id: str, l
     mirror = repo_dir(repo)
     workspace = run_workspace(repo, run_id, lane)
     lockfile = mirror_lock_path(repo)
-    script = "\n".join(
-        [
-            "set -euo pipefail",
-            f"mirror={shlex.quote(mirror)}",
-            f"workspace={shlex.quote(workspace)}",
-            f"lockfile={shlex.quote(lockfile)}",
-            'mkdir -p "$(dirname "$lockfile")"',
-            'exec 9>"$lockfile"',
-            (
-                f'flock -w {WORKSPACE_CLEANUP_LOCK_WAIT_SECONDS} 9 '
-                '|| { echo "mirror lock acquisition timed out during cleanup" >&2; exit 1; }'
-            ),
-            'git -C "$mirror" worktree remove --force "$workspace" 2>/dev/null || rm -rf "$workspace"',
-            'git -C "$mirror" worktree prune',
-        ]
+    script = workspace_lock_python(
+        mirror=mirror,
+        workspace=workspace,
+        lockfile=lockfile,
+        wait_seconds=WORKSPACE_CLEANUP_LOCK_WAIT_SECONDS,
+        timeout_message="mirror lock acquisition timed out during cleanup",
+        lane="cleanup",
     )
     sprite_bash(runner, sprite, script, timeout=180)
 
@@ -1759,6 +1929,175 @@ def check_env(args: argparse.Namespace) -> int:  # noqa: ARG001
 def gh_json(runner: Runner, args: list[str]) -> Any:
     out = runner.run(["gh", *args], timeout=60)
     return json.loads(out)
+
+
+def dedupe_key_from_issue_body(body: str) -> str | None:
+    match = re.search(r"bitterblossom-qa-dedupe:([a-f0-9]{12})", body)
+    if match is None:
+        return None
+    return match.group(1)
+
+
+def render_qa_issue_body(finding: QAFinding) -> str:
+    steps = "\n".join(f"{index}. {step}" for index, step in enumerate(finding.repro_steps, start=1))
+    evidence_lines = "\n".join(
+        f"- {entry.get('kind', 'evidence')}: [{entry.get('label', entry.get('url', 'artifact'))}]({entry.get('url', '')})"
+        if entry.get("url")
+        else f"- {entry.get('kind', 'evidence')}: {entry.get('label', 'artifact')}"
+        for entry in finding.evidence
+    )
+    if not evidence_lines:
+        evidence_lines = "- none attached"
+    return "\n".join(
+        [
+            "## Product Spec",
+            "### Problem",
+            finding.summary,
+            "",
+            "### Intent Contract",
+            "- Intent: capture this QA-discovered regression as a GitHub issue with reproducible evidence.",
+            "- Success Conditions: the issue carries severity, target, environment, evidence, and deterministic dedupe metadata.",
+            "- Hard Boundaries: GitHub remains the canonical work queue.",
+            "- Non-Goals: automated remediation in this intake lane.",
+            "",
+            "## Acceptance Criteria",
+            "- [ ] [behavioral] Reproduce the reported regression on the affected target.",
+            "- [ ] [behavioral] Confirm the proposed fix removes the observed failure.",
+            "- [ ] [test] Preserve the QA evidence contract and dedupe marker.",
+            "",
+            "## QA Finding",
+            f"- Severity: `{finding.severity}`",
+            f"- Target: `{finding.target_url}`",
+            f"- Environment: `{finding.environment}`",
+            "",
+            "## Reproduction",
+            steps,
+            "",
+            "## Evidence",
+            evidence_lines,
+            "",
+            "<!-- bitterblossom-qa-origin:true -->",
+            f"<!-- bitterblossom-qa-dedupe:{finding.dedupe_key} -->",
+        ]
+    )
+
+
+def render_qa_issue_comment(finding: QAFinding) -> str:
+    evidence_lines = "\n".join(
+        f"- {entry.get('kind', 'evidence')}: {entry.get('label', entry.get('url', 'artifact'))} {entry.get('url', '')}".rstrip()
+        for entry in finding.evidence
+    )
+    if not evidence_lines:
+        evidence_lines = "- no new evidence attached"
+    return "\n".join(
+        [
+            "QA intake re-observed this finding.",
+            "",
+            f"- Severity: `{finding.severity}`",
+            f"- Target: `{finding.target_url}`",
+            f"- Environment: `{finding.environment}`",
+            "",
+            "### Reproduction",
+            "\n".join(f"{index}. {step}" for index, step in enumerate(finding.repro_steps, start=1)),
+            "",
+            "### Evidence",
+            evidence_lines,
+        ]
+    )
+
+
+def existing_qa_issues_by_key(runner: Runner, repo: str) -> dict[str, Issue]:
+    payload = gh_json(
+        runner,
+        [
+            "issue",
+            "list",
+            "--repo",
+            repo,
+            "--state",
+            "open",
+            "--label",
+            "source/qa",
+            "--limit",
+            "200",
+            "--json",
+            "number,title,body,url,labels,updatedAt",
+        ],
+    )
+    issues_by_key: dict[str, Issue] = {}
+    for item in payload:
+        body = item.get("body") or ""
+        dedupe_key = dedupe_key_from_issue_body(body)
+        if dedupe_key is None:
+            continue
+        issues_by_key[dedupe_key] = Issue(
+            number=item["number"],
+            title=item["title"],
+            body=body,
+            url=item["url"],
+            labels=[label_obj["name"] for label_obj in item.get("labels", [])],
+            updated_at=item.get("updatedAt") or "",
+        )
+    return issues_by_key
+
+
+def write_temp_body(prefix: str, body: str) -> str:
+    with tempfile.NamedTemporaryFile("w", prefix=prefix, suffix=".md", delete=False) as handle:
+        handle.write(body)
+        return handle.name
+
+
+def sync_qa_findings(
+    runner: Runner,
+    repo: str,
+    findings: list[QAFinding],
+    *,
+    existing_issue_by_key: dict[str, Issue] | None = None,
+) -> tuple[list[str], list[str]]:
+    issues_by_key = existing_issue_by_key if existing_issue_by_key is not None else existing_qa_issues_by_key(runner, repo)
+    created: list[str] = []
+    updated: list[str] = []
+    for finding in findings:
+        existing = issues_by_key.get(finding.dedupe_key)
+        if existing is not None:
+            body_path = write_temp_body("bb-qa-comment-", render_qa_issue_comment(finding))
+            try:
+                runner.run(
+                    [
+                        "gh",
+                        "issue",
+                        "comment",
+                        str(existing.number),
+                        "--repo",
+                        repo,
+                        "--body-file",
+                        body_path,
+                    ],
+                    timeout=60,
+                )
+            finally:
+                pathlib.Path(body_path).unlink(missing_ok=True)
+            updated.append(existing.url)
+            continue
+
+        body_path = write_temp_body("bb-qa-issue-", render_qa_issue_body(finding))
+        try:
+            argv = ["gh", "issue", "create", "--repo", repo, "--title", f"[QA][{finding.priority_label.upper()}] {finding.title}"]
+            for label in finding.labels:
+                argv.extend(["--label", label])
+            argv.extend(["--body-file", body_path])
+            issue_url = runner.run(argv, timeout=60).strip()
+        finally:
+            pathlib.Path(body_path).unlink(missing_ok=True)
+        created.append(issue_url)
+        issues_by_key[finding.dedupe_key] = Issue(
+            number=0,
+            title=finding.title,
+            body="",
+            url=issue_url,
+            labels=finding.labels,
+        )
+    return created, updated
 
 
 def split_repo(repo: str) -> tuple[str, str]:
@@ -1974,6 +2313,7 @@ def route_issues_semantically(repo: str, eligible: list[Issue], builder_profile:
                 "number": issue.number,
                 "title": issue.title,
                 "labels": issue.labels,
+                "qa_origin": is_qa_origin_issue(issue.labels),
                 "updated_at": issue.updated_at,
                 "body": issue.body,
             },
@@ -1995,6 +2335,7 @@ def route_issues_semantically(repo: str, eligible: list[Issue], builder_profile:
             "You are Bitterblossom's router.",
             "Choose the single best issue to run next from the eligible set.",
             "Use semantic reasoning across the problem, intent contract, and acceptance criteria.",
+            "If two issues are otherwise comparable within the same priority tier, prefer qa_origin issues because they represent deployed-app risk.",
             "Do not use label priority as the primary reason unless the issue content is otherwise tied.",
             f"Repository: {repo}",
             f"Default builder profile: {builder_profile}",
@@ -2029,9 +2370,9 @@ def pick_issue(conn: sqlite3.Connection, issues: list[Issue], repo: str) -> Issu
 
     if not eligible:
         return None
-    def key(issue: Issue) -> tuple[int, str, int]:
+    def key(issue: Issue) -> tuple[int, int, str, int]:
         priority, _matched = issue_priority(issue.labels)
-        return (priority, issue.updated_at or "", issue.number)
+        return (priority, qa_priority_rank(issue), issue.updated_at or "", issue.number)
 
     return sorted(eligible, key=key)[0]
 
@@ -5575,6 +5916,19 @@ def route_issue(args: argparse.Namespace) -> int:
     return emit_payload(decision.issue, decision.profile, decision.rationale, decision.readiness_failures, 0)
 
 
+def qa_intake(args: argparse.Namespace) -> int:
+    runner = Runner(ROOT)
+    try:
+        probe_output = runner.run(shlex.split(args.command), timeout=getattr(args, "timeout", 900))
+        payload = json.loads(probe_output)
+    except json.JSONDecodeError as exc:
+        raise CmdError(f"qa probe command returned invalid JSON: {exc}") from exc
+    findings = parse_qa_intake_payload(payload)
+    created, updated = sync_qa_findings(runner, args.repo, findings)
+    print(f"created={len(created)} updated={len(updated)} findings={len(findings)}")
+    return 0
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Bitterblossom conductor MVP")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -5657,6 +6011,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     route_p.add_argument("--limit", type=int, default=25)
     route_p.add_argument("--builder-profile", default="claude-sonnet")
     route_p.set_defaults(func=route_issue)
+
+    qa_p = sub.add_parser("qa-intake", help="Run a QA probe command and sync findings into GitHub issues")
+    qa_p.add_argument("--repo", required=True)
+    qa_p.add_argument("--command", required=True, help="Shell-style probe command that prints QA finding JSON to stdout")
+    qa_p.add_argument("--timeout", type=int, default=900)
+    qa_p.set_defaults(func=qa_intake)
 
     show_p = sub.add_parser("show-runs", help="Show recent runs")
     show_p.add_argument("--db", default=str(DEFAULT_DB))

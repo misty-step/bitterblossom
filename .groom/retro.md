@@ -103,3 +103,11 @@
 - scope: replaced the unsupported `nohup` coordinator story with one repo-owned supervisor script, a reboot launcher contract, bounded local log rotation, and explicit operator docs
 - blocker: none
 - pattern: when "always-on" behavior matters, ship a narrow supported runtime contract in code and docs instead of leaving operators to improvise shell folklore
+
+## 2026-03-12 [issue #505](https://github.com/misty-step/bitterblossom/issues/505)
+
+- predicted: L
+- actual: M
+- scope: added a narrow QA-intake lane that runs a configurable probe command, normalizes findings into deduped GitHub issues with stable evidence contracts, and gives same-tier routing preference to `source/qa`
+- blocker: the existing worktree lock tests exposed shell-lock fragility, so the ship gate also required replacing that path with an inline Python `fcntl.flock` contract
+- pattern: when a new intake source is still exploratory, keep the runner pluggable and codify only the stable handoff contract that the rest of the factory needs

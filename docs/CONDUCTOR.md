@@ -161,6 +161,45 @@ python3 scripts/conductor.py route-issue \
 
 `route-issue` emits JSON with the selected issue, chosen profile, semantic rationale, and any skipped issue numbers keyed to explicit readiness failures. Auto-pick in `run-once`/`loop` uses the same readiness + routing path.
 
+QA-originated backlog items now get one small routing preference: if two issues are otherwise in the same priority tier, `source/qa` issues sort ahead of ordinary backlog work because they represent deployed-app risk.
+
+Ingest QA findings from an external probe command:
+
+```bash
+python3 scripts/conductor.py qa-intake \
+  --repo misty-step/bitterblossom \
+  --command 'python3 scripts/examples/qa_probe.py --target https://app.example.com'
+```
+
+The probe command must print JSON to stdout with this contract:
+
+```json
+{
+  "target": "https://app.example.com",
+  "environment": "production",
+  "findings": [
+    {
+      "title": "Checkout button disabled",
+      "summary": "Valid form input never enables submit.",
+      "severity": "high",
+      "repro_steps": ["Open /checkout", "Fill valid form", "Observe disabled button"],
+      "evidence": [
+        {
+          "kind": "screenshot",
+          "label": "disabled button",
+          "url": "https://example.com/shot.png"
+        }
+      ]
+    }
+  ]
+}
+```
+
+`qa-intake` normalizes each finding into a GitHub issue body with explicit target, environment, reproduction steps, evidence, and a deterministic hidden dedupe marker. Open `source/qa` issues are matched by that marker:
+
+- new finding: create a fresh GitHub issue with `source/qa` plus severity-derived priority labels
+- duplicate finding: append a new issue comment with the latest evidence instead of creating backlog spam
+
 Inspect runs:
 
 ```bash
