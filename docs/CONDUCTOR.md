@@ -321,7 +321,7 @@ Both commands include `worktree_path` in the JSON output. A non-null `worktree_p
 Manual cleanup on the sprite:
 
 ```bash
-sprite exec <sprite> -- bash -lc 'git -C /home/sprite/workspace/<repo> worktree remove --force <worktree_path>; git -C /home/sprite/workspace/<repo> worktree prune'
+sprite exec <sprite> -- bash -lc 'git -C /home/sprite/workspace/<repo-name> worktree remove --force <worktree_path>; git -C /home/sprite/workspace/<repo-name> worktree prune'
 ```
 
 ### Builder handoff boundary

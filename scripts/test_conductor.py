@@ -5750,6 +5750,26 @@ def test_prepare_run_workspace_uses_remote_tracking_refs(monkeypatch: pytest.Mon
     assert 'flock --exclusive' in captured["script"]
 
 
+def test_prepare_run_workspace_accepts_workspace_as_last_output_line(monkeypatch: pytest.MonkeyPatch) -> None:
+    expected_workspace = conductor.run_workspace("misty-step/bitterblossom", "run-538-1", "builder")
+    monkeypatch.setattr(
+        conductor,
+        "sprite_bash",
+        lambda *_a, **_kw: f"HEAD is now at 020fe69 feature\n{expected_workspace}\n",
+    )
+    monkeypatch.setattr(conductor.time, "sleep", lambda _: None)
+
+    workspace = conductor.prepare_run_workspace(
+        object(),
+        "noble-blue-serpent",
+        "misty-step/bitterblossom",
+        "run-538-1",
+        "builder",
+    )
+
+    assert workspace == expected_workspace
+
+
 def test_dispatch_until_artifact_passes_workspace_to_dispatch_task(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 

@@ -756,6 +756,13 @@ def sprite_bash(runner: Runner, sprite: str, script: str, *, timeout: int = 120)
     )
 
 
+def parse_workspace_prepare_output(output: str, workspace: str, sprite: str) -> str:
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    if lines and lines[-1] == workspace:
+        return workspace
+    raise CmdError(f"unexpected workspace prepare output for {sprite}: {output!r}")
+
+
 def _prepare_run_workspace_once(runner: Runner, sprite: str, mirror: str, workspace: str) -> str:
     lock_file = mirror + "/.conductor_lock"
     script = "\n".join(
@@ -782,10 +789,8 @@ def _prepare_run_workspace_once(runner: Runner, sprite: str, mirror: str, worksp
             'printf "%s\\n" "$workspace"',
         ]
     )
-    output = sprite_bash(runner, sprite, script, timeout=300).strip()
-    if output != workspace:
-        raise CmdError(f"unexpected workspace prepare output for {sprite}: {output!r}")
-    return workspace
+    output = sprite_bash(runner, sprite, script, timeout=300)
+    return parse_workspace_prepare_output(output, workspace, sprite)
 
 
 def prepare_run_workspace(runner: Runner, sprite: str, repo: str, run_id: str, lane: str) -> str:
