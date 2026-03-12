@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import sqlite3
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -6951,6 +6953,196 @@ def test_cleanup_run_workspace_uses_bounded_lock_wait(monkeypatch: pytest.Monkey
 
     assert f'flock -w {conductor.WORKSPACE_CLEANUP_LOCK_WAIT_SECONDS} 9' in captured["script"]
     assert "mirror lock acquisition timed out during cleanup" in captured["script"]
+
+
+def _init_local_worktree_mirror(tmp_path: pathlib.Path) -> pathlib.Path:
+    origin = tmp_path / "origin.git"
+    seed = tmp_path / "seed"
+    mirror = tmp_path / "bitterblossom"
+
+    subprocess.run(["git", "init", "--bare", str(origin)], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "clone", str(origin), str(seed)], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(seed), "config", "user.email", "tests@example.com"], check=True)
+    subprocess.run(["git", "-C", str(seed), "config", "user.name", "Bitterblossom Tests"], check=True)
+    (seed / "README.md").write_text("seed\n")
+    subprocess.run(["git", "-C", str(seed), "add", "README.md"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(seed), "commit", "-m", "seed"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(seed), "push", "origin", "HEAD:master"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "clone", str(origin), str(mirror)], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(mirror), "config", "advice.detachedHead", "false"], check=True)
+    return mirror
+
+
+def _install_flock_shim(tmp_path: pathlib.Path) -> pathlib.Path:
+    bin_dir = tmp_path / "test-bin"
+    bin_dir.mkdir()
+    flock = bin_dir / "flock"
+    flock.write_text(
+        """#!/usr/bin/env python3
+import fcntl
+import sys
+import time
+
+args = sys.argv[1:]
+timeout = None
+if len(args) == 3 and args[0] == "-w":
+    timeout = float(args[1])
+    fd = int(args[2])
+elif len(args) == 1:
+    fd = int(args[0])
+else:
+    raise SystemExit("unsupported flock arguments")
+
+deadline = None if timeout is None else time.monotonic() + timeout
+while True:
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        raise SystemExit(0)
+    except BlockingIOError:
+        if deadline is not None and time.monotonic() >= deadline:
+            raise SystemExit(1)
+        time.sleep(0.01)
+"""
+    )
+    flock.chmod(0o755)
+    return bin_dir
+
+
+def _local_sprite_bash(bin_dir: pathlib.Path) -> Any:
+    def run(_runner: object, _sprite: str, script: str, *, timeout: int) -> str:
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_dir}:{env['PATH']}"
+        try:
+            completed = subprocess.run(
+                ["bash", "-c", script],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env=env,
+            )
+        except subprocess.TimeoutExpired:
+            raise
+        if completed.returncode != 0:
+            raise conductor.CmdError((completed.stderr or completed.stdout).strip())
+        lines = [line for line in completed.stdout.splitlines() if line.strip()]
+        if not lines:
+            return completed.stdout
+        return f"{lines[-1]}\n"
+
+    return run
+
+
+def _hold_lock(lockfile: pathlib.Path, hold_seconds: float, bin_dir: pathlib.Path) -> subprocess.Popen[str]:
+    ready = lockfile.with_suffix(".ready")
+    ready.unlink(missing_ok=True)
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    proc = subprocess.Popen(
+        [
+            "bash",
+            "-c",
+            (
+                f'exec 9>"{lockfile}"; '
+                "flock 9; "
+                f'printf ready > "{ready}"; '
+                f"sleep {hold_seconds}"
+            ),
+        ],
+        text=True,
+        env=env,
+    )
+    deadline = time.monotonic() + 5
+    while not ready.exists():
+        if proc.poll() is not None:
+            raise AssertionError(f"lock holder exited early with {proc.returncode}")
+        if time.monotonic() >= deadline:
+            proc.terminate()
+            proc.wait(timeout=5)
+            raise AssertionError("lock holder did not become ready")
+        time.sleep(0.01)
+    return proc
+
+
+def test_prepare_run_workspace_waits_for_lock_release(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    mirror = _init_local_worktree_mirror(tmp_path)
+    bin_dir = _install_flock_shim(tmp_path)
+    lockfile = mirror / ".bb" / "conductor" / "mirror.lock"
+    lockfile.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(conductor, "repo_dir", lambda _repo: str(mirror))
+    monkeypatch.setattr(conductor, "sprite_bash", _local_sprite_bash(bin_dir))
+
+    holder = _hold_lock(lockfile, hold_seconds=1.2, bin_dir=bin_dir)
+    try:
+        started = time.monotonic()
+        workspace = conductor.prepare_run_workspace(
+            object(),
+            "noble-blue-serpent",
+            "misty-step/bitterblossom",
+            "run-472-1",
+            "builder",
+        )
+    finally:
+        holder.wait(timeout=5)
+
+    assert time.monotonic() - started >= 1.0
+    assert workspace == conductor.run_workspace("misty-step/bitterblossom", "run-472-1", "builder")
+    assert pathlib.Path(workspace).exists()
+
+
+def test_prepare_run_workspace_reports_lock_timeout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    mirror = _init_local_worktree_mirror(tmp_path)
+    bin_dir = _install_flock_shim(tmp_path)
+    lockfile = mirror / ".bb" / "conductor" / "mirror.lock"
+    lockfile.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(conductor, "repo_dir", lambda _repo: str(mirror))
+    monkeypatch.setattr(conductor, "sprite_bash", _local_sprite_bash(bin_dir))
+    monkeypatch.setattr(conductor, "WORKSPACE_PREPARE_LOCK_WAIT_SECONDS", 1)
+
+    holder = _hold_lock(lockfile, hold_seconds=2.0, bin_dir=bin_dir)
+    try:
+        with pytest.raises(conductor.CmdError, match="mirror lock acquisition timed out"):
+            conductor.prepare_run_workspace(
+                object(),
+                "noble-blue-serpent",
+                "misty-step/bitterblossom",
+                "run-473-1",
+                "builder",
+            )
+    finally:
+        holder.wait(timeout=5)
+
+
+def test_cleanup_run_workspace_reports_lock_timeout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    mirror = _init_local_worktree_mirror(tmp_path)
+    bin_dir = _install_flock_shim(tmp_path)
+    lockfile = mirror / ".bb" / "conductor" / "mirror.lock"
+    lockfile.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(conductor, "repo_dir", lambda _repo: str(mirror))
+    monkeypatch.setattr(conductor, "sprite_bash", _local_sprite_bash(bin_dir))
+    monkeypatch.setattr(conductor, "WORKSPACE_CLEANUP_LOCK_WAIT_SECONDS", 1)
+
+    workspace = pathlib.Path(conductor.run_workspace("misty-step/bitterblossom", "run-474-1", "builder"))
+    workspace.mkdir(parents=True)
+
+    holder = _hold_lock(lockfile, hold_seconds=2.0, bin_dir=bin_dir)
+    try:
+        with pytest.raises(conductor.CmdError, match="mirror lock acquisition timed out during cleanup"):
+            conductor.cleanup_run_workspace(
+                object(),
+                "noble-blue-serpent",
+                "misty-step/bitterblossom",
+                "run-474-1",
+                "builder",
+            )
+    finally:
+        holder.wait(timeout=5)
 
 
 def test_prepare_run_workspace_with_retry_recovers_after_transient_failure(
