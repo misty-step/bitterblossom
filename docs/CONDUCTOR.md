@@ -122,6 +122,17 @@ python3 scripts/conductor.py loop \
   --reviewer council-thorn-20260306
 ```
 
+Preview the next routed issue and profile:
+
+```bash
+python3 scripts/conductor.py route-issue \
+  --repo misty-step/bitterblossom \
+  --label autopilot \
+  --limit 25
+```
+
+`route-issue` emits JSON with the selected issue, chosen profile, semantic rationale, and any skipped issue numbers keyed to explicit readiness failures. Auto-pick in `run-once`/`loop` uses the same readiness + routing path.
+
 Inspect runs:
 
 ```bash
@@ -284,21 +295,43 @@ Builder runs now execute in a run-scoped Git worktree under the warm mirror:
 
 The shared checkout stays warm for fetches and object reuse, but the conductor no longer reuses it as the execution surface for builder or reviewer runs.
 
-To inspect which worktree a completed run used on the worker:
+### Worktree Lifecycle and Serialization
+
+Mirror mutation — `git fetch`, `git worktree add/remove`, `git worktree prune` — is serialized at two levels:
+
+1. **Python-level lock**: a `threading.Lock` per `(sprite, mirror)` pair serializes calls within a single conductor process. This protects reviewer and builder lanes that happen to use the same sprite concurrently without stalling independent sprites that have their own mirrors.
+2. **Filesystem flock**: the bash script wraps all git mirror operations in `flock --exclusive` on a `.conductor_lock` file inside the mirror directory. This serializes concurrent *processes* (e.g., two supervisors running against the same sprite).
+
+**Prepare retries**: `prepare_run_workspace` retries up to `WORKSPACE_PREP_RETRIES` times (default 2) on transient `CmdError`. A run that cannot prepare its workspace after all retries fails with an explicit `workspace preparation failed after N attempts: <root cause>` message rather than leaving ambiguous state.
+
+**Cleanup failure visibility**: if workspace cleanup fails after a run ends, the conductor records a `workspace_cleanup_failed` event with:
+- `error`: the failure message
+- `surviving_path`: the worktree path that was not removed
+
+The `worktree_path` column in the run store is intentionally **not cleared** when cleanup fails. An operator can see the surviving path without touching the sprite filesystem.
+
+To inspect worktree state for any run:
 
 ```bash
 python3 scripts/conductor.py show-runs --limit 5
+python3 scripts/conductor.py show-run --run-id <run-id>
 ```
 
-The JSON row now includes `worktree_path`. That path is preserved in the run store even after the worktree has been cleaned up.
+Both commands include `worktree_path` in the JSON output. A non-null `worktree_path` on a terminal run (merged, failed) usually indicates cleanup did not complete — use `show-events` to see the `workspace_cleanup_failed` event. If the physical cleanup succeeded but a later run-state write failed, the run raises and the last persisted `worktree_path` can be stale until an operator reconciles it.
+
+Manual cleanup on the sprite:
+
+```bash
+sprite exec <sprite> -- bash -lc 'git -C /home/sprite/workspace/<repo-name> worktree remove --force <worktree_path>; git -C /home/sprite/workspace/<repo-name> worktree prune'
+```
 
 ### Builder handoff boundary
 
 Once a builder writes its artifact and the referenced PR is verified, the conductor persists `phase=awaiting_governance` and `pr_number` immediately. That write is the durable boundary between builder work and control-plane cleanup.
 
-Post-artifact sprite cleanup (`bb kill <sprite>`) is then best-effort. Transport failures during cleanup (e.g., `use of closed network connection`) are downgraded to `cleanup_warning` events in the event log and printed to stderr. They do **not** overwrite the run to `phase=failed` or clear `pr_number`.
+Post-artifact sprite cleanup is best-effort. Transport failures during cleanup (e.g., `use of closed network connection`) are recorded as `cleanup_warning` events and do **not** overwrite the run to `phase=failed` or clear `pr_number`.
 
-If a run shows `phase=awaiting_governance` with a valid `pr_number` and a `cleanup_warning` event, the builder delivered its handoff correctly. The operator can run `govern-pr`, reconcile the run, or let a later conductor invocation adopt the PR.
+If a run shows `phase=awaiting_governance` with a valid `pr_number`, the builder delivered its handoff correctly. The operator can run `govern-pr`, reconcile the run, or let a later conductor invocation adopt the PR.
 
 Review state is now split deliberately:
 
@@ -436,6 +469,7 @@ The `wrap_untrusted_issue_content` helper ([`scripts/conductor.py`](../scripts/c
 - one PR-feedback revision loop
 - SQLite only
 - single-tenant worker assumption
-- deterministic issue filtering, heuristic ranking for now
+- issue readiness requires `## Product Spec` and `### Intent Contract`
+- deterministic lease safety plus Claude-backed semantic ranking
 
-The accepted next cuts are in [ADR-003](./adr/003-conductor-control-plane.md): stale-lease reclaim, resume-first reconciliation, semantic routing, and parallel variants.
+The accepted next cuts are in [ADR-003](./adr/003-conductor-control-plane.md): stale-lease reclaim, resume-first reconciliation, and parallel variants.

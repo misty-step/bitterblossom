@@ -8,6 +8,36 @@ import (
 	"testing"
 )
 
+func TestRootCommandRejectsLegacyProvisionCommand(t *testing.T) {
+	t.Parallel()
+
+	root := newRootCmd()
+	root.SetArgs([]string{"provision", "fern"})
+
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected unknown command error")
+	}
+	if !strings.Contains(err.Error(), `unknown command "provision" for "bb"`) {
+		t.Fatalf("error = %q, want unknown provision command", err.Error())
+	}
+}
+
+func TestRootCommandRejectsLegacyStatusFormatFlag(t *testing.T) {
+	t.Parallel()
+
+	root := newRootCmd()
+	root.SetArgs([]string{"status", "--format", "text"})
+
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected unknown flag error")
+	}
+	if !strings.Contains(err.Error(), "unknown flag: --format") {
+		t.Fatalf("error = %q, want unknown --format flag", err.Error())
+	}
+}
+
 func TestTokenExchangeErrUnauthorizedHint(t *testing.T) {
 	t.Parallel()
 

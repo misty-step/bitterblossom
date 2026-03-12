@@ -1,39 +1,43 @@
 ### Technical Overview: /scripts
 
-The `scripts` directory serves as the orchestration and management layer for **Bitterblossom**, a system designed to deploy and supervise autonomous AI agents (referred to as "sprites") running Claude Code. The architecture follows a hub-and-spoke model where local management scripts dispatch tasks to remote execution environments (typically Fly.io machines), which then run persistent agent loops.
+The `scripts` directory holds the run-centric control plane plus a small set of supporting operational utilities. The canonical operator boundary is:
+
+- `bb` for sprite transport (`setup`, `dispatch`, `status`, `logs`, `kill`)
+- `scripts/conductor.py` for issue leasing, review orchestration, CI waits, and merge
 
 #### Core Architecture and Key Roles
 
 **1. Agent Orchestration (The "Ralph" Loop)**
-The system implements the "Ralph" pattern—an autonomous execution loop that persists until a task is completed or blocked.
-*   **`sprite-agent.sh`**: The primary remote supervisor. It manages the agent's lifecycle, emits structured JSONL events, handles heartbeats, performs periodic git auto-pushes, and monitors for error loops or token exhaustion.
-*   **`ralph.sh`**: A lower-level execution harness that wraps the `claude` CLI, providing iteration safety caps and log trimming.
-*   **`ralph-prompt-template.md`**: The standardized instruction set for agents, defining a three-phase workflow (Implementation, PR/CI, and Review Response) and strictly forbidding rebases.
+The system implements the Ralph loop for on-sprite execution until a task completes or blocks.
+- `ralph.sh`: the harness that invokes Claude Code, enforces iteration limits, and checks completion signals.
+- `ralph-prompt-template.md`: the dispatch template rendered by `bb dispatch`.
+- `sprite-agent.sh`: an older remote supervisor retained for legacy or ad hoc workflows, not the primary transport path.
 
-**2. Fleet Management and Dispatch**
-These scripts handle the lifecycle of sprites from local environments.
-*   **`dispatch.sh`**: The entry point for assigning tasks. It supports "one-shot" prompts or persistent "Ralph" loops and handles repository cloning and prompt injection.
-*   **`provision.sh`, `sync.sh`, `teardown.sh`, `status.sh`**: Shell wrappers for the `bb` Go binary (resolved via `lib_bb.sh`). They manage the infrastructure lifecycle based on YAML composition files.
-*   **`sprite-bootstrap.sh`**: An idempotent setup script that prepares the remote environment, installing dependencies like `ripgrep`, `tmux`, and the `sprite-agent` binary.
+**2. Control Plane**
+- `conductor.py`: the control plane for GitHub issue intake, builder/reviewer dispatch, reconciliation, CI waiting, and merge.
+- `test_conductor.py`: regression coverage for the run lifecycle and governance rules.
 
-**3. Monitoring and Observability**
+**3. Supporting Utilities**
+- `dispatch.sh`: a legacy shell dispatch helper. Prefer `bb dispatch` for the supported path.
+- `sprite-bootstrap.sh`: idempotent remote bootstrap helper for shell-driven environments.
+- `onboard.sh`: local environment bootstrap for operators.
+
+**4. Monitoring and Observability**
 A suite of tools provides visibility into the distributed agent fleet.
-*   **`watchdog-v2.sh` / `watchdog.sh`**: Automated monitors that detect dead Claude processes or "stuck" agents (no commits/branch activity) and trigger redispatch or alerts.
-*   **`health-check.sh` / `fleet-status.sh`**: Provide deep inspection of sprite state, calculating "staleness" based on file modification epochs and git activity.
-*   **`refresh-dashboard.sh`**: A generator that aggregates sprite status and GitHub PR data into a static HTML dashboard.
-*   **`webhook-receiver.sh`**: A Python-based micro-service that collects and logs events POSTed by remote `sprite-agents`.
+- `watchdog-v2.sh` / `watchdog.sh`: older monitoring experiments.
+- `health-check.sh` / `fleet-status.sh`: deeper shell-based inspection helpers.
+- `refresh-dashboard.sh`: static dashboard generator.
+- `webhook-receiver.sh`: event collector for posted sprite-agent events.
 
-**4. External Integrations**
-*   **`pr-shepherd.sh`**: Monitors GitHub for PRs authored by sprites, tracking CI status and review requests.
-*   **`sentry-watcher.sh`**: Polls the Sentry API to detect anomalies or fatal exceptions across the organization's projects.
+**5. External Integrations**
+- `pr-shepherd.sh`: tracks PR and CI state.
+- `sentry-watcher.sh`: polls Sentry for anomalies.
 
 #### Shared Logic and Libraries
-*   **`lib.sh`**: The central library providing shell utilities for GitHub authentication resolution, sprite-to-environment variable mapping, and provider-specific configuration (Moonshot vs. OpenRouter).
-*   **`onboard.sh`**: A utility to bootstrap local developer environments by inferring Fly.io and GitHub credentials.
+- `lib.sh`: shared shell helpers for auth, environment resolution, and remote shell utilities.
 
 #### Dependencies and Key Constraints
-*   **CLI Dependencies**: Requires `sprite` (Fly.io agent CLI), `fly`, `gh` (GitHub CLI), and `yq` (mikefarah/yq) for composition parsing.
-*   **Environment Variables**: Operation depends heavily on `ANTHROPIC_AUTH_TOKEN` (for Moonshot/Anthropic) or `BB_OPENROUTER_API_KEY` (for OpenRouter).
-*   **PTY Requirement**: `sprite-agent.sh` prefers the `script` command to provide a PTY-backed execution environment, ensuring near-real-time log flushing.
-*   **Git Policy**: The system explicitly forbids rebasing due to repository policy hooks; agents are instructed to use `--force-with-lease` only on their own feature branches.
-*   **State Management**: Sprite state is signaled via specific extensionless files in the workspace (e.g., `TASK_COMPLETE`, `BLOCKED.md`), which the supervisors use to terminate loops.
+- Prefer `SPRITE_TOKEN` for transport auth; `FLY_API_TOKEN` is a fallback token-exchange path.
+- `OPENROUTER_API_KEY` is required during `bb setup` so sprite-side settings can be rendered.
+- Completion is signaled through `TASK_COMPLETE`, `TASK_COMPLETE.md`, and `BLOCKED.md` in the workspace root.
+- New transport behavior should land in `cmd/bb`, not in additional shell wrapper surfaces.
