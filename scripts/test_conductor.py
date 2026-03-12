@@ -5712,6 +5712,7 @@ def test_run_once_cleans_builder_worktree_when_run_builder_raises(
 
 def test_prepare_run_workspace_rejects_empty_output(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(conductor, "sprite_bash", lambda *_a, **_kw: "")
+    monkeypatch.setattr(conductor.time, "sleep", lambda _: None)
 
     with pytest.raises(conductor.CmdError, match="unexpected workspace prepare output"):
         conductor.prepare_run_workspace(
@@ -5746,6 +5747,7 @@ def test_prepare_run_workspace_uses_remote_tracking_refs(monkeypatch: pytest.Mon
     assert 'refs/remotes/origin/master' in captured["script"]
     assert 'base_ref="origin/master"' in captured["script"]
     assert 'refs/remotes/origin/HEAD' in captured["script"]
+    assert 'flock --exclusive' in captured["script"]
 
 
 def test_dispatch_until_artifact_passes_workspace_to_dispatch_task(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -5792,3 +5794,268 @@ def test_show_runs_includes_worktree_path(tmp_path: pathlib.Path, capsys: pytest
     assert rc == 0
     payload = json.loads(capsys.readouterr().out.strip())
     assert payload["worktree_path"] == "/tmp/run-469-1/builder-worktree"
+
+
+# ---------------------------------------------------------------------------
+# Worktree lifecycle hardening tests (issue #538)
+# ---------------------------------------------------------------------------
+
+
+def test_prepare_run_workspace_script_uses_flock_for_mirror_serialization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, str] = {}
+    expected_workspace = conductor.run_workspace("misty-step/bitterblossom", "run-538-1", "builder")
+
+    def fake_sprite_bash(_runner: object, _sprite: str, script: str, *, timeout: int) -> str:
+        _ = timeout
+        captured["script"] = script
+        return expected_workspace
+
+    monkeypatch.setattr(conductor, "sprite_bash", fake_sprite_bash)
+
+    conductor.prepare_run_workspace(
+        object(),
+        "noble-blue-serpent",
+        "misty-step/bitterblossom",
+        "run-538-1",
+        "builder",
+    )
+
+    script = captured["script"]
+    assert "flock --exclusive" in script
+    assert ".conductor_lock" in script
+    # All git mirror operations must be inside the flock subshell
+    flock_pos = script.index("flock --exclusive")
+    close_pos = script.index(') 9>>"$lock_file"')
+    assert flock_pos < script.index("git -C") < close_pos
+
+
+def test_cleanup_run_workspace_script_uses_flock(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, str] = {}
+
+    def fake_sprite_bash(_runner: object, _sprite: str, script: str, *, timeout: int) -> str:
+        _ = timeout
+        captured["script"] = script
+        return ""
+
+    monkeypatch.setattr(conductor, "sprite_bash", fake_sprite_bash)
+
+    conductor.cleanup_run_workspace(
+        object(),
+        "noble-blue-serpent",
+        "misty-step/bitterblossom",
+        "run-538-1",
+        "builder",
+    )
+
+    script = captured["script"]
+    assert "flock --exclusive" in script
+    assert ".conductor_lock" in script
+    assert "worktree prune" in script
+
+
+def test_prepare_run_workspace_retries_on_transient_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    call_count = 0
+    expected_workspace = conductor.run_workspace("misty-step/bitterblossom", "run-538-1", "builder")
+    sleeps: list[float] = []
+
+    def fake_sprite_bash(_runner: object, _sprite: str, _script: str, *, timeout: int) -> str:
+        nonlocal call_count
+        _ = timeout
+        call_count += 1
+        if call_count < 2:
+            raise conductor.CmdError("transient git network error")
+        return expected_workspace
+
+    monkeypatch.setattr(conductor, "sprite_bash", fake_sprite_bash)
+    monkeypatch.setattr(conductor.time, "sleep", lambda s: sleeps.append(s))
+
+    workspace = conductor.prepare_run_workspace(
+        object(),
+        "noble-blue-serpent",
+        "misty-step/bitterblossom",
+        "run-538-1",
+        "builder",
+    )
+
+    assert workspace == expected_workspace
+    assert call_count == 2
+    assert len(sleeps) == 1
+
+
+def test_prepare_run_workspace_exhausts_retries_with_explicit_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        conductor, "sprite_bash", lambda *_a, **_kw: (_ for _ in ()).throw(conductor.CmdError("git fetch failed"))
+    )
+    monkeypatch.setattr(conductor.time, "sleep", lambda _: None)
+
+    with pytest.raises(conductor.CmdError, match="workspace preparation failed after"):
+        conductor.prepare_run_workspace(
+            object(),
+            "noble-blue-serpent",
+            "misty-step/bitterblossom",
+            "run-538-1",
+            "builder",
+        )
+
+
+def test_prepare_run_workspace_serializes_overlapping_calls(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Concurrent calls for the same sprite+repo must not interleave mirror operations."""
+    import threading as _threading
+
+    # Track when _prepare_run_workspace_once is active vs. not
+    active_count = 0
+    max_concurrent = 0
+    active_mu = _threading.Lock()
+    call_count = 0
+
+    real_prepare_once = conductor._prepare_run_workspace_once  # noqa: SLF001
+
+    def counting_prepare_once(runner: object, sprite: str, mirror: str, workspace: str) -> str:
+        nonlocal active_count, max_concurrent, call_count
+        with active_mu:
+            active_count += 1
+            max_concurrent = max(max_concurrent, active_count)
+            call_count += 1
+        result = real_prepare_once(runner, sprite, mirror, workspace)  # type: ignore[arg-type]
+        with active_mu:
+            active_count -= 1
+        return result
+
+    expected_workspaces: dict[str, str] = {}
+
+    def fake_sprite_bash(_runner: object, _sprite: str, script: str, *, timeout: int) -> str:
+        _ = timeout
+        # Extract workspace path from script: workspace='...'
+        import re as _re
+        m = _re.search(r"^workspace=(.+)$", script, _re.MULTILINE)
+        if m:
+            return m.group(1).strip("'")
+        return ""
+
+    monkeypatch.setattr(conductor, "_prepare_run_workspace_once", counting_prepare_once)
+    monkeypatch.setattr(conductor, "sprite_bash", fake_sprite_bash)
+
+    results: list[str] = []
+    errors: list[Exception] = []
+
+    def call_prepare(run_suffix: str) -> None:
+        try:
+            ws = conductor.prepare_run_workspace(
+                object(),
+                "noble-blue-serpent",
+                "misty-step/bitterblossom",
+                f"run-538-{run_suffix}",
+                "builder",
+            )
+            results.append(ws)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    t1 = _threading.Thread(target=call_prepare, args=("a",))
+    t2 = _threading.Thread(target=call_prepare, args=("b",))
+    t1.start()
+    t2.start()
+    t1.join(timeout=5)
+    t2.join(timeout=5)
+
+    assert not errors, errors
+    assert len(results) == 2
+    # The lock guarantees at most one call to _prepare_run_workspace_once at a time
+    assert max_concurrent == 1, f"lock did not serialize: max_concurrent={max_concurrent}"
+
+
+def test_cleanup_builder_workspace_records_workspace_cleanup_failed_on_error(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="cleanup", body="", url="u538", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-1", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(conn, "run-538-1", worktree_path="/home/sprite/workspace/bitterblossom/.bb/conductor/run-538-1/builder-worktree")
+
+    monkeypatch.setattr(
+        conductor,
+        "cleanup_run_workspace",
+        lambda *_a, **_kw: (_ for _ in ()).throw(conductor.CmdError("git locked")),
+    )
+
+    conductor.cleanup_builder_workspace(
+        object(),
+        conn,
+        tmp_path / "events.jsonl",
+        "run-538-1",
+        "misty-step/bitterblossom",
+        "noble-blue-serpent",
+        "/home/sprite/workspace/bitterblossom/.bb/conductor/run-538-1/builder-worktree",
+    )
+
+    event_types = [r[0] for r in conn.execute("select event_type from events where run_id = 'run-538-1'").fetchall()]
+    assert "workspace_cleanup_failed" in event_types
+    assert "cleanup_warning" not in event_types
+
+    # surviving_path must be in the event payload for operator recovery
+    row = conn.execute(
+        "select payload_json from events where run_id = 'run-538-1' and event_type = 'workspace_cleanup_failed'"
+    ).fetchone()
+    payload = json.loads(row[0])
+    assert "surviving_path" in payload
+    assert payload["surviving_path"] == "/home/sprite/workspace/bitterblossom/.bb/conductor/run-538-1/builder-worktree"
+
+
+def test_cleanup_builder_workspace_preserves_worktree_path_on_failure(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="cleanup", body="", url="u538", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-1", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(conn, "run-538-1", worktree_path="/home/sprite/workspace/bitterblossom/.bb/conductor/run-538-1/builder-worktree")
+
+    monkeypatch.setattr(
+        conductor,
+        "cleanup_run_workspace",
+        lambda *_a, **_kw: (_ for _ in ()).throw(conductor.CmdError("git locked")),
+    )
+
+    conductor.cleanup_builder_workspace(
+        object(),
+        conn,
+        tmp_path / "events.jsonl",
+        "run-538-1",
+        "misty-step/bitterblossom",
+        "noble-blue-serpent",
+        "/home/sprite/workspace/bitterblossom/.bb/conductor/run-538-1/builder-worktree",
+    )
+
+    # worktree_path must NOT be cleared — operator needs it for manual recovery
+    row = conn.execute("select worktree_path from runs where run_id = 'run-538-1'").fetchone()
+    assert row["worktree_path"] == "/home/sprite/workspace/bitterblossom/.bb/conductor/run-538-1/builder-worktree"
+
+
+def test_show_run_includes_worktree_path(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="inspect worktree", body="", url="u538", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-1", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(
+        conn,
+        "run-538-1",
+        phase="building",
+        status="active",
+        builder_sprite="noble-blue-serpent",
+        worktree_path="/home/sprite/workspace/bitterblossom/.bb/conductor/run-538-1/builder-worktree",
+    )
+
+    rc = conductor.show_run(
+        argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-538-1", event_limit=5)
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["run"]["worktree_path"] == "/home/sprite/workspace/bitterblossom/.bb/conductor/run-538-1/builder-worktree"
