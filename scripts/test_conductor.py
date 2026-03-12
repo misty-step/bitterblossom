@@ -7059,6 +7059,9 @@ def test_prepare_run_workspace_with_retry_records_explicit_failure(
         "workspace_preparation_failed",
     ]
     payload = json.loads(events[-1]["payload_json"])
+    assert payload["sprite"] == "noble-blue-serpent"
+    assert payload["lane"] == "builder"
+    assert payload["workspace"] == conductor.run_workspace("misty-step/bitterblossom", "run-470-1", "builder")
     assert payload["attempt"] == 3
     assert payload["attempts"] == 3
     assert payload["error"] == "mirror locked elsewhere"
