@@ -17,54 +17,48 @@ Run this skill when you want a sprite to execute a coding task through `bb dispa
 
 ```bash
 source .env.bb
-bb status --format text
+bb status
+bb dispatch <sprite> "dry-run readiness probe" --repo <owner/repo> --dry-run
 ```
 
 Confirm:
-- `FLY_APP`, `FLY_API_TOKEN`, and `FLY_ORG` are set.
-- Target sprite exists (or let dispatch provision it).
+- `GITHUB_TOKEN` is set.
+- `SPRITE_TOKEN` is preferred, or `FLY_API_TOKEN` is available as fallback auth.
+- Target sprite is already set up for the repo (`bb setup <sprite> --repo <owner/repo>`).
 
 ## Workflow
 
-1. Plan first (dry-run default):
+1. Probe readiness first:
 
 ```bash
-bb dispatch <sprite> --issue <number> --repo <owner/repo>
+bb dispatch <sprite> "dry-run readiness probe" --repo <owner/repo> --dry-run
 ```
 
-2. Execute with explicit skill(s):
+2. Dispatch the real task:
 
 ```bash
-bb dispatch <sprite> --issue <number> --repo <owner/repo> \
-  --skill base/skills/bitterblossom-dispatch \
-  --execute --wait
+bb dispatch <sprite> "Implement feature X" --repo <owner/repo>
 ```
 
-3. For multiple skills, repeat `--skill`:
+3. Follow progress and verify output:
 
 ```bash
-bb dispatch <sprite> "Implement feature X" \
-  --repo <owner/repo> \
-  --skill base/skills/bitterblossom-dispatch \
-  --skill base/skills/bitterblossom-monitoring \
-  --execute --wait
+bb logs <sprite> --follow
+bb status <sprite>
 ```
-
-## Skill Mount Semantics
-
-- Each `--skill` path may be a skill directory or `SKILL.md`.
-- Bitterblossom mounts the full skill directory under `./skills/<name>/` on sprite.
-- Prompt is augmented with required instructions:
-  - `Follow the skill at ./skills/<name>/SKILL.md`
 
 ## Failure Handling
 
-- Validation blocked by labels/readiness:
-  - Use `--skip-validation` only for intentional bypasses.
-- If `--wait` shows no progress, run:
+- If readiness fails, re-run setup:
 
 ```bash
-bb status <sprite> --format text
-bb watchdog --sprite <sprite>
+bb setup <sprite> --repo <owner/repo> --force
 ```
 
+- If dispatch was interrupted or the sprite is stuck, recover with:
+
+```bash
+bb kill <sprite>
+bb logs <sprite> --lines 50
+bb status <sprite>
+```

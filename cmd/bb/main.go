@@ -41,6 +41,22 @@ func (e *exitError) Unwrap() error {
 }
 
 func main() {
+	root := newRootCmd()
+
+	if err := root.Execute(); err != nil {
+		var coded *exitError
+		if errors.As(err, &coded) {
+			if coded.Err != nil {
+				_, _ = fmt.Fprintln(os.Stderr, coded.Err)
+			}
+			os.Exit(coded.Code)
+		}
+		_, _ = fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "bb",
 		Short:         "Bitterblossom — sprite dispatch CLI",
@@ -58,17 +74,7 @@ func main() {
 		newKillCmd(),
 	)
 
-	if err := root.Execute(); err != nil {
-		var coded *exitError
-		if errors.As(err, &coded) {
-			if coded.Err != nil {
-				_, _ = fmt.Fprintln(os.Stderr, coded.Err)
-			}
-			os.Exit(coded.Code)
-		}
-		_, _ = fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
+	return root
 }
 
 func newVersionCmd() *cobra.Command {
@@ -124,7 +130,6 @@ func spriteToken() (string, error) {
 	}
 	return token, nil
 }
-
 
 // tokenExchangeErr wraps a CreateToken error with an actionable hint.
 // Matches "unauthorized" case-insensitively — sprites-go doesn't expose typed

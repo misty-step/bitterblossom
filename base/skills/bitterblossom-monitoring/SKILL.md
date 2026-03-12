@@ -17,44 +17,44 @@ Use when a dispatched task might be stuck, blocked, or silent.
 
 ```bash
 source .env.bb
-bb status --format text
-bb status <sprite> --format text
-bb watchdog --sprite <sprite>
+bb status
+bb status <sprite>
+bb logs <sprite> --lines 50
 ```
 
 ## During Active Dispatch
 
-Prefer:
+Prefer live logs:
 
 ```bash
-bb dispatch <sprite> ... --execute --wait
+bb logs <sprite> --follow
 ```
 
-If wait mode is silent for too long:
+If the sprite looks stuck or a prior dispatch was interrupted:
 
 ```bash
-bb status <sprite> --format text
-bb watchdog --sprite <sprite> --json
+bb kill <sprite>
+bb status <sprite>
+bb logs <sprite> --lines 100
 ```
 
 ## Fast Triage Heuristics
 
-- `running`: task active; continue waiting.
-- `blocked`: inspect `/home/sprite/workspace/BLOCKED.md`.
-- `complete`: pull PR URL or branch changes from sprite workspace.
-- `dead` or `stale`: re-dispatch with same prompt and capture logs.
+- `bb logs --follow` is streaming: the task is active.
+- `bb status <sprite>` shows `BLOCKED.md`: inspect the sprite workspace and unblock explicitly.
+- `bb status <sprite>` shows recent commits or PRs: the task likely produced work even if the prior terminal session ended.
+- `bb kill <sprite>` succeeds cleanly: the sprite is ready for a fresh dispatch.
 
 ## Direct Sprite Probe (Fallback)
 
 Use only when BB surfaces are insufficient:
 
 ```bash
-sprite exec -o "$FLY_ORG" -s <sprite> -- bash -lc 'ls -la /home/sprite/workspace'
+sprite exec -o "${SPRITES_ORG:-personal}" -s <sprite> -- bash -lc 'ls -la /home/sprite/workspace'
 ```
 
 Add timeout for unstable exec calls:
 
 ```bash
-timeout 20 sprite exec -o "$FLY_ORG" -s <sprite> -- pwd
+timeout 20 sprite exec -o "${SPRITES_ORG:-personal}" -s <sprite> -- pwd
 ```
-
