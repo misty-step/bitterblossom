@@ -1012,6 +1012,27 @@ def release_worker_slot(conn: sqlite3.Connection, slot_id: int, *, run_id: str |
         update_worker_slot(conn, slot_id, current_run_id=None)
 
 
+def reap_terminal_worker_slots(conn: sqlite3.Connection, repo: str, workers: list[str]) -> None:
+    for slot in load_worker_slots(conn, repo, workers):
+        if slot.current_run_id is None:
+            continue
+        run = conn.execute("select status from runs where run_id = ?", (slot.current_run_id,)).fetchone()
+        if run is not None and str(run["status"]) not in TERMINAL_RUN_STATUSES:
+            continue
+        cursor = conn.execute(
+            """
+            update worker_slots
+            set current_run_id = null, updated_at = ?
+            where id = ? and current_run_id = ?
+            """,
+            (now_utc(), slot.id, slot.current_run_id),
+        )
+        if cursor.rowcount:
+            conn.commit()
+        else:
+            conn.rollback()
+
+
 def record_worker_probe_success(conn: sqlite3.Connection, slot_id: int) -> None:
     update_worker_slot(conn, slot_id, consecutive_failures=0, last_probe_at=now_utc(), last_error=None)
 
@@ -3732,6 +3753,7 @@ def ensure_governance_run(
         if worker:
             worker_slot = acquire_named_worker_slot(conn, args.repo, args.worker, worker, run_id)
         else:
+            reap_terminal_worker_slots(conn, args.repo, args.worker)
             worker_slot = select_worker_slot(
                 conn,
                 args.repo,
@@ -4289,6 +4311,7 @@ def run_once(args: argparse.Namespace) -> int:
         )
         ensure_reviewers_ready(runner, args.repo, args.reviewer, pathlib.Path(args.reviewer_template))
         record_event(conn, event_log, run_id, "reviewers_ready", {"reviewers": args.reviewer})
+        reap_terminal_worker_slots(conn, args.repo, args.worker)
         worker_slot = select_worker_slot(
             conn,
             args.repo,

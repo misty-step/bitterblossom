@@ -2960,6 +2960,11 @@ def test_select_worker_slot_supports_default_single_slot_workers(monkeypatch: py
     assert selected.slot_index == 1
     assert selected.current_run_id == "run-42"
     persisted = conductor.load_worker_slots(conn, "misty-step/bitterblossom", ["thorn", "sage"])
+    failed_slot = next(slot for slot in persisted if slot.worker == "thorn")
+    assert failed_slot.slot_index == 1
+    assert failed_slot.state == conductor.WORKER_SLOT_ACTIVE
+    assert failed_slot.consecutive_failures == 1
+    assert failed_slot.current_run_id is None
     asserted_slot = next(slot for slot in persisted if slot.worker == "sage")
     assert asserted_slot.slot_index == 1
     assert asserted_slot.current_run_id == "run-42"
@@ -4374,6 +4379,27 @@ def test_release_worker_slot_clears_terminal_stale_assignment(tmp_path: pathlib.
     assert refreshed.current_run_id is None
 
 
+def test_reap_terminal_worker_slots_clears_only_terminal_or_missing_assignments(tmp_path: pathlib.Path) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=449, title="release", body="", url="https://example.com/449", labels=["autopilot"])
+    conductor.create_run(conn, "run-active", "misty-step/bitterblossom", issue, "claude-sonnet")
+    conductor.update_run(conn, "run-active", status="active")
+    conductor.create_run(conn, "run-merged", "misty-step/bitterblossom", issue, "claude-sonnet")
+    conductor.update_run(conn, "run-merged", status="merged")
+    conductor.seed_worker_slots(conn, "misty-step/bitterblossom", ["fern:3"])
+    slots = conductor.load_worker_slots(conn, "misty-step/bitterblossom", ["fern:3"])
+    conductor.assign_worker_slot(conn, slots[0].id, "run-active")
+    conductor.assign_worker_slot(conn, slots[1].id, "run-merged")
+    conductor.update_worker_slot(conn, slots[2].id, current_run_id="run-missing")
+
+    conductor.reap_terminal_worker_slots(conn, "misty-step/bitterblossom", ["fern:3"])
+
+    refreshed = conductor.load_worker_slots(conn, "misty-step/bitterblossom", ["fern:3"])
+    assert refreshed[0].current_run_id == "run-active"
+    assert refreshed[1].current_run_id is None
+    assert refreshed[2].current_run_id is None
+
+
 def test_reset_worker_slots_restores_drained_capacity(
     tmp_path: pathlib.Path,
     capsys: pytest.CaptureFixture[str],
@@ -4800,6 +4826,9 @@ def _select_named_worker_slot(worker: str):
         run_id: str,
         on_drained: Any | None = None,
     ) -> conductor.WorkerSlot:
+        configured_workers = {conductor.parse_worker_capacity(spec)[0] for spec in workers}
+        if worker not in configured_workers:
+            raise AssertionError(f"{worker} missing from configured workers: {workers}")
         return conductor.acquire_named_worker_slot(conn, repo, workers, worker, run_id)
 
     return selector
@@ -4818,8 +4847,16 @@ def test_ensure_governance_run_does_not_claim_worker_slot_before_lease(tmp_path:
     conn = conductor.open_db(tmp_path / "conductor.db")
 
     assert conductor.acquire_lease(conn, "misty-step/bitterblossom", 479, "run-479-existing") is True
+    select_calls = 0
+
+    def fail_if_selected(*_a: object, **_kw: object) -> conductor.WorkerSlot:
+        nonlocal select_calls
+        select_calls += 1
+        raise AssertionError("select_worker_slot should not run before lease acquisition")
+
     monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
     monkeypatch.setattr(conductor, "probe_sprite_readiness", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "select_worker_slot", fail_if_selected)
     monkeypatch.setattr(
         conductor,
         "gh_json",
@@ -4839,6 +4876,7 @@ def test_ensure_governance_run_does_not_claim_worker_slot_before_lease(tmp_path:
             _make_govern_pr_args(tmp_path, issue_number=479, pr_number=490),
         )
 
+    assert select_calls == 0
     slots = conductor.load_worker_slots(conn, "misty-step/bitterblossom", ["noble-blue-serpent"])
     assert all(slot.current_run_id is None for slot in slots)
 
@@ -5212,6 +5250,69 @@ def test_run_once_records_stale_lease_reclaim_events(monkeypatch: pytest.MonkeyP
     payload = json.loads(new_run_events[0]["payload_json"])
     assert payload["issue"] == 468
     assert payload["previous_run_id"] == old_run_id
+
+
+def test_run_once_reclaims_stale_lease_and_reuses_terminal_worker_slot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    issue = conductor.Issue(number=468, title="lease", body="body", url="https://example.com/468", labels=["autopilot", "P1"])
+    old_run_id = "run-468-stale"
+    builder = conductor.BuilderResult(
+        status="ready_for_review",
+        branch="factory/468-test-123",
+        pr_number=469,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/469",
+        summary="done",
+        tests=[],
+    )
+    reviews = [
+        conductor.ReviewResult(reviewer="fern", verdict="pass", summary="ok", findings=[]),
+        conductor.ReviewResult(reviewer="sage", verdict="pass", summary="ok", findings=[]),
+    ]
+
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    assert conductor.acquire_lease(conn, "misty-step/bitterblossom", 468, old_run_id) is True
+    conductor.create_run(conn, old_run_id, "misty-step/bitterblossom", issue, "default")
+    conductor.seed_worker_slots(conn, "misty-step/bitterblossom", ["noble-blue-serpent"])
+    stale_slot = conductor.load_worker_slots(conn, "misty-step/bitterblossom", ["noble-blue-serpent"])[0]
+    conductor.assign_worker_slot(conn, stale_slot.id, old_run_id)
+    conn.execute(
+        """
+        update leases
+        set heartbeat_at = '2000-01-01T00:00:00Z', lease_expires_at = '2000-01-01T00:00:00Z'
+        where repo = 'misty-step/bitterblossom' and issue_number = 468
+        """
+    )
+    conn.commit()
+
+    monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
+    monkeypatch.setattr(conductor, "probe_sprite_readiness", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "ensure_reviewers_ready", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "run_builder", lambda *_a, **_kw: (builder, {"status": "ready_for_review"}))
+    monkeypatch.setattr(conductor, "run_review_round", lambda *_a, **_kw: reviews)
+    monkeypatch.setattr(conductor, "ensure_pr_ready", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "wait_for_pr_checks", lambda *_a, **_kw: (True, "merge-gate: SUCCESS"))
+    monkeypatch.setattr(conductor, "ensure_required_checks_present", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "list_unresolved_review_threads", lambda *_a, **_kw: [])
+    monkeypatch.setattr(conductor, "merge_pr", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "comment_pr", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "comment_issue", lambda *_a, **_kw: None)
+
+    rc = conductor.run_once(_make_run_once_args(tmp_path, issue_number=468))
+
+    assert rc == 0
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    reclaimed_run = conn.execute(
+        "select run_id from runs where issue_number = ? and run_id != ? order by created_at desc limit 1",
+        (468, old_run_id),
+    ).fetchone()
+    assert reclaimed_run is not None
+    builder_selected = conn.execute(
+        "select payload_json from events where run_id = ? and event_type = 'builder_selected'",
+        (str(reclaimed_run["run_id"]),),
+    ).fetchone()
+    assert builder_selected is not None
+    assert json.loads(builder_selected["payload_json"])["sprite"] == "noble-blue-serpent"
 
 
 def test_run_once_releases_reclaimed_lease_when_reclaim_bookkeeping_fails(
@@ -6619,7 +6720,7 @@ def test_run_once_cleanup_error_after_builder_handoff_does_not_record_false_fail
     )
 
     monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
-    monkeypatch.setattr(conductor, "select_worker_slot", _select_named_worker_slot("pr83-e2e2-20260306-001"))
+    monkeypatch.setattr(conductor, "select_worker_slot", _select_named_worker_slot("noble-blue-serpent"))
     monkeypatch.setattr(conductor, "ensure_reviewers_ready", lambda *_a, **_kw: None)
     monkeypatch.setattr(conductor, "run_builder", lambda *_a, **_kw: (builder, {"status": "ready_for_review"}))
 
@@ -6664,7 +6765,7 @@ def test_run_once_workspace_preparation_error_after_builder_handoff_does_not_rec
 
     issue_comments: list[str] = []
     monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
-    monkeypatch.setattr(conductor, "select_worker_slot", _select_named_worker_slot("pr83-e2e2-20260306-001"))
+    monkeypatch.setattr(conductor, "select_worker_slot", _select_named_worker_slot("noble-blue-serpent"))
     monkeypatch.setattr(conductor, "ensure_reviewers_ready", lambda *_a, **_kw: None)
     monkeypatch.setattr(conductor, "run_builder", lambda *_a, **_kw: (builder, {"status": "ready_for_review"}))
     monkeypatch.setattr(

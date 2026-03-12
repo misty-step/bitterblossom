@@ -2,7 +2,7 @@
 
 ## Merge Claim
 
-The conductor now chooses builders through one slot-claiming path, and governance adoption only claims that slot after the lease is confirmed, so default single-slot workers and explicit-capacity workers share the same readiness and reservation behavior without leaking slots on lease contention.
+The conductor now chooses builders through one slot-claiming path, reaps stale terminal or orphaned slot owners before fresh selection, and governance adoption only claims a slot after the lease is confirmed, so default single-slot workers and explicit-capacity workers share the same readiness and reservation behavior without leaking or wedging slots on recovery paths.
 
 ## Why This Matters
 
@@ -23,15 +23,16 @@ That split meant callers had to remember two selection contracts, and the defaul
 
 ### Code Path
 
-- `scripts/conductor.py:1578`
-- `scripts/conductor.py:3678`
-- `scripts/conductor.py:4291`
+- `scripts/conductor.py:1015`
+- `scripts/conductor.py:1594`
+- `scripts/conductor.py:3773`
+- `scripts/conductor.py:4314`
 
 ### Real Execution
 
 ```text
 $ python3 -m pytest -q base/hooks scripts/test_conductor.py
-335 passed in 1.37s
+337 passed in 1.39s
 
 $ python3 -m ruff check base/hooks scripts/conductor.py scripts/test_conductor.py
 All checks passed!
@@ -40,10 +41,12 @@ All checks passed!
 ### Targeted Regression Added
 
 - `scripts/test_conductor.py:2932`
-- `scripts/test_conductor.py:4814`
-- `scripts/test_conductor.py:6652`
+- `scripts/test_conductor.py:4382`
+- `scripts/test_conductor.py:4845`
+- `scripts/test_conductor.py:5255`
+- `scripts/test_conductor.py:6753`
 
-These tests prove the slot selector handles the plain single-slot worker case directly, governance adoption does not claim a worker slot before lease acquisition succeeds, and post-handoff workspace-preparation failures still avoid false failure reporting on the current merge surface.
+These tests prove the slot selector handles the plain single-slot worker case directly, stale terminal or orphaned slot owners are reaped before fresh selection, governance adoption does not claim a worker slot before lease acquisition succeeds, reclaimed stale leases can reuse the freed slot, and post-handoff workspace-preparation failures still avoid false failure reporting on the current merge surface.
 
 ## Persistent Verification
 
