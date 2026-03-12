@@ -1094,15 +1094,17 @@ def test_run_review_round_persists_reviews_as_they_arrive(monkeypatch: pytest.Mo
         "select event_type, payload_json from events where run_id = 'run-447-1' order by id"
     ).fetchall()
     assert [row["event_type"] for row in events] == [
+        "review_wave_started",
         "review_complete",
         "review_complete",
         "review_complete",
+        "review_wave_completed",
         "reviewer_workspace_cleaned",
         "reviewer_workspace_cleaned",
         "reviewer_workspace_cleaned",
     ]
-    assert json.loads(events[0]["payload_json"]) == {"reviewer": "sage", "verdict": "pass"}
-    assert json.loads(events[1]["payload_json"]) == {"reviewer": "fern", "verdict": "fix"}
+    assert json.loads(events[1]["payload_json"]) == {"reviewer": "sage", "verdict": "pass"}
+    assert json.loads(events[2]["payload_json"]) == {"reviewer": "fern", "verdict": "fix"}
 
     waves = conductor.load_review_waves(conn, "run-447-1")
     assert len(waves) == 1
@@ -1168,8 +1170,12 @@ def test_run_review_round_cleans_only_prepared_reviewers(monkeypatch: pytest.Mon
     events = conn.execute(
         "select event_type, payload_json from events where run_id = 'run-447-1' order by id"
     ).fetchall()
-    assert [row["event_type"] for row in events] == ["reviewer_workspace_cleaned"]
-    assert json.loads(events[0]["payload_json"]) == {
+    assert [row["event_type"] for row in events] == [
+        "review_wave_started",
+        "review_wave_completed",
+        "reviewer_workspace_cleaned",
+    ]
+    assert json.loads(events[2]["payload_json"]) == {
         "reviewer": "fern",
         "workspace": conductor.run_workspace("misty-step/bitterblossom", "run-447-1", "review-fern"),
     }
@@ -1476,7 +1482,72 @@ def test_record_pr_thread_scan_marks_duplicate_fingerprint_across_thread_waves(t
     assert [finding.status for finding in findings] == ["open", "duplicate"]
 
 
-def test_record_pr_thread_scan_keeps_live_thread_open_when_review_artifact_matches(tmp_path: pathlib.Path) -> None:
+def test_record_review_artifact_marks_duplicate_fingerprint_across_reviewers(tmp_path: pathlib.Path) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    review_wave = conductor.start_review_wave(conn, "run-447-1", "review_round", pr_number=460, reviewer_count=2)
+
+    conductor.record_review_artifact(
+        conn,
+        "run-447-1",
+        review_wave,
+        "fern",
+        {
+            "verdict": "fix",
+            "summary": "needs revision",
+            "findings": [{"classification": "bug", "severity": "high", "path": "scripts/conductor.py", "line": 59, "message": "guard the stale lease check"}],
+        },
+    )
+    conductor.record_review_artifact(
+        conn,
+        "run-447-1",
+        review_wave,
+        "sage",
+        {
+            "verdict": "fix",
+            "summary": "same blocker",
+            "findings": [{"classification": "bug", "severity": "high", "path": "scripts/conductor.py", "line": 59, "message": "guard the stale lease check"}],
+        },
+    )
+
+    findings = conductor.load_review_findings(conn, "run-447-1")
+    assert [finding.reviewer for finding in findings] == ["fern", "sage"]
+    assert [finding.status for finding in findings] == ["open", "duplicate"]
+
+
+def test_record_review_artifact_marks_duplicate_fingerprint_across_review_waves(tmp_path: pathlib.Path) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    first_wave = conductor.start_review_wave(conn, "run-447-1", "review_round", pr_number=460, reviewer_count=1)
+    second_wave = conductor.start_review_wave(conn, "run-447-1", "review_round", pr_number=460, reviewer_count=1)
+
+    conductor.record_review_artifact(
+        conn,
+        "run-447-1",
+        first_wave,
+        "fern",
+        {
+            "verdict": "fix",
+            "summary": "first wave",
+            "findings": [{"classification": "bug", "severity": "high", "path": "scripts/conductor.py", "line": 59, "message": "guard the stale lease check"}],
+        },
+    )
+    conductor.record_review_artifact(
+        conn,
+        "run-447-1",
+        second_wave,
+        "sage",
+        {
+            "verdict": "fix",
+            "summary": "second wave",
+            "findings": [{"classification": "bug", "severity": "high", "path": "scripts/conductor.py", "line": 59, "message": "guard the stale lease check"}],
+        },
+    )
+
+    findings = conductor.load_review_findings(conn, "run-447-1")
+    assert [finding.wave_id for finding in findings] == [first_wave, second_wave]
+    assert [finding.status for finding in findings] == ["open", "duplicate"]
+
+
+def test_record_pr_thread_scan_marks_duplicate_when_review_artifact_matches(tmp_path: pathlib.Path) -> None:
     conn = conductor.open_db(tmp_path / "conductor.db")
     review_wave = conductor.start_review_wave(conn, "run-447-1", "review_round", pr_number=460, reviewer_count=1)
     conductor.record_review_artifact(
@@ -1516,7 +1587,7 @@ def test_record_pr_thread_scan_keeps_live_thread_open_when_review_artifact_match
 
     findings = conductor.load_review_findings(conn, "run-447-1")
     assert [finding.source_kind for finding in findings] == ["review_artifact", "pr_review_thread"]
-    assert [finding.status for finding in findings] == ["open", "open"]
+    assert [finding.status for finding in findings] == ["open", "duplicate"]
 
 
 def test_record_pr_thread_scan_does_not_collapse_against_closed_prior_finding(tmp_path: pathlib.Path) -> None:
@@ -2509,7 +2580,7 @@ def test_handle_pr_review_threads_persists_thread_scan_wave(
     assert findings[0].line == 59
 
 
-def test_handle_pr_review_threads_reopens_for_trusted_thread_even_when_review_artifact_matches(
+def test_handle_pr_review_threads_ignores_duplicate_trusted_thread_when_review_artifact_matches(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
 ) -> None:
     conn = conductor.open_db(tmp_path / "conductor.db")
@@ -2561,10 +2632,9 @@ def test_handle_pr_review_threads_reopens_for_trusted_thread_even_when_review_ar
         last_pr_feedback_thread_ids=(),
     )
 
-    assert action == "revise"
-    assert feedback is not None
-    assert "scripts/conductor.py:59" in feedback
-    assert thread_ids == ("thread-1",)
+    assert action == "clear"
+    assert feedback is None
+    assert thread_ids == ()
 
 
 def test_handle_pr_review_threads_ignores_late_low_severity_nit(
@@ -4592,6 +4662,9 @@ def test_acceptance_trace_bullet_run_is_inspectable_from_run_store(
     assert "merged" in event_types
     assert "ci_wait_complete" in event_types
     assert "builder_complete" in event_types
+    assert "external_review_wait_complete" in event_types
+    assert "review_wave_started" in event_types
+    assert "review_wave_completed" in event_types
 
 
 def test_run_once_rechecks_pr_threads_after_external_reviews_settle(

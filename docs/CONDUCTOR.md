@@ -132,7 +132,7 @@ python3 scripts/conductor.py show-events --run-id run-450-1772813415
 
 `show-runs` emits one JSON object per run. The operator contract is that each row includes the current `phase` and `status`, the raw `heartbeat_at` timestamp, a computed `heartbeat_age_seconds`, and when applicable a `blocking_reason` plus the source `blocking_event_type`.
 
-`show-events` emits one JSON object for the requested run with a `run` metadata envelope, `latest_event_type`, `latest_event_at`, and an `events` array. Use it when you need recent event context without joining SQLite tables by hand.
+`show-events` emits one JSON object for the requested run with a `run` metadata envelope, `latest_event_type`, `latest_event_at`, and an `events` array. Review convergence is now explicit in that stream: `review_wave_started`, `review_wave_completed`, and `external_review_wait_complete` events let operators inspect when a council round began, when a PR-thread scan or external-review wait settled, and why governance advanced or stopped.
 
 `show-run` is the narrower single-run inspection surface: it returns the same run metadata together with a `recent_events` array keyed by `run_id`.
 
@@ -143,13 +143,13 @@ Issue [#102](https://github.com/misty-step/bitterblossom/issues/102) is the boun
 Run the acceptance-focused regression slice first:
 
 ```bash
-python3 -m pytest -q scripts/test_conductor.py -k 'acceptance_trace_bullet_run or duplicate_trusted_findings or low_severity_nit or novel_high_severity'
+python3 -m pytest -q scripts/test_conductor.py -k 'acceptance_trace_bullet_run or duplicate_fingerprint or low_severity_nit or novel_high_severity or trusted_thread'
 ```
 
 Expected:
 
 - the trace bullet path reaches `merged`
-- duplicate findings across review surfaces are recorded without reopening the loop
+- duplicate findings across reviewers, review waves, and trusted PR-thread surfaces are recorded without reopening the loop
 - late low-severity nits are recorded without reopening the loop
 - late novel high-severity findings still reopen the loop
 
@@ -181,6 +181,7 @@ The acceptance run is only valid if the operator surfaces expose the full path:
 - lease acquired
 - builder handoff (`phase=awaiting_governance`)
 - governance freshness wait / adoption
+- explicit review-wave start/finish events for council rounds, PR-thread scans, and trusted external-review settlement
 - review evidence
 - CI wait completion
 - external review settle or block evidence
@@ -302,9 +303,9 @@ If a run shows `phase=awaiting_governance` with a valid `pr_number` and a `clean
 Review state is now split deliberately:
 
 - `reviews` keeps the latest per-reviewer council snapshot for compatibility with existing run logic.
-- `review_waves` is append-only wave history for council rounds and PR-thread scans.
+- `review_waves` is append-only wave history for council rounds, PR-thread scans, and trusted external-review settlement waits.
 - `review_wave_reviews` stores per-wave reviewer verdicts and raw payloads.
-- `review_findings` stores normalized findings with reviewer, wave, source id, fingerprint, classification, severity, decision, and status.
+- `review_findings` stores normalized findings with reviewer, wave, source id, fingerprint, classification, severity, decision, and status. Duplicate fingerprints now collapse across review surfaces so a repeated blocker is recorded once semantically instead of reopening the run on every restatement.
 
 Council artifact writes are atomic at the storage boundary: the compatibility snapshot, per-wave reviewer payload, and normalized findings land together for each artifact, and PR-thread scans only finalize their wave after the finding write succeeds.
 
