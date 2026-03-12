@@ -29,6 +29,10 @@ DEFAULT_REVIEWER_TEMPLATE = ROOT / "scripts" / "prompts" / "conductor-reviewer-t
 DEFAULT_LABEL = "autopilot"
 DEFAULT_LEASE_BUFFER_SECONDS = 300
 ROUTER_TIMEOUT_SECONDS = 120
+WORKSPACE_PREPARE_LOCK_WAIT_SECONDS = 240
+WORKSPACE_CLEANUP_LOCK_WAIT_SECONDS = 120
+WORKSPACE_PREPARE_ATTEMPTS = 3
+WORKSPACE_PREPARE_RETRY_DELAY_SECONDS = 2
 SUCCESSFUL_CHECK_CONCLUSIONS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 FAILED_CHECK_CONCLUSIONS = {"FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STALE", "STARTUP_FAILURE"}
 FAILED_STATUS_CONTEXTS = {"FAILURE", "ERROR"}
@@ -55,22 +59,6 @@ WORKER_SLOT_STATES = {WORKER_SLOT_ACTIVE, WORKER_SLOT_DRAINED}
 WORKER_DRAIN_FAILURE_THRESHOLD = 2
 MAX_WORKER_SLOT_COUNT = 1000
 TERMINAL_RUN_STATUSES = {"merged", "failed", "blocked", "closed"}
-
-WORKSPACE_PREP_RETRIES = 2
-WORKSPACE_PREP_RETRY_DELAY_SECONDS = 5
-
-# Per-(sprite, mirror) locks to serialize mirror mutation within a process.
-# Cross-process serialization is handled by flock on the sprite filesystem.
-_mirror_locks: dict[str, threading.Lock] = {}
-_mirror_locks_mu = threading.Lock()
-
-
-def _mirror_lock(sprite: str, mirror: str) -> threading.Lock:
-    key = f"{sprite}:{mirror}"
-    with _mirror_locks_mu:
-        if key not in _mirror_locks:
-            _mirror_locks[key] = threading.Lock()
-        return _mirror_locks[key]
 
 
 @dataclass(slots=True)
@@ -236,6 +224,10 @@ class GovernanceRun:
 
 
 class CmdError(RuntimeError):
+    pass
+
+
+class WorkspacePreparationError(RuntimeError):
     pass
 
 
@@ -698,9 +690,25 @@ def summarize_blocking_reason(event_type: str | None, payload: dict[str, Any]) -
         return output or "trusted external reviews did not settle"
     if event_type == "command_failed":
         return str(payload.get("error", "")).strip() or "command failed"
+    if event_type == "workspace_preparation_failed":
+        return str(payload.get("error", "")).strip() or "workspace preparation failed"
     if event_type == "unexpected_error":
         return str(payload.get("error", "")).strip() or "unexpected conductor error"
     return None
+
+
+def latest_worktree_recovery_event(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        select event_type, payload_json, created_at
+        from events
+        where run_id = ?
+          and event_type in ('builder_workspace_cleaned', 'cleanup_warning', 'workspace_preparation_failed')
+        order by id desc
+        limit 1
+        """,
+        (run_id,),
+    ).fetchone()
 
 
 def latest_event_for_run(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row | None:
@@ -723,7 +731,7 @@ def blocking_event_for_run(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row
         from events
         where run_id = ?
           and (
-            event_type in ('pr_feedback_blocked', 'council_blocked', 'command_failed', 'unexpected_error')
+            event_type in ('pr_feedback_blocked', 'council_blocked', 'command_failed', 'workspace_preparation_failed', 'unexpected_error')
             or (event_type = 'ci_wait_complete' and json_extract(payload_json, '$.passed') = 0)
             or (event_type = 'external_review_wait_complete' and json_extract(payload_json, '$.passed') = 0)
           )
@@ -755,6 +763,24 @@ def serialize_run_surface(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[st
         "heartbeat_age_seconds": age_seconds_from_now(heartbeat_at),
         "updated_at": row["updated_at"],
     }
+    payload["worktree_recovery_status"] = None
+    payload["worktree_recovery_error"] = None
+    payload["worktree_recovery_event_type"] = None
+    payload["worktree_recovery_event_at"] = None
+    recovery_event = latest_worktree_recovery_event(conn, row["run_id"])
+    if recovery_event is not None:
+        recovery_payload = json.loads(recovery_event["payload_json"])
+        payload["worktree_recovery_event_type"] = recovery_event["event_type"]
+        payload["worktree_recovery_event_at"] = recovery_event["created_at"]
+        if recovery_event["event_type"] == "builder_workspace_cleaned":
+            payload["worktree_recovery_status"] = "cleaned"
+        elif recovery_event["event_type"] == "cleanup_warning":
+            if recovery_payload.get("kind") in {"builder_workspace_cleanup", "reviewer_workspace_cleanup"}:
+                payload["worktree_recovery_status"] = "cleanup_failed"
+                payload["worktree_recovery_error"] = recovery_payload.get("error")
+        elif recovery_event["event_type"] == "workspace_preparation_failed":
+            payload["worktree_recovery_status"] = "prepare_failed"
+            payload["worktree_recovery_error"] = recovery_payload.get("error")
     blocking_reason = None
     payload["blocking_event_type"] = None
     payload["blocking_event_at"] = None
@@ -1078,79 +1104,97 @@ def sprite_bash(runner: Runner, sprite: str, script: str, *, timeout: int = 120)
     )
 
 
-def parse_workspace_prepare_output(output: str, workspace: str, sprite: str) -> str:
-    lines = [line.strip() for line in output.splitlines() if line.strip()]
-    if lines and lines[-1] == workspace:
-        return workspace
-    raise CmdError(f"unexpected workspace prepare output for {sprite}: {output!r}")
-
-
-def _prepare_run_workspace_once(runner: Runner, sprite: str, mirror: str, workspace: str) -> str:
-    lock_file = mirror + "/.conductor_lock"
-    script = "\n".join(
-        [
-            "set -euo pipefail",
-            f"mirror={shlex.quote(mirror)}",
-            f"workspace={shlex.quote(workspace)}",
-            f"lock_file={shlex.quote(lock_file)}",
-            "(",
-            "  flock --exclusive 9",
-            '  git -C "$mirror" fetch --all --prune',
-            '  if git -C "$mirror" show-ref --verify --quiet refs/remotes/origin/master; then',
-            '    base_ref="origin/master"',
-            '  elif git -C "$mirror" show-ref --verify --quiet refs/remotes/origin/main; then',
-            '    base_ref="origin/main"',
-            "  else",
-            '    base_ref=$(git -C "$mirror" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || git -C "$mirror" rev-parse HEAD)',
-            "  fi",
-            '  mkdir -p "$(dirname "$workspace")"',
-            '  rm -rf "$workspace"',
-            '  git -C "$mirror" worktree prune',
-            '  git -C "$mirror" worktree add --detach "$workspace" "$base_ref"',
-            ') 9>>"$lock_file"',
-            'printf "%s\\n" "$workspace"',
-        ]
-    )
-    output = sprite_bash(runner, sprite, script, timeout=300)
-    return parse_workspace_prepare_output(output, workspace, sprite)
-
-
 def prepare_run_workspace(runner: Runner, sprite: str, repo: str, run_id: str, lane: str) -> str:
     mirror = repo_dir(repo)
     workspace = run_workspace(repo, run_id, lane)
-    last_exc: Exception | None = None
-    for attempt in range(1 + WORKSPACE_PREP_RETRIES):
-        try:
-            with _mirror_lock(sprite, mirror):
-                return _prepare_run_workspace_once(runner, sprite, mirror, workspace)
-        except (CmdError, OSError, subprocess.TimeoutExpired) as exc:
-            last_exc = exc
-            if attempt < WORKSPACE_PREP_RETRIES:
-                time.sleep(WORKSPACE_PREP_RETRY_DELAY_SECONDS * (attempt + 1))
-    raise CmdError(
-        f"workspace preparation failed after {1 + WORKSPACE_PREP_RETRIES} attempts: {last_exc}"
-    ) from last_exc
-
-
-def cleanup_run_workspace(runner: Runner, sprite: str, repo: str, run_id: str, lane: str) -> None:
-    mirror = repo_dir(repo)
-    workspace = run_workspace(repo, run_id, lane)
-    lock_file = mirror + "/.conductor_lock"
+    lockfile = f"{mirror}/.bb/conductor/mirror.lock"
     script = "\n".join(
         [
             "set -euo pipefail",
             f"mirror={shlex.quote(mirror)}",
             f"workspace={shlex.quote(workspace)}",
-            f"lock_file={shlex.quote(lock_file)}",
-            "(",
-            "  flock --exclusive 9",
-            '  git -C "$mirror" worktree remove --force "$workspace" 2>/dev/null || rm -rf "$workspace"',
-            '  git -C "$mirror" worktree prune',
-            ') 9>>"$lock_file"',
+            f"lockfile={shlex.quote(lockfile)}",
+            'mkdir -p "$(dirname "$workspace")" "$(dirname "$lockfile")"',
+            'exec 9>"$lockfile"',
+            f'flock -w {WORKSPACE_PREPARE_LOCK_WAIT_SECONDS} 9 || {{ echo "mirror lock acquisition timed out" >&2; exit 1; }}',
+            'git -C "$mirror" fetch --all --prune',
+            'if git -C "$mirror" show-ref --verify --quiet refs/remotes/origin/master; then',
+            '  base_ref="origin/master"',
+            'elif git -C "$mirror" show-ref --verify --quiet refs/remotes/origin/main; then',
+            '  base_ref="origin/main"',
+            "else",
+            '  base_ref=$(git -C "$mirror" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || git -C "$mirror" rev-parse HEAD)',
+            "fi",
+            'rm -rf "$workspace"',
+            'git -C "$mirror" worktree prune',
+            'git -C "$mirror" worktree add --detach "$workspace" "$base_ref"',
+            'printf "%s\\n" "$workspace"',
         ]
     )
-    with _mirror_lock(sprite, mirror):
-        sprite_bash(runner, sprite, script, timeout=180)
+    output = sprite_bash(runner, sprite, script, timeout=300).strip()
+    if output != workspace:
+        raise CmdError(f"unexpected workspace prepare output for {sprite}: {output!r}")
+    return workspace
+
+
+def cleanup_run_workspace(runner: Runner, sprite: str, repo: str, run_id: str, lane: str) -> None:
+    workspace = run_workspace(repo, run_id, lane)
+    lockfile = f"{repo_dir(repo)}/.bb/conductor/mirror.lock"
+    script = "\n".join(
+        [
+            "set -euo pipefail",
+            f"mirror={shlex.quote(repo_dir(repo))}",
+            f"workspace={shlex.quote(workspace)}",
+            f"lockfile={shlex.quote(lockfile)}",
+            'mkdir -p "$(dirname "$lockfile")"',
+            'exec 9>"$lockfile"',
+            (
+                f'flock -w {WORKSPACE_CLEANUP_LOCK_WAIT_SECONDS} 9 '
+                '|| { echo "mirror lock acquisition timed out during cleanup" >&2; exit 1; }'
+            ),
+            'git -C "$mirror" worktree remove --force "$workspace" 2>/dev/null || rm -rf "$workspace"',
+            'git -C "$mirror" worktree prune',
+        ]
+    )
+    sprite_bash(runner, sprite, script, timeout=180)
+
+
+def prepare_run_workspace_with_retry(
+    runner: Runner,
+    conn: sqlite3.Connection,
+    event_log: pathlib.Path,
+    run_id: str,
+    sprite: str,
+    repo: str,
+    lane: str,
+) -> str:
+    last_exc: CmdError | None = None
+    for attempt in range(1, WORKSPACE_PREPARE_ATTEMPTS + 1):
+        try:
+            return prepare_run_workspace(runner, sprite, repo, run_id, lane)
+        except CmdError as exc:
+            last_exc = exc
+            payload = {
+                "sprite": sprite,
+                "lane": lane,
+                "workspace": run_workspace(repo, run_id, lane),
+                "attempt": attempt,
+                "attempts": WORKSPACE_PREPARE_ATTEMPTS,
+                "error": stringify_exc(exc),
+            }
+            if attempt < WORKSPACE_PREPARE_ATTEMPTS:
+                payload["retry_in_seconds"] = WORKSPACE_PREPARE_RETRY_DELAY_SECONDS
+                record_event(conn, event_log, run_id, "workspace_preparation_retry", payload)
+                time.sleep(WORKSPACE_PREPARE_RETRY_DELAY_SECONDS)
+                continue
+            record_event(conn, event_log, run_id, "workspace_preparation_failed", payload)
+    message = "workspace preparation failed"
+    if last_exc is not None:
+        message = (
+            f"workspace preparation failed for {lane} on {sprite} after "
+            f"{WORKSPACE_PREPARE_ATTEMPTS} attempts: {stringify_exc(last_exc)}"
+        )
+    raise WorkspacePreparationError(message)
 
 
 def resolve_org() -> str:
@@ -3153,8 +3197,12 @@ def cleanup_builder_workspace(
             conn,
             event_log,
             run_id,
-            "workspace_cleanup_failed",
-            {"error": stringify_exc(exc), "surviving_path": workspace},
+            "cleanup_warning",
+            {
+                "kind": "builder_workspace_cleanup",
+                "workspace": workspace,
+                "error": f"builder workspace cleanup failed: {stringify_exc(exc)}",
+            },
         )
         return
 
@@ -3536,7 +3584,15 @@ def run_review_round(
             except CmdError:
                 pass
             ensure_sprite_ready(runner, reviewer, repo, prompt_template)
-            workspace = prepare_run_workspace(runner, reviewer, repo, run_id, f"review-{reviewer}")
+            workspace = prepare_run_workspace_with_retry(
+                runner,
+                conn,
+                event_log,
+                run_id,
+                reviewer,
+                repo,
+                f"review-{reviewer}",
+            )
             prepared_reviewers.append(reviewer)
             review_rel = artifact_rel(run_id, f"review-{reviewer}.json")
             review_prompt = build_review_task(issue, run_id, pr_number, pr_url, review_rel)
@@ -3594,11 +3650,12 @@ def run_review_round(
                     conn,
                     event_log,
                     run_id,
-                    "workspace_cleanup_failed",
+                    "cleanup_warning",
                     {
-                        "error": stringify_exc(exc),
+                        "kind": "reviewer_workspace_cleanup",
                         "reviewer": reviewer,
-                        "surviving_path": workspace,
+                        "workspace": run_workspace(repo, run_id, f"review-{reviewer}"),
+                        "error": f"reviewer workspace cleanup failed for {reviewer}: {stringify_exc(exc)}",
                     },
                 )
                 continue
@@ -3767,7 +3824,15 @@ def ensure_governance_run(
         )
 
         if not builder_workspace:
-            builder_workspace = prepare_run_workspace(runner, worker, args.repo, run_id, "builder")
+            builder_workspace = prepare_run_workspace_with_retry(
+                runner,
+                conn,
+                event_log,
+                run_id,
+                worker,
+                args.repo,
+                "builder",
+            )
             update_run(conn, run_id, worktree_path=builder_workspace)
             record_event(conn, event_log, run_id, "builder_workspace_prepared", {"workspace": builder_workspace})
 
@@ -4329,8 +4394,15 @@ def run_once(args: argparse.Namespace) -> int:
         )
 
         branch = branch_name(issue.number, run_id_suffix(run_id))
-        builder_template = pathlib.Path(args.builder_template)
-        builder_workspace = prepare_run_workspace(runner, worker, args.repo, run_id, "builder")
+        builder_workspace = prepare_run_workspace_with_retry(
+            runner,
+            conn,
+            event_log,
+            run_id,
+            worker,
+            args.repo,
+            "builder",
+        )
         builder_workspace_prepared = True
         update_run(conn, run_id, worktree_path=builder_workspace)
         record_event(conn, event_log, run_id, "builder_workspace_prepared", {"workspace": builder_workspace})
@@ -4389,6 +4461,19 @@ def run_once(args: argparse.Namespace) -> int:
             args.repo,
             issue.number,
             f"Bitterblossom stopped `{run_id}` after losing its lease.\n\n```\n{message[:1500]}\n```",
+            event_type="issue_comment_failed",
+        )
+        return 1
+    except WorkspacePreparationError as exc:
+        update_run(conn, run_id, phase="failed", status="failed")
+        best_effort_issue_comment(
+            runner,
+            conn,
+            event_log,
+            run_id,
+            args.repo,
+            issue.number,
+            f"Bitterblossom failed `{run_id}`.\n\n```\n{str(exc)[:1500]}\n```",
             event_type="issue_comment_failed",
         )
         return 1
@@ -4494,6 +4579,22 @@ def govern_pr(args: argparse.Namespace) -> int:
             args.repo,
             governance_run.issue.number,
             f"Bitterblossom stopped `{governance_run.run_id}` after losing its lease.\n\n```\n{message[:1500]}\n```",
+            event_type="issue_comment_failed",
+        )
+        return 1
+    except WorkspacePreparationError as exc:
+        if issue is None or not run_id:
+            print(f"conductor: {exc}", file=sys.stderr)
+            return 1
+        update_run(conn, run_id, phase="failed", status="failed")
+        best_effort_issue_comment(
+            runner,
+            conn,
+            event_log,
+            run_id,
+            args.repo,
+            issue.number,
+            f"Bitterblossom failed `{run_id}`.\n\n```\n{str(exc)[:1500]}\n```",
             event_type="issue_comment_failed",
         )
         return 1

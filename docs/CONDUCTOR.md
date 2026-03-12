@@ -374,27 +374,29 @@ The shared checkout stays warm for fetches and object reuse, but the conductor n
 
 ### Worktree Lifecycle and Serialization
 
-Mirror mutation — `git fetch`, `git worktree add/remove`, `git worktree prune` — is serialized at two levels:
+Mirror mutation is conductor-owned and serialized on-sprite with a per-repo lock. `fetch --all --prune`,
+`worktree add`, `worktree remove`, and `worktree prune` no longer race each other across overlapping runs on one sprite.
 
-1. **Python-level lock**: a `threading.Lock` per `(sprite, mirror)` pair serializes calls within a single conductor process. This protects reviewer and builder lanes that happen to use the same sprite concurrently without stalling independent sprites that have their own mirrors.
-2. **Filesystem flock**: the bash script wraps all git mirror operations in `flock --exclusive` on a `.conductor_lock` file inside the mirror directory. This serializes concurrent *processes* (e.g., two supervisors running against the same sprite).
+Workspace preparation now retries transient sprite/git failures up to three attempts before the run fails with an explicit
+`workspace_preparation_failed` event. Operators should treat that event as the authoritative failure reason for the
+specific workspace/lane that exhausted retries, including reviewer and governance preparation paths, not as a generic
+command failure.
 
-**Prepare retries**: `prepare_run_workspace` retries up to `WORKSPACE_PREP_RETRIES` times (default 2) on transient `CmdError`. A run that cannot prepare its workspace after all retries fails with an explicit `workspace preparation failed after N attempts: <root cause>` message rather than leaving ambiguous state.
-
-**Cleanup failure visibility**: if workspace cleanup fails after a run ends, the conductor records a `workspace_cleanup_failed` event with:
-- `error`: the failure message
-- `surviving_path`: the worktree path that was not removed
-
-The `worktree_path` column in the run store is intentionally **not cleared** when cleanup fails. An operator can see the surviving path without touching the sprite filesystem.
-
-To inspect worktree state for any run:
+To inspect which worktree a completed run used on the worker:
 
 ```bash
 python3 scripts/conductor.py show-runs --limit 5
 python3 scripts/conductor.py show-run --run-id <run-id>
 ```
 
-Both commands include `worktree_path` in the JSON output. A non-null `worktree_path` on a terminal run (merged, failed) usually indicates cleanup did not complete — use `show-events` to see the `workspace_cleanup_failed` event. If the physical cleanup succeeded but a later run-state write failed, the run raises and the last persisted `worktree_path` can be stale until an operator reconciles it.
+The JSON row now includes `worktree_path` plus explicit recovery fields:
+
+- `worktree_recovery_status` — `cleaned`, `cleanup_failed`, or `prepare_failed`
+- `worktree_recovery_error` — the last cleanup/preparation error when recovery degraded
+- `worktree_recovery_event_type` / `worktree_recovery_event_at` — the event that established that recovery state
+
+If cleanup fails, `worktree_path` remains populated so the surviving worktree can be inspected and recovered without reading
+the sprite filesystem first.
 
 Manual cleanup on the sprite:
 

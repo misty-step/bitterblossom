@@ -1948,13 +1948,17 @@ def test_run_review_round_cleans_only_prepared_reviewers(monkeypatch: pytest.Mon
         return conductor.run_workspace(repo, run_id, lane)
 
     monkeypatch.setattr(conductor, "prepare_run_workspace", fake_prepare)
+    monkeypatch.setattr(conductor.time, "sleep", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         conductor,
         "cleanup_run_workspace",
         lambda _runner, reviewer, _repo, _run_id, _lane: cleaned_workspaces.append(reviewer),
     )
 
-    with pytest.raises(conductor.CmdError, match="sprite transport failed"):
+    with pytest.raises(
+        conductor.WorkspacePreparationError,
+        match="workspace preparation failed for review-sage on sage after 3 attempts: sprite transport failed",
+    ):
         conductor.run_review_round(
             _RunnerSpy(),
             conn,
@@ -1976,10 +1980,38 @@ def test_run_review_round_cleans_only_prepared_reviewers(monkeypatch: pytest.Mon
     ).fetchall()
     assert [row["event_type"] for row in events] == [
         "review_wave_started",
+        "workspace_preparation_retry",
+        "workspace_preparation_retry",
+        "workspace_preparation_failed",
         "review_wave_completed",
         "reviewer_workspace_cleaned",
     ]
-    assert json.loads(events[2]["payload_json"]) == {
+    assert json.loads(events[1]["payload_json"]) == {
+        "sprite": "sage",
+        "lane": "review-sage",
+        "workspace": conductor.run_workspace("misty-step/bitterblossom", "run-447-1", "review-sage"),
+        "attempt": 1,
+        "attempts": 3,
+        "error": "sprite transport failed",
+        "retry_in_seconds": 2,
+    }
+    assert json.loads(events[3]["payload_json"]) == {
+        "sprite": "sage",
+        "lane": "review-sage",
+        "workspace": conductor.run_workspace("misty-step/bitterblossom", "run-447-1", "review-sage"),
+        "attempt": 3,
+        "attempts": 3,
+        "error": "sprite transport failed",
+    }
+    assert json.loads(events[4]["payload_json"]) == {
+        "kind": "review_round",
+        "pr_number": 463,
+        "reviewer_count": 3,
+        "reviews_recorded": 0,
+        "status": "failed",
+        "wave_id": 1,
+    }
+    assert json.loads(events[-1]["payload_json"]) == {
         "reviewer": "fern",
         "workspace": conductor.run_workspace("misty-step/bitterblossom", "run-447-1", "review-fern"),
     }
@@ -4206,6 +4238,40 @@ def test_show_runs_surfaces_failed_ci_blocking_reason(tmp_path: pathlib.Path, ca
     assert lines[0]["blocking_reason"] == "merge-gate failed"
 
 
+def test_show_runs_surfaces_worktree_recovery_context(tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=45, title="cleanup", body="body", url="https://example.com/45", labels=["autopilot"])
+    conductor.create_run(conn, "run-45", "misty-step/bitterblossom", issue, "claude-sonnet")
+    conductor.update_run(
+        conn,
+        "run-45",
+        phase="awaiting_governance",
+        status="active",
+        builder_sprite="fern",
+        worktree_path="/tmp/run-45/builder-worktree",
+    )
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-45",
+        "cleanup_warning",
+        {
+            "kind": "builder_workspace_cleanup",
+            "workspace": "/tmp/run-45/builder-worktree",
+            "error": "builder workspace cleanup failed: permission denied",
+        },
+    )
+
+    rc = conductor.show_runs(argparse.Namespace(db=str(tmp_path / "conductor.db"), limit=5))
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload["worktree_path"] == "/tmp/run-45/builder-worktree"
+    assert payload["worktree_recovery_status"] == "cleanup_failed"
+    assert payload["worktree_recovery_event_type"] == "cleanup_warning"
+    assert payload["worktree_recovery_error"] == "builder workspace cleanup failed: permission denied"
+
+
 def test_show_runs_hides_stale_blocking_reason_after_merge(tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
     conn = conductor.open_db(tmp_path / "conductor.db")
     issue = conductor.Issue(number=44, title="merged", body="body", url="https://example.com/44", labels=["autopilot"])
@@ -4480,6 +4546,44 @@ def test_show_run_prints_run_metadata_and_recent_event_context(
         "ci_wait_complete",
     ]
     assert payload["recent_events"][0]["payload"]["reason"] == "unchanged_after_revision"
+
+
+def test_show_run_surfaces_workspace_preparation_failure_reason(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=448, title="prepare", body="", url="https://example.com/448", labels=["autopilot"])
+    conductor.create_run(conn, "run-448-1", "misty-step/bitterblossom", issue, "claude-sonnet")
+    conductor.update_run(conn, "run-448-1", phase="failed", status="failed", builder_sprite="fern")
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-448-1",
+        "workspace_preparation_failed",
+        {
+            "sprite": "fern",
+            "lane": "builder",
+            "workspace": "/tmp/run-448-1/builder-worktree",
+            "attempt": 3,
+            "attempts": 3,
+            "error": "workspace prepare failed: transient network",
+        },
+    )
+
+    rc = conductor.show_run(
+        argparse.Namespace(
+            db=str(tmp_path / "conductor.db"),
+            run_id="run-448-1",
+            event_limit=2,
+        )
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["run"]["blocking_event_type"] == "workspace_preparation_failed"
+    assert payload["run"]["blocking_reason"] == "workspace prepare failed: transient network"
+    assert payload["run"]["worktree_recovery_status"] == "prepare_failed"
+    assert payload["run"]["worktree_recovery_error"] == "workspace prepare failed: transient network"
 
 
 def test_check_env_passes_when_all_present(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -4860,11 +4964,11 @@ def test_ensure_governance_run_releases_lease_when_workspace_prepare_fails(
     )
     monkeypatch.setattr(
         conductor,
-        "prepare_run_workspace",
-        lambda *_a, **_kw: (_ for _ in ()).throw(conductor.CmdError("workspace prepare failed")),
+        "prepare_run_workspace_with_retry",
+        lambda *_a, **_kw: (_ for _ in ()).throw(conductor.WorkspacePreparationError("workspace prepare failed")),
     )
 
-    with pytest.raises(conductor.CmdError, match="workspace prepare failed"):
+    with pytest.raises(conductor.WorkspacePreparationError, match="workspace prepare failed"):
         conductor.ensure_governance_run(
             _RunnerSpy(),
             conn,
@@ -6726,6 +6830,9 @@ def test_prepare_run_workspace_uses_remote_tracking_refs(monkeypatch: pytest.Mon
     )
 
     assert workspace == expected_workspace
+    assert "lockfile=/home/sprite/workspace/bitterblossom/.bb/conductor/mirror.lock" in captured["script"]
+    assert 'exec 9>"$lockfile"' in captured["script"]
+    assert 'flock 9' in captured["script"]
     assert 'refs/remotes/origin/master' in captured["script"]
     assert 'base_ref="origin/master"' in captured["script"]
     assert 'refs/remotes/origin/HEAD' in captured["script"]
@@ -6750,6 +6857,81 @@ def test_prepare_run_workspace_accepts_workspace_as_last_output_line(monkeypatch
     )
 
     assert workspace == expected_workspace
+
+
+def test_prepare_run_workspace_with_retry_recovers_after_transient_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=469, title="worktrees", body="", url="u469", labels=["autopilot"])
+    conductor.create_run(conn, "run-469-1", "misty-step/bitterblossom", issue, "default")
+    attempts = {"count": 0}
+
+    def flaky_prepare(*_args: object, **_kwargs: object) -> str:
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise conductor.CmdError("transient fetch failure")
+        return "/tmp/run-469-1/builder-worktree"
+
+    monkeypatch.setattr(conductor, "prepare_run_workspace", flaky_prepare)
+    monkeypatch.setattr(conductor.time, "sleep", lambda *_args, **_kwargs: None)
+
+    workspace = conductor.prepare_run_workspace_with_retry(
+        object(),
+        conn,
+        tmp_path / "events.jsonl",
+        "run-469-1",
+        "noble-blue-serpent",
+        "misty-step/bitterblossom",
+        "builder",
+    )
+
+    assert workspace == "/tmp/run-469-1/builder-worktree"
+    assert attempts["count"] == 2
+    events = conn.execute("select event_type, payload_json from events where run_id = 'run-469-1' order by id").fetchall()
+    assert [row["event_type"] for row in events] == ["workspace_preparation_retry"]
+    payload = json.loads(events[0]["payload_json"])
+    assert payload["attempt"] == 1
+    assert payload["error"] == "transient fetch failure"
+
+
+def test_prepare_run_workspace_with_retry_records_explicit_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=470, title="worktrees", body="", url="u470", labels=["autopilot"])
+    conductor.create_run(conn, "run-470-1", "misty-step/bitterblossom", issue, "default")
+    monkeypatch.setattr(
+        conductor,
+        "prepare_run_workspace",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(conductor.CmdError("mirror locked elsewhere")),
+    )
+    monkeypatch.setattr(conductor.time, "sleep", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(
+        conductor.WorkspacePreparationError,
+        match="workspace preparation failed for builder on noble-blue-serpent after 3 attempts: mirror locked elsewhere",
+    ):
+        conductor.prepare_run_workspace_with_retry(
+            object(),
+            conn,
+            tmp_path / "events.jsonl",
+            "run-470-1",
+            "noble-blue-serpent",
+            "misty-step/bitterblossom",
+            "builder",
+        )
+
+    events = conn.execute("select event_type, payload_json from events where run_id = 'run-470-1' order by id").fetchall()
+    assert [row["event_type"] for row in events] == [
+        "workspace_preparation_retry",
+        "workspace_preparation_retry",
+        "workspace_preparation_failed",
+    ]
+    payload = json.loads(events[-1]["payload_json"])
+    assert payload["attempt"] == 3
+    assert payload["attempts"] == 3
+    assert payload["error"] == "mirror locked elsewhere"
 
 
 def test_dispatch_until_artifact_passes_workspace_to_dispatch_task(monkeypatch: pytest.MonkeyPatch) -> None:
