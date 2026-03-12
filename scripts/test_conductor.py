@@ -212,6 +212,20 @@ def test_seed_worker_slots_supports_explicit_capacity(tmp_path: pathlib.Path) ->
     ]
 
 
+def test_parse_worker_capacity_rejects_non_numeric_slot_count() -> None:
+    with pytest.raises(conductor.CmdError, match="invalid worker slot count"):
+        conductor.parse_worker_capacity("fern:two")
+
+
+def test_load_worker_slots_filters_to_current_configured_capacity(tmp_path: pathlib.Path) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    conductor.seed_worker_slots(conn, "misty-step/bitterblossom", ["fern:3"])
+
+    slots = conductor.load_worker_slots(conn, "misty-step/bitterblossom", ["fern:1"])
+
+    assert [(slot.worker, slot.slot_index) for slot in slots] == [("fern", 1)]
+
+
 def test_acquire_lease_reclaims_expired_active_lease(tmp_path: pathlib.Path) -> None:
     conn = conductor.open_db(tmp_path / "conductor.db")
     assert conductor.acquire_lease(conn, "misty-step/bitterblossom", 12, "run-12-1") is True
@@ -1800,7 +1814,6 @@ def test_select_worker_skips_failed_probes_without_auto_repair(monkeypatch: pyte
         "misty-step/bitterblossom",
         ["thorn", "sage"],
         pathlib.Path("scripts/prompts/conductor-builder-template.md"),
-        "run-1",
     )
 
     assert selected == "sage"
@@ -3100,6 +3113,37 @@ def test_show_workers_reports_slot_health_assignments_and_backfill(
     assert len(payload["slots"]) == 2
     assert payload["slots"][0]["current_run_id"] == "run-447-1"
     assert payload["recent_replacement_actions"][0]["event_type"] == "worker_slot_drained"
+
+
+def test_reset_worker_slots_restores_drained_capacity(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    conductor.seed_worker_slots(conn, "misty-step/bitterblossom", ["fern:2"])
+    slots = conductor.load_worker_slots(conn, "misty-step/bitterblossom", ["fern:2"])
+    conductor.update_worker_slot(
+        conn,
+        slots[0].id,
+        state=conductor.WORKER_SLOT_DRAINED,
+        consecutive_failures=2,
+        last_error="probe failed",
+    )
+
+    rc = conductor.reset_worker_slots(
+        argparse.Namespace(
+            db=str(tmp_path / "conductor.db"),
+            repo="misty-step/bitterblossom",
+            worker=["fern"],
+        )
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["reset_slots"] == 2
+    refreshed = conductor.load_worker_slots(conn, "misty-step/bitterblossom", ["fern:2"])
+    assert all(slot.state == conductor.WORKER_SLOT_ACTIVE for slot in refreshed)
+    assert all(slot.consecutive_failures == 0 for slot in refreshed)
 
 
 def test_show_run_prints_run_metadata_and_recent_event_context(

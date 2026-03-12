@@ -51,6 +51,8 @@ WORKER_SLOT_DRAINED = "drained"
 WORKER_SLOT_MAINTENANCE = "maintenance"
 WORKER_SLOT_STATES = {WORKER_SLOT_ACTIVE, WORKER_SLOT_DRAINED, WORKER_SLOT_MAINTENANCE}
 WORKER_DRAIN_FAILURE_THRESHOLD = 2
+MAX_WORKER_SLOT_COUNT = 1000
+TERMINAL_RUN_STATUSES = {"merged", "failed", "blocked", "closed"}
 
 
 @dataclass(slots=True)
@@ -172,6 +174,21 @@ class WorkerSlot:
     last_probe_at: str | None
     last_error: str | None
     updated_at: str
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> "WorkerSlot":
+        return cls(
+            id=int(row["id"]),
+            repo=str(row["repo"]),
+            worker=str(row["worker"]),
+            slot_index=int(row["slot_index"]),
+            state=str(row["state"]),
+            consecutive_failures=int(row["consecutive_failures"]),
+            current_run_id=str(row["current_run_id"]) if row["current_run_id"] is not None else None,
+            last_probe_at=str(row["last_probe_at"]) if row["last_probe_at"] is not None else None,
+            last_error=str(row["last_error"]) if row["last_error"] is not None else None,
+            updated_at=str(row["updated_at"]),
+        )
 
 
 class CmdError(RuntimeError):
@@ -328,6 +345,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             updated_at text not null,
             unique (repo, worker, slot_index)
         );
+        create index if not exists idx_worker_slots_repo_worker_state
+            on worker_slots (repo, worker, state);
         """
     )
     ensure_column(conn, "runs", "heartbeat_at", "text")
@@ -739,10 +758,12 @@ def parse_worker_capacity(spec: str) -> tuple[str, int]:
         raise CmdError(f"invalid worker spec {spec!r}")
     try:
         slots = int(raw_slots)
-    except ValueError:
-        return spec, 1
+    except ValueError as exc:
+        raise CmdError(f"invalid worker slot count in {spec!r}") from exc
     if slots <= 0:
         raise CmdError(f"invalid worker slot count in {spec!r}")
+    if slots > MAX_WORKER_SLOT_COUNT:
+        raise CmdError(f"worker slot count exceeds maximum in {spec!r}")
     return worker, slots
 
 
@@ -776,21 +797,7 @@ def load_worker_slots(conn: sqlite3.Connection, repo: str, workers: list[str]) -
         (repo, *capacities.keys()),
     ).fetchall()
     order = {worker: index for index, worker in enumerate(capacities.keys())}
-    slots = [
-        WorkerSlot(
-            id=int(row["id"]),
-            repo=str(row["repo"]),
-            worker=str(row["worker"]),
-            slot_index=int(row["slot_index"]),
-            state=str(row["state"]),
-            consecutive_failures=int(row["consecutive_failures"]),
-            current_run_id=str(row["current_run_id"]) if row["current_run_id"] is not None else None,
-            last_probe_at=str(row["last_probe_at"]) if row["last_probe_at"] is not None else None,
-            last_error=str(row["last_error"]) if row["last_error"] is not None else None,
-            updated_at=str(row["updated_at"]),
-        )
-        for row in rows
-    ]
+    slots = [WorkerSlot.from_row(row) for row in rows if int(row["slot_index"]) <= capacities.get(str(row["worker"]), 0)]
     return sorted(
         slots,
         key=lambda slot: (
@@ -830,7 +837,17 @@ def update_worker_slot(conn: sqlite3.Connection, slot_id: int, **fields: Any) ->
 
 
 def assign_worker_slot(conn: sqlite3.Connection, slot_id: int, run_id: str) -> None:
-    update_worker_slot(conn, slot_id, current_run_id=run_id)
+    cursor = conn.execute(
+        """
+        update worker_slots
+        set current_run_id = ?, updated_at = ?
+        where id = ? and current_run_id is null and state = ?
+        """,
+        (run_id, now_utc(), slot_id, WORKER_SLOT_ACTIVE),
+    )
+    conn.commit()
+    if cursor.rowcount != 1:
+        raise CmdError(f"worker slot {slot_id} is no longer available")
 
 
 def acquire_named_worker_slot(conn: sqlite3.Connection, repo: str, workers: list[str], worker: str, run_id: str) -> WorkerSlot:
@@ -838,7 +855,10 @@ def acquire_named_worker_slot(conn: sqlite3.Connection, repo: str, workers: list
     for slot in load_worker_slots(conn, repo, workers):
         if slot.worker != worker or slot.state != WORKER_SLOT_ACTIVE or slot.current_run_id is not None:
             continue
-        assign_worker_slot(conn, slot.id, run_id)
+        try:
+            assign_worker_slot(conn, slot.id, run_id)
+        except CmdError:
+            continue
         slot.current_run_id = run_id
         return slot
     ts = now_utc()
@@ -862,19 +882,31 @@ def acquire_named_worker_slot(conn: sqlite3.Connection, repo: str, workers: list
     if slot is None:
         raise CmdError(f"worker {worker} has no free active slot")
     if slot["current_run_id"] not in {None, run_id}:
+        for candidate in load_worker_slots(conn, repo, workers):
+            if candidate.worker != worker or candidate.state != WORKER_SLOT_ACTIVE or candidate.current_run_id is not None:
+                continue
+            try:
+                assign_worker_slot(conn, candidate.id, run_id)
+            except CmdError:
+                continue
+            candidate.current_run_id = run_id
+            return candidate
         raise CmdError(f"worker {worker} has no free active slot")
-    return WorkerSlot(
-        id=int(slot["id"]),
-        repo=str(slot["repo"]),
-        worker=str(slot["worker"]),
-        slot_index=int(slot["slot_index"]),
-        state=str(slot["state"]),
-        consecutive_failures=int(slot["consecutive_failures"]),
-        current_run_id=str(slot["current_run_id"]) if slot["current_run_id"] is not None else None,
-        last_probe_at=str(slot["last_probe_at"]) if slot["last_probe_at"] is not None else None,
-        last_error=str(slot["last_error"]) if slot["last_error"] is not None else None,
-        updated_at=str(slot["updated_at"]),
-    )
+    if slot["state"] != WORKER_SLOT_ACTIVE:
+        raise CmdError(f"worker {worker} has no free active slot")
+    if slot["current_run_id"] is None:
+        assign_worker_slot(conn, int(slot["id"]), run_id)
+        slot = conn.execute(
+            """
+            select id, repo, worker, slot_index, state, consecutive_failures, current_run_id, last_probe_at, last_error, updated_at
+            from worker_slots
+            where id = ?
+            """,
+            (int(slot["id"]),),
+        ).fetchone()
+        if slot is None:
+            raise CmdError(f"worker {worker} has no free active slot")
+    return WorkerSlot.from_row(slot)
 
 
 def release_worker_slot(conn: sqlite3.Connection, slot_id: int, *, run_id: str | None = None) -> None:
@@ -882,9 +914,15 @@ def release_worker_slot(conn: sqlite3.Connection, slot_id: int, *, run_id: str |
         update_worker_slot(conn, slot_id, current_run_id=None)
         return
     row = conn.execute("select current_run_id from worker_slots where id = ?", (slot_id,)).fetchone()
-    if row is None or row["current_run_id"] != run_id:
+    if row is None or row["current_run_id"] is None:
         return
-    update_worker_slot(conn, slot_id, current_run_id=None)
+    current_run_id = str(row["current_run_id"])
+    if current_run_id == run_id:
+        update_worker_slot(conn, slot_id, current_run_id=None)
+        return
+    run = conn.execute("select status from runs where run_id = ?", (current_run_id,)).fetchone()
+    if run is not None and str(run["status"]) in TERMINAL_RUN_STATUSES:
+        update_worker_slot(conn, slot_id, current_run_id=None)
 
 
 def record_worker_probe_success(conn: sqlite3.Connection, slot_id: int) -> None:
@@ -895,11 +933,12 @@ def record_worker_probe_failure(conn: sqlite3.Connection, slot: WorkerSlot, reas
     failures = slot.consecutive_failures + 1
     drained = failures >= WORKER_DRAIN_FAILURE_THRESHOLD
     state = WORKER_SLOT_DRAINED if drained else slot.state
+    ts = now_utc()
     update_worker_slot(
         conn,
         slot.id,
         consecutive_failures=failures,
-        last_probe_at=now_utc(),
+        last_probe_at=ts,
         last_error=reason,
         state=state,
     )
@@ -911,9 +950,9 @@ def record_worker_probe_failure(conn: sqlite3.Connection, slot: WorkerSlot, reas
         state=state,
         consecutive_failures=failures,
         current_run_id=slot.current_run_id,
-        last_probe_at=now_utc(),
+        last_probe_at=ts,
         last_error=reason,
-        updated_at=now_utc(),
+        updated_at=ts,
     ), drained
 
 
@@ -1264,16 +1303,20 @@ def select_worker_slot(
     raise CmdError(f"no available worker in {workers}: {last_error}")
 
 
-def select_worker(conn: sqlite3.Connection, repo: str, workers: list[str], prompt_template: pathlib.Path, run_id: str) -> str:
-    _ = (conn, run_id)
+def select_worker(conn: sqlite3.Connection, repo: str, workers: list[str], prompt_template: pathlib.Path) -> str:
+    seed_worker_slots(conn, repo, workers)
     last_error = ""
-    for worker in worker_capacities(workers):
+    for slot in load_worker_slots(conn, repo, workers):
+        if slot.state != WORKER_SLOT_ACTIVE or slot.current_run_id is not None:
+            continue
         try:
-            probe_sprite_readiness(worker, repo, prompt_template)
+            probe_sprite_readiness(slot.worker, repo, prompt_template)
         except CmdError as exc:
             last_error = stringify_exc(exc)
+            record_worker_probe_failure(conn, slot, last_error)
             continue
-        return worker
+        record_worker_probe_success(conn, slot.id)
+        return slot.worker
     raise CmdError(f"no available worker in {workers}: {last_error}")
 
 
@@ -3155,7 +3198,7 @@ def ensure_governance_run(
 
     worker = str(existing_run["builder_sprite"] or "") if existing_run is not None else ""
     if not worker:
-        worker = select_worker(conn, args.repo, args.worker, pathlib.Path(args.builder_template), run_id)
+        worker = select_worker(conn, args.repo, args.worker, pathlib.Path(args.builder_template))
 
     builder_workspace = str(existing_run["worktree_path"] or "") if existing_run is not None else ""
 
@@ -3696,7 +3739,7 @@ def run_once(args: argparse.Namespace) -> int:
             )
             worker = worker_slot.worker
         else:
-            worker = select_worker(conn, args.repo, args.worker, pathlib.Path(args.builder_template), run_id)
+            worker = select_worker(conn, args.repo, args.worker, pathlib.Path(args.builder_template))
             worker_slot = acquire_named_worker_slot(conn, args.repo, args.worker, worker, run_id)
         update_run(conn, run_id, phase="building", builder_sprite=worker, builder_slot_id=worker_slot.id)
         touch_run(conn, args.repo, issue.number, run_id, args.builder_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS)
@@ -3942,7 +3985,6 @@ def loop(args: argparse.Namespace) -> int:
 
 def show_workers(args: argparse.Namespace) -> int:
     conn = open_db(pathlib.Path(args.db))
-    seed_worker_slots(conn, args.repo, args.worker)
     slots = load_worker_slots(conn, args.repo, args.worker)
     active_assignments = sum(1 for slot in slots if slot.current_run_id)
     recent_actions = conn.execute(
@@ -3952,7 +3994,7 @@ def show_workers(args: argparse.Namespace) -> int:
         join runs on runs.run_id = events.run_id
         where event_type in ('builder_selected', 'worker_slot_drained')
           and runs.repo = ?
-        order by id desc
+        order by events.id desc
         limit ?
         """,
         (args.repo, args.event_limit),
@@ -3979,6 +4021,22 @@ def show_workers(args: argparse.Namespace) -> int:
         "recent_replacement_actions": [format_event_row(row) for row in recent_actions],
     }
     print(json.dumps(payload))
+    return 0
+
+
+def reset_worker_slots(args: argparse.Namespace) -> int:
+    conn = open_db(pathlib.Path(args.db))
+    capacities = worker_capacities(args.worker)
+    placeholders = ",".join("?" for _ in capacities)
+    params: list[Any] = [args.repo, *capacities.keys()]
+    query = f"""
+        update worker_slots
+        set state = ?, consecutive_failures = 0, last_error = null, current_run_id = null, updated_at = ?
+        where repo = ? and worker in ({placeholders})
+    """
+    cursor = conn.execute(query, (WORKER_SLOT_ACTIVE, now_utc(), *params))
+    conn.commit()
+    print(json.dumps({"repo": args.repo, "workers": list(capacities.keys()), "reset_slots": cursor.rowcount}))
     return 0
 
 
@@ -4230,6 +4288,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     workers_p.add_argument("--desired-concurrency", type=int, default=1)
     workers_p.add_argument("--event-limit", type=int, default=10)
     workers_p.set_defaults(func=show_workers)
+
+    reset_workers_p = sub.add_parser("reset-worker-slots", help="Reset drained worker slots back to active")
+    reset_workers_p.add_argument("--repo", required=True)
+    reset_workers_p.add_argument("--db", default=str(DEFAULT_DB))
+    reset_workers_p.add_argument("--worker", action="append", required=True, help="Worker name or worker:slots")
+    reset_workers_p.set_defaults(func=reset_worker_slots)
 
     reconcile_p = sub.add_parser("reconcile-run", help="Reconcile a run against GitHub PR state")
     reconcile_p.add_argument("--db", default=str(DEFAULT_DB))

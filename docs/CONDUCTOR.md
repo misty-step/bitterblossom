@@ -136,6 +136,10 @@ python3 scripts/conductor.py show-workers \
   --worker noble-blue-serpent:2 \
   --worker moss \
   --desired-concurrency 2
+python3 scripts/conductor.py reset-worker-slots \
+  --repo misty-step/bitterblossom \
+  --worker noble-blue-serpent \
+  --worker moss
 ```
 
 `show-runs` emits one JSON object per run. The operator contract is that each row includes the current `phase` and `status`, the raw `heartbeat_at` timestamp, a computed `heartbeat_age_seconds`, and when applicable a `blocking_reason` plus the source `blocking_event_type`.
@@ -148,6 +152,11 @@ python3 scripts/conductor.py show-workers \
 current assignments, computed backfill demand against `--desired-concurrency`,
 and recent slot-drain / selection events so operators can see which capacity is
 healthy before touching sprites manually.
+
+`reset-worker-slots` is the recovery surface for drained capacity. It resets the
+matching workers back to `active`, clears probe failures, and removes stale
+slot assignment state so transient probe failures do not strand worker capacity
+forever.
 
 ## Acceptance Proof
 
