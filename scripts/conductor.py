@@ -723,12 +723,12 @@ def serialize_run_surface(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[st
     payload["worktree_recovery_event_at"] = None
     lifecycle_event = builder_workspace_lifecycle_event(conn, row["run_id"])
     if lifecycle_event is not None:
-        recovery_payload = json.loads(lifecycle_event["payload_json"])
         payload["worktree_recovery_event_type"] = lifecycle_event["event_type"]
         payload["worktree_recovery_event_at"] = lifecycle_event["created_at"]
         if lifecycle_event["event_type"] == "builder_workspace_cleaned":
             payload["worktree_recovery_status"] = "cleaned"
-        else:
+        elif lifecycle_event["event_type"] == "workspace_cleanup_failed":
+            recovery_payload = json.loads(lifecycle_event["payload_json"])
             payload["worktree_recovery_status"] = "cleanup_failed"
             payload["worktree_recovery_error"] = recovery_payload.get("error")
     blocking_reason = None

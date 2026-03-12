@@ -6600,24 +6600,53 @@ def test_show_run_worktree_recovery_status_null_when_no_lifecycle_event(
     assert run["worktree_recovery_event_at"] is None
 
 
+def test_show_runs_exposes_worktree_recovery_status_cleanup_failed(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """show-runs includes the builder cleanup recovery fields for failed cleanup."""
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="recovery", body="", url="u538", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-rec-4", "misty-step/bitterblossom", issue, "default")
+    workspace = conductor.run_workspace("misty-step/bitterblossom", "run-538-rec-4", "builder")
+    conductor.update_run(conn, "run-538-rec-4", worktree_path=workspace)
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-538-rec-4",
+        "workspace_cleanup_failed",
+        {"error": "git locked", "surviving_path": workspace},
+    )
+
+    rc = conductor.show_runs(argparse.Namespace(db=str(tmp_path / "conductor.db"), limit=5))
+
+    assert rc == 0
+    rows = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line]
+    assert len(rows) == 1
+    run = rows[0]
+    assert run["worktree_recovery_status"] == "cleanup_failed"
+    assert run["worktree_recovery_error"] == "git locked"
+    assert run["worktree_recovery_event_type"] == "workspace_cleanup_failed"
+    assert run["worktree_recovery_event_at"] is not None
+
+
 def test_reviewer_cleanup_failure_does_not_set_builder_recovery_status(
     tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Reviewer workspace_cleanup_failed events must not pollute builder worktree_recovery_status."""
     conn = conductor.open_db(tmp_path / "conductor.db")
     issue = conductor.Issue(number=538, title="recovery", body="", url="u538", labels=["autopilot"])
-    conductor.create_run(conn, "run-538-rec-4", "misty-step/bitterblossom", issue, "default")
-    reviewer_workspace = conductor.run_workspace("misty-step/bitterblossom", "run-538-rec-4", "review-fern")
+    conductor.create_run(conn, "run-538-rec-5", "misty-step/bitterblossom", issue, "default")
+    reviewer_workspace = conductor.run_workspace("misty-step/bitterblossom", "run-538-rec-5", "review-fern")
     conductor.record_event(
         conn,
         tmp_path / "events.jsonl",
-        "run-538-rec-4",
+        "run-538-rec-5",
         "workspace_cleanup_failed",
         {"error": "stale worktree", "reviewer": "fern", "surviving_path": reviewer_workspace},
     )
 
     rc = conductor.show_run(
-        argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-538-rec-4", event_limit=5)
+        argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-538-rec-5", event_limit=5)
     )
 
     assert rc == 0

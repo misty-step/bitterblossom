@@ -316,7 +316,14 @@ python3 scripts/conductor.py show-runs --limit 5
 python3 scripts/conductor.py show-run --run-id <run-id>
 ```
 
-Both commands include `worktree_path` in the JSON output. A non-null `worktree_path` on a terminal run (merged, failed) usually indicates cleanup did not complete — use `show-events` to see the `workspace_cleanup_failed` event. If the physical cleanup succeeded but a later run-state write failed, the run raises and the last persisted `worktree_path` can be stale until an operator reconciles it.
+Both commands include `worktree_path` plus four builder cleanup recovery fields in the JSON output:
+
+- `worktree_recovery_status`: `cleaned`, `cleanup_failed`, or `null`
+- `worktree_recovery_error`: cleanup failure message when status is `cleanup_failed`
+- `worktree_recovery_event_type`: the builder lifecycle event that established the recovery state
+- `worktree_recovery_event_at`: when that lifecycle event was recorded
+
+A non-null `worktree_path` on a terminal run (merged, failed) still means cleanup may not have completed, but operators no longer need to infer that only from raw events: `worktree_recovery_status=cleanup_failed` tells you the last persisted builder cleanup failed, while `cleaned` tells you the builder cleanup completed successfully. If the physical cleanup succeeded but a later run-state write failed, the run can still raise and leave a stale `worktree_path`; in that case the recovery fields surface the last persisted builder cleanup event directly, and `show-events` remains the deeper history/debug view rather than the primary cleanup-status surface.
 
 Manual cleanup on the sprite:
 
