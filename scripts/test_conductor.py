@@ -5925,8 +5925,6 @@ def test_prepare_run_workspace_serializes_overlapping_calls(monkeypatch: pytest.
             active_count -= 1
         return result
 
-    expected_workspaces: dict[str, str] = {}
-
     def fake_sprite_bash(_runner: object, _sprite: str, script: str, *, timeout: int) -> str:
         _ = timeout
         # Extract workspace path from script: workspace='...'
