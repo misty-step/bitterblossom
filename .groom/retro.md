@@ -16,6 +16,14 @@
 - blocker: live Claude CLI JSON mode returned an event stream envelope rather than a plain object, so the router needed a real-format parser fix before command verification passed
 - pattern: when a control-plane decision is judgment-heavy, keep the deterministic boundary tiny and test the real structured-output envelope instead of rebuilding semantics with labels and timestamps
 
+## 2026-03-12 [issue #538](https://github.com/misty-step/bitterblossom/issues/538)
+
+- predicted: L
+- actual: M
+- scope: hardened the existing warm-mirror worktree lifecycle with serialized mutation, bounded preparation retries, and explicit operator-visible recovery state instead of adding a new workspace mechanism
+- blocker: none
+- pattern: when lifecycle truth is already in the run ledger, deepen the operator surface and failure contract before introducing more orchestration layers
+
 ## 2026-03-10 [issue #98](https://github.com/misty-step/bitterblossom/issues/98)
 
 - predicted: M
