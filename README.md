@@ -32,7 +32,7 @@ docs/                    operator docs and contracts
 
 ## How It Works
 
-1. `bb setup <sprite> --repo owner/repo` bootstraps persistent worker sprites
+1. `bb setup <sprite> --repo owner/repo` bootstraps persistent worker sprites with base configs, imported autonomy skills, and a role persona
 2. `scripts/conductor.py run-once|loop` reads GitHub issues and acquires a lease
 3. the conductor dispatches a builder sprite with a branch + artifact contract
 4. the builder opens a PR and writes `builder-result.json`
@@ -80,9 +80,21 @@ See [docs/CLI-REFERENCE.md](docs/CLI-REFERENCE.md) for `bb`, and [docs/CONDUCTOR
 
 Bitterblossom ships task-oriented skill files in `base/skills/` so agents can load workflow guidance directly instead of inferring from CLI help text.
 
-Current Bitterblossom-specific skills:
+Imported first-party autonomy skills (vendored from `phrazzld/agent-skills`):
+- `autopilot`
+- `shape`
+- `build`
+- `pr`
+- `pr-walkthrough`
+- `debug`
+- `pr-fix`
+- `pr-polish`
+
+Bitterblossom-specific runtime skills:
 - `base/skills/bitterblossom-dispatch/SKILL.md` — dry-run probing plus prompt dispatch through `bb`
 - `base/skills/bitterblossom-monitoring/SKILL.md` — monitoring, status checks, and recovery triage
+
+`bb setup` provisions the full `base/skills/` tree onto managed sprites so role personas can rely on a version-pinned skill surface.
 
 Example workflow using the current transport surface:
 

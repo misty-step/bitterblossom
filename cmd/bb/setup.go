@@ -83,41 +83,14 @@ func runSetup(ctx context.Context, spriteName, repo string, force bool, persona 
 	// 3. Upload base configs
 	_, _ = fmt.Fprintf(os.Stderr, "uploading base configs...\n")
 
-	configMap := map[string]string{
-		"base/CLAUDE.md": "/home/sprite/.claude/CLAUDE.md",
-	}
-
 	if err := uploadPatchedSettings(ctx, s, openrouterKey); err != nil {
 		return fmt.Errorf("upload settings.json: %w", err)
 	}
 
-	// hooks
-	hookFiles, _ := filepath.Glob("base/hooks/*.py")
-	for _, f := range hookFiles {
-		configMap[f] = "/home/sprite/.claude/hooks/" + filepath.Base(f)
+	configMap, err := buildBaseConfigMap(".")
+	if err != nil {
+		return fmt.Errorf("collect base configs: %w", err)
 	}
-
-	// commands
-	cmdFiles, _ := filepath.Glob("base/commands/*.md")
-	for _, f := range cmdFiles {
-		configMap[f] = "/home/sprite/.claude/commands/" + filepath.Base(f)
-	}
-
-	// prompts
-	promptFiles, _ := filepath.Glob("base/prompts/*.md")
-	for _, f := range promptFiles {
-		configMap[f] = "/home/sprite/.claude/prompts/" + filepath.Base(f)
-	}
-
-	// skills — each skill is a directory with SKILL.md
-	_ = filepath.WalkDir("base/skills", func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return err
-		}
-		rel, _ := filepath.Rel("base/skills", p)
-		configMap[p] = "/home/sprite/.claude/skills/" + rel
-		return nil
-	})
 
 	for local, remote := range configMap {
 		if err := uploadFile(ctx, s, local, remote); err != nil {
@@ -209,6 +182,56 @@ git config --global --add safe.directory '*'
 
 	_, _ = fmt.Fprintf(os.Stderr, "setup complete: %s\n", spriteName)
 	return nil
+}
+
+func buildBaseConfigMap(root string) (map[string]string, error) {
+	configMap := map[string]string{
+		filepath.Join(root, "base/CLAUDE.md"): "/home/sprite/.claude/CLAUDE.md",
+	}
+
+	hookFiles, err := filepath.Glob(filepath.Join(root, "base/hooks/*.py"))
+	if err != nil {
+		return nil, err
+	}
+	for _, f := range hookFiles {
+		configMap[f] = "/home/sprite/.claude/hooks/" + filepath.Base(f)
+	}
+
+	commandFiles, err := filepath.Glob(filepath.Join(root, "base/commands/*.md"))
+	if err != nil {
+		return nil, err
+	}
+	for _, f := range commandFiles {
+		configMap[f] = "/home/sprite/.claude/commands/" + filepath.Base(f)
+	}
+
+	promptFiles, err := filepath.Glob(filepath.Join(root, "base/prompts/*.md"))
+	if err != nil {
+		return nil, err
+	}
+	for _, f := range promptFiles {
+		configMap[f] = "/home/sprite/.claude/prompts/" + filepath.Base(f)
+	}
+
+	skillsRoot := filepath.Join(root, "base/skills")
+	if err := filepath.WalkDir(skillsRoot, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(skillsRoot, p)
+		if err != nil {
+			return err
+		}
+		configMap[p] = "/home/sprite/.claude/skills/" + rel
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	return configMap, nil
 }
 
 // resolvePersona returns the local path to the persona file to use for setup.

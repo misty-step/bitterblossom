@@ -9,6 +9,11 @@ skills:
   - naming-conventions
   - git-mastery
   - external-integration
+  - build
+  - debug
+  - pr-walkthrough
+  - pr-fix
+  - pr-polish
 ---
 
 # Thorn — Quality & Security
