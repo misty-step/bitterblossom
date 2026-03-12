@@ -6054,6 +6054,37 @@ def test_cleanup_builder_workspace_preserves_worktree_path_on_failure(
     assert row["worktree_path"] == "/home/sprite/workspace/bitterblossom/.bb/conductor/run-538-1/builder-worktree"
 
 
+def test_cleanup_builder_workspace_does_not_mislabel_state_write_failures(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="cleanup", body="", url="u538", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-1", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(conn, "run-538-1", worktree_path="/home/sprite/workspace/bitterblossom/.bb/conductor/run-538-1/builder-worktree")
+
+    monkeypatch.setattr(conductor, "cleanup_run_workspace", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        conductor,
+        "update_run",
+        lambda *_a, **_kw: (_ for _ in ()).throw(conductor.CmdError("db write failed")),
+    )
+
+    with pytest.raises(conductor.CmdError, match="db write failed"):
+        conductor.cleanup_builder_workspace(
+            object(),
+            conn,
+            tmp_path / "events.jsonl",
+            "run-538-1",
+            "misty-step/bitterblossom",
+            "noble-blue-serpent",
+            "/home/sprite/workspace/bitterblossom/.bb/conductor/run-538-1/builder-worktree",
+        )
+
+    event_types = [r[0] for r in conn.execute("select event_type from events where run_id = 'run-538-1'").fetchall()]
+    assert "workspace_cleanup_failed" not in event_types
+
+
 def test_show_run_includes_worktree_path(
     tmp_path: pathlib.Path,
     capsys: pytest.CaptureFixture[str],

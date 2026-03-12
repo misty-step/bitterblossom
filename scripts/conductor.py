@@ -53,18 +53,17 @@ INACTIVE_FINDING_STATUSES = {"addressed", "deferred", "rejected", "duplicate"}
 WORKSPACE_PREP_RETRIES = 2
 WORKSPACE_PREP_RETRY_DELAY_SECONDS = 5
 
-# Per-(sprite, repo) locks to serialize mirror mutation within a process.
+# Per-mirror locks to serialize mirror mutation within a process.
 # Cross-process serialization is handled by flock on the sprite filesystem.
-_mirror_locks: dict[tuple[str, str], threading.Lock] = {}
+_mirror_locks: dict[str, threading.Lock] = {}
 _mirror_locks_mu = threading.Lock()
 
 
-def _mirror_lock(sprite: str, repo: str) -> threading.Lock:
-    key = (sprite, repo)
+def _mirror_lock(mirror: str) -> threading.Lock:
     with _mirror_locks_mu:
-        if key not in _mirror_locks:
-            _mirror_locks[key] = threading.Lock()
-        return _mirror_locks[key]
+        if mirror not in _mirror_locks:
+            _mirror_locks[mirror] = threading.Lock()
+        return _mirror_locks[mirror]
 
 
 @dataclass(slots=True)
@@ -797,7 +796,7 @@ def prepare_run_workspace(runner: Runner, sprite: str, repo: str, run_id: str, l
     mirror = repo_dir(repo)
     workspace = run_workspace(repo, run_id, lane)
     last_exc: CmdError | None = None
-    with _mirror_lock(sprite, repo):
+    with _mirror_lock(mirror):
         for attempt in range(1 + WORKSPACE_PREP_RETRIES):
             try:
                 return _prepare_run_workspace_once(runner, sprite, mirror, workspace)
@@ -827,7 +826,7 @@ def cleanup_run_workspace(runner: Runner, sprite: str, repo: str, run_id: str, l
             ') 9>>"$lock_file"',
         ]
     )
-    with _mirror_lock(sprite, repo):
+    with _mirror_lock(mirror):
         sprite_bash(runner, sprite, script, timeout=180)
 
 
@@ -2660,8 +2659,6 @@ def cleanup_builder_workspace(
 ) -> None:
     try:
         cleanup_run_workspace(runner, worker, repo, run_id, "builder")
-        update_run(conn, run_id, worktree_path=None)
-        record_event(conn, event_log, run_id, "builder_workspace_cleaned", {"workspace": workspace})
     except Exception as exc:  # noqa: BLE001
         # worktree_path intentionally not cleared so operators can recover using surviving_path.
         record_event(
@@ -2671,6 +2668,10 @@ def cleanup_builder_workspace(
             "workspace_cleanup_failed",
             {"error": stringify_exc(exc), "surviving_path": workspace},
         )
+        return
+
+    update_run(conn, run_id, worktree_path=None)
+    record_event(conn, event_log, run_id, "builder_workspace_cleaned", {"workspace": workspace})
 
 
 def dispatch(
