@@ -6260,19 +6260,11 @@ def test_govern_pr_workspace_preparation_error_after_adoption_records_warning(
     )
 
     issue_comments: list[str] = []
-    monkeypatch.setattr(conductor, "cleanup_run_workspace", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "cleanup_builder_workspace", lambda *_a, **_kw: None)
     monkeypatch.setattr(
         conductor,
         "ensure_governance_run",
-        lambda *_a, **_kw: (
-            issue,
-            "run-479-1",
-            "noble-blue-serpent",
-            "factory/479-handoff-1",
-            490,
-            "https://github.com/misty-step/bitterblossom/pull/490",
-            "/tmp/run-479-1-builder",
-        ),
+        lambda *_a, **_kw: _make_governance_run(issue),
     )
     monkeypatch.setattr(
         conductor,
