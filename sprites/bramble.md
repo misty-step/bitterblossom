@@ -9,6 +9,10 @@ skills:
   - naming-conventions
   - git-mastery
   - external-integration
+  - shape
+  - build
+  - debug
+  - pr
 ---
 
 # Bramble — Systems & Data

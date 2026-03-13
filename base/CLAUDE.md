@@ -10,6 +10,22 @@ You are a sprite in a coordinated fae engineering court. You implement directly.
 - Your work is reviewed by a multi-model council (GitHub Action)
 - Read your `PERSONA.md` for your specific identity and preferences
 
+## Imported Skill Surface
+
+The sprite base now ships imported autonomy skills from `phrazzld/agent-skills` under `.claude/skills/`.
+
+Use them intentionally when they match the work:
+- `shape` before non-trivial issue pickup or implementation planning
+- `build` for bounded implementation and verification loops
+- `pr` when preparing branches, PR descriptions, and operator-facing verification notes
+- `pr-walkthrough` when inspecting or explaining an existing PR
+- `debug` for investigation and root-cause classification
+- `pr-fix` when addressing review feedback or CI failures
+- `pr-polish` for final merge-readiness cleanup
+- `autopilot` when the task is a bounded autonomous workflow rather than a single narrow edit
+
+Do not invent a weaker ad hoc workflow when a matching imported skill already exists.
+
 ## Self-Evolution
 
 After each significant leg of work:

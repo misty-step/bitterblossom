@@ -4,7 +4,7 @@ The `/sprites` directory serves as the configuration hub for a multi-agent orche
 The architecture is modular and role-based, designed for a delegated workflow where tasks are routed based on specific "Routing Signals." The system follows a collaborative "Team Context" model, where individual agents are aware of their peers' specialties to facilitate handoffs (e.g., Foxglove identifying a bug and handing it to Clover for regression testing). 
 
 Each sprite configuration adheres to a standardized schema:
-*   **Metadata (Frontmatter):** Defines the agent's name, skill sets (e.g., `git-mastery`, `testing-philosophy`), and execution parameters such as `permissionMode: bypassPermissions` and `model: inherit`.
+*   **Metadata (Frontmatter):** Defines the agent's name, skill sets (for example imported autonomy skills such as `shape`, `build`, `debug`, `pr-fix`, or `autopilot`), and execution parameters such as `permissionMode: bypassPermissions` and `model: inherit`.
 *   **Operational Philosophy:** Establishes the high-level principles guiding the agent's logic (e.g., "Infrastructure as Code" for Fern or "Reproduce First" for Foxglove).
 *   **Working Patterns:** Provides specific algorithmic or procedural instructions for task execution.
 *   **Routing Signals:** Defines the triggers and keywords used by the orchestrator (OpenClaw) to dispatch tasks to the correct agent.
@@ -12,9 +12,9 @@ Each sprite configuration adheres to a standardized schema:
 
 ### Key File Roles
 The directory is partitioned into several functional domains:
-*   **Infrastructure & Operations:** `fern.md` (CI/CD, Docker, Deployment).
-*   **Core Development:** `bramble.md` (Backend/Data), `willow.md` (Frontend/UI), and `moss.md` (System Architecture).
-*   **Quality & Security:** `thorn.md` (General Quality), `hemlock.md` (Security Auditing), `clover.md` (Test Writing), and `foxglove.md` (Bug Investigation).
+*   **Infrastructure & Operations:** `fern.md` (CI/CD, Docker, Deployment, skill-backed remediation).
+*   **Core Development:** `bramble.md` (Backend/Data with `shape`/`build`/`pr`), `willow.md` (Frontend/UI with polish and walkthrough skills), and `moss.md` (System Architecture with autopilot/shaping/review skills).
+*   **Quality & Security:** `thorn.md` (General Quality with debug/fix/polish), `hemlock.md` (Security Auditing), `clover.md` (Test Writing), and `foxglove.md` (Bug Investigation).
 *   **Maintenance & Evolution:** `rowan.md` (Refactoring), `nettle.md` (Technical Debt), and `hazel.md` (Issue Grooming).
 *   **Support & Research:** `sage.md` (Documentation) and `beaker.md` (Scientific Experimentation/Adversarial Testing).
 

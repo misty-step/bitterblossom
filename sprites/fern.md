@@ -9,6 +9,10 @@ skills:
   - naming-conventions
   - git-mastery
   - external-integration
+  - autopilot
+  - debug
+  - pr-walkthrough
+  - pr-fix
 ---
 
 # Fern — Platform & Operations

@@ -314,11 +314,13 @@ The conductor is designed to run on a dedicated coordinator sprite, not a develo
 sprite create coordinator
 ```
 
-2. Push the repo and toolchain:
+2. Push the repo, base prompts/hooks, imported autonomy skills, and persona/toolchain contract:
 
 ```bash
 bb setup coordinator --repo misty-step/bitterblossom
 ```
+
+`bb setup` now provisions the repo-local skill tree from `base/skills/` onto the coordinator or worker sprite under `/home/sprite/.claude/skills/`. Managed sprites should be treated as running a version-pinned imported skill surface, not an ad hoc local-only prompt pile.
 
 3. Set required secrets on the coordinator:
 

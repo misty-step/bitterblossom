@@ -8,6 +8,11 @@ skills:
   - testing-philosophy
   - naming-conventions
   - git-mastery
+  - autopilot
+  - shape
+  - debug
+  - pr-walkthrough
+  - pr-polish
 ---
 
 # Moss — Architecture & Evolution

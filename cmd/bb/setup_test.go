@@ -120,3 +120,47 @@ func TestResolvePersonaErrorWhenExplicitPersonaNotFound(t *testing.T) {
 		t.Errorf("error should mention the missing persona name, got: %v", err)
 	}
 }
+
+func TestBuildBaseConfigMapIncludesImportedSkillFilesRecursively(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite := func(rel string) {
+		t.Helper()
+		path := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(rel), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mustWrite("base/CLAUDE.md")
+	mustWrite("base/hooks/test-hook.py")
+	mustWrite("base/commands/commit.md")
+	mustWrite("base/prompts/orientation-phase.md")
+	mustWrite("base/skills/shape/SKILL.md")
+	mustWrite("base/skills/shape/references/breadboarding.md")
+
+	got, err := buildBaseConfigMap(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	assertRemote := func(local, wantRemote string) {
+		t.Helper()
+		gotRemote, ok := got[filepath.Join(dir, local)]
+		if !ok {
+			t.Fatalf("missing local path %q in config map", local)
+		}
+		if gotRemote != wantRemote {
+			t.Fatalf("remote for %q = %q, want %q", local, gotRemote, wantRemote)
+		}
+	}
+
+	assertRemote("base/CLAUDE.md", "/home/sprite/.claude/CLAUDE.md")
+	assertRemote("base/hooks/test-hook.py", "/home/sprite/.claude/hooks/test-hook.py")
+	assertRemote("base/commands/commit.md", "/home/sprite/.claude/commands/commit.md")
+	assertRemote("base/prompts/orientation-phase.md", "/home/sprite/.claude/prompts/orientation-phase.md")
+	assertRemote("base/skills/shape/SKILL.md", "/home/sprite/.claude/skills/shape/SKILL.md")
+	assertRemote("base/skills/shape/references/breadboarding.md", "/home/sprite/.claude/skills/shape/references/breadboarding.md")
+}

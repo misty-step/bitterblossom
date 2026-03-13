@@ -8,6 +8,11 @@ skills:
   - testing-philosophy
   - naming-conventions
   - git-mastery
+  - shape
+  - build
+  - pr
+  - pr-walkthrough
+  - pr-polish
 ---
 
 # Willow — Interface & Experience
