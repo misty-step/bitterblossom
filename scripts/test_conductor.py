@@ -18,6 +18,10 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent))
 import conductor  # noqa: E402
 
 
+def _qa_test_key(seed: str) -> str:
+    return conductor.qa_dedupe_key(seed, seed, f"https://{seed}.example.com", "production", [seed])
+
+
 @pytest.fixture(autouse=True)
 def _stub_run_once_worktrees(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> None:
     node_name = request.node.name
@@ -633,6 +637,7 @@ def test_parse_qa_intake_payload_normalizes_findings() -> None:
 
 
 def test_parse_qa_intake_payload_normalizes_or_replaces_external_dedupe_key() -> None:
+    valid_external_key = "".join(["ABC123", "DEF456"])
     payload = {
         "target": "https://app.example.com",
         "environment": "production",
@@ -641,7 +646,7 @@ def test_parse_qa_intake_payload_normalizes_or_replaces_external_dedupe_key() ->
                 "title": "Uppercase key",
                 "summary": "Probe supplied uppercase hex.",
                 "severity": "medium",
-                "dedupe_key": "ABC123DEF456",
+                "dedupe_key": valid_external_key,
                 "repro_steps": ["Open /", "Observe issue"],
                 "evidence": [],
             },
@@ -658,13 +663,19 @@ def test_parse_qa_intake_payload_normalizes_or_replaces_external_dedupe_key() ->
 
     findings = conductor.parse_qa_intake_payload(payload)
 
-    assert findings[0].dedupe_key == "abc123def456"
+    assert findings[0].dedupe_key == valid_external_key.lower()
     assert findings[1].dedupe_key != "not-a-valid-key"
     assert len(findings[1].dedupe_key) == 12
 
 
+def test_parse_qa_intake_payload_rejects_non_object_payload() -> None:
+    with pytest.raises(conductor.CmdError, match="qa intake payload must be a JSON object"):
+        conductor.parse_qa_intake_payload(["not", "an", "object"])  # type: ignore[arg-type]
+
+
 def test_sync_qa_findings_creates_new_issue_for_novel_finding() -> None:
     runner = _RunnerSpy(responses=["https://github.com/misty-step/bitterblossom/issues/999\n"])
+    dedupe_key = _qa_test_key("checkout-button-disabled")
     finding = conductor.QAFinding(
         title="Checkout button disabled",
         summary="Valid form input never enables submit.",
@@ -673,7 +684,7 @@ def test_sync_qa_findings_creates_new_issue_for_novel_finding() -> None:
         environment="production",
         repro_steps=["Open /checkout", "Fill valid form", "Observe disabled button"],
         evidence=[{"kind": "screenshot", "label": "disabled button", "url": "https://example.com/shot.png"}],
-        dedupe_key="abc123def456",
+        dedupe_key=dedupe_key,
         priority_label="p1",
         labels=["autopilot", "bug", "domain/infra", "p1", "source/qa"],
     )
@@ -699,6 +710,7 @@ def test_sync_qa_findings_uses_created_issue_number_for_same_batch_duplicate() -
             "",
         ]
     )
+    dedupe_key = _qa_test_key("checkout-batch-duplicate")
     findings = [
         conductor.QAFinding(
             title="Checkout button disabled",
@@ -708,7 +720,7 @@ def test_sync_qa_findings_uses_created_issue_number_for_same_batch_duplicate() -
             environment="production",
             repro_steps=["Open /checkout", "Fill valid form", "Observe disabled button"],
             evidence=[],
-            dedupe_key="abc123def456",
+            dedupe_key=dedupe_key,
             priority_label="p1",
             labels=["autopilot", "bug", "domain/infra", "p1", "source/qa"],
         ),
@@ -720,7 +732,7 @@ def test_sync_qa_findings_uses_created_issue_number_for_same_batch_duplicate() -
             environment="production",
             repro_steps=["Open /checkout", "Fill valid form", "Observe disabled button"],
             evidence=[],
-            dedupe_key="abc123def456",
+            dedupe_key=dedupe_key,
             priority_label="p1",
             labels=["autopilot", "bug", "domain/infra", "p1", "source/qa"],
         ),
@@ -741,6 +753,7 @@ def test_sync_qa_findings_uses_created_issue_number_for_same_batch_duplicate() -
 
 def test_sync_qa_findings_comments_on_existing_issue_for_duplicate() -> None:
     runner = _RunnerSpy()
+    dedupe_key = _qa_test_key("checkout-existing-duplicate")
     finding = conductor.QAFinding(
         title="Checkout button disabled",
         summary="Valid form input never enables submit.",
@@ -749,7 +762,7 @@ def test_sync_qa_findings_comments_on_existing_issue_for_duplicate() -> None:
         environment="production",
         repro_steps=["Open /checkout", "Fill valid form", "Observe disabled button"],
         evidence=[{"kind": "screenshot", "label": "disabled button", "url": "https://example.com/shot.png"}],
-        dedupe_key="abc123def456",
+        dedupe_key=dedupe_key,
         priority_label="p1",
         labels=["autopilot", "bug", "domain/infra", "p1", "source/qa"],
     )
@@ -759,7 +772,7 @@ def test_sync_qa_findings_comments_on_existing_issue_for_duplicate() -> None:
         "misty-step/bitterblossom",
         [finding],
         existing_issue_by_key={
-            "abc123def456": conductor.Issue(
+            dedupe_key: conductor.Issue(
                 number=505,
                 title="existing",
                 body="",
@@ -778,6 +791,7 @@ def test_sync_qa_findings_comments_on_existing_issue_for_duplicate() -> None:
 
 def test_sync_qa_findings_escalates_priority_label_for_duplicate() -> None:
     runner = _RunnerSpy()
+    dedupe_key = _qa_test_key("checkout-severity-escalation")
     finding = conductor.QAFinding(
         title="Checkout button disabled",
         summary="Valid form input never enables submit.",
@@ -786,7 +800,7 @@ def test_sync_qa_findings_escalates_priority_label_for_duplicate() -> None:
         environment="production",
         repro_steps=["Open /checkout", "Fill valid form", "Observe disabled button"],
         evidence=[],
-        dedupe_key="abc123def456",
+        dedupe_key=dedupe_key,
         priority_label="p0",
         labels=["autopilot", "bug", "domain/infra", "p0", "source/qa"],
     )
@@ -803,7 +817,7 @@ def test_sync_qa_findings_escalates_priority_label_for_duplicate() -> None:
         runner,
         "misty-step/bitterblossom",
         [finding],
-        existing_issue_by_key={"abc123def456": existing},
+        existing_issue_by_key={dedupe_key: existing},
     )
 
     edit_call = next(call for call in runner.calls if call[:3] == ["gh", "issue", "edit"])
@@ -817,6 +831,7 @@ def test_sync_qa_findings_escalates_priority_label_for_duplicate() -> None:
 
 
 def test_render_qa_issue_comment_keeps_evidence_links_clickable() -> None:
+    dedupe_key = _qa_test_key("checkout-comment-links")
     finding = conductor.QAFinding(
         title="Checkout button disabled",
         summary="Valid form input never enables submit.",
@@ -825,7 +840,7 @@ def test_render_qa_issue_comment_keeps_evidence_links_clickable() -> None:
         environment="production",
         repro_steps=["Open /checkout", "Fill valid form", "Observe disabled button"],
         evidence=[{"kind": "screenshot", "label": "disabled button", "url": "https://example.com/shot.png"}],
-        dedupe_key="abc123def456",
+        dedupe_key=dedupe_key,
         priority_label="p1",
         labels=["autopilot", "bug", "domain/infra", "p1", "source/qa"],
     )
@@ -835,30 +850,91 @@ def test_render_qa_issue_comment_keeps_evidence_links_clickable() -> None:
     assert "[disabled button](https://example.com/shot.png)" in body
 
 
-def test_existing_qa_issues_by_key_warns_when_dedupe_lookup_hits_limit(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setattr(
-        conductor,
-        "gh_json",
-        lambda *_a, **_kw: [
-            {
-                "number": index,
-                "title": f"issue {index}",
-                "body": f"<!-- bitterblossom-qa-dedupe:{index:012x} -->",
-                "url": f"https://example.com/{index}",
-                "labels": [{"name": "source/qa"}],
-                "updatedAt": "2026-03-13T00:00:00Z",
-            }
-            for index in range(conductor.QA_DEDUPE_LOOKUP_LIMIT)
-        ],
+def test_existing_qa_issues_by_key_paginates_all_open_source_qa_issues() -> None:
+    runner = _RunnerSpy(
+        responses=[
+            json.dumps(
+                [
+                    {
+                        "number": 1,
+                        "title": "issue 1",
+                        "body": f"<!-- bitterblossom-qa-dedupe:{_qa_test_key('page-one')} -->",
+                        "url": "https://example.com/1",
+                        "labels": [{"name": "source/qa"}, {"name": "p1"}],
+                        "updated_at": "2026-03-13T00:00:00Z",
+                    }
+                ]
+            ),
+            json.dumps(
+                [
+                    {
+                        "number": 2,
+                        "title": "issue 2",
+                        "body": f"<!-- bitterblossom-qa-dedupe:{_qa_test_key('page-two')} -->",
+                        "url": "https://example.com/2",
+                        "labels": [{"name": "source/qa"}, {"name": "p2"}],
+                        "updated_at": "2026-03-13T00:01:00Z",
+                    },
+                    {
+                        "number": 3,
+                        "title": "ignore pull request",
+                        "body": "",
+                        "url": "https://example.com/3",
+                        "labels": [{"name": "source/qa"}],
+                        "updated_at": "2026-03-13T00:02:00Z",
+                        "pull_request": {"url": "https://example.com/pr/3"},
+                    },
+                ]
+            ),
+            "[]",
+        ]
     )
 
-    issues = conductor.existing_qa_issues_by_key(_RunnerSpy(), "misty-step/bitterblossom")
+    issues = conductor.existing_qa_issues_by_key(runner, "misty-step/bitterblossom")
 
-    captured = capsys.readouterr()
-    assert len(issues) == conductor.QA_DEDUPE_LOOKUP_LIMIT
-    assert "warning: dedupe lookup returned" in captured.err
+    assert sorted(issues) == sorted([_qa_test_key("page-one"), _qa_test_key("page-two")])
+    assert runner.calls == [
+        ["gh", "api", "repos/misty-step/bitterblossom/issues?state=open&labels=source/qa&per_page=100&page=1"],
+        ["gh", "api", "repos/misty-step/bitterblossom/issues?state=open&labels=source/qa&per_page=100&page=2"],
+        ["gh", "api", "repos/misty-step/bitterblossom/issues?state=open&labels=source/qa&per_page=100&page=3"],
+    ]
+
+
+def test_qa_intake_rejects_invalid_command_quoting() -> None:
+    with pytest.raises(conductor.CmdError, match="invalid qa probe command"):
+        conductor.qa_intake(
+            argparse.Namespace(
+                repo="misty-step/bitterblossom",
+                command="'unterminated",
+            )
+        )
+
+
+def test_qa_intake_rejects_empty_command() -> None:
+    with pytest.raises(conductor.CmdError, match="qa probe command is empty"):
+        conductor.qa_intake(
+            argparse.Namespace(
+                repo="misty-step/bitterblossom",
+                command="",
+            )
+        )
+
+
+def test_qa_intake_wraps_exec_failures(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _ExecFailRunner:
+        def run(self, argv: list[str], *, timeout: int | None = None, check: bool = True) -> str:
+            _ = (argv, timeout, check)
+            raise FileNotFoundError("qa-probe")
+
+    monkeypatch.setattr(conductor, "Runner", lambda _cwd: _ExecFailRunner())
+
+    with pytest.raises(conductor.CmdError, match="failed to execute qa probe command"):
+        conductor.qa_intake(
+            argparse.Namespace(
+                repo="misty-step/bitterblossom",
+                command="qa-probe --target https://app.example.com",
+            )
+        )
 
 
 def test_qa_intake_runs_probe_command_and_prints_summary(

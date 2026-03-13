@@ -10,6 +10,7 @@ Issue [#505](https://github.com/misty-step/bitterblossom/issues/505) now has a n
 - duplicate findings append evidence to the existing `source/qa` issue instead of creating backlog spam
 - duplicate findings that repeat within the same intake payload reuse the real created issue number instead of attempting to comment on issue `0`
 - duplicate findings that reappear at a higher severity now promote the existing issue priority label so routing sees the escalated risk
+- dedupe lookup now pages through all open `source/qa` issues instead of silently truncating at the CLI cap
 - routing prefers `source/qa` issues over ordinary backlog work within the same priority tier
 - workspace locking no longer depends on shell `flock`; the conductor now uses an inline Python `fcntl.flock` path that keeps the worktree tests deterministic on this branch without adding a network fetch to cleanup
 
@@ -23,10 +24,11 @@ python3 -m pytest -q scripts/test_conductor.py -k 'qa or worktree or pick_issue_
 
 Expected on this branch:
 
-- `16 passed`
+- the selected QA, worktree, and routing tests pass
 - QA finding normalization is covered
 - novel-vs-duplicate GitHub sync behavior is covered
 - duplicate severity escalation is covered
+- malformed payload and probe-command handling are covered
 - `qa-intake` command execution is covered
 - routing preference for `source/qa` is covered
 - worktree prepare/cleanup locking still passes after the lock-path simplification
@@ -39,7 +41,7 @@ python3 -m pytest -q scripts/test_conductor.py
 
 Expected on this branch:
 
-- `252 passed`
+- the full `scripts/test_conductor.py` suite passes
 
 ## Before / After
 

@@ -35,7 +35,7 @@ WORKSPACE_PREPARE_RETRY_DELAY_SECONDS = 2
 SUCCESSFUL_CHECK_CONCLUSIONS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 FAILED_CHECK_CONCLUSIONS = {"FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STALE", "STARTUP_FAILURE"}
 FAILED_STATUS_CONTEXTS = {"FAILURE", "ERROR"}
-QA_DEDUPE_LOOKUP_LIMIT = 1000
+QA_DEDUPE_PAGE_SIZE = 100
 TRUSTED_REVIEW_AUTHOR_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
 # GitHub App reviewers show up with weak authorAssociation values, so trust them by login.
 TRUSTED_REVIEW_BOT_LOGINS = {
@@ -1354,6 +1354,8 @@ def normalize_external_dedupe_key(raw_key: Any) -> str | None:
 
 
 def parse_qa_intake_payload(payload: dict[str, Any]) -> list[QAFinding]:
+    if not isinstance(payload, dict):
+        raise CmdError("qa intake payload must be a JSON object")
     target = str(payload.get("target") or "").strip()
     environment = str(payload.get("environment") or "").strip()
     raw_findings = payload.get("findings")
@@ -2042,31 +2044,31 @@ def render_qa_issue_comment(finding: QAFinding) -> str:
     )
 
 
-def existing_qa_issues_by_key(runner: Runner, repo: str) -> dict[str, Issue]:
-    payload = gh_json(
-        runner,
-        [
-            "issue",
-            "list",
-            "--repo",
-            repo,
-            "--state",
-            "open",
-            "--label",
-            "source/qa",
-            "--limit",
-            str(QA_DEDUPE_LOOKUP_LIMIT),
-            "--json",
-            "number,title,body,url,labels,updatedAt",
-        ],
-    )
-    if len(payload) >= QA_DEDUPE_LOOKUP_LIMIT:
-        print(
-            f"warning: dedupe lookup returned {QA_DEDUPE_LOOKUP_LIMIT} issues; older source/qa issues may be missed",
-            file=sys.stderr,
+def list_open_qa_issues(runner: Runner, repo: str) -> list[dict[str, Any]]:
+    page = 1
+    issues: list[dict[str, Any]] = []
+    while True:
+        payload = gh_json(
+            runner,
+            [
+                "api",
+                f"repos/{repo}/issues?state=open&labels=source/qa&per_page={QA_DEDUPE_PAGE_SIZE}&page={page}",
+            ],
         )
+        if not isinstance(payload, list):
+            raise CmdError("unexpected GitHub issue list payload while loading source/qa issues")
+        if not payload:
+            return issues
+        for item in payload:
+            if not isinstance(item, dict) or item.get("pull_request") is not None:
+                continue
+            issues.append(item)
+        page += 1
+
+
+def existing_qa_issues_by_key(runner: Runner, repo: str) -> dict[str, Issue]:
     issues_by_key: dict[str, Issue] = {}
-    for item in payload:
+    for item in list_open_qa_issues(runner, repo):
         body = item.get("body") or ""
         dedupe_key = dedupe_key_from_issue_body(body)
         if dedupe_key is None:
@@ -2077,7 +2079,7 @@ def existing_qa_issues_by_key(runner: Runner, repo: str) -> dict[str, Issue]:
             body=body,
             url=item["url"],
             labels=[label_obj["name"] for label_obj in item.get("labels", [])],
-            updated_at=item.get("updatedAt") or "",
+            updated_at=item.get("updated_at") or item.get("updatedAt") or "",
         )
     return issues_by_key
 
@@ -5980,10 +5982,18 @@ def route_issue(args: argparse.Namespace) -> int:
 def qa_intake(args: argparse.Namespace) -> int:
     runner = Runner(ROOT)
     try:
-        probe_output = runner.run(shlex.split(args.command), timeout=getattr(args, "timeout", 900))
+        command_argv = shlex.split(args.command)
+    except ValueError as exc:
+        raise CmdError(f"invalid qa probe command: {exc}") from exc
+    if not command_argv:
+        raise CmdError("qa probe command is empty")
+    try:
+        probe_output = runner.run(command_argv, timeout=getattr(args, "timeout", 900))
         payload = json.loads(probe_output)
     except json.JSONDecodeError as exc:
         raise CmdError(f"qa probe command returned invalid JSON: {exc}") from exc
+    except OSError as exc:
+        raise CmdError(f"failed to execute qa probe command: {exc}") from exc
     findings = parse_qa_intake_payload(payload)
     created, updated = sync_qa_findings(runner, args.repo, findings)
     print(f"created={len(created)} updated={len(updated)} findings={len(findings)}")
