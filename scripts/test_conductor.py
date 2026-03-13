@@ -8872,6 +8872,91 @@ def test_show_runs_recovers_from_malformed_command_failed_payload(
     assert run["blocking_reason"] == "command failed"
 
 
+def test_show_run_ignores_reviewer_workspace_cleanup_warning(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """show-run must not surface reviewer cleanup_warning as builder worktree recovery."""
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="reviewer cleanup", body="", url="u538-rcw", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-rcw", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(
+        conn,
+        "run-538-rcw",
+        phase="awaiting_governance",
+        status="active",
+        builder_sprite="noble-blue-serpent",
+        worktree_path="/tmp/run-538-rcw/builder-worktree",
+    )
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-538-rcw",
+        "cleanup_warning",
+        {
+            "kind": "reviewer_workspace_cleanup",
+            "workspace": "/tmp/run-538-rcw/review-sage-worktree",
+            "error": "reviewer workspace cleanup failed for sage: stale lock",
+        },
+    )
+
+    rc = conductor.show_run(
+        argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-538-rcw", event_limit=5)
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    run = payload["run"]
+    assert run["worktree_recovery_status"] is None
+    assert run["worktree_recovery_error"] is None
+    assert run["worktree_recovery_event_type"] is None
+    assert run["worktree_recovery_event_at"] is None
+
+
+def test_show_run_ignores_reviewer_workspace_preparation_failure(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """show-run must not surface reviewer workspace_preparation_failed as builder worktree recovery."""
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="reviewer prepare failed", body="", url="u538-rpf", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-rpf", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(
+        conn,
+        "run-538-rpf",
+        phase="failed",
+        status="failed",
+        builder_sprite="noble-blue-serpent",
+        worktree_path="/tmp/run-538-rpf/builder-worktree",
+    )
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-538-rpf",
+        "workspace_preparation_failed",
+        {
+            "sprite": "sage",
+            "lane": "review-sage",
+            "workspace": "/tmp/run-538-rpf/review-sage-worktree",
+            "attempt": 3,
+            "attempts": 3,
+            "error": "reviewer workspace prepare failed",
+        },
+    )
+
+    rc = conductor.show_run(
+        argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-538-rpf", event_limit=5)
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    run = payload["run"]
+    assert run["worktree_recovery_status"] is None
+    assert run["worktree_recovery_error"] is None
+    assert run["worktree_recovery_event_type"] is None
+    assert run["worktree_recovery_event_at"] is None
+    assert run["blocking_event_type"] is None
+    assert run["blocking_reason"] is None
+
+
 def test_show_runs_does_not_call_per_run_recovery_query(
     tmp_path: pathlib.Path,
     capsys: pytest.CaptureFixture[str],
