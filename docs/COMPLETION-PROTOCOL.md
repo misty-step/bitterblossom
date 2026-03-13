@@ -45,10 +45,11 @@ Exit code 4 indicates an off-rails abort where neither signal files nor new comm
 
 ## Where Signal Knowledge Lives
 
-Signal filenames are checked as string literals in two places:
+The Go transport now keeps the workspace/signal contract in one place and reuses it across commands:
 
 | System | What it checks | File |
 |--------|---------------|------|
+| Workspace contract | Canonical sprite paths, signal filenames, prompt/log filenames, cleanup/check shell snippets | `cmd/bb/workspace_contract.go` |
 | Ralph loop | Completion + blocked between iterations | `scripts/ralph.sh` |
-| Dispatch cleanup | Removes stale signals before ralph start | `cmd/bb/dispatch.go` |
+| Dispatch cleanup | Removes stale signals before ralph start via the shared contract helpers | `cmd/bb/dispatch.go` |
 | Status check | Reports signal file presence | `cmd/bb/status.go` |

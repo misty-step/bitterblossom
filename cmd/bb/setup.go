@@ -61,12 +61,12 @@ func runSetup(ctx context.Context, spriteName, repo string, force bool, persona 
 
 	// 2. Create remote directories
 	dirs := []string{
-		"/home/sprite/.claude",
-		"/home/sprite/.claude/hooks",
-		"/home/sprite/.claude/skills",
-		"/home/sprite/.claude/commands",
-		"/home/sprite/.claude/prompts",
-		"/home/sprite/workspace",
+		spriteClaudeDir,
+		spriteClaudeDir + "/hooks",
+		spriteClaudeDir + "/skills",
+		spriteClaudeDir + "/commands",
+		spriteClaudeDir + "/prompts",
+		spriteWorkspaceRoot,
 	}
 	mkdirScript := "mkdir -p " + strings.Join(dirs, " ")
 	if _, err := s.CommandContext(ctx, "bash", "-c", mkdirScript).Output(); err != nil {
@@ -97,20 +97,20 @@ func runSetup(ctx context.Context, spriteName, repo string, force bool, persona 
 		return err
 	}
 	_, _ = fmt.Fprintf(os.Stderr, "uploading persona from %s...\n", personaFile)
-	if err := uploadFile(ctx, s, personaFile, "/home/sprite/workspace/PERSONA.md"); err != nil {
+	if err := uploadFile(ctx, s, personaFile, spritePersonaPath); err != nil {
 		return fmt.Errorf("upload persona: %w", err)
 	}
 
 	// 5. Upload ralph script + prompt template
-	if err := uploadFile(ctx, s, "scripts/ralph.sh", "/home/sprite/workspace/.ralph.sh"); err != nil {
+	if err := uploadFile(ctx, s, "scripts/ralph.sh", spriteRalphScriptPath); err != nil {
 		return fmt.Errorf("upload ralph.sh: %w", err)
 	}
 	// Make executable
-	if _, err := s.CommandContext(ctx, "chmod", "+x", "/home/sprite/workspace/.ralph.sh").Output(); err != nil {
+	if _, err := s.CommandContext(ctx, "chmod", "+x", spriteRalphScriptPath).Output(); err != nil {
 		return fmt.Errorf("chmod ralph.sh: %w", err)
 	}
 
-	if err := uploadFile(ctx, s, "scripts/ralph-prompt-template.md", "/home/sprite/workspace/.ralph-prompt-template.md"); err != nil {
+	if err := uploadFile(ctx, s, "scripts/ralph-prompt-template.md", spriteRalphPromptTemplatePath); err != nil {
 		return fmt.Errorf("upload prompt template: %w", err)
 	}
 
@@ -135,19 +135,18 @@ git config --global --add safe.directory '*'
 			return fmt.Errorf("GITHUB_TOKEN must be set to clone repo")
 		}
 
-		repoName := filepath.Base(repo)
-		repoDir := "/home/sprite/workspace/" + repoName
+		repoDir := spriteRepoWorkspace(repo)
 
 		var cloneScript string
 		if force {
 			cloneScript = fmt.Sprintf(
-				`rm -rf %s && cd /home/sprite/workspace && git clone https://github.com/%s.git`,
-				repoDir, repo,
+				`rm -rf %s && cd %s && git clone https://github.com/%s.git`,
+				repoDir, spriteWorkspaceRoot, repo,
 			)
 		} else {
 			cloneScript = fmt.Sprintf(
-				`if [ -d %s ]; then cd %s && git checkout master 2>/dev/null || git checkout main 2>/dev/null && git pull --ff-only; else cd /home/sprite/workspace && git clone https://github.com/%s.git; fi`,
-				repoDir, repoDir, repo,
+				`if [ -d %s ]; then cd %s && git checkout master 2>/dev/null || git checkout main 2>/dev/null && git pull --ff-only; else cd %s && git clone https://github.com/%s.git; fi`,
+				repoDir, repoDir, spriteWorkspaceRoot, repo,
 			)
 		}
 
@@ -179,7 +178,7 @@ git config --global --add safe.directory '*'
 
 func buildBaseConfigMap(root string) (map[string]string, error) {
 	configMap := map[string]string{
-		filepath.Join(root, "base/CLAUDE.md"): "/home/sprite/.claude/CLAUDE.md",
+		filepath.Join(root, "base/CLAUDE.md"): spriteClaudeDir + "/CLAUDE.md",
 	}
 
 	hookFiles, err := filepath.Glob(filepath.Join(root, "base/hooks/*.py"))
@@ -187,7 +186,7 @@ func buildBaseConfigMap(root string) (map[string]string, error) {
 		return nil, err
 	}
 	for _, f := range hookFiles {
-		configMap[f] = "/home/sprite/.claude/hooks/" + filepath.Base(f)
+		configMap[f] = spriteClaudeDir + "/hooks/" + filepath.Base(f)
 	}
 
 	commandFiles, err := filepath.Glob(filepath.Join(root, "base/commands/*.md"))
@@ -195,7 +194,7 @@ func buildBaseConfigMap(root string) (map[string]string, error) {
 		return nil, err
 	}
 	for _, f := range commandFiles {
-		configMap[f] = "/home/sprite/.claude/commands/" + filepath.Base(f)
+		configMap[f] = spriteClaudeDir + "/commands/" + filepath.Base(f)
 	}
 
 	promptFiles, err := filepath.Glob(filepath.Join(root, "base/prompts/*.md"))
@@ -203,7 +202,7 @@ func buildBaseConfigMap(root string) (map[string]string, error) {
 		return nil, err
 	}
 	for _, f := range promptFiles {
-		configMap[f] = "/home/sprite/.claude/prompts/" + filepath.Base(f)
+		configMap[f] = spriteClaudeDir + "/prompts/" + filepath.Base(f)
 	}
 
 	skillsRoot := filepath.Join(root, "base/skills")
@@ -218,7 +217,7 @@ func buildBaseConfigMap(root string) (map[string]string, error) {
 		if err != nil {
 			return err
 		}
-		configMap[p] = "/home/sprite/.claude/skills/" + rel
+		configMap[p] = spriteClaudeDir + "/skills/" + rel
 		return nil
 	}); err != nil {
 		return nil, err
@@ -290,5 +289,5 @@ func uploadPatchedSettings(ctx context.Context, s *sprites.Sprite, openrouterKey
 
 	patched := strings.ReplaceAll(string(data), "__SET_VIA_OPENROUTER_API_KEY_ENV__", openrouterKey)
 
-	return s.Filesystem().WriteFileContext(ctx, "/home/sprite/.claude/settings.json", []byte(patched), 0644)
+	return s.Filesystem().WriteFileContext(ctx, spriteClaudeDir+"/settings.json", []byte(patched), 0644)
 }
