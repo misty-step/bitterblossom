@@ -18,6 +18,7 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from typing import Any, Callable
+from urllib.parse import quote
 from conductorlib.common import (
     BuilderResult,
     BUILDER_WORKSPACE_CLEANUP_KIND,
@@ -3762,7 +3763,8 @@ def governance_snapshot_for_run(
 
 def required_status_checks(runner: Runner, repo: str, base_branch: str) -> list[str]:
     try:
-        payload = json.loads(runner.run(["gh", "api", f"repos/{repo}/branches/{base_branch}/protection"], timeout=60))
+        encoded_branch = quote(base_branch, safe="")
+        payload = json.loads(runner.run(["gh", "api", f"repos/{repo}/branches/{encoded_branch}/protection"], timeout=60))
     except CmdError as exc:
         text = stringify_exc(exc)
         if "Branch not found" in text or "404" in text:

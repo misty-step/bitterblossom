@@ -4314,6 +4314,23 @@ def test_ensure_required_checks_present_accepts_matching_contexts() -> None:
     ]
 
 
+def test_ensure_required_checks_present_url_encodes_branch_name() -> None:
+    runner = _RunnerSpy(
+        [
+            '{"baseRefName":"release/2026.03","statusCheckRollup":[{"__typename":"CheckRun","name":"merge-gate"}]}',
+            '{"required_status_checks":{"contexts":["merge-gate"]}}',
+        ]
+    )
+
+    conductor.ensure_required_checks_present(runner, "misty-step/bitterblossom", 42)
+
+    assert runner.calls[-1] == [
+        "gh",
+        "api",
+        "repos/misty-step/bitterblossom/branches/release%2F2026.03/protection",
+    ]
+
+
 def test_ensure_required_checks_present_rejects_missing_context() -> None:
     runner = _RunnerSpy(
         [

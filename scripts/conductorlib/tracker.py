@@ -367,13 +367,14 @@ def get_issue(runner: Runner, repo: str, issue_number: int) -> Issue:
 
 
 def has_markdown_heading(body: str, marker: str) -> bool:
-    active_fence: str | None = None
+    active_fence: tuple[str, int] | None = None
     for raw_line in body.splitlines():
         line = raw_line.rstrip()
         stripped = line.lstrip()
         match = re.match(r"^(`{3,}|~{3,})", stripped)
         if match:
-            fence_type = match.group(1)[0]
+            fence = match.group(1)
+            fence_type = (fence[0], len(fence))
             if active_fence is None:
                 active_fence = fence_type
             elif fence_type == active_fence:

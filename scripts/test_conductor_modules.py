@@ -26,6 +26,12 @@ def test_parse_workspace_prepare_output_requires_workspace_echo() -> None:
         workspace.parse_workspace_prepare_output("noise only", target, "fern")
 
 
+def test_has_markdown_heading_requires_matching_fence_length() -> None:
+    body = "````python\n## Product Spec\n```\n"
+
+    assert tracker.has_markdown_heading(body, "## Product Spec") is False
+
+
 def test_collect_routable_issues_respects_lease_and_readiness_boundaries() -> None:
     ready = Issue(
         number=1,
@@ -89,3 +95,47 @@ def test_summarize_review_threads_keeps_location_and_author() -> None:
 
     assert "scripts/conductor.py:59" in summary
     assert "@coderabbitai" in summary
+
+
+def test_list_unresolved_review_threads_queries_latest_comment(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_gh_graphql(_runner: object, query: str, variables: dict[str, str | int]) -> dict[str, object]:
+        seen["query"] = query
+        seen["variables"] = variables
+        return {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {
+                            "nodes": [
+                                {
+                                    "id": "thread-1",
+                                    "isResolved": False,
+                                    "path": "scripts/conductor.py",
+                                    "line": 59,
+                                    "comments": {
+                                        "nodes": [
+                                            {
+                                                "author": {"login": "coderabbitai"},
+                                                "authorAssociation": "NONE",
+                                                "body": "latest comment",
+                                                "url": "https://example.com/thread-1",
+                                            }
+                                        ]
+                                    },
+                                }
+                            ],
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        }
+                    }
+                }
+            }
+        }
+
+    monkeypatch.setattr(governance, "gh_graphql", fake_gh_graphql)
+
+    threads = governance.list_unresolved_review_threads(object(), "misty-step/bitterblossom", 42)
+
+    assert "comments(last:1)" in str(seen["query"])
+    assert threads[0].body == "latest comment"

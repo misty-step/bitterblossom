@@ -188,7 +188,7 @@ query($owner:String!, $repo:String!, $number:Int!, $after:String) {
           isResolved
           path
           line
-          comments(first:1) {
+          comments(last:1) {
             nodes {
               author { login }
               authorAssociation
