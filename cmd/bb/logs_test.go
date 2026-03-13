@@ -77,12 +77,19 @@ func TestLogsNoActiveTaskGoesToStderr(t *testing.T) {
 	t.Parallel()
 
 	var stderr bytes.Buffer
-	if err := writeLogsNoTaskMsg(&stderr); err != nil {
+	if err := writeLogsNoTaskMsg(&stderr, "fern"); err != nil {
 		t.Fatalf("writeLogsNoTaskMsg: %v", err)
 	}
 
-	if !strings.Contains(stderr.String(), "No active task") {
-		t.Errorf("stderr = %q, want to contain %q", stderr.String(), "No active task")
+	msg := stderr.String()
+	if !strings.Contains(msg, `No active task on "fern".`) {
+		t.Errorf("stderr = %q, want sprite-specific idle message", msg)
+	}
+	if !strings.Contains(msg, "ralph.log is empty") {
+		t.Errorf("stderr = %q, want explanation that no logs are available", msg)
+	}
+	if !strings.Contains(msg, "bb status fern") {
+		t.Errorf("stderr = %q, want next-step guidance", msg)
 	}
 }
 
