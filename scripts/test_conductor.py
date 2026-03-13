@@ -8541,3 +8541,76 @@ def test_show_run_surfaces_builder_workspace_cleanup_failure(
     assert run["worktree_recovery_status"] == "cleanup_failed"
     assert run["worktree_recovery_event_type"] == "cleanup_warning"
     assert run["worktree_recovery_error"] == "builder workspace cleanup failed: stale worktree"
+
+
+def test_show_run_surfaces_cleaned_workspace_recovery_status(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="cleaned workspace", body="", url="u538d", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-3", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(
+        conn,
+        "run-538-3",
+        phase="awaiting_governance",
+        status="active",
+        builder_sprite="noble-blue-serpent",
+        pr_number=1001,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/1001",
+        worktree_path=None,
+    )
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-538-3",
+        "builder_workspace_cleaned",
+        {"workspace": "/home/sprite/workspace/bitterblossom/.bb/conductor/run-538-3/builder-worktree"},
+    )
+
+    rc = conductor.show_run(
+        argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-538-3", event_limit=5)
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    run = payload["run"]
+    assert run["worktree_path"] is None
+    assert run["worktree_recovery_status"] == "cleaned"
+    assert run["worktree_recovery_event_type"] == "builder_workspace_cleaned"
+    assert run["worktree_recovery_error"] is None
+
+
+def test_show_runs_surfaces_cleaned_workspace_recovery_status(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="cleaned workspace runs", body="", url="u538e", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-4", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(
+        conn,
+        "run-538-4",
+        phase="awaiting_governance",
+        status="active",
+        builder_sprite="noble-blue-serpent",
+        pr_number=1002,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/1002",
+        worktree_path=None,
+    )
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-538-4",
+        "builder_workspace_cleaned",
+        {"workspace": "/home/sprite/workspace/bitterblossom/.bb/conductor/run-538-4/builder-worktree"},
+    )
+
+    rc = conductor.show_runs(argparse.Namespace(db=str(tmp_path / "conductor.db"), limit=5))
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload["worktree_path"] is None
+    assert payload["worktree_recovery_status"] == "cleaned"
+    assert payload["worktree_recovery_event_type"] == "builder_workspace_cleaned"
+    assert payload["worktree_recovery_error"] is None
