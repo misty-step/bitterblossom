@@ -8614,3 +8614,87 @@ def test_show_runs_surfaces_cleaned_workspace_recovery_status(
     assert payload["worktree_recovery_status"] == "cleaned"
     assert payload["worktree_recovery_event_type"] == "builder_workspace_cleaned"
     assert payload["worktree_recovery_error"] is None
+
+
+def test_show_runs_bulk_recovery_across_mixed_states(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """show_runs resolves recovery state correctly for each run when multiple
+    runs with different recovery statuses are returned in one query."""
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    event_log = tmp_path / "events.jsonl"
+
+    # Run A: cleanup_failed — worktree_path stays populated
+    issue_a = conductor.Issue(number=538, title="cleanup fail", body="", url="ua", labels=["autopilot"])
+    conductor.create_run(conn, "run-bulk-a", "misty-step/bitterblossom", issue_a, "default")
+    conductor.update_run(
+        conn,
+        "run-bulk-a",
+        phase="awaiting_governance",
+        status="active",
+        builder_sprite="noble-blue-serpent",
+        worktree_path="/tmp/run-bulk-a/builder-worktree",
+    )
+    conductor.record_event(
+        conn,
+        event_log,
+        "run-bulk-a",
+        "cleanup_warning",
+        {
+            "kind": conductor.BUILDER_WORKSPACE_CLEANUP_KIND,
+            "workspace": "/tmp/run-bulk-a/builder-worktree",
+            "error": "builder workspace cleanup failed: transport error",
+        },
+    )
+
+    # Run B: cleaned — worktree_path cleared
+    issue_b = conductor.Issue(number=539, title="cleaned", body="", url="ub", labels=["autopilot"])
+    conductor.create_run(conn, "run-bulk-b", "misty-step/bitterblossom", issue_b, "default")
+    conductor.update_run(
+        conn,
+        "run-bulk-b",
+        phase="awaiting_governance",
+        status="active",
+        builder_sprite="noble-blue-serpent",
+        worktree_path=None,
+    )
+    conductor.record_event(
+        conn,
+        event_log,
+        "run-bulk-b",
+        "builder_workspace_cleaned",
+        {"workspace": "/tmp/run-bulk-b/builder-worktree"},
+    )
+
+    # Run C: no recovery event — no worktree recovery context
+    issue_c = conductor.Issue(number=540, title="no recovery", body="", url="uc", labels=["autopilot"])
+    conductor.create_run(conn, "run-bulk-c", "misty-step/bitterblossom", issue_c, "default")
+    conductor.update_run(
+        conn,
+        "run-bulk-c",
+        phase="running_builder",
+        status="active",
+        builder_sprite="noble-blue-serpent",
+        worktree_path="/tmp/run-bulk-c/builder-worktree",
+    )
+
+    rc = conductor.show_runs(argparse.Namespace(db=str(tmp_path / "conductor.db"), limit=10))
+
+    assert rc == 0
+    lines = {
+        json.loads(line)["run_id"]: json.loads(line)
+        for line in capsys.readouterr().out.splitlines()
+        if line.strip()
+    }
+
+    assert lines["run-bulk-a"]["worktree_recovery_status"] == "cleanup_failed"
+    assert lines["run-bulk-a"]["worktree_recovery_error"] == "builder workspace cleanup failed: transport error"
+    assert lines["run-bulk-a"]["worktree_path"] == "/tmp/run-bulk-a/builder-worktree"
+
+    assert lines["run-bulk-b"]["worktree_recovery_status"] == "cleaned"
+    assert lines["run-bulk-b"]["worktree_recovery_error"] is None
+    assert lines["run-bulk-b"]["worktree_path"] is None
+
+    assert lines["run-bulk-c"]["worktree_recovery_status"] is None
+    assert lines["run-bulk-c"]["worktree_recovery_error"] is None

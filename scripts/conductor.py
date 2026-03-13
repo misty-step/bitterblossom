@@ -5262,8 +5262,20 @@ def show_runs(args: argparse.Namespace) -> int:
         """,
         (args.limit,),
     ).fetchall()
+    run_ids = [row["run_id"] for row in rows]
+    recovery_by_run = latest_worktree_recovery_events(conn, run_ids)
+    blocking_by_run = blocking_events_for_runs(conn, run_ids)
     for row in rows:
-        print(json.dumps(serialize_run_surface(conn, row)))
+        print(
+            json.dumps(
+                serialize_run_surface(
+                    conn,
+                    row,
+                    worktree_recovery_event=recovery_by_run.get(row["run_id"]),
+                    blocking_event=blocking_by_run.get(row["run_id"]),
+                )
+            )
+        )
     return 0
 
 
