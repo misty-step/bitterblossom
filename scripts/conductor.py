@@ -556,7 +556,8 @@ def active_live_lease_count(conn: sqlite3.Connection, repo: str, *, now: str | N
         where repo = ?
           and released_at is null
           and blocked_at is null
-          and (lease_expires_at is null or lease_expires_at > ?)
+          and lease_expires_at is not null
+          and lease_expires_at > ?
         """,
         (repo, lease_now),
     ).fetchone()
@@ -5524,13 +5525,18 @@ def run_once(args: argparse.Namespace) -> int:
         issue = decision.issue
         builder_profile = decision.profile
 
+    current_repo_view = repository_scheduling_view(conn, args.repo)
+    if not current_repo_view.scheduling_allowed:
+        print(current_repo_view.scheduling_reason or f"repository {args.repo} is not schedulable")
+        return 0
+
     run_id = run_id_for(issue.number)
     acquire_result = acquire_lease_result(
         conn,
         args.repo,
         issue.number,
         run_id,
-        desired_concurrency=repo_view.desired_concurrency,
+        desired_concurrency=current_repo_view.desired_concurrency,
     )
     if not acquire_result.acquired:
         print(acquire_result.reason or f"issue #{issue.number} already leased")

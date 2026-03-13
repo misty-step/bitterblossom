@@ -381,6 +381,39 @@ def test_acquire_lease_result_reports_reclaimed_run_id_for_stale_lease(tmp_path:
     assert result.reclaimed_run_id == "run-12-1"
 
 
+def test_repository_scheduling_view_ignores_legacy_null_expiry_leases(tmp_path: pathlib.Path) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    conductor.upsert_repository_record(
+        conn,
+        "misty-step/bitterblossom",
+        state=conductor.REPOSITORY_STATE_ACTIVE,
+        desired_concurrency=1,
+    )
+    conn.execute(
+        """
+        insert into leases (repo, issue_number, run_id, leased_at, heartbeat_at, lease_expires_at, released_at, blocked_at)
+        values (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "misty-step/bitterblossom",
+            12,
+            "run-12-1",
+            "2026-03-07T00:00:00Z",
+            "2026-03-07T00:00:00Z",
+            None,
+            None,
+            None,
+        ),
+    )
+    conn.commit()
+
+    view = conductor.repository_scheduling_view(conn, "misty-step/bitterblossom")
+
+    assert view.active_runs == 0
+    assert view.available_capacity == 1
+    assert view.scheduling_allowed is True
+
+
 def test_touch_run_refreshes_run_heartbeat_and_lease_expiry(tmp_path: pathlib.Path) -> None:
     conn = conductor.open_db(tmp_path / "conductor.db")
     issue = conductor.Issue(number=12, title="test", body="", url="u12", labels=["autopilot"])
@@ -6202,6 +6235,52 @@ def test_run_once_skips_unschedulable_repository_before_issue_lookup(
 
     assert rc == 0
     assert capsys.readouterr().out.strip() == "repository is draining"
+
+
+def test_run_once_refreshes_repo_view_before_leasing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    conductor.upsert_repository_record(
+        conn,
+        "misty-step/bitterblossom",
+        state=conductor.REPOSITORY_STATE_ACTIVE,
+        desired_concurrency=2,
+    )
+    issue = conductor.Issue(
+        number=447,
+        title="test",
+        body="## Product Spec\n### Intent Contract\n- good\n",
+        url="https://example.com/447",
+        labels=["autopilot"],
+    )
+
+    def get_issue_and_pause(*_args: object, **_kwargs: object) -> conductor.Issue:
+        conductor.upsert_repository_record(
+            conn,
+            "misty-step/bitterblossom",
+            state=conductor.REPOSITORY_STATE_PAUSED,
+            desired_concurrency=1,
+        )
+        return issue
+
+    monkeypatch.setattr(conductor, "get_issue", get_issue_and_pause)
+    monkeypatch.setattr(
+        conductor,
+        "create_run",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("should not create a run after repo policy changes")),
+    )
+
+    rc = conductor.run_once(_make_run_once_args(tmp_path, issue_number=447))
+
+    assert rc == 0
+    assert capsys.readouterr().out.strip() == "repository is paused"
+    refreshed = conductor.open_db(tmp_path / "conductor.db")
+    lease = refreshed.execute(
+        "select 1 from leases where repo = ? and issue_number = ?",
+        ("misty-step/bitterblossom", 447),
+    ).fetchone()
+    assert lease is None
 
 
 def _select_named_worker_slot(worker: str):
