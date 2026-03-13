@@ -16,7 +16,7 @@ import sys
 import tempfile
 import time
 from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any, Callable
 from conductorlib.common import (
     BuilderResult,
@@ -29,8 +29,6 @@ from conductorlib.common import (
     DEFAULT_LEASE_BUFFER_SECONDS,
     DEFAULT_REPOSITORY_DESIRED_CONCURRENCY,
     DEFAULT_REVIEWER_TEMPLATE,
-    FAILED_CHECK_CONCLUSIONS,
-    FAILED_STATUS_CONTEXTS,
     FINDING_CLASSIFICATIONS,
     FINDING_DECISIONS,
     FINDING_SEVERITIES,
@@ -49,7 +47,7 @@ from conductorlib.common import (
     REPOSITORY_STATE_PAUSED,
     REPOSITORY_STATES,
     QA_DEDUPE_PAGE_SIZE,
-    ReadinessResult,
+    ReadinessResult as _ReadinessResult,
     RepositoryRecord,
     RepositorySchedulingView,
     ReviewFinding,
@@ -58,7 +56,6 @@ from conductorlib.common import (
     ReviewWave,
     ReviewWaveReview,
     Runner,
-    SUCCESSFUL_CHECK_CONCLUSIONS,
     TERMINAL_RUN_STATUSES,
     TRUSTED_THREAD_METADATA_FIELDS,
     UNSET,
@@ -83,63 +80,39 @@ from conductorlib.governance import (
     ensure_required_checks_present as _ensure_required_checks_present,
     is_trusted_review_author,
     list_unresolved_review_threads,
-    present_pr_status_checks,
     status_check_snapshot,
     summarize_review_threads,
     summarize_status_check_rollup,
-    trusted_surface_matches,
     trusted_surface_snapshot,
     trusted_surfaces_pending,
     wait_for_check_refresh,
-    wait_for_external_reviews as _wait_for_external_reviews,
-    wait_for_pr_checks as _wait_for_pr_checks,
-    wait_for_pr_minimum_age as _wait_for_pr_minimum_age,
 )
 from conductorlib.tracker import (
     best_priority_label,
     collect_routable_issues,
     comment_issue,
     comment_pr,
-    dedupe_key_from_issue_body,
-    existing_qa_issues_by_key,
-    get_issue,
-    gh_graphql,
-    gh_json,
-    has_markdown_heading,
     is_qa_origin_issue,
-    issue_number_from_url,
     issue_priority,
-    list_candidate_issues,
-    list_open_qa_issues,
-    normalize_external_dedupe_key,
     parse_qa_intake_payload,
     priority_label_rank,
-    qa_dedupe_key,
-    qa_priority_label,
+    qa_dedupe_key as _qa_dedupe_key,
     qa_priority_rank,
-    render_qa_evidence_lines,
-    render_qa_issue_body,
-    render_qa_issue_comment,
-    split_repo,
-    sync_qa_findings,
     validate_issue_readiness,
     verify_builder_pr,
-    write_temp_body,
 )
 from conductorlib.workspace import (
-    artifact_abs,
     artifact_rel,
-    cleanup_run_workspace,
-    mirror_lock_path,
     parse_workspace_prepare_output,
-    prepare_run_workspace,
     repo_dir,
     resolve_org,
-    run_root,
     run_workspace,
     sprite_bash,
     workspace_lock_python,
 )
+
+ReadinessResult = _ReadinessResult
+qa_dedupe_key = _qa_dedupe_key
 
 SEMANTIC_ROUTING_FAMILY = "issue_routing"
 
