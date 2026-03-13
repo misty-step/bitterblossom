@@ -35,6 +35,7 @@ WORKSPACE_PREPARE_RETRY_DELAY_SECONDS = 2
 SUCCESSFUL_CHECK_CONCLUSIONS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 FAILED_CHECK_CONCLUSIONS = {"FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STALE", "STARTUP_FAILURE"}
 FAILED_STATUS_CONTEXTS = {"FAILURE", "ERROR"}
+QA_DEDUPE_PAGE_SIZE = 100
 TRUSTED_REVIEW_AUTHOR_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
 # GitHub App reviewers show up with weak authorAssociation values, so trust them by login.
 TRUSTED_REVIEW_BOT_LOGINS = {
@@ -85,6 +86,20 @@ class RouteDecision:
     profile: str
     rationale: str
     readiness_failures: dict[int, list[str]]
+
+
+@dataclass(slots=True)
+class QAFinding:
+    title: str
+    summary: str
+    severity: str
+    target_url: str
+    environment: str
+    repro_steps: list[str]
+    evidence: list[dict[str, str]]
+    dedupe_key: str
+    priority_label: str
+    labels: list[str]
 
 
 @dataclass(slots=True)
@@ -342,6 +357,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             payload_json text not null,
             created_at text not null
         );
+        create index if not exists idx_events_run_id_event_type_id
+            on events (run_id, event_type, id desc);
 
         create table if not exists review_waves (
             id integer primary key autoincrement,
@@ -600,7 +617,7 @@ def lease_expired(lease_expires_at: str | None) -> bool:
 
 
 def event_row_payload(row: sqlite3.Row) -> dict[str, Any]:
-    return json.loads(str(row["payload_json"]))
+    return _parse_event_payload(row["payload_json"])
 
 
 def format_event_row(row: sqlite3.Row) -> dict[str, Any]:
@@ -1078,10 +1095,12 @@ def latest_worktree_recovery_event(conn: sqlite3.Connection, run_id: str) -> sql
             event_type = 'builder_workspace_cleaned'
             or (
               event_type = 'workspace_preparation_failed'
+              and json_valid(payload_json)
               and json_extract(payload_json, '$.lane') = 'builder'
             )
             or (
               event_type = 'cleanup_warning'
+              and json_valid(payload_json)
               and json_extract(payload_json, '$.kind') = ?
             )
           )
@@ -1106,10 +1125,12 @@ def latest_worktree_recovery_events(conn: sqlite3.Connection, run_ids: list[str]
             event_type = 'builder_workspace_cleaned'
             or (
               event_type = 'workspace_preparation_failed'
+              and json_valid(payload_json)
               and json_extract(payload_json, '$.lane') = 'builder'
             )
             or (
               event_type = 'cleanup_warning'
+              and json_valid(payload_json)
               and json_extract(payload_json, '$.kind') = ?
             )
           )
@@ -1146,10 +1167,19 @@ def blocking_event_for_run(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row
             event_type in ('pr_feedback_blocked', 'council_blocked', 'command_failed', 'unexpected_error')
             or (
               event_type = 'workspace_preparation_failed'
+              and json_valid(payload_json)
               and json_extract(payload_json, '$.lane') = 'builder'
             )
-            or (event_type = 'ci_wait_complete' and json_extract(payload_json, '$.passed') = 0)
-            or (event_type = 'external_review_wait_complete' and json_extract(payload_json, '$.passed') = 0)
+            or (
+              event_type = 'ci_wait_complete'
+              and json_valid(payload_json)
+              and json_extract(payload_json, '$.passed') = 0
+            )
+            or (
+              event_type = 'external_review_wait_complete'
+              and json_valid(payload_json)
+              and json_extract(payload_json, '$.passed') = 0
+            )
           )
         order by id desc
         limit 1
@@ -1172,10 +1202,19 @@ def blocking_events_for_runs(conn: sqlite3.Connection, run_ids: list[str]) -> di
             event_type in ('pr_feedback_blocked', 'council_blocked', 'command_failed', 'unexpected_error')
             or (
               event_type = 'workspace_preparation_failed'
+              and json_valid(payload_json)
               and json_extract(payload_json, '$.lane') = 'builder'
             )
-            or (event_type = 'ci_wait_complete' and json_extract(payload_json, '$.passed') = 0)
-            or (event_type = 'external_review_wait_complete' and json_extract(payload_json, '$.passed') = 0)
+            or (
+              event_type = 'ci_wait_complete'
+              and json_valid(payload_json)
+              and json_extract(payload_json, '$.passed') = 0
+            )
+            or (
+              event_type = 'external_review_wait_complete'
+              and json_valid(payload_json)
+              and json_extract(payload_json, '$.passed') = 0
+            )
           )
         order by run_id, id desc
         """,
@@ -1185,6 +1224,19 @@ def blocking_events_for_runs(conn: sqlite3.Connection, run_ids: list[str]) -> di
     for row in rows:
         events.setdefault(row["run_id"], row)
     return events
+
+
+def _parse_event_payload(payload_json: str | None) -> dict[str, Any]:
+    """Parse an event payload_json string, returning {} for any missing or malformed value."""
+    if not payload_json:
+        return {}
+    try:
+        result = json.loads(payload_json)
+        if isinstance(result, dict):
+            return result
+        return {}
+    except (json.JSONDecodeError, TypeError):
+        return {}
 
 
 def serialize_run_surface(
@@ -1237,7 +1289,7 @@ def serialize_run_surface(
     payload["worktree_recovery_event_at"] = None
     recovery_event = latest_worktree_recovery_event(conn, row["run_id"]) if worktree_recovery_event is UNSET else worktree_recovery_event
     if recovery_event is not None:
-        recovery_payload = json.loads(recovery_event["payload_json"])
+        recovery_payload = _parse_event_payload(recovery_event["payload_json"])
         payload["worktree_recovery_event_type"] = recovery_event["event_type"]
         payload["worktree_recovery_event_at"] = recovery_event["created_at"]
         if recovery_event["event_type"] == "builder_workspace_cleaned":
@@ -1255,7 +1307,7 @@ def serialize_run_surface(
     if row["status"] in {"blocked", "failed"}:
         resolved_blocking_event = blocking_event_for_run(conn, row["run_id"]) if blocking_event is UNSET else blocking_event
         if resolved_blocking_event is not None:
-            blocking_payload = json.loads(resolved_blocking_event["payload_json"])
+            blocking_payload = _parse_event_payload(resolved_blocking_event["payload_json"])
             blocking_reason = summarize_blocking_reason(resolved_blocking_event["event_type"], blocking_payload)
             payload["blocking_event_type"] = resolved_blocking_event["event_type"]
             payload["blocking_event_at"] = resolved_blocking_event["created_at"]
@@ -1273,6 +1325,133 @@ def issue_priority(labels: list[str]) -> tuple[int, str]:
             best = order[upper]
             matched = upper
     return best, matched
+
+
+def is_qa_origin_issue(labels: list[str]) -> bool:
+    return any(label.lower() == "source/qa" for label in labels)
+
+
+def qa_priority_rank(issue: Issue) -> int:
+    return 0 if is_qa_origin_issue(issue.labels) else 1
+
+
+def qa_priority_label(severity: str) -> str:
+    order = {
+        "critical": "p0",
+        "high": "p1",
+        "medium": "p2",
+        "low": "p3",
+    }
+    return order.get(severity.lower(), "p2")
+
+
+def priority_label_rank(label: str) -> int | None:
+    upper = label.upper()
+    if not re.fullmatch(r"P[0-3]", upper):
+        return None
+    return int(upper[1])
+
+
+def best_priority_label(labels: list[str]) -> str:
+    best_rank: int | None = None
+    matched = ""
+    for label in labels:
+        rank = priority_label_rank(label)
+        if rank is None:
+            continue
+        if best_rank is None or rank < best_rank:
+            best_rank = rank
+            matched = label
+    return matched
+
+
+def qa_dedupe_key(
+    title: str,
+    summary: str,
+    target_url: str,
+    environment: str,
+    repro_steps: list[str],
+) -> str:
+    seed = "\n".join(
+        [
+            title.strip().lower(),
+            summary.strip().lower(),
+            target_url.strip().lower(),
+            environment.strip().lower(),
+            "\n".join(step.strip().lower() for step in repro_steps),
+        ]
+    )
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:12]
+
+
+def normalize_external_dedupe_key(raw_key: Any) -> str | None:
+    candidate = str(raw_key or "").strip().lower()
+    if re.fullmatch(r"[a-f0-9]{12}", candidate):
+        return candidate
+    return None
+
+
+def parse_qa_intake_payload(payload: dict[str, Any]) -> list[QAFinding]:
+    if not isinstance(payload, dict):
+        raise CmdError("qa intake payload must be a JSON object")
+    target = str(payload.get("target") or "").strip()
+    environment = str(payload.get("environment") or "").strip()
+    raw_findings = payload.get("findings")
+    if not target:
+        raise CmdError("qa intake payload missing target")
+    if not environment:
+        raise CmdError("qa intake payload missing environment")
+    if not isinstance(raw_findings, list) or not raw_findings:
+        raise CmdError("qa intake payload must include a non-empty findings list")
+
+    findings: list[QAFinding] = []
+    for item in raw_findings:
+        if not isinstance(item, dict):
+            raise CmdError("qa finding must be an object")
+        title = str(item.get("title") or "").strip()
+        summary = str(item.get("summary") or "").strip()
+        severity = str(item.get("severity") or "").strip().lower()
+        repro_steps = item.get("repro_steps") or []
+        evidence = item.get("evidence") or []
+        finding_target = str(item.get("target_url") or target).strip()
+        finding_environment = str(item.get("environment") or environment).strip()
+        if not title:
+            raise CmdError("qa finding missing title")
+        if not summary:
+            raise CmdError(f"qa finding {title!r} missing summary")
+        if severity not in {"critical", "high", "medium", "low"}:
+            raise CmdError(f"qa finding {title!r} has unsupported severity {severity!r}")
+        if not isinstance(repro_steps, list) or not repro_steps:
+            raise CmdError(f"qa finding {title!r} must include repro_steps")
+        if not isinstance(evidence, list):
+            raise CmdError(f"qa finding {title!r} evidence must be a list")
+        normalized_steps = [str(step).strip() for step in repro_steps if str(step).strip()]
+        if not normalized_steps:
+            raise CmdError(f"qa finding {title!r} must include non-empty repro_steps")
+        normalized_evidence: list[dict[str, str]] = []
+        for entry in evidence:
+            if not isinstance(entry, dict):
+                raise CmdError(f"qa finding {title!r} evidence entries must be objects")
+            normalized_evidence.append({str(key): str(value) for key, value in entry.items()})
+        priority = qa_priority_label(severity)
+        dedupe_key = normalize_external_dedupe_key(item.get("dedupe_key"))
+        if dedupe_key is None:
+            dedupe_key = qa_dedupe_key(title, summary, finding_target, finding_environment, normalized_steps)
+        findings.append(
+            QAFinding(
+                title=title,
+                summary=summary,
+                severity=severity,
+                target_url=finding_target,
+                environment=finding_environment,
+                repro_steps=normalized_steps,
+                evidence=normalized_evidence,
+                dedupe_key=dedupe_key,
+                priority_label=priority,
+                labels=["autopilot", "bug", "domain/infra", priority, "source/qa"],
+            )
+        )
+    return findings
 
 
 def run_id_for(issue_number: int) -> str:
@@ -1596,74 +1775,101 @@ def parse_workspace_prepare_output(output: str, workspace: str, sprite: str) -> 
     raise CmdError(f"unexpected workspace prepare output for {sprite}: {output!r}")
 
 
+def workspace_lock_python(
+    *,
+    mirror: str,
+    workspace: str,
+    lockfile: str,
+    wait_seconds: int,
+    timeout_message: str,
+    lane: str,
+) -> str:
+    return "\n".join(
+        [
+            "set -euo pipefail",
+            "python3 - <<'PY'",
+            "import fcntl",
+            "import pathlib",
+            "import shutil",
+            "import subprocess",
+            "import sys",
+            "import time",
+            f"mirror = {mirror!r}",
+            f"workspace = {workspace!r}",
+            f"lockfile = {lockfile!r}",
+            f"wait_seconds = {wait_seconds}",
+            f"timeout_message = {timeout_message!r}",
+            f"lane = {lane!r}",
+            'pathlib.Path(lockfile).parent.mkdir(parents=True, exist_ok=True)',
+            'pathlib.Path(workspace).parent.mkdir(parents=True, exist_ok=True)',
+            "with open(lockfile, 'w', encoding='utf-8') as lock_handle:",
+            "    deadline = time.monotonic() + wait_seconds",
+            "    while True:",
+            "        try:",
+            "            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)",
+            "            break",
+            "        except BlockingIOError:",
+            "            if time.monotonic() >= deadline:",
+            "                print(timeout_message, file=sys.stderr)",
+            "                raise SystemExit(1)",
+            "            time.sleep(0.01)",
+            "    if lane == 'prepare':",
+            "        subprocess.run(['git', '-C', mirror, 'fetch', '--all', '--prune'], check=True)",
+            "        master = subprocess.run(['git', '-C', mirror, 'show-ref', '--verify', '--quiet', 'refs/remotes/origin/master'])",
+            "        if master.returncode == 0:",
+            "            base_ref = 'origin/master'",
+            "        else:",
+            "            main = subprocess.run(['git', '-C', mirror, 'show-ref', '--verify', '--quiet', 'refs/remotes/origin/main'])",
+            "            if main.returncode == 0:",
+            "                base_ref = 'origin/main'",
+            "            else:",
+            "                symbolic = subprocess.run(",
+            "                    ['git', '-C', mirror, 'symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'],",
+            "                    check=False,",
+            "                    capture_output=True,",
+            "                    text=True,",
+            "                )",
+            "                if symbolic.returncode == 0 and symbolic.stdout.strip():",
+            "                    base_ref = symbolic.stdout.strip()",
+            "                else:",
+            "                    head = subprocess.run(",
+            "                        ['git', '-C', mirror, 'rev-parse', 'HEAD'],",
+            "                        check=True,",
+            "                        capture_output=True,",
+            "                        text=True,",
+            "                    )",
+            "                    base_ref = head.stdout.strip()",
+            "        if pathlib.Path(workspace).exists():",
+            "            shutil.rmtree(workspace)",
+            "        subprocess.run(['git', '-C', mirror, 'worktree', 'prune'], check=True)",
+            "        subprocess.run(['git', '-C', mirror, 'worktree', 'add', '--detach', workspace, base_ref], check=True)",
+            "        print(workspace)",
+            "    else:",
+            "        remove = subprocess.run(",
+            "            ['git', '-C', mirror, 'worktree', 'remove', '--force', workspace],",
+            "            check=False,",
+            "            capture_output=True,",
+            "            text=True,",
+            "        )",
+            "        if remove.returncode != 0:",
+            "            shutil.rmtree(workspace, ignore_errors=True)",
+            "        subprocess.run(['git', '-C', mirror, 'worktree', 'prune'], check=True)",
+            "PY",
+        ]
+    )
+
+
 def prepare_run_workspace(runner: Runner, sprite: str, repo: str, run_id: str, lane: str) -> str:
     mirror = repo_dir(repo)
     workspace = run_workspace(repo, run_id, lane)
     lockfile = mirror_lock_path(repo)
-    script = "\n".join(
-        [
-            "set -euo pipefail",
-            f"mirror={shlex.quote(mirror)}",
-            f"workspace={shlex.quote(workspace)}",
-            f"lockfile={shlex.quote(lockfile)}",
-            'mkdir -p "$(dirname "$workspace")" "$(dirname "$lockfile")"',
-            'export BB_MIRROR="$mirror" BB_WORKSPACE="$workspace" BB_LOCKFILE="$lockfile"',
-            "python3 - <<'PY'\n"
-            "import fcntl\n"
-            "import os\n"
-            "import shutil\n"
-            "import subprocess\n"
-            "import sys\n"
-            "import time\n"
-            "\n"
-            "mirror = os.environ['BB_MIRROR']\n"
-            "workspace = os.environ['BB_WORKSPACE']\n"
-            "lockfile = os.environ['BB_LOCKFILE']\n"
-            "deadline = time.monotonic() + "
-            f"{WORKSPACE_PREPARE_LOCK_WAIT_SECONDS}\n"
-            "\n"
-            "def git(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:\n"
-            "    return subprocess.run(\n"
-            "        ['git', '-c', 'gc.auto=0', '-c', 'maintenance.auto=false', '-C', mirror, *args],\n"
-            "        check=check,\n"
-            "        capture_output=True,\n"
-            "        text=True,\n"
-            "    )\n"
-            "\n"
-            "with open(lockfile, 'w', encoding='utf-8') as lock:\n"
-            "    while True:\n"
-            "        try:\n"
-            "            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
-            "            break\n"
-            "        except BlockingIOError:\n"
-            "            if time.monotonic() >= deadline:\n"
-            "                sys.stderr.write('mirror lock acquisition timed out\\n')\n"
-            "                raise SystemExit(1)\n"
-            "            time.sleep(0.01)\n"
-            "\n"
-            "    try:\n"
-            "        git('fetch', '--all', '--prune')\n"
-            "        if git('show-ref', '--verify', '--quiet', 'refs/remotes/origin/master', check=False).returncode == 0:\n"
-            "            base_ref = 'origin/master'\n"
-            "        elif git('show-ref', '--verify', '--quiet', 'refs/remotes/origin/main', check=False).returncode == 0:\n"
-            "            base_ref = 'origin/main'\n"
-            "        else:\n"
-            "            head_ref = git('symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD', check=False)\n"
-            "            if head_ref.returncode == 0:\n"
-            "                base_ref = head_ref.stdout.strip()\n"
-            "            else:\n"
-            "                base_ref = git('rev-parse', 'HEAD').stdout.strip()\n"
-            "        shutil.rmtree(workspace, ignore_errors=True)\n"
-            "        git('worktree', 'prune')\n"
-            "        git('worktree', 'add', '--detach', workspace, base_ref)\n"
-            "    except subprocess.CalledProcessError as exc:\n"
-            "        output = (exc.stderr or exc.stdout or str(exc)).strip()\n"
-            "        sys.stderr.write(output + ('\\n' if output else ''))\n"
-            "        raise SystemExit(exc.returncode)\n"
-            "\n"
-            "    print(workspace)\n"
-            "PY",
-        ]
+    script = workspace_lock_python(
+        mirror=mirror,
+        workspace=workspace,
+        lockfile=lockfile,
+        wait_seconds=WORKSPACE_PREPARE_LOCK_WAIT_SECONDS,
+        timeout_message="mirror lock acquisition timed out",
+        lane="prepare",
     )
     output = sprite_bash(runner, sprite, script, timeout=300)
     return parse_workspace_prepare_output(output, workspace, sprite)
@@ -1673,58 +1879,13 @@ def cleanup_run_workspace(runner: Runner, sprite: str, repo: str, run_id: str, l
     mirror = repo_dir(repo)
     workspace = run_workspace(repo, run_id, lane)
     lockfile = mirror_lock_path(repo)
-    script = "\n".join(
-        [
-            "set -euo pipefail",
-            f"mirror={shlex.quote(mirror)}",
-            f"workspace={shlex.quote(workspace)}",
-            f"lockfile={shlex.quote(lockfile)}",
-            'mkdir -p "$(dirname "$lockfile")"',
-            'export BB_MIRROR="$mirror" BB_WORKSPACE="$workspace" BB_LOCKFILE="$lockfile"',
-            "python3 - <<'PY'\n"
-            "import fcntl\n"
-            "import os\n"
-            "import shutil\n"
-            "import subprocess\n"
-            "import sys\n"
-            "import time\n"
-            "\n"
-            "mirror = os.environ['BB_MIRROR']\n"
-            "workspace = os.environ['BB_WORKSPACE']\n"
-            "lockfile = os.environ['BB_LOCKFILE']\n"
-            "deadline = time.monotonic() + "
-            f"{WORKSPACE_CLEANUP_LOCK_WAIT_SECONDS}\n"
-            "\n"
-            "def git(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:\n"
-            "    return subprocess.run(\n"
-            "        ['git', '-c', 'gc.auto=0', '-c', 'maintenance.auto=false', '-C', mirror, *args],\n"
-            "        check=check,\n"
-            "        capture_output=True,\n"
-            "        text=True,\n"
-            "    )\n"
-            "\n"
-            "with open(lockfile, 'w', encoding='utf-8') as lock:\n"
-            "    while True:\n"
-            "        try:\n"
-            "            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
-            "            break\n"
-            "        except BlockingIOError:\n"
-            "            if time.monotonic() >= deadline:\n"
-            "                sys.stderr.write('mirror lock acquisition timed out during cleanup\\n')\n"
-            "                raise SystemExit(1)\n"
-            "            time.sleep(0.01)\n"
-            "\n"
-            "    try:\n"
-            "        removed = git('worktree', 'remove', '--force', workspace, check=False)\n"
-            "        if removed.returncode != 0:\n"
-            "            shutil.rmtree(workspace, ignore_errors=True)\n"
-            "        git('worktree', 'prune')\n"
-            "    except subprocess.CalledProcessError as exc:\n"
-            "        output = (exc.stderr or exc.stdout or str(exc)).strip()\n"
-            "        sys.stderr.write(output + ('\\n' if output else ''))\n"
-            "        raise SystemExit(exc.returncode)\n"
-            "PY",
-        ]
+    script = workspace_lock_python(
+        mirror=mirror,
+        workspace=workspace,
+        lockfile=lockfile,
+        wait_seconds=WORKSPACE_CLEANUP_LOCK_WAIT_SECONDS,
+        timeout_message="mirror lock acquisition timed out during cleanup",
+        lane="cleanup",
     )
     sprite_bash(runner, sprite, script, timeout=180)
 
@@ -1743,7 +1904,7 @@ def prepare_run_workspace_with_retry(
         assert_run_still_leased(conn, repo, run_id)
         try:
             return prepare_run_workspace(runner, sprite, repo, run_id, lane)
-        except (CmdError, subprocess.TimeoutExpired) as exc:
+        except (CmdError, subprocess.TimeoutExpired, OSError) as exc:
             last_exc = exc
             payload = {
                 "sprite": sprite,
@@ -1839,6 +2000,205 @@ def check_env(args: argparse.Namespace) -> int:  # noqa: ARG001
 def gh_json(runner: Runner, args: list[str]) -> Any:
     out = runner.run(["gh", *args], timeout=60)
     return json.loads(out)
+
+
+def dedupe_key_from_issue_body(body: str) -> str | None:
+    match = re.search(r"bitterblossom-qa-dedupe:([a-f0-9]{12})", body)
+    if match is None:
+        return None
+    return match.group(1)
+
+
+def issue_number_from_url(issue_url: str) -> int:
+    try:
+        return int(issue_url.rstrip("/").rsplit("/", 1)[-1])
+    except ValueError as exc:
+        raise CmdError(f"could not parse issue number from url: {issue_url!r}") from exc
+
+
+def render_qa_evidence_lines(evidence: list[dict[str, str]], *, empty_message: str) -> str:
+    lines = "\n".join(
+        f"- {entry.get('kind', 'evidence')}: [{entry.get('label', entry.get('url', 'artifact'))}]({entry.get('url', '')})"
+        if entry.get("url")
+        else f"- {entry.get('kind', 'evidence')}: {entry.get('label', 'artifact')}"
+        for entry in evidence
+    )
+    return lines or empty_message
+
+
+def render_qa_issue_body(finding: QAFinding) -> str:
+    steps = "\n".join(f"{index}. {step}" for index, step in enumerate(finding.repro_steps, start=1))
+    evidence_lines = render_qa_evidence_lines(finding.evidence, empty_message="- none attached")
+    return "\n".join(
+        [
+            "## Product Spec",
+            "### Problem",
+            finding.summary,
+            "",
+            "### Intent Contract",
+            "- Intent: capture this QA-discovered regression as a GitHub issue with reproducible evidence.",
+            "- Success Conditions: the issue carries severity, target, environment, evidence, and deterministic dedupe metadata.",
+            "- Hard Boundaries: GitHub remains the canonical work queue.",
+            "- Non-Goals: automated remediation in this intake lane.",
+            "",
+            "## Acceptance Criteria",
+            "- [ ] [behavioral] Reproduce the reported regression on the affected target.",
+            "- [ ] [behavioral] Confirm the proposed fix removes the observed failure.",
+            "- [ ] [test] Preserve the QA evidence contract and dedupe marker.",
+            "",
+            "## QA Finding",
+            f"- Severity: `{finding.severity}`",
+            f"- Target: `{finding.target_url}`",
+            f"- Environment: `{finding.environment}`",
+            "",
+            "## Reproduction",
+            steps,
+            "",
+            "## Evidence",
+            evidence_lines,
+            "",
+            "<!-- bitterblossom-qa-origin:true -->",
+            f"<!-- bitterblossom-qa-dedupe:{finding.dedupe_key} -->",
+        ]
+    )
+
+
+def render_qa_issue_comment(finding: QAFinding) -> str:
+    evidence_lines = render_qa_evidence_lines(finding.evidence, empty_message="- no new evidence attached")
+    return "\n".join(
+        [
+            "QA intake re-observed this finding.",
+            "",
+            f"- Severity: `{finding.severity}`",
+            f"- Target: `{finding.target_url}`",
+            f"- Environment: `{finding.environment}`",
+            "",
+            "### Reproduction",
+            "\n".join(f"{index}. {step}" for index, step in enumerate(finding.repro_steps, start=1)),
+            "",
+            "### Evidence",
+            evidence_lines,
+        ]
+    )
+
+
+def list_open_qa_issues(runner: Runner, repo: str) -> list[dict[str, Any]]:
+    page = 1
+    issues: list[dict[str, Any]] = []
+    while True:
+        payload = gh_json(
+            runner,
+            [
+                "api",
+                f"repos/{repo}/issues?state=open&labels=source/qa&per_page={QA_DEDUPE_PAGE_SIZE}&page={page}",
+            ],
+        )
+        if not isinstance(payload, list):
+            raise CmdError("unexpected GitHub issue list payload while loading source/qa issues")
+        if not payload:
+            return issues
+        for item in payload:
+            if not isinstance(item, dict) or item.get("pull_request") is not None:
+                continue
+            issues.append(item)
+        page += 1
+
+
+def existing_qa_issues_by_key(runner: Runner, repo: str) -> dict[str, Issue]:
+    issues_by_key: dict[str, Issue] = {}
+    for item in list_open_qa_issues(runner, repo):
+        body = item.get("body") or ""
+        dedupe_key = dedupe_key_from_issue_body(body)
+        if dedupe_key is None:
+            continue
+        issues_by_key[dedupe_key] = Issue(
+            number=item["number"],
+            title=item["title"],
+            body=body,
+            url=item["url"],
+            labels=[label_obj["name"] for label_obj in item.get("labels", [])],
+            updated_at=item.get("updated_at") or item.get("updatedAt") or "",
+        )
+    return issues_by_key
+
+
+def write_temp_body(prefix: str, body: str) -> str:
+    with tempfile.NamedTemporaryFile("w", prefix=prefix, suffix=".md", delete=False) as handle:
+        handle.write(body)
+        return handle.name
+
+
+def sync_qa_findings(
+    runner: Runner,
+    repo: str,
+    findings: list[QAFinding],
+    *,
+    existing_issue_by_key: dict[str, Issue] | None = None,
+) -> tuple[list[str], list[str]]:
+    issues_by_key = existing_issue_by_key if existing_issue_by_key is not None else existing_qa_issues_by_key(runner, repo)
+    created: list[str] = []
+    updated: list[str] = []
+    for finding in findings:
+        existing = issues_by_key.get(finding.dedupe_key)
+        if existing is not None:
+            existing_priority = best_priority_label(existing.labels)
+            body_path = write_temp_body("bb-qa-comment-", render_qa_issue_comment(finding))
+            try:
+                runner.run(
+                    [
+                        "gh",
+                        "issue",
+                        "comment",
+                        str(existing.number),
+                        "--repo",
+                        repo,
+                        "--body-file",
+                        body_path,
+                    ],
+                    timeout=60,
+                )
+            finally:
+                pathlib.Path(body_path).unlink(missing_ok=True)
+            existing_rank = priority_label_rank(existing_priority) if existing_priority else None
+            finding_rank = priority_label_rank(finding.priority_label)
+            if finding_rank is not None and (existing_rank is None or finding_rank < existing_rank):
+                argv = [
+                    "gh",
+                    "issue",
+                    "edit",
+                    str(existing.number),
+                    "--repo",
+                    repo,
+                    "--add-label",
+                    finding.priority_label,
+                ]
+                if existing_priority:
+                    argv.extend(["--remove-label", existing_priority])
+                runner.run(argv, timeout=60)
+                existing.labels = [label for label in existing.labels if label != existing_priority]
+                existing.labels.append(finding.priority_label)
+            updated.append(existing.url)
+            continue
+
+        body_path = write_temp_body("bb-qa-issue-", render_qa_issue_body(finding))
+        try:
+            argv = ["gh", "issue", "create", "--repo", repo, "--title", f"[QA][{finding.priority_label.upper()}] {finding.title}"]
+            for label in finding.labels:
+                argv.extend(["--label", label])
+            argv.extend(["--body-file", body_path])
+            issue_url = runner.run(argv, timeout=60).strip()
+        finally:
+            pathlib.Path(body_path).unlink(missing_ok=True)
+        created.append(issue_url)
+        issue_number = issue_number_from_url(issue_url)
+        issues_by_key[finding.dedupe_key] = Issue(
+            number=issue_number,
+            title=finding.title,
+            body="",
+            url=issue_url,
+            labels=finding.labels,
+        )
+    return created, updated
 
 
 def split_repo(repo: str) -> tuple[str, str]:
@@ -2054,6 +2414,7 @@ def route_issues_semantically(repo: str, eligible: list[Issue], builder_profile:
                 "number": issue.number,
                 "title": issue.title,
                 "labels": issue.labels,
+                "qa_origin": is_qa_origin_issue(issue.labels),
                 "updated_at": issue.updated_at,
                 "body": issue.body,
             },
@@ -2075,6 +2436,7 @@ def route_issues_semantically(repo: str, eligible: list[Issue], builder_profile:
             "You are Bitterblossom's router.",
             "Choose the single best issue to run next from the eligible set.",
             "Use semantic reasoning across the problem, intent contract, and acceptance criteria.",
+            "If two issues are otherwise comparable within the same priority tier, prefer qa_origin issues because they represent deployed-app risk.",
             "Do not use label priority as the primary reason unless the issue content is otherwise tied.",
             f"Repository: {repo}",
             f"Default builder profile: {builder_profile}",
@@ -2109,9 +2471,9 @@ def pick_issue(conn: sqlite3.Connection, issues: list[Issue], repo: str) -> Issu
 
     if not eligible:
         return None
-    def key(issue: Issue) -> tuple[int, str, int]:
+    def key(issue: Issue) -> tuple[int, int, str, int]:
         priority, _matched = issue_priority(issue.labels)
-        return (priority, issue.updated_at or "", issue.number)
+        return (priority, qa_priority_rank(issue), issue.updated_at or "", issue.number)
 
     return sorted(eligible, key=key)[0]
 
@@ -4053,7 +4415,8 @@ def run_builder(
     branch: str,
     prompt_template: pathlib.Path,
     timeout_minutes: int,
-    workspace: str | None = None,
+    *,
+    workspace: str,
     feedback: str | None = None,
     pr_number: int | None = None,
     pr_url: str | None = None,
@@ -4063,8 +4426,6 @@ def run_builder(
         cleanup_sprite_processes(runner, worker)
     except CmdError:
         pass
-    if workspace is None:
-        workspace = prepare_run_workspace(runner, worker, repo, run_id, "builder")
     builder_rel = artifact_rel(run_id, "builder-result.json")
     builder_prompt = build_builder_task(
         issue,
@@ -4485,6 +4846,462 @@ def ensure_governance_run(
         raise
 
 
+class GovernanceSession:
+    """Own the mutable state for one governor lane instead of threading it through every branch."""
+
+    def __init__(
+        self,
+        runner: Runner,
+        conn: sqlite3.Connection,
+        event_log: pathlib.Path,
+        args: argparse.Namespace,
+        *,
+        issue: Issue,
+        run_id: str,
+        worker: str,
+        branch: str,
+        pr_number: int,
+        pr_url: str,
+        builder_workspace: str,
+    ) -> None:
+        self.runner = runner
+        self.conn = conn
+        self.event_log = event_log
+        self.args = args
+        self.issue = issue
+        self.run_id = run_id
+        self.worker = worker
+        self.branch = branch
+        self.builder_workspace = builder_workspace
+        self.builder_template = pathlib.Path(args.builder_template)
+        self.reviewer_template = pathlib.Path(args.reviewer_template)
+        self.internal_reviewers = list(getattr(args, "reviewer", []))
+        self.builder = BuilderResult(
+            status="ready_for_review",
+            branch=branch,
+            pr_number=pr_number,
+            pr_url=pr_url,
+            summary="governance adoption",
+            tests=[],
+        )
+        self.review_rounds = 0
+        self.ci_rounds = 0
+        self.pr_feedback_rounds = 0
+        self.last_pr_feedback_thread_ids: tuple[str, ...] = ()
+        self.polish_completed = False
+
+    def run(self) -> int:
+        if self._wait_for_minimum_age():
+            return 2
+
+        while True:
+            update_run(self.conn, self.run_id, phase="governing")
+            if self.internal_reviewers:
+                reviews = self._run_review_round()
+                review_decision = self._review_decision(reviews)
+                if review_decision == "block":
+                    return 2
+                if review_decision == "continue":
+                    continue
+
+            ci_decision = self._ci_decision()
+            if ci_decision == "fail":
+                return 1
+            if ci_decision == "continue":
+                continue
+
+            thread_decision = self._thread_decision()
+            if thread_decision == "block":
+                return 2
+            if thread_decision == "continue":
+                continue
+
+            external_decision = self._external_review_decision()
+            if external_decision == "block":
+                return 2
+            if external_decision == "continue":
+                continue
+
+            if not self.polish_completed:
+                self._run_final_polish()
+                continue
+
+            return self._merge()
+
+    def _wait_for_minimum_age(self) -> bool:
+        minimum_age_seconds = getattr(self.args, "pr_minimum_age_seconds", 0)
+        if minimum_age_seconds <= 0:
+            return False
+
+        update_run(self.conn, self.run_id, phase="governance_wait")
+        self._touch_run(self.args.ci_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS)
+        age_timeout_minutes = max(1, self.args.ci_timeout, math.ceil(minimum_age_seconds / 60) + 1)
+        age_ok, age_output = wait_for_pr_minimum_age(
+            self.runner,
+            self.args.repo,
+            self.builder.pr_number,
+            minimum_age_seconds=minimum_age_seconds,
+            timeout_minutes=age_timeout_minutes,
+            on_tick=lambda: self._touch_run(age_timeout_minutes * 60 + DEFAULT_LEASE_BUFFER_SECONDS),
+        )
+        record_event(
+            self.conn,
+            self.event_log,
+            self.run_id,
+            "pr_freshness_wait_complete",
+            {
+                "passed": age_ok,
+                "output": age_output,
+                "pr_number": self.builder.pr_number,
+                "minimum_age_seconds": minimum_age_seconds,
+            },
+        )
+        if age_ok:
+            return False
+
+        update_run(self.conn, self.run_id, phase="blocked", status="blocked")
+        best_effort_issue_comment(
+            self.runner,
+            self.conn,
+            self.event_log,
+            self.run_id,
+            self.args.repo,
+            self.issue.number,
+            f"Bitterblossom blocked `{self.run_id}` because governance freshness did not settle: {age_output}",
+            event_type="issue_comment_failed",
+        )
+        return True
+
+    def _run_review_round(self) -> list[ReviewResult]:
+        self._touch_run(
+            self.args.review_timeout * 60 * max(1, len(self.internal_reviewers)) + DEFAULT_LEASE_BUFFER_SECONDS
+        )
+        reviews = run_review_round(
+            self.runner,
+            self.conn,
+            self.event_log,
+            self.args.repo,
+            self.issue,
+            self.run_id,
+            self.builder.pr_number,
+            self.builder.pr_url,
+            self.internal_reviewers,
+            self.reviewer_template,
+            self.args.review_timeout,
+            on_tick=lambda: self._touch_run(self.args.review_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS),
+        )
+        best_effort_pr_comment(
+            self.runner,
+            self.conn,
+            self.event_log,
+            self.run_id,
+            self.args.repo,
+            self.builder.pr_number,
+            format_council_comment(reviews),
+            event_type="pr_comment_failed",
+        )
+        return reviews
+
+    def _review_decision(self, reviews: list[ReviewResult]) -> str:
+        passes = sum(1 for review in reviews if review.verdict == "pass")
+        blocks = [review for review in reviews if review.verdict == "block"]
+        fixes = [review for review in reviews if review.verdict == "fix"]
+        if not blocks and passes >= self.args.review_quorum:
+            return "proceed"
+
+        if self.review_rounds >= self.args.max_revision_rounds:
+            update_run(self.conn, self.run_id, phase="blocked", status="blocked")
+            record_event(
+                self.conn,
+                self.event_log,
+                self.run_id,
+                "council_blocked",
+                {"reviews": [asdict(review) for review in reviews]},
+            )
+            best_effort_issue_comment(
+                self.runner,
+                self.conn,
+                self.event_log,
+                self.run_id,
+                self.args.repo,
+                self.issue.number,
+                f"Bitterblossom blocked `{self.run_id}` after review.",
+                event_type="issue_comment_failed",
+            )
+            return "block"
+
+        self._request_builder_turn(
+            summarize_reviews(blocks + fixes),
+            reason="review",
+            feedback_source="review",
+            event_type="builder_revised",
+        )
+        self.review_rounds += 1
+        self.last_pr_feedback_thread_ids = ()
+        return "continue"
+
+    def _ci_decision(self) -> str:
+        update_run(self.conn, self.run_id, phase="ci_wait")
+        self._touch_run(self.args.ci_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS)
+        ensure_pr_ready(self.runner, self.args.repo, self.builder.pr_number)
+        ok, checks_output = wait_for_pr_checks(
+            self.runner,
+            self.args.repo,
+            self.builder.pr_number,
+            self.args.ci_timeout,
+            on_tick=lambda: self._touch_run(self.args.ci_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS),
+        )
+        record_event(
+            self.conn,
+            self.event_log,
+            self.run_id,
+            "ci_wait_complete",
+            {"passed": ok, "output": checks_output},
+        )
+        if ok:
+            return "proceed"
+
+        if self.ci_rounds >= self.args.max_ci_rounds:
+            update_run(self.conn, self.run_id, phase="failed", status="failed")
+            best_effort_issue_comment(
+                self.runner,
+                self.conn,
+                self.event_log,
+                self.run_id,
+                self.args.repo,
+                self.issue.number,
+                f"Bitterblossom failed `{self.run_id}` because PR checks did not pass.",
+                event_type="issue_comment_failed",
+            )
+            return "fail"
+
+        self._request_builder_turn(
+            f"CI checks failed for PR #{self.builder.pr_number}:\n{checks_output}",
+            reason="ci",
+            feedback_source="ci",
+            event_type="builder_revised",
+        )
+        self.ci_rounds += 1
+        self.last_pr_feedback_thread_ids = ()
+        return "continue"
+
+    def _thread_decision(self) -> str:
+        ensure_required_checks_present(self.runner, self.args.repo, self.builder.pr_number)
+        return self._handle_pr_thread_feedback()
+
+    def _external_review_decision(self) -> str:
+        trusted_surfaces = self.args.trusted_external_surfaces
+        if not trusted_surfaces:
+            return "proceed"
+
+        external_review_timeout = self.args.external_review_timeout
+        external_review_quiet_window = self.args.external_review_quiet_window
+        wave_extra = {
+            "trusted_surfaces": trusted_surfaces,
+            "quiet_window_seconds": external_review_quiet_window,
+        }
+        wave_id = start_review_wave(
+            self.conn,
+            self.run_id,
+            "external_review_wait",
+            pr_number=self.builder.pr_number,
+            reviewer_count=len(trusted_surfaces),
+        )
+        ext_ok: bool | None = None
+        try:
+            record_review_wave_event(
+                self.conn,
+                self.event_log,
+                self.run_id,
+                wave_id,
+                "review_wave_started",
+                extra=wave_extra,
+            )
+            self._touch_run(external_review_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS)
+            ext_ok, ext_output = wait_for_external_reviews(
+                self.runner,
+                self.args.repo,
+                self.builder.pr_number,
+                trusted_surfaces,
+                quiet_window_seconds=external_review_quiet_window,
+                timeout_minutes=external_review_timeout,
+                on_tick=lambda: self._touch_run(external_review_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS),
+            )
+            record_event(
+                self.conn,
+                self.event_log,
+                self.run_id,
+                "external_review_wait_complete",
+                {"wave_id": wave_id, "passed": ext_ok, "output": ext_output, **wave_extra},
+            )
+            complete_review_wave(
+                self.conn,
+                self.event_log,
+                self.run_id,
+                wave_id,
+                "settled" if ext_ok else "failed",
+                extra=wave_extra,
+            )
+        except Exception:
+            complete_review_wave(
+                self.conn,
+                self.event_log,
+                self.run_id,
+                wave_id,
+                "settled" if ext_ok else "failed",
+                extra=wave_extra,
+                preserve_primary_error=True,
+                skip_if_terminal=True,
+            )
+            raise
+
+        if not ext_ok:
+            update_run(self.conn, self.run_id, phase="blocked", status="blocked")
+            best_effort_issue_comment(
+                self.runner,
+                self.conn,
+                self.event_log,
+                self.run_id,
+                self.args.repo,
+                self.issue.number,
+                (
+                    f"Bitterblossom blocked `{self.run_id}` because trusted external reviews "
+                    f"did not settle: {ext_output[:500]}"
+                ),
+                event_type="issue_comment_failed",
+            )
+            return "block"
+
+        return self._handle_pr_thread_feedback()
+
+    def _handle_pr_thread_feedback(self) -> str:
+        thread_action, feedback, thread_ids = handle_pr_review_threads(
+            self.runner,
+            self.conn,
+            self.event_log,
+            self.run_id,
+            self.args.repo,
+            self.issue.number,
+            self.builder.pr_number,
+            pr_feedback_rounds=self.pr_feedback_rounds,
+            max_pr_feedback_rounds=self.args.max_pr_feedback_rounds,
+            last_pr_feedback_thread_ids=self.last_pr_feedback_thread_ids,
+        )
+        if thread_action == "clear":
+            self.last_pr_feedback_thread_ids = ()
+            return "proceed"
+        if thread_action == "blocked":
+            return "block"
+        if thread_action == "revise" and feedback is not None:
+            self.last_pr_feedback_thread_ids = thread_ids
+            # handle_pr_review_threads() already recorded revision_requested and
+            # phase="revising", so calling _request_builder_turn() here would
+            # duplicate the run-state transition and event log entry.
+            self.builder = self._run_builder_turn(
+                event_type="builder_revised",
+                feedback=feedback,
+                feedback_source="pr_review_threads",
+            )
+            self.pr_feedback_rounds += 1
+            return "continue"
+        return "proceed"
+
+    def _run_final_polish(self) -> None:
+        update_run(self.conn, self.run_id, phase="polishing")
+        record_event(
+            self.conn,
+            self.event_log,
+            self.run_id,
+            "final_polish_requested",
+            {"pr_number": self.builder.pr_number},
+        )
+        self.builder = self._run_builder_turn(
+            event_type="final_polish_complete",
+            feedback=final_polish_feedback(self.builder.pr_number),
+            feedback_source="polish",
+        )
+        self.polish_completed = True
+        self.last_pr_feedback_thread_ids = ()
+
+    def _request_builder_turn(
+        self,
+        feedback: str,
+        *,
+        reason: str,
+        feedback_source: str,
+        event_type: str,
+    ) -> None:
+        update_run(self.conn, self.run_id, phase="revising")
+        record_event(
+            self.conn,
+            self.event_log,
+            self.run_id,
+            "revision_requested",
+            {"feedback": feedback, "reason": reason},
+        )
+        self.builder = self._run_builder_turn(
+            event_type=event_type,
+            feedback=feedback,
+            feedback_source=feedback_source,
+        )
+
+    def _run_builder_turn(self, *, event_type: str, feedback: str, feedback_source: str) -> BuilderResult:
+        self.polish_completed = False
+        self._touch_run(self.args.builder_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS)
+        return run_builder_turn(
+            self.runner,
+            self.conn,
+            self.event_log,
+            self.args.repo,
+            self.worker,
+            self.issue,
+            self.run_id,
+            self.branch,
+            self.builder_template,
+            self.args.builder_timeout,
+            workspace=self.builder_workspace,
+            event_type=event_type,
+            feedback=feedback,
+            feedback_source=feedback_source,
+            pr_number=self.builder.pr_number,
+            pr_url=self.builder.pr_url,
+        )
+
+    def _merge(self) -> int:
+        update_run(self.conn, self.run_id, phase="merge_ready")
+        merge_budget_seconds = 2 * 120 + 600 + DEFAULT_LEASE_BUFFER_SECONDS
+        self._touch_run(merge_budget_seconds)
+        merge_pr(self.runner, self.args.repo, self.builder.pr_number)
+        update_run(self.conn, self.run_id, phase="merged", status="merged")
+        record_event(
+            self.conn,
+            self.event_log,
+            self.run_id,
+            "merged",
+            {"pr_number": self.builder.pr_number, "pr_url": self.builder.pr_url},
+        )
+        best_effort_issue_comment(
+            self.runner,
+            self.conn,
+            self.event_log,
+            self.run_id,
+            self.args.repo,
+            self.issue.number,
+            f"Bitterblossom merged `{self.run_id}` via PR #{self.builder.pr_number}.",
+            event_type="issue_comment_failed",
+        )
+        return 0
+
+    def _touch_run(self, ttl_seconds: int) -> None:
+        touch_run(
+            self.conn,
+            self.args.repo,
+            self.issue.number,
+            self.run_id,
+            ttl_seconds,
+        )
+
+
 def govern_pr_flow(
     runner: Runner,
     conn: sqlite3.Connection,
@@ -4499,426 +5316,19 @@ def govern_pr_flow(
     pr_url: str,
     builder_workspace: str,
 ) -> int:
-    builder_template = pathlib.Path(args.builder_template)
-    internal_reviewers = list(getattr(args, "reviewer", []))
-    builder = BuilderResult(
-        status="ready_for_review",
+    return GovernanceSession(
+        runner,
+        conn,
+        event_log,
+        args,
+        issue=issue,
+        run_id=run_id,
+        worker=worker,
         branch=branch,
         pr_number=pr_number,
         pr_url=pr_url,
-        summary="governance adoption",
-        tests=[],
-    )
-    review_rounds = 0
-    ci_rounds = 0
-    pr_feedback_rounds = 0
-    last_pr_feedback_thread_ids: tuple[str, ...] = ()
-    polish_completed = False
-
-    minimum_age_seconds = getattr(args, "pr_minimum_age_seconds", 0)
-    if minimum_age_seconds > 0:
-        update_run(conn, run_id, phase="governance_wait")
-        touch_run(conn, args.repo, issue.number, run_id, args.ci_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS)
-        age_timeout_minutes = max(1, args.ci_timeout, math.ceil(minimum_age_seconds / 60) + 1)
-        age_ok, age_output = wait_for_pr_minimum_age(
-            runner,
-            args.repo,
-            pr_number,
-            minimum_age_seconds=minimum_age_seconds,
-            timeout_minutes=age_timeout_minutes,
-            on_tick=lambda: touch_run(
-                conn,
-                args.repo,
-                issue.number,
-                run_id,
-                age_timeout_minutes * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
-            ),
-        )
-        record_event(
-            conn,
-            event_log,
-            run_id,
-            "pr_freshness_wait_complete",
-            {
-                "passed": age_ok,
-                "output": age_output,
-                "pr_number": pr_number,
-                "minimum_age_seconds": minimum_age_seconds,
-            },
-        )
-        if not age_ok:
-            update_run(conn, run_id, phase="blocked", status="blocked")
-            best_effort_issue_comment(
-                runner,
-                conn,
-                event_log,
-                run_id,
-                args.repo,
-                issue.number,
-                f"Bitterblossom blocked `{run_id}` because governance freshness did not settle: {age_output}",
-                event_type="issue_comment_failed",
-            )
-            return 2
-
-    while True:
-        update_run(conn, run_id, phase="governing")
-        if internal_reviewers:
-            touch_run(
-                conn,
-                args.repo,
-                issue.number,
-                run_id,
-                args.review_timeout * 60 * max(1, len(internal_reviewers)) + DEFAULT_LEASE_BUFFER_SECONDS,
-            )
-            reviews = run_review_round(
-                runner,
-                conn,
-                event_log,
-                args.repo,
-                issue,
-                run_id,
-                builder.pr_number,
-                builder.pr_url,
-                internal_reviewers,
-                pathlib.Path(args.reviewer_template),
-                args.review_timeout,
-                on_tick=lambda: touch_run(
-                    conn,
-                    args.repo,
-                    issue.number,
-                    run_id,
-                    args.review_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
-                ),
-            )
-
-            best_effort_pr_comment(
-                runner,
-                conn,
-                event_log,
-                run_id,
-                args.repo,
-                builder.pr_number,
-                format_council_comment(reviews),
-                event_type="pr_comment_failed",
-            )
-
-            passes = sum(1 for review in reviews if review.verdict == "pass")
-            blocks = [review for review in reviews if review.verdict == "block"]
-            fixes = [review for review in reviews if review.verdict == "fix"]
-
-            if blocks or passes < args.review_quorum:
-                if review_rounds >= args.max_revision_rounds:
-                    update_run(conn, run_id, phase="blocked", status="blocked")
-                    record_event(
-                        conn,
-                        event_log,
-                        run_id,
-                        "council_blocked",
-                        {"reviews": [asdict(review) for review in reviews]},
-                    )
-                    best_effort_issue_comment(
-                        runner,
-                        conn,
-                        event_log,
-                        run_id,
-                        args.repo,
-                        issue.number,
-                        f"Bitterblossom blocked `{run_id}` after review.",
-                        event_type="issue_comment_failed",
-                    )
-                    return 2
-
-                feedback = summarize_reviews(blocks + fixes)
-                update_run(conn, run_id, phase="revising")
-                record_event(conn, event_log, run_id, "revision_requested", {"feedback": feedback, "reason": "review"})
-                builder = run_builder_turn(
-                    runner,
-                    conn,
-                    event_log,
-                    args.repo,
-                    worker,
-                    issue,
-                    run_id,
-                    branch,
-                    builder_template,
-                    args.builder_timeout,
-                    workspace=builder_workspace,
-                    event_type="builder_revised",
-                    feedback=feedback,
-                    feedback_source="review",
-                    pr_number=builder.pr_number,
-                    pr_url=builder.pr_url,
-                )
-                review_rounds += 1
-                last_pr_feedback_thread_ids = ()
-                continue
-
-        touch_run(conn, args.repo, issue.number, run_id, args.ci_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS)
-        update_run(conn, run_id, phase="ci_wait")
-        ensure_pr_ready(runner, args.repo, builder.pr_number)
-        ok, checks_output = wait_for_pr_checks(
-            runner,
-            args.repo,
-            builder.pr_number,
-            args.ci_timeout,
-            on_tick=lambda: touch_run(
-                conn,
-                args.repo,
-                issue.number,
-                run_id,
-                args.ci_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
-            ),
-        )
-        record_event(conn, event_log, run_id, "ci_wait_complete", {"passed": ok, "output": checks_output})
-        if not ok:
-            if ci_rounds >= args.max_ci_rounds:
-                update_run(conn, run_id, phase="failed", status="failed")
-                best_effort_issue_comment(
-                    runner,
-                    conn,
-                    event_log,
-                    run_id,
-                    args.repo,
-                    issue.number,
-                    f"Bitterblossom failed `{run_id}` because PR checks did not pass.",
-                    event_type="issue_comment_failed",
-                )
-                return 1
-
-            feedback = f"CI checks failed for PR #{builder.pr_number}:\n{checks_output}"
-            update_run(conn, run_id, phase="revising")
-            record_event(conn, event_log, run_id, "revision_requested", {"feedback": feedback, "reason": "ci"})
-            builder = run_builder_turn(
-                runner,
-                conn,
-                event_log,
-                args.repo,
-                worker,
-                issue,
-                run_id,
-                branch,
-                builder_template,
-                args.builder_timeout,
-                workspace=builder_workspace,
-                event_type="builder_revised",
-                feedback=feedback,
-                feedback_source="ci",
-                pr_number=builder.pr_number,
-                pr_url=builder.pr_url,
-            )
-            ci_rounds += 1
-            last_pr_feedback_thread_ids = ()
-            continue
-
-        ensure_required_checks_present(runner, args.repo, builder.pr_number)
-        thread_action, feedback, thread_ids = handle_pr_review_threads(
-            runner,
-            conn,
-            event_log,
-            run_id,
-            args.repo,
-            issue.number,
-            builder.pr_number,
-            pr_feedback_rounds=pr_feedback_rounds,
-            max_pr_feedback_rounds=args.max_pr_feedback_rounds,
-            last_pr_feedback_thread_ids=last_pr_feedback_thread_ids,
-        )
-        if thread_action == "clear":
-            last_pr_feedback_thread_ids = ()
-        if thread_action == "blocked":
-            return 2
-        if thread_action == "revise" and feedback is not None:
-            last_pr_feedback_thread_ids = thread_ids
-            builder = run_builder_turn(
-                runner,
-                conn,
-                event_log,
-                args.repo,
-                worker,
-                issue,
-                run_id,
-                branch,
-                builder_template,
-                args.builder_timeout,
-                workspace=builder_workspace,
-                event_type="builder_revised",
-                feedback=feedback,
-                feedback_source="pr_review_threads",
-                pr_number=builder.pr_number,
-                pr_url=builder.pr_url,
-            )
-            pr_feedback_rounds += 1
-            continue
-
-        trusted_surfaces = args.trusted_external_surfaces
-        if trusted_surfaces:
-            external_review_timeout = args.external_review_timeout
-            external_review_quiet_window = args.external_review_quiet_window
-            wave_extra = {
-                "trusted_surfaces": trusted_surfaces,
-                "quiet_window_seconds": external_review_quiet_window,
-            }
-            wave_id = start_review_wave(
-                conn,
-                run_id,
-                "external_review_wait",
-                pr_number=builder.pr_number,
-                reviewer_count=len(trusted_surfaces),
-            )
-            ext_ok: bool | None = None
-            try:
-                record_review_wave_event(
-                    conn,
-                    event_log,
-                    run_id,
-                    wave_id,
-                    "review_wave_started",
-                    extra=wave_extra,
-                )
-                touch_run(
-                    conn,
-                    args.repo,
-                    issue.number,
-                    run_id,
-                    external_review_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
-                )
-                ext_ok, ext_output = wait_for_external_reviews(
-                    runner,
-                    args.repo,
-                    builder.pr_number,
-                    trusted_surfaces,
-                    quiet_window_seconds=external_review_quiet_window,
-                    timeout_minutes=external_review_timeout,
-                    on_tick=lambda: touch_run(
-                        conn,
-                        args.repo,
-                        issue.number,
-                        run_id,
-                        external_review_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS,
-                    ),
-                )
-                record_event(
-                    conn,
-                    event_log,
-                    run_id,
-                    "external_review_wait_complete",
-                    {"wave_id": wave_id, "passed": ext_ok, "output": ext_output, **wave_extra},
-                )
-                complete_review_wave(
-                    conn,
-                    event_log,
-                    run_id,
-                    wave_id,
-                    "settled" if ext_ok else "failed",
-                    extra=wave_extra,
-                )
-            except Exception:
-                complete_review_wave(
-                    conn,
-                    event_log,
-                    run_id,
-                    wave_id,
-                    "settled" if ext_ok else "failed",
-                    extra=wave_extra,
-                    preserve_primary_error=True,
-                    skip_if_terminal=True,
-                )
-                raise
-            if not ext_ok:
-                update_run(conn, run_id, phase="blocked", status="blocked")
-                best_effort_issue_comment(
-                    runner,
-                    conn,
-                    event_log,
-                    run_id,
-                    args.repo,
-                    issue.number,
-                    f"Bitterblossom blocked `{run_id}` because trusted external reviews did not settle: {ext_output[:500]}",
-                    event_type="issue_comment_failed",
-                )
-                return 2
-            thread_action, feedback, thread_ids = handle_pr_review_threads(
-                runner,
-                conn,
-                event_log,
-                run_id,
-                args.repo,
-                issue.number,
-                builder.pr_number,
-                pr_feedback_rounds=pr_feedback_rounds,
-                max_pr_feedback_rounds=args.max_pr_feedback_rounds,
-                last_pr_feedback_thread_ids=last_pr_feedback_thread_ids,
-            )
-            if thread_action == "clear":
-                last_pr_feedback_thread_ids = ()
-            if thread_action == "blocked":
-                return 2
-            if thread_action == "revise" and feedback is not None:
-                last_pr_feedback_thread_ids = thread_ids
-                builder = run_builder_turn(
-                    runner,
-                    conn,
-                    event_log,
-                    args.repo,
-                    worker,
-                    issue,
-                    run_id,
-                    branch,
-                    builder_template,
-                    args.builder_timeout,
-                    workspace=builder_workspace,
-                    event_type="builder_revised",
-                    feedback=feedback,
-                    feedback_source="pr_review_threads",
-                    pr_number=builder.pr_number,
-                    pr_url=builder.pr_url,
-                )
-                pr_feedback_rounds += 1
-                continue
-
-        if not polish_completed:
-            update_run(conn, run_id, phase="polishing")
-            record_event(conn, event_log, run_id, "final_polish_requested", {"pr_number": builder.pr_number})
-            builder = run_builder_turn(
-                runner,
-                conn,
-                event_log,
-                args.repo,
-                worker,
-                issue,
-                run_id,
-                branch,
-                builder_template,
-                args.builder_timeout,
-                workspace=builder_workspace,
-                event_type="final_polish_complete",
-                feedback=final_polish_feedback(builder.pr_number),
-                feedback_source="polish",
-                pr_number=builder.pr_number,
-                pr_url=builder.pr_url,
-            )
-            polish_completed = True
-            last_pr_feedback_thread_ids = ()
-            # Re-enter the full governor loop so any polish changes re-run review,
-            # CI, thread, and external-review gates before merge.
-            continue
-
-        update_run(conn, run_id, phase="merge_ready")
-        touch_run(conn, args.repo, issue.number, run_id, 600)
-        merge_pr(runner, args.repo, builder.pr_number)
-        update_run(conn, run_id, phase="merged", status="merged")
-        record_event(conn, event_log, run_id, "merged", {"pr_number": builder.pr_number, "pr_url": builder.pr_url})
-        best_effort_issue_comment(
-            runner,
-            conn,
-            event_log,
-            run_id,
-            args.repo,
-            issue.number,
-            f"Bitterblossom merged `{run_id}` via PR #{builder.pr_number}.",
-            event_type="issue_comment_failed",
-        )
-        return 0
+        builder_workspace=builder_workspace,
+    ).run()
 
 
 def run_once(args: argparse.Namespace) -> int:
@@ -5354,8 +5764,20 @@ def show_runs(args: argparse.Namespace) -> int:
         """,
         (args.limit,),
     ).fetchall()
+    run_ids = [row["run_id"] for row in rows]
+    recovery_by_run = latest_worktree_recovery_events(conn, run_ids)
+    blocking_by_run = blocking_events_for_runs(conn, run_ids)
     for row in rows:
-        print(json.dumps(serialize_run_surface(conn, row)))
+        print(
+            json.dumps(
+                serialize_run_surface(
+                    conn,
+                    row,
+                    worktree_recovery_event=recovery_by_run.get(row["run_id"]),
+                    blocking_event=blocking_by_run.get(row["run_id"]),
+                )
+            )
+        )
     return 0
 
 
@@ -5666,6 +6088,27 @@ def route_issue(args: argparse.Namespace) -> int:
     return emit_payload(decision.issue, decision.profile, decision.rationale, decision.readiness_failures, 0)
 
 
+def qa_intake(args: argparse.Namespace) -> int:
+    runner = Runner(ROOT)
+    try:
+        command_argv = shlex.split(args.command)
+    except ValueError as exc:
+        raise CmdError(f"invalid qa probe command: {exc}") from exc
+    if not command_argv:
+        raise CmdError("qa probe command is empty")
+    try:
+        probe_output = runner.run(command_argv, timeout=getattr(args, "timeout", 900))
+        payload = json.loads(probe_output)
+    except json.JSONDecodeError as exc:
+        raise CmdError(f"qa probe command returned invalid JSON: {exc}") from exc
+    except OSError as exc:
+        raise CmdError(f"failed to execute qa probe command: {exc}") from exc
+    findings = parse_qa_intake_payload(payload)
+    created, updated = sync_qa_findings(runner, args.repo, findings)
+    print(f"created={len(created)} updated={len(updated)} findings={len(findings)}")
+    return 0
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Bitterblossom conductor MVP")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -5748,6 +6191,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     route_p.add_argument("--limit", type=int, default=25)
     route_p.add_argument("--builder-profile", default="claude-sonnet")
     route_p.set_defaults(func=route_issue)
+
+    qa_p = sub.add_parser("qa-intake", help="Run a QA probe command and sync findings into GitHub issues")
+    qa_p.add_argument("--repo", required=True)
+    qa_p.add_argument("--command", required=True, help="Shell-style probe command that prints QA finding JSON to stdout")
+    qa_p.add_argument("--timeout", type=int, default=900)
+    qa_p.set_defaults(func=qa_intake)
 
     show_p = sub.add_parser("show-runs", help="Show recent runs")
     show_p.add_argument("--db", default=str(DEFAULT_DB))

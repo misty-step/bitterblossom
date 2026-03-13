@@ -1,0 +1,13 @@
+== Governance shape delta ==
+{'base': {'govern_pr_flow': 434}, 'current': {'GovernanceSession': 448, 'govern_pr_flow': 27}}
+
+== Ruff ==
+All checks passed!
+
+== Governance regression slice ==
+....................................                                     [100%]
+36 passed, 209 deselected in 0.86s
+
+== External-only regression slice ==
+.....                                                                    [100%]
+5 passed, 240 deselected in 0.44s

@@ -18,6 +18,10 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent))
 import conductor  # noqa: E402
 
 
+def _qa_test_key(seed: str) -> str:
+    return conductor.qa_dedupe_key(seed, seed, f"https://{seed}.example.com", "production", [seed])
+
+
 @pytest.fixture(autouse=True)
 def _stub_run_once_worktrees(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> None:
     node_name = request.node.name
@@ -51,6 +55,19 @@ def test_run_workspace_uses_run_root_and_lane_suffix() -> None:
         conductor.run_workspace("misty-step/bitterblossom", "run-42-1777", "builder")
         == "/home/sprite/workspace/bitterblossom/.bb/conductor/run-42-1777/builder-worktree"
     )
+
+
+def test_init_db_creates_events_index_for_worktree_recovery_queries(tmp_path: pathlib.Path) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    idx = conn.execute(
+        "select tbl_name from sqlite_master where type='index' and name='idx_events_run_id_event_type_id'"
+    ).fetchone()
+    assert idx is not None, "idx_events_run_id_event_type_id must exist after init_db"
+    assert idx["tbl_name"] == "events", "idx_events_run_id_event_type_id must index the events table"
+
+    info = conn.execute("pragma index_xinfo('idx_events_run_id_event_type_id')").fetchall()
+    indexed_cols = [(row["name"], row["desc"]) for row in info if row["key"]]
+    assert indexed_cols == [("run_id", 0), ("event_type", 0), ("id", 1)]
 
 
 def test_parse_args_allows_external_authority_without_reviewers() -> None:
@@ -380,6 +397,35 @@ def test_pick_issue_skips_leased_and_prefers_higher_priority(tmp_path: pathlib.P
     assert picked.number == 3
 
 
+def test_pick_issue_prefers_qa_origin_within_same_priority_tier(tmp_path: pathlib.Path) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    ready_body = "## Product Spec\n### Intent Contract\n- good\n"
+
+    issues = [
+        conductor.Issue(
+            number=7,
+            title="ordinary p1",
+            body=ready_body,
+            url="u7",
+            labels=["autopilot", "P1"],
+            updated_at="2026-03-06T00:00:00Z",
+        ),
+        conductor.Issue(
+            number=8,
+            title="qa p1",
+            body=ready_body,
+            url="u8",
+            labels=["autopilot", "P1", "source/qa"],
+            updated_at="2026-03-06T00:00:00Z",
+        ),
+    ]
+
+    picked = conductor.pick_issue(conn, issues, "misty-step/bitterblossom")
+
+    assert picked is not None
+    assert picked.number == 8
+
+
 def test_pick_issue_treats_expired_leases_as_eligible(tmp_path: pathlib.Path) -> None:
     conn = conductor.open_db(tmp_path / "conductor.db")
     assert conductor.acquire_lease(conn, "misty-step/bitterblossom", 2, "run-2-1") is True
@@ -574,6 +620,367 @@ def test_validate_issue_readiness_requires_exact_intent_contract_heading() -> No
 
     assert readiness.ready is False
     assert readiness.reasons == ["missing `### Intent Contract` section"]
+
+
+def test_parse_qa_intake_payload_normalizes_findings() -> None:
+    payload = {
+        "target": "https://app.example.com",
+        "environment": "production",
+        "findings": [
+            {
+                "title": "Checkout button disabled",
+                "summary": "Valid form input never enables submit.",
+                "severity": "high",
+                "repro_steps": ["Open /checkout", "Fill valid form", "Observe disabled button"],
+                "evidence": [{"kind": "screenshot", "label": "disabled button", "url": "https://example.com/shot.png"}],
+            }
+        ],
+    }
+
+    findings = conductor.parse_qa_intake_payload(payload)
+
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.target_url == "https://app.example.com"
+    assert finding.environment == "production"
+    assert finding.priority_label == "p1"
+    assert finding.labels == ["autopilot", "bug", "domain/infra", "p1", "source/qa"]
+    assert finding.dedupe_key
+    assert len(finding.dedupe_key) == 12
+
+
+def test_parse_qa_intake_payload_normalizes_or_replaces_external_dedupe_key() -> None:
+    valid_external_key = "".join(["ABC123", "DEF456"])
+    payload = {
+        "target": "https://app.example.com",
+        "environment": "production",
+        "findings": [
+            {
+                "title": "Uppercase key",
+                "summary": "Probe supplied uppercase hex.",
+                "severity": "medium",
+                "dedupe_key": valid_external_key,
+                "repro_steps": ["Open /", "Observe issue"],
+                "evidence": [],
+            },
+            {
+                "title": "Invalid key",
+                "summary": "Probe supplied an invalid custom key.",
+                "severity": "medium",
+                "dedupe_key": "not-a-valid-key",
+                "repro_steps": ["Open /", "Observe issue"],
+                "evidence": [],
+            },
+        ],
+    }
+
+    findings = conductor.parse_qa_intake_payload(payload)
+
+    assert findings[0].dedupe_key == valid_external_key.lower()
+    assert findings[1].dedupe_key != "not-a-valid-key"
+    assert len(findings[1].dedupe_key) == 12
+
+
+def test_parse_qa_intake_payload_rejects_non_object_payload() -> None:
+    with pytest.raises(conductor.CmdError, match="qa intake payload must be a JSON object"):
+        conductor.parse_qa_intake_payload(["not", "an", "object"])  # type: ignore[arg-type]
+
+
+def test_sync_qa_findings_creates_new_issue_for_novel_finding() -> None:
+    runner = _RunnerSpy(responses=["https://github.com/misty-step/bitterblossom/issues/999\n"])
+    dedupe_key = _qa_test_key("checkout-button-disabled")
+    finding = conductor.QAFinding(
+        title="Checkout button disabled",
+        summary="Valid form input never enables submit.",
+        severity="high",
+        target_url="https://app.example.com/checkout",
+        environment="production",
+        repro_steps=["Open /checkout", "Fill valid form", "Observe disabled button"],
+        evidence=[{"kind": "screenshot", "label": "disabled button", "url": "https://example.com/shot.png"}],
+        dedupe_key=dedupe_key,
+        priority_label="p1",
+        labels=["autopilot", "bug", "domain/infra", "p1", "source/qa"],
+    )
+
+    created, updated = conductor.sync_qa_findings(
+        runner,
+        "misty-step/bitterblossom",
+        [finding],
+        existing_issue_by_key={},
+    )
+
+    assert created == ["https://github.com/misty-step/bitterblossom/issues/999"]
+    assert updated == []
+    create_call = next(call for call in runner.calls if call[:3] == ["gh", "issue", "create"])
+    assert "--body-file" in create_call
+    assert create_call.count("--label") == len(finding.labels)
+
+
+def test_sync_qa_findings_uses_created_issue_number_for_same_batch_duplicate() -> None:
+    runner = _RunnerSpy(
+        responses=[
+            "https://github.com/misty-step/bitterblossom/issues/999\n",
+            "",
+        ]
+    )
+    dedupe_key = _qa_test_key("checkout-batch-duplicate")
+    findings = [
+        conductor.QAFinding(
+            title="Checkout button disabled",
+            summary="Valid form input never enables submit.",
+            severity="high",
+            target_url="https://app.example.com/checkout",
+            environment="production",
+            repro_steps=["Open /checkout", "Fill valid form", "Observe disabled button"],
+            evidence=[],
+            dedupe_key=dedupe_key,
+            priority_label="p1",
+            labels=["autopilot", "bug", "domain/infra", "p1", "source/qa"],
+        ),
+        conductor.QAFinding(
+            title="Checkout button disabled",
+            summary="Valid form input never enables submit.",
+            severity="high",
+            target_url="https://app.example.com/checkout",
+            environment="production",
+            repro_steps=["Open /checkout", "Fill valid form", "Observe disabled button"],
+            evidence=[],
+            dedupe_key=dedupe_key,
+            priority_label="p1",
+            labels=["autopilot", "bug", "domain/infra", "p1", "source/qa"],
+        ),
+    ]
+
+    created, updated = conductor.sync_qa_findings(
+        runner,
+        "misty-step/bitterblossom",
+        findings,
+        existing_issue_by_key={},
+    )
+
+    assert created == ["https://github.com/misty-step/bitterblossom/issues/999"]
+    assert updated == ["https://github.com/misty-step/bitterblossom/issues/999"]
+    comment_call = next(call for call in runner.calls if call[:3] == ["gh", "issue", "comment"])
+    assert comment_call[3] == "999"
+
+
+def test_sync_qa_findings_comments_on_existing_issue_for_duplicate() -> None:
+    runner = _RunnerSpy()
+    dedupe_key = _qa_test_key("checkout-existing-duplicate")
+    finding = conductor.QAFinding(
+        title="Checkout button disabled",
+        summary="Valid form input never enables submit.",
+        severity="high",
+        target_url="https://app.example.com/checkout",
+        environment="production",
+        repro_steps=["Open /checkout", "Fill valid form", "Observe disabled button"],
+        evidence=[{"kind": "screenshot", "label": "disabled button", "url": "https://example.com/shot.png"}],
+        dedupe_key=dedupe_key,
+        priority_label="p1",
+        labels=["autopilot", "bug", "domain/infra", "p1", "source/qa"],
+    )
+
+    conductor.sync_qa_findings(
+        runner,
+        "misty-step/bitterblossom",
+        [finding],
+        existing_issue_by_key={
+            dedupe_key: conductor.Issue(
+                number=505,
+                title="existing",
+                body="",
+                url="https://example.com/505",
+                labels=[],
+            )
+        },
+    )
+
+    comment_call = next(call for call in runner.calls if call[:3] == ["gh", "issue", "comment"])
+    assert comment_call[3] == "505"
+    assert comment_call[4] == "--repo"
+    assert comment_call[5] == "misty-step/bitterblossom"
+    assert "--body-file" in comment_call
+
+
+def test_sync_qa_findings_escalates_priority_label_for_duplicate() -> None:
+    runner = _RunnerSpy()
+    dedupe_key = _qa_test_key("checkout-severity-escalation")
+    finding = conductor.QAFinding(
+        title="Checkout button disabled",
+        summary="Valid form input never enables submit.",
+        severity="critical",
+        target_url="https://app.example.com/checkout",
+        environment="production",
+        repro_steps=["Open /checkout", "Fill valid form", "Observe disabled button"],
+        evidence=[],
+        dedupe_key=dedupe_key,
+        priority_label="p0",
+        labels=["autopilot", "bug", "domain/infra", "p0", "source/qa"],
+    )
+
+    existing = conductor.Issue(
+        number=505,
+        title="existing",
+        body="",
+        url="https://example.com/505",
+        labels=["bug", "p3", "source/qa"],
+    )
+
+    conductor.sync_qa_findings(
+        runner,
+        "misty-step/bitterblossom",
+        [finding],
+        existing_issue_by_key={dedupe_key: existing},
+    )
+
+    edit_call = next(call for call in runner.calls if call[:3] == ["gh", "issue", "edit"])
+    assert edit_call[3] == "505"
+    assert "--add-label" in edit_call
+    assert "p0" in edit_call
+    assert "--remove-label" in edit_call
+    assert "p3" in edit_call
+    assert "p0" in existing.labels
+    assert "p3" not in existing.labels
+
+
+def test_render_qa_issue_comment_keeps_evidence_links_clickable() -> None:
+    dedupe_key = _qa_test_key("checkout-comment-links")
+    finding = conductor.QAFinding(
+        title="Checkout button disabled",
+        summary="Valid form input never enables submit.",
+        severity="high",
+        target_url="https://app.example.com/checkout",
+        environment="production",
+        repro_steps=["Open /checkout", "Fill valid form", "Observe disabled button"],
+        evidence=[{"kind": "screenshot", "label": "disabled button", "url": "https://example.com/shot.png"}],
+        dedupe_key=dedupe_key,
+        priority_label="p1",
+        labels=["autopilot", "bug", "domain/infra", "p1", "source/qa"],
+    )
+
+    body = conductor.render_qa_issue_comment(finding)
+
+    assert "[disabled button](https://example.com/shot.png)" in body
+
+
+def test_existing_qa_issues_by_key_paginates_all_open_source_qa_issues() -> None:
+    runner = _RunnerSpy(
+        responses=[
+            json.dumps(
+                [
+                    {
+                        "number": 1,
+                        "title": "issue 1",
+                        "body": f"<!-- bitterblossom-qa-dedupe:{_qa_test_key('page-one')} -->",
+                        "url": "https://example.com/1",
+                        "labels": [{"name": "source/qa"}, {"name": "p1"}],
+                        "updated_at": "2026-03-13T00:00:00Z",
+                    }
+                ]
+            ),
+            json.dumps(
+                [
+                    {
+                        "number": 2,
+                        "title": "issue 2",
+                        "body": f"<!-- bitterblossom-qa-dedupe:{_qa_test_key('page-two')} -->",
+                        "url": "https://example.com/2",
+                        "labels": [{"name": "source/qa"}, {"name": "p2"}],
+                        "updated_at": "2026-03-13T00:01:00Z",
+                    },
+                    {
+                        "number": 3,
+                        "title": "ignore pull request",
+                        "body": "",
+                        "url": "https://example.com/3",
+                        "labels": [{"name": "source/qa"}],
+                        "updated_at": "2026-03-13T00:02:00Z",
+                        "pull_request": {"url": "https://example.com/pr/3"},
+                    },
+                ]
+            ),
+            "[]",
+        ]
+    )
+
+    issues = conductor.existing_qa_issues_by_key(runner, "misty-step/bitterblossom")
+
+    assert sorted(issues) == sorted([_qa_test_key("page-one"), _qa_test_key("page-two")])
+    assert runner.calls == [
+        ["gh", "api", "repos/misty-step/bitterblossom/issues?state=open&labels=source/qa&per_page=100&page=1"],
+        ["gh", "api", "repos/misty-step/bitterblossom/issues?state=open&labels=source/qa&per_page=100&page=2"],
+        ["gh", "api", "repos/misty-step/bitterblossom/issues?state=open&labels=source/qa&per_page=100&page=3"],
+    ]
+
+
+def test_qa_intake_rejects_invalid_command_quoting() -> None:
+    with pytest.raises(conductor.CmdError, match="invalid qa probe command"):
+        conductor.qa_intake(
+            argparse.Namespace(
+                repo="misty-step/bitterblossom",
+                command="'unterminated",
+            )
+        )
+
+
+def test_qa_intake_rejects_empty_command() -> None:
+    with pytest.raises(conductor.CmdError, match="qa probe command is empty"):
+        conductor.qa_intake(
+            argparse.Namespace(
+                repo="misty-step/bitterblossom",
+                command="",
+            )
+        )
+
+
+def test_qa_intake_wraps_exec_failures(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _ExecFailRunner:
+        def run(self, argv: list[str], *, timeout: int | None = None, check: bool = True) -> str:
+            _ = (argv, timeout, check)
+            raise FileNotFoundError("qa-probe")
+
+    monkeypatch.setattr(conductor, "Runner", lambda _cwd: _ExecFailRunner())
+
+    with pytest.raises(conductor.CmdError, match="failed to execute qa probe command"):
+        conductor.qa_intake(
+            argparse.Namespace(
+                repo="misty-step/bitterblossom",
+                command="qa-probe --target https://app.example.com",
+            )
+        )
+
+
+def test_qa_intake_runs_probe_command_and_prints_summary(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    probe_payload = {
+        "target": "https://app.example.com",
+        "environment": "production",
+        "findings": [
+            {
+                "title": "Checkout button disabled",
+                "summary": "Valid form input never enables submit.",
+                "severity": "high",
+                "repro_steps": ["Open /checkout", "Fill valid form", "Observe disabled button"],
+                "evidence": [],
+            }
+        ],
+    }
+
+    runner = _RunnerSpy(responses=[json.dumps(probe_payload), "[]", "https://github.com/misty-step/bitterblossom/issues/999\n"])
+    monkeypatch.setattr(conductor, "Runner", lambda _cwd: runner)
+
+    rc = conductor.qa_intake(
+        argparse.Namespace(
+            repo="misty-step/bitterblossom",
+            command="python3 qa_probe.py --target https://app.example.com",
+        )
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert runner.calls[0] == ["python3", "qa_probe.py", "--target", "https://app.example.com"]
+    assert "created=1 updated=0" in captured.out
 
 
 def test_invoke_claude_json_reads_structured_output_event(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2900,6 +3307,7 @@ def test_run_builder_precleans_worker(monkeypatch: pytest.MonkeyPatch) -> None:
         "factory/464-docs-1",
         pathlib.Path("scripts/prompts/conductor-builder-template.md"),
         10,
+        workspace=conductor.run_workspace("misty-step/bitterblossom", "run-464-1", "builder"),
     )
 
     assert cleaned == ["noble-blue-serpent"]
@@ -3947,6 +4355,71 @@ def test_run_once_blocks_when_stale_pr_threads_persist_after_revision(monkeypatc
     assert any("need human confirmation" in body for body in issue_comments)
 
 
+def test_run_once_thread_revision_keeps_original_event_log_shape(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    issue = conductor.Issue(number=447, title="test", body="body", url="https://example.com/447", labels=["autopilot"])
+    builder = conductor.BuilderResult(
+        status="ready_for_review",
+        branch="factory/447-test-123",
+        pr_number=460,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/460",
+        summary="done",
+        tests=[],
+    )
+    reviews = [
+        conductor.ReviewResult(reviewer="fern", verdict="pass", summary="ok", findings=[]),
+        conductor.ReviewResult(reviewer="sage", verdict="pass", summary="ok", findings=[]),
+        conductor.ReviewResult(reviewer="thorn", verdict="pass", summary="ok", findings=[]),
+    ]
+    thread = conductor.ReviewThread(
+        id="thread-1",
+        path="README.md",
+        line=59,
+        author_login="gemini-code-assist",
+        body="please keep this copy-pastable",
+        url="https://example.com/thread-1",
+    )
+    thread_reads = iter([[thread], [], [], []])
+
+    monkeypatch.setattr(conductor, "get_issue", lambda *_args, **_kwargs: issue)
+    monkeypatch.setattr(conductor, "select_worker_slot", _select_named_worker_slot("noble-blue-serpent"))
+    monkeypatch.setattr(conductor, "ensure_reviewers_ready", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(conductor, "run_builder", lambda *_args, **_kwargs: (builder, {"status": "ready_for_review"}))
+    monkeypatch.setattr(conductor, "run_review_round", lambda *_args, **_kwargs: reviews)
+    monkeypatch.setattr(conductor, "ensure_pr_ready", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(conductor, "wait_for_pr_checks", lambda *_args, **_kwargs: (True, "green"))
+    monkeypatch.setattr(conductor, "ensure_required_checks_present", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(conductor, "list_unresolved_review_threads", lambda *_args, **_kwargs: next(thread_reads))
+    monkeypatch.setattr(
+        conductor,
+        "resolve_review_threads",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected auto-resolve")),
+    )
+    monkeypatch.setattr(conductor, "merge_pr", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(conductor, "comment_pr", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(conductor, "comment_issue", lambda *_args, **_kwargs: None)
+
+    rc = conductor.run_once(_make_run_once_args(tmp_path, issue_number=447))
+
+    assert rc == 0
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    run_row = conn.execute("select run_id from runs where issue_number = ?", (447,)).fetchone()
+    assert run_row is not None
+    events = conn.execute(
+        "select event_type, payload_json from events where run_id = ? order by id",
+        (run_row["run_id"],),
+    ).fetchall()
+    event_types = [row["event_type"] for row in events]
+    assert event_types.count("builder_revised") == 1
+    revision_events = [
+        json.loads(row["payload_json"])
+        for row in events
+        if row["event_type"] == "revision_requested"
+    ]
+    assert [payload["reason"] for payload in revision_events] == ["pr_feedback"]
+
+
 def test_run_once_blocks_on_untrusted_pr_thread(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
     issue = conductor.Issue(number=447, title="test", body="body", url="https://example.com/447", labels=["autopilot"])
     builder = conductor.BuilderResult(
@@ -4374,6 +4847,45 @@ def test_show_runs_surfaces_worktree_recovery_context(tmp_path: pathlib.Path, ca
     assert payload["worktree_recovery_status"] == "cleanup_failed"
     assert payload["worktree_recovery_event_type"] == "cleanup_warning"
     assert payload["worktree_recovery_error"] == "builder workspace cleanup failed: permission denied"
+
+
+def test_show_runs_surfaces_builder_workspace_preparation_failure(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=45, title="prepare", body="body", url="https://example.com/45", labels=["autopilot"])
+    conductor.create_run(conn, "run-45b", "misty-step/bitterblossom", issue, "claude-sonnet")
+    conductor.update_run(
+        conn,
+        "run-45b",
+        phase="failed",
+        status="failed",
+        builder_sprite="noble-blue-serpent",
+        worktree_path="/tmp/run-45b/builder-worktree",
+    )
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-45b",
+        "workspace_preparation_failed",
+        {
+            "sprite": "noble-blue-serpent",
+            "lane": "builder",
+            "workspace": "/tmp/run-45b/builder-worktree",
+            "attempt": 3,
+            "attempts": 3,
+            "error": "mirror lock acquisition timed out",
+        },
+    )
+
+    rc = conductor.show_runs(argparse.Namespace(db=str(tmp_path / "conductor.db"), limit=5))
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload["worktree_path"] == "/tmp/run-45b/builder-worktree"
+    assert payload["worktree_recovery_status"] == "prepare_failed"
+    assert payload["worktree_recovery_event_type"] == "workspace_preparation_failed"
+    assert payload["worktree_recovery_error"] == "mirror lock acquisition timed out"
 
 
 def test_show_runs_ignores_non_workspace_cleanup_warnings(
@@ -6805,6 +7317,7 @@ def test_govern_pr_uses_external_authority_without_internal_reviewers(
 ) -> None:
     issue = conductor.Issue(number=494, title="govern", body="", url="https://example.com/494", labels=["autopilot"])
     events: list[tuple[str, int | tuple[str, ...]]] = []
+    phase_updates: list[str] = []
     merge_calls: list[int] = []
     conn = conductor.open_db(tmp_path / "conductor.db")
     assert conductor.acquire_lease(conn, "misty-step/bitterblossom", issue.number, "run-479-1") is True
@@ -6821,6 +7334,14 @@ def test_govern_pr_uses_external_authority_without_internal_reviewers(
         pr_url="https://github.com/misty-step/bitterblossom/pull/490",
     )
 
+    original_update_run = conductor.update_run
+
+    def tracking_update_run(conn: sqlite3.Connection, run_id: str, **kwargs: object) -> None:
+        if run_id == "run-479-1" and "phase" in kwargs:
+            phase_updates.append(str(kwargs["phase"]))
+        original_update_run(conn, run_id, **kwargs)
+
+    monkeypatch.setattr(conductor, "update_run", tracking_update_run)
     monkeypatch.setattr(conductor, "cleanup_builder_workspace", lambda *_a, **_kw: None)
     monkeypatch.setattr(conductor, "ensure_governance_run", lambda *_a, **_kw: _make_governance_run(issue))
     monkeypatch.setattr(
@@ -6832,15 +7353,19 @@ def test_govern_pr_uses_external_authority_without_internal_reviewers(
     monkeypatch.setattr(conductor, "wait_for_pr_checks", lambda *_a, **_kw: (True, "merge-gate: SUCCESS"))
     monkeypatch.setattr(conductor, "ensure_required_checks_present", lambda *_a, **_kw: None)
     monkeypatch.setattr(conductor, "list_unresolved_review_threads", lambda *_a, **_kw: [])
-    monkeypatch.setattr(
-        conductor,
-        "wait_for_external_reviews",
-        lambda _runner, _repo, pr_number, surfaces, **_kw: (
-            events.append(("external_wait", pr_number)),
-            events.append(("surfaces", tuple(surfaces))),
-            (True, "Cerberus: SUCCESS"),
-        )[-1],
-    )
+
+    def fake_wait_for_external_reviews(
+        _runner: object,
+        _repo: str,
+        pr_number: int,
+        surfaces: list[str],
+        **_kw: object,
+    ) -> tuple[bool, str]:
+        events.append(("external_wait", pr_number))
+        events.append(("surfaces", tuple(surfaces)))
+        return True, "Cerberus: SUCCESS"
+
+    monkeypatch.setattr(conductor, "wait_for_external_reviews", fake_wait_for_external_reviews)
     monkeypatch.setattr(
         conductor,
         "run_builder",
@@ -6881,6 +7406,128 @@ def test_govern_pr_uses_external_authority_without_internal_reviewers(
     assert ("merge", 490) in events
     assert events.index(("external_wait", 490)) < events.index(("merge", 490))
     assert merge_calls == [490]
+    assert phase_updates.count("governing") >= events.count(("external_wait", 490))
+
+
+def test_govern_pr_refreshes_lease_for_governance_builder_turns_and_merge(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    issue = conductor.Issue(number=495, title="govern", body="", url="https://example.com/495", labels=["autopilot"])
+    merge_calls: list[int] = []
+    ttl_updates: list[int] = []
+    trusted_thread = conductor.ReviewThread(
+        id="thread-1",
+        path="scripts/conductor.py",
+        line=2034,
+        author_login="review-bot",
+        author_association="MEMBER",
+        body=(
+            "This thread reopened after the earlier clear.\n\n"
+            "<!-- bitterblossom: {\"classification\":\"bug\",\"severity\":\"high\",\"decision\":\"fix_now\"} -->"
+        ),
+        url="https://example.com/thread-1",
+    )
+    thread_reads = iter([[trusted_thread], [], [], [], []])
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    assert conductor.acquire_lease(conn, "misty-step/bitterblossom", issue.number, "run-495-1") is True
+    conductor.create_run(conn, "run-495-1", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(
+        conn,
+        "run-495-1",
+        phase="awaiting_governance",
+        status="active",
+        builder_sprite="noble-blue-serpent",
+        worktree_path="/tmp/run-495-1-builder",
+        branch="factory/495-handoff-1",
+        pr_number=496,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/496",
+    )
+
+    original_touch_run = conductor.touch_run
+
+    def tracking_touch_run(
+        conn: sqlite3.Connection,
+        repo: str,
+        issue_number: int,
+        run_id: str,
+        ttl_seconds: int,
+    ) -> None:
+        if run_id == "run-495-1":
+            ttl_updates.append(ttl_seconds)
+        original_touch_run(conn, repo, issue_number, run_id, ttl_seconds)
+
+    monkeypatch.setattr(conductor, "touch_run", tracking_touch_run)
+    monkeypatch.setattr(conductor, "cleanup_builder_workspace", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        conductor,
+        "ensure_governance_run",
+        lambda *_a, **_kw: conductor.GovernanceRun(
+            issue=issue,
+            run_id="run-495-1",
+            worker="noble-blue-serpent",
+            worker_slot=conductor.WorkerSlot(
+                id=7,
+                repo="misty-step/bitterblossom",
+                worker="noble-blue-serpent",
+                slot_index=1,
+                state=conductor.WORKER_SLOT_ACTIVE,
+                consecutive_failures=0,
+                current_run_id="run-495-1",
+                last_probe_at=None,
+                last_error=None,
+                updated_at="2026-03-12T12:00:00Z",
+            ),
+            branch="factory/495-handoff-1",
+            pr_number=496,
+            pr_url="https://github.com/misty-step/bitterblossom/pull/496",
+            builder_workspace="/tmp/run-495-1-builder",
+        ),
+    )
+    monkeypatch.setattr(
+        conductor,
+        "run_review_round",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("review council should be skipped")),
+    )
+    monkeypatch.setattr(conductor, "ensure_pr_ready", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "wait_for_pr_checks", lambda *_a, **_kw: (True, "merge-gate: SUCCESS"))
+    monkeypatch.setattr(conductor, "ensure_required_checks_present", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "list_unresolved_review_threads", lambda *_a, **_kw: next(thread_reads))
+    monkeypatch.setattr(conductor, "wait_for_external_reviews", lambda *_a, **_kw: (True, "CodeRabbit: SUCCESS"))
+    monkeypatch.setattr(
+        conductor,
+        "run_builder",
+        lambda *_a, **_kw: (
+            conductor.BuilderResult(
+                status="ready_for_review",
+                branch="factory/495-handoff-1",
+                pr_number=496,
+                pr_url="https://github.com/misty-step/bitterblossom/pull/496",
+                summary="polished",
+                tests=[],
+            ),
+            {"status": "ready_for_review"},
+        ),
+    )
+    monkeypatch.setattr(conductor, "comment_pr", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "comment_issue", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "merge_pr", lambda _r, _repo, pr_num: merge_calls.append(pr_num))
+
+    args = _make_govern_pr_args(
+        tmp_path,
+        issue_number=495,
+        pr_number=496,
+        run_id="run-495-1",
+        reviewers=[],
+        trusted_external_surfaces=["CodeRabbit"],
+    )
+    args.builder_timeout = 7
+
+    rc = conductor.govern_pr(args)
+
+    assert rc == 0
+    assert merge_calls == [496]
+    assert ttl_updates.count(args.builder_timeout * 60 + conductor.DEFAULT_LEASE_BUFFER_SECONDS) >= 2
+    assert 2 * 120 + 600 + conductor.DEFAULT_LEASE_BUFFER_SECONDS in ttl_updates
 
 
 def test_govern_pr_marks_run_failed_when_lease_is_lost(
@@ -7470,6 +8117,70 @@ def test_run_once_uses_external_authority_without_internal_reviewers(
     assert "external_review_wait_complete" in event_types
 
 
+def test_run_once_reruns_final_polish_after_post_polish_thread_revision(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    issue = conductor.Issue(number=497, title="post-polish", body="", url="https://example.com/497", labels=["autopilot"])
+    builder = conductor.BuilderResult(
+        status="ready_for_review",
+        branch="factory/497-gov-1",
+        pr_number=498,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/498",
+        summary="done",
+        tests=[],
+    )
+    reviews = [
+        conductor.ReviewResult(reviewer="fern", verdict="pass", summary="ok", findings=[]),
+        conductor.ReviewResult(reviewer="sage", verdict="pass", summary="ok", findings=[]),
+        conductor.ReviewResult(reviewer="thorn", verdict="pass", summary="ok", findings=[]),
+    ]
+    builder_turns: list[tuple[str | None, str | None]] = []
+    merge_calls: list[int] = []
+    trusted_thread = conductor.ReviewThread(
+        id="thread-1",
+        path="scripts/conductor.py",
+        line=2034,
+        author_login="review-bot",
+        author_association="MEMBER",
+        body=(
+            "This thread reopened after the earlier clear.\n\n"
+            "<!-- bitterblossom: {\"classification\":\"bug\",\"severity\":\"high\",\"decision\":\"fix_now\"} -->"
+        ),
+        url="https://example.com/thread-1",
+    )
+    thread_reads = iter([[], [trusted_thread], [], []])
+    check_results = iter([(True, "green"), (True, "green"), (True, "green"), (True, "green")])
+
+    monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
+    monkeypatch.setattr(conductor, "select_worker_slot", _select_named_worker_slot("noble-blue-serpent"))
+    monkeypatch.setattr(conductor, "ensure_reviewers_ready", lambda *_a, **_kw: None)
+
+    def fake_run_builder(*_args: object, **kwargs: object) -> tuple[conductor.BuilderResult, dict[str, object]]:
+        builder_turns.append((kwargs.get("feedback"), kwargs.get("feedback_source")))  # type: ignore[arg-type]
+        return builder, {"status": "ready_for_review"}
+
+    monkeypatch.setattr(conductor, "run_builder", fake_run_builder)
+    monkeypatch.setattr(conductor, "run_review_round", lambda *_a, **_kw: reviews)
+    monkeypatch.setattr(conductor, "ensure_pr_ready", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "wait_for_pr_checks", lambda *_a, **_kw: next(check_results))
+    monkeypatch.setattr(conductor, "ensure_required_checks_present", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "list_unresolved_review_threads", lambda *_a, **_kw: next(thread_reads))
+    monkeypatch.setattr(conductor, "merge_pr", lambda _r, _repo, pr_num: merge_calls.append(pr_num))
+    monkeypatch.setattr(conductor, "comment_pr", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "comment_issue", lambda *_a, **_kw: None)
+
+    rc = conductor.run_once(_make_run_once_args(tmp_path, issue_number=497))
+
+    assert rc == 0
+    assert merge_calls == [498]
+    assert [feedback_source for _feedback, feedback_source in builder_turns] == [
+        "review",
+        "polish",
+        "pr_review_threads",
+        "polish",
+    ]
+
+
 def test_run_once_merges_normally_when_no_trusted_surfaces_configured(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
 ) -> None:
@@ -7791,11 +8502,10 @@ def test_prepare_run_workspace_uses_remote_tracking_refs(monkeypatch: pytest.Mon
     )
 
     assert workspace == expected_workspace
-    assert "lockfile=/home/sprite/workspace/bitterblossom/.bb/conductor/mirror.lock" in captured["script"]
-    assert 'export BB_MIRROR="$mirror" BB_WORKSPACE="$workspace" BB_LOCKFILE="$lockfile"' in captured["script"]
-    assert "fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)" in captured["script"]
+    assert "lockfile = '/home/sprite/workspace/bitterblossom/.bb/conductor/mirror.lock'" in captured["script"]
+    assert "import fcntl" in captured["script"]
+    assert f"wait_seconds = {conductor.WORKSPACE_PREPARE_LOCK_WAIT_SECONDS}" in captured["script"]
     assert 'refs/remotes/origin/master' in captured["script"]
-    assert "base_ref = 'origin/master'" in captured["script"]
     assert 'refs/remotes/origin/HEAD' in captured["script"]
     assert "mirror lock acquisition timed out" in captured["script"]
 
@@ -7838,8 +8548,9 @@ def test_cleanup_run_workspace_uses_bounded_lock_wait(monkeypatch: pytest.Monkey
         "builder",
     )
 
-    assert 'export BB_MIRROR="$mirror" BB_WORKSPACE="$workspace" BB_LOCKFILE="$lockfile"' in captured["script"]
-    assert "fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)" in captured["script"]
+    assert "import fcntl" in captured["script"]
+    assert f"wait_seconds = {conductor.WORKSPACE_CLEANUP_LOCK_WAIT_SECONDS}" in captured["script"]
+    assert "fetch --all --prune" not in captured["script"]
     assert "mirror lock acquisition timed out during cleanup" in captured["script"]
 
 
@@ -7861,38 +8572,9 @@ def _init_local_worktree_mirror(tmp_path: pathlib.Path) -> pathlib.Path:
     return mirror
 
 
-def _install_flock_shim(tmp_path: pathlib.Path) -> pathlib.Path:
+def _make_test_bin_dir(tmp_path: pathlib.Path) -> pathlib.Path:
     bin_dir = tmp_path / "test-bin"
     bin_dir.mkdir()
-    flock = bin_dir / "flock"
-    flock.write_text(
-        """#!/usr/bin/env python3
-import fcntl
-import sys
-import time
-
-args = sys.argv[1:]
-timeout = None
-if len(args) == 3 and args[0] == "-w":
-    timeout = float(args[1])
-    fd = int(args[2])
-elif len(args) == 1:
-    fd = int(args[0])
-else:
-    raise SystemExit("unsupported flock arguments")
-
-deadline = None if timeout is None else time.monotonic() + timeout
-while True:
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        raise SystemExit(0)
-    except BlockingIOError:
-        if deadline is not None and time.monotonic() >= deadline:
-            raise SystemExit(1)
-        time.sleep(0.01)
-"""
-    )
-    flock.chmod(0o755)
     return bin_dir
 
 
@@ -7928,13 +8610,21 @@ def _hold_lock(lockfile: pathlib.Path, hold_seconds: float, bin_dir: pathlib.Pat
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     proc = subprocess.Popen(
         [
-            "bash",
+            "python3",
             "-c",
-            (
-                f'exec 9>"{lockfile}"; '
-                "flock 9; "
-                f'printf ready > "{ready}"; '
-                f"sleep {hold_seconds}"
+            "\n".join(
+                [
+                    "import fcntl",
+                    "import pathlib",
+                    "import time",
+                    f"lockfile = {str(lockfile)!r}",
+                    f"ready = {str(ready)!r}",
+                    "pathlib.Path(lockfile).parent.mkdir(parents=True, exist_ok=True)",
+                    "with open(lockfile, 'w', encoding='utf-8') as handle:",
+                    "    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)",
+                    "    pathlib.Path(ready).write_text('ready', encoding='utf-8')",
+                    f"    time.sleep({hold_seconds})",
+                ]
             ),
         ],
         text=True,
@@ -7956,7 +8646,7 @@ def test_prepare_run_workspace_waits_for_lock_release(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
 ) -> None:
     mirror = _init_local_worktree_mirror(tmp_path)
-    bin_dir = _install_flock_shim(tmp_path)
+    bin_dir = _make_test_bin_dir(tmp_path)
     lockfile = mirror / ".bb" / "conductor" / "mirror.lock"
     lockfile.parent.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(conductor, "repo_dir", lambda _repo: str(mirror))
@@ -7989,7 +8679,7 @@ def test_prepare_run_workspace_reports_lock_timeout(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
 ) -> None:
     mirror = _init_local_worktree_mirror(tmp_path)
-    bin_dir = _install_flock_shim(tmp_path)
+    bin_dir = _make_test_bin_dir(tmp_path)
     lockfile = mirror / ".bb" / "conductor" / "mirror.lock"
     lockfile.parent.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(conductor, "repo_dir", lambda _repo: str(mirror))
@@ -8019,7 +8709,7 @@ def test_cleanup_run_workspace_reports_lock_timeout(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
 ) -> None:
     mirror = _init_local_worktree_mirror(tmp_path)
-    bin_dir = _install_flock_shim(tmp_path)
+    bin_dir = _make_test_bin_dir(tmp_path)
     lockfile = mirror / ".bb" / "conductor" / "mirror.lock"
     lockfile.parent.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(conductor, "repo_dir", lambda _repo: str(mirror))
@@ -8198,6 +8888,89 @@ def test_prepare_run_workspace_with_retry_records_explicit_failure(
     assert payload["error"] == "mirror locked elsewhere"
 
 
+def test_prepare_run_workspace_with_retry_retries_os_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """OSError (e.g. broken pipe, ENOENT) is treated as transient and retried."""
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="worktrees", body="", url="u538", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-1", "misty-step/bitterblossom", issue, "default")
+    attempts = {"count": 0}
+
+    def flaky_prepare(*_args: object, **_kwargs: object) -> str:
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise OSError("Connection reset by peer")
+        return "/tmp/run-538-1/builder-worktree"
+
+    monkeypatch.setattr(conductor, "prepare_run_workspace", flaky_prepare)
+    monkeypatch.setattr(conductor.time, "sleep", lambda *_args, **_kwargs: None)
+
+    workspace = conductor.prepare_run_workspace_with_retry(
+        object(),
+        conn,
+        tmp_path / "events.jsonl",
+        "run-538-1",
+        "noble-blue-serpent",
+        "misty-step/bitterblossom",
+        "builder",
+    )
+
+    assert workspace == "/tmp/run-538-1/builder-worktree"
+    assert attempts["count"] == 2
+    events = conn.execute("select event_type, payload_json from events where run_id = 'run-538-1' order by id").fetchall()
+    assert [row["event_type"] for row in events] == ["workspace_preparation_retry"]
+    payload = json.loads(events[0]["payload_json"])
+    assert payload["attempt"] == 1
+    assert "Connection reset by peer" in payload["error"]
+
+
+def test_prepare_run_workspace_with_retry_records_explicit_failure_on_os_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """OSError that exhausts all attempts records workspace_preparation_failed with explicit reason."""
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="worktrees", body="", url="u538", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-2", "misty-step/bitterblossom", issue, "default")
+
+    def always_fail(*_args: object, **_kwargs: object) -> None:
+        raise OSError("broken pipe")
+
+    monkeypatch.setattr(conductor, "prepare_run_workspace", always_fail)
+    monkeypatch.setattr(conductor.time, "sleep", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(
+        conductor.WorkspacePreparationError,
+        match="workspace preparation failed for builder on noble-blue-serpent after 3 attempts: broken pipe",
+    ):
+        conductor.prepare_run_workspace_with_retry(
+            object(),
+            conn,
+            tmp_path / "events.jsonl",
+            "run-538-2",
+            "noble-blue-serpent",
+            "misty-step/bitterblossom",
+            "builder",
+        )
+
+    events = conn.execute("select event_type, payload_json from events where run_id = 'run-538-2' order by id").fetchall()
+    assert [row["event_type"] for row in events] == [
+        "workspace_preparation_retry",
+        "workspace_preparation_retry",
+        "workspace_preparation_failed",
+    ]
+    retry_payloads = [json.loads(row["payload_json"]) for row in events[:-1]]
+    assert [payload["attempt"] for payload in retry_payloads] == [1, 2]
+    assert all(payload["attempts"] == 3 for payload in retry_payloads)
+    payload = json.loads(events[-1]["payload_json"])
+    assert payload["sprite"] == "noble-blue-serpent"
+    assert payload["lane"] == "builder"
+    assert payload["workspace"] == conductor.run_workspace("misty-step/bitterblossom", "run-538-2", "builder")
+    assert payload["attempt"] == 3
+    assert payload["attempts"] == 3
+    assert payload["error"] == "broken pipe"
+
+
 def test_dispatch_until_artifact_passes_workspace_to_dispatch_task(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
@@ -8259,7 +9032,7 @@ def test_cleanup_run_workspace_waits_for_lock_release(
     cleanup must block rather than race against it.
     """
     mirror = _init_local_worktree_mirror(tmp_path)
-    bin_dir = _install_flock_shim(tmp_path)
+    bin_dir = _make_test_bin_dir(tmp_path)
     lockfile = mirror / ".bb" / "conductor" / "mirror.lock"
     lockfile.parent.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(conductor, "repo_dir", lambda _repo: str(mirror))
@@ -8419,3 +9192,727 @@ def test_show_run_includes_worktree_path(
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["run"]["worktree_path"] == "/home/sprite/workspace/bitterblossom/.bb/conductor/run-538-1/builder-worktree"
+
+
+def test_show_run_surfaces_builder_workspace_cleanup_failure(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="cleanup failure", body="", url="u538c", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-2", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(
+        conn,
+        "run-538-2",
+        phase="awaiting_governance",
+        status="active",
+        builder_sprite="noble-blue-serpent",
+        pr_number=999,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/999",
+        worktree_path="/home/sprite/workspace/bitterblossom/.bb/conductor/run-538-2/builder-worktree",
+    )
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-538-2",
+        "cleanup_warning",
+        {
+            "kind": conductor.BUILDER_WORKSPACE_CLEANUP_KIND,
+            "workspace": "/home/sprite/workspace/bitterblossom/.bb/conductor/run-538-2/builder-worktree",
+            "error": "builder workspace cleanup failed: stale worktree",
+        },
+    )
+
+    rc = conductor.show_run(
+        argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-538-2", event_limit=5)
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    run = payload["run"]
+    assert run["worktree_path"] == "/home/sprite/workspace/bitterblossom/.bb/conductor/run-538-2/builder-worktree"
+    assert run["worktree_recovery_status"] == "cleanup_failed"
+    assert run["worktree_recovery_event_type"] == "cleanup_warning"
+    assert run["worktree_recovery_error"] == "builder workspace cleanup failed: stale worktree"
+
+
+def test_show_run_surfaces_cleaned_workspace_recovery_status(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="cleaned workspace", body="", url="u538d", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-3", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(
+        conn,
+        "run-538-3",
+        phase="awaiting_governance",
+        status="active",
+        builder_sprite="noble-blue-serpent",
+        pr_number=1001,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/1001",
+        worktree_path=None,
+    )
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-538-3",
+        "builder_workspace_cleaned",
+        {"workspace": "/home/sprite/workspace/bitterblossom/.bb/conductor/run-538-3/builder-worktree"},
+    )
+
+    rc = conductor.show_run(
+        argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-538-3", event_limit=5)
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    run = payload["run"]
+    assert run["worktree_path"] is None
+    assert run["worktree_recovery_status"] == "cleaned"
+    assert run["worktree_recovery_event_type"] == "builder_workspace_cleaned"
+    assert run["worktree_recovery_error"] is None
+
+
+def test_show_runs_surfaces_cleaned_workspace_recovery_status(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="cleaned workspace runs", body="", url="u538e", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-4", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(
+        conn,
+        "run-538-4",
+        phase="awaiting_governance",
+        status="active",
+        builder_sprite="noble-blue-serpent",
+        pr_number=1002,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/1002",
+        worktree_path=None,
+    )
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-538-4",
+        "builder_workspace_cleaned",
+        {"workspace": "/home/sprite/workspace/bitterblossom/.bb/conductor/run-538-4/builder-worktree"},
+    )
+
+    rc = conductor.show_runs(argparse.Namespace(db=str(tmp_path / "conductor.db"), limit=5))
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload["worktree_path"] is None
+    assert payload["worktree_recovery_status"] == "cleaned"
+    assert payload["worktree_recovery_event_type"] == "builder_workspace_cleaned"
+    assert payload["worktree_recovery_error"] is None
+
+
+def test_serialize_run_surface_recovers_from_malformed_recovery_payload(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """show-run must not crash when the recovery event payload_json is malformed."""
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="corrupt payload", body="", url="u538f", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-5", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(
+        conn,
+        "run-538-5",
+        phase="awaiting_governance",
+        status="active",
+        builder_sprite="noble-blue-serpent",
+        worktree_path="/tmp/run-538-5/builder-worktree",
+    )
+    # Insert a cleanup_warning event with corrupted payload_json directly.
+    conn.execute(
+        "insert into events (run_id, event_type, payload_json, created_at) values (?, ?, ?, ?)",
+        ("run-538-5", "cleanup_warning", "not-valid-json{{", conductor.now_utc()),
+    )
+    conn.commit()
+
+    rc = conductor.show_run(
+        argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-538-5", event_limit=5)
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    run = payload["run"]
+    # Malformed payload must not crash; recovery fields default to None.
+    assert run["worktree_recovery_status"] is None
+    assert run["worktree_recovery_error"] is None
+
+
+def test_serialize_run_surface_recovers_from_malformed_cleaned_payload(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """show-run must tolerate malformed payloads on unguarded recovery events."""
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="corrupt cleaned payload", body="", url="u538ga", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-5b", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(
+        conn,
+        "run-538-5b",
+        phase="awaiting_governance",
+        status="active",
+        builder_sprite="noble-blue-serpent",
+        worktree_path="/tmp/run-538-5b/builder-worktree",
+    )
+    conn.execute(
+        "insert into events (run_id, event_type, payload_json, created_at) values (?, ?, ?, ?)",
+        ("run-538-5b", "builder_workspace_cleaned", "not-valid-json{{", conductor.now_utc()),
+    )
+    conn.commit()
+
+    rc = conductor.show_run(
+        argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-538-5b", event_limit=5)
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    run = payload["run"]
+    assert run["worktree_recovery_event_type"] == "builder_workspace_cleaned"
+    assert run["worktree_recovery_status"] == "cleaned"
+    assert run["worktree_recovery_error"] is None
+
+
+def test_serialize_run_surface_recovers_from_malformed_blocking_payload(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """show-run must skip malformed SQL-filtered blocking payloads instead of crashing."""
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="corrupt blocking", body="", url="u538g", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-6", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(
+        conn,
+        "run-538-6",
+        phase="failed",
+        status="failed",
+        builder_sprite="noble-blue-serpent",
+    )
+    # Insert a valid fallback blocking event, then later malformed SQL-filtered ones.
+    conn.execute(
+        "insert into events (run_id, event_type, payload_json, created_at) values (?, ?, ?, ?)",
+        (
+            "run-538-6",
+            "command_failed",
+            json.dumps({"error": "builder command exploded"}),
+            conductor.now_utc(),
+        ),
+    )
+    conn.execute(
+        "insert into events (run_id, event_type, payload_json, created_at) values (?, ?, ?, ?)",
+        ("run-538-6", "ci_wait_complete", "{not-valid-json", conductor.now_utc()),
+    )
+    conn.execute(
+        "insert into events (run_id, event_type, payload_json, created_at) values (?, ?, ?, ?)",
+        ("run-538-6", "external_review_wait_complete", "{not-valid-json", conductor.now_utc()),
+    )
+    conn.commit()
+
+    rc = conductor.show_run(
+        argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-538-6", event_limit=5)
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    run = payload["run"]
+    assert run["blocking_event_type"] == "command_failed"
+    assert run["blocking_reason"] == "builder command exploded"
+
+
+def test_serialize_run_surface_recovers_from_malformed_command_failed_payload(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """show-run must tolerate malformed payloads on non-SQL-guarded blocking events."""
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="corrupt command failed", body="", url="u538h", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-7", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(
+        conn,
+        "run-538-7",
+        phase="failed",
+        status="failed",
+        builder_sprite="noble-blue-serpent",
+    )
+    conn.execute(
+        "insert into events (run_id, event_type, payload_json, created_at) values (?, ?, ?, ?)",
+        ("run-538-7", "command_failed", "{not-valid-json", conductor.now_utc()),
+    )
+    conn.commit()
+
+    rc = conductor.show_run(
+        argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-538-7", event_limit=5)
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    run = payload["run"]
+    assert run["blocking_event_type"] == "command_failed"
+    assert run["blocking_reason"] == "command failed"
+
+
+def test_serialize_run_surface_recovers_from_non_object_blocking_payload(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """show-run must treat valid JSON that is not an object as an empty blocking payload."""
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="array blocking payload", body="", url="u538i", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-8", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(
+        conn,
+        "run-538-8",
+        phase="failed",
+        status="failed",
+        builder_sprite="noble-blue-serpent",
+    )
+    conn.execute(
+        "insert into events (run_id, event_type, payload_json, created_at) values (?, ?, ?, ?)",
+        ("run-538-8", "command_failed", json.dumps(["not", "a", "dict"]), conductor.now_utc()),
+    )
+    conn.commit()
+
+    rc = conductor.show_run(
+        argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-538-8", event_limit=5)
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    run = payload["run"]
+    assert run["blocking_event_type"] == "command_failed"
+    assert run["blocking_reason"] == "command failed"
+
+
+def test_show_runs_recovers_from_malformed_blocking_payload(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """show-runs must survive malformed SQL-filtered blocking payloads in the bulk path."""
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=539, title="bulk corrupt blocking", body="", url="u539", labels=["autopilot"])
+    conductor.create_run(conn, "run-539-1", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(
+        conn,
+        "run-539-1",
+        phase="failed",
+        status="failed",
+        builder_sprite="noble-blue-serpent",
+    )
+    conn.execute(
+        "insert into events (run_id, event_type, payload_json, created_at) values (?, ?, ?, ?)",
+        (
+            "run-539-1",
+            "command_failed",
+            json.dumps({"error": "bulk fallback"}),
+            conductor.now_utc(),
+        ),
+    )
+    conn.execute(
+        "insert into events (run_id, event_type, payload_json, created_at) values (?, ?, ?, ?)",
+        ("run-539-1", "workspace_preparation_failed", "{not-valid-json", conductor.now_utc()),
+    )
+    conn.execute(
+        "insert into events (run_id, event_type, payload_json, created_at) values (?, ?, ?, ?)",
+        ("run-539-1", "external_review_wait_complete", "{not-valid-json", conductor.now_utc()),
+    )
+    conn.commit()
+
+    rc = conductor.show_runs(argparse.Namespace(db=str(tmp_path / "conductor.db"), limit=10))
+
+    assert rc == 0
+    payloads = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert len(payloads) == 1
+    run = payloads[0]
+    assert run["run_id"] == "run-539-1"
+    assert run["blocking_event_type"] == "command_failed"
+    assert run["blocking_reason"] == "bulk fallback"
+
+
+def test_show_runs_recovers_from_malformed_command_failed_payload(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """show-runs must tolerate malformed payloads on non-SQL-guarded blocking events."""
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=539, title="bulk malformed command failed", body="", url="u539b", labels=["autopilot"])
+    conductor.create_run(conn, "run-539-2", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(
+        conn,
+        "run-539-2",
+        phase="failed",
+        status="failed",
+        builder_sprite="noble-blue-serpent",
+    )
+    conn.execute(
+        "insert into events (run_id, event_type, payload_json, created_at) values (?, ?, ?, ?)",
+        ("run-539-2", "command_failed", "{not-valid-json", conductor.now_utc()),
+    )
+    conn.commit()
+
+    rc = conductor.show_runs(argparse.Namespace(db=str(tmp_path / "conductor.db"), limit=10))
+
+    assert rc == 0
+    payloads = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert len(payloads) == 1
+    run = payloads[0]
+    assert run["run_id"] == "run-539-2"
+    assert run["blocking_event_type"] == "command_failed"
+    assert run["blocking_reason"] == "command failed"
+
+
+def test_show_run_ignores_reviewer_workspace_cleanup_warning(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """show-run must not surface reviewer cleanup_warning as builder worktree recovery."""
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="reviewer cleanup", body="", url="u538-rcw", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-rcw", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(
+        conn,
+        "run-538-rcw",
+        phase="awaiting_governance",
+        status="active",
+        builder_sprite="noble-blue-serpent",
+        worktree_path="/tmp/run-538-rcw/builder-worktree",
+    )
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-538-rcw",
+        "cleanup_warning",
+        {
+            "kind": "reviewer_workspace_cleanup",
+            "workspace": "/tmp/run-538-rcw/review-sage-worktree",
+            "error": "reviewer workspace cleanup failed for sage: stale lock",
+        },
+    )
+
+    rc = conductor.show_run(
+        argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-538-rcw", event_limit=5)
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    run = payload["run"]
+    assert run["worktree_recovery_status"] is None
+    assert run["worktree_recovery_error"] is None
+    assert run["worktree_recovery_event_type"] is None
+    assert run["worktree_recovery_event_at"] is None
+
+
+def test_show_run_ignores_reviewer_workspace_preparation_failure(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """show-run must not surface reviewer workspace_preparation_failed as builder worktree recovery."""
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="reviewer prepare failed", body="", url="u538-rpf", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-rpf", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(
+        conn,
+        "run-538-rpf",
+        phase="failed",
+        status="failed",
+        builder_sprite="noble-blue-serpent",
+        worktree_path="/tmp/run-538-rpf/builder-worktree",
+    )
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-538-rpf",
+        "workspace_preparation_failed",
+        {
+            "sprite": "sage",
+            "lane": "review-sage",
+            "workspace": "/tmp/run-538-rpf/review-sage-worktree",
+            "attempt": 3,
+            "attempts": 3,
+            "error": "reviewer workspace prepare failed",
+        },
+    )
+
+    rc = conductor.show_run(
+        argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-538-rpf", event_limit=5)
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    run = payload["run"]
+    assert run["worktree_recovery_status"] is None
+    assert run["worktree_recovery_error"] is None
+    assert run["worktree_recovery_event_type"] is None
+    assert run["worktree_recovery_event_at"] is None
+    assert run["blocking_event_type"] is None
+    assert run["blocking_reason"] is None
+
+
+def test_show_run_surfaces_builder_cleanup_when_both_builder_and_reviewer_fail(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """show-run must pick builder cleanup_warning and ignore reviewer cleanup_warning when both exist."""
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="both cleanups fail", body="", url="u538-bcf", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-bcf", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(
+        conn,
+        "run-538-bcf",
+        phase="awaiting_governance",
+        status="active",
+        builder_sprite="noble-blue-serpent",
+        worktree_path="/tmp/run-538-bcf/builder-worktree",
+    )
+    # reviewer cleanup_warning recorded first
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-538-bcf",
+        "cleanup_warning",
+        {
+            "kind": "reviewer_workspace_cleanup",
+            "workspace": "/tmp/run-538-bcf/review-sage-worktree",
+            "error": "reviewer workspace cleanup failed for sage: stale lock",
+        },
+    )
+    # builder cleanup_warning recorded after
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-538-bcf",
+        "cleanup_warning",
+        {
+            "kind": conductor.BUILDER_WORKSPACE_CLEANUP_KIND,
+            "workspace": "/tmp/run-538-bcf/builder-worktree",
+            "error": "builder workspace cleanup failed: permission denied",
+        },
+    )
+
+    rc = conductor.show_run(
+        argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-538-bcf", event_limit=5)
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    run = payload["run"]
+    assert run["worktree_recovery_status"] == "cleanup_failed"
+    assert run["worktree_recovery_event_type"] == "cleanup_warning"
+    assert run["worktree_recovery_error"] == "builder workspace cleanup failed: permission denied"
+    assert run["worktree_path"] == "/tmp/run-538-bcf/builder-worktree"
+
+
+def test_show_runs_surfaces_builder_cleanup_when_both_builder_and_reviewer_fail(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """show-runs must pick builder cleanup_warning and ignore reviewer cleanup_warning when both exist."""
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="both cleanups fail", body="", url="u538-bcfr", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-bcfr", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(
+        conn,
+        "run-538-bcfr",
+        phase="awaiting_governance",
+        status="active",
+        builder_sprite="noble-blue-serpent",
+        worktree_path="/tmp/run-538-bcfr/builder-worktree",
+    )
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-538-bcfr",
+        "cleanup_warning",
+        {
+            "kind": "reviewer_workspace_cleanup",
+            "workspace": "/tmp/run-538-bcfr/review-sage-worktree",
+            "error": "reviewer workspace cleanup failed for sage: stale lock",
+        },
+    )
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-538-bcfr",
+        "cleanup_warning",
+        {
+            "kind": conductor.BUILDER_WORKSPACE_CLEANUP_KIND,
+            "workspace": "/tmp/run-538-bcfr/builder-worktree",
+            "error": "builder workspace cleanup failed: permission denied",
+        },
+    )
+
+    rc = conductor.show_runs(argparse.Namespace(db=str(tmp_path / "conductor.db"), limit=5))
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload["worktree_recovery_status"] == "cleanup_failed"
+    assert payload["worktree_recovery_event_type"] == "cleanup_warning"
+    assert payload["worktree_recovery_error"] == "builder workspace cleanup failed: permission denied"
+    assert payload["worktree_path"] == "/tmp/run-538-bcfr/builder-worktree"
+
+
+def test_show_runs_does_not_call_per_run_recovery_query(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """show-runs pre-fetches recovery and blocking events in bulk; per-run queries must not fire."""
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    for i in range(3):
+        issue = conductor.Issue(number=538 + i, title=f"run {i}", body="", url=f"u{i}", labels=["autopilot"])
+        conductor.create_run(conn, f"run-538-bulk-{i}", "misty-step/bitterblossom", issue, "default")
+
+    per_run_recovery_calls: list[str] = []
+    per_run_blocking_calls: list[str] = []
+
+    original_recovery = conductor.latest_worktree_recovery_event
+    original_blocking = conductor.blocking_event_for_run
+
+    def recovery_spy(c: object, run_id: str) -> object:
+        per_run_recovery_calls.append(run_id)
+        return original_recovery(c, run_id)  # type: ignore[arg-type]
+
+    def blocking_spy(c: object, run_id: str) -> object:
+        per_run_blocking_calls.append(run_id)
+        return original_blocking(c, run_id)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(conductor, "latest_worktree_recovery_event", recovery_spy)
+    monkeypatch.setattr(conductor, "blocking_event_for_run", blocking_spy)
+
+    rc = conductor.show_runs(argparse.Namespace(db=str(tmp_path / "conductor.db"), limit=10))
+
+    assert rc == 0
+    assert per_run_recovery_calls == [], (
+        "show_runs must use the bulk pre-fetch; per-run latest_worktree_recovery_event must not be called"
+    )
+    assert per_run_blocking_calls == [], (
+        "show_runs must use the bulk pre-fetch; per-run blocking_event_for_run must not be called"
+    )
+
+
+def test_cleanup_builder_workspace_records_cleanup_warning_on_os_error(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """cleanup_builder_workspace catches OSError the same as CmdError — cleanup_warning is recorded."""
+    run_id = "run-538-oe"
+    repo = "misty-step/bitterblossom"
+    worker = "noble-blue-serpent"
+    worktree_path = "/tmp/run-538-oe/builder-worktree"
+
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="cleanup", body="", url="u538", labels=["autopilot"])
+    conductor.create_run(conn, run_id, repo, issue, "default")
+    conductor.update_run(conn, run_id, worktree_path=worktree_path)
+
+    def raise_os_error(*_args: object, **_kwargs: object) -> None:
+        raise OSError("network connection dropped")
+
+    monkeypatch.setattr(conductor, "cleanup_run_workspace", raise_os_error)
+
+    conductor.cleanup_builder_workspace(
+        object(),
+        conn,
+        tmp_path / "events.jsonl",
+        run_id,
+        repo,
+        worker,
+        worktree_path,
+    )
+
+    row = conn.execute(
+        "select payload_json from events where run_id = ? and event_type = 'cleanup_warning'",
+        (run_id,),
+    ).fetchone()
+    assert row is not None
+    payload = json.loads(row[0])
+    assert payload["kind"] == conductor.BUILDER_WORKSPACE_CLEANUP_KIND
+    assert "network connection dropped" in payload["error"]
+    # worktree_path must survive so the operator can recover
+    path_row = conn.execute("select worktree_path from runs where run_id = ?", (run_id,)).fetchone()
+    assert path_row["worktree_path"] == worktree_path
+
+
+def test_prepare_run_workspace_with_retry_stops_after_lease_loss_on_second_retry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """Lease check between attempt 2 and 3 also aborts without a third attempt."""
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="worktrees", body="", url="u538", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-lr2", "misty-step/bitterblossom", issue, "default")
+    acquire_result = conductor.acquire_lease_result(conn, "misty-step/bitterblossom", issue.number, "run-538-lr2")
+    assert acquire_result.acquired is True
+
+    sleep_calls: list[float] = []
+
+    def always_fail(*_args: object, **_kwargs: object) -> str:
+        raise conductor.CmdError("transient")
+
+    def release_on_second_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+        if len(sleep_calls) == 2:
+            conductor.release_lease(conn, "misty-step/bitterblossom", issue.number, "run-538-lr2")
+
+    monkeypatch.setattr(conductor, "prepare_run_workspace", always_fail)
+    monkeypatch.setattr(conductor.time, "sleep", release_on_second_sleep)
+
+    with pytest.raises(conductor.LeaseLostError):
+        conductor.prepare_run_workspace_with_retry(
+            object(),
+            conn,
+            tmp_path / "events.jsonl",
+            "run-538-lr2",
+            "noble-blue-serpent",
+            "misty-step/bitterblossom",
+            "builder",
+        )
+
+    events = conn.execute("select event_type from events where run_id = 'run-538-lr2' order by id").fetchall()
+    # Two retries recorded before lease-check aborts before the third attempt
+    assert [row["event_type"] for row in events] == [
+        "workspace_preparation_retry",
+        "workspace_preparation_retry",
+    ]
+
+
+def test_show_run_surfaces_worktree_recovery_event_at(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """worktree_recovery_event_at matches the event's created_at timestamp."""
+    run_id = "run-538-rat"
+    repo = "misty-step/bitterblossom"
+    worktree_path = "/tmp/run-538-rat/builder-worktree"
+
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="inspect", body="", url="u538", labels=["autopilot"])
+    conductor.create_run(conn, run_id, repo, issue, "default")
+    conductor.update_run(conn, run_id, worktree_path=worktree_path)
+
+    event_log = tmp_path / "events.jsonl"
+    conductor.record_event(
+        conn,
+        event_log,
+        run_id,
+        "cleanup_warning",
+        {
+            "kind": conductor.BUILDER_WORKSPACE_CLEANUP_KIND,
+            "workspace": worktree_path,
+            "error": "builder workspace cleanup failed: timeout",
+        },
+    )
+
+    row = conn.execute(
+        "select created_at from events where run_id = ? and event_type = 'cleanup_warning'",
+        (run_id,),
+    ).fetchone()
+    expected_event_at = row["created_at"]
+
+    rc = conductor.show_run(
+        argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id=run_id, event_limit=5)
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["run"]["worktree_recovery_status"] == "cleanup_failed"
+    assert payload["run"]["worktree_recovery_event_at"] == expected_event_at

@@ -111,3 +111,11 @@
 - scope: codified a narrow trusted-thread metadata allowlist, documented the reviewer-owned versus conductor-owned boundary, and hardened the local mirror-lock mutation path so governance verification stays reliable on this branch
 - blocker: the existing worktree cleanup lock proof failed locally because git-side child processes could keep the shared mirror lock alive after prepare
 - pattern: when a semantic contract depends on a few fields, name the allowlist in code and tests, and when lock truth matters, keep ownership in one process instead of trusting shell fd inheritance across subprocesses
+
+## 2026-03-12 [issue #505](https://github.com/misty-step/bitterblossom/issues/505)
+
+- predicted: L
+- actual: M
+- scope: added a narrow QA-intake lane that runs a configurable probe command, normalizes findings into deduped GitHub issues with stable evidence contracts, and gives same-tier routing preference to `source/qa`
+- blocker: the existing worktree lock tests exposed shell-lock fragility, so the ship gate also required replacing that path with an inline Python `fcntl.flock` contract
+- pattern: when a new intake source is still exploratory, keep the runner pluggable and codify only the stable handoff contract that the rest of the factory needs
