@@ -72,7 +72,7 @@ func runLogs(ctx context.Context, stdout, stderr io.Writer, spriteName string, f
 	active := spriteHasRunningAgent(ctx, s)
 	hasLog := spriteFileHasContent(ctx, s, logPath)
 	if !active && !hasLog {
-		if err := writeLogsNoTaskMsg(stderr); err != nil {
+		if err := writeLogsNoTaskMsg(stderr, spriteName); err != nil {
 			return fmt.Errorf("logs: %w", err)
 		}
 		return nil
@@ -100,11 +100,15 @@ func runLogs(ctx context.Context, stdout, stderr io.Writer, spriteName string, f
 	return nil
 }
 
-// writeLogsNoTaskMsg writes the "No active task" status message to stderr.
+// writeLogsNoTaskMsg writes the idle-state recovery message to stderr.
 // This is an operational message, not log data, so it must never appear on
 // stdout — stdout must remain parseable JSON in --json mode.
-func writeLogsNoTaskMsg(stderr io.Writer) error {
-	_, err := fmt.Fprintf(stderr, "No active task\n")
+func writeLogsNoTaskMsg(stderr io.Writer, spriteName string) error {
+	_, err := fmt.Fprintf(stderr,
+		"No active task on %q.\nThe sprite is reachable, but no agent is running and ralph.log is empty.\nTry: bb status %s\n",
+		spriteName,
+		spriteName,
+	)
 	return err
 }
 
