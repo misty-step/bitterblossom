@@ -16,7 +16,7 @@ The design is intentional:
 - GitHub is the human-facing work ledger
 - SQLite + JSONL event logs are the machine-facing run ledger
 
-Read [ADR-002](docs/adr/002-architecture-minimalism.md) for the thin-CLI boundary and [ADR-003](docs/adr/003-conductor-control-plane.md) for the remote conductor design.
+Read [WORKFLOW.md](WORKFLOW.md) first for the repo-owned runtime workflow contract, then [ADR-002](docs/adr/002-architecture-minimalism.md) for the thin-CLI boundary and [ADR-003](docs/adr/003-conductor-control-plane.md) for the remote conductor design.
 
 ## Architecture
 
@@ -41,6 +41,18 @@ docs/                    operator docs and contracts
 7. the conductor waits for green CI, satisfies merge policy, merges, and records the run
 
 The default human workflow is not "dispatch ad hoc prompts forever." It is "operate the conductor, inspect runs, recover when needed."
+
+## Workflow Contract
+
+`WORKFLOW.md` is the primary agent-facing contract for Bitterblossom's runtime phases.
+
+It defines:
+- the canonical phase order (`shape -> build -> review -> fix -> merge -> recover`)
+- the default worker mapping for those phases
+- the required imported skills for each phase
+- the policy distinction between semantic readiness, policy mergeability, and mechanical check state
+
+If README prose, persona guidance, or prompt templates drift from that contract, the contract wins.
 
 ## Quick Start
 
@@ -94,7 +106,7 @@ Bitterblossom-specific runtime skills:
 - `base/skills/bitterblossom-dispatch/SKILL.md` — dry-run probing plus prompt dispatch through `bb`
 - `base/skills/bitterblossom-monitoring/SKILL.md` — monitoring, status checks, and recovery triage
 
-`bb setup` provisions the full `base/skills/` tree onto managed sprites so role personas can rely on a version-pinned skill surface.
+`bb setup` provisions the full `base/skills/` tree onto managed sprites so role personas can rely on a version-pinned skill surface, while repo clones provide the versioned `WORKFLOW.md` contract those skills are meant to follow.
 
 Example workflow using the current transport surface:
 

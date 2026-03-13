@@ -5,7 +5,7 @@ The `/base/skills` directory now has two layers:
 1. **Imported autonomy skills** vendored from `phrazzld/agent-skills` so Bitterblossom can ship a version-pinned, testable skill surface to managed sprites.
 2. **Bitterblossom-specific runtime skills** that stay close to the `bb` transport and conductor operating model.
 
-These are repo-local runtime assets, not a second transport API.
+These are repo-local runtime assets, not a second transport API. Repo `WORKFLOW.md` is the contract that tells sprites when to use which phase and skill.
 
 ### Imported autonomy skills
 - `autopilot` — bounded autonomous execution workflow
@@ -26,6 +26,7 @@ These are repo-local runtime assets, not a second transport API.
 ### Provisioning contract
 - `bb setup` copies everything under `base/skills/` onto the sprite under `/home/sprite/.claude/skills/`.
 - Imported skills are version-pinned by the Bitterblossom repo state, not by ad hoc sprite drift.
+- Imported skills are meant to execute inside the repo `WORKFLOW.md` contract, not replace it with their own repo policy.
 - Sprite personas advertise role-specific skill packs so the same imported skill surface can be specialized by worker type.
 
 ### Key File Roles

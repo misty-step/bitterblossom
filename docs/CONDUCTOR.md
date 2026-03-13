@@ -16,6 +16,10 @@ It is not another transport CLI. It owns:
 
 ## Runtime Contract
 
+The repo-root [`WORKFLOW.md`](../WORKFLOW.md) file is the primary workflow contract for Bitterblossom agents. The conductor is the kernel that executes that contract; it is not the source of truth for phase semantics on its own.
+
+Prompt templates, sprite personas, and operator docs should point back to `WORKFLOW.md` when they describe phase order, required skills, or merge policy.
+
 State lives locally in:
 
 - `.bb/conductor.db`
@@ -515,7 +519,7 @@ A run exits with `rc=2` (blocked) when the conductor cannot proceed without huma
 
 - reviewer council blocked after max revision rounds
 - an untrusted PR review thread requires maintainer review
-- PR review threads remain unresolved after a revision pass
+- review evidence still contains active merge-blocking findings after a revision pass
 
 When a run is blocked the conductor **does not release the issue's lease**. Instead it marks the lease as blocked (`blocked_at` in the leases table and `lease_expires_at = null`). The blocked issue is excluded from backlog selection on all subsequent polls — it will not be re-tried automatically.
 
@@ -607,9 +611,9 @@ The target repo currently requires a `merge-gate` status on `master`.
 
 This repo now publishes `merge-gate` in GitHub Actions. The conductor also checks for missing required statuses before it attempts merge, so policy mismatches fail loudly instead of pretending CI is complete.
 
-The governor lane does not merge on the first green snapshot. It waits for the configured minimum PR age, ensures required checks are present, queries unresolved review threads before and after trusted external review settlement, routes trusted feedback back to the builder on the existing PR, and only proceeds once the thread gate is clear.
+The governor lane does not merge on the first green snapshot. It waits for the configured minimum PR age, ensures required checks are present, queries review threads before and after trusted external review settlement, routes trusted feedback back to the builder on the existing PR, and only proceeds when repo `WORKFLOW.md` says no active merge-blocking findings remain. Thread presence alone is evidence to inspect, not an automatic block.
 
-After the PR is green and thread-clear, the governor runs one final polish/simplification pass on the existing PR and re-verifies the review + CI path before squash merge. If the same threads still block after a revision pass, the conductor stops with `pr_feedback_blocked` and escalates to a human for confirmation.
+After the PR is semantically ready and policy-mergeable, the governor runs one final polish/simplification pass on the existing PR and re-verifies the review + CI path before squash merge. If review evidence still leaves active merge-blocking findings after a revision pass, the conductor stops with `pr_feedback_blocked` and escalates to a human for confirmation.
 
 ## Review Council
 

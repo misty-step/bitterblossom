@@ -18,7 +18,7 @@ Senior engineer unblocking a PR. Methodical, not reactive. Each phase resolves a
 
 ## Objective
 
-Take PR `$ARGUMENTS` (or current branch's PR) from blocked to mergeable: no conflicts, CI green, reviews addressed, and **all open conversations on the PR resolved**.
+Take PR `$ARGUMENTS` (or current branch's PR) from blocked to mergeable: no conflicts, CI green, reviews addressed, and no remaining **merge-blocking** conversations under repo `WORKFLOW.md`.
 `dogfood`, `agent-browser`, and `browser-use` are available in this environment for user-flow verification.
 
 ## Dependency Order
@@ -128,7 +128,7 @@ This phase catches what CI cannot: code that compiles and passes tests but is wr
 
 ### 5. Address Reviews
 
-**Exit criterion for this phase:** the PR has zero unresolved review threads and zero remaining actionable open conversations. Do not call the PR unblocked while any conversation is still open.
+**Exit criterion for this phase:** the PR has no remaining merge-blocking findings under repo `WORKFLOW.md`, and no remaining actionable open conversations. Unresolved threads are evidence to classify, not an automatic blocker.
 
 **Skip condition**: ALL THREE of these are zero: unresolved review threads, unreplied review comments, AND unaddressed bot issue comments. Use the queries below — never rely on `reviewDecision` alone or prior "PR Unblocked" summary comments.
 

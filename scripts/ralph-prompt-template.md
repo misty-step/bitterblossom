@@ -10,34 +10,23 @@ If something is ambiguous, make your best judgment call and document the decisio
 ## Workflow
 
 ### Phase 1: Implementation
-1. Read MEMORY.md and CLAUDE.md for context from previous iterations
+1. Read MEMORY.md, CLAUDE.md, and repo WORKFLOW.md for context from previous iterations
 2. Assess current state: what's done, what's left, what's broken
 3. Work on the highest-priority remaining item
 4. Run tests after every meaningful change
 5. Commit working changes with descriptive messages (conventional commits)
 6. Push frequently — don't accumulate uncommitted work
 
-### Phase 2: PR and CI
-7. When implementation is complete, open a PR if you haven't already:
-   `gh pr create --title "<type>: <description>" --body "<details>"`
-8. After opening or pushing to the PR, check CI status:
-   `gh pr checks $(gh pr view --json number --jq .number) --watch --fail-fast`
-   Or poll: `gh pr checks $(gh pr view --json number --jq .number)`
-9. If CI fails: read the failure logs, fix the issue, commit, push
-10. Repeat steps 8-9 until CI is green
-
-### Phase 3: Review Response
-11. Check for review comments:
-    `gh pr view --json reviews,comments --jq '.reviews[] | "\(.state): \(.body)"'`
-    `gh api repos/{{REPO}}/pulls/$(gh pr view --json number --jq .number)/comments --jq '.[] | "\(.path):\(.line) \(.body)"'`
-12. If there are review comments requesting changes: address them, commit, push
-13. Repeat steps 8-12 until CI is green and no pending review requests
+### Phase 2: PR and verification
+7. When implementation is complete, create or update the PR under repo `WORKFLOW.md`, using the matching imported skills (`pr`, `pr-fix`, `pr-polish`, `debug`) as execution tools rather than a second policy source.
+8. Run the relevant checks for the current phase. If CI or local verification fails, read the evidence, fix the issue, commit, and push.
+9. Inspect review comments and review threads. Classify them semantically against repo `WORKFLOW.md`, then address active merge-blocking findings or document why no code change is needed.
+10. Repeat the verify/respond loop until the lane reaches a truthful handoff state: ready for review, blocked with explicit reason, or complete.
 
 ### Completion
-14. When PR is green and either approved or no pending reviews:
-    Create a file named exactly TASK_COMPLETE (no file extension) with a summary of what was done.
+11. Create a file named exactly TASK_COMPLETE (no file extension) with a summary of what was done.
     Do NOT use TASK_COMPLETE.md — the detection system expects the extensionless filename.
-15. Update MEMORY.md with learnings from this task
+12. Update MEMORY.md with learnings from this task
 
 ## When you get stuck
 - If genuinely blocked (missing credentials, permission error, external dependency):

@@ -11,7 +11,7 @@ The conductor owns merge and follow-up routing.
 
 ## Required workflow
 
-1. Read repo guidance first: repo `AGENTS.md`, repo `README.md`, relevant ADRs, and any docs referenced in the task.
+1. Read repo guidance first: repo `WORKFLOW.md`, repo `AGENTS.md`, repo `README.md`, relevant ADRs, and any docs referenced in the task.
 2. Inspect the issue and PR described in the task.
 3. Review the implementation for correctness, regressions, missing tests, needless complexity, and spec mismatch.
 4. Write the review artifact JSON to the exact path specified in the task.

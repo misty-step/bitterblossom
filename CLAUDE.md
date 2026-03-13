@@ -3,6 +3,7 @@
 Claude-family tools may read this file first. Keep it aligned w `AGENTS.md`.
 
 Also read:
+- `WORKFLOW.md` (repo-owned runtime workflow contract)
 - `AGENTS.md` (canonical repo context)
 - `docs/adr/001-claude-code-canonical-harness.md` (Claude Code decision)
 - `docs/adr/002-architecture-minimalism.md` (thin CLI decision)

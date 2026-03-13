@@ -21,10 +21,10 @@ clean:
 	rm -rf $(BIN_DIR)
 
 test-python:
-	python3 -m pytest -q base/hooks scripts/test_conductor.py scripts/test_conductor_supervise.py
+	python3 -m pytest -q base/hooks scripts/test_conductor.py scripts/test_conductor_supervise.py scripts/test_workflow_contract.py
 
 lint-python:
-	ruff check base/hooks scripts/conductor.py scripts/test_conductor.py scripts/test_conductor_supervise.py
+	ruff check base/hooks scripts/conductor.py scripts/test_conductor.py scripts/test_conductor_supervise.py scripts/test_workflow_contract.py
 
 conductor-check:
 	python3 scripts/conductor.py check-env

@@ -1063,8 +1063,8 @@ def summarize_blocking_reason(event_type: str | None, payload: dict[str, Any]) -
         reason = str(payload.get("reason", "")).strip()
         mapping = {
             "untrusted_author": "untrusted PR review thread requires maintainer review",
-            "unchanged_after_revision": "PR review threads remained unresolved after revision",
-            "max_rounds": "PR review threads still require resolution after max rounds",
+            "unchanged_after_revision": "active merge-blocking review findings remained after revision",
+            "max_rounds": "active merge-blocking review findings still require resolution after max rounds",
         }
         return mapping.get(reason, reason or "PR feedback blocked merge")
     if event_type == "council_blocked":
@@ -3628,7 +3628,7 @@ query($owner:String!, $repo:String!, $number:Int!, $after:String) {
 
 def summarize_review_threads(threads: list[ReviewThread]) -> str:
     lines = [
-        "Unresolved PR review threads are blocking merge.",
+        "Active merge-blocking review findings remain in PR threads.",
         "Address the feedback on the existing PR, push any needed updates, then resolve each addressed thread before handing back to the conductor.",
     ]
     for thread in threads:
@@ -3990,7 +3990,7 @@ def handle_pr_review_threads(
             run_id,
             repo,
             issue_number,
-            f"Bitterblossom blocked `{run_id}` because PR review threads remained unresolved after revision and need human confirmation.",
+            f"Bitterblossom blocked `{run_id}` because active merge-blocking review findings remained after revision and need human confirmation.",
             event_type="issue_comment_failed",
         )
         return "blocked", None, thread_ids
