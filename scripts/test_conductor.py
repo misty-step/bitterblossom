@@ -4475,7 +4475,7 @@ def test_run_once_routes_unresolved_pr_threads_back_to_builder(monkeypatch: pyte
     assert rc == 0
     assert feedbacks[0] is None
     assert feedbacks[1] is not None
-    assert "Unresolved PR review threads are blocking merge" in feedbacks[1]
+    assert "Active merge-blocking review findings remain in PR threads" in feedbacks[1]
     assert "README.md:59" in feedbacks[1]
     assert merge_calls == [460]
 
@@ -5060,7 +5060,7 @@ def test_show_runs_surfaces_heartbeat_and_blocking_reason(tmp_path: pathlib.Path
     assert lines[0]["heartbeat_at"] is not None
     assert isinstance(lines[0]["heartbeat_age_seconds"], int)
     assert lines[0]["blocking_event_type"] == "pr_feedback_blocked"
-    assert lines[0]["blocking_reason"] == "PR review threads remained unresolved after revision"
+    assert lines[0]["blocking_reason"] == "active merge-blocking review findings remained after revision"
 
 
 def test_show_runs_surfaces_failed_ci_blocking_reason(tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -5338,7 +5338,7 @@ def test_show_runs_surfaces_heartbeat_age_and_blocking_reason(
     assert by_run_id["run-102-1"]["heartbeat_age_seconds"] == 300
     assert by_run_id["run-102-1"]["blocking_event_type"] == "pr_feedback_blocked"
     assert by_run_id["run-102-1"]["blocking_event_at"] == "2026-03-10T12:05:00Z"
-    assert by_run_id["run-102-1"]["blocking_reason"] == "PR review threads still require resolution after max rounds"
+    assert by_run_id["run-102-1"]["blocking_reason"] == "active merge-blocking review findings still require resolution after max rounds"
 
 
 def test_show_workers_reports_slot_health_assignments_and_backfill(
@@ -5648,7 +5648,7 @@ def test_show_run_prints_run_metadata_and_recent_event_context(
     assert payload["run"]["heartbeat_age_seconds"] == 300
     assert payload["run"]["blocking_event_type"] == "pr_feedback_blocked"
     assert payload["run"]["blocking_event_at"] == "2026-03-10T12:05:00Z"
-    assert payload["run"]["blocking_reason"] == "PR review threads remained unresolved after revision"
+    assert payload["run"]["blocking_reason"] == "active merge-blocking review findings remained after revision"
     assert [event["event_type"] for event in payload["recent_events"]] == [
         "pr_feedback_blocked",
         "ci_wait_complete",
@@ -8393,7 +8393,7 @@ def test_run_once_rechecks_pr_threads_after_external_reviews_settle(
     assert rc == 0
     assert feedbacks[0] is None
     assert feedbacks[1] is not None
-    assert "Unresolved PR review threads are blocking merge" in feedbacks[1]
+    assert "Active merge-blocking review findings remain in PR threads" in feedbacks[1]
     assert "scripts/conductor.py:2034" in feedbacks[1]
     assert merge_calls == [485]
 

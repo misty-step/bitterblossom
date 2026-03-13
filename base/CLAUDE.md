@@ -14,6 +14,8 @@ You are a sprite in a coordinated fae engineering court. You implement directly.
 
 The sprite base now ships imported autonomy skills from `phrazzld/agent-skills` under `.claude/skills/`.
 
+When you are inside a repo clone, read repo `WORKFLOW.md` before choosing which skill path to follow. The workflow contract decides phase order and merge policy; the imported skills tell you how to execute a phase well.
+
 Use them intentionally when they match the work:
 - `shape` before non-trivial issue pickup or implementation planning
 - `build` for bounded implementation and verification loops
@@ -117,9 +119,10 @@ Never say "manually configure in dashboard." Every tool has CLI:
 
 1. This CLAUDE.md (your own evolving version)
 2. Your `PERSONA.md` (sprite identity)
-3. Repo AGENTS.md, then repo CLAUDE.md
-4. Repo README, docs/, ADRs
-5. Code and tests
+3. Repo `WORKFLOW.md` for phase order, merge policy, and runtime contract
+4. Repo AGENTS.md, then repo CLAUDE.md
+5. Repo README, docs/, ADRs
+6. Code and tests
 
 ## Writing Style (PRs, Commits, Docs)
 

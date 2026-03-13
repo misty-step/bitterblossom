@@ -11,7 +11,7 @@ Bitterblossom has two surfaces:
 
 `bb` stays deterministic and small. The conductor owns workflow judgment and durable run state.
 
-See [ADR-002](docs/adr/002-architecture-minimalism.md) for why.
+Read [WORKFLOW.md](WORKFLOW.md) first for the repo-owned phase contract, then see [ADR-002](docs/adr/002-architecture-minimalism.md) for why.
 
 ## Architecture
 

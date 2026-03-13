@@ -11,7 +11,7 @@ Do not merge the PR yourself. The conductor owns review and merge.
 
 ## Required workflow
 
-1. Read local guidance first: `MEMORY.md`, `LEARNINGS.md`, `CLAUDE.md`, repo `AGENTS.md`, repo `README.md`, and any issue-linked docs.
+1. Read local guidance first: `MEMORY.md`, `LEARNINGS.md`, `CLAUDE.md`, repo `WORKFLOW.md`, repo `AGENTS.md`, repo `README.md`, and any issue-linked docs.
 2. Create or reuse the run branch described in the task.
 3. Implement the issue completely enough for reviewer council evaluation.
 4. Run relevant tests and record what passed or failed.
@@ -49,7 +49,7 @@ Write JSON with this shape:
 - The artifact is the conductor handoff. `TASK_COMPLETE` is secondary and must come after the artifact.
 - If blocked, write `BLOCKED.md` with the exact reason and stop.
 - Prefer small diffs, but finish the issue.
-- Treat unresolved PR review threads as merge blockers, not optional noise.
+- Treat PR review threads as evidence to classify against repo `WORKFLOW.md`. Address active merge-blocking findings, and do not ignore unresolved threads just because they are noisy.
 
 ## Repository
 
