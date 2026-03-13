@@ -1193,6 +1193,7 @@ def semantic_trace_to_payload(trace: SemanticDecisionTrace) -> dict[str, Any]:
 
 def persist_semantic_decision_trace(conn: sqlite3.Connection, run_id: str, trace: SemanticDecisionTrace) -> None:
     ts = now_utc()
+    payload = {**semantic_trace_to_payload(trace), "created_at": ts}
     conn.execute(
         """
         insert into semantic_decisions (
@@ -1218,7 +1219,7 @@ def persist_semantic_decision_trace(conn: sqlite3.Connection, run_id: str, trace
             trace.output_tokens,
             trace.total_tokens,
             trace.estimated_cost_usd,
-            json.dumps(semantic_trace_to_payload(trace), sort_keys=True, separators=(",", ":")),
+            json.dumps(payload, sort_keys=True, separators=(",", ":")),
             ts,
         ),
     )

@@ -6225,6 +6225,40 @@ def test_show_run_rolls_up_builder_and_reviewer_telemetry(
     assert payload["semantic_decisions"][0]["outcome_ref"] == "issue#481"
 
 
+def test_persist_semantic_decision_trace_stamps_created_at_in_sample_json(tmp_path: pathlib.Path) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=481, title="telemetry", body="", url="u481", labels=["autopilot"])
+    conductor.create_run(conn, "run-481-1", "misty-step/bitterblossom", issue, "claude-sonnet")
+
+    conductor.persist_semantic_decision_trace(
+        conn,
+        "run-481-1",
+        conductor.SemanticDecisionTrace(
+            family=conductor.SEMANTIC_ROUTING_FAMILY,
+            profile="claude-sonnet",
+            skill_name="semantic-router",
+            skill_version="2026-03-13",
+            prompt_version="issue-routing-v1",
+            outcome_ref="issue#481",
+            rationale="best match",
+            model="sonnet",
+            provider="anthropic",
+            reasoning_budget="medium",
+            latency_ms=125,
+            estimated_cost_usd=0.03,
+        ),
+    )
+
+    row = conn.execute(
+        "select sample_json, created_at from semantic_decisions where run_id = ?",
+        ("run-481-1",),
+    ).fetchone()
+
+    assert row is not None
+    sample = json.loads(row["sample_json"])
+    assert sample["created_at"] == row["created_at"]
+
+
 def test_show_metrics_returns_summary_recent_runs_and_timeline(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: pathlib.Path,
