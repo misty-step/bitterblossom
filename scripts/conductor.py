@@ -4340,6 +4340,36 @@ def cleanup_builder_workspace(
     record_event(conn, event_log, run_id, "builder_workspace_cleaned", {"workspace": workspace})
 
 
+def reconcile_builder_workspace(
+    runner: Runner,
+    conn: sqlite3.Connection,
+    event_log: pathlib.Path,
+    *,
+    run_id: str,
+    repo: str,
+    builder_sprite: str | None,
+    workspace: str | None,
+) -> None:
+    builder = (builder_sprite or "").strip()
+    workspace_path = (workspace or "").strip()
+    if not workspace_path:
+        return
+    if not builder:
+        record_event(
+            conn,
+            event_log,
+            run_id,
+            "cleanup_warning",
+            {
+                "kind": BUILDER_WORKSPACE_CLEANUP_KIND,
+                "workspace": workspace_path,
+                "error": "builder workspace cleanup failed: missing builder sprite for reconcile cleanup",
+            },
+        )
+        return
+    cleanup_builder_workspace(runner, conn, event_log, run_id, repo, builder, workspace_path)
+
+
 def dispatch(
     runner: Runner,
     sprite: str,
@@ -6176,7 +6206,7 @@ def reconcile_run(args: argparse.Namespace) -> int:
     event_log = pathlib.Path(args.event_log)
     row = conn.execute(
         """
-        select run_id, repo, issue_number, phase, status, pr_number, pr_url
+        select run_id, repo, issue_number, phase, status, pr_number, pr_url, builder_sprite, worktree_path
         from runs
         where run_id = ?
         """,
@@ -6207,12 +6237,30 @@ def reconcile_run(args: argparse.Namespace) -> int:
     }
     if pr.get("mergedAt"):
         update_run(conn, args.run_id, phase="merged", status="merged", pr_url=pr["url"])
+        reconcile_builder_workspace(
+            runner,
+            conn,
+            event_log,
+            run_id=args.run_id,
+            repo=str(row["repo"]),
+            builder_sprite=str(row["builder_sprite"] or ""),
+            workspace=str(row["worktree_path"] or ""),
+        )
         record_event(conn, event_log, args.run_id, "reconciled_merged", payload)
     elif pr["state"] == "OPEN":
         update_run(conn, args.run_id, pr_url=pr["url"])
         record_event(conn, event_log, args.run_id, "reconciled_open", payload)
     else:
         update_run(conn, args.run_id, phase="closed", status="closed", pr_url=pr["url"])
+        reconcile_builder_workspace(
+            runner,
+            conn,
+            event_log,
+            run_id=args.run_id,
+            repo=str(row["repo"]),
+            builder_sprite=str(row["builder_sprite"] or ""),
+            workspace=str(row["worktree_path"] or ""),
+        )
         record_event(conn, event_log, args.run_id, "reconciled_closed", payload)
 
     print(json.dumps({"run_id": args.run_id, **payload}))
