@@ -53,6 +53,19 @@ def test_run_workspace_uses_run_root_and_lane_suffix() -> None:
     )
 
 
+def test_init_db_creates_events_index_for_worktree_recovery_queries(tmp_path: pathlib.Path) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    idx = conn.execute(
+        "select tbl_name from sqlite_master where type='index' and name='idx_events_run_id_event_type_id'"
+    ).fetchone()
+    assert idx is not None, "idx_events_run_id_event_type_id must exist after init_db"
+    assert idx["tbl_name"] == "events", "idx_events_run_id_event_type_id must index the events table"
+
+    info = conn.execute("pragma index_xinfo('idx_events_run_id_event_type_id')").fetchall()
+    indexed_cols = [(row["name"], row["desc"]) for row in info if row["key"]]
+    assert indexed_cols == [("run_id", 0), ("event_type", 0), ("id", 1)]
+
+
 def test_parse_args_allows_external_authority_without_reviewers() -> None:
     args = conductor.parse_args(
         [

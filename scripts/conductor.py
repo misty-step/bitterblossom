@@ -341,6 +341,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             payload_json text not null,
             created_at text not null
         );
+        create index if not exists idx_events_run_id_event_type_id
+            on events (run_id, event_type, id desc);
 
         create table if not exists review_waves (
             id integer primary key autoincrement,
