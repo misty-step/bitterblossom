@@ -1320,6 +1320,8 @@ def serialize_run_surface(
     worktree_path = row["worktree_path"] if "worktree_path" in row.keys() else None
     picked_at = row["picked_at"] if "picked_at" in row.keys() else row["created_at"]
     completed_at = row["completed_at"] if "completed_at" in row.keys() else None
+    findings = load_review_findings(conn, row["run_id"])
+    review_waves = load_review_waves(conn, row["run_id"])
     if telemetry is None:
         telemetry = run_telemetry_rollup(conn, row["run_id"])
     payload: dict[str, Any] = {
@@ -1352,6 +1354,12 @@ def serialize_run_surface(
         "heartbeat_age_seconds": age_seconds_from_now(heartbeat_at),
         "updated_at": row["updated_at"],
     }
+    payload["governance"] = governance_snapshot_for_run(
+        conn,
+        row,
+        findings=findings,
+        review_waves=review_waves,
+    )
     payload["worktree_recovery_status"] = None
     payload["worktree_recovery_error"] = None
     payload["worktree_recovery_event_type"] = None
@@ -3523,6 +3531,214 @@ def load_review_findings(conn: sqlite3.Connection, run_id: str, *, wave_id: int 
         )
         for row in rows
     ]
+
+
+def serialize_review_wave(wave: ReviewWave) -> dict[str, Any]:
+    return asdict(wave)
+
+
+def serialize_review_finding(finding: ReviewFinding) -> dict[str, Any]:
+    return {
+        "wave_id": finding.wave_id,
+        "reviewer": finding.reviewer,
+        "source_kind": finding.source_kind,
+        "source_id": finding.source_id,
+        "fingerprint": finding.fingerprint,
+        "classification": finding.classification,
+        "severity": finding.severity,
+        "decision": finding.decision,
+        "status": finding.status,
+        "path": finding.path,
+        "line": finding.line,
+        "message": finding.message,
+        "created_at": finding.created_at,
+        "updated_at": finding.updated_at,
+    }
+
+
+def latest_event_of_type_for_run(conn: sqlite3.Connection, run_id: str, event_type: str) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        select event_type, payload_json, created_at
+        from events
+        where run_id = ? and event_type = ?
+        order by id desc
+        limit 1
+        """,
+        (run_id, event_type),
+    ).fetchone()
+
+
+def governance_snapshot_for_run(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    findings: list[ReviewFinding] | None = None,
+    review_waves: list[ReviewWave] | None = None,
+) -> dict[str, Any]:
+    run_id = str(row["run_id"])
+    if findings is None:
+        findings = load_review_findings(conn, run_id)
+    if review_waves is None:
+        review_waves = load_review_waves(conn, run_id)
+
+    active_findings = [finding for finding in findings if finding.status not in INACTIVE_FINDING_STATUSES]
+    blocking_findings = [finding for finding in active_findings if finding_blocks_merge(finding)]
+
+    finding_counts = {
+        "open": 0,
+        "addressed": 0,
+        "deferred": 0,
+        "rejected": 0,
+        "duplicate": 0,
+        "pending": 0,
+    }
+    for finding in findings:
+        if finding.status in finding_counts:
+            finding_counts[finding.status] += 1
+
+    phase = str(row["phase"])
+    has_pr = row["pr_number"] is not None
+    has_governance_history = bool(review_waves or findings or has_pr)
+
+    if blocking_findings:
+        semantic_readiness = {
+            "state": "blocked",
+            "reason": "active merge-blocking findings remain open",
+            "blocking_finding_count": len(blocking_findings),
+        }
+    elif has_governance_history and phase not in {"picked", "dispatching", "building"}:
+        semantic_readiness = {
+            "state": "ready",
+            "reason": "no active merge-blocking findings remain",
+            "blocking_finding_count": 0,
+        }
+    elif has_pr:
+        semantic_readiness = {
+            "state": "pending",
+            "reason": "governance has not completed semantic review yet",
+            "blocking_finding_count": 0,
+        }
+    else:
+        semantic_readiness = {
+            "state": "unknown",
+            "reason": "run has not reached governance yet",
+            "blocking_finding_count": 0,
+        }
+
+    latest_ci_event = latest_event_of_type_for_run(conn, run_id, "ci_wait_complete")
+    ci_payload = _parse_event_payload(latest_ci_event["payload_json"]) if latest_ci_event is not None else {}
+    if latest_ci_event is None and not has_pr:
+        mechanical_mergeability = {
+            "state": "unknown",
+            "reason": "run has no PR yet",
+            "event_type": None,
+            "event_at": None,
+        }
+    elif latest_ci_event is None:
+        mechanical_mergeability = {
+            "state": "pending",
+            "reason": "required-check state has not been recorded yet",
+            "event_type": None,
+            "event_at": None,
+        }
+    elif ci_payload.get("passed"):
+        mechanical_mergeability = {
+            "state": "mergeable",
+            "reason": "required checks passed",
+            "event_type": latest_ci_event["event_type"],
+            "event_at": latest_ci_event["created_at"],
+        }
+    else:
+        mechanical_mergeability = {
+            "state": "blocked",
+            "reason": summarize_blocking_reason(latest_ci_event["event_type"], ci_payload),
+            "event_type": latest_ci_event["event_type"],
+            "event_at": latest_ci_event["created_at"],
+        }
+
+    latest_external_event = latest_event_of_type_for_run(conn, run_id, "external_review_wait_complete")
+    external_payload = _parse_event_payload(latest_external_event["payload_json"]) if latest_external_event is not None else {}
+    latest_policy_block_event = conn.execute(
+        """
+        select event_type, payload_json, created_at
+        from events
+        where run_id = ?
+          and (
+            event_type = 'pr_feedback_blocked'
+            or event_type = 'council_blocked'
+            or event_type = 'external_review_wait_complete'
+          )
+        order by id desc
+        limit 1
+        """,
+        (run_id,),
+    ).fetchone()
+    policy_block_reason = None
+    policy_block_event_type = None
+    policy_block_event_at = None
+    if latest_policy_block_event is not None:
+        policy_payload = _parse_event_payload(latest_policy_block_event["payload_json"])
+        if latest_policy_block_event["event_type"] == "external_review_wait_complete" and policy_payload.get("passed"):
+            policy_payload = {}
+        else:
+            policy_block_reason = summarize_blocking_reason(latest_policy_block_event["event_type"], policy_payload)
+            policy_block_event_type = latest_policy_block_event["event_type"]
+            policy_block_event_at = latest_policy_block_event["created_at"]
+
+    if semantic_readiness["state"] == "blocked":
+        policy_mergeability = {
+            "state": "blocked",
+            "reason": semantic_readiness["reason"],
+            "event_type": None,
+            "event_at": None,
+        }
+    elif policy_block_reason is not None:
+        policy_mergeability = {
+            "state": "blocked",
+            "reason": policy_block_reason,
+            "event_type": policy_block_event_type,
+            "event_at": policy_block_event_at,
+        }
+    elif latest_external_event is not None and external_payload.get("passed"):
+        policy_mergeability = {
+            "state": "mergeable",
+            "reason": "governance policy gates are satisfied",
+            "event_type": latest_external_event["event_type"],
+            "event_at": latest_external_event["created_at"],
+        }
+    elif has_governance_history and has_pr:
+        policy_mergeability = {
+            "state": "mergeable",
+            "reason": "no active policy gate is currently blocking merge",
+            "event_type": None,
+            "event_at": None,
+        }
+    elif has_pr:
+        policy_mergeability = {
+            "state": "pending",
+            "reason": "governance policy has not finished evaluating the PR",
+            "event_type": None,
+            "event_at": None,
+        }
+    else:
+        policy_mergeability = {
+            "state": "unknown",
+            "reason": "run has not reached governance yet",
+            "event_type": None,
+            "event_at": None,
+        }
+
+    return {
+        "semantic_readiness": semantic_readiness,
+        "policy_mergeability": policy_mergeability,
+        "mechanical_mergeability": mechanical_mergeability,
+        "finding_counts": finding_counts,
+        "active_finding_count": len(active_findings),
+        "active_blocking_finding_count": len(blocking_findings),
+        "review_wave_count": len(review_waves),
+        "latest_review_wave": serialize_review_wave(review_waves[-1]) if review_waves else None,
+    }
 
 
 def verify_builder_pr(runner: Runner, repo: str, pr_number: int, expected_branch: str) -> tuple[int, str]:
@@ -6042,10 +6258,14 @@ def show_run(args: argparse.Namespace) -> int:
     if row is None:
         raise CmdError(f"unknown run_id: {args.run_id}")
     telemetry = run_telemetry_rollup(conn, args.run_id)
+    review_waves = load_review_waves(conn, args.run_id)
+    review_findings = load_review_findings(conn, args.run_id)
     print(
         json.dumps(
             {
                 "run": serialize_run_surface(conn, row, telemetry=telemetry),
+                "review_waves": [serialize_review_wave(wave) for wave in review_waves],
+                "review_findings": [serialize_review_finding(finding) for finding in review_findings],
                 "telemetry_samples": telemetry["samples"],
                 "recent_events": recent_events(conn, args.run_id, args.event_limit),
             }

@@ -5010,6 +5010,45 @@ def test_show_runs_surfaces_failed_ci_blocking_reason(tmp_path: pathlib.Path, ca
     assert lines[0]["blocking_reason"] == "merge-gate failed"
 
 
+def test_show_runs_include_governance_summary(tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=44, title="governance", body="body", url="https://example.com/44", labels=["autopilot"])
+    conductor.create_run(conn, "run-44", "misty-step/bitterblossom", issue, "claude-sonnet")
+    conductor.update_run(
+        conn,
+        "run-44",
+        phase="blocked",
+        status="blocked",
+        builder_sprite="fern",
+        pr_number=44,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/44",
+    )
+    wave_id = conductor.start_review_wave(conn, "run-44", "review_round", pr_number=44, reviewer_count=1)
+    conductor.record_review_artifact(
+        conn,
+        "run-44",
+        wave_id,
+        "fern",
+        {"verdict": "pass", "summary": "ready", "findings": []},
+    )
+    conductor.complete_review_wave(conn, tmp_path / "events.jsonl", "run-44", wave_id, "settled")
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-44",
+        "ci_wait_complete",
+        {"passed": False, "output": "merge-gate failed"},
+    )
+
+    rc = conductor.show_runs(argparse.Namespace(db=str(tmp_path / "conductor.db"), limit=5))
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload["governance"]["semantic_readiness"]["state"] == "ready"
+    assert payload["governance"]["policy_mergeability"]["state"] == "mergeable"
+    assert payload["governance"]["mechanical_mergeability"]["state"] == "blocked"
+
+
 def test_show_runs_surfaces_worktree_recovery_context(tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
     conn = conductor.open_db(tmp_path / "conductor.db")
     issue = conductor.Issue(number=45, title="cleanup", body="body", url="https://example.com/45", labels=["autopilot"])
@@ -5577,6 +5616,141 @@ def test_show_run_prints_run_metadata_and_recent_event_context(
         "ci_wait_complete",
     ]
     assert payload["recent_events"][0]["payload"]["reason"] == "unchanged_after_revision"
+
+
+def test_show_run_separates_semantic_policy_and_mechanical_mergeability(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=593, title="governance", body="", url="https://example.com/593", labels=["autopilot"])
+    conductor.create_run(conn, "run-593-1", "misty-step/bitterblossom", issue, "claude-sonnet")
+    conductor.update_run(
+        conn,
+        "run-593-1",
+        phase="blocked",
+        status="blocked",
+        builder_sprite="fern",
+        pr_number=593,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/593",
+    )
+    wave_id = conductor.start_review_wave(conn, "run-593-1", "review_round", pr_number=593, reviewer_count=1)
+    conductor.record_review_artifact(
+        conn,
+        "run-593-1",
+        wave_id,
+        "sage",
+        {"verdict": "pass", "summary": "semantically ready", "findings": []},
+    )
+    conductor.complete_review_wave(conn, tmp_path / "events.jsonl", "run-593-1", wave_id, "settled")
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-593-1",
+        "ci_wait_complete",
+        {"passed": False, "output": "merge-gate failed"},
+    )
+
+    rc = conductor.show_run(
+        argparse.Namespace(
+            db=str(tmp_path / "conductor.db"),
+            run_id="run-593-1",
+            event_limit=5,
+        )
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    governance = payload["run"]["governance"]
+    assert governance["semantic_readiness"]["state"] == "ready"
+    assert governance["policy_mergeability"]["state"] == "mergeable"
+    assert governance["mechanical_mergeability"]["state"] == "blocked"
+    assert governance["mechanical_mergeability"]["reason"] == "merge-gate failed"
+
+
+def test_show_run_surfaces_governance_findings_and_review_waves(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=500, title="ledger", body="", url="https://example.com/500", labels=["autopilot"])
+    conductor.create_run(conn, "run-500-1", "misty-step/bitterblossom", issue, "claude-sonnet")
+    conductor.update_run(
+        conn,
+        "run-500-1",
+        phase="blocked",
+        status="blocked",
+        builder_sprite="fern",
+        pr_number=500,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/500",
+    )
+    wave_id = conductor.start_review_wave(conn, "run-500-1", "review_round", pr_number=500, reviewer_count=2)
+    conductor.persist_review_findings(
+        conn,
+        [
+            conductor.ReviewFinding(
+                id=None,
+                run_id="run-500-1",
+                wave_id=wave_id,
+                reviewer="fern",
+                source_kind="review_artifact",
+                source_id="fern-1",
+                fingerprint="fp-open",
+                classification="bug",
+                severity="high",
+                decision="pending",
+                status="open",
+                path="scripts/conductor.py",
+                line=3374,
+                message="blocking bug",
+                raw={},
+            ),
+            conductor.ReviewFinding(
+                id=None,
+                run_id="run-500-1",
+                wave_id=wave_id,
+                reviewer="sage",
+                source_kind="review_artifact",
+                source_id="sage-1",
+                fingerprint="fp-dup",
+                classification="bug",
+                severity="high",
+                decision="pending",
+                status="duplicate",
+                path="scripts/conductor.py",
+                line=3374,
+                message="duplicate bug",
+                raw={},
+            ),
+        ],
+    )
+    conductor.complete_review_wave(conn, tmp_path / "events.jsonl", "run-500-1", wave_id, "settled")
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-500-1",
+        "pr_feedback_blocked",
+        {"reason": "unchanged_after_revision"},
+    )
+
+    rc = conductor.show_run(
+        argparse.Namespace(
+            db=str(tmp_path / "conductor.db"),
+            run_id="run-500-1",
+            event_limit=5,
+        )
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    governance = payload["run"]["governance"]
+    assert governance["semantic_readiness"]["state"] == "blocked"
+    assert governance["semantic_readiness"]["blocking_finding_count"] == 1
+    assert governance["finding_counts"]["duplicate"] == 1
+    assert payload["review_waves"][0]["kind"] == "review_round"
+    assert payload["review_waves"][0]["status"] == "settled"
+    assert payload["review_findings"][0]["status"] == "open"
+    assert payload["review_findings"][1]["status"] == "duplicate"
 
 def test_show_run_rolls_up_builder_and_reviewer_telemetry(
     tmp_path: pathlib.Path,
