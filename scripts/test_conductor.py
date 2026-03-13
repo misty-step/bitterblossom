@@ -8499,3 +8499,45 @@ def test_show_run_includes_worktree_path(
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["run"]["worktree_path"] == "/home/sprite/workspace/bitterblossom/.bb/conductor/run-538-1/builder-worktree"
+
+
+def test_show_run_surfaces_builder_workspace_cleanup_failure(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="cleanup failure", body="", url="u538c", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-2", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(
+        conn,
+        "run-538-2",
+        phase="awaiting_governance",
+        status="active",
+        builder_sprite="noble-blue-serpent",
+        pr_number=999,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/999",
+        worktree_path="/home/sprite/workspace/bitterblossom/.bb/conductor/run-538-2/builder-worktree",
+    )
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-538-2",
+        "cleanup_warning",
+        {
+            "kind": conductor.BUILDER_WORKSPACE_CLEANUP_KIND,
+            "workspace": "/home/sprite/workspace/bitterblossom/.bb/conductor/run-538-2/builder-worktree",
+            "error": "builder workspace cleanup failed: stale worktree",
+        },
+    )
+
+    rc = conductor.show_run(
+        argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-538-2", event_limit=5)
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    run = payload["run"]
+    assert run["worktree_path"] == "/home/sprite/workspace/bitterblossom/.bb/conductor/run-538-2/builder-worktree"
+    assert run["worktree_recovery_status"] == "cleanup_failed"
+    assert run["worktree_recovery_event_type"] == "cleanup_warning"
+    assert run["worktree_recovery_error"] == "builder workspace cleanup failed: stale worktree"
