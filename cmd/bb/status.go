@@ -44,18 +44,11 @@ func newStatusCmd() *cobra.Command {
 	}
 }
 
-func statusClient(token string) *sprites.Client {
-	client := sprites.New(token, sprites.WithDisableControl())
-	return client
-}
-
 func fleetStatus(ctx context.Context) error {
-	token, err := spriteToken()
+	client, err := newSpritesClientFromEnv(spriteClientOptions{disableControl: true})
 	if err != nil {
 		return err
 	}
-
-	client := statusClient(token)
 	defer func() { _ = client.Close() }()
 
 	all, err := client.ListAllSprites(ctx, "")
@@ -89,11 +82,7 @@ func fleetStatus(ctx context.Context) error {
 			defer wg.Done()
 			r := probeResult{name: s.Name(), status: s.Status, reach: "?", avail: "-"}
 
-			probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-			_, probeErr := s.CommandContext(probeCtx, "echo", "ok").Output()
-			cancel()
-
-			if probeErr != nil {
+			if err := probeSprite(ctx, s, s.Name(), 3*time.Second); err != nil {
 				r.reach = "no"
 				r.note = "unreachable"
 			} else {
@@ -125,21 +114,15 @@ func fleetStatus(ctx context.Context) error {
 }
 
 func spriteStatus(ctx context.Context, spriteName string) error {
-	token, err := spriteToken()
+	session, err := newSpriteSession(ctx, spriteName, spriteSessionOptions{
+		disableControl: true,
+		probeTimeout:   10 * time.Second,
+	})
 	if err != nil {
 		return err
 	}
-
-	client := statusClient(token)
-	defer func() { _ = client.Close() }()
-	s := client.Sprite(spriteName)
-
-	// Probe
-	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if _, err := s.CommandContext(probeCtx, "echo", "ok").Output(); err != nil {
-		return fmt.Errorf("sprite %q unreachable: %w", spriteName, err)
-	}
+	defer func() { _ = session.close() }()
+	s := session.sprite
 
 	// Gather status info.
 	// Uses --porcelain=v1 for stable machine-readable output. When dirty files

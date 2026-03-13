@@ -1,0 +1,27 @@
+== Transport helper call sites ==
+$ rg -n 'newSpriteSession|newSpritesClientFromEnv|probeSprite' cmd/bb/*.go
+cmd/bb/status.go:48:	client, err := newSpritesClientFromEnv(spriteClientOptions{disableControl: true})
+cmd/bb/status.go:85:			if err := probeSprite(ctx, s, s.Name(), 3*time.Second); err != nil {
+cmd/bb/status.go:117:	session, err := newSpriteSession(ctx, spriteName, spriteSessionOptions{
+cmd/bb/logs.go:47:	session, err := newSpriteSession(ctx, spriteName, spriteSessionOptions{probeTimeout: 10 * time.Second})
+cmd/bb/kill.go:25:	session, err := newSpriteSession(ctx, spriteName, spriteSessionOptions{probeTimeout: 10 * time.Second})
+cmd/bb/sprite_transport.go:25:func newSpritesClientFromEnv(opts spriteClientOptions) (*sprites.Client, error) {
+cmd/bb/sprite_transport.go:40:func newSpriteSession(ctx context.Context, spriteName string, opts spriteSessionOptions) (*spriteSession, error) {
+cmd/bb/sprite_transport.go:41:	client, err := newSpritesClientFromEnv(spriteClientOptions{disableControl: opts.disableControl})
+cmd/bb/sprite_transport.go:50:	if err := probeSprite(ctx, session.sprite, spriteName, opts.probeTimeout); err != nil {
+cmd/bb/sprite_transport.go:64:func probeSprite(ctx context.Context, s *sprites.Sprite, spriteName string, timeout time.Duration) error {
+cmd/bb/setup.go:55:	session, err := newSpriteSession(ctx, spriteName, spriteSessionOptions{probeTimeout: 15 * time.Second})
+cmd/bb/dispatch.go:103:	session, err := newSpriteSession(ctx, spriteName, spriteSessionOptions{probeTimeout: 15 * time.Second})
+
+== Remaining spriteToken call sites ==
+$ rg -n 'spriteToken\(' cmd/bb/*.go
+cmd/bb/main_test.go:108:	_, err := spriteToken()
+cmd/bb/main.go:93:func spriteToken() (string, error) {
+cmd/bb/sprite_transport.go:26:	token, err := spriteToken()
+
+== cmd/bb tests ==
+$ go test ./cmd/bb/...
+ok  	github.com/misty-step/bitterblossom/cmd/bb	(cached)
+
+== Build ==
+$ go build -o bin/bb ./cmd/bb
