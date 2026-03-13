@@ -1325,6 +1325,13 @@ def qa_dedupe_key(
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:12]
 
 
+def normalize_external_dedupe_key(raw_key: Any) -> str | None:
+    candidate = str(raw_key or "").strip().lower()
+    if re.fullmatch(r"[a-f0-9]{12}", candidate):
+        return candidate
+    return None
+
+
 def parse_qa_intake_payload(payload: dict[str, Any]) -> list[QAFinding]:
     target = str(payload.get("target") or "").strip()
     environment = str(payload.get("environment") or "").strip()
@@ -1366,6 +1373,9 @@ def parse_qa_intake_payload(payload: dict[str, Any]) -> list[QAFinding]:
                 raise CmdError(f"qa finding {title!r} evidence entries must be objects")
             normalized_evidence.append({str(key): str(value) for key, value in entry.items()})
         priority = qa_priority_label(severity)
+        dedupe_key = normalize_external_dedupe_key(item.get("dedupe_key"))
+        if dedupe_key is None:
+            dedupe_key = qa_dedupe_key(title, summary, finding_target, finding_environment, normalized_steps)
         findings.append(
             QAFinding(
                 title=title,
@@ -1375,7 +1385,7 @@ def parse_qa_intake_payload(payload: dict[str, Any]) -> list[QAFinding]:
                 environment=finding_environment,
                 repro_steps=normalized_steps,
                 evidence=normalized_evidence,
-                dedupe_key=str(item.get("dedupe_key") or qa_dedupe_key(title, summary, finding_target, finding_environment, normalized_steps)),
+                dedupe_key=dedupe_key,
                 priority_label=priority,
                 labels=["autopilot", "bug", "domain/infra", priority, "source/qa"],
             )
@@ -1742,35 +1752,35 @@ def workspace_lock_python(
             "                print(timeout_message, file=sys.stderr)",
             "                raise SystemExit(1)",
             "            time.sleep(0.01)",
-            "    subprocess.run(['git', '-C', mirror, 'fetch', '--all', '--prune'], check=True)",
-            "    master = subprocess.run(['git', '-C', mirror, 'show-ref', '--verify', '--quiet', 'refs/remotes/origin/master'])",
-            "    if master.returncode == 0:",
-            "        base_ref = 'origin/master'",
-            "    else:",
-            "        main = subprocess.run(['git', '-C', mirror, 'show-ref', '--verify', '--quiet', 'refs/remotes/origin/main'])",
-            "        if main.returncode == 0:",
-            "            base_ref = 'origin/main'",
+            "    if lane == 'prepare':",
+            "        subprocess.run(['git', '-C', mirror, 'fetch', '--all', '--prune'], check=True)",
+            "        master = subprocess.run(['git', '-C', mirror, 'show-ref', '--verify', '--quiet', 'refs/remotes/origin/master'])",
+            "        if master.returncode == 0:",
+            "            base_ref = 'origin/master'",
             "        else:",
-            "            symbolic = subprocess.run(",
-            "                ['git', '-C', mirror, 'symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'],",
-            "                check=False,",
-            "                capture_output=True,",
-            "                text=True,",
-            "            )",
-            "            if symbolic.returncode == 0 and symbolic.stdout.strip():",
-            "                base_ref = symbolic.stdout.strip()",
+            "            main = subprocess.run(['git', '-C', mirror, 'show-ref', '--verify', '--quiet', 'refs/remotes/origin/main'])",
+            "            if main.returncode == 0:",
+            "                base_ref = 'origin/main'",
             "            else:",
-            "                head = subprocess.run(",
-            "                    ['git', '-C', mirror, 'rev-parse', 'HEAD'],",
-            "                    check=True,",
+            "                symbolic = subprocess.run(",
+            "                    ['git', '-C', mirror, 'symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'],",
+            "                    check=False,",
             "                    capture_output=True,",
             "                    text=True,",
             "                )",
-            "                base_ref = head.stdout.strip()",
-            "    if pathlib.Path(workspace).exists():",
-            "        shutil.rmtree(workspace)",
-            "    subprocess.run(['git', '-C', mirror, 'worktree', 'prune'], check=True)",
-            "    if lane == 'prepare':",
+            "                if symbolic.returncode == 0 and symbolic.stdout.strip():",
+            "                    base_ref = symbolic.stdout.strip()",
+            "                else:",
+            "                    head = subprocess.run(",
+            "                        ['git', '-C', mirror, 'rev-parse', 'HEAD'],",
+            "                        check=True,",
+            "                        capture_output=True,",
+            "                        text=True,",
+            "                    )",
+            "                    base_ref = head.stdout.strip()",
+            "        if pathlib.Path(workspace).exists():",
+            "            shutil.rmtree(workspace)",
+            "        subprocess.run(['git', '-C', mirror, 'worktree', 'prune'], check=True)",
             "        subprocess.run(['git', '-C', mirror, 'worktree', 'add', '--detach', workspace, base_ref], check=True)",
             "        print(workspace)",
             "    else:",
@@ -1938,6 +1948,13 @@ def dedupe_key_from_issue_body(body: str) -> str | None:
     return match.group(1)
 
 
+def issue_number_from_url(issue_url: str) -> int:
+    try:
+        return int(issue_url.rstrip("/").rsplit("/", 1)[-1])
+    except ValueError as exc:
+        raise CmdError(f"could not parse issue number from url: {issue_url!r}") from exc
+
+
 def render_qa_issue_body(finding: QAFinding) -> str:
     steps = "\n".join(f"{index}. {step}" for index, step in enumerate(finding.repro_steps, start=1))
     evidence_lines = "\n".join(
@@ -2019,7 +2036,7 @@ def existing_qa_issues_by_key(runner: Runner, repo: str) -> dict[str, Issue]:
             "--label",
             "source/qa",
             "--limit",
-            "200",
+            "1000",
             "--json",
             "number,title,body,url,labels,updatedAt",
         ],
@@ -2090,8 +2107,9 @@ def sync_qa_findings(
         finally:
             pathlib.Path(body_path).unlink(missing_ok=True)
         created.append(issue_url)
+        issue_number = issue_number_from_url(issue_url)
         issues_by_key[finding.dedupe_key] = Issue(
-            number=0,
+            number=issue_number,
             title=finding.title,
             body="",
             url=issue_url,

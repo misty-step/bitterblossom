@@ -632,6 +632,37 @@ def test_parse_qa_intake_payload_normalizes_findings() -> None:
     assert len(finding.dedupe_key) == 12
 
 
+def test_parse_qa_intake_payload_normalizes_or_replaces_external_dedupe_key() -> None:
+    payload = {
+        "target": "https://app.example.com",
+        "environment": "production",
+        "findings": [
+            {
+                "title": "Uppercase key",
+                "summary": "Probe supplied uppercase hex.",
+                "severity": "medium",
+                "dedupe_key": "ABC123DEF456",
+                "repro_steps": ["Open /", "Observe issue"],
+                "evidence": [],
+            },
+            {
+                "title": "Invalid key",
+                "summary": "Probe supplied an invalid custom key.",
+                "severity": "medium",
+                "dedupe_key": "not-a-valid-key",
+                "repro_steps": ["Open /", "Observe issue"],
+                "evidence": [],
+            },
+        ],
+    }
+
+    findings = conductor.parse_qa_intake_payload(payload)
+
+    assert findings[0].dedupe_key == "abc123def456"
+    assert findings[1].dedupe_key != "not-a-valid-key"
+    assert len(findings[1].dedupe_key) == 12
+
+
 def test_sync_qa_findings_creates_new_issue_for_novel_finding() -> None:
     runner = _RunnerSpy(responses=["https://github.com/misty-step/bitterblossom/issues/999\n"])
     finding = conductor.QAFinding(
@@ -659,6 +690,53 @@ def test_sync_qa_findings_creates_new_issue_for_novel_finding() -> None:
     create_call = next(call for call in runner.calls if call[:3] == ["gh", "issue", "create"])
     assert "--body-file" in create_call
     assert create_call.count("--label") == len(finding.labels)
+
+
+def test_sync_qa_findings_uses_created_issue_number_for_same_batch_duplicate() -> None:
+    runner = _RunnerSpy(
+        responses=[
+            "https://github.com/misty-step/bitterblossom/issues/999\n",
+            "",
+        ]
+    )
+    findings = [
+        conductor.QAFinding(
+            title="Checkout button disabled",
+            summary="Valid form input never enables submit.",
+            severity="high",
+            target_url="https://app.example.com/checkout",
+            environment="production",
+            repro_steps=["Open /checkout", "Fill valid form", "Observe disabled button"],
+            evidence=[],
+            dedupe_key="abc123def456",
+            priority_label="p1",
+            labels=["autopilot", "bug", "domain/infra", "p1", "source/qa"],
+        ),
+        conductor.QAFinding(
+            title="Checkout button disabled",
+            summary="Valid form input never enables submit.",
+            severity="high",
+            target_url="https://app.example.com/checkout",
+            environment="production",
+            repro_steps=["Open /checkout", "Fill valid form", "Observe disabled button"],
+            evidence=[],
+            dedupe_key="abc123def456",
+            priority_label="p1",
+            labels=["autopilot", "bug", "domain/infra", "p1", "source/qa"],
+        ),
+    ]
+
+    created, updated = conductor.sync_qa_findings(
+        runner,
+        "misty-step/bitterblossom",
+        findings,
+        existing_issue_by_key={},
+    )
+
+    assert created == ["https://github.com/misty-step/bitterblossom/issues/999"]
+    assert updated == ["https://github.com/misty-step/bitterblossom/issues/999"]
+    comment_call = next(call for call in runner.calls if call[:3] == ["gh", "issue", "comment"])
+    assert comment_call[3] == "999"
 
 
 def test_sync_qa_findings_comments_on_existing_issue_for_duplicate() -> None:
@@ -7952,6 +8030,7 @@ def test_cleanup_run_workspace_uses_bounded_lock_wait(monkeypatch: pytest.Monkey
 
     assert "import fcntl" in captured["script"]
     assert f"wait_seconds = {conductor.WORKSPACE_CLEANUP_LOCK_WAIT_SECONDS}" in captured["script"]
+    assert "fetch --all --prune" not in captured["script"]
     assert "mirror lock acquisition timed out during cleanup" in captured["script"]
 
 
@@ -7973,38 +8052,9 @@ def _init_local_worktree_mirror(tmp_path: pathlib.Path) -> pathlib.Path:
     return mirror
 
 
-def _install_flock_shim(tmp_path: pathlib.Path) -> pathlib.Path:
+def _make_test_bin_dir(tmp_path: pathlib.Path) -> pathlib.Path:
     bin_dir = tmp_path / "test-bin"
     bin_dir.mkdir()
-    flock = bin_dir / "flock"
-    flock.write_text(
-        """#!/usr/bin/env python3
-import fcntl
-import sys
-import time
-
-args = sys.argv[1:]
-timeout = None
-if len(args) == 3 and args[0] == "-w":
-    timeout = float(args[1])
-    fd = int(args[2])
-elif len(args) == 1:
-    fd = int(args[0])
-else:
-    raise SystemExit("unsupported flock arguments")
-
-deadline = None if timeout is None else time.monotonic() + timeout
-while True:
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        raise SystemExit(0)
-    except BlockingIOError:
-        if deadline is not None and time.monotonic() >= deadline:
-            raise SystemExit(1)
-        time.sleep(0.01)
-"""
-    )
-    flock.chmod(0o755)
     return bin_dir
 
 
@@ -8076,7 +8126,7 @@ def test_prepare_run_workspace_waits_for_lock_release(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
 ) -> None:
     mirror = _init_local_worktree_mirror(tmp_path)
-    bin_dir = _install_flock_shim(tmp_path)
+    bin_dir = _make_test_bin_dir(tmp_path)
     lockfile = mirror / ".bb" / "conductor" / "mirror.lock"
     lockfile.parent.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(conductor, "repo_dir", lambda _repo: str(mirror))
@@ -8109,7 +8159,7 @@ def test_prepare_run_workspace_reports_lock_timeout(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
 ) -> None:
     mirror = _init_local_worktree_mirror(tmp_path)
-    bin_dir = _install_flock_shim(tmp_path)
+    bin_dir = _make_test_bin_dir(tmp_path)
     lockfile = mirror / ".bb" / "conductor" / "mirror.lock"
     lockfile.parent.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(conductor, "repo_dir", lambda _repo: str(mirror))
@@ -8139,7 +8189,7 @@ def test_cleanup_run_workspace_reports_lock_timeout(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
 ) -> None:
     mirror = _init_local_worktree_mirror(tmp_path)
-    bin_dir = _install_flock_shim(tmp_path)
+    bin_dir = _make_test_bin_dir(tmp_path)
     lockfile = mirror / ".bb" / "conductor" / "mirror.lock"
     lockfile.parent.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(conductor, "repo_dir", lambda _repo: str(mirror))
@@ -8379,7 +8429,7 @@ def test_cleanup_run_workspace_waits_for_lock_release(
     cleanup must block rather than race against it.
     """
     mirror = _init_local_worktree_mirror(tmp_path)
-    bin_dir = _install_flock_shim(tmp_path)
+    bin_dir = _make_test_bin_dir(tmp_path)
     lockfile = mirror / ".bb" / "conductor" / "mirror.lock"
     lockfile.parent.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(conductor, "repo_dir", lambda _repo: str(mirror))

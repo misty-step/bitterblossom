@@ -6,9 +6,11 @@ Issue [#505](https://github.com/misty-step/bitterblossom/issues/505) now has a n
 
 - a configurable `qa-intake` command executes an external probe command that emits JSON findings
 - the conductor normalizes those findings into a stable GitHub issue contract with severity, environment, repro steps, evidence, and a deterministic dedupe marker
+- probe-supplied dedupe keys are normalized to the same 12-char hex contract used by the reader side, so malformed external keys do not silently disable deduplication
 - duplicate findings append evidence to the existing `source/qa` issue instead of creating backlog spam
+- duplicate findings that repeat within the same intake payload reuse the real created issue number instead of attempting to comment on issue `0`
 - routing prefers `source/qa` issues over ordinary backlog work within the same priority tier
-- workspace locking no longer depends on shell `flock`; the conductor now uses an inline Python `fcntl.flock` path that keeps the worktree tests deterministic on this branch
+- workspace locking no longer depends on shell `flock`; the conductor now uses an inline Python `fcntl.flock` path that keeps the worktree tests deterministic on this branch without adding a network fetch to cleanup
 
 ## Reviewer Entry Point
 
@@ -20,7 +22,7 @@ python3 -m pytest -q scripts/test_conductor.py -k 'qa or worktree or pick_issue_
 
 Expected on this branch:
 
-- `11 passed`
+- `13 passed`
 - QA finding normalization is covered
 - novel-vs-duplicate GitHub sync behavior is covered
 - `qa-intake` command execution is covered
@@ -35,7 +37,7 @@ python3 -m pytest -q scripts/test_conductor.py
 
 Expected on this branch:
 
-- `247 passed`
+- `249 passed`
 
 ## Before / After
 
