@@ -8908,6 +8908,8 @@ def test_show_run_ignores_reviewer_workspace_cleanup_warning(
     run = payload["run"]
     assert run["worktree_recovery_status"] is None
     assert run["worktree_recovery_error"] is None
+    assert run["worktree_recovery_event_type"] is None
+    assert run["worktree_recovery_event_at"] is None
 
 
 def test_show_run_ignores_reviewer_workspace_preparation_failure(
@@ -8949,6 +8951,8 @@ def test_show_run_ignores_reviewer_workspace_preparation_failure(
     run = payload["run"]
     assert run["worktree_recovery_status"] is None
     assert run["worktree_recovery_error"] is None
+    assert run["worktree_recovery_event_type"] is None
+    assert run["worktree_recovery_event_at"] is None
     assert run["blocking_event_type"] is None
     assert run["blocking_reason"] is None
 
