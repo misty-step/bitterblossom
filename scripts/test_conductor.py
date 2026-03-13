@@ -1107,11 +1107,13 @@ def test_invoke_claude_json_reads_structured_output_event(monkeypatch: pytest.Mo
 
     result = conductor.invoke_claude_json("pick one", {"type": "object"})
 
-    assert result == {
+    assert result.structured_output == {
         "issue_number": 474,
         "profile": "claude-sonnet",
         "rationale": "best match",
     }
+    assert result.trace.family == conductor.SEMANTIC_ROUTING_FAMILY
+    assert result.trace.skill_name == "semantic-router"
 
 
 def test_invoke_claude_json_uses_default_permission_mode(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1189,7 +1191,7 @@ def test_invoke_claude_json_reads_json_result_field(monkeypatch: pytest.MonkeyPa
 
     result = conductor.invoke_claude_json("pick one", {"type": "object"})
 
-    assert result == {"issue_number": 474, "profile": "claude-sonnet", "rationale": "best match"}
+    assert result.structured_output == {"issue_number": 474, "profile": "claude-sonnet", "rationale": "best match"}
 
 
 def test_invoke_claude_json_raises_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1234,7 +1236,16 @@ def test_route_issues_semantically_rejects_unknown_issue_from_model(monkeypatch:
     monkeypatch.setattr(
         conductor,
         "invoke_claude_json",
-        lambda *_a, **_kw: {"issue_number": 99, "profile": "claude-sonnet", "rationale": "bad"},
+        lambda *_a, **_kw: conductor.SemanticInvocationResult(
+            structured_output={"issue_number": 99, "profile": "claude-sonnet", "rationale": "bad"},
+            trace=conductor.semantic_decision_trace(
+                conductor.semantic_decision_profile(conductor.SEMANTIC_ROUTING_FAMILY),
+                payload={},
+                outcome_ref="route_issue",
+                rationale=None,
+                latency_ms=None,
+            ),
+        ),
     )
 
     with pytest.raises(conductor.CmdError, match="semantic router chose unknown issue #99"):
@@ -1261,7 +1272,16 @@ def test_route_issues_semantically_rejects_empty_rationale(monkeypatch: pytest.M
     monkeypatch.setattr(
         conductor,
         "invoke_claude_json",
-        lambda *_a, **_kw: {"issue_number": 3, "profile": "claude-sonnet", "rationale": "  "},
+        lambda *_a, **_kw: conductor.SemanticInvocationResult(
+            structured_output={"issue_number": 3, "profile": "claude-sonnet", "rationale": "  "},
+            trace=conductor.semantic_decision_trace(
+                conductor.semantic_decision_profile(conductor.SEMANTIC_ROUTING_FAMILY),
+                payload={},
+                outcome_ref="route_issue",
+                rationale=None,
+                latency_ms=None,
+            ),
+        ),
     )
 
     with pytest.raises(conductor.CmdError, match="semantic router returned an empty rationale"):
@@ -1288,7 +1308,16 @@ def test_route_issues_semantically_rejects_unsupported_profile(monkeypatch: pyte
     monkeypatch.setattr(
         conductor,
         "invoke_claude_json",
-        lambda *_a, **_kw: {"issue_number": 3, "profile": "other-model", "rationale": "bad"},
+        lambda *_a, **_kw: conductor.SemanticInvocationResult(
+            structured_output={"issue_number": 3, "profile": "other-model", "rationale": "bad"},
+            trace=conductor.semantic_decision_trace(
+                conductor.semantic_decision_profile(conductor.SEMANTIC_ROUTING_FAMILY),
+                payload={},
+                outcome_ref="route_issue",
+                rationale=None,
+                latency_ms=None,
+            ),
+        ),
     )
 
     with pytest.raises(conductor.CmdError, match="semantic router chose unsupported profile"):
@@ -1402,6 +1431,7 @@ def test_route_issue_command_emits_machine_readable_explanation(
         "readiness_failures": {
             "2": ["missing `## Product Spec` section", "missing `### Intent Contract` section"]
         },
+        "semantic_decision": None,
     }
 
 
@@ -1440,8 +1470,8 @@ def test_route_issue_command_reports_readiness_failures_when_none_are_eligible(
         "readiness_failures": {
             "2": ["missing `## Product Spec` section", "missing `### Intent Contract` section"]
         },
+        "semantic_decision": None,
     }
-
 
 def test_route_issue_reports_repo_when_scheduling_is_blocked(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
@@ -1479,7 +1509,71 @@ def test_route_issue_reports_repo_when_scheduling_is_blocked(
         "profile": "claude-sonnet",
         "rationale": "repository is paused",
         "readiness_failures": {},
+        "semantic_decision": None,
     }
+
+
+def test_route_issue_command_includes_semantic_trace_when_router_runs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    conductor.upsert_repository_record(
+        conn,
+        "misty-step/bitterblossom",
+        state=conductor.REPOSITORY_STATE_ACTIVE,
+        desired_concurrency=1,
+    )
+    issue = conductor.Issue(
+        number=4,
+        title="ready two",
+        body="## Product Spec\n### Intent Contract\n- better\n",
+        url="https://example.com/issues/4",
+        labels=["autopilot", "P1"],
+        updated_at="2026-03-05T00:00:00Z",
+    )
+    monkeypatch.setattr(conductor, "list_candidate_issues", lambda *_a, **_kw: [issue])
+    trace = conductor.SemanticDecisionTrace(
+        family=conductor.SEMANTIC_ROUTING_FAMILY,
+        profile="claude-sonnet",
+        skill_name="semantic-router",
+        skill_version="2026-03-13",
+        prompt_version="issue-routing-v1",
+        outcome_ref="issue#4",
+        rationale="the issue is ready and aligns with the requested profile",
+        model="sonnet",
+        provider="anthropic",
+        reasoning_budget="medium",
+        latency_ms=42,
+        estimated_cost_usd=0.01,
+    )
+    monkeypatch.setattr(
+        conductor,
+        "route_issues_semantically",
+        lambda _repo, eligible, builder_profile: conductor.RouteDecision(
+            issue=eligible[0],
+            profile=builder_profile,
+            rationale="the issue is ready and aligns with the requested profile",
+            readiness_failures={},
+            semantic_trace=trace,
+        ),
+    )
+
+    rc = conductor.route_issue(
+        argparse.Namespace(
+            repo="misty-step/bitterblossom",
+            db=str(tmp_path / "conductor.db"),
+            label="autopilot",
+            limit=20,
+            builder_profile="claude-sonnet",
+            issue=None,
+        )
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["semantic_decision"]["family"] == conductor.SEMANTIC_ROUTING_FAMILY
+    assert payload["semantic_decision"]["skill_name"] == "semantic-router"
+    assert payload["semantic_decision"]["outcome_ref"] == "issue#4"
 
 
 def test_route_issue_command_reports_lease_failures_when_none_are_eligible(
@@ -1598,6 +1692,7 @@ def test_route_issue_reports_repo_when_saturated(
         "profile": "claude-sonnet",
         "rationale": "repository is at desired concurrency",
         "readiness_failures": {},
+        "semantic_decision": None,
     }
 
 
@@ -1689,6 +1784,7 @@ def test_route_issue_returns_json_error_when_semantic_router_fails(
         "readiness_failures": {
             "1": ["missing `## Product Spec` section", "missing `### Intent Contract` section"]
         },
+        "semantic_decision": None,
     }
 
 
@@ -1721,6 +1817,7 @@ def test_route_issue_returns_json_error_when_fetching_explicit_issue_fails(
         "profile": "claude-sonnet",
         "rationale": "failed to fetch issue #42: github unavailable",
         "readiness_failures": {},
+        "semantic_decision": None,
     }
 
 
@@ -1753,6 +1850,7 @@ def test_route_issue_returns_json_error_when_listing_candidates_fails(
         "profile": "claude-sonnet",
         "rationale": "failed to list candidate issues: github unavailable",
         "readiness_failures": {},
+        "semantic_decision": None,
     }
 
 
@@ -4401,6 +4499,96 @@ def test_run_once_keeps_merged_truth_when_issue_comment_fails(monkeypatch: pytes
     assert run["phase"] == "merged"
 
 
+def test_run_once_persists_semantic_decision_trace_for_auto_selected_issue(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    issues = [
+        conductor.Issue(
+            number=447,
+            title="first ready issue",
+            body="## Product Spec\n### Intent Contract\n- ready\n",
+            url="https://example.com/447",
+            labels=["autopilot", "P1"],
+            updated_at="2026-03-06T00:00:00Z",
+        ),
+        conductor.Issue(
+            number=448,
+            title="second ready issue",
+            body="## Product Spec\n### Intent Contract\n- ready\n",
+            url="https://example.com/448",
+            labels=["autopilot", "P1"],
+            updated_at="2026-03-05T00:00:00Z",
+        ),
+    ]
+    builder = conductor.BuilderResult(
+        status="ready_for_review",
+        branch="factory/448-test-123",
+        pr_number=449,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/449",
+        summary="done",
+        tests=[],
+    )
+
+    monkeypatch.setattr(conductor, "list_candidate_issues", lambda *_a, **_kw: issues)
+    monkeypatch.setattr(conductor, "select_worker_slot", _select_named_worker_slot("noble-blue-serpent"))
+    monkeypatch.setattr(conductor, "ensure_reviewers_ready", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "comment_issue", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "cleanup_builder_workspace", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "probe_sprite_readiness", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        conductor,
+        "invoke_claude_json",
+        lambda *_a, **_kw: conductor.SemanticInvocationResult(
+            structured_output={
+                "issue_number": 448,
+                "profile": "default",
+                "rationale": "issue #448 is the better fit for the active sprint",
+            },
+            trace=conductor.semantic_decision_trace(
+                conductor.semantic_decision_profile(conductor.SEMANTIC_ROUTING_FAMILY),
+                payload={
+                    "model": "sonnet",
+                    "provider": "anthropic",
+                    "reasoning_budget": "medium",
+                    "usage": {"input_tokens": 120, "output_tokens": 30, "total_tokens": 150},
+                    "estimated_cost_usd": 0.02,
+                },
+                outcome_ref="route_issue",
+                rationale=None,
+                latency_ms=75,
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        conductor,
+        "run_builder",
+        lambda *_a, **_kw: (builder, {"status": "ready_for_review", "pr_number": builder.pr_number}),
+    )
+
+    args = _make_run_once_args(tmp_path, issue_number=448, stop_after_pr=True)
+    args.issue = None
+
+    rc = conductor.run_once(args)
+
+    assert rc == 0
+    conn = conductor.open_db(pathlib.Path(args.db))
+    trace = conn.execute(
+        """
+        select family, profile, outcome_ref, rationale, latency_ms, total_tokens, estimated_cost_usd
+        from semantic_decisions
+        where run_id in (select run_id from runs where issue_number = 448)
+        """,
+    ).fetchone()
+    assert trace is not None
+    assert trace["family"] == conductor.SEMANTIC_ROUTING_FAMILY
+    assert trace["profile"] == "claude-sonnet"
+    assert trace["outcome_ref"] == "issue#448"
+    assert trace["rationale"] == "issue #448 is the better fit for the active sprint"
+    assert trace["latency_ms"] == 75
+    assert trace["total_tokens"] == 150
+    assert trace["estimated_cost_usd"] == pytest.approx(0.02)
+
+
 def test_run_once_routes_unresolved_pr_threads_back_to_builder(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
     issue = conductor.Issue(number=447, title="test", body="body", url="https://example.com/447", labels=["autopilot"])
     builder = conductor.BuilderResult(
@@ -6076,6 +6264,24 @@ def test_show_run_rolls_up_builder_and_reviewer_telemetry(
             "usage": {"prompt_tokens": 200, "completion_tokens": 50},
         },
     )
+    conductor.persist_semantic_decision_trace(
+        conn,
+        "run-481-1",
+        conductor.SemanticDecisionTrace(
+            family=conductor.SEMANTIC_ROUTING_FAMILY,
+            profile="claude-sonnet",
+            skill_name="semantic-router",
+            skill_version="2026-03-13",
+            prompt_version="issue-routing-v1",
+            outcome_ref="issue#481",
+            rationale="best match",
+            model="sonnet",
+            provider="anthropic",
+            reasoning_budget="medium",
+            latency_ms=125,
+            estimated_cost_usd=0.03,
+        ),
+    )
     conductor.update_run(conn, "run-481-1", phase="merged", status="merged")
 
     rc = conductor.show_run(argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-481-1", event_limit=5))
@@ -6102,6 +6308,80 @@ def test_show_run_rolls_up_builder_and_reviewer_telemetry(
     assert payload["telemetry_samples"][0]["reasoning_budget"] == "high"
     assert payload["telemetry_samples"][1]["lane"] == "reviewer"
     assert payload["telemetry_samples"][1]["reasoning_budget"] == "medium"
+    assert payload["run"]["semantic_decision_count"] == 1
+    assert payload["run"]["semantic_average_latency_ms"] == 125
+    assert payload["run"]["semantic_estimated_cost_usd"] == pytest.approx(0.03)
+    assert payload["semantic_decisions"][0]["family"] == conductor.SEMANTIC_ROUTING_FAMILY
+    assert payload["semantic_decisions"][0]["outcome_ref"] == "issue#481"
+
+
+def test_persist_semantic_decision_trace_stamps_created_at_in_sample_json(tmp_path: pathlib.Path) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=481, title="telemetry", body="", url="u481", labels=["autopilot"])
+    conductor.create_run(conn, "run-481-1", "misty-step/bitterblossom", issue, "claude-sonnet")
+
+    conductor.persist_semantic_decision_trace(
+        conn,
+        "run-481-1",
+        conductor.SemanticDecisionTrace(
+            family=conductor.SEMANTIC_ROUTING_FAMILY,
+            profile="claude-sonnet",
+            skill_name="semantic-router",
+            skill_version="2026-03-13",
+            prompt_version="issue-routing-v1",
+            outcome_ref="issue#481",
+            rationale="best match",
+            model="sonnet",
+            provider="anthropic",
+            reasoning_budget="medium",
+            latency_ms=125,
+            estimated_cost_usd=0.03,
+        ),
+    )
+
+    row = conn.execute(
+        "select sample_json, created_at from semantic_decisions where run_id = ?",
+        ("run-481-1",),
+    ).fetchone()
+
+    assert row is not None
+    sample = json.loads(row["sample_json"])
+    assert sample["created_at"] == row["created_at"]
+
+
+def test_semantic_decision_rollup_skips_malformed_numeric_values() -> None:
+    summary = conductor.semantic_decision_rollup_from_traces(
+        [
+            {
+                "family": conductor.SEMANTIC_ROUTING_FAMILY,
+                "latency_ms": "150",
+                "estimated_cost_usd": "0.03",
+            },
+            {
+                "family": conductor.SEMANTIC_ROUTING_FAMILY,
+                "latency_ms": "oops",
+                "estimated_cost_usd": "nan",
+            },
+            {
+                "family": conductor.SEMANTIC_ROUTING_FAMILY,
+                "latency_ms": -5,
+                "estimated_cost_usd": -1,
+            },
+            {
+                "family": "other",
+                "latency_ms": 90,
+                "estimated_cost_usd": 0.02,
+            },
+        ]
+    )
+
+    assert summary["decision_count"] == 4
+    assert summary["average_latency_ms"] == 120
+    assert summary["total_estimated_cost_usd"] == pytest.approx(0.05)
+    assert summary["family_usage"] == [
+        {"family": conductor.SEMANTIC_ROUTING_FAMILY, "calls": 3},
+        {"family": "other", "calls": 1},
+    ]
 
 
 def test_show_metrics_returns_summary_recent_runs_and_timeline(
@@ -6175,6 +6455,42 @@ def test_show_metrics_returns_summary_recent_runs_and_timeline(
             "usage": {"input_tokens": 200, "output_tokens": 50, "total_tokens": 250},
         },
     )
+    conductor.persist_semantic_decision_trace(
+        conn,
+        "run-481-1",
+        conductor.SemanticDecisionTrace(
+            family=conductor.SEMANTIC_ROUTING_FAMILY,
+            profile="claude-sonnet",
+            skill_name="semantic-router",
+            skill_version="2026-03-13",
+            prompt_version="issue-routing-v1",
+            outcome_ref="issue#481",
+            rationale="best match",
+            model="sonnet",
+            provider="anthropic",
+            reasoning_budget="medium",
+            latency_ms=150,
+            estimated_cost_usd=0.03,
+        ),
+    )
+    conductor.persist_semantic_decision_trace(
+        conn,
+        "run-482-1",
+        conductor.SemanticDecisionTrace(
+            family=conductor.SEMANTIC_ROUTING_FAMILY,
+            profile="claude-sonnet",
+            skill_name="semantic-router",
+            skill_version="2026-03-13",
+            prompt_version="issue-routing-v1",
+            outcome_ref="issue#482",
+            rationale="best match",
+            model="sonnet",
+            provider="anthropic",
+            reasoning_budget="medium",
+            latency_ms=90,
+            estimated_cost_usd=0.02,
+        ),
+    )
     conductor.persist_run_telemetry_sample(
         conn,
         "run-300-1",
@@ -6201,11 +6517,19 @@ def test_show_metrics_returns_summary_recent_runs_and_timeline(
     assert payload["summary"]["average_duration_seconds"] == 1200
     assert payload["summary"]["total_estimated_cost_usd"] == pytest.approx(0.5)
     assert payload["summary"]["total_tokens"] == 1550
+    assert payload["summary"]["semantic_decision_count"] == 2
+    assert payload["summary"]["semantic_average_latency_ms"] == 120
+    assert payload["summary"]["semantic_estimated_cost_usd"] == pytest.approx(0.05)
+    assert payload["summary"]["semantic_family_usage"] == [
+        {"family": conductor.SEMANTIC_ROUTING_FAMILY, "calls": 2}
+    ]
     assert [run["run_id"] for run in payload["recent_runs"]] == ["run-482-1", "run-481-1"]
     assert payload["recent_runs"][0]["reasoning_budget_usage"] == [{"reasoning_budget": "medium", "calls": 1}]
     assert payload["recent_runs"][1]["reasoning_budget_usage"] == [{"reasoning_budget": "high", "calls": 1}]
     assert payload["recent_runs"][0]["governance"]["mechanical_mergeability"]["state"] == "unknown"
     assert payload["recent_runs"][1]["governance"]["semantic_readiness"]["state"] == "unknown"
+    assert payload["recent_runs"][0]["semantic_decision_count"] == 1
+    assert payload["recent_runs"][1]["semantic_decision_count"] == 1
     assert [bucket["bucket"] for bucket in payload["timeline"]] == ["2026-03-11", "2026-03-12"]
     assert payload["timeline"][0]["merged_runs"] == 1
     assert payload["timeline"][1]["blocked_runs"] == 1

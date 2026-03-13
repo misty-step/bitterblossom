@@ -163,7 +163,7 @@ python3 scripts/conductor.py route-issue \
   --limit 25
 ```
 
-`route-issue` emits JSON with the selected issue, chosen profile, semantic rationale, and any skipped issue numbers keyed to explicit readiness failures. Auto-pick in `run-once`/`loop` uses the same readiness + routing path.
+`route-issue` emits JSON with the selected issue, chosen profile, semantic rationale, any skipped issue numbers keyed to explicit readiness failures, and a `semantic_decision` object when the Claude-backed router actually ran. That trace includes the decision family, skill/prompt contract identifiers, configured model/provider/reasoning budget, latency, and any usage/cost metadata the harness returned. Auto-pick in `run-once`/`loop` uses the same readiness + routing path and persists the same semantic trace on the resulting run.
 
 Repository participation is now also durable kernel state. Operators can persist
 repo-level scheduling intent separately from worker-slot health:
@@ -246,7 +246,7 @@ python3 scripts/conductor.py reset-worker-slots \
 ```
 
 `show-runs` emits one JSON object per run. The operator contract is that each row includes the current `phase` and `status`, the raw `heartbeat_at` timestamp, a computed `heartbeat_age_seconds`, and when applicable a `blocking_reason` plus the source `blocking_event_type`.
-Completed and in-flight telemetry now ride on the same surface: each row also includes `picked_at`, `completed_at`, `duration_seconds`, `outcome`, `turn_count`, aggregate token totals, `estimated_cost_usd`, plus `model_usage`, `provider_usage`, and `reasoning_budget_usage` rollups.
+Completed and in-flight telemetry now ride on the same surface: each row also includes `picked_at`, `completed_at`, `duration_seconds`, `outcome`, `turn_count`, aggregate token totals, `estimated_cost_usd`, plus `model_usage`, `provider_usage`, and `reasoning_budget_usage` rollups. Semantic-decision telemetry is summarized separately so operators can distinguish conductor reasoning from builder/reviewer execution: `semantic_decision_count`, `semantic_family_usage`, `semantic_average_latency_ms`, and `semantic_estimated_cost_usd`.
 Each row now also includes a `governance` snapshot so operators can distinguish:
 
 - `semantic_readiness` — whether active merge-blocking findings still exist
@@ -256,11 +256,12 @@ Each row now also includes a `governance` snapshot so operators can distinguish:
 
 `show-events` emits one JSON object for the requested run with a `run` metadata envelope, `latest_event_type`, `latest_event_at`, and an `events` array. Review convergence is now explicit in that stream: `review_wave_started`, `review_wave_completed`, and `external_review_wait_complete` events let operators inspect when a council round began, when a PR-thread scan or external-review wait settled, and why governance advanced or stopped.
 
-`show-run` is the narrower single-run inspection surface: it returns the same run metadata together with `review_waves`, `review_findings`, a `telemetry_samples` array, and a `recent_events` array keyed by `run_id`.
+`show-run` is the narrower single-run inspection surface: it returns the same run metadata together with `review_waves`, `review_findings`, a `telemetry_samples` array, a `semantic_decisions` array, and a `recent_events` array keyed by `run_id`. Each semantic decision row captures the family (`issue_routing` today), skill/prompt contract, routed outcome reference, configured model/provider/reasoning budget, latency, and any usage/cost metadata the router exposed.
 
 `show-metrics` is the aggregate telemetry read model. It accepts `--window <Nd|Nh|Nm>` and `--limit N`, then returns one JSON object with:
 
 - `summary` — throughput, completion/success counts, average duration, token totals, and estimated cost over the chosen window
+- `summary.semantic_*` — semantic decision counts, family usage, average latency, and estimated cost over the chosen window
 - `recent_runs` — the same run rows exposed by `show-runs`, already filtered to the window
 - `timeline` — day-bucketed run volume, completion rate, duration, and cost trend data for dashboards or sidecars
 
