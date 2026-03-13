@@ -3614,7 +3614,7 @@ def load_review_findings(conn: sqlite3.Connection, run_id: str, *, wave_id: int 
             path=str(row["path"]),
             line=int(row["line"]) if row["line"] is not None else None,
             message=str(row["message"]),
-            raw=json.loads(row["raw_json"]),
+            raw=_parse_event_payload(row["raw_json"]),
             created_at=str(row["created_at"]),
             updated_at=str(row["updated_at"]),
         )
@@ -3657,7 +3657,7 @@ def load_review_findings_for_runs(conn: sqlite3.Connection, run_ids: list[str]) 
                 if row["line"] is not None
                 else None,
                 message=str(row["message"]),
-                raw=json.loads(row["raw_json"]),
+                raw=_parse_event_payload(row["raw_json"]),
                 created_at=str(row["created_at"]),
                 updated_at=str(row["updated_at"]),
             )
@@ -3742,7 +3742,7 @@ def governance_snapshot_for_run(
 
     phase = str(row["phase"])
     has_pr = row["pr_number"] is not None
-    has_governance_history = bool(review_waves or findings or has_pr)
+    has_governance_history = bool(review_waves or findings)
 
     if blocking_findings:
         semantic_readiness = {
