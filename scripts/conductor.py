@@ -4742,6 +4742,9 @@ class GovernanceSession:
             return "block"
         if thread_action == "revise" and feedback is not None:
             self.last_pr_feedback_thread_ids = thread_ids
+            # handle_pr_review_threads() already recorded revision_requested and
+            # phase="revising", so calling _request_builder_turn() here would
+            # duplicate the run-state transition and event log entry.
             self.builder = self._run_builder_turn(
                 event_type="builder_revised",
                 feedback=feedback,
@@ -4791,6 +4794,8 @@ class GovernanceSession:
         )
 
     def _run_builder_turn(self, *, event_type: str, feedback: str, feedback_source: str) -> BuilderResult:
+        self.polish_completed = False
+        self._touch_run(self.args.builder_timeout * 60 + DEFAULT_LEASE_BUFFER_SECONDS)
         return run_builder_turn(
             self.runner,
             self.conn,
@@ -4812,7 +4817,8 @@ class GovernanceSession:
 
     def _merge(self) -> int:
         update_run(self.conn, self.run_id, phase="merge_ready")
-        self._touch_run(600)
+        merge_budget_seconds = 2 * 120 + 600 + DEFAULT_LEASE_BUFFER_SECONDS
+        self._touch_run(merge_budget_seconds)
         merge_pr(self.runner, self.args.repo, self.builder.pr_number)
         update_run(self.conn, self.run_id, phase="merged", status="merged")
         record_event(

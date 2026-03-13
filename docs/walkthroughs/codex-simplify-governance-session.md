@@ -6,7 +6,7 @@ Collapse `govern_pr_flow` into a state-owning `GovernanceSession`.
 
 ## Why Now
 
-Before this branch, the conductor's governor lane lived in one 426-line temporal script. It mixed review policy, CI policy, PR-thread policy, external-review waiting, final polish, and merge handoff in one function, so even a small governance tweak required threading the same mutable state through several branches.
+Before this branch, the conductor's governor lane lived in one 434-line temporal script. It mixed review policy, CI policy, PR-thread policy, external-review waiting, final polish, and merge handoff in one function, so even a small governance tweak required threading the same mutable state through several branches.
 
 ## Before
 
@@ -68,6 +68,8 @@ Observable improvements:
 - revision requests follow one internal path instead of five hand-built call sites
 - PR-thread revisions preserve the pre-refactor event log shape instead of introducing a new `pr_review_threads` revision event path
 - external-only governance still re-enters the `"governing"` phase before each pass, matching the base-branch run contract
+- post-polish revisions now force another final-polish pass before merge instead of letting stale polish state slip through
+- governance-side builder turns and the merge handoff now renew the issue lease for the full operation budget
 - tests still exercise the same operator-visible run contract
 
 ## Verification
@@ -84,7 +86,7 @@ Supporting checks:
 
 - `python3 -m ruff check scripts/conductor.py scripts/test_conductor.py`
 - targeted external-only regression:
-  - `python3 -m pytest -q scripts/test_conductor.py -k 'govern_pr_uses_external_authority_without_internal_reviewers or run_once_uses_external_authority_without_internal_reviewers or run_once_thread_revision_keeps_original_event_log_shape'`
+  - `python3 -m pytest -q scripts/test_conductor.py -k 'govern_pr_refreshes_lease_for_governance_builder_turns_and_merge or run_once_reruns_final_polish_after_post_polish_thread_revision or govern_pr_uses_external_authority_without_internal_reviewers or run_once_uses_external_authority_without_internal_reviewers or run_once_thread_revision_keeps_original_event_log_shape'`
 - AST shape check captured in the transcript:
   - base branch `govern_pr_flow`: `434` lines
   - this branch `govern_pr_flow`: `27` lines
