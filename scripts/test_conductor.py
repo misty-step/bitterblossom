@@ -381,6 +381,22 @@ def test_acquire_lease_result_reports_reclaimed_run_id_for_stale_lease(tmp_path:
     assert result.reclaimed_run_id == "run-12-1"
 
 
+def test_acquire_lease_result_prefers_issue_already_leased_reason_for_same_issue(tmp_path: pathlib.Path) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    assert conductor.acquire_lease(conn, "misty-step/bitterblossom", 12, "run-12-1") is True
+
+    result = conductor.acquire_lease_result(
+        conn,
+        "misty-step/bitterblossom",
+        12,
+        "run-12-2",
+        desired_concurrency=1,
+    )
+
+    assert result.acquired is False
+    assert result.reason == "issue already leased"
+
+
 def test_repository_scheduling_view_ignores_legacy_null_expiry_leases(tmp_path: pathlib.Path) -> None:
     conn = conductor.open_db(tmp_path / "conductor.db")
     conductor.upsert_repository_record(

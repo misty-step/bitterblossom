@@ -581,6 +581,13 @@ def acquire_lease_result(
             "select run_id, released_at, blocked_at, lease_expires_at from leases where repo = ? and issue_number = ?",
             (repo, issue_number),
         ).fetchone()
+        reclaimed_run_id: str | None = None
+        if row is not None and row["released_at"] is None:
+            if row["blocked_at"] is not None or not lease_missing_or_expired(row["lease_expires_at"]):
+                conn.rollback()
+                return LeaseAcquireResult(acquired=False, reason="issue already leased")
+            reclaimed_run_id = str(row["run_id"])
+
         if desired_concurrency is not None and active_live_lease_count(conn, repo, now=ts) >= desired_concurrency:
             conn.rollback()
             return LeaseAcquireResult(acquired=False, reason="repository is at desired concurrency")
@@ -594,13 +601,6 @@ def acquire_lease_result(
             )
             conn.commit()
             return LeaseAcquireResult(acquired=True)
-
-        reclaimed_run_id: str | None = None
-        if row["released_at"] is None:
-            if row["blocked_at"] is not None or not lease_missing_or_expired(row["lease_expires_at"]):
-                conn.rollback()
-                return LeaseAcquireResult(acquired=False, reason="issue already leased")
-            reclaimed_run_id = str(row["run_id"])
 
         conn.execute(
             """
