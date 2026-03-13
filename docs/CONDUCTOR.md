@@ -247,10 +247,16 @@ python3 scripts/conductor.py reset-worker-slots \
 
 `show-runs` emits one JSON object per run. The operator contract is that each row includes the current `phase` and `status`, the raw `heartbeat_at` timestamp, a computed `heartbeat_age_seconds`, and when applicable a `blocking_reason` plus the source `blocking_event_type`.
 Completed and in-flight telemetry now ride on the same surface: each row also includes `picked_at`, `completed_at`, `duration_seconds`, `outcome`, `turn_count`, aggregate token totals, `estimated_cost_usd`, plus `model_usage`, `provider_usage`, and `reasoning_budget_usage` rollups.
+Each row now also includes a `governance` snapshot so operators can distinguish:
+
+- `semantic_readiness` — whether active merge-blocking findings still exist
+- `policy_mergeability` — whether governance policy is currently blocking merge
+- `mechanical_mergeability` — whether the latest required-check snapshot would let GitHub merge right now
+- `finding_counts` / `latest_review_wave` — compact review-ledger state without replaying the raw event log
 
 `show-events` emits one JSON object for the requested run with a `run` metadata envelope, `latest_event_type`, `latest_event_at`, and an `events` array. Review convergence is now explicit in that stream: `review_wave_started`, `review_wave_completed`, and `external_review_wait_complete` events let operators inspect when a council round began, when a PR-thread scan or external-review wait settled, and why governance advanced or stopped.
 
-`show-run` is the narrower single-run inspection surface: it returns the same run metadata together with a `telemetry_samples` array and a `recent_events` array keyed by `run_id`.
+`show-run` is the narrower single-run inspection surface: it returns the same run metadata together with `review_waves`, `review_findings`, a `telemetry_samples` array, and a `recent_events` array keyed by `run_id`.
 
 `show-metrics` is the aggregate telemetry read model. It accepts `--window <Nd|Nh|Nm>` and `--limit N`, then returns one JSON object with:
 
@@ -496,6 +502,8 @@ The JSON row now includes the persisted builder `worktree_path` plus explicit re
 - `worktree_recovery_status` — `cleaned`, `cleanup_failed`, or `prepare_failed`
 - `worktree_recovery_error` — the last cleanup/preparation error when recovery degraded
 - `worktree_recovery_event_type` / `worktree_recovery_event_at` — the event that established that recovery state
+- `governance.semantic_readiness` / `policy_mergeability` / `mechanical_mergeability` — the three-way merge truth model for the run
+- `governance.finding_counts` / `latest_review_wave` — compact review-ledger state on the run row
 
 If builder cleanup fails, `worktree_path` remains populated so the surviving builder worktree can be inspected and recovered
 without reading the sprite filesystem first. Reviewer cleanup and reviewer workspace-preparation failures stay in the event
@@ -582,6 +590,12 @@ To inspect the blocked run's events before re-queuing:
 python3 scripts/conductor.py show-run --run-id <run-id>
 python3 scripts/conductor.py show-events --run-id <run-id>
 ```
+
+If the run is blocked because one truth is red while another is green, inspect the `governance` object on `show-run`:
+
+- `semantic_readiness=ready` with `mechanical_mergeability=blocked` means the code/review state looks clean but required checks are still red
+- `semantic_readiness=ready` with `policy_mergeability=blocked` means governance policy is still holding the PR even though no active semantic blocker remains
+- `semantic_readiness=blocked` means the review ledger still contains an active merge-blocking finding
 
 ## Operator Recovery
 
