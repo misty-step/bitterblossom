@@ -6251,7 +6251,7 @@ def route_issue(args: argparse.Namespace) -> int:
         return code
 
     repo_view = repository_scheduling_view(conn, args.repo)
-    if repo_view.state in {REPOSITORY_STATE_PAUSED, REPOSITORY_STATE_DRAINING}:
+    if not repo_view.scheduling_allowed:
         return emit_payload(None, args.builder_profile, repo_view.scheduling_reason or "repository is not schedulable", {}, 0)
 
     if args.issue:

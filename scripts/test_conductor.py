@@ -1437,6 +1437,12 @@ def test_route_issue_command_reports_lease_failures_when_none_are_eligible(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     conn = conductor.open_db(tmp_path / "conductor.db")
+    conductor.upsert_repository_record(
+        conn,
+        "misty-step/bitterblossom",
+        state=conductor.REPOSITORY_STATE_ACTIVE,
+        desired_concurrency=2,
+    )
     assert conductor.acquire_lease(conn, "misty-step/bitterblossom", 2, "run-2-1") is True
     ready = conductor.Issue(
         number=2,
@@ -1470,6 +1476,12 @@ def test_route_issue_explicit_issue_reports_active_lease_warning(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     conn = conductor.open_db(tmp_path / "conductor.db")
+    conductor.upsert_repository_record(
+        conn,
+        "misty-step/bitterblossom",
+        state=conductor.REPOSITORY_STATE_ACTIVE,
+        desired_concurrency=2,
+    )
     issue = conductor.Issue(
         number=42,
         title="ready",
@@ -1497,6 +1509,46 @@ def test_route_issue_explicit_issue_reports_active_lease_warning(
     payload = json.loads(capsys.readouterr().out)
     assert payload["readiness_failures"] == {
         "42": ["issue has an active lease and cannot be re-leased"]
+    }
+
+
+def test_route_issue_reports_repo_when_saturated(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    conductor.upsert_repository_record(
+        conn,
+        "misty-step/bitterblossom",
+        state=conductor.REPOSITORY_STATE_ACTIVE,
+        desired_concurrency=1,
+    )
+    assert conductor.acquire_lease(conn, "misty-step/bitterblossom", 2, "run-2-1") is True
+    monkeypatch.setattr(
+        conductor,
+        "list_candidate_issues",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("should not list issues for saturated repo")),
+    )
+
+    rc = conductor.route_issue(
+        argparse.Namespace(
+            repo="misty-step/bitterblossom",
+            db=str(tmp_path / "conductor.db"),
+            label="autopilot",
+            limit=20,
+            builder_profile="claude-sonnet",
+            issue=None,
+        )
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "issue_number": None,
+        "issue_title": None,
+        "issue_url": None,
+        "profile": "claude-sonnet",
+        "rationale": "repository is at desired concurrency",
+        "readiness_failures": {},
     }
 
 
