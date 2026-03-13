@@ -67,6 +67,7 @@ MAX_WORKER_SLOT_COUNT = 1000
 TERMINAL_RUN_STATUSES = {"merged", "failed", "blocked", "closed"}
 BUILDER_WORKSPACE_CLEANUP_KIND = "builder_workspace_cleanup"
 UNSET = object()
+SEMANTIC_ROUTING_FAMILY = "issue_routing"
 
 
 @dataclass(slots=True)
@@ -91,6 +92,59 @@ class RouteDecision:
     profile: str
     rationale: str
     readiness_failures: dict[int, list[str]]
+    semantic_trace: SemanticDecisionTrace | None = None
+
+
+@dataclass(slots=True)
+class SemanticDecisionProfile:
+    family: str
+    profile: str
+    model: str
+    provider: str | None
+    reasoning_budget: str | None
+    skill_name: str
+    skill_version: str
+    prompt_version: str
+
+
+@dataclass(slots=True)
+class SemanticDecisionTrace:
+    family: str
+    profile: str
+    skill_name: str
+    skill_version: str
+    prompt_version: str
+    outcome_ref: str
+    rationale: str | None
+    model: str | None = None
+    provider: str | None = None
+    reasoning_budget: str | None = None
+    latency_ms: int | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+    estimated_cost_usd: float | None = None
+    created_at: str | None = None
+
+
+@dataclass(slots=True)
+class SemanticInvocationResult:
+    structured_output: dict[str, Any]
+    trace: SemanticDecisionTrace
+
+
+SEMANTIC_DECISION_PROFILES = {
+    SEMANTIC_ROUTING_FAMILY: SemanticDecisionProfile(
+        family=SEMANTIC_ROUTING_FAMILY,
+        profile="claude-sonnet",
+        model="sonnet",
+        provider="anthropic",
+        reasoning_budget="medium",
+        skill_name="semantic-router",
+        skill_version="2026-03-13",
+        prompt_version="issue-routing-v1",
+    ),
+}
 
 
 @dataclass(slots=True)
@@ -363,6 +417,30 @@ def init_db(conn: sqlite3.Connection) -> None:
         );
         create index if not exists idx_run_telemetry_samples_run_id
             on run_telemetry_samples (run_id, created_at);
+
+        create table if not exists semantic_decisions (
+            id integer primary key autoincrement,
+            run_id text not null,
+            family text not null,
+            profile text not null,
+            skill_name text not null,
+            skill_version text not null,
+            prompt_version text not null,
+            outcome_ref text not null,
+            rationale text,
+            model text,
+            provider text,
+            reasoning_budget text,
+            latency_ms integer,
+            input_tokens integer,
+            output_tokens integer,
+            total_tokens integer,
+            estimated_cost_usd real,
+            sample_json text not null,
+            created_at text not null
+        );
+        create index if not exists idx_semantic_decisions_run_id
+            on semantic_decisions (run_id, created_at);
 
         create table if not exists leases (
             repo text not null,
@@ -863,6 +941,33 @@ def float_value(value: Any) -> float | None:
         return None
 
 
+def latency_ms_value(value: Any) -> int | None:
+    if value in ("", None):
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        if value < 0:
+            return None
+        return int(round(float(value)))
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    multiplier = 1.0
+    if text.endswith("ms"):
+        text = text[:-2].strip()
+    elif text.endswith("s"):
+        text = text[:-1].strip()
+        multiplier = 1000.0
+    try:
+        parsed = float(text)
+    except ValueError:
+        return None
+    if parsed < 0:
+        return None
+    return int(round(parsed * multiplier))
+
+
 def first_present_value(*values: Any, caster: Callable[[Any], Any | None]) -> Any | None:
     for value in values:
         parsed = caster(value)
@@ -950,6 +1055,84 @@ def extract_usage_sample(payload: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def semantic_decision_profile(family: str) -> SemanticDecisionProfile:
+    try:
+        profile = SEMANTIC_DECISION_PROFILES[family]
+    except KeyError as exc:
+        raise CmdError(f"unknown semantic decision family {family!r}") from exc
+    return SemanticDecisionProfile(**asdict(profile))
+
+
+def _structured_output_from_response_payload(payload: Any) -> dict[str, Any] | None:
+    if isinstance(payload, list):
+        structured_output: dict[str, Any] | None = None
+        for event in payload:
+            if isinstance(event, dict) and isinstance(event.get("structured_output"), dict):
+                structured_output = event["structured_output"]
+        return structured_output
+    if isinstance(payload, dict) and "result" in payload and isinstance(payload["result"], str):
+        return json.loads(payload["result"])
+    if isinstance(payload, dict):
+        return payload
+    return None
+
+
+def _response_payload_candidates(payload: Any) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    structured_output = _structured_output_from_response_payload(payload)
+    if isinstance(structured_output, dict):
+        candidates.append(structured_output)
+    if isinstance(payload, dict):
+        candidates.append(payload)
+        for value in payload.values():
+            if isinstance(value, dict):
+                candidates.append(value)
+    elif isinstance(payload, list):
+        for item in payload:
+            if isinstance(item, dict):
+                candidates.append(item)
+                for value in item.values():
+                    if isinstance(value, dict):
+                        candidates.append(value)
+    return candidates
+
+
+def semantic_usage_sample(payload: Any) -> dict[str, Any] | None:
+    for candidate in _response_payload_candidates(payload):
+        sample = extract_usage_sample(candidate)
+        if sample is not None:
+            return sample
+    return None
+
+
+def semantic_decision_trace(
+    profile: SemanticDecisionProfile,
+    *,
+    payload: Any,
+    outcome_ref: str,
+    rationale: str | None,
+    latency_ms: int | None,
+) -> SemanticDecisionTrace:
+    sample = semantic_usage_sample(payload) or {}
+    return SemanticDecisionTrace(
+        family=profile.family,
+        profile=profile.profile,
+        skill_name=profile.skill_name,
+        skill_version=profile.skill_version,
+        prompt_version=profile.prompt_version,
+        outcome_ref=outcome_ref,
+        rationale=rationale,
+        model=sample.get("model") or profile.model,
+        provider=sample.get("provider") or profile.provider,
+        reasoning_budget=sample.get("reasoning_budget") or profile.reasoning_budget,
+        latency_ms=latency_ms,
+        input_tokens=sample.get("input_tokens"),
+        output_tokens=sample.get("output_tokens"),
+        total_tokens=sample.get("total_tokens"),
+        estimated_cost_usd=sample.get("estimated_cost_usd"),
+    )
+
+
 def persist_run_telemetry_sample(
     conn: sqlite3.Connection,
     run_id: str,
@@ -985,6 +1168,144 @@ def persist_run_telemetry_sample(
             now_utc(),
         ),
     )
+
+
+def semantic_trace_to_payload(trace: SemanticDecisionTrace) -> dict[str, Any]:
+    return {
+        "family": trace.family,
+        "profile": trace.profile,
+        "skill_name": trace.skill_name,
+        "skill_version": trace.skill_version,
+        "prompt_version": trace.prompt_version,
+        "outcome_ref": trace.outcome_ref,
+        "rationale": trace.rationale,
+        "model": trace.model,
+        "provider": trace.provider,
+        "reasoning_budget": trace.reasoning_budget,
+        "latency_ms": trace.latency_ms,
+        "input_tokens": trace.input_tokens,
+        "output_tokens": trace.output_tokens,
+        "total_tokens": trace.total_tokens,
+        "estimated_cost_usd": trace.estimated_cost_usd,
+        "created_at": trace.created_at,
+    }
+
+
+def persist_semantic_decision_trace(conn: sqlite3.Connection, run_id: str, trace: SemanticDecisionTrace) -> None:
+    ts = now_utc()
+    conn.execute(
+        """
+        insert into semantic_decisions (
+            run_id, family, profile, skill_name, skill_version, prompt_version, outcome_ref, rationale,
+            model, provider, reasoning_budget, latency_ms, input_tokens, output_tokens, total_tokens,
+            estimated_cost_usd, sample_json, created_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            run_id,
+            trace.family,
+            trace.profile,
+            trace.skill_name,
+            trace.skill_version,
+            trace.prompt_version,
+            trace.outcome_ref,
+            trace.rationale,
+            trace.model,
+            trace.provider,
+            trace.reasoning_budget,
+            trace.latency_ms,
+            trace.input_tokens,
+            trace.output_tokens,
+            trace.total_tokens,
+            trace.estimated_cost_usd,
+            json.dumps(semantic_trace_to_payload(trace), sort_keys=True, separators=(",", ":")),
+            ts,
+        ),
+    )
+    conn.commit()
+
+
+def _semantic_trace_row_to_payload(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "family": row["family"],
+        "profile": row["profile"],
+        "skill_name": row["skill_name"],
+        "skill_version": row["skill_version"],
+        "prompt_version": row["prompt_version"],
+        "outcome_ref": row["outcome_ref"],
+        "rationale": row["rationale"],
+        "model": row["model"],
+        "provider": row["provider"],
+        "reasoning_budget": row["reasoning_budget"],
+        "latency_ms": row["latency_ms"],
+        "input_tokens": row["input_tokens"],
+        "output_tokens": row["output_tokens"],
+        "total_tokens": row["total_tokens"],
+        "estimated_cost_usd": row["estimated_cost_usd"],
+        "created_at": row["created_at"],
+    }
+
+
+def semantic_decisions_for_run(conn: sqlite3.Connection, run_id: str) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        select family, profile, skill_name, skill_version, prompt_version, outcome_ref, rationale,
+               model, provider, reasoning_budget, latency_ms, input_tokens, output_tokens, total_tokens,
+               estimated_cost_usd, created_at
+        from semantic_decisions
+        where run_id = ?
+        order by id
+        """,
+        (run_id,),
+    ).fetchall()
+    return [_semantic_trace_row_to_payload(row) for row in rows]
+
+
+def semantic_decisions_for_runs(conn: sqlite3.Connection, run_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+    ordered_run_ids = list(dict.fromkeys(run_ids))
+    if not ordered_run_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in ordered_run_ids)
+    rows = conn.execute(
+        f"""
+        select run_id, family, profile, skill_name, skill_version, prompt_version, outcome_ref, rationale,
+               model, provider, reasoning_budget, latency_ms, input_tokens, output_tokens, total_tokens,
+               estimated_cost_usd, created_at
+        from semantic_decisions
+        where run_id in ({placeholders})
+        order by run_id, id
+        """,
+        ordered_run_ids,
+    ).fetchall()
+    by_run: dict[str, list[dict[str, Any]]] = {run_id: [] for run_id in ordered_run_ids}
+    for row in rows:
+        by_run[row["run_id"]].append(_semantic_trace_row_to_payload(row))
+    return by_run
+
+
+def semantic_decision_rollup_from_traces(traces: list[dict[str, Any]]) -> dict[str, Any]:
+    summary = {
+        "decision_count": len(traces),
+        "average_latency_ms": None,
+        "total_estimated_cost_usd": None,
+        "family_usage": [],
+    }
+    if not traces:
+        return summary
+    latency_values = [int(trace["latency_ms"]) for trace in traces if trace.get("latency_ms") is not None]
+    cost_values = [float(trace["estimated_cost_usd"]) for trace in traces if trace.get("estimated_cost_usd") is not None]
+    families: dict[str, int] = {}
+    for trace in traces:
+        family = normalized_string(trace.get("family"))
+        if family is not None:
+            families[family] = families.get(family, 0) + 1
+    summary["average_latency_ms"] = int(sum(latency_values) / len(latency_values)) if latency_values else None
+    summary["total_estimated_cost_usd"] = round(sum(cost_values), 6) if cost_values else None
+    summary["family_usage"] = [
+        {"family": family, "calls": count}
+        for family, count in sorted(families.items(), key=lambda item: (-item[1], item[0]))
+    ]
+    return summary
 
 
 def increment_run_turn_count(conn: sqlite3.Connection, run_id: str) -> None:
@@ -1360,6 +1681,7 @@ def serialize_run_surface(
     row: sqlite3.Row,
     *,
     telemetry: dict[str, Any] | None = None,
+    semantic_decisions: list[dict[str, Any]] | None = None,
     findings: list[ReviewFinding] | None = None,
     review_waves: list[ReviewWave] | None = None,
     latest_ci_event: sqlite3.Row | None | object = UNSET,
@@ -1378,6 +1700,9 @@ def serialize_run_surface(
         review_waves = load_review_waves(conn, row["run_id"])
     if telemetry is None:
         telemetry = run_telemetry_rollup(conn, row["run_id"])
+    if semantic_decisions is None:
+        semantic_decisions = semantic_decisions_for_run(conn, row["run_id"])
+    semantic_summary = semantic_decision_rollup_from_traces(semantic_decisions)
     payload: dict[str, Any] = {
         "run_id": row["run_id"],
         "repo": row["repo"],
@@ -1404,6 +1729,10 @@ def serialize_run_surface(
         "model_usage": telemetry["model_usage"],
         "provider_usage": telemetry["provider_usage"],
         "reasoning_budget_usage": telemetry["reasoning_budget_usage"],
+        "semantic_decision_count": semantic_summary["decision_count"],
+        "semantic_family_usage": semantic_summary["family_usage"],
+        "semantic_average_latency_ms": semantic_summary["average_latency_ms"],
+        "semantic_estimated_cost_usd": semantic_summary["total_estimated_cost_usd"],
         "heartbeat_at": heartbeat_at,
         "heartbeat_age_seconds": age_seconds_from_now(heartbeat_at),
         "updated_at": row["updated_at"],
@@ -2559,7 +2888,15 @@ def collect_routable_issues(
     return eligible, readiness_failures
 
 
-def invoke_claude_json(prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
+def invoke_claude_json(
+    prompt: str,
+    schema: dict[str, Any],
+    *,
+    decision_profile: SemanticDecisionProfile | None = None,
+    outcome_ref: str = "",
+    rationale: str | None = None,
+) -> SemanticInvocationResult:
+    active_profile = decision_profile or semantic_decision_profile(SEMANTIC_ROUTING_FAMILY)
     argv = [
         shutil.which("claude") or "claude",
         "--print",
@@ -2572,9 +2909,10 @@ def invoke_claude_json(prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
         "--tools",
         "",
         "--model",
-        "sonnet",
+        active_profile.model,
         prompt,
     ]
+    started_at = time.monotonic()
     try:
         proc = subprocess.run(
             argv,
@@ -2604,22 +2942,22 @@ def invoke_claude_json(prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
         payload = json.loads(proc.stdout)
     except json.JSONDecodeError as exc:
         raise CmdError(f"semantic router returned invalid JSON: {exc}") from exc
-    if isinstance(payload, list):
-        structured_output: dict[str, Any] | None = None
-        for event in payload:
-            if isinstance(event, dict) and isinstance(event.get("structured_output"), dict):
-                structured_output = event["structured_output"]
-        if structured_output is not None:
-            return structured_output
+    try:
+        structured_output = _structured_output_from_response_payload(payload)
+    except json.JSONDecodeError as exc:
+        raise CmdError(f"semantic router returned invalid JSON in result field: {exc}") from exc
+    if isinstance(payload, list) and structured_output is None:
         raise CmdError("semantic router returned an event-stream list with no structured_output event")
-    if isinstance(payload, dict) and "result" in payload and isinstance(payload["result"], str):
-        try:
-            return json.loads(payload["result"])
-        except json.JSONDecodeError as exc:
-            raise CmdError(f"semantic router returned invalid JSON in result field: {exc}") from exc
-    if not isinstance(payload, dict):
+    if not isinstance(structured_output, dict):
         raise CmdError("semantic router returned a non-object payload")
-    return payload
+    trace = semantic_decision_trace(
+        active_profile,
+        payload=payload,
+        outcome_ref=outcome_ref or "unknown",
+        rationale=rationale,
+        latency_ms=latency_ms_value(int(round((time.monotonic() - started_at) * 1000))),
+    )
+    return SemanticInvocationResult(structured_output=structured_output, trace=trace)
 
 
 def lease_warnings(conn: sqlite3.Connection, repo: str, issue_number: int) -> list[str]:
@@ -2646,6 +2984,7 @@ def route_issues_semantically(repo: str, eligible: list[Issue], builder_profile:
             rationale="only one issue satisfied the autopilot readiness contract",
             readiness_failures={},
         )
+    decision_profile = semantic_decision_profile(SEMANTIC_ROUTING_FAMILY)
 
     issue_payload = [
         render_untrusted_json_block(
@@ -2685,11 +3024,21 @@ def route_issues_semantically(repo: str, eligible: list[Issue], builder_profile:
             "Do not use label priority as the primary reason unless the issue content is otherwise tied.",
             f"Repository: {repo}",
             f"Default builder profile: {builder_profile}",
+            f"Decision family: {decision_profile.family}",
+            f"Skill contract: {decision_profile.skill_name}@{decision_profile.skill_version}",
+            f"Prompt contract: {decision_profile.prompt_version}",
             "Return valid JSON matching the provided schema.",
             "\n\n".join(issue_payload),
         ]
     )
-    routed = invoke_claude_json(prompt, schema)
+    invoked = invoke_claude_json(
+        prompt,
+        schema,
+        decision_profile=decision_profile,
+        outcome_ref="route_issue",
+    )
+    routed = invoked.structured_output
+    trace_seed = invoked.trace
     chosen_number = routed.get("issue_number")
     chosen_issue = next((issue for issue in eligible if issue.number == chosen_number), None)
     if chosen_issue is None:
@@ -2702,11 +3051,19 @@ def route_issues_semantically(repo: str, eligible: list[Issue], builder_profile:
     rationale = str(routed.get("rationale") or "").strip()
     if not rationale:
         raise CmdError("semantic router returned an empty rationale")
+    semantic_trace = SemanticDecisionTrace(
+        **{
+            **asdict(trace_seed),
+            "outcome_ref": f"issue#{chosen_issue.number}",
+            "rationale": rationale,
+        }
+    )
     return RouteDecision(
         issue=chosen_issue,
         profile=profile,
         rationale=rationale,
         readiness_failures={},
+        semantic_trace=semantic_trace,
     )
 
 
@@ -5913,6 +6270,7 @@ def run_once(args: argparse.Namespace) -> int:
     if not repo_view.scheduling_allowed:
         print(repo_view.scheduling_reason or f"repository {args.repo} is not schedulable")
         return 0
+    decision: RouteDecision | None = None
 
     if args.issue:
         issue = get_issue(runner, args.repo, args.issue)
@@ -5954,6 +6312,8 @@ def run_once(args: argparse.Namespace) -> int:
     worker_slot: WorkerSlot | None = None
     try:
         create_run(conn, run_id, args.repo, issue, builder_profile)
+        if decision is not None and decision.semantic_trace is not None:
+            persist_semantic_decision_trace(conn, run_id, decision.semantic_trace)
         if reclaimed_run_id:
             if run_exists(conn, reclaimed_run_id):
                 update_run(conn, reclaimed_run_id, phase="failed", status="failed")
@@ -6444,6 +6804,7 @@ def show_run(args: argparse.Namespace) -> int:
     if row is None:
         raise CmdError(f"unknown run_id: {args.run_id}")
     telemetry = run_telemetry_rollup(conn, args.run_id)
+    semantic_traces = semantic_decisions_for_run(conn, args.run_id)
     review_waves = load_review_waves(conn, args.run_id)
     review_findings = load_review_findings(conn, args.run_id)
     print(
@@ -6453,12 +6814,14 @@ def show_run(args: argparse.Namespace) -> int:
                     conn,
                     row,
                     telemetry=telemetry,
+                    semantic_decisions=semantic_traces,
                     findings=review_findings,
                     review_waves=review_waves,
                 ),
                 "review_waves": [serialize_review_wave(wave) for wave in review_waves],
                 "review_findings": [serialize_review_finding(finding) for finding in review_findings],
                 "telemetry_samples": telemetry["samples"],
+                "semantic_decisions": semantic_traces,
                 "recent_events": recent_events(conn, args.run_id, args.event_limit),
             }
         )
@@ -6501,6 +6864,7 @@ def show_metrics(args: argparse.Namespace) -> int:
     ).fetchall()
     run_ids = [row["run_id"] for row in rows]
     telemetry_by_run = run_telemetry_rollup_bulk(conn, run_ids)
+    semantic_by_run = semantic_decisions_for_runs(conn, run_ids)
     review_waves_by_run = load_review_waves_for_runs(conn, run_ids)
     review_findings_by_run = load_review_findings_for_runs(conn, run_ids)
     latest_ci_by_run = latest_events_of_type_for_runs(conn, run_ids, "ci_wait_complete")
@@ -6514,6 +6878,7 @@ def show_metrics(args: argparse.Namespace) -> int:
                 conn,
                 row,
                 telemetry=telemetry_by_run.get(row["run_id"], empty_run_telemetry_rollup()),
+                semantic_decisions=semantic_by_run.get(row["run_id"], []),
                 findings=review_findings_by_run.get(row["run_id"], []),
                 review_waves=review_waves_by_run.get(row["run_id"], []),
                 latest_ci_event=latest_ci_by_run.get(row["run_id"]),
@@ -6526,6 +6891,9 @@ def show_metrics(args: argparse.Namespace) -> int:
         ],
         key=lambda run: (run["picked_at"] or run["updated_at"] or "", run["run_id"]),
         reverse=True,
+    )
+    semantic_summary = semantic_decision_rollup_from_traces(
+        [trace for traces in semantic_by_run.values() for trace in traces]
     )
     terminal_runs = [run for run in runs if run["completed_at"] is not None]
     successful_runs = [run for run in terminal_runs if run["status"] == "merged"]
@@ -6584,6 +6952,10 @@ def show_metrics(args: argparse.Namespace) -> int:
             "total_estimated_cost_usd": round(sum(cost_values), 6) if cost_values else None,
             "average_estimated_cost_usd": round(sum(cost_values) / len(cost_values), 6) if cost_values else None,
             "total_tokens": sum(token_values) if token_values else None,
+            "semantic_decision_count": semantic_summary["decision_count"],
+            "semantic_average_latency_ms": semantic_summary["average_latency_ms"],
+            "semantic_estimated_cost_usd": semantic_summary["total_estimated_cost_usd"],
+            "semantic_family_usage": semantic_summary["family_usage"],
         },
         "recent_runs": runs[: args.limit],
         "timeline": [timeline[key] for key in sorted(timeline.keys())],
@@ -6695,7 +7067,12 @@ def route_issue(args: argparse.Namespace) -> int:
     conn = open_db(pathlib.Path(args.db))
 
     def emit_payload(
-        issue: Issue | None, profile: str, rationale: str, readiness_failures: dict[int, list[str]], code: int
+        issue: Issue | None,
+        profile: str,
+        rationale: str,
+        readiness_failures: dict[int, list[str]],
+        code: int,
+        semantic_trace: SemanticDecisionTrace | None = None,
     ) -> int:
         payload = {
             "issue_number": issue.number if issue is not None else None,
@@ -6704,6 +7081,7 @@ def route_issue(args: argparse.Namespace) -> int:
             "profile": profile,
             "rationale": rationale,
             "readiness_failures": {str(k): v for k, v in readiness_failures.items()},
+            "semantic_decision": semantic_trace_to_payload(semantic_trace) if semantic_trace is not None else None,
         }
         print(json.dumps(payload))
         return code
@@ -6743,7 +7121,14 @@ def route_issue(args: argparse.Namespace) -> int:
             return emit_payload(None, args.builder_profile, f"semantic router failed: {exc}", readiness_failures, 1)
         decision.readiness_failures.update(readiness_failures)
 
-    return emit_payload(decision.issue, decision.profile, decision.rationale, decision.readiness_failures, 0)
+    return emit_payload(
+        decision.issue,
+        decision.profile,
+        decision.rationale,
+        decision.readiness_failures,
+        0,
+        semantic_trace=decision.semantic_trace,
+    )
 
 
 def qa_intake(args: argparse.Namespace) -> int:
