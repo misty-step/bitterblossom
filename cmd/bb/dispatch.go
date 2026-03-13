@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path"
 	"strings"
 	"time"
 
@@ -73,14 +72,7 @@ func dispatchWorkspace(repo, override string) string {
 	if override != "" {
 		return override
 	}
-	return "/home/sprite/workspace/" + path.Base(repo)
-}
-
-func cleanSignalsScriptFor(workspace string) string {
-	return fmt.Sprintf(
-		`export WORKSPACE=%q; rm -f "$WORKSPACE"/TASK_COMPLETE "$WORKSPACE"/TASK_COMPLETE.md "$WORKSPACE"/BLOCKED.md`,
-		workspace,
-	)
+	return spriteRepoWorkspace(repo)
 }
 
 func verifyWorkScriptFor(workspace, ghToken string) string {
@@ -117,7 +109,7 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverrid
 	}
 
 	// 2. Check that setup was run (ralph.sh must exist)
-	ralphScript := "/home/sprite/workspace/.ralph.sh"
+	ralphScript := spriteRalphScriptPath
 	checkCtx, checkCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer checkCancel()
 	if _, err := s.CommandContext(checkCtx, "test", "-f", ralphScript).Output(); err != nil {
@@ -185,7 +177,7 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverrid
 		return fmt.Errorf("render prompt: %w", err)
 	}
 
-	promptPath := workspace + "/.dispatch-prompt.md"
+	promptPath := workspaceDispatchPromptPath(workspace)
 	if err := s.Filesystem().WriteFileContext(ctx, promptPath, []byte(rendered), 0644); err != nil {
 		return fmt.Errorf("upload prompt: %w", err)
 	}
@@ -366,11 +358,6 @@ if [ "$status" -eq 1 ]; then
 fi
 echo "$busy" >&2
 exit "$status"`
-
-const taskCompleteSignalCheckScript = `if [ -f "$WORKSPACE/TASK_COMPLETE" ] || [ -f "$WORKSPACE/TASK_COMPLETE.md" ]; then
-  exit 0
-fi
-exit 1`
 
 // newCommitsCheckScript checks if any commits on HEAD are not yet on origin/master or
 // origin/main. Exits 0 with commit list on stdout when new commits exist, exits 1 when
@@ -559,7 +546,7 @@ func hasTaskCompleteSignalWithRunner(ctx context.Context, run spriteScriptRunner
 	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	checkScript := fmt.Sprintf("export WORKSPACE=%q\n%s", workspace, taskCompleteSignalCheckScript)
+	checkScript := taskCompleteSignalCheckScriptFor(workspace)
 	out, exitCode, err := run(checkCtx, checkScript)
 	if err != nil {
 		return false, fmt.Errorf("check completion signal command failed: %w", err)
@@ -666,7 +653,7 @@ func waitForTaskCompleteWithRunner(ctx context.Context, run spriteScriptRunner, 
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
-	taskCheckScript := fmt.Sprintf("WORKSPACE=%q\n%s", workspace, taskCompleteSignalCheckScript)
+	taskCheckScript := taskCompleteSignalCheckScriptFor(workspace)
 
 	for {
 		checkCtx, checkCancel := context.WithTimeout(pollCtx, 30*time.Second)

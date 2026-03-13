@@ -146,9 +146,7 @@ func spriteStatus(ctx context.Context, spriteName string) error {
 	// are present, they are listed below the count line (like git status --short).
 	statusScript := `
 echo "=== signals ==="
-for f in TASK_COMPLETE TASK_COMPLETE.md BLOCKED.md; do
-  [ -f "$WS/$f" ] && echo "$f: present" || echo "$f: absent"
-done
+` + workspaceStatusSignalsScript("WS") + `
 
 echo ""
 echo "=== git ==="

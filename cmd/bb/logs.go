@@ -67,7 +67,7 @@ func runLogs(ctx context.Context, stdout, stderr io.Writer, spriteName string, f
 		return fmt.Errorf("sprite %q has no workspace repo (run: bb setup %s --repo owner/repo)", spriteName, spriteName)
 	}
 
-	logPath := workspace + "/ralph.log"
+	logPath := workspaceRalphLogPath(workspace)
 
 	active := spriteHasRunningAgent(ctx, s)
 	hasLog := spriteFileHasContent(ctx, s, logPath)

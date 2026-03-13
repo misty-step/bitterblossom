@@ -1,0 +1,27 @@
+$ go test ./cmd/bb
+ok  	github.com/misty-step/bitterblossom/cmd/bb	(cached)
+
+$ git diff --stat -- cmd/bb/dispatch.go cmd/bb/logs.go cmd/bb/setup.go cmd/bb/status.go cmd/bb/workspace_metadata.go docs/COMPLETION-PROTOCOL.md
+ cmd/bb/dispatch.go           | 23 +++++------------------
+ cmd/bb/logs.go               |  2 +-
+ cmd/bb/setup.go              | 43 +++++++++++++++++++++----------------------
+ cmd/bb/status.go             |  4 +---
+ cmd/bb/workspace_metadata.go | 31 +++++++++++++++++++------------
+ docs/COMPLETION-PROTOCOL.md  |  5 +++--
+ 6 files changed, 50 insertions(+), 58 deletions(-)
+
+$ rg -n "spriteRepoWorkspace|workspaceDispatchPromptPath|workspaceRalphLogPath|taskCompleteSignalCheckScriptFor|workspaceStatusSignalsScript|cleanSignalsScriptFor" cmd/bb
+cmd/bb/workspace_contract.go:38:func spriteRepoWorkspace(repo string) string {
+cmd/bb/workspace_contract.go:46:func workspaceDispatchPromptPath(workspace string) string {
+cmd/bb/workspace_contract.go:50:func workspaceRalphLogPath(workspace string) string {
+cmd/bb/workspace_contract.go:54:func cleanSignalsScriptFor(workspace string) string {
+cmd/bb/workspace_contract.go:63:func taskCompleteSignalCheckScriptFor(workspace string) string {
+cmd/bb/workspace_contract.go:72:func workspaceStatusSignalsScript(envName string) string {
+cmd/bb/setup.go:145:		repoDir := spriteRepoWorkspace(repo)
+cmd/bb/dispatch.go:75:	return spriteRepoWorkspace(repo)
+cmd/bb/dispatch.go:164:	cleanScript := cleanSignalsScriptFor(workspace)
+cmd/bb/dispatch.go:180:	promptPath := workspaceDispatchPromptPath(workspace)
+cmd/bb/dispatch.go:549:	checkScript := taskCompleteSignalCheckScriptFor(workspace)
+cmd/bb/dispatch.go:656:	taskCheckScript := taskCompleteSignalCheckScriptFor(workspace)
+cmd/bb/logs.go:70:	logPath := workspaceRalphLogPath(workspace)
+cmd/bb/status.go:149:` + workspaceStatusSignalsScript("WS") + `

@@ -7,8 +7,6 @@ import (
 	"time"
 )
 
-const workspaceMetadataRelPath = ".bb/workspace.json"
-
 type workspaceMetadata struct {
 	SchemaVersion int    `json:"schema_version"`
 	Repo          string `json:"repo"`
@@ -42,28 +40,37 @@ func marshalWorkspaceMetadata(meta workspaceMetadata) ([]byte, error) {
 }
 
 func workspaceDiscoveryScript() string {
-	return `
+	return fmt.Sprintf(`
 set -euo pipefail
 
-meta=$(ls -dt /home/sprite/workspace/*/.bb/workspace.json 2>/dev/null | head -1 || true)
+meta=$(ls -dt %s/*/%s 2>/dev/null | head -1 || true)
 if [[ -n "$meta" ]]; then
-  printf '%s\n' "${meta%/.bb/workspace.json}"
+  printf '%%s\n' "${meta%%/%s}"
   exit 0
 fi
 
-prompt=$(ls -dt /home/sprite/workspace/*/.dispatch-prompt.md 2>/dev/null | head -1 || true)
+prompt=$(ls -dt %s/*/%s 2>/dev/null | head -1 || true)
 if [[ -n "$prompt" ]]; then
-  printf '%s\n' "${prompt%/*}"
+  printf '%%s\n' "${prompt%%/*}"
   exit 0
 fi
 
-log=$(ls -dt /home/sprite/workspace/*/ralph.log 2>/dev/null | head -1 || true)
+log=$(ls -dt %s/*/%s 2>/dev/null | head -1 || true)
 if [[ -n "$log" ]]; then
-  printf '%s\n' "${log%/*}"
+  printf '%%s\n' "${log%%/*}"
   exit 0
 fi
 
-ws=$(ls -d /home/sprite/workspace/*/ 2>/dev/null | head -1 || true)
-printf '%s\n' "${ws%/}"
-`
+ws=$(ls -d %s/*/ 2>/dev/null | head -1 || true)
+printf '%%s\n' "${ws%%/}"
+`,
+		spriteWorkspaceRoot,
+		workspaceMetadataRelPath,
+		workspaceMetadataRelPath,
+		spriteWorkspaceRoot,
+		dispatchPromptFileName,
+		spriteWorkspaceRoot,
+		ralphLogFileName,
+		spriteWorkspaceRoot,
+	)
 }
