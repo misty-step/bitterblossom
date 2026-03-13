@@ -9108,3 +9108,121 @@ def test_show_runs_does_not_call_per_run_recovery_query(
     assert per_run_blocking_calls == [], (
         "show_runs must use the bulk pre-fetch; per-run blocking_event_for_run must not be called"
     )
+
+
+def test_cleanup_builder_workspace_records_cleanup_warning_on_os_error(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """cleanup_builder_workspace catches OSError the same as CmdError — cleanup_warning is recorded."""
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="cleanup", body="", url="u538", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-oe", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(conn, "run-538-oe", worktree_path="/tmp/run-538-oe/builder-worktree")
+
+    monkeypatch.setattr(
+        conductor,
+        "cleanup_run_workspace",
+        lambda *_a, **_kw: (_ for _ in ()).throw(OSError("network connection dropped")),
+    )
+
+    conductor.cleanup_builder_workspace(
+        object(),
+        conn,
+        tmp_path / "events.jsonl",
+        "run-538-oe",
+        "misty-step/bitterblossom",
+        "noble-blue-serpent",
+        "/tmp/run-538-oe/builder-worktree",
+    )
+
+    row = conn.execute(
+        "select payload_json from events where run_id = 'run-538-oe' and event_type = 'cleanup_warning'"
+    ).fetchone()
+    assert row is not None
+    payload = json.loads(row[0])
+    assert payload["kind"] == conductor.BUILDER_WORKSPACE_CLEANUP_KIND
+    assert "network connection dropped" in payload["error"]
+    # worktree_path must survive so the operator can recover
+    path_row = conn.execute("select worktree_path from runs where run_id = 'run-538-oe'").fetchone()
+    assert path_row["worktree_path"] == "/tmp/run-538-oe/builder-worktree"
+
+
+def test_prepare_run_workspace_with_retry_stops_after_lease_loss_on_second_retry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """Lease check between attempt 2 and 3 also aborts without a third attempt."""
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="worktrees", body="", url="u538", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-lr2", "misty-step/bitterblossom", issue, "default")
+    acquire_result = conductor.acquire_lease_result(conn, "misty-step/bitterblossom", issue.number, "run-538-lr2")
+    assert acquire_result.acquired is True
+
+    sleep_calls: list[float] = []
+
+    def always_fail(*_args: object, **_kwargs: object) -> str:
+        raise conductor.CmdError("transient")
+
+    def release_on_second_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+        if len(sleep_calls) == 2:
+            conductor.release_lease(conn, "misty-step/bitterblossom", issue.number, "run-538-lr2")
+
+    monkeypatch.setattr(conductor, "prepare_run_workspace", always_fail)
+    monkeypatch.setattr(conductor.time, "sleep", release_on_second_sleep)
+
+    with pytest.raises(conductor.LeaseLostError):
+        conductor.prepare_run_workspace_with_retry(
+            object(),
+            conn,
+            tmp_path / "events.jsonl",
+            "run-538-lr2",
+            "noble-blue-serpent",
+            "misty-step/bitterblossom",
+            "builder",
+        )
+
+    events = conn.execute("select event_type from events where run_id = 'run-538-lr2' order by id").fetchall()
+    # Two retries recorded before lease-check aborts before the third attempt
+    assert [row["event_type"] for row in events] == [
+        "workspace_preparation_retry",
+        "workspace_preparation_retry",
+    ]
+
+
+def test_show_run_surfaces_worktree_recovery_event_at(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """worktree_recovery_event_at matches the event's created_at timestamp."""
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="inspect", body="", url="u538", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-rat", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(conn, "run-538-rat", worktree_path="/tmp/run-538-rat/builder-worktree")
+
+    event_log = tmp_path / "events.jsonl"
+    conductor.record_event(
+        conn,
+        event_log,
+        "run-538-rat",
+        "cleanup_warning",
+        {
+            "kind": conductor.BUILDER_WORKSPACE_CLEANUP_KIND,
+            "workspace": "/tmp/run-538-rat/builder-worktree",
+            "error": "builder workspace cleanup failed: timeout",
+        },
+    )
+
+    row = conn.execute(
+        "select created_at from events where run_id = 'run-538-rat' and event_type = 'cleanup_warning'"
+    ).fetchone()
+    expected_event_at = row["created_at"]
+
+    rc = conductor.show_run(
+        argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-538-rat", event_limit=5)
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["run"]["worktree_recovery_status"] == "cleanup_failed"
+    assert payload["run"]["worktree_recovery_event_at"] == expected_event_at
