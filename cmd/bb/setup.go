@@ -45,26 +45,19 @@ Without --persona, bb falls back to the first available file in sprites/.`,
 }
 
 func runSetup(ctx context.Context, spriteName, repo string, force bool, persona string) error {
-	token, err := spriteToken()
-	if err != nil {
-		return err
-	}
 	openrouterKey, err := requireEnv("OPENROUTER_API_KEY")
 	if err != nil {
 		return err
 	}
 
-	client := sprites.New(token)
-	defer func() { _ = client.Close() }()
-	s := client.Sprite(spriteName)
-
 	// 1. Probe
 	_, _ = fmt.Fprintf(os.Stderr, "probing %s...\n", spriteName)
-	probeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	if _, err := s.CommandContext(probeCtx, "echo", "ok").Output(); err != nil {
-		return fmt.Errorf("sprite %q unreachable: %w", spriteName, err)
+	session, err := newSpriteSession(ctx, spriteName, spriteSessionOptions{probeTimeout: 15 * time.Second})
+	if err != nil {
+		return err
 	}
+	defer func() { _ = session.close() }()
+	s := session.sprite
 
 	// 2. Create remote directories
 	dirs := []string{

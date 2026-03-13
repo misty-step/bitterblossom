@@ -44,20 +44,12 @@ func runLogs(ctx context.Context, stdout, stderr io.Writer, spriteName string, f
 		return fmt.Errorf("--lines must be >= 0")
 	}
 
-	token, err := spriteToken()
+	session, err := newSpriteSession(ctx, spriteName, spriteSessionOptions{probeTimeout: 10 * time.Second})
 	if err != nil {
 		return err
 	}
-
-	client := sprites.New(token)
-	defer func() { _ = client.Close() }()
-	s := client.Sprite(spriteName)
-
-	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if _, err := s.CommandContext(probeCtx, "echo", "ok").Output(); err != nil {
-		return fmt.Errorf("sprite %q unreachable: %w", spriteName, err)
-	}
+	defer func() { _ = session.close() }()
+	s := session.sprite
 
 	workspace, err := findSpriteWorkspace(ctx, s)
 	if err != nil {

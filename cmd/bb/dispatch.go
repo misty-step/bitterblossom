@@ -92,10 +92,6 @@ func verifyWorkScriptFor(workspace, ghToken string) string {
 
 func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverride, promptTemplate string, maxIter int, timeout time.Duration, noOutputTimeout time.Duration, dryRun bool, prCheckTimeout time.Duration, waitForComplete bool) error {
 	// Validate credentials
-	token, err := spriteToken()
-	if err != nil {
-		return err
-	}
 	ghToken, err := requireEnv("GITHUB_TOKEN")
 	if err != nil {
 		return err
@@ -103,18 +99,13 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverrid
 
 	// LLM auth is handled by settings.json on the sprite (baked in during setup).
 	// Dispatch only validates that GITHUB_TOKEN is set for git operations.
-
-	client := sprites.New(token)
-	defer func() { _ = client.Close() }()
-	s := client.Sprite(spriteName)
-
-	// 1. Probe connectivity (15s)
 	_, _ = fmt.Fprintf(os.Stderr, "probing %s...\n", spriteName)
-	probeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	if _, err := s.CommandContext(probeCtx, "echo", "ok").Output(); err != nil {
-		return fmt.Errorf("sprite %q unreachable: %w", spriteName, err)
+	session, err := newSpriteSession(ctx, spriteName, spriteSessionOptions{probeTimeout: 15 * time.Second})
+	if err != nil {
+		return err
 	}
+	defer func() { _ = session.close() }()
+	s := session.sprite
 
 	// 2. Check that setup was run (ralph.sh must exist)
 	ralphScript := "/home/sprite/workspace/.ralph.sh"

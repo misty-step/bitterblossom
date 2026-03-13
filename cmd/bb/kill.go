@@ -7,8 +7,6 @@ import (
 	"strings"
 	"time"
 
-	sprites "github.com/superfly/sprites-go"
-
 	"github.com/spf13/cobra"
 )
 
@@ -24,20 +22,12 @@ func newKillCmd() *cobra.Command {
 }
 
 func runKill(ctx context.Context, out io.Writer, spriteName string) error {
-	token, err := spriteToken()
+	session, err := newSpriteSession(ctx, spriteName, spriteSessionOptions{probeTimeout: 10 * time.Second})
 	if err != nil {
 		return err
 	}
-
-	client := sprites.New(token)
-	defer func() { _ = client.Close() }()
-	s := client.Sprite(spriteName)
-
-	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if _, err := s.CommandContext(probeCtx, "echo", "ok").Output(); err != nil {
-		return fmt.Errorf("sprite %q unreachable: %w", spriteName, err)
-	}
+	defer func() { _ = session.close() }()
+	s := session.sprite
 
 	killCtx, killCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer killCancel()
