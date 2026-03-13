@@ -1149,10 +1149,19 @@ def blocking_event_for_run(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row
             event_type in ('pr_feedback_blocked', 'council_blocked', 'command_failed', 'unexpected_error')
             or (
               event_type = 'workspace_preparation_failed'
+              and json_valid(payload_json)
               and json_extract(payload_json, '$.lane') = 'builder'
             )
-            or (event_type = 'ci_wait_complete' and json_extract(payload_json, '$.passed') = 0)
-            or (event_type = 'external_review_wait_complete' and json_extract(payload_json, '$.passed') = 0)
+            or (
+              event_type = 'ci_wait_complete'
+              and json_valid(payload_json)
+              and json_extract(payload_json, '$.passed') = 0
+            )
+            or (
+              event_type = 'external_review_wait_complete'
+              and json_valid(payload_json)
+              and json_extract(payload_json, '$.passed') = 0
+            )
           )
         order by id desc
         limit 1
@@ -1175,10 +1184,19 @@ def blocking_events_for_runs(conn: sqlite3.Connection, run_ids: list[str]) -> di
             event_type in ('pr_feedback_blocked', 'council_blocked', 'command_failed', 'unexpected_error')
             or (
               event_type = 'workspace_preparation_failed'
+              and json_valid(payload_json)
               and json_extract(payload_json, '$.lane') = 'builder'
             )
-            or (event_type = 'ci_wait_complete' and json_extract(payload_json, '$.passed') = 0)
-            or (event_type = 'external_review_wait_complete' and json_extract(payload_json, '$.passed') = 0)
+            or (
+              event_type = 'ci_wait_complete'
+              and json_valid(payload_json)
+              and json_extract(payload_json, '$.passed') = 0
+            )
+            or (
+              event_type = 'external_review_wait_complete'
+              and json_valid(payload_json)
+              and json_extract(payload_json, '$.passed') = 0
+            )
           )
         order by run_id, id desc
         """,

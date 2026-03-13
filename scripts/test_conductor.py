@@ -8655,7 +8655,7 @@ def test_serialize_run_surface_recovers_from_malformed_blocking_payload(
     tmp_path: pathlib.Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """show-run must not crash when the blocking event payload_json is malformed."""
+    """show-run must skip malformed SQL-filtered blocking payloads instead of crashing."""
     conn = conductor.open_db(tmp_path / "conductor.db")
     issue = conductor.Issue(number=538, title="corrupt blocking", body="", url="u538g", labels=["autopilot"])
     conductor.create_run(conn, "run-538-6", "misty-step/bitterblossom", issue, "default")
@@ -8666,10 +8666,19 @@ def test_serialize_run_surface_recovers_from_malformed_blocking_payload(
         status="failed",
         builder_sprite="noble-blue-serpent",
     )
-    # Insert a command_failed event with corrupted payload_json directly.
+    # Insert a valid fallback blocking event, then a later malformed SQL-filtered one.
     conn.execute(
         "insert into events (run_id, event_type, payload_json, created_at) values (?, ?, ?, ?)",
-        ("run-538-6", "command_failed", "[not-a-dict]", conductor.now_utc()),
+        (
+            "run-538-6",
+            "command_failed",
+            json.dumps({"error": "builder command exploded"}),
+            conductor.now_utc(),
+        ),
+    )
+    conn.execute(
+        "insert into events (run_id, event_type, payload_json, created_at) values (?, ?, ?, ?)",
+        ("run-538-6", "ci_wait_complete", "{not-valid-json", conductor.now_utc()),
     )
     conn.commit()
 
@@ -8680,8 +8689,49 @@ def test_serialize_run_surface_recovers_from_malformed_blocking_payload(
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     run = payload["run"]
-    # Malformed payload must not crash; error field is absent so fallback message is used.
-    assert run["blocking_reason"] == "command failed"
+    assert run["blocking_event_type"] == "command_failed"
+    assert run["blocking_reason"] == "builder command exploded"
+
+
+def test_show_runs_recovers_from_malformed_blocking_payload(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """show-runs must survive malformed SQL-filtered blocking payloads in the bulk path."""
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=539, title="bulk corrupt blocking", body="", url="u539", labels=["autopilot"])
+    conductor.create_run(conn, "run-539-1", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(
+        conn,
+        "run-539-1",
+        phase="failed",
+        status="failed",
+        builder_sprite="noble-blue-serpent",
+    )
+    conn.execute(
+        "insert into events (run_id, event_type, payload_json, created_at) values (?, ?, ?, ?)",
+        (
+            "run-539-1",
+            "command_failed",
+            json.dumps({"error": "bulk fallback"}),
+            conductor.now_utc(),
+        ),
+    )
+    conn.execute(
+        "insert into events (run_id, event_type, payload_json, created_at) values (?, ?, ?, ?)",
+        ("run-539-1", "workspace_preparation_failed", "{not-valid-json", conductor.now_utc()),
+    )
+    conn.commit()
+
+    rc = conductor.show_runs(argparse.Namespace(db=str(tmp_path / "conductor.db"), limit=10))
+
+    assert rc == 0
+    payloads = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert len(payloads) == 1
+    run = payloads[0]
+    assert run["run_id"] == "run-539-1"
+    assert run["blocking_event_type"] == "command_failed"
+    assert run["blocking_reason"] == "bulk fallback"
 
 
 def test_show_runs_does_not_call_per_run_recovery_query(
