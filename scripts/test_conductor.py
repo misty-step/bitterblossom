@@ -8614,3 +8614,100 @@ def test_show_runs_surfaces_cleaned_workspace_recovery_status(
     assert payload["worktree_recovery_status"] == "cleaned"
     assert payload["worktree_recovery_event_type"] == "builder_workspace_cleaned"
     assert payload["worktree_recovery_error"] is None
+
+
+def test_serialize_run_surface_recovers_from_malformed_recovery_payload(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """show-run must not crash when the recovery event payload_json is malformed."""
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="corrupt payload", body="", url="u538f", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-5", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(
+        conn,
+        "run-538-5",
+        phase="awaiting_governance",
+        status="active",
+        builder_sprite="noble-blue-serpent",
+        worktree_path="/tmp/run-538-5/builder-worktree",
+    )
+    # Insert a cleanup_warning event with corrupted payload_json directly.
+    conn.execute(
+        "insert into events (run_id, event_type, payload_json, created_at) values (?, ?, ?, ?)",
+        ("run-538-5", "cleanup_warning", "not-valid-json{{", conductor.now_utc()),
+    )
+    conn.commit()
+
+    rc = conductor.show_run(
+        argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-538-5", event_limit=5)
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    run = payload["run"]
+    # Malformed payload must not crash; recovery fields default to None.
+    assert run["worktree_recovery_status"] is None
+    assert run["worktree_recovery_error"] is None
+
+
+def test_serialize_run_surface_recovers_from_malformed_blocking_payload(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """show-run must not crash when the blocking event payload_json is malformed."""
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="corrupt blocking", body="", url="u538g", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-6", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(
+        conn,
+        "run-538-6",
+        phase="failed",
+        status="failed",
+        builder_sprite="noble-blue-serpent",
+    )
+    # Insert a command_failed event with corrupted payload_json directly.
+    conn.execute(
+        "insert into events (run_id, event_type, payload_json, created_at) values (?, ?, ?, ?)",
+        ("run-538-6", "command_failed", "[not-a-dict]", conductor.now_utc()),
+    )
+    conn.commit()
+
+    rc = conductor.show_run(
+        argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-538-6", event_limit=5)
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    run = payload["run"]
+    # Malformed payload must not crash; error field is absent so fallback message is used.
+    assert run["blocking_reason"] == "command failed"
+
+
+def test_show_runs_does_not_call_per_run_recovery_query(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """show-runs pre-fetches recovery events in bulk; individual per-run queries must not fire."""
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    for i in range(3):
+        issue = conductor.Issue(number=538 + i, title=f"run {i}", body="", url=f"u{i}", labels=["autopilot"])
+        conductor.create_run(conn, f"run-538-bulk-{i}", "misty-step/bitterblossom", issue, "default")
+
+    per_run_calls: list[str] = []
+
+    original = conductor.latest_worktree_recovery_event
+
+    def spy(c: object, run_id: str) -> object:
+        per_run_calls.append(run_id)
+        return original(c, run_id)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(conductor, "latest_worktree_recovery_event", spy)
+
+    rc = conductor.show_runs(argparse.Namespace(db=str(tmp_path / "conductor.db"), limit=10))
+
+    assert rc == 0
+    assert per_run_calls == [], (
+        "show_runs must use the bulk pre-fetch; per-run latest_worktree_recovery_event must not be called"
+    )

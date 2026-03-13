@@ -599,7 +599,7 @@ def lease_expired(lease_expires_at: str | None) -> bool:
 
 
 def event_row_payload(row: sqlite3.Row) -> dict[str, Any]:
-    return json.loads(str(row["payload_json"]))
+    return _parse_event_payload(row["payload_json"])
 
 
 def format_event_row(row: sqlite3.Row) -> dict[str, Any]:
@@ -1077,10 +1077,12 @@ def latest_worktree_recovery_event(conn: sqlite3.Connection, run_id: str) -> sql
             event_type = 'builder_workspace_cleaned'
             or (
               event_type = 'workspace_preparation_failed'
+              and json_valid(payload_json)
               and json_extract(payload_json, '$.lane') = 'builder'
             )
             or (
               event_type = 'cleanup_warning'
+              and json_valid(payload_json)
               and json_extract(payload_json, '$.kind') = ?
             )
           )
@@ -1105,10 +1107,12 @@ def latest_worktree_recovery_events(conn: sqlite3.Connection, run_ids: list[str]
             event_type = 'builder_workspace_cleaned'
             or (
               event_type = 'workspace_preparation_failed'
+              and json_valid(payload_json)
               and json_extract(payload_json, '$.lane') = 'builder'
             )
             or (
               event_type = 'cleanup_warning'
+              and json_valid(payload_json)
               and json_extract(payload_json, '$.kind') = ?
             )
           )
@@ -1186,6 +1190,19 @@ def blocking_events_for_runs(conn: sqlite3.Connection, run_ids: list[str]) -> di
     return events
 
 
+def _parse_event_payload(payload_json: str | None) -> dict[str, Any]:
+    """Parse an event payload_json string, returning {} for any missing or malformed value."""
+    if not payload_json:
+        return {}
+    try:
+        result = json.loads(payload_json)
+        if isinstance(result, dict):
+            return result
+        return {}
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
 def serialize_run_surface(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
@@ -1236,7 +1253,7 @@ def serialize_run_surface(
     payload["worktree_recovery_event_at"] = None
     recovery_event = latest_worktree_recovery_event(conn, row["run_id"]) if worktree_recovery_event is UNSET else worktree_recovery_event
     if recovery_event is not None:
-        recovery_payload = json.loads(recovery_event["payload_json"])
+        recovery_payload = _parse_event_payload(recovery_event["payload_json"])
         payload["worktree_recovery_event_type"] = recovery_event["event_type"]
         payload["worktree_recovery_event_at"] = recovery_event["created_at"]
         if recovery_event["event_type"] == "builder_workspace_cleaned":
@@ -1254,7 +1271,7 @@ def serialize_run_surface(
     if row["status"] in {"blocked", "failed"}:
         resolved_blocking_event = blocking_event_for_run(conn, row["run_id"]) if blocking_event is UNSET else blocking_event
         if resolved_blocking_event is not None:
-            blocking_payload = json.loads(resolved_blocking_event["payload_json"])
+            blocking_payload = _parse_event_payload(resolved_blocking_event["payload_json"])
             blocking_reason = summarize_blocking_reason(resolved_blocking_event["event_type"], blocking_payload)
             payload["blocking_event_type"] = resolved_blocking_event["event_type"]
             payload["blocking_event_at"] = resolved_blocking_event["created_at"]
@@ -5262,8 +5279,20 @@ def show_runs(args: argparse.Namespace) -> int:
         """,
         (args.limit,),
     ).fetchall()
+    run_ids = [row["run_id"] for row in rows]
+    recovery_by_run = latest_worktree_recovery_events(conn, run_ids)
+    blocking_by_run = blocking_events_for_runs(conn, run_ids)
     for row in rows:
-        print(json.dumps(serialize_run_surface(conn, row)))
+        print(
+            json.dumps(
+                serialize_run_surface(
+                    conn,
+                    row,
+                    worktree_recovery_event=recovery_by_run.get(row["run_id"]),
+                    blocking_event=blocking_by_run.get(row["run_id"]),
+                )
+            )
+        )
     return 0
 
 
