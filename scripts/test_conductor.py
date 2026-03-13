@@ -8970,6 +8970,107 @@ def test_show_run_ignores_reviewer_workspace_preparation_failure(
     assert run["blocking_reason"] is None
 
 
+def test_show_run_surfaces_builder_cleanup_when_both_builder_and_reviewer_fail(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """show-run must pick builder cleanup_warning and ignore reviewer cleanup_warning when both exist."""
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="both cleanups fail", body="", url="u538-bcf", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-bcf", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(
+        conn,
+        "run-538-bcf",
+        phase="awaiting_governance",
+        status="active",
+        builder_sprite="noble-blue-serpent",
+        worktree_path="/tmp/run-538-bcf/builder-worktree",
+    )
+    # reviewer cleanup_warning recorded first
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-538-bcf",
+        "cleanup_warning",
+        {
+            "kind": "reviewer_workspace_cleanup",
+            "workspace": "/tmp/run-538-bcf/review-sage-worktree",
+            "error": "reviewer workspace cleanup failed for sage: stale lock",
+        },
+    )
+    # builder cleanup_warning recorded after
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-538-bcf",
+        "cleanup_warning",
+        {
+            "kind": conductor.BUILDER_WORKSPACE_CLEANUP_KIND,
+            "workspace": "/tmp/run-538-bcf/builder-worktree",
+            "error": "builder workspace cleanup failed: permission denied",
+        },
+    )
+
+    rc = conductor.show_run(
+        argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-538-bcf", event_limit=5)
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    run = payload["run"]
+    assert run["worktree_recovery_status"] == "cleanup_failed"
+    assert run["worktree_recovery_event_type"] == "cleanup_warning"
+    assert run["worktree_recovery_error"] == "builder workspace cleanup failed: permission denied"
+    assert run["worktree_path"] == "/tmp/run-538-bcf/builder-worktree"
+
+
+def test_show_runs_surfaces_builder_cleanup_when_both_builder_and_reviewer_fail(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """show-runs must pick builder cleanup_warning and ignore reviewer cleanup_warning when both exist."""
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="both cleanups fail", body="", url="u538-bcfr", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-bcfr", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(
+        conn,
+        "run-538-bcfr",
+        phase="awaiting_governance",
+        status="active",
+        builder_sprite="noble-blue-serpent",
+        worktree_path="/tmp/run-538-bcfr/builder-worktree",
+    )
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-538-bcfr",
+        "cleanup_warning",
+        {
+            "kind": "reviewer_workspace_cleanup",
+            "workspace": "/tmp/run-538-bcfr/review-sage-worktree",
+            "error": "reviewer workspace cleanup failed for sage: stale lock",
+        },
+    )
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-538-bcfr",
+        "cleanup_warning",
+        {
+            "kind": conductor.BUILDER_WORKSPACE_CLEANUP_KIND,
+            "workspace": "/tmp/run-538-bcfr/builder-worktree",
+            "error": "builder workspace cleanup failed: permission denied",
+        },
+    )
+
+    rc = conductor.show_runs(argparse.Namespace(db=str(tmp_path / "conductor.db"), limit=5))
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload["worktree_recovery_status"] == "cleanup_failed"
+    assert payload["worktree_recovery_event_type"] == "cleanup_warning"
+    assert payload["worktree_recovery_error"] == "builder workspace cleanup failed: permission denied"
+    assert payload["worktree_path"] == "/tmp/run-538-bcfr/builder-worktree"
+
+
 def test_show_runs_does_not_call_per_run_recovery_query(
     tmp_path: pathlib.Path,
     capsys: pytest.CaptureFixture[str],
