@@ -4335,6 +4335,45 @@ def test_show_runs_surfaces_worktree_recovery_context(tmp_path: pathlib.Path, ca
     assert payload["worktree_recovery_error"] == "builder workspace cleanup failed: permission denied"
 
 
+def test_show_runs_surfaces_builder_workspace_preparation_failure(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=45, title="prepare", body="body", url="https://example.com/45", labels=["autopilot"])
+    conductor.create_run(conn, "run-45b", "misty-step/bitterblossom", issue, "claude-sonnet")
+    conductor.update_run(
+        conn,
+        "run-45b",
+        phase="failed",
+        status="failed",
+        builder_sprite="noble-blue-serpent",
+        worktree_path="/tmp/run-45b/builder-worktree",
+    )
+    conductor.record_event(
+        conn,
+        tmp_path / "events.jsonl",
+        "run-45b",
+        "workspace_preparation_failed",
+        {
+            "sprite": "noble-blue-serpent",
+            "lane": "builder",
+            "workspace": "/tmp/run-45b/builder-worktree",
+            "attempt": 3,
+            "attempts": 3,
+            "error": "mirror lock acquisition timed out",
+        },
+    )
+
+    rc = conductor.show_runs(argparse.Namespace(db=str(tmp_path / "conductor.db"), limit=5))
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload["worktree_path"] == "/tmp/run-45b/builder-worktree"
+    assert payload["worktree_recovery_status"] == "prepare_failed"
+    assert payload["worktree_recovery_event_type"] == "workspace_preparation_failed"
+    assert payload["worktree_recovery_error"] == "mirror lock acquisition timed out"
+
+
 def test_show_runs_ignores_non_workspace_cleanup_warnings(
     tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
