@@ -10262,3 +10262,102 @@ def test_show_run_surfaces_worktree_recovery_event_at(
     payload = json.loads(capsys.readouterr().out)
     assert payload["run"]["worktree_recovery_status"] == "cleanup_failed"
     assert payload["run"]["worktree_recovery_event_at"] == expected_event_at
+
+
+def test_serialize_run_surface_recovers_from_non_object_cleanup_warning_payload(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A cleanup_warning with a non-dict JSON payload must not crash and must yield no recovery status.
+
+    The SQL that selects the recovery event filters on json_extract(payload_json, '$.kind'),
+    so a non-object payload (e.g. "[]") will not match the kind filter and the event will not
+    be returned — worktree_recovery_status stays None.
+    """
+    run_id = "run-538-no1"
+    repo = "misty-step/bitterblossom"
+    worktree_path = f"/tmp/{run_id}/builder-worktree"
+
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="non-object warning", body="", url="u538-no1", labels=["autopilot"])
+    conductor.create_run(conn, run_id, repo, issue, "default")
+    conductor.update_run(conn, run_id, worktree_path=worktree_path)
+    # Insert a cleanup_warning whose payload is valid JSON but not an object.
+    conn.execute(
+        "insert into events (run_id, event_type, payload_json, created_at) values (?, ?, ?, ?)",
+        (run_id, "cleanup_warning", "[]", conductor.now_utc()),
+    )
+    conn.commit()
+
+    rc = conductor.show_run(
+        argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id=run_id, event_limit=5)
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    run = payload["run"]
+    # Non-object payload makes the SQL kind-filter miss; status defaults to None.
+    assert run["worktree_recovery_status"] is None
+    assert run["worktree_recovery_error"] is None
+    assert run["worktree_recovery_event_type"] is None
+    assert run["worktree_recovery_event_at"] is None
+
+
+def test_latest_worktree_recovery_event_takes_newest(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The most recent matching event drives worktree_recovery_* when multiple exist.
+
+    Records a builder_workspace_cleaned followed by a cleanup_warning (failure), then
+    verifies that show-run surfaces the cleanup_warning — the newer one — not the
+    earlier cleaned event.
+    """
+    run_id = "run-538-lw1"
+    repo = "misty-step/bitterblossom"
+    worktree_path = "/tmp/run-538-lw1/builder-worktree"
+
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="latest wins", body="", url="u538-lw1", labels=["autopilot"])
+    conductor.create_run(conn, run_id, repo, issue, "default")
+    conductor.update_run(conn, run_id, worktree_path=worktree_path)
+
+    event_log = tmp_path / "events.jsonl"
+    # First: a clean event.
+    conductor.record_event(
+        conn,
+        event_log,
+        run_id,
+        "builder_workspace_cleaned",
+        {"workspace": worktree_path},
+    )
+    # Second (newer): a cleanup failure.
+    conductor.record_event(
+        conn,
+        event_log,
+        run_id,
+        "cleanup_warning",
+        {
+            "kind": conductor.BUILDER_WORKSPACE_CLEANUP_KIND,
+            "workspace": worktree_path,
+            "error": "builder workspace cleanup failed: stale lock",
+        },
+    )
+    expected_event_at = conn.execute(
+        "select created_at from events where run_id = ? order by id desc limit 1",
+        (run_id,),
+    ).fetchone()["created_at"]
+
+    rc = conductor.show_run(
+        argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id=run_id, event_limit=5)
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    run = payload["run"]
+    # The cleanup_warning is newer; it must win over the earlier builder_workspace_cleaned.
+    assert run["worktree_recovery_status"] == "cleanup_failed"
+    assert run["worktree_recovery_error"] is not None
+    assert "stale lock" in run["worktree_recovery_error"]
+    assert run["worktree_recovery_event_type"] == "cleanup_warning"
+    assert run["worktree_recovery_event_at"] == expected_event_at
