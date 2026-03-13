@@ -785,6 +785,29 @@ def test_parse_qa_intake_payload_normalizes_or_replaces_external_dedupe_key() ->
     assert len(findings[1].dedupe_key) == 12
 
 
+def test_parse_qa_intake_payload_uses_top_level_values_after_whitespace_override() -> None:
+    payload = {
+        "target": "https://app.example.com",
+        "environment": "production",
+        "findings": [
+            {
+                "title": "Whitespace override",
+                "summary": "Probe supplied blank per-finding overrides.",
+                "severity": "medium",
+                "target_url": "   ",
+                "environment": "\t",
+                "repro_steps": ["Open /", "Observe issue"],
+                "evidence": [],
+            }
+        ],
+    }
+
+    finding = conductor.parse_qa_intake_payload(payload)[0]
+
+    assert finding.target_url == "https://app.example.com"
+    assert finding.environment == "production"
+
+
 def test_parse_qa_intake_payload_rejects_non_object_payload() -> None:
     with pytest.raises(conductor.CmdError, match="qa intake payload must be a JSON object"):
         conductor.parse_qa_intake_payload(["not", "an", "object"])  # type: ignore[arg-type]
@@ -1015,6 +1038,31 @@ def test_existing_qa_issues_by_key_paginates_all_open_source_qa_issues() -> None
         ["gh", "api", "repos/misty-step/bitterblossom/issues?state=open&labels=source/qa&per_page=100&page=2"],
         ["gh", "api", "repos/misty-step/bitterblossom/issues?state=open&labels=source/qa&per_page=100&page=3"],
     ]
+
+
+def test_existing_qa_issues_by_key_prefers_browser_url() -> None:
+    runner = _RunnerSpy(
+        responses=[
+            json.dumps(
+                [
+                    {
+                        "number": 1,
+                        "title": "issue 1",
+                        "body": f"<!-- bitterblossom-qa-dedupe:{_qa_test_key('browser-url')} -->",
+                        "url": "https://api.github.com/repos/misty-step/bitterblossom/issues/1",
+                        "html_url": "https://github.com/misty-step/bitterblossom/issues/1",
+                        "labels": [{"name": "source/qa"}, {"name": "p1"}],
+                        "updated_at": "2026-03-13T00:00:00Z",
+                    }
+                ]
+            ),
+            "[]",
+        ]
+    )
+
+    issues = conductor.existing_qa_issues_by_key(runner, "misty-step/bitterblossom")
+
+    assert issues[_qa_test_key("browser-url")].url == "https://github.com/misty-step/bitterblossom/issues/1"
 
 
 def test_qa_intake_rejects_invalid_command_quoting() -> None:

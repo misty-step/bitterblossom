@@ -117,8 +117,8 @@ def parse_qa_intake_payload(payload: dict[str, Any]) -> list[QAFinding]:
         severity = str(item.get("severity") or "").strip().lower()
         repro_steps = item.get("repro_steps") or []
         evidence = item.get("evidence") or []
-        finding_target = str(item.get("target_url") or target).strip()
-        finding_environment = str(item.get("environment") or environment).strip()
+        finding_target = str(item.get("target_url") or "").strip() or target
+        finding_environment = str(item.get("environment") or "").strip() or environment
         if not title:
             raise CmdError("qa finding missing title")
         if not summary:
@@ -264,11 +264,14 @@ def existing_qa_issues_by_key(runner: Runner, repo: str) -> dict[str, Issue]:
         dedupe_key = dedupe_key_from_issue_body(body)
         if dedupe_key is None:
             continue
+        issue_url = str(item.get("html_url") or item["url"])
+        if issue_url.startswith("https://api.github.com/repos/"):
+            issue_url = issue_url.replace("https://api.github.com/repos/", "https://github.com/", 1)
         issues_by_key[dedupe_key] = Issue(
             number=item["number"],
             title=item["title"],
             body=body,
-            url=item["url"],
+            url=issue_url,
             labels=[label_obj["name"] for label_obj in item.get("labels", [])],
             updated_at=item.get("updated_at") or item.get("updatedAt") or "",
         )

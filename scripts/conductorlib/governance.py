@@ -77,12 +77,10 @@ def summarize_status_check_rollup(payload: dict[str, Any]) -> str:
 def checks_complete(payload: dict[str, Any], required: set[str]) -> tuple[bool, bool]:
     required_remaining = set(required)
     all_present_terminal = True
-    saw_any = False
     for item in payload.get("statusCheckRollup", []):
         name = rollup_item_name(item)
         if not name:
             continue
-        saw_any = True
         state, terminal, failed = rollup_item_state(item)
         if failed and (not required or name in required):
             return False, True
@@ -97,7 +95,7 @@ def checks_complete(payload: dict[str, Any], required: set[str]) -> tuple[bool, 
             all_present_terminal = False
     if required:
         return not required_remaining and all_present_terminal, False
-    return saw_any and all_present_terminal, False
+    return all_present_terminal, False
 
 
 def wait_for_pr_checks(

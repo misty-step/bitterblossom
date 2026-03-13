@@ -8,6 +8,7 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 
+from conductorlib import common  # noqa: E402
 from conductorlib import governance, tracker, workspace  # noqa: E402
 from conductorlib.common import CmdError, Issue, ReviewThread  # noqa: E402
 
@@ -78,6 +79,10 @@ def test_governance_filters_trusted_surface_state() -> None:
     assert governance.trusted_surfaces_pending(payload, ["CodeQL"]) == ["CodeQL"]
 
 
+def test_checks_complete_accepts_empty_rollup_when_nothing_is_required() -> None:
+    assert governance.checks_complete({"statusCheckRollup": []}, set()) == (True, False)
+
+
 def test_summarize_review_threads_keeps_location_and_author() -> None:
     summary = governance.summarize_review_threads(
         [
@@ -139,3 +144,13 @@ def test_list_unresolved_review_threads_queries_latest_comment(monkeypatch: pyte
 
     assert "comments(last:1)" in str(seen["query"])
     assert threads[0].body == "latest comment"
+
+
+def test_runner_wraps_timeout_expired_as_cmd_error(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
+    def fake_run(*_args: object, **_kwargs: object) -> object:
+        raise common.subprocess.TimeoutExpired(cmd=["sleep", "10"], timeout=3, output="partial", stderr="stuck")
+
+    monkeypatch.setattr(common.subprocess, "run", fake_run)
+
+    with pytest.raises(CmdError, match="command timed out after 3s"):
+        common.Runner(tmp_path).run(["sleep", "10"], timeout=3)

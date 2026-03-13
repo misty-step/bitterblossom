@@ -2239,11 +2239,14 @@ def existing_qa_issues_by_key(runner: Runner, repo: str) -> dict[str, Issue]:
         dedupe_key = dedupe_key_from_issue_body(body)
         if dedupe_key is None:
             continue
+        issue_url = str(item.get("html_url") or item["url"])
+        if issue_url.startswith("https://api.github.com/repos/"):
+            issue_url = issue_url.replace("https://api.github.com/repos/", "https://github.com/", 1)
         issues_by_key[dedupe_key] = Issue(
             number=item["number"],
             title=item["title"],
             body=body,
-            url=item["url"],
+            url=issue_url,
             labels=[label_obj["name"] for label_obj in item.get("labels", [])],
             updated_at=item.get("updated_at") or item.get("updatedAt") or "",
         )

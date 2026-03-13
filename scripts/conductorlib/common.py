@@ -280,14 +280,21 @@ class Runner:
         self.cwd = cwd
 
     def run(self, argv: list[str], *, timeout: int | None = None, check: bool = True) -> str:
-        proc = subprocess.run(
-            argv,
-            cwd=self.cwd,
-            text=True,
-            capture_output=True,
-            timeout=timeout,
-            check=False,
-        )
+        try:
+            proc = subprocess.run(
+                argv,
+                cwd=self.cwd,
+                text=True,
+                capture_output=True,
+                timeout=timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise CmdError(
+                f"command timed out after {exc.timeout}s: {' '.join(shlex.quote(a) for a in argv)}\n"
+                f"stdout:\n{exc.stdout or ''}\n"
+                f"stderr:\n{exc.stderr or ''}"
+            ) from exc
         if check and proc.returncode != 0:
             raise CmdError(
                 f"command failed ({proc.returncode}): {' '.join(shlex.quote(a) for a in argv)}\n"
