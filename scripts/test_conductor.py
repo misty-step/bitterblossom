@@ -4900,7 +4900,16 @@ def test_reconcile_run_marks_merged(monkeypatch: pytest.MonkeyPatch, tmp_path: p
     conn = conductor.open_db(tmp_path / "conductor.db")
     issue = conductor.Issue(number=450, title="test", body="body", url="https://example.com/450", labels=["autopilot"])
     conductor.create_run(conn, "run-450-1", "misty-step/bitterblossom", issue, "default")
-    conductor.update_run(conn, "run-450-1", phase="failed", status="failed", pr_number=452, pr_url="https://example.com/pr/452")
+    conductor.update_run(
+        conn,
+        "run-450-1",
+        phase="failed",
+        status="failed",
+        pr_number=452,
+        pr_url="https://example.com/pr/452",
+        builder_sprite="fern",
+        worktree_path="/tmp/run-450-1/builder-worktree",
+    )
 
     monkeypatch.setattr(
         conductor,
@@ -4912,6 +4921,7 @@ def test_reconcile_run_marks_merged(monkeypatch: pytest.MonkeyPatch, tmp_path: p
             "mergedAt": "2026-03-06T16:33:51Z",
         },
     )
+    monkeypatch.setattr(conductor, "cleanup_run_workspace", lambda *_args, **_kwargs: None)
 
     args = argparse.Namespace(
         db=str(tmp_path / "conductor.db"),
@@ -4925,11 +4935,78 @@ def test_reconcile_run_marks_merged(monkeypatch: pytest.MonkeyPatch, tmp_path: p
     out = capsys.readouterr().out
     assert '"run_id": "run-450-1"' in out
 
-    run = conn.execute("select phase, status, pr_url from runs where run_id = 'run-450-1'").fetchone()
+    run = conn.execute("select phase, status, pr_url, worktree_path from runs where run_id = 'run-450-1'").fetchone()
     assert run is not None
     assert run["phase"] == "merged"
     assert run["status"] == "merged"
     assert run["pr_url"] == "https://github.com/misty-step/bitterblossom/pull/452"
+    assert run["worktree_path"] is None
+    events = conn.execute(
+        "select event_type from events where run_id = 'run-450-1' order by id"
+    ).fetchall()
+    assert [row["event_type"] for row in events] == ["builder_workspace_cleaned", "reconciled_merged"]
+
+
+def test_reconcile_run_preserves_builder_workspace_when_cleanup_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=451, title="test", body="body", url="https://example.com/451", labels=["autopilot"])
+    conductor.create_run(conn, "run-451-1", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(
+        conn,
+        "run-451-1",
+        phase="failed",
+        status="failed",
+        pr_number=453,
+        pr_url="https://example.com/pr/453",
+        builder_sprite="fern",
+        worktree_path="/tmp/run-451-1/builder-worktree",
+    )
+
+    monkeypatch.setattr(
+        conductor,
+        "gh_json",
+        lambda *_args, **_kwargs: {
+            "number": 453,
+            "url": "https://github.com/misty-step/bitterblossom/pull/453",
+            "state": "MERGED",
+            "mergedAt": "2026-03-06T16:33:51Z",
+        },
+    )
+    monkeypatch.setattr(
+        conductor,
+        "cleanup_run_workspace",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(conductor.CmdError("stale worktree")),
+    )
+
+    args = argparse.Namespace(
+        db=str(tmp_path / "conductor.db"),
+        event_log=str(tmp_path / "events.jsonl"),
+        run_id="run-451-1",
+    )
+
+    rc = conductor.reconcile_run(args)
+
+    assert rc == 0
+    assert '"run_id": "run-451-1"' in capsys.readouterr().out
+
+    run = conn.execute("select phase, status, worktree_path from runs where run_id = 'run-451-1'").fetchone()
+    assert run is not None
+    assert run["phase"] == "merged"
+    assert run["status"] == "merged"
+    assert run["worktree_path"] == "/tmp/run-451-1/builder-worktree"
+
+    warning = conn.execute(
+        "select payload_json from events where run_id = 'run-451-1' and event_type = 'cleanup_warning'"
+    ).fetchone()
+    assert warning is not None
+    payload = json.loads(warning["payload_json"])
+    assert payload["kind"] == conductor.BUILDER_WORKSPACE_CLEANUP_KIND
+    assert payload["workspace"] == "/tmp/run-451-1/builder-worktree"
+    assert payload["error"] == "builder workspace cleanup failed: stale worktree"
 
 
 def test_show_events_prints_recent_events(tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:

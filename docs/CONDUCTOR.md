@@ -497,6 +497,14 @@ If builder cleanup fails, `worktree_path` remains populated so the surviving bui
 without reading the sprite filesystem first. Reviewer cleanup and reviewer workspace-preparation failures stay in the event
 ledger rather than the top-level run row.
 
+The builder workspace is the durable execution surface for one run. `run-once` prepares it before the first builder turn,
+`govern-pr` adopts that same workspace for repair and final-polish turns, and `reconcile-run` now performs the same cleanup
+path when a PR is already merged or closed outside the active governor loop. A terminal run should therefore end in one of
+two truthful states:
+
+- `worktree_path = null` plus `worktree_recovery_status = "cleaned"` when the durable workspace was released successfully
+- `worktree_path = <path>` plus `worktree_recovery_status = "cleanup_failed"` when operator recovery is still required
+
 Manual cleanup on the sprite:
 
 ```bash
