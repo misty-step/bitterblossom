@@ -18,6 +18,10 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent))
 import conductor  # noqa: E402
 
 
+def _qa_test_key(seed: str) -> str:
+    return conductor.qa_dedupe_key(seed, seed, f"https://{seed}.example.com", "production", [seed])
+
+
 @pytest.fixture(autouse=True)
 def _stub_run_once_worktrees(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> None:
     node_name = request.node.name
@@ -393,6 +397,35 @@ def test_pick_issue_skips_leased_and_prefers_higher_priority(tmp_path: pathlib.P
     assert picked.number == 3
 
 
+def test_pick_issue_prefers_qa_origin_within_same_priority_tier(tmp_path: pathlib.Path) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    ready_body = "## Product Spec\n### Intent Contract\n- good\n"
+
+    issues = [
+        conductor.Issue(
+            number=7,
+            title="ordinary p1",
+            body=ready_body,
+            url="u7",
+            labels=["autopilot", "P1"],
+            updated_at="2026-03-06T00:00:00Z",
+        ),
+        conductor.Issue(
+            number=8,
+            title="qa p1",
+            body=ready_body,
+            url="u8",
+            labels=["autopilot", "P1", "source/qa"],
+            updated_at="2026-03-06T00:00:00Z",
+        ),
+    ]
+
+    picked = conductor.pick_issue(conn, issues, "misty-step/bitterblossom")
+
+    assert picked is not None
+    assert picked.number == 8
+
+
 def test_pick_issue_treats_expired_leases_as_eligible(tmp_path: pathlib.Path) -> None:
     conn = conductor.open_db(tmp_path / "conductor.db")
     assert conductor.acquire_lease(conn, "misty-step/bitterblossom", 2, "run-2-1") is True
@@ -587,6 +620,367 @@ def test_validate_issue_readiness_requires_exact_intent_contract_heading() -> No
 
     assert readiness.ready is False
     assert readiness.reasons == ["missing `### Intent Contract` section"]
+
+
+def test_parse_qa_intake_payload_normalizes_findings() -> None:
+    payload = {
+        "target": "https://app.example.com",
+        "environment": "production",
+        "findings": [
+            {
+                "title": "Checkout button disabled",
+                "summary": "Valid form input never enables submit.",
+                "severity": "high",
+                "repro_steps": ["Open /checkout", "Fill valid form", "Observe disabled button"],
+                "evidence": [{"kind": "screenshot", "label": "disabled button", "url": "https://example.com/shot.png"}],
+            }
+        ],
+    }
+
+    findings = conductor.parse_qa_intake_payload(payload)
+
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.target_url == "https://app.example.com"
+    assert finding.environment == "production"
+    assert finding.priority_label == "p1"
+    assert finding.labels == ["autopilot", "bug", "domain/infra", "p1", "source/qa"]
+    assert finding.dedupe_key
+    assert len(finding.dedupe_key) == 12
+
+
+def test_parse_qa_intake_payload_normalizes_or_replaces_external_dedupe_key() -> None:
+    valid_external_key = "".join(["ABC123", "DEF456"])
+    payload = {
+        "target": "https://app.example.com",
+        "environment": "production",
+        "findings": [
+            {
+                "title": "Uppercase key",
+                "summary": "Probe supplied uppercase hex.",
+                "severity": "medium",
+                "dedupe_key": valid_external_key,
+                "repro_steps": ["Open /", "Observe issue"],
+                "evidence": [],
+            },
+            {
+                "title": "Invalid key",
+                "summary": "Probe supplied an invalid custom key.",
+                "severity": "medium",
+                "dedupe_key": "not-a-valid-key",
+                "repro_steps": ["Open /", "Observe issue"],
+                "evidence": [],
+            },
+        ],
+    }
+
+    findings = conductor.parse_qa_intake_payload(payload)
+
+    assert findings[0].dedupe_key == valid_external_key.lower()
+    assert findings[1].dedupe_key != "not-a-valid-key"
+    assert len(findings[1].dedupe_key) == 12
+
+
+def test_parse_qa_intake_payload_rejects_non_object_payload() -> None:
+    with pytest.raises(conductor.CmdError, match="qa intake payload must be a JSON object"):
+        conductor.parse_qa_intake_payload(["not", "an", "object"])  # type: ignore[arg-type]
+
+
+def test_sync_qa_findings_creates_new_issue_for_novel_finding() -> None:
+    runner = _RunnerSpy(responses=["https://github.com/misty-step/bitterblossom/issues/999\n"])
+    dedupe_key = _qa_test_key("checkout-button-disabled")
+    finding = conductor.QAFinding(
+        title="Checkout button disabled",
+        summary="Valid form input never enables submit.",
+        severity="high",
+        target_url="https://app.example.com/checkout",
+        environment="production",
+        repro_steps=["Open /checkout", "Fill valid form", "Observe disabled button"],
+        evidence=[{"kind": "screenshot", "label": "disabled button", "url": "https://example.com/shot.png"}],
+        dedupe_key=dedupe_key,
+        priority_label="p1",
+        labels=["autopilot", "bug", "domain/infra", "p1", "source/qa"],
+    )
+
+    created, updated = conductor.sync_qa_findings(
+        runner,
+        "misty-step/bitterblossom",
+        [finding],
+        existing_issue_by_key={},
+    )
+
+    assert created == ["https://github.com/misty-step/bitterblossom/issues/999"]
+    assert updated == []
+    create_call = next(call for call in runner.calls if call[:3] == ["gh", "issue", "create"])
+    assert "--body-file" in create_call
+    assert create_call.count("--label") == len(finding.labels)
+
+
+def test_sync_qa_findings_uses_created_issue_number_for_same_batch_duplicate() -> None:
+    runner = _RunnerSpy(
+        responses=[
+            "https://github.com/misty-step/bitterblossom/issues/999\n",
+            "",
+        ]
+    )
+    dedupe_key = _qa_test_key("checkout-batch-duplicate")
+    findings = [
+        conductor.QAFinding(
+            title="Checkout button disabled",
+            summary="Valid form input never enables submit.",
+            severity="high",
+            target_url="https://app.example.com/checkout",
+            environment="production",
+            repro_steps=["Open /checkout", "Fill valid form", "Observe disabled button"],
+            evidence=[],
+            dedupe_key=dedupe_key,
+            priority_label="p1",
+            labels=["autopilot", "bug", "domain/infra", "p1", "source/qa"],
+        ),
+        conductor.QAFinding(
+            title="Checkout button disabled",
+            summary="Valid form input never enables submit.",
+            severity="high",
+            target_url="https://app.example.com/checkout",
+            environment="production",
+            repro_steps=["Open /checkout", "Fill valid form", "Observe disabled button"],
+            evidence=[],
+            dedupe_key=dedupe_key,
+            priority_label="p1",
+            labels=["autopilot", "bug", "domain/infra", "p1", "source/qa"],
+        ),
+    ]
+
+    created, updated = conductor.sync_qa_findings(
+        runner,
+        "misty-step/bitterblossom",
+        findings,
+        existing_issue_by_key={},
+    )
+
+    assert created == ["https://github.com/misty-step/bitterblossom/issues/999"]
+    assert updated == ["https://github.com/misty-step/bitterblossom/issues/999"]
+    comment_call = next(call for call in runner.calls if call[:3] == ["gh", "issue", "comment"])
+    assert comment_call[3] == "999"
+
+
+def test_sync_qa_findings_comments_on_existing_issue_for_duplicate() -> None:
+    runner = _RunnerSpy()
+    dedupe_key = _qa_test_key("checkout-existing-duplicate")
+    finding = conductor.QAFinding(
+        title="Checkout button disabled",
+        summary="Valid form input never enables submit.",
+        severity="high",
+        target_url="https://app.example.com/checkout",
+        environment="production",
+        repro_steps=["Open /checkout", "Fill valid form", "Observe disabled button"],
+        evidence=[{"kind": "screenshot", "label": "disabled button", "url": "https://example.com/shot.png"}],
+        dedupe_key=dedupe_key,
+        priority_label="p1",
+        labels=["autopilot", "bug", "domain/infra", "p1", "source/qa"],
+    )
+
+    conductor.sync_qa_findings(
+        runner,
+        "misty-step/bitterblossom",
+        [finding],
+        existing_issue_by_key={
+            dedupe_key: conductor.Issue(
+                number=505,
+                title="existing",
+                body="",
+                url="https://example.com/505",
+                labels=[],
+            )
+        },
+    )
+
+    comment_call = next(call for call in runner.calls if call[:3] == ["gh", "issue", "comment"])
+    assert comment_call[3] == "505"
+    assert comment_call[4] == "--repo"
+    assert comment_call[5] == "misty-step/bitterblossom"
+    assert "--body-file" in comment_call
+
+
+def test_sync_qa_findings_escalates_priority_label_for_duplicate() -> None:
+    runner = _RunnerSpy()
+    dedupe_key = _qa_test_key("checkout-severity-escalation")
+    finding = conductor.QAFinding(
+        title="Checkout button disabled",
+        summary="Valid form input never enables submit.",
+        severity="critical",
+        target_url="https://app.example.com/checkout",
+        environment="production",
+        repro_steps=["Open /checkout", "Fill valid form", "Observe disabled button"],
+        evidence=[],
+        dedupe_key=dedupe_key,
+        priority_label="p0",
+        labels=["autopilot", "bug", "domain/infra", "p0", "source/qa"],
+    )
+
+    existing = conductor.Issue(
+        number=505,
+        title="existing",
+        body="",
+        url="https://example.com/505",
+        labels=["bug", "p3", "source/qa"],
+    )
+
+    conductor.sync_qa_findings(
+        runner,
+        "misty-step/bitterblossom",
+        [finding],
+        existing_issue_by_key={dedupe_key: existing},
+    )
+
+    edit_call = next(call for call in runner.calls if call[:3] == ["gh", "issue", "edit"])
+    assert edit_call[3] == "505"
+    assert "--add-label" in edit_call
+    assert "p0" in edit_call
+    assert "--remove-label" in edit_call
+    assert "p3" in edit_call
+    assert "p0" in existing.labels
+    assert "p3" not in existing.labels
+
+
+def test_render_qa_issue_comment_keeps_evidence_links_clickable() -> None:
+    dedupe_key = _qa_test_key("checkout-comment-links")
+    finding = conductor.QAFinding(
+        title="Checkout button disabled",
+        summary="Valid form input never enables submit.",
+        severity="high",
+        target_url="https://app.example.com/checkout",
+        environment="production",
+        repro_steps=["Open /checkout", "Fill valid form", "Observe disabled button"],
+        evidence=[{"kind": "screenshot", "label": "disabled button", "url": "https://example.com/shot.png"}],
+        dedupe_key=dedupe_key,
+        priority_label="p1",
+        labels=["autopilot", "bug", "domain/infra", "p1", "source/qa"],
+    )
+
+    body = conductor.render_qa_issue_comment(finding)
+
+    assert "[disabled button](https://example.com/shot.png)" in body
+
+
+def test_existing_qa_issues_by_key_paginates_all_open_source_qa_issues() -> None:
+    runner = _RunnerSpy(
+        responses=[
+            json.dumps(
+                [
+                    {
+                        "number": 1,
+                        "title": "issue 1",
+                        "body": f"<!-- bitterblossom-qa-dedupe:{_qa_test_key('page-one')} -->",
+                        "url": "https://example.com/1",
+                        "labels": [{"name": "source/qa"}, {"name": "p1"}],
+                        "updated_at": "2026-03-13T00:00:00Z",
+                    }
+                ]
+            ),
+            json.dumps(
+                [
+                    {
+                        "number": 2,
+                        "title": "issue 2",
+                        "body": f"<!-- bitterblossom-qa-dedupe:{_qa_test_key('page-two')} -->",
+                        "url": "https://example.com/2",
+                        "labels": [{"name": "source/qa"}, {"name": "p2"}],
+                        "updated_at": "2026-03-13T00:01:00Z",
+                    },
+                    {
+                        "number": 3,
+                        "title": "ignore pull request",
+                        "body": "",
+                        "url": "https://example.com/3",
+                        "labels": [{"name": "source/qa"}],
+                        "updated_at": "2026-03-13T00:02:00Z",
+                        "pull_request": {"url": "https://example.com/pr/3"},
+                    },
+                ]
+            ),
+            "[]",
+        ]
+    )
+
+    issues = conductor.existing_qa_issues_by_key(runner, "misty-step/bitterblossom")
+
+    assert sorted(issues) == sorted([_qa_test_key("page-one"), _qa_test_key("page-two")])
+    assert runner.calls == [
+        ["gh", "api", "repos/misty-step/bitterblossom/issues?state=open&labels=source/qa&per_page=100&page=1"],
+        ["gh", "api", "repos/misty-step/bitterblossom/issues?state=open&labels=source/qa&per_page=100&page=2"],
+        ["gh", "api", "repos/misty-step/bitterblossom/issues?state=open&labels=source/qa&per_page=100&page=3"],
+    ]
+
+
+def test_qa_intake_rejects_invalid_command_quoting() -> None:
+    with pytest.raises(conductor.CmdError, match="invalid qa probe command"):
+        conductor.qa_intake(
+            argparse.Namespace(
+                repo="misty-step/bitterblossom",
+                command="'unterminated",
+            )
+        )
+
+
+def test_qa_intake_rejects_empty_command() -> None:
+    with pytest.raises(conductor.CmdError, match="qa probe command is empty"):
+        conductor.qa_intake(
+            argparse.Namespace(
+                repo="misty-step/bitterblossom",
+                command="",
+            )
+        )
+
+
+def test_qa_intake_wraps_exec_failures(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _ExecFailRunner:
+        def run(self, argv: list[str], *, timeout: int | None = None, check: bool = True) -> str:
+            _ = (argv, timeout, check)
+            raise FileNotFoundError("qa-probe")
+
+    monkeypatch.setattr(conductor, "Runner", lambda _cwd: _ExecFailRunner())
+
+    with pytest.raises(conductor.CmdError, match="failed to execute qa probe command"):
+        conductor.qa_intake(
+            argparse.Namespace(
+                repo="misty-step/bitterblossom",
+                command="qa-probe --target https://app.example.com",
+            )
+        )
+
+
+def test_qa_intake_runs_probe_command_and_prints_summary(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    probe_payload = {
+        "target": "https://app.example.com",
+        "environment": "production",
+        "findings": [
+            {
+                "title": "Checkout button disabled",
+                "summary": "Valid form input never enables submit.",
+                "severity": "high",
+                "repro_steps": ["Open /checkout", "Fill valid form", "Observe disabled button"],
+                "evidence": [],
+            }
+        ],
+    }
+
+    runner = _RunnerSpy(responses=[json.dumps(probe_payload), "[]", "https://github.com/misty-step/bitterblossom/issues/999\n"])
+    monkeypatch.setattr(conductor, "Runner", lambda _cwd: runner)
+
+    rc = conductor.qa_intake(
+        argparse.Namespace(
+            repo="misty-step/bitterblossom",
+            command="python3 qa_probe.py --target https://app.example.com",
+        )
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert runner.calls[0] == ["python3", "qa_probe.py", "--target", "https://app.example.com"]
+    assert "created=1 updated=0" in captured.out
 
 
 def test_invoke_claude_json_reads_structured_output_event(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -8066,11 +8460,10 @@ def test_prepare_run_workspace_uses_remote_tracking_refs(monkeypatch: pytest.Mon
     )
 
     assert workspace == expected_workspace
-    assert "lockfile=/home/sprite/workspace/bitterblossom/.bb/conductor/mirror.lock" in captured["script"]
-    assert 'exec 9>"$lockfile"' in captured["script"]
-    assert f'flock -w {conductor.WORKSPACE_PREPARE_LOCK_WAIT_SECONDS} 9' in captured["script"]
+    assert "lockfile = '/home/sprite/workspace/bitterblossom/.bb/conductor/mirror.lock'" in captured["script"]
+    assert "import fcntl" in captured["script"]
+    assert f"wait_seconds = {conductor.WORKSPACE_PREPARE_LOCK_WAIT_SECONDS}" in captured["script"]
     assert 'refs/remotes/origin/master' in captured["script"]
-    assert 'base_ref="origin/master"' in captured["script"]
     assert 'refs/remotes/origin/HEAD' in captured["script"]
     assert "mirror lock acquisition timed out" in captured["script"]
 
@@ -8113,7 +8506,9 @@ def test_cleanup_run_workspace_uses_bounded_lock_wait(monkeypatch: pytest.Monkey
         "builder",
     )
 
-    assert f'flock -w {conductor.WORKSPACE_CLEANUP_LOCK_WAIT_SECONDS} 9' in captured["script"]
+    assert "import fcntl" in captured["script"]
+    assert f"wait_seconds = {conductor.WORKSPACE_CLEANUP_LOCK_WAIT_SECONDS}" in captured["script"]
+    assert "fetch --all --prune" not in captured["script"]
     assert "mirror lock acquisition timed out during cleanup" in captured["script"]
 
 
@@ -8135,38 +8530,9 @@ def _init_local_worktree_mirror(tmp_path: pathlib.Path) -> pathlib.Path:
     return mirror
 
 
-def _install_flock_shim(tmp_path: pathlib.Path) -> pathlib.Path:
+def _make_test_bin_dir(tmp_path: pathlib.Path) -> pathlib.Path:
     bin_dir = tmp_path / "test-bin"
     bin_dir.mkdir()
-    flock = bin_dir / "flock"
-    flock.write_text(
-        """#!/usr/bin/env python3
-import fcntl
-import sys
-import time
-
-args = sys.argv[1:]
-timeout = None
-if len(args) == 3 and args[0] == "-w":
-    timeout = float(args[1])
-    fd = int(args[2])
-elif len(args) == 1:
-    fd = int(args[0])
-else:
-    raise SystemExit("unsupported flock arguments")
-
-deadline = None if timeout is None else time.monotonic() + timeout
-while True:
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        raise SystemExit(0)
-    except BlockingIOError:
-        if deadline is not None and time.monotonic() >= deadline:
-            raise SystemExit(1)
-        time.sleep(0.01)
-"""
-    )
-    flock.chmod(0o755)
     return bin_dir
 
 
@@ -8202,13 +8568,21 @@ def _hold_lock(lockfile: pathlib.Path, hold_seconds: float, bin_dir: pathlib.Pat
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     proc = subprocess.Popen(
         [
-            "bash",
+            "python3",
             "-c",
-            (
-                f'exec 9>"{lockfile}"; '
-                "flock 9; "
-                f'printf ready > "{ready}"; '
-                f"sleep {hold_seconds}"
+            "\n".join(
+                [
+                    "import fcntl",
+                    "import pathlib",
+                    "import time",
+                    f"lockfile = {str(lockfile)!r}",
+                    f"ready = {str(ready)!r}",
+                    "pathlib.Path(lockfile).parent.mkdir(parents=True, exist_ok=True)",
+                    "with open(lockfile, 'w', encoding='utf-8') as handle:",
+                    "    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)",
+                    "    pathlib.Path(ready).write_text('ready', encoding='utf-8')",
+                    f"    time.sleep({hold_seconds})",
+                ]
             ),
         ],
         text=True,
@@ -8230,7 +8604,7 @@ def test_prepare_run_workspace_waits_for_lock_release(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
 ) -> None:
     mirror = _init_local_worktree_mirror(tmp_path)
-    bin_dir = _install_flock_shim(tmp_path)
+    bin_dir = _make_test_bin_dir(tmp_path)
     lockfile = mirror / ".bb" / "conductor" / "mirror.lock"
     lockfile.parent.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(conductor, "repo_dir", lambda _repo: str(mirror))
@@ -8263,7 +8637,7 @@ def test_prepare_run_workspace_reports_lock_timeout(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
 ) -> None:
     mirror = _init_local_worktree_mirror(tmp_path)
-    bin_dir = _install_flock_shim(tmp_path)
+    bin_dir = _make_test_bin_dir(tmp_path)
     lockfile = mirror / ".bb" / "conductor" / "mirror.lock"
     lockfile.parent.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(conductor, "repo_dir", lambda _repo: str(mirror))
@@ -8293,7 +8667,7 @@ def test_cleanup_run_workspace_reports_lock_timeout(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
 ) -> None:
     mirror = _init_local_worktree_mirror(tmp_path)
-    bin_dir = _install_flock_shim(tmp_path)
+    bin_dir = _make_test_bin_dir(tmp_path)
     lockfile = mirror / ".bb" / "conductor" / "mirror.lock"
     lockfile.parent.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(conductor, "repo_dir", lambda _repo: str(mirror))
@@ -8616,7 +8990,7 @@ def test_cleanup_run_workspace_waits_for_lock_release(
     cleanup must block rather than race against it.
     """
     mirror = _init_local_worktree_mirror(tmp_path)
-    bin_dir = _install_flock_shim(tmp_path)
+    bin_dir = _make_test_bin_dir(tmp_path)
     lockfile = mirror / ".bb" / "conductor" / "mirror.lock"
     lockfile.parent.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(conductor, "repo_dir", lambda _repo: str(mirror))
