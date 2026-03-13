@@ -9115,37 +9115,42 @@ def test_cleanup_builder_workspace_records_cleanup_warning_on_os_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """cleanup_builder_workspace catches OSError the same as CmdError — cleanup_warning is recorded."""
+    run_id = "run-538-oe"
+    repo = "misty-step/bitterblossom"
+    worker = "noble-blue-serpent"
+    worktree_path = "/tmp/run-538-oe/builder-worktree"
+
     conn = conductor.open_db(tmp_path / "conductor.db")
     issue = conductor.Issue(number=538, title="cleanup", body="", url="u538", labels=["autopilot"])
-    conductor.create_run(conn, "run-538-oe", "misty-step/bitterblossom", issue, "default")
-    conductor.update_run(conn, "run-538-oe", worktree_path="/tmp/run-538-oe/builder-worktree")
+    conductor.create_run(conn, run_id, repo, issue, "default")
+    conductor.update_run(conn, run_id, worktree_path=worktree_path)
 
-    monkeypatch.setattr(
-        conductor,
-        "cleanup_run_workspace",
-        lambda *_a, **_kw: (_ for _ in ()).throw(OSError("network connection dropped")),
-    )
+    def raise_os_error(*_args: object, **_kwargs: object) -> None:
+        raise OSError("network connection dropped")
+
+    monkeypatch.setattr(conductor, "cleanup_run_workspace", raise_os_error)
 
     conductor.cleanup_builder_workspace(
         object(),
         conn,
         tmp_path / "events.jsonl",
-        "run-538-oe",
-        "misty-step/bitterblossom",
-        "noble-blue-serpent",
-        "/tmp/run-538-oe/builder-worktree",
+        run_id,
+        repo,
+        worker,
+        worktree_path,
     )
 
     row = conn.execute(
-        "select payload_json from events where run_id = 'run-538-oe' and event_type = 'cleanup_warning'"
+        "select payload_json from events where run_id = ? and event_type = 'cleanup_warning'",
+        (run_id,),
     ).fetchone()
     assert row is not None
     payload = json.loads(row[0])
     assert payload["kind"] == conductor.BUILDER_WORKSPACE_CLEANUP_KIND
     assert "network connection dropped" in payload["error"]
     # worktree_path must survive so the operator can recover
-    path_row = conn.execute("select worktree_path from runs where run_id = 'run-538-oe'").fetchone()
-    assert path_row["worktree_path"] == "/tmp/run-538-oe/builder-worktree"
+    path_row = conn.execute("select worktree_path from runs where run_id = ?", (run_id,)).fetchone()
+    assert path_row["worktree_path"] == worktree_path
 
 
 def test_prepare_run_workspace_with_retry_stops_after_lease_loss_on_second_retry(
@@ -9195,31 +9200,36 @@ def test_show_run_surfaces_worktree_recovery_event_at(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """worktree_recovery_event_at matches the event's created_at timestamp."""
+    run_id = "run-538-rat"
+    repo = "misty-step/bitterblossom"
+    worktree_path = "/tmp/run-538-rat/builder-worktree"
+
     conn = conductor.open_db(tmp_path / "conductor.db")
     issue = conductor.Issue(number=538, title="inspect", body="", url="u538", labels=["autopilot"])
-    conductor.create_run(conn, "run-538-rat", "misty-step/bitterblossom", issue, "default")
-    conductor.update_run(conn, "run-538-rat", worktree_path="/tmp/run-538-rat/builder-worktree")
+    conductor.create_run(conn, run_id, repo, issue, "default")
+    conductor.update_run(conn, run_id, worktree_path=worktree_path)
 
     event_log = tmp_path / "events.jsonl"
     conductor.record_event(
         conn,
         event_log,
-        "run-538-rat",
+        run_id,
         "cleanup_warning",
         {
             "kind": conductor.BUILDER_WORKSPACE_CLEANUP_KIND,
-            "workspace": "/tmp/run-538-rat/builder-worktree",
+            "workspace": worktree_path,
             "error": "builder workspace cleanup failed: timeout",
         },
     )
 
     row = conn.execute(
-        "select created_at from events where run_id = 'run-538-rat' and event_type = 'cleanup_warning'"
+        "select created_at from events where run_id = ? and event_type = 'cleanup_warning'",
+        (run_id,),
     ).fetchone()
     expected_event_at = row["created_at"]
 
     rc = conductor.show_run(
-        argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id="run-538-rat", event_limit=5)
+        argparse.Namespace(db=str(tmp_path / "conductor.db"), run_id=run_id, event_limit=5)
     )
 
     assert rc == 0
