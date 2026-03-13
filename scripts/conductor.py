@@ -1295,6 +1295,53 @@ def blocking_events_for_runs(conn: sqlite3.Connection, run_ids: list[str]) -> di
     return events
 
 
+def latest_events_of_type_for_runs(
+    conn: sqlite3.Connection, run_ids: list[str], event_type: str
+) -> dict[str, sqlite3.Row]:
+    ordered_run_ids = list(dict.fromkeys(run_ids))
+    if not ordered_run_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in ordered_run_ids)
+    rows = conn.execute(
+        f"""
+        select run_id, event_type, payload_json, created_at
+        from events
+        where run_id in ({placeholders}) and event_type = ?
+        order by run_id, id desc
+        """,
+        [*ordered_run_ids, event_type],
+    ).fetchall()
+    events: dict[str, sqlite3.Row] = {}
+    for row in rows:
+        events.setdefault(row["run_id"], row)
+    return events
+
+
+def latest_policy_block_events_for_runs(conn: sqlite3.Connection, run_ids: list[str]) -> dict[str, sqlite3.Row]:
+    ordered_run_ids = list(dict.fromkeys(run_ids))
+    if not ordered_run_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in ordered_run_ids)
+    rows = conn.execute(
+        f"""
+        select run_id, event_type, payload_json, created_at
+        from events
+        where run_id in ({placeholders})
+          and (
+            event_type = 'pr_feedback_blocked'
+            or event_type = 'council_blocked'
+            or event_type = 'external_review_wait_complete'
+          )
+        order by run_id, id desc
+        """,
+        ordered_run_ids,
+    ).fetchall()
+    events: dict[str, sqlite3.Row] = {}
+    for row in rows:
+        events.setdefault(row["run_id"], row)
+    return events
+
+
 def _parse_event_payload(payload_json: str | None) -> dict[str, Any]:
     """Parse an event payload_json string, returning {} for any missing or malformed value."""
     if not payload_json:
@@ -1313,6 +1360,11 @@ def serialize_run_surface(
     row: sqlite3.Row,
     *,
     telemetry: dict[str, Any] | None = None,
+    findings: list[ReviewFinding] | None = None,
+    review_waves: list[ReviewWave] | None = None,
+    latest_ci_event: sqlite3.Row | None | object = UNSET,
+    latest_external_event: sqlite3.Row | None | object = UNSET,
+    latest_policy_block_event: sqlite3.Row | None | object = UNSET,
     worktree_recovery_event: sqlite3.Row | None | object = UNSET,
     blocking_event: sqlite3.Row | None | object = UNSET,
 ) -> dict[str, Any]:
@@ -1320,8 +1372,10 @@ def serialize_run_surface(
     worktree_path = row["worktree_path"] if "worktree_path" in row.keys() else None
     picked_at = row["picked_at"] if "picked_at" in row.keys() else row["created_at"]
     completed_at = row["completed_at"] if "completed_at" in row.keys() else None
-    findings = load_review_findings(conn, row["run_id"])
-    review_waves = load_review_waves(conn, row["run_id"])
+    if findings is None:
+        findings = load_review_findings(conn, row["run_id"])
+    if review_waves is None:
+        review_waves = load_review_waves(conn, row["run_id"])
     if telemetry is None:
         telemetry = run_telemetry_rollup(conn, row["run_id"])
     payload: dict[str, Any] = {
@@ -1359,6 +1413,9 @@ def serialize_run_surface(
         row,
         findings=findings,
         review_waves=review_waves,
+        latest_ci_event=latest_ci_event,
+        latest_external_event=latest_external_event,
+        latest_policy_block_event=latest_policy_block_event,
     )
     payload["worktree_recovery_status"] = None
     payload["worktree_recovery_error"] = None
@@ -3472,6 +3529,38 @@ def load_review_waves(conn: sqlite3.Connection, run_id: str) -> list[ReviewWave]
     ]
 
 
+def load_review_waves_for_runs(conn: sqlite3.Connection, run_ids: list[str]) -> dict[str, list[ReviewWave]]:
+    ordered_run_ids = list(dict.fromkeys(run_ids))
+    if not ordered_run_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in ordered_run_ids)
+    rows = conn.execute(
+        f"""
+        select id, run_id, kind, ordinal, pr_number, status, reviewer_count, started_at, completed_at
+        from review_waves
+        where run_id in ({placeholders})
+        order by run_id, id
+        """,
+        ordered_run_ids,
+    ).fetchall()
+    waves_by_run: dict[str, list[ReviewWave]] = {run_id: [] for run_id in ordered_run_ids}
+    for row in rows:
+        waves_by_run[row["run_id"]].append(
+            ReviewWave(
+                id=int(row["id"]),
+                run_id=str(row["run_id"]),
+                kind=str(row["kind"]),
+                ordinal=int(row["ordinal"]),
+                pr_number=int(row["pr_number"]) if row["pr_number"] is not None else None,
+                status=str(row["status"]),
+                reviewer_count=int(row["reviewer_count"]),
+                started_at=str(row["started_at"]),
+                completed_at=str(row["completed_at"]) if row["completed_at"] is not None else None,
+            )
+        )
+    return waves_by_run
+
+
 def load_review_wave_reviews(conn: sqlite3.Connection, wave_id: int) -> list[ReviewWaveReview]:
     rows = conn.execute(
         """
@@ -3533,8 +3622,59 @@ def load_review_findings(conn: sqlite3.Connection, run_id: str, *, wave_id: int 
     ]
 
 
+def load_review_findings_for_runs(conn: sqlite3.Connection, run_ids: list[str]) -> dict[str, list[ReviewFinding]]:
+    ordered_run_ids = list(dict.fromkeys(run_ids))
+    if not ordered_run_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in ordered_run_ids)
+    rows = conn.execute(
+        f"""
+        select id, run_id, wave_id, reviewer, source_kind, source_id, fingerprint, classification,
+               severity, decision, status, path, line, message, raw_json, created_at, updated_at
+        from review_findings
+        where run_id in ({placeholders})
+        order by run_id, id
+        """,
+        ordered_run_ids,
+    ).fetchall()
+    findings_by_run: dict[str, list[ReviewFinding]] = {run_id: [] for run_id in ordered_run_ids}
+    for row in rows:
+        findings_by_run[row["run_id"]].append(
+            ReviewFinding(
+                id=int(row["id"]),
+                run_id=str(row["run_id"]),
+                wave_id=int(row["wave_id"]),
+                reviewer=str(row["reviewer"]),
+                source_kind=str(row["source_kind"]),
+                source_id=str(row["source_id"]),
+                fingerprint=str(row["fingerprint"]),
+                classification=str(row["classification"]),
+                severity=str(row["severity"]),
+                decision=str(row["decision"]),
+                status=str(row["status"]),
+                path=str(row["path"]),
+                line=int(row["line"])
+                if row["line"] is not None
+                else None,
+                message=str(row["message"]),
+                raw=json.loads(row["raw_json"]),
+                created_at=str(row["created_at"]),
+                updated_at=str(row["updated_at"]),
+            )
+        )
+    return findings_by_run
+
+
 def serialize_review_wave(wave: ReviewWave) -> dict[str, Any]:
-    return asdict(wave)
+    return {
+        "kind": wave.kind,
+        "ordinal": wave.ordinal,
+        "pr_number": wave.pr_number,
+        "status": wave.status,
+        "reviewer_count": wave.reviewer_count,
+        "started_at": wave.started_at,
+        "completed_at": wave.completed_at,
+    }
 
 
 def serialize_review_finding(finding: ReviewFinding) -> dict[str, Any]:
@@ -3575,6 +3715,9 @@ def governance_snapshot_for_run(
     *,
     findings: list[ReviewFinding] | None = None,
     review_waves: list[ReviewWave] | None = None,
+    latest_ci_event: sqlite3.Row | None | object = UNSET,
+    latest_external_event: sqlite3.Row | None | object = UNSET,
+    latest_policy_block_event: sqlite3.Row | None | object = UNSET,
 ) -> dict[str, Any]:
     run_id = str(row["run_id"])
     if findings is None:
@@ -3626,7 +3769,8 @@ def governance_snapshot_for_run(
             "blocking_finding_count": 0,
         }
 
-    latest_ci_event = latest_event_of_type_for_run(conn, run_id, "ci_wait_complete")
+    if latest_ci_event is UNSET:
+        latest_ci_event = latest_event_of_type_for_run(conn, run_id, "ci_wait_complete")
     ci_payload = _parse_event_payload(latest_ci_event["payload_json"]) if latest_ci_event is not None else {}
     if latest_ci_event is None and not has_pr:
         mechanical_mergeability = {
@@ -3657,23 +3801,25 @@ def governance_snapshot_for_run(
             "event_at": latest_ci_event["created_at"],
         }
 
-    latest_external_event = latest_event_of_type_for_run(conn, run_id, "external_review_wait_complete")
+    if latest_external_event is UNSET:
+        latest_external_event = latest_event_of_type_for_run(conn, run_id, "external_review_wait_complete")
     external_payload = _parse_event_payload(latest_external_event["payload_json"]) if latest_external_event is not None else {}
-    latest_policy_block_event = conn.execute(
-        """
-        select event_type, payload_json, created_at
-        from events
-        where run_id = ?
-          and (
-            event_type = 'pr_feedback_blocked'
-            or event_type = 'council_blocked'
-            or event_type = 'external_review_wait_complete'
-          )
-        order by id desc
-        limit 1
-        """,
-        (run_id,),
-    ).fetchone()
+    if latest_policy_block_event is UNSET:
+        latest_policy_block_event = conn.execute(
+            """
+            select event_type, payload_json, created_at
+            from events
+            where run_id = ?
+              and (
+                event_type = 'pr_feedback_blocked'
+                or event_type = 'council_blocked'
+                or event_type = 'external_review_wait_complete'
+              )
+            order by id desc
+            limit 1
+            """,
+            (run_id,),
+        ).fetchone()
     policy_block_reason = None
     policy_block_event_type = None
     policy_block_event_at = None
@@ -6194,6 +6340,11 @@ def show_runs(args: argparse.Namespace) -> int:
         (args.limit,),
     ).fetchall()
     run_ids = [row["run_id"] for row in rows]
+    review_waves_by_run = load_review_waves_for_runs(conn, run_ids)
+    review_findings_by_run = load_review_findings_for_runs(conn, run_ids)
+    latest_ci_by_run = latest_events_of_type_for_runs(conn, run_ids, "ci_wait_complete")
+    latest_external_by_run = latest_events_of_type_for_runs(conn, run_ids, "external_review_wait_complete")
+    latest_policy_block_by_run = latest_policy_block_events_for_runs(conn, run_ids)
     recovery_by_run = latest_worktree_recovery_events(conn, run_ids)
     blocking_by_run = blocking_events_for_runs(conn, run_ids)
     for row in rows:
@@ -6202,6 +6353,11 @@ def show_runs(args: argparse.Namespace) -> int:
                 serialize_run_surface(
                     conn,
                     row,
+                    findings=review_findings_by_run.get(row["run_id"], []),
+                    review_waves=review_waves_by_run.get(row["run_id"], []),
+                    latest_ci_event=latest_ci_by_run.get(row["run_id"]),
+                    latest_external_event=latest_external_by_run.get(row["run_id"]),
+                    latest_policy_block_event=latest_policy_block_by_run.get(row["run_id"]),
                     worktree_recovery_event=recovery_by_run.get(row["run_id"]),
                     blocking_event=blocking_by_run.get(row["run_id"]),
                 )
@@ -6263,7 +6419,13 @@ def show_run(args: argparse.Namespace) -> int:
     print(
         json.dumps(
             {
-                "run": serialize_run_surface(conn, row, telemetry=telemetry),
+                "run": serialize_run_surface(
+                    conn,
+                    row,
+                    telemetry=telemetry,
+                    findings=review_findings,
+                    review_waves=review_waves,
+                ),
                 "review_waves": [serialize_review_wave(wave) for wave in review_waves],
                 "review_findings": [serialize_review_finding(finding) for finding in review_findings],
                 "telemetry_samples": telemetry["samples"],
@@ -6309,6 +6471,11 @@ def show_metrics(args: argparse.Namespace) -> int:
     ).fetchall()
     run_ids = [row["run_id"] for row in rows]
     telemetry_by_run = run_telemetry_rollup_bulk(conn, run_ids)
+    review_waves_by_run = load_review_waves_for_runs(conn, run_ids)
+    review_findings_by_run = load_review_findings_for_runs(conn, run_ids)
+    latest_ci_by_run = latest_events_of_type_for_runs(conn, run_ids, "ci_wait_complete")
+    latest_external_by_run = latest_events_of_type_for_runs(conn, run_ids, "external_review_wait_complete")
+    latest_policy_block_by_run = latest_policy_block_events_for_runs(conn, run_ids)
     recovery_by_run = latest_worktree_recovery_events(conn, run_ids)
     blocking_by_run = blocking_events_for_runs(conn, run_ids)
     runs = sorted(
@@ -6317,6 +6484,11 @@ def show_metrics(args: argparse.Namespace) -> int:
                 conn,
                 row,
                 telemetry=telemetry_by_run.get(row["run_id"], empty_run_telemetry_rollup()),
+                findings=review_findings_by_run.get(row["run_id"], []),
+                review_waves=review_waves_by_run.get(row["run_id"], []),
+                latest_ci_event=latest_ci_by_run.get(row["run_id"]),
+                latest_external_event=latest_external_by_run.get(row["run_id"]),
+                latest_policy_block_event=latest_policy_block_by_run.get(row["run_id"]),
                 worktree_recovery_event=recovery_by_run.get(row["run_id"]),
                 blocking_event=blocking_by_run.get(row["run_id"]),
             )
