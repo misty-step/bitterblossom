@@ -8949,6 +8949,8 @@ def test_show_run_ignores_reviewer_workspace_preparation_failure(
     run = payload["run"]
     assert run["worktree_recovery_status"] is None
     assert run["worktree_recovery_error"] is None
+    assert run["blocking_event_type"] is None
+    assert run["blocking_reason"] is None
 
 
 def test_show_runs_does_not_call_per_run_recovery_query(
