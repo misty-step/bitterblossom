@@ -44,13 +44,19 @@ def test_repo_guidance_references_workflow_contract() -> None:
 
 
 def test_phase_workers_reference_contract_and_required_skills() -> None:
-    fern = (ROOT / "sprites" / "fern.md").read_text(encoding="utf-8")
+    bramble = (ROOT / "sprites" / "bramble.md").read_text(encoding="utf-8")
+    moss = (ROOT / "sprites" / "moss.md").read_text(encoding="utf-8")
+    thorn = (ROOT / "sprites" / "thorn.md").read_text(encoding="utf-8")
     willow = (ROOT / "sprites" / "willow.md").read_text(encoding="utf-8")
+    fern = (ROOT / "sprites" / "fern.md").read_text(encoding="utf-8")
     foxglove = (ROOT / "sprites" / "foxglove.md").read_text(encoding="utf-8")
 
-    assert "WORKFLOW.md" in fern
-    assert "- pr\n" in fern
+    assert "WORKFLOW.md" in bramble
+    assert "WORKFLOW.md" in moss
+    assert "WORKFLOW.md" in thorn
     assert "WORKFLOW.md" in willow
     assert "- pr-fix\n" in willow
+    assert "WORKFLOW.md" in fern
+    assert "- pr\n" in fern
     assert "WORKFLOW.md" in foxglove
     assert "- debug\n" in foxglove
