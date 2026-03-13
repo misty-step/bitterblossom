@@ -57,7 +57,6 @@ from conductorlib.common import (
     ReviewThread,
     ReviewWave,
     ReviewWaveReview,
-    RouteDecision,
     Runner,
     SUCCESSFUL_CHECK_CONCLUSIONS,
     TERMINAL_RUN_STATUSES,
@@ -85,7 +84,6 @@ from conductorlib.governance import (
     is_trusted_review_author,
     list_unresolved_review_threads,
     present_pr_status_checks,
-    resolve_review_threads,
     status_check_snapshot,
     summarize_review_threads,
     summarize_status_check_rollup,
@@ -5213,7 +5211,6 @@ class GovernanceSession:
             self.runner,
             self.args.repo,
             self.builder.pr_number,
-            required_status_checks=required_status_checks,
         )
         return self._handle_pr_thread_feedback()
 

@@ -8432,6 +8432,40 @@ def test_govern_pr_adopts_existing_pr_and_runs_final_polish(
     assert "final_polish_complete" in event_types
 
 
+def test_governance_session_thread_decision_checks_required_statuses_before_feedback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    issue = conductor.Issue(number=479, title="govern", body="", url="https://example.com/479", labels=["autopilot"])
+    governance_run = _make_governance_run(issue)
+    args = _make_govern_pr_args(tmp_path, issue_number=479, pr_number=490, run_id=governance_run.run_id)
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    calls: list[tuple[str, int]] = []
+
+    monkeypatch.setattr(
+        conductor,
+        "ensure_required_checks_present",
+        lambda _runner, repo, pr_number: calls.append((repo, pr_number)),
+    )
+    monkeypatch.setattr(conductor.GovernanceSession, "_handle_pr_thread_feedback", lambda self: "proceed")
+
+    session = conductor.GovernanceSession(
+        conductor.Runner(tmp_path),
+        conn,
+        pathlib.Path(args.event_log),
+        args,
+        issue=governance_run.issue,
+        run_id=governance_run.run_id,
+        worker=governance_run.worker,
+        branch=governance_run.branch,
+        pr_number=governance_run.pr_number,
+        pr_url=governance_run.pr_url,
+        builder_workspace=governance_run.builder_workspace,
+    )
+
+    assert session._thread_decision() == "proceed"
+    assert calls == [("misty-step/bitterblossom", 490)]
+
+
 def test_govern_pr_uses_external_authority_without_internal_reviewers(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
 ) -> None:

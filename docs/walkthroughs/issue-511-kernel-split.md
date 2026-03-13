@@ -22,7 +22,7 @@ python3 -m pytest -q scripts/test_workflow_contract.py
 
 Expected result:
 
-- `309 passed` for the conductor and module test surfaces.
+- `314 passed` for the conductor and module test surfaces.
 - `4 passed` for the workflow contract regression surface.
 
 ## Why This Is Better

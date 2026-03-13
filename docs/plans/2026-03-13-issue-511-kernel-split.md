@@ -1,6 +1,6 @@
 # Issue 511 Kernel Split Plan
 
-> Scope issue: #511
+> Scope issue: [#511](https://github.com/misty-step/bitterblossom/issues/511)
 
 ## Goal
 
