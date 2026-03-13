@@ -2858,6 +2858,7 @@ def test_run_builder_precleans_worker(monkeypatch: pytest.MonkeyPatch) -> None:
         "factory/464-docs-1",
         pathlib.Path("scripts/prompts/conductor-builder-template.md"),
         10,
+        workspace=conductor.run_workspace("misty-step/bitterblossom", "run-464-1", "builder"),
     )
 
     assert cleaned == ["noble-blue-serpent"]
@@ -8153,6 +8154,89 @@ def test_prepare_run_workspace_with_retry_records_explicit_failure(
     assert payload["attempt"] == 3
     assert payload["attempts"] == 3
     assert payload["error"] == "mirror locked elsewhere"
+
+
+def test_prepare_run_workspace_with_retry_retries_os_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """OSError (e.g. broken pipe, ENOENT) is treated as transient and retried."""
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="worktrees", body="", url="u538", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-1", "misty-step/bitterblossom", issue, "default")
+    attempts = {"count": 0}
+
+    def flaky_prepare(*_args: object, **_kwargs: object) -> str:
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise OSError("Connection reset by peer")
+        return "/tmp/run-538-1/builder-worktree"
+
+    monkeypatch.setattr(conductor, "prepare_run_workspace", flaky_prepare)
+    monkeypatch.setattr(conductor.time, "sleep", lambda *_args, **_kwargs: None)
+
+    workspace = conductor.prepare_run_workspace_with_retry(
+        object(),
+        conn,
+        tmp_path / "events.jsonl",
+        "run-538-1",
+        "noble-blue-serpent",
+        "misty-step/bitterblossom",
+        "builder",
+    )
+
+    assert workspace == "/tmp/run-538-1/builder-worktree"
+    assert attempts["count"] == 2
+    events = conn.execute("select event_type, payload_json from events where run_id = 'run-538-1' order by id").fetchall()
+    assert [row["event_type"] for row in events] == ["workspace_preparation_retry"]
+    payload = json.loads(events[0]["payload_json"])
+    assert payload["attempt"] == 1
+    assert "Connection reset by peer" in payload["error"]
+
+
+def test_prepare_run_workspace_with_retry_records_explicit_failure_on_os_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """OSError that exhausts all attempts records workspace_preparation_failed with explicit reason."""
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    issue = conductor.Issue(number=538, title="worktrees", body="", url="u538", labels=["autopilot"])
+    conductor.create_run(conn, "run-538-2", "misty-step/bitterblossom", issue, "default")
+
+    def always_fail(*_args: object, **_kwargs: object) -> None:
+        raise OSError("broken pipe")
+
+    monkeypatch.setattr(conductor, "prepare_run_workspace", always_fail)
+    monkeypatch.setattr(conductor.time, "sleep", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(
+        conductor.WorkspacePreparationError,
+        match="workspace preparation failed for builder on noble-blue-serpent after 3 attempts: broken pipe",
+    ):
+        conductor.prepare_run_workspace_with_retry(
+            object(),
+            conn,
+            tmp_path / "events.jsonl",
+            "run-538-2",
+            "noble-blue-serpent",
+            "misty-step/bitterblossom",
+            "builder",
+        )
+
+    events = conn.execute("select event_type, payload_json from events where run_id = 'run-538-2' order by id").fetchall()
+    assert [row["event_type"] for row in events] == [
+        "workspace_preparation_retry",
+        "workspace_preparation_retry",
+        "workspace_preparation_failed",
+    ]
+    retry_payloads = [json.loads(row["payload_json"]) for row in events[:-1]]
+    assert [payload["attempt"] for payload in retry_payloads] == [1, 2]
+    assert all(payload["attempts"] == 3 for payload in retry_payloads)
+    payload = json.loads(events[-1]["payload_json"])
+    assert payload["sprite"] == "noble-blue-serpent"
+    assert payload["lane"] == "builder"
+    assert payload["workspace"] == conductor.run_workspace("misty-step/bitterblossom", "run-538-2", "builder")
+    assert payload["attempt"] == 3
+    assert payload["attempts"] == 3
+    assert payload["error"] == "broken pipe"
 
 
 def test_dispatch_until_artifact_passes_workspace_to_dispatch_task(monkeypatch: pytest.MonkeyPatch) -> None:

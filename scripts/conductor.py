@@ -1663,7 +1663,7 @@ def prepare_run_workspace_with_retry(
         assert_run_still_leased(conn, repo, run_id)
         try:
             return prepare_run_workspace(runner, sprite, repo, run_id, lane)
-        except (CmdError, subprocess.TimeoutExpired) as exc:
+        except (CmdError, subprocess.TimeoutExpired, OSError) as exc:
             last_exc = exc
             payload = {
                 "sprite": sprite,
@@ -3962,7 +3962,8 @@ def run_builder(
     branch: str,
     prompt_template: pathlib.Path,
     timeout_minutes: int,
-    workspace: str | None = None,
+    *,
+    workspace: str,
     feedback: str | None = None,
     pr_number: int | None = None,
     pr_url: str | None = None,
@@ -3972,8 +3973,6 @@ def run_builder(
         cleanup_sprite_processes(runner, worker)
     except CmdError:
         pass
-    if workspace is None:
-        workspace = prepare_run_workspace(runner, worker, repo, run_id, "builder")
     builder_rel = artifact_rel(run_id, "builder-result.json")
     builder_prompt = build_builder_task(
         issue,
