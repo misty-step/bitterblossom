@@ -4,22 +4,25 @@ The conductor is the workflow brain. It decides when work starts, when it is blo
 
 File: [`scripts/conductor.py`](../../scripts/conductor.py)
 
+The CLI entrypoint still lives in `scripts/conductor.py`, but deep support code now belongs in `scripts/conductorlib/`:
+
+- `common.py` — shared conductor contracts, constants, and runtime primitives
+- `tracker.py` — GitHub issue/PR reads plus QA issue sync helpers
+- `workspace.py` — run workspace pathing and worktree preparation/cleanup
+- `governance.py` — PR check polling, trusted-surface settling, and review-thread parsing
+
 ## Module Shape
 
 ```mermaid
 flowchart TD
-    Intake["Intake\nget_issue / list_candidate_issues"] --> Lease["Lease\nacquire_lease / touch_run / release_lease"]
-    Lease --> Route["Routing\npick_issue / select_worker_slot"]
-    Route --> Build["Builder Dispatch\nrun_builder"]
-    Build --> Review["Reviewer Council\nrun_review_round"]
-    Review --> Gate["Governance\nCI, threads, trusted external reviews"]
-    Gate --> Merge["Merge + Reconcile\nmerge_pr / reconcile_run"]
+    CLI["conductor.py\nCLI + orchestrator"] --> Tracker["conductorlib.tracker\nGitHub issue/PR boundary"]
+    CLI --> Workspace["conductorlib.workspace\nrun worktree boundary"]
+    CLI --> Governance["conductorlib.governance\nmerge/readiness boundary"]
+    CLI --> State["in-file state + lease helpers\npending later split"]
 
-    DB["SQLite\nruns + leases + reviews + events"] --- Lease
-    DB --- Review
-    DB --- Merge
-    Log["events.jsonl"] --- Review
-    Log --- Merge
+    State --- DB["SQLite\nruns + leases + reviews + events"]
+    State --- Log["events.jsonl"]
+    Tracker --> GH["GitHub"]
 ```
 
 ## Run State

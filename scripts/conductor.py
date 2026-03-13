@@ -18,72 +18,132 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
+from conductorlib.common import (
+    BuilderResult,
+    BUILDER_WORKSPACE_CLEANUP_KIND,
+    CmdError,
+    DEFAULT_BUILDER_TEMPLATE,
+    DEFAULT_DB,
+    DEFAULT_EVENT_LOG,
+    DEFAULT_LABEL,
+    DEFAULT_LEASE_BUFFER_SECONDS,
+    DEFAULT_REPOSITORY_DESIRED_CONCURRENCY,
+    DEFAULT_REVIEWER_TEMPLATE,
+    FAILED_CHECK_CONCLUSIONS,
+    FAILED_STATUS_CONTEXTS,
+    FINDING_CLASSIFICATIONS,
+    FINDING_DECISIONS,
+    FINDING_SEVERITIES,
+    FINDING_STATUSES,
+    GovernanceRun,
+    INACTIVE_FINDING_STATUSES,
+    Issue,
+    LeaseAcquireResult,
+    LeaseLostError,
+    MAX_WORKER_SLOT_COUNT,
+    QAFinding,
+    ROOT,
+    ROUTER_TIMEOUT_SECONDS,
+    REPOSITORY_STATE_ACTIVE,
+    REPOSITORY_STATE_DRAINING,
+    REPOSITORY_STATE_PAUSED,
+    REPOSITORY_STATES,
+    QA_DEDUPE_PAGE_SIZE,
+    ReadinessResult,
+    RepositoryRecord,
+    RepositorySchedulingView,
+    ReviewFinding,
+    ReviewResult,
+    ReviewThread,
+    ReviewWave,
+    ReviewWaveReview,
+    RouteDecision,
+    Runner,
+    SUCCESSFUL_CHECK_CONCLUSIONS,
+    TERMINAL_RUN_STATUSES,
+    TRUSTED_THREAD_METADATA_FIELDS,
+    UNSET,
+    WORKER_DRAIN_FAILURE_THRESHOLD,
+    WORKER_SLOT_ACTIVE,
+    WORKER_SLOT_DRAINED,
+    WORKER_SLOT_STATES,
+    WORKSPACE_CLEANUP_LOCK_WAIT_SECONDS,
+    WORKSPACE_PREPARE_ATTEMPTS,
+    WORKSPACE_PREPARE_LOCK_WAIT_SECONDS,
+    WORKSPACE_PREPARE_RETRY_DELAY_SECONDS,
+    WorkspacePreparationError,
+    WorkerSlot,
+    DispatchSession,
+    DispatchTask,
+    ensure_parent,
+    stringify_exc,
+    utc_now,
+)
+from conductorlib.governance import (
+    checks_complete,
+    ensure_required_checks_present as _ensure_required_checks_present,
+    is_trusted_review_author,
+    list_unresolved_review_threads,
+    present_pr_status_checks,
+    resolve_review_threads,
+    status_check_snapshot,
+    summarize_review_threads,
+    summarize_status_check_rollup,
+    trusted_surface_matches,
+    trusted_surface_snapshot,
+    trusted_surfaces_pending,
+    wait_for_check_refresh,
+    wait_for_external_reviews as _wait_for_external_reviews,
+    wait_for_pr_checks as _wait_for_pr_checks,
+    wait_for_pr_minimum_age as _wait_for_pr_minimum_age,
+)
+from conductorlib.tracker import (
+    best_priority_label,
+    collect_routable_issues,
+    comment_issue,
+    comment_pr,
+    dedupe_key_from_issue_body,
+    existing_qa_issues_by_key,
+    get_issue,
+    gh_graphql,
+    gh_json,
+    has_markdown_heading,
+    is_qa_origin_issue,
+    issue_number_from_url,
+    issue_priority,
+    list_candidate_issues,
+    list_open_qa_issues,
+    normalize_external_dedupe_key,
+    parse_qa_intake_payload,
+    priority_label_rank,
+    qa_dedupe_key,
+    qa_priority_label,
+    qa_priority_rank,
+    render_qa_evidence_lines,
+    render_qa_issue_body,
+    render_qa_issue_comment,
+    split_repo,
+    sync_qa_findings,
+    validate_issue_readiness,
+    verify_builder_pr,
+    write_temp_body,
+)
+from conductorlib.workspace import (
+    artifact_abs,
+    artifact_rel,
+    cleanup_run_workspace,
+    mirror_lock_path,
+    parse_workspace_prepare_output,
+    prepare_run_workspace,
+    repo_dir,
+    resolve_org,
+    run_root,
+    run_workspace,
+    sprite_bash,
+    workspace_lock_python,
+)
 
-
-ROOT = pathlib.Path(__file__).resolve().parents[1]
-DEFAULT_DB = ROOT / ".bb" / "conductor.db"
-DEFAULT_EVENT_LOG = ROOT / ".bb" / "events.jsonl"
-DEFAULT_BUILDER_TEMPLATE = ROOT / "scripts" / "prompts" / "conductor-builder-template.md"
-DEFAULT_REVIEWER_TEMPLATE = ROOT / "scripts" / "prompts" / "conductor-reviewer-template.md"
-DEFAULT_LABEL = "autopilot"
-DEFAULT_LEASE_BUFFER_SECONDS = 300
-ROUTER_TIMEOUT_SECONDS = 120
-WORKSPACE_PREPARE_LOCK_WAIT_SECONDS = 240
-WORKSPACE_CLEANUP_LOCK_WAIT_SECONDS = 120
-WORKSPACE_PREPARE_ATTEMPTS = 3
-WORKSPACE_PREPARE_RETRY_DELAY_SECONDS = 2
-SUCCESSFUL_CHECK_CONCLUSIONS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
-FAILED_CHECK_CONCLUSIONS = {"FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STALE", "STARTUP_FAILURE"}
-FAILED_STATUS_CONTEXTS = {"FAILURE", "ERROR"}
-QA_DEDUPE_PAGE_SIZE = 100
-TRUSTED_REVIEW_AUTHOR_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
-# GitHub App reviewers show up with weak authorAssociation values, so trust them by login.
-TRUSTED_REVIEW_BOT_LOGINS = {
-    "chatgpt-codex-connector",
-    "coderabbitai",
-    "coderabbitai[bot]",
-    "gemini-code-assist",
-    "github-actions",
-    "github-actions[bot]",
-    "greptile-apps",
-    "greptile-apps[bot]",
-}
-FINDING_CLASSIFICATIONS = {"bug", "risk", "style", "question", "unspecified"}
-FINDING_SEVERITIES = {"critical", "high", "medium", "low", "unknown"}
-FINDING_DECISIONS = {"fix_now", "defer", "reject", "noise", "pending"}
-FINDING_STATUSES = {"open", "addressed", "deferred", "rejected", "duplicate", "pending"}
-INACTIVE_FINDING_STATUSES = {"addressed", "deferred", "rejected", "duplicate"}
-TRUSTED_THREAD_METADATA_FIELDS = frozenset({"classification", "severity", "decision"})
-WORKER_SLOT_ACTIVE = "active"
-WORKER_SLOT_DRAINED = "drained"
-WORKER_SLOT_STATES = {WORKER_SLOT_ACTIVE, WORKER_SLOT_DRAINED}
-REPOSITORY_STATE_ACTIVE = "active"
-REPOSITORY_STATE_PAUSED = "paused"
-REPOSITORY_STATE_DRAINING = "draining"
-REPOSITORY_STATES = {REPOSITORY_STATE_ACTIVE, REPOSITORY_STATE_PAUSED, REPOSITORY_STATE_DRAINING}
-DEFAULT_REPOSITORY_DESIRED_CONCURRENCY = 1
-WORKER_DRAIN_FAILURE_THRESHOLD = 2
-MAX_WORKER_SLOT_COUNT = 1000
-TERMINAL_RUN_STATUSES = {"merged", "failed", "blocked", "closed"}
-BUILDER_WORKSPACE_CLEANUP_KIND = "builder_workspace_cleanup"
-UNSET = object()
 SEMANTIC_ROUTING_FAMILY = "issue_routing"
-
-
-@dataclass(slots=True)
-class Issue:
-    number: int
-    title: str
-    body: str
-    url: str
-    labels: list[str]
-    updated_at: str = ""
-
-
-@dataclass(slots=True)
-class ReadinessResult:
-    ready: bool
-    reasons: list[str]
 
 
 @dataclass(slots=True)
@@ -147,236 +207,8 @@ SEMANTIC_DECISION_PROFILES = {
 }
 
 
-@dataclass(slots=True)
-class QAFinding:
-    title: str
-    summary: str
-    severity: str
-    target_url: str
-    environment: str
-    repro_steps: list[str]
-    evidence: list[dict[str, str]]
-    dedupe_key: str
-    priority_label: str
-    labels: list[str]
-
-
-@dataclass(slots=True)
-class BuilderResult:
-    status: str
-    branch: str
-    pr_number: int
-    pr_url: str
-    summary: str
-    tests: list[dict[str, Any]]
-
-
-@dataclass(slots=True)
-class ReviewResult:
-    reviewer: str
-    verdict: str
-    summary: str
-    findings: list[dict[str, Any]]
-
-
-@dataclass(slots=True)
-class ReviewThread:
-    id: str
-    path: str
-    line: int | None
-    author_login: str
-    body: str
-    url: str
-    author_association: str = ""
-
-
-@dataclass(slots=True)
-class ReviewWave:
-    id: int
-    run_id: str
-    kind: str
-    ordinal: int
-    pr_number: int | None
-    status: str
-    reviewer_count: int
-    started_at: str
-    completed_at: str | None
-
-
-@dataclass(slots=True)
-class ReviewWaveReview:
-    wave_id: int
-    reviewer: str
-    verdict: str
-    summary: str
-    source_kind: str
-    payload: dict[str, Any]
-    created_at: str
-
-
-@dataclass(slots=True)
-class ReviewFinding:
-    id: int | None
-    run_id: str
-    wave_id: int
-    reviewer: str
-    source_kind: str
-    source_id: str
-    fingerprint: str
-    classification: str
-    severity: str
-    decision: str
-    status: str
-    path: str
-    line: int | None
-    message: str
-    raw: dict[str, Any]
-    created_at: str | None = None
-    updated_at: str | None = None
-
-
-@dataclass(slots=True)
-class DispatchTask:
-    sprite: str
-    prompt: str
-    artifact_path: str
-    workspace: str | None = None
-
-
-@dataclass(slots=True)
-class DispatchSession:
-    task: DispatchTask
-    argv: list[str]
-    proc: Any
-    log_path: pathlib.Path
-    last_error: str = ""
-
-
-@dataclass(slots=True)
-class LeaseAcquireResult:
-    acquired: bool
-    reclaimed_run_id: str | None = None
-    reason: str | None = None
-
-
-@dataclass(slots=True)
-class WorkerSlot:
-    id: int
-    repo: str
-    worker: str
-    slot_index: int
-    state: str
-    consecutive_failures: int
-    current_run_id: str | None
-    last_probe_at: str | None
-    last_error: str | None
-    updated_at: str
-
-    @classmethod
-    def from_row(cls, row: sqlite3.Row) -> "WorkerSlot":
-        return cls(
-            id=int(row["id"]),
-            repo=str(row["repo"]),
-            worker=str(row["worker"]),
-            slot_index=int(row["slot_index"]),
-            state=str(row["state"]),
-            consecutive_failures=int(row["consecutive_failures"]),
-            current_run_id=str(row["current_run_id"]) if row["current_run_id"] is not None else None,
-            last_probe_at=str(row["last_probe_at"]) if row["last_probe_at"] is not None else None,
-            last_error=str(row["last_error"]) if row["last_error"] is not None else None,
-            updated_at=str(row["updated_at"]),
-        )
-
-
-@dataclass(slots=True)
-class RepositoryRecord:
-    repo: str
-    state: str
-    desired_concurrency: int
-    updated_at: str
-
-    @classmethod
-    def from_row(cls, row: sqlite3.Row) -> "RepositoryRecord":
-        return cls(
-            repo=str(row["repo"]),
-            state=str(row["state"]),
-            desired_concurrency=int(row["desired_concurrency"]),
-            updated_at=str(row["updated_at"]),
-        )
-
-
-@dataclass(slots=True)
-class RepositorySchedulingView:
-    repo: str
-    state: str
-    desired_concurrency: int
-    active_runs: int
-    available_capacity: int
-    scheduling_allowed: bool
-    scheduling_reason: str | None
-    updated_at: str | None = None
-
-
-@dataclass(slots=True)
-class GovernanceRun:
-    issue: Issue
-    run_id: str
-    worker: str
-    worker_slot: WorkerSlot
-    branch: str
-    pr_number: int
-    pr_url: str
-    builder_workspace: str
-
-
-class CmdError(RuntimeError):
-    pass
-
-
-class WorkspacePreparationError(RuntimeError):
-    pass
-
-
-class LeaseLostError(RuntimeError):
-    pass
-
-
-class Runner:
-    def __init__(self, cwd: pathlib.Path) -> None:
-        self.cwd = cwd
-
-    def run(self, argv: list[str], *, timeout: int | None = None, check: bool = True) -> str:
-        proc = subprocess.run(
-            argv,
-            cwd=self.cwd,
-            text=True,
-            capture_output=True,
-            timeout=timeout,
-            check=False,
-        )
-        if check and proc.returncode != 0:
-            raise CmdError(
-                f"command failed ({proc.returncode}): {' '.join(shlex.quote(a) for a in argv)}\n"
-                f"stdout:\n{proc.stdout}\n"
-                f"stderr:\n{proc.stderr}"
-        )
-        return proc.stdout
-
-
-def stringify_exc(exc: BaseException) -> str:
-    return str(exc) or exc.__class__.__name__
-
-
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc).replace(microsecond=0)
-
-
 def now_utc() -> str:
     return utc_now().isoformat().replace("+00:00", "Z")
-
-
-def ensure_parent(path: pathlib.Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
 
 
 def init_db(conn: sqlite3.Connection) -> None:
@@ -1785,145 +1617,6 @@ def serialize_run_surface(
     return payload
 
 
-def issue_priority(labels: list[str]) -> tuple[int, str]:
-    order = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
-    best = 9
-    matched = ""
-    for label in labels:
-        upper = label.upper()
-        if upper in order and order[upper] < best:
-            best = order[upper]
-            matched = upper
-    return best, matched
-
-
-def is_qa_origin_issue(labels: list[str]) -> bool:
-    return any(label.lower() == "source/qa" for label in labels)
-
-
-def qa_priority_rank(issue: Issue) -> int:
-    return 0 if is_qa_origin_issue(issue.labels) else 1
-
-
-def qa_priority_label(severity: str) -> str:
-    order = {
-        "critical": "p0",
-        "high": "p1",
-        "medium": "p2",
-        "low": "p3",
-    }
-    return order.get(severity.lower(), "p2")
-
-
-def priority_label_rank(label: str) -> int | None:
-    upper = label.upper()
-    if not re.fullmatch(r"P[0-3]", upper):
-        return None
-    return int(upper[1])
-
-
-def best_priority_label(labels: list[str]) -> str:
-    best_rank: int | None = None
-    matched = ""
-    for label in labels:
-        rank = priority_label_rank(label)
-        if rank is None:
-            continue
-        if best_rank is None or rank < best_rank:
-            best_rank = rank
-            matched = label
-    return matched
-
-
-def qa_dedupe_key(
-    title: str,
-    summary: str,
-    target_url: str,
-    environment: str,
-    repro_steps: list[str],
-) -> str:
-    seed = "\n".join(
-        [
-            title.strip().lower(),
-            summary.strip().lower(),
-            target_url.strip().lower(),
-            environment.strip().lower(),
-            "\n".join(step.strip().lower() for step in repro_steps),
-        ]
-    )
-    return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:12]
-
-
-def normalize_external_dedupe_key(raw_key: Any) -> str | None:
-    candidate = str(raw_key or "").strip().lower()
-    if re.fullmatch(r"[a-f0-9]{12}", candidate):
-        return candidate
-    return None
-
-
-def parse_qa_intake_payload(payload: dict[str, Any]) -> list[QAFinding]:
-    if not isinstance(payload, dict):
-        raise CmdError("qa intake payload must be a JSON object")
-    target = str(payload.get("target") or "").strip()
-    environment = str(payload.get("environment") or "").strip()
-    raw_findings = payload.get("findings")
-    if not target:
-        raise CmdError("qa intake payload missing target")
-    if not environment:
-        raise CmdError("qa intake payload missing environment")
-    if not isinstance(raw_findings, list) or not raw_findings:
-        raise CmdError("qa intake payload must include a non-empty findings list")
-
-    findings: list[QAFinding] = []
-    for item in raw_findings:
-        if not isinstance(item, dict):
-            raise CmdError("qa finding must be an object")
-        title = str(item.get("title") or "").strip()
-        summary = str(item.get("summary") or "").strip()
-        severity = str(item.get("severity") or "").strip().lower()
-        repro_steps = item.get("repro_steps") or []
-        evidence = item.get("evidence") or []
-        finding_target = str(item.get("target_url") or target).strip()
-        finding_environment = str(item.get("environment") or environment).strip()
-        if not title:
-            raise CmdError("qa finding missing title")
-        if not summary:
-            raise CmdError(f"qa finding {title!r} missing summary")
-        if severity not in {"critical", "high", "medium", "low"}:
-            raise CmdError(f"qa finding {title!r} has unsupported severity {severity!r}")
-        if not isinstance(repro_steps, list) or not repro_steps:
-            raise CmdError(f"qa finding {title!r} must include repro_steps")
-        if not isinstance(evidence, list):
-            raise CmdError(f"qa finding {title!r} evidence must be a list")
-        normalized_steps = [str(step).strip() for step in repro_steps if str(step).strip()]
-        if not normalized_steps:
-            raise CmdError(f"qa finding {title!r} must include non-empty repro_steps")
-        normalized_evidence: list[dict[str, str]] = []
-        for entry in evidence:
-            if not isinstance(entry, dict):
-                raise CmdError(f"qa finding {title!r} evidence entries must be objects")
-            normalized_evidence.append({str(key): str(value) for key, value in entry.items()})
-        priority = qa_priority_label(severity)
-        dedupe_key = normalize_external_dedupe_key(item.get("dedupe_key"))
-        if dedupe_key is None:
-            dedupe_key = qa_dedupe_key(title, summary, finding_target, finding_environment, normalized_steps)
-        findings.append(
-            QAFinding(
-                title=title,
-                summary=summary,
-                severity=severity,
-                target_url=finding_target,
-                environment=finding_environment,
-                repro_steps=normalized_steps,
-                evidence=normalized_evidence,
-                dedupe_key=dedupe_key,
-                priority_label=priority,
-                labels=["autopilot", "bug", "domain/infra", priority, "source/qa"],
-            )
-        )
-    return findings
-
-
 def run_id_for(issue_number: int) -> str:
     return f"run-{issue_number}-{int(time.time())}"
 
@@ -2318,126 +2011,12 @@ def record_worker_probe_failure(conn: sqlite3.Connection, slot: WorkerSlot, reas
     ), drained
 
 
-def repo_dir(repo: str) -> str:
-    return f"/home/sprite/workspace/{repo.split('/')[-1]}"
-
-
 def mirror_lock_path(repo: str) -> str:
     return f"{repo_dir(repo)}/.bb/conductor/mirror.lock"
 
 
-def run_root(repo: str, run_id: str) -> str:
-    return f"{repo_dir(repo)}/.bb/conductor/{run_id}"
-
-
-def run_workspace(repo: str, run_id: str, lane: str) -> str:
-    return f"{run_root(repo, run_id)}/{lane}-worktree"
-
-
-def artifact_rel(run_id: str, name: str) -> str:
-    return f".bb/conductor/{run_id}/{name}"
-
-
 def artifact_abs(repo: str, rel_path: str) -> str:
     return f"{repo_dir(repo)}/{rel_path}"
-
-
-def sprite_bash(runner: Runner, sprite: str, script: str, *, timeout: int = 120) -> str:
-    return runner.run(
-        ["sprite", "-o", resolve_org(), "-s", sprite, "exec", "bash", "-lc", script],
-        timeout=timeout,
-    )
-
-
-def parse_workspace_prepare_output(output: str, workspace: str, sprite: str) -> str:
-    lines = [line.strip() for line in output.splitlines() if line.strip()]
-    if lines and lines[-1] == workspace:
-        return workspace
-    raise CmdError(f"unexpected workspace prepare output for {sprite}: {output!r}")
-
-
-def workspace_lock_python(
-    *,
-    mirror: str,
-    workspace: str,
-    lockfile: str,
-    wait_seconds: int,
-    timeout_message: str,
-    lane: str,
-) -> str:
-    return "\n".join(
-        [
-            "set -euo pipefail",
-            "python3 - <<'PY'",
-            "import fcntl",
-            "import pathlib",
-            "import shutil",
-            "import subprocess",
-            "import sys",
-            "import time",
-            f"mirror = {mirror!r}",
-            f"workspace = {workspace!r}",
-            f"lockfile = {lockfile!r}",
-            f"wait_seconds = {wait_seconds}",
-            f"timeout_message = {timeout_message!r}",
-            f"lane = {lane!r}",
-            'pathlib.Path(lockfile).parent.mkdir(parents=True, exist_ok=True)',
-            'pathlib.Path(workspace).parent.mkdir(parents=True, exist_ok=True)',
-            "with open(lockfile, 'w', encoding='utf-8') as lock_handle:",
-            "    deadline = time.monotonic() + wait_seconds",
-            "    while True:",
-            "        try:",
-            "            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)",
-            "            break",
-            "        except BlockingIOError:",
-            "            if time.monotonic() >= deadline:",
-            "                print(timeout_message, file=sys.stderr)",
-            "                raise SystemExit(1)",
-            "            time.sleep(0.01)",
-            "    if lane == 'prepare':",
-            "        subprocess.run(['git', '-C', mirror, 'fetch', '--all', '--prune'], check=True)",
-            "        master = subprocess.run(['git', '-C', mirror, 'show-ref', '--verify', '--quiet', 'refs/remotes/origin/master'])",
-            "        if master.returncode == 0:",
-            "            base_ref = 'origin/master'",
-            "        else:",
-            "            main = subprocess.run(['git', '-C', mirror, 'show-ref', '--verify', '--quiet', 'refs/remotes/origin/main'])",
-            "            if main.returncode == 0:",
-            "                base_ref = 'origin/main'",
-            "            else:",
-            "                symbolic = subprocess.run(",
-            "                    ['git', '-C', mirror, 'symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'],",
-            "                    check=False,",
-            "                    capture_output=True,",
-            "                    text=True,",
-            "                )",
-            "                if symbolic.returncode == 0 and symbolic.stdout.strip():",
-            "                    base_ref = symbolic.stdout.strip()",
-            "                else:",
-            "                    head = subprocess.run(",
-            "                        ['git', '-C', mirror, 'rev-parse', 'HEAD'],",
-            "                        check=True,",
-            "                        capture_output=True,",
-            "                        text=True,",
-            "                    )",
-            "                    base_ref = head.stdout.strip()",
-            "        if pathlib.Path(workspace).exists():",
-            "            shutil.rmtree(workspace)",
-            "        subprocess.run(['git', '-C', mirror, 'worktree', 'prune'], check=True)",
-            "        subprocess.run(['git', '-C', mirror, 'worktree', 'add', '--detach', workspace, base_ref], check=True)",
-            "        print(workspace)",
-            "    else:",
-            "        remove = subprocess.run(",
-            "            ['git', '-C', mirror, 'worktree', 'remove', '--force', workspace],",
-            "            check=False,",
-            "            capture_output=True,",
-            "            text=True,",
-            "        )",
-            "        if remove.returncode != 0:",
-            "            shutil.rmtree(workspace, ignore_errors=True)",
-            "        subprocess.run(['git', '-C', mirror, 'worktree', 'prune'], check=True)",
-            "PY",
-        ]
-    )
 
 
 def prepare_run_workspace(runner: Runner, sprite: str, repo: str, run_id: str, lane: str) -> str:
@@ -2509,10 +2088,6 @@ def prepare_run_workspace_with_retry(
             f"{WORKSPACE_PREPARE_ATTEMPTS} attempts: {stringify_exc(last_exc)}"
         )
     raise WorkspacePreparationError(message)
-
-
-def resolve_org() -> str:
-    return os.environ.get("SPRITES_ORG") or os.environ.get("FLY_ORG") or "personal"
 
 
 def require_runtime_env() -> None:
@@ -2850,51 +2425,6 @@ def get_issue(runner: Runner, repo: str, issue_number: int) -> Issue:
         updated_at=item.get("updatedAt") or "",
     )
 
-
-def has_markdown_heading(body: str, marker: str) -> bool:
-    active_fence: str | None = None
-    for raw_line in body.splitlines():
-        line = raw_line.rstrip()
-        stripped = line.lstrip()
-        match = re.match(r"^(`{3,}|~{3,})", stripped)
-        if match:
-            fence_type = match.group(1)[0]
-            if active_fence is None:
-                active_fence = fence_type
-            elif fence_type == active_fence:
-                active_fence = None
-            continue
-        if active_fence is None and line == marker:
-            return True
-    return False
-
-
-def validate_issue_readiness(issue: Issue) -> ReadinessResult:
-    reasons: list[str] = []
-    for marker in ("## Product Spec", "### Intent Contract"):
-        if not has_markdown_heading(issue.body, marker):
-            reasons.append(f"missing `{marker}` section")
-    return ReadinessResult(ready=not reasons, reasons=reasons)
-
-
-def collect_routable_issues(
-    conn: sqlite3.Connection, issues: list[Issue], repo: str
-) -> tuple[list[Issue], dict[int, list[str]]]:
-    eligible: list[Issue] = []
-    readiness_failures: dict[int, list[str]] = {}
-    for issue in issues:
-        lease_messages = lease_warnings(conn, repo, issue.number)
-        if lease_messages:
-            readiness_failures[issue.number] = lease_messages
-            continue
-        readiness = validate_issue_readiness(issue)
-        if readiness.ready:
-            eligible.append(issue)
-        else:
-            readiness_failures[issue.number] = readiness.reasons
-    return eligible, readiness_failures
-
-
 def invoke_claude_json(
     prompt: str,
     schema: dict[str, Any],
@@ -3075,7 +2605,11 @@ def route_issues_semantically(repo: str, eligible: list[Issue], builder_profile:
 
 
 def pick_issue(conn: sqlite3.Connection, issues: list[Issue], repo: str) -> Issue | None:
-    eligible, readiness_failures = collect_routable_issues(conn, issues, repo)
+    eligible, readiness_failures = collect_routable_issues(
+        issues,
+        repo,
+        lease_warnings=lambda issue_number: lease_warnings(conn, repo, issue_number),
+    )
     _ = readiness_failures
 
     if not eligible:
@@ -3090,7 +2624,11 @@ def pick_issue(conn: sqlite3.Connection, issues: list[Issue], repo: str) -> Issu
 def pick_issue_semantically(
     conn: sqlite3.Connection, issues: list[Issue], repo: str, builder_profile: str
 ) -> RouteDecision | None:
-    eligible, readiness_failures = collect_routable_issues(conn, issues, repo)
+    eligible, readiness_failures = collect_routable_issues(
+        issues,
+        repo,
+        lease_warnings=lambda issue_number: lease_warnings(conn, repo, issue_number),
+    )
     if not eligible:
         return None
     decision = route_issues_semantically(repo, eligible, builder_profile)
@@ -4251,110 +3789,18 @@ def governance_snapshot_for_run(
     }
 
 
-def verify_builder_pr(runner: Runner, repo: str, pr_number: int, expected_branch: str) -> tuple[int, str]:
-    pr = gh_json(runner, ["pr", "view", str(pr_number), "--repo", repo, "--json", "number,url,headRefName,state"])
-    if int(pr["number"]) != pr_number:
-        raise CmdError(f"builder artifact PR number mismatch: expected {pr_number}, got {pr['number']}")
-    if pr["headRefName"] != expected_branch:
-        raise CmdError(
-            f"builder artifact PR head mismatch: expected {expected_branch!r}, got {pr['headRefName']!r}"
-        )
-    if pr["state"] != "OPEN":
-        raise CmdError(f"builder artifact PR is not open: #{pr_number} state={pr['state']}")
-    return int(pr["number"]), str(pr["url"])
+def required_status_checks(runner: Runner, repo: str, base_branch: str) -> list[str]:
+    try:
+        payload = json.loads(runner.run(["gh", "api", f"repos/{repo}/branches/{base_branch}/protection"], timeout=60))
+    except CmdError as exc:
+        text = stringify_exc(exc)
+        if "Branch not found" in text or "404" in text:
+            return []
+        raise
 
-
-def comment_issue(runner: Runner, repo: str, issue_number: int, body: str) -> None:
-    runner.run(["gh", "issue", "comment", str(issue_number), "--repo", repo, "--body", body], timeout=60)
-
-
-def comment_pr(runner: Runner, repo: str, pr_number: int, body: str) -> None:
-    runner.run(["gh", "pr", "comment", str(pr_number), "--repo", repo, "--body", body], timeout=60)
-
-
-def rollup_item_name(item: dict[str, Any]) -> str:
-    typename = str(item.get("__typename", ""))
-    if typename == "CheckRun":
-        return str(item.get("name", ""))
-    if typename == "StatusContext":
-        return str(item.get("context", ""))
-    return ""
-
-
-def rollup_item_workflow_name(item: dict[str, Any]) -> str:
-    if str(item.get("__typename", "")) != "CheckRun":
-        return ""
-    return str(item.get("workflowName", ""))
-
-
-def rollup_item_state(item: dict[str, Any]) -> tuple[str, bool, bool]:
-    typename = str(item.get("__typename", ""))
-    if typename == "CheckRun":
-        status = str(item.get("status", "")).upper()
-        if status != "COMPLETED":
-            return status or "PENDING", False, False
-        conclusion = str(item.get("conclusion", "")).upper()
-        if conclusion in FAILED_CHECK_CONCLUSIONS:
-            return conclusion or "FAILURE", True, True
-        return conclusion or "SUCCESS", True, False
-
-    if typename == "StatusContext":
-        state = str(item.get("state", "")).upper()
-        if state in FAILED_STATUS_CONTEXTS:
-            return state, True, True
-        if state == "SUCCESS":
-            return state, True, False
-        return state or "PENDING", False, False
-
-    return "", False, False
-
-
-def trusted_surface_matches(item: dict[str, Any], trusted_surface: str) -> bool:
-    names = {rollup_item_name(item)}
-    workflow_name = rollup_item_workflow_name(item)
-    if workflow_name:
-        names.add(workflow_name)
-    names.discard("")
-    return trusted_surface in names
-
-
-def summarize_status_check_rollup(payload: dict[str, Any]) -> str:
-    lines: list[str] = []
-    for item in payload.get("statusCheckRollup", []):
-        name = rollup_item_name(item)
-        if not name:
-            continue
-        state, _terminal, _failed = rollup_item_state(item)
-        lines.append(f"{name}: {state}")
-    return "\n".join(lines) or "(no checks reported)"
-
-
-def checks_complete(payload: dict[str, Any], required: set[str]) -> tuple[bool, bool]:
-    required_remaining = set(required)
-    all_present_terminal = True
-    saw_any = False
-
-    for item in payload.get("statusCheckRollup", []):
-        name = rollup_item_name(item)
-        if not name:
-            continue
-        saw_any = True
-        state, terminal, failed = rollup_item_state(item)
-        if failed and (not required or name in required):
-            return False, True
-        if required:
-            if name in required_remaining and terminal and state in SUCCESSFUL_CHECK_CONCLUSIONS:
-                required_remaining.discard(name)
-            elif name in required and not terminal:
-                all_present_terminal = False
-            elif name in required and terminal and state not in SUCCESSFUL_CHECK_CONCLUSIONS:
-                return False, True
-        elif not terminal:
-            all_present_terminal = False
-
-    if required:
-        return not required_remaining and all_present_terminal, False
-    return saw_any and all_present_terminal, False
+    checks = payload.get("required_status_checks") or {}
+    contexts = checks.get("contexts") or []
+    return [str(context) for context in contexts if context]
 
 
 def wait_for_pr_checks(
@@ -4397,167 +3843,13 @@ def wait_for_pr_checks(
     return False, f"timed out waiting for PR #{pr_number} checks after {timeout_minutes}m\n{detail}"
 
 
-def status_check_snapshot(payload: dict[str, Any]) -> tuple[tuple[str, str, str, str], ...]:
-    snapshot: list[tuple[str, str, str, str]] = []
-    for item in payload.get("statusCheckRollup", []):
-        typename = str(item.get("__typename", ""))
-        if typename == "CheckRun":
-            name = str(item.get("name", ""))
-            status = str(item.get("status", ""))
-            started = str(item.get("startedAt", ""))
-            completed = str(item.get("completedAt", ""))
-        elif typename == "StatusContext":
-            name = str(item.get("context", ""))
-            status = str(item.get("state", ""))
-            started = str(item.get("startedAt", ""))
-            completed = ""
-        else:
-            continue
-        snapshot.append((name, status, started, completed))
-    return tuple(sorted(snapshot))
-
-
-def wait_for_check_refresh(
-    runner: Runner,
-    repo: str,
-    pr_number: int,
-    before: tuple[tuple[str, str, str, str], ...],
-    *,
-    timeout_seconds: int = 60,
-) -> None:
-    deadline = time.time() + timeout_seconds
-    while time.time() < deadline:
-        pr = gh_json(runner, ["pr", "view", str(pr_number), "--repo", repo, "--json", "statusCheckRollup"])
-        after = status_check_snapshot(pr)
-        if after != before:
-            return
-        time.sleep(5)
-    raise CmdError(f"timed out waiting for PR #{pr_number} checks to refresh after marking ready")
-
-
-def required_status_checks(runner: Runner, repo: str, base_branch: str) -> list[str]:
-    try:
-        payload = json.loads(runner.run(["gh", "api", f"repos/{repo}/branches/{base_branch}/protection"], timeout=60))
-    except CmdError as exc:
-        text = stringify_exc(exc)
-        if "Branch not found" in text or "404" in text:
-            return []
-        raise
-
-    checks = payload.get("required_status_checks") or {}
-    contexts = checks.get("contexts") or []
-    return [str(context) for context in contexts if context]
-
-
-def list_unresolved_review_threads(runner: Runner, repo: str, pr_number: int) -> list[ReviewThread]:
-    owner, name = split_repo(repo)
-    query = """
-query($owner:String!, $repo:String!, $number:Int!, $after:String) {
-  repository(owner:$owner, name:$repo) {
-    pullRequest(number:$number) {
-      reviewThreads(first:100, after:$after) {
-        nodes {
-          id
-          isResolved
-          path
-          line
-          comments(first:1) {
-            nodes {
-              author { login }
-              authorAssociation
-              body
-              url
-            }
-          }
-        }
-        pageInfo {
-          hasNextPage
-          endCursor
-        }
-      }
-    }
-  }
-}
-""".strip()
-    threads: list[ReviewThread] = []
-    after = ""
-    while True:
-        variables: dict[str, str | int] = {"owner": owner, "repo": name, "number": pr_number}
-        if after:
-            variables["after"] = after
-        payload = gh_graphql(runner, query, variables)
-        try:
-            review_threads = payload["data"]["repository"]["pullRequest"]["reviewThreads"]
-            nodes = review_threads["nodes"]
-            page_info = review_threads["pageInfo"]
-        except (KeyError, TypeError) as exc:
-            raise CmdError(f"invalid review thread payload for PR #{pr_number}") from exc
-        if not isinstance(nodes, list):
-            raise CmdError(f"invalid review thread payload for PR #{pr_number}: nodes is not a list")
-        if not isinstance(page_info, dict):
-            raise CmdError(f"invalid review thread payload for PR #{pr_number}: pageInfo is not an object")
-
-        for node in nodes:
-            if not isinstance(node, dict):
-                raise CmdError(f"invalid review thread payload for PR #{pr_number}: thread is not an object")
-            if node.get("isResolved"):
-                continue
-            comments_node = node.get("comments", {})
-            if not isinstance(comments_node, dict):
-                raise CmdError(f"invalid review thread payload for PR #{pr_number}: comments is not an object")
-            comments = comments_node.get("nodes", [])
-            if not isinstance(comments, list):
-                raise CmdError(f"invalid review thread payload for PR #{pr_number}: comments.nodes is not a list")
-            comment = comments[0] if comments else {}
-            if comment and not isinstance(comment, dict):
-                raise CmdError(f"invalid review thread payload for PR #{pr_number}: comment is not an object")
-            line = node.get("line")
-            try:
-                thread_line = int(line) if line is not None else None
-            except (TypeError, ValueError):
-                thread_line = None
-            author_node = comment.get("author", {})
-            if author_node is None:
-                author_login = "unknown"
-            elif isinstance(author_node, dict):
-                author_login = str(author_node.get("login") or "unknown")
-            else:
-                raise CmdError(f"invalid review thread payload for PR #{pr_number}: author is not an object")
-            author_association = str(comment.get("authorAssociation") or "").upper()
-            threads.append(
-                ReviewThread(
-                    id=str(node.get("id", "")),
-                    path=str(node.get("path") or ""),
-                    line=thread_line,
-                    author_login=author_login,
-                    author_association=author_association,
-                    body=str(comment.get("body") or ""),
-                    url=str(comment.get("url") or ""),
-                )
-            )
-
-        if page_info.get("hasNextPage") is not True:
-            break
-        after = str(page_info.get("endCursor") or "")
-        if not after:
-            raise CmdError(f"invalid review thread payload for PR #{pr_number}: missing endCursor")
-    return [thread for thread in threads if thread.id]
-
-
-def summarize_review_threads(threads: list[ReviewThread]) -> str:
-    lines = [
-        "Active merge-blocking review findings remain in PR threads.",
-        "Address the feedback on the existing PR, push any needed updates, then resolve each addressed thread before handing back to the conductor.",
-    ]
-    for thread in threads:
-        location = thread.path or "(unknown path)"
-        if thread.line is not None:
-            location = f"{location}:{thread.line}"
-        body = " ".join(thread.body.split())
-        if len(body) > 280:
-            body = body[:277].rstrip() + "..."
-        lines.append(f"- {location} by @{thread.author_login}: {body} ({thread.url})")
-    return "\n".join(lines)
+def ensure_required_checks_present(runner: Runner, repo: str, pr_number: int) -> None:
+    _ensure_required_checks_present(
+        runner,
+        repo,
+        pr_number,
+        required_status_checks=required_status_checks,
+    )
 
 
 def resolve_review_threads(runner: Runner, thread_ids: list[str]) -> None:
@@ -4580,99 +3872,6 @@ mutation($threadId:ID!) {
         raise CmdError("failed to resolve review threads:\n" + "\n".join(failures))
 
 
-def is_trusted_review_author(thread: ReviewThread) -> bool:
-    if thread.author_association in TRUSTED_REVIEW_AUTHOR_ASSOCIATIONS:
-        return True
-    return thread.author_login.lower() in TRUSTED_REVIEW_BOT_LOGINS
-
-
-def present_pr_status_checks(runner: Runner, repo: str, pr_number: int) -> tuple[str, set[str]]:
-    pr = gh_json(runner, ["pr", "view", str(pr_number), "--repo", repo, "--json", "baseRefName,statusCheckRollup"])
-    names: set[str] = set()
-    for item in pr.get("statusCheckRollup", []):
-        typename = item.get("__typename")
-        if typename == "CheckRun":
-            name = item.get("name")
-        elif typename == "StatusContext":
-            name = item.get("context")
-        else:
-            name = None
-        if name:
-            names.add(str(name))
-    return str(pr["baseRefName"]), names
-
-
-def ensure_required_checks_present(runner: Runner, repo: str, pr_number: int) -> None:
-    base_branch, present = present_pr_status_checks(runner, repo, pr_number)
-    required = required_status_checks(runner, repo, base_branch)
-    missing = [context for context in required if context not in present]
-    if missing:
-        joined = ", ".join(sorted(missing))
-        raise CmdError(
-            f"required status checks missing for PR #{pr_number} on {base_branch}: {joined}"
-        )
-
-
-SurfaceMatchSnapshot = tuple[str, str, str, str, str]
-TrustedSurfaceSnapshot = tuple[tuple[str, tuple[SurfaceMatchSnapshot, ...]], ...]
-
-
-def trusted_surfaces_pending(payload: dict[str, Any], trusted_surfaces: list[str]) -> list[str]:
-    """Return trusted surfaces that still block merge.
-
-    A configured trusted surface blocks merge until it is observed at least once.
-    After it is observed, it continues to block while pending or failed.
-    """
-    blocking: list[str] = []
-    rollup = payload.get("statusCheckRollup", [])
-    if not isinstance(rollup, list):
-        return list(trusted_surfaces)
-
-    for pattern in trusted_surfaces:
-        matched = False
-        for item in rollup:
-            if not isinstance(item, dict):
-                continue
-            if not trusted_surface_matches(item, pattern):
-                continue
-            matched = True
-            name = rollup_item_name(item)
-            _state, terminal, failed = rollup_item_state(item)
-            if not terminal or failed:
-                blocking.append(name)
-        if not matched:
-            blocking.append(pattern)
-    return blocking
-
-
-def trusted_surface_snapshot(payload: dict[str, Any], trusted_surfaces: list[str]) -> TrustedSurfaceSnapshot:
-    """Capture the observed state of all watched trusted surfaces.
-
-    The snapshot is keyed by configured trusted surface so unseen surfaces are represented
-    explicitly instead of disappearing from the comparison set.
-    """
-    rollup = payload.get("statusCheckRollup", [])
-    if not isinstance(rollup, list):
-        return tuple((pattern, ()) for pattern in trusted_surfaces)
-
-    snapshots: list[tuple[str, tuple[SurfaceMatchSnapshot, ...]]] = []
-    for pattern in trusted_surfaces:
-        matches: list[SurfaceMatchSnapshot] = []
-        for item in rollup:
-            if not isinstance(item, dict):
-                continue
-            if not trusted_surface_matches(item, pattern):
-                continue
-            name = rollup_item_name(item)
-            workflow_name = rollup_item_workflow_name(item)
-            state, _terminal, _failed = rollup_item_state(item)
-            started = str(item.get("startedAt") or "")
-            completed = str(item.get("completedAt") or "")
-            matches.append((name, workflow_name, state, started, completed))
-        snapshots.append((pattern, tuple(sorted(matches))))
-    return tuple(snapshots)
-
-
 def wait_for_external_reviews(
     runner: Runner,
     repo: str,
@@ -4683,29 +3882,19 @@ def wait_for_external_reviews(
     timeout_minutes: int = 30,
     on_tick: Callable[[], None] | None = None,
 ) -> tuple[bool, str]:
-    """
-    Wait until all trusted external review surfaces have been observed, reached
-    non-failed terminal states, and stayed unchanged for the quiet window.
-
-    Returns (True, summary) when all surfaces are settled and quiet.
-    Returns (False, reason) if the timeout expires first.
-    """
     if not trusted_surfaces:
         return True, ""
 
     deadline = time.time() + timeout_minutes * 60
     quiet_since: float | None = None
     last_payload: dict[str, Any] = {}
-    last_snapshot: TrustedSurfaceSnapshot | None = None
+    last_snapshot = None
 
     while time.time() < deadline:
         if on_tick is not None:
             on_tick()
         try:
-            last_payload = gh_json(
-                runner,
-                ["pr", "view", str(pr_number), "--repo", repo, "--json", "statusCheckRollup"],
-            )
+            last_payload = gh_json(runner, ["pr", "view", str(pr_number), "--repo", repo, "--json", "statusCheckRollup"])
         except CmdError:
             if not sleep_until(deadline, 10):
                 break
@@ -4723,13 +3912,10 @@ def wait_for_external_reviews(
                 break
             continue
 
-        # All trusted surfaces are in terminal states.
         if quiet_since is None:
             quiet_since = time.time()
-
         if time.time() - quiet_since >= quiet_window_seconds:
             return True, summarize_status_check_rollup(last_payload)
-
         if not sleep_until(deadline, 5):
             break
 
@@ -4760,14 +3946,15 @@ def wait_for_pr_minimum_age(
     deadline = time.time() + timeout_minutes * 60
     last_error = ""
     created: datetime | None = None
+    created_at = ""
 
     while time.time() < deadline and created is None:
         if on_tick is not None:
             on_tick()
         try:
             pr = gh_json(runner, ["pr", "view", str(pr_number), "--repo", repo, "--json", "createdAt"])
-            created_at = pr.get("createdAt")
-            if not isinstance(created_at, str) or not created_at:
+            created_at = str(pr.get("createdAt") or "")
+            if not created_at:
                 raise CmdError(f"PR #{pr_number} missing or has invalid createdAt value from API: {pr!r}")
             created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
             last_error = ""
@@ -6022,7 +5209,12 @@ class GovernanceSession:
         return "continue"
 
     def _thread_decision(self) -> str:
-        ensure_required_checks_present(self.runner, self.args.repo, self.builder.pr_number)
+        ensure_required_checks_present(
+            self.runner,
+            self.args.repo,
+            self.builder.pr_number,
+            required_status_checks=required_status_checks,
+        )
         return self._handle_pr_thread_feedback()
 
     def _external_review_decision(self) -> str:
@@ -7119,7 +6311,11 @@ def route_issue(args: argparse.Namespace) -> int:
             issues = list_candidate_issues(runner, args.repo, args.label, args.limit)
         except CmdError as exc:
             return emit_payload(None, args.builder_profile, f"failed to list candidate issues: {exc}", {}, 1)
-        eligible, readiness_failures = collect_routable_issues(conn, issues, args.repo)
+        eligible, readiness_failures = collect_routable_issues(
+            issues,
+            args.repo,
+            lease_warnings=lambda issue_number: lease_warnings(conn, args.repo, issue_number),
+        )
         if not eligible:
             return emit_payload(None, args.builder_profile, "no eligible issues", readiness_failures, 0)
         try:
