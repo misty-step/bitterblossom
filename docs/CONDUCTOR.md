@@ -161,6 +161,29 @@ python3 scripts/conductor.py route-issue \
 
 `route-issue` emits JSON with the selected issue, chosen profile, semantic rationale, and any skipped issue numbers keyed to explicit readiness failures. Auto-pick in `run-once`/`loop` uses the same readiness + routing path.
 
+Repository participation is now also durable kernel state. Operators can persist
+repo-level scheduling intent separately from worker-slot health:
+
+```bash
+python3 scripts/conductor.py set-repo-state \
+  --repo misty-step/bitterblossom \
+  --state active \
+  --desired-concurrency 2
+
+python3 scripts/conductor.py show-repos
+python3 scripts/conductor.py show-repos --repo misty-step/bitterblossom
+```
+
+Repository state is one of:
+
+- `active` — new work may start if current active runs are below desired concurrency
+- `paused` — no new work starts
+- `draining` — existing runs may finish, but no new work starts
+
+`run-once`, `loop`, and `route-issue` consult the same repository-registry gate
+before leasing work, so repo admission truth lives in SQLite instead of the
+current shell invocation.
+
 QA-originated backlog items now get one small routing preference: if two issues are otherwise in the same priority tier, `source/qa` issues sort ahead of ordinary backlog work because they represent deployed-app risk.
 
 Ingest QA findings from an external probe command:

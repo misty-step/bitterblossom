@@ -111,3 +111,11 @@
 - scope: added a narrow QA-intake lane that runs a configurable probe command, normalizes findings into deduped GitHub issues with stable evidence contracts, and gives same-tier routing preference to `source/qa`
 - blocker: the existing worktree lock tests exposed shell-lock fragility, so the ship gate also required replacing that path with an inline Python `fcntl.flock` contract
 - pattern: when a new intake source is still exploratory, keep the runner pluggable and codify only the stable handoff contract that the rest of the factory needs
+
+## 2026-03-12 [issue #503](https://github.com/misty-step/bitterblossom/issues/503)
+
+- predicted: L
+- actual: M
+- scope: added a durable repository registry to the conductor ledger, exposed `set-repo-state` and `show-repos`, and made run admission honor repo activation state plus desired concurrency before lease acquisition
+- blocker: a stale lock-holder test helper had to be simplified before the full conductor suite would go green
+- pattern: when scheduler policy is still evolving, persist the repo-level truth and expose it through existing operator surfaces before attempting full multi-repo orchestration
