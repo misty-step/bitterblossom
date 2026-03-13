@@ -104,6 +104,14 @@
 - blocker: none
 - pattern: when "always-on" behavior matters, ship a narrow supported runtime contract in code and docs instead of leaving operators to improvise shell folklore
 
+## 2026-03-12 [issue #529](https://github.com/misty-step/bitterblossom/issues/529)
+
+- predicted: M
+- actual: M
+- scope: codified a narrow trusted-thread metadata allowlist, documented the reviewer-owned versus conductor-owned boundary, and hardened the local mirror-lock mutation path so governance verification stays reliable on this branch
+- blocker: the existing worktree cleanup lock proof failed locally because git-side child processes could keep the shared mirror lock alive after prepare
+- pattern: when a semantic contract depends on a few fields, name the allowlist in code and tests, and when lock truth matters, keep ownership in one process instead of trusting shell fd inheritance across subprocesses
+
 ## 2026-03-12 [issue #505](https://github.com/misty-step/bitterblossom/issues/505)
 
 - predicted: L

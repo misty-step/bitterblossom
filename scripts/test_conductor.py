@@ -3186,6 +3186,48 @@ def test_normalize_review_thread_finding_reads_embedded_metadata() -> None:
     assert finding.message == "late style nit"
 
 
+def test_normalize_trusted_thread_metadata_allows_only_reviewer_owned_fields() -> None:
+    normalized = conductor.normalize_trusted_thread_metadata(
+        {
+            "classification": "bug",
+            "severity": "high",
+            "decision": "fix_now",
+            "status": "duplicate",
+            "wave_id": 9,
+            "internal_note": "should not leak into governance state",
+        }
+    )
+
+    assert normalized == {
+        "classification": "bug",
+        "severity": "high",
+        "decision": "fix_now",
+    }
+
+
+def test_normalize_review_thread_finding_ignores_conductor_owned_metadata_fields() -> None:
+    thread = conductor.ReviewThread(
+        id="thread-1",
+        path="scripts/conductor.py",
+        line=59,
+        author_login="***",
+        author_association="***",
+        body=(
+            "late bug report\n\n"
+            "<!-- bitterblossom: {\"classification\":\"bug\",\"severity\":\"high\",\"decision\":\"fix_now\",\"status\":\"duplicate\",\"wave_id\":99} -->"
+        ),
+        url="https://example.com/thread-1",
+    )
+
+    finding = conductor.normalize_review_thread_finding("run-447-1", 1, thread)
+
+    assert finding.classification == "bug"
+    assert finding.severity == "high"
+    assert finding.decision == "fix_now"
+    assert finding.status == "open"
+    assert finding.raw["body"].endswith("\"wave_id\":99} -->")
+
+
 def test_parse_embedded_finding_metadata_handles_missing_and_invalid_payloads() -> None:
     assert conductor.parse_embedded_finding_metadata("plain text") == ("plain text", {})
     assert conductor.parse_embedded_finding_metadata("<!-- bitterblossom: {oops} -->") == ("", {})

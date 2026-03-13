@@ -53,6 +53,7 @@ FINDING_SEVERITIES = {"critical", "high", "medium", "low", "unknown"}
 FINDING_DECISIONS = {"fix_now", "defer", "reject", "noise", "pending"}
 FINDING_STATUSES = {"open", "addressed", "deferred", "rejected", "duplicate", "pending"}
 INACTIVE_FINDING_STATUSES = {"addressed", "deferred", "rejected", "duplicate"}
+TRUSTED_THREAD_METADATA_FIELDS = frozenset({"classification", "severity", "decision"})
 WORKER_SLOT_ACTIVE = "active"
 WORKER_SLOT_DRAINED = "drained"
 WORKER_SLOT_STATES = {WORKER_SLOT_ACTIVE, WORKER_SLOT_DRAINED}
@@ -3046,6 +3047,16 @@ def parse_embedded_finding_metadata(body: str) -> tuple[str, dict[str, Any]]:
     return visible_body, metadata
 
 
+def normalize_trusted_thread_metadata(metadata: Any) -> dict[str, Any]:
+    if not isinstance(metadata, dict):
+        return {}
+    return {
+        field: metadata[field]
+        for field in TRUSTED_THREAD_METADATA_FIELDS
+        if field in metadata
+    }
+
+
 def review_finding_fingerprint(*, classification: str, severity: str, path: str, line: int | None, message: str) -> str:
     material = json.dumps(
         {
@@ -3106,6 +3117,7 @@ def normalize_review_finding(
 
 def normalize_review_thread_finding(run_id: str, wave_id: int, thread: ReviewThread) -> ReviewFinding:
     visible_body, metadata = parse_embedded_finding_metadata(thread.body)
+    metadata = normalize_trusted_thread_metadata(metadata)
     classification = normalized_choice(metadata.get("classification"), "unspecified", FINDING_CLASSIFICATIONS)
     severity = normalized_choice(metadata.get("severity"), "unknown", FINDING_SEVERITIES)
     decision = normalized_choice(metadata.get("decision"), "pending", FINDING_DECISIONS)
