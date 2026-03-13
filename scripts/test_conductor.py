@@ -3919,6 +3919,71 @@ def test_run_once_blocks_when_stale_pr_threads_persist_after_revision(monkeypatc
     assert any("need human confirmation" in body for body in issue_comments)
 
 
+def test_run_once_thread_revision_keeps_original_event_log_shape(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    issue = conductor.Issue(number=447, title="test", body="body", url="https://example.com/447", labels=["autopilot"])
+    builder = conductor.BuilderResult(
+        status="ready_for_review",
+        branch="factory/447-test-123",
+        pr_number=460,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/460",
+        summary="done",
+        tests=[],
+    )
+    reviews = [
+        conductor.ReviewResult(reviewer="fern", verdict="pass", summary="ok", findings=[]),
+        conductor.ReviewResult(reviewer="sage", verdict="pass", summary="ok", findings=[]),
+        conductor.ReviewResult(reviewer="thorn", verdict="pass", summary="ok", findings=[]),
+    ]
+    thread = conductor.ReviewThread(
+        id="thread-1",
+        path="README.md",
+        line=59,
+        author_login="gemini-code-assist",
+        body="please keep this copy-pastable",
+        url="https://example.com/thread-1",
+    )
+    thread_reads = iter([[thread], [], [], []])
+
+    monkeypatch.setattr(conductor, "get_issue", lambda *_args, **_kwargs: issue)
+    monkeypatch.setattr(conductor, "select_worker_slot", _select_named_worker_slot("noble-blue-serpent"))
+    monkeypatch.setattr(conductor, "ensure_reviewers_ready", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(conductor, "run_builder", lambda *_args, **_kwargs: (builder, {"status": "ready_for_review"}))
+    monkeypatch.setattr(conductor, "run_review_round", lambda *_args, **_kwargs: reviews)
+    monkeypatch.setattr(conductor, "ensure_pr_ready", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(conductor, "wait_for_pr_checks", lambda *_args, **_kwargs: (True, "green"))
+    monkeypatch.setattr(conductor, "ensure_required_checks_present", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(conductor, "list_unresolved_review_threads", lambda *_args, **_kwargs: next(thread_reads))
+    monkeypatch.setattr(
+        conductor,
+        "resolve_review_threads",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected auto-resolve")),
+    )
+    monkeypatch.setattr(conductor, "merge_pr", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(conductor, "comment_pr", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(conductor, "comment_issue", lambda *_args, **_kwargs: None)
+
+    rc = conductor.run_once(_make_run_once_args(tmp_path, issue_number=447))
+
+    assert rc == 0
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    run_row = conn.execute("select run_id from runs where issue_number = ?", (447,)).fetchone()
+    assert run_row is not None
+    events = conn.execute(
+        "select event_type, payload_json from events where run_id = ? order by id",
+        (run_row["run_id"],),
+    ).fetchall()
+    event_types = [row["event_type"] for row in events]
+    assert event_types.count("builder_revised") == 1
+    revision_events = [
+        json.loads(row["payload_json"])
+        for row in events
+        if row["event_type"] == "revision_requested"
+    ]
+    assert [payload["reason"] for payload in revision_events] == ["pr_feedback"]
+
+
 def test_run_once_blocks_on_untrusted_pr_thread(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
     issue = conductor.Issue(number=447, title="test", body="body", url="https://example.com/447", labels=["autopilot"])
     builder = conductor.BuilderResult(
@@ -6816,6 +6881,7 @@ def test_govern_pr_uses_external_authority_without_internal_reviewers(
 ) -> None:
     issue = conductor.Issue(number=494, title="govern", body="", url="https://example.com/494", labels=["autopilot"])
     events: list[tuple[str, int | tuple[str, ...]]] = []
+    phase_updates: list[str] = []
     merge_calls: list[int] = []
     conn = conductor.open_db(tmp_path / "conductor.db")
     assert conductor.acquire_lease(conn, "misty-step/bitterblossom", issue.number, "run-479-1") is True
@@ -6832,6 +6898,14 @@ def test_govern_pr_uses_external_authority_without_internal_reviewers(
         pr_url="https://github.com/misty-step/bitterblossom/pull/490",
     )
 
+    original_update_run = conductor.update_run
+
+    def tracking_update_run(conn: sqlite3.Connection, run_id: str, **kwargs: object) -> None:
+        if run_id == "run-479-1" and "phase" in kwargs:
+            phase_updates.append(str(kwargs["phase"]))
+        original_update_run(conn, run_id, **kwargs)
+
+    monkeypatch.setattr(conductor, "update_run", tracking_update_run)
     monkeypatch.setattr(conductor, "cleanup_builder_workspace", lambda *_a, **_kw: None)
     monkeypatch.setattr(conductor, "ensure_governance_run", lambda *_a, **_kw: _make_governance_run(issue))
     monkeypatch.setattr(
@@ -6843,15 +6917,19 @@ def test_govern_pr_uses_external_authority_without_internal_reviewers(
     monkeypatch.setattr(conductor, "wait_for_pr_checks", lambda *_a, **_kw: (True, "merge-gate: SUCCESS"))
     monkeypatch.setattr(conductor, "ensure_required_checks_present", lambda *_a, **_kw: None)
     monkeypatch.setattr(conductor, "list_unresolved_review_threads", lambda *_a, **_kw: [])
-    monkeypatch.setattr(
-        conductor,
-        "wait_for_external_reviews",
-        lambda _runner, _repo, pr_number, surfaces, **_kw: (
-            events.append(("external_wait", pr_number)),
-            events.append(("surfaces", tuple(surfaces))),
-            (True, "Cerberus: SUCCESS"),
-        )[-1],
-    )
+
+    def fake_wait_for_external_reviews(
+        _runner: object,
+        _repo: str,
+        pr_number: int,
+        surfaces: list[str],
+        **_kw: object,
+    ) -> tuple[bool, str]:
+        events.append(("external_wait", pr_number))
+        events.append(("surfaces", tuple(surfaces)))
+        return True, "Cerberus: SUCCESS"
+
+    monkeypatch.setattr(conductor, "wait_for_external_reviews", fake_wait_for_external_reviews)
     monkeypatch.setattr(
         conductor,
         "run_builder",
@@ -6892,6 +6970,128 @@ def test_govern_pr_uses_external_authority_without_internal_reviewers(
     assert ("merge", 490) in events
     assert events.index(("external_wait", 490)) < events.index(("merge", 490))
     assert merge_calls == [490]
+    assert phase_updates.count("governing") >= events.count(("external_wait", 490))
+
+
+def test_govern_pr_refreshes_lease_for_governance_builder_turns_and_merge(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    issue = conductor.Issue(number=495, title="govern", body="", url="https://example.com/495", labels=["autopilot"])
+    merge_calls: list[int] = []
+    ttl_updates: list[int] = []
+    trusted_thread = conductor.ReviewThread(
+        id="thread-1",
+        path="scripts/conductor.py",
+        line=2034,
+        author_login="review-bot",
+        author_association="MEMBER",
+        body=(
+            "This thread reopened after the earlier clear.\n\n"
+            "<!-- bitterblossom: {\"classification\":\"bug\",\"severity\":\"high\",\"decision\":\"fix_now\"} -->"
+        ),
+        url="https://example.com/thread-1",
+    )
+    thread_reads = iter([[trusted_thread], [], [], [], []])
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    assert conductor.acquire_lease(conn, "misty-step/bitterblossom", issue.number, "run-495-1") is True
+    conductor.create_run(conn, "run-495-1", "misty-step/bitterblossom", issue, "default")
+    conductor.update_run(
+        conn,
+        "run-495-1",
+        phase="awaiting_governance",
+        status="active",
+        builder_sprite="noble-blue-serpent",
+        worktree_path="/tmp/run-495-1-builder",
+        branch="factory/495-handoff-1",
+        pr_number=496,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/496",
+    )
+
+    original_touch_run = conductor.touch_run
+
+    def tracking_touch_run(
+        conn: sqlite3.Connection,
+        repo: str,
+        issue_number: int,
+        run_id: str,
+        ttl_seconds: int,
+    ) -> None:
+        if run_id == "run-495-1":
+            ttl_updates.append(ttl_seconds)
+        original_touch_run(conn, repo, issue_number, run_id, ttl_seconds)
+
+    monkeypatch.setattr(conductor, "touch_run", tracking_touch_run)
+    monkeypatch.setattr(conductor, "cleanup_builder_workspace", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        conductor,
+        "ensure_governance_run",
+        lambda *_a, **_kw: conductor.GovernanceRun(
+            issue=issue,
+            run_id="run-495-1",
+            worker="noble-blue-serpent",
+            worker_slot=conductor.WorkerSlot(
+                id=7,
+                repo="misty-step/bitterblossom",
+                worker="noble-blue-serpent",
+                slot_index=1,
+                state=conductor.WORKER_SLOT_ACTIVE,
+                consecutive_failures=0,
+                current_run_id="run-495-1",
+                last_probe_at=None,
+                last_error=None,
+                updated_at="2026-03-12T12:00:00Z",
+            ),
+            branch="factory/495-handoff-1",
+            pr_number=496,
+            pr_url="https://github.com/misty-step/bitterblossom/pull/496",
+            builder_workspace="/tmp/run-495-1-builder",
+        ),
+    )
+    monkeypatch.setattr(
+        conductor,
+        "run_review_round",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("review council should be skipped")),
+    )
+    monkeypatch.setattr(conductor, "ensure_pr_ready", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "wait_for_pr_checks", lambda *_a, **_kw: (True, "merge-gate: SUCCESS"))
+    monkeypatch.setattr(conductor, "ensure_required_checks_present", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "list_unresolved_review_threads", lambda *_a, **_kw: next(thread_reads))
+    monkeypatch.setattr(conductor, "wait_for_external_reviews", lambda *_a, **_kw: (True, "CodeRabbit: SUCCESS"))
+    monkeypatch.setattr(
+        conductor,
+        "run_builder",
+        lambda *_a, **_kw: (
+            conductor.BuilderResult(
+                status="ready_for_review",
+                branch="factory/495-handoff-1",
+                pr_number=496,
+                pr_url="https://github.com/misty-step/bitterblossom/pull/496",
+                summary="polished",
+                tests=[],
+            ),
+            {"status": "ready_for_review"},
+        ),
+    )
+    monkeypatch.setattr(conductor, "comment_pr", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "comment_issue", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "merge_pr", lambda _r, _repo, pr_num: merge_calls.append(pr_num))
+
+    args = _make_govern_pr_args(
+        tmp_path,
+        issue_number=495,
+        pr_number=496,
+        run_id="run-495-1",
+        reviewers=[],
+        trusted_external_surfaces=["CodeRabbit"],
+    )
+    args.builder_timeout = 7
+
+    rc = conductor.govern_pr(args)
+
+    assert rc == 0
+    assert merge_calls == [496]
+    assert ttl_updates.count(args.builder_timeout * 60 + conductor.DEFAULT_LEASE_BUFFER_SECONDS) >= 2
+    assert 2 * 120 + 600 + conductor.DEFAULT_LEASE_BUFFER_SECONDS in ttl_updates
 
 
 def test_govern_pr_marks_run_failed_when_lease_is_lost(
@@ -7479,6 +7679,70 @@ def test_run_once_uses_external_authority_without_internal_reviewers(
     event_types = [row["event_type"] for row in conn.execute("select event_type from events where run_id = ? order by id", (run_row["run_id"],))]
     assert "reviewers_ready" not in event_types
     assert "external_review_wait_complete" in event_types
+
+
+def test_run_once_reruns_final_polish_after_post_polish_thread_revision(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    issue = conductor.Issue(number=497, title="post-polish", body="", url="https://example.com/497", labels=["autopilot"])
+    builder = conductor.BuilderResult(
+        status="ready_for_review",
+        branch="factory/497-gov-1",
+        pr_number=498,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/498",
+        summary="done",
+        tests=[],
+    )
+    reviews = [
+        conductor.ReviewResult(reviewer="fern", verdict="pass", summary="ok", findings=[]),
+        conductor.ReviewResult(reviewer="sage", verdict="pass", summary="ok", findings=[]),
+        conductor.ReviewResult(reviewer="thorn", verdict="pass", summary="ok", findings=[]),
+    ]
+    builder_turns: list[tuple[str | None, str | None]] = []
+    merge_calls: list[int] = []
+    trusted_thread = conductor.ReviewThread(
+        id="thread-1",
+        path="scripts/conductor.py",
+        line=2034,
+        author_login="review-bot",
+        author_association="MEMBER",
+        body=(
+            "This thread reopened after the earlier clear.\n\n"
+            "<!-- bitterblossom: {\"classification\":\"bug\",\"severity\":\"high\",\"decision\":\"fix_now\"} -->"
+        ),
+        url="https://example.com/thread-1",
+    )
+    thread_reads = iter([[], [trusted_thread], [], []])
+    check_results = iter([(True, "green"), (True, "green"), (True, "green"), (True, "green")])
+
+    monkeypatch.setattr(conductor, "get_issue", lambda *_a, **_kw: issue)
+    monkeypatch.setattr(conductor, "select_worker_slot", _select_named_worker_slot("noble-blue-serpent"))
+    monkeypatch.setattr(conductor, "ensure_reviewers_ready", lambda *_a, **_kw: None)
+
+    def fake_run_builder(*_args: object, **kwargs: object) -> tuple[conductor.BuilderResult, dict[str, object]]:
+        builder_turns.append((kwargs.get("feedback"), kwargs.get("feedback_source")))  # type: ignore[arg-type]
+        return builder, {"status": "ready_for_review"}
+
+    monkeypatch.setattr(conductor, "run_builder", fake_run_builder)
+    monkeypatch.setattr(conductor, "run_review_round", lambda *_a, **_kw: reviews)
+    monkeypatch.setattr(conductor, "ensure_pr_ready", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "wait_for_pr_checks", lambda *_a, **_kw: next(check_results))
+    monkeypatch.setattr(conductor, "ensure_required_checks_present", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "list_unresolved_review_threads", lambda *_a, **_kw: next(thread_reads))
+    monkeypatch.setattr(conductor, "merge_pr", lambda _r, _repo, pr_num: merge_calls.append(pr_num))
+    monkeypatch.setattr(conductor, "comment_pr", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "comment_issue", lambda *_a, **_kw: None)
+
+    rc = conductor.run_once(_make_run_once_args(tmp_path, issue_number=497))
+
+    assert rc == 0
+    assert merge_calls == [498]
+    assert [feedback_source for _feedback, feedback_source in builder_turns] == [
+        "review",
+        "polish",
+        "pr_review_threads",
+        "polish",
+    ]
 
 
 def test_run_once_merges_normally_when_no_trusted_surfaces_configured(
