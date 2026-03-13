@@ -9,6 +9,7 @@ Issue [#505](https://github.com/misty-step/bitterblossom/issues/505) now has a n
 - probe-supplied dedupe keys are normalized to the same 12-char hex contract used by the reader side, so malformed external keys do not silently disable deduplication
 - duplicate findings append evidence to the existing `source/qa` issue instead of creating backlog spam
 - duplicate findings that repeat within the same intake payload reuse the real created issue number instead of attempting to comment on issue `0`
+- duplicate findings that reappear at a higher severity now promote the existing issue priority label so routing sees the escalated risk
 - routing prefers `source/qa` issues over ordinary backlog work within the same priority tier
 - workspace locking no longer depends on shell `flock`; the conductor now uses an inline Python `fcntl.flock` path that keeps the worktree tests deterministic on this branch without adding a network fetch to cleanup
 
@@ -22,9 +23,10 @@ python3 -m pytest -q scripts/test_conductor.py -k 'qa or worktree or pick_issue_
 
 Expected on this branch:
 
-- `13 passed`
+- `16 passed`
 - QA finding normalization is covered
 - novel-vs-duplicate GitHub sync behavior is covered
+- duplicate severity escalation is covered
 - `qa-intake` command execution is covered
 - routing preference for `source/qa` is covered
 - worktree prepare/cleanup locking still passes after the lock-path simplification
@@ -37,7 +39,7 @@ python3 -m pytest -q scripts/test_conductor.py
 
 Expected on this branch:
 
-- `249 passed`
+- `252 passed`
 
 ## Before / After
 

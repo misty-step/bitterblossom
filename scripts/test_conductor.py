@@ -776,6 +776,91 @@ def test_sync_qa_findings_comments_on_existing_issue_for_duplicate() -> None:
     assert "--body-file" in comment_call
 
 
+def test_sync_qa_findings_escalates_priority_label_for_duplicate() -> None:
+    runner = _RunnerSpy()
+    finding = conductor.QAFinding(
+        title="Checkout button disabled",
+        summary="Valid form input never enables submit.",
+        severity="critical",
+        target_url="https://app.example.com/checkout",
+        environment="production",
+        repro_steps=["Open /checkout", "Fill valid form", "Observe disabled button"],
+        evidence=[],
+        dedupe_key="abc123def456",
+        priority_label="p0",
+        labels=["autopilot", "bug", "domain/infra", "p0", "source/qa"],
+    )
+
+    existing = conductor.Issue(
+        number=505,
+        title="existing",
+        body="",
+        url="https://example.com/505",
+        labels=["bug", "p3", "source/qa"],
+    )
+
+    conductor.sync_qa_findings(
+        runner,
+        "misty-step/bitterblossom",
+        [finding],
+        existing_issue_by_key={"abc123def456": existing},
+    )
+
+    edit_call = next(call for call in runner.calls if call[:3] == ["gh", "issue", "edit"])
+    assert edit_call[3] == "505"
+    assert "--add-label" in edit_call
+    assert "p0" in edit_call
+    assert "--remove-label" in edit_call
+    assert "p3" in edit_call
+    assert "p0" in existing.labels
+    assert "p3" not in existing.labels
+
+
+def test_render_qa_issue_comment_keeps_evidence_links_clickable() -> None:
+    finding = conductor.QAFinding(
+        title="Checkout button disabled",
+        summary="Valid form input never enables submit.",
+        severity="high",
+        target_url="https://app.example.com/checkout",
+        environment="production",
+        repro_steps=["Open /checkout", "Fill valid form", "Observe disabled button"],
+        evidence=[{"kind": "screenshot", "label": "disabled button", "url": "https://example.com/shot.png"}],
+        dedupe_key="abc123def456",
+        priority_label="p1",
+        labels=["autopilot", "bug", "domain/infra", "p1", "source/qa"],
+    )
+
+    body = conductor.render_qa_issue_comment(finding)
+
+    assert "[disabled button](https://example.com/shot.png)" in body
+
+
+def test_existing_qa_issues_by_key_warns_when_dedupe_lookup_hits_limit(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        conductor,
+        "gh_json",
+        lambda *_a, **_kw: [
+            {
+                "number": index,
+                "title": f"issue {index}",
+                "body": f"<!-- bitterblossom-qa-dedupe:{index:012x} -->",
+                "url": f"https://example.com/{index}",
+                "labels": [{"name": "source/qa"}],
+                "updatedAt": "2026-03-13T00:00:00Z",
+            }
+            for index in range(conductor.QA_DEDUPE_LOOKUP_LIMIT)
+        ],
+    )
+
+    issues = conductor.existing_qa_issues_by_key(_RunnerSpy(), "misty-step/bitterblossom")
+
+    captured = capsys.readouterr()
+    assert len(issues) == conductor.QA_DEDUPE_LOOKUP_LIMIT
+    assert "warning: dedupe lookup returned" in captured.err
+
+
 def test_qa_intake_runs_probe_command_and_prints_summary(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

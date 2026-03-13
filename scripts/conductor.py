@@ -35,6 +35,7 @@ WORKSPACE_PREPARE_RETRY_DELAY_SECONDS = 2
 SUCCESSFUL_CHECK_CONCLUSIONS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 FAILED_CHECK_CONCLUSIONS = {"FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STALE", "STARTUP_FAILURE"}
 FAILED_STATUS_CONTEXTS = {"FAILURE", "ERROR"}
+QA_DEDUPE_LOOKUP_LIMIT = 1000
 TRUSTED_REVIEW_AUTHOR_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
 # GitHub App reviewers show up with weak authorAssociation values, so trust them by login.
 TRUSTED_REVIEW_BOT_LOGINS = {
@@ -1306,6 +1307,26 @@ def qa_priority_label(severity: str) -> str:
     return order.get(severity.lower(), "p2")
 
 
+def priority_label_rank(label: str) -> int | None:
+    upper = label.upper()
+    if not re.fullmatch(r"P[0-3]", upper):
+        return None
+    return int(upper[1])
+
+
+def best_priority_label(labels: list[str]) -> str:
+    best_rank: int | None = None
+    matched = ""
+    for label in labels:
+        rank = priority_label_rank(label)
+        if rank is None:
+            continue
+        if best_rank is None or rank < best_rank:
+            best_rank = rank
+            matched = label
+    return matched
+
+
 def qa_dedupe_key(
     title: str,
     summary: str,
@@ -1955,16 +1976,19 @@ def issue_number_from_url(issue_url: str) -> int:
         raise CmdError(f"could not parse issue number from url: {issue_url!r}") from exc
 
 
-def render_qa_issue_body(finding: QAFinding) -> str:
-    steps = "\n".join(f"{index}. {step}" for index, step in enumerate(finding.repro_steps, start=1))
-    evidence_lines = "\n".join(
+def render_qa_evidence_lines(evidence: list[dict[str, str]], *, empty_message: str) -> str:
+    lines = "\n".join(
         f"- {entry.get('kind', 'evidence')}: [{entry.get('label', entry.get('url', 'artifact'))}]({entry.get('url', '')})"
         if entry.get("url")
         else f"- {entry.get('kind', 'evidence')}: {entry.get('label', 'artifact')}"
-        for entry in finding.evidence
+        for entry in evidence
     )
-    if not evidence_lines:
-        evidence_lines = "- none attached"
+    return lines or empty_message
+
+
+def render_qa_issue_body(finding: QAFinding) -> str:
+    steps = "\n".join(f"{index}. {step}" for index, step in enumerate(finding.repro_steps, start=1))
+    evidence_lines = render_qa_evidence_lines(finding.evidence, empty_message="- none attached")
     return "\n".join(
         [
             "## Product Spec",
@@ -2000,12 +2024,7 @@ def render_qa_issue_body(finding: QAFinding) -> str:
 
 
 def render_qa_issue_comment(finding: QAFinding) -> str:
-    evidence_lines = "\n".join(
-        f"- {entry.get('kind', 'evidence')}: {entry.get('label', entry.get('url', 'artifact'))} {entry.get('url', '')}".rstrip()
-        for entry in finding.evidence
-    )
-    if not evidence_lines:
-        evidence_lines = "- no new evidence attached"
+    evidence_lines = render_qa_evidence_lines(finding.evidence, empty_message="- no new evidence attached")
     return "\n".join(
         [
             "QA intake re-observed this finding.",
@@ -2036,11 +2055,16 @@ def existing_qa_issues_by_key(runner: Runner, repo: str) -> dict[str, Issue]:
             "--label",
             "source/qa",
             "--limit",
-            "1000",
+            str(QA_DEDUPE_LOOKUP_LIMIT),
             "--json",
             "number,title,body,url,labels,updatedAt",
         ],
     )
+    if len(payload) >= QA_DEDUPE_LOOKUP_LIMIT:
+        print(
+            f"warning: dedupe lookup returned {QA_DEDUPE_LOOKUP_LIMIT} issues; older source/qa issues may be missed",
+            file=sys.stderr,
+        )
     issues_by_key: dict[str, Issue] = {}
     for item in payload:
         body = item.get("body") or ""
@@ -2077,6 +2101,7 @@ def sync_qa_findings(
     for finding in findings:
         existing = issues_by_key.get(finding.dedupe_key)
         if existing is not None:
+            existing_priority = best_priority_label(existing.labels)
             body_path = write_temp_body("bb-qa-comment-", render_qa_issue_comment(finding))
             try:
                 runner.run(
@@ -2094,6 +2119,24 @@ def sync_qa_findings(
                 )
             finally:
                 pathlib.Path(body_path).unlink(missing_ok=True)
+            existing_rank = priority_label_rank(existing_priority) if existing_priority else None
+            finding_rank = priority_label_rank(finding.priority_label)
+            if finding_rank is not None and (existing_rank is None or finding_rank < existing_rank):
+                argv = [
+                    "gh",
+                    "issue",
+                    "edit",
+                    str(existing.number),
+                    "--repo",
+                    repo,
+                    "--add-label",
+                    finding.priority_label,
+                ]
+                if existing_priority:
+                    argv.extend(["--remove-label", existing_priority])
+                runner.run(argv, timeout=60)
+                existing.labels = [label for label in existing.labels if label != existing_priority]
+                existing.labels.append(finding.priority_label)
             updated.append(existing.url)
             continue
 
