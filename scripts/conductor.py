@@ -1293,10 +1293,16 @@ def semantic_decision_rollup_from_traces(traces: list[dict[str, Any]]) -> dict[s
     }
     if not traces:
         return summary
-    latency_values = [int(trace["latency_ms"]) for trace in traces if trace.get("latency_ms") is not None]
-    cost_values = [float(trace["estimated_cost_usd"]) for trace in traces if trace.get("estimated_cost_usd") is not None]
+    latency_values: list[int] = []
+    cost_values: list[float] = []
     families: dict[str, int] = {}
     for trace in traces:
+        latency = int_value(trace.get("latency_ms"))
+        if latency is not None and latency >= 0:
+            latency_values.append(latency)
+        cost = float_value(trace.get("estimated_cost_usd"))
+        if cost is not None and math.isfinite(cost) and cost >= 0:
+            cost_values.append(cost)
         family = normalized_string(trace.get("family"))
         if family is not None:
             families[family] = families.get(family, 0) + 1

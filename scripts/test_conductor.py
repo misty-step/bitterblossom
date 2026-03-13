@@ -4499,6 +4499,96 @@ def test_run_once_keeps_merged_truth_when_issue_comment_fails(monkeypatch: pytes
     assert run["phase"] == "merged"
 
 
+def test_run_once_persists_semantic_decision_trace_for_auto_selected_issue(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    issues = [
+        conductor.Issue(
+            number=447,
+            title="first ready issue",
+            body="## Product Spec\n### Intent Contract\n- ready\n",
+            url="https://example.com/447",
+            labels=["autopilot", "P1"],
+            updated_at="2026-03-06T00:00:00Z",
+        ),
+        conductor.Issue(
+            number=448,
+            title="second ready issue",
+            body="## Product Spec\n### Intent Contract\n- ready\n",
+            url="https://example.com/448",
+            labels=["autopilot", "P1"],
+            updated_at="2026-03-05T00:00:00Z",
+        ),
+    ]
+    builder = conductor.BuilderResult(
+        status="ready_for_review",
+        branch="factory/448-test-123",
+        pr_number=449,
+        pr_url="https://github.com/misty-step/bitterblossom/pull/449",
+        summary="done",
+        tests=[],
+    )
+
+    monkeypatch.setattr(conductor, "list_candidate_issues", lambda *_a, **_kw: issues)
+    monkeypatch.setattr(conductor, "select_worker_slot", _select_named_worker_slot("noble-blue-serpent"))
+    monkeypatch.setattr(conductor, "ensure_reviewers_ready", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "comment_issue", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "cleanup_builder_workspace", lambda *_a, **_kw: None)
+    monkeypatch.setattr(conductor, "probe_sprite_readiness", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        conductor,
+        "invoke_claude_json",
+        lambda *_a, **_kw: conductor.SemanticInvocationResult(
+            structured_output={
+                "issue_number": 448,
+                "profile": "default",
+                "rationale": "issue #448 is the better fit for the active sprint",
+            },
+            trace=conductor.semantic_decision_trace(
+                conductor.semantic_decision_profile(conductor.SEMANTIC_ROUTING_FAMILY),
+                payload={
+                    "model": "sonnet",
+                    "provider": "anthropic",
+                    "reasoning_budget": "medium",
+                    "usage": {"input_tokens": 120, "output_tokens": 30, "total_tokens": 150},
+                    "estimated_cost_usd": 0.02,
+                },
+                outcome_ref="route_issue",
+                rationale=None,
+                latency_ms=75,
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        conductor,
+        "run_builder",
+        lambda *_a, **_kw: (builder, {"status": "ready_for_review", "pr_number": builder.pr_number}),
+    )
+
+    args = _make_run_once_args(tmp_path, issue_number=448, stop_after_pr=True)
+    args.issue = None
+
+    rc = conductor.run_once(args)
+
+    assert rc == 0
+    conn = conductor.open_db(pathlib.Path(args.db))
+    trace = conn.execute(
+        """
+        select family, profile, outcome_ref, rationale, latency_ms, total_tokens, estimated_cost_usd
+        from semantic_decisions
+        where run_id in (select run_id from runs where issue_number = 448)
+        """,
+    ).fetchone()
+    assert trace is not None
+    assert trace["family"] == conductor.SEMANTIC_ROUTING_FAMILY
+    assert trace["profile"] == "claude-sonnet"
+    assert trace["outcome_ref"] == "issue#448"
+    assert trace["rationale"] == "issue #448 is the better fit for the active sprint"
+    assert trace["latency_ms"] == 75
+    assert trace["total_tokens"] == 150
+    assert trace["estimated_cost_usd"] == pytest.approx(0.02)
+
+
 def test_run_once_routes_unresolved_pr_threads_back_to_builder(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
     issue = conductor.Issue(number=447, title="test", body="body", url="https://example.com/447", labels=["autopilot"])
     builder = conductor.BuilderResult(
@@ -6257,6 +6347,41 @@ def test_persist_semantic_decision_trace_stamps_created_at_in_sample_json(tmp_pa
     assert row is not None
     sample = json.loads(row["sample_json"])
     assert sample["created_at"] == row["created_at"]
+
+
+def test_semantic_decision_rollup_skips_malformed_numeric_values() -> None:
+    summary = conductor.semantic_decision_rollup_from_traces(
+        [
+            {
+                "family": conductor.SEMANTIC_ROUTING_FAMILY,
+                "latency_ms": "150",
+                "estimated_cost_usd": "0.03",
+            },
+            {
+                "family": conductor.SEMANTIC_ROUTING_FAMILY,
+                "latency_ms": "oops",
+                "estimated_cost_usd": "nan",
+            },
+            {
+                "family": conductor.SEMANTIC_ROUTING_FAMILY,
+                "latency_ms": -5,
+                "estimated_cost_usd": -1,
+            },
+            {
+                "family": "other",
+                "latency_ms": 90,
+                "estimated_cost_usd": 0.02,
+            },
+        ]
+    )
+
+    assert summary["decision_count"] == 4
+    assert summary["average_latency_ms"] == 120
+    assert summary["total_estimated_cost_usd"] == pytest.approx(0.05)
+    assert summary["family_usage"] == [
+        {"family": conductor.SEMANTIC_ROUTING_FAMILY, "calls": 3},
+        {"family": "other", "calls": 1},
+    ]
 
 
 def test_show_metrics_returns_summary_recent_runs_and_timeline(
