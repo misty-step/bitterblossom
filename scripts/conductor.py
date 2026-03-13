@@ -4015,7 +4015,7 @@ def handle_pr_review_threads(
             run_id,
             repo,
             issue_number,
-            f"Bitterblossom blocked `{run_id}` because PR review threads still require resolution.",
+            f"Bitterblossom blocked `{run_id}` because active merge-blocking review findings still require resolution after max rounds.",
             event_type="issue_comment_failed",
         )
         return "blocked", None, thread_ids

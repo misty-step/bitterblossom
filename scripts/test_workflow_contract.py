@@ -6,6 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_workflow_contract_exists_and_is_versioned() -> None:
     workflow = ROOT / "WORKFLOW.md"
+    assert workflow.is_file(), "WORKFLOW.md must exist at repo root"
     text = workflow.read_text(encoding="utf-8")
 
     assert text.startswith("---\nversion: 1\n")
@@ -22,7 +23,10 @@ def test_runtime_prompts_reference_workflow_contract() -> None:
     assert "repo `WORKFLOW.md`" in builder
     assert "repo `WORKFLOW.md`" in reviewer
     assert "WORKFLOW.md" in ralph
-    assert "unresolved PR review threads as merge blockers" not in builder
+    legacy = "unresolved PR review threads as merge blockers"
+    assert legacy not in builder
+    assert legacy not in reviewer
+    assert legacy not in ralph
 
 
 def test_repo_guidance_references_workflow_contract() -> None:

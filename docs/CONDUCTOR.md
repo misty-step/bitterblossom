@@ -611,7 +611,7 @@ The target repo currently requires a `merge-gate` status on `master`.
 
 This repo now publishes `merge-gate` in GitHub Actions. The conductor also checks for missing required statuses before it attempts merge, so policy mismatches fail loudly instead of pretending CI is complete.
 
-The governor lane does not merge on the first green snapshot. It waits for the configured minimum PR age, ensures required checks are present, queries review threads before and after trusted external review settlement, routes trusted feedback back to the builder on the existing PR, and only proceeds when repo `WORKFLOW.md` says no active merge-blocking findings remain. Thread presence alone is evidence to inspect, not an automatic block.
+The governor lane does not merge on the first green snapshot. It waits for the configured minimum PR age, ensures required checks are present, queries review threads before and after trusted external review settlement, routes trusted feedback back to the builder on the existing PR, and then relies on the conductor's policy logic to decide whether any normalized findings remain merge-blocking. Thread presence alone is evidence to inspect, not an automatic block.
 
 After the PR is semantically ready and policy-mergeable, the governor runs one final polish/simplification pass on the existing PR and re-verifies the review + CI path before squash merge. If review evidence still leaves active merge-blocking findings after a revision pass, the conductor stops with `pr_feedback_blocked` and escalates to a human for confirmation.
 
