@@ -4,7 +4,8 @@
 
 The conductor now persists repo-level scheduling state in SQLite, exposes it via
 machine-readable operator commands, and blocks new work for paused, draining, or
-saturated repositories before lease acquisition.
+saturated repositories with the final desired-concurrency check enforced inside
+lease acquisition.
 
 ## Before
 
@@ -26,13 +27,13 @@ flowchart LR
     A["set-repo-state"] --> B["repository_registry table"]
     B --> C["show-repos"]
     B --> D["repository_scheduling_view"]
-    D --> E["run-once / loop / route-issue admission"]
-    E --> F["issue leasing"]
+    D --> E["run-once / loop preflight"]
+    E --> F["transactional lease acquisition"]
 ```
 
 - Repo scheduling state is durable kernel-owned data.
 - Operators can inspect repo state, utilization, and remaining capacity from one JSON surface.
-- New work is rejected before lease acquisition when the repo is paused, draining, or already at desired concurrency.
+- New work is rejected before lease acquisition when the repo is paused or draining, and desired concurrency is enforced again inside the lease transaction so concurrent invocations cannot overrun the repo cap.
 
 ## Verification
 
@@ -51,4 +52,3 @@ Expected:
 - `scripts/conductor.py`
 - `scripts/test_conductor.py`
 - `docs/CONDUCTOR.md`
-

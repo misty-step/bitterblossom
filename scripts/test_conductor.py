@@ -5219,9 +5219,8 @@ def test_repository_scheduling_view_uses_persisted_desired_concurrency(tmp_path:
         state=conductor.REPOSITORY_STATE_ACTIVE,
         desired_concurrency=2,
     )
-    issue = conductor.Issue(number=447, title="inspect", body="", url="https://example.com/447", labels=["autopilot"])
-    conductor.create_run(conn, "run-447-1", "misty-step/bitterblossom", issue, "claude-sonnet")
-    conductor.create_run(conn, "run-447-2", "misty-step/bitterblossom", issue, "claude-sonnet")
+    assert conductor.acquire_lease(conn, "misty-step/bitterblossom", 447, "run-447-1") is True
+    assert conductor.acquire_lease(conn, "misty-step/bitterblossom", 448, "run-448-1") is True
 
     view = conductor.repository_scheduling_view(conn, "misty-step/bitterblossom")
 
@@ -5229,6 +5228,23 @@ def test_repository_scheduling_view_uses_persisted_desired_concurrency(tmp_path:
     assert view.available_capacity == 0
     assert view.scheduling_allowed is False
     assert view.scheduling_reason == "repository is at desired concurrency"
+
+
+def test_acquire_lease_result_respects_repo_desired_concurrency(tmp_path: pathlib.Path) -> None:
+    conn = conductor.open_db(tmp_path / "conductor.db")
+
+    assert conductor.acquire_lease(conn, "misty-step/bitterblossom", 447, "run-447-1") is True
+
+    result = conductor.acquire_lease_result(
+        conn,
+        "misty-step/bitterblossom",
+        448,
+        "run-448-1",
+        desired_concurrency=1,
+    )
+
+    assert result.acquired is False
+    assert result.reason == "repository is at desired concurrency"
 
 
 def test_set_repo_state_and_show_repos_emit_machine_readable_registry(

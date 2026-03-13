@@ -201,6 +201,7 @@ class DispatchSession:
 class LeaseAcquireResult:
     acquired: bool
     reclaimed_run_id: str | None = None
+    reason: str | None = None
 
 
 @dataclass(slots=True)
@@ -546,7 +547,30 @@ def update_run(conn: sqlite3.Connection, run_id: str, **fields: Any) -> None:
     conn.commit()
 
 
-def acquire_lease_result(conn: sqlite3.Connection, repo: str, issue_number: int, run_id: str) -> LeaseAcquireResult:
+def active_live_lease_count(conn: sqlite3.Connection, repo: str, *, now: str | None = None) -> int:
+    lease_now = now or now_utc()
+    row = conn.execute(
+        """
+        select count(*) as count
+        from leases
+        where repo = ?
+          and released_at is null
+          and blocked_at is null
+          and (lease_expires_at is null or lease_expires_at > ?)
+        """,
+        (repo, lease_now),
+    ).fetchone()
+    return int(row["count"]) if row is not None else 0
+
+
+def acquire_lease_result(
+    conn: sqlite3.Connection,
+    repo: str,
+    issue_number: int,
+    run_id: str,
+    *,
+    desired_concurrency: int | None = None,
+) -> LeaseAcquireResult:
     ts = now_utc()
     expires_at = ts_plus(lease_ttl_seconds())
 
@@ -556,6 +580,9 @@ def acquire_lease_result(conn: sqlite3.Connection, repo: str, issue_number: int,
             "select run_id, released_at, blocked_at, lease_expires_at from leases where repo = ? and issue_number = ?",
             (repo, issue_number),
         ).fetchone()
+        if desired_concurrency is not None and active_live_lease_count(conn, repo, now=ts) >= desired_concurrency:
+            conn.rollback()
+            return LeaseAcquireResult(acquired=False, reason="repository is at desired concurrency")
         if row is None:
             conn.execute(
                 """
@@ -571,7 +598,7 @@ def acquire_lease_result(conn: sqlite3.Connection, repo: str, issue_number: int,
         if row["released_at"] is None:
             if row["blocked_at"] is not None or not lease_missing_or_expired(row["lease_expires_at"]):
                 conn.rollback()
-                return LeaseAcquireResult(acquired=False)
+                return LeaseAcquireResult(acquired=False, reason="issue already leased")
             reclaimed_run_id = str(row["run_id"])
 
         conn.execute(
@@ -1635,30 +1662,7 @@ def list_repository_records(conn: sqlite3.Connection) -> list[RepositoryRecord]:
 
 
 def active_run_count_for_repo(conn: sqlite3.Connection, repo: str) -> int:
-    active_statuses = sorted(TERMINAL_RUN_STATUSES)
-    now = now_utc()
-    row = conn.execute(
-        f"""
-        select count(*) as count
-        from runs
-        left join leases
-          on leases.repo = runs.repo
-         and leases.issue_number = runs.issue_number
-         and leases.run_id = runs.run_id
-        where runs.repo = ?
-          and runs.status not in ({",".join("?" for _ in active_statuses)})
-          and (
-            leases.run_id is null
-            or (
-              leases.released_at is null
-              and leases.blocked_at is null
-              and (leases.lease_expires_at is null or leases.lease_expires_at > ?)
-            )
-          )
-        """,
-        (repo, *active_statuses, now),
-    ).fetchone()
-    return int(row["count"]) if row is not None else 0
+    return active_live_lease_count(conn, repo)
 
 
 def repository_scheduling_view(conn: sqlite3.Connection, repo: str) -> RepositorySchedulingView:
@@ -5521,9 +5525,15 @@ def run_once(args: argparse.Namespace) -> int:
         builder_profile = decision.profile
 
     run_id = run_id_for(issue.number)
-    acquire_result = acquire_lease_result(conn, args.repo, issue.number, run_id)
+    acquire_result = acquire_lease_result(
+        conn,
+        args.repo,
+        issue.number,
+        run_id,
+        desired_concurrency=repo_view.desired_concurrency,
+    )
     if not acquire_result.acquired:
-        print(f"issue #{issue.number} already leased")
+        print(acquire_result.reason or f"issue #{issue.number} already leased")
         return 0
     reclaimed_run_id = acquire_result.reclaimed_run_id
 
@@ -6241,7 +6251,7 @@ def route_issue(args: argparse.Namespace) -> int:
         return code
 
     repo_view = repository_scheduling_view(conn, args.repo)
-    if not repo_view.scheduling_allowed:
+    if repo_view.state in {REPOSITORY_STATE_PAUSED, REPOSITORY_STATE_DRAINING}:
         return emit_payload(None, args.builder_profile, repo_view.scheduling_reason or "repository is not schedulable", {}, 0)
 
     if args.issue:
