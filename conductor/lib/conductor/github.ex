@@ -4,7 +4,12 @@ defmodule Conductor.GitHub do
 
   Deep module: hides all GitHub API details, argument construction,
   and JSON parsing. Callers see Elixir structs and maps.
+
+  Implements `Conductor.Tracker` and `Conductor.CodeHost`.
   """
+
+  @behaviour Conductor.Tracker
+  @behaviour Conductor.CodeHost
 
   alias Conductor.{Shell, Issue}
   require Logger
@@ -60,6 +65,10 @@ defmodule Conductor.GitHub do
         {:error, msg}
     end
   end
+
+  # Conductor.Tracker callback — delegates to eligible_issues/2.
+  @spec list_eligible(binary(), keyword()) :: [Issue.t()]
+  def list_eligible(repo, opts \\ []), do: eligible_issues(repo, opts)
 
   @spec eligible_issues(binary(), keyword()) :: [Issue.t()]
   def eligible_issues(repo, opts \\ []) do
@@ -129,6 +138,10 @@ defmodule Conductor.GitHub do
     real != [] and not pending and Enum.all?(real, fn c -> c["conclusion"] in @green end)
   end
 
+  # Conductor.CodeHost callback — delegates to merge_pr/3.
+  @spec merge(binary(), pos_integer(), keyword()) :: :ok | {:error, term()}
+  def merge(repo, pr_number, opts \\ []), do: merge_pr(repo, pr_number, opts)
+
   @spec merge_pr(binary(), pos_integer(), keyword()) :: :ok | {:error, term()}
   def merge_pr(repo, pr_number, opts \\ []) do
     method = Keyword.get(opts, :method, "squash")
@@ -149,6 +162,10 @@ defmodule Conductor.GitHub do
       {:error, msg, _} -> {:error, msg}
     end
   end
+
+  # Conductor.Tracker callback — delegates to create_issue_comment/3.
+  @spec comment(binary(), pos_integer(), binary()) :: :ok | {:error, term()}
+  def comment(repo, issue_number, body), do: create_issue_comment(repo, issue_number, body)
 
   @spec create_issue_comment(binary(), pos_integer(), binary()) :: :ok | {:error, term()}
   def create_issue_comment(repo, issue_number, body) do
