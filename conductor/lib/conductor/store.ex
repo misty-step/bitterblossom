@@ -35,7 +35,7 @@ defmodule Conductor.Store do
     GenServer.call(__MODULE__, {:create_run, attrs})
   end
 
-  @spec update_run(binary(), map()) :: :ok
+  @spec update_run(binary(), map()) :: :ok | {:error, :invalid_column | :empty_attrs}
   def update_run(run_id, attrs) do
     GenServer.call(__MODULE__, {:update_run, run_id, attrs})
   end
@@ -153,8 +153,11 @@ defmodule Conductor.Store do
 
   @impl true
   def handle_call({:update_run, run_id, attrs}, _from, state) do
-    case validate_columns(attrs) do
-      :ok ->
+    case {map_size(attrs), validate_columns(attrs)} do
+      {0, _} ->
+        {:reply, {:error, :empty_attrs}, state}
+
+      {_, :ok} ->
         sets = Enum.map_join(attrs, ", ", fn {k, _} -> "#{k} = ?" end)
         vals = Map.values(attrs) ++ [now_utc(), run_id]
 
@@ -167,7 +170,7 @@ defmodule Conductor.Store do
         broadcast_update()
         {:reply, :ok, state}
 
-      {:error, :invalid_column} ->
+      {_, {:error, :invalid_column}} ->
         Logger.error("update_run rejected: invalid column in #{inspect(Map.keys(attrs))}")
         {:reply, {:error, :invalid_column}, state}
     end

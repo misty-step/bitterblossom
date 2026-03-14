@@ -88,7 +88,9 @@ defmodule Conductor.Prompt do
   end
 
   # Neutralize fence-breaking sequences in untrusted content.
-  # Replaces ``` and ~~~ with zero-width-space-separated versions.
+  # Replaces ``` and ~~~ with space-separated versions so they can't close the fence.
+  defp sanitize_fence(nil), do: ""
+
   defp sanitize_fence(text) do
     text
     |> String.replace("```", "` ` `")

@@ -11,10 +11,14 @@ defmodule Conductor.Workspace do
   @mirror_base "/home/sprite/workspace"
   @safe_input ~r/^[a-zA-Z0-9_\-\.\/]+$/
 
-  @doc "Validate that a string is safe for shell interpolation."
+  @doc "Validate that a string is safe for shell interpolation. Rejects metacharacters and path traversal."
   @spec validate_input(binary()) :: :ok | {:error, :invalid_input}
   def validate_input(input) do
-    if Regex.match?(@safe_input, input), do: :ok, else: {:error, :invalid_input}
+    cond do
+      not Regex.match?(@safe_input, input) -> {:error, :invalid_input}
+      String.contains?(input, "..") -> {:error, :invalid_input}
+      true -> :ok
+    end
   end
 
   @spec prepare(binary(), binary(), binary(), binary()) :: {:ok, binary()} | {:error, term()}
@@ -56,6 +60,13 @@ defmodule Conductor.Workspace do
 
   @spec cleanup(binary(), binary(), binary()) :: :ok | {:error, term()}
   def cleanup(sprite, repo, run_id) do
+    with :ok <- validate_input(repo),
+         :ok <- validate_input(run_id) do
+      do_cleanup(sprite, repo, run_id)
+    end
+  end
+
+  defp do_cleanup(sprite, repo, run_id) do
     repo_name = repo |> String.split("/") |> List.last()
     mirror = Path.join(@mirror_base, repo_name)
 

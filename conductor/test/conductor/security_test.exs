@@ -30,6 +30,14 @@ defmodule Conductor.SecurityTest do
     test "accepts valid branch with slashes and dots" do
       assert :ok = Workspace.validate_input("factory/625-1773502623")
     end
+
+    test "rejects path traversal" do
+      assert {:error, :invalid_input} = Workspace.validate_input("../../etc/passwd")
+    end
+
+    test "rejects absolute path traversal" do
+      assert {:error, :invalid_input} = Workspace.validate_input("foo/../../../tmp")
+    end
   end
 
   describe "Store column allowlist" do
