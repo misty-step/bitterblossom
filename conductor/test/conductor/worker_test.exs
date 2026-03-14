@@ -34,10 +34,9 @@ defmodule Conductor.WorkerTest do
     end
 
     test "Conductor.Sprite implements the Worker behaviour" do
-      # Compile-time enforcement: @behaviour Conductor.Worker in Sprite.
-      # At runtime we verify the functions exist with the correct arity.
-      # ensure_loaded! required because Sprite is a pure module (not OTP-started).
       Code.ensure_loaded!(Conductor.Sprite)
+      behaviours = declared_behaviours(Conductor.Sprite)
+      assert Conductor.Worker in behaviours
       assert function_exported?(Conductor.Sprite, :exec, 3)
       assert function_exported?(Conductor.Sprite, :dispatch, 4)
       assert function_exported?(Conductor.Sprite, :read_artifact, 3)
@@ -48,6 +47,8 @@ defmodule Conductor.WorkerTest do
   describe "Conductor.Tracker behaviour" do
     test "Conductor.GitHub implements the Tracker behaviour" do
       Code.ensure_loaded!(Conductor.GitHub)
+      behaviours = declared_behaviours(Conductor.GitHub)
+      assert Conductor.Tracker in behaviours
       assert function_exported?(Conductor.GitHub, :list_eligible, 2)
       assert function_exported?(Conductor.GitHub, :get_issue, 2)
       assert function_exported?(Conductor.GitHub, :comment, 3)
@@ -57,6 +58,8 @@ defmodule Conductor.WorkerTest do
   describe "Conductor.CodeHost behaviour" do
     test "Conductor.GitHub implements the CodeHost behaviour" do
       Code.ensure_loaded!(Conductor.GitHub)
+      behaviours = declared_behaviours(Conductor.GitHub)
+      assert Conductor.CodeHost in behaviours
       assert function_exported?(Conductor.GitHub, :get_pr_checks, 2)
       assert function_exported?(Conductor.GitHub, :checks_green?, 2)
       assert function_exported?(Conductor.GitHub, :merge, 3)
@@ -66,6 +69,8 @@ defmodule Conductor.WorkerTest do
   describe "Conductor.Harness behaviour" do
     test "Conductor.ClaudeCode implements the Harness behaviour" do
       Code.ensure_loaded!(Conductor.ClaudeCode)
+      behaviours = declared_behaviours(Conductor.ClaudeCode)
+      assert Conductor.Harness in behaviours
       assert function_exported?(Conductor.ClaudeCode, :name, 0)
       assert function_exported?(Conductor.ClaudeCode, :dispatch_command, 1)
     end
@@ -87,5 +92,13 @@ defmodule Conductor.WorkerTest do
       idx = Enum.find_index(args, &(&1 == "--model"))
       assert Enum.at(args, idx + 1) == "anthropic/claude-opus-4"
     end
+  end
+
+  # Returns all behaviours declared on a module. A module can declare multiple
+  # @behaviour attributes, each stored as a separate entry in module_info.
+  defp declared_behaviours(mod) do
+    mod.module_info(:attributes)
+    |> Keyword.get_values(:behaviour)
+    |> List.flatten()
   end
 end

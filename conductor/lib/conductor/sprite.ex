@@ -53,7 +53,9 @@ defmodule Conductor.Sprite do
   @impl Conductor.Worker
   @spec read_artifact(binary(), binary(), keyword()) :: {:ok, map()} | {:error, term()}
   def read_artifact(sprite, path, _opts) do
-    case exec(sprite, "cat #{path}", timeout: 30_000) do
+    quoted = "'#{String.replace(path, "'", "'\\''")}'"
+
+    case exec(sprite, "cat -- #{quoted}", timeout: 30_000) do
       {:ok, json} ->
         case Jason.decode(json) do
           {:ok, data} -> {:ok, data}
