@@ -10,7 +10,7 @@ defmodule Conductor.Orchestrator do
   use GenServer
   require Logger
 
-  alias Conductor.{Store, GitHub, Config, Issue}
+  alias Conductor.{Store, Config, Issue}
 
   defstruct [
     :repo,
@@ -19,7 +19,10 @@ defmodule Conductor.Orchestrator do
     :trusted_surfaces,
     mode: :idle,
     active_runs: %{},
-    worker_index: 0
+    worker_index: 0,
+    tracker_mod: Conductor.GitHub,
+    code_host_mod: Conductor.GitHub,
+    worker_mod: Conductor.Sprite
   ]
 
   # --- Public API ---
@@ -35,12 +38,19 @@ defmodule Conductor.Orchestrator do
     issue_number = Keyword.fetch!(opts, :issue)
     worker = Keyword.fetch!(opts, :worker)
     trusted_surfaces = Keyword.get(opts, :trusted_surfaces, [])
+    tracker_mod = Keyword.get(opts, :tracker_mod, Conductor.GitHub)
+    code_host_mod = Keyword.get(opts, :code_host_mod, Conductor.GitHub)
+    worker_mod = Keyword.get(opts, :worker_mod, Conductor.Sprite)
 
-    case GitHub.get_issue(repo, issue_number) do
+    case tracker_mod.get_issue(repo, issue_number) do
       {:ok, issue} ->
         case Issue.ready?(issue) do
           :ok ->
-            run_issue(repo, issue, worker, trusted_surfaces)
+            run_issue(repo, issue, worker, trusted_surfaces,
+              tracker_mod: tracker_mod,
+              code_host_mod: code_host_mod,
+              worker_mod: worker_mod
+            )
 
           {:error, failures} ->
             IO.puts("issue ##{issue_number} not ready: #{Enum.join(failures, ", ")}")
@@ -67,7 +77,10 @@ defmodule Conductor.Orchestrator do
        repo: Keyword.get(opts, :repo),
        label: Keyword.get(opts, :label, "autopilot"),
        workers: Keyword.get(opts, :workers, []),
-       trusted_surfaces: Keyword.get(opts, :trusted_surfaces, [])
+       trusted_surfaces: Keyword.get(opts, :trusted_surfaces, []),
+       tracker_mod: Keyword.get(opts, :tracker_mod, Conductor.GitHub),
+       code_host_mod: Keyword.get(opts, :code_host_mod, Conductor.GitHub),
+       worker_mod: Keyword.get(opts, :worker_mod, Conductor.Sprite)
      }}
   end
 
@@ -84,6 +97,9 @@ defmodule Conductor.Orchestrator do
           label: Keyword.get(opts, :label, state.label),
           workers: workers,
           trusted_surfaces: Keyword.get(opts, :trusted_surfaces, state.trusted_surfaces),
+          tracker_mod: Keyword.get(opts, :tracker_mod, state.tracker_mod),
+          code_host_mod: Keyword.get(opts, :code_host_mod, state.code_host_mod),
+          worker_mod: Keyword.get(opts, :worker_mod, state.worker_mod),
           mode: :polling
       }
 
@@ -118,13 +134,14 @@ defmodule Conductor.Orchestrator do
 
   # --- Private ---
 
-  defp run_issue(repo, issue, worker, trusted_surfaces) do
-    opts = [
-      repo: repo,
-      issue: issue,
-      worker: worker,
-      trusted_surfaces: trusted_surfaces
-    ]
+  defp run_issue(repo, issue, worker, trusted_surfaces, extra_opts) do
+    opts =
+      [
+        repo: repo,
+        issue: issue,
+        worker: worker,
+        trusted_surfaces: trusted_surfaces
+      ] ++ extra_opts
 
     case DynamicSupervisor.start_child(
            Conductor.RunSupervisor,
@@ -160,7 +177,7 @@ defmodule Conductor.Orchestrator do
     else
       slots = max - active_count
 
-      eligible = GitHub.eligible_issues(state.repo, label: state.label)
+      eligible = state.tracker_mod.list_eligible(state.repo, label: state.label)
       unleased = Enum.reject(eligible, &Store.leased?(state.repo, &1.number))
 
       unleased
@@ -176,7 +193,10 @@ defmodule Conductor.Orchestrator do
       repo: state.repo,
       issue: issue,
       worker: worker,
-      trusted_surfaces: state.trusted_surfaces
+      trusted_surfaces: state.trusted_surfaces,
+      worker_mod: state.worker_mod,
+      tracker_mod: state.tracker_mod,
+      code_host_mod: state.code_host_mod
     ]
 
     case DynamicSupervisor.start_child(Conductor.RunSupervisor, {Conductor.RunServer, opts}) do

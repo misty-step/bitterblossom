@@ -4,11 +4,17 @@ defmodule Conductor.GitHub do
 
   Deep module: hides all GitHub API details, argument construction,
   and JSON parsing. Callers see Elixir structs and maps.
+
+  Implements `Conductor.Tracker` and `Conductor.CodeHost`.
   """
+
+  @behaviour Conductor.Tracker
+  @behaviour Conductor.CodeHost
 
   alias Conductor.{Shell, Issue}
   require Logger
 
+  @impl Conductor.Tracker
   @spec get_issue(binary(), pos_integer()) :: {:ok, Issue.t()} | {:error, term()}
   def get_issue(repo, number) do
     case Shell.cmd("gh", [
@@ -61,8 +67,9 @@ defmodule Conductor.GitHub do
     end
   end
 
-  @spec eligible_issues(binary(), keyword()) :: [Issue.t()]
-  def eligible_issues(repo, opts \\ []) do
+  @impl Conductor.Tracker
+  @spec list_eligible(binary(), keyword()) :: [Issue.t()]
+  def list_eligible(repo, opts \\ []) do
     case list_issues(repo, opts) do
       {:ok, issues} ->
         issues
@@ -74,6 +81,9 @@ defmodule Conductor.GitHub do
         []
     end
   end
+
+  @doc "Alias for backward compatibility."
+  def eligible_issues(repo, opts \\ []), do: list_eligible(repo, opts)
 
   @spec get_pr_checks(binary(), pos_integer()) :: {:ok, [map()]} | {:error, term()}
   def get_pr_checks(repo, pr_number) do
@@ -99,6 +109,7 @@ defmodule Conductor.GitHub do
 
   @green ~w(SUCCESS success NEUTRAL neutral SKIPPED skipped)
 
+  @impl Conductor.CodeHost
   @spec checks_green?(binary(), pos_integer()) :: boolean()
   def checks_green?(repo, pr_number) do
     case get_pr_checks(repo, pr_number) do
@@ -129,8 +140,9 @@ defmodule Conductor.GitHub do
     real != [] and not pending and Enum.all?(real, fn c -> c["conclusion"] in @green end)
   end
 
-  @spec merge_pr(binary(), pos_integer(), keyword()) :: :ok | {:error, term()}
-  def merge_pr(repo, pr_number, opts \\ []) do
+  @impl Conductor.CodeHost
+  @spec merge(binary(), pos_integer(), keyword()) :: :ok | {:error, term()}
+  def merge(repo, pr_number, opts \\ []) do
     method = Keyword.get(opts, :method, "squash")
     delete_branch = if Keyword.get(opts, :delete_branch, true), do: ["--delete-branch"], else: []
 
@@ -148,6 +160,15 @@ defmodule Conductor.GitHub do
       {:ok, _} -> :ok
       {:error, msg, _} -> {:error, msg}
     end
+  end
+
+  @doc "Alias for backward compatibility."
+  def merge_pr(repo, pr_number, opts \\ []), do: merge(repo, pr_number, opts)
+
+  @impl Conductor.Tracker
+  @spec comment(binary(), pos_integer(), binary()) :: :ok | {:error, term()}
+  def comment(repo, issue_number, body) do
+    create_issue_comment(repo, issue_number, body)
   end
 
   @spec create_issue_comment(binary(), pos_integer(), binary()) :: :ok | {:error, term()}

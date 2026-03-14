@@ -16,7 +16,7 @@ defmodule Conductor.RunServer do
   use GenServer, restart: :temporary
   require Logger
 
-  alias Conductor.{Store, GitHub, Sprite, Workspace, Prompt, Config, Recovery}
+  alias Conductor.{Store, GitHub, Workspace, Prompt, Config, Recovery}
 
   @heartbeat_ms 30_000
   @ci_poll_ms 30_000
@@ -37,7 +37,10 @@ defmodule Conductor.RunServer do
     phase: :pending,
     turn_count: 0,
     trusted_surfaces: [],
-    replay_count: 0
+    replay_count: 0,
+    worker_mod: Conductor.Sprite,
+    tracker_mod: Conductor.GitHub,
+    code_host_mod: Conductor.GitHub
   ]
 
   # --- Public API ---
@@ -58,7 +61,10 @@ defmodule Conductor.RunServer do
       repo: Keyword.fetch!(opts, :repo),
       issue: Keyword.fetch!(opts, :issue),
       worker: Keyword.fetch!(opts, :worker),
-      trusted_surfaces: Keyword.get(opts, :trusted_surfaces, [])
+      trusted_surfaces: Keyword.get(opts, :trusted_surfaces, []),
+      worker_mod: Keyword.get(opts, :worker_mod, Conductor.Sprite),
+      tracker_mod: Keyword.get(opts, :tracker_mod, Conductor.GitHub),
+      code_host_mod: Keyword.get(opts, :code_host_mod, Conductor.GitHub)
     }
 
     {:ok, state, {:continue, :acquire_lease}}
@@ -130,7 +136,7 @@ defmodule Conductor.RunServer do
     log(state, "dispatching builder to #{state.worker}")
 
     # Delete stale artifact before dispatch (prevent false completion)
-    Sprite.exec(state.worker, "rm -f #{state.artifact_path}", timeout: 10_000)
+    state.worker_mod.exec(state.worker, "rm -f #{state.artifact_path}", timeout: 10_000)
 
     prompt =
       Prompt.build_builder_prompt(
@@ -148,9 +154,11 @@ defmodule Conductor.RunServer do
     })
 
     # Dispatch in a linked task so GenServer stays responsive
+    worker_mod = state.worker_mod
+
     task =
       Task.async(fn ->
-        Sprite.dispatch(state.worker, prompt, state.repo,
+        worker_mod.dispatch(state.worker, prompt, state.repo,
           timeout: Config.builder_timeout(),
           workspace: state.worktree_path,
           template: Config.prompt_template()
@@ -167,7 +175,7 @@ defmodule Conductor.RunServer do
   def handle_continue(:read_artifact, state) do
     log(state, "reading builder artifact")
 
-    case Sprite.read_artifact(state.worker, state.artifact_path) do
+    case state.worker_mod.read_artifact(state.worker, state.artifact_path, []) do
       {:ok, artifact} ->
         handle_artifact(artifact, state)
 
@@ -218,7 +226,7 @@ defmodule Conductor.RunServer do
   def handle_continue(:attempt_merge, state) do
     log(state, "attempting merge of PR ##{state.pr_number}")
 
-    case GitHub.merge_pr(state.repo, state.pr_number) do
+    case state.code_host_mod.merge(state.repo, state.pr_number, []) do
       :ok ->
         Store.record_event(state.run_id, "merged", %{pr_number: state.pr_number})
         Store.complete_run(state.run_id, "merged", "merged")
@@ -470,7 +478,7 @@ defmodule Conductor.RunServer do
     cleanup_workspace(state)
 
     # Comment on the issue so the operator knows
-    GitHub.create_issue_comment(
+    state.tracker_mod.comment(
       state.repo,
       state.issue.number,
       "Bitterblossom blocked `#{state.run_id}`: #{reason}"
@@ -481,7 +489,7 @@ defmodule Conductor.RunServer do
 
   defp cleanup_workspace(state) do
     if state.worktree_path do
-      case Workspace.cleanup(state.worker, state.repo, state.run_id) do
+      case state.worker_mod.cleanup(state.worker, state.repo, state.run_id) do
         :ok ->
           Store.record_event(state.run_id, "workspace_cleaned", %{})
 
