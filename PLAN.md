@@ -1,37 +1,56 @@
-# PLAN: Issue #538 — Harden conductor worktree lifecycle
+# PLAN: Issue #544 — Incident-aware replay and false-red waiver handling
 
-## Status
+## Problem
 
-The core hardening is already in master (PR #545):
-- Bash-level `flock` per-repo mirror lock serializing fetch, worktree add/remove, and prune
-- `prepare_run_workspace_with_retry` with 3 attempts and explicit `workspace_preparation_failed` events
-- `cleanup_builder_workspace` records `cleanup_warning` + preserves `worktree_path` for operator recovery
-- `show-runs` / `show-run` expose `worktree_path` and `worktree_recovery_*` fields
-- `docs/CONDUCTOR.md` documents worktree lifecycle semantics and operator recovery
+RunServer collapses all failures into generic blocked/failed states. Known false-reds on
+trusted external surfaces reopen code work unnecessarily. No incident audit trail exists.
 
-## Gap Identified
+## Solution Slice
 
-No test explicitly verified the cross-operation lock contention case: that
-`cleanup_run_workspace` must wait when the per-repo mirror lock is held by a
-concurrent `prepare_run_workspace` (or any other mirror mutation). The existing
-tests covered prepare+external-lock-holder and cleanup+lock-timeout, but not
-the symmetric case that proves cleanup and prepare share and respect the same flock.
+Add a `Conductor.Recovery` module that classifies failures and drives policy decisions.
+Extend Store with `incidents` and `waivers` tables. Update RunServer CI evaluation to
+use recovery-aware logic. Add CLI inspection commands.
+
+## Failure Classes
+
+- `:transient_infra`      — network, timeout, infra noise
+- `:auth_config`          — credential or config misconfiguration
+- `:semantic_code`        — actual code/test failure
+- `:flaky_check`          — known intermittent check
+- `:known_false_red`      — external trusted surface failure (e.g. Cerberus)
+- `:human_policy_block`   — requires human approval
+- `:unknown`              — unclassified
+
+## Key Invariants
+
+- Semantic readiness is independent of mechanical check state
+- Waiver recording is durable (events + waivers table)
+- Replay is bounded (max_replays config, default 3)
+- Merge via CLI only; no auto-merge of true code failures
+
+## Files to Create
+
+- `conductor/lib/conductor/recovery.ex`
+- `conductor/test/conductor/recovery_test.exs`
+
+## Files to Modify
+
+- `conductor/lib/conductor/store.ex` — incidents/waivers tables, new CRUD, new run columns
+- `conductor/lib/conductor/run_server.ex` — CI evaluation via Recovery, replay lane
+- `conductor/lib/conductor/cli.ex` — show-incidents, show-waivers commands
+- `conductor/lib/conductor/config.ex` — max_replays, replay_delay_seconds config
 
 ## Steps
 
-- [x] Audit existing implementation and tests
-- [x] Add `test_cleanup_run_workspace_waits_for_lock_release` to `scripts/test_conductor.py`
-- [x] Run `python3 -m pytest -q scripts/test_conductor.py -k "worktree or workspace or cleanup"` — 36 passed
-- [x] Run full `python3 -m pytest -q scripts/test_conductor.py` — 237 passed
-- [x] Push branch, open draft PR with `Closes #538`
-- [x] Write builder artifact
+- [x] Read context (MEMORY.md, WORKFLOW.md, existing modules)
+- [ ] Implement Conductor.Recovery (classify_check, evaluate_with_policy)
+- [ ] Extend Store (tables, CRUD, update_run columns)
+- [ ] Update RunServer (recovery-aware check_ci, replay lane)
+- [ ] Add CLI commands (show-incidents, show-waivers)
+- [ ] Write tests (recovery_test.exs, extend store/github tests)
+- [ ] Run `mix test` and fix failures
+- [ ] Create PR
 
-## Review
+## Review Notes
 
-- New test `test_cleanup_run_workspace_waits_for_lock_release` reuses the `_init_local_worktree_mirror`,
-  `_install_flock_shim`, `_local_sprite_bash`, and `_hold_lock` helpers already in place for the
-  prepare+lock tests.
-- Cleanup first creates a real worktree via prepare, then a lock holder simulates a concurrent
-  prepare on the same sprite mirror. Cleanup must demonstrably block for ≥1 second before the
-  lock holder releases and cleanup completes.
-- All 237 tests pass.
+(fill in after implementation)

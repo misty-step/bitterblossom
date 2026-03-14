@@ -70,6 +70,31 @@ defmodule Conductor.Store do
     GenServer.call(__MODULE__, {:list_events, run_id})
   end
 
+  @spec record_incident(binary(), map()) :: :ok
+  def record_incident(run_id, attrs) do
+    GenServer.call(__MODULE__, {:record_incident, run_id, attrs})
+  end
+
+  @spec list_incidents(binary()) :: [map()]
+  def list_incidents(run_id) do
+    GenServer.call(__MODULE__, {:list_incidents, run_id})
+  end
+
+  @spec record_waiver(binary(), map()) :: :ok
+  def record_waiver(run_id, attrs) do
+    GenServer.call(__MODULE__, {:record_waiver, run_id, attrs})
+  end
+
+  @spec list_waivers(binary()) :: [map()]
+  def list_waivers(run_id) do
+    GenServer.call(__MODULE__, {:list_waivers, run_id})
+  end
+
+  @spec mark_semantic_ready(binary()) :: :ok
+  def mark_semantic_ready(run_id) do
+    GenServer.call(__MODULE__, {:mark_semantic_ready, run_id})
+  end
+
   # --- GenServer Callbacks ---
 
   @impl true
@@ -244,6 +269,84 @@ defmodule Conductor.Store do
     {:reply, events, state}
   end
 
+  @impl true
+  def handle_call({:record_incident, run_id, attrs}, _from, state) do
+    now = now_utc()
+
+    exec(
+      state.conn,
+      """
+        INSERT INTO incidents (run_id, check_name, failure_class, signature, created_at)
+        VALUES (?1, ?2, ?3, ?4, ?5)
+      """,
+      [
+        run_id,
+        attrs[:check_name] || attrs["check_name"],
+        attrs[:failure_class] || attrs["failure_class"],
+        attrs[:signature] || attrs["signature"],
+        now
+      ]
+    )
+
+    {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call({:list_incidents, run_id}, _from, state) do
+    rows =
+      query_all(
+        state.conn,
+        "SELECT * FROM incidents WHERE run_id = ?1 ORDER BY created_at ASC",
+        [run_id]
+      )
+
+    {:reply, rows, state}
+  end
+
+  @impl true
+  def handle_call({:record_waiver, run_id, attrs}, _from, state) do
+    now = now_utc()
+
+    exec(
+      state.conn,
+      """
+        INSERT INTO waivers (run_id, check_name, rationale, waived_at)
+        VALUES (?1, ?2, ?3, ?4)
+      """,
+      [
+        run_id,
+        attrs[:check_name] || attrs["check_name"],
+        attrs[:rationale] || attrs["rationale"],
+        now
+      ]
+    )
+
+    {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call({:list_waivers, run_id}, _from, state) do
+    rows =
+      query_all(
+        state.conn,
+        "SELECT * FROM waivers WHERE run_id = ?1 ORDER BY waived_at ASC",
+        [run_id]
+      )
+
+    {:reply, rows, state}
+  end
+
+  @impl true
+  def handle_call({:mark_semantic_ready, run_id}, _from, state) do
+    exec(
+      state.conn,
+      "UPDATE runs SET semantic_ready = 1, updated_at = ?1 WHERE run_id = ?2",
+      [now_utc(), run_id]
+    )
+
+    {:reply, :ok, state}
+  end
+
   # --- Private ---
 
   defp create_tables(conn) do
@@ -262,6 +365,8 @@ defmodule Conductor.Store do
             pr_url TEXT,
             worktree_path TEXT,
             turn_count INTEGER DEFAULT 0,
+            semantic_ready INTEGER DEFAULT NULL,
+            replay_count INTEGER DEFAULT 0,
             picked_at TEXT,
             completed_at TEXT,
             heartbeat_at TEXT,
@@ -286,6 +391,25 @@ defmodule Conductor.Store do
             event_type TEXT NOT NULL,
             payload TEXT NOT NULL DEFAULT '{}',
             created_at TEXT NOT NULL
+          )
+          """,
+          """
+          CREATE TABLE IF NOT EXISTS incidents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL,
+            check_name TEXT,
+            failure_class TEXT NOT NULL,
+            signature TEXT,
+            created_at TEXT NOT NULL
+          )
+          """,
+          """
+          CREATE TABLE IF NOT EXISTS waivers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL,
+            check_name TEXT,
+            rationale TEXT NOT NULL,
+            waived_at TEXT NOT NULL
           )
           """
         ] do

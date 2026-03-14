@@ -1,7 +1,7 @@
 defmodule Conductor.CLI do
   @moduledoc "Escript entry point. Parses args and delegates to Conductor."
 
-  @commands ~w(run-once loop show-runs show-events check-env)
+  @commands ~w(run-once loop show-runs show-events show-incidents show-waivers check-env)
 
   def main(args) do
     Application.ensure_all_started(:conductor)
@@ -18,6 +18,12 @@ defmodule Conductor.CLI do
 
       ["show-events" | rest] ->
         cmd_show_events(rest)
+
+      ["show-incidents" | rest] ->
+        cmd_show_incidents(rest)
+
+      ["show-waivers" | rest] ->
+        cmd_show_waivers(rest)
 
       ["check-env" | _] ->
         cmd_check_env()
@@ -126,6 +132,34 @@ defmodule Conductor.CLI do
         event_count: length(events),
         events: events
       })
+    )
+  end
+
+  defp cmd_show_incidents(args) do
+    {opts, _, _} = OptionParser.parse(args, strict: [run_id: :string])
+    cmd_show_run_records(Keyword.fetch!(opts, :run_id), :incidents)
+  end
+
+  defp cmd_show_waivers(args) do
+    {opts, _, _} = OptionParser.parse(args, strict: [run_id: :string])
+    cmd_show_run_records(Keyword.fetch!(opts, :run_id), :waivers)
+  end
+
+  defp cmd_show_run_records(run_id, kind) do
+    {list_fn, count_key} =
+      case kind do
+        :incidents -> {&Conductor.Store.list_incidents/1, :incident_count}
+        :waivers -> {&Conductor.Store.list_waivers/1, :waiver_count}
+      end
+
+    records = list_fn.(run_id)
+
+    IO.puts(
+      Jason.encode!(
+        %{run_id: run_id}
+        |> Map.put(kind, records)
+        |> Map.put(count_key, length(records))
+      )
     )
   end
 
