@@ -172,6 +172,15 @@ defmodule Conductor.Orchestrator do
   defp start_run(state, issue) do
     worker = pick_worker(state)
 
+    if worker_mod().busy?(worker) do
+      Logger.info("worker #{worker} busy, deferring issue ##{issue.number}")
+      state
+    else
+      dispatch_run(state, issue, worker)
+    end
+  end
+
+  defp dispatch_run(state, issue, worker) do
     opts = [
       repo: state.repo,
       issue: issue,
@@ -255,6 +264,7 @@ defmodule Conductor.Orchestrator do
   end
 
   defp tracker_mod, do: Application.get_env(:conductor, :tracker_module, Conductor.GitHub)
+  defp worker_mod, do: Application.get_env(:conductor, :worker_module, Conductor.Sprite)
 
   defp schedule_poll(delay) do
     Process.send_after(self(), :poll, delay)
