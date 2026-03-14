@@ -192,7 +192,7 @@ defmodule Conductor.GitHub do
 
   @spec update_issue_body(binary(), pos_integer(), binary()) :: :ok | {:error, term()}
   def update_issue_body(repo, issue_number, body) do
-    tmp = Path.join(System.tmp_dir!(), "conductor-body-#{:rand.uniform(999_999)}.md")
+    tmp = Path.join(System.tmp_dir!(), "conductor-body-#{System.unique_integer([:positive])}.md")
     File.write!(tmp, body)
 
     result =

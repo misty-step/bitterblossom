@@ -124,9 +124,26 @@ defmodule Conductor.Shaper do
     prompt = build_prompt(issue, context)
 
     with {:ok, new_body} <- call_llm(prompt),
+         :ok <- validate_shaped_body(issue.number, new_body, issue),
          :ok <- GitHub.update_issue_body(repo, issue.number, new_body) do
       Logger.info("[shaper] ##{issue.number} shaped successfully")
       {:ok, :shaped}
+    end
+  end
+
+  defp validate_shaped_body(number, new_body, issue) do
+    shaped = %{issue | body: new_body}
+
+    case Issue.ready?(shaped) do
+      :ok ->
+        :ok
+
+      {:error, missing} ->
+        Logger.warning(
+          "[shaper] ##{number} LLM output missing required sections: #{inspect(missing)}"
+        )
+
+        {:error, "LLM did not produce required sections: #{inspect(missing)}"}
     end
   end
 
@@ -154,43 +171,51 @@ defmodule Conductor.Shaper do
         })
 
       tmp = Path.join(System.tmp_dir!(), "shaper-#{System.unique_integer([:positive])}.json")
-      File.write!(tmp, body)
 
-      try do
-        result =
-          Shell.cmd("curl", [
-            "-sS",
-            "-X",
-            "POST",
-            @anthropic_url,
-            "-H",
-            "content-type: application/json",
-            "-H",
-            "x-api-key: #{api_key}",
-            "-H",
-            "anthropic-version: 2023-06-01",
-            "-d",
-            "@#{tmp}"
-          ])
+      case File.write(tmp, body) do
+        {:error, reason} ->
+          {:error, "failed to write temp file: #{reason}"}
 
-        case result do
-          {:ok, json} ->
-            case Jason.decode(json) do
-              {:ok, %{"content" => [%{"text" => text} | _]}} ->
-                {:ok, strip_code_fence(text)}
+        :ok ->
+          try do
+            result =
+              Shell.cmd("curl", [
+                "-sS",
+                "-X",
+                "POST",
+                @anthropic_url,
+                "-H",
+                "content-type: application/json",
+                "-H",
+                "x-api-key: #{api_key}",
+                "-H",
+                "anthropic-version: 2023-06-01",
+                "-d",
+                "@#{tmp}"
+              ])
 
-              {:ok, %{"error" => err}} ->
-                {:error, "API error: #{inspect(err)}"}
+            case result do
+              {:ok, json} ->
+                case Jason.decode(json) do
+                  {:ok, %{"content" => [%{"text" => text} | _]}} ->
+                    {:ok, strip_code_fence(text)}
 
-              {:error, _} ->
-                {:error, "invalid JSON response from LLM"}
+                  {:ok, %{"error" => err}} ->
+                    {:error, "API error: #{inspect(err)}"}
+
+                  {:ok, _} ->
+                    {:error, "unexpected API response shape from LLM"}
+
+                  {:error, _} ->
+                    {:error, "invalid JSON response from LLM"}
+                end
+
+              {:error, msg, code} ->
+                {:error, "curl failed (#{code}): #{String.slice(msg, 0, 200)}"}
             end
-
-          {:error, msg, code} ->
-            {:error, "curl failed (#{code}): #{String.slice(msg, 0, 200)}"}
-        end
-      after
-        File.rm(tmp)
+          after
+            File.rm(tmp)
+          end
       end
     end
   end
@@ -241,11 +266,15 @@ defmodule Conductor.Shaper do
            [
              "conductor/lib",
              "cmd/bb",
+             "-type",
+             "f",
+             "(",
              "-name",
              "*.ex",
              "-o",
              "-name",
-             "*.go"
+             "*.go",
+             ")"
            ],
            cd: @repo_root
          ) do
