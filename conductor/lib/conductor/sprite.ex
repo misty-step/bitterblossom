@@ -113,6 +113,17 @@ defmodule Conductor.Sprite do
     match?({:ok, _}, exec(sprite, "echo ok", timeout: 15_000))
   end
 
+  @doc "Check if a sprite has active agent processes (busy with a dispatch)."
+  @spec busy?(binary(), keyword()) :: boolean()
+  def busy?(sprite, opts \\ []) do
+    exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
+
+    case exec_fn.(sprite, "pgrep -f 'claude.*-p' 2>/dev/null", timeout: 15_000) do
+      {:ok, output} -> String.trim(output) != ""
+      _ -> false
+    end
+  end
+
   # --- Private ---
 
   defp run_agent(sprite, workspace, prompt_path, harness, exec_fn, timeout_ms) do
