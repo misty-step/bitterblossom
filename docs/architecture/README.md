@@ -46,6 +46,7 @@ flowchart LR
     Ops --> Conductor
     Conductor --> DB
     Conductor --> BB
+    Conductor --> Sprites
     BB --> Sprites
     Sprites --> PR
     PR --> CI
@@ -79,7 +80,7 @@ sequenceDiagram
 ## Design Rules
 
 - GitHub is the human-facing work ledger.
-- SQLite + event log are the machine-facing truth.
+- SQLite is the machine-facing truth (runs, leases, events — one file).
 - `bb` stays transport-sized; workflow judgment lives in the conductor.
 - Sprites are persistent VMs; execution uses isolated per-run git worktrees.
 - Merge is a governance decision, not a builder feeling.

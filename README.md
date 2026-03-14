@@ -87,7 +87,7 @@ cd conductor && mix conductor loop \
   --worker noble-blue-serpent
 ```
 
-See [docs/CLI-REFERENCE.md](docs/CLI-REFERENCE.md) for `bb`, and [docs/CONDUCTOR.md](docs/CONDUCTOR.md) for the conductor loop.
+See [docs/CLI-REFERENCE.md](docs/CLI-REFERENCE.md) for `bb`, and [docs/architecture/conductor.md](docs/architecture/conductor.md) for the conductor loop.
 
 ## Agent Skills
 
