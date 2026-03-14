@@ -77,7 +77,8 @@ jobs:
         working-directory: conductor
     steps:
       - uses: actions/checkout@v4
-      - uses: erlef/setup-beam@v1
+      - id: setup-beam
+        uses: erlef/setup-beam@v1
         with:
           otp-version: "27.x"
           elixir-version: "1.18.x"
@@ -87,7 +88,7 @@ jobs:
           path: |
             conductor/deps
             conductor/_build
-          key: ${{ runner.os }}-mix-${{ hashFiles('conductor/mix.lock') }}
+          key: ${{ runner.os }}-mix-${{ steps.setup-beam.outputs.otp-version }}-${{ steps.setup-beam.outputs.elixir-version }}-${{ hashFiles('conductor/mix.lock') }}
           restore-keys: |
             ${{ runner.os }}-mix-
       - name: Install dependencies
