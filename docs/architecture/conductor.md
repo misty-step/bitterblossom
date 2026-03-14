@@ -22,11 +22,14 @@ flowchart TD
 
     CLI --> Orchestrator
     Orchestrator --> RunServer
+    Orchestrator --> Issue
+    Orchestrator --> Config
     RunServer --> Store
     RunServer --> GitHub
     RunServer --> Sprite
     RunServer --> Workspace
     RunServer --> Prompt
+    RunServer --> Config
     Sprite --> Shell
     Workspace --> Shell
     GitHub --> Shell
@@ -93,7 +96,6 @@ sequenceDiagram
 
 - `run_once(opts)` — run a single issue synchronously
 - `start_loop(opts)` — start continuous polling loop
-- `pick_worker/1` — round-robin worker selection
 
 ### Store
 

@@ -28,8 +28,7 @@ flowchart LR
 
     subgraph Control["Bitterblossom Control Plane"]
         Conductor["Conductor\nconductor/ (Elixir/OTP)"]
-        DB["Run Store\nSQLite"]
-        Events["Event Log\nappend-only events"]
+        DB["SQLite\nruns + leases + events"]
     end
 
     subgraph Runtime["Transport + Execution"]
@@ -46,7 +45,6 @@ flowchart LR
     Ops --> GH
     Ops --> Conductor
     Conductor --> DB
-    Conductor --> Events
     Conductor --> BB
     BB --> Sprites
     Sprites --> PR
@@ -66,12 +64,13 @@ sequenceDiagram
 
     GH->>C: eligible issue exists
     C->>C: acquire lease + create run
-    C->>C: prepare git worktree on sprite
+    C->>W: prepare git worktree (Workspace.prepare)
     C->>BB: dispatch builder (via Sprite.dispatch)
     BB->>W: sync repo + run Claude Code
     W-->>GH: push branch + open PR
-    W-->>C: builder-result.json artifact
-    C->>C: read artifact, enter governance
+    C->>W: read artifact (Sprite.read_artifact)
+    W-->>C: builder-result.json
+    C->>C: enter governance
     C->>C: poll CI until green or timeout
     C->>GH: squash merge
     C->>C: release lease + finalize run
