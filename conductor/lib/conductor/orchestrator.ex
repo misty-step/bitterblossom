@@ -5,6 +5,19 @@ defmodule Conductor.Orchestrator do
   In `run_once` mode: starts one RunServer and waits for it.
   In `loop` mode: polls for eligible issues and starts RunServers up to concurrency limit.
   Reconciles stale runs on every tick.
+
+  ## Fleet Management
+
+  The orchestrator maintains a fleet of declared worker sprites. Before each
+  dispatch, it probes the chosen sprite with `wake/1` to auto-wake sleeping
+  machines (Fly.io suspends idle VMs). Consecutive probe failures drain a
+  worker from the round-robin pool; a successful probe auto-recovers it.
+
+  Fleet state per worker:
+    - `name`     — sprite name
+    - `tags`     — capability tags (reserved for future routing, not used yet)
+    - `health`   — `:healthy | :drained`
+    - `failures` — consecutive probe failure count
   """
 
   use GenServer
@@ -15,10 +28,11 @@ defmodule Conductor.Orchestrator do
   defstruct [
     :repo,
     :label,
-    :workers,
     :trusted_surfaces,
+    :wake_fn,
     mode: :idle,
     active_runs: %{},
+    fleet: [],
     worker_index: 0
   ]
 
@@ -35,11 +49,21 @@ defmodule Conductor.Orchestrator do
     issue_number = Keyword.fetch!(opts, :issue)
     worker = Keyword.fetch!(opts, :worker)
     trusted_surfaces = Keyword.get(opts, :trusted_surfaces, [])
+    wake_fn = Keyword.get(opts, :wake_fn, &Conductor.Sprite.wake/1)
 
     case tracker_mod().get_issue(repo, issue_number) do
       {:ok, issue} ->
         case Issue.ready?(issue) do
           :ok ->
+            # Auto-wake the sprite before dispatching
+            case wake_fn.(worker) do
+              :ok ->
+                :ok
+
+              {:error, msg} ->
+                Logger.warning("wake probe failed for #{worker}: #{msg}, proceeding anyway")
+            end
+
             run_issue(repo, issue, worker, trusted_surfaces)
 
           {:error, failures} ->
@@ -58,6 +82,15 @@ defmodule Conductor.Orchestrator do
     GenServer.call(__MODULE__, {:start_loop, opts})
   end
 
+  @doc "Return current fleet state for all declared workers."
+  @spec fleet_status() :: {:ok, [map()]} | {:error, :not_running}
+  def fleet_status do
+    case GenServer.whereis(__MODULE__) do
+      nil -> {:error, :not_running}
+      _pid -> {:ok, GenServer.call(__MODULE__, :fleet_status)}
+    end
+  end
+
   # --- GenServer Callbacks ---
 
   @impl true
@@ -66,8 +99,9 @@ defmodule Conductor.Orchestrator do
      %__MODULE__{
        repo: Keyword.get(opts, :repo),
        label: Keyword.get(opts, :label, "autopilot"),
-       workers: Keyword.get(opts, :workers, []),
-       trusted_surfaces: Keyword.get(opts, :trusted_surfaces, [])
+       fleet: init_fleet(Keyword.get(opts, :workers, [])),
+       trusted_surfaces: Keyword.get(opts, :trusted_surfaces, []),
+       wake_fn: Keyword.get(opts, :wake_fn, &Conductor.Sprite.wake/1)
      }}
   end
 
@@ -78,18 +112,26 @@ defmodule Conductor.Orchestrator do
     if workers == [] do
       {:reply, {:error, :no_workers}, state}
     else
+      wake_fn = Keyword.get(opts, :wake_fn, state.wake_fn || (&Conductor.Sprite.wake/1))
+
       state = %{
         state
         | repo: Keyword.fetch!(opts, :repo),
           label: Keyword.get(opts, :label, state.label),
-          workers: workers,
+          fleet: init_fleet(workers),
           trusted_surfaces: Keyword.get(opts, :trusted_surfaces, state.trusted_surfaces),
+          wake_fn: wake_fn,
           mode: :polling
       }
 
       schedule_poll(0)
       {:reply, :ok, state}
     end
+  end
+
+  @impl true
+  def handle_call(:fleet_status, _from, state) do
+    {:reply, state.fleet, state}
   end
 
   @impl true
@@ -170,27 +212,42 @@ defmodule Conductor.Orchestrator do
   end
 
   defp start_run(state, issue) do
-    worker = pick_worker(state)
+    case pick_fleet_worker(state) do
+      nil ->
+        Logger.warning("no healthy workers available for issue ##{issue.number}")
+        state
 
+      fleet_worker ->
+        # Always advance the index so the next pick tries a different worker
+        state = %{state | worker_index: state.worker_index + 1}
+
+        # Auto-wake probe: confirms sprite is responsive, wakes sleeping VMs
+        wake_result = state.wake_fn.(fleet_worker.name)
+        {state, worker_ok} = update_fleet_health(state, fleet_worker.name, wake_result)
+
+        if worker_ok do
+          do_start_run(state, issue, fleet_worker.name)
+        else
+          state
+        end
+    end
+  end
+
+  defp do_start_run(state, issue, worker_name) do
     opts = [
       repo: state.repo,
       issue: issue,
-      worker: worker,
+      worker: worker_name,
       trusted_surfaces: state.trusted_surfaces
     ]
 
     case DynamicSupervisor.start_child(Conductor.RunSupervisor, {Conductor.RunServer, opts}) do
       {:ok, pid} ->
         ref = Process.monitor(pid)
-        run_entry = %{pid: pid, ref: ref, issue: issue.number, worker: worker}
+        run_entry = %{pid: pid, ref: ref, issue: issue.number, worker: worker_name}
+        Logger.info("started run for issue ##{issue.number} on #{worker_name}")
 
-        Logger.info("started run for issue ##{issue.number} on #{worker}")
-
-        %{
-          state
-          | active_runs: Map.put(state.active_runs, issue.number, run_entry),
-            worker_index: state.worker_index + 1
-        }
+        %{state | active_runs: Map.put(state.active_runs, issue.number, run_entry)}
 
       {:error, reason} ->
         Logger.error("failed to start run for issue ##{issue.number}: #{inspect(reason)}")
@@ -198,10 +255,52 @@ defmodule Conductor.Orchestrator do
     end
   end
 
-  defp pick_worker(%{workers: []}), do: raise("no workers configured")
+  # Return the next healthy worker by round-robin, or nil if none are healthy.
+  defp pick_fleet_worker(%{fleet: fleet, worker_index: idx}) do
+    healthy = Enum.filter(fleet, &(&1.health == :healthy))
 
-  defp pick_worker(%{workers: workers, worker_index: idx}) do
-    Enum.at(workers, rem(idx, length(workers)))
+    case healthy do
+      [] -> nil
+      workers -> Enum.at(workers, rem(idx, length(workers)))
+    end
+  end
+
+  # Update fleet health based on wake probe result.
+  # Returns `{new_state, worker_ok?}` where `worker_ok?` is true if dispatch should proceed.
+  defp update_fleet_health(state, name, :ok) do
+    fleet =
+      Enum.map(state.fleet, fn
+        %{name: ^name} = w -> %{w | failures: 0, health: :healthy}
+        w -> w
+      end)
+
+    {%{state | fleet: fleet}, true}
+  end
+
+  defp update_fleet_health(state, name, {:error, msg}) do
+    threshold = Config.probe_failure_threshold()
+
+    fleet =
+      Enum.map(state.fleet, fn
+        %{name: ^name} = w ->
+          failures = w.failures + 1
+          health = if failures >= threshold, do: :drained, else: :healthy
+
+          if health == :drained do
+            Logger.warning(
+              "worker #{name} drained after #{failures} consecutive probe failure(s): #{msg}"
+            )
+          else
+            Logger.warning("worker #{name} probe failed (#{failures}/#{threshold}): #{msg}")
+          end
+
+          %{w | failures: failures, health: health}
+
+        w ->
+          w
+      end)
+
+    {%{state | fleet: fleet}, false}
   end
 
   defp reconcile(state) do
@@ -218,6 +317,20 @@ defmodule Conductor.Orchestrator do
     Store.list_runs(limit: 50)
     |> Enum.find(fn r ->
       r["repo"] == repo and r["issue_number"] == issue_number
+    end)
+  end
+
+  # Normalize raw worker declarations into fleet worker maps.
+  defp init_fleet(workers) do
+    Enum.map(workers, fn
+      name when is_binary(name) ->
+        %{name: name, tags: [], health: :healthy, failures: 0}
+
+      %{name: name} = w ->
+        %{name: name, tags: Map.get(w, :tags, []), health: :healthy, failures: 0}
+
+      %{"name" => name} = w ->
+        %{name: name, tags: Map.get(w, "tags", []), health: :healthy, failures: 0}
     end)
   end
 

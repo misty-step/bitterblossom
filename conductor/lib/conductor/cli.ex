@@ -1,7 +1,7 @@
 defmodule Conductor.CLI do
   @moduledoc "Escript entry point. Parses args and delegates to Conductor."
 
-  @commands ~w(run-once loop show-runs show-events show-incidents show-waivers check-env dashboard)
+  @commands ~w(run-once loop fleet show-runs show-events show-incidents show-waivers check-env dashboard)
 
   def main(args) do
     Application.ensure_all_started(:conductor)
@@ -12,6 +12,9 @@ defmodule Conductor.CLI do
 
       ["loop" | rest] ->
         cmd_loop(rest)
+
+      ["fleet" | rest] ->
+        cmd_fleet(rest)
 
       ["show-runs" | rest] ->
         cmd_show_runs(rest)
@@ -110,6 +113,56 @@ defmodule Conductor.CLI do
 
     # Block forever — the orchestrator runs in the supervision tree
     Process.sleep(:infinity)
+  end
+
+  defp cmd_fleet(_args) do
+    workers = Conductor.Config.workers()
+
+    if workers == [] do
+      IO.puts("no workers declared (configure :workers in conductor app config)")
+    else
+      # Pull assignment info from Store (active runs)
+      active_runs =
+        Conductor.Store.list_runs(limit: 100)
+        |> Enum.filter(fn r -> r["phase"] in ["building", "governing"] end)
+
+      # Pull health state from Orchestrator if the loop is running
+      fleet_health =
+        case Conductor.Orchestrator.fleet_status() do
+          {:ok, fleet} -> Map.new(fleet, &{&1.name, &1})
+          {:error, :not_running} -> %{}
+        end
+
+      IO.puts(
+        String.pad_trailing("WORKER", 24) <>
+          String.pad_trailing("HEALTH", 12) <>
+          "ASSIGNMENT"
+      )
+
+      IO.puts(String.duplicate("-", 60))
+
+      Enum.each(workers, fn w ->
+        name = w.name
+
+        health =
+          case Map.get(fleet_health, name) do
+            nil -> "unknown"
+            %{health: h} -> Atom.to_string(h)
+          end
+
+        assignment =
+          case Enum.find(active_runs, fn r -> r["builder_sprite"] == name end) do
+            nil -> "-"
+            r -> "##{r["issue_number"]} (#{r["phase"]})"
+          end
+
+        IO.puts(
+          String.pad_trailing(name, 24) <>
+            String.pad_trailing(health, 12) <>
+            assignment
+        )
+      end)
+    end
   end
 
   defp cmd_show_runs(args) do
