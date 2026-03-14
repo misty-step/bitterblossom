@@ -197,9 +197,9 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverrid
 	ralphEnv := fmt.Sprintf(
 		`export MAX_ITERATIONS=%d MAX_TIME_SEC=%d ITER_TIMEOUT_SEC=%d HEARTBEAT_INTERVAL_SEC=%d WORKSPACE=%q GH_TOKEN=%q LEFTHOOK=0 ANTHROPIC_MODEL=%q ANTHROPIC_DEFAULT_SONNET_MODEL=%q CLAUDE_CODE_SUBAGENT_MODEL=%q`,
 		maxIter, totalSec, iterSec, heartbeatSec, workspace, ghToken,
-		"anthropic/claude-sonnet-4-6",
-		"anthropic/claude-sonnet-4-6",
-		"anthropic/claude-sonnet-4-6",
+		spriteModel,
+		spriteModel,
+		spriteModel,
 	)
 
 	ralphEnv += fmt.Sprintf(` && exec bash %s`, ralphScript)

@@ -64,3 +64,22 @@ the gate will never be green otherwise.
 `actions/cache@v4` paths must still be relative to the repo root (the cache step
 doesn't inherit the working-directory default). Always use `conductor/deps` and
 `conductor/_build` as cache paths when the job has `working-directory: conductor`.
+
+## Runtime Contract Codification (#606)
+
+### 2026-03-14 — PR #639
+
+**Canonical source pattern**: When a literal value (e.g. a model ID) must remain
+consistent across Go code, shell scripts, and docs, the right pattern is:
+1. Designate one file as the canonical source (`base/settings.json` in this case).
+2. Extract a named constant in Go (`cmd/bb/runtime_contract.go`) that matches it.
+3. Write a pytest test that reads the canonical source, then greps all other surfaces
+   and asserts they match. This gives a clear failure message on drift.
+4. Add the test directory to `pytest.ini` testpaths so it runs automatically.
+
+**Real drift found**: `scripts/lib.sh` `openrouter-claude` fallback was
+`"anthropic/claude-opus-4"` (different from the canonical `"anthropic/claude-sonnet-4-6"`
+in `base/settings.json`). Always grep all surfaces — doc-only reviews miss code paths.
+
+**pytest.ini testpaths**: Adding a new test directory requires updating `testpaths`
+in `pytest.ini`. Without it, `pytest` (no args) won't discover the new tests.
