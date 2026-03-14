@@ -59,8 +59,9 @@ If README prose, persona guidance, or prompt templates drift from that contract,
 ## Quick Start
 
 ```bash
-# 0) Build bb
+# 0) Build bb and conductor deps
 make build
+cd conductor && mix deps.get && mix compile
 
 # 1) Load env
 source .env.bb
@@ -72,20 +73,19 @@ export OPENROUTER_API_KEY="..."
 # FLY_API_TOKEN is a more fragile fallback.
 export SPRITE_TOKEN="..."  # from https://sprites.dev/settings
 
-# 2) Bootstrap one builder + three reviewers
+# 2) Bootstrap a builder sprite
 ./bin/bb setup noble-blue-serpent --repo misty-step/bitterblossom
-./bin/bb setup council-fern-20260306 --repo misty-step/bitterblossom
-./bin/bb setup council-sage-20260306 --repo misty-step/bitterblossom
-./bin/bb setup council-thorn-20260306 --repo misty-step/bitterblossom
 
-# 3) Run one conductor cycle against an issue or backlog label
-python3 scripts/conductor.py run-once \
+# 3) Run one conductor cycle against a specific issue
+cd conductor && mix conductor run-once \
   --repo misty-step/bitterblossom \
-  --label autopilot \
-  --worker noble-blue-serpent \
-  --reviewer council-fern-20260306 \
-  --reviewer council-sage-20260306 \
-  --reviewer council-thorn-20260306
+  --issue 123 \
+  --worker noble-blue-serpent
+
+# Or run the continuous polling loop
+cd conductor && mix conductor loop \
+  --repo misty-step/bitterblossom \
+  --worker noble-blue-serpent
 ```
 
 See [docs/CLI-REFERENCE.md](docs/CLI-REFERENCE.md) for `bb`, and [docs/CONDUCTOR.md](docs/CONDUCTOR.md) for the conductor loop.

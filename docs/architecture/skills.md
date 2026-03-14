@@ -68,7 +68,7 @@ Each skill directory contains:
 ## Update Path
 
 1. Edit skill files in `base/skills/` (repo)
-2. Commit and push to master
+2. Commit to a feature branch, open a PR, merge after review and CI pass
 3. Run `bb setup <sprite> --repo <repo>` to re-provision
 4. New dispatches pick up the updated skill content
 

@@ -37,7 +37,7 @@ flowchart TD
 ```mermaid
 flowchart TD
     App["Conductor.Application\nOTP root"]
-    App --> Repo["Conductor.Repo\nEcto/SQLite"]
+    App --> Store["Conductor.Store\nSQLite GenServer"]
     App --> OrcSup["Conductor.Orchestrator\nGenServer"]
     App --> RunSup["Conductor.RunSupervisor\nDynamicSupervisor"]
     RunSup --> RS1["RunServer (issue A)"]
