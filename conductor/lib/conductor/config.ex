@@ -67,6 +67,32 @@ defmodule Conductor.Config do
     Application.get_env(:conductor, :replay_delay_seconds, 120) * 1_000
   end
 
+  @doc """
+  Declared fleet workers. Returns a list of maps with `:name` and `:tags` keys.
+  Accepts either strings or maps from application config.
+  """
+  @spec workers() :: [%{name: binary(), tags: [binary()]}]
+  def workers do
+    raw = Application.get_env(:conductor, :workers, [])
+
+    Enum.map(raw, fn
+      name when is_binary(name) ->
+        %{name: name, tags: []}
+
+      %{name: _} = spec ->
+        Map.put_new(spec, :tags, [])
+
+      %{"name" => name} = spec ->
+        %{name: name, tags: Map.get(spec, "tags", [])}
+    end)
+  end
+
+  @doc "Consecutive probe failures before a worker is drained. Default: 3."
+  @spec max_probe_failures() :: pos_integer()
+  def max_probe_failures do
+    Application.get_env(:conductor, :max_probe_failures, 3)
+  end
+
   @spec prompt_template() :: binary()
   def prompt_template do
     System.get_env("CONDUCTOR_PROMPT_TEMPLATE") ||

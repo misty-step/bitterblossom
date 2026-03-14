@@ -5,6 +5,14 @@ defmodule Conductor.Orchestrator do
   In `run_once` mode: starts one RunServer and waits for it.
   In `loop` mode: polls for eligible issues and starts RunServers up to concurrency limit.
   Reconciles stale runs on every tick.
+
+  ## Fleet and health tracking
+
+  Workers are probed before each dispatch. A worker that fails N consecutive probes
+  (see `Config.max_probe_failures/0`, default 3) is marked drained and skipped.
+  A drained worker is automatically recovered on the next successful probe — the
+  conductor retries drained workers on every tick so they rejoin the pool once the
+  sprite is reachable again.
   """
 
   use GenServer
@@ -12,14 +20,21 @@ defmodule Conductor.Orchestrator do
 
   alias Conductor.{Store, Config, Issue}
 
+  @health_default %{consecutive_failures: 0, drained: false}
+
   defstruct [
     :repo,
     :label,
     :workers,
     :trusted_surfaces,
+    # Injected in tests to probe workers without real sprite calls.
+    :probe_fn,
+    # Injected in tests to avoid starting real RunServers.
+    :dispatch_fn,
     mode: :idle,
     active_runs: %{},
-    worker_index: 0
+    worker_index: 0,
+    worker_health: %{}
   ]
 
   # --- Public API ---
@@ -58,6 +73,15 @@ defmodule Conductor.Orchestrator do
     GenServer.call(__MODULE__, {:start_loop, opts})
   end
 
+  @doc """
+  Returns health and assignment status for each declared worker.
+  Only meaningful after `start_loop/1` has been called.
+  """
+  @spec fleet_status() :: [map()]
+  def fleet_status do
+    GenServer.call(__MODULE__, :fleet_status)
+  end
+
   # --- GenServer Callbacks ---
 
   @impl true
@@ -67,7 +91,9 @@ defmodule Conductor.Orchestrator do
        repo: Keyword.get(opts, :repo),
        label: Keyword.get(opts, :label, "autopilot"),
        workers: Keyword.get(opts, :workers, []),
-       trusted_surfaces: Keyword.get(opts, :trusted_surfaces, [])
+       trusted_surfaces: Keyword.get(opts, :trusted_surfaces, []),
+       probe_fn: Keyword.get(opts, :probe_fn),
+       dispatch_fn: Keyword.get(opts, :dispatch_fn)
      }}
   end
 
@@ -84,12 +110,34 @@ defmodule Conductor.Orchestrator do
           label: Keyword.get(opts, :label, state.label),
           workers: workers,
           trusted_surfaces: Keyword.get(opts, :trusted_surfaces, state.trusted_surfaces),
+          probe_fn: Keyword.get(opts, :probe_fn, state.probe_fn),
+          dispatch_fn: Keyword.get(opts, :dispatch_fn, state.dispatch_fn),
           mode: :polling
       }
 
       schedule_poll(0)
       {:reply, :ok, state}
     end
+  end
+
+  @impl true
+  def handle_call(:fleet_status, _from, state) do
+    statuses =
+      Enum.map(state.workers, fn worker ->
+        health = Map.get(state.worker_health, worker, @health_default)
+
+        active =
+          Enum.count(state.active_runs, fn {_, entry} -> entry.worker == worker end)
+
+        %{
+          worker: worker,
+          drained: health.drained,
+          consecutive_failures: health.consecutive_failures,
+          active_runs: active
+        }
+      end)
+
+    {:reply, statuses, state}
   end
 
   @impl true
@@ -102,7 +150,6 @@ defmodule Conductor.Orchestrator do
 
   @impl true
   def handle_info({:DOWN, ref, :process, _pid, _reason}, state) do
-    # A RunServer died. Remove it from active runs.
     active =
       state.active_runs
       |> Enum.reject(fn {_id, %{ref: r}} -> r == ref end)
@@ -170,27 +217,36 @@ defmodule Conductor.Orchestrator do
   end
 
   defp start_run(state, issue) do
-    worker = pick_worker(state)
+    case pick_healthy_worker(state) do
+      {nil, state} ->
+        Logger.warning("no healthy workers for issue ##{issue.number}, skipping until next poll")
+        state
 
-    opts = [
+      {worker, state} ->
+        dispatch_run(state, issue, worker)
+    end
+  end
+
+  defp dispatch_run(state, issue, worker) do
+    run_opts = [
       repo: state.repo,
       issue: issue,
       worker: worker,
       trusted_surfaces: state.trusted_surfaces
     ]
 
-    case DynamicSupervisor.start_child(Conductor.RunSupervisor, {Conductor.RunServer, opts}) do
+    start_child =
+      state.dispatch_fn ||
+        fn opts ->
+          DynamicSupervisor.start_child(Conductor.RunSupervisor, {Conductor.RunServer, opts})
+        end
+
+    case start_child.(run_opts) do
       {:ok, pid} ->
         ref = Process.monitor(pid)
         run_entry = %{pid: pid, ref: ref, issue: issue.number, worker: worker}
-
         Logger.info("started run for issue ##{issue.number} on #{worker}")
-
-        %{
-          state
-          | active_runs: Map.put(state.active_runs, issue.number, run_entry),
-            worker_index: state.worker_index + 1
-        }
+        %{state | active_runs: Map.put(state.active_runs, issue.number, run_entry)}
 
       {:error, reason} ->
         Logger.error("failed to start run for issue ##{issue.number}: #{inspect(reason)}")
@@ -198,10 +254,76 @@ defmodule Conductor.Orchestrator do
     end
   end
 
-  defp pick_worker(%{workers: []}), do: raise("no workers configured")
+  @doc false
+  # Pick the next healthy worker via round-robin, probing each candidate.
+  # Returns `{worker, updated_state}` or `{nil, updated_state}` when all are drained.
+  defp pick_healthy_worker(%{workers: []} = state) do
+    {nil, state}
+  end
 
-  defp pick_worker(%{workers: workers, worker_index: idx}) do
-    Enum.at(workers, rem(idx, length(workers)))
+  defp pick_healthy_worker(%{workers: workers, worker_index: idx} = state) do
+    n = length(workers)
+
+    result =
+      Enum.reduce_while(0..(n - 1), state, fn offset, acc ->
+        candidate = Enum.at(workers, rem(idx + offset, n))
+        health = Map.get(acc.worker_health, candidate, @health_default)
+
+        case do_probe(acc, candidate) do
+          :ok ->
+            # Probe succeeded — clear failures (auto-recovery if was drained)
+            if health.drained do
+              Logger.info("worker #{candidate} auto-recovered after successful probe")
+            end
+
+            new_acc = clear_health(acc, candidate)
+            {:halt, {:found, candidate, new_acc}}
+
+          :error ->
+            if health.drained do
+              # Still drained, keep going
+              {:cont, acc}
+            else
+              # Record failure; drain if threshold hit
+              {:cont, record_failure(acc, candidate)}
+            end
+        end
+      end)
+
+    case result do
+      {:found, worker, new_state} ->
+        {worker, %{new_state | worker_index: idx + 1}}
+
+      state ->
+        {nil, state}
+    end
+  end
+
+  defp do_probe(state, worker) do
+    probe = state.probe_fn || (&Conductor.Sprite.wake/1)
+
+    case probe.(worker) do
+      :ok -> :ok
+      _ -> :error
+    end
+  end
+
+  defp clear_health(state, worker) do
+    %{state | worker_health: Map.put(state.worker_health, worker, @health_default)}
+  end
+
+  defp record_failure(state, worker) do
+    health = Map.get(state.worker_health, worker, @health_default)
+    failures = health.consecutive_failures + 1
+    max_fails = Config.max_probe_failures()
+    drained = failures >= max_fails
+
+    if drained do
+      Logger.warning("worker #{worker} drained after #{failures} consecutive probe failures")
+    end
+
+    new_health = %{consecutive_failures: failures, drained: drained}
+    %{state | worker_health: Map.put(state.worker_health, worker, new_health)}
   end
 
   defp reconcile(state) do

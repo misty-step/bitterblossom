@@ -1,7 +1,7 @@
 defmodule Conductor.CLI do
   @moduledoc "Escript entry point. Parses args and delegates to Conductor."
 
-  @commands ~w(run-once loop show-runs show-events show-incidents show-waivers check-env dashboard)
+  @commands ~w(run-once loop fleet show-runs show-events show-incidents show-waivers check-env dashboard)
 
   def main(args) do
     Application.ensure_all_started(:conductor)
@@ -12,6 +12,9 @@ defmodule Conductor.CLI do
 
       ["loop" | rest] ->
         cmd_loop(rest)
+
+      ["fleet" | rest] ->
+        cmd_fleet(rest)
 
       ["show-runs" | rest] ->
         cmd_show_runs(rest)
@@ -164,6 +167,53 @@ defmodule Conductor.CLI do
         |> Map.put(count_key, length(records))
       )
     )
+  end
+
+  defp cmd_fleet(args) do
+    {opts, _, _} =
+      OptionParser.parse(args,
+        strict: [
+          worker: [:string, :keep],
+          repo: :string
+        ]
+      )
+
+    # Resolve declared workers: CLI flags take precedence over app config.
+    config_workers = Conductor.Config.workers() |> Enum.map(& &1.name)
+    cli_workers = Keyword.get_values(opts, :worker)
+    workers = if cli_workers != [], do: cli_workers, else: config_workers
+
+    if workers == [] do
+      IO.puts(
+        "no workers declared. " <>
+          "Configure :workers in app config or pass --worker <name>."
+      )
+
+      System.halt(1)
+    end
+
+    repo = Keyword.get(opts, :repo)
+
+    # Gather active run counts from the store (best-effort; 0 if repo unset).
+    active_by_worker =
+      if repo do
+        repo
+        |> Conductor.Store.list_active_runs()
+        |> Enum.group_by(& &1["builder_sprite"])
+        |> Map.new(fn {k, v} -> {k, length(v)} end)
+      else
+        %{}
+      end
+
+    header = String.pad_trailing("WORKER", 32) <> String.pad_trailing("STATUS", 14) <> "RUNS"
+    IO.puts(header)
+
+    Enum.each(workers, fn worker ->
+      status = if Conductor.Sprite.reachable?(worker), do: "healthy", else: "unreachable"
+      active = Map.get(active_by_worker, worker, 0)
+
+      IO.puts(String.pad_trailing(worker, 32) <> String.pad_trailing(status, 14) <> "#{active}")
+    end)
   end
 
   defp cmd_dashboard(args) do

@@ -113,6 +113,19 @@ defmodule Conductor.Sprite do
     match?({:ok, _}, exec(sprite, "echo ok", timeout: 15_000))
   end
 
+  @doc """
+  Wake a sleeping sprite and confirm it's reachable.
+  Returns `:ok` on success, `{:error, reason}` on failure.
+  Sprites auto-wake on any exec call; this makes the wake explicit.
+  """
+  @spec wake(binary()) :: :ok | {:error, binary()}
+  def wake(sprite) do
+    case exec(sprite, "echo ok", timeout: 15_000) do
+      {:ok, _} -> :ok
+      {:error, msg, _} -> {:error, msg}
+    end
+  end
+
   # --- Private ---
 
   defp run_agent(sprite, workspace, prompt_path, harness, exec_fn, timeout_ms) do
