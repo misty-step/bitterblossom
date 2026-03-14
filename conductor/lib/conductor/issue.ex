@@ -23,22 +23,43 @@ defmodule Conductor.Issue do
     }
   end
 
+  @doc """
+  Check issue readiness for conductor pickup.
+
+  Accepts two formats:
+  - Groom format: `## Problem` + `## Acceptance Criteria` (org standard)
+  - Conductor format: `## Product Spec` + `### Intent Contract` (legacy)
+
+  An issue is ready if it has EITHER format — problem + criteria is sufficient.
+  """
   @spec ready?(t()) :: :ok | {:error, [binary()]}
   def ready?(%__MODULE__{body: body}) do
-    failures =
-      []
-      |> check_section(body, "## Product Spec", "missing `## Product Spec` section")
-      |> check_section(body, "### Intent Contract", "missing `### Intent Contract` section")
-      |> Enum.reverse()
+    cond do
+      # Groom format (org standard): Problem + Acceptance Criteria
+      has?(body, "## Problem") and has?(body, "## Acceptance Criteria") ->
+        :ok
 
-    case failures do
-      [] -> :ok
-      list -> {:error, list}
+      # Conductor format (legacy): Product Spec + Intent Contract
+      has?(body, "## Product Spec") and has?(body, "### Intent Contract") ->
+        :ok
+
+      true ->
+        failures =
+          []
+          |> check_missing(body, ["## Problem", "## Product Spec"],
+               "missing `## Problem` or `## Product Spec` section")
+          |> check_missing(body, ["## Acceptance Criteria", "### Intent Contract"],
+               "missing `## Acceptance Criteria` or `### Intent Contract` section")
+          |> Enum.reverse()
+
+        {:error, failures}
     end
   end
 
-  defp check_section(acc, body, heading, msg) do
-    if String.contains?(body, heading), do: acc, else: [msg | acc]
+  defp has?(body, heading), do: String.contains?(body, heading)
+
+  defp check_missing(acc, body, headings, msg) do
+    if Enum.any?(headings, &has?(body, &1)), do: acc, else: [msg | acc]
   end
 
   defp label_name(%{"name" => n}), do: n

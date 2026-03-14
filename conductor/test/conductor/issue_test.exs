@@ -77,44 +77,45 @@ defmodule Conductor.IssueTest do
   end
 
   describe "ready?/1" do
-    test "returns :ok when both sections present" do
+    test "accepts groom format (Problem + Acceptance Criteria)" do
       body = """
-      ## Product Spec
-      Build the thing.
+      ## Problem
+      Widget is broken.
 
-      ### Intent Contract
-      - MUST do X
+      ## Acceptance Criteria
+      - [ ] [test] Given X, when Y, then Z
       """
 
       issue = %Issue{number: 1, title: "t", body: body, url: "u"}
-
       assert :ok = Issue.ready?(issue)
     end
 
-    test "rejects missing Product Spec" do
+    test "accepts conductor format (Product Spec + Intent Contract)" do
       body = """
+      ## Product Spec
+
       ### Intent Contract
       - MUST do X
       """
 
       issue = %Issue{number: 1, title: "t", body: body, url: "u"}
-
-      assert {:error, failures} = Issue.ready?(issue)
-      assert "missing `## Product Spec` section" in failures
-      refute "missing `### Intent Contract` section" in failures
+      assert :ok = Issue.ready?(issue)
     end
 
-    test "rejects missing Intent Contract" do
-      body = """
-      ## Product Spec
-      Build the thing.
-      """
-
+    test "rejects body with only Problem (no criteria)" do
+      body = "## Problem\nSomething is wrong."
       issue = %Issue{number: 1, title: "t", body: body, url: "u"}
 
       assert {:error, failures} = Issue.ready?(issue)
-      assert "missing `### Intent Contract` section" in failures
-      refute "missing `## Product Spec` section" in failures
+      assert length(failures) == 1
+    end
+
+    test "rejects body with only Acceptance Criteria (no problem)" do
+      body = "## Acceptance Criteria\n- [ ] test"
+      issue = %Issue{number: 1, title: "t", body: body, url: "u"}
+
+      assert {:error, failures} = Issue.ready?(issue)
+      assert length(failures) == 1
     end
 
     test "rejects empty body with both failures" do
@@ -122,15 +123,15 @@ defmodule Conductor.IssueTest do
 
       assert {:error, failures} = Issue.ready?(issue)
       assert length(failures) == 2
-      assert "missing `## Product Spec` section" in failures
-      assert "missing `### Intent Contract` section" in failures
     end
 
-    test "heading match is substring-based, not line-anchored" do
-      body = "prefix ## Product Spec suffix\nprefix ### Intent Contract suffix"
+    test "accepts mixed format (Problem + Intent Contract)" do
+      body = "## Problem\nBroken.\n\n### Intent Contract\nFix it."
       issue = %Issue{number: 1, title: "t", body: body, url: "u"}
 
-      assert :ok = Issue.ready?(issue)
+      # Has Problem but not Acceptance Criteria, has Intent Contract but not Product Spec
+      # Neither complete format matches, so this should fail
+      assert {:error, _} = Issue.ready?(issue)
     end
   end
 end
