@@ -190,6 +190,29 @@ defmodule Conductor.GitHub do
     result
   end
 
+  @spec update_issue_body(binary(), pos_integer(), binary()) :: :ok | {:error, term()}
+  def update_issue_body(repo, issue_number, body) do
+    tmp = Path.join(System.tmp_dir!(), "conductor-body-#{System.unique_integer([:positive])}.md")
+    File.write!(tmp, body)
+
+    result =
+      case Shell.cmd("gh", [
+             "issue",
+             "edit",
+             to_string(issue_number),
+             "--repo",
+             repo,
+             "--body-file",
+             tmp
+           ]) do
+        {:ok, _} -> :ok
+        {:error, msg, _} -> {:error, msg}
+      end
+
+    File.rm(tmp)
+    result
+  end
+
   @spec get_pr(binary(), pos_integer()) :: {:ok, map()} | {:error, term()}
   def get_pr(repo, pr_number) do
     case Shell.cmd("gh", [
