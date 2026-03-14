@@ -144,4 +144,90 @@ defmodule Conductor.PromptTest do
       assert prompt =~ ~s("blocking_reason")
     end
   end
+
+  describe "build_builder_prompt/5 with repo_context (CLAUDE.md)" do
+    @claude_md_content """
+    # CLAUDE.md
+
+    ## What This Is
+    Bitterblossom — Elixir/OTP conductor for a sprite-based software factory.
+
+    ## Coding Standards
+    - Elixir 1.16+, mix format, deep modules (Ousterhout)
+    - Semantic commits: feat:, fix:, test:, docs:, refactor:
+    """
+
+    test "includes Repository Context section before the task header" do
+      prompt =
+        Prompt.build_builder_prompt(
+          @issue,
+          "run-99-300",
+          "factory/99-300",
+          "/tmp/result.json",
+          repo_context: @claude_md_content
+        )
+
+      assert prompt =~ "## Repository Context"
+      assert prompt =~ "Elixir/OTP conductor"
+      context_pos = :binary.match(prompt, "## Repository Context") |> elem(0)
+      task_pos = :binary.match(prompt, "# Builder Task") |> elem(0)
+      assert context_pos < task_pos, "Repository Context must appear before Builder Task"
+    end
+
+    test "includes CLAUDE.md content in the prompt" do
+      prompt =
+        Prompt.build_builder_prompt(
+          @issue,
+          "run-99-301",
+          "factory/99-301",
+          "/tmp/result.json",
+          repo_context: @claude_md_content
+        )
+
+      assert prompt =~ "Coding Standards"
+      assert prompt =~ "mix format"
+    end
+  end
+
+  describe "build_builder_prompt/5 with repo_context (project.md)" do
+    @project_md_content """
+    # Project: Bitterblossom
+
+    ## Vision
+    Single-repo software factory conductor. Routes GitHub work to sprites, drives implementation, merges when governance says done.
+
+    ## Quality Bar
+    - Every issue the conductor leases is runnable by sprites without clarification loops.
+    - Run state tells the truth.
+    """
+
+    test "includes project vision and quality bar from project.md" do
+      prompt =
+        Prompt.build_builder_prompt(
+          @issue,
+          "run-99-400",
+          "factory/99-400",
+          "/tmp/result.json",
+          repo_context: @project_md_content
+        )
+
+      assert prompt =~ "## Repository Context"
+      assert prompt =~ "software factory conductor"
+      assert prompt =~ "Quality Bar"
+    end
+  end
+
+  describe "build_builder_prompt/5 without repo_context" do
+    test "omits Repository Context section when not provided" do
+      prompt =
+        Prompt.build_builder_prompt(
+          @issue,
+          "run-99-500",
+          "factory/99-500",
+          "/tmp/result.json"
+        )
+
+      refute prompt =~ "## Repository Context"
+    end
+  end
 end

@@ -122,7 +122,7 @@ defmodule Conductor.ConfigTest do
     test "falls back to relative path when env unset" do
       System.delete_env("CONDUCTOR_PROMPT_TEMPLATE")
       path = Config.prompt_template()
-      assert String.ends_with?(path, "scripts/ralph-prompt-template.md")
+      assert String.ends_with?(path, "scripts/builder-prompt-template.md")
     end
   end
 
