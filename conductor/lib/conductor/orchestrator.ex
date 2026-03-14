@@ -19,7 +19,9 @@ defmodule Conductor.Orchestrator do
     :trusted_surfaces,
     mode: :idle,
     active_runs: %{},
-    worker_index: 0
+    worker_index: 0,
+    # %{sprite_name => %{consecutive_failures: non_neg_integer(), drained: boolean()}}
+    worker_health: %{}
   ]
 
   # --- Public API ---
@@ -170,8 +172,33 @@ defmodule Conductor.Orchestrator do
   end
 
   defp start_run(state, issue) do
-    worker = pick_worker(state)
+    case pick_healthy_worker(state) do
+      nil ->
+        Logger.warning(
+          "no healthy workers available for issue ##{issue.number}, will retry next poll"
+        )
 
+        state
+
+      {worker, updated_state} ->
+        # Auto-wake: probe the sprite before dispatching. This wakes sleeping
+        # fly.io machines and validates reachability in one call.
+        case sprite_mod().probe(worker) do
+          {:ok, _} ->
+            state_after_probe = record_probe_success(updated_state, worker)
+            do_start_run(state_after_probe, issue, worker)
+
+          {:error, reason} ->
+            Logger.warning(
+              "probe failed for worker #{worker}: #{reason}, skipping issue ##{issue.number}"
+            )
+
+            record_probe_failure(updated_state, worker)
+        end
+    end
+  end
+
+  defp do_start_run(state, issue, worker) do
     opts = [
       repo: state.repo,
       issue: issue,
@@ -183,14 +210,8 @@ defmodule Conductor.Orchestrator do
       {:ok, pid} ->
         ref = Process.monitor(pid)
         run_entry = %{pid: pid, ref: ref, issue: issue.number, worker: worker}
-
         Logger.info("started run for issue ##{issue.number} on #{worker}")
-
-        %{
-          state
-          | active_runs: Map.put(state.active_runs, issue.number, run_entry),
-            worker_index: state.worker_index + 1
-        }
+        %{state | active_runs: Map.put(state.active_runs, issue.number, run_entry)}
 
       {:error, reason} ->
         Logger.error("failed to start run for issue ##{issue.number}: #{inspect(reason)}")
@@ -198,10 +219,49 @@ defmodule Conductor.Orchestrator do
     end
   end
 
-  defp pick_worker(%{workers: []}), do: raise("no workers configured")
+  # Returns {worker, updated_state} with incremented worker_index, or nil if no healthy workers.
+  defp pick_healthy_worker(%{workers: []}), do: nil
 
-  defp pick_worker(%{workers: workers, worker_index: idx}) do
-    Enum.at(workers, rem(idx, length(workers)))
+  defp pick_healthy_worker(%{workers: workers, worker_health: health, worker_index: idx} = state) do
+    healthy =
+      Enum.filter(workers, fn w ->
+        h = Map.get(health, w, %{consecutive_failures: 0, drained: false})
+        not h.drained
+      end)
+
+    case healthy do
+      [] ->
+        nil
+
+      _ ->
+        worker = Enum.at(healthy, rem(idx, length(healthy)))
+        {worker, %{state | worker_index: idx + 1}}
+    end
+  end
+
+  defp record_probe_success(state, worker) do
+    prev = Map.get(state.worker_health, worker, %{consecutive_failures: 0, drained: false})
+
+    if prev.drained do
+      Logger.info("worker #{worker} recovered — re-entering active pool")
+    end
+
+    health = %{consecutive_failures: 0, drained: false}
+    %{state | worker_health: Map.put(state.worker_health, worker, health)}
+  end
+
+  defp record_probe_failure(state, worker) do
+    prev = Map.get(state.worker_health, worker, %{consecutive_failures: 0, drained: false})
+    failures = prev.consecutive_failures + 1
+    threshold = Config.probe_fail_threshold()
+    newly_drained = not prev.drained and failures >= threshold
+
+    if newly_drained do
+      Logger.warning("worker #{worker} drained after #{failures} consecutive probe failures")
+    end
+
+    health = %{consecutive_failures: failures, drained: failures >= threshold}
+    %{state | worker_health: Map.put(state.worker_health, worker, health)}
   end
 
   defp reconcile(state) do
@@ -255,6 +315,7 @@ defmodule Conductor.Orchestrator do
   end
 
   defp tracker_mod, do: Application.get_env(:conductor, :tracker_module, Conductor.GitHub)
+  defp sprite_mod, do: Application.get_env(:conductor, :sprite_module, Conductor.Sprite)
 
   defp schedule_poll(delay) do
     Process.send_after(self(), :poll, delay)

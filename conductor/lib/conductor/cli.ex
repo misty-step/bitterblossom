@@ -1,7 +1,7 @@
 defmodule Conductor.CLI do
   @moduledoc "Escript entry point. Parses args and delegates to Conductor."
 
-  @commands ~w(run-once loop show-runs show-events show-incidents show-waivers check-env dashboard)
+  @commands ~w(run-once loop show-runs show-events show-incidents show-waivers check-env dashboard fleet)
 
   def main(args) do
     Application.ensure_all_started(:conductor)
@@ -27,6 +27,9 @@ defmodule Conductor.CLI do
 
       ["dashboard" | rest] ->
         cmd_dashboard(rest)
+
+      ["fleet" | rest] ->
+        cmd_fleet(rest)
 
       ["check-env" | _] ->
         cmd_check_env()
@@ -186,6 +189,43 @@ defmodule Conductor.CLI do
     {:ok, _} = Supervisor.start_child(Conductor.Supervisor, Conductor.Web.Endpoint)
     IO.puts("dashboard running at http://localhost:#{port}")
     Process.sleep(:infinity)
+  end
+
+  defp cmd_fleet(args) do
+    {opts, _, _} = OptionParser.parse(args, strict: [worker: [:string, :keep]])
+
+    workers =
+      case Keyword.get_values(opts, :worker) do
+        [] -> Conductor.Config.workers()
+        ws -> ws
+      end
+
+    if workers == [] do
+      IO.puts("no workers declared (use --worker NAME or set :workers in conductor app config)")
+      System.halt(1)
+    end
+
+    # Build assignment index: sprite_name -> [issue_number]
+    active_runs = Conductor.Store.list_active_runs_all()
+    by_worker = Enum.group_by(active_runs, & &1["builder_sprite"])
+
+    Enum.each(workers, fn worker ->
+      health =
+        case Conductor.Sprite.probe(worker) do
+          {:ok, _} -> "healthy"
+          {:error, _} -> "unreachable"
+        end
+
+      assigned = Map.get(by_worker, worker, []) |> Enum.map(& &1["issue_number"])
+
+      IO.puts(
+        Jason.encode!(%{
+          worker: worker,
+          status: health,
+          assigned_issues: assigned
+        })
+      )
+    end)
   end
 
   defp cmd_check_env do

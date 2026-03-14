@@ -49,6 +49,18 @@ defmodule Conductor.Config do
     Application.get_env(:conductor, :max_replays, 3)
   end
 
+  @doc "Declared fleet of worker sprites. Each entry is a sprite name string."
+  @spec workers() :: [binary()]
+  def workers do
+    Application.get_env(:conductor, :workers, [])
+  end
+
+  @doc "Consecutive probe failures before a worker is drained from the active pool."
+  @spec probe_fail_threshold() :: pos_integer()
+  def probe_fail_threshold do
+    Application.get_env(:conductor, :probe_fail_threshold, 3)
+  end
+
   @doc """
   Minutes of heartbeat silence before a run is considered stale and its lease expired.
   Defaults to builder_timeout + ci_timeout + 10 minutes of buffer.

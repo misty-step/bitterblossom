@@ -101,6 +101,12 @@ defmodule Conductor.Store do
     GenServer.call(__MODULE__, {:list_active_runs, repo})
   end
 
+  @doc "List all non-terminal runs across all repos."
+  @spec list_active_runs_all() :: [map()]
+  def list_active_runs_all do
+    GenServer.call(__MODULE__, :list_active_runs_all)
+  end
+
   @doc """
   Atomically expire a stale run: record event, complete the run as failed,
   and release its lease. Encapsulates the domain transition so callers
@@ -373,6 +379,18 @@ defmodule Conductor.Store do
         state.conn,
         "SELECT * FROM runs WHERE repo = ?1 AND completed_at IS NULL ORDER BY picked_at ASC",
         [repo]
+      )
+
+    {:reply, rows, state}
+  end
+
+  @impl true
+  def handle_call(:list_active_runs_all, _from, state) do
+    rows =
+      query_all(
+        state.conn,
+        "SELECT * FROM runs WHERE completed_at IS NULL ORDER BY picked_at ASC",
+        []
       )
 
     {:reply, rows, state}

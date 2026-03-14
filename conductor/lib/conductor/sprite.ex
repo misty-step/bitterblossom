@@ -113,6 +113,18 @@ defmodule Conductor.Sprite do
     match?({:ok, _}, exec(sprite, "echo ok", timeout: 15_000))
   end
 
+  @doc """
+  Probe a sprite for health. Also wakes it if sleeping (fly.io restarts on any exec).
+  Returns `{:ok, :reachable}` or `{:error, reason}`.
+  """
+  @spec probe(binary()) :: {:ok, :reachable} | {:error, binary()}
+  def probe(sprite) do
+    case exec(sprite, "echo ok", timeout: 15_000) do
+      {:ok, _} -> {:ok, :reachable}
+      {:error, msg, _} -> {:error, msg}
+    end
+  end
+
   # --- Private ---
 
   defp run_agent(sprite, workspace, prompt_path, harness, exec_fn, timeout_ms) do
