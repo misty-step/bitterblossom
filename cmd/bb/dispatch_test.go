@@ -609,8 +609,11 @@ func TestVerifyWorkScriptForUsesDetectedBranch(t *testing.T) {
 
 	script := verifyWorkScriptFor("/tmp/ws", "ghtoken123", "development")
 
-	if !strings.Contains(script, "origin/development..HEAD") {
-		t.Fatalf("verifyWorkScriptFor() should use detected branch: %q", script)
+	if !strings.Contains(script, `BRANCH="development"`) {
+		t.Fatalf("verifyWorkScriptFor() should set BRANCH to detected branch: %q", script)
+	}
+	if !strings.Contains(script, `"origin/$BRANCH..HEAD"`) {
+		t.Fatalf("verifyWorkScriptFor() should use $BRANCH for log range: %q", script)
 	}
 	if strings.Contains(script, "origin/master") {
 		t.Fatalf("verifyWorkScriptFor() should not contain hardcoded origin/master: %q", script)
@@ -691,6 +694,53 @@ func TestDetectDefaultBranchHasDeadline(t *testing.T) {
 	_, _ = detectDefaultBranchWithRunner(context.Background(), r.run, "/tmp/ws")
 	if !r.gotDeadline {
 		t.Fatal("expected context to carry a deadline")
+	}
+}
+
+func TestDetectDefaultBranchRejectsHEAD(t *testing.T) {
+	t.Parallel()
+
+	// Simulates the edge case where origin/HEAD is unset: git outputs "origin/HEAD",
+	// the bash script strips the prefix leaving "HEAD", which the Go layer must reject.
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: []byte("HEAD\n"), err: nil}
+	_, err := detectDefaultBranchWithRunner(context.Background(), r.run, "/tmp/ws")
+	if err == nil {
+		t.Fatal("expected error for HEAD branch name")
+	}
+	if !strings.Contains(err.Error(), "invalid branch name") {
+		t.Fatalf("err = %q, want to contain %q", err.Error(), "invalid branch name")
+	}
+}
+
+func TestDetectDefaultBranchRejectsUnsafeName(t *testing.T) {
+	t.Parallel()
+
+	// Simulates a (malicious) branch name containing shell metacharacters.
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: []byte("main;id\n"), err: nil}
+	_, err := detectDefaultBranchWithRunner(context.Background(), r.run, "/tmp/ws")
+	if err == nil {
+		t.Fatal("expected error for branch name with shell metacharacters")
+	}
+	if !strings.Contains(err.Error(), "invalid branch name") {
+		t.Fatalf("err = %q, want to contain %q", err.Error(), "invalid branch name")
+	}
+}
+
+func TestIsValidBranchName(t *testing.T) {
+	t.Parallel()
+
+	valid := []string{"main", "master", "development", "feature/ABC-123", "release-1.0", "my_branch"}
+	for _, name := range valid {
+		if !isValidBranchName(name) {
+			t.Errorf("isValidBranchName(%q) = false, want true", name)
+		}
+	}
+
+	invalid := []string{"", "HEAD", "main;id", "$(id)", "branch name", "branch&id", "branch|id"}
+	for _, name := range invalid {
+		if isValidBranchName(name) {
+			t.Errorf("isValidBranchName(%q) = true, want false", name)
+		}
 	}
 }
 

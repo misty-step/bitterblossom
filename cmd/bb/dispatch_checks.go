@@ -66,11 +66,14 @@ exit 1`
 // detectDefaultBranchScript resolves the remote default branch from origin/HEAD.
 // Exits 0 with the branch name (e.g. "main", "master", "development") on stdout.
 // Falls back to checking whether origin/master exists, then "main" as a last resort.
+//
+// Guard: when origin/HEAD is unset, git rev-parse may output "origin/HEAD" literally
+// (stripped to "HEAD"). We reject that value and fall through to the master/main probe.
 const detectDefaultBranchScript = `
 cd "$WORKSPACE" 2>/dev/null || { echo "main"; exit 0; }
 branch="$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null)"
 branch="${branch#origin/}"
-if [ -n "$branch" ]; then
+if [ -n "$branch" ] && [ "$branch" != "HEAD" ]; then
   echo "$branch"
   exit 0
 fi
@@ -228,6 +231,7 @@ func pollDispatchCheck(ctx context.Context, run spriteScriptRunner, cfg dispatch
 
 // detectDefaultBranchWithRunner resolves the remote default branch from origin/HEAD.
 // Returns "main" when origin/HEAD is not configured and origin/master is absent.
+// Returns an error when the detected name contains characters unsafe for shell use.
 func detectDefaultBranchWithRunner(ctx context.Context, run spriteScriptRunner, workspace string) (string, error) {
 	output, exitCode, err := runDispatchCheck(ctx, run, dispatchCheck{
 		timeout: 10 * time.Second,
@@ -242,7 +246,26 @@ func detectDefaultBranchWithRunner(ctx context.Context, run spriteScriptRunner, 
 	if output == "" {
 		return "main", nil
 	}
+	if !isValidBranchName(output) {
+		return "", fmt.Errorf("detect default branch: invalid branch name %q", output)
+	}
 	return output, nil
+}
+
+// isValidBranchName reports whether name is safe to use in shell commands.
+// Accepts only characters that valid git branch names use in practice; rejects
+// shell metacharacters and the literal "HEAD" (produced when origin/HEAD is unset).
+func isValidBranchName(name string) bool {
+	if name == "" || name == "HEAD" {
+		return false
+	}
+	for _, c := range name {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '/') {
+			return false
+		}
+	}
+	return true
 }
 
 // hasNewCommitsWithRunner returns true when commits exist on HEAD that are not

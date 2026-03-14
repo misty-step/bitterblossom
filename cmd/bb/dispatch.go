@@ -77,7 +77,7 @@ func dispatchWorkspace(repo, override string) string {
 
 func verifyWorkScriptFor(workspace, ghToken, branch string) string {
 	return fmt.Sprintf(
-		`export GH_TOKEN=%q WORKSPACE=%q; cd "$WORKSPACE" && echo "--- commits ---" && git log --oneline origin/%s..HEAD 2>/dev/null; echo "--- PRs ---" && gh pr list --json url,title 2>/dev/null || echo "(gh not available)"`,
+		`export GH_TOKEN=%q WORKSPACE=%q BRANCH=%q; cd "$WORKSPACE" && echo "--- commits ---" && git log --oneline "origin/$BRANCH..HEAD" 2>/dev/null; echo "--- PRs ---" && gh pr list --json url,title 2>/dev/null || echo "(gh not available)"`,
 		ghToken, workspace, branch,
 	)
 }
@@ -140,7 +140,7 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverrid
 	if workspaceOverride == "" {
 		_, _ = fmt.Fprintf(os.Stderr, "syncing repo %s (branch: %s)...\n", repo, defaultBranch)
 		syncScript := fmt.Sprintf(
-			`git config --global --add safe.directory %q 2>/dev/null; export GH_TOKEN=%q && cd %q && git checkout %s; git pull --ff-only 2>&1`,
+			`git config --global --add safe.directory %q 2>/dev/null; export GH_TOKEN=%q && cd %q && git checkout %q; git pull --ff-only 2>&1`,
 			workspace, ghToken, workspace, defaultBranch,
 		)
 		syncCmd := s.CommandContext(ctx, "bash", "-c", syncScript)
