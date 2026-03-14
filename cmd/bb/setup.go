@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io/fs"
 	"os"
@@ -121,8 +122,10 @@ func runSetup(ctx context.Context, spriteName, repo string, force bool, persona 
 
 	// 6. Persist gh auth on the sprite so agents always have GitHub access without
 	// relying on per-dispatch env-var injection.
+	// Base64-encode the token to avoid any shell quoting issues (consistent with Elixir side).
 	_, _ = fmt.Fprintf(os.Stderr, "persisting gh auth...\n")
-	ghAuthScript := fmt.Sprintf("echo %q | gh auth login --with-token", ghToken)
+	encoded := base64.StdEncoding.EncodeToString([]byte(ghToken))
+	ghAuthScript := fmt.Sprintf("echo %s | base64 -d | gh auth login --with-token", encoded)
 	if out, err := s.CommandContext(ctx, "bash", "-c", ghAuthScript).Output(); err != nil {
 		// Log but don't fail — gh may not be installed on every sprite variant.
 		_, _ = fmt.Fprintf(os.Stderr, "warning: gh auth setup failed (gh may not be installed): %v\n%s\n", err, out)
