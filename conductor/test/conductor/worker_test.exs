@@ -57,6 +57,7 @@ defmodule Conductor.WorkerTest do
   describe "Conductor.CodeHost behaviour" do
     test "Conductor.GitHub implements the CodeHost behaviour" do
       Code.ensure_loaded!(Conductor.GitHub)
+      assert function_exported?(Conductor.GitHub, :get_pr_checks, 2)
       assert function_exported?(Conductor.GitHub, :checks_green?, 2)
       assert function_exported?(Conductor.GitHub, :merge, 3)
     end

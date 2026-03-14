@@ -16,7 +16,7 @@ defmodule Conductor.RunServer do
   use GenServer, restart: :temporary
   require Logger
 
-  alias Conductor.{Store, GitHub, Workspace, Prompt, Config, Recovery}
+  alias Conductor.{Store, Workspace, Prompt, Config, Recovery}
 
   @heartbeat_ms 30_000
   @ci_poll_ms 30_000
@@ -211,7 +211,7 @@ defmodule Conductor.RunServer do
   def handle_continue(:check_ci, state) do
     log(state, "checking CI status")
 
-    case GitHub.get_pr_checks(state.repo, state.pr_number) do
+    case state.code_host_mod.get_pr_checks(state.repo, state.pr_number) do
       {:ok, checks} ->
         handle_ci_checks(checks, state)
 

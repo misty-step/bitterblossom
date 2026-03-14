@@ -85,6 +85,7 @@ defmodule Conductor.GitHub do
   @doc "Alias for backward compatibility."
   def eligible_issues(repo, opts \\ []), do: list_eligible(repo, opts)
 
+  @impl Conductor.CodeHost
   @spec get_pr_checks(binary(), pos_integer()) :: {:ok, [map()]} | {:error, term()}
   def get_pr_checks(repo, pr_number) do
     case Shell.cmd("gh", [
