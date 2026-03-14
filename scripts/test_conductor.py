@@ -219,6 +219,25 @@ class TestFindExistingGithubIssue:
         ):
             assert find_existing_github_issue("owner/repo", "abc123") is None
 
+    def test_uses_gh_search_not_issue_list(self):
+        """gh search issues is used so there is no fixed pagination cap."""
+        fp = "abc123deadbeef01"
+        body = f"Some body\n<!-- {DEDUPE_MARKER_PREFIX}{fp} -->"
+        payload = json.dumps([{"number": 42, "body": body}])
+        with patch("sentry_intake.run_gh", return_value=_make_gh_result(payload)) as m:
+            find_existing_github_issue("owner/repo", fp)
+            args = m.call_args[0][0]
+        assert args[0] == "search"
+        assert args[1] == "issues"
+
+    def test_gh_failure_prints_warning_to_stderr(self, capsys):
+        with patch(
+            "sentry_intake.run_gh",
+            side_effect=subprocess.CalledProcessError(1, "gh"),
+        ):
+            find_existing_github_issue("owner/repo", "abc123")
+        assert "warning" in capsys.readouterr().err.lower()
+
 
 # ─── create_github_issue ─────────────────────────────────────────────────────
 

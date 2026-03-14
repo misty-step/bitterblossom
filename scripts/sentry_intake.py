@@ -235,34 +235,34 @@ def build_labels(level: str) -> list:
 def find_existing_github_issue(repo: str, fingerprint: str) -> Optional[int]:
     """Return the number of an open issue that carries the fingerprint marker.
 
-    Lists open ``source/sentry`` issues and checks each body client-side.
-    Returns ``None`` if no match is found or if the ``gh`` call fails.
+    Uses ``gh search issues`` for a server-side body search — no pagination
+    limit.  Falls back to ``None`` if the search fails; logs a warning so
+    operators can diagnose auth or network problems before a duplicate is
+    created.
     """
-    marker = f"<!-- {DEDUPE_MARKER_PREFIX}{fingerprint} -->"
+    search_term = f"{DEDUPE_MARKER_PREFIX}{fingerprint}"
+    full_marker = f"<!-- {search_term} -->"
     try:
         result = run_gh(
             [
-                "issue",
-                "list",
+                "search",
+                "issues",
+                search_term,
                 "--repo",
                 repo,
                 "--state",
                 "open",
-                "--label",
-                "source/sentry",
                 "--json",
                 "number,body",
-                "--limit",
-                "100",
             ]
         )
         issues = json.loads(result.stdout)
         for issue in issues:
             body = issue.get("body") or ""
-            if marker in body:
+            if full_marker in body:
                 return issue["number"]
-    except subprocess.CalledProcessError:
-        pass
+    except subprocess.CalledProcessError as exc:
+        print(f"warning: gh search failed: {exc}", file=sys.stderr)
     return None
 
 
@@ -294,27 +294,6 @@ def comment_on_github_issue(repo: str, issue_number: int, incident: dict) -> Non
             body,
         ]
     )
-
-
-def ensure_label(repo: str, name: str, color: str, description: str) -> None:
-    """Create a GitHub label if it does not already exist."""
-    try:
-        run_gh(
-            [
-                "label",
-                "create",
-                name,
-                "--repo",
-                repo,
-                "--color",
-                color,
-                "--description",
-                description,
-                "--force",
-            ]
-        )
-    except subprocess.CalledProcessError:
-        pass
 
 
 # ─── Main entry point ─────────────────────────────────────────────────────────
@@ -364,7 +343,7 @@ def fetch_sentry_incident(org: str, project: str, issue_id: str) -> dict:
     req = urllib.request.Request(
         url, headers={"Authorization": f"Bearer {token}"}
     )
-    with urllib.request.urlopen(req) as resp:
+    with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read())
 
 
