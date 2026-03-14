@@ -72,13 +72,14 @@ sequenceDiagram
     participant O as Orchestrator
     participant RS as RunServer
     participant S as Store (SQLite)
+    participant W as Workspace
     participant SP as Sprite
     participant GH as GitHub
 
     O->>RS: start_link (via DynamicSupervisor)
     RS->>S: acquire_lease
     RS->>S: create_run (phase=building)
-    RS->>SP: Workspace.prepare (git worktree)
+    RS->>W: Workspace.prepare (git worktree)
     RS->>SP: Sprite.dispatch (Claude Code builder)
     SP-->>RS: {:ok, _} or {:error, ...}
     RS->>SP: Sprite.read_artifact
@@ -87,7 +88,7 @@ sequenceDiagram
     RS->>GH: merge_pr
     RS->>S: complete_run (merged)
     RS->>S: release_lease
-    RS->>SP: Workspace.cleanup
+    RS->>W: Workspace.cleanup
 ```
 
 ## Key Interfaces
