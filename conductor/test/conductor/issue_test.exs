@@ -5,24 +5,26 @@ defmodule Conductor.IssueTest do
 
   describe "from_github/1" do
     test "maps required fields" do
-      issue = Issue.from_github(%{
-        "number" => 42,
-        "title" => "Add widget",
-        "body" => "some body",
-        "url" => "https://github.com/org/repo/issues/42"
-      })
+      issue =
+        Issue.from_github(%{
+          "number" => 42,
+          "title" => "Add widget",
+          "body" => "some body",
+          "url" => "https://github.com/org/repo/issues/42"
+        })
 
       assert %Issue{number: 42, title: "Add widget", body: "some body"} = issue
       assert issue.url == "https://github.com/org/repo/issues/42"
     end
 
     test "defaults body to empty string when nil" do
-      issue = Issue.from_github(%{
-        "number" => 1,
-        "title" => "No body",
-        "body" => nil,
-        "url" => "https://github.com/org/repo/issues/1"
-      })
+      issue =
+        Issue.from_github(%{
+          "number" => 1,
+          "title" => "No body",
+          "body" => nil,
+          "url" => "https://github.com/org/repo/issues/1"
+        })
 
       assert issue.body == ""
     end
@@ -40,21 +42,23 @@ defmodule Conductor.IssueTest do
     end
 
     test "extracts label names from map labels" do
-      issue = Issue.from_github(%{
-        "number" => 1,
-        "title" => "Labeled",
-        "labels" => [%{"name" => "bug"}, %{"name" => "autopilot"}]
-      })
+      issue =
+        Issue.from_github(%{
+          "number" => 1,
+          "title" => "Labeled",
+          "labels" => [%{"name" => "bug"}, %{"name" => "autopilot"}]
+        })
 
       assert issue.labels == ["bug", "autopilot"]
     end
 
     test "handles plain string labels" do
-      issue = Issue.from_github(%{
-        "number" => 1,
-        "title" => "Strings",
-        "labels" => ["enhancement", "p1"]
-      })
+      issue =
+        Issue.from_github(%{
+          "number" => 1,
+          "title" => "Strings",
+          "labels" => ["enhancement", "p1"]
+        })
 
       assert issue.labels == ["enhancement", "p1"]
     end
@@ -66,11 +70,12 @@ defmodule Conductor.IssueTest do
     end
 
     test "defaults labels to empty list when nil" do
-      issue = Issue.from_github(%{
-        "number" => 1,
-        "title" => "Nil labels",
-        "labels" => nil
-      })
+      issue =
+        Issue.from_github(%{
+          "number" => 1,
+          "title" => "Nil labels",
+          "labels" => nil
+        })
 
       assert issue.labels == []
     end
