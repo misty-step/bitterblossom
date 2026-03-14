@@ -18,6 +18,8 @@ Bitterblossom is a **cybernetic governor** for software production. The conducto
 
 **The drift trap:** Without codified architectural constraints, agents amplify drift at machine speed. You can't use agents to clean up the mess if the agents don't know what clean looks like. The retro loop's architectural guard (“symptom or root cause?”) is the anti-drift sensor.
 
+**The adaptive harness:** The conductor doesn't just govern itself — it governs arbitrary repos. For each target, it must detect the harness (tests, CI, docs, conventions), build a calibration profile, and adapt its feedback loop. A repo with no tests gets harness investment before feature work. A repo with strong CI gets backlog clearing at speed. The conductor's value scales with its ability to calibrate to unfamiliar systems.
+
 ## Domain Glossary
 
 | Term | Definition |

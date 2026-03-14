@@ -43,11 +43,51 @@ Captured 2026-03-14. These are beyond the current sprint scope but represent the
 - Phase 3: Auto-triage (requires self-hosted observability service — see ~/Development/vigil/)
 - Phase 4: Domain specialization framework (only after 2-3 workflows prove the pattern)
 
+## Strategic Vision: Adaptive Harness Engineering
+
+Captured 2026-03-14. Informed by "Harness Engineering Is Cybernetics" (odysseus0z).
+
+The conductor is a cybernetic governor. Its value is the feedback loop, not the code it dispatches. The critical design problem ahead: making the harness adaptive to arbitrary target repos, not just bitterblossom.
+
+### The Calibration Surface
+
+For each target repo, the conductor needs to detect and internalize:
+- **What "good" means** — CLAUDE.md, conventions, architecture patterns, coding standards
+- **What feedback loops exist** — tests, linters, CI, type checkers, pre-commit hooks
+- **What the definition of done is** — merge policy, review requirements, quality gates
+- **What knowledge is missing** — gaps in docs, untested paths, undocumented invariants
+
+Today this calibration is manual (read CLAUDE.md, read project.md). The vision: the conductor auto-detects the harness on first contact with a repo, builds a calibration profile, and adapts its builder prompts, governance policy, and retro analysis accordingly.
+
+### Per-Repo Harness Detection
+
+When the conductor is pointed at a new repo for the first time:
+1. **Scan** — detect language, framework, test runner, CI config, CLAUDE.md/AGENTS.md, project structure
+2. **Profile** — build a harness profile: what feedback loops exist, what's fast vs. slow, what gates are mechanical vs. judgment
+3. **Calibrate** — inject the profile into builder prompts and governance policy
+4. **Learn** — retro loop updates the profile as runs reveal gaps (tests that don't exist, conventions that aren't documented)
+
+### Harness Quality as a Metric
+
+The conductor should be able to assess a repo's harness quality:
+- Does it have tests? How fast? What coverage?
+- Does it have CI? Does CI actually catch real issues?
+- Does it have documentation agents can read?
+- Are there architectural constraints encoded mechanically (types, linters) or only in prose?
+
+Low harness quality → conductor invests in harness improvement before feature work (write tests, add CI, create CLAUDE.md). High harness quality → conductor can clear backlog at speed.
+
+### The Drift Trap
+
+Without codified constraints, agents amplify drift at machine speed. The retro loop is the anti-drift sensor. But it only works if the retro agent knows what "clean" looks like for THIS repo. Per-repo calibration is what makes the retro loop useful across diverse projects.
+
 ## Research Prompts
 
 - **Sprite specialization patterns** — How do other agent orchestrators handle multi-workflow dispatch? Is it profile-based, environment-based, or routing-based?
 - **Webhook-driven reactive agents** — Best practices for GitHub webhook → agent dispatch. Latency, deduplication, idempotency.
 - **Error-feed → autonomous fix pipelines** — Prior art on auto-triage systems. How do they determine when to fix vs. escalate?
+- **Auto-detecting repo harness quality** — Can we score a repo's readiness for agent work? What signals matter most? (test coverage, CI config, doc quality, type strictness)
+- **Cybernetic calibration for multi-repo orchestration** — How should per-repo harness profiles be structured? What's the minimum viable profile? When should the conductor invest in improving a repo's harness vs. working within its constraints?
 
 ## Archived This Session
 
