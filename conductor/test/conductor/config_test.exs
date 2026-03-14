@@ -111,6 +111,19 @@ defmodule Conductor.ConfigTest do
     end
   end
 
+  describe "stale_run_threshold_seconds/0" do
+    test "returns default of 300" do
+      assert Config.stale_run_threshold_seconds() == 300
+    end
+
+    test "returns configured value" do
+      Application.put_env(:conductor, :stale_run_threshold_seconds, 600)
+      assert Config.stale_run_threshold_seconds() == 600
+    after
+      Application.delete_env(:conductor, :stale_run_threshold_seconds)
+    end
+  end
+
   describe "prompt_template/0" do
     test "returns env var when set" do
       System.put_env("CONDUCTOR_PROMPT_TEMPLATE", "/custom/template.md")

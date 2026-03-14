@@ -95,6 +95,21 @@ defmodule Conductor.Store do
     GenServer.call(__MODULE__, {:mark_semantic_ready, run_id})
   end
 
+  @doc """
+  Returns runs in a non-terminal phase whose heartbeat is older than `cutoff_iso8601`.
+  Used by the orchestrator reconcile tick to detect abandoned runs.
+  """
+  @spec stale_runs(binary(), binary()) :: [map()]
+  def stale_runs(repo, cutoff_iso8601) do
+    GenServer.call(__MODULE__, {:stale_runs, repo, cutoff_iso8601})
+  end
+
+  @doc "Mark a run as failed due to stale heartbeat and record an expiry event."
+  @spec expire_stale_run(binary(), binary()) :: :ok
+  def expire_stale_run(run_id, reason) do
+    GenServer.call(__MODULE__, {:expire_stale_run, run_id, reason})
+  end
+
   # --- GenServer Callbacks ---
 
   @impl true
@@ -347,6 +362,48 @@ defmodule Conductor.Store do
       [now_utc(), run_id]
     )
 
+    {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call({:stale_runs, repo, cutoff}, _from, state) do
+    rows =
+      query_all(
+        state.conn,
+        """
+        SELECT * FROM runs
+        WHERE repo = ?1
+          AND phase NOT IN ('merged', 'blocked', 'failed')
+          AND heartbeat_at IS NOT NULL
+          AND heartbeat_at < ?2
+        ORDER BY heartbeat_at ASC
+        """,
+        [repo, cutoff]
+      )
+
+    {:reply, rows, state}
+  end
+
+  @impl true
+  def handle_call({:expire_stale_run, run_id, reason}, _from, state) do
+    now = now_utc()
+
+    exec(
+      state.conn,
+      """
+      UPDATE runs SET phase = 'failed', status = 'failed', completed_at = ?1, updated_at = ?1
+      WHERE run_id = ?2
+      """,
+      [now, run_id]
+    )
+
+    exec(
+      state.conn,
+      "INSERT INTO events (run_id, event_type, payload, created_at) VALUES (?1, ?2, ?3, ?4)",
+      [run_id, "stale_run_expired", Jason.encode!(%{reason: reason}), now]
+    )
+
+    broadcast_update()
     {:reply, :ok, state}
   end
 

@@ -70,6 +70,16 @@ defmodule Conductor.Config do
     Application.get_env(:conductor, :replay_delay_seconds, 120) * 1_000
   end
 
+  @doc """
+  Seconds after which a non-terminal run with no heartbeat update is considered stale.
+  The orchestrator reconcile tick uses this to detect and expire abandoned runs.
+  Default: 300s (5 minutes), well above the 30s RunServer heartbeat interval.
+  """
+  @spec stale_run_threshold_seconds() :: pos_integer()
+  def stale_run_threshold_seconds do
+    Application.get_env(:conductor, :stale_run_threshold_seconds, 300)
+  end
+
   @spec prompt_template() :: binary()
   def prompt_template do
     System.get_env("CONDUCTOR_PROMPT_TEMPLATE") ||

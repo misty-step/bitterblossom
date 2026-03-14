@@ -205,7 +205,45 @@ defmodule Conductor.Orchestrator do
   end
 
   defp reconcile(state) do
-    # Remove active runs whose processes have died
+    state
+    |> expire_stale_db_runs()
+    |> drop_dead_active_runs()
+  end
+
+  # Detect runs in the DB that missed heartbeats (abandoned/crashed without cleanup).
+  # Expires their leases so the issue becomes eligible again on the next tick.
+  defp expire_stale_db_runs(state) do
+    threshold = Config.stale_run_threshold_seconds()
+
+    cutoff =
+      DateTime.utc_now()
+      |> DateTime.add(-threshold, :second)
+      |> DateTime.to_iso8601()
+
+    stale = Store.stale_runs(state.repo, cutoff)
+
+    if stale != [] do
+      Logger.warning("reconcile: #{length(stale)} stale run(s) found, expiring leases")
+    end
+
+    Enum.each(stale, fn run ->
+      run_id = run["run_id"]
+      issue_number = run["issue_number"]
+      Logger.warning("[#{run_id}] stale heartbeat — expiring lease for issue ##{issue_number}")
+      Store.expire_stale_run(run_id, "stale_heartbeat")
+      Store.release_lease(state.repo, issue_number)
+    end)
+
+    stale_issue_ids = MapSet.new(stale, & &1["issue_number"])
+
+    active =
+      Map.reject(state.active_runs, fn {id, _} -> MapSet.member?(stale_issue_ids, id) end)
+
+    %{state | active_runs: active}
+  end
+
+  # Remove active runs whose RunServer processes have exited normally or crashed.
+  defp drop_dead_active_runs(state) do
     active =
       state.active_runs
       |> Enum.filter(fn {_id, %{pid: pid}} -> Process.alive?(pid) end)

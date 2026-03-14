@@ -208,6 +208,93 @@ defmodule Conductor.StoreTest do
     assert hd(waivers)["waived_at"] != nil
   end
 
+  test "stale_runs returns non-terminal runs with old heartbeats" do
+    {:ok, run_id} =
+      Store.create_run(%{
+        repo: "test/repo",
+        issue_number: 20,
+        issue_title: "stale test",
+        builder_sprite: "s"
+      })
+
+    Store.update_run(run_id, %{phase: "building"})
+
+    # Cutoff in the future captures everything with heartbeat_at < now+1m
+    cutoff = DateTime.utc_now() |> DateTime.add(60, :second) |> DateTime.to_iso8601()
+    stale = Store.stale_runs("test/repo", cutoff)
+
+    assert Enum.any?(stale, fn r -> r["run_id"] == run_id end)
+  end
+
+  test "stale_runs excludes terminal runs" do
+    {:ok, run_id} =
+      Store.create_run(%{
+        repo: "test/repo",
+        issue_number: 21,
+        issue_title: "terminal test",
+        builder_sprite: "s"
+      })
+
+    Store.complete_run(run_id, "merged", "merged")
+
+    cutoff = DateTime.utc_now() |> DateTime.add(60, :second) |> DateTime.to_iso8601()
+    stale = Store.stale_runs("test/repo", cutoff)
+
+    refute Enum.any?(stale, fn r -> r["run_id"] == run_id end)
+  end
+
+  test "stale_runs is scoped to repo" do
+    {:ok, run_id} =
+      Store.create_run(%{
+        repo: "other/repo",
+        issue_number: 22,
+        issue_title: "other repo",
+        builder_sprite: "s"
+      })
+
+    cutoff = DateTime.utc_now() |> DateTime.add(60, :second) |> DateTime.to_iso8601()
+    stale = Store.stale_runs("test/repo", cutoff)
+
+    refute Enum.any?(stale, fn r -> r["run_id"] == run_id end)
+  end
+
+  test "expire_stale_run marks run as failed and records event" do
+    {:ok, run_id} =
+      Store.create_run(%{
+        repo: "test/repo",
+        issue_number: 23,
+        issue_title: "expiry test",
+        builder_sprite: "s"
+      })
+
+    :ok = Store.expire_stale_run(run_id, "stale_heartbeat")
+
+    {:ok, run} = Store.get_run(run_id)
+    assert run["phase"] == "failed"
+    assert run["status"] == "failed"
+    assert run["completed_at"] != nil
+
+    events = Store.list_events(run_id)
+    assert Enum.any?(events, fn e -> e["event_type"] == "stale_run_expired" end)
+  end
+
+  test "expire_stale_run removes run from subsequent stale_runs queries" do
+    {:ok, run_id} =
+      Store.create_run(%{
+        repo: "test/repo",
+        issue_number: 24,
+        issue_title: "already expired",
+        builder_sprite: "s"
+      })
+
+    Store.expire_stale_run(run_id, "stale_heartbeat")
+
+    cutoff = DateTime.utc_now() |> DateTime.add(60, :second) |> DateTime.to_iso8601()
+    stale = Store.stale_runs("test/repo", cutoff)
+
+    refute Enum.any?(stale, fn r -> r["run_id"] == run_id end)
+  end
+
   test "incidents and waivers are isolated per run" do
     {:ok, run_a} =
       Store.create_run(%{
