@@ -12,7 +12,7 @@ Bitterblossom is the conductor for a single-repo software factory: it routes Git
 
 | Term | Definition |
 |------|-----------|
-| Conductor | The always-on control plane in `scripts/conductor.py` that owns intake, leases, routing, review, CI, and merge decisions. |
+| Conductor | The always-on Elixir/OTP control plane in `conductor/` that owns intake, leases, routing, governance, and merge decisions. |
 | Worker Sprite | A persistent remote execution surface used for builder and reviewer runs. |
 | Review Council | The independent reviewer set that audits a builder result before merge. |
 | Run | One durable execution record with a `run_id`, explicit phase, artifacts, and event history. |
@@ -23,9 +23,9 @@ Bitterblossom is the conductor for a single-repo software factory: it routes Git
 
 ## Active Focus
 
-- **Milestone:** `Now: Current Sprint` for active governance truth work, with `Next: Up Next` carrying the surrounding factory simplification slices.
-- **Key Issues:** [#500](https://github.com/misty-step/bitterblossom/issues/500), [#569](https://github.com/misty-step/bitterblossom/issues/569), [#590](https://github.com/misty-step/bitterblossom/issues/590), [#592](https://github.com/misty-step/bitterblossom/issues/592), [#593](https://github.com/misty-step/bitterblossom/issues/593), [#544](https://github.com/misty-step/bitterblossom/issues/544), [#532](https://github.com/misty-step/bitterblossom/issues/532)
-- **Theme:** Make the factory truthful and legible: semantic review truth, explicit workflow contracts, phase-specialized workers, durable recovery, and a trustworthy auth/bootstrap path.
+- **Milestone:** `Now: Current Sprint` for operational quality foundation, with `Next: Up Next` carrying behaviour extraction and Go absorption.
+- **Key Issues:** [#625](https://github.com/misty-step/bitterblossom/issues/625) (Elixir CI), [#626](https://github.com/misty-step/bitterblossom/issues/626) (RunServer tests), [#627](https://github.com/misty-step/bitterblossom/issues/627) (security hardening), [#628](https://github.com/misty-step/bitterblossom/issues/628) (prompt context), [#553](https://github.com/misty-step/bitterblossom/issues/553) (CI/Auth)
+- **Theme:** Make the Elixir conductor trustworthy: CI pipeline, test coverage on critical paths, security hardening, builder prompt enrichment. The architecture is validated — now harden the operational foundation.
 
 ## Architecture Artifacts
 
@@ -49,23 +49,21 @@ Bitterblossom is the conductor for a single-repo software factory: it routes Git
 ## Patterns to Follow
 
 ### Run-Centric State
-```python
-update_run(conn, run_id, phase="reviewing", pr_number=builder.pr_number, pr_url=builder.pr_url)
-record_event(conn, event_log, run_id, "review_complete", {"reviewer": review.reviewer, "verdict": review.verdict})
+```elixir
+Store.update_run(run_id, %{phase: "governing", pr_number: pr_number, pr_url: pr_url})
+Store.record_event(run_id, "governance_complete", %{verdict: verdict, reason: reason})
 ```
 
-The conductor should expose explicit state transitions instead of inferring truth from ad hoc shell behavior.
+The conductor exposes explicit state transitions via `RunServer` `handle_continue` chains instead of inferring truth from ad hoc shell behavior.
 
 ### Thin Edge, Rich Control Plane
-```python
-# cmd/bb stays transport; orchestration lives in scripts/conductor.py
-worker_slot = select_worker_slot(conn, args.repo, args.worker, pathlib.Path(args.builder_template), run_id)
-worker = worker_slot.worker
-builder, builder_payload = run_builder(...)
-reviews = run_review_round(...)
+```elixir
+# Orchestrator dispatches to RunServer GenServers
+{:ok, pid} = DynamicSupervisor.start_child(Conductor.RunSupervisor, {RunServer, opts})
+# RunServer owns the full lifecycle: lease -> workspace -> dispatch -> govern -> merge
 ```
 
-Keep transport logic thin and deterministic. Put workflow judgment and orchestration in the conductor, not in `cmd/bb/`.
+Keep transport logic thin and deterministic. Workflow judgment lives in the Elixir conductor, not in `cmd/bb/`.
 
 ## Lessons Learned
 
@@ -75,7 +73,8 @@ Keep transport logic thin and deterministic. Put workflow judgment and orchestra
 | Shared worker checkout per run | Causes state leakage and brittle cleanup | Persistent mirrors are fine; execution surfaces must be isolated per run. |
 | Local-only orchestration | Good for proving the loop, bad for 24/7 operation | Production orchestration belongs on a remote coordinator runtime. |
 | Generic status strings and hidden failure modes | Erode operator trust | Surface explicit run phases, review outcomes, and blocking reasons. |
+| Python conductor (20K LOC in 7 days) | Replaced by 1,649 LOC Elixir | Architecture critique before implementation prevents complexity spirals. OTP is the natural fit for agent orchestration. |
 
 ---
-*Last updated: 2026-03-13*
+*Last updated: 2026-03-14*
 *Updated during: /groom session*
