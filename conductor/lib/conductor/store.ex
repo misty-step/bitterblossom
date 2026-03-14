@@ -95,6 +95,22 @@ defmodule Conductor.Store do
     GenServer.call(__MODULE__, {:mark_semantic_ready, run_id})
   end
 
+  @doc "List non-terminal runs for a repo (completed_at IS NULL)."
+  @spec list_active_runs(binary()) :: [map()]
+  def list_active_runs(repo) do
+    GenServer.call(__MODULE__, {:list_active_runs, repo})
+  end
+
+  @doc """
+  Atomically expire a stale run: record event, complete the run as failed,
+  and release its lease. Encapsulates the domain transition so callers
+  only express intent.
+  """
+  @spec expire_stale_run(binary(), binary(), pos_integer(), binary() | nil) :: :ok
+  def expire_stale_run(repo, run_id, issue_number, heartbeat_at) do
+    GenServer.call(__MODULE__, {:expire_stale_run, repo, run_id, issue_number, heartbeat_at})
+  end
+
   # --- GenServer Callbacks ---
 
   @impl true
@@ -350,6 +366,56 @@ defmodule Conductor.Store do
     {:reply, :ok, state}
   end
 
+  @impl true
+  def handle_call({:list_active_runs, repo}, _from, state) do
+    rows =
+      query_all(
+        state.conn,
+        "SELECT * FROM runs WHERE repo = ?1 AND completed_at IS NULL ORDER BY picked_at ASC",
+        [repo]
+      )
+
+    {:reply, rows, state}
+  end
+
+  @impl true
+  def handle_call({:expire_stale_run, repo, run_id, issue_number, heartbeat_at}, _from, state) do
+    now = now_utc()
+
+    # Record event
+    event_json = Jason.encode!(%{heartbeat_at: heartbeat_at})
+
+    exec(
+      state.conn,
+      "INSERT INTO events (run_id, event_type, payload, created_at) VALUES (?1, ?2, ?3, ?4)",
+      [run_id, "stale_run_detected", event_json, now]
+    )
+
+    # Mark run failed
+    exec(
+      state.conn,
+      "UPDATE runs SET phase = 'failed', status = 'failed', completed_at = ?1, updated_at = ?1 WHERE run_id = ?2",
+      [now, run_id]
+    )
+
+    # Release lease
+    exec(
+      state.conn,
+      "UPDATE leases SET released_at = ?1 WHERE repo = ?2 AND issue_number = ?3 AND released_at IS NULL",
+      [now, repo, issue_number]
+    )
+
+    append_event_log(state.event_log, %{
+      run_id: run_id,
+      event_type: "stale_run_detected",
+      payload: %{heartbeat_at: heartbeat_at},
+      created_at: now
+    })
+
+    broadcast_update()
+    {:reply, :ok, state}
+  end
+
   # --- Private ---
 
   defp create_tables(conn) do
@@ -414,6 +480,10 @@ defmodule Conductor.Store do
             rationale TEXT NOT NULL,
             waived_at TEXT NOT NULL
           )
+          """,
+          """
+          CREATE INDEX IF NOT EXISTS idx_runs_repo_active
+          ON runs(repo, completed_at, picked_at)
           """
         ] do
       exec(conn, sql, [])
