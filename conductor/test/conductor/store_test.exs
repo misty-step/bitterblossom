@@ -14,7 +14,14 @@ defmodule Conductor.StoreTest do
     {:ok, _pid} = Store.start_link(db_path: db_path, event_log: event_log)
 
     on_exit(fn ->
-      if Process.whereis(Store), do: GenServer.stop(Store)
+      if pid = Process.whereis(Store) do
+        try do
+          GenServer.stop(pid)
+        catch
+          :exit, _ -> :ok
+        end
+      end
+
       File.rm(db_path)
       File.rm(event_log)
     end)

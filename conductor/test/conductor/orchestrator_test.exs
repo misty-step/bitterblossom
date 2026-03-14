@@ -14,8 +14,16 @@ defmodule Conductor.OrchestratorTest do
     {:ok, _} = Orchestrator.start_link()
 
     on_exit(fn ->
-      if Process.whereis(Orchestrator), do: GenServer.stop(Orchestrator)
-      if Process.whereis(Store), do: GenServer.stop(Store)
+      for name <- [Orchestrator, Store] do
+        if pid = Process.whereis(name) do
+          try do
+            GenServer.stop(pid)
+          catch
+            :exit, _ -> :ok
+          end
+        end
+      end
+
       File.rm(db_path)
       File.rm(event_log)
     end)
@@ -72,6 +80,7 @@ defmodule Conductor.OrchestratorTest do
 
       # Configure a zero threshold so every run is stale immediately
       Application.put_env(:conductor, :stale_run_threshold_seconds, 0)
+      on_exit(fn -> Application.delete_env(:conductor, :stale_run_threshold_seconds) end)
 
       :ok =
         Orchestrator.start_loop(
@@ -94,8 +103,6 @@ defmodule Conductor.OrchestratorTest do
 
       events = Store.list_events(run_id)
       assert Enum.any?(events, fn e -> e["event_type"] == "stale_run_expired" end)
-    after
-      Application.delete_env(:conductor, :stale_run_threshold_seconds)
     end
 
     test "poll does not expire recent runs" do
@@ -115,6 +122,7 @@ defmodule Conductor.OrchestratorTest do
 
       # Use a very large threshold so the recent run is not considered stale
       Application.put_env(:conductor, :stale_run_threshold_seconds, 9999)
+      on_exit(fn -> Application.delete_env(:conductor, :stale_run_threshold_seconds) end)
 
       :ok =
         Orchestrator.start_loop(
@@ -129,8 +137,6 @@ defmodule Conductor.OrchestratorTest do
       {:ok, run} = Store.get_run(run_id)
       assert run["phase"] == "building", "recent run should not be expired"
       assert Store.leased?(repo, issue_number)
-    after
-      Application.delete_env(:conductor, :stale_run_threshold_seconds)
     end
   end
 end
