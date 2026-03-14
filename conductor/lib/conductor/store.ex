@@ -95,6 +95,12 @@ defmodule Conductor.Store do
     GenServer.call(__MODULE__, {:mark_semantic_ready, run_id})
   end
 
+  @doc "List non-terminal runs for a repo (completed_at IS NULL)."
+  @spec list_active_runs(binary()) :: [map()]
+  def list_active_runs(repo) do
+    GenServer.call(__MODULE__, {:list_active_runs, repo})
+  end
+
   # --- GenServer Callbacks ---
 
   @impl true
@@ -348,6 +354,18 @@ defmodule Conductor.Store do
     )
 
     {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call({:list_active_runs, repo}, _from, state) do
+    rows =
+      query_all(
+        state.conn,
+        "SELECT * FROM runs WHERE repo = ?1 AND completed_at IS NULL ORDER BY picked_at ASC",
+        [repo]
+      )
+
+    {:reply, rows, state}
   end
 
   # --- Private ---

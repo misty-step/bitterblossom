@@ -65,6 +65,19 @@ defmodule Conductor.Config do
     Application.get_env(:conductor, :max_replays, 3)
   end
 
+  @doc """
+  Minutes of heartbeat silence before a run is considered stale and its lease expired.
+  Defaults to builder_timeout + ci_timeout + 10 minutes of buffer.
+  """
+  @spec stale_run_threshold_minutes() :: pos_integer()
+  def stale_run_threshold_minutes do
+    Application.get_env(
+      :conductor,
+      :stale_run_threshold_minutes,
+      builder_timeout() + ci_timeout() + 10
+    )
+  end
+
   @spec replay_delay_ms() :: pos_integer()
   def replay_delay_ms do
     Application.get_env(:conductor, :replay_delay_seconds, 120) * 1_000
