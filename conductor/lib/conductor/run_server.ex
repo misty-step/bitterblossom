@@ -297,20 +297,11 @@ defmodule Conductor.RunServer do
 
   defp handle_retryable(failing, state) do
     max_replays = Config.max_replays()
+    record_check_incidents(failing, state)
 
     if state.replay_count < max_replays do
       replay_count = state.replay_count + 1
       delay_ms = Config.replay_delay_ms()
-
-      Enum.each(failing, fn check ->
-        class = Recovery.classify_check(check, state.trusted_surfaces)
-
-        Store.record_incident(state.run_id, %{
-          check_name: check["name"] || "unknown",
-          failure_class: Recovery.failure_class_to_string(class),
-          signature: "#{check["name"]}:#{check["conclusion"]}"
-        })
-      end)
 
       Store.update_run(state.run_id, %{replay_count: replay_count})
 
@@ -329,22 +320,18 @@ defmodule Conductor.RunServer do
       Process.send_after(self(), :poll_ci, delay_ms)
       {:noreply, %{state | replay_count: replay_count}}
     else
-      Enum.each(failing, fn check ->
-        class = Recovery.classify_check(check, state.trusted_surfaces)
-
-        Store.record_incident(state.run_id, %{
-          check_name: check["name"] || "unknown",
-          failure_class: Recovery.failure_class_to_string(class),
-          signature: "#{check["name"]}:#{check["conclusion"]}"
-        })
-      end)
-
       fail(state, "replay_exhausted", "#{max_replays} replay(s) exhausted; checks still failing")
     end
   end
 
   defp handle_ci_blocked(blockers, state) do
-    Enum.each(blockers, fn check ->
+    record_check_incidents(blockers, state)
+    names = Enum.map_join(blockers, ", ", & &1["name"])
+    fail(state, "ci_check_failure", "blocking checks failed: #{names}")
+  end
+
+  defp record_check_incidents(checks, state) do
+    Enum.each(checks, fn check ->
       class = Recovery.classify_check(check, state.trusted_surfaces)
 
       Store.record_incident(state.run_id, %{
@@ -353,9 +340,6 @@ defmodule Conductor.RunServer do
         signature: "#{check["name"]}:#{check["conclusion"]}"
       })
     end)
-
-    names = Enum.map_join(blockers, ", ", & &1["name"])
-    fail(state, "ci_check_failure", "blocking checks failed: #{names}")
   end
 
   # --- Handle dispatch task completion ---

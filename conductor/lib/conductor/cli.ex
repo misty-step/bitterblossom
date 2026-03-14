@@ -137,31 +137,29 @@ defmodule Conductor.CLI do
 
   defp cmd_show_incidents(args) do
     {opts, _, _} = OptionParser.parse(args, strict: [run_id: :string])
-    run_id = Keyword.fetch!(opts, :run_id)
-
-    incidents = Conductor.Store.list_incidents(run_id)
-
-    IO.puts(
-      Jason.encode!(%{
-        run_id: run_id,
-        incident_count: length(incidents),
-        incidents: incidents
-      })
-    )
+    cmd_show_run_records(Keyword.fetch!(opts, :run_id), :incidents)
   end
 
   defp cmd_show_waivers(args) do
     {opts, _, _} = OptionParser.parse(args, strict: [run_id: :string])
-    run_id = Keyword.fetch!(opts, :run_id)
+    cmd_show_run_records(Keyword.fetch!(opts, :run_id), :waivers)
+  end
 
-    waivers = Conductor.Store.list_waivers(run_id)
+  defp cmd_show_run_records(run_id, kind) do
+    {list_fn, count_key} =
+      case kind do
+        :incidents -> {&Conductor.Store.list_incidents/1, :incident_count}
+        :waivers -> {&Conductor.Store.list_waivers/1, :waiver_count}
+      end
+
+    records = list_fn.(run_id)
 
     IO.puts(
-      Jason.encode!(%{
-        run_id: run_id,
-        waiver_count: length(waivers),
-        waivers: waivers
-      })
+      Jason.encode!(
+        %{run_id: run_id}
+        |> Map.put(kind, records)
+        |> Map.put(count_key, length(records))
+      )
     )
   end
 

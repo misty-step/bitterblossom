@@ -85,19 +85,10 @@ defmodule Conductor.Recovery do
     r = String.downcase(reason)
 
     cond do
-      String.contains?(r, "timeout") -> :transient_infra
-      String.contains?(r, "network") -> :transient_infra
-      String.contains?(r, "connection") -> :transient_infra
-      String.contains?(r, "auth") -> :auth_config
-      String.contains?(r, "token") -> :auth_config
-      String.contains?(r, "credential") -> :auth_config
-      String.contains?(r, "unauthorized") -> :auth_config
-      String.contains?(r, "forbidden") -> :auth_config
-      String.contains?(r, "human") -> :human_policy_block
-      String.contains?(r, "policy") -> :human_policy_block
-      String.contains?(r, "test") -> :semantic_code
-      String.contains?(r, "compile") -> :semantic_code
-      String.contains?(r, "build") -> :semantic_code
+      matches_any?(r, ~w(timeout network connection)) -> :transient_infra
+      matches_any?(r, ~w(auth token credential unauthorized forbidden)) -> :auth_config
+      matches_any?(r, ~w(human policy)) -> :human_policy_block
+      matches_any?(r, ~w(test compile build)) -> :semantic_code
       true -> :unknown
     end
   end
@@ -140,13 +131,7 @@ defmodule Conductor.Recovery do
   Convert a failure class atom to a canonical string for storage.
   """
   @spec failure_class_to_string(failure_class()) :: binary()
-  def failure_class_to_string(:transient_infra), do: "transient_infra"
-  def failure_class_to_string(:auth_config), do: "auth_config"
-  def failure_class_to_string(:semantic_code), do: "semantic_code"
-  def failure_class_to_string(:flaky_check), do: "flaky_check"
-  def failure_class_to_string(:known_false_red), do: "known_false_red"
-  def failure_class_to_string(:human_policy_block), do: "human_policy_block"
-  def failure_class_to_string(:unknown), do: "unknown"
+  def failure_class_to_string(atom) when is_atom(atom), do: Atom.to_string(atom)
 
   @doc """
   Whether a failure class is retryable under replay policy.
@@ -173,17 +158,9 @@ defmodule Conductor.Recovery do
     blockers = for {c, cls} <- classified, not retryable?(cls), cls != :known_false_red, do: c
 
     cond do
-      blockers != [] ->
-        {:blocked, blockers}
-
-      false_reds != [] and retryables == [] ->
-        {:waiver_eligible, false_reds}
-
-      retryables != [] ->
-        {:retryable, retryables ++ false_reds}
-
-      true ->
-        {:blocked, failing}
+      blockers != [] -> {:blocked, blockers}
+      false_reds != [] and retryables == [] -> {:waiver_eligible, false_reds}
+      true -> {:retryable, retryables ++ false_reds}
     end
   end
 
