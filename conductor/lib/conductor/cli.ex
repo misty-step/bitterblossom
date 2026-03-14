@@ -1,7 +1,7 @@
 defmodule Conductor.CLI do
   @moduledoc "Escript entry point. Parses args and delegates to Conductor."
 
-  @commands ~w(run-once loop show-runs show-events show-incidents show-waivers check-env)
+  @commands ~w(run-once loop show-runs show-events show-incidents show-waivers check-env dashboard)
 
   def main(args) do
     Application.ensure_all_started(:conductor)
@@ -24,6 +24,9 @@ defmodule Conductor.CLI do
 
       ["show-waivers" | rest] ->
         cmd_show_waivers(rest)
+
+      ["dashboard" | rest] ->
+        cmd_dashboard(rest)
 
       ["check-env" | _] ->
         cmd_check_env()
@@ -161,6 +164,26 @@ defmodule Conductor.CLI do
         |> Map.put(count_key, length(records))
       )
     )
+  end
+
+  defp cmd_dashboard(args) do
+    {opts, _, _} = OptionParser.parse(args, strict: [port: :integer])
+    port = Keyword.get(opts, :port, 4000)
+
+    Application.put_env(:conductor, :start_dashboard, true)
+
+    Application.put_env(:conductor, Conductor.Web.Endpoint, [
+      {:http, [ip: {127, 0, 0, 1}, port: port]},
+      {:secret_key_base,
+       System.get_env("DASHBOARD_SECRET_KEY_BASE") ||
+         "bitterblossom-dashboard-dev-key-must-be-at-least-64-chars-long-x"},
+      {:live_view, [signing_salt: "bb_lv_salt"]},
+      {:server, true}
+    ])
+
+    Application.ensure_all_started(:conductor)
+    IO.puts("dashboard running at http://localhost:#{port}")
+    Process.sleep(:infinity)
   end
 
   defp cmd_check_env do
