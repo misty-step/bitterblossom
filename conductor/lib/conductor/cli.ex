@@ -1,7 +1,7 @@
 defmodule Conductor.CLI do
   @moduledoc "Escript entry point. Parses args and delegates to Conductor."
 
-  @commands ~w(run-once loop shape show-runs show-events show-incidents show-waivers check-env dashboard)
+  @commands ~w(run-once loop shape setup show-runs show-events show-incidents show-waivers check-env dashboard)
 
   def main(args) do
     Application.ensure_all_started(:conductor)
@@ -30,6 +30,9 @@ defmodule Conductor.CLI do
 
       ["dashboard" | rest] ->
         cmd_dashboard(rest)
+
+      ["setup" | rest] ->
+        cmd_setup(rest)
 
       ["check-env" | _] ->
         cmd_check_env()
@@ -216,6 +219,41 @@ defmodule Conductor.CLI do
     {:ok, _} = Supervisor.start_child(Conductor.Supervisor, Conductor.Web.Endpoint)
     IO.puts("dashboard running at http://localhost:#{port}")
     Process.sleep(:infinity)
+  end
+
+  defp cmd_setup(args) do
+    {opts, _, _} =
+      OptionParser.parse(args,
+        strict: [worker: [:string, :keep]]
+      )
+
+    workers = Keyword.get_values(opts, :worker)
+
+    if workers == [] do
+      IO.puts("usage: conductor setup --worker SPRITE [--worker SPRITE ...]")
+      System.halt(1)
+    end
+
+    token = Conductor.Config.github_token!()
+
+    results =
+      Enum.map(workers, fn worker ->
+        IO.puts("setting up gh auth on #{worker}...")
+
+        case Conductor.Sprite.setup_gh_auth(worker, token) do
+          :ok ->
+            IO.puts("  #{worker}: gh auth ok")
+            :ok
+
+          {:error, reason} ->
+            IO.puts("  #{worker}: FAILED — #{reason}")
+            :error
+        end
+      end)
+
+    if Enum.any?(results, &(&1 == :error)) do
+      System.halt(1)
+    end
   end
 
   defp cmd_check_env do

@@ -113,6 +113,50 @@ defmodule Conductor.Sprite do
     match?({:ok, _}, exec(sprite, "echo ok", timeout: 15_000))
   end
 
+  @doc """
+  Persists GitHub authentication on the sprite using `gh auth login --with-token`.
+
+  After this call, agents on the sprite can run `gh` commands and git operations
+  without relying on per-dispatch `GH_TOKEN` environment injection.
+
+  Accepts `:exec_fn` in `opts` for testing (same pattern as `dispatch/4`).
+  """
+  @spec setup_gh_auth(binary(), binary(), keyword()) :: :ok | {:error, binary()}
+  def setup_gh_auth(sprite, token, opts \\ []) do
+    exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
+    encoded = Base.encode64(token)
+
+    # Decode via base64 to avoid any quoting issues with the token value.
+    auth_cmd = "echo #{encoded} | base64 -d | gh auth login --with-token"
+
+    git_config_cmd =
+      "git config --global credential.helper '!gh auth git-credential' && " <>
+        "git config --global user.name 'bitterblossom[bot]' && " <>
+        "git config --global user.email 'bitterblossom@misty-step.dev'"
+
+    with {:ok, _} <- exec_fn.(sprite, auth_cmd, opts),
+         {:ok, _} <- exec_fn.(sprite, git_config_cmd, opts) do
+      :ok
+    else
+      {:error, msg, _code} -> {:error, msg}
+    end
+  end
+
+  @doc """
+  Returns `true` if the sprite has a valid `gh` authentication session.
+
+  Accepts `:exec_fn` in `opts` for testing.
+  """
+  @spec gh_auth_ok?(binary(), keyword()) :: boolean()
+  def gh_auth_ok?(sprite, opts \\ []) do
+    exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
+
+    case exec_fn.(sprite, "gh auth status 2>&1", opts) do
+      {:ok, output} -> String.contains?(output, "Logged in")
+      {:error, _, _} -> false
+    end
+  end
+
   # --- Private ---
 
   defp run_agent(sprite, workspace, prompt_path, harness, exec_fn, timeout_ms) do

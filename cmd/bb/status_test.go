@@ -4,6 +4,32 @@ import (
 	"testing"
 )
 
+func TestGHAuthStatusFromOutputLoggedIn(t *testing.T) {
+	t.Parallel()
+
+	out := "github.com\n  Logged in to github.com as bitterblossom-bot (token)\n"
+	if got := ghAuthStatusFromOutput(out); got != "ok" {
+		t.Errorf("ghAuthStatusFromOutput(%q) = %q, want %q", out, got, "ok")
+	}
+}
+
+func TestGHAuthStatusFromOutputNotLoggedIn(t *testing.T) {
+	t.Parallel()
+
+	out := "You are not logged into any GitHub hosts. Run gh auth login to authenticate.\n"
+	if got := ghAuthStatusFromOutput(out); got != "no" {
+		t.Errorf("ghAuthStatusFromOutput(%q) = %q, want %q", out, got, "no")
+	}
+}
+
+func TestGHAuthStatusFromOutputEmpty(t *testing.T) {
+	t.Parallel()
+
+	if got := ghAuthStatusFromOutput(""); got != "no" {
+		t.Errorf("ghAuthStatusFromOutput(%q) = %q, want %q", "", got, "no")
+	}
+}
+
 func TestParsePorcelainStatus_Empty(t *testing.T) {
 	t.Parallel()
 

@@ -67,6 +67,7 @@ func fleetStatus(ctx context.Context) error {
 		status string
 		reach  string
 		avail  string
+		ghAuth string
 		note   string
 	}
 
@@ -80,7 +81,7 @@ func fleetStatus(ctx context.Context) error {
 		go func(idx int, s *sprites.Sprite) {
 			defer func() { <-sem }()
 			defer wg.Done()
-			r := probeResult{name: s.Name(), status: s.Status, reach: "?", avail: "-"}
+			r := probeResult{name: s.Name(), status: s.Status, reach: "?", avail: "-", ghAuth: "-"}
 
 			if err := probeSprite(ctx, s, s.Name(), 3*time.Second); err != nil {
 				r.reach = "no"
@@ -96,6 +97,7 @@ func fleetStatus(ctx context.Context) error {
 				} else {
 					r.avail = "idle"
 				}
+				r.ghAuth = checkGHAuth(ctx, s)
 			}
 
 			results[idx] = r
@@ -104,13 +106,31 @@ func fleetStatus(ctx context.Context) error {
 
 	wg.Wait()
 
-	fmt.Printf("%-15s %-10s %-8s %-6s %s\n", "SPRITE", "STATUS", "REACH", "AVAIL", "NOTE")
-	fmt.Printf("%-15s %-10s %-8s %-6s %s\n", "------", "------", "-----", "-----", "----")
+	fmt.Printf("%-15s %-10s %-8s %-6s %-7s %s\n", "SPRITE", "STATUS", "REACH", "AVAIL", "GH_AUTH", "NOTE")
+	fmt.Printf("%-15s %-10s %-8s %-6s %-7s %s\n", "------", "------", "-----", "-----", "-------", "----")
 	for _, r := range results {
-		fmt.Printf("%-15s %-10s %-8s %-6s %s\n", r.name, r.status, r.reach, r.avail, r.note)
+		fmt.Printf("%-15s %-10s %-8s %-6s %-7s %s\n", r.name, r.status, r.reach, r.avail, r.ghAuth, r.note)
 	}
 
 	return nil
+}
+
+// ghAuthStatusFromOutput returns "ok" if the gh auth status output indicates
+// a successful login, "no" otherwise.
+func ghAuthStatusFromOutput(out string) string {
+	if strings.Contains(out, "Logged in") {
+		return "ok"
+	}
+	return "no"
+}
+
+// checkGHAuth runs `gh auth status` on the sprite and returns "ok" or "no".
+func checkGHAuth(ctx context.Context, s *sprites.Sprite) string {
+	out, err := s.CommandContext(ctx, "bash", "-c", "gh auth status 2>&1").Output()
+	if err != nil {
+		return "no"
+	}
+	return ghAuthStatusFromOutput(string(out))
 }
 
 func spriteStatus(ctx context.Context, spriteName string) error {
@@ -130,6 +150,10 @@ func spriteStatus(ctx context.Context, spriteName string) error {
 	statusScript := `
 echo "=== signals ==="
 ` + workspaceStatusSignalsScript("WS") + `
+
+echo ""
+echo "=== gh auth ==="
+gh auth status 2>&1 || echo "(not authenticated)"
 
 echo ""
 echo "=== git ==="

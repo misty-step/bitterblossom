@@ -50,6 +50,11 @@ func runSetup(ctx context.Context, spriteName, repo string, force bool, persona 
 		return err
 	}
 
+	ghToken, err := requireEnv("GITHUB_TOKEN")
+	if err != nil {
+		return err
+	}
+
 	// 1. Probe
 	_, _ = fmt.Fprintf(os.Stderr, "probing %s...\n", spriteName)
 	session, err := newSpriteSession(ctx, spriteName, spriteSessionOptions{probeTimeout: 15 * time.Second})
@@ -114,10 +119,18 @@ func runSetup(ctx context.Context, spriteName, repo string, force bool, persona 
 		return fmt.Errorf("upload prompt template: %w", err)
 	}
 
-	// 6. Git auth
+	// 6. Persist gh auth on the sprite so agents always have GitHub access without
+	// relying on per-dispatch env-var injection.
+	_, _ = fmt.Fprintf(os.Stderr, "persisting gh auth...\n")
+	ghAuthScript := fmt.Sprintf("echo %q | gh auth login --with-token", ghToken)
+	if out, err := s.CommandContext(ctx, "bash", "-c", ghAuthScript).Output(); err != nil {
+		// Log but don't fail — gh may not be installed on every sprite variant.
+		_, _ = fmt.Fprintf(os.Stderr, "warning: gh auth setup failed (gh may not be installed): %v\n%s\n", err, out)
+	}
+
 	_, _ = fmt.Fprintf(os.Stderr, "configuring git auth...\n")
 	gitAuthScript := `
-git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=$GH_TOKEN"; }; f'
+git config --global credential.helper '!gh auth git-credential'
 git config --global user.name "bitterblossom[bot]"
 git config --global user.email "bitterblossom@misty-step.dev"
 git config --global --add safe.directory '*'
@@ -129,11 +142,6 @@ git config --global --add safe.directory '*'
 	// 7. Clone repo
 	if repo != "" {
 		_, _ = fmt.Fprintf(os.Stderr, "setting up repo %s...\n", repo)
-
-		ghToken := os.Getenv("GITHUB_TOKEN")
-		if ghToken == "" {
-			return fmt.Errorf("GITHUB_TOKEN must be set to clone repo")
-		}
 
 		repoDir := spriteRepoWorkspace(repo)
 
@@ -150,7 +158,6 @@ git config --global --add safe.directory '*'
 			)
 		}
 
-		cloneScript = fmt.Sprintf("export GH_TOKEN=%q && %s", ghToken, cloneScript)
 		cloneCmd := s.CommandContext(ctx, "bash", "-c", cloneScript)
 		cloneCmd.Stdout = os.Stderr
 		cloneCmd.Stderr = os.Stderr
