@@ -225,7 +225,7 @@ PY
 # prepare_settings_with_provider renders settings.json with provider-specific configuration.
 # Usage: prepare_settings_with_provider <provider> [model]
 #   provider: moonshot | openrouter-kimi | openrouter-claude
-#   model: optional model identifier (e.g., "kimi-k2.5", "anthropic/claude-opus-4")
+#   model: optional model identifier (e.g., "kimi-k2.5", "anthropic/claude-sonnet-4-6")
 prepare_settings_with_provider() {
     local provider="${1:-moonshot}"
     local model="${2:-}"
@@ -286,7 +286,7 @@ elif provider == "openrouter-claude":
     elif model:
         env["ANTHROPIC_MODEL"] = f"anthropic/{model}"
     else:
-        env["ANTHROPIC_MODEL"] = "anthropic/claude-opus-4"
+        env["ANTHROPIC_MODEL"] = "anthropic/claude-sonnet-4-6"  # canonical; keep in sync with base/settings.json
     env["ANTHROPIC_AUTH_TOKEN"] = token
     env["OPENROUTER_API_KEY"] = token
     env["CLAUDE_CODE_OPENROUTER_COMPAT"] = "1"
