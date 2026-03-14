@@ -48,7 +48,10 @@ defmodule Conductor.Sprite do
   def read_artifact(sprite, path) do
     case exec(sprite, "cat #{path}", timeout: 30_000) do
       {:ok, json} ->
-        {:ok, Jason.decode!(json)}
+        case Jason.decode(json) do
+          {:ok, data} -> {:ok, data}
+          {:error, _} -> {:error, "invalid JSON in artifact: #{String.slice(json, 0, 200)}"}
+        end
 
       {:error, output, _} ->
         {:error, "artifact not found: #{output}"}

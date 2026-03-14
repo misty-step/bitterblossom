@@ -68,6 +68,8 @@ defmodule Conductor.Config do
 
   @spec dispatch_env() :: [{binary(), binary()}]
   def dispatch_env do
+    # ANTHROPIC_API_KEY is intentionally empty — sprites use OPENROUTER_API_KEY
+    # (set during bb setup). Clearing it prevents accidental direct Anthropic billing.
     [
       {"GITHUB_TOKEN", github_token!()},
       {"ANTHROPIC_API_KEY", ""}

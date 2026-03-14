@@ -310,6 +310,8 @@ defmodule Conductor.Store do
     File.mkdir_p!(Path.dirname(path))
     File.write!(path, Jason.encode!(event) <> "\n", [:append])
   rescue
-    _ -> :ok
+    e ->
+      Logger.warning("event log append failed: #{Exception.message(e)}")
+      :ok
   end
 end

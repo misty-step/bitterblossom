@@ -7,6 +7,7 @@ defmodule Conductor.GitHub do
   """
 
   alias Conductor.{Shell, Issue}
+  require Logger
 
   @spec get_issue(binary(), pos_integer()) :: {:ok, Issue.t()} | {:error, term()}
   def get_issue(repo, number) do
@@ -15,7 +16,12 @@ defmodule Conductor.GitHub do
            "--repo", repo,
            "--json", "number,title,body,url,labels"
          ]) do
-      {:ok, json} -> {:ok, Issue.from_github(Jason.decode!(json))}
+      {:ok, json} ->
+        case Jason.decode(json) do
+          {:ok, data} -> {:ok, Issue.from_github(data)}
+          {:error, _} -> {:error, "invalid JSON from gh: #{String.slice(json, 0, 200)}"}
+        end
+
       {:error, msg, _} -> {:error, msg}
     end
   end
@@ -34,8 +40,10 @@ defmodule Conductor.GitHub do
            "--limit", to_string(limit)
          ]) do
       {:ok, json} ->
-        issues = json |> Jason.decode!() |> Enum.map(&Issue.from_github/1)
-        {:ok, issues}
+        case Jason.decode(json) do
+          {:ok, list} -> {:ok, Enum.map(list, &Issue.from_github/1)}
+          {:error, _} -> {:error, "invalid JSON from gh: #{String.slice(json, 0, 200)}"}
+        end
 
       {:error, msg, _} ->
         {:error, msg}
@@ -44,11 +52,16 @@ defmodule Conductor.GitHub do
 
   @spec eligible_issues(binary(), keyword()) :: [Issue.t()]
   def eligible_issues(repo, opts \\ []) do
-    {:ok, issues} = list_issues(repo, opts)
+    case list_issues(repo, opts) do
+      {:ok, issues} ->
+        issues
+        |> Enum.filter(fn issue -> Issue.ready?(issue) == :ok end)
+        |> Enum.sort_by(& &1.number)
 
-    issues
-    |> Enum.filter(fn issue -> Issue.ready?(issue) == :ok end)
-    |> Enum.sort_by(& &1.number)
+      {:error, reason} ->
+        Logger.warning("failed to list issues: #{inspect(reason)}")
+        []
+    end
   end
 
   @spec get_pr_checks(binary(), pos_integer()) :: {:ok, [map()]} | {:error, term()}
@@ -59,8 +72,10 @@ defmodule Conductor.GitHub do
            "--json", "statusCheckRollup"
          ]) do
       {:ok, json} ->
-        checks = json |> Jason.decode!() |> Map.get("statusCheckRollup", [])
-        {:ok, checks}
+        case Jason.decode(json) do
+          {:ok, data} -> {:ok, Map.get(data, "statusCheckRollup", [])}
+          {:error, _} -> {:error, "invalid JSON from gh: #{String.slice(json, 0, 200)}"}
+        end
 
       {:error, msg, _} ->
         {:error, msg}
@@ -70,6 +85,9 @@ defmodule Conductor.GitHub do
   @spec checks_green?(binary(), pos_integer()) :: boolean()
   def checks_green?(repo, pr_number) do
     case get_pr_checks(repo, pr_number) do
+      {:ok, []} ->
+        false
+
       {:ok, checks} ->
         Enum.all?(checks, fn c ->
           c["conclusion"] in ["SUCCESS", "success", "NEUTRAL", "neutral", "SKIPPED", "skipped"]
@@ -121,7 +139,12 @@ defmodule Conductor.GitHub do
            "--repo", repo,
            "--json", "number,title,state,mergeable,headRefName,url"
          ]) do
-      {:ok, json} -> {:ok, Jason.decode!(json)}
+      {:ok, json} ->
+        case Jason.decode(json) do
+          {:ok, data} -> {:ok, data}
+          {:error, _} -> {:error, "invalid JSON from gh: #{String.slice(json, 0, 200)}"}
+        end
+
       {:error, msg, _} -> {:error, msg}
     end
   end

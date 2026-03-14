@@ -33,6 +33,7 @@ defmodule Conductor.RunServer do
     :pr_url,
     :dispatch_task,
     :heartbeat_timer,
+    :ci_deadline,
     phase: :pending,
     turn_count: 0,
     trusted_surfaces: []
@@ -74,28 +75,33 @@ defmodule Conductor.RunServer do
         {:stop, :normal, state}
 
       :ok ->
-        {:ok, ^run_id} =
-          Store.create_run(%{
-            run_id: run_id,
-            repo: state.repo,
-            issue_number: state.issue.number,
-            issue_title: state.issue.title,
-            builder_sprite: state.worker
-          })
+        case Store.create_run(%{
+               run_id: run_id,
+               repo: state.repo,
+               issue_number: state.issue.number,
+               issue_title: state.issue.title,
+               builder_sprite: state.worker
+             }) do
+          {:ok, ^run_id} ->
+            branch = "factory/#{state.issue.number}-#{ts}"
+            artifact = Workspace.artifact_path(state.repo, run_id)
 
-        branch = "factory/#{state.issue.number}-#{ts}"
-        artifact = Workspace.artifact_path(state.repo, run_id)
+            state = %{state |
+              run_id: run_id,
+              branch: branch,
+              artifact_path: artifact
+            }
 
-        state = %{state |
-          run_id: run_id,
-          branch: branch,
-          artifact_path: artifact
-        }
+            Store.record_event(run_id, "lease_acquired", %{issue: state.issue.number})
+            log(state, "lease acquired for issue ##{state.issue.number}")
 
-        Store.record_event(run_id, "lease_acquired", %{issue: state.issue.number})
-        log(state, "lease acquired for issue ##{state.issue.number}")
+            {:noreply, state, {:continue, :prepare_workspace}}
 
-        {:noreply, state, {:continue, :prepare_workspace}}
+          _ ->
+            Store.release_lease(state.repo, state.issue.number)
+            Logger.error("create_run failed after lease acquired for issue ##{state.issue.number}")
+            {:stop, :normal, state}
+        end
     end
   end
 
@@ -176,8 +182,9 @@ defmodule Conductor.RunServer do
   def handle_continue(:govern, state) do
     log(state, "entering governance for PR ##{state.pr_number}")
     Store.update_run(state.run_id, %{phase: "governing"})
+    ci_deadline = System.monotonic_time(:millisecond) + Config.ci_timeout() * 60_000
 
-    {:noreply, %{state | phase: :governing}, {:continue, :wait_pr_age}}
+    {:noreply, %{state | phase: :governing, ci_deadline: ci_deadline}, {:continue, :wait_pr_age}}
   end
 
   @impl true
@@ -267,7 +274,12 @@ defmodule Conductor.RunServer do
   @impl true
   def handle_info(:poll_ci, state) do
     Store.heartbeat_run(state.run_id)
-    {:noreply, state, {:continue, :check_ci}}
+
+    if System.monotonic_time(:millisecond) > state.ci_deadline do
+      fail(state, "ci_timeout", "CI did not pass within #{Config.ci_timeout()} minutes")
+    else
+      {:noreply, state, {:continue, :check_ci}}
+    end
   end
 
   @impl true
@@ -335,6 +347,7 @@ defmodule Conductor.RunServer do
     Logger.warning("[#{state.run_id}] blocked: #{reason}")
     Store.record_event(state.run_id, "run_blocked", %{reason: reason})
     Store.complete_run(state.run_id, "blocked", "blocked")
+    Store.release_lease(state.repo, state.issue.number)
     cleanup_workspace(state)
 
     # Comment on the issue so the operator knows

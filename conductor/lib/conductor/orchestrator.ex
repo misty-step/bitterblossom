@@ -53,7 +53,7 @@ defmodule Conductor.Orchestrator do
   end
 
   @doc "Start the continuous polling loop."
-  @spec start_loop(keyword()) :: :ok
+  @spec start_loop(keyword()) :: :ok | {:error, :no_workers}
   def start_loop(opts) do
     GenServer.call(__MODULE__, {:start_loop, opts})
   end
@@ -72,16 +72,22 @@ defmodule Conductor.Orchestrator do
 
   @impl true
   def handle_call({:start_loop, opts}, _from, state) do
-    state = %{state |
-      repo: Keyword.fetch!(opts, :repo),
-      label: Keyword.get(opts, :label, state.label),
-      workers: Keyword.fetch!(opts, :workers),
-      trusted_surfaces: Keyword.get(opts, :trusted_surfaces, state.trusted_surfaces),
-      mode: :polling
-    }
+    workers = Keyword.fetch!(opts, :workers)
 
-    schedule_poll(0)
-    {:reply, :ok, state}
+    if workers == [] do
+      {:reply, {:error, :no_workers}, state}
+    else
+      state = %{state |
+        repo: Keyword.fetch!(opts, :repo),
+        label: Keyword.get(opts, :label, state.label),
+        workers: workers,
+        trusted_surfaces: Keyword.get(opts, :trusted_surfaces, state.trusted_surfaces),
+        mode: :polling
+      }
+
+      schedule_poll(0)
+      {:reply, :ok, state}
+    end
   end
 
   @impl true
@@ -118,21 +124,28 @@ defmodule Conductor.Orchestrator do
       trusted_surfaces: trusted_surfaces
     ]
 
-    {:ok, pid} = DynamicSupervisor.start_child(
-      Conductor.RunSupervisor,
-      {Conductor.RunServer, opts}
-    )
+    case DynamicSupervisor.start_child(
+           Conductor.RunSupervisor,
+           {Conductor.RunServer, opts}
+         ) do
+      {:ok, pid} ->
+        ref = Process.monitor(pid)
+        timeout = (Config.builder_timeout() + Config.ci_timeout() + 10) * 60_000
 
-    ref = Process.monitor(pid)
-
-    # Wait for the RunServer to finish
-    receive do
-      {:DOWN, ^ref, :process, ^pid, _reason} ->
-        # Check terminal state from store
-        case find_latest_run(repo, issue.number) do
-          %{"phase" => phase} -> {:ok, String.to_atom(phase)}
-          nil -> {:error, :run_not_found}
+        receive do
+          {:DOWN, ^ref, :process, ^pid, _reason} ->
+            case find_latest_run(repo, issue.number) do
+              %{"phase" => phase} -> {:ok, String.to_existing_atom(phase)}
+              nil -> {:error, :run_not_found}
+            end
+        after
+          timeout ->
+            Process.exit(pid, :kill)
+            {:error, :timeout}
         end
+
+      {:error, reason} ->
+        {:error, {:start_failed, reason}}
     end
   end
 
@@ -182,6 +195,7 @@ defmodule Conductor.Orchestrator do
     end
   end
 
+  defp pick_worker(%{workers: []}), do: raise("no workers configured")
   defp pick_worker(%{workers: workers, worker_index: idx}) do
     Enum.at(workers, rem(idx, length(workers)))
   end
