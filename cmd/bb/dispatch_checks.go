@@ -63,6 +63,33 @@ if [ -n "$commits" ]; then
 fi
 exit 1`
 
+// detectDefaultBranchScript resolves the remote default branch from origin/HEAD.
+// Exits 0 with the branch name (e.g. "main", "master", "trunk") on stdout.
+// Exits 1 when origin/HEAD is unset; caller should fall back to "main".
+// Exits 2 when the workspace is not a git repo.
+const detectDefaultBranchScript = `
+cd "$WORKSPACE" 2>/dev/null || exit 2
+branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|^refs/remotes/origin/||')
+if [ -n "$branch" ]; then
+  printf '%s\n' "$branch"
+  exit 0
+fi
+exit 1`
+
+// detectDefaultBranchWithRunner resolves the remote default branch from
+// origin/HEAD. Falls back to "main" when origin/HEAD is unset, when the
+// workspace is not a git repo, or when the runner fails.
+func detectDefaultBranchWithRunner(ctx context.Context, run spriteScriptRunner, workspace string) string {
+	output, exitCode, err := runDispatchCheck(ctx, run, dispatchCheck{
+		timeout: 10 * time.Second,
+		script:  fmt.Sprintf("export WORKSPACE=%q\n%s", workspace, detectDefaultBranchScript),
+	})
+	if err != nil || exitCode != 0 || output == "" {
+		return "main"
+	}
+	return output
+}
+
 // prChecksScript checks whether all PR CI checks for the current HEAD have passed.
 // Exits 0 when all checks pass, 1 when checks are still pending, 2 on error (no PR, no git, etc.).
 const prChecksScript = `
