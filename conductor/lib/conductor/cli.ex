@@ -209,9 +209,11 @@ defmodule Conductor.CLI do
     active_runs = Conductor.Store.list_active_runs_all()
     by_worker = Enum.group_by(active_runs, & &1["builder_sprite"])
 
+    sprite_mod = Application.get_env(:conductor, :sprite_module, Conductor.Sprite)
+
     Enum.each(workers, fn worker ->
       health =
-        case Conductor.Sprite.probe(worker) do
+        case sprite_mod.probe(worker) do
           {:ok, _} -> "healthy"
           {:error, _} -> "unreachable"
         end
