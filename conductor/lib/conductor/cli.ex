@@ -170,18 +170,20 @@ defmodule Conductor.CLI do
     {opts, _, _} = OptionParser.parse(args, strict: [port: :integer])
     port = Keyword.get(opts, :port, 4000)
 
-    Application.put_env(:conductor, :start_dashboard, true)
+    # The app is already running (started in main/1) without the endpoint,
+    # because :start_dashboard was false at that point. Configure the endpoint
+    # and start it directly into the running supervisor.
+    Application.put_env(:conductor, Conductor.Web.Endpoint,
+      adapter: Bandit.PhoenixAdapter,
+      http: [ip: {127, 0, 0, 1}, port: port],
+      secret_key_base:
+        System.get_env("DASHBOARD_SECRET_KEY_BASE") ||
+          "bitterblossom-dashboard-dev-key-must-be-at-least-64-chars-long-x",
+      live_view: [signing_salt: "bb_lv_salt"],
+      server: true
+    )
 
-    Application.put_env(:conductor, Conductor.Web.Endpoint, [
-      {:http, [ip: {127, 0, 0, 1}, port: port]},
-      {:secret_key_base,
-       System.get_env("DASHBOARD_SECRET_KEY_BASE") ||
-         "bitterblossom-dashboard-dev-key-must-be-at-least-64-chars-long-x"},
-      {:live_view, [signing_salt: "bb_lv_salt"]},
-      {:server, true}
-    ])
-
-    Application.ensure_all_started(:conductor)
+    {:ok, _} = Supervisor.start_child(Conductor.Supervisor, Conductor.Web.Endpoint)
     IO.puts("dashboard running at http://localhost:#{port}")
     Process.sleep(:infinity)
   end

@@ -86,7 +86,22 @@ in `pytest.ini`. Without it, `pytest` (no args) won't discover the new tests.
 
 ## Phoenix LiveView Dashboard (#615)
 
-### 2026-03-14 — PR #643
+### 2026-03-14 — PR #643, fix PR #645
+
+**Re-run pattern**: Conductor may re-dispatch an issue if the original PR did not close
+the issue (GitHub only auto-closes with "Closes #N" in the PR body, not just `(#N)` in
+the title). When re-dispatched, assess what's in master before implementing — the work
+may already be done. Look for genuine bugs to fix rather than adding busywork.
+
+**cmd_dashboard escript startup bug (fixed in #645)**: `CLI.main/1` calls
+`Application.ensure_all_started(:conductor)` before dispatching to sub-commands. The
+supervisor starts without the endpoint (`:start_dashboard` is false at that point).
+`cmd_dashboard` then sets `:start_dashboard` to true and calls `ensure_all_started`
+again — but this is a no-op since the app is already running. The endpoint never starts.
+Fix: use `Supervisor.start_child(Conductor.Supervisor, Conductor.Web.Endpoint)` after
+configuring the endpoint env. Also: `Application.put_env` in `cmd_dashboard` REPLACES
+the full key, so `adapter: Bandit.PhoenixAdapter` must be explicitly included or it
+will be silently dropped from the running config.
 
 **Module attribute ordering in Phoenix.Endpoint**: `@session_options` (or any
 module attribute used inside `use Phoenix.Endpoint`) must be defined BEFORE the
