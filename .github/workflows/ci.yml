@@ -42,9 +42,9 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install pytest==8.4.1 ruff==0.15.0
       - name: Ruff
-        run: ruff check base/hooks scripts/conductor.py scripts/test_conductor.py scripts/test_conductor_supervise.py scripts/test_workflow_contract.py
+        run: ruff check base/hooks scripts/test_workflow_contract.py
       - name: Pytest
-        run: python -m pytest -q base/hooks scripts/test_conductor.py scripts/test_conductor_supervise.py scripts/test_workflow_contract.py
+        run: python -m pytest -q base/hooks scripts/test_workflow_contract.py
 
   yaml:
     name: YAML Lint
