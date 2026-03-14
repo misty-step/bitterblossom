@@ -1,17 +1,27 @@
 defmodule Conductor.Sprite do
   @moduledoc """
-  Sprite operations via the `sprite` and `bb` CLIs.
+  Sprite operations via the `sprite` CLI.
 
   Deep module: hides all sprite protocol details — exec, dispatch,
   artifact retrieval, process cleanup.
 
   Implements `Conductor.Worker`.
+
+  ## Dispatch sequence
+
+  `dispatch/4` performs the full sequence via direct `sprite exec` calls:
+
+  1. Kill stale agent processes (`pkill -9 -f claude`)
+  2. Upload prompt to workspace (base64-encoded to avoid shell quoting issues)
+  3. Run agent via `Conductor.Harness` (e.g. `claude -p < PROMPT.md`)
+  4. On non-zero exit, retry once using the harness `continue_command`
   """
 
   @behaviour Conductor.Worker
 
   alias Conductor.{Shell, Config, Workspace}
 
+  @impl Conductor.Worker
   @spec exec(binary(), binary(), keyword()) :: {:ok, binary()} | {:error, binary(), integer()}
   def exec(sprite, command, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, 60_000)
@@ -30,24 +40,36 @@ defmodule Conductor.Sprite do
     end
   end
 
+  @impl Conductor.Worker
   @spec dispatch(binary(), binary(), binary(), keyword()) ::
           {:ok, binary()} | {:error, binary(), integer()}
-  def dispatch(sprite, prompt, repo, opts \\ []) do
+  def dispatch(sprite, prompt, _repo, opts \\ []) do
     timeout_minutes = Keyword.get(opts, :timeout, Config.builder_timeout())
-    template = Keyword.get(opts, :template)
-    workspace = Keyword.get(opts, :workspace)
+    workspace = Keyword.fetch!(opts, :workspace)
+    harness = Keyword.get(opts, :harness, Conductor.ClaudeCode)
+    # Injected in tests to capture exec calls without a real sprite
+    exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
 
-    args =
-      ["dispatch", sprite, prompt, "--repo", repo, "--timeout", "#{timeout_minutes}m"]
-      |> maybe_add("--prompt-template", template)
-      |> maybe_add("--workspace", workspace)
+    timeout_ms = timeout_minutes * 60_000
 
-    Shell.cmd(Config.bb_path(), args,
-      timeout: (timeout_minutes + 5) * 60_000,
-      env: Config.dispatch_env()
-    )
+    # 1. Kill stale agent processes from prior dispatches
+    exec_fn.(sprite, "pkill -9 -f claude 2>/dev/null; true", timeout: 15_000)
+
+    # 2. Upload prompt (base64 to avoid shell quoting; base64 alphabet is shell-safe)
+    prompt_path = Path.join(workspace, "PROMPT.md")
+    encoded = Base.encode64(prompt)
+
+    case exec_fn.(sprite, "echo #{encoded} | base64 -d > '#{prompt_path}'", timeout: 30_000) do
+      {:error, msg, code} ->
+        {:error, "prompt upload failed: #{msg}", code}
+
+      {:ok, _} ->
+        # 3. Run agent
+        run_agent(sprite, workspace, prompt_path, harness, exec_fn, timeout_ms)
+    end
   end
 
+  @impl Conductor.Worker
   @spec read_artifact(binary(), binary(), keyword()) :: {:ok, map()} | {:error, term()}
   def read_artifact(sprite, path, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, 30_000)
@@ -64,6 +86,7 @@ defmodule Conductor.Sprite do
     end
   end
 
+  @impl Conductor.Worker
   @spec cleanup(binary(), binary(), binary()) :: :ok | {:error, term()}
   def cleanup(sprite, repo, run_id) do
     Workspace.cleanup(sprite, repo, run_id)
@@ -71,7 +94,7 @@ defmodule Conductor.Sprite do
 
   @spec kill(binary()) :: :ok | {:error, term()}
   def kill(sprite) do
-    case Shell.cmd(Config.bb_path(), ["kill", sprite], timeout: 30_000) do
+    case exec(sprite, "pkill -9 -f claude 2>/dev/null; true", timeout: 15_000) do
       {:ok, _} -> :ok
       {:error, msg, _} -> {:error, msg}
     end
@@ -79,8 +102,8 @@ defmodule Conductor.Sprite do
 
   @spec status(binary()) :: {:ok, map()} | {:error, term()}
   def status(sprite) do
-    case Shell.cmd(Config.bb_path(), ["status", sprite], timeout: 30_000) do
-      {:ok, output} -> {:ok, %{sprite: sprite, output: output, reachable: true}}
+    case exec(sprite, "echo ok", timeout: 15_000) do
+      {:ok, _} -> {:ok, %{sprite: sprite, reachable: true}}
       {:error, msg, _} -> {:error, msg}
     end
   end
@@ -90,6 +113,30 @@ defmodule Conductor.Sprite do
     match?({:ok, _}, exec(sprite, "echo ok", timeout: 15_000))
   end
 
-  defp maybe_add(args, _flag, nil), do: args
-  defp maybe_add(args, flag, value), do: args ++ [flag, value]
+  # --- Private ---
+
+  defp run_agent(sprite, workspace, prompt_path, harness, exec_fn, timeout_ms) do
+    cmd = agent_command(harness.dispatch_command([]), workspace, prompt_path)
+
+    case exec_fn.(sprite, cmd, timeout: timeout_ms) do
+      {:ok, output} ->
+        {:ok, output}
+
+      {:error, _output, _code} ->
+        # Retry with session resumption if the harness supports it
+        case harness.continue_command([]) do
+          nil ->
+            {:error, "agent exited non-zero; harness does not support continuation", 1}
+
+          continue_parts ->
+            retry_cmd = agent_command(continue_parts, workspace, prompt_path)
+            exec_fn.(sprite, retry_cmd, timeout: timeout_ms)
+        end
+    end
+  end
+
+  defp agent_command(cmd_parts, workspace, prompt_path) do
+    cmd_str = Enum.join(cmd_parts, " ")
+    "cd '#{workspace}' && LEFTHOOK=0 #{cmd_str} < '#{prompt_path}'"
+  end
 end

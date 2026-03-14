@@ -9,22 +9,6 @@ defmodule Conductor.Config do
     System.get_env("SPRITES_ORG") || System.fetch_env!("FLY_ORG")
   end
 
-  @spec bb_path() :: binary()
-  def bb_path do
-    System.get_env("BB_PATH") || resolve_bb_path()
-  end
-
-  defp resolve_bb_path do
-    # Look for bb in parent directory (conductor lives inside the bitterblossom repo)
-    candidates = [
-      Path.expand("../bin/bb"),
-      Path.expand("./bin/bb"),
-      "bb"
-    ]
-
-    Enum.find(candidates, "bb", &File.exists?/1)
-  end
-
   @spec db_path() :: binary()
   def db_path do
     Application.get_env(:conductor, :db_path, ".bb/conductor.db")
@@ -92,7 +76,6 @@ defmodule Conductor.Config do
       {"GITHUB_TOKEN", fn -> System.get_env("GITHUB_TOKEN") end},
       {"SPRITE_TOKEN or FLY_API_TOKEN",
        fn -> System.get_env("SPRITE_TOKEN") || System.get_env("FLY_API_TOKEN") end},
-      {"bb", fn -> find_executable("bb") || File.exists?(bb_path()) end},
       {"gh", fn -> find_executable("gh") end},
       {"sprite", fn -> find_executable("sprite") end}
     ]
