@@ -132,6 +132,7 @@ defmodule Conductor.Store do
       ]
     )
 
+    broadcast_update()
     {:reply, {:ok, run_id}, state}
   end
 
@@ -146,6 +147,7 @@ defmodule Conductor.Store do
       vals
     )
 
+    broadcast_update()
     {:reply, :ok, state}
   end
 
@@ -162,6 +164,7 @@ defmodule Conductor.Store do
       [phase, status, now, run_id]
     )
 
+    broadcast_update()
     {:reply, :ok, state}
   end
 
@@ -458,6 +461,14 @@ defmodule Conductor.Store do
 
   defp now_utc do
     DateTime.utc_now() |> DateTime.to_iso8601()
+  end
+
+  defp broadcast_update do
+    if Process.whereis(Conductor.PubSub) do
+      Phoenix.PubSub.broadcast(Conductor.PubSub, "dashboard", :runs_updated)
+    end
+
+    :ok
   end
 
   defp append_event_log(path, event) do
