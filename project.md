@@ -8,6 +8,16 @@ Bitterblossom is the conductor for a single-repo software factory: it routes Git
 **Current Focus:** Make the single-repo factory trustworthy enough to run 24/7 without a laptop in the loop.
 **Key Differentiators:** Thin transport CLI, run-centric control plane, persistent sprites, GitHub as the work ledger, explicit governance instead of “builder says done.”
 
+## Design Philosophy
+
+Bitterblossom is a **cybernetic governor** for software production. The conductor doesn't write code — it designs and operates the feedback control loop that closes at the architectural level.
+
+**The cybernetics pattern:** Stop turning the valve. Steer. Each time this pattern appears in history (Watt's governor, Kubernetes, agent harnesses), it's because someone built a sensor and actuator powerful enough to close the loop at a new layer. LLMs are the first sensor+actuator that can operate at the level of architectural judgment — not just “does it compile?” but “does this change fit the system?”
+
+**The calibration problem:** The hard work isn't getting the basic loop running (CI, tests, dispatch). It's encoding system-specific knowledge: what “good” means for this codebase, which patterns the architecture rewards, which it avoids. If you don't externalize this judgment, agents make the same mistakes on the hundredth run as the first. CLAUDE.md, project.md, WORKFLOW.md, and the retro loop are the calibration surface.
+
+**The drift trap:** Without codified architectural constraints, agents amplify drift at machine speed. You can't use agents to clean up the mess if the agents don't know what clean looks like. The retro loop's architectural guard (“symptom or root cause?”) is the anti-drift sensor.
+
 ## Domain Glossary
 
 | Term | Definition |
