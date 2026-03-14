@@ -271,21 +271,51 @@ defmodule Conductor.Orchestrator do
   defp merge_labeled_prs(%{repo: repo}) do
     case code_host_mod().labeled_prs(repo, "lgtm") do
       {:ok, prs} ->
-        Enum.each(prs, fn pr ->
+        prs
+        |> Enum.filter(fn pr ->
+          # Only merge PRs from conductor branches (factory/*)
+          branch = pr["headRefName"] || ""
+          String.starts_with?(branch, "factory/")
+        end)
+        |> Enum.each(fn pr ->
           pr_number = pr["number"]
-          Logger.info("[merge] PR ##{pr_number} has lgtm label, merging")
 
-          case code_host_mod().merge(repo, pr_number, []) do
-            :ok ->
-              Logger.info("[merge] PR ##{pr_number} merged successfully")
+          if code_host_mod().checks_green?(repo, pr_number) do
+            Logger.info("[merge] PR ##{pr_number} has lgtm + green CI, merging")
 
-            {:error, reason} ->
-              Logger.warning("[merge] PR ##{pr_number} merge failed: #{reason}")
+            case code_host_mod().merge(repo, pr_number, []) do
+              :ok ->
+                Logger.info("[merge] PR ##{pr_number} merged successfully")
+                record_merge(repo, pr_number)
+
+              {:error, reason} ->
+                Logger.warning("[merge] PR ##{pr_number} merge failed: #{reason}")
+            end
+          else
+            Logger.debug("[merge] PR ##{pr_number} has lgtm but CI not green, skipping")
           end
         end)
 
       {:error, reason} ->
         Logger.warning("[merge] failed to check labeled PRs: #{reason}")
+    end
+  end
+
+  # Update the Store when the orchestrator merges a PR (not the RunServer).
+  defp record_merge(repo, pr_number) do
+    case Store.list_runs(limit: 50) do
+      runs when is_list(runs) ->
+        case Enum.find(runs, fn r -> r["repo"] == repo and r["pr_number"] == pr_number end) do
+          %{"run_id" => run_id} ->
+            Store.complete_run(run_id, "merged", "merged")
+            Conductor.Retro.analyze(run_id)
+
+          nil ->
+            :ok
+        end
+
+      _ ->
+        :ok
     end
   end
 

@@ -16,6 +16,8 @@ defmodule Conductor.RunServer do
 
   alias Conductor.{Store, Workspace, Prompt, Config, Retro}
 
+  defp tracker_mod, do: Application.get_env(:conductor, :tracker_module, Conductor.GitHub)
+
   @heartbeat_ms 30_000
 
   defstruct [
@@ -282,7 +284,7 @@ defmodule Conductor.RunServer do
     cleanup_workspace(state)
 
     # Comment on the issue so the operator knows
-    Conductor.GitHub.create_issue_comment(
+    tracker_mod().comment(
       state.repo,
       state.issue.number,
       "Bitterblossom blocked `#{state.run_id}`: #{reason}"
