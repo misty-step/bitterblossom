@@ -130,7 +130,7 @@ defmodule Conductor.RunServer do
     log(state, "dispatching builder to #{state.worker}")
 
     # Delete stale artifact before dispatch (prevent false completion)
-    worker_mod().exec(state.worker, "rm -f #{state.artifact_path}", timeout: 10_000)
+    worker_mod().exec(state.worker, "rm -f '#{state.artifact_path}'", timeout: 10_000)
 
     prompt =
       Prompt.build_builder_prompt(

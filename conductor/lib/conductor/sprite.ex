@@ -52,7 +52,7 @@ defmodule Conductor.Sprite do
   def read_artifact(sprite, path, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, 30_000)
 
-    case exec(sprite, "cat #{path}", timeout: timeout) do
+    case exec(sprite, "cat '#{path}'", timeout: timeout) do
       {:ok, json} ->
         case Jason.decode(json) do
           {:ok, data} -> {:ok, data}
