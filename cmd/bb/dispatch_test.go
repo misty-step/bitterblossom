@@ -393,7 +393,7 @@ func TestHasNewCommitsReturnsTrue(t *testing.T) {
 	t.Parallel()
 
 	r := &fakeSpriteScriptRunner{exitCode: 0, out: []byte("abc123 feat: something\n"), err: nil}
-	hasWork, err := hasNewCommitsWithRunner(context.Background(), r.run, "/tmp/ws")
+	hasWork, err := hasNewCommitsWithRunner(context.Background(), r.run, "/tmp/ws", "main")
 	if err != nil {
 		t.Fatalf("hasNewCommitsWithRunner() error = %v", err)
 	}
@@ -406,7 +406,7 @@ func TestHasNewCommitsReturnsFalseWhenNone(t *testing.T) {
 	t.Parallel()
 
 	r := &fakeSpriteScriptRunner{exitCode: 1, out: nil, err: nil}
-	hasWork, err := hasNewCommitsWithRunner(context.Background(), r.run, "/tmp/ws")
+	hasWork, err := hasNewCommitsWithRunner(context.Background(), r.run, "/tmp/ws", "main")
 	if err != nil {
 		t.Fatalf("hasNewCommitsWithRunner() error = %v", err)
 	}
@@ -419,7 +419,7 @@ func TestHasNewCommitsReturnsErrorOnRunnerFailure(t *testing.T) {
 	t.Parallel()
 
 	r := &fakeSpriteScriptRunner{exitCode: 0, out: nil, err: errors.New("network")}
-	_, err := hasNewCommitsWithRunner(context.Background(), r.run, "/tmp/ws")
+	_, err := hasNewCommitsWithRunner(context.Background(), r.run, "/tmp/ws", "main")
 	if err == nil {
 		t.Fatal("expected error for runner failure")
 	}
@@ -435,7 +435,7 @@ func TestHasNewCommitsReturnsErrorOnUnexpectedExitCode(t *testing.T) {
 	t.Parallel()
 
 	r := &fakeSpriteScriptRunner{exitCode: 2, out: []byte("fatal: not a git repo"), err: nil}
-	_, err := hasNewCommitsWithRunner(context.Background(), r.run, "/tmp/ws")
+	_, err := hasNewCommitsWithRunner(context.Background(), r.run, "/tmp/ws", "main")
 	if err == nil {
 		t.Fatal("expected error for unexpected exit code")
 	}
@@ -448,7 +448,7 @@ func TestHasNewCommitsUsesWorkspace(t *testing.T) {
 	t.Parallel()
 
 	r := &fakeSpriteScriptRunner{exitCode: 0, out: []byte("abc123\n"), err: nil}
-	if _, err := hasNewCommitsWithRunner(context.Background(), r.run, "/home/sprite/workspace/myrepo"); err != nil {
+	if _, err := hasNewCommitsWithRunner(context.Background(), r.run, "/home/sprite/workspace/myrepo", "main"); err != nil {
 		t.Fatalf("hasNewCommitsWithRunner() error = %v", err)
 	}
 	if !strings.Contains(r.script, "/home/sprite/workspace/myrepo") {
@@ -456,11 +456,29 @@ func TestHasNewCommitsUsesWorkspace(t *testing.T) {
 	}
 }
 
+func TestHasNewCommitsUsesDetectedBranch(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: []byte("abc123\n"), err: nil}
+	if _, err := hasNewCommitsWithRunner(context.Background(), r.run, "/tmp/ws", "development"); err != nil {
+		t.Fatalf("hasNewCommitsWithRunner() error = %v", err)
+	}
+	if !strings.Contains(r.script, `BRANCH="development"`) {
+		t.Fatalf("script = %q, want BRANCH set to detected branch", r.script)
+	}
+	if strings.Contains(r.script, "origin/master") {
+		t.Fatalf("script = %q, should not hardcode origin/master", r.script)
+	}
+	if strings.Contains(r.script, "origin/main") {
+		t.Fatalf("script = %q, should not hardcode origin/main", r.script)
+	}
+}
+
 func TestHasNewCommitsHasDeadline(t *testing.T) {
 	t.Parallel()
 
 	r := &fakeSpriteScriptRunner{exitCode: 0, out: []byte("abc123\n"), err: nil}
-	_, _ = hasNewCommitsWithRunner(context.Background(), r.run, "/tmp/ws")
+	_, _ = hasNewCommitsWithRunner(context.Background(), r.run, "/tmp/ws", "main")
 	if !r.gotDeadline {
 		t.Fatal("expected context to carry a deadline (15s timeout)")
 	}

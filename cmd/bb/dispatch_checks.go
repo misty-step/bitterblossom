@@ -31,13 +31,13 @@ fi
 echo "$busy" >&2
 exit "$status"`
 
-// newCommitsCheckScript checks if any commits on HEAD are not yet on origin/master or
-// origin/main. Exits 0 with commit list on stdout when new commits exist, exits 1 when
-// the branch is flush with upstream (no new work). Exits 2 when not a git repo or when
-// neither origin/master nor origin/main exists (no valid upstream baseline).
+// newCommitsCheckScript checks if any commits on HEAD are not yet on the remote
+// default branch ($BRANCH). Exits 0 with commit list on stdout when new commits
+// exist, exits 1 when the branch is flush with upstream (no new work). Exits 2
+// when not a git repo or origin/$BRANCH does not exist.
 const newCommitsCheckScript = `
 cd "$WORKSPACE" 2>/dev/null || exit 2
-commits="$(git log origin/master..HEAD --oneline 2>/dev/null || git log origin/main..HEAD --oneline 2>/dev/null)" || exit 2
+commits="$(git log "origin/$BRANCH"..HEAD --oneline 2>/dev/null)" || exit 2
 if [ -n "$commits" ]; then
   printf '%s\n' "$commits"
   exit 0
@@ -273,13 +273,13 @@ func isValidBranchName(name string) bool {
 }
 
 // hasNewCommitsWithRunner returns true when commits exist on HEAD that are not
-// present on origin/master or origin/main. This is used as a secondary off-rails
+// present on origin/<defaultBranch>. This is used as a secondary off-rails
 // backstop: if the detector fired while the agent was mid-task (e.g. waiting for CI),
 // and work exists on the branch, dispatch succeeds with a warning rather than failing.
-func hasNewCommitsWithRunner(ctx context.Context, run spriteScriptRunner, workspace string) (bool, error) {
+func hasNewCommitsWithRunner(ctx context.Context, run spriteScriptRunner, workspace, defaultBranch string) (bool, error) {
 	output, exitCode, err := runDispatchCheck(ctx, run, dispatchCheck{
 		timeout: 15 * time.Second,
-		script:  fmt.Sprintf("export WORKSPACE=%q\n%s", workspace, newCommitsCheckScript),
+		script:  fmt.Sprintf("export WORKSPACE=%q BRANCH=%q\n%s", workspace, defaultBranch, newCommitsCheckScript),
 	})
 	if err != nil {
 		return false, fmt.Errorf("check new commits: %w", err)

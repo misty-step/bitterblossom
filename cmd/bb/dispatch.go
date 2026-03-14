@@ -140,7 +140,7 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverrid
 	if workspaceOverride == "" {
 		_, _ = fmt.Fprintf(os.Stderr, "syncing repo %s (branch: %s)...\n", repo, defaultBranch)
 		syncScript := fmt.Sprintf(
-			`git config --global --add safe.directory %q 2>/dev/null; export GH_TOKEN=%q && cd %q && git checkout %q; git pull --ff-only 2>&1`,
+			`git config --global --add safe.directory %q 2>/dev/null; export GH_TOKEN=%q && cd %q && git checkout %q && git pull --ff-only 2>&1`,
 			workspace, ghToken, workspace, defaultBranch,
 		)
 		syncCmd := s.CommandContext(ctx, "bash", "-c", syncScript)
@@ -287,7 +287,7 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverrid
 			hasWork, checkErr = hasNewCommitsSinceSHAWithRunner(ctx, spriteBashRunner(s), workspace, preSHA)
 		} else {
 			_, _ = fmt.Fprintf(os.Stderr, "\n=== off-rails: no pre-dispatch SHA — falling back to origin baseline check ===\n")
-			hasWork, checkErr = hasNewCommitsWithRunner(ctx, spriteBashRunner(s), workspace)
+			hasWork, checkErr = hasNewCommitsWithRunner(ctx, spriteBashRunner(s), workspace, defaultBranch)
 		}
 		if checkErr != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "\n=== off-rails: new commits check failed: %v — treating as failure ===\n", checkErr)
