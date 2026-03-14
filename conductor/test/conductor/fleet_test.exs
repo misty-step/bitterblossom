@@ -94,17 +94,6 @@ defmodule Conductor.FleetTest do
     def comment(_repo, _number, _body), do: :ok
   end
 
-  # BuildIssue — minimal struct with the fields RunServer needs.
-  defp build_issue(number) do
-    %Conductor.Issue{
-      number: number,
-      title: "issue #{number}",
-      labels: ["autopilot"],
-      body: "",
-      url: "https://github.com/org/repo/issues/#{number}"
-    }
-  end
-
   # Start a fresh Orchestrator GenServer for each test (not the global singleton).
   defp start_orchestrator(wake_fn) do
     {:ok, pid} =
@@ -160,99 +149,15 @@ defmodule Conductor.FleetTest do
   end
 
   describe "round-robin dispatch across 3 workers" do
-    test "work is distributed across all 3 workers" do
-      # Track which workers receive dispatch calls
-      test_pid = self()
-
-      wake_fn = fn name ->
-        send(test_pid, {:wake_called, name})
-        :ok
-      end
-
-      # Simulate 3 issues dispatched; collect the picked workers via wake calls
-      # We exercise pick_fleet_worker 3 times by calling start_run via maybe_start_runs.
-      # Instead of going through the full loop, we test pick_fleet_worker indirectly
-      # by watching wake_fn calls from multiple start_run invocations.
-
-      # Build 3 issues and a tracker that returns them
-      issues = [build_issue(1), build_issue(2), build_issue(3)]
-
-      # We'll exercise the pick logic through the state machine directly.
-      # Inject a mock tracker that returns the issues.
-      defmodule ThreeIssueTracker do
-        @behaviour Conductor.Tracker
-
-        def get_issue(_repo, n) do
-          issue = %Conductor.Issue{
-            number: n,
-            title: "issue #{n}",
-            labels: ["autopilot"],
-            body: "",
-            url: "https://github.com/org/repo/issues/#{n}"
-          }
-
-          {:ok, issue}
-        end
-
-        def list_eligible(_repo, _opts) do
-          url = "https://github.com/org/repo/issues/"
-
-          [
-            %Conductor.Issue{
-              number: 1,
-              title: "i1",
-              labels: ["autopilot"],
-              body: "",
-              url: url <> "1"
-            },
-            %Conductor.Issue{
-              number: 2,
-              title: "i2",
-              labels: ["autopilot"],
-              body: "",
-              url: url <> "2"
-            },
-            %Conductor.Issue{
-              number: 3,
-              title: "i3",
-              labels: ["autopilot"],
-              body: "",
-              url: url <> "3"
-            }
-          ]
-        end
-
-        def comment(_repo, _number, _body), do: :ok
-      end
-
-      # We can't easily inject the tracker into a standalone Orchestrator pid without
-      # going through Application config (which is not async-safe). Instead, test the
-      # pick_fleet_worker logic via fleet state checks.
-      #
-      # The round-robin guarantee: given a 3-worker fleet and 3 consecutive picks,
-      # each worker should appear exactly once.
-
+    test "fleet initializes all 3 workers as healthy" do
+      wake_fn = fn _name -> :ok end
       pid = start_orchestrator(wake_fn)
+      :ok = start_loop(pid, ["sprite-1", "sprite-2", "sprite-3"], wake_fn: wake_fn)
 
-      :ok =
-        start_loop(pid, ["sprite-1", "sprite-2", "sprite-3"], wake_fn: wake_fn)
-
-      # Simulate picks by calling start_run 3 times. Since RunServer needs a real
-      # child supervisor and SQLite, we exercise pick logic by peeking inside state.
-      # We verify via worker_index advancement and fleet health invariants.
-
-      fleet_before = fleet_state(pid)
-      assert length(fleet_before) == 3
-      assert Enum.all?(fleet_before, &(&1.health == :healthy))
-
-      # Drain 2 of 3 to verify the round-robin skips drained workers.
-      # Manually call update via process state is not possible externally —
-      # instead we rely on the pick being deterministic: index mod N.
-      # Verify that the initial worker_index is 0 and the fleet has 3 healthy workers.
-      # The first dispatch will probe sprite-1, second sprite-2, third sprite-3.
-      assert Enum.map(fleet_before, & &1.name) == ["sprite-1", "sprite-2", "sprite-3"]
-
-      _ = issues
+      fleet = fleet_state(pid)
+      assert length(fleet) == 3
+      assert Enum.all?(fleet, &(&1.health == :healthy))
+      assert Enum.map(fleet, & &1.name) == ["sprite-1", "sprite-2", "sprite-3"]
     end
 
     test "round-robin cycles through workers in order" do
@@ -357,11 +262,13 @@ defmodule Conductor.FleetTest do
   end
 
   describe "orchestrator wake_fn injection" do
-    test "start_loop accepts wake_fn override" do
+    test "start_loop accepts wake_fn override and initializes healthy fleet" do
       calls = :ets.new(:wake_calls, [:set, :public])
+      test_pid = self()
 
       wake_fn = fn name ->
         :ets.insert(calls, {name, true})
+        send(test_pid, {:wake_called, name})
         :ok
       end
 
@@ -372,6 +279,11 @@ defmodule Conductor.FleetTest do
       fleet = fleet_state(pid)
       assert length(fleet) == 2
       assert Enum.all?(fleet, &(&1.health == :healthy))
+      assert Enum.map(fleet, & &1.name) == ["sprite-a", "sprite-b"]
+
+      # wake_fn is only invoked during actual dispatch (not during start_loop).
+      # Verify the ETS table is clean — no spurious calls at initialization time.
+      assert :ets.tab2list(calls) == []
 
       :ets.delete(calls)
     end

@@ -85,9 +85,10 @@ defmodule Conductor.Orchestrator do
   @doc "Return current fleet state for all declared workers."
   @spec fleet_status() :: {:ok, [map()]} | {:error, :not_running}
   def fleet_status do
-    case GenServer.whereis(__MODULE__) do
-      nil -> {:error, :not_running}
-      _pid -> {:ok, GenServer.call(__MODULE__, :fleet_status)}
+    try do
+      {:ok, GenServer.call(__MODULE__, :fleet_status)}
+    catch
+      :exit, _ -> {:error, :not_running}
     end
   end
 

@@ -67,7 +67,7 @@ defmodule Conductor.Config do
 
   @spec probe_failure_threshold() :: pos_integer()
   def probe_failure_threshold do
-    Application.get_env(:conductor, :probe_failure_threshold, 3)
+    Application.get_env(:conductor, :probe_failure_threshold, 3) |> max(1)
   end
 
   @spec replay_delay_ms() :: pos_integer()
