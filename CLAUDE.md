@@ -54,6 +54,26 @@ cd conductor && mix deps.get && mix compile && mix test
 go build -o bin/bb ./cmd/bb
 ```
 
+## Conductor Authorities
+
+The conductor owns five authorities. Nothing else may perform these:
+
+1. **Lease** — claim an issue so no other run touches it
+2. **Dispatch** — send a builder to a sprite with a prompt and a worktree
+3. **Govern** — independently verify: CI green? Reviews clean? Policy satisfied?
+4. **Merge** — squash-merge when governance passes
+5. **Learn** — post-run retro analysis, backlog synthesis, pattern detection
+
+The entity doing the work cannot judge the work. Builders don't know the merge policy.
+
+## Gotchas (earned by pain, 2026-03-14)
+
+- **Go/Elixir coupling on file paths.** The Go transport (`cmd/bb/`) hardcodes paths that the Elixir conductor also references. Renaming a file in one surface breaks the other. Always grep both `cmd/bb/` and `conductor/` when renaming. The symlink `scripts/ralph-prompt-template.md → builder-prompt-template.md` exists for this reason. Dies with #621.
+- **Closing a PR doesn't stop the conductor.** The conductor doesn't monitor PR state — it only checks CI status. To stop a merge, use the `hold` label on the issue (#637). Closing the PR is not communication.
+- **`statusCheckRollup` contains null entries.** External review tools (CodeRabbit) report checks with null conclusions. `evaluate_checks/1` filters these. If you add new CI check logic, handle nulls.
+- **Stale ralph.sh blocks dispatch.** When runs complete, ralph.sh processes may linger on the sprite. The next dispatch detects them and refuses. The conductor retries every 60s until they die. #621 eliminates this entirely.
+- **Issue boundaries must not contradict AC.** If you write "Don't modify X" but AC requires X to compile, the builder will modify X. Ensure AC is achievable within stated boundaries.
+
 ## Coding Standards
 
 - Elixir 1.16+, `mix format`, deep modules (Ousterhout)
