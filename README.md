@@ -6,29 +6,31 @@ Remote conductor and thin transport for a [Sprites](https://sprites.dev) softwar
 
 Bitterblossom has two surfaces:
 
-- `bb`: thin Go transport for sprite setup, dispatch, status, logs, and recovery
-- `scripts/conductor.py`: remote control plane that leases GitHub issues, dispatches builders, runs a review council, observes CI signals, and merges
+- `conductor/`: Elixir/OTP orchestrator — leases GitHub issues, dispatches builders, governs PRs, merges
+- `cmd/bb/`: Go transport for sprite setup, dispatch, status, and logs (transitional — being absorbed into Elixir)
 
 The design is intentional:
 
-- `bb` stays deterministic and small
+- `bb` stays transport-sized and deterministic
 - the conductor owns workflow judgment and durable state
 - GitHub is the human-facing work ledger
-- SQLite + JSONL event logs are the machine-facing run ledger
+- SQLite events are the machine-facing run ledger
 
-Read [WORKFLOW.md](WORKFLOW.md) first for the repo-owned runtime workflow contract, then [ADR-002](docs/adr/002-architecture-minimalism.md) for the thin-CLI boundary and [ADR-003](docs/adr/003-conductor-control-plane.md) for the remote conductor design.
+Read [WORKFLOW.md](WORKFLOW.md) for the runtime workflow contract. For the architecture stack, see [docs/architecture/](docs/architecture/).
 
 ## Architecture
 
 ```text
-cmd/bb/                  thin sprite transport CLI
-scripts/conductor.py     conductor MVP with SQLite run store
-scripts/prompts/         builder + reviewer prompt templates
+conductor/               Elixir/OTP control plane (orchestrator, run state, merge)
+cmd/bb/                  Go transport CLI (setup, dispatch, status, logs, kill)
 base/                    shared CLAUDE/settings/hooks/skills pushed to sprites
 sprites/                 per-sprite personas
+docs/architecture/       hierarchical architecture artifacts ← start here
 docs/adr/                architecture decisions
 docs/                    operator docs and contracts
 ```
+
+**Architecture stack:** [`docs/architecture/README.md`](docs/architecture/README.md) — system overview with diagrams, drill-downs for the conductor and transport modules, and the repo-local skills layer.
 
 ## How It Works
 

@@ -2,82 +2,77 @@
 
 Current Bitterblossom is a **conductor-first software factory**:
 
-- `scripts/conductor.py` is the workflow brain and durable control plane.
-- `cmd/bb/` is the thin transport/operator edge for talking to sprites.
-- `scripts/ralph.sh` is the remote execution loop that actually runs work on a sprite.
+- `conductor/` (Elixir/OTP) is the workflow brain and durable control plane.
+- `cmd/bb/` (Go) is the thin transport/operator edge for talking to sprites. Transitional — being absorbed into Elixir per #621.
+- `scripts/ralph.sh` is the remote execution loop that runs Claude Code on a sprite.
 
-If you are trying to understand how the repo works today, start from those three entrypoints.
+Start from those three entrypoints to understand how the repo works today.
 
 ## Authoritative Entry Points
 
 | Path | Role |
 |---|---|
-| [`scripts/conductor.py`](../scripts/conductor.py) | Intake, leasing, builder/reviewer orchestration, CI wait, review-thread handling, trusted external review settling, merge, durable run state |
-| [`cmd/bb/main.go`](../cmd/bb/main.go) + [`cmd/bb/*.go`](../cmd/bb/) | Sprite auth, setup, repo sync, prompt upload, PTY execution, logs, status, kill |
-| [`scripts/ralph.sh`](../scripts/ralph.sh) | On-sprite execution loop, heartbeat output, signal-file protocol, bounded agent iterations |
+| [`conductor/lib/conductor/`](../conductor/lib/conductor/) | Elixir/OTP control plane: orchestrator, per-run GenServer, store, GitHub, sprite, workspace |
+| [`cmd/bb/main.go`](../cmd/bb/main.go) + [`cmd/bb/*.go`](../cmd/bb/) | Go transport: sprite auth, setup, repo sync, prompt upload, PTY exec, logs, status, kill |
+| [`scripts/ralph.sh`](../scripts/ralph.sh) | On-sprite execution loop, heartbeat output, signal-file protocol |
 
 ## Trace Bullet
 
 ```mermaid
 sequenceDiagram
     participant GH as GitHub
-    participant C as Conductor
-    participant BB as bb
+    participant C as Conductor (Elixir)
+    participant BB as bb CLI
     participant W as Builder Sprite
-    participant R as Reviewer Sprites
 
     GH->>C: eligible issue exists
     C->>C: acquire lease + create run
-    C->>BB: dry-run probe + dispatch builder
-    BB->>W: sync repo + run Ralph
-    W-->>GH: push branch + open draft PR
-    W-->>C: builder artifact
-    C->>BB: dispatch reviewer council
-    BB->>R: review PR independently
-    R-->>C: review artifacts
-    C->>GH: council comment / request revision
-    C->>GH: mark ready + wait for CI and trusted reviews
-    GH-->>C: checks green + conversations resolved
+    C->>C: Workspace.prepare (git worktree on sprite)
+    C->>BB: Sprite.dispatch → bb dispatch
+    BB->>W: sync repo + run Claude Code
+    W-->>GH: push branch + open PR
+    W-->>C: builder-result.json artifact
+    C->>C: read artifact, enter governance
+    C->>C: poll CI (checks_green?)
     C->>GH: squash merge
     C->>C: release lease + finalize run
 ```
 
 ## Subsystem Map
 
-### Control Plane
+### Control Plane (Elixir)
 
-- [`scripts/conductor.py`](../scripts/conductor.py)
-  - SQLite-backed run ledger
-  - lease acquisition/reclaim/release
-  - issue intake and prioritization
-  - builder dispatch and artifact verification
-  - reviewer council dispatch
-  - governance loop: CI, review threads, trusted external reviews, quiet-window settling
-  - merge / reconcile / operator inspection surfaces
-- [`scripts/test_conductor.py`](../scripts/test_conductor.py)
-  - acceptance proof and governance regression coverage
-- [`docs/CONDUCTOR.md`](CONDUCTOR.md)
-  - operator-facing contract for the conductor loop
+- [`conductor/lib/conductor/orchestrator.ex`](../conductor/lib/conductor/orchestrator.ex)
+  - polling loop, issue selection, run dispatch, round-robin worker selection
+- [`conductor/lib/conductor/run_server.ex`](../conductor/lib/conductor/run_server.ex)
+  - per-run GenServer: lease → workspace → build → govern → merge/fail/block
+- [`conductor/lib/conductor/store.ex`](../conductor/lib/conductor/store.ex)
+  - SQLite persistence: runs, leases, events
+- [`conductor/lib/conductor/github.ex`](../conductor/lib/conductor/github.ex)
+  - GitHub intent via `gh` CLI: issues, checks, merge, comments
+- [`conductor/lib/conductor/sprite.ex`](../conductor/lib/conductor/sprite.ex)
+  - sprite exec, dispatch (Claude Code), artifact fetch
+- [`conductor/lib/conductor/workspace.ex`](../conductor/lib/conductor/workspace.ex)
+  - git worktree prepare/cleanup on sprite filesystem
+- [`conductor/lib/conductor/prompt.ex`](../conductor/lib/conductor/prompt.ex)
+  - builder prompt construction with issue + repo context
 - [`docs/architecture/conductor.md`](architecture/conductor.md)
-  - fast architecture drill-down for this module
+  - architecture drill-down: OTP tree, state machine, key interfaces
 
-### Transport Edge
+### Transport Edge (Go — transitional)
 
 - [`cmd/bb/main.go`](../cmd/bb/main.go)
   - root Cobra command, auth resolution, top-level command registration
 - [`cmd/bb/setup.go`](../cmd/bb/setup.go)
   - uploads `base/`, repo bootstrap/repair, workspace metadata
-  - see also: [`cmd/bb/sprite_workspace.go`](../cmd/bb/sprite_workspace.go), [`cmd/bb/workspace_metadata.go`](../cmd/bb/workspace_metadata.go)
 - [`cmd/bb/dispatch.go`](../cmd/bb/dispatch.go)
-  - probe, stale-process cleanup, repo sync, prompt upload, Ralph exec, result verification
+  - probe, stale-process cleanup, repo sync, prompt upload, Ralph exec, verification
 - [`cmd/bb/status.go`](../cmd/bb/status.go)
   - sprite truth and operator status surface
 - [`cmd/bb/logs.go`](../cmd/bb/logs.go)
   - remote `ralph.log` streaming
 - [`cmd/bb/kill.go`](../cmd/bb/kill.go)
   - recovery path for stuck Ralph/agent processes
-- [`cmd/bb/offrails.go`](../cmd/bb/offrails.go), [`cmd/bb/stream_json.go`](../cmd/bb/stream_json.go)
-  - silence/error-loop detection and stream-json parsing
 - [`docs/CLI-REFERENCE.md`](CLI-REFERENCE.md)
   - operator reference for the current `bb` command surface
 - [`docs/architecture/bb-cli.md`](architecture/bb-cli.md)
@@ -87,8 +82,8 @@ sequenceDiagram
 
 - [`scripts/ralph.sh`](../scripts/ralph.sh)
   - bounded remote agent loop and signal-file exit contract
-- [`scripts/prompts/`](../scripts/prompts/)
-  - builder/reviewer prompt templates and artifact expectations
+- [`scripts/builder-prompt-template.md`](../scripts/builder-prompt-template.md)
+  - builder prompt template (rendered by `conductor/prompt.ex`)
 - [`docs/COMPLETION-PROTOCOL.md`](COMPLETION-PROTOCOL.md)
   - signal files, artifact expectations, and completion semantics
 
@@ -101,16 +96,16 @@ sequenceDiagram
 - [`base/CLAUDE.md`](../base/CLAUDE.md)
   - shared operating instructions for dispatched agents
 - [`base/skills/`](../base/skills/)
-  - reusable guidance shipped onto sprites; useful, but not authoritative for current CLI flags
+  - reusable guidance shipped onto sprites at `bb setup` time
+- [`docs/architecture/skills.md`](architecture/skills.md)
+  - skills drill-down: layers, provisioning contract, phase mapping
 
 ### Personas + Factory Inputs
 
 - [`sprites/*.md`](../sprites/)
   - per-sprite personas / specializations
-- [`compositions/`](../compositions/)
-  - experimental team hypotheses and historical input, not current conductor scheduler truth
-- [`project.md`](../project.md)
-  - current repo vision, glossary, active focus, and quality bar
+- [`WORKFLOW.md`](../WORKFLOW.md)
+  - agent-facing runtime contract: phases, workers, required skills, merge policy
 - [`AGENTS.md`](../AGENTS.md)
   - coding-agent context and working conventions for this repo
 
@@ -118,65 +113,42 @@ sequenceDiagram
 
 - [`observations/`](../observations/)
   - learning journal and experiments
-- [`reports/`](../reports/)
-  - generated reports and snapshots
 - [`docs/archive/`](archive/)
   - historical docs; not the source of truth for current architecture
 
 ## Durable State and Contracts
 
-### Local control-plane truth
+### Control-plane truth (on conductor host)
 
-- `.bb/conductor.db`
-- `.bb/events.jsonl`
+- `.bb/conductor.db` — SQLite: runs, leases, events
 
-These are the machine-facing source of truth for:
-
-- run phase/status
-- lease ownership and heartbeat expiry
-- reviewer verdicts and governance events
-- append-only event history
-
-### Remote per-run artifacts
+### Remote per-run artifacts (on sprite)
 
 - `${WORKSPACE}/.bb/conductor/<run_id>/builder-result.json`
-- `${WORKSPACE}/.bb/conductor/<run_id>/review-<sprite>.json`
 - `${WORKSPACE}/.bb/workspace.json`
-- signal files such as `TASK_COMPLETE`, `TASK_COMPLETE.md`, `BLOCKED.md`
+- signal files: `TASK_COMPLETE`, `BLOCKED.md`
 
-GitHub remains the human-facing conversation and merge surface, but these artifacts are how the machine proves what happened.
+GitHub is the human-facing conversation and merge surface. SQLite is how the machine proves what happened.
 
 ## Current Reality vs Roadmap
 
 ### True today
 
-- Bitterblossom is conductor-first, not CLI-first.
-- `bb` is the current operator/transport surface.
-- Builder and reviewer runs are tracked with durable run and lease state.
-- Reviewer readiness includes probe + forced setup repair before a run proceeds.
-- Governance is explicit: council review, CI, conversations, trusted external reviews, then merge.
+- Bitterblossom is Elixir-conductor-first, not CLI-first.
+- `bb` is the current transport edge but is shrinking.
+- Each run gets an isolated git worktree on the builder sprite.
+- Governance is explicit: builder artifact → CI polling → squash merge.
 
-### Not true yet
+### Not yet true
 
-- Per-run git worktree isolation is not fully landed yet.
-- Composition files are not the authoritative scheduler input for the conductor loop.
-- Routing is not a fully semantic/LLM-driven planner; current selection is still deterministic.
-- `base/skills/` is not the source of truth for the live CLI command surface.
-
-## Notable Absences
-
-These absences matter because old docs still sometimes imply otherwise:
-
-- There is no current `internal/` package tree.
-- There is no current `pkg/` package tree.
-- There is no separate legacy orchestration stack outside the conductor + `bb` split.
-- The primary operator-facing `bb` surface is small: setup, dispatch, status, logs, kill, version.
+- Full `bb` surface absorption into Elixir (tracked in #621).
+- Semantic/LLM-driven issue routing; current selection is still deterministic.
+- Reviewer council dispatch (Python conductor had this; Elixir rewrite has not re-added it yet).
 
 ## Read Next
 
 1. [`docs/architecture/README.md`](architecture/README.md)
-2. [`docs/CONDUCTOR.md`](CONDUCTOR.md)
+2. [`docs/architecture/conductor.md`](architecture/conductor.md)
 3. [`docs/CLI-REFERENCE.md`](CLI-REFERENCE.md)
 4. [`AGENTS.md`](../AGENTS.md)
-5. [`project.md`](../project.md)
-6. [`docs/context/INDEX.md`](context/INDEX.md)
+5. [`WORKFLOW.md`](../WORKFLOW.md)

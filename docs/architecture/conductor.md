@@ -1,140 +1,135 @@
 # Conductor
 
-The conductor is the workflow brain. It decides when work starts, when it is blocked, when it needs revision, and when it is safe to merge.
+The conductor is the workflow brain. It decides when work starts, when it is blocked, and when it is safe to merge. Built as an Elixir/OTP application.
 
-File: [`scripts/conductor.py`](../../scripts/conductor.py)
+Source: [`conductor/lib/conductor/`](../../conductor/lib/conductor/)
 
-The CLI entrypoint still lives in `scripts/conductor.py`, but deep support code now belongs in `scripts/conductorlib/`:
-
-- `common.py` — shared conductor contracts, constants, and runtime primitives
-- `tracker.py` — GitHub issue/PR reads plus QA issue sync helpers
-- `workspace.py` — run workspace pathing and worktree preparation/cleanup
-- `governance.py` — PR check polling, trusted-surface settling, and review-thread parsing
-
-## Module Shape
+## Module Map
 
 ```mermaid
 flowchart TD
-    CLI["conductor.py\nCLI + orchestrator"] --> Tracker["conductorlib.tracker\nGitHub issue/PR boundary"]
-    CLI --> Workspace["conductorlib.workspace\nrun worktree boundary"]
-    CLI --> Governance["conductorlib.governance\nmerge/readiness boundary"]
-    CLI --> State["in-file state + lease helpers\npending later split"]
+    CLI["cli.ex\nCLI entrypoint (mix conductor ...)"]
+    Orchestrator["orchestrator.ex\nPolling loop + run dispatch"]
+    RunServer["run_server.ex\nPer-run GenServer state machine"]
+    Store["store.ex\nSQLite persistence"]
+    GitHub["github.ex\nGitHub operations via gh CLI"]
+    Sprite["sprite.ex\nSprite exec + dispatch + artifact fetch"]
+    Workspace["workspace.ex\nWorktree lifecycle on sprites"]
+    Prompt["prompt.ex\nBuilder prompt construction"]
+    Shell["shell.ex\nSubprocess execution with timeout"]
+    Config["config.ex\nRuntime configuration"]
+    Issue["issue.ex\nIssue struct + readiness checks"]
 
-    State --- DB["SQLite\nruns + leases + reviews + events"]
-    State --- Log["events.jsonl"]
-    Tracker --> GH["GitHub"]
+    CLI --> Orchestrator
+    Orchestrator --> RunServer
+    RunServer --> Store
+    RunServer --> GitHub
+    RunServer --> Sprite
+    RunServer --> Workspace
+    RunServer --> Prompt
+    Sprite --> Shell
+    Workspace --> Shell
+    GitHub --> Shell
 ```
 
-## Run State
+## Supervision Tree
+
+```mermaid
+flowchart TD
+    App["Conductor.Application\nOTP root"]
+    App --> Repo["Conductor.Repo\nEcto/SQLite"]
+    App --> OrcSup["Conductor.Orchestrator\nGenServer"]
+    App --> RunSup["Conductor.RunSupervisor\nDynamicSupervisor"]
+    RunSup --> RS1["RunServer (issue A)"]
+    RunSup --> RS2["RunServer (issue B)"]
+```
+
+Each issue gets its own `RunServer` under `RunSupervisor`. Restarts are `:temporary` (no automatic retry — failure is a terminal state).
+
+## Run State Machine
 
 ```mermaid
 stateDiagram-v2
-    [*] --> queued
-    queued --> leased
-    leased --> building
-    building --> reviewing
-    reviewing --> revising: review fixes requested
-    revising --> reviewing: builder revised
-    reviewing --> ci_wait: council quorum
-    ci_wait --> revising: CI failure or PR feedback
-    ci_wait --> blocked: unresolved trusted feedback / timeout
-    ci_wait --> merge_ready: checks settled
-    merge_ready --> merged
-    building --> failed
-    reviewing --> failed
-    revising --> failed
-    merge_ready --> failed
+    [*] --> pending
+    pending --> building: lease acquired + workspace ready
+    building --> governing: builder artifact ready (status=ready)
+    building --> blocked: builder artifact blocked
+    building --> failed: dispatch failed or artifact missing
+    governing --> merged: CI green → squash merge
+    governing --> blocked: CI timeout or merge failure
+    merged --> [*]
     blocked --> [*]
     failed --> [*]
-    merged --> [*]
 ```
 
-## Governance Loop
+## Trace Bullet (RunServer lifecycle)
 
 ```mermaid
-flowchart LR
-    PR["PR ready"] --> Council["internal council quorum"]
-    Council --> CI["required CI green"]
-    CI --> Threads["all conversations resolved"]
-    Threads --> External["trusted external reviews settled"]
-    External --> Quiet["quiet window elapsed"]
-    Quiet --> Merge["squash merge"]
+sequenceDiagram
+    participant O as Orchestrator
+    participant RS as RunServer
+    participant S as Store (SQLite)
+    participant SP as Sprite
+    participant GH as GitHub
 
-    Council -. fail .-> Revise["builder revision"]
-    CI -. fail .-> Revise
-    Threads -. fail .-> Revise
-    External -. timeout .-> Block["block run"]
+    O->>RS: start_link (via DynamicSupervisor)
+    RS->>S: acquire_lease
+    RS->>S: create_run (phase=building)
+    RS->>SP: Workspace.prepare (git worktree)
+    RS->>SP: Sprite.dispatch (Claude Code builder)
+    SP-->>RS: {:ok, _} or {:error, ...}
+    RS->>SP: Sprite.read_artifact
+    RS->>S: update_run (pr_number, phase=governing)
+    RS->>GH: checks_green? (poll loop)
+    RS->>GH: merge_pr
+    RS->>S: complete_run (merged)
+    RS->>S: release_lease
+    RS->>SP: Workspace.cleanup
 ```
-
-## Worker Readiness
-
-Recent failure mode: reviewer dispatch failed after the builder already opened a PR because a reviewer sprite had a broken repo checkout.
-
-Current mitigation:
-
-```mermaid
-flowchart TD
-    Probe["bb dispatch --dry-run"] --> Ok{"ready?"}
-    Ok -- yes --> Use["use sprite"]
-    Ok -- no --> Repair["bb setup <sprite> --repo <repo> --force"]
-    Repair --> Reprobe["probe again"]
-    Reprobe --> Ready{"ready now?"}
-    Ready -- yes --> Use
-    Ready -- no --> Fail["fail run before builder work"]
-```
-
-This is a point hardening step, not the final worker-pool design. The longer-term pool manager still belongs in the broader worker-health backlog.
-
-## Persistent Truth
-
-The conductor writes truth in two places:
-
-- `.bb/conductor.db`
-- `.bb/events.jsonl`
-
-Use them for:
-
-- current phase and status
-- lease ownership and heartbeat expiry
-- reviewer verdicts
-- append-only event history
-
-GitHub is still the operator-facing conversation surface, but the run store is where the machine remembers what actually happened.
 
 ## Key Interfaces
 
-### Intake
+### Orchestrator
 
-- `get_issue(...)`
-- `list_candidate_issues(...)`
-- `pick_issue(...)`
+- `run_once(opts)` — run a single issue synchronously
+- `start_loop(opts)` — start continuous polling loop
+- `pick_worker/1` — round-robin worker selection
 
-### State
+### Store
 
-- `open_db(...)`
-- `create_run(...)`
-- `update_run(...)`
-- `record_event(...)`
-- `touch_run(...)`
+- `acquire_lease/3`, `release_lease/2` — exclusive run ownership
+- `create_run/1`, `update_run/2`, `complete_run/3` — run lifecycle
+- `record_event/3` — append-only event log
+- `heartbeat_run/1` — keepalive for stale-run detection
 
-### Runtime
+### GitHub
 
-- `select_worker_slot(...)`
-- `run_builder(...)`
-- `run_review_round(...)`
+- `get_issue/2`, `eligible_issues/2` — intake
+- `checks_green?/2` — CI polling
+- `merge_pr/2` — squash merge
 
-### Governance
+### Sprite
 
-- `wait_for_pr_checks(...)`
-- `list_unresolved_review_threads(...)`
-- `wait_for_external_reviews(...)`
-- `merge_pr(...)`
+- `dispatch/4` — run Claude Code on a sprite with prompt + repo
+- `exec/3` — raw command execution with timeout
+- `read_artifact/2` — fetch builder-result.json from sprite
+
+## Persistence
+
+Two durable truth surfaces:
+
+| Surface | Location | Contents |
+|---------|----------|----------|
+| SQLite | `.bb/conductor.db` (on conductor host) | runs, leases, events |
+| Event log | same DB events table | append-only audit trail |
+
+GitHub remains the human conversation surface. SQLite is what the machine remembers.
 
 ## What This Module Should Not Become
 
-- not a second `bb`
+- not a second transport CLI (that is `bb`'s job)
 - not a generic fleet manager
 - not a bag of shell heuristics with implied state
 - not a peer-to-peer sprite chat layer
 
-It should stay deep: small operator surface, rich internal orchestration.
+Stay deep: small operator surface, rich internal orchestration.
