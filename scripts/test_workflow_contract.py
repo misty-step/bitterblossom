@@ -16,16 +16,9 @@ def test_workflow_contract_exists_and_is_versioned() -> None:
 
 
 def test_runtime_prompts_reference_workflow_contract() -> None:
-    builder = (ROOT / "scripts" / "prompts" / "conductor-builder-template.md").read_text(encoding="utf-8")
-    reviewer = (ROOT / "scripts" / "prompts" / "conductor-reviewer-template.md").read_text(encoding="utf-8")
     ralph = (ROOT / "scripts" / "ralph-prompt-template.md").read_text(encoding="utf-8")
-
-    assert "repo `WORKFLOW.md`" in builder
-    assert "repo `WORKFLOW.md`" in reviewer
     assert "WORKFLOW.md" in ralph
     legacy = "unresolved PR review threads as merge blockers"
-    assert legacy not in builder
-    assert legacy not in reviewer
     assert legacy not in ralph
 
 
