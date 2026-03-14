@@ -785,6 +785,29 @@ def test_parse_qa_intake_payload_normalizes_or_replaces_external_dedupe_key() ->
     assert len(findings[1].dedupe_key) == 12
 
 
+def test_parse_qa_intake_payload_uses_top_level_values_after_whitespace_override() -> None:
+    payload = {
+        "target": "https://app.example.com",
+        "environment": "production",
+        "findings": [
+            {
+                "title": "Whitespace override",
+                "summary": "Probe supplied blank per-finding overrides.",
+                "severity": "medium",
+                "target_url": "   ",
+                "environment": "\t",
+                "repro_steps": ["Open /", "Observe issue"],
+                "evidence": [],
+            }
+        ],
+    }
+
+    finding = conductor.parse_qa_intake_payload(payload)[0]
+
+    assert finding.target_url == "https://app.example.com"
+    assert finding.environment == "production"
+
+
 def test_parse_qa_intake_payload_rejects_non_object_payload() -> None:
     with pytest.raises(conductor.CmdError, match="qa intake payload must be a JSON object"):
         conductor.parse_qa_intake_payload(["not", "an", "object"])  # type: ignore[arg-type]
@@ -1015,6 +1038,31 @@ def test_existing_qa_issues_by_key_paginates_all_open_source_qa_issues() -> None
         ["gh", "api", "repos/misty-step/bitterblossom/issues?state=open&labels=source/qa&per_page=100&page=2"],
         ["gh", "api", "repos/misty-step/bitterblossom/issues?state=open&labels=source/qa&per_page=100&page=3"],
     ]
+
+
+def test_existing_qa_issues_by_key_prefers_browser_url() -> None:
+    runner = _RunnerSpy(
+        responses=[
+            json.dumps(
+                [
+                    {
+                        "number": 1,
+                        "title": "issue 1",
+                        "body": f"<!-- bitterblossom-qa-dedupe:{_qa_test_key('browser-url')} -->",
+                        "url": "https://api.github.com/repos/misty-step/bitterblossom/issues/1",
+                        "html_url": "https://github.com/misty-step/bitterblossom/issues/1",
+                        "labels": [{"name": "source/qa"}, {"name": "p1"}],
+                        "updated_at": "2026-03-13T00:00:00Z",
+                    }
+                ]
+            ),
+            "[]",
+        ]
+    )
+
+    issues = conductor.existing_qa_issues_by_key(runner, "misty-step/bitterblossom")
+
+    assert issues[_qa_test_key("browser-url")].url == "https://github.com/misty-step/bitterblossom/issues/1"
 
 
 def test_qa_intake_rejects_invalid_command_quoting() -> None:
@@ -4311,6 +4359,23 @@ def test_ensure_required_checks_present_accepts_matching_contexts() -> None:
     assert runner.calls == [
         ["gh", "pr", "view", "42", "--repo", "misty-step/bitterblossom", "--json", "baseRefName,statusCheckRollup"],
         ["gh", "api", "repos/misty-step/bitterblossom/branches/master/protection"],
+    ]
+
+
+def test_ensure_required_checks_present_url_encodes_branch_name() -> None:
+    runner = _RunnerSpy(
+        [
+            '{"baseRefName":"release/2026.03","statusCheckRollup":[{"__typename":"CheckRun","name":"merge-gate"}]}',
+            '{"required_status_checks":{"contexts":["merge-gate"]}}',
+        ]
+    )
+
+    conductor.ensure_required_checks_present(runner, "misty-step/bitterblossom", 42)
+
+    assert runner.calls[-1] == [
+        "gh",
+        "api",
+        "repos/misty-step/bitterblossom/branches/release%2F2026.03/protection",
     ]
 
 
@@ -8430,6 +8495,40 @@ def test_govern_pr_adopts_existing_pr_and_runs_final_polish(
     assert "governance_adopted" in event_types
     assert "final_polish_requested" in event_types
     assert "final_polish_complete" in event_types
+
+
+def test_governance_session_thread_decision_checks_required_statuses_before_feedback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    issue = conductor.Issue(number=479, title="govern", body="", url="https://example.com/479", labels=["autopilot"])
+    governance_run = _make_governance_run(issue)
+    args = _make_govern_pr_args(tmp_path, issue_number=479, pr_number=490, run_id=governance_run.run_id)
+    conn = conductor.open_db(tmp_path / "conductor.db")
+    calls: list[tuple[str, int]] = []
+
+    monkeypatch.setattr(
+        conductor,
+        "ensure_required_checks_present",
+        lambda _runner, repo, pr_number: calls.append((repo, pr_number)),
+    )
+    monkeypatch.setattr(conductor.GovernanceSession, "_handle_pr_thread_feedback", lambda self: "proceed")
+
+    session = conductor.GovernanceSession(
+        conductor.Runner(tmp_path),
+        conn,
+        pathlib.Path(args.event_log),
+        args,
+        issue=governance_run.issue,
+        run_id=governance_run.run_id,
+        worker=governance_run.worker,
+        branch=governance_run.branch,
+        pr_number=governance_run.pr_number,
+        pr_url=governance_run.pr_url,
+        builder_workspace=governance_run.builder_workspace,
+    )
+
+    assert session._thread_decision() == "proceed"
+    assert calls == [("misty-step/bitterblossom", 490)]
 
 
 def test_govern_pr_uses_external_authority_without_internal_reviewers(
