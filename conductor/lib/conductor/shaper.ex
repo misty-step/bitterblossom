@@ -195,12 +195,25 @@ defmodule Conductor.Shaper do
     end
   end
 
-  # Strip ```markdown ... ``` or ``` ... ``` fences the LLM may add.
+  # Strip a single outer ```...``` wrapper the LLM may add around the entire body.
+  # Only removes the outermost fence — does NOT touch embedded code blocks.
   defp strip_code_fence(text) do
-    text
-    |> String.replace(~r/^```[a-z]*\n?/m, "")
-    |> String.replace(~r/\n?```$/m, "")
-    |> String.trim()
+    lines =
+      text
+      |> String.trim()
+      |> String.split("\n")
+
+    if length(lines) >= 2 and
+         String.match?(hd(lines), ~r/^```[a-zA-Z]*$/) and
+         List.last(lines) == "```" do
+      lines
+      |> Enum.drop(1)
+      |> Enum.drop(-1)
+      |> Enum.join("\n")
+      |> String.trim()
+    else
+      String.trim(text)
+    end
   end
 
   defp api_key do
