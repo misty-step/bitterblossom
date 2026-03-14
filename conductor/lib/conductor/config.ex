@@ -63,7 +63,7 @@ defmodule Conductor.Config do
   @spec prompt_template() :: binary()
   def prompt_template do
     System.get_env("CONDUCTOR_PROMPT_TEMPLATE") ||
-      Path.expand("../scripts/ralph-prompt-template.md")
+      Path.expand("../scripts/builder-prompt-template.md")
   end
 
   @spec dispatch_env() :: [{binary(), binary()}]

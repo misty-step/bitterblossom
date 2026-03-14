@@ -137,7 +137,8 @@ defmodule Conductor.RunServer do
         state.run_id,
         state.branch,
         state.artifact_path,
-        pr_number: state.pr_number
+        pr_number: state.pr_number,
+        repo_context: read_repo_context()
       )
 
     Store.record_event(state.run_id, "builder_dispatched", %{
@@ -376,6 +377,28 @@ defmodule Conductor.RunServer do
 
   defp cancel_heartbeat(nil), do: :ok
   defp cancel_heartbeat(ref), do: Process.cancel_timer(ref)
+
+  # Read CLAUDE.md and project.md from the repo root (one level above conductor/).
+  # Returns nil if neither file exists. Truncated to ~8 KB to stay within prompt budget.
+  defp read_repo_context do
+    root = Path.expand("../../..", __DIR__)
+
+    parts =
+      ["CLAUDE.md", "project.md"]
+      |> Enum.flat_map(fn filename ->
+        path = Path.join(root, filename)
+
+        case File.read(path) do
+          {:ok, content} -> [String.trim(content)]
+          _ -> []
+        end
+      end)
+
+    case parts do
+      [] -> nil
+      _ -> parts |> Enum.join("\n\n---\n\n") |> String.slice(0, 8_000)
+    end
+  end
 
   defp log(state, msg) do
     label = state.run_id || "init"

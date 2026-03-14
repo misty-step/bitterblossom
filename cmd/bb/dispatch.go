@@ -56,7 +56,7 @@ func newDispatchCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&repo, "repo", "", "GitHub repo (owner/repo)")
 	cmd.Flags().StringVar(&workspace, "workspace", "", "Remote workspace path override (skip default repo sync)")
-	cmd.Flags().StringVar(&promptTemplate, "prompt-template", "scripts/ralph-prompt-template.md", "Local prompt template to render before upload")
+	cmd.Flags().StringVar(&promptTemplate, "prompt-template", "scripts/builder-prompt-template.md", "Local prompt template to render before upload")
 	cmd.Flags().DurationVar(&timeout, "timeout", 30*time.Minute, "Max wall-clock time for the ralph loop")
 	cmd.Flags().IntVar(&maxIterations, "max-iterations", 50, "Max ralph loop iterations")
 	cmd.Flags().DurationVar(&noOutputTimeout, "no-output-timeout", defaultSilenceAbortThreshold, "Abort if no output for this duration (0 to disable)")

@@ -558,8 +558,8 @@ func TestDispatchFlagPromptTemplate_Default(t *testing.T) {
 	if f == nil {
 		t.Fatal("--prompt-template flag not registered on dispatch command")
 	}
-	if f.DefValue != "scripts/ralph-prompt-template.md" {
-		t.Fatalf("--prompt-template default = %q, want %q", f.DefValue, "scripts/ralph-prompt-template.md")
+	if f.DefValue != "scripts/builder-prompt-template.md" {
+		t.Fatalf("--prompt-template default = %q, want %q", f.DefValue, "scripts/builder-prompt-template.md")
 	}
 }
 

@@ -12,9 +12,10 @@ defmodule Conductor.Prompt do
   def build_builder_prompt(%Issue{} = issue, run_id, branch, artifact_path, opts \\ []) do
     pr_number = Keyword.get(opts, :pr_number)
     feedback = Keyword.get(opts, :feedback)
+    repo_context = Keyword.get(opts, :repo_context)
 
     """
-    # Builder Task
+    #{if repo_context, do: repo_context_section(repo_context), else: ""}# Builder Task
 
     Run ID: #{run_id}
     Issue: ##{issue.number} — #{issue.title}
@@ -49,6 +50,17 @@ defmodule Conductor.Prompt do
     ```
 
     Then write TASK_COMPLETE to signal you are finished.
+    """
+  end
+
+  defp repo_context_section(context) do
+    """
+    ## Repository Context
+
+    #{context}
+
+    ---
+
     """
   end
 
