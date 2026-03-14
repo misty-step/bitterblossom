@@ -9,7 +9,7 @@ Current Bitterblossom is a **conductor-first software factory**:
 
 If you are trying to understand how the repo works today, start from those four entrypoints.
 
-The Python conductor (`scripts/conductor.py`) is deprecated as of [ADR-004](adr/004-elixir-conductor-architecture.md). It remains as reference; new features land in the Elixir conductor.
+The Python conductor (historically `scripts/conductor.py`) is deprecated as of [ADR-004](adr/004-elixir-conductor-architecture.md). All features now land in the Elixir conductor.
 
 ## Authoritative Entry Points
 
@@ -58,8 +58,8 @@ sequenceDiagram
   - `sprite.ex` — sprite dispatch via `bb` CLI
   - `workspace.ex` — worktree lifecycle
   - See [ADR-004](adr/004-elixir-conductor-architecture.md) for full design
-- [`scripts/conductor.py`](../scripts/conductor.py) *(deprecated — Python reference)*
-  - governance loop, review handling, merge logic; no new features
+- Python conductor *(deprecated — removed, see ADR-004)*
+  - governance logic and review handling now live in the Elixir conductor
 - [`conductor/test/`](../conductor/test/)
   - Elixir ExUnit test suite
 - [`docs/CONDUCTOR.md`](CONDUCTOR.md)

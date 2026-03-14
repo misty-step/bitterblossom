@@ -2,7 +2,7 @@
 
 Bitterblossom has three surfaces:
 
-- `conductor/`: Elixir/OTP orchestrator — the workflow brain
+- `conductor/`: Elixir/OTP orchestrator — the workflow brain (see [ADR-004](../adr/004-elixir-conductor-architecture.md))
 - `cmd/bb`: thin Go transport — the operator and sprite edge
 - `base/skills/`: skill files provisioned onto every sprite
 
@@ -11,7 +11,7 @@ This stack is intentionally small. The overview explains the full software-facto
 ## Map
 
 - [System Overview](#system-overview)
-- [Conductor (Elixir)](./conductor.md)
+- [Conductor](./conductor.md)
 - [bb CLI Transport](./bb-cli.md)
 - [Repo-Local Skills](./skills.md)
 - [Architecture Glance](./glance.md)

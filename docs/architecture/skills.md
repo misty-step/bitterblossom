@@ -7,7 +7,7 @@ Skills are structured guidance files loaded by Claude Code at prompt time. They 
 A skill is a Markdown file with a YAML frontmatter header. Claude Code imports it into the agent context before execution.
 
 ```text
-base/skills/<name>/
+base/skills/<skill-name>/
   SKILL.md    frontmatter + guidance body
 ```
 

@@ -2,14 +2,19 @@
 
 The conductor is the workflow brain. It decides when work starts, when it is blocked, when it needs revision, and when it is safe to merge.
 
-File: [`scripts/conductor.py`](../../scripts/conductor.py)
+> **Status:** This doc describes the **Elixir conductor** (`conductor/`), which is the current primary implementation per [ADR-004](../adr/004-elixir-conductor-architecture.md). The Python conductor (`scripts/conductorlib/`) is deprecated.
 
-The CLI entrypoint still lives in `scripts/conductor.py`, but deep support code now belongs in `scripts/conductorlib/`:
+Current implementation: [`conductor/lib/conductor/`](../../conductor/lib/conductor/)
 
-- `common.py` — shared conductor contracts, constants, and runtime primitives
-- `tracker.py` — GitHub issue/PR reads plus QA issue sync helpers
-- `workspace.py` — run workspace pathing and worktree preparation/cleanup
-- `governance.py` — PR check polling, trusted-surface settling, and review-thread parsing
+Key modules:
+
+- `orchestrator.ex` — polling loop, issue selection, run dispatch
+- `run_server.ex` — per-run GenServer state machine
+- `store.ex` — SQLite persistence (runs, leases, events)
+- `github.ex` — GitHub operations via `gh` CLI
+- `sprite.ex` — sprite operations via `bb` CLI
+- `workspace.ex` — worktree lifecycle
+- `shell.ex` — subprocess execution with timeout
 
 ## Module Shape
 
