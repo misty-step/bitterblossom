@@ -35,7 +35,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Test hooks
-        run: pip install pytest && python3 -m pytest -q base/hooks/
+        run: pip install pytest==8.4.1 && python3 -m pytest -q base/hooks/
 
   yaml:
     name: YAML Lint
