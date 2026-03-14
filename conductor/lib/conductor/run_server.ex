@@ -16,7 +16,7 @@ defmodule Conductor.RunServer do
   use GenServer, restart: :temporary
   require Logger
 
-  alias Conductor.{Store, GitHub, Sprite, Workspace, Prompt, Config, Recovery}
+  alias Conductor.{Store, GitHub, Sprite, Workspace, Prompt, Config, Recovery, Retro}
 
   @heartbeat_ms 30_000
   @ci_poll_ms 30_000
@@ -225,6 +225,7 @@ defmodule Conductor.RunServer do
         Store.release_lease(state.repo, state.issue.number)
         cleanup_workspace(state)
         log(state, "PR ##{state.pr_number} merged successfully")
+        Retro.analyze(state.run_id)
         {:stop, :normal, %{state | phase: :merged}}
 
       {:error, reason} ->
@@ -459,6 +460,7 @@ defmodule Conductor.RunServer do
     Store.complete_run(state.run_id, "failed", "failed")
     Store.release_lease(state.repo, state.issue.number)
     cleanup_workspace(state)
+    Retro.analyze(state.run_id)
     {:stop, :normal, %{state | phase: :failed}}
   end
 
@@ -476,6 +478,7 @@ defmodule Conductor.RunServer do
       "Bitterblossom blocked `#{state.run_id}`: #{reason}"
     )
 
+    Retro.analyze(state.run_id)
     {:stop, :normal, %{state | phase: :blocked}}
   end
 

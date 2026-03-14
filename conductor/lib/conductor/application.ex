@@ -7,6 +7,7 @@ defmodule Conductor.Application do
   def start(_type, _args) do
     children = [
       Conductor.Store,
+      Conductor.Retro,
       {DynamicSupervisor, name: Conductor.RunSupervisor, strategy: :one_for_one},
       Conductor.Orchestrator
     ]
