@@ -11,6 +11,24 @@ defmodule Conductor.OrchestratorTest do
     def comment(_repo, _issue, _body), do: :ok
   end
 
+  # Retry an assertion block until it passes or timeout elapses.
+  defp eventually(assert_fun, timeout_ms \\ 1_000, step_ms \\ 20) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_eventually(assert_fun, deadline, step_ms)
+  end
+
+  defp do_eventually(assert_fun, deadline, step_ms) do
+    assert_fun.()
+  rescue
+    _ ->
+      if System.monotonic_time(:millisecond) < deadline do
+        Process.sleep(step_ms)
+        do_eventually(assert_fun, deadline, step_ms)
+      else
+        assert_fun.()
+      end
+  end
+
   setup do
     db_path = Path.join(System.tmp_dir!(), "orch_test_#{:rand.uniform(999_999)}.db")
     event_log = Path.join(System.tmp_dir!(), "orch_test_#{:rand.uniform(999_999)}.jsonl")
@@ -83,12 +101,13 @@ defmodule Conductor.OrchestratorTest do
 
       # start_loop triggers an immediate poll
       :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
-      Process.sleep(100)
 
-      {:ok, run} = Store.get_run(run_id)
-      assert run["phase"] == "failed"
-      assert run["completed_at"] != nil
-      refute Store.leased?("test/repo", 99)
+      eventually(fn ->
+        {:ok, run} = Store.get_run(run_id)
+        assert run["phase"] == "failed"
+        assert run["completed_at"] != nil
+        refute Store.leased?("test/repo", 99)
+      end)
     end
 
     test "stale detection records stale_run_detected event" do
@@ -107,11 +126,12 @@ defmodule Conductor.OrchestratorTest do
       :ok = Store.acquire_lease("test/repo", 98, run_id)
 
       :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
-      Process.sleep(100)
 
-      events = Store.list_events(run_id)
-      event_types = Enum.map(events, & &1["event_type"])
-      assert "stale_run_detected" in event_types
+      eventually(fn ->
+        events = Store.list_events(run_id)
+        event_types = Enum.map(events, & &1["event_type"])
+        assert "stale_run_detected" in event_types
+      end)
     end
 
     test "does not expire runs with recent heartbeat" do
@@ -131,8 +151,9 @@ defmodule Conductor.OrchestratorTest do
       :ok = Store.acquire_lease("test/repo", 100, run_id)
 
       :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
-      Process.sleep(100)
 
+      # Give the poll a chance to fire, then assert the run is still active
+      Process.sleep(100)
       {:ok, run} = Store.get_run(run_id)
       assert run["completed_at"] == nil
       assert Store.leased?("test/repo", 100)
@@ -152,11 +173,12 @@ defmodule Conductor.OrchestratorTest do
       :ok = Store.acquire_lease("test/repo", 97, run_id)
 
       :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
-      Process.sleep(100)
 
-      {:ok, run} = Store.get_run(run_id)
-      assert run["phase"] == "failed"
-      refute Store.leased?("test/repo", 97)
+      eventually(fn ->
+        {:ok, run} = Store.get_run(run_id)
+        assert run["phase"] == "failed"
+        refute Store.leased?("test/repo", 97)
+      end)
     end
   end
 
@@ -173,9 +195,9 @@ defmodule Conductor.OrchestratorTest do
 
       # start_loop with capacity 0 — no runs should start
       :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
-      Process.sleep(100)
 
-      # Verify store has no runs (tracker returns [] anyway, but concurrency check fires first)
+      # Give the poll a chance to fire, then assert nothing was dispatched
+      Process.sleep(100)
       runs = Store.list_runs()
       assert runs == []
     end
