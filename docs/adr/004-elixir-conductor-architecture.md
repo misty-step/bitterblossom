@@ -1,6 +1,6 @@
 # ADR-004: Elixir Conductor — Behaviour-Driven Agent Orchestration
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-03-14
 - **Related:** ADR-001 (Claude Code harness), ADR-002 (thin CLI), ADR-003 (conductor control plane)
 
@@ -65,7 +65,7 @@ end
 
 ### Supervision Tree
 
-```
+```text
 Conductor.Application
 ├── Conductor.Store (GenServer — SQLite persistence)
 ├── Conductor.EventBus (Phoenix.PubSub — event broadcasting)
@@ -77,7 +77,7 @@ Conductor.Application
 
 ### Run State Machine
 
-```
+```text
 pending → building → governing → terminal
                                    ├── merged
                                    ├── blocked
