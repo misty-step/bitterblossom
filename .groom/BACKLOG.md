@@ -24,7 +24,7 @@ Captured 2026-03-14. These are beyond the current sprint scope but represent the
 
 2. **CI-Fix Sprites** — GitHub webhook-triggered. When CI completes with failures on a PR, sprite checks out the PR, investigates the failure, and ships a fix. Focused, reactive, fast cycle time.
 
-3. **Auto-Triage Sprites** — Plugged into error-logging feed (Sentry, etc.). On error: systematic debug investigation, hypothesis formation, rigorous root-cause determination, strategic fix, tests, verify, open PR, merge, write postmortem, create follow-up issues to improve quality gates.
+3. **Auto-Triage Sprites** — Plugged into observability feed (Vigil webhooks). On error: systematic debug investigation, hypothesis formation, rigorous root-cause determination, strategic fix, tests, verify, open PR, merge, write postmortem, create follow-up issues to improve quality gates.
 
 4. **Domain-Specialized Sprites** — Narrowly scoped environments tuned per workflow. Triage sprites get devops/sysadmin/infrastructure/debugging/monitoring skills, not frontend design. Backlog sprites get full-stack skills. Each environment is purpose-built.
 
@@ -40,7 +40,7 @@ Captured 2026-03-14. These are beyond the current sprint scope but represent the
 
 - Phase 1: Get primary backlog-clearing workflow solid and trustworthy
 - Phase 2: Add next most valuable workflow (likely CI-fix — tightest feedback loop)
-- Phase 3: Auto-triage (requires Sentry integration, which is already #471)
+- Phase 3: Auto-triage (requires self-hosted observability service — see ~/Development/vigil/)
 - Phase 4: Domain specialization framework (only after 2-3 workflows prove the pattern)
 
 ## Research Prompts
