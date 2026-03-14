@@ -31,13 +31,13 @@ fi
 echo "$busy" >&2
 exit "$status"`
 
-// newCommitsCheckScript checks if any commits on HEAD are not yet on origin/master or
-// origin/main. Exits 0 with commit list on stdout when new commits exist, exits 1 when
-// the branch is flush with upstream (no new work). Exits 2 when not a git repo or when
-// neither origin/master nor origin/main exists (no valid upstream baseline).
+// newCommitsCheckScript checks if any commits on HEAD are not yet on the remote
+// default branch ($BRANCH). Exits 0 with commit list on stdout when new commits
+// exist, exits 1 when the branch is flush with upstream (no new work). Exits 2
+// when not a git repo or origin/$BRANCH does not exist.
 const newCommitsCheckScript = `
 cd "$WORKSPACE" 2>/dev/null || exit 2
-commits="$(git log origin/master..HEAD --oneline 2>/dev/null || git log origin/main..HEAD --oneline 2>/dev/null)" || exit 2
+commits="$(git log "origin/$BRANCH"..HEAD --oneline 2>/dev/null)" || exit 2
 if [ -n "$commits" ]; then
   printf '%s\n' "$commits"
   exit 0
@@ -62,6 +62,26 @@ if [ -n "$commits" ]; then
   exit 0
 fi
 exit 1`
+
+// detectDefaultBranchScript resolves the remote default branch from origin/HEAD.
+// Exits 0 with the branch name (e.g. "main", "master", "development") on stdout.
+// Falls back to checking whether origin/master exists, then "main" as a last resort.
+//
+// Guard: when origin/HEAD is unset, git rev-parse may output "origin/HEAD" literally
+// (stripped to "HEAD"). We reject that value and fall through to the master/main probe.
+const detectDefaultBranchScript = `
+cd "$WORKSPACE" 2>/dev/null || { echo "main"; exit 0; }
+branch="$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null)"
+branch="${branch#origin/}"
+if [ -n "$branch" ] && [ "$branch" != "HEAD" ]; then
+  echo "$branch"
+  exit 0
+fi
+if git rev-parse --verify origin/master >/dev/null 2>&1; then
+  echo "master"
+  exit 0
+fi
+echo "main"`
 
 // prChecksScript checks whether all PR CI checks for the current HEAD have passed.
 // Exits 0 when all checks pass, 1 when checks are still pending, 2 on error (no PR, no git, etc.).
@@ -209,14 +229,57 @@ func pollDispatchCheck(ctx context.Context, run spriteScriptRunner, cfg dispatch
 	}
 }
 
+// detectDefaultBranchWithRunner resolves the remote default branch from origin/HEAD.
+// Returns "main" when origin/HEAD is not configured and origin/master is absent.
+// Returns an error when the detected name contains characters unsafe for shell use.
+func detectDefaultBranchWithRunner(ctx context.Context, run spriteScriptRunner, workspace string) (string, error) {
+	output, exitCode, err := runDispatchCheck(ctx, run, dispatchCheck{
+		timeout: 10 * time.Second,
+		script:  fmt.Sprintf("export WORKSPACE=%q\n%s", workspace, detectDefaultBranchScript),
+	})
+	if err != nil {
+		return "", fmt.Errorf("detect default branch: %w", err)
+	}
+	if exitCode != 0 {
+		return "", fmt.Errorf("detect default branch: exited %d: %s", exitCode, output)
+	}
+	if output == "" {
+		return "main", nil
+	}
+	if !isValidBranchName(output) {
+		return "", fmt.Errorf("detect default branch: invalid branch name %q", output)
+	}
+	return output, nil
+}
+
+// isValidBranchName reports whether name is safe to use in shell commands.
+// Accepts only characters that valid git branch names use in practice; rejects
+// shell metacharacters and the literal "HEAD" (produced when origin/HEAD is unset).
+func isValidBranchName(name string) bool {
+	if name == "" || name == "HEAD" {
+		return false
+	}
+	for _, c := range name {
+		switch {
+		case c >= 'a' && c <= 'z':
+		case c >= 'A' && c <= 'Z':
+		case c >= '0' && c <= '9':
+		case c == '-' || c == '_' || c == '.' || c == '/':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // hasNewCommitsWithRunner returns true when commits exist on HEAD that are not
-// present on origin/master or origin/main. This is used as a secondary off-rails
+// present on origin/<defaultBranch>. This is used as a secondary off-rails
 // backstop: if the detector fired while the agent was mid-task (e.g. waiting for CI),
 // and work exists on the branch, dispatch succeeds with a warning rather than failing.
-func hasNewCommitsWithRunner(ctx context.Context, run spriteScriptRunner, workspace string) (bool, error) {
+func hasNewCommitsWithRunner(ctx context.Context, run spriteScriptRunner, workspace, defaultBranch string) (bool, error) {
 	output, exitCode, err := runDispatchCheck(ctx, run, dispatchCheck{
 		timeout: 15 * time.Second,
-		script:  fmt.Sprintf("export WORKSPACE=%q\n%s", workspace, newCommitsCheckScript),
+		script:  fmt.Sprintf("export WORKSPACE=%q BRANCH=%q\n%s", workspace, defaultBranch, newCommitsCheckScript),
 	})
 	if err != nil {
 		return false, fmt.Errorf("check new commits: %w", err)

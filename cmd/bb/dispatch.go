@@ -75,10 +75,10 @@ func dispatchWorkspace(repo, override string) string {
 	return spriteRepoWorkspace(repo)
 }
 
-func verifyWorkScriptFor(workspace, ghToken string) string {
+func verifyWorkScriptFor(workspace, ghToken, branch string) string {
 	return fmt.Sprintf(
-		`export GH_TOKEN=%q WORKSPACE=%q; cd "$WORKSPACE" && echo "--- commits ---" && git log --oneline origin/master..HEAD 2>/dev/null || git log --oneline origin/main..HEAD 2>/dev/null; echo "--- PRs ---" && gh pr list --json url,title 2>/dev/null || echo "(gh not available)"`,
-		ghToken, workspace,
+		`export GH_TOKEN=%q WORKSPACE=%q BRANCH=%q; cd "$WORKSPACE" && echo "--- commits ---" && git log --oneline "origin/$BRANCH..HEAD" 2>/dev/null; echo "--- PRs ---" && gh pr list --json url,title 2>/dev/null || echo "(gh not available)"`,
+		ghToken, workspace, branch,
 	)
 }
 
@@ -130,11 +130,18 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverrid
 	// Conductor-owned worktrees pass --workspace and handle preparation separately.
 	workspace := dispatchWorkspace(repo, workspaceOverride)
 
+	// Detect the remote default branch once; used in both sync and verification.
+	defaultBranch, branchErr := detectDefaultBranchWithRunner(ctx, spriteBashRunner(s), workspace)
+	if branchErr != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "warning: could not detect default branch: %v — falling back to main\n", branchErr)
+		defaultBranch = "main"
+	}
+
 	if workspaceOverride == "" {
-		_, _ = fmt.Fprintf(os.Stderr, "syncing repo %s...\n", repo)
+		_, _ = fmt.Fprintf(os.Stderr, "syncing repo %s (branch: %s)...\n", repo, defaultBranch)
 		syncScript := fmt.Sprintf(
-			`git config --global --add safe.directory %q 2>/dev/null; export GH_TOKEN=%q && cd %q && git checkout master 2>/dev/null || git checkout main 2>/dev/null; git pull --ff-only 2>&1`,
-			workspace, ghToken, workspace,
+			`git config --global --add safe.directory %q 2>/dev/null; export GH_TOKEN=%q && cd %q && git checkout %q && git pull --ff-only 2>&1`,
+			workspace, ghToken, workspace, defaultBranch,
 		)
 		syncCmd := s.CommandContext(ctx, "bash", "-c", syncScript)
 		if out, err := syncCmd.Output(); err != nil {
@@ -246,7 +253,7 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverrid
 
 	// 9. Verify work produced
 	_, _ = fmt.Fprintf(os.Stderr, "\n=== work produced ===\n")
-	verifyScript := verifyWorkScriptFor(workspace, ghToken)
+	verifyScript := verifyWorkScriptFor(workspace, ghToken, defaultBranch)
 	verifyCmd := s.CommandContext(ctx, "bash", "-c", verifyScript)
 	verifyCmd.Stdout = os.Stderr
 	verifyCmd.Stderr = os.Stderr
@@ -280,7 +287,7 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverrid
 			hasWork, checkErr = hasNewCommitsSinceSHAWithRunner(ctx, spriteBashRunner(s), workspace, preSHA)
 		} else {
 			_, _ = fmt.Fprintf(os.Stderr, "\n=== off-rails: no pre-dispatch SHA — falling back to origin baseline check ===\n")
-			hasWork, checkErr = hasNewCommitsWithRunner(ctx, spriteBashRunner(s), workspace)
+			hasWork, checkErr = hasNewCommitsWithRunner(ctx, spriteBashRunner(s), workspace, defaultBranch)
 		}
 		if checkErr != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "\n=== off-rails: new commits check failed: %v — treating as failure ===\n", checkErr)

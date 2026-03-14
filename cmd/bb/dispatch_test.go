@@ -393,7 +393,7 @@ func TestHasNewCommitsReturnsTrue(t *testing.T) {
 	t.Parallel()
 
 	r := &fakeSpriteScriptRunner{exitCode: 0, out: []byte("abc123 feat: something\n"), err: nil}
-	hasWork, err := hasNewCommitsWithRunner(context.Background(), r.run, "/tmp/ws")
+	hasWork, err := hasNewCommitsWithRunner(context.Background(), r.run, "/tmp/ws", "main")
 	if err != nil {
 		t.Fatalf("hasNewCommitsWithRunner() error = %v", err)
 	}
@@ -406,7 +406,7 @@ func TestHasNewCommitsReturnsFalseWhenNone(t *testing.T) {
 	t.Parallel()
 
 	r := &fakeSpriteScriptRunner{exitCode: 1, out: nil, err: nil}
-	hasWork, err := hasNewCommitsWithRunner(context.Background(), r.run, "/tmp/ws")
+	hasWork, err := hasNewCommitsWithRunner(context.Background(), r.run, "/tmp/ws", "main")
 	if err != nil {
 		t.Fatalf("hasNewCommitsWithRunner() error = %v", err)
 	}
@@ -419,7 +419,7 @@ func TestHasNewCommitsReturnsErrorOnRunnerFailure(t *testing.T) {
 	t.Parallel()
 
 	r := &fakeSpriteScriptRunner{exitCode: 0, out: nil, err: errors.New("network")}
-	_, err := hasNewCommitsWithRunner(context.Background(), r.run, "/tmp/ws")
+	_, err := hasNewCommitsWithRunner(context.Background(), r.run, "/tmp/ws", "main")
 	if err == nil {
 		t.Fatal("expected error for runner failure")
 	}
@@ -435,7 +435,7 @@ func TestHasNewCommitsReturnsErrorOnUnexpectedExitCode(t *testing.T) {
 	t.Parallel()
 
 	r := &fakeSpriteScriptRunner{exitCode: 2, out: []byte("fatal: not a git repo"), err: nil}
-	_, err := hasNewCommitsWithRunner(context.Background(), r.run, "/tmp/ws")
+	_, err := hasNewCommitsWithRunner(context.Background(), r.run, "/tmp/ws", "main")
 	if err == nil {
 		t.Fatal("expected error for unexpected exit code")
 	}
@@ -448,7 +448,7 @@ func TestHasNewCommitsUsesWorkspace(t *testing.T) {
 	t.Parallel()
 
 	r := &fakeSpriteScriptRunner{exitCode: 0, out: []byte("abc123\n"), err: nil}
-	if _, err := hasNewCommitsWithRunner(context.Background(), r.run, "/home/sprite/workspace/myrepo"); err != nil {
+	if _, err := hasNewCommitsWithRunner(context.Background(), r.run, "/home/sprite/workspace/myrepo", "main"); err != nil {
 		t.Fatalf("hasNewCommitsWithRunner() error = %v", err)
 	}
 	if !strings.Contains(r.script, "/home/sprite/workspace/myrepo") {
@@ -456,11 +456,29 @@ func TestHasNewCommitsUsesWorkspace(t *testing.T) {
 	}
 }
 
+func TestHasNewCommitsUsesDetectedBranch(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: []byte("abc123\n"), err: nil}
+	if _, err := hasNewCommitsWithRunner(context.Background(), r.run, "/tmp/ws", "development"); err != nil {
+		t.Fatalf("hasNewCommitsWithRunner() error = %v", err)
+	}
+	if !strings.Contains(r.script, `BRANCH="development"`) {
+		t.Fatalf("script = %q, want BRANCH set to detected branch", r.script)
+	}
+	if strings.Contains(r.script, "origin/master") {
+		t.Fatalf("script = %q, should not hardcode origin/master", r.script)
+	}
+	if strings.Contains(r.script, "origin/main") {
+		t.Fatalf("script = %q, should not hardcode origin/main", r.script)
+	}
+}
+
 func TestHasNewCommitsHasDeadline(t *testing.T) {
 	t.Parallel()
 
 	r := &fakeSpriteScriptRunner{exitCode: 0, out: []byte("abc123\n"), err: nil}
-	_, _ = hasNewCommitsWithRunner(context.Background(), r.run, "/tmp/ws")
+	_, _ = hasNewCommitsWithRunner(context.Background(), r.run, "/tmp/ws", "main")
 	if !r.gotDeadline {
 		t.Fatal("expected context to carry a deadline (15s timeout)")
 	}
@@ -594,13 +612,153 @@ func TestVerifyWorkScriptForQuotesWorkspace(t *testing.T) {
 	t.Parallel()
 
 	workspace := `/tmp/run 123; touch /tmp/pwned`
-	script := verifyWorkScriptFor(workspace, "ghtoken123")
+	script := verifyWorkScriptFor(workspace, "ghtoken123", "main")
 
 	if !strings.Contains(script, `WORKSPACE="/tmp/run 123; touch /tmp/pwned"`) {
 		t.Fatalf("verifyWorkScriptFor() missing quoted workspace: %q", script)
 	}
 	if !strings.Contains(script, `cd "$WORKSPACE"`) {
 		t.Fatalf("verifyWorkScriptFor() should cd via WORKSPACE env var: %q", script)
+	}
+}
+
+func TestVerifyWorkScriptForUsesDetectedBranch(t *testing.T) {
+	t.Parallel()
+
+	script := verifyWorkScriptFor("/tmp/ws", "ghtoken123", "development")
+
+	if !strings.Contains(script, `BRANCH="development"`) {
+		t.Fatalf("verifyWorkScriptFor() should set BRANCH to detected branch: %q", script)
+	}
+	if !strings.Contains(script, `"origin/$BRANCH..HEAD"`) {
+		t.Fatalf("verifyWorkScriptFor() should use $BRANCH for log range: %q", script)
+	}
+	if strings.Contains(script, "origin/master") {
+		t.Fatalf("verifyWorkScriptFor() should not contain hardcoded origin/master: %q", script)
+	}
+	if strings.Contains(script, "origin/main") {
+		t.Fatalf("verifyWorkScriptFor() should not contain hardcoded origin/main: %q", script)
+	}
+}
+
+func TestDetectDefaultBranchReturnsRemoteBranch(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: []byte("development\n"), err: nil}
+	branch, err := detectDefaultBranchWithRunner(context.Background(), r.run, "/tmp/ws")
+	if err != nil {
+		t.Fatalf("detectDefaultBranchWithRunner() error = %v", err)
+	}
+	if branch != "development" {
+		t.Fatalf("branch = %q, want %q", branch, "development")
+	}
+}
+
+func TestDetectDefaultBranchFallsBackToMainOnEmptyOutput(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: []byte("\n"), err: nil}
+	branch, err := detectDefaultBranchWithRunner(context.Background(), r.run, "/tmp/ws")
+	if err != nil {
+		t.Fatalf("detectDefaultBranchWithRunner() error = %v", err)
+	}
+	if branch != "main" {
+		t.Fatalf("branch = %q, want %q", branch, "main")
+	}
+}
+
+func TestDetectDefaultBranchReturnsErrorOnRunnerFailure(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: nil, err: errors.New("network")}
+	_, err := detectDefaultBranchWithRunner(context.Background(), r.run, "/tmp/ws")
+	if err == nil {
+		t.Fatal("expected error for runner failure")
+	}
+	if !strings.Contains(err.Error(), "detect default branch") {
+		t.Fatalf("err = %q, want to contain %q", err.Error(), "detect default branch")
+	}
+}
+
+func TestDetectDefaultBranchReturnsErrorOnNonZeroExit(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 1, out: []byte("some error"), err: nil}
+	_, err := detectDefaultBranchWithRunner(context.Background(), r.run, "/tmp/ws")
+	if err == nil {
+		t.Fatal("expected error for non-zero exit")
+	}
+	if !strings.Contains(err.Error(), "detect default branch") {
+		t.Fatalf("err = %q, want to contain %q", err.Error(), "detect default branch")
+	}
+}
+
+func TestDetectDefaultBranchUsesWorkspace(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: []byte("main\n"), err: nil}
+	if _, err := detectDefaultBranchWithRunner(context.Background(), r.run, "/home/sprite/workspace/myrepo"); err != nil {
+		t.Fatalf("detectDefaultBranchWithRunner() error = %v", err)
+	}
+	if !strings.Contains(r.script, "/home/sprite/workspace/myrepo") {
+		t.Fatalf("script = %q, want to contain workspace path", r.script)
+	}
+}
+
+func TestDetectDefaultBranchHasDeadline(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: []byte("main\n"), err: nil}
+	_, _ = detectDefaultBranchWithRunner(context.Background(), r.run, "/tmp/ws")
+	if !r.gotDeadline {
+		t.Fatal("expected context to carry a deadline")
+	}
+}
+
+func TestDetectDefaultBranchRejectsHEAD(t *testing.T) {
+	t.Parallel()
+
+	// Simulates the edge case where origin/HEAD is unset: git outputs "origin/HEAD",
+	// the bash script strips the prefix leaving "HEAD", which the Go layer must reject.
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: []byte("HEAD\n"), err: nil}
+	_, err := detectDefaultBranchWithRunner(context.Background(), r.run, "/tmp/ws")
+	if err == nil {
+		t.Fatal("expected error for HEAD branch name")
+	}
+	if !strings.Contains(err.Error(), "invalid branch name") {
+		t.Fatalf("err = %q, want to contain %q", err.Error(), "invalid branch name")
+	}
+}
+
+func TestDetectDefaultBranchRejectsUnsafeName(t *testing.T) {
+	t.Parallel()
+
+	// Simulates a (malicious) branch name containing shell metacharacters.
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: []byte("main;id\n"), err: nil}
+	_, err := detectDefaultBranchWithRunner(context.Background(), r.run, "/tmp/ws")
+	if err == nil {
+		t.Fatal("expected error for branch name with shell metacharacters")
+	}
+	if !strings.Contains(err.Error(), "invalid branch name") {
+		t.Fatalf("err = %q, want to contain %q", err.Error(), "invalid branch name")
+	}
+}
+
+func TestIsValidBranchName(t *testing.T) {
+	t.Parallel()
+
+	valid := []string{"main", "master", "development", "feature/ABC-123", "release-1.0", "my_branch"}
+	for _, name := range valid {
+		if !isValidBranchName(name) {
+			t.Errorf("isValidBranchName(%q) = false, want true", name)
+		}
+	}
+
+	invalid := []string{"", "HEAD", "main;id", "$(id)", "branch name", "branch&id", "branch|id"}
+	for _, name := range invalid {
+		if isValidBranchName(name) {
+			t.Errorf("isValidBranchName(%q) = true, want false", name)
+		}
 	}
 }
 
