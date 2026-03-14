@@ -38,6 +38,14 @@ defmodule Conductor.SecurityTest do
     test "rejects absolute path traversal" do
       assert {:error, :invalid_input} = Workspace.validate_input("foo/../../../tmp")
     end
+
+    test "rejects absolute paths (leading slash)" do
+      assert {:error, :invalid_input} = Workspace.validate_input("/etc/passwd")
+    end
+
+    test "rejects leading dash (git argument injection)" do
+      assert {:error, :invalid_input} = Workspace.validate_input("--force")
+    end
   end
 
   describe "Store column allowlist" do

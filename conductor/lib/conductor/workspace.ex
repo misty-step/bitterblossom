@@ -11,12 +11,14 @@ defmodule Conductor.Workspace do
   @mirror_base "/home/sprite/workspace"
   @safe_input ~r/^[a-zA-Z0-9_\-\.\/]+$/
 
-  @doc "Validate that a string is safe for shell interpolation. Rejects metacharacters and path traversal."
+  @doc "Validate that a string is safe for shell interpolation. Rejects metacharacters, path traversal, absolute paths, and leading dashes."
   @spec validate_input(binary()) :: :ok | {:error, :invalid_input}
   def validate_input(input) do
     cond do
       not Regex.match?(@safe_input, input) -> {:error, :invalid_input}
       String.contains?(input, "..") -> {:error, :invalid_input}
+      String.starts_with?(input, "/") -> {:error, :invalid_input}
+      String.starts_with?(input, "-") -> {:error, :invalid_input}
       true -> :ok
     end
   end
