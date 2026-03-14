@@ -17,6 +17,10 @@ type lockedBuffer struct {
 	b  bytes.Buffer
 }
 
+type errWriter struct {
+	err error
+}
+
 func (b *lockedBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -27,6 +31,10 @@ func (b *lockedBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.b.String()
+}
+
+func (w errWriter) Write(_ []byte) (int, error) {
+	return 0, w.err
 }
 
 func TestDispatchTextMessageHandlerWritesStructuredOutput(t *testing.T) {
@@ -322,6 +330,9 @@ func TestHasTaskCompleteSignalReturnsErrorOnRunnerError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "network") {
 		t.Fatalf("err = %q, want to contain %q", err.Error(), "network")
+	}
+	if strings.Contains(err.Error(), "check completion signal command: network") {
+		t.Fatalf("err = %q, want pre-refactor message without duplicate prefix", err.Error())
 	}
 }
 
@@ -915,6 +926,9 @@ func TestWaitForPRChecksRetriesOnRunnerError(t *testing.T) {
 	if !strings.Contains(progress.String(), "runner error") {
 		t.Fatalf("progress = %q, want to contain %q", progress.String(), "runner error")
 	}
+	if strings.Contains(progress.String(), "check PR status") {
+		t.Fatalf("progress = %q, want raw runner error without duplicate check-name prefix", progress.String())
+	}
 }
 
 func TestPRChecksScriptContainsExpectedCommands(t *testing.T) {
@@ -926,8 +940,62 @@ func TestPRChecksScriptContainsExpectedCommands(t *testing.T) {
 	if !strings.Contains(prChecksScript, "--exit-status") {
 		t.Fatalf("prChecksScript missing '--exit-status':\n%s", prChecksScript)
 	}
+	if !strings.Contains(prChecksScript, "\"$exit_code\" -eq 8") {
+		t.Fatalf("prChecksScript missing pending exit code 8 handling:\n%s", prChecksScript)
+	}
 	if !strings.Contains(prChecksScript, "exit 2") {
 		t.Fatalf("prChecksScript missing fatal exit code 2:\n%s", prChecksScript)
+	}
+}
+
+func TestWaitForPRChecksTreatsExitCode8AsPending(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	runner := func(_ context.Context, _ string) ([]byte, int, error) {
+		calls++
+		if calls == 1 {
+			return []byte("checks pending\n"), 8, nil
+		}
+		return []byte("pass\n"), 0, nil
+	}
+
+	var progress bytes.Buffer
+	if err := waitForPRChecksWithRunner(context.Background(), runner, "/tmp/ws", "token", time.Second, 10*time.Millisecond, &progress); err != nil {
+		t.Fatalf("expected nil after pending exit code 8, got %v", err)
+	}
+	if !strings.Contains(progress.String(), "PR checks: pending") {
+		t.Fatalf("progress = %q, want pending progress line", progress.String())
+	}
+}
+
+func TestWaitForPRChecksRejectsNonPositivePollInterval(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{}
+	var progress bytes.Buffer
+	err := waitForPRChecksWithRunner(context.Background(), r.run, "/tmp/ws", "token", time.Second, 0, &progress)
+	if err == nil {
+		t.Fatal("expected error for non-positive poll interval")
+	}
+	if !strings.Contains(err.Error(), "invalid poll interval") {
+		t.Fatalf("err = %q, want invalid poll interval", err.Error())
+	}
+	if r.called {
+		t.Fatal("runner should not be called when poll interval is invalid")
+	}
+}
+
+func TestWaitForPRChecksPropagatesProgressWriterFailure(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 1, out: nil, err: nil}
+	err := waitForPRChecksWithRunner(context.Background(), r.run, "/tmp/ws", "token", time.Second, 10*time.Millisecond, errWriter{err: errors.New("write failed")})
+	if err == nil {
+		t.Fatal("expected progress writer error")
+	}
+	if !strings.Contains(err.Error(), "write dispatch progress") {
+		t.Fatalf("err = %q, want progress write context", err.Error())
 	}
 }
 
@@ -1092,6 +1160,20 @@ func TestSnapshotPRChecksReturnsPendingOnExitCode1(t *testing.T) {
 	}
 	if got.checksExit != 1 {
 		t.Fatalf("checks_exit = %d, want %d", got.checksExit, 1)
+	}
+}
+
+func TestSnapshotPRChecksReturnsPendingOnExitCode8(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 8, out: []byte("checks pending\n"), err: nil}
+	got := snapshotPRChecksWithRunner(context.Background(), r.run, "/tmp/ws", "token")
+
+	if got.status != "pending" {
+		t.Fatalf("status = %q, want %q", got.status, "pending")
+	}
+	if got.checksExit != 8 {
+		t.Fatalf("checks_exit = %d, want %d", got.checksExit, 8)
 	}
 }
 

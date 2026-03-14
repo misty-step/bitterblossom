@@ -330,6 +330,17 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverrid
 	return nil
 }
 
+// graceFor returns a proportional grace period: at least 30s, otherwise 25%
+// of the dispatch timeout, capped at 5 minutes. This gives the ralph loop
+// time to write TASK_COMPLETE/BLOCKED signals after its own timeout fires.
+func graceFor(timeout time.Duration) time.Duration {
+	grace := max(30*time.Second, timeout/4)
+	if grace > 5*time.Minute {
+		grace = 5 * time.Minute
+	}
+	return grace
+}
+
 // renderPrompt reads a local prompt template and substitutes placeholders.
 func renderPrompt(templatePath, taskDescription, repo, spriteName string) (string, error) {
 	tmpl, err := os.ReadFile(templatePath)

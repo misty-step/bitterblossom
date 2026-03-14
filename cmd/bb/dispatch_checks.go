@@ -69,7 +69,7 @@ const prChecksScript = `
 cd "$WORKSPACE" 2>/dev/null || exit 2
 gh pr checks HEAD --exit-status 2>&1
 exit_code=$?
-if [ "$exit_code" -eq 0 ] || [ "$exit_code" -eq 1 ]; then
+if [ "$exit_code" -eq 0 ] || [ "$exit_code" -eq 1 ] || [ "$exit_code" -eq 8 ]; then
   exit $exit_code
 fi
 exit 2`
@@ -82,7 +82,6 @@ type prCheckSummary struct {
 }
 
 type dispatchCheck struct {
-	name    string
 	timeout time.Duration
 	script  string
 }
@@ -107,11 +106,14 @@ func isDispatchLoopActive(ctx context.Context, s *sprites.Sprite) (bool, error) 
 
 // runRalphLoopCheck executes the pgrep check and returns the raw result.
 func runRalphLoopCheck(ctx context.Context, run spriteScriptRunner) (output string, exitCode int, err error) {
-	return runDispatchCheck(ctx, run, dispatchCheck{
-		name:    "check dispatch loop",
+	output, exitCode, err = runDispatchCheck(ctx, run, dispatchCheck{
 		timeout: 10 * time.Second,
 		script:  activeRalphLoopCheckScript,
 	})
+	if err != nil {
+		return "", 0, fmt.Errorf("check dispatch loop: %w", err)
+	}
+	return output, exitCode, nil
 }
 
 func isDispatchLoopActiveWithRunner(ctx context.Context, run spriteScriptRunner) (bool, error) {
@@ -153,7 +155,7 @@ func runDispatchCheck(ctx context.Context, run spriteScriptRunner, check dispatc
 
 	out, exitCode, err := run(checkCtx, check.script)
 	if err != nil {
-		return "", 0, fmt.Errorf("%s: %w", check.name, err)
+		return "", 0, err
 	}
 	return strings.TrimSpace(string(out)), exitCode, nil
 }
@@ -161,6 +163,9 @@ func runDispatchCheck(ctx context.Context, run spriteScriptRunner, check dispatc
 func pollDispatchCheck(ctx context.Context, run spriteScriptRunner, cfg dispatchPollConfig, progress io.Writer, step func(exitCode int, output string) (done bool, progressLine string, err error)) error {
 	if cfg.waitTimeout == 0 {
 		return nil
+	}
+	if cfg.pollInterval <= 0 {
+		return fmt.Errorf("invalid poll interval %s", cfg.pollInterval)
 	}
 
 	deadline := time.Now().Add(cfg.waitTimeout)
@@ -173,7 +178,11 @@ func pollDispatchCheck(ctx context.Context, run spriteScriptRunner, cfg dispatch
 	for {
 		output, exitCode, err := runDispatchCheck(pollCtx, run, cfg.check)
 		if err != nil {
-			_, _ = fmt.Fprintf(progress, "[dispatch] %s: %v\n", cfg.runnerErrorPrefix, err)
+			if progress != nil {
+				if _, writeErr := fmt.Fprintf(progress, "[dispatch] %s: %v\n", cfg.runnerErrorPrefix, err); writeErr != nil {
+					return fmt.Errorf("write dispatch progress: %w", writeErr)
+				}
+			}
 		} else {
 			done, progressLine, stepErr := step(exitCode, output)
 			if stepErr != nil {
@@ -182,8 +191,10 @@ func pollDispatchCheck(ctx context.Context, run spriteScriptRunner, cfg dispatch
 			if done {
 				return nil
 			}
-			if progressLine != "" {
-				_, _ = fmt.Fprintf(progress, "[dispatch] %s\n", progressLine)
+			if progress != nil && progressLine != "" {
+				if _, writeErr := fmt.Fprintf(progress, "[dispatch] %s\n", progressLine); writeErr != nil {
+					return fmt.Errorf("write dispatch progress: %w", writeErr)
+				}
 			}
 		}
 
@@ -192,21 +203,10 @@ func pollDispatchCheck(ctx context.Context, run spriteScriptRunner, cfg dispatch
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			return fmt.Errorf("%s", cfg.timeoutMessage)
+			return errors.New(cfg.timeoutMessage)
 		case <-ticker.C:
 		}
 	}
-}
-
-// graceFor returns a proportional grace period: at least 30s, otherwise 25%
-// of the dispatch timeout, capped at 5 minutes. This gives the ralph loop
-// time to write TASK_COMPLETE/BLOCKED signals after its own timeout fires.
-func graceFor(timeout time.Duration) time.Duration {
-	grace := max(30*time.Second, timeout/4)
-	if grace > 5*time.Minute {
-		grace = 5 * time.Minute
-	}
-	return grace
 }
 
 // hasNewCommitsWithRunner returns true when commits exist on HEAD that are not
@@ -215,12 +215,11 @@ func graceFor(timeout time.Duration) time.Duration {
 // and work exists on the branch, dispatch succeeds with a warning rather than failing.
 func hasNewCommitsWithRunner(ctx context.Context, run spriteScriptRunner, workspace string) (bool, error) {
 	output, exitCode, err := runDispatchCheck(ctx, run, dispatchCheck{
-		name:    "check new commits",
 		timeout: 15 * time.Second,
 		script:  fmt.Sprintf("export WORKSPACE=%q\n%s", workspace, newCommitsCheckScript),
 	})
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("check new commits: %w", err)
 	}
 
 	switch exitCode {
@@ -238,12 +237,11 @@ func hasNewCommitsWithRunner(ctx context.Context, run spriteScriptRunner, worksp
 // the off-rails secondary commit check to the current dispatch.
 func captureHeadSHAWithRunner(ctx context.Context, run spriteScriptRunner, workspace string) (string, error) {
 	output, exitCode, err := runDispatchCheck(ctx, run, dispatchCheck{
-		name:    "capture HEAD SHA",
 		timeout: 10 * time.Second,
 		script:  fmt.Sprintf("export WORKSPACE=%q\n%s", workspace, captureHeadSHAScript),
 	})
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("capture HEAD SHA: %w", err)
 	}
 	if exitCode != 0 {
 		return "", fmt.Errorf("capture HEAD SHA: exited %d: %s", exitCode, output)
@@ -259,12 +257,11 @@ func captureHeadSHAWithRunner(ctx context.Context, run spriteScriptRunner, works
 // produced during the current dispatch, ignoring stale commits from prior runs.
 func hasNewCommitsSinceSHAWithRunner(ctx context.Context, run spriteScriptRunner, workspace, baseSHA string) (bool, error) {
 	output, exitCode, err := runDispatchCheck(ctx, run, dispatchCheck{
-		name:    "check new commits since SHA",
 		timeout: 15 * time.Second,
 		script:  fmt.Sprintf("export WORKSPACE=%q BASE_SHA=%q\n%s", workspace, baseSHA, newCommitsSinceSHACheckScript),
 	})
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("check new commits since SHA: %w", err)
 	}
 
 	switch exitCode {
@@ -279,7 +276,6 @@ func hasNewCommitsSinceSHAWithRunner(ctx context.Context, run spriteScriptRunner
 
 func hasTaskCompleteSignalWithRunner(ctx context.Context, run spriteScriptRunner, workspace string) (bool, error) {
 	output, exitCode, err := runDispatchCheck(ctx, run, dispatchCheck{
-		name:    "check completion signal command",
 		timeout: 10 * time.Second,
 		script:  taskCompleteSignalCheckScriptFor(workspace),
 	})
@@ -305,7 +301,6 @@ func prChecksScriptFor(workspace, ghToken string) string {
 
 func snapshotPRChecksWithRunner(ctx context.Context, run spriteScriptRunner, workspace, ghToken string) prCheckSummary {
 	_, exitCode, err := runDispatchCheck(ctx, run, dispatchCheck{
-		name:    "check PR status",
 		timeout: 30 * time.Second,
 		script:  prChecksScriptFor(workspace, ghToken),
 	})
@@ -316,7 +311,7 @@ func snapshotPRChecksWithRunner(ctx context.Context, run spriteScriptRunner, wor
 	switch exitCode {
 	case 0:
 		return prCheckSummary{status: "pass", checksExit: exitCode}
-	case 1:
+	case 1, 8:
 		return prCheckSummary{status: "pending", checksExit: exitCode}
 	default:
 		return prCheckSummary{status: "error", checksExit: exitCode}
@@ -331,7 +326,6 @@ func snapshotPRChecksWithRunner(ctx context.Context, run spriteScriptRunner, wor
 func waitForPRChecksWithRunner(ctx context.Context, run spriteScriptRunner, workspace, ghToken string, prCheckTimeout, pollInterval time.Duration, progress io.Writer) error {
 	return pollDispatchCheck(ctx, run, dispatchPollConfig{
 		check: dispatchCheck{
-			name:    "check PR status",
 			timeout: 30 * time.Second,
 			script:  prChecksScriptFor(workspace, ghToken),
 		},
@@ -343,7 +337,7 @@ func waitForPRChecksWithRunner(ctx context.Context, run spriteScriptRunner, work
 		switch exitCode {
 		case 0:
 			return true, "", nil
-		case 1:
+		case 1, 8:
 			return false, fmt.Sprintf("PR checks: pending — next poll in %s", pollInterval), nil
 		case 2:
 			return false, "", fmt.Errorf("pr checks error (gh unavailable, no PR for HEAD, or auth failure)")
@@ -360,7 +354,6 @@ func waitForPRChecksWithRunner(ctx context.Context, run spriteScriptRunner, work
 func waitForTaskCompleteWithRunner(ctx context.Context, run spriteScriptRunner, workspace string, waitTimeout, pollInterval time.Duration, progress io.Writer) error {
 	return pollDispatchCheck(ctx, run, dispatchPollConfig{
 		check: dispatchCheck{
-			name:    "check task complete signal",
 			timeout: 30 * time.Second,
 			script:  taskCompleteSignalCheckScriptFor(workspace),
 		},
