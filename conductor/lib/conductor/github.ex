@@ -97,20 +97,36 @@ defmodule Conductor.GitHub do
     end
   end
 
+  @green ~w(SUCCESS success NEUTRAL neutral SKIPPED skipped)
+
   @spec checks_green?(binary(), pos_integer()) :: boolean()
   def checks_green?(repo, pr_number) do
     case get_pr_checks(repo, pr_number) do
-      {:ok, []} ->
-        false
-
-      {:ok, checks} ->
-        Enum.all?(checks, fn c ->
-          c["conclusion"] in ["SUCCESS", "success", "NEUTRAL", "neutral", "SKIPPED", "skipped"]
-        end)
-
-      _ ->
-        false
+      {:ok, checks} -> evaluate_checks(checks)
+      _ -> false
     end
+  end
+
+  @active_statuses ~w(IN_PROGRESS QUEUED PENDING WAITING REQUESTED in_progress queued pending waiting requested)
+
+  @doc """
+  Pure evaluation of a check list. Distinguishes three categories:
+
+  1. Completed checks (non-nil conclusion) — must all be in @green
+  2. In-progress checks (nil conclusion but active status) — block merge
+  3. Annotations (nil conclusion AND nil/inactive status) — ignored
+
+  Returns false when no real checks remain or any are still running.
+  """
+  @spec evaluate_checks([map()]) :: boolean()
+  def evaluate_checks(checks) do
+    real =
+      Enum.filter(checks, fn c ->
+        not is_nil(c["conclusion"]) or c["status"] in @active_statuses
+      end)
+
+    pending = Enum.any?(real, fn c -> is_nil(c["conclusion"]) end)
+    real != [] and not pending and Enum.all?(real, fn c -> c["conclusion"] in @green end)
   end
 
   @spec merge_pr(binary(), pos_integer(), keyword()) :: :ok | {:error, term()}
