@@ -86,11 +86,7 @@ defmodule Conductor.RunServer do
             branch = "factory/#{state.issue.number}-#{ts}"
             artifact = Workspace.artifact_path(state.repo, run_id)
 
-            state = %{state |
-              run_id: run_id,
-              branch: branch,
-              artifact_path: artifact
-            }
+            state = %{state | run_id: run_id, branch: branch, artifact_path: artifact}
 
             Store.record_event(run_id, "lease_acquired", %{issue: state.issue.number})
             log(state, "lease acquired for issue ##{state.issue.number}")
@@ -99,7 +95,11 @@ defmodule Conductor.RunServer do
 
           _ ->
             Store.release_lease(state.repo, state.issue.number)
-            Logger.error("create_run failed after lease acquired for issue ##{state.issue.number}")
+
+            Logger.error(
+              "create_run failed after lease acquired for issue ##{state.issue.number}"
+            )
+
             {:stop, :normal, state}
         end
     end
@@ -157,11 +157,8 @@ defmodule Conductor.RunServer do
 
     timer = start_heartbeat()
 
-    {:noreply, %{state |
-      dispatch_task: task,
-      heartbeat_timer: timer,
-      turn_count: state.turn_count + 1
-    }}
+    {:noreply,
+     %{state | dispatch_task: task, heartbeat_timer: timer, turn_count: state.turn_count + 1}}
   end
 
   @impl true
@@ -284,14 +281,15 @@ defmodule Conductor.RunServer do
 
   @impl true
   def handle_call(:status, _from, state) do
-    {:reply, %{
-      run_id: state.run_id,
-      phase: state.phase,
-      issue: state.issue.number,
-      worker: state.worker,
-      pr_number: state.pr_number,
-      turn_count: state.turn_count
-    }, state}
+    {:reply,
+     %{
+       run_id: state.run_id,
+       phase: state.phase,
+       issue: state.issue.number,
+       worker: state.worker,
+       pr_number: state.pr_number,
+       turn_count: state.turn_count
+     }, state}
   end
 
   # --- Private ---

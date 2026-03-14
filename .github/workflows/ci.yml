@@ -68,12 +68,43 @@ jobs:
       - name: Build
         run: make build
 
+  elixir:
+    name: Elixir Checks
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: conductor
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27.x"
+          elixir-version: "1.16.x"
+      - name: Cache deps and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            conductor/deps
+            conductor/_build
+          key: ${{ runner.os }}-mix-${{ hashFiles('conductor/mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-
+      - name: Install dependencies
+        run: mix deps.get
+      - name: Compile (warnings as errors)
+        run: mix compile --warnings-as-errors
+      - name: Check formatting
+        run: mix format --check-formatted
+      - name: Run tests
+        run: mix test
+
   merge_gate:
     name: merge-gate
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     if: ${{ github.event_name == 'pull_request' && always() }}
-    needs: [shellcheck, hooks, yaml, go]
+    needs: [shellcheck, hooks, yaml, go, elixir]
     steps:
       - name: Require green merge inputs
         env:
@@ -81,9 +112,10 @@ jobs:
           HOOKS_RESULT: ${{ needs.hooks.result }}
           YAML_RESULT: ${{ needs.yaml.result }}
           GO_RESULT: ${{ needs.go.result }}
+          ELIXIR_RESULT: ${{ needs.elixir.result }}
         run: |
           set -euo pipefail
-          for result in "$SHELLCHECK_RESULT" "$HOOKS_RESULT" "$YAML_RESULT" "$GO_RESULT"; do
+          for result in "$SHELLCHECK_RESULT" "$HOOKS_RESULT" "$YAML_RESULT" "$GO_RESULT" "$ELIXIR_RESULT"; do
             if [ "$result" != "success" ]; then
               echo "merge-gate blocked by dependency result: $result"
               exit 1

@@ -12,9 +12,13 @@ defmodule Conductor.GitHub do
   @spec get_issue(binary(), pos_integer()) :: {:ok, Issue.t()} | {:error, term()}
   def get_issue(repo, number) do
     case Shell.cmd("gh", [
-           "issue", "view", to_string(number),
-           "--repo", repo,
-           "--json", "number,title,body,url,labels"
+           "issue",
+           "view",
+           to_string(number),
+           "--repo",
+           repo,
+           "--json",
+           "number,title,body,url,labels"
          ]) do
       {:ok, json} ->
         case Jason.decode(json) do
@@ -22,7 +26,8 @@ defmodule Conductor.GitHub do
           {:error, _} -> {:error, "invalid JSON from gh: #{String.slice(json, 0, 200)}"}
         end
 
-      {:error, msg, _} -> {:error, msg}
+      {:error, msg, _} ->
+        {:error, msg}
     end
   end
 
@@ -32,12 +37,18 @@ defmodule Conductor.GitHub do
     limit = Keyword.get(opts, :limit, 25)
 
     case Shell.cmd("gh", [
-           "issue", "list",
-           "--repo", repo,
-           "--label", label,
-           "--state", "open",
-           "--json", "number,title,body,url,labels",
-           "--limit", to_string(limit)
+           "issue",
+           "list",
+           "--repo",
+           repo,
+           "--label",
+           label,
+           "--state",
+           "open",
+           "--json",
+           "number,title,body,url,labels",
+           "--limit",
+           to_string(limit)
          ]) do
       {:ok, json} ->
         case Jason.decode(json) do
@@ -67,9 +78,13 @@ defmodule Conductor.GitHub do
   @spec get_pr_checks(binary(), pos_integer()) :: {:ok, [map()]} | {:error, term()}
   def get_pr_checks(repo, pr_number) do
     case Shell.cmd("gh", [
-           "pr", "view", to_string(pr_number),
-           "--repo", repo,
-           "--json", "statusCheckRollup"
+           "pr",
+           "view",
+           to_string(pr_number),
+           "--repo",
+           repo,
+           "--json",
+           "statusCheckRollup"
          ]) do
       {:ok, json} ->
         case Jason.decode(json) do
@@ -103,11 +118,17 @@ defmodule Conductor.GitHub do
     method = Keyword.get(opts, :method, "squash")
     delete_branch = if Keyword.get(opts, :delete_branch, true), do: ["--delete-branch"], else: []
 
-    case Shell.cmd("gh", [
-           "pr", "merge", to_string(pr_number),
-           "--repo", repo,
-           "--#{method}"
-         ] ++ delete_branch) do
+    case Shell.cmd(
+           "gh",
+           [
+             "pr",
+             "merge",
+             to_string(pr_number),
+             "--repo",
+             repo,
+             "--#{method}"
+           ] ++ delete_branch
+         ) do
       {:ok, _} -> :ok
       {:error, msg, _} -> {:error, msg}
     end
@@ -120,9 +141,13 @@ defmodule Conductor.GitHub do
 
     result =
       case Shell.cmd("gh", [
-             "issue", "comment", to_string(issue_number),
-             "--repo", repo,
-             "--body-file", tmp
+             "issue",
+             "comment",
+             to_string(issue_number),
+             "--repo",
+             repo,
+             "--body-file",
+             tmp
            ]) do
         {:ok, _} -> :ok
         {:error, msg, _} -> {:error, msg}
@@ -135,9 +160,13 @@ defmodule Conductor.GitHub do
   @spec get_pr(binary(), pos_integer()) :: {:ok, map()} | {:error, term()}
   def get_pr(repo, pr_number) do
     case Shell.cmd("gh", [
-           "pr", "view", to_string(pr_number),
-           "--repo", repo,
-           "--json", "number,title,state,mergeable,headRefName,url"
+           "pr",
+           "view",
+           to_string(pr_number),
+           "--repo",
+           repo,
+           "--json",
+           "number,title,state,mergeable,headRefName,url"
          ]) do
       {:ok, json} ->
         case Jason.decode(json) do
@@ -145,7 +174,8 @@ defmodule Conductor.GitHub do
           {:error, _} -> {:error, "invalid JSON from gh: #{String.slice(json, 0, 200)}"}
         end
 
-      {:error, msg, _} -> {:error, msg}
+      {:error, msg, _} ->
+        {:error, msg}
     end
   end
 end
