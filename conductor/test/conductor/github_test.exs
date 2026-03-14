@@ -75,13 +75,30 @@ defmodule Conductor.GitHubTest do
       assert GitHub.evaluate_checks([]) == false
     end
 
-    test "PENDING check (non-null but incomplete) → false" do
+    test "in-progress check (nil conclusion, active status) blocks → false" do
       checks = [
         %{"name" => "CI", "conclusion" => "SUCCESS", "status" => "COMPLETED"},
         %{"name" => "Deploy", "conclusion" => nil, "status" => "IN_PROGRESS"}
       ]
 
-      # status is IN_PROGRESS but conclusion is nil — should be filtered as pending
+      assert GitHub.evaluate_checks(checks) == false
+    end
+
+    test "queued check blocks → false" do
+      checks = [
+        %{"name" => "CI", "conclusion" => "SUCCESS", "status" => "COMPLETED"},
+        %{"name" => "Deploy", "conclusion" => nil, "status" => "QUEUED"}
+      ]
+
+      assert GitHub.evaluate_checks(checks) == false
+    end
+
+    test "annotation (nil conclusion AND nil status) is ignored → true" do
+      checks = [
+        %{"name" => "CI", "conclusion" => "SUCCESS", "status" => "COMPLETED"},
+        %{"name" => nil, "conclusion" => nil, "status" => nil}
+      ]
+
       assert GitHub.evaluate_checks(checks) == true
     end
   end

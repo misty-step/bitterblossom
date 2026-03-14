@@ -107,15 +107,26 @@ defmodule Conductor.GitHub do
     end
   end
 
+  @active_statuses ~w(IN_PROGRESS QUEUED PENDING in_progress queued pending)
+
   @doc """
-  Pure evaluation of a check list. Filters out entries with nil conclusions
-  (external review annotations like CodeRabbit) before checking whether all
-  real checks passed. Returns false when no real checks remain.
+  Pure evaluation of a check list. Distinguishes three categories:
+
+  1. Completed checks (non-nil conclusion) — must all be in @green
+  2. In-progress checks (nil conclusion but active status) — block merge
+  3. Annotations (nil conclusion AND nil/inactive status) — ignored
+
+  Returns false when no real checks remain or any are still running.
   """
   @spec evaluate_checks([map()]) :: boolean()
   def evaluate_checks(checks) do
-    real = Enum.filter(checks, fn c -> not is_nil(c["conclusion"]) end)
-    real != [] and Enum.all?(real, fn c -> c["conclusion"] in @green end)
+    real =
+      Enum.filter(checks, fn c ->
+        not is_nil(c["conclusion"]) or c["status"] in @active_statuses
+      end)
+
+    pending = Enum.any?(real, fn c -> is_nil(c["conclusion"]) end)
+    real != [] and not pending and Enum.all?(real, fn c -> c["conclusion"] in @green end)
   end
 
   @spec merge_pr(binary(), pos_integer(), keyword()) :: :ok | {:error, term()}
