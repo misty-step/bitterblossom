@@ -16,7 +16,7 @@ defmodule Conductor.RunServer do
   use GenServer, restart: :temporary
   require Logger
 
-  alias Conductor.{Store, GitHub, Sprite, Workspace, Prompt, Config}
+  alias Conductor.{Store, GitHub, Sprite, Workspace, Prompt, Config, Recovery}
 
   @heartbeat_ms 30_000
   @ci_poll_ms 30_000
@@ -36,7 +36,8 @@ defmodule Conductor.RunServer do
     :ci_deadline,
     phase: :pending,
     turn_count: 0,
-    trusted_surfaces: []
+    trusted_surfaces: [],
+    replay_count: 0
   ]
 
   # --- Public API ---
@@ -202,13 +203,14 @@ defmodule Conductor.RunServer do
   def handle_continue(:check_ci, state) do
     log(state, "checking CI status")
 
-    if GitHub.checks_green?(state.repo, state.pr_number) do
-      Store.record_event(state.run_id, "ci_passed", %{pr_number: state.pr_number})
-      {:noreply, state, {:continue, :attempt_merge}}
-    else
-      log(state, "CI not green yet, polling in #{@ci_poll_ms}ms")
-      Process.send_after(self(), :poll_ci, @ci_poll_ms)
-      {:noreply, state}
+    case GitHub.get_pr_checks(state.repo, state.pr_number) do
+      {:ok, checks} ->
+        handle_ci_checks(checks, state)
+
+      {:error, reason} ->
+        log(state, "CI check fetch failed: #{reason}, polling in #{@ci_poll_ms}ms")
+        Process.send_after(self(), :poll_ci, @ci_poll_ms)
+        {:noreply, state}
     end
   end
 
@@ -228,6 +230,132 @@ defmodule Conductor.RunServer do
       {:error, reason} ->
         fail(state, "merge_failed", reason)
     end
+  end
+
+  defp handle_ci_checks(checks, state) do
+    case Recovery.evaluate_with_policy(checks, state.trusted_surfaces) do
+      :pass ->
+        Store.record_event(state.run_id, "ci_passed", %{pr_number: state.pr_number})
+        {:noreply, state, {:continue, :attempt_merge}}
+
+      :pending ->
+        log(state, "CI still pending, polling in #{@ci_poll_ms}ms")
+        Process.send_after(self(), :poll_ci, @ci_poll_ms)
+        {:noreply, state}
+
+      {:waiver_eligible, false_reds} ->
+        handle_waiver_eligible(false_reds, state)
+
+      {:retryable, failing} ->
+        handle_retryable(failing, state)
+
+      {:blocked, blockers} ->
+        handle_ci_blocked(blockers, state)
+    end
+  end
+
+  defp handle_waiver_eligible(false_reds, state) do
+    log(
+      state,
+      "semantic review clean; #{length(false_reds)} known false-red(s) on trusted surface(s)"
+    )
+
+    # Mark semantic readiness separately from mechanical check state
+    Store.mark_semantic_ready(state.run_id)
+
+    Store.record_event(state.run_id, "semantic_ready_with_false_reds", %{
+      pr_number: state.pr_number,
+      false_red_count: length(false_reds)
+    })
+
+    # Record each false-red as an incident
+    Enum.each(false_reds, fn check ->
+      Store.record_incident(state.run_id, %{
+        check_name: check["name"] || "unknown",
+        failure_class: "known_false_red",
+        signature: "#{check["name"]}:#{check["conclusion"]}"
+      })
+
+      # Record waiver with rationale
+      Store.record_waiver(state.run_id, %{
+        check_name: check["name"] || "unknown",
+        rationale:
+          "known false-red on trusted surface '#{check["name"]}' " <>
+            "(conclusion: #{check["conclusion"]}); semantic review clean; " <>
+            "waived by conductor policy"
+      })
+    end)
+
+    Store.record_event(state.run_id, "waivers_recorded", %{
+      check_names: Enum.map(false_reds, & &1["name"]),
+      rationale: "known false-red on trusted surface(s); semantic review clean"
+    })
+
+    log(state, "waivers recorded; proceeding to merge")
+    {:noreply, state, {:continue, :attempt_merge}}
+  end
+
+  defp handle_retryable(failing, state) do
+    max_replays = Config.max_replays()
+
+    if state.replay_count < max_replays do
+      replay_count = state.replay_count + 1
+      delay_ms = Config.replay_delay_ms()
+
+      Enum.each(failing, fn check ->
+        class = Recovery.classify_check(check, state.trusted_surfaces)
+
+        Store.record_incident(state.run_id, %{
+          check_name: check["name"] || "unknown",
+          failure_class: Recovery.failure_class_to_string(class),
+          signature: "#{check["name"]}:#{check["conclusion"]}"
+        })
+      end)
+
+      Store.update_run(state.run_id, %{replay_count: replay_count})
+
+      Store.record_event(state.run_id, "replay_triggered", %{
+        replay_count: replay_count,
+        max_replays: max_replays,
+        delay_ms: delay_ms,
+        failing_checks: Enum.map(failing, & &1["name"])
+      })
+
+      log(
+        state,
+        "retryable failure (replay #{replay_count}/#{max_replays}); next poll in #{delay_ms}ms"
+      )
+
+      Process.send_after(self(), :poll_ci, delay_ms)
+      {:noreply, %{state | replay_count: replay_count}}
+    else
+      Enum.each(failing, fn check ->
+        class = Recovery.classify_check(check, state.trusted_surfaces)
+
+        Store.record_incident(state.run_id, %{
+          check_name: check["name"] || "unknown",
+          failure_class: Recovery.failure_class_to_string(class),
+          signature: "#{check["name"]}:#{check["conclusion"]}"
+        })
+      end)
+
+      fail(state, "replay_exhausted", "#{max_replays} replay(s) exhausted; checks still failing")
+    end
+  end
+
+  defp handle_ci_blocked(blockers, state) do
+    Enum.each(blockers, fn check ->
+      class = Recovery.classify_check(check, state.trusted_surfaces)
+
+      Store.record_incident(state.run_id, %{
+        check_name: check["name"] || "unknown",
+        failure_class: Recovery.failure_class_to_string(class),
+        signature: "#{check["name"]}:#{check["conclusion"]}"
+      })
+    end)
+
+    names = Enum.map_join(blockers, ", ", & &1["name"])
+    fail(state, "ci_check_failure", "blocking checks failed: #{names}")
   end
 
   # --- Handle dispatch task completion ---
@@ -274,6 +402,14 @@ defmodule Conductor.RunServer do
     Store.heartbeat_run(state.run_id)
 
     if System.monotonic_time(:millisecond) > state.ci_deadline do
+      class = Recovery.failure_class_to_string(:transient_infra)
+
+      Store.record_incident(state.run_id, %{
+        check_name: "ci_deadline",
+        failure_class: class,
+        signature: "ci_timeout:exceeded"
+      })
+
       fail(state, "ci_timeout", "CI did not pass within #{Config.ci_timeout()} minutes")
     else
       {:noreply, state, {:continue, :check_ci}}

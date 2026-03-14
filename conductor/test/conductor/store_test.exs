@@ -141,4 +141,98 @@ defmodule Conductor.StoreTest do
   test "get_run returns error for missing run" do
     assert {:error, :not_found} = Store.get_run("nonexistent")
   end
+
+  test "mark_semantic_ready sets semantic_ready flag on run" do
+    {:ok, run_id} =
+      Store.create_run(%{
+        repo: "test/repo",
+        issue_number: 5,
+        issue_title: "test",
+        builder_sprite: "s"
+      })
+
+    {:ok, run_before} = Store.get_run(run_id)
+    assert is_nil(run_before["semantic_ready"])
+
+    Store.mark_semantic_ready(run_id)
+    {:ok, run_after} = Store.get_run(run_id)
+    assert run_after["semantic_ready"] == 1
+  end
+
+  test "record and list incidents" do
+    {:ok, run_id} =
+      Store.create_run(%{
+        repo: "test/repo",
+        issue_number: 6,
+        issue_title: "test",
+        builder_sprite: "s"
+      })
+
+    Store.record_incident(run_id, %{
+      check_name: "cerberus",
+      failure_class: "known_false_red",
+      signature: "cerberus:FAILURE"
+    })
+
+    Store.record_incident(run_id, %{
+      check_name: "e2e-timeout",
+      failure_class: "transient_infra",
+      signature: "e2e-timeout:FAILURE"
+    })
+
+    incidents = Store.list_incidents(run_id)
+    assert length(incidents) == 2
+    assert hd(incidents)["check_name"] == "cerberus"
+    assert hd(incidents)["failure_class"] == "known_false_red"
+    assert List.last(incidents)["failure_class"] == "transient_infra"
+  end
+
+  test "record and list waivers" do
+    {:ok, run_id} =
+      Store.create_run(%{
+        repo: "test/repo",
+        issue_number: 7,
+        issue_title: "test",
+        builder_sprite: "s"
+      })
+
+    Store.record_waiver(run_id, %{
+      check_name: "cerberus",
+      rationale: "known false-red on trusted surface cerberus; semantic review clean"
+    })
+
+    waivers = Store.list_waivers(run_id)
+    assert length(waivers) == 1
+    assert hd(waivers)["check_name"] == "cerberus"
+    assert String.contains?(hd(waivers)["rationale"], "known false-red")
+    assert hd(waivers)["waived_at"] != nil
+  end
+
+  test "incidents and waivers are isolated per run" do
+    {:ok, run_a} =
+      Store.create_run(%{
+        repo: "test/repo",
+        issue_number: 8,
+        issue_title: "a",
+        builder_sprite: "s"
+      })
+
+    {:ok, run_b} =
+      Store.create_run(%{
+        repo: "test/repo",
+        issue_number: 9,
+        issue_title: "b",
+        builder_sprite: "s"
+      })
+
+    Store.record_incident(run_a, %{
+      check_name: "cerberus",
+      failure_class: "known_false_red",
+      signature: "x"
+    })
+
+    assert Store.list_incidents(run_a) |> length() == 1
+    assert Store.list_incidents(run_b) |> length() == 0
+    assert Store.list_waivers(run_a) |> length() == 0
+  end
 end

@@ -60,6 +60,16 @@ defmodule Conductor.Config do
     Application.get_env(:conductor, :max_concurrent_runs, 2)
   end
 
+  @spec max_replays() :: pos_integer()
+  def max_replays do
+    Application.get_env(:conductor, :max_replays, 3)
+  end
+
+  @spec replay_delay_ms() :: pos_integer()
+  def replay_delay_ms do
+    Application.get_env(:conductor, :replay_delay_seconds, 120) * 1_000
+  end
+
   @spec prompt_template() :: binary()
   def prompt_template do
     System.get_env("CONDUCTOR_PROMPT_TEMPLATE") ||
