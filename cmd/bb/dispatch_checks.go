@@ -63,6 +63,23 @@ if [ -n "$commits" ]; then
 fi
 exit 1`
 
+// detectDefaultBranchScript resolves the remote default branch from origin/HEAD.
+// Exits 0 with the branch name (e.g. "main", "master", "development") on stdout.
+// Falls back to checking whether origin/master exists, then "main" as a last resort.
+const detectDefaultBranchScript = `
+cd "$WORKSPACE" 2>/dev/null || { echo "main"; exit 0; }
+branch="$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null)"
+branch="${branch#origin/}"
+if [ -n "$branch" ]; then
+  echo "$branch"
+  exit 0
+fi
+if git rev-parse --verify origin/master >/dev/null 2>&1; then
+  echo "master"
+  exit 0
+fi
+echo "main"`
+
 // prChecksScript checks whether all PR CI checks for the current HEAD have passed.
 // Exits 0 when all checks pass, 1 when checks are still pending, 2 on error (no PR, no git, etc.).
 const prChecksScript = `
@@ -207,6 +224,25 @@ func pollDispatchCheck(ctx context.Context, run spriteScriptRunner, cfg dispatch
 		case <-ticker.C:
 		}
 	}
+}
+
+// detectDefaultBranchWithRunner resolves the remote default branch from origin/HEAD.
+// Returns "main" when origin/HEAD is not configured and origin/master is absent.
+func detectDefaultBranchWithRunner(ctx context.Context, run spriteScriptRunner, workspace string) (string, error) {
+	output, exitCode, err := runDispatchCheck(ctx, run, dispatchCheck{
+		timeout: 10 * time.Second,
+		script:  fmt.Sprintf("export WORKSPACE=%q\n%s", workspace, detectDefaultBranchScript),
+	})
+	if err != nil {
+		return "", fmt.Errorf("detect default branch: %w", err)
+	}
+	if exitCode != 0 {
+		return "", fmt.Errorf("detect default branch: exited %d: %s", exitCode, output)
+	}
+	if output == "" {
+		return "main", nil
+	}
+	return output, nil
 }
 
 // hasNewCommitsWithRunner returns true when commits exist on HEAD that are not
