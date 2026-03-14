@@ -95,6 +95,7 @@ defmodule Conductor.Orchestrator do
   @impl true
   def handle_info(:poll, %{mode: :polling} = state) do
     state = reconcile(state)
+    merge_labeled_prs(state)
     state = maybe_start_runs(state)
     schedule_poll(Config.poll_seconds() * 1_000)
     {:noreply, state}
@@ -263,8 +264,34 @@ defmodule Conductor.Orchestrator do
     end)
   end
 
+  # --- Label-Driven Merge ---
+
+  defp merge_labeled_prs(%{repo: nil}), do: :ok
+
+  defp merge_labeled_prs(%{repo: repo}) do
+    case code_host_mod().labeled_prs(repo, "lgtm") do
+      {:ok, prs} ->
+        Enum.each(prs, fn pr ->
+          pr_number = pr["number"]
+          Logger.info("[merge] PR ##{pr_number} has lgtm label, merging")
+
+          case code_host_mod().merge(repo, pr_number, []) do
+            :ok ->
+              Logger.info("[merge] PR ##{pr_number} merged successfully")
+
+            {:error, reason} ->
+              Logger.warning("[merge] PR ##{pr_number} merge failed: #{reason}")
+          end
+        end)
+
+      {:error, reason} ->
+        Logger.warning("[merge] failed to check labeled PRs: #{reason}")
+    end
+  end
+
   defp tracker_mod, do: Application.get_env(:conductor, :tracker_module, Conductor.GitHub)
   defp worker_mod, do: Application.get_env(:conductor, :worker_module, Conductor.Sprite)
+  defp code_host_mod, do: Application.get_env(:conductor, :code_host_module, Conductor.GitHub)
 
   defp schedule_poll(delay) do
     Process.send_after(self(), :poll, delay)

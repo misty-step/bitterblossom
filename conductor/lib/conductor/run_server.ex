@@ -1,25 +1,22 @@
 defmodule Conductor.RunServer do
   @moduledoc """
-  Per-run GenServer. Owns one issue's lifecycle from lease to terminal state.
+  Per-run GenServer. Owns one issue from lease to PR opened.
 
-  State machine (Symphony-inspired, 4 phases):
+  State machine:
 
-      pending → building → governing → terminal
-                                         ├── merged
-                                         ├── blocked
-                                         └── failed
+      pending → building → pr_opened (terminal)
+                            └── failed
 
-  The builder agent owns the full implementation + revision cycle.
-  The conductor only handles authority decisions: lease, merge, block.
+  The builder opens a PR and exits. Governance (CI, reviews, merge)
+  is handled by the orchestrator's label-driven merge loop — no sprite needed.
   """
 
   use GenServer, restart: :temporary
   require Logger
 
-  alias Conductor.{Store, GitHub, Workspace, Prompt, Config, Recovery, Retro}
+  alias Conductor.{Store, Workspace, Prompt, Config, Retro}
 
   @heartbeat_ms 30_000
-  @ci_poll_ms 30_000
 
   defstruct [
     :run_id,
@@ -33,11 +30,8 @@ defmodule Conductor.RunServer do
     :pr_url,
     :dispatch_task,
     :heartbeat_timer,
-    :ci_deadline,
     phase: :pending,
-    turn_count: 0,
-    trusted_surfaces: [],
-    replay_count: 0
+    turn_count: 0
   ]
 
   # --- Public API ---
@@ -57,8 +51,7 @@ defmodule Conductor.RunServer do
     state = %__MODULE__{
       repo: Keyword.fetch!(opts, :repo),
       issue: Keyword.fetch!(opts, :issue),
-      worker: Keyword.fetch!(opts, :worker),
-      trusted_surfaces: Keyword.get(opts, :trusted_surfaces, [])
+      worker: Keyword.fetch!(opts, :worker)
     }
 
     {:ok, state, {:continue, :acquire_lease}}
@@ -177,171 +170,8 @@ defmodule Conductor.RunServer do
     end
   end
 
-  @impl true
-  def handle_continue(:govern, state) do
-    log(state, "entering governance for PR ##{state.pr_number}")
-    Store.update_run(state.run_id, %{phase: "governing"})
-    ci_deadline = System.monotonic_time(:millisecond) + Config.ci_timeout() * 60_000
-
-    {:noreply, %{state | phase: :governing, ci_deadline: ci_deadline}, {:continue, :wait_pr_age}}
-  end
-
-  @impl true
-  def handle_continue(:wait_pr_age, state) do
-    min_age = Config.pr_minimum_age()
-
-    if min_age > 0 do
-      log(state, "waiting #{min_age}s for PR to age")
-      Process.send_after(self(), :check_pr_age, min_age * 1_000)
-      {:noreply, state}
-    else
-      {:noreply, state, {:continue, :check_ci}}
-    end
-  end
-
-  @impl true
-  def handle_continue(:check_ci, state) do
-    log(state, "checking CI status")
-
-    case GitHub.get_pr_checks(state.repo, state.pr_number) do
-      {:ok, checks} ->
-        handle_ci_checks(checks, state)
-
-      {:error, reason} ->
-        log(state, "CI check fetch failed: #{reason}, polling in #{@ci_poll_ms}ms")
-        Process.send_after(self(), :poll_ci, @ci_poll_ms)
-        {:noreply, state}
-    end
-  end
-
-  @impl true
-  def handle_continue(:attempt_merge, state) do
-    log(state, "attempting merge of PR ##{state.pr_number}")
-
-    case code_host_mod().merge(state.repo, state.pr_number, []) do
-      :ok ->
-        Store.record_event(state.run_id, "merged", %{pr_number: state.pr_number})
-        Store.complete_run(state.run_id, "merged", "merged")
-        Store.release_lease(state.repo, state.issue.number)
-        cleanup_workspace(state)
-        log(state, "PR ##{state.pr_number} merged successfully")
-        Retro.analyze(state.run_id)
-        {:stop, :normal, %{state | phase: :merged}}
-
-      {:error, reason} ->
-        fail(state, "merge_failed", reason)
-    end
-  end
-
-  defp handle_ci_checks(checks, state) do
-    case Recovery.evaluate_with_policy(checks, state.trusted_surfaces) do
-      :pass ->
-        Store.record_event(state.run_id, "ci_passed", %{pr_number: state.pr_number})
-        {:noreply, state, {:continue, :attempt_merge}}
-
-      :pending ->
-        log(state, "CI still pending, polling in #{@ci_poll_ms}ms")
-        Process.send_after(self(), :poll_ci, @ci_poll_ms)
-        {:noreply, state}
-
-      {:waiver_eligible, false_reds} ->
-        handle_waiver_eligible(false_reds, state)
-
-      {:retryable, failing} ->
-        handle_retryable(failing, state)
-
-      {:blocked, blockers} ->
-        handle_ci_blocked(blockers, state)
-    end
-  end
-
-  defp handle_waiver_eligible(false_reds, state) do
-    log(
-      state,
-      "semantic review clean; #{length(false_reds)} known false-red(s) on trusted surface(s)"
-    )
-
-    # Mark semantic readiness separately from mechanical check state
-    Store.mark_semantic_ready(state.run_id)
-
-    Store.record_event(state.run_id, "semantic_ready_with_false_reds", %{
-      pr_number: state.pr_number,
-      false_red_count: length(false_reds)
-    })
-
-    # Record each false-red as an incident
-    Enum.each(false_reds, fn check ->
-      Store.record_incident(state.run_id, %{
-        check_name: check["name"] || "unknown",
-        failure_class: "known_false_red",
-        signature: "#{check["name"]}:#{check["conclusion"]}"
-      })
-
-      # Record waiver with rationale
-      Store.record_waiver(state.run_id, %{
-        check_name: check["name"] || "unknown",
-        rationale:
-          "known false-red on trusted surface '#{check["name"]}' " <>
-            "(conclusion: #{check["conclusion"]}); semantic review clean; " <>
-            "waived by conductor policy"
-      })
-    end)
-
-    Store.record_event(state.run_id, "waivers_recorded", %{
-      check_names: Enum.map(false_reds, & &1["name"]),
-      rationale: "known false-red on trusted surface(s); semantic review clean"
-    })
-
-    log(state, "waivers recorded; proceeding to merge")
-    {:noreply, state, {:continue, :attempt_merge}}
-  end
-
-  defp handle_retryable(failing, state) do
-    max_replays = Config.max_replays()
-    record_check_incidents(failing, state)
-
-    if state.replay_count < max_replays do
-      replay_count = state.replay_count + 1
-      delay_ms = Config.replay_delay_ms()
-
-      Store.update_run(state.run_id, %{replay_count: replay_count})
-
-      Store.record_event(state.run_id, "replay_triggered", %{
-        replay_count: replay_count,
-        max_replays: max_replays,
-        delay_ms: delay_ms,
-        failing_checks: Enum.map(failing, & &1["name"])
-      })
-
-      log(
-        state,
-        "retryable failure (replay #{replay_count}/#{max_replays}); next poll in #{delay_ms}ms"
-      )
-
-      Process.send_after(self(), :poll_ci, delay_ms)
-      {:noreply, %{state | replay_count: replay_count}}
-    else
-      fail(state, "replay_exhausted", "#{max_replays} replay(s) exhausted; checks still failing")
-    end
-  end
-
-  defp handle_ci_blocked(blockers, state) do
-    record_check_incidents(blockers, state)
-    names = Enum.map_join(blockers, ", ", & &1["name"])
-    fail(state, "ci_check_failure", "blocking checks failed: #{names}")
-  end
-
-  defp record_check_incidents(checks, state) do
-    Enum.each(checks, fn check ->
-      class = Recovery.classify_check(check, state.trusted_surfaces)
-
-      Store.record_incident(state.run_id, %{
-        check_name: check["name"] || "unknown",
-        failure_class: Recovery.failure_class_to_string(class),
-        signature: "#{check["name"]}:#{check["conclusion"]}"
-      })
-    end)
-  end
+  # Governance (CI polling, review handling, merge) has been moved to the
+  # orchestrator's label-driven merge loop. The RunServer exits at PR open.
 
   # --- Handle dispatch task completion ---
 
@@ -378,30 +208,6 @@ defmodule Conductor.RunServer do
   end
 
   @impl true
-  def handle_info(:check_pr_age, state) do
-    {:noreply, state, {:continue, :check_ci}}
-  end
-
-  @impl true
-  def handle_info(:poll_ci, state) do
-    Store.heartbeat_run(state.run_id)
-
-    if System.monotonic_time(:millisecond) > state.ci_deadline do
-      class = Recovery.failure_class_to_string(:transient_infra)
-
-      Store.record_incident(state.run_id, %{
-        check_name: "ci_deadline",
-        failure_class: class,
-        signature: "ci_timeout:exceeded"
-      })
-
-      fail(state, "ci_timeout", "CI did not pass within #{Config.ci_timeout()} minutes")
-    else
-      {:noreply, state, {:continue, :check_ci}}
-    end
-  end
-
-  @impl true
   def handle_call(:status, _from, state) do
     {:reply,
      %{
@@ -435,8 +241,12 @@ defmodule Conductor.RunServer do
 
     log(state, "builder reports ready — PR ##{pr_number}: #{pr_url}")
 
-    state = %{state | pr_number: pr_number, pr_url: pr_url}
-    {:noreply, state, {:continue, :govern}}
+    # Builder's job is done. PR is open. Governance is label-driven by the orchestrator.
+    Store.complete_run(state.run_id, "pr_opened", "pr_opened")
+    Store.release_lease(state.repo, state.issue.number)
+    cleanup_workspace(state)
+    Retro.analyze(state.run_id)
+    {:stop, :normal, %{state | phase: :pr_opened, pr_number: pr_number}}
   end
 
   defp handle_artifact(%{"status" => "blocked"} = artifact, state) do
@@ -472,7 +282,7 @@ defmodule Conductor.RunServer do
     cleanup_workspace(state)
 
     # Comment on the issue so the operator knows
-    tracker_mod().comment(
+    Conductor.GitHub.create_issue_comment(
       state.repo,
       state.issue.number,
       "Bitterblossom blocked `#{state.run_id}`: #{reason}"
@@ -524,8 +334,6 @@ defmodule Conductor.RunServer do
   end
 
   defp worker_mod, do: Application.get_env(:conductor, :worker_module, Conductor.Sprite)
-  defp tracker_mod, do: Application.get_env(:conductor, :tracker_module, Conductor.GitHub)
-  defp code_host_mod, do: Application.get_env(:conductor, :code_host_module, Conductor.GitHub)
 
   defp log(state, msg) do
     label = state.run_id || "init"
