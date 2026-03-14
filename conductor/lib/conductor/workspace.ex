@@ -9,9 +9,30 @@ defmodule Conductor.Workspace do
   alias Conductor.Sprite
 
   @mirror_base "/home/sprite/workspace"
+  @safe_input ~r/^[a-zA-Z0-9_\-\.\/]+$/
+
+  @doc "Validate that a string is safe for shell interpolation. Rejects metacharacters, path traversal, absolute paths, and leading dashes."
+  @spec validate_input(binary()) :: :ok | {:error, :invalid_input}
+  def validate_input(input) do
+    cond do
+      not Regex.match?(@safe_input, input) -> {:error, :invalid_input}
+      String.contains?(input, "..") -> {:error, :invalid_input}
+      String.starts_with?(input, "/") -> {:error, :invalid_input}
+      String.starts_with?(input, "-") -> {:error, :invalid_input}
+      true -> :ok
+    end
+  end
 
   @spec prepare(binary(), binary(), binary(), binary()) :: {:ok, binary()} | {:error, term()}
   def prepare(sprite, repo, run_id, branch) do
+    with :ok <- validate_input(repo),
+         :ok <- validate_input(run_id),
+         :ok <- validate_input(branch) do
+      do_prepare(sprite, repo, run_id, branch)
+    end
+  end
+
+  defp do_prepare(sprite, repo, run_id, branch) do
     repo_name = repo |> String.split("/") |> List.last()
     mirror = Path.join(@mirror_base, repo_name)
     worktree = Path.join([mirror, ".bb", "conductor", run_id, "builder-worktree"])
@@ -41,6 +62,13 @@ defmodule Conductor.Workspace do
 
   @spec cleanup(binary(), binary(), binary()) :: :ok | {:error, term()}
   def cleanup(sprite, repo, run_id) do
+    with :ok <- validate_input(repo),
+         :ok <- validate_input(run_id) do
+      do_cleanup(sprite, repo, run_id)
+    end
+  end
+
+  defp do_cleanup(sprite, repo, run_id) do
     repo_name = repo |> String.split("/") |> List.last()
     mirror = Path.join(@mirror_base, repo_name)
 

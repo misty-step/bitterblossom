@@ -9,6 +9,21 @@ defmodule Conductor.Store do
   use GenServer
   require Logger
 
+  @valid_columns ~w(phase status branch pr_number pr_url turn_count worktree_path
+                    replay_count builder_sprite heartbeat_at completed_at)
+
+  @doc "Validate that all map keys are in the column allowlist."
+  @spec validate_columns(map()) :: :ok | {:error, :invalid_column}
+  def validate_columns(attrs) do
+    keys = Enum.map(Map.keys(attrs), &to_string/1)
+
+    if Enum.all?(keys, &(&1 in @valid_columns)) do
+      :ok
+    else
+      {:error, :invalid_column}
+    end
+  end
+
   # --- Public API ---
 
   def start_link(opts \\ []) do
@@ -20,7 +35,7 @@ defmodule Conductor.Store do
     GenServer.call(__MODULE__, {:create_run, attrs})
   end
 
-  @spec update_run(binary(), map()) :: :ok
+  @spec update_run(binary(), map()) :: :ok | {:error, :invalid_column | :empty_attrs}
   def update_run(run_id, attrs) do
     GenServer.call(__MODULE__, {:update_run, run_id, attrs})
   end
@@ -154,17 +169,27 @@ defmodule Conductor.Store do
 
   @impl true
   def handle_call({:update_run, run_id, attrs}, _from, state) do
-    sets = Enum.map_join(attrs, ", ", fn {k, _} -> "#{k} = ?" end)
-    vals = Map.values(attrs) ++ [now_utc(), run_id]
+    case {map_size(attrs), validate_columns(attrs)} do
+      {0, _} ->
+        {:reply, {:error, :empty_attrs}, state}
 
-    exec(
-      state.conn,
-      "UPDATE runs SET #{sets}, updated_at = ? WHERE run_id = ?",
-      vals
-    )
+      {_, :ok} ->
+        sets = Enum.map_join(attrs, ", ", fn {k, _} -> "#{k} = ?" end)
+        vals = Map.values(attrs) ++ [now_utc(), run_id]
 
-    broadcast_update()
-    {:reply, :ok, state}
+        exec(
+          state.conn,
+          "UPDATE runs SET #{sets}, updated_at = ? WHERE run_id = ?",
+          vals
+        )
+
+        broadcast_update()
+        {:reply, :ok, state}
+
+      {_, {:error, :invalid_column}} ->
+        Logger.error("update_run rejected: invalid column in #{inspect(Map.keys(attrs))}")
+        {:reply, {:error, :invalid_column}, state}
+    end
   end
 
   @impl true
