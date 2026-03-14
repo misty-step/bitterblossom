@@ -9,9 +9,24 @@ defmodule Conductor.Workspace do
   alias Conductor.Sprite
 
   @mirror_base "/home/sprite/workspace"
+  @safe_input ~r/^[a-zA-Z0-9_\-\.\/]+$/
+
+  @doc "Validate that a string is safe for shell interpolation."
+  @spec validate_input(binary()) :: :ok | {:error, :invalid_input}
+  def validate_input(input) do
+    if Regex.match?(@safe_input, input), do: :ok, else: {:error, :invalid_input}
+  end
 
   @spec prepare(binary(), binary(), binary(), binary()) :: {:ok, binary()} | {:error, term()}
   def prepare(sprite, repo, run_id, branch) do
+    with :ok <- validate_input(repo),
+         :ok <- validate_input(run_id),
+         :ok <- validate_input(branch) do
+      do_prepare(sprite, repo, run_id, branch)
+    end
+  end
+
+  defp do_prepare(sprite, repo, run_id, branch) do
     repo_name = repo |> String.split("/") |> List.last()
     mirror = Path.join(@mirror_base, repo_name)
     worktree = Path.join([mirror, ".bb", "conductor", run_id, "builder-worktree"])

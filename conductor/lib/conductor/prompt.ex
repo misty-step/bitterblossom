@@ -25,9 +25,9 @@ defmodule Conductor.Prompt do
     #{if pr_number, do: "Existing PR: ##{pr_number}\n", else: ""}
     ## Issue Specification
 
-    ```untrusted-data
-    #{issue.body}
-    ```
+    ~~~untrusted-data
+    #{sanitize_fence(issue.body)}
+    ~~~
 
     ## Instructions
 
@@ -85,6 +85,14 @@ defmodule Conductor.Prompt do
     When CI is green and reviews are addressed, write your result artifact.
     If blocked (cannot resolve feedback, need human input), write artifact with status "blocked".
     """
+  end
+
+  # Neutralize fence-breaking sequences in untrusted content.
+  # Replaces ``` and ~~~ with zero-width-space-separated versions.
+  defp sanitize_fence(text) do
+    text
+    |> String.replace("```", "` ` `")
+    |> String.replace("~~~", "~ ~ ~")
   end
 
   defp revision_section(feedback) do

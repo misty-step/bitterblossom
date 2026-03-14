@@ -35,7 +35,7 @@ defmodule Conductor.PromptTest do
     end
 
     test "wraps issue body in untrusted-data fence", %{prompt: prompt} do
-      assert prompt =~ "```untrusted-data"
+      assert prompt =~ "~~~untrusted-data"
       assert prompt =~ "Cache all the things."
     end
 
