@@ -1,7 +1,7 @@
 defmodule Conductor.CLI do
   @moduledoc "Escript entry point. Parses args and delegates to Conductor."
 
-  @commands ~w(run-once loop show-runs show-events show-incidents show-waivers check-env dashboard)
+  @commands ~w(run-once loop shape show-runs show-events show-incidents show-waivers check-env dashboard)
 
   def main(args) do
     Application.ensure_all_started(:conductor)
@@ -12,6 +12,9 @@ defmodule Conductor.CLI do
 
       ["loop" | rest] ->
         cmd_loop(rest)
+
+      ["shape" | rest] ->
+        cmd_shape(rest)
 
       ["show-runs" | rest] ->
         cmd_show_runs(rest)
@@ -110,6 +113,33 @@ defmodule Conductor.CLI do
 
     # Block forever — the orchestrator runs in the supervision tree
     Process.sleep(:infinity)
+  end
+
+  defp cmd_shape(args) do
+    {opts, _, _} =
+      OptionParser.parse(args,
+        strict: [
+          repo: :string,
+          issue: :integer
+        ]
+      )
+
+    repo = Keyword.fetch!(opts, :repo)
+    issue = Keyword.fetch!(opts, :issue)
+
+    IO.puts("conductor shape: issue ##{issue} on #{repo}")
+
+    case Conductor.Shaper.shape(repo, issue) do
+      {:ok, :already_shaped} ->
+        IO.puts("issue ##{issue} is already shaped — no changes made")
+
+      {:ok, :shaped} ->
+        IO.puts("issue ##{issue} shaped successfully")
+
+      {:error, reason} ->
+        IO.puts("shape failed: #{inspect(reason)}")
+        System.halt(1)
+    end
   end
 
   defp cmd_show_runs(args) do
