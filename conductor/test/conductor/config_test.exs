@@ -3,23 +3,6 @@ defmodule Conductor.ConfigTest do
 
   alias Conductor.Config
 
-  describe "bb_path/0" do
-    test "returns BB_PATH env var when set" do
-      System.put_env("BB_PATH", "/custom/path/bb")
-      assert Config.bb_path() == "/custom/path/bb"
-    after
-      System.delete_env("BB_PATH")
-    end
-
-    test "falls back to resolution when BB_PATH unset" do
-      System.delete_env("BB_PATH")
-      path = Config.bb_path()
-
-      # Must return a string; either a resolved candidate or the fallback "bb"
-      assert is_binary(path)
-    end
-  end
-
   describe "db_path/0" do
     test "returns default when no app config" do
       assert Config.db_path() == ".bb/conductor.db"

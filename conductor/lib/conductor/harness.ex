@@ -22,4 +22,16 @@ defmodule Conductor.Harness do
   - `:model` — override the default model identifier
   """
   @callback dispatch_command(opts :: keyword()) :: [binary()]
+
+  @doc """
+  Build the session-resumption command for this harness.
+
+  Used when the agent crashes mid-task: resumes the prior session
+  instead of starting fresh. Returns nil if the harness does not
+  support continuation.
+
+  Accepted opts:
+  - `:model` — override the default model identifier
+  """
+  @callback continue_command(opts :: keyword()) :: [binary()] | nil
 end
