@@ -2,19 +2,23 @@
 
 Current Bitterblossom is a **conductor-first software factory**:
 
-- `scripts/conductor.py` is the workflow brain and durable control plane.
-- `cmd/bb/` is the thin transport/operator edge for talking to sprites.
-- `scripts/ralph.sh` is the remote execution loop that actually runs work on a sprite.
+- `conductor/`: Elixir/OTP orchestrator — the workflow brain.
+- `cmd/bb/`: thin Go transport, the operator edge for talking to sprites.
+- `scripts/ralph.sh`: remote execution loop that runs work on a sprite.
+- `base/skills/`: skill library provisioned onto every managed sprite.
 
-If you are trying to understand how the repo works today, start from those three entrypoints.
+If you are trying to understand how the repo works today, start from those four entrypoints.
+
+The Python conductor (historically `scripts/conductor.py`) is deprecated as of [ADR-004](adr/004-elixir-conductor-architecture.md). All features now land in the Elixir conductor.
 
 ## Authoritative Entry Points
 
 | Path | Role |
 |---|---|
-| [`scripts/conductor.py`](../scripts/conductor.py) | Intake, leasing, builder/reviewer orchestration, CI wait, review-thread handling, trusted external review settling, merge, durable run state |
+| [`conductor/lib/conductor/`](../conductor/lib/conductor/) | Elixir/OTP orchestrator: intake, leasing, builder/reviewer dispatch, CI wait, governance, merge, run state |
 | [`cmd/bb/main.go`](../cmd/bb/main.go) + [`cmd/bb/*.go`](../cmd/bb/) | Sprite auth, setup, repo sync, prompt upload, PTY execution, logs, status, kill |
 | [`scripts/ralph.sh`](../scripts/ralph.sh) | On-sprite execution loop, heartbeat output, signal-file protocol, bounded agent iterations |
+| [`base/skills/`](../base/skills/) | Agent skill modules provisioned via `bb setup`; advisory guidance for each workflow phase |
 
 ## Trace Bullet
 
@@ -46,16 +50,18 @@ sequenceDiagram
 
 ### Control Plane
 
-- [`scripts/conductor.py`](../scripts/conductor.py)
-  - SQLite-backed run ledger
-  - lease acquisition/reclaim/release
-  - issue intake and prioritization
-  - builder dispatch and artifact verification
-  - reviewer council dispatch
-  - governance loop: CI, review threads, trusted external reviews, quiet-window settling
-  - merge / reconcile / operator inspection surfaces
-- [`scripts/test_conductor.py`](../scripts/test_conductor.py)
-  - acceptance proof and governance regression coverage
+- [`conductor/lib/conductor/`](../conductor/lib/conductor/) *(primary — Elixir/OTP)*
+  - `orchestrator.ex` — polling loop, issue selection, run dispatch
+  - `run_server.ex` — per-run GenServer state machine
+  - `store.ex` — SQLite persistence (runs, leases, events)
+  - `github.ex` — GitHub operations via `gh` CLI
+  - `sprite.ex` — sprite dispatch via `bb` CLI
+  - `workspace.ex` — worktree lifecycle
+  - See [ADR-004](adr/004-elixir-conductor-architecture.md) for full design
+- Python conductor *(deprecated — removed, see ADR-004)*
+  - governance logic and review handling now live in the Elixir conductor
+- [`conductor/test/`](../conductor/test/)
+  - Elixir ExUnit test suite
 - [`docs/CONDUCTOR.md`](CONDUCTOR.md)
   - operator-facing contract for the conductor loop
 - [`docs/architecture/conductor.md`](architecture/conductor.md)
@@ -92,6 +98,17 @@ sequenceDiagram
 - [`docs/COMPLETION-PROTOCOL.md`](COMPLETION-PROTOCOL.md)
   - signal files, artifact expectations, and completion semantics
 
+### Skill System
+
+- [`base/skills/`](../base/skills/)
+  - versioned skill library provisioned via `bb setup`
+  - `bitterblossom-dispatch/` — probe + dispatch + monitoring workflow
+  - `bitterblossom-monitoring/` — stuck-sprite recovery and diagnostics
+  - `autopilot/`, `shape/`, `build/`, `pr/`, `pr-walkthrough/`, `debug/`, `pr-fix/`, `pr-polish/` — vendored phase workflow skills
+  - `external-integration/`, `git-mastery/`, `naming-conventions/`, `testing-philosophy/` — craft discipline skills
+- [`docs/architecture/skills.md`](architecture/skills.md)
+  - skill inventory, provisioning pipeline, and WORKFLOW.md contract
+
 ### Base Runtime Surface
 
 - [`base/settings.json`](../base/settings.json)
@@ -100,8 +117,6 @@ sequenceDiagram
   - destructive-command guard and fast-feedback hooks
 - [`base/CLAUDE.md`](../base/CLAUDE.md)
   - shared operating instructions for dispatched agents
-- [`base/skills/`](../base/skills/)
-  - reusable guidance shipped onto sprites; useful, but not authoritative for current CLI flags
 
 ### Personas + Factory Inputs
 
@@ -175,8 +190,11 @@ These absences matter because old docs still sometimes imply otherwise:
 ## Read Next
 
 1. [`docs/architecture/README.md`](architecture/README.md)
-2. [`docs/CONDUCTOR.md`](CONDUCTOR.md)
-3. [`docs/CLI-REFERENCE.md`](CLI-REFERENCE.md)
-4. [`AGENTS.md`](../AGENTS.md)
-5. [`project.md`](../project.md)
-6. [`docs/context/INDEX.md`](context/INDEX.md)
+2. [`docs/architecture/conductor.md`](architecture/conductor.md)
+3. [`docs/architecture/bb-cli.md`](architecture/bb-cli.md)
+4. [`docs/architecture/skills.md`](architecture/skills.md)
+5. [`docs/CONDUCTOR.md`](CONDUCTOR.md)
+6. [`docs/CLI-REFERENCE.md`](CLI-REFERENCE.md)
+7. [`AGENTS.md`](../AGENTS.md)
+8. [`project.md`](../project.md)
+9. [`docs/context/INDEX.md`](context/INDEX.md)

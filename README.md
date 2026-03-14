@@ -4,10 +4,13 @@ Remote conductor and thin transport for a [Sprites](https://sprites.dev) softwar
 
 ## What This Is
 
-Bitterblossom has two surfaces:
+Bitterblossom has three surfaces:
 
+- `conductor/`: Elixir/OTP orchestrator — leases issues, dispatches builds, governs PRs, merges
 - `bb`: thin Go transport for sprite setup, dispatch, status, logs, and recovery
-- `scripts/conductor.py`: remote control plane that leases GitHub issues, dispatches builders, runs a review council, observes CI signals, and merges
+- `base/skills/`: skill library provisioned onto every managed sprite
+
+The Python conductor (`scripts/conductor.py`) is deprecated as of [ADR-004](docs/adr/004-elixir-conductor-architecture.md); it remains as reference only.
 
 The design is intentional:
 
@@ -20,13 +23,16 @@ Read [WORKFLOW.md](WORKFLOW.md) first for the repo-owned runtime workflow contra
 
 ## Architecture
 
+Full artifact stack: [docs/architecture/README.md](docs/architecture/README.md)
+
 ```text
-cmd/bb/                  thin sprite transport CLI
-scripts/conductor.py     conductor MVP with SQLite run store
-scripts/prompts/         builder + reviewer prompt templates
-base/                    shared CLAUDE/settings/hooks/skills pushed to sprites
+conductor/               Elixir/OTP orchestrator (control plane)
+cmd/bb/                  thin Go transport CLI (sprite edge)
+base/skills/             skill files provisioned onto sprites
+scripts/                 ralph loop + prompt templates + legacy Python conductor
 sprites/                 per-sprite personas
 docs/adr/                architecture decisions
+docs/architecture/       system overview + per-module drill-downs
 docs/                    operator docs and contracts
 ```
 

@@ -1,17 +1,19 @@
 # Architecture
 
-Bitterblossom has two core surfaces:
+Bitterblossom has three surfaces:
 
-- `scripts/conductor.py`: the always-on control plane
-- `cmd/bb`: the thin transport and operator edge
+- `conductor/`: Elixir/OTP orchestrator — the workflow brain (see [ADR-004](../adr/004-elixir-conductor-architecture.md))
+- `cmd/bb`: thin Go transport — the operator and sprite edge
+- `base/skills/`: skill files provisioned onto every sprite
 
-This stack is intentionally small. The overview explains the full software-factory shape, then the drill-down docs explain the two main modules in more detail.
+This stack is intentionally small. The overview explains the full software-factory shape, then the drill-down docs cover each module.
 
 ## Map
 
 - [System Overview](#system-overview)
 - [Conductor](./conductor.md)
 - [bb CLI Transport](./bb-cli.md)
+- [Repo-Local Skills](./skills.md)
 - [Architecture Glance](./glance.md)
 - [Codebase Map](../CODEBASE_MAP.md)
 - [Context Index](../context/INDEX.md)
@@ -27,7 +29,7 @@ flowchart LR
     end
 
     subgraph Control["Bitterblossom Control Plane"]
-        Conductor["Conductor\nscripts/conductor.py"]
+        Conductor["Conductor\nconductor/ (Elixir/OTP)"]
         DB["Run Store\n.bb/conductor.db"]
         Events["Event Log\n.bb/events.jsonl"]
     end
@@ -116,3 +118,12 @@ sequenceDiagram
 - setup / dispatch / status / logs / kill responsibilities
 - what `dispatch` actually does on-sprite
 - how the conductor uses `bb` as a runtime adapter
+
+### Skill System
+
+[Repo-Local Skills](./skills.md) covers:
+
+- skill inventory (bitterblossom-specific + vendored workflow + craft)
+- how skills are provisioned via `bb setup`
+- WORKFLOW.md required-skills contract
+- responsibility boundary: advisory only, no workflow state
