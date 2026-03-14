@@ -45,3 +45,22 @@ the entire bash execution path.
 - #293 commented (wait/poll hang regression signal)
 - #320 commented (json-output pollution class)
 - #388 commented (streaming regression signal)
+
+## Elixir CI Pipeline (#625)
+
+### 2026-03-14 — PR #629
+
+**OTP/Elixir compatibility**: Elixir 1.16 only supports OTP 24-26. OTP 27
+requires Elixir 1.17+. When adding CI, always verify the version matrix at
+https://hexdocs.pm/elixir/compatibility-and-deprecations.html. Use OTP 27 +
+Elixir 1.18 for current projects with `~> 1.16` in mix.exs.
+
+**Format before gating**: If existing code is not formatted and you're adding
+`mix format --check-formatted` to CI, you MUST run `mix format` first to bring
+the codebase into compliance. This is a prerequisite, not a scope violation —
+the gate will never be green otherwise.
+
+**Cache path with defaults working-directory**: When using `defaults.run.working-directory`,
+`actions/cache@v4` paths must still be relative to the repo root (the cache step
+doesn't inherit the working-directory default). Always use `conductor/deps` and
+`conductor/_build` as cache paths when the job has `working-directory: conductor`.
