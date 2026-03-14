@@ -35,12 +35,11 @@ docs/                    operator docs and contracts
 ## How It Works
 
 1. `bb setup <sprite> --repo owner/repo` bootstraps persistent worker sprites with base configs, imported autonomy skills, and a role persona
-2. `scripts/conductor.py run-once|loop` reads GitHub issues and acquires a lease
-3. the conductor dispatches a builder sprite with a branch + artifact contract
+2. `mix conductor loop` (or `run-once`) polls GitHub issues, acquires a lease, and dispatches a builder
+3. the conductor deploys a builder sprite: git worktree → prompt → Claude Code dispatch
 4. the builder opens a PR and writes `builder-result.json`
-5. three reviewer sprites run adversarial reviews and write review artifacts
-6. the conductor requests revisions until quorum passes
-7. the conductor evaluates review and CI signals, merges when policy allows, and records the run
+5. the conductor enters governance: polls CI, waits for required checks to pass
+6. the conductor squash-merges when policy allows and records the completed run
 
 The default human workflow is not "dispatch ad hoc prompts forever." It is "operate the conductor, inspect runs, recover when needed."
 
@@ -204,14 +203,16 @@ GitHub Actions CI runs on pull requests and pushes to `master` with:
 - `ruff` + `pytest` for `base/hooks/`
 - `yamllint` for `compositions/`
 
-## Python Testing (Hooks + Conductor)
+## Python Testing (Hooks)
 
-Safety-critical hooks in `base/hooks/` and the conductor script are covered with pytest and ruff. Use the Makefile targets:
+Safety-critical hooks in `base/hooks/` are covered with pytest and ruff. Use the Makefile targets:
 
 ```bash
-make test-python   # pytest: base/hooks + scripts/test_conductor.py
-make lint-python   # ruff:   base/hooks + scripts/conductor.py + tests
+make test-python   # pytest: base/hooks
+make lint-python   # ruff:   base/hooks
 ```
+
+The Elixir conductor is tested with `cd conductor && mix test`.
 
 ## Troubleshooting
 
