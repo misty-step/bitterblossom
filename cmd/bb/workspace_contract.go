@@ -13,7 +13,7 @@ const (
 
 	spritePersonaPath             = spriteWorkspaceRoot + "/PERSONA.md"
 	spriteRalphScriptPath         = spriteWorkspaceRoot + "/.ralph.sh"
-	spriteRalphPromptTemplatePath = spriteWorkspaceRoot + "/.ralph-prompt-template.md"
+	spriteRalphPromptTemplatePath = spriteWorkspaceRoot + "/.builder-prompt-template.md"
 
 	workspaceMetadataRelPath   = ".bb/workspace.json"
 	dispatchPromptFileName     = ".dispatch-prompt.md"

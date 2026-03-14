@@ -110,7 +110,7 @@ func runSetup(ctx context.Context, spriteName, repo string, force bool, persona 
 		return fmt.Errorf("chmod ralph.sh: %w", err)
 	}
 
-	if err := uploadFile(ctx, s, "scripts/ralph-prompt-template.md", spriteRalphPromptTemplatePath); err != nil {
+	if err := uploadFile(ctx, s, "scripts/builder-prompt-template.md", spriteRalphPromptTemplatePath); err != nil {
 		return fmt.Errorf("upload prompt template: %w", err)
 	}
 
