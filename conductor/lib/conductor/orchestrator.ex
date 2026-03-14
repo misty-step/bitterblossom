@@ -232,9 +232,7 @@ defmodule Conductor.Orchestrator do
       issue_number = run["issue_number"]
 
       Logger.warning("[reconcile] stale run #{run_id} (issue ##{issue_number}), expiring lease")
-      Store.record_event(run_id, "stale_run_detected", %{heartbeat_at: run["heartbeat_at"]})
-      Store.complete_run(run_id, "failed", "failed")
-      Store.release_lease(state.repo, issue_number)
+      Store.expire_stale_run(state.repo, run_id, issue_number, run["heartbeat_at"])
     end)
 
     state
