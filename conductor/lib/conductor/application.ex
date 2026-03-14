@@ -9,6 +9,7 @@ defmodule Conductor.Application do
       [
         {Phoenix.PubSub, name: Conductor.PubSub},
         Conductor.Store,
+        Conductor.Retro,
         {DynamicSupervisor, name: Conductor.RunSupervisor, strategy: :one_for_one},
         Conductor.Orchestrator
       ] ++ dashboard_children()
