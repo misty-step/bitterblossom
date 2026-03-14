@@ -88,8 +88,6 @@ defmodule Conductor.Retro do
     open_issues = list_open_issue_titles(run)
 
     """
-    #{system_prompt()}
-
     ## Run Data
 
     Run ID: #{run["run_id"]}
@@ -183,6 +181,7 @@ defmodule Conductor.Retro do
         Jason.encode!(%{
           model: @model,
           max_tokens: @max_tokens,
+          system: system_prompt(),
           messages: [%{role: "user", content: prompt}]
         })
 
@@ -323,7 +322,6 @@ defmodule Conductor.Retro do
     if File.exists?(backlog_path) do
       content = File.read!(backlog_path)
 
-      # Append to High Potential section
       updated =
         String.replace(
           content,
@@ -332,8 +330,14 @@ defmodule Conductor.Retro do
           global: false
         )
 
-      File.write!(backlog_path, updated)
-      Logger.info("[retro] updated BACKLOG.md: #{finding["title"]}")
+      if updated != content do
+        File.write!(backlog_path, updated)
+        Logger.info("[retro] updated BACKLOG.md: #{finding["title"]}")
+      else
+        # Heading not found — append to end of file instead
+        File.write!(backlog_path, content <> "\n- #{entry}\n")
+        Logger.info("[retro] appended to BACKLOG.md (heading not found): #{finding["title"]}")
+      end
     else
       Logger.warning("[retro] no BACKLOG.md found at #{backlog_path}")
     end
