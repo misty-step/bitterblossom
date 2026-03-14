@@ -46,10 +46,16 @@ defmodule Conductor.Issue do
       true ->
         failures =
           []
-          |> check_missing(body, ["## Problem", "## Product Spec"],
-               "missing `## Problem` or `## Product Spec` section")
-          |> check_missing(body, ["## Acceptance Criteria", "### Intent Contract"],
-               "missing `## Acceptance Criteria` or `### Intent Contract` section")
+          |> check_missing(
+            body,
+            ["## Problem", "## Product Spec"],
+            "missing `## Problem` or `## Product Spec` section"
+          )
+          |> check_missing(
+            body,
+            ["## Acceptance Criteria", "### Intent Contract"],
+            "missing `## Acceptance Criteria` or `### Intent Contract` section"
+          )
           |> Enum.reverse()
 
         {:error, failures}

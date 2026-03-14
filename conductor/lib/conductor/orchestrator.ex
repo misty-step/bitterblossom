@@ -62,12 +62,13 @@ defmodule Conductor.Orchestrator do
 
   @impl true
   def init(opts) do
-    {:ok, %__MODULE__{
-      repo: Keyword.get(opts, :repo),
-      label: Keyword.get(opts, :label, "autopilot"),
-      workers: Keyword.get(opts, :workers, []),
-      trusted_surfaces: Keyword.get(opts, :trusted_surfaces, [])
-    }}
+    {:ok,
+     %__MODULE__{
+       repo: Keyword.get(opts, :repo),
+       label: Keyword.get(opts, :label, "autopilot"),
+       workers: Keyword.get(opts, :workers, []),
+       trusted_surfaces: Keyword.get(opts, :trusted_surfaces, [])
+     }}
   end
 
   @impl true
@@ -77,12 +78,13 @@ defmodule Conductor.Orchestrator do
     if workers == [] do
       {:reply, {:error, :no_workers}, state}
     else
-      state = %{state |
-        repo: Keyword.fetch!(opts, :repo),
-        label: Keyword.get(opts, :label, state.label),
-        workers: workers,
-        trusted_surfaces: Keyword.get(opts, :trusted_surfaces, state.trusted_surfaces),
-        mode: :polling
+      state = %{
+        state
+        | repo: Keyword.fetch!(opts, :repo),
+          label: Keyword.get(opts, :label, state.label),
+          workers: workers,
+          trusted_surfaces: Keyword.get(opts, :trusted_surfaces, state.trusted_surfaces),
+          mode: :polling
       }
 
       schedule_poll(0)
@@ -184,9 +186,10 @@ defmodule Conductor.Orchestrator do
 
         Logger.info("started run for issue ##{issue.number} on #{worker}")
 
-        %{state |
-          active_runs: Map.put(state.active_runs, issue.number, run_entry),
-          worker_index: state.worker_index + 1
+        %{
+          state
+          | active_runs: Map.put(state.active_runs, issue.number, run_entry),
+            worker_index: state.worker_index + 1
         }
 
       {:error, reason} ->
@@ -196,6 +199,7 @@ defmodule Conductor.Orchestrator do
   end
 
   defp pick_worker(%{workers: []}), do: raise("no workers configured")
+
   defp pick_worker(%{workers: workers, worker_index: idx}) do
     Enum.at(workers, rem(idx, length(workers)))
   end

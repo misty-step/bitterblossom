@@ -12,12 +12,13 @@ defmodule Conductor.PromptTest do
 
   describe "build_builder_prompt/5 initial (no feedback)" do
     setup do
-      prompt = Prompt.build_builder_prompt(
-        @issue,
-        "run-99-123",
-        "factory/99-123",
-        "/home/sprite/workspace/repo/.bb/conductor/run-99-123/builder-result.json"
-      )
+      prompt =
+        Prompt.build_builder_prompt(
+          @issue,
+          "run-99-123",
+          "factory/99-123",
+          "/home/sprite/workspace/repo/.bb/conductor/run-99-123/builder-result.json"
+        )
 
       %{prompt: prompt}
     end
@@ -65,13 +66,14 @@ defmodule Conductor.PromptTest do
 
   describe "build_builder_prompt/5 with existing PR" do
     test "includes existing PR number" do
-      prompt = Prompt.build_builder_prompt(
-        @issue,
-        "run-99-200",
-        "factory/99-200",
-        "/tmp/result.json",
-        pr_number: 42
-      )
+      prompt =
+        Prompt.build_builder_prompt(
+          @issue,
+          "run-99-200",
+          "factory/99-200",
+          "/tmp/result.json",
+          pr_number: 42
+        )
 
       assert prompt =~ "Existing PR: #42"
     end
@@ -79,13 +81,14 @@ defmodule Conductor.PromptTest do
 
   describe "build_builder_prompt/5 revision (with feedback)" do
     setup do
-      prompt = Prompt.build_builder_prompt(
-        @issue,
-        "run-99-456",
-        "factory/99-456",
-        "/tmp/result.json",
-        feedback: "Please add error handling for nil inputs."
-      )
+      prompt =
+        Prompt.build_builder_prompt(
+          @issue,
+          "run-99-456",
+          "factory/99-456",
+          "/tmp/result.json",
+          feedback: "Please add error handling for nil inputs."
+        )
 
       %{prompt: prompt}
     end
@@ -107,14 +110,15 @@ defmodule Conductor.PromptTest do
 
   describe "build_builder_prompt/5 with both PR and feedback" do
     test "includes both existing PR and revision" do
-      prompt = Prompt.build_builder_prompt(
-        @issue,
-        "run-99-789",
-        "factory/99-789",
-        "/tmp/result.json",
-        pr_number: 55,
-        feedback: "Fix the tests."
-      )
+      prompt =
+        Prompt.build_builder_prompt(
+          @issue,
+          "run-99-789",
+          "factory/99-789",
+          "/tmp/result.json",
+          pr_number: 55,
+          feedback: "Fix the tests."
+        )
 
       assert prompt =~ "Existing PR: #55"
       assert prompt =~ "Revision Required"
@@ -124,12 +128,13 @@ defmodule Conductor.PromptTest do
 
   describe "build_builder_prompt/5 result artifact" do
     test "specifies expected JSON schema fields" do
-      prompt = Prompt.build_builder_prompt(
-        @issue,
-        "run-99-100",
-        "factory/99-100",
-        "/tmp/result.json"
-      )
+      prompt =
+        Prompt.build_builder_prompt(
+          @issue,
+          "run-99-100",
+          "factory/99-100",
+          "/tmp/result.json"
+        )
 
       assert prompt =~ ~s("status": "ready" or "blocked")
       assert prompt =~ ~s("branch": "factory/99-100")

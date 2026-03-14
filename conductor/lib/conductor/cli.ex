@@ -7,13 +7,26 @@ defmodule Conductor.CLI do
     Application.ensure_all_started(:conductor)
 
     case args do
-      ["run-once" | rest] -> cmd_run_once(rest)
-      ["loop" | rest] -> cmd_loop(rest)
-      ["show-runs" | rest] -> cmd_show_runs(rest)
-      ["show-events" | rest] -> cmd_show_events(rest)
-      ["check-env" | _] -> cmd_check_env()
-      [cmd | _] -> IO.puts("unknown command: #{cmd}\navailable: #{Enum.join(@commands, ", ")}")
-      [] -> IO.puts("usage: conductor <command> [options]\navailable: #{Enum.join(@commands, ", ")}")
+      ["run-once" | rest] ->
+        cmd_run_once(rest)
+
+      ["loop" | rest] ->
+        cmd_loop(rest)
+
+      ["show-runs" | rest] ->
+        cmd_show_runs(rest)
+
+      ["show-events" | rest] ->
+        cmd_show_events(rest)
+
+      ["check-env" | _] ->
+        cmd_check_env()
+
+      [cmd | _] ->
+        IO.puts("unknown command: #{cmd}\navailable: #{Enum.join(@commands, ", ")}")
+
+      [] ->
+        IO.puts("usage: conductor <command> [options]\navailable: #{Enum.join(@commands, ", ")}")
     end
   end
 
@@ -107,17 +120,20 @@ defmodule Conductor.CLI do
 
     events = Conductor.Store.list_events(run_id)
 
-    IO.puts(Jason.encode!(%{
-      run_id: run_id,
-      event_count: length(events),
-      events: events
-    }))
+    IO.puts(
+      Jason.encode!(%{
+        run_id: run_id,
+        event_count: length(events),
+        events: events
+      })
+    )
   end
 
   defp cmd_check_env do
     Conductor.Config.check_env!()
   rescue
-    e -> IO.puts("environment check failed: #{Exception.message(e)}")
-         System.halt(1)
+    e ->
+      IO.puts("environment check failed: #{Exception.message(e)}")
+      System.halt(1)
   end
 end

@@ -23,12 +23,13 @@ defmodule Conductor.StoreTest do
   end
 
   test "create and retrieve a run" do
-    {:ok, run_id} = Store.create_run(%{
-      repo: "test/repo",
-      issue_number: 42,
-      issue_title: "Test issue",
-      builder_sprite: "test-sprite"
-    })
+    {:ok, run_id} =
+      Store.create_run(%{
+        repo: "test/repo",
+        issue_number: 42,
+        issue_title: "Test issue",
+        builder_sprite: "test-sprite"
+      })
 
     assert String.starts_with?(run_id, "run-42-")
 
@@ -41,12 +42,13 @@ defmodule Conductor.StoreTest do
   end
 
   test "update run fields" do
-    {:ok, run_id} = Store.create_run(%{
-      repo: "test/repo",
-      issue_number: 1,
-      issue_title: "test",
-      builder_sprite: "s"
-    })
+    {:ok, run_id} =
+      Store.create_run(%{
+        repo: "test/repo",
+        issue_number: 1,
+        issue_title: "test",
+        builder_sprite: "s"
+      })
 
     Store.update_run(run_id, %{phase: "building", branch: "factory/1-123"})
 
@@ -56,12 +58,13 @@ defmodule Conductor.StoreTest do
   end
 
   test "complete run sets terminal state" do
-    {:ok, run_id} = Store.create_run(%{
-      repo: "test/repo",
-      issue_number: 2,
-      issue_title: "test",
-      builder_sprite: "s"
-    })
+    {:ok, run_id} =
+      Store.create_run(%{
+        repo: "test/repo",
+        issue_number: 2,
+        issue_title: "test",
+        builder_sprite: "s"
+      })
 
     Store.complete_run(run_id, "merged", "merged")
 
@@ -84,12 +87,13 @@ defmodule Conductor.StoreTest do
   end
 
   test "record and list events" do
-    {:ok, run_id} = Store.create_run(%{
-      repo: "test/repo",
-      issue_number: 3,
-      issue_title: "test",
-      builder_sprite: "s"
-    })
+    {:ok, run_id} =
+      Store.create_run(%{
+        repo: "test/repo",
+        issue_number: 3,
+        issue_title: "test",
+        builder_sprite: "s"
+      })
 
     Store.record_event(run_id, "lease_acquired", %{issue: 3})
     Store.record_event(run_id, "builder_dispatched", %{sprite: "s"})
@@ -118,12 +122,13 @@ defmodule Conductor.StoreTest do
   end
 
   test "heartbeat updates timestamp" do
-    {:ok, run_id} = Store.create_run(%{
-      repo: "test/repo",
-      issue_number: 4,
-      issue_title: "test",
-      builder_sprite: "s"
-    })
+    {:ok, run_id} =
+      Store.create_run(%{
+        repo: "test/repo",
+        issue_number: 4,
+        issue_title: "test",
+        builder_sprite: "s"
+      })
 
     {:ok, run_before} = Store.get_run(run_id)
     Process.sleep(10)

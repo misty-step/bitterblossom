@@ -90,12 +90,22 @@ defmodule Conductor.Store do
     run_id = attrs[:run_id] || generate_run_id(attrs[:issue_number])
     now = now_utc()
 
-    exec(state.conn, """
-      INSERT INTO runs (run_id, repo, issue_number, issue_title, phase, status,
-                        builder_sprite, picked_at, heartbeat_at, updated_at)
-      VALUES (?1, ?2, ?3, ?4, 'pending', 'pending', ?5, ?6, ?6, ?6)
-    """, [run_id, attrs[:repo], attrs[:issue_number], attrs[:issue_title],
-          attrs[:builder_sprite], now])
+    exec(
+      state.conn,
+      """
+        INSERT INTO runs (run_id, repo, issue_number, issue_title, phase, status,
+                          builder_sprite, picked_at, heartbeat_at, updated_at)
+        VALUES (?1, ?2, ?3, ?4, 'pending', 'pending', ?5, ?6, ?6, ?6)
+      """,
+      [
+        run_id,
+        attrs[:repo],
+        attrs[:issue_number],
+        attrs[:issue_title],
+        attrs[:builder_sprite],
+        now
+      ]
+    )
 
     {:reply, {:ok, run_id}, state}
   end
@@ -105,9 +115,11 @@ defmodule Conductor.Store do
     sets = Enum.map_join(attrs, ", ", fn {k, _} -> "#{k} = ?" end)
     vals = Map.values(attrs) ++ [now_utc(), run_id]
 
-    exec(state.conn,
+    exec(
+      state.conn,
       "UPDATE runs SET #{sets}, updated_at = ? WHERE run_id = ?",
-      vals)
+      vals
+    )
 
     {:reply, :ok, state}
   end
@@ -116,10 +128,14 @@ defmodule Conductor.Store do
   def handle_call({:complete_run, run_id, phase, status}, _from, state) do
     now = now_utc()
 
-    exec(state.conn, """
-      UPDATE runs SET phase = ?1, status = ?2, completed_at = ?3, updated_at = ?3
-      WHERE run_id = ?4
-    """, [phase, status, now, run_id])
+    exec(
+      state.conn,
+      """
+        UPDATE runs SET phase = ?1, status = ?2, completed_at = ?3, updated_at = ?3
+        WHERE run_id = ?4
+      """,
+      [phase, status, now, run_id]
+    )
 
     {:reply, :ok, state}
   end
@@ -148,16 +164,20 @@ defmodule Conductor.Store do
   @impl true
   def handle_call({:acquire_lease, repo, issue_number, run_id}, _from, state) do
     active =
-      query_one(state.conn,
+      query_one(
+        state.conn,
         "SELECT run_id FROM leases WHERE repo = ?1 AND issue_number = ?2 AND released_at IS NULL",
-        [repo, issue_number])
+        [repo, issue_number]
+      )
 
     if active do
       {:reply, {:error, :already_leased}, state}
     else
-      exec(state.conn,
+      exec(
+        state.conn,
         "INSERT INTO leases (repo, issue_number, run_id, acquired_at) VALUES (?1, ?2, ?3, ?4)",
-        [repo, issue_number, run_id, now_utc()])
+        [repo, issue_number, run_id, now_utc()]
+      )
 
       {:reply, :ok, state}
     end
@@ -165,9 +185,11 @@ defmodule Conductor.Store do
 
   @impl true
   def handle_call({:release_lease, repo, issue_number}, _from, state) do
-    exec(state.conn,
+    exec(
+      state.conn,
       "UPDATE leases SET released_at = ?1 WHERE repo = ?2 AND issue_number = ?3 AND released_at IS NULL",
-      [now_utc(), repo, issue_number])
+      [now_utc(), repo, issue_number]
+    )
 
     {:reply, :ok, state}
   end
@@ -175,9 +197,11 @@ defmodule Conductor.Store do
   @impl true
   def handle_call({:leased?, repo, issue_number}, _from, state) do
     row =
-      query_one(state.conn,
+      query_one(
+        state.conn,
         "SELECT 1 FROM leases WHERE repo = ?1 AND issue_number = ?2 AND released_at IS NULL",
-        [repo, issue_number])
+        [repo, issue_number]
+      )
 
     {:reply, row != nil, state}
   end
@@ -187,9 +211,11 @@ defmodule Conductor.Store do
     now = now_utc()
     json = Jason.encode!(payload)
 
-    exec(state.conn,
+    exec(
+      state.conn,
       "INSERT INTO events (run_id, event_type, payload, created_at) VALUES (?1, ?2, ?3, ?4)",
-      [run_id, event_type, json, now])
+      [run_id, event_type, json, now]
+    )
 
     append_event_log(state.event_log, %{
       run_id: run_id,
@@ -203,13 +229,17 @@ defmodule Conductor.Store do
 
   @impl true
   def handle_call({:list_events, run_id}, _from, state) do
-    rows = query_all(state.conn,
-      "SELECT * FROM events WHERE run_id = ?1 ORDER BY created_at ASC",
-      [run_id])
+    rows =
+      query_all(
+        state.conn,
+        "SELECT * FROM events WHERE run_id = ?1 ORDER BY created_at ASC",
+        [run_id]
+      )
 
-    events = Enum.map(rows, fn row ->
-      Map.update(row, "payload", %{}, &Jason.decode!/1)
-    end)
+    events =
+      Enum.map(rows, fn row ->
+        Map.update(row, "payload", %{}, &Jason.decode!/1)
+      end)
 
     {:reply, events, state}
   end
@@ -218,47 +248,47 @@ defmodule Conductor.Store do
 
   defp create_tables(conn) do
     for sql <- [
-      """
-      CREATE TABLE IF NOT EXISTS runs (
-        run_id TEXT PRIMARY KEY,
-        repo TEXT NOT NULL,
-        issue_number INTEGER NOT NULL,
-        issue_title TEXT,
-        phase TEXT NOT NULL DEFAULT 'pending',
-        status TEXT NOT NULL DEFAULT 'pending',
-        builder_sprite TEXT,
-        branch TEXT,
-        pr_number INTEGER,
-        pr_url TEXT,
-        worktree_path TEXT,
-        turn_count INTEGER DEFAULT 0,
-        picked_at TEXT,
-        completed_at TEXT,
-        heartbeat_at TEXT,
-        updated_at TEXT
-      )
-      """,
-      """
-      CREATE TABLE IF NOT EXISTS leases (
-        repo TEXT NOT NULL,
-        issue_number INTEGER NOT NULL,
-        run_id TEXT NOT NULL,
-        acquired_at TEXT NOT NULL,
-        released_at TEXT,
-        blocked_at TEXT,
-        PRIMARY KEY (repo, issue_number, run_id)
-      )
-      """,
-      """
-      CREATE TABLE IF NOT EXISTS events (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        run_id TEXT NOT NULL,
-        event_type TEXT NOT NULL,
-        payload TEXT NOT NULL DEFAULT '{}',
-        created_at TEXT NOT NULL
-      )
-      """
-    ] do
+          """
+          CREATE TABLE IF NOT EXISTS runs (
+            run_id TEXT PRIMARY KEY,
+            repo TEXT NOT NULL,
+            issue_number INTEGER NOT NULL,
+            issue_title TEXT,
+            phase TEXT NOT NULL DEFAULT 'pending',
+            status TEXT NOT NULL DEFAULT 'pending',
+            builder_sprite TEXT,
+            branch TEXT,
+            pr_number INTEGER,
+            pr_url TEXT,
+            worktree_path TEXT,
+            turn_count INTEGER DEFAULT 0,
+            picked_at TEXT,
+            completed_at TEXT,
+            heartbeat_at TEXT,
+            updated_at TEXT
+          )
+          """,
+          """
+          CREATE TABLE IF NOT EXISTS leases (
+            repo TEXT NOT NULL,
+            issue_number INTEGER NOT NULL,
+            run_id TEXT NOT NULL,
+            acquired_at TEXT NOT NULL,
+            released_at TEXT,
+            blocked_at TEXT,
+            PRIMARY KEY (repo, issue_number, run_id)
+          )
+          """,
+          """
+          CREATE TABLE IF NOT EXISTS events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            payload TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+          )
+          """
+        ] do
       exec(conn, sql, [])
     end
   end
