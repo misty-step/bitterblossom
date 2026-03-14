@@ -228,6 +228,95 @@ The probe command must print JSON to stdout with this contract:
 - new finding: create a fresh GitHub issue with `source/qa` plus severity-derived priority labels
 - duplicate finding: append a new issue comment with the latest evidence instead of creating backlog spam
 
+## Sentry Intake
+
+`scripts/sentry_intake.py` bridges Sentry incidents into GitHub issues so the
+conductor can lease and route them through the same queue it already understands.
+
+GitHub remains the system of record. Sentry is input only — not a second backlog.
+
+### Dedupe contract
+
+Each GitHub issue created by the adapter embeds a hidden fingerprint marker in its
+body:
+
+```
+<!-- sentry-fp-<16-char-hex> -->
+```
+
+When the adapter runs for an incident, it:
+
+1. Lists all open `source/sentry` issues in the target repo.
+2. Scans each body for the fingerprint marker.
+3. **New fingerprint** → creates a GitHub issue with severity, environment, stack
+   trace, impact counts, and a link back to Sentry; applies `bug`, `source/sentry`,
+   and a `P0`–`P3` priority label derived from the incident level.
+4. **Known fingerprint** → appends a recurrence comment to the existing issue instead
+   of creating a duplicate.
+5. Emits the created or matched GitHub issue number to stdout.
+
+### Label taxonomy
+
+| Sentry level | Priority label |
+|---|---|
+| `fatal`   | `P0` |
+| `error`   | `P1` |
+| `warning` | `P2` |
+| `info`    | `P3` |
+
+All issues also receive `bug` and `source/sentry`. These labels must exist in the
+target repo before the first run (see `.env.bb.example`).
+
+### Usage
+
+Pipe a Sentry webhook payload (or any Sentry Issues API response) via stdin:
+
+```bash
+curl -s "https://sentry.io/api/0/projects/$SENTRY_ORG/$SENTRY_PROJECT/issues/$ISSUE_ID/" \
+  -H "Authorization: Bearer $SENTRY_AUTH_TOKEN" \
+  | python3 scripts/sentry_intake.py --repo misty-step/bitterblossom
+```
+
+Or pass the JSON inline:
+
+```bash
+python3 scripts/sentry_intake.py \
+  --repo misty-step/bitterblossom \
+  --payload '{"id":"123","level":"error","title":"NullPointerException",...}'
+```
+
+Or fetch directly from the Sentry API:
+
+```bash
+python3 scripts/sentry_intake.py \
+  --repo misty-step/bitterblossom \
+  --sentry-org misty-step \
+  --sentry-project bitterblossom-api \
+  --sentry-issue-id 123456789
+```
+
+Output is the GitHub issue number on stdout:
+
+```
+471
+```
+
+### Environment
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `SENTRY_AUTH_TOKEN` | For `--sentry-issue-id` | Sentry API auth token |
+| `SENTRY_MASTER_TOKEN` | Fallback | Sentry API auth token (legacy name) |
+| `GITHUB_TOKEN` | Always | GitHub auth for `gh` CLI |
+
+See `env.bb.example` for setup guidance.
+
+### Tests
+
+```bash
+python3 -m pytest -q scripts/test_conductor.py
+```
+
 Inspect runs:
 
 ```bash
