@@ -4,9 +4,13 @@ defmodule Conductor.Sprite do
 
   Deep module: hides all sprite protocol details — exec, dispatch,
   artifact retrieval, process cleanup.
+
+  Implements `Conductor.Worker`.
   """
 
-  alias Conductor.{Shell, Config}
+  @behaviour Conductor.Worker
+
+  alias Conductor.{Shell, Config, Workspace}
 
   @spec exec(binary(), binary(), keyword()) :: {:ok, binary()} | {:error, binary(), integer()}
   def exec(sprite, command, opts \\ []) do
@@ -44,9 +48,11 @@ defmodule Conductor.Sprite do
     )
   end
 
-  @spec read_artifact(binary(), binary()) :: {:ok, map()} | {:error, term()}
-  def read_artifact(sprite, path) do
-    case exec(sprite, "cat #{path}", timeout: 30_000) do
+  @spec read_artifact(binary(), binary(), keyword()) :: {:ok, map()} | {:error, term()}
+  def read_artifact(sprite, path, opts \\ []) do
+    timeout = Keyword.get(opts, :timeout, 30_000)
+
+    case exec(sprite, "cat #{path}", timeout: timeout) do
       {:ok, json} ->
         case Jason.decode(json) do
           {:ok, data} -> {:ok, data}
@@ -56,6 +62,11 @@ defmodule Conductor.Sprite do
       {:error, output, _} ->
         {:error, "artifact not found: #{output}"}
     end
+  end
+
+  @spec cleanup(binary(), binary(), binary()) :: :ok | {:error, term()}
+  def cleanup(sprite, repo, run_id) do
+    Workspace.cleanup(sprite, repo, run_id)
   end
 
   @spec kill(binary()) :: :ok | {:error, term()}

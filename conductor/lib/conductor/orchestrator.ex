@@ -10,7 +10,7 @@ defmodule Conductor.Orchestrator do
   use GenServer
   require Logger
 
-  alias Conductor.{Store, GitHub, Config, Issue}
+  alias Conductor.{Store, Config, Issue}
 
   defstruct [
     :repo,
@@ -36,7 +36,7 @@ defmodule Conductor.Orchestrator do
     worker = Keyword.fetch!(opts, :worker)
     trusted_surfaces = Keyword.get(opts, :trusted_surfaces, [])
 
-    case GitHub.get_issue(repo, issue_number) do
+    case tracker_mod().get_issue(repo, issue_number) do
       {:ok, issue} ->
         case Issue.ready?(issue) do
           :ok ->
@@ -160,7 +160,7 @@ defmodule Conductor.Orchestrator do
     else
       slots = max - active_count
 
-      eligible = GitHub.eligible_issues(state.repo, label: state.label)
+      eligible = tracker_mod().list_eligible(state.repo, label: state.label)
       unleased = Enum.reject(eligible, &Store.leased?(state.repo, &1.number))
 
       unleased
@@ -220,6 +220,8 @@ defmodule Conductor.Orchestrator do
       r["repo"] == repo and r["issue_number"] == issue_number
     end)
   end
+
+  defp tracker_mod, do: Application.get_env(:conductor, :tracker_module, Conductor.GitHub)
 
   defp schedule_poll(delay) do
     Process.send_after(self(), :poll, delay)
