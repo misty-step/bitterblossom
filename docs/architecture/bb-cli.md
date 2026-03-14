@@ -6,6 +6,7 @@ Files:
 
 - [`cmd/bb/setup.go`](../../cmd/bb/setup.go)
 - [`cmd/bb/dispatch.go`](../../cmd/bb/dispatch.go)
+- [`cmd/bb/dispatch_checks.go`](../../cmd/bb/dispatch_checks.go)
 - [`cmd/bb/status.go`](../../cmd/bb/status.go)
 - [`cmd/bb/logs.go`](../../cmd/bb/logs.go)
 - [`cmd/bb/kill.go`](../../cmd/bb/kill.go)
