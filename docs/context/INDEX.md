@@ -12,14 +12,14 @@ Read in this order when you need the current architecture, not the historical on
 4. [`docs/architecture/bb-cli.md`](../architecture/bb-cli.md)
 5. [`docs/architecture/skills.md`](../architecture/skills.md)
 6. [`docs/CONDUCTOR.md`](../CONDUCTOR.md)
-6. [`docs/CLI-REFERENCE.md`](../CLI-REFERENCE.md)
-7. [`docs/COMPLETION-PROTOCOL.md`](../COMPLETION-PROTOCOL.md)
-8. [`AGENTS.md`](../../AGENTS.md)
-9. [`project.md`](../../project.md) *(vision, glossary, roadmap language)*
-10. [`docs/adr/002-architecture-minimalism.md`](../adr/002-architecture-minimalism.md)
-11. [`docs/adr/003-conductor-control-plane.md`](../adr/003-conductor-control-plane.md)
-12. [`docs/adr/004-bounded-review-governance.md`](../adr/004-bounded-review-governance.md) *(proposed direction, not current behavior)*
-13. Code entrypoints: [`scripts/conductor.py`](../../scripts/conductor.py), [`cmd/bb/*.go`](../../cmd/bb/), [`scripts/ralph.sh`](../../scripts/ralph.sh)
+7. [`docs/CLI-REFERENCE.md`](../CLI-REFERENCE.md)
+8. [`docs/COMPLETION-PROTOCOL.md`](../COMPLETION-PROTOCOL.md)
+9. [`AGENTS.md`](../../AGENTS.md)
+10. [`project.md`](../../project.md) *(vision, glossary, roadmap language)*
+11. [`docs/adr/002-architecture-minimalism.md`](../adr/002-architecture-minimalism.md)
+12. [`docs/adr/003-conductor-control-plane.md`](../adr/003-conductor-control-plane.md)
+13. [`docs/adr/004-bounded-review-governance.md`](../adr/004-bounded-review-governance.md) *(proposed direction, not current behavior)*
+14. Code entrypoints: [`conductor/lib/conductor/`](../../conductor/lib/conductor/), [`cmd/bb/*.go`](../../cmd/bb/), [`scripts/ralph.sh`](../../scripts/ralph.sh)
 
 ## Authority Ranking
 

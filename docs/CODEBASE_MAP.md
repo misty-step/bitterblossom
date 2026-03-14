@@ -2,10 +2,10 @@
 
 Current Bitterblossom is a **conductor-first software factory**:
 
-- `conductor/` is the Elixir/OTP orchestrator — the workflow brain.
-- `cmd/bb/` is the thin Go transport/operator edge for talking to sprites.
-- `scripts/ralph.sh` is the remote execution loop that runs work on a sprite.
-- `base/skills/` is the skill library provisioned onto every managed sprite.
+- `conductor/`: Elixir/OTP orchestrator — the workflow brain.
+- `cmd/bb/`: thin Go transport, the operator edge for talking to sprites.
+- `scripts/ralph.sh`: remote execution loop that runs work on a sprite.
+- `base/skills/`: skill library provisioned onto every managed sprite.
 
 If you are trying to understand how the repo works today, start from those four entrypoints.
 
