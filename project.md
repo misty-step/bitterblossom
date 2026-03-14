@@ -23,9 +23,9 @@ Bitterblossom is the conductor for a single-repo software factory: it routes Git
 
 ## Active Focus
 
-- **Milestone:** `Now: Current Sprint` — harden the accepted conductor MVP into a reliable single-repo factory.
-- **Key Issues:** [#470](https://github.com/misty-step/bitterblossom/issues/470), [#468](https://github.com/misty-step/bitterblossom/issues/468), [#469](https://github.com/misty-step/bitterblossom/issues/469), [#98](https://github.com/misty-step/bitterblossom/issues/98), [#102](https://github.com/misty-step/bitterblossom/issues/102)
-- **Theme:** Always-on control plane, isolated execution, truthful observability, and proof of the full trace bullet.
+- **Milestone:** `Now: Current Sprint` for active governance truth work, with `Next: Up Next` carrying the surrounding factory simplification slices.
+- **Key Issues:** [#500](https://github.com/misty-step/bitterblossom/issues/500), [#569](https://github.com/misty-step/bitterblossom/issues/569), [#590](https://github.com/misty-step/bitterblossom/issues/590), [#592](https://github.com/misty-step/bitterblossom/issues/592), [#593](https://github.com/misty-step/bitterblossom/issues/593), [#544](https://github.com/misty-step/bitterblossom/issues/544), [#532](https://github.com/misty-step/bitterblossom/issues/532)
+- **Theme:** Make the factory truthful and legible: semantic review truth, explicit workflow contracts, phase-specialized workers, durable recovery, and a trustworthy auth/bootstrap path.
 
 ## Architecture Artifacts
 
@@ -77,5 +77,5 @@ Keep transport logic thin and deterministic. Put workflow judgment and orchestra
 | Generic status strings and hidden failure modes | Erode operator trust | Surface explicit run phases, review outcomes, and blocking reasons. |
 
 ---
-*Last updated: 2026-03-11*
+*Last updated: 2026-03-13*
 *Updated during: /groom session*

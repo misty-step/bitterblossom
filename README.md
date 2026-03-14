@@ -7,7 +7,7 @@ Remote conductor and thin transport for a [Sprites](https://sprites.dev) softwar
 Bitterblossom has two surfaces:
 
 - `bb`: thin Go transport for sprite setup, dispatch, status, logs, and recovery
-- `scripts/conductor.py`: remote control plane that leases GitHub issues, dispatches builders, runs a review council, waits for CI, and merges
+- `scripts/conductor.py`: remote control plane that leases GitHub issues, dispatches builders, runs a review council, observes CI signals, and merges
 
 The design is intentional:
 
@@ -38,7 +38,7 @@ docs/                    operator docs and contracts
 4. the builder opens a PR and writes `builder-result.json`
 5. three reviewer sprites run adversarial reviews and write review artifacts
 6. the conductor requests revisions until quorum passes
-7. the conductor waits for green CI, satisfies merge policy, merges, and records the run
+7. the conductor evaluates review and CI signals, merges when policy allows, and records the run
 
 The default human workflow is not "dispatch ad hoc prompts forever." It is "operate the conductor, inspect runs, recover when needed."
 
