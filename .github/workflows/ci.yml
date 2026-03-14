@@ -28,23 +28,14 @@ jobs:
           find scripts -type f -name "*.sh" -print0 \
             | xargs -0 shellcheck -x -S error
 
-  python:
-    name: Python Checks
+  hooks:
+    name: Hook Tests
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Install tooling
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install pytest==8.4.1 ruff==0.15.0
-      - name: Ruff
-        run: ruff check base/hooks scripts/test_workflow_contract.py
-      - name: Pytest
-        run: python -m pytest -q base/hooks scripts/test_workflow_contract.py
+      - name: Test hooks
+        run: python3 -m pytest -q base/hooks/
 
   yaml:
     name: YAML Lint
@@ -82,18 +73,17 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     if: ${{ github.event_name == 'pull_request' && always() }}
-    needs: [shellcheck, python, yaml, go]
+    needs: [shellcheck, hooks, yaml, go]
     steps:
       - name: Require green merge inputs
         env:
-          # Keep this list aligned with `needs`; merge-gate is the single PR check to require.
           SHELLCHECK_RESULT: ${{ needs.shellcheck.result }}
-          PYTHON_RESULT: ${{ needs.python.result }}
+          HOOKS_RESULT: ${{ needs.hooks.result }}
           YAML_RESULT: ${{ needs.yaml.result }}
           GO_RESULT: ${{ needs.go.result }}
         run: |
           set -euo pipefail
-          for result in "$SHELLCHECK_RESULT" "$PYTHON_RESULT" "$YAML_RESULT" "$GO_RESULT"; do
+          for result in "$SHELLCHECK_RESULT" "$HOOKS_RESULT" "$YAML_RESULT" "$GO_RESULT"; do
             if [ "$result" != "success" ]; then
               echo "merge-gate blocked by dependency result: $result"
               exit 1

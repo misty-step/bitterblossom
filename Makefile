@@ -1,4 +1,4 @@
-.PHONY: build test lint clean test-python lint-python test-conductor conductor-check
+.PHONY: build test lint clean test-hooks test-conductor conductor-check
 
 BINARY := bb
 BIN_DIR := bin
@@ -20,11 +20,8 @@ lint:
 clean:
 	rm -rf $(BIN_DIR)
 
-test-python:
-	python3 -m pytest -q base/hooks scripts/test_workflow_contract.py
-
-lint-python:
-	ruff check base/hooks scripts/test_workflow_contract.py
+test-hooks:
+	python3 -m pytest -q base/hooks/
 
 test-conductor:
 	cd conductor && mix test
