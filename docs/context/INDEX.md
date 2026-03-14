@@ -10,7 +10,8 @@ Read in this order when you need the current architecture, not the historical on
 2. [`docs/architecture/README.md`](../architecture/README.md)
 3. [`docs/architecture/conductor.md`](../architecture/conductor.md)
 4. [`docs/architecture/bb-cli.md`](../architecture/bb-cli.md)
-5. [`docs/CONDUCTOR.md`](../CONDUCTOR.md)
+5. [`docs/architecture/skills.md`](../architecture/skills.md)
+6. [`docs/CONDUCTOR.md`](../CONDUCTOR.md)
 6. [`docs/CLI-REFERENCE.md`](../CLI-REFERENCE.md)
 7. [`docs/COMPLETION-PROTOCOL.md`](../COMPLETION-PROTOCOL.md)
 8. [`AGENTS.md`](../../AGENTS.md)
@@ -50,6 +51,9 @@ When sources disagree, trust them in this order:
   - [`base/settings.json`](../../base/settings.json)
   - [`base/hooks/*`](../../base/hooks/)
   - [`base/CLAUDE.md`](../../base/CLAUDE.md)
+- Skill system / agent guidance modules:
+  - [`base/skills/`](../../base/skills/)
+  - [`docs/architecture/skills.md`](../architecture/skills.md)
 - Persona / worker specialization:
   - [`sprites/*.md`](../../sprites/)
 

@@ -20,13 +20,16 @@ Read [WORKFLOW.md](WORKFLOW.md) first for the repo-owned runtime workflow contra
 
 ## Architecture
 
+Full artifact stack: [docs/architecture/README.md](docs/architecture/README.md)
+
 ```text
-cmd/bb/                  thin sprite transport CLI
-scripts/conductor.py     conductor MVP with SQLite run store
-scripts/prompts/         builder + reviewer prompt templates
-base/                    shared CLAUDE/settings/hooks/skills pushed to sprites
+conductor/               Elixir/OTP orchestrator (control plane)
+cmd/bb/                  thin Go transport CLI (sprite edge)
+base/skills/             skill files provisioned onto sprites
+scripts/                 ralph loop + prompt templates + legacy Python conductor
 sprites/                 per-sprite personas
 docs/adr/                architecture decisions
+docs/architecture/       system overview + per-module drill-downs
 docs/                    operator docs and contracts
 ```
 
