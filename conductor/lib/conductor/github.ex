@@ -107,7 +107,7 @@ defmodule Conductor.GitHub do
     end
   end
 
-  @active_statuses ~w(IN_PROGRESS QUEUED PENDING in_progress queued pending)
+  @active_statuses ~w(IN_PROGRESS QUEUED PENDING WAITING REQUESTED in_progress queued pending waiting requested)
 
   @doc """
   Pure evaluation of a check list. Distinguishes three categories:

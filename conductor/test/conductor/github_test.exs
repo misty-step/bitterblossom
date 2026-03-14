@@ -93,6 +93,24 @@ defmodule Conductor.GitHubTest do
       assert GitHub.evaluate_checks(checks) == false
     end
 
+    test "waiting check (environment protection) blocks → false" do
+      checks = [
+        %{"name" => "CI", "conclusion" => "SUCCESS", "status" => "COMPLETED"},
+        %{"name" => "Deploy", "conclusion" => nil, "status" => "WAITING"}
+      ]
+
+      assert GitHub.evaluate_checks(checks) == false
+    end
+
+    test "requested check blocks → false" do
+      checks = [
+        %{"name" => "CI", "conclusion" => "SUCCESS", "status" => "COMPLETED"},
+        %{"name" => "Deploy", "conclusion" => nil, "status" => "REQUESTED"}
+      ]
+
+      assert GitHub.evaluate_checks(checks) == false
+    end
+
     test "annotation (nil conclusion AND nil status) is ignored → true" do
       checks = [
         %{"name" => "CI", "conclusion" => "SUCCESS", "status" => "COMPLETED"},
