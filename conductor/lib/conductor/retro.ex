@@ -11,7 +11,8 @@ defmodule Conductor.Retro do
   the target architecture? Is this a symptom or a root cause?"
 
   Runs asynchronously via a dedicated GenServer so it doesn't block
-  RunServer shutdown.
+  RunServer shutdown. Crashes in analysis are caught and logged — they
+  never take down the GenServer.
   """
 
   use GenServer
@@ -22,6 +23,9 @@ defmodule Conductor.Retro do
   @anthropic_url "https://api.anthropic.com/v1/messages"
   @model "claude-sonnet-4-20250514"
   @max_tokens 2048
+
+  # Repo root is three levels up from __DIR__ (conductor/lib/conductor/)
+  @repo_root Path.expand("../../..", __DIR__)
 
   # --- Public API ---
 
@@ -50,7 +54,13 @@ defmodule Conductor.Retro do
 
   @impl true
   def handle_cast({:analyze, run_id}, state) do
-    do_analyze(run_id)
+    try do
+      do_analyze(run_id)
+    rescue
+      e ->
+        Logger.warning("[retro] #{run_id} crashed: #{Exception.message(e)}")
+    end
+
     {:noreply, state}
   end
 
@@ -176,37 +186,39 @@ defmodule Conductor.Retro do
           messages: [%{role: "user", content: prompt}]
         })
 
-      tmp = Path.join(System.tmp_dir!(), "retro-#{:rand.uniform(999_999)}.json")
+      tmp = Path.join(System.tmp_dir!(), "retro-#{System.unique_integer([:positive])}.json")
       File.write!(tmp, body)
 
-      result =
-        Shell.cmd("curl", [
-          "-sS",
-          "-X",
-          "POST",
-          @anthropic_url,
-          "-H",
-          "content-type: application/json",
-          "-H",
-          "x-api-key: #{api_key}",
-          "-H",
-          "anthropic-version: 2023-06-01",
-          "-d",
-          "@#{tmp}"
-        ])
+      try do
+        result =
+          Shell.cmd("curl", [
+            "-sS",
+            "-X",
+            "POST",
+            @anthropic_url,
+            "-H",
+            "content-type: application/json",
+            "-H",
+            "x-api-key: #{api_key}",
+            "-H",
+            "anthropic-version: 2023-06-01",
+            "-d",
+            "@#{tmp}"
+          ])
 
-      File.rm(tmp)
+        case result do
+          {:ok, json} ->
+            case Jason.decode(json) do
+              {:ok, %{"content" => [%{"text" => text} | _]}} -> {:ok, text}
+              {:ok, %{"error" => err}} -> {:error, "API error: #{inspect(err)}"}
+              {:error, _} -> {:error, "invalid JSON response"}
+            end
 
-      case result do
-        {:ok, json} ->
-          case Jason.decode(json) do
-            {:ok, %{"content" => [%{"text" => text} | _]}} -> {:ok, text}
-            {:ok, %{"error" => err}} -> {:error, "API error: #{inspect(err)}"}
-            {:error, _} -> {:error, "invalid JSON response"}
-          end
-
-        {:error, msg, code} ->
-          {:error, "curl failed (#{code}): #{String.slice(msg, 0, 200)}"}
+          {:error, msg, code} ->
+            {:error, "curl failed (#{code}): #{String.slice(msg, 0, 200)}"}
+        end
+      after
+        File.rm(tmp)
       end
     end
   end
@@ -256,37 +268,47 @@ defmodule Conductor.Retro do
     title = "[retro] #{finding["title"]}"
     body = (finding["content"] || finding["description"]) <> "\n\n---\nCreated by conductor retro"
 
-    tmp = Path.join(System.tmp_dir!(), "retro-issue-#{:rand.uniform(999_999)}.md")
+    tmp = Path.join(System.tmp_dir!(), "retro-issue-#{System.unique_integer([:positive])}.md")
     File.write!(tmp, body)
 
-    case Shell.cmd("gh", [
-           "issue",
-           "create",
-           "--repo",
-           repo,
-           "--title",
-           title,
-           "--label",
-           "source/retro,p2",
-           "--body-file",
-           tmp
-         ]) do
-      {:ok, url} ->
-        Logger.info("[retro] created issue: #{String.trim(url)}")
+    try do
+      case Shell.cmd("gh", [
+             "issue",
+             "create",
+             "--repo",
+             repo,
+             "--title",
+             title,
+             "--label",
+             "source/retro,p2",
+             "--body-file",
+             tmp
+           ]) do
+        {:ok, url} ->
+          Logger.info("[retro] created issue: #{String.trim(url)}")
 
-      {:error, msg, _} ->
-        Logger.warning("[retro] issue creation failed: #{msg}")
+        {:error, msg, _} ->
+          Logger.warning("[retro] issue creation failed: #{msg}")
+      end
+    after
+      File.rm(tmp)
     end
-
-    File.rm(tmp)
   end
 
   defp comment_issue(repo, finding) do
     case finding["existing_issue"] do
       "#" <> num ->
-        comment = "**Retro finding:** #{finding["description"]}\n\n#{finding["content"] || ""}"
-        GitHub.create_issue_comment(repo, String.to_integer(num), comment)
-        Logger.info("[retro] commented on #{finding["existing_issue"]}")
+        case Integer.parse(num) do
+          {issue_number, _} ->
+            comment =
+              "**Retro finding:** #{finding["description"]}\n\n#{finding["content"] || ""}"
+
+            GitHub.create_issue_comment(repo, issue_number, comment)
+            Logger.info("[retro] commented on ##{issue_number}")
+
+          :error ->
+            Logger.warning("[retro] invalid issue number: #{num}")
+        end
 
       _ ->
         Logger.warning("[retro] comment_issue but no existing_issue specified")
@@ -294,7 +316,7 @@ defmodule Conductor.Retro do
   end
 
   defp update_backlog(finding) do
-    backlog_path = Path.expand("../../.groom/BACKLOG.md", __DIR__)
+    backlog_path = Path.join(@repo_root, ".groom/BACKLOG.md")
 
     entry = finding["content"] || "- **#{finding["title"]}** — #{finding["description"]}"
 
@@ -322,7 +344,7 @@ defmodule Conductor.Retro do
   defp format_events(events) do
     events
     |> Enum.map(fn e ->
-      "- [#{e["event_type"]}] #{e["created_at"]} #{inspect(e["data"])}"
+      "- [#{e["event_type"]}] #{e["created_at"]} #{inspect(e["payload"])}"
     end)
     |> Enum.join("\n")
     |> String.slice(0, 4_000)
@@ -337,7 +359,7 @@ defmodule Conductor.Retro do
   end
 
   defp read_project_context do
-    path = Path.expand("../../project.md", __DIR__)
+    path = Path.join(@repo_root, "project.md")
 
     case File.read(path) do
       {:ok, content} -> String.slice(content, 0, 3_000)
@@ -346,7 +368,7 @@ defmodule Conductor.Retro do
   end
 
   defp read_backlog do
-    path = Path.expand("../../.groom/BACKLOG.md", __DIR__)
+    path = Path.join(@repo_root, ".groom/BACKLOG.md")
 
     case File.read(path) do
       {:ok, content} -> String.slice(content, 0, 2_000)
