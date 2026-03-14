@@ -381,7 +381,7 @@ defmodule Conductor.RunServer do
   # Read CLAUDE.md and project.md from the repo root (one level above conductor/).
   # Returns nil if neither file exists. Truncated to ~8 KB to stay within prompt budget.
   defp read_repo_context do
-    root = Path.expand("..")
+    root = Path.expand("../../..", __DIR__)
 
     parts =
       ["CLAUDE.md", "project.md"]
