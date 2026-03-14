@@ -5,70 +5,58 @@ Claude-family tools may read this file first. Keep it aligned w `AGENTS.md`.
 Also read:
 - `WORKFLOW.md` (repo-owned runtime workflow contract)
 - `AGENTS.md` (canonical repo context)
-- `docs/adr/001-claude-code-canonical-harness.md` (Claude Code decision)
-- `docs/adr/002-architecture-minimalism.md` (thin CLI decision)
+- `docs/adr/004-elixir-conductor-architecture.md` (Elixir conductor design)
 
 ## What This Is
 
 Bitterblossom has two surfaces:
 
-- `bb`: thin Go transport for sprite setup, dispatch, status, logs, and recovery
-- `scripts/conductor.py`: the run-centric control plane for GitHub issue intake, leases, builder/reviewer dispatch, CI waits, PR reconciliation, and merge
+- `conductor/`: Elixir/OTP orchestrator — leases issues, dispatches builders, governs PRs, merges
+- `cmd/bb/`: Go transport for sprite dispatch, setup, status, logs (being absorbed into Elixir per #621)
 
-`bb` stays deterministic and small. The conductor owns workflow judgment and durable run state.
+The conductor owns workflow judgment and durable run state. `bb` is transitional transport.
 
 ## Architecture
 
 ```text
-cmd/bb/
-  main.go               Cobra root, token exchange, helpers
-  dispatch.go           Probe -> sync -> upload prompt -> run ralph
-  logs.go               Tail + render ralph.log (pretty or --json)
-  setup.go              Configure sprite: configs, persona, ralph, git auth
-  status.go             Fleet overview or single sprite detail
-  stream_json.go        stream-json renderer (shared by dispatch/logs)
-  sprite_workspace.go   Find workspace on-sprite
+conductor/
+  lib/conductor/
+    application.ex       OTP supervision tree
+    orchestrator.ex      Polling loop, issue selection, run dispatch
+    run_server.ex        Per-run GenServer — state machine lifecycle
+    store.ex             SQLite persistence (runs, leases, events)
+    github.ex            GitHub operations via gh CLI
+    sprite.ex            Sprite operations via sprite/bb CLI
+    workspace.ex         Worktree lifecycle on sprites
+    prompt.ex            Builder prompt construction
+    shell.ex             Subprocess execution with timeout
+    config.ex            Runtime configuration
+    issue.ex             Issue struct + readiness checks
+    cli.ex               CLI commands
 
-scripts/
-  conductor.py              GitHub issue -> PR -> review -> merge control plane
-  ralph.sh                  The ralph loop: invoke agent, check signals, enforce limits
-  ralph-prompt-template.md  Prompt template with {{TASK_DESCRIPTION}}, {{REPO}}, {{SPRITE_NAME}}
+cmd/bb/                  Go transport (transitional, see #621)
+scripts/ralph.sh         Agent loop on sprites (being eliminated, see #621)
 ```
 
-No `internal/` directory. No `pkg/`. All Go logic lives in `cmd/bb/`.
+## Operating Model
 
-Default operating model:
-
-1. `bb setup` bootstraps persistent worker sprites
-2. `scripts/conductor.py run-once|loop` operates the factory
-3. `bb status` / `bb logs` / conductor run surfaces are the operator recovery path
-
-## Canonical Harness
-
-Claude Code is the only supported sprite harness (ADR-001). Runtime is pinned to Sonnet 4.6 with official `ralph-loop` plugin enabled in settings.
-
-```bash
-# Direct
-claude -p --dangerously-skip-permissions --verbose < prompt.md
-
-# Via OpenRouter proxy (default sprite runtime)
-ANTHROPIC_BASE_URL=https://openrouter.ai/api \
-ANTHROPIC_AUTH_TOKEN="$OPENROUTER_API_KEY" \
-ANTHROPIC_MODEL=anthropic/claude-sonnet-4-6 \
-claude -p --dangerously-skip-permissions --verbose < prompt.md
-```
-
-NEVER set `ANTHROPIC_API_KEY` on sprites (billing risk).
+1. `cd conductor && mix conductor run-once --repo R --issue N --worker W` runs one issue
+2. `cd conductor && mix conductor loop --repo R --worker W1 --worker W2` runs continuously
+3. `cd conductor && mix conductor show-runs` / `show-events` for inspection
 
 ## Build & Test
 
 ```bash
+# Elixir conductor
+cd conductor && mix deps.get && mix compile && mix test
+
+# Go transport (transitional)
 go build -o bin/bb ./cmd/bb
 ```
 
 ## Coding Standards
 
+- Elixir 1.16+, `mix format`, deep modules (Ousterhout)
 - Go 1.23+, `gofmt` + `golangci-lint`
 - Semantic commits: `feat:`, `fix:`, `test:`, `docs:`, `refactor:`
-- Handle errors explicitly (except `fmt.Fprintf` to stderr)
-- No new packages. All Go code in `cmd/bb/`.
+- No new Go packages. Go surface is shrinking, not growing.

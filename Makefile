@@ -1,4 +1,4 @@
-.PHONY: build test lint clean test-python lint-python conductor-check conductor-start conductor-install-cron conductor-status conductor-stop
+.PHONY: build test lint clean test-hooks test-conductor conductor-check
 
 BINARY := bb
 BIN_DIR := bin
@@ -20,25 +20,11 @@ lint:
 clean:
 	rm -rf $(BIN_DIR)
 
-test-python:
-	python3 -m pytest -q base/hooks scripts/test_conductor.py scripts/test_conductor_supervise.py scripts/test_workflow_contract.py
+test-hooks:
+	python3 -m pytest -q base/hooks/
 
-lint-python:
-	ruff check base/hooks scripts/conductor.py scripts/test_conductor.py scripts/test_conductor_supervise.py scripts/test_workflow_contract.py
+test-conductor:
+	cd conductor && mix test
 
 conductor-check:
-	python3 scripts/conductor.py check-env
-
-# CONDUCTOR_SUPERVISOR_ARGS is an operator shell passthrough. It is only for
-# trusted local invocation, not untrusted input.
-conductor-start:
-	./scripts/conductor-supervise.sh start $(CONDUCTOR_SUPERVISOR_ARGS)
-
-conductor-install-cron:
-	./scripts/conductor-supervise.sh install-cron $(CONDUCTOR_SUPERVISOR_ARGS)
-
-conductor-status:
-	./scripts/conductor-supervise.sh status
-
-conductor-stop:
-	./scripts/conductor-supervise.sh stop
+	cd conductor && mix conductor check-env
