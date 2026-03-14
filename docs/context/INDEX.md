@@ -35,7 +35,7 @@ When sources disagree, trust them in this order:
 ## Fast Routing
 
 - Control-plane logic, leases, runs, review waves, merge policy:
-  - [`scripts/conductor.py`](../../scripts/conductor.py)
+  - [`conductor/lib/conductor/`](../../conductor/lib/conductor/)
   - [`docs/CONDUCTOR.md`](../CONDUCTOR.md)
   - [`docs/architecture/conductor.md`](../architecture/conductor.md)
 - Sprite setup, dispatch, logs, status, recovery:
@@ -77,11 +77,11 @@ These files and areas are still useful context, but they are not reliable truth 
 
 | Question | Start Here |
 |---|---|
-| Why did a run block or fail? | [`scripts/conductor.py`](../../scripts/conductor.py), [`docs/CONDUCTOR.md`](../CONDUCTOR.md), `.bb/conductor.db`, `.bb/events.jsonl` |
+| Why did a run block or fail? | [`conductor/lib/conductor/`](../../conductor/lib/conductor/), [`docs/CONDUCTOR.md`](../CONDUCTOR.md), `.bb/conductor.db`, `.bb/events.jsonl` |
 | What does `bb dispatch` actually do? | [`cmd/bb/dispatch.go`](../../cmd/bb/dispatch.go), [`docs/architecture/bb-cli.md`](../architecture/bb-cli.md) |
 | How does setup/bootstrap work? | [`cmd/bb/setup.go`](../../cmd/bb/setup.go), [`docs/CLI-REFERENCE.md`](../CLI-REFERENCE.md) |
 | What files prove work completion? | [`docs/COMPLETION-PROTOCOL.md`](../COMPLETION-PROTOCOL.md), [`scripts/ralph.sh`](../../scripts/ralph.sh) |
-| Where do review artifacts live? | [`scripts/conductor.py`](../../scripts/conductor.py), [`docs/CODEBASE_MAP.md`](../CODEBASE_MAP.md) |
+| Where do review artifacts live? | [`conductor/lib/conductor/`](../../conductor/lib/conductor/), [`docs/CODEBASE_MAP.md`](../CODEBASE_MAP.md) |
 | What is current vs planned? | [`project.md`](../../project.md), [`ADR-002`](../adr/002-architecture-minimalism.md), [`ADR-003`](../adr/003-conductor-control-plane.md), [`ADR-004`](../adr/004-bounded-review-governance.md) |
 
 ## Companion Files
