@@ -83,3 +83,40 @@ in `base/settings.json`). Always grep all surfaces — doc-only reviews miss cod
 
 **pytest.ini testpaths**: Adding a new test directory requires updating `testpaths`
 in `pytest.ini`. Without it, `pytest` (no args) won't discover the new tests.
+
+## Phoenix LiveView Dashboard (#615)
+
+### 2026-03-14 — PR #643
+
+**Module attribute ordering in Phoenix.Endpoint**: `@session_options` (or any
+module attribute used inside `use Phoenix.Endpoint`) must be defined BEFORE the
+`use` macro call, not after. The macro expansion happens at compile time and sees
+nil if the attr is defined later.
+
+**Bandit adapter must be explicit**: Phoenix 1.7+ now ships without Cowboy as a
+default in newer versions (1.8+). When using Bandit, add
+`adapter: Bandit.PhoenixAdapter` to both the app config and test config, or the
+endpoint will try to use Plug.Cowboy and fail to start if cowboy isn't in deps.
+
+**Phoenix.PubSub.broadcast takes atom name, not pid**: `Process.whereis/1`
+returns a PID. `Phoenix.PubSub.broadcast/3` requires the registered atom name
+(e.g. `Conductor.PubSub`), not the pid. Pattern: check `Process.whereis(Name)`
+to guard the broadcast, then call `Phoenix.PubSub.broadcast(Name, ...)`.
+
+**LiveView tests need lazy_html**: `Phoenix.LiveViewTest` since LiveView ~1.1
+requires `{:lazy_html, ">= 0.1.0", only: :test}` in mix.exs. Without it,
+`live/2` raises at runtime (not compile time).
+
+**LiveView tests need Phoenix.ConnTest import**: `import Phoenix.LiveViewTest`
+imports `live/2` but `live/2` internally calls `get/2` from `Phoenix.ConnTest`.
+Must `import Phoenix.ConnTest` in the test module too.
+
+**App env pollution across test modules**: Tests that call `Application.put_env`
+must restore originals in `on_exit`. Non-async tests run sequentially but if a
+prior test sets an env key and crashes before cleanup, the next module sees it.
+Always save the original value before overwriting and restore in `on_exit`.
+
+**Zero-build-complexity asset serving**: Serve phoenix.min.js and
+phoenix_live_view.min.js directly from the deps' priv/static dirs using two
+`Plug.Static` declarations (`from: {:phoenix, "priv/static"}` and
+`from: {:phoenix_live_view, "priv/static"}`). No esbuild, no Node required.
