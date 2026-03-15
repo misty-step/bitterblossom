@@ -135,10 +135,18 @@ defmodule Conductor.CLI do
 
         config.sprites
         |> Enum.each(fn sprite ->
-          tags = format_tags(sprite.capability_tags)
+          name = sprite_name(sprite)
+          display_name = name || "(unnamed sprite)"
+          role = Map.get(sprite, :role) || Map.get(sprite, "role") || "unknown"
+
+          tags =
+            format_tags(
+              Map.get(sprite, :capability_tags) || Map.get(sprite, "capability_tags") || []
+            )
+
           health = probe_status(sprite)
-          assignment = Map.get(assignments, sprite.name, "idle")
-          IO.puts("#{sprite.name} role=#{sprite.role} #{health} assignment=#{assignment} #{tags}")
+          assignment = if name, do: Map.get(assignments, name, "idle"), else: "idle"
+          IO.puts("#{display_name} role=#{role} #{health} assignment=#{assignment} #{tags}")
         end)
 
       {:error, reason} ->
@@ -328,10 +336,20 @@ defmodule Conductor.CLI do
       {:ok, _} ->
         "healthy"
 
+      {:error, :missing_name} ->
+        "invalid config (name missing)"
+
       {:error, _} ->
         "unreachable"
     end
   end
+
+  defp sprite_name(sprite) when is_binary(sprite), do: sprite
+
+  defp sprite_name(sprite) when is_map(sprite),
+    do: Map.get(sprite, :name) || Map.get(sprite, "name")
+
+  defp sprite_name(_), do: nil
 
   defp maybe_missing(acc, status, key, label) do
     case Map.fetch(status, key) do
