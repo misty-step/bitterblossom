@@ -129,7 +129,7 @@ defmodule Conductor.Orchestrator do
   @impl true
   def handle_call(:pause, _from, state) do
     Store.set_dispatch_paused(true)
-    {:reply, :ok, %{state | mode: pause_mode(state.mode)}}
+    {:reply, :ok, pause_state(state)}
   end
 
   @impl true
@@ -138,10 +138,10 @@ defmodule Conductor.Orchestrator do
 
     state =
       if state.mode == :idle do
+        schedule_poll(0)
         state
       else
-        schedule_poll(0)
-        %{state | mode: :polling}
+        state
       end
 
     {:reply, :ok, state}
@@ -418,16 +418,26 @@ defmodule Conductor.Orchestrator do
   defp worker_map(workers), do: Map.new(workers, fn worker -> {worker.name, worker} end)
 
   defp reconcile(state) do
-    # 1. Remove in-memory entries for dead processes
-    active =
-      state.active_runs
-      |> Enum.filter(fn {_id, %{pid: pid}} -> Process.alive?(pid) end)
-      |> Map.new()
+    try do
+      # 1. Remove in-memory entries for dead processes
+      active =
+        state.active_runs
+        |> Enum.filter(fn {_id, %{pid: pid}} -> Process.alive?(pid) end)
+        |> Map.new()
 
-    state = %{state | active_runs: active}
+      state = %{state | active_runs: active}
 
-    # 2. Detect and expire stale runs from the Store (covers restarts and orphans)
-    expire_stale_runs(state)
+      # 2. Detect and expire stale runs from the Store (covers restarts and orphans)
+      expire_stale_runs(state)
+    rescue
+      exception ->
+        Logger.warning("[reconcile] failed to read active runs: #{Exception.message(exception)}")
+        state
+    catch
+      :exit, reason ->
+        Logger.warning("[reconcile] failed to read active runs: #{inspect(reason)}")
+        state
+    end
   end
 
   defp expire_stale_runs(%{repo: nil} = state), do: state
@@ -708,22 +718,31 @@ defmodule Conductor.Orchestrator do
   end
 
   defp dispatch_paused? do
-    Store.dispatch_paused?()
-  rescue
-    exception ->
-      Logger.warning(
-        "[dispatch] failed to read pause state: #{Exception.message(exception)}; defaulting to paused"
-      )
+    try do
+      Store.dispatch_paused?()
+    rescue
+      exception ->
+        Logger.warning(
+          "[dispatch] failed to read pause state: #{Exception.message(exception)}; defaulting to paused"
+        )
 
-      true
+        true
+    catch
+      :exit, reason ->
+        Logger.warning(
+          "[dispatch] failed to read pause state: #{inspect(reason)}; defaulting to paused"
+        )
+
+        true
+    end
   end
 
   defp dispatch_mode do
     if dispatch_paused?(), do: :paused, else: :polling
   end
 
-  defp pause_mode(:idle), do: :idle
-  defp pause_mode(_mode), do: :paused
+  defp pause_state(%{mode: :idle} = state), do: state
+  defp pause_state(state), do: %{state | mode: :paused}
 
   # Update the Store when the orchestrator merges a PR (not the RunServer).
   defp record_merge(repo, pr_number) do

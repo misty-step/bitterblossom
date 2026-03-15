@@ -207,7 +207,7 @@ defmodule Conductor.OrchestratorTest do
   end
 
   describe "pause/resume dispatch" do
-    test "pause prevents new runs and resume restarts polling" do
+    test "pause prevents new runs and resume restarts polling", %{orch_pid: orch_pid} do
       issue = %Conductor.Issue{
         number: 301,
         title: "paused issue",
@@ -227,10 +227,24 @@ defmodule Conductor.OrchestratorTest do
 
       assert :ok = Orchestrator.resume()
       refute Store.dispatch_paused?()
+      send(orch_pid, :poll)
 
       eventually(fn ->
         assert MockState.get(:started_runs) == [{301, "sprite-1"}]
       end)
+    end
+
+    test "poll fails closed when pause state cannot be read", %{orch_pid: orch_pid} do
+      Process.unlink(orch_pid)
+
+      assert :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      assert Process.alive?(orch_pid)
+
+      GenServer.stop(Store)
+      send(orch_pid, :poll)
+      Process.sleep(50)
+
+      assert Process.alive?(orch_pid)
     end
   end
 
