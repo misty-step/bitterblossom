@@ -3,6 +3,31 @@ defmodule Conductor.SpriteHealthTest do
 
   alias Conductor.Sprite
 
+  describe "probe/2" do
+    test "uses echo ok to wake and verify the sprite" do
+      test_pid = self()
+
+      assert {:ok, %{sprite: "test-sprite", reachable: true}} =
+               Sprite.probe("test-sprite",
+                 exec_fn: fn sprite, cmd, _opts ->
+                   send(test_pid, {:probe_called, sprite, cmd})
+                   {:ok, "ok\n"}
+                 end
+               )
+
+      assert_received {:probe_called, "test-sprite", "echo ok"}
+    end
+
+    test "returns an error when the sprite cannot be reached" do
+      assert {:error, "connection refused"} =
+               Sprite.probe("test-sprite",
+                 exec_fn: fn _sprite, _cmd, _opts ->
+                   {:error, "connection refused", 255}
+                 end
+               )
+    end
+  end
+
   describe "busy?/1" do
     test "returns true when agent processes are detected" do
       # Stub exec to simulate pgrep finding claude processes

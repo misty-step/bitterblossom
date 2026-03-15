@@ -94,6 +94,15 @@ defmodule Conductor.ConfigTest do
     end
   end
 
+  describe "normalize_workers/1" do
+    test "coalesces nil capability tags to an empty list" do
+      assert [%{name: "sprite-1", capability_tags: []}] =
+               Config.normalize_workers([
+                 %{name: "sprite-1", capability_tags: nil}
+               ])
+    end
+  end
+
   describe "prompt_template/0" do
     test "returns env var when set" do
       System.put_env("CONDUCTOR_PROMPT_TEMPLATE", "/custom/template.md")

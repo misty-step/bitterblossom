@@ -13,6 +13,7 @@ defmodule Conductor.Fleet.Loader do
           role: atom(),
           org: binary(),
           repo: binary(),
+          capability_tags: [binary()],
           harness: binary(),
           model: binary(),
           reasoning_effort: binary(),
@@ -138,24 +139,34 @@ defmodule Conductor.Fleet.Loader do
 
       true ->
         harness = raw_sprite["harness"] || defaults.harness
+        capability_tags = raw_sprite["capability_tags"] || []
 
-        if harness not in @valid_harnesses do
-          {:error,
-           "sprite #{name} has invalid harness '#{harness}' (valid: #{Enum.join(@valid_harnesses, ", ")})"}
-        else
-          {:ok,
-           %{
-             name: name,
-             role: String.to_atom(role_str),
-             org: raw_sprite["org"] || defaults.org,
-             repo: raw_sprite["repo"] || defaults.repo,
-             harness: harness,
-             model: raw_sprite["model"] || defaults.model,
-             reasoning_effort: raw_sprite["reasoning_effort"] || defaults.reasoning_effort,
-             label: raw_sprite["label"] || defaults.label,
-             persona: raw_sprite["persona"]
-           }}
+        cond do
+          harness not in @valid_harnesses ->
+            {:error,
+             "sprite #{name} has invalid harness '#{harness}' (valid: #{Enum.join(@valid_harnesses, ", ")})"}
+
+          not valid_capability_tags?(capability_tags) ->
+            {:error, "sprite #{name} capability_tags must be an array of strings"}
+
+          true ->
+            {:ok,
+             %{
+               name: name,
+               role: String.to_atom(role_str),
+               org: raw_sprite["org"] || defaults.org,
+               repo: raw_sprite["repo"] || defaults.repo,
+               capability_tags: capability_tags,
+               harness: harness,
+               model: raw_sprite["model"] || defaults.model,
+               reasoning_effort: raw_sprite["reasoning_effort"] || defaults.reasoning_effort,
+               label: raw_sprite["label"] || defaults.label,
+               persona: raw_sprite["persona"]
+             }}
         end
     end
   end
+
+  defp valid_capability_tags?(tags) when is_list(tags), do: Enum.all?(tags, &is_binary/1)
+  defp valid_capability_tags?(_), do: false
 end

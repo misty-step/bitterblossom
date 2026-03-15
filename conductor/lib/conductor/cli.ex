@@ -1,7 +1,7 @@
 defmodule Conductor.CLI do
   @moduledoc "Escript entry point. Parses args and delegates to Conductor."
 
-  @commands ~w(start shape show-runs show-events show-incidents show-waivers check-env dashboard status)
+  @commands ~w(start shape fleet show-runs show-events show-incidents show-waivers check-env dashboard status)
 
   def main(args) do
     Application.ensure_all_started(:conductor)
@@ -23,6 +23,9 @@ defmodule Conductor.CLI do
 
       ["shape" | rest] ->
         cmd_shape(rest)
+
+      ["fleet" | rest] ->
+        cmd_fleet(rest)
 
       ["show-runs" | rest] ->
         cmd_show_runs(rest)
@@ -112,6 +115,34 @@ defmodule Conductor.CLI do
 
       {:error, reason} ->
         IO.puts("shape failed: #{inspect(reason)}")
+        System.halt(1)
+    end
+  end
+
+  defp cmd_fleet(args) do
+    {opts, _, _} =
+      OptionParser.parse(args,
+        strict: [
+          fleet: :string
+        ]
+      )
+
+    fleet_path = Keyword.get(opts, :fleet, fleet_default_path())
+
+    case Conductor.Fleet.Loader.load(fleet_path) do
+      {:ok, config} ->
+        assignments = active_builder_assignments(config.defaults.repo)
+
+        config.sprites
+        |> Enum.each(fn sprite ->
+          tags = format_tags(sprite.capability_tags)
+          health = probe_status(sprite.name)
+          assignment = Map.get(assignments, sprite.name, "idle")
+          IO.puts("#{sprite.name} role=#{sprite.role} #{health} assignment=#{assignment} #{tags}")
+        end)
+
+      {:error, reason} ->
+        IO.puts("fleet failed: #{reason}")
         System.halt(1)
     end
   end
@@ -243,4 +274,30 @@ defmodule Conductor.CLI do
       IO.puts("environment check failed: #{Exception.message(e)}")
       System.halt(1)
   end
+
+  defp active_builder_assignments(repo) do
+    repo
+    |> Conductor.Store.list_active_runs()
+    |> Map.new(fn run -> {run["builder_sprite"], "issue ##{run["issue_number"]}"} end)
+  end
+
+  defp probe_status(sprite) do
+    worker_mod = Application.get_env(:conductor, :worker_module, Conductor.Sprite)
+
+    result =
+      try do
+        Conductor.Orchestrator.probe_worker_module(worker_mod, sprite, [])
+      rescue
+        System.EnvError ->
+          {:error, :missing_env}
+      end
+
+    case result do
+      {:ok, _} -> "healthy"
+      {:error, _} -> "unreachable"
+    end
+  end
+
+  defp format_tags([]), do: "tags=-"
+  defp format_tags(tags), do: "tags=#{Enum.join(tags, ",")}"
 end

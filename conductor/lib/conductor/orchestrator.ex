@@ -12,9 +12,21 @@ defmodule Conductor.Orchestrator do
 
   alias Conductor.{Store, Config, Issue, Workspace}
 
+  defmodule RunLauncher do
+    @moduledoc false
+
+    def start(opts) do
+      DynamicSupervisor.start_child(
+        Conductor.RunSupervisor,
+        {Conductor.RunServer, opts}
+      )
+    end
+  end
+
   defstruct [
     :repo,
     :label,
+    :worker_order,
     :workers,
     :trusted_surfaces,
     mode: :idle,
@@ -58,22 +70,31 @@ defmodule Conductor.Orchestrator do
     GenServer.call(__MODULE__, {:start_loop, opts})
   end
 
+  @doc "Return fleet worker status in round-robin order."
+  @spec fleet_status() :: [map()]
+  def fleet_status do
+    GenServer.call(__MODULE__, :fleet_status)
+  end
+
   # --- GenServer Callbacks ---
 
   @impl true
   def init(opts) do
+    workers = normalize_workers(Keyword.get(opts, :workers, []))
+
     {:ok,
      %__MODULE__{
        repo: Keyword.get(opts, :repo),
        label: Keyword.get(opts, :label, "autopilot"),
-       workers: Keyword.get(opts, :workers, []),
+       workers: worker_map(workers),
+       worker_order: Enum.map(workers, & &1.name),
        trusted_surfaces: Keyword.get(opts, :trusted_surfaces, [])
      }}
   end
 
   @impl true
   def handle_call({:start_loop, opts}, _from, state) do
-    workers = Keyword.fetch!(opts, :workers)
+    workers = normalize_workers(Keyword.fetch!(opts, :workers))
 
     if workers == [] do
       {:reply, {:error, :no_workers}, state}
@@ -82,7 +103,8 @@ defmodule Conductor.Orchestrator do
         state
         | repo: Keyword.fetch!(opts, :repo),
           label: Keyword.get(opts, :label, state.label),
-          workers: workers,
+          workers: worker_map(workers),
+          worker_order: Enum.map(workers, & &1.name),
           trusted_surfaces: Keyword.get(opts, :trusted_surfaces, state.trusted_surfaces),
           mode: :polling
       }
@@ -90,6 +112,11 @@ defmodule Conductor.Orchestrator do
       schedule_poll(0)
       {:reply, :ok, state}
     end
+  end
+
+  @impl true
+  def handle_call(:fleet_status, _from, state) do
+    {:reply, ordered_workers(state), state}
   end
 
   @impl true
@@ -127,10 +154,7 @@ defmodule Conductor.Orchestrator do
       trusted_surfaces: trusted_surfaces
     ]
 
-    case DynamicSupervisor.start_child(
-           Conductor.RunSupervisor,
-           {Conductor.RunServer, opts}
-         ) do
+    case run_launcher().start(opts) do
       {:ok, pid} ->
         ref = Process.monitor(pid)
         timeout = (Config.builder_timeout() + Config.ci_timeout() + 10) * 60_000
@@ -171,13 +195,13 @@ defmodule Conductor.Orchestrator do
   end
 
   defp start_run(state, issue) do
-    worker = pick_worker(state)
+    case pick_worker(state) do
+      {:ok, worker, state} ->
+        dispatch_run(state, issue, worker.name)
 
-    if worker_mod().busy?(worker) do
-      Logger.info("worker #{worker} busy, deferring issue ##{issue.number}")
-      state
-    else
-      dispatch_run(state, issue, worker)
+      {:error, :no_available_workers, state} ->
+        Logger.info("no healthy worker available, deferring issue ##{issue.number}")
+        state
     end
   end
 
@@ -203,7 +227,7 @@ defmodule Conductor.Orchestrator do
         trusted_surfaces: state.trusted_surfaces
       ] ++ adoption_opts(existing_pr)
 
-    case DynamicSupervisor.start_child(Conductor.RunSupervisor, {Conductor.RunServer, opts}) do
+    case run_launcher().start(opts) do
       {:ok, pid} ->
         ref = Process.monitor(pid)
         run_entry = %{pid: pid, ref: ref, issue: issue.number, worker: worker}
@@ -212,8 +236,7 @@ defmodule Conductor.Orchestrator do
 
         %{
           state
-          | active_runs: Map.put(state.active_runs, issue.number, run_entry),
-            worker_index: state.worker_index + 1
+          | active_runs: Map.put(state.active_runs, issue.number, run_entry)
         }
 
       {:error, reason} ->
@@ -232,11 +255,119 @@ defmodule Conductor.Orchestrator do
     ]
   end
 
-  defp pick_worker(%{workers: []}), do: raise("no workers configured")
+  defp pick_worker(%{worker_order: []} = state), do: {:error, :no_available_workers, state}
 
-  defp pick_worker(%{workers: workers, worker_index: idx}) do
-    Enum.at(workers, rem(idx, length(workers)))
+  defp pick_worker(state) do
+    count = length(state.worker_order)
+
+    0..(count - 1)
+    |> Enum.reduce_while({:error, :no_available_workers, state}, fn offset,
+                                                                    {_status, _reason, acc} ->
+      candidate_index = rem(acc.worker_index + offset, count)
+      worker_name = Enum.at(acc.worker_order, candidate_index)
+
+      case probe_and_reserve_worker(acc, worker_name, candidate_index) do
+        {:ok, worker, next_state} ->
+          {:halt, {:ok, worker, next_state}}
+
+        {:error, next_state} ->
+          {:cont, {:error, :no_available_workers, next_state}}
+      end
+    end)
   end
+
+  defp probe_and_reserve_worker(state, worker_name, candidate_index) do
+    {worker, state} = probe_worker(state, worker_name)
+
+    cond do
+      not worker.healthy ->
+        {:error, state}
+
+      worker_busy?(worker.name) ->
+        Logger.info("worker #{worker.name} busy, skipping this cycle")
+        {:error, state}
+
+      true ->
+        {:ok, worker,
+         %{state | worker_index: rem(candidate_index + 1, length(state.worker_order))}}
+    end
+  end
+
+  defp probe_worker(state, worker_name) do
+    worker = Map.fetch!(state.workers, worker_name)
+
+    case probe_worker_module(worker_mod(), worker.name, capability_tags: worker.capability_tags) do
+      {:ok, _} ->
+        updated = %{
+          worker
+          | healthy: true,
+            drained: false,
+            consecutive_failures: 0,
+            last_error: nil
+        }
+
+        {updated, put_worker(state, updated)}
+
+      {:error, reason} ->
+        failures = worker.consecutive_failures + 1
+        drained = failures >= Config.fleet_probe_failure_threshold()
+
+        updated = %{
+          worker
+          | healthy: false,
+            drained: drained,
+            consecutive_failures: failures,
+            last_error: to_string(reason)
+        }
+
+        if drained do
+          Logger.warning("worker #{worker.name} drained after #{failures} failed probes")
+        end
+
+        {updated, put_worker(state, updated)}
+    end
+  end
+
+  defp ordered_workers(state) do
+    assignments =
+      state.active_runs
+      |> Enum.map(fn {_issue_number, run} -> {run.worker, run.issue} end)
+      |> Map.new()
+
+    Enum.map(state.worker_order, fn worker_name ->
+      worker = Map.fetch!(state.workers, worker_name)
+      Map.put(worker, :assignment, assignment_for(worker_name, assignments))
+    end)
+  end
+
+  defp assignment_for(worker_name, assignments) do
+    case Map.get(assignments, worker_name) do
+      nil -> nil
+      issue_number -> %{issue_number: issue_number}
+    end
+  end
+
+  defp put_worker(state, worker) do
+    %{state | workers: Map.put(state.workers, worker.name, worker)}
+  end
+
+  defp normalize_workers(workers) do
+    workers
+    |> Config.normalize_workers()
+    |> Enum.map(fn worker ->
+      Map.merge(
+        %{
+          healthy: true,
+          drained: false,
+          consecutive_failures: 0,
+          last_error: nil
+        },
+        worker
+      )
+    end)
+  end
+
+  defp worker_map(workers), do: Map.new(workers, fn worker -> {worker.name, worker} end)
 
   defp reconcile(state) do
     # 1. Remove in-memory entries for dead processes
@@ -292,7 +423,7 @@ defmodule Conductor.Orchestrator do
 
   defp merge_labeled_prs(%{repo: nil}), do: :ok
 
-  defp merge_labeled_prs(%{repo: repo, workers: workers}) do
+  defp merge_labeled_prs(%{repo: repo} = state) do
     case code_host_mod().labeled_prs(repo, "lgtm") do
       {:ok, prs} ->
         prs
@@ -315,7 +446,7 @@ defmodule Conductor.Orchestrator do
 
               {:error, reason} ->
                 if merge_conflict?(reason) do
-                  attempt_rebase_merge(repo, pr_number, pr["headRefName"], workers)
+                  attempt_rebase_merge(repo, pr_number, pr["headRefName"], state.worker_order)
                 else
                   Logger.warning("[merge] PR ##{pr_number} merge failed: #{reason}")
                 end
@@ -410,6 +541,33 @@ defmodule Conductor.Orchestrator do
   defp tracker_mod, do: Application.get_env(:conductor, :tracker_module, Conductor.GitHub)
   defp worker_mod, do: Application.get_env(:conductor, :worker_module, Conductor.Sprite)
   defp code_host_mod, do: Application.get_env(:conductor, :code_host_module, Conductor.GitHub)
+
+  defp run_launcher,
+    do: Application.get_env(:conductor, :run_launcher_module, __MODULE__.RunLauncher)
+
+  @doc false
+  def probe_worker_module(worker_module, worker, opts \\ []) do
+    cond do
+      function_exported?(worker_module, :probe, 2) ->
+        worker_module.probe(worker, opts)
+
+      function_exported?(worker_module, :status, 1) ->
+        worker_module.status(worker)
+
+      true ->
+        if worker_module.reachable?(worker),
+          do: {:ok, %{sprite: worker, reachable: true}},
+          else: {:error, :unreachable}
+    end
+  end
+
+  defp worker_busy?(worker) do
+    if function_exported?(worker_mod(), :busy?, 2) do
+      worker_mod().busy?(worker, [])
+    else
+      worker_mod().busy?(worker)
+    end
+  end
 
   defp schedule_poll(delay) do
     Process.send_after(self(), :poll, delay)

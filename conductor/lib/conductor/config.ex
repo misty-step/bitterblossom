@@ -1,6 +1,11 @@
 defmodule Conductor.Config do
   @moduledoc "Runtime configuration from environment and application config."
 
+  @type worker_config :: %{
+          name: binary(),
+          capability_tags: [binary()]
+        }
+
   @spec github_token!() :: binary()
   def github_token!, do: System.fetch_env!("GITHUB_TOKEN")
 
@@ -47,6 +52,11 @@ defmodule Conductor.Config do
   @spec max_replays() :: pos_integer()
   def max_replays do
     Application.get_env(:conductor, :max_replays, 3)
+  end
+
+  @spec fleet_probe_failure_threshold() :: pos_integer()
+  def fleet_probe_failure_threshold do
+    Application.get_env(:conductor, :fleet_probe_failure_threshold, 3)
   end
 
   @doc """
@@ -110,6 +120,22 @@ defmodule Conductor.Config do
       "" -> acc
       val -> [{target_key, val} | acc]
     end
+  end
+
+  @spec normalize_workers([binary() | map()]) :: [worker_config()]
+  def normalize_workers(workers) do
+    Enum.map(workers, fn
+      %{name: name} = worker ->
+        %{
+          name: name,
+          capability_tags:
+            (Map.get(worker, :capability_tags) || Map.get(worker, "capability_tags") || [])
+            |> List.wrap()
+        }
+
+      name when is_binary(name) ->
+        %{name: name, capability_tags: []}
+    end)
   end
 
   @spec check_env!() :: :ok
