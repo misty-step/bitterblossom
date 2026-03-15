@@ -357,15 +357,15 @@ func hasTaskCompleteSignalWithRunner(ctx context.Context, run spriteScriptRunner
 }
 
 // prChecksScriptFor builds the shell snippet that runs prChecksScript with
-// the given workspace and GitHub token. Shared by snapshot and wait-for-checks.
-func prChecksScriptFor(workspace, ghToken string) string {
-	return fmt.Sprintf("export WORKSPACE=%q GH_TOKEN=%q\n%s", workspace, ghToken, prChecksScript)
+// the given workspace. Shared by snapshot and wait-for-checks.
+func prChecksScriptFor(workspace string) string {
+	return fmt.Sprintf("export WORKSPACE=%q\n%s", workspace, prChecksScript)
 }
 
-func snapshotPRChecksWithRunner(ctx context.Context, run spriteScriptRunner, workspace, ghToken string) prCheckSummary {
+func snapshotPRChecksWithRunner(ctx context.Context, run spriteScriptRunner, workspace string) prCheckSummary {
 	_, exitCode, err := runDispatchCheck(ctx, run, dispatchCheck{
 		timeout: 30 * time.Second,
-		script:  prChecksScriptFor(workspace, ghToken),
+		script:  prChecksScriptFor(workspace),
 	})
 	if err != nil {
 		return prCheckSummary{status: "error", checksExit: -1}
@@ -386,11 +386,11 @@ func snapshotPRChecksWithRunner(ctx context.Context, run spriteScriptRunner, wor
 // line to progress on every poll interval so operators can see activity.
 //
 // prCheckTimeout == 0 is a no-op (returns nil immediately without calling run).
-func waitForPRChecksWithRunner(ctx context.Context, run spriteScriptRunner, workspace, ghToken string, prCheckTimeout, pollInterval time.Duration, progress io.Writer) error {
+func waitForPRChecksWithRunner(ctx context.Context, run spriteScriptRunner, workspace string, prCheckTimeout, pollInterval time.Duration, progress io.Writer) error {
 	return pollDispatchCheck(ctx, run, dispatchPollConfig{
 		check: dispatchCheck{
 			timeout: 30 * time.Second,
-			script:  prChecksScriptFor(workspace, ghToken),
+			script:  prChecksScriptFor(workspace),
 		},
 		waitTimeout:       prCheckTimeout,
 		pollInterval:      pollInterval,

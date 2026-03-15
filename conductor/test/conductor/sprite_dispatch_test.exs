@@ -130,7 +130,7 @@ defmodule Conductor.SpriteDispatchTest do
       assert String.contains?(agent_cmd, "LEFTHOOK=0")
     end
 
-    test "injects GITHUB_TOKEN from env, shell-quoted" do
+    test "does not inject GITHUB_TOKEN from env" do
       prev = System.get_env("GITHUB_TOKEN")
       System.put_env("GITHUB_TOKEN", "ghp_test123")
 
@@ -147,13 +147,13 @@ defmodule Conductor.SpriteDispatchTest do
         assert_received {:exec_called, _}
         assert_received {:exec_called, _}
         assert_received {:exec_called, agent_cmd}
-        assert String.contains?(agent_cmd, "GITHUB_TOKEN='ghp_test123'")
+        refute String.contains?(agent_cmd, "GITHUB_TOKEN")
       after
         if prev, do: System.put_env("GITHUB_TOKEN", prev), else: System.delete_env("GITHUB_TOKEN")
       end
     end
 
-    test "omits env exports when GITHUB_TOKEN is unset" do
+    test "still omits GITHUB_TOKEN when unset" do
       prev = System.get_env("GITHUB_TOKEN")
       System.delete_env("GITHUB_TOKEN")
 

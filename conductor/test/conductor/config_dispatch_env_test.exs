@@ -30,7 +30,7 @@ defmodule Conductor.ConfigDispatchEnvTest do
       end
     end
 
-    test "includes both GITHUB_TOKEN and OPENAI_API_KEY when both set" do
+    test "does not inject GITHUB_TOKEN even when OPENAI_API_KEY is set" do
       prev_gh = System.get_env("GITHUB_TOKEN")
       prev_oai = System.get_env("OPENAI_API_KEY")
       System.put_env("GITHUB_TOKEN", "ghp_test")
@@ -38,7 +38,7 @@ defmodule Conductor.ConfigDispatchEnvTest do
 
       try do
         env = Config.dispatch_env()
-        assert {"GITHUB_TOKEN", "ghp_test"} in env
+        refute {"GITHUB_TOKEN", "ghp_test"} in env
         assert {"OPENAI_API_KEY", "sk-test"} in env
       after
         if prev_gh,
