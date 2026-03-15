@@ -253,6 +253,26 @@ defmodule Conductor.StoreTest do
     refute Store.dispatch_paused?()
   end
 
+  test "terminate_run atomically completes run and releases lease" do
+    {:ok, run_id} =
+      Store.create_run(%{
+        repo: "test/repo",
+        issue_number: 77,
+        issue_title: "atomic test",
+        builder_sprite: "sprite-1"
+      })
+
+    :ok = Store.acquire_lease("test/repo", 77, run_id)
+    assert Store.leased?("test/repo", 77)
+
+    :ok = Store.terminate_run(run_id, "failed", "failed", "test/repo", 77)
+
+    {:ok, run} = Store.get_run(run_id)
+    assert run["phase"] == "failed"
+    assert run["completed_at"] != nil
+    refute Store.leased?("test/repo", 77)
+  end
+
   test "find_run_by_pr returns an error tuple when the database query fails" do
     :sys.replace_state(Store, fn state -> %{state | conn: :invalid} end)
 
