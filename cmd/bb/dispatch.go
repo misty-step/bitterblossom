@@ -75,22 +75,16 @@ func dispatchWorkspace(repo, override string) string {
 	return spriteRepoWorkspace(repo)
 }
 
-func verifyWorkScriptFor(workspace, ghToken, branch string) string {
+func verifyWorkScriptFor(workspace, branch string) string {
 	return fmt.Sprintf(
-		`export GH_TOKEN=%q WORKSPACE=%q BRANCH=%q; cd "$WORKSPACE" && echo "--- commits ---" && git log --oneline "origin/$BRANCH..HEAD" 2>/dev/null; echo "--- PRs ---" && gh pr list --json url,title 2>/dev/null || echo "(gh not available)"`,
-		ghToken, workspace, branch,
+		`export WORKSPACE=%q BRANCH=%q; cd "$WORKSPACE" && echo "--- commits ---" && git log --oneline "origin/$BRANCH..HEAD" 2>/dev/null; echo "--- PRs ---" && gh pr list --json url,title 2>/dev/null || echo "(gh not available)"`,
+		workspace, branch,
 	)
 }
 
 func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverride, promptTemplate string, maxIter int, timeout time.Duration, noOutputTimeout time.Duration, dryRun bool, prCheckTimeout time.Duration, waitForComplete bool) error {
-	// Validate credentials
-	ghToken, err := requireEnv("GITHUB_TOKEN")
-	if err != nil {
-		return err
-	}
-
-	// LLM auth is handled by settings.json on the sprite (baked in during setup).
-	// Dispatch only validates that GITHUB_TOKEN is set for git operations.
+	// LLM auth is handled by settings.json on the sprite and GitHub auth is
+	// persisted on the sprite during setup.
 	_, _ = fmt.Fprintf(os.Stderr, "probing %s...\n", spriteName)
 	session, err := newSpriteSession(ctx, spriteName, spriteSessionOptions{probeTimeout: 15 * time.Second})
 	if err != nil {
@@ -140,8 +134,8 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverrid
 	if workspaceOverride == "" {
 		_, _ = fmt.Fprintf(os.Stderr, "syncing repo %s (branch: %s)...\n", repo, defaultBranch)
 		syncScript := fmt.Sprintf(
-			`git config --global --add safe.directory %q 2>/dev/null; export GH_TOKEN=%q && cd %q && git checkout %q && git pull --ff-only 2>&1`,
-			workspace, ghToken, workspace, defaultBranch,
+			`git config --global --add safe.directory %q 2>/dev/null; cd %q && git checkout %q && git pull --ff-only 2>&1`,
+			workspace, workspace, defaultBranch,
 		)
 		syncCmd := s.CommandContext(ctx, "bash", "-c", syncScript)
 		if out, err := syncCmd.Output(); err != nil {
@@ -195,8 +189,8 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverrid
 		heartbeatSec = 30
 	}
 	ralphEnv := fmt.Sprintf(
-		`export MAX_ITERATIONS=%d MAX_TIME_SEC=%d ITER_TIMEOUT_SEC=%d HEARTBEAT_INTERVAL_SEC=%d WORKSPACE=%q GH_TOKEN=%q LEFTHOOK=0 ANTHROPIC_MODEL=%q ANTHROPIC_DEFAULT_SONNET_MODEL=%q CLAUDE_CODE_SUBAGENT_MODEL=%q`,
-		maxIter, totalSec, iterSec, heartbeatSec, workspace, ghToken,
+		`export MAX_ITERATIONS=%d MAX_TIME_SEC=%d ITER_TIMEOUT_SEC=%d HEARTBEAT_INTERVAL_SEC=%d WORKSPACE=%q LEFTHOOK=0 ANTHROPIC_MODEL=%q ANTHROPIC_DEFAULT_SONNET_MODEL=%q CLAUDE_CODE_SUBAGENT_MODEL=%q`,
+		maxIter, totalSec, iterSec, heartbeatSec, workspace,
 		spriteModel,
 		spriteModel,
 		spriteModel,
@@ -253,14 +247,14 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverrid
 
 	// 9. Verify work produced
 	_, _ = fmt.Fprintf(os.Stderr, "\n=== work produced ===\n")
-	verifyScript := verifyWorkScriptFor(workspace, ghToken, defaultBranch)
+	verifyScript := verifyWorkScriptFor(workspace, defaultBranch)
 	verifyCmd := s.CommandContext(ctx, "bash", "-c", verifyScript)
 	verifyCmd.Stdout = os.Stderr
 	verifyCmd.Stderr = os.Stderr
 	_ = verifyCmd.Run()
 
 	// 10. Snapshot PR CI status (informational; gating is controlled by --pr-check-timeout).
-	prs := snapshotPRChecksWithRunner(ctx, spriteBashRunner(s), workspace, ghToken)
+	prs := snapshotPRChecksWithRunner(ctx, spriteBashRunner(s), workspace)
 	_, _ = fmt.Fprintf(os.Stderr, "dispatch pr-checks: status=%s checks_exit=%d\n", prs.status, prs.checksExit)
 
 	// 11. Return appropriate exit code
@@ -319,7 +313,7 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverrid
 	if prCheckTimeout > 0 {
 		_, _ = fmt.Fprintf(os.Stderr, "\n=== waiting for PR checks (timeout %s) ===\n", prCheckTimeout)
 		pollInterval := 30 * time.Second
-		if err := waitForPRChecksWithRunner(ctx, spriteBashRunner(s), workspace, ghToken, prCheckTimeout, pollInterval, os.Stderr); err != nil {
+		if err := waitForPRChecksWithRunner(ctx, spriteBashRunner(s), workspace, prCheckTimeout, pollInterval, os.Stderr); err != nil {
 			return fmt.Errorf("PR checks: %w", err)
 		}
 		_, _ = fmt.Fprintf(os.Stderr, "=== PR checks passed ===\n")

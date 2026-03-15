@@ -196,11 +196,15 @@ defmodule Conductor.CLI do
 
     if fleet_sprites != [] do
       for s <- fleet_sprites do
-        reachable = Conductor.Sprite.reachable?(s.name)
+        case Conductor.Sprite.status(s.name, harness: s.harness) do
+          {:ok, status} ->
+            auth = if status.gh_authenticated, do: "gh auth ok", else: "gh auth missing"
+            health = if status.healthy, do: "healthy", else: "needs setup"
+            IO.puts("  #{s.name} (#{s.role}, #{s.harness}) — #{health}, #{auth}")
 
-        IO.puts(
-          "  #{s.name} (#{s.role}, #{s.harness}) — #{if reachable, do: "reachable", else: "unreachable"}"
-        )
+          {:error, _reason} ->
+            IO.puts("  #{s.name} (#{s.role}, #{s.harness}) — unreachable")
+        end
       end
     else
       IO.puts("  (no fleet loaded — run 'conductor start' first)")

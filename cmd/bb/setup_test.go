@@ -164,3 +164,35 @@ func TestBuildBaseConfigMapIncludesImportedSkillFilesRecursively(t *testing.T) {
 	assertRemote("base/skills/shape/SKILL.md", "/home/sprite/.claude/skills/shape/SKILL.md")
 	assertRemote("base/skills/shape/references/breadboarding.md", "/home/sprite/.claude/skills/shape/references/breadboarding.md")
 }
+
+func TestPersistGitHubAuthScriptUsesGhCredentialHelper(t *testing.T) {
+	t.Parallel()
+
+	script := persistGitHubAuthScript("/tmp/bb-gh-token")
+
+	if !strings.Contains(script, "gh auth login --with-token") {
+		t.Fatalf("script = %q, want gh auth login", script)
+	}
+	if !strings.Contains(script, "credential.helper '!gh auth git-credential'") {
+		t.Fatalf("script = %q, want gh auth git-credential helper", script)
+	}
+	if strings.Contains(script, "password=$GH_TOKEN") {
+		t.Fatalf("script = %q, should not use env-backed git credential helper", script)
+	}
+	if !strings.Contains(script, "trap 'rm -f") {
+		t.Fatalf("script = %q, want cleanup trap for token file", script)
+	}
+}
+
+func TestRepoSetupScriptDoesNotExportGHToken(t *testing.T) {
+	t.Parallel()
+
+	script := repoSetupScript("/home/sprite/workspace/repo", "misty-step/bitterblossom", false)
+
+	if strings.Contains(script, "GH_TOKEN") {
+		t.Fatalf("script = %q, should not export GH_TOKEN during repo setup", script)
+	}
+	if !strings.Contains(script, "git clone https://github.com/misty-step/bitterblossom.git") {
+		t.Fatalf("script = %q, want clone command", script)
+	}
+}

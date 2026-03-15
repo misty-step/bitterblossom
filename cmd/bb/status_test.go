@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"testing"
 )
 
@@ -104,5 +105,41 @@ func TestParsePorcelainStatus_CountMatchesLines(t *testing.T) {
 	lines := parsePorcelainStatus(input)
 	if len(lines) != 3 {
 		t.Errorf("expected 3 lines (matching dirty count), got %d", len(lines))
+	}
+}
+
+func TestGhAuthStateWithRunnerReturnsOK(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 0}
+	state, err := ghAuthStateWithRunner(context.Background(), r.run)
+	if err != nil {
+		t.Fatalf("ghAuthStateWithRunner() error = %v", err)
+	}
+	if state != "ok" {
+		t.Fatalf("state = %q, want %q", state, "ok")
+	}
+}
+
+func TestGhAuthStateWithRunnerReturnsNoOnUnauthenticated(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 1}
+	state, err := ghAuthStateWithRunner(context.Background(), r.run)
+	if err != nil {
+		t.Fatalf("ghAuthStateWithRunner() error = %v", err)
+	}
+	if state != "no" {
+		t.Fatalf("state = %q, want %q", state, "no")
+	}
+}
+
+func TestGhAuthStateWithRunnerReturnsErrorOnUnexpectedExit(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 127, out: []byte("gh missing")}
+	_, err := ghAuthStateWithRunner(context.Background(), r.run)
+	if err == nil {
+		t.Fatal("expected error, got nil")
 	}
 }

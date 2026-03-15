@@ -85,11 +85,9 @@ defmodule Conductor.Config do
 
   @spec dispatch_env() :: [{binary(), binary()}]
   def dispatch_env do
-    # Pass auth tokens to sprites. Use get_env (not fetch_env!) so command
-    # building never crashes — missing tokens surface at runtime on the sprite,
-    # which is the right failure boundary.
+    # Pass only the runtime API keys the harness still needs. GitHub auth is
+    # persisted on the sprite during setup and should not rely on env injection.
     []
-    |> maybe_env("GITHUB_TOKEN")
     |> maybe_env("OPENAI_API_KEY")
     |> maybe_env_as("OPENAI_API_KEY", "CODEX_API_KEY")
     |> maybe_env("EXA_API_KEY")

@@ -13,6 +13,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const ghAuthCheckScript = "gh auth status >/dev/null 2>&1"
+
 // parsePorcelainStatus parses `git status --porcelain=v1` output and returns
 // a slice of human-readable file-status lines (e.g. " M cmd/bb/status.go",
 // "?? newfile.go"). An empty input returns nil. This mirrors git status --short
@@ -66,6 +68,7 @@ func fleetStatus(ctx context.Context) error {
 		name   string
 		status string
 		reach  string
+		auth   string
 		avail  string
 		note   string
 	}
@@ -80,17 +83,26 @@ func fleetStatus(ctx context.Context) error {
 		go func(idx int, s *sprites.Sprite) {
 			defer func() { <-sem }()
 			defer wg.Done()
-			r := probeResult{name: s.Name(), status: s.Status, reach: "?", avail: "-"}
+			r := probeResult{name: s.Name(), status: s.Status, reach: "?", auth: "?", avail: "-"}
 
 			if err := probeSprite(ctx, s, s.Name(), 3*time.Second); err != nil {
 				r.reach = "no"
 				r.note = "unreachable"
 			} else {
 				r.reach = "ok"
+				auth, authErr := ghAuthStateWithRunner(ctx, spriteBashRunner(s))
+				if authErr != nil {
+					r.auth = "?"
+					r.note = "gh-auth check failed"
+				} else {
+					r.auth = auth
+				}
 				busy, busyErr := isDispatchLoopActive(ctx, s)
 				if busyErr != nil {
 					r.avail = "?"
-					r.note = "busy-check failed"
+					if r.note == "" {
+						r.note = "busy-check failed"
+					}
 				} else if busy {
 					r.avail = "busy"
 				} else {
@@ -104,10 +116,10 @@ func fleetStatus(ctx context.Context) error {
 
 	wg.Wait()
 
-	fmt.Printf("%-15s %-10s %-8s %-6s %s\n", "SPRITE", "STATUS", "REACH", "AVAIL", "NOTE")
-	fmt.Printf("%-15s %-10s %-8s %-6s %s\n", "------", "------", "-----", "-----", "----")
+	fmt.Printf("%-15s %-10s %-8s %-6s %-6s %s\n", "SPRITE", "STATUS", "REACH", "GH", "AVAIL", "NOTE")
+	fmt.Printf("%-15s %-10s %-8s %-6s %-6s %s\n", "------", "------", "-----", "--", "-----", "----")
 	for _, r := range results {
-		fmt.Printf("%-15s %-10s %-8s %-6s %s\n", r.name, r.status, r.reach, r.avail, r.note)
+		fmt.Printf("%-15s %-10s %-8s %-6s %-6s %s\n", r.name, r.status, r.reach, r.auth, r.avail, r.note)
 	}
 
 	return nil
@@ -130,6 +142,14 @@ func spriteStatus(ctx context.Context, spriteName string) error {
 	statusScript := `
 echo "=== signals ==="
 ` + workspaceStatusSignalsScript("WS") + `
+
+echo ""
+echo "=== gh auth ==="
+if ! command -v gh >/dev/null 2>&1; then
+  echo "(gh not installed)"
+elif ! gh auth status; then
+  echo "(gh auth unavailable)"
+fi
 
 echo ""
 echo "=== git ==="
@@ -175,4 +195,23 @@ fi
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+func ghAuthStateWithRunner(ctx context.Context, run spriteScriptRunner) (string, error) {
+	output, exitCode, err := runDispatchCheck(ctx, run, dispatchCheck{
+		timeout: 10 * time.Second,
+		script:  ghAuthCheckScript,
+	})
+	if err != nil {
+		return "", fmt.Errorf("check gh auth: %w", err)
+	}
+
+	switch exitCode {
+	case 0:
+		return "ok", nil
+	case 1:
+		return "no", nil
+	default:
+		return "", fmt.Errorf("gh auth check exited %d: %s", exitCode, output)
+	}
 }

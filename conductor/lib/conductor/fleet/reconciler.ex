@@ -83,22 +83,15 @@ defmodule Conductor.Fleet.Reconciler do
   end
 
   defp check_health(sprite) do
-    case Sprite.reachable?(sprite.name) do
-      false ->
+    case Sprite.status(sprite.name, harness: sprite.harness) do
+      {:error, _reason} ->
         :unreachable
 
-      true ->
-        harness_cmd =
-          case sprite.harness do
-            "codex" -> "command -v codex"
-            "claude-code" -> "command -v claude"
-            _ -> "echo ok"
-          end
+      {:ok, %{healthy: true}} ->
+        :healthy
 
-        case Sprite.exec(sprite.name, harness_cmd, timeout: 15_000) do
-          {:ok, _} -> :healthy
-          {:error, _, _} -> :needs_setup
-        end
+      {:ok, _status} ->
+        :needs_setup
     end
   end
 

@@ -49,6 +49,10 @@ func runSetup(ctx context.Context, spriteName, repo string, force bool, persona 
 	if err != nil {
 		return err
 	}
+	ghToken, err := requireEnv("GITHUB_TOKEN")
+	if err != nil {
+		return err
+	}
 
 	// 1. Probe
 	_, _ = fmt.Fprintf(os.Stderr, "probing %s...\n", spriteName)
@@ -138,12 +142,11 @@ func runSetup(ctx context.Context, spriteName, repo string, force bool, persona 
 
 	// 7. Git auth
 	_, _ = fmt.Fprintf(os.Stderr, "configuring git auth...\n")
-	gitAuthScript := `
-git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=$GH_TOKEN"; }; f'
-git config --global user.name "bitterblossom[bot]"
-git config --global user.email "bitterblossom@misty-step.dev"
-git config --global --add safe.directory '*'
-`
+	tokenPath := fmt.Sprintf("/tmp/bb-gh-token-%d", time.Now().UnixNano())
+	if err := s.Filesystem().WriteFileContext(ctx, tokenPath, []byte(ghToken+"\n"), 0600); err != nil {
+		return fmt.Errorf("upload github token: %w", err)
+	}
+	gitAuthScript := persistGitHubAuthScript(tokenPath)
 	if _, err := s.CommandContext(ctx, "bash", "-c", gitAuthScript).Output(); err != nil {
 		return fmt.Errorf("git auth: %w", err)
 	}
@@ -152,27 +155,8 @@ git config --global --add safe.directory '*'
 	if repo != "" {
 		_, _ = fmt.Fprintf(os.Stderr, "setting up repo %s...\n", repo)
 
-		ghToken := os.Getenv("GITHUB_TOKEN")
-		if ghToken == "" {
-			return fmt.Errorf("GITHUB_TOKEN must be set to clone repo")
-		}
-
 		repoDir := spriteRepoWorkspace(repo)
-
-		var cloneScript string
-		if force {
-			cloneScript = fmt.Sprintf(
-				`rm -rf %s && cd %s && git clone https://github.com/%s.git`,
-				repoDir, spriteWorkspaceRoot, repo,
-			)
-		} else {
-			cloneScript = fmt.Sprintf(
-				`if [ -d %s ]; then cd %s && git checkout master 2>/dev/null || git checkout main 2>/dev/null && git pull --ff-only; else cd %s && git clone https://github.com/%s.git; fi`,
-				repoDir, repoDir, spriteWorkspaceRoot, repo,
-			)
-		}
-
-		cloneScript = fmt.Sprintf("export GH_TOKEN=%q && %s", ghToken, cloneScript)
+		cloneScript := repoSetupScript(repoDir, repo, force)
 		cloneCmd := s.CommandContext(ctx, "bash", "-c", cloneScript)
 		cloneCmd.Stdout = os.Stderr
 		cloneCmd.Stderr = os.Stderr
@@ -196,6 +180,33 @@ git config --global --add safe.directory '*'
 
 	_, _ = fmt.Fprintf(os.Stderr, "setup complete: %s\n", spriteName)
 	return nil
+}
+
+func persistGitHubAuthScript(tokenPath string) string {
+	return fmt.Sprintf(`
+set -e
+trap 'rm -f %q' EXIT
+gh auth login --with-token < %q >/dev/null
+gh auth status >/dev/null
+git config --global credential.helper '!gh auth git-credential'
+git config --global user.name "bitterblossom[bot]"
+git config --global user.email "bitterblossom@misty-step.dev"
+git config --global --add safe.directory '*'
+`, tokenPath, tokenPath)
+}
+
+func repoSetupScript(repoDir, repo string, force bool) string {
+	if force {
+		return fmt.Sprintf(
+			`rm -rf %q && cd %q && git clone https://github.com/%s.git`,
+			repoDir, spriteWorkspaceRoot, repo,
+		)
+	}
+
+	return fmt.Sprintf(
+		`if [ -d %q ]; then cd %q && git checkout master 2>/dev/null || git checkout main 2>/dev/null && git pull --ff-only; else cd %q && git clone https://github.com/%s.git; fi`,
+		repoDir, repoDir, spriteWorkspaceRoot, repo,
+	)
 }
 
 func buildBaseConfigMap(root string) (map[string]string, error) {

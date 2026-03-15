@@ -101,11 +101,27 @@ defmodule Conductor.Sprite do
     end
   end
 
-  @spec status(binary()) :: {:ok, map()} | {:error, term()}
-  def status(sprite) do
-    case exec(sprite, "echo ok", timeout: 15_000) do
-      {:ok, _} -> {:ok, %{sprite: sprite, reachable: true}}
-      {:error, msg, _} -> {:error, msg}
+  @spec status(binary(), keyword()) :: {:ok, map()} | {:error, term()}
+  def status(sprite, opts \\ []) do
+    exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
+    harness = Keyword.get(opts, :harness)
+
+    case exec_fn.(sprite, "echo ok", timeout: 15_000) do
+      {:ok, _} ->
+        harness_ready = harness_ready?(sprite, harness, exec_fn)
+        gh_authenticated = gh_authenticated?(sprite, exec_fn)
+
+        {:ok,
+         %{
+           sprite: sprite,
+           reachable: true,
+           harness_ready: harness_ready,
+           gh_authenticated: gh_authenticated,
+           healthy: harness_ready and gh_authenticated
+         }}
+
+      {:error, msg, _} ->
+        {:error, msg}
     end
   end
 
@@ -141,6 +157,24 @@ defmodule Conductor.Sprite do
     @agent_process_names
     |> Enum.map_join(" || ", &"pgrep -x #{&1} 2>/dev/null")
     |> Kernel.<>(" || pgrep -f 'ralph\\.sh' 2>/dev/null")
+  end
+
+  defp harness_ready?(_sprite, nil, _exec_fn), do: true
+  defp harness_ready?(_sprite, "", _exec_fn), do: true
+
+  defp harness_ready?(sprite, harness, exec_fn) do
+    harness_cmd =
+      case harness do
+        "codex" -> "command -v codex"
+        "claude-code" -> "command -v claude"
+        _ -> "echo ok"
+      end
+
+    match?({:ok, _}, exec_fn.(sprite, harness_cmd, timeout: 15_000))
+  end
+
+  defp gh_authenticated?(sprite, exec_fn) do
+    match?({:ok, _}, exec_fn.(sprite, "gh auth status >/dev/null 2>&1", timeout: 15_000))
   end
 
   defp run_agent(sprite, workspace, prompt_path, harness, harness_opts, exec_fn, timeout_ms) do
