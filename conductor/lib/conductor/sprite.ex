@@ -151,6 +151,18 @@ defmodule Conductor.Sprite do
 
   defp agent_command(cmd_parts, workspace, prompt_path) do
     cmd_str = Enum.join(cmd_parts, " ")
-    "cd '#{workspace}' && LEFTHOOK=0 #{cmd_str} < '#{prompt_path}'"
+
+    env_exports =
+      Config.dispatch_env()
+      |> Enum.map(fn {k, v} -> "#{k}=#{shell_quote(v)}" end)
+      |> Enum.join(" ")
+
+    prefix = if env_exports == "", do: "", else: env_exports <> " "
+    "cd '#{workspace}' && #{prefix}LEFTHOOK=0 #{cmd_str} < '#{prompt_path}'"
+  end
+
+  defp shell_quote(value) do
+    escaped = value |> to_string() |> String.replace("'", "'\"'\"'")
+    "'#{escaped}'"
   end
 end

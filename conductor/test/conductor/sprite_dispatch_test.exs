@@ -130,6 +130,53 @@ defmodule Conductor.SpriteDispatchTest do
       assert String.contains?(agent_cmd, "LEFTHOOK=0")
     end
 
+    test "injects GITHUB_TOKEN from env, shell-quoted" do
+      prev = System.get_env("GITHUB_TOKEN")
+      System.put_env("GITHUB_TOKEN", "ghp_test123")
+
+      try do
+        exec_fn = make_exec_fn()
+
+        Sprite.dispatch("s1", "prompt", "org/repo",
+          workspace: "/ws",
+          harness: MockHarness,
+          exec_fn: exec_fn,
+          timeout: 1
+        )
+
+        assert_received {:exec_called, _}
+        assert_received {:exec_called, _}
+        assert_received {:exec_called, agent_cmd}
+        assert String.contains?(agent_cmd, "GITHUB_TOKEN='ghp_test123'")
+      after
+        if prev, do: System.put_env("GITHUB_TOKEN", prev), else: System.delete_env("GITHUB_TOKEN")
+      end
+    end
+
+    test "omits env exports when GITHUB_TOKEN is unset" do
+      prev = System.get_env("GITHUB_TOKEN")
+      System.delete_env("GITHUB_TOKEN")
+
+      try do
+        exec_fn = make_exec_fn()
+
+        Sprite.dispatch("s1", "prompt", "org/repo",
+          workspace: "/ws",
+          harness: MockHarness,
+          exec_fn: exec_fn,
+          timeout: 1
+        )
+
+        assert_received {:exec_called, _}
+        assert_received {:exec_called, _}
+        assert_received {:exec_called, agent_cmd}
+        refute String.contains?(agent_cmd, "GITHUB_TOKEN")
+        assert String.contains?(agent_cmd, "LEFTHOOK=0")
+      after
+        if prev, do: System.put_env("GITHUB_TOKEN", prev)
+      end
+    end
+
     test "returns :ok tuple on success" do
       exec_fn = make_exec_fn()
 

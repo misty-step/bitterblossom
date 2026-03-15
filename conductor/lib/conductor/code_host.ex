@@ -37,4 +37,8 @@ defmodule Conductor.CodeHost do
   @doc "Add a label to a PR."
   @callback add_label(repo :: binary(), pr_number :: pos_integer(), label :: binary()) ::
               :ok | {:error, term()}
+
+  @doc "Find an open PR whose branch starts with factory/<issue_number>-."
+  @callback find_open_pr(repo :: binary(), issue_number :: pos_integer()) ::
+              {:ok, map()} | {:error, :not_found}
 end

@@ -27,6 +27,7 @@ defmodule Conductor.RunServer do
     :issue,
     :worker,
     :branch,
+    :existing_branch,
     :worktree_path,
     :artifact_path,
     :pr_number,
@@ -54,7 +55,10 @@ defmodule Conductor.RunServer do
     state = %__MODULE__{
       repo: Keyword.fetch!(opts, :repo),
       issue: Keyword.fetch!(opts, :issue),
-      worker: Keyword.fetch!(opts, :worker)
+      worker: Keyword.fetch!(opts, :worker),
+      existing_branch: Keyword.get(opts, :existing_branch),
+      pr_number: Keyword.get(opts, :existing_pr_number),
+      pr_url: Keyword.get(opts, :existing_pr_url)
     }
 
     {:ok, state, {:continue, :acquire_lease}}
@@ -80,7 +84,7 @@ defmodule Conductor.RunServer do
                builder_sprite: state.worker
              }) do
           {:ok, ^run_id} ->
-            branch = "factory/#{state.issue.number}-#{ts}"
+            branch = state.existing_branch || "factory/#{state.issue.number}-#{ts}"
             artifact = Workspace.artifact_path(state.repo, run_id)
 
             state = %{state | run_id: run_id, branch: branch, artifact_path: artifact}
@@ -106,7 +110,14 @@ defmodule Conductor.RunServer do
   def handle_continue(:prepare_workspace, state) do
     log(state, "preparing workspace on #{state.worker}")
 
-    case Workspace.prepare(state.worker, state.repo, state.run_id, state.branch) do
+    prepare_fn =
+      if state.existing_branch do
+        fn -> Workspace.adopt_branch(state.worker, state.repo, state.run_id, state.branch) end
+      else
+        fn -> Workspace.prepare(state.worker, state.repo, state.run_id, state.branch) end
+      end
+
+    case prepare_fn.() do
       {:ok, path} ->
         Store.record_event(state.run_id, "builder_workspace_prepared", %{workspace: path})
         Store.update_run(state.run_id, %{phase: "building", branch: state.branch})

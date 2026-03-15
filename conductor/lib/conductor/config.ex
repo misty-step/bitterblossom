@@ -85,11 +85,14 @@ defmodule Conductor.Config do
 
   @spec dispatch_env() :: [{binary(), binary()}]
   def dispatch_env do
-    # Sprites configure their own API key in ~/.claude/settings.json.
-    # Don't override it here — just pass GITHUB_TOKEN for gh CLI operations.
-    [
-      {"GITHUB_TOKEN", github_token!()}
-    ]
+    # Pass GITHUB_TOKEN for gh CLI on sprites. Use get_env (not fetch_env!)
+    # so command building never crashes — missing token surfaces at git-push
+    # time on the sprite, which is the right failure boundary.
+    case System.get_env("GITHUB_TOKEN") do
+      nil -> []
+      "" -> []
+      token -> [{"GITHUB_TOKEN", token}]
+    end
   end
 
   @spec check_env!() :: :ok

@@ -11,6 +11,41 @@ defmodule Conductor.OrchestratorTest do
     def comment(_repo, _issue, _body), do: :ok
   end
 
+  # Shared persistent state for mock coordination across processes.
+  defmodule MockState do
+    def put(key, value), do: :persistent_term.put({__MODULE__, key}, value)
+
+    def get(key, default \\ nil) do
+      try do
+        :persistent_term.get({__MODULE__, key})
+      rescue
+        ArgumentError -> default
+      end
+    end
+
+    def cleanup do
+      for {{__MODULE__, _} = k, _} <- :persistent_term.get(), do: :persistent_term.erase(k)
+    end
+  end
+
+  # Mock code host for orchestrator tests. Configurable merge results and PR lookups.
+  defmodule MockCodeHost do
+    @behaviour Conductor.CodeHost
+    alias Conductor.OrchestratorTest.MockState
+
+    def checks_green?(_repo, _pr), do: true
+    def checks_failed?(_repo, _pr), do: false
+    def merge(_repo, pr_number, _opts), do: MockState.get({:merge_result, pr_number}, :ok)
+    def labeled_prs(_repo, _label), do: {:ok, []}
+    def factory_prs(_repo), do: {:ok, []}
+    def pr_review_comments(_repo, _pr), do: {:ok, []}
+    def pr_ci_failure_logs(_repo, _pr), do: {:ok, ""}
+    def add_label(_repo, _pr, _label), do: :ok
+
+    def find_open_pr(_repo, issue_number),
+      do: MockState.get({:open_pr, issue_number}, {:error, :not_found})
+  end
+
   # Retry an assertion block until it passes or timeout elapses.
   defp eventually(assert_fun, timeout_ms \\ 1_000, step_ms \\ 20) do
     deadline = System.monotonic_time(:millisecond) + timeout_ms
@@ -201,6 +236,64 @@ defmodule Conductor.OrchestratorTest do
       Process.sleep(100)
       runs = Store.list_runs()
       assert runs == []
+    end
+  end
+
+  describe "merge_conflict?/1" do
+    test "detects 'not mergeable'" do
+      assert Orchestrator.merge_conflict?("Pull Request is not mergeable")
+    end
+
+    test "detects 'cannot be cleanly created'" do
+      assert Orchestrator.merge_conflict?("Merge cannot be cleanly created")
+    end
+
+    test "ignores other errors" do
+      refute Orchestrator.merge_conflict?("rate limit exceeded")
+      refute Orchestrator.merge_conflict?("authentication failed")
+      refute Orchestrator.merge_conflict?("")
+    end
+  end
+
+  describe "merge conflict: mark run blocked" do
+    setup do
+      orig_code_host = Application.get_env(:conductor, :code_host_module)
+      Application.put_env(:conductor, :code_host_module, MockCodeHost)
+
+      on_exit(fn ->
+        MockState.cleanup()
+
+        if orig_code_host,
+          do: Application.put_env(:conductor, :code_host_module, orig_code_host),
+          else: Application.delete_env(:conductor, :code_host_module)
+      end)
+
+      :ok
+    end
+
+    test "marks run as blocked when rebase fails on a conflict PR" do
+      # Create a run with a known PR number
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 55,
+          issue_title: "conflict issue",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(run_id, %{pr_number: 99})
+
+      # Simulate: merge fails with conflict, and worker_module.rebase also fails
+      # mark_conflict_blocked is called after a failed rebase — test it directly
+      Orchestrator.mark_conflict_blocked("test/repo", 99)
+
+      eventually(fn ->
+        {:ok, run} = Store.get_run(run_id)
+        assert run["phase"] == "blocked"
+        events = Store.list_events(run_id)
+        types = Enum.map(events, & &1["event_type"])
+        assert "merge_conflict_blocked" in types
+      end)
     end
   end
 
