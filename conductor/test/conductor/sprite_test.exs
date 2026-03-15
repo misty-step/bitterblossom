@@ -20,7 +20,7 @@ defmodule Conductor.SpriteTest do
             {"echo ok", {:ok, "ok\n"}},
             {"command -v codex", {:ok, "/usr/bin/codex\n"}},
             {"gh auth status", {:ok, "github.com\n"}},
-            {"git config --global --get credential.helper", {:ok, "!gh auth git-credential\n"}}
+            {"git config --global --get credential.helper", {:ok, "!gh auth git-credential"}}
           ])
       )
 
@@ -43,7 +43,7 @@ defmodule Conductor.SpriteTest do
             {"echo ok", {:ok, "ok\n"}},
             {"command -v codex", {:ok, "/usr/bin/codex\n"}},
             {"gh auth status", {:error, "not logged in", 1}},
-            {"git config --global --get credential.helper", {:ok, "!gh auth git-credential\n"}}
+            {"git config --global --get credential.helper", {:ok, "!gh auth git-credential"}}
           ])
       )
 
@@ -66,7 +66,7 @@ defmodule Conductor.SpriteTest do
             {"echo ok", {:ok, "ok\n"}},
             {"command -v codex", {:ok, "/usr/bin/codex\n"}},
             {"gh auth status", {:ok, "github.com\n"}},
-            {"git config --global --get credential.helper", {:ok, "cache\n"}}
+            {"git config --global --get credential.helper", {:ok, "cache"}}
           ])
       )
 

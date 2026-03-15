@@ -181,7 +181,7 @@ defmodule Conductor.Sprite do
 
   defp git_credential_helper_ready?(sprite, exec_fn) do
     case exec_fn.(sprite, "git config --global --get credential.helper", timeout: 15_000) do
-      {:ok, output} -> String.trim(output) == "!gh auth git-credential"
+      {:ok, output} -> output == "!gh auth git-credential"
       _ -> false
     end
   end
