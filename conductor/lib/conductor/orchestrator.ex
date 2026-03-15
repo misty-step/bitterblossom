@@ -100,16 +100,19 @@ defmodule Conductor.Orchestrator do
     if workers == [] do
       {:reply, {:error, :no_workers}, state}
     else
+      label = Keyword.get(opts, :label, state.label)
+
       state = %{
         state
         | repo: Keyword.fetch!(opts, :repo),
-          label: Keyword.get(opts, :label, state.label),
+          label: label,
           workers: worker_map(workers),
           worker_order: Enum.map(workers, & &1.name),
           trusted_surfaces: Keyword.get(opts, :trusted_surfaces, state.trusted_surfaces),
           mode: :polling
       }
 
+      maybe_warn_unfiltered_backlog(label)
       schedule_poll(0)
       {:reply, :ok, state}
     end
@@ -178,74 +181,85 @@ defmodule Conductor.Orchestrator do
   end
 
   defp maybe_start_runs(state) do
-    max = Config.max_concurrent_runs()
+    max_runs = Config.max_concurrent_runs()
     active_count = map_size(state.active_runs)
 
-    if active_count >= max do
-      state
-    else
-      slots = max - active_count
+    run_slots = max(max_runs - active_count, 0)
+    shape_budget = max(run_slots, 1)
 
-      state.repo
-      |> tracker_mod().list_eligible(label: state.label)
-      |> Enum.reject(&Store.leased?(state.repo, &1.number))
-      |> Enum.reduce_while({state, slots}, fn issue, {acc, remaining_slots} ->
-        if remaining_slots == 0 do
-          {:halt, {acc, remaining_slots}}
-        else
-          {next_state, outcome} = consider_issue(acc, issue)
+    state.repo
+    |> tracker_mod().list_eligible(label: state.label)
+    |> Enum.reject(&Store.leased?(state.repo, &1.number))
+    |> Enum.reduce_while({state, run_slots, shape_budget}, fn issue,
+                                                              {acc, runs_left, shapes_left} ->
+      if runs_left == 0 and shapes_left == 0 do
+        {:halt, {acc, runs_left, shapes_left}}
+      else
+        {next_state, outcome} = consider_issue(acc, issue, runs_left, shapes_left)
 
-          slots_left =
-            if outcome in [:started, :shaped], do: remaining_slots - 1, else: remaining_slots
+        {next_runs_left, next_shapes_left} =
+          case outcome do
+            :started -> {runs_left - 1, shapes_left}
+            :shaped -> {runs_left, shapes_left - 1}
+            :skipped -> {runs_left, shapes_left}
+          end
 
-          {:cont, {next_state, slots_left}}
-        end
-      end)
-      |> elem(0)
-    end
+        {:cont, {next_state, next_runs_left, next_shapes_left}}
+      end
+    end)
+    |> elem(0)
   end
 
-  defp consider_issue(state, issue) do
+  defp consider_issue(state, issue, runs_left, shapes_left) do
     case Issue.ready?(issue) do
       :ok ->
-        next_state =
-          clear_shape_attempt(state, issue.number)
-          |> start_run(issue)
+        if runs_left > 0 do
+          next_state =
+            clear_shape_attempt(state, issue.number)
+            |> start_run(issue)
 
-        outcome =
-          if map_size(next_state.active_runs) > map_size(state.active_runs),
-            do: :started,
-            else: :skipped
+          outcome =
+            if map_size(next_state.active_runs) > map_size(state.active_runs),
+              do: :started,
+              else: :skipped
 
-        {next_state, outcome}
+          {next_state, outcome}
+        else
+          {state, :skipped}
+        end
 
       {:error, failures} ->
-        maybe_shape_issue(state, issue, failures)
+        maybe_shape_issue(state, issue, failures, shapes_left)
     end
   end
 
-  defp maybe_shape_issue(state, issue, failures) do
+  defp maybe_shape_issue(state, issue, failures, shapes_left) do
     digest = body_digest(issue)
 
-    if Map.get(state.shape_attempts, issue.number) == digest do
-      Logger.info("issue ##{issue.number} still unready after prior shaping attempt, skipping")
-      {state, :skipped}
-    else
-      state =
-        case shaper_mod().shape(state.repo, issue.number) do
-          {:ok, result} when result in [:shaped, :already_shaped] ->
-            Logger.info("issue ##{issue.number} shaped successfully, deferring until next poll")
-            state
+    cond do
+      shapes_left == 0 ->
+        {state, :skipped}
 
-          {:error, reason} ->
-            Logger.info(
-              "issue ##{issue.number} not ready (#{Enum.join(failures, ", ")}); shaping failed: #{inspect(reason)}"
-            )
+      Map.get(state.shape_attempts, issue.number) == digest ->
+        Logger.info("issue ##{issue.number} still unready after prior shaping attempt, skipping")
+        {state, :skipped}
 
-            state
-        end
+      true ->
+        state =
+          case safe_shape_issue(state.repo, issue.number) do
+            {:ok, result} when result in [:shaped, :already_shaped] ->
+              Logger.info("issue ##{issue.number} shaped successfully, deferring until next poll")
+              state
 
-      {put_shape_attempt(state, issue.number, digest), :shaped}
+            {:error, reason} ->
+              Logger.info(
+                "issue ##{issue.number} not ready (#{Enum.join(failures, ", ")}); shaping failed: #{inspect(reason)}"
+              )
+
+              state
+          end
+
+        {put_shape_attempt(state, issue.number, digest), :shaped}
     end
   end
 
@@ -257,7 +271,29 @@ defmodule Conductor.Orchestrator do
     %{state | shape_attempts: Map.put(state.shape_attempts, issue_number, digest)}
   end
 
-  defp body_digest(%{body: body}), do: :erlang.phash2(body || "")
+  defp body_digest(%{body: body}), do: :crypto.hash(:sha256, body || "")
+
+  defp safe_shape_issue(repo, issue_number) do
+    try do
+      case shaper_mod().shape(repo, issue_number) do
+        {:ok, result} when result in [:shaped, :already_shaped] -> {:ok, result}
+        {:error, _reason} = error -> error
+        other -> {:error, {:unexpected_shaper_result, other}}
+      end
+    rescue
+      error ->
+        {:error, {:raised, error}}
+    catch
+      kind, reason ->
+        {:error, {kind, reason}}
+    end
+  end
+
+  defp maybe_warn_unfiltered_backlog(label) when label in [nil, ""] do
+    Logger.warning("no issue label filter configured; orchestrator will consider all open issues")
+  end
+
+  defp maybe_warn_unfiltered_backlog(_label), do: :ok
 
   defp start_run(state, issue) do
     case pick_worker(state) do

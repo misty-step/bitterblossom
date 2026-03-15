@@ -29,6 +29,9 @@ defmodule Conductor.OrchestratorTest do
 
           shaped
 
+        {:raise, error} ->
+          raise error
+
         other ->
           other
       end
@@ -487,6 +490,33 @@ defmodule Conductor.OrchestratorTest do
       end)
     end
 
+    test "treats :already_shaped as a successful defer-until-next-poll outcome" do
+      orig_max = Application.get_env(:conductor, :max_concurrent_runs)
+      Application.put_env(:conductor, :max_concurrent_runs, 1)
+
+      on_exit(fn ->
+        if orig_max,
+          do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
+          else: Application.delete_env(:conductor, :max_concurrent_runs)
+      end)
+
+      issue = %Conductor.Issue{
+        number: 306,
+        title: "already shaped elsewhere",
+        body: "still stale in this poll",
+        url: "https://example.test/issues/306"
+      }
+
+      MockState.put({:eligible, "test/repo", nil}, [issue])
+      MockState.put({:shape_result, 306}, {:ok, :already_shaped})
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      assert_receive {:shape_attempted, "test/repo", 306}, 1_000
+      Process.sleep(100)
+      assert MockState.get(:started_runs) == []
+    end
+
     test "does not retry shaping on every poll when the issue body is unchanged" do
       orig_max = Application.get_env(:conductor, :max_concurrent_runs)
       Application.put_env(:conductor, :max_concurrent_runs, 1)
@@ -549,6 +579,33 @@ defmodule Conductor.OrchestratorTest do
       assert_receive {:shape_attempted, "test/repo", 303}, 1_000
     end
 
+    test "converts shaper exceptions into skipped shaping attempts" do
+      orig_max = Application.get_env(:conductor, :max_concurrent_runs)
+      Application.put_env(:conductor, :max_concurrent_runs, 1)
+
+      on_exit(fn ->
+        if orig_max,
+          do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
+          else: Application.delete_env(:conductor, :max_concurrent_runs)
+      end)
+
+      issue = %Conductor.Issue{
+        number: 307,
+        title: "shaper crash",
+        body: "needs shaping",
+        url: "https://example.test/issues/307"
+      }
+
+      MockState.put({:eligible, "test/repo", nil}, [issue])
+      MockState.put({:shape_result, 307}, {:raise, RuntimeError.exception("boom")})
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      assert_receive {:shape_attempted, "test/repo", 307}, 1_000
+      Process.sleep(100)
+      assert MockState.get(:started_runs) == []
+    end
+
     test "limits shaping work to the available slots in a single poll" do
       orig_max = Application.get_env(:conductor, :max_concurrent_runs)
       Application.put_env(:conductor, :max_concurrent_runs, 1)
@@ -581,6 +638,32 @@ defmodule Conductor.OrchestratorTest do
 
       assert_receive {:shape_attempted, "test/repo", 304}, 1_000
       refute_receive {:shape_attempted, "test/repo", 305}, 200
+    end
+
+    test "still performs one shaping attempt when run slots are exhausted" do
+      orig_max = Application.get_env(:conductor, :max_concurrent_runs)
+      Application.put_env(:conductor, :max_concurrent_runs, 0)
+
+      on_exit(fn ->
+        if orig_max,
+          do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
+          else: Application.delete_env(:conductor, :max_concurrent_runs)
+      end)
+
+      issue = %Conductor.Issue{
+        number: 308,
+        title: "shape during saturation",
+        body: "needs shaping",
+        url: "https://example.test/issues/308"
+      }
+
+      MockState.put({:eligible, "test/repo", nil}, [issue])
+      MockState.put({:shape_result, 308}, {:error, :llm_unavailable})
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      assert_receive {:shape_attempted, "test/repo", 308}, 1_000
+      assert MockState.get(:started_runs) == []
     end
   end
 

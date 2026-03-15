@@ -1,7 +1,52 @@
 defmodule Conductor.GitHubTest do
   use ExUnit.Case, async: true
 
-  alias Conductor.GitHub
+  alias Conductor.{GitHub, Issue}
+
+  describe "list_issue_args/2" do
+    test "omits --label and raises the default limit when label is nil" do
+      args = GitHub.list_issue_args("test/repo", label: nil)
+
+      refute "--label" in args
+      assert Enum.at(args, -1) == "1000"
+    end
+
+    test "includes --label and keeps the narrow default limit when label is set" do
+      args = GitHub.list_issue_args("test/repo", label: "autopilot")
+
+      assert args |> Enum.take(-2) == ["--label", "autopilot"]
+      assert "--limit" in args
+      assert Enum.at(args, Enum.find_index(args, &(&1 == "--limit")) + 1) == "25"
+    end
+
+    test "respects an explicit limit override" do
+      args = GitHub.list_issue_args("test/repo", label: nil, limit: 50)
+      assert Enum.at(args, Enum.find_index(args, &(&1 == "--limit")) + 1) == "50"
+    end
+  end
+
+  describe "sort_eligible_issues/1" do
+    test "retains underspecified issues while sorting by issue number" do
+      ready_issue = %Issue{
+        number: 20,
+        title: "ready",
+        body: "## Problem\nx\n\n## Acceptance Criteria\n- [ ] [test] y",
+        url: "https://example.test/issues/20"
+      }
+
+      unready_issue = %Issue{
+        number: 10,
+        title: "unready",
+        body: "missing sections",
+        url: "https://example.test/issues/10"
+      }
+
+      assert GitHub.sort_eligible_issues([ready_issue, unready_issue]) == [
+               unready_issue,
+               ready_issue
+             ]
+    end
+  end
 
   describe "checks_green?/1 (unit, no CLI)" do
     # Test the pure logic extracted into evaluate_checks/1

@@ -14,6 +14,9 @@ defmodule Conductor.GitHub do
   alias Conductor.{Shell, Issue}
   require Logger
 
+  @default_labeled_limit 25
+  @default_unfiltered_limit 1000
+
   @spec get_issue(binary(), pos_integer()) :: {:ok, Issue.t()} | {:error, term()}
   def get_issue(repo, number) do
     case Shell.cmd("gh", [
@@ -38,24 +41,7 @@ defmodule Conductor.GitHub do
 
   @spec list_issues(binary(), keyword()) :: {:ok, [Issue.t()]} | {:error, term()}
   def list_issues(repo, opts \\ []) do
-    limit = Keyword.get(opts, :limit, 25)
-    label = Keyword.get(opts, :label)
-
-    args =
-      [
-        "issue",
-        "list",
-        "--repo",
-        repo,
-        "--state",
-        "open",
-        "--json",
-        "number,title,body,url,labels",
-        "--limit",
-        to_string(limit)
-      ] ++ maybe_label_filter(label)
-
-    case Shell.cmd("gh", args) do
+    case Shell.cmd("gh", list_issue_args(repo, opts)) do
       {:ok, json} ->
         case Jason.decode(json) do
           {:ok, list} -> {:ok, Enum.map(list, &Issue.from_github/1)}
@@ -75,13 +61,35 @@ defmodule Conductor.GitHub do
   def eligible_issues(repo, opts \\ []) do
     case list_issues(repo, opts) do
       {:ok, issues} ->
-        Enum.sort_by(issues, & &1.number)
+        sort_eligible_issues(issues)
 
       {:error, reason} ->
         Logger.warning("failed to list issues: #{inspect(reason)}")
         []
     end
   end
+
+  @doc false
+  def list_issue_args(repo, opts \\ []) do
+    label = Keyword.get(opts, :label)
+    limit = Keyword.get(opts, :limit, default_issue_limit(label))
+
+    [
+      "issue",
+      "list",
+      "--repo",
+      repo,
+      "--state",
+      "open",
+      "--json",
+      "number,title,body,url,labels",
+      "--limit",
+      to_string(limit)
+    ] ++ maybe_label_filter(label)
+  end
+
+  @doc false
+  def sort_eligible_issues(issues), do: Enum.sort_by(issues, & &1.number)
 
   @spec get_pr_checks(binary(), pos_integer()) :: {:ok, [map()]} | {:error, term()}
   def get_pr_checks(repo, pr_number) do
@@ -108,6 +116,10 @@ defmodule Conductor.GitHub do
   defp maybe_label_filter(nil), do: []
   defp maybe_label_filter(""), do: []
   defp maybe_label_filter(label), do: ["--label", label]
+
+  defp default_issue_limit(nil), do: @default_unfiltered_limit
+  defp default_issue_limit(""), do: @default_unfiltered_limit
+  defp default_issue_limit(_label), do: @default_labeled_limit
 
   @green ~w(SUCCESS success NEUTRAL neutral SKIPPED skipped)
 
