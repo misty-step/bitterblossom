@@ -17,7 +17,7 @@ defmodule Conductor.Fleet.Loader do
           harness: binary(),
           model: binary(),
           reasoning_effort: binary(),
-          label: binary(),
+          label: binary() | nil,
           persona: binary() | nil
         }
 
@@ -91,7 +91,7 @@ defmodule Conductor.Fleet.Loader do
          harness: Map.get(defaults, "harness", "codex"),
          model: Map.get(defaults, "model", "gpt-5.4"),
          reasoning_effort: Map.get(defaults, "reasoning_effort", "medium"),
-         label: Map.get(defaults, "label", "autopilot")
+         label: Map.get(defaults, "label")
        }}
     end
   end

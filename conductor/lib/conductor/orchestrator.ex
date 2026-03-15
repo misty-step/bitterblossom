@@ -31,6 +31,7 @@ defmodule Conductor.Orchestrator do
     :trusted_surfaces,
     mode: :idle,
     active_runs: %{},
+    shape_attempts: %{},
     worker_index: 0
   ]
 
@@ -85,7 +86,7 @@ defmodule Conductor.Orchestrator do
     {:ok,
      %__MODULE__{
        repo: Keyword.get(opts, :repo),
-       label: Keyword.get(opts, :label, "autopilot"),
+       label: Keyword.get(opts, :label),
        workers: worker_map(workers),
        worker_order: Enum.map(workers, & &1.name),
        trusted_surfaces: Keyword.get(opts, :trusted_surfaces, [])
@@ -185,14 +186,65 @@ defmodule Conductor.Orchestrator do
     else
       slots = max - active_count
 
-      eligible = tracker_mod().list_eligible(state.repo, label: state.label)
-      unleased = Enum.reject(eligible, &Store.leased?(state.repo, &1.number))
-
-      unleased
-      |> Enum.take(slots)
-      |> Enum.reduce(state, fn issue, acc -> start_run(acc, issue) end)
+      state.repo
+      |> tracker_mod().list_eligible(label: state.label)
+      |> Enum.reject(&Store.leased?(state.repo, &1.number))
+      |> Enum.reduce_while({state, slots}, fn issue, {acc, remaining_slots} ->
+        if remaining_slots == 0 do
+          {:halt, {acc, remaining_slots}}
+        else
+          next_state = consider_issue(acc, issue)
+          started_run? = map_size(next_state.active_runs) > map_size(acc.active_runs)
+          slots_left = if started_run?, do: remaining_slots - 1, else: remaining_slots
+          {:cont, {next_state, slots_left}}
+        end
+      end)
+      |> elem(0)
     end
   end
+
+  defp consider_issue(state, issue) do
+    case Issue.ready?(issue) do
+      :ok ->
+        clear_shape_attempt(state, issue.number)
+        |> start_run(issue)
+
+      {:error, failures} ->
+        maybe_shape_issue(state, issue, failures)
+    end
+  end
+
+  defp maybe_shape_issue(state, issue, failures) do
+    digest = body_digest(issue)
+
+    if Map.get(state.shape_attempts, issue.number) == digest do
+      Logger.info("issue ##{issue.number} still unready after prior shaping attempt, skipping")
+      state
+    else
+      case shaper_mod().shape(state.repo, issue.number) do
+        {:ok, result} when result in [:shaped, :already_shaped] ->
+          Logger.info("issue ##{issue.number} shaped successfully, deferring until next poll")
+          put_shape_attempt(state, issue.number, digest)
+
+        {:error, reason} ->
+          Logger.info(
+            "issue ##{issue.number} not ready (#{Enum.join(failures, ", ")}); shaping failed: #{inspect(reason)}"
+          )
+
+          put_shape_attempt(state, issue.number, digest)
+      end
+    end
+  end
+
+  defp clear_shape_attempt(state, issue_number) do
+    %{state | shape_attempts: Map.delete(state.shape_attempts, issue_number)}
+  end
+
+  defp put_shape_attempt(state, issue_number, digest) do
+    %{state | shape_attempts: Map.put(state.shape_attempts, issue_number, digest)}
+  end
+
+  defp body_digest(%{body: body}), do: :erlang.phash2(body || "")
 
   defp start_run(state, issue) do
     case pick_worker(state) do
@@ -541,6 +593,7 @@ defmodule Conductor.Orchestrator do
   defp tracker_mod, do: Application.get_env(:conductor, :tracker_module, Conductor.GitHub)
   defp worker_mod, do: Application.get_env(:conductor, :worker_module, Conductor.Sprite)
   defp code_host_mod, do: Application.get_env(:conductor, :code_host_module, Conductor.GitHub)
+  defp shaper_mod, do: Application.get_env(:conductor, :shaper_module, Conductor.Shaper)
 
   defp run_launcher,
     do: Application.get_env(:conductor, :run_launcher_module, __MODULE__.RunLauncher)

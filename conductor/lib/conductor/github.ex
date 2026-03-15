@@ -38,23 +38,24 @@ defmodule Conductor.GitHub do
 
   @spec list_issues(binary(), keyword()) :: {:ok, [Issue.t()]} | {:error, term()}
   def list_issues(repo, opts \\ []) do
-    label = Keyword.get(opts, :label, "autopilot")
     limit = Keyword.get(opts, :limit, 25)
+    label = Keyword.get(opts, :label)
 
-    case Shell.cmd("gh", [
-           "issue",
-           "list",
-           "--repo",
-           repo,
-           "--label",
-           label,
-           "--state",
-           "open",
-           "--json",
-           "number,title,body,url,labels",
-           "--limit",
-           to_string(limit)
-         ]) do
+    args =
+      [
+        "issue",
+        "list",
+        "--repo",
+        repo,
+        "--state",
+        "open",
+        "--json",
+        "number,title,body,url,labels",
+        "--limit",
+        to_string(limit)
+      ] ++ maybe_label_filter(label)
+
+    case Shell.cmd("gh", args) do
       {:ok, json} ->
         case Jason.decode(json) do
           {:ok, list} -> {:ok, Enum.map(list, &Issue.from_github/1)}
@@ -74,9 +75,7 @@ defmodule Conductor.GitHub do
   def eligible_issues(repo, opts \\ []) do
     case list_issues(repo, opts) do
       {:ok, issues} ->
-        issues
-        |> Enum.filter(fn issue -> Issue.ready?(issue) == :ok end)
-        |> Enum.sort_by(& &1.number)
+        Enum.sort_by(issues, & &1.number)
 
       {:error, reason} ->
         Logger.warning("failed to list issues: #{inspect(reason)}")
@@ -105,6 +104,10 @@ defmodule Conductor.GitHub do
         {:error, msg}
     end
   end
+
+  defp maybe_label_filter(nil), do: []
+  defp maybe_label_filter(""), do: []
+  defp maybe_label_filter(label), do: ["--label", label]
 
   @green ~w(SUCCESS success NEUTRAL neutral SKIPPED skipped)
 
