@@ -221,18 +221,21 @@ defmodule Conductor.Orchestrator do
       Logger.info("issue ##{issue.number} still unready after prior shaping attempt, skipping")
       state
     else
-      case shaper_mod().shape(state.repo, issue.number) do
-        {:ok, result} when result in [:shaped, :already_shaped] ->
-          Logger.info("issue ##{issue.number} shaped successfully, deferring until next poll")
-          put_shape_attempt(state, issue.number, digest)
+      state =
+        case shaper_mod().shape(state.repo, issue.number) do
+          {:ok, result} when result in [:shaped, :already_shaped] ->
+            Logger.info("issue ##{issue.number} shaped successfully, deferring until next poll")
+            state
 
-        {:error, reason} ->
-          Logger.info(
-            "issue ##{issue.number} not ready (#{Enum.join(failures, ", ")}); shaping failed: #{inspect(reason)}"
-          )
+          {:error, reason} ->
+            Logger.info(
+              "issue ##{issue.number} not ready (#{Enum.join(failures, ", ")}); shaping failed: #{inspect(reason)}"
+            )
 
-          put_shape_attempt(state, issue.number, digest)
-      end
+            state
+        end
+
+      put_shape_attempt(state, issue.number, digest)
     end
   end
 
