@@ -129,8 +129,7 @@ defmodule Conductor.Config do
         %{
           name: name,
           capability_tags:
-            worker
-            |> Map.get(:capability_tags, Map.get(worker, "capability_tags", []))
+            (Map.get(worker, :capability_tags) || Map.get(worker, "capability_tags") || [])
             |> List.wrap()
         }
 

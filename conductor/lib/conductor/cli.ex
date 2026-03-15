@@ -286,16 +286,7 @@ defmodule Conductor.CLI do
 
     result =
       try do
-        cond do
-          function_exported?(worker_mod, :probe, 2) ->
-            worker_mod.probe(sprite, [])
-
-          function_exported?(worker_mod, :status, 1) ->
-            worker_mod.status(sprite)
-
-          true ->
-            if worker_mod.reachable?(sprite), do: {:ok, :reachable}, else: {:error, :unreachable}
-        end
+        Conductor.Orchestrator.probe_worker_module(worker_mod, sprite, [])
       rescue
         System.EnvError ->
           {:error, :missing_env}

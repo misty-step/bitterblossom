@@ -296,7 +296,7 @@ defmodule Conductor.Orchestrator do
   defp probe_worker(state, worker_name) do
     worker = Map.fetch!(state.workers, worker_name)
 
-    case worker_probe(worker.name, capability_tags: worker.capability_tags) do
+    case probe_worker_module(worker_mod(), worker.name, capability_tags: worker.capability_tags) do
       {:ok, _} ->
         updated = %{
           worker
@@ -545,16 +545,17 @@ defmodule Conductor.Orchestrator do
   defp run_launcher,
     do: Application.get_env(:conductor, :run_launcher_module, __MODULE__.RunLauncher)
 
-  defp worker_probe(worker, opts) do
+  @doc false
+  def probe_worker_module(worker_module, worker, opts \\ []) do
     cond do
-      function_exported?(worker_mod(), :probe, 2) ->
-        worker_mod().probe(worker, opts)
+      function_exported?(worker_module, :probe, 2) ->
+        worker_module.probe(worker, opts)
 
-      function_exported?(worker_mod(), :status, 1) ->
-        worker_mod().status(worker)
+      function_exported?(worker_module, :status, 1) ->
+        worker_module.status(worker)
 
       true ->
-        if worker_mod().reachable?(worker),
+        if worker_module.reachable?(worker),
           do: {:ok, %{sprite: worker, reachable: true}},
           else: {:error, :unreachable}
     end
