@@ -68,8 +68,16 @@ defmodule Conductor.Fleet.Loader do
   end
 
   defp parse_defaults(raw) do
-    defaults = Map.get(raw, "defaults", %{})
+    case Map.get(raw, "defaults", %{}) do
+      defaults when is_map(defaults) ->
+        parse_defaults_map(defaults)
 
+      other ->
+        {:error, "[defaults] must be a TOML table, got: #{inspect(other)}"}
+    end
+  end
+
+  defp parse_defaults_map(defaults) do
     {:ok,
      %{
        org: Map.get(defaults, "org", "misty-step"),

@@ -45,16 +45,7 @@ defmodule Conductor.Fleet.Reconciler do
 
       :needs_setup ->
         Logger.info("[fleet] #{name} needs setup, provisioning...")
-
-        case run_setup(sprite) do
-          :ok ->
-            Logger.info("[fleet] #{name} provisioned successfully")
-            %{name: name, role: sprite.role, healthy: true, action: :provisioned}
-
-          {:error, reason} ->
-            Logger.error("[fleet] #{name} provisioning failed: #{reason}")
-            %{name: name, role: sprite.role, healthy: false, action: :failed}
-        end
+        provision_and_verify(sprite)
 
       :unreachable ->
         Logger.error("[fleet] #{name} unreachable")
@@ -64,13 +55,35 @@ defmodule Conductor.Fleet.Reconciler do
 
   # --- Private ---
 
+  defp provision_and_verify(sprite) do
+    case run_setup(sprite) do
+      :ok ->
+        # Re-check health after provisioning to confirm it actually worked
+        case check_health(sprite) do
+          :healthy ->
+            Logger.info("[fleet] #{sprite.name} provisioned and verified healthy")
+            %{name: sprite.name, role: sprite.role, healthy: true, action: :provisioned}
+
+          status ->
+            Logger.warning(
+              "[fleet] #{sprite.name} provisioned but health check returned #{status}"
+            )
+
+            %{name: sprite.name, role: sprite.role, healthy: false, action: :setup_incomplete}
+        end
+
+      {:error, reason} ->
+        Logger.error("[fleet] #{sprite.name} provisioning failed: #{reason}")
+        %{name: sprite.name, role: sprite.role, healthy: false, action: :failed}
+    end
+  end
+
   defp check_health(sprite) do
     case Sprite.reachable?(sprite.name) do
       false ->
         :unreachable
 
       true ->
-        # Check if harness is installed
         harness_cmd =
           case sprite.harness do
             "codex" -> "command -v codex"
@@ -86,12 +99,20 @@ defmodule Conductor.Fleet.Reconciler do
   end
 
   defp run_setup(sprite) do
-    # Use bb setup under the hood — it handles harness install, config upload,
-    # git auth, and repo clone idempotently.
     bb_path = find_bb()
     repo_flag = if sprite.repo, do: ["--repo", sprite.repo], else: []
 
-    args = ["setup", sprite.name] ++ repo_flag ++ ["--force"]
+    # Pass persona via --persona flag if set (writes to sprite as PERSONA.md)
+    persona_flag =
+      if sprite.persona do
+        tmp = Path.join(System.tmp_dir!(), "bb-persona-#{sprite.name}.md")
+        File.write!(tmp, sprite.persona)
+        ["--persona", tmp]
+      else
+        []
+      end
+
+    args = ["setup", sprite.name] ++ repo_flag ++ persona_flag ++ ["--force"]
 
     case Shell.cmd(bb_path, args, timeout: 300_000) do
       {:ok, _output} -> :ok
