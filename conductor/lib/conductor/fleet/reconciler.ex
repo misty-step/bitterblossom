@@ -103,35 +103,38 @@ defmodule Conductor.Fleet.Reconciler do
   end
 
   defp run_setup(sprite) do
-    bb_path = find_bb()
-    repo_flag = if sprite.repo, do: ["--repo", sprite.repo], else: []
+    with {:ok, bb_path} <- find_bb(),
+         {:ok, persona_flag, tmp_file} <- build_persona_flag(sprite) do
+      repo_flag = if sprite.repo, do: ["--repo", sprite.repo], else: []
+      args = ["setup", sprite.name] ++ repo_flag ++ persona_flag ++ ["--force"]
+      result = Shell.cmd(bb_path, args, timeout: 300_000)
+      if tmp_file, do: File.rm(tmp_file)
 
-    # Pass persona via --persona flag if set (writes to sprite as PERSONA.md)
-    {persona_flag, tmp_file} =
-      if sprite.persona do
-        tmp = Path.join(System.tmp_dir!(), "bb-persona-#{sprite.name}.md")
-        File.write!(tmp, sprite.persona)
-        {["--persona", tmp], tmp}
-      else
-        {[], nil}
+      case result do
+        {:ok, _output} -> :ok
+        {:error, output, _code} -> {:error, output}
       end
+    end
+  end
 
-    args = ["setup", sprite.name] ++ repo_flag ++ persona_flag ++ ["--force"]
-    result = Shell.cmd(bb_path, args, timeout: 300_000)
-    if tmp_file, do: File.rm(tmp_file)
+  defp build_persona_flag(%{persona: nil}), do: {:ok, [], nil}
+  defp build_persona_flag(%{persona: ""}), do: {:ok, [], nil}
 
-    case result do
-      {:ok, _output} -> :ok
-      {:error, output, _code} -> {:error, output}
+  defp build_persona_flag(%{persona: persona, name: name}) do
+    tmp = Path.join(System.tmp_dir!(), "bb-persona-#{name}.md")
+
+    case File.write(tmp, persona) do
+      :ok -> {:ok, ["--persona", tmp], tmp}
+      {:error, reason} -> {:error, "cannot write persona temp file: #{inspect(reason)}"}
     end
   end
 
   defp find_bb do
     cond do
-      File.exists?("../bin/bb") -> "../bin/bb"
-      File.exists?("./bin/bb") -> "./bin/bb"
-      System.find_executable("bb") -> "bb"
-      true -> raise "bb binary not found — build with: go build -o bin/bb ./cmd/bb"
+      File.exists?("../bin/bb") -> {:ok, "../bin/bb"}
+      File.exists?("./bin/bb") -> {:ok, "./bin/bb"}
+      System.find_executable("bb") -> {:ok, "bb"}
+      true -> {:error, "bb binary not found — build with: go build -o bin/bb ./cmd/bb"}
     end
   end
 end

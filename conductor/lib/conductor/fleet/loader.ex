@@ -101,7 +101,13 @@ defmodule Conductor.Fleet.Loader do
         {:error, "no [[sprite]] entries in fleet.toml"}
 
       sprites when is_list(sprites) ->
-        results = Enum.map(sprites, &parse_one_sprite(&1, defaults))
+        results =
+          Enum.with_index(sprites, 1)
+          |> Enum.map(fn
+            {entry, _idx} when is_map(entry) -> parse_one_sprite(entry, defaults)
+            {_entry, idx} -> {:error, "sprite entry ##{idx} is not a TOML table"}
+          end)
+
         errors = for {:error, msg} <- results, do: msg
 
         if errors == [] do
