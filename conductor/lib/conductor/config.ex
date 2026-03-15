@@ -91,13 +91,14 @@ defmodule Conductor.Config do
     []
     |> maybe_env("GITHUB_TOKEN")
     |> maybe_env("OPENAI_API_KEY")
+    |> Enum.reverse()
   end
 
   defp maybe_env(acc, key) do
     case System.get_env(key) do
       nil -> acc
       "" -> acc
-      val -> acc ++ [{key, val}]
+      val -> [{key, val} | acc]
     end
   end
 
