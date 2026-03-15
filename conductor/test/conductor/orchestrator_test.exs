@@ -1125,6 +1125,26 @@ defmodule Conductor.OrchestratorTest do
         assert "merge_conflict_blocked" in types
       end)
     end
+
+    test "releases lease when marking conflict blocked" do
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 56,
+          issue_title: "conflict lease test",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(run_id, %{pr_number: 100})
+      Store.acquire_lease("test/repo", 56, run_id)
+      assert Store.leased?("test/repo", 56)
+
+      Orchestrator.mark_conflict_blocked("test/repo", 100)
+
+      eventually(fn ->
+        refute Store.leased?("test/repo", 56)
+      end)
+    end
   end
 
   describe "operator directives" do
@@ -1581,6 +1601,32 @@ defmodule Conductor.OrchestratorTest do
         types = Enum.map(events, & &1["event_type"])
         assert "external_close" in types
       end)
+    end
+
+    test "survives Store errors without crashing poll loop", %{orch_pid: orch_pid} do
+      Process.unlink(orch_pid)
+
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 803,
+          issue_title: "error test",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.acquire_lease("test/repo", 803, run_id)
+      Store.complete_run(run_id, "pr_opened", "pr_opened")
+      Store.update_run(run_id, %{pr_number: 303})
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      Process.sleep(100)
+
+      # Kill the Store — next poll tick should survive the error
+      GenServer.stop(Store)
+      send(orch_pid, :poll)
+      Process.sleep(100)
+
+      assert Process.alive?(orch_pid)
     end
 
     test "holds lease when PR is still open" do

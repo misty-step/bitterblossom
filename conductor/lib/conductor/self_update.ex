@@ -64,14 +64,33 @@ defmodule Conductor.SelfUpdate do
   # --- Private ---
 
   defp local_behind_remote? do
-    case Conductor.Shell.cmd("git", ["-C", @repo_root, "rev-parse", "HEAD", "origin/master"],
+    # Use merge-base --is-ancestor to check if HEAD is behind origin/master.
+    # Returns 0 (true) if HEAD is an ancestor of origin/master — meaning we're behind.
+    # Returns 1 if HEAD is equal to or ahead of origin/master.
+    case Conductor.Shell.cmd(
+           "git",
+           ["-C", @repo_root, "merge-base", "--is-ancestor", "HEAD", "origin/master"],
            timeout: 10_000
          ) do
-      {:ok, output} ->
-        case String.split(String.trim(output), "\n") do
-          [local, remote] -> local != remote
-          _ -> false
+      {:ok, _} ->
+        # HEAD is ancestor of origin/master — but could be equal. Check for that.
+        case Conductor.Shell.cmd("git", ["-C", @repo_root, "rev-parse", "HEAD", "origin/master"],
+               timeout: 10_000
+             ) do
+          {:ok, output} ->
+            case String.split(String.trim(output), "\n") do
+              [same, same] -> false
+              [_local, _remote] -> true
+              _ -> false
+            end
+
+          _ ->
+            false
         end
+
+      {:error, _, _} ->
+        # HEAD is not an ancestor — we're ahead or diverged, not behind
+        false
 
       _ ->
         false
