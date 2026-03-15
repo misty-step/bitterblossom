@@ -99,6 +99,17 @@ defmodule Conductor.OrchestratorTest do
     end
   end
 
+  defmodule MockRunControl do
+    alias Conductor.OrchestratorTest.MockState
+
+    def operator_block(pid, reason) do
+      calls = MockState.get(:run_control_calls, [])
+      MockState.put(:run_control_calls, calls ++ [{pid, reason}])
+      Process.exit(pid, :shutdown)
+      :ok
+    end
+  end
+
   # Retry an assertion block until it passes or timeout elapses.
   defp eventually(assert_fun, timeout_ms \\ 1_000, step_ms \\ 20) do
     deadline = System.monotonic_time(:millisecond) + timeout_ms
@@ -137,6 +148,9 @@ defmodule Conductor.OrchestratorTest do
     orig_code_host = Application.get_env(:conductor, :code_host_module)
     Application.put_env(:conductor, :code_host_module, MockCodeHost)
 
+    orig_run_control = Application.get_env(:conductor, :run_control_module)
+    Application.put_env(:conductor, :run_control_module, MockRunControl)
+
     # Use a 60-minute stale threshold; tests can plant older heartbeats to trigger expiry
     orig_stale = Application.get_env(:conductor, :stale_run_threshold_minutes)
     Application.put_env(:conductor, :stale_run_threshold_minutes, 60)
@@ -148,6 +162,7 @@ defmodule Conductor.OrchestratorTest do
     MockState.put(:started_runs, [])
     MockState.put(:run_lifetime_ms, 150)
     MockState.put(:merge_calls, [])
+    MockState.put(:run_control_calls, [])
 
     # Restart the Orchestrator under the global name so start_loop/1 works
     if pid = Process.whereis(Orchestrator), do: GenServer.stop(pid)
@@ -177,6 +192,10 @@ defmodule Conductor.OrchestratorTest do
       if orig_code_host,
         do: Application.put_env(:conductor, :code_host_module, orig_code_host),
         else: Application.delete_env(:conductor, :code_host_module)
+
+      if orig_run_control,
+        do: Application.put_env(:conductor, :run_control_module, orig_run_control),
+        else: Application.delete_env(:conductor, :run_control_module)
 
       if orig_stale,
         do: Application.put_env(:conductor, :stale_run_threshold_minutes, orig_stale),
@@ -787,6 +806,53 @@ defmodule Conductor.OrchestratorTest do
         events = Store.list_events(run_id)
         operator_event = Enum.find(events, &(&1["event_type"] == "operator_blocked"))
         assert operator_event["payload"]["reason"] == "operator_cancel"
+      end)
+    end
+
+    test "bb: cancel comment blocks an active run and frees the worker slot", %{
+      orch_pid: orch_pid
+    } do
+      orig_max = Application.get_env(:conductor, :max_concurrent_runs)
+      Application.put_env(:conductor, :max_concurrent_runs, 1)
+
+      on_exit(fn ->
+        if orig_max,
+          do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
+          else: Application.delete_env(:conductor, :max_concurrent_runs)
+      end)
+
+      issue1 = %Conductor.Issue{
+        number: 409,
+        title: "active cancel",
+        body: "## Problem\nx\n## Acceptance Criteria\ny",
+        url: "https://example.test/issues/409"
+      }
+
+      issue2 = %Conductor.Issue{
+        number: 410,
+        title: "next issue",
+        body: "## Problem\nx\n## Acceptance Criteria\ny",
+        url: "https://example.test/issues/410"
+      }
+
+      MockState.put(:run_lifetime_ms, 5_000)
+      MockState.put({:eligible, "test/repo", "autopilot"}, [issue1])
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      eventually(fn ->
+        assert MockState.get(:started_runs) == [{409, "sprite-1"}]
+      end)
+
+      MockState.put({:issue_comments, "test/repo", 409}, [%{"body" => "bb: cancel"}])
+      MockState.put({:eligible, "test/repo", "autopilot"}, [issue2])
+
+      send(orch_pid, :poll)
+
+      eventually(fn ->
+        [{_pid, reason}] = MockState.get(:run_control_calls)
+        assert reason == "operator_cancel"
+        assert MockState.get(:started_runs) == [{409, "sprite-1"}, {410, "sprite-1"}]
       end)
     end
   end

@@ -161,6 +161,7 @@ defmodule Conductor.Orchestrator do
   def handle_info(:poll, state) do
     state = reconcile(state)
     merge_labeled_prs(state)
+    state = cancel_active_runs(state)
 
     state =
       if dispatch_paused?() do
@@ -607,6 +608,46 @@ defmodule Conductor.Orchestrator do
     end
   end
 
+  defp cancel_active_runs(%{repo: nil} = state), do: state
+
+  defp cancel_active_runs(state) do
+    active_runs =
+      Enum.reduce(state.active_runs, state.active_runs, fn {issue_number, run}, acc ->
+        if active_run_cancelled?(state.repo, issue_number) do
+          case run_control_mod().operator_block(run.pid, "operator_cancel") do
+            :ok ->
+              Logger.warning("[dispatch] active issue ##{issue_number} blocked: operator_cancel")
+              Map.delete(acc, issue_number)
+
+            {:error, reason} ->
+              Logger.warning(
+                "[dispatch] failed to block active issue ##{issue_number}: #{inspect(reason)}"
+              )
+
+              acc
+          end
+        else
+          acc
+        end
+      end)
+
+    %{state | active_runs: active_runs}
+  end
+
+  defp active_run_cancelled?(repo, issue_number) do
+    case tracker_mod().issue_comments(repo, issue_number) do
+      {:ok, comments} ->
+        cancel_comment_present?(comments)
+
+      {:error, reason} ->
+        Logger.warning(
+          "[dispatch] failed to read comments for active issue ##{issue_number}: #{inspect(reason)}"
+        )
+
+        false
+    end
+  end
+
   defp operator_merge_decision(repo, pr) do
     with {:ok, issue_number} <- issue_number_for_pr(repo, pr) do
       operator_issue_decision(repo, issue_number)
@@ -769,6 +810,9 @@ defmodule Conductor.Orchestrator do
 
   defp run_launcher,
     do: Application.get_env(:conductor, :run_launcher_module, __MODULE__.RunLauncher)
+
+  defp run_control_mod,
+    do: Application.get_env(:conductor, :run_control_module, Conductor.RunServer)
 
   @doc false
   def probe_worker_module(worker_module, worker, opts \\ []) do
