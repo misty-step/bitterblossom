@@ -6,8 +6,10 @@ defmodule Conductor.RetroTest do
   alias Conductor.{CLI, Retro, Store}
 
   setup do
-    db_path = Path.join(System.tmp_dir!(), "retro_test_#{:rand.uniform(999_999)}.db")
-    event_log = Path.join(System.tmp_dir!(), "retro_test_#{:rand.uniform(999_999)}.jsonl")
+    db_path = Path.join(System.tmp_dir!(), "retro_test_#{System.unique_integer([:positive])}.db")
+
+    event_log =
+      Path.join(System.tmp_dir!(), "retro_test_#{System.unique_integer([:positive])}.jsonl")
 
     orig_db = Application.get_env(:conductor, :db_path)
     orig_log = Application.get_env(:conductor, :event_log)

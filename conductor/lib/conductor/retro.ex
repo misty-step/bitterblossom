@@ -49,10 +49,7 @@ defmodule Conductor.Retro do
   @spec record_complete_event(binary(), map()) :: :ok
   def record_complete_event(run_id, %{"findings" => findings, "summary" => summary})
       when is_list(findings) and is_binary(summary) do
-    actionable_findings =
-      Enum.filter(findings, fn finding ->
-        Map.get(finding, "action") not in [nil, "none"]
-      end)
+    actionable_findings = Enum.filter(findings, &actionable?/1)
 
     skipped_count = length(findings) - length(actionable_findings)
 
@@ -435,7 +432,7 @@ defmodule Conductor.Retro do
 
   defp action_count(findings) do
     findings
-    |> Enum.count(fn finding -> Map.get(finding, "action") not in [nil, "none"] end)
+    |> Enum.count(&actionable?/1)
   end
 
   defp action_metadata(finding) do
@@ -445,4 +442,6 @@ defmodule Conductor.Retro do
       existing_issue: finding["existing_issue"]
     }
   end
+
+  defp actionable?(finding), do: Map.get(finding, "action") not in [nil, "none"]
 end
