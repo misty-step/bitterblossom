@@ -802,6 +802,16 @@ defmodule Conductor.OrchestratorTest do
                )
     end
 
+    test "returns :skip when run lookup exits" do
+      assert :skip =
+               Orchestrator.issue_number_for_pr_lookup(
+                 "test/repo",
+                 903,
+                 "factory/903-123",
+                 fn _repo, _pr_number -> exit(:noproc) end
+               )
+    end
+
     test "returns :skip when run lookup raises" do
       assert :skip =
                Orchestrator.issue_number_for_pr_lookup(

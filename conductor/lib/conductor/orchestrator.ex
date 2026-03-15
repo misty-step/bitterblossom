@@ -662,25 +662,31 @@ defmodule Conductor.Orchestrator do
         head_ref_name,
         find_run_by_pr_fn \\ &Store.find_run_by_pr/2
       ) do
-    case find_run_by_pr_fn.(repo, pr_number) do
-      {:ok, %{"issue_number" => issue_number}} ->
-        {:ok, issue_number}
+    try do
+      case find_run_by_pr_fn.(repo, pr_number) do
+        {:ok, %{"issue_number" => issue_number}} ->
+          {:ok, issue_number}
 
-      {:error, :not_found} ->
-        parse_issue_number_from_branch(head_ref_name)
+        {:error, :not_found} ->
+          parse_issue_number_from_branch(head_ref_name)
 
-      {:error, reason} ->
-        Logger.warning("[operator] failed to find run for PR ##{pr_number}: #{inspect(reason)}")
+        {:error, reason} ->
+          Logger.warning("[operator] failed to find run for PR ##{pr_number}: #{inspect(reason)}")
+
+          :skip
+      end
+    rescue
+      exception ->
+        Logger.warning(
+          "[operator] failed to find run for PR ##{pr_number}: #{Exception.message(exception)}"
+        )
 
         :skip
+    catch
+      :exit, reason ->
+        Logger.warning("[operator] failed to find run for PR ##{pr_number}: #{inspect(reason)}")
+        :skip
     end
-  rescue
-    exception ->
-      Logger.warning(
-        "[operator] failed to find run for PR ##{pr_number}: #{Exception.message(exception)}"
-      )
-
-      :skip
   end
 
   defp parse_issue_number_from_branch("factory/" <> rest) do
