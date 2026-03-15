@@ -1,12 +1,110 @@
 defmodule Conductor.RetroTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
-  alias Conductor.Retro
+  import ExUnit.CaptureIO
+
+  alias Conductor.{CLI, Retro, Store}
+
+  setup do
+    db_path = Path.join(System.tmp_dir!(), "retro_test_#{:rand.uniform(999_999)}.db")
+    event_log = Path.join(System.tmp_dir!(), "retro_test_#{:rand.uniform(999_999)}.jsonl")
+
+    orig_db = Application.get_env(:conductor, :db_path)
+    orig_log = Application.get_env(:conductor, :event_log)
+
+    Application.stop(:conductor)
+    Application.put_env(:conductor, :db_path, db_path)
+    Application.put_env(:conductor, :event_log, event_log)
+    Application.ensure_all_started(:conductor)
+
+    on_exit(fn ->
+      Application.stop(:conductor)
+      Application.put_env(:conductor, :db_path, orig_db)
+      Application.put_env(:conductor, :event_log, orig_log)
+      File.rm(db_path)
+      File.rm(event_log)
+    end)
+
+    :ok
+  end
 
   describe "analyze/1" do
     test "returns :ok without crashing when retro is disabled" do
-      # Retro is disabled when no API key is set (test environment)
       assert Retro.analyze("run-999-0000000000") == :ok
+    end
+  end
+
+  describe "retro_complete persistence" do
+    test "list_events includes retro summary and action count" do
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 646,
+          issue_title: "Persist retro analysis",
+          builder_sprite: "sprite-1"
+        })
+
+      :ok =
+        Retro.record_complete_event(run_id, %{
+          "summary" => "builder hit review friction; backlog updated",
+          "findings" => [
+            %{
+              "title" => "Missing reviewer guidance",
+              "action" => "create_issue",
+              "existing_issue" => nil
+            },
+            %{
+              "title" => "Low-value note",
+              "action" => "none",
+              "existing_issue" => "#615"
+            }
+          ]
+        })
+
+      [event] = Store.list_events(run_id)
+
+      assert event["event_type"] == "retro_complete"
+      assert event["payload"]["summary"] == "builder hit review friction; backlog updated"
+      assert event["payload"]["action_count"] == 1
+      assert event["payload"]["skipped_count"] == 1
+
+      assert event["payload"]["actions_taken"] == [
+               %{
+                 "action" => "create_issue",
+                 "existing_issue" => nil,
+                 "title" => "Missing reviewer guidance"
+               }
+             ]
+    end
+
+    test "show-events exposes retro_complete event payload" do
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 647,
+          issue_title: "Show retro event",
+          builder_sprite: "sprite-1"
+        })
+
+      :ok =
+        Retro.record_complete_event(run_id, %{
+          "summary" => "clean run",
+          "findings" => []
+        })
+
+      output =
+        capture_io(fn ->
+          CLI.main(["show-events", "--run-id", run_id])
+        end)
+
+      decoded = Jason.decode!(output)
+      assert decoded["run_id"] == run_id
+      assert decoded["event_count"] == 1
+
+      [event] = decoded["events"]
+      assert event["event_type"] == "retro_complete"
+      assert event["payload"]["summary"] == "clean run"
+      assert event["payload"]["action_count"] == 0
     end
   end
 end
