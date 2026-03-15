@@ -22,7 +22,7 @@ defmodule Conductor.Codex do
   def name, do: "codex"
 
   @impl Conductor.Harness
-  def dispatch_command(opts \\ []) do
+  def dispatch_command(opts) do
     reasoning = Keyword.get(opts, :reasoning_effort, @default_reasoning)
 
     [

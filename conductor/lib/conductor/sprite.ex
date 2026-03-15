@@ -11,7 +11,7 @@ defmodule Conductor.Sprite do
 
   `dispatch/4` performs the full sequence via direct `sprite exec` calls:
 
-  1. Kill stale agent processes (`pkill -9 -f claude`)
+  1. Kill stale agent processes (all known harnesses)
   2. Upload prompt to workspace (base64-encoded to avoid shell quoting issues)
   3. Run agent via `Conductor.Harness` (e.g. `claude -p < PROMPT.md`)
   4. On non-zero exit, retry once using the harness `continue_command`
@@ -54,9 +54,7 @@ defmodule Conductor.Sprite do
     timeout_ms = timeout_minutes * 60_000
 
     # 1. Kill stale agent processes from prior dispatches
-    exec_fn.(sprite, "pkill -9 -f claude 2>/dev/null; pkill -9 -f codex 2>/dev/null; true",
-      timeout: 15_000
-    )
+    exec_fn.(sprite, kill_agents_cmd(), timeout: 15_000)
 
     # 2. Upload prompt (base64 to avoid shell quoting; base64 alphabet is shell-safe)
     prompt_path = Path.join(workspace, "PROMPT.md")
@@ -97,9 +95,7 @@ defmodule Conductor.Sprite do
 
   @spec kill(binary()) :: :ok | {:error, term()}
   def kill(sprite) do
-    case exec(sprite, "pkill -9 -f claude 2>/dev/null; pkill -9 -f codex 2>/dev/null; true",
-           timeout: 15_000
-         ) do
+    case exec(sprite, kill_agents_cmd(), timeout: 15_000) do
       {:ok, _} -> :ok
       {:error, msg, _} -> {:error, msg}
     end
@@ -123,18 +119,29 @@ defmodule Conductor.Sprite do
   def busy?(sprite, opts \\ []) do
     exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
 
-    # Use pgrep -x to match exact process name, avoiding self-match on the pgrep command
-    case exec_fn.(
-           sprite,
-           "pgrep -x claude 2>/dev/null || pgrep -x codex 2>/dev/null || pgrep -f 'ralph\\.sh' 2>/dev/null",
-           timeout: 15_000
-         ) do
+    case exec_fn.(sprite, detect_agents_cmd(), timeout: 15_000) do
       {:ok, output} -> String.trim(output) != ""
       _ -> false
     end
   end
 
   # --- Private ---
+
+  # Process names for all known agent harnesses. Used to kill stale processes
+  # before dispatch and detect busy sprites. Update when adding a new harness.
+  @agent_process_names ~w(claude codex)
+
+  defp kill_agents_cmd do
+    @agent_process_names
+    |> Enum.map_join("; ", &"pkill -9 -f #{&1} 2>/dev/null")
+    |> Kernel.<>("; true")
+  end
+
+  defp detect_agents_cmd do
+    @agent_process_names
+    |> Enum.map_join(" || ", &"pgrep -x #{&1} 2>/dev/null")
+    |> Kernel.<>(" || pgrep -f 'ralph\\.sh' 2>/dev/null")
+  end
 
   defp run_agent(sprite, workspace, prompt_path, harness, harness_opts, exec_fn, timeout_ms) do
     cmd = agent_command(harness.dispatch_command(harness_opts), workspace, prompt_path)

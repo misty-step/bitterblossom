@@ -92,13 +92,17 @@ func runSetup(ctx context.Context, spriteName, repo string, force bool, persona 
 		}
 	}
 
-	// 4. Install Codex CLI and upload config
-	_, _ = fmt.Fprintf(os.Stderr, "installing codex...\n")
-	codexInstall := s.CommandContext(ctx, "bash", "-c", "npm i -g @openai/codex 2>&1")
-	codexInstall.Stdout = os.Stderr
-	codexInstall.Stderr = os.Stderr
-	if err := codexInstall.Run(); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "warning: codex install failed (non-fatal): %v\n", err)
+	// 4. Install Codex CLI (skip if already present) and upload config
+	if checkCodex := s.CommandContext(ctx, "bash", "-c", "command -v codex >/dev/null 2>&1"); checkCodex.Run() != nil || force {
+		_, _ = fmt.Fprintf(os.Stderr, "installing codex...\n")
+		codexInstall := s.CommandContext(ctx, "bash", "-c", "npm i -g @openai/codex 2>&1")
+		codexInstall.Stdout = os.Stderr
+		codexInstall.Stderr = os.Stderr
+		if err := codexInstall.Run(); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "warning: codex install failed (non-fatal): %v\n", err)
+		}
+	} else {
+		_, _ = fmt.Fprintf(os.Stderr, "codex already installed, skipping\n")
 	}
 
 	if err := uploadFile(ctx, s, "base/codex-config.toml", spriteCodexDir+"/config.toml"); err != nil {

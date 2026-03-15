@@ -1,10 +1,10 @@
 # Codex CLI configuration for sprites (headless VMs).
 # Uploaded to ~/.codex/config.toml during bb setup.
 # Auth: OPENAI_API_KEY env var injected at dispatch time.
+#
+# Note: model, reasoning_effort, web_search, and sandbox are set
+# via CLI flags by the conductor (Conductor.Codex module).
+# Only values NOT overridden by the conductor belong here.
 
 preferred_auth_method = "apikey"
-model = "gpt-5.4"
-model_reasoning_effort = "medium"
 approval_policy = "never"
-sandbox_mode = "danger-full-access"
-web_search = "live"
