@@ -16,7 +16,23 @@ defmodule Conductor.Application do
         Conductor.Orchestrator
       ] ++ dashboard_children()
 
-    Supervisor.start_link(children, strategy: :one_for_one, name: Conductor.Supervisor)
+    result = Supervisor.start_link(children, strategy: :one_for_one, name: Conductor.Supervisor)
+    attach_canary()
+    result
+  end
+
+  @doc false
+  def attach_canary do
+    with endpoint when is_binary(endpoint) <- System.get_env("CANARY_ENDPOINT"),
+         api_key when is_binary(api_key) <- System.get_env("CANARY_API_KEY") do
+      CanarySdk.attach(
+        endpoint: endpoint,
+        api_key: api_key,
+        service: "bitterblossom"
+      )
+    else
+      _ -> :ok
+    end
   end
 
   @doc """

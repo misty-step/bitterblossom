@@ -30,6 +30,7 @@ defmodule Conductor.MixProject do
       {:bandit, "~> 1.5"},
       {:plug_crypto, "~> 2.1"},
       {:toml, "~> 0.7"},
+      {:canary_sdk, github: "misty-step/canary", sparse: "canary_sdk"},
       {:lazy_html, ">= 0.1.0", only: :test}
     ]
   end
