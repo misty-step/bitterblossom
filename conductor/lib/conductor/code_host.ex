@@ -19,4 +19,19 @@ defmodule Conductor.CodeHost do
   @doc "List open PRs with a given label."
   @callback labeled_prs(repo :: binary(), label :: binary()) ::
               {:ok, [map()]} | {:error, term()}
+
+  @doc "List open factory/* PRs with CI and label metadata."
+  @callback factory_prs(repo :: binary()) :: {:ok, [map()]} | {:error, term()}
+
+  @doc "Fetch review comments on a PR."
+  @callback pr_review_comments(repo :: binary(), pr_number :: pos_integer()) ::
+              {:ok, [map()]} | {:error, term()}
+
+  @doc "Fetch CI failure logs for a PR."
+  @callback pr_ci_failure_logs(repo :: binary(), pr_number :: pos_integer()) ::
+              {:ok, binary()} | {:error, term()}
+
+  @doc "Add a label to a PR."
+  @callback add_label(repo :: binary(), pr_number :: pos_integer(), label :: binary()) ::
+              :ok | {:error, term()}
 end
