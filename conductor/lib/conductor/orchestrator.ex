@@ -604,7 +604,7 @@ defmodule Conductor.Orchestrator do
   end
 
   defp operator_issue_decision(repo, issue_number) do
-    case tracker_mod().issue_has_label?(repo, issue_number, "hold") do
+    case tracker_mod().issue_has_label?(repo, issue_number, Config.operator_hold_label()) do
       {:ok, true} ->
         {:blocked, "operator_hold"}
 
@@ -636,16 +636,10 @@ defmodule Conductor.Orchestrator do
 
   defp cancel_comment_present?(comments) do
     Enum.any?(comments, fn comment ->
-      body = comment_body(comment)
-
-      String.trim(body) |> String.downcase() == "bb: cancel"
+      body = Map.get(comment, "body", "")
+      String.trim(body) |> String.downcase() == String.downcase(Config.operator_cancel_command())
     end)
   end
-
-  defp comment_body(%{"body" => body}) when is_binary(body), do: body
-
-  defp comment_body(comment),
-    do: get_in(comment, ["body", "text"]) || get_in(comment, ["body", "body"]) || ""
 
   defp issue_number_for_pr(repo, pr) do
     case Store.find_run_by_pr(repo, pr["number"]) do

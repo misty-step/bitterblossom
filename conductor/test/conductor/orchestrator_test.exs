@@ -1,7 +1,7 @@
 defmodule Conductor.OrchestratorTest do
   use ExUnit.Case, async: false
 
-  alias Conductor.{Store, Orchestrator}
+  alias Conductor.{GitHub, Store, Orchestrator}
 
   # Mock tracker: no eligible issues by default.
   defmodule MockTracker do
@@ -650,7 +650,7 @@ defmodule Conductor.OrchestratorTest do
 
       MockState.put(
         {:issue_comments, "test/repo", 405},
-        [%{"body" => %{"text" => "bb: cancel"}}]
+        GitHub.normalize_issue_comments([%{"body" => %{"text" => "bb: cancel"}}])
       )
 
       :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
@@ -714,8 +714,55 @@ defmodule Conductor.OrchestratorTest do
 
       MockState.put(
         {:issue_comments, "test/repo", 407},
-        [%{"body" => %{"body" => "bb: cancel"}}]
+        GitHub.normalize_issue_comments([%{"body" => %{"body" => "bb: cancel"}}])
       )
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      eventually(fn ->
+        {:ok, run} = Store.get_run(run_id)
+        assert run["phase"] == "blocked"
+
+        events = Store.list_events(run_id)
+        operator_event = Enum.find(events, &(&1["event_type"] == "operator_blocked"))
+        assert operator_event["payload"]["reason"] == "operator_cancel"
+      end)
+    end
+
+    test "operator directives use configurable policy strings" do
+      orig_hold = Application.get_env(:conductor, :operator_hold_label)
+      orig_cancel = Application.get_env(:conductor, :operator_cancel_command)
+
+      Application.put_env(:conductor, :operator_hold_label, "pause-me")
+      Application.put_env(:conductor, :operator_cancel_command, "bb: stop")
+
+      on_exit(fn ->
+        if orig_hold,
+          do: Application.put_env(:conductor, :operator_hold_label, orig_hold),
+          else: Application.delete_env(:conductor, :operator_hold_label)
+
+        if orig_cancel,
+          do: Application.put_env(:conductor, :operator_cancel_command, orig_cancel),
+          else: Application.delete_env(:conductor, :operator_cancel_command)
+      end)
+
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 408,
+          issue_title: "configurable directives",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(run_id, %{pr_number: 83, phase: "pr_opened", status: "pr_opened"})
+
+      MockState.put(
+        {:labeled_prs, "test/repo", "lgtm"},
+        [%{"number" => 83, "headRefName" => "factory/408-123"}]
+      )
+
+      MockState.put({:issue_has_label, "test/repo", 408, "pause-me"}, {:ok, false})
+      MockState.put({:issue_comments, "test/repo", 408}, [%{"body" => "bb: stop"}])
 
       :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
 

@@ -54,6 +54,16 @@ defmodule Conductor.Config do
     Application.get_env(:conductor, :max_replays, 3)
   end
 
+  @spec operator_hold_label() :: binary()
+  def operator_hold_label do
+    Application.get_env(:conductor, :operator_hold_label, "hold")
+  end
+
+  @spec operator_cancel_command() :: binary()
+  def operator_cancel_command do
+    Application.get_env(:conductor, :operator_cancel_command, "bb: cancel")
+  end
+
   @spec fleet_probe_failure_threshold() :: pos_integer()
   def fleet_probe_failure_threshold do
     Application.get_env(:conductor, :fleet_probe_failure_threshold, 3)

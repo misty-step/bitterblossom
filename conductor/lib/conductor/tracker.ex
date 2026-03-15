@@ -24,7 +24,7 @@ defmodule Conductor.Tracker do
   @callback issue_has_label?(repo :: binary(), issue_number :: pos_integer(), label :: binary()) ::
               {:ok, boolean()} | {:error, term()}
 
-  @doc "Return issue comments for operator directive checks."
+  @doc "Return issue comments normalized to maps with a binary `body` field."
   @callback issue_comments(repo :: binary(), issue_number :: pos_integer()) ::
               {:ok, [map()]} | {:error, term()}
 end
