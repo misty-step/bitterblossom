@@ -1,5 +1,6 @@
 defmodule Conductor.GitHubTest do
   use ExUnit.Case, async: false
+  import ExUnit.CaptureLog
 
   alias Conductor.{GitHub, Issue}
 
@@ -367,6 +368,17 @@ defmodule Conductor.GitHubTest do
           refute String.contains?(args, "--label\n")
         end
       )
+    end
+
+    test "returns an error instead of raising when the repo is malformed" do
+      assert {:error, message} = GitHub.list_issues("not-a-repo")
+      assert message =~ "expected repo in owner/name format"
+    end
+
+    test "eligible_issues logs and returns an empty list when the repo is malformed" do
+      assert capture_log(fn ->
+               assert GitHub.eligible_issues("still-not-a-repo") == []
+             end) =~ "failed to list issues"
     end
   end
 

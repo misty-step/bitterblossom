@@ -129,48 +129,48 @@ defmodule Conductor.GitHub do
   defp normalized_label(label), do: label
 
   defp list_all_open_issues(repo) do
-    {owner, name} = repo_parts(repo)
-
-    query = """
-    query($owner: String!, $name: String!, $endCursor: String) {
-      repository(owner: $owner, name: $name) {
-        issues(first: 100, after: $endCursor, states: OPEN, orderBy: {field: CREATED_AT, direction: ASC}) {
-          nodes {
-            number
-            title
-            body
-            url
-            labels(first: 100) {
-              nodes {
-                name
+    with {:ok, {owner, name}} <- repo_parts(repo) do
+      query = """
+      query($owner: String!, $name: String!, $endCursor: String) {
+        repository(owner: $owner, name: $name) {
+          issues(first: 100, after: $endCursor, states: OPEN, orderBy: {field: CREATED_AT, direction: ASC}) {
+            nodes {
+              number
+              title
+              body
+              url
+              labels(first: 100) {
+                nodes {
+                  name
+                }
               }
             }
-          }
-          pageInfo {
-            hasNextPage
-            endCursor
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
           }
         }
       }
-    }
-    """
+      """
 
-    args = [
-      "api",
-      "graphql",
-      "--paginate",
-      "--slurp",
-      "-f",
-      "owner=#{owner}",
-      "-f",
-      "name=#{name}",
-      "-f",
-      "query=#{query}"
-    ]
+      args = [
+        "api",
+        "graphql",
+        "--paginate",
+        "--slurp",
+        "-f",
+        "owner=#{owner}",
+        "-f",
+        "name=#{name}",
+        "-f",
+        "query=#{query}"
+      ]
 
-    with {:ok, json} <- run_gh(args),
-         {:ok, pages} <- decode_issue_list_pages(json) do
-      {:ok, pages}
+      with {:ok, json} <- run_gh(args),
+           {:ok, pages} <- decode_issue_list_pages(json) do
+        {:ok, pages}
+      end
     end
   end
 
@@ -214,8 +214,8 @@ defmodule Conductor.GitHub do
 
   defp repo_parts(repo) do
     case String.split(repo, "/", parts: 2) do
-      [owner, name] -> {owner, name}
-      _ -> raise ArgumentError, "expected repo in owner/name format, got: #{inspect(repo)}"
+      [owner, name] when owner != "" and name != "" -> {:ok, {owner, name}}
+      _ -> {:error, "expected repo in owner/name format, got: #{inspect(repo)}"}
     end
   end
 
