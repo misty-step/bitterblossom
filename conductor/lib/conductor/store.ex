@@ -530,6 +530,10 @@ defmodule Conductor.Store do
           """
           CREATE INDEX IF NOT EXISTS idx_runs_repo_active
           ON runs(repo, completed_at, picked_at)
+          """,
+          """
+          CREATE INDEX IF NOT EXISTS idx_runs_repo_pr
+          ON runs(repo, pr_number)
           """
         ] do
       exec(conn, sql, [])
