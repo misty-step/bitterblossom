@@ -23,6 +23,7 @@ defmodule Conductor.Retro do
   @anthropic_url "https://api.anthropic.com/v1/messages"
   @model "claude-sonnet-4-20250514"
   @max_tokens 2048
+  @supported_actions ~w(create_issue comment_issue update_backlog)
 
   # Repo root is three levels up from __DIR__ (conductor/lib/conductor/)
   @repo_root Path.expand("../../..", __DIR__)
@@ -40,6 +41,46 @@ defmodule Conductor.Retro do
       GenServer.cast(__MODULE__, {:analyze, run_id})
     else
       Logger.debug("[retro] disabled, skipping #{run_id}")
+    end
+
+    :ok
+  end
+
+  @doc false
+  @spec record_complete_event(binary(), map()) :: :ok
+  def record_complete_event(run_id, %{"findings" => findings, "summary" => summary})
+      when is_list(findings) and is_binary(summary) do
+    actionable_findings = Enum.filter(findings, &actionable?/1)
+
+    skipped_count = length(findings) - length(actionable_findings)
+
+    Store.record_event(run_id, "retro_complete", %{
+      summary: summary,
+      findings: findings,
+      finding_count: length(findings),
+      action_count: length(actionable_findings),
+      actions_taken: Enum.map(actionable_findings, &action_metadata/1),
+      skipped_count: skipped_count
+    })
+  end
+
+  @doc false
+  @spec finalize_analysis(binary(), map(), map(), (list(), map() -> any())) :: :ok
+  def finalize_analysis(
+        run_id,
+        %{"findings" => findings} = analysis,
+        run,
+        execute_fn \\ &execute_actions/2
+      )
+      when is_list(findings) and is_map(run) do
+    try do
+      execute_fn.(findings, run)
+    rescue
+      error ->
+        Logger.error(Exception.format(:error, error, __STACKTRACE__))
+        reraise error, __STACKTRACE__
+    after
+      record_complete_event(run_id, analysis)
     end
 
     :ok
@@ -73,9 +114,9 @@ defmodule Conductor.Retro do
          events <- Store.list_events(run_id),
          context <- build_context(run, events),
          {:ok, response} <- call_llm(context),
-         {:ok, actions} <- parse_response(response) do
-      execute_actions(actions, run)
-      Logger.info("[retro] #{run_id} complete: #{length(actions)} action(s)")
+         {:ok, analysis} <- parse_response(response) do
+      finalize_analysis(run_id, analysis, run)
+      Logger.info("[retro] #{run_id} complete: #{action_count(analysis["findings"])} action(s)")
     else
       {:error, reason} ->
         Logger.warning("[retro] #{run_id} failed: #{inspect(reason)}")
@@ -231,9 +272,10 @@ defmodule Conductor.Retro do
       |> String.trim()
 
     case Jason.decode(cleaned) do
-      {:ok, %{"findings" => findings, "summary" => summary}} when is_list(findings) ->
+      {:ok, %{"findings" => findings, "summary" => summary} = analysis}
+      when is_list(findings) and is_binary(summary) ->
         Logger.info("[retro] summary: #{summary}")
-        {:ok, findings}
+        {:ok, analysis}
 
       {:ok, _} ->
         {:error, "unexpected JSON structure"}
@@ -409,4 +451,19 @@ defmodule Conductor.Retro do
     Application.get_env(:conductor, :retro_enabled, true) and
       not is_nil(api_key())
   end
+
+  defp action_count(findings) do
+    findings
+    |> Enum.count(&actionable?/1)
+  end
+
+  defp action_metadata(finding) do
+    %{
+      action: finding["action"],
+      title: finding["title"],
+      existing_issue: finding["existing_issue"]
+    }
+  end
+
+  defp actionable?(finding), do: Map.get(finding, "action") in @supported_actions
 end
