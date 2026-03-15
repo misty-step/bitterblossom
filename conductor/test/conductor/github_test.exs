@@ -359,6 +359,74 @@ defmodule Conductor.GitHubTest do
       )
     end
 
+    test "continues past the initial page budget when mixed issue pages still retain backlog items" do
+      with_fake_gh(
+        """
+        printf '%s\n' "$@" >> "$GH_ARGS_PATH"
+        page="$(printf '%s' "$*" | sed -n 's/.*page=\\([0-9][0-9]*\\).*/\\1/p')"
+
+        if [[ -z "$page" ]]; then
+          echo '[]'
+        elif (( page <= 10 )); then
+          start=$(( (page - 1) * 90 + 1 ))
+          finish=$(( start + 89 ))
+          printf '[\n'
+
+          first=1
+
+          for number in $(seq "$start" "$finish"); do
+            if (( first == 0 )); then
+              printf ',\n'
+            fi
+
+            first=0
+
+            printf '{"number":%s,"title":"issue %s","body":"draft body","url":"https://example.test/issues/%s","labels":[]}' \
+              "$number" "$number" "$number"
+          done
+
+          for pr_number in $(seq 1 10); do
+            printf ',\n{"number":%s,"title":"not an issue","body":"","url":"https://example.test/pull/%s","labels":[],"pull_request":{"url":"https://example.test/pull/%s"}}' \
+              "$(( page * 1000 + pr_number ))" "$(( page * 1000 + pr_number ))" "$(( page * 1000 + pr_number ))"
+          done
+
+          printf '\n]\n'
+        elif (( page == 11 )); then
+          start=901
+          finish=1000
+          printf '[\n'
+
+          first=1
+
+          for number in $(seq "$start" "$finish"); do
+            if (( first == 0 )); then
+              printf ',\n'
+            fi
+
+            first=0
+
+            printf '{"number":%s,"title":"issue %s","body":"draft body","url":"https://example.test/issues/%s","labels":[]}' \
+              "$number" "$number" "$number"
+          done
+
+          printf '\n]\n'
+        else
+          echo '[]'
+        fi
+        """,
+        fn _tmp_dir, args_path ->
+          assert {:ok, issues} = GitHub.list_issues("misty-step/bitterblossom")
+          assert length(issues) == 1000
+          assert Enum.at(issues, 0).number == 1
+          assert Enum.at(issues, -1).number == 1000
+
+          args = File.read!(args_path)
+          assert String.contains?(args, "page=11")
+          refute String.contains?(args, "page=12")
+        end
+      )
+    end
+
     test "stops unfiltered pagination after the default page budget even when pages only contain pull requests" do
       with_fake_gh(
         """
