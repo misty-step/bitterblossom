@@ -70,6 +70,18 @@ defmodule Conductor.Orchestrator do
     GenServer.call(__MODULE__, {:start_loop, opts})
   end
 
+  @doc "Pause dispatch of new runs. Existing work continues."
+  @spec pause() :: :ok
+  def pause do
+    GenServer.call(__MODULE__, :pause)
+  end
+
+  @doc "Resume dispatch of new runs."
+  @spec resume() :: :ok
+  def resume do
+    GenServer.call(__MODULE__, :resume)
+  end
+
   @doc "Return fleet worker status in round-robin order."
   @spec fleet_status() :: [map()]
   def fleet_status do
@@ -106,7 +118,7 @@ defmodule Conductor.Orchestrator do
           workers: worker_map(workers),
           worker_order: Enum.map(workers, & &1.name),
           trusted_surfaces: Keyword.get(opts, :trusted_surfaces, state.trusted_surfaces),
-          mode: :polling
+          mode: dispatch_mode()
       }
 
       schedule_poll(0)
@@ -115,15 +127,50 @@ defmodule Conductor.Orchestrator do
   end
 
   @impl true
+  def handle_call(:pause, _from, state) do
+    Store.set_dispatch_paused(true)
+    {:reply, :ok, %{state | mode: pause_mode(state.mode)}}
+  end
+
+  @impl true
+  def handle_call(:resume, _from, state) do
+    Store.set_dispatch_paused(false)
+
+    state =
+      if state.mode == :idle do
+        state
+      else
+        schedule_poll(0)
+        %{state | mode: :polling}
+      end
+
+    {:reply, :ok, state}
+  end
+
+  @impl true
   def handle_call(:fleet_status, _from, state) do
     {:reply, ordered_workers(state), state}
   end
 
   @impl true
-  def handle_info(:poll, %{mode: :polling} = state) do
+  def handle_info(:poll, %{mode: :idle} = state) do
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info(:poll, state) do
     state = reconcile(state)
     merge_labeled_prs(state)
-    state = maybe_start_runs(state)
+
+    state =
+      if dispatch_paused?() do
+        %{state | mode: :paused}
+      else
+        state
+        |> Map.put(:mode, :polling)
+        |> maybe_start_runs()
+      end
+
     schedule_poll(Config.poll_seconds() * 1_000)
     {:noreply, state}
   end
@@ -189,6 +236,7 @@ defmodule Conductor.Orchestrator do
       unleased = Enum.reject(eligible, &Store.leased?(state.repo, &1.number))
 
       unleased
+      |> Enum.reject(&operator_blocked_issue?(state.repo, &1.number))
       |> Enum.take(slots)
       |> Enum.reduce(state, fn issue, acc -> start_run(acc, issue) end)
     end
@@ -436,20 +484,29 @@ defmodule Conductor.Orchestrator do
           pr_number = pr["number"]
 
           if code_host_mod().checks_green?(repo, pr_number) do
-            Logger.info("[merge] PR ##{pr_number} has lgtm + green CI, merging")
+            case operator_merge_decision(repo, pr) do
+              :allow ->
+                Logger.info("[merge] PR ##{pr_number} has lgtm + green CI, merging")
 
-            case code_host_mod().merge(repo, pr_number, []) do
-              :ok ->
-                Logger.info("[merge] PR ##{pr_number} merged successfully")
-                record_merge(repo, pr_number)
-                Conductor.SelfUpdate.maybe_reload(repo, pr_number)
+                case code_host_mod().merge(repo, pr_number, []) do
+                  :ok ->
+                    Logger.info("[merge] PR ##{pr_number} merged successfully")
+                    record_merge(repo, pr_number)
+                    Conductor.SelfUpdate.maybe_reload(repo, pr_number)
 
-              {:error, reason} ->
-                if merge_conflict?(reason) do
-                  attempt_rebase_merge(repo, pr_number, pr["headRefName"], state.worker_order)
-                else
-                  Logger.warning("[merge] PR ##{pr_number} merge failed: #{reason}")
+                  {:error, reason} ->
+                    if merge_conflict?(reason) do
+                      attempt_rebase_merge(repo, pr_number, pr["headRefName"], state.worker_order)
+                    else
+                      Logger.warning("[merge] PR ##{pr_number} merge failed: #{reason}")
+                    end
                 end
+
+              {:blocked, reason} ->
+                mark_operator_blocked(repo, pr_number, reason)
+
+              :skip ->
+                Logger.warning("[merge] PR ##{pr_number} operator checks unavailable, skipping")
             end
           else
             Logger.debug("[merge] PR ##{pr_number} has lgtm but CI not green, skipping")
@@ -524,6 +581,120 @@ defmodule Conductor.Orchestrator do
         mark_conflict_blocked(repo, pr_number)
     end
   end
+
+  defp operator_blocked_issue?(repo, issue_number) do
+    case operator_issue_decision(repo, issue_number) do
+      {:blocked, reason} ->
+        Logger.info("[dispatch] issue ##{issue_number} skipped: #{reason}")
+        true
+
+      :allow ->
+        false
+
+      :skip ->
+        Logger.warning("[dispatch] issue ##{issue_number} operator checks unavailable, skipping")
+        true
+    end
+  end
+
+  defp operator_merge_decision(repo, pr) do
+    with {:ok, issue_number} <- issue_number_for_pr(repo, pr) do
+      operator_issue_decision(repo, issue_number)
+    end
+  end
+
+  defp operator_issue_decision(repo, issue_number) do
+    cond do
+      tracker_mod().issue_has_label?(repo, issue_number, "hold") ->
+        {:blocked, "operator_hold"}
+
+      true ->
+        case tracker_mod().issue_comments(repo, issue_number) do
+          {:ok, comments} ->
+            if cancel_comment_present?(comments) do
+              {:blocked, "operator_cancel"}
+            else
+              :allow
+            end
+
+          {:error, reason} ->
+            Logger.warning(
+              "[operator] failed to read comments for issue ##{issue_number}: #{inspect(reason)}"
+            )
+
+            :skip
+        end
+    end
+  end
+
+  defp cancel_comment_present?(comments) do
+    Enum.any?(comments, fn comment ->
+      body =
+        comment["body"] ||
+          get_in(comment, ["body", "text"]) ||
+          get_in(comment, ["body", "body"]) ||
+          ""
+
+      String.trim(body) |> String.downcase() == "bb: cancel"
+    end)
+  end
+
+  defp issue_number_for_pr(repo, pr) do
+    case Store.find_run_by_pr(repo, pr["number"]) do
+      {:ok, %{"issue_number" => issue_number}} ->
+        {:ok, issue_number}
+
+      {:error, :not_found} ->
+        parse_issue_number_from_branch(pr["headRefName"] || "")
+    end
+  end
+
+  defp parse_issue_number_from_branch("factory/" <> rest) do
+    case String.split(rest, "-", parts: 2) do
+      [issue_number, _suffix] ->
+        case Integer.parse(issue_number) do
+          {value, ""} -> {:ok, value}
+          _ -> :skip
+        end
+
+      _ ->
+        :skip
+    end
+  end
+
+  defp parse_issue_number_from_branch(_branch), do: :skip
+
+  defp mark_operator_blocked(repo, pr_number, reason) do
+    Logger.warning("[merge] PR ##{pr_number} blocked: #{reason}")
+
+    case Store.find_run_by_pr(repo, pr_number) do
+      {:ok, %{"run_id" => run_id, "issue_number" => issue_number}} ->
+        Store.record_event(run_id, "operator_blocked", %{
+          pr_number: pr_number,
+          issue_number: issue_number,
+          reason: reason
+        })
+
+        Store.complete_run(run_id, "blocked", "blocked")
+        Store.release_lease(repo, issue_number)
+
+      _ ->
+        Logger.debug("[merge] no run found for PR ##{pr_number}, cannot mark operator block")
+    end
+  end
+
+  defp dispatch_paused? do
+    Store.dispatch_paused?()
+  rescue
+    _ -> false
+  end
+
+  defp dispatch_mode do
+    if dispatch_paused?(), do: :paused, else: :polling
+  end
+
+  defp pause_mode(:idle), do: :idle
+  defp pause_mode(_mode), do: :paused
 
   # Update the Store when the orchestrator merges a PR (not the RunServer).
   defp record_merge(repo, pr_number) do

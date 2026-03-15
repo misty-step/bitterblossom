@@ -36,6 +36,53 @@ defmodule Conductor.GitHub do
     end
   end
 
+  @spec issue_has_label?(binary(), pos_integer(), binary()) :: boolean()
+  def issue_has_label?(repo, issue_number, label) do
+    case Shell.cmd("gh", [
+           "issue",
+           "view",
+           to_string(issue_number),
+           "--repo",
+           repo,
+           "--json",
+           "labels"
+         ]) do
+      {:ok, json} ->
+        case Jason.decode(json) do
+          {:ok, %{"labels" => labels}} ->
+            Enum.any?(labels, fn item -> item["name"] == label end)
+
+          _ ->
+            false
+        end
+
+      {:error, _msg, _} ->
+        false
+    end
+  end
+
+  @spec issue_comments(binary(), pos_integer()) :: {:ok, [map()]} | {:error, term()}
+  def issue_comments(repo, issue_number) do
+    case Shell.cmd("gh", [
+           "issue",
+           "view",
+           to_string(issue_number),
+           "--repo",
+           repo,
+           "--json",
+           "comments"
+         ]) do
+      {:ok, json} ->
+        case Jason.decode(json) do
+          {:ok, data} -> {:ok, Map.get(data, "comments", [])}
+          {:error, _} -> {:error, "invalid JSON from gh: #{String.slice(json, 0, 200)}"}
+        end
+
+      {:error, msg, _} ->
+        {:error, msg}
+    end
+  end
+
   @spec list_issues(binary(), keyword()) :: {:ok, [Issue.t()]} | {:error, term()}
   def list_issues(repo, opts \\ []) do
     label = Keyword.get(opts, :label, "autopilot")

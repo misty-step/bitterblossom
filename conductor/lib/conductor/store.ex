@@ -116,6 +116,18 @@ defmodule Conductor.Store do
     GenServer.call(__MODULE__, {:mark_semantic_ready, run_id})
   end
 
+  @doc "Persist whether new run dispatch is paused."
+  @spec set_dispatch_paused(boolean()) :: :ok
+  def set_dispatch_paused(paused?) do
+    GenServer.call(__MODULE__, {:set_dispatch_paused, paused?})
+  end
+
+  @doc "Return true when new run dispatch is paused."
+  @spec dispatch_paused?() :: boolean()
+  def dispatch_paused? do
+    GenServer.call(__MODULE__, :dispatch_paused?)
+  end
+
   @doc "List non-terminal runs for a repo (completed_at IS NULL)."
   @spec list_active_runs(binary()) :: [map()]
   def list_active_runs(repo) do
@@ -413,6 +425,30 @@ defmodule Conductor.Store do
   end
 
   @impl true
+  def handle_call({:set_dispatch_paused, paused?}, _from, state) do
+    now = now_utc()
+    value = if paused?, do: "true", else: "false"
+
+    exec(
+      state.conn,
+      """
+      INSERT INTO control (key, value, updated_at)
+      VALUES ('dispatch_paused', ?1, ?2)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+      """,
+      [value, now]
+    )
+
+    {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call(:dispatch_paused?, _from, state) do
+    row = query_one(state.conn, "SELECT value FROM control WHERE key = 'dispatch_paused'", [])
+    {:reply, row != nil and row["value"] == "true", state}
+  end
+
+  @impl true
   def handle_call({:list_active_runs, repo}, _from, state) do
     rows =
       query_all(
@@ -525,6 +561,13 @@ defmodule Conductor.Store do
             check_name TEXT,
             rationale TEXT NOT NULL,
             waived_at TEXT NOT NULL
+          )
+          """,
+          """
+          CREATE TABLE IF NOT EXISTS control (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
           )
           """,
           """

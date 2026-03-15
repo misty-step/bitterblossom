@@ -235,4 +235,14 @@ defmodule Conductor.StoreTest do
     assert Store.list_incidents(run_b) |> length() == 0
     assert Store.list_waivers(run_a) |> length() == 0
   end
+
+  test "dispatch pause flag defaults false and can be toggled" do
+    refute Store.dispatch_paused?()
+
+    :ok = Store.set_dispatch_paused(true)
+    assert Store.dispatch_paused?()
+
+    :ok = Store.set_dispatch_paused(false)
+    refute Store.dispatch_paused?()
+  end
 end
