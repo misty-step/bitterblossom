@@ -12,7 +12,7 @@ defmodule Conductor.ClaudeCode do
 
   @behaviour Conductor.Harness
 
-  @default_model "anthropic/claude-sonnet-4-6"
+  @default_model "claude-sonnet-4-6"
 
   @impl Conductor.Harness
   def name, do: "claude_code"

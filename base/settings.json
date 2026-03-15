@@ -1,22 +1,10 @@
 {
   "model": "sonnet",
-  "enabledPlugins": {
-    "ralph-loop@claude-plugins-official": true
-  },
   "skipDangerousModePermissionPrompt": true,
   "permissions": {
     "defaultMode": "bypassPermissions"
   },
   "env": {
-    "ANTHROPIC_BASE_URL": "https://openrouter.ai/api",
-    "ANTHROPIC_AUTH_TOKEN": "__SET_VIA_OPENROUTER_API_KEY_ENV__",
-    "OPENROUTER_API_KEY": "__SET_VIA_OPENROUTER_API_KEY_ENV__",
-    "ANTHROPIC_MODEL": "anthropic/claude-sonnet-4-6",
-    "ANTHROPIC_SMALL_FAST_MODEL": "anthropic/claude-sonnet-4-6",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL": "anthropic/claude-sonnet-4-6",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "anthropic/claude-sonnet-4-6",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "anthropic/claude-sonnet-4-6",
-    "CLAUDE_CODE_SUBAGENT_MODEL": "anthropic/claude-sonnet-4-6",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
     "API_TIMEOUT_MS": "600000"
   },
