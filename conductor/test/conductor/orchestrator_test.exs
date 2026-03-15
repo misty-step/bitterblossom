@@ -54,7 +54,8 @@ defmodule Conductor.OrchestratorTest do
         pid -> if Process.alive?(pid), do: catch_exit(GenServer.stop(pid))
       end
 
-      if Process.whereis(Store), do: GenServer.stop(Store)
+      if pid = Process.whereis(Store),
+        do: if(Process.alive?(pid), do: catch_exit(GenServer.stop(Store)))
 
       if orig_tracker,
         do: Application.put_env(:conductor, :tracker_module, orig_tracker),

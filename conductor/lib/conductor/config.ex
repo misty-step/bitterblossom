@@ -62,6 +62,16 @@ defmodule Conductor.Config do
     )
   end
 
+  @spec fixer_timeout() :: pos_integer()
+  def fixer_timeout do
+    Application.get_env(:conductor, :fixer_timeout_minutes, 15)
+  end
+
+  @spec polisher_timeout() :: pos_integer()
+  def polisher_timeout do
+    Application.get_env(:conductor, :polisher_timeout_minutes, 15)
+  end
+
   @spec replay_delay_ms() :: pos_integer()
   def replay_delay_ms do
     Application.get_env(:conductor, :replay_delay_seconds, 120) * 1_000

@@ -116,6 +116,27 @@ defmodule Conductor.GitHub do
     end
   end
 
+  @failed ~w(FAILURE failure ERROR error CANCELLED cancelled TIMED_OUT timed_out ACTION_REQUIRED action_required STALE stale STARTUP_FAILURE startup_failure)
+
+  @spec checks_failed?(binary(), pos_integer()) :: boolean()
+  def checks_failed?(repo, pr_number) do
+    case get_pr_checks(repo, pr_number) do
+      {:ok, checks} -> evaluate_checks_failed(checks)
+      _ -> false
+    end
+  end
+
+  @doc """
+  Return true when at least one completed check has a non-green conclusion.
+  Returns false for pending/queued/no-checks states.
+  """
+  @spec evaluate_checks_failed([map()]) :: boolean()
+  def evaluate_checks_failed(checks) do
+    Enum.any?(checks, fn c ->
+      not is_nil(c["conclusion"]) and c["conclusion"] in @failed
+    end)
+  end
+
   @active_statuses ~w(IN_PROGRESS QUEUED PENDING WAITING REQUESTED in_progress queued pending waiting requested)
 
   @doc """
@@ -186,6 +207,99 @@ defmodule Conductor.GitHub do
 
       {:error, msg, _} ->
         {:error, msg}
+    end
+  end
+
+  @doc "List open factory/* PRs with CI status and labels."
+  @spec factory_prs(binary()) :: {:ok, [map()]} | {:error, term()}
+  def factory_prs(repo) do
+    case Shell.cmd("gh", [
+           "pr",
+           "list",
+           "--repo",
+           repo,
+           "--state",
+           "open",
+           "--json",
+           "number,title,body,headRefName,labels,statusCheckRollup"
+         ]) do
+      {:ok, json} ->
+        case Jason.decode(json) do
+          {:ok, prs} ->
+            factory =
+              Enum.filter(prs, fn pr ->
+                branch = pr["headRefName"] || ""
+                String.starts_with?(branch, "factory/")
+              end)
+
+            {:ok, factory}
+
+          {:error, _} ->
+            {:error, "invalid JSON"}
+        end
+
+      {:error, msg, _} ->
+        {:error, msg}
+    end
+  end
+
+  @doc "Fetch review comments on a PR."
+  @spec pr_review_comments(binary(), pos_integer()) :: {:ok, [map()]} | {:error, term()}
+  def pr_review_comments(repo, pr_number) do
+    case Shell.cmd("gh", [
+           "pr",
+           "view",
+           to_string(pr_number),
+           "--repo",
+           repo,
+           "--json",
+           "reviews,comments"
+         ]) do
+      {:ok, json} ->
+        case Jason.decode(json) do
+          {:ok, data} ->
+            reviews = Map.get(data, "reviews", [])
+            comments = Map.get(data, "comments", [])
+            {:ok, reviews ++ comments}
+
+          {:error, _} ->
+            {:error, "invalid JSON"}
+        end
+
+      {:error, msg, _} ->
+        {:error, msg}
+    end
+  end
+
+  @doc "Fetch CI failure logs for a PR."
+  @spec pr_ci_failure_logs(binary(), pos_integer()) :: {:ok, binary()} | {:error, term()}
+  def pr_ci_failure_logs(repo, pr_number) do
+    case Shell.cmd("gh", [
+           "pr",
+           "checks",
+           to_string(pr_number),
+           "--repo",
+           repo
+         ]) do
+      {:ok, output} -> {:ok, output}
+      {:error, output, _} -> {:ok, output}
+    end
+  end
+
+  @doc "Add a label to a PR."
+  @spec add_label(binary(), pos_integer(), binary()) :: :ok | {:error, term()}
+  def add_label(repo, pr_number, label) do
+    case Shell.cmd("gh", [
+           "pr",
+           "edit",
+           to_string(pr_number),
+           "--repo",
+           repo,
+           "--add-label",
+           label
+         ]) do
+      {:ok, _} -> :ok
+      {:error, msg, _} -> {:error, msg}
     end
   end
 
