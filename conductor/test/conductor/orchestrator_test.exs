@@ -128,6 +128,20 @@ defmodule Conductor.OrchestratorTest do
       end
   end
 
+  defp safe_stop(nil), do: :ok
+
+  defp safe_stop(pid) when is_pid(pid) do
+    if Process.alive?(pid) do
+      try do
+        GenServer.stop(pid)
+      catch
+        :exit, _ -> :ok
+      end
+    else
+      :ok
+    end
+  end
+
   setup do
     db_path = Path.join(System.tmp_dir!(), "orch_test_#{:rand.uniform(999_999)}.db")
     event_log = Path.join(System.tmp_dir!(), "orch_test_#{:rand.uniform(999_999)}.jsonl")
@@ -165,17 +179,12 @@ defmodule Conductor.OrchestratorTest do
     MockState.put(:run_control_calls, [])
 
     # Restart the Orchestrator under the global name so start_loop/1 works
-    if pid = Process.whereis(Orchestrator), do: GenServer.stop(pid)
+    safe_stop(Process.whereis(Orchestrator))
     {:ok, orch_pid} = Orchestrator.start_link([])
 
     on_exit(fn ->
-      case Process.whereis(Orchestrator) do
-        nil -> :ok
-        pid -> if(Process.alive?(pid), do: GenServer.stop(pid))
-      end
-
-      if pid = Process.whereis(Store),
-        do: if(Process.alive?(pid), do: GenServer.stop(Store))
+      safe_stop(Process.whereis(Orchestrator))
+      safe_stop(Process.whereis(Store))
 
       if orig_tracker,
         do: Application.put_env(:conductor, :tracker_module, orig_tracker),
