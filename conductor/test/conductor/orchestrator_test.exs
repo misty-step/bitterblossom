@@ -9,9 +9,15 @@ defmodule Conductor.OrchestratorTest do
     alias Conductor.OrchestratorTest.MockState
 
     def list_eligible(repo, opts),
-      do: MockState.get({:eligible, repo, Keyword.get(opts, :label, "autopilot")}, [])
+      do: MockState.get({:eligible, repo, Keyword.get(opts, :label)}, [])
 
-    def get_issue(_repo, _number), do: {:error, :not_found}
+    def get_issue(repo, number) do
+      case MockState.get({:issue, repo, number}) do
+        nil -> {:error, :not_found}
+        issue -> {:ok, issue}
+      end
+    end
+
     def comment(_repo, _issue, _body), do: :ok
 
     def issue_has_label?(repo, issue_number, label) do
@@ -23,6 +29,40 @@ defmodule Conductor.OrchestratorTest do
         {:ok, _comments} = result -> result
         {:error, _reason} = result -> result
         comments -> {:ok, comments}
+      end
+    end
+  end
+
+  defmodule MockShaper do
+    alias Conductor.OrchestratorTest.MockState
+
+    def shape(repo, issue_number, _opts \\ []) do
+      send(MockState.get(:test_pid, self()), {:shape_attempted, repo, issue_number})
+      Process.sleep(MockState.get({:shape_delay_ms, repo, issue_number}, 0))
+
+      case MockState.get({:shape_result, repo, issue_number}, {:error, :not_configured}) do
+        {:sleep, sleep_ms, result} ->
+          Process.sleep(sleep_ms)
+          result
+
+        {:ok, result} = shaped when result in [:shaped, :already_shaped] ->
+          if issue = MockState.get({:issue_after_shape, repo, issue_number}) do
+            MockState.put({:issue, repo, issue_number}, issue)
+          end
+
+          shaped
+
+        {:raise, error} ->
+          raise error
+
+        {:throw, reason} ->
+          throw(reason)
+
+        {:exit, reason} ->
+          exit(reason)
+
+        other ->
+          other
       end
     end
   end
@@ -148,6 +188,8 @@ defmodule Conductor.OrchestratorTest do
 
     if Process.whereis(Store), do: GenServer.stop(Store)
     {:ok, _} = Store.start_link(db_path: db_path, event_log: event_log)
+    safe_stop(Process.whereis(Conductor.TaskSupervisor))
+    {:ok, _} = Task.Supervisor.start_link(name: Conductor.TaskSupervisor)
 
     # Inject mock tracker so polls don't hit GitHub
     orig_tracker = Application.get_env(:conductor, :tracker_module)
@@ -164,6 +206,9 @@ defmodule Conductor.OrchestratorTest do
 
     orig_run_control = Application.get_env(:conductor, :run_control_module)
     Application.put_env(:conductor, :run_control_module, MockRunControl)
+
+    orig_shaper = Application.get_env(:conductor, :shaper_module)
+    Application.put_env(:conductor, :shaper_module, MockShaper)
 
     # Use a 60-minute stale threshold; tests can plant older heartbeats to trigger expiry
     orig_stale = Application.get_env(:conductor, :stale_run_threshold_minutes)
@@ -185,6 +230,7 @@ defmodule Conductor.OrchestratorTest do
     on_exit(fn ->
       safe_stop(Process.whereis(Orchestrator))
       safe_stop(Process.whereis(Store))
+      safe_stop(Process.whereis(Conductor.TaskSupervisor))
 
       if orig_tracker,
         do: Application.put_env(:conductor, :tracker_module, orig_tracker),
@@ -205,6 +251,10 @@ defmodule Conductor.OrchestratorTest do
       if orig_run_control,
         do: Application.put_env(:conductor, :run_control_module, orig_run_control),
         else: Application.delete_env(:conductor, :run_control_module)
+
+      if orig_shaper,
+        do: Application.put_env(:conductor, :shaper_module, orig_shaper),
+        else: Application.delete_env(:conductor, :shaper_module)
 
       if orig_stale,
         do: Application.put_env(:conductor, :stale_run_threshold_minutes, orig_stale),
@@ -232,6 +282,51 @@ defmodule Conductor.OrchestratorTest do
     test "returns :ok with at least one worker" do
       assert :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
     end
+
+    test "clears a prior label filter when a later start_loop call omits :label" do
+      assert :ok =
+               Orchestrator.start_loop(
+                 repo: "test/repo",
+                 label: "autopilot",
+                 workers: ["sprite-1"]
+               )
+
+      assert :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      assert :sys.get_state(Orchestrator).label == nil
+    end
+
+    test "clears shape attempts when start_loop switches repos" do
+      assert :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      :sys.replace_state(Orchestrator, fn state ->
+        %{state | shape_attempts: %{123 => :crypto.hash(:sha256, "draft body")}}
+      end)
+
+      assert :ok = Orchestrator.start_loop(repo: "other/repo", workers: ["sprite-1"])
+
+      assert :sys.get_state(Orchestrator).shape_attempts == %{}
+    end
+  end
+
+  describe "run_once/1" do
+    test "attempts shaping for an unready issue before returning not_ready" do
+      issue = %Conductor.Issue{
+        number: 320,
+        title: "underspecified run once issue",
+        body: "missing structure",
+        url: "https://example.test/issues/320"
+      }
+
+      MockState.put({:issue, "test/repo", 320}, issue)
+      MockState.put({:shape_result, "test/repo", 320}, {:ok, :shaped})
+
+      assert {:error, :not_ready} =
+               Orchestrator.run_once(repo: "test/repo", issue: 320, worker: "sprite-1")
+
+      assert_receive {:shape_attempted, "test/repo", 320}, 1_000
+      assert MockState.get(:started_runs) == []
+    end
   end
 
   describe "pause/resume dispatch" do
@@ -243,7 +338,7 @@ defmodule Conductor.OrchestratorTest do
         url: "https://example.test/issues/301"
       }
 
-      MockState.put({:eligible, "test/repo", "autopilot"}, [issue])
+      MockState.put({:eligible, "test/repo", nil}, [issue])
 
       assert :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
       assert :ok = Orchestrator.pause()
@@ -416,7 +511,7 @@ defmodule Conductor.OrchestratorTest do
           }
         end)
 
-      MockState.put({:eligible, "test/repo", "autopilot"}, issues)
+      MockState.put({:eligible, "test/repo", nil}, issues)
 
       workers = [
         %{name: "sprite-1", capability_tags: []},
@@ -462,7 +557,7 @@ defmodule Conductor.OrchestratorTest do
       ]
 
       MockState.put({:probe_result, "sprite-1"}, {:error, "timeout"})
-      MockState.put({:eligible, "test/repo", "autopilot"}, [issue1])
+      MockState.put({:eligible, "test/repo", nil}, [issue1])
 
       :ok = Orchestrator.start_loop(repo: "test/repo", workers: workers)
 
@@ -485,7 +580,7 @@ defmodule Conductor.OrchestratorTest do
       end)
 
       MockState.put({:probe_result, "sprite-1"}, {:ok, %{sprite: "sprite-1", reachable: true}})
-      MockState.put({:eligible, "test/repo", "autopilot"}, [issue2])
+      MockState.put({:eligible, "test/repo", nil}, [issue2])
 
       Process.sleep(200)
       send(orch_pid, :poll)
@@ -505,6 +600,458 @@ defmodule Conductor.OrchestratorTest do
         assert recovered.consecutive_failures == 0
         assert recovered.healthy == true
       end)
+    end
+  end
+
+  describe "shape-before-skip" do
+    test "attempts shaping once for an unready issue and dispatches it on the next poll when shaping succeeds" do
+      orig_max = Application.get_env(:conductor, :max_concurrent_runs)
+      Application.put_env(:conductor, :max_concurrent_runs, 1)
+
+      on_exit(fn ->
+        if orig_max,
+          do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
+          else: Application.delete_env(:conductor, :max_concurrent_runs)
+      end)
+
+      unready_issue = %Conductor.Issue{
+        number: 301,
+        title: "underspecified issue",
+        body: "Need better issue text",
+        url: "https://example.test/issues/301"
+      }
+
+      shaped_issue = %{
+        unready_issue
+        | body: "## Problem\nx\n\n## Acceptance Criteria\n- [ ] [test] y"
+      }
+
+      MockState.put({:eligible, "test/repo", nil}, [unready_issue])
+      MockState.put({:shape_result, "test/repo", 301}, {:ok, :shaped})
+      MockState.put({:issue_after_shape, "test/repo", 301}, shaped_issue)
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      assert_receive {:shape_attempted, "test/repo", 301}, 1_000
+      Process.sleep(100)
+      assert MockState.get(:started_runs) == []
+
+      MockState.put({:eligible, "test/repo", nil}, [MockState.get({:issue, "test/repo", 301})])
+      send(Process.whereis(Orchestrator), :poll)
+
+      eventually(fn ->
+        assert MockState.get(:started_runs) == [{301, "sprite-1"}]
+      end)
+    end
+
+    test "treats :already_shaped as a successful defer-until-next-poll outcome" do
+      orig_max = Application.get_env(:conductor, :max_concurrent_runs)
+      Application.put_env(:conductor, :max_concurrent_runs, 1)
+
+      on_exit(fn ->
+        if orig_max,
+          do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
+          else: Application.delete_env(:conductor, :max_concurrent_runs)
+      end)
+
+      issue = %Conductor.Issue{
+        number: 306,
+        title: "already shaped elsewhere",
+        body: "still stale in this poll",
+        url: "https://example.test/issues/306"
+      }
+
+      MockState.put({:eligible, "test/repo", nil}, [issue])
+      MockState.put({:shape_result, "test/repo", 306}, {:ok, :already_shaped})
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      assert_receive {:shape_attempted, "test/repo", 306}, 1_000
+      Process.sleep(100)
+      assert MockState.get(:started_runs) == []
+    end
+
+    test "does not retry shaping on every poll when the issue body is unchanged" do
+      orig_max = Application.get_env(:conductor, :max_concurrent_runs)
+      Application.put_env(:conductor, :max_concurrent_runs, 1)
+
+      on_exit(fn ->
+        if orig_max,
+          do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
+          else: Application.delete_env(:conductor, :max_concurrent_runs)
+      end)
+
+      issue = %Conductor.Issue{
+        number: 302,
+        title: "still underspecified",
+        body: "no sections here",
+        url: "https://example.test/issues/302"
+      }
+
+      MockState.put({:eligible, "test/repo", nil}, [issue])
+      MockState.put({:shape_result, "test/repo", 302}, {:error, :llm_unavailable})
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      assert_receive {:shape_attempted, "test/repo", 302}, 1_000
+      send(Process.whereis(Orchestrator), :poll)
+      refute_receive {:shape_attempted, "test/repo", 302}, 200
+
+      Process.sleep(100)
+      assert MockState.get(:started_runs) == []
+    end
+
+    test "slow shaping does not block orchestrator calls" do
+      issue = %Conductor.Issue{
+        number: 311,
+        title: "slow shaping",
+        body: "needs shaping",
+        url: "https://example.test/issues/311"
+      }
+
+      MockState.put({:eligible, "test/repo", nil}, [issue])
+      MockState.put({:shape_result, "test/repo", 311}, {:sleep, 500, {:error, :llm_slow}})
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      assert_receive {:shape_attempted, "test/repo", 311}, 1_000
+
+      pause_task = Task.async(fn -> Orchestrator.pause() end)
+
+      assert Task.await(pause_task, 200) == :ok
+    end
+
+    test "retries shaping after the issue body changes" do
+      orig_max = Application.get_env(:conductor, :max_concurrent_runs)
+      Application.put_env(:conductor, :max_concurrent_runs, 1)
+
+      on_exit(fn ->
+        if orig_max,
+          do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
+          else: Application.delete_env(:conductor, :max_concurrent_runs)
+      end)
+
+      issue = %Conductor.Issue{
+        number: 303,
+        title: "groom me later",
+        body: "first draft",
+        url: "https://example.test/issues/303"
+      }
+
+      MockState.put({:eligible, "test/repo", nil}, [issue])
+      MockState.put({:shape_result, "test/repo", 303}, {:error, :llm_unavailable})
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      assert_receive {:shape_attempted, "test/repo", 303}, 1_000
+
+      updated_issue = %{issue | body: "operator updated context"}
+      MockState.put({:eligible, "test/repo", nil}, [updated_issue])
+
+      send(Process.whereis(Orchestrator), :poll)
+
+      assert_receive {:shape_attempted, "test/repo", 303}, 1_000
+    end
+
+    test "continues shaping later issues after a ready issue consumes the last slot" do
+      orig_max = Application.get_env(:conductor, :max_concurrent_runs)
+      Application.put_env(:conductor, :max_concurrent_runs, 1)
+      MockState.put(:run_lifetime_ms, 1_000)
+
+      on_exit(fn ->
+        if orig_max,
+          do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
+          else: Application.delete_env(:conductor, :max_concurrent_runs)
+      end)
+
+      ready_issue = %Conductor.Issue{
+        number: 304,
+        title: "ready issue",
+        body: "## Problem\nx\n\n## Acceptance Criteria\n- [ ] [test] y",
+        url: "https://example.test/issues/304"
+      }
+
+      issue_1 = %Conductor.Issue{
+        number: 305,
+        title: "first underspecified issue",
+        body: "draft one",
+        url: "https://example.test/issues/305"
+      }
+
+      issue_2 = %Conductor.Issue{
+        number: 306,
+        title: "second underspecified issue",
+        body: "draft two",
+        url: "https://example.test/issues/306"
+      }
+
+      MockState.put({:eligible, "test/repo", nil}, [ready_issue, issue_1, issue_2])
+      MockState.put({:shape_result, "test/repo", 305}, {:error, :llm_unavailable})
+      MockState.put({:shape_result, "test/repo", 306}, {:error, :llm_unavailable})
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      eventually(fn ->
+        assert MockState.get(:started_runs) == [{304, "sprite-1"}]
+      end)
+
+      assert_receive {:shape_attempted, "test/repo", 305}, 1_000
+      assert_receive {:shape_attempted, "test/repo", 306}, 1_000
+    end
+
+    test "attempts shaping even when the poll starts at max active capacity" do
+      orig_max = Application.get_env(:conductor, :max_concurrent_runs)
+      Application.put_env(:conductor, :max_concurrent_runs, 1)
+      MockState.put(:run_lifetime_ms, 1_000)
+
+      on_exit(fn ->
+        if orig_max,
+          do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
+          else: Application.delete_env(:conductor, :max_concurrent_runs)
+      end)
+
+      ready_issue = %Conductor.Issue{
+        number: 307,
+        title: "ready issue",
+        body: "## Problem\nx\n\n## Acceptance Criteria\n- [ ] [test] y",
+        url: "https://example.test/issues/307"
+      }
+
+      unready_issue = %Conductor.Issue{
+        number: 308,
+        title: "underspecified issue",
+        body: "draft body",
+        url: "https://example.test/issues/308"
+      }
+
+      MockState.put({:eligible, "test/repo", nil}, [ready_issue])
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      eventually(fn ->
+        assert MockState.get(:started_runs) == [{307, "sprite-1"}]
+      end)
+
+      MockState.put({:eligible, "test/repo", nil}, [unready_issue])
+      MockState.put({:shape_result, "test/repo", 308}, {:error, :llm_unavailable})
+      send(Process.whereis(Orchestrator), :poll)
+
+      assert_receive {:shape_attempted, "test/repo", 308}, 1_000
+    end
+
+    test "treats :already_shaped as a successful shaping attempt" do
+      orig_max = Application.get_env(:conductor, :max_concurrent_runs)
+      Application.put_env(:conductor, :max_concurrent_runs, 1)
+
+      on_exit(fn ->
+        if orig_max,
+          do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
+          else: Application.delete_env(:conductor, :max_concurrent_runs)
+      end)
+
+      unready_issue = %Conductor.Issue{
+        number: 309,
+        title: "already shaped elsewhere",
+        body: "Need better issue text",
+        url: "https://example.test/issues/309"
+      }
+
+      ready_issue = %{
+        unready_issue
+        | body: "## Problem\nx\n\n## Acceptance Criteria\n- [ ] [test] y"
+      }
+
+      MockState.put({:eligible, "test/repo", nil}, [unready_issue])
+      MockState.put({:shape_result, "test/repo", 309}, {:ok, :already_shaped})
+      MockState.put({:issue_after_shape, "test/repo", 309}, ready_issue)
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      assert_receive {:shape_attempted, "test/repo", 309}, 1_000
+      Process.sleep(100)
+      assert MockState.get(:started_runs) == []
+
+      MockState.put({:eligible, "test/repo", nil}, [MockState.get({:issue, "test/repo", 309})])
+      send(Process.whereis(Orchestrator), :poll)
+
+      eventually(fn ->
+        assert MockState.get(:started_runs) == [{309, "sprite-1"}]
+      end)
+    end
+
+    test "records a failed shaping attempt when the shaper raises without crashing the loop" do
+      orig_max = Application.get_env(:conductor, :max_concurrent_runs)
+      Application.put_env(:conductor, :max_concurrent_runs, 1)
+
+      on_exit(fn ->
+        if orig_max,
+          do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
+          else: Application.delete_env(:conductor, :max_concurrent_runs)
+      end)
+
+      issue = %Conductor.Issue{
+        number: 310,
+        title: "crashy shaper input",
+        body: "draft body",
+        url: "https://example.test/issues/310"
+      }
+
+      MockState.put({:eligible, "test/repo", nil}, [issue])
+      MockState.put({:shape_result, "test/repo", 310}, {:raise, RuntimeError.exception("boom")})
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      assert_receive {:shape_attempted, "test/repo", 310}, 1_000
+      assert Process.alive?(Process.whereis(Orchestrator))
+
+      send(Process.whereis(Orchestrator), :poll)
+      refute_receive {:shape_attempted, "test/repo", 310}, 200
+      assert MockState.get(:started_runs) == []
+    end
+
+    test "records a failed shaping attempt when the shaper throws without crashing the loop" do
+      orig_max = Application.get_env(:conductor, :max_concurrent_runs)
+      Application.put_env(:conductor, :max_concurrent_runs, 1)
+
+      on_exit(fn ->
+        if orig_max,
+          do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
+          else: Application.delete_env(:conductor, :max_concurrent_runs)
+      end)
+
+      issue = %Conductor.Issue{
+        number: 312,
+        title: "throwy shaper input",
+        body: "draft body",
+        url: "https://example.test/issues/312"
+      }
+
+      MockState.put({:eligible, "test/repo", nil}, [issue])
+      MockState.put({:shape_result, "test/repo", 312}, {:throw, :boom})
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      assert_receive {:shape_attempted, "test/repo", 312}, 1_000
+      assert Process.alive?(Process.whereis(Orchestrator))
+
+      send(Process.whereis(Orchestrator), :poll)
+      refute_receive {:shape_attempted, "test/repo", 312}, 200
+      assert MockState.get(:started_runs) == []
+    end
+
+    test "records a failed shaping attempt when the shaper exits without crashing the loop" do
+      orig_max = Application.get_env(:conductor, :max_concurrent_runs)
+      Application.put_env(:conductor, :max_concurrent_runs, 1)
+
+      on_exit(fn ->
+        if orig_max,
+          do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
+          else: Application.delete_env(:conductor, :max_concurrent_runs)
+      end)
+
+      issue = %Conductor.Issue{
+        number: 313,
+        title: "exiting shaper input",
+        body: "draft body",
+        url: "https://example.test/issues/313"
+      }
+
+      MockState.put({:eligible, "test/repo", nil}, [issue])
+      MockState.put({:shape_result, "test/repo", 313}, {:exit, :boom})
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      assert_receive {:shape_attempted, "test/repo", 313}, 1_000
+      assert Process.alive?(Process.whereis(Orchestrator))
+
+      send(Process.whereis(Orchestrator), :poll)
+      refute_receive {:shape_attempted, "test/repo", 313}, 200
+      assert MockState.get(:started_runs) == []
+    end
+
+    test "records an unexpected shaper return as a failed shaping attempt" do
+      orig_max = Application.get_env(:conductor, :max_concurrent_runs)
+      Application.put_env(:conductor, :max_concurrent_runs, 1)
+
+      on_exit(fn ->
+        if orig_max,
+          do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
+          else: Application.delete_env(:conductor, :max_concurrent_runs)
+      end)
+
+      issue = %Conductor.Issue{
+        number: 314,
+        title: "weird shaper return",
+        body: "draft body",
+        url: "https://example.test/issues/314"
+      }
+
+      MockState.put({:eligible, "test/repo", nil}, [issue])
+      MockState.put({:shape_result, "test/repo", 314}, :weird_return)
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      assert_receive {:shape_attempted, "test/repo", 314}, 1_000
+      assert Process.alive?(Process.whereis(Orchestrator))
+
+      send(Process.whereis(Orchestrator), :poll)
+      refute_receive {:shape_attempted, "test/repo", 314}, 200
+      assert MockState.get(:started_runs) == []
+    end
+
+    test "still performs one shaping attempt when run slots are exhausted" do
+      orig_max = Application.get_env(:conductor, :max_concurrent_runs)
+      Application.put_env(:conductor, :max_concurrent_runs, 0)
+
+      on_exit(fn ->
+        if orig_max,
+          do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
+          else: Application.delete_env(:conductor, :max_concurrent_runs)
+      end)
+
+      issue = %Conductor.Issue{
+        number: 308,
+        title: "shape during saturation",
+        body: "needs shaping",
+        url: "https://example.test/issues/308"
+      }
+
+      MockState.put({:eligible, "test/repo", nil}, [issue])
+      MockState.put({:shape_result, "test/repo", 308}, {:error, :llm_unavailable})
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      assert_receive {:shape_attempted, "test/repo", 308}, 1_000
+      assert MockState.get(:started_runs) == []
+    end
+
+    test "does not block orchestrator control calls while shaping runs in the background" do
+      orig_max = Application.get_env(:conductor, :max_concurrent_runs)
+      Application.put_env(:conductor, :max_concurrent_runs, 1)
+
+      on_exit(fn ->
+        if orig_max,
+          do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
+          else: Application.delete_env(:conductor, :max_concurrent_runs)
+      end)
+
+      issue = %Conductor.Issue{
+        number: 311,
+        title: "slow shaper input",
+        body: "needs grooming",
+        url: "https://example.test/issues/311"
+      }
+
+      MockState.put({:eligible, "test/repo", nil}, [issue])
+      MockState.put({:shape_result, "test/repo", 311}, {:error, :llm_slow})
+      MockState.put({:shape_delay_ms, "test/repo", 311}, 500)
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      assert_receive {:shape_attempted, "test/repo", 311}, 1_000
+
+      pause_task = Task.async(fn -> Orchestrator.pause() end)
+      assert Task.yield(pause_task, 400) == {:ok, :ok}
     end
   end
 
@@ -575,7 +1122,7 @@ defmodule Conductor.OrchestratorTest do
         url: "https://example.test/issues/401"
       }
 
-      MockState.put({:eligible, "test/repo", "autopilot"}, [issue])
+      MockState.put({:eligible, "test/repo", nil}, [issue])
       MockState.put({:issue_has_label, "test/repo", 401, "hold"}, {:ok, true})
 
       :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
@@ -715,7 +1262,7 @@ defmodule Conductor.OrchestratorTest do
         url: "https://example.test/issues/404"
       }
 
-      MockState.put({:eligible, "test/repo", "autopilot"}, [issue])
+      MockState.put({:eligible, "test/repo", nil}, [issue])
       MockState.put({:issue_has_label, "test/repo", 404, "hold"}, {:error, :github_down})
 
       :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
@@ -845,7 +1392,7 @@ defmodule Conductor.OrchestratorTest do
       }
 
       MockState.put(:run_lifetime_ms, 5_000)
-      MockState.put({:eligible, "test/repo", "autopilot"}, [issue1])
+      MockState.put({:eligible, "test/repo", nil}, [issue1])
 
       :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
 
@@ -854,7 +1401,7 @@ defmodule Conductor.OrchestratorTest do
       end)
 
       MockState.put({:issue_comments, "test/repo", 409}, [%{"body" => "bb: cancel"}])
-      MockState.put({:eligible, "test/repo", "autopilot"}, [issue2])
+      MockState.put({:eligible, "test/repo", nil}, [issue2])
 
       send(orch_pid, :poll)
 

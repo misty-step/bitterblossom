@@ -14,6 +14,10 @@ defmodule Conductor.GitHub do
   alias Conductor.{Shell, Issue}
   require Logger
 
+  @default_labeled_limit 25
+  @default_unfiltered_limit 1000
+  @issues_page_size 100
+
   @spec get_issue(binary(), pos_integer()) :: {:ok, Issue.t()} | {:error, term()}
   def get_issue(repo, number) do
     case Shell.cmd("gh", [
@@ -88,31 +92,19 @@ defmodule Conductor.GitHub do
 
   @spec list_issues(binary(), keyword()) :: {:ok, [Issue.t()]} | {:error, term()}
   def list_issues(repo, opts \\ []) do
-    label = Keyword.get(opts, :label, "autopilot")
-    limit = Keyword.get(opts, :limit, 25)
+    label = Keyword.get(opts, :label)
+    explicit_limit? = Keyword.has_key?(opts, :limit)
+    limit = Keyword.get(opts, :limit, default_issue_limit(label))
 
-    case Shell.cmd("gh", [
-           "issue",
-           "list",
-           "--repo",
-           repo,
-           "--label",
-           label,
-           "--state",
-           "open",
-           "--json",
-           "number,title,body,url,labels",
-           "--limit",
-           to_string(limit)
-         ]) do
-      {:ok, json} ->
-        case Jason.decode(json) do
-          {:ok, list} -> {:ok, Enum.map(list, &Issue.from_github/1)}
-          {:error, _} -> {:error, "invalid JSON from gh: #{String.slice(json, 0, 200)}"}
+    case {normalized_label(label), explicit_limit?} do
+      {nil, false} ->
+        list_all_open_issues(repo, limit)
+
+      {_label, _explicit_limit?} ->
+        with {:ok, json} <- run_gh(list_issue_args(repo, opts)),
+             {:ok, list} <- decode_issue_list(json) do
+          {:ok, Enum.map(list, &Issue.from_github/1)}
         end
-
-      {:error, msg, _} ->
-        {:error, msg}
     end
   end
 
@@ -124,9 +116,7 @@ defmodule Conductor.GitHub do
   def eligible_issues(repo, opts \\ []) do
     case list_issues(repo, opts) do
       {:ok, issues} ->
-        issues
-        |> Enum.filter(fn issue -> Issue.ready?(issue) == :ok end)
-        |> Enum.sort_by(& &1.number)
+        sort_eligible_issues(issues)
 
       {:error, reason} ->
         Logger.warning("failed to list issues: #{inspect(reason)}")
@@ -134,7 +124,26 @@ defmodule Conductor.GitHub do
     end
   end
 
-  @doc false
+  defp list_issue_args(repo, opts) do
+    label = Keyword.get(opts, :label)
+    limit = Keyword.get(opts, :limit, default_issue_limit(label))
+
+    [
+      "issue",
+      "list",
+      "--repo",
+      repo,
+      "--state",
+      "open",
+      "--json",
+      "number,title,body,url,labels",
+      "--limit",
+      to_string(limit)
+    ] ++ maybe_label_filter(label)
+  end
+
+  defp sort_eligible_issues(issues), do: Enum.sort_by(issues, & &1.number)
+
   def label_present?(data, label) do
     data
     |> Map.get("labels")
@@ -175,6 +184,126 @@ defmodule Conductor.GitHub do
 
       {:error, msg, _} ->
         {:error, msg}
+    end
+  end
+
+  defp maybe_label_filter(nil), do: []
+  defp maybe_label_filter(""), do: []
+  defp maybe_label_filter(label), do: ["--label", label]
+
+  defp default_issue_limit(nil), do: @default_unfiltered_limit
+  defp default_issue_limit(""), do: @default_unfiltered_limit
+  defp default_issue_limit(_label), do: @default_labeled_limit
+
+  defp normalized_label(nil), do: nil
+  defp normalized_label(""), do: nil
+  defp normalized_label(label), do: label
+
+  defp list_all_open_issues(repo, limit) do
+    with {:ok, {owner, name}} <- repo_parts(repo) do
+      empty_page_budget = ceil(limit / @issues_page_size)
+      fetch_issue_pages(owner, name, 1, limit, empty_page_budget, empty_page_budget, [])
+    end
+  end
+
+  defp decode_issue_list(json) do
+    case Jason.decode(json) do
+      {:ok, list} when is_list(list) ->
+        {:ok, list}
+
+      {:ok, _other} ->
+        {:error, "invalid JSON from gh: #{String.slice(json, 0, 200)}"}
+
+      {:error, _reason} ->
+        {:error, "invalid JSON from gh: #{String.slice(json, 0, 200)}"}
+    end
+  end
+
+  defp decode_issue_page(json) do
+    case Jason.decode(json) do
+      {:ok, page} when is_list(page) ->
+        {:ok, page}
+
+      {:ok, _other} ->
+        {:error, "invalid JSON from gh: #{String.slice(json, 0, 200)}"}
+
+      {:error, _reason} ->
+        {:error, "invalid JSON from gh: #{String.slice(json, 0, 200)}"}
+    end
+  end
+
+  defp fetch_issue_pages(
+         _owner,
+         _name,
+         _page,
+         remaining,
+         _max_empty_pages,
+         _empty_pages_left,
+         acc
+       )
+       when remaining <= 0 do
+    {:ok, Enum.reverse(acc)}
+  end
+
+  defp fetch_issue_pages(
+         _owner,
+         _name,
+         _page,
+         _remaining,
+         _max_empty_pages,
+         empty_pages_left,
+         acc
+       )
+       when empty_pages_left <= 0 do
+    {:ok, Enum.reverse(acc)}
+  end
+
+  defp fetch_issue_pages(owner, name, page, remaining, max_empty_pages, empty_pages_left, acc) do
+    args = [
+      "api",
+      "repos/#{owner}/#{name}/issues?state=open&per_page=#{@issues_page_size}&page=#{page}"
+    ]
+
+    with {:ok, json} <- run_gh(args),
+         {:ok, issues} <- decode_issue_page(json) do
+      page_issues =
+        issues
+        |> Enum.reject(&Map.has_key?(&1, "pull_request"))
+        |> Enum.take(remaining)
+        |> Enum.map(&Issue.from_github/1)
+
+      if issues == [] do
+        {:ok, Enum.reverse(acc)}
+      else
+        fetch_issue_pages(
+          owner,
+          name,
+          page + 1,
+          remaining - length(page_issues),
+          max_empty_pages,
+          next_empty_page_budget(max_empty_pages, empty_pages_left, page_issues),
+          Enum.reverse(page_issues) ++ acc
+        )
+      end
+    end
+  end
+
+  defp next_empty_page_budget(_max_empty_pages, empty_pages_left, []), do: empty_pages_left - 1
+
+  defp next_empty_page_budget(max_empty_pages, _empty_pages_left, _page_issues),
+    do: max_empty_pages
+
+  defp repo_parts(repo) do
+    case String.split(repo, "/") do
+      [owner, name] when owner != "" and name != "" -> {:ok, {owner, name}}
+      _ -> {:error, "expected repo in owner/name format, got: #{inspect(repo)}"}
+    end
+  end
+
+  defp run_gh(args) do
+    case Shell.cmd("gh", args) do
+      {:ok, output} -> {:ok, output}
+      {:error, msg, _code} -> {:error, msg}
     end
   end
 

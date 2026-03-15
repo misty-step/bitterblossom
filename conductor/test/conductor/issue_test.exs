@@ -139,4 +139,26 @@ defmodule Conductor.IssueTest do
       assert {:error, _} = Issue.ready?(issue)
     end
   end
+
+  describe "revision_id/1" do
+    test "returns the same hash for identical bodies" do
+      issue = %Issue{number: 1, title: "t", body: "same body", url: "u"}
+
+      assert Issue.revision_id(issue) == Issue.revision_id(issue)
+    end
+
+    test "returns different hashes for different bodies" do
+      issue_a = %Issue{number: 1, title: "t", body: "alpha", url: "u"}
+      issue_b = %Issue{number: 1, title: "t", body: "beta", url: "u"}
+
+      refute Issue.revision_id(issue_a) == Issue.revision_id(issue_b)
+    end
+
+    test "treats nil and empty bodies the same" do
+      empty_issue = %Issue{number: 1, title: "t", body: "", url: "u"}
+      nil_issue = %Issue{number: 1, title: "t", body: nil, url: "u"}
+
+      assert Issue.revision_id(empty_issue) == Issue.revision_id(nil_issue)
+    end
+  end
 end

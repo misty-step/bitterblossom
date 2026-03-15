@@ -12,7 +12,6 @@ defmodule Conductor.Fleet.LoaderTest do
   harness = "codex"
   model = "gpt-5.4"
   reasoning_effort = "medium"
-  label = "autopilot"
 
   [[sprite]]
   name = "bb-builder"
@@ -64,8 +63,27 @@ defmodule Conductor.Fleet.LoaderTest do
 
       assert builder.org == "test-org"
       assert builder.repo == "test-org/test-repo"
-      assert builder.label == "autopilot"
+      assert builder.label == nil
       assert builder.capability_tags == ["elixir", "ci"]
+    end
+
+    test "label stays optional when configured explicitly", %{path: path} do
+      File.write!(path, """
+      version = "1"
+
+      [defaults]
+      repo = "test/repo"
+      label = "hold"
+
+      [[sprite]]
+      name = "bb-builder"
+      role = "builder"
+      """)
+
+      assert {:ok, config} = Loader.load(path)
+      [builder] = config.sprites
+      assert config.defaults.label == "hold"
+      assert builder.label == "hold"
     end
 
     test "returns error for missing file" do

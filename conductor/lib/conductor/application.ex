@@ -11,6 +11,7 @@ defmodule Conductor.Application do
         {Phoenix.PubSub, name: Conductor.PubSub},
         Conductor.Store,
         Conductor.Retro,
+        {Task.Supervisor, name: Conductor.TaskSupervisor},
         {DynamicSupervisor, name: Conductor.RunSupervisor, strategy: :one_for_one},
         Conductor.Orchestrator
       ] ++ dashboard_children()
@@ -60,6 +61,7 @@ defmodule Conductor.Application do
         |> Enum.filter(&MapSet.member?(healthy, &1.name))
 
       if builders != [] do
+        maybe_warn_unfiltered_scope(repo, defaults.label)
         Conductor.Orchestrator.start_loop(repo: repo, workers: builders, label: defaults.label)
 
         Logger.info(
@@ -81,6 +83,12 @@ defmodule Conductor.Application do
       :ok
     end
   end
+
+  defp maybe_warn_unfiltered_scope(repo, label) when label in [nil, ""] do
+    Logger.warning("[boot] no default label configured for #{repo}; all open issues are eligible")
+  end
+
+  defp maybe_warn_unfiltered_scope(_repo, _label), do: :ok
 
   defp start_phase_workers(sprites, healthy, repo) do
     alias Conductor.Fleet.Loader

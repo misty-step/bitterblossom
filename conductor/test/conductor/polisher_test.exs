@@ -96,6 +96,14 @@ defmodule Conductor.PolisherTest do
     def issue_comments(_repo, _issue), do: {:ok, []}
   end
 
+  defp stop_process(name) do
+    try do
+      GenServer.stop(name)
+    catch
+      :exit, _reason -> :ok
+    end
+  end
+
   setup do
     db_path = Path.join(System.tmp_dir!(), "polisher_test_#{:rand.uniform(999_999)}.db")
     event_log = Path.join(System.tmp_dir!(), "polisher_test_#{:rand.uniform(999_999)}.jsonl")
@@ -115,9 +123,9 @@ defmodule Conductor.PolisherTest do
 
     on_exit(fn ->
       if pid = Process.whereis(Polisher),
-        do: if(Process.alive?(pid), do: GenServer.stop(Polisher))
+        do: if(Process.alive?(pid), do: stop_process(pid))
 
-      if pid = Process.whereis(Store), do: if(Process.alive?(pid), do: GenServer.stop(Store))
+      if pid = Process.whereis(Store), do: if(Process.alive?(pid), do: stop_process(pid))
       MockState.cleanup()
 
       for {key, orig} <- [

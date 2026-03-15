@@ -148,19 +148,20 @@ Run continuously against the backlog:
 ```bash
 python3 scripts/conductor.py loop \
   --repo misty-step/bitterblossom \
-  --label autopilot \
   --worker noble-blue-serpent \
   --reviewer council-fern-20260306 \
   --reviewer council-sage-20260306 \
   --reviewer council-thorn-20260306
 ```
 
+All open issues are eligible by default. Add `--label <name>` only when you
+want to narrow the polling scope.
+
 Preview the next routed issue and profile:
 
 ```bash
 python3 scripts/conductor.py route-issue \
   --repo misty-step/bitterblossom \
-  --label autopilot \
   --limit 25
 ```
 
@@ -405,7 +406,6 @@ sprite exec coordinator -- bash -lc '
   cd /home/sprite/workspace/bitterblossom
   ./scripts/conductor-supervise.sh start \
     --repo misty-step/bitterblossom \
-    --label autopilot \
     --worker noble-blue-serpent \
     --reviewer council-fern-20260306 \
     --reviewer council-sage-20260306 \
@@ -425,7 +425,6 @@ sprite exec coordinator -- bash -lc '
   ./scripts/conductor-supervise.sh install-cron \
     --repo-root /home/sprite/workspace/bitterblossom \
     --repo misty-step/bitterblossom \
-    --label autopilot \
     --worker noble-blue-serpent \
     --reviewer council-fern-20260306 \
     --reviewer council-sage-20260306 \
@@ -617,7 +616,6 @@ sprite exec coordinator -- bash -lc '
   ./scripts/conductor-supervise.sh stop
   ./scripts/conductor-supervise.sh start \
     --repo misty-step/bitterblossom \
-    --label autopilot \
     --worker noble-blue-serpent \
     --reviewer council-fern-20260306 \
     --reviewer council-sage-20260306 \
