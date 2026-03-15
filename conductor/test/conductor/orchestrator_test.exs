@@ -221,6 +221,19 @@ defmodule Conductor.OrchestratorTest do
     test "returns :ok with at least one worker" do
       assert :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
     end
+
+    test "clears a prior label filter when a later start_loop call omits :label" do
+      assert :ok =
+               Orchestrator.start_loop(
+                 repo: "test/repo",
+                 label: "autopilot",
+                 workers: ["sprite-1"]
+               )
+
+      assert :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      assert :sys.get_state(Orchestrator).label == nil
+    end
   end
 
   describe "reconcile — stale run detection" do

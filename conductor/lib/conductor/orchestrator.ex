@@ -103,7 +103,7 @@ defmodule Conductor.Orchestrator do
       state = %{
         state
         | repo: Keyword.fetch!(opts, :repo),
-          label: Keyword.get(opts, :label, state.label),
+          label: Keyword.get(opts, :label),
           workers: worker_map(workers),
           worker_order: Enum.map(workers, & &1.name),
           trusted_surfaces: Keyword.get(opts, :trusted_surfaces, state.trusted_surfaces),
