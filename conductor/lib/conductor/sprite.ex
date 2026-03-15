@@ -110,6 +110,7 @@ defmodule Conductor.Sprite do
       {:ok, %{reachable: true}} ->
         harness_ready = harness_ready?(sprite, harness, exec_fn)
         gh_authenticated = gh_authenticated?(sprite, exec_fn)
+        git_credential_helper = git_credential_helper_ready?(sprite, exec_fn)
 
         {:ok,
          %{
@@ -117,7 +118,8 @@ defmodule Conductor.Sprite do
            reachable: true,
            harness_ready: harness_ready,
            gh_authenticated: gh_authenticated,
-           healthy: harness_ready and gh_authenticated
+           git_credential_helper: git_credential_helper,
+           healthy: harness_ready and gh_authenticated and git_credential_helper
          }}
 
       {:error, reason} ->
@@ -185,6 +187,13 @@ defmodule Conductor.Sprite do
 
   defp gh_authenticated?(sprite, exec_fn) do
     match?({:ok, _}, exec_fn.(sprite, "gh auth status >/dev/null 2>&1", timeout: 15_000))
+  end
+
+  defp git_credential_helper_ready?(sprite, exec_fn) do
+    case exec_fn.(sprite, "git config --global --get credential.helper", timeout: 15_000) do
+      {:ok, output} -> output == "!gh auth git-credential"
+      _ -> false
+    end
   end
 
   defp run_agent(sprite, workspace, prompt_path, harness, harness_opts, exec_fn, timeout_ms) do

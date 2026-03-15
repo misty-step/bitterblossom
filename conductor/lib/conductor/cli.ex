@@ -230,8 +230,9 @@ defmodule Conductor.CLI do
         case Conductor.Sprite.status(s.name, harness: s.harness) do
           {:ok, status} ->
             auth = if status.gh_authenticated, do: "gh auth ok", else: "gh auth missing"
+            git = if status.git_credential_helper, do: "git helper ok", else: "git helper missing"
             health = if status.healthy, do: "healthy", else: "needs setup"
-            IO.puts("  #{s.name} (#{s.role}, #{s.harness}) — #{health}, #{auth}")
+            IO.puts("  #{s.name} (#{s.role}, #{s.harness}) — #{health}, #{auth}, #{git}")
 
           {:error, _reason} ->
             IO.puts("  #{s.name} (#{s.role}, #{s.harness}) — unreachable")
