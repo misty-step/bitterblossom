@@ -134,6 +134,14 @@ defmodule Conductor.OrchestratorTest do
       end
   end
 
+  defp stop_process(pid) when is_pid(pid) do
+    try do
+      GenServer.stop(pid)
+    catch
+      :exit, _reason -> :ok
+    end
+  end
+
   setup do
     db_path = Path.join(System.tmp_dir!(), "orch_test_#{:rand.uniform(999_999)}.db")
     event_log = Path.join(System.tmp_dir!(), "orch_test_#{:rand.uniform(999_999)}.jsonl")
@@ -175,11 +183,11 @@ defmodule Conductor.OrchestratorTest do
     on_exit(fn ->
       case Process.whereis(Orchestrator) do
         nil -> :ok
-        pid -> if Process.alive?(pid), do: catch_exit(GenServer.stop(pid))
+        pid -> if Process.alive?(pid), do: stop_process(pid)
       end
 
       if pid = Process.whereis(Store),
-        do: if(Process.alive?(pid), do: catch_exit(GenServer.stop(Store)))
+        do: if(Process.alive?(pid), do: stop_process(pid))
 
       if orig_tracker,
         do: Application.put_env(:conductor, :tracker_module, orig_tracker),
