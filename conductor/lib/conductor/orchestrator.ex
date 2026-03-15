@@ -648,6 +648,13 @@ defmodule Conductor.Orchestrator do
 
       {:error, :not_found} ->
         parse_issue_number_from_branch(pr["headRefName"] || "")
+
+      {:error, reason} ->
+        Logger.warning(
+          "[operator] failed to resolve issue for PR ##{pr["number"]}: #{inspect(reason)}"
+        )
+
+        :skip
     end
   end
 

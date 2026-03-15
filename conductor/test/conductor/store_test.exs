@@ -245,4 +245,10 @@ defmodule Conductor.StoreTest do
     :ok = Store.set_dispatch_paused(false)
     refute Store.dispatch_paused?()
   end
+
+  test "find_run_by_pr returns an error tuple when the database query fails" do
+    :sys.replace_state(Store, fn state -> %{state | conn: :invalid} end)
+
+    assert {:error, {:db_error, _}} = Store.find_run_by_pr("test/repo", 123)
+  end
 end

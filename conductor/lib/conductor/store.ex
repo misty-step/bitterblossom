@@ -41,7 +41,7 @@ defmodule Conductor.Store do
   end
 
   @doc "Find a run by repo and PR number."
-  @spec find_run_by_pr(binary(), pos_integer()) :: {:ok, map()} | {:error, :not_found}
+  @spec find_run_by_pr(binary(), pos_integer()) :: {:ok, map()} | {:error, term()}
   def find_run_by_pr(repo, pr_number) do
     GenServer.call(__MODULE__, {:find_run_by_pr, repo, pr_number})
   end
@@ -212,17 +212,28 @@ defmodule Conductor.Store do
 
   @impl true
   def handle_call({:find_run_by_pr, repo, pr_number}, _from, state) do
-    rows =
-      query_all(
-        state.conn,
-        "SELECT * FROM runs WHERE repo = ?1 AND pr_number = ?2 ORDER BY picked_at DESC LIMIT 1",
-        [repo, pr_number]
-      )
+    result =
+      try do
+        rows =
+          query_all(
+            state.conn,
+            "SELECT * FROM runs WHERE repo = ?1 AND pr_number = ?2 ORDER BY picked_at DESC LIMIT 1",
+            [repo, pr_number]
+          )
 
-    case rows do
-      [run | _] -> {:reply, {:ok, run}, state}
-      [] -> {:reply, {:error, :not_found}, state}
-    end
+        case rows do
+          [run | _] -> {:ok, run}
+          [] -> {:error, :not_found}
+        end
+      rescue
+        error ->
+          {:error, {:db_error, Exception.message(error)}}
+      catch
+        :exit, reason ->
+          {:error, reason}
+      end
+
+    {:reply, result, state}
   end
 
   @impl true
