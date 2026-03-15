@@ -90,11 +90,14 @@ defmodule Conductor.Prompt do
   @doc "Build prompt for the fixer sprite: CI failure context + fix instructions."
   @spec build_fixer_prompt(map(), binary(), binary()) :: binary()
   def build_fixer_prompt(pr, ci_failure_logs, issue_body) do
+    safe_title = sanitize_inline(pr["title"])
+    safe_branch = sanitize_inline(pr["headRefName"])
+
     """
     # Fixer Task
 
-    PR: ##{pr["number"]} — #{pr["title"]}
-    Branch: #{pr["headRefName"]}
+    PR: ##{pr["number"]} — #{safe_title}
+    Branch: #{safe_branch}
 
     ## Original Issue
 
@@ -112,7 +115,7 @@ defmodule Conductor.Prompt do
 
     You are the fixer. Your only job is to fix the CI failure on this PR.
 
-    1. Check out branch `#{pr["headRefName"]}`
+    1. Check out branch `#{safe_branch}`
     2. Read the CI failure output above carefully
     3. Investigate the root cause in the codebase
     4. Fix the issue — do not change PR scope or add features
@@ -131,6 +134,9 @@ defmodule Conductor.Prompt do
   @doc "Build prompt for the polisher sprite: review context + polish instructions."
   @spec build_polisher_prompt(map(), [map()], binary()) :: binary()
   def build_polisher_prompt(pr, review_comments, issue_body) do
+    safe_title = sanitize_inline(pr["title"])
+    safe_branch = sanitize_inline(pr["headRefName"])
+
     comments_text =
       review_comments
       |> Enum.map(fn c ->
@@ -151,8 +157,8 @@ defmodule Conductor.Prompt do
     """
     # Polisher Task
 
-    PR: ##{pr["number"]} — #{pr["title"]}
-    Branch: #{pr["headRefName"]}
+    PR: ##{pr["number"]} — #{safe_title}
+    Branch: #{safe_branch}
 
     ## Original Issue
 
@@ -170,20 +176,31 @@ defmodule Conductor.Prompt do
 
     You are the polisher. Your job is to address all review feedback on this PR.
 
-    1. Check out branch `#{pr["headRefName"]}`
+    1. Check out branch `#{safe_branch}`
     2. Read each review comment above
     3. For in-scope feedback: make the fix on-branch, commit, push
     4. For out-of-scope feedback: note it in a comment on the PR thread
     5. Respond to each review thread with what you did
     6. Run tests to ensure nothing is broken
     7. When all feedback is addressed and CI is green, run:
-       `gh pr edit #{pr["number"]} --add-label lgtm`
+       `gh pr edit --add-label lgtm`
 
     Do NOT expand the scope of the PR beyond addressing review feedback.
     Do NOT remove the PR from review or modify its base branch.
 
     When done, write TASK_COMPLETE.
     """
+  end
+
+  # Strip newlines and control characters from inline values (titles, branch names)
+  # to prevent prompt section injection.
+  defp sanitize_inline(nil), do: ""
+
+  defp sanitize_inline(text) do
+    text
+    |> String.replace(~r/[\r\n]/, " ")
+    |> String.replace(~r/[#~`]/, "")
+    |> String.slice(0, 200)
   end
 
   # Neutralize fence-breaking sequences in untrusted content.

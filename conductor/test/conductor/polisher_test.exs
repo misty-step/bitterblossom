@@ -135,6 +135,9 @@ defmodule Conductor.PolisherTest do
   end
 
   describe "poll triggers polisher dispatch" do
+    @green_checks [%{"name" => "CI", "conclusion" => "SUCCESS", "status" => "COMPLETED"}]
+    @red_checks [%{"name" => "CI", "conclusion" => "FAILURE", "status" => "COMPLETED"}]
+
     test "dispatches polisher when factory PR has green CI and no lgtm" do
       MockState.put(
         :factory_prs,
@@ -145,12 +148,11 @@ defmodule Conductor.PolisherTest do
              "headRefName" => "factory/99-12345",
              "title" => "feat: implement feature",
              "body" => "Closes #99",
-             "labels" => [%{"name" => "feature"}]
+             "labels" => [%{"name" => "feature"}],
+             "statusCheckRollup" => @green_checks
            }
          ]}
       )
-
-      MockState.put(:checks_green, fn _pr -> true end)
 
       MockState.put(
         :review_comments,
@@ -181,12 +183,11 @@ defmodule Conductor.PolisherTest do
              "headRefName" => "factory/99-12345",
              "title" => "feat: implement feature",
              "body" => "Closes #99",
-             "labels" => []
+             "labels" => [],
+             "statusCheckRollup" => @red_checks
            }
          ]}
       )
-
-      MockState.put(:checks_green, fn _pr -> false end)
 
       {:ok, _pid} =
         Polisher.start_link(
@@ -208,12 +209,11 @@ defmodule Conductor.PolisherTest do
              "headRefName" => "factory/99-12345",
              "title" => "feat: implement feature",
              "body" => "Closes #99",
-             "labels" => [%{"name" => "lgtm"}]
+             "labels" => [%{"name" => "lgtm"}],
+             "statusCheckRollup" => @green_checks
            }
          ]}
       )
-
-      MockState.put(:checks_green, fn _pr -> true end)
 
       {:ok, _pid} =
         Polisher.start_link(
@@ -235,12 +235,12 @@ defmodule Conductor.PolisherTest do
              "headRefName" => "factory/99-12345",
              "title" => "feat: implement feature",
              "body" => "Closes #99",
-             "labels" => []
+             "labels" => [],
+             "statusCheckRollup" => @green_checks
            }
          ]}
       )
 
-      MockState.put(:checks_green, fn _pr -> true end)
       MockState.put(:dispatch_delay_ms, 500)
 
       {:ok, _pid} =

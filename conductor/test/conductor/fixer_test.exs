@@ -145,12 +145,13 @@ defmodule Conductor.FixerTest do
              "number" => 42,
              "headRefName" => "factory/99-12345",
              "title" => "feat: implement feature",
-             "body" => "Closes #99"
+             "body" => "Closes #99",
+             "statusCheckRollup" => [
+               %{"name" => "CI", "conclusion" => "FAILURE", "status" => "COMPLETED"}
+             ]
            }
          ]}
       )
-
-      MockState.put(:checks_failed, fn _pr -> true end)
 
       {:ok, _pid} =
         Fixer.start_link(
@@ -172,12 +173,13 @@ defmodule Conductor.FixerTest do
              "number" => 42,
              "headRefName" => "factory/99-12345",
              "title" => "feat: implement feature",
-             "body" => "Closes #99"
+             "body" => "Closes #99",
+             "statusCheckRollup" => [
+               %{"name" => "CI", "conclusion" => "SUCCESS", "status" => "COMPLETED"}
+             ]
            }
          ]}
       )
-
-      MockState.put(:checks_failed_default, false)
 
       {:ok, _pid} =
         Fixer.start_link(
@@ -222,12 +224,14 @@ defmodule Conductor.FixerTest do
              "number" => 42,
              "headRefName" => "factory/99-12345",
              "title" => "feat: implement feature",
-             "body" => "Closes #99"
+             "body" => "Closes #99",
+             "statusCheckRollup" => [
+               %{"name" => "CI", "conclusion" => "FAILURE", "status" => "COMPLETED"}
+             ]
            }
          ]}
       )
 
-      MockState.put(:checks_failed, fn _pr -> true end)
       # Slow dispatch so in-flight tracking is testable
       MockState.put(:dispatch_delay_ms, 500)
 

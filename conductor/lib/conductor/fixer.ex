@@ -65,7 +65,11 @@ defmodule Conductor.Fixer do
   end
 
   @impl true
-  def handle_info({:DOWN, ref, :process, _pid, _reason}, state) do
+  def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
+    if reason not in [:normal, :shutdown] do
+      Logger.warning("[fixer] dispatch task exited: #{inspect(reason)}")
+    end
+
     state = complete_task(state, ref)
     {:noreply, state}
   end
@@ -105,13 +109,12 @@ defmodule Conductor.Fixer do
     end
   end
 
-  defp needs_fix?(pr, state) do
-    pr_number = pr["number"]
+  defp needs_fix?(pr, _state) do
     branch = pr["headRefName"] || ""
+    checks = pr["statusCheckRollup"] || []
 
     String.starts_with?(branch, "factory/") and
-      not Map.has_key?(state.in_flight, pr_number) and
-      code_host_mod().checks_failed?(state.repo, pr_number)
+      Conductor.GitHub.evaluate_checks_failed(checks)
   end
 
   defp dispatch_fixer(state, pr) do
@@ -140,10 +143,14 @@ defmodule Conductor.Fixer do
 
     task =
       Task.async(fn ->
-        worker_mod().dispatch(state.fixer_sprite, prompt, state.repo,
-          timeout: Config.fixer_timeout(),
-          workspace: workspace_for_branch(state.repo, branch)
-        )
+        try do
+          worker_mod().dispatch(state.fixer_sprite, prompt, state.repo,
+            timeout: Config.fixer_timeout(),
+            workspace: workspace_for_branch(state.repo, branch)
+          )
+        rescue
+          e -> {:error, "fixer dispatch crashed: #{Exception.message(e)}", 1}
+        end
       end)
 
     %{state | in_flight: Map.put(state.in_flight, pr_number, task.ref)}
