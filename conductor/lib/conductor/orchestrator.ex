@@ -382,7 +382,9 @@ defmodule Conductor.Orchestrator do
             else
               # Transient/policy failure after rebase — don't mark blocked,
               # let normal retry pick it up on the next poll cycle.
-              Logger.warning("[merge] PR ##{pr_number} post-rebase merge failed (non-conflict): #{retry_reason}")
+              Logger.warning(
+                "[merge] PR ##{pr_number} post-rebase merge failed (non-conflict): #{retry_reason}"
+              )
             end
         end
 
