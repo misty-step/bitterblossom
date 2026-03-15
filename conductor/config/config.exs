@@ -7,7 +7,12 @@ config :conductor,
   builder_timeout_minutes: 25,
   ci_timeout_minutes: 15,
   pr_minimum_age_seconds: 300,
-  max_concurrent_runs: 2
+  max_concurrent_runs: 2,
+  fleet: [
+    %{name: "builder", role: :builder, org: "misty-step"},
+    %{name: "fixer", role: :fixer, org: "misty-step"},
+    %{name: "polisher", role: :polisher, org: "misty-step"}
+  ]
 
 config :conductor, Conductor.Web.Endpoint,
   adapter: Bandit.PhoenixAdapter,
