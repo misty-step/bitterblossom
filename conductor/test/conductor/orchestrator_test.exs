@@ -1629,6 +1629,46 @@ defmodule Conductor.OrchestratorTest do
       assert Process.alive?(orch_pid)
     end
 
+    test "holds lease when pr_state returns error" do
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 804,
+          issue_title: "github down",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(run_id, %{pr_number: 304, phase: "pr_opened", status: "pr_opened"})
+      Store.acquire_lease("test/repo", 804, run_id)
+      Store.complete_run(run_id, "pr_opened", "pr_opened")
+
+      MockState.put({:pr_state, 304}, {:error, :github_down})
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      Process.sleep(200)
+      assert Store.leased?("test/repo", 804)
+    end
+
+    test "holds lease when pr_number is nil" do
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 805,
+          issue_title: "no pr",
+          builder_sprite: "sprite-1"
+        })
+
+      # No pr_number set — run was force-completed
+      Store.acquire_lease("test/repo", 805, run_id)
+      Store.complete_run(run_id, "pr_opened", "pr_opened")
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      Process.sleep(200)
+      assert Store.leased?("test/repo", 805)
+    end
+
     test "holds lease when PR is still open" do
       {:ok, run_id} =
         Store.create_run(%{

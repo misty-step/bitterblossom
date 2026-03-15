@@ -299,8 +299,7 @@ defmodule Conductor.RunServer do
   defp fail(state, event_type, reason) do
     Logger.error("[#{state.run_id}] #{event_type}: #{reason}")
     Store.record_event(state.run_id, event_type, %{reason: reason})
-    Store.complete_run(state.run_id, "failed", "failed")
-    Store.release_lease(state.repo, state.issue.number)
+    Store.terminate_run(state.run_id, "failed", "failed", state.repo, state.issue.number)
     cleanup_workspace(state)
     Retro.analyze(state.run_id)
     {:stop, :normal, %{state | phase: :failed}}
@@ -309,8 +308,7 @@ defmodule Conductor.RunServer do
   defp block(state, reason) do
     Logger.warning("[#{state.run_id}] blocked: #{reason}")
     Store.record_event(state.run_id, "run_blocked", %{reason: reason})
-    Store.complete_run(state.run_id, "blocked", "blocked")
-    Store.release_lease(state.repo, state.issue.number)
+    Store.terminate_run(state.run_id, "blocked", "blocked", state.repo, state.issue.number)
     cleanup_workspace(state)
 
     # Comment on the issue so the operator knows

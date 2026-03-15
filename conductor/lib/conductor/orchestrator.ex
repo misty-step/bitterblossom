@@ -783,8 +783,7 @@ defmodule Conductor.Orchestrator do
           reason: "merge_conflict_unresolvable"
         })
 
-        Store.complete_run(run_id, "blocked", "blocked")
-        Store.release_lease(repo, issue_number)
+        Store.terminate_run(run_id, "blocked", "blocked", repo, issue_number)
 
       _ ->
         Logger.debug("[merge] no run found for PR ##{pr_number}, cannot mark blocked")
@@ -992,8 +991,7 @@ defmodule Conductor.Orchestrator do
           reason: reason
         })
 
-        Store.complete_run(run_id, "blocked", "blocked")
-        Store.release_lease(repo, issue_number)
+        Store.terminate_run(run_id, "blocked", "blocked", repo, issue_number)
 
       _ ->
         Logger.debug("[merge] no run found for PR ##{pr_number}, cannot mark operator block")
@@ -1032,8 +1030,7 @@ defmodule Conductor.Orchestrator do
     case Store.find_run_by_pr(repo, pr_number) do
       {:ok, %{"run_id" => run_id, "issue_number" => issue_number}} ->
         Store.record_event(run_id, "merged", %{pr_number: pr_number, merged_by: "orchestrator"})
-        Store.complete_run(run_id, "merged", "merged")
-        Store.release_lease(repo, issue_number)
+        Store.terminate_run(run_id, "merged", "merged", repo, issue_number)
         Conductor.Retro.analyze(run_id)
 
       _ ->

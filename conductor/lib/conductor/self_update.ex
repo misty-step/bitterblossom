@@ -139,29 +139,25 @@ defmodule Conductor.SelfUpdate do
   end
 
   defp pull_and_recompile do
-    # 1. Pull latest from master
     case Conductor.Shell.cmd("git", ["-C", @repo_root, "pull", "origin", "master"],
            timeout: 30_000
          ) do
       {:ok, output} ->
         Logger.info("[self-update] git pull: #{String.trim(output)}")
 
+        try do
+          Mix.Task.rerun("compile", ["--force"])
+          Logger.info("[self-update] recompile complete, new code active on next message")
+          :ok
+        rescue
+          e ->
+            Logger.warning("[self-update] recompile failed: #{Exception.message(e)}")
+            :ok
+        end
+
       {:error, msg, _} ->
         Logger.warning("[self-update] git pull failed: #{msg}")
-        return_noop()
-    end
-
-    # 2. Recompile — BEAM hot-swaps modules automatically
-    try do
-      Mix.Task.rerun("compile", ["--force"])
-      Logger.info("[self-update] recompile complete, new code active on next message")
-      :ok
-    rescue
-      e ->
-        Logger.warning("[self-update] recompile failed: #{Exception.message(e)}")
-        :ok
+        :noop
     end
   end
-
-  defp return_noop, do: :noop
 end

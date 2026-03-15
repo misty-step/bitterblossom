@@ -51,6 +51,12 @@ defmodule Conductor.Store do
     GenServer.call(__MODULE__, {:complete_run, run_id, phase, status})
   end
 
+  @doc "Atomically complete a run and release its lease. Prevents the class of bug where one is called without the other."
+  @spec terminate_run(binary(), binary(), binary(), binary(), pos_integer()) :: :ok
+  def terminate_run(run_id, phase, status, repo, issue_number) do
+    GenServer.call(__MODULE__, {:terminate_run, run_id, phase, status, repo, issue_number})
+  end
+
   @spec heartbeat_run(binary()) :: :ok
   def heartbeat_run(run_id) do
     GenServer.call(__MODULE__, {:heartbeat_run, run_id})
@@ -253,6 +259,26 @@ defmodule Conductor.Store do
         WHERE run_id = ?4
       """,
       [phase, status, now, run_id]
+    )
+
+    broadcast_update()
+    {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call({:terminate_run, run_id, phase, status, repo, issue_number}, _from, state) do
+    now = now_utc()
+
+    exec(
+      state.conn,
+      "UPDATE runs SET phase = ?1, status = ?2, completed_at = ?3, updated_at = ?3 WHERE run_id = ?4",
+      [phase, status, now, run_id]
+    )
+
+    exec(
+      state.conn,
+      "UPDATE leases SET released_at = ?1 WHERE repo = ?2 AND issue_number = ?3 AND released_at IS NULL",
+      [now, repo, issue_number]
     )
 
     broadcast_update()
