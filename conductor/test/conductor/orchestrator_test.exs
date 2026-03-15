@@ -6,7 +6,11 @@ defmodule Conductor.OrchestratorTest do
   # Mock tracker: no eligible issues by default.
   defmodule MockTracker do
     @behaviour Conductor.Tracker
-    def list_eligible(_repo, _opts), do: []
+    alias Conductor.OrchestratorTest.MockState
+
+    def list_eligible(repo, opts),
+      do: MockState.get({:eligible, repo, Keyword.get(opts, :label, "autopilot")}, [])
+
     def get_issue(_repo, _number), do: {:error, :not_found}
     def comment(_repo, _issue, _body), do: :ok
   end
@@ -46,6 +50,37 @@ defmodule Conductor.OrchestratorTest do
       do: MockState.get({:open_pr, issue_number}, {:error, :not_found})
   end
 
+  defmodule MockWorker do
+    alias Conductor.OrchestratorTest.MockState
+
+    def probe(worker, _opts \\ []) do
+      send(MockState.get(:test_pid, self()), {:probed, worker})
+
+      case MockState.get({:probe_result, worker}, {:ok, %{sprite: worker, reachable: true}}) do
+        {:error, reason} -> {:error, reason}
+        other -> other
+      end
+    end
+
+    def busy?(worker, _opts \\ []) do
+      send(MockState.get(:test_pid, self()), {:busy_checked, worker})
+      MockState.get({:busy, worker}, false)
+    end
+  end
+
+  defmodule MockRunLauncher do
+    alias Conductor.OrchestratorTest.MockState
+
+    def start(opts) do
+      started = MockState.get(:started_runs, [])
+      MockState.put(:started_runs, started ++ [{opts[:issue].number, opts[:worker]}])
+
+      lifetime_ms = MockState.get(:run_lifetime_ms, 150)
+      pid = spawn(fn -> Process.sleep(lifetime_ms) end)
+      {:ok, pid}
+    end
+  end
+
   # Retry an assertion block until it passes or timeout elapses.
   defp eventually(assert_fun, timeout_ms \\ 1_000, step_ms \\ 20) do
     deadline = System.monotonic_time(:millisecond) + timeout_ms
@@ -75,9 +110,25 @@ defmodule Conductor.OrchestratorTest do
     orig_tracker = Application.get_env(:conductor, :tracker_module)
     Application.put_env(:conductor, :tracker_module, MockTracker)
 
+    orig_worker = Application.get_env(:conductor, :worker_module)
+    Application.put_env(:conductor, :worker_module, MockWorker)
+
+    orig_launcher = Application.get_env(:conductor, :run_launcher_module)
+    Application.put_env(:conductor, :run_launcher_module, MockRunLauncher)
+
+    orig_code_host = Application.get_env(:conductor, :code_host_module)
+    Application.put_env(:conductor, :code_host_module, MockCodeHost)
+
     # Use a 60-minute stale threshold; tests can plant older heartbeats to trigger expiry
     orig_stale = Application.get_env(:conductor, :stale_run_threshold_minutes)
     Application.put_env(:conductor, :stale_run_threshold_minutes, 60)
+
+    orig_probe_threshold = Application.get_env(:conductor, :fleet_probe_failure_threshold)
+    Application.put_env(:conductor, :fleet_probe_failure_threshold, 2)
+
+    MockState.put(:test_pid, self())
+    MockState.put(:started_runs, [])
+    MockState.put(:run_lifetime_ms, 150)
 
     # Restart the Orchestrator under the global name so start_loop/1 works
     if pid = Process.whereis(Orchestrator), do: GenServer.stop(pid)
@@ -96,9 +147,27 @@ defmodule Conductor.OrchestratorTest do
         do: Application.put_env(:conductor, :tracker_module, orig_tracker),
         else: Application.delete_env(:conductor, :tracker_module)
 
+      if orig_worker,
+        do: Application.put_env(:conductor, :worker_module, orig_worker),
+        else: Application.delete_env(:conductor, :worker_module)
+
+      if orig_launcher,
+        do: Application.put_env(:conductor, :run_launcher_module, orig_launcher),
+        else: Application.delete_env(:conductor, :run_launcher_module)
+
+      if orig_code_host,
+        do: Application.put_env(:conductor, :code_host_module, orig_code_host),
+        else: Application.delete_env(:conductor, :code_host_module)
+
       if orig_stale,
         do: Application.put_env(:conductor, :stale_run_threshold_minutes, orig_stale),
         else: Application.delete_env(:conductor, :stale_run_threshold_minutes)
+
+      if orig_probe_threshold,
+        do: Application.put_env(:conductor, :fleet_probe_failure_threshold, orig_probe_threshold),
+        else: Application.delete_env(:conductor, :fleet_probe_failure_threshold)
+
+      MockState.cleanup()
 
       File.rm(db_path)
       File.rm(event_log)
@@ -236,6 +305,117 @@ defmodule Conductor.OrchestratorTest do
       Process.sleep(100)
       runs = Store.list_runs()
       assert runs == []
+    end
+
+    test "round-robins work across three healthy workers" do
+      orig_max = Application.get_env(:conductor, :max_concurrent_runs)
+      Application.put_env(:conductor, :max_concurrent_runs, 3)
+
+      on_exit(fn ->
+        if orig_max,
+          do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
+          else: Application.delete_env(:conductor, :max_concurrent_runs)
+      end)
+
+      issues =
+        Enum.map(1..3, fn number ->
+          %Conductor.Issue{
+            number: number,
+            title: "issue #{number}",
+            body: "## Problem\nx\n## Acceptance Criteria\ny",
+            url: "https://example.test/issues/#{number}"
+          }
+        end)
+
+      MockState.put({:eligible, "test/repo", "autopilot"}, issues)
+
+      workers = [
+        %{name: "sprite-1", capability_tags: []},
+        %{name: "sprite-2", capability_tags: ["elixir"]},
+        %{name: "sprite-3", capability_tags: ["ci"]}
+      ]
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: workers)
+
+      eventually(fn ->
+        assert MockState.get(:started_runs) == [{1, "sprite-1"}, {2, "sprite-2"}, {3, "sprite-3"}]
+      end)
+    end
+
+    test "drains unhealthy workers after consecutive probe failures and recovers on success",
+         %{orch_pid: orch_pid} do
+      orig_max = Application.get_env(:conductor, :max_concurrent_runs)
+      Application.put_env(:conductor, :max_concurrent_runs, 1)
+
+      on_exit(fn ->
+        if orig_max,
+          do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
+          else: Application.delete_env(:conductor, :max_concurrent_runs)
+      end)
+
+      issue1 = %Conductor.Issue{
+        number: 201,
+        title: "first issue",
+        body: "## Problem\nx\n## Acceptance Criteria\ny",
+        url: "https://example.test/issues/201"
+      }
+
+      issue2 = %Conductor.Issue{
+        number: 202,
+        title: "second issue",
+        body: "## Problem\nx\n## Acceptance Criteria\ny",
+        url: "https://example.test/issues/202"
+      }
+
+      workers = [
+        %{name: "sprite-1", capability_tags: []},
+        %{name: "sprite-2", capability_tags: []}
+      ]
+
+      MockState.put({:probe_result, "sprite-1"}, {:error, "timeout"})
+      MockState.put({:eligible, "test/repo", "autopilot"}, [issue1])
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: workers)
+
+      eventually(fn ->
+        assert MockState.get(:started_runs) == [{201, "sprite-2"}]
+      end)
+
+      Process.sleep(200)
+      send(orch_pid, :poll)
+
+      eventually(fn ->
+        assert MockState.get(:started_runs) == [{201, "sprite-2"}, {201, "sprite-2"}]
+      end)
+
+      eventually(fn ->
+        [drained | _] = Orchestrator.fleet_status()
+        assert drained.name == "sprite-1"
+        assert drained.drained == true
+        assert drained.consecutive_failures == 2
+      end)
+
+      MockState.put({:probe_result, "sprite-1"}, {:ok, %{sprite: "sprite-1", reachable: true}})
+      MockState.put({:eligible, "test/repo", "autopilot"}, [issue2])
+
+      Process.sleep(200)
+      send(orch_pid, :poll)
+
+      eventually(fn ->
+        assert MockState.get(:started_runs) == [
+                 {201, "sprite-2"},
+                 {201, "sprite-2"},
+                 {202, "sprite-1"}
+               ]
+      end)
+
+      eventually(fn ->
+        [recovered | _] = Orchestrator.fleet_status()
+        assert recovered.name == "sprite-1"
+        assert recovered.drained == false
+        assert recovered.consecutive_failures == 0
+        assert recovered.healthy == true
+      end)
     end
   end
 

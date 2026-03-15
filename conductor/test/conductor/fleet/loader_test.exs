@@ -17,6 +17,7 @@ defmodule Conductor.Fleet.LoaderTest do
   [[sprite]]
   name = "bb-builder"
   role = "builder"
+  capability_tags = ["elixir", "ci"]
   persona = "Build things."
 
   [[sprite]]
@@ -48,6 +49,7 @@ defmodule Conductor.Fleet.LoaderTest do
       assert builder.harness == "codex"
       assert builder.model == "gpt-5.4"
       assert builder.reasoning_effort == "medium"
+      assert builder.capability_tags == ["elixir", "ci"]
       assert builder.persona == "Build things."
 
       assert polisher.name == "bb-polisher"
@@ -63,6 +65,7 @@ defmodule Conductor.Fleet.LoaderTest do
       assert builder.org == "test-org"
       assert builder.repo == "test-org/test-repo"
       assert builder.label == "autopilot"
+      assert builder.capability_tags == ["elixir", "ci"]
     end
 
     test "returns error for missing file" do

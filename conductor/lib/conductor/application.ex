@@ -58,11 +58,13 @@ defmodule Conductor.Application do
       builders =
         Loader.by_role(sprites, :builder)
         |> Enum.filter(&MapSet.member?(healthy, &1.name))
-        |> Enum.map(& &1.name)
 
       if builders != [] do
         Conductor.Orchestrator.start_loop(repo: repo, workers: builders, label: defaults.label)
-        Logger.info("[boot] orchestrator polling with builders: #{Enum.join(builders, ", ")}")
+
+        Logger.info(
+          "[boot] orchestrator polling with builders: #{Enum.map_join(builders, ", ", & &1.name)}"
+        )
       else
         Logger.warning("[boot] no healthy builders — orchestrator will not poll")
       end
@@ -73,6 +75,7 @@ defmodule Conductor.Application do
       # 5. Store fleet config for runtime queries
       Application.put_env(:conductor, :fleet_config, config)
       Application.put_env(:conductor, :fleet_sprites, sprites)
+      Application.put_env(:conductor, :fleet_workers, builders)
 
       Logger.info("[boot] bitterblossom running — #{MapSet.size(healthy)} healthy sprites")
       :ok

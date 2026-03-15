@@ -106,8 +106,8 @@ defmodule Conductor.Sprite do
     exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
     harness = Keyword.get(opts, :harness)
 
-    case exec_fn.(sprite, "echo ok", timeout: 15_000) do
-      {:ok, _} ->
+    case probe(sprite, exec_fn: exec_fn) do
+      {:ok, %{reachable: true}} ->
         harness_ready = harness_ready?(sprite, harness, exec_fn)
         gh_authenticated = gh_authenticated?(sprite, exec_fn)
 
@@ -120,14 +120,24 @@ defmodule Conductor.Sprite do
            healthy: harness_ready and gh_authenticated
          }}
 
-      {:error, msg, _} ->
-        {:error, msg}
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @spec probe(binary(), keyword()) :: {:ok, map()} | {:error, term()}
+  def probe(sprite, opts \\ []) do
+    exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
+
+    case exec_fn.(sprite, "echo ok", timeout: 15_000) do
+      {:ok, _} -> {:ok, %{sprite: sprite, reachable: true}}
+      {:error, msg, _} -> {:error, msg}
     end
   end
 
   @spec reachable?(binary()) :: boolean()
   def reachable?(sprite) do
-    match?({:ok, _}, exec(sprite, "echo ok", timeout: 15_000))
+    match?({:ok, _}, probe(sprite))
   end
 
   @doc "Check if a sprite has active agent processes (busy with a dispatch)."
