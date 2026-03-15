@@ -142,7 +142,10 @@ func runSetup(ctx context.Context, spriteName, repo string, force bool, persona 
 
 	// 7. Git auth
 	_, _ = fmt.Fprintf(os.Stderr, "configuring git auth...\n")
-	tokenPath := fmt.Sprintf("/tmp/bb-gh-token-%d", time.Now().UnixNano())
+	tokenPath, err := createRemoteTempFilePath(ctx, s, "/tmp/bb-gh-token-XXXXXX")
+	if err != nil {
+		return fmt.Errorf("create temp file for github token: %w", err)
+	}
 	if err := s.Filesystem().WriteFileContext(ctx, tokenPath, []byte(ghToken+"\n"), 0600); err != nil {
 		return fmt.Errorf("upload github token: %w", err)
 	}
@@ -180,6 +183,24 @@ func runSetup(ctx context.Context, spriteName, repo string, force bool, persona 
 
 	_, _ = fmt.Fprintf(os.Stderr, "setup complete: %s\n", spriteName)
 	return nil
+}
+
+func createRemoteTempFilePath(ctx context.Context, s *sprites.Sprite, pattern string) (string, error) {
+	out, err := s.CommandContext(ctx, "mktemp", pattern).Output()
+	if err != nil {
+		return "", err
+	}
+
+	return parseTempFilePath(out)
+}
+
+func parseTempFilePath(out []byte) (string, error) {
+	path := strings.TrimSpace(string(out))
+	if path == "" {
+		return "", fmt.Errorf("mktemp returned empty path")
+	}
+
+	return path, nil
 }
 
 func persistGitHubAuthScript(tokenPath string) string {

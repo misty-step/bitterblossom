@@ -184,6 +184,26 @@ func TestPersistGitHubAuthScriptUsesGhCredentialHelper(t *testing.T) {
 	}
 }
 
+func TestParseTempFilePathTrimsMktempOutput(t *testing.T) {
+	t.Parallel()
+
+	path, err := parseTempFilePath([]byte("/tmp/bb-gh-token-abc123\n"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if path != "/tmp/bb-gh-token-abc123" {
+		t.Fatalf("path = %q, want trimmed mktemp path", path)
+	}
+}
+
+func TestParseTempFilePathRejectsEmptyOutput(t *testing.T) {
+	t.Parallel()
+
+	if _, err := parseTempFilePath([]byte("\n")); err == nil {
+		t.Fatal("expected error for empty mktemp output")
+	}
+}
+
 func TestRepoSetupScriptDoesNotExportGHToken(t *testing.T) {
 	t.Parallel()
 
