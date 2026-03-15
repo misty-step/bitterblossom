@@ -28,6 +28,21 @@ defmodule Conductor.SpriteHealthTest do
       assert busy == false
     end
 
+    test "returns true when codex processes are detected" do
+      busy =
+        Sprite.busy?("test-sprite",
+          exec_fn: fn _sprite, cmd, _opts ->
+            if String.contains?(cmd, "codex") do
+              {:ok, "54321\n"}
+            else
+              {:error, "", 1}
+            end
+          end
+        )
+
+      assert busy == true
+    end
+
     test "returns false when sprite is unreachable" do
       busy =
         Sprite.busy?("test-sprite",

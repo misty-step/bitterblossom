@@ -85,13 +85,21 @@ defmodule Conductor.Config do
 
   @spec dispatch_env() :: [{binary(), binary()}]
   def dispatch_env do
-    # Pass GITHUB_TOKEN for gh CLI on sprites. Use get_env (not fetch_env!)
-    # so command building never crashes — missing token surfaces at git-push
-    # time on the sprite, which is the right failure boundary.
-    case System.get_env("GITHUB_TOKEN") do
-      nil -> []
-      "" -> []
-      token -> [{"GITHUB_TOKEN", token}]
+    # Pass auth tokens to sprites. Use get_env (not fetch_env!) so command
+    # building never crashes — missing tokens surface at runtime on the sprite,
+    # which is the right failure boundary.
+    []
+    |> maybe_env("GITHUB_TOKEN")
+    |> maybe_env("OPENAI_API_KEY")
+    |> maybe_env("EXA_API_KEY")
+    |> Enum.reverse()
+  end
+
+  defp maybe_env(acc, key) do
+    case System.get_env(key) do
+      nil -> acc
+      "" -> acc
+      val -> [{key, val} | acc]
     end
   end
 

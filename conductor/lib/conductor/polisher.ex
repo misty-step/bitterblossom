@@ -146,7 +146,8 @@ defmodule Conductor.Polisher do
         try do
           worker_mod().dispatch(state.polisher_sprite, prompt, state.repo,
             timeout: Config.polisher_timeout(),
-            workspace: workspace_for_branch(state.repo, branch)
+            workspace: workspace_for_branch(state.repo, branch),
+            harness_opts: [reasoning_effort: "high"]
           )
         rescue
           e -> {:error, "polisher dispatch crashed: #{Exception.message(e)}", 1}

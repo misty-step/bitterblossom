@@ -18,7 +18,7 @@ defmodule Conductor.ClaudeCode do
   def name, do: "claude_code"
 
   @impl Conductor.Harness
-  def dispatch_command(opts \\ []) do
+  def dispatch_command(opts) do
     model = Keyword.get(opts, :model, @default_model)
 
     [
@@ -32,7 +32,7 @@ defmodule Conductor.ClaudeCode do
   end
 
   @impl Conductor.Harness
-  def continue_command(opts \\ []) do
+  def continue_command(opts) do
     model = Keyword.get(opts, :model, @default_model)
 
     [

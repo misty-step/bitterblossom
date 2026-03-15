@@ -9,6 +9,7 @@ import (
 const (
 	spriteHomeDir       = "/home/sprite"
 	spriteClaudeDir     = spriteHomeDir + "/.claude"
+	spriteCodexDir      = spriteHomeDir + "/.codex"
 	spriteWorkspaceRoot = spriteHomeDir + "/workspace"
 
 	spritePersonaPath             = spriteWorkspaceRoot + "/PERSONA.md"

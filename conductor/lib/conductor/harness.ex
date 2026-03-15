@@ -2,7 +2,7 @@ defmodule Conductor.Harness do
   @moduledoc """
   Behaviour for agent harnesses that run builder code on sprites.
 
-  Implementations: `Conductor.ClaudeCode` (default).
+  Implementations: `Conductor.Codex` (default), `Conductor.ClaudeCode`.
 
   A harness knows its own name and how to produce the invocation
   command for its agent. The dispatch layer uses this to construct

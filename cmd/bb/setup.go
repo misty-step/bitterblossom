@@ -66,6 +66,7 @@ func runSetup(ctx context.Context, spriteName, repo string, force bool, persona 
 		spriteClaudeDir + "/skills",
 		spriteClaudeDir + "/commands",
 		spriteClaudeDir + "/prompts",
+		spriteCodexDir,
 		spriteWorkspaceRoot,
 	}
 	mkdirScript := "mkdir -p " + strings.Join(dirs, " ")
@@ -91,7 +92,28 @@ func runSetup(ctx context.Context, spriteName, repo string, force bool, persona 
 		}
 	}
 
-	// 4. Upload persona
+	// 4. Install Codex CLI (skip if already present) and upload config
+	if checkCodex := s.CommandContext(ctx, "bash", "-c", "command -v codex >/dev/null 2>&1"); checkCodex.Run() != nil || force {
+		_, _ = fmt.Fprintf(os.Stderr, "installing codex...\n")
+		codexInstall := s.CommandContext(ctx, "bash", "-c", "npm i -g @openai/codex 2>&1")
+		codexInstall.Stdout = os.Stderr
+		codexInstall.Stderr = os.Stderr
+		if err := codexInstall.Run(); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "warning: codex install failed (non-fatal): %v\n", err)
+		}
+	} else {
+		_, _ = fmt.Fprintf(os.Stderr, "codex already installed, skipping\n")
+	}
+
+	if err := uploadFile(ctx, s, "base/codex-config.toml", spriteCodexDir+"/config.toml"); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "warning: codex config upload failed (non-fatal): %v\n", err)
+	}
+
+	if err := uploadFile(ctx, s, "base/codex-instructions.md", spriteCodexDir+"/instructions.md"); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "warning: codex instructions upload failed (non-fatal): %v\n", err)
+	}
+
+	// 5. Upload persona
 	personaFile, err := resolvePersona(spriteName, persona)
 	if err != nil {
 		return err
@@ -101,7 +123,7 @@ func runSetup(ctx context.Context, spriteName, repo string, force bool, persona 
 		return fmt.Errorf("upload persona: %w", err)
 	}
 
-	// 5. Upload ralph script + prompt template
+	// 6. Upload ralph script + prompt template
 	if err := uploadFile(ctx, s, "scripts/ralph.sh", spriteRalphScriptPath); err != nil {
 		return fmt.Errorf("upload ralph.sh: %w", err)
 	}
@@ -114,7 +136,7 @@ func runSetup(ctx context.Context, spriteName, repo string, force bool, persona 
 		return fmt.Errorf("upload prompt template: %w", err)
 	}
 
-	// 6. Git auth
+	// 7. Git auth
 	_, _ = fmt.Fprintf(os.Stderr, "configuring git auth...\n")
 	gitAuthScript := `
 git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=$GH_TOKEN"; }; f'
@@ -126,7 +148,7 @@ git config --global --add safe.directory '*'
 		return fmt.Errorf("git auth: %w", err)
 	}
 
-	// 7. Clone repo
+	// 8. Clone repo
 	if repo != "" {
 		_, _ = fmt.Fprintf(os.Stderr, "setting up repo %s...\n", repo)
 
