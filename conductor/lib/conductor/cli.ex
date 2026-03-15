@@ -362,13 +362,6 @@ defmodule Conductor.CLI do
     end
   end
 
-  defp sprite_name(sprite) when is_binary(sprite), do: sprite
-
-  defp sprite_name(sprite) when is_map(sprite),
-    do: Map.get(sprite, :name) || Map.get(sprite, "name")
-
-  defp sprite_name(_sprite), do: nil
-
   defp probe_only_status?(status) do
     reachable = Map.get(status, :reachable, Map.get(status, "reachable"))
 
