@@ -271,8 +271,9 @@ defmodule Conductor.GitHubTest do
       assert GitHub.evaluate_checks_failed(checks) == false
     end
 
-    test "STARTUP_FAILURE conclusion → true (Cerberus bootstrap failure)" do
+    test "STARTUP_FAILURE among passing checks → true (Cerberus bootstrap failure)" do
       checks = [
+        %{"name" => "CI", "conclusion" => "SUCCESS", "status" => "COMPLETED"},
         %{
           "name" => "review / Cerberus · preflight",
           "conclusion" => "STARTUP_FAILURE",
@@ -283,25 +284,28 @@ defmodule Conductor.GitHubTest do
       assert GitHub.evaluate_checks_failed(checks) == true
     end
 
-    test "TIMED_OUT conclusion → true" do
+    test "TIMED_OUT among passing checks → true" do
       checks = [
-        %{"name" => "CI", "conclusion" => "TIMED_OUT", "status" => "COMPLETED"}
+        %{"name" => "CI", "conclusion" => "SUCCESS", "status" => "COMPLETED"},
+        %{"name" => "Deploy", "conclusion" => "TIMED_OUT", "status" => "COMPLETED"}
       ]
 
       assert GitHub.evaluate_checks_failed(checks) == true
     end
 
-    test "STALE conclusion → true" do
+    test "STALE among passing checks → true" do
       checks = [
-        %{"name" => "CI", "conclusion" => "STALE", "status" => "COMPLETED"}
+        %{"name" => "CI", "conclusion" => "SUCCESS", "status" => "COMPLETED"},
+        %{"name" => "Lint", "conclusion" => "STALE", "status" => "COMPLETED"}
       ]
 
       assert GitHub.evaluate_checks_failed(checks) == true
     end
 
-    test "ACTION_REQUIRED conclusion → true" do
+    test "ACTION_REQUIRED among passing checks → true" do
       checks = [
-        %{"name" => "CI", "conclusion" => "ACTION_REQUIRED", "status" => "COMPLETED"}
+        %{"name" => "CI", "conclusion" => "SUCCESS", "status" => "COMPLETED"},
+        %{"name" => "Review", "conclusion" => "ACTION_REQUIRED", "status" => "COMPLETED"}
       ]
 
       assert GitHub.evaluate_checks_failed(checks) == true
@@ -331,17 +335,19 @@ defmodule Conductor.GitHubTest do
       assert GitHub.evaluate_checks(checks) == false
     end
 
-    test "STALE blocks merge" do
+    test "STALE blocks merge among passing checks" do
       checks = [
-        %{"name" => "CI", "conclusion" => "STALE", "status" => "COMPLETED"}
+        %{"name" => "CI", "conclusion" => "SUCCESS", "status" => "COMPLETED"},
+        %{"name" => "Lint", "conclusion" => "STALE", "status" => "COMPLETED"}
       ]
 
       assert GitHub.evaluate_checks(checks) == false
     end
 
-    test "ACTION_REQUIRED blocks merge" do
+    test "ACTION_REQUIRED blocks merge among passing checks" do
       checks = [
-        %{"name" => "CI", "conclusion" => "ACTION_REQUIRED", "status" => "COMPLETED"}
+        %{"name" => "CI", "conclusion" => "SUCCESS", "status" => "COMPLETED"},
+        %{"name" => "Review", "conclusion" => "ACTION_REQUIRED", "status" => "COMPLETED"}
       ]
 
       assert GitHub.evaluate_checks(checks) == false
