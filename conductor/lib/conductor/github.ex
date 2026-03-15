@@ -353,6 +353,40 @@ defmodule Conductor.GitHub do
     result
   end
 
+  @doc "Find the first open PR whose branch starts with factory/<issue_number>-."
+  @spec find_open_pr(binary(), pos_integer()) :: {:ok, map()} | {:error, :not_found}
+  def find_open_pr(repo, issue_number) do
+    case Shell.cmd("gh", [
+           "pr",
+           "list",
+           "--repo",
+           repo,
+           "--state",
+           "open",
+           "--json",
+           "number,title,headRefName,url"
+         ]) do
+      {:ok, json} ->
+        case Jason.decode(json) do
+          {:ok, prs} ->
+            prefix = "factory/#{issue_number}-"
+
+            case Enum.find(prs, fn pr ->
+                   String.starts_with?(pr["headRefName"] || "", prefix)
+                 end) do
+              nil -> {:error, :not_found}
+              pr -> {:ok, pr}
+            end
+
+          {:error, _} ->
+            {:error, :not_found}
+        end
+
+      {:error, _, _} ->
+        {:error, :not_found}
+    end
+  end
+
   @spec get_pr(binary(), pos_integer()) :: {:ok, map()} | {:error, term()}
   def get_pr(repo, pr_number) do
     case Shell.cmd("gh", [

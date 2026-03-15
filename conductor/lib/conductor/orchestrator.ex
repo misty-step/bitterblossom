@@ -10,7 +10,7 @@ defmodule Conductor.Orchestrator do
   use GenServer
   require Logger
 
-  alias Conductor.{Store, Config, Issue}
+  alias Conductor.{Store, Config, Issue, Workspace}
 
   defstruct [
     :repo,
@@ -182,12 +182,26 @@ defmodule Conductor.Orchestrator do
   end
 
   defp dispatch_run(state, issue, worker) do
-    opts = [
-      repo: state.repo,
-      issue: issue,
-      worker: worker,
-      trusted_surfaces: state.trusted_surfaces
-    ]
+    existing_pr =
+      case code_host_mod().find_open_pr(state.repo, issue.number) do
+        {:ok, pr} ->
+          Logger.info(
+            "found existing PR ##{pr["number"]} for issue ##{issue.number}, adopting branch #{pr["headRefName"]}"
+          )
+
+          pr
+
+        {:error, _} ->
+          nil
+      end
+
+    opts =
+      [
+        repo: state.repo,
+        issue: issue,
+        worker: worker,
+        trusted_surfaces: state.trusted_surfaces
+      ] ++ adoption_opts(existing_pr)
 
     case DynamicSupervisor.start_child(Conductor.RunSupervisor, {Conductor.RunServer, opts}) do
       {:ok, pid} ->
@@ -206,6 +220,16 @@ defmodule Conductor.Orchestrator do
         Logger.error("failed to start run for issue ##{issue.number}: #{inspect(reason)}")
         state
     end
+  end
+
+  defp adoption_opts(nil), do: []
+
+  defp adoption_opts(pr) do
+    [
+      existing_branch: pr["headRefName"],
+      existing_pr_number: pr["number"],
+      existing_pr_url: pr["url"]
+    ]
   end
 
   defp pick_worker(%{workers: []}), do: raise("no workers configured")
@@ -268,7 +292,7 @@ defmodule Conductor.Orchestrator do
 
   defp merge_labeled_prs(%{repo: nil}), do: :ok
 
-  defp merge_labeled_prs(%{repo: repo}) do
+  defp merge_labeled_prs(%{repo: repo, workers: workers}) do
     case code_host_mod().labeled_prs(repo, "lgtm") do
       {:ok, prs} ->
         prs
@@ -290,7 +314,11 @@ defmodule Conductor.Orchestrator do
                 Conductor.SelfUpdate.maybe_reload(repo, pr_number)
 
               {:error, reason} ->
-                Logger.warning("[merge] PR ##{pr_number} merge failed: #{reason}")
+                if merge_conflict?(reason) do
+                  attempt_rebase_merge(repo, pr_number, pr["headRefName"], workers)
+                else
+                  Logger.warning("[merge] PR ##{pr_number} merge failed: #{reason}")
+                end
             end
           else
             Logger.debug("[merge] PR ##{pr_number} has lgtm but CI not green, skipping")
@@ -299,6 +327,61 @@ defmodule Conductor.Orchestrator do
 
       {:error, reason} ->
         Logger.warning("[merge] failed to check labeled PRs: #{reason}")
+    end
+  end
+
+  # Returns true when a merge error message indicates a git conflict rather than
+  # a policy or infrastructure failure.
+  @doc false
+  def merge_conflict?(reason) do
+    msg = to_string(reason)
+    String.contains?(msg, "not mergeable") or String.contains?(msg, "cannot be cleanly created")
+  end
+
+  @doc false
+  def mark_conflict_blocked(repo, pr_number) do
+    Logger.warning("[merge] PR ##{pr_number} blocked: merge_conflict_unresolvable")
+
+    case Store.find_run_by_pr(repo, pr_number) do
+      {:ok, %{"run_id" => run_id}} ->
+        Store.record_event(run_id, "merge_conflict_blocked", %{
+          pr_number: pr_number,
+          reason: "merge_conflict_unresolvable"
+        })
+
+        Store.complete_run(run_id, "blocked", "blocked")
+
+      _ ->
+        Logger.debug("[merge] no run found for PR ##{pr_number}, cannot mark blocked")
+    end
+  end
+
+  defp attempt_rebase_merge(repo, pr_number, branch, workers) do
+    worker = List.first(workers)
+
+    Logger.info(
+      "[merge] PR ##{pr_number} has merge conflict, rebasing branch #{branch} on #{worker}"
+    )
+
+    case Workspace.rebase(worker, repo, branch) do
+      :ok ->
+        Logger.info("[merge] rebase succeeded, retrying merge for PR ##{pr_number}")
+
+        case code_host_mod().merge(repo, pr_number, []) do
+          :ok ->
+            Logger.info("[merge] PR ##{pr_number} merged after rebase")
+            record_merge(repo, pr_number)
+            Conductor.SelfUpdate.maybe_reload(repo, pr_number)
+
+          {:error, reason} ->
+            Logger.warning("[merge] PR ##{pr_number} still failed after rebase: #{reason}")
+
+            mark_conflict_blocked(repo, pr_number)
+        end
+
+      {:error, reason} ->
+        Logger.warning("[merge] rebase failed for PR ##{pr_number}: #{reason}")
+        mark_conflict_blocked(repo, pr_number)
     end
   end
 

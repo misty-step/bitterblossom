@@ -48,6 +48,29 @@ defmodule Conductor.SecurityTest do
     end
   end
 
+  describe "Workspace.rebase/3 and adopt_branch/4 input validation" do
+    # rebase and adopt_branch both call validate_input on repo and branch,
+    # so injection attempts should be caught before any sprite exec.
+
+    test "rebase rejects invalid repo" do
+      assert {:error, :invalid_input} = Workspace.rebase("sprite-1", "bad repo;", "factory/1-ts")
+    end
+
+    test "rebase rejects invalid branch" do
+      assert {:error, :invalid_input} = Workspace.rebase("sprite-1", "owner/repo", "bad branch;")
+    end
+
+    test "adopt_branch rejects invalid repo" do
+      assert {:error, :invalid_input} =
+               Workspace.adopt_branch("sprite-1", "bad repo;", "run-1", "factory/1-ts")
+    end
+
+    test "adopt_branch rejects invalid branch" do
+      assert {:error, :invalid_input} =
+               Workspace.adopt_branch("sprite-1", "owner/repo", "run-1", "bad branch;")
+    end
+  end
+
   describe "Store column allowlist" do
     test "rejects SQL injection in column names" do
       assert {:error, :invalid_column} =
