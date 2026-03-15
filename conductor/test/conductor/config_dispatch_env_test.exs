@@ -12,7 +12,9 @@ defmodule Conductor.ConfigDispatchEnvTest do
         env = Config.dispatch_env()
         assert {"OPENAI_API_KEY", "sk-test-123"} in env
       after
-        if prev, do: System.put_env("OPENAI_API_KEY", prev), else: System.delete_env("OPENAI_API_KEY")
+        if prev,
+          do: System.put_env("OPENAI_API_KEY", prev),
+          else: System.delete_env("OPENAI_API_KEY")
       end
     end
 
@@ -39,8 +41,13 @@ defmodule Conductor.ConfigDispatchEnvTest do
         assert {"GITHUB_TOKEN", "ghp_test"} in env
         assert {"OPENAI_API_KEY", "sk-test"} in env
       after
-        if prev_gh, do: System.put_env("GITHUB_TOKEN", prev_gh), else: System.delete_env("GITHUB_TOKEN")
-        if prev_oai, do: System.put_env("OPENAI_API_KEY", prev_oai), else: System.delete_env("OPENAI_API_KEY")
+        if prev_gh,
+          do: System.put_env("GITHUB_TOKEN", prev_gh),
+          else: System.delete_env("GITHUB_TOKEN")
+
+        if prev_oai,
+          do: System.put_env("OPENAI_API_KEY", prev_oai),
+          else: System.delete_env("OPENAI_API_KEY")
       end
     end
   end
