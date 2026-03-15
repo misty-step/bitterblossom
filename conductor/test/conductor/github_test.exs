@@ -382,6 +382,38 @@ defmodule Conductor.GitHubTest do
     end
   end
 
+  describe "operator directive normalization" do
+    test "label_present?/2 treats nil labels as empty" do
+      refute GitHub.label_present?(%{"labels" => nil}, "hold")
+    end
+
+    test "label_present?/2 finds matching label names" do
+      assert GitHub.label_present?(%{"labels" => [%{"name" => "hold"}]}, "hold")
+    end
+
+    test "normalize_issue_comments/1 treats nil comments as empty" do
+      assert GitHub.normalize_issue_comments(nil) == []
+    end
+
+    test "normalize_issue_comments/1 keeps binary comment bodies" do
+      assert GitHub.normalize_issue_comments([%{"body" => "bb: cancel"}]) == [
+               %{"body" => "bb: cancel"}
+             ]
+    end
+
+    test "normalize_issue_comments/1 extracts nested text bodies" do
+      assert GitHub.normalize_issue_comments([%{"body" => %{"text" => "bb: cancel"}}]) == [
+               %{"body" => "bb: cancel"}
+             ]
+    end
+
+    test "normalize_issue_comments/1 extracts nested body bodies" do
+      assert GitHub.normalize_issue_comments([%{"body" => %{"body" => "bb: cancel"}}]) == [
+               %{"body" => "bb: cancel"}
+             ]
+    end
+  end
+
   describe "checks_failed?/1 (unit, no CLI)" do
     test "FAILURE among checks → true" do
       checks = [

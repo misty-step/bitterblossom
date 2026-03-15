@@ -14,7 +14,14 @@ defmodule Conductor.StoreTest do
     {:ok, _pid} = Store.start_link(db_path: db_path, event_log: event_log)
 
     on_exit(fn ->
-      if Process.whereis(Store), do: GenServer.stop(Store)
+      case Process.whereis(Store) do
+        nil ->
+          :ok
+
+        pid when is_pid(pid) ->
+          if Process.alive?(pid), do: GenServer.stop(Store), else: :ok
+      end
+
       File.rm(db_path)
       File.rm(event_log)
     end)
@@ -234,5 +241,21 @@ defmodule Conductor.StoreTest do
     assert Store.list_incidents(run_a) |> length() == 1
     assert Store.list_incidents(run_b) |> length() == 0
     assert Store.list_waivers(run_a) |> length() == 0
+  end
+
+  test "dispatch pause flag defaults false and can be toggled" do
+    refute Store.dispatch_paused?()
+
+    :ok = Store.set_dispatch_paused(true)
+    assert Store.dispatch_paused?()
+
+    :ok = Store.set_dispatch_paused(false)
+    refute Store.dispatch_paused?()
+  end
+
+  test "find_run_by_pr returns an error tuple when the database query fails" do
+    :sys.replace_state(Store, fn state -> %{state | conn: :invalid} end)
+
+    assert {:error, {:db_error, _}} = Store.find_run_by_pr("test/repo", 123)
   end
 end

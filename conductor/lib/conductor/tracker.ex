@@ -19,4 +19,12 @@ defmodule Conductor.Tracker do
   @doc "Post a comment on an issue."
   @callback comment(repo :: binary(), issue_number :: pos_integer(), body :: binary()) ::
               :ok | {:error, term()}
+
+  @doc "Return true when the issue currently has the given label."
+  @callback issue_has_label?(repo :: binary(), issue_number :: pos_integer(), label :: binary()) ::
+              {:ok, boolean()} | {:error, term()}
+
+  @doc "Return issue comments normalized to maps with a binary `body` field."
+  @callback issue_comments(repo :: binary(), issue_number :: pos_integer()) ::
+              {:ok, [map()]} | {:error, term()}
 end

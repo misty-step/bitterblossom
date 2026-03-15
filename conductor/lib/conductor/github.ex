@@ -39,6 +39,56 @@ defmodule Conductor.GitHub do
     end
   end
 
+  @spec issue_has_label?(binary(), pos_integer(), binary()) :: {:ok, boolean()} | {:error, term()}
+  def issue_has_label?(repo, issue_number, label) do
+    case Shell.cmd("gh", [
+           "issue",
+           "view",
+           to_string(issue_number),
+           "--repo",
+           repo,
+           "--json",
+           "labels"
+         ]) do
+      {:ok, json} ->
+        case Jason.decode(json) do
+          {:ok, data} ->
+            {:ok, label_present?(data, label)}
+
+          {:error, _} ->
+            {:error, "invalid JSON from gh: #{String.slice(json, 0, 200)}"}
+        end
+
+      {:error, msg, _} ->
+        {:error, msg}
+    end
+  end
+
+  @spec issue_comments(binary(), pos_integer()) :: {:ok, [map()]} | {:error, term()}
+  def issue_comments(repo, issue_number) do
+    case Shell.cmd("gh", [
+           "issue",
+           "view",
+           to_string(issue_number),
+           "--repo",
+           repo,
+           "--json",
+           "comments"
+         ]) do
+      {:ok, json} ->
+        case Jason.decode(json) do
+          {:ok, data} ->
+            {:ok, data |> Map.get("comments") |> normalize_issue_comments()}
+
+          {:error, _} ->
+            {:error, "invalid JSON from gh: #{String.slice(json, 0, 200)}"}
+        end
+
+      {:error, msg, _} ->
+        {:error, msg}
+    end
+  end
+
   @spec list_issues(binary(), keyword()) :: {:ok, [Issue.t()]} | {:error, term()}
   def list_issues(repo, opts \\ []) do
     label = Keyword.get(opts, :label)
@@ -93,6 +143,27 @@ defmodule Conductor.GitHub do
 
   @doc false
   def sort_eligible_issues(issues), do: Enum.sort_by(issues, & &1.number)
+
+  def label_present?(data, label) do
+    data
+    |> Map.get("labels")
+    |> List.wrap()
+    |> Enum.any?(fn item -> item["name"] == label end)
+  end
+
+  @doc false
+  def normalize_issue_comments(comments) do
+    comments
+    |> List.wrap()
+    |> Enum.map(fn comment ->
+      %{"body" => comment_body(comment)}
+    end)
+  end
+
+  defp comment_body(%{"body" => body}) when is_binary(body), do: body
+
+  defp comment_body(comment),
+    do: get_in(comment, ["body", "text"]) || get_in(comment, ["body", "body"]) || ""
 
   @spec get_pr_checks(binary(), pos_integer()) :: {:ok, [map()]} | {:error, term()}
   def get_pr_checks(repo, pr_number) do
