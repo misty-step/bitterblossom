@@ -287,6 +287,7 @@ defmodule Conductor.Orchestrator do
               :ok ->
                 Logger.info("[merge] PR ##{pr_number} merged successfully")
                 record_merge(repo, pr_number)
+                Conductor.SelfUpdate.maybe_reload(repo, pr_number)
 
               {:error, reason} ->
                 Logger.warning("[merge] PR ##{pr_number} merge failed: #{reason}")
