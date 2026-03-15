@@ -202,7 +202,7 @@ defmodule Conductor.GitHub do
   defp list_all_open_issues(repo, limit) do
     with {:ok, {owner, name}} <- repo_parts(repo) do
       empty_page_budget = ceil(limit / @issues_page_size)
-      fetch_issue_pages(owner, name, 1, limit, empty_page_budget, [])
+      fetch_issue_pages(owner, name, 1, limit, empty_page_budget, empty_page_budget, [])
     end
   end
 
@@ -232,17 +232,33 @@ defmodule Conductor.GitHub do
     end
   end
 
-  defp fetch_issue_pages(_owner, _name, _page, remaining, _empty_pages_left, acc)
+  defp fetch_issue_pages(
+         _owner,
+         _name,
+         _page,
+         remaining,
+         _max_empty_pages,
+         _empty_pages_left,
+         acc
+       )
        when remaining <= 0 do
     {:ok, Enum.reverse(acc)}
   end
 
-  defp fetch_issue_pages(_owner, _name, _page, _remaining, empty_pages_left, acc)
+  defp fetch_issue_pages(
+         _owner,
+         _name,
+         _page,
+         _remaining,
+         _max_empty_pages,
+         empty_pages_left,
+         acc
+       )
        when empty_pages_left <= 0 do
     {:ok, Enum.reverse(acc)}
   end
 
-  defp fetch_issue_pages(owner, name, page, remaining, empty_pages_left, acc) do
+  defp fetch_issue_pages(owner, name, page, remaining, max_empty_pages, empty_pages_left, acc) do
     args = [
       "api",
       "repos/#{owner}/#{name}/issues?state=open&per_page=#{@issues_page_size}&page=#{page}"
@@ -264,18 +280,21 @@ defmodule Conductor.GitHub do
           name,
           page + 1,
           remaining - length(page_issues),
-          next_empty_page_budget(empty_pages_left, page_issues),
+          max_empty_pages,
+          next_empty_page_budget(max_empty_pages, empty_pages_left, page_issues),
           Enum.reverse(page_issues) ++ acc
         )
       end
     end
   end
 
-  defp next_empty_page_budget(empty_pages_left, []), do: empty_pages_left - 1
-  defp next_empty_page_budget(empty_pages_left, _page_issues), do: empty_pages_left
+  defp next_empty_page_budget(_max_empty_pages, empty_pages_left, []), do: empty_pages_left - 1
+
+  defp next_empty_page_budget(max_empty_pages, _empty_pages_left, _page_issues),
+    do: max_empty_pages
 
   defp repo_parts(repo) do
-    case String.split(repo, "/", trim: true) do
+    case String.split(repo, "/") do
       [owner, name] when owner != "" and name != "" -> {:ok, {owner, name}}
       _ -> {:error, "expected repo in owner/name format, got: #{inspect(repo)}"}
     end

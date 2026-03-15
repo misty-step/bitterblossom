@@ -427,6 +427,80 @@ defmodule Conductor.GitHubTest do
       )
     end
 
+    test "resets the PR-only page budget after a retained issue page" do
+      with_fake_gh(
+        """
+        printf '%s\n' "$@" >> "$GH_ARGS_PATH"
+        page="$(printf '%s' "$*" | sed -n 's/.*page=\\([0-9][0-9]*\\).*/\\1/p')"
+
+        if [[ -z "$page" ]]; then
+          echo '[]'
+        elif (( page == 1 )); then
+          cat <<'JSON'
+        [
+          {
+            "number": 1,
+            "title": "first issue",
+            "body": "draft body",
+            "url": "https://example.test/issues/1",
+            "labels": []
+          }
+        ]
+        JSON
+        elif (( page == 11 )); then
+          cat <<'JSON'
+        [
+          {
+            "number": 2,
+            "title": "middle issue",
+            "body": "draft body",
+            "url": "https://example.test/issues/2",
+            "labels": []
+          }
+        ]
+        JSON
+        elif (( page == 21 )); then
+          cat <<'JSON'
+        [
+          {
+            "number": 3,
+            "title": "late issue",
+            "body": "draft body",
+            "url": "https://example.test/issues/3",
+            "labels": []
+          }
+        ]
+        JSON
+        elif (( page < 21 )); then
+          cat <<'JSON'
+        [
+          {
+            "number": 9999,
+            "title": "not an issue",
+            "body": "",
+            "url": "https://example.test/pull/9999",
+            "labels": [],
+            "pull_request": {"url": "https://example.test/pull/9999"}
+          }
+        ]
+        JSON
+        else
+          echo '[]'
+        fi
+        """,
+        fn _tmp_dir, args_path ->
+          assert {:ok, issues} = GitHub.list_issues("misty-step/bitterblossom")
+          assert Enum.map(issues, & &1.number) == [1, 2, 3]
+
+          args = File.read!(args_path)
+          assert String.contains?(args, "page=11")
+          assert String.contains?(args, "page=21")
+          assert String.contains?(args, "page=22")
+          refute String.contains?(args, "page=23")
+        end
+      )
+    end
+
     test "stops unfiltered pagination after the default page budget even when pages only contain pull requests" do
       with_fake_gh(
         """
@@ -552,6 +626,13 @@ defmodule Conductor.GitHubTest do
     test "rejects a repo with extra path segments" do
       assert {:error, message} = GitHub.list_issues("owner/name/extra")
       assert message =~ "expected repo in owner/name format"
+    end
+
+    test "rejects malformed repo strings that rely on trimmed segments" do
+      for repo <- ["/owner/name/", "owner//name"] do
+        assert {:error, message} = GitHub.list_issues(repo)
+        assert message =~ "expected repo in owner/name format"
+      end
     end
 
     test "eligible_issues logs and returns an empty list when the repo is malformed" do
