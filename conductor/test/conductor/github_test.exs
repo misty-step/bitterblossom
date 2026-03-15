@@ -1,5 +1,5 @@
 defmodule Conductor.GitHubTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Conductor.{GitHub, Issue}
 
@@ -45,6 +45,32 @@ defmodule Conductor.GitHubTest do
                unready_issue,
                ready_issue
              ]
+    end
+  end
+
+  defp with_fake_gh(script, fun) do
+    tmp_dir = Path.join(System.tmp_dir!(), "github_test_#{System.unique_integer([:positive])}")
+    gh_path = Path.join(tmp_dir, "gh")
+    args_path = Path.join(tmp_dir, "gh-args.log")
+    prev_path = System.get_env("PATH") || ""
+    prev_args_path = System.get_env("GH_ARGS_PATH")
+
+    File.mkdir_p!(tmp_dir)
+    File.write!(gh_path, "#!/usr/bin/env bash\nset -eu\n#{script}\n")
+    File.chmod!(gh_path, 0o755)
+    System.put_env("PATH", "#{tmp_dir}:#{prev_path}")
+    System.put_env("GH_ARGS_PATH", args_path)
+
+    try do
+      fun.(tmp_dir, args_path)
+    after
+      System.put_env("PATH", prev_path)
+
+      if prev_args_path,
+        do: System.put_env("GH_ARGS_PATH", prev_args_path),
+        else: System.delete_env("GH_ARGS_PATH")
+
+      File.rm_rf!(tmp_dir)
     end
   end
 
@@ -225,6 +251,122 @@ defmodule Conductor.GitHubTest do
 
     test "returns nil for empty list" do
       assert filter_open_pr([], 42) == nil
+    end
+  end
+
+  describe "list_issues/2" do
+    test "omits --label when label is nil and preserves an explicit limit" do
+      with_fake_gh(
+        """
+        printf '%s\n' "$@" > "$GH_ARGS_PATH"
+        cat <<'JSON'
+        []
+        JSON
+        """,
+        fn _tmp_dir, args_path ->
+          assert {:ok, []} = GitHub.list_issues("misty-step/bitterblossom", label: nil, limit: 12)
+
+          args = File.read!(args_path)
+          assert String.contains?(args, "issue\nlist\n")
+          assert String.contains?(args, "--limit\n12\n")
+          refute String.contains?(args, "--label\n")
+        end
+      )
+    end
+
+    test "omits --label when label is blank" do
+      with_fake_gh(
+        """
+        printf '%s\n' "$@" > "$GH_ARGS_PATH"
+        cat <<'JSON'
+        []
+        JSON
+        """,
+        fn _tmp_dir, args_path ->
+          assert {:ok, []} = GitHub.list_issues("misty-step/bitterblossom", label: "", limit: 8)
+
+          args = File.read!(args_path)
+          refute String.contains?(args, "--label\n")
+        end
+      )
+    end
+
+    test "includes --label when a label filter is provided" do
+      with_fake_gh(
+        """
+        printf '%s\n' "$@" > "$GH_ARGS_PATH"
+        cat <<'JSON'
+        []
+        JSON
+        """,
+        fn _tmp_dir, args_path ->
+          assert {:ok, []} =
+                   GitHub.list_issues("misty-step/bitterblossom", label: "autopilot", limit: 7)
+
+          args = File.read!(args_path)
+          assert String.contains?(args, "--label\nautopilot\n")
+        end
+      )
+    end
+
+    test "paginates all open issues by default and eligible_issues keeps unready issues" do
+      with_fake_gh(
+        """
+        printf '%s\n' "$@" > "$GH_ARGS_PATH"
+        cat <<'JSON'
+        [
+          {
+            "data": {
+              "repository": {
+                "issues": {
+                  "nodes": [
+                    {
+                      "number": 7,
+                      "title": "ready issue",
+                      "body": "## Problem\\nx\\n\\n## Acceptance Criteria\\n- [ ] [test] y",
+                      "url": "https://example.test/issues/7",
+                      "labels": {"nodes": [{"name": "autopilot"}]}
+                    }
+                  ],
+                  "pageInfo": {"hasNextPage": true, "endCursor": "cursor-1"}
+                }
+              }
+            }
+          },
+          {
+            "data": {
+              "repository": {
+                "issues": {
+                  "nodes": [
+                    {
+                      "number": 6,
+                      "title": "unready issue",
+                      "body": "draft body",
+                      "url": "https://example.test/issues/6",
+                      "labels": {"nodes": []}
+                    }
+                  ],
+                  "pageInfo": {"hasNextPage": false, "endCursor": null}
+                }
+              }
+            }
+          }
+        ]
+        JSON
+        """,
+        fn _tmp_dir, args_path ->
+          issues = GitHub.eligible_issues("misty-step/bitterblossom")
+
+          assert Enum.map(issues, & &1.number) == [6, 7]
+          assert Enum.find(issues, &(&1.number == 6)).body == "draft body"
+
+          args = File.read!(args_path)
+          assert String.contains?(args, "api\ngraphql\n")
+          assert String.contains?(args, "--paginate\n")
+          assert String.contains?(args, "--slurp\n")
+          refute String.contains?(args, "--label\n")
+        end
+      )
     end
   end
 

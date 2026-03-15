@@ -41,15 +41,18 @@ defmodule Conductor.GitHub do
 
   @spec list_issues(binary(), keyword()) :: {:ok, [Issue.t()]} | {:error, term()}
   def list_issues(repo, opts \\ []) do
-    case Shell.cmd("gh", list_issue_args(repo, opts)) do
-      {:ok, json} ->
-        case Jason.decode(json) do
-          {:ok, list} -> {:ok, Enum.map(list, &Issue.from_github/1)}
-          {:error, _} -> {:error, "invalid JSON from gh: #{String.slice(json, 0, 200)}"}
-        end
+    label = Keyword.get(opts, :label)
+    explicit_limit? = Keyword.has_key?(opts, :limit)
 
-      {:error, msg, _} ->
-        {:error, msg}
+    case {normalized_label(label), explicit_limit?} do
+      {nil, false} ->
+        list_all_open_issues(repo)
+
+      {_label, _explicit_limit?} ->
+        with {:ok, json} <- run_gh(list_issue_args(repo, opts)),
+             {:ok, list} <- decode_issue_list(json) do
+          {:ok, Enum.map(list, &Issue.from_github/1)}
+        end
     end
   end
 
@@ -120,6 +123,108 @@ defmodule Conductor.GitHub do
   defp default_issue_limit(nil), do: @default_unfiltered_limit
   defp default_issue_limit(""), do: @default_unfiltered_limit
   defp default_issue_limit(_label), do: @default_labeled_limit
+
+  defp normalized_label(nil), do: nil
+  defp normalized_label(""), do: nil
+  defp normalized_label(label), do: label
+
+  defp list_all_open_issues(repo) do
+    {owner, name} = repo_parts(repo)
+
+    query = """
+    query($owner: String!, $name: String!, $endCursor: String) {
+      repository(owner: $owner, name: $name) {
+        issues(first: 100, after: $endCursor, states: OPEN, orderBy: {field: CREATED_AT, direction: ASC}) {
+          nodes {
+            number
+            title
+            body
+            url
+            labels(first: 100) {
+              nodes {
+                name
+              }
+            }
+          }
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+        }
+      }
+    }
+    """
+
+    args = [
+      "api",
+      "graphql",
+      "--paginate",
+      "--slurp",
+      "-f",
+      "owner=#{owner}",
+      "-f",
+      "name=#{name}",
+      "-f",
+      "query=#{query}"
+    ]
+
+    with {:ok, json} <- run_gh(args),
+         {:ok, pages} <- decode_issue_list_pages(json) do
+      {:ok, pages}
+    end
+  end
+
+  defp decode_issue_list(json) do
+    case Jason.decode(json) do
+      {:ok, list} when is_list(list) ->
+        {:ok, list}
+
+      {:ok, _other} ->
+        {:error, "invalid JSON from gh: #{String.slice(json, 0, 200)}"}
+
+      {:error, _reason} ->
+        {:error, "invalid JSON from gh: #{String.slice(json, 0, 200)}"}
+    end
+  end
+
+  defp decode_issue_list_pages(json) do
+    case Jason.decode(json) do
+      {:ok, pages} when is_list(pages) ->
+        issues =
+          Enum.flat_map(pages, fn page ->
+            get_in(page, ["data", "repository", "issues", "nodes"]) || []
+          end)
+          |> Enum.map(&graphql_issue_to_issue/1)
+
+        {:ok, issues}
+
+      {:ok, _other} ->
+        {:error, "invalid JSON from gh: #{String.slice(json, 0, 200)}"}
+
+      {:error, _reason} ->
+        {:error, "invalid JSON from gh: #{String.slice(json, 0, 200)}"}
+    end
+  end
+
+  defp graphql_issue_to_issue(issue) do
+    issue
+    |> Map.put("labels", get_in(issue, ["labels", "nodes"]) || [])
+    |> Issue.from_github()
+  end
+
+  defp repo_parts(repo) do
+    case String.split(repo, "/", parts: 2) do
+      [owner, name] -> {owner, name}
+      _ -> raise ArgumentError, "expected repo in owner/name format, got: #{inspect(repo)}"
+    end
+  end
+
+  defp run_gh(args) do
+    case Shell.cmd("gh", args) do
+      {:ok, output} -> {:ok, output}
+      {:error, msg, _code} -> {:error, msg}
+    end
+  end
 
   @green ~w(SUCCESS success NEUTRAL neutral SKIPPED skipped)
 
