@@ -5,6 +5,7 @@ defmodule Conductor.RunServer do
   State machine:
 
       pending → building → pr_opened (terminal)
+                            ├── blocked
                             └── failed
 
   The builder opens a PR and exits. Governance (CI, reviews, merge)
@@ -244,10 +245,10 @@ defmodule Conductor.RunServer do
     log(state, "builder reports ready — PR ##{pr_number}: #{pr_url}")
 
     # Builder's job is done. PR is open. Governance is label-driven by the orchestrator.
+    # Retro runs after merge (orchestrator), not here — avoids double analysis.
     Store.complete_run(state.run_id, "pr_opened", "pr_opened")
     Store.release_lease(state.repo, state.issue.number)
     cleanup_workspace(state)
-    Retro.analyze(state.run_id)
     {:stop, :normal, %{state | phase: :pr_opened, pr_number: pr_number}}
   end
 

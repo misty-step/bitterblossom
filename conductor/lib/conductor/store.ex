@@ -40,6 +40,12 @@ defmodule Conductor.Store do
     GenServer.call(__MODULE__, {:update_run, run_id, attrs})
   end
 
+  @doc "Find a run by repo and PR number."
+  @spec find_run_by_pr(binary(), pos_integer()) :: {:ok, map()} | {:error, :not_found}
+  def find_run_by_pr(repo, pr_number) do
+    GenServer.call(__MODULE__, {:find_run_by_pr, repo, pr_number})
+  end
+
   @spec complete_run(binary(), binary(), binary()) :: :ok
   def complete_run(run_id, phase, status) do
     GenServer.call(__MODULE__, {:complete_run, run_id, phase, status})
@@ -189,6 +195,21 @@ defmodule Conductor.Store do
       {_, {:error, :invalid_column}} ->
         Logger.error("update_run rejected: invalid column in #{inspect(Map.keys(attrs))}")
         {:reply, {:error, :invalid_column}, state}
+    end
+  end
+
+  @impl true
+  def handle_call({:find_run_by_pr, repo, pr_number}, _from, state) do
+    rows =
+      query_all(
+        state.conn,
+        "SELECT * FROM runs WHERE repo = ?1 AND pr_number = ?2 ORDER BY picked_at DESC LIMIT 1",
+        [repo, pr_number]
+      )
+
+    case rows do
+      [run | _] -> {:reply, {:ok, run}, state}
+      [] -> {:reply, {:error, :not_found}, state}
     end
   end
 

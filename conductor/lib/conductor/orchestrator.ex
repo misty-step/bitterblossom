@@ -303,19 +303,14 @@ defmodule Conductor.Orchestrator do
 
   # Update the Store when the orchestrator merges a PR (not the RunServer).
   defp record_merge(repo, pr_number) do
-    case Store.list_runs(limit: 50) do
-      runs when is_list(runs) ->
-        case Enum.find(runs, fn r -> r["repo"] == repo and r["pr_number"] == pr_number end) do
-          %{"run_id" => run_id} ->
-            Store.complete_run(run_id, "merged", "merged")
-            Conductor.Retro.analyze(run_id)
-
-          nil ->
-            :ok
-        end
+    case Store.find_run_by_pr(repo, pr_number) do
+      {:ok, %{"run_id" => run_id}} ->
+        Store.record_event(run_id, "merged", %{pr_number: pr_number, merged_by: "orchestrator"})
+        Store.complete_run(run_id, "merged", "merged")
+        Conductor.Retro.analyze(run_id)
 
       _ ->
-        :ok
+        Logger.debug("[merge] no run found for PR ##{pr_number}, skipping store update")
     end
   end
 
