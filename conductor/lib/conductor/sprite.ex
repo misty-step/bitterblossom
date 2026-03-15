@@ -118,7 +118,10 @@ defmodule Conductor.Sprite do
   def busy?(sprite, opts \\ []) do
     exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
 
-    case exec_fn.(sprite, "pgrep -f 'claude.*-p' 2>/dev/null", timeout: 15_000) do
+    # Use pgrep -x to match exact process name, avoiding self-match on the pgrep command
+    case exec_fn.(sprite, "pgrep -x claude 2>/dev/null || pgrep -f 'ralph\\.sh' 2>/dev/null",
+           timeout: 15_000
+         ) do
       {:ok, output} -> String.trim(output) != ""
       _ -> false
     end
