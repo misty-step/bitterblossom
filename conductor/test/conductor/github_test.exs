@@ -270,5 +270,81 @@ defmodule Conductor.GitHubTest do
 
       assert GitHub.evaluate_checks_failed(checks) == false
     end
+
+    test "STARTUP_FAILURE conclusion → true (Cerberus bootstrap failure)" do
+      checks = [
+        %{
+          "name" => "review / Cerberus · preflight",
+          "conclusion" => "STARTUP_FAILURE",
+          "status" => "COMPLETED"
+        }
+      ]
+
+      assert GitHub.evaluate_checks_failed(checks) == true
+    end
+
+    test "TIMED_OUT conclusion → true" do
+      checks = [
+        %{"name" => "CI", "conclusion" => "TIMED_OUT", "status" => "COMPLETED"}
+      ]
+
+      assert GitHub.evaluate_checks_failed(checks) == true
+    end
+
+    test "STALE conclusion → true" do
+      checks = [
+        %{"name" => "CI", "conclusion" => "STALE", "status" => "COMPLETED"}
+      ]
+
+      assert GitHub.evaluate_checks_failed(checks) == true
+    end
+
+    test "ACTION_REQUIRED conclusion → true" do
+      checks = [
+        %{"name" => "CI", "conclusion" => "ACTION_REQUIRED", "status" => "COMPLETED"}
+      ]
+
+      assert GitHub.evaluate_checks_failed(checks) == true
+    end
+  end
+
+  describe "evaluate_checks/1 — workflow bootstrap failure modes" do
+    test "STARTUP_FAILURE blocks merge (non-green)" do
+      checks = [
+        %{"name" => "CI", "conclusion" => "SUCCESS", "status" => "COMPLETED"},
+        %{
+          "name" => "review / Cerberus · preflight",
+          "conclusion" => "STARTUP_FAILURE",
+          "status" => "COMPLETED"
+        }
+      ]
+
+      assert GitHub.evaluate_checks(checks) == false
+    end
+
+    test "TIMED_OUT blocks merge" do
+      checks = [
+        %{"name" => "CI", "conclusion" => "SUCCESS", "status" => "COMPLETED"},
+        %{"name" => "Deploy", "conclusion" => "TIMED_OUT", "status" => "COMPLETED"}
+      ]
+
+      assert GitHub.evaluate_checks(checks) == false
+    end
+
+    test "STALE blocks merge" do
+      checks = [
+        %{"name" => "CI", "conclusion" => "STALE", "status" => "COMPLETED"}
+      ]
+
+      assert GitHub.evaluate_checks(checks) == false
+    end
+
+    test "ACTION_REQUIRED blocks merge" do
+      checks = [
+        %{"name" => "CI", "conclusion" => "ACTION_REQUIRED", "status" => "COMPLETED"}
+      ]
+
+      assert GitHub.evaluate_checks(checks) == false
+    end
   end
 end
