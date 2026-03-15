@@ -4,10 +4,11 @@ defmodule Conductor.SelfUpdateTest do
   alias Conductor.SelfUpdate
 
   describe "check_for_updates/0" do
-    test "returns :noop when HEAD matches origin/master" do
-      # In the test environment, we just ran — HEAD == origin/master
-      # (or fetch fails gracefully). Either way, no update should trigger.
-      assert SelfUpdate.check_for_updates() in [:ok, :noop]
+    test "returns :noop when not behind origin/master" do
+      # On CI branches, HEAD may differ from origin/master, but
+      # rev-list --count HEAD..origin/master returns 0 when at or ahead.
+      # We only assert :noop to avoid mutating the checkout mid-test.
+      assert SelfUpdate.check_for_updates() == :noop
     end
   end
 
