@@ -62,6 +62,9 @@ defmodule Conductor.Issue do
     end
   end
 
+  @spec revision_id(t()) :: binary()
+  def revision_id(%__MODULE__{body: body}), do: :crypto.hash(:sha256, body || "")
+
   defp has?(body, heading), do: String.contains?(body, heading)
 
   defp check_missing(acc, body, headings, msg) do

@@ -16,6 +16,7 @@ defmodule Conductor.GitHub do
 
   @default_labeled_limit 25
   @default_unfiltered_limit 1000
+  @graphql_page_size 100
 
   @spec get_issue(binary(), pos_integer()) :: {:ok, Issue.t()} | {:error, term()}
   def get_issue(repo, number) do
@@ -96,7 +97,7 @@ defmodule Conductor.GitHub do
 
     case {normalized_label(label), explicit_limit?} do
       {nil, false} ->
-        list_all_open_issues(repo)
+        list_all_open_issues(repo, @default_unfiltered_limit)
 
       {_label, _explicit_limit?} ->
         with {:ok, json} <- run_gh(list_issue_args(repo, opts)),
@@ -199,49 +200,9 @@ defmodule Conductor.GitHub do
   defp normalized_label(""), do: nil
   defp normalized_label(label), do: label
 
-  defp list_all_open_issues(repo) do
+  defp list_all_open_issues(repo, limit) do
     with {:ok, {owner, name}} <- repo_parts(repo) do
-      query = """
-      query($owner: String!, $name: String!, $endCursor: String) {
-        repository(owner: $owner, name: $name) {
-          issues(first: 100, after: $endCursor, states: OPEN, orderBy: {field: CREATED_AT, direction: ASC}) {
-            nodes {
-              number
-              title
-              body
-              url
-              labels(first: 100) {
-                nodes {
-                  name
-                }
-              }
-            }
-            pageInfo {
-              hasNextPage
-              endCursor
-            }
-          }
-        }
-      }
-      """
-
-      args = [
-        "api",
-        "graphql",
-        "--paginate",
-        "--slurp",
-        "-f",
-        "owner=#{owner}",
-        "-f",
-        "name=#{name}",
-        "-f",
-        "query=#{query}"
-      ]
-
-      with {:ok, json} <- run_gh(args),
-           {:ok, pages} <- decode_issue_list_pages(json) do
-        {:ok, pages}
-      end
+      fetch_open_issue_page(owner, name, nil, limit, [])
     end
   end
 
@@ -258,16 +219,85 @@ defmodule Conductor.GitHub do
     end
   end
 
-  defp decode_issue_list_pages(json) do
-    case Jason.decode(json) do
-      {:ok, pages} when is_list(pages) ->
-        issues =
-          Enum.flat_map(pages, fn page ->
-            get_in(page, ["data", "repository", "issues", "nodes"]) || []
-          end)
-          |> Enum.map(&graphql_issue_to_issue/1)
+  defp graphql_issue_to_issue(issue) do
+    issue
+    |> Map.put("labels", get_in(issue, ["labels", "nodes"]) || [])
+    |> Issue.from_github()
+  end
 
-        {:ok, issues}
+  defp fetch_open_issue_page(_owner, _name, _cursor, remaining, acc) when remaining <= 0,
+    do: {:ok, acc}
+
+  defp fetch_open_issue_page(owner, name, cursor, remaining, acc) do
+    page_size = min(remaining, @graphql_page_size)
+
+    with {:ok, json} <- run_gh(graphql_issue_args(owner, name, cursor, page_size)),
+         {:ok, issues, next_cursor} <- decode_issue_page(json) do
+      acc = acc ++ Enum.map(issues, &graphql_issue_to_issue/1)
+
+      cond do
+        issues == [] ->
+          {:ok, acc}
+
+        is_nil(next_cursor) ->
+          {:ok, acc}
+
+        true ->
+          fetch_open_issue_page(owner, name, next_cursor, remaining - length(issues), acc)
+      end
+    end
+  end
+
+  defp graphql_issue_args(owner, name, cursor, page_size) do
+    query = """
+    query($owner: String!, $name: String!, $pageSize: Int!, $endCursor: String) {
+      repository(owner: $owner, name: $name) {
+        issues(first: $pageSize, after: $endCursor, states: OPEN, orderBy: {field: CREATED_AT, direction: ASC}) {
+          nodes {
+            number
+            title
+            body
+            url
+            labels(first: 100) {
+              nodes {
+                name
+              }
+            }
+          }
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+        }
+      }
+    }
+    """
+
+    [
+      "api",
+      "graphql",
+      "-f",
+      "owner=#{owner}",
+      "-f",
+      "name=#{name}",
+      "-F",
+      "pageSize=#{page_size}",
+      "-f",
+      "query=#{query}"
+    ] ++ maybe_cursor_arg(cursor)
+  end
+
+  defp maybe_cursor_arg(nil), do: []
+  defp maybe_cursor_arg(cursor), do: ["-f", "endCursor=#{cursor}"]
+
+  defp decode_issue_page(json) do
+    case Jason.decode(json) do
+      {:ok, page} when is_map(page) ->
+        issues = get_in(page, ["data", "repository", "issues", "nodes"]) || []
+        next_page? = get_in(page, ["data", "repository", "issues", "pageInfo", "hasNextPage"])
+        end_cursor = get_in(page, ["data", "repository", "issues", "pageInfo", "endCursor"])
+        next_cursor = if next_page?, do: end_cursor, else: nil
+        {:ok, issues, next_cursor}
 
       {:ok, _other} ->
         {:error, "invalid JSON from gh: #{String.slice(json, 0, 200)}"}
@@ -275,12 +305,6 @@ defmodule Conductor.GitHub do
       {:error, _reason} ->
         {:error, "invalid JSON from gh: #{String.slice(json, 0, 200)}"}
     end
-  end
-
-  defp graphql_issue_to_issue(issue) do
-    issue
-    |> Map.put("labels", get_in(issue, ["labels", "nodes"]) || [])
-    |> Issue.from_github()
   end
 
   defp repo_parts(repo) do

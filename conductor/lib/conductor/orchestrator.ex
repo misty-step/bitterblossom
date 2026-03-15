@@ -207,6 +207,12 @@ defmodule Conductor.Orchestrator do
   end
 
   @impl true
+  def handle_info({:shape_result, repo, issue_number, failures, result}, state) do
+    log_shape_result(repo, issue_number, failures, result, state)
+    {:noreply, state}
+  end
+
+  @impl true
   def handle_info(_msg, state) do
     {:noreply, state}
   end
@@ -283,27 +289,14 @@ defmodule Conductor.Orchestrator do
   end
 
   defp maybe_shape_issue(state, issue, failures) do
-    digest = body_digest(issue)
+    revision = Issue.revision_id(issue)
 
-    if Map.get(state.shape_attempts, issue.number) == digest do
+    if Map.get(state.shape_attempts, issue.number) == revision do
       Logger.info("issue ##{issue.number} still unready after prior shaping attempt, skipping")
       {state, :skipped}
     else
-      state =
-        case safe_shape_issue(state.repo, issue.number) do
-          {:ok, result} when result in [:shaped, :already_shaped] ->
-            Logger.info("issue ##{issue.number} shaped successfully, deferring until next poll")
-            state
-
-          {:error, reason} ->
-            Logger.info(
-              "issue ##{issue.number} not ready (#{Enum.join(failures, ", ")}); shaping failed: #{inspect(reason)}"
-            )
-
-            state
-        end
-
-      {put_shape_attempt(state, issue.number, digest), :shaped}
+      spawn_shape_issue(state.repo, issue.number, failures)
+      {put_shape_attempt(state, issue.number, revision), :shaped}
     end
   end
 
@@ -314,8 +307,6 @@ defmodule Conductor.Orchestrator do
   defp put_shape_attempt(state, issue_number, digest) do
     %{state | shape_attempts: Map.put(state.shape_attempts, issue_number, digest)}
   end
-
-  defp body_digest(%{body: body}), do: :crypto.hash(:sha256, body || "")
 
   defp maybe_start_ready_issue(state, issue, remaining_slots)
        when remaining_slots > 0,
@@ -336,6 +327,32 @@ defmodule Conductor.Orchestrator do
     catch
       kind, reason ->
         {:error, {kind, reason}}
+    end
+  end
+
+  defp spawn_shape_issue(repo, issue_number, failures) do
+    orchestrator = self()
+
+    spawn(fn ->
+      result = safe_shape_issue(repo, issue_number)
+      send(orchestrator, {:shape_result, repo, issue_number, failures, result})
+    end)
+  end
+
+  defp log_shape_result(repo, issue_number, failures, result, %{repo: current_repo}) do
+    case result do
+      {:ok, shaped} when shaped in [:shaped, :already_shaped] ->
+        Logger.info("issue ##{issue_number} shaped successfully, deferring until next poll")
+
+      {:error, reason} when repo == current_repo ->
+        Logger.info(
+          "issue ##{issue_number} not ready (#{Enum.join(failures, ", ")}); shaping failed: #{inspect(reason)}"
+        )
+
+      {:error, reason} ->
+        Logger.debug(
+          "discarding stale shaping result for #{repo}##{issue_number}: #{inspect(reason)}"
+        )
     end
   end
 

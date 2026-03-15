@@ -38,6 +38,7 @@ defmodule Conductor.OrchestratorTest do
 
     def shape(repo, issue_number, _opts \\ []) do
       send(MockState.get(:test_pid, self()), {:shape_attempted, repo, issue_number})
+      Process.sleep(MockState.get({:shape_delay_ms, issue_number}, 0))
 
       case MockState.get({:shape_result, issue_number}, {:error, :not_configured}) do
         {:ok, result} = shaped when result in [:shaped, :already_shaped] ->
@@ -905,6 +906,35 @@ defmodule Conductor.OrchestratorTest do
 
       assert_receive {:shape_attempted, "test/repo", 308}, 1_000
       assert MockState.get(:started_runs) == []
+    end
+
+    test "does not block orchestrator control calls while shaping runs in the background" do
+      orig_max = Application.get_env(:conductor, :max_concurrent_runs)
+      Application.put_env(:conductor, :max_concurrent_runs, 1)
+
+      on_exit(fn ->
+        if orig_max,
+          do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
+          else: Application.delete_env(:conductor, :max_concurrent_runs)
+      end)
+
+      issue = %Conductor.Issue{
+        number: 311,
+        title: "slow shaper input",
+        body: "needs grooming",
+        url: "https://example.test/issues/311"
+      }
+
+      MockState.put({:eligible, "test/repo", nil}, [issue])
+      MockState.put({:shape_result, 311}, {:error, :llm_slow})
+      MockState.put({:shape_delay_ms, 311}, 500)
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      assert_receive {:shape_attempted, "test/repo", 311}, 1_000
+
+      pause_task = Task.async(fn -> Orchestrator.pause() end)
+      assert Task.yield(pause_task, 100) == {:ok, :ok}
     end
   end
 

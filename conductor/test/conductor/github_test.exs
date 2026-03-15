@@ -310,50 +310,62 @@ defmodule Conductor.GitHubTest do
       )
     end
 
-    test "paginates all open issues by default and eligible_issues keeps unready issues" do
+    test "fetches unlabeled issues page-by-page without slurping and keeps unready issues" do
       with_fake_gh(
         """
-        printf '%s\n' "$@" > "$GH_ARGS_PATH"
+        call_file="$(dirname "$GH_ARGS_PATH")/gh-call-count"
+        call_count=0
+        if [ -f "$call_file" ]; then
+        call_count="$(cat "$call_file")"
+        fi
+        call_count=$((call_count + 1))
+        printf '%s\n' "$@" >> "$GH_ARGS_PATH"
+        printf '%s\n' '---' >> "$GH_ARGS_PATH"
+        printf '%s' "$call_count" > "$call_file"
+
+        if [ "$call_count" -eq 1 ]; then
         cat <<'JSON'
-        [
+        {
+        "data": {
+        "repository": {
+        "issues": {
+        "nodes": [
           {
-            "data": {
-              "repository": {
-                "issues": {
-                  "nodes": [
-                    {
-                      "number": 7,
-                      "title": "ready issue",
-                      "body": "## Problem\\nx\\n\\n## Acceptance Criteria\\n- [ ] [test] y",
-                      "url": "https://example.test/issues/7",
-                      "labels": {"nodes": [{"name": "autopilot"}]}
-                    }
-                  ],
-                  "pageInfo": {"hasNextPage": true, "endCursor": "cursor-1"}
-                }
-              }
-            }
-          },
-          {
-            "data": {
-              "repository": {
-                "issues": {
-                  "nodes": [
-                    {
-                      "number": 6,
-                      "title": "unready issue",
-                      "body": "draft body",
-                      "url": "https://example.test/issues/6",
-                      "labels": {"nodes": []}
-                    }
-                  ],
-                  "pageInfo": {"hasNextPage": false, "endCursor": null}
-                }
-              }
-            }
+            "number": 7,
+            "title": "ready issue",
+            "body": "## Problem\\nx\\n\\n## Acceptance Criteria\\n- [ ] [test] y",
+            "url": "https://example.test/issues/7",
+            "labels": {"nodes": [{"name": "autopilot"}]}
           }
-        ]
+        ],
+        "pageInfo": {"hasNextPage": true, "endCursor": "cursor-1"}
+        }
+        }
+        }
+        }
         JSON
+        else
+        cat <<'JSON'
+        {
+        "data": {
+        "repository": {
+        "issues": {
+        "nodes": [
+          {
+            "number": 6,
+            "title": "unready issue",
+            "body": "draft body",
+            "url": "https://example.test/issues/6",
+            "labels": {"nodes": []}
+          }
+        ],
+        "pageInfo": {"hasNextPage": false, "endCursor": null}
+        }
+        }
+        }
+        }
+        JSON
+        fi
         """,
         fn _tmp_dir, args_path ->
           issues = GitHub.eligible_issues("misty-step/bitterblossom")
@@ -363,8 +375,10 @@ defmodule Conductor.GitHubTest do
 
           args = File.read!(args_path)
           assert String.contains?(args, "api\ngraphql\n")
-          assert String.contains?(args, "--paginate\n")
-          assert String.contains?(args, "--slurp\n")
+          assert length(String.split(args, "---\n", trim: true)) == 2
+          refute String.contains?(args, "--paginate\n")
+          refute String.contains?(args, "--slurp\n")
+          assert String.contains?(args, "endCursor=cursor-1\n")
           refute String.contains?(args, "--label\n")
         end
       )
