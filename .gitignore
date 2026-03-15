@@ -22,3 +22,6 @@ base/hooks/__pycache__/
 bin/
 
 e2e-reports/
+
+# Ephemeral /research thinktank output
+thinktank.log

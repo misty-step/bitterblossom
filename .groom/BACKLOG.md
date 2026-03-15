@@ -8,6 +8,73 @@ Last groomed: 2026-03-14
 - **Cost tracking with model, provider, and budget gates** — Every dispatch records model, provider, tokens, estimated cost. Budget gates pause orchestrator on threshold breach. Source: #616, groom.
 - **OpenTelemetry GenAI spans for run telemetry** — Adopt OTEL semantic conventions for free Langfuse/Datadog/Arize integration without custom dashboards. Source: #619, groom.
 
+- **Fast-fail patterns for common issue types** — Auth, deps, env setup should fail within 5 minutes, not 25. Issue classification drives timeout policy.
+
+## Next Sprint: Multi-Repo Conductor
+
+Added 2026-03-15. One conductor, one fleet, multiple repos. Sprites are roles (Weaver, Thorn, Fern, Muse), not repo bindings.
+
+### Design Principles
+- **Sprites are repo-agnostic.** A Weaver builds for any repo. A Thorn fixes CI in any repo. No `cerberus-builder` — just Weaver dispatched to Cerberus.
+- **One conductor, 10-20 sprites.** The conductor manages the full fleet and routes work to available sprites by role, not by repo.
+- **Repos declared in fleet.toml.** Each repo has its own label filter, issue selection, and calibration profile. Sprites declared separately from repos.
+
+### fleet.toml sketch
+```toml
+[[repo]]
+name = "misty-step/bitterblossom"
+label = "autopilot"
+
+[[repo]]
+name = "misty-step/cerberus"
+label = "autopilot"
+
+[[repo]]
+name = "misty-step/canary"
+label = "autopilot"
+
+[[repo]]
+name = "misty-step/volume"
+label = "autopilot"
+
+[[sprite]]
+name = "bb-weaver-1"
+role = "builder"
+
+[[sprite]]
+name = "bb-weaver-2"
+role = "builder"
+
+[[sprite]]
+name = "bb-thorn"
+role = "fixer"
+
+[[sprite]]
+name = "bb-fern"
+role = "polisher"
+
+[[sprite]]
+name = "bb-muse"
+role = "muse"
+```
+
+### Key Changes
+- Orchestrator polls issues across all declared repos, round-robin or priority-weighted
+- Fixer/Fern watch PRs across all repos
+- Merge loop merges across all repos
+- Workspace module clones/manages multiple repos per sprite
+- `bb setup` provisions all declared repos on each sprite
+- Per-repo harness detection (scan CLAUDE.md, CI config, test runner) — see Adaptive Harness section below
+
+### Prerequisites
+- #680 (remove factory/ branch prefix) — sprites must work on any branch in any repo
+- #675 (harness-agnostic artifact protocol) — can't assume Claude-specific conventions
+- #676 (close issues after merge) — prevents re-leasing across repos
+- #686 (Muse sprite) — reflection should span all repos
+
+### Sprite Math
+5 sprites (2 Weavers + 1 Thorn + 1 Fern + 1 Muse) can serve 4 repos. Scale by adding Weavers for throughput, not by adding per-repo sprites.
+
 ## Someday / Maybe
 
 - **Promptfoo-based model comparison and regression testing** — Declarative LLM evals with CI/CD integration. Depends on behaviours (#613). Source: #620, groom.
