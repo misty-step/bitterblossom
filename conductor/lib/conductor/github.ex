@@ -203,7 +203,8 @@ defmodule Conductor.GitHub do
 
   defp list_all_open_issues(repo, limit) do
     with {:ok, {owner, name}} <- repo_parts(repo) do
-      fetch_issue_pages(owner, name, 1, limit, [])
+      max_pages = ceil(limit / @issues_page_size)
+      fetch_issue_pages(owner, name, 1, limit, max_pages, [])
     end
   end
 
@@ -233,11 +234,16 @@ defmodule Conductor.GitHub do
     end
   end
 
-  defp fetch_issue_pages(_owner, _name, _page, remaining, acc) when remaining <= 0 do
+  defp fetch_issue_pages(_owner, _name, _page, remaining, _pages_left, acc) when remaining <= 0 do
     {:ok, Enum.reverse(acc)}
   end
 
-  defp fetch_issue_pages(owner, name, page, remaining, acc) do
+  defp fetch_issue_pages(_owner, _name, _page, _remaining, pages_left, acc)
+       when pages_left <= 0 do
+    {:ok, Enum.reverse(acc)}
+  end
+
+  defp fetch_issue_pages(owner, name, page, remaining, pages_left, acc) do
     args = [
       "api",
       "repos/#{owner}/#{name}/issues?state=open&per_page=#{@issues_page_size}&page=#{page}"
@@ -259,6 +265,7 @@ defmodule Conductor.GitHub do
           name,
           page + 1,
           remaining - length(page_issues),
+          pages_left - 1,
           Enum.reverse(page_issues) ++ acc
         )
       end
@@ -266,7 +273,7 @@ defmodule Conductor.GitHub do
   end
 
   defp repo_parts(repo) do
-    case String.split(repo, "/", parts: 2) do
+    case String.split(repo, "/", trim: true) do
       [owner, name] when owner != "" and name != "" -> {:ok, {owner, name}}
       _ -> {:error, "expected repo in owner/name format, got: #{inspect(repo)}"}
     end

@@ -404,6 +404,42 @@ defmodule Conductor.GitHubTest do
       )
     end
 
+    test "stops unfiltered pagination after the default page budget even when pages only contain pull requests" do
+      with_fake_gh(
+        """
+        printf '%s\n' "$@" >> "$GH_ARGS_PATH"
+        page="$(printf '%s' "$*" | sed -n 's/.*page=\\([0-9][0-9]*\\).*/\\1/p')"
+
+        if [[ -z "$page" ]]; then
+          echo '[]'
+        elif (( page <= 10 )); then
+          cat <<JSON
+        [
+          {
+            "number": $(( page + 100 )),
+            "title": "not an issue",
+            "body": "",
+            "url": "https://example.test/pull/$(( page + 100 ))",
+            "labels": [],
+            "pull_request": {"url": "https://example.test/pull/$(( page + 100 ))"}
+          }
+        ]
+        JSON
+        else
+          echo '[]'
+        fi
+        """,
+        fn _tmp_dir, args_path ->
+          assert {:ok, []} = GitHub.list_issues("misty-step/bitterblossom")
+
+          args = File.read!(args_path)
+          assert String.contains?(args, "page=1")
+          assert String.contains?(args, "page=10")
+          refute String.contains?(args, "page=11")
+        end
+      )
+    end
+
     test "eligible_issues returns both ready and unready issues sorted by number" do
       with_fake_gh(
         """
@@ -487,6 +523,11 @@ defmodule Conductor.GitHubTest do
 
     test "returns an error instead of raising when the repo is malformed" do
       assert {:error, message} = GitHub.list_issues("not-a-repo")
+      assert message =~ "expected repo in owner/name format"
+    end
+
+    test "rejects a repo with extra path segments" do
+      assert {:error, message} = GitHub.list_issues("owner/name/extra")
       assert message =~ "expected repo in owner/name format"
     end
 
