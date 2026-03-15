@@ -135,10 +135,18 @@ defmodule Conductor.CLI do
 
         config.sprites
         |> Enum.each(fn sprite ->
-          tags = format_tags(sprite.capability_tags)
-          health = probe_status(sprite.name)
-          assignment = Map.get(assignments, sprite.name, "idle")
-          IO.puts("#{sprite.name} role=#{sprite.role} #{health} assignment=#{assignment} #{tags}")
+          name = sprite_name(sprite)
+          display_name = name || "(unnamed sprite)"
+          role = Map.get(sprite, :role) || Map.get(sprite, "role") || "unknown"
+
+          tags =
+            format_tags(
+              Map.get(sprite, :capability_tags) || Map.get(sprite, "capability_tags") || []
+            )
+
+          health = probe_status(sprite)
+          assignment = if name, do: Map.get(assignments, name, "idle"), else: "idle"
+          IO.puts("#{display_name} role=#{role} #{health} assignment=#{assignment} #{tags}")
         end)
 
       {:error, reason} ->
@@ -284,19 +292,88 @@ defmodule Conductor.CLI do
 
   defp probe_status(sprite) do
     worker_mod = Application.get_env(:conductor, :worker_module, Conductor.Sprite)
+    harness = Map.get(sprite, :harness) || Map.get(sprite, "harness")
+    name = sprite_name(sprite)
 
     result =
-      try do
-        Conductor.Orchestrator.probe_worker_module(worker_mod, sprite, [])
-      rescue
-        System.EnvError ->
-          {:error, :missing_env}
+      if is_binary(name) and name != "" do
+        try do
+          cond do
+            function_exported?(worker_mod, :status, 2) ->
+              worker_mod.status(name, harness: harness)
+
+            function_exported?(worker_mod, :status, 1) ->
+              worker_mod.status(name)
+
+            true ->
+              Conductor.Orchestrator.probe_worker_module(worker_mod, name, [])
+          end
+        rescue
+          System.EnvError ->
+            {:error, :missing_env}
+        end
+      else
+        {:error, :missing_name}
       end
 
     case result do
-      {:ok, _} -> "healthy"
-      {:error, _} -> "unreachable"
+      {:ok, %{healthy: true}} ->
+        "healthy"
+
+      {:ok, status} when is_map(status) ->
+        if probe_only_status?(status) do
+          "healthy"
+        else
+          missing =
+            []
+            |> maybe_missing(status, :harness_ready, "harness")
+            |> maybe_missing(status, :gh_authenticated, "gh auth")
+            |> maybe_missing(status, :git_credential_helper, "git helper")
+
+          if missing == [] do
+            "needs setup"
+          else
+            "needs setup (" <> Enum.join(missing, ", ") <> " missing)"
+          end
+        end
+
+      {:ok, _} ->
+        "healthy"
+
+      {:error, :missing_name} ->
+        "invalid config (name missing)"
+
+      {:error, _} ->
+        "unreachable"
     end
+  end
+
+  defp sprite_name(sprite) when is_binary(sprite), do: sprite
+
+  defp sprite_name(sprite) when is_map(sprite),
+    do: Map.get(sprite, :name) || Map.get(sprite, "name")
+
+  defp sprite_name(_), do: nil
+
+  defp maybe_missing(acc, status, key, label) do
+    case Map.fetch(status, key) do
+      {:ok, false} -> acc ++ [label]
+      _ -> acc
+    end
+  end
+
+  defp probe_only_status?(status) do
+    reachable = Map.get(status, :reachable, Map.get(status, "reachable"))
+
+    reachable == true and
+      not Map.has_key?(status, :healthy) and
+      not Map.has_key?(status, "healthy") and
+      not Map.has_key?(status, :gh_authenticated) and
+      not Map.has_key?(status, "gh_authenticated") and
+      not Map.has_key?(status, :git_credential_helper) and
+      not Map.has_key?(status, "git_credential_helper") and
+      not Map.has_key?(status, :harness_ready) and
+      not Map.has_key?(status, "harness_ready")
   end
 
   defp format_tags([]), do: "tags=-"

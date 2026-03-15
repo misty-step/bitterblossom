@@ -6,9 +6,48 @@ defmodule Conductor.CLIFleetTest do
   alias Conductor.{CLI, Store}
 
   defmodule MockWorker do
-    def probe(worker, opts \\ [])
+    def status("bb-builder-1", _opts),
+      do:
+        {:ok,
+         %{
+           sprite: "bb-builder-1",
+           reachable: true,
+           harness_ready: true,
+           gh_authenticated: true,
+           git_credential_helper: true,
+           healthy: true
+         }}
+
+    def status("bb-builder-2", _opts), do: {:error, "connection refused"}
+
+    def status("bb-builder-3", _opts),
+      do:
+        {:ok,
+         %{
+           sprite: "bb-builder-3",
+           reachable: true,
+           harness_ready: true,
+           gh_authenticated: false,
+           git_credential_helper: true,
+           healthy: false
+         }}
+
+    def status("bb-builder-4", _opts),
+      do:
+        {:ok,
+         %{
+           sprite: "bb-builder-4",
+           reachable: true,
+           harness_ready: true,
+           gh_authenticated: true,
+           git_credential_helper: false,
+           healthy: false
+         }}
+  end
+
+  defmodule ProbeOnlyWorker do
     def probe("bb-builder-1", _opts), do: {:ok, %{sprite: "bb-builder-1", reachable: true}}
-    def probe("bb-builder-2", _opts), do: {:error, "connection refused"}
+    def probe(_worker, _opts), do: {:error, "connection refused"}
   end
 
   setup do
@@ -36,6 +75,14 @@ defmodule Conductor.CLIFleetTest do
 
       [[sprite]]
       name = "bb-builder-2"
+      role = "builder"
+
+      [[sprite]]
+      name = "bb-builder-3"
+      role = "builder"
+
+      [[sprite]]
+      name = "bb-builder-4"
       role = "builder"
       """
     )
@@ -93,5 +140,30 @@ defmodule Conductor.CLIFleetTest do
     assert output =~ "bb-builder-2"
     assert output =~ "unreachable"
     assert output =~ "idle"
+
+    assert output =~ "bb-builder-3"
+    assert output =~ "needs setup (gh auth missing)"
+
+    assert output =~ "bb-builder-4"
+    assert output =~ "needs setup (git helper missing)"
+  end
+
+  test "fleet keeps probe-only workers healthy", %{fleet_path: fleet_path} do
+    orig_worker = Application.get_env(:conductor, :worker_module)
+    Application.put_env(:conductor, :worker_module, ProbeOnlyWorker)
+
+    try do
+      output =
+        capture_io(fn ->
+          CLI.main(["fleet", "--fleet", fleet_path])
+        end)
+
+      assert output =~ "bb-builder-1"
+      assert output =~ "healthy"
+    after
+      if orig_worker,
+        do: Application.put_env(:conductor, :worker_module, orig_worker),
+        else: Application.delete_env(:conductor, :worker_module)
+    end
   end
 end
