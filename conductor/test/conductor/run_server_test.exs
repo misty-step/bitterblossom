@@ -255,6 +255,46 @@ defmodule Conductor.RunServerTest do
     end
   end
 
+  # --- AC1 variant: adopt_branch path ---
+
+  describe "AC1: adopt existing branch" do
+    setup do
+      MockState.put({:dispatch_result, "test-sprite"}, {:ok, ""})
+
+      MockState.put(:artifact, {
+        :ok,
+        %{
+          "status" => "ready",
+          "pr_number" => 999,
+          "pr_url" => "https://github.com/test/repo/pull/999",
+          "summary" => "adopted and fixed"
+        }
+      })
+
+      :ok
+    end
+
+    test "uses adopt_branch instead of prepare when existing_branch given" do
+      {:ok, pid} =
+        start_run_server(
+          existing_branch: "factory/42-1234567890",
+          existing_pr_number: 999,
+          existing_pr_url: "https://github.com/test/repo/pull/999"
+        )
+
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "pr_opened"
+      assert run["pr_number"] == 999
+
+      types = event_types(run["run_id"])
+      assert "lease_acquired" in types
+      assert "builder_workspace_prepared" in types
+      assert "builder_artifact_ready" in types
+    end
+  end
+
   # --- AC2: blocked artifact handling ---
 
   describe "AC2: blocked artifact" do
