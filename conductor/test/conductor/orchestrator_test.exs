@@ -548,6 +548,40 @@ defmodule Conductor.OrchestratorTest do
 
       assert_receive {:shape_attempted, "test/repo", 303}, 1_000
     end
+
+    test "limits shaping work to the available slots in a single poll" do
+      orig_max = Application.get_env(:conductor, :max_concurrent_runs)
+      Application.put_env(:conductor, :max_concurrent_runs, 1)
+
+      on_exit(fn ->
+        if orig_max,
+          do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
+          else: Application.delete_env(:conductor, :max_concurrent_runs)
+      end)
+
+      issue_1 = %Conductor.Issue{
+        number: 304,
+        title: "first underspecified issue",
+        body: "draft one",
+        url: "https://example.test/issues/304"
+      }
+
+      issue_2 = %Conductor.Issue{
+        number: 305,
+        title: "second underspecified issue",
+        body: "draft two",
+        url: "https://example.test/issues/305"
+      }
+
+      MockState.put({:eligible, "test/repo", nil}, [issue_1, issue_2])
+      MockState.put({:shape_result, 304}, {:error, :llm_unavailable})
+      MockState.put({:shape_result, 305}, {:error, :llm_unavailable})
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      assert_receive {:shape_attempted, "test/repo", 304}, 1_000
+      refute_receive {:shape_attempted, "test/repo", 305}, 200
+    end
   end
 
   describe "merge_conflict?/1" do

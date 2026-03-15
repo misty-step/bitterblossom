@@ -193,9 +193,11 @@ defmodule Conductor.Orchestrator do
         if remaining_slots == 0 do
           {:halt, {acc, remaining_slots}}
         else
-          next_state = consider_issue(acc, issue)
-          started_run? = map_size(next_state.active_runs) > map_size(acc.active_runs)
-          slots_left = if started_run?, do: remaining_slots - 1, else: remaining_slots
+          {next_state, outcome} = consider_issue(acc, issue)
+
+          slots_left =
+            if outcome in [:started, :shaped], do: remaining_slots - 1, else: remaining_slots
+
           {:cont, {next_state, slots_left}}
         end
       end)
@@ -206,8 +208,16 @@ defmodule Conductor.Orchestrator do
   defp consider_issue(state, issue) do
     case Issue.ready?(issue) do
       :ok ->
-        clear_shape_attempt(state, issue.number)
-        |> start_run(issue)
+        next_state =
+          clear_shape_attempt(state, issue.number)
+          |> start_run(issue)
+
+        outcome =
+          if map_size(next_state.active_runs) > map_size(state.active_runs),
+            do: :started,
+            else: :skipped
+
+        {next_state, outcome}
 
       {:error, failures} ->
         maybe_shape_issue(state, issue, failures)
@@ -219,7 +229,7 @@ defmodule Conductor.Orchestrator do
 
     if Map.get(state.shape_attempts, issue.number) == digest do
       Logger.info("issue ##{issue.number} still unready after prior shaping attempt, skipping")
-      state
+      {state, :skipped}
     else
       state =
         case shaper_mod().shape(state.repo, issue.number) do
@@ -235,7 +245,7 @@ defmodule Conductor.Orchestrator do
             state
         end
 
-      put_shape_attempt(state, issue.number, digest)
+      {put_shape_attempt(state, issue.number, digest), :shaped}
     end
   end
 
