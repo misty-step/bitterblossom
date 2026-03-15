@@ -285,23 +285,27 @@ defmodule Conductor.CLI do
   defp probe_status(sprite) do
     worker_mod = Application.get_env(:conductor, :worker_module, Conductor.Sprite)
     harness = Map.get(sprite, :harness) || Map.get(sprite, "harness")
-    name = Map.get(sprite, :name) || Map.get(sprite, "name") || sprite
+    name = sprite_name(sprite)
 
     result =
-      try do
-        cond do
-          function_exported?(worker_mod, :status, 2) ->
-            worker_mod.status(name, harness: harness)
+      if is_binary(name) and name != "" do
+        try do
+          cond do
+            function_exported?(worker_mod, :status, 2) ->
+              worker_mod.status(name, harness: harness)
 
-          function_exported?(worker_mod, :status, 1) ->
-            worker_mod.status(name)
+            function_exported?(worker_mod, :status, 1) ->
+              worker_mod.status(name)
 
-          true ->
-            Conductor.Orchestrator.probe_worker_module(worker_mod, name, [])
+            true ->
+              Conductor.Orchestrator.probe_worker_module(worker_mod, name, [])
+          end
+        rescue
+          System.EnvError ->
+            {:error, :missing_env}
         end
-      rescue
-        System.EnvError ->
-          {:error, :missing_env}
+      else
+        {:error, :missing_name}
       end
 
     case result do
@@ -335,6 +339,13 @@ defmodule Conductor.CLI do
       _ -> acc
     end
   end
+
+  defp sprite_name(sprite) when is_binary(sprite), do: sprite
+
+  defp sprite_name(sprite) when is_map(sprite),
+    do: Map.get(sprite, :name) || Map.get(sprite, "name")
+
+  defp sprite_name(_sprite), do: nil
 
   defp format_tags([]), do: "tags=-"
   defp format_tags(tags), do: "tags=#{Enum.join(tags, ",")}"
