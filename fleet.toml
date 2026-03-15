@@ -1,0 +1,35 @@
+# Bitterblossom Fleet Declaration
+# The conductor reads this on startup and provisions all declared sprites.
+# Only sprites listed here are managed. Others in the Fly.io org are untouched.
+
+version = "1"
+
+[defaults]
+org = "misty-step"
+repo = "misty-step/bitterblossom"
+harness = "codex"
+model = "gpt-5.4"
+reasoning_effort = "medium"
+label = "autopilot"
+
+[[sprite]]
+name = "bb-builder"
+role = "builder"
+persona = """
+You are a careful builder sprite. Implement the spec with minimal diffs.
+TDD by default. Fix what you touch. Read WORKFLOW.md before starting.
+"""
+
+[[sprite]]
+name = "bb-fixer"
+role = "fixer"
+persona = "You are a strict CI fixer. Fix the failing tests and nothing else."
+
+[[sprite]]
+name = "bb-polisher"
+role = "polisher"
+reasoning_effort = "high"
+persona = """
+You are a quality-obsessed polisher. Run /simplify, /pr-polish, and /pr-fix.
+Only add the lgtm label when the PR is genuinely merge-ready.
+"""

@@ -1,17 +1,25 @@
 defmodule Conductor.CLI do
   @moduledoc "Escript entry point. Parses args and delegates to Conductor."
 
-  @commands ~w(run-once loop shape show-runs show-events show-incidents show-waivers check-env dashboard status)
+  @commands ~w(start shape show-runs show-events show-incidents show-waivers check-env dashboard status)
 
   def main(args) do
     Application.ensure_all_started(:conductor)
 
     case args do
-      ["run-once" | rest] ->
-        cmd_run_once(rest)
+      ["start" | rest] ->
+        cmd_start(rest)
 
-      ["loop" | rest] ->
-        cmd_loop(rest)
+      # Legacy aliases — clear error messages
+      ["run-once" | _] ->
+        IO.puts("run-once has been removed. Use: mix conductor start")
+        IO.puts("The conductor now runs as an always-on service.")
+        System.halt(1)
+
+      ["loop" | _] ->
+        IO.puts("loop has been removed. Use: mix conductor start")
+        IO.puts("The conductor now runs as an always-on service.")
+        System.halt(1)
 
       ["shape" | rest] ->
         cmd_shape(rest)
@@ -45,80 +53,40 @@ defmodule Conductor.CLI do
     end
   end
 
-  defp cmd_run_once(args) do
+  defp cmd_start(args) do
     {opts, _, _} =
       OptionParser.parse(args,
         strict: [
-          repo: :string,
-          issue: :integer,
-          worker: :string,
-          trusted_external_surface: [:string, :keep]
+          fleet: :string
         ]
       )
 
-    repo = Keyword.fetch!(opts, :repo)
-    issue = Keyword.fetch!(opts, :issue)
-    worker = Keyword.fetch!(opts, :worker)
-    surfaces = Keyword.get_values(opts, :trusted_external_surface)
+    fleet_path = Keyword.get(opts, :fleet, fleet_default_path())
 
-    IO.puts("conductor run-once: issue ##{issue} on #{worker}")
+    IO.puts("bitterblossom starting — fleet: #{fleet_path}")
 
-    case Conductor.run_once(
-           repo: repo,
-           issue: issue,
-           worker: worker,
-           trusted_surfaces: surfaces
-         ) do
-      {:ok, :merged} ->
-        IO.puts("run complete: merged")
+    # Validate environment before doing anything
+    cmd_check_env()
 
-      {:ok, :blocked} ->
-        IO.puts("run complete: blocked")
-        System.halt(2)
-
-      {:ok, :failed} ->
-        IO.puts("run complete: failed")
-        System.halt(1)
-
-      {:ok, phase} ->
-        IO.puts("run complete: #{phase}")
+    case Conductor.Application.boot_fleet(fleet_path) do
+      :ok ->
+        IO.puts("bitterblossom running. Press Ctrl+C to stop.")
+        # Block forever — everything runs in the supervision tree
+        Process.sleep(:infinity)
 
       {:error, reason} ->
-        IO.puts("run failed: #{inspect(reason)}")
+        IO.puts("boot failed: #{inspect(reason)}")
         System.halt(1)
     end
   end
 
-  defp cmd_loop(args) do
-    {opts, _, _} =
-      OptionParser.parse(args,
-        strict: [
-          repo: :string,
-          label: :string,
-          worker: [:string, :keep],
-          trusted_external_surface: [:string, :keep]
-        ]
-      )
-
-    repo = Keyword.fetch!(opts, :repo)
-    workers = Keyword.get_values(opts, :worker)
-    label = Keyword.get(opts, :label, "autopilot")
-    surfaces = Keyword.get_values(opts, :trusted_external_surface)
-
-    IO.puts("conductor loop: repo=#{repo} workers=#{Enum.join(workers, ",")} label=#{label}")
-
-    Conductor.Orchestrator.start_loop(
-      repo: repo,
-      workers: workers,
-      label: label,
-      trusted_surfaces: surfaces
-    )
-
-    # Start fixer and polisher phase loops
-    start_phase_workers(repo)
-
-    # Block forever — the orchestrator runs in the supervision tree
-    Process.sleep(:infinity)
+  defp fleet_default_path do
+    # Look for fleet.toml relative to the conductor dir, then repo root
+    cond do
+      File.exists?("fleet.toml") -> "fleet.toml"
+      File.exists?("../fleet.toml") -> "../fleet.toml"
+      true -> "fleet.toml"
+    end
   end
 
   defp cmd_shape(args) do
@@ -206,9 +174,6 @@ defmodule Conductor.CLI do
     {opts, _, _} = OptionParser.parse(args, strict: [port: :integer])
     port = Keyword.get(opts, :port, 4000)
 
-    # The app is already running (started in main/1) without the endpoint,
-    # because :start_dashboard was false at that point. Configure the endpoint
-    # and start it directly into the running supervisor.
     Application.put_env(:conductor, Conductor.Web.Endpoint,
       adapter: Bandit.PhoenixAdapter,
       http: [ip: {127, 0, 0, 1}, port: port],
@@ -227,8 +192,23 @@ defmodule Conductor.CLI do
   defp cmd_status do
     IO.puts("=== Fleet ===")
 
-    for s <- Conductor.Fleet.status() do
-      IO.puts("  #{s.name} (#{s.role}) — #{if s.reachable, do: "reachable", else: "unreachable"}")
+    fleet_sprites = Application.get_env(:conductor, :fleet_sprites, [])
+
+    if fleet_sprites != [] do
+      for s <- fleet_sprites do
+        reachable = Conductor.Sprite.reachable?(s.name)
+
+        IO.puts(
+          "  #{s.name} (#{s.role}, #{s.harness}) — #{if reachable, do: "reachable", else: "unreachable"}"
+        )
+      end
+    else
+      # Fall back to static fleet config
+      for s <- Conductor.Fleet.status() do
+        IO.puts(
+          "  #{s.name} (#{s.role}) — #{if s.reachable, do: "reachable", else: "unreachable"}"
+        )
+      end
     end
 
     IO.puts("\n=== Phase Workers ===")
@@ -254,31 +234,6 @@ defmodule Conductor.CLI do
 
     for run <- Conductor.Store.list_runs(limit: 5) do
       IO.puts("  #{run["run_id"]} — #{run["phase"]} (#{run["status"]})")
-    end
-  end
-
-  defp start_phase_workers(repo) do
-    fixer_sprites = Conductor.Fleet.by_role(:fixer)
-    polisher_sprites = Conductor.Fleet.by_role(:polisher)
-
-    if fixer_sprites != [] do
-      case Supervisor.start_child(Conductor.Supervisor, {
-             Conductor.Fixer,
-             repo: repo, fixer_sprite: hd(fixer_sprites)
-           }) do
-        {:ok, _} -> IO.puts("fixer started: #{hd(fixer_sprites)}")
-        {:error, reason} -> IO.puts("fixer failed to start: #{inspect(reason)}")
-      end
-    end
-
-    if polisher_sprites != [] do
-      case Supervisor.start_child(Conductor.Supervisor, {
-             Conductor.Polisher,
-             repo: repo, polisher_sprite: hd(polisher_sprites)
-           }) do
-        {:ok, _} -> IO.puts("polisher started: #{hd(polisher_sprites)}")
-        {:error, reason} -> IO.puts("polisher failed to start: #{inspect(reason)}")
-      end
     end
   end
 
