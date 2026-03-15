@@ -136,7 +136,7 @@ defmodule Conductor.CLI do
         config.sprites
         |> Enum.each(fn sprite ->
           tags = format_tags(sprite.capability_tags)
-          health = probe_status(sprite.name)
+          health = probe_status(sprite)
           assignment = Map.get(assignments, sprite.name, "idle")
           IO.puts("#{sprite.name} role=#{sprite.role} #{health} assignment=#{assignment} #{tags}")
         end)
@@ -284,18 +284,55 @@ defmodule Conductor.CLI do
 
   defp probe_status(sprite) do
     worker_mod = Application.get_env(:conductor, :worker_module, Conductor.Sprite)
+    harness = Map.get(sprite, :harness) || Map.get(sprite, "harness")
+    name = Map.get(sprite, :name) || Map.get(sprite, "name") || sprite
 
     result =
       try do
-        Conductor.Orchestrator.probe_worker_module(worker_mod, sprite, [])
+        cond do
+          function_exported?(worker_mod, :status, 2) ->
+            worker_mod.status(name, harness: harness)
+
+          function_exported?(worker_mod, :status, 1) ->
+            worker_mod.status(name)
+
+          true ->
+            Conductor.Orchestrator.probe_worker_module(worker_mod, name, [])
+        end
       rescue
         System.EnvError ->
           {:error, :missing_env}
       end
 
     case result do
-      {:ok, _} -> "healthy"
-      {:error, _} -> "unreachable"
+      {:ok, %{healthy: true}} ->
+        "healthy"
+
+      {:ok, status} when is_map(status) ->
+        missing =
+          []
+          |> maybe_missing(status, :harness_ready, "harness")
+          |> maybe_missing(status, :gh_authenticated, "gh auth")
+          |> maybe_missing(status, :git_credential_helper, "git helper")
+
+        if missing == [] do
+          "needs setup"
+        else
+          "needs setup (" <> Enum.join(missing, ", ") <> " missing)"
+        end
+
+      {:ok, _} ->
+        "healthy"
+
+      {:error, _} ->
+        "unreachable"
+    end
+  end
+
+  defp maybe_missing(acc, status, key, label) do
+    case Map.fetch(status, key) do
+      {:ok, false} -> acc ++ [label]
+      _ -> acc
     end
   end
 
