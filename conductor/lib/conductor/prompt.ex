@@ -149,8 +149,9 @@ defmodule Conductor.Prompt do
             _ -> "unknown"
           end
 
+        safe_name = sanitize_inline(name)
         body = sanitize_fence(c["body"] || "")
-        "- **#{name}**: #{body}"
+        "- **#{safe_name}**: #{body}"
       end)
       |> Enum.join("\n")
 

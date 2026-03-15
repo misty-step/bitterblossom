@@ -262,23 +262,23 @@ defmodule Conductor.CLI do
     polisher_sprites = Conductor.Fleet.by_role(:polisher)
 
     if fixer_sprites != [] do
-      {:ok, _} =
-        Supervisor.start_child(Conductor.Supervisor, {
-          Conductor.Fixer,
-          repo: repo, fixer_sprite: hd(fixer_sprites)
-        })
-
-      IO.puts("fixer started: #{hd(fixer_sprites)}")
+      case Supervisor.start_child(Conductor.Supervisor, {
+             Conductor.Fixer,
+             repo: repo, fixer_sprite: hd(fixer_sprites)
+           }) do
+        {:ok, _} -> IO.puts("fixer started: #{hd(fixer_sprites)}")
+        {:error, reason} -> IO.puts("fixer failed to start: #{inspect(reason)}")
+      end
     end
 
     if polisher_sprites != [] do
-      {:ok, _} =
-        Supervisor.start_child(Conductor.Supervisor, {
-          Conductor.Polisher,
-          repo: repo, polisher_sprite: hd(polisher_sprites)
-        })
-
-      IO.puts("polisher started: #{hd(polisher_sprites)}")
+      case Supervisor.start_child(Conductor.Supervisor, {
+             Conductor.Polisher,
+             repo: repo, polisher_sprite: hd(polisher_sprites)
+           }) do
+        {:ok, _} -> IO.puts("polisher started: #{hd(polisher_sprites)}")
+        {:error, reason} -> IO.puts("polisher failed to start: #{inspect(reason)}")
+      end
     end
   end
 
