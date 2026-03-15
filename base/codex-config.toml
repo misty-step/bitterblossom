@@ -1,0 +1,8 @@
+# Codex CLI configuration for sprites (headless VMs).
+# Uploaded to ~/.codex/config.toml during bb setup.
+# Auth: OPENAI_API_KEY env var injected at dispatch time.
+
+preferred_auth_method = "apikey"
+model = "o3"
+approval_policy = "never"
+sandbox_mode = "workspace-write"

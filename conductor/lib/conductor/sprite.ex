@@ -53,7 +53,7 @@ defmodule Conductor.Sprite do
     timeout_ms = timeout_minutes * 60_000
 
     # 1. Kill stale agent processes from prior dispatches
-    exec_fn.(sprite, "pkill -9 -f claude 2>/dev/null; true", timeout: 15_000)
+    exec_fn.(sprite, "pkill -9 -f claude 2>/dev/null; pkill -9 -f codex 2>/dev/null; true", timeout: 15_000)
 
     # 2. Upload prompt (base64 to avoid shell quoting; base64 alphabet is shell-safe)
     prompt_path = Path.join(workspace, "PROMPT.md")
@@ -94,7 +94,7 @@ defmodule Conductor.Sprite do
 
   @spec kill(binary()) :: :ok | {:error, term()}
   def kill(sprite) do
-    case exec(sprite, "pkill -9 -f claude 2>/dev/null; true", timeout: 15_000) do
+    case exec(sprite, "pkill -9 -f claude 2>/dev/null; pkill -9 -f codex 2>/dev/null; true", timeout: 15_000) do
       {:ok, _} -> :ok
       {:error, msg, _} -> {:error, msg}
     end
@@ -119,7 +119,7 @@ defmodule Conductor.Sprite do
     exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
 
     # Use pgrep -x to match exact process name, avoiding self-match on the pgrep command
-    case exec_fn.(sprite, "pgrep -x claude 2>/dev/null || pgrep -f 'ralph\\.sh' 2>/dev/null",
+    case exec_fn.(sprite, "pgrep -x claude 2>/dev/null || pgrep -x codex 2>/dev/null || pgrep -f 'ralph\\.sh' 2>/dev/null",
            timeout: 15_000
          ) do
       {:ok, output} -> String.trim(output) != ""

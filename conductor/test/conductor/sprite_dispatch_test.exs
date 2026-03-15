@@ -260,6 +260,44 @@ defmodule Conductor.SpriteDispatchTest do
     end
   end
 
+  describe "dispatch/4 with Codex harness" do
+    test "dispatches via codex exec command" do
+      exec_fn = make_exec_fn()
+
+      Sprite.dispatch("s1", "prompt", "org/repo",
+        workspace: "/ws",
+        harness: Conductor.Codex,
+        exec_fn: exec_fn,
+        timeout: 1
+      )
+
+      # Drain kill and upload
+      assert_received {:exec_called, _}
+      assert_received {:exec_called, _}
+
+      assert_received {:exec_called, agent_cmd}
+      assert String.contains?(agent_cmd, "codex exec --full-auto --json")
+    end
+
+    test "returns error on failure (no retry — codex has no continuation)" do
+      exec_fn =
+        make_exec_fn([
+          {"codex exec", {:error, "codex crashed", 1}}
+        ])
+
+      result =
+        Sprite.dispatch("s1", "prompt", "org/repo",
+          workspace: "/ws",
+          harness: Conductor.Codex,
+          exec_fn: exec_fn,
+          timeout: 1
+        )
+
+      assert {:error, msg, _code} = result
+      assert String.contains?(msg, "continuation")
+    end
+  end
+
   describe "dispatch/4 upload failure" do
     test "returns error when prompt upload fails" do
       exec_fn =
