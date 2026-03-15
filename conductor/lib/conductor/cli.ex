@@ -1,7 +1,7 @@
 defmodule Conductor.CLI do
   @moduledoc "Escript entry point. Parses args and delegates to Conductor."
 
-  @commands ~w(run-once loop shape show-runs show-events show-incidents show-waivers check-env dashboard)
+  @commands ~w(run-once loop shape show-runs show-events show-incidents show-waivers check-env dashboard status)
 
   def main(args) do
     Application.ensure_all_started(:conductor)
@@ -30,6 +30,9 @@ defmodule Conductor.CLI do
 
       ["dashboard" | rest] ->
         cmd_dashboard(rest)
+
+      ["status" | _] ->
+        cmd_status()
 
       ["check-env" | _] ->
         cmd_check_env()
@@ -110,6 +113,9 @@ defmodule Conductor.CLI do
       label: label,
       trusted_surfaces: surfaces
     )
+
+    # Start fixer and polisher phase loops
+    start_phase_workers(repo)
 
     # Block forever — the orchestrator runs in the supervision tree
     Process.sleep(:infinity)
@@ -216,6 +222,64 @@ defmodule Conductor.CLI do
     {:ok, _} = Supervisor.start_child(Conductor.Supervisor, Conductor.Web.Endpoint)
     IO.puts("dashboard running at http://localhost:#{port}")
     Process.sleep(:infinity)
+  end
+
+  defp cmd_status do
+    IO.puts("=== Fleet ===")
+
+    for s <- Conductor.Fleet.status() do
+      IO.puts("  #{s.name} (#{s.role}) — #{if s.reachable, do: "reachable", else: "unreachable"}")
+    end
+
+    IO.puts("\n=== Phase Workers ===")
+
+    if Process.whereis(Conductor.Fixer) do
+      fixer = Conductor.Fixer.status()
+      IO.puts("  fixer: #{fixer.fixer_sprite} — #{map_size(fixer.in_flight)} in-flight")
+    else
+      IO.puts("  fixer: not running")
+    end
+
+    if Process.whereis(Conductor.Polisher) do
+      polisher = Conductor.Polisher.status()
+
+      IO.puts(
+        "  polisher: #{polisher.polisher_sprite} — #{map_size(polisher.in_flight)} in-flight"
+      )
+    else
+      IO.puts("  polisher: not running")
+    end
+
+    IO.puts("\n=== Recent Runs ===")
+
+    for run <- Conductor.Store.list_runs(limit: 5) do
+      IO.puts("  #{run["run_id"]} — #{run["phase"]} (#{run["status"]})")
+    end
+  end
+
+  defp start_phase_workers(repo) do
+    fixer_sprites = Conductor.Fleet.by_role(:fixer)
+    polisher_sprites = Conductor.Fleet.by_role(:polisher)
+
+    if fixer_sprites != [] do
+      {:ok, _} =
+        Supervisor.start_child(Conductor.Supervisor, {
+          Conductor.Fixer,
+          repo: repo, fixer_sprite: hd(fixer_sprites)
+        })
+
+      IO.puts("fixer started: #{hd(fixer_sprites)}")
+    end
+
+    if polisher_sprites != [] do
+      {:ok, _} =
+        Supervisor.start_child(Conductor.Supervisor, {
+          Conductor.Polisher,
+          repo: repo, polisher_sprite: hd(polisher_sprites)
+        })
+
+      IO.puts("polisher started: #{hd(polisher_sprites)}")
+    end
   end
 
   defp cmd_check_env do
