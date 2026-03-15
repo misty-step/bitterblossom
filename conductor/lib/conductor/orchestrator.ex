@@ -636,15 +636,16 @@ defmodule Conductor.Orchestrator do
 
   defp cancel_comment_present?(comments) do
     Enum.any?(comments, fn comment ->
-      body =
-        comment["body"] ||
-          get_in(comment, ["body", "text"]) ||
-          get_in(comment, ["body", "body"]) ||
-          ""
+      body = comment_body(comment)
 
       String.trim(body) |> String.downcase() == "bb: cancel"
     end)
   end
+
+  defp comment_body(%{"body" => body}) when is_binary(body), do: body
+
+  defp comment_body(comment),
+    do: get_in(comment, ["body", "text"]) || get_in(comment, ["body", "body"]) || ""
 
   defp issue_number_for_pr(repo, pr) do
     case Store.find_run_by_pr(repo, pr["number"]) do
