@@ -23,6 +23,7 @@ defmodule Conductor.Retro do
   @anthropic_url "https://api.anthropic.com/v1/messages"
   @model "claude-sonnet-4-20250514"
   @max_tokens 2048
+  @supported_actions ~w(create_issue comment_issue update_backlog)
 
   # Repo root is three levels up from __DIR__ (conductor/lib/conductor/)
   @repo_root Path.expand("../../..", __DIR__)
@@ -63,6 +64,28 @@ defmodule Conductor.Retro do
     })
   end
 
+  @doc false
+  @spec finalize_analysis(binary(), map(), map(), (list(), map() -> any())) :: :ok
+  def finalize_analysis(
+        run_id,
+        %{"findings" => findings} = analysis,
+        run,
+        execute_fn \\ &execute_actions/2
+      )
+      when is_list(findings) and is_map(run) do
+    try do
+      execute_fn.(findings, run)
+    rescue
+      error ->
+        Logger.error(Exception.format(:error, error, __STACKTRACE__))
+        reraise error, __STACKTRACE__
+    after
+      record_complete_event(run_id, analysis)
+    end
+
+    :ok
+  end
+
   # --- GenServer Callbacks ---
 
   @impl true
@@ -92,8 +115,7 @@ defmodule Conductor.Retro do
          context <- build_context(run, events),
          {:ok, response} <- call_llm(context),
          {:ok, analysis} <- parse_response(response) do
-      execute_actions(analysis["findings"], run)
-      record_complete_event(run_id, analysis)
+      finalize_analysis(run_id, analysis, run)
       Logger.info("[retro] #{run_id} complete: #{action_count(analysis["findings"])} action(s)")
     else
       {:error, reason} ->
@@ -443,5 +465,5 @@ defmodule Conductor.Retro do
     }
   end
 
-  defp actionable?(finding), do: Map.get(finding, "action") not in [nil, "none"]
+  defp actionable?(finding), do: Map.get(finding, "action") in @supported_actions
 end

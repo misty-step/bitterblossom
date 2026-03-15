@@ -59,6 +59,11 @@ defmodule Conductor.RetroTest do
               "title" => "Low-value note",
               "action" => "none",
               "existing_issue" => "#615"
+            },
+            %{
+              "title" => "Unsupported action",
+              "action" => "surprise_me",
+              "existing_issue" => nil
             }
           ]
         })
@@ -68,7 +73,7 @@ defmodule Conductor.RetroTest do
       assert event["event_type"] == "retro_complete"
       assert event["payload"]["summary"] == "builder hit review friction; backlog updated"
       assert event["payload"]["action_count"] == 1
-      assert event["payload"]["skipped_count"] == 1
+      assert event["payload"]["skipped_count"] == 2
 
       assert event["payload"]["actions_taken"] == [
                %{
@@ -107,6 +112,38 @@ defmodule Conductor.RetroTest do
       assert event["event_type"] == "retro_complete"
       assert event["payload"]["summary"] == "clean run"
       assert event["payload"]["action_count"] == 0
+    end
+
+    test "persists retro_complete even when action execution raises" do
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 648,
+          issue_title: "Persist failed retro",
+          builder_sprite: "sprite-1"
+        })
+
+      {:ok, run} = Store.get_run(run_id)
+
+      analysis = %{
+        "summary" => "retro action failed",
+        "findings" => [
+          %{
+            "title" => "Actionable failure",
+            "action" => "create_issue",
+            "existing_issue" => nil
+          }
+        ]
+      }
+
+      assert_raise RuntimeError, "boom", fn ->
+        Retro.finalize_analysis(run_id, analysis, run, fn _, _ -> raise "boom" end)
+      end
+
+      [event] = Store.list_events(run_id)
+      assert event["event_type"] == "retro_complete"
+      assert event["payload"]["summary"] == "retro action failed"
+      assert event["payload"]["action_count"] == 1
     end
   end
 end
