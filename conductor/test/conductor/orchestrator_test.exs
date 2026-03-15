@@ -777,6 +777,28 @@ defmodule Conductor.OrchestratorTest do
     end
   end
 
+  describe "issue_number_for_pr_lookup/4" do
+    test "returns :skip when run lookup returns an unexpected store error" do
+      assert :skip =
+               Orchestrator.issue_number_for_pr_lookup(
+                 "test/repo",
+                 901,
+                 "factory/901-123",
+                 fn _repo, _pr_number -> {:error, :db_down} end
+               )
+    end
+
+    test "returns :skip when run lookup raises" do
+      assert :skip =
+               Orchestrator.issue_number_for_pr_lookup(
+                 "test/repo",
+                 902,
+                 "factory/902-123",
+                 fn _repo, _pr_number -> raise "sqlite exploded" end
+               )
+    end
+  end
+
   describe "Store.list_active_runs/1" do
     test "returns only non-terminal runs for the given repo" do
       {:ok, run_a} =
