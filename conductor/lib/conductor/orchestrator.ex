@@ -109,14 +109,18 @@ defmodule Conductor.Orchestrator do
   @impl true
   def handle_call({:start_loop, opts}, _from, state) do
     workers = normalize_workers(Keyword.fetch!(opts, :workers))
+    repo = Keyword.fetch!(opts, :repo)
 
     if workers == [] do
       {:reply, {:error, :no_workers}, state}
     else
+      shape_attempts = if repo == state.repo, do: state.shape_attempts, else: %{}
+
       state = %{
         state
-        | repo: Keyword.fetch!(opts, :repo),
+        | repo: repo,
           label: Keyword.get(opts, :label),
+          shape_attempts: shape_attempts,
           workers: worker_map(workers),
           worker_order: Enum.map(workers, & &1.name),
           trusted_surfaces: Keyword.get(opts, :trusted_surfaces, state.trusted_surfaces),

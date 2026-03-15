@@ -248,6 +248,18 @@ defmodule Conductor.OrchestratorTest do
 
       assert :sys.get_state(Orchestrator).label == nil
     end
+
+    test "clears shape attempts when start_loop switches repos" do
+      assert :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      :sys.replace_state(Orchestrator, fn state ->
+        %{state | shape_attempts: %{123 => :crypto.hash(:sha256, "draft body")}}
+      end)
+
+      assert :ok = Orchestrator.start_loop(repo: "other/repo", workers: ["sprite-1"])
+
+      assert :sys.get_state(Orchestrator).shape_attempts == %{}
+    end
   end
 
   describe "run_once/1" do

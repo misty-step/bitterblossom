@@ -96,6 +96,14 @@ defmodule Conductor.FixerTest do
     def comment(_repo, _issue, _body), do: :ok
   end
 
+  defp stop_process(name) do
+    try do
+      GenServer.stop(name)
+    catch
+      :exit, _reason -> :ok
+    end
+  end
+
   setup do
     db_path = Path.join(System.tmp_dir!(), "fixer_test_#{:rand.uniform(999_999)}.db")
     event_log = Path.join(System.tmp_dir!(), "fixer_test_#{:rand.uniform(999_999)}.jsonl")
@@ -115,8 +123,8 @@ defmodule Conductor.FixerTest do
     MockState.put(:test_pid, self())
 
     on_exit(fn ->
-      if pid = Process.whereis(Fixer), do: if(Process.alive?(pid), do: GenServer.stop(Fixer))
-      if pid = Process.whereis(Store), do: if(Process.alive?(pid), do: GenServer.stop(Store))
+      if pid = Process.whereis(Fixer), do: if(Process.alive?(pid), do: stop_process(Fixer))
+      if pid = Process.whereis(Store), do: if(Process.alive?(pid), do: stop_process(Store))
       MockState.cleanup()
 
       for {key, orig} <- [
