@@ -15,7 +15,7 @@ defmodule Conductor.OrchestratorTest do
     def comment(_repo, _issue, _body), do: :ok
 
     def issue_has_label?(repo, issue_number, label) do
-      MockState.get({:issue_has_label, repo, issue_number, label}, false)
+      MockState.get({:issue_has_label, repo, issue_number, label}, {:ok, false})
     end
 
     def issue_comments(repo, issue_number) do
@@ -145,11 +145,11 @@ defmodule Conductor.OrchestratorTest do
     on_exit(fn ->
       case Process.whereis(Orchestrator) do
         nil -> :ok
-        pid -> if Process.alive?(pid), do: catch_exit(GenServer.stop(pid))
+        pid -> if(Process.alive?(pid), do: GenServer.stop(pid))
       end
 
       if pid = Process.whereis(Store),
-        do: if(Process.alive?(pid), do: catch_exit(GenServer.stop(Store)))
+        do: if(Process.alive?(pid), do: GenServer.stop(Store))
 
       if orig_tracker,
         do: Application.put_env(:conductor, :tracker_module, orig_tracker),
@@ -523,7 +523,7 @@ defmodule Conductor.OrchestratorTest do
       }
 
       MockState.put({:eligible, "test/repo", "autopilot"}, [issue])
-      MockState.put({:issue_has_label, "test/repo", 401, "hold"}, true)
+      MockState.put({:issue_has_label, "test/repo", 401, "hold"}, {:ok, true})
 
       :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
 
@@ -547,7 +547,7 @@ defmodule Conductor.OrchestratorTest do
         [%{"number" => 77, "headRefName" => "factory/402-123"}]
       )
 
-      MockState.put({:issue_has_label, "test/repo", 402, "hold"}, true)
+      MockState.put({:issue_has_label, "test/repo", 402, "hold"}, {:ok, true})
 
       :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
 
@@ -590,6 +590,23 @@ defmodule Conductor.OrchestratorTest do
         operator_event = Enum.find(events, &(&1["event_type"] == "operator_blocked"))
         assert operator_event["payload"]["reason"] == "operator_cancel"
       end)
+    end
+
+    test "label check errors fail closed for dispatch" do
+      issue = %Conductor.Issue{
+        number: 404,
+        title: "label lookup failed",
+        body: "## Problem\nx\n## Acceptance Criteria\ny",
+        url: "https://example.test/issues/404"
+      }
+
+      MockState.put({:eligible, "test/repo", "autopilot"}, [issue])
+      MockState.put({:issue_has_label, "test/repo", 404, "hold"}, {:error, :github_down})
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      Process.sleep(100)
+      assert MockState.get(:started_runs) == []
     end
   end
 

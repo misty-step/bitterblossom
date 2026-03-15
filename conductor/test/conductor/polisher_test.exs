@@ -92,7 +92,7 @@ defmodule Conductor.PolisherTest do
     end
 
     def comment(_repo, _issue, _body), do: :ok
-    def issue_has_label?(_repo, _issue, _label), do: false
+    def issue_has_label?(_repo, _issue, _label), do: {:ok, false}
     def issue_comments(_repo, _issue), do: {:ok, []}
   end
 

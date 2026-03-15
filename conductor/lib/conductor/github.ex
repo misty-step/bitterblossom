@@ -36,7 +36,7 @@ defmodule Conductor.GitHub do
     end
   end
 
-  @spec issue_has_label?(binary(), pos_integer(), binary()) :: boolean()
+  @spec issue_has_label?(binary(), pos_integer(), binary()) :: {:ok, boolean()} | {:error, term()}
   def issue_has_label?(repo, issue_number, label) do
     case Shell.cmd("gh", [
            "issue",
@@ -50,14 +50,14 @@ defmodule Conductor.GitHub do
       {:ok, json} ->
         case Jason.decode(json) do
           {:ok, %{"labels" => labels}} ->
-            Enum.any?(labels, fn item -> item["name"] == label end)
+            {:ok, Enum.any?(labels, fn item -> item["name"] == label end)}
 
-          _ ->
-            false
+          {:error, _} ->
+            {:error, "invalid JSON from gh: #{String.slice(json, 0, 200)}"}
         end
 
-      {:error, _msg, _} ->
-        false
+      {:error, msg, _} ->
+        {:error, msg}
     end
   end
 

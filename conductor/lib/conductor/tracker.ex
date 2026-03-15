@@ -22,7 +22,7 @@ defmodule Conductor.Tracker do
 
   @doc "Return true when the issue currently has the given label."
   @callback issue_has_label?(repo :: binary(), issue_number :: pos_integer(), label :: binary()) ::
-              boolean()
+              {:ok, boolean()} | {:error, term()}
 
   @doc "Return issue comments for operator directive checks."
   @callback issue_comments(repo :: binary(), issue_number :: pos_integer()) ::

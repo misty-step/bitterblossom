@@ -126,13 +126,11 @@ defmodule Conductor.CLI do
   end
 
   defp cmd_pause do
-    :ok = Conductor.Store.set_dispatch_paused(true)
     :ok = Conductor.Orchestrator.pause()
     IO.puts("conductor dispatch paused")
   end
 
   defp cmd_resume do
-    :ok = Conductor.Store.set_dispatch_paused(false)
     :ok = Conductor.Orchestrator.resume()
     IO.puts("conductor dispatch resumed")
   end

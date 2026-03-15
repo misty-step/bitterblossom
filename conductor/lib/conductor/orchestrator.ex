@@ -604,11 +604,11 @@ defmodule Conductor.Orchestrator do
   end
 
   defp operator_issue_decision(repo, issue_number) do
-    cond do
-      tracker_mod().issue_has_label?(repo, issue_number, "hold") ->
+    case tracker_mod().issue_has_label?(repo, issue_number, "hold") do
+      {:ok, true} ->
         {:blocked, "operator_hold"}
 
-      true ->
+      {:ok, false} ->
         case tracker_mod().issue_comments(repo, issue_number) do
           {:ok, comments} ->
             if cancel_comment_present?(comments) do
@@ -624,6 +624,13 @@ defmodule Conductor.Orchestrator do
 
             :skip
         end
+
+      {:error, reason} ->
+        Logger.warning(
+          "[operator] failed to check hold label for issue ##{issue_number}: #{inspect(reason)}"
+        )
+
+        :skip
     end
   end
 
@@ -686,7 +693,7 @@ defmodule Conductor.Orchestrator do
   defp dispatch_paused? do
     Store.dispatch_paused?()
   rescue
-    _ -> false
+    _ -> true
   end
 
   defp dispatch_mode do
