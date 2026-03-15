@@ -123,9 +123,9 @@ defmodule Conductor.PolisherTest do
 
     on_exit(fn ->
       if pid = Process.whereis(Polisher),
-        do: if(Process.alive?(pid), do: stop_process(Polisher))
+        do: if(Process.alive?(pid), do: stop_process(pid))
 
-      if pid = Process.whereis(Store), do: if(Process.alive?(pid), do: stop_process(Store))
+      if pid = Process.whereis(Store), do: if(Process.alive?(pid), do: stop_process(pid))
       MockState.cleanup()
 
       for {key, orig} <- [

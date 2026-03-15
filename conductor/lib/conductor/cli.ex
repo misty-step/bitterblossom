@@ -91,8 +91,7 @@ defmodule Conductor.CLI do
         strict: [
           repo: :string,
           issue: :integer,
-          worker: :string,
-          label: :string
+          worker: :string
         ]
       )
 
@@ -101,7 +100,6 @@ defmodule Conductor.CLI do
     worker = Keyword.fetch!(opts, :worker)
 
     warn_legacy_command("run-once")
-    maybe_warn_label_deprecation(Keyword.get(opts, :label))
 
     case Conductor.Orchestrator.run_once(repo: repo, issue: issue, worker: worker) do
       {:ok, phase} ->

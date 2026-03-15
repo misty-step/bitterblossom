@@ -125,8 +125,8 @@ defmodule Conductor.FixerTest do
     MockState.put(:test_pid, self())
 
     on_exit(fn ->
-      if pid = Process.whereis(Fixer), do: if(Process.alive?(pid), do: stop_process(Fixer))
-      if pid = Process.whereis(Store), do: if(Process.alive?(pid), do: stop_process(Store))
+      if pid = Process.whereis(Fixer), do: if(Process.alive?(pid), do: stop_process(pid))
+      if pid = Process.whereis(Store), do: if(Process.alive?(pid), do: stop_process(pid))
       MockState.cleanup()
 
       for {key, orig} <- [

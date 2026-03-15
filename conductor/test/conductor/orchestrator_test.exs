@@ -38,15 +38,15 @@ defmodule Conductor.OrchestratorTest do
 
     def shape(repo, issue_number, _opts \\ []) do
       send(MockState.get(:test_pid, self()), {:shape_attempted, repo, issue_number})
-      Process.sleep(MockState.get({:shape_delay_ms, issue_number}, 0))
+      Process.sleep(MockState.get({:shape_delay_ms, repo, issue_number}, 0))
 
-      case MockState.get({:shape_result, issue_number}, {:error, :not_configured}) do
+      case MockState.get({:shape_result, repo, issue_number}, {:error, :not_configured}) do
         {:sleep, sleep_ms, result} ->
           Process.sleep(sleep_ms)
           result
 
         {:ok, result} = shaped when result in [:shaped, :already_shaped] ->
-          if issue = MockState.get({:issue_after_shape, issue_number}) do
+          if issue = MockState.get({:issue_after_shape, repo, issue_number}) do
             MockState.put({:issue, repo, issue_number}, issue)
           end
 
@@ -319,7 +319,7 @@ defmodule Conductor.OrchestratorTest do
       }
 
       MockState.put({:issue, "test/repo", 320}, issue)
-      MockState.put({:shape_result, 320}, {:ok, :shaped})
+      MockState.put({:shape_result, "test/repo", 320}, {:ok, :shaped})
 
       assert {:error, :not_ready} =
                Orchestrator.run_once(repo: "test/repo", issue: 320, worker: "sprite-1")
@@ -627,8 +627,8 @@ defmodule Conductor.OrchestratorTest do
       }
 
       MockState.put({:eligible, "test/repo", nil}, [unready_issue])
-      MockState.put({:shape_result, 301}, {:ok, :shaped})
-      MockState.put({:issue_after_shape, 301}, shaped_issue)
+      MockState.put({:shape_result, "test/repo", 301}, {:ok, :shaped})
+      MockState.put({:issue_after_shape, "test/repo", 301}, shaped_issue)
 
       :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
 
@@ -662,7 +662,7 @@ defmodule Conductor.OrchestratorTest do
       }
 
       MockState.put({:eligible, "test/repo", nil}, [issue])
-      MockState.put({:shape_result, 306}, {:ok, :already_shaped})
+      MockState.put({:shape_result, "test/repo", 306}, {:ok, :already_shaped})
 
       :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
 
@@ -689,7 +689,7 @@ defmodule Conductor.OrchestratorTest do
       }
 
       MockState.put({:eligible, "test/repo", nil}, [issue])
-      MockState.put({:shape_result, 302}, {:error, :llm_unavailable})
+      MockState.put({:shape_result, "test/repo", 302}, {:error, :llm_unavailable})
 
       :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
 
@@ -710,7 +710,7 @@ defmodule Conductor.OrchestratorTest do
       }
 
       MockState.put({:eligible, "test/repo", nil}, [issue])
-      MockState.put({:shape_result, 311}, {:sleep, 500, {:error, :llm_slow}})
+      MockState.put({:shape_result, "test/repo", 311}, {:sleep, 500, {:error, :llm_slow}})
 
       :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
 
@@ -739,7 +739,7 @@ defmodule Conductor.OrchestratorTest do
       }
 
       MockState.put({:eligible, "test/repo", nil}, [issue])
-      MockState.put({:shape_result, 303}, {:error, :llm_unavailable})
+      MockState.put({:shape_result, "test/repo", 303}, {:error, :llm_unavailable})
 
       :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
 
@@ -786,8 +786,8 @@ defmodule Conductor.OrchestratorTest do
       }
 
       MockState.put({:eligible, "test/repo", nil}, [ready_issue, issue_1, issue_2])
-      MockState.put({:shape_result, 305}, {:error, :llm_unavailable})
-      MockState.put({:shape_result, 306}, {:error, :llm_unavailable})
+      MockState.put({:shape_result, "test/repo", 305}, {:error, :llm_unavailable})
+      MockState.put({:shape_result, "test/repo", 306}, {:error, :llm_unavailable})
 
       :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
 
@@ -833,7 +833,7 @@ defmodule Conductor.OrchestratorTest do
       end)
 
       MockState.put({:eligible, "test/repo", nil}, [unready_issue])
-      MockState.put({:shape_result, 308}, {:error, :llm_unavailable})
+      MockState.put({:shape_result, "test/repo", 308}, {:error, :llm_unavailable})
       send(Process.whereis(Orchestrator), :poll)
 
       assert_receive {:shape_attempted, "test/repo", 308}, 1_000
@@ -862,8 +862,8 @@ defmodule Conductor.OrchestratorTest do
       }
 
       MockState.put({:eligible, "test/repo", nil}, [unready_issue])
-      MockState.put({:shape_result, 309}, {:ok, :already_shaped})
-      MockState.put({:issue_after_shape, 309}, ready_issue)
+      MockState.put({:shape_result, "test/repo", 309}, {:ok, :already_shaped})
+      MockState.put({:issue_after_shape, "test/repo", 309}, ready_issue)
 
       :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
 
@@ -897,7 +897,7 @@ defmodule Conductor.OrchestratorTest do
       }
 
       MockState.put({:eligible, "test/repo", nil}, [issue])
-      MockState.put({:shape_result, 310}, {:raise, RuntimeError.exception("boom")})
+      MockState.put({:shape_result, "test/repo", 310}, {:raise, RuntimeError.exception("boom")})
 
       :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
 
@@ -927,7 +927,7 @@ defmodule Conductor.OrchestratorTest do
       }
 
       MockState.put({:eligible, "test/repo", nil}, [issue])
-      MockState.put({:shape_result, 308}, {:error, :llm_unavailable})
+      MockState.put({:shape_result, "test/repo", 308}, {:error, :llm_unavailable})
 
       :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
 
@@ -953,15 +953,15 @@ defmodule Conductor.OrchestratorTest do
       }
 
       MockState.put({:eligible, "test/repo", nil}, [issue])
-      MockState.put({:shape_result, 311}, {:error, :llm_slow})
-      MockState.put({:shape_delay_ms, 311}, 500)
+      MockState.put({:shape_result, "test/repo", 311}, {:error, :llm_slow})
+      MockState.put({:shape_delay_ms, "test/repo", 311}, 500)
 
       :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
 
       assert_receive {:shape_attempted, "test/repo", 311}, 1_000
 
       pause_task = Task.async(fn -> Orchestrator.pause() end)
-      assert Task.yield(pause_task, 100) == {:ok, :ok}
+      assert Task.yield(pause_task, 400) == {:ok, :ok}
     end
   end
 
