@@ -41,6 +41,10 @@ defmodule Conductor.OrchestratorTest do
       Process.sleep(MockState.get({:shape_delay_ms, issue_number}, 0))
 
       case MockState.get({:shape_result, issue_number}, {:error, :not_configured}) do
+        {:sleep, sleep_ms, result} ->
+          Process.sleep(sleep_ms)
+          result
+
         {:ok, result} = shaped when result in [:shaped, :already_shaped] ->
           if issue = MockState.get({:issue_after_shape, issue_number}) do
             MockState.put({:issue, repo, issue_number}, issue)
@@ -184,6 +188,8 @@ defmodule Conductor.OrchestratorTest do
 
     if Process.whereis(Store), do: GenServer.stop(Store)
     {:ok, _} = Store.start_link(db_path: db_path, event_log: event_log)
+    safe_stop(Process.whereis(Conductor.TaskSupervisor))
+    {:ok, _} = Task.Supervisor.start_link(name: Conductor.TaskSupervisor)
 
     # Inject mock tracker so polls don't hit GitHub
     orig_tracker = Application.get_env(:conductor, :tracker_module)
@@ -224,6 +230,7 @@ defmodule Conductor.OrchestratorTest do
     on_exit(fn ->
       safe_stop(Process.whereis(Orchestrator))
       safe_stop(Process.whereis(Store))
+      safe_stop(Process.whereis(Conductor.TaskSupervisor))
 
       if orig_tracker,
         do: Application.put_env(:conductor, :tracker_module, orig_tracker),
@@ -692,6 +699,26 @@ defmodule Conductor.OrchestratorTest do
 
       Process.sleep(100)
       assert MockState.get(:started_runs) == []
+    end
+
+    test "slow shaping does not block orchestrator calls" do
+      issue = %Conductor.Issue{
+        number: 311,
+        title: "slow shaping",
+        body: "needs shaping",
+        url: "https://example.test/issues/311"
+      }
+
+      MockState.put({:eligible, "test/repo", nil}, [issue])
+      MockState.put({:shape_result, 311}, {:sleep, 500, {:error, :llm_slow}})
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      assert_receive {:shape_attempted, "test/repo", 311}, 1_000
+
+      pause_task = Task.async(fn -> Orchestrator.pause() end)
+
+      assert Task.await(pause_task, 100) == :ok
     end
 
     test "retries shaping after the issue body changes" do

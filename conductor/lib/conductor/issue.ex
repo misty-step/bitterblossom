@@ -62,8 +62,11 @@ defmodule Conductor.Issue do
     end
   end
 
+  @doc "Stable revision identifier for issue body change detection."
   @spec revision_id(t()) :: binary()
-  def revision_id(%__MODULE__{body: body}), do: :crypto.hash(:sha256, body || "")
+  def revision_id(%__MODULE__{body: body}) do
+    :crypto.hash(:sha256, body || "")
+  end
 
   defp has?(body, heading), do: String.contains?(body, heading)
 

@@ -32,6 +32,7 @@ defmodule Conductor.Orchestrator do
     mode: :idle,
     active_runs: %{},
     shape_attempts: %{},
+    shape_tasks: %{},
     worker_index: 0
   ]
 
@@ -126,6 +127,7 @@ defmodule Conductor.Orchestrator do
     if workers == [] do
       {:reply, {:error, :no_workers}, state}
     else
+      state = maybe_reset_shape_state(state, repo)
       shape_attempts = if repo == state.repo, do: state.shape_attempts, else: %{}
 
       state = %{
@@ -197,19 +199,37 @@ defmodule Conductor.Orchestrator do
 
   @impl true
   def handle_info({:DOWN, ref, :process, _pid, _reason}, state) do
-    # A RunServer died. Remove it from active runs.
-    active =
-      state.active_runs
-      |> Enum.reject(fn {_id, %{ref: r}} -> r == ref end)
-      |> Map.new()
+    case Map.pop(state.shape_tasks, ref) do
+      {nil, _shape_tasks} ->
+        active =
+          state.active_runs
+          |> Enum.reject(fn {_id, %{ref: r}} -> r == ref end)
+          |> Map.new()
 
-    {:noreply, %{state | active_runs: active}}
+        {:noreply, %{state | active_runs: active}}
+
+      {_task_meta, shape_tasks} ->
+        {:noreply, %{state | shape_tasks: shape_tasks}}
+    end
   end
 
   @impl true
-  def handle_info({:shape_result, repo, issue_number, failures, result}, state) do
-    log_shape_result(repo, issue_number, failures, result, state)
-    {:noreply, state}
+  def handle_info({ref, result}, state) when is_reference(ref) do
+    case Map.fetch(state.shape_tasks, ref) do
+      {:ok, task_meta} ->
+        Process.demonitor(ref, [:flush])
+        state = complete_shape_task(state, ref)
+        log_shape_result(task_meta, result)
+
+        if match?({:ok, result} when result in [:shaped, :already_shaped], result) do
+          schedule_poll(0)
+        end
+
+        {:noreply, state}
+
+      :error ->
+        {:noreply, state}
+    end
   end
 
   @impl true
@@ -289,14 +309,32 @@ defmodule Conductor.Orchestrator do
   end
 
   defp maybe_shape_issue(state, issue, failures) do
-    revision = Issue.revision_id(issue)
+    revision_id = Issue.revision_id(issue)
 
-    if Map.get(state.shape_attempts, issue.number) == revision do
-      Logger.info("issue ##{issue.number} still unready after prior shaping attempt, skipping")
-      {state, :skipped}
-    else
-      spawn_shape_issue(state.repo, issue.number, failures)
-      {put_shape_attempt(state, issue.number, revision), :shaped}
+    cond do
+      shape_in_flight?(state, issue.number) ->
+        {state, :skipped}
+
+      Map.get(state.shape_attempts, issue.number) == revision_id ->
+        Logger.info("issue ##{issue.number} still unready after prior shaping attempt, skipping")
+        {state, :skipped}
+
+      true ->
+        Logger.info(
+          "issue ##{issue.number} not ready (#{Enum.join(failures, ", ")}); shaping asynchronously"
+        )
+
+        task =
+          Task.Supervisor.async_nolink(task_supervisor(), fn ->
+            safe_shape_issue(state.repo, issue.number)
+          end)
+
+        next_state =
+          state
+          |> put_shape_attempt(issue.number, revision_id)
+          |> put_shape_task(task, state.repo, issue.number, revision_id, failures)
+
+        {next_state, :shaped}
     end
   end
 
@@ -304,8 +342,58 @@ defmodule Conductor.Orchestrator do
     %{state | shape_attempts: Map.delete(state.shape_attempts, issue_number)}
   end
 
-  defp put_shape_attempt(state, issue_number, digest) do
-    %{state | shape_attempts: Map.put(state.shape_attempts, issue_number, digest)}
+  defp put_shape_attempt(state, issue_number, revision_id) do
+    %{state | shape_attempts: Map.put(state.shape_attempts, issue_number, revision_id)}
+  end
+
+  defp put_shape_task(state, %Task{} = task, repo, issue_number, revision_id, failures) do
+    task_meta = %{
+      task: task,
+      repo: repo,
+      issue_number: issue_number,
+      revision_id: revision_id,
+      failures: failures
+    }
+
+    %{state | shape_tasks: Map.put(state.shape_tasks, task.ref, task_meta)}
+  end
+
+  defp complete_shape_task(state, ref) do
+    %{state | shape_tasks: Map.delete(state.shape_tasks, ref)}
+  end
+
+  defp maybe_reset_shape_state(state, repo) when repo == state.repo, do: state
+
+  defp maybe_reset_shape_state(state, _repo) do
+    Enum.each(state.shape_tasks, fn {_ref, %{task: task}} ->
+      Task.shutdown(task, :brutal_kill)
+    end)
+
+    %{state | shape_attempts: %{}, shape_tasks: %{}}
+  end
+
+  defp shape_in_flight?(state, issue_number) do
+    Enum.any?(state.shape_tasks, fn {_ref, meta} -> meta.issue_number == issue_number end)
+  end
+
+  defp log_shape_result(task_meta, {:ok, result}) when result in [:shaped, :already_shaped] do
+    Logger.info("issue ##{task_meta.issue_number} shaped successfully, deferring until next poll")
+  end
+
+  defp log_shape_result(task_meta, {:error, reason}) do
+    Logger.info(
+      "issue ##{task_meta.issue_number} not ready (#{Enum.join(task_meta.failures, ", ")}); shaping failed: #{inspect(reason)}"
+    )
+  end
+
+  defp log_shape_result(task_meta, other) do
+    Logger.info(
+      "issue ##{task_meta.issue_number} not ready (#{Enum.join(task_meta.failures, ", ")}); shaping failed: #{inspect(other)}"
+    )
+  end
+
+  defp task_supervisor do
+    Application.get_env(:conductor, :task_supervisor, Conductor.TaskSupervisor)
   end
 
   defp maybe_start_ready_issue(state, issue, remaining_slots)
@@ -327,32 +415,6 @@ defmodule Conductor.Orchestrator do
     catch
       kind, reason ->
         {:error, {kind, reason}}
-    end
-  end
-
-  defp spawn_shape_issue(repo, issue_number, failures) do
-    orchestrator = self()
-
-    spawn(fn ->
-      result = safe_shape_issue(repo, issue_number)
-      send(orchestrator, {:shape_result, repo, issue_number, failures, result})
-    end)
-  end
-
-  defp log_shape_result(repo, issue_number, failures, result, %{repo: current_repo}) do
-    case result do
-      {:ok, shaped} when shaped in [:shaped, :already_shaped] ->
-        Logger.info("issue ##{issue_number} shaped successfully, deferring until next poll")
-
-      {:error, reason} when repo == current_repo ->
-        Logger.info(
-          "issue ##{issue_number} not ready (#{Enum.join(failures, ", ")}); shaping failed: #{inspect(reason)}"
-        )
-
-      {:error, reason} ->
-        Logger.debug(
-          "discarding stale shaping result for #{repo}##{issue_number}: #{inspect(reason)}"
-        )
     end
   end
 

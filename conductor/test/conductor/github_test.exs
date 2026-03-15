@@ -310,61 +310,36 @@ defmodule Conductor.GitHubTest do
       )
     end
 
-    test "fetches unlabeled issues page-by-page without slurping and keeps unready issues" do
+    test "paginates all open issues by default and eligible_issues keeps unready issues" do
       with_fake_gh(
         """
-        call_file="$(dirname "$GH_ARGS_PATH")/gh-call-count"
-        call_count=0
-        if [ -f "$call_file" ]; then
-        call_count="$(cat "$call_file")"
-        fi
-        call_count=$((call_count + 1))
         printf '%s\n' "$@" >> "$GH_ARGS_PATH"
-        printf '%s\n' '---' >> "$GH_ARGS_PATH"
-        printf '%s' "$call_count" > "$call_file"
-
-        if [ "$call_count" -eq 1 ]; then
-        cat <<'JSON'
-        {
-        "data": {
-        "repository": {
-        "issues": {
-        "nodes": [
+        if [[ "$*" == *"&page=1"* ]]; then
+          cat <<'JSON'
+        [
           {
             "number": 7,
             "title": "ready issue",
             "body": "## Problem\\nx\\n\\n## Acceptance Criteria\\n- [ ] [test] y",
             "url": "https://example.test/issues/7",
-            "labels": {"nodes": [{"name": "autopilot"}]}
+            "labels": [{"name": "autopilot"}]
           }
-        ],
-        "pageInfo": {"hasNextPage": true, "endCursor": "cursor-1"}
-        }
-        }
-        }
-        }
+        ]
         JSON
-        else
-        cat <<'JSON'
-        {
-        "data": {
-        "repository": {
-        "issues": {
-        "nodes": [
+        elif [[ "$*" == *"&page=2"* ]]; then
+          cat <<'JSON'
+        [
           {
             "number": 6,
             "title": "unready issue",
             "body": "draft body",
             "url": "https://example.test/issues/6",
-            "labels": {"nodes": []}
+            "labels": []
           }
-        ],
-        "pageInfo": {"hasNextPage": false, "endCursor": null}
-        }
-        }
-        }
-        }
+        ]
         JSON
+        else
+          echo '[]'
         fi
         """,
         fn _tmp_dir, args_path ->
@@ -374,12 +349,61 @@ defmodule Conductor.GitHubTest do
           assert Enum.find(issues, &(&1.number == 6)).body == "draft body"
 
           args = File.read!(args_path)
-          assert String.contains?(args, "api\ngraphql\n")
-          assert length(String.split(args, "---\n", trim: true)) == 2
-          refute String.contains?(args, "--paginate\n")
-          refute String.contains?(args, "--slurp\n")
-          assert String.contains?(args, "endCursor=cursor-1\n")
-          refute String.contains?(args, "--label\n")
+
+          assert String.contains?(
+                   args,
+                   "api\nrepos/misty-step/bitterblossom/issues?state=open&per_page=100&page=1\n"
+                 )
+
+          assert String.contains?(
+                   args,
+                   "api\nrepos/misty-step/bitterblossom/issues?state=open&per_page=100&page=2\n"
+                 )
+        end
+      )
+    end
+
+    test "filters pull requests from paginated issue fetches" do
+      with_fake_gh(
+        """
+        if [[ "$*" == *"&page=1"* ]]; then
+          cat <<'JSON'
+        [
+          {
+            "number": 8,
+            "title": "real issue",
+            "body": "draft body",
+            "url": "https://example.test/issues/8",
+            "labels": []
+          },
+          {
+            "number": 99,
+            "title": "not an issue",
+            "body": "",
+            "url": "https://example.test/pull/99",
+            "labels": [],
+            "pull_request": {"url": "https://example.test/pull/99"}
+          }
+        ]
+        JSON
+        else
+          echo '[]'
+        fi
+        """,
+        fn _tmp_dir, _args_path ->
+          assert {:ok, [%Issue{number: 8}]} = GitHub.list_issues("misty-step/bitterblossom")
+        end
+      )
+    end
+
+    test "returns an error when a paginated issue page is malformed" do
+      with_fake_gh(
+        """
+        echo '{"not":"a list"}'
+        """,
+        fn _tmp_dir, _args_path ->
+          assert {:error, message} = GitHub.list_issues("misty-step/bitterblossom")
+          assert message =~ "invalid JSON from gh"
         end
       )
     end
