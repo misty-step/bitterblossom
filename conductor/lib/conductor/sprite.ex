@@ -46,7 +46,8 @@ defmodule Conductor.Sprite do
   def dispatch(sprite, prompt, _repo, opts \\ []) do
     timeout_minutes = Keyword.get(opts, :timeout, Config.builder_timeout())
     workspace = Keyword.fetch!(opts, :workspace)
-    harness = Keyword.get(opts, :harness, Conductor.ClaudeCode)
+    harness = Keyword.get(opts, :harness, Conductor.Codex)
+    harness_opts = Keyword.get(opts, :harness_opts, [])
     # Injected in tests to capture exec calls without a real sprite
     exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
 
@@ -67,7 +68,7 @@ defmodule Conductor.Sprite do
 
       {:ok, _} ->
         # 3. Run agent
-        run_agent(sprite, workspace, prompt_path, harness, exec_fn, timeout_ms)
+        run_agent(sprite, workspace, prompt_path, harness, harness_opts, exec_fn, timeout_ms)
     end
   end
 
@@ -135,8 +136,8 @@ defmodule Conductor.Sprite do
 
   # --- Private ---
 
-  defp run_agent(sprite, workspace, prompt_path, harness, exec_fn, timeout_ms) do
-    cmd = agent_command(harness.dispatch_command([]), workspace, prompt_path)
+  defp run_agent(sprite, workspace, prompt_path, harness, harness_opts, exec_fn, timeout_ms) do
+    cmd = agent_command(harness.dispatch_command(harness_opts), workspace, prompt_path)
 
     case exec_fn.(sprite, cmd, timeout: timeout_ms) do
       {:ok, output} ->
@@ -144,7 +145,7 @@ defmodule Conductor.Sprite do
 
       {:error, _output, _code} ->
         # Retry with session resumption if the harness supports it
-        case harness.continue_command([]) do
+        case harness.continue_command(harness_opts) do
           nil ->
             {:error, "agent exited non-zero; harness does not support continuation", 1}
 

@@ -4,21 +4,39 @@ defmodule Conductor.Codex do
 
   Implements `Conductor.Harness`.
 
-  Codex is invoked via `codex exec` in full-auto mode with JSON output.
-  The prompt is supplied via stdin. Model selection lives in the sprite's
-  `~/.codex/config.toml`, not in CLI args.
+  Codex is invoked via `codex exec` with `--yolo` (full sandbox bypass)
+  and live web search. The prompt is supplied via stdin.
+
+  Accepts `:reasoning_effort` opt to override the default (`"medium"`).
+  The polisher uses `"high"`.
 
   Codex has no session resumption — `continue_command/1` returns nil.
   """
 
   @behaviour Conductor.Harness
 
+  @default_model "gpt-5.4"
+  @default_reasoning "medium"
+
   @impl Conductor.Harness
   def name, do: "codex"
 
   @impl Conductor.Harness
-  def dispatch_command(_opts \\ []) do
-    ["codex", "exec", "--full-auto", "--json"]
+  def dispatch_command(opts \\ []) do
+    reasoning = Keyword.get(opts, :reasoning_effort, @default_reasoning)
+
+    [
+      "codex",
+      "exec",
+      "--yolo",
+      "--json",
+      "--model",
+      @default_model,
+      "-c",
+      "web_search=live",
+      "-c",
+      "model_reasoning_effort=#{reasoning}"
+    ]
   end
 
   @impl Conductor.Harness

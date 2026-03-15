@@ -3,6 +3,8 @@
 # Auth: OPENAI_API_KEY env var injected at dispatch time.
 
 preferred_auth_method = "apikey"
-model = "o3"
+model = "gpt-5.4"
+model_reasoning_effort = "medium"
 approval_policy = "never"
-sandbox_mode = "workspace-write"
+sandbox_mode = "danger-full-access"
+web_search = "live"

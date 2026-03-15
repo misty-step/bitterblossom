@@ -105,6 +105,10 @@ func runSetup(ctx context.Context, spriteName, repo string, force bool, persona 
 		_, _ = fmt.Fprintf(os.Stderr, "warning: codex config upload failed (non-fatal): %v\n", err)
 	}
 
+	if err := uploadFile(ctx, s, "base/codex-instructions.md", spriteCodexDir+"/instructions.md"); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "warning: codex instructions upload failed (non-fatal): %v\n", err)
+	}
+
 	// 5. Upload persona
 	personaFile, err := resolvePersona(spriteName, persona)
 	if err != nil {

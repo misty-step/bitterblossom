@@ -91,6 +91,7 @@ defmodule Conductor.Config do
     []
     |> maybe_env("GITHUB_TOKEN")
     |> maybe_env("OPENAI_API_KEY")
+    |> maybe_env("EXA_API_KEY")
     |> Enum.reverse()
   end
 

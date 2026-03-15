@@ -50,5 +50,19 @@ defmodule Conductor.ConfigDispatchEnvTest do
           else: System.delete_env("OPENAI_API_KEY")
       end
     end
+
+    test "includes EXA_API_KEY when set" do
+      prev = System.get_env("EXA_API_KEY")
+      System.put_env("EXA_API_KEY", "exa-test-key")
+
+      try do
+        env = Config.dispatch_env()
+        assert {"EXA_API_KEY", "exa-test-key"} in env
+      after
+        if prev,
+          do: System.put_env("EXA_API_KEY", prev),
+          else: System.delete_env("EXA_API_KEY")
+      end
+    end
   end
 end

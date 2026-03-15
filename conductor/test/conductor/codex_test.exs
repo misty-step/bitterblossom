@@ -10,12 +10,23 @@ defmodule Conductor.CodexTest do
   end
 
   describe "dispatch_command/1" do
-    test "returns codex exec with full-auto and json flags" do
-      assert Codex.dispatch_command([]) == ["codex", "exec", "--full-auto", "--json"]
+    test "returns codex exec with yolo, json, model, web search, and medium reasoning" do
+      cmd = Codex.dispatch_command([])
+
+      assert "codex" in cmd
+      assert "exec" in cmd
+      assert "--yolo" in cmd
+      assert "--json" in cmd
+      assert "--model" in cmd
+      assert "gpt-5.4" in cmd
+      assert "web_search=live" in cmd
+      assert "model_reasoning_effort=medium" in cmd
     end
 
-    test "ignores model opt (model set via config.toml on sprite)" do
-      assert Codex.dispatch_command(model: "o3") == ["codex", "exec", "--full-auto", "--json"]
+    test "accepts reasoning_effort override" do
+      cmd = Codex.dispatch_command(reasoning_effort: "high")
+      assert "model_reasoning_effort=high" in cmd
+      refute "model_reasoning_effort=medium" in cmd
     end
   end
 
