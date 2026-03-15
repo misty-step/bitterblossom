@@ -85,6 +85,10 @@ defmodule Conductor.Fleet do
   defp push_settings(name) do
     api_key = System.get_env("ANTHROPIC_API_KEY") || ""
 
+    if api_key == "" do
+      Logger.warning("[fleet] ANTHROPIC_API_KEY not set — #{name} will not be able to run Claude Code")
+    end
+
     settings =
       Jason.encode!(%{
         model: "sonnet",

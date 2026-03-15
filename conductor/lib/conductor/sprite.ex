@@ -154,9 +154,15 @@ defmodule Conductor.Sprite do
 
     env_exports =
       Config.dispatch_env()
-      |> Enum.map(fn {k, v} -> "#{k}=#{v}" end)
+      |> Enum.map(fn {k, v} -> "#{k}=#{shell_quote(v)}" end)
       |> Enum.join(" ")
 
-    "cd '#{workspace}' && #{env_exports} LEFTHOOK=0 #{cmd_str} < '#{prompt_path}'"
+    prefix = if env_exports == "", do: "", else: env_exports <> " "
+    "cd '#{workspace}' && #{prefix}LEFTHOOK=0 #{cmd_str} < '#{prompt_path}'"
+  end
+
+  defp shell_quote(value) do
+    escaped = value |> to_string() |> String.replace("'", "'\"'\"'")
+    "'#{escaped}'"
   end
 end

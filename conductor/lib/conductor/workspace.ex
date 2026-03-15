@@ -84,7 +84,7 @@ defmodule Conductor.Workspace do
     set -e
     cd #{mirror}
     flock .git/bb-worktree.lock bash -c '
-      git fetch origin --quiet 2>/dev/null || true
+      git fetch origin --quiet
       git worktree prune 2>/dev/null || true
       rm -rf #{tmp} 2>/dev/null || true
       git worktree add #{tmp} #{branch} --quiet
@@ -127,7 +127,7 @@ defmodule Conductor.Workspace do
     set -e
     cd #{mirror}
     flock .git/bb-worktree.lock bash -c '
-      git fetch origin --quiet 2>/dev/null || true
+      git fetch origin --quiet
       git worktree prune 2>/dev/null || true
       rm -rf #{worktree} 2>/dev/null || true
       git worktree add #{worktree} #{branch} --quiet
@@ -156,6 +156,8 @@ defmodule Conductor.Workspace do
   defp do_cleanup(sprite, repo, run_id) do
     repo_name = repo |> String.split("/") |> List.last()
     mirror = Path.join(@mirror_base, repo_name)
+    # Extract branch name from run_id pattern: run-<issue>-<ts> → factory/<issue>-<ts>
+    branch = run_id_to_branch(run_id)
 
     commands = """
     set -e
@@ -166,6 +168,7 @@ defmodule Conductor.Workspace do
         git worktree remove --force "$worktree_dir" 2>/dev/null || true
       fi
       git worktree prune 2>/dev/null || true
+      #{if branch, do: "git branch -D #{branch} 2>/dev/null || true", else: ""}
     '
     """
 
@@ -174,6 +177,10 @@ defmodule Conductor.Workspace do
       {:error, msg, _} -> {:error, msg}
     end
   end
+
+  # run-648-1773580938 → factory/648-1773580938
+  defp run_id_to_branch("run-" <> rest), do: "factory/#{rest}"
+  defp run_id_to_branch(_), do: nil
 
   @spec artifact_path(binary(), binary()) :: binary()
   def artifact_path(repo, run_id) do

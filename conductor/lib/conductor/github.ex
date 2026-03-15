@@ -363,6 +363,8 @@ defmodule Conductor.GitHub do
            repo,
            "--state",
            "open",
+           "--limit",
+           "200",
            "--json",
            "number,title,headRefName,url"
          ]) do
@@ -378,11 +380,13 @@ defmodule Conductor.GitHub do
               pr -> {:ok, pr}
             end
 
-          {:error, _} ->
+          {:error, reason} ->
+            Logger.warning("[github] failed to decode PR list: #{inspect(reason)}")
             {:error, :not_found}
         end
 
-      {:error, _, _} ->
+      {:error, msg, _} ->
+        Logger.warning("[github] failed to list PRs: #{msg}")
         {:error, :not_found}
     end
   end

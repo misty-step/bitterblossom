@@ -356,9 +356,11 @@ defmodule Conductor.Orchestrator do
     end
   end
 
-  defp attempt_rebase_merge(repo, pr_number, branch, workers) do
-    worker = List.first(workers)
+  defp attempt_rebase_merge(_repo, pr_number, _branch, []) do
+    Logger.warning("[merge] no workers available to rebase PR ##{pr_number}")
+  end
 
+  defp attempt_rebase_merge(repo, pr_number, branch, [worker | _]) do
     Logger.info(
       "[merge] PR ##{pr_number} has merge conflict, rebasing branch #{branch} on #{worker}"
     )
@@ -373,10 +375,15 @@ defmodule Conductor.Orchestrator do
             record_merge(repo, pr_number)
             Conductor.SelfUpdate.maybe_reload(repo, pr_number)
 
-          {:error, reason} ->
-            Logger.warning("[merge] PR ##{pr_number} still failed after rebase: #{reason}")
-
-            mark_conflict_blocked(repo, pr_number)
+          {:error, retry_reason} ->
+            if merge_conflict?(retry_reason) do
+              Logger.warning("[merge] PR ##{pr_number} still has conflict after rebase")
+              mark_conflict_blocked(repo, pr_number)
+            else
+              # Transient/policy failure after rebase — don't mark blocked,
+              # let normal retry pick it up on the next poll cycle.
+              Logger.warning("[merge] PR ##{pr_number} post-rebase merge failed (non-conflict): #{retry_reason}")
+            end
         end
 
       {:error, reason} ->
