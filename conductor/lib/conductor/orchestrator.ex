@@ -180,7 +180,7 @@ defmodule Conductor.Orchestrator do
 
   @impl true
   def handle_info(:poll, state) do
-    Conductor.SelfUpdate.check_for_updates()
+    self_update_mod().check_for_updates()
     state = reconcile(state)
     reconcile_held_leases(state)
     merge_labeled_prs(state)
@@ -673,8 +673,15 @@ defmodule Conductor.Orchestrator do
           :ok
 
         {event_type, _reason} ->
-          Logger.info("[reconcile] releasing orphan lease for issue ##{issue_number}: #{event_type}")
-          Store.record_event(run_id, event_type, %{issue_number: issue_number, pr_number: pr_number})
+          Logger.info(
+            "[reconcile] releasing orphan lease for issue ##{issue_number}: #{event_type}"
+          )
+
+          Store.record_event(run_id, event_type, %{
+            issue_number: issue_number,
+            pr_number: pr_number
+          })
+
           Store.release_lease(repo, issue_number)
       end
     end)
@@ -1044,6 +1051,9 @@ defmodule Conductor.Orchestrator do
 
   defp run_control_mod,
     do: Application.get_env(:conductor, :run_control_module, Conductor.RunServer)
+
+  defp self_update_mod,
+    do: Application.get_env(:conductor, :self_update_module, Conductor.SelfUpdate)
 
   @doc false
   def probe_worker_module(worker_module, worker, opts \\ []) do

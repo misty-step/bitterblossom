@@ -153,6 +153,10 @@ defmodule Conductor.OrchestratorTest do
     end
   end
 
+  defmodule MockSelfUpdate do
+    def check_for_updates, do: :noop
+  end
+
   # Retry an assertion block until it passes or timeout elapses.
   defp eventually(assert_fun, timeout_ms \\ 1_000, step_ms \\ 20) do
     deadline = System.monotonic_time(:millisecond) + timeout_ms
@@ -213,6 +217,9 @@ defmodule Conductor.OrchestratorTest do
     orig_shaper = Application.get_env(:conductor, :shaper_module)
     Application.put_env(:conductor, :shaper_module, MockShaper)
 
+    orig_self_update = Application.get_env(:conductor, :self_update_module)
+    Application.put_env(:conductor, :self_update_module, MockSelfUpdate)
+
     # Use a 60-minute stale threshold; tests can plant older heartbeats to trigger expiry
     orig_stale = Application.get_env(:conductor, :stale_run_threshold_minutes)
     Application.put_env(:conductor, :stale_run_threshold_minutes, 60)
@@ -258,6 +265,10 @@ defmodule Conductor.OrchestratorTest do
       if orig_shaper,
         do: Application.put_env(:conductor, :shaper_module, orig_shaper),
         else: Application.delete_env(:conductor, :shaper_module)
+
+      if orig_self_update,
+        do: Application.put_env(:conductor, :self_update_module, orig_self_update),
+        else: Application.delete_env(:conductor, :self_update_module)
 
       if orig_stale,
         do: Application.put_env(:conductor, :stale_run_threshold_minutes, orig_stale),
