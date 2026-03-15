@@ -82,10 +82,9 @@ export SPRITE_TOKEN="..."  # from https://sprites.dev/settings
 ./bin/bb setup council-sage-20260306 --repo misty-step/bitterblossom
 ./bin/bb setup council-thorn-20260306 --repo misty-step/bitterblossom
 
-# 3) Run one conductor cycle against an issue or backlog label
+# 3) Run one conductor cycle against the backlog
 python3 scripts/conductor.py run-once \
   --repo misty-step/bitterblossom \
-  --label autopilot \
   --worker noble-blue-serpent \
   --reviewer council-fern-20260306 \
   --reviewer council-sage-20260306 \

@@ -166,4 +166,33 @@ defmodule Conductor.CLIFleetTest do
         else: Application.delete_env(:conductor, :worker_module)
     end
   end
+
+  test "deprecated loop command works without a label and leaves the filter unset" do
+    stderr =
+      capture_io(:stderr, fn ->
+        assert :ok =
+                 CLI.loop_command(
+                   ["--repo", "test/repo", "--worker", "bb-builder-1"],
+                   wait: false
+                 )
+      end)
+
+    assert stderr =~ "loop is deprecated"
+    assert :sys.get_state(Conductor.Orchestrator).label == nil
+  end
+
+  test "deprecated loop command still accepts label as an optional narrowing filter" do
+    stderr =
+      capture_io(:stderr, fn ->
+        assert :ok =
+                 CLI.loop_command(
+                   ["--repo", "test/repo", "--worker", "bb-builder-1", "--label", "hold"],
+                   wait: false
+                 )
+      end)
+
+    assert stderr =~ "loop is deprecated"
+    assert stderr =~ "--label is deprecated as a backlog gate"
+    assert :sys.get_state(Conductor.Orchestrator).label == "hold"
+  end
 end

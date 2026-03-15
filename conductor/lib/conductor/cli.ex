@@ -1,7 +1,7 @@
 defmodule Conductor.CLI do
   @moduledoc "Escript entry point. Parses args and delegates to Conductor."
 
-  @commands ~w(start shape fleet show-runs show-events show-incidents show-waivers check-env dashboard status)
+  @commands ~w(run-once loop start shape fleet show-runs show-events show-incidents show-waivers check-env dashboard status)
 
   def main(args) do
     Application.ensure_all_started(:conductor)
@@ -10,16 +10,11 @@ defmodule Conductor.CLI do
       ["start" | rest] ->
         cmd_start(rest)
 
-      # Legacy aliases — clear error messages
-      ["run-once" | _] ->
-        IO.puts("run-once has been removed. Use: mix conductor start")
-        IO.puts("The conductor now runs as an always-on service.")
-        System.halt(1)
+      ["run-once" | rest] ->
+        cmd_run_once(rest)
 
-      ["loop" | _] ->
-        IO.puts("loop has been removed. Use: mix conductor start")
-        IO.puts("The conductor now runs as an always-on service.")
-        System.halt(1)
+      ["loop" | rest] ->
+        cmd_loop(rest)
 
       ["shape" | rest] ->
         cmd_shape(rest)
@@ -83,6 +78,70 @@ defmodule Conductor.CLI do
     end
   end
 
+  @doc false
+  def run_once_command(args) do
+    {opts, _, _} =
+      OptionParser.parse(args,
+        strict: [
+          repo: :string,
+          issue: :integer,
+          worker: :string,
+          label: :string
+        ]
+      )
+
+    repo = Keyword.fetch!(opts, :repo)
+    issue = Keyword.fetch!(opts, :issue)
+    worker = Keyword.fetch!(opts, :worker)
+
+    warn_legacy_command("run-once")
+    maybe_warn_label_deprecation(Keyword.get(opts, :label))
+
+    case Conductor.Orchestrator.run_once(repo: repo, issue: issue, worker: worker) do
+      {:ok, phase} ->
+        IO.puts("issue ##{issue} finished in phase=#{phase}")
+        :ok
+
+      {:error, reason} ->
+        IO.puts("run-once failed: #{inspect(reason)}")
+        System.halt(1)
+    end
+  end
+
+  @doc false
+  def loop_command(args, runtime_opts \\ []) do
+    {opts, _, _} =
+      OptionParser.parse(args,
+        strict: [
+          repo: :string,
+          worker: :string,
+          label: :string
+        ]
+      )
+
+    repo = Keyword.fetch!(opts, :repo)
+    workers = Keyword.get_values(opts, :worker)
+    label = Keyword.get(opts, :label)
+
+    warn_legacy_command("loop")
+    maybe_warn_label_deprecation(label)
+
+    case Conductor.Orchestrator.start_loop(repo: repo, workers: workers, label: label) do
+      :ok ->
+        IO.puts("bitterblossom loop (deprecated) polling #{repo}. Press Ctrl+C to stop.")
+
+        if Keyword.get(runtime_opts, :wait, true) do
+          Process.sleep(:infinity)
+        end
+
+        :ok
+
+      {:error, :no_workers} ->
+        IO.puts("loop failed: at least one --worker is required")
+        System.halt(1)
+    end
+  end
+
   defp fleet_default_path do
     # Look for fleet.toml relative to the conductor dir, then repo root
     cond do
@@ -91,6 +150,10 @@ defmodule Conductor.CLI do
       true -> "fleet.toml"
     end
   end
+
+  defp cmd_run_once(args), do: run_once_command(args)
+
+  defp cmd_loop(args), do: loop_command(args)
 
   defp cmd_shape(args) do
     {opts, _, _} =
@@ -117,6 +180,18 @@ defmodule Conductor.CLI do
         IO.puts("shape failed: #{inspect(reason)}")
         System.halt(1)
     end
+  end
+
+  defp warn_legacy_command(command) do
+    IO.warn("#{command} is deprecated. Prefer `mix conductor start` with fleet.toml.")
+  end
+
+  defp maybe_warn_label_deprecation(label) when label in [nil, ""], do: :ok
+
+  defp maybe_warn_label_deprecation(_label) do
+    IO.warn(
+      "--label is deprecated as a backlog gate. All open issues are eligible by default; --label now only narrows scope."
+    )
   end
 
   defp cmd_fleet(args) do
