@@ -124,6 +124,7 @@ defmodule Conductor.CLI do
     label = Keyword.get(opts, :label)
 
     warn_legacy_command("loop")
+    maybe_warn_unfiltered_scope(repo, label)
     maybe_warn_label_deprecation(label)
 
     case Conductor.Orchestrator.start_loop(repo: repo, workers: workers, label: label) do
@@ -192,6 +193,12 @@ defmodule Conductor.CLI do
     IO.warn(
       "--label is deprecated as a backlog gate. All open issues are eligible by default; --label now only narrows scope."
     )
+  end
+
+  defp maybe_warn_unfiltered_scope(_repo, label) when label not in [nil, ""], do: :ok
+
+  defp maybe_warn_unfiltered_scope(repo, _label) do
+    IO.warn("starting loop for #{repo} without a label filter; all open issues are eligible")
   end
 
   defp cmd_fleet(args) do

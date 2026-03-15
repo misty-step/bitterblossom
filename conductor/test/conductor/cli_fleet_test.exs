@@ -178,6 +178,7 @@ defmodule Conductor.CLIFleetTest do
       end)
 
     assert stderr =~ "loop is deprecated"
+    assert stderr =~ "all open issues are eligible"
     assert :sys.get_state(Conductor.Orchestrator).label == nil
   end
 
