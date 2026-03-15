@@ -134,20 +134,7 @@ defmodule Conductor.CLI do
         assignments = active_builder_assignments(config.defaults.repo)
 
         config.sprites
-        |> Enum.each(fn sprite ->
-          name = sprite_name(sprite)
-          display_name = name || "(unnamed sprite)"
-          role = Map.get(sprite, :role) || Map.get(sprite, "role") || "unknown"
-
-          tags =
-            format_tags(
-              Map.get(sprite, :capability_tags) || Map.get(sprite, "capability_tags") || []
-            )
-
-          health = probe_status(sprite)
-          assignment = if name, do: Map.get(assignments, name, "idle"), else: "idle"
-          IO.puts("#{display_name} role=#{role} #{health} assignment=#{assignment} #{tags}")
-        end)
+        |> Enum.each(fn sprite -> IO.puts(fleet_row(sprite, assignments)) end)
 
       {:error, reason} ->
         IO.puts("fleet failed: #{reason}")
@@ -290,8 +277,25 @@ defmodule Conductor.CLI do
     |> Map.new(fn run -> {run["builder_sprite"], "issue ##{run["issue_number"]}"} end)
   end
 
-  defp probe_status(sprite) do
-    worker_mod = Application.get_env(:conductor, :worker_module, Conductor.Sprite)
+  @doc false
+  def fleet_row(
+        sprite,
+        assignments,
+        worker_mod \\ Application.get_env(:conductor, :worker_module, Conductor.Sprite)
+      ) do
+    name = sprite_name(sprite)
+    display_name = name || "(unnamed sprite)"
+    role = Map.get(sprite, :role) || Map.get(sprite, "role") || "unknown"
+
+    tags =
+      format_tags(Map.get(sprite, :capability_tags) || Map.get(sprite, "capability_tags") || [])
+
+    health = probe_status(sprite, worker_mod)
+    assignment = if name, do: Map.get(assignments, name, "idle"), else: "idle"
+    "#{display_name} role=#{role} #{health} assignment=#{assignment} #{tags}"
+  end
+
+  defp probe_status(sprite, worker_mod) do
     harness = Map.get(sprite, :harness) || Map.get(sprite, "harness")
     name = sprite_name(sprite)
 

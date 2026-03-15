@@ -43,6 +43,18 @@ defmodule Conductor.CLIFleetTest do
            git_credential_helper: false,
            healthy: false
          }}
+
+    def status("bb-builder-5", _opts),
+      do:
+        {:ok,
+         %{
+           sprite: "bb-builder-5",
+           reachable: true,
+           harness_ready: false,
+           gh_authenticated: true,
+           git_credential_helper: true,
+           healthy: false
+         }}
   end
 
   defmodule ProbeOnlyWorker do
@@ -83,6 +95,10 @@ defmodule Conductor.CLIFleetTest do
 
       [[sprite]]
       name = "bb-builder-4"
+      role = "builder"
+
+      [[sprite]]
+      name = "bb-builder-5"
       role = "builder"
       """
     )
@@ -146,6 +162,9 @@ defmodule Conductor.CLIFleetTest do
 
     assert output =~ "bb-builder-4"
     assert output =~ "needs setup (git helper missing)"
+
+    assert output =~ "bb-builder-5"
+    assert output =~ "needs setup (harness missing)"
   end
 
   test "fleet keeps probe-only workers healthy", %{fleet_path: fleet_path} do
@@ -165,5 +184,23 @@ defmodule Conductor.CLIFleetTest do
         do: Application.put_env(:conductor, :worker_module, orig_worker),
         else: Application.delete_env(:conductor, :worker_module)
     end
+  end
+
+  test "fleet row reports invalid config for unnamed sprites" do
+    row =
+      CLI.fleet_row(
+        %{
+          role: :builder,
+          harness: "codex",
+          capability_tags: ["elixir"]
+        },
+        %{},
+        MockWorker
+      )
+
+    assert row =~ "(unnamed sprite)"
+    assert row =~ "invalid config (name missing)"
+    assert row =~ "assignment=idle"
+    assert row =~ "tags=elixir"
   end
 end
