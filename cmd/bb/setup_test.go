@@ -182,6 +182,9 @@ func TestPersistGitHubAuthScriptUsesGhCredentialHelper(t *testing.T) {
 	if !strings.Contains(script, "trap 'rm -f") {
 		t.Fatalf("script = %q, want cleanup trap for token file", script)
 	}
+	if !strings.Contains(script, `test "$(git config --global --get credential.helper)" = "!gh auth git-credential"`) {
+		t.Fatalf("script = %q, want credential helper verification", script)
+	}
 }
 
 func TestRepoSetupScriptDoesNotExportGHToken(t *testing.T) {

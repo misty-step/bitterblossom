@@ -19,7 +19,8 @@ defmodule Conductor.SpriteTest do
           exec_fn([
             {"echo ok", {:ok, "ok\n"}},
             {"command -v codex", {:ok, "/usr/bin/codex\n"}},
-            {"gh auth status", {:ok, "github.com\n"}}
+            {"gh auth status", {:ok, "github.com\n"}},
+            {"git config --global --get credential.helper", {:ok, "!gh auth git-credential\n"}}
           ])
       )
 
@@ -28,6 +29,7 @@ defmodule Conductor.SpriteTest do
               reachable: true,
               harness_ready: true,
               gh_authenticated: true,
+              git_credential_helper: true,
               healthy: true
             }} = status
   end
@@ -40,7 +42,8 @@ defmodule Conductor.SpriteTest do
           exec_fn([
             {"echo ok", {:ok, "ok\n"}},
             {"command -v codex", {:ok, "/usr/bin/codex\n"}},
-            {"gh auth status", {:error, "not logged in", 1}}
+            {"gh auth status", {:error, "not logged in", 1}},
+            {"git config --global --get credential.helper", {:ok, "!gh auth git-credential\n"}}
           ])
       )
 
@@ -49,6 +52,30 @@ defmodule Conductor.SpriteTest do
               reachable: true,
               harness_ready: true,
               gh_authenticated: false,
+              git_credential_helper: true,
+              healthy: false
+            }} = status
+  end
+
+  test "status marks missing git credential helper as unhealthy" do
+    status =
+      Sprite.status("bb-builder",
+        harness: "codex",
+        exec_fn:
+          exec_fn([
+            {"echo ok", {:ok, "ok\n"}},
+            {"command -v codex", {:ok, "/usr/bin/codex\n"}},
+            {"gh auth status", {:ok, "github.com\n"}},
+            {"git config --global --get credential.helper", {:ok, "cache\n"}}
+          ])
+      )
+
+    assert {:ok,
+            %{
+              reachable: true,
+              harness_ready: true,
+              gh_authenticated: true,
+              git_credential_helper: false,
               healthy: false
             }} = status
   end
