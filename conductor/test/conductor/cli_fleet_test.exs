@@ -45,6 +45,11 @@ defmodule Conductor.CLIFleetTest do
          }}
   end
 
+  defmodule ProbeOnlyWorker do
+    def probe("bb-builder-1", _opts), do: {:ok, %{sprite: "bb-builder-1", reachable: true}}
+    def probe(_worker, _opts), do: {:error, "connection refused"}
+  end
+
   setup do
     db_path =
       Path.join(System.tmp_dir!(), "fleet_cli_test_#{System.unique_integer([:positive])}.db")
@@ -141,5 +146,24 @@ defmodule Conductor.CLIFleetTest do
 
     assert output =~ "bb-builder-4"
     assert output =~ "needs setup (git helper missing)"
+  end
+
+  test "fleet keeps probe-only workers healthy", %{fleet_path: fleet_path} do
+    orig_worker = Application.get_env(:conductor, :worker_module)
+    Application.put_env(:conductor, :worker_module, ProbeOnlyWorker)
+
+    try do
+      output =
+        capture_io(fn ->
+          CLI.main(["fleet", "--fleet", fleet_path])
+        end)
+
+      assert output =~ "bb-builder-1"
+      assert output =~ "healthy"
+    after
+      if orig_worker,
+        do: Application.put_env(:conductor, :worker_module, orig_worker),
+        else: Application.delete_env(:conductor, :worker_module)
+    end
   end
 end

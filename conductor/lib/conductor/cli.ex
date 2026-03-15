@@ -321,16 +321,20 @@ defmodule Conductor.CLI do
         "healthy"
 
       {:ok, status} when is_map(status) ->
-        missing =
-          []
-          |> maybe_missing(status, :harness_ready, "harness")
-          |> maybe_missing(status, :gh_authenticated, "gh auth")
-          |> maybe_missing(status, :git_credential_helper, "git helper")
-
-        if missing == [] do
-          "needs setup"
+        if probe_only_status?(status) do
+          "healthy"
         else
-          "needs setup (" <> Enum.join(missing, ", ") <> " missing)"
+          missing =
+            []
+            |> maybe_missing(status, :harness_ready, "harness")
+            |> maybe_missing(status, :gh_authenticated, "gh auth")
+            |> maybe_missing(status, :git_credential_helper, "git helper")
+
+          if missing == [] do
+            "needs setup"
+          else
+            "needs setup (" <> Enum.join(missing, ", ") <> " missing)"
+          end
         end
 
       {:ok, _} ->
@@ -364,6 +368,20 @@ defmodule Conductor.CLI do
     do: Map.get(sprite, :name) || Map.get(sprite, "name")
 
   defp sprite_name(_sprite), do: nil
+
+  defp probe_only_status?(status) do
+    reachable = Map.get(status, :reachable, Map.get(status, "reachable"))
+
+    reachable == true and
+      not Map.has_key?(status, :healthy) and
+      not Map.has_key?(status, "healthy") and
+      not Map.has_key?(status, :gh_authenticated) and
+      not Map.has_key?(status, "gh_authenticated") and
+      not Map.has_key?(status, :git_credential_helper) and
+      not Map.has_key?(status, "git_credential_helper") and
+      not Map.has_key?(status, :harness_ready) and
+      not Map.has_key?(status, "harness_ready")
+  end
 
   defp format_tags([]), do: "tags=-"
   defp format_tags(tags), do: "tags=#{Enum.join(tags, ",")}"
