@@ -56,7 +56,20 @@ defmodule Conductor.Orchestrator do
             run_issue(repo, issue, worker, trusted_surfaces)
 
           {:error, failures} ->
-            IO.puts("issue ##{issue_number} not ready: #{Enum.join(failures, ", ")}")
+            case safe_shape_issue(repo, issue_number) do
+              {:ok, result} when result in [:shaped, :already_shaped] ->
+                IO.puts(
+                  "issue ##{issue_number} not ready: #{Enum.join(failures, ", ")}; " <>
+                    "shaping #{result} and deferring execution until the next fetch"
+                )
+
+              {:error, reason} ->
+                IO.puts(
+                  "issue ##{issue_number} not ready: #{Enum.join(failures, ", ")}; " <>
+                    "shaping failed: #{inspect(reason)}"
+                )
+            end
+
             {:error, :not_ready}
         end
 

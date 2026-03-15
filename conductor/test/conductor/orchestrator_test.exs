@@ -11,7 +11,13 @@ defmodule Conductor.OrchestratorTest do
     def list_eligible(repo, opts),
       do: MockState.get({:eligible, repo, Keyword.get(opts, :label)}, [])
 
-    def get_issue(_repo, _number), do: {:error, :not_found}
+    def get_issue(repo, number) do
+      case MockState.get({:issue, repo, number}) do
+        nil -> {:error, :not_found}
+        issue -> {:ok, issue}
+      end
+    end
+
     def comment(_repo, _issue, _body), do: :ok
   end
 
@@ -233,6 +239,26 @@ defmodule Conductor.OrchestratorTest do
       assert :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
 
       assert :sys.get_state(Orchestrator).label == nil
+    end
+  end
+
+  describe "run_once/1" do
+    test "attempts shaping for an unready issue before returning not_ready" do
+      issue = %Conductor.Issue{
+        number: 320,
+        title: "underspecified run once issue",
+        body: "missing structure",
+        url: "https://example.test/issues/320"
+      }
+
+      MockState.put({:issue, "test/repo", 320}, issue)
+      MockState.put({:shape_result, 320}, {:ok, :shaped})
+
+      assert {:error, :not_ready} =
+               Orchestrator.run_once(repo: "test/repo", issue: 320, worker: "sprite-1")
+
+      assert_receive {:shape_attempted, "test/repo", 320}, 1_000
+      assert MockState.get(:started_runs) == []
     end
   end
 

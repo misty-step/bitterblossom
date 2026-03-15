@@ -10,7 +10,6 @@ repo = "misty-step/bitterblossom"
 harness = "codex"
 model = "gpt-5.4"
 reasoning_effort = "medium"
-label = "autopilot"
 
 [[sprite]]
 name = "bb-builder"
