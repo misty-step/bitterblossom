@@ -134,6 +134,12 @@ defmodule Conductor.Store do
     GenServer.call(__MODULE__, {:list_active_runs, repo})
   end
 
+  @doc "Leases held past run completion: process exited, lease persists, awaiting resolution."
+  @spec list_held_leases(binary()) :: [map()]
+  def list_held_leases(repo) do
+    GenServer.call(__MODULE__, {:list_held_leases, repo})
+  end
+
   @doc """
   Atomically expire a stale run: record event, complete the run as failed,
   and release its lease. Encapsulates the domain transition so callers
@@ -465,6 +471,24 @@ defmodule Conductor.Store do
       query_all(
         state.conn,
         "SELECT * FROM runs WHERE repo = ?1 AND completed_at IS NULL ORDER BY picked_at ASC",
+        [repo]
+      )
+
+    {:reply, rows, state}
+  end
+
+  @impl true
+  def handle_call({:list_held_leases, repo}, _from, state) do
+    rows =
+      query_all(
+        state.conn,
+        """
+        SELECT l.repo, l.issue_number, l.run_id, l.acquired_at, r.pr_number, r.completed_at
+        FROM leases l
+        JOIN runs r ON l.run_id = r.run_id
+        WHERE l.repo = ?1 AND l.released_at IS NULL AND r.completed_at IS NOT NULL
+        ORDER BY l.acquired_at ASC
+        """,
         [repo]
       )
 

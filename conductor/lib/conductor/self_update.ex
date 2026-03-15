@@ -36,7 +36,47 @@ defmodule Conductor.SelfUpdate do
     end
   end
 
+  @doc """
+  Check if origin/master has diverged from HEAD. If so, pull and recompile.
+
+  Called on every poll tick so externally merged changes (human force-merge,
+  other conductor instances) are picked up without waiting for a conductor-initiated merge.
+  """
+  @spec check_for_updates() :: :ok | :noop
+  def check_for_updates do
+    case Conductor.Shell.cmd("git", ["-C", @repo_root, "fetch", "origin", "master", "--quiet"],
+           timeout: 30_000
+         ) do
+      {:ok, _} ->
+        if local_behind_remote?() do
+          Logger.info("[self-update] HEAD behind origin/master, pulling")
+          pull_and_recompile()
+        else
+          :noop
+        end
+
+      {:error, msg, _} ->
+        Logger.debug("[self-update] fetch failed: #{msg}")
+        :noop
+    end
+  end
+
   # --- Private ---
+
+  defp local_behind_remote? do
+    case Conductor.Shell.cmd("git", ["-C", @repo_root, "rev-parse", "HEAD", "origin/master"],
+           timeout: 10_000
+         ) do
+      {:ok, output} ->
+        case String.split(String.trim(output), "\n") do
+          [local, remote] -> local != remote
+          _ -> false
+        end
+
+      _ ->
+        false
+    end
+  end
 
   defp self_repo?(repo) do
     # The conductor is always working on its own repo when repo matches
