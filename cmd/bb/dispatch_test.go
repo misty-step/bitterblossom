@@ -1455,7 +1455,7 @@ func TestSnapshotPRChecksReturnsErrorOnUnexpectedExitCode(t *testing.T) {
 	}
 }
 
-func TestPRChecksScriptForIncludesWorkspaceAndToken(t *testing.T) {
+func TestPRChecksScriptForIncludesWorkspaceOnly(t *testing.T) {
 	t.Parallel()
 
 	script := prChecksScriptFor("/home/sprite/workspace/myrepo")

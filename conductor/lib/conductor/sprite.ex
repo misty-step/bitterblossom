@@ -17,6 +17,8 @@ defmodule Conductor.Sprite do
   4. On non-zero exit, retry once using the harness `continue_command`
   """
 
+  require Logger
+
   @behaviour Conductor.Worker
 
   alias Conductor.{Shell, Config, Workspace}
@@ -146,6 +148,10 @@ defmodule Conductor.Sprite do
   # Process names for all known agent harnesses. Used to kill stale processes
   # before dispatch and detect busy sprites. Update when adding a new harness.
   @agent_process_names ~w(claude codex)
+  @harness_commands %{
+    "codex" => "command -v codex",
+    "claude-code" => "command -v claude"
+  }
 
   defp kill_agents_cmd do
     @agent_process_names
@@ -163,14 +169,14 @@ defmodule Conductor.Sprite do
   defp harness_ready?(_sprite, "", _exec_fn), do: true
 
   defp harness_ready?(sprite, harness, exec_fn) do
-    harness_cmd =
-      case harness do
-        "codex" -> "command -v codex"
-        "claude-code" -> "command -v claude"
-        _ -> "echo ok"
-      end
+    case Map.fetch(@harness_commands, harness) do
+      {:ok, harness_cmd} ->
+        match?({:ok, _}, exec_fn.(sprite, harness_cmd, timeout: 15_000))
 
-    match?({:ok, _}, exec_fn.(sprite, harness_cmd, timeout: 15_000))
+      :error ->
+        Logger.warning("[sprite] unknown harness #{inspect(harness)} on #{sprite}")
+        false
+    end
   end
 
   defp gh_authenticated?(sprite, exec_fn) do

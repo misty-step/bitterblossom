@@ -53,6 +53,27 @@ defmodule Conductor.SpriteTest do
             }} = status
   end
 
+  test "status marks missing harness as unhealthy" do
+    status =
+      Sprite.status("bb-builder",
+        harness: "codex",
+        exec_fn:
+          exec_fn([
+            {"echo ok", {:ok, "ok\n"}},
+            {"command -v codex", {:error, "", 1}},
+            {"gh auth status", {:ok, "github.com\n"}}
+          ])
+      )
+
+    assert {:ok,
+            %{
+              reachable: true,
+              harness_ready: false,
+              gh_authenticated: true,
+              healthy: false
+            }} = status
+  end
+
   test "status returns error when sprite is unreachable" do
     assert {:error, "timeout"} =
              Sprite.status("bb-builder",
