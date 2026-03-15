@@ -91,6 +91,7 @@ defmodule Conductor.Config do
     []
     |> maybe_env("GITHUB_TOKEN")
     |> maybe_env("OPENAI_API_KEY")
+    |> maybe_env_as("OPENAI_API_KEY", "CODEX_API_KEY")
     |> maybe_env("EXA_API_KEY")
     |> Enum.reverse()
   end
@@ -100,6 +101,16 @@ defmodule Conductor.Config do
       nil -> acc
       "" -> acc
       val -> [{key, val} | acc]
+    end
+  end
+
+  # Inject a local env var under a different name on the sprite.
+  # Used for OPENAI_API_KEY → CODEX_API_KEY (Codex CLI reads CODEX_API_KEY).
+  defp maybe_env_as(acc, source_key, target_key) do
+    case System.get_env(source_key) do
+      nil -> acc
+      "" -> acc
+      val -> [{target_key, val} | acc]
     end
   end
 

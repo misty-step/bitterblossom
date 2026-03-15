@@ -51,6 +51,20 @@ defmodule Conductor.ConfigDispatchEnvTest do
       end
     end
 
+    test "maps OPENAI_API_KEY to CODEX_API_KEY for Codex CLI" do
+      prev = System.get_env("OPENAI_API_KEY")
+      System.put_env("OPENAI_API_KEY", "sk-test-codex")
+
+      try do
+        env = Config.dispatch_env()
+        assert {"CODEX_API_KEY", "sk-test-codex"} in env
+      after
+        if prev,
+          do: System.put_env("OPENAI_API_KEY", prev),
+          else: System.delete_env("OPENAI_API_KEY")
+      end
+    end
+
     test "includes EXA_API_KEY when set" do
       prev = System.get_env("EXA_API_KEY")
       System.put_env("EXA_API_KEY", "exa-test-key")
