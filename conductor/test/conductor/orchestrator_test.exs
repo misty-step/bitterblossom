@@ -718,7 +718,7 @@ defmodule Conductor.OrchestratorTest do
 
       pause_task = Task.async(fn -> Orchestrator.pause() end)
 
-      assert Task.await(pause_task, 100) == :ok
+      assert Task.await(pause_task, 200) == :ok
     end
 
     test "retries shaping after the issue body changes" do

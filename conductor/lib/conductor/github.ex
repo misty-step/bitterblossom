@@ -124,8 +124,7 @@ defmodule Conductor.GitHub do
     end
   end
 
-  @doc false
-  def list_issue_args(repo, opts \\ []) do
+  defp list_issue_args(repo, opts) do
     label = Keyword.get(opts, :label)
     limit = Keyword.get(opts, :limit, default_issue_limit(label))
 
@@ -143,8 +142,7 @@ defmodule Conductor.GitHub do
     ] ++ maybe_label_filter(label)
   end
 
-  @doc false
-  def sort_eligible_issues(issues), do: Enum.sort_by(issues, & &1.number)
+  defp sort_eligible_issues(issues), do: Enum.sort_by(issues, & &1.number)
 
   def label_present?(data, label) do
     data
