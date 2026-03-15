@@ -688,7 +688,12 @@ defmodule Conductor.Orchestrator do
   defp dispatch_paused? do
     Store.dispatch_paused?()
   rescue
-    _ -> true
+    exception ->
+      Logger.warning(
+        "[dispatch] failed to read pause state: #{Exception.message(exception)}; defaulting to paused"
+      )
+
+      true
   end
 
   defp dispatch_mode do
