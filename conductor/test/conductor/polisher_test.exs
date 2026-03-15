@@ -34,6 +34,8 @@ defmodule Conductor.PolisherTest do
       end
     end
 
+    def checks_failed?(_repo, _pr_number), do: false
+
     def merge(_repo, _pr, _opts), do: :ok
 
     def labeled_prs(_repo, label) do

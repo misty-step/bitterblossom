@@ -120,4 +120,61 @@ defmodule Conductor.GitHubTest do
       assert GitHub.evaluate_checks(checks) == true
     end
   end
+
+  describe "checks_failed?/1 (unit, no CLI)" do
+    test "FAILURE among checks → true" do
+      checks = [
+        %{"name" => "CI", "conclusion" => "SUCCESS", "status" => "COMPLETED"},
+        %{"name" => "Tests", "conclusion" => "FAILURE", "status" => "COMPLETED"}
+      ]
+
+      assert GitHub.evaluate_checks_failed(checks) == true
+    end
+
+    test "all SUCCESS → false" do
+      checks = [
+        %{"name" => "CI", "conclusion" => "SUCCESS", "status" => "COMPLETED"},
+        %{"name" => "Lint", "conclusion" => "SUCCESS", "status" => "COMPLETED"}
+      ]
+
+      assert GitHub.evaluate_checks_failed(checks) == false
+    end
+
+    test "pending checks with no conclusion → false (not failed yet)" do
+      checks = [
+        %{"name" => "CI", "conclusion" => nil, "status" => "IN_PROGRESS"},
+        %{"name" => "Lint", "conclusion" => nil, "status" => "QUEUED"}
+      ]
+
+      assert GitHub.evaluate_checks_failed(checks) == false
+    end
+
+    test "empty list → false" do
+      assert GitHub.evaluate_checks_failed([]) == false
+    end
+
+    test "ERROR conclusion → true" do
+      checks = [
+        %{"name" => "CI", "conclusion" => "ERROR", "status" => "COMPLETED"}
+      ]
+
+      assert GitHub.evaluate_checks_failed(checks) == true
+    end
+
+    test "CANCELLED conclusion → true" do
+      checks = [
+        %{"name" => "CI", "conclusion" => "CANCELLED", "status" => "COMPLETED"}
+      ]
+
+      assert GitHub.evaluate_checks_failed(checks) == true
+    end
+
+    test "null conclusions only → false" do
+      checks = [
+        %{"name" => nil, "conclusion" => nil, "status" => nil}
+      ]
+
+      assert GitHub.evaluate_checks_failed(checks) == false
+    end
+  end
 end

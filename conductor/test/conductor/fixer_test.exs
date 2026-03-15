@@ -34,6 +34,13 @@ defmodule Conductor.FixerTest do
       end
     end
 
+    def checks_failed?(_repo, pr_number) do
+      case MockState.get(:checks_failed) do
+        fun when is_function(fun) -> fun.(pr_number)
+        _ -> MockState.get(:checks_failed_default, true)
+      end
+    end
+
     def merge(_repo, _pr, _opts), do: :ok
     def labeled_prs(_repo, _label), do: {:ok, []}
 
@@ -129,7 +136,7 @@ defmodule Conductor.FixerTest do
   end
 
   describe "poll triggers fixer dispatch" do
-    test "dispatches fixer sprite when factory PR has red CI" do
+    test "dispatches fixer sprite when factory PR has failed CI" do
       MockState.put(
         :factory_prs,
         {:ok,
@@ -143,7 +150,7 @@ defmodule Conductor.FixerTest do
          ]}
       )
 
-      MockState.put(:checks_green, fn _pr -> false end)
+      MockState.put(:checks_failed, fn _pr -> true end)
 
       {:ok, _pid} =
         Fixer.start_link(
@@ -156,7 +163,7 @@ defmodule Conductor.FixerTest do
       assert prompt =~ "CI"
     end
 
-    test "skips PRs with green CI" do
+    test "skips PRs when CI has not failed (green or pending)" do
       MockState.put(
         :factory_prs,
         {:ok,
@@ -170,7 +177,7 @@ defmodule Conductor.FixerTest do
          ]}
       )
 
-      MockState.put(:checks_green, fn _pr -> true end)
+      MockState.put(:checks_failed_default, false)
 
       {:ok, _pid} =
         Fixer.start_link(
@@ -220,7 +227,7 @@ defmodule Conductor.FixerTest do
          ]}
       )
 
-      MockState.put(:checks_green, fn _pr -> false end)
+      MockState.put(:checks_failed, fn _pr -> true end)
       # Slow dispatch so in-flight tracking is testable
       MockState.put(:dispatch_delay_ms, 500)
 

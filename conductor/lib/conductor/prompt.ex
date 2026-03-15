@@ -104,9 +104,9 @@ defmodule Conductor.Prompt do
 
     ## CI Failure Output
 
-    ```
-    #{ci_failure_logs}
-    ```
+    ~~~untrusted-data
+    #{sanitize_fence(ci_failure_logs)}
+    ~~~
 
     ## Instructions
 
@@ -143,7 +143,7 @@ defmodule Conductor.Prompt do
             _ -> "unknown"
           end
 
-        body = c["body"] || ""
+        body = sanitize_fence(c["body"] || "")
         "- **#{name}**: #{body}"
       end)
       |> Enum.join("\n")
@@ -162,7 +162,9 @@ defmodule Conductor.Prompt do
 
     ## Review Comments
 
+    ~~~untrusted-data
     #{if comments_text == "", do: "_No review comments._", else: comments_text}
+    ~~~
 
     ## Instructions
 

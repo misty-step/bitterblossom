@@ -84,15 +84,22 @@ defmodule Conductor.Polisher do
   # --- Private ---
 
   defp poll_and_dispatch(state) do
-    case code_host_mod().factory_prs(state.repo) do
-      {:ok, prs} ->
-        prs
-        |> Enum.filter(&needs_polish?(&1, state))
-        |> Enum.reduce(state, &dispatch_polisher(&2, &1))
+    # Skip if sprite is already working on a PR
+    if map_size(state.in_flight) > 0 do
+      state
+    else
+      case code_host_mod().factory_prs(state.repo) do
+        {:ok, prs} ->
+          # Dispatch at most one PR per poll (single sprite, single workspace)
+          case Enum.find(prs, &needs_polish?(&1, state)) do
+            nil -> state
+            pr -> dispatch_polisher(state, pr)
+          end
 
-      {:error, reason} ->
-        Logger.warning("[polisher] failed to list factory PRs: #{reason}")
-        state
+        {:error, reason} ->
+          Logger.warning("[polisher] failed to list factory PRs: #{reason}")
+          state
+      end
     end
   end
 
@@ -112,7 +119,15 @@ defmodule Conductor.Polisher do
     pr_number = pr["number"]
     Logger.info("[polisher] PR ##{pr_number} is green, dispatching polisher")
 
-    {:ok, comments} = code_host_mod().pr_review_comments(state.repo, pr_number)
+    comments =
+      case code_host_mod().pr_review_comments(state.repo, pr_number) do
+        {:ok, comments} ->
+          comments
+
+        {:error, reason} ->
+          Logger.warning("[polisher] failed to fetch reviews for PR ##{pr_number}: #{reason}")
+          []
+      end
 
     issue_body = pr["body"] || ""
     prompt = Prompt.build_polisher_prompt(pr, comments, issue_body)

@@ -20,6 +20,9 @@ defmodule Conductor.CodeHost do
   @callback labeled_prs(repo :: binary(), label :: binary()) ::
               {:ok, [map()]} | {:error, term()}
 
+  @doc "Return true when at least one completed check has a non-green conclusion."
+  @callback checks_failed?(repo :: binary(), pr_number :: pos_integer()) :: boolean()
+
   @doc "List open factory/* PRs with CI and label metadata."
   @callback factory_prs(repo :: binary()) :: {:ok, [map()]} | {:error, term()}
 

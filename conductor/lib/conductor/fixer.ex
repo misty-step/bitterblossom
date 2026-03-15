@@ -86,15 +86,22 @@ defmodule Conductor.Fixer do
   # --- Private ---
 
   defp poll_and_dispatch(state) do
-    case code_host_mod().factory_prs(state.repo) do
-      {:ok, prs} ->
-        prs
-        |> Enum.filter(&needs_fix?(&1, state))
-        |> Enum.reduce(state, &dispatch_fixer(&2, &1))
+    # Skip if sprite is already working on a PR
+    if map_size(state.in_flight) > 0 do
+      state
+    else
+      case code_host_mod().factory_prs(state.repo) do
+        {:ok, prs} ->
+          # Dispatch at most one PR per poll (single sprite, single workspace)
+          case Enum.find(prs, &needs_fix?(&1, state)) do
+            nil -> state
+            pr -> dispatch_fixer(state, pr)
+          end
 
-      {:error, reason} ->
-        Logger.warning("[fixer] failed to list factory PRs: #{reason}")
-        state
+        {:error, reason} ->
+          Logger.warning("[fixer] failed to list factory PRs: #{reason}")
+          state
+      end
     end
   end
 
@@ -104,17 +111,23 @@ defmodule Conductor.Fixer do
 
     String.starts_with?(branch, "factory/") and
       not Map.has_key?(state.in_flight, pr_number) and
-      not code_host_mod().checks_green?(state.repo, pr_number)
+      code_host_mod().checks_failed?(state.repo, pr_number)
   end
 
   defp dispatch_fixer(state, pr) do
     pr_number = pr["number"]
     Logger.info("[fixer] PR ##{pr_number} has red CI, dispatching fixer")
 
-    # Fetch failure context
-    {:ok, ci_logs} = code_host_mod().pr_ci_failure_logs(state.repo, pr_number)
+    ci_logs =
+      case code_host_mod().pr_ci_failure_logs(state.repo, pr_number) do
+        {:ok, logs} ->
+          logs
 
-    # Extract issue number from branch (factory/<issue_number>-<ts>)
+        {:error, reason} ->
+          Logger.warning("[fixer] failed to fetch CI logs for PR ##{pr_number}: #{reason}")
+          "(CI logs unavailable)"
+      end
+
     issue_body = extract_issue_body(pr)
 
     prompt = Prompt.build_fixer_prompt(pr, ci_logs, issue_body)

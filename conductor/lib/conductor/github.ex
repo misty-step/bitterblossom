@@ -116,6 +116,27 @@ defmodule Conductor.GitHub do
     end
   end
 
+  @failed ~w(FAILURE failure ERROR error CANCELLED cancelled TIMED_OUT timed_out ACTION_REQUIRED action_required STALE stale STARTUP_FAILURE startup_failure)
+
+  @spec checks_failed?(binary(), pos_integer()) :: boolean()
+  def checks_failed?(repo, pr_number) do
+    case get_pr_checks(repo, pr_number) do
+      {:ok, checks} -> evaluate_checks_failed(checks)
+      _ -> false
+    end
+  end
+
+  @doc """
+  Return true when at least one completed check has a non-green conclusion.
+  Returns false for pending/queued/no-checks states.
+  """
+  @spec evaluate_checks_failed([map()]) :: boolean()
+  def evaluate_checks_failed(checks) do
+    Enum.any?(checks, fn c ->
+      not is_nil(c["conclusion"]) and c["conclusion"] in @failed
+    end)
+  end
+
   @active_statuses ~w(IN_PROGRESS QUEUED PENDING WAITING REQUESTED in_progress queued pending waiting requested)
 
   @doc """
