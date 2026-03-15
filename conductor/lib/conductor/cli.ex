@@ -1,7 +1,7 @@
 defmodule Conductor.CLI do
   @moduledoc "Escript entry point. Parses args and delegates to Conductor."
 
-  @commands ~w(start shape fleet show-runs show-events show-incidents show-waivers check-env dashboard status)
+  @commands ~w(start pause resume shape fleet show-runs show-events show-incidents show-waivers check-env dashboard status)
 
   def main(args) do
     Application.ensure_all_started(:conductor)
@@ -23,6 +23,12 @@ defmodule Conductor.CLI do
 
       ["shape" | rest] ->
         cmd_shape(rest)
+
+      ["pause"] ->
+        cmd_pause()
+
+      ["resume"] ->
+        cmd_resume()
 
       ["fleet" | rest] ->
         cmd_fleet(rest)
@@ -117,6 +123,16 @@ defmodule Conductor.CLI do
         IO.puts("shape failed: #{inspect(reason)}")
         System.halt(1)
     end
+  end
+
+  defp cmd_pause do
+    :ok = Conductor.Orchestrator.pause()
+    IO.puts("conductor dispatch paused")
+  end
+
+  defp cmd_resume do
+    :ok = Conductor.Orchestrator.resume()
+    IO.puts("conductor dispatch resumed")
   end
 
   defp cmd_fleet(args) do

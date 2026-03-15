@@ -48,6 +48,10 @@ defmodule Conductor.RunServer do
     GenServer.call(pid, :status)
   end
 
+  def operator_block(pid, reason) do
+    GenServer.call(pid, {:operator_block, reason})
+  end
+
   # --- GenServer Callbacks ---
 
   @impl true
@@ -234,6 +238,15 @@ defmodule Conductor.RunServer do
      }, state}
   end
 
+  @impl true
+  def handle_call({:operator_block, reason}, _from, state) do
+    state = cancel_dispatch(state)
+
+    case block(state, reason) do
+      {:stop, :normal, new_state} -> {:stop, :normal, :ok, new_state}
+    end
+  end
+
   # --- Private ---
 
   defp handle_artifact(%{"status" => "ready"} = artifact, state) do
@@ -315,6 +328,25 @@ defmodule Conductor.RunServer do
         {:error, reason} ->
           Store.record_event(state.run_id, "workspace_cleanup_failed", %{reason: reason})
       end
+    end
+  end
+
+  defp cancel_dispatch(%{dispatch_task: %Task{} = task} = state) do
+    cancel_heartbeat(state.heartbeat_timer)
+    Task.shutdown(task, :brutal_kill)
+    maybe_kill_worker(state)
+    %{state | dispatch_task: nil, heartbeat_timer: nil}
+  end
+
+  defp cancel_dispatch(state) do
+    cancel_heartbeat(state.heartbeat_timer)
+    maybe_kill_worker(state)
+    %{state | heartbeat_timer: nil}
+  end
+
+  defp maybe_kill_worker(state) do
+    if function_exported?(worker_mod(), :kill, 1) do
+      _ = worker_mod().kill(state.worker)
     end
   end
 

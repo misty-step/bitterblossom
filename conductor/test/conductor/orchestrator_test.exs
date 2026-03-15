@@ -1,7 +1,7 @@
 defmodule Conductor.OrchestratorTest do
   use ExUnit.Case, async: false
 
-  alias Conductor.{Store, Orchestrator}
+  alias Conductor.{GitHub, Store, Orchestrator}
 
   # Mock tracker: no eligible issues by default.
   defmodule MockTracker do
@@ -13,6 +13,18 @@ defmodule Conductor.OrchestratorTest do
 
     def get_issue(_repo, _number), do: {:error, :not_found}
     def comment(_repo, _issue, _body), do: :ok
+
+    def issue_has_label?(repo, issue_number, label) do
+      MockState.get({:issue_has_label, repo, issue_number, label}, {:ok, false})
+    end
+
+    def issue_comments(repo, issue_number) do
+      case MockState.get({:issue_comments, repo, issue_number}, {:ok, []}) do
+        {:ok, _comments} = result -> result
+        {:error, _reason} = result -> result
+        comments -> {:ok, comments}
+      end
+    end
   end
 
   # Shared persistent state for mock coordination across processes.
@@ -39,8 +51,14 @@ defmodule Conductor.OrchestratorTest do
 
     def checks_green?(_repo, _pr), do: true
     def checks_failed?(_repo, _pr), do: false
-    def merge(_repo, pr_number, _opts), do: MockState.get({:merge_result, pr_number}, :ok)
-    def labeled_prs(_repo, _label), do: {:ok, []}
+
+    def merge(_repo, pr_number, _opts) do
+      merge_calls = MockState.get(:merge_calls, [])
+      MockState.put(:merge_calls, merge_calls ++ [pr_number])
+      MockState.get({:merge_result, pr_number}, :ok)
+    end
+
+    def labeled_prs(repo, label), do: {:ok, MockState.get({:labeled_prs, repo, label}, [])}
     def factory_prs(_repo), do: {:ok, []}
     def pr_review_comments(_repo, _pr), do: {:ok, []}
     def pr_ci_failure_logs(_repo, _pr), do: {:ok, ""}
@@ -81,6 +99,17 @@ defmodule Conductor.OrchestratorTest do
     end
   end
 
+  defmodule MockRunControl do
+    alias Conductor.OrchestratorTest.MockState
+
+    def operator_block(pid, reason) do
+      calls = MockState.get(:run_control_calls, [])
+      MockState.put(:run_control_calls, calls ++ [{pid, reason}])
+      Process.exit(pid, :shutdown)
+      :ok
+    end
+  end
+
   # Retry an assertion block until it passes or timeout elapses.
   defp eventually(assert_fun, timeout_ms \\ 1_000, step_ms \\ 20) do
     deadline = System.monotonic_time(:millisecond) + timeout_ms
@@ -97,6 +126,20 @@ defmodule Conductor.OrchestratorTest do
       else
         assert_fun.()
       end
+  end
+
+  defp safe_stop(nil), do: :ok
+
+  defp safe_stop(pid) when is_pid(pid) do
+    if Process.alive?(pid) do
+      try do
+        GenServer.stop(pid)
+      catch
+        :exit, _ -> :ok
+      end
+    else
+      :ok
+    end
   end
 
   setup do
@@ -119,6 +162,9 @@ defmodule Conductor.OrchestratorTest do
     orig_code_host = Application.get_env(:conductor, :code_host_module)
     Application.put_env(:conductor, :code_host_module, MockCodeHost)
 
+    orig_run_control = Application.get_env(:conductor, :run_control_module)
+    Application.put_env(:conductor, :run_control_module, MockRunControl)
+
     # Use a 60-minute stale threshold; tests can plant older heartbeats to trigger expiry
     orig_stale = Application.get_env(:conductor, :stale_run_threshold_minutes)
     Application.put_env(:conductor, :stale_run_threshold_minutes, 60)
@@ -129,19 +175,16 @@ defmodule Conductor.OrchestratorTest do
     MockState.put(:test_pid, self())
     MockState.put(:started_runs, [])
     MockState.put(:run_lifetime_ms, 150)
+    MockState.put(:merge_calls, [])
+    MockState.put(:run_control_calls, [])
 
     # Restart the Orchestrator under the global name so start_loop/1 works
-    if pid = Process.whereis(Orchestrator), do: GenServer.stop(pid)
+    safe_stop(Process.whereis(Orchestrator))
     {:ok, orch_pid} = Orchestrator.start_link([])
 
     on_exit(fn ->
-      case Process.whereis(Orchestrator) do
-        nil -> :ok
-        pid -> if Process.alive?(pid), do: catch_exit(GenServer.stop(pid))
-      end
-
-      if pid = Process.whereis(Store),
-        do: if(Process.alive?(pid), do: catch_exit(GenServer.stop(Store)))
+      safe_stop(Process.whereis(Orchestrator))
+      safe_stop(Process.whereis(Store))
 
       if orig_tracker,
         do: Application.put_env(:conductor, :tracker_module, orig_tracker),
@@ -158,6 +201,10 @@ defmodule Conductor.OrchestratorTest do
       if orig_code_host,
         do: Application.put_env(:conductor, :code_host_module, orig_code_host),
         else: Application.delete_env(:conductor, :code_host_module)
+
+      if orig_run_control,
+        do: Application.put_env(:conductor, :run_control_module, orig_run_control),
+        else: Application.delete_env(:conductor, :run_control_module)
 
       if orig_stale,
         do: Application.put_env(:conductor, :stale_run_threshold_minutes, orig_stale),
@@ -184,6 +231,48 @@ defmodule Conductor.OrchestratorTest do
 
     test "returns :ok with at least one worker" do
       assert :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+    end
+  end
+
+  describe "pause/resume dispatch" do
+    test "pause prevents new runs and resume restarts polling", %{orch_pid: orch_pid} do
+      issue = %Conductor.Issue{
+        number: 301,
+        title: "paused issue",
+        body: "## Problem\nx\n## Acceptance Criteria\ny",
+        url: "https://example.test/issues/301"
+      }
+
+      MockState.put({:eligible, "test/repo", "autopilot"}, [issue])
+
+      assert :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      assert :ok = Orchestrator.pause()
+      assert Store.dispatch_paused?()
+
+      send(Process.whereis(Orchestrator), :poll)
+      Process.sleep(100)
+      assert MockState.get(:started_runs) == []
+
+      assert :ok = Orchestrator.resume()
+      refute Store.dispatch_paused?()
+      send(orch_pid, :poll)
+
+      eventually(fn ->
+        assert MockState.get(:started_runs) == [{301, "sprite-1"}]
+      end)
+    end
+
+    test "poll fails closed when pause state cannot be read", %{orch_pid: orch_pid} do
+      Process.unlink(orch_pid)
+
+      assert :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      assert Process.alive?(orch_pid)
+
+      GenServer.stop(Store)
+      send(orch_pid, :poll)
+      Process.sleep(50)
+
+      assert Process.alive?(orch_pid)
     end
   end
 
@@ -474,6 +563,338 @@ defmodule Conductor.OrchestratorTest do
         types = Enum.map(events, & &1["event_type"])
         assert "merge_conflict_blocked" in types
       end)
+    end
+  end
+
+  describe "operator directives" do
+    test "hold label prevents dispatch for an eligible issue" do
+      issue = %Conductor.Issue{
+        number: 401,
+        title: "held issue",
+        body: "## Problem\nx\n## Acceptance Criteria\ny",
+        url: "https://example.test/issues/401"
+      }
+
+      MockState.put({:eligible, "test/repo", "autopilot"}, [issue])
+      MockState.put({:issue_has_label, "test/repo", 401, "hold"}, {:ok, true})
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      Process.sleep(100)
+      assert MockState.get(:started_runs) == []
+    end
+
+    test "hold label blocks merge and records operator_hold" do
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 402,
+          issue_title: "hold merge",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(run_id, %{pr_number: 77, phase: "pr_opened", status: "pr_opened"})
+
+      MockState.put(
+        {:labeled_prs, "test/repo", "lgtm"},
+        [%{"number" => 77, "headRefName" => "factory/402-123"}]
+      )
+
+      MockState.put({:issue_has_label, "test/repo", 402, "hold"}, {:ok, true})
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      eventually(fn ->
+        {:ok, run} = Store.get_run(run_id)
+        assert run["phase"] == "blocked"
+
+        events = Store.list_events(run_id)
+        operator_event = Enum.find(events, &(&1["event_type"] == "operator_blocked"))
+        assert operator_event["payload"]["reason"] == "operator_hold"
+      end)
+    end
+
+    test "bb: cancel comment blocks merge and records operator_cancel" do
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 403,
+          issue_title: "cancel merge",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(run_id, %{pr_number: 78, phase: "pr_opened", status: "pr_opened"})
+
+      MockState.put(
+        {:labeled_prs, "test/repo", "lgtm"},
+        [%{"number" => 78, "headRefName" => "factory/403-123"}]
+      )
+
+      MockState.put({:issue_comments, "test/repo", 403}, [%{"body" => "bb: cancel"}])
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      eventually(fn ->
+        {:ok, run} = Store.get_run(run_id)
+        assert run["phase"] == "blocked"
+        refute Store.leased?("test/repo", 403)
+
+        events = Store.list_events(run_id)
+        operator_event = Enum.find(events, &(&1["event_type"] == "operator_blocked"))
+        assert operator_event["payload"]["reason"] == "operator_cancel"
+      end)
+    end
+
+    test "comment lookup errors fail closed for merge" do
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 404,
+          issue_title: "comment lookup failed",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(run_id, %{pr_number: 79, phase: "pr_opened", status: "pr_opened"})
+
+      MockState.put(
+        {:labeled_prs, "test/repo", "lgtm"},
+        [%{"number" => 79, "headRefName" => "factory/404-123"}]
+      )
+
+      MockState.put({:issue_comments, "test/repo", 404}, {:error, :github_down})
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      Process.sleep(100)
+      {:ok, run} = Store.get_run(run_id)
+      assert run["phase"] == "pr_opened"
+      assert MockState.get(:merge_calls) == []
+
+      events = Store.list_events(run_id)
+      refute Enum.any?(events, &(&1["event_type"] == "operator_blocked"))
+    end
+
+    test "bb: cancel comment in body.text blocks merge" do
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 405,
+          issue_title: "cancel merge body.text",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(run_id, %{pr_number: 80, phase: "pr_opened", status: "pr_opened"})
+
+      MockState.put(
+        {:labeled_prs, "test/repo", "lgtm"},
+        [%{"number" => 80, "headRefName" => "factory/405-123"}]
+      )
+
+      MockState.put(
+        {:issue_comments, "test/repo", 405},
+        GitHub.normalize_issue_comments([%{"body" => %{"text" => "bb: cancel"}}])
+      )
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      eventually(fn ->
+        {:ok, run} = Store.get_run(run_id)
+        assert run["phase"] == "blocked"
+
+        events = Store.list_events(run_id)
+        operator_event = Enum.find(events, &(&1["event_type"] == "operator_blocked"))
+        assert operator_event["payload"]["reason"] == "operator_cancel"
+      end)
+    end
+
+    test "label check errors fail closed for dispatch" do
+      issue = %Conductor.Issue{
+        number: 404,
+        title: "label lookup failed",
+        body: "## Problem\nx\n## Acceptance Criteria\ny",
+        url: "https://example.test/issues/404"
+      }
+
+      MockState.put({:eligible, "test/repo", "autopilot"}, [issue])
+      MockState.put({:issue_has_label, "test/repo", 404, "hold"}, {:error, :github_down})
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      Process.sleep(100)
+      assert MockState.get(:started_runs) == []
+    end
+
+    test "hold label blocks merge when issue number is inferred from the branch" do
+      MockState.put(
+        {:labeled_prs, "test/repo", "lgtm"},
+        [%{"number" => 81, "headRefName" => "factory/406-123"}]
+      )
+
+      MockState.put({:issue_has_label, "test/repo", 406, "hold"}, {:ok, true})
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      Process.sleep(100)
+      assert MockState.get(:merge_calls) == []
+    end
+
+    test "bb: cancel comment in body.body blocks merge" do
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 407,
+          issue_title: "cancel merge body.body",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(run_id, %{pr_number: 82, phase: "pr_opened", status: "pr_opened"})
+
+      MockState.put(
+        {:labeled_prs, "test/repo", "lgtm"},
+        [%{"number" => 82, "headRefName" => "factory/407-123"}]
+      )
+
+      MockState.put(
+        {:issue_comments, "test/repo", 407},
+        GitHub.normalize_issue_comments([%{"body" => %{"body" => "bb: cancel"}}])
+      )
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      eventually(fn ->
+        {:ok, run} = Store.get_run(run_id)
+        assert run["phase"] == "blocked"
+
+        events = Store.list_events(run_id)
+        operator_event = Enum.find(events, &(&1["event_type"] == "operator_blocked"))
+        assert operator_event["payload"]["reason"] == "operator_cancel"
+      end)
+    end
+
+    test "operator directives use configurable policy strings" do
+      orig_hold = Application.get_env(:conductor, :operator_hold_label)
+      orig_cancel = Application.get_env(:conductor, :operator_cancel_command)
+
+      Application.put_env(:conductor, :operator_hold_label, "pause-me")
+      Application.put_env(:conductor, :operator_cancel_command, "bb: stop")
+
+      on_exit(fn ->
+        if orig_hold,
+          do: Application.put_env(:conductor, :operator_hold_label, orig_hold),
+          else: Application.delete_env(:conductor, :operator_hold_label)
+
+        if orig_cancel,
+          do: Application.put_env(:conductor, :operator_cancel_command, orig_cancel),
+          else: Application.delete_env(:conductor, :operator_cancel_command)
+      end)
+
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 408,
+          issue_title: "configurable directives",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(run_id, %{pr_number: 83, phase: "pr_opened", status: "pr_opened"})
+
+      MockState.put(
+        {:labeled_prs, "test/repo", "lgtm"},
+        [%{"number" => 83, "headRefName" => "factory/408-123"}]
+      )
+
+      MockState.put({:issue_has_label, "test/repo", 408, "pause-me"}, {:ok, false})
+      MockState.put({:issue_comments, "test/repo", 408}, [%{"body" => "bb: stop"}])
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      eventually(fn ->
+        {:ok, run} = Store.get_run(run_id)
+        assert run["phase"] == "blocked"
+
+        events = Store.list_events(run_id)
+        operator_event = Enum.find(events, &(&1["event_type"] == "operator_blocked"))
+        assert operator_event["payload"]["reason"] == "operator_cancel"
+      end)
+    end
+
+    test "bb: cancel comment blocks an active run and frees the worker slot", %{
+      orch_pid: orch_pid
+    } do
+      orig_max = Application.get_env(:conductor, :max_concurrent_runs)
+      Application.put_env(:conductor, :max_concurrent_runs, 1)
+
+      on_exit(fn ->
+        if orig_max,
+          do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
+          else: Application.delete_env(:conductor, :max_concurrent_runs)
+      end)
+
+      issue1 = %Conductor.Issue{
+        number: 409,
+        title: "active cancel",
+        body: "## Problem\nx\n## Acceptance Criteria\ny",
+        url: "https://example.test/issues/409"
+      }
+
+      issue2 = %Conductor.Issue{
+        number: 410,
+        title: "next issue",
+        body: "## Problem\nx\n## Acceptance Criteria\ny",
+        url: "https://example.test/issues/410"
+      }
+
+      MockState.put(:run_lifetime_ms, 5_000)
+      MockState.put({:eligible, "test/repo", "autopilot"}, [issue1])
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      eventually(fn ->
+        assert MockState.get(:started_runs) == [{409, "sprite-1"}]
+      end)
+
+      MockState.put({:issue_comments, "test/repo", 409}, [%{"body" => "bb: cancel"}])
+      MockState.put({:eligible, "test/repo", "autopilot"}, [issue2])
+
+      send(orch_pid, :poll)
+
+      eventually(fn ->
+        [{_pid, reason}] = MockState.get(:run_control_calls)
+        assert reason == "operator_cancel"
+        assert MockState.get(:started_runs) == [{409, "sprite-1"}, {410, "sprite-1"}]
+      end)
+    end
+  end
+
+  describe "issue_number_for_pr_lookup/4" do
+    test "returns :skip when run lookup returns an unexpected store error" do
+      assert :skip =
+               Orchestrator.issue_number_for_pr_lookup(
+                 "test/repo",
+                 901,
+                 "factory/901-123",
+                 fn _repo, _pr_number -> {:error, :db_down} end
+               )
+    end
+
+    test "returns :skip when run lookup exits" do
+      assert :skip =
+               Orchestrator.issue_number_for_pr_lookup(
+                 "test/repo",
+                 903,
+                 "factory/903-123",
+                 fn _repo, _pr_number -> exit(:noproc) end
+               )
+    end
+
+    test "returns :skip when run lookup raises" do
+      assert :skip =
+               Orchestrator.issue_number_for_pr_lookup(
+                 "test/repo",
+                 902,
+                 "factory/902-123",
+                 fn _repo, _pr_number -> raise "sqlite exploded" end
+               )
     end
   end
 

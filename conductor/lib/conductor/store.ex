@@ -41,7 +41,7 @@ defmodule Conductor.Store do
   end
 
   @doc "Find a run by repo and PR number."
-  @spec find_run_by_pr(binary(), pos_integer()) :: {:ok, map()} | {:error, :not_found}
+  @spec find_run_by_pr(binary(), pos_integer()) :: {:ok, map()} | {:error, term()}
   def find_run_by_pr(repo, pr_number) do
     GenServer.call(__MODULE__, {:find_run_by_pr, repo, pr_number})
   end
@@ -114,6 +114,18 @@ defmodule Conductor.Store do
   @spec mark_semantic_ready(binary()) :: :ok
   def mark_semantic_ready(run_id) do
     GenServer.call(__MODULE__, {:mark_semantic_ready, run_id})
+  end
+
+  @doc "Persist whether new run dispatch is paused."
+  @spec set_dispatch_paused(boolean()) :: :ok
+  def set_dispatch_paused(paused?) do
+    GenServer.call(__MODULE__, {:set_dispatch_paused, paused?})
+  end
+
+  @doc "Return true when new run dispatch is paused."
+  @spec dispatch_paused?() :: boolean()
+  def dispatch_paused? do
+    GenServer.call(__MODULE__, :dispatch_paused?)
   end
 
   @doc "List non-terminal runs for a repo (completed_at IS NULL)."
@@ -200,17 +212,28 @@ defmodule Conductor.Store do
 
   @impl true
   def handle_call({:find_run_by_pr, repo, pr_number}, _from, state) do
-    rows =
-      query_all(
-        state.conn,
-        "SELECT * FROM runs WHERE repo = ?1 AND pr_number = ?2 ORDER BY picked_at DESC LIMIT 1",
-        [repo, pr_number]
-      )
+    result =
+      try do
+        rows =
+          query_all(
+            state.conn,
+            "SELECT * FROM runs WHERE repo = ?1 AND pr_number = ?2 ORDER BY picked_at DESC LIMIT 1",
+            [repo, pr_number]
+          )
 
-    case rows do
-      [run | _] -> {:reply, {:ok, run}, state}
-      [] -> {:reply, {:error, :not_found}, state}
-    end
+        case rows do
+          [run | _] -> {:ok, run}
+          [] -> {:error, :not_found}
+        end
+      rescue
+        error ->
+          {:error, {:db_error, Exception.message(error)}}
+      catch
+        :exit, reason ->
+          {:error, reason}
+      end
+
+    {:reply, result, state}
   end
 
   @impl true
@@ -413,6 +436,30 @@ defmodule Conductor.Store do
   end
 
   @impl true
+  def handle_call({:set_dispatch_paused, paused?}, _from, state) do
+    now = now_utc()
+    value = if paused?, do: "true", else: "false"
+
+    exec(
+      state.conn,
+      """
+      INSERT INTO control (key, value, updated_at)
+      VALUES ('dispatch_paused', ?1, ?2)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+      """,
+      [value, now]
+    )
+
+    {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call(:dispatch_paused?, _from, state) do
+    row = query_one(state.conn, "SELECT value FROM control WHERE key = 'dispatch_paused'", [])
+    {:reply, row != nil and row["value"] == "true", state}
+  end
+
+  @impl true
   def handle_call({:list_active_runs, repo}, _from, state) do
     rows =
       query_all(
@@ -525,6 +572,13 @@ defmodule Conductor.Store do
             check_name TEXT,
             rationale TEXT NOT NULL,
             waived_at TEXT NOT NULL
+          )
+          """,
+          """
+          CREATE TABLE IF NOT EXISTS control (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
           )
           """,
           """
