@@ -18,6 +18,7 @@ defmodule Conductor.RunServer do
   alias Conductor.{Store, Workspace, Prompt, Config, Retro}
 
   defp tracker_mod, do: Application.get_env(:conductor, :tracker_module, Conductor.GitHub)
+  defp workspace_mod, do: Application.get_env(:conductor, :workspace_module, Workspace)
 
   @heartbeat_ms 30_000
 
@@ -116,9 +117,11 @@ defmodule Conductor.RunServer do
 
     prepare_fn =
       if state.existing_branch do
-        fn -> Workspace.adopt_branch(state.worker, state.repo, state.run_id, state.branch) end
+        fn ->
+          workspace_mod().adopt_branch(state.worker, state.repo, state.run_id, state.branch)
+        end
       else
-        fn -> Workspace.prepare(state.worker, state.repo, state.run_id, state.branch) end
+        fn -> workspace_mod().prepare(state.worker, state.repo, state.run_id, state.branch) end
       end
 
     case prepare_fn.() do

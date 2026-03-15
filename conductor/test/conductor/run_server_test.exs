@@ -1,0 +1,449 @@
+defmodule Conductor.RunServerTest do
+  use ExUnit.Case, async: false
+
+  alias Conductor.{Store, RunServer}
+
+  # --- Mock State (shared across processes via persistent_term) ---
+
+  defmodule MockState do
+    def put(key, value), do: :persistent_term.put({__MODULE__, key}, value)
+
+    def get(key, default \\ nil) do
+      try do
+        :persistent_term.get({__MODULE__, key})
+      rescue
+        ArgumentError -> default
+      end
+    end
+
+    def cleanup do
+      for {{__MODULE__, _} = k, _} <- :persistent_term.get(), do: :persistent_term.erase(k)
+    end
+  end
+
+  # --- Mock Worker (Conductor.Worker behaviour) ---
+
+  defmodule MockWorker do
+    @behaviour Conductor.Worker
+    alias Conductor.RunServerTest.MockState
+
+    def exec(_sprite, _cmd, _opts), do: {:ok, ""}
+
+    def dispatch(sprite, _prompt, _repo, _opts) do
+      MockState.get({:dispatch_result, sprite}, {:ok, ""})
+    end
+
+    def read_artifact(_sprite, _path, _opts) do
+      # Use a single global key — the path is dynamic and unpredictable
+      MockState.get(:artifact, {:error, :not_found})
+    end
+
+    def cleanup(_sprite, _repo, _run_id), do: :ok
+    def kill(_sprite), do: :ok
+  end
+
+  # --- Mock Workspace ---
+
+  defmodule MockWorkspace do
+    alias Conductor.RunServerTest.MockState
+
+    def prepare(_sprite, _repo, _run_id, _branch) do
+      MockState.get(:workspace_result, {:ok, "/tmp/test-worktree"})
+    end
+
+    def adopt_branch(_sprite, _repo, _run_id, _branch) do
+      MockState.get(:workspace_result, {:ok, "/tmp/test-worktree"})
+    end
+
+    def artifact_path(repo, run_id) do
+      Conductor.Workspace.artifact_path(repo, run_id)
+    end
+  end
+
+  # --- Mock Tracker ---
+
+  defmodule MockTracker do
+    @behaviour Conductor.Tracker
+    alias Conductor.RunServerTest.MockState
+
+    def get_issue(_repo, _number), do: {:error, :not_found}
+    def list_eligible(_repo, _opts), do: []
+    def issue_has_label?(_repo, _issue, _label), do: {:ok, false}
+    def issue_comments(_repo, _issue), do: {:ok, []}
+
+    def comment(_repo, issue_number, body) do
+      comments = MockState.get({:comments, issue_number}, [])
+      MockState.put({:comments, issue_number}, comments ++ [body])
+      :ok
+    end
+  end
+
+  # --- Slow Worker for operator_block tests ---
+
+  defmodule SlowWorker do
+    @behaviour Conductor.Worker
+
+    def exec(_sprite, _cmd, _opts), do: {:ok, ""}
+
+    def dispatch(_sprite, _prompt, _repo, _opts) do
+      Process.sleep(30_000)
+      {:ok, ""}
+    end
+
+    def read_artifact(_sprite, _path, _opts), do: {:error, :not_found}
+    def cleanup(_sprite, _repo, _run_id), do: :ok
+    def kill(_sprite), do: :ok
+  end
+
+  # --- Crashing Worker for crash tests ---
+
+  defmodule CrashingWorker do
+    @behaviour Conductor.Worker
+
+    def exec(_sprite, _cmd, _opts), do: {:ok, ""}
+
+    def dispatch(_sprite, _prompt, _repo, _opts) do
+      raise "simulated crash"
+    end
+
+    def read_artifact(_sprite, _path, _opts), do: {:error, :not_found}
+    def cleanup(_sprite, _repo, _run_id), do: :ok
+  end
+
+  # --- Helpers ---
+
+  defp test_issue(number \\ 42) do
+    %Conductor.Issue{
+      number: number,
+      title: "test issue #{number}",
+      body: "## Problem\ntest\n## Acceptance Criteria\ntest",
+      url: "https://example.test/issues/#{number}"
+    }
+  end
+
+  defp start_run_server(opts \\ []) do
+    issue = Keyword.get(opts, :issue, test_issue())
+    worker = Keyword.get(opts, :worker, "test-sprite")
+    repo = Keyword.get(opts, :repo, "test/repo")
+    extra = Keyword.drop(opts, [:issue, :worker, :repo])
+    RunServer.start_link([repo: repo, issue: issue, worker: worker] ++ extra)
+  end
+
+  defp wait_for_exit(pid, timeout \\ 5_000) do
+    ref = Process.monitor(pid)
+    assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, timeout
+  end
+
+  defp find_run(issue_number) do
+    Store.list_runs(limit: 50)
+    |> Enum.find(&(&1["issue_number"] == issue_number))
+  end
+
+  defp event_types(run_id) do
+    Store.list_events(run_id)
+    |> Enum.map(& &1["event_type"])
+  end
+
+  defp eventually(assert_fun, timeout_ms \\ 2_000, step_ms \\ 20) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_eventually(assert_fun, deadline, step_ms)
+  end
+
+  defp do_eventually(assert_fun, deadline, step_ms) do
+    assert_fun.()
+  rescue
+    _ ->
+      if System.monotonic_time(:millisecond) < deadline do
+        Process.sleep(step_ms)
+        do_eventually(assert_fun, deadline, step_ms)
+      else
+        assert_fun.()
+      end
+  end
+
+  # --- Setup ---
+
+  setup do
+    db_path = Path.join(System.tmp_dir!(), "rs_test_#{:rand.uniform(999_999)}.db")
+    event_log = Path.join(System.tmp_dir!(), "rs_test_#{:rand.uniform(999_999)}.jsonl")
+
+    if Process.whereis(Store), do: GenServer.stop(Store)
+    {:ok, _} = Store.start_link(db_path: db_path, event_log: event_log)
+
+    originals = %{
+      worker: Application.get_env(:conductor, :worker_module),
+      workspace: Application.get_env(:conductor, :workspace_module),
+      tracker: Application.get_env(:conductor, :tracker_module)
+    }
+
+    Application.put_env(:conductor, :worker_module, MockWorker)
+    Application.put_env(:conductor, :workspace_module, MockWorkspace)
+    Application.put_env(:conductor, :tracker_module, MockTracker)
+
+    MockState.cleanup()
+
+    on_exit(fn ->
+      MockState.cleanup()
+
+      for {key, orig} <- originals do
+        config_key = :"#{key}_module"
+
+        if orig,
+          do: Application.put_env(:conductor, config_key, orig),
+          else: Application.delete_env(:conductor, config_key)
+      end
+
+      if pid = Process.whereis(Store) do
+        if Process.alive?(pid), do: catch_exit(GenServer.stop(Store))
+      end
+
+      File.rm(db_path)
+      File.rm(event_log)
+    end)
+
+    :ok
+  end
+
+  # --- AC1: pending → building → pr_opened lifecycle ---
+
+  describe "AC1: successful lifecycle" do
+    setup do
+      MockState.put({:dispatch_result, "test-sprite"}, {:ok, "build complete"})
+
+      MockState.put(:artifact, {
+        :ok,
+        %{
+          "status" => "ready",
+          "pr_number" => 123,
+          "pr_url" => "https://github.com/test/repo/pull/123",
+          "summary" => "implemented feature"
+        }
+      })
+
+      :ok
+    end
+
+    test "run progresses through all phases to pr_opened" do
+      {:ok, pid} = start_run_server()
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "pr_opened"
+      assert run["pr_number"] == 123
+    end
+
+    test "records events at each phase transition" do
+      {:ok, pid} = start_run_server()
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      types = event_types(run["run_id"])
+
+      assert "lease_acquired" in types
+      assert "builder_workspace_prepared" in types
+      assert "builder_dispatched" in types
+      assert "builder_complete" in types
+      assert "builder_artifact_ready" in types
+      assert "workspace_cleaned" in types
+    end
+
+    test "lease is released after successful completion" do
+      {:ok, pid} = start_run_server()
+      wait_for_exit(pid)
+
+      refute Store.leased?("test/repo", 42)
+    end
+  end
+
+  # --- AC2: blocked artifact handling ---
+
+  describe "AC2: blocked artifact" do
+    setup do
+      MockState.put({:dispatch_result, "test-sprite"}, {:ok, ""})
+
+      MockState.put(:artifact, {
+        :ok,
+        %{
+          "status" => "blocked",
+          "blocking_reason" => "lint failed",
+          "pr_number" => 789,
+          "pr_url" => "https://github.com/test/repo/pull/789"
+        }
+      })
+
+      :ok
+    end
+
+    test "run transitions to blocked" do
+      {:ok, pid} = start_run_server()
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "blocked"
+    end
+
+    test "lease is released on block" do
+      {:ok, pid} = start_run_server()
+      wait_for_exit(pid)
+
+      refute Store.leased?("test/repo", 42)
+    end
+
+    test "operator comment posted with blocking reason" do
+      {:ok, pid} = start_run_server()
+      wait_for_exit(pid)
+
+      comments = MockState.get({:comments, 42}, [])
+      assert length(comments) == 1
+      assert hd(comments) =~ "lint failed"
+    end
+
+    test "records run_blocked event" do
+      {:ok, pid} = start_run_server()
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert "run_blocked" in event_types(run["run_id"])
+    end
+  end
+
+  # --- AC3: builder dispatch failure ---
+
+  describe "AC3: dispatch error" do
+    setup do
+      MockState.put({:dispatch_result, "test-sprite"}, {:error, "SEGFAULT", 139})
+      :ok
+    end
+
+    test "marks run failed" do
+      {:ok, pid} = start_run_server()
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "failed"
+    end
+
+    test "lease released" do
+      {:ok, pid} = start_run_server()
+      wait_for_exit(pid)
+
+      refute Store.leased?("test/repo", 42)
+    end
+
+    test "records builder_dispatch_failed event" do
+      {:ok, pid} = start_run_server()
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert "builder_dispatch_failed" in event_types(run["run_id"])
+    end
+  end
+
+  describe "AC3: dispatch task crash" do
+    test "crash kills RunServer via link — stale-run detection handles cleanup" do
+      # Task.async links to RunServer. A task crash sends an EXIT signal
+      # that kills RunServer before the :DOWN handler can fire. The run
+      # stays in "building" until the Orchestrator's stale-run reconciler
+      # expires it. This is the actual production behavior.
+      Application.put_env(:conductor, :worker_module, CrashingWorker)
+
+      Process.flag(:trap_exit, true)
+
+      {:ok, pid} = start_run_server()
+
+      # RunServer dies from the linked task crash
+      assert_receive {:EXIT, ^pid, _reason}, 5_000
+
+      run = find_run(42)
+      # Run stays in building — the :DOWN handler never fires
+      assert run["phase"] == "building"
+      # Lease stays held — stale-run detection cleans this up
+      assert Store.leased?("test/repo", 42)
+    end
+  end
+
+  # --- Additional failure paths ---
+
+  describe "workspace preparation failure" do
+    test "workspace error transitions to failed" do
+      MockState.put(:workspace_result, {:error, "ssh timeout"})
+
+      {:ok, pid} = start_run_server()
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "failed"
+      assert "workspace_preparation_failed" in event_types(run["run_id"])
+      refute Store.leased?("test/repo", 42)
+    end
+  end
+
+  describe "already-leased issue" do
+    test "stops immediately without creating a run" do
+      :ok = Store.acquire_lease("test/repo", 42, "existing-run")
+
+      {:ok, pid} = start_run_server()
+      wait_for_exit(pid)
+
+      assert Store.leased?("test/repo", 42)
+    end
+  end
+
+  describe "missing artifact" do
+    test "marks run failed" do
+      MockState.put({:dispatch_result, "test-sprite"}, {:ok, ""})
+      # artifact defaults to {:error, :not_found}
+
+      {:ok, pid} = start_run_server()
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "failed"
+      assert "artifact_missing" in event_types(run["run_id"])
+    end
+  end
+
+  describe "invalid artifact status" do
+    test "unexpected status marks run failed" do
+      MockState.put({:dispatch_result, "test-sprite"}, {:ok, ""})
+
+      MockState.put(:artifact, {
+        :ok,
+        %{"status" => "unknown", "data" => "garbage"}
+      })
+
+      {:ok, pid} = start_run_server()
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "failed"
+      assert "invalid_artifact" in event_types(run["run_id"])
+    end
+  end
+
+  describe "operator_block/2" do
+    test "blocks active run and records reason" do
+      Application.put_env(:conductor, :worker_module, SlowWorker)
+
+      {:ok, pid} = start_run_server()
+
+      eventually(fn ->
+        status = RunServer.status(pid)
+        assert status.phase == :building
+      end)
+
+      :ok = RunServer.operator_block(pid, "operator cancelled")
+
+      # operator_block stops the GenServer synchronously via handle_call
+      # so the process is already dead after the call returns
+      eventually(fn ->
+        refute Process.alive?(pid)
+      end)
+
+      run = find_run(42)
+      assert run["phase"] == "blocked"
+      assert "run_blocked" in event_types(run["run_id"])
+      refute Store.leased?("test/repo", 42)
+    end
+  end
+end
