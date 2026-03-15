@@ -1,12 +1,11 @@
 defmodule Conductor do
   @moduledoc """
-  Bitterblossom conductor — issue-to-merged-PR orchestrator.
+  Bitterblossom conductor — always-on issue-to-merged-PR service.
 
-  Thin state machine that trusts the builder agent.
-  The conductor owns authority (lease, merge) and persistence (runs, events).
-  The agent owns judgment (code, reviews, revisions).
+  Start with `mix conductor start`. The conductor reads fleet.toml,
+  provisions sprites, and runs continuously: picking issues, building,
+  polishing, and merging.
   """
 
-  defdelegate run_once(opts), to: Conductor.Orchestrator
-  defdelegate start_loop(opts), to: Conductor.Orchestrator
+  defdelegate boot_fleet(fleet_path), to: Conductor.Application
 end

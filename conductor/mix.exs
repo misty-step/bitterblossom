@@ -29,6 +29,7 @@ defmodule Conductor.MixProject do
       {:phoenix_pubsub, "~> 2.1"},
       {:bandit, "~> 1.5"},
       {:plug_crypto, "~> 2.1"},
+      {:toml, "~> 0.7"},
       {:lazy_html, ">= 0.1.0", only: :test}
     ]
   end

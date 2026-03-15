@@ -10,7 +10,7 @@ defmodule Conductor.Polisher do
   use GenServer
   require Logger
 
-  alias Conductor.{Config, Prompt, Store, Fleet}
+  alias Conductor.{Config, Prompt, Store}
 
   defstruct [
     :repo,
@@ -35,7 +35,7 @@ defmodule Conductor.Polisher do
   @impl true
   def init(opts) do
     repo = Keyword.fetch!(opts, :repo)
-    polisher_sprite = Keyword.get(opts, :polisher_sprite) || resolve_polisher_sprite()
+    polisher_sprite = Keyword.fetch!(opts, :polisher_sprite)
     poll_ms = Keyword.get(opts, :poll_ms, Config.poll_seconds() * 1_000)
 
     state = %__MODULE__{
@@ -175,13 +175,6 @@ defmodule Conductor.Polisher do
   defp workspace_for_branch(repo, _branch) do
     repo_name = repo |> String.split("/") |> List.last()
     "/home/sprite/workspace/#{repo_name}"
-  end
-
-  defp resolve_polisher_sprite do
-    case Fleet.by_role(:polisher) do
-      [sprite | _] -> sprite
-      [] -> "bb-polisher"
-    end
   end
 
   defp schedule_poll(_, delay) do
