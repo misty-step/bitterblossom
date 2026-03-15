@@ -203,12 +203,7 @@ defmodule Conductor.CLI do
         )
       end
     else
-      # Fall back to static fleet config
-      for s <- Conductor.Fleet.status() do
-        IO.puts(
-          "  #{s.name} (#{s.role}) — #{if s.reachable, do: "reachable", else: "unreachable"}"
-        )
-      end
+      IO.puts("  (no fleet loaded — run 'conductor start' first)")
     end
 
     IO.puts("\n=== Phase Workers ===")

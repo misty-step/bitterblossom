@@ -78,15 +78,21 @@ defmodule Conductor.Fleet.Loader do
   end
 
   defp parse_defaults_map(defaults) do
-    {:ok,
-     %{
-       org: Map.get(defaults, "org", "misty-step"),
-       repo: Map.get(defaults, "repo"),
-       harness: Map.get(defaults, "harness", "codex"),
-       model: Map.get(defaults, "model", "gpt-5.4"),
-       reasoning_effort: Map.get(defaults, "reasoning_effort", "medium"),
-       label: Map.get(defaults, "label", "autopilot")
-     }}
+    repo = Map.get(defaults, "repo")
+
+    if is_nil(repo) or repo == "" do
+      {:error, "[defaults] must specify 'repo' (e.g. repo = \"org/repo\")"}
+    else
+      {:ok,
+       %{
+         org: Map.get(defaults, "org", "misty-step"),
+         repo: repo,
+         harness: Map.get(defaults, "harness", "codex"),
+         model: Map.get(defaults, "model", "gpt-5.4"),
+         reasoning_effort: Map.get(defaults, "reasoning_effort", "medium"),
+         label: Map.get(defaults, "label", "autopilot")
+       }}
+    end
   end
 
   defp parse_sprites(raw, defaults) do

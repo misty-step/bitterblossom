@@ -11,7 +11,7 @@ defmodule Conductor.Fixer do
   use GenServer
   require Logger
 
-  alias Conductor.{Config, Prompt, Store, Fleet}
+  alias Conductor.{Config, Prompt, Store}
 
   defstruct [
     :repo,
@@ -36,7 +36,7 @@ defmodule Conductor.Fixer do
   @impl true
   def init(opts) do
     repo = Keyword.fetch!(opts, :repo)
-    fixer_sprite = Keyword.get(opts, :fixer_sprite) || resolve_fixer_sprite()
+    fixer_sprite = Keyword.fetch!(opts, :fixer_sprite)
     poll_ms = Keyword.get(opts, :poll_ms, Config.poll_seconds() * 1_000)
 
     state = %__MODULE__{
@@ -179,13 +179,6 @@ defmodule Conductor.Fixer do
   defp workspace_for_branch(repo, _branch) do
     repo_name = repo |> String.split("/") |> List.last()
     "/home/sprite/workspace/#{repo_name}"
-  end
-
-  defp resolve_fixer_sprite do
-    case Fleet.by_role(:fixer) do
-      [sprite | _] -> sprite
-      [] -> "bb-fixer"
-    end
   end
 
   defp schedule_poll(_, delay) do

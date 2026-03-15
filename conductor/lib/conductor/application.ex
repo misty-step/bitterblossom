@@ -42,47 +42,40 @@ defmodule Conductor.Application do
 
     sprites = config.sprites
     defaults = config.defaults
+    repo = defaults.repo
 
-    # Validate repo is configured
-    if is_nil(defaults.repo) or defaults.repo == "" do
-      Logger.error("[boot] fleet.toml [defaults] must specify 'repo'")
-      {:error, "missing required [defaults].repo"}
+    Logger.info("[boot] loaded #{length(sprites)} sprite(s) from #{fleet_path}")
+
+    # 2. Reconcile all sprites (idempotent provisioning)
+    {:ok, results} = reconciler_mod.reconcile_all(sprites)
+    healthy = MapSet.new(for r <- results, r.healthy, do: r.name)
+
+    if MapSet.size(healthy) == 0 do
+      Logger.error("[boot] no healthy sprites after reconciliation — cannot start")
+      {:error, :no_healthy_sprites}
     else
-      Logger.info("[boot] loaded #{length(sprites)} sprite(s) from #{fleet_path}")
+      # 3. Start orchestrator
+      builders =
+        Loader.by_role(sprites, :builder)
+        |> Enum.filter(&MapSet.member?(healthy, &1.name))
+        |> Enum.map(& &1.name)
 
-      # 2. Reconcile all sprites (idempotent provisioning)
-      {:ok, results} = reconciler_mod.reconcile_all(sprites)
-      healthy = MapSet.new(for r <- results, r.healthy, do: r.name)
-
-      if MapSet.size(healthy) == 0 do
-        Logger.error("[boot] no healthy sprites after reconciliation — cannot start")
-        {:error, :no_healthy_sprites}
+      if builders != [] do
+        Conductor.Orchestrator.start_loop(repo: repo, workers: builders, label: defaults.label)
+        Logger.info("[boot] orchestrator polling with builders: #{Enum.join(builders, ", ")}")
       else
-        repo = defaults.repo
-
-        # 3. Start orchestrator
-        builders =
-          Loader.by_role(sprites, :builder)
-          |> Enum.filter(&MapSet.member?(healthy, &1.name))
-          |> Enum.map(& &1.name)
-
-        if builders != [] do
-          Conductor.Orchestrator.start_loop(repo: repo, workers: builders, label: defaults.label)
-          Logger.info("[boot] orchestrator polling with builders: #{Enum.join(builders, ", ")}")
-        else
-          Logger.warning("[boot] no healthy builders — orchestrator will not poll")
-        end
-
-        # 4. Start phase workers (fixer + polisher)
-        start_phase_workers(sprites, healthy, repo)
-
-        # 5. Store fleet config for runtime queries
-        Application.put_env(:conductor, :fleet_config, config)
-        Application.put_env(:conductor, :fleet_sprites, sprites)
-
-        Logger.info("[boot] bitterblossom running — #{MapSet.size(healthy)} healthy sprites")
-        :ok
+        Logger.warning("[boot] no healthy builders — orchestrator will not poll")
       end
+
+      # 4. Start phase workers (fixer + polisher)
+      start_phase_workers(sprites, healthy, repo)
+
+      # 5. Store fleet config for runtime queries
+      Application.put_env(:conductor, :fleet_config, config)
+      Application.put_env(:conductor, :fleet_sprites, sprites)
+
+      Logger.info("[boot] bitterblossom running — #{MapSet.size(healthy)} healthy sprites")
+      :ok
     end
   end
 

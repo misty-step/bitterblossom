@@ -70,11 +70,27 @@ defmodule Conductor.Fleet.LoaderTest do
       assert msg =~ "not found"
     end
 
+    test "returns error for missing repo in defaults", %{path: path} do
+      File.write!(path, """
+      version = "1"
+      [defaults]
+      org = "test"
+
+      [[sprite]]
+      name = "bb-test"
+      role = "builder"
+      """)
+
+      assert {:error, msg} = Loader.load(path)
+      assert msg =~ "must specify 'repo'"
+    end
+
     test "returns error for missing sprites", %{path: path} do
       File.write!(path, """
       version = "1"
       [defaults]
       org = "test"
+      repo = "test/repo"
       """)
 
       assert {:error, msg} = Loader.load(path)
@@ -83,6 +99,9 @@ defmodule Conductor.Fleet.LoaderTest do
 
     test "returns error for invalid role", %{path: path} do
       File.write!(path, """
+      [defaults]
+      repo = "test/repo"
+
       [[sprite]]
       name = "bb-test"
       role = "invalid"
@@ -94,6 +113,9 @@ defmodule Conductor.Fleet.LoaderTest do
 
     test "returns error for missing name", %{path: path} do
       File.write!(path, """
+      [defaults]
+      repo = "test/repo"
+
       [[sprite]]
       role = "builder"
       """)

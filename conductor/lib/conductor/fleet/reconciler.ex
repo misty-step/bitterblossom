@@ -17,7 +17,11 @@ defmodule Conductor.Fleet.Reconciler do
   """
   @spec reconcile_all([map()]) :: {:ok, [map()]}
   def reconcile_all(sprites) do
-    results = Enum.map(sprites, &reconcile_sprite/1)
+    results =
+      sprites
+      |> Task.async_stream(&reconcile_sprite/1, timeout: 600_000, ordered: false)
+      |> Enum.map(fn {:ok, result} -> result end)
+
     healthy = Enum.count(results, & &1.healthy)
     degraded = Enum.count(results, &(not &1.healthy))
 
@@ -103,18 +107,20 @@ defmodule Conductor.Fleet.Reconciler do
     repo_flag = if sprite.repo, do: ["--repo", sprite.repo], else: []
 
     # Pass persona via --persona flag if set (writes to sprite as PERSONA.md)
-    persona_flag =
+    {persona_flag, tmp_file} =
       if sprite.persona do
         tmp = Path.join(System.tmp_dir!(), "bb-persona-#{sprite.name}.md")
         File.write!(tmp, sprite.persona)
-        ["--persona", tmp]
+        {["--persona", tmp], tmp}
       else
-        []
+        {[], nil}
       end
 
     args = ["setup", sprite.name] ++ repo_flag ++ persona_flag ++ ["--force"]
+    result = Shell.cmd(bb_path, args, timeout: 300_000)
+    if tmp_file, do: File.rm(tmp_file)
 
-    case Shell.cmd(bb_path, args, timeout: 300_000) do
+    case result do
       {:ok, _output} -> :ok
       {:error, output, _code} -> {:error, output}
     end
