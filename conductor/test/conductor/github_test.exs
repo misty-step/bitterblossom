@@ -363,6 +363,83 @@ defmodule Conductor.GitHubTest do
       )
     end
 
+    test "caps unfiltered pagination at the default issue limit" do
+      with_fake_gh(
+        """
+        printf '%s\n' "$@" >> "$GH_ARGS_PATH"
+        page="$(printf '%s' "$*" | sed -n 's/.*page=\\([0-9][0-9]*\\).*/\\1/p')"
+
+        if [[ -z "$page" ]]; then
+          echo '[]'
+        elif (( page <= 11 )); then
+          start=$(( (page - 1) * 100 + 1 ))
+          finish=$(( start + 99 ))
+          printf '[\n'
+
+          for number in $(seq "$start" "$finish"); do
+            comma=","
+
+            if (( number == finish )); then
+              comma=""
+            fi
+
+            printf '{"number":%s,"title":"issue %s","body":"draft body","url":"https://example.test/issues/%s","labels":[]}%s\n' \
+              "$number" "$number" "$number" "$comma"
+          done
+
+          printf ']\n'
+        else
+          echo '[]'
+        fi
+        """,
+        fn _tmp_dir, args_path ->
+          assert {:ok, issues} = GitHub.list_issues("misty-step/bitterblossom")
+          assert length(issues) == 1000
+          assert Enum.at(issues, 0).number == 1
+          assert Enum.at(issues, -1).number == 1000
+
+          args = File.read!(args_path)
+          refute String.contains?(args, "page=11")
+        end
+      )
+    end
+
+    test "eligible_issues returns both ready and unready issues sorted by number" do
+      with_fake_gh(
+        """
+        cat <<'JSON'
+        [
+          {
+            "number": 20,
+            "title": "ready issue",
+            "body": "## Problem\\nx\\n\\n## Acceptance Criteria\\n- [ ] [test] y",
+            "url": "https://example.test/issues/20",
+            "labels": []
+          },
+          {
+            "number": 10,
+            "title": "unready issue",
+            "body": "draft body",
+            "url": "https://example.test/issues/10",
+            "labels": []
+          }
+        ]
+        JSON
+        """,
+        fn _tmp_dir, _args_path ->
+          issues =
+            GitHub.eligible_issues(
+              "misty-step/bitterblossom",
+              label: "autopilot",
+              limit: 25
+            )
+
+          assert Enum.map(issues, & &1.number) == [10, 20]
+          assert Enum.find(issues, &(&1.number == 10)).body == "draft body"
+        end
+      )
+    end
+
     test "filters pull requests from paginated issue fetches" do
       with_fake_gh(
         """

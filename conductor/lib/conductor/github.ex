@@ -94,10 +94,11 @@ defmodule Conductor.GitHub do
   def list_issues(repo, opts \\ []) do
     label = Keyword.get(opts, :label)
     explicit_limit? = Keyword.has_key?(opts, :limit)
+    limit = Keyword.get(opts, :limit, default_issue_limit(label))
 
     case {normalized_label(label), explicit_limit?} do
       {nil, false} ->
-        list_all_open_issues(repo)
+        list_all_open_issues(repo, limit)
 
       {_label, _explicit_limit?} ->
         with {:ok, json} <- run_gh(list_issue_args(repo, opts)),
@@ -200,9 +201,9 @@ defmodule Conductor.GitHub do
   defp normalized_label(""), do: nil
   defp normalized_label(label), do: label
 
-  defp list_all_open_issues(repo) do
+  defp list_all_open_issues(repo, limit) do
     with {:ok, {owner, name}} <- repo_parts(repo) do
-      fetch_issue_pages(owner, name, 1, [])
+      fetch_issue_pages(owner, name, 1, limit, [])
     end
   end
 
@@ -232,7 +233,11 @@ defmodule Conductor.GitHub do
     end
   end
 
-  defp fetch_issue_pages(owner, name, page, acc) do
+  defp fetch_issue_pages(_owner, _name, _page, remaining, acc) when remaining <= 0 do
+    {:ok, Enum.reverse(acc)}
+  end
+
+  defp fetch_issue_pages(owner, name, page, remaining, acc) do
     args = [
       "api",
       "repos/#{owner}/#{name}/issues?state=open&per_page=#{@issues_page_size}&page=#{page}"
@@ -243,12 +248,19 @@ defmodule Conductor.GitHub do
       page_issues =
         issues
         |> Enum.reject(&Map.has_key?(&1, "pull_request"))
+        |> Enum.take(remaining)
         |> Enum.map(&Issue.from_github/1)
 
       if issues == [] do
-        {:ok, Enum.reverse(page_issues, acc)}
+        {:ok, Enum.reverse(acc)}
       else
-        fetch_issue_pages(owner, name, page + 1, Enum.reverse(page_issues, acc))
+        fetch_issue_pages(
+          owner,
+          name,
+          page + 1,
+          remaining - length(page_issues),
+          Enum.reverse(page_issues) ++ acc
+        )
       end
     end
   end
