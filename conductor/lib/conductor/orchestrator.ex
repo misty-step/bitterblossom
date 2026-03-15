@@ -95,6 +95,7 @@ defmodule Conductor.Orchestrator do
   @impl true
   def handle_info(:poll, %{mode: :polling} = state) do
     state = reconcile(state)
+    merge_labeled_prs(state)
     state = maybe_start_runs(state)
     schedule_poll(Config.poll_seconds() * 1_000)
     {:noreply, state}
@@ -263,8 +264,59 @@ defmodule Conductor.Orchestrator do
     end)
   end
 
+  # --- Label-Driven Merge ---
+
+  defp merge_labeled_prs(%{repo: nil}), do: :ok
+
+  defp merge_labeled_prs(%{repo: repo}) do
+    case code_host_mod().labeled_prs(repo, "lgtm") do
+      {:ok, prs} ->
+        prs
+        |> Enum.filter(fn pr ->
+          # Only merge PRs from conductor branches (factory/*)
+          branch = pr["headRefName"] || ""
+          String.starts_with?(branch, "factory/")
+        end)
+        |> Enum.each(fn pr ->
+          pr_number = pr["number"]
+
+          if code_host_mod().checks_green?(repo, pr_number) do
+            Logger.info("[merge] PR ##{pr_number} has lgtm + green CI, merging")
+
+            case code_host_mod().merge(repo, pr_number, []) do
+              :ok ->
+                Logger.info("[merge] PR ##{pr_number} merged successfully")
+                record_merge(repo, pr_number)
+
+              {:error, reason} ->
+                Logger.warning("[merge] PR ##{pr_number} merge failed: #{reason}")
+            end
+          else
+            Logger.debug("[merge] PR ##{pr_number} has lgtm but CI not green, skipping")
+          end
+        end)
+
+      {:error, reason} ->
+        Logger.warning("[merge] failed to check labeled PRs: #{reason}")
+    end
+  end
+
+  # Update the Store when the orchestrator merges a PR (not the RunServer).
+  defp record_merge(repo, pr_number) do
+    case Store.find_run_by_pr(repo, pr_number) do
+      {:ok, %{"run_id" => run_id}} ->
+        Store.record_event(run_id, "merged", %{pr_number: pr_number, merged_by: "orchestrator"})
+        Store.complete_run(run_id, "merged", "merged")
+        Conductor.Retro.analyze(run_id)
+
+      _ ->
+        Logger.debug("[merge] no run found for PR ##{pr_number}, skipping store update")
+    end
+  end
+
   defp tracker_mod, do: Application.get_env(:conductor, :tracker_module, Conductor.GitHub)
   defp worker_mod, do: Application.get_env(:conductor, :worker_module, Conductor.Sprite)
+  defp code_host_mod, do: Application.get_env(:conductor, :code_host_module, Conductor.GitHub)
 
   defp schedule_poll(delay) do
     Process.send_after(self(), :poll, delay)

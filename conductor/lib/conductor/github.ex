@@ -163,6 +163,32 @@ defmodule Conductor.GitHub do
     end
   end
 
+  @doc "List open PRs with a specific label."
+  @spec labeled_prs(binary(), binary()) :: {:ok, [map()]} | {:error, term()}
+  def labeled_prs(repo, label) do
+    case Shell.cmd("gh", [
+           "pr",
+           "list",
+           "--repo",
+           repo,
+           "--state",
+           "open",
+           "--label",
+           label,
+           "--json",
+           "number,title,headRefName"
+         ]) do
+      {:ok, json} ->
+        case Jason.decode(json) do
+          {:ok, prs} -> {:ok, prs}
+          {:error, _} -> {:error, "invalid JSON"}
+        end
+
+      {:error, msg, _} ->
+        {:error, msg}
+    end
+  end
+
   # Conductor.Tracker callback — delegates to create_issue_comment/3.
   @spec comment(binary(), pos_integer(), binary()) :: :ok | {:error, term()}
   def comment(repo, issue_number, body), do: create_issue_comment(repo, issue_number, body)
