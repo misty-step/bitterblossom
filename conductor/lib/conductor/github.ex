@@ -617,8 +617,7 @@ defmodule Conductor.GitHub do
   @spec pr_state(binary(), pos_integer()) :: {:ok, binary()} | {:error, term()}
   def pr_state(repo, pr_number) do
     case get_pr(repo, pr_number) do
-      {:ok, %{"state" => "CLOSED", "merged" => true}} -> {:ok, "MERGED"}
-      {:ok, %{"state" => "MERGED"}} -> {:ok, "MERGED"}
+      {:ok, %{"merged" => true}} -> {:ok, "MERGED"}
       {:ok, %{"state" => state}} -> {:ok, String.upcase(state)}
       {:error, reason} -> {:error, reason}
     end

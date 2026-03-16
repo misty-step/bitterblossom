@@ -674,6 +674,44 @@ defmodule Conductor.GitHubTest do
     end
   end
 
+  describe "pr_state/2" do
+    test "closed + merged returns MERGED" do
+      with_fake_gh(
+        ~S|echo '{"number":1,"title":"t","state":"closed","merged":true,"mergeable":"","headRefName":"b","url":"u"}'|,
+        fn _tmp_dir, _args_path ->
+          assert {:ok, "MERGED"} = GitHub.pr_state("owner/repo", 1)
+        end
+      )
+    end
+
+    test "closed + not merged returns CLOSED" do
+      with_fake_gh(
+        ~S|echo '{"number":1,"title":"t","state":"closed","merged":false,"mergeable":"","headRefName":"b","url":"u"}'|,
+        fn _tmp_dir, _args_path ->
+          assert {:ok, "CLOSED"} = GitHub.pr_state("owner/repo", 1)
+        end
+      )
+    end
+
+    test "open returns OPEN (upcased from lowercase)" do
+      with_fake_gh(
+        ~S|echo '{"number":1,"title":"t","state":"open","merged":false,"mergeable":"","headRefName":"b","url":"u"}'|,
+        fn _tmp_dir, _args_path ->
+          assert {:ok, "OPEN"} = GitHub.pr_state("owner/repo", 1)
+        end
+      )
+    end
+
+    test "error passthrough" do
+      with_fake_gh(
+        "exit 1",
+        fn _tmp_dir, _args_path ->
+          assert {:error, _} = GitHub.pr_state("owner/repo", 1)
+        end
+      )
+    end
+  end
+
   describe "checks_failed?/1 (unit, no CLI)" do
     test "FAILURE among checks → true" do
       checks = [
