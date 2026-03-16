@@ -69,6 +69,24 @@ name = "bb-fixer"
 	}
 }
 
+func TestParseFleetSpriteNamesHandlesQuotedHashesAndEscapes(t *testing.T) {
+	t.Parallel()
+
+	names, err := parseFleetSpriteNames(`
+[[sprite]]
+name = "bb-\"builder\" #1" # comment
+`)
+	if err != nil {
+		t.Fatalf("parseFleetSpriteNames() error = %v", err)
+	}
+	if len(names) != 1 {
+		t.Fatalf("len(names) = %d, want 1", len(names))
+	}
+	if names[0] != `bb-"builder" #1` {
+		t.Fatalf("names[0] = %q, want %q", names[0], `bb-"builder" #1`)
+	}
+}
+
 func TestFindRepoRootAscends(t *testing.T) {
 	t.Parallel()
 
@@ -242,6 +260,7 @@ func TestRunPreflightPassesWhenAllCriticalChecksPass(t *testing.T) {
 		probeWorkers: func(_ context.Context, _ string, _ []string) ([]preflightWorkerProbe, error) {
 			return []preflightWorkerProbe{
 				{Name: "bb-builder", Reachable: true, GHAuth: true, Detail: "reachable"},
+				{Name: "bb-fixer", Reachable: false, GHAuth: false, Detail: "unreachable"},
 			}, nil
 		},
 	}
@@ -253,6 +272,9 @@ func TestRunPreflightPassesWhenAllCriticalChecksPass(t *testing.T) {
 	text := out.String()
 	if !strings.Contains(text, "PASS worker reachability + GH auth") {
 		t.Fatalf("output = %q, want worker pass", text)
+	}
+	if !strings.Contains(text, "bb-builder ok, bb-fixer unreachable") {
+		t.Fatalf("output = %q, want complete worker summary", text)
 	}
 	if !strings.Contains(text, "Preflight passed") {
 		t.Fatalf("output = %q, want passing summary", text)

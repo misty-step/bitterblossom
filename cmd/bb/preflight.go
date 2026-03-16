@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -493,20 +494,25 @@ func (r *preflightRunner) checkWorkers(ctx context.Context) preflightCheckResult
 	}
 
 	summaries := make([]string, 0, len(probes))
+	hasHealthyWorker := false
 	for _, probe := range probes {
 		switch {
 		case probe.Reachable && probe.GHAuth:
 			summaries = append(summaries, fmt.Sprintf("%s ok", probe.Name))
-			return preflightCheckResult{
-				Status:   preflightPass,
-				Label:    "worker reachability + GH auth",
-				Detail:   strings.Join(summaries, ", "),
-				Critical: true,
-			}
+			hasHealthyWorker = true
 		case probe.Reachable:
 			summaries = append(summaries, fmt.Sprintf("%s reachable, gh auth missing", probe.Name))
 		default:
 			summaries = append(summaries, fmt.Sprintf("%s unreachable", probe.Name))
+		}
+	}
+
+	if hasHealthyWorker {
+		return preflightCheckResult{
+			Status:   preflightPass,
+			Label:    "worker reachability + GH auth",
+			Detail:   strings.Join(summaries, ", "),
+			Critical: true,
 		}
 	}
 
@@ -729,8 +735,20 @@ func stripInlineComment(line string) string {
 	var b strings.Builder
 	inSingle := false
 	inDouble := false
+	escaped := false
 	for i, r := range line {
+		if escaped {
+			b.WriteRune(r)
+			escaped = false
+			continue
+		}
 		switch r {
+		case '\\':
+			if inDouble {
+				b.WriteRune(r)
+				escaped = true
+				continue
+			}
 		case '\'':
 			if !inDouble {
 				inSingle = !inSingle
@@ -755,14 +773,42 @@ func parseQuotedAssignment(line, key string) (string, bool) {
 		return "", false
 	}
 	value := strings.TrimSpace(right)
-	if len(value) < 2 || !strings.HasPrefix(value, "\"") {
+	if value == "" || !strings.HasPrefix(value, "\"") {
 		return "", false
 	}
-	end := strings.LastIndex(value, "\"")
-	if end <= 0 {
+
+	literal, ok := consumeDoubleQuotedString(value)
+	if !ok {
 		return "", false
 	}
-	return value[1:end], true
+
+	unquoted, err := strconv.Unquote(literal)
+	if err != nil {
+		return "", false
+	}
+	return unquoted, true
+}
+
+func consumeDoubleQuotedString(value string) (string, bool) {
+	if value == "" || value[0] != '"' {
+		return "", false
+	}
+
+	escaped := false
+	for i := 1; i < len(value); i++ {
+		switch value[i] {
+		case '\\':
+			escaped = !escaped
+		case '"':
+			if !escaped {
+				return value[:i+1], true
+			}
+			escaped = false
+		default:
+			escaped = false
+		}
+	}
+	return "", false
 }
 
 func exportedVars(exports map[string]string, keys ...string) []string {
