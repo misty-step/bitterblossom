@@ -44,7 +44,7 @@ defmodule Conductor.PolisherTest do
       {:ok, Map.get(prs, label, [])}
     end
 
-    def factory_prs(_repo), do: MockState.get(:factory_prs, {:ok, []})
+    def open_prs(_repo), do: MockState.get(:open_prs, {:ok, []})
 
     def pr_review_comments(_repo, _pr_number) do
       MockState.get(:review_comments, {:ok, []})
@@ -153,7 +153,7 @@ defmodule Conductor.PolisherTest do
 
     test "dispatches polisher when factory PR has green CI and no lgtm" do
       MockState.put(
-        :factory_prs,
+        :open_prs,
         {:ok,
          [
            %{
@@ -188,7 +188,7 @@ defmodule Conductor.PolisherTest do
 
     test "skips PRs with red CI" do
       MockState.put(
-        :factory_prs,
+        :open_prs,
         {:ok,
          [
            %{
@@ -214,7 +214,7 @@ defmodule Conductor.PolisherTest do
 
     test "skips PRs that already have lgtm label" do
       MockState.put(
-        :factory_prs,
+        :open_prs,
         {:ok,
          [
            %{
@@ -240,7 +240,7 @@ defmodule Conductor.PolisherTest do
 
     test "does not dispatch when polisher already working on a PR" do
       MockState.put(
-        :factory_prs,
+        :open_prs,
         {:ok,
          [
            %{

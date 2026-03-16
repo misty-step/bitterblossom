@@ -647,13 +647,7 @@ defmodule Conductor.Orchestrator do
   defp merge_labeled_prs(%{repo: repo} = state) do
     case code_host_mod().labeled_prs(repo, "lgtm") do
       {:ok, prs} ->
-        prs
-        |> Enum.filter(fn pr ->
-          # Only merge PRs from conductor branches (factory/*)
-          branch = pr["headRefName"] || ""
-          String.starts_with?(branch, "factory/")
-        end)
-        |> Enum.each(fn pr ->
+        Enum.each(prs, fn pr ->
           pr_number = pr["number"]
 
           case code_host_mod().ci_status(repo, pr_number) do
@@ -926,10 +920,18 @@ defmodule Conductor.Orchestrator do
     end
   end
 
-  defp parse_issue_number_from_branch("factory/" <> rest) do
-    case String.split(rest, "-", parts: 2) do
-      [issue_number, _suffix] ->
-        case Integer.parse(issue_number) do
+  # Extract issue number from branch names like "factory/42-ts", "fix/42-desc", "42-desc".
+  # Tries the segment after the last "/" first, then the full name.
+  defp parse_issue_number_from_branch(branch) do
+    segment =
+      case String.split(branch, "/") do
+        [_prefix, rest | _] -> rest
+        [rest] -> rest
+      end
+
+    case String.split(segment, "-", parts: 2) do
+      [issue_str, _suffix] ->
+        case Integer.parse(issue_str) do
           {value, ""} -> {:ok, value}
           _ -> :skip
         end
@@ -938,8 +940,6 @@ defmodule Conductor.Orchestrator do
         :skip
     end
   end
-
-  defp parse_issue_number_from_branch(_branch), do: :skip
 
   defp mark_operator_blocked(repo, pr_number, reason) do
     Logger.warning("[merge] PR ##{pr_number} blocked: #{reason}")

@@ -563,9 +563,9 @@ defmodule Conductor.GitHub do
     end
   end
 
-  @doc "List open factory/* PRs with CI status and labels."
-  @spec factory_prs(binary()) :: {:ok, [map()]} | {:error, term()}
-  def factory_prs(repo) do
+  @doc "List all open PRs with CI status and labels."
+  @spec open_prs(binary()) :: {:ok, [map()]} | {:error, term()}
+  def open_prs(repo) do
     case Shell.cmd("gh", [
            "pr",
            "list",
@@ -579,13 +579,7 @@ defmodule Conductor.GitHub do
       {:ok, json} ->
         case Jason.decode(json) do
           {:ok, prs} ->
-            factory =
-              Enum.filter(prs, fn pr ->
-                branch = pr["headRefName"] || ""
-                String.starts_with?(branch, "factory/")
-              end)
-
-            {:ok, factory}
+            {:ok, Enum.filter(prs, &(is_map(&1) and is_binary(&1["headRefName"])))}
 
           {:error, _} ->
             {:error, "invalid JSON"}
@@ -706,7 +700,7 @@ defmodule Conductor.GitHub do
     result
   end
 
-  @doc "Find the first open PR whose branch starts with factory/<issue_number>-."
+  @doc "Find the first open conductor PR whose branch starts with factory/<issue_number>-."
   @spec find_open_pr(binary(), pos_integer()) :: {:ok, map()} | {:error, :not_found}
   def find_open_pr(repo, issue_number) do
     case Shell.cmd("gh", [

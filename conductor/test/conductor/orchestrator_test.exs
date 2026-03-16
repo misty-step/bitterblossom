@@ -107,7 +107,7 @@ defmodule Conductor.OrchestratorTest do
     end
 
     def labeled_prs(repo, label), do: {:ok, MockState.get({:labeled_prs, repo, label}, [])}
-    def factory_prs(_repo), do: {:ok, []}
+    def open_prs(_repo), do: {:ok, []}
     def pr_review_comments(_repo, _pr), do: {:ok, []}
     def pr_ci_failure_logs(_repo, _pr), do: {:ok, ""}
     def add_label(_repo, _pr, _label), do: :ok
