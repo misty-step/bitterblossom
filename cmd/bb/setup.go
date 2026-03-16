@@ -333,7 +333,9 @@ func uploadPatchedSettings(ctx context.Context, s *sprites.Sprite, openrouterKey
 
 func uploadSpriteRuntimeEnv(ctx context.Context, s *sprites.Sprite) error {
 	sfs := s.Filesystem()
-	_ = sfs.MkdirAll(spriteRuntimeDir, 0700)
+	if err := sfs.MkdirAll(spriteRuntimeDir, 0700); err != nil {
+		return fmt.Errorf("create runtime dir: %w", err)
+	}
 	return sfs.WriteFileContext(ctx, spriteRuntimeEnvPath, []byte(renderSpriteRuntimeEnv()), 0600)
 }
 
