@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -67,6 +68,7 @@ func newRootCmd() *cobra.Command {
 
 	root.AddCommand(
 		newVersionCmd(),
+		newPreflightCmd(),
 		newDispatchCmd(),
 		newSetupCmd(),
 		newLogsCmd(),
@@ -91,8 +93,17 @@ func newVersionCmd() *cobra.Command {
 // spriteToken returns a bearer token for the Sprites API.
 // Uses SPRITE_TOKEN directly if set, otherwise exchanges FLY_API_TOKEN.
 func spriteToken() (string, error) {
+	token, _, err := resolveSpriteToken(os.Stderr)
+	return token, err
+}
+
+func resolveSpriteToken(log io.Writer) (string, string, error) {
+	if log == nil {
+		log = io.Discard
+	}
+
 	if t := os.Getenv("SPRITE_TOKEN"); t != "" {
-		return t, nil
+		return t, "SPRITE_TOKEN", nil
 	}
 
 	flyToken := os.Getenv("FLY_API_TOKEN")
@@ -105,30 +116,30 @@ func spriteToken() (string, error) {
 		if org == "" {
 			org = "personal"
 		}
-		fmt.Fprintf(os.Stderr, "exchanging FLY_API_TOKEN for sprites token (org=%s)...\n", org)
+		fmt.Fprintf(log, "exchanging FLY_API_TOKEN for sprites token (org=%s)...\n", org)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if token, err := sprites.CreateToken(ctx, macaroon, org, ""); err == nil {
-			return token, nil
+			return token, "FLY_API_TOKEN", nil
 		} else {
-			fmt.Fprintf(os.Stderr, "FLY_API_TOKEN exchange failed (%v); trying sprite CLI...\n", err)
+			fmt.Fprintf(log, "FLY_API_TOKEN exchange failed (%v); trying sprite CLI...\n", err)
 		}
 	} else {
-		fmt.Fprint(os.Stderr, "no SPRITE_TOKEN or FLY_API_TOKEN; trying sprite CLI...\n")
+		fmt.Fprint(log, "no SPRITE_TOKEN or FLY_API_TOKEN; trying sprite CLI...\n")
 	}
 	flyTokenCLI, orgCLI, err := getSpriteCLIFlyToken()
 	if err != nil {
-		return "", fmt.Errorf("SPRITE_TOKEN, FLY_API_TOKEN, or sprite CLI auth required: %w", err)
+		return "", "", fmt.Errorf("SPRITE_TOKEN, FLY_API_TOKEN, or sprite CLI auth required: %w", err)
 	}
 	macaroon := strings.TrimPrefix(flyTokenCLI, "FlyV1 ")
-	fmt.Fprintf(os.Stderr, "exchanging sprite CLI token for sprites token (org=%s)...\n", orgCLI)
+	fmt.Fprintf(log, "exchanging sprite CLI token for sprites token (org=%s)...\n", orgCLI)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	token, err := sprites.CreateToken(ctx, macaroon, orgCLI, "")
 	if err != nil {
-		return "", tokenExchangeErr(err)
+		return "", "", tokenExchangeErr(err)
 	}
-	return token, nil
+	return token, "sprite CLI session", nil
 }
 
 // tokenExchangeErr wraps a CreateToken error with an actionable hint.

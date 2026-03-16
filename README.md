@@ -66,6 +66,9 @@ If README prose, persona guidance, or prompt templates drift from that contract,
 # 0) Build bb
 make build
 
+# Optional: validate the whole control-plane machine first
+./bin/bb preflight
+
 # 1) Load env
 source .env.bb
 export GITHUB_TOKEN="$(gh auth token)"
@@ -93,6 +96,12 @@ python3 scripts/conductor.py run-once \
 ```
 
 See [docs/CLI-REFERENCE.md](docs/CLI-REFERENCE.md) for `bb`, and [docs/CONDUCTOR.md](docs/CONDUCTOR.md) for the conductor loop.
+
+If you want the same readiness check behind `make`, run:
+
+```bash
+make preflight
+```
 
 ## Agent Skills
 

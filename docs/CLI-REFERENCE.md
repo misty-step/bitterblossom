@@ -22,6 +22,35 @@ without any environment variables. This is the recommended path for local develo
 
 For CI/automated environments, set `SPRITE_TOKEN` or `FLY_API_TOKEN` explicitly.
 
+## preflight
+
+Validate the local control-plane machine before you try to run the conductor.
+This works even when Elixir is missing: `bb` checks the Elixir toolchain instead
+of requiring it just to start the command.
+
+```
+bb preflight
+```
+
+### What It Checks
+
+- Elixir, Erlang, and `mix`
+- local `gh`, `sprite`, and optional `fly`
+- `.env.bb` presence plus required org export
+- `GITHUB_TOKEN`
+- usable sprite auth (`SPRITE_TOKEN`, `FLY_API_TOKEN`, or supported sprite CLI auth)
+- at least one worker from `fleet.toml` is reachable and GitHub-authenticated
+- conductor compile readiness
+- `.bb/conductor.db` write access
+
+### Exit
+
+- `0` when all critical checks pass
+- non-zero when any critical check fails
+
+Each failing item includes a one-line fix hint so operators can clear multiple
+blockers in one pass.
+
 ### Org resolution
 
 The sprites org is resolved in order: `SPRITES_ORG` > `FLY_ORG` > sprite CLI config (`current_selection.org`).

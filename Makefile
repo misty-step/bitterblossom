@@ -1,4 +1,4 @@
-.PHONY: build test lint clean test-hooks test-conductor conductor-check
+.PHONY: build test lint clean test-hooks test-conductor conductor-check preflight
 
 BINARY := bb
 BIN_DIR := bin
@@ -28,3 +28,6 @@ test-conductor:
 
 conductor-check:
 	cd conductor && mix conductor check-env
+
+preflight: build
+	./bin/bb preflight
