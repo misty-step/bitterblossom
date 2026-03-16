@@ -573,6 +573,8 @@ defmodule Conductor.GitHub do
            repo,
            "--state",
            "open",
+           "--limit",
+           to_string(@default_unfiltered_limit),
            "--json",
            "number,title,body,headRefName,labels,statusCheckRollup"
          ]) do
@@ -580,6 +582,9 @@ defmodule Conductor.GitHub do
         case Jason.decode(json) do
           {:ok, prs} when is_list(prs) ->
             {:ok, Enum.filter(prs, &(is_map(&1) and is_binary(&1["headRefName"])))}
+
+          {:ok, _other} ->
+            {:error, "invalid JSON"}
 
           {:error, _} ->
             {:error, "invalid JSON"}
