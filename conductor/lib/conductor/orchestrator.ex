@@ -903,6 +903,12 @@ defmodule Conductor.Orchestrator do
     segment = branch |> String.split("/") |> List.last()
 
     case String.split(segment, "-", parts: 2) do
+      [issue_str] ->
+        case Integer.parse(issue_str) do
+          {value, ""} -> {:ok, value}
+          _ -> :skip
+        end
+
       [issue_str, _suffix] ->
         case Integer.parse(issue_str) do
           {value, ""} -> {:ok, value}

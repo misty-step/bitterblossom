@@ -200,6 +200,38 @@ defmodule Conductor.GitHubTest do
     end
   end
 
+  describe "open_prs/1" do
+    test "requests the unfiltered limit so all open PRs are considered" do
+      with_fake_gh(
+        """
+        printf '%s\n' "$@" > "$GH_ARGS_PATH"
+        cat <<'JSON'
+        []
+        JSON
+        """,
+        fn _tmp_dir, args_path ->
+          assert {:ok, []} = GitHub.open_prs("misty-step/bitterblossom")
+
+          args = File.read!(args_path)
+          assert String.contains?(args, "--limit\n1000\n")
+        end
+      )
+    end
+
+    test "returns an error when gh returns non-list JSON" do
+      with_fake_gh(
+        """
+        cat <<'JSON'
+        {"number": 1}
+        JSON
+        """,
+        fn _tmp_dir, _args_path ->
+          assert {:error, "invalid JSON"} = GitHub.open_prs("misty-step/bitterblossom")
+        end
+      )
+    end
+  end
+
   describe "list_issues/2" do
     test "omits --label when label is nil and preserves an explicit limit" do
       with_fake_gh(

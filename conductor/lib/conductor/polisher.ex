@@ -182,7 +182,20 @@ defmodule Conductor.Polisher do
   # Only conductor-tracked PRs may receive the automated `lgtm` label.
   # Non-conductor PRs get polisher review but require human merge approval.
   defp conductor_managed?(repo, pr_number) do
-    match?({:ok, _}, Store.find_run_by_pr(repo, pr_number))
+    try do
+      match?({:ok, _}, Store.find_run_by_pr(repo, pr_number))
+    rescue
+      exception ->
+        Logger.warning(
+          "[polisher] failed to find run for PR ##{pr_number}: #{Exception.message(exception)}"
+        )
+
+        false
+    catch
+      :exit, reason ->
+        Logger.warning("[polisher] failed to find run for PR ##{pr_number}: #{inspect(reason)}")
+        false
+    end
   end
 
   defp code_host_mod, do: Application.get_env(:conductor, :code_host_module, Conductor.GitHub)

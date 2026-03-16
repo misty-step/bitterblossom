@@ -1487,8 +1487,24 @@ defmodule Conductor.OrchestratorTest do
       assert {:ok, 7} = Orchestrator.parse_issue_number_from_branch("7-quick-fix")
     end
 
+    test "parses branch without description suffix" do
+      assert {:ok, 123} = Orchestrator.parse_issue_number_from_branch("hotfix/123")
+    end
+
     test "returns :skip for branch without issue number" do
       assert :skip = Orchestrator.parse_issue_number_from_branch("feature/unrelated")
+    end
+
+    test "returns :skip for empty trailing segment" do
+      assert :skip = Orchestrator.parse_issue_number_from_branch("feature/")
+    end
+
+    test "returns :skip for non-numeric issue segment" do
+      assert :skip = Orchestrator.parse_issue_number_from_branch("fix/abc-description")
+    end
+
+    test "parses issue number when suffix contains additional dashes" do
+      assert {:ok, 123} = Orchestrator.parse_issue_number_from_branch("fix/123-456-bug")
     end
 
     test "returns :skip for branch with no dash delimiter" do
