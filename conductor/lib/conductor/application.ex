@@ -89,7 +89,12 @@ defmodule Conductor.Application do
 
       if builders != [] do
         maybe_warn_unfiltered_scope(repo, defaults.label)
-        Conductor.Orchestrator.start_loop(repo: repo, workers: builders, label: defaults.label)
+
+        Conductor.Orchestrator.configure_polling(
+          repo: repo,
+          workers: builders,
+          label: defaults.label
+        )
 
         Logger.info(
           "[boot] orchestrator polling with builders: #{Enum.map_join(builders, ", ", & &1.name)}"
