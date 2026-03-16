@@ -185,6 +185,32 @@ defmodule Conductor.PolisherTest do
       assert prompt =~ "review"
     end
 
+    test "dispatches polisher for non-factory PR with green CI" do
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 55,
+             "headRefName" => "fix/cerberus-permissions",
+             "title" => "fix: cerberus permissions",
+             "body" => "Fixes permissions",
+             "labels" => [],
+             "statusCheckRollup" => @green_checks
+           }
+         ]}
+      )
+
+      {:ok, _pid} =
+        Polisher.start_link(
+          repo: "test/repo",
+          polisher_sprite: "bb-polisher",
+          poll_ms: 50
+        )
+
+      assert_receive {:dispatched, "bb-polisher", _prompt}, 2_000
+    end
+
     test "skips PRs with red CI" do
       MockState.put(
         :open_prs,

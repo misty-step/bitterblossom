@@ -426,7 +426,7 @@ defmodule Conductor.GitHub do
          ]) do
       {:ok, json} ->
         case Jason.decode(json) do
-          {:ok, prs} ->
+          {:ok, prs} when is_list(prs) ->
             {:ok, Enum.filter(prs, &(is_map(&1) and is_binary(&1["headRefName"])))}
 
           {:error, _} ->
