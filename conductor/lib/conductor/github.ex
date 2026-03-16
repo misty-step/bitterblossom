@@ -613,4 +613,12 @@ defmodule Conductor.GitHub do
         {:error, msg}
     end
   end
+
+  @spec pr_state(binary(), pos_integer()) :: {:ok, binary()} | {:error, term()}
+  def pr_state(repo, pr_number) do
+    case get_pr(repo, pr_number) do
+      {:ok, %{"state" => state}} -> {:ok, state}
+      {:error, reason} -> {:error, reason}
+    end
+  end
 end

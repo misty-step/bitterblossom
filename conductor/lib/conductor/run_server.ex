@@ -8,8 +8,10 @@ defmodule Conductor.RunServer do
                             ├── blocked
                             └── failed
 
-  The builder opens a PR and exits. Governance (CI, reviews, merge)
-  is handled by the orchestrator's label-driven merge loop — no sprite needed.
+  Lease lifecycle: the lease means "this issue is claimed" — it persists from
+  dispatch through merge, block, or external resolution. RunServer exits at
+  pr_opened but the lease holds. The orchestrator releases the lease at merge
+  or via reconciliation. fail/3 and block/2 release immediately (terminal).
   """
 
   use GenServer, restart: :temporary
@@ -273,8 +275,8 @@ defmodule Conductor.RunServer do
 
     # Builder's job is done. PR is open. Governance is label-driven by the orchestrator.
     # Retro runs after merge (orchestrator), not here — avoids double analysis.
+    # Lease holds through governance — released at merge or by reconciliation.
     Store.complete_run(state.run_id, "pr_opened", "pr_opened")
-    Store.release_lease(state.repo, state.issue.number)
     cleanup_workspace(state)
     {:stop, :normal, %{state | phase: :pr_opened, pr_number: pr_number}}
   end
@@ -297,8 +299,7 @@ defmodule Conductor.RunServer do
   defp fail(state, event_type, reason) do
     Logger.error("[#{state.run_id}] #{event_type}: #{reason}")
     Store.record_event(state.run_id, event_type, %{reason: reason})
-    Store.complete_run(state.run_id, "failed", "failed")
-    Store.release_lease(state.repo, state.issue.number)
+    Store.terminate_run(state.run_id, "failed", "failed", state.repo, state.issue.number)
     cleanup_workspace(state)
     Retro.analyze(state.run_id)
     {:stop, :normal, %{state | phase: :failed}}
@@ -307,8 +308,7 @@ defmodule Conductor.RunServer do
   defp block(state, reason) do
     Logger.warning("[#{state.run_id}] blocked: #{reason}")
     Store.record_event(state.run_id, "run_blocked", %{reason: reason})
-    Store.complete_run(state.run_id, "blocked", "blocked")
-    Store.release_lease(state.repo, state.issue.number)
+    Store.terminate_run(state.run_id, "blocked", "blocked", state.repo, state.issue.number)
     cleanup_workspace(state)
 
     # Comment on the issue so the operator knows

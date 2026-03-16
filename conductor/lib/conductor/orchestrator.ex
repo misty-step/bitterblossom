@@ -180,7 +180,9 @@ defmodule Conductor.Orchestrator do
 
   @impl true
   def handle_info(:poll, state) do
+    self_update_mod().check_for_updates()
     state = reconcile(state)
+    reconcile_held_leases(state)
     merge_labeled_prs(state)
     state = cancel_active_runs(state)
 
@@ -654,6 +656,56 @@ defmodule Conductor.Orchestrator do
     end
   end
 
+  defp reconcile_held_leases(%{repo: nil}), do: :ok
+
+  defp reconcile_held_leases(%{repo: repo}) do
+    repo
+    |> Store.list_held_leases()
+    |> Enum.each(fn lease ->
+      issue_number = lease["issue_number"]
+      run_id = lease["run_id"]
+      pr_number = lease["pr_number"]
+
+      resolution = resolve_held_lease(repo, pr_number, issue_number)
+
+      case resolution do
+        :hold ->
+          :ok
+
+        {event_type, _reason} ->
+          Logger.info(
+            "[reconcile] releasing orphan lease for issue ##{issue_number}: #{event_type}"
+          )
+
+          Store.record_event(run_id, event_type, %{
+            issue_number: issue_number,
+            pr_number: pr_number
+          })
+
+          Store.release_lease(repo, issue_number)
+      end
+    end)
+  rescue
+    exception ->
+      Logger.warning("[reconcile] held lease check failed: #{Exception.message(exception)}")
+      :ok
+  catch
+    :exit, reason ->
+      Logger.warning("[reconcile] held lease check failed: #{inspect(reason)}")
+      :ok
+  end
+
+  defp resolve_held_lease(repo, pr_number, _issue_number) when is_integer(pr_number) do
+    case code_host_mod().pr_state(repo, pr_number) do
+      {:ok, "MERGED"} -> {"external_merge", "PR merged externally"}
+      {:ok, "CLOSED"} -> {"external_close", "PR closed without merge"}
+      {:ok, _open} -> :hold
+      {:error, _} -> :hold
+    end
+  end
+
+  defp resolve_held_lease(_repo, _pr_number, _issue_number), do: :hold
+
   defp find_latest_run(repo, issue_number) do
     Store.list_runs(limit: 50)
     |> Enum.find(fn r ->
@@ -725,13 +777,13 @@ defmodule Conductor.Orchestrator do
     Logger.warning("[merge] PR ##{pr_number} blocked: merge_conflict_unresolvable")
 
     case Store.find_run_by_pr(repo, pr_number) do
-      {:ok, %{"run_id" => run_id}} ->
+      {:ok, %{"run_id" => run_id, "issue_number" => issue_number}} ->
         Store.record_event(run_id, "merge_conflict_blocked", %{
           pr_number: pr_number,
           reason: "merge_conflict_unresolvable"
         })
 
-        Store.complete_run(run_id, "blocked", "blocked")
+        Store.terminate_run(run_id, "blocked", "blocked", repo, issue_number)
 
       _ ->
         Logger.debug("[merge] no run found for PR ##{pr_number}, cannot mark blocked")
@@ -939,8 +991,7 @@ defmodule Conductor.Orchestrator do
           reason: reason
         })
 
-        Store.complete_run(run_id, "blocked", "blocked")
-        Store.release_lease(repo, issue_number)
+        Store.terminate_run(run_id, "blocked", "blocked", repo, issue_number)
 
       _ ->
         Logger.debug("[merge] no run found for PR ##{pr_number}, cannot mark operator block")
@@ -977,9 +1028,9 @@ defmodule Conductor.Orchestrator do
   # Update the Store when the orchestrator merges a PR (not the RunServer).
   defp record_merge(repo, pr_number) do
     case Store.find_run_by_pr(repo, pr_number) do
-      {:ok, %{"run_id" => run_id}} ->
+      {:ok, %{"run_id" => run_id, "issue_number" => issue_number}} ->
         Store.record_event(run_id, "merged", %{pr_number: pr_number, merged_by: "orchestrator"})
-        Store.complete_run(run_id, "merged", "merged")
+        Store.terminate_run(run_id, "merged", "merged", repo, issue_number)
         Conductor.Retro.analyze(run_id)
 
       _ ->
@@ -997,6 +1048,9 @@ defmodule Conductor.Orchestrator do
 
   defp run_control_mod,
     do: Application.get_env(:conductor, :run_control_module, Conductor.RunServer)
+
+  defp self_update_mod,
+    do: Application.get_env(:conductor, :self_update_module, Conductor.SelfUpdate)
 
   @doc false
   def probe_worker_module(worker_module, worker, opts \\ []) do

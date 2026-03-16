@@ -106,6 +106,9 @@ defmodule Conductor.OrchestratorTest do
 
     def find_open_pr(_repo, issue_number),
       do: MockState.get({:open_pr, issue_number}, {:error, :not_found})
+
+    def pr_state(_repo, pr_number),
+      do: MockState.get({:pr_state, pr_number}, {:ok, "OPEN"})
   end
 
   defmodule MockWorker do
@@ -148,6 +151,10 @@ defmodule Conductor.OrchestratorTest do
       Process.exit(pid, :shutdown)
       :ok
     end
+  end
+
+  defmodule MockSelfUpdate do
+    def check_for_updates, do: :noop
   end
 
   # Retry an assertion block until it passes or timeout elapses.
@@ -210,6 +217,9 @@ defmodule Conductor.OrchestratorTest do
     orig_shaper = Application.get_env(:conductor, :shaper_module)
     Application.put_env(:conductor, :shaper_module, MockShaper)
 
+    orig_self_update = Application.get_env(:conductor, :self_update_module)
+    Application.put_env(:conductor, :self_update_module, MockSelfUpdate)
+
     # Use a 60-minute stale threshold; tests can plant older heartbeats to trigger expiry
     orig_stale = Application.get_env(:conductor, :stale_run_threshold_minutes)
     Application.put_env(:conductor, :stale_run_threshold_minutes, 60)
@@ -255,6 +265,10 @@ defmodule Conductor.OrchestratorTest do
       if orig_shaper,
         do: Application.put_env(:conductor, :shaper_module, orig_shaper),
         else: Application.delete_env(:conductor, :shaper_module)
+
+      if orig_self_update,
+        do: Application.put_env(:conductor, :self_update_module, orig_self_update),
+        else: Application.delete_env(:conductor, :self_update_module)
 
       if orig_stale,
         do: Application.put_env(:conductor, :stale_run_threshold_minutes, orig_stale),
@@ -1111,6 +1125,26 @@ defmodule Conductor.OrchestratorTest do
         assert "merge_conflict_blocked" in types
       end)
     end
+
+    test "releases lease when marking conflict blocked" do
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 56,
+          issue_title: "conflict lease test",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(run_id, %{pr_number: 100})
+      Store.acquire_lease("test/repo", 56, run_id)
+      assert Store.leased?("test/repo", 56)
+
+      Orchestrator.mark_conflict_blocked("test/repo", 100)
+
+      eventually(fn ->
+        refute Store.leased?("test/repo", 56)
+      end)
+    end
   end
 
   describe "operator directives" do
@@ -1484,6 +1518,214 @@ defmodule Conductor.OrchestratorTest do
       active = Store.list_active_runs("test/repo")
       ids = Enum.map(active, & &1["run_id"])
       refute run_id in ids
+    end
+  end
+
+  describe "merge releases lease" do
+    test "record_merge releases the lease for the issue" do
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 700,
+          issue_title: "merge lease test",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(run_id, %{pr_number: 200, phase: "pr_opened", status: "pr_opened"})
+      Store.acquire_lease("test/repo", 700, run_id)
+      assert Store.leased?("test/repo", 700)
+
+      # Simulate merge via labeled_prs poll
+      MockState.put(
+        {:labeled_prs, "test/repo", "lgtm"},
+        [%{"number" => 200, "headRefName" => "factory/700-123"}]
+      )
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      eventually(fn ->
+        refute Store.leased?("test/repo", 700)
+        {:ok, run} = Store.get_run(run_id)
+        assert run["phase"] == "merged"
+      end)
+    end
+  end
+
+  describe "reconcile_held_leases" do
+    test "releases lease when PR merged externally" do
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 800,
+          issue_title: "external merge",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(run_id, %{pr_number: 300, phase: "pr_opened", status: "pr_opened"})
+      Store.acquire_lease("test/repo", 800, run_id)
+      Store.complete_run(run_id, "pr_opened", "pr_opened")
+
+      # PR was merged externally
+      MockState.put({:pr_state, 300}, {:ok, "MERGED"})
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      eventually(fn ->
+        refute Store.leased?("test/repo", 800)
+        events = Store.list_events(run_id)
+        types = Enum.map(events, & &1["event_type"])
+        assert "external_merge" in types
+      end)
+    end
+
+    test "releases lease when PR closed without merge" do
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 801,
+          issue_title: "external close",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(run_id, %{pr_number: 301, phase: "pr_opened", status: "pr_opened"})
+      Store.acquire_lease("test/repo", 801, run_id)
+      Store.complete_run(run_id, "pr_opened", "pr_opened")
+
+      MockState.put({:pr_state, 301}, {:ok, "CLOSED"})
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      eventually(fn ->
+        refute Store.leased?("test/repo", 801)
+        events = Store.list_events(run_id)
+        types = Enum.map(events, & &1["event_type"])
+        assert "external_close" in types
+      end)
+    end
+
+    test "survives Store errors without crashing poll loop", %{orch_pid: orch_pid} do
+      Process.unlink(orch_pid)
+
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 803,
+          issue_title: "error test",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.acquire_lease("test/repo", 803, run_id)
+      Store.complete_run(run_id, "pr_opened", "pr_opened")
+      Store.update_run(run_id, %{pr_number: 303})
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      Process.sleep(100)
+
+      # Kill the Store — next poll tick should survive the error
+      GenServer.stop(Store)
+      send(orch_pid, :poll)
+      Process.sleep(100)
+
+      assert Process.alive?(orch_pid)
+    end
+
+    test "holds lease when pr_state returns error" do
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 804,
+          issue_title: "github down",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(run_id, %{pr_number: 304, phase: "pr_opened", status: "pr_opened"})
+      Store.acquire_lease("test/repo", 804, run_id)
+      Store.complete_run(run_id, "pr_opened", "pr_opened")
+
+      MockState.put({:pr_state, 304}, {:error, :github_down})
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      Process.sleep(200)
+      assert Store.leased?("test/repo", 804)
+    end
+
+    test "holds lease when pr_number is nil" do
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 805,
+          issue_title: "no pr",
+          builder_sprite: "sprite-1"
+        })
+
+      # No pr_number set — run was force-completed
+      Store.acquire_lease("test/repo", 805, run_id)
+      Store.complete_run(run_id, "pr_opened", "pr_opened")
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      Process.sleep(200)
+      assert Store.leased?("test/repo", 805)
+    end
+
+    test "holds lease when PR is still open" do
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 802,
+          issue_title: "still open",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(run_id, %{pr_number: 302, phase: "pr_opened", status: "pr_opened"})
+      Store.acquire_lease("test/repo", 802, run_id)
+      Store.complete_run(run_id, "pr_opened", "pr_opened")
+
+      MockState.put({:pr_state, 302}, {:ok, "OPEN"})
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      Process.sleep(200)
+      assert Store.leased?("test/repo", 802)
+    end
+  end
+
+  describe "leased issue re-dispatch guard" do
+    test "leased issue is not re-dispatched" do
+      issue = %Conductor.Issue{
+        number: 900,
+        title: "leased issue",
+        body: "## Problem\nx\n## Acceptance Criteria\ny",
+        url: "https://example.test/issues/900"
+      }
+
+      # Simulate a held lease from a prior run
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 900,
+          issue_title: "leased issue",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.acquire_lease("test/repo", 900, run_id)
+      Store.complete_run(run_id, "pr_opened", "pr_opened")
+      Store.update_run(run_id, %{pr_number: 400})
+
+      # PR still open — lease holds
+      MockState.put({:pr_state, 400}, {:ok, "OPEN"})
+
+      # Make issue eligible
+      MockState.put({:eligible, "test/repo", nil}, [issue])
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      Process.sleep(200)
+      # Should NOT have started a run for issue 900 (lease blocks it)
+      started = MockState.get(:started_runs, [])
+      issue_numbers = Enum.map(started, fn {n, _w} -> n end)
+      refute 900 in issue_numbers
     end
   end
 end

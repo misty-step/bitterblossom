@@ -41,4 +41,8 @@ defmodule Conductor.CodeHost do
   @doc "Find an open PR whose branch starts with factory/<issue_number>-."
   @callback find_open_pr(repo :: binary(), issue_number :: pos_integer()) ::
               {:ok, map()} | {:error, :not_found}
+
+  @doc "Return the state of a PR: OPEN, MERGED, or CLOSED."
+  @callback pr_state(repo :: binary(), pr_number :: pos_integer()) ::
+              {:ok, binary()} | {:error, term()}
 end

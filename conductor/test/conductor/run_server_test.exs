@@ -247,11 +247,11 @@ defmodule Conductor.RunServerTest do
       assert "workspace_cleaned" in types
     end
 
-    test "lease is released after successful completion" do
+    test "lease is held after pr_opened — released at merge by orchestrator" do
       {:ok, pid} = start_run_server()
       wait_for_exit(pid)
 
-      refute Store.leased?("test/repo", 42)
+      assert Store.leased?("test/repo", 42)
     end
   end
 
