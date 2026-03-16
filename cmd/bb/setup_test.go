@@ -199,3 +199,40 @@ func TestRepoSetupScriptDoesNotExportGHToken(t *testing.T) {
 		t.Fatalf("script = %q, want clone command", script)
 	}
 }
+
+func TestRenderSpriteRuntimeEnvMirrorsOpenAIIntoCodexWithoutGitHubToken(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "sk-openai-test")
+	t.Setenv("EXA_API_KEY", "exa-test-key")
+	t.Setenv("GITHUB_TOKEN", "ghp-should-not-leak")
+
+	rendered := renderSpriteRuntimeEnv()
+
+	if !strings.Contains(rendered, "export OPENAI_API_KEY='sk-openai-test'") {
+		t.Fatalf("runtime env = %q, want OPENAI_API_KEY export", rendered)
+	}
+	if !strings.Contains(rendered, "export CODEX_API_KEY='sk-openai-test'") {
+		t.Fatalf("runtime env = %q, want CODEX_API_KEY export", rendered)
+	}
+	if !strings.Contains(rendered, "export EXA_API_KEY='exa-test-key'") {
+		t.Fatalf("runtime env = %q, want EXA_API_KEY export", rendered)
+	}
+	if strings.Contains(rendered, "GITHUB_TOKEN") {
+		t.Fatalf("runtime env = %q, should not include GITHUB_TOKEN", rendered)
+	}
+}
+
+func TestRuntimeEnvSourceCommandUsesFilePathNotInlineSecrets(t *testing.T) {
+	t.Parallel()
+
+	command := runtimeEnvSourceCommand(spriteRuntimeEnvPath)
+
+	if !strings.Contains(command, spriteRuntimeEnvPath) {
+		t.Fatalf("command = %q, want runtime env path", command)
+	}
+	if strings.Contains(command, "OPENAI_API_KEY=") || strings.Contains(command, "CODEX_API_KEY=") {
+		t.Fatalf("command = %q, should not inline API keys", command)
+	}
+	if !strings.Contains(command, ". ") {
+		t.Fatalf("command = %q, want shell source invocation", command)
+	}
+}

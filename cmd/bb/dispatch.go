@@ -177,7 +177,8 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverrid
 	// 8. Run ralph loop — foreground, streaming
 	_, _ = fmt.Fprintf(os.Stderr, "starting ralph loop (max %d iterations, %s timeout, harness=claude)...\n", maxIter, timeout)
 
-	// Only pass operational env vars — LLM auth/model come from settings.json.
+	// Only pass operational env vars inline. Runtime API keys are sourced from
+	// the sprite-side env file written during setup.
 	totalSec := int(timeout.Seconds())
 	iterSec := 900 // default per-iteration timeout
 	if totalSec < iterSec {
@@ -189,7 +190,9 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverrid
 		heartbeatSec = 30
 	}
 	ralphEnv := fmt.Sprintf(
-		`export MAX_ITERATIONS=%d MAX_TIME_SEC=%d ITER_TIMEOUT_SEC=%d HEARTBEAT_INTERVAL_SEC=%d WORKSPACE=%q LEFTHOOK=0 ANTHROPIC_MODEL=%q ANTHROPIC_DEFAULT_SONNET_MODEL=%q CLAUDE_CODE_SUBAGENT_MODEL=%q`,
+		`%s
+export MAX_ITERATIONS=%d MAX_TIME_SEC=%d ITER_TIMEOUT_SEC=%d HEARTBEAT_INTERVAL_SEC=%d WORKSPACE=%q LEFTHOOK=0 ANTHROPIC_MODEL=%q ANTHROPIC_DEFAULT_SONNET_MODEL=%q CLAUDE_CODE_SUBAGENT_MODEL=%q`,
+		runtimeEnvSourceCommand(spriteRuntimeEnvPath),
 		maxIter, totalSec, iterSec, heartbeatSec, workspace,
 		spriteModel,
 		spriteModel,

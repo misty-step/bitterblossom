@@ -7,10 +7,12 @@ import (
 )
 
 const (
-	spriteHomeDir       = "/home/sprite"
-	spriteClaudeDir     = spriteHomeDir + "/.claude"
-	spriteCodexDir      = spriteHomeDir + "/.codex"
-	spriteWorkspaceRoot = spriteHomeDir + "/workspace"
+	spriteHomeDir        = "/home/sprite"
+	spriteClaudeDir      = spriteHomeDir + "/.claude"
+	spriteCodexDir       = spriteHomeDir + "/.codex"
+	spriteRuntimeDir     = spriteHomeDir + "/.bitterblossom"
+	spriteRuntimeEnvPath = spriteRuntimeDir + "/runtime.env"
+	spriteWorkspaceRoot  = spriteHomeDir + "/workspace"
 
 	spritePersonaPath             = spriteWorkspaceRoot + "/PERSONA.md"
 	spriteRalphScriptPath         = spriteWorkspaceRoot + "/.ralph.sh"
