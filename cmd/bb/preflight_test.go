@@ -87,6 +87,15 @@ name = "bb-\"builder\" #1" # comment
 	}
 }
 
+func TestParseFleetSpriteNamesFailsWithoutSprites(t *testing.T) {
+	t.Parallel()
+
+	_, err := parseFleetSpriteNames("[defaults]\nrepo = \"misty-step/bitterblossom\"\n")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
 func TestFindRepoRootAscends(t *testing.T) {
 	t.Parallel()
 
@@ -162,7 +171,7 @@ func TestRunPreflightReturnsExitErrorForCriticalFailures(t *testing.T) {
 		mkdirAll:  os.MkdirAll,
 		writeFile: os.WriteFile,
 		remove:    os.Remove,
-		resolveSpriteAuth: func(context.Context) (preflightSpriteAuth, error) {
+		resolveSpriteAuth: func(_ context.Context, _ func(string) string) (preflightSpriteAuth, error) {
 			return preflightSpriteAuth{Token: "sprite-token", Source: "SPRITE_TOKEN"}, nil
 		},
 		probeWorkers: func(_ context.Context, token string, names []string) ([]preflightWorkerProbe, error) {
@@ -254,7 +263,7 @@ func TestRunPreflightPassesWhenAllCriticalChecksPass(t *testing.T) {
 		mkdirAll:  os.MkdirAll,
 		writeFile: os.WriteFile,
 		remove:    os.Remove,
-		resolveSpriteAuth: func(context.Context) (preflightSpriteAuth, error) {
+		resolveSpriteAuth: func(_ context.Context, _ func(string) string) (preflightSpriteAuth, error) {
 			return preflightSpriteAuth{Token: "sprite-token", Source: "SPRITE_TOKEN"}, nil
 		},
 		probeWorkers: func(_ context.Context, _ string, _ []string) ([]preflightWorkerProbe, error) {
@@ -278,5 +287,213 @@ func TestRunPreflightPassesWhenAllCriticalChecksPass(t *testing.T) {
 	}
 	if !strings.Contains(text, "Preflight passed") {
 		t.Fatalf("output = %q, want passing summary", text)
+	}
+}
+
+func TestCheckElixirRuntimeFailures(t *testing.T) {
+	tests := []struct {
+		name       string
+		runCommand func(context.Context, string, string, ...string) (localCommandResult, error)
+		want       string
+	}{
+		{
+			name: "elixir missing",
+			runCommand: func(_ context.Context, _ string, name string, _ ...string) (localCommandResult, error) {
+				if name == "elixir" {
+					return localCommandResult{}, errors.New("exec: elixir not found")
+				}
+				return localCommandResult{}, nil
+			},
+			want: "exec: elixir not found",
+		},
+		{
+			name: "erl exits nonzero",
+			runCommand: func(_ context.Context, _ string, name string, _ ...string) (localCommandResult, error) {
+				switch name {
+				case "elixir":
+					return localCommandResult{Stdout: "Elixir 1.16.2", ExitCode: 0}, nil
+				case "erl":
+					return localCommandResult{Stderr: "erl failed", ExitCode: 1}, nil
+				default:
+					return localCommandResult{}, nil
+				}
+			},
+			want: "erl failed",
+		},
+		{
+			name: "mix exits nonzero",
+			runCommand: func(_ context.Context, _ string, name string, _ ...string) (localCommandResult, error) {
+				switch name {
+				case "elixir":
+					return localCommandResult{Stdout: "Elixir 1.16.2", ExitCode: 0}, nil
+				case "erl":
+					return localCommandResult{Stdout: "27", ExitCode: 0}, nil
+				case "mix":
+					return localCommandResult{Stderr: "mix failed", ExitCode: 1}, nil
+				default:
+					return localCommandResult{}, nil
+				}
+			},
+			want: "mix failed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &preflightRunner{deps: withDefaultPreflightDeps(preflightDeps{runCommand: tt.runCommand})}
+			result := runner.checkElixirRuntime(context.Background())
+			if result.Status != preflightFail {
+				t.Fatalf("status = %s, want FAIL", result.Status)
+			}
+			if !strings.Contains(result.Detail, tt.want) {
+				t.Fatalf("detail = %q, want %q", result.Detail, tt.want)
+			}
+		})
+	}
+}
+
+func TestCheckEnvFileFailures(t *testing.T) {
+	t.Run("missing file", func(t *testing.T) {
+		runner := &preflightRunner{
+			opts: preflightOptions{EnvFile: ".env.bb"},
+			deps: withDefaultPreflightDeps(preflightDeps{
+				readFile: func(string) ([]byte, error) { return nil, os.ErrNotExist },
+			}),
+		}
+		result := runner.checkEnvFile()
+		if result.Status != preflightFail {
+			t.Fatalf("status = %s, want FAIL", result.Status)
+		}
+	})
+
+	t.Run("missing org exports", func(t *testing.T) {
+		runner := &preflightRunner{
+			opts: preflightOptions{EnvFile: ".env.bb"},
+			deps: withDefaultPreflightDeps(preflightDeps{
+				readFile: func(string) ([]byte, error) { return []byte("export OPENROUTER_API_KEY=token\n"), nil },
+			}),
+		}
+		result := runner.checkEnvFile()
+		if result.Status != preflightFail {
+			t.Fatalf("status = %s, want FAIL", result.Status)
+		}
+		if !strings.Contains(result.Detail, "SPRITES_ORG/FLY_ORG") {
+			t.Fatalf("detail = %q, want org-export failure", result.Detail)
+		}
+	})
+}
+
+func TestCheckWorkersFailures(t *testing.T) {
+	t.Run("missing fleet file", func(t *testing.T) {
+		runner := &preflightRunner{
+			opts: preflightOptions{FleetFile: "fleet.toml"},
+			deps: withDefaultPreflightDeps(preflightDeps{
+				readFile: func(string) ([]byte, error) { return nil, os.ErrNotExist },
+			}),
+		}
+		result := runner.checkWorkers(context.Background())
+		if result.Status != preflightFail {
+			t.Fatalf("status = %s, want FAIL", result.Status)
+		}
+	})
+
+	t.Run("no sprite names", func(t *testing.T) {
+		runner := &preflightRunner{
+			opts: preflightOptions{FleetFile: "fleet.toml"},
+			deps: withDefaultPreflightDeps(preflightDeps{
+				readFile: func(string) ([]byte, error) { return []byte("[defaults]\nrepo = \"misty-step/bitterblossom\"\n"), nil },
+			}),
+		}
+		result := runner.checkWorkers(context.Background())
+		if result.Status != preflightFail {
+			t.Fatalf("status = %s, want FAIL", result.Status)
+		}
+	})
+
+	t.Run("sprite auth error", func(t *testing.T) {
+		runner := &preflightRunner{
+			opts: preflightOptions{FleetFile: "fleet.toml"},
+			deps: withDefaultPreflightDeps(preflightDeps{
+				readFile: func(string) ([]byte, error) { return []byte("[[sprite]]\nname = \"bb-builder\"\n"), nil },
+				resolveSpriteAuth: func(_ context.Context, _ func(string) string) (preflightSpriteAuth, error) {
+					return preflightSpriteAuth{}, errors.New("auth failed")
+				},
+			}),
+		}
+		result := runner.checkWorkers(context.Background())
+		if result.Status != preflightFail {
+			t.Fatalf("status = %s, want FAIL", result.Status)
+		}
+	})
+
+	t.Run("probe error", func(t *testing.T) {
+		runner := &preflightRunner{
+			opts:        preflightOptions{FleetFile: "fleet.toml"},
+			spriteToken: "sprite-token",
+			deps: withDefaultPreflightDeps(preflightDeps{
+				readFile: func(string) ([]byte, error) { return []byte("[[sprite]]\nname = \"bb-builder\"\n"), nil },
+				probeWorkers: func(context.Context, string, []string) ([]preflightWorkerProbe, error) {
+					return nil, errors.New("probe failed")
+				},
+			}),
+		}
+		result := runner.checkWorkers(context.Background())
+		if result.Status != preflightFail {
+			t.Fatalf("status = %s, want FAIL", result.Status)
+		}
+	})
+
+	t.Run("workers unhealthy", func(t *testing.T) {
+		runner := &preflightRunner{
+			opts:        preflightOptions{FleetFile: "fleet.toml"},
+			spriteToken: "sprite-token",
+			deps: withDefaultPreflightDeps(preflightDeps{
+				readFile: func(string) ([]byte, error) { return []byte("[[sprite]]\nname = \"bb-builder\"\n"), nil },
+				probeWorkers: func(context.Context, string, []string) ([]preflightWorkerProbe, error) {
+					return []preflightWorkerProbe{{Name: "bb-builder", Reachable: true, GHAuth: false}}, nil
+				},
+			}),
+		}
+		result := runner.checkWorkers(context.Background())
+		if result.Status != preflightFail {
+			t.Fatalf("status = %s, want FAIL", result.Status)
+		}
+	})
+}
+
+func TestEnvLookupFallsBackToEnvFileExports(t *testing.T) {
+	t.Parallel()
+
+	runner := &preflightRunner{
+		envExports: map[string]string{"FLY_ORG": "misty-step"},
+		deps: withDefaultPreflightDeps(preflightDeps{
+			getenv: func(string) string { return "" },
+		}),
+	}
+
+	if got := runner.envLookup("FLY_ORG"); got != "misty-step" {
+		t.Fatalf("envLookup(FLY_ORG) = %q, want %q", got, "misty-step")
+	}
+}
+
+func TestCheckSpriteAuthUsesEnvFileExports(t *testing.T) {
+	t.Parallel()
+
+	runner := &preflightRunner{
+		envExports: map[string]string{"FLY_ORG": "misty-step"},
+		deps: withDefaultPreflightDeps(preflightDeps{
+			getenv: func(string) string { return "" },
+			resolveSpriteAuth: func(_ context.Context, getenv func(string) string) (preflightSpriteAuth, error) {
+				if got := getenv("FLY_ORG"); got != "misty-step" {
+					t.Fatalf("getenv(FLY_ORG) = %q, want %q", got, "misty-step")
+				}
+				return preflightSpriteAuth{Token: "sprite-token", Source: "FLY_API_TOKEN"}, nil
+			},
+		}),
+	}
+
+	result := runner.checkSpriteAuth(context.Background())
+	if result.Status != preflightPass {
+		t.Fatalf("status = %s, want PASS", result.Status)
 	}
 }

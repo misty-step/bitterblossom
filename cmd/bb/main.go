@@ -98,20 +98,27 @@ func spriteToken() (string, error) {
 }
 
 func resolveSpriteToken(log io.Writer) (string, string, error) {
+	return resolveSpriteTokenWithLookup(log, os.Getenv)
+}
+
+func resolveSpriteTokenWithLookup(log io.Writer, getenv func(string) string) (string, string, error) {
 	if log == nil {
 		log = io.Discard
 	}
+	if getenv == nil {
+		getenv = os.Getenv
+	}
 
-	if t := os.Getenv("SPRITE_TOKEN"); t != "" {
+	if t := getenv("SPRITE_TOKEN"); t != "" {
 		return t, "SPRITE_TOKEN", nil
 	}
 
-	flyToken := os.Getenv("FLY_API_TOKEN")
+	flyToken := getenv("FLY_API_TOKEN")
 	if flyToken != "" {
 		macaroon := strings.TrimPrefix(flyToken, "FlyV1 ")
-		org := os.Getenv("SPRITES_ORG")
+		org := getenv("SPRITES_ORG")
 		if org == "" {
-			org = os.Getenv("FLY_ORG")
+			org = getenv("FLY_ORG")
 		}
 		if org == "" {
 			org = "personal"

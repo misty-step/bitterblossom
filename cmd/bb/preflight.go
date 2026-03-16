@@ -50,7 +50,7 @@ type preflightDeps struct {
 	mkdirAll          func(string, os.FileMode) error
 	writeFile         func(string, []byte, os.FileMode) error
 	remove            func(string) error
-	resolveSpriteAuth func(context.Context) (preflightSpriteAuth, error)
+	resolveSpriteAuth func(context.Context, func(string) string) (preflightSpriteAuth, error)
 	probeWorkers      func(context.Context, string, []string) ([]preflightWorkerProbe, error)
 }
 
@@ -73,6 +73,7 @@ type preflightCheckResult struct {
 type preflightRunner struct {
 	opts        preflightOptions
 	deps        preflightDeps
+	envExports  map[string]string
 	spriteToken string
 }
 
@@ -192,8 +193,8 @@ func withDefaultPreflightDeps(deps preflightDeps) preflightDeps {
 		deps.remove = os.Remove
 	}
 	if deps.resolveSpriteAuth == nil {
-		deps.resolveSpriteAuth = func(context.Context) (preflightSpriteAuth, error) {
-			token, source, err := resolveSpriteToken(io.Discard)
+		deps.resolveSpriteAuth = func(_ context.Context, getenv func(string) string) (preflightSpriteAuth, error) {
+			token, source, err := resolveSpriteTokenWithLookup(io.Discard, getenv)
 			if err != nil {
 				return preflightSpriteAuth{}, err
 			}
@@ -387,6 +388,7 @@ func (r *preflightRunner) checkEnvFile() preflightCheckResult {
 	}
 
 	exports := parseExportedEnv(string(data))
+	r.envExports = exports
 	orgVars := exportedVars(exports, "SPRITES_ORG", "FLY_ORG")
 	if len(orgVars) == 0 {
 		return preflightCheckResult{
@@ -425,7 +427,7 @@ func (r *preflightRunner) checkGitHubToken() preflightCheckResult {
 }
 
 func (r *preflightRunner) checkSpriteAuth(ctx context.Context) preflightCheckResult {
-	auth, err := r.deps.resolveSpriteAuth(ctx)
+	auth, err := r.deps.resolveSpriteAuth(ctx, r.envLookup)
 	if err != nil {
 		return preflightCheckResult{
 			Status:   preflightFail,
@@ -469,7 +471,7 @@ func (r *preflightRunner) checkWorkers(ctx context.Context) preflightCheckResult
 	}
 
 	if r.spriteToken == "" {
-		auth, authErr := r.deps.resolveSpriteAuth(ctx)
+		auth, authErr := r.deps.resolveSpriteAuth(ctx, r.envLookup)
 		if authErr != nil {
 			return preflightCheckResult{
 				Status:   preflightFail,
@@ -676,6 +678,16 @@ func resolveRepoPath(repoRoot, path string) string {
 		return path
 	}
 	return filepath.Join(repoRoot, path)
+}
+
+func (r *preflightRunner) envLookup(name string) string {
+	if value := strings.TrimSpace(r.deps.getenv(name)); value != "" {
+		return value
+	}
+	if r.envExports == nil {
+		return ""
+	}
+	return strings.TrimSpace(r.envExports[name])
 }
 
 func choosePreflightFailureStatus(critical bool) preflightStatus {
