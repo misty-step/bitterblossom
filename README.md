@@ -29,7 +29,7 @@ Full artifact stack: [docs/architecture/README.md](docs/architecture/README.md)
 conductor/               Elixir/OTP orchestrator (control plane)
 cmd/bb/                  thin Go transport CLI (sprite edge)
 base/skills/             skill files provisioned onto sprites
-scripts/                 ralph loop + prompt templates + legacy Python conductor
+scripts/                 prompt/setup helpers + legacy Python conductor
 sprites/                 per-sprite personas
 docs/adr/                architecture decisions
 docs/architecture/       system overview + per-module drill-downs
@@ -128,7 +128,6 @@ Bitterblossom ships one canonical runtime profile out of the box:
 
 - Provider: `openrouter-claude`
 - Model: `anthropic/claude-sonnet-4-6`
-- Plugin: `ralph-loop@claude-plugins-official`
 - Auth: `OPENROUTER_API_KEY`
 
 Legacy provider variants are still parseable for compatibility, but they are not the default path. See [docs/PROVIDERS.md](docs/PROVIDERS.md) for compatibility notes.

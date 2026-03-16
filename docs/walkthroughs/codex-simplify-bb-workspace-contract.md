@@ -54,8 +54,7 @@ Supporting evidence captured in the transcript:
 
 ## Residual Risk
 
-- `scripts/ralph.sh` still has to know the shell-side signal filenames, so the contract is centralized for Go callers, not fully generated across languages.
-- Process-pattern constants in `dispatch.go` and `kill.go` still encode the Ralph loop path separately; that is adjacent cleanup, not part of this PR.
+- The transport still owns the signal filenames and process-pattern constants directly, so the contract is centralized for Go callers rather than generated across languages.
 
 ## Merge Case
 

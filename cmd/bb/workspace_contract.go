@@ -12,16 +12,15 @@ const (
 	spriteCodexDir      = spriteHomeDir + "/.codex"
 	spriteWorkspaceRoot = spriteHomeDir + "/workspace"
 
-	spritePersonaPath             = spriteWorkspaceRoot + "/PERSONA.md"
-	spriteRalphScriptPath         = spriteWorkspaceRoot + "/.ralph.sh"
-	spriteRalphPromptTemplatePath = spriteWorkspaceRoot + "/.builder-prompt-template.md"
+	spritePersonaPath = spriteWorkspaceRoot + "/PERSONA.md"
 
 	workspaceMetadataRelPath   = ".bb/workspace.json"
 	dispatchPromptFileName     = ".dispatch-prompt.md"
-	ralphLogFileName           = "ralph.log"
+	agentLogFileName           = "agent.log"
 	taskCompleteFileName       = "TASK_COMPLETE"
 	legacyTaskCompleteFileName = "TASK_COMPLETE.md"
 	blockedFileName            = "BLOCKED.md"
+	agentSessionName           = "bb-agent-session"
 )
 
 var (
@@ -48,8 +47,8 @@ func workspaceDispatchPromptPath(workspace string) string {
 	return workspaceFilePath(workspace, dispatchPromptFileName)
 }
 
-func workspaceRalphLogPath(workspace string) string {
-	return workspaceFilePath(workspace, ralphLogFileName)
+func workspaceAgentLogPath(workspace string) string {
+	return workspaceFilePath(workspace, agentLogFileName)
 }
 
 func cleanSignalsScriptFor(workspace string) string {

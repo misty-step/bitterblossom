@@ -636,7 +636,7 @@ sqlite3 .bb/conductor.db \
 
 ### Worker Sprite Stuck
 
-Kill the stuck ralph loop and let the conductor retry:
+Kill the stuck agent session and let the conductor retry:
 
 ```bash
 bb kill noble-blue-serpent

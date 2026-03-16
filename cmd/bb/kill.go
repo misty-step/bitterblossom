@@ -13,7 +13,7 @@ import (
 func newKillCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "kill <sprite>",
-		Short: "Clean up stale ralph/agent processes on a sprite",
+		Short: "Clean up stale agent processes on a sprite",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runKill(cmd.Context(), cmd.OutOrStdout(), args[0])
@@ -58,7 +58,7 @@ if ! command -v pkill >/dev/null 2>&1; then
   exit 1
 fi
 
-agents='/home/sprite/workspace/\.[r]alph\.sh|[c]laude|[o]pencode'
+agents='[b]b-agent-session|[c]laude|[c]odex'
 
 match=$(pgrep -af "$agents" 2>&1 || true)
 if [ -z "$match" ]; then

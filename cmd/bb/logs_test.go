@@ -10,11 +10,11 @@ import (
 func TestLogsRemoteCommandTailFollow(t *testing.T) {
 	t.Parallel()
 
-	got := logsRemoteCommand("/tmp/ralph.log", true, 0)
+	got := logsRemoteCommand("/tmp/agent.log", true, 0)
 	if !strings.Contains(got, "tail -n 50 -f") {
 		t.Errorf("logsRemoteCommand follow=true lines=0: %q, want tail -n 50 -f", got)
 	}
-	if !strings.Contains(got, "/tmp/ralph.log") {
+	if !strings.Contains(got, "/tmp/agent.log") {
 		t.Errorf("logsRemoteCommand: %q, want to contain log path", got)
 	}
 }
@@ -23,7 +23,7 @@ func TestLogsRemoteCommandTailFollow(t *testing.T) {
 func TestLogsRemoteCommandTailFollowCustomLines(t *testing.T) {
 	t.Parallel()
 
-	got := logsRemoteCommand("/tmp/ralph.log", true, 20)
+	got := logsRemoteCommand("/tmp/agent.log", true, 20)
 	if !strings.Contains(got, "tail -n 20 -f") {
 		t.Errorf("logsRemoteCommand follow=true lines=20: %q, want tail -n 20 -f", got)
 	}
@@ -33,7 +33,7 @@ func TestLogsRemoteCommandTailFollowCustomLines(t *testing.T) {
 func TestLogsRemoteCommandTailLines(t *testing.T) {
 	t.Parallel()
 
-	got := logsRemoteCommand("/tmp/ralph.log", false, 30)
+	got := logsRemoteCommand("/tmp/agent.log", false, 30)
 	if !strings.Contains(got, "tail -n 30") {
 		t.Errorf("logsRemoteCommand follow=false lines=30: %q, want tail -n 30", got)
 	}
@@ -46,7 +46,7 @@ func TestLogsRemoteCommandTailLines(t *testing.T) {
 func TestLogsRemoteCommandCatAll(t *testing.T) {
 	t.Parallel()
 
-	got := logsRemoteCommand("/tmp/ralph.log", false, 0)
+	got := logsRemoteCommand("/tmp/agent.log", false, 0)
 	if !strings.Contains(got, "cat") {
 		t.Errorf("logsRemoteCommand follow=false lines=0: %q, want cat", got)
 	}
@@ -62,7 +62,7 @@ func TestLogsRemoteCommandTouchesLogPath(t *testing.T) {
 
 	for _, follow := range []bool{true, false} {
 		for _, lines := range []int{0, 10} {
-			got := logsRemoteCommand("/tmp/ralph.log", follow, lines)
+			got := logsRemoteCommand("/tmp/agent.log", follow, lines)
 			if !strings.Contains(got, "touch") {
 				t.Errorf("logsRemoteCommand follow=%v lines=%d: %q, want touch", follow, lines, got)
 			}
@@ -85,7 +85,7 @@ func TestLogsNoActiveTaskGoesToStderr(t *testing.T) {
 	if !strings.Contains(msg, `No active task on "fern".`) {
 		t.Errorf("stderr = %q, want sprite-specific idle message", msg)
 	}
-	if !strings.Contains(msg, "ralph.log is empty") {
+	if !strings.Contains(msg, "agent.log is empty") {
 		t.Errorf("stderr = %q, want explanation that no logs are available", msg)
 	}
 	if !strings.Contains(msg, "bb status fern") {

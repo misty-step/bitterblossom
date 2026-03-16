@@ -168,7 +168,7 @@ defmodule Conductor.Sprite do
   defp detect_agents_cmd do
     @agent_process_names
     |> Enum.map_join(" || ", &"pgrep -x #{&1} 2>/dev/null")
-    |> Kernel.<>(" || pgrep -f 'ralph\\.sh' 2>/dev/null")
+    |> Kernel.<>(" || pgrep -f 'bb-agent-session' 2>/dev/null")
   end
 
   defp harness_ready?(_sprite, nil, _exec_fn), do: true

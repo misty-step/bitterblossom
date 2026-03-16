@@ -73,7 +73,7 @@ func TestWorkspaceDiscoveryScriptPrefersMetadata(t *testing.T) {
 	script := workspaceDiscoveryScript()
 	metaIdx := strings.Index(script, "/.bb/workspace.json")
 	promptIdx := strings.Index(script, "/.dispatch-prompt.md")
-	logIdx := strings.Index(script, "/ralph.log")
+	logIdx := strings.Index(script, "/agent.log")
 
 	if metaIdx == -1 || promptIdx == -1 || logIdx == -1 {
 		t.Fatalf("script missing expected discovery checks")

@@ -102,10 +102,10 @@ python3 scripts/conductor.py show-events --run-id <run-id>
 
 ## Manual Checklist
 
-- `bb setup` uploads base config, persona, Ralph assets, and repo metadata.
+- `bb setup` uploads base config, persona, and repo metadata.
 - `bb dispatch --dry-run` fails fast on auth or readiness problems.
 - `bb dispatch` streams output and exits `2` when the agent writes `BLOCKED.md`.
 - `bb status` shows fleet reachability and single-sprite git/signal details.
-- `bb logs` reads `ralph.log` and supports `--follow` and `--json`.
-- `bb kill` clears stale Ralph or Claude processes so the next dispatch can start.
+- `bb logs` reads `agent.log` and supports `--follow` and `--json`.
+- `bb kill` clears stale managed agent or Claude processes so the next dispatch can start.
 - `scripts/conductor.py` can acquire a run, dispatch the builder, collect review evidence, and surface run state through `show-runs` / `show-run` / `show-events`.

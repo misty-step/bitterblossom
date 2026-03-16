@@ -101,7 +101,7 @@ func TestStreamJSONWriterJSONModeEmitsOnlyJSONObjects(t *testing.T) {
 
 	var out bytes.Buffer
 	w := newStreamJSONWriter(&out, true)
-	_, err := w.Write([]byte("[ralph] iteration 1\n"))
+	_, err := w.Write([]byte("[agent] iteration 1\n"))
 	if err != nil {
 		t.Fatalf("write: %v", err)
 	}

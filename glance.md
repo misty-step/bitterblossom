@@ -3,15 +3,15 @@ Bitterblossom is a Go-based orchestration framework and command-line interface (
 ### Architecture and Core Components
 
 The system architecture is structured into three distinct layers:
-*   **Transport & Orchestration Layer (Go):** The `cmd/bb` utility serves as the entry point, utilizing the `sprites-go` SDK to manage remote execution, file synchronization, and fleet status reconciliation. It bridges local user input with remote environments, bypassing the execution timeouts of standard agent tools.
-*   **Supervisory Layer (Bash/Ralph):** The "Ralph" loop (`scripts/ralph.sh`) is a "sacred" autonomous execution harness that wraps the agent's primary process. It manages iteration limits, enforces wall-clock timeouts, monitors for "off-rails" behavior (e.g., error loops), and handles filesystem-based signaling for task completion.
-*   **Intelligence Layer (Claude Code):** The system uses Claude Code (pinned to Sonnet 4.6) as the primary agentic harness. Agent behavior is specialized through persona files in `/sprites` and modular instruction sets in `/base/skills`.
+*   **Transport & Orchestration Layer (Go):** The `cmd/bb` utility serves as the entry point, utilizing the `sprites-go` SDK to manage remote execution, file synchronization, PTY streaming, and fleet status reconciliation.
+*   **Control Layer (Elixir):** The conductor in `conductor/` owns leasing, routing, governance, merge, and durable run state.
+*   **Intelligence Layer (Agent Harness + Skills):** Claude Code is the primary harness, with behavior specialized through persona files in `/sprites` and modular instruction sets in `/base/skills`.
 
 ### Key Directory and File Roles
 
 *   **`cmd/bb/`**: Contains the Go implementation of the CLI. Key files include `dispatch.go` (task orchestration and repo synchronization), `setup.go` (environment provisioning and persona injection), `status.go` (concurrent fleet health probing), and `logs.go` (pretty-printed or JSON-structured log streaming).
 *   **`/base`**: Defines the foundational configuration for all sprites. It includes `settings.json` for LLM model routing and event hooks, `CLAUDE.md` for engineering philosophy, and `/hooks` containing Python-based safety middleware like the `destructive-command-guard.py`.
-*   **`/scripts`**: Houses the operational logic for the remote environments. `sprite-agent.sh` acts as the remote supervisor, while `ralph-prompt-template.md` provides the standardized instruction set for task execution.
+*   **`/scripts`**: Now limited to prompt/setup helpers and standalone operator utilities such as `builder-prompt-template.md`, `onboard.sh`, `lib.sh`, and `sentry-watcher.sh`.
 *   **`/compositions`**: Uses versioned YAML files to define "Fae Court" models—hierarchical agent rosters with specific specializations (e.g., Bramble for backend, Fern for DevOps) and model provider routing.
 *   **`/observations` & `/reports`**: Serve as the system's telemetry and feedback loop, housing qualitative journals (`OBSERVATIONS.md`) and quantitative E2E shakedown reports that track dispatch reliability and model performance.
 

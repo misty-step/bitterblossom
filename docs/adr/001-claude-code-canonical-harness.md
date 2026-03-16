@@ -12,7 +12,7 @@ However, this limitation was discovered to be solvable. PR #136 (`feat/proxy-pro
 
 Additionally, during the brief OpenCode-only period, several stability and usability issues with OpenCode were encountered that required workarounds.
 
-On February 19, 2026, Bitterblossom intentionally removed OpenCode support from runtime paths to reduce operational branching and harden dispatch reliability. The canonical runtime is now Claude Code pinned to Sonnet 4.6 with the official `ralph-loop` plugin.
+On February 19, 2026, Bitterblossom intentionally removed OpenCode support from runtime paths to reduce operational branching and harden dispatch reliability. The canonical runtime is now Claude Code pinned to Sonnet 4.6.
 
 ## Decision
 

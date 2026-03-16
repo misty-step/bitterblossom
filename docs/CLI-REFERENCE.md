@@ -61,7 +61,7 @@ bb kill fern
 ### Behavior
 
 1. Connects to the sprite.
-2. Kills the ralph loop (`/home/sprite/workspace/.ralph.sh`) plus `claude` processes matching known stale patterns.
+2. Kills the named bb agent session plus `claude`/`codex` processes matching known stale patterns.
 3. Verifies those processes are gone before exiting.
 
 ### Exit
@@ -73,7 +73,7 @@ bb kill fern
 
 ## dispatch
 
-Send a task to a sprite via the ralph loop. Runs foreground with streaming stdout/stderr.
+Send a task to a sprite through the transport-managed agent session. Runs foreground with streaming stdout/stderr.
 If no remote output arrives for ~45s, dispatch emits a keepalive line (`[dispatch] no remote output...`) so operators can distinguish silence from a hung CLI.
 
 ```
@@ -99,18 +99,18 @@ bb dispatch bramble "Write tests" --repo misty-step/api
 |------|---------|-------------|
 | `--repo` | (required) | GitHub repo (`owner/repo`) |
 | `--timeout` | `30m` | Max wall-clock time |
-| `--max-iterations` | `50` | Max ralph loop iterations |
+| `--max-iterations` | `50` | Max agent-session iterations |
 
 ### Pipeline
 
 1. Probe connectivity (15s timeout)
-2. Verify setup (`ralph.sh` exists)
-3. Refuse overlapping dispatch if ralph loop already running
+2. Verify the Claude harness is available
+3. Refuse overlapping dispatch if another bb agent session is already running
 4. Kill stale agent processes
 5. Repo sync (pull latest on default branch)
 6. Clean stale signal files
 7. Render and upload prompt
-8. Run ralph loop (foreground, streaming)
+8. Run the agent session (foreground, streaming)
 9. Verify work produced (commits, PRs)
 
 ### Exit Codes
@@ -125,7 +125,7 @@ bb dispatch bramble "Write tests" --repo misty-step/api
 
 ## setup
 
-Configure a sprite with base configs, persona, and ralph loop. Run once per sprite per repo.
+Configure a sprite with base configs and persona. Run once per sprite per repo.
 
 ```
 bb setup <sprite> [flags]
@@ -155,10 +155,9 @@ bb setup fern --repo misty-step/webapp --force
 2. Create directory structure (`~/.claude/`, workspace)
 3. Upload base configs (CLAUDE.md, settings.json with OpenRouter key, hooks, skills, commands)
 4. Upload persona file (`sprites/<name>.md` → `PERSONA.md`)
-5. Upload ralph.sh and prompt template
-6. Configure git auth (credential helper, user identity)
-7. Clone repo (if `--repo` provided)
-8. Write workspace metadata at `.bb/workspace.json`
+5. Configure git auth (credential helper, user identity)
+6. Clone repo (if `--repo` provided)
+7. Write workspace metadata at `.bb/workspace.json`
 
 ---
 
@@ -198,7 +197,7 @@ Shows signal files, git branch, dirty files, recent commits, and PR visibility.
 
 ## logs
 
-Stream a sprite's agent output (reads `${WORKSPACE}/ralph.log` on-sprite).
+Stream a sprite's agent output (reads `${WORKSPACE}/agent.log` on-sprite).
 
 ```
 bb logs <sprite> [--follow] [--lines N] [--json]
@@ -228,7 +227,7 @@ bb logs bramble --follow --json
 | `--lines` | `0` | Last N lines (0 = all; follow defaults to 50) |
 | `--json` | `false` | Raw Claude Code `stream-json` events |
 
-If you upgraded `bb`, re-run `bb setup <sprite>` once to upload the updated `ralph.sh` (it creates/appends `ralph.log`).
+`bb dispatch` creates/appends `${WORKSPACE}/agent.log` automatically.
 
 ---
 

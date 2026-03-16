@@ -30,16 +30,14 @@ Risk:
 - tend to preserve older orchestration and wrapper-script mental models
 - useful for historical context, risky for exact implementation truth
 
-### Legacy wrapper surfaces in `scripts/`
+### Historical wrapper surfaces in `scripts/`
 
 Examples:
 
 - [`scripts/provision.sh`](../../scripts/provision.sh)
 - [`scripts/teardown.sh`](../../scripts/teardown.sh)
 - [`scripts/status.sh`](../../scripts/status.sh)
-- [`scripts/fleet-status.sh`](../../scripts/fleet-status.sh)
-- [`scripts/watchdog.sh`](../../scripts/watchdog.sh)
-- [`scripts/watchdog-v2.sh`](../../scripts/watchdog-v2.sh)
+- deleted wrapper entrypoints preserved only in historical docs and old reports
 - [`scripts/test_legacy_wrappers.sh`](../../scripts/test_legacy_wrappers.sh)
 
 Risk:

@@ -1,4 +1,4 @@
-This directory serves as a historical archive for superseded Large Language Model (LLM) prompt templates and workflow protocols within the `bitterblossom` project. Its primary purpose is to preserve legacy logic and patterns that have been replaced by more robust automation scripts, specifically `scripts/ralph-prompt-template.md`.
+This directory serves as a historical archive for superseded Large Language Model (LLM) prompt templates and workflow protocols within the `bitterblossom` project. Its primary purpose is to preserve legacy logic and patterns that have been replaced by the repo's current shared builder prompt template, `scripts/builder-prompt-template.md`.
 
 ### Architecture and Key Files
 

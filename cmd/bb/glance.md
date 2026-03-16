@@ -1,20 +1,20 @@
 ### Technical Overview: Bitterblossom CLI (`bb`)
 
-The `bb` directory contains the source code for the Bitterblossom command-line interface, a tool designed to orchestrate and monitor agentic tasks—specifically the "ralph" loop—running on remote "sprites" (ephemeral virtual environments). The CLI acts as a control plane for setting up remote environments, dispatching prompts, and managing the lifecycle of agent processes.
+The `bb` directory contains the source code for the Bitterblossom command-line interface, a thin transport that talks to remote sprites. It sets up environments, dispatches prompts through an inline agent session, streams logs, and exposes recovery/status surfaces.
 
 #### Architecture and Purpose
-The application is built using the Cobra CLI framework and follows a provider-consumer model where the CLI communicates with the Sprites API via the `sprites-go` SDK. The architecture emphasizes remote execution and observability, delegating heavy lifting to bash scripts on the sprite while maintaining local control over task safety and log streaming.
+The application is built using the Cobra CLI framework and follows a provider-consumer model where the CLI communicates with the Sprites API via the `sprites-go` SDK. The architecture emphasizes remote execution and observability while keeping workflow judgment out of the transport.
 
 #### Key File Roles
 - **`main.go`**: The entry point that initializes the Cobra command hierarchy. It handles authentication by exchanging Fly.io API tokens for Sprites-specific bearer tokens and manages global error handling through a custom `exitError` type.
-- **`dispatch.go`**: The dispatch pipeline orchestrator. It performs pre-flight connectivity checks, synchronizes GitHub repositories on the remote sprite, renders prompt templates, and executes the `ralph.sh` agent loop. It utilizes a `context.CancelCauseFunc` to terminate tasks if "off-rails" behavior is detected.
-- **`dispatch_checks.go`**: The low-level remote check contract used by dispatch. It owns the shell snippets, timeout-bounded runner helpers, and polling logic for Ralph loop activity, commit detection, completion signals, and PR check monitoring.
+- **`dispatch.go`**: The dispatch pipeline orchestrator. It performs pre-flight connectivity checks, synchronizes GitHub repositories on the remote sprite, renders prompt templates, and runs a named inline agent session with heartbeat/off-rails handling.
+- **`dispatch_checks.go`**: The low-level remote check contract used by dispatch. It owns the shell snippets, timeout-bounded runner helpers, and polling logic for agent-session activity, commit detection, completion signals, and PR check monitoring.
 - **`setup.go`**: Manages the initial provisioning of a sprite. It creates directory structures, uploads base configuration files (e.g., `CLAUDE.md`, `settings.json`), configures Git credentials, and clones target repositories.
 - **`offrails.go`**: Implements a safety monitoring system. It tracks activity via an `atomic.Int64` timestamp and monitors for "silence" (lack of output) or "error loops" (repeated identical tool errors), triggering an automatic abort if thresholds are exceeded.
 - **`stream_json.go`**: A specialized writer that parses the Claude Code `stream-json` output format. It provides two modes: a "pretty" mode for human-readable terminal output and a raw JSON mode for structured data processing. It also extracts tool errors to feed the off-rails detector.
 - **`status.go` & `logs.go`**: Provide observability. `status.go` uses concurrency to probe the availability and activity state of an entire fleet of sprites, while `logs.go` implements remote `tail` logic to stream agent logs to the local terminal.
 - **`kill.go`**: A maintenance utility that executes a remote bash script to identify and terminate stale or orphaned agent processes using `pgrep` and `pkill` with specific regex patterns.
-- **`sprite_workspace.go`**: A utility for dynamically discovering the active working directory on a remote sprite by searching for specific signal files like `.dispatch-prompt.md` or `ralph.log`.
+- **`sprite_workspace.go`**: A utility for dynamically discovering the active working directory on a remote sprite by searching for specific signal files like `.dispatch-prompt.md` or `agent.log`.
 
 #### Dependencies and Gotchas
 - **SDK Dependency**: Relies heavily on `github.com/superfly/sprites-go` for remote command execution and filesystem abstraction.

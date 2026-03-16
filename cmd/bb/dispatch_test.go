@@ -208,25 +208,25 @@ func TestEnsureNoActiveDispatchLoop_AllowsIdle(t *testing.T) {
 	if !strings.Contains(r.script, "pgrep -af") {
 		t.Fatalf("script = %q, want to contain %q", r.script, "pgrep -af")
 	}
-	if !strings.Contains(r.script, "[r]alph") {
-		t.Fatalf("script = %q, want to contain %q", r.script, "[r]alph")
+	if !strings.Contains(r.script, "[b]b-agent-session") {
+		t.Fatalf("script = %q, want to contain %q", r.script, "[b]b-agent-session")
 	}
-	if strings.Contains(r.script, "claude") || strings.Contains(r.script, "opencode") {
-		t.Fatalf("script = %q, want ralph-only busy check", r.script)
+	if strings.Contains(r.script, "claude") || strings.Contains(r.script, "codex") {
+		t.Fatalf("script = %q, want session-only busy check", r.script)
 	}
 }
 
 func TestEnsureNoActiveDispatchLoop_BlocksWhenBusy(t *testing.T) {
 	t.Parallel()
 
-	const busy = "1234 bash /home/sprite/workspace/.ralph.sh\n"
+	const busy = "1234 bb-agent-session\n"
 	r := &fakeSpriteScriptRunner{out: []byte(busy), exitCode: 1, err: nil}
 	err := ensureNoActiveDispatchLoopWithRunner(context.Background(), r.run)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !strings.Contains(err.Error(), "active dispatch loop detected") {
-		t.Fatalf("err = %q, want to contain %q", err.Error(), "active dispatch loop detected")
+	if !strings.Contains(err.Error(), "active agent session detected") {
+		t.Fatalf("err = %q, want to contain %q", err.Error(), "active agent session detected")
 	}
 	if !strings.Contains(err.Error(), strings.TrimSpace(busy)) {
 		t.Fatalf("err = %q, want to contain %q", err.Error(), strings.TrimSpace(busy))
@@ -241,8 +241,8 @@ func TestEnsureNoActiveDispatchLoop_WrapsRunnerError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !strings.Contains(err.Error(), "check dispatch loop") {
-		t.Fatalf("err = %q, want to contain %q", err.Error(), "check dispatch loop")
+	if !strings.Contains(err.Error(), "check agent session") {
+		t.Fatalf("err = %q, want to contain %q", err.Error(), "check agent session")
 	}
 	if !strings.Contains(err.Error(), "network") {
 		t.Fatalf("err = %q, want to contain %q", err.Error(), "network")
@@ -352,7 +352,7 @@ func TestIsDispatchLoopActive_ReturnsFalseWhenIdle(t *testing.T) {
 func TestIsDispatchLoopActive_ReturnsTrueWhenBusy(t *testing.T) {
 	t.Parallel()
 
-	const busyOut = "1234 bash /home/sprite/workspace/.ralph.sh\n"
+	const busyOut = "1234 bb-agent-session\n"
 	r := &fakeSpriteScriptRunner{out: []byte(busyOut), exitCode: 1, err: nil}
 	busy, err := isDispatchLoopActiveWithRunner(context.Background(), r.run)
 	if err != nil {
@@ -371,8 +371,8 @@ func TestIsDispatchLoopActive_ErrorsOnRunnerFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !strings.Contains(err.Error(), "check dispatch loop") {
-		t.Fatalf("err = %q, want to contain %q", err.Error(), "check dispatch loop")
+	if !strings.Contains(err.Error(), "check agent session") {
+		t.Fatalf("err = %q, want to contain %q", err.Error(), "check agent session")
 	}
 }
 
