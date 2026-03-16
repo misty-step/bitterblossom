@@ -44,7 +44,7 @@ defmodule Conductor.FixerTest do
     def merge(_repo, _pr, _opts), do: :ok
     def labeled_prs(_repo, _label), do: {:ok, []}
 
-    def factory_prs(_repo), do: MockState.get(:factory_prs, {:ok, []})
+    def open_prs(_repo), do: MockState.get(:open_prs, {:ok, []})
 
     def pr_ci_failure_logs(_repo, _pr_number) do
       MockState.get(:ci_failure_logs, {:ok, "Build failed: test_foo.ex:42 assertion error"})
@@ -150,7 +150,7 @@ defmodule Conductor.FixerTest do
   describe "poll triggers fixer dispatch" do
     test "dispatches fixer sprite when factory PR has failed CI" do
       MockState.put(
-        :factory_prs,
+        :open_prs,
         {:ok,
          [
            %{
@@ -178,7 +178,7 @@ defmodule Conductor.FixerTest do
 
     test "skips PRs when CI has not failed (green or pending)" do
       MockState.put(
-        :factory_prs,
+        :open_prs,
         {:ok,
          [
            %{
@@ -203,16 +203,19 @@ defmodule Conductor.FixerTest do
       refute_receive {:dispatched, _, _}, 300
     end
 
-    test "skips non-factory PRs" do
+    test "dispatches fixer for non-factory PRs with failed CI" do
       MockState.put(
-        :factory_prs,
+        :open_prs,
         {:ok,
          [
            %{
              "number" => 42,
-             "headRefName" => "feature/unrelated",
-             "title" => "unrelated PR",
-             "body" => ""
+             "headRefName" => "fix/cerberus-permissions",
+             "title" => "fix: cerberus permissions",
+             "body" => "Fixes permissions",
+             "statusCheckRollup" => [
+               %{"name" => "CI", "conclusion" => "FAILURE", "status" => "COMPLETED"}
+             ]
            }
          ]}
       )
@@ -224,12 +227,12 @@ defmodule Conductor.FixerTest do
           poll_ms: 50
         )
 
-      refute_receive {:dispatched, _, _}, 300
+      assert_receive {:dispatched, "bb-fixer", _prompt}, 2_000
     end
 
     test "does not dispatch when fixer is already working on a PR" do
       MockState.put(
-        :factory_prs,
+        :open_prs,
         {:ok,
          [
            %{

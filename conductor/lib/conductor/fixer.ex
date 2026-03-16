@@ -1,8 +1,8 @@
 defmodule Conductor.Fixer do
   @moduledoc """
-  Polls for factory PRs with red CI and dispatches the fixer sprite.
+  Polls for open PRs with red CI and dispatches the fixer sprite.
 
-  Single-responsibility: detect CI failures on open factory PRs,
+  Single-responsibility: detect CI failures on open PRs,
   build a fixer prompt with failure context, and dispatch the fixer
   sprite to push a fix. Tracks in-flight dispatches to avoid
   double-fixing the same PR.
@@ -94,7 +94,7 @@ defmodule Conductor.Fixer do
     if map_size(state.in_flight) > 0 do
       state
     else
-      case code_host_mod().factory_prs(state.repo) do
+      case code_host_mod().open_prs(state.repo) do
         {:ok, prs} ->
           # Dispatch at most one PR per poll (single sprite, single workspace)
           case Enum.find(prs, &needs_fix?(&1, state)) do
@@ -103,18 +103,15 @@ defmodule Conductor.Fixer do
           end
 
         {:error, reason} ->
-          Logger.warning("[fixer] failed to list factory PRs: #{reason}")
+          Logger.warning("[fixer] failed to list open PRs: #{reason}")
           state
       end
     end
   end
 
   defp needs_fix?(pr, _state) do
-    branch = pr["headRefName"] || ""
     checks = pr["statusCheckRollup"] || []
-
-    String.starts_with?(branch, "factory/") and
-      Conductor.GitHub.evaluate_checks_failed(checks)
+    Conductor.GitHub.evaluate_checks_failed(checks)
   end
 
   defp dispatch_fixer(state, pr) do
