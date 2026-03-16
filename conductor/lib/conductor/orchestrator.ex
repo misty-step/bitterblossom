@@ -43,10 +43,52 @@ defmodule Conductor.Orchestrator do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
+  @doc "Run a single issue synchronously. Returns the terminal phase."
+  @spec run_once(keyword()) :: {:ok, atom()} | {:error, term()}
+  def run_once(opts) do
+    repo = Keyword.fetch!(opts, :repo)
+    issue_number = Keyword.fetch!(opts, :issue)
+    worker = Keyword.fetch!(opts, :worker)
+    trusted_surfaces = Keyword.get(opts, :trusted_surfaces, [])
+
+    case tracker_mod().get_issue(repo, issue_number) do
+      {:ok, issue} ->
+        case Issue.ready?(issue) do
+          :ok ->
+            run_issue(repo, issue, worker, trusted_surfaces)
+
+          {:error, failures} ->
+            case safe_shape_issue(repo, issue_number) do
+              {:ok, result} when result in [:shaped, :already_shaped] ->
+                IO.puts(
+                  "issue ##{issue_number} not ready: #{Enum.join(failures, ", ")}; " <>
+                    "shaping #{result} and deferring execution until the next fetch"
+                )
+
+              {:error, reason} ->
+                IO.puts(
+                  "issue ##{issue_number} not ready: #{Enum.join(failures, ", ")}; " <>
+                    "shaping failed: #{inspect(reason)}"
+                )
+            end
+
+            {:error, :not_ready}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
   @doc "Configure the orchestrator and begin polling."
   @spec configure_polling(keyword()) :: :ok | {:error, :no_workers}
   def configure_polling(opts) do
     GenServer.call(__MODULE__, {:configure_polling, opts})
+  end
+
+  @doc "Start the continuous polling loop."
+  @spec start_loop(keyword()) :: :ok | {:error, :no_workers}
+  def start_loop(opts) do
+    configure_polling(opts)
   end
 
   @doc "Pause dispatch of new runs. Existing work continues."
@@ -109,6 +151,11 @@ defmodule Conductor.Orchestrator do
       schedule_poll(0)
       {:reply, :ok, state}
     end
+  end
+
+  @impl true
+  def handle_call({:start_loop, opts}, from, state) do
+    handle_call({:configure_polling, opts}, from, state)
   end
 
   @impl true
