@@ -1467,6 +1467,38 @@ defmodule Conductor.OrchestratorTest do
     end
   end
 
+  describe "parse_issue_number_from_branch/1" do
+    test "parses factory/ branch" do
+      assert {:ok, 42} = Orchestrator.parse_issue_number_from_branch("factory/42-1234567890")
+    end
+
+    test "parses fix/ branch" do
+      assert {:ok, 99} =
+               Orchestrator.parse_issue_number_from_branch("fix/99-cerberus-permissions")
+    end
+
+    test "parses multi-segment branch" do
+      assert {:ok, 123} = Orchestrator.parse_issue_number_from_branch("team/fix/123-bug")
+    end
+
+    test "parses bare branch without prefix" do
+      assert {:ok, 7} = Orchestrator.parse_issue_number_from_branch("7-quick-fix")
+    end
+
+    test "returns :skip for branch without issue number" do
+      assert :skip = Orchestrator.parse_issue_number_from_branch("feature/unrelated")
+    end
+
+    test "returns :skip for branch with no dash delimiter" do
+      assert :skip = Orchestrator.parse_issue_number_from_branch("main")
+    end
+
+    test "does not match prefix of larger number" do
+      # "factory/420-..." should not match issue 42
+      assert {:ok, 420} = Orchestrator.parse_issue_number_from_branch("factory/420-1234567890")
+    end
+  end
+
   describe "Store.list_active_runs/1" do
     test "returns only non-terminal runs for the given repo" do
       {:ok, run_a} =

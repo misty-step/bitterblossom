@@ -920,14 +920,11 @@ defmodule Conductor.Orchestrator do
     end
   end
 
-  # Extract issue number from branch names like "factory/42-ts", "fix/42-desc", "42-desc".
-  # Tries the segment after the last "/" first, then the full name.
-  defp parse_issue_number_from_branch(branch) do
-    segment =
-      case String.split(branch, "/") do
-        [_prefix, rest | _] -> rest
-        [rest] -> rest
-      end
+  # Extract issue number from branch names like "factory/42-ts", "fix/42-desc",
+  # "team/fix/42-desc", "42-desc". Uses the final path segment after the last "/".
+  @doc false
+  def parse_issue_number_from_branch(branch) do
+    segment = branch |> String.split("/") |> List.last()
 
     case String.split(segment, "-", parts: 2) do
       [issue_str, _suffix] ->
