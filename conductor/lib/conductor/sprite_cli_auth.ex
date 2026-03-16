@@ -25,6 +25,8 @@ defmodule Conductor.SpriteCLIAuth do
   end
 
   @spec read_config(binary()) :: {:ok, %{org: binary(), url: binary()}} | {:error, binary()}
+  def read_config(""), do: {:error, "home_dir is empty; cannot locate sprite CLI config"}
+
   def read_config(home_dir) do
     path = Path.join(home_dir, @config_rel_path)
 
@@ -84,7 +86,8 @@ defmodule Conductor.SpriteCLIAuth do
     {:ok, %{org: org, url: url}}
   end
 
-  defp extract_selection(_), do: {:error, "missing current_selection in sprites.json"}
+  defp extract_selection(_),
+    do: {:error, "invalid current_selection in sprites.json (requires non-empty org and url)"}
 
   defp resolve_home do
     case System.get_env("HOME") do

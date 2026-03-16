@@ -25,6 +25,11 @@ defmodule Conductor.SpriteCLIAuthTest do
                SpriteCLIAuth.read_config(dir)
     end
 
+    test "returns error when home_dir is empty string" do
+      assert {:error, msg} = SpriteCLIAuth.read_config("")
+      assert msg =~ "empty"
+    end
+
     test "returns error when config dir missing" do
       assert {:error, msg} = SpriteCLIAuth.read_config("/nonexistent")
       assert msg =~ "read sprites.json"
@@ -40,7 +45,7 @@ defmodule Conductor.SpriteCLIAuthTest do
       config = Jason.encode!(%{"current_selection" => %{"url" => "", "org" => ""}, "urls" => %{}})
       dir = make_config_dir(config)
       assert {:error, msg} = SpriteCLIAuth.read_config(dir)
-      assert msg =~ "missing current_selection"
+      assert msg =~ "current_selection"
     end
 
     test "returns error when current_selection.org missing" do
@@ -52,7 +57,7 @@ defmodule Conductor.SpriteCLIAuthTest do
 
       dir = make_config_dir(config)
       assert {:error, msg} = SpriteCLIAuth.read_config(dir)
-      assert msg =~ "missing current_selection"
+      assert msg =~ "current_selection"
     end
   end
 

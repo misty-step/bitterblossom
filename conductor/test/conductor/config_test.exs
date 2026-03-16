@@ -197,6 +197,58 @@ defmodule Conductor.ConfigTest do
     end
   end
 
+  describe "sprite_auth_available?/0" do
+    test "returns token when SPRITE_TOKEN set" do
+      System.put_env("SPRITE_TOKEN", "st_test")
+      assert Config.sprite_auth_available?() == "st_test"
+    after
+      System.delete_env("SPRITE_TOKEN")
+    end
+
+    test "returns token when FLY_API_TOKEN set" do
+      System.delete_env("SPRITE_TOKEN")
+      System.put_env("FLY_API_TOKEN", "fly_test")
+      assert Config.sprite_auth_available?() == "fly_test"
+    after
+      System.delete_env("SPRITE_TOKEN")
+      System.delete_env("FLY_API_TOKEN")
+    end
+
+    test "returns sprite-cli when sprite CLI authenticated" do
+      System.delete_env("SPRITE_TOKEN")
+      System.delete_env("FLY_API_TOKEN")
+
+      home =
+        make_sprite_cli_home(%{
+          "current_selection" => %{"url" => "https://api.machines.dev", "org" => "personal"},
+          "urls" => %{}
+        })
+
+      System.put_env("HOME", home)
+      assert Config.sprite_auth_available?() == "sprite-cli"
+    after
+      System.delete_env("SPRITE_TOKEN")
+      System.delete_env("FLY_API_TOKEN")
+    end
+
+    test "returns false when no auth available" do
+      System.delete_env("SPRITE_TOKEN")
+      System.delete_env("FLY_API_TOKEN")
+
+      System.put_env(
+        "HOME",
+        System.tmp_dir!()
+        |> Path.join("no_sprite_#{:erlang.unique_integer([:positive])}")
+        |> tap(&File.mkdir_p!/1)
+      )
+
+      assert Config.sprite_auth_available?() == false
+    after
+      System.delete_env("SPRITE_TOKEN")
+      System.delete_env("FLY_API_TOKEN")
+    end
+  end
+
   defp restore_home(nil), do: System.delete_env("HOME")
   defp restore_home(val), do: System.put_env("HOME", val)
 
