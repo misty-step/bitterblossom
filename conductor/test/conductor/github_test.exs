@@ -149,6 +149,29 @@ defmodule Conductor.GitHubTest do
   end
 
   describe "summarize_checks/1" do
+    test "reports green when every actionable check succeeded" do
+      summary =
+        GitHub.summarize_checks([
+          %{
+            "name" => "Elixir Checks",
+            "status" => "COMPLETED",
+            "conclusion" => "SUCCESS",
+            "detailsUrl" => "https://example.test/checks/green-1"
+          },
+          %{
+            "name" => "Shell Scripts",
+            "status" => "COMPLETED",
+            "conclusion" => "SUCCESS",
+            "detailsUrl" => "https://example.test/checks/green-2"
+          }
+        ])
+
+      assert summary.state == :green
+      assert summary.pending == []
+      assert summary.failed == []
+      assert summary.summary == "2 checks green"
+    end
+
     test "surfaces pending checks with URLs" do
       summary =
         GitHub.summarize_checks([
@@ -196,6 +219,24 @@ defmodule Conductor.GitHubTest do
 
       assert [%{name: "Deploy", conclusion: "TIMED_OUT", url: "https://example.test/checks/9"}] =
                summary.failed
+    end
+
+    test "sanitizes control characters before summarizing check names and urls" do
+      summary =
+        GitHub.summarize_checks([
+          %{
+            "name" => "Cerberus\nTesting",
+            "status" => "IN_PROGRESS",
+            "conclusion" => nil,
+            "detailsUrl" => "https://example.test/checks/\r509"
+          }
+        ])
+
+      assert summary.state == :pending
+      assert summary.summary =~ "Cerberus Testing (IN_PROGRESS)"
+      assert summary.summary =~ "https://example.test/checks/509"
+      refute summary.summary =~ "\n"
+      refute summary.summary =~ "\r"
     end
   end
 

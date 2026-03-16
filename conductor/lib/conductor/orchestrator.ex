@@ -1060,11 +1060,12 @@ defmodule Conductor.Orchestrator do
     DateTime.diff(now, wait_started_at, :second)
     |> Kernel./(60)
     |> trunc()
+    |> max(0)
   end
 
   defp ci_timeout_reason(ci_status, elapsed_minutes) do
     "timed out after #{elapsed_minutes} minutes waiting for CI: #{ci_status.summary}. " <>
-      "Next actions: inspect the job URL(s), rerun or fix the external CI job, then re-label the PR with lgtm once checks are green."
+      "Next actions: inspect the job URL(s), rerun or fix the external CI job, then trigger a new run for this issue once checks are green."
   end
 
   defp maybe_comment_ci_timeout(repo, issue_number, run_id, reason) do

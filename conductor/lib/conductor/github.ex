@@ -405,7 +405,12 @@ defmodule Conductor.GitHub do
           check["context"],
           check["displayName"],
           check["workflowName"]
-        ]) || "unnamed check",
+        ])
+        |> sanitize_check_name()
+        |> case do
+          nil -> "unnamed check"
+          name -> name
+        end,
       status: normalize_check_value(check["status"]),
       conclusion: normalize_check_value(check["conclusion"]),
       url:
@@ -414,6 +419,7 @@ defmodule Conductor.GitHub do
           check["targetUrl"],
           check["url"]
         ])
+        |> sanitize_check_url()
     }
   end
 
@@ -426,6 +432,31 @@ defmodule Conductor.GitHub do
       value when is_binary(value) -> value != ""
       _ -> false
     end)
+  end
+
+  defp sanitize_check_name(nil), do: nil
+
+  defp sanitize_check_name(value) when is_binary(value) do
+    value
+    |> String.replace(~r/[\x00-\x1F\x7F]/u, " ")
+    |> String.replace(~r/\s+/u, " ")
+    |> String.trim()
+    |> case do
+      "" -> nil
+      sanitized -> sanitized
+    end
+  end
+
+  defp sanitize_check_url(nil), do: nil
+
+  defp sanitize_check_url(value) when is_binary(value) do
+    value
+    |> String.replace(~r/[\x00-\x1F\x7F]/u, "")
+    |> String.trim()
+    |> case do
+      "" -> nil
+      sanitized -> sanitized
+    end
   end
 
   defp ignored_check?(check) do
