@@ -164,6 +164,53 @@ func TestGetSpriteCLIFlyToken_MalformedJSON(t *testing.T) {
 	}
 }
 
+// TestGetSpriteCLIFlyToken_URLNotInURLs verifies error when current_selection.url is not in urls map.
+func TestGetSpriteCLIFlyToken_URLNotInURLs(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	dir := tmp + "/.sprites"
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := `{"current_selection":{"url":"https://missing.example","org":"personal"},"urls":{}}`
+	if err := os.WriteFile(dir+"/sprites.json", []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := getSpriteCLIFlyToken()
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "no https://missing.example in urls") {
+		t.Errorf("err = %q, want to mention missing URL", err.Error())
+	}
+}
+
+// TestGetSpriteCLIFlyToken_NoValidKeyringEntry verifies error when keyring has no valid token.
+func TestGetSpriteCLIFlyToken_NoValidKeyringEntry(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	dir := tmp + "/.sprites"
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Config with a URL entry but the keyring lookup will fail (no real keychain entry)
+	content := `{"current_selection":{"url":"https://api.machines.dev","org":"personal"},"urls":{"https://api.machines.dev":{"orgs":{"personal":{"keyring_key":"nonexistent_key_12345"}}}}}`
+	if err := os.WriteFile(dir+"/sprites.json", []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := getSpriteCLIFlyToken()
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "no valid Fly token in sprite CLI keyring") {
+		t.Errorf("err = %q, want keyring error", err.Error())
+	}
+}
+
 // TestGetSpriteCLIFlyToken_MissingCurrentSelection verifies error when current_selection is empty.
 func TestGetSpriteCLIFlyToken_MissingCurrentSelection(t *testing.T) {
 	tmp := t.TempDir()

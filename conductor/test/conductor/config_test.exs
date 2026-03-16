@@ -153,13 +153,105 @@ defmodule Conductor.ConfigTest do
       System.delete_env("FLY_ORG")
     end
 
-    test "raises when both missing" do
+    test "falls back to sprite CLI config org" do
       System.delete_env("SPRITES_ORG")
       System.delete_env("FLY_ORG")
 
-      assert_raise System.EnvError, fn ->
+      # Write a valid sprite CLI config
+      home =
+        make_sprite_cli_home(%{
+          "current_selection" => %{"url" => "https://api.machines.dev", "org" => "cli-org"},
+          "urls" => %{}
+        })
+
+      System.put_env("HOME", home)
+      assert Config.sprites_org!() == "cli-org"
+    after
+      System.delete_env("SPRITES_ORG")
+      System.delete_env("FLY_ORG")
+    end
+
+    test "raises when env vars and sprite CLI all missing" do
+      System.delete_env("SPRITES_ORG")
+      System.delete_env("FLY_ORG")
+
+      # Point HOME to empty dir so sprite CLI config isn't found
+      System.put_env(
+        "HOME",
+        System.tmp_dir!()
+        |> Path.join("no_sprite_#{:erlang.unique_integer([:positive])}")
+        |> tap(&File.mkdir_p!/1)
+      )
+
+      assert_raise RuntimeError, ~r/no sprite org/, fn ->
         Config.sprites_org!()
       end
+    after
+      System.delete_env("SPRITES_ORG")
+      System.delete_env("FLY_ORG")
     end
+  end
+
+  describe "check_env!/0" do
+    test "passes when SPRITE_TOKEN set" do
+      System.put_env("GITHUB_TOKEN", "ghp_test")
+      System.put_env("SPRITE_TOKEN", "st_test")
+
+      assert Config.check_env!() == :ok
+    after
+      System.delete_env("GITHUB_TOKEN")
+      System.delete_env("SPRITE_TOKEN")
+    end
+
+    test "passes when sprite CLI authenticated (no token env vars)" do
+      System.put_env("GITHUB_TOKEN", "ghp_test")
+      System.delete_env("SPRITE_TOKEN")
+      System.delete_env("FLY_API_TOKEN")
+
+      home =
+        make_sprite_cli_home(%{
+          "current_selection" => %{"url" => "https://api.machines.dev", "org" => "personal"},
+          "urls" => %{}
+        })
+
+      System.put_env("HOME", home)
+
+      assert Config.check_env!() == :ok
+    after
+      System.delete_env("GITHUB_TOKEN")
+      System.delete_env("SPRITE_TOKEN")
+      System.delete_env("FLY_API_TOKEN")
+    end
+
+    test "fails when no sprite auth at all" do
+      System.put_env("GITHUB_TOKEN", "ghp_test")
+      System.delete_env("SPRITE_TOKEN")
+      System.delete_env("FLY_API_TOKEN")
+
+      System.put_env(
+        "HOME",
+        System.tmp_dir!()
+        |> Path.join("no_sprite_#{:erlang.unique_integer([:positive])}")
+        |> tap(&File.mkdir_p!/1)
+      )
+
+      assert_raise RuntimeError, ~r/missing/, fn ->
+        Config.check_env!()
+      end
+    after
+      System.delete_env("GITHUB_TOKEN")
+      System.delete_env("SPRITE_TOKEN")
+      System.delete_env("FLY_API_TOKEN")
+    end
+  end
+
+  defp make_sprite_cli_home(config) do
+    home =
+      Path.join(System.tmp_dir!(), "sprite_config_test_#{:erlang.unique_integer([:positive])}")
+
+    sprites_dir = Path.join(home, ".sprites")
+    File.mkdir_p!(sprites_dir)
+    File.write!(Path.join(sprites_dir, "sprites.json"), Jason.encode!(config))
+    home
   end
 end

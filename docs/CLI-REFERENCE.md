@@ -2,20 +2,40 @@
 
 `bb` is the Bitterblossom sprite transport CLI. Workflow orchestration lives in [docs/CONDUCTOR.md](./CONDUCTOR.md), not in `bb`.
 
-## Environment
+## Authentication
+
+`bb` and the conductor try three auth methods in order:
+
+1. **`SPRITE_TOKEN`** (preferred) — direct sprites API token, no exchange needed
+2. **`FLY_API_TOKEN`** — exchanged for a sprites token via the SDK
+3. **Sprite CLI session** — reads `~/.sprites/sprites.json` and keychain (macOS)
+
+The **preferred operator path** is sprite CLI login:
+
+```bash
+sprite auth login          # interactive login, stores token in keychain
+sprite auth switch -o org  # select org (if not personal)
+```
+
+After login, both `bb` and `mix conductor check-env` accept the sprite CLI session
+without any environment variables. This is the recommended path for local development.
+
+For CI/automated environments, set `SPRITE_TOKEN` or `FLY_API_TOKEN` explicitly.
+
+### Org resolution
+
+The sprites org is resolved in order: `SPRITES_ORG` > `FLY_ORG` > sprite CLI config (`current_selection.org`).
+
+### Environment variables
 
 | Variable | Required | Purpose |
 |----------|----------|---------|
-| `SPRITE_TOKEN` | Preferred | Direct sprites token (skips FLY_API_TOKEN exchange) |
-| `FLY_API_TOKEN` | Alternative | Fly.io token for Sprites API auth |
-| `SPRITES_ORG` | If not `personal` | Sprites org slug for token exchange |
+| `SPRITE_TOKEN` | One of three | Direct sprites token (skips exchange) |
+| `FLY_API_TOKEN` | One of three | Fly.io token, exchanged for sprites token |
+| Sprite CLI login | One of three | `~/.sprites/sprites.json` + keychain |
+| `SPRITES_ORG` | If not `personal` | Override sprites org slug |
 | `GITHUB_TOKEN` | For dispatch | Git operations on sprite |
 | `OPENROUTER_API_KEY` | For setup | Baked into sprite settings.json |
-
-Preferred token setup:
-```bash
-export SPRITE_TOKEN="..."
-```
 
 Fallback Fly token creation:
 ```bash
