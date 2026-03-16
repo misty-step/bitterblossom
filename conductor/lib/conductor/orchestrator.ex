@@ -1164,7 +1164,36 @@ defmodule Conductor.Orchestrator do
   end
 
   defp conductor_tracked?(repo, pr_number) do
-    match?({:ok, _}, Store.find_run_by_pr(repo, pr_number))
+    try do
+      case Store.find_run_by_pr(repo, pr_number) do
+        {:ok, _} ->
+          true
+
+        {:error, :not_found} ->
+          false
+
+        {:error, reason} ->
+          Logger.warning(
+            "[merge] conductor_tracked? failed for PR ##{pr_number}: #{inspect(reason)}"
+          )
+
+          false
+      end
+    rescue
+      exception ->
+        Logger.warning(
+          "[merge] conductor_tracked? failed for PR ##{pr_number}: #{Exception.message(exception)}"
+        )
+
+        false
+    catch
+      :exit, reason ->
+        Logger.warning(
+          "[merge] conductor_tracked? failed for PR ##{pr_number}: #{inspect(reason)}"
+        )
+
+        false
+    end
   end
 
   defp tracker_mod, do: Application.get_env(:conductor, :tracker_module, Conductor.GitHub)
