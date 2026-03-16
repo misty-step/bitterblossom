@@ -123,23 +123,23 @@ func resolveSpriteTokenWithLookup(log io.Writer, getenv func(string) string) (st
 		if org == "" {
 			org = "personal"
 		}
-		fmt.Fprintf(log, "exchanging FLY_API_TOKEN for sprites token (org=%s)...\n", org)
+		_, _ = fmt.Fprintf(log, "exchanging FLY_API_TOKEN for sprites token (org=%s)...\n", org)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if token, err := sprites.CreateToken(ctx, macaroon, org, ""); err == nil {
 			return token, "FLY_API_TOKEN", nil
 		} else {
-			fmt.Fprintf(log, "FLY_API_TOKEN exchange failed (%v); trying sprite CLI...\n", err)
+			_, _ = fmt.Fprintf(log, "FLY_API_TOKEN exchange failed (%v); trying sprite CLI...\n", err)
 		}
 	} else {
-		fmt.Fprint(log, "no SPRITE_TOKEN or FLY_API_TOKEN; trying sprite CLI...\n")
+		_, _ = fmt.Fprint(log, "no SPRITE_TOKEN or FLY_API_TOKEN; trying sprite CLI...\n")
 	}
 	flyTokenCLI, orgCLI, err := getSpriteCLIFlyToken()
 	if err != nil {
 		return "", "", fmt.Errorf("SPRITE_TOKEN, FLY_API_TOKEN, or sprite CLI auth required: %w", err)
 	}
 	macaroon := strings.TrimPrefix(flyTokenCLI, "FlyV1 ")
-	fmt.Fprintf(log, "exchanging sprite CLI token for sprites token (org=%s)...\n", orgCLI)
+	_, _ = fmt.Fprintf(log, "exchanging sprite CLI token for sprites token (org=%s)...\n", orgCLI)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	token, err := sprites.CreateToken(ctx, macaroon, orgCLI, "")
