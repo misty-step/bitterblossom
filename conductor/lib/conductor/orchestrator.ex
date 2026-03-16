@@ -656,33 +656,67 @@ defmodule Conductor.Orchestrator do
         |> Enum.each(fn pr ->
           pr_number = pr["number"]
 
-          if code_host_mod().checks_green?(repo, pr_number) do
-            case operator_merge_decision(repo, pr) do
-              :allow ->
-                Logger.info("[merge] PR ##{pr_number} has lgtm + green CI, merging")
+          case code_host_mod().ci_status(repo, pr_number) do
+            {:ok, %{state: :green}} ->
+              if ci_timeout_run?(repo, pr_number) do
+                Logger.warning(
+                  "[merge] PR ##{pr_number} previously timed out waiting for CI, skipping"
+                )
+              else
+                clear_ci_wait_tracking(repo, pr_number)
 
-                case code_host_mod().merge(repo, pr_number, []) do
-                  :ok ->
-                    Logger.info("[merge] PR ##{pr_number} merged successfully")
-                    record_merge(repo, pr_number)
-                    Conductor.SelfUpdate.maybe_reload(repo, pr_number)
+                case operator_merge_decision(repo, pr) do
+                  :allow ->
+                    Logger.info("[merge] PR ##{pr_number} has lgtm + green CI, merging")
 
-                  {:error, reason} ->
-                    if merge_conflict?(reason) do
-                      attempt_rebase_merge(repo, pr_number, pr["headRefName"], state.worker_order)
-                    else
-                      Logger.warning("[merge] PR ##{pr_number} merge failed: #{reason}")
+                    case code_host_mod().merge(repo, pr_number, []) do
+                      :ok ->
+                        Logger.info("[merge] PR ##{pr_number} merged successfully")
+                        record_merge(repo, pr_number)
+                        Conductor.SelfUpdate.maybe_reload(repo, pr_number)
+
+                      {:error, reason} ->
+                        if merge_conflict?(reason) do
+                          attempt_rebase_merge(
+                            repo,
+                            pr_number,
+                            pr["headRefName"],
+                            state.worker_order
+                          )
+                        else
+                          Logger.warning("[merge] PR ##{pr_number} merge failed: #{reason}")
+                        end
                     end
+
+                  {:blocked, reason} ->
+                    mark_operator_blocked(repo, pr_number, reason)
+
+                  :skip ->
+                    Logger.warning(
+                      "[merge] PR ##{pr_number} operator checks unavailable, skipping"
+                    )
                 end
+              end
 
-              {:blocked, reason} ->
-                mark_operator_blocked(repo, pr_number, reason)
+            {:ok, %{state: :pending} = ci_status} ->
+              maybe_handle_pending_ci(repo, pr_number, ci_status)
 
-              :skip ->
-                Logger.warning("[merge] PR ##{pr_number} operator checks unavailable, skipping")
-            end
-          else
-            Logger.debug("[merge] PR ##{pr_number} has lgtm but CI not green, skipping")
+            {:ok, %{state: :failed} = ci_status} ->
+              clear_ci_wait_tracking(repo, pr_number)
+
+              Logger.debug(
+                "[merge] PR ##{pr_number} has lgtm but CI failed: #{ci_status.summary}"
+              )
+
+            {:ok, %{state: :unknown} = ci_status} ->
+              Logger.debug(
+                "[merge] PR ##{pr_number} has lgtm but CI is still unclear: #{ci_status.summary}"
+              )
+
+            {:error, reason} ->
+              Logger.warning(
+                "[merge] failed to inspect CI for PR ##{pr_number}: #{inspect(reason)}"
+              )
           end
         end)
 
@@ -925,6 +959,159 @@ defmodule Conductor.Orchestrator do
     end
   end
 
+  defp maybe_handle_pending_ci(repo, pr_number, ci_status) do
+    case Store.find_run_by_pr(repo, pr_number) do
+      {:ok, %{"phase" => "ci_timeout"}} ->
+        Logger.debug("[merge] PR ##{pr_number} already marked ci_timeout, skipping")
+
+      {:ok, %{"phase" => phase}} when phase not in ["pr_opened", nil] ->
+        Logger.debug("[merge] PR ##{pr_number} is in phase #{phase}, skipping CI wait tracking")
+
+      {:ok, run} ->
+        track_pending_ci(repo, run, ci_status)
+
+      {:error, :not_found} ->
+        Logger.debug("[merge] no run found for PR ##{pr_number}, cannot track CI wait")
+
+      {:error, reason} ->
+        Logger.warning("[merge] failed to look up run for PR ##{pr_number}: #{inspect(reason)}")
+    end
+  end
+
+  defp track_pending_ci(repo, run, ci_status) do
+    now = DateTime.utc_now()
+    run_id = run["run_id"]
+    issue_number = run["issue_number"]
+    pr_number = run["pr_number"]
+
+    wait_started_at =
+      case parse_datetime(run["ci_wait_started_at"]) do
+        {:ok, dt} ->
+          dt
+
+        :error ->
+          Store.update_run(run_id, %{ci_wait_started_at: DateTime.to_iso8601(now)})
+
+          Store.record_event(run_id, "ci_wait_started", %{
+            pr_number: pr_number,
+            summary: ci_status.summary,
+            pending_checks: ci_status.pending
+          })
+
+          now
+      end
+
+    elapsed_minutes = elapsed_minutes(wait_started_at, now)
+
+    if ci_wait_log_due?(run["ci_last_reported_at"], now) do
+      Logger.info("[merge] PR ##{pr_number} #{ci_status.summary}")
+
+      Store.record_event(run_id, "ci_wait_status", %{
+        pr_number: pr_number,
+        elapsed_minutes: elapsed_minutes,
+        summary: ci_status.summary,
+        pending_checks: ci_status.pending
+      })
+
+      Store.update_run(run_id, %{ci_last_reported_at: DateTime.to_iso8601(now)})
+    end
+
+    if ci_wait_timed_out?(wait_started_at, now) do
+      reason = ci_timeout_reason(ci_status, elapsed_minutes)
+
+      Logger.warning("[merge] PR ##{pr_number} #{reason}")
+
+      Store.record_event(run_id, "ci_timeout", %{
+        pr_number: pr_number,
+        elapsed_minutes: elapsed_minutes,
+        reason: reason,
+        pending_checks: ci_status.pending
+      })
+
+      Store.update_run(run_id, %{
+        blocked_reason: reason,
+        ci_wait_started_at: DateTime.to_iso8601(wait_started_at),
+        ci_last_reported_at: DateTime.to_iso8601(now)
+      })
+
+      Store.terminate_run(run_id, "ci_timeout", "ci_timeout", repo, issue_number)
+      maybe_comment_ci_timeout(repo, issue_number, run_id, reason)
+      Conductor.Retro.analyze(run_id)
+    end
+  end
+
+  defp ci_wait_log_due?(nil, _now), do: true
+
+  defp ci_wait_log_due?(last_reported_at, now) do
+    case parse_datetime(last_reported_at) do
+      {:ok, last_reported} ->
+        DateTime.diff(now, last_reported, :second) >= Config.ci_status_log_interval() * 60
+
+      :error ->
+        true
+    end
+  end
+
+  defp ci_wait_timed_out?(wait_started_at, now) do
+    DateTime.diff(now, wait_started_at, :second) >= Config.ci_timeout() * 60
+  end
+
+  defp elapsed_minutes(wait_started_at, now) do
+    DateTime.diff(now, wait_started_at, :second)
+    |> Kernel./(60)
+    |> trunc()
+  end
+
+  defp ci_timeout_reason(ci_status, elapsed_minutes) do
+    "timed out after #{elapsed_minutes} minutes waiting for CI: #{ci_status.summary}. " <>
+      "Next actions: inspect the job URL(s), rerun or fix the external CI job, then re-label the PR with lgtm once checks are green."
+  end
+
+  defp maybe_comment_ci_timeout(repo, issue_number, run_id, reason) do
+    case tracker_mod().comment(
+           repo,
+           issue_number,
+           "Bitterblossom timed out `#{run_id}` waiting for CI: #{reason}"
+         ) do
+      :ok ->
+        :ok
+
+      {:error, comment_reason} ->
+        Logger.warning(
+          "[merge] failed to comment on issue ##{issue_number} after CI timeout: #{inspect(comment_reason)}"
+        )
+    end
+  end
+
+  defp ci_timeout_run?(repo, pr_number) do
+    case Store.find_run_by_pr(repo, pr_number) do
+      {:ok, %{"phase" => "ci_timeout"}} -> true
+      _ -> false
+    end
+  end
+
+  defp clear_ci_wait_tracking(repo, pr_number) do
+    case Store.find_run_by_pr(repo, pr_number) do
+      {:ok, %{"run_id" => run_id, "phase" => "pr_opened"}} ->
+        Store.update_run(run_id, %{
+          ci_wait_started_at: nil,
+          ci_last_reported_at: nil
+        })
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp parse_datetime(nil), do: :error
+
+  defp parse_datetime(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, dt, _offset} -> {:ok, dt}
+      _ -> :error
+    end
+  end
+
   defp dispatch_paused? do
     try do
       Store.dispatch_paused?()
@@ -956,6 +1143,12 @@ defmodule Conductor.Orchestrator do
   defp record_merge(repo, pr_number) do
     case Store.find_run_by_pr(repo, pr_number) do
       {:ok, %{"run_id" => run_id, "issue_number" => issue_number}} ->
+        Store.update_run(run_id, %{
+          ci_wait_started_at: nil,
+          ci_last_reported_at: nil,
+          blocked_reason: nil
+        })
+
         Store.record_event(run_id, "merged", %{pr_number: pr_number, merged_by: "orchestrator"})
         Store.terminate_run(run_id, "merged", "merged", repo, issue_number)
         Conductor.Retro.analyze(run_id)

@@ -40,7 +40,12 @@ defmodule Conductor.Config do
 
   @spec ci_timeout() :: pos_integer()
   def ci_timeout do
-    Application.get_env(:conductor, :ci_timeout_minutes, 15)
+    Application.get_env(:conductor, :ci_timeout_minutes, 30)
+  end
+
+  @spec ci_status_log_interval() :: non_neg_integer()
+  def ci_status_log_interval do
+    Application.get_env(:conductor, :ci_status_log_interval_minutes, 5)
   end
 
   @spec pr_minimum_age() :: non_neg_integer()

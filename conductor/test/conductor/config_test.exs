@@ -50,8 +50,8 @@ defmodule Conductor.ConfigTest do
   end
 
   describe "ci_timeout/0" do
-    test "returns default of 15" do
-      assert Config.ci_timeout() == 15
+    test "returns default of 30" do
+      assert Config.ci_timeout() == 30
     end
 
     test "returns configured value" do
@@ -59,6 +59,19 @@ defmodule Conductor.ConfigTest do
       assert Config.ci_timeout() == 30
     after
       Application.delete_env(:conductor, :ci_timeout_minutes)
+    end
+  end
+
+  describe "ci_status_log_interval/0" do
+    test "returns default of 5" do
+      assert Config.ci_status_log_interval() == 5
+    end
+
+    test "returns configured value" do
+      Application.put_env(:conductor, :ci_status_log_interval_minutes, 2)
+      assert Config.ci_status_log_interval() == 2
+    after
+      Application.delete_env(:conductor, :ci_status_log_interval_minutes)
     end
   end
 

@@ -10,7 +10,8 @@ defmodule Conductor.Store do
   require Logger
 
   @valid_columns ~w(phase status branch pr_number pr_url turn_count worktree_path
-                    replay_count builder_sprite heartbeat_at completed_at)
+                    replay_count builder_sprite heartbeat_at completed_at
+                    ci_wait_started_at ci_last_reported_at blocked_reason)
 
   @doc "Validate that all map keys are in the column allowlist."
   @spec validate_columns(map()) :: :ok | {:error, :invalid_column}
@@ -586,6 +587,9 @@ defmodule Conductor.Store do
             picked_at TEXT,
             completed_at TEXT,
             heartbeat_at TEXT,
+            ci_wait_started_at TEXT,
+            ci_last_reported_at TEXT,
+            blocked_reason TEXT,
             updated_at TEXT
           )
           """,
@@ -646,6 +650,26 @@ defmodule Conductor.Store do
         ] do
       exec(conn, sql, [])
     end
+
+    ensure_columns(conn, "runs", [
+      {"ci_wait_started_at", "TEXT"},
+      {"ci_last_reported_at", "TEXT"},
+      {"blocked_reason", "TEXT"}
+    ])
+  end
+
+  defp ensure_columns(conn, table, columns) do
+    existing =
+      conn
+      |> query_all("PRAGMA table_info(#{table})", [])
+      |> Enum.map(& &1["name"])
+      |> MapSet.new()
+
+    Enum.each(columns, fn {name, type} ->
+      unless MapSet.member?(existing, name) do
+        exec(conn, "ALTER TABLE #{table} ADD COLUMN #{name} #{type}", [])
+      end
+    end)
   end
 
   defp exec(conn, sql, params) do

@@ -35,6 +35,7 @@ defmodule Conductor.PolisherTest do
     end
 
     def checks_failed?(_repo, _pr_number), do: false
+    def ci_status(_repo, _pr_number), do: {:ok, %{state: :green, summary: "mock ci", pending: []}}
 
     def merge(_repo, _pr, _opts), do: :ok
 

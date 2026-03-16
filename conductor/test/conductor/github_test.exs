@@ -148,6 +148,57 @@ defmodule Conductor.GitHubTest do
     end
   end
 
+  describe "summarize_checks/1" do
+    test "surfaces pending checks with URLs" do
+      summary =
+        GitHub.summarize_checks([
+          %{
+            "name" => "Cerberus · wave1 · Testing",
+            "status" => "IN_PROGRESS",
+            "conclusion" => nil,
+            "detailsUrl" => "https://example.test/checks/1"
+          },
+          %{
+            "name" => "Lint",
+            "status" => "COMPLETED",
+            "conclusion" => "SUCCESS",
+            "detailsUrl" => "https://example.test/checks/2"
+          }
+        ])
+
+      assert summary.state == :pending
+
+      assert [
+               %{
+                 name: "Cerberus · wave1 · Testing",
+                 status: "IN_PROGRESS",
+                 conclusion: nil,
+                 url: "https://example.test/checks/1"
+               }
+             ] = summary.pending
+
+      assert summary.summary =~ "Cerberus · wave1 · Testing (IN_PROGRESS)"
+      assert summary.summary =~ "https://example.test/checks/1"
+    end
+
+    test "surfaces failed checks with URLs" do
+      summary =
+        GitHub.summarize_checks([
+          %{
+            "name" => "Deploy",
+            "status" => "COMPLETED",
+            "conclusion" => "TIMED_OUT",
+            "targetUrl" => "https://example.test/checks/9"
+          }
+        ])
+
+      assert summary.state == :failed
+
+      assert [%{name: "Deploy", conclusion: "TIMED_OUT", url: "https://example.test/checks/9"}] =
+               summary.failed
+    end
+  end
+
   describe "find_open_pr/2 — branch prefix filtering" do
     # Test the pure filter logic extracted from find_open_pr.
     # The function finds the first PR whose headRefName starts with "factory/<issue>-".

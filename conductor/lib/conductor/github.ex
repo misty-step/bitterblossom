@@ -327,6 +327,14 @@ defmodule Conductor.GitHub do
     end
   end
 
+  @spec ci_status(binary(), pos_integer()) :: {:ok, map()} | {:error, term()}
+  def ci_status(repo, pr_number) do
+    case get_pr_checks(repo, pr_number) do
+      {:ok, checks} -> {:ok, summarize_checks(checks)}
+      {:error, _reason} = error -> error
+    end
+  end
+
   @doc """
   Return true when at least one completed check has a non-green conclusion.
   Returns false for pending/queued/no-checks states.
@@ -358,6 +366,107 @@ defmodule Conductor.GitHub do
 
     pending = Enum.any?(real, fn c -> is_nil(c["conclusion"]) end)
     real != [] and not pending and Enum.all?(real, fn c -> c["conclusion"] in @green end)
+  end
+
+  @doc false
+  @spec summarize_checks([map()]) :: map()
+  def summarize_checks(checks) do
+    normalized =
+      checks
+      |> Enum.map(&normalize_check/1)
+      |> Enum.reject(&ignored_check?/1)
+
+    pending = Enum.filter(normalized, &pending_check?/1)
+    failed = Enum.filter(normalized, &failed_check?/1)
+
+    state =
+      cond do
+        normalized == [] -> :unknown
+        failed != [] -> :failed
+        pending != [] -> :pending
+        Enum.all?(normalized, &green_check?/1) -> :green
+        true -> :unknown
+      end
+
+    %{
+      state: state,
+      checks: normalized,
+      pending: pending,
+      failed: failed,
+      summary: summarize_check_state(state, normalized, pending, failed)
+    }
+  end
+
+  defp normalize_check(check) do
+    %{
+      name:
+        first_present([
+          check["name"],
+          check["context"],
+          check["displayName"],
+          check["workflowName"]
+        ]) || "unnamed check",
+      status: normalize_check_value(check["status"]),
+      conclusion: normalize_check_value(check["conclusion"]),
+      url:
+        first_present([
+          check["detailsUrl"],
+          check["targetUrl"],
+          check["url"]
+        ])
+    }
+  end
+
+  defp normalize_check_value(nil), do: nil
+  defp normalize_check_value(value) when is_binary(value), do: String.upcase(value)
+  defp normalize_check_value(value), do: value |> to_string() |> String.upcase()
+
+  defp first_present(values) do
+    Enum.find(values, fn
+      value when is_binary(value) -> value != ""
+      _ -> false
+    end)
+  end
+
+  defp ignored_check?(check) do
+    is_nil(check.conclusion) and check.status not in @active_statuses
+  end
+
+  defp pending_check?(check) do
+    is_nil(check.conclusion) and check.status in @active_statuses
+  end
+
+  defp failed_check?(check) do
+    not is_nil(check.conclusion) and check.conclusion in @failed
+  end
+
+  defp green_check?(check) do
+    not is_nil(check.conclusion) and check.conclusion in @green
+  end
+
+  defp summarize_check_state(:green, checks, _pending, _failed) do
+    "#{length(checks)} checks green"
+  end
+
+  defp summarize_check_state(:pending, _checks, pending, _failed) do
+    "waiting on " <> Enum.map_join(pending, "; ", &format_check/1)
+  end
+
+  defp summarize_check_state(:failed, _checks, _pending, failed) do
+    "failed checks: " <> Enum.map_join(failed, "; ", &format_check/1)
+  end
+
+  defp summarize_check_state(:unknown, _checks, _pending, _failed) do
+    "no actionable CI signal yet"
+  end
+
+  defp format_check(check) do
+    state = check.conclusion || check.status || "UNKNOWN"
+
+    case check.url do
+      nil -> "#{check.name} (#{state})"
+      url -> "#{check.name} (#{state}) #{url}"
+    end
   end
 
   # Conductor.CodeHost callback — delegates to merge_pr/3.
