@@ -2,7 +2,8 @@ defmodule Conductor.Orchestrator do
   @moduledoc """
   Main polling loop. Symphony-inspired single authority.
 
-  Polls for eligible issues and starts RunServers up to concurrency limit.
+  In `run_once` mode: starts one RunServer and waits for it.
+  In `loop` mode: polls for eligible issues and starts RunServers up to concurrency limit.
   Reconciles stale runs on every tick.
   """
 
@@ -79,6 +80,7 @@ defmodule Conductor.Orchestrator do
         {:error, reason}
     end
   end
+
   @doc "Configure the orchestrator and begin polling."
   @spec configure_polling(keyword()) :: :ok | {:error, :no_workers}
   def configure_polling(opts) do
@@ -251,6 +253,36 @@ defmodule Conductor.Orchestrator do
   end
 
   # --- Private ---
+
+  defp run_issue(repo, issue, worker, trusted_surfaces) do
+    opts = [
+      repo: repo,
+      issue: issue,
+      worker: worker,
+      trusted_surfaces: trusted_surfaces
+    ]
+
+    case run_launcher().start(opts) do
+      {:ok, pid} ->
+        ref = Process.monitor(pid)
+        timeout = (Config.builder_timeout() + Config.ci_timeout() + 10) * 60_000
+
+        receive do
+          {:DOWN, ^ref, :process, ^pid, _reason} ->
+            case find_latest_run(repo, issue.number) do
+              %{"phase" => phase} -> {:ok, String.to_existing_atom(phase)}
+              nil -> {:error, :run_not_found}
+            end
+        after
+          timeout ->
+            Process.exit(pid, :kill)
+            {:error, :timeout}
+        end
+
+      {:error, reason} ->
+        {:error, {:start_failed, reason}}
+    end
+  end
 
   defp maybe_start_runs(state) do
     max_runs = Config.max_concurrent_runs()
@@ -686,6 +718,13 @@ defmodule Conductor.Orchestrator do
   end
 
   defp resolve_held_lease(_repo, _pr_number, _issue_number), do: :hold
+
+  defp find_latest_run(repo, issue_number) do
+    Store.list_runs(limit: 50)
+    |> Enum.find(fn r ->
+      r["repo"] == repo and r["issue_number"] == issue_number
+    end)
+  end
 
   # --- Label-Driven Merge ---
 
