@@ -185,7 +185,7 @@ defmodule Conductor.PolisherTest do
       assert prompt =~ "review"
     end
 
-    test "dispatches polisher for non-factory PR with green CI" do
+    test "dispatches polisher for non-factory PR without lgtm permission" do
       MockState.put(
         :open_prs,
         {:ok,
@@ -208,7 +208,10 @@ defmodule Conductor.PolisherTest do
           poll_ms: 50
         )
 
-      assert_receive {:dispatched, "bb-polisher", _prompt}, 2_000
+      assert_receive {:dispatched, "bb-polisher", prompt}, 2_000
+      # Non-conductor PRs get review but NOT lgtm labeling authority
+      assert prompt =~ "Do NOT add the `lgtm` label"
+      refute prompt =~ "gh pr edit --add-label lgtm"
     end
 
     test "skips PRs with red CI" do

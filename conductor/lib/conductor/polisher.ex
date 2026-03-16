@@ -130,7 +130,8 @@ defmodule Conductor.Polisher do
       end
 
     issue_body = pr["body"] || ""
-    prompt = Prompt.build_polisher_prompt(pr, comments, issue_body)
+    conductor_managed = conductor_managed?(state.repo, pr_number)
+    prompt = Prompt.build_polisher_prompt(pr, comments, issue_body, may_label: conductor_managed)
     branch = pr["headRefName"]
 
     Store.record_event("polisher", "polisher_dispatched", %{
@@ -176,6 +177,12 @@ defmodule Conductor.Polisher do
 
   defp schedule_poll(_, delay) do
     Process.send_after(self(), :poll, delay)
+  end
+
+  # Only conductor-tracked PRs may receive the automated `lgtm` label.
+  # Non-conductor PRs get polisher review but require human merge approval.
+  defp conductor_managed?(repo, pr_number) do
+    match?({:ok, _}, Store.find_run_by_pr(repo, pr_number))
   end
 
   defp code_host_mod, do: Application.get_env(:conductor, :code_host_module, Conductor.GitHub)
