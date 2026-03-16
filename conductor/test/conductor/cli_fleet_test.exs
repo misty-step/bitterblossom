@@ -45,37 +45,6 @@ defmodule Conductor.CLIFleetTest do
          }}
   end
 
-  defmodule RunOnceTracker do
-    def get_issue("test/repo", 642) do
-      {:ok,
-       %Conductor.Issue{
-         number: 642,
-         title: "run once issue",
-         body: "## Problem\nx\n\n## Acceptance Criteria\n- [ ] [test] y",
-         url: "https://example.test/issues/642"
-       }}
-    end
-
-    def get_issue(_repo, _issue), do: {:error, :not_found}
-  end
-
-  defmodule RunOnceLauncher do
-    def start(opts) do
-      {:ok, run_id} =
-        Store.create_run(%{
-          repo: opts[:repo],
-          issue_number: opts[:issue].number,
-          issue_title: opts[:issue].title,
-          builder_sprite: opts[:worker]
-        })
-
-      :ok = Store.complete_run(run_id, "pending", "pending")
-      send(self(), {:run_once_started, opts[:issue].number, opts[:worker]})
-      pid = spawn(fn -> Process.sleep(25) end)
-      {:ok, pid}
-    end
-  end
-
   defmodule ProbeOnlyWorker do
     def probe("bb-builder-1", _opts), do: {:ok, %{sprite: "bb-builder-1", reachable: true}}
     def probe(_worker, _opts), do: {:error, "connection refused"}
@@ -121,9 +90,6 @@ defmodule Conductor.CLIFleetTest do
     orig_db = Application.get_env(:conductor, :db_path)
     orig_log = Application.get_env(:conductor, :event_log)
     orig_worker = Application.get_env(:conductor, :worker_module)
-    orig_tracker = Application.get_env(:conductor, :tracker_module)
-    orig_launcher = Application.get_env(:conductor, :run_launcher_module)
-
     Application.stop(:conductor)
     Application.put_env(:conductor, :db_path, db_path)
     Application.put_env(:conductor, :event_log, event_log)
@@ -148,14 +114,6 @@ defmodule Conductor.CLIFleetTest do
       if orig_worker,
         do: Application.put_env(:conductor, :worker_module, orig_worker),
         else: Application.delete_env(:conductor, :worker_module)
-
-      if orig_tracker,
-        do: Application.put_env(:conductor, :tracker_module, orig_tracker),
-        else: Application.delete_env(:conductor, :tracker_module)
-
-      if orig_launcher,
-        do: Application.put_env(:conductor, :run_launcher_module, orig_launcher),
-        else: Application.delete_env(:conductor, :run_launcher_module)
 
       File.rm(db_path)
       File.rm(event_log)
@@ -206,61 +164,5 @@ defmodule Conductor.CLIFleetTest do
         do: Application.put_env(:conductor, :worker_module, orig_worker),
         else: Application.delete_env(:conductor, :worker_module)
     end
-  end
-
-  test "deprecated loop command works without a label and leaves the filter unset" do
-    stderr =
-      capture_io(:stderr, fn ->
-        assert :ok =
-                 CLI.loop_command(
-                   ["--repo", "test/repo", "--worker", "bb-builder-1"],
-                   wait: false
-                 )
-      end)
-
-    assert stderr =~ "loop is deprecated"
-    assert stderr =~ "all open issues are eligible"
-    assert :sys.get_state(Conductor.Orchestrator).label == nil
-  end
-
-  test "deprecated loop command still accepts label as an optional narrowing filter" do
-    stderr =
-      capture_io(:stderr, fn ->
-        assert :ok =
-                 CLI.loop_command(
-                   ["--repo", "test/repo", "--worker", "bb-builder-1", "--label", "hold"],
-                   wait: false
-                 )
-      end)
-
-    assert stderr =~ "loop is deprecated"
-    assert stderr =~ "--label is deprecated as a backlog gate"
-    assert :sys.get_state(Conductor.Orchestrator).label == "hold"
-  end
-
-  test "deprecated run-once command runs a ready issue and emits the warning" do
-    Application.put_env(:conductor, :tracker_module, RunOnceTracker)
-    Application.put_env(:conductor, :run_launcher_module, RunOnceLauncher)
-
-    stderr =
-      capture_io(:stderr, fn ->
-        output =
-          capture_io(fn ->
-            assert :ok =
-                     CLI.run_once_command([
-                       "--repo",
-                       "test/repo",
-                       "--issue",
-                       "642",
-                       "--worker",
-                       "bb-builder-1"
-                     ])
-          end)
-
-        assert output =~ "issue #642 finished in phase="
-      end)
-
-    assert stderr =~ "run-once is deprecated"
-    assert_receive {:run_once_started, 642, "bb-builder-1"}
   end
 end

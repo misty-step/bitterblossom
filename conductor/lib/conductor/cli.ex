@@ -1,52 +1,63 @@
 defmodule Conductor.CLI do
   @moduledoc "Escript entry point. Parses args and delegates to Conductor."
 
-  @commands ~w(run-once loop start pause resume shape fleet show-runs show-events show-incidents show-waivers check-env dashboard status)
+  @commands ~w(start pause resume shape fleet show-runs show-events show-incidents show-waivers check-env dashboard status)
 
+  @doc "Dispatch the conductor CLI command selected by `args`."
   def main(args) do
-    Application.ensure_all_started(:conductor)
-
     case args do
+      ["run-once" | _] ->
+        removed_command("run-once")
+
+      ["loop" | _] ->
+        removed_command("loop")
+
       ["start" | rest] ->
+        Application.ensure_all_started(:conductor)
         cmd_start(rest)
 
-      ["run-once" | rest] ->
-        cmd_run_once(rest)
-
-      ["loop" | rest] ->
-        cmd_loop(rest)
-
       ["shape" | rest] ->
+        Application.ensure_all_started(:conductor)
         cmd_shape(rest)
 
       ["pause"] ->
+        Application.ensure_all_started(:conductor)
         cmd_pause()
 
       ["resume"] ->
+        Application.ensure_all_started(:conductor)
         cmd_resume()
 
       ["fleet" | rest] ->
+        Application.ensure_all_started(:conductor)
         cmd_fleet(rest)
 
       ["show-runs" | rest] ->
+        Application.ensure_all_started(:conductor)
         cmd_show_runs(rest)
 
       ["show-events" | rest] ->
+        Application.ensure_all_started(:conductor)
         cmd_show_events(rest)
 
       ["show-incidents" | rest] ->
+        Application.ensure_all_started(:conductor)
         cmd_show_incidents(rest)
 
       ["show-waivers" | rest] ->
+        Application.ensure_all_started(:conductor)
         cmd_show_waivers(rest)
 
       ["dashboard" | rest] ->
+        Application.ensure_all_started(:conductor)
         cmd_dashboard(rest)
 
       ["status" | _] ->
+        Application.ensure_all_started(:conductor)
         cmd_status()
 
       ["check-env" | _] ->
+        Application.ensure_all_started(:conductor)
         cmd_check_env()
 
       [cmd | _] ->
@@ -84,69 +95,6 @@ defmodule Conductor.CLI do
     end
   end
 
-  @doc false
-  def run_once_command(args) do
-    {opts, _, _} =
-      OptionParser.parse(args,
-        strict: [
-          repo: :string,
-          issue: :integer,
-          worker: :string
-        ]
-      )
-
-    repo = Keyword.fetch!(opts, :repo)
-    issue = Keyword.fetch!(opts, :issue)
-    worker = Keyword.fetch!(opts, :worker)
-
-    warn_legacy_command("run-once")
-
-    case Conductor.Orchestrator.run_once(repo: repo, issue: issue, worker: worker) do
-      {:ok, phase} ->
-        IO.puts("issue ##{issue} finished in phase=#{phase}")
-        :ok
-
-      {:error, reason} ->
-        IO.puts("run-once failed: #{inspect(reason)}")
-        System.halt(1)
-    end
-  end
-
-  @doc false
-  def loop_command(args, runtime_opts \\ []) do
-    {opts, _, _} =
-      OptionParser.parse(args,
-        strict: [
-          repo: :string,
-          worker: :string,
-          label: :string
-        ]
-      )
-
-    repo = Keyword.fetch!(opts, :repo)
-    workers = Keyword.get_values(opts, :worker)
-    label = Keyword.get(opts, :label)
-
-    warn_legacy_command("loop")
-    maybe_warn_unfiltered_scope(repo, label)
-    maybe_warn_label_deprecation(label)
-
-    case Conductor.Orchestrator.start_loop(repo: repo, workers: workers, label: label) do
-      :ok ->
-        IO.puts("bitterblossom loop (deprecated) polling #{repo}. Press Ctrl+C to stop.")
-
-        if Keyword.get(runtime_opts, :wait, true) do
-          Process.sleep(:infinity)
-        end
-
-        :ok
-
-      {:error, :no_workers} ->
-        IO.puts("loop failed: at least one --worker is required")
-        System.halt(1)
-    end
-  end
-
   defp fleet_default_path do
     # Look for fleet.toml relative to the conductor dir, then repo root
     cond do
@@ -155,10 +103,6 @@ defmodule Conductor.CLI do
       true -> "fleet.toml"
     end
   end
-
-  defp cmd_run_once(args), do: run_once_command(args)
-
-  defp cmd_loop(args), do: loop_command(args)
 
   defp cmd_shape(args) do
     {opts, _, _} =
@@ -187,22 +131,9 @@ defmodule Conductor.CLI do
     end
   end
 
-  defp warn_legacy_command(command) do
-    IO.warn("#{command} is deprecated. Prefer `mix conductor start` with fleet.toml.")
-  end
-
-  defp maybe_warn_label_deprecation(label) when label in [nil, ""], do: :ok
-
-  defp maybe_warn_label_deprecation(_label) do
-    IO.warn(
-      "--label is deprecated as a backlog gate. All open issues are eligible by default; --label now only narrows scope."
-    )
-  end
-
-  defp maybe_warn_unfiltered_scope(_repo, label) when label not in [nil, ""], do: :ok
-
-  defp maybe_warn_unfiltered_scope(repo, _label) do
-    IO.warn("starting loop for #{repo} without a label filter; all open issues are eligible")
+  defp removed_command(command) do
+    IO.puts("#{command} removed — use `mix conductor start`")
+    System.halt(1)
   end
 
   defp cmd_pause do

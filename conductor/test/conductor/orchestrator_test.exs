@@ -233,7 +233,7 @@ defmodule Conductor.OrchestratorTest do
     MockState.put(:merge_calls, [])
     MockState.put(:run_control_calls, [])
 
-    # Restart the Orchestrator under the global name so start_loop/1 works
+    # Restart the Orchestrator under the global name so configure_polling/1 works
     safe_stop(Process.whereis(Orchestrator))
     {:ok, orch_pid} = Orchestrator.start_link([])
 
@@ -287,59 +287,39 @@ defmodule Conductor.OrchestratorTest do
     %{orch_pid: orch_pid}
   end
 
-  describe "start_loop/1" do
+  describe "configure_polling/1" do
     test "returns error when workers list is empty" do
       assert {:error, :no_workers} =
-               Orchestrator.start_loop(repo: "test/repo", workers: [])
+               Orchestrator.configure_polling(repo: "test/repo", workers: [])
     end
 
     test "returns :ok with at least one worker" do
-      assert :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      assert :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
     end
 
-    test "clears a prior label filter when a later start_loop call omits :label" do
+    test "clears a prior label filter when a later configure_polling call omits :label" do
       assert :ok =
-               Orchestrator.start_loop(
+               Orchestrator.configure_polling(
                  repo: "test/repo",
                  label: "autopilot",
                  workers: ["sprite-1"]
                )
 
-      assert :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      assert :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       assert :sys.get_state(Orchestrator).label == nil
     end
 
-    test "clears shape attempts when start_loop switches repos" do
-      assert :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+    test "clears shape attempts when configure_polling switches repos" do
+      assert :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       :sys.replace_state(Orchestrator, fn state ->
         %{state | shape_attempts: %{123 => :crypto.hash(:sha256, "draft body")}}
       end)
 
-      assert :ok = Orchestrator.start_loop(repo: "other/repo", workers: ["sprite-1"])
+      assert :ok = Orchestrator.configure_polling(repo: "other/repo", workers: ["sprite-1"])
 
       assert :sys.get_state(Orchestrator).shape_attempts == %{}
-    end
-  end
-
-  describe "run_once/1" do
-    test "attempts shaping for an unready issue before returning not_ready" do
-      issue = %Conductor.Issue{
-        number: 320,
-        title: "underspecified run once issue",
-        body: "missing structure",
-        url: "https://example.test/issues/320"
-      }
-
-      MockState.put({:issue, "test/repo", 320}, issue)
-      MockState.put({:shape_result, "test/repo", 320}, {:ok, :shaped})
-
-      assert {:error, :not_ready} =
-               Orchestrator.run_once(repo: "test/repo", issue: 320, worker: "sprite-1")
-
-      assert_receive {:shape_attempted, "test/repo", 320}, 1_000
-      assert MockState.get(:started_runs) == []
     end
   end
 
@@ -354,8 +334,8 @@ defmodule Conductor.OrchestratorTest do
 
       MockState.put({:eligible, "test/repo", nil}, [issue])
 
-      assert :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
       assert :ok = Orchestrator.pause()
+      assert :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
       assert Store.dispatch_paused?()
 
       send(Process.whereis(Orchestrator), :poll)
@@ -374,7 +354,7 @@ defmodule Conductor.OrchestratorTest do
     test "poll fails closed when pause state cannot be read", %{orch_pid: orch_pid} do
       Process.unlink(orch_pid)
 
-      assert :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      assert :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
       assert Process.alive?(orch_pid)
 
       GenServer.stop(Store)
@@ -402,8 +382,8 @@ defmodule Conductor.OrchestratorTest do
       Store.update_run(run_id, %{heartbeat_at: old_heartbeat})
       :ok = Store.acquire_lease("test/repo", 99, run_id)
 
-      # start_loop triggers an immediate poll
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      # configure_polling triggers an immediate poll
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       eventually(fn ->
         {:ok, run} = Store.get_run(run_id)
@@ -428,7 +408,7 @@ defmodule Conductor.OrchestratorTest do
       Store.update_run(run_id, %{heartbeat_at: old_heartbeat})
       :ok = Store.acquire_lease("test/repo", 98, run_id)
 
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       eventually(fn ->
         events = Store.list_events(run_id)
@@ -453,7 +433,7 @@ defmodule Conductor.OrchestratorTest do
       Store.update_run(run_id, %{heartbeat_at: recent_heartbeat})
       :ok = Store.acquire_lease("test/repo", 100, run_id)
 
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       # Give the poll a chance to fire, then assert the run is still active
       Process.sleep(100)
@@ -475,7 +455,7 @@ defmodule Conductor.OrchestratorTest do
       Store.update_run(run_id, %{heartbeat_at: nil})
       :ok = Store.acquire_lease("test/repo", 97, run_id)
 
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       eventually(fn ->
         {:ok, run} = Store.get_run(run_id)
@@ -496,8 +476,8 @@ defmodule Conductor.OrchestratorTest do
           else: Application.delete_env(:conductor, :max_concurrent_runs)
       end)
 
-      # start_loop with capacity 0 — no runs should start
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      # configure_polling with capacity 0 — no runs should start
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       # Give the poll a chance to fire, then assert nothing was dispatched
       Process.sleep(100)
@@ -533,7 +513,7 @@ defmodule Conductor.OrchestratorTest do
         %{name: "sprite-3", capability_tags: ["ci"]}
       ]
 
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: workers)
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: workers)
 
       eventually(fn ->
         assert MockState.get(:started_runs) == [{1, "sprite-1"}, {2, "sprite-2"}, {3, "sprite-3"}]
@@ -573,7 +553,7 @@ defmodule Conductor.OrchestratorTest do
       MockState.put({:probe_result, "sprite-1"}, {:error, "timeout"})
       MockState.put({:eligible, "test/repo", nil}, [issue1])
 
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: workers)
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: workers)
 
       eventually(fn ->
         assert MockState.get(:started_runs) == [{201, "sprite-2"}]
@@ -644,7 +624,7 @@ defmodule Conductor.OrchestratorTest do
       MockState.put({:shape_result, "test/repo", 301}, {:ok, :shaped})
       MockState.put({:issue_after_shape, "test/repo", 301}, shaped_issue)
 
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       assert_receive {:shape_attempted, "test/repo", 301}, 1_000
       Process.sleep(100)
@@ -678,7 +658,7 @@ defmodule Conductor.OrchestratorTest do
       MockState.put({:eligible, "test/repo", nil}, [issue])
       MockState.put({:shape_result, "test/repo", 306}, {:ok, :already_shaped})
 
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       assert_receive {:shape_attempted, "test/repo", 306}, 1_000
       Process.sleep(100)
@@ -705,7 +685,7 @@ defmodule Conductor.OrchestratorTest do
       MockState.put({:eligible, "test/repo", nil}, [issue])
       MockState.put({:shape_result, "test/repo", 302}, {:error, :llm_unavailable})
 
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       assert_receive {:shape_attempted, "test/repo", 302}, 1_000
       send(Process.whereis(Orchestrator), :poll)
@@ -726,7 +706,7 @@ defmodule Conductor.OrchestratorTest do
       MockState.put({:eligible, "test/repo", nil}, [issue])
       MockState.put({:shape_result, "test/repo", 311}, {:sleep, 500, {:error, :llm_slow}})
 
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       assert_receive {:shape_attempted, "test/repo", 311}, 1_000
 
@@ -755,7 +735,7 @@ defmodule Conductor.OrchestratorTest do
       MockState.put({:eligible, "test/repo", nil}, [issue])
       MockState.put({:shape_result, "test/repo", 303}, {:error, :llm_unavailable})
 
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       assert_receive {:shape_attempted, "test/repo", 303}, 1_000
 
@@ -803,7 +783,7 @@ defmodule Conductor.OrchestratorTest do
       MockState.put({:shape_result, "test/repo", 305}, {:error, :llm_unavailable})
       MockState.put({:shape_result, "test/repo", 306}, {:error, :llm_unavailable})
 
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       eventually(fn ->
         assert MockState.get(:started_runs) == [{304, "sprite-1"}]
@@ -840,7 +820,7 @@ defmodule Conductor.OrchestratorTest do
 
       MockState.put({:eligible, "test/repo", nil}, [ready_issue])
 
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       eventually(fn ->
         assert MockState.get(:started_runs) == [{307, "sprite-1"}]
@@ -879,7 +859,7 @@ defmodule Conductor.OrchestratorTest do
       MockState.put({:shape_result, "test/repo", 309}, {:ok, :already_shaped})
       MockState.put({:issue_after_shape, "test/repo", 309}, ready_issue)
 
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       assert_receive {:shape_attempted, "test/repo", 309}, 1_000
       Process.sleep(100)
@@ -913,7 +893,7 @@ defmodule Conductor.OrchestratorTest do
       MockState.put({:eligible, "test/repo", nil}, [issue])
       MockState.put({:shape_result, "test/repo", 310}, {:raise, RuntimeError.exception("boom")})
 
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       assert_receive {:shape_attempted, "test/repo", 310}, 1_000
       assert Process.alive?(Process.whereis(Orchestrator))
@@ -943,7 +923,7 @@ defmodule Conductor.OrchestratorTest do
       MockState.put({:eligible, "test/repo", nil}, [issue])
       MockState.put({:shape_result, "test/repo", 312}, {:throw, :boom})
 
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       assert_receive {:shape_attempted, "test/repo", 312}, 1_000
       assert Process.alive?(Process.whereis(Orchestrator))
@@ -973,7 +953,7 @@ defmodule Conductor.OrchestratorTest do
       MockState.put({:eligible, "test/repo", nil}, [issue])
       MockState.put({:shape_result, "test/repo", 313}, {:exit, :boom})
 
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       assert_receive {:shape_attempted, "test/repo", 313}, 1_000
       assert Process.alive?(Process.whereis(Orchestrator))
@@ -1003,7 +983,7 @@ defmodule Conductor.OrchestratorTest do
       MockState.put({:eligible, "test/repo", nil}, [issue])
       MockState.put({:shape_result, "test/repo", 314}, :weird_return)
 
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       assert_receive {:shape_attempted, "test/repo", 314}, 1_000
       assert Process.alive?(Process.whereis(Orchestrator))
@@ -1033,7 +1013,7 @@ defmodule Conductor.OrchestratorTest do
       MockState.put({:eligible, "test/repo", nil}, [issue])
       MockState.put({:shape_result, "test/repo", 308}, {:error, :llm_unavailable})
 
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       assert_receive {:shape_attempted, "test/repo", 308}, 1_000
       assert MockState.get(:started_runs) == []
@@ -1060,7 +1040,7 @@ defmodule Conductor.OrchestratorTest do
       MockState.put({:shape_result, "test/repo", 311}, {:error, :llm_slow})
       MockState.put({:shape_delay_ms, "test/repo", 311}, 500)
 
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       assert_receive {:shape_attempted, "test/repo", 311}, 1_000
 
@@ -1159,7 +1139,7 @@ defmodule Conductor.OrchestratorTest do
       MockState.put({:eligible, "test/repo", nil}, [issue])
       MockState.put({:issue_has_label, "test/repo", 401, "hold"}, {:ok, true})
 
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       Process.sleep(100)
       assert MockState.get(:started_runs) == []
@@ -1183,7 +1163,7 @@ defmodule Conductor.OrchestratorTest do
 
       MockState.put({:issue_has_label, "test/repo", 402, "hold"}, {:ok, true})
 
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       eventually(fn ->
         {:ok, run} = Store.get_run(run_id)
@@ -1213,7 +1193,7 @@ defmodule Conductor.OrchestratorTest do
 
       MockState.put({:issue_comments, "test/repo", 403}, [%{"body" => "bb: cancel"}])
 
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       eventually(fn ->
         {:ok, run} = Store.get_run(run_id)
@@ -1244,7 +1224,7 @@ defmodule Conductor.OrchestratorTest do
 
       MockState.put({:issue_comments, "test/repo", 404}, {:error, :github_down})
 
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       Process.sleep(100)
       {:ok, run} = Store.get_run(run_id)
@@ -1276,7 +1256,7 @@ defmodule Conductor.OrchestratorTest do
         GitHub.normalize_issue_comments([%{"body" => %{"text" => "bb: cancel"}}])
       )
 
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       eventually(fn ->
         {:ok, run} = Store.get_run(run_id)
@@ -1299,7 +1279,7 @@ defmodule Conductor.OrchestratorTest do
       MockState.put({:eligible, "test/repo", nil}, [issue])
       MockState.put({:issue_has_label, "test/repo", 404, "hold"}, {:error, :github_down})
 
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       Process.sleep(100)
       assert MockState.get(:started_runs) == []
@@ -1313,7 +1293,7 @@ defmodule Conductor.OrchestratorTest do
 
       MockState.put({:issue_has_label, "test/repo", 406, "hold"}, {:ok, true})
 
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       Process.sleep(100)
       assert MockState.get(:merge_calls) == []
@@ -1340,7 +1320,7 @@ defmodule Conductor.OrchestratorTest do
         GitHub.normalize_issue_comments([%{"body" => %{"body" => "bb: cancel"}}])
       )
 
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       eventually(fn ->
         {:ok, run} = Store.get_run(run_id)
@@ -1387,7 +1367,7 @@ defmodule Conductor.OrchestratorTest do
       MockState.put({:issue_has_label, "test/repo", 408, "pause-me"}, {:ok, false})
       MockState.put({:issue_comments, "test/repo", 408}, [%{"body" => "bb: stop"}])
 
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       eventually(fn ->
         {:ok, run} = Store.get_run(run_id)
@@ -1428,7 +1408,7 @@ defmodule Conductor.OrchestratorTest do
       MockState.put(:run_lifetime_ms, 5_000)
       MockState.put({:eligible, "test/repo", nil}, [issue1])
 
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       eventually(fn ->
         assert MockState.get(:started_runs) == [{409, "sprite-1"}]
@@ -1541,7 +1521,7 @@ defmodule Conductor.OrchestratorTest do
         [%{"number" => 200, "headRefName" => "factory/700-123"}]
       )
 
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       eventually(fn ->
         refute Store.leased?("test/repo", 700)
@@ -1568,7 +1548,7 @@ defmodule Conductor.OrchestratorTest do
       # PR was merged externally
       MockState.put({:pr_state, 300}, {:ok, "MERGED"})
 
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       eventually(fn ->
         refute Store.leased?("test/repo", 800)
@@ -1593,7 +1573,7 @@ defmodule Conductor.OrchestratorTest do
 
       MockState.put({:pr_state, 301}, {:ok, "CLOSED"})
 
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       eventually(fn ->
         refute Store.leased?("test/repo", 801)
@@ -1618,7 +1598,7 @@ defmodule Conductor.OrchestratorTest do
       Store.complete_run(run_id, "pr_opened", "pr_opened")
       Store.update_run(run_id, %{pr_number: 303})
 
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
       Process.sleep(100)
 
       # Kill the Store — next poll tick should survive the error
@@ -1644,7 +1624,7 @@ defmodule Conductor.OrchestratorTest do
 
       MockState.put({:pr_state, 304}, {:error, :github_down})
 
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       Process.sleep(200)
       assert Store.leased?("test/repo", 804)
@@ -1663,7 +1643,7 @@ defmodule Conductor.OrchestratorTest do
       Store.acquire_lease("test/repo", 805, run_id)
       Store.complete_run(run_id, "pr_opened", "pr_opened")
 
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       Process.sleep(200)
       assert Store.leased?("test/repo", 805)
@@ -1684,7 +1664,7 @@ defmodule Conductor.OrchestratorTest do
 
       MockState.put({:pr_state, 302}, {:ok, "OPEN"})
 
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       Process.sleep(200)
       assert Store.leased?("test/repo", 802)
@@ -1719,7 +1699,7 @@ defmodule Conductor.OrchestratorTest do
       # Make issue eligible
       MockState.put({:eligible, "test/repo", nil}, [issue])
 
-      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       Process.sleep(200)
       # Should NOT have started a run for issue 900 (lease blocks it)

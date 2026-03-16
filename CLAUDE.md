@@ -40,8 +40,8 @@ scripts/ralph.sh         Agent loop on sprites (being eliminated, see #621)
 
 ## Operating Model
 
-1. `cd conductor && mix conductor run-once --repo R --issue N --worker W` runs one issue
-2. `cd conductor && mix conductor loop --repo R --worker W1 --worker W2` runs continuously
+1. `cd conductor && mix conductor start --fleet ../fleet.toml` boots the full pipeline
+2. `cd conductor && mix conductor pause` / `resume` controls dispatch without stopping workers
 3. `cd conductor && mix conductor show-runs` / `show-events` for inspection
 
 ## Build & Test

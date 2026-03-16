@@ -2,8 +2,7 @@ defmodule Conductor.Orchestrator do
   @moduledoc """
   Main polling loop. Symphony-inspired single authority.
 
-  In `run_once` mode: starts one RunServer and waits for it.
-  In `loop` mode: polls for eligible issues and starts RunServers up to concurrency limit.
+  Polls for eligible issues and starts RunServers up to concurrency limit.
   Reconciles stale runs on every tick.
   """
 
@@ -15,6 +14,7 @@ defmodule Conductor.Orchestrator do
   defmodule RunLauncher do
     @moduledoc false
 
+    @doc false
     def start(opts) do
       DynamicSupervisor.start_child(
         Conductor.RunSupervisor,
@@ -38,51 +38,15 @@ defmodule Conductor.Orchestrator do
 
   # --- Public API ---
 
+  @doc "Start the orchestrator GenServer under the conductor supervision tree."
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
-  @doc "Run a single issue synchronously. Returns the terminal phase."
-  @spec run_once(keyword()) :: {:ok, atom()} | {:error, term()}
-  def run_once(opts) do
-    repo = Keyword.fetch!(opts, :repo)
-    issue_number = Keyword.fetch!(opts, :issue)
-    worker = Keyword.fetch!(opts, :worker)
-    trusted_surfaces = Keyword.get(opts, :trusted_surfaces, [])
-
-    case tracker_mod().get_issue(repo, issue_number) do
-      {:ok, issue} ->
-        case Issue.ready?(issue) do
-          :ok ->
-            run_issue(repo, issue, worker, trusted_surfaces)
-
-          {:error, failures} ->
-            case safe_shape_issue(repo, issue_number) do
-              {:ok, result} when result in [:shaped, :already_shaped] ->
-                IO.puts(
-                  "issue ##{issue_number} not ready: #{Enum.join(failures, ", ")}; " <>
-                    "shaping #{result} and deferring execution until the next fetch"
-                )
-
-              {:error, reason} ->
-                IO.puts(
-                  "issue ##{issue_number} not ready: #{Enum.join(failures, ", ")}; " <>
-                    "shaping failed: #{inspect(reason)}"
-                )
-            end
-
-            {:error, :not_ready}
-        end
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  @doc "Start the continuous polling loop."
-  @spec start_loop(keyword()) :: :ok | {:error, :no_workers}
-  def start_loop(opts) do
-    GenServer.call(__MODULE__, {:start_loop, opts})
+  @doc "Configure the orchestrator and begin polling."
+  @spec configure_polling(keyword()) :: :ok | {:error, :no_workers}
+  def configure_polling(opts) do
+    GenServer.call(__MODULE__, {:configure_polling, opts})
   end
 
   @doc "Pause dispatch of new runs. Existing work continues."
@@ -120,7 +84,7 @@ defmodule Conductor.Orchestrator do
   end
 
   @impl true
-  def handle_call({:start_loop, opts}, _from, state) do
+  def handle_call({:configure_polling, opts}, _from, state) do
     workers = normalize_workers(Keyword.fetch!(opts, :workers))
     repo = Keyword.fetch!(opts, :repo)
 
@@ -240,36 +204,6 @@ defmodule Conductor.Orchestrator do
   end
 
   # --- Private ---
-
-  defp run_issue(repo, issue, worker, trusted_surfaces) do
-    opts = [
-      repo: repo,
-      issue: issue,
-      worker: worker,
-      trusted_surfaces: trusted_surfaces
-    ]
-
-    case run_launcher().start(opts) do
-      {:ok, pid} ->
-        ref = Process.monitor(pid)
-        timeout = (Config.builder_timeout() + Config.ci_timeout() + 10) * 60_000
-
-        receive do
-          {:DOWN, ^ref, :process, ^pid, _reason} ->
-            case find_latest_run(repo, issue.number) do
-              %{"phase" => phase} -> {:ok, String.to_existing_atom(phase)}
-              nil -> {:error, :run_not_found}
-            end
-        after
-          timeout ->
-            Process.exit(pid, :kill)
-            {:error, :timeout}
-        end
-
-      {:error, reason} ->
-        {:error, {:start_failed, reason}}
-    end
-  end
 
   defp maybe_start_runs(state) do
     max_runs = Config.max_concurrent_runs()
@@ -705,13 +639,6 @@ defmodule Conductor.Orchestrator do
   end
 
   defp resolve_held_lease(_repo, _pr_number, _issue_number), do: :hold
-
-  defp find_latest_run(repo, issue_number) do
-    Store.list_runs(limit: 50)
-    |> Enum.find(fn r ->
-      r["repo"] == repo and r["issue_number"] == issue_number
-    end)
-  end
 
   # --- Label-Driven Merge ---
 
