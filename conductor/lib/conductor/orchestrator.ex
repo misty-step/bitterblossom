@@ -14,6 +14,7 @@ defmodule Conductor.Orchestrator do
   defmodule RunLauncher do
     @moduledoc false
 
+    @doc false
     def start(opts) do
       DynamicSupervisor.start_child(
         Conductor.RunSupervisor,
@@ -37,6 +38,7 @@ defmodule Conductor.Orchestrator do
 
   # --- Public API ---
 
+  @doc "Start the orchestrator GenServer under the conductor supervision tree."
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end

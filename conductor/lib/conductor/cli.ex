@@ -3,6 +3,7 @@ defmodule Conductor.CLI do
 
   @commands ~w(start pause resume shape fleet show-runs show-events show-incidents show-waivers check-env dashboard status)
 
+  @doc "Dispatch the conductor CLI command selected by `args`."
   def main(args) do
     case args do
       ["run-once" | _] ->
