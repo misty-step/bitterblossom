@@ -17,7 +17,12 @@ defmodule Conductor.Application do
       ] ++ dashboard_children()
 
     result = Supervisor.start_link(children, strategy: :one_for_one, name: Conductor.Supervisor)
-    attach_canary()
+
+    case result do
+      {:ok, _pid} -> attach_canary()
+      _ -> :ok
+    end
+
     result
   end
 
