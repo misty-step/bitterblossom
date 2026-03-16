@@ -29,9 +29,11 @@ defmodule Conductor.Sprite do
     org = Keyword.get(opts, :org, Config.sprites_org!())
     files = Keyword.get(opts, :files, [])
 
+    # "--" separates sprite CLI flags from the bash command.
+    # Without it, bash's "-lc" is parsed as a sprite CLI flag.
     Shell.cmd(
       "sprite",
-      ["-o", org, "-s", sprite, "exec"] ++ file_args(files) ++ ["bash", "-lc", command],
+      ["-o", org, "-s", sprite, "exec"] ++ file_args(files) ++ ["--", "bash", "-lc", command],
       timeout: timeout
     )
   end
