@@ -601,7 +601,7 @@ defmodule Conductor.GitHub do
            "--repo",
            repo,
            "--json",
-           "number,title,state,mergeable,headRefName,url"
+           "number,title,state,merged,mergeable,headRefName,url"
          ]) do
       {:ok, json} ->
         case Jason.decode(json) do
@@ -617,7 +617,8 @@ defmodule Conductor.GitHub do
   @spec pr_state(binary(), pos_integer()) :: {:ok, binary()} | {:error, term()}
   def pr_state(repo, pr_number) do
     case get_pr(repo, pr_number) do
-      {:ok, %{"state" => state}} -> {:ok, state}
+      {:ok, %{"merged" => true}} -> {:ok, "MERGED"}
+      {:ok, %{"state" => state}} -> {:ok, String.upcase(state)}
       {:error, reason} -> {:error, reason}
     end
   end
