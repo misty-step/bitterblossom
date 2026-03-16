@@ -55,8 +55,8 @@ defmodule Conductor.ConfigTest do
     end
 
     test "returns configured value" do
-      Application.put_env(:conductor, :ci_timeout_minutes, 30)
-      assert Config.ci_timeout() == 30
+      Application.put_env(:conductor, :ci_timeout_minutes, 45)
+      assert Config.ci_timeout() == 45
     after
       Application.delete_env(:conductor, :ci_timeout_minutes)
     end
