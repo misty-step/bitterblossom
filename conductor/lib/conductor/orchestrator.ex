@@ -652,44 +652,51 @@ defmodule Conductor.Orchestrator do
 
           case code_host_mod().ci_status(repo, pr_number) do
             {:ok, %{state: :green}} ->
-              if ci_timeout_run?(repo, pr_number) do
-                Logger.warning(
-                  "[merge] PR ##{pr_number} previously timed out waiting for CI, skipping"
-                )
-              else
-                clear_ci_wait_tracking(repo, pr_number)
+              cond do
+                ci_timeout_run?(repo, pr_number) ->
+                  Logger.warning(
+                    "[merge] PR ##{pr_number} previously timed out waiting for CI, skipping"
+                  )
 
-                case operator_merge_decision(repo, pr) do
-                  :allow ->
-                    Logger.info("[merge] PR ##{pr_number} has lgtm + green CI, merging")
+                not conductor_tracked?(repo, pr_number) ->
+                  Logger.debug(
+                    "[merge] PR ##{pr_number} has lgtm but is not conductor-tracked, skipping"
+                  )
 
-                    case code_host_mod().merge(repo, pr_number, []) do
-                      :ok ->
-                        Logger.info("[merge] PR ##{pr_number} merged successfully")
-                        record_merge(repo, pr_number)
-                        Conductor.SelfUpdate.maybe_reload(repo, pr_number)
+                true ->
+                  clear_ci_wait_tracking(repo, pr_number)
 
-                      {:error, reason} ->
-                        if merge_conflict?(reason) do
-                          attempt_rebase_merge(
-                            repo,
-                            pr_number,
-                            pr["headRefName"],
-                            state.worker_order
-                          )
-                        else
-                          Logger.warning("[merge] PR ##{pr_number} merge failed: #{reason}")
-                        end
-                    end
+                  case operator_merge_decision(repo, pr) do
+                    :allow ->
+                      Logger.info("[merge] PR ##{pr_number} has lgtm + green CI, merging")
 
-                  {:blocked, reason} ->
-                    mark_operator_blocked(repo, pr_number, reason)
+                      case code_host_mod().merge(repo, pr_number, []) do
+                        :ok ->
+                          Logger.info("[merge] PR ##{pr_number} merged successfully")
+                          record_merge(repo, pr_number)
+                          Conductor.SelfUpdate.maybe_reload(repo, pr_number)
 
-                  :skip ->
-                    Logger.warning(
-                      "[merge] PR ##{pr_number} operator checks unavailable, skipping"
-                    )
-                end
+                        {:error, reason} ->
+                          if merge_conflict?(reason) do
+                            attempt_rebase_merge(
+                              repo,
+                              pr_number,
+                              pr["headRefName"],
+                              state.worker_order
+                            )
+                          else
+                            Logger.warning("[merge] PR ##{pr_number} merge failed: #{reason}")
+                          end
+                      end
+
+                    {:blocked, reason} ->
+                      mark_operator_blocked(repo, pr_number, reason)
+
+                    :skip ->
+                      Logger.warning(
+                        "[merge] PR ##{pr_number} operator checks unavailable, skipping"
+                      )
+                  end
               end
 
             {:ok, %{state: :pending} = ci_status} ->
@@ -1154,6 +1161,10 @@ defmodule Conductor.Orchestrator do
       _ ->
         Logger.debug("[merge] no run found for PR ##{pr_number}, skipping store update")
     end
+  end
+
+  defp conductor_tracked?(repo, pr_number) do
+    match?({:ok, _}, Store.find_run_by_pr(repo, pr_number))
   end
 
   defp tracker_mod, do: Application.get_env(:conductor, :tracker_module, Conductor.GitHub)
