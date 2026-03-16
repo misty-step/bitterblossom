@@ -1563,6 +1563,22 @@ defmodule Conductor.OrchestratorTest do
     end
   end
 
+  describe "merge skips non-conductor PRs" do
+    test "non-conductor PR with lgtm is not auto-merged" do
+      # No store run for this PR — it's human-created
+      MockState.put(
+        {:labeled_prs, "test/repo", "lgtm"},
+        [%{"number" => 300, "headRefName" => "fix/manual-change"}]
+      )
+
+      :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
+
+      Process.sleep(100)
+      # Merge should NOT have been called for non-conductor PR
+      assert MockState.get(:merge_calls) == []
+    end
+  end
+
   describe "reconcile_held_leases" do
     test "releases lease when PR merged externally" do
       {:ok, run_id} =
