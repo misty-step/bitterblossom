@@ -20,7 +20,7 @@ defmodule Conductor.SelfUpdate do
 
   Called by the orchestrator after each successful label-driven merge.
   """
-  @spec maybe_reload(binary(), pos_integer()) :: :ok | :noop
+  @spec maybe_reload(binary(), pos_integer()) :: :ok | :noop | {:error, :recompile_failed}
   def maybe_reload(repo, pr_number) do
     if self_repo?(repo) do
       case changed_conductor_files?(pr_number, repo) do
@@ -42,7 +42,7 @@ defmodule Conductor.SelfUpdate do
   Called on every poll tick so externally merged changes (human force-merge,
   other conductor instances) are picked up without waiting for a conductor-initiated merge.
   """
-  @spec check_for_updates() :: :ok | :noop
+  @spec check_for_updates() :: :ok | :noop | {:error, :recompile_failed}
   def check_for_updates do
     case Conductor.Shell.cmd("git", ["-C", @repo_root, "fetch", "origin", "master", "--quiet"],
            timeout: 30_000
@@ -134,7 +134,7 @@ defmodule Conductor.SelfUpdate do
         rescue
           e ->
             Logger.warning("[self-update] recompile failed: #{Exception.message(e)}")
-            :ok
+            {:error, :recompile_failed}
         end
 
       {:error, msg, _} ->

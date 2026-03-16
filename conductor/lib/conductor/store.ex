@@ -269,6 +269,8 @@ defmodule Conductor.Store do
   def handle_call({:terminate_run, run_id, phase, status, repo, issue_number}, _from, state) do
     now = now_utc()
 
+    exec(state.conn, "BEGIN IMMEDIATE", [])
+
     exec(
       state.conn,
       "UPDATE runs SET phase = ?1, status = ?2, completed_at = ?3, updated_at = ?3 WHERE run_id = ?4",
@@ -280,6 +282,8 @@ defmodule Conductor.Store do
       "UPDATE leases SET released_at = ?1 WHERE repo = ?2 AND issue_number = ?3 AND released_at IS NULL",
       [now, repo, issue_number]
     )
+
+    exec(state.conn, "COMMIT", [])
 
     broadcast_update()
     {:reply, :ok, state}

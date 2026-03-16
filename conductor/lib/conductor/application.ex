@@ -25,11 +25,17 @@ defmodule Conductor.Application do
   def attach_canary do
     with endpoint when is_binary(endpoint) <- System.get_env("CANARY_ENDPOINT"),
          api_key when is_binary(api_key) <- System.get_env("CANARY_API_KEY") do
-      CanarySdk.attach(
-        endpoint: endpoint,
-        api_key: api_key,
-        service: "bitterblossom"
-      )
+      try do
+        CanarySdk.attach(
+          endpoint: endpoint,
+          api_key: api_key,
+          service: "bitterblossom"
+        )
+      rescue
+        e ->
+          Logger.warning("[canary] attach failed: #{Exception.message(e)}")
+          :ok
+      end
     else
       _ -> :ok
     end

@@ -1,5 +1,5 @@
 defmodule Conductor.CanaryIntegrationTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   describe "attach_canary/0" do
     test "skips when CANARY_ENDPOINT is not set" do
