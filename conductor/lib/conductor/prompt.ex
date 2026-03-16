@@ -132,8 +132,9 @@ defmodule Conductor.Prompt do
   end
 
   @doc "Build prompt for the polisher sprite: review context + polish instructions."
-  @spec build_polisher_prompt(map(), [map()], binary()) :: binary()
-  def build_polisher_prompt(pr, review_comments, issue_body) do
+  @spec build_polisher_prompt(map(), [map()], binary(), keyword()) :: binary()
+  def build_polisher_prompt(pr, review_comments, issue_body, opts \\ []) do
+    may_label = Keyword.get(opts, :may_label, true)
     safe_title = sanitize_inline(pr["title"])
     safe_branch = sanitize_inline(pr["headRefName"])
 
@@ -183,8 +184,7 @@ defmodule Conductor.Prompt do
     4. For out-of-scope feedback: note it in a comment on the PR thread
     5. Respond to each review thread with what you did
     6. Run tests to ensure nothing is broken
-    7. When all feedback is addressed and CI is green, run:
-       `gh pr edit --add-label lgtm`
+    #{if may_label, do: "7. When all feedback is addressed and CI is green, run:\n       `gh pr edit --add-label lgtm`", else: "7. When all feedback is addressed and CI is green, you are done.\n       Do NOT add the `lgtm` label — a human must approve this PR for merge."}
 
     Do NOT expand the scope of the PR beyond addressing review feedback.
     Do NOT remove the PR from review or modify its base branch.
