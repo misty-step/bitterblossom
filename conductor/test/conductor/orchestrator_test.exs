@@ -1428,6 +1428,16 @@ defmodule Conductor.OrchestratorTest do
   end
 
   describe "issue_number_for_pr_lookup/4" do
+    test "returns :unmapped when run lookup misses and branch has no issue number" do
+      assert :unmapped =
+               Orchestrator.issue_number_for_pr_lookup(
+                 "test/repo",
+                 904,
+                 "fix/cerberus-permissions",
+                 fn _repo, _pr_number -> {:error, :not_found} end
+               )
+    end
+
     test "returns :skip when run lookup returns an unexpected store error" do
       assert :skip =
                Orchestrator.issue_number_for_pr_lookup(
@@ -1563,19 +1573,18 @@ defmodule Conductor.OrchestratorTest do
     end
   end
 
-  describe "merge skips non-conductor PRs" do
-    test "non-conductor PR with lgtm is not auto-merged" do
-      # No store run for this PR — it's human-created
+  describe "merge handles non-conductor PRs" do
+    test "non-conductor PR with lgtm and green CI is auto-merged" do
       MockState.put(
         {:labeled_prs, "test/repo", "lgtm"},
-        [%{"number" => 300, "headRefName" => "fix/manual-change"}]
+        [%{"number" => 300, "headRefName" => "fix/cerberus-permissions"}]
       )
 
       :ok = Orchestrator.start_loop(repo: "test/repo", workers: ["sprite-1"])
 
-      Process.sleep(100)
-      # Merge should NOT have been called for non-conductor PR
-      assert MockState.get(:merge_calls) == []
+      eventually(fn ->
+        assert MockState.get(:merge_calls) == [300]
+      end)
     end
   end
 
