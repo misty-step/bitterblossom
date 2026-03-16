@@ -11,7 +11,16 @@ defmodule Conductor.Config do
 
   @spec sprites_org!() :: binary()
   def sprites_org! do
-    System.get_env("SPRITES_ORG") || System.fetch_env!("FLY_ORG")
+    System.get_env("SPRITES_ORG") ||
+      System.get_env("FLY_ORG") ||
+      sprite_cli_org!()
+  end
+
+  defp sprite_cli_org! do
+    case Conductor.SpriteCLIAuth.current_org() do
+      {:ok, org} -> org
+      {:error, _} -> raise "no sprite org: set SPRITES_ORG, FLY_ORG, or log in via sprite CLI"
+    end
   end
 
   @spec db_path() :: binary()
@@ -152,8 +161,7 @@ defmodule Conductor.Config do
   def check_env! do
     checks = [
       {"GITHUB_TOKEN", fn -> System.get_env("GITHUB_TOKEN") end},
-      {"SPRITE_TOKEN or FLY_API_TOKEN",
-       fn -> System.get_env("SPRITE_TOKEN") || System.get_env("FLY_API_TOKEN") end},
+      {"SPRITE_TOKEN, FLY_API_TOKEN, or sprite CLI auth", fn -> sprite_auth_available?() end},
       {"gh", fn -> find_executable("gh") end},
       {"sprite", fn -> find_executable("sprite") end}
     ]
@@ -182,6 +190,18 @@ defmodule Conductor.Config do
 
       raise "missing: #{Enum.join(failures, ", ")}"
     end
+  end
+
+  @doc """
+  Returns a truthy value if any sprite auth method is available:
+  SPRITE_TOKEN env, FLY_API_TOKEN env, or sprite CLI session.
+  """
+  @spec sprite_auth_available?() :: binary() | false
+  def sprite_auth_available? do
+    System.get_env("SPRITE_TOKEN") ||
+      System.get_env("FLY_API_TOKEN") ||
+      (Conductor.SpriteCLIAuth.authenticated?() && "sprite-cli") ||
+      false
   end
 
   defp find_executable(name) do
