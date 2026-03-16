@@ -16,8 +16,16 @@ defmodule Conductor.SpriteCLIAuth do
 
   Returns `{:ok, %{org: org, url: url}}` or `{:error, reason}`.
   """
+  @spec read_config() :: {:ok, %{org: binary(), url: binary()}} | {:error, binary()}
+  def read_config do
+    case resolve_home() do
+      {:ok, home} -> read_config(home)
+      error -> error
+    end
+  end
+
   @spec read_config(binary()) :: {:ok, %{org: binary(), url: binary()}} | {:error, binary()}
-  def read_config(home_dir \\ System.get_env("HOME") || "") do
+  def read_config(home_dir) do
     path = Path.join(home_dir, @config_rel_path)
 
     with {:ok, data} <- read_file(path),
@@ -28,8 +36,16 @@ defmodule Conductor.SpriteCLIAuth do
   end
 
   @doc "Extract just the current org from sprite CLI config."
+  @spec current_org() :: {:ok, binary()} | {:error, binary()}
+  def current_org do
+    case read_config() do
+      {:ok, %{org: org}} -> {:ok, org}
+      error -> error
+    end
+  end
+
   @spec current_org(binary()) :: {:ok, binary()} | {:error, binary()}
-  def current_org(home_dir \\ System.get_env("HOME") || "") do
+  def current_org(home_dir) do
     case read_config(home_dir) do
       {:ok, %{org: org}} -> {:ok, org}
       error -> error
@@ -37,8 +53,13 @@ defmodule Conductor.SpriteCLIAuth do
   end
 
   @doc "True if sprite CLI config exists with a valid current_selection."
+  @spec authenticated?() :: boolean()
+  def authenticated? do
+    match?({:ok, _}, read_config())
+  end
+
   @spec authenticated?(binary()) :: boolean()
-  def authenticated?(home_dir \\ System.get_env("HOME") || "") do
+  def authenticated?(home_dir) do
     match?({:ok, _}, read_config(home_dir))
   end
 
@@ -64,4 +85,12 @@ defmodule Conductor.SpriteCLIAuth do
   end
 
   defp extract_selection(_), do: {:error, "missing current_selection in sprites.json"}
+
+  defp resolve_home do
+    case System.get_env("HOME") do
+      nil -> {:error, "HOME not set; cannot locate sprite CLI config"}
+      "" -> {:error, "HOME is empty; cannot locate sprite CLI config"}
+      home -> {:ok, home}
+    end
+  end
 end

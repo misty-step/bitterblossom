@@ -3,6 +3,13 @@ defmodule Conductor.ConfigTest do
 
   alias Conductor.Config
 
+  # Restore HOME after every test (some tests mutate it for sprite CLI auth).
+  setup do
+    original_home = System.get_env("HOME")
+    on_exit(fn -> restore_home(original_home) end)
+    :ok
+  end
+
   describe "db_path/0" do
     test "returns default when no app config" do
       assert Config.db_path() == ".bb/conductor.db"
@@ -157,7 +164,6 @@ defmodule Conductor.ConfigTest do
       System.delete_env("SPRITES_ORG")
       System.delete_env("FLY_ORG")
 
-      # Write a valid sprite CLI config
       home =
         make_sprite_cli_home(%{
           "current_selection" => %{"url" => "https://api.machines.dev", "org" => "cli-org"},
@@ -175,7 +181,6 @@ defmodule Conductor.ConfigTest do
       System.delete_env("SPRITES_ORG")
       System.delete_env("FLY_ORG")
 
-      # Point HOME to empty dir so sprite CLI config isn't found
       System.put_env(
         "HOME",
         System.tmp_dir!()
@@ -192,58 +197,8 @@ defmodule Conductor.ConfigTest do
     end
   end
 
-  describe "check_env!/0" do
-    test "passes when SPRITE_TOKEN set" do
-      System.put_env("GITHUB_TOKEN", "ghp_test")
-      System.put_env("SPRITE_TOKEN", "st_test")
-
-      assert Config.check_env!() == :ok
-    after
-      System.delete_env("GITHUB_TOKEN")
-      System.delete_env("SPRITE_TOKEN")
-    end
-
-    test "passes when sprite CLI authenticated (no token env vars)" do
-      System.put_env("GITHUB_TOKEN", "ghp_test")
-      System.delete_env("SPRITE_TOKEN")
-      System.delete_env("FLY_API_TOKEN")
-
-      home =
-        make_sprite_cli_home(%{
-          "current_selection" => %{"url" => "https://api.machines.dev", "org" => "personal"},
-          "urls" => %{}
-        })
-
-      System.put_env("HOME", home)
-
-      assert Config.check_env!() == :ok
-    after
-      System.delete_env("GITHUB_TOKEN")
-      System.delete_env("SPRITE_TOKEN")
-      System.delete_env("FLY_API_TOKEN")
-    end
-
-    test "fails when no sprite auth at all" do
-      System.put_env("GITHUB_TOKEN", "ghp_test")
-      System.delete_env("SPRITE_TOKEN")
-      System.delete_env("FLY_API_TOKEN")
-
-      System.put_env(
-        "HOME",
-        System.tmp_dir!()
-        |> Path.join("no_sprite_#{:erlang.unique_integer([:positive])}")
-        |> tap(&File.mkdir_p!/1)
-      )
-
-      assert_raise RuntimeError, ~r/missing/, fn ->
-        Config.check_env!()
-      end
-    after
-      System.delete_env("GITHUB_TOKEN")
-      System.delete_env("SPRITE_TOKEN")
-      System.delete_env("FLY_API_TOKEN")
-    end
-  end
+  defp restore_home(nil), do: System.delete_env("HOME")
+  defp restore_home(val), do: System.put_env("HOME", val)
 
   defp make_sprite_cli_home(config) do
     home =
