@@ -204,6 +204,31 @@ defmodule Conductor.GitHubTest do
       assert summary.summary =~ "https://example.test/checks/1"
     end
 
+    test "surfaces pending status contexts with urls" do
+      summary =
+        GitHub.summarize_checks([
+          %{
+            "context" => "CodeRabbit",
+            "state" => "PENDING",
+            "targetUrl" => "https://example.test/status/1"
+          }
+        ])
+
+      assert summary.state == :pending
+
+      assert [
+               %{
+                 name: "CodeRabbit",
+                 status: "PENDING",
+                 conclusion: nil,
+                 url: "https://example.test/status/1"
+               }
+             ] = summary.pending
+
+      assert summary.summary =~ "CodeRabbit (PENDING)"
+      assert summary.summary =~ "https://example.test/status/1"
+    end
+
     test "surfaces failed checks with URLs" do
       summary =
         GitHub.summarize_checks([
@@ -218,6 +243,22 @@ defmodule Conductor.GitHubTest do
       assert summary.state == :failed
 
       assert [%{name: "Deploy", conclusion: "TIMED_OUT", url: "https://example.test/checks/9"}] =
+               summary.failed
+    end
+
+    test "surfaces failed status contexts" do
+      summary =
+        GitHub.summarize_checks([
+          %{
+            "context" => "External CI",
+            "state" => "FAILURE",
+            "targetUrl" => "https://example.test/status/2"
+          }
+        ])
+
+      assert summary.state == :failed
+
+      assert [%{name: "External CI", conclusion: "FAILURE", url: "https://example.test/status/2"}] =
                summary.failed
     end
 

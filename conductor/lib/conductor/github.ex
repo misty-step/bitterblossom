@@ -398,6 +398,8 @@ defmodule Conductor.GitHub do
   end
 
   defp normalize_check(check) do
+    status_context_state = normalize_check_value(check["state"])
+
     %{
       name:
         first_present([
@@ -411,8 +413,11 @@ defmodule Conductor.GitHub do
           nil -> "unnamed check"
           name -> name
         end,
-      status: normalize_check_value(check["status"]),
-      conclusion: normalize_check_value(check["conclusion"]),
+      status:
+        normalize_check_value(check["status"]) || status_context_status(status_context_state),
+      conclusion:
+        normalize_check_value(check["conclusion"]) ||
+          status_context_conclusion(status_context_state),
       url:
         first_present([
           check["detailsUrl"],
@@ -458,6 +463,13 @@ defmodule Conductor.GitHub do
       sanitized -> sanitized
     end
   end
+
+  defp status_context_status(state) when state in ["PENDING", "EXPECTED"], do: "PENDING"
+  defp status_context_status(_state), do: nil
+
+  defp status_context_conclusion("SUCCESS"), do: "SUCCESS"
+  defp status_context_conclusion(state) when state in ["FAILURE", "ERROR"], do: "FAILURE"
+  defp status_context_conclusion(_state), do: nil
 
   defp ignored_check?(check) do
     is_nil(check.conclusion) and check.status not in @active_statuses
