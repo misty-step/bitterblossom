@@ -28,7 +28,7 @@ Validate the local control-plane machine before you try to run the conductor.
 This works even when Elixir is missing: `bb` checks the Elixir toolchain instead
 of requiring it just to start the command.
 
-```
+```bash
 bb preflight
 ```
 

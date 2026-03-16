@@ -352,6 +352,33 @@ func TestCheckElixirRuntimeFailures(t *testing.T) {
 	}
 }
 
+func TestCheckElixirRuntimeRejectsOlderSupportedCommands(t *testing.T) {
+	t.Parallel()
+
+	runner := &preflightRunner{deps: withDefaultPreflightDeps(preflightDeps{
+		runCommand: func(_ context.Context, _ string, name string, _ ...string) (localCommandResult, error) {
+			switch name {
+			case "elixir":
+				return localCommandResult{Stdout: "Elixir 1.15.7", ExitCode: 0}, nil
+			case "erl":
+				return localCommandResult{Stdout: "27", ExitCode: 0}, nil
+			case "mix":
+				return localCommandResult{Stdout: "Mix 1.15.7", ExitCode: 0}, nil
+			default:
+				return localCommandResult{}, nil
+			}
+		},
+	})}
+
+	result := runner.checkElixirRuntime(context.Background())
+	if result.Status != preflightFail {
+		t.Fatalf("status = %s, want FAIL", result.Status)
+	}
+	if !strings.Contains(result.FixHint, "Elixir 1.16+") {
+		t.Fatalf("fix hint = %q, want Elixir 1.16+", result.FixHint)
+	}
+}
+
 func TestCheckEnvFileFailures(t *testing.T) {
 	t.Run("missing file", func(t *testing.T) {
 		runner := &preflightRunner{
@@ -459,6 +486,27 @@ func TestCheckWorkersFailures(t *testing.T) {
 			t.Fatalf("status = %s, want FAIL", result.Status)
 		}
 	})
+}
+
+func TestCheckDBWritableFailsWhenConductorDBIsNotWritable(t *testing.T) {
+	t.Parallel()
+
+	runner := &preflightRunner{
+		opts: preflightOptions{RepoRoot: t.TempDir()},
+		deps: withDefaultPreflightDeps(preflightDeps{
+			openFile: func(string, int, os.FileMode) (*os.File, error) {
+				return nil, errors.New("permission denied")
+			},
+		}),
+	}
+
+	result := runner.checkDBWritable()
+	if result.Status != preflightFail {
+		t.Fatalf("status = %s, want FAIL", result.Status)
+	}
+	if !strings.Contains(result.Detail, "permission denied") {
+		t.Fatalf("detail = %q, want permission error", result.Detail)
+	}
 }
 
 func TestEnvLookupFallsBackToEnvFileExports(t *testing.T) {

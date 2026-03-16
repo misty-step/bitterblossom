@@ -1,4 +1,4 @@
-.PHONY: build test lint clean test-hooks test-conductor conductor-check preflight
+.PHONY: all build test lint clean test-hooks test-conductor conductor-check preflight
 
 BINARY := bb
 BIN_DIR := bin
@@ -6,6 +6,8 @@ VERSION ?= dev
 COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 DATE := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
+
+all: build
 
 build:
 	mkdir -p $(BIN_DIR)

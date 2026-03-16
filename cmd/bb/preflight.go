@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -48,6 +49,7 @@ type preflightDeps struct {
 	readFile          func(string) ([]byte, error)
 	runCommand        func(context.Context, string, string, ...string) (localCommandResult, error)
 	mkdirAll          func(string, os.FileMode) error
+	openFile          func(string, int, os.FileMode) (*os.File, error)
 	writeFile         func(string, []byte, os.FileMode) error
 	remove            func(string) error
 	resolveSpriteAuth func(context.Context, func(string) string) (preflightSpriteAuth, error)
@@ -185,6 +187,9 @@ func withDefaultPreflightDeps(deps preflightDeps) preflightDeps {
 	}
 	if deps.mkdirAll == nil {
 		deps.mkdirAll = os.MkdirAll
+	}
+	if deps.openFile == nil {
+		deps.openFile = os.OpenFile
 	}
 	if deps.writeFile == nil {
 		deps.writeFile = os.WriteFile
@@ -339,6 +344,17 @@ func (r *preflightRunner) checkElixirRuntime(ctx context.Context) preflightCheck
 	if detail != "" && otpRelease != "" {
 		detail = fmt.Sprintf("%s / OTP %s", detail, otpRelease)
 	}
+
+	if !elixirVersionAtLeast(elixirLine, 1, 16) {
+		return preflightCheckResult{
+			Status:   preflightFail,
+			Label:    "Elixir + Erlang",
+			Detail:   detail,
+			FixHint:  "Install Elixir 1.16+ (with Erlang/OTP) so `elixir`, `erl`, and `mix` are all available.",
+			Critical: true,
+		}
+	}
+
 	return preflightCheckResult{
 		Status:   preflightPass,
 		Label:    "Elixir + Erlang",
@@ -568,8 +584,9 @@ func (r *preflightRunner) checkDBWritable() preflightCheckResult {
 		}
 	}
 
-	probePath := filepath.Join(dbDir, fmt.Sprintf(".preflight-write-%d", time.Now().UnixNano()))
-	if err := r.deps.writeFile(probePath, []byte("ok\n"), 0o644); err != nil {
+	dbPath := filepath.Join(dbDir, "conductor.db")
+	file, err := r.deps.openFile(dbPath, os.O_RDWR|os.O_CREATE, 0o644)
+	if err != nil {
 		return preflightCheckResult{
 			Status:   preflightFail,
 			Label:    "conductor DB writable",
@@ -578,7 +595,7 @@ func (r *preflightRunner) checkDBWritable() preflightCheckResult {
 			Critical: true,
 		}
 	}
-	_ = r.deps.remove(probePath)
+	_ = file.Close()
 
 	return preflightCheckResult{
 		Status:   preflightPass,
@@ -734,6 +751,29 @@ func findLineContaining(value, needle string) string {
 		}
 	}
 	return ""
+}
+
+var elixirVersionPattern = regexp.MustCompile(`Elixir\s+(\d+)\.(\d+)`)
+
+func elixirVersionAtLeast(line string, minMajor, minMinor int) bool {
+	match := elixirVersionPattern.FindStringSubmatch(line)
+	if len(match) != 3 {
+		return false
+	}
+
+	major, err := strconv.Atoi(match[1])
+	if err != nil {
+		return false
+	}
+	minor, err := strconv.Atoi(match[2])
+	if err != nil {
+		return false
+	}
+
+	if major != minMajor {
+		return major > minMajor
+	}
+	return minor >= minMinor
 }
 
 func errString(err error) string {
