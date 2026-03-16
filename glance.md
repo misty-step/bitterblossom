@@ -23,7 +23,7 @@ The system architecture is structured into three distinct layers:
 
 ### Technical Gotchas
 
-*   **Completion Protocol**: The system relies on specific, extensionless signal files (e.g., `TASK_COMPLETE`, `BLOCKED.md`) created by the agent. Failure to produce these exact filenames can cause the Ralph loop to hang or exhaust its iteration limit.
+*   **Completion Protocol**: The system relies on specific, extensionless signal files (e.g., `TASK_COMPLETE`, `BLOCKED.md`) created by the agent. Failure to produce these exact filenames can cause the agent session to hang or exhaust its iteration limit.
 *   **Credential Precedence**: The presence of both `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_API_KEY` can cause authentication collisions. The system is designed to prioritize OpenRouter-based tokens to mitigate billing risks and model access issues.
 *   **State Fragmentation**: Context is maintained through local `MEMORY.md` and `PLAN.md` files on the remote sprite. If a sprite is destroyed or the filesystem is not synchronized, the agent loses historical context for the project.
 *   **Log Pollution**: Non-structured text (e.g., token exchange logs or terminal escape sequences) occasionally leaks into the JSON stdout, which can break machine-parseability for downstream telemetry tools.

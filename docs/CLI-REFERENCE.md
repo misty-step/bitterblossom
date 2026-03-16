@@ -157,7 +157,7 @@ bb setup fern --repo misty-step/webapp --force
 4. Upload persona file (`sprites/<name>.md` → `PERSONA.md`)
 5. Configure git auth (credential helper, user identity)
 6. Clone repo (if `--repo` provided)
-7. Write workspace metadata at `.bb/workspace.json`
+7. Write workspace metadata at `.bb/workspace.json` (when `--repo` is provided)
 
 ---
 

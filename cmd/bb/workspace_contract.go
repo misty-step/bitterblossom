@@ -51,6 +51,19 @@ func workspaceAgentLogPath(workspace string) string {
 	return workspaceFilePath(workspace, agentLogFileName)
 }
 
+func cleanupStaleAgentProcessesScriptFor(workspace string) string {
+	return fmt.Sprintf(`export WORKSPACE=%q
+if ! command -v pgrep >/dev/null 2>&1; then
+  exit 0
+fi
+
+pids="$(pgrep -af '[b]b-agent-session|[c]laude|[c]odex' 2>/dev/null | awk -v ws="$WORKSPACE" 'index($0, ws) {print $1}')"
+if [ -n "$pids" ]; then
+  printf '%%s\n' "$pids" | xargs kill -9 2>/dev/null || true
+fi
+sleep 1`, workspace)
+}
+
 func cleanSignalsScriptFor(workspace string) string {
 	targets := make([]string, 0, len(workspaceStatusSignalFileNames))
 	for _, name := range workspaceStatusSignalFileNames {

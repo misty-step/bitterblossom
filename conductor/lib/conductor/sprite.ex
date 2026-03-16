@@ -160,7 +160,7 @@ defmodule Conductor.Sprite do
   @agent_process_names ~w(claude codex)
 
   defp kill_agents_cmd do
-    @agent_process_names
+    ["bb-agent-session" | @agent_process_names]
     |> Enum.map_join("; ", &"pkill -9 -f #{&1} 2>/dev/null")
     |> Kernel.<>("; true")
   end

@@ -105,6 +105,10 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverrid
 		return fmt.Errorf("sprite %q is currently working: %w", spriteName, err)
 	}
 
+	// Resolve workspace early so stale-process cleanup can be constrained to this
+	// dispatch target instead of killing matching processes globally on the sprite.
+	workspace := dispatchWorkspace(repo, workspaceOverride)
+
 	// Dry-run: all pre-flight checks passed — do not start the agent.
 	if dryRun {
 		_, _ = fmt.Fprintf(os.Stderr, "dry-run: sprite %q is ready to dispatch\n", spriteName)
@@ -117,12 +121,10 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverrid
 	// Without this, concurrent claude processes compete for resources and hang.
 	killCtx, killCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer killCancel()
-	_, _ = s.CommandContext(killCtx, "bash", "-c", "pkill -9 -f 'bb-agent-session|claude|codex' 2>/dev/null; sleep 1").Output()
+	_, _ = s.CommandContext(killCtx, "bash", "-c", cleanupStaleAgentProcessesScriptFor(workspace)).Output()
 
 	// 5. Resolve workspace. Default dispatch syncs the shared repo checkout.
 	// Conductor-owned worktrees pass --workspace and handle preparation separately.
-	workspace := dispatchWorkspace(repo, workspaceOverride)
-
 	// Detect the remote default branch once; used in both sync and verification.
 	defaultBranch, branchErr := detectDefaultBranchWithRunner(ctx, spriteBashRunner(s), workspace)
 	if branchErr != nil {
@@ -361,7 +363,9 @@ while (( i < MAX_ITERATIONS )); do
   [ -f "$WS/BLOCKED.md" ] && log_err "[agent] BLOCKED: $(head -3 "$WS/BLOCKED.md")" && exit 2
 
   now=$(date +%%s)
-  (( now - start >= MAX_TIME_SEC )) && log_err "[agent] time limit (${MAX_TIME_SEC}s)" && exit 1
+  elapsed=$((now - start))
+  remaining=$((MAX_TIME_SEC - elapsed))
+  (( remaining <= 0 )) && log_err "[agent] time limit (${MAX_TIME_SEC}s)" && exit 1
 
   i=$((i+1))
   log "[agent] iteration $i / $MAX_ITERATIONS at $(date -Iseconds)"
@@ -369,16 +373,39 @@ while (( i < MAX_ITERATIONS )); do
   { while sleep "$HEARTBEAT_INTERVAL_SEC"; do log "[agent] heartbeat: $(date -Iseconds)"; done; } &
   HB_PID=$!
 
-  timeout "$ITER_TIMEOUT_SEC" env \
+  iter_budget=$ITER_TIMEOUT_SEC
+  if (( remaining < iter_budget )); then
+    iter_budget=$remaining
+  fi
+
+  timeout "$iter_budget" env \
     LEFTHOOK=0 \
     ANTHROPIC_MODEL=%q \
     ANTHROPIC_DEFAULT_SONNET_MODEL=%q \
     CLAUDE_CODE_SUBAGENT_MODEL=%q \
     claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json \
-    < "$PROMPT" 2>&1 | grep --line-buffered -F -v '"type":"system","subtype":"init"' | tee -a "$AGENT_LOG" || true
+    < "$PROMPT" 2>&1 | grep --line-buffered -F -v '"type":"system","subtype":"init"' | tee -a "$AGENT_LOG"
+  statuses=("${PIPESTATUS[@]}")
 
   kill "$HB_PID" 2>/dev/null || true
   wait "$HB_PID" 2>/dev/null || true
+
+  agent_status=${statuses[0]}
+  grep_status=${statuses[1]}
+  tee_status=${statuses[2]}
+
+  if (( agent_status != 0 )); then
+    log_err "[agent] claude exit $agent_status"
+    exit 1
+  fi
+  if (( tee_status != 0 )); then
+    log_err "[agent] tee exit $tee_status"
+    exit 1
+  fi
+  if (( grep_status != 0 && grep_status != 1 )); then
+    log_err "[agent] grep exit $grep_status"
+    exit 1
+  fi
 
   sleep 2
 done

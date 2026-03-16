@@ -608,6 +608,9 @@ func TestAgentSessionScriptInterpolatesContractAndParsesAsBash(t *testing.T) {
 		`MAX_TIME_SEC=600`,
 		`ITER_TIMEOUT_SEC=120`,
 		`HEARTBEAT_INTERVAL_SEC=40`,
+		`remaining=$((MAX_TIME_SEC - elapsed))`,
+		`iter_budget=$ITER_TIMEOUT_SEC`,
+		`statuses=("${PIPESTATUS[@]}")`,
 		`TASK_COMPLETE`,
 		`BLOCKED.md`,
 		`claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json`,
@@ -637,6 +640,23 @@ func TestCleanSignalsScriptForQuotesWorkspace(t *testing.T) {
 	}
 	if !strings.Contains(script, `"$WORKSPACE"/TASK_COMPLETE`) {
 		t.Fatalf("cleanSignalsScriptFor() should use WORKSPACE env var: %q", script)
+	}
+}
+
+func TestCleanupStaleAgentProcessesScriptForScopesKillByWorkspace(t *testing.T) {
+	t.Parallel()
+
+	workspace := `/tmp/run 123; touch /tmp/pwned`
+	script := cleanupStaleAgentProcessesScriptFor(workspace)
+
+	for _, want := range []string{
+		`export WORKSPACE="/tmp/run 123; touch /tmp/pwned"`,
+		`pgrep -af '[b]b-agent-session|[c]laude|[c]odex'`,
+		`awk -v ws="$WORKSPACE" 'index($0, ws) {print $1}'`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("cleanupStaleAgentProcessesScriptFor() missing %q in script:\n%s", want, script)
+		}
 	}
 }
 
