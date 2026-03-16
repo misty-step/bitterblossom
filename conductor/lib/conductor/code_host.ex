@@ -42,7 +42,7 @@ defmodule Conductor.CodeHost do
   @callback add_label(repo :: binary(), pr_number :: pos_integer(), label :: binary()) ::
               :ok | {:error, term()}
 
-  @doc "Find an open conductor PR whose branch starts with factory/<issue_number>-."
+  @doc "Find an open PR associated with the given issue number."
   @callback find_open_pr(repo :: binary(), issue_number :: pos_integer()) ::
               {:ok, map()} | {:error, :not_found}
 

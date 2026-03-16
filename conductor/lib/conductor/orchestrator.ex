@@ -846,8 +846,10 @@ defmodule Conductor.Orchestrator do
   end
 
   defp operator_merge_decision(repo, pr) do
-    with {:ok, issue_number} <- issue_number_for_pr(repo, pr) do
-      operator_issue_decision(repo, issue_number)
+    case issue_number_for_pr(repo, pr) do
+      {:ok, issue_number} -> operator_issue_decision(repo, issue_number)
+      :unmapped -> :allow
+      :skip -> :skip
     end
   end
 
@@ -906,7 +908,10 @@ defmodule Conductor.Orchestrator do
           {:ok, issue_number}
 
         {:error, :not_found} ->
-          parse_issue_number_from_branch(head_ref_name)
+          case parse_issue_number_from_branch(head_ref_name) do
+            {:ok, issue_number} -> {:ok, issue_number}
+            :skip -> :unmapped
+          end
 
         {:error, reason} ->
           Logger.warning("[operator] failed to find run for PR ##{pr_number}: #{inspect(reason)}")
@@ -1160,39 +1165,6 @@ defmodule Conductor.Orchestrator do
 
       _ ->
         Logger.debug("[merge] no run found for PR ##{pr_number}, skipping store update")
-    end
-  end
-
-  defp conductor_tracked?(repo, pr_number) do
-    try do
-      case Store.find_run_by_pr(repo, pr_number) do
-        {:ok, _} ->
-          true
-
-        {:error, :not_found} ->
-          false
-
-        {:error, reason} ->
-          Logger.warning(
-            "[merge] conductor_tracked? failed for PR ##{pr_number}: #{inspect(reason)}"
-          )
-
-          false
-      end
-    rescue
-      exception ->
-        Logger.warning(
-          "[merge] conductor_tracked? failed for PR ##{pr_number}: #{Exception.message(exception)}"
-        )
-
-        false
-    catch
-      :exit, reason ->
-        Logger.warning(
-          "[merge] conductor_tracked? failed for PR ##{pr_number}: #{inspect(reason)}"
-        )
-
-        false
     end
   end
 

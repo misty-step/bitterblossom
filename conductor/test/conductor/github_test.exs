@@ -281,65 +281,55 @@ defmodule Conductor.GitHubTest do
     end
   end
 
-  describe "find_open_pr/2 — branch prefix filtering" do
-    # Test the pure filter logic extracted from find_open_pr.
-    # The function finds the first PR whose headRefName starts with "factory/<issue>-".
-
-    defp filter_open_pr(prs, issue_number) do
-      prefix = "factory/#{issue_number}-"
-      Enum.find(prs, fn pr -> String.starts_with?(pr["headRefName"] || "", prefix) end)
+  describe "find_open_pr/2" do
+    test "matches open PRs on non-factory branches when the branch embeds the issue number" do
+      with_fake_gh(
+        """
+        printf '%s\n' "$@" > "$GH_ARGS_PATH"
+        cat <<'JSON'
+        [
+          {"number":10,"title":"fix","body":"","headRefName":"fix/42-cerberus-permissions","url":"http://example.com/10"},
+          {"number":11,"title":"other","body":"","headRefName":"factory/99-1234567890","url":"http://example.com/11"}
+        ]
+        JSON
+        """,
+        fn _tmp_dir, _args_path ->
+          assert {:ok, %{"number" => 10}} = GitHub.find_open_pr("misty-step/bitterblossom", 42)
+        end
+      )
     end
 
-    test "matches PR with correct issue prefix" do
-      prs = [
-        %{
-          "number" => 10,
-          "headRefName" => "factory/42-1234567890",
-          "url" => "http://example.com/10"
-        },
-        %{
-          "number" => 11,
-          "headRefName" => "factory/99-9999999999",
-          "url" => "http://example.com/11"
-        }
-      ]
-
-      result = filter_open_pr(prs, 42)
-      assert result["number"] == 10
+    test "matches open PRs on manual branches when the body closes the issue" do
+      with_fake_gh(
+        """
+        printf '%s\n' "$@" > "$GH_ARGS_PATH"
+        cat <<'JSON'
+        [
+          {"number":12,"title":"fix","body":"Closes #42","headRefName":"fix/cerberus-permissions","url":"http://example.com/12"},
+          {"number":13,"title":"other","body":"Closes #99","headRefName":"fix/other","url":"http://example.com/13"}
+        ]
+        JSON
+        """,
+        fn _tmp_dir, _args_path ->
+          assert {:ok, %{"number" => 12}} = GitHub.find_open_pr("misty-step/bitterblossom", 42)
+        end
+      )
     end
 
-    test "returns nil when no PR matches the issue number" do
-      prs = [
-        %{
-          "number" => 10,
-          "headRefName" => "factory/99-1234567890",
-          "url" => "http://example.com/10"
-        }
-      ]
-
-      assert filter_open_pr(prs, 42) == nil
-    end
-
-    test "does not match a different issue number that shares a prefix" do
-      prs = [
-        %{
-          "number" => 10,
-          "headRefName" => "factory/420-1234567890",
-          "url" => "http://example.com/10"
-        }
-      ]
-
-      # issue 42 should NOT match factory/420-... (dash is the delimiter)
-      assert filter_open_pr(prs, 42) == nil
-    end
-
-    test "handles nil headRefName gracefully" do
-      prs = [%{"number" => 10, "headRefName" => nil, "url" => "http://example.com/10"}]
-      assert filter_open_pr(prs, 42) == nil
-    end
-
-    test "returns nil for empty list" do
-      assert filter_open_pr([], 42) == nil
+    test "does not match a different issue number that shares a numeric prefix" do
+      with_fake_gh(
+        """
+        printf '%s\n' "$@" > "$GH_ARGS_PATH"
+        cat <<'JSON'
+        [
+          {"number":10,"title":"fix","body":"Closes #420","headRefName":"factory/420-1234567890","url":"http://example.com/10"}
+        ]
+        JSON
+        """,
+        fn _tmp_dir, _args_path ->
+          assert {:error, :not_found} = GitHub.find_open_pr("misty-step/bitterblossom", 42)
+        end
+      )
     end
   end
 
