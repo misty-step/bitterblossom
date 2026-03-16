@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -591,6 +592,37 @@ func TestDispatchWorkspaceFallsBackToRepoCheckout(t *testing.T) {
 	got := dispatchWorkspace("misty-step/bitterblossom", "")
 	if got != "/home/sprite/workspace/bitterblossom" {
 		t.Fatalf("dispatchWorkspace fallback = %q", got)
+	}
+}
+
+func TestAgentSessionScriptInterpolatesContractAndParsesAsBash(t *testing.T) {
+	t.Parallel()
+
+	script := agentSessionScript("/tmp/run-123", 7, 600, 120, 40)
+
+	for _, want := range []string{
+		`WS="/tmp/run-123"`,
+		`PROMPT="/tmp/run-123/.dispatch-prompt.md"`,
+		`AGENT_LOG="/tmp/run-123/agent.log"`,
+		`MAX_ITERATIONS=7`,
+		`MAX_TIME_SEC=600`,
+		`ITER_TIMEOUT_SEC=120`,
+		`HEARTBEAT_INTERVAL_SEC=40`,
+		`TASK_COMPLETE`,
+		`BLOCKED.md`,
+		`claude -p --dangerously-skip-permissions --permission-mode bypassPermissions --verbose --output-format stream-json`,
+		`ANTHROPIC_MODEL="` + spriteModel + `"`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("agentSessionScript() missing %q in script:\n%s", want, script)
+		}
+	}
+
+	cmd := exec.Command("bash", "-n")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("agentSessionScript() bash -n failed: %v\n%s", err, out)
 	}
 }
 
