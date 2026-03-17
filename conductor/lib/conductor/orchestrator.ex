@@ -1260,6 +1260,16 @@ defmodule Conductor.Orchestrator do
     end
   end
 
+  defp conductor_tracked?(repo, pr_number) do
+    try do
+      match?({:ok, _}, Store.find_run_by_pr(repo, pr_number))
+    rescue
+      _ -> false
+    catch
+      :exit, _ -> false
+    end
+  end
+
   defp tracker_mod, do: Application.get_env(:conductor, :tracker_module, Conductor.GitHub)
   defp worker_mod, do: Application.get_env(:conductor, :worker_module, Conductor.Sprite)
   defp code_host_mod, do: Application.get_env(:conductor, :code_host_module, Conductor.GitHub)
