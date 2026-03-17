@@ -1,0 +1,110 @@
+{
+  "run": {
+    "branch": "factory/698-1773687993",
+    "builder_sprite": "bb-fixer",
+    "completed_at": "2026-03-16T19:31:35.247456Z",
+    "heartbeat_at": "2026-03-16T19:31:34.916299Z",
+    "issue_number": 698,
+    "issue_title": "[P2] bb preflight: single command to validate control plane readiness",
+    "phase": "failed",
+    "picked_at": "2026-03-16T19:06:33.458723Z",
+    "pr_number": null,
+    "pr_url": null,
+    "replay_count": 0,
+    "repo": "misty-step/bitterblossom",
+    "run_id": "run-698-1773687993",
+    "semantic_ready": null,
+    "status": "failed",
+    "turn_count": 0,
+    "updated_at": "2026-03-16T19:31:35.247456Z",
+    "worktree_path": null
+  },
+  "events": [
+    {
+      "events": [
+        {
+          "created_at": "2026-03-16T19:06:33.461193Z",
+          "event_type": "lease_acquired",
+          "id": 3,
+          "payload": {
+            "issue": 698
+          },
+          "run_id": "run-698-1773687993"
+        },
+        {
+          "created_at": "2026-03-16T19:06:34.290806Z",
+          "event_type": "builder_workspace_prepared",
+          "id": 4,
+          "payload": {
+            "workspace": "/home/sprite/workspace/bitterblossom/.bb/conductor/run-698-1773687993/builder-worktree"
+          },
+          "run_id": "run-698-1773687993"
+        },
+        {
+          "created_at": "2026-03-16T19:06:34.759938Z",
+          "event_type": "builder_dispatched",
+          "id": 5,
+          "payload": {
+            "sprite": "bb-fixer",
+            "turn": 1
+          },
+          "run_id": "run-698-1773687993"
+        },
+        {
+          "created_at": "2026-03-16T19:31:35.244965Z",
+          "event_type": "builder_dispatch_failed",
+          "id": 6,
+          "payload": {
+            "reason": "exit 1: agent exited non-zero; harness does not support continuation"
+          },
+          "run_id": "run-698-1773687993"
+        },
+        {
+          "created_at": "2026-03-16T19:31:35.552516Z",
+          "event_type": "workspace_cleaned",
+          "id": 7,
+          "payload": {},
+          "run_id": "run-698-1773687993"
+        }
+      ],
+      "run_id": "run-698-1773687993",
+      "event_count": 5
+    }
+  ],
+  "issue": {
+    "comments": [],
+    "labels": [
+      {
+        "id": "LA_kwDORJkRwM8AAAACXMhSDw",
+        "name": "domain/infra",
+        "description": "Dashboard, deployment, monitoring infrastructure",
+        "color": "D4C5F9"
+      },
+      {
+        "id": "LA_kwDORJkRwM8AAAACX6j47g",
+        "name": "feature",
+        "description": "New capability or behavior",
+        "color": "1d76db"
+      },
+      {
+        "id": "LA_kwDORJkRwM8AAAACX6j6-g",
+        "name": "next",
+        "description": "Next sprint candidate",
+        "color": "D93F0B"
+      },
+      {
+        "id": "LA_kwDORJkRwM8AAAACX6j7mg",
+        "name": "effort/s",
+        "description": "Less than a day",
+        "color": "c2e0c6"
+      }
+    ],
+    "milestone": null,
+    "number": 698,
+    "state": "OPEN",
+    "title": "[P2] bb preflight: single command to validate control plane readiness",
+    "url": "https://github.com/misty-step/bitterblossom/issues/698"
+  },
+  "pr": null,
+  "review_threads": null
+}
