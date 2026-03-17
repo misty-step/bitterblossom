@@ -1,0 +1,448 @@
+{
+  "run": {
+    "branch": "factory/701-1773693000",
+    "builder_sprite": "bb-builder",
+    "completed_at": "2026-03-16T20:48:53.343761Z",
+    "heartbeat_at": "2026-03-16T20:41:31.845503Z",
+    "issue_number": 701,
+    "issue_title": "[P1] Delete run-once and loop CLI commands \u2014 define the error out of existence",
+    "phase": "merged",
+    "picked_at": "2026-03-16T20:30:00.821795Z",
+    "pr_number": 705,
+    "pr_url": "https://github.com/misty-step/bitterblossom/pull/705",
+    "replay_count": 0,
+    "repo": "misty-step/bitterblossom",
+    "run_id": "run-701-1773693000",
+    "semantic_ready": null,
+    "status": "merged",
+    "turn_count": 1,
+    "updated_at": "2026-03-16T20:48:53.343761Z",
+    "worktree_path": null
+  },
+  "events": [
+    {
+      "events": [
+        {
+          "created_at": "2026-03-16T20:30:00.824272Z",
+          "event_type": "lease_acquired",
+          "id": 10,
+          "payload": {
+            "issue": 701
+          },
+          "run_id": "run-701-1773693000"
+        },
+        {
+          "created_at": "2026-03-16T20:30:01.596738Z",
+          "event_type": "builder_workspace_prepared",
+          "id": 11,
+          "payload": {
+            "workspace": "/home/sprite/workspace/bitterblossom/.bb/conductor/run-701-1773693000/builder-worktree"
+          },
+          "run_id": "run-701-1773693000"
+        },
+        {
+          "created_at": "2026-03-16T20:30:01.794336Z",
+          "event_type": "builder_dispatched",
+          "id": 12,
+          "payload": {
+            "sprite": "bb-builder",
+            "turn": 1
+          },
+          "run_id": "run-701-1773693000"
+        },
+        {
+          "created_at": "2026-03-16T20:41:39.750068Z",
+          "event_type": "builder_complete",
+          "id": 37,
+          "payload": {
+            "turn": 1
+          },
+          "run_id": "run-701-1773693000"
+        },
+        {
+          "created_at": "2026-03-16T20:41:40.048961Z",
+          "event_type": "builder_artifact_ready",
+          "id": 38,
+          "payload": {
+            "pr_number": 705,
+            "pr_url": "https://github.com/misty-step/bitterblossom/pull/705",
+            "summary": "Removed the legacy `mix conductor run-once` and `mix conductor loop` entrypoints so they now print a removal message and exit 1, replaced internal `Orchestrator.start_loop/1` usage with `configure_polling/1`, updated orchestrator and CLI tests, added subprocess CLI exit tests, refreshed CLAUDE.md, and verified with `cd conductor && mix test` plus green PR checks."
+          },
+          "run_id": "run-701-1773693000"
+        },
+        {
+          "created_at": "2026-03-16T20:41:40.431921Z",
+          "event_type": "workspace_cleaned",
+          "id": 39,
+          "payload": {},
+          "run_id": "run-701-1773693000"
+        },
+        {
+          "created_at": "2026-03-16T20:48:53.341175Z",
+          "event_type": "merged",
+          "id": 41,
+          "payload": {
+            "merged_by": "orchestrator",
+            "pr_number": 705
+          },
+          "run_id": "run-701-1773693000"
+        },
+        {
+          "created_at": "2026-03-16T20:48:59.099748Z",
+          "event_type": "retro_complete",
+          "id": 42,
+          "payload": {
+            "action_count": 0,
+            "actions_taken": [],
+            "finding_count": 1,
+            "findings": [
+              {
+                "action": "none",
+                "alignment": "neutral",
+                "content": null,
+                "description": "Run took 18+ minutes for a simple CLI command deletion. Workspace preparation (1.6s) was fine, but builder execution took 10+ minutes for what should be a 2-minute change. This suggests either sprite resource constraints or inefficient build processes.",
+                "existing_issue": null,
+                "root_cause": "Build environment not optimized for simple changes - full test suite or dependency resolution may be running unnecessarily",
+                "title": "Run duration indicates workspace preparation bottleneck",
+                "type": "operational_bug"
+              }
+            ],
+            "skipped_count": 1,
+            "summary": "clean deletion run with performance concern"
+          },
+          "run_id": "run-701-1773693000"
+        }
+      ],
+      "run_id": "run-701-1773693000",
+      "event_count": 8
+    }
+  ],
+  "issue": {
+    "comments": [
+      {
+        "id": "IC_kwDORJkRwM7ynyDZ",
+        "author": {
+          "login": "kaylee-mistystep"
+        },
+        "authorAssociation": "MEMBER",
+        "body": ":tada: This issue has been resolved in version 1.70.1 :tada:\n\nThe release is available on [GitHub release](https://github.com/misty-step/bitterblossom/releases/tag/v1.70.1)\n\nYour **[semantic-release](https://github.com/semantic-release/semantic-release)** bot :package::rocket:",
+        "createdAt": "2026-03-16T20:50:16Z",
+        "includesCreatedEdit": false,
+        "isMinimized": false,
+        "minimizedReason": "",
+        "reactionGroups": [],
+        "url": "https://github.com/misty-step/bitterblossom/issues/701#issuecomment-4070514905",
+        "viewerDidAuthor": false
+      }
+    ],
+    "labels": [
+      {
+        "id": "LA_kwDORJkRwM8AAAACXZGpFQ",
+        "name": "released",
+        "description": "",
+        "color": "ededed"
+      },
+      {
+        "id": "LA_kwDORJkRwM8AAAACX6j5ew",
+        "name": "task",
+        "description": "Implementation work item",
+        "color": "6f42c1"
+      },
+      {
+        "id": "LA_kwDORJkRwM8AAAACX6j6ww",
+        "name": "now",
+        "description": "Current sprint focus",
+        "color": "B60205"
+      },
+      {
+        "id": "LA_kwDORJkRwM8AAAACX6j6-g",
+        "name": "next",
+        "description": "Next sprint candidate",
+        "color": "D93F0B"
+      },
+      {
+        "id": "LA_kwDORJkRwM8AAAACX6j7mg",
+        "name": "effort/s",
+        "description": "Less than a day",
+        "color": "c2e0c6"
+      },
+      {
+        "id": "LA_kwDORJkRwM8AAAACX6nQ0A",
+        "name": "p1",
+        "description": "Essential: foundation and fundamentals",
+        "color": "e36209"
+      }
+    ],
+    "milestone": {
+      "number": 7,
+      "title": "Now: Current Sprint",
+      "description": "Active work. Issues labeled 'now'.",
+      "dueOn": null
+    },
+    "number": 701,
+    "state": "CLOSED",
+    "title": "[P1] Delete run-once and loop CLI commands \u2014 define the error out of existence",
+    "url": "https://github.com/misty-step/bitterblossom/issues/701"
+  },
+  "pr": {
+    "comments": [
+      {
+        "id": "IC_kwDORJkRwM7yng_u",
+        "author": {
+          "login": "coderabbitai"
+        },
+        "authorAssociation": "NONE",
+        "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\nNo actionable comments were generated in the recent review. \ud83c\udf89\n\n<details>\n<summary>\u2139\ufe0f Recent review info</summary>\n\n<details>\n<summary>\u2699\ufe0f Run configuration</summary>\n\n**Configuration used**: defaults\n\n**Review profile**: CHILL\n\n**Plan**: Pro\n\n**Run ID**: `d2a95f47-20cd-41b7-9809-4200f430e9be`\n\n</details>\n\n<details>\n<summary>\ud83d\udce5 Commits</summary>\n\nReviewing files that changed from the base of the PR and between 0f6a756123ff3825d2e40d2ecc29e64e0b2cba0e and bce2cd481dc2ab68f5f52862a9e93f07cd17ba26.\n\n</details>\n\n<details>\n<summary>\ud83d\udcd2 Files selected for processing (3)</summary>\n\n* `conductor/lib/conductor/application.ex`\n* `conductor/lib/conductor/cli.ex`\n* `conductor/lib/conductor/orchestrator.ex`\n\n</details>\n\n<details>\n<summary>\ud83d\udea7 Files skipped from review as they are similar to previous changes (1)</summary>\n\n* conductor/lib/conductor/application.ex\n\n</details>\n\n</details>\n\n---\n\n\n<!-- walkthrough_start -->\n\n<details>\n<summary>\ud83d\udcdd Walkthrough</summary>\n\n## Walkthrough\n\nDeprecated CLI commands `run-once` and `loop` were removed and now print a removal message and exit 1. Orchestration entry points were consolidated: `run_once/1` and `start_loop/1` replaced by `configure_polling/1`. Application startup and tests adjusted to the new CLI and orchestrator flow.\n\n## Changes\n\n|Cohort / File(s)|Summary|\n|---|---|\n|**Orchestration API** <br> `conductor/lib/conductor/orchestrator.ex`|Removed `run_once/1` and `start_loop/1`; added `configure_polling/1`. GenServer dispatch updated to handle `{:configure_polling, opts}`. Deleted run-once-specific flows and lookups.|\n|**Application bootstrap** <br> `conductor/lib/conductor/application.ex`|Replaced `Orchestrator.start_loop(...)` call with `Orchestrator.configure_polling(...)`. Added `@doc false` to the start callback area.|\n|**CLI surface & dispatch** <br> `conductor/lib/conductor/cli.ex`|Removed `run-once` and `loop` from `@commands`; removed legacy handlers and deprecation helpers; added `removed_command/1` to print removal message and exit; deferred application startup to command handlers (ensure Application started before handling).|\n|**Tests \u2014 removed/updated legacy behavior** <br> `conductor/test/conductor/cli_fleet_test.exs`, `conductor/test/conductor/orchestrator_test.exs`|Deleted run-once/loop test stubs and trackers; replaced `start_loop/1` usages with `configure_polling/1`; updated expectations and descriptions to the new polling entrypoint.|\n|**Tests \u2014 new legacy command checks** <br> `conductor/test/conductor/cli_legacy_command_test.exs`|Added tests asserting `mix conductor run-once` and `mix conductor loop` print a removal message, exit 1, and suggest `mix conductor start`.|\n|**Docs/Operating model** <br> `CLAUDE.md`|Rewrote Operating Model bullets to remove run-once/loop workflow and document `start`, plus `pause`/`resume` for dispatch control and existing inspection commands.|\n\n## Estimated code review effort\n\n\ud83c\udfaf 4 (Complex) | \u23f1\ufe0f ~45 minutes\n\n## Poem\n\n> \ud83d\udc30 I thumped my paw and gave a cheer,  \n> Old loops and runs have disappeared,  \n> Configure polling hums the tune,  \n> Start, pause, resume \u2014 we hop to noon!  \n> Farewell, deprecated commands \u2014 carrot cake soon.\n\n</details>\n\n<!-- walkthrough_end -->\n\n\n<!-- pre_merge_checks_walkthrough_start -->\n\n<details>\n<summary>\ud83d\udea5 Pre-merge checks | \u2705 4 | \u274c 1</summary>\n\n### \u274c Failed checks (1 warning)\n\n|     Check name     | Status     | Explanation                                                                           | Resolution                                                                         |\n| :----------------: | :--------- | :------------------------------------------------------------------------------------ | :--------------------------------------------------------------------------------- |\n| Docstring Coverage | \u26a0\ufe0f Warning | Docstring coverage is 33.33% which is insufficient. The required threshold is 80.00%. | Write docstrings for the functions missing them to satisfy the coverage threshold. |\n\n<details>\n<summary>\u2705 Passed checks (4 passed)</summary>\n\n|         Check name         | Status   | Explanation                                                                                                                                                                                      |\n| :------------------------: | :------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |\n|      Description Check     | \u2705 Passed | Check skipped - CodeRabbit\u2019s high-level summary is enabled.                                                                                                                                      |\n|         Title check        | \u2705 Passed | The title accurately and concisely summarizes the primary change: removing deprecated conductor run commands (run-once and loop).                                                                |\n|     Linked Issues check    | \u2705 Passed | All acceptance criteria from issue `#701` are met: removed commands print the specified message and exit 1, no code paths reference legacy orchestrator functions, and tests are updated.          |\n| Out of Scope Changes check | \u2705 Passed | The PR focuses on removing deprecated commands and their dependencies. The rename of start_loop to configure_polling is a necessary in-scope change to eliminate all references to removed APIs. |\n\n</details>\n\n<sub>\u270f\ufe0f Tip: You can configure your own custom pre-merge checks in the settings.</sub>\n\n</details>\n\n<!-- pre_merge_checks_walkthrough_end -->\n\n<!-- finishing_touch_checkbox_start -->\n\n<details>\n<summary>\u2728 Finishing Touches</summary>\n\n- [ ] <!-- {\"checkboxId\": \"7962f53c-55bc-4827-bfbf-6a18da830691\"} --> \ud83d\udcdd Generate docstrings (stacked PR)\n- [ ] <!-- {\"checkboxId\": \"3e1879ae-f29b-4d0d-8e06-d12b7ba33d98\"} --> \ud83d\udcdd Generate docstrings (commit on current branch)\n<details>\n<summary>\ud83e\uddea Generate unit tests (beta)</summary>\n\n- [ ] <!-- {\"checkboxId\": \"f47ac10b-58cc-4372-a567-0e02b2c3d479\", \"radioGroupId\": \"utg-output-choice-group-unknown_comment_id\"} -->   Create PR with unit tests\n- [ ] <!-- {\"checkboxId\": \"07f1e7d6-8a8e-4e23-9900-8731c2c87f58\", \"radioGroupId\": \"utg-output-choice-group-unknown_comment_id\"} -->   Post copyable unit tests in a comment\n- [ ] <!-- {\"checkboxId\": \"6ba7b810-9dad-11d1-80b4-00c04fd430c8\", \"radioGroupId\": \"utg-output-choice-group-unknown_comment_id\"} -->   Commit unit tests in branch `factory/701-1773693000`\n\n</details>\n\n</details>\n\n<!-- finishing_touch_checkbox_end -->\n\n<!-- pr_review_plan_action_start -->\n\n<details>\n<summary>\ud83d\udcdd Coding Plan</summary>\n\n- [ ] <!-- {\"checkboxId\": \"6ad8a4e1-0b3a-4ea2-9b5b-d82c1f47d1f2\"} --> Generate coding plan for human review comments\n\n</details>\n\n<!-- pr_review_plan_action_end -->\n\n<!-- tips_start -->\n\n---\n\n\n\n<sub>Comment `@coderabbitai help` to get the list of available commands and usage tips.</sub>\n\n<!-- tips_end -->\n\n<!-- internal state start -->\n\n\n<!-- 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= -->\n\n<!-- internal state end -->",
+        "createdAt": "2026-03-16T20:36:03Z",
+        "includesCreatedEdit": true,
+        "isMinimized": false,
+        "minimizedReason": "",
+        "reactionGroups": [],
+        "url": "https://github.com/misty-step/bitterblossom/pull/705#issuecomment-4070445038",
+        "viewerDidAuthor": false
+      },
+      {
+        "id": "IC_kwDORJkRwM7ynhGj",
+        "author": {
+          "login": "gemini-code-assist"
+        },
+        "authorAssociation": "NONE",
+        "body": "## Summary of Changes\n\nHello, I'm Gemini Code Assist[^1]! I'm currently reviewing this pull request and will post my feedback shortly. In the meantime, here's a summary to help you and other reviewers quickly get up to speed!\n\nThis pull request refactors the Conductor application by eliminating outdated command-line interface entry points and modernizing the core orchestrator's initialization process. The changes aim to simplify the user experience by enforcing a single, consistent method for starting the conductor pipeline, thereby reducing confusion and maintaining a cleaner codebase. This streamlines the application's operational model and improves its maintainability.\n\n### Highlights\n\n* **Deprecated CLI Commands Removed**: The `mix conductor run-once` and `mix conductor loop` CLI commands have been removed. Attempting to use these commands will now result in a clear error message and an exit status of 1, guiding users to the recommended `mix conductor start` command.\n* **Orchestrator API Update**: The internal orchestrator boot API `Conductor.Orchestrator.start_loop` has been replaced with `Conductor.Orchestrator.configure_polling` to align with the streamlined operational model.\n* **Documentation and Test Coverage Enhanced**: Documentation in `CLAUDE.md` has been updated to reflect the new operating model. New subprocess CLI tests have been added to verify the correct exit behavior for the removed commands, and existing orchestrator tests have been updated to use the new API.\n\n<details>\n<summary><b>Changelog</b></summary>\n\n* **CLAUDE.md**\n    * Updated operating model section to reflect the removal of `run-once` and `loop` commands, replacing them with `start` and `pause`/`resume`.\n* **conductor/lib/conductor/application.ex**\n    * Replaced `Conductor.Orchestrator.start_loop` with `Conductor.Orchestrator.configure_polling` for orchestrator initialization.\n* **conductor/lib/conductor/cli.ex**\n    * Removed `run-once` and `loop` from the list of supported commands.\n    * Introduced `removed_command` function to handle calls to deprecated commands, providing a message and exiting with status 1.\n    * Removed `cmd_run_once`, `cmd_loop`, `warn_legacy_command`, `maybe_warn_label_deprecation`, and `maybe_warn_unfiltered_scope` functions.\n    * Moved `Application.ensure_all_started(:conductor)` calls to specific command handlers.\n* **conductor/lib/conductor/orchestrator.ex**\n    * Updated module documentation to remove references to `run_once` and `loop` modes.\n    * Removed the `run_once` public function.\n    * Renamed `start_loop` to `configure_polling` and updated its documentation.\n    * Removed private functions `run_issue` and `find_latest_run`.\n* **conductor/test/conductor/cli_fleet_test.exs**\n    * Removed `RunOnceTracker` and `RunOnceLauncher` mock modules.\n    * Removed environment variable configurations for `orig_tracker` and `orig_launcher`.\n    * Deleted tests related to the deprecated `loop` and `run-once` commands.\n* **conductor/test/conductor/cli_legacy_command_test.exs**\n    * Added new test file.\n    * Added tests to verify that `mix conductor run-once` and `mix conductor loop` commands print a removal message and exit with status 1.\n* **conductor/test/conductor/orchestrator_test.exs**\n    * Updated comments and test descriptions to reference `configure_polling` instead of `start_loop`.\n    * Removed tests specifically for the `run_once/1` function.\n    * Replaced all calls to `Orchestrator.start_loop` with `Orchestrator.configure_polling`.\n</details>\n\n<details>\n<summary><b>Activity</b></summary>\n\n* phrazzld created the pull request with a clear summary of the changes, including the removal of deprecated CLI entrypoints, the internal API replacement, and the addition of new CLI tests.\n* phrazzld provided detailed testing instructions for verifying the changes.\n</details>\n\n<details>\n<summary><b>Using Gemini Code Assist</b></summary>\n<br>\n\nThe full guide for Gemini Code Assist can be found on our [documentation page](https://developers.google.com/gemini-code-assist/docs/review-github-code), here are some quick tips.\n\n<b>Invoking Gemini</b>\n\nYou can request assistance from Gemini at any point by creating a comment using either `/gemini <command>` or `@gemini-code-assist <command>`. Below is a summary of the supported commands on the current page.\n\nFeature | Command | Description\n--- | --- | ---\nCode Review | `/gemini review` | Performs a code review for the current pull request in its current state.\nPull Request Summary | `/gemini summary` | Provides a summary of the current pull request in its current state.\nComment | @gemini-code-assist | Responds in comments when explicitly tagged, both in pull request comments and review comments.\nHelp | `/gemini help` | Displays a list of available commands.\n\n<b>Customization</b>\n\nTo customize Gemini Code Assist for GitHub experience, repository maintainers can create a configuration file and/or provide a custom code review style guide (such as PEP-8 for Python) by creating and adding files to a `.gemini/` folder in the base of the repository. Detailed instructions can be found [here](https://developers.google.com/gemini-code-assist/docs/customize-gemini-behavior-github).\n\n<b>Limitations & Feedback</b>\n\nGemini Code Assist may make mistakes. Please leave feedback on any instances where its feedback is incorrect or counter productive. You can react with :thumbsup: and :thumbsdown: on @gemini-code-assist comments. If you're interested in giving your feedback about your experience with Gemini Code Assist for GitHub and other Google products, sign up [here](https://google.qualtrics.com/jfe/form/SV_2cyuGuTWsEw84yG).\n\n<b>You can also get AI-powered code generation, chat, as well as code reviews directly in the IDE at no cost with the [Gemini Code Assist IDE Extension](https://cloud.google.com/products/gemini/code-assist).</b>\n</details>\n\n\n[^1]: Review the [Privacy Notices](https://policies.google.com/privacy), [Generative AI Prohibited Use Policy](https://policies.google.com/terms/generative-ai/use-policy), [Terms of Service](https://policies.google.com/terms), and learn how to configure Gemini Code Assist in GitHub [here](https://developers.google.com/gemini-code-assist/docs/customize-gemini-behavior-github). Gemini can make mistakes, so double check it and [use code with caution](https://support.google.com/legal/answer/13505487).\n",
+        "createdAt": "2026-03-16T20:36:09Z",
+        "includesCreatedEdit": false,
+        "isMinimized": false,
+        "minimizedReason": "",
+        "reactionGroups": [],
+        "url": "https://github.com/misty-step/bitterblossom/pull/705#issuecomment-4070445475",
+        "viewerDidAuthor": false
+      },
+      {
+        "id": "IC_kwDORJkRwM7ynmkR",
+        "author": {
+          "login": "github-actions"
+        },
+        "authorAssociation": "NONE",
+        "body": "<!-- cerberus:verdict -->\n## \u2705 Cerberus Verdict: PASS\n\n**Summary:** 4/4 reviewers passed.\n\n**Review Scope:** 7 files changed, +116 / -347 lines\n**Reviewer Breakdown:** 4 total | 4 pass | 0 warn | 0 fail | 0 skip\n**Findings:** 0 critical | 0 major | 0 minor | 0 info\n\n### Wave Summary\n- **Unscoped**: 4 reviewers | 4 pass | 0 warn | 0 fail | 0 skip | 0 findings\n\n### Reviewer Overview\n<details>\n<summary>(click to expand)</summary>\n\n- \u2705 **Architecture** (atlas) | `PASS` | 0 findings | wave `Unscoped` | conf `0.95` | runtime `3m 4s` | model `kimi-k2.5` \u21a9\ufe0f (fallback from `grok-4.20-beta`)\n- \u2705 **Security** (guard) | `PASS` | 0 findings | wave `Unscoped` | conf `0.95` | runtime `2m 28s` | model `kimi-k2.5` \u21a9\ufe0f (fallback from `grok-4.20-beta`)\n- \u2705 **Testing** (proof) | `PASS` | 0 findings | wave `Unscoped` | conf `0.95` | runtime `2m 47s` | model `kimi-k2.5` \u21a9\ufe0f (fallback from `grok-4.20-beta`)\n- \u2705 **Correctness** (trace) | `PASS` | 0 findings | wave `Unscoped` | conf `0.95` | runtime `3m 14s` | model `kimi-k2.5` \u21a9\ufe0f (fallback from `grok-4.20-beta`)\n\n</details>\n\n---\n*Cerberus (master) | Run [#23165045192](https://github.com/misty-step/bitterblossom/actions/runs/23165045192) | Override policy `pr_author` | Fail on verdict `true` | Override command: `/cerberus override sha=bce2cd481dc2` (reason required)*\n",
+        "createdAt": "2026-03-16T20:40:42Z",
+        "includesCreatedEdit": true,
+        "isMinimized": false,
+        "minimizedReason": "",
+        "reactionGroups": [],
+        "url": "https://github.com/misty-step/bitterblossom/pull/705#issuecomment-4070467857",
+        "viewerDidAuthor": false
+      },
+      {
+        "id": "IC_kwDORJkRwM7ynwDD",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "Addressed the remaining automated feedback by restoring doc coverage on the touched conductor entrypoints and explicitly hiding internal OTP helpers from docs. Verified locally with `cd conductor && mix test` (357 tests, 0 failures). No inline review threads were present on this PR, so there was nothing thread-specific to reply to.",
+        "createdAt": "2026-03-16T20:48:35Z",
+        "includesCreatedEdit": false,
+        "isMinimized": false,
+        "minimizedReason": "",
+        "reactionGroups": [],
+        "url": "https://github.com/misty-step/bitterblossom/pull/705#issuecomment-4070506691",
+        "viewerDidAuthor": true
+      },
+      {
+        "id": "IC_kwDORJkRwM7ynx_w",
+        "author": {
+          "login": "kaylee-mistystep"
+        },
+        "authorAssociation": "MEMBER",
+        "body": ":tada: This PR is included in version 1.70.1 :tada:\n\nThe release is available on [GitHub release](https://github.com/misty-step/bitterblossom/releases/tag/v1.70.1)\n\nYour **[semantic-release](https://github.com/semantic-release/semantic-release)** bot :package::rocket:",
+        "createdAt": "2026-03-16T20:50:13Z",
+        "includesCreatedEdit": false,
+        "isMinimized": false,
+        "minimizedReason": "",
+        "reactionGroups": [],
+        "url": "https://github.com/misty-step/bitterblossom/pull/705#issuecomment-4070514672",
+        "viewerDidAuthor": false
+      }
+    ],
+    "createdAt": "2026-03-16T20:35:50Z",
+    "isDraft": false,
+    "mergeStateStatus": "UNKNOWN",
+    "mergeable": "UNKNOWN",
+    "mergedAt": "2026-03-16T20:48:52Z",
+    "number": 705,
+    "reviewDecision": "",
+    "reviews": [
+      {
+        "id": "PRR_kwDORJkRwM7r0_1i",
+        "author": {
+          "login": "gemini-code-assist"
+        },
+        "authorAssociation": "NONE",
+        "body": "## Code Review\n\nThis pull request refactors the Conductor application by removing the `run-once` and `loop` commands and their underlying implementation. The previous `start_loop` functionality in the `Orchestrator` module has been renamed to `configure_polling` to align with a new operating model that uses a `start` command with a `fleet.toml` configuration, alongside `pause` and `resume` commands for dispatch control. The changes include updating CLI commands, application logic, documentation, and tests to reflect these removals and refactorings, with new tests added to confirm the deprecation messages for the removed commands.",
+        "submittedAt": "2026-03-16T20:38:56Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "0f6a756123ff3825d2e40d2ecc29e64e0b2cba0e"
+        }
+      }
+    ],
+    "state": "MERGED",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-16T20:44:21Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23165045039/job/67302705024",
+        "name": "Shell Scripts",
+        "startedAt": "2026-03-16T20:44:07Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-16T20:44:05Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23165045192/job/67302705041",
+        "name": "review / Cerberus \u00b7 preflight",
+        "startedAt": "2026-03-16T20:44:01Z",
+        "status": "COMPLETED",
+        "workflowName": "Cerberus"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-16T20:44:20Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23165045040/job/67302704869",
+        "name": "trufflehog",
+        "startedAt": "2026-03-16T20:44:07Z",
+        "status": "COMPLETED",
+        "workflowName": "Secret Detection"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-16T20:44:13Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23165045039/job/67302705016",
+        "name": "Hook Tests",
+        "startedAt": "2026-03-16T20:44:07Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-16T20:44:15Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23165045192/job/67302720797",
+        "name": "review / Cerberus \u00b7 route",
+        "startedAt": "2026-03-16T20:44:08Z",
+        "status": "COMPLETED",
+        "workflowName": "Cerberus"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-16T20:44:12Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23165045039/job/67302705048",
+        "name": "YAML Lint",
+        "startedAt": "2026-03-16T20:44:07Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-16T20:47:55Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23165045192/job/67302745108",
+        "name": "review / Cerberus \u00b7 Correctness",
+        "startedAt": "2026-03-16T20:44:19Z",
+        "status": "COMPLETED",
+        "workflowName": "Cerberus"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-16T20:47:53Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23165045192/job/67302745091",
+        "name": "review / Cerberus \u00b7 Architecture",
+        "startedAt": "2026-03-16T20:44:19Z",
+        "status": "COMPLETED",
+        "workflowName": "Cerberus"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-16T20:47:14Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23165045192/job/67302745086",
+        "name": "review / Cerberus \u00b7 Security",
+        "startedAt": "2026-03-16T20:44:18Z",
+        "status": "COMPLETED",
+        "workflowName": "Cerberus"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-16T20:47:34Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23165045192/job/67302745071",
+        "name": "review / Cerberus \u00b7 Testing",
+        "startedAt": "2026-03-16T20:44:19Z",
+        "status": "COMPLETED",
+        "workflowName": "Cerberus"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-16T20:44:21Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23165045039/job/67302705038",
+        "name": "Go Checks",
+        "startedAt": "2026-03-16T20:44:08Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-16T20:48:12Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23165045192/job/67303254398",
+        "name": "review / Cerberus",
+        "startedAt": "2026-03-16T20:47:58Z",
+        "status": "COMPLETED",
+        "workflowName": "Cerberus"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-16T20:44:29Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23165045039/job/67302705114",
+        "name": "Elixir Checks",
+        "startedAt": "2026-03-16T20:44:07Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-16T20:44:42Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23165045039/job/67302776676",
+        "name": "merge-gate",
+        "startedAt": "2026-03-16T20:44:38Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "StatusContext",
+        "context": "CodeRabbit",
+        "startedAt": "2026-03-16T20:48:31Z",
+        "state": "SUCCESS",
+        "targetUrl": ""
+      }
+    ],
+    "title": "fix: remove deprecated conductor run commands",
+    "updatedAt": "2026-03-16T20:50:15Z",
+    "url": "https://github.com/misty-step/bitterblossom/pull/705"
+  },
+  "review_threads": {
+    "reviewThreads": {
+      "nodes": []
+    }
+  }
+}
