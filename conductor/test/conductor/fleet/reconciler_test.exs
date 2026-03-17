@@ -9,29 +9,30 @@ defmodule Conductor.Fleet.ReconcilerTest do
     # The key invariant: returned paths must be absolute (Path.expand),
     # because System.cmd/3 does not resolve ".." in executable paths.
 
-    test "reconcile_sprite returns degraded (not crash) when bb binary not found" do
-      # A sprite that needs_setup but bb is missing should degrade, not crash
-      sprite = %{
-        name: "test-sprite",
-        role: "builder",
-        harness: "codex",
-        repo: "test/repo",
-        persona: nil
-      }
+    test "reconcile_sprite returns degraded (not crash) when sprite is unreachable" do
+      # Ensure SPRITES_ORG is set so Config.sprites_org! doesn't raise
+      prev = System.get_env("SPRITES_ORG")
+      System.put_env("SPRITES_ORG", "test-org")
 
-      # Mock the health check to return :needs_setup
-      # reconcile_sprite calls check_health → Sprite.status which needs a real sprite.
-      # Instead, test the find_bb invariant directly via Module attribute inspection.
-      # Since find_bb is private, we verify the behavior through the public API:
-      # when no bb binary exists, reconcile should return a degraded result.
+      try do
+        sprite = %{
+          name: "test-sprite",
+          role: "builder",
+          harness: "codex",
+          repo: "test/repo",
+          persona: nil
+        }
 
-      result = Reconciler.reconcile_sprite(sprite)
+        result = Reconciler.reconcile_sprite(sprite)
 
-      # Should not crash — returns a map with healthy: false
-      assert is_map(result)
-      assert result.name == "test-sprite"
-      # Either unreachable (can't reach sprite) or failed (can't find bb)
-      assert result.healthy == false
+        # Should not crash — returns a map with healthy: false
+        assert is_map(result)
+        assert result.name == "test-sprite"
+        # Unreachable (can't reach sprite) — graceful degradation, not crash
+        assert result.healthy == false
+      after
+        if prev, do: System.put_env("SPRITES_ORG", prev), else: System.delete_env("SPRITES_ORG")
+      end
     end
   end
 end
