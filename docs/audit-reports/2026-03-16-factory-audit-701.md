@@ -96,7 +96,7 @@ Run-702 (issue #702: delete dead scripts) launched concurrently on the same buil
 ## Backlog Actions
 
 - New issues: #708, #709, #710, #711, #712
-- Fixed in-session: `find_bb/0` Path.expand (not yet committed)
+- Fixed in-session: `find_bb/0` Path.expand
 - Existing issues referenced: #703 (Go CLI deletion subsumes #708 and Finding 5)
 
 ## Reflection

@@ -80,6 +80,29 @@ defmodule Conductor.SpriteTest do
             }} = status
   end
 
+  describe "exec_args/3 argument construction" do
+    test "includes -- separator before bash to prevent flag parsing" do
+      args = Sprite.exec_args("my-org", "my-sprite", "echo hello")
+      assert "--" in args
+
+      # "--" must appear before "bash" — otherwise sprite CLI parses "-lc" as its own flag
+      separator_index = Enum.find_index(args, &(&1 == "--"))
+      bash_index = Enum.find_index(args, &(&1 == "bash"))
+      assert separator_index < bash_index
+    end
+
+    test "passes org and sprite name as sprite CLI flags" do
+      args = Sprite.exec_args("my-org", "bb-builder", "ls")
+      assert ["-o", "my-org", "-s", "bb-builder" | _] = args
+    end
+
+    test "passes command as bash -lc argument" do
+      args = Sprite.exec_args("org", "sprite", "cd /ws && mix test")
+      assert List.last(args) == "cd /ws && mix test"
+      assert Enum.at(args, -2) == "-lc"
+    end
+  end
+
   test "status returns error when sprite is unreachable" do
     assert {:error, "timeout"} =
              Sprite.status("bb-builder",
