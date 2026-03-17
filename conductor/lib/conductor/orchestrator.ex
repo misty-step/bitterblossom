@@ -2,8 +2,7 @@ defmodule Conductor.Orchestrator do
   @moduledoc """
   Main polling loop. Symphony-inspired single authority.
 
-  In `run_once` mode: starts one RunServer and waits for it.
-  In `loop` mode: polls for eligible issues and starts RunServers up to concurrency limit.
+  Polls for eligible issues and starts RunServers up to concurrency limit.
   Reconciles stale runs on every tick.
   """
 
