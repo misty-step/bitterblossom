@@ -148,6 +148,139 @@ defmodule Conductor.GitHubTest do
     end
   end
 
+  describe "summarize_checks/1" do
+    test "reports green when every actionable check succeeded" do
+      summary =
+        GitHub.summarize_checks([
+          %{
+            "name" => "Elixir Checks",
+            "status" => "COMPLETED",
+            "conclusion" => "SUCCESS",
+            "detailsUrl" => "https://example.test/checks/green-1"
+          },
+          %{
+            "name" => "Shell Scripts",
+            "status" => "COMPLETED",
+            "conclusion" => "SUCCESS",
+            "detailsUrl" => "https://example.test/checks/green-2"
+          }
+        ])
+
+      assert summary.state == :green
+      assert summary.pending == []
+      assert summary.failed == []
+      assert summary.summary == "2 checks green"
+    end
+
+    test "surfaces pending checks with URLs" do
+      summary =
+        GitHub.summarize_checks([
+          %{
+            "name" => "Cerberus · wave1 · Testing",
+            "status" => "IN_PROGRESS",
+            "conclusion" => nil,
+            "detailsUrl" => "https://example.test/checks/1"
+          },
+          %{
+            "name" => "Lint",
+            "status" => "COMPLETED",
+            "conclusion" => "SUCCESS",
+            "detailsUrl" => "https://example.test/checks/2"
+          }
+        ])
+
+      assert summary.state == :pending
+
+      assert [
+               %{
+                 name: "Cerberus · wave1 · Testing",
+                 status: "IN_PROGRESS",
+                 conclusion: nil,
+                 url: "https://example.test/checks/1"
+               }
+             ] = summary.pending
+
+      assert summary.summary =~ "Cerberus · wave1 · Testing (IN_PROGRESS)"
+      assert summary.summary =~ "https://example.test/checks/1"
+    end
+
+    test "surfaces pending status contexts with urls" do
+      summary =
+        GitHub.summarize_checks([
+          %{
+            "context" => "CodeRabbit",
+            "state" => "PENDING",
+            "targetUrl" => "https://example.test/status/1"
+          }
+        ])
+
+      assert summary.state == :pending
+
+      assert [
+               %{
+                 name: "CodeRabbit",
+                 status: "PENDING",
+                 conclusion: nil,
+                 url: "https://example.test/status/1"
+               }
+             ] = summary.pending
+
+      assert summary.summary =~ "CodeRabbit (PENDING)"
+      assert summary.summary =~ "https://example.test/status/1"
+    end
+
+    test "surfaces failed checks with URLs" do
+      summary =
+        GitHub.summarize_checks([
+          %{
+            "name" => "Deploy",
+            "status" => "COMPLETED",
+            "conclusion" => "TIMED_OUT",
+            "targetUrl" => "https://example.test/checks/9"
+          }
+        ])
+
+      assert summary.state == :failed
+
+      assert [%{name: "Deploy", conclusion: "TIMED_OUT", url: "https://example.test/checks/9"}] =
+               summary.failed
+    end
+
+    test "surfaces failed status contexts" do
+      summary =
+        GitHub.summarize_checks([
+          %{
+            "context" => "External CI",
+            "state" => "FAILURE",
+            "targetUrl" => "https://example.test/status/2"
+          }
+        ])
+
+      assert summary.state == :failed
+
+      assert [%{name: "External CI", conclusion: "FAILURE", url: "https://example.test/status/2"}] =
+               summary.failed
+    end
+
+    test "sanitizes control characters before summarizing check names and urls" do
+      summary =
+        GitHub.summarize_checks([
+          %{
+            "name" => "Cerberus\nTesting",
+            "status" => "IN_PROGRESS",
+            "conclusion" => nil,
+            "detailsUrl" => "https://example.test/checks/\r509"
+          }
+        ])
+
+      assert summary.state == :pending
+      assert summary.summary =~ "Cerberus Testing (IN_PROGRESS)"
+      assert summary.summary =~ "https://example.test/checks/509"
+      refute summary.summary =~ "\n"
+      refute summary.summary =~ "\r"
+    end
+  end
+
   describe "find_open_pr/2 — branch prefix filtering" do
     # Test the pure filter logic extracted from find_open_pr.
     # The function finds the first PR whose headRefName starts with "factory/<issue>-".

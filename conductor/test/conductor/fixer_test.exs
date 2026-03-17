@@ -41,6 +41,17 @@ defmodule Conductor.FixerTest do
       end
     end
 
+    def ci_status(_repo, pr_number) do
+      state =
+        cond do
+          checks_failed?("", pr_number) -> :failed
+          checks_green?("", pr_number) -> :green
+          true -> :pending
+        end
+
+      {:ok, %{state: state, summary: "mock ci", pending: []}}
+    end
+
     def merge(_repo, _pr, _opts), do: :ok
     def labeled_prs(_repo, _label), do: {:ok, []}
 

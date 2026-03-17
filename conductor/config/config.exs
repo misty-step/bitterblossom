@@ -5,7 +5,7 @@ config :conductor,
   event_log: ".bb/events.jsonl",
   poll_seconds: 60,
   builder_timeout_minutes: 25,
-  ci_timeout_minutes: 15,
+  ci_timeout_minutes: 30,
   pr_minimum_age_seconds: 300,
   max_concurrent_runs: 2
 

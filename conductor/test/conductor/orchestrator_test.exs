@@ -1,5 +1,6 @@
 defmodule Conductor.OrchestratorTest do
   use ExUnit.Case, async: false
+  import ExUnit.CaptureLog
 
   alias Conductor.{GitHub, Store, Orchestrator}
 
@@ -18,7 +19,11 @@ defmodule Conductor.OrchestratorTest do
       end
     end
 
-    def comment(_repo, _issue, _body), do: :ok
+    def comment(repo, issue_number, body) do
+      comments = MockState.get({:comments, repo, issue_number}, [])
+      MockState.put({:comments, repo, issue_number}, comments ++ [body])
+      :ok
+    end
 
     def issue_has_label?(repo, issue_number, label) do
       MockState.get({:issue_has_label, repo, issue_number, label}, {:ok, false})
@@ -91,6 +96,9 @@ defmodule Conductor.OrchestratorTest do
 
     def checks_green?(_repo, _pr), do: true
     def checks_failed?(_repo, _pr), do: false
+
+    def ci_status(_repo, pr_number),
+      do: MockState.get({:ci_status, pr_number}, {:ok, %{state: :green}})
 
     def merge(_repo, pr_number, _opts) do
       merge_calls = MockState.get(:merge_calls, [])
@@ -1527,6 +1535,432 @@ defmodule Conductor.OrchestratorTest do
         refute Store.leased?("test/repo", 700)
         {:ok, run} = Store.get_run(run_id)
         assert run["phase"] == "merged"
+      end)
+    end
+
+    test "record_merge clears ci wait metadata after merge" do
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 701,
+          issue_title: "merge cleanup test",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(run_id, %{
+        pr_number: 201,
+        phase: "pr_opened",
+        status: "pr_opened",
+        ci_wait_started_at:
+          DateTime.utc_now() |> DateTime.add(-600, :second) |> DateTime.to_iso8601(),
+        ci_last_reported_at:
+          DateTime.utc_now() |> DateTime.add(-300, :second) |> DateTime.to_iso8601(),
+        blocked_reason: "stale wait state"
+      })
+
+      Store.acquire_lease("test/repo", 701, run_id)
+
+      MockState.put(
+        {:labeled_prs, "test/repo", "lgtm"},
+        [%{"number" => 201, "headRefName" => "factory/701-123"}]
+      )
+
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
+
+      eventually(fn ->
+        {:ok, run} = Store.get_run(run_id)
+        assert run["phase"] == "merged"
+        assert run["ci_wait_started_at"] == nil
+        assert run["ci_last_reported_at"] == nil
+        assert run["blocked_reason"] == nil
+      end)
+    end
+  end
+
+  describe "CI wait governance" do
+    test "logs pending CI status with job URLs while waiting" do
+      orig_interval = Application.get_env(:conductor, :ci_status_log_interval_minutes)
+      Application.put_env(:conductor, :ci_status_log_interval_minutes, 0)
+
+      on_exit(fn ->
+        if orig_interval,
+          do: Application.put_env(:conductor, :ci_status_log_interval_minutes, orig_interval),
+          else: Application.delete_env(:conductor, :ci_status_log_interval_minutes)
+      end)
+
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 501,
+          issue_title: "pending ci",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(run_id, %{pr_number: 501, phase: "pr_opened", status: "pr_opened"})
+      Store.acquire_lease("test/repo", 501, run_id)
+
+      MockState.put(
+        {:labeled_prs, "test/repo", "lgtm"},
+        [%{"number" => 501, "headRefName" => "factory/501-123"}]
+      )
+
+      MockState.put(
+        {:ci_status, 501},
+        {:ok,
+         %{
+           state: :pending,
+           summary:
+             "waiting on Cerberus · wave1 · Testing (IN_PROGRESS) https://example.test/checks/501",
+           pending: [
+             %{
+               name: "Cerberus · wave1 · Testing",
+               status: "IN_PROGRESS",
+               conclusion: nil,
+               url: "https://example.test/checks/501"
+             }
+           ]
+         }}
+      )
+
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
+      send(Process.whereis(Orchestrator), :poll)
+
+      eventually(fn ->
+        events = Store.list_events(run_id)
+        wait_events = Enum.filter(events, &(&1["event_type"] == "ci_wait_status"))
+        assert length(wait_events) >= 2
+        wait_event = List.last(wait_events)
+        assert wait_event["payload"]["summary"] =~ "Cerberus · wave1 · Testing"
+
+        assert hd(wait_event["payload"]["pending_checks"])["url"] ==
+                 "https://example.test/checks/501"
+
+        assert MockState.get(:merge_calls) == []
+      end)
+    end
+
+    test "transitions to ci_timeout with blocked reason and next actions" do
+      orig_timeout = Application.get_env(:conductor, :ci_timeout_minutes)
+      orig_interval = Application.get_env(:conductor, :ci_status_log_interval_minutes)
+      Application.put_env(:conductor, :ci_timeout_minutes, 0)
+      Application.put_env(:conductor, :ci_status_log_interval_minutes, 0)
+
+      on_exit(fn ->
+        if orig_timeout,
+          do: Application.put_env(:conductor, :ci_timeout_minutes, orig_timeout),
+          else: Application.delete_env(:conductor, :ci_timeout_minutes)
+
+        if orig_interval,
+          do: Application.put_env(:conductor, :ci_status_log_interval_minutes, orig_interval),
+          else: Application.delete_env(:conductor, :ci_status_log_interval_minutes)
+      end)
+
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 502,
+          issue_title: "ci timeout",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(run_id, %{pr_number: 502, phase: "pr_opened", status: "pr_opened"})
+      Store.acquire_lease("test/repo", 502, run_id)
+
+      MockState.put(
+        {:labeled_prs, "test/repo", "lgtm"},
+        [%{"number" => 502, "headRefName" => "factory/502-123"}]
+      )
+
+      MockState.put(
+        {:ci_status, 502},
+        {:ok,
+         %{
+           state: :pending,
+           summary:
+             "waiting on Cerberus · wave1 · Testing (IN_PROGRESS) https://example.test/checks/502",
+           pending: [
+             %{
+               name: "Cerberus · wave1 · Testing",
+               status: "IN_PROGRESS",
+               conclusion: nil,
+               url: "https://example.test/checks/502"
+             }
+           ]
+         }}
+      )
+
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
+
+      eventually(fn ->
+        {:ok, run} = Store.get_run(run_id)
+        assert run["phase"] == "ci_timeout"
+        assert run["status"] == "ci_timeout"
+        assert run["blocked_reason"] =~ "https://example.test/checks/502"
+        assert run["blocked_reason"] =~ "trigger a new run for this issue"
+        refute Store.leased?("test/repo", 502)
+
+        events = Store.list_events(run_id)
+        assert Enum.any?(events, &(&1["event_type"] == "ci_timeout"))
+
+        comments = MockState.get({:comments, "test/repo", 502}, [])
+        assert Enum.any?(comments, &String.contains?(&1, "https://example.test/checks/502"))
+        assert Enum.any?(comments, &String.contains?(&1, "trigger a new run for this issue"))
+      end)
+    end
+
+    test "does not merge when the latest run already timed out even if CI is green" do
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 503,
+          issue_title: "timed out run",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(run_id, %{pr_number: 503, phase: "ci_timeout", status: "ci_timeout"})
+      Store.complete_run(run_id, "ci_timeout", "ci_timeout")
+
+      MockState.put(
+        {:labeled_prs, "test/repo", "lgtm"},
+        [%{"number" => 503, "headRefName" => "factory/503-123"}]
+      )
+
+      MockState.put({:ci_status, 503}, {:ok, %{state: :green, summary: "all checks green"}})
+
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
+
+      eventually(fn ->
+        assert MockState.get(:merge_calls) == []
+        {:ok, run} = Store.get_run(run_id)
+        assert run["phase"] == "ci_timeout"
+      end)
+    end
+
+    test "a new run on the same PR can merge after an earlier ci_timeout" do
+      {:ok, timed_out_run_id} =
+        Store.create_run(%{
+          run_id: "run-504-timeout",
+          repo: "test/repo",
+          issue_number: 504,
+          issue_title: "older timed out run",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(timed_out_run_id, %{
+        pr_number: 504,
+        phase: "ci_timeout",
+        status: "ci_timeout",
+        blocked_reason: "old timeout"
+      })
+
+      Store.complete_run(timed_out_run_id, "ci_timeout", "ci_timeout")
+
+      {:ok, retry_run_id} =
+        Store.create_run(%{
+          run_id: "run-504-retry",
+          repo: "test/repo",
+          issue_number: 504,
+          issue_title: "retry run",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(retry_run_id, %{pr_number: 504, phase: "pr_opened", status: "pr_opened"})
+      Store.acquire_lease("test/repo", 504, retry_run_id)
+
+      MockState.put(
+        {:labeled_prs, "test/repo", "lgtm"},
+        [%{"number" => 504, "headRefName" => "factory/504-123"}]
+      )
+
+      MockState.put({:ci_status, 504}, {:ok, %{state: :green, summary: "all checks green"}})
+
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
+
+      eventually(fn ->
+        assert MockState.get(:merge_calls) == [504]
+        {:ok, retry_run} = Store.get_run(retry_run_id)
+        assert retry_run["phase"] == "merged"
+
+        {:ok, timed_out_run} = Store.get_run(timed_out_run_id)
+        assert timed_out_run["phase"] == "ci_timeout"
+      end)
+    end
+
+    test "failed CI clears wait tracking on the active run" do
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 505,
+          issue_title: "failed ci",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(run_id, %{
+        pr_number: 505,
+        phase: "pr_opened",
+        status: "pr_opened",
+        ci_wait_started_at:
+          DateTime.utc_now() |> DateTime.add(-600, :second) |> DateTime.to_iso8601(),
+        ci_last_reported_at:
+          DateTime.utc_now() |> DateTime.add(-300, :second) |> DateTime.to_iso8601()
+      })
+
+      Store.acquire_lease("test/repo", 505, run_id)
+
+      MockState.put(
+        {:labeled_prs, "test/repo", "lgtm"},
+        [%{"number" => 505, "headRefName" => "factory/505-123"}]
+      )
+
+      MockState.put(
+        {:ci_status, 505},
+        {:ok,
+         %{
+           state: :failed,
+           summary: "failed checks: Deploy (TIMED_OUT) https://example.test/checks/505"
+         }}
+      )
+
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
+
+      eventually(fn ->
+        {:ok, run} = Store.get_run(run_id)
+        assert run["phase"] == "pr_opened"
+        assert run["ci_wait_started_at"] == nil
+        assert run["ci_last_reported_at"] == nil
+        assert MockState.get(:merge_calls) == []
+      end)
+    end
+
+    test "unknown CI leaves the run untouched while waiting for signal" do
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 506,
+          issue_title: "unknown ci",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(run_id, %{pr_number: 506, phase: "pr_opened", status: "pr_opened"})
+      Store.acquire_lease("test/repo", 506, run_id)
+
+      MockState.put(
+        {:labeled_prs, "test/repo", "lgtm"},
+        [%{"number" => 506, "headRefName" => "factory/506-123"}]
+      )
+
+      MockState.put(
+        {:ci_status, 506},
+        {:ok, %{state: :unknown, summary: "no actionable CI signal yet", pending: []}}
+      )
+
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
+
+      eventually(fn ->
+        {:ok, run} = Store.get_run(run_id)
+        assert run["phase"] == "pr_opened"
+        assert run["ci_wait_started_at"] == nil
+        assert run["ci_last_reported_at"] == nil
+        assert Store.list_events(run_id) == []
+        assert MockState.get(:merge_calls) == []
+      end)
+    end
+
+    test "warns when CI inspection fails" do
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 507,
+          issue_title: "ci api error",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(run_id, %{pr_number: 507, phase: "pr_opened", status: "pr_opened"})
+      Store.acquire_lease("test/repo", 507, run_id)
+
+      MockState.put(
+        {:labeled_prs, "test/repo", "lgtm"},
+        [%{"number" => 507, "headRefName" => "factory/507-123"}]
+      )
+
+      MockState.put({:ci_status, 507}, {:error, :api_error})
+
+      log =
+        capture_log(fn ->
+          :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
+          send(Process.whereis(Orchestrator), :poll)
+          Process.sleep(100)
+        end)
+
+      assert log =~ "failed to inspect CI for PR #507"
+      assert log =~ ":api_error"
+      assert MockState.get(:merge_calls) == []
+      {:ok, run} = Store.get_run(run_id)
+      assert run["phase"] == "pr_opened"
+    end
+
+    test "invalid stored ci wait timestamps restart tracking cleanly" do
+      orig_interval = Application.get_env(:conductor, :ci_status_log_interval_minutes)
+      Application.put_env(:conductor, :ci_status_log_interval_minutes, 0)
+
+      on_exit(fn ->
+        if orig_interval,
+          do: Application.put_env(:conductor, :ci_status_log_interval_minutes, orig_interval),
+          else: Application.delete_env(:conductor, :ci_status_log_interval_minutes)
+      end)
+
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 508,
+          issue_title: "invalid ci timestamps",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(run_id, %{
+        pr_number: 508,
+        phase: "pr_opened",
+        status: "pr_opened",
+        ci_wait_started_at: "not-a-datetime",
+        ci_last_reported_at: "also-not-a-datetime"
+      })
+
+      Store.acquire_lease("test/repo", 508, run_id)
+
+      MockState.put(
+        {:labeled_prs, "test/repo", "lgtm"},
+        [%{"number" => 508, "headRefName" => "factory/508-123"}]
+      )
+
+      MockState.put(
+        {:ci_status, 508},
+        {:ok,
+         %{
+           state: :pending,
+           summary:
+             "waiting on Cerberus · wave1 · Testing (IN_PROGRESS) https://example.test/checks/508",
+           pending: [
+             %{
+               name: "Cerberus · wave1 · Testing",
+               status: "IN_PROGRESS",
+               conclusion: nil,
+               url: "https://example.test/checks/508"
+             }
+           ]
+         }}
+      )
+
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
+      send(Process.whereis(Orchestrator), :poll)
+
+      eventually(fn ->
+        {:ok, run} = Store.get_run(run_id)
+        assert is_binary(run["ci_wait_started_at"])
+        assert is_binary(run["ci_last_reported_at"])
+
+        events = Store.list_events(run_id)
+        assert Enum.any?(events, &(&1["event_type"] == "ci_wait_started"))
+        assert Enum.any?(events, &(&1["event_type"] == "ci_wait_status"))
       end)
     end
   end

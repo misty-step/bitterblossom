@@ -12,6 +12,10 @@ defmodule Conductor.CodeHost do
   @doc "Return true when all required checks on a PR have passed."
   @callback checks_green?(repo :: binary(), pr_number :: pos_integer()) :: boolean()
 
+  @doc "Return a structured CI gate summary for a PR."
+  @callback ci_status(repo :: binary(), pr_number :: pos_integer()) ::
+              {:ok, map()} | {:error, term()}
+
   @doc "Merge a pull request using the configured merge strategy."
   @callback merge(repo :: binary(), pr_number :: pos_integer(), opts :: keyword()) ::
               :ok | {:error, term()}
