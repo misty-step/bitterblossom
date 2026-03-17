@@ -736,38 +736,45 @@ defmodule Conductor.Orchestrator do
         Enum.each(prs, fn pr ->
           pr_number = pr["number"]
 
-          if code_host_mod().checks_green?(repo, pr_number) do
-            case operator_merge_decision(repo, pr) do
-              :allow ->
-                Logger.info("[merge] PR ##{pr_number} has lgtm + green CI, merging")
+          cond do
+            not code_host_mod().checks_green?(repo, pr_number) ->
+              Logger.debug("[merge] PR ##{pr_number} has lgtm but CI not green, skipping")
 
-                case code_host_mod().merge(repo, pr_number, []) do
-                  :ok ->
-                    Logger.info("[merge] PR ##{pr_number} merged successfully")
-                    record_merge(repo, pr_number)
-                    Conductor.SelfUpdate.maybe_reload(repo, pr_number)
+            not conductor_tracked?(repo, pr_number) ->
+              Logger.debug(
+                "[merge] PR ##{pr_number} has lgtm but is not conductor-tracked, skipping"
+              )
 
-                  {:error, reason} ->
-                    if merge_conflict?(reason) do
-                      attempt_rebase_merge(
-                        repo,
-                        pr_number,
-                        pr["headRefName"],
-                        state.worker_order
-                      )
-                    else
-                      Logger.warning("[merge] PR ##{pr_number} merge failed: #{reason}")
-                    end
-                end
+            true ->
+              case operator_merge_decision(repo, pr) do
+                :allow ->
+                  Logger.info("[merge] PR ##{pr_number} has lgtm + green CI, merging")
 
-              {:blocked, reason} ->
-                mark_operator_blocked(repo, pr_number, reason)
+                  case code_host_mod().merge(repo, pr_number, []) do
+                    :ok ->
+                      Logger.info("[merge] PR ##{pr_number} merged successfully")
+                      record_merge(repo, pr_number)
+                      Conductor.SelfUpdate.maybe_reload(repo, pr_number)
 
-              :skip ->
-                Logger.warning("[merge] PR ##{pr_number} operator checks unavailable, skipping")
-            end
-          else
-            Logger.debug("[merge] PR ##{pr_number} has lgtm but CI not green, skipping")
+                    {:error, reason} ->
+                      if merge_conflict?(reason) do
+                        attempt_rebase_merge(
+                          repo,
+                          pr_number,
+                          pr["headRefName"],
+                          state.worker_order
+                        )
+                      else
+                        Logger.warning("[merge] PR ##{pr_number} merge failed: #{reason}")
+                      end
+                  end
+
+                {:blocked, reason} ->
+                  mark_operator_blocked(repo, pr_number, reason)
+
+                :skip ->
+                  Logger.warning("[merge] PR ##{pr_number} operator checks unavailable, skipping")
+              end
           end
         end)
 
@@ -1061,6 +1068,16 @@ defmodule Conductor.Orchestrator do
 
       _ ->
         Logger.debug("[merge] no run found for PR ##{pr_number}, skipping store update")
+    end
+  end
+
+  defp conductor_tracked?(repo, pr_number) do
+    try do
+      match?({:ok, _}, Store.find_run_by_pr(repo, pr_number))
+    rescue
+      _ -> false
+    catch
+      :exit, _ -> false
     end
   end
 
