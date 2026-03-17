@@ -119,8 +119,8 @@ defmodule Conductor.Config do
 
   @spec dispatch_env() :: [{binary(), binary()}]
   def dispatch_env do
-    # Pass only the runtime API keys the harness still needs. GitHub auth is
-    # persisted on the sprite during setup and should not rely on env injection.
+    # Render only the runtime API keys the harness still needs into the
+    # sprite-side env file. GitHub auth is persisted separately during setup.
     []
     |> maybe_env("OPENAI_API_KEY")
     |> maybe_env_as("OPENAI_API_KEY", "CODEX_API_KEY")

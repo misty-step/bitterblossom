@@ -12,7 +12,7 @@ defmodule Conductor.Sprite do
   `dispatch/4` performs the full sequence via direct `sprite exec` calls:
 
   1. Kill stale agent processes (all known harnesses)
-  2. Upload prompt to workspace (base64-encoded to avoid shell quoting issues)
+  2. Upload prompt and runtime env file via `sprite exec --file`
   3. Run agent via `Conductor.Harness` (e.g. `claude -p < PROMPT.md`)
   4. On non-zero exit, retry once using the harness `continue_command`
   """
@@ -20,14 +20,18 @@ defmodule Conductor.Sprite do
   @behaviour Conductor.Worker
 
   alias Conductor.{Shell, Config, Workspace}
+  @runtime_env_file ".bb-runtime-env"
 
   @impl Conductor.Worker
   @spec exec(binary(), binary(), keyword()) :: {:ok, binary()} | {:error, binary(), integer()}
   def exec(sprite, command, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, 60_000)
     org = Keyword.get(opts, :org, Config.sprites_org!())
+    files = Keyword.get(opts, :files, [])
 
-    Shell.cmd("sprite", ["-o", org, "-s", sprite, "exec", "bash", "-lc", command],
+    Shell.cmd(
+      "sprite",
+      ["-o", org, "-s", sprite, "exec"] ++ file_args(files) ++ ["bash", "-lc", command],
       timeout: timeout
     )
   end
@@ -56,13 +60,13 @@ defmodule Conductor.Sprite do
     # 1. Kill stale agent processes from prior dispatches
     exec_fn.(sprite, kill_agents_cmd(), timeout: 15_000)
 
-    # 2. Upload prompt (base64 to avoid shell quoting; base64 alphabet is shell-safe)
     prompt_path = Path.join(workspace, "PROMPT.md")
-    encoded = Base.encode64(prompt)
+    runtime_env_path = Path.join(workspace, @runtime_env_file)
 
-    case exec_fn.(sprite, "echo #{encoded} | base64 -d > '#{prompt_path}'", timeout: 30_000) do
+    # 2. Upload prompt and runtime env without embedding secrets in the remote argv
+    case upload_dispatch_files(exec_fn, sprite, prompt_path, prompt, runtime_env_path) do
       {:error, msg, code} ->
-        {:error, "prompt upload failed: #{msg}", code}
+        {:error, "dispatch file upload failed: #{msg}", code}
 
       {:ok, _} ->
         # 3. Run agent
@@ -218,18 +222,50 @@ defmodule Conductor.Sprite do
 
   defp agent_command(cmd_parts, workspace, prompt_path) do
     cmd_str = Enum.join(cmd_parts, " ")
+    runtime_env_path = Path.join(workspace, @runtime_env_file)
 
-    env_exports =
-      Config.dispatch_env()
-      |> Enum.map(fn {k, v} -> "#{k}=#{shell_quote(v)}" end)
-      |> Enum.join(" ")
-
-    prefix = if env_exports == "", do: "", else: env_exports <> " "
-    "cd '#{workspace}' && #{prefix}LEFTHOOK=0 #{cmd_str} < '#{prompt_path}'"
+    "cd '#{workspace}' && if [ -f '#{runtime_env_path}' ]; then set -a; . '#{runtime_env_path}'; set +a; fi && LEFTHOOK=0 #{cmd_str} < '#{prompt_path}'"
   end
 
   defp shell_quote(value) do
     escaped = value |> to_string() |> String.replace("'", "'\"'\"'")
     "'#{escaped}'"
+  end
+
+  defp runtime_env_contents do
+    body =
+      Config.dispatch_env()
+      |> Enum.map_join("\n", fn {key, value} -> "export #{key}=#{shell_quote(value)}" end)
+
+    if body == "", do: "# managed by Conductor\n", else: body <> "\n"
+  end
+
+  defp upload_dispatch_files(exec_fn, sprite, prompt_path, prompt, runtime_env_path) do
+    with_temp_file("sprite-prompt", prompt, fn prompt_file ->
+      with_temp_file("sprite-env", runtime_env_contents(), fn env_file ->
+        exec_fn.(sprite, "true",
+          files: [{prompt_file, prompt_path}, {env_file, runtime_env_path}],
+          timeout: 30_000
+        )
+      end)
+    end)
+  end
+
+  defp with_temp_file(prefix, contents, fun) do
+    path = Path.join(System.tmp_dir!(), "#{prefix}-#{System.unique_integer([:positive])}")
+    File.write!(path, contents)
+    File.chmod!(path, 0o600)
+
+    try do
+      fun.(path)
+    after
+      File.rm(path)
+    end
+  end
+
+  defp file_args(files) do
+    Enum.flat_map(files, fn {source, dest} ->
+      ["--file", "#{source}:#{dest}"]
+    end)
   end
 end

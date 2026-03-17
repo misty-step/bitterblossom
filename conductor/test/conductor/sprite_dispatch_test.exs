@@ -1,5 +1,5 @@
 defmodule Conductor.SpriteDispatchTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   @moduledoc """
   Verifies the `Conductor.Sprite.dispatch/4` sequence using an injected
@@ -7,7 +7,7 @@ defmodule Conductor.SpriteDispatchTest do
 
   Sequence under test:
   1. Kill stale agent processes
-  2. Upload prompt (base64)
+  2. Upload prompt and runtime env files
   3. Run agent via harness dispatch_command
   4. On crash, retry via harness continue_command
   """
@@ -43,8 +43,13 @@ defmodule Conductor.SpriteDispatchTest do
   defp make_exec_fn(responses \\ []) do
     test_pid = self()
 
-    fn _sprite, command, _opts ->
-      send(test_pid, {:exec_called, command})
+    fn _sprite, command, opts ->
+      uploaded_files =
+        opts
+        |> Keyword.get(:files, [])
+        |> Enum.map(fn {src, dest} -> {dest, File.read!(src)} end)
+
+      send(test_pid, {:exec_called, command, opts, uploaded_files})
 
       Enum.find_value(responses, {:ok, ""}, fn {pattern, result} ->
         if String.contains?(command, pattern), do: result
@@ -67,11 +72,56 @@ defmodule Conductor.SpriteDispatchTest do
         timeout: 1
       )
 
-      assert_received {:exec_called, kill_cmd}
+      assert_received {:exec_called, kill_cmd, _opts, _files}
       assert String.contains?(kill_cmd, "pkill")
     end
 
-    test "uploads prompt as base64 to workspace/PROMPT.md" do
+    test "uploads prompt and runtime env files without embedding secret contents in argv" do
+      prev_openai = System.get_env("OPENAI_API_KEY")
+      prev_exa = System.get_env("EXA_API_KEY")
+      System.put_env("OPENAI_API_KEY", "sk-test-123")
+      System.put_env("EXA_API_KEY", "exa-test-456")
+
+      try do
+        exec_fn = make_exec_fn()
+
+        Sprite.dispatch("s1", "my test prompt", "org/repo",
+          workspace: "/my/ws",
+          harness: MockHarness,
+          exec_fn: exec_fn,
+          timeout: 1
+        )
+
+        assert_received {:exec_called, _kill_cmd, _opts, _files}
+        assert_received {:exec_called, upload_cmd, upload_opts, uploaded_files}
+        assert upload_cmd == "true"
+        assert Keyword.has_key?(upload_opts, :files)
+
+        assert {"/my/ws/PROMPT.md", "my test prompt"} in uploaded_files
+
+        assert {"/my/ws/.bb-runtime-env", runtime_env} =
+                 Enum.find(uploaded_files, fn {dest, _content} ->
+                   dest == "/my/ws/.bb-runtime-env"
+                 end)
+
+        assert runtime_env =~ "export OPENAI_API_KEY='sk-test-123'"
+        assert runtime_env =~ "export CODEX_API_KEY='sk-test-123'"
+        assert runtime_env =~ "export EXA_API_KEY='exa-test-456'"
+        refute runtime_env =~ "GITHUB_TOKEN"
+        refute upload_cmd =~ "sk-test-123"
+        refute upload_cmd =~ "exa-test-456"
+      after
+        if prev_openai,
+          do: System.put_env("OPENAI_API_KEY", prev_openai),
+          else: System.delete_env("OPENAI_API_KEY")
+
+        if prev_exa,
+          do: System.put_env("EXA_API_KEY", prev_exa),
+          else: System.delete_env("EXA_API_KEY")
+      end
+    end
+
+    test "uploads prompt to workspace/PROMPT.md" do
       exec_fn = make_exec_fn()
 
       Sprite.dispatch("s1", "my test prompt", "org/repo",
@@ -81,17 +131,9 @@ defmodule Conductor.SpriteDispatchTest do
         timeout: 1
       )
 
-      # Drain the kill call
-      assert_received {:exec_called, _kill_cmd}
-
-      # Base64 upload
-      assert_received {:exec_called, upload_cmd}
-      assert String.contains?(upload_cmd, "base64 -d")
-      assert String.contains?(upload_cmd, "/my/ws/PROMPT.md")
-
-      # Verify the prompt content is encoded in the command
-      expected_b64 = Base.encode64("my test prompt")
-      assert String.contains?(upload_cmd, expected_b64)
+      assert_received {:exec_called, _kill_cmd, _opts, _files}
+      assert_received {:exec_called, _upload_cmd, _upload_opts, uploaded_files}
+      assert {"/my/ws/PROMPT.md", "my test prompt"} in uploaded_files
     end
 
     test "runs agent via harness dispatch_command" do
@@ -105,10 +147,10 @@ defmodule Conductor.SpriteDispatchTest do
       )
 
       # Drain kill and upload
-      assert_received {:exec_called, _}
-      assert_received {:exec_called, _}
+      assert_received {:exec_called, _, _, _}
+      assert_received {:exec_called, _, _, _}
 
-      assert_received {:exec_called, agent_cmd}
+      assert_received {:exec_called, agent_cmd, _opts, _files}
       assert String.contains?(agent_cmd, "agent -p")
       assert String.contains?(agent_cmd, "/ws")
       assert String.contains?(agent_cmd, "PROMPT.md")
@@ -124,9 +166,9 @@ defmodule Conductor.SpriteDispatchTest do
         timeout: 1
       )
 
-      assert_received {:exec_called, _}
-      assert_received {:exec_called, _}
-      assert_received {:exec_called, agent_cmd}
+      assert_received {:exec_called, _, _, _}
+      assert_received {:exec_called, _, _, _}
+      assert_received {:exec_called, agent_cmd, _opts, _files}
       assert String.contains?(agent_cmd, "LEFTHOOK=0")
     end
 
@@ -144,10 +186,14 @@ defmodule Conductor.SpriteDispatchTest do
           timeout: 1
         )
 
-        assert_received {:exec_called, _}
-        assert_received {:exec_called, _}
-        assert_received {:exec_called, agent_cmd}
+        assert_received {:exec_called, _, _, _}
+        assert_received {:exec_called, _upload_cmd, _upload_opts, uploaded_files}
+        assert_received {:exec_called, agent_cmd, _opts, _files}
         refute String.contains?(agent_cmd, "GITHUB_TOKEN")
+
+        refute Enum.any?(uploaded_files, fn {_dest, content} ->
+                 String.contains?(content, "GITHUB_TOKEN")
+               end)
       after
         if prev, do: System.put_env("GITHUB_TOKEN", prev), else: System.delete_env("GITHUB_TOKEN")
       end
@@ -167,9 +213,9 @@ defmodule Conductor.SpriteDispatchTest do
           timeout: 1
         )
 
-        assert_received {:exec_called, _}
-        assert_received {:exec_called, _}
-        assert_received {:exec_called, agent_cmd}
+        assert_received {:exec_called, _, _, _}
+        assert_received {:exec_called, _, _, _}
+        assert_received {:exec_called, agent_cmd, _opts, _files}
         refute String.contains?(agent_cmd, "GITHUB_TOKEN")
         assert String.contains?(agent_cmd, "LEFTHOOK=0")
       after
@@ -211,15 +257,15 @@ defmodule Conductor.SpriteDispatchTest do
       assert {:ok, _} = result
 
       # Drain kill and upload
-      assert_received {:exec_called, _}
-      assert_received {:exec_called, _}
+      assert_received {:exec_called, _, _, _}
+      assert_received {:exec_called, _, _, _}
 
       # First agent call (fails)
-      assert_received {:exec_called, first_cmd}
+      assert_received {:exec_called, first_cmd, _opts, _files}
       refute String.contains?(first_cmd, "--continue")
 
       # Retry call (continue)
-      assert_received {:exec_called, retry_cmd}
+      assert_received {:exec_called, retry_cmd, _opts, _files}
       assert String.contains?(retry_cmd, "agent --continue -p")
     end
 
@@ -271,10 +317,10 @@ defmodule Conductor.SpriteDispatchTest do
       )
 
       # Drain kill and upload
-      assert_received {:exec_called, _}
-      assert_received {:exec_called, _}
+      assert_received {:exec_called, _, _, _}
+      assert_received {:exec_called, _, _, _}
 
-      assert_received {:exec_called, agent_cmd}
+      assert_received {:exec_called, agent_cmd, _opts, _files}
       assert String.contains?(agent_cmd, "codex exec --yolo --json")
       assert String.contains?(agent_cmd, "--model gpt-5.4")
       assert String.contains?(agent_cmd, "web_search=live")
@@ -291,9 +337,9 @@ defmodule Conductor.SpriteDispatchTest do
         timeout: 1
       )
 
-      assert_received {:exec_called, _}
-      assert_received {:exec_called, _}
-      assert_received {:exec_called, agent_cmd}
+      assert_received {:exec_called, _, _, _}
+      assert_received {:exec_called, _, _, _}
+      assert_received {:exec_called, agent_cmd, _opts, _files}
       assert String.contains?(agent_cmd, "model_reasoning_effort=high")
       refute String.contains?(agent_cmd, "model_reasoning_effort=medium")
     end
@@ -321,7 +367,7 @@ defmodule Conductor.SpriteDispatchTest do
     test "returns error when prompt upload fails" do
       exec_fn =
         make_exec_fn([
-          {"base64 -d", {:error, "no space left", 1}}
+          {"true", {:error, "no space left", 1}}
         ])
 
       result =
@@ -333,7 +379,7 @@ defmodule Conductor.SpriteDispatchTest do
         )
 
       assert {:error, msg, _code} = result
-      assert String.contains?(msg, "prompt upload failed")
+      assert String.contains?(msg, "dispatch file upload failed")
     end
   end
 end

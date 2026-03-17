@@ -71,6 +71,7 @@ func runSetup(ctx context.Context, spriteName, repo string, force bool, persona 
 		spriteClaudeDir + "/commands",
 		spriteClaudeDir + "/prompts",
 		spriteCodexDir,
+		spriteRuntimeDir,
 		spriteWorkspaceRoot,
 	}
 	mkdirScript := "mkdir -p " + strings.Join(dirs, " ")
@@ -115,6 +116,10 @@ func runSetup(ctx context.Context, spriteName, repo string, force bool, persona 
 
 	if err := uploadFile(ctx, s, "base/codex-instructions.md", spriteCodexDir+"/instructions.md"); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "warning: codex instructions upload failed (non-fatal): %v\n", err)
+	}
+
+	if err := uploadSpriteRuntimeEnv(ctx, s); err != nil {
+		return fmt.Errorf("upload runtime env: %w", err)
 	}
 
 	// 5. Upload persona
@@ -324,4 +329,42 @@ func uploadPatchedSettings(ctx context.Context, s *sprites.Sprite, openrouterKey
 	patched := strings.ReplaceAll(string(data), "__SET_VIA_OPENROUTER_API_KEY_ENV__", openrouterKey)
 
 	return s.Filesystem().WriteFileContext(ctx, spriteClaudeDir+"/settings.json", []byte(patched), 0644)
+}
+
+func uploadSpriteRuntimeEnv(ctx context.Context, s *sprites.Sprite) error {
+	sfs := s.Filesystem()
+	if err := sfs.MkdirAll(spriteRuntimeDir, 0700); err != nil {
+		return fmt.Errorf("create runtime dir: %w", err)
+	}
+	return sfs.WriteFileContext(ctx, spriteRuntimeEnvPath, []byte(renderSpriteRuntimeEnv()), 0600)
+}
+
+func renderSpriteRuntimeEnv() string {
+	lines := []string{"# Managed by Bitterblossom. Runtime secrets only."}
+
+	if openAIKey := os.Getenv("OPENAI_API_KEY"); openAIKey != "" {
+		lines = append(lines, "export OPENAI_API_KEY="+shellQuote(openAIKey))
+		// Fall back to OPENAI_API_KEY for CODEX_API_KEY unless explicitly set
+		if os.Getenv("CODEX_API_KEY") == "" {
+			lines = append(lines, "export CODEX_API_KEY="+shellQuote(openAIKey))
+		}
+	}
+
+	if codexKey := os.Getenv("CODEX_API_KEY"); codexKey != "" {
+		lines = append(lines, "export CODEX_API_KEY="+shellQuote(codexKey))
+	}
+
+	if exaKey := os.Getenv("EXA_API_KEY"); exaKey != "" {
+		lines = append(lines, "export EXA_API_KEY="+shellQuote(exaKey))
+	}
+
+	return strings.Join(lines, "\n") + "\n"
+}
+
+func runtimeEnvSourceCommand(path string) string {
+	return fmt.Sprintf(`if [ -f %q ]; then set -a; . %q; set +a; fi`, path, path)
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
