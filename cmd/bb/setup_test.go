@@ -202,6 +202,7 @@ func TestRepoSetupScriptDoesNotExportGHToken(t *testing.T) {
 
 func TestRenderSpriteRuntimeEnvMirrorsOpenAIIntoCodexWithoutGitHubToken(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "sk-openai-test")
+	t.Setenv("CODEX_API_KEY", "") // unset so fallback kicks in
 	t.Setenv("EXA_API_KEY", "exa-test-key")
 	t.Setenv("GITHUB_TOKEN", "ghp-should-not-leak")
 
@@ -211,13 +212,70 @@ func TestRenderSpriteRuntimeEnvMirrorsOpenAIIntoCodexWithoutGitHubToken(t *testi
 		t.Fatalf("runtime env = %q, want OPENAI_API_KEY export", rendered)
 	}
 	if !strings.Contains(rendered, "export CODEX_API_KEY='sk-openai-test'") {
-		t.Fatalf("runtime env = %q, want CODEX_API_KEY export", rendered)
+		t.Fatalf("runtime env = %q, want CODEX_API_KEY fallback from OPENAI_API_KEY", rendered)
 	}
 	if !strings.Contains(rendered, "export EXA_API_KEY='exa-test-key'") {
 		t.Fatalf("runtime env = %q, want EXA_API_KEY export", rendered)
 	}
 	if strings.Contains(rendered, "GITHUB_TOKEN") {
 		t.Fatalf("runtime env = %q, should not include GITHUB_TOKEN", rendered)
+	}
+}
+
+func TestRenderSpriteRuntimeEnvExplicitCodexAPIKeyTakesPrecedence(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "sk-openai-test")
+	t.Setenv("CODEX_API_KEY", "sk-codex-explicit")
+
+	rendered := renderSpriteRuntimeEnv()
+
+	if !strings.Contains(rendered, "export OPENAI_API_KEY='sk-openai-test'") {
+		t.Fatalf("runtime env = %q, want OPENAI_API_KEY export", rendered)
+	}
+	if !strings.Contains(rendered, "export CODEX_API_KEY='sk-codex-explicit'") {
+		t.Fatalf("runtime env = %q, want explicit CODEX_API_KEY", rendered)
+	}
+	if strings.Count(rendered, "CODEX_API_KEY") != 1 {
+		t.Fatalf("runtime env = %q, want exactly one CODEX_API_KEY entry", rendered)
+	}
+}
+
+func TestRenderSpriteRuntimeEnvCodexOnlyWithoutOpenAI(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("CODEX_API_KEY", "sk-codex-only")
+	t.Setenv("EXA_API_KEY", "")
+
+	rendered := renderSpriteRuntimeEnv()
+
+	if strings.Contains(rendered, "OPENAI_API_KEY") {
+		t.Fatalf("runtime env = %q, should not include OPENAI_API_KEY when unset", rendered)
+	}
+	if !strings.Contains(rendered, "export CODEX_API_KEY='sk-codex-only'") {
+		t.Fatalf("runtime env = %q, want CODEX_API_KEY export", rendered)
+	}
+}
+
+func TestRenderSpriteRuntimeEnvEmptyWhenNoKeysSet(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("CODEX_API_KEY", "")
+	t.Setenv("EXA_API_KEY", "")
+
+	rendered := renderSpriteRuntimeEnv()
+
+	if strings.Contains(rendered, "export ") {
+		t.Fatalf("runtime env = %q, should have no exports when no keys set", rendered)
+	}
+	if !strings.Contains(rendered, "# Managed by Bitterblossom") {
+		t.Fatalf("runtime env = %q, want header comment", rendered)
+	}
+}
+
+func TestShellQuoteEscapesSingleQuotes(t *testing.T) {
+	t.Parallel()
+
+	got := shellQuote("sk'key")
+	want := "'sk'\"'\"'key'"
+	if got != want {
+		t.Fatalf("shellQuote(%q) = %q, want %q", "sk'key", got, want)
 	}
 }
 

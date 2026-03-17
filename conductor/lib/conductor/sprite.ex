@@ -254,6 +254,7 @@ defmodule Conductor.Sprite do
   defp with_temp_file(prefix, contents, fun) do
     path = Path.join(System.tmp_dir!(), "#{prefix}-#{System.unique_integer([:positive])}")
     File.write!(path, contents)
+    File.chmod!(path, 0o600)
 
     try do
       fun.(path)

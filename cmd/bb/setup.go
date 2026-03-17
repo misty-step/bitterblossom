@@ -344,7 +344,14 @@ func renderSpriteRuntimeEnv() string {
 
 	if openAIKey := os.Getenv("OPENAI_API_KEY"); openAIKey != "" {
 		lines = append(lines, "export OPENAI_API_KEY="+shellQuote(openAIKey))
-		lines = append(lines, "export CODEX_API_KEY="+shellQuote(openAIKey))
+		// Fall back to OPENAI_API_KEY for CODEX_API_KEY unless explicitly set
+		if os.Getenv("CODEX_API_KEY") == "" {
+			lines = append(lines, "export CODEX_API_KEY="+shellQuote(openAIKey))
+		}
+	}
+
+	if codexKey := os.Getenv("CODEX_API_KEY"); codexKey != "" {
+		lines = append(lines, "export CODEX_API_KEY="+shellQuote(codexKey))
 	}
 
 	if exaKey := os.Getenv("EXA_API_KEY"); exaKey != "" {
