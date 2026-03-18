@@ -61,7 +61,10 @@ func runLogs(ctx context.Context, stdout, stderr io.Writer, spriteName string, f
 
 	logPath := workspaceRalphLogPath(workspace)
 
-	active := spriteHasRunningAgent(ctx, s, workspace)
+	active, err := spriteHasRunningAgent(ctx, s, workspace)
+	if err != nil {
+		return fmt.Errorf("check running agent: %w", err)
+	}
 	hasLog := spriteFileHasContent(ctx, s, logPath)
 	if !active && !hasLog {
 		if err := writeLogsNoTaskMsg(stderr, spriteName); err != nil {
@@ -119,9 +122,12 @@ func logsRemoteCommand(logPath string, follow bool, lines int) string {
 	return fmt.Sprintf("touch %q && cat %q", logPath, logPath)
 }
 
-func spriteHasRunningAgent(ctx context.Context, s *sprites.Sprite, workspace string) bool {
-	check := activeDispatchCheckScriptFor(workspace)
-	return s.CommandContext(ctx, "bash", "-c", check).Run() == nil
+func spriteHasRunningAgent(ctx context.Context, s *sprites.Sprite, workspace string) (bool, error) {
+	return spriteHasRunningAgentWithRunner(ctx, spriteBashRunner(s), workspace)
+}
+
+func spriteHasRunningAgentWithRunner(ctx context.Context, run spriteScriptRunner, workspace string) (bool, error) {
+	return isDispatchLoopActiveWithRunner(ctx, run, workspace)
 }
 
 func spriteFileHasContent(ctx context.Context, s *sprites.Sprite, path string) bool {

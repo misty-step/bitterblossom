@@ -73,7 +73,7 @@ sequenceDiagram
   - uploads `base/`, repo bootstrap/repair, workspace metadata
   - see also: [`cmd/bb/sprite_workspace.go`](../cmd/bb/sprite_workspace.go), [`cmd/bb/workspace_metadata.go`](../cmd/bb/workspace_metadata.go)
 - [`cmd/bb/dispatch.go`](../cmd/bb/dispatch.go)
-  - probe, stale-process cleanup, repo sync, prompt upload, agent exec, result verification
+  - probe, active-run guard, workspace/repo preflight, prompt upload, agent exec, result verification
 - [`cmd/bb/status.go`](../cmd/bb/status.go)
   - sprite truth and operator status surface
 - [`cmd/bb/logs.go`](../cmd/bb/logs.go)

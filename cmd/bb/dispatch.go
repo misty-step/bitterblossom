@@ -79,6 +79,44 @@ func verifyWorkScriptFor(workspace, branch string) string {
 	)
 }
 
+func workspaceCheckoutCheckScriptFor(workspace string) string {
+	return fmt.Sprintf(`git -C %q rev-parse --is-inside-work-tree 2>/dev/null`, workspace)
+}
+
+func ensureWorkspaceCheckoutReadyWithRunner(ctx context.Context, run spriteScriptRunner, workspace string) error {
+	output, exitCode, err := runDispatchCheck(ctx, run, dispatchCheck{
+		timeout: 10 * time.Second,
+		script:  workspaceCheckoutCheckScriptFor(workspace),
+	})
+	if err != nil {
+		return err
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("git rev-parse failed")
+	}
+	if output != "true" {
+		return fmt.Errorf("git rev-parse returned %q", output)
+	}
+	return nil
+}
+
+func syncWorkspaceRepoWithRunner(ctx context.Context, run spriteScriptRunner, workspace, branch string) error {
+	output, exitCode, err := runDispatchCheck(ctx, run, dispatchCheck{
+		timeout: 45 * time.Second,
+		script: fmt.Sprintf(
+			`git config --global --add safe.directory %q 2>/dev/null; cd %q && git checkout %q && git pull --ff-only 2>&1`,
+			workspace, workspace, branch,
+		),
+	})
+	if err != nil {
+		return err
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("%s", output)
+	}
+	return nil
+}
+
 func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverride, promptTemplate string, timeout time.Duration, noOutputTimeout time.Duration, dryRun bool, prCheckTimeout time.Duration, waitForComplete bool) error {
 	// LLM auth is handled by settings.json on the sprite and GitHub auth is
 	// persisted on the sprite during setup.
@@ -113,24 +151,26 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverrid
 	}
 
 	if workspaceOverride == "" {
-		_, _ = fmt.Fprintf(os.Stderr, "syncing repo %s (branch: %s)...\n", repo, defaultBranch)
-		syncScript := fmt.Sprintf(
-			`git config --global --add safe.directory %q 2>/dev/null; cd %q && git checkout %q && git pull --ff-only 2>&1`,
-			workspace, workspace, defaultBranch,
-		)
-		syncCmd := s.CommandContext(ctx, "bash", "-c", syncScript)
-		if out, err := syncCmd.Output(); err != nil {
-			return fmt.Errorf("repo sync failed: %w\n%s", err, out)
+		if dryRun {
+			if err := ensureWorkspaceCheckoutReadyWithRunner(ctx, spriteBashRunner(s), workspace); err != nil {
+				return fmt.Errorf("repo workspace %q is not ready on sprite %q: %w", workspace, spriteName, err)
+			}
+		} else {
+			_, _ = fmt.Fprintf(os.Stderr, "syncing repo %s (branch: %s)...\n", repo, defaultBranch)
+			if err := syncWorkspaceRepoWithRunner(ctx, spriteBashRunner(s), workspace, defaultBranch); err != nil {
+				return fmt.Errorf("repo sync failed: %w", err)
+			}
 		}
 	} else {
-		checkWorkspaceCmd := s.CommandContext(ctx, "git", "-C", workspace, "rev-parse", "--is-inside-work-tree")
-		out, err := checkWorkspaceCmd.Output()
-		if err != nil {
+		if err := ensureWorkspaceCheckoutReadyWithRunner(ctx, spriteBashRunner(s), workspace); err != nil {
 			return fmt.Errorf("workspace override %q is not ready on sprite %q: %w", workspace, spriteName, err)
 		}
-		if strings.TrimSpace(string(out)) != "true" {
-			return fmt.Errorf("workspace override %q is not ready on sprite %q: git rev-parse returned %q", workspace, spriteName, strings.TrimSpace(string(out)))
-		}
+	}
+
+	// Dry-run: readiness checks passed — do not start the agent.
+	if dryRun {
+		_, _ = fmt.Fprintf(os.Stderr, "dry-run: sprite %q is ready to dispatch\n", spriteName)
+		return nil
 	}
 
 	// 4. Clean stale signals

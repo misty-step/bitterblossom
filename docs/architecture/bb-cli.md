@@ -70,7 +70,6 @@ The conductor calls `bb`; `bb` does not own the workflow.
 sequenceDiagram
     participant C as Conductor
     participant BB as bb dispatch
-    participant S as Sprite
     participant S as Sprite agent
 
     C->>BB: dispatch builder or reviewer task

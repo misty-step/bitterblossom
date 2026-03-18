@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 
@@ -21,5 +22,5 @@ def test_builder_prompt_requires_extensionless_task_complete_signal():
 
 def test_workspace_contract_keeps_dispatch_prompt_and_task_complete_names():
     content = WORKSPACE_CONTRACT.read_text(encoding="utf-8")
-    assert 'dispatchPromptFileName     = ".dispatch-prompt.md"' in content
-    assert 'taskCompleteFileName       = "TASK_COMPLETE"' in content
+    assert re.search(r'\bdispatchPromptFileName\s*=\s*"\.dispatch-prompt\.md"', content)
+    assert re.search(r'\btaskCompleteFileName\s*=\s*"TASK_COMPLETE"', content)

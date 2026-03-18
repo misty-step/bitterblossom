@@ -34,7 +34,7 @@ func runKill(ctx context.Context, out io.Writer, spriteName string) error {
 		return fmt.Errorf("find workspace: %w", err)
 	}
 	if workspace == "" {
-		_, _ = fmt.Fprintln(out, "no stale agent processes found")
+		_, _ = fmt.Fprintln(out, "could not determine workspace; stale agents may still exist")
 		return nil
 	}
 

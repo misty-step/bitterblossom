@@ -262,6 +262,64 @@ func TestEnsureNoActiveDispatchLoop_ErrorsOnUnexpectedOutputWhenIdle(t *testing.
 	}
 }
 
+func TestEnsureWorkspaceCheckoutReadyWithRunnerAcceptsGitRepo(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{out: []byte("true\n"), exitCode: 0}
+	if err := ensureWorkspaceCheckoutReadyWithRunner(context.Background(), r.run, "/tmp/ws"); err != nil {
+		t.Fatalf("ensureWorkspaceCheckoutReadyWithRunner() error = %v", err)
+	}
+	if !strings.Contains(r.script, `git -C "/tmp/ws" rev-parse --is-inside-work-tree`) {
+		t.Fatalf("script = %q", r.script)
+	}
+}
+
+func TestEnsureWorkspaceCheckoutReadyWithRunnerRejectsUnexpectedOutput(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{out: []byte("false\n"), exitCode: 0}
+	err := ensureWorkspaceCheckoutReadyWithRunner(context.Background(), r.run, "/tmp/ws")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), `git rev-parse returned "false"`) {
+		t.Fatalf("err = %q", err)
+	}
+}
+
+func TestSyncWorkspaceRepoWithRunnerBuildsSyncScript(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{out: []byte("Already up to date.\n"), exitCode: 0}
+	if err := syncWorkspaceRepoWithRunner(context.Background(), r.run, "/tmp/ws", "main"); err != nil {
+		t.Fatalf("syncWorkspaceRepoWithRunner() error = %v", err)
+	}
+	if !strings.Contains(r.script, `git checkout "main"`) {
+		t.Fatalf("script = %q, want checkout", r.script)
+	}
+	if !strings.Contains(r.script, `git pull --ff-only`) {
+		t.Fatalf("script = %q, want pull --ff-only", r.script)
+	}
+}
+
+func TestAgentDispatchCommandIncludesHeartbeatAndPIDCleanup(t *testing.T) {
+	t.Parallel()
+
+	script := agentDispatchCommand("/tmp/ws", "/tmp/ws/.dispatch-prompt.md", 90*time.Second)
+	if !strings.Contains(script, `printf '%s\n' "$$" > "$PID_FILE"`) {
+		t.Fatalf("script = %q, want pid file write", script)
+	}
+	if !strings.Contains(script, `heartbeat() {`) {
+		t.Fatalf("script = %q, want heartbeat function", script)
+	}
+	if !strings.Contains(script, `printf '[dispatch] heartbeat: %s\n' "$(date -Iseconds)"`) {
+		t.Fatalf("script = %q, want heartbeat log line", script)
+	}
+	if !strings.Contains(script, `rm -f "$PID_FILE"`) {
+		t.Fatalf("script = %q, want pid file cleanup", script)
+	}
+}
+
 func TestEnsureNoActiveDispatchLoop_ErrorsOnUnexpectedExitCode(t *testing.T) {
 	t.Parallel()
 
