@@ -499,6 +499,22 @@ defmodule Conductor.RunServerTest do
 
       refute Store.leased?("test/repo", 42)
     end
+
+    test "fails truthfully when BLOCKED.md cannot be read" do
+      MockState.put({:dispatch_result, "test-sprite"}, {:ok, ""})
+
+      MockState.put(
+        {:file_read, "test-sprite", "/tmp/test-worktree/BLOCKED.md"},
+        {:error, "permission denied", 126}
+      )
+
+      {:ok, pid} = start_run_server()
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "failed"
+      assert "workspace_read_error" in event_types(run["run_id"])
+    end
   end
 
   describe "stale PR branch after dispatch" do
@@ -568,6 +584,24 @@ defmodule Conductor.RunServerTest do
       MockState.put({:open_pr, "test/repo", 42}, {:error, :api_down})
 
       {:ok, pid} = start_run_server()
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "failed"
+      assert "pr_detection_failed" in event_types(run["run_id"])
+    end
+  end
+
+  describe "PR lookup returns incomplete data" do
+    test "fails when PR is missing url or number" do
+      MockState.put({:dispatch_result, "test-sprite"}, {:ok, ""})
+
+      MockState.put(
+        {:open_pr_exact, "test/repo", 42, "factory/42-1234567890"},
+        {:ok, %{"headRefName" => "factory/42-1234567890"}}
+      )
+
+      {:ok, pid} = start_run_server(existing_branch: "factory/42-1234567890")
       wait_for_exit(pid)
 
       run = find_run(42)

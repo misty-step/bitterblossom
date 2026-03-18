@@ -236,10 +236,11 @@ defmodule Conductor.RunServer do
 
   defp detect_pr(state) do
     case code_host_mod().find_open_pr(state.repo, state.issue.number, state.branch) do
-      {:ok, %{"headRefName" => head_ref} = pr} when head_ref == state.branch ->
+      {:ok, %{"headRefName" => head_ref, "number" => _number, "url" => _url} = pr}
+      when head_ref == state.branch ->
         handle_pr_ready(pr, state)
 
-      {:ok, %{"headRefName" => head_ref}} ->
+      {:ok, %{"headRefName" => head_ref}} when head_ref != state.branch ->
         fail(
           state,
           "pr_branch_mismatch",
@@ -260,6 +261,9 @@ defmodule Conductor.RunServer do
 
           {:error, :not_found} ->
             fail(state, "pr_not_found", "builder completed without opening a PR")
+
+          {:error, reason} ->
+            fail(state, "workspace_read_error", inspect(reason))
         end
 
       {:error, reason} ->
@@ -382,7 +386,17 @@ defmodule Conductor.RunServer do
 
     case worker_mod().exec(state.worker, "cat '#{path}'", timeout: 30_000) do
       {:ok, content} -> {:ok, String.trim(content)}
-      {:error, _output, _code} -> {:error, :not_found}
+      {:error, output, code} -> classify_workspace_read_error(output, code)
+    end
+  end
+
+  defp classify_workspace_read_error(output, code) do
+    normalized_output = String.downcase(to_string(output || ""))
+
+    if code == 1 and String.contains?(normalized_output, "not found") do
+      {:error, :not_found}
+    else
+      {:error, %{output: String.slice(to_string(output || ""), 0, 200), code: code}}
     end
   end
 

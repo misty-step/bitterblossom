@@ -35,7 +35,7 @@ sequenceDiagram
     C->>BB: dry-run probe + dispatch builder
     BB->>W: sync repo + run Ralph
     W-->>GH: push branch + open draft PR
-    W-->>C: builder artifact
+    W-->>C: open PR on factory/* branch
     C->>BB: dispatch reviewer council
     BB->>R: review PR independently
     R-->>C: review artifacts
@@ -94,9 +94,9 @@ sequenceDiagram
 - [`scripts/ralph.sh`](../scripts/ralph.sh)
   - bounded remote agent loop and signal-file exit contract
 - [`scripts/prompts/`](../scripts/prompts/)
-  - builder/reviewer prompt templates and artifact expectations
+  - builder/reviewer prompt templates and completion expectations
 - [`docs/COMPLETION-PROTOCOL.md`](COMPLETION-PROTOCOL.md)
-  - signal files, artifact expectations, and completion semantics
+  - signal files, PR-based builder completion, and completion semantics
 
 ### Skill System
 

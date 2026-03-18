@@ -525,9 +525,9 @@ sprite exec <sprite> -- bash -lc 'git -C /home/sprite/workspace/<repo-name> work
 
 ### Builder handoff boundary
 
-Once a builder writes its artifact and the referenced PR is verified, the conductor persists `phase=awaiting_governance` and `pr_number` immediately. That write is the durable boundary between builder work and control-plane cleanup.
+Once a builder opens the expected PR and the conductor verifies that branch, it persists `phase=awaiting_governance` and `pr_number` immediately. That write is the durable boundary between builder work and control-plane cleanup.
 
-Post-artifact sprite cleanup is best-effort. Transport failures during cleanup (e.g., `use of closed network connection`) are recorded as `cleanup_warning` events and do **not** overwrite the run to `phase=failed` or clear `pr_number`.
+Post-handoff sprite cleanup is best-effort. Transport failures during cleanup (e.g., `use of closed network connection`) are recorded as `cleanup_warning` events and do **not** overwrite the run to `phase=failed` or clear `pr_number`.
 
 If a run shows `phase=awaiting_governance` with a valid `pr_number`, the builder delivered its handoff correctly. The operator can run `govern-pr`, reconcile the run, or let a later conductor invocation adopt the PR.
 
@@ -673,7 +673,7 @@ The conductor constructs prompts from several sources. Not all of them are trust
 | `issue.url` | GitHub Issues (system-generated from repo + issue number) | Yes | Embedded plain-text |
 | PR review thread comments (`source=pr_review_threads`) | External GitHub reviewers / bots | **No** | JSON-fenced + untrusted-data header via `format_builder_feedback` |
 | Internal sprite review summary (`source=review`) | Trusted conductor-owned sprites | Yes | Embedded plain-text |
-| Run metadata (run ID, branch, artifact path) | Conductor internals | Yes | Embedded plain-text |
+| Run metadata (run ID, branch, PR context) | Conductor internals | Yes | Embedded plain-text |
 
 **Rule:** any user-authored string that originates outside the conductor (GitHub issue text, external review bot feedback) is wrapped in a JSON code-fence before being placed in a prompt. The wrapper includes an explicit instruction telling the agent to treat the block as data, not as executable guidance.
 
