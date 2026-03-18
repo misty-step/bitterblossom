@@ -1,8 +1,8 @@
 defmodule Conductor.Polisher do
   @moduledoc """
-  Polls for factory PRs with green CI (no `lgtm`) and dispatches the polisher sprite.
+  Polls for open PRs with green CI (no `lgtm`) and dispatches the polisher sprite.
 
-  Single-responsibility: detect review-ready factory PRs, build a polisher
+  Single-responsibility: detect review-ready open PRs, build a polisher
   prompt with review context, and dispatch the polisher sprite to address
   feedback and apply `lgtm` when clean.
   """
@@ -92,7 +92,7 @@ defmodule Conductor.Polisher do
     if map_size(state.in_flight) > 0 do
       state
     else
-      case code_host_mod().factory_prs(state.repo) do
+      case code_host_mod().open_prs(state.repo) do
         {:ok, prs} ->
           # Dispatch at most one PR per poll (single sprite, single workspace)
           case Enum.find(prs, &needs_polish?(&1, state)) do
@@ -101,21 +101,18 @@ defmodule Conductor.Polisher do
           end
 
         {:error, reason} ->
-          Logger.warning("[polisher] failed to list factory PRs: #{reason}")
+          Logger.warning("[polisher] failed to list open PRs: #{reason}")
           state
       end
     end
   end
 
   defp needs_polish?(pr, _state) do
-    branch = pr["headRefName"] || ""
     labels = pr["labels"] || []
     label_names = Enum.map(labels, & &1["name"])
-    checks = pr["statusCheckRollup"] || []
+    checks = pr["statusCheckRollup"] |> List.wrap() |> Enum.filter(&is_map/1)
 
-    String.starts_with?(branch, "factory/") and
-      "lgtm" not in label_names and
-      Conductor.GitHub.evaluate_checks(checks)
+    "lgtm" not in label_names and Conductor.GitHub.evaluate_checks(checks)
   end
 
   defp dispatch_polisher(state, pr) do
@@ -133,7 +130,8 @@ defmodule Conductor.Polisher do
       end
 
     issue_body = pr["body"] || ""
-    prompt = Prompt.build_polisher_prompt(pr, comments, issue_body)
+    conductor_managed = conductor_managed?(state.repo, pr_number)
+    prompt = Prompt.build_polisher_prompt(pr, comments, issue_body, may_label: conductor_managed)
     branch = pr["headRefName"]
 
     Store.record_event("polisher", "polisher_dispatched", %{
@@ -179,6 +177,25 @@ defmodule Conductor.Polisher do
 
   defp schedule_poll(_, delay) do
     Process.send_after(self(), :poll, delay)
+  end
+
+  # Only conductor-tracked PRs may receive the automated `lgtm` label.
+  # Non-conductor PRs get polisher review but require human merge approval.
+  defp conductor_managed?(repo, pr_number) do
+    try do
+      match?({:ok, _}, Store.find_run_by_pr(repo, pr_number))
+    rescue
+      exception ->
+        Logger.warning(
+          "[polisher] failed to find run for PR ##{pr_number}: #{Exception.message(exception)}"
+        )
+
+        false
+    catch
+      :exit, reason ->
+        Logger.warning("[polisher] failed to find run for PR ##{pr_number}: #{inspect(reason)}")
+        false
+    end
   end
 
   defp code_host_mod, do: Application.get_env(:conductor, :code_host_module, Conductor.GitHub)

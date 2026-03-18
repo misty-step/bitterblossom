@@ -1,5 +1,6 @@
 defmodule Conductor.PolisherTest do
   use ExUnit.Case, async: false
+  import ExUnit.CaptureLog
 
   alias Conductor.{Store, Polisher}
 
@@ -44,7 +45,7 @@ defmodule Conductor.PolisherTest do
       {:ok, Map.get(prs, label, [])}
     end
 
-    def factory_prs(_repo), do: MockState.get(:factory_prs, {:ok, []})
+    def open_prs(_repo), do: MockState.get(:open_prs, {:ok, []})
 
     def pr_review_comments(_repo, _pr_number) do
       MockState.get(:review_comments, {:ok, []})
@@ -153,7 +154,7 @@ defmodule Conductor.PolisherTest do
 
     test "dispatches polisher when factory PR has green CI and no lgtm" do
       MockState.put(
-        :factory_prs,
+        :open_prs,
         {:ok,
          [
            %{
@@ -186,9 +187,77 @@ defmodule Conductor.PolisherTest do
       assert prompt =~ "review"
     end
 
+    test "conductor-tracked PR gets lgtm authority in prompt" do
+      # Create a store run so conductor_managed? returns true
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 99,
+          issue_title: "tracked issue",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(run_id, %{pr_number: 42, phase: "pr_opened", status: "pr_opened"})
+
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 42,
+             "headRefName" => "factory/99-12345",
+             "title" => "feat: implement feature",
+             "body" => "Closes #99",
+             "labels" => [],
+             "statusCheckRollup" => @green_checks
+           }
+         ]}
+      )
+
+      {:ok, _pid} =
+        Polisher.start_link(
+          repo: "test/repo",
+          polisher_sprite: "bb-polisher",
+          poll_ms: 50
+        )
+
+      assert_receive {:dispatched, "bb-polisher", prompt}, 2_000
+      assert prompt =~ "gh pr edit --add-label lgtm"
+      refute prompt =~ "Do NOT add the `lgtm` label"
+    end
+
+    test "dispatches polisher for non-factory PR without lgtm permission" do
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 55,
+             "headRefName" => "fix/cerberus-permissions",
+             "title" => "fix: cerberus permissions",
+             "body" => "Fixes permissions",
+             "labels" => [],
+             "statusCheckRollup" => @green_checks
+           }
+         ]}
+      )
+
+      {:ok, _pid} =
+        Polisher.start_link(
+          repo: "test/repo",
+          polisher_sprite: "bb-polisher",
+          poll_ms: 50
+        )
+
+      assert_receive {:dispatched, "bb-polisher", prompt}, 2_000
+      # Non-conductor PRs get review but NOT lgtm labeling authority
+      assert prompt =~ "Do NOT add the `lgtm` label"
+      refute prompt =~ "gh pr edit --add-label lgtm"
+    end
+
     test "skips PRs with red CI" do
       MockState.put(
-        :factory_prs,
+        :open_prs,
         {:ok,
          [
            %{
@@ -214,7 +283,7 @@ defmodule Conductor.PolisherTest do
 
     test "skips PRs that already have lgtm label" do
       MockState.put(
-        :factory_prs,
+        :open_prs,
         {:ok,
          [
            %{
@@ -240,7 +309,7 @@ defmodule Conductor.PolisherTest do
 
     test "does not dispatch when polisher already working on a PR" do
       MockState.put(
-        :factory_prs,
+        :open_prs,
         {:ok,
          [
            %{

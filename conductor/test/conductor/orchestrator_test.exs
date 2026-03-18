@@ -107,7 +107,7 @@ defmodule Conductor.OrchestratorTest do
     end
 
     def labeled_prs(repo, label), do: {:ok, MockState.get({:labeled_prs, repo, label}, [])}
-    def factory_prs(_repo), do: {:ok, []}
+    def open_prs(_repo), do: {:ok, []}
     def pr_review_comments(_repo, _pr), do: {:ok, []}
     def pr_ci_failure_logs(_repo, _pr), do: {:ok, ""}
     def add_label(_repo, _pr, _label), do: :ok
@@ -1436,6 +1436,16 @@ defmodule Conductor.OrchestratorTest do
   end
 
   describe "issue_number_for_pr_lookup/4" do
+    test "returns :unmapped when run lookup misses and branch has no issue number" do
+      assert :unmapped =
+               Orchestrator.issue_number_for_pr_lookup(
+                 "test/repo",
+                 904,
+                 "fix/cerberus-permissions",
+                 fn _repo, _pr_number -> {:error, :not_found} end
+               )
+    end
+
     test "returns :skip when run lookup returns an unexpected store error" do
       assert :skip =
                Orchestrator.issue_number_for_pr_lookup(
@@ -1464,6 +1474,54 @@ defmodule Conductor.OrchestratorTest do
                  "factory/902-123",
                  fn _repo, _pr_number -> raise "sqlite exploded" end
                )
+    end
+  end
+
+  describe "parse_issue_number_from_branch/1" do
+    test "parses factory/ branch" do
+      assert {:ok, 42} = Orchestrator.parse_issue_number_from_branch("factory/42-1234567890")
+    end
+
+    test "parses fix/ branch" do
+      assert {:ok, 99} =
+               Orchestrator.parse_issue_number_from_branch("fix/99-cerberus-permissions")
+    end
+
+    test "parses multi-segment branch" do
+      assert {:ok, 123} = Orchestrator.parse_issue_number_from_branch("team/fix/123-bug")
+    end
+
+    test "parses bare branch without prefix" do
+      assert {:ok, 7} = Orchestrator.parse_issue_number_from_branch("7-quick-fix")
+    end
+
+    test "parses branch without description suffix" do
+      assert {:ok, 123} = Orchestrator.parse_issue_number_from_branch("hotfix/123")
+    end
+
+    test "returns :skip for branch without issue number" do
+      assert :skip = Orchestrator.parse_issue_number_from_branch("feature/unrelated")
+    end
+
+    test "returns :skip for empty trailing segment" do
+      assert :skip = Orchestrator.parse_issue_number_from_branch("feature/")
+    end
+
+    test "returns :skip for non-numeric issue segment" do
+      assert :skip = Orchestrator.parse_issue_number_from_branch("fix/abc-description")
+    end
+
+    test "parses issue number when suffix contains additional dashes" do
+      assert {:ok, 123} = Orchestrator.parse_issue_number_from_branch("fix/123-456-bug")
+    end
+
+    test "returns :skip for branch with no dash delimiter" do
+      assert :skip = Orchestrator.parse_issue_number_from_branch("main")
+    end
+
+    test "does not match prefix of larger number" do
+      # "factory/420-..." should not match issue 42
+      assert {:ok, 420} = Orchestrator.parse_issue_number_from_branch("factory/420-1234567890")
     end
   end
 
@@ -1962,6 +2020,39 @@ defmodule Conductor.OrchestratorTest do
         assert Enum.any?(events, &(&1["event_type"] == "ci_wait_started"))
         assert Enum.any?(events, &(&1["event_type"] == "ci_wait_status"))
       end)
+    end
+  end
+
+  describe "merge skips non-conductor PRs" do
+    test "non-conductor PR with lgtm is not auto-merged", %{orch_pid: orch_pid} do
+      MockState.put(
+        {:labeled_prs, "test/repo", "lgtm"},
+        [%{"number" => 300, "headRefName" => "fix/cerberus-permissions"}]
+      )
+
+      :ok =
+        GenServer.call(
+          orch_pid,
+          {:configure_polling, [repo: "test/repo", workers: ["sprite-1"]]}
+        )
+
+      Process.sleep(100)
+      assert MockState.get(:merge_calls) == []
+    end
+
+    test "conductor_tracked? returns false for non-conductor PR even with green CI", %{
+      orch_pid: orch_pid
+    } do
+      # PR 400 has no Store run — conductor_tracked? returns false → merge skipped
+      MockState.put(
+        {:labeled_prs, "test/repo", "lgtm"},
+        [%{"number" => 400, "headRefName" => "fix/99-test"}]
+      )
+
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
+      Process.sleep(200)
+
+      assert MockState.get(:merge_calls) == []
     end
   end
 

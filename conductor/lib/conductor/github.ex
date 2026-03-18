@@ -563,9 +563,9 @@ defmodule Conductor.GitHub do
     end
   end
 
-  @doc "List open factory/* PRs with CI status and labels."
-  @spec factory_prs(binary()) :: {:ok, [map()]} | {:error, term()}
-  def factory_prs(repo) do
+  @doc "List all open PRs with CI status and labels."
+  @spec open_prs(binary()) :: {:ok, [map()]} | {:error, term()}
+  def open_prs(repo) do
     case Shell.cmd("gh", [
            "pr",
            "list",
@@ -573,19 +573,18 @@ defmodule Conductor.GitHub do
            repo,
            "--state",
            "open",
+           "--limit",
+           to_string(@default_unfiltered_limit),
            "--json",
            "number,title,body,headRefName,labels,statusCheckRollup"
          ]) do
       {:ok, json} ->
         case Jason.decode(json) do
-          {:ok, prs} ->
-            factory =
-              Enum.filter(prs, fn pr ->
-                branch = pr["headRefName"] || ""
-                String.starts_with?(branch, "factory/")
-              end)
+          {:ok, prs} when is_list(prs) ->
+            {:ok, Enum.filter(prs, &(is_map(&1) and is_binary(&1["headRefName"])))}
 
-            {:ok, factory}
+          {:ok, _other} ->
+            {:error, "invalid JSON"}
 
           {:error, _} ->
             {:error, "invalid JSON"}
@@ -706,7 +705,7 @@ defmodule Conductor.GitHub do
     result
   end
 
-  @doc "Find the first open PR whose branch starts with factory/<issue_number>-."
+  @doc "Find the first open PR associated with the issue number."
   @spec find_open_pr(binary(), pos_integer()) :: {:ok, map()} | {:error, :not_found}
   def find_open_pr(repo, issue_number) do
     case Shell.cmd("gh", [
@@ -719,19 +718,18 @@ defmodule Conductor.GitHub do
            "--limit",
            "200",
            "--json",
-           "number,title,headRefName,url"
+           "number,title,body,headRefName,url"
          ]) do
       {:ok, json} ->
         case Jason.decode(json) do
-          {:ok, prs} ->
-            prefix = "factory/#{issue_number}-"
-
-            case Enum.find(prs, fn pr ->
-                   String.starts_with?(pr["headRefName"] || "", prefix)
-                 end) do
+          {:ok, prs} when is_list(prs) ->
+            case Enum.find(prs, &pr_matches_issue?(&1, issue_number)) do
               nil -> {:error, :not_found}
               pr -> {:ok, pr}
             end
+
+          {:ok, _other} ->
+            {:error, :not_found}
 
           {:error, reason} ->
             Logger.warning("[github] failed to decode PR list: #{inspect(reason)}")
@@ -743,6 +741,39 @@ defmodule Conductor.GitHub do
         {:error, :not_found}
     end
   end
+
+  defp pr_matches_issue?(pr, issue_number) do
+    branch_matches_issue?(pr["headRefName"], issue_number) or
+      body_closes_issue?(pr["body"], issue_number)
+  end
+
+  defp branch_matches_issue?(branch, issue_number) when is_binary(branch) do
+    branch
+    |> String.split("/")
+    |> List.last()
+    |> String.split("-", parts: 2)
+    |> case do
+      [issue_str | _] ->
+        case Integer.parse(issue_str) do
+          {^issue_number, ""} -> true
+          _ -> false
+        end
+
+      _ ->
+        false
+    end
+  end
+
+  defp branch_matches_issue?(_, _issue_number), do: false
+
+  defp body_closes_issue?(body, issue_number) when is_binary(body) do
+    Regex.match?(
+      ~r/\b(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)\s+(?:[[:alnum:]._-]+\/[[:alnum:]._-]+)?##{issue_number}\b/i,
+      body
+    )
+  end
+
+  defp body_closes_issue?(_, _issue_number), do: false
 
   @spec get_pr(binary(), pos_integer()) :: {:ok, map()} | {:error, term()}
   def get_pr(repo, pr_number) do

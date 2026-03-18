@@ -1,9 +1,10 @@
 defmodule Conductor.Orchestrator do
   @moduledoc """
-  Main polling loop. Symphony-inspired single authority.
+  Issue dispatch authority.
 
-  Polls for eligible issues and starts RunServers up to concurrency limit.
-  Reconciles stale runs on every tick.
+  `run_once/1` — start one RunServer synchronously and wait for it.
+  `configure_polling/1` — poll for eligible issues and start RunServers up to concurrency limit.
+  Reconciles stale runs and merges lgtm-labeled PRs on every tick.
   """
 
   use GenServer
@@ -41,6 +42,43 @@ defmodule Conductor.Orchestrator do
   @doc "Start the orchestrator GenServer under the conductor supervision tree."
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  end
+
+  @doc "Run a single issue synchronously. Returns the terminal phase."
+  @spec run_once(keyword()) :: {:ok, atom()} | {:error, term()}
+  def run_once(opts) do
+    repo = Keyword.fetch!(opts, :repo)
+    issue_number = Keyword.fetch!(opts, :issue)
+    worker = Keyword.fetch!(opts, :worker)
+    trusted_surfaces = Keyword.get(opts, :trusted_surfaces, [])
+
+    case tracker_mod().get_issue(repo, issue_number) do
+      {:ok, issue} ->
+        case Issue.ready?(issue) do
+          :ok ->
+            run_issue(repo, issue, worker, trusted_surfaces)
+
+          {:error, failures} ->
+            case safe_shape_issue(repo, issue_number) do
+              {:ok, result} when result in [:shaped, :already_shaped] ->
+                IO.puts(
+                  "issue ##{issue_number} not ready: #{Enum.join(failures, ", ")}; " <>
+                    "shaping #{result} and deferring execution until the next fetch"
+                )
+
+              {:error, reason} ->
+                IO.puts(
+                  "issue ##{issue_number} not ready: #{Enum.join(failures, ", ")}; " <>
+                    "shaping failed: #{inspect(reason)}"
+                )
+            end
+
+            {:error, :not_ready}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   @doc "Configure the orchestrator and begin polling."
@@ -204,6 +242,36 @@ defmodule Conductor.Orchestrator do
   end
 
   # --- Private ---
+
+  defp run_issue(repo, issue, worker, trusted_surfaces) do
+    opts = [
+      repo: repo,
+      issue: issue,
+      worker: worker,
+      trusted_surfaces: trusted_surfaces
+    ]
+
+    case run_launcher().start(opts) do
+      {:ok, pid} ->
+        ref = Process.monitor(pid)
+        timeout = (Config.builder_timeout() + Config.ci_timeout() + 10) * 60_000
+
+        receive do
+          {:DOWN, ^ref, :process, ^pid, _reason} ->
+            case find_latest_run(repo, issue.number) do
+              %{"phase" => phase} -> {:ok, String.to_atom(phase)}
+              nil -> {:error, :run_not_found}
+            end
+        after
+          timeout ->
+            Process.exit(pid, :kill)
+            {:error, :timeout}
+        end
+
+      {:error, reason} ->
+        {:error, {:start_failed, reason}}
+    end
+  end
 
   defp maybe_start_runs(state) do
     max_runs = Config.max_concurrent_runs()
@@ -640,6 +708,11 @@ defmodule Conductor.Orchestrator do
 
   defp resolve_held_lease(_repo, _pr_number, _issue_number), do: :hold
 
+  defp find_latest_run(repo, issue_number) do
+    Store.list_runs(repo: repo, issue_number: issue_number, limit: 1)
+    |> List.first()
+  end
+
   # --- Label-Driven Merge ---
 
   defp merge_labeled_prs(%{repo: nil}), do: :ok
@@ -647,55 +720,56 @@ defmodule Conductor.Orchestrator do
   defp merge_labeled_prs(%{repo: repo} = state) do
     case code_host_mod().labeled_prs(repo, "lgtm") do
       {:ok, prs} ->
-        prs
-        |> Enum.filter(fn pr ->
-          # Only merge PRs from conductor branches (factory/*)
-          branch = pr["headRefName"] || ""
-          String.starts_with?(branch, "factory/")
-        end)
-        |> Enum.each(fn pr ->
+        Enum.each(prs, fn pr ->
           pr_number = pr["number"]
 
           case code_host_mod().ci_status(repo, pr_number) do
             {:ok, %{state: :green}} ->
-              if ci_timeout_run?(repo, pr_number) do
-                Logger.warning(
-                  "[merge] PR ##{pr_number} previously timed out waiting for CI, skipping"
-                )
-              else
-                clear_ci_wait_tracking(repo, pr_number)
+              cond do
+                ci_timeout_run?(repo, pr_number) ->
+                  Logger.warning(
+                    "[merge] PR ##{pr_number} previously timed out waiting for CI, skipping"
+                  )
 
-                case operator_merge_decision(repo, pr) do
-                  :allow ->
-                    Logger.info("[merge] PR ##{pr_number} has lgtm + green CI, merging")
+                not conductor_tracked?(repo, pr_number) ->
+                  Logger.debug(
+                    "[merge] PR ##{pr_number} has lgtm but is not conductor-tracked, skipping"
+                  )
 
-                    case code_host_mod().merge(repo, pr_number, []) do
-                      :ok ->
-                        Logger.info("[merge] PR ##{pr_number} merged successfully")
-                        record_merge(repo, pr_number)
-                        Conductor.SelfUpdate.maybe_reload(repo, pr_number)
+                true ->
+                  clear_ci_wait_tracking(repo, pr_number)
 
-                      {:error, reason} ->
-                        if merge_conflict?(reason) do
-                          attempt_rebase_merge(
-                            repo,
-                            pr_number,
-                            pr["headRefName"],
-                            state.worker_order
-                          )
-                        else
-                          Logger.warning("[merge] PR ##{pr_number} merge failed: #{reason}")
-                        end
-                    end
+                  case operator_merge_decision(repo, pr) do
+                    :allow ->
+                      Logger.info("[merge] PR ##{pr_number} has lgtm + green CI, merging")
 
-                  {:blocked, reason} ->
-                    mark_operator_blocked(repo, pr_number, reason)
+                      case code_host_mod().merge(repo, pr_number, []) do
+                        :ok ->
+                          Logger.info("[merge] PR ##{pr_number} merged successfully")
+                          record_merge(repo, pr_number)
+                          Conductor.SelfUpdate.maybe_reload(repo, pr_number)
 
-                  :skip ->
-                    Logger.warning(
-                      "[merge] PR ##{pr_number} operator checks unavailable, skipping"
-                    )
-                end
+                        {:error, reason} ->
+                          if merge_conflict?(reason) do
+                            attempt_rebase_merge(
+                              repo,
+                              pr_number,
+                              pr["headRefName"],
+                              state.worker_order
+                            )
+                          else
+                            Logger.warning("[merge] PR ##{pr_number} merge failed: #{reason}")
+                          end
+                      end
+
+                    {:blocked, reason} ->
+                      mark_operator_blocked(repo, pr_number, reason)
+
+                    :skip ->
+                      Logger.warning(
+                        "[merge] PR ##{pr_number} operator checks unavailable, skipping"
+                      )
+                  end
               end
 
             {:ok, %{state: :pending} = ci_status} ->
@@ -845,8 +919,10 @@ defmodule Conductor.Orchestrator do
   end
 
   defp operator_merge_decision(repo, pr) do
-    with {:ok, issue_number} <- issue_number_for_pr(repo, pr) do
-      operator_issue_decision(repo, issue_number)
+    case issue_number_for_pr(repo, pr) do
+      {:ok, issue_number} -> operator_issue_decision(repo, issue_number)
+      :unmapped -> :allow
+      :skip -> :skip
     end
   end
 
@@ -905,7 +981,10 @@ defmodule Conductor.Orchestrator do
           {:ok, issue_number}
 
         {:error, :not_found} ->
-          parse_issue_number_from_branch(head_ref_name)
+          case parse_issue_number_from_branch(head_ref_name) do
+            {:ok, issue_number} -> {:ok, issue_number}
+            :skip -> :unmapped
+          end
 
         {:error, reason} ->
           Logger.warning("[operator] failed to find run for PR ##{pr_number}: #{inspect(reason)}")
@@ -926,10 +1005,15 @@ defmodule Conductor.Orchestrator do
     end
   end
 
-  defp parse_issue_number_from_branch("factory/" <> rest) do
-    case String.split(rest, "-", parts: 2) do
-      [issue_number, _suffix] ->
-        case Integer.parse(issue_number) do
+  # Extract issue number from branch names like "factory/42-ts", "fix/42-desc",
+  # "team/fix/42-desc", "42-desc", "fix/42". Uses the final path segment after the last "/".
+  @doc false
+  def parse_issue_number_from_branch(branch) do
+    segment = branch |> String.split("/") |> List.last()
+
+    case String.split(segment, "-", parts: 2) do
+      [issue_str | _] ->
+        case Integer.parse(issue_str) do
           {value, ""} -> {:ok, value}
           _ -> :skip
         end
@@ -938,8 +1022,6 @@ defmodule Conductor.Orchestrator do
         :skip
     end
   end
-
-  defp parse_issue_number_from_branch(_branch), do: :skip
 
   defp mark_operator_blocked(repo, pr_number, reason) do
     Logger.warning("[merge] PR ##{pr_number} blocked: #{reason}")
@@ -1156,6 +1238,26 @@ defmodule Conductor.Orchestrator do
 
       _ ->
         Logger.debug("[merge] no run found for PR ##{pr_number}, skipping store update")
+    end
+  end
+
+  defp conductor_tracked?(repo, pr_number) do
+    try do
+      match?({:ok, _}, Store.find_run_by_pr(repo, pr_number))
+    rescue
+      exception ->
+        Logger.warning(
+          "[merge] failed to check if PR ##{pr_number} is tracked: #{Exception.message(exception)}"
+        )
+
+        false
+    catch
+      :exit, reason ->
+        Logger.warning(
+          "[merge] failed to check if PR ##{pr_number} is tracked: #{inspect(reason)}"
+        )
+
+        false
     end
   end
 

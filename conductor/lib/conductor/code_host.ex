@@ -27,8 +27,8 @@ defmodule Conductor.CodeHost do
   @doc "Return true when at least one completed check has a non-green conclusion."
   @callback checks_failed?(repo :: binary(), pr_number :: pos_integer()) :: boolean()
 
-  @doc "List open factory/* PRs with CI and label metadata."
-  @callback factory_prs(repo :: binary()) :: {:ok, [map()]} | {:error, term()}
+  @doc "List all open PRs with CI and label metadata."
+  @callback open_prs(repo :: binary()) :: {:ok, [map()]} | {:error, term()}
 
   @doc "Fetch review comments on a PR."
   @callback pr_review_comments(repo :: binary(), pr_number :: pos_integer()) ::
@@ -42,7 +42,7 @@ defmodule Conductor.CodeHost do
   @callback add_label(repo :: binary(), pr_number :: pos_integer(), label :: binary()) ::
               :ok | {:error, term()}
 
-  @doc "Find an open PR whose branch starts with factory/<issue_number>-."
+  @doc "Find an open PR associated with the given issue number."
   @callback find_open_pr(repo :: binary(), issue_number :: pos_integer()) ::
               {:ok, map()} | {:error, :not_found}
 
