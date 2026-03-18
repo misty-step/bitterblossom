@@ -237,8 +237,22 @@ defmodule Conductor.RunServer do
 
   defp detect_pr(state) do
     case code_host_mod().find_open_pr(state.repo, state.issue.number) do
-      {:ok, pr} ->
+      {:ok, %{"headRefName" => head_ref} = pr} when head_ref == state.branch ->
         handle_pr_ready(pr, state)
+
+      {:ok, %{"headRefName" => head_ref}} ->
+        fail(
+          state,
+          "pr_branch_mismatch",
+          "builder opened PR on unexpected branch #{inspect(head_ref)} (expected #{inspect(state.branch)})"
+        )
+
+      {:ok, pr} ->
+        fail(
+          state,
+          "pr_detection_failed",
+          "builder PR lookup returned incomplete data: #{inspect(Map.take(pr, ["number", "url", "headRefName"]))}"
+        )
 
       {:error, :not_found} ->
         fail(state, "pr_not_found", "builder completed without opening a PR")

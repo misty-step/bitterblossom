@@ -56,7 +56,19 @@ defmodule Conductor.RunServerTest do
     def add_label(_repo, _pr_number, _label), do: :ok
 
     def find_open_pr(repo, issue_number) do
-      MockState.get({:open_pr, repo, issue_number}, {:error, :not_found})
+      case MockState.get({:open_pr, repo, issue_number}, {:error, :not_found}) do
+        {:ok, %{"headRefName" => _} = pr} ->
+          {:ok, pr}
+
+        {:ok, pr} ->
+          case MockState.get({:prepared_branch, repo, issue_number}) do
+            nil -> {:ok, pr}
+            branch -> {:ok, Map.put(pr, "headRefName", branch)}
+          end
+
+        other ->
+          other
+      end
     end
 
     def pr_state(_repo, _pr_number), do: {:ok, "OPEN"}
@@ -67,17 +79,41 @@ defmodule Conductor.RunServerTest do
   defmodule MockWorkspace do
     alias Conductor.RunServerTest.MockState
 
-    def prepare(_sprite, _repo, _run_id, _branch) do
+    def prepare(_sprite, repo, _run_id, branch) do
+      remember_branch(repo, branch)
       MockState.get(:workspace_result, {:ok, "/tmp/test-worktree"})
     end
 
-    def adopt_branch(_sprite, _repo, _run_id, _branch) do
+    def adopt_branch(_sprite, repo, _run_id, branch) do
+      remember_branch(repo, branch)
       MockState.get(:workspace_result, {:ok, "/tmp/test-worktree"})
     end
 
     def artifact_path(repo, run_id) do
       Conductor.Workspace.artifact_path(repo, run_id)
     end
+
+    defp remember_branch(repo, branch) do
+      case parse_issue_number(branch) do
+        {:ok, issue_number} -> MockState.put({:prepared_branch, repo, issue_number}, branch)
+        :error -> :ok
+      end
+    end
+
+    defp parse_issue_number("factory/" <> rest) do
+      case String.split(rest, "-", parts: 2) do
+        [issue_number, _suffix] ->
+          case Integer.parse(issue_number) do
+            {number, ""} -> {:ok, number}
+            _ -> :error
+          end
+
+        _ ->
+          :error
+      end
+    end
+
+    defp parse_issue_number(_branch), do: :error
   end
 
   # --- Mock Tracker ---
@@ -399,6 +435,29 @@ defmodule Conductor.RunServerTest do
       run = find_run(42)
       assert run["phase"] == "failed"
       assert "pr_not_found" in event_types(run["run_id"])
+    end
+  end
+
+  describe "stale PR branch after dispatch" do
+    test "marks run failed when lookup finds a different factory branch" do
+      MockState.put({:dispatch_result, "test-sprite"}, {:ok, ""})
+
+      MockState.put(
+        {:open_pr, "test/repo", 42},
+        {:ok,
+         %{
+           "number" => 123,
+           "url" => "https://github.com/test/repo/pull/123",
+           "headRefName" => "factory/42-older-run"
+         }}
+      )
+
+      {:ok, pid} = start_run_server()
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "failed"
+      assert "pr_branch_mismatch" in event_types(run["run_id"])
     end
   end
 
