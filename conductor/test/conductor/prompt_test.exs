@@ -189,6 +189,49 @@ defmodule Conductor.PromptTest do
     end
   end
 
+  describe "governance restrictions in builder prompt" do
+    test "prohibits gh pr merge" do
+      prompt =
+        Prompt.build_builder_prompt(@issue, "run-99-gov", "factory/99-gov", "/tmp/result.json")
+
+      assert prompt =~ "gh pr merge"
+      assert prompt =~ "MUST NOT"
+    end
+
+    test "prohibits gh pr close" do
+      prompt =
+        Prompt.build_builder_prompt(@issue, "run-99-gov", "factory/99-gov", "/tmp/result.json")
+
+      assert prompt =~ "gh pr close"
+      assert prompt =~ "MUST NOT"
+    end
+  end
+
+  describe "governance restrictions in fixer prompt" do
+    test "prohibits gh pr merge" do
+      pr = %{"number" => 10, "title" => "Fix CI", "headRefName" => "factory/10-fix"}
+      prompt = Prompt.build_fixer_prompt(pr, "test failed", "issue body")
+      assert prompt =~ "gh pr merge"
+      assert prompt =~ "MUST NOT"
+    end
+  end
+
+  describe "governance restrictions in polisher prompt" do
+    test "prohibits gh pr merge" do
+      pr = %{"number" => 10, "title" => "Fix CI", "headRefName" => "factory/10-fix"}
+      prompt = Prompt.build_polisher_prompt(pr, [], "issue body")
+      assert prompt =~ "gh pr merge"
+      assert prompt =~ "MUST NOT"
+    end
+
+    test "prohibits gh pr close" do
+      pr = %{"number" => 10, "title" => "Fix CI", "headRefName" => "factory/10-fix"}
+      prompt = Prompt.build_polisher_prompt(pr, [], "issue body")
+      assert prompt =~ "gh pr close"
+      assert prompt =~ "MUST NOT"
+    end
+  end
+
   describe "build_builder_prompt/5 with repo_context (project.md)" do
     @project_md_content """
     # Project: Bitterblossom

@@ -176,6 +176,12 @@ defmodule Conductor.Orchestrator do
   end
 
   @impl true
+  def terminate(_reason, _state) do
+    kill_fleet_agents()
+    :ok
+  end
+
+  @impl true
   def handle_info(:poll, %{mode: :idle} = state) do
     {:noreply, state}
   end
@@ -1301,5 +1307,23 @@ defmodule Conductor.Orchestrator do
 
   defp schedule_poll(delay) do
     Process.send_after(self(), :poll, delay)
+  end
+
+  # On shutdown, kill all agent processes and revoke gh auth on every fleet sprite.
+  # Ensures sprites that outlive the conductor cannot exercise merge authority.
+  defp kill_fleet_agents do
+    sprites = Application.get_env(:conductor, :fleet_sprites, [])
+
+    Enum.each(sprites, fn sprite ->
+      name = if is_map(sprite), do: sprite.name, else: to_string(sprite)
+
+      try do
+        worker_mod().kill_and_revoke(name)
+      rescue
+        _ -> :ok
+      catch
+        _, _ -> :ok
+      end
+    end)
   end
 end
