@@ -1,8 +1,8 @@
 defmodule Conductor.Prompt do
   @moduledoc """
-  Builder prompt construction.
+  Prompt construction for sprites (Weaver, Thorn, Fern).
 
-  The new design gives the builder the full lifecycle: implement, create PR,
+  The new design gives Weaver the full lifecycle: implement, create PR,
   handle review feedback, iterate until ready. No conductor re-dispatch.
   """
 

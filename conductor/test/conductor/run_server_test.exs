@@ -397,11 +397,16 @@ defmodule Conductor.RunServerTest do
     end
 
     test "marks run failed" do
-      {:ok, pid} = start_run_server()
-      wait_for_exit(pid)
+      log =
+        capture_log(fn ->
+          {:ok, pid} = start_run_server()
+          wait_for_exit(pid)
+        end)
 
       run = find_run(42)
       assert run["phase"] == "failed"
+      assert log =~ "[weaver][run-42-"
+      assert log =~ "builder_dispatch_failed: exit 139: SEGFAULT"
     end
 
     test "lease released" do
@@ -501,12 +506,17 @@ defmodule Conductor.RunServerTest do
         {:ok, "need operator input"}
       )
 
-      {:ok, pid} = start_run_server()
-      wait_for_exit(pid)
+      log =
+        capture_log(fn ->
+          {:ok, pid} = start_run_server()
+          wait_for_exit(pid)
+        end)
 
       run = find_run(42)
       assert run["phase"] == "blocked"
       assert "run_blocked" in event_types(run["run_id"])
+      assert log =~ "[weaver][run-42-"
+      assert log =~ "blocked: need operator input"
 
       assert MockState.get({:comments, 42}) == [
                "Bitterblossom blocked `#{run["run_id"]}`: need operator input"

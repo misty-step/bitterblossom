@@ -149,9 +149,10 @@ defmodule Conductor.Application do
     end
   end
 
-  defp role_display_name(:fixer), do: "thorn"
-  defp role_display_name(:polisher), do: "fern"
-  defp role_display_name(role), do: to_string(role)
+  @doc false
+  def role_display_name(:fixer), do: "thorn"
+  def role_display_name(:polisher), do: "fern"
+  def role_display_name(role), do: to_string(role)
 
   defp dashboard_children do
     if Application.get_env(:conductor, :start_dashboard, false) do
