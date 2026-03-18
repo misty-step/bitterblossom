@@ -1327,10 +1327,14 @@ defmodule Conductor.Orchestrator do
         worker_mod().kill_and_revoke(name)
       rescue
         e ->
-          Logger.warning("[shutdown] failed to kill/revoke sprite #{name}: #{Exception.message(e)}")
+          Logger.warning(
+            "[shutdown] failed to kill/revoke sprite #{name}: #{Exception.message(e)}"
+          )
       catch
         kind, reason ->
-          Logger.warning("[shutdown] failed to kill/revoke sprite #{name}: #{kind} #{inspect(reason)}")
+          Logger.warning(
+            "[shutdown] failed to kill/revoke sprite #{name}: #{kind} #{inspect(reason)}"
+          )
       end
     end)
   end
