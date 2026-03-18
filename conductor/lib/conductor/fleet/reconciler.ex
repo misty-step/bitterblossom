@@ -123,9 +123,10 @@ defmodule Conductor.Fleet.Reconciler do
   end
 
   defp find_bb do
+    # Path.expand required: System.cmd/3 does not resolve ".." in executable paths
     cond do
-      File.exists?("../bin/bb") -> {:ok, "../bin/bb"}
-      File.exists?("./bin/bb") -> {:ok, "./bin/bb"}
+      File.exists?("../bin/bb") -> {:ok, Path.expand("../bin/bb")}
+      File.exists?("./bin/bb") -> {:ok, Path.expand("./bin/bb")}
       System.find_executable("bb") -> {:ok, "bb"}
       true -> {:error, "bb binary not found — build with: go build -o bin/bb ./cmd/bb"}
     end

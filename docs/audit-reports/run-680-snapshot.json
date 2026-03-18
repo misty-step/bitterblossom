@@ -1,0 +1,1622 @@
+{
+  "run": {
+    "branch": "factory/680-open-all-prs",
+    "builder_sprite": "bb-builder",
+    "completed_at": "2026-03-16T21:41:10.105125Z",
+    "heartbeat_at": "2026-03-16T21:40:46.188540Z",
+    "issue_number": 680,
+    "issue_title": "[P1] Sprites should serve the repo, not just factory/* branches",
+    "phase": "blocked",
+    "picked_at": "2026-03-16T21:31:15.352165Z",
+    "pr_number": 697,
+    "pr_url": "https://github.com/misty-step/bitterblossom/pull/697",
+    "replay_count": 0,
+    "repo": "misty-step/bitterblossom",
+    "run_id": "run-680-1773696675",
+    "semantic_ready": null,
+    "status": "blocked",
+    "turn_count": 0,
+    "updated_at": "2026-03-16T21:41:10.105125Z",
+    "worktree_path": null
+  },
+  "events": [
+    {
+      "events": [
+        {
+          "created_at": "2026-03-16T21:31:15.353338Z",
+          "event_type": "lease_acquired",
+          "id": 81,
+          "payload": {
+            "issue": 680
+          },
+          "run_id": "run-680-1773696675"
+        },
+        {
+          "created_at": "2026-03-16T21:31:15.936219Z",
+          "event_type": "builder_workspace_prepared",
+          "id": 82,
+          "payload": {
+            "workspace": "/home/sprite/workspace/bitterblossom/.bb/conductor/run-680-1773696675/builder-worktree"
+          },
+          "run_id": "run-680-1773696675"
+        },
+        {
+          "created_at": "2026-03-16T21:31:16.141548Z",
+          "event_type": "builder_dispatched",
+          "id": 83,
+          "payload": {
+            "sprite": "bb-builder",
+            "turn": 1
+          },
+          "run_id": "run-680-1773696675"
+        },
+        {
+          "created_at": "2026-03-16T21:40:46.929607Z",
+          "event_type": "builder_complete",
+          "id": 86,
+          "payload": {
+            "turn": 1
+          },
+          "run_id": "run-680-1773696675"
+        },
+        {
+          "created_at": "2026-03-16T21:41:10.103778Z",
+          "event_type": "run_blocked",
+          "id": 87,
+          "payload": {
+            "reason": "GitHub has not finished the required review/check surface yet: repo CI checks are green, but review / Cerberus \u00b7 Architecture, Testing, Correctness, and Security are still in progress, so the PR is not yet fully green."
+          },
+          "run_id": "run-680-1773696675"
+        },
+        {
+          "created_at": "2026-03-16T21:41:10.467914Z",
+          "event_type": "workspace_cleaned",
+          "id": 88,
+          "payload": {},
+          "run_id": "run-680-1773696675"
+        },
+        {
+          "created_at": "2026-03-16T21:41:25.828712Z",
+          "event_type": "retro_complete",
+          "id": 92,
+          "payload": {
+            "action_count": 2,
+            "actions_taken": [
+              {
+                "action": "comment_issue",
+                "existing_issue": "#681",
+                "title": "Run blocked by pending GitHub checks with no resolution path"
+              },
+              {
+                "action": "comment_issue",
+                "existing_issue": "#707",
+                "title": "Zero-turn runs indicate premature dispatch or sprite misconfiguration"
+              }
+            ],
+            "finding_count": 2,
+            "findings": [
+              {
+                "action": "comment_issue",
+                "alignment": "toward",
+                "content": "Run 680 provides another data point: 10 minutes blocked on external CI with no resolution path. This suggests we need either a timeout policy (fail after X minutes) or a polling strategy with exponential backoff. The current 'wait indefinitely' approach creates resource leaks and unclear run states.",
+                "description": "Run 680 completed builder work but remained blocked for 10 minutes on 'review / Cerberus \u00b7 Architecture, Testing, Correctness, and Security are still in progress'. No timeout or retry logic exists.",
+                "existing_issue": "#681",
+                "root_cause": "No governance timeout policy for external CI dependencies",
+                "title": "Run blocked by pending GitHub checks with no resolution path",
+                "type": "operational_bug"
+              },
+              {
+                "action": "comment_issue",
+                "alignment": "toward",
+                "content": "Run 680 had 0 turns despite builder dispatch, suggesting the graceful degradation gap extends beyond just dispatch failures - we also need dispatch success verification. A sprite that doesn't pick up work should trigger immediate failover, not a 10-minute wait.",
+                "description": "Run had 0 turns despite being dispatched to bb-builder sprite. This suggests either the sprite failed to pick up work or the dispatch mechanism is broken.",
+                "existing_issue": "#707",
+                "root_cause": "No visibility into sprite health or dispatch success verification",
+                "title": "Zero-turn runs indicate premature dispatch or sprite misconfiguration",
+                "type": "architectural_gap"
+              }
+            ],
+            "skipped_count": 0,
+            "summary": "Zero-turn run blocked indefinitely on external CI - highlights dispatch verification gap"
+          },
+          "run_id": "run-680-1773696675"
+        }
+      ],
+      "run_id": "run-680-1773696675",
+      "event_count": 7
+    }
+  ],
+  "issue": {
+    "comments": [
+      {
+        "id": "IC_kwDORJkRwM7yNwoo",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "**Design decision**: Remove the `factory/` branch prefix constraint entirely. Sprites should work on anything and everything in the repositories they're pointed at. The fixer fixes any failing CI, the polisher polishes any green PR, the merge loop merges any PR with `lgtm` + green CI.",
+        "createdAt": "2026-03-15T19:07:46Z",
+        "includesCreatedEdit": false,
+        "isMinimized": false,
+        "minimizedReason": "",
+        "reactionGroups": [],
+        "url": "https://github.com/misty-step/bitterblossom/issues/680#issuecomment-4063693352",
+        "viewerDidAuthor": true
+      },
+      {
+        "id": "IC_kwDORJkRwM7yNwu4",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "**Additional design decision**: The `lgtm` label IS the polisher-already-dispatched marker. Once a PR has `lgtm`, no sprite should touch it \u2014 the conductor sanity-checks and squash-merges. The polisher's loop condition should be: green CI AND no `lgtm` label. This also fixes the polisher re-dispatching on already-polished PRs (PR #683 was polished 4 times).",
+        "createdAt": "2026-03-15T19:08:01Z",
+        "includesCreatedEdit": false,
+        "isMinimized": false,
+        "minimizedReason": "",
+        "reactionGroups": [],
+        "url": "https://github.com/misty-step/bitterblossom/issues/680#issuecomment-4063693752",
+        "viewerDidAuthor": true
+      },
+      {
+        "id": "IC_kwDORJkRwM7yogyC",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "Bitterblossom blocked `run-680-1773695823`: GitHub has not attached check runs to the latest PR head commit 00d0ac440113fa5df4839a14c48a682024a33dd0 yet. `gh pr checks 697` currently reports no checks for the branch while the commit status API remains pending, so the PR is not yet truthfully CI-green/mergeable from the remote side.",
+        "createdAt": "2026-03-16T21:30:31Z",
+        "includesCreatedEdit": false,
+        "isMinimized": false,
+        "minimizedReason": "",
+        "reactionGroups": [],
+        "url": "https://github.com/misty-step/bitterblossom/issues/680#issuecomment-4070706306",
+        "viewerDidAuthor": true
+      },
+      {
+        "id": "IC_kwDORJkRwM7yosXg",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "Bitterblossom blocked `run-680-1773696675`: GitHub has not finished the required review/check surface yet: repo CI checks are green, but review / Cerberus \u00b7 Architecture, Testing, Correctness, and Security are still in progress, so the PR is not yet fully green.",
+        "createdAt": "2026-03-16T21:41:11Z",
+        "includesCreatedEdit": false,
+        "isMinimized": false,
+        "minimizedReason": "",
+        "reactionGroups": [],
+        "url": "https://github.com/misty-step/bitterblossom/issues/680#issuecomment-4070753760",
+        "viewerDidAuthor": true
+      }
+    ],
+    "labels": [
+      {
+        "id": "LA_kwDORJkRwM8AAAACXKdOzQ",
+        "name": "bug",
+        "description": "Something isn't working",
+        "color": "d73a4a"
+      },
+      {
+        "id": "LA_kwDORJkRwM8AAAACXMhSDw",
+        "name": "domain/infra",
+        "description": "Dashboard, deployment, monitoring infrastructure",
+        "color": "D4C5F9"
+      },
+      {
+        "id": "LA_kwDORJkRwM8AAAACX6j6ww",
+        "name": "now",
+        "description": "Current sprint focus",
+        "color": "B60205"
+      },
+      {
+        "id": "LA_kwDORJkRwM8AAAACX6j6-g",
+        "name": "next",
+        "description": "Next sprint candidate",
+        "color": "D93F0B"
+      },
+      {
+        "id": "LA_kwDORJkRwM8AAAACX6j7xQ",
+        "name": "effort/m",
+        "description": "1-3 days",
+        "color": "bfd4f2"
+      },
+      {
+        "id": "LA_kwDORJkRwM8AAAACX6nQ0A",
+        "name": "p1",
+        "description": "Essential: foundation and fundamentals",
+        "color": "e36209"
+      }
+    ],
+    "milestone": {
+      "number": 7,
+      "title": "Now: Current Sprint",
+      "description": "Active work. Issues labeled 'now'.",
+      "dueOn": null
+    },
+    "number": 680,
+    "state": "OPEN",
+    "title": "[P1] Sprites should serve the repo, not just factory/* branches",
+    "url": "https://github.com/misty-step/bitterblossom/issues/680"
+  },
+  "pr": {
+    "comments": [
+      {
+        "id": "IC_kwDORJkRwM7ylc6l",
+        "author": {
+          "login": "gemini-code-assist"
+        },
+        "authorAssociation": "NONE",
+        "body": "## Summary of Changes\n\nHello, I'm Gemini Code Assist[^1]! I'm currently reviewing this pull request and will post my feedback shortly. In the meantime, here's a summary to help you and other reviewers quickly get up to speed!\n\nThis pull request extends the functionality of the automated 'sprites' (Fixer, Polisher, and Orchestrator) to encompass all open pull requests within the repository, moving beyond the previous restriction to `factory/*` branches. This change ensures that all PRs, including those created manually, benefit from automated CI failure remediation, code polishing, and auto-merging when appropriate. The underlying code host interface and branch parsing logic have been updated to support this expanded scope, promoting a more consistent and comprehensive automation experience across the development workflow.\n\n### Highlights\n\n* **Expanded Sprite Scope**: The Fixer, Polisher, and Orchestrator sprites now monitor and act on all open pull requests, removing the previous limitation to only `factory/*` branches.\n* **CodeHost Interface Update**: The `factory_prs` callback and its implementation in `Conductor.GitHub` were renamed to `open_prs` to accurately reflect the broader scope of PRs being fetched.\n* **Generalized Branch Parsing**: The `parse_issue_number_from_branch` function in `Orchestrator` was refactored to extract issue numbers from various branch naming conventions (e.g., `fix/N-suffix`, `N-suffix`), not just `factory/N-suffix`.\n* **Enhanced Test Coverage**: A new test was added to `fixer_test.exs` to explicitly verify that the fixer dispatches for non-factory PRs with failed CI.\n\n<details>\n<summary><b>Changelog</b></summary>\n\n* **conductor/lib/conductor/code_host.ex**\n    * Renamed the `@callback factory_prs` to `open_prs` and updated its associated docstring.\n    * Updated the docstring for `find_open_pr` to specify it finds 'conductor PRs'.\n* **conductor/lib/conductor/fixer.ex**\n    * Updated the `@moduledoc` to reflect that the module now polls for 'open PRs' instead of 'factory PRs'.\n    * Replaced calls to `code_host_mod().factory_prs` with `open_prs`.\n    * Removed the `String.starts_with?(branch, \"factory/\")` check from the `needs_fix?` function, allowing all PRs with failed CI to be eligible for fixing.\n    * Updated the warning message for listing PRs to reflect the broader scope.\n* **conductor/lib/conductor/github.ex**\n    * Renamed the `def factory_prs` function to `open_prs` and updated its docstring and `@spec`.\n    * Removed the `Enum.filter` logic that previously restricted the listed PRs to only those with a `factory/` branch prefix.\n    * Updated the docstring for `find_open_pr` to clarify it finds 'conductor PRs'.\n* **conductor/lib/conductor/orchestrator.ex**\n    * Removed the `Enum.filter` that previously restricted `merge_labeled_prs` to only PRs from `factory/` branches.\n    * Refactored the `parse_issue_number_from_branch` function to generalize issue number extraction from various branch naming patterns, removing the specific `factory/` prefix requirement and the catch-all `_branch` clause.\n* **conductor/lib/conductor/polisher.ex**\n    * Updated the `@moduledoc` to reflect that the module now polls for 'open PRs' instead of 'factory PRs'.\n    * Replaced calls to `code_host_mod().factory_prs` with `open_prs`.\n    * Removed the `String.starts_with?(branch, \"factory/\")` check from the `needs_polish?` function, allowing all green PRs without `lgtm` to be eligible for polishing.\n    * Updated the warning message for listing PRs to reflect the broader scope.\n* **conductor/test/conductor/fixer_test.exs**\n    * Updated mock calls from `MockState.put(:factory_prs, ...)` to `MockState.put(:open_prs, ...)`.\n    * Modified a test case to verify that the fixer dispatches for non-factory PRs with failed CI, changing `refute_receive` to `assert_receive`.\n* **conductor/test/conductor/orchestrator_test.exs**\n    * Updated mock calls from `def factory_prs(_repo)` to `def open_prs(_repo)`.\n* **conductor/test/conductor/polisher_test.exs**\n    * Updated mock calls from `MockState.get(:factory_prs, ...)` to `MockState.get(:open_prs, ...)`.\n</details>\n\n<details>\n<summary><b>Activity</b></summary>\n\n* The author performed manual QA, confirming 359 tests passed with 0 failures and `mix format --check-formatted` reported no issues.\n* Test coverage was explicitly addressed by adding a new test in `fixer_test.exs` to cover the scenario of dispatching the fixer for non-factory PRs with failed CI.\n* Existing tests for `polisher_test.exs` and `orchestrator_test.exs` were confirmed to pass with the updated `open_prs` mock.\n* The pull request description indicates it was generated with Claude Code.\n</details>\n\n<details>\n<summary><b>Using Gemini Code Assist</b></summary>\n<br>\n\nThe full guide for Gemini Code Assist can be found on our [documentation page](https://developers.google.com/gemini-code-assist/docs/review-github-code), here are some quick tips.\n\n<b>Invoking Gemini</b>\n\nYou can request assistance from Gemini at any point by creating a comment using either `/gemini <command>` or `@gemini-code-assist <command>`. Below is a summary of the supported commands on the current page.\n\nFeature | Command | Description\n--- | --- | ---\nCode Review | `/gemini review` | Performs a code review for the current pull request in its current state.\nPull Request Summary | `/gemini summary` | Provides a summary of the current pull request in its current state.\nComment | @gemini-code-assist | Responds in comments when explicitly tagged, both in pull request comments and review comments.\nHelp | `/gemini help` | Displays a list of available commands.\n\n<b>Customization</b>\n\nTo customize Gemini Code Assist for GitHub experience, repository maintainers can create a configuration file and/or provide a custom code review style guide (such as PEP-8 for Python) by creating and adding files to a `.gemini/` folder in the base of the repository. Detailed instructions can be found [here](https://developers.google.com/gemini-code-assist/docs/customize-gemini-behavior-github).\n\n<b>Limitations & Feedback</b>\n\nGemini Code Assist may make mistakes. Please leave feedback on any instances where its feedback is incorrect or counter productive. You can react with :thumbsup: and :thumbsdown: on @gemini-code-assist comments. If you're interested in giving your feedback about your experience with Gemini Code Assist for GitHub and other Google products, sign up [here](https://google.qualtrics.com/jfe/form/SV_2cyuGuTWsEw84yG).\n\n<b>You can also get AI-powered code generation, chat, as well as code reviews directly in the IDE at no cost with the [Gemini Code Assist IDE Extension](https://cloud.google.com/products/gemini/code-assist).</b>\n</details>\n\n\n[^1]: Review the [Privacy Notices](https://policies.google.com/privacy), [Generative AI Prohibited Use Policy](https://policies.google.com/terms/generative-ai/use-policy), [Terms of Service](https://policies.google.com/terms), and learn how to configure Gemini Code Assist in GitHub [here](https://developers.google.com/gemini-code-assist/docs/customize-gemini-behavior-github). Gemini can make mistakes, so double check it and [use code with caution](https://support.google.com/legal/answer/13505487).\n",
+        "createdAt": "2026-03-16T18:58:11Z",
+        "includesCreatedEdit": false,
+        "isMinimized": false,
+        "minimizedReason": "",
+        "reactionGroups": [],
+        "url": "https://github.com/misty-step/bitterblossom/pull/697#issuecomment-4069904037",
+        "viewerDidAuthor": false
+      },
+      {
+        "id": "IC_kwDORJkRwM7ylqy2",
+        "author": {
+          "login": "github-actions"
+        },
+        "authorAssociation": "NONE",
+        "body": "<!-- cerberus:verdict -->\n## \u274c Cerberus Verdict: FAIL\n\n**Summary:** 0/4 reviewers passed. 3 failed (Architecture, Testing, Correctness). 1 skipped (Security).\n\n> **\u23f1\ufe0f One or more reviewers timed out.** Some reviews were skipped because they exceeded the configured runtime limit.\n\n**Review Scope:** 10 files changed, +432 / -125 lines\n**Reviewer Breakdown:** 4 total | 0 pass | 0 warn | 3 fail | 1 skip\n**Findings:** 3 critical | 3 major | 2 minor | 1 info\n\n### Skipped Reviews\n\n| Reviewer | Reason | Recovery |\n|----------|--------|----------|\n| Security | Timeout (600s) | Increase `timeout` input or break PR into smaller changes. |\n\n### Wave Summary\n- **Unscoped**: 4 reviewers | 0 pass | 0 warn | 3 fail | 1 skip | 9 findings\n\n### Fix Order\n1. \ud83d\udd34 **Missing hard gate: non-conductor PRs can be auto-merged** (`missing-authorization-gate`) at [`conductor/lib/conductor/orchestrator.ex:733`](https://github.com/misty-step/bitterblossom/blob/95dd74c278dc5e4d8ce2d9231a6b840955f0c18c/conductor/lib/conductor/orchestrator.ex#L733) (Correctness)\n   Fix: Add a conductor tracking check before merging: verify Store.find_run_by_pr returns a run before allowing merge, or add a separate conductor_tracked? check that returns :skip for non-conductor PRs\n2. \ud83d\udd34 **operator_merge_decision allows :unmapped PRs** (`unintended-auto-merge`) at [`conductor/lib/conductor/orchestrator.ex:896`](https://github.com/misty-step/bitterblossom/blob/95dd74c278dc5e4d8ce2d9231a6b840955f0c18c/conductor/lib/conductor/orchestrator.ex#L896) (Correctness)\n   Fix: Change :unmapped -> :skip to prevent auto-merge of non-conductor PRs, or add explicit conductor tracking verification\n3. \ud83d\udd34 **Test asserts non-conductor PR is auto-merged contrary to PR requirements** (`wrong-test-expectation`) at [`conductor/test/conductor/orchestrator_test.exs:1593`](https://github.com/misty-step/bitterblossom/blob/95dd74c278dc5e4d8ce2d9231a6b840955f0c18c/conductor/test/conductor/orchestrator_test.exs#L1593) (Testing)\n   Fix: Change the test to verify non-conductor PRs are NOT merged: change test name to 'non-conductor PR with lgtm is not auto-merged' and assertion to 'assert MockState.get(:merge_calls) == []' (or refute 300 in merge_calls). Also verify the imp\u2026\n\n### Hotspots\n- [`conductor/test/conductor/orchestrator_test.exs`](https://github.com/misty-step/bitterblossom/blob/95dd74c278dc5e4d8ce2d9231a6b840955f0c18c/conductor/test/conductor/orchestrator_test.exs) \u2014 3 reviewers | 1 critical | 1 major | 2 minor\n- [`conductor/lib/conductor/orchestrator.ex`](https://github.com/misty-step/bitterblossom/blob/95dd74c278dc5e4d8ce2d9231a6b840955f0c18c/conductor/lib/conductor/orchestrator.ex) \u2014 2 reviewers | 2 critical | 2 major | 0 minor\n\n### Reviewer Overview\n<details>\n<summary>(click to expand)</summary>\n\n- \u274c **Architecture** (atlas) | `FAIL` | 3 findings | wave `Unscoped` | conf `0.92` | runtime `5m 13s` | model `kimi-k2.5` \u21a9\ufe0f (fallback from `grok-4.20-multi-agent-beta`)\n- \u274c **Testing** (proof) | `FAIL` | 2 findings | wave `Unscoped` | conf `0.95` | runtime `6m 24s` | model `kimi-k2.5` \u21a9\ufe0f (fallback from `grok-4.20-multi-agent-beta`)\n- \u274c **Correctness** (trace) | `FAIL` | 3 findings | wave `Unscoped` | conf `0.92` | runtime `6m 9s` | model `kimi-k2.5` \u21a9\ufe0f (fallback from `grok-4.20-multi-agent-beta`)\n- \u23ed\ufe0f **Security** (guard) | `SKIP` | 1 findings | wave `Unscoped` | conf `0.00` | runtime `10m 1s` | model `kimi-k2.5` \u21a9\ufe0f (fallback from `grok-4.20-multi-agent-beta`)\n\n</details>\n\n### Key Findings\n<details open>\n<summary>(show less)</summary>\n\n- \ud83d\udd34 **Missing hard gate: non-conductor PRs can be auto-merged** (`missing-authorization-gate`) at [`conductor/lib/conductor/orchestrator.ex:733`](https://github.com/misty-step/bitterblossom/blob/95dd74c278dc5e4d8ce2d9231a6b840955f0c18c/conductor/lib/conductor/orchestrator.ex#L733) (Correctness)\n  <details>\n  <summary>Details</summary>\n\n  Description: The PR claims 'Non-conductor PRs are never auto-merged' with a 'hard gate' via Store.find_run_by_pr, but the factory/ prefix filter was removed from merge_labeled_prs without adding any conductor tracking check. The operator_merge_decision function returns :allow for :unmapped PRs (those without conductor runs), allowing non-conductor PRs with lgtm labels to be auto-merged.\n  Suggestion: Add a conductor tracking check before merging: verify Store.find_run_by_pr returns a run before allowing merge, or add a separate conductor_tracked? check that returns :skip for non-conductor PRs\n\n  </details>\n- \ud83d\udd34 **operator_merge_decision allows :unmapped PRs** (`unintended-auto-merge`) at [`conductor/lib/conductor/orchestrator.ex:896`](https://github.com/misty-step/bitterblossom/blob/95dd74c278dc5e4d8ce2d9231a6b840955f0c18c/conductor/lib/conductor/orchestrator.ex#L896) (Correctness)\n  <details>\n  <summary>Details</summary>\n\n  Description: The operator_merge_decision function returns :allow for :unmapped PRs, which are PRs that couldn't be mapped to a conductor run. This includes all non-conductor PRs with branches that don't contain issue numbers. This directly contradicts the acceptance criteria that 'Non-conductor PRs get service but NOT automated merge'.\n  Suggestion: Change :unmapped -> :skip to prevent auto-merge of non-conductor PRs, or add explicit conductor tracking verification\n\n  </details>\n- \ud83d\udd34 **Test asserts non-conductor PR is auto-merged contrary to PR requirements** (`wrong-test-expectation`) at [`conductor/test/conductor/orchestrator_test.exs:1593`](https://github.com/misty-step/bitterblossom/blob/95dd74c278dc5e4d8ce2d9231a6b840955f0c18c/conductor/test/conductor/orchestrator_test.exs#L1593) (Testing)\n  <details>\n  <summary>Details</summary>\n\n  Description: The test 'non-conductor PR with lgtm and green CI is auto-merged' asserts that merge_calls == [300], meaning the PR is merged. This directly contradicts the PR description which states: 'Merge loop processes all lgtm PRs but only merges conductor-tracked ones', 'non-conductor PR with lgtm is not auto-merged', and 'Non-conductor PRs get service but NOT automated merge (defense-in-depth)'. The test should assert that merge_calls is empty (or does not contain 300) to verify the security gate is working.\n  Suggestion: Change the test to verify non-conductor PRs are NOT merged: change test name to 'non-conductor PR with lgtm is not auto-merged' and assertion to 'assert MockState.get(:merge_calls) == []' (or refute 300 in merge_calls). Also verify the implementation adds the missing conductor check in merge_labeled_prs.\n\n  </details>\n- \ud83d\udfe0 **Factory filter removed without replacement check** (`leaky-abstraction`) at [`conductor/lib/conductor/orchestrator.ex:647`](https://github.com/misty-step/bitterblossom/blob/95dd74c278dc5e4d8ce2d9231a6b840955f0c18c/conductor/lib/conductor/orchestrator.ex#L647) (Architecture)\n  <details>\n  <summary>Details</summary>\n\n  Description: The explicit factory/* branch filter that restricted auto-merge to conductor-created PRs was removed from merge_labeled_prs/1. While this enables watching all PRs (the stated goal), the replacement security boundary was not properly implemented. The function now processes ALL lgtm-labeled PRs through operator_check/3, which defaults to allowing merges for untracked PRs.\n  Suggestion: Insert a conductor_tracked?/2 check before the operator_check call, or wrap the merge logic with a verification that the PR originated from conductor (exists in Store with matching pr_number).\n\n  </details>\n- \ud83d\udfe0 **Missing hard gate for non-conductor PR auto-merge** (`security-boundary-regression`) at [`conductor/lib/conductor/orchestrator.ex:733`](https://github.com/misty-step/bitterblossom/blob/95dd74c278dc5e4d8ce2d9231a6b840955f0c18c/conductor/lib/conductor/orchestrator.ex#L733) (Architecture)\n  <details>\n  <summary>Details</summary>\n\n  Description: The PR description claims a 'hard gate' checks Store.find_run_by_pr before merging, but the actual implementation removes the factory/* filter without implementing a replacement check. The operator_merge_decision/2 function returns :allow for :unmapped PRs (non-conductor PRs that don't match branch patterns), allowing them to be auto-merged if they have the lgtm label. This contradicts the documented security model of 'Non-conductor PRs are never auto-merged.'\n  Suggestion: Add an explicit conductor_tracked? check in merge_labeled_prs/1 before calling operator_check/3, or change operator_merge_decision to return :skip instead of :allow for :unmapped PRs to maintain the deny-by-default security posture.\n\n  </details>\n- \ud83d\udfe0 **Test expects non-conductor PR auto-merge behavior** (`test-asserts-bug`) at [`conductor/test/conductor/orchestrator_test.exs:1592`](https://github.com/misty-step/bitterblossom/blob/95dd74c278dc5e4d8ce2d9231a6b840955f0c18c/conductor/test/conductor/orchestrator_test.exs#L1592) (Correctness)\n  <details>\n  <summary>Details</summary>\n\n  Description: The test 'non-conductor PR with lgtm and green CI is auto-merged' explicitly expects and asserts that non-conductor PRs ARE auto-merged (assert MockState.get(:merge_calls) == [300]). This confirms the implementation allows the behavior that the PR description claims is prevented.\n  Suggestion: Fix the implementation to prevent auto-merge of non-conductor PRs, then update the test to verify that merge_calls does NOT include the non-conductor PR\n\n  </details>\n- \ud83d\udfe1 **Missing test for conductor-tracked PR merge happy path** (`missing-coverage`) at [`conductor/test/conductor/orchestrator_test.exs:1589`](https://github.com/misty-step/bitterblossom/blob/95dd74c278dc5e4d8ce2d9231a6b840955f0c18c/conductor/test/conductor/orchestrator_test.exs#L1589) (Testing)\n  <details>\n  <summary>Details</summary>\n\n  Description: While there's a test for non-conductor PR merge behavior, there's no corresponding test to verify that conductor-tracked PRs with lgtm ARE correctly auto-merged. This happy path test would ensure the merge logic works for the intended use case.\n  Suggestion: Add a test 'conductor-tracked PR with lgtm and green CI is auto-merged' that creates a store run for the PR and verifies it gets merged.\n\n  </details>\n- \ud83d\udfe1 **Test contradicts claimed security model** (`documentation-mismatch`) at [`conductor/test/conductor/orchestrator_test.exs:1589`](https://github.com/misty-step/bitterblossom/blob/95dd74c278dc5e4d8ce2d9231a6b840955f0c18c/conductor/test/conductor/orchestrator_test.exs#L1589) (Architecture)\n  <details>\n  <summary>Details</summary>\n\n  Description: The test 'non-conductor PR with lgtm and green CI is auto-merged' explicitly expects the behavior that the PR description claims should NOT happen. This creates confusion about the intended security boundary - either the test is wrong or the PR description is misleading about the security guarantees.\n  Suggestion: Either update the test to expect :skip (non-merge) behavior for non-conductor PRs, or update the PR description to accurately reflect that non-conductor PRs can be auto-merged if they have the lgtm label.\n\n  </details>\n- \ud83d\udd35 **Reviewer timeout after 600s** (`timeout`) at `location n/a` (Security)\n  <details>\n  <summary>Details</summary>\n\n  Description: Reviewer exceeded the configured runtime limit before completing. Files in diff: conductor/lib/conductor/code_host.ex\nconductor/lib/conductor/fixer.ex\nconductor/lib/conductor/github.ex\nconductor/lib/conductor/orchestrator.ex\nconductor/lib/conductor/polisher.ex\nconductor/lib/conductor/prompt.ex\nconductor/test/conductor/fixer_test.exs\nconductor/test/conductor/github_test.exs\nconductor/test/conductor/orchestrator_test.exs\nconductor/test/conductor/polisher_test.exs Fast-path fallback: yes\n  Suggestion: Model provider may be stalled \u2014 check provider status. Increase timeout, reduce diff size, or try a faster model.\n\n  </details>\n\n</details>\n\n<details>\n<summary>Reviewer details (click to expand)</summary>\n\n#### \u274c Architecture (atlas) \u2014 FAIL\n\n- Confidence: `0.92`\n- Wave: `Unscoped`\n- Model: `kimi-k2.5` \u21a9\ufe0f (fallback from `grok-4.20-multi-agent-beta`)\n- Runtime: `5m 13s`\n- Summary: Security boundary regression: the claimed 'hard gate' preventing auto-merge of non-conductor PRs is not implemented; removing the factory/* filter without a replacement conductor_tracked? check weakens the security model from deny-by-default to allow-by-default.\n\n**Findings**\n- \ud83d\udfe0 **Factory filter removed without replacement check** (`leaky-abstraction`) at [`conductor/lib/conductor/orchestrator.ex:647`](https://github.com/misty-step/bitterblossom/blob/95dd74c278dc5e4d8ce2d9231a6b840955f0c18c/conductor/lib/conductor/orchestrator.ex#L647)\n  - The explicit factory/* branch filter that restricted auto-merge to conductor-created PRs was removed from merge_labeled_prs/1. While this enables watching all PRs (the stated goal), the replacement security boundary was not properly implemented. The function now processes ALL lgtm-labeled PRs through operator_check/3, which defaults to allowing merges for untracked PRs.\n  - Suggestion: Insert a conductor_tracked?/2 check before the operator_check call, or wrap the merge logic with a verification that the PR originated from conductor (exists in Store with matching pr_number).\n- \ud83d\udfe0 **Missing hard gate for non-conductor PR auto-merge** (`security-boundary-regression`) at [`conductor/lib/conductor/orchestrator.ex:733`](https://github.com/misty-step/bitterblossom/blob/95dd74c278dc5e4d8ce2d9231a6b840955f0c18c/conductor/lib/conductor/orchestrator.ex#L733)\n  - The PR description claims a 'hard gate' checks Store.find_run_by_pr before merging, but the actual implementation removes the factory/* filter without implementing a replacement check. The operator_merge_decision/2 function returns :allow for :unmapped PRs (non-conductor PRs that don't match branch patterns), allowing them to be auto-merged if they have the lgtm label. This contradicts the documented security model of 'Non-conductor PRs are never auto-merged.'\n  - Suggestion: Add an explicit conductor_tracked? check in merge_labeled_prs/1 before calling operator_check/3, or change operator_merge_decision to return :skip instead of :allow for :unmapped PRs to maintain the deny-by-default security posture.\n- \ud83d\udfe1 **Test contradicts claimed security model** (`documentation-mismatch`) at [`conductor/test/conductor/orchestrator_test.exs:1589`](https://github.com/misty-step/bitterblossom/blob/95dd74c278dc5e4d8ce2d9231a6b840955f0c18c/conductor/test/conductor/orchestrator_test.exs#L1589)\n  - The test 'non-conductor PR with lgtm and green CI is auto-merged' explicitly expects the behavior that the PR description claims should NOT happen. This creates confusion about the intended security boundary - either the test is wrong or the PR description is misleading about the security guarantees.\n  - Suggestion: Either update the test to expect :skip (non-merge) behavior for non-conductor PRs, or update the PR description to accurately reflect that non-conductor PRs can be auto-merged if they have the lgtm label.\n\n#### \u274c Testing (proof) \u2014 FAIL\n\n- Confidence: `0.95`\n- Wave: `Unscoped`\n- Model: `kimi-k2.5` \u21a9\ufe0f (fallback from `grok-4.20-multi-agent-beta`)\n- Runtime: `6m 24s`\n- Summary: Critical test asserts wrong behavior: test confirms non-conductor PRs are auto-merged while PR description explicitly states they should NOT be merged (defense-in-depth security requirement).\n\n**Findings**\n- \ud83d\udd34 **Test asserts non-conductor PR is auto-merged contrary to PR requirements** (`wrong-test-expectation`) at [`conductor/test/conductor/orchestrator_test.exs:1593`](https://github.com/misty-step/bitterblossom/blob/95dd74c278dc5e4d8ce2d9231a6b840955f0c18c/conductor/test/conductor/orchestrator_test.exs#L1593)\n  - The test 'non-conductor PR with lgtm and green CI is auto-merged' asserts that merge_calls == [300], meaning the PR is merged. This directly contradicts the PR description which states: 'Merge loop processes all lgtm PRs but only merges conductor-tracked ones', 'non-conductor PR with lgtm is not auto-merged', and 'Non-conductor PRs get service but NOT automated merge (defense-in-depth)'. The test should assert that merge_calls is empty (or does not contain 300) to verify the security gate is working.\n  - Suggestion: Change the test to verify non-conductor PRs are NOT merged: change test name to 'non-conductor PR with lgtm is not auto-merged' and assertion to 'assert MockState.get(:merge_calls) == []' (or refute 300 in merge_calls). Also verify the implementation adds the missing conductor check in merge_labeled_prs.\n- \ud83d\udfe1 **Missing test for conductor-tracked PR merge happy path** (`missing-coverage`) at [`conductor/test/conductor/orchestrator_test.exs:1589`](https://github.com/misty-step/bitterblossom/blob/95dd74c278dc5e4d8ce2d9231a6b840955f0c18c/conductor/test/conductor/orchestrator_test.exs#L1589)\n  - While there's a test for non-conductor PR merge behavior, there's no corresponding test to verify that conductor-tracked PRs with lgtm ARE correctly auto-merged. This happy path test would ensure the merge logic works for the intended use case.\n  - Suggestion: Add a test 'conductor-tracked PR with lgtm and green CI is auto-merged' that creates a store run for the PR and verifies it gets merged.\n\n#### \u274c Correctness (trace) \u2014 FAIL\n\n- Confidence: `0.92`\n- Wave: `Unscoped`\n- Model: `kimi-k2.5` \u21a9\ufe0f (fallback from `grok-4.20-multi-agent-beta`)\n- Runtime: `6m 9s`\n- Summary: CRITICAL: The claimed 'hard gate' preventing auto-merge of non-conductor PRs is NOT implemented. The removal of the factory/ filter in merge_labeled_prs without adding a conductor tracking check allows ANY PR with lgtm label and green CI to be auto-merged, directly contradicting the PR's stated acceptance criteria and security design.\n\n**Findings**\n- \ud83d\udd34 **Missing hard gate: non-conductor PRs can be auto-merged** (`missing-authorization-gate`) at [`conductor/lib/conductor/orchestrator.ex:733`](https://github.com/misty-step/bitterblossom/blob/95dd74c278dc5e4d8ce2d9231a6b840955f0c18c/conductor/lib/conductor/orchestrator.ex#L733)\n  - The PR claims 'Non-conductor PRs are never auto-merged' with a 'hard gate' via Store.find_run_by_pr, but the factory/ prefix filter was removed from merge_labeled_prs without adding any conductor tracking check. The operator_merge_decision function returns :allow for :unmapped PRs (those without conductor runs), allowing non-conductor PRs with lgtm labels to be auto-merged.\n  - Suggestion: Add a conductor tracking check before merging: verify Store.find_run_by_pr returns a run before allowing merge, or add a separate conductor_tracked? check that returns :skip for non-conductor PRs\n- \ud83d\udd34 **operator_merge_decision allows :unmapped PRs** (`unintended-auto-merge`) at [`conductor/lib/conductor/orchestrator.ex:896`](https://github.com/misty-step/bitterblossom/blob/95dd74c278dc5e4d8ce2d9231a6b840955f0c18c/conductor/lib/conductor/orchestrator.ex#L896)\n  - The operator_merge_decision function returns :allow for :unmapped PRs, which are PRs that couldn't be mapped to a conductor run. This includes all non-conductor PRs with branches that don't contain issue numbers. This directly contradicts the acceptance criteria that 'Non-conductor PRs get service but NOT automated merge'.\n  - Suggestion: Change :unmapped -> :skip to prevent auto-merge of non-conductor PRs, or add explicit conductor tracking verification\n- \ud83d\udfe0 **Test expects non-conductor PR auto-merge behavior** (`test-asserts-bug`) at [`conductor/test/conductor/orchestrator_test.exs:1592`](https://github.com/misty-step/bitterblossom/blob/95dd74c278dc5e4d8ce2d9231a6b840955f0c18c/conductor/test/conductor/orchestrator_test.exs#L1592)\n  - The test 'non-conductor PR with lgtm and green CI is auto-merged' explicitly expects and asserts that non-conductor PRs ARE auto-merged (assert MockState.get(:merge_calls) == [300]). This confirms the implementation allows the behavior that the PR description claims is prevented.\n  - Suggestion: Fix the implementation to prevent auto-merge of non-conductor PRs, then update the test to verify that merge_calls does NOT include the non-conductor PR\n\n#### \u23ed\ufe0f Security (guard) \u2014 SKIP\n\n- Confidence: `0.00`\n- Wave: `Unscoped`\n- Model: `kimi-k2.5` \u21a9\ufe0f (fallback from `grok-4.20-multi-agent-beta`)\n- Runtime: `10m 1s`\n- Summary: Review skipped due to timeout after 600s.\n\n**Findings**\n- \ud83d\udd35 **Reviewer timeout after 600s** (`timeout`) at `N/A`\n  - Reviewer exceeded the configured runtime limit before completing. Files in diff: conductor/lib/conductor/code_host.ex\nconductor/lib/conductor/fixer.ex\nconductor/lib/conductor/github.ex\nconductor/lib/conductor/orchestrator.ex\nconductor/lib/conductor/polisher.ex\nconductor/lib/conductor/prompt.ex\nconductor/test/conductor/fixer_test.exs\nconductor/test/conductor/github_test.exs\nconductor/test/conductor/orchestrator_test.exs\nconductor/test/conductor/polisher_test.exs Fast-path fallback: yes\n  - Suggestion: Model provider may be stalled \u2014 check provider status. Increase timeout, reduce diff size, or try a faster model.\n\n</details>\n\n---\n*Cerberus (master) | Run [#23167131582](https://github.com/misty-step/bitterblossom/actions/runs/23167131582) | Override policy `pr_author` | Fail on verdict `true` | Override command: `/cerberus override sha=95dd74c278dc` (reason required)*\n",
+        "createdAt": "2026-03-16T19:08:47Z",
+        "includesCreatedEdit": true,
+        "isMinimized": false,
+        "minimizedReason": "",
+        "reactionGroups": [],
+        "url": "https://github.com/misty-step/bitterblossom/pull/697#issuecomment-4069960886",
+        "viewerDidAuthor": false
+      },
+      {
+        "id": "IC_kwDORJkRwM7ylyug",
+        "author": {
+          "login": "coderabbitai"
+        },
+        "authorAssociation": "NONE",
+        "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n<!-- This is an auto-generated comment: review paused by coderabbit.ai -->\n\n> [!NOTE]\n> ## Reviews paused\n> \n> It looks like this branch is under active development. To avoid overwhelming you with review comments due to an influx of new commits, CodeRabbit has automatically paused this review. You can configure this behavior by changing the `reviews.auto_review.auto_pause_after_reviewed_commits` setting.\n> \n> Use the following commands to manage reviews:\n> - `@coderabbitai resume` to resume automatic reviews.\n> - `@coderabbitai review` to trigger a single review.\n> \n> Use the checkboxes below for quick actions:\n> - [ ] <!-- {\"checkboxId\": \"7f6cc2e2-2e4e-497a-8c31-c9e4573e93d1\"} --> \u25b6\ufe0f Resume reviews\n> - [ ] <!-- {\"checkboxId\": \"e9bb8d72-00e8-4f67-9cb2-caf3b22574fe\"} --> \ud83d\udd0d Trigger review\n\n<!-- end of auto-generated comment: review paused by coderabbit.ai -->\n<!-- walkthrough_start -->\n\n<details>\n<summary>\ud83d\udcdd Walkthrough</summary>\n\n## Walkthrough\n\nRemove hardcoded `factory/*` branch filtering across PR listing, fixer, polisher, and merge flows; rename `factory_prs/1` \u2192 `open_prs/1`; expose branch-parsing helper; and add a `:may_label` option to the polisher prompt to control lgtm labeling behavior.\n\n## Changes\n\n|Cohort / File(s)|Summary|\n|---|---|\n|**Code Host Behaviour** <br> `conductor/lib/conductor/code_host.ex`|Callback renamed `factory_prs/1` \u2192 `open_prs/1` and docstring updated to \"List all open PRs with CI and label metadata.\" `find_open_pr` doc adjusted to refer to an open PR associated with an issue.|\n|**GitHub Adapter** <br> `conductor/lib/conductor/github.ex`|Removed factory-prefixed filtering and added `open_prs/1` that returns all open PRs with a binary `headRefName`. Added helpers to match PR\u2194issue via branch or PR body; expanded PR JSON mapping.|\n|**Orchestrator** <br> `conductor/lib/conductor/orchestrator.ex`|Introduced `configure_polling/1` and routed `start_loop/1` through it. Made `parse_issue_number_from_branch/1` public (generalized extraction from last path segment) and adjusted issue-number lookup/merge flows and rebase/merge calls.|\n|**Fixer Service** <br> `conductor/lib/conductor/fixer.ex`|Polling now uses `open_prs`; removed branch-prefix filtering in `needs_fix?` (checks CI failure only); updated logs and error messages to reference open PRs.|\n|**Polisher Service** <br> `conductor/lib/conductor/polisher.ex`|Polling now uses `open_prs`; removed branch-prefix filtering in `needs_polish?`; added `conductor_managed?` lookup and pass `may_label` to prompt builder.|\n|**Prompt Rendering** <br> `conductor/lib/conductor/prompt.ex`|`build_polisher_prompt/3` \u2192 `build_polisher_prompt/4 (opts \\\\ [])`; new `:may_label` option controls whether prompt instructs adding `lgtm` or requires human approval. Spec updated.|\n|**Tests & Mocks** <br> `conductor/test/conductor/*_test.exs` <br> (`fixer_test.exs`, `polisher_test.exs`, `orchestrator_test.exs`, `github_test.exs`)|Test mocks and expectations renamed from `factory_prs` \u2192 `open_prs`; MockState keys switched to `:open_prs`. Added/extended tests for branch parsing, issue lookup, open_prs error handling, and behavior on non-`factory/` branches. Adjusted fixtures to include headRefName/body/status fields.|\n\n```mermaid\nsequenceDiagram\n  autonumber\n  participant Scheduler as Scheduler\n  participant CodeHost as CodeHost (open_prs)\n  participant Fixer as Fixer\n  participant Polisher as Polisher\n  participant Orchestrator as Orchestrator\n  participant Dispatcher as Dispatcher\n  rect rgba(200,230,255,0.5)\n    Scheduler->>CodeHost: poll open_prs(repo)\n    CodeHost-->>Scheduler: {:ok, [PR...]}\n  end\n  rect rgba(200,255,200,0.5)\n    Scheduler->>Fixer: evaluate PRs (CI failed?)\n    Fixer->>Dispatcher: build prompt & dispatch fix job\n  end\n  rect rgba(255,230,200,0.5)\n    Scheduler->>Polisher: evaluate PRs (CI green, no lgtm)\n    Polisher->>CodeHost: conductor_managed? lookup\n    Polisher->>Dispatcher: build prompt (may_label?) & dispatch polish job\n  end\n  rect rgba(230,200,255,0.5)\n    Orchestrator->>CodeHost: list labeled PRs\n    Orchestrator->>Orchestrator: parse_issue_number_from_branch(branch)\n    Orchestrator->>CodeHost: merge PRs with lgtm + green CI\n  end\n```\n\n## Estimated code review effort\n\n\ud83c\udfaf 4 (Complex) | \u23f1\ufe0f ~45 minutes\n\n## Possibly related PRs\n\n- misty-step/bitterblossom#664 \u2014 Renames `factory_prs` \u2192 `open_prs` and updates GitHub/phase logic; directly related API and behavior changes.\n\n## Poem\n\n> \ud83d\udc30 I hopped through branches, wide and free,  \n> No longer bound to factory-tree.  \n> I polish, fix, and help merge too\u2014  \n> For every open PR, not only a few.  \n> Hooray! The sprites now serve the whole crew. \u2728\n\n</details>\n\n<!-- walkthrough_end -->\n\n<!-- pre_merge_checks_walkthrough_start -->\n\n<details>\n<summary>\ud83d\udea5 Pre-merge checks | \u2705 4 | \u274c 1</summary>\n\n### \u274c Failed checks (1 warning)\n\n|     Check name     | Status     | Explanation                                                                           | Resolution                                                                         |\n| :----------------: | :--------- | :------------------------------------------------------------------------------------ | :--------------------------------------------------------------------------------- |\n| Docstring Coverage | \u26a0\ufe0f Warning | Docstring coverage is 59.26% which is insufficient. The required threshold is 80.00%. | Write docstrings for the functions missing them to satisfy the coverage threshold. |\n\n<details>\n<summary>\u2705 Passed checks (4 passed)</summary>\n\n|         Check name         | Status   | Explanation                                                                                                                                                                                                                                            |\n| :------------------------: | :------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |\n|      Description Check     | \u2705 Passed | Check skipped - CodeRabbit\u2019s high-level summary is enabled.                                                                                                                                                                                            |\n|         Title check        | \u2705 Passed | The title accurately describes the primary change: removing the factory/* branch filter to serve all repo PRs, which is the core objective of this PR.                                                                                                 |\n|     Linked Issues check    | \u2705 Passed | The PR successfully addresses all behavioral and code requirements from issue `#680`: fixer, polisher, and merge loop now operate on all open PRs regardless of branch prefix, while preserving the lgtm governance gate and factory/ naming convention. |\n| Out of Scope Changes check | \u2705 Passed | All changes are directly aligned with issue `#680` objectives. The API refactoring (factory_prs\u2192open_prs), logic removal of branch filters, conductor-tracking gates, and test updates are all within scope.                                             |\n\n</details>\n\n<sub>\u270f\ufe0f Tip: You can configure your own custom pre-merge checks in the settings.</sub>\n\n</details>\n\n<!-- pre_merge_checks_walkthrough_end -->\n\n<!-- finishing_touch_checkbox_start -->\n\n<details>\n<summary>\u2728 Finishing Touches</summary>\n\n<details>\n<summary>\ud83e\uddea Generate unit tests (beta)</summary>\n\n- [ ] <!-- {\"checkboxId\": \"f47ac10b-58cc-4372-a567-0e02b2c3d479\", \"radioGroupId\": \"utg-output-choice-group-unknown_comment_id\"} -->   Create PR with unit tests\n- [ ] <!-- {\"checkboxId\": \"07f1e7d6-8a8e-4e23-9900-8731c2c87f58\", \"radioGroupId\": \"utg-output-choice-group-unknown_comment_id\"} -->   Post copyable unit tests in a comment\n- [ ] <!-- {\"checkboxId\": \"6ba7b810-9dad-11d1-80b4-00c04fd430c8\", \"radioGroupId\": \"utg-output-choice-group-unknown_comment_id\"} -->   Commit unit tests in branch `factory/680-open-all-prs`\n\n</details>\n\n</details>\n\n<!-- finishing_touch_checkbox_end -->\n\n<!-- pr_review_plan_action_start -->\n\n<details>\n<summary>\ud83d\udcdd Coding Plan</summary>\n\n- [ ] <!-- {\"checkboxId\": \"6ad8a4e1-0b3a-4ea2-9b5b-d82c1f47d1f2\"} --> Generate coding plan for human review comments\n\n</details>\n\n<!-- pr_review_plan_action_end -->\n\n<!-- tips_start -->\n\n---\n\n\n\n<sub>Comment `@coderabbitai help` to get the list of available commands and usage tips.</sub>\n\n<!-- tips_end -->\n\n<!-- internal state start -->\n\n\n<!-- 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 -->\n\n<!-- internal state end -->",
+        "createdAt": "2026-03-16T19:15:08Z",
+        "includesCreatedEdit": true,
+        "isMinimized": false,
+        "minimizedReason": "",
+        "reactionGroups": [],
+        "url": "https://github.com/misty-step/bitterblossom/pull/697#issuecomment-4069993376",
+        "viewerDidAuthor": false
+      }
+    ],
+    "createdAt": "2026-03-16T18:57:48Z",
+    "isDraft": false,
+    "mergeStateStatus": "UNSTABLE",
+    "mergeable": "MERGEABLE",
+    "mergedAt": null,
+    "number": 697,
+    "reviewDecision": "",
+    "reviews": [
+      {
+        "id": "PRR_kwDORJkRwM7ry6sB",
+        "author": {
+          "login": "gemini-code-assist"
+        },
+        "authorAssociation": "NONE",
+        "body": "## Code Review\n\nThe pull request successfully generalizes the sprite services to cover all open PRs, not just those prefixed with `factory/`. This is a significant improvement that aligns with the goal of providing an always-on service. The changes are well-implemented across `CodeHost`, `Fixer`, `Polisher`, and `Orchestrator` modules, with corresponding updates in documentation and tests. The generalization of `parse_issue_number_from_branch` is also a good enhancement.",
+        "submittedAt": "2026-03-16T18:59:47Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "ae6a3edeacb87e69562d38c61494198409608e0d"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7ry9x7",
+        "author": {
+          "login": "chatgpt-codex-connector"
+        },
+        "authorAssociation": "NONE",
+        "body": "\n### \ud83d\udca1 Codex Review\n\nHere are some automated review suggestions for this pull request.\n\n**Reviewed commit:** `ae6a3edeac`\n    \n\n<details> <summary>\u2139\ufe0f About Codex in GitHub</summary>\n<br/>\n\n[Your team has set up Codex to review pull requests in this repo](http://chatgpt.com/codex/settings/general). Reviews are triggered when you\n- Open a pull request for review\n- Mark a draft as ready\n- Comment \"@codex review\".\n\nIf Codex has suggestions, it will comment; otherwise it will react with \ud83d\udc4d.\n\n\n\n\nCodex can also answer questions or update the PR. Try commenting \"@codex address that feedback\".\n            \n</details>",
+        "submittedAt": "2026-03-16T19:02:21Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "ae6a3edeacb87e69562d38c61494198409608e0d"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7rzGWr",
+        "author": {
+          "login": "github-actions"
+        },
+        "authorAssociation": "NONE",
+        "body": "<!-- cerberus:verdict-review sha=ae6a3edeacb8 -->\n**Cerberus inline comments** for `ae6a3edeacb8`\n\n- Inline comments posted: 5/6 (1 unanchored)\n- Canonical report: [verdict report](https://github.com/misty-step/bitterblossom/pull/697#issuecomment-4069960886)\n- Cerberus verdict: `FAIL` (4 reviewers. Failures: 2, warnings: 0, skipped: 0.)\n",
+        "submittedAt": "2026-03-16T19:08:50Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "ae6a3edeacb87e69562d38c61494198409608e0d"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7rzNQo",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "",
+        "submittedAt": "2026-03-16T19:13:40Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "ae6a3edeacb87e69562d38c61494198409608e0d"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7rzNfq",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "",
+        "submittedAt": "2026-03-16T19:13:50Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "ae6a3edeacb87e69562d38c61494198409608e0d"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7rzNhw",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "",
+        "submittedAt": "2026-03-16T19:13:52Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "ae6a3edeacb87e69562d38c61494198409608e0d"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7rzNjw",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "",
+        "submittedAt": "2026-03-16T19:13:53Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "ae6a3edeacb87e69562d38c61494198409608e0d"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7rzNl1",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "",
+        "submittedAt": "2026-03-16T19:13:55Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "ae6a3edeacb87e69562d38c61494198409608e0d"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7rzNny",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "",
+        "submittedAt": "2026-03-16T19:13:57Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "ae6a3edeacb87e69562d38c61494198409608e0d"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7rzNp5",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "",
+        "submittedAt": "2026-03-16T19:13:58Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "ae6a3edeacb87e69562d38c61494198409608e0d"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7rzZFo",
+        "author": {
+          "login": "github-actions"
+        },
+        "authorAssociation": "NONE",
+        "body": "<!-- cerberus:verdict-review sha=ff3f7b47fdf6 -->\n**Cerberus inline comments** for `ff3f7b47fdf6`\n\n- Inline comments posted: 6/8 (top 6/7 anchored (cap 30, 3/file); 1 unanchored)\n- Canonical report: [verdict report](https://github.com/misty-step/bitterblossom/pull/697#issuecomment-4069960886)\n- Cerberus verdict: `FAIL` (4 reviewers. Failures: 3, warnings: 1, skipped: 0.)\n",
+        "submittedAt": "2026-03-16T19:24:05Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "ff3f7b47fdf674fc980200d1395ebe8094fe361b"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7rzcdV",
+        "author": {
+          "login": "coderabbitai"
+        },
+        "authorAssociation": "NONE",
+        "body": "\n\n> [!CAUTION]\n> Some comments are outside the diff and can\u2019t be posted inline due to platform limitations.\n> \n> \n> \n> <details>\n> <summary>\u26a0\ufe0f Outside diff range comments (3)</summary><blockquote>\n> \n> <details>\n> <summary>conductor/lib/conductor/orchestrator.ex (1)</summary><blockquote>\n> \n> `723-750`: _\u26a0\ufe0f Potential issue_ | _\ud83d\udfe0 Major_\n> \n> **Human-style branches still never reach the repo-wide merge path.**\n> \n> `merge_labeled_prs/1` now scans every `lgtm` PR, but the fallback identity check still only succeeds for stored runs or branches whose final segment begins with `<issue_number>-`. A branch like `fix/cerberus-permissions`\u2014which this PR now treats as eligible elsewhere\u2014still resolves to `:skip`, so green `lgtm` PRs are logged and skipped instead of merged.\n> \n> \n> \n> <details>\n> <summary>One way to keep real lookup failures fail-closed without blocking unmapped human PRs</summary>\n> \n> ```elixir\n> defp operator_merge_decision(repo, pr) do\n>   case issue_number_for_pr(repo, pr) do\n>     {:ok, issue_number} -> operator_issue_decision(repo, issue_number)\n>     :unmapped -> :allow\n>     :skip -> :skip\n>   end\n> end\n> ```\n> \n> Then have `issue_number_for_pr_lookup/4` return `:unmapped` specifically for the \u201cno Store row + no parsable issue number\u201d case, while preserving `:skip` for actual Store/GitHub failures.\n> </details>\n> \n> \n> Also applies to: 965-977\n> \n> <details>\n> <summary>\ud83e\udd16 Prompt for AI Agents</summary>\n> \n> ```\n> Verify each finding against the current code and only fix it if needed.\n> \n> In `@conductor/lib/conductor/orchestrator.ex` around lines 723 - 750,\n> operator_merge_decision currently treats any non-OK outcome from\n> issue_number_for_pr as :skip, causing human-style branches (e.g. fix/... without\n> stored run or numeric suffix) to be skipped; update operator_merge_decision to\n> map {:ok, issue_number} -> operator_issue_decision(repo, issue_number),\n> :unmapped -> :allow, and :skip -> :skip, and then adjust\n> issue_number_for_pr_lookup (or the internal helper that decides mapping) so it\n> returns a distinct :unmapped when there is no Store row AND the branch name does\n> not parse to an issue number, while preserving :skip for real\n> lookup/GitHub/Store failures; reference operator_merge_decision/1 and\n> issue_number_for_pr_lookup/4 (or the helper used) when making these changes.\n> ```\n> \n> </details>\n> \n> </blockquote></details>\n> <details>\n> <summary>conductor/lib/conductor/github.ex (2)</summary><blockquote>\n> \n> `428-434`: _\u26a0\ufe0f Potential issue_ | _\ud83d\udfe1 Minor_\n> \n> **Handle non-list JSON instead of crashing.**\n> \n> The new guard fixes the happy path, but `{:ok, _other}` now falls through and raises a `CaseClauseError`. `decode_issue_list/1` already handles this shape explicitly; `open_prs/1` should too.\n> \n> \n> \n> <details>\n> <summary>Suggested hardening</summary>\n> \n> ```diff\n>        case Jason.decode(json) do\n>          {:ok, prs} when is_list(prs) ->\n>            {:ok, Enum.filter(prs, &(is_map(&1) and is_binary(&1[\"headRefName\"])))}\n>  \n> +        {:ok, _other} ->\n> +          {:error, \"invalid JSON\"}\n> +\n>          {:error, _} ->\n>            {:error, \"invalid JSON\"}\n>        end\n> ```\n> </details>\n> \n> <details>\n> <summary>\ud83e\udd16 Prompt for AI Agents</summary>\n> \n> ```\n> Verify each finding against the current code and only fix it if needed.\n> \n> In `@conductor/lib/conductor/github.ex` around lines 428 - 434, The case in\n> open_prs/1 currently matches {:ok, prs} when prs is a list and {:error, _} but\n> falls through for {:ok, other} causing a CaseClauseError; update open_prs/1 to\n> explicitly handle the {:ok, other} shape (similar to decode_issue_list/1) by\n> returning a descriptive error tuple (e.g., {:error, \"expected list\"} or reusing\n> decode_issue_list's error behavior) so non-list JSON doesn't crash the process.\n> Ensure you modify the case inside open_prs/1 and keep the existing filter logic\n> for {:ok, prs} when is_list(prs).\n> ```\n> \n> </details>\n> \n> ---\n> \n> `414-430`: _\u26a0\ufe0f Potential issue_ | _\ud83d\udfe0 Major_\n> \n> **Add `--limit` to avoid silent truncation to 30 PRs.**\n> \n> The `gh pr list` command defaults to 30 items when `--limit` is omitted. This contradicts the docstring \"List all open PRs\" and will cause the fixer/polisher rollout to silently inspect only the first page.\n> \n> Pass `@default_unfiltered_limit` (1000) explicitly:\n> \n> <details>\n> <summary>Fix</summary>\n> \n> ```diff\n>      case Shell.cmd(\"gh\", [\n>             \"pr\",\n>             \"list\",\n>             \"--repo\",\n>             repo,\n>             \"--state\",\n>             \"open\",\n> +           \"--limit\",\n> +           to_string(`@default_unfiltered_limit`),\n>             \"--json\",\n>             \"number,title,body,headRefName,labels,statusCheckRollup\"\n>           ]) do\n> ```\n> </details>\n> \n> <details>\n> <summary>\ud83e\udd16 Prompt for AI Agents</summary>\n> \n> ```\n> Verify each finding against the current code and only fix it if needed.\n> \n> In `@conductor/lib/conductor/github.ex` around lines 414 - 430, The gh CLI call in\n> open_prs/1 omits --limit so it silently returns only 30 PRs; update the\n> Shell.cmd invocation inside open_prs (the call building the args for \"gh\", \"pr\",\n> \"list\") to include the flag \"--limit\" followed by the module attribute\n> `@default_unfiltered_limit` (1000) so all open PRs are returned; ensure you\n> add/keep the attribute definition (`@default_unfiltered_limit`) if not present and\n> insert the two-element args [\"--limit\",\n> Integer.to_string(`@default_unfiltered_limit`)] (or equivalent) into the argument\n> list passed to Shell.cmd.\n> ```\n> \n> </details>\n> \n> </blockquote></details>\n> \n> </blockquote></details>\n\n<details>\n<summary>\ud83e\udd16 Prompt for all review comments with AI agents</summary>\n\n```\nVerify each finding against the current code and only fix it if needed.\n\nOutside diff comments:\nIn `@conductor/lib/conductor/github.ex`:\n- Around line 428-434: The case in open_prs/1 currently matches {:ok, prs} when\nprs is a list and {:error, _} but falls through for {:ok, other} causing a\nCaseClauseError; update open_prs/1 to explicitly handle the {:ok, other} shape\n(similar to decode_issue_list/1) by returning a descriptive error tuple (e.g.,\n{:error, \"expected list\"} or reusing decode_issue_list's error behavior) so\nnon-list JSON doesn't crash the process. Ensure you modify the case inside\nopen_prs/1 and keep the existing filter logic for {:ok, prs} when is_list(prs).\n- Around line 414-430: The gh CLI call in open_prs/1 omits --limit so it\nsilently returns only 30 PRs; update the Shell.cmd invocation inside open_prs\n(the call building the args for \"gh\", \"pr\", \"list\") to include the flag\n\"--limit\" followed by the module attribute `@default_unfiltered_limit` (1000) so\nall open PRs are returned; ensure you add/keep the attribute definition\n(`@default_unfiltered_limit`) if not present and insert the two-element args\n[\"--limit\", Integer.to_string(`@default_unfiltered_limit`)] (or equivalent) into\nthe argument list passed to Shell.cmd.\n\nIn `@conductor/lib/conductor/orchestrator.ex`:\n- Around line 723-750: operator_merge_decision currently treats any non-OK\noutcome from issue_number_for_pr as :skip, causing human-style branches (e.g.\nfix/... without stored run or numeric suffix) to be skipped; update\noperator_merge_decision to map {:ok, issue_number} ->\noperator_issue_decision(repo, issue_number), :unmapped -> :allow, and :skip ->\n:skip, and then adjust issue_number_for_pr_lookup (or the internal helper that\ndecides mapping) so it returns a distinct :unmapped when there is no Store row\nAND the branch name does not parse to an issue number, while preserving :skip\nfor real lookup/GitHub/Store failures; reference operator_merge_decision/1 and\nissue_number_for_pr_lookup/4 (or the helper used) when making these changes.\n```\n\n</details>\n\n---\n\n<details>\n<summary>\u2139\ufe0f Review info</summary>\n\n<details>\n<summary>\u2699\ufe0f Run configuration</summary>\n\n**Configuration used**: defaults\n\n**Review profile**: CHILL\n\n**Plan**: Pro\n\n**Run ID**: `ee7a1abe-e179-45d1-b2c7-0347b0e2a58d`\n\n</details>\n\n<details>\n<summary>\ud83d\udce5 Commits</summary>\n\nReviewing files that changed from the base of the PR and between 55ce96eff22b4a5e3456bed895bb5e4640ec293f and ff3f7b47fdf674fc980200d1395ebe8094fe361b.\n\n</details>\n\n<details>\n<summary>\ud83d\udcd2 Files selected for processing (8)</summary>\n\n* `conductor/lib/conductor/code_host.ex`\n* `conductor/lib/conductor/fixer.ex`\n* `conductor/lib/conductor/github.ex`\n* `conductor/lib/conductor/orchestrator.ex`\n* `conductor/lib/conductor/polisher.ex`\n* `conductor/test/conductor/fixer_test.exs`\n* `conductor/test/conductor/orchestrator_test.exs`\n* `conductor/test/conductor/polisher_test.exs`\n\n</details>\n\n</details>\n\n<!-- This is an auto-generated comment by CodeRabbit for review status -->",
+        "submittedAt": "2026-03-16T19:27:16Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "ff3f7b47fdf674fc980200d1395ebe8094fe361b"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7rzdgs",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "",
+        "submittedAt": "2026-03-16T19:28:11Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "ff3f7b47fdf674fc980200d1395ebe8094fe361b"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7rzdkZ",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "",
+        "submittedAt": "2026-03-16T19:28:14Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "ff3f7b47fdf674fc980200d1395ebe8094fe361b"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7rzdmK",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "",
+        "submittedAt": "2026-03-16T19:28:16Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "ff3f7b47fdf674fc980200d1395ebe8094fe361b"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7rzic2",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "",
+        "submittedAt": "2026-03-16T19:32:29Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "320b4b0ecac8cffa4b2fcb09c8652e24065b6ac9"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7rzie_",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "",
+        "submittedAt": "2026-03-16T19:32:31Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "320b4b0ecac8cffa4b2fcb09c8652e24065b6ac9"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7rzihN",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "",
+        "submittedAt": "2026-03-16T19:32:33Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "320b4b0ecac8cffa4b2fcb09c8652e24065b6ac9"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7rzisY",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "",
+        "submittedAt": "2026-03-16T19:32:41Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "320b4b0ecac8cffa4b2fcb09c8652e24065b6ac9"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7rzivX",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "",
+        "submittedAt": "2026-03-16T19:32:43Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "320b4b0ecac8cffa4b2fcb09c8652e24065b6ac9"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7rzixs",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "",
+        "submittedAt": "2026-03-16T19:32:45Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "320b4b0ecac8cffa4b2fcb09c8652e24065b6ac9"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7rzlZD",
+        "author": {
+          "login": "coderabbitai"
+        },
+        "authorAssociation": "NONE",
+        "body": "\n\n<details>\n<summary>\ud83e\uddf9 Nitpick comments (1)</summary><blockquote>\n\n<details>\n<summary>conductor/lib/conductor/prompt.ex (1)</summary><blockquote>\n\n`187-187`: **Consider extracting the step 7 instruction to a helper for readability.**\n\nThe inline conditional works correctly but the long string makes the line harder to scan. A small helper would improve clarity.\n\n<details>\n<summary>\u267b\ufe0f Optional refactor</summary>\n\n```diff\n+  defp step_7_instruction(true) do\n+    \"7. When all feedback is addressed and CI is green, run:\\n       `gh pr edit --add-label lgtm`\"\n+  end\n+\n+  defp step_7_instruction(false) do\n+    \"7. When all feedback is addressed and CI is green, you are done.\\n       Do NOT add the `lgtm` label \u2014 a human must approve this PR for merge.\"\n+  end\n\n   # In build_polisher_prompt:\n-    #{if may_label, do: \"7. When all feedback is addressed and CI is green, run:\\n       `gh pr edit --add-label lgtm`\", else: \"7. When all feedback is addressed and CI is green, you are done.\\n       Do NOT add the `lgtm` label \u2014 a human must approve this PR for merge.\"}\n+    #{step_7_instruction(may_label)}\n```\n</details>\n\n<details>\n<summary>\ud83e\udd16 Prompt for AI Agents</summary>\n\n```\nVerify each finding against the current code and only fix it if needed.\n\nIn `@conductor/lib/conductor/prompt.ex` at line 187, The long inline conditional\nstring in conductor/lib/conductor/prompt.ex reduces readability\u2014extract it into\na small helper such as step7_instruction(may_label) that returns the appropriate\nmulti-line string; then replace the inline #{if may_label, do: ...} with\n#{step7_instruction(may_label)}. Ensure the helper lives in the same module\n(e.g., Prompt) and uses the same wording for both branches so behavior remains\nunchanged.\n```\n\n</details>\n\n</blockquote></details>\n\n</blockquote></details>\n\n<details>\n<summary>\ud83e\udd16 Prompt for all review comments with AI agents</summary>\n\n```\nVerify each finding against the current code and only fix it if needed.\n\nNitpick comments:\nIn `@conductor/lib/conductor/prompt.ex`:\n- Line 187: The long inline conditional string in\nconductor/lib/conductor/prompt.ex reduces readability\u2014extract it into a small\nhelper such as step7_instruction(may_label) that returns the appropriate\nmulti-line string; then replace the inline #{if may_label, do: ...} with\n#{step7_instruction(may_label)}. Ensure the helper lives in the same module\n(e.g., Prompt) and uses the same wording for both branches so behavior remains\nunchanged.\n```\n\n</details>\n\n---\n\n<details>\n<summary>\u2139\ufe0f Review info</summary>\n\n<details>\n<summary>\u2699\ufe0f Run configuration</summary>\n\n**Configuration used**: defaults\n\n**Review profile**: CHILL\n\n**Plan**: Pro\n\n**Run ID**: `96bc05e6-2c63-48e3-bc40-a3f6e160ccfa`\n\n</details>\n\n<details>\n<summary>\ud83d\udce5 Commits</summary>\n\nReviewing files that changed from the base of the PR and between ff3f7b47fdf674fc980200d1395ebe8094fe361b and 320b4b0ecac8cffa4b2fcb09c8652e24065b6ac9.\n\n</details>\n\n<details>\n<summary>\ud83d\udcd2 Files selected for processing (3)</summary>\n\n* `conductor/lib/conductor/polisher.ex`\n* `conductor/lib/conductor/prompt.ex`\n* `conductor/test/conductor/polisher_test.exs`\n\n</details>\n\n<details>\n<summary>\ud83d\udea7 Files skipped from review as they are similar to previous changes (1)</summary>\n\n* conductor/lib/conductor/polisher.ex\n\n</details>\n\n</details>\n\n<!-- This is an auto-generated comment by CodeRabbit for review status -->",
+        "submittedAt": "2026-03-16T19:35:08Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "320b4b0ecac8cffa4b2fcb09c8652e24065b6ac9"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7rzwbZ",
+        "author": {
+          "login": "github-actions"
+        },
+        "authorAssociation": "NONE",
+        "body": "<!-- cerberus:verdict-review sha=320b4b0ecac8 -->\n**Cerberus inline comments** for `320b4b0ecac8`\n\n- Inline comments posted: 5/5\n- Canonical report: [verdict report](https://github.com/misty-step/bitterblossom/pull/697#issuecomment-4069960886)\n- Cerberus verdict: `FAIL` (4 reviewers. Failures: 2, warnings: 0, skipped: 0.)\n",
+        "submittedAt": "2026-03-16T19:42:18Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "320b4b0ecac8cffa4b2fcb09c8652e24065b6ac9"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7rzzPC",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "",
+        "submittedAt": "2026-03-16T19:43:55Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "320b4b0ecac8cffa4b2fcb09c8652e24065b6ac9"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7r0EVN",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "",
+        "submittedAt": "2026-03-16T19:52:58Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "1560f1f948c4b751511ad4b99c9d64d91a890a15"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7r0TZ4",
+        "author": {
+          "login": "coderabbitai"
+        },
+        "authorAssociation": "NONE",
+        "body": "**Actionable comments posted: 1**\n\n<details>\n<summary>\ud83e\uddf9 Nitpick comments (1)</summary><blockquote>\n\n<details>\n<summary>conductor/lib/conductor/orchestrator.ex (1)</summary><blockquote>\n\n`726-729`: **After hardening `conductor_tracked?/2`, run it before checking CI.**\n\nLine 726 calls `checks_green?/2` before the ownership gate on Line 729. `Conductor.GitHub.checks_green?/2` (`conductor/lib/conductor/github.ex`, Lines 312-317) does another PR-check lookup, so every non-conductor `lgtm` PR now burns avoidable GitHub traffic on each poll. Once the Store lookup is fail-closed, flip the order so the cheap ownership check runs first.\n\n<details>\n<summary>\ud83e\udd16 Prompt for AI Agents</summary>\n\n```\nVerify each finding against the current code and only fix it if needed.\n\nIn `@conductor/lib/conductor/orchestrator.ex` around lines 726 - 729, The CI check\n(code_host_mod().checks_green?/2) is being called before the ownership gate,\ncausing extra GitHub traffic for non-conductor PRs; flip the order so\nconductor_tracked?/2 (the cheap Store/ownership check) runs first and only if it\nreturns true call code_host_mod().checks_green?/2 to avoid unnecessary PR-check\nlookups. Locate the conditional containing code_host_mod().checks_green?(repo,\npr_number) and conductor_tracked?(repo, pr_number) in orchestrator orchestration\nlogic and reorder the checks accordingly, preserving the existing comments and\nbehavior for conductor-tracked PRs.\n```\n\n</details>\n\n</blockquote></details>\n\n</blockquote></details>\n\n<details>\n<summary>\ud83e\udd16 Prompt for all review comments with AI agents</summary>\n\n```\nVerify each finding against the current code and only fix it if needed.\n\nInline comments:\nIn `@conductor/lib/conductor/orchestrator.ex`:\n- Around line 1051-1053: The call to Store.find_run_by_pr/2 inside\nconductor_tracked?/2 must be guarded so Store unavailability doesn't crash the\norchestrator; modify conductor_tracked?/2 to wrap the call in a\ntry/case/rescue/catch like issue_number_for_pr_lookup/4: call\nStore.find_run_by_pr(repo, pr_number) inside a try, match {:ok, _} -> true,\n{:error, :not_found} or :not_found -> false, and on any unexpected\nexception/exit/catch log the error (with context that it occurred in\nconductor_tracked?/2 called from merge_labeled_prs) and return false so\nmerge_labeled_prs/1 can skip the PR instead of crashing. Ensure logging mirrors\nthe pattern and verbosity used by issue_number_for_pr_lookup/4.\n\n---\n\nNitpick comments:\nIn `@conductor/lib/conductor/orchestrator.ex`:\n- Around line 726-729: The CI check (code_host_mod().checks_green?/2) is being\ncalled before the ownership gate, causing extra GitHub traffic for non-conductor\nPRs; flip the order so conductor_tracked?/2 (the cheap Store/ownership check)\nruns first and only if it returns true call code_host_mod().checks_green?/2 to\navoid unnecessary PR-check lookups. Locate the conditional containing\ncode_host_mod().checks_green?(repo, pr_number) and conductor_tracked?(repo,\npr_number) in orchestrator orchestration logic and reorder the checks\naccordingly, preserving the existing comments and behavior for conductor-tracked\nPRs.\n```\n\n</details>\n\n---\n\n<details>\n<summary>\u2139\ufe0f Review info</summary>\n\n<details>\n<summary>\u2699\ufe0f Run configuration</summary>\n\n**Configuration used**: defaults\n\n**Review profile**: CHILL\n\n**Plan**: Pro\n\n**Run ID**: `e72d3bf9-e2a1-46c0-9b9f-0d9dd8319531`\n\n</details>\n\n<details>\n<summary>\ud83d\udce5 Commits</summary>\n\nReviewing files that changed from the base of the PR and between 320b4b0ecac8cffa4b2fcb09c8652e24065b6ac9 and 1560f1f948c4b751511ad4b99c9d64d91a890a15.\n\n</details>\n\n<details>\n<summary>\ud83d\udcd2 Files selected for processing (3)</summary>\n\n* `conductor/lib/conductor/orchestrator.ex`\n* `conductor/test/conductor/orchestrator_test.exs`\n* `conductor/test/conductor/polisher_test.exs`\n\n</details>\n\n</details>\n\n<!-- This is an auto-generated comment by CodeRabbit for review status -->",
+        "submittedAt": "2026-03-16T20:02:51Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "1560f1f948c4b751511ad4b99c9d64d91a890a15"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7r1uMI",
+        "author": {
+          "login": "github-actions"
+        },
+        "authorAssociation": "NONE",
+        "body": "<!-- cerberus:verdict-review sha=83182db7f8f1 -->\n**Cerberus inline comments** for `83182db7f8f1`\n\n- Inline comments posted: 2/2\n- Canonical report: [verdict report](https://github.com/misty-step/bitterblossom/pull/697#issuecomment-4069960886)\n- Cerberus verdict: `WARN` (4 reviewers. Failures: 1, warnings: 0, skipped: 0.)\n",
+        "submittedAt": "2026-03-16T21:21:23Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "83182db7f8f18705ae5bbe96ce5ec6718eb6e7f4"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7r14JP",
+        "author": {
+          "login": "github-actions"
+        },
+        "authorAssociation": "NONE",
+        "body": "<!-- cerberus:verdict-review sha=1d5fa3d620c3 -->\n**Cerberus inline comments** for `1d5fa3d620c3`\n\n- Inline comments posted: 2/3 (1 unanchored)\n- Canonical report: [verdict report](https://github.com/misty-step/bitterblossom/pull/697#issuecomment-4069960886)\n- Cerberus verdict: `FAIL` (4 reviewers. Failures: 2, warnings: 1, skipped: 0.)\n",
+        "submittedAt": "2026-03-16T21:31:18Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "1d5fa3d620c3e4bff5501544d7f79ee63a7b1e97"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7r17tu",
+        "author": {
+          "login": "coderabbitai"
+        },
+        "authorAssociation": "NONE",
+        "body": "**Actionable comments posted: 2**\n\n> [!CAUTION]\n> Some comments are outside the diff and can\u2019t be posted inline due to platform limitations.\n> \n> \n> \n> <details>\n> <summary>\u26a0\ufe0f Outside diff range comments (1)</summary><blockquote>\n> \n> <details>\n> <summary>conductor/lib/conductor/github.ex (1)</summary><blockquote>\n> \n> `556-577`: _\u26a0\ufe0f Potential issue_ | _\ud83d\udfe0 Major_\n> \n> **Paginate `find_open_pr/2` or lift the 200-PR cap.**\n> \n> After removing the `factory/*` scope, this lookup now has to search across every open PR in the repo. Keeping `--limit 200` means older matches outside the first page are invisible, so `dispatch_run/2` can miss an existing PR and create a duplicate branch/PR.\n> \n> \n> <details>\n> <summary>\ud83d\udca1 Minimal fix</summary>\n> \n> ```diff\n>      case Shell.cmd(\"gh\", [\n>             \"pr\",\n>             \"list\",\n>             \"--repo\",\n>             repo,\n>             \"--state\",\n>             \"open\",\n>             \"--limit\",\n> -           \"200\",\n> +           to_string(`@default_unfiltered_limit`),\n>             \"--json\",\n>             \"number,title,body,headRefName,url\"\n>           ]) do\n> ```\n> </details>\n> \n> <details>\n> <summary>\ud83e\udd16 Prompt for AI Agents</summary>\n> \n> ```\n> Verify each finding against the current code and only fix it if needed.\n> \n> In `@conductor/lib/conductor/github.ex` around lines 556 - 577, The current\n> find_open_pr/2 in conductor/lib/conductor/github.ex limits results with \"--limit\n> 200\", which can miss PRs; update the Shell.cmd call in find_open_pr/2 to fetch\n> all open PRs by removing the fixed \"--limit\" argument and using gh's pagination\n> (e.g., add the \"--paginate\" flag) or implement a loop to request pages until\n> exhausted, keeping the existing JSON fields and then continue using\n> pr_matches_issue?/2 to find the matching PR.\n> ```\n> \n> </details>\n> \n> </blockquote></details>\n> \n> </blockquote></details>\n\n<details>\n<summary>\u267b\ufe0f Duplicate comments (1)</summary><blockquote>\n\n<details>\n<summary>conductor/lib/conductor/orchestrator.ex (1)</summary><blockquote>\n\n`734-770`: _\u26a0\ufe0f Potential issue_ | _\ud83d\udd34 Critical_\n\n**Enforce conductor ownership before merge/rebase.**\n\nThis loop still auto-merges any `lgtm` + green PR. `operator_merge_decision/2` only checks hold/cancel directives; when the store lookup misses, Line 899 maps `:unmapped` to `:allow`, so non-conductor PRs still fall through to merge and `attempt_rebase_merge/4`. That regresses the hard gate described in the PR objectives.\n\n<details>\n<summary>\ud83e\udd16 Prompt for AI Agents</summary>\n\n```\nVerify each finding against the current code and only fix it if needed.\n\nIn `@conductor/lib/conductor/orchestrator.ex` around lines 734 - 770, The loop\ncurrently treats :unmapped as :allow so non-conductor PRs get auto-merged;\nadjust the merge gating to enforce conductor ownership by treating :unmapped (or\nany \"not explicitly allowed by store\") as a non-allow outcome. Concretely,\nchange the branch that matches operator_merge_decision(repo, pr) so that\n:unmapped (or any unmapped/store-miss sentinel) does not fall through to the\n:allow case and instead is handled as :skip or {:blocked, ...}; ensure\nattempt_rebase_merge/4 and code_host_mod().merge(repo, pr_number, []) are only\ncalled when operator_merge_decision/2 returns an explicit :allow from the store\nmapping.\n```\n\n</details>\n\n</blockquote></details>\n\n</blockquote></details>\n\n<details>\n<summary>\ud83e\udd16 Prompt for all review comments with AI agents</summary>\n\n```\nVerify each finding against the current code and only fix it if needed.\n\nInline comments:\nIn `@conductor/lib/conductor/github.ex`:\n- Around line 595-610: The branch_matches_issue?/2 function currently only\nrecognizes branches with a suffix (pattern [issue_str, _suffix]) so branches\nlike \"hotfix/123\" or \"factory/42\" don't match; update branch_matches_issue?/2 to\nalso handle a single-segment issue string after the final \"/\" (i.e., cases where\nString.split(... ) yields [issue_str]) by running Integer.parse(issue_str) and\nreturning true when it matches ^issue_number with an empty remainder, otherwise\nfalse; keep the existing suffix branch logic but consolidate both patterns into\nthe same Integer.parse check for {^issue_number, \"\"} to ensure parity with\nConductor.Orchestrator.parse_issue_number_from_branch/1.\n\nIn `@conductor/test/conductor/orchestrator_test.exs`:\n- Around line 1612-1624: The test currently asserts that non-conductor PR `#300`\nis auto-merged, which contradicts the acceptance criteria; change the test to\nflip to the non-conductor skip path by asserting that no merge was attempted:\nreplace the assertion on MockState.get(:merge_calls) to assert it is empty\n(e.g., == []) inside the eventually block, and/or assert the PR appears in\nwhatever skip/queued state your code records for non-conductor PRs; this ensures\nmerge_labeled_prs/1 (and the Orchestrator.start_loop call) enforces the hard\ngate for non-conductor PRs rather than allowing an auto-merge.\n\n---\n\nOutside diff comments:\nIn `@conductor/lib/conductor/github.ex`:\n- Around line 556-577: The current find_open_pr/2 in\nconductor/lib/conductor/github.ex limits results with \"--limit 200\", which can\nmiss PRs; update the Shell.cmd call in find_open_pr/2 to fetch all open PRs by\nremoving the fixed \"--limit\" argument and using gh's pagination (e.g., add the\n\"--paginate\" flag) or implement a loop to request pages until exhausted, keeping\nthe existing JSON fields and then continue using pr_matches_issue?/2 to find the\nmatching PR.\n\n---\n\nDuplicate comments:\nIn `@conductor/lib/conductor/orchestrator.ex`:\n- Around line 734-770: The loop currently treats :unmapped as :allow so\nnon-conductor PRs get auto-merged; adjust the merge gating to enforce conductor\nownership by treating :unmapped (or any \"not explicitly allowed by store\") as a\nnon-allow outcome. Concretely, change the branch that matches\noperator_merge_decision(repo, pr) so that :unmapped (or any unmapped/store-miss\nsentinel) does not fall through to the :allow case and instead is handled as\n:skip or {:blocked, ...}; ensure attempt_rebase_merge/4 and\ncode_host_mod().merge(repo, pr_number, []) are only called when\noperator_merge_decision/2 returns an explicit :allow from the store mapping.\n```\n\n</details>\n\n---\n\n<details>\n<summary>\u2139\ufe0f Review info</summary>\n\n<details>\n<summary>\u2699\ufe0f Run configuration</summary>\n\n**Configuration used**: defaults\n\n**Review profile**: CHILL\n\n**Plan**: Pro\n\n**Run ID**: `eab5d396-01c5-4004-ba65-198e19a4c75b`\n\n</details>\n\n<details>\n<summary>\ud83d\udce5 Commits</summary>\n\nReviewing files that changed from the base of the PR and between 83182db7f8f18705ae5bbe96ce5ec6718eb6e7f4 and 44e734de14f075b6f08366db9ae29a3710fa977f.\n\n</details>\n\n<details>\n<summary>\ud83d\udcd2 Files selected for processing (6)</summary>\n\n* `conductor/lib/conductor/code_host.ex`\n* `conductor/lib/conductor/github.ex`\n* `conductor/lib/conductor/orchestrator.ex`\n* `conductor/lib/conductor/polisher.ex`\n* `conductor/test/conductor/github_test.exs`\n* `conductor/test/conductor/orchestrator_test.exs`\n\n</details>\n\n</details>\n\n<!-- This is an auto-generated comment by CodeRabbit for review status -->",
+        "submittedAt": "2026-03-16T21:34:58Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "44e734de14f075b6f08366db9ae29a3710fa977f"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7r2LiW",
+        "author": {
+          "login": "github-actions"
+        },
+        "authorAssociation": "NONE",
+        "body": "<!-- cerberus:verdict-review sha=95dd74c278dc -->\n**Cerberus inline comments** for `95dd74c278dc`\n\n- Inline comments posted: 5/6 (1 unanchored)\n- Canonical report: [verdict report](https://github.com/misty-step/bitterblossom/pull/697#issuecomment-4069960886)\n- Cerberus verdict: `FAIL` (4 reviewers. Failures: 3, warnings: 0, skipped: 1. Timed out reviewers: guard.)\n",
+        "submittedAt": "2026-03-16T21:49:15Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "95dd74c278dc5e4d8ce2d9231a6b840955f0c18c"
+        }
+      }
+    ],
+    "state": "OPEN",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-16T21:38:17Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23167131446/job/67309938157",
+        "name": "Shell Scripts",
+        "startedAt": "2026-03-16T21:38:05Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-16T21:38:11Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23167131582/job/67309938313",
+        "name": "review / Cerberus \u00b7 preflight",
+        "startedAt": "2026-03-16T21:38:06Z",
+        "status": "COMPLETED",
+        "workflowName": "Cerberus"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-16T21:38:13Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23167131448/job/67309937971",
+        "name": "trufflehog",
+        "startedAt": "2026-03-16T21:38:04Z",
+        "status": "COMPLETED",
+        "workflowName": "Secret Detection"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-16T21:38:11Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23167131446/job/67309938176",
+        "name": "Hook Tests",
+        "startedAt": "2026-03-16T21:38:04Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-16T21:38:24Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23167131582/job/67309957092",
+        "name": "review / Cerberus \u00b7 route",
+        "startedAt": "2026-03-16T21:38:14Z",
+        "status": "COMPLETED",
+        "workflowName": "Cerberus"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-16T21:38:10Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23167131446/job/67309938177",
+        "name": "YAML Lint",
+        "startedAt": "2026-03-16T21:38:05Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-16T21:45:01Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23167131582/job/67309985299",
+        "name": "review / Cerberus \u00b7 Correctness",
+        "startedAt": "2026-03-16T21:38:27Z",
+        "status": "COMPLETED",
+        "workflowName": "Cerberus"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-16T21:44:05Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23167131582/job/67309985331",
+        "name": "review / Cerberus \u00b7 Architecture",
+        "startedAt": "2026-03-16T21:38:27Z",
+        "status": "COMPLETED",
+        "workflowName": "Cerberus"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-16T21:48:59Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23167131582/job/67309985332",
+        "name": "review / Cerberus \u00b7 Security",
+        "startedAt": "2026-03-16T21:38:27Z",
+        "status": "COMPLETED",
+        "workflowName": "Cerberus"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-16T21:45:14Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23167131582/job/67309985308",
+        "name": "review / Cerberus \u00b7 Testing",
+        "startedAt": "2026-03-16T21:38:27Z",
+        "status": "COMPLETED",
+        "workflowName": "Cerberus"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-16T21:49:19Z",
+        "conclusion": "FAILURE",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23167131582/job/67311302584",
+        "name": "review / Cerberus",
+        "startedAt": "2026-03-16T21:49:03Z",
+        "status": "COMPLETED",
+        "workflowName": "Cerberus"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-16T21:38:23Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23167131446/job/67309938232",
+        "name": "Go Checks",
+        "startedAt": "2026-03-16T21:38:12Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-16T21:38:27Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23167131446/job/67309938173",
+        "name": "Elixir Checks",
+        "startedAt": "2026-03-16T21:38:05Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-16T21:38:33Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23167131446/job/67309993087",
+        "name": "merge-gate",
+        "startedAt": "2026-03-16T21:38:29Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "StatusContext",
+        "context": "CodeRabbit",
+        "startedAt": "2026-03-16T21:38:08Z",
+        "state": "SUCCESS",
+        "targetUrl": ""
+      }
+    ],
+    "title": "fix: sprites serve all repo PRs, not just factory/* branches",
+    "updatedAt": "2026-03-16T21:49:15Z",
+    "url": "https://github.com/misty-step/bitterblossom/pull/697"
+  },
+  "review_threads": {
+    "reviewThreads": {
+      "nodes": [
+        {
+          "id": "PRRT_kwDORJkRwM50qqDn",
+          "isResolved": false,
+          "isOutdated": false,
+          "path": "conductor/lib/conductor/github.ex",
+          "line": 432,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "gemini-code-assist"
+                },
+                "body": "![medium](https://www.gstatic.com/codereviewagent/medium-priority.svg)\n\nThe `open_prs` function expects `Jason.decode(json)` to return a list of PRs. If `json` decodes to a non-list value (e.g., a map or a scalar), `Enum.filter` will raise an `ArgumentError`. It's safer to explicitly check if `prs` is a list before attempting to filter it, to ensure robust parsing of external data payloads and prevent unhandled exceptions.\n\n```\n            {:ok, prs} when is_list(prs) ->\n              {:ok, Enum.filter(prs, &(is_map(&1) and is_binary(&1[\"headRefName\"])))}\n```",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2942328093",
+                "createdAt": "2026-03-16T18:59:47Z"
+              },
+              {
+                "author": {
+                  "login": "phrazzld"
+                },
+                "body": "Fixed in ff3f7b4 \u2014 added `when is_list(prs)` guard to the decode match.",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2942395791",
+                "createdAt": "2026-03-16T19:13:40Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM50qsZp",
+          "isResolved": false,
+          "isOutdated": true,
+          "path": "conductor/lib/conductor/orchestrator.ex",
+          "line": null,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "chatgpt-codex-connector"
+                },
+                "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Parse issue number from the final branch segment**\n\nWhen `issue_number_for_pr_lookup/4` falls back to branch parsing, this branch split takes the second path segment (`[_prefix, rest | _]`) rather than the last one. For common branch names with multiple slashes (for example `team/security/680-fix`), parsing uses `\"security\"` and returns `:skip`, which makes `operator_merge_decision/2` skip merge even when the PR has `lgtm` and green CI. This regresses the new \u201cserve all PRs\u201d behavior for multi-segment branch naming schemes.\n\nUseful? React with \ud83d\udc4d\u00a0/ \ud83d\udc4e.",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2942340631",
+                "createdAt": "2026-03-16T19:02:21Z"
+              },
+              {
+                "author": {
+                  "login": "phrazzld"
+                },
+                "body": "Fixed in ff3f7b4 \u2014 now uses `List.last` to take the final path segment. Added 7 unit tests covering factory/, fix/, multi-segment, bare, and no-match patterns.",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2942396546",
+                "createdAt": "2026-03-16T19:13:50Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM50qyUQ",
+          "isResolved": false,
+          "isOutdated": false,
+          "path": "conductor/lib/conductor/orchestrator.ex",
+          "line": 737,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "github-actions"
+                },
+                "body": "\ud83d\udd34 **Merge logic no longer restricted to conductor PRs** (`safety-boundary-violation`) (Architecture)\n\nThe removal of the factory/* branch filter in merge_labeled_prs/1 means the orchestrator will now merge ANY PR with the 'lgtm' label, not just conductor-managed PRs. Combined with the polisher now operating on all PRs, this creates a critical risk of automatic merging of human PRs.\n\nSuggestion: Restore the factory/* filter or implement an alternative identification mechanism (e.g., a 'conductor-managed' label) to distinguish bot-created PRs from human PRs before merging.\n\n<details>\n<summary>Evidence</summary>\n\n```text\ncase code_host_mod().labeled_prs(repo, \"lgtm\") do\n      {:ok, prs} ->\n        Enum.each(prs, fn pr ->\n          pr_number = pr[\"number\"]\n\n          if code_host_mod().checks_green?(repo, pr_number) do\n```\n\n</details>\n",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2942372383",
+                "createdAt": "2026-03-16T19:08:50Z"
+              },
+              {
+                "author": {
+                  "login": "phrazzld"
+                },
+                "body": "Intentional per issue #680 \u2014 the issue explicitly requests: \"Merge loop: merge any PR with lgtm + green CI, not just factory/*.\" The lgtm label is the governance gate. Operators retain override via the `hold` label and `bb: cancel` comment. This broadens the service scope without removing human control.",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2942396656",
+                "createdAt": "2026-03-16T19:13:52Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM50qyUa",
+          "isResolved": false,
+          "isOutdated": false,
+          "path": "conductor/lib/conductor/polisher.ex",
+          "line": 113,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "github-actions"
+                },
+                "body": "\ud83d\udd34 **Polisher operates on all open PRs** (`safety-boundary-violation`) (Architecture)\n\nThe removal of the factory/ prefix check in needs_polish?/2 allows the polisher to dispatch sprites for any open PR with green CI. Since the polisher applies the 'lgtm' label when complete, this indirectly triggers automatic merging of human PRs via the orchestrator.\n\nSuggestion: Maintain branch prefix filtering or add configuration to specify which branch patterns the conductor should manage.\n\n<details>\n<summary>Evidence</summary>\n\n```text\ndefp needs_polish?(pr, _state) do\n    labels = pr[\"labels\"] || []\n    label_names = Enum.map(labels, & &1[\"name\"])\n    checks = pr[\"statusCheckRollup\"] || []\n\n    \"lgtm\" not in label_names and Conductor.GitHub.evaluate_checks(checks)\n  end\n```\n\n</details>\n",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2942372396",
+                "createdAt": "2026-03-16T19:08:50Z"
+              },
+              {
+                "author": {
+                  "login": "phrazzld"
+                },
+                "body": "Same as above \u2014 issue #680 explicitly requests this. The polisher is now an always-on review service for the repo. Human control preserved via `hold` label and `bb: cancel`.",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2942396772",
+                "createdAt": "2026-03-16T19:13:53Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM50qyUd",
+          "isResolved": false,
+          "isOutdated": true,
+          "path": "conductor/lib/conductor/orchestrator.ex",
+          "line": null,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "github-actions"
+                },
+                "body": "\ud83d\udfe0 **Issue number parsing applies universally** (`ambiguous-behavior`) (Architecture)\n\nThe generalized parse_issue_number_from_branch/1 function now attempts to extract issue numbers from all branch names, not just factory/* branches. This could lead to false associations between human PRs and unrelated issues (e.g., branch 'hotfix/123-crash' incorrectly linking to issue #123).\n\nSuggestion: Only parse issue numbers from branches known to be conductor-managed, or validate that the parsed issue matches expected metadata before linking.\n\n<details>\n<summary>Evidence</summary>\n\n```text\ndefp parse_issue_number_from_branch(branch) do\n    segment =\n      case String.split(branch, \"/\") do\n        [_prefix, rest | _] -> rest\n        [rest] -> rest\n      end\n\n    case String.split(segment, \"-\", parts: 2) do\n      [issue_str, _suffix] ->\n        case Integer.parse(issue_str) do\n```\n\n</details>\n",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2942372400",
+                "createdAt": "2026-03-16T19:08:50Z"
+              },
+              {
+                "author": {
+                  "login": "phrazzld"
+                },
+                "body": "This is a fallback path \u2014 `issue_number_for_pr_lookup` first checks the Store for an exact run\u2192PR mapping. Branch parsing only fires when no store record exists. The worst case is :skip (operator checks unavailable), same as the previous behavior for non-factory branches. Now uses List.last to handle nested paths correctly.",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2942396897",
+                "createdAt": "2026-03-16T19:13:55Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM50qyUg",
+          "isResolved": false,
+          "isOutdated": true,
+          "path": "conductor/lib/conductor/orchestrator.ex",
+          "line": null,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "github-actions"
+                },
+                "body": "\ud83d\udfe0 **Untested and brittle branch parsing logic** (`missing-coverage`) (Testing)\n\nThe new `parse_issue_number_from_branch` logic replaces a strict prefix check with a split-based heuristic that has no direct test coverage. The current implementation only works for branches with zero or one slash and incorrectly identifies the segment containing the issue number for nested branches (e.g., `user/fix/123-bug`), contradicting the 'best-effort' generalization goal and the accompanying code comment.\n\nSuggestion: Implement a more robust parsing logic (e.g., using a regex) and add a dedicated test suite for `parse_issue_number_from_branch` covering various branch name patterns (nested, no prefix, no issue number).\n\n<details>\n<summary>Evidence</summary>\n\n```text\nsegment =\n      case String.split(branch, \"/\") do\n        [_prefix, rest | _] -> rest\n        [rest] -> rest\n      end\n```\n\n</details>\n",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2942372404",
+                "createdAt": "2026-03-16T19:08:50Z"
+              },
+              {
+                "author": {
+                  "login": "phrazzld"
+                },
+                "body": "Fixed in ff3f7b4 \u2014 added 7 dedicated unit tests for `parse_issue_number_from_branch/1` covering: factory/, fix/, multi-segment (team/fix/123-bug), bare (7-quick-fix), no-match, no-dash, and prefix ambiguity.",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2942397022",
+                "createdAt": "2026-03-16T19:13:56Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM50qyUk",
+          "isResolved": false,
+          "isOutdated": false,
+          "path": "conductor/test/conductor/polisher_test.exs",
+          "line": 154,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "github-actions"
+                },
+                "body": "\ud83d\udfe0 **Polisher expansion to non-factory branches is untested** (`missing-coverage`) (Testing)\n\nWhile the PR enables the Polisher for all branches, the corresponding test suite was not updated with any tests using non-factory branch patterns. All existing tests in `polisher_test.exs` still use the `factory/` prefix, leaving the new 'generalized' behavior unverified for human-created branches.\n\nSuggestion: Add a new test case to `polisher_test.exs` that uses a human-style branch name (e.g., `fix/some-bug`) and verifies that the polisher correctly dispatches for it.\n\n<details>\n<summary>Evidence</summary>\n\n```text\ntest \"dispatches polisher when factory PR has green CI and no lgtm\" do\n```\n\n</details>\n",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2942372408",
+                "createdAt": "2026-03-16T19:08:50Z"
+              },
+              {
+                "author": {
+                  "login": "phrazzld"
+                },
+                "body": "Fixed in ff3f7b4 \u2014 added test \"dispatches polisher for non-factory PR with green CI\" using `fix/cerberus-permissions` branch.",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2942397183",
+                "createdAt": "2026-03-16T19:13:58Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM50q_hY",
+          "isResolved": false,
+          "isOutdated": false,
+          "path": "conductor/lib/conductor/fixer.ex",
+          "line": 115,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "github-actions"
+                },
+                "body": "\ud83d\udd34 **Fixer and Polisher will interlope on human PRs** (`logic-error`) (Correctness)\n\nThe removal of the `String.starts_with?(branch, \"factory/\")` check in `needs_fix?` (and similar in `needs_polish?`) means the bot will now attempt to automatically push 'fixes' or 'polishing' commits to any developer's branch that happens to have a failing or passing CI status. This is destructive to human workflows and potentially dangerous if the bot's changes are incorrect.\n\nSuggestion: Restore branch filtering or implement an alternative safety check (e.g., checking for a specific label like 'conductor' or verifying the PR creator is the bot) before dispatching sprites.\n\n<details>\n<summary>Evidence</summary>\n\n```text\nchecks = pr[\"statusCheckRollup\"] || []\n    Conductor.GitHub.evaluate_checks_failed(checks)\n```\n\n</details>\n",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2942442871",
+                "createdAt": "2026-03-16T19:24:05Z"
+              },
+              {
+                "author": {
+                  "login": "phrazzld"
+                },
+                "body": "Intentional per issue #680. The issue title is \"Sprites should serve the repo, not just factory/* branches.\" The fixer/polisher are being extended to serve all repo PRs as an always-on service. Human override preserved via `hold` label and `bb: cancel` comment.",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2942461316",
+                "createdAt": "2026-03-16T19:28:11Z"
+              },
+              {
+                "author": {
+                  "login": "phrazzld"
+                },
+                "body": "Fixed in 320b4b0 \u2014 the polisher now checks conductor ownership via Store.find_run_by_pr. Non-conductor PRs get polisher review (feedback addressed, tests verified) but the prompt explicitly prohibits adding the lgtm label. This ensures human PRs require human merge approval.",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2942481520",
+                "createdAt": "2026-03-16T19:32:41Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM50q_hd",
+          "isResolved": false,
+          "isOutdated": false,
+          "path": "conductor/lib/conductor/orchestrator.ex",
+          "line": 737,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "github-actions"
+                },
+                "body": "\ud83d\udd34 **Unauthorized Auto-Merge / RCE via Prompt Injection** (`prompt-injection`) (Security)\n\nThe merge loop now processes all PRs with an 'lgtm' label, removing the check that restricted this to trusted 'factory/' branches. Since the Polisher sprite (an LLM) reads untrusted PR content and can apply 'lgtm', an attacker can use prompt injection to trick the system into auto-merging malicious code from any branch or fork.\n\nSuggestion: Restore the branch prefix check in `merge_labeled_prs` or implement a strict allowlist of trusted branch prefixes. Ensure that automated labels like 'lgtm' applied by LLMs are not inherently trusted for auto-merge on untrusted branches.\n\n<details>\n<summary>Evidence</summary>\n\n```text\ncase code_host_mod().labeled_prs(repo, \"lgtm\") do\n      {:ok, prs} ->\n        Enum.each(prs, fn pr ->\n          pr_number = pr[\"number\"]\n\n          if code_host_mod().checks_green?(repo, pr_number) do\n```\n\n</details>\n",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2942442878",
+                "createdAt": "2026-03-16T19:24:05Z"
+              },
+              {
+                "author": {
+                  "login": "phrazzld"
+                },
+                "body": "The prompt injection risk applies equally to factory/ branches \u2014 CI logs are attacker-controlled regardless of branch prefix. This PR does not change the security boundary; it broadens scope within the same trust model. The operator hold/cancel mechanism provides human override for any PR. Filed as a valid concern for a separate hardening issue but out of scope for this change.",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2942461584",
+                "createdAt": "2026-03-16T19:28:14Z"
+              },
+              {
+                "author": {
+                  "login": "phrazzld"
+                },
+                "body": "Fixed in 320b4b0 \u2014 the polisher now restricts lgtm authority to conductor-tracked PRs. The auto-merge chain (polisher adds lgtm \u2192 merge loop merges) is now gated: non-conductor PRs never receive automated lgtm, so prompt injection in CI logs cannot trigger auto-merge of untrusted branches.",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2942481699",
+                "createdAt": "2026-03-16T19:32:43Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM50q_hh",
+          "isResolved": false,
+          "isOutdated": false,
+          "path": "conductor/lib/conductor/fixer.ex",
+          "line": 112,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "github-actions"
+                },
+                "body": "\ud83d\udfe0 **Erosion of automation namespace** (`leaky-abstraction`) (Architecture)\n\nBy removing the 'factory/' prefix check, the Fixer and Polisher modules now attempt to process and push changes to human-authored branches if CI fails, which may interfere with developer work-in-progress.\n\nSuggestion: Introduce an explicit 'ownership' or 'managed' metadata field in the PR model instead of relying on broad repository-wide polls.\n\n<details>\n<summary>Evidence</summary>\n\n```text\ndefp needs_fix?(pr, _state) ->\n     checks = pr[\"statusCheckRollup\"] || []\n     Conductor.GitHub.evaluate_checks_failed(checks)\n   end\n```\n\n</details>\n",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2942442883",
+                "createdAt": "2026-03-16T19:24:05Z"
+              },
+              {
+                "author": {
+                  "login": "phrazzld"
+                },
+                "body": "Intentional per issue #680 \u2014 same as above. Sprites are being promoted from conductor-specific to repo-wide services.",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2942461695",
+                "createdAt": "2026-03-16T19:28:16Z"
+              },
+              {
+                "author": {
+                  "login": "phrazzld"
+                },
+                "body": "Addressed in 320b4b0 \u2014 the fixer still serves all PRs (pushes CI fixes), but the downstream lgtm \u2192 merge chain is now gated by conductor ownership in the polisher. Non-conductor PRs get service without risking unauthorized merge.",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2942481833",
+                "createdAt": "2026-03-16T19:32:45Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM50q_hl",
+          "isResolved": false,
+          "isOutdated": false,
+          "path": "conductor/lib/conductor/fixer.ex",
+          "line": 112,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "github-actions"
+                },
+                "body": "\ud83d\udfe0 **Malicious Code Injection via Fixer Sprite** (`prompt-injection`) (Security)\n\nThe Fixer sprite now attempts to 'fix' any open PR with failing CI. The Fixer builds its LLM prompt using CI failure logs, which are attacker-controlled. Prompt injection within these logs can trick the Fixer into generating and pushing backdoored code directly to the branch.\n\nSuggestion: Restrict the Fixer to only operate on internal/trusted branches or implement strict sandboxing and secondary validation for its output before it is pushed to the repository.\n\n<details>\n<summary>Evidence</summary>\n\n```text\ndefp needs_fix?(pr, _state) do\n    checks = pr[\"statusCheckRollup\"] || []\n    Conductor.GitHub.evaluate_checks_failed(checks)\n  end\n```\n\n</details>\n",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2942442887",
+                "createdAt": "2026-03-16T19:24:05Z"
+              },
+              {
+                "author": {
+                  "login": "phrazzld"
+                },
+                "body": "Fixed in 320b4b0 \u2014 the polisher now checks `Store.find_run_by_pr` to determine conductor ownership. Non-conductor PRs get review but the prompt explicitly says \"Do NOT add the lgtm label \u2014 a human must approve this PR for merge.\" This closes the CI log prompt injection \u2192 lgtm \u2192 auto-merge chain.",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2942480631",
+                "createdAt": "2026-03-16T19:32:29Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM50q_hq",
+          "isResolved": false,
+          "isOutdated": false,
+          "path": "conductor/lib/conductor/orchestrator.ex",
+          "line": 734,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "github-actions"
+                },
+                "body": "\ud83d\udfe0 **Unconstrained merge authority** (`boundary-integrity`) (Architecture)\n\nThe Orchestrator now merges any PR with an 'lgtm' label and green checks, regardless of origin. This removes the safety boundary that ensured automation only managed its own generated PRs.\n\nSuggestion: Retain a mechanism to verify that a PR is owner-managed before performing destructive or final operations like merging.\n\n<details>\n<summary>Evidence</summary>\n\n```text\ncase code_host_mod().labeled_prs(repo, \"lgtm\") do\n      {:ok, prs} ->\n        Enum.each(prs, fn pr ->\n```\n\n</details>\n",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2942442892",
+                "createdAt": "2026-03-16T19:24:05Z"
+              },
+              {
+                "author": {
+                  "login": "phrazzld"
+                },
+                "body": "Fixed in 320b4b0 \u2014 the polisher only grants lgtm authority to conductor-tracked PRs. Human PRs require a human to add lgtm before auto-merge. This preserves the \"serve all PRs\" feature while maintaining the merge safety boundary.",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2942480744",
+                "createdAt": "2026-03-16T19:32:31Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM50q_hu",
+          "isResolved": false,
+          "isOutdated": false,
+          "path": "conductor/lib/conductor/orchestrator.ex",
+          "line": 737,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "github-actions"
+                },
+                "body": "\ud83d\udfe0 **Orchestrator will automatically merge human PRs** (`logic-error`) (Correctness)\n\nIn `merge_labeled_prs`, the filter that limited automatic merging to `factory/*` branches was removed. The Orchestrator will now automatically merge any PR in the repository that has an 'lgtm' label and green CI, bypassing human control over the merge timing of non-conductor PRs.\n\nSuggestion: Re-add the filter to ensure only bot-managed branches are automatically merged by this task.\n\n<details>\n<summary>Evidence</summary>\n\n```text\ncase code_host_mod().labeled_prs(repo, \"lgtm\") do\n      {:ok, prs} ->\n        Enum.each(prs, fn pr ->\n```\n\n</details>\n",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2942442897",
+                "createdAt": "2026-03-16T19:24:05Z"
+              },
+              {
+                "author": {
+                  "login": "phrazzld"
+                },
+                "body": "Fixed in 320b4b0 \u2014 auto-merge is now safe because non-conductor PRs never receive automated lgtm. The polisher reviews them but explicitly instructs the sprite not to label. A human must add lgtm for their PR to be auto-merged.",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2942480867",
+                "createdAt": "2026-03-16T19:32:33Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM50rQJQ",
+          "isResolved": false,
+          "isOutdated": false,
+          "path": "conductor/lib/conductor/orchestrator.ex",
+          "line": 737,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "github-actions"
+                },
+                "body": "\ud83d\udd34 **Removal of branch-based security boundary for automated merges** (`authz-gap`) (Security)\n\nThe Orchestrator previously only merged PRs from 'factory/' branches. The diff removes this filter, meaning any PR with an 'lgtm' label and green CI will be automatically merged. This allows unauthorized code merges if the 'lgtm' label is applied to a non-system branch by an external actor or another automated process.\n\nSuggestion: Restore the branch prefix check to ensure the orchestrator only merges branches managed by the conductor system.\n\n<details>\n<summary>Evidence</summary>\n\n```text\ndefp merge_labeled_prs(%{repo: repo} = state) do\n     case code_host_mod().labeled_prs(repo, \"lgtm\") do\n       {:ok, prs} ->\n-        prs\n-        |> Enum.filter(fn pr ->\n-          # Only merge PRs from conductor branches (factory/*)\n-          branch = pr[\"headRefName\"] || \"\"\n-          String.starts_with?(branch, \"factory/\")\n-        end)\n-        |> Enum.each(fn pr ->\n```\n\n</details>\n",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2942532578",
+                "createdAt": "2026-03-16T19:42:18Z"
+              },
+              {
+                "author": {
+                  "login": "phrazzld"
+                },
+                "body": "Addressed in 320b4b0 \u2014 the polisher (the only automated system that adds lgtm) now restricts lgtm authority to conductor-tracked PRs via Store.find_run_by_pr. Non-conductor PRs never receive automated lgtm. A human adding lgtm to their own PR is an explicit opt-in for auto-merge, which is the intended behavior per issue #680.",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2942542440",
+                "createdAt": "2026-03-16T19:43:55Z"
+              },
+              {
+                "author": {
+                  "login": "phrazzld"
+                },
+                "body": "Fixed in 1560f1f \u2014 added `conductor_tracked?/2` hard gate in `merge_labeled_prs`. Non-conductor PRs with lgtm are now explicitly skipped. The defense model is two layers: soft gate (prompt instruction) + hard gate (Store check before merge). Test added verifying non-conductor PRs are not auto-merged.",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2942614029",
+                "createdAt": "2026-03-16T19:52:58Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM50rQJS",
+          "isResolved": false,
+          "isOutdated": false,
+          "path": "conductor/lib/conductor/fixer.ex",
+          "line": 115,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "github-actions"
+                },
+                "body": "\ud83d\udfe0 **LLM agent exposure to untrusted input from arbitrary PRs** (`prompt-injection`) (Security)\n\nBy removing the branch prefix check, the Fixer sprite now processes all open PRs, including those from untrusted contributors. This exposes the LLM to prompt injection through PR metadata (titles, bodies) and comments, potentially allowing an attacker to hijack the agent to push unauthorized code or exfiltrate environment secrets.\n\nSuggestion: Maintain a strict allowlist of branches or specific PR authors that automated sprites are permitted to process.\n\n<details>\n<summary>Evidence</summary>\n\n```text\ndefp needs_fix?(pr, _state) do\n-    branch = pr[\"headRefName\"] || \"\"\n     checks = pr[\"statusCheckRollup\"] || []\n-\n-    String.starts_with?(branch, \"factory/\") and\n-      Conductor.GitHub.evaluate_checks_failed(checks)\n```\n\n</details>\n",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2942532581",
+                "createdAt": "2026-03-16T19:42:18Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM50rQJU",
+          "isResolved": false,
+          "isOutdated": false,
+          "path": "conductor/lib/conductor/orchestrator.ex",
+          "line": 734,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "github-actions"
+                },
+                "body": "\ud83d\udfe0 **merge_labeled_prs non-factory PR not tested** (`missing-coverage`) (Testing)\n\nThe factory/ filter was removed from merge_labeled_prs, meaning ANY PR with lgtm label + green CI will now be merged. No test verifies this new behavior for non-factory PRs. The orchestrator mock labeled_prs returns empty by default, and no test sets up labeled PR mock data to exercise the merge path.\n\nSuggestion: Add a test that mocks labeled_prs to return a non-factory PR with lgtm label and verifies the merge is called\n\n<details>\n<summary>Evidence</summary>\n\n```text\ndefp merge_labeled_prs(%{repo: repo} = state) do\n    case code_host_mod().labeled_prs(repo, \"lgtm\") do\n      {:ok, prs} ->\n        Enum.each(prs, fn pr ->\n```\n\n</details>\n",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2942532583",
+                "createdAt": "2026-03-16T19:42:18Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM50rQJW",
+          "isResolved": false,
+          "isOutdated": false,
+          "path": "conductor/lib/conductor/polisher.ex",
+          "line": 182,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "github-actions"
+                },
+                "body": "\ud83d\udfe0 **conductor_managed? true path not tested** (`missing-coverage`) (Testing)\n\nThe new conductor_managed?/2 function determines lgtm labeling authority. The test 'dispatches polisher for non-factory PR without lgtm permission' verifies the false case (prompt contains 'Do NOT add the lgtm label'), but no test verifies the true case - that a conductor-managed PR DOES receive the lgtm command in the prompt. The existing test 'dispatches polisher when factory PR has green CI and no lgtm' only asserts 'prompt =~ \"review\"' which doesn't verify lgtm permission, and doesn't mock Store.find_run_by_pr so it doesn't actually test the conductor-managed path.\n\nSuggestion: Add a test that mocks Store.find_run_by_pr to return {:ok, run} and asserts the prompt contains 'gh pr edit --add-label lgtm'\n\n<details>\n<summary>Evidence</summary>\n\n```text\n# Only conductor-tracked PRs may receive the automated `lgtm` label.\n  # Non-conductor PRs get polisher review but require human merge approval.\n  defp conductor_managed?(repo, pr_number) do\n    match?({:ok, _}, Store.find_run_by_pr(repo, pr_number))\n  end\n```\n\n</details>\n",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2942532586",
+                "createdAt": "2026-03-16T19:42:18Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM50rQJX",
+          "isResolved": false,
+          "isOutdated": false,
+          "path": "conductor/lib/conductor/prompt.ex",
+          "line": 188,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "github-actions"
+                },
+                "body": "\ud83d\udfe0 **Insecure authorization check via LLM prompt instructions** (`authz-gap`) (Security)\n\nThe Polisher relies on natural language instructions in a prompt ('Do NOT add the lgtm label') to enforce authorization for non-managed PRs. This is easily bypassed via prompt injection in the untrusted PR body or comments, leading to unauthorized automated labeling.\n\nSuggestion: Enforce labeling restrictions in the application logic that executes the agent's commands, rather than relying on LLM compliance with negative instructions.\n\n<details>\n<summary>Evidence</summary>\n\n```text\n6. Run tests to ensure nothing is broken\n-    7. When all feedback is addressed and CI is green, run:\n-       `gh pr edit --add-label lgtm`\n+    #{if may_label, do: \"7. When all feedback is addressed and CI is green, run:\\n       `gh pr edit --add-label lgtm`\", else: \"7. When all feedback is addressed and CI is green, you are done.\\n       Do NOT add the `lgtm` label \u2014 a human must approve this PR for merge.\"}\n```\n\n</details>\n",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2942532589",
+                "createdAt": "2026-03-16T19:42:18Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM50roaU",
+          "isResolved": true,
+          "isOutdated": true,
+          "path": "conductor/lib/conductor/orchestrator.ex",
+          "line": null,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "coderabbitai"
+                },
+                "body": "_\u26a0\ufe0f Potential issue_ | _\ud83d\udd34 Critical_\n\n<details>\n<summary>\ud83e\udde9 Analysis chain</summary>\n\n\ud83c\udfc1 Script executed:\n\n```shell\n#!/bin/bash\nset -euo pipefail\n\nrg -n -C 3 'def handle_info\\(:poll|merge_labeled_prs\\(state\\)|defp merge_labeled_prs|defp conductor_tracked\\?|def find_run_by_pr|GenServer.call\\(__MODULE__, \\{:find_run_by_pr' \\\n  conductor/lib/conductor/store.ex \\\n  conductor/lib/conductor/orchestrator.ex\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 2779\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\n#!/bin/bash\nset -euo pipefail\n\n# Find how conductor_tracked? is used in merge_labeled_prs\necho \"=== merge_labeled_prs implementation ===\"\nsed -n '720,750p' conductor/lib/conductor/orchestrator.ex\n\n# Find issue_number_for_pr_lookup to see the error handling pattern\necho -e \"\\n=== issue_number_for_pr_lookup pattern ===\"\nrg -n -A 20 'defp issue_number_for_pr_lookup' conductor/lib/conductor/orchestrator.ex | head -40\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 1544\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\n#!/bin/bash\nset -euo pipefail\n\n# Get issue_number_for_pr_lookup with full context (rescue/catch handling)\necho \"=== issue_number_for_pr_lookup with error handling ===\"\nrg -n -A 30 'defp issue_number_for_pr_lookup' conductor/lib/conductor/orchestrator.ex | head -50\n\n# Also check if Store module might have any GenServer issues\necho -e \"\\n=== Store.handle_call for find_run_by_pr ===\"\nrg -n -B 2 -A 5 'find_run_by_pr' conductor/lib/conductor/store.ex | head -30\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 122\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\n#!/bin/bash\nset -euo pipefail\n\n# Read more of the merge_labeled_prs context and surrounding code\necho \"=== merge_labeled_prs and surrounding context ===\"\nsed -n '720,800p' conductor/lib/conductor/orchestrator.ex\n\n# Search for any rescue/catch patterns in the orchestrator\necho -e \"\\n=== Rescue/catch patterns in orchestrator ===\"\nrg -n 'rescue|catch' conductor/lib/conductor/orchestrator.ex | head -15\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 3375\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\n#!/bin/bash\nset -euo pipefail\n\n# Check rescue/catch patterns in the orchestrator\necho \"=== Example rescue/catch patterns ===\"\nsed -n '410,425p' conductor/lib/conductor/orchestrator.ex\necho \"\"\nsed -n '615,630p' conductor/lib/conductor/orchestrator.ex\necho \"\"\nsed -n '685,700p' conductor/lib/conductor/orchestrator.ex\n\n# Also search for functions with Store calls and rescue\necho -e \"\\n=== Functions that call Store with rescue/catch ===\"\nrg -n -B 5 -A 10 'Store\\.' conductor/lib/conductor/orchestrator.ex | grep -A 10 'rescue\\|catch' | head -30\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 2583\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\n#!/bin/bash\nset -euo pipefail\n\n# Search for issue_number_for_pr_lookup to verify it exists\necho \"=== Search for issue_number_for_pr_lookup ===\"\nrg 'issue_number_for_pr_lookup' conductor/lib/conductor/orchestrator.ex || echo \"Not found\"\n\n# Check if merge_labeled_prs is called in a try/rescue context\necho -e \"\\n=== Context around merge_labeled_prs call ===\"\nsed -n '175,195p' conductor/lib/conductor/orchestrator.ex\n\n# Verify Store.find_run_by_pr is indeed a bare GenServer.call\necho -e \"\\n=== Store.find_run_by_pr implementation ===\"\nsed -n '43,47p' conductor/lib/conductor/store.ex\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 1037\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\n#!/bin/bash\nset -euo pipefail\n\n# Check the full issue_number_for_pr_lookup to see if it has rescue/catch pattern\necho \"=== issue_number_for_pr_lookup implementation ===\"\nrg -n -A 20 'def issue_number_for_pr_lookup' conductor/lib/conductor/orchestrator.ex\n\n# Check if handle_info has any wrapping around the calls\necho -e \"\\n=== Full handle_info(:poll, state) context ===\"\nsed -n '182,200p' conductor/lib/conductor/orchestrator.ex\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 1282\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\n#!/bin/bash\nset -euo pipefail\n\n# Verify the proposed fix format by checking if merge_labeled_prs structure matches pattern\necho \"=== Complete issue_number_for_pr_lookup rescue/catch ===\"\nsed -n '948,970p' conductor/lib/conductor/orchestrator.ex\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 816\n\n---\n\n\n\n</details>\n\n**Wrap `conductor_tracked?` with try/rescue/catch to prevent orchestrator crash on Store unavailability.**\n\n`conductor_tracked?` calls `Store.find_run_by_pr/2` as a bare `GenServer.call` without error handling. When the Store is restarting or temporarily unavailable, this causes an unhandled exit that propagates from `merge_labeled_prs/1` through `Enum.each` and crashes the orchestrator instead of skipping the merge.\n\nHandle `:not_found` as `false` and wrap unexpected Store failures using the same pattern as `issue_number_for_pr_lookup/4` (lines 948\u2013970+): try/case/rescue/catch with appropriate logging.\n\n<details>\n<summary>\ud83d\udee1\ufe0f Proposed fix</summary>\n\n```diff\n defp conductor_tracked?(repo, pr_number) do\n-  match?({:ok, _}, Store.find_run_by_pr(repo, pr_number))\n+  try do\n+    case Store.find_run_by_pr(repo, pr_number) do\n+      {:ok, _run} ->\n+        true\n+\n+      {:error, :not_found} ->\n+        false\n+\n+      {:error, reason} ->\n+        Logger.warning(\n+          \"[merge] failed to verify conductor ownership for PR ##{pr_number}: #{inspect(reason)}\"\n+        )\n+\n+        false\n+    end\n+  rescue\n+    exception ->\n+      Logger.warning(\n+        \"[merge] failed to verify conductor ownership for PR ##{pr_number}: #{Exception.message(exception)}\"\n+      )\n+\n+      false\n+  catch\n+    :exit, reason ->\n+      Logger.warning(\n+        \"[merge] failed to verify conductor ownership for PR ##{pr_number}: #{inspect(reason)}\"\n+      )\n+\n+      false\n+  end\n end\n```\n</details>\n\n<!-- suggestion_start -->\n\n<details>\n<summary>\ud83d\udcdd Committable suggestion</summary>\n\n> \u203c\ufe0f **IMPORTANT**\n> Carefully review the code before committing. Ensure that it accurately replaces the highlighted code, contains no missing lines, and has no issues with indentation. Thoroughly test & benchmark the code to ensure it meets the requirements.\n\n```suggestion\n  defp conductor_tracked?(repo, pr_number) do\n    try do\n      case Store.find_run_by_pr(repo, pr_number) do\n        {:ok, _run} ->\n          true\n\n        {:error, :not_found} ->\n          false\n\n        {:error, reason} ->\n          Logger.warning(\n            \"[merge] failed to verify conductor ownership for PR ##{pr_number}: #{inspect(reason)}\"\n          )\n\n          false\n      end\n    rescue\n      exception ->\n        Logger.warning(\n          \"[merge] failed to verify conductor ownership for PR ##{pr_number}: #{Exception.message(exception)}\"\n        )\n\n        false\n    catch\n      :exit, reason ->\n        Logger.warning(\n          \"[merge] failed to verify conductor ownership for PR ##{pr_number}: #{inspect(reason)}\"\n        )\n\n        false\n    end\n  end\n```\n\n</details>\n\n<!-- suggestion_end -->\n\n<details>\n<summary>\ud83e\udd16 Prompt for AI Agents</summary>\n\n```\nVerify each finding against the current code and only fix it if needed.\n\nIn `@conductor/lib/conductor/orchestrator.ex` around lines 1051 - 1053, The call\nto Store.find_run_by_pr/2 inside conductor_tracked?/2 must be guarded so Store\nunavailability doesn't crash the orchestrator; modify conductor_tracked?/2 to\nwrap the call in a try/case/rescue/catch like issue_number_for_pr_lookup/4: call\nStore.find_run_by_pr(repo, pr_number) inside a try, match {:ok, _} -> true,\n{:error, :not_found} or :not_found -> false, and on any unexpected\nexception/exit/catch log the error (with context that it occurred in\nconductor_tracked?/2 called from merge_labeled_prs) and return false so\nmerge_labeled_prs/1 can skip the PR instead of crashing. Ensure logging mirrors\nthe pattern and verbosity used by issue_number_for_pr_lookup/4.\n```\n\n</details>\n\n<!-- fingerprinting:phantom:medusa:grasshopper -->\n\n<!-- This is an auto-generated comment by CodeRabbit -->\n\n\u2705 Addressed in commit 83182db",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2942678540",
+                "createdAt": "2026-03-16T20:02:50Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM50srgE",
+          "isResolved": false,
+          "isOutdated": false,
+          "path": "conductor/lib/conductor/orchestrator.ex",
+          "line": 989,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "github-actions"
+                },
+                "body": "\ud83d\udfe0 **parse_issue_number_from_branch fails for branches without description suffix** (`logic-error`) (Correctness)\n\nThe pattern match `[issue_str, _suffix]` requires the branch segment to contain a dash. For branches like 'hotfix/123' or 'factory/42' (without description suffix), String.split returns a single-element list which fails to match, causing valid issue numbers to be skipped. This breaks operator merge checks for branches that only contain an issue number.\n\nSuggestion: Handle the single-element case where the entire segment is the issue number: match on `[issue_str, _]` or handle single element lists explicitly, e.g., `case String.split(segment, \"-\", parts: 2) do [issue_str, _] -> ...; [issue_str] -> ... end`\n\n<details>\n<summary>Evidence</summary>\n\n```text\ncase String.split(segment, \"-\", parts: 2) do\n  [issue_str, _suffix] ->\n    case Integer.parse(issue_str) do\n      {value, \"\"} -> {:ok, value}\n      _ -> :skip\n    end\n\n  _ ->\n    :skip\nend\n```\n\n</details>\n",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2943041164",
+                "createdAt": "2026-03-16T21:21:23Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM50srgI",
+          "isResolved": false,
+          "isOutdated": false,
+          "path": "conductor/lib/conductor/polisher.ex",
+          "line": 183,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "github-actions"
+                },
+                "body": "\ud83d\udfe0 **Polisher conductor_managed? lacks error handling present in Orchestrator** (`error-handling`) (Correctness)\n\nThe Orchestrator's conductor_tracked? has comprehensive try/rescue/catch error handling for Store.find_run_by_pr failures, but the Polisher's conductor_managed? has none. If Store.find_run_by_pr raises an exception or exits, the Polisher process will crash while the Orchestrator would handle it gracefully. This inconsistency creates a reliability gap where store outages could crash the Polisher.\n\nSuggestion: Add try/rescue/catch error handling to conductor_managed? to match the Orchestrator's defensive pattern, returning false on any error instead of crashing\n\n<details>\n<summary>Evidence</summary>\n\n```text\ndefp conductor_managed?(repo, pr_number) do\n  match?({:ok, _}, Store.find_run_by_pr(repo, pr_number))\nend\n```\n\n</details>\n",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2943041167",
+                "createdAt": "2026-03-16T21:21:23Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM50sy6W",
+          "isResolved": false,
+          "isOutdated": true,
+          "path": "conductor/test/conductor/orchestrator_test.exs",
+          "line": null,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "github-actions"
+                },
+                "body": "\ud83d\udd34 **Test verifies non-conductor PR auto-merge contradicting PR security claims** (`security-boundary-mismatch`) (Testing)\n\nThe PR description claims 'Non-conductor PRs are never auto-merged' with a 'hard gate' via Store.find_run_by_pr. However, the test 'non-conductor PR with lgtm and green CI is auto-merged' explicitly asserts that merge_calls contains the PR number (300), confirming non-conductor PRs ARE merged. The orchestrator.ex code returns :allow for :unmapped PRs in operator_merge_decision/2, allowing merges without conductor ownership verification. This is either a missing security implementation or dangerously misleading documentation.\n\nSuggestion: Either: (1) Add the claimed 'hard gate' check in merge_labeled_prs that calls Store.find_run_by_pr and skips merge for non-conductor PRs, OR (2) Update PR description to accurately reflect that non-conductor PRs can be auto-merged via the :unmapped path\n\n<details>\n<summary>Evidence</summary>\n\n```text\ntest \"non-conductor PR with lgtm and green CI is auto-merged\" do\n  MockState.put(\n    {:labeled_prs, \"test/repo\", \"lgtm\"},\n    [%{\"number\" => 300, \"headRefName\" => \"fix/cerberus-permissions\"}]\n  )\n  :ok = Orchestrator.start_loop(repo: \"test/repo\", workers: [\"sprite-1\"])\n  eventually(fn ->\n    assert MockState.get(:merge_calls) == [300]\n  end)\nend\n```\n\n</details>\n",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2943080565",
+                "createdAt": "2026-03-16T21:31:18Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM50sy6h",
+          "isResolved": false,
+          "isOutdated": true,
+          "path": "conductor/test/conductor/orchestrator_test.exs",
+          "line": null,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "github-actions"
+                },
+                "body": "\ud83d\udfe0 **Test asserts non-conductor PRs ARE auto-merged, contradicting PR requirements** (`test-contradicts-requirement`) (Correctness)\n\nThe test 'non-conductor PR with lgtm and green CI is auto-merged' asserts that merge_calls includes the non-conductor PR. This directly contradicts the PR description which states 'Non-conductor PRs are never auto-merged' and the acceptance criteria 'Non-conductor PRs get service but NOT automated merge (defense-in-depth)'. Either the test is wrong or the requirements are not implemented.\n\nSuggestion: The test should assert that non-conductor PRs are NOT merged (refute merge_calls includes 300) to match the stated requirements, OR the PR description and acceptance criteria should be updated to reflect that non-conductor PRs can be auto-merged.\n\n<details>\n<summary>Evidence</summary>\n\n```text\ndescribe \"merge handles non-conductor PRs\" do\n  test \"non-conductor PR with lgtm and green CI is auto-merged\" do\n    MockState.put(\n      {:labeled_prs, \"test/repo\", \"lgtm\"},\n      [%{\"number\" => 300, \"headRefName\" => \"fix/cerberus-permissions\"}]\n    )\n    :ok = Orchestrator.start_loop(repo: \"test/repo\", workers: [\"sprite-1\"])\n    eventually(fn ->\n      assert MockState.get(:merge_calls) == [300]\n    end)\n  end\nend\n```\n\n</details>\n",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2943080578",
+                "createdAt": "2026-03-16T21:31:18Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM50s1uK",
+          "isResolved": true,
+          "isOutdated": false,
+          "path": "conductor/lib/conductor/github.ex",
+          "line": 610,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "coderabbitai"
+                },
+                "body": "_\u26a0\ufe0f Potential issue_ | _\ud83d\udfe0 Major_\n\n**Accept issue-only branch names in `branch_matches_issue?/2`.**\n\nThis helper only matches `[issue_str, _suffix]`, so branches like `hotfix/123` or `factory/42` never associate with the issue. `Conductor.Orchestrator.parse_issue_number_from_branch/1` now accepts those forms, so PR adoption and merge/operator lookup paths can disagree on the same branch.\n\n\n<details>\n<summary>\ud83d\udca1 Suggested fix</summary>\n\n```diff\n   defp branch_matches_issue?(branch, issue_number) when is_binary(branch) do\n     branch\n     |> String.split(\"/\")\n     |> List.last()\n     |> String.split(\"-\", parts: 2)\n     |> case do\n+      [issue_str] ->\n+        case Integer.parse(issue_str) do\n+          {^issue_number, \"\"} -> true\n+          _ -> false\n+        end\n+\n       [issue_str, _suffix] ->\n         case Integer.parse(issue_str) do\n           {^issue_number, \"\"} -> true\n           _ -> false\n         end\n```\n</details>\n\n<details>\n<summary>\ud83e\udd16 Prompt for AI Agents</summary>\n\n```\nVerify each finding against the current code and only fix it if needed.\n\nIn `@conductor/lib/conductor/github.ex` around lines 595 - 610, The\nbranch_matches_issue?/2 function currently only recognizes branches with a\nsuffix (pattern [issue_str, _suffix]) so branches like \"hotfix/123\" or\n\"factory/42\" don't match; update branch_matches_issue?/2 to also handle a\nsingle-segment issue string after the final \"/\" (i.e., cases where\nString.split(... ) yields [issue_str]) by running Integer.parse(issue_str) and\nreturning true when it matches ^issue_number with an empty remainder, otherwise\nfalse; keep the existing suffix branch logic but consolidate both patterns into\nthe same Integer.parse check for {^issue_number, \"\"} to ensure parity with\nConductor.Orchestrator.parse_issue_number_from_branch/1.\n```\n\n</details>\n\n<!-- fingerprinting:phantom:medusa:grasshopper -->\n\n<!-- This is an auto-generated comment by CodeRabbit -->\n\n\u2705 Addressed in commits cfa43f2 to b4bb173",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2943095466",
+                "createdAt": "2026-03-16T21:34:55Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM50s1uS",
+          "isResolved": false,
+          "isOutdated": false,
+          "path": "conductor/test/conductor/orchestrator_test.exs",
+          "line": 1604,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "coderabbitai"
+                },
+                "body": "_\u26a0\ufe0f Potential issue_ | _\ud83d\udfe0 Major_\n\n**Flip this regression to the non-conductor skip path.**\n\nThe acceptance criteria say non-conductor PRs may be serviced but must not be auto-merged. Asserting `merge_calls == [300]` blesses the opposite behavior and will hide the missing hard gate in `merge_labeled_prs/1`.\n\n\n<details>\n<summary>\ud83d\udca1 Suggested test update</summary>\n\n```diff\n-  describe \"merge handles non-conductor PRs\" do\n-    test \"non-conductor PR with lgtm and green CI is auto-merged\" do\n+  describe \"merge handles non-conductor PRs\" do\n+    test \"non-conductor PR with lgtm and green CI is not auto-merged\" do\n       MockState.put(\n         {:labeled_prs, \"test/repo\", \"lgtm\"},\n         [%{\"number\" => 300, \"headRefName\" => \"fix/cerberus-permissions\"}]\n       )\n\n       :ok = Orchestrator.start_loop(repo: \"test/repo\", workers: [\"sprite-1\"])\n\n-      eventually(fn ->\n-        assert MockState.get(:merge_calls) == [300]\n-      end)\n+      Process.sleep(100)\n+      assert MockState.get(:merge_calls) == []\n     end\n   end\n```\n</details>\n\n<!-- suggestion_start -->\n\n<details>\n<summary>\ud83d\udcdd Committable suggestion</summary>\n\n> \u203c\ufe0f **IMPORTANT**\n> Carefully review the code before committing. Ensure that it accurately replaces the highlighted code, contains no missing lines, and has no issues with indentation. Thoroughly test & benchmark the code to ensure it meets the requirements.\n\n```suggestion\n  describe \"merge handles non-conductor PRs\" do\n    test \"non-conductor PR with lgtm and green CI is not auto-merged\" do\n      MockState.put(\n        {:labeled_prs, \"test/repo\", \"lgtm\"},\n        [%{\"number\" => 300, \"headRefName\" => \"fix/cerberus-permissions\"}]\n      )\n\n      :ok = Orchestrator.start_loop(repo: \"test/repo\", workers: [\"sprite-1\"])\n\n      Process.sleep(100)\n      assert MockState.get(:merge_calls) == []\n    end\n  end\n```\n\n</details>\n\n<!-- suggestion_end -->\n\n<details>\n<summary>\ud83e\udd16 Prompt for AI Agents</summary>\n\n```\nVerify each finding against the current code and only fix it if needed.\n\nIn `@conductor/test/conductor/orchestrator_test.exs` around lines 1612 - 1624, The\ntest currently asserts that non-conductor PR `#300` is auto-merged, which\ncontradicts the acceptance criteria; change the test to flip to the\nnon-conductor skip path by asserting that no merge was attempted: replace the\nassertion on MockState.get(:merge_calls) to assert it is empty (e.g., == [])\ninside the eventually block, and/or assert the PR appears in whatever\nskip/queued state your code records for non-conductor PRs; this ensures\nmerge_labeled_prs/1 (and the Orchestrator.start_loop call) enforces the hard\ngate for non-conductor PRs rather than allowing an auto-merge.\n```\n\n</details>\n\n<!-- fingerprinting:phantom:medusa:grasshopper -->\n\n<!-- This is an auto-generated comment by CodeRabbit -->",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2943095477",
+                "createdAt": "2026-03-16T21:34:55Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM50tAt8",
+          "isResolved": false,
+          "isOutdated": false,
+          "path": "conductor/lib/conductor/orchestrator.ex",
+          "line": 734,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "github-actions"
+                },
+                "body": "\ud83d\udd34 **Missing hard gate: non-conductor PRs can be auto-merged** (`missing-authorization-gate`) (Correctness)\n\nThe PR claims 'Non-conductor PRs are never auto-merged' with a 'hard gate' via Store.find_run_by_pr, but the factory/ prefix filter was removed from merge_labeled_prs without adding any conductor tracking check. The operator_merge_decision function returns :allow for :unmapped PRs (those without conductor runs), allowing non-conductor PRs with lgtm labels to be auto-merged.\n\nSuggestion: Add a conductor tracking check before merging: verify Store.find_run_by_pr returns a run before allowing merge, or add a separate conductor_tracked? check that returns :skip for non-conductor PRs\n",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2943154319",
+                "createdAt": "2026-03-16T21:49:15Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM50tAt_",
+          "isResolved": false,
+          "isOutdated": false,
+          "path": "conductor/lib/conductor/orchestrator.ex",
+          "line": 897,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "github-actions"
+                },
+                "body": "\ud83d\udd34 **operator_merge_decision allows :unmapped PRs** (`unintended-auto-merge`) (Correctness)\n\nThe operator_merge_decision function returns :allow for :unmapped PRs, which are PRs that couldn't be mapped to a conductor run. This includes all non-conductor PRs with branches that don't contain issue numbers. This directly contradicts the acceptance criteria that 'Non-conductor PRs get service but NOT automated merge'.\n\nSuggestion: Change :unmapped -> :skip to prevent auto-merge of non-conductor PRs, or add explicit conductor tracking verification\n",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2943154323",
+                "createdAt": "2026-03-16T21:49:15Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM50tAuB",
+          "isResolved": false,
+          "isOutdated": false,
+          "path": "conductor/test/conductor/orchestrator_test.exs",
+          "line": 1594,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "github-actions"
+                },
+                "body": "\ud83d\udd34 **Test asserts non-conductor PR is auto-merged contrary to PR requirements** (`wrong-test-expectation`) (Testing)\n\nThe test 'non-conductor PR with lgtm and green CI is auto-merged' asserts that merge_calls == [300], meaning the PR is merged. This directly contradicts the PR description which states: 'Merge loop processes all lgtm PRs but only merges conductor-tracked ones', 'non-conductor PR with lgtm is not auto-merged', and 'Non-conductor PRs get service but NOT automated merge (defense-in-depth)'. The test should assert that merge_calls is empty (or does not contain 300) to verify the security gate is working.\n\nSuggestion: Change the test to verify non-conductor PRs are NOT merged: change test name to 'non-conductor PR with lgtm is not auto-merged' and assertion to 'assert MockState.get(:merge_calls) == []' (or refute 300 in merge_calls). Also verify the implementation adds the missing conductor check in merge_labeled_prs.\n",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2943154326",
+                "createdAt": "2026-03-16T21:49:15Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM50tAuG",
+          "isResolved": false,
+          "isOutdated": false,
+          "path": "conductor/lib/conductor/orchestrator.ex",
+          "line": 734,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "github-actions"
+                },
+                "body": "\ud83d\udfe0 **Missing hard gate for non-conductor PR auto-merge** (`security-boundary-regression`) (Architecture)\n\nThe PR description claims a 'hard gate' checks Store.find_run_by_pr before merging, but the actual implementation removes the factory/* filter without implementing a replacement check. The operator_merge_decision/2 function returns :allow for :unmapped PRs (non-conductor PRs that don't match branch patterns), allowing them to be auto-merged if they have the lgtm label. This contradicts the documented security model of 'Non-conductor PRs are never auto-merged.'\n\nSuggestion: Add an explicit conductor_tracked? check in merge_labeled_prs/1 before calling operator_check/3, or change operator_merge_decision to return :skip instead of :allow for :unmapped PRs to maintain the deny-by-default security posture.\n",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2943154332",
+                "createdAt": "2026-03-16T21:49:15Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM50tAuI",
+          "isResolved": false,
+          "isOutdated": false,
+          "path": "conductor/test/conductor/orchestrator_test.exs",
+          "line": 1593,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "github-actions"
+                },
+                "body": "\ud83d\udfe0 **Test expects non-conductor PR auto-merge behavior** (`test-asserts-bug`) (Correctness)\n\nThe test 'non-conductor PR with lgtm and green CI is auto-merged' explicitly expects and asserts that non-conductor PRs ARE auto-merged (assert MockState.get(:merge_calls) == [300]). This confirms the implementation allows the behavior that the PR description claims is prevented.\n\nSuggestion: Fix the implementation to prevent auto-merge of non-conductor PRs, then update the test to verify that merge_calls does NOT include the non-conductor PR\n",
+                "url": "https://github.com/misty-step/bitterblossom/pull/697#discussion_r2943154334",
+                "createdAt": "2026-03-16T21:49:15Z"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

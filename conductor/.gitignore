@@ -8,3 +8,4 @@ erl_crash.dump
 *.beam
 /conductor
 .bb/
+conductor.db

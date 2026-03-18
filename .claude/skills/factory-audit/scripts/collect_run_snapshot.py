@@ -18,18 +18,15 @@ def find_repo_root(start: Path) -> Path:
 
 
 ROOT = find_repo_root(Path(__file__))
+CONDUCTOR_DIR = ROOT / "conductor"
 TIMEOUT_SECONDS = 120
-
-
-def snapshot_python() -> str:
-    return sys.executable
 
 
 def run(argv: list[str]) -> str:
     try:
         proc = subprocess.run(
             argv,
-            cwd=ROOT,
+            cwd=CONDUCTOR_DIR if argv[0] == "mix" else ROOT,
             text=True,
             capture_output=True,
             check=False,
@@ -175,8 +172,8 @@ def main() -> int:
 
     runs = run_jsonl(
         [
-            snapshot_python(),
-            "scripts/conductor.py",
+            "mix",
+            "conductor",
             "show-runs",
             "--limit",
             str(max(args.limit, 20)),
@@ -188,8 +185,8 @@ def main() -> int:
 
     events = run_jsonl(
         [
-            snapshot_python(),
-            "scripts/conductor.py",
+            "mix",
+            "conductor",
             "show-events",
             "--run-id",
             args.run_id,
