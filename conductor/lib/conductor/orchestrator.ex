@@ -109,6 +109,11 @@ defmodule Conductor.Orchestrator do
 
   @impl true
   def init(opts) do
+    # Required for terminate/2 to fire during supervisor shutdown.
+    # Without this, the VM kills the process without calling terminate,
+    # and sprites retain merge-capable credentials.
+    Process.flag(:trap_exit, true)
+
     workers = normalize_workers(Keyword.get(opts, :workers, []))
 
     {:ok,
@@ -1311,6 +1316,7 @@ defmodule Conductor.Orchestrator do
 
   # On shutdown, kill all agent processes and revoke gh auth on every fleet sprite.
   # Ensures sprites that outlive the conductor cannot exercise merge authority.
+  # Best-effort: failures are logged but don't block shutdown of remaining sprites.
   defp kill_fleet_agents do
     sprites = Application.get_env(:conductor, :fleet_sprites, [])
 
@@ -1320,9 +1326,11 @@ defmodule Conductor.Orchestrator do
       try do
         worker_mod().kill_and_revoke(name)
       rescue
-        _ -> :ok
+        e ->
+          Logger.warning("[shutdown] failed to kill/revoke sprite #{name}: #{Exception.message(e)}")
       catch
-        _, _ -> :ok
+        kind, reason ->
+          Logger.warning("[shutdown] failed to kill/revoke sprite #{name}: #{kind} #{inspect(reason)}")
       end
     end)
   end

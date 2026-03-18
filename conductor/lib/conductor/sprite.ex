@@ -115,13 +115,25 @@ defmodule Conductor.Sprite do
   Used during conductor shutdown to ensure surviving sprite processes
   cannot exercise merge authority. Defense in depth for governance
   invariant: the entity doing the work cannot judge the work.
+
+  Best-effort: logs failures but always returns :ok so shutdown proceeds.
+  Uses 5s timeouts to stay within GenServer terminate budget.
   """
   @spec kill_and_revoke(binary(), keyword()) :: :ok
   def kill_and_revoke(sprite, opts \\ []) do
+    require Logger
     exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
 
-    exec_fn.(sprite, kill_agents_cmd(), timeout: 15_000)
-    exec_fn.(sprite, "gh auth logout --hostname github.com 2>/dev/null; true", timeout: 15_000)
+    case exec_fn.(sprite, kill_agents_cmd(), timeout: 5_000) do
+      {:ok, _} -> :ok
+      {:error, msg, _} -> Logger.warning("[shutdown] kill agents on #{sprite}: #{msg}")
+    end
+
+    case exec_fn.(sprite, "gh auth logout --hostname github.com", timeout: 5_000) do
+      {:ok, _} -> :ok
+      {:error, msg, _} -> Logger.warning("[shutdown] gh auth logout on #{sprite}: #{msg}")
+    end
+
     :ok
   end
 
