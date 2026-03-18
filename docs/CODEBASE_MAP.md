@@ -35,7 +35,7 @@ sequenceDiagram
     C->>BB: dry-run probe + dispatch builder
     BB->>W: sync repo + run Ralph
     W-->>GH: push branch + open draft PR
-    W-->>C: builder artifact
+    W-->>C: open PR on factory/* branch
     C->>BB: dispatch reviewer council
     BB->>R: review PR independently
     R-->>C: review artifacts
@@ -94,9 +94,9 @@ sequenceDiagram
 - [`scripts/ralph.sh`](../scripts/ralph.sh)
   - bounded remote agent loop and signal-file exit contract
 - [`scripts/prompts/`](../scripts/prompts/)
-  - builder/reviewer prompt templates and artifact expectations
+  - builder/reviewer prompt templates and completion expectations
 - [`docs/COMPLETION-PROTOCOL.md`](COMPLETION-PROTOCOL.md)
-  - signal files, artifact expectations, and completion semantics
+  - signal files, PR-based builder completion, and completion semantics
 
 ### Skill System
 
@@ -154,12 +154,11 @@ These are the machine-facing source of truth for:
 
 ### Remote per-run artifacts
 
-- `${WORKSPACE}/.bb/conductor/<run_id>/builder-result.json`
 - `${WORKSPACE}/.bb/conductor/<run_id>/review-<sprite>.json`
 - `${WORKSPACE}/.bb/workspace.json`
 - signal files such as `TASK_COMPLETE`, `TASK_COMPLETE.md`, `BLOCKED.md`
 
-GitHub remains the human-facing conversation and merge surface, but these artifacts are how the machine proves what happened.
+GitHub remains the human-facing conversation and merge surface. For builder runs, an open PR on the assigned `factory/*` branch is the machine success signal; remote artifacts remain for reviewer outputs and workspace signals.
 
 ## Current Reality vs Roadmap
 

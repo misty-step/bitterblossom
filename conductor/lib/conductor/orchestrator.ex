@@ -454,7 +454,7 @@ defmodule Conductor.Orchestrator do
 
   defp dispatch_run(state, issue, worker) do
     existing_pr =
-      case code_host_mod().find_open_pr(state.repo, issue.number) do
+      case code_host_mod().find_open_pr(state.repo, issue.number, nil) do
         {:ok, pr} ->
           Logger.info(
             "found existing PR ##{pr["number"]} for issue ##{issue.number}, adopting branch #{pr["headRefName"]}"

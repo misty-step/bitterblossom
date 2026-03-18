@@ -181,11 +181,4 @@ defmodule Conductor.Workspace do
   # run-648-1773580938 → factory/648-1773580938
   defp run_id_to_branch("run-" <> rest), do: "factory/#{rest}"
   defp run_id_to_branch(_), do: nil
-
-  @spec artifact_path(binary(), binary()) :: binary()
-  def artifact_path(repo, run_id) do
-    repo_name = repo |> String.split("/") |> List.last()
-    mirror = Path.join(@mirror_base, repo_name)
-    Path.join([mirror, ".bb", "conductor", run_id, "builder-result.json"])
-  end
 end

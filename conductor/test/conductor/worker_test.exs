@@ -22,11 +22,6 @@ defmodule Conductor.WorkerTest do
     def dispatch(_worker, prompt, _repo, _opts), do: {:ok, "dispatched:#{prompt}"}
 
     @impl Conductor.Worker
-    def read_artifact(_worker, path, _opts) do
-      {:ok, %{"status" => "ready", "path" => path, "pr_number" => 42, "pr_url" => "http://pr"}}
-    end
-
-    @impl Conductor.Worker
     def cleanup(_worker, _repo, _run_id), do: :ok
   end
 
@@ -41,11 +36,6 @@ defmodule Conductor.WorkerTest do
 
     test "dispatch/4 returns ok tuple" do
       assert {:ok, "dispatched:hello"} = MockWorker.dispatch("sprite-1", "hello", "org/repo", [])
-    end
-
-    test "read_artifact/3 returns decoded map" do
-      assert {:ok, %{"status" => "ready", "pr_number" => 42}} =
-               MockWorker.read_artifact("sprite-1", "/tmp/result.json", [])
     end
 
     test "cleanup/3 returns :ok" do
@@ -79,7 +69,6 @@ defmodule Conductor.WorkerTest do
       mod = Application.get_env(:conductor, :worker_module, Conductor.Sprite)
       assert {:ok, _} = mod.exec("w", "echo hi", [])
       assert {:ok, _} = mod.dispatch("w", "prompt", "org/repo", [])
-      assert {:ok, _} = mod.read_artifact("w", "/path", [])
       assert :ok = mod.cleanup("w", "org/repo", "run-1")
     end
   end

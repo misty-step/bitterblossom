@@ -20,6 +20,7 @@ defmodule Conductor.RunServer do
   alias Conductor.{Store, Workspace, Prompt, Config, Retro}
 
   defp tracker_mod, do: Application.get_env(:conductor, :tracker_module, Conductor.GitHub)
+  defp code_host_mod, do: Application.get_env(:conductor, :code_host_module, Conductor.GitHub)
   defp workspace_mod, do: Application.get_env(:conductor, :workspace_module, Workspace)
 
   @heartbeat_ms 30_000
@@ -32,7 +33,6 @@ defmodule Conductor.RunServer do
     :branch,
     :existing_branch,
     :worktree_path,
-    :artifact_path,
     :pr_number,
     :pr_url,
     :dispatch_task,
@@ -92,9 +92,7 @@ defmodule Conductor.RunServer do
              }) do
           {:ok, ^run_id} ->
             branch = state.existing_branch || "factory/#{state.issue.number}-#{ts}"
-            artifact = Workspace.artifact_path(state.repo, run_id)
-
-            state = %{state | run_id: run_id, branch: branch, artifact_path: artifact}
+            state = %{state | run_id: run_id, branch: branch}
 
             Store.record_event(run_id, "lease_acquired", %{issue: state.issue.number})
             log(state, "lease acquired for issue ##{state.issue.number}")
@@ -145,15 +143,11 @@ defmodule Conductor.RunServer do
   def handle_continue(:dispatch_builder, state) do
     log(state, "dispatching builder to #{state.worker}")
 
-    # Delete stale artifact before dispatch (prevent false completion)
-    worker_mod().exec(state.worker, "rm -f '#{state.artifact_path}'", timeout: 10_000)
-
     prompt =
       Prompt.build_builder_prompt(
         state.issue,
         state.run_id,
         state.branch,
-        state.artifact_path,
         pr_number: state.pr_number,
         repo_context: read_repo_context()
       )
@@ -179,20 +173,6 @@ defmodule Conductor.RunServer do
      %{state | dispatch_task: task, heartbeat_timer: timer, turn_count: state.turn_count + 1}}
   end
 
-  @impl true
-  def handle_continue(:read_artifact, state) do
-    log(state, "reading builder artifact")
-
-    case worker_mod().read_artifact(state.worker, state.artifact_path, []) do
-      {:ok, artifact} ->
-        handle_artifact(artifact, state)
-
-      {:error, reason} ->
-        # Builder finished but no artifact — treat as failure
-        fail(state, "artifact_missing", "builder completed without artifact: #{reason}")
-    end
-  end
-
   # Governance (CI polling, review handling, merge) has been moved to the
   # orchestrator's label-driven merge loop. The RunServer exits at PR open.
 
@@ -208,8 +188,8 @@ defmodule Conductor.RunServer do
     case result do
       {:ok, _output} ->
         Store.record_event(state.run_id, "builder_complete", %{turn: state.turn_count})
-        log(state, "builder dispatch completed, reading artifact")
-        {:noreply, state, {:continue, :read_artifact}}
+        log(state, "builder dispatch completed, detecting PR")
+        detect_pr(state)
 
       {:error, output, code} ->
         fail(state, "builder_dispatch_failed", "exit #{code}: #{String.slice(output, 0, 500)}")
@@ -254,10 +234,48 @@ defmodule Conductor.RunServer do
 
   # --- Private ---
 
-  defp handle_artifact(%{"status" => "ready"} = artifact, state) do
-    pr_number = artifact["pr_number"]
-    pr_url = artifact["pr_url"]
-    summary = artifact["summary"]
+  defp detect_pr(state) do
+    case code_host_mod().find_open_pr(state.repo, state.issue.number, state.branch) do
+      {:ok, %{"headRefName" => head_ref, "number" => _number, "url" => _url} = pr}
+      when head_ref == state.branch ->
+        handle_pr_ready(pr, state)
+
+      {:ok, %{"headRefName" => head_ref}} when head_ref != state.branch ->
+        fail(
+          state,
+          "pr_branch_mismatch",
+          "builder opened PR on unexpected branch #{inspect(head_ref)} (expected #{inspect(state.branch)})"
+        )
+
+      {:ok, pr} ->
+        fail(
+          state,
+          "pr_detection_failed",
+          "builder PR lookup returned incomplete data: #{inspect(Map.take(pr, ["number", "url", "headRefName"]))}"
+        )
+
+      {:error, :not_found} ->
+        case read_workspace_file(state, "BLOCKED.md") do
+          {:ok, reason} ->
+            block(state, reason)
+
+          {:error, :not_found} ->
+            fail(state, "pr_not_found", "builder completed without opening a PR")
+
+          {:error, reason} ->
+            fail(state, "workspace_read_error", inspect(reason))
+        end
+
+      {:error, reason} ->
+        fail(state, "pr_detection_failed", inspect(reason))
+    end
+  end
+
+  defp handle_pr_ready(pr, state) do
+    pr_number = pr["number"]
+    pr_url = pr["url"]
+
+    Store.complete_run(state.run_id, "pr_opened", "pr_opened")
 
     Store.update_run(state.run_id, %{
       pr_number: pr_number,
@@ -265,35 +283,14 @@ defmodule Conductor.RunServer do
       turn_count: state.turn_count
     })
 
-    Store.record_event(state.run_id, "builder_artifact_ready", %{
+    Store.record_event(state.run_id, "builder_pr_detected", %{
       pr_number: pr_number,
-      pr_url: pr_url,
-      summary: summary
+      pr_url: pr_url
     })
 
-    log(state, "builder reports ready — PR ##{pr_number}: #{pr_url}")
-
-    # Builder's job is done. PR is open. Governance is label-driven by the orchestrator.
-    # Retro runs after merge (orchestrator), not here — avoids double analysis.
-    # Lease holds through governance — released at merge or by reconciliation.
-    Store.complete_run(state.run_id, "pr_opened", "pr_opened")
+    log(state, "builder opened PR ##{pr_number}: #{pr_url}")
     cleanup_workspace(state)
     {:stop, :normal, %{state | phase: :pr_opened, pr_number: pr_number}}
-  end
-
-  defp handle_artifact(%{"status" => "blocked"} = artifact, state) do
-    reason = artifact["blocking_reason"] || "builder reported blocked"
-    pr_number = artifact["pr_number"]
-
-    if pr_number do
-      Store.update_run(state.run_id, %{pr_number: pr_number, pr_url: artifact["pr_url"]})
-    end
-
-    block(state, reason)
-  end
-
-  defp handle_artifact(artifact, state) do
-    fail(state, "invalid_artifact", "unexpected artifact: #{inspect(artifact)}")
   end
 
   defp fail(state, event_type, reason) do
@@ -370,7 +367,7 @@ defmodule Conductor.RunServer do
       |> Enum.flat_map(fn filename ->
         path = Path.join(root, filename)
 
-        case File.read(path) do
+        case read_file(path) do
           {:ok, content} -> [String.trim(content)]
           _ -> []
         end
@@ -379,6 +376,38 @@ defmodule Conductor.RunServer do
     case parts do
       [] -> nil
       _ -> parts |> Enum.join("\n\n---\n\n") |> String.slice(0, 8_000)
+    end
+  end
+
+  defp read_workspace_file(%{worktree_path: nil}, _filename), do: {:error, :not_found}
+
+  defp read_workspace_file(state, filename) do
+    path = Path.join(state.worktree_path, filename)
+
+    case worker_mod().exec(state.worker, "cat '#{path}'", timeout: 30_000) do
+      {:ok, content} -> {:ok, String.trim(content)}
+      {:error, output, code} -> classify_workspace_read_error(output, code)
+    end
+  end
+
+  defp classify_workspace_read_error(output, code) do
+    normalized_output = String.downcase(to_string(output || ""))
+
+    file_missing =
+      String.contains?(normalized_output, "not found") or
+        String.contains?(normalized_output, "no such file or directory")
+
+    if code == 1 and file_missing do
+      {:error, :not_found}
+    else
+      {:error, %{output: String.slice(to_string(output || ""), 0, 200), code: code}}
+    end
+  end
+
+  defp read_file(path) do
+    case File.read(path) do
+      {:ok, content} -> {:ok, content}
+      _ -> {:error, :not_found}
     end
   end
 

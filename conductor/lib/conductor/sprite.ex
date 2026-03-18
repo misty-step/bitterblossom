@@ -3,7 +3,7 @@ defmodule Conductor.Sprite do
   Sprite operations via the `sprite` CLI.
 
   Deep module: hides all sprite protocol details — exec, dispatch,
-  artifact retrieval, process cleanup.
+  and process cleanup.
 
   Implements `Conductor.Worker`.
 
@@ -75,23 +75,6 @@ defmodule Conductor.Sprite do
       {:ok, _} ->
         # 3. Run agent
         run_agent(sprite, workspace, prompt_path, harness, harness_opts, exec_fn, timeout_ms)
-    end
-  end
-
-  @impl Conductor.Worker
-  @spec read_artifact(binary(), binary(), keyword()) :: {:ok, map()} | {:error, term()}
-  def read_artifact(sprite, path, opts \\ []) do
-    timeout = Keyword.get(opts, :timeout, 30_000)
-
-    case exec(sprite, "cat '#{path}'", timeout: timeout) do
-      {:ok, json} ->
-        case Jason.decode(json) do
-          {:ok, data} -> {:ok, data}
-          {:error, _} -> {:error, "invalid JSON in artifact: #{String.slice(json, 0, 200)}"}
-        end
-
-      {:error, output, _} ->
-        {:error, "artifact not found: #{output}"}
     end
   end
 

@@ -135,3 +135,20 @@ Always save the original value before overwriting and restore in `on_exit`.
 phoenix_live_view.min.js directly from the deps' priv/static dirs using two
 `Plug.Static` declarations (`from: {:phoenix, "priv/static"}` and
 `from: {:phoenix_live_view, "priv/static"}`). No esbuild, no Node required.
+
+## Builder Completion via PR Detection (#675)
+
+### 2026-03-18
+
+**Success signal belongs to the conductor**: Builder completion should be inferred
+from the control plane's own observables, not a harness-specific sidecar file.
+For build runs, the durable success signal is an open `factory/<issue>-*` PR found
+via `Conductor.CodeHost.find_open_pr/2` after dispatch exits.
+
+**Prompt contract must stay harness-agnostic**: `Conductor.Prompt.build_builder_prompt/4`
+must not tell agents to emit `builder-result.json`. Codex ignores that convention,
+and Claude Code does not need it when the conductor can detect the PR directly.
+
+**RunServer tests need a mocked code host**: Completion-path tests should inject
+`code_host_module` and assert `builder_pr_detected`, `pr_not_found`, and
+`pr_detection_failed` events instead of artifact decode outcomes.

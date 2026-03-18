@@ -821,9 +821,10 @@ defmodule Conductor.GitHub do
     result
   end
 
-  @doc "Find the first open PR associated with the issue number."
-  @spec find_open_pr(binary(), pos_integer()) :: {:ok, map()} | {:error, :not_found}
-  def find_open_pr(repo, issue_number) do
+  @doc "Find the first open PR for an issue, optionally constrained to an exact branch."
+  @spec find_open_pr(binary(), pos_integer(), binary() | nil) ::
+          {:ok, map()} | {:error, :not_found | :api_error}
+  def find_open_pr(repo, issue_number, expected_branch \\ nil) do
     case Shell.cmd("gh", [
            "pr",
            "list",
@@ -839,7 +840,7 @@ defmodule Conductor.GitHub do
       {:ok, json} ->
         case Jason.decode(json) do
           {:ok, prs} when is_list(prs) ->
-            case Enum.find(prs, &pr_matches_issue?(&1, issue_number)) do
+            case Enum.find(prs, &matching_open_pr?(&1, issue_number, expected_branch)) do
               nil -> {:error, :not_found}
               pr -> {:ok, pr}
             end
@@ -849,13 +850,21 @@ defmodule Conductor.GitHub do
 
           {:error, reason} ->
             Logger.warning("[github] failed to decode PR list: #{inspect(reason)}")
-            {:error, :not_found}
+            {:error, :api_error}
         end
 
       {:error, msg, _} ->
         Logger.warning("[github] failed to list PRs: #{msg}")
-        {:error, :not_found}
+        {:error, :api_error}
     end
+  end
+
+  defp matching_open_pr?(pr, issue_number, nil) do
+    pr_matches_issue?(pr, issue_number)
+  end
+
+  defp matching_open_pr?(pr, _issue_number, expected_branch) do
+    pr["headRefName"] == expected_branch
   end
 
   defp pr_matches_issue?(pr, issue_number) do

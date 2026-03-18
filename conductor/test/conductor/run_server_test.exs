@@ -27,19 +27,81 @@ defmodule Conductor.RunServerTest do
     @behaviour Conductor.Worker
     alias Conductor.RunServerTest.MockState
 
-    def exec(_sprite, _cmd, _opts), do: {:ok, ""}
+    def exec(sprite, cmd, _opts) do
+      case Regex.run(~r/^cat '(.+)'$/, cmd, capture: :all_but_first) do
+        [path] -> MockState.get({:file_read, sprite, path}, {:error, "not found", 1})
+        _ -> {:ok, ""}
+      end
+    end
 
     def dispatch(sprite, _prompt, _repo, _opts) do
       MockState.get({:dispatch_result, sprite}, {:ok, ""})
     end
 
-    def read_artifact(_sprite, _path, _opts) do
-      # Use a single global key — the path is dynamic and unpredictable
-      MockState.get(:artifact, {:error, :not_found})
-    end
-
     def cleanup(_sprite, _repo, _run_id), do: :ok
     def kill(_sprite), do: :ok
+  end
+
+  defmodule MockCodeHost do
+    @behaviour Conductor.CodeHost
+    alias Conductor.RunServerTest.MockState
+
+    def checks_green?(_repo, _pr_number), do: true
+    def checks_failed?(_repo, _pr_number), do: false
+    def ci_status(_repo, _pr_number), do: {:ok, %{state: :green, summary: "mock ci", pending: []}}
+    def merge(_repo, _pr_number, _opts), do: :ok
+    def labeled_prs(_repo, _label), do: {:ok, []}
+    def factory_prs(_repo), do: {:ok, []}
+    def pr_review_comments(_repo, _pr_number), do: {:ok, []}
+    def pr_ci_failure_logs(_repo, _pr_number), do: {:ok, ""}
+    def add_label(_repo, _pr_number, _label), do: :ok
+    def close_issue(_repo, _issue_number), do: :ok
+    def open_prs(_repo), do: {:ok, []}
+
+    def find_open_pr(repo, issue_number, expected_branch \\ nil) do
+      result =
+        case expected_branch do
+          nil ->
+            MockState.get({:open_pr, repo, issue_number}, {:error, :not_found})
+
+          branch ->
+            MockState.get(
+              {:open_pr_force, repo, issue_number, branch},
+              MockState.get(
+                {:open_pr_exact, repo, issue_number, branch},
+                MockState.get({:open_pr, repo, issue_number}, {:error, :not_found})
+              )
+            )
+        end
+
+      case result do
+        {:force_ok, %{"headRefName" => _head_ref} = pr} ->
+          {:ok, pr}
+
+        {:ok, %{"headRefName" => head_ref} = pr} ->
+          if is_nil(expected_branch) or head_ref == expected_branch,
+            do: {:ok, pr},
+            else: {:error, :not_found}
+
+        {:ok, pr} ->
+          case MockState.get({:prepared_branch, repo, issue_number}) do
+            nil ->
+              {:ok, pr}
+
+            branch ->
+              pr = Map.put(pr, "headRefName", branch)
+
+              if is_nil(expected_branch) or branch == expected_branch,
+                do: {:ok, pr},
+                else: {:error, :not_found}
+          end
+
+        other ->
+          other
+      end
+    end
+
+    def pr_state(_repo, _pr_number), do: {:ok, "OPEN"}
   end
 
   # --- Mock Workspace ---
@@ -47,17 +109,37 @@ defmodule Conductor.RunServerTest do
   defmodule MockWorkspace do
     alias Conductor.RunServerTest.MockState
 
-    def prepare(_sprite, _repo, _run_id, _branch) do
+    def prepare(_sprite, repo, _run_id, branch) do
+      remember_branch(repo, branch)
       MockState.get(:workspace_result, {:ok, "/tmp/test-worktree"})
     end
 
-    def adopt_branch(_sprite, _repo, _run_id, _branch) do
+    def adopt_branch(_sprite, repo, _run_id, branch) do
+      remember_branch(repo, branch)
       MockState.get(:workspace_result, {:ok, "/tmp/test-worktree"})
     end
 
-    def artifact_path(repo, run_id) do
-      Conductor.Workspace.artifact_path(repo, run_id)
+    defp remember_branch(repo, branch) do
+      case parse_issue_number(branch) do
+        {:ok, issue_number} -> MockState.put({:prepared_branch, repo, issue_number}, branch)
+        :error -> :ok
+      end
     end
+
+    defp parse_issue_number("factory/" <> rest) do
+      case String.split(rest, "-", parts: 2) do
+        [issue_number, _suffix] ->
+          case Integer.parse(issue_number) do
+            {number, ""} -> {:ok, number}
+            _ -> :error
+          end
+
+        _ ->
+          :error
+      end
+    end
+
+    defp parse_issue_number(_branch), do: :error
   end
 
   # --- Mock Tracker ---
@@ -90,7 +172,6 @@ defmodule Conductor.RunServerTest do
       {:ok, ""}
     end
 
-    def read_artifact(_sprite, _path, _opts), do: {:error, :not_found}
     def cleanup(_sprite, _repo, _run_id), do: :ok
     def kill(_sprite), do: :ok
   end
@@ -106,7 +187,6 @@ defmodule Conductor.RunServerTest do
       raise "simulated crash"
     end
 
-    def read_artifact(_sprite, _path, _opts), do: {:error, :not_found}
     def cleanup(_sprite, _repo, _run_id), do: :ok
   end
 
@@ -173,12 +253,14 @@ defmodule Conductor.RunServerTest do
     originals = %{
       worker: Application.get_env(:conductor, :worker_module),
       workspace: Application.get_env(:conductor, :workspace_module),
-      tracker: Application.get_env(:conductor, :tracker_module)
+      tracker: Application.get_env(:conductor, :tracker_module),
+      code_host: Application.get_env(:conductor, :code_host_module)
     }
 
     Application.put_env(:conductor, :worker_module, MockWorker)
     Application.put_env(:conductor, :workspace_module, MockWorkspace)
     Application.put_env(:conductor, :tracker_module, MockTracker)
+    Application.put_env(:conductor, :code_host_module, MockCodeHost)
 
     MockState.cleanup()
 
@@ -210,15 +292,10 @@ defmodule Conductor.RunServerTest do
     setup do
       MockState.put({:dispatch_result, "test-sprite"}, {:ok, "build complete"})
 
-      MockState.put(:artifact, {
-        :ok,
-        %{
-          "status" => "ready",
-          "pr_number" => 123,
-          "pr_url" => "https://github.com/test/repo/pull/123",
-          "summary" => "implemented feature"
-        }
-      })
+      MockState.put(
+        {:open_pr, "test/repo", 42},
+        {:ok, %{"number" => 123, "url" => "https://github.com/test/repo/pull/123"}}
+      )
 
       :ok
     end
@@ -243,8 +320,16 @@ defmodule Conductor.RunServerTest do
       assert "builder_workspace_prepared" in types
       assert "builder_dispatched" in types
       assert "builder_complete" in types
-      assert "builder_artifact_ready" in types
+      assert "builder_pr_detected" in types
       assert "workspace_cleaned" in types
+    end
+
+    test "stores the detected PR URL for downstream governance" do
+      {:ok, pid} = start_run_server()
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["pr_url"] == "https://github.com/test/repo/pull/123"
     end
 
     test "lease is held after pr_opened — released at merge by orchestrator" do
@@ -261,15 +346,10 @@ defmodule Conductor.RunServerTest do
     setup do
       MockState.put({:dispatch_result, "test-sprite"}, {:ok, ""})
 
-      MockState.put(:artifact, {
-        :ok,
-        %{
-          "status" => "ready",
-          "pr_number" => 999,
-          "pr_url" => "https://github.com/test/repo/pull/999",
-          "summary" => "adopted and fixed"
-        }
-      })
+      MockState.put(
+        {:open_pr, "test/repo", 42},
+        {:ok, %{"number" => 999, "url" => "https://github.com/test/repo/pull/999"}}
+      )
 
       :ok
     end
@@ -291,59 +371,7 @@ defmodule Conductor.RunServerTest do
       types = event_types(run["run_id"])
       assert "lease_acquired" in types
       assert "builder_workspace_prepared" in types
-      assert "builder_artifact_ready" in types
-    end
-  end
-
-  # --- AC2: blocked artifact handling ---
-
-  describe "AC2: blocked artifact" do
-    setup do
-      MockState.put({:dispatch_result, "test-sprite"}, {:ok, ""})
-
-      MockState.put(:artifact, {
-        :ok,
-        %{
-          "status" => "blocked",
-          "blocking_reason" => "lint failed",
-          "pr_number" => 789,
-          "pr_url" => "https://github.com/test/repo/pull/789"
-        }
-      })
-
-      :ok
-    end
-
-    test "run transitions to blocked" do
-      {:ok, pid} = start_run_server()
-      wait_for_exit(pid)
-
-      run = find_run(42)
-      assert run["phase"] == "blocked"
-    end
-
-    test "lease is released on block" do
-      {:ok, pid} = start_run_server()
-      wait_for_exit(pid)
-
-      refute Store.leased?("test/repo", 42)
-    end
-
-    test "operator comment posted with blocking reason" do
-      {:ok, pid} = start_run_server()
-      wait_for_exit(pid)
-
-      comments = MockState.get({:comments, 42}, [])
-      assert length(comments) == 1
-      assert hd(comments) =~ "lint failed"
-    end
-
-    test "records run_blocked event" do
-      {:ok, pid} = start_run_server()
-      wait_for_exit(pid)
-
-      run = find_run(42)
-      assert "run_blocked" in event_types(run["run_id"])
+      assert "builder_pr_detected" in types
     end
   end
 
@@ -429,35 +457,158 @@ defmodule Conductor.RunServerTest do
     end
   end
 
-  describe "missing artifact" do
+  describe "missing PR after dispatch" do
     test "marks run failed" do
       MockState.put({:dispatch_result, "test-sprite"}, {:ok, ""})
-      # artifact defaults to {:error, :not_found}
 
       {:ok, pid} = start_run_server()
       wait_for_exit(pid)
 
       run = find_run(42)
       assert run["phase"] == "failed"
-      assert "artifact_missing" in event_types(run["run_id"])
+      assert "pr_not_found" in event_types(run["run_id"])
+    end
+
+    test "releases the lease when builder exits without opening a PR" do
+      MockState.put({:dispatch_result, "test-sprite"}, {:ok, ""})
+
+      {:ok, pid} = start_run_server()
+      wait_for_exit(pid)
+
+      refute Store.leased?("test/repo", 42)
     end
   end
 
-  describe "invalid artifact status" do
-    test "unexpected status marks run failed" do
+  describe "blocked run after dispatch" do
+    test "marks run blocked when BLOCKED.md exists and no PR is found" do
       MockState.put({:dispatch_result, "test-sprite"}, {:ok, ""})
 
-      MockState.put(:artifact, {
-        :ok,
-        %{"status" => "unknown", "data" => "garbage"}
-      })
+      MockState.put(
+        {:file_read, "test-sprite", "/tmp/test-worktree/BLOCKED.md"},
+        {:ok, "need operator input"}
+      )
+
+      {:ok, pid} = start_run_server()
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "blocked"
+      assert "run_blocked" in event_types(run["run_id"])
+
+      assert MockState.get({:comments, 42}) == [
+               "Bitterblossom blocked `#{run["run_id"]}`: need operator input"
+             ]
+
+      refute Store.leased?("test/repo", 42)
+    end
+
+    test "fails truthfully when BLOCKED.md cannot be read" do
+      MockState.put({:dispatch_result, "test-sprite"}, {:ok, ""})
+
+      MockState.put(
+        {:file_read, "test-sprite", "/tmp/test-worktree/BLOCKED.md"},
+        {:error, "permission denied", 126}
+      )
 
       {:ok, pid} = start_run_server()
       wait_for_exit(pid)
 
       run = find_run(42)
       assert run["phase"] == "failed"
-      assert "invalid_artifact" in event_types(run["run_id"])
+      assert "workspace_read_error" in event_types(run["run_id"])
+    end
+  end
+
+  describe "stale PR branch after dispatch" do
+    test "marks run failed when lookup finds a different factory branch" do
+      MockState.put({:dispatch_result, "test-sprite"}, {:ok, ""})
+
+      MockState.put(
+        {:open_pr_force, "test/repo", 42, "factory/42-1773840329"},
+        {:force_ok,
+         %{
+           "number" => 123,
+           "url" => "https://github.com/test/repo/pull/123",
+           "headRefName" => "factory/42-older-run"
+         }}
+      )
+
+      {:ok, pid} = start_run_server(existing_branch: "factory/42-1773840329")
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "failed"
+      assert "pr_branch_mismatch" in event_types(run["run_id"])
+    end
+
+    test "finds the current run branch when an older factory PR also exists" do
+      MockState.put({:dispatch_result, "test-sprite"}, {:ok, ""})
+
+      MockState.put(
+        {:open_pr, "test/repo", 42},
+        {:ok,
+         %{
+           "number" => 456,
+           "url" => "https://github.com/test/repo/pull/456",
+           "headRefName" => "factory/42-older-run"
+         }}
+      )
+
+      MockState.put(
+        {:open_pr_exact, "test/repo", 42, "factory/42-1234567890"},
+        {:ok,
+         %{
+           "number" => 999,
+           "url" => "https://github.com/test/repo/pull/999",
+           "headRefName" => "factory/42-1234567890"
+         }}
+      )
+
+      {:ok, pid} =
+        start_run_server(
+          existing_branch: "factory/42-1234567890",
+          existing_pr_number: 999,
+          existing_pr_url: "https://github.com/test/repo/pull/999"
+        )
+
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "pr_opened"
+      assert run["pr_number"] == 999
+      assert "builder_pr_detected" in event_types(run["run_id"])
+    end
+  end
+
+  describe "PR lookup failure" do
+    test "lookup error marks run failed" do
+      MockState.put({:dispatch_result, "test-sprite"}, {:ok, ""})
+      MockState.put({:open_pr, "test/repo", 42}, {:error, :api_down})
+
+      {:ok, pid} = start_run_server()
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "failed"
+      assert "pr_detection_failed" in event_types(run["run_id"])
+    end
+  end
+
+  describe "PR lookup returns incomplete data" do
+    test "fails when PR is missing url or number" do
+      MockState.put({:dispatch_result, "test-sprite"}, {:ok, ""})
+
+      MockState.put(
+        {:open_pr_exact, "test/repo", 42, "factory/42-1234567890"},
+        {:ok, %{"headRefName" => "factory/42-1234567890"}}
+      )
+
+      {:ok, pid} = start_run_server(existing_branch: "factory/42-1234567890")
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "failed"
+      assert "pr_detection_failed" in event_types(run["run_id"])
     end
   end
 

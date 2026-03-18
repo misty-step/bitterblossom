@@ -32,7 +32,6 @@ with 2-4 callbacks. New implementations require zero orchestrator changes.
 defmodule Conductor.Worker do
   @callback exec(config, command, opts) :: {:ok, binary()} | {:error, term()}
   @callback dispatch(config, prompt, repo, opts) :: {:ok, binary()} | {:error, term()}
-  @callback read_artifact(config, path) :: {:ok, map()} | {:error, term()}
   @callback cleanup(config, run_id) :: :ok | {:error, term()}
 end
 # Implementations: Worker.Sprite, Worker.Docker, Worker.SSH, Worker.Local

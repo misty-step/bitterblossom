@@ -40,8 +40,8 @@ docs/                    operator docs and contracts
 
 1. `bb setup <sprite> --repo owner/repo` bootstraps persistent worker sprites with base configs, imported autonomy skills, and a role persona
 2. `scripts/conductor.py run-once|loop` reads GitHub issues and acquires a lease
-3. the conductor dispatches a builder sprite with a branch + artifact contract
-4. the builder opens a PR and writes `builder-result.json`
+3. the conductor dispatches a builder sprite with a branch contract
+4. the builder opens a PR on that branch; PR existence is the success signal
 5. three reviewer sprites run adversarial reviews and write review artifacts
 6. the conductor requests revisions until quorum passes
 7. the conductor evaluates review and CI signals, merges when policy allows, and records the run

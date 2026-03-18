@@ -8,8 +8,8 @@ defmodule Conductor.Prompt do
 
   alias Conductor.Issue
 
-  @spec build_builder_prompt(Issue.t(), binary(), binary(), binary(), keyword()) :: binary()
-  def build_builder_prompt(%Issue{} = issue, run_id, branch, artifact_path, opts \\ []) do
+  @spec build_builder_prompt(Issue.t(), binary(), binary(), keyword()) :: binary()
+  def build_builder_prompt(%Issue{} = issue, run_id, branch, opts \\ []) do
     pr_number = Keyword.get(opts, :pr_number)
     feedback = Keyword.get(opts, :feedback)
     repo_context = Keyword.get(opts, :repo_context)
@@ -21,7 +21,6 @@ defmodule Conductor.Prompt do
     Issue: ##{issue.number} — #{issue.title}
     Issue URL: #{issue.url}
     Branch: #{branch}
-    Artifact path: #{artifact_path}
     #{if pr_number, do: "Existing PR: ##{pr_number}\n", else: ""}
     ## Issue Specification
 
@@ -35,23 +34,6 @@ defmodule Conductor.Prompt do
     #{if feedback, do: revision_section(feedback), else: initial_section(branch)}
 
     #{governance_restrictions()}
-
-    ## Result Artifact
-
-    When done, write JSON to `#{artifact_path}`:
-
-    ```json
-    {
-      "status": "ready" or "blocked",
-      "branch": "#{branch}",
-      "pr_number": <number>,
-      "pr_url": "<url>",
-      "summary": "<what you did>",
-      "blocking_reason": "<why, only if blocked>"
-    }
-    ```
-
-    Then write TASK_COMPLETE to signal you are finished.
     """
   end
 
@@ -73,7 +55,7 @@ defmodule Conductor.Prompt do
     2. Read the issue carefully — respect acceptance criteria and boundaries
     3. Implement with tests (TDD: red, green, refactor)
     4. Create a PR with semantic commit messages
-    5. Push and ensure CI passes
+    5. Push and ensure the PR exists
 
     ### Phase 2: Review & Revision
     After creating the PR:
@@ -84,8 +66,8 @@ defmodule Conductor.Prompt do
     5. Repeat until CI is green and no unresolved review threads remain
 
     ### Phase 3: Handoff
-    When CI is green and reviews are addressed, write your result artifact.
-    If blocked (cannot resolve feedback, need human input), write artifact with status "blocked".
+    When CI is green and reviews are addressed, write TASK_COMPLETE with a short summary.
+    If blocked (cannot resolve feedback, need human input), write BLOCKED.md with the reason.
     """
   end
 
@@ -247,7 +229,7 @@ defmodule Conductor.Prompt do
     2. Push fixes to the existing branch
     3. Wait for CI to re-run
     4. Verify review threads are resolved
-    5. Write your result artifact when ready
+    5. Write TASK_COMPLETE when ready
     """
   end
 end

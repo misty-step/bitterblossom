@@ -1,0 +1,9 @@
+# .spellbook.yaml
+# Domain skills for Bitterblossom — autonomous software factory
+# Global skills (16) + agents (30+) are available via bootstrap.
+skills:
+  - otp-agent-orchestration
+  - fly-io
+  - github-cli-hygiene
+  - canary
+  - formal-verify

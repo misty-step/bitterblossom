@@ -110,7 +110,6 @@ defmodule Conductor.SecurityTest do
 
     test "Sprite.kill_and_revoke/2 tolerates exec failures" do
       exec_fn = fn _sprite, _command, _opts -> {:error, "unreachable", 1} end
-      # Should not raise
       assert :ok = Conductor.Sprite.kill_and_revoke("bb-builder", exec_fn: exec_fn)
     end
   end
@@ -124,7 +123,7 @@ defmodule Conductor.SecurityTest do
         url: "https://example.com/1"
       }
 
-      prompt = Prompt.build_builder_prompt(issue, "run-1", "branch-1", "/tmp/artifact.json")
+      prompt = Prompt.build_builder_prompt(issue, "run-1", "branch-1")
 
       # The issue body's backticks should be neutralized (separated with spaces)
       # The prompt itself may contain ``` for JSON examples — that's fine,
@@ -141,7 +140,7 @@ defmodule Conductor.SecurityTest do
         url: "https://example.com/1"
       }
 
-      prompt = Prompt.build_builder_prompt(issue, "run-1", "branch-1", "/tmp/artifact.json")
+      prompt = Prompt.build_builder_prompt(issue, "run-1", "branch-1")
 
       # The nested fence attempt should be neutralized
       refute String.contains?(prompt, "```untrusted-data")

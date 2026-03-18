@@ -54,7 +54,7 @@ defmodule Conductor.PolisherTest do
     def pr_ci_failure_logs(_repo, _pr_number), do: {:ok, ""}
     def add_label(_repo, _pr_number, _label), do: :ok
     def close_issue(_repo, _issue_number), do: :ok
-    def find_open_pr(_repo, _issue_number), do: {:error, :not_found}
+    def find_open_pr(_repo, _issue_number, _expected_branch \\ nil), do: {:error, :not_found}
     def pr_state(_repo, _pr_number), do: {:ok, "OPEN"}
 
     def get_pr_checks(_repo, _pr_number) do
@@ -76,7 +76,6 @@ defmodule Conductor.PolisherTest do
       {:ok, "done"}
     end
 
-    def read_artifact(_worker, _path, _opts), do: {:ok, %{"status" => "ready"}}
     def cleanup(_worker, _repo, _run_id), do: :ok
     def busy?(_worker, _opts), do: false
   end
