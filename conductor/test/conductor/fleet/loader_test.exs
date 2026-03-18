@@ -14,15 +14,23 @@ defmodule Conductor.Fleet.LoaderTest do
   reasoning_effort = "medium"
 
   [[sprite]]
-  name = "bb-builder"
+  name = "bb-weaver"
   role = "builder"
   capability_tags = ["elixir", "ci"]
   persona = "Build things."
 
   [[sprite]]
-  name = "bb-polisher"
+  name = "bb-thorn"
+  role = "fixer"
+
+  [[sprite]]
+  name = "bb-fern"
   role = "polisher"
   reasoning_effort = "high"
+
+  [[sprite]]
+  name = "bb-muse"
+  role = "triage"
   """
 
   setup do
@@ -37,12 +45,12 @@ defmodule Conductor.Fleet.LoaderTest do
       File.write!(path, @valid_toml)
       assert {:ok, config} = Loader.load(path)
 
-      assert length(config.sprites) == 2
+      assert length(config.sprites) == 4
       assert config.defaults.org == "test-org"
       assert config.defaults.repo == "test-org/test-repo"
 
-      [builder, polisher] = config.sprites
-      assert builder.name == "bb-builder"
+      [builder, fixer, polisher, muse] = config.sprites
+      assert builder.name == "bb-weaver"
       assert builder.role == :builder
       assert builder.org == "test-org"
       assert builder.harness == "codex"
@@ -51,15 +59,21 @@ defmodule Conductor.Fleet.LoaderTest do
       assert builder.capability_tags == ["elixir", "ci"]
       assert builder.persona == "Build things."
 
-      assert polisher.name == "bb-polisher"
+      assert fixer.name == "bb-thorn"
+      assert fixer.role == :fixer
+
+      assert polisher.name == "bb-fern"
       assert polisher.role == :polisher
       assert polisher.reasoning_effort == "high"
+
+      assert muse.name == "bb-muse"
+      assert muse.role == :triage
     end
 
     test "sprite inherits defaults when not overridden", %{path: path} do
       File.write!(path, @valid_toml)
       {:ok, config} = Loader.load(path)
-      [builder, _] = config.sprites
+      [builder | _] = config.sprites
 
       assert builder.org == "test-org"
       assert builder.repo == "test-org/test-repo"
@@ -76,7 +90,7 @@ defmodule Conductor.Fleet.LoaderTest do
       label = "hold"
 
       [[sprite]]
-      name = "bb-builder"
+      name = "bb-weaver"
       role = "builder"
       """)
 
@@ -159,14 +173,15 @@ defmodule Conductor.Fleet.LoaderTest do
 
       builders = Loader.by_role(config.sprites, :builder)
       assert length(builders) == 1
-      assert hd(builders).name == "bb-builder"
+      assert hd(builders).name == "bb-weaver"
 
       polishers = Loader.by_role(config.sprites, :polisher)
       assert length(polishers) == 1
-      assert hd(polishers).name == "bb-polisher"
+      assert hd(polishers).name == "bb-fern"
 
       fixers = Loader.by_role(config.sprites, :fixer)
-      assert fixers == []
+      assert length(fixers) == 1
+      assert hd(fixers).name == "bb-thorn"
     end
   end
 end

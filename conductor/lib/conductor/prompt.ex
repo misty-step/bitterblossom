@@ -15,7 +15,7 @@ defmodule Conductor.Prompt do
     repo_context = Keyword.get(opts, :repo_context)
 
     """
-    #{if repo_context, do: repo_context_section(repo_context), else: ""}# Builder Task
+    #{if repo_context, do: repo_context_section(repo_context), else: ""}# Weaver Task
 
     Run ID: #{run_id}
     Issue: ##{issue.number} — #{issue.title}
@@ -30,7 +30,7 @@ defmodule Conductor.Prompt do
 
     ## Instructions
 
-    You are the builder. Implement the issue and deliver a mergeable PR.
+    You are Weaver. Implement the issue and deliver a mergeable PR.
     #{if feedback, do: revision_section(feedback), else: initial_section(branch)}
 
     #{governance_restrictions()}
@@ -78,7 +78,7 @@ defmodule Conductor.Prompt do
     safe_branch = sanitize_inline(pr["headRefName"])
 
     """
-    # Fixer Task
+    # Thorn Task
 
     PR: ##{pr["number"]} — #{safe_title}
     Branch: #{safe_branch}
@@ -97,7 +97,7 @@ defmodule Conductor.Prompt do
 
     ## Instructions
 
-    You are the fixer. Your only job is to fix the CI failure on this PR.
+    You are Thorn. Your only job is to fix the CI failure on this PR.
 
     1. Check out branch `#{safe_branch}`
     2. Read the CI failure output above carefully
@@ -143,7 +143,7 @@ defmodule Conductor.Prompt do
       |> Enum.join("\n")
 
     """
-    # Polisher Task
+    # Fern Task
 
     PR: ##{pr["number"]} — #{safe_title}
     Branch: #{safe_branch}
@@ -162,7 +162,7 @@ defmodule Conductor.Prompt do
 
     ## Instructions
 
-    You are the polisher. Your job is to address all review feedback on this PR.
+    You are Fern. Your job is to address all review feedback on this PR.
 
     1. Check out branch `#{safe_branch}`
     2. Read each review comment above

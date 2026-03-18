@@ -48,8 +48,8 @@ defmodule Conductor.Application do
   end
 
   @doc """
-  Boot the full fleet from fleet.toml: reconcile sprites, start orchestrator
-  loop, start fixer and polisher. Called by `mix conductor start`.
+  Boot the full fleet from fleet.toml: reconcile sprites, start the Weaver lane,
+  then start Thorn and Fern. Called by `mix conductor start`.
   """
   @spec boot_fleet(binary()) :: :ok | {:error, term()}
   def boot_fleet(fleet_path) do
@@ -98,10 +98,10 @@ defmodule Conductor.Application do
         )
 
         Logger.info(
-          "[boot] orchestrator polling with builders: #{Enum.map_join(builders, ", ", & &1.name)}"
+          "[boot] orchestrator polling with weavers: #{Enum.map_join(builders, ", ", & &1.name)}"
         )
       else
-        Logger.warning("[boot] no healthy builders — orchestrator will not poll")
+        Logger.warning("[boot] no healthy weavers — orchestrator will not poll")
       end
 
       # 4. Start phase workers (fixer + polisher)
@@ -139,12 +139,19 @@ defmodule Conductor.Application do
                module,
                [{:repo, repo}, {sprite_key, sprite.name}]
              }) do
-          {:ok, _} -> Logger.info("[boot] #{role} started: #{sprite.name}")
-          {:error, reason} -> Logger.warning("[boot] #{role} failed: #{inspect(reason)}")
+          {:ok, _} ->
+            Logger.info("[boot] #{role_display_name(role)} started: #{sprite.name}")
+
+          {:error, reason} ->
+            Logger.warning("[boot] #{role_display_name(role)} failed: #{inspect(reason)}")
         end
       end)
     end
   end
+
+  defp role_display_name(:fixer), do: "thorn"
+  defp role_display_name(:polisher), do: "fern"
+  defp role_display_name(role), do: to_string(role)
 
   defp dashboard_children do
     if Application.get_env(:conductor, :start_dashboard, false) do

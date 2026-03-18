@@ -6,7 +6,7 @@ Bitterblossom is the conductor for a single-repo software factory: it routes Git
 **North Star:** An always-on remote conductor clears a fully agent-runnable backlog end-to-end with truthful run state, isolated execution, and human-auditable decisions.
 **Target User:** An operator or autonomous agent supervising a persistent sprite workforce for one repository.
 **Current Focus:** Make the single-repo factory trustworthy enough to run 24/7 without a laptop in the loop.
-**Key Differentiators:** Thin transport CLI, run-centric control plane, persistent sprites, GitHub as the work ledger, explicit governance instead of “builder says done.”
+**Key Differentiators:** Thin transport CLI, run-centric control plane, persistent sprites, GitHub as the work ledger, explicit governance instead of “Weaver says done.”
 
 ## Design Philosophy
 
@@ -25,7 +25,7 @@ Bitterblossom is a **cybernetic governor** for software production. The conducto
 | Term | Definition |
 |------|-----------|
 | Conductor | The always-on Elixir/OTP control plane in `conductor/` that owns intake, leases, routing, governance, and merge decisions. |
-| Worker Sprite | A persistent remote execution surface used for builder and reviewer runs. |
+| Worker Sprite | A persistent remote execution surface used by named sprites such as Weaver, Thorn, Fern, and Muse. |
 | Review Council | The independent reviewer set that audits a builder result before merge. |
 | Run | One durable execution record with a `run_id`, explicit phase, artifacts, and event history. |
 | Lease | The machine-facing claim that one run currently owns one GitHub issue. |
@@ -37,7 +37,7 @@ Bitterblossom is a **cybernetic governor** for software production. The conducto
 
 - **Milestone:** `Now: Current Sprint` for operational quality foundation, with `Next: Up Next` carrying behaviour extraction and Go absorption.
 - **Key Issues:** [#625](https://github.com/misty-step/bitterblossom/issues/625) (Elixir CI), [#626](https://github.com/misty-step/bitterblossom/issues/626) (RunServer tests), [#627](https://github.com/misty-step/bitterblossom/issues/627) (security hardening), [#628](https://github.com/misty-step/bitterblossom/issues/628) (prompt context), [#553](https://github.com/misty-step/bitterblossom/issues/553) (CI/Auth)
-- **Theme:** Make the Elixir conductor trustworthy: CI pipeline, test coverage on critical paths, security hardening, builder prompt enrichment. The architecture is validated — now harden the operational foundation.
+- **Theme:** Make the Elixir conductor trustworthy: CI pipeline, test coverage on critical paths, security hardening, Weaver prompt enrichment. The architecture is validated — now harden the operational foundation.
 
 ## Architecture Artifacts
 

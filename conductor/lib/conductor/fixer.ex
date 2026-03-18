@@ -67,7 +67,7 @@ defmodule Conductor.Fixer do
   @impl true
   def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
     if reason not in [:normal, :shutdown] do
-      Logger.warning("[fixer] dispatch task exited: #{inspect(reason)}")
+      Logger.warning("[thorn] dispatch task exited: #{inspect(reason)}")
     end
 
     state = complete_task(state, ref)
@@ -103,7 +103,7 @@ defmodule Conductor.Fixer do
           end
 
         {:error, reason} ->
-          Logger.warning("[fixer] failed to list open PRs: #{reason}")
+          Logger.warning("[thorn] failed to list open PRs: #{reason}")
           state
       end
     end
@@ -116,7 +116,7 @@ defmodule Conductor.Fixer do
 
   defp dispatch_fixer(state, pr) do
     pr_number = pr["number"]
-    Logger.info("[fixer] PR ##{pr_number} has red CI, dispatching fixer")
+    Logger.info("[thorn] PR ##{pr_number} has red CI, dispatching Thorn")
 
     ci_logs =
       case code_host_mod().pr_ci_failure_logs(state.repo, pr_number) do
@@ -124,7 +124,7 @@ defmodule Conductor.Fixer do
           logs
 
         {:error, reason} ->
-          Logger.warning("[fixer] failed to fetch CI logs for PR ##{pr_number}: #{reason}")
+          Logger.warning("[thorn] failed to fetch CI logs for PR ##{pr_number}: #{reason}")
           "(CI logs unavailable)"
       end
 
@@ -160,7 +160,7 @@ defmodule Conductor.Fixer do
       end)
 
     if pr_number do
-      Logger.info("[fixer] completed work on PR ##{pr_number}")
+      Logger.info("[thorn] completed work on PR ##{pr_number}")
 
       Store.record_event("fixer", "fixer_complete", %{pr_number: pr_number})
     end

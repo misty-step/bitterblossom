@@ -1,5 +1,6 @@
 defmodule Conductor.FixerTest do
   use ExUnit.Case, async: false
+  import ExUnit.CaptureLog
 
   alias Conductor.{Store, Fixer}
 
@@ -176,15 +177,20 @@ defmodule Conductor.FixerTest do
          ]}
       )
 
-      {:ok, _pid} =
-        Fixer.start_link(
-          repo: "test/repo",
-          fixer_sprite: "bb-fixer",
-          poll_ms: 50
-        )
+      log =
+        capture_log(fn ->
+          {:ok, _pid} =
+            Fixer.start_link(
+              repo: "test/repo",
+              fixer_sprite: "bb-thorn",
+              poll_ms: 50
+            )
 
-      assert_receive {:dispatched, "bb-fixer", prompt}, 2_000
-      assert prompt =~ "CI"
+          assert_receive {:dispatched, "bb-thorn", prompt}, 2_000
+          assert prompt =~ "CI"
+        end)
+
+      assert log =~ "[thorn] PR #42 has red CI, dispatching Thorn"
     end
 
     test "skips PRs when CI has not failed (green or pending)" do
@@ -207,7 +213,7 @@ defmodule Conductor.FixerTest do
       {:ok, _pid} =
         Fixer.start_link(
           repo: "test/repo",
-          fixer_sprite: "bb-fixer",
+          fixer_sprite: "bb-thorn",
           poll_ms: 50
         )
 
@@ -234,11 +240,11 @@ defmodule Conductor.FixerTest do
       {:ok, _pid} =
         Fixer.start_link(
           repo: "test/repo",
-          fixer_sprite: "bb-fixer",
+          fixer_sprite: "bb-thorn",
           poll_ms: 50
         )
 
-      assert_receive {:dispatched, "bb-fixer", _prompt}, 2_000
+      assert_receive {:dispatched, "bb-thorn", _prompt}, 2_000
     end
 
     test "does not dispatch when fixer is already working on a PR" do
@@ -264,14 +270,14 @@ defmodule Conductor.FixerTest do
       {:ok, _pid} =
         Fixer.start_link(
           repo: "test/repo",
-          fixer_sprite: "bb-fixer",
+          fixer_sprite: "bb-thorn",
           poll_ms: 50
         )
 
       # First dispatch should happen
-      assert_receive {:dispatched, "bb-fixer", _}, 2_000
+      assert_receive {:dispatched, "bb-thorn", _}, 2_000
       # Second dispatch for same PR should not happen while first is in-flight
-      refute_receive {:dispatched, "bb-fixer", _}, 300
+      refute_receive {:dispatched, "bb-thorn", _}, 300
     end
   end
 
@@ -280,13 +286,13 @@ defmodule Conductor.FixerTest do
       {:ok, _pid} =
         Fixer.start_link(
           repo: "test/repo",
-          fixer_sprite: "bb-fixer",
+          fixer_sprite: "bb-thorn",
           poll_ms: 60_000
         )
 
       status = Fixer.status()
       assert status.repo == "test/repo"
-      assert status.fixer_sprite == "bb-fixer"
+      assert status.fixer_sprite == "bb-thorn"
       assert is_map(status.in_flight)
     end
   end

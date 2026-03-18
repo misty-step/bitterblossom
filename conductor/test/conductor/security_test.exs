@@ -100,7 +100,7 @@ defmodule Conductor.SecurityTest do
         {:ok, ""}
       end
 
-      Conductor.Sprite.kill_and_revoke("bb-builder", exec_fn: exec_fn)
+      Conductor.Sprite.kill_and_revoke("bb-weaver", exec_fn: exec_fn)
 
       cmds = :ets.tab2list(commands_run) |> Enum.map(fn {:cmd, c} -> c end)
       assert Enum.any?(cmds, &String.contains?(&1, "pkill"))
@@ -110,7 +110,7 @@ defmodule Conductor.SecurityTest do
 
     test "Sprite.kill_and_revoke/2 tolerates exec failures" do
       exec_fn = fn _sprite, _command, _opts -> {:error, "unreachable", 1} end
-      assert :ok = Conductor.Sprite.kill_and_revoke("bb-builder", exec_fn: exec_fn)
+      assert :ok = Conductor.Sprite.kill_and_revoke("bb-weaver", exec_fn: exec_fn)
     end
   end
 

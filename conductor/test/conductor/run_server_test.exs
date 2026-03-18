@@ -1,5 +1,6 @@
 defmodule Conductor.RunServerTest do
   use ExUnit.Case, async: false
+  import ExUnit.CaptureLog
 
   alias Conductor.{Store, RunServer}
 
@@ -337,6 +338,18 @@ defmodule Conductor.RunServerTest do
       wait_for_exit(pid)
 
       assert Store.leased?("test/repo", 42)
+    end
+
+    test "logs Weaver-prefixed lifecycle messages" do
+      log =
+        capture_log(fn ->
+          {:ok, pid} = start_run_server()
+          wait_for_exit(pid)
+        end)
+
+      assert log =~ "[weaver][run-42-"
+      assert log =~ "dispatching Weaver"
+      assert log =~ "Weaver opened PR #123"
     end
   end
 

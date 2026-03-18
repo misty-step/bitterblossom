@@ -65,7 +65,7 @@ defmodule Conductor.Polisher do
   @impl true
   def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
     if reason not in [:normal, :shutdown] do
-      Logger.warning("[polisher] dispatch task exited: #{inspect(reason)}")
+      Logger.warning("[fern] dispatch task exited: #{inspect(reason)}")
     end
 
     state = complete_task(state, ref)
@@ -101,7 +101,7 @@ defmodule Conductor.Polisher do
           end
 
         {:error, reason} ->
-          Logger.warning("[polisher] failed to list open PRs: #{reason}")
+          Logger.warning("[fern] failed to list open PRs: #{reason}")
           state
       end
     end
@@ -117,7 +117,7 @@ defmodule Conductor.Polisher do
 
   defp dispatch_polisher(state, pr) do
     pr_number = pr["number"]
-    Logger.info("[polisher] PR ##{pr_number} is green, dispatching polisher")
+    Logger.info("[fern] PR ##{pr_number} is green, dispatching Fern")
 
     comments =
       case code_host_mod().pr_review_comments(state.repo, pr_number) do
@@ -125,7 +125,7 @@ defmodule Conductor.Polisher do
           comments
 
         {:error, reason} ->
-          Logger.warning("[polisher] failed to fetch reviews for PR ##{pr_number}: #{reason}")
+          Logger.warning("[fern] failed to fetch reviews for PR ##{pr_number}: #{reason}")
           []
       end
 
@@ -162,7 +162,7 @@ defmodule Conductor.Polisher do
       end)
 
     if pr_number do
-      Logger.info("[polisher] completed work on PR ##{pr_number}")
+      Logger.info("[fern] completed work on PR ##{pr_number}")
       Store.record_event("polisher", "polisher_complete", %{pr_number: pr_number})
     end
 
@@ -186,13 +186,13 @@ defmodule Conductor.Polisher do
     rescue
       exception ->
         Logger.warning(
-          "[polisher] failed to find run for PR ##{pr_number}: #{Exception.message(exception)}"
+          "[fern] failed to find run for PR ##{pr_number}: #{Exception.message(exception)}"
         )
 
         false
     catch
       :exit, reason ->
-        Logger.warning("[polisher] failed to find run for PR ##{pr_number}: #{inspect(reason)}")
+        Logger.warning("[fern] failed to find run for PR ##{pr_number}: #{inspect(reason)}")
         false
     end
   end

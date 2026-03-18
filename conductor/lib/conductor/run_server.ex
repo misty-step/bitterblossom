@@ -141,7 +141,7 @@ defmodule Conductor.RunServer do
 
   @impl true
   def handle_continue(:dispatch_builder, state) do
-    log(state, "dispatching builder to #{state.worker}")
+    log(state, "dispatching Weaver to #{state.worker}")
 
     prompt =
       Prompt.build_builder_prompt(
@@ -188,7 +188,7 @@ defmodule Conductor.RunServer do
     case result do
       {:ok, _output} ->
         Store.record_event(state.run_id, "builder_complete", %{turn: state.turn_count})
-        log(state, "builder dispatch completed, detecting PR")
+        log(state, "Weaver dispatch completed, detecting PR")
         detect_pr(state)
 
       {:error, output, code} ->
@@ -244,14 +244,14 @@ defmodule Conductor.RunServer do
         fail(
           state,
           "pr_branch_mismatch",
-          "builder opened PR on unexpected branch #{inspect(head_ref)} (expected #{inspect(state.branch)})"
+          "Weaver opened PR on unexpected branch #{inspect(head_ref)} (expected #{inspect(state.branch)})"
         )
 
       {:ok, pr} ->
         fail(
           state,
           "pr_detection_failed",
-          "builder PR lookup returned incomplete data: #{inspect(Map.take(pr, ["number", "url", "headRefName"]))}"
+          "Weaver PR lookup returned incomplete data: #{inspect(Map.take(pr, ["number", "url", "headRefName"]))}"
         )
 
       {:error, :not_found} ->
@@ -260,7 +260,7 @@ defmodule Conductor.RunServer do
             block(state, reason)
 
           {:error, :not_found} ->
-            fail(state, "pr_not_found", "builder completed without opening a PR")
+            fail(state, "pr_not_found", "Weaver completed without opening a PR")
 
           {:error, reason} ->
             fail(state, "workspace_read_error", inspect(reason))
@@ -288,13 +288,13 @@ defmodule Conductor.RunServer do
       pr_url: pr_url
     })
 
-    log(state, "builder opened PR ##{pr_number}: #{pr_url}")
+    log(state, "Weaver opened PR ##{pr_number}: #{pr_url}")
     cleanup_workspace(state)
     {:stop, :normal, %{state | phase: :pr_opened, pr_number: pr_number}}
   end
 
   defp fail(state, event_type, reason) do
-    Logger.error("[#{state.run_id}] #{event_type}: #{reason}")
+    role_log(:error, state, "#{event_type}: #{reason}")
     Store.record_event(state.run_id, event_type, %{reason: reason})
     Store.terminate_run(state.run_id, "failed", "failed", state.repo, state.issue.number)
     cleanup_workspace(state)
@@ -303,7 +303,7 @@ defmodule Conductor.RunServer do
   end
 
   defp block(state, reason) do
-    Logger.warning("[#{state.run_id}] blocked: #{reason}")
+    role_log(:warning, state, "blocked: #{reason}")
     Store.record_event(state.run_id, "run_blocked", %{reason: reason})
     Store.terminate_run(state.run_id, "blocked", "blocked", state.repo, state.issue.number)
     cleanup_workspace(state)
@@ -414,8 +414,20 @@ defmodule Conductor.RunServer do
   defp worker_mod, do: Application.get_env(:conductor, :worker_module, Conductor.Sprite)
 
   defp log(state, msg) do
+    formatted = role_log(:info, state, msg)
+    IO.puts(formatted)
+  end
+
+  defp role_log(level, state, msg) do
     label = state.run_id || "init"
-    Logger.info("[#{label}] #{msg}")
-    IO.puts("[#{label}] #{msg}")
+    formatted = "[weaver][#{label}] #{msg}"
+
+    case level do
+      :info -> Logger.info(formatted)
+      :warning -> Logger.warning(formatted)
+      :error -> Logger.error(formatted)
+    end
+
+    formatted
   end
 end
