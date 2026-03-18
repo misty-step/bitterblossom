@@ -116,7 +116,9 @@ defmodule Conductor.GitHub do
   def eligible_issues(repo, opts \\ []) do
     case list_issues(repo, opts) do
       {:ok, issues} ->
-        sort_eligible_issues(issues)
+        issues
+        |> reject_issues_with_merged_factory_prs(repo)
+        |> sort_eligible_issues()
 
       {:error, reason} ->
         Logger.warning("failed to list issues: #{inspect(reason)}")
@@ -143,6 +145,92 @@ defmodule Conductor.GitHub do
   end
 
   defp sort_eligible_issues(issues), do: Enum.sort_by(issues, & &1.number)
+
+  defp reject_issues_with_merged_factory_prs([], _repo), do: []
+
+  defp reject_issues_with_merged_factory_prs(issues, repo) do
+    issue_numbers = issues |> Enum.map(& &1.number) |> MapSet.new()
+    merged_issue_numbers = merged_factory_issue_numbers(repo, issue_numbers)
+    Enum.reject(issues, &MapSet.member?(merged_issue_numbers, &1.number))
+  end
+
+  defp fetch_merged_factory_issue_numbers(owner, name, page, remaining_issue_numbers, acc) do
+    if MapSet.size(remaining_issue_numbers) == 0 do
+      {:ok, acc}
+    else
+      args = [
+        "api",
+        "repos/#{owner}/#{name}/pulls?state=closed&per_page=#{@issues_page_size}&page=#{page}"
+      ]
+
+      with {:ok, json} <- run_gh(args),
+           {:ok, prs} <- decode_pr_page(json) do
+        if prs == [] do
+          {:ok, acc}
+        else
+          page_matches =
+            prs
+            |> Enum.filter(&merged_factory_pr?/1)
+            |> Enum.map(&factory_issue_number_from_branch(pr_branch_name(&1)))
+            |> Enum.reject(&is_nil/1)
+            |> MapSet.new()
+
+          matched_issue_numbers = MapSet.intersection(page_matches, remaining_issue_numbers)
+          next_acc = MapSet.union(acc, matched_issue_numbers)
+          next_remaining = MapSet.difference(remaining_issue_numbers, matched_issue_numbers)
+
+          if length(prs) < @issues_page_size do
+            {:ok, next_acc}
+          else
+            fetch_merged_factory_issue_numbers(owner, name, page + 1, next_remaining, next_acc)
+          end
+        end
+      end
+    end
+  end
+
+  defp merged_factory_issue_numbers(repo, issue_numbers) do
+    if MapSet.size(issue_numbers) == 0 do
+      MapSet.new()
+    else
+      with {:ok, {owner, name}} <- repo_parts(repo),
+           {:ok, merged_issue_numbers} <-
+             fetch_merged_factory_issue_numbers(owner, name, 1, issue_numbers, MapSet.new()) do
+        merged_issue_numbers
+      else
+        {:error, reason} ->
+          Logger.warning("[github] failed to list merged PRs: #{inspect(reason)}")
+          MapSet.new()
+      end
+    end
+  end
+
+  defp merged_factory_pr?(pr) do
+    is_binary(pr_merged_at(pr)) and String.starts_with?(pr_branch_name(pr), "factory/")
+  end
+
+  defp pr_merged_at(%{"merged_at" => merged_at}) when is_binary(merged_at), do: merged_at
+  defp pr_merged_at(%{"mergedAt" => merged_at}) when is_binary(merged_at), do: merged_at
+  defp pr_merged_at(_pr), do: nil
+
+  defp pr_branch_name(%{"headRefName" => branch}) when is_binary(branch), do: branch
+  defp pr_branch_name(%{"head" => %{"ref" => branch}}) when is_binary(branch), do: branch
+  defp pr_branch_name(_pr), do: ""
+
+  defp factory_issue_number_from_branch("factory/" <> rest) do
+    case String.split(rest, "-", parts: 2) do
+      [issue_number, _suffix] ->
+        case Integer.parse(issue_number) do
+          {value, ""} -> value
+          _ -> nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp factory_issue_number_from_branch(_branch), do: nil
 
   def label_present?(data, label) do
     data
@@ -220,6 +308,19 @@ defmodule Conductor.GitHub do
   end
 
   defp decode_issue_page(json) do
+    case Jason.decode(json) do
+      {:ok, page} when is_list(page) ->
+        {:ok, page}
+
+      {:ok, _other} ->
+        {:error, "invalid JSON from gh: #{String.slice(json, 0, 200)}"}
+
+      {:error, _reason} ->
+        {:error, "invalid JSON from gh: #{String.slice(json, 0, 200)}"}
+    end
+  end
+
+  defp decode_pr_page(json) do
     case Jason.decode(json) do
       {:ok, page} when is_list(page) ->
         {:ok, page}
@@ -649,6 +750,21 @@ defmodule Conductor.GitHub do
            repo,
            "--add-label",
            label
+         ]) do
+      {:ok, _} -> :ok
+      {:error, msg, _} -> {:error, msg}
+    end
+  end
+
+  @doc "Close an issue."
+  @spec close_issue(binary(), pos_integer()) :: :ok | {:error, term()}
+  def close_issue(repo, issue_number) do
+    case Shell.cmd("gh", [
+           "issue",
+           "close",
+           to_string(issue_number),
+           "--repo",
+           repo
          ]) do
       {:ok, _} -> :ok
       {:error, msg, _} -> {:error, msg}

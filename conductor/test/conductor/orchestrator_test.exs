@@ -112,6 +112,12 @@ defmodule Conductor.OrchestratorTest do
     def pr_ci_failure_logs(_repo, _pr), do: {:ok, ""}
     def add_label(_repo, _pr, _label), do: :ok
 
+    def close_issue(repo, issue_number) do
+      close_calls = MockState.get(:close_issue_calls, [])
+      MockState.put(:close_issue_calls, close_calls ++ [{repo, issue_number}])
+      MockState.get({:close_issue_result, repo, issue_number}, :ok)
+    end
+
     def find_open_pr(_repo, issue_number),
       do: MockState.get({:open_pr, issue_number}, {:error, :not_found})
 
@@ -239,6 +245,7 @@ defmodule Conductor.OrchestratorTest do
     MockState.put(:started_runs, [])
     MockState.put(:run_lifetime_ms, 150)
     MockState.put(:merge_calls, [])
+    MockState.put(:close_issue_calls, [])
     MockState.put(:run_control_calls, [])
 
     # Restart the Orchestrator under the global name so configure_polling/1 works
@@ -1596,6 +1603,66 @@ defmodule Conductor.OrchestratorTest do
       end)
     end
 
+    test "record_merge closes the linked issue after merge" do
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 702,
+          issue_title: "merge close issue test",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(run_id, %{pr_number: 202, phase: "pr_opened", status: "pr_opened"})
+      Store.acquire_lease("test/repo", 702, run_id)
+
+      MockState.put(
+        {:labeled_prs, "test/repo", "lgtm"},
+        [%{"number" => 202, "headRefName" => "factory/702-123"}]
+      )
+
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
+
+      eventually(fn ->
+        assert {"test/repo", 702} in MockState.get(:close_issue_calls, [])
+        {:ok, run} = Store.get_run(run_id)
+        assert run["phase"] == "merged"
+      end)
+    end
+
+    test "record_merge keeps the lease when issue closure fails" do
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 703,
+          issue_title: "merge close issue failure test",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(run_id, %{pr_number: 203, phase: "pr_opened", status: "pr_opened"})
+      Store.acquire_lease("test/repo", 703, run_id)
+      MockState.put({:close_issue_result, "test/repo", 703}, {:error, :github_down})
+
+      MockState.put(
+        {:labeled_prs, "test/repo", "lgtm"},
+        [%{"number" => 203, "headRefName" => "factory/703-123"}]
+      )
+
+      log =
+        capture_log(fn ->
+          :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
+
+          eventually(fn ->
+            assert {"test/repo", 703} in MockState.get(:close_issue_calls, [])
+            assert Store.leased?("test/repo", 703)
+            {:ok, run} = Store.get_run(run_id)
+            assert run["phase"] == "pr_opened"
+          end)
+        end)
+
+      assert log =~ "post-merge reconciliation is incomplete"
+      assert log =~ "leaving run #{run_id} and lease for issue #703 unchanged"
+    end
+
     test "record_merge clears ci wait metadata after merge" do
       {:ok, run_id} =
         Store.create_run(%{
@@ -2076,11 +2143,45 @@ defmodule Conductor.OrchestratorTest do
       :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       eventually(fn ->
+        assert {"test/repo", 800} in MockState.get(:close_issue_calls, [])
         refute Store.leased?("test/repo", 800)
         events = Store.list_events(run_id)
         types = Enum.map(events, & &1["event_type"])
         assert "external_merge" in types
       end)
+    end
+
+    test "keeps lease when external merge cannot close the issue" do
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 806,
+          issue_title: "external merge close failure",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(run_id, %{pr_number: 306, phase: "pr_opened", status: "pr_opened"})
+      Store.acquire_lease("test/repo", 806, run_id)
+      Store.complete_run(run_id, "pr_opened", "pr_opened")
+
+      MockState.put({:pr_state, 306}, {:ok, "MERGED"})
+      MockState.put({:close_issue_result, "test/repo", 806}, {:error, :github_down})
+
+      log =
+        capture_log(fn ->
+          :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
+
+          eventually(fn ->
+            assert {"test/repo", 806} in MockState.get(:close_issue_calls, [])
+            assert Store.leased?("test/repo", 806)
+            events = Store.list_events(run_id)
+            types = Enum.map(events, & &1["event_type"])
+            refute "external_merge" in types
+          end)
+        end)
+
+      assert log =~ "keeping lease for issue #806 after external merge of PR #306"
+      assert log =~ "issue closure will retry on the next poll"
     end
 
     test "releases lease when PR closed without merge" do
