@@ -34,12 +34,32 @@ defmodule Conductor.RunServerTest do
     end
 
     def read_artifact(_sprite, _path, _opts) do
-      # Use a single global key — the path is dynamic and unpredictable
       MockState.get(:artifact, {:error, :not_found})
     end
 
     def cleanup(_sprite, _repo, _run_id), do: :ok
     def kill(_sprite), do: :ok
+  end
+
+  defmodule MockCodeHost do
+    @behaviour Conductor.CodeHost
+    alias Conductor.RunServerTest.MockState
+
+    def checks_green?(_repo, _pr_number), do: true
+    def checks_failed?(_repo, _pr_number), do: false
+    def ci_status(_repo, _pr_number), do: {:ok, %{state: :green, summary: "mock ci", pending: []}}
+    def merge(_repo, _pr_number, _opts), do: :ok
+    def labeled_prs(_repo, _label), do: {:ok, []}
+    def factory_prs(_repo), do: {:ok, []}
+    def pr_review_comments(_repo, _pr_number), do: {:ok, []}
+    def pr_ci_failure_logs(_repo, _pr_number), do: {:ok, ""}
+    def add_label(_repo, _pr_number, _label), do: :ok
+
+    def find_open_pr(repo, issue_number) do
+      MockState.get({:open_pr, repo, issue_number}, {:error, :not_found})
+    end
+
+    def pr_state(_repo, _pr_number), do: {:ok, "OPEN"}
   end
 
   # --- Mock Workspace ---
@@ -173,12 +193,14 @@ defmodule Conductor.RunServerTest do
     originals = %{
       worker: Application.get_env(:conductor, :worker_module),
       workspace: Application.get_env(:conductor, :workspace_module),
-      tracker: Application.get_env(:conductor, :tracker_module)
+      tracker: Application.get_env(:conductor, :tracker_module),
+      code_host: Application.get_env(:conductor, :code_host_module)
     }
 
     Application.put_env(:conductor, :worker_module, MockWorker)
     Application.put_env(:conductor, :workspace_module, MockWorkspace)
     Application.put_env(:conductor, :tracker_module, MockTracker)
+    Application.put_env(:conductor, :code_host_module, MockCodeHost)
 
     MockState.cleanup()
 
@@ -210,15 +232,10 @@ defmodule Conductor.RunServerTest do
     setup do
       MockState.put({:dispatch_result, "test-sprite"}, {:ok, "build complete"})
 
-      MockState.put(:artifact, {
-        :ok,
-        %{
-          "status" => "ready",
-          "pr_number" => 123,
-          "pr_url" => "https://github.com/test/repo/pull/123",
-          "summary" => "implemented feature"
-        }
-      })
+      MockState.put(
+        {:open_pr, "test/repo", 42},
+        {:ok, %{"number" => 123, "url" => "https://github.com/test/repo/pull/123"}}
+      )
 
       :ok
     end
@@ -243,7 +260,7 @@ defmodule Conductor.RunServerTest do
       assert "builder_workspace_prepared" in types
       assert "builder_dispatched" in types
       assert "builder_complete" in types
-      assert "builder_artifact_ready" in types
+      assert "builder_pr_detected" in types
       assert "workspace_cleaned" in types
     end
 
@@ -261,15 +278,10 @@ defmodule Conductor.RunServerTest do
     setup do
       MockState.put({:dispatch_result, "test-sprite"}, {:ok, ""})
 
-      MockState.put(:artifact, {
-        :ok,
-        %{
-          "status" => "ready",
-          "pr_number" => 999,
-          "pr_url" => "https://github.com/test/repo/pull/999",
-          "summary" => "adopted and fixed"
-        }
-      })
+      MockState.put(
+        {:open_pr, "test/repo", 42},
+        {:ok, %{"number" => 999, "url" => "https://github.com/test/repo/pull/999"}}
+      )
 
       :ok
     end
@@ -291,59 +303,7 @@ defmodule Conductor.RunServerTest do
       types = event_types(run["run_id"])
       assert "lease_acquired" in types
       assert "builder_workspace_prepared" in types
-      assert "builder_artifact_ready" in types
-    end
-  end
-
-  # --- AC2: blocked artifact handling ---
-
-  describe "AC2: blocked artifact" do
-    setup do
-      MockState.put({:dispatch_result, "test-sprite"}, {:ok, ""})
-
-      MockState.put(:artifact, {
-        :ok,
-        %{
-          "status" => "blocked",
-          "blocking_reason" => "lint failed",
-          "pr_number" => 789,
-          "pr_url" => "https://github.com/test/repo/pull/789"
-        }
-      })
-
-      :ok
-    end
-
-    test "run transitions to blocked" do
-      {:ok, pid} = start_run_server()
-      wait_for_exit(pid)
-
-      run = find_run(42)
-      assert run["phase"] == "blocked"
-    end
-
-    test "lease is released on block" do
-      {:ok, pid} = start_run_server()
-      wait_for_exit(pid)
-
-      refute Store.leased?("test/repo", 42)
-    end
-
-    test "operator comment posted with blocking reason" do
-      {:ok, pid} = start_run_server()
-      wait_for_exit(pid)
-
-      comments = MockState.get({:comments, 42}, [])
-      assert length(comments) == 1
-      assert hd(comments) =~ "lint failed"
-    end
-
-    test "records run_blocked event" do
-      {:ok, pid} = start_run_server()
-      wait_for_exit(pid)
-
-      run = find_run(42)
-      assert "run_blocked" in event_types(run["run_id"])
+      assert "builder_pr_detected" in types
     end
   end
 
@@ -429,35 +389,30 @@ defmodule Conductor.RunServerTest do
     end
   end
 
-  describe "missing artifact" do
+  describe "missing PR after dispatch" do
     test "marks run failed" do
       MockState.put({:dispatch_result, "test-sprite"}, {:ok, ""})
-      # artifact defaults to {:error, :not_found}
 
       {:ok, pid} = start_run_server()
       wait_for_exit(pid)
 
       run = find_run(42)
       assert run["phase"] == "failed"
-      assert "artifact_missing" in event_types(run["run_id"])
+      assert "pr_not_found" in event_types(run["run_id"])
     end
   end
 
-  describe "invalid artifact status" do
-    test "unexpected status marks run failed" do
+  describe "PR lookup failure" do
+    test "lookup error marks run failed" do
       MockState.put({:dispatch_result, "test-sprite"}, {:ok, ""})
-
-      MockState.put(:artifact, {
-        :ok,
-        %{"status" => "unknown", "data" => "garbage"}
-      })
+      MockState.put({:open_pr, "test/repo", 42}, {:error, :api_down})
 
       {:ok, pid} = start_run_server()
       wait_for_exit(pid)
 
       run = find_run(42)
       assert run["phase"] == "failed"
-      assert "invalid_artifact" in event_types(run["run_id"])
+      assert "pr_detection_failed" in event_types(run["run_id"])
     end
   end
 

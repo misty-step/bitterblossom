@@ -39,9 +39,10 @@ defmodule Conductor.PromptTest do
       assert prompt =~ "Cache all the things."
     end
 
-    test "includes artifact path in instructions and json block", %{prompt: prompt} do
-      artifact = "/home/sprite/workspace/repo/.bb/conductor/run-99-123/builder-result.json"
-      assert prompt =~ "write JSON to `#{artifact}`"
+    test "omits artifact instructions and includes completion handoff", %{prompt: prompt} do
+      refute prompt =~ "builder-result.json"
+      refute prompt =~ "write JSON"
+      refute prompt =~ "Result Artifact"
       assert prompt =~ "TASK_COMPLETE"
     end
 
@@ -126,8 +127,8 @@ defmodule Conductor.PromptTest do
     end
   end
 
-  describe "build_builder_prompt/5 result artifact" do
-    test "specifies expected JSON schema fields" do
+  describe "build_builder_prompt/5 handoff contract" do
+    test "uses TASK_COMPLETE and BLOCKED.md instead of artifact JSON" do
       prompt =
         Prompt.build_builder_prompt(
           @issue,
@@ -136,12 +137,10 @@ defmodule Conductor.PromptTest do
           "/tmp/result.json"
         )
 
-      assert prompt =~ ~s("status": "ready" or "blocked")
-      assert prompt =~ ~s("branch": "factory/99-100")
-      assert prompt =~ ~s("pr_number")
-      assert prompt =~ ~s("pr_url")
-      assert prompt =~ ~s("summary")
-      assert prompt =~ ~s("blocking_reason")
+      assert prompt =~ "write TASK_COMPLETE"
+      assert prompt =~ "write BLOCKED.md"
+      refute prompt =~ ~s("pr_number")
+      refute prompt =~ ~s("pr_url")
     end
   end
 
