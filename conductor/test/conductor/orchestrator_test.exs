@@ -2023,21 +2023,6 @@ defmodule Conductor.OrchestratorTest do
     end
   end
 
-  describe "merge handles non-conductor PRs" do
-    test "non-conductor PR with lgtm and green CI is NOT auto-merged", %{orch_pid: orch_pid} do
-      # No store run for this PR — it's human-created
-      MockState.put(
-        {:labeled_prs, "test/repo", "lgtm"},
-        [%{"number" => 300, "headRefName" => "fix/cerberus-permissions"}]
-      )
-
-      :ok = GenServer.call(orch_pid, {:start_loop, repo: "test/repo", workers: ["sprite-1"]})
-
-      Process.sleep(100)
-      assert MockState.get(:merge_calls) == []
-    end
-  end
-
   describe "merge skips non-conductor PRs" do
     test "non-conductor PR with lgtm is not auto-merged", %{orch_pid: orch_pid} do
       MockState.put(

@@ -1,9 +1,10 @@
 defmodule Conductor.Orchestrator do
   @moduledoc """
-  Main polling loop. Symphony-inspired single authority.
+  Issue dispatch authority.
 
-  Polls for eligible issues and starts RunServers up to concurrency limit.
-  Reconciles stale runs on every tick.
+  `run_once/1` — start one RunServer synchronously and wait for it.
+  `start_loop/1` — poll for eligible issues and start RunServers up to concurrency limit.
+  Reconciles stale runs and merges lgtm-labeled PRs on every tick.
   """
 
   use GenServer
@@ -152,11 +153,6 @@ defmodule Conductor.Orchestrator do
       schedule_poll(0)
       {:reply, :ok, state}
     end
-  end
-
-  @impl true
-  def handle_call({:start_loop, opts}, from, state) do
-    handle_call({:configure_polling, opts}, from, state)
   end
 
   @impl true
