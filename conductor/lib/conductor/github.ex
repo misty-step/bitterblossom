@@ -707,7 +707,7 @@ defmodule Conductor.GitHub do
 
   @doc "Find the first open PR for an issue, optionally constrained to an exact branch."
   @spec find_open_pr(binary(), pos_integer(), binary() | nil) ::
-          {:ok, map()} | {:error, :not_found}
+          {:ok, map()} | {:error, :not_found | :api_error}
   def find_open_pr(repo, issue_number, expected_branch \\ nil) do
     case Shell.cmd("gh", [
            "pr",
@@ -734,12 +734,12 @@ defmodule Conductor.GitHub do
 
           {:error, reason} ->
             Logger.warning("[github] failed to decode PR list: #{inspect(reason)}")
-            {:error, :not_found}
+            {:error, :api_error}
         end
 
       {:error, msg, _} ->
         Logger.warning("[github] failed to list PRs: #{msg}")
-        {:error, :not_found}
+        {:error, :api_error}
     end
   end
 

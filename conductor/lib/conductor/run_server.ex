@@ -393,7 +393,11 @@ defmodule Conductor.RunServer do
   defp classify_workspace_read_error(output, code) do
     normalized_output = String.downcase(to_string(output || ""))
 
-    if code == 1 and String.contains?(normalized_output, "not found") do
+    file_missing =
+      String.contains?(normalized_output, "not found") or
+        String.contains?(normalized_output, "no such file or directory")
+
+    if code == 1 and file_missing do
       {:error, :not_found}
     else
       {:error, %{output: String.slice(to_string(output || ""), 0, 200), code: code}}
