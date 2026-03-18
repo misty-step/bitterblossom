@@ -8,7 +8,8 @@ Use this file to decide where to start reading or editing.
 
 Start with:
 
-- [`scripts/conductor.py`](../../scripts/conductor.py)
+- [`conductor/lib/conductor/orchestrator.ex`](../../conductor/lib/conductor/orchestrator.ex)
+- [`conductor/lib/conductor/run_server.ex`](../../conductor/lib/conductor/run_server.ex)
 - [`docs/CONDUCTOR.md`](../CONDUCTOR.md)
 - [`docs/architecture/conductor.md`](../architecture/conductor.md)
 - [`ADR-003`](../adr/003-conductor-control-plane.md)
@@ -43,11 +44,11 @@ Typical changes here:
 - PTY execution and log streaming
 - operator recovery paths
 
-### Runtime loop, silence/off-rails detection, completion protocol
+### Dispatch execution, silence/off-rails detection, completion protocol
 
 Start with:
 
-- [`scripts/ralph.sh`](../../scripts/ralph.sh)
+- [`cmd/bb/dispatch.go`](../../cmd/bb/dispatch.go)
 - [`cmd/bb/offrails.go`](../../cmd/bb/offrails.go)
 - [`cmd/bb/stream_json.go`](../../cmd/bb/stream_json.go)
 - [`docs/COMPLETION-PROTOCOL.md`](../COMPLETION-PROTOCOL.md)
@@ -63,8 +64,8 @@ Typical changes here:
 
 Start with:
 
-- [`scripts/prompts/`](../../scripts/prompts/)
-- [`scripts/conductor.py`](../../scripts/conductor.py)
+- [`scripts/builder-prompt-template.md`](../../scripts/builder-prompt-template.md)
+- [`conductor/lib/conductor/prompt.ex`](../../conductor/lib/conductor/prompt.ex)
 - [`docs/COMPLETION-PROTOCOL.md`](../COMPLETION-PROTOCOL.md)
 
 Typical changes here:
@@ -105,7 +106,7 @@ Do **not** start from these when you need the current architecture contract:
 - [`base/skills/*`](../../base/skills/) for exact live CLI flags
 - [`glance.md`](../../glance.md) files for exact current behavior
 - [`docs/archive/`](../archive/) for implementation truth
-- legacy shell wrappers in [`scripts/`](../../scripts/) (for example `provision.sh`, `watchdog.sh`, `fleet-status.sh`) as if they define the live control plane; [`scripts/ralph.sh`](../../scripts/ralph.sh) and [`scripts/conductor.py`](../../scripts/conductor.py) remain authoritative for their subsystems
+- legacy shell wrappers in [`scripts/`](../../scripts/) as if they define the live control plane
 - [`compositions/`](../../compositions/) as if they are the current scheduler state model
 
 ## Verify Against Code
@@ -123,8 +124,8 @@ Before editing docs or behavior, verify assumptions against code when any of the
 
 | Goal | Best Starting Files |
 |---|---|
-| Add a new operator inspection surface | [`scripts/conductor.py`](../../scripts/conductor.py), [`docs/CONDUCTOR.md`](../CONDUCTOR.md) |
-| Harden reviewer readiness or sprite repair | [`scripts/conductor.py`](../../scripts/conductor.py), [`cmd/bb/setup.go`](../../cmd/bb/setup.go), [`cmd/bb/dispatch.go`](../../cmd/bb/dispatch.go) |
+| Add a new operator inspection surface | [`conductor/lib/conductor/cli.ex`](../../conductor/lib/conductor/cli.ex), [`docs/CONDUCTOR.md`](../CONDUCTOR.md) |
+| Harden reviewer readiness or sprite repair | [`conductor/lib/conductor/orchestrator.ex`](../../conductor/lib/conductor/orchestrator.ex), [`cmd/bb/setup.go`](../../cmd/bb/setup.go), [`cmd/bb/dispatch.go`](../../cmd/bb/dispatch.go) |
 | Change dispatch UX or output | [`cmd/bb/dispatch.go`](../../cmd/bb/dispatch.go), [`docs/CLI-REFERENCE.md`](../CLI-REFERENCE.md) |
-| Change completion semantics | [`scripts/ralph.sh`](../../scripts/ralph.sh), [`docs/COMPLETION-PROTOCOL.md`](../COMPLETION-PROTOCOL.md), conductor artifact parsing |
+| Change completion semantics | [`cmd/bb/dispatch.go`](../../cmd/bb/dispatch.go), [`docs/COMPLETION-PROTOCOL.md`](../COMPLETION-PROTOCOL.md), conductor prompt/state handling |
 | Refresh stale architecture docs | [`project.md`](../../project.md), [`docs/architecture/*`](../architecture/), [`docs/CODEBASE_MAP.md`](../CODEBASE_MAP.md), [`docs/context/*`](./) |

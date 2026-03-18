@@ -70,7 +70,7 @@ printf '%%s\n' "${ws%%/}"
 		spriteWorkspaceRoot,
 		dispatchPromptFileName,
 		spriteWorkspaceRoot,
-		ralphLogFileName,
+		dispatchLogFileName,
 		spriteWorkspaceRoot,
 	)
 }

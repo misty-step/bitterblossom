@@ -35,7 +35,7 @@ conductor/
     cli.ex               CLI commands
 
 cmd/bb/                  Go transport (transitional, see #621)
-scripts/ralph.sh         Agent loop on sprites (being eliminated, see #621)
+scripts/                 Prompt templates + onboarding helpers
 ```
 
 ## Operating Model
@@ -68,10 +68,10 @@ The entity doing the work cannot judge the work. Builders don't know the merge p
 
 ## Gotchas (earned by pain, 2026-03-14)
 
-- **Go/Elixir coupling on file paths.** The Go transport (`cmd/bb/`) hardcodes paths that the Elixir conductor also references. Renaming a file in one surface breaks the other. Always grep both `cmd/bb/` and `conductor/` when renaming. The symlink `scripts/ralph-prompt-template.md → builder-prompt-template.md` exists for this reason. Dies with #621.
+- **Go/Elixir coupling on file paths.** The Go transport (`cmd/bb/`) and Elixir conductor both reference some shared repo assets such as `scripts/builder-prompt-template.md`. Always grep both `cmd/bb/` and `conductor/` when renaming.
 - **Closing a PR doesn't stop the conductor.** The conductor doesn't monitor PR state — it only checks CI status. To stop a merge, use the `hold` label on the issue (#637). Closing the PR is not communication.
 - **`statusCheckRollup` contains null entries.** External review tools (CodeRabbit) report checks with null conclusions. `evaluate_checks/1` filters these. If you add new CI check logic, handle nulls.
-- **Stale ralph.sh blocks dispatch.** When runs complete, ralph.sh processes may linger on the sprite. The next dispatch detects them and refuses. The conductor retries every 60s until they die. #621 eliminates this entirely.
+- **Stale agent processes block dispatch.** When runs complete, `claude`/`codex` processes may linger on the sprite. The next dispatch detects them and refuses until cleanup succeeds.
 - **Issue boundaries must not contradict AC.** If you write "Don't modify X" but AC requires X to compile, the builder will modify X. Ensure AC is achievable within stated boundaries.
 
 ## Coding Standards

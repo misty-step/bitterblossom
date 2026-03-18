@@ -19,7 +19,7 @@ Read in this order when you need the current architecture, not the historical on
 11. [`docs/adr/002-architecture-minimalism.md`](../adr/002-architecture-minimalism.md)
 12. [`docs/adr/003-conductor-control-plane.md`](../adr/003-conductor-control-plane.md)
 13. [`docs/adr/004-bounded-review-governance.md`](../adr/004-bounded-review-governance.md) *(proposed direction, not current behavior)*
-14. Code entrypoints: [`conductor/lib/conductor/`](../../conductor/lib/conductor/), [`cmd/bb/*.go`](../../cmd/bb/), [`scripts/ralph.sh`](../../scripts/ralph.sh)
+14. Code entrypoints: [`conductor/lib/conductor/`](../../conductor/lib/conductor/), [`cmd/bb/*.go`](../../cmd/bb/), [`scripts/builder-prompt-template.md`](../../scripts/builder-prompt-template.md)
 
 ## Authority Ranking
 
@@ -42,8 +42,8 @@ When sources disagree, trust them in this order:
   - [`cmd/bb/*.go`](../../cmd/bb/)
   - [`docs/CLI-REFERENCE.md`](../CLI-REFERENCE.md)
   - [`docs/architecture/bb-cli.md`](../architecture/bb-cli.md)
-- Runtime loop / signal files / off-rails behavior:
-  - [`scripts/ralph.sh`](../../scripts/ralph.sh)
+- Dispatch runtime / signal files / off-rails behavior:
+  - [`cmd/bb/dispatch.go`](../../cmd/bb/dispatch.go)
   - [`cmd/bb/offrails.go`](../../cmd/bb/offrails.go)
   - [`cmd/bb/stream_json.go`](../../cmd/bb/stream_json.go)
   - [`docs/COMPLETION-PROTOCOL.md`](../COMPLETION-PROTOCOL.md)
@@ -80,7 +80,7 @@ These files and areas are still useful context, but they are not reliable truth 
 | Why did a run block or fail? | [`conductor/lib/conductor/`](../../conductor/lib/conductor/), [`docs/CONDUCTOR.md`](../CONDUCTOR.md), `.bb/conductor.db`, `.bb/events.jsonl` |
 | What does `bb dispatch` actually do? | [`cmd/bb/dispatch.go`](../../cmd/bb/dispatch.go), [`docs/architecture/bb-cli.md`](../architecture/bb-cli.md) |
 | How does setup/bootstrap work? | [`cmd/bb/setup.go`](../../cmd/bb/setup.go), [`docs/CLI-REFERENCE.md`](../CLI-REFERENCE.md) |
-| What files prove work completion? | [`docs/COMPLETION-PROTOCOL.md`](../COMPLETION-PROTOCOL.md), [`scripts/ralph.sh`](../../scripts/ralph.sh) |
+| What files prove work completion? | [`docs/COMPLETION-PROTOCOL.md`](../COMPLETION-PROTOCOL.md), [`cmd/bb/dispatch.go`](../../cmd/bb/dispatch.go) |
 | Where do review artifacts live? | [`conductor/lib/conductor/`](../../conductor/lib/conductor/), [`docs/CODEBASE_MAP.md`](../CODEBASE_MAP.md) |
 | What is current vs planned? | [`project.md`](../../project.md), [`ADR-002`](../adr/002-architecture-minimalism.md), [`ADR-003`](../adr/003-conductor-control-plane.md), [`ADR-004`](../adr/004-bounded-review-governance.md) |
 

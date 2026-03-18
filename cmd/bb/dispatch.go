@@ -22,7 +22,6 @@ func newDispatchCmd() *cobra.Command {
 		workspace       string
 		promptTemplate  string
 		timeout         time.Duration
-		maxIterations   int
 		noOutputTimeout time.Duration
 		dryRun          bool
 		prCheckTimeout  time.Duration
@@ -31,7 +30,7 @@ func newDispatchCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "dispatch <sprite> <prompt>",
-		Short: "Dispatch a task to a sprite via the ralph loop",
+		Short: "Dispatch a task to a sprite via the configured agent harness",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			spriteName := args[0]
@@ -44,7 +43,6 @@ func newDispatchCmd() *cobra.Command {
 				repo,
 				workspace,
 				promptTemplate,
-				maxIterations,
 				timeout,
 				noOutputTimeout,
 				dryRun,
@@ -57,8 +55,7 @@ func newDispatchCmd() *cobra.Command {
 	cmd.Flags().StringVar(&repo, "repo", "", "GitHub repo (owner/repo)")
 	cmd.Flags().StringVar(&workspace, "workspace", "", "Remote workspace path override (skip default repo sync)")
 	cmd.Flags().StringVar(&promptTemplate, "prompt-template", "scripts/builder-prompt-template.md", "Local prompt template to render before upload")
-	cmd.Flags().DurationVar(&timeout, "timeout", 30*time.Minute, "Max wall-clock time for the ralph loop")
-	cmd.Flags().IntVar(&maxIterations, "max-iterations", 50, "Max ralph loop iterations")
+	cmd.Flags().DurationVar(&timeout, "timeout", 30*time.Minute, "Max wall-clock time for the agent run")
 	cmd.Flags().DurationVar(&noOutputTimeout, "no-output-timeout", defaultSilenceAbortThreshold, "Abort if no output for this duration (0 to disable)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Validate credentials and sprite readiness without starting the agent")
 	cmd.Flags().DurationVar(&prCheckTimeout, "pr-check-timeout", 0, "After task complete, wait up to this long for PR CI checks to pass (0 to skip)")
@@ -82,7 +79,7 @@ func verifyWorkScriptFor(workspace, branch string) string {
 	)
 }
 
-func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverride, promptTemplate string, maxIter int, timeout time.Duration, noOutputTimeout time.Duration, dryRun bool, prCheckTimeout time.Duration, waitForComplete bool) error {
+func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverride, promptTemplate string, timeout time.Duration, noOutputTimeout time.Duration, dryRun bool, prCheckTimeout time.Duration, waitForComplete bool) error {
 	// LLM auth is handled by settings.json on the sprite and GitHub auth is
 	// persisted on the sprite during setup.
 	_, _ = fmt.Fprintf(os.Stderr, "probing %s...\n", spriteName)
@@ -93,15 +90,7 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverrid
 	defer func() { _ = session.close() }()
 	s := session.sprite
 
-	// 2. Check that setup was run (ralph.sh must exist)
-	ralphScript := spriteRalphScriptPath
-	checkCtx, checkCancel := context.WithTimeout(ctx, 10*time.Second)
-	defer checkCancel()
-	if _, err := s.CommandContext(checkCtx, "test", "-f", ralphScript).Output(); err != nil {
-		return fmt.Errorf("sprite %q not configured — run: bb setup %s --repo %s", spriteName, spriteName, repo)
-	}
-
-	// 3. Refuse overlapping dispatches against an active ralph loop
+	// 2. Refuse overlapping dispatches against an active agent process.
 	if err := ensureNoActiveDispatchLoop(ctx, s); err != nil {
 		return fmt.Errorf("sprite %q is currently working: %w", spriteName, err)
 	}
@@ -112,15 +101,12 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverrid
 		return nil
 	}
 
-	// 4. Kill stale agent processes from prior dispatches
-	// We intentionally only treat an active ralph loop as "busy" to allow self-healing
-	// orphaned agent processes from prior dispatch attempts.
-	// Without this, concurrent claude processes compete for resources and hang.
+	// 3. Kill stale agent processes from prior dispatches.
 	killCtx, killCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer killCancel()
-	_, _ = s.CommandContext(killCtx, "bash", "-c", "pkill -9 -f 'ralph\\.sh|claude' 2>/dev/null; sleep 1").Output()
+	_, _ = s.CommandContext(killCtx, "bash", "-c", killAgentProcessesScript).Output()
 
-	// 5. Resolve workspace. Default dispatch syncs the shared repo checkout.
+	// 4. Resolve workspace. Default dispatch syncs the shared repo checkout.
 	// Conductor-owned worktrees pass --workspace and handle preparation separately.
 	workspace := dispatchWorkspace(repo, workspaceOverride)
 
@@ -156,7 +142,7 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverrid
 	cleanScript := cleanSignalsScriptFor(workspace)
 	_, _ = s.CommandContext(ctx, "bash", "-c", cleanScript).Output()
 
-	// Record HEAD SHA before the ralph loop so the off-rails commit check is
+	// Record HEAD SHA before the agent run so the off-rails commit check is
 	// scoped to work produced by this dispatch, not prior stale commits.
 	preSHA, shaErr := captureHeadSHAWithRunner(ctx, spriteBashRunner(s), workspace)
 	if shaErr != nil {
@@ -174,51 +160,29 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverrid
 		return fmt.Errorf("upload prompt: %w", err)
 	}
 
-	// 8. Run ralph loop — foreground, streaming
-	_, _ = fmt.Fprintf(os.Stderr, "starting ralph loop (max %d iterations, %s timeout, harness=claude)...\n", maxIter, timeout)
-
-	// Only pass operational env vars inline. Runtime API keys are sourced from
-	// the sprite-side env file written during setup.
-	totalSec := int(timeout.Seconds())
-	iterSec := 900 // default per-iteration timeout
-	if totalSec < iterSec {
-		iterSec = totalSec // cap per-iteration at total timeout (#389)
-	}
-	// Heartbeat must fire well before the silence-abort threshold.
-	heartbeatSec := int(noOutputTimeout.Seconds() / 3)
-	if heartbeatSec < 30 {
-		heartbeatSec = 30
-	}
-	ralphEnv := fmt.Sprintf(
-		`%s
-export MAX_ITERATIONS=%d MAX_TIME_SEC=%d ITER_TIMEOUT_SEC=%d HEARTBEAT_INTERVAL_SEC=%d WORKSPACE=%q LEFTHOOK=0 ANTHROPIC_MODEL=%q ANTHROPIC_DEFAULT_SONNET_MODEL=%q CLAUDE_CODE_SUBAGENT_MODEL=%q`,
-		runtimeEnvSourceCommand(spriteRuntimeEnvPath),
-		maxIter, totalSec, iterSec, heartbeatSec, workspace,
-		spriteModel,
-		spriteModel,
-		spriteModel,
-	)
-
-	ralphEnv += fmt.Sprintf(` && exec bash %s`, ralphScript)
+	// 6. Run the agent directly in the workspace.
+	logPath := workspaceDispatchLogPath(workspace)
+	_, _ = fmt.Fprintf(os.Stderr, "starting agent dispatch (%s timeout, harness=claude)...\n", timeout)
+	agentCommand := dispatchAgentCommand(workspace, promptPath, logPath)
 
 	gracePeriod := graceFor(timeout)
 	timeoutCtx, timeoutCancel := context.WithTimeout(ctx, timeout+gracePeriod)
 	defer timeoutCancel()
 
-	ralphCtx, ralphCancel := context.WithCancelCause(timeoutCtx)
-	defer ralphCancel(nil)
+	agentCtx, agentCancel := context.WithCancelCause(timeoutCtx)
+	defer agentCancel(nil)
 
 	detector := newOffRailsDetector(offRailsConfig{
 		SilenceAbort: noOutputTimeout,
-		Cancel:       ralphCancel,
+		Cancel:       agentCancel,
 		Alert:        os.Stderr,
 	})
 	defer detector.stop()
 	detector.start()
 
-	ralphCmd := s.CommandContext(ralphCtx, "bash", "-c", ralphEnv)
-	ralphCmd.Dir = workspace
-	ralphCmd.SetTTY(true)
+	agentCmd := s.CommandContext(agentCtx, "bash", "-lc", agentCommand)
+	agentCmd.Dir = workspace
+	agentCmd.SetTTY(true)
 
 	prettyStdout := newStreamJSONWriter(os.Stdout, false)
 	prettyStdout.onToolError = detector.recordError
@@ -237,13 +201,13 @@ export MAX_ITERATIONS=%d MAX_TIME_SEC=%d ITER_TIMEOUT_SEC=%d HEARTBEAT_INTERVAL_
 
 	stdout := detector.wrap(prettyStdout)
 	stderr := detector.wrap(prettyStderr)
-	ralphCmd.Stdout = stdout
-	ralphCmd.Stderr = stderr
-	ralphCmd.TextMessageHandler = newDispatchTextMessageHandler(stdout, stderr)
+	agentCmd.Stdout = stdout
+	agentCmd.Stderr = stderr
+	agentCmd.TextMessageHandler = newDispatchTextMessageHandler(stdout, stderr)
 
-	ralphErr := ralphCmd.Run()
+	agentErr := agentCmd.Run()
 
-	// Stop off-rails immediately — the agent has finished. Any post-ralph work
+	// Stop off-rails immediately — the agent has finished. Any post-dispatch work
 	// (PR check polling, verify) is intentional and must not trigger the silence
 	// detector.
 	detector.stop()
@@ -261,8 +225,8 @@ export MAX_ITERATIONS=%d MAX_TIME_SEC=%d ITER_TIMEOUT_SEC=%d HEARTBEAT_INTERVAL_
 	_, _ = fmt.Fprintf(os.Stderr, "dispatch pr-checks: status=%s checks_exit=%d\n", prs.status, prs.checksExit)
 
 	// 11. Return appropriate exit code
-	// Check if off-rails detector killed the dispatch
-	if cause := context.Cause(ralphCtx); cause != nil && errors.Is(cause, errOffRails) {
+	// Check if off-rails detector killed the dispatch.
+	if cause := context.Cause(agentCtx); cause != nil && errors.Is(cause, errOffRails) {
 		_, _ = fmt.Fprintf(os.Stderr, "\n=== off-rails detected: %v ===\n", cause)
 
 		completed, completeErr := hasTaskCompleteSignalWithRunner(ctx, spriteBashRunner(s), workspace)
@@ -296,19 +260,31 @@ export MAX_ITERATIONS=%d MAX_TIME_SEC=%d ITER_TIMEOUT_SEC=%d HEARTBEAT_INTERVAL_
 		return &exitError{Code: 4, Err: cause}
 	}
 
-	if ralphErr != nil {
-		if exitErr, ok := ralphErr.(*sprites.ExitError); ok {
+	blocked, blockedErr := hasBlockedSignalWithRunner(ctx, spriteBashRunner(s), workspace)
+	if blockedErr != nil {
+		return fmt.Errorf("blocked signal check failed: %w", blockedErr)
+	}
+	if blocked {
+		return &exitError{Code: 2, Err: fmt.Errorf("agent blocked — check BLOCKED.md on sprite")}
+	}
+
+	if agentErr != nil {
+		completed, completeErr := hasTaskCompleteSignalWithRunner(ctx, spriteBashRunner(s), workspace)
+		if completeErr != nil {
+			return fmt.Errorf("completion signal check failed: %w", completeErr)
+		}
+		if completed {
+			_, _ = fmt.Fprintf(os.Stderr, "\n=== task completed: TASK_COMPLETE signal found ===\n")
+		} else if exitErr, ok := agentErr.(*sprites.ExitError); ok {
 			code := exitErr.ExitCode()
 			switch code {
 			case 0:
 				// fall through to optional PR check polling
-			case 2:
-				return &exitError{Code: 2, Err: fmt.Errorf("agent blocked — check BLOCKED.md on sprite")}
 			default:
-				return &exitError{Code: code, Err: fmt.Errorf("ralph exited %d", code)}
+				return &exitError{Code: code, Err: fmt.Errorf("agent exited %d", code)}
 			}
 		} else {
-			return fmt.Errorf("ralph failed: %w", ralphErr)
+			return fmt.Errorf("agent failed: %w", agentErr)
 		}
 	}
 
@@ -335,7 +311,7 @@ export MAX_ITERATIONS=%d MAX_TIME_SEC=%d ITER_TIMEOUT_SEC=%d HEARTBEAT_INTERVAL_
 }
 
 // graceFor returns a proportional grace period: at least 30s, otherwise 25%
-// of the dispatch timeout, capped at 5 minutes. This gives the ralph loop
+// of the dispatch timeout, capped at 5 minutes. This gives the agent process
 // time to write TASK_COMPLETE/BLOCKED signals after its own timeout fires.
 func graceFor(timeout time.Duration) time.Duration {
 	grace := max(30*time.Second, timeout/4)
@@ -343,6 +319,37 @@ func graceFor(timeout time.Duration) time.Duration {
 		grace = 5 * time.Minute
 	}
 	return grace
+}
+
+func dispatchAgentCommand(workspace, promptPath, logPath string) string {
+	return fmt.Sprintf(`
+set -euo pipefail
+export WORKSPACE=%q
+export PROMPT_PATH=%q
+export LOG_PATH=%q
+export RUNTIME_ENV=%q
+cd "$WORKSPACE"
+if [ -f "$RUNTIME_ENV" ]; then
+  set -a
+  . "$RUNTIME_ENV"
+  set +a
+fi
+export LEFTHOOK=0
+export ANTHROPIC_MODEL=%q
+export ANTHROPIC_DEFAULT_SONNET_MODEL=%q
+export CLAUDE_CODE_SUBAGENT_MODEL=%q
+: > "$LOG_PATH"
+claude -p --dangerously-skip-permissions --model %q --verbose < "$PROMPT_PATH" > >(tee -a "$LOG_PATH") 2> >(tee -a "$LOG_PATH" >&2)
+`,
+		workspace,
+		promptPath,
+		logPath,
+		spriteRuntimeEnvPath,
+		spriteModel,
+		spriteModel,
+		spriteModel,
+		spriteModel,
+	)
 }
 
 // renderPrompt reads a local prompt template and substitutes placeholders.

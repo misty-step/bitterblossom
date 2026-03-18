@@ -23,8 +23,8 @@ func newSetupCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "setup <sprite>",
-		Short: "Configure a sprite with base configs, persona, and ralph loop",
-		Long: `Configure a sprite with base configs, persona, and ralph loop.
+		Short: "Configure a sprite with base configs, persona, and repo access",
+		Long: `Configure a sprite with base configs, persona, and repo access.
 
 If no persona file exists for the sprite name, use --persona to specify one:
   bb setup worker-1 --persona bramble      # use sprites/bramble.md
@@ -132,20 +132,7 @@ func runSetup(ctx context.Context, spriteName, repo string, force bool, persona 
 		return fmt.Errorf("upload persona: %w", err)
 	}
 
-	// 6. Upload ralph script + prompt template
-	if err := uploadFile(ctx, s, "scripts/ralph.sh", spriteRalphScriptPath); err != nil {
-		return fmt.Errorf("upload ralph.sh: %w", err)
-	}
-	// Make executable
-	if _, err := s.CommandContext(ctx, "chmod", "+x", spriteRalphScriptPath).Output(); err != nil {
-		return fmt.Errorf("chmod ralph.sh: %w", err)
-	}
-
-	if err := uploadFile(ctx, s, "scripts/builder-prompt-template.md", spriteRalphPromptTemplatePath); err != nil {
-		return fmt.Errorf("upload prompt template: %w", err)
-	}
-
-	// 7. Git auth
+	// 6. Git auth
 	_, _ = fmt.Fprintf(os.Stderr, "configuring git auth...\n")
 	tokenPath := fmt.Sprintf("/tmp/bb-gh-token-%d", time.Now().UnixNano())
 	if err := s.Filesystem().WriteFileContext(ctx, tokenPath, []byte(ghToken+"\n"), 0600); err != nil {
@@ -156,7 +143,7 @@ func runSetup(ctx context.Context, spriteName, repo string, force bool, persona 
 		return fmt.Errorf("git auth: %w", err)
 	}
 
-	// 8. Clone repo
+	// 7. Clone repo
 	if repo != "" {
 		_, _ = fmt.Fprintf(os.Stderr, "setting up repo %s...\n", repo)
 

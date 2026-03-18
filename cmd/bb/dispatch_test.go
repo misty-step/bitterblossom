@@ -192,11 +192,11 @@ func (r *fakeSpriteScriptRunner) run(ctx context.Context, script string) ([]byte
 	return r.out, r.exitCode, r.err
 }
 
-func TestEnsureNoActiveDispatchLoop_AllowsIdle(t *testing.T) {
+func TestEnsureNoActiveDispatch_AllowsIdle(t *testing.T) {
 	t.Parallel()
 
 	r := &fakeSpriteScriptRunner{out: nil, exitCode: 0, err: nil}
-	if err := ensureNoActiveDispatchLoopWithRunner(context.Background(), r.run); err != nil {
+	if err := ensureNoActiveDispatchWithRunner(context.Background(), r.run); err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
 	if !r.called {
@@ -208,52 +208,51 @@ func TestEnsureNoActiveDispatchLoop_AllowsIdle(t *testing.T) {
 	if !strings.Contains(r.script, "pgrep -af") {
 		t.Fatalf("script = %q, want to contain %q", r.script, "pgrep -af")
 	}
-	if !strings.Contains(r.script, "[r]alph") {
-		t.Fatalf("script = %q, want to contain %q", r.script, "[r]alph")
-	}
-	if strings.Contains(r.script, "claude") || strings.Contains(r.script, "opencode") {
-		t.Fatalf("script = %q, want ralph-only busy check", r.script)
+	for _, want := range []string{"[c]laude", "[c]odex", "[o]pencode"} {
+		if !strings.Contains(r.script, want) {
+			t.Fatalf("script = %q, want to contain %q", r.script, want)
+		}
 	}
 }
 
-func TestEnsureNoActiveDispatchLoop_BlocksWhenBusy(t *testing.T) {
+func TestEnsureNoActiveDispatch_BlocksWhenBusy(t *testing.T) {
 	t.Parallel()
 
-	const busy = "1234 bash /home/sprite/workspace/.ralph.sh\n"
+	const busy = "1234 claude -p --dangerously-skip-permissions\n"
 	r := &fakeSpriteScriptRunner{out: []byte(busy), exitCode: 1, err: nil}
-	err := ensureNoActiveDispatchLoopWithRunner(context.Background(), r.run)
+	err := ensureNoActiveDispatchWithRunner(context.Background(), r.run)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !strings.Contains(err.Error(), "active dispatch loop detected") {
-		t.Fatalf("err = %q, want to contain %q", err.Error(), "active dispatch loop detected")
+	if !strings.Contains(err.Error(), "active dispatch detected") {
+		t.Fatalf("err = %q, want to contain %q", err.Error(), "active dispatch detected")
 	}
 	if !strings.Contains(err.Error(), strings.TrimSpace(busy)) {
 		t.Fatalf("err = %q, want to contain %q", err.Error(), strings.TrimSpace(busy))
 	}
 }
 
-func TestEnsureNoActiveDispatchLoop_WrapsRunnerError(t *testing.T) {
+func TestEnsureNoActiveDispatch_WrapsRunnerError(t *testing.T) {
 	t.Parallel()
 
 	r := &fakeSpriteScriptRunner{out: nil, exitCode: 0, err: errors.New("network")}
-	err := ensureNoActiveDispatchLoopWithRunner(context.Background(), r.run)
+	err := ensureNoActiveDispatchWithRunner(context.Background(), r.run)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !strings.Contains(err.Error(), "check dispatch loop") {
-		t.Fatalf("err = %q, want to contain %q", err.Error(), "check dispatch loop")
+	if !strings.Contains(err.Error(), "check active dispatch") {
+		t.Fatalf("err = %q, want to contain %q", err.Error(), "check active dispatch")
 	}
 	if !strings.Contains(err.Error(), "network") {
 		t.Fatalf("err = %q, want to contain %q", err.Error(), "network")
 	}
 }
 
-func TestEnsureNoActiveDispatchLoop_ErrorsOnUnexpectedOutputWhenIdle(t *testing.T) {
+func TestEnsureNoActiveDispatch_ErrorsOnUnexpectedOutputWhenIdle(t *testing.T) {
 	t.Parallel()
 
 	r := &fakeSpriteScriptRunner{out: []byte("unexpected garbage"), exitCode: 0, err: nil}
-	err := ensureNoActiveDispatchLoopWithRunner(context.Background(), r.run)
+	err := ensureNoActiveDispatchWithRunner(context.Background(), r.run)
 	if err == nil {
 		t.Fatal("expected error for exit 0 with output, got nil")
 	}
@@ -262,11 +261,11 @@ func TestEnsureNoActiveDispatchLoop_ErrorsOnUnexpectedOutputWhenIdle(t *testing.
 	}
 }
 
-func TestEnsureNoActiveDispatchLoop_ErrorsOnUnexpectedExitCode(t *testing.T) {
+func TestEnsureNoActiveDispatch_ErrorsOnUnexpectedExitCode(t *testing.T) {
 	t.Parallel()
 
 	r := &fakeSpriteScriptRunner{out: []byte("syntax error"), exitCode: 2, err: nil}
-	err := ensureNoActiveDispatchLoopWithRunner(context.Background(), r.run)
+	err := ensureNoActiveDispatchWithRunner(context.Background(), r.run)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -336,11 +335,50 @@ func TestHasTaskCompleteSignalReturnsErrorOnRunnerError(t *testing.T) {
 	}
 }
 
-func TestIsDispatchLoopActive_ReturnsFalseWhenIdle(t *testing.T) {
+func TestHasBlockedSignalReturnsTrue(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: nil, err: nil}
+	blocked, err := hasBlockedSignalWithRunner(context.Background(), r.run, "/tmp/ws")
+	if err != nil {
+		t.Fatalf("hasBlockedSignalWithRunner() error = %v", err)
+	}
+	if !blocked {
+		t.Fatal("expected blocked signal to be present")
+	}
+}
+
+func TestHasBlockedSignalReturnsFalseWhenMissing(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 1, out: nil, err: nil}
+	blocked, err := hasBlockedSignalWithRunner(context.Background(), r.run, "/tmp/ws")
+	if err != nil {
+		t.Fatalf("hasBlockedSignalWithRunner() error = %v", err)
+	}
+	if blocked {
+		t.Fatal("expected blocked signal to be missing")
+	}
+}
+
+func TestHasBlockedSignalReturnsErrorOnRunnerError(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{exitCode: 0, out: nil, err: errors.New("network")}
+	_, err := hasBlockedSignalWithRunner(context.Background(), r.run, "/tmp/ws")
+	if err == nil {
+		t.Fatal("expected error for runner failure")
+	}
+	if !strings.Contains(err.Error(), "check blocked signal command failed") {
+		t.Fatalf("err = %q, want to contain %q", err.Error(), "check blocked signal command failed")
+	}
+}
+
+func TestIsDispatchActive_ReturnsFalseWhenIdle(t *testing.T) {
 	t.Parallel()
 
 	r := &fakeSpriteScriptRunner{out: nil, exitCode: 0, err: nil}
-	busy, err := isDispatchLoopActiveWithRunner(context.Background(), r.run)
+	busy, err := isDispatchActiveWithRunner(context.Background(), r.run)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -349,12 +387,12 @@ func TestIsDispatchLoopActive_ReturnsFalseWhenIdle(t *testing.T) {
 	}
 }
 
-func TestIsDispatchLoopActive_ReturnsTrueWhenBusy(t *testing.T) {
+func TestIsDispatchActive_ReturnsTrueWhenBusy(t *testing.T) {
 	t.Parallel()
 
-	const busyOut = "1234 bash /home/sprite/workspace/.ralph.sh\n"
+	const busyOut = "1234 codex exec --yolo\n"
 	r := &fakeSpriteScriptRunner{out: []byte(busyOut), exitCode: 1, err: nil}
-	busy, err := isDispatchLoopActiveWithRunner(context.Background(), r.run)
+	busy, err := isDispatchActiveWithRunner(context.Background(), r.run)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -363,24 +401,24 @@ func TestIsDispatchLoopActive_ReturnsTrueWhenBusy(t *testing.T) {
 	}
 }
 
-func TestIsDispatchLoopActive_ErrorsOnRunnerFailure(t *testing.T) {
+func TestIsDispatchActive_ErrorsOnRunnerFailure(t *testing.T) {
 	t.Parallel()
 
 	r := &fakeSpriteScriptRunner{out: nil, exitCode: 0, err: errors.New("network")}
-	_, err := isDispatchLoopActiveWithRunner(context.Background(), r.run)
+	_, err := isDispatchActiveWithRunner(context.Background(), r.run)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !strings.Contains(err.Error(), "check dispatch loop") {
-		t.Fatalf("err = %q, want to contain %q", err.Error(), "check dispatch loop")
+	if !strings.Contains(err.Error(), "check active dispatch") {
+		t.Fatalf("err = %q, want to contain %q", err.Error(), "check active dispatch")
 	}
 }
 
-func TestIsDispatchLoopActive_ErrorsOnUnexpectedExitCode(t *testing.T) {
+func TestIsDispatchActive_ErrorsOnUnexpectedExitCode(t *testing.T) {
 	t.Parallel()
 
 	r := &fakeSpriteScriptRunner{out: []byte("syntax error"), exitCode: 2, err: nil}
-	_, err := isDispatchLoopActiveWithRunner(context.Background(), r.run)
+	_, err := isDispatchActiveWithRunner(context.Background(), r.run)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -573,6 +611,15 @@ func TestDispatchFlagWorkspace_Default(t *testing.T) {
 	}
 	if f.DefValue != "" {
 		t.Fatalf("--workspace default = %q, want empty", f.DefValue)
+	}
+}
+
+func TestDispatchFlagMaxIterationsAbsent(t *testing.T) {
+	t.Parallel()
+
+	cmd := newDispatchCmd()
+	if f := cmd.Flags().Lookup("max-iterations"); f != nil {
+		t.Fatalf("--max-iterations should not be registered, found %q", f.Name)
 	}
 }
 

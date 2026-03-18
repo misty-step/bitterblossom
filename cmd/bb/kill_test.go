@@ -5,12 +5,10 @@ import (
 	"testing"
 )
 
-func TestKillAgentProcessesScriptTargetsRalphLoop(t *testing.T) {
+func TestKillAgentProcessesScriptTargetsSupportedAgents(t *testing.T) {
 	t.Parallel()
 
-	// Dispatch considers the sprite busy only when the ralph loop is running.
-	// `bb kill` must be able to find/terminate that loop to unblock dispatch.
-	if !strings.Contains(killAgentProcessesScript, `agents='/home/sprite/workspace/\.[r]alph\.sh|[c]laude|[o]pencode'`) {
+	if !strings.Contains(killAgentProcessesScript, `agents='[c]laude|[c]odex|[o]pencode'`) {
 		t.Fatalf("killAgentProcessesScript does not include expected agents regex")
 	}
 }

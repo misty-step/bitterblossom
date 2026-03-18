@@ -34,13 +34,9 @@ Risk:
 
 Examples:
 
-- [`scripts/provision.sh`](../../scripts/provision.sh)
-- [`scripts/teardown.sh`](../../scripts/teardown.sh)
-- [`scripts/status.sh`](../../scripts/status.sh)
-- [`scripts/fleet-status.sh`](../../scripts/fleet-status.sh)
-- [`scripts/watchdog.sh`](../../scripts/watchdog.sh)
-- [`scripts/watchdog-v2.sh`](../../scripts/watchdog-v2.sh)
-- [`scripts/test_legacy_wrappers.sh`](../../scripts/test_legacy_wrappers.sh)
+- deleted shell wrapper names resurfacing in live docs or skills
+- new helper scripts duplicating `mix conductor ...` or `bb ...` behavior
+- ad hoc operator instructions that bypass the conductor and supported transport
 
 Risk:
 
@@ -86,7 +82,7 @@ Use these when you suspect drift:
 
 ```bash
 rg -n "watchdog|provision|teardown|Fly Machines|--issue|--skill|--execute|fleet|proxy|registry" README.md QA.md base/skills docs scripts
-rg -n "conductor.db|events.jsonl|run_id|blocking_reason|heartbeat_age_seconds" docs project.md scripts/conductor.py
+rg -n "conductor.db|events.jsonl|run_id|blocking_reason|heartbeat_age_seconds" docs project.md conductor
 ```
 
 ## Rule Of Thumb

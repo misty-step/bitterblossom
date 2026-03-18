@@ -85,7 +85,7 @@ func TestLogsNoActiveTaskGoesToStderr(t *testing.T) {
 	if !strings.Contains(msg, `No active task on "fern".`) {
 		t.Errorf("stderr = %q, want sprite-specific idle message", msg)
 	}
-	if !strings.Contains(msg, "ralph.log is empty") {
+	if !strings.Contains(msg, "dispatch log is empty") {
 		t.Errorf("stderr = %q, want explanation that no logs are available", msg)
 	}
 	if !strings.Contains(msg, "bb status fern") {

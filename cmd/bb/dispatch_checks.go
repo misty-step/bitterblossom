@@ -11,15 +11,15 @@ import (
 	sprites "github.com/superfly/sprites-go"
 )
 
-// activeRalphLoopCheckScript checks for an in-flight ralph loop process.
+// activeDispatchCheckScript checks for an in-flight agent process.
 //
 // Use the bracket trick to avoid self-matching under `pgrep -f` (pattern appears in argv).
-const activeRalphLoopCheckScript = `if ! command -v pgrep >/dev/null 2>&1; then
+const activeDispatchCheckScript = `if ! command -v pgrep >/dev/null 2>&1; then
   echo "pgrep missing" >&2
   exit 2
 fi
 
-busy="$(pgrep -af '/home/sprite/workspace/\.[r]alph\.sh' 2>&1)"
+busy="$(pgrep -af '[c]laude|[c]odex|[o]pencode' 2>&1)"
 status=$?
 if [ "$status" -eq 0 ]; then
   echo "$busy"
@@ -115,29 +115,29 @@ type dispatchPollConfig struct {
 }
 
 func ensureNoActiveDispatchLoop(ctx context.Context, s *sprites.Sprite) error {
-	return ensureNoActiveDispatchLoopWithRunner(ctx, spriteBashRunner(s))
+	return ensureNoActiveDispatchWithRunner(ctx, spriteBashRunner(s))
 }
 
-// isDispatchLoopActive returns true when a ralph loop is running on s.
+// isDispatchLoopActive returns true when a dispatch agent is running on s.
 // It uses the same pgrep check as ensureNoActiveDispatchLoop.
 func isDispatchLoopActive(ctx context.Context, s *sprites.Sprite) (bool, error) {
-	return isDispatchLoopActiveWithRunner(ctx, spriteBashRunner(s))
+	return isDispatchActiveWithRunner(ctx, spriteBashRunner(s))
 }
 
-// runRalphLoopCheck executes the pgrep check and returns the raw result.
-func runRalphLoopCheck(ctx context.Context, run spriteScriptRunner) (output string, exitCode int, err error) {
+// runActiveDispatchCheck executes the pgrep check and returns the raw result.
+func runActiveDispatchCheck(ctx context.Context, run spriteScriptRunner) (output string, exitCode int, err error) {
 	output, exitCode, err = runDispatchCheck(ctx, run, dispatchCheck{
 		timeout: 10 * time.Second,
-		script:  activeRalphLoopCheckScript,
+		script:  activeDispatchCheckScript,
 	})
 	if err != nil {
-		return "", 0, fmt.Errorf("check dispatch loop: %w", err)
+		return "", 0, fmt.Errorf("check active dispatch: %w", err)
 	}
 	return output, exitCode, nil
 }
 
-func isDispatchLoopActiveWithRunner(ctx context.Context, run spriteScriptRunner) (bool, error) {
-	_, exitCode, err := runRalphLoopCheck(ctx, run)
+func isDispatchActiveWithRunner(ctx context.Context, run spriteScriptRunner) (bool, error) {
+	_, exitCode, err := runActiveDispatchCheck(ctx, run)
 	if err != nil {
 		return false, err
 	}
@@ -148,7 +148,7 @@ func isDispatchLoopActiveWithRunner(ctx context.Context, run spriteScriptRunner)
 	case 1:
 		return true, nil
 	default:
-		return false, fmt.Errorf("check dispatch loop exited %d", exitCode)
+		return false, fmt.Errorf("check active dispatch exited %d", exitCode)
 	}
 }
 
@@ -295,8 +295,8 @@ func hasNewCommitsWithRunner(ctx context.Context, run spriteScriptRunner, worksp
 	}
 }
 
-// captureHeadSHAWithRunner records the current HEAD SHA in workspace before the ralph
-// loop starts. The returned SHA is used by hasNewCommitsSinceSHAWithRunner to scope
+// captureHeadSHAWithRunner records the current HEAD SHA in workspace before the agent
+// starts. The returned SHA is used by hasNewCommitsSinceSHAWithRunner to scope
 // the off-rails secondary commit check to the current dispatch.
 func captureHeadSHAWithRunner(ctx context.Context, run spriteScriptRunner, workspace string) (string, error) {
 	output, exitCode, err := runDispatchCheck(ctx, run, dispatchCheck{
@@ -353,6 +353,25 @@ func hasTaskCompleteSignalWithRunner(ctx context.Context, run spriteScriptRunner
 		return false, nil
 	default:
 		return false, fmt.Errorf("completion signal check exited %d: %s", exitCode, output)
+	}
+}
+
+func hasBlockedSignalWithRunner(ctx context.Context, run spriteScriptRunner, workspace string) (bool, error) {
+	output, exitCode, err := runDispatchCheck(ctx, run, dispatchCheck{
+		timeout: 10 * time.Second,
+		script:  blockedSignalCheckScriptFor(workspace),
+	})
+	if err != nil {
+		return false, fmt.Errorf("check blocked signal command failed: %w", err)
+	}
+
+	switch exitCode {
+	case 0:
+		return true, nil
+	case 1:
+		return false, nil
+	default:
+		return false, fmt.Errorf("blocked signal check exited %d: %s", exitCode, output)
 	}
 }
 
@@ -436,8 +455,8 @@ func waitForTaskCompleteWithRunner(ctx context.Context, run spriteScriptRunner, 
 	})
 }
 
-func ensureNoActiveDispatchLoopWithRunner(ctx context.Context, run spriteScriptRunner) error {
-	output, exitCode, err := runRalphLoopCheck(ctx, run)
+func ensureNoActiveDispatchWithRunner(ctx context.Context, run spriteScriptRunner) error {
+	output, exitCode, err := runActiveDispatchCheck(ctx, run)
 	if err != nil {
 		return err
 	}
@@ -452,11 +471,11 @@ func ensureNoActiveDispatchLoopWithRunner(ctx context.Context, run spriteScriptR
 		if output == "" {
 			output = "(process list empty)"
 		}
-		return fmt.Errorf("active dispatch loop detected:\n%s", output)
+		return fmt.Errorf("active dispatch detected:\n%s", output)
 	default:
 		if output == "" {
-			return fmt.Errorf("check dispatch loop exited %d", exitCode)
+			return fmt.Errorf("check active dispatch exited %d", exitCode)
 		}
-		return fmt.Errorf("check dispatch loop exited %d:\n%s", exitCode, output)
+		return fmt.Errorf("check active dispatch exited %d:\n%s", exitCode, output)
 	}
 }

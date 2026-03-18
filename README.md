@@ -10,7 +10,7 @@ Bitterblossom has three surfaces:
 - `bb`: thin Go transport for sprite setup, dispatch, status, logs, and recovery
 - `base/skills/`: skill library provisioned onto every managed sprite
 
-The Python conductor (`scripts/conductor.py`) is deprecated as of [ADR-004](docs/adr/004-elixir-conductor-architecture.md); it remains as reference only.
+The legacy Python/shell control plane is retired. The supported conductor entrypoint is `mix conductor ...` from [`conductor/`](conductor/).
 
 The design is intentional:
 
@@ -29,7 +29,7 @@ Full artifact stack: [docs/architecture/README.md](docs/architecture/README.md)
 conductor/               Elixir/OTP orchestrator (control plane)
 cmd/bb/                  thin Go transport CLI (sprite edge)
 base/skills/             skill files provisioned onto sprites
-scripts/                 ralph loop + prompt templates + legacy Python conductor
+scripts/                 prompt templates + onboarding helpers
 sprites/                 per-sprite personas
 docs/adr/                architecture decisions
 docs/architecture/       system overview + per-module drill-downs
@@ -39,7 +39,7 @@ docs/                    operator docs and contracts
 ## How It Works
 
 1. `bb setup <sprite> --repo owner/repo` bootstraps persistent worker sprites with base configs, imported autonomy skills, and a role persona
-2. `scripts/conductor.py run-once|loop` reads GitHub issues and acquires a lease
+2. `mix conductor start --fleet ../fleet.toml` boots the orchestrator and begins leasing eligible issues
 3. the conductor dispatches a builder sprite with a branch contract
 4. the builder opens a PR on that branch; PR existence is the success signal
 5. three reviewer sprites run adversarial reviews and write review artifacts
@@ -82,14 +82,10 @@ export SPRITE_TOKEN="..."  # from https://sprites.dev/settings
 ./bin/bb setup council-sage-20260306 --repo misty-step/bitterblossom
 ./bin/bb setup council-thorn-20260306 --repo misty-step/bitterblossom
 
-# 3) Run one conductor cycle for a specific issue
-python3 scripts/conductor.py run-once \
-  --repo misty-step/bitterblossom \
-  --issue 123 \
-  --worker noble-blue-serpent \
-  --reviewer council-fern-20260306 \
-  --reviewer council-sage-20260306 \
-  --reviewer council-thorn-20260306
+# 3) Start the conductor
+cd conductor
+mix deps.get
+mix conductor start --fleet ../fleet.toml
 ```
 
 See [docs/CLI-REFERENCE.md](docs/CLI-REFERENCE.md) for `bb`, and [docs/CONDUCTOR.md](docs/CONDUCTOR.md) for the conductor loop.
@@ -128,7 +124,6 @@ Bitterblossom ships one canonical runtime profile out of the box:
 
 - Provider: `openrouter-claude`
 - Model: `anthropic/claude-sonnet-4-6`
-- Plugin: `ralph-loop@claude-plugins-official`
 - Auth: `OPENROUTER_API_KEY`
 
 Legacy provider variants are still parseable for compatibility, but they are not the default path. See [docs/PROVIDERS.md](docs/PROVIDERS.md) for compatibility notes.
@@ -208,26 +203,26 @@ GitHub Actions CI runs on pull requests and pushes to `master` with:
 - `ruff` + `pytest` for `base/hooks/`
 - `yamllint` for `compositions/`
 
-## Python Testing (Hooks + Conductor)
+## Python Testing (Hooks)
 
-Safety-critical hooks in `base/hooks/` and the conductor script are covered with pytest and ruff. Use the Makefile targets:
+Safety-critical hooks in `base/hooks/` are covered with pytest and ruff. Use the Makefile targets:
 
 ```bash
-make test-python   # pytest: base/hooks + scripts/test_conductor.py
-make lint-python   # ruff:   base/hooks + scripts/conductor.py + tests
+make test-python   # pytest: base/hooks
+make lint-python   # ruff:   base/hooks
 ```
 
 ## Troubleshooting
 
-### Dispatch blocked by a stale Ralph loop
+### Dispatch blocked by a stale agent process
 
-If a previous dispatch was interrupted (Ctrl-C, network drop, timeout), the Ralph loop may still be running on the sprite. A live Ralph process blocks the next dispatch.
+If a previous dispatch was interrupted (Ctrl-C, network drop, timeout), an agent process may still be running on the sprite. A live agent process blocks the next dispatch.
 
 ```bash
 bb kill <sprite>
 ```
 
-This terminates the Ralph loop and any associated agent processes, clearing the way for a fresh dispatch. Stale Claude-only processes (no active Ralph loop) are cleaned automatically by dispatch and don't require `bb kill`.
+This terminates the active agent process and clears the way for a fresh dispatch.
 
 ## Constraints
 

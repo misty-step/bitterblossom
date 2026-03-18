@@ -5,6 +5,12 @@
     "defaultMode": "bypassPermissions"
   },
   "env": {
+    "ANTHROPIC_MODEL": "anthropic/claude-sonnet-4-6",
+    "ANTHROPIC_SMALL_FAST_MODEL": "anthropic/claude-sonnet-4-6",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "anthropic/claude-sonnet-4-6",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "anthropic/claude-sonnet-4-6",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "anthropic/claude-sonnet-4-6",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "anthropic/claude-sonnet-4-6",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
     "API_TIMEOUT_MS": "600000"
   },

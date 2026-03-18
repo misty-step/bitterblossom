@@ -14,13 +14,11 @@ const (
 	spriteRuntimeEnvPath = spriteRuntimeDir + "/runtime.env"
 	spriteWorkspaceRoot  = spriteHomeDir + "/workspace"
 
-	spritePersonaPath             = spriteWorkspaceRoot + "/PERSONA.md"
-	spriteRalphScriptPath         = spriteWorkspaceRoot + "/.ralph.sh"
-	spriteRalphPromptTemplatePath = spriteWorkspaceRoot + "/.builder-prompt-template.md"
+	spritePersonaPath = spriteWorkspaceRoot + "/PERSONA.md"
 
 	workspaceMetadataRelPath   = ".bb/workspace.json"
 	dispatchPromptFileName     = ".dispatch-prompt.md"
-	ralphLogFileName           = "ralph.log"
+	dispatchLogFileName        = "ralph.log"
 	taskCompleteFileName       = "TASK_COMPLETE"
 	legacyTaskCompleteFileName = "TASK_COMPLETE.md"
 	blockedFileName            = "BLOCKED.md"
@@ -50,8 +48,8 @@ func workspaceDispatchPromptPath(workspace string) string {
 	return workspaceFilePath(workspace, dispatchPromptFileName)
 }
 
-func workspaceRalphLogPath(workspace string) string {
-	return workspaceFilePath(workspace, ralphLogFileName)
+func workspaceDispatchLogPath(workspace string) string {
+	return workspaceFilePath(workspace, dispatchLogFileName)
 }
 
 func cleanSignalsScriptFor(workspace string) string {
@@ -70,6 +68,10 @@ func taskCompleteSignalCheckScriptFor(workspace string) string {
 	}
 
 	return fmt.Sprintf("export WORKSPACE=%q\nif %s; then\n  exit 0\nfi\nexit 1", workspace, strings.Join(checks, " || "))
+}
+
+func blockedSignalCheckScriptFor(workspace string) string {
+	return fmt.Sprintf("export WORKSPACE=%q\nif [ -f \"$WORKSPACE/%s\" ]; then\n  exit 0\nfi\nexit 1", workspace, blockedFileName)
 }
 
 func workspaceStatusSignalsScript(envName string) string {
