@@ -91,6 +91,29 @@ defmodule Conductor.SecurityTest do
     end
   end
 
+  describe "governance: sprite merge lockout" do
+    test "Sprite.kill_and_revoke/2 kills agents and revokes gh auth" do
+      commands_run = :ets.new(:kill_revoke_cmds, [:bag, :public])
+
+      exec_fn = fn _sprite, command, _opts ->
+        :ets.insert(commands_run, {:cmd, command})
+        {:ok, ""}
+      end
+
+      Conductor.Sprite.kill_and_revoke("bb-builder", exec_fn: exec_fn)
+
+      cmds = :ets.tab2list(commands_run) |> Enum.map(fn {:cmd, c} -> c end)
+      assert Enum.any?(cmds, &String.contains?(&1, "pkill"))
+      assert Enum.any?(cmds, &String.contains?(&1, "gh auth logout"))
+      :ets.delete(commands_run)
+    end
+
+    test "Sprite.kill_and_revoke/2 tolerates exec failures" do
+      exec_fn = fn _sprite, _command, _opts -> {:error, "unreachable", 1} end
+      assert :ok = Conductor.Sprite.kill_and_revoke("bb-builder", exec_fn: exec_fn)
+    end
+  end
+
   describe "Prompt fence escaping" do
     test "escapes triple backticks in issue body" do
       issue = %Issue{

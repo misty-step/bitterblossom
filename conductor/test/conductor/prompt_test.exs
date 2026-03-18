@@ -139,6 +139,57 @@ defmodule Conductor.PromptTest do
     end
   end
 
+  describe "governance restrictions in builder prompt" do
+    test "prohibits gh pr merge" do
+      prompt = Prompt.build_builder_prompt(@issue, "run-99-gov", "factory/99-gov")
+      assert prompt =~ "gh pr merge"
+      assert prompt =~ "MUST NOT"
+    end
+
+    test "prohibits gh pr close" do
+      prompt = Prompt.build_builder_prompt(@issue, "run-99-gov", "factory/99-gov")
+      assert prompt =~ "gh pr close"
+      assert prompt =~ "MUST NOT"
+    end
+  end
+
+  describe "governance restrictions in builder revision prompt" do
+    test "prohibits gh pr merge even with feedback" do
+      prompt =
+        Prompt.build_builder_prompt(@issue, "run-99-rev", "factory/99-rev",
+          feedback: "Fix the tests."
+        )
+
+      assert prompt =~ "gh pr merge"
+      assert prompt =~ "MUST NOT"
+    end
+  end
+
+  describe "governance restrictions in fixer prompt" do
+    test "prohibits gh pr merge" do
+      pr = %{"number" => 10, "title" => "Fix CI", "headRefName" => "factory/10-fix"}
+      prompt = Prompt.build_fixer_prompt(pr, "test failed", "issue body")
+      assert prompt =~ "gh pr merge"
+      assert prompt =~ "MUST NOT"
+    end
+  end
+
+  describe "governance restrictions in polisher prompt" do
+    test "prohibits gh pr merge" do
+      pr = %{"number" => 10, "title" => "Fix CI", "headRefName" => "factory/10-fix"}
+      prompt = Prompt.build_polisher_prompt(pr, [], "issue body")
+      assert prompt =~ "gh pr merge"
+      assert prompt =~ "MUST NOT"
+    end
+
+    test "prohibits gh pr close" do
+      pr = %{"number" => 10, "title" => "Fix CI", "headRefName" => "factory/10-fix"}
+      prompt = Prompt.build_polisher_prompt(pr, [], "issue body")
+      assert prompt =~ "gh pr close"
+      assert prompt =~ "MUST NOT"
+    end
+  end
+
   describe "build_builder_prompt/4 with repo_context (CLAUDE.md)" do
     @claude_md_content """
     # CLAUDE.md

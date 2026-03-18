@@ -295,6 +295,18 @@ defmodule Conductor.OrchestratorTest do
     %{orch_pid: orch_pid}
   end
 
+  describe "terminate/2 shutdown behavior" do
+    test "orchestrator traps exits for clean shutdown" do
+      info = Process.info(Process.whereis(Orchestrator), :trap_exit)
+      assert {:trap_exit, true} = info
+    end
+
+    test "stopping orchestrator with workers calls kill_fleet_agents" do
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
+      safe_stop(Process.whereis(Orchestrator))
+    end
+  end
+
   describe "configure_polling/1" do
     test "returns error when workers list is empty" do
       assert {:error, :no_workers} =

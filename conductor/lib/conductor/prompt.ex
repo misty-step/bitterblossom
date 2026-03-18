@@ -32,6 +32,8 @@ defmodule Conductor.Prompt do
 
     You are the builder. Implement the issue and deliver a mergeable PR.
     #{if feedback, do: revision_section(feedback), else: initial_section(branch)}
+
+    #{governance_restrictions()}
     """
   end
 
@@ -109,6 +111,8 @@ defmodule Conductor.Prompt do
     Do NOT expand the scope of the PR.
     Focus exclusively on making CI green.
 
+    #{governance_restrictions()}
+
     When done, write TASK_COMPLETE.
     """
   end
@@ -171,7 +175,22 @@ defmodule Conductor.Prompt do
     Do NOT expand the scope of the PR beyond addressing review feedback.
     Do NOT remove the PR from review or modify its base branch.
 
+    #{governance_restrictions()}
+
     When done, write TASK_COMPLETE.
+    """
+  end
+
+  # Governance invariant: sprites do the work, the conductor judges the work.
+  # These restrictions are prompt-level defense in depth — mechanical enforcement
+  # lives in token scoping and conductor shutdown hooks.
+  defp governance_restrictions do
+    """
+    ## Restrictions
+
+    You MUST NOT run `gh pr merge` or `gh pr close` under any circumstances.
+    Merge and close authority belongs exclusively to the conductor.
+    Violating this restriction is a governance failure.
     """
   end
 
