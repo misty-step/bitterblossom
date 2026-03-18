@@ -80,6 +80,7 @@ func verifyWorkScriptFor(workspace, branch string) string {
 }
 
 func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverride, promptTemplate string, timeout time.Duration, noOutputTimeout time.Duration, dryRun bool, prCheckTimeout time.Duration, waitForComplete bool) error {
+	// 1. Probe sprite and open the session.
 	// LLM auth is handled by settings.json on the sprite and GitHub auth is
 	// persisted on the sprite during setup.
 	_, _ = fmt.Fprintf(os.Stderr, "probing %s...\n", spriteName)
@@ -138,7 +139,7 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverrid
 		}
 	}
 
-	// 6. Clean stale signals
+	// 5. Clean stale signals and capture pre-dispatch state.
 	cleanScript := cleanSignalsScriptFor(workspace)
 	_, _ = s.CommandContext(ctx, "bash", "-c", cleanScript).Output()
 
@@ -149,7 +150,7 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverrid
 		_, _ = fmt.Fprintf(os.Stderr, "warning: could not capture pre-dispatch HEAD SHA: %v\n", shaErr)
 	}
 
-	// 7. Render and upload prompt
+	// 6. Render and upload prompt.
 	rendered, err := renderPrompt(promptTemplate, prompt, repo, spriteName)
 	if err != nil {
 		return fmt.Errorf("render prompt: %w", err)
@@ -160,7 +161,7 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverrid
 		return fmt.Errorf("upload prompt: %w", err)
 	}
 
-	// 8. Run the agent directly in the workspace.
+	// 7. Run the agent directly in the workspace.
 	logPath := workspaceDispatchLogPath(workspace)
 	_, _ = fmt.Fprintf(os.Stderr, "starting agent dispatch (%s timeout, harness=claude)...\n", timeout)
 	agentCommand := dispatchAgentCommand(workspace, promptPath, logPath)
@@ -212,7 +213,7 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverrid
 	// detector.
 	detector.stop()
 
-	// 9. Verify work produced
+	// 8. Verify work produced.
 	_, _ = fmt.Fprintf(os.Stderr, "\n=== work produced ===\n")
 	verifyScript := verifyWorkScriptFor(workspace, defaultBranch)
 	verifyCmd := s.CommandContext(ctx, "bash", "-c", verifyScript)
@@ -220,11 +221,11 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverrid
 	verifyCmd.Stderr = os.Stderr
 	_ = verifyCmd.Run()
 
-	// 10. Snapshot PR CI status (informational; gating is controlled by --pr-check-timeout).
+	// 9. Snapshot PR CI status (informational; gating is controlled by --pr-check-timeout).
 	prs := snapshotPRChecksWithRunner(ctx, spriteBashRunner(s), workspace)
 	_, _ = fmt.Fprintf(os.Stderr, "dispatch pr-checks: status=%s checks_exit=%d\n", prs.status, prs.checksExit)
 
-	// 11. Return appropriate exit code
+	// 10. Return appropriate exit code.
 	// Check if off-rails detector killed the dispatch.
 	if cause := context.Cause(agentCtx); cause != nil && errors.Is(cause, errOffRails) {
 		_, _ = fmt.Fprintf(os.Stderr, "\n=== off-rails detected: %v ===\n", cause)
@@ -283,7 +284,7 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverrid
 		}
 	}
 
-	// 12. Optionally wait for PR CI checks to pass.
+	// 11. Optionally wait for PR CI checks to pass.
 	if prCheckTimeout > 0 {
 		_, _ = fmt.Fprintf(os.Stderr, "\n=== waiting for PR checks (timeout %s) ===\n", prCheckTimeout)
 		pollInterval := 30 * time.Second
@@ -293,6 +294,7 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverrid
 		_, _ = fmt.Fprintf(os.Stderr, "=== PR checks passed ===\n")
 	}
 
+	// 12. Optionally wait for the task-complete signal.
 	if waitForComplete {
 		_, _ = fmt.Fprintf(os.Stderr, "\n=== waiting for task complete (timeout %s) ===\n", timeout)
 		pollInterval := 30 * time.Second

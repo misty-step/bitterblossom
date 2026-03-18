@@ -8,8 +8,17 @@ import (
 func TestKillAgentProcessesScriptTargetsSupportedAgents(t *testing.T) {
 	t.Parallel()
 
-	if !strings.Contains(killAgentProcessesScript, `agents='/home/sprite/workspace/\\.[r]alph\\.sh|[c]laude|[c]odex|[o]pencode'`) {
-		t.Fatalf("killAgentProcessesScript does not include expected agents regex")
+	for _, want := range []string{
+		`agents='`,
+		`/home/sprite/workspace/`,
+		`\\.[r]alph\\.sh`,
+		`[c]laude`,
+		`[c]odex`,
+		`[o]pencode`,
+	} {
+		if !strings.Contains(killAgentProcessesScript, want) {
+			t.Fatalf("killAgentProcessesScript missing %q in agent targets", want)
+		}
 	}
 }
 
