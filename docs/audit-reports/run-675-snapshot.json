@@ -1,0 +1,1289 @@
+{
+  "run": {
+    "blocked_reason": null,
+    "branch": "factory/675-1773840329",
+    "builder_sprite": "bb-builder",
+    "ci_last_reported_at": null,
+    "ci_wait_started_at": null,
+    "completed_at": "2026-03-18T14:11:27.558133Z",
+    "heartbeat_at": "2026-03-18T14:11:04.919086Z",
+    "issue_number": 675,
+    "issue_title": "[P1] Delete builder-result.json artifact protocol \u2014 PR existence is the success signal",
+    "phase": "pr_opened",
+    "picked_at": "2026-03-18T14:02:34.123141Z",
+    "pr_number": 723,
+    "pr_url": "https://github.com/misty-step/bitterblossom/pull/723",
+    "replay_count": 0,
+    "repo": "misty-step/bitterblossom",
+    "run_id": "run-675-1773842554",
+    "semantic_ready": null,
+    "status": "pr_opened",
+    "turn_count": 1,
+    "updated_at": "2026-03-18T14:11:27.558133Z",
+    "worktree_path": null
+  },
+  "events": [
+    {
+      "events": [
+        {
+          "created_at": "2026-03-18T14:02:34.124715Z",
+          "event_type": "lease_acquired",
+          "id": 127,
+          "payload": {
+            "issue": 675
+          },
+          "run_id": "run-675-1773842554"
+        },
+        {
+          "created_at": "2026-03-18T14:02:34.656603Z",
+          "event_type": "builder_workspace_prepared",
+          "id": 128,
+          "payload": {
+            "workspace": "/home/sprite/workspace/bitterblossom/.bb/conductor/run-675-1773842554/builder-worktree"
+          },
+          "run_id": "run-675-1773842554"
+        },
+        {
+          "created_at": "2026-03-18T14:02:34.870255Z",
+          "event_type": "builder_dispatched",
+          "id": 129,
+          "payload": {
+            "sprite": "bb-builder",
+            "turn": 1
+          },
+          "run_id": "run-675-1773842554"
+        },
+        {
+          "created_at": "2026-03-18T14:11:27.221377Z",
+          "event_type": "builder_complete",
+          "id": 135,
+          "payload": {
+            "turn": 1
+          },
+          "run_id": "run-675-1773842554"
+        },
+        {
+          "created_at": "2026-03-18T14:11:27.555944Z",
+          "event_type": "builder_artifact_ready",
+          "id": 136,
+          "payload": {
+            "pr_number": 723,
+            "pr_url": "https://github.com/misty-step/bitterblossom/pull/723",
+            "summary": "Removed the builder artifact dependency by using PR existence as the build success signal, matched PR detection to the exact run branch to avoid stale PR false negatives, surfaced incomplete PR payloads and workspace read failures truthfully, added focused RunServer/GitHub coverage, and aligned completion docs. Focused conductor tests pass locally (202 tests). Repo-owned PR checks are green; external review surfaces are still pending."
+          },
+          "run_id": "run-675-1773842554"
+        },
+        {
+          "created_at": "2026-03-18T14:11:27.980675Z",
+          "event_type": "workspace_cleaned",
+          "id": 137,
+          "payload": {},
+          "run_id": "run-675-1773842554"
+        }
+      ],
+      "run_id": "run-675-1773842554",
+      "event_count": 6
+    }
+  ],
+  "issue": {
+    "comments": [
+      {
+        "id": "IC_kwDORJkRwM7yNwlH",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "**Design decision**: Artifact protocol must be harness-independent. Should work whether the builder runs Codex, Claude, Pi, or anything else. The conductor should own artifact creation \u2014 don't rely on the agent to write a specific file format.",
+        "createdAt": "2026-03-15T19:07:38Z",
+        "includesCreatedEdit": false,
+        "isMinimized": false,
+        "minimizedReason": "",
+        "reactionGroups": [],
+        "url": "https://github.com/misty-step/bitterblossom/issues/675#issuecomment-4063693127",
+        "viewerDidAuthor": true
+      },
+      {
+        "id": "IC_kwDORJkRwM7ymlB1",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "**Simplification proposal (factory audit 2026-03-16):** Delete the artifact protocol entirely. The PR is the artifact.\n\nAfter builder dispatch (any exit code), the conductor should check if a PR exists on the factory branch. If yes \u2192 `pr_opened`. If no \u2192 `failed`. One code path instead of two.\n\nThis subsumes both #675 (Codex doesn't write artifact) and #685 (builder completes without artifact) and #700 (adopt PRs from failed builders). All three are symptoms of the same design: treating `builder-result.json` as the success signal instead of the PR.\n\nProposed scope: delete `read_artifact`, `handle_artifact`, `artifact_path` from RunServer. Replace with a single `check_for_pr` call after builder exits. Delete `builder-result.json` from prompt templates.",
+        "createdAt": "2026-03-16T19:50:44Z",
+        "includesCreatedEdit": false,
+        "isMinimized": false,
+        "minimizedReason": "",
+        "reactionGroups": [],
+        "url": "https://github.com/misty-step/bitterblossom/issues/675#issuecomment-4070199413",
+        "viewerDidAuthor": true
+      },
+      {
+        "id": "IC_kwDORJkRwM7yohyt",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "**Retro finding:** Builder sprite completed after 14 minutes but produced no builder-result.json artifact, causing run to fail despite potential success\n\nEvidence from run-681-1773695824: Builder completed after 14min runtime but no builder-result.json was found. This demonstrates the fragility of file-based success detection. The builder may have succeeded (created PR) but artifact creation failed, leading to false negative. This reinforces that PR existence should be the canonical success signal, not file artifacts.",
+        "createdAt": "2026-03-16T21:31:27Z",
+        "includesCreatedEdit": false,
+        "isMinimized": false,
+        "minimizedReason": "",
+        "reactionGroups": [],
+        "url": "https://github.com/misty-step/bitterblossom/issues/675#issuecomment-4070710445",
+        "viewerDidAuthor": true
+      },
+      {
+        "id": "IC_kwDORJkRwM7zV6sh",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "Bitterblossom blocked `run-675-1773840329`: Repo-owned CI is green, but external review checks are still pending on PR #723 (CodeRabbit: review in progress; Cerberus review jobs still in progress), so the lane is not truthfully ready yet.",
+        "createdAt": "2026-03-18T13:34:03Z",
+        "includesCreatedEdit": false,
+        "isMinimized": false,
+        "minimizedReason": "",
+        "reactionGroups": [],
+        "url": "https://github.com/misty-step/bitterblossom/issues/675#issuecomment-4082608929",
+        "viewerDidAuthor": true
+      },
+      {
+        "id": "IC_kwDORJkRwM7zV6-h",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "**Retro finding:** Run was marked complete when PR was created, but the block condition shows we're waiting for external CI. This creates false success signals when the merge path isn't actually clear.\n\nRun #675 demonstrates the core issue: builder marked complete after creating PR #723, but run blocked on external CI. The success signal (PR exists) is decoupled from merge readiness. This confirms that PR existence alone is insufficient - we need to validate the merge path before declaring success.",
+        "createdAt": "2026-03-18T13:34:14Z",
+        "includesCreatedEdit": false,
+        "isMinimized": false,
+        "minimizedReason": "",
+        "reactionGroups": [],
+        "url": "https://github.com/misty-step/bitterblossom/issues/675#issuecomment-4082610081",
+        "viewerDidAuthor": true
+      },
+      {
+        "id": "IC_kwDORJkRwM7zWpA9",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "Bitterblossom blocked `run-675-1773841880`: PR #723 is updated and repo CI is green, but the external Cerberus review jobs for the current head commit are still pending, so the review loop is not truthfully complete yet.",
+        "createdAt": "2026-03-18T14:01:39Z",
+        "includesCreatedEdit": false,
+        "isMinimized": false,
+        "minimizedReason": "",
+        "reactionGroups": [],
+        "url": "https://github.com/misty-step/bitterblossom/issues/675#issuecomment-4082798653",
+        "viewerDidAuthor": true
+      }
+    ],
+    "labels": [
+      {
+        "id": "LA_kwDORJkRwM8AAAACXKdOzQ",
+        "name": "bug",
+        "description": "Something isn't working",
+        "color": "d73a4a"
+      },
+      {
+        "id": "LA_kwDORJkRwM8AAAACXMhSDw",
+        "name": "domain/infra",
+        "description": "Dashboard, deployment, monitoring infrastructure",
+        "color": "D4C5F9"
+      },
+      {
+        "id": "LA_kwDORJkRwM8AAAACX6j6ww",
+        "name": "now",
+        "description": "Current sprint focus",
+        "color": "B60205"
+      },
+      {
+        "id": "LA_kwDORJkRwM8AAAACX6j6-g",
+        "name": "next",
+        "description": "Next sprint candidate",
+        "color": "D93F0B"
+      },
+      {
+        "id": "LA_kwDORJkRwM8AAAACX6j7xQ",
+        "name": "effort/m",
+        "description": "1-3 days",
+        "color": "bfd4f2"
+      },
+      {
+        "id": "LA_kwDORJkRwM8AAAACX6nQ0A",
+        "name": "p1",
+        "description": "Essential: foundation and fundamentals",
+        "color": "e36209"
+      }
+    ],
+    "milestone": {
+      "number": 7,
+      "title": "Now: Current Sprint",
+      "description": "Active work. Issues labeled 'now'.",
+      "dueOn": null
+    },
+    "number": 675,
+    "state": "OPEN",
+    "title": "[P1] Delete builder-result.json artifact protocol \u2014 PR existence is the success signal",
+    "url": "https://github.com/misty-step/bitterblossom/issues/675"
+  },
+  "pr": {
+    "comments": [
+      {
+        "id": "IC_kwDORJkRwM7zV1Ki",
+        "author": {
+          "login": "coderabbitai"
+        },
+        "authorAssociation": "NONE",
+        "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n<!-- This is an auto-generated comment: review paused by coderabbit.ai -->\n\n> [!NOTE]\n> ## Reviews paused\n> \n> It looks like this branch is under active development. To avoid overwhelming you with review comments due to an influx of new commits, CodeRabbit has automatically paused this review. You can configure this behavior by changing the `reviews.auto_review.auto_pause_after_reviewed_commits` setting.\n> \n> Use the following commands to manage reviews:\n> - `@coderabbitai resume` to resume automatic reviews.\n> - `@coderabbitai review` to trigger a single review.\n> \n> Use the checkboxes below for quick actions:\n> - [ ] <!-- {\"checkboxId\": \"7f6cc2e2-2e4e-497a-8c31-c9e4573e93d1\"} --> \u25b6\ufe0f Resume reviews\n> - [ ] <!-- {\"checkboxId\": \"e9bb8d72-00e8-4f67-9cb2-caf3b22574fe\"} --> \ud83d\udd0d Trigger review\n\n<!-- end of auto-generated comment: review paused by coderabbit.ai -->\n\n<!-- walkthrough_start -->\n\n<details>\n<summary>\ud83d\udcdd Walkthrough</summary>\n\n## Walkthrough\n\nReplaces artifact-based builder completion with PR-detection: prompt no longer asks for builder-result.json, conductor detects open PRs via a configurable CodeHost, removes artifact APIs and reads, updates prompt/run lifecycle, mocks, tests, and docs to use PR-based TASK_COMPLETE/BLOCKED.md handoff.\n\n## Changes\n\n|Cohort / File(s)|Summary|\n|---|---|\n|**Documentation & templates** <br> `MEMORY.md`, `README.md`, `docs/*`, `scripts/builder-prompt-template.md`|Add \"Builder Completion via PR Detection\" text; remove `builder-result.json` references; update prompt/template and docs to describe PR-based success signal and TASK_COMPLETE / BLOCKED.md handoff.|\n|**Prompt generation** <br> `conductor/lib/conductor/prompt.ex`|Remove `artifact_path` parameter and all artifact-emission instructions; prompt now instructs opening a PR on factory/* branch and writing `TASK_COMPLETE` or `BLOCKED.md`.|\n|**Run server core** <br> `conductor/lib/conductor/run_server.ex`|Remove artifact lifecycle/state and artifact reads; add `code_host_mod` usage, `detect_pr/1`, `handle_pr_ready/2`, workspace file helpers (`read_workspace_file/2`, `read_file/1`); switch events/logging to PR-centric flow.|\n|**Code host & GitHub integration** <br> `conductor/lib/conductor/code_host.ex`, `conductor/lib/conductor/github.ex`, `conductor/lib/conductor/orchestrator.ex`|Change `find_open_pr/2` \u2192 `find_open_pr/3` (optional expected_branch); add matching logic to allow exact-branch constraint while preserving prefix behavior. Update callers to pass the extra arg.|\n|**Worker / Sprite / Workspace behaviour** <br> `conductor/lib/conductor/worker.ex`, `conductor/lib/conductor/sprite.ex`, `conductor/lib/conductor/workspace.ex`|Remove `read_artifact/3` callback and `Conductor.Sprite.read_artifact/3`; remove `artifact_path/2` helper from workspace API.|\n|**Tests & mocks** <br> `conductor/test/conductor/*`, `conductor/test/conductor/run_server_test.exs`, `conductor/test/conductor/*_test.exs`|Update prompt tests to new arity and handoff markers; replace artifact-driven tests with PR-detection scenarios; add `MockCodeHost`, adapt `MockWorkspace`/`MockWorker` to file-read behavior, remove many `read_artifact` mocks; add tests for PR-detection success/failure and branch-matching.|\n|**Misc / lockfile** <br> `mix.lock`|Update lockfile changes. |\n\n## Sequence Diagram(s)\n\n```mermaid\nsequenceDiagram\n    participant Client as Client\n    participant RunServer as RunServer\n    participant CodeHost as CodeHost\n    participant Repo as Repo_System\n\n    Client->>RunServer: dispatch builder (repo, issue, branch)\n    RunServer->>RunServer: build prompt (no artifact path)\n    RunServer->>CodeHost: dispatch builder sprite\n    CodeHost-->>RunServer: dispatch accepted\n\n    Note over RunServer,CodeHost: post-dispatch completion detected via PR\n    RunServer->>CodeHost: find_open_pr(repo, issue_number, expected_branch)\n    CodeHost->>Repo: query open PR for branch/issue\n    Repo-->>CodeHost: PR found {number, url}\n    CodeHost-->>RunServer: {:ok, pr_data}\n\n    RunServer->>RunServer: handle_pr_ready(pr_data)\n    RunServer->>RunServer: update run (pr_number, pr_url), emit builder_pr_detected\n    RunServer->>RunServer: cleanup workspace, transition state\n    RunServer-->>Client: report completion (PR)\n```\n\n## Estimated code review effort\n\n\ud83c\udfaf 4 (Complex) | \u23f1\ufe0f ~50 minutes\n\n## Poem\n\n> \ud83d\udc30 I hopped through branches, sniffed the git air,  \n> No JSON crumbs\u2014just a PR waiting there.  \n> I nudged a branch and watched the checks gleam,  \n> TASK_COMPLETE shouted, a reviewer\u2019s dream.  \n> I twitched my nose and curled back to my burrow\u2014hooray!\n\n</details>\n\n<!-- walkthrough_end -->\n\n\n<!-- pre_merge_checks_walkthrough_start -->\n\n<details>\n<summary>\ud83d\udea5 Pre-merge checks | \u2705 4 | \u274c 1</summary>\n\n### \u274c Failed checks (1 warning)\n\n|     Check name     | Status     | Explanation                                                                           | Resolution                                                                         |\n| :----------------: | :--------- | :------------------------------------------------------------------------------------ | :--------------------------------------------------------------------------------- |\n| Docstring Coverage | \u26a0\ufe0f Warning | Docstring coverage is 13.73% which is insufficient. The required threshold is 80.00%. | Write docstrings for the functions missing them to satisfy the coverage threshold. |\n\n<details>\n<summary>\u2705 Passed checks (4 passed)</summary>\n\n|         Check name         | Status   | Explanation                                                                                                                                                                          |\n| :------------------------: | :------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |\n|      Description Check     | \u2705 Passed | Check skipped - CodeRabbit\u2019s high-level summary is enabled.                                                                                                                          |\n|         Title check        | \u2705 Passed | The title clearly and specifically describes the main change: detecting builder success from PR existence instead of artifacts.                                                      |\n|     Linked Issues check    | \u2705 Passed | All code changes align with issue `#675` requirements: artifact-reading logic removed, PR detection implemented, builder prompt updated, and test coverage added.                      |\n| Out of Scope Changes check | \u2705 Passed | All changes directly support the PR-based success detection goal. Documentation updates, mock implementations, and callback signature changes are necessary to complete the feature. |\n\n</details>\n\n<sub>\u270f\ufe0f Tip: You can configure your own custom pre-merge checks in the settings.</sub>\n\n</details>\n\n<!-- pre_merge_checks_walkthrough_end -->\n\n<!-- finishing_touch_checkbox_start -->\n\n<details>\n<summary>\u2728 Finishing Touches</summary>\n\n<details>\n<summary>\ud83d\udcdd Generate docstrings</summary>\n\n- [ ] <!-- {\"checkboxId\": \"7962f53c-55bc-4827-bfbf-6a18da830691\"} --> Create stacked PR\n- [ ] <!-- {\"checkboxId\": \"3e1879ae-f29b-4d0d-8e06-d12b7ba33d98\"} --> Commit on current branch\n\n</details>\n<details>\n<summary>\ud83e\uddea Generate unit tests (beta)</summary>\n\n- [ ] <!-- {\"checkboxId\": \"f47ac10b-58cc-4372-a567-0e02b2c3d479\", \"radioGroupId\": \"utg-output-choice-group-unknown_comment_id\"} -->   Create PR with unit tests\n- [ ] <!-- {\"checkboxId\": \"6ba7b810-9dad-11d1-80b4-00c04fd430c8\", \"radioGroupId\": \"utg-output-choice-group-unknown_comment_id\"} -->   Commit unit tests in branch `factory/675-1773840329`\n\n</details>\n\n</details>\n\n<!-- finishing_touch_checkbox_end -->\n\n<!-- pr_review_plan_action_start -->\n\n<details>\n<summary>\ud83d\udcdd Coding Plan</summary>\n\n- [ ] <!-- {\"checkboxId\": \"6ad8a4e1-0b3a-4ea2-9b5b-d82c1f47d1f2\"} --> Generate coding plan for human review comments\n\n</details>\n\n<!-- pr_review_plan_action_end -->\n\n<!-- tips_start -->\n\n---\n\n\n\n<sub>Comment `@coderabbitai help` to get the list of available commands and usage tips.</sub>\n\n<!-- tips_end -->\n\n<!-- internal state start -->\n\n\n<!-- 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 -->\n\n<!-- internal state end -->",
+        "createdAt": "2026-03-18T13:30:28Z",
+        "includesCreatedEdit": true,
+        "isMinimized": false,
+        "minimizedReason": "",
+        "reactionGroups": [],
+        "url": "https://github.com/misty-step/bitterblossom/pull/723#issuecomment-4082586274",
+        "viewerDidAuthor": false
+      },
+      {
+        "id": "IC_kwDORJkRwM7zV1jC",
+        "author": {
+          "login": "gemini-code-assist"
+        },
+        "authorAssociation": "NONE",
+        "body": "## Summary of Changes\n\nHello, I'm Gemini Code Assist[^1]! I'm currently reviewing this pull request and will post my feedback shortly. In the meantime, here's a summary to help you and other reviewers quickly get up to speed!\n\nThis pull request significantly refactors the builder completion detection mechanism within the `conductor` service. Instead of relying on a specific `builder-result.json` artifact, the system now determines builder success by actively searching for an open Pull Request associated with the issue. This change streamlines the process, removes a harness-specific dependency from the builder prompt, and improves the robustness of completion detection by leveraging the control plane's own observables.\n\n### Highlights\n\n* **Builder Completion Refactor**: The mechanism for detecting builder completion has been refactored to identify success by finding an open `factory/<issue>-*` Pull Request, removing the previous reliance on a `builder-result.json` artifact.\n* **Prompt Contract Update**: The `Conductor.Prompt` contract has been updated to remove instructions for agents to write `builder-result.json`, making the prompt harness-agnostic and simplifying agent interaction.\n* **Enhanced Test Coverage**: `Conductor.RunServer` tests have been enhanced to include a mocked code host, covering both success and failure paths for the new PR detection logic, and replacing artifact-based assertions.\n\n<details>\n<summary><b>Using Gemini Code Assist</b></summary>\n<br>\n\nThe full guide for Gemini Code Assist can be found on our [documentation page](https://developers.google.com/gemini-code-assist/docs/review-github-code), here are some quick tips.\n\n<b>Invoking Gemini</b>\n\nYou can request assistance from Gemini at any point by creating a comment using either `/gemini <command>` or `@gemini-code-assist <command>`. Below is a summary of the supported commands on the current page.\n\nFeature | Command | Description\n--- | --- | ---\nCode Review | `/gemini review` | Performs a code review for the current pull request in its current state.\nPull Request Summary | `/gemini summary` | Provides a summary of the current pull request in its current state.\nComment | @gemini-code-assist | Responds in comments when explicitly tagged, both in pull request comments and review comments.\nHelp | `/gemini help` | Displays a list of available commands.\n\n<b>Customization</b>\n\nTo customize Gemini Code Assist for GitHub experience, repository maintainers can create a configuration file and/or provide a custom code review style guide (such as PEP-8 for Python) by creating and adding files to a `.gemini/` folder in the base of the repository. Detailed instructions can be found [here](https://developers.google.com/gemini-code-assist/docs/customize-gemini-behavior-github).\n\n<b>Limitations & Feedback</b>\n\nGemini Code Assist may make mistakes. Please leave feedback on any instances where its feedback is incorrect or counter productive. You can react with :thumbsup: and :thumbsdown: on @gemini-code-assist comments. If you're interested in giving your feedback about your experience with Gemini Code Assist for GitHub and other Google products, sign up [here](https://google.qualtrics.com/jfe/form/SV_2cyuGuTWsEw84yG).\n</details>\n\n\n[^1]: Review the [Privacy Notices](https://policies.google.com/privacy), [Generative AI Prohibited Use Policy](https://policies.google.com/terms/generative-ai/use-policy), [Terms of Service](https://policies.google.com/terms), and learn how to configure Gemini Code Assist in GitHub [here](https://developers.google.com/gemini-code-assist/docs/customize-gemini-behavior-github). Gemini can make mistakes, so double check it and [use code with caution](https://support.google.com/legal/answer/13505487).\n",
+        "createdAt": "2026-03-18T13:30:42Z",
+        "includesCreatedEdit": false,
+        "isMinimized": false,
+        "minimizedReason": "",
+        "reactionGroups": [],
+        "url": "https://github.com/misty-step/bitterblossom/pull/723#issuecomment-4082587842",
+        "viewerDidAuthor": false
+      },
+      {
+        "id": "IC_kwDORJkRwM7zWAGJ",
+        "author": {
+          "login": "github-actions"
+        },
+        "authorAssociation": "NONE",
+        "body": "<!-- cerberus:verdict -->\n## \u2705 Cerberus Verdict: PASS\n\n**Summary:** 4/4 reviewers passed.\n\n**Review Scope:** 22 files changed, +432 / -281 lines\n**Reviewer Breakdown:** 4 total | 4 pass | 0 warn | 0 fail | 0 skip\n**Findings:** 0 critical | 0 major | 2 minor | 0 info\n\n### Wave Summary\n- **Unscoped**: 4 reviewers | 4 pass | 0 warn | 0 fail | 0 skip | 2 findings\n\n### Reviewer Overview\n<details>\n<summary>(click to expand)</summary>\n\n- \u2705 **Architecture** (atlas) | `PASS` | 1 findings | wave `Unscoped` | conf `0.92` | runtime `1m 45s` | model `kimi-k2.5` \u21a9\ufe0f (fallback from `grok-4.20-multi-agent-beta`)\n- \u2705 **Security** (guard) | `PASS` | 1 findings | wave `Unscoped` | conf `0.90` | runtime `2m 50s` | model `kimi-k2.5` \u21a9\ufe0f (fallback from `grok-4.20-beta`)\n- \u2705 **Testing** (proof) | `PASS` | 0 findings | wave `Unscoped` | conf `0.90` | runtime `3m 42s` | model `kimi-k2.5` \u21a9\ufe0f (fallback from `grok-4.20-multi-agent-beta`)\n- \u2705 **Correctness** (trace) | `PASS` | 0 findings | wave `Unscoped` | conf `0.90` | runtime `4m 41s` | model `kimi-k2.5` \u21a9\ufe0f (fallback from `grok-4.20-beta`)\n\n</details>\n\n### Key Findings\n<details>\n<summary>(click to expand)</summary>\n\n- \ud83d\udfe1 **Potential shell command injection via unescaped path** (`command-injection`) at [`conductor/lib/conductor/run_server.ex:391`](https://github.com/misty-step/bitterblossom/blob/de2bb1df75c37dcf45aff698b88e0f8d2c142948/conductor/lib/conductor/run_server.ex#L391) (Security)\n  <details>\n  <summary>Details</summary>\n\n  Description: The read_workspace_file function constructs a shell command by wrapping a file path in single quotes. If the worktree_path or filename were to contain single quotes, it could break out of the quoted shell context. While currently only called with hardcoded 'BLOCKED.md' filename and internally-controlled worktree_path, this is a defense-in-depth gap that should use proper shell escaping.\n  Suggestion: Escape single quotes in the path before interpolation: escaped_path = String.replace(path, \"'\", \"'\\\"'\\\"'\") or use a shell-escaping library\n\n  </details>\n- \ud83d\udfe1 **String matching on shell error output is brittle** (`brittle-string-matching`) at [`conductor/lib/conductor/run_server.ex:395`](https://github.com/misty-step/bitterblossom/blob/de2bb1df75c37dcf45aff698b88e0f8d2c142948/conductor/lib/conductor/run_server.ex#L395) (Architecture)\n  <details>\n  <summary>Details</summary>\n\n  Description: The classify_workspace_read_error/2 function matches on the substring 'not found' in shell error output. This assumes specific error message formatting from the underlying shell implementation, which may vary across different environments (bash, sh, busybox).\n  Suggestion: Consider matching on exit code alone or using a more robust error classification mechanism that doesn't depend on specific error message strings\n\n  </details>\n\n</details>\n\n<details>\n<summary>Reviewer details (click to expand)</summary>\n\n#### \u2705 Architecture (atlas) \u2014 PASS\n\n- Confidence: `0.92`\n- Wave: `Unscoped`\n- Model: `kimi-k2.5` \u21a9\ufe0f (fallback from `grok-4.20-multi-agent-beta`)\n- Runtime: `1m 45s`\n- Summary: PR removes leaky artifact-file abstraction in favor of control-plane observable PR detection, simplifying Worker API surface and making prompts harness-agnostic.\n\n**Findings**\n- \ud83d\udfe1 **String matching on shell error output is brittle** (`brittle-string-matching`) at [`conductor/lib/conductor/run_server.ex:395`](https://github.com/misty-step/bitterblossom/blob/de2bb1df75c37dcf45aff698b88e0f8d2c142948/conductor/lib/conductor/run_server.ex#L395)\n  - The classify_workspace_read_error/2 function matches on the substring 'not found' in shell error output. This assumes specific error message formatting from the underlying shell implementation, which may vary across different environments (bash, sh, busybox).\n  - Suggestion: Consider matching on exit code alone or using a more robust error classification mechanism that doesn't depend on specific error message strings\n\n#### \u2705 Security (guard) \u2014 PASS\n\n- Confidence: `0.90`\n- Wave: `Unscoped`\n- Model: `kimi-k2.5` \u21a9\ufe0f (fallback from `grok-4.20-beta`)\n- Runtime: `2m 50s`\n- Summary: No exploitable vulnerabilities found. One minor defense-in-depth issue with shell command construction in read_workspace_file that should use proper escaping.\n\n**Findings**\n- \ud83d\udfe1 **Potential shell command injection via unescaped path** (`command-injection`) at [`conductor/lib/conductor/run_server.ex:391`](https://github.com/misty-step/bitterblossom/blob/de2bb1df75c37dcf45aff698b88e0f8d2c142948/conductor/lib/conductor/run_server.ex#L391)\n  - The read_workspace_file function constructs a shell command by wrapping a file path in single quotes. If the worktree_path or filename were to contain single quotes, it could break out of the quoted shell context. While currently only called with hardcoded 'BLOCKED.md' filename and internally-controlled worktree_path, this is a defense-in-depth gap that should use proper shell escaping.\n  - Suggestion: Escape single quotes in the path before interpolation: escaped_path = String.replace(path, \"'\", \"'\\\"'\\\"'\") or use a shell-escaping library\n\n</details>\n\n---\n*Cerberus (master) | Run [#23248831328](https://github.com/misty-step/bitterblossom/actions/runs/23248831328) | Override policy `pr_author` | Fail on verdict `true` | Override command: `/cerberus override sha=de2bb1df75c3` (reason required)*\n",
+        "createdAt": "2026-03-18T13:37:28Z",
+        "includesCreatedEdit": true,
+        "isMinimized": false,
+        "minimizedReason": "",
+        "reactionGroups": [],
+        "url": "https://github.com/misty-step/bitterblossom/pull/723#issuecomment-4082631049",
+        "viewerDidAuthor": false
+      }
+    ],
+    "createdAt": "2026-03-18T13:30:13Z",
+    "isDraft": false,
+    "mergeStateStatus": "CLEAN",
+    "mergeable": "MERGEABLE",
+    "mergedAt": null,
+    "number": 723,
+    "reviewDecision": "",
+    "reviews": [
+      {
+        "id": "PRR_kwDORJkRwM7sgOYB",
+        "author": {
+          "login": "gemini-code-assist"
+        },
+        "authorAssociation": "NONE",
+        "body": "## Code Review\n\nThe code changes in this pull request remove the artifact path from the `build_builder_prompt` function and update the handoff contract to use `TASK_COMPLETE` and `BLOCKED.md` instead of artifact JSON. The code also updates the `RunServer` to detect the PR using `code_host_mod().find_open_pr` instead of reading the artifact. The tests are updated to reflect these changes.",
+        "submittedAt": "2026-03-18T13:33:07Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "871d1bf4f412439a7e1e6a68db1539cce3746a6c"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7sgTdI",
+        "author": {
+          "login": "chatgpt-codex-connector"
+        },
+        "authorAssociation": "NONE",
+        "body": "\n### \ud83d\udca1 Codex Review\n\nHere are some automated review suggestions for this pull request.\n\n**Reviewed commit:** `871d1bf4f4`\n    \n\n<details> <summary>\u2139\ufe0f About Codex in GitHub</summary>\n<br/>\n\n[Your team has set up Codex to review pull requests in this repo](http://chatgpt.com/codex/settings/general). Reviews are triggered when you\n- Open a pull request for review\n- Mark a draft as ready\n- Comment \"@codex review\".\n\nIf Codex has suggestions, it will comment; otherwise it will react with \ud83d\udc4d.\n\n\n\n\nCodex can also answer questions or update the PR. Try commenting \"@codex address that feedback\".\n            \n</details>",
+        "submittedAt": "2026-03-18T13:36:16Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "871d1bf4f412439a7e1e6a68db1539cce3746a6c"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7sgVkm",
+        "author": {
+          "login": "github-actions"
+        },
+        "authorAssociation": "NONE",
+        "body": "<!-- cerberus:verdict-review sha=871d1bf4f412 -->\n**Cerberus inline comments** for `871d1bf4f412`\n\n- Inline comments posted: 4/6 (top 4/6 anchored (cap 30, 3/file))\n- Canonical report: [verdict report](https://github.com/misty-step/bitterblossom/pull/723#issuecomment-4082631049)\n- Cerberus verdict: `FAIL` (4 reviewers. Failures: 2, warnings: 0, skipped: 0.)\n",
+        "submittedAt": "2026-03-18T13:37:31Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "871d1bf4f412439a7e1e6a68db1539cce3746a6c"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7sgmha",
+        "author": {
+          "login": "coderabbitai"
+        },
+        "authorAssociation": "NONE",
+        "body": "**Actionable comments posted: 1**\n\n<details>\n<summary>\ud83e\udd16 Prompt for all review comments with AI agents</summary>\n\n```\nVerify each finding against the current code and only fix it if needed.\n\nInline comments:\nIn `@conductor/lib/conductor/run_server.ex`:\n- Around line 192-193: detect_pr/1 currently fails with pr_not_found when\nfind_open_pr/2 returns {:error, :not_found} instead of checking for a BLOCKED.md\nfile; update detect_pr/1 so that when find_open_pr/2 returns {:error,\n:not_found} it attempts to read \"BLOCKED.md\" from the workspace and if present\ntransitions the run to :blocked with the file contents as the diagnostic reason,\notherwise continue to call fail/3 with the original pr_not_found error. Use the\nsame workspace file-reading helper used elsewhere in this module (the pattern\naround reading \"CLAUDE.md\"/\"project.md\") and keep the existing behavior for\nother error tuples from find_open_pr/2.\n```\n\n</details>\n\n---\n\n<details>\n<summary>\u2139\ufe0f Review info</summary>\n\n<details>\n<summary>\u2699\ufe0f Run configuration</summary>\n\n**Configuration used**: defaults\n\n**Review profile**: CHILL\n\n**Plan**: Pro\n\n**Run ID**: `60a15a31-3439-4a67-853f-fd6aa899c3f1`\n\n</details>\n\n<details>\n<summary>\ud83d\udce5 Commits</summary>\n\nReviewing files that changed from the base of the PR and between 871d1bf4f412439a7e1e6a68db1539cce3746a6c and 886380379c4d204dd98accc2211dee1f778633a8.\n\n</details>\n\n<details>\n<summary>\ud83d\udcd2 Files selected for processing (2)</summary>\n\n* `conductor/lib/conductor/run_server.ex`\n* `conductor/test/conductor/run_server_test.exs`\n\n</details>\n\n</details>\n\n<!-- This is an auto-generated comment by CodeRabbit for review status -->",
+        "submittedAt": "2026-03-18T13:46:41Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "886380379c4d204dd98accc2211dee1f778633a8"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7sgvnU",
+        "author": {
+          "login": "github-actions"
+        },
+        "authorAssociation": "NONE",
+        "body": "<!-- cerberus:verdict-review sha=886380379c4d -->\n**Cerberus inline comments** for `886380379c4d`\n\n- Inline comments posted: 2/2\n- Canonical report: [verdict report](https://github.com/misty-step/bitterblossom/pull/723#issuecomment-4082631049)\n- Cerberus verdict: `WARN` (4 reviewers. Failures: 1, warnings: 1, skipped: 1. Timed out reviewers: proof.)\n",
+        "submittedAt": "2026-03-18T13:52:16Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "886380379c4d204dd98accc2211dee1f778633a8"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7sg2rE",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "",
+        "submittedAt": "2026-03-18T13:56:12Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "862269fdd422cfc8e1e2f3cbd8bb367f397ccfc0"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7sg3li",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "",
+        "submittedAt": "2026-03-18T13:56:45Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "862269fdd422cfc8e1e2f3cbd8bb367f397ccfc0"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7sg3pQ",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "",
+        "submittedAt": "2026-03-18T13:56:48Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "862269fdd422cfc8e1e2f3cbd8bb367f397ccfc0"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7sg3tX",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "",
+        "submittedAt": "2026-03-18T13:56:50Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "862269fdd422cfc8e1e2f3cbd8bb367f397ccfc0"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7sg3xM",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "",
+        "submittedAt": "2026-03-18T13:56:52Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "862269fdd422cfc8e1e2f3cbd8bb367f397ccfc0"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7sg303",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "",
+        "submittedAt": "2026-03-18T13:56:54Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "862269fdd422cfc8e1e2f3cbd8bb367f397ccfc0"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7sg37F",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "",
+        "submittedAt": "2026-03-18T13:56:58Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "862269fdd422cfc8e1e2f3cbd8bb367f397ccfc0"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7sg4AB",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "",
+        "submittedAt": "2026-03-18T13:57:00Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "862269fdd422cfc8e1e2f3cbd8bb367f397ccfc0"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7sg4Fc",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "",
+        "submittedAt": "2026-03-18T13:57:03Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "862269fdd422cfc8e1e2f3cbd8bb367f397ccfc0"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7sg4JQ",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "",
+        "submittedAt": "2026-03-18T13:57:05Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "862269fdd422cfc8e1e2f3cbd8bb367f397ccfc0"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7sg4ni",
+        "author": {
+          "login": "coderabbitai"
+        },
+        "authorAssociation": "NONE",
+        "body": "",
+        "submittedAt": "2026-03-18T13:57:22Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "862269fdd422cfc8e1e2f3cbd8bb367f397ccfc0"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7sg445",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "",
+        "submittedAt": "2026-03-18T13:57:32Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "862269fdd422cfc8e1e2f3cbd8bb367f397ccfc0"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7sg47z",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "",
+        "submittedAt": "2026-03-18T13:57:34Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "ae72c715debf888448517374ee85afb013232fec"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7sg4-G",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "",
+        "submittedAt": "2026-03-18T13:57:36Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "ae72c715debf888448517374ee85afb013232fec"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7sg5AD",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "",
+        "submittedAt": "2026-03-18T13:57:37Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "ae72c715debf888448517374ee85afb013232fec"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7sg5CM",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "",
+        "submittedAt": "2026-03-18T13:57:38Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "ae72c715debf888448517374ee85afb013232fec"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7sg5E3",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "",
+        "submittedAt": "2026-03-18T13:57:40Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "ae72c715debf888448517374ee85afb013232fec"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7sg5H-",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "",
+        "submittedAt": "2026-03-18T13:57:42Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "ae72c715debf888448517374ee85afb013232fec"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7sg5Kz",
+        "author": {
+          "login": "phrazzld"
+        },
+        "authorAssociation": "MEMBER",
+        "body": "",
+        "submittedAt": "2026-03-18T13:57:44Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "ae72c715debf888448517374ee85afb013232fec"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7sg74h",
+        "author": {
+          "login": "coderabbitai"
+        },
+        "authorAssociation": "NONE",
+        "body": "\n\n<details>\n<summary>\u267b\ufe0f Duplicate comments (1)</summary><blockquote>\n\n<details>\n<summary>conductor/lib/conductor/run_server.ex (1)</summary><blockquote>\n\n`239-241`: _\u26a0\ufe0f Potential issue_ | _\ud83d\udfe0 Major_\n\n**Filter PR lookup by exact run branch to avoid stale-PR false failures.**\n\nLine 239 still queries by issue only. If two open `factory/<issue>-*` PRs exist, the code host may return an older PR first, causing a false `pr_branch_mismatch` even when the current run\u2019s PR exists. Pass `state.branch` into lookup and match exactly in the provider.\n\n \n<details>\n<summary>Suggested direction</summary>\n\n```diff\n- case code_host_mod().find_open_pr(state.repo, state.issue.number) do\n+ case code_host_mod().find_open_pr(state.repo, state.issue.number, state.branch) do\n```\n\nAnd update `Conductor.CodeHost` + `Conductor.GitHub.find_open_pr/3` to filter by exact `headRefName == expected_branch`.\n</details>\n\n<details>\n<summary>\ud83e\udd16 Prompt for AI Agents</summary>\n\n```\nVerify each finding against the current code and only fix it if needed.\n\nIn `@conductor/lib/conductor/run_server.ex` around lines 239 - 241, The PR lookup\ncurrently calls code_host_mod().find_open_pr with only state.repo and\nstate.issue.number which can return a stale PR when multiple factory/<issue>-*\nbranches exist; change the call in run_server (the clause that currently invokes\nhandle_pr_ready) to pass state.branch as a third argument, and update the\nbehavior in Conductor.CodeHost and Conductor.GitHub.find_open_pr/3 to accept the\nexpected_branch argument and filter results by exact headRefName ==\nexpected_branch so only the current run\u2019s PR is returned.\n```\n\n</details>\n\n</blockquote></details>\n\n</blockquote></details>\n\n<details>\n<summary>\ud83e\udd16 Prompt for all review comments with AI agents</summary>\n\n```\nVerify each finding against the current code and only fix it if needed.\n\nDuplicate comments:\nIn `@conductor/lib/conductor/run_server.ex`:\n- Around line 239-241: The PR lookup currently calls\ncode_host_mod().find_open_pr with only state.repo and state.issue.number which\ncan return a stale PR when multiple factory/<issue>-* branches exist; change the\ncall in run_server (the clause that currently invokes handle_pr_ready) to pass\nstate.branch as a third argument, and update the behavior in Conductor.CodeHost\nand Conductor.GitHub.find_open_pr/3 to accept the expected_branch argument and\nfilter results by exact headRefName == expected_branch so only the current run\u2019s\nPR is returned.\n```\n\n</details>\n\n---\n\n<details>\n<summary>\u2139\ufe0f Review info</summary>\n\n<details>\n<summary>\u2699\ufe0f Run configuration</summary>\n\n**Configuration used**: defaults\n\n**Review profile**: CHILL\n\n**Plan**: Pro\n\n**Run ID**: `d3b06dc4-d1e1-45a3-bbd9-74331ee72d59`\n\n</details>\n\n<details>\n<summary>\ud83d\udce5 Commits</summary>\n\nReviewing files that changed from the base of the PR and between 886380379c4d204dd98accc2211dee1f778633a8 and 862269fdd422cfc8e1e2f3cbd8bb367f397ccfc0.\n\n</details>\n\n<details>\n<summary>\ud83d\udcd2 Files selected for processing (2)</summary>\n\n* `conductor/lib/conductor/run_server.ex`\n* `conductor/test/conductor/run_server_test.exs`\n\n</details>\n\n</details>\n\n<!-- This is an auto-generated comment by CodeRabbit for review status -->",
+        "submittedAt": "2026-03-18T13:59:11Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "862269fdd422cfc8e1e2f3cbd8bb367f397ccfc0"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7shJlN",
+        "author": {
+          "login": "coderabbitai"
+        },
+        "authorAssociation": "NONE",
+        "body": "**Actionable comments posted: 4**\n\n<details>\n<summary>\ud83e\udd16 Prompt for all review comments with AI agents</summary>\n\n```\nVerify each finding against the current code and only fix it if needed.\n\nInline comments:\nIn `@conductor/lib/conductor/run_server.ex`:\n- Around line 237-254: The success clause in detect_pr currently only checks\nheadRefName so payloads missing \"number\" or \"url\" can reach handle_pr_ready/2;\nupdate the pattern match to require \"number\" and \"url\" as well (e.g. match\n%{\"headRefName\" => head_ref, \"number\" => number, \"url\" => url} = pr) before\ncalling handle_pr_ready(pr, state), and add a fail(...) branch mirroring the\nexisting pr_detection_failed message when those keys are missing; apply the same\nstricter validation to the other handle_pr_ready invocation in the nearby clause\n(the one referenced in the comment around lines 270-273).\n- Around line 256-263: read_workspace_file/2 currently collapses all read\nfailures to {:error, :not_found}, so the match treating any {:error, :not_found}\nas \u201cPR missing\u201d hides real transport/permission errors; change the case handling\naround the read_workspace_file call in run_server (the block that calls\nblock(state, reason) and fail(state, \"pr_not_found\", ...)) to distinguish\n{:error, :not_found} from other {:error, reason} tuples and for non-:not_found\nreturn values call fail(state, \"workspace_read_error\", inspect(reason)) (or\notherwise surface/log the actual reason) so permission/transport errors are not\nmisclassified; apply the same fix to the similar read_workspace_file handling at\nthe later occurrence (lines referenced in the review).\n\nIn `@docs/CODEBASE_MAP.md`:\n- Line 161: The document currently mixes two success models; align all\nreferences so the machine success signal is an open PR on the assigned factory/*\nbranch (as stated in the paragraph mentioning factory/*) rather than a \"builder\nartifact\". Update the \"W-->>C: builder artifact\" notation to reflect \"W-->>C:\nopen PR on factory/* branch\" and revise the runtime/prompt section (the\nruntime/prompt references to artifact expectations) to state that operators\nshould look for an open PR on factory/* as the machine success signal and that\nremote artifacts are only reviewer/workspace outputs. Ensure all occurrences of\n\"builder artifact\" and any artifact-expectation wording are replaced or\nannotated to match the single PR-based model.\n\nIn `@docs/CONDUCTOR.md`:\n- Around line 28-30: Update the remaining builder-handoff wording to match the\nPR-based completion model: replace occurrences of phrases like \"review\nartifacts\", \"Once a builder writes its artifact\u2026\", and \"Post-artifact sprite\ncleanup\" with PR-centric language (e.g., reference PR creation/existence and\nPR-based cleanup) so the section describing\n`${WORKSPACE}/.bb/conductor/<run_id>/review-<sprite>.json` and later passages\nconsistently state that completion, cleanup, and review rely on PR presence\nrather than artifact writing; search for and update the exact strings \"review\nartifacts\", \"writes its artifact\", and \"Post-artifact sprite cleanup\" to their\nPR-based equivalents to ensure consistency across the document.\n```\n\n</details>\n\n---\n\n<details>\n<summary>\u2139\ufe0f Review info</summary>\n\n<details>\n<summary>\u2699\ufe0f Run configuration</summary>\n\n**Configuration used**: defaults\n\n**Review profile**: CHILL\n\n**Plan**: Pro\n\n**Run ID**: `760f2243-d1de-41f1-b063-e7fbc78e6aec`\n\n</details>\n\n<details>\n<summary>\ud83d\udce5 Commits</summary>\n\nReviewing files that changed from the base of the PR and between 862269fdd422cfc8e1e2f3cbd8bb367f397ccfc0 and ae72c715debf888448517374ee85afb013232fec.\n\n</details>\n\n<details>\n<summary>\ud83d\udcd2 Files selected for processing (17)</summary>\n\n* `MEMORY.md`\n* `README.md`\n* `conductor/lib/conductor/prompt.ex`\n* `conductor/lib/conductor/run_server.ex`\n* `conductor/lib/conductor/sprite.ex`\n* `conductor/lib/conductor/worker.ex`\n* `conductor/lib/conductor/workspace.ex`\n* `conductor/test/conductor/fixer_test.exs`\n* `conductor/test/conductor/polisher_test.exs`\n* `conductor/test/conductor/prompt_test.exs`\n* `conductor/test/conductor/run_server_test.exs`\n* `conductor/test/conductor/security_test.exs`\n* `conductor/test/conductor/worker_test.exs`\n* `docs/CODEBASE_MAP.md`\n* `docs/CONDUCTOR.md`\n* `docs/adr/004-elixir-conductor-architecture.md`\n* `scripts/builder-prompt-template.md`\n\n</details>\n\n<details>\n<summary>\ud83d\udca4 Files with no reviewable changes (6)</summary>\n\n* conductor/lib/conductor/workspace.ex\n* docs/adr/004-elixir-conductor-architecture.md\n* conductor/lib/conductor/worker.ex\n* conductor/test/conductor/fixer_test.exs\n* conductor/test/conductor/polisher_test.exs\n* conductor/test/conductor/worker_test.exs\n\n</details>\n\n<details>\n<summary>\u2705 Files skipped from review due to trivial changes (1)</summary>\n\n* MEMORY.md\n\n</details>\n\n</details>\n\n<!-- This is an auto-generated comment by CodeRabbit for review status -->",
+        "submittedAt": "2026-03-18T14:06:39Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "ae72c715debf888448517374ee85afb013232fec"
+        }
+      },
+      {
+        "id": "PRR_kwDORJkRwM7sheEI",
+        "author": {
+          "login": "coderabbitai"
+        },
+        "authorAssociation": "NONE",
+        "body": "**Actionable comments posted: 2**\n\n> [!CAUTION]\n> Some comments are outside the diff and can\u2019t be posted inline due to platform limitations.\n> \n> \n> \n> <details>\n> <summary>\u26a0\ufe0f Outside diff range comments (1)</summary><blockquote>\n> \n> <details>\n> <summary>conductor/lib/conductor/github.ex (1)</summary><blockquote>\n> \n> `725-740`: _\u26a0\ufe0f Potential issue_ | _\ud83d\udfe0 Major_\n> \n> **Keep lookup failures distinct from \"no PR opened\".**\n> \n> Lines 735 and 740 collapse CLI and JSON decode failures into `{:error, :not_found}`, which RunServer.detect_pr/1 interprets as the builder completing without opening a PR. A transient `gh pr list` or JSON decode failure will be reported downstream as \"builder completed without opening a PR\" (line 263 in run_server.ex), even though line 269 has proper infrastructure to distinguish infrastructure failures. Reserve `:not_found` for the empty-result case and propagate distinct error tuples here. This requires widening `Conductor.CodeHost.find_open_pr/3` from `{:error, :not_found}` to `{:error, term()}`.\n> \n> <details>\n> <summary>\ud83e\udd16 Prompt for AI Agents</summary>\n> \n> ```\n> Verify each finding against the current code and only fix it if needed.\n> \n> In `@conductor/lib/conductor/github.ex` around lines 725 - 740, The code currently\n> turns CLI or JSON decode failures into {:error, :not_found}; change the two\n> failure branches inside the function that calls matching_open_pr? so only the\n> nil branch returns {:error, :not_found} and the other branches return distinct\n> error tuples (e.g. {:error, {:decode_failed, reason}} for Jason.decode failures\n> and {:error, {:list_failed, msg}} for the {:error, msg, _} CLI case). Update the\n> public spec/type for Conductor.CodeHost.find_open_pr/3 to return {:ok, map()} |\n> {:error, term()} (or similar) so callers like RunServer.detect_pr/1 can\n> distinguish infrastructure errors from no-PR results and handle them\n> appropriately.\n> ```\n> \n> </details>\n> \n> </blockquote></details>\n> \n> </blockquote></details>\n\n<details>\n<summary>\ud83e\udd16 Prompt for all review comments with AI agents</summary>\n\n```\nVerify each finding against the current code and only fix it if needed.\n\nInline comments:\nIn `@conductor/lib/conductor/run_server.ex`:\n- Around line 188-192: The PR-detection flow (detect_pr / find_open_pr)\nimmediately treats {:error, :not_found} as terminal and falls back to\nBLOCKED.md; add a bounded retry with exponential backoff (e.g., 2\u20133 attempts\nwith backoff 500ms -> 1s -> 2s) inside detect_pr (or a small helper invoked by\ndetect_pr) so that when find_open_pr returns {:error, :not_found} you retry the\nlookup before calling the terminal pr_not_found path and BLOCKED.md handling;\nensure retries are limited, log each retry (use log/2) and record a\nStore.record_event when finally giving up to preserve existing telemetry.\n- Around line 393-400: The classify_workspace_read_error function currently only\nchecks for \"not found\" in the normalized output, which misses the typical \"no\nsuch file or directory\" message from cat; update classify_workspace_read_error\nto treat either case as a not-found error by checking if\nString.contains?(normalized_output, \"not found\") or\nString.contains?(normalized_output, \"no such file or directory\") and return\n{:error, :not_found} when either matches, leaving the existing fallback that\nreturns {:error, %{output: ..., code: code}} unchanged.\n\n---\n\nOutside diff comments:\nIn `@conductor/lib/conductor/github.ex`:\n- Around line 725-740: The code currently turns CLI or JSON decode failures into\n{:error, :not_found}; change the two failure branches inside the function that\ncalls matching_open_pr? so only the nil branch returns {:error, :not_found} and\nthe other branches return distinct error tuples (e.g. {:error, {:decode_failed,\nreason}} for Jason.decode failures and {:error, {:list_failed, msg}} for the\n{:error, msg, _} CLI case). Update the public spec/type for\nConductor.CodeHost.find_open_pr/3 to return {:ok, map()} | {:error, term()} (or\nsimilar) so callers like RunServer.detect_pr/1 can distinguish infrastructure\nerrors from no-PR results and handle them appropriately.\n```\n\n</details>\n\n---\n\n<details>\n<summary>\u2139\ufe0f Review info</summary>\n\n<details>\n<summary>\u2699\ufe0f Run configuration</summary>\n\n**Configuration used**: defaults\n\n**Review profile**: CHILL\n\n**Plan**: Pro\n\n**Run ID**: `fd25367a-ba15-44ff-925e-24e873880905`\n\n</details>\n\n<details>\n<summary>\ud83d\udce5 Commits</summary>\n\nReviewing files that changed from the base of the PR and between ae72c715debf888448517374ee85afb013232fec and de2bb1df75c37dcf45aff698b88e0f8d2c142948.\n\n</details>\n\n<details>\n<summary>\ud83d\udcd2 Files selected for processing (11)</summary>\n\n* `conductor/lib/conductor/code_host.ex`\n* `conductor/lib/conductor/github.ex`\n* `conductor/lib/conductor/orchestrator.ex`\n* `conductor/lib/conductor/run_server.ex`\n* `conductor/test/conductor/fixer_test.exs`\n* `conductor/test/conductor/github_test.exs`\n* `conductor/test/conductor/orchestrator_test.exs`\n* `conductor/test/conductor/polisher_test.exs`\n* `conductor/test/conductor/run_server_test.exs`\n* `docs/CODEBASE_MAP.md`\n* `docs/CONDUCTOR.md`\n\n</details>\n\n<details>\n<summary>\ud83d\udea7 Files skipped from review as they are similar to previous changes (1)</summary>\n\n* docs/CODEBASE_MAP.md\n\n</details>\n\n</details>\n\n<!-- This is an auto-generated comment by CodeRabbit for review status -->",
+        "submittedAt": "2026-03-18T14:19:08Z",
+        "includesCreatedEdit": false,
+        "reactionGroups": [],
+        "state": "COMMENTED",
+        "commit": {
+          "oid": "de2bb1df75c37dcf45aff698b88e0f8d2c142948"
+        }
+      }
+    ],
+    "state": "OPEN",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-18T14:09:03Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23248831126/job/67584767739",
+        "name": "Shell Scripts",
+        "startedAt": "2026-03-18T14:08:51Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-18T14:09:08Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23248831328/job/67584818149",
+        "name": "review / Cerberus \u00b7 preflight",
+        "startedAt": "2026-03-18T14:09:04Z",
+        "status": "COMPLETED",
+        "workflowName": "Cerberus"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-18T14:09:02Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23248831063/job/67584768083",
+        "name": "trufflehog",
+        "startedAt": "2026-03-18T14:08:51Z",
+        "status": "COMPLETED",
+        "workflowName": "Secret Detection"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-18T14:08:57Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23248831126/job/67584767808",
+        "name": "Hook Tests",
+        "startedAt": "2026-03-18T14:08:51Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-18T14:09:20Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23248831328/job/67584839723",
+        "name": "review / Cerberus \u00b7 route",
+        "startedAt": "2026-03-18T14:09:12Z",
+        "status": "COMPLETED",
+        "workflowName": "Cerberus"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-18T14:08:57Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23248831126/job/67584767747",
+        "name": "YAML Lint",
+        "startedAt": "2026-03-18T14:08:52Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-18T14:14:34Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23248831328/job/67584873072",
+        "name": "review / Cerberus \u00b7 Correctness",
+        "startedAt": "2026-03-18T14:09:24Z",
+        "status": "COMPLETED",
+        "workflowName": "Cerberus"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-18T14:11:33Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23248831328/job/67584873063",
+        "name": "review / Cerberus \u00b7 Architecture",
+        "startedAt": "2026-03-18T14:09:24Z",
+        "status": "COMPLETED",
+        "workflowName": "Cerberus"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-18T14:12:38Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23248831328/job/67584873299",
+        "name": "review / Cerberus \u00b7 Security",
+        "startedAt": "2026-03-18T14:09:25Z",
+        "status": "COMPLETED",
+        "workflowName": "Cerberus"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-18T14:13:29Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23248831328/job/67584873153",
+        "name": "review / Cerberus \u00b7 Testing",
+        "startedAt": "2026-03-18T14:09:24Z",
+        "status": "COMPLETED",
+        "workflowName": "Cerberus"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-18T14:09:04Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23248831126/job/67584767735",
+        "name": "Go Checks",
+        "startedAt": "2026-03-18T14:08:51Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-18T14:14:54Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23248831328/job/67585747480",
+        "name": "review / Cerberus",
+        "startedAt": "2026-03-18T14:14:38Z",
+        "status": "COMPLETED",
+        "workflowName": "Cerberus"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-18T14:09:14Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23248831126/job/67584767763",
+        "name": "Elixir Checks",
+        "startedAt": "2026-03-18T14:08:51Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-03-18T14:09:28Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/misty-step/bitterblossom/actions/runs/23248831126/job/67584856574",
+        "name": "merge-gate",
+        "startedAt": "2026-03-18T14:09:24Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "StatusContext",
+        "context": "CodeRabbit",
+        "startedAt": "2026-03-18T14:19:10Z",
+        "state": "SUCCESS",
+        "targetUrl": ""
+      }
+    ],
+    "title": "fix(conductor): detect builder success from PR existence",
+    "updatedAt": "2026-03-18T14:19:08Z",
+    "url": "https://github.com/misty-step/bitterblossom/pull/723"
+  },
+  "review_threads": {
+    "reviewThreads": {
+      "nodes": [
+        {
+          "id": "PRRT_kwDORJkRwM51KqWi",
+          "isResolved": true,
+          "isOutdated": false,
+          "path": "conductor/lib/conductor/prompt.ex",
+          "line": 68,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "chatgpt-codex-connector"
+                },
+                "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Restore blocked-signal handling in builder handoff**\n\nThe prompt now instructs builders to signal unrecoverable situations by writing `BLOCKED.md`, but this commit removed the corresponding builder-side blocked path in `RunServer` and completion is now inferred only from PR existence. In practice, a blocked builder will be misclassified as `failed` (`pr_not_found`) or `pr_opened`, so `run_blocked` and the operator-facing block comment path are skipped, which regresses the workflow contract for explicit blocked outcomes.\n\nUseful? React with \ud83d\udc4d\u00a0/ \ud83d\udc4e.",
+                "url": "https://github.com/misty-step/bitterblossom/pull/723#discussion_r2953497382",
+                "createdAt": "2026-03-18T13:36:16Z"
+              },
+              {
+                "author": {
+                  "login": "phrazzld"
+                },
+                "body": "Fixed in 862269f. `RunServer.detect_pr/1` now falls back to reading `BLOCKED.md` when `find_open_pr/2` returns `{:error, :not_found}`, and blocks the run with the file contents instead of failing with `pr_not_found`. Added regression coverage in `run_server_test.exs` for the blocked path.",
+                "url": "https://github.com/misty-step/bitterblossom/pull/723#discussion_r2953624469",
+                "createdAt": "2026-03-18T13:56:12Z"
+              },
+              {
+                "author": {
+                  "login": "phrazzld"
+                },
+                "body": "Fixed in 862269f.  now falls back to reading  when  returns , and blocks the run with the file contents instead of failing with . Added regression coverage in  for the blocked path.",
+                "url": "https://github.com/misty-step/bitterblossom/pull/723#discussion_r2953627951",
+                "createdAt": "2026-03-18T13:56:45Z"
+              },
+              {
+                "author": {
+                  "login": "phrazzld"
+                },
+                "body": "Clarifying the earlier reply: fixed in 862269f. detect_pr/1 now falls back to reading BLOCKED.md when find_open_pr/2 returns {:error, :not_found}, and blocks the run with the file contents instead of failing with pr_not_found. Added regression coverage in run_server_test.exs for the blocked path.",
+                "url": "https://github.com/misty-step/bitterblossom/pull/723#discussion_r2953633052",
+                "createdAt": "2026-03-18T13:57:32Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM51KqWq",
+          "isResolved": false,
+          "isOutdated": true,
+          "path": "conductor/lib/conductor/run_server.ex",
+          "line": null,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "chatgpt-codex-connector"
+                },
+                "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Retry PR lookup before marking dispatch as failed**\n\nAfter dispatch returns `{:ok, ...}`, the run is failed immediately on the first `find_open_pr/2` miss. Because PR listing visibility is asynchronous, a just-opened PR can briefly return `:not_found`; this one-shot check introduces false `pr_not_found` failures and premature lease release for otherwise successful runs. A bounded retry/backoff around this branch would avoid transient misclassification.\n\nUseful? React with \ud83d\udc4d\u00a0/ \ud83d\udc4e.",
+                "url": "https://github.com/misty-step/bitterblossom/pull/723#discussion_r2953497390",
+                "createdAt": "2026-03-18T13:36:16Z"
+              },
+              {
+                "author": {
+                  "login": "phrazzld"
+                },
+                "body": "I verified this suggestion, but I\u2019m intentionally not changing it in this polish pass. This task was scoped to review feedback on the blocked-handoff regression, and adding retry/backoff around PR visibility would broaden behavior beyond that fix. If we want to harden against eventual-consistency misses, I\u2019d treat it as a follow-up issue rather than fold it into PR #723 at this stage.",
+                "url": "https://github.com/misty-step/bitterblossom/pull/723#discussion_r2953630022",
+                "createdAt": "2026-03-18T13:57:05Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM51Krvv",
+          "isResolved": true,
+          "isOutdated": false,
+          "path": "conductor/lib/conductor/prompt.ex",
+          "line": 69,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "github-actions"
+                },
+                "body": "\ud83d\udfe0 **Divergence between agent instructions and system implementation** (`contract-integrity`) (Architecture)\n\nThe prompt instructs agents to signal being blocked via BLOCKED.md, but the conductor no longer reads the workspace for status signals, making this instruction a 'ghost' requirement that the system ignores. This fragments the interface contract between the conductor and the agents it orchestrates.\n\nSuggestion: Either update the RunServer to inspect the workspace for BLOCKED.md before attempting PR detection, or update the prompt contract to use a CodeHost-native signal (e.g., a specific label or PR draft status) for blocking conditions.\n\n<details>\n<summary>Evidence</summary>\n\n```text\n### Phase 3: Handoff\n    When CI is green and reviews are addressed, write TASK_COMPLETE with a short summary.\n    If blocked (cannot resolve feedback, need human input), write BLOCKED.md with the reason.\n```\n\n</details>\n",
+                "url": "https://github.com/misty-step/bitterblossom/pull/723#discussion_r2953504871",
+                "createdAt": "2026-03-18T13:37:31Z"
+              },
+              {
+                "author": {
+                  "login": "phrazzld"
+                },
+                "body": "Fixed in 862269f. The prompt/implementation gap is closed by restoring blocked detection on the no-PR path: when the builder writes , the run transitions to , records , comments on the issue, and avoids the  failure path.",
+                "url": "https://github.com/misty-step/bitterblossom/pull/723#discussion_r2953628192",
+                "createdAt": "2026-03-18T13:56:48Z"
+              },
+              {
+                "author": {
+                  "login": "phrazzld"
+                },
+                "body": "Clarifying the earlier reply: fixed in 862269f. The prompt/implementation gap is closed by restoring blocked detection on the no-PR path. When the builder writes BLOCKED.md, the run transitions to blocked, records run_blocked, comments on the issue, and avoids the pr_not_found failure path.",
+                "url": "https://github.com/misty-step/bitterblossom/pull/723#discussion_r2953633203",
+                "createdAt": "2026-03-18T13:57:34Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM51Krv5",
+          "isResolved": true,
+          "isOutdated": false,
+          "path": "conductor/lib/conductor/run_server.ex",
+          "line": 235,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "github-actions"
+                },
+                "body": "\ud83d\udfe0 **Blocked status and diagnostic reason are lost** (`regression`) (Correctness)\n\nThe logic to handle builders reporting as 'blocked' has been removed. Builders are still instructed to write BLOCKED.md, but the conductor no longer reads this file or sets the run phase to blocked. Blocked agents will now be misclassified as generic failures (pr_not_found) or false successes.\n\nSuggestion: Restore logic to check for BLOCKED.md on the worker if no PR is detected, and transition the run to the 'blocked' phase with the captured reason.\n\n<details>\n<summary>Evidence</summary>\n\n```text\n-  defp handle_artifact(%{\"status\" => \"blocked\"} = artifact, state) do\n-    reason = artifact[\"blocking_reason\"] || \"builder reported blocked\"\n...\n-    block(state, reason)\n-  end\n```\n\n</details>\n",
+                "url": "https://github.com/misty-step/bitterblossom/pull/723#discussion_r2953504882",
+                "createdAt": "2026-03-18T13:37:31Z"
+              },
+              {
+                "author": {
+                  "login": "phrazzld"
+                },
+                "body": "Fixed in 862269f. The missing blocked-state transition is restored by checking  after a  miss and passing the file contents through . I also restored regression coverage so the blocked path stays exercised.",
+                "url": "https://github.com/misty-step/bitterblossom/pull/723#discussion_r2953628443",
+                "createdAt": "2026-03-18T13:56:50Z"
+              },
+              {
+                "author": {
+                  "login": "phrazzld"
+                },
+                "body": "Clarifying the earlier reply: fixed in 862269f. The missing blocked-state transition is restored by checking BLOCKED.md after a find_open_pr/2 miss and passing the file contents through block/2. I also restored regression coverage so the blocked path stays exercised.",
+                "url": "https://github.com/misty-step/bitterblossom/pull/723#discussion_r2953633340",
+                "createdAt": "2026-03-18T13:57:36Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM51Krv9",
+          "isResolved": true,
+          "isOutdated": true,
+          "path": "conductor/lib/conductor/run_server.ex",
+          "line": null,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "github-actions"
+                },
+                "body": "\ud83d\udfe0 **PR detection logic may latch onto stale PRs from previous runs** (`logic-bug`) (Correctness)\n\nThe find_open_pr lookup only uses the issue number. It does not verify the branch name or creation time. This risks detecting an old, abandoned PR for the same issue as a success for the current run, even if the current run failed to push its changes.\n\nSuggestion: Pass the run's branch name to find_open_pr and ensure the code host implementation filters results by the expected 'factory/<issue>-*' pattern.\n\n<details>\n<summary>Evidence</summary>\n\n```text\ndefp detect_pr(state) do\n    case code_host_mod().find_open_pr(state.repo, state.issue.number) do\n      {:ok, pr} ->\n        handle_pr_ready(pr, state)\n```\n\n</details>\n",
+                "url": "https://github.com/misty-step/bitterblossom/pull/723#discussion_r2953504888",
+                "createdAt": "2026-03-18T13:37:31Z"
+              },
+              {
+                "author": {
+                  "login": "phrazzld"
+                },
+                "body": "No code change needed here in this polish pass. The stale-PR case is already rejected in : it only accepts a PR when , and it fails with  for older factory branches. The existing regression test for that path is still in place.",
+                "url": "https://github.com/misty-step/bitterblossom/pull/723#discussion_r2953628669",
+                "createdAt": "2026-03-18T13:56:52Z"
+              },
+              {
+                "author": {
+                  "login": "phrazzld"
+                },
+                "body": "Clarifying the earlier reply: no code change was needed here in this polish pass. The stale-PR case is already rejected in detect_pr/1: it only accepts a PR when headRefName matches state.branch, and it fails with pr_branch_mismatch for older factory branches. The existing regression test for that path is still in place.",
+                "url": "https://github.com/misty-step/bitterblossom/pull/723#discussion_r2953633479",
+                "createdAt": "2026-03-18T13:57:37Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM51KrwE",
+          "isResolved": true,
+          "isOutdated": false,
+          "path": "conductor/lib/conductor/run_server.ex",
+          "line": 276,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "github-actions"
+                },
+                "body": "\ud83d\udfe0 **Inconsistent key access for PR metadata** (`type-mismatch`) (Correctness)\n\nThe code accesses PR metadata using string keys (pr[\"number\"]), matching the updated test mock. However, internal Elixir models and GitHub providers typically use atom-keyed maps. This mismatch will cause the pr_number to be recorded as nil in production.\n\nSuggestion: Standardize on atom keys if the Conductor.GitHub provider returns them, or use Map.get/3 with atom fallbacks.\n\n<details>\n<summary>Evidence</summary>\n\n```text\ndefp handle_pr_ready(pr, state) do\n    pr_number = pr[\"number\"]\n    pr_url = pr[\"url\"]\n```\n\n</details>\n",
+                "url": "https://github.com/misty-step/bitterblossom/pull/723#discussion_r2953504897",
+                "createdAt": "2026-03-18T13:37:31Z"
+              },
+              {
+                "author": {
+                  "login": "phrazzld"
+                },
+                "body": "Verified current production behavior before changing anything:  parses  via , so the returned PR maps are string-keyed.  is consistent with that provider contract, so no code change was needed for this thread.",
+                "url": "https://github.com/misty-step/bitterblossom/pull/723#discussion_r2953628849",
+                "createdAt": "2026-03-18T13:56:54Z"
+              },
+              {
+                "author": {
+                  "login": "phrazzld"
+                },
+                "body": "Clarifying the earlier reply: I verified the current production behavior before changing anything. Conductor.GitHub.find_open_pr/2 parses gh pr list JSON via Jason.decode/1, so the returned PR maps are string-keyed. handle_pr_ready/2 is consistent with that provider contract, so no code change was needed for this thread.",
+                "url": "https://github.com/misty-step/bitterblossom/pull/723#discussion_r2953633610",
+                "createdAt": "2026-03-18T13:57:38Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM51K2nY",
+          "isResolved": true,
+          "isOutdated": false,
+          "path": "conductor/lib/conductor/run_server.ex",
+          "line": 192,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "coderabbitai"
+                },
+                "body": "_\u26a0\ufe0f Potential issue_ | _\ud83d\udfe0 Major_\n\n<details>\n<summary>\ud83e\udde9 Analysis chain</summary>\n\n\ud83c\udfc1 Script executed:\n\n```shell\n#!/bin/bash\n# Check if BLOCKED.md is still referenced in the builder prompt template\nrg -n \"BLOCKED\" scripts/builder-prompt-template.md\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 191\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\n# Examine the file around the mentioned lines\ncat -n conductor/lib/conductor/run_server.ex | sed -n '180,210p'\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 1308\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\n# Also check the section mentioned at lines 238-263\ncat -n conductor/lib/conductor/run_server.ex | sed -n '230,270p'\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 1510\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\n# Find the find_open_pr/2 function to understand what it returns\nrg -n \"def find_open_pr\" conductor/\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 560\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\n# Search for any BLOCKED.md handling in the conductor codebase\nrg -n \"BLOCKED\" conductor/ -i\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 8399\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\n# Examine find_open_pr implementation\ncat -n conductor/lib/conductor/github.ex | sed -n '710,750p'\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 1541\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\n# Search for any workspace artifact reading (including BLOCKED.md)\nrg -n \"workspace\" conductor/lib/conductor/ --context 2\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 11657\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\n# Check if there's any precedent for reading artifacts from workspace\nrg -n \"BLOCKED\\.md\\|blocked\\.md\" conductor/\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 50\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\n# Understand the block/2 function referenced in detect_pr's surrounding context\nrg -n \"def block\" conductor/lib/conductor/run_server.ex\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 50\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\n# Find the block function definition\nrg -n \"defp block\" conductor/lib/conductor/run_server.ex -A 5\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 374\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\n# Check if BLOCKED.md was previously used or referenced in git history\ngit log -p --all -- \"BLOCKED.md\" conductor/ | head -100\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 50\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\n# Search for any file reading operations in run_server\nrg -n \"File\\.\\|read\" conductor/lib/conductor/run_server.ex\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 50\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\n# Check if detect_pr is called from anywhere else or if there are alternative paths to blocked\nrg -n \"detect_pr\\|block\\(\" conductor/lib/conductor/run_server.ex | head -20\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 50\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\n# Verify the complete flow: what happens when builder completes\nrg -n \"builder_complete\\|builder dispatch completed\" conductor/lib/conductor/ -A 3\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 50\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\n# Check if workspace_mod provides any file reading capability\nrg -n \"def \" conductor/lib/conductor/workspace.ex | head -20\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 332\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\n# Check artifact_path usage - see if artifacts are read anywhere\nrg -n \"artifact_path\" conductor/lib/conductor/ -A 2\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 723\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\n# Look for any file operations that might read from workspace\nrg -n \"File\\.|read_file\\|read\\(\" conductor/lib/conductor/ -t elixir | grep -v \"test\\|Binary file\"\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 2459\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\n# Check the exact context around detect_pr to understand the full picture\ncat -n conductor/lib/conductor/run_server.ex | sed -n '185,265p'\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 2980\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\n# Check line 361 in run_server.ex to see what file reading operation exists there\ncat -n conductor/lib/conductor/run_server.ex | sed -n '355,370p'\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 544\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\n# Check if there are any recent changes or patterns related to BLOCKED detection\nrg -n \"pr_not_found\\|blocked\" conductor/lib/conductor/run_server.ex\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 50\n\n---\n\n\n\n</details>\n\n**Add fallback check for BLOCKED.md when PR is not found.**\n\nThe builder prompt contract (per PR `#675`) still instructs agents to write `BLOCKED.md` when blocked, but `detect_pr/1` only checks for PR creation via `find_open_pr/2`. When that returns `{:error, :not_found}`, the code fails with `pr_not_found` instead of detecting if the builder wrote `BLOCKED.md`. If a builder encounters a blocker and correctly writes `BLOCKED.md`, the run should transition to `:blocked` with the diagnostic reason rather than reporting a PR lookup failure.\n\nConsider reading `BLOCKED.md` from the workspace when `find_open_pr/2` returns `{:error, :not_found}` before calling `fail/3`\u2014similar to how `CLAUDE.md` and `project.md` are read elsewhere in this file (line 361).\n\n<details>\n<summary>\ud83e\udd16 Prompt for AI Agents</summary>\n\n```\nVerify each finding against the current code and only fix it if needed.\n\nIn `@conductor/lib/conductor/run_server.ex` around lines 192 - 193, detect_pr/1\ncurrently fails with pr_not_found when find_open_pr/2 returns {:error,\n:not_found} instead of checking for a BLOCKED.md file; update detect_pr/1 so\nthat when find_open_pr/2 returns {:error, :not_found} it attempts to read\n\"BLOCKED.md\" from the workspace and if present transitions the run to :blocked\nwith the file contents as the diagnostic reason, otherwise continue to call\nfail/3 with the original pr_not_found error. Use the same workspace file-reading\nhelper used elsewhere in this module (the pattern around reading\n\"CLAUDE.md\"/\"project.md\") and keep the existing behavior for other error tuples\nfrom find_open_pr/2.\n```\n\n</details>\n\n<!-- fingerprinting:phantom:poseidon:ocelot -->\n\n<!-- This is an auto-generated reply by CodeRabbit -->\n\n\u2705 Addressed in commit 862269f",
+                "url": "https://github.com/misty-step/bitterblossom/pull/723#discussion_r2953563304",
+                "createdAt": "2026-03-18T13:46:40Z"
+              },
+              {
+                "author": {
+                  "login": "phrazzld"
+                },
+                "body": "Fixed in 862269f. On  from ,  now reads  from the builder workspace and transitions to  with that diagnostic text. If the file is absent, the original  failure behavior still applies.",
+                "url": "https://github.com/misty-step/bitterblossom/pull/723#discussion_r2953629245",
+                "createdAt": "2026-03-18T13:56:58Z"
+              },
+              {
+                "author": {
+                  "login": "coderabbitai"
+                },
+                "body": "`@phrazzld`, thanks for the fix! The implementation in `detect_pr/1` looks correct \u2014 when `find_open_pr/2` returns `{:error, :not_found}`, it now reads `BLOCKED.md` via `read_workspace_file/2` and transitions to `:blocked` with the file contents as the diagnostic reason. The original `pr_not_found` failure path is preserved when the file is absent. \n\n<!-- <review_comment_addressed> -->\n\n---\n\n<details>\n<summary>\ud83e\udde0 Learnings used</summary>\n\n```\nLearnt from: phrazzld\nRepo: misty-step/bitterblossom PR: 664\nFile: conductor/lib/conductor/cli.ex:227-258\nTimestamp: 2026-03-15T02:33:10.963Z\nLearning: In conductor/lib/**/*.ex, when reviewing code that uses Process.whereis/1 to check for local components (e.g., Conductor.Fixer, Conductor.Polisher), treat this as intentional local diagnostic logic for v1. Do not add cross-process or persisted heartbeats (e.g., Persisting heartbeats to Conductor.Store) unless there is a clear distributed-deployment requirement. If a future change adds distribution, justify it with a plan and CI checks. This pattern should apply to similarly scoped modules in the conductor/lib directory, not to one-off, file-specific deviations.\n```\n\n</details>\n\n\n\n<!-- This is an auto-generated reply by CodeRabbit -->",
+                "url": "https://github.com/misty-step/bitterblossom/pull/723#discussion_r2953631912",
+                "createdAt": "2026-03-18T13:57:22Z"
+              },
+              {
+                "author": {
+                  "login": "phrazzld"
+                },
+                "body": "Clarifying the earlier reply: fixed in 862269f. On {:error, :not_found} from find_open_pr/2, RunServer now reads BLOCKED.md from the builder workspace and transitions to blocked with that diagnostic text. If the file is absent, the original pr_not_found failure behavior still applies.",
+                "url": "https://github.com/misty-step/bitterblossom/pull/723#discussion_r2953633746",
+                "createdAt": "2026-03-18T13:57:40Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM51K9BP",
+          "isResolved": true,
+          "isOutdated": false,
+          "path": "conductor/lib/conductor/run_server.ex",
+          "line": 235,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "github-actions"
+                },
+                "body": "\ud83d\udfe0 **BLOCKED.md handling missing from PR detection flow** (`behavioral-regression`) (Correctness)\n\nThe prompt instructs builders to 'write BLOCKED.md with the reason' when blocked, but the RunServer has no code to detect or handle this file. The detect_pr/1 function only handles PR detection. When a builder writes BLOCKED.md (without creating a PR), the system fails with 'pr_not_found' instead of transitioning to 'blocked' phase. This is a behavioral regression - the old code had handle_artifact(%{\"status\" => \"blocked\"} = artifact, state) that properly transitioned to blocked phase, and tests verified this behavior.\n\nSuggestion: Add BLOCKED.md detection after PR detection fails. When find_open_pr returns {:error, :not_found}, check if BLOCKED.md exists in the workspace and transition to blocked phase instead of failing.\n",
+                "url": "https://github.com/misty-step/bitterblossom/pull/723#discussion_r2953597754",
+                "createdAt": "2026-03-18T13:52:16Z"
+              },
+              {
+                "author": {
+                  "login": "phrazzld"
+                },
+                "body": "Fixed in 862269f.  now checks for  when PR lookup returns  and blocks the run with the file contents instead of failing generically. Added a regression test covering the blocked handoff path.",
+                "url": "https://github.com/misty-step/bitterblossom/pull/723#discussion_r2953629491",
+                "createdAt": "2026-03-18T13:57:00Z"
+              },
+              {
+                "author": {
+                  "login": "phrazzld"
+                },
+                "body": "Clarifying the earlier reply: fixed in 862269f. detect_pr/1 now checks for BLOCKED.md when PR lookup returns {:error, :not_found} and blocks the run with the file contents instead of failing generically. Added a regression test covering the blocked handoff path.",
+                "url": "https://github.com/misty-step/bitterblossom/pull/723#discussion_r2953633940",
+                "createdAt": "2026-03-18T13:57:42Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM51K9BW",
+          "isResolved": true,
+          "isOutdated": false,
+          "path": "conductor/lib/conductor/run_server.ex",
+          "line": 235,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "github-actions"
+                },
+                "body": "\ud83d\udfe0 **Blocked state handling removed but still referenced in prompt** (`contract-implementation-gap`) (Architecture)\n\nThe RunServer no longer handles blocked state after removing artifact-based detection. The `handle_artifact/2` function for blocked status was deleted, and `detect_pr/1` has no path for blocked state detection. However, the prompt in `Conductor.Prompt.build_builder_prompt/5` still instructs builders to 'write BLOCKED.md with the reason' when blocked. This creates a gap where builders follow instructions but the conductor ignores the signal.\n\nSuggestion: Either add BLOCKED.md reading logic to detect blocked states after PR detection fails, or remove BLOCKED.md references from the prompt if blocked state detection is intentionally out of scope for this PR.\n\n<details>\n<summary>Evidence</summary>\n\n```text\ndefp detect_pr(state) do\n  case code_host_mod().find_open_pr(state.repo, state.issue.number) do\n    {:ok, %{\"headRefName\" => head_ref} = pr} when head_ref == state.branch ->\n      handle_pr_ready(pr, state)\n    {:error, :not_found} ->\n      fail(state, \"pr_not_found\", \"builder completed without opening a PR\")\n```\n\n</details>\n",
+                "url": "https://github.com/misty-step/bitterblossom/pull/723#discussion_r2953597762",
+                "createdAt": "2026-03-18T13:52:16Z"
+              },
+              {
+                "author": {
+                  "login": "phrazzld"
+                },
+                "body": "Fixed in 862269f. The prompt contract and implementation are aligned again: the builder can still signal a blocked outcome via , and  now consumes that signal before falling back to .",
+                "url": "https://github.com/misty-step/bitterblossom/pull/723#discussion_r2953629808",
+                "createdAt": "2026-03-18T13:57:03Z"
+              },
+              {
+                "author": {
+                  "login": "phrazzld"
+                },
+                "body": "Clarifying the earlier reply: fixed in 862269f. The prompt contract and implementation are aligned again: the builder can still signal a blocked outcome via BLOCKED.md, and RunServer now consumes that signal before falling back to pr_not_found.",
+                "url": "https://github.com/misty-step/bitterblossom/pull/723#discussion_r2953634138",
+                "createdAt": "2026-03-18T13:57:43Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM51LPGH",
+          "isResolved": false,
+          "isOutdated": false,
+          "path": "conductor/lib/conductor/run_server.ex",
+          "line": 255,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "coderabbitai"
+                },
+                "body": "_\u26a0\ufe0f Potential issue_ | _\ud83d\udfe0 Major_\n\n**Validate `number`/`url` before transitioning to `pr_opened`.**\n\nThe success branch only requires `headRefName`, so a payload missing `number` or `url` still reaches `handle_pr_ready/2` and can persist nil PR metadata while marking the run `pr_opened`.\n\n\n\n<details>\n<summary>Suggested fix</summary>\n\n```diff\n-    case code_host_mod().find_open_pr(state.repo, state.issue.number) do\n-      {:ok, %{\"headRefName\" => head_ref} = pr} when head_ref == state.branch ->\n+    case code_host_mod().find_open_pr(state.repo, state.issue.number) do\n+      {:ok, %{\"headRefName\" => head_ref, \"number\" => pr_number, \"url\" => pr_url} = pr}\n+      when head_ref == state.branch and not is_nil(pr_number) and is_binary(pr_url) ->\n         handle_pr_ready(pr, state)\n```\n</details>\n\n\nAlso applies to: 270-273\n\n<details>\n<summary>\ud83e\udd16 Prompt for AI Agents</summary>\n\n```\nVerify each finding against the current code and only fix it if needed.\n\nIn `@conductor/lib/conductor/run_server.ex` around lines 237 - 254, The success\nclause in detect_pr currently only checks headRefName so payloads missing\n\"number\" or \"url\" can reach handle_pr_ready/2; update the pattern match to\nrequire \"number\" and \"url\" as well (e.g. match %{\"headRefName\" => head_ref,\n\"number\" => number, \"url\" => url} = pr) before calling handle_pr_ready(pr,\nstate), and add a fail(...) branch mirroring the existing pr_detection_failed\nmessage when those keys are missing; apply the same stricter validation to the\nother handle_pr_ready invocation in the nearby clause (the one referenced in the\ncomment around lines 270-273).\n```\n\n</details>\n\n<!-- fingerprinting:phantom:poseidon:hawk -->\n\n<!-- This is an auto-generated comment by CodeRabbit -->",
+                "url": "https://github.com/misty-step/bitterblossom/pull/723#discussion_r2953694666",
+                "createdAt": "2026-03-18T14:06:37Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM51LPGQ",
+          "isResolved": true,
+          "isOutdated": false,
+          "path": "conductor/lib/conductor/run_server.ex",
+          "line": 267,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "coderabbitai"
+                },
+                "body": "_\u26a0\ufe0f Potential issue_ | _\ud83d\udfe0 Major_\n\n**Do not treat all `BLOCKED.md` read failures as \u201cfile missing\u201d.**\n\n`read_workspace_file/2` currently converts every remote read error into `{:error, :not_found}`. That makes transport/permission failures look like a normal `pr_not_found` path, which hides the real failure mode.\n\n\n\n<details>\n<summary>Suggested fix</summary>\n\n```diff\n       {:error, :not_found} ->\n         case read_workspace_file(state, \"BLOCKED.md\") do\n           {:ok, reason} ->\n             block(state, reason)\n\n           {:error, :not_found} ->\n             fail(state, \"pr_not_found\", \"builder completed without opening a PR\")\n+\n+          {:error, {:read_failed, reason}} ->\n+            fail(state, \"pr_detection_failed\", \"unable to read BLOCKED.md: #{reason}\")\n         end\n```\n\n```diff\n   defp read_workspace_file(state, filename) do\n     path = Path.join(state.worktree_path, filename)\n\n     case worker_mod().exec(state.worker, \"cat '#{path}'\", timeout: 30_000) do\n       {:ok, content} -> {:ok, String.trim(content)}\n-      {:error, _output, _code} -> {:error, :not_found}\n+      {:error, output, code} ->\n+        if code == 1 and String.contains?(output, \"No such file\") do\n+          {:error, :not_found}\n+        else\n+          {:error, {:read_failed, \"exit #{code}: #{String.slice(output, 0, 300)}\"}}\n+        end\n     end\n   end\n```\n</details>\n\n\nAlso applies to: 380-386\n\n<details>\n<summary>\ud83e\udd16 Prompt for AI Agents</summary>\n\n```\nVerify each finding against the current code and only fix it if needed.\n\nIn `@conductor/lib/conductor/run_server.ex` around lines 256 - 263,\nread_workspace_file/2 currently collapses all read failures to {:error,\n:not_found}, so the match treating any {:error, :not_found} as \u201cPR missing\u201d\nhides real transport/permission errors; change the case handling around the\nread_workspace_file call in run_server (the block that calls block(state,\nreason) and fail(state, \"pr_not_found\", ...)) to distinguish {:error,\n:not_found} from other {:error, reason} tuples and for non-:not_found return\nvalues call fail(state, \"workspace_read_error\", inspect(reason)) (or otherwise\nsurface/log the actual reason) so permission/transport errors are not\nmisclassified; apply the same fix to the similar read_workspace_file handling at\nthe later occurrence (lines referenced in the review).\n```\n\n</details>\n\n<!-- fingerprinting:phantom:poseidon:hawk -->\n\n<!-- This is an auto-generated comment by CodeRabbit -->\n\n\u2705 Addressed in commits 0d3dea2 to de2bb1d",
+                "url": "https://github.com/misty-step/bitterblossom/pull/723#discussion_r2953694679",
+                "createdAt": "2026-03-18T14:06:37Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM51LPGW",
+          "isResolved": true,
+          "isOutdated": false,
+          "path": "docs/CODEBASE_MAP.md",
+          "line": 161,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "coderabbitai"
+                },
+                "body": "_\u26a0\ufe0f Potential issue_ | _\ud83d\udfe1 Minor_\n\n**This file still mixes PR-success and builder-artifact semantics.**\n\nLine 161 is correct, but the same document still says `W-->>C: builder artifact` (Line 38) and references artifact expectations in the runtime/prompt section (Line 97-100). Please align those sections so operators get one consistent model.\n\n<details>\n<summary>\ud83e\udd16 Prompt for AI Agents</summary>\n\n```\nVerify each finding against the current code and only fix it if needed.\n\nIn `@docs/CODEBASE_MAP.md` at line 161, The document currently mixes two success\nmodels; align all references so the machine success signal is an open PR on the\nassigned factory/* branch (as stated in the paragraph mentioning factory/*)\nrather than a \"builder artifact\". Update the \"W-->>C: builder artifact\" notation\nto reflect \"W-->>C: open PR on factory/* branch\" and revise the runtime/prompt\nsection (the runtime/prompt references to artifact expectations) to state that\noperators should look for an open PR on factory/* as the machine success signal\nand that remote artifacts are only reviewer/workspace outputs. Ensure all\noccurrences of \"builder artifact\" and any artifact-expectation wording are\nreplaced or annotated to match the single PR-based model.\n```\n\n</details>\n\n<!-- fingerprinting:phantom:poseidon:hawk -->\n\n<!-- This is an auto-generated comment by CodeRabbit -->\n\n\u2705 Addressed in commits 0d3dea2 to de2bb1d",
+                "url": "https://github.com/misty-step/bitterblossom/pull/723#discussion_r2953694688",
+                "createdAt": "2026-03-18T14:06:37Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM51LPGa",
+          "isResolved": true,
+          "isOutdated": false,
+          "path": "docs/CONDUCTOR.md",
+          "line": 30,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "coderabbitai"
+                },
+                "body": "_\u26a0\ufe0f Potential issue_ | _\ud83d\udfe1 Minor_\n\n**Update remaining builder-handoff wording to fully match PR-based completion.**\n\nThis section now says review artifacts only, but the same page later still says \u201cOnce a builder writes its artifact\u2026\u201d and \u201cPost-artifact sprite cleanup\u201d (Line 528 and Line 530). That conflicts with the PR-existence success model introduced in this PR.\n\n\n\n<details>\n<summary>Suggested doc diff</summary>\n\n```diff\n-Once a builder writes its artifact and the referenced PR is verified, the conductor persists `phase=awaiting_governance` and `pr_number` immediately. That write is the durable boundary between builder work and control-plane cleanup.\n+Once a builder opens/updates the assigned PR and the conductor verifies it, the conductor persists `phase=awaiting_governance` and `pr_number` immediately. That write is the durable boundary between builder work and control-plane cleanup.\n\n-Post-artifact sprite cleanup is best-effort. Transport failures during cleanup (e.g., `use of closed network connection`) are recorded as `cleanup_warning` events and do **not** overwrite the run to `phase=failed` or clear `pr_number`.\n+Post-handoff sprite cleanup is best-effort. Transport failures during cleanup (e.g., `use of closed network connection`) are recorded as `cleanup_warning` events and do **not** overwrite the run to `phase=failed` or clear `pr_number`.\n```\n</details>\n\n<details>\n<summary>\ud83e\udd16 Prompt for AI Agents</summary>\n\n```\nVerify each finding against the current code and only fix it if needed.\n\nIn `@docs/CONDUCTOR.md` around lines 28 - 30, Update the remaining builder-handoff\nwording to match the PR-based completion model: replace occurrences of phrases\nlike \"review artifacts\", \"Once a builder writes its artifact\u2026\", and\n\"Post-artifact sprite cleanup\" with PR-centric language (e.g., reference PR\ncreation/existence and PR-based cleanup) so the section describing\n`${WORKSPACE}/.bb/conductor/<run_id>/review-<sprite>.json` and later passages\nconsistently state that completion, cleanup, and review rely on PR presence\nrather than artifact writing; search for and update the exact strings \"review\nartifacts\", \"writes its artifact\", and \"Post-artifact sprite cleanup\" to their\nPR-based equivalents to ensure consistency across the document.\n```\n\n</details>\n\n<!-- fingerprinting:phantom:poseidon:hawk -->\n\n<!-- This is an auto-generated comment by CodeRabbit -->\n\n\u2705 Addressed in commits 0d3dea2 to de2bb1d",
+                "url": "https://github.com/misty-step/bitterblossom/pull/723#discussion_r2953694694",
+                "createdAt": "2026-03-18T14:06:37Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM51LeXu",
+          "isResolved": false,
+          "isOutdated": false,
+          "path": "conductor/lib/conductor/run_server.ex",
+          "line": 192,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "coderabbitai"
+                },
+                "body": "_\u26a0\ufe0f Potential issue_ | _\ud83d\udfe0 Major_\n\n<details>\n<summary>\ud83e\udde9 Analysis chain</summary>\n\n\ud83c\udfc1 Script executed:\n\n```shell\nwc -l conductor/lib/conductor/run_server.ex\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 109\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\n# Read the file to understand the structure\nhead -250 conductor/lib/conductor/run_server.ex | tail -100\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 3067\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\n# Get lines 188-192 context with surrounding lines\nsed -n '180,200p' conductor/lib/conductor/run_server.ex\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 712\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\n# Get lines 257-267 context\nsed -n '250,275p' conductor/lib/conductor/run_server.ex\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 816\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\n# Search for detect_pr function definition\nrg \"def detect_pr\" conductor/lib/conductor/run_server.ex -A 20\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 50\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\n# Search for classify_workspace_read_error function\nrg \"def classify_workspace_read_error\" conductor/lib/conductor/run_server.ex -A 15\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 50\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\n# Search for any retry logic or backoff related to PR detection\nrg \"retry|backoff|sleep\" conductor/lib/conductor/run_server.ex\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 50\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\n# Read lines 382-408 mentioned in scratchpad\nsed -n '382,410p' conductor/lib/conductor/run_server.ex\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 1034\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\n# Find read_workspace_file function\nrg \"def read_workspace_file\" conductor/lib/conductor/run_server.ex -A 20\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 50\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\n# Search for error classification or stderr parsing anywhere\nrg \"stderr|not found|classify\" conductor/lib/conductor/run_server.ex\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 270\n\n---\n\n\n\n</details>\n\n**Add bounded retry/backoff before the terminal PR-not-found fallback.**\n\nWhen `find_open_pr` returns `{:error, :not_found}` immediately after builder completion, the code falls through to `BLOCKED.md` lookup without retrying. GitHub/`gh` PR visibility can lag by a few seconds, causing successful runs to immediately fail with \"pr_not_found\" even though the PR exists. Implement a short bounded retry (2-3 attempts with exponential backoff) before treating the miss as terminal.\n\nAffects: lines 257-267 (and the detection flow starting at line 188)\n\n<details>\n<summary>\ud83e\udd16 Prompt for AI Agents</summary>\n\n```\nVerify each finding against the current code and only fix it if needed.\n\nIn `@conductor/lib/conductor/run_server.ex` around lines 188 - 192, The\nPR-detection flow (detect_pr / find_open_pr) immediately treats {:error,\n:not_found} as terminal and falls back to BLOCKED.md; add a bounded retry with\nexponential backoff (e.g., 2\u20133 attempts with backoff 500ms -> 1s -> 2s) inside\ndetect_pr (or a small helper invoked by detect_pr) so that when find_open_pr\nreturns {:error, :not_found} you retry the lookup before calling the terminal\npr_not_found path and BLOCKED.md handling; ensure retries are limited, log each\nretry (use log/2) and record a Store.record_event when finally giving up to\npreserve existing telemetry.\n```\n\n</details>\n\n<!-- fingerprinting:phantom:medusa:grasshopper -->\n\n<!-- This is an auto-generated comment by CodeRabbit -->",
+                "url": "https://github.com/misty-step/bitterblossom/pull/723#discussion_r2953776033",
+                "createdAt": "2026-03-18T14:19:07Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDORJkRwM51LeX7",
+          "isResolved": false,
+          "isOutdated": false,
+          "path": "conductor/lib/conductor/run_server.ex",
+          "line": 400,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "coderabbitai"
+                },
+                "body": "_\u26a0\ufe0f Potential issue_ | _\ud83d\udfe0 Major_\n\n<details>\n<summary>\ud83e\udde9 Analysis chain</summary>\n\n\ud83c\udfc1 Script executed:\n\n```shell\ncat -n conductor/lib/conductor/run_server.ex | sed -n '390,410p'\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 787\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\nrg -i \"classify_workspace_read_error\" --type elixir\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 273\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\nrg -B 5 -A 10 \"classify_workspace_read_error\" conductor/lib/conductor/run_server.ex\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 743\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\nfd -e \"test.exs\" -e \"test.ex\" conductor/ | head -20\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 413\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\nrg -l \"classify_workspace_read_error\\|read_workspace_file\" --type elixir conductor/\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 50\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\nrg -B 5 -A 10 \"No such file\\|not found\\|cat\" conductor/test/ --type elixir | head -80\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 50\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\nfd --full-path 'conductor/.*test' . | head -20\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 941\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\nfind conductor -type f -name \"*test*\" 2>/dev/null | head -20\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 961\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\ncat /nonexistent/file 2>&1 || echo \"Exit code: $?\"\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 130\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\nrg -n \"classify_workspace_read_error\\|read_workspace_file\\|BLOCKED\" conductor/test/conductor/run_server_test.exs | head -50\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 50\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\ncat conductor/test/conductor/run_server_test.exs | head -100\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 3115\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\nrg -n \"test.*classify\\|test.*read_workspace\\|No such file\" conductor/test/conductor/run_server_test.exs\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 50\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\nwc -l conductor/test/conductor/run_server_test.exs\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 116\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\ntail -200 conductor/test/conductor/run_server_test.exs\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 5880\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\nrg -B 5 -A 5 \"file_read.*BLOCKED\" conductor/test/conductor/run_server_test.exs\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 790\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\nsed -n '480,520p' conductor/test/conductor/run_server_test.exs\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 1298\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\nrg -B 10 -A 10 \"read_workspace_file\" conductor/lib/conductor/run_server.ex | head -30\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 818\n\n---\n\n\ud83c\udfc1 Script executed:\n\n```shell\n# Verify that the mock test data uses \"not found\" but real cat uses \"No such file or directory\"\npython3 << 'EOF'\n# Test what substring patterns match actual cat error vs command not found\ncat_missing_file_error = \"cat: /tmp/test-worktree/BLOCKED.md: No such file or directory\"\ncat_command_not_found = \"sh: cat: not found\"\n\nprint(f\"Missing file error: '{cat_missing_file_error}'\")\nprint(f\"  Contains 'not found': {'not found' in cat_missing_file_error.lower()}\")\nprint(f\"  Contains 'no such file': {'no such file' in cat_missing_file_error.lower()}\")\nprint()\nprint(f\"Cat command not found: '{cat_command_not_found}'\")\nprint(f\"  Contains 'not found': {'not found' in cat_command_not_found.lower()}\")\nprint(f\"  Contains 'no such file': {'no such file' in cat_command_not_found.lower()}\")\nEOF\n```\n\nRepository: misty-step/bitterblossom\n\nLength of output: 320\n\n---\n\n\n\n</details>\n\n**Add \"no such file or directory\" check for missing file detection.**\n\nLine 396 only checks for `\"not found\"`, which matches `cat` command not found (a less common case), but misses the standard error `\"No such file or directory\"` that `cat` emits for missing files. This causes absent `BLOCKED.md` files to be classified as `workspace_read_error` instead of `:not_found`, breaking the error handling logic that relies on distinguishing between the two cases.\n\n<details>\n<summary>Suggested fix</summary>\n\n```diff\n-    if code == 1 and String.contains?(normalized_output, \"not found\") do\n+    if code == 1 and\n+         (String.contains?(normalized_output, \"no such file\") or\n+            String.contains?(normalized_output, \"not found\")) do\n```\n</details>\n\n<details>\n<summary>\ud83e\udd16 Prompt for AI Agents</summary>\n\n```\nVerify each finding against the current code and only fix it if needed.\n\nIn `@conductor/lib/conductor/run_server.ex` around lines 393 - 400, The\nclassify_workspace_read_error function currently only checks for \"not found\" in\nthe normalized output, which misses the typical \"no such file or directory\"\nmessage from cat; update classify_workspace_read_error to treat either case as a\nnot-found error by checking if String.contains?(normalized_output, \"not found\")\nor String.contains?(normalized_output, \"no such file or directory\") and return\n{:error, :not_found} when either matches, leaving the existing fallback that\nreturns {:error, %{output: ..., code: code}} unchanged.\n```\n\n</details>\n\n<!-- fingerprinting:phantom:medusa:grasshopper -->\n\n<!-- This is an auto-generated comment by CodeRabbit -->",
+                "url": "https://github.com/misty-step/bitterblossom/pull/723#discussion_r2953776055",
+                "createdAt": "2026-03-18T14:19:07Z"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}
