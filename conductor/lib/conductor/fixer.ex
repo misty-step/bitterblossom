@@ -110,7 +110,7 @@ defmodule Conductor.Fixer do
   end
 
   defp needs_fix?(pr, _state) do
-    checks = pr["statusCheckRollup"] || []
+    checks = pr["statusCheckRollup"] |> List.wrap() |> Enum.filter(&is_map/1)
     Conductor.GitHub.evaluate_checks_failed(checks)
   end
 

@@ -110,7 +110,7 @@ defmodule Conductor.Polisher do
   defp needs_polish?(pr, _state) do
     labels = pr["labels"] || []
     label_names = Enum.map(labels, & &1["name"])
-    checks = pr["statusCheckRollup"] || []
+    checks = pr["statusCheckRollup"] |> List.wrap() |> Enum.filter(&is_map/1)
 
     "lgtm" not in label_names and Conductor.GitHub.evaluate_checks(checks)
   end

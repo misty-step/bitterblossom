@@ -1018,19 +1018,13 @@ defmodule Conductor.Orchestrator do
   end
 
   # Extract issue number from branch names like "factory/42-ts", "fix/42-desc",
-  # "team/fix/42-desc", "42-desc". Uses the final path segment after the last "/".
+  # "team/fix/42-desc", "42-desc", "fix/42". Uses the final path segment after the last "/".
   @doc false
   def parse_issue_number_from_branch(branch) do
     segment = branch |> String.split("/") |> List.last()
 
     case String.split(segment, "-", parts: 2) do
-      [issue_str] ->
-        case Integer.parse(issue_str) do
-          {value, ""} -> {:ok, value}
-          _ -> :skip
-        end
-
-      [issue_str, _suffix] ->
+      [issue_str | _] ->
         case Integer.parse(issue_str) do
           {value, ""} -> {:ok, value}
           _ -> :skip
@@ -1263,9 +1257,19 @@ defmodule Conductor.Orchestrator do
     try do
       match?({:ok, _}, Store.find_run_by_pr(repo, pr_number))
     rescue
-      _ -> false
+      exception ->
+        Logger.warning(
+          "[merge] failed to check if PR ##{pr_number} is tracked: #{Exception.message(exception)}"
+        )
+
+        false
     catch
-      :exit, _ -> false
+      :exit, reason ->
+        Logger.warning(
+          "[merge] failed to check if PR ##{pr_number} is tracked: #{inspect(reason)}"
+        )
+
+        false
     end
   end
 

@@ -722,11 +722,14 @@ defmodule Conductor.GitHub do
          ]) do
       {:ok, json} ->
         case Jason.decode(json) do
-          {:ok, prs} ->
+          {:ok, prs} when is_list(prs) ->
             case Enum.find(prs, &pr_matches_issue?(&1, issue_number)) do
               nil -> {:error, :not_found}
               pr -> {:ok, pr}
             end
+
+          {:ok, _other} ->
+            {:error, :not_found}
 
           {:error, reason} ->
             Logger.warning("[github] failed to decode PR list: #{inspect(reason)}")
@@ -750,7 +753,7 @@ defmodule Conductor.GitHub do
     |> List.last()
     |> String.split("-", parts: 2)
     |> case do
-      [issue_str, _suffix] ->
+      [issue_str | _] ->
         case Integer.parse(issue_str) do
           {^issue_number, ""} -> true
           _ -> false
