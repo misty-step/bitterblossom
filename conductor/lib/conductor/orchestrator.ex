@@ -3,7 +3,7 @@ defmodule Conductor.Orchestrator do
   Issue dispatch authority.
 
   `run_once/1` — start one RunServer synchronously and wait for it.
-  `start_loop/1` — poll for eligible issues and start RunServers up to concurrency limit.
+  `configure_polling/1` — poll for eligible issues and start RunServers up to concurrency limit.
   Reconciles stale runs and merges lgtm-labeled PRs on every tick.
   """
 
@@ -85,12 +85,6 @@ defmodule Conductor.Orchestrator do
   @spec configure_polling(keyword()) :: :ok | {:error, :no_workers}
   def configure_polling(opts) do
     GenServer.call(__MODULE__, {:configure_polling, opts})
-  end
-
-  @doc "Start the continuous polling loop."
-  @spec start_loop(keyword()) :: :ok | {:error, :no_workers}
-  def start_loop(opts) do
-    configure_polling(opts)
   end
 
   @doc "Pause dispatch of new runs. Existing work continues."
