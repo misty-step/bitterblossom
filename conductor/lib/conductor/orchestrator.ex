@@ -1226,6 +1226,16 @@ defmodule Conductor.Orchestrator do
   defp record_merge(repo, pr_number) do
     case Store.find_run_by_pr(repo, pr_number) do
       {:ok, %{"run_id" => run_id, "issue_number" => issue_number}} ->
+        case code_host_mod().close_issue(repo, issue_number) do
+          :ok ->
+            :ok
+
+          {:error, reason} ->
+            Logger.warning(
+              "[merge] failed to close issue ##{issue_number} after merging PR ##{pr_number}: #{inspect(reason)}"
+            )
+        end
+
         Store.update_run(run_id, %{
           ci_wait_started_at: nil,
           ci_last_reported_at: nil,

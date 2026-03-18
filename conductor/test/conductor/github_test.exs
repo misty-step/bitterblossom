@@ -867,6 +867,29 @@ defmodule Conductor.GitHubTest do
     end
   end
 
+  describe "close_issue/2" do
+    test "closes the issue via gh" do
+      with_fake_gh(
+        """
+        printf '%s\n' \"$*\" > \"$GH_ARGS_PATH\"
+        """,
+        fn _tmp_dir, args_path ->
+          assert :ok = GitHub.close_issue("owner/repo", 42)
+          assert File.read!(args_path) =~ "issue close 42 --repo owner/repo"
+        end
+      )
+    end
+
+    test "returns an error when gh issue close fails" do
+      with_fake_gh(
+        "exit 1",
+        fn _tmp_dir, _args_path ->
+          assert {:error, _} = GitHub.close_issue("owner/repo", 42)
+        end
+      )
+    end
+  end
+
   describe "checks_failed?/1 (unit, no CLI)" do
     test "FAILURE among checks → true" do
       checks = [

@@ -655,6 +655,21 @@ defmodule Conductor.GitHub do
     end
   end
 
+  @doc "Close an issue."
+  @spec close_issue(binary(), pos_integer()) :: :ok | {:error, term()}
+  def close_issue(repo, issue_number) do
+    case Shell.cmd("gh", [
+           "issue",
+           "close",
+           to_string(issue_number),
+           "--repo",
+           repo
+         ]) do
+      {:ok, _} -> :ok
+      {:error, msg, _} -> {:error, msg}
+    end
+  end
+
   # Conductor.Tracker callback — delegates to create_issue_comment/3.
   @spec comment(binary(), pos_integer(), binary()) :: :ok | {:error, term()}
   def comment(repo, issue_number, body), do: create_issue_comment(repo, issue_number, body)

@@ -112,6 +112,12 @@ defmodule Conductor.OrchestratorTest do
     def pr_ci_failure_logs(_repo, _pr), do: {:ok, ""}
     def add_label(_repo, _pr, _label), do: :ok
 
+    def close_issue(repo, issue_number) do
+      close_calls = MockState.get(:close_issue_calls, [])
+      MockState.put(:close_issue_calls, close_calls ++ [{repo, issue_number}])
+      MockState.get({:close_issue_result, repo, issue_number}, :ok)
+    end
+
     def find_open_pr(_repo, issue_number),
       do: MockState.get({:open_pr, issue_number}, {:error, :not_found})
 
@@ -239,6 +245,7 @@ defmodule Conductor.OrchestratorTest do
     MockState.put(:started_runs, [])
     MockState.put(:run_lifetime_ms, 150)
     MockState.put(:merge_calls, [])
+    MockState.put(:close_issue_calls, [])
     MockState.put(:run_control_calls, [])
 
     # Restart the Orchestrator under the global name so configure_polling/1 works
@@ -1591,6 +1598,32 @@ defmodule Conductor.OrchestratorTest do
 
       eventually(fn ->
         refute Store.leased?("test/repo", 700)
+        {:ok, run} = Store.get_run(run_id)
+        assert run["phase"] == "merged"
+      end)
+    end
+
+    test "record_merge closes the linked issue after merge" do
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 702,
+          issue_title: "merge close issue test",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(run_id, %{pr_number: 202, phase: "pr_opened", status: "pr_opened"})
+      Store.acquire_lease("test/repo", 702, run_id)
+
+      MockState.put(
+        {:labeled_prs, "test/repo", "lgtm"},
+        [%{"number" => 202, "headRefName" => "factory/702-123"}]
+      )
+
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
+
+      eventually(fn ->
+        assert {"test/repo", 702} in MockState.get(:close_issue_calls, [])
         {:ok, run} = Store.get_run(run_id)
         assert run["phase"] == "merged"
       end)
