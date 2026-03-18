@@ -16,23 +16,22 @@ Files:
 ```mermaid
 flowchart TD
     Root["bb"] --> Setup["setup\nbootstrap sprite"]
-    Root --> Dispatch["dispatch\nrun Ralph loop"]
+    Root --> Dispatch["dispatch\nrun agent"]
     Root --> Status["status\nshow fleet or sprite truth"]
     Root --> Logs["logs\nstream remote ralph.log"]
-    Root --> Kill["kill\nterminate active ralph loop"]
+    Root --> Kill["kill\nterminate stale agents"]
 ```
 
 ## Dispatch Pipeline
 
 ```mermaid
 flowchart LR
-    Probe["probe sprite"] --> Config["verify setup"]
-    Config --> Busy["check active ralph loop"]
+    Probe["probe sprite"] --> Busy["check active agent"]
     Busy --> Cleanup["kill stale agent processes"]
     Cleanup --> Sync["repo sync to default branch"]
     Sync --> Prompt["render + upload prompt"]
-    Prompt --> Ralph["run ralph.sh"]
-    Ralph --> Verify["verify work + PR state"]
+    Prompt --> Run["run agent"]
+    Run --> Verify["verify work + PR state"]
     Verify --> Exit["exit code / optional CI wait"]
 ```
 
@@ -43,8 +42,8 @@ flowchart LR
     Probe["probe sprite"] --> Dirs["create remote dirs"]
     Dirs --> Base["upload CLAUDE/settings/hooks/skills"]
     Base --> Persona["upload persona"]
-    Persona --> Ralph["upload ralph.sh + prompt template"]
-    Ralph --> Git["configure git auth"]
+    Persona --> Prompt["upload prompt template"]
+    Prompt --> Git["configure git auth"]
     Git --> Repo["clone or repair repo checkout"]
     Repo --> Meta["write workspace metadata"]
 ```
@@ -72,12 +71,12 @@ sequenceDiagram
     participant C as Conductor
     participant BB as bb dispatch
     participant S as Sprite
-    participant R as Ralph
+    participant S as Sprite agent
 
     C->>BB: dispatch builder or reviewer task
     BB->>S: probe + sync + upload prompt
-    BB->>R: exec ralph.sh
-    R-->>BB: completion signal or artifact
+    BB->>S: exec agent command
+    S-->>BB: completion signal or artifact
     BB-->>C: process exit + artifact availability
 ```
 

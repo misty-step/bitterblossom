@@ -29,7 +29,7 @@ Full artifact stack: [docs/architecture/README.md](docs/architecture/README.md)
 conductor/               Elixir/OTP orchestrator (control plane)
 cmd/bb/                  thin Go transport CLI (sprite edge)
 base/skills/             skill files provisioned onto sprites
-scripts/                 ralph loop + prompt templates + legacy Python conductor
+scripts/                 prompt templates, onboarding helpers, legacy Python conductor
 sprites/                 per-sprite personas
 docs/adr/                architecture decisions
 docs/architecture/       system overview + per-module drill-downs
@@ -219,15 +219,15 @@ make lint-python   # ruff:   base/hooks + scripts/conductor.py + tests
 
 ## Troubleshooting
 
-### Dispatch blocked by a stale Ralph loop
+### Dispatch blocked by a stale agent process
 
-If a previous dispatch was interrupted (Ctrl-C, network drop, timeout), the Ralph loop may still be running on the sprite. A live Ralph process blocks the next dispatch.
+If a previous dispatch was interrupted (Ctrl-C, network drop, timeout), an agent process may still be running on the sprite. A live agent process blocks the next dispatch.
 
 ```bash
 bb kill <sprite>
 ```
 
-This terminates the Ralph loop and any associated agent processes, clearing the way for a fresh dispatch. Stale Claude-only processes (no active Ralph loop) are cleaned automatically by dispatch and don't require `bb kill`.
+This terminates stale agent processes and clears the way for a fresh dispatch. Dispatch also performs a best-effort cleanup before it starts.
 
 ## Constraints
 

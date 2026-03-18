@@ -36,7 +36,6 @@ flowchart LR
 
     subgraph Runtime["Transport + Execution"]
         BB["bb CLI\ncmd/bb/*"]
-        Ralph["Ralph Loop\nscripts/ralph.sh"]
         Sprites["Persistent Sprites"]
     end
 
@@ -55,8 +54,7 @@ flowchart LR
     Conductor --> Events
     Conductor --> BB
     BB --> Sprites
-    Sprites --> Ralph
-    Ralph --> PR
+    Sprites --> PR
     PR --> Council
     PR --> CI
     PR --> External
@@ -79,7 +77,7 @@ sequenceDiagram
     GH->>C: eligible issue exists
     C->>C: acquire lease + create run
     C->>BB: dry-run probe + dispatch builder
-    BB->>W: sync repo + run Ralph
+    BB->>W: sync repo + run agent
     W-->>GH: push branch + open draft PR
     W-->>C: builder artifact
     C->>BB: dispatch reviewer council

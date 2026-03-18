@@ -5,12 +5,14 @@ import (
 	"testing"
 )
 
-func TestKillAgentProcessesScriptTargetsRalphLoop(t *testing.T) {
+func TestKillDispatchProcessScriptUsesWorkspacePIDFile(t *testing.T) {
 	t.Parallel()
 
-	// Dispatch considers the sprite busy only when the ralph loop is running.
-	// `bb kill` must be able to find/terminate that loop to unblock dispatch.
-	if !strings.Contains(killAgentProcessesScript, `agents='/home/sprite/workspace/\.[r]alph\.sh|[c]laude|[o]pencode'`) {
-		t.Fatalf("killAgentProcessesScript does not include expected agents regex")
+	script := killDispatchProcessScriptFor("/home/sprite/workspace/repo")
+	if !strings.Contains(script, `/home/sprite/workspace/repo/.bb-agent.pid`) {
+		t.Fatalf("killDispatchProcessScriptFor() missing workspace pid path: %q", script)
+	}
+	if !strings.Contains(script, `pkill -TERM -P "$pid"`) {
+		t.Fatalf("killDispatchProcessScriptFor() should terminate child processes: %q", script)
 	}
 }

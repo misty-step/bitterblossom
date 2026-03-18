@@ -1,12 +1,14 @@
-"""Runtime contract verification — guards against model/provider drift.
+"""Runtime contract verification — guards against model/profile drift.
 
-Canonical source: base/settings.json  (ANTHROPIC_MODEL)
+Canonical sources:
+  - base/settings.json         — sprite-side Claude profile alias (`model`)
+  - cmd/bb/runtime_contract.go — exact provider/model identifier used by dispatch
 
 Surfaces validated:
-  - base/settings.json       — deployed sprite env defaults
-  - cmd/bb/runtime_contract.go — Go constant used by dispatch
-  - scripts/lib.sh           — openrouter-claude provider default fallback
-  - README.md                — operator-facing documentation
+  - base/settings.json
+  - cmd/bb/runtime_contract.go
+  - scripts/lib.sh
+  - README.md
 
 Run:
   python3 -m pytest -q scripts/test_runtime_contract.py
@@ -19,54 +21,41 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).parent.parent
 
 
-def _load_canonical_model() -> str:
-    """Read the canonical sprite model from base/settings.json."""
+def _load_settings_profile() -> str:
+    """Read the canonical sprite profile alias from base/settings.json."""
     settings_path = REPO_ROOT / "base" / "settings.json"
     data = json.loads(settings_path.read_text())
-    return data["env"]["ANTHROPIC_MODEL"]
+    return data["model"]
 
 
-CANONICAL_MODEL = _load_canonical_model()
+SETTINGS_PROFILE = _load_settings_profile()
 
 
-def test_settings_json_model_vars_agree():
-    """All ANTHROPIC_*_MODEL and CLAUDE_CODE_SUBAGENT_MODEL vars must match ANTHROPIC_MODEL."""
-    settings_path = REPO_ROOT / "base" / "settings.json"
-    data = json.loads(settings_path.read_text())
-    env = data.get("env", {})
-
-    model_keys = [
-        "ANTHROPIC_MODEL",
-        "ANTHROPIC_SMALL_FAST_MODEL",
-        "ANTHROPIC_DEFAULT_OPUS_MODEL",
-        "ANTHROPIC_DEFAULT_SONNET_MODEL",
-        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-        "CLAUDE_CODE_SUBAGENT_MODEL",
-    ]
-    mismatches = {k: env[k] for k in model_keys if k in env and env[k] != CANONICAL_MODEL}
-    assert not mismatches, (
-        f"base/settings.json model vars disagree with ANTHROPIC_MODEL={CANONICAL_MODEL!r}:\n"
-        + "\n".join(f"  {k} = {v!r}" for k, v in mismatches.items())
-    )
-
-    print(f"\n[ok] base/settings.json: {len(model_keys)} model vars all = {CANONICAL_MODEL!r}")
-
-
-def test_go_runtime_constant_matches_canonical():
-    """cmd/bb/runtime_contract.go spriteModel constant must equal canonical model."""
+def _load_runtime_model() -> str:
+    """Read the exact runtime model identifier from Go's transport contract."""
     go_path = REPO_ROOT / "cmd" / "bb" / "runtime_contract.go"
     content = go_path.read_text()
 
-    # Match: const spriteModel = "anthropic/claude-sonnet-4-6"
     match = re.search(r'const\s+spriteModel\s*=\s*"([^"]+)"', content)
     assert match, f"Could not find spriteModel constant in {go_path}"
+    return match.group(1)
 
-    go_model = match.group(1)
-    assert go_model == CANONICAL_MODEL, (
-        f"cmd/bb/runtime_contract.go spriteModel={go_model!r} "
-        f"!= canonical {CANONICAL_MODEL!r} from base/settings.json"
-    )
-    print(f"[ok] cmd/bb/runtime_contract.go: spriteModel = {go_model!r}")
+
+RUNTIME_MODEL = _load_runtime_model()
+
+
+def test_settings_json_uses_sonnet_profile():
+    """Sprite settings should use the stable Claude profile alias."""
+    settings_path = REPO_ROOT / "base" / "settings.json"
+    data = json.loads(settings_path.read_text())
+    assert data["model"] == "sonnet"
+    print(f"\n[ok] base/settings.json: model profile = {data['model']!r}")
+
+
+def test_go_runtime_constant_matches_canonical():
+    """cmd/bb/runtime_contract.go should keep the documented exact runtime model."""
+    assert RUNTIME_MODEL == "anthropic/claude-sonnet-4-6"
+    print(f"[ok] cmd/bb/runtime_contract.go: spriteModel = {RUNTIME_MODEL!r}")
 
 
 def test_dispatch_go_uses_sprite_model_constant():
@@ -102,9 +91,9 @@ def test_lib_sh_openrouter_claude_default_matches_canonical():
     assert match, "Could not find openrouter-claude default model in scripts/lib.sh"
 
     lib_default = match.group(1)
-    assert lib_default == CANONICAL_MODEL, (
+    assert lib_default == RUNTIME_MODEL, (
         f"scripts/lib.sh openrouter-claude default={lib_default!r} "
-        f"!= canonical {CANONICAL_MODEL!r} from base/settings.json"
+        f"!= runtime contract {RUNTIME_MODEL!r} from cmd/bb/runtime_contract.go"
     )
     print(f"[ok] scripts/lib.sh: openrouter-claude default = {lib_default!r}")
 
@@ -114,29 +103,28 @@ def test_readme_documents_canonical_model():
     readme_path = REPO_ROOT / "README.md"
     content = readme_path.read_text()
 
-    assert CANONICAL_MODEL in content, (
-        f"README.md does not reference the canonical model {CANONICAL_MODEL!r}.\n"
+    assert RUNTIME_MODEL in content, (
+        f"README.md does not reference the canonical model {RUNTIME_MODEL!r}.\n"
         "Update the 'Runtime profile' section to match base/settings.json."
     )
-    print(f"[ok] README.md: references {CANONICAL_MODEL!r}")
+    print(f"[ok] README.md: references {RUNTIME_MODEL!r}")
 
 
 def test_canonical_source_is_base_settings_json():
-    """Smoke test: base/settings.json must exist and have ANTHROPIC_MODEL set."""
+    """Smoke test: base/settings.json must exist and define the sprite profile alias."""
     settings_path = REPO_ROOT / "base" / "settings.json"
     assert settings_path.exists(), "base/settings.json not found — canonical source is missing"
 
     data = json.loads(settings_path.read_text())
-    assert "env" in data, "base/settings.json missing 'env' key"
-    assert "ANTHROPIC_MODEL" in data["env"], "base/settings.json missing ANTHROPIC_MODEL in env"
-
-    model = data["env"]["ANTHROPIC_MODEL"]
-    assert model, "base/settings.json ANTHROPIC_MODEL is empty"
-    print(f"\n[canonical] base/settings.json ANTHROPIC_MODEL = {model!r}")
+    assert "model" in data, "base/settings.json missing top-level 'model' key"
+    model = data["model"]
+    assert model, "base/settings.json model is empty"
+    assert model == SETTINGS_PROFILE
+    print(f"\n[canonical] base/settings.json model profile = {model!r}")
     print(
         "Validated surfaces:"
-        "\n  base/settings.json     (canonical)"
-        "\n  cmd/bb/runtime_contract.go"
+        "\n  base/settings.json     (profile alias)"
+        "\n  cmd/bb/runtime_contract.go (exact model)"
         "\n  scripts/lib.sh"
         "\n  README.md"
     )

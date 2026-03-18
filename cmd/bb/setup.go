@@ -23,8 +23,8 @@ func newSetupCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "setup <sprite>",
-		Short: "Configure a sprite with base configs, persona, and ralph loop",
-		Long: `Configure a sprite with base configs, persona, and ralph loop.
+		Short: "Configure a sprite with base configs, persona, and agent runtime",
+		Long: `Configure a sprite with base configs, persona, and agent runtime.
 
 If no persona file exists for the sprite name, use --persona to specify one:
   bb setup worker-1 --persona bramble      # use sprites/bramble.md
@@ -132,16 +132,8 @@ func runSetup(ctx context.Context, spriteName, repo string, force bool, persona 
 		return fmt.Errorf("upload persona: %w", err)
 	}
 
-	// 6. Upload ralph script + prompt template
-	if err := uploadFile(ctx, s, "scripts/ralph.sh", spriteRalphScriptPath); err != nil {
-		return fmt.Errorf("upload ralph.sh: %w", err)
-	}
-	// Make executable
-	if _, err := s.CommandContext(ctx, "chmod", "+x", spriteRalphScriptPath).Output(); err != nil {
-		return fmt.Errorf("chmod ralph.sh: %w", err)
-	}
-
-	if err := uploadFile(ctx, s, "scripts/builder-prompt-template.md", spriteRalphPromptTemplatePath); err != nil {
+	// 6. Upload the builder prompt template used by dispatch.
+	if err := uploadFile(ctx, s, "scripts/builder-prompt-template.md", spritePromptTemplatePath); err != nil {
 		return fmt.Errorf("upload prompt template: %w", err)
 	}
 

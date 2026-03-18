@@ -196,7 +196,7 @@ func TestEnsureNoActiveDispatchLoop_AllowsIdle(t *testing.T) {
 	t.Parallel()
 
 	r := &fakeSpriteScriptRunner{out: nil, exitCode: 0, err: nil}
-	if err := ensureNoActiveDispatchLoopWithRunner(context.Background(), r.run); err != nil {
+	if err := ensureNoActiveDispatchLoopWithRunner(context.Background(), r.run, "/tmp/ws"); err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
 	if !r.called {
@@ -205,23 +205,17 @@ func TestEnsureNoActiveDispatchLoop_AllowsIdle(t *testing.T) {
 	if !r.gotDeadline {
 		t.Fatal("runner ctx should have a deadline (timeout)")
 	}
-	if !strings.Contains(r.script, "pgrep -af") {
-		t.Fatalf("script = %q, want to contain %q", r.script, "pgrep -af")
-	}
-	if !strings.Contains(r.script, "[r]alph") {
-		t.Fatalf("script = %q, want to contain %q", r.script, "[r]alph")
-	}
-	if strings.Contains(r.script, "claude") || strings.Contains(r.script, "opencode") {
-		t.Fatalf("script = %q, want ralph-only busy check", r.script)
+	if !strings.Contains(r.script, `/tmp/ws/.bb-agent.pid`) {
+		t.Fatalf("script = %q, want workspace pid file", r.script)
 	}
 }
 
 func TestEnsureNoActiveDispatchLoop_BlocksWhenBusy(t *testing.T) {
 	t.Parallel()
 
-	const busy = "1234 bash /home/sprite/workspace/.ralph.sh\n"
+	const busy = "1234 claude -p --output-format stream-json\n"
 	r := &fakeSpriteScriptRunner{out: []byte(busy), exitCode: 1, err: nil}
-	err := ensureNoActiveDispatchLoopWithRunner(context.Background(), r.run)
+	err := ensureNoActiveDispatchLoopWithRunner(context.Background(), r.run, "/tmp/ws")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -237,7 +231,7 @@ func TestEnsureNoActiveDispatchLoop_WrapsRunnerError(t *testing.T) {
 	t.Parallel()
 
 	r := &fakeSpriteScriptRunner{out: nil, exitCode: 0, err: errors.New("network")}
-	err := ensureNoActiveDispatchLoopWithRunner(context.Background(), r.run)
+	err := ensureNoActiveDispatchLoopWithRunner(context.Background(), r.run, "/tmp/ws")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -253,7 +247,7 @@ func TestEnsureNoActiveDispatchLoop_ErrorsOnUnexpectedOutputWhenIdle(t *testing.
 	t.Parallel()
 
 	r := &fakeSpriteScriptRunner{out: []byte("unexpected garbage"), exitCode: 0, err: nil}
-	err := ensureNoActiveDispatchLoopWithRunner(context.Background(), r.run)
+	err := ensureNoActiveDispatchLoopWithRunner(context.Background(), r.run, "/tmp/ws")
 	if err == nil {
 		t.Fatal("expected error for exit 0 with output, got nil")
 	}
@@ -266,7 +260,7 @@ func TestEnsureNoActiveDispatchLoop_ErrorsOnUnexpectedExitCode(t *testing.T) {
 	t.Parallel()
 
 	r := &fakeSpriteScriptRunner{out: []byte("syntax error"), exitCode: 2, err: nil}
-	err := ensureNoActiveDispatchLoopWithRunner(context.Background(), r.run)
+	err := ensureNoActiveDispatchLoopWithRunner(context.Background(), r.run, "/tmp/ws")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -340,7 +334,7 @@ func TestIsDispatchLoopActive_ReturnsFalseWhenIdle(t *testing.T) {
 	t.Parallel()
 
 	r := &fakeSpriteScriptRunner{out: nil, exitCode: 0, err: nil}
-	busy, err := isDispatchLoopActiveWithRunner(context.Background(), r.run)
+	busy, err := isDispatchLoopActiveWithRunner(context.Background(), r.run, "/tmp/ws")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -352,9 +346,9 @@ func TestIsDispatchLoopActive_ReturnsFalseWhenIdle(t *testing.T) {
 func TestIsDispatchLoopActive_ReturnsTrueWhenBusy(t *testing.T) {
 	t.Parallel()
 
-	const busyOut = "1234 bash /home/sprite/workspace/.ralph.sh\n"
+	const busyOut = "1234 codex exec --json\n"
 	r := &fakeSpriteScriptRunner{out: []byte(busyOut), exitCode: 1, err: nil}
-	busy, err := isDispatchLoopActiveWithRunner(context.Background(), r.run)
+	busy, err := isDispatchLoopActiveWithRunner(context.Background(), r.run, "/tmp/ws")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -367,7 +361,7 @@ func TestIsDispatchLoopActive_ErrorsOnRunnerFailure(t *testing.T) {
 	t.Parallel()
 
 	r := &fakeSpriteScriptRunner{out: nil, exitCode: 0, err: errors.New("network")}
-	_, err := isDispatchLoopActiveWithRunner(context.Background(), r.run)
+	_, err := isDispatchLoopActiveWithRunner(context.Background(), r.run, "/tmp/ws")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -380,7 +374,7 @@ func TestIsDispatchLoopActive_ErrorsOnUnexpectedExitCode(t *testing.T) {
 	t.Parallel()
 
 	r := &fakeSpriteScriptRunner{out: []byte("syntax error"), exitCode: 2, err: nil}
-	_, err := isDispatchLoopActiveWithRunner(context.Background(), r.run)
+	_, err := isDispatchLoopActiveWithRunner(context.Background(), r.run, "/tmp/ws")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

@@ -43,12 +43,13 @@ Typical changes here:
 - PTY execution and log streaming
 - operator recovery paths
 
-### Runtime loop, silence/off-rails detection, completion protocol
+### Remote execution, silence/off-rails detection, completion protocol
 
 Start with:
 
-- [`scripts/ralph.sh`](../../scripts/ralph.sh)
+- [`cmd/bb/dispatch.go`](../../cmd/bb/dispatch.go)
 - [`cmd/bb/offrails.go`](../../cmd/bb/offrails.go)
+- [`cmd/bb/dispatch_checks.go`](../../cmd/bb/dispatch_checks.go)
 - [`cmd/bb/stream_json.go`](../../cmd/bb/stream_json.go)
 - [`docs/COMPLETION-PROTOCOL.md`](../COMPLETION-PROTOCOL.md)
 
@@ -105,7 +106,7 @@ Do **not** start from these when you need the current architecture contract:
 - [`base/skills/*`](../../base/skills/) for exact live CLI flags
 - [`glance.md`](../../glance.md) files for exact current behavior
 - [`docs/archive/`](../archive/) for implementation truth
-- legacy shell wrappers in [`scripts/`](../../scripts/) (for example `provision.sh`, `watchdog.sh`, `fleet-status.sh`) as if they define the live control plane; [`scripts/ralph.sh`](../../scripts/ralph.sh) and [`scripts/conductor.py`](../../scripts/conductor.py) remain authoritative for their subsystems
+- legacy shell wrappers in [`scripts/`](../../scripts/) as if they define the live control plane; `cmd/bb/*.go` and [`scripts/conductor.py`](../../scripts/conductor.py) are the active surfaces
 - [`compositions/`](../../compositions/) as if they are the current scheduler state model
 
 ## Verify Against Code
@@ -126,5 +127,5 @@ Before editing docs or behavior, verify assumptions against code when any of the
 | Add a new operator inspection surface | [`scripts/conductor.py`](../../scripts/conductor.py), [`docs/CONDUCTOR.md`](../CONDUCTOR.md) |
 | Harden reviewer readiness or sprite repair | [`scripts/conductor.py`](../../scripts/conductor.py), [`cmd/bb/setup.go`](../../cmd/bb/setup.go), [`cmd/bb/dispatch.go`](../../cmd/bb/dispatch.go) |
 | Change dispatch UX or output | [`cmd/bb/dispatch.go`](../../cmd/bb/dispatch.go), [`docs/CLI-REFERENCE.md`](../CLI-REFERENCE.md) |
-| Change completion semantics | [`scripts/ralph.sh`](../../scripts/ralph.sh), [`docs/COMPLETION-PROTOCOL.md`](../COMPLETION-PROTOCOL.md), conductor artifact parsing |
+| Change completion semantics | [`cmd/bb/dispatch.go`](../../cmd/bb/dispatch.go), [`cmd/bb/dispatch_checks.go`](../../cmd/bb/dispatch_checks.go), [`docs/COMPLETION-PROTOCOL.md`](../COMPLETION-PROTOCOL.md), conductor artifact parsing |
 | Refresh stale architecture docs | [`project.md`](../../project.md), [`docs/architecture/*`](../architecture/), [`docs/CODEBASE_MAP.md`](../CODEBASE_MAP.md), [`docs/context/*`](./) |

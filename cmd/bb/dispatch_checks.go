@@ -11,26 +11,6 @@ import (
 	sprites "github.com/superfly/sprites-go"
 )
 
-// activeRalphLoopCheckScript checks for an in-flight ralph loop process.
-//
-// Use the bracket trick to avoid self-matching under `pgrep -f` (pattern appears in argv).
-const activeRalphLoopCheckScript = `if ! command -v pgrep >/dev/null 2>&1; then
-  echo "pgrep missing" >&2
-  exit 2
-fi
-
-busy="$(pgrep -af '/home/sprite/workspace/\.[r]alph\.sh' 2>&1)"
-status=$?
-if [ "$status" -eq 0 ]; then
-  echo "$busy"
-  exit 1
-fi
-if [ "$status" -eq 1 ]; then
-  exit 0
-fi
-echo "$busy" >&2
-exit "$status"`
-
 // newCommitsCheckScript checks if any commits on HEAD are not yet on the remote
 // default branch ($BRANCH). Exits 0 with commit list on stdout when new commits
 // exist, exits 1 when the branch is flush with upstream (no new work). Exits 2
@@ -114,21 +94,21 @@ type dispatchPollConfig struct {
 	timeoutMessage    string
 }
 
-func ensureNoActiveDispatchLoop(ctx context.Context, s *sprites.Sprite) error {
-	return ensureNoActiveDispatchLoopWithRunner(ctx, spriteBashRunner(s))
+func ensureNoActiveDispatchLoop(ctx context.Context, s *sprites.Sprite, workspace string) error {
+	return ensureNoActiveDispatchLoopWithRunner(ctx, spriteBashRunner(s), workspace)
 }
 
-// isDispatchLoopActive returns true when a ralph loop is running on s.
+// isDispatchLoopActive returns true when an agent process is running on s.
 // It uses the same pgrep check as ensureNoActiveDispatchLoop.
-func isDispatchLoopActive(ctx context.Context, s *sprites.Sprite) (bool, error) {
-	return isDispatchLoopActiveWithRunner(ctx, spriteBashRunner(s))
+func isDispatchLoopActive(ctx context.Context, s *sprites.Sprite, workspace string) (bool, error) {
+	return isDispatchLoopActiveWithRunner(ctx, spriteBashRunner(s), workspace)
 }
 
-// runRalphLoopCheck executes the pgrep check and returns the raw result.
-func runRalphLoopCheck(ctx context.Context, run spriteScriptRunner) (output string, exitCode int, err error) {
+// runActiveAgentCheck executes the pgrep check and returns the raw result.
+func runActiveAgentCheck(ctx context.Context, run spriteScriptRunner, workspace string) (output string, exitCode int, err error) {
 	output, exitCode, err = runDispatchCheck(ctx, run, dispatchCheck{
 		timeout: 10 * time.Second,
-		script:  activeRalphLoopCheckScript,
+		script:  activeDispatchCheckScriptFor(workspace),
 	})
 	if err != nil {
 		return "", 0, fmt.Errorf("check dispatch loop: %w", err)
@@ -136,8 +116,8 @@ func runRalphLoopCheck(ctx context.Context, run spriteScriptRunner) (output stri
 	return output, exitCode, nil
 }
 
-func isDispatchLoopActiveWithRunner(ctx context.Context, run spriteScriptRunner) (bool, error) {
-	_, exitCode, err := runRalphLoopCheck(ctx, run)
+func isDispatchLoopActiveWithRunner(ctx context.Context, run spriteScriptRunner, workspace string) (bool, error) {
+	_, exitCode, err := runActiveAgentCheck(ctx, run, workspace)
 	if err != nil {
 		return false, err
 	}
@@ -295,7 +275,7 @@ func hasNewCommitsWithRunner(ctx context.Context, run spriteScriptRunner, worksp
 	}
 }
 
-// captureHeadSHAWithRunner records the current HEAD SHA in workspace before the ralph
+// captureHeadSHAWithRunner records the current HEAD SHA in workspace before dispatch
 // loop starts. The returned SHA is used by hasNewCommitsSinceSHAWithRunner to scope
 // the off-rails secondary commit check to the current dispatch.
 func captureHeadSHAWithRunner(ctx context.Context, run spriteScriptRunner, workspace string) (string, error) {
@@ -436,8 +416,8 @@ func waitForTaskCompleteWithRunner(ctx context.Context, run spriteScriptRunner, 
 	})
 }
 
-func ensureNoActiveDispatchLoopWithRunner(ctx context.Context, run spriteScriptRunner) error {
-	output, exitCode, err := runRalphLoopCheck(ctx, run)
+func ensureNoActiveDispatchLoopWithRunner(ctx context.Context, run spriteScriptRunner, workspace string) error {
+	output, exitCode, err := runActiveAgentCheck(ctx, run, workspace)
 	if err != nil {
 		return err
 	}
