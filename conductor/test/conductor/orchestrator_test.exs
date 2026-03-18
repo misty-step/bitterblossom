@@ -112,7 +112,7 @@ defmodule Conductor.OrchestratorTest do
     def pr_ci_failure_logs(_repo, _pr), do: {:ok, ""}
     def add_label(_repo, _pr, _label), do: :ok
 
-    def find_open_pr(_repo, issue_number),
+    def find_open_pr(_repo, issue_number, _expected_branch \\ nil),
       do: MockState.get({:open_pr, issue_number}, {:error, :not_found})
 
     def pr_state(_repo, pr_number),

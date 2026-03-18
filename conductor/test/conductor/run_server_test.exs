@@ -56,15 +56,42 @@ defmodule Conductor.RunServerTest do
     def pr_ci_failure_logs(_repo, _pr_number), do: {:ok, ""}
     def add_label(_repo, _pr_number, _label), do: :ok
 
-    def find_open_pr(repo, issue_number) do
-      case MockState.get({:open_pr, repo, issue_number}, {:error, :not_found}) do
-        {:ok, %{"headRefName" => _} = pr} ->
+    def find_open_pr(repo, issue_number, expected_branch \\ nil) do
+      result =
+        case expected_branch do
+          nil ->
+            MockState.get({:open_pr, repo, issue_number}, {:error, :not_found})
+
+          branch ->
+            MockState.get(
+              {:open_pr_force, repo, issue_number, branch},
+              MockState.get(
+                {:open_pr_exact, repo, issue_number, branch},
+                MockState.get({:open_pr, repo, issue_number}, {:error, :not_found})
+              )
+            )
+        end
+
+      case result do
+        {:force_ok, %{"headRefName" => _head_ref} = pr} ->
           {:ok, pr}
+
+        {:ok, %{"headRefName" => head_ref} = pr} ->
+          if is_nil(expected_branch) or head_ref == expected_branch,
+            do: {:ok, pr},
+            else: {:error, :not_found}
 
         {:ok, pr} ->
           case MockState.get({:prepared_branch, repo, issue_number}) do
-            nil -> {:ok, pr}
-            branch -> {:ok, Map.put(pr, "headRefName", branch)}
+            nil ->
+              {:ok, pr}
+
+            branch ->
+              pr = Map.put(pr, "headRefName", branch)
+
+              if is_nil(expected_branch) or branch == expected_branch,
+                do: {:ok, pr},
+                else: {:error, :not_found}
           end
 
         other ->
@@ -479,8 +506,8 @@ defmodule Conductor.RunServerTest do
       MockState.put({:dispatch_result, "test-sprite"}, {:ok, ""})
 
       MockState.put(
-        {:open_pr, "test/repo", 42},
-        {:ok,
+        {:open_pr_force, "test/repo", 42, "factory/42-1773840329"},
+        {:force_ok,
          %{
            "number" => 123,
            "url" => "https://github.com/test/repo/pull/123",
@@ -488,12 +515,50 @@ defmodule Conductor.RunServerTest do
          }}
       )
 
-      {:ok, pid} = start_run_server()
+      {:ok, pid} = start_run_server(existing_branch: "factory/42-1773840329")
       wait_for_exit(pid)
 
       run = find_run(42)
       assert run["phase"] == "failed"
       assert "pr_branch_mismatch" in event_types(run["run_id"])
+    end
+
+    test "finds the current run branch when an older factory PR also exists" do
+      MockState.put({:dispatch_result, "test-sprite"}, {:ok, ""})
+
+      MockState.put(
+        {:open_pr, "test/repo", 42},
+        {:ok,
+         %{
+           "number" => 456,
+           "url" => "https://github.com/test/repo/pull/456",
+           "headRefName" => "factory/42-older-run"
+         }}
+      )
+
+      MockState.put(
+        {:open_pr_exact, "test/repo", 42, "factory/42-1234567890"},
+        {:ok,
+         %{
+           "number" => 999,
+           "url" => "https://github.com/test/repo/pull/999",
+           "headRefName" => "factory/42-1234567890"
+         }}
+      )
+
+      {:ok, pid} =
+        start_run_server(
+          existing_branch: "factory/42-1234567890",
+          existing_pr_number: 999,
+          existing_pr_url: "https://github.com/test/repo/pull/999"
+        )
+
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "pr_opened"
+      assert run["pr_number"] == 999
+      assert "builder_pr_detected" in event_types(run["run_id"])
     end
   end
 

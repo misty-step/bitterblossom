@@ -235,7 +235,7 @@ defmodule Conductor.RunServer do
   # --- Private ---
 
   defp detect_pr(state) do
-    case code_host_mod().find_open_pr(state.repo, state.issue.number) do
+    case code_host_mod().find_open_pr(state.repo, state.issue.number, state.branch) do
       {:ok, %{"headRefName" => head_ref} = pr} when head_ref == state.branch ->
         handle_pr_ready(pr, state)
 

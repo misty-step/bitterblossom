@@ -281,7 +281,7 @@ defmodule Conductor.GitHubTest do
     end
   end
 
-  describe "find_open_pr/2" do
+  describe "find_open_pr/3" do
     test "matches open PRs on non-factory branches when the branch embeds the issue number" do
       with_fake_gh(
         """
