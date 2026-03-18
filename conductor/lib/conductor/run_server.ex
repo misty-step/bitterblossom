@@ -254,7 +254,13 @@ defmodule Conductor.RunServer do
         )
 
       {:error, :not_found} ->
-        fail(state, "pr_not_found", "builder completed without opening a PR")
+        case read_workspace_file(state, "BLOCKED.md") do
+          {:ok, reason} ->
+            block(state, reason)
+
+          {:error, :not_found} ->
+            fail(state, "pr_not_found", "builder completed without opening a PR")
+        end
 
       {:error, reason} ->
         fail(state, "pr_detection_failed", inspect(reason))
@@ -357,7 +363,7 @@ defmodule Conductor.RunServer do
       |> Enum.flat_map(fn filename ->
         path = Path.join(root, filename)
 
-        case File.read(path) do
+        case read_file(path) do
           {:ok, content} -> [String.trim(content)]
           _ -> []
         end
@@ -366,6 +372,24 @@ defmodule Conductor.RunServer do
     case parts do
       [] -> nil
       _ -> parts |> Enum.join("\n\n---\n\n") |> String.slice(0, 8_000)
+    end
+  end
+
+  defp read_workspace_file(%{worktree_path: nil}, _filename), do: {:error, :not_found}
+
+  defp read_workspace_file(state, filename) do
+    path = Path.join(state.worktree_path, filename)
+
+    case worker_mod().exec(state.worker, "cat '#{path}'", timeout: 30_000) do
+      {:ok, content} -> {:ok, String.trim(content)}
+      {:error, _output, _code} -> {:error, :not_found}
+    end
+  end
+
+  defp read_file(path) do
+    case File.read(path) do
+      {:ok, content} -> {:ok, content}
+      _ -> {:error, :not_found}
     end
   end
 

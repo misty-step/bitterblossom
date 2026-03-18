@@ -27,7 +27,12 @@ defmodule Conductor.RunServerTest do
     @behaviour Conductor.Worker
     alias Conductor.RunServerTest.MockState
 
-    def exec(_sprite, _cmd, _opts), do: {:ok, ""}
+    def exec(sprite, cmd, _opts) do
+      case Regex.run(~r/^cat '(.+)'$/, cmd, capture: :all_but_first) do
+        [path] -> MockState.get({:file_read, sprite, path}, {:error, "not found", 1})
+        _ -> {:ok, ""}
+      end
+    end
 
     def dispatch(sprite, _prompt, _repo, _opts) do
       MockState.get({:dispatch_result, sprite}, {:ok, ""})
@@ -440,6 +445,30 @@ defmodule Conductor.RunServerTest do
 
       {:ok, pid} = start_run_server()
       wait_for_exit(pid)
+
+      refute Store.leased?("test/repo", 42)
+    end
+  end
+
+  describe "blocked run after dispatch" do
+    test "marks run blocked when BLOCKED.md exists and no PR is found" do
+      MockState.put({:dispatch_result, "test-sprite"}, {:ok, ""})
+
+      MockState.put(
+        {:file_read, "test-sprite", "/tmp/test-worktree/BLOCKED.md"},
+        {:ok, "need operator input"}
+      )
+
+      {:ok, pid} = start_run_server()
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "blocked"
+      assert "run_blocked" in event_types(run["run_id"])
+
+      assert MockState.get({:comments, 42}) == [
+               "Bitterblossom blocked `#{run["run_id"]}`: need operator input"
+             ]
 
       refute Store.leased?("test/repo", 42)
     end
