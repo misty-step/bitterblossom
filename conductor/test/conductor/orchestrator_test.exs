@@ -2149,23 +2149,23 @@ defmodule Conductor.OrchestratorTest do
       {:ok, run_id} =
         Store.create_run(%{
           repo: "test/repo",
-          issue_number: 802,
+          issue_number: 806,
           issue_title: "external merge close failure",
           builder_sprite: "sprite-1"
         })
 
-      Store.update_run(run_id, %{pr_number: 302, phase: "pr_opened", status: "pr_opened"})
-      Store.acquire_lease("test/repo", 802, run_id)
+      Store.update_run(run_id, %{pr_number: 306, phase: "pr_opened", status: "pr_opened"})
+      Store.acquire_lease("test/repo", 806, run_id)
       Store.complete_run(run_id, "pr_opened", "pr_opened")
 
-      MockState.put({:pr_state, 302}, {:ok, "MERGED"})
-      MockState.put({:close_issue_result, "test/repo", 802}, {:error, :github_down})
+      MockState.put({:pr_state, 306}, {:ok, "MERGED"})
+      MockState.put({:close_issue_result, "test/repo", 806}, {:error, :github_down})
 
       :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       eventually(fn ->
-        assert {"test/repo", 802} in MockState.get(:close_issue_calls, [])
-        assert Store.leased?("test/repo", 802)
+        assert {"test/repo", 806} in MockState.get(:close_issue_calls, [])
+        assert Store.leased?("test/repo", 806)
         events = Store.list_events(run_id)
         types = Enum.map(events, & &1["event_type"])
         refute "external_merge" in types
