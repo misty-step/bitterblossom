@@ -214,8 +214,8 @@ defmodule Conductor.PromptTest do
       assert prompt =~ "## Repository Context"
       assert prompt =~ "Elixir/OTP conductor"
       context_pos = :binary.match(prompt, "## Repository Context") |> elem(0)
-      task_pos = :binary.match(prompt, "# Builder Task") |> elem(0)
-      assert context_pos < task_pos, "Repository Context must appear before Builder Task"
+      task_pos = :binary.match(prompt, "# Weaver Task") |> elem(0)
+      assert context_pos < task_pos, "Repository Context must appear before Weaver Task"
     end
 
     test "includes CLAUDE.md content in the prompt" do

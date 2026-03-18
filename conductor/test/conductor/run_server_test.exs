@@ -1,5 +1,6 @@
 defmodule Conductor.RunServerTest do
   use ExUnit.Case, async: false
+  import ExUnit.CaptureLog
 
   alias Conductor.{Store, RunServer}
 
@@ -338,6 +339,18 @@ defmodule Conductor.RunServerTest do
 
       assert Store.leased?("test/repo", 42)
     end
+
+    test "logs Weaver-prefixed lifecycle messages" do
+      log =
+        capture_log(fn ->
+          {:ok, pid} = start_run_server()
+          wait_for_exit(pid)
+        end)
+
+      assert log =~ "[weaver][run-42-"
+      assert log =~ "dispatching Weaver"
+      assert log =~ "Weaver opened PR #123"
+    end
   end
 
   # --- AC1 variant: adopt_branch path ---
@@ -384,11 +397,16 @@ defmodule Conductor.RunServerTest do
     end
 
     test "marks run failed" do
-      {:ok, pid} = start_run_server()
-      wait_for_exit(pid)
+      log =
+        capture_log(fn ->
+          {:ok, pid} = start_run_server()
+          wait_for_exit(pid)
+        end)
 
       run = find_run(42)
       assert run["phase"] == "failed"
+      assert log =~ "[weaver][run-42-"
+      assert log =~ "builder_dispatch_failed: exit 139: SEGFAULT"
     end
 
     test "lease released" do
@@ -488,12 +506,17 @@ defmodule Conductor.RunServerTest do
         {:ok, "need operator input"}
       )
 
-      {:ok, pid} = start_run_server()
-      wait_for_exit(pid)
+      log =
+        capture_log(fn ->
+          {:ok, pid} = start_run_server()
+          wait_for_exit(pid)
+        end)
 
       run = find_run(42)
       assert run["phase"] == "blocked"
       assert "run_blocked" in event_types(run["run_id"])
+      assert log =~ "[weaver][run-42-"
+      assert log =~ "blocked: need operator input"
 
       assert MockState.get({:comments, 42}) == [
                "Bitterblossom blocked `#{run["run_id"]}`: need operator input"

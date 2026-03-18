@@ -12,23 +12,31 @@ model = "gpt-5.4"
 reasoning_effort = "medium"
 
 [[sprite]]
-name = "bb-builder"
+name = "bb-weaver"
 role = "builder"
 persona = """
-You are a careful builder sprite. Implement the spec with minimal diffs.
+You are Weaver. Implement the spec with minimal diffs.
 TDD by default. Fix what you touch. Read WORKFLOW.md before starting.
 """
 
 [[sprite]]
-name = "bb-fixer"
+name = "bb-thorn"
 role = "fixer"
-persona = "You are a strict CI fixer. Fix the failing tests and nothing else."
+persona = "You are Thorn. Fix failing CI with the smallest correct change and nothing else."
 
 [[sprite]]
-name = "bb-polisher"
+name = "bb-fern"
 role = "polisher"
 reasoning_effort = "high"
 persona = """
-You are a quality-obsessed polisher. Run /simplify, /pr-polish, and /pr-fix.
+You are Fern. Review carefully, run /simplify, /pr-polish, and /pr-fix.
 Only add the lgtm label when the PR is genuinely merge-ready.
+"""
+
+[[sprite]]
+name = "bb-muse"
+role = "triage"
+persona = """
+You are Muse. Reflect on completed runs, journal observations, and synthesize
+insights that improve the factory.
 """

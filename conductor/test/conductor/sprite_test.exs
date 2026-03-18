@@ -13,7 +13,7 @@ defmodule Conductor.SpriteTest do
 
   test "status reports gh auth and harness readiness" do
     status =
-      Sprite.status("bb-builder",
+      Sprite.status("bb-weaver",
         harness: "codex",
         exec_fn:
           exec_fn([
@@ -36,7 +36,7 @@ defmodule Conductor.SpriteTest do
 
   test "status marks missing gh auth as unhealthy" do
     status =
-      Sprite.status("bb-builder",
+      Sprite.status("bb-weaver",
         harness: "codex",
         exec_fn:
           exec_fn([
@@ -59,7 +59,7 @@ defmodule Conductor.SpriteTest do
 
   test "status marks missing git credential helper as unhealthy" do
     status =
-      Sprite.status("bb-builder",
+      Sprite.status("bb-weaver",
         harness: "codex",
         exec_fn:
           exec_fn([
@@ -92,8 +92,8 @@ defmodule Conductor.SpriteTest do
     end
 
     test "passes org and sprite name as sprite CLI flags" do
-      args = Sprite.exec_args("my-org", "bb-builder", "ls")
-      assert ["-o", "my-org", "-s", "bb-builder" | _] = args
+      args = Sprite.exec_args("my-org", "bb-weaver", "ls")
+      assert ["-o", "my-org", "-s", "bb-weaver" | _] = args
     end
 
     test "passes command as bash -lc argument" do
@@ -105,7 +105,7 @@ defmodule Conductor.SpriteTest do
 
   test "status returns error when sprite is unreachable" do
     assert {:error, "timeout"} =
-             Sprite.status("bb-builder",
+             Sprite.status("bb-weaver",
                harness: "codex",
                exec_fn: fn _sprite, _command, _opts -> {:error, "timeout", 255} end
              )

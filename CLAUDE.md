@@ -11,10 +11,17 @@ Also read:
 
 Bitterblossom has two surfaces:
 
-- `conductor/`: Elixir/OTP orchestrator — leases issues, dispatches builders, governs PRs, merges
+- `conductor/`: Elixir/OTP orchestrator — leases issues, dispatches named sprites, governs PRs, merges
 - `cmd/bb/`: Go transport for sprite dispatch, setup, status, logs (being absorbed into Elixir per #621)
 
 The conductor owns workflow judgment and durable run state. `bb` is transitional transport.
+
+## Sprite Names
+
+- **Weaver** (`bb-weaver`) — implements issues, writes code, opens PRs
+- **Thorn** (`bb-thorn`) — watches failing CI and pushes narrow fixes
+- **Fern** (`bb-fern`) — reviews PRs, polishes diffs, adds `lgtm` when warranted
+- **Muse** (`bb-muse`) — reflects on runs and synthesizes learning for the factory
 
 ## Architecture
 
@@ -59,12 +66,12 @@ go build -o bin/bb ./cmd/bb
 The conductor owns five authorities. Nothing else may perform these:
 
 1. **Lease** — claim an issue so no other run touches it
-2. **Dispatch** — send a builder to a sprite with a prompt and a worktree
+2. **Dispatch** — send Weaver to a sprite with a prompt and a worktree
 3. **Govern** — independently verify: CI green? Reviews clean? Policy satisfied?
 4. **Merge** — squash-merge when governance passes
 5. **Learn** — post-run retro analysis, backlog synthesis, pattern detection
 
-The entity doing the work cannot judge the work. Builders don't know the merge policy.
+The entity doing the work cannot judge the work. Weaver doesn't know the merge policy.
 
 ## Gotchas (earned by pain, 2026-03-14)
 
@@ -72,7 +79,7 @@ The entity doing the work cannot judge the work. Builders don't know the merge p
 - **Closing a PR doesn't stop the conductor.** The conductor doesn't monitor PR state — it only checks CI status. To stop a merge, use the `hold` label on the issue (#637). Closing the PR is not communication.
 - **`statusCheckRollup` contains null entries.** External review tools (CodeRabbit) report checks with null conclusions. `evaluate_checks/1` filters these. If you add new CI check logic, handle nulls.
 - **Stale ralph.sh blocks dispatch.** When runs complete, ralph.sh processes may linger on the sprite. The next dispatch detects them and refuses. The conductor retries every 60s until they die. #621 eliminates this entirely.
-- **Issue boundaries must not contradict AC.** If you write "Don't modify X" but AC requires X to compile, the builder will modify X. Ensure AC is achievable within stated boundaries.
+- **Issue boundaries must not contradict AC.** If you write "Don't modify X" but AC requires X to compile, Weaver will modify X. Ensure AC is achievable within stated boundaries.
 
 ## Coding Standards
 

@@ -281,19 +281,17 @@ defmodule Conductor.CLI do
 
     if Process.whereis(Conductor.Fixer) do
       fixer = Conductor.Fixer.status()
-      IO.puts("  fixer: #{fixer.fixer_sprite} — #{map_size(fixer.in_flight)} in-flight")
+      IO.puts("  thorn: #{fixer.fixer_sprite} — #{map_size(fixer.in_flight)} in-flight")
     else
-      IO.puts("  fixer: not running")
+      IO.puts("  thorn: not running")
     end
 
     if Process.whereis(Conductor.Polisher) do
       polisher = Conductor.Polisher.status()
 
-      IO.puts(
-        "  polisher: #{polisher.polisher_sprite} — #{map_size(polisher.in_flight)} in-flight"
-      )
+      IO.puts("  fern: #{polisher.polisher_sprite} — #{map_size(polisher.in_flight)} in-flight")
     else
-      IO.puts("  polisher: not running")
+      IO.puts("  fern: not running")
     end
 
     IO.puts("\n=== Recent Runs ===")

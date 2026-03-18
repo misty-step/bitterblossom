@@ -176,15 +176,20 @@ defmodule Conductor.PolisherTest do
          ]}
       )
 
-      {:ok, _pid} =
-        Polisher.start_link(
-          repo: "test/repo",
-          polisher_sprite: "bb-polisher",
-          poll_ms: 50
-        )
+      log =
+        capture_log(fn ->
+          {:ok, _pid} =
+            Polisher.start_link(
+              repo: "test/repo",
+              polisher_sprite: "bb-fern",
+              poll_ms: 50
+            )
 
-      assert_receive {:dispatched, "bb-polisher", prompt}, 2_000
-      assert prompt =~ "review"
+          assert_receive {:dispatched, "bb-fern", prompt}, 2_000
+          assert prompt =~ "review"
+        end)
+
+      assert log =~ "[fern] PR #42 is green, dispatching Fern"
     end
 
     test "conductor-tracked PR gets lgtm authority in prompt" do
@@ -217,11 +222,11 @@ defmodule Conductor.PolisherTest do
       {:ok, _pid} =
         Polisher.start_link(
           repo: "test/repo",
-          polisher_sprite: "bb-polisher",
+          polisher_sprite: "bb-fern",
           poll_ms: 50
         )
 
-      assert_receive {:dispatched, "bb-polisher", prompt}, 2_000
+      assert_receive {:dispatched, "bb-fern", prompt}, 2_000
       assert prompt =~ "gh pr edit --add-label lgtm"
       refute prompt =~ "Do NOT add the `lgtm` label"
     end
@@ -245,11 +250,11 @@ defmodule Conductor.PolisherTest do
       {:ok, _pid} =
         Polisher.start_link(
           repo: "test/repo",
-          polisher_sprite: "bb-polisher",
+          polisher_sprite: "bb-fern",
           poll_ms: 50
         )
 
-      assert_receive {:dispatched, "bb-polisher", prompt}, 2_000
+      assert_receive {:dispatched, "bb-fern", prompt}, 2_000
       # Non-conductor PRs get review but NOT lgtm labeling authority
       assert prompt =~ "Do NOT add the `lgtm` label"
       refute prompt =~ "gh pr edit --add-label lgtm"
@@ -274,7 +279,7 @@ defmodule Conductor.PolisherTest do
       {:ok, _pid} =
         Polisher.start_link(
           repo: "test/repo",
-          polisher_sprite: "bb-polisher",
+          polisher_sprite: "bb-fern",
           poll_ms: 50
         )
 
@@ -300,7 +305,7 @@ defmodule Conductor.PolisherTest do
       {:ok, _pid} =
         Polisher.start_link(
           repo: "test/repo",
-          polisher_sprite: "bb-polisher",
+          polisher_sprite: "bb-fern",
           poll_ms: 50
         )
 
@@ -326,7 +331,7 @@ defmodule Conductor.PolisherTest do
       {:ok, _pid} =
         Polisher.start_link(
           repo: "test/repo",
-          polisher_sprite: "bb-polisher",
+          polisher_sprite: "bb-fern",
           poll_ms: 50
         )
 
@@ -354,12 +359,12 @@ defmodule Conductor.PolisherTest do
       {:ok, _pid} =
         Polisher.start_link(
           repo: "test/repo",
-          polisher_sprite: "bb-polisher",
+          polisher_sprite: "bb-fern",
           poll_ms: 50
         )
 
-      assert_receive {:dispatched, "bb-polisher", _}, 2_000
-      refute_receive {:dispatched, "bb-polisher", _}, 300
+      assert_receive {:dispatched, "bb-fern", _}, 2_000
+      refute_receive {:dispatched, "bb-fern", _}, 300
     end
   end
 
@@ -368,13 +373,13 @@ defmodule Conductor.PolisherTest do
       {:ok, _pid} =
         Polisher.start_link(
           repo: "test/repo",
-          polisher_sprite: "bb-polisher",
+          polisher_sprite: "bb-fern",
           poll_ms: 60_000
         )
 
       status = Polisher.status()
       assert status.repo == "test/repo"
-      assert status.polisher_sprite == "bb-polisher"
+      assert status.polisher_sprite == "bb-fern"
       assert is_map(status.in_flight)
     end
   end

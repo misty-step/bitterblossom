@@ -6,11 +6,11 @@ defmodule Conductor.CLIFleetTest do
   alias Conductor.{CLI, Store}
 
   defmodule MockWorker do
-    def status("bb-builder-1", _opts),
+    def status("bb-weaver-1", _opts),
       do:
         {:ok,
          %{
-           sprite: "bb-builder-1",
+           sprite: "bb-weaver-1",
            reachable: true,
            harness_ready: true,
            gh_authenticated: true,
@@ -18,13 +18,13 @@ defmodule Conductor.CLIFleetTest do
            healthy: true
          }}
 
-    def status("bb-builder-2", _opts), do: {:error, "connection refused"}
+    def status("bb-weaver-2", _opts), do: {:error, "connection refused"}
 
-    def status("bb-builder-3", _opts),
+    def status("bb-weaver-3", _opts),
       do:
         {:ok,
          %{
-           sprite: "bb-builder-3",
+           sprite: "bb-weaver-3",
            reachable: true,
            harness_ready: true,
            gh_authenticated: false,
@@ -32,11 +32,11 @@ defmodule Conductor.CLIFleetTest do
            healthy: false
          }}
 
-    def status("bb-builder-4", _opts),
+    def status("bb-weaver-4", _opts),
       do:
         {:ok,
          %{
-           sprite: "bb-builder-4",
+           sprite: "bb-weaver-4",
            reachable: true,
            harness_ready: true,
            gh_authenticated: true,
@@ -46,7 +46,7 @@ defmodule Conductor.CLIFleetTest do
   end
 
   defmodule ProbeOnlyWorker do
-    def probe("bb-builder-1", _opts), do: {:ok, %{sprite: "bb-builder-1", reachable: true}}
+    def probe("bb-weaver-1", _opts), do: {:ok, %{sprite: "bb-weaver-1", reachable: true}}
     def probe(_worker, _opts), do: {:error, "connection refused"}
   end
 
@@ -69,20 +69,20 @@ defmodule Conductor.CLIFleetTest do
       repo = "test/repo"
 
       [[sprite]]
-      name = "bb-builder-1"
+      name = "bb-weaver-1"
       role = "builder"
       capability_tags = ["elixir"]
 
       [[sprite]]
-      name = "bb-builder-2"
+      name = "bb-weaver-2"
       role = "builder"
 
       [[sprite]]
-      name = "bb-builder-3"
+      name = "bb-weaver-3"
       role = "builder"
 
       [[sprite]]
-      name = "bb-builder-4"
+      name = "bb-weaver-4"
       role = "builder"
       """
     )
@@ -101,7 +101,7 @@ defmodule Conductor.CLIFleetTest do
         repo: "test/repo",
         issue_number: 622,
         issue_title: "fleet status",
-        builder_sprite: "bb-builder-1"
+        builder_sprite: "bb-weaver-1"
       })
 
     Store.update_run(run_id, %{phase: "building"})
@@ -131,19 +131,19 @@ defmodule Conductor.CLIFleetTest do
         CLI.main(["fleet", "--fleet", fleet_path])
       end)
 
-    assert output =~ "bb-builder-1"
+    assert output =~ "bb-weaver-1"
     assert output =~ "healthy"
     assert output =~ "issue #622"
     assert output =~ "tags=elixir"
 
-    assert output =~ "bb-builder-2"
+    assert output =~ "bb-weaver-2"
     assert output =~ "unreachable"
     assert output =~ "idle"
 
-    assert output =~ "bb-builder-3"
+    assert output =~ "bb-weaver-3"
     assert output =~ "needs setup (gh auth missing)"
 
-    assert output =~ "bb-builder-4"
+    assert output =~ "bb-weaver-4"
     assert output =~ "needs setup (git helper missing)"
   end
 
@@ -157,7 +157,7 @@ defmodule Conductor.CLIFleetTest do
           CLI.main(["fleet", "--fleet", fleet_path])
         end)
 
-      assert output =~ "bb-builder-1"
+      assert output =~ "bb-weaver-1"
       assert output =~ "healthy"
     after
       if orig_worker,
