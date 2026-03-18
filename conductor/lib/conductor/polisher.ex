@@ -2,15 +2,9 @@ defmodule Conductor.Polisher do
   @moduledoc """
   Polls for open PRs with green CI (no `lgtm`) and dispatches the polisher sprite.
 
-<<<<<<< HEAD
-  Single-responsibility: detect review-ready open PRs, build a polisher
-  prompt with review context, and dispatch the polisher sprite to address
-  feedback and apply `lgtm` when clean.
-=======
   The polisher sprite does judgment work (address feedback, simplify code, run tests)
   and labels `lgtm` when the PR is genuinely merge-ready. The conductor then verifies
   the label + CI green and merges.
->>>>>>> 75c294f (fix(conductor): case-insensitive lgtm label check in polisher)
   """
 
   use GenServer
