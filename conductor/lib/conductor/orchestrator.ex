@@ -679,7 +679,11 @@ defmodule Conductor.Orchestrator do
             :ok ->
               release_reconciled_lease(repo, run_id, issue_number, pr_number, merged_resolution)
 
-            {:error, _reason} ->
+            {:error, reason} ->
+              Logger.warning(
+                "[reconcile] keeping lease for issue ##{issue_number} after external merge of PR ##{pr_number}; issue closure will retry on the next poll: #{inspect(reason)}"
+              )
+
               :ok
           end
 
@@ -757,8 +761,16 @@ defmodule Conductor.Orchestrator do
                       case code_host_mod().merge(repo, pr_number, []) do
                         :ok ->
                           Logger.info("[merge] PR ##{pr_number} merged successfully")
-                          record_merge(repo, pr_number)
-                          Conductor.SelfUpdate.maybe_reload(repo, pr_number)
+
+                          case record_merge(repo, pr_number) do
+                            :ok ->
+                              Conductor.SelfUpdate.maybe_reload(repo, pr_number)
+
+                            {:error, reason} ->
+                              Logger.warning(
+                                "[merge] PR ##{pr_number} merged but post-merge reconciliation is incomplete: #{inspect(reason)}"
+                              )
+                          end
 
                         {:error, reason} ->
                           if merge_conflict?(reason) do
@@ -852,8 +864,16 @@ defmodule Conductor.Orchestrator do
         case code_host_mod().merge(repo, pr_number, []) do
           :ok ->
             Logger.info("[merge] PR ##{pr_number} merged after rebase")
-            record_merge(repo, pr_number)
-            Conductor.SelfUpdate.maybe_reload(repo, pr_number)
+
+            case record_merge(repo, pr_number) do
+              :ok ->
+                Conductor.SelfUpdate.maybe_reload(repo, pr_number)
+
+              {:error, reason} ->
+                Logger.warning(
+                  "[merge] PR ##{pr_number} merged after rebase but post-merge reconciliation is incomplete: #{inspect(reason)}"
+                )
+            end
 
           {:error, retry_reason} ->
             if merge_conflict?(retry_reason) do
@@ -1253,12 +1273,19 @@ defmodule Conductor.Orchestrator do
             Store.terminate_run(run_id, "merged", "merged", repo, issue_number)
             Conductor.Retro.analyze(run_id)
 
-          {:error, _reason} ->
             :ok
+
+          {:error, reason} ->
+            Logger.warning(
+              "[merge] leaving run #{run_id} and lease for issue ##{issue_number} unchanged until issue closure succeeds"
+            )
+
+            {:error, reason}
         end
 
       _ ->
         Logger.debug("[merge] no run found for PR ##{pr_number}, skipping store update")
+        :ok
     end
   end
 

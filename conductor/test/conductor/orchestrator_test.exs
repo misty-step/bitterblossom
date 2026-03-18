@@ -1647,14 +1647,20 @@ defmodule Conductor.OrchestratorTest do
         [%{"number" => 203, "headRefName" => "factory/703-123"}]
       )
 
-      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
+      log =
+        capture_log(fn ->
+          :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
-      eventually(fn ->
-        assert {"test/repo", 703} in MockState.get(:close_issue_calls, [])
-        assert Store.leased?("test/repo", 703)
-        {:ok, run} = Store.get_run(run_id)
-        assert run["phase"] == "pr_opened"
-      end)
+          eventually(fn ->
+            assert {"test/repo", 703} in MockState.get(:close_issue_calls, [])
+            assert Store.leased?("test/repo", 703)
+            {:ok, run} = Store.get_run(run_id)
+            assert run["phase"] == "pr_opened"
+          end)
+        end)
+
+      assert log =~ "post-merge reconciliation is incomplete"
+      assert log =~ "leaving run #{run_id} and lease for issue #703 unchanged"
     end
 
     test "record_merge clears ci wait metadata after merge" do
@@ -2161,15 +2167,21 @@ defmodule Conductor.OrchestratorTest do
       MockState.put({:pr_state, 306}, {:ok, "MERGED"})
       MockState.put({:close_issue_result, "test/repo", 806}, {:error, :github_down})
 
-      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
+      log =
+        capture_log(fn ->
+          :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
-      eventually(fn ->
-        assert {"test/repo", 806} in MockState.get(:close_issue_calls, [])
-        assert Store.leased?("test/repo", 806)
-        events = Store.list_events(run_id)
-        types = Enum.map(events, & &1["event_type"])
-        refute "external_merge" in types
-      end)
+          eventually(fn ->
+            assert {"test/repo", 806} in MockState.get(:close_issue_calls, [])
+            assert Store.leased?("test/repo", 806)
+            events = Store.list_events(run_id)
+            types = Enum.map(events, & &1["event_type"])
+            refute "external_merge" in types
+          end)
+        end)
+
+      assert log =~ "keeping lease for issue #806 after external merge of PR #306"
+      assert log =~ "issue closure will retry on the next poll"
     end
 
     test "releases lease when PR closed without merge" do
