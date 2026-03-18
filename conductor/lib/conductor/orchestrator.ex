@@ -109,6 +109,11 @@ defmodule Conductor.Orchestrator do
 
   @impl true
   def init(opts) do
+    # Required for terminate/2 to fire during supervisor shutdown.
+    # Without this, the VM kills the process without calling terminate,
+    # and sprites retain merge-capable credentials.
+    Process.flag(:trap_exit, true)
+
     workers = normalize_workers(Keyword.get(opts, :workers, []))
 
     {:ok,
@@ -173,6 +178,12 @@ defmodule Conductor.Orchestrator do
   @impl true
   def handle_call(:fleet_status, _from, state) do
     {:reply, ordered_workers(state), state}
+  end
+
+  @impl true
+  def terminate(_reason, state) do
+    kill_fleet_agents(state)
+    :ok
   end
 
   @impl true
@@ -1364,4 +1375,28 @@ defmodule Conductor.Orchestrator do
   defp schedule_poll(delay) do
     Process.send_after(self(), :poll, delay)
   end
+
+  # On shutdown, kill all agent processes and revoke gh auth on every fleet sprite.
+  # Ensures sprites that outlive the conductor cannot exercise merge authority.
+  # Best-effort: failures are logged but don't block shutdown of remaining sprites.
+  # Uses state.worker_order (not Application env) so this works on all startup paths.
+  defp kill_fleet_agents(%{worker_order: workers}) when is_list(workers) do
+    Enum.each(workers, fn name ->
+      try do
+        worker_mod().kill_and_revoke(name)
+      rescue
+        e ->
+          Logger.warning(
+            "[shutdown] failed to kill/revoke sprite #{name}: #{Exception.message(e)}"
+          )
+      catch
+        kind, reason ->
+          Logger.warning(
+            "[shutdown] failed to kill/revoke sprite #{name}: #{kind} #{inspect(reason)}"
+          )
+      end
+    end)
+  end
+
+  defp kill_fleet_agents(_state), do: :ok
 end

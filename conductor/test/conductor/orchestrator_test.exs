@@ -302,6 +302,22 @@ defmodule Conductor.OrchestratorTest do
     %{orch_pid: orch_pid}
   end
 
+  describe "terminate/2 shutdown behavior" do
+    test "orchestrator traps exits for clean shutdown" do
+      # trap_exit must be true for terminate/2 to fire during supervisor shutdown
+      info = Process.info(Process.whereis(Orchestrator), :trap_exit)
+      assert {:trap_exit, true} = info
+    end
+
+    test "stopping orchestrator with workers calls kill_fleet_agents" do
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
+      # GenServer.stop triggers terminate/2 which calls kill_fleet_agents
+      # MockWorker doesn't implement kill_and_revoke, so it logs a warning (best-effort)
+      # The key assertion: this doesn't crash
+      safe_stop(Process.whereis(Orchestrator))
+    end
+  end
+
   describe "configure_polling/1" do
     test "returns error when workers list is empty" do
       assert {:error, :no_workers} =

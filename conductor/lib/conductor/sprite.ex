@@ -109,6 +109,34 @@ defmodule Conductor.Sprite do
     end
   end
 
+  @doc """
+  Kill agent processes and revoke GitHub auth on a sprite.
+
+  Used during conductor shutdown to ensure surviving sprite processes
+  cannot exercise merge authority. Defense in depth for governance
+  invariant: the entity doing the work cannot judge the work.
+
+  Best-effort: logs failures but always returns :ok so shutdown proceeds.
+  Uses 5s timeouts to stay within GenServer terminate budget.
+  """
+  @spec kill_and_revoke(binary(), keyword()) :: :ok
+  def kill_and_revoke(sprite, opts \\ []) do
+    require Logger
+    exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
+
+    case exec_fn.(sprite, kill_agents_cmd(), timeout: 5_000) do
+      {:ok, _} -> :ok
+      {:error, msg, _} -> Logger.warning("[shutdown] kill agents on #{sprite}: #{msg}")
+    end
+
+    case exec_fn.(sprite, "gh auth logout --hostname github.com", timeout: 5_000) do
+      {:ok, _} -> :ok
+      {:error, msg, _} -> Logger.warning("[shutdown] gh auth logout on #{sprite}: #{msg}")
+    end
+
+    :ok
+  end
+
   @spec status(binary(), keyword()) :: {:ok, map()} | {:error, term()}
   def status(sprite, opts \\ []) do
     exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
