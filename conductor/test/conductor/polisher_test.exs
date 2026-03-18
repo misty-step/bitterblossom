@@ -308,6 +308,32 @@ defmodule Conductor.PolisherTest do
       refute_receive {:dispatched, _, _}, 300
     end
 
+    test "skips PRs with LGTM label (case-insensitive match)" do
+      MockState.put(
+        :factory_prs,
+        {:ok,
+         [
+           %{
+             "number" => 42,
+             "headRefName" => "factory/99-12345",
+             "title" => "feat: implement feature",
+             "body" => "Closes #99",
+             "labels" => [%{"name" => "LGTM"}],
+             "statusCheckRollup" => @green_checks
+           }
+         ]}
+      )
+
+      {:ok, _pid} =
+        Polisher.start_link(
+          repo: "test/repo",
+          polisher_sprite: "bb-polisher",
+          poll_ms: 50
+        )
+
+      refute_receive {:dispatched, _, _}, 300
+    end
+
     test "does not dispatch when polisher already working on a PR" do
       MockState.put(
         :open_prs,

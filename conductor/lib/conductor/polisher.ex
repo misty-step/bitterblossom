@@ -2,9 +2,9 @@ defmodule Conductor.Polisher do
   @moduledoc """
   Polls for open PRs with green CI (no `lgtm`) and dispatches the polisher sprite.
 
-  Single-responsibility: detect review-ready open PRs, build a polisher
-  prompt with review context, and dispatch the polisher sprite to address
-  feedback and apply `lgtm` when clean.
+  The polisher sprite does judgment work (address feedback, simplify code, run tests)
+  and labels `lgtm` when the PR is genuinely merge-ready. The conductor then verifies
+  the label + CI green and merges.
   """
 
   use GenServer
@@ -109,7 +109,7 @@ defmodule Conductor.Polisher do
 
   defp needs_polish?(pr, _state) do
     labels = pr["labels"] || []
-    label_names = Enum.map(labels, & &1["name"])
+    label_names = Enum.map(labels, &String.downcase(&1["name"] || ""))
     checks = pr["statusCheckRollup"] |> List.wrap() |> Enum.filter(&is_map/1)
 
     "lgtm" not in label_names and Conductor.GitHub.evaluate_checks(checks)
@@ -163,7 +163,6 @@ defmodule Conductor.Polisher do
 
     if pr_number do
       Logger.info("[polisher] completed work on PR ##{pr_number}")
-
       Store.record_event("polisher", "polisher_complete", %{pr_number: pr_number})
     end
 
