@@ -53,6 +53,7 @@ defmodule Conductor.PolisherTest do
 
     def pr_ci_failure_logs(_repo, _pr_number), do: {:ok, ""}
     def add_label(_repo, _pr_number, _label), do: :ok
+    def close_issue(_repo, _issue_number), do: :ok
     def find_open_pr(_repo, _issue_number, _expected_branch \\ nil), do: {:error, :not_found}
     def pr_state(_repo, _pr_number), do: {:ok, "OPEN"}
 
@@ -291,6 +292,32 @@ defmodule Conductor.PolisherTest do
              "title" => "feat: implement feature",
              "body" => "Closes #99",
              "labels" => [%{"name" => "lgtm"}],
+             "statusCheckRollup" => @green_checks
+           }
+         ]}
+      )
+
+      {:ok, _pid} =
+        Polisher.start_link(
+          repo: "test/repo",
+          polisher_sprite: "bb-polisher",
+          poll_ms: 50
+        )
+
+      refute_receive {:dispatched, _, _}, 300
+    end
+
+    test "skips PRs with LGTM label (case-insensitive match)" do
+      MockState.put(
+        :factory_prs,
+        {:ok,
+         [
+           %{
+             "number" => 42,
+             "headRefName" => "factory/99-12345",
+             "title" => "feat: implement feature",
+             "body" => "Closes #99",
+             "labels" => [%{"name" => "LGTM"}],
              "statusCheckRollup" => @green_checks
            }
          ]}

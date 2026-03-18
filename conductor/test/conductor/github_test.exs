@@ -728,6 +728,135 @@ defmodule Conductor.GitHubTest do
       )
     end
 
+    test "eligible_issues excludes open issues whose factory PR is already merged" do
+      with_fake_gh(
+        """
+        printf '%s\\n' "$@" >> "$GH_ARGS_PATH"
+
+        if [[ "$*" == issue\\ list* ]]; then
+          cat <<'JSON'
+        [
+          {
+            "number": 10,
+            "title": "already merged",
+            "body": "## Problem\\nx\\n\\n## Acceptance Criteria\\n- [ ] [test] y",
+            "url": "https://example.test/issues/10",
+            "labels": [{"name": "autopilot"}]
+          },
+          {
+            "number": 11,
+            "title": "still eligible",
+            "body": "## Problem\\nx\\n\\n## Acceptance Criteria\\n- [ ] [test] y",
+            "url": "https://example.test/issues/11",
+            "labels": [{"name": "autopilot"}]
+          }
+        ]
+        JSON
+        elif [[ "$*" == *"pulls?state=closed&per_page=100&page=1"* ]]; then
+          cat <<'JSON'
+        [
+          {
+            "merged_at": "2026-03-18T14:00:00Z",
+            "head": {"ref": "factory/10-1773840330"}
+          },
+          {
+            "merged_at": "2026-03-18T14:00:01Z",
+            "head": {"ref": "factory/999-1773840331"}
+          }
+        ]
+        JSON
+        elif [[ "$*" == *"pulls?state=closed&per_page=100&page=2"* ]]; then
+          echo '[]'
+        else
+          echo '[]'
+        fi
+        """,
+        fn _tmp_dir, args_path ->
+          issues =
+            GitHub.eligible_issues(
+              "misty-step/bitterblossom",
+              label: "autopilot",
+              limit: 25
+            )
+
+          assert Enum.map(issues, & &1.number) == [11]
+
+          args = File.read!(args_path)
+          assert String.contains?(args, "issue\nlist\n")
+
+          assert String.contains?(
+                   args,
+                   "api\nrepos/misty-step/bitterblossom/pulls?state=closed&per_page=100&page=1\n"
+                 )
+
+          refute String.contains?(
+                   args,
+                   "api\nrepos/misty-step/bitterblossom/pulls?state=closed&per_page=100&page=2\n"
+                 )
+        end
+      )
+    end
+
+    test "eligible_issues scans older merged PR pages and stops after all open issues are matched" do
+      with_fake_gh(
+        """
+        printf '%s\\n' "$@" >> "$GH_ARGS_PATH"
+
+        if [[ "$*" == issue\\ list* ]]; then
+          cat <<'JSON'
+        [
+          {
+            "number": 10,
+            "title": "already merged",
+            "body": "## Problem\\nx\\n\\n## Acceptance Criteria\\n- [ ] [test] y",
+            "url": "https://example.test/issues/10",
+            "labels": [{"name": "autopilot"}]
+          }
+        ]
+        JSON
+        elif [[ "$*" == *"pulls?state=closed&per_page=100&page=1"* ]]; then
+          printf '[\n'
+
+          for n in $(seq 1 100); do
+            comma=","
+
+            if (( n == 100 )); then
+              comma=""
+            fi
+
+            printf '{"merged_at":"2026-03-18T13:59:00Z","head":{"ref":"factory/%s-1773840331"}}%s\n' \
+              "$(( 1000 + n ))" "$comma"
+          done
+
+          printf ']\n'
+        elif [[ "$*" == *"pulls?state=closed&per_page=100&page=2"* ]]; then
+          cat <<'JSON'
+        [
+          {
+            "merged_at": "2026-03-18T14:00:00Z",
+            "head": {"ref": "factory/10-1773840330"}
+          }
+        ]
+        JSON
+        elif [[ "$*" == *"pulls?state=closed&per_page=100&page=3"* ]]; then
+          echo 'unexpected page 3' >&2
+          exit 1
+        else
+          echo '[]'
+        fi
+        """,
+        fn _tmp_dir, args_path ->
+          assert GitHub.eligible_issues("misty-step/bitterblossom", label: "autopilot", limit: 25) ==
+                   []
+
+          args = File.read!(args_path)
+          assert String.contains?(args, "page=1")
+          assert String.contains?(args, "page=2")
+          refute String.contains?(args, "page=3")
+        end
+      )
+    end
+
     test "filters pull requests from paginated issue fetches" do
       with_fake_gh(
         """
@@ -862,6 +991,29 @@ defmodule Conductor.GitHubTest do
         "exit 1",
         fn _tmp_dir, _args_path ->
           assert {:error, _} = GitHub.pr_state("owner/repo", 1)
+        end
+      )
+    end
+  end
+
+  describe "close_issue/2" do
+    test "closes the issue via gh" do
+      with_fake_gh(
+        """
+        printf '%s\n' \"$*\" > \"$GH_ARGS_PATH\"
+        """,
+        fn _tmp_dir, args_path ->
+          assert :ok = GitHub.close_issue("owner/repo", 42)
+          assert File.read!(args_path) =~ "issue close 42 --repo owner/repo"
+        end
+      )
+    end
+
+    test "returns an error when gh issue close fails" do
+      with_fake_gh(
+        "exit 1",
+        fn _tmp_dir, _args_path ->
+          assert {:error, _} = GitHub.close_issue("owner/repo", 42)
         end
       )
     end

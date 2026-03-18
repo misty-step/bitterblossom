@@ -55,6 +55,8 @@ defmodule Conductor.RunServerTest do
     def pr_review_comments(_repo, _pr_number), do: {:ok, []}
     def pr_ci_failure_logs(_repo, _pr_number), do: {:ok, ""}
     def add_label(_repo, _pr_number, _label), do: :ok
+    def close_issue(_repo, _issue_number), do: :ok
+    def open_prs(_repo), do: {:ok, []}
 
     def find_open_pr(repo, issue_number, expected_branch \\ nil) do
       result =

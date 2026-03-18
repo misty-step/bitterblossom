@@ -685,17 +685,21 @@ defmodule Conductor.Orchestrator do
         :hold ->
           :ok
 
+        {"external_merge", _reason} = merged_resolution ->
+          case close_issue_after_merge(repo, issue_number, pr_number, "external merge") do
+            :ok ->
+              release_reconciled_lease(repo, run_id, issue_number, pr_number, merged_resolution)
+
+            {:error, reason} ->
+              Logger.warning(
+                "[reconcile] keeping lease for issue ##{issue_number} after external merge of PR ##{pr_number}; issue closure will retry on the next poll: #{inspect(reason)}"
+              )
+
+              :ok
+          end
+
         {event_type, _reason} ->
-          Logger.info(
-            "[reconcile] releasing orphan lease for issue ##{issue_number}: #{event_type}"
-          )
-
-          Store.record_event(run_id, event_type, %{
-            issue_number: issue_number,
-            pr_number: pr_number
-          })
-
-          Store.release_lease(repo, issue_number)
+          release_reconciled_lease(repo, run_id, issue_number, pr_number, {event_type, nil})
       end
     end)
   rescue
@@ -722,6 +726,17 @@ defmodule Conductor.Orchestrator do
   defp find_latest_run(repo, issue_number) do
     Store.list_runs(repo: repo, issue_number: issue_number, limit: 1)
     |> List.first()
+  end
+
+  defp release_reconciled_lease(repo, run_id, issue_number, pr_number, {event_type, _reason}) do
+    Logger.info("[reconcile] releasing orphan lease for issue ##{issue_number}: #{event_type}")
+
+    Store.record_event(run_id, event_type, %{
+      issue_number: issue_number,
+      pr_number: pr_number
+    })
+
+    Store.release_lease(repo, issue_number)
   end
 
   # --- Label-Driven Merge ---
@@ -757,8 +772,16 @@ defmodule Conductor.Orchestrator do
                       case code_host_mod().merge(repo, pr_number, []) do
                         :ok ->
                           Logger.info("[merge] PR ##{pr_number} merged successfully")
-                          record_merge(repo, pr_number)
-                          Conductor.SelfUpdate.maybe_reload(repo, pr_number)
+
+                          case record_merge(repo, pr_number) do
+                            :ok ->
+                              Conductor.SelfUpdate.maybe_reload(repo, pr_number)
+
+                            {:error, reason} ->
+                              Logger.warning(
+                                "[merge] PR ##{pr_number} merged but post-merge reconciliation is incomplete: #{inspect(reason)}"
+                              )
+                          end
 
                         {:error, reason} ->
                           if merge_conflict?(reason) do
@@ -852,8 +875,16 @@ defmodule Conductor.Orchestrator do
         case code_host_mod().merge(repo, pr_number, []) do
           :ok ->
             Logger.info("[merge] PR ##{pr_number} merged after rebase")
-            record_merge(repo, pr_number)
-            Conductor.SelfUpdate.maybe_reload(repo, pr_number)
+
+            case record_merge(repo, pr_number) do
+              :ok ->
+                Conductor.SelfUpdate.maybe_reload(repo, pr_number)
+
+              {:error, reason} ->
+                Logger.warning(
+                  "[merge] PR ##{pr_number} merged after rebase but post-merge reconciliation is incomplete: #{inspect(reason)}"
+                )
+            end
 
           {:error, retry_reason} ->
             if merge_conflict?(retry_reason) do
@@ -1237,18 +1268,35 @@ defmodule Conductor.Orchestrator do
   defp record_merge(repo, pr_number) do
     case Store.find_run_by_pr(repo, pr_number) do
       {:ok, %{"run_id" => run_id, "issue_number" => issue_number}} ->
-        Store.update_run(run_id, %{
-          ci_wait_started_at: nil,
-          ci_last_reported_at: nil,
-          blocked_reason: nil
-        })
+        case close_issue_after_merge(repo, issue_number, pr_number, "merge") do
+          :ok ->
+            Store.update_run(run_id, %{
+              ci_wait_started_at: nil,
+              ci_last_reported_at: nil,
+              blocked_reason: nil
+            })
 
-        Store.record_event(run_id, "merged", %{pr_number: pr_number, merged_by: "orchestrator"})
-        Store.terminate_run(run_id, "merged", "merged", repo, issue_number)
-        Conductor.Retro.analyze(run_id)
+            Store.record_event(run_id, "merged", %{
+              pr_number: pr_number,
+              merged_by: "orchestrator"
+            })
+
+            Store.terminate_run(run_id, "merged", "merged", repo, issue_number)
+            Conductor.Retro.analyze(run_id)
+
+            :ok
+
+          {:error, reason} ->
+            Logger.warning(
+              "[merge] leaving run #{run_id} and lease for issue ##{issue_number} unchanged until issue closure succeeds"
+            )
+
+            {:error, reason}
+        end
 
       _ ->
         Logger.debug("[merge] no run found for PR ##{pr_number}, skipping store update")
+        :ok
     end
   end
 
@@ -1269,6 +1317,20 @@ defmodule Conductor.Orchestrator do
         )
 
         false
+    end
+  end
+
+  defp close_issue_after_merge(repo, issue_number, pr_number, context) do
+    case code_host_mod().close_issue(repo, issue_number) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "[merge] failed to close issue ##{issue_number} after #{context} for PR ##{pr_number}: #{inspect(reason)}"
+        )
+
+        {:error, reason}
     end
   end
 
