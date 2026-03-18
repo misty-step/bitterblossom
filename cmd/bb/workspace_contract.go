@@ -16,8 +16,9 @@ const (
 
 	spritePersonaPath = spriteWorkspaceRoot + "/PERSONA.md"
 
-	workspaceMetadataRelPath   = ".bb/workspace.json"
-	dispatchPromptFileName     = ".dispatch-prompt.md"
+	workspaceMetadataRelPath = ".bb/workspace.json"
+	dispatchPromptFileName   = ".dispatch-prompt.md"
+	// Keep the legacy filename for compatibility with existing sprite log readers.
 	dispatchLogFileName        = "ralph.log"
 	taskCompleteFileName       = "TASK_COMPLETE"
 	legacyTaskCompleteFileName = "TASK_COMPLETE.md"

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -685,6 +686,34 @@ func TestVerifyWorkScriptForUsesDetectedBranch(t *testing.T) {
 	}
 	if strings.Contains(script, "origin/main") {
 		t.Fatalf("verifyWorkScriptFor() should not contain hardcoded origin/main: %q", script)
+	}
+}
+
+func TestDispatchAgentCommandQuotesInputsAndPreservesStreamJSON(t *testing.T) {
+	t.Parallel()
+
+	workspace := `/tmp/run 123; touch /tmp/pwned`
+	promptPath := `/tmp/prompt "quoted".md`
+	logPath := `/tmp/dispatch log.jsonl`
+
+	script := dispatchAgentCommand(workspace, promptPath, logPath)
+
+	for _, want := range []string{
+		`export WORKSPACE="/tmp/run 123; touch /tmp/pwned"`,
+		`export PROMPT_PATH="/tmp/prompt \"quoted\".md"`,
+		`export LOG_PATH="/tmp/dispatch log.jsonl"`,
+		fmt.Sprintf(`export RUNTIME_ENV=%q`, spriteRuntimeEnvPath),
+		`if [ -f "$RUNTIME_ENV" ]; then`,
+		`. "$RUNTIME_ENV"`,
+		fmt.Sprintf(`export ANTHROPIC_MODEL=%q`, spriteModel),
+		fmt.Sprintf(`export ANTHROPIC_DEFAULT_SONNET_MODEL=%q`, spriteModel),
+		fmt.Sprintf(`export CLAUDE_CODE_SUBAGENT_MODEL=%q`, spriteModel),
+		fmt.Sprintf(`claude -p --dangerously-skip-permissions --output-format stream-json --model %q --verbose`, spriteModel),
+		`> >(tee -a "$LOG_PATH") 2> >(tee -a "$LOG_PATH" >&2)`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("dispatchAgentCommand() = %q, want to contain %q", script, want)
+		}
 	}
 }
 

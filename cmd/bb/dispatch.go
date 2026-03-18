@@ -160,7 +160,7 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverrid
 		return fmt.Errorf("upload prompt: %w", err)
 	}
 
-	// 6. Run the agent directly in the workspace.
+	// 8. Run the agent directly in the workspace.
 	logPath := workspaceDispatchLogPath(workspace)
 	_, _ = fmt.Fprintf(os.Stderr, "starting agent dispatch (%s timeout, harness=claude)...\n", timeout)
 	agentCommand := dispatchAgentCommand(workspace, promptPath, logPath)
@@ -277,12 +277,7 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverrid
 			_, _ = fmt.Fprintf(os.Stderr, "\n=== task completed: TASK_COMPLETE signal found ===\n")
 		} else if exitErr, ok := agentErr.(*sprites.ExitError); ok {
 			code := exitErr.ExitCode()
-			switch code {
-			case 0:
-				// fall through to optional PR check polling
-			default:
-				return &exitError{Code: code, Err: fmt.Errorf("agent exited %d", code)}
-			}
+			return &exitError{Code: code, Err: fmt.Errorf("agent exited %d", code)}
 		} else {
 			return fmt.Errorf("agent failed: %w", agentErr)
 		}
@@ -339,7 +334,7 @@ export ANTHROPIC_MODEL=%q
 export ANTHROPIC_DEFAULT_SONNET_MODEL=%q
 export CLAUDE_CODE_SUBAGENT_MODEL=%q
 : > "$LOG_PATH"
-claude -p --dangerously-skip-permissions --model %q --verbose < "$PROMPT_PATH" > >(tee -a "$LOG_PATH") 2> >(tee -a "$LOG_PATH" >&2)
+claude -p --dangerously-skip-permissions --output-format stream-json --model %q --verbose < "$PROMPT_PATH" > >(tee -a "$LOG_PATH") 2> >(tee -a "$LOG_PATH" >&2)
 `,
 		workspace,
 		promptPath,

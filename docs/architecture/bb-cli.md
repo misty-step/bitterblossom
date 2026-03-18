@@ -18,7 +18,7 @@ flowchart TD
     Root["bb"] --> Setup["setup\nbootstrap sprite"]
     Root --> Dispatch["dispatch\nrun agent command"]
     Root --> Status["status\nshow fleet or sprite truth"]
-    Root --> Logs["logs\nstream remote ralph.log"]
+    Root --> Logs["logs\nstream remote dispatch log"]
     Root --> Kill["kill\nterminate active agent"]
 ```
 
