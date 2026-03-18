@@ -34,6 +34,8 @@ defmodule Conductor.Prompt do
     You are the builder. Implement the issue and deliver a mergeable PR.
     #{if feedback, do: revision_section(feedback), else: initial_section(branch)}
 
+    #{governance_restrictions()}
+
     ## Result Artifact
 
     When done, write JSON to `#{artifact_path}`:
@@ -84,8 +86,6 @@ defmodule Conductor.Prompt do
     ### Phase 3: Handoff
     When CI is green and reviews are addressed, write your result artifact.
     If blocked (cannot resolve feedback, need human input), write artifact with status "blocked".
-
-    #{governance_restrictions()}
     """
   end
 

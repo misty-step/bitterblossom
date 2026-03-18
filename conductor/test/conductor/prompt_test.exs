@@ -207,6 +207,22 @@ defmodule Conductor.PromptTest do
     end
   end
 
+  describe "governance restrictions in builder revision prompt" do
+    test "prohibits gh pr merge even with feedback" do
+      prompt =
+        Prompt.build_builder_prompt(
+          @issue,
+          "run-99-rev",
+          "factory/99-rev",
+          "/tmp/result.json",
+          feedback: "Fix the tests."
+        )
+
+      assert prompt =~ "gh pr merge"
+      assert prompt =~ "MUST NOT"
+    end
+  end
+
   describe "governance restrictions in fixer prompt" do
     test "prohibits gh pr merge" do
       pr = %{"number" => 10, "title" => "Fix CI", "headRefName" => "factory/10-fix"}

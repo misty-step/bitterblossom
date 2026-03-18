@@ -181,8 +181,8 @@ defmodule Conductor.Orchestrator do
   end
 
   @impl true
-  def terminate(_reason, _state) do
-    kill_fleet_agents()
+  def terminate(_reason, state) do
+    kill_fleet_agents(state)
     :ok
   end
 
@@ -1317,12 +1317,9 @@ defmodule Conductor.Orchestrator do
   # On shutdown, kill all agent processes and revoke gh auth on every fleet sprite.
   # Ensures sprites that outlive the conductor cannot exercise merge authority.
   # Best-effort: failures are logged but don't block shutdown of remaining sprites.
-  defp kill_fleet_agents do
-    sprites = Application.get_env(:conductor, :fleet_sprites, [])
-
-    Enum.each(sprites, fn sprite ->
-      name = if is_map(sprite), do: sprite.name, else: to_string(sprite)
-
+  # Uses state.worker_order (not Application env) so this works on all startup paths.
+  defp kill_fleet_agents(%{worker_order: workers}) when is_list(workers) do
+    Enum.each(workers, fn name ->
       try do
         worker_mod().kill_and_revoke(name)
       rescue
@@ -1338,4 +1335,6 @@ defmodule Conductor.Orchestrator do
       end
     end)
   end
+
+  defp kill_fleet_agents(_state), do: :ok
 end
