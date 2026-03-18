@@ -25,9 +25,8 @@ State lives locally in:
 - `.bb/conductor.db`
 - `.bb/events.jsonl`
 
-Remote run artifacts live on the worker sprite under:
+Remote review artifacts live on the worker sprite under:
 
-- `${WORKSPACE}/.bb/conductor/<run_id>/builder-result.json`
 - `${WORKSPACE}/.bb/conductor/<run_id>/review-<sprite>.json`
 
 Before builder or reviewer dispatch, the conductor probes sprite readiness with

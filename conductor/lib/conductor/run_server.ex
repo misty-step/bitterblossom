@@ -148,7 +148,6 @@ defmodule Conductor.RunServer do
         state.issue,
         state.run_id,
         state.branch,
-        nil,
         pr_number: state.pr_number,
         repo_context: read_repo_context()
       )

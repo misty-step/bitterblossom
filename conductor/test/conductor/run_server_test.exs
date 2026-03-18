@@ -33,10 +33,6 @@ defmodule Conductor.RunServerTest do
       MockState.get({:dispatch_result, sprite}, {:ok, ""})
     end
 
-    def read_artifact(_sprite, _path, _opts) do
-      MockState.get(:artifact, {:error, :not_found})
-    end
-
     def cleanup(_sprite, _repo, _run_id), do: :ok
     def kill(_sprite), do: :ok
   end
@@ -87,10 +83,6 @@ defmodule Conductor.RunServerTest do
     def adopt_branch(_sprite, repo, _run_id, branch) do
       remember_branch(repo, branch)
       MockState.get(:workspace_result, {:ok, "/tmp/test-worktree"})
-    end
-
-    def artifact_path(repo, run_id) do
-      Conductor.Workspace.artifact_path(repo, run_id)
     end
 
     defp remember_branch(repo, branch) do
@@ -146,7 +138,6 @@ defmodule Conductor.RunServerTest do
       {:ok, ""}
     end
 
-    def read_artifact(_sprite, _path, _opts), do: {:error, :not_found}
     def cleanup(_sprite, _repo, _run_id), do: :ok
     def kill(_sprite), do: :ok
   end
@@ -162,7 +153,6 @@ defmodule Conductor.RunServerTest do
       raise "simulated crash"
     end
 
-    def read_artifact(_sprite, _path, _opts), do: {:error, :not_found}
     def cleanup(_sprite, _repo, _run_id), do: :ok
   end
 
@@ -300,6 +290,14 @@ defmodule Conductor.RunServerTest do
       assert "workspace_cleaned" in types
     end
 
+    test "stores the detected PR URL for downstream governance" do
+      {:ok, pid} = start_run_server()
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["pr_url"] == "https://github.com/test/repo/pull/123"
+    end
+
     test "lease is held after pr_opened — released at merge by orchestrator" do
       {:ok, pid} = start_run_server()
       wait_for_exit(pid)
@@ -435,6 +433,15 @@ defmodule Conductor.RunServerTest do
       run = find_run(42)
       assert run["phase"] == "failed"
       assert "pr_not_found" in event_types(run["run_id"])
+    end
+
+    test "releases the lease when builder exits without opening a PR" do
+      MockState.put({:dispatch_result, "test-sprite"}, {:ok, ""})
+
+      {:ok, pid} = start_run_server()
+      wait_for_exit(pid)
+
+      refute Store.leased?("test/repo", 42)
     end
   end
 

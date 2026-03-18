@@ -100,7 +100,7 @@ defmodule Conductor.SecurityTest do
         url: "https://example.com/1"
       }
 
-      prompt = Prompt.build_builder_prompt(issue, "run-1", "branch-1", "/tmp/artifact.json")
+      prompt = Prompt.build_builder_prompt(issue, "run-1", "branch-1")
 
       # The issue body's backticks should be neutralized (separated with spaces)
       # The prompt itself may contain ``` for JSON examples — that's fine,
@@ -117,7 +117,7 @@ defmodule Conductor.SecurityTest do
         url: "https://example.com/1"
       }
 
-      prompt = Prompt.build_builder_prompt(issue, "run-1", "branch-1", "/tmp/artifact.json")
+      prompt = Prompt.build_builder_prompt(issue, "run-1", "branch-1")
 
       # The nested fence attempt should be neutralized
       refute String.contains?(prompt, "```untrusted-data")

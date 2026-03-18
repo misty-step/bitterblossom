@@ -145,7 +145,7 @@ from the control plane's own observables, not a harness-specific sidecar file.
 For build runs, the durable success signal is an open `factory/<issue>-*` PR found
 via `Conductor.CodeHost.find_open_pr/2` after dispatch exits.
 
-**Prompt contract must stay harness-agnostic**: `Conductor.Prompt.build_builder_prompt/5`
+**Prompt contract must stay harness-agnostic**: `Conductor.Prompt.build_builder_prompt/4`
 must not tell agents to emit `builder-result.json`. Codex ignores that convention,
 and Claude Code does not need it when the conductor can detect the PR directly.
 

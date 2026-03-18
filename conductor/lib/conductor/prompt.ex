@@ -8,8 +8,8 @@ defmodule Conductor.Prompt do
 
   alias Conductor.Issue
 
-  @spec build_builder_prompt(Issue.t(), binary(), binary(), binary() | nil, keyword()) :: binary()
-  def build_builder_prompt(%Issue{} = issue, run_id, branch, _artifact_path, opts \\ []) do
+  @spec build_builder_prompt(Issue.t(), binary(), binary(), keyword()) :: binary()
+  def build_builder_prompt(%Issue{} = issue, run_id, branch, opts \\ []) do
     pr_number = Keyword.get(opts, :pr_number)
     feedback = Keyword.get(opts, :feedback)
     repo_context = Keyword.get(opts, :repo_context)

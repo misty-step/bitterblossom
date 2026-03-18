@@ -20,10 +20,6 @@ defmodule Conductor.Worker do
   @callback dispatch(worker :: binary(), prompt :: binary(), repo :: binary(), opts :: keyword()) ::
               {:ok, binary()} | {:error, binary(), integer()}
 
-  @doc "Read and decode a JSON artifact file from the worker filesystem."
-  @callback read_artifact(worker :: binary(), path :: binary(), opts :: keyword()) ::
-              {:ok, map()} | {:error, term()}
-
   @doc "Remove the run worktree from the worker filesystem."
   @callback cleanup(worker :: binary(), repo :: binary(), run_id :: binary()) ::
               :ok | {:error, term()}

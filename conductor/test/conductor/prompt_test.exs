@@ -10,14 +10,13 @@ defmodule Conductor.PromptTest do
     url: "https://github.com/org/repo/issues/99"
   }
 
-  describe "build_builder_prompt/5 initial (no feedback)" do
+  describe "build_builder_prompt/4 initial (no feedback)" do
     setup do
       prompt =
         Prompt.build_builder_prompt(
           @issue,
           "run-99-123",
-          "factory/99-123",
-          "/home/sprite/workspace/repo/.bb/conductor/run-99-123/builder-result.json"
+          "factory/99-123"
         )
 
       %{prompt: prompt}
@@ -65,14 +64,13 @@ defmodule Conductor.PromptTest do
     end
   end
 
-  describe "build_builder_prompt/5 with existing PR" do
+  describe "build_builder_prompt/4 with existing PR" do
     test "includes existing PR number" do
       prompt =
         Prompt.build_builder_prompt(
           @issue,
           "run-99-200",
           "factory/99-200",
-          "/tmp/result.json",
           pr_number: 42
         )
 
@@ -80,14 +78,13 @@ defmodule Conductor.PromptTest do
     end
   end
 
-  describe "build_builder_prompt/5 revision (with feedback)" do
+  describe "build_builder_prompt/4 revision (with feedback)" do
     setup do
       prompt =
         Prompt.build_builder_prompt(
           @issue,
           "run-99-456",
           "factory/99-456",
-          "/tmp/result.json",
           feedback: "Please add error handling for nil inputs."
         )
 
@@ -109,14 +106,13 @@ defmodule Conductor.PromptTest do
     end
   end
 
-  describe "build_builder_prompt/5 with both PR and feedback" do
+  describe "build_builder_prompt/4 with both PR and feedback" do
     test "includes both existing PR and revision" do
       prompt =
         Prompt.build_builder_prompt(
           @issue,
           "run-99-789",
           "factory/99-789",
-          "/tmp/result.json",
           pr_number: 55,
           feedback: "Fix the tests."
         )
@@ -127,14 +123,13 @@ defmodule Conductor.PromptTest do
     end
   end
 
-  describe "build_builder_prompt/5 handoff contract" do
+  describe "build_builder_prompt/4 handoff contract" do
     test "uses TASK_COMPLETE and BLOCKED.md instead of artifact JSON" do
       prompt =
         Prompt.build_builder_prompt(
           @issue,
           "run-99-100",
-          "factory/99-100",
-          "/tmp/result.json"
+          "factory/99-100"
         )
 
       assert prompt =~ "write TASK_COMPLETE"
@@ -144,7 +139,7 @@ defmodule Conductor.PromptTest do
     end
   end
 
-  describe "build_builder_prompt/5 with repo_context (CLAUDE.md)" do
+  describe "build_builder_prompt/4 with repo_context (CLAUDE.md)" do
     @claude_md_content """
     # CLAUDE.md
 
@@ -162,7 +157,6 @@ defmodule Conductor.PromptTest do
           @issue,
           "run-99-300",
           "factory/99-300",
-          "/tmp/result.json",
           repo_context: @claude_md_content
         )
 
@@ -179,7 +173,6 @@ defmodule Conductor.PromptTest do
           @issue,
           "run-99-301",
           "factory/99-301",
-          "/tmp/result.json",
           repo_context: @claude_md_content
         )
 
@@ -188,7 +181,7 @@ defmodule Conductor.PromptTest do
     end
   end
 
-  describe "build_builder_prompt/5 with repo_context (project.md)" do
+  describe "build_builder_prompt/4 with repo_context (project.md)" do
     @project_md_content """
     # Project: Bitterblossom
 
@@ -206,7 +199,6 @@ defmodule Conductor.PromptTest do
           @issue,
           "run-99-400",
           "factory/99-400",
-          "/tmp/result.json",
           repo_context: @project_md_content
         )
 
@@ -216,14 +208,13 @@ defmodule Conductor.PromptTest do
     end
   end
 
-  describe "build_builder_prompt/5 without repo_context" do
+  describe "build_builder_prompt/4 without repo_context" do
     test "omits Repository Context section when not provided" do
       prompt =
         Prompt.build_builder_prompt(
           @issue,
           "run-99-500",
-          "factory/99-500",
-          "/tmp/result.json"
+          "factory/99-500"
         )
 
       refute prompt =~ "## Repository Context"

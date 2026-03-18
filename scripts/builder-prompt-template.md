@@ -24,9 +24,10 @@ If something is ambiguous, make your best judgment call and document the decisio
 10. Repeat the verify/respond loop until the lane reaches a truthful handoff state: ready for review, blocked with explicit reason, or complete.
 
 ### Completion
-11. Create a file named exactly TASK_COMPLETE (no file extension) with a summary of what was done.
+11. The success signal is an open PR on the assigned `factory/*` branch.
+12. Create a file named exactly TASK_COMPLETE (no file extension) with a summary of what was done.
     Do NOT use TASK_COMPLETE.md — the detection system expects the extensionless filename.
-12. Update MEMORY.md with learnings from this task
+13. Update MEMORY.md with learnings from this task
 
 ## When you get stuck
 - If genuinely blocked (missing credentials, permission error, external dependency):

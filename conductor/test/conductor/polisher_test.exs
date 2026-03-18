@@ -75,7 +75,6 @@ defmodule Conductor.PolisherTest do
       {:ok, "done"}
     end
 
-    def read_artifact(_worker, _path, _opts), do: {:ok, %{"status" => "ready"}}
     def cleanup(_worker, _repo, _run_id), do: :ok
     def busy?(_worker, _opts), do: false
   end

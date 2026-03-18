@@ -154,12 +154,11 @@ These are the machine-facing source of truth for:
 
 ### Remote per-run artifacts
 
-- `${WORKSPACE}/.bb/conductor/<run_id>/builder-result.json`
 - `${WORKSPACE}/.bb/conductor/<run_id>/review-<sprite>.json`
 - `${WORKSPACE}/.bb/workspace.json`
 - signal files such as `TASK_COMPLETE`, `TASK_COMPLETE.md`, `BLOCKED.md`
 
-GitHub remains the human-facing conversation and merge surface, but these artifacts are how the machine proves what happened.
+GitHub remains the human-facing conversation and merge surface. For builder runs, an open PR on the assigned `factory/*` branch is the machine success signal; remote artifacts remain for reviewer outputs and workspace signals.
 
 ## Current Reality vs Roadmap
 
