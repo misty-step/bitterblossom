@@ -17,6 +17,7 @@ defmodule Conductor.GitHub do
   @default_labeled_limit 25
   @default_unfiltered_limit 1000
   @issues_page_size 100
+  @merged_pr_scan_limit 200
 
   @spec get_issue(binary(), pos_integer()) :: {:ok, Issue.t()} | {:error, term()}
   def get_issue(repo, number) do
@@ -116,7 +117,9 @@ defmodule Conductor.GitHub do
   def eligible_issues(repo, opts \\ []) do
     case list_issues(repo, opts) do
       {:ok, issues} ->
-        sort_eligible_issues(issues)
+        issues
+        |> reject_issues_with_merged_factory_prs(repo)
+        |> sort_eligible_issues()
 
       {:error, reason} ->
         Logger.warning("failed to list issues: #{inspect(reason)}")
@@ -143,6 +146,67 @@ defmodule Conductor.GitHub do
   end
 
   defp sort_eligible_issues(issues), do: Enum.sort_by(issues, & &1.number)
+
+  defp reject_issues_with_merged_factory_prs([], _repo), do: []
+
+  defp reject_issues_with_merged_factory_prs(issues, repo) do
+    merged_issue_numbers = merged_factory_issue_numbers(repo)
+    Enum.reject(issues, &MapSet.member?(merged_issue_numbers, &1.number))
+  end
+
+  defp merged_factory_issue_numbers(repo) do
+    case Shell.cmd("gh", [
+           "pr",
+           "list",
+           "--repo",
+           repo,
+           "--state",
+           "merged",
+           "--limit",
+           to_string(@merged_pr_scan_limit),
+           "--json",
+           "headRefName"
+         ]) do
+      {:ok, json} ->
+        case Jason.decode(json) do
+          {:ok, prs} when is_list(prs) ->
+            prs
+            |> Enum.map(&factory_issue_number_from_branch(pr_branch_name(&1)))
+            |> Enum.reject(&is_nil/1)
+            |> MapSet.new()
+
+          {:ok, _other} ->
+            Logger.warning("[github] failed to decode merged PR list: invalid JSON")
+            MapSet.new()
+
+          {:error, reason} ->
+            Logger.warning("[github] failed to decode merged PR list: #{inspect(reason)}")
+            MapSet.new()
+        end
+
+      {:error, msg, _} ->
+        Logger.warning("[github] failed to list merged PRs: #{msg}")
+        MapSet.new()
+    end
+  end
+
+  defp pr_branch_name(%{"headRefName" => branch}) when is_binary(branch), do: branch
+  defp pr_branch_name(_pr), do: ""
+
+  defp factory_issue_number_from_branch("factory/" <> rest) do
+    case String.split(rest, "-", parts: 2) do
+      [issue_number, _suffix] ->
+        case Integer.parse(issue_number) do
+          {value, ""} -> value
+          _ -> nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp factory_issue_number_from_branch(_branch), do: nil
 
   def label_present?(data, label) do
     data

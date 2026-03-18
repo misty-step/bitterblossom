@@ -728,6 +728,63 @@ defmodule Conductor.GitHubTest do
       )
     end
 
+    test "eligible_issues excludes open issues whose factory PR is already merged" do
+      with_fake_gh(
+        """
+        printf '%s\\n' "$@" >> "$GH_ARGS_PATH"
+
+        if [[ "$*" == issue\\ list* ]]; then
+          cat <<'JSON'
+        [
+          {
+            "number": 10,
+            "title": "already merged",
+            "body": "## Problem\\nx\\n\\n## Acceptance Criteria\\n- [ ] [test] y",
+            "url": "https://example.test/issues/10",
+            "labels": [{"name": "autopilot"}]
+          },
+          {
+            "number": 11,
+            "title": "still eligible",
+            "body": "## Problem\\nx\\n\\n## Acceptance Criteria\\n- [ ] [test] y",
+            "url": "https://example.test/issues/11",
+            "labels": [{"name": "autopilot"}]
+          }
+        ]
+        JSON
+        elif [[ "$*" == pr\\ list* && "$*" == *"--state merged"* ]]; then
+          cat <<'JSON'
+        [
+          {
+            "headRefName": "factory/10-1773840330"
+          },
+          {
+            "headRefName": "factory/999-1773840331"
+          }
+        ]
+        JSON
+        else
+          echo '[]'
+        fi
+        """,
+        fn _tmp_dir, args_path ->
+          issues =
+            GitHub.eligible_issues(
+              "misty-step/bitterblossom",
+              label: "autopilot",
+              limit: 25
+            )
+
+          assert Enum.map(issues, & &1.number) == [11]
+
+          args = File.read!(args_path)
+          assert String.contains?(args, "issue\nlist\n")
+          assert String.contains?(args, "pr\nlist\n")
+          assert String.contains?(args, "--state\nmerged\n")
+        end
+      )
+    end
+
     test "filters pull requests from paginated issue fetches" do
       with_fake_gh(
         """
