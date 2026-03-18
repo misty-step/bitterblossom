@@ -208,6 +208,12 @@ func TestEnsureNoActiveDispatchLoop_AllowsIdle(t *testing.T) {
 	if !strings.Contains(r.script, `/tmp/ws/.bb-agent.pid`) {
 		t.Fatalf("script = %q, want workspace pid file", r.script)
 	}
+	if !strings.Contains(r.script, `readlink -f "/proc/$1/cwd"`) {
+		t.Fatalf("script = %q, want workspace ownership check", r.script)
+	}
+	if !strings.Contains(r.script, `pgrep -x claude`) {
+		t.Fatalf("script = %q, want workspace fallback process scan", r.script)
+	}
 }
 
 func TestEnsureNoActiveDispatchLoop_BlocksWhenBusy(t *testing.T) {
