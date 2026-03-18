@@ -2039,6 +2039,21 @@ defmodule Conductor.OrchestratorTest do
       Process.sleep(100)
       assert MockState.get(:merge_calls) == []
     end
+
+    test "conductor_tracked? returns false for non-conductor PR even with green CI", %{
+      orch_pid: orch_pid
+    } do
+      # PR 400 has no Store run — conductor_tracked? returns false → merge skipped
+      MockState.put(
+        {:labeled_prs, "test/repo", "lgtm"},
+        [%{"number" => 400, "headRefName" => "fix/99-test"}]
+      )
+
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
+      Process.sleep(200)
+
+      assert MockState.get(:merge_calls) == []
+    end
   end
 
   describe "reconcile_held_leases" do

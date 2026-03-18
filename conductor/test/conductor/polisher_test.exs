@@ -1,5 +1,6 @@
 defmodule Conductor.PolisherTest do
   use ExUnit.Case, async: false
+  import ExUnit.CaptureLog
 
   alias Conductor.{Store, Polisher}
 

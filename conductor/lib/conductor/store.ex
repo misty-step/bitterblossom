@@ -307,8 +307,20 @@ defmodule Conductor.Store do
   @impl true
   def handle_call({:list_runs, opts}, _from, state) do
     limit = Keyword.get(opts, :limit, 20)
-    rows = query_all(state.conn, "SELECT * FROM runs ORDER BY picked_at DESC LIMIT ?1", [limit])
-    {:reply, rows, state}
+    repo = Keyword.get(opts, :repo)
+    issue_number = Keyword.get(opts, :issue_number)
+
+    {sql, params} =
+      case {repo, issue_number} do
+        {r, i} when is_binary(r) and is_integer(i) ->
+          {"SELECT * FROM runs WHERE repo = ?1 AND issue_number = ?2 ORDER BY picked_at DESC LIMIT ?3",
+           [r, i, limit]}
+
+        _ ->
+          {"SELECT * FROM runs ORDER BY picked_at DESC LIMIT ?1", [limit]}
+      end
+
+    {:reply, query_all(state.conn, sql, params), state}
   end
 
   @impl true

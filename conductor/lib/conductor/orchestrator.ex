@@ -259,7 +259,7 @@ defmodule Conductor.Orchestrator do
         receive do
           {:DOWN, ^ref, :process, ^pid, _reason} ->
             case find_latest_run(repo, issue.number) do
-              %{"phase" => phase} -> {:ok, String.to_existing_atom(phase)}
+              %{"phase" => phase} -> {:ok, String.to_atom(phase)}
               nil -> {:error, :run_not_found}
             end
         after
@@ -709,10 +709,8 @@ defmodule Conductor.Orchestrator do
   defp resolve_held_lease(_repo, _pr_number, _issue_number), do: :hold
 
   defp find_latest_run(repo, issue_number) do
-    Store.list_runs(limit: 50)
-    |> Enum.find(fn r ->
-      r["repo"] == repo and r["issue_number"] == issue_number
-    end)
+    Store.list_runs(repo: repo, issue_number: issue_number, limit: 1)
+    |> List.first()
   end
 
   # --- Label-Driven Merge ---
