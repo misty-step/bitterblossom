@@ -137,6 +137,10 @@ defmodule Conductor.RunServerTest do
       MockState.get(:workspace_result, {:ok, "/tmp/test-worktree"})
     end
 
+    def sync_persona(_sprite, _workspace, _role, _opts \\ []) do
+      MockState.get(:sync_persona_result, :ok)
+    end
+
     defp remember_branch(repo, branch) do
       case parse_issue_number(branch) do
         {:ok, issue_number} -> MockState.put({:prepared_branch, repo, issue_number}, branch)
@@ -489,6 +493,24 @@ defmodule Conductor.RunServerTest do
     end
   end
 
+  describe "persona sync failure" do
+    test "marks run failed when persona sync errors before dispatch" do
+      MockState.put(:sync_persona_result, {:error, "persona sync failed"})
+
+      log =
+        capture_log(fn ->
+          {:ok, pid} = start_run_server()
+          wait_for_exit(pid)
+        end)
+
+      run = find_run(42)
+      assert run["phase"] == "failed"
+      assert "builder_dispatch_failed" in event_types(run["run_id"])
+      assert log =~ "builder_dispatch_failed: builder dispatch failed (category=unknown, exit 1)"
+      refute log =~ "persona sync failed"
+    end
+  end
+
   describe "AC3: dispatch task crash" do
     test "crash retries before failing when the worker is exhausted" do
       Application.put_env(:conductor, :worker_module, CrashingWorker)
@@ -739,7 +761,9 @@ defmodule Conductor.RunServerTest do
           run
         end)
 
-      assert "builder_retry_scheduled" in event_types(run["run_id"])
+      eventually(fn ->
+        assert "builder_retry_scheduled" in event_types(run["run_id"])
+      end)
 
       Process.send(pid, {:DOWN, make_ref(), :process, self(), :normal}, [])
 

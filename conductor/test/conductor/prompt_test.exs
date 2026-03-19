@@ -23,6 +23,7 @@ defmodule Conductor.PromptTest do
     end
 
     test "includes run metadata", %{prompt: prompt} do
+      assert prompt =~ "# Builder Task"
       assert prompt =~ "Run ID: run-99-123"
       assert prompt =~ "Issue: #99"
       assert prompt =~ "Add caching layer"
@@ -59,8 +60,27 @@ defmodule Conductor.PromptTest do
       refute prompt =~ "Existing PR:"
     end
 
+    test "does not carry inline weaver identity prose", %{prompt: prompt} do
+      refute prompt =~ "You are Weaver"
+    end
+
     test "includes branch name in implementation instructions", %{prompt: prompt} do
       assert prompt =~ "Create branch `factory/99-123`"
+    end
+  end
+
+  describe "build_builder_prompt/4 with workspace_root" do
+    test "includes repo root metadata" do
+      prompt =
+        Prompt.build_builder_prompt(
+          @issue,
+          "run-99-321",
+          "factory/99-321",
+          workspace_root: "/tmp/bb/run-99"
+        )
+
+      assert prompt =~ "Repository Root: /tmp/bb/run-99"
+      refute prompt =~ "Change to repo root"
     end
   end
 
@@ -169,20 +189,32 @@ defmodule Conductor.PromptTest do
     test "prohibits gh pr merge" do
       pr = %{"number" => 10, "title" => "Fix CI", "headRefName" => "factory/10-fix"}
       prompt = Prompt.build_fixer_prompt(pr, "test failed", "issue body")
+      assert prompt =~ "# Fixer Task"
       assert prompt =~ "gh pr merge"
       assert prompt =~ "MUST NOT"
+      refute prompt =~ "You are Thorn"
     end
 
-    test "routes Thorn through the context and invariant skills before coding" do
+    test "prohibits weakening safeguards just to clear CI" do
       pr = %{"number" => 10, "title" => "Fix CI", "headRefName" => "factory/10-fix"}
       prompt = Prompt.build_fixer_prompt(pr, "test failed", "issue body")
 
-      assert prompt =~ "/gather-pr-context"
-      assert prompt =~ "/diagnose-ci"
-      assert prompt =~ "/plan-fix"
-      assert prompt =~ "/verify-invariants"
-      assert prompt =~ ".claude/skills"
-      refute prompt =~ "Your only job is to fix the CI failure"
+      assert prompt =~ "Do NOT weaken tests, security gates, review protections"
+      assert prompt =~ "Restore the intended behavior and let CI prove the fix."
+      refute prompt =~ "Focus exclusively on making CI green."
+    end
+
+    test "keeps Thorn workflow guidance in persona files instead of inline prompt text" do
+      pr = %{"number" => 10, "title" => "Fix CI", "headRefName" => "factory/10-fix"}
+      prompt = Prompt.build_fixer_prompt(pr, "test failed", "issue body")
+
+      assert prompt =~ "Fix the CI failure on this PR."
+      assert prompt =~ "Investigate the root cause in the codebase"
+      refute prompt =~ "/gather-pr-context"
+      refute prompt =~ "/diagnose-ci"
+      refute prompt =~ "/plan-fix"
+      refute prompt =~ "/verify-invariants"
+      refute prompt =~ ".claude/skills"
     end
   end
 
@@ -190,8 +222,10 @@ defmodule Conductor.PromptTest do
     test "prohibits gh pr merge" do
       pr = %{"number" => 10, "title" => "Fix CI", "headRefName" => "factory/10-fix"}
       prompt = Prompt.build_polisher_prompt(pr, [], "issue body")
+      assert prompt =~ "# Polisher Task"
       assert prompt =~ "gh pr merge"
       assert prompt =~ "MUST NOT"
+      refute prompt =~ "You are Fern"
     end
 
     test "prohibits gh pr close" do
@@ -226,8 +260,8 @@ defmodule Conductor.PromptTest do
       assert prompt =~ "## Repository Context"
       assert prompt =~ "Elixir/OTP conductor"
       context_pos = :binary.match(prompt, "## Repository Context") |> elem(0)
-      task_pos = :binary.match(prompt, "# Weaver Task") |> elem(0)
-      assert context_pos < task_pos, "Repository Context must appear before Weaver Task"
+      task_pos = :binary.match(prompt, "# Builder Task") |> elem(0)
+      assert context_pos < task_pos, "Repository Context must appear before Builder Task"
     end
 
     test "includes CLAUDE.md content in the prompt" do

@@ -11,7 +11,7 @@ defmodule Conductor.Fixer do
   use GenServer
   require Logger
 
-  alias Conductor.{Config, Prompt, Store}
+  alias Conductor.{Config, Prompt, Store, Workspace}
 
   defstruct [
     :repo,
@@ -128,10 +128,10 @@ defmodule Conductor.Fixer do
           "(CI logs unavailable)"
       end
 
-    issue_body = extract_issue_body(pr)
-
-    prompt = Prompt.build_fixer_prompt(pr, ci_logs, issue_body)
     branch = pr["headRefName"]
+    workspace = workspace_for_branch(state.repo, branch)
+    issue_body = extract_issue_body(pr)
+    prompt = Prompt.build_fixer_prompt(pr, ci_logs, issue_body, workspace_root: workspace)
 
     Store.record_event("fixer", "fixer_dispatched", %{
       pr_number: pr_number,
@@ -141,11 +141,21 @@ defmodule Conductor.Fixer do
     task =
       Task.async(fn ->
         try do
-          worker_mod().dispatch(state.fixer_sprite, prompt, state.repo,
-            timeout: Config.fixer_timeout(),
-            workspace: workspace_for_branch(state.repo, branch),
-            role: :thorn
-          )
+          with :ok <- workspace_mod().sync_persona(state.fixer_sprite, workspace, :thorn),
+               {:ok, output} <-
+                 worker_mod().dispatch(
+                   state.fixer_sprite,
+                   prompt,
+                   state.repo,
+                   workspace: workspace,
+                   persona_role: :thorn,
+                   timeout: Config.fixer_timeout()
+                 ) do
+            {:ok, output}
+          else
+            {:error, msg, code} -> {:error, msg, code}
+            {:error, reason} -> {:error, to_string(reason), 1}
+          end
         rescue
           e -> {:error, "fixer dispatch crashed: #{Exception.message(e)}", 1}
         end
@@ -175,8 +185,7 @@ defmodule Conductor.Fixer do
   end
 
   defp workspace_for_branch(repo, _branch) do
-    repo_name = repo |> String.split("/") |> List.last()
-    "/home/sprite/workspace/#{repo_name}"
+    Workspace.repo_root(repo)
   end
 
   defp schedule_poll(_, delay) do
@@ -185,4 +194,5 @@ defmodule Conductor.Fixer do
 
   defp code_host_mod, do: Application.get_env(:conductor, :code_host_module, Conductor.GitHub)
   defp worker_mod, do: Application.get_env(:conductor, :worker_module, Conductor.Sprite)
+  defp workspace_mod, do: Application.get_env(:conductor, :workspace_module, Workspace)
 end

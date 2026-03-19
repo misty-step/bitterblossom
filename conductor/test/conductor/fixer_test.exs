@@ -91,6 +91,15 @@ defmodule Conductor.FixerTest do
     def busy?(_worker, _opts), do: false
   end
 
+  defmodule MockWorkspace do
+    alias Conductor.FixerTest.MockState
+
+    def sync_persona(worker, workspace, role, _opts \\ []) do
+      send(MockState.get(:test_pid, self()), {:persona_synced, worker, workspace, role})
+      :ok
+    end
+  end
+
   # Mock tracker
   defmodule MockTracker do
     @behaviour Conductor.Tracker
@@ -130,10 +139,12 @@ defmodule Conductor.FixerTest do
     orig_code_host = Application.get_env(:conductor, :code_host_module)
     orig_worker = Application.get_env(:conductor, :worker_module)
     orig_tracker = Application.get_env(:conductor, :tracker_module)
+    orig_workspace = Application.get_env(:conductor, :workspace_module)
 
     Application.put_env(:conductor, :code_host_module, MockCodeHost)
     Application.put_env(:conductor, :worker_module, MockWorker)
     Application.put_env(:conductor, :tracker_module, MockTracker)
+    Application.put_env(:conductor, :workspace_module, MockWorkspace)
 
     MockState.put(:test_pid, self())
 
@@ -145,7 +156,8 @@ defmodule Conductor.FixerTest do
       for {key, orig} <- [
             {:code_host_module, orig_code_host},
             {:worker_module, orig_worker},
-            {:tracker_module, orig_tracker}
+            {:tracker_module, orig_tracker},
+            {:workspace_module, orig_workspace}
           ] do
         if orig,
           do: Application.put_env(:conductor, key, orig),
@@ -186,7 +198,11 @@ defmodule Conductor.FixerTest do
               poll_ms: 50
             )
 
+          assert_receive {:persona_synced, "bb-thorn", "/home/sprite/workspace/repo", :thorn},
+                         2_000
+
           assert_receive {:dispatched, "bb-thorn", prompt}, 2_000
+          assert prompt =~ "Repository Root: /home/sprite/workspace/repo"
           assert prompt =~ "CI"
         end)
 

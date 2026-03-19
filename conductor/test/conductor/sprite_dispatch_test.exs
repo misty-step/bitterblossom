@@ -236,81 +236,6 @@ defmodule Conductor.SpriteDispatchTest do
 
       assert {:ok, _} = result
     end
-
-    test "syncs role persona files into the workspace before the agent runs" do
-      exec_fn = make_exec_fn()
-
-      Sprite.dispatch("s1", "prompt", "org/repo",
-        workspace: "/ws",
-        role: :thorn,
-        harness: MockHarness,
-        exec_fn: exec_fn,
-        timeout: 1
-      )
-
-      assert_received {:exec_called, _kill_cmd, _opts, _files}
-      assert_received {:exec_called, mkdir_cmd, _opts, _files}
-      assert mkdir_cmd =~ "mkdir -p"
-
-      assert_received {:exec_called, _upload_cmd, _upload_opts, uploaded_files}
-
-      assert {"/ws/CLAUDE.md", claude_md} =
-               Enum.find(uploaded_files, fn {dest, _content} -> dest == "/ws/CLAUDE.md" end)
-
-      assert claude_md =~ "Quality guardian"
-
-      assert {"/ws/AGENTS.md", agents_md} =
-               Enum.find(uploaded_files, fn {dest, _content} -> dest == "/ws/AGENTS.md" end)
-
-      assert agents_md =~ "gather-pr-context"
-
-      assert {"/ws/.claude/skills/gather-pr-context/SKILL.md", _} =
-               Enum.find(uploaded_files, fn {dest, _content} ->
-                 dest == "/ws/.claude/skills/gather-pr-context/SKILL.md"
-               end)
-
-      assert {"/ws/.codex/skills/plan-fix/SKILL.md", _} =
-               Enum.find(uploaded_files, fn {dest, _content} ->
-                 dest == "/ws/.codex/skills/plan-fix/SKILL.md"
-               end)
-    end
-
-    test "returns a clear error when role persona files are missing" do
-      exec_fn = make_exec_fn()
-
-      result =
-        Sprite.dispatch("s1", "prompt", "org/repo",
-          workspace: "/ws",
-          role: :bogus,
-          harness: MockHarness,
-          exec_fn: exec_fn,
-          timeout: 1
-        )
-
-      assert {:error, msg, 1} = result
-      assert msg =~ "persona sync failed"
-      assert msg =~ "sprites/bogus/CLAUDE.md"
-    end
-
-    test "returns a clear error when persona directory setup fails" do
-      exec_fn =
-        make_exec_fn([
-          {"mkdir -p", {:error, "permission denied", 73}}
-        ])
-
-      result =
-        Sprite.dispatch("s1", "prompt", "org/repo",
-          workspace: "/ws",
-          role: :thorn,
-          harness: MockHarness,
-          exec_fn: exec_fn,
-          timeout: 1
-        )
-
-      assert {:error, msg, 73} = result
-      assert msg =~ "persona directory setup failed"
-      assert msg =~ "permission denied"
-    end
   end
 
   describe "dispatch/4 retry on agent crash" do
@@ -417,6 +342,62 @@ defmodule Conductor.SpriteDispatchTest do
       assert_received {:exec_called, agent_cmd, _opts, _files}
       assert String.contains?(agent_cmd, "model_reasoning_effort=high")
       refute String.contains?(agent_cmd, "model_reasoning_effort=medium")
+    end
+
+    test "keeps execution rooted at the workspace and prepends AGENTS persona for codex" do
+      exec_fn = make_exec_fn()
+
+      Sprite.dispatch("s1", "prompt", "org/repo",
+        workspace: "/ws",
+        exec_fn: exec_fn,
+        persona_role: :thorn,
+        timeout: 1
+      )
+
+      assert_received {:exec_called, _, _, _}
+      assert_received {:exec_called, _, _, _}
+      assert_received {:exec_called, agent_cmd, _opts, _files}
+      assert String.contains?(agent_cmd, "cd '/ws'")
+
+      assert String.contains?(
+               agent_cmd,
+               "cat '/ws/.bb/persona/thorn/AGENTS.md' '/ws/PROMPT.md' | LEFTHOOK=0 codex exec"
+             )
+    end
+
+    test "rejects invalid persona roles early" do
+      exec_fn = make_exec_fn()
+
+      result =
+        Sprite.dispatch("s1", "prompt", "org/repo",
+          workspace: "/ws",
+          exec_fn: exec_fn,
+          persona_role: :unknown,
+          timeout: 1
+        )
+
+      assert {:error, msg, 1} = result
+      assert String.contains?(msg, "invalid persona role")
+      refute_received {:exec_called, _, _, _}
+    end
+
+    test "runs claude code from the workspace root without persona argv injection" do
+      exec_fn = make_exec_fn()
+
+      Sprite.dispatch("s1", "prompt", "org/repo",
+        workspace: "/ws",
+        harness: Conductor.ClaudeCode,
+        exec_fn: exec_fn,
+        persona_role: :fern,
+        timeout: 1
+      )
+
+      assert_received {:exec_called, _, _, _}
+      assert_received {:exec_called, _, _, _}
+      assert_received {:exec_called, agent_cmd, _opts, _files}
+      assert String.contains?(agent_cmd, "cd '/ws'")
+      assert String.contains?(agent_cmd, "< '/ws/PROMPT.md'")
+      refute String.contains?(agent_cmd, "--append-system-prompt")
     end
 
     test "returns error on failure (no retry — codex has no continuation)" do

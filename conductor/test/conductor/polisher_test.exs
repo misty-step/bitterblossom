@@ -80,6 +80,15 @@ defmodule Conductor.PolisherTest do
     def busy?(_worker, _opts), do: false
   end
 
+  defmodule MockWorkspace do
+    alias Conductor.PolisherTest.MockState
+
+    def sync_persona(worker, workspace, role, _opts \\ []) do
+      send(MockState.get(:test_pid, self()), {:persona_synced, worker, workspace, role})
+      :ok
+    end
+  end
+
   defmodule MockTracker do
     @behaviour Conductor.Tracker
     def list_eligible(_repo, _opts), do: []
@@ -117,10 +126,12 @@ defmodule Conductor.PolisherTest do
     orig_code_host = Application.get_env(:conductor, :code_host_module)
     orig_worker = Application.get_env(:conductor, :worker_module)
     orig_tracker = Application.get_env(:conductor, :tracker_module)
+    orig_workspace = Application.get_env(:conductor, :workspace_module)
 
     Application.put_env(:conductor, :code_host_module, MockCodeHost)
     Application.put_env(:conductor, :worker_module, MockWorker)
     Application.put_env(:conductor, :tracker_module, MockTracker)
+    Application.put_env(:conductor, :workspace_module, MockWorkspace)
 
     MockState.put(:test_pid, self())
 
@@ -134,7 +145,8 @@ defmodule Conductor.PolisherTest do
       for {key, orig} <- [
             {:code_host_module, orig_code_host},
             {:worker_module, orig_worker},
-            {:tracker_module, orig_tracker}
+            {:tracker_module, orig_tracker},
+            {:workspace_module, orig_workspace}
           ] do
         if orig,
           do: Application.put_env(:conductor, key, orig),
@@ -185,7 +197,11 @@ defmodule Conductor.PolisherTest do
               poll_ms: 50
             )
 
+          assert_receive {:persona_synced, "bb-fern", "/home/sprite/workspace/repo", :fern},
+                         2_000
+
           assert_receive {:dispatched, "bb-fern", prompt}, 2_000
+          assert prompt =~ "Repository Root: /home/sprite/workspace/repo"
           assert prompt =~ "review"
         end)
 
