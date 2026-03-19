@@ -10,6 +10,7 @@ defmodule Conductor.Fleet.Reconciler do
 
   require Logger
   alias Conductor.{Sprite, Shell}
+  @repo_root Path.expand("../../../../", __DIR__)
 
   @doc """
   Reconcile all declared sprites. Returns `{:ok, results}` where each
@@ -83,7 +84,7 @@ defmodule Conductor.Fleet.Reconciler do
   end
 
   defp check_health(sprite) do
-    case Sprite.status(sprite.name, harness: sprite.harness) do
+    case sprite_mod().status(sprite.name, harness: sprite.harness) do
       {:error, _reason} ->
         :unreachable
 
@@ -100,7 +101,7 @@ defmodule Conductor.Fleet.Reconciler do
          {:ok, persona_flag, tmp_file} <- build_persona_flag(sprite) do
       repo_flag = if sprite.repo, do: ["--repo", sprite.repo], else: []
       args = ["setup", sprite.name] ++ repo_flag ++ persona_flag ++ ["--force"]
-      result = Shell.cmd(bb_path, args, timeout: 300_000)
+      result = shell_mod().cmd(bb_path, args, timeout: 300_000, cd: repo_root())
       if tmp_file, do: File.rm(tmp_file)
 
       case result do
@@ -124,11 +125,21 @@ defmodule Conductor.Fleet.Reconciler do
 
   defp find_bb do
     # Path.expand required: System.cmd/3 does not resolve ".." in executable paths
+    repo_bb = Path.join(repo_root(), "bin/bb")
+    configured_bb = Application.get_env(:conductor, :bb_path)
+
     cond do
+      is_binary(configured_bb) and configured_bb != "" -> {:ok, configured_bb}
+      File.exists?(repo_bb) -> {:ok, repo_bb}
       File.exists?("../bin/bb") -> {:ok, Path.expand("../bin/bb")}
       File.exists?("./bin/bb") -> {:ok, Path.expand("./bin/bb")}
       System.find_executable("bb") -> {:ok, "bb"}
       true -> {:error, "bb binary not found — build with: go build -o bin/bb ./cmd/bb"}
     end
   end
+
+  defp repo_root, do: @repo_root
+
+  defp shell_mod, do: Application.get_env(:conductor, :shell_module, Shell)
+  defp sprite_mod, do: Application.get_env(:conductor, :sprite_module, Sprite)
 end
