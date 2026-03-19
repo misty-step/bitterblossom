@@ -39,7 +39,7 @@ docs/                    operator docs and contracts
 ## How It Works
 
 1. `bb setup <sprite> --repo owner/repo` bootstraps persistent worker sprites with base configs, imported autonomy skills, and a role persona
-2. `mix conductor start --fleet ../fleet.toml` boots the Elixir control plane and starts leasing runnable issues
+2. `cd conductor && mix conductor start --fleet ../fleet.toml` boots the Elixir control plane and starts leasing runnable issues
 3. the conductor dispatches a builder sprite with a branch contract
 4. the builder opens a PR on that branch; PR existence is the success signal
 5. three reviewer sprites run adversarial reviews and write review artifacts
@@ -89,7 +89,7 @@ mix compile
 mix conductor start --fleet ../fleet.toml
 ```
 
-Use `mix conductor pause`, `mix conductor resume`, `mix conductor show-runs`, and `mix conductor show-events` to inspect or control the running pipeline.
+Use `cd conductor && mix conductor pause`, `cd conductor && mix conductor resume`, `cd conductor && mix conductor show-runs`, and `cd conductor && mix conductor show-events` to inspect or control the running pipeline.
 
 See [docs/CLI-REFERENCE.md](docs/CLI-REFERENCE.md) for `bb`, and [docs/CONDUCTOR.md](docs/CONDUCTOR.md) for the conductor loop.
 

@@ -16,7 +16,7 @@ Delete the dead shell entrypoints that were superseded by the Elixir conductor s
 
 - Intent: remove obsolete shell scripts and the obsolete `ralph-prompt-template.md` symlink so the repository only exposes supported runtime entrypoints.
 - Success Conditions: the 13 dead scripts are deleted, the explicitly retained files remain, and live code/docs/tests no longer point at the removed files as if they are supported.
-- Hard Boundaries: keep `scripts/onboard.sh`, `scripts/lib.sh`, `scripts/test_runtime_contract.py`, `scripts/builder-prompt-template.md`, and `scripts/glance.md`; do not rewrite conductor behavior in this lane.
+- Hard Boundaries: keep `scripts/onboard.sh`, `scripts/lib.sh`, `scripts/test_runtime_contract.py`, and `scripts/builder-prompt-template.md`; do not rewrite conductor behavior in this lane.
 - Non-Goals: remove historical archive references, delete all `ralph.sh`-era documentation in one sweep, or redesign the remaining `cmd/bb` runtime in the same lane.
 
 ## Technical Design
@@ -31,7 +31,7 @@ Delete the dead shell entrypoints that were superseded by the Elixir conductor s
 ### Files to Modify
 
 - `scripts/` — delete obsolete scripts and the obsolete symlink; keep the files named in the issue.
-- `README.md`, `CLAUDE.md`, `glance.md`, `scripts/glance.md`, selected docs under `docs/` — remove or reframe live references to deleted scripts.
+- `README.md`, `CLAUDE.md`, selected docs under `docs/` — remove or reframe live references to deleted scripts.
 - `cmd/bb/*.go`, `cmd/bb/*_test.go`, `base/hooks/test_workspace_contract.py` — remove hardcoded references to deleted shell assets that are no longer part of the supported path.
 
 ### Implementation Sequence

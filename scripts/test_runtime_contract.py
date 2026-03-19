@@ -168,6 +168,7 @@ def test_removed_shell_entrypoints_and_symlink_stay_deleted():
 def test_supported_surfaces_do_not_reference_removed_shell_entrypoints():
     """Core docs and transport surfaces should not advertise removed shell entrypoints."""
     for path in LIVE_REFERENCE_SURFACES:
+        assert path.exists(), f"Expected supported surface is missing: {path}"
         content = path.read_text()
 
         for relative_path in REMOVED_SHELL_ENTRYPOINTS:
