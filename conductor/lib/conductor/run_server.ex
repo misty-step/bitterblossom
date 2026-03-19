@@ -372,7 +372,7 @@ defmodule Conductor.RunServer do
       _ ->
         fail(
           state,
-          "unexpected_issue_prs",
+          "unexpected_issue_prs_cleanup_failed",
           "failed to close duplicate foreign-branch PRs for issue ##{state.issue.number}: #{details}; close failures: #{Enum.join(failures, ", ")}"
         )
     end

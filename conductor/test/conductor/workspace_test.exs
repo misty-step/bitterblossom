@@ -22,8 +22,10 @@ defmodule Conductor.WorkspaceTest do
                )
 
       assert_received {:prepare_command, command}
-      assert command =~ "rev-parse --git-path hooks/pre-push"
-      assert command =~ "expected_branch='factory/42-1773867376'"
+      assert command =~ "config extensions.worktreeConfig true"
+      assert command =~ "config --worktree core.hooksPath .bb-hooks"
+      assert command =~ "hook_path=\"$hook_dir/pre-push\""
+      assert command =~ "expected_branch=\"factory/42-1773867376\""
       assert command =~ "refs/heads/$expected_branch"
       assert command =~ "refusing push from"
     end
@@ -48,8 +50,8 @@ defmodule Conductor.WorkspaceTest do
                )
 
       assert_received {:adopt_command, command}
-      assert command =~ "rev-parse --git-path hooks/pre-push"
-      assert command =~ "expected_branch='factory/42-1773867376'"
+      assert command =~ "config --worktree core.hooksPath .bb-hooks"
+      assert command =~ "expected_branch=\"factory/42-1773867376\""
     end
   end
 end

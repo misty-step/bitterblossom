@@ -48,8 +48,8 @@ defmodule Conductor.Workspace do
       rm -rf #{worktree} 2>/dev/null || true
       default_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed "s|refs/remotes/origin/||" || echo master)
       git worktree add -b #{branch} #{worktree} origin/$default_branch --quiet
-      #{install_branch_guard_commands(worktree, branch)}
     '
+    #{install_branch_guard_commands(worktree, branch)}
     echo #{worktree}
     """
 
@@ -134,8 +134,8 @@ defmodule Conductor.Workspace do
       git worktree prune 2>/dev/null || true
       rm -rf #{worktree} 2>/dev/null || true
       git worktree add #{worktree} #{branch} --quiet
-      #{install_branch_guard_commands(worktree, branch)}
     '
+    #{install_branch_guard_commands(worktree, branch)}
     echo #{worktree}
     """
 
@@ -185,6 +185,13 @@ defmodule Conductor.Workspace do
   defp run_id_to_branch("run-" <> rest), do: "factory/#{rest}"
   defp run_id_to_branch(_), do: nil
 
+  @spec factory_branch?(binary() | nil) :: boolean()
+  def factory_branch?(branch) when is_binary(branch) and branch != "" do
+    String.starts_with?(branch, "factory/")
+  end
+
+  def factory_branch?(_branch), do: false
+
   defp extract_path(output) do
     output
     |> String.split("\n", trim: true)
@@ -194,12 +201,15 @@ defmodule Conductor.Workspace do
 
   defp install_branch_guard_commands(worktree, branch) do
     """
-    hook_path=$(git -C #{worktree} rev-parse --git-path hooks/pre-push)
-    mkdir -p "$(dirname "$hook_path")"
-    cat <<'EOF' > "$hook_path"
+    git config extensions.worktreeConfig true
+    git -C #{worktree} config --worktree core.hooksPath .bb-hooks
+    hook_dir=#{worktree}/.bb-hooks
+    hook_path="$hook_dir/pre-push"
+    mkdir -p "$hook_dir"
+    cat > "$hook_path" <<EOF
     #!/usr/bin/env bash
     set -eu
-    expected_branch='#{branch}'
+    expected_branch="#{branch}"
     current_branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)
 
     if [ "$current_branch" != "$expected_branch" ]; then

@@ -1,6 +1,6 @@
 # Issue 730 Single-PR Invariant Plan
 
-> Scope issue: [#730](https://github.com/misty-step/bitterblossom/issues/730)
+> Scope issue: #730
 
 ## Goal
 
