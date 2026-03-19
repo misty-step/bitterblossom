@@ -19,6 +19,35 @@ import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent
+REMOVED_SHELL_ENTRYPOINTS = (
+    "scripts/dispatch.sh",
+    "scripts/ralph.sh",
+    "scripts/sprite-agent.sh",
+    "scripts/sprite-bootstrap.sh",
+    "scripts/watchdog.sh",
+    "scripts/watchdog-v2.sh",
+    "scripts/pr-shepherd.sh",
+    "scripts/fleet-status.sh",
+    "scripts/refresh-dashboard.sh",
+    "scripts/webhook-receiver.sh",
+    "scripts/preflight.sh",
+    "scripts/health-check.sh",
+    "scripts/tail-logs.sh",
+    "scripts/ralph-prompt-template.md",
+)
+LIVE_REFERENCE_SURFACES = (
+    REPO_ROOT / "README.md",
+    REPO_ROOT / "AGENTS.md",
+    REPO_ROOT / "CLAUDE.md",
+    REPO_ROOT / "docs" / "CONDUCTOR.md",
+    REPO_ROOT / "docs" / "CLI-REFERENCE.md",
+    REPO_ROOT / "docs" / "CODEBASE_MAP.md",
+    REPO_ROOT / "docs" / "architecture" / "README.md",
+    REPO_ROOT / "docs" / "architecture" / "bb-cli.md",
+    REPO_ROOT / "docs" / "architecture" / "conductor.md",
+    REPO_ROOT / "docs" / "architecture" / "skills.md",
+    REPO_ROOT / "docs" / "adr" / "002-architecture-minimalism.md",
+)
 
 
 def _load_settings_profile() -> str:
@@ -128,3 +157,21 @@ def test_canonical_source_is_base_settings_json():
         "\n  scripts/lib.sh"
         "\n  README.md"
     )
+
+
+def test_removed_shell_entrypoints_and_symlink_stay_deleted():
+    """Dead shell entrypoints should not reappear on the supported scripts surface."""
+    for relative_path in REMOVED_SHELL_ENTRYPOINTS:
+        assert not (REPO_ROOT / relative_path).exists(), f"{relative_path} should stay deleted"
+
+
+def test_supported_surfaces_do_not_reference_removed_shell_entrypoints():
+    """Core docs and transport surfaces should not advertise removed shell entrypoints."""
+    for path in LIVE_REFERENCE_SURFACES:
+        assert path.exists(), f"Expected supported surface is missing: {path}"
+        content = path.read_text()
+
+        for relative_path in REMOVED_SHELL_ENTRYPOINTS:
+            basename = relative_path.replace("scripts/", "")
+            assert relative_path not in content, f"{path} still references {relative_path}"
+            assert basename not in content, f"{path} still references {basename}"
