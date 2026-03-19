@@ -742,6 +742,18 @@ defmodule Conductor.Sprite do
     end
   end
 
+  defp with_temp_file(prefix, content, fun) do
+    path = Path.join(System.tmp_dir!(), "#{prefix}-#{System.unique_integer([:positive])}")
+    File.write!(path, content)
+    File.chmod!(path, 0o600)
+
+    try do
+      fun.(path)
+    after
+      File.rm(path)
+    end
+  end
+
   defp file_args(files) do
     Enum.flat_map(files, fn {source, dest} ->
       ["--file", "#{source}:#{dest}"]
