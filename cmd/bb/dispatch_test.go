@@ -297,8 +297,8 @@ func TestSyncWorkspaceRepoWithRunnerBuildsSyncScript(t *testing.T) {
 	if !strings.Contains(r.script, `git checkout "main"`) {
 		t.Fatalf("script = %q, want checkout", r.script)
 	}
-	if !strings.Contains(r.script, `git pull --ff-only`) {
-		t.Fatalf("script = %q, want pull --ff-only", r.script)
+	if !strings.Contains(r.script, `git pull --rebase`) {
+		t.Fatalf("script = %q, want pull --rebase", r.script)
 	}
 	if !strings.Contains(r.script, `git config --global --get-all safe.directory 2>/dev/null | grep -qxF "/tmp/ws" || git config --global --add safe.directory "/tmp/ws"`) {
 		t.Fatalf("script = %q, want idempotent safe.directory guard", r.script)
