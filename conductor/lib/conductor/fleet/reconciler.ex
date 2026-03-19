@@ -131,8 +131,6 @@ defmodule Conductor.Fleet.Reconciler do
     cond do
       is_binary(configured_bb) and configured_bb != "" -> {:ok, configured_bb}
       File.exists?(repo_bb) -> {:ok, repo_bb}
-      File.exists?("../bin/bb") -> {:ok, Path.expand("../bin/bb")}
-      File.exists?("./bin/bb") -> {:ok, Path.expand("./bin/bb")}
       System.find_executable("bb") -> {:ok, "bb"}
       true -> {:error, "bb binary not found — build with: go build -o bin/bb ./cmd/bb"}
     end
