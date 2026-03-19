@@ -166,6 +166,21 @@ defmodule Conductor.ConfigTest do
     end
   end
 
+  describe "persona_source_root!/0" do
+    test "raises when configured path is missing" do
+      missing_path =
+        Path.join(System.tmp_dir!(), "missing-persona-#{System.unique_integer([:positive])}")
+
+      Application.put_env(:conductor, :persona_source_root, missing_path)
+
+      assert_raise RuntimeError, "persona source root missing: #{missing_path}", fn ->
+        Config.persona_source_root!()
+      end
+    after
+      Application.delete_env(:conductor, :persona_source_root)
+    end
+  end
+
   describe "github_token!/0" do
     test "returns token when set" do
       System.put_env("GITHUB_TOKEN", "ghp_test123")

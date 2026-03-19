@@ -199,7 +199,7 @@ defmodule Conductor.Workspace do
     exec_fn = Keyword.get(opts, :exec_fn, &Sprite.exec/3)
 
     with {:ok, role_name} <- normalize_persona_role(role),
-         source_root <- Keyword.get(opts, :source_root, Config.persona_source_root!()),
+         source_root <- Keyword.get_lazy(opts, :source_root, &Config.persona_source_root!/0),
          {:ok, local_persona_dir} <- build_persona_tree(source_root, role_name) do
       try do
         with {:ok, _output} <-
