@@ -38,6 +38,16 @@ defmodule Conductor.Config do
     Application.get_env(:conductor, :builder_timeout_minutes, 25)
   end
 
+  @spec builder_retry_max_attempts() :: pos_integer()
+  def builder_retry_max_attempts do
+    Application.get_env(:conductor, :builder_retry_max_attempts, 3)
+  end
+
+  @spec builder_retry_backoff_base_ms() :: pos_integer()
+  def builder_retry_backoff_base_ms do
+    Application.get_env(:conductor, :builder_retry_backoff_base_ms, 1_000)
+  end
+
   @spec ci_timeout() :: pos_integer()
   def ci_timeout do
     Application.get_env(:conductor, :ci_timeout_minutes, 30)

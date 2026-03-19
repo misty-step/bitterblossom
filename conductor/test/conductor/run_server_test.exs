@@ -36,11 +36,28 @@ defmodule Conductor.RunServerTest do
     end
 
     def dispatch(sprite, _prompt, _repo, _opts) do
-      MockState.get({:dispatch_result, sprite}, {:ok, ""})
+      send(MockState.get(:test_pid, self()), {:worker_dispatch, sprite})
+
+      case MockState.get({:dispatch_sequence, sprite}) do
+        [next | rest] ->
+          MockState.put({:dispatch_sequence, sprite}, rest)
+          next
+
+        _ ->
+          MockState.get({:dispatch_result, sprite}, {:ok, ""})
+      end
     end
 
     def cleanup(_sprite, _repo, _run_id), do: :ok
     def kill(_sprite), do: :ok
+
+    def probe(sprite, _opts \\ []) do
+      MockState.get({:probe_result, sprite}, {:ok, %{sprite: sprite, reachable: true}})
+    end
+
+    def busy?(sprite, _opts \\ []) do
+      MockState.get({:busy, sprite}, false)
+    end
   end
 
   defmodule MockCodeHost do
@@ -250,26 +267,41 @@ defmodule Conductor.RunServerTest do
 
     if Process.whereis(Store), do: GenServer.stop(Store)
     {:ok, _} = Store.start_link(db_path: db_path, event_log: event_log)
+    if Process.whereis(Conductor.TaskSupervisor), do: GenServer.stop(Conductor.TaskSupervisor)
+    {:ok, _} = Task.Supervisor.start_link(name: Conductor.TaskSupervisor)
 
     originals = %{
       worker: Application.get_env(:conductor, :worker_module),
       workspace: Application.get_env(:conductor, :workspace_module),
       tracker: Application.get_env(:conductor, :tracker_module),
-      code_host: Application.get_env(:conductor, :code_host_module)
+      code_host: Application.get_env(:conductor, :code_host_module),
+      task_supervisor: Application.get_env(:conductor, :task_supervisor),
+      retry_max: Application.get_env(:conductor, :builder_retry_max_attempts),
+      retry_backoff_base_ms: Application.get_env(:conductor, :builder_retry_backoff_base_ms)
     }
 
     Application.put_env(:conductor, :worker_module, MockWorker)
     Application.put_env(:conductor, :workspace_module, MockWorkspace)
     Application.put_env(:conductor, :tracker_module, MockTracker)
     Application.put_env(:conductor, :code_host_module, MockCodeHost)
+    Application.put_env(:conductor, :task_supervisor, Conductor.TaskSupervisor)
+    Application.put_env(:conductor, :builder_retry_max_attempts, 3)
+    Application.put_env(:conductor, :builder_retry_backoff_base_ms, 0)
 
     MockState.cleanup()
+    MockState.put(:test_pid, self())
 
     on_exit(fn ->
       MockState.cleanup()
 
       for {key, orig} <- originals do
-        config_key = :"#{key}_module"
+        config_key =
+          case key do
+            :retry_max -> :builder_retry_max_attempts
+            :retry_backoff_base_ms -> :builder_retry_backoff_base_ms
+            :task_supervisor -> :task_supervisor
+            _ -> :"#{key}_module"
+          end
 
         if orig,
           do: Application.put_env(:conductor, config_key, orig),
@@ -278,6 +310,10 @@ defmodule Conductor.RunServerTest do
 
       if pid = Process.whereis(Store) do
         if Process.alive?(pid), do: catch_exit(GenServer.stop(Store))
+      end
+
+      if pid = Process.whereis(Conductor.TaskSupervisor) do
+        if Process.alive?(pid), do: catch_exit(GenServer.stop(pid))
       end
 
       File.rm(db_path)
@@ -426,25 +462,15 @@ defmodule Conductor.RunServerTest do
   end
 
   describe "AC3: dispatch task crash" do
-    test "crash kills RunServer via link — stale-run detection handles cleanup" do
-      # Task.async links to RunServer. A task crash sends an EXIT signal
-      # that kills RunServer before the :DOWN handler can fire. The run
-      # stays in "building" until the Orchestrator's stale-run reconciler
-      # expires it. This is the actual production behavior.
+    test "crash is recovered and terminates the run cleanly" do
       Application.put_env(:conductor, :worker_module, CrashingWorker)
 
-      Process.flag(:trap_exit, true)
-
       {:ok, pid} = start_run_server()
-
-      # RunServer dies from the linked task crash
-      assert_receive {:EXIT, ^pid, _reason}, 5_000
+      wait_for_exit(pid)
 
       run = find_run(42)
-      # Run stays in building — the :DOWN handler never fires
-      assert run["phase"] == "building"
-      # Lease stays held — stale-run detection cleans this up
-      assert Store.leased?("test/repo", 42)
+      assert run["phase"] == "failed"
+      refute Store.leased?("test/repo", 42)
     end
   end
 
@@ -632,6 +658,86 @@ defmodule Conductor.RunServerTest do
       run = find_run(42)
       assert run["phase"] == "failed"
       assert "pr_detection_failed" in event_types(run["run_id"])
+    end
+  end
+
+  describe "builder recovery" do
+    setup do
+      MockState.put(
+        {:open_pr, "test/repo", 42},
+        {:ok,
+         %{
+           "number" => 123,
+           "url" => "https://github.com/test/repo/pull/123"
+         }}
+      )
+
+      :ok
+    end
+
+    @tag :retry_logic
+    test "retries transient builder failures with backoff up to success" do
+      MockState.put(
+        {:dispatch_sequence, "test-sprite"},
+        [
+          {:error, "network timeout contacting sprite", 124},
+          {:error, "temporary resource contention", 75},
+          {:ok, "build complete"}
+        ]
+      )
+
+      {:ok, pid} = start_run_server()
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "pr_opened"
+      assert run["dispatch_attempt_count"] == 3
+
+      events = Store.list_events(run["run_id"])
+
+      assert Enum.count(events, &(&1["event_type"] == "builder_retry_scheduled")) == 2
+
+      assert Enum.any?(events, fn event ->
+               event["event_type"] == "builder_retry_scheduled" and
+                 event["payload"]["failure_class"] == "transient"
+             end)
+    end
+
+    @tag :retry_logic
+    test "falls back to a different sprite after retry exhaustion" do
+      MockState.put(
+        {:dispatch_sequence, "test-sprite"},
+        [
+          {:error, "network timeout contacting sprite", 124},
+          {:error, "temporary resource contention", 75},
+          {:error, "sprite agent unavailable", 70}
+        ]
+      )
+
+      MockState.put({:dispatch_result, "backup-sprite"}, {:ok, "build complete"})
+
+      {:ok, pid} =
+        start_run_server(worker: "test-sprite", workers: ["test-sprite", "backup-sprite"])
+
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "pr_opened"
+      assert run["builder_sprite"] == "backup-sprite"
+      assert run["dispatch_attempt_count"] == 4
+
+      events = Store.list_events(run["run_id"])
+
+      assert Enum.any?(events, fn event ->
+               event["event_type"] == "builder_sprite_fallback" and
+                 event["payload"]["from"] == "test-sprite" and
+                 event["payload"]["to"] == "backup-sprite"
+             end)
+
+      assert_received {:worker_dispatch, "test-sprite"}
+      assert_received {:worker_dispatch, "test-sprite"}
+      assert_received {:worker_dispatch, "test-sprite"}
+      assert_received {:worker_dispatch, "backup-sprite"}
     end
   end
 

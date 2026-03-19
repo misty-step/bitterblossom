@@ -11,7 +11,8 @@ defmodule Conductor.Store do
 
   @valid_columns ~w(phase status branch pr_number pr_url turn_count worktree_path
                     replay_count builder_sprite heartbeat_at completed_at
-                    ci_wait_started_at ci_last_reported_at blocked_reason)
+                    ci_wait_started_at ci_last_reported_at blocked_reason
+                    dispatch_attempt_count builder_failure_class builder_failure_reason)
 
   @doc "Validate that all map keys are in the column allowlist."
   @spec validate_columns(map()) :: :ok | {:error, :invalid_column}
@@ -596,6 +597,9 @@ defmodule Conductor.Store do
             turn_count INTEGER DEFAULT 0,
             semantic_ready INTEGER DEFAULT NULL,
             replay_count INTEGER DEFAULT 0,
+            dispatch_attempt_count INTEGER DEFAULT 0,
+            builder_failure_class TEXT,
+            builder_failure_reason TEXT,
             picked_at TEXT,
             completed_at TEXT,
             heartbeat_at TEXT,
@@ -666,7 +670,10 @@ defmodule Conductor.Store do
     ensure_columns(conn, "runs", [
       {"ci_wait_started_at", "TEXT"},
       {"ci_last_reported_at", "TEXT"},
-      {"blocked_reason", "TEXT"}
+      {"blocked_reason", "TEXT"},
+      {"dispatch_attempt_count", "INTEGER DEFAULT 0"},
+      {"builder_failure_class", "TEXT"},
+      {"builder_failure_reason", "TEXT"}
     ])
   end
 

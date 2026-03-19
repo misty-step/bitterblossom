@@ -17,7 +17,7 @@ defmodule Conductor.RunServer do
   use GenServer, restart: :temporary
   require Logger
 
-  alias Conductor.{Store, Workspace, Prompt, Config, Retro}
+  alias Conductor.{Store, Workspace, Prompt, Config, Retro, Harness}
 
   defp tracker_mod, do: Application.get_env(:conductor, :tracker_module, Conductor.GitHub)
   defp code_host_mod, do: Application.get_env(:conductor, :code_host_module, Conductor.GitHub)
@@ -30,6 +30,7 @@ defmodule Conductor.RunServer do
     :repo,
     :issue,
     :worker,
+    :workers,
     :branch,
     :existing_branch,
     :worktree_path,
@@ -37,8 +38,12 @@ defmodule Conductor.RunServer do
     :pr_url,
     :dispatch_task,
     :heartbeat_timer,
+    :retry_timer,
     phase: :pending,
-    turn_count: 0
+    turn_count: 0,
+    dispatch_attempt_count: 0,
+    worker_attempt_count: 0,
+    attempted_workers: []
   ]
 
   # --- Public API ---
@@ -59,13 +64,17 @@ defmodule Conductor.RunServer do
 
   @impl true
   def init(opts) do
+    worker = Keyword.fetch!(opts, :worker)
+
     state = %__MODULE__{
       repo: Keyword.fetch!(opts, :repo),
       issue: Keyword.fetch!(opts, :issue),
-      worker: Keyword.fetch!(opts, :worker),
+      worker: worker,
+      workers: normalize_workers(worker, Keyword.get(opts, :workers, [worker])),
       existing_branch: Keyword.get(opts, :existing_branch),
       pr_number: Keyword.get(opts, :existing_pr_number),
-      pr_url: Keyword.get(opts, :existing_pr_url)
+      pr_url: Keyword.get(opts, :existing_pr_url),
+      attempted_workers: [worker]
     }
 
     {:ok, state, {:continue, :acquire_lease}}
@@ -127,7 +136,12 @@ defmodule Conductor.RunServer do
     case prepare_fn.() do
       {:ok, path} ->
         Store.record_event(state.run_id, "builder_workspace_prepared", %{workspace: path})
-        Store.update_run(state.run_id, %{phase: "building", branch: state.branch})
+
+        Store.update_run(state.run_id, %{
+          phase: "building",
+          branch: state.branch,
+          builder_sprite: state.worker
+        })
 
         state = %{state | worktree_path: path, phase: :building}
         log(state, "workspace ready: #{path}")
@@ -143,6 +157,9 @@ defmodule Conductor.RunServer do
   def handle_continue(:dispatch_builder, state) do
     log(state, "dispatching Weaver to #{state.worker}")
 
+    next_dispatch_attempt = state.dispatch_attempt_count + 1
+    next_worker_attempt = state.worker_attempt_count + 1
+
     prompt =
       Prompt.build_builder_prompt(
         state.issue,
@@ -154,12 +171,22 @@ defmodule Conductor.RunServer do
 
     Store.record_event(state.run_id, "builder_dispatched", %{
       sprite: state.worker,
-      turn: state.turn_count + 1
+      turn: state.turn_count + 1,
+      attempt: next_dispatch_attempt,
+      worker_attempt: next_worker_attempt
     })
 
-    # Dispatch in a linked task so GenServer stays responsive
+    Store.update_run(state.run_id, %{
+      phase: "building",
+      branch: state.branch,
+      builder_sprite: state.worker,
+      dispatch_attempt_count: next_dispatch_attempt,
+      builder_failure_class: nil,
+      builder_failure_reason: nil
+    })
+
     task =
-      Task.async(fn ->
+      Task.Supervisor.async_nolink(task_supervisor(), fn ->
         worker_mod().dispatch(state.worker, prompt, state.repo,
           timeout: Config.builder_timeout(),
           workspace: state.worktree_path,
@@ -170,7 +197,14 @@ defmodule Conductor.RunServer do
     timer = start_heartbeat()
 
     {:noreply,
-     %{state | dispatch_task: task, heartbeat_timer: timer, turn_count: state.turn_count + 1}}
+     %{
+       state
+       | dispatch_task: task,
+         heartbeat_timer: timer,
+         turn_count: state.turn_count + 1,
+         dispatch_attempt_count: next_dispatch_attempt,
+         worker_attempt_count: next_worker_attempt
+     }}
   end
 
   # Governance (CI polling, review handling, merge) has been moved to the
@@ -192,7 +226,7 @@ defmodule Conductor.RunServer do
         detect_pr(state)
 
       {:error, output, code} ->
-        fail(state, "builder_dispatch_failed", "exit #{code}: #{String.slice(output, 0, 500)}")
+        handle_dispatch_failure(state, output, code)
     end
   end
 
@@ -200,7 +234,8 @@ defmodule Conductor.RunServer do
   @impl true
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{dispatch_task: %Task{ref: ref}} = state) do
     cancel_heartbeat(state.heartbeat_timer)
-    fail(state, "builder_dispatch_crashed", inspect(reason))
+    state = %{state | dispatch_task: nil, heartbeat_timer: nil}
+    handle_dispatch_failure(state, "dispatch task crashed: #{inspect(reason)}", nil)
   end
 
   @impl true
@@ -208,6 +243,11 @@ defmodule Conductor.RunServer do
     Store.heartbeat_run(state.run_id)
     timer = start_heartbeat()
     {:noreply, %{state | heartbeat_timer: timer}}
+  end
+
+  @impl true
+  def handle_info(:builder_retry, state) do
+    {:noreply, %{state | retry_timer: nil}, {:continue, :dispatch_builder}}
   end
 
   @impl true
@@ -233,6 +273,135 @@ defmodule Conductor.RunServer do
   end
 
   # --- Private ---
+
+  defp handle_dispatch_failure(state, output, code) do
+    reason = dispatch_failure_reason(output, code)
+    {failure_class, category} = Harness.classify_dispatch_failure(output, code)
+
+    Store.update_run(state.run_id, %{
+      builder_failure_class: Atom.to_string(failure_class),
+      builder_failure_reason: reason
+    })
+
+    Store.record_event(state.run_id, "builder_dispatch_error", %{
+      sprite: state.worker,
+      attempt: state.dispatch_attempt_count,
+      worker_attempt: state.worker_attempt_count,
+      failure_class: Atom.to_string(failure_class),
+      category: Atom.to_string(category),
+      reason: reason,
+      code: code
+    })
+
+    case next_dispatch_step(state, failure_class, reason) do
+      {:retry, backoff_ms} ->
+        role_log(
+          :warning,
+          state,
+          "builder retry scheduled on #{state.worker} in #{backoff_ms}ms: #{reason}"
+        )
+
+        Store.record_event(state.run_id, "builder_retry_scheduled", %{
+          sprite: state.worker,
+          attempt: state.dispatch_attempt_count,
+          worker_attempt: state.worker_attempt_count,
+          backoff_ms: backoff_ms,
+          failure_class: Atom.to_string(failure_class),
+          reason: reason
+        })
+
+        timer = Process.send_after(self(), :builder_retry, backoff_ms)
+        {:noreply, %{state | retry_timer: timer}}
+
+      {:fallback, next_worker} ->
+        cleanup_workspace(state)
+
+        Store.record_event(state.run_id, "builder_sprite_fallback", %{
+          from: state.worker,
+          to: next_worker,
+          attempt: state.dispatch_attempt_count,
+          failure_class: Atom.to_string(failure_class),
+          reason: reason
+        })
+
+        Store.update_run(state.run_id, %{
+          builder_sprite: next_worker,
+          builder_failure_class: Atom.to_string(failure_class),
+          builder_failure_reason: reason
+        })
+
+        log(state, "builder fallback from #{state.worker} to #{next_worker}")
+
+        {:noreply,
+         %{
+           state
+           | worker: next_worker,
+             worktree_path: nil,
+             worker_attempt_count: 0,
+             attempted_workers: Enum.uniq(state.attempted_workers ++ [next_worker])
+         }, {:continue, :prepare_workspace}}
+
+      :fail ->
+        fail(state, "builder_dispatch_failed", reason, %{
+          sprite: state.worker,
+          attempt: state.dispatch_attempt_count,
+          worker_attempt: state.worker_attempt_count,
+          failure_class: Atom.to_string(failure_class),
+          reason: reason,
+          code: code
+        })
+    end
+  end
+
+  defp next_dispatch_step(state, :transient, _reason) do
+    cond do
+      state.worker_attempt_count < Config.builder_retry_max_attempts() ->
+        {:retry, Harness.retry_backoff_ms(state.worker_attempt_count)}
+
+      next_worker = next_available_worker(state) ->
+        {:fallback, next_worker}
+
+      true ->
+        :fail
+    end
+  end
+
+  defp next_dispatch_step(state, :permanent, _reason) do
+    case next_available_worker(state) do
+      nil -> :fail
+      next_worker -> {:fallback, next_worker}
+    end
+  end
+
+  defp next_available_worker(state) do
+    state.workers
+    |> Enum.reject(&(&1 in state.attempted_workers))
+    |> Enum.find(&worker_available?/1)
+  end
+
+  defp worker_available?(worker) do
+    healthy? =
+      if function_exported?(worker_mod(), :probe, 2) do
+        match?({:ok, _}, worker_mod().probe(worker, []))
+      else
+        true
+      end
+
+    not_busy? =
+      cond do
+        function_exported?(worker_mod(), :busy?, 2) -> not worker_mod().busy?(worker, [])
+        function_exported?(worker_mod(), :busy?, 1) -> not worker_mod().busy?(worker)
+        true -> true
+      end
+
+    healthy? and not_busy?
+  end
+
+  defp dispatch_failure_reason(output, nil), do: String.slice(to_string(output || ""), 0, 500)
+
+  defp dispatch_failure_reason(output, code) do
+    "exit #{code}: #{String.slice(to_string(output || ""), 0, 500)}"
+  end
 
   defp detect_pr(state) do
     case code_host_mod().find_open_pr(state.repo, state.issue.number, state.branch) do
@@ -293,9 +462,9 @@ defmodule Conductor.RunServer do
     {:stop, :normal, %{state | phase: :pr_opened, pr_number: pr_number}}
   end
 
-  defp fail(state, event_type, reason) do
+  defp fail(state, event_type, reason, payload \\ %{}) do
     role_log(:error, state, "#{event_type}: #{reason}")
-    Store.record_event(state.run_id, event_type, %{reason: reason})
+    Store.record_event(state.run_id, event_type, Map.put(payload, :reason, reason))
     Store.terminate_run(state.run_id, "failed", "failed", state.repo, state.issue.number)
     cleanup_workspace(state)
     Retro.analyze(state.run_id)
@@ -333,15 +502,17 @@ defmodule Conductor.RunServer do
 
   defp cancel_dispatch(%{dispatch_task: %Task{} = task} = state) do
     cancel_heartbeat(state.heartbeat_timer)
+    cancel_retry(state.retry_timer)
     Task.shutdown(task, :brutal_kill)
     maybe_kill_worker(state)
-    %{state | dispatch_task: nil, heartbeat_timer: nil}
+    %{state | dispatch_task: nil, heartbeat_timer: nil, retry_timer: nil}
   end
 
   defp cancel_dispatch(state) do
     cancel_heartbeat(state.heartbeat_timer)
+    cancel_retry(state.retry_timer)
     maybe_kill_worker(state)
-    %{state | heartbeat_timer: nil}
+    %{state | heartbeat_timer: nil, retry_timer: nil}
   end
 
   defp maybe_kill_worker(state) do
@@ -356,6 +527,8 @@ defmodule Conductor.RunServer do
 
   defp cancel_heartbeat(nil), do: :ok
   defp cancel_heartbeat(ref), do: Process.cancel_timer(ref)
+  defp cancel_retry(nil), do: :ok
+  defp cancel_retry(ref), do: Process.cancel_timer(ref)
 
   # Read CLAUDE.md and project.md from the repo root (one level above conductor/).
   # Returns nil if neither file exists. Truncated to ~8 KB to stay within prompt budget.
@@ -412,6 +585,14 @@ defmodule Conductor.RunServer do
   end
 
   defp worker_mod, do: Application.get_env(:conductor, :worker_module, Conductor.Sprite)
+
+  defp task_supervisor,
+    do: Application.get_env(:conductor, :task_supervisor, Conductor.TaskSupervisor)
+
+  defp normalize_workers(primary_worker, workers) do
+    [primary_worker | List.wrap(workers)]
+    |> Enum.uniq()
+  end
 
   defp log(state, msg) do
     formatted = role_log(:info, state, msg)
