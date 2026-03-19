@@ -86,6 +86,26 @@ defmodule Conductor.SelfUpdateTest do
              ]
     end
 
+    test "fails closed when worktree inspection errors" do
+      Process.put(:self_update_shell_handler, fn
+        "git", ["-C", @repo_root, "worktree", "list", "--porcelain"], _opts ->
+          {:error, "permission denied", 1}
+
+        program, args, _opts ->
+          flunk("unexpected command: #{program} #{inspect(args)}")
+      end)
+
+      log =
+        capture_log(fn ->
+          assert SelfUpdate.check_for_updates() == :noop
+        end)
+
+      assert log =~
+               "[self-update] worktree inspection failed, skipping update to be safe: permission denied"
+
+      assert Process.get(:self_update_compile_calls, 0) == 0
+    end
+
     test "hard-resets to origin/master and recompiles when behind" do
       Process.put(:self_update_shell_handler, fn
         "git", ["-C", @repo_root, "worktree", "list", "--porcelain"], _opts ->

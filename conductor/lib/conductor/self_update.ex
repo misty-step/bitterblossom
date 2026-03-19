@@ -95,8 +95,11 @@ defmodule Conductor.SelfUpdate do
         |> Enum.any?(fn path -> Path.expand(path) != @repo_root end)
 
       {:error, msg, _} ->
-        Logger.debug("[self-update] worktree inspection failed: #{msg}")
-        false
+        rate_limited_warning(
+          "[self-update] worktree inspection failed, skipping update to be safe: #{msg}"
+        )
+
+        true
     end
   end
 
