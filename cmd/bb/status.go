@@ -97,16 +97,22 @@ func fleetStatus(ctx context.Context) error {
 				} else {
 					r.auth = auth
 				}
-				busy, busyErr := isDispatchLoopActive(ctx, s)
-				if busyErr != nil {
+				workspace, wsErr := findSpriteWorkspace(ctx, s)
+				if wsErr != nil {
 					r.avail = "?"
-					if r.note == "" {
-						r.note = "busy-check failed"
-					}
-				} else if busy {
-					r.avail = "busy"
-				} else {
+					r.note = "workspace check failed"
+				} else if workspace == "" {
 					r.avail = "idle"
+				} else {
+					busy, busyErr := isDispatchLoopActive(ctx, s, workspace)
+					if busyErr != nil {
+						r.avail = "?"
+						r.note = "busy-check failed"
+					} else if busy {
+						r.avail = "busy"
+					} else {
+						r.avail = "idle"
+					}
 				}
 			}
 

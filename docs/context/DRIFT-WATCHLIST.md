@@ -37,9 +37,6 @@ Examples:
 - [`scripts/provision.sh`](../../scripts/provision.sh)
 - [`scripts/teardown.sh`](../../scripts/teardown.sh)
 - [`scripts/status.sh`](../../scripts/status.sh)
-- [`scripts/fleet-status.sh`](../../scripts/fleet-status.sh)
-- [`scripts/watchdog.sh`](../../scripts/watchdog.sh)
-- [`scripts/watchdog-v2.sh`](../../scripts/watchdog-v2.sh)
 - [`scripts/test_legacy_wrappers.sh`](../../scripts/test_legacy_wrappers.sh)
 
 Risk:

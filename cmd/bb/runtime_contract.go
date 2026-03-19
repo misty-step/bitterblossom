@@ -4,7 +4,7 @@ package main
 //
 // This is the single authoritative Go reference for the model string.
 // It must stay in sync with:
-//   - base/settings.json  ANTHROPIC_MODEL  (canonical deployed config)
+//   - base/settings.json  model profile alias (canonical deployed config)
 //   - scripts/lib.sh      openrouter-claude default fallback
 //   - README.md           documented runtime profile
 //

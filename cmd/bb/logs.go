@@ -61,7 +61,10 @@ func runLogs(ctx context.Context, stdout, stderr io.Writer, spriteName string, f
 
 	logPath := workspaceRalphLogPath(workspace)
 
-	active := spriteHasRunningAgent(ctx, s)
+	active, err := spriteHasRunningAgent(ctx, s, workspace)
+	if err != nil {
+		return fmt.Errorf("check running agent: %w", err)
+	}
 	hasLog := spriteFileHasContent(ctx, s, logPath)
 	if !active && !hasLog {
 		if err := writeLogsNoTaskMsg(stderr, spriteName); err != nil {
@@ -97,7 +100,7 @@ func runLogs(ctx context.Context, stdout, stderr io.Writer, spriteName string, f
 // stdout — stdout must remain parseable JSON in --json mode.
 func writeLogsNoTaskMsg(stderr io.Writer, spriteName string) error {
 	_, err := fmt.Fprintf(stderr,
-		"No active task on %q.\nThe sprite is reachable, but no agent is running and ralph.log is empty.\nTry: bb status %s\n",
+		"No active task on %q.\nThe sprite is reachable, but no agent is running and the dispatch log is empty.\nTry: bb status %s\n",
 		spriteName,
 		spriteName,
 	)
@@ -119,9 +122,12 @@ func logsRemoteCommand(logPath string, follow bool, lines int) string {
 	return fmt.Sprintf("touch %q && cat %q", logPath, logPath)
 }
 
-func spriteHasRunningAgent(ctx context.Context, s *sprites.Sprite) bool {
-	check := `pgrep -f '[r]alph\.sh|[c]laude|[o]pencode' >/dev/null 2>&1`
-	return s.CommandContext(ctx, "bash", "-c", check).Run() == nil
+func spriteHasRunningAgent(ctx context.Context, s *sprites.Sprite, workspace string) (bool, error) {
+	return spriteHasRunningAgentWithRunner(ctx, spriteBashRunner(s), workspace)
+}
+
+func spriteHasRunningAgentWithRunner(ctx context.Context, run spriteScriptRunner, workspace string) (bool, error) {
+	return isDispatchLoopActiveWithRunner(ctx, run, workspace)
 }
 
 func spriteFileHasContent(ctx context.Context, s *sprites.Sprite, path string) bool {

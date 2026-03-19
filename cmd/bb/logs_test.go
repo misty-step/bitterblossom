@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"strings"
 	"testing"
 )
@@ -85,7 +86,7 @@ func TestLogsNoActiveTaskGoesToStderr(t *testing.T) {
 	if !strings.Contains(msg, `No active task on "fern".`) {
 		t.Errorf("stderr = %q, want sprite-specific idle message", msg)
 	}
-	if !strings.Contains(msg, "ralph.log is empty") {
+	if !strings.Contains(msg, "dispatch log is empty") {
 		t.Errorf("stderr = %q, want explanation that no logs are available", msg)
 	}
 	if !strings.Contains(msg, "bb status fern") {
@@ -104,5 +105,25 @@ func TestLogsCmdHasJSONFlag(t *testing.T) {
 	}
 	if f.DefValue != "false" {
 		t.Fatalf("--json default = %q, want %q", f.DefValue, "false")
+	}
+}
+
+func TestSpriteHasRunningAgentWithRunnerUsesDispatchLoopExitContract(t *testing.T) {
+	t.Parallel()
+
+	idle, err := spriteHasRunningAgentWithRunner(context.Background(), (&fakeSpriteScriptRunner{exitCode: 0}).run, "/tmp/ws")
+	if err != nil {
+		t.Fatalf("idle check error = %v", err)
+	}
+	if idle {
+		t.Fatal("idle check reported active agent")
+	}
+
+	active, err := spriteHasRunningAgentWithRunner(context.Background(), (&fakeSpriteScriptRunner{exitCode: 1}).run, "/tmp/ws")
+	if err != nil {
+		t.Fatalf("active check error = %v", err)
+	}
+	if !active {
+		t.Fatal("active check reported idle agent")
 	}
 }

@@ -196,7 +196,7 @@ func TestEnsureNoActiveDispatchLoop_AllowsIdle(t *testing.T) {
 	t.Parallel()
 
 	r := &fakeSpriteScriptRunner{out: nil, exitCode: 0, err: nil}
-	if err := ensureNoActiveDispatchLoopWithRunner(context.Background(), r.run); err != nil {
+	if err := ensureNoActiveDispatchLoopWithRunner(context.Background(), r.run, "/tmp/ws"); err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
 	if !r.called {
@@ -205,23 +205,23 @@ func TestEnsureNoActiveDispatchLoop_AllowsIdle(t *testing.T) {
 	if !r.gotDeadline {
 		t.Fatal("runner ctx should have a deadline (timeout)")
 	}
-	if !strings.Contains(r.script, "pgrep -af") {
-		t.Fatalf("script = %q, want to contain %q", r.script, "pgrep -af")
+	if !strings.Contains(r.script, `/tmp/ws/.bb-agent.pid`) {
+		t.Fatalf("script = %q, want workspace pid file", r.script)
 	}
-	if !strings.Contains(r.script, "[r]alph") {
-		t.Fatalf("script = %q, want to contain %q", r.script, "[r]alph")
+	if !strings.Contains(r.script, `readlink -f "/proc/$1/cwd"`) {
+		t.Fatalf("script = %q, want workspace ownership check", r.script)
 	}
-	if strings.Contains(r.script, "claude") || strings.Contains(r.script, "opencode") {
-		t.Fatalf("script = %q, want ralph-only busy check", r.script)
+	if !strings.Contains(r.script, `pgrep -x claude`) {
+		t.Fatalf("script = %q, want workspace fallback process scan", r.script)
 	}
 }
 
 func TestEnsureNoActiveDispatchLoop_BlocksWhenBusy(t *testing.T) {
 	t.Parallel()
 
-	const busy = "1234 bash /home/sprite/workspace/.ralph.sh\n"
+	const busy = "1234 claude -p --output-format stream-json\n"
 	r := &fakeSpriteScriptRunner{out: []byte(busy), exitCode: 1, err: nil}
-	err := ensureNoActiveDispatchLoopWithRunner(context.Background(), r.run)
+	err := ensureNoActiveDispatchLoopWithRunner(context.Background(), r.run, "/tmp/ws")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -237,7 +237,7 @@ func TestEnsureNoActiveDispatchLoop_WrapsRunnerError(t *testing.T) {
 	t.Parallel()
 
 	r := &fakeSpriteScriptRunner{out: nil, exitCode: 0, err: errors.New("network")}
-	err := ensureNoActiveDispatchLoopWithRunner(context.Background(), r.run)
+	err := ensureNoActiveDispatchLoopWithRunner(context.Background(), r.run, "/tmp/ws")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -253,7 +253,7 @@ func TestEnsureNoActiveDispatchLoop_ErrorsOnUnexpectedOutputWhenIdle(t *testing.
 	t.Parallel()
 
 	r := &fakeSpriteScriptRunner{out: []byte("unexpected garbage"), exitCode: 0, err: nil}
-	err := ensureNoActiveDispatchLoopWithRunner(context.Background(), r.run)
+	err := ensureNoActiveDispatchLoopWithRunner(context.Background(), r.run, "/tmp/ws")
 	if err == nil {
 		t.Fatal("expected error for exit 0 with output, got nil")
 	}
@@ -262,11 +262,91 @@ func TestEnsureNoActiveDispatchLoop_ErrorsOnUnexpectedOutputWhenIdle(t *testing.
 	}
 }
 
+func TestEnsureWorkspaceCheckoutReadyWithRunnerAcceptsGitRepo(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{out: []byte("true\n"), exitCode: 0}
+	if err := ensureWorkspaceCheckoutReadyWithRunner(context.Background(), r.run, "/tmp/ws"); err != nil {
+		t.Fatalf("ensureWorkspaceCheckoutReadyWithRunner() error = %v", err)
+	}
+	if !strings.Contains(r.script, `git -C "/tmp/ws" rev-parse --is-inside-work-tree`) {
+		t.Fatalf("script = %q", r.script)
+	}
+}
+
+func TestEnsureWorkspaceCheckoutReadyWithRunnerRejectsUnexpectedOutput(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{out: []byte("false\n"), exitCode: 0}
+	err := ensureWorkspaceCheckoutReadyWithRunner(context.Background(), r.run, "/tmp/ws")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), `git rev-parse returned "false"`) {
+		t.Fatalf("err = %q", err)
+	}
+}
+
+func TestSyncWorkspaceRepoWithRunnerBuildsSyncScript(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{out: []byte("Already up to date.\n"), exitCode: 0}
+	if err := syncWorkspaceRepoWithRunner(context.Background(), r.run, "/tmp/ws", "main"); err != nil {
+		t.Fatalf("syncWorkspaceRepoWithRunner() error = %v", err)
+	}
+	if !strings.Contains(r.script, `git checkout "main"`) {
+		t.Fatalf("script = %q, want checkout", r.script)
+	}
+	if !strings.Contains(r.script, `git pull --ff-only`) {
+		t.Fatalf("script = %q, want pull --ff-only", r.script)
+	}
+	if !strings.Contains(r.script, `git config --global --get-all safe.directory 2>/dev/null | grep -qxF "/tmp/ws" || git config --global --add safe.directory "/tmp/ws"`) {
+		t.Fatalf("script = %q, want idempotent safe.directory guard", r.script)
+	}
+}
+
+func TestPrepareDispatchWorkspaceWithRunnerDryRunValidatesRepoWorkspace(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{out: []byte("false\n"), exitCode: 0}
+	err := prepareDispatchWorkspaceWithRunner(context.Background(), r.run, "weaver", "owner/repo", "/tmp/ws", "", "main", true, nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !r.called {
+		t.Fatal("runner should be called")
+	}
+	if !strings.Contains(err.Error(), `repo workspace "/tmp/ws" is not ready on sprite "weaver"`) {
+		t.Fatalf("err = %q", err)
+	}
+	if !strings.Contains(r.script, `git -C "/tmp/ws" rev-parse --is-inside-work-tree`) {
+		t.Fatalf("script = %q", r.script)
+	}
+}
+
+func TestAgentDispatchCommandIncludesHeartbeatAndPIDCleanup(t *testing.T) {
+	t.Parallel()
+
+	script := agentDispatchCommand("/tmp/ws", "/tmp/ws/.dispatch-prompt.md", 90*time.Second)
+	if !strings.Contains(script, `printf '%s\n' "$$" > "$PID_FILE"`) {
+		t.Fatalf("script = %q, want pid file write", script)
+	}
+	if !strings.Contains(script, `heartbeat() {`) {
+		t.Fatalf("script = %q, want heartbeat function", script)
+	}
+	if !strings.Contains(script, `printf '[dispatch] heartbeat: %s\n' "$(date -Iseconds)"`) {
+		t.Fatalf("script = %q, want heartbeat log line", script)
+	}
+	if !strings.Contains(script, `rm -f "$PID_FILE"`) {
+		t.Fatalf("script = %q, want pid file cleanup", script)
+	}
+}
+
 func TestEnsureNoActiveDispatchLoop_ErrorsOnUnexpectedExitCode(t *testing.T) {
 	t.Parallel()
 
 	r := &fakeSpriteScriptRunner{out: []byte("syntax error"), exitCode: 2, err: nil}
-	err := ensureNoActiveDispatchLoopWithRunner(context.Background(), r.run)
+	err := ensureNoActiveDispatchLoopWithRunner(context.Background(), r.run, "/tmp/ws")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -340,7 +420,7 @@ func TestIsDispatchLoopActive_ReturnsFalseWhenIdle(t *testing.T) {
 	t.Parallel()
 
 	r := &fakeSpriteScriptRunner{out: nil, exitCode: 0, err: nil}
-	busy, err := isDispatchLoopActiveWithRunner(context.Background(), r.run)
+	busy, err := isDispatchLoopActiveWithRunner(context.Background(), r.run, "/tmp/ws")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -352,9 +432,9 @@ func TestIsDispatchLoopActive_ReturnsFalseWhenIdle(t *testing.T) {
 func TestIsDispatchLoopActive_ReturnsTrueWhenBusy(t *testing.T) {
 	t.Parallel()
 
-	const busyOut = "1234 bash /home/sprite/workspace/.ralph.sh\n"
+	const busyOut = "1234 codex exec --json\n"
 	r := &fakeSpriteScriptRunner{out: []byte(busyOut), exitCode: 1, err: nil}
-	busy, err := isDispatchLoopActiveWithRunner(context.Background(), r.run)
+	busy, err := isDispatchLoopActiveWithRunner(context.Background(), r.run, "/tmp/ws")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -367,7 +447,7 @@ func TestIsDispatchLoopActive_ErrorsOnRunnerFailure(t *testing.T) {
 	t.Parallel()
 
 	r := &fakeSpriteScriptRunner{out: nil, exitCode: 0, err: errors.New("network")}
-	_, err := isDispatchLoopActiveWithRunner(context.Background(), r.run)
+	_, err := isDispatchLoopActiveWithRunner(context.Background(), r.run, "/tmp/ws")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -380,7 +460,7 @@ func TestIsDispatchLoopActive_ErrorsOnUnexpectedExitCode(t *testing.T) {
 	t.Parallel()
 
 	r := &fakeSpriteScriptRunner{out: []byte("syntax error"), exitCode: 2, err: nil}
-	_, err := isDispatchLoopActiveWithRunner(context.Background(), r.run)
+	_, err := isDispatchLoopActiveWithRunner(context.Background(), r.run, "/tmp/ws")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

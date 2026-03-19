@@ -4,10 +4,9 @@ Current Bitterblossom is a **conductor-first software factory**:
 
 - `conductor/`: Elixir/OTP orchestrator — the workflow brain.
 - `cmd/bb/`: thin Go transport, the operator edge for talking to sprites.
-- `scripts/ralph.sh`: remote execution loop that runs work on a sprite.
 - `base/skills/`: skill library provisioned onto every managed sprite.
 
-If you are trying to understand how the repo works today, start from those four entrypoints.
+If you are trying to understand how the repo works today, start from those three entrypoints.
 
 The Python conductor (historically `scripts/conductor.py`) is deprecated as of [ADR-004](adr/004-elixir-conductor-architecture.md). All features now land in the Elixir conductor.
 
@@ -17,7 +16,6 @@ The Python conductor (historically `scripts/conductor.py`) is deprecated as of [
 |---|---|
 | [`conductor/lib/conductor/`](../conductor/lib/conductor/) | Elixir/OTP orchestrator: intake, leasing, builder/reviewer dispatch, CI wait, governance, merge, run state |
 | [`cmd/bb/main.go`](../cmd/bb/main.go) + [`cmd/bb/*.go`](../cmd/bb/) | Sprite auth, setup, repo sync, prompt upload, PTY execution, logs, status, kill |
-| [`scripts/ralph.sh`](../scripts/ralph.sh) | On-sprite execution loop, heartbeat output, signal-file protocol, bounded agent iterations |
 | [`base/skills/`](../base/skills/) | Agent skill modules provisioned via `bb setup`; advisory guidance for each workflow phase |
 
 ## Trace Bullet
@@ -33,7 +31,7 @@ sequenceDiagram
     GH->>C: eligible issue exists
     C->>C: acquire lease + create run
     C->>BB: dry-run probe + dispatch builder
-    BB->>W: sync repo + run Ralph
+    BB->>W: sync repo + run agent
     W-->>GH: push branch + open draft PR
     W-->>C: open PR on factory/* branch
     C->>BB: dispatch reviewer council
@@ -75,13 +73,13 @@ sequenceDiagram
   - uploads `base/`, repo bootstrap/repair, workspace metadata
   - see also: [`cmd/bb/sprite_workspace.go`](../cmd/bb/sprite_workspace.go), [`cmd/bb/workspace_metadata.go`](../cmd/bb/workspace_metadata.go)
 - [`cmd/bb/dispatch.go`](../cmd/bb/dispatch.go)
-  - probe, stale-process cleanup, repo sync, prompt upload, Ralph exec, result verification
+  - probe, active-run guard, workspace/repo preflight, prompt upload, agent exec, result verification
 - [`cmd/bb/status.go`](../cmd/bb/status.go)
   - sprite truth and operator status surface
 - [`cmd/bb/logs.go`](../cmd/bb/logs.go)
   - remote `ralph.log` streaming
 - [`cmd/bb/kill.go`](../cmd/bb/kill.go)
-  - recovery path for stuck Ralph/agent processes
+  - recovery path for stuck agent processes
 - [`cmd/bb/offrails.go`](../cmd/bb/offrails.go), [`cmd/bb/stream_json.go`](../cmd/bb/stream_json.go)
   - silence/error-loop detection and stream-json parsing
 - [`docs/CLI-REFERENCE.md`](CLI-REFERENCE.md)
@@ -91,8 +89,6 @@ sequenceDiagram
 
 ### Runtime + Prompt Contracts
 
-- [`scripts/ralph.sh`](../scripts/ralph.sh)
-  - bounded remote agent loop and signal-file exit contract
 - [`scripts/prompts/`](../scripts/prompts/)
   - builder/reviewer prompt templates and completion expectations
 - [`docs/COMPLETION-PROTOCOL.md`](COMPLETION-PROTOCOL.md)

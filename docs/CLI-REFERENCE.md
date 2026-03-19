@@ -61,7 +61,7 @@ bb kill fern
 ### Behavior
 
 1. Connects to the sprite.
-2. Kills the ralph loop (`/home/sprite/workspace/.ralph.sh`) plus `claude` processes matching known stale patterns.
+2. Kills stale `claude`, `codex`, or `opencode` processes matching the dispatch runtime patterns.
 3. Verifies those processes are gone before exiting.
 
 ### Exit
@@ -73,7 +73,7 @@ bb kill fern
 
 ## dispatch
 
-Send a task to a sprite via the ralph loop. Runs foreground with streaming stdout/stderr.
+Send a task to a sprite via the remote agent runtime. Runs foreground with streaming stdout/stderr.
 If no remote output arrives for ~45s, dispatch emits a keepalive line (`[dispatch] no remote output...`) so operators can distinguish silence from a hung CLI.
 
 ```
@@ -86,8 +86,8 @@ bb dispatch <sprite> <prompt> --repo <owner/repo> [flags]
 # Basic dispatch
 bb dispatch fern "Fix the login bug" --repo misty-step/webapp
 
-# With timeout and iteration limit
-bb dispatch bramble "Add user search" --repo misty-step/api --timeout 20m --max-iterations 30
+# With a custom timeout
+bb dispatch bramble "Add user search" --repo misty-step/api --timeout 20m
 
 # Claude Sonnet 4.6 runtime (default)
 bb dispatch bramble "Write tests" --repo misty-step/api
@@ -99,19 +99,17 @@ bb dispatch bramble "Write tests" --repo misty-step/api
 |------|---------|-------------|
 | `--repo` | (required) | GitHub repo (`owner/repo`) |
 | `--timeout` | `30m` | Max wall-clock time |
-| `--max-iterations` | `50` | Max ralph loop iterations |
 
 ### Pipeline
 
 1. Probe connectivity (15s timeout)
-2. Verify setup (`ralph.sh` exists)
-3. Refuse overlapping dispatch if ralph loop already running
-4. Kill stale agent processes
-5. Repo sync (pull latest on default branch)
-6. Clean stale signal files
-7. Render and upload prompt
-8. Run ralph loop (foreground, streaming)
-9. Verify work produced (commits, PRs)
+2. Refuse overlapping dispatch if an agent process is already running
+3. Kill stale agent processes
+4. Repo sync (pull latest on default branch)
+5. Clean stale signal files
+6. Render and upload prompt
+7. Run the agent (foreground, streaming)
+8. Verify work produced (commits, PRs)
 
 ### Exit Codes
 
@@ -125,7 +123,7 @@ bb dispatch bramble "Write tests" --repo misty-step/api
 
 ## setup
 
-Configure a sprite with base configs, persona, and ralph loop. Run once per sprite per repo.
+Configure a sprite with base configs, persona, and the dispatch runtime. Run once per sprite per repo.
 
 ```
 bb setup <sprite> [flags]
@@ -155,7 +153,7 @@ bb setup fern --repo misty-step/webapp --force
 2. Create directory structure (`~/.claude/`, workspace)
 3. Upload base configs (CLAUDE.md, settings.json with OpenRouter key, hooks, skills, commands)
 4. Upload persona file (`sprites/<name>.md` → `PERSONA.md`)
-5. Upload ralph.sh and prompt template
+5. Upload the builder prompt template
 6. Configure git auth (credential helper, user identity)
 7. Clone repo (if `--repo` provided)
 8. Write workspace metadata at `.bb/workspace.json`
@@ -228,7 +226,7 @@ bb logs bramble --follow --json
 | `--lines` | `0` | Last N lines (0 = all; follow defaults to 50) |
 | `--json` | `false` | Raw Claude Code `stream-json` events |
 
-If you upgraded `bb`, re-run `bb setup <sprite>` once to upload the updated `ralph.sh` (it creates/appends `ralph.log`).
+If you upgraded `bb`, re-run `bb setup <sprite>` once so the sprite gets the latest base configs, prompt template, and runtime metadata.
 
 ---
 

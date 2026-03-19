@@ -13,7 +13,7 @@ import (
 func newKillCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "kill <sprite>",
-		Short: "Clean up stale ralph/agent processes on a sprite",
+		Short: "Clean up stale agent processes on a sprite",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runKill(cmd.Context(), cmd.OutOrStdout(), args[0])
@@ -29,9 +29,18 @@ func runKill(ctx context.Context, out io.Writer, spriteName string) error {
 	defer func() { _ = session.close() }()
 	s := session.sprite
 
+	workspace, err := findSpriteWorkspace(ctx, s)
+	if err != nil {
+		return fmt.Errorf("find workspace: %w", err)
+	}
+	if workspace == "" {
+		_, _ = fmt.Fprintln(out, "could not determine workspace; stale agents may still exist")
+		return nil
+	}
+
 	killCtx, killCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer killCancel()
-	outBytes, err := s.CommandContext(killCtx, "bash", "-c", killAgentProcessesScript).CombinedOutput()
+	outBytes, err := s.CommandContext(killCtx, "bash", "-c", killDispatchProcessScriptFor(workspace)).CombinedOutput()
 	if err != nil {
 		if msg := strings.TrimSpace(string(outBytes)); msg != "" {
 			return fmt.Errorf("failed to cleanup sprite %q: %w (%s)", spriteName, err, msg)
@@ -46,38 +55,3 @@ func runKill(ctx context.Context, out io.Writer, spriteName string) error {
 	_, _ = fmt.Fprint(out, string(outBytes))
 	return nil
 }
-
-const killAgentProcessesScript = `
-if ! command -v pgrep >/dev/null 2>&1; then
-  echo "required process tools unavailable on sprite: pgrep missing" >&2
-  exit 1
-fi
-
-if ! command -v pkill >/dev/null 2>&1; then
-  echo "required process tools unavailable on sprite: pkill missing" >&2
-  exit 1
-fi
-
-agents='/home/sprite/workspace/\.[r]alph\.sh|[c]laude|[o]pencode'
-
-match=$(pgrep -af "$agents" 2>&1 || true)
-if [ -z "$match" ]; then
-  echo "no stale agent processes found"
-  exit 0
-fi
-
-echo "found agent processes:"
-echo "$match"
-
-pkill -9 -f "$agents" 2>/dev/null || true
-sleep 1
-
-remaining=$(pgrep -af "$agents" 2>&1 || true)
-if [ -n "$remaining" ]; then
-  echo "cleanup verification failed; process still running:" >&2
-  echo "$remaining" >&2
-  exit 1
-fi
-
-echo "stale agent processes terminated"
-`
