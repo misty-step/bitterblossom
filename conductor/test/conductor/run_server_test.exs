@@ -506,7 +506,8 @@ defmodule Conductor.RunServerTest do
       run = find_run(42)
       assert run["phase"] == "failed"
       assert "builder_dispatch_failed" in event_types(run["run_id"])
-      assert log =~ "builder_dispatch_failed: exit 1: persona sync failed"
+      assert log =~ "builder_dispatch_failed: builder dispatch failed (category=unknown, exit 1)"
+      refute log =~ "persona sync failed"
     end
   end
 
@@ -760,7 +761,9 @@ defmodule Conductor.RunServerTest do
           run
         end)
 
-      assert "builder_retry_scheduled" in event_types(run["run_id"])
+      eventually(fn ->
+        assert "builder_retry_scheduled" in event_types(run["run_id"])
+      end)
 
       Process.send(pid, {:DOWN, make_ref(), :process, self(), :normal}, [])
 
