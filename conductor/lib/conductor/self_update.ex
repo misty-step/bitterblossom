@@ -28,7 +28,7 @@ defmodule Conductor.SelfUpdate do
       case changed_conductor_files?(pr_number, repo) do
         true ->
           Logger.info("[self-update] PR ##{pr_number} changed conductor code, hot-reloading")
-          reset_and_recompile()
+          reset_and_recompile(refresh_remote?: true)
 
         false ->
           :noop
@@ -56,7 +56,7 @@ defmodule Conductor.SelfUpdate do
         {:ok, _} ->
           if local_behind_remote?() do
             Logger.info("[self-update] HEAD behind #{@remote_ref}, resetting")
-            reset_and_recompile()
+            reset_and_recompile(refresh_remote?: false)
           else
             :noop
           end
@@ -135,7 +135,7 @@ defmodule Conductor.SelfUpdate do
   defp repo_name(repo), do: repo |> String.split("/") |> List.last()
 
   defp changed_conductor_files?(pr_number, repo) do
-    case Conductor.Shell.cmd("gh", [
+    case shell_module().cmd("gh", [
            "pr",
            "view",
            to_string(pr_number),
@@ -162,37 +162,60 @@ defmodule Conductor.SelfUpdate do
     end
   end
 
-  defp reset_and_recompile do
+  defp reset_and_recompile(opts) do
     if active_worktrees?() do
       Logger.debug("[self-update] active worktrees present, skipping")
       :noop
     else
-      case shell_module().cmd("git", ["-C", @repo_root, "reset", "--hard", @remote_ref],
-             timeout: 30_000
-           ) do
-        {:ok, output} ->
-          Logger.info("[self-update] git reset --hard #{@remote_ref}: #{String.trim(output)}")
+      case maybe_refresh_remote_ref(opts) do
+        :ok ->
+          case shell_module().cmd("git", ["-C", @repo_root, "reset", "--hard", @remote_ref],
+                 timeout: 30_000
+               ) do
+            {:ok, output} ->
+              Logger.info("[self-update] git reset --hard #{@remote_ref}: #{String.trim(output)}")
 
-          try do
-            case compiler_module().recompile() do
-              :ok ->
-                Logger.info("[self-update] recompile complete, new code active on next message")
-                :ok
+              try do
+                case compiler_module().recompile() do
+                  :ok ->
+                    Logger.info(
+                      "[self-update] recompile complete, new code active on next message"
+                    )
 
-              {:error, reason} ->
-                rate_limited_warning("[self-update] recompile failed: #{inspect(reason)}")
-                {:error, :recompile_failed}
-            end
-          rescue
-            e ->
-              rate_limited_warning("[self-update] recompile failed: #{Exception.message(e)}")
-              {:error, :recompile_failed}
+                    :ok
+
+                  {:error, reason} ->
+                    rate_limited_warning("[self-update] recompile failed: #{inspect(reason)}")
+                    {:error, :recompile_failed}
+                end
+              rescue
+                e ->
+                  rate_limited_warning("[self-update] recompile failed: #{Exception.message(e)}")
+                  {:error, :recompile_failed}
+              end
+
+            {:error, msg, _} ->
+              rate_limited_warning("[self-update] git reset failed: #{msg}")
+              :noop
           end
 
-        {:error, msg, _} ->
-          rate_limited_warning("[self-update] git reset failed: #{msg}")
+        {:error, msg} ->
+          rate_limited_warning("[self-update] git fetch failed before reset: #{msg}")
           :noop
       end
+    end
+  end
+
+  defp maybe_refresh_remote_ref(opts) do
+    if Keyword.get(opts, :refresh_remote?, true) do
+      case shell_module().cmd("git", ["-C", @repo_root, "fetch", "origin", "master", "--quiet"],
+             timeout: 30_000
+           ) do
+        {:ok, _} -> :ok
+        {:error, msg, _} -> {:error, msg}
+      end
+    else
+      :ok
     end
   end
 
@@ -211,7 +234,11 @@ defmodule Conductor.SelfUpdate.Compiler do
   @moduledoc false
 
   def recompile do
-    Mix.Task.rerun("compile", ["--force"])
-    :ok
+    case Mix.Task.rerun("compile", ["--force"]) do
+      {:ok, _diagnostics} -> :ok
+      {:noop, _diagnostics} -> :ok
+      {:error, diagnostics} -> {:error, diagnostics}
+      other -> {:error, other}
+    end
   end
 end

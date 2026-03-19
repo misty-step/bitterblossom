@@ -172,6 +172,63 @@ defmodule Conductor.SelfUpdateTest do
     test "returns :noop for non-self repo" do
       assert SelfUpdate.maybe_reload("other-org/other-repo", 1) == :noop
     end
+
+    test "fetches latest remote state before resetting after a self-merge" do
+      Process.put(:self_update_shell_handler, fn
+        "git", ["-C", @repo_root, "remote", "get-url", "origin"], _opts ->
+          {:ok, "https://github.com/misty-step/bitterblossom.git"}
+
+        "gh",
+        [
+          "pr",
+          "view",
+          "42",
+          "--repo",
+          "misty-step/bitterblossom",
+          "--json",
+          "files",
+          "--jq",
+          ".files[].path"
+        ],
+        _opts ->
+          {:ok, "conductor/lib/conductor/self_update.ex\n"}
+
+        "git", ["-C", @repo_root, "worktree", "list", "--porcelain"], _opts ->
+          {:ok, "worktree #{@repo_root}\nHEAD abc123\nbranch refs/heads/master\n"}
+
+        "git", ["-C", @repo_root, "fetch", "origin", "master", "--quiet"], _opts ->
+          {:ok, ""}
+
+        "git", ["-C", @repo_root, "reset", "--hard", "origin/master"], _opts ->
+          {:ok, "HEAD is now at fedcba merged update"}
+
+        program, args, _opts ->
+          flunk("unexpected command: #{program} #{inspect(args)}")
+      end)
+
+      assert SelfUpdate.maybe_reload("misty-step/bitterblossom", 42) == :ok
+      assert Process.get(:self_update_compile_calls, 0) == 1
+
+      assert Process.get(:self_update_shell_calls) == [
+               {"git", ["-C", @repo_root, "remote", "get-url", "origin"], [timeout: 10_000]},
+               {"gh",
+                [
+                  "pr",
+                  "view",
+                  "42",
+                  "--repo",
+                  "misty-step/bitterblossom",
+                  "--json",
+                  "files",
+                  "--jq",
+                  ".files[].path"
+                ], []},
+               {"git", ["-C", @repo_root, "worktree", "list", "--porcelain"], [timeout: 10_000]},
+               {"git", ["-C", @repo_root, "fetch", "origin", "master", "--quiet"],
+                [timeout: 30_000]},
+               {"git", ["-C", @repo_root, "reset", "--hard", "origin/master"], [timeout: 30_000]}
+             ]
+    end
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:conductor, key)
