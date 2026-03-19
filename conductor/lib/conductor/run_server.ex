@@ -235,7 +235,11 @@ defmodule Conductor.RunServer do
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{dispatch_task: %Task{ref: ref}} = state) do
     cancel_heartbeat(state.heartbeat_timer)
     state = %{state | dispatch_task: nil, heartbeat_timer: nil}
-    handle_dispatch_failure(state, "dispatch task crashed: #{inspect(reason)}", nil)
+
+    handle_dispatch_failure(state, "dispatch task crashed: #{inspect(reason)}", nil,
+      failure_class: :transient,
+      category: :crash
+    )
   end
 
   @impl true
@@ -274,9 +278,11 @@ defmodule Conductor.RunServer do
 
   # --- Private ---
 
-  defp handle_dispatch_failure(state, output, code) do
+  defp handle_dispatch_failure(state, output, code, opts \\ []) do
     reason = dispatch_failure_reason(output, code)
-    {failure_class, category} = Harness.classify_dispatch_failure(output, code)
+    {default_failure_class, default_category} = Harness.classify_dispatch_failure(output, code)
+    failure_class = Keyword.get(opts, :failure_class, default_failure_class)
+    category = Keyword.get(opts, :category, default_category)
 
     Store.update_run(state.run_id, %{
       builder_failure_class: Atom.to_string(failure_class),

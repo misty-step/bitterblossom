@@ -462,7 +462,7 @@ defmodule Conductor.RunServerTest do
   end
 
   describe "AC3: dispatch task crash" do
-    test "crash is recovered and terminates the run cleanly" do
+    test "crash retries before failing when the worker is exhausted" do
       Application.put_env(:conductor, :worker_module, CrashingWorker)
 
       {:ok, pid} = start_run_server()
@@ -470,6 +470,17 @@ defmodule Conductor.RunServerTest do
 
       run = find_run(42)
       assert run["phase"] == "failed"
+      assert run["dispatch_attempt_count"] == 3
+
+      events = Store.list_events(run["run_id"])
+      assert Enum.count(events, &(&1["event_type"] == "builder_retry_scheduled")) == 2
+
+      assert Enum.any?(events, fn event ->
+               event["event_type"] == "builder_dispatch_error" and
+                 event["payload"]["failure_class"] == "transient" and
+                 event["payload"]["category"] == "crash"
+             end)
+
       refute Store.leased?("test/repo", 42)
     end
   end
@@ -736,6 +747,72 @@ defmodule Conductor.RunServerTest do
 
       assert_received {:worker_dispatch, "test-sprite"}
       assert_received {:worker_dispatch, "test-sprite"}
+      assert_received {:worker_dispatch, "test-sprite"}
+      assert_received {:worker_dispatch, "backup-sprite"}
+    end
+
+    test "falls back immediately on a permanent failure" do
+      MockState.put(
+        {:dispatch_sequence, "test-sprite"},
+        [
+          {:error, "permission denied", 4}
+        ]
+      )
+
+      MockState.put({:dispatch_result, "backup-sprite"}, {:ok, "build complete"})
+
+      {:ok, pid} =
+        start_run_server(worker: "test-sprite", workers: ["test-sprite", "backup-sprite"])
+
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "pr_opened"
+      assert run["builder_sprite"] == "backup-sprite"
+      assert run["dispatch_attempt_count"] == 2
+
+      events = Store.list_events(run["run_id"])
+
+      assert Enum.any?(events, fn event ->
+               event["event_type"] == "builder_sprite_fallback" and
+                 event["payload"]["from"] == "test-sprite" and
+                 event["payload"]["to"] == "backup-sprite"
+             end)
+
+      refute Enum.any?(events, &(&1["event_type"] == "builder_retry_scheduled"))
+      assert_received {:worker_dispatch, "test-sprite"}
+      assert_received {:worker_dispatch, "backup-sprite"}
+    end
+
+    test "fails once all workers are exhausted" do
+      MockState.put(
+        {:dispatch_sequence, "test-sprite"},
+        [
+          {:error, "permission denied", 4}
+        ]
+      )
+
+      MockState.put(
+        {:dispatch_sequence, "backup-sprite"},
+        [
+          {:error, "permission denied", 4}
+        ]
+      )
+
+      {:ok, pid} =
+        start_run_server(worker: "test-sprite", workers: ["test-sprite", "backup-sprite"])
+
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "failed"
+      assert run["dispatch_attempt_count"] == 2
+      assert run["builder_sprite"] == "backup-sprite"
+
+      events = Store.list_events(run["run_id"])
+      assert Enum.any?(events, &(&1["event_type"] == "builder_sprite_fallback"))
+      assert "builder_dispatch_failed" in event_types(run["run_id"])
+      refute Enum.any?(events, &(&1["event_type"] == "builder_retry_scheduled"))
       assert_received {:worker_dispatch, "test-sprite"}
       assert_received {:worker_dispatch, "backup-sprite"}
     end
