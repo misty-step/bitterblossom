@@ -11,7 +11,7 @@ This runbook covers the supported Bitterblossom surface:
 ```bash
 make test
 cd conductor && mix test
-python3 -m pytest -q scripts/test_runtime_contract.py
+python3 -m pytest -q base/hooks/ scripts/test_runtime_contract.py
 ```
 
 ## Required Environment

@@ -195,10 +195,10 @@ defmodule Conductor.SpriteTest do
 
       {repo_cmd, _repo_opts, _repo_files} =
         Enum.find(calls, fn {command, _opts, _files} ->
-          String.contains?(command, "git clone https://github.com/misty-step/bitterblossom.git")
+          String.contains?(command, "git clone 'https://github.com/misty-step/bitterblossom.git'")
         end)
 
-      assert repo_cmd =~ "git clone https://github.com/misty-step/bitterblossom.git"
+      assert repo_cmd =~ "git clone 'https://github.com/misty-step/bitterblossom.git'"
 
       {_, _metadata_opts, metadata_files} =
         Enum.find(calls, fn {_command, _opts, uploaded_files} ->
@@ -243,7 +243,10 @@ defmodule Conductor.SpriteTest do
          fn command, _opts -> String.contains?(command, "gh auth login --with-token") end},
         {"repo setup", "repo setup failed",
          fn command, _opts ->
-           String.contains?(command, "git clone https://github.com/misty-step/bitterblossom.git")
+           String.contains?(
+             command,
+             "git clone 'https://github.com/misty-step/bitterblossom.git'"
+           )
          end},
         {"workspace metadata upload", "metadata upload failed",
          fn command, opts ->
@@ -266,6 +269,39 @@ defmodule Conductor.SpriteTest do
         assert result == {:error, reason},
                "expected #{stage} failure to propagate, got: #{inspect(result)}"
       end)
+    after
+      if prev_gh,
+        do: System.put_env("GITHUB_TOKEN", prev_gh),
+        else: System.delete_env("GITHUB_TOKEN")
+    end
+  end
+
+  test "provision rejects invalid repo formats before clone commands" do
+    test_pid = self()
+    prev_gh = System.get_env("GITHUB_TOKEN")
+    System.put_env("GITHUB_TOKEN", "ghp-test-token")
+
+    try do
+      exec_fn = fn _sprite, command, _opts ->
+        send(test_pid, {:exec_called, command})
+        {:ok, ""}
+      end
+
+      assert {:error, reason} =
+               Sprite.provision("bb-weaver",
+                 repo: "bad repo;",
+                 persona: "You are Weaver.",
+                 force: true,
+                 exec_fn: exec_fn
+               )
+
+      assert reason =~ "invalid repo format"
+
+      calls = drain_exec_calls()
+
+      refute Enum.any?(calls, fn {command, _opts, _files} ->
+               String.contains?(command, "git clone")
+             end)
     after
       if prev_gh,
         do: System.put_env("GITHUB_TOKEN", prev_gh),

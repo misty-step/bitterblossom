@@ -53,7 +53,7 @@ defmodule Conductor.CLIFleetTest do
   end
 
   defmodule MockReconciler do
-    def reconcile_all(sprites) do
+    def reconcile_all(sprites, _opts \\ []) do
       send(self(), {:reconciled, Enum.map(sprites, & &1.name)})
       {:ok, Enum.map(sprites, &%{name: &1.name, healthy: true, action: :provisioned})}
     end

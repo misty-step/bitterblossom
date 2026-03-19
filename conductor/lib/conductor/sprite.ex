@@ -455,38 +455,41 @@ defmodule Conductor.Sprite do
   defp maybe_setup_repo(_sprite, "", _persona, _force, _exec_fn), do: :ok
 
   defp maybe_setup_repo(sprite, repo, persona, force, exec_fn) do
-    repo_dir = sprite_repo_workspace(repo)
+    with :ok <- validate_repo(repo) do
+      repo_dir = sprite_repo_workspace(repo)
 
-    setup_cmd =
-      repo_setup_script(repo_dir, repo, force) <>
-        " && mkdir -p #{shell_quote(Path.join(repo_dir, ".claude/skills"))} #{shell_quote(Path.join(repo_dir, ".claude/commands"))} #{shell_quote(Path.join(repo_dir, ".bb"))}"
+      setup_cmd =
+        repo_setup_script(repo_dir, repo, force) <>
+          " && mkdir -p #{shell_quote(Path.join(repo_dir, ".claude/skills"))} #{shell_quote(Path.join(repo_dir, ".claude/commands"))} #{shell_quote(Path.join(repo_dir, ".bb"))}"
 
-    setup_result =
-      case exec_fn.(sprite, setup_cmd, timeout: 120_000) do
-        {:ok, _} -> :ok
-        {:error, msg, _code} -> {:error, msg}
-      end
-
-    with :ok <- setup_result do
-      metadata =
-        Jason.encode!(%{
-          schema_version: 1,
-          repo: repo,
-          repo_dir: repo_dir,
-          sprite: sprite,
-          persona: persona_contents(sprite, persona),
-          configured_at: DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
-        }) <> "\n"
-
-      with_temp_file("sprite-workspace", metadata, fn metadata_file ->
-        case exec_fn.(sprite, "true",
-               files: [{metadata_file, Path.join(repo_dir, @workspace_metadata_rel_path)}],
-               timeout: 30_000
-             ) do
+      setup_result =
+        case exec_fn.(sprite, setup_cmd, timeout: 120_000) do
           {:ok, _} -> :ok
           {:error, msg, _code} -> {:error, msg}
         end
-      end)
+
+      with :ok <- setup_result do
+        metadata =
+          Jason.encode!(%{
+            schema_version: 1,
+            repo: repo,
+            repo_dir: repo_dir,
+            sprite: sprite,
+            persona: persona_contents(sprite, persona),
+            configured_at:
+              DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+          }) <> "\n"
+
+        with_temp_file("sprite-workspace", metadata, fn metadata_file ->
+          case exec_fn.(sprite, "true",
+                 files: [{metadata_file, Path.join(repo_dir, @workspace_metadata_rel_path)}],
+                 timeout: 30_000
+               ) do
+            {:ok, _} -> :ok
+            {:error, msg, _code} -> {:error, msg}
+          end
+        end)
+      end
     end
   end
 
@@ -653,11 +656,24 @@ defmodule Conductor.Sprite do
     """
   end
 
+  defp validate_repo(repo) when is_binary(repo) do
+    with :ok <- Workspace.validate_input(repo),
+         [owner, name] <- String.split(repo, "/", parts: 2),
+         true <- valid_repo_segment?(owner),
+         true <- valid_repo_segment?(name) do
+      :ok
+    else
+      _ -> {:error, "invalid repo format: #{inspect(repo)}"}
+    end
+  end
+
+  defp validate_repo(repo), do: {:error, "invalid repo format: #{inspect(repo)}"}
+
   defp repo_setup_script(repo_dir, repo, true) do
     """
     rm -rf #{shell_quote(repo_dir)} &&
       cd #{shell_quote(@sprite_workspace_root)} &&
-      git clone https://github.com/#{repo}.git
+      git clone #{shell_quote(repo_clone_url(repo))}
     """
   end
 
@@ -669,13 +685,19 @@ defmodule Conductor.Sprite do
         git pull --ff-only
     else
       cd #{shell_quote(@sprite_workspace_root)} &&
-        git clone https://github.com/#{repo}.git
+        git clone #{shell_quote(repo_clone_url(repo))}
     fi
     """
   end
 
+  defp repo_clone_url(repo), do: "https://github.com/#{repo}.git"
+
   defp sprite_repo_workspace(repo) do
     repo |> String.split("/") |> List.last() |> then(&Path.join(@sprite_workspace_root, &1))
+  end
+
+  defp valid_repo_segment?(segment) do
+    Regex.match?(~r/^[A-Za-z0-9_.-]+$/, segment)
   end
 
   defp workspace_discovery_script do
