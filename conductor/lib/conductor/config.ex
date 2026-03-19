@@ -38,6 +38,16 @@ defmodule Conductor.Config do
     Application.get_env(:conductor, :builder_timeout_minutes, 25)
   end
 
+  @spec builder_retry_max_attempts() :: pos_integer()
+  def builder_retry_max_attempts do
+    Application.get_env(:conductor, :builder_retry_max_attempts, 3)
+  end
+
+  @spec builder_retry_backoff_base_ms() :: pos_integer()
+  def builder_retry_backoff_base_ms do
+    Application.get_env(:conductor, :builder_retry_backoff_base_ms, 1_000)
+  end
+
   @spec ci_timeout() :: pos_integer()
   def ci_timeout do
     Application.get_env(:conductor, :ci_timeout_minutes, 30)
@@ -126,6 +136,17 @@ defmodule Conductor.Config do
       Path.expand("../scripts/builder-prompt-template.md")
   end
 
+  @spec persona_source_root!() :: binary()
+  def persona_source_root! do
+    path = Application.fetch_env!(:conductor, :persona_source_root)
+
+    if File.dir?(path) do
+      path
+    else
+      raise "persona source root missing: #{path}"
+    end
+  end
+
   @spec dispatch_env() :: [{binary(), binary()}]
   def dispatch_env do
     # Render only the runtime API keys the harness still needs into the
@@ -197,7 +218,14 @@ defmodule Conductor.Config do
       {"GITHUB_TOKEN", fn -> System.get_env("GITHUB_TOKEN") end},
       {"SPRITE_TOKEN, FLY_API_TOKEN, or sprite CLI auth", fn -> sprite_auth_available?() end},
       {"gh", fn -> find_executable("gh") end},
-      {"sprite", fn -> find_executable("sprite") end}
+      {"sprite", fn -> find_executable("sprite") end},
+      {"persona source root",
+       fn ->
+         case Application.get_env(:conductor, :persona_source_root) do
+           path when is_binary(path) -> File.dir?(path)
+           _ -> false
+         end
+       end}
     ]
 
     results =

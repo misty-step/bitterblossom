@@ -185,6 +185,9 @@ func TestPersistGitHubAuthScriptUsesGhCredentialHelper(t *testing.T) {
 	if !strings.Contains(script, `test "$(git config --global --get credential.helper)" = "!gh auth git-credential"`) {
 		t.Fatalf("script = %q, want credential helper verification", script)
 	}
+	if !strings.Contains(script, `git config --global pull.rebase true`) {
+		t.Fatalf("script = %q, want pull.rebase configuration", script)
+	}
 }
 
 func TestRepoSetupScriptDoesNotExportGHToken(t *testing.T) {
@@ -197,6 +200,9 @@ func TestRepoSetupScriptDoesNotExportGHToken(t *testing.T) {
 	}
 	if !strings.Contains(script, "git clone https://github.com/misty-step/bitterblossom.git") {
 		t.Fatalf("script = %q, want clone command", script)
+	}
+	if !strings.Contains(script, "git pull --rebase") {
+		t.Fatalf("script = %q, want rebase-based pull for existing repos", script)
 	}
 }
 

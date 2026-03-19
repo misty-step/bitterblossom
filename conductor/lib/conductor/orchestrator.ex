@@ -259,6 +259,7 @@ defmodule Conductor.Orchestrator do
       repo: repo,
       issue: issue,
       worker: worker,
+      workers: [worker],
       trusted_surfaces: trusted_surfaces
     ]
 
@@ -471,6 +472,7 @@ defmodule Conductor.Orchestrator do
         repo: state.repo,
         issue: issue,
         worker: worker,
+        workers: state.worker_order,
         trusted_surfaces: state.trusted_surfaces
       ] ++ adoption_opts(existing_pr)
 

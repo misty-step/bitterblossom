@@ -104,7 +104,7 @@ func syncWorkspaceRepoWithRunner(ctx context.Context, run spriteScriptRunner, wo
 	output, exitCode, err := runDispatchCheck(ctx, run, dispatchCheck{
 		timeout: 45 * time.Second,
 		script: fmt.Sprintf(
-			`git config --global --get-all safe.directory 2>/dev/null | grep -qxF %q || git config --global --add safe.directory %q 2>/dev/null; cd %q && git checkout %q && git pull --ff-only 2>&1`,
+			`git config --global --get-all safe.directory 2>/dev/null | grep -qxF %q || git config --global --add safe.directory %q 2>/dev/null; cd %q && git checkout %q && git pull --rebase 2>&1`,
 			workspace, workspace, workspace, branch,
 		),
 	})

@@ -57,11 +57,20 @@ defmodule Conductor.StoreTest do
         builder_sprite: "s"
       })
 
-    Store.update_run(run_id, %{phase: "building", branch: "factory/1-123"})
+    Store.update_run(run_id, %{
+      phase: "building",
+      branch: "factory/1-123",
+      dispatch_attempt_count: 2,
+      builder_failure_class: "transient",
+      builder_failure_reason: "network timeout"
+    })
 
     {:ok, run} = Store.get_run(run_id)
     assert run["phase"] == "building"
     assert run["branch"] == "factory/1-123"
+    assert run["dispatch_attempt_count"] == 2
+    assert run["builder_failure_class"] == "transient"
+    assert run["builder_failure_reason"] == "network timeout"
   end
 
   test "complete run sets terminal state" do

@@ -189,6 +189,7 @@ git config --global credential.helper '!gh auth git-credential'
 test "$(git config --global --get credential.helper)" = "!gh auth git-credential"
 git config --global user.name "bitterblossom[bot]"
 git config --global user.email "bitterblossom@misty-step.dev"
+git config --global pull.rebase true
 git config --global --add safe.directory '*'
 `, tokenPath, tokenPath)
 }
@@ -202,7 +203,7 @@ func repoSetupScript(repoDir, repo string, force bool) string {
 	}
 
 	return fmt.Sprintf(
-		`if [ -d %q ]; then cd %q && git checkout master 2>/dev/null || git checkout main 2>/dev/null && git pull --ff-only; else cd %q && git clone https://github.com/%s.git; fi`,
+		`if [ -d %q ]; then cd %q && git checkout master 2>/dev/null || git checkout main 2>/dev/null && git pull --rebase; else cd %q && git clone https://github.com/%s.git; fi`,
 		repoDir, repoDir, spriteWorkspaceRoot, repo,
 	)
 }
