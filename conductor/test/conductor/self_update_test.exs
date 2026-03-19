@@ -20,7 +20,11 @@ defmodule Conductor.SelfUpdateTest do
     def recompile do
       calls = Process.get(:self_update_compile_calls, 0)
       Process.put(:self_update_compile_calls, calls + 1)
-      :ok
+
+      case Process.get(:self_update_compiler_handler) do
+        nil -> :ok
+        handler -> handler.()
+      end
     end
   end
 
@@ -42,6 +46,7 @@ defmodule Conductor.SelfUpdateTest do
     Process.delete(:self_update_shell_calls)
     Process.delete(:self_update_shell_handler)
     Process.delete(:self_update_compile_calls)
+    Process.delete(:self_update_compiler_handler)
     Process.delete(:self_update_now_ms)
     Process.delete({SelfUpdate, :last_warning_ms})
 
@@ -52,6 +57,7 @@ defmodule Conductor.SelfUpdateTest do
       Process.delete(:self_update_shell_calls)
       Process.delete(:self_update_shell_handler)
       Process.delete(:self_update_compile_calls)
+      Process.delete(:self_update_compiler_handler)
       Process.delete(:self_update_now_ms)
       Process.delete({SelfUpdate, :last_warning_ms})
     end)
@@ -134,6 +140,31 @@ defmodule Conductor.SelfUpdateTest do
       refute Enum.any?(calls, fn {_program, args, _opts} -> Enum.member?(args, "pull") end)
     end
 
+    test "returns :noop when HEAD is already up to date" do
+      Process.put(:self_update_shell_handler, fn
+        "git", ["-C", @repo_root, "worktree", "list", "--porcelain"], _opts ->
+          {:ok, "worktree #{@repo_root}\nHEAD abc123\nbranch refs/heads/master\n"}
+
+        "git", ["-C", @repo_root, "fetch", "origin", "master", "--quiet"], _opts ->
+          {:ok, ""}
+
+        "git", ["-C", @repo_root, "rev-list", "--count", "HEAD..origin/master"], _opts ->
+          {:ok, "0\n"}
+
+        program, args, _opts ->
+          flunk("unexpected command: #{program} #{inspect(args)}")
+      end)
+
+      assert SelfUpdate.check_for_updates() == :noop
+      assert Process.get(:self_update_compile_calls, 0) == 0
+
+      calls = Process.get(:self_update_shell_calls)
+
+      refute Enum.any?(calls, fn {_program, args, _opts} ->
+               args == ["-C", @repo_root, "reset", "--hard", "origin/master"]
+             end)
+    end
+
     test "rate-limits self-update warnings to once per minute" do
       Process.put(:self_update_shell_handler, fn
         "git", ["-C", @repo_root, "worktree", "list", "--porcelain"], _opts ->
@@ -165,6 +196,64 @@ defmodule Conductor.SelfUpdateTest do
         end)
 
       assert Regex.scan(~r/\[self-update\] git reset failed: diverged/, log) |> length() == 2
+    end
+
+    test "returns recompile_failed and logs when recompilation returns an error" do
+      Process.put(:self_update_compiler_handler, fn -> {:error, :compile_failed} end)
+
+      Process.put(:self_update_shell_handler, fn
+        "git", ["-C", @repo_root, "worktree", "list", "--porcelain"], _opts ->
+          {:ok, "worktree #{@repo_root}\nHEAD abc123\nbranch refs/heads/master\n"}
+
+        "git", ["-C", @repo_root, "fetch", "origin", "master", "--quiet"], _opts ->
+          {:ok, ""}
+
+        "git", ["-C", @repo_root, "rev-list", "--count", "HEAD..origin/master"], _opts ->
+          {:ok, "1\n"}
+
+        "git", ["-C", @repo_root, "reset", "--hard", "origin/master"], _opts ->
+          {:ok, "HEAD is now at abc123 update"}
+
+        program, args, _opts ->
+          flunk("unexpected command: #{program} #{inspect(args)}")
+      end)
+
+      log =
+        capture_log(fn ->
+          assert SelfUpdate.check_for_updates() == {:error, :recompile_failed}
+        end)
+
+      assert Process.get(:self_update_compile_calls, 0) == 1
+      assert log =~ "[self-update] recompile failed: :compile_failed"
+    end
+
+    test "returns recompile_failed and logs when recompilation raises" do
+      Process.put(:self_update_compiler_handler, fn -> raise "compile exploded" end)
+
+      Process.put(:self_update_shell_handler, fn
+        "git", ["-C", @repo_root, "worktree", "list", "--porcelain"], _opts ->
+          {:ok, "worktree #{@repo_root}\nHEAD abc123\nbranch refs/heads/master\n"}
+
+        "git", ["-C", @repo_root, "fetch", "origin", "master", "--quiet"], _opts ->
+          {:ok, ""}
+
+        "git", ["-C", @repo_root, "rev-list", "--count", "HEAD..origin/master"], _opts ->
+          {:ok, "1\n"}
+
+        "git", ["-C", @repo_root, "reset", "--hard", "origin/master"], _opts ->
+          {:ok, "HEAD is now at abc123 update"}
+
+        program, args, _opts ->
+          flunk("unexpected command: #{program} #{inspect(args)}")
+      end)
+
+      log =
+        capture_log(fn ->
+          assert SelfUpdate.check_for_updates() == {:error, :recompile_failed}
+        end)
+
+      assert Process.get(:self_update_compile_calls, 0) == 1
+      assert log =~ "[self-update] recompile failed: compile exploded"
     end
   end
 
