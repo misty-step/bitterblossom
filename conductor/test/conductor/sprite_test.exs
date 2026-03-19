@@ -406,4 +406,17 @@ defmodule Conductor.SpriteTest do
     assert reason =~ ~s(No active task on "bb-weaver".)
     assert reason =~ "dispatch log is empty"
   end
+
+  test "logs preserves transport failures from log availability checks" do
+    exec_fn = fn _sprite, command, _opts ->
+      cond do
+        String.contains?(command, "test -s") -> {:error, "connection refused", 255}
+        String.contains?(command, "pgrep") -> {:error, "", 1}
+        true -> {:ok, ""}
+      end
+    end
+
+    assert {:error, "connection refused"} =
+             Sprite.logs("bb-weaver", workspace: "/tmp/worktree", exec_fn: exec_fn)
+  end
 end

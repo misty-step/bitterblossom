@@ -20,8 +20,33 @@ defmodule Conductor.Fleet.Reconciler do
   def reconcile_all(sprites, opts \\ []) do
     results =
       sprites
-      |> Task.async_stream(&reconcile_sprite(&1, opts), timeout: 600_000, ordered: false)
-      |> Enum.map(fn {:ok, result} -> result end)
+      |> Task.async_stream(
+        fn sprite ->
+          try do
+            {:ok, reconcile_sprite(sprite, opts)}
+          rescue
+            error -> {:error, Exception.message(error)}
+          catch
+            kind, reason -> {:error, {kind, reason}}
+          end
+        end,
+        timeout: 600_000,
+        ordered: true,
+        on_timeout: :kill_task
+      )
+      |> Enum.zip(sprites)
+      |> Enum.map(fn
+        {{:ok, {:ok, result}}, _sprite} ->
+          result
+
+        {{:ok, {:error, reason}}, sprite} ->
+          Logger.error("[fleet] #{sprite.name} reconcile crashed: #{inspect(reason)}")
+          %{name: sprite.name, role: sprite.role, healthy: false, action: :failed}
+
+        {{:exit, reason}, sprite} ->
+          Logger.error("[fleet] #{sprite.name} reconcile crashed: #{inspect(reason)}")
+          %{name: sprite.name, role: sprite.role, healthy: false, action: :failed}
+      end)
 
     healthy = Enum.count(results, & &1.healthy)
     degraded = Enum.count(results, &(not &1.healthy))

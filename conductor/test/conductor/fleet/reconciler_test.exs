@@ -254,6 +254,16 @@ defmodule Conductor.Fleet.ReconcilerTest do
     assert result == %{name: "bb-weaver", role: "builder", healthy: false, action: :failed}
   end
 
+  test "reconcile_all degrades sprites whose reconcile task crashes" do
+    {:ok, [result]} =
+      Reconciler.reconcile_all([@sprite],
+        status_fn: fn _name, _opts -> {:ok, %{healthy: false}} end,
+        provision_fn: fn _name, _opts -> raise "boom" end
+      )
+
+    assert result == %{name: "bb-weaver", role: "builder", healthy: false, action: :failed}
+  end
+
   defp temp_dir(prefix) do
     Path.join(System.tmp_dir!(), "#{prefix}-#{System.unique_integer([:positive])}")
   end

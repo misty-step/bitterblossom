@@ -400,8 +400,12 @@ defmodule Conductor.CLI do
           System.EnvError ->
             {:error, :missing_env}
 
-          RuntimeError ->
-            {:error, :missing_env}
+          error in RuntimeError ->
+            if String.starts_with?(Exception.message(error), "no sprite org:") do
+              {:error, :missing_env}
+            else
+              reraise error, __STACKTRACE__
+            end
         end
       else
         {:error, :missing_name}
