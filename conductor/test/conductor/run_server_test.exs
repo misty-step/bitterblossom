@@ -442,7 +442,9 @@ defmodule Conductor.RunServerTest do
       run = find_run(42)
       assert run["phase"] == "failed"
       assert log =~ "[weaver][run-42-"
-      assert log =~ "builder_dispatch_failed: exit 139: SEGFAULT"
+
+      assert log =~
+               "builder_dispatch_failed: builder dispatch failed (category=unknown, exit 139)"
     end
 
     test "lease released" do
@@ -458,6 +460,32 @@ defmodule Conductor.RunServerTest do
 
       run = find_run(42)
       assert "builder_dispatch_failed" in event_types(run["run_id"])
+    end
+
+    test "does not persist raw builder output in durable failure data" do
+      MockState.put(
+        {:dispatch_result, "test-sprite"},
+        {:error, "TOKEN=abc123\npermission denied", 4}
+      )
+
+      {:ok, pid} = start_run_server()
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "failed"
+      assert run["builder_failure_class"] == "permanent"
+      assert run["builder_failure_reason"] == "builder dispatch failed (category=auth, exit 4)"
+      refute String.contains?(run["builder_failure_reason"], "TOKEN=abc123")
+
+      [event] =
+        Store.list_events(run["run_id"])
+        |> Enum.filter(&(&1["event_type"] == "builder_dispatch_error"))
+
+      assert event["payload"]["failure_class"] == "permanent"
+      assert event["payload"]["category"] == "auth"
+      assert event["payload"]["code"] == 4
+      assert event["payload"]["reason"] == "builder dispatch failed (category=auth, exit 4)"
+      refute String.contains?(event["payload"]["reason"], "TOKEN=abc123")
     end
   end
 

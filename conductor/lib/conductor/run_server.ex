@@ -284,10 +284,10 @@ defmodule Conductor.RunServer do
   # --- Private ---
 
   defp handle_dispatch_failure(state, output, code, opts \\ []) do
-    reason = dispatch_failure_reason(output, code)
     {default_failure_class, default_category} = Harness.classify_dispatch_failure(output, code)
     failure_class = Keyword.get(opts, :failure_class, default_failure_class)
     category = Keyword.get(opts, :category, default_category)
+    reason = dispatch_failure_reason(failure_class, category, code)
 
     Store.update_run(state.run_id, %{
       builder_failure_class: Atom.to_string(failure_class),
@@ -408,10 +408,20 @@ defmodule Conductor.RunServer do
     healthy? and not_busy?
   end
 
-  defp dispatch_failure_reason(output, nil), do: String.slice(to_string(output || ""), 0, 500)
+  defp dispatch_failure_reason(failure_class, category, nil) do
+    if failure_class == :transient and category == :crash do
+      "builder dispatch crashed"
+    else
+      "builder dispatch failed (category=#{category})"
+    end
+  end
 
-  defp dispatch_failure_reason(output, code) do
-    "exit #{code}: #{String.slice(to_string(output || ""), 0, 500)}"
+  defp dispatch_failure_reason(failure_class, category, code) do
+    if failure_class == :transient and category == :crash do
+      "builder dispatch crashed (exit #{code})"
+    else
+      "builder dispatch failed (category=#{category}, exit #{code})"
+    end
   end
 
   defp detect_pr(state) do

@@ -1,5 +1,5 @@
 defmodule Conductor.HarnessTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Conductor.Harness
 
