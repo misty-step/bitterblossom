@@ -236,7 +236,6 @@ defmodule Conductor.SpriteDispatchTest do
 
       assert {:ok, _} = result
     end
-
   end
 
   describe "dispatch/4 retry on agent crash" do
