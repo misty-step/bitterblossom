@@ -118,8 +118,12 @@ defmodule Conductor.OrchestratorTest do
       MockState.get({:close_issue_result, repo, issue_number}, :ok)
     end
 
+    def close_pr(_repo, _pr_number, _opts \\ []), do: :ok
+
     def find_open_pr(_repo, issue_number, _expected_branch \\ nil),
       do: MockState.get({:open_pr, issue_number}, {:error, :not_found})
+
+    def issue_open_prs(_repo, _issue_number), do: {:ok, []}
 
     def pr_state(_repo, pr_number),
       do: MockState.get({:pr_state, pr_number}, {:ok, "OPEN"})

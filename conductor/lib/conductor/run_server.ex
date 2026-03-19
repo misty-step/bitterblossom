@@ -440,36 +440,143 @@ defmodule Conductor.RunServer do
     case code_host_mod().find_open_pr(state.repo, state.issue.number, state.branch) do
       {:ok, %{"headRefName" => head_ref, "number" => _number, "url" => _url} = pr}
       when head_ref == state.branch ->
-        handle_pr_ready(pr, state)
+        with :ok <- handle_duplicate_issue_prs(state) do
+          handle_pr_ready(pr, state)
+        end
 
       {:ok, %{"headRefName" => head_ref}} when head_ref != state.branch ->
         fail(
           state,
           "pr_branch_mismatch",
-          "Weaver opened PR on unexpected branch #{inspect(head_ref)} (expected #{inspect(state.branch)})"
+          "Weaver opened PR on unexpected branch #{branch_label(head_ref)} (expected #{inspect(state.branch)})"
         )
 
       {:ok, pr} ->
         fail(
           state,
           "pr_detection_failed",
-          "Weaver PR lookup returned incomplete data: #{inspect(Map.take(pr, ["number", "url", "headRefName"]))}"
+          "Weaver PR lookup returned incomplete data: #{inspect(Map.put(Map.take(pr, ["number", "url", "headRefName"]), "headRefName", branch_label(Map.get(pr, "headRefName"))))}"
         )
 
       {:error, :not_found} ->
-        case read_workspace_file(state, "BLOCKED.md") do
-          {:ok, reason} ->
-            block(state, reason)
+        case handle_unexpected_issue_prs_without_expected_branch(state) do
+          :continue ->
+            case read_workspace_file(state, "BLOCKED.md") do
+              {:ok, reason} ->
+                block(state, reason)
 
-          {:error, :not_found} ->
-            fail(state, "pr_not_found", "Weaver completed without opening a PR")
+              {:error, :not_found} ->
+                fail(state, "pr_not_found", "Weaver completed without opening a PR")
 
-          {:error, reason} ->
-            fail(state, "workspace_read_error", inspect(reason))
+              {:error, reason} ->
+                fail(state, "workspace_read_error", inspect(reason))
+            end
+
+          {:stop, result} ->
+            result
         end
 
       {:error, reason} ->
         fail(state, "pr_detection_failed", inspect(reason))
+    end
+  end
+
+  defp handle_duplicate_issue_prs(state) do
+    case code_host_mod().issue_open_prs(state.repo, state.issue.number) do
+      {:ok, prs} ->
+        unexpected =
+          Enum.filter(prs, fn pr ->
+            branch = pr["headRefName"]
+            branch != state.branch and not Workspace.factory_branch?(branch)
+          end)
+
+        close_and_fail_on_unexpected_prs(state, unexpected)
+
+      {:error, reason} ->
+        fail(state, "pr_detection_failed", inspect(reason))
+    end
+  end
+
+  defp handle_unexpected_issue_prs_without_expected_branch(state) do
+    case code_host_mod().issue_open_prs(state.repo, state.issue.number) do
+      {:ok, prs} ->
+        case Enum.split_with(prs, fn pr ->
+               Workspace.factory_branch?(pr["headRefName"])
+             end) do
+          {[], []} ->
+            :continue
+
+          {factory_prs, unexpected_prs} ->
+            if unexpected_prs != [] do
+              {:stop, close_and_fail_on_unexpected_prs(state, unexpected_prs)}
+            else
+              branch = factory_prs |> List.first() |> Map.get("headRefName", "unknown")
+
+              {:stop,
+               fail(
+                 state,
+                 "pr_branch_mismatch",
+                 "Weaver opened PR on unexpected branch #{branch_label(branch)} (expected #{inspect(state.branch)})"
+               )}
+            end
+        end
+
+      {:error, reason} ->
+        {:stop, fail(state, "pr_detection_failed", inspect(reason))}
+    end
+  end
+
+  defp close_and_fail_on_unexpected_prs(_state, []), do: :ok
+
+  defp close_and_fail_on_unexpected_prs(state, unexpected_prs) do
+    comment =
+      "Bitterblossom closed this PR because issue ##{state.issue.number} is leased to `#{state.branch}` and duplicate foreign-branch PRs are not governable."
+
+    results =
+      Enum.map(unexpected_prs, fn pr ->
+        case code_host_mod().close_pr(state.repo, pr["number"], comment: comment) do
+          :ok -> {:ok, pr}
+          {:error, reason} -> {:error, pr, reason}
+        end
+      end)
+
+    details =
+      results
+      |> Enum.map(fn
+        {:ok, pr} ->
+          "##{pr["number"]} on #{branch_label(pr["headRefName"])}"
+
+        {:error, pr, reason} ->
+          "##{pr["number"]} on #{branch_label(pr["headRefName"])} (close failed: #{format_close_failure(reason)})"
+      end)
+      |> Enum.join(", ")
+
+    failures =
+      results
+      |> Enum.flat_map(fn
+        {:error, pr, reason} ->
+          [
+            "##{pr["number"]} on #{branch_label(pr["headRefName"])}: #{format_close_failure(reason)}"
+          ]
+
+        _ ->
+          []
+      end)
+
+    case failures do
+      [] ->
+        fail(
+          state,
+          "unexpected_issue_prs",
+          "closed duplicate foreign-branch PRs for issue ##{state.issue.number}: #{details}"
+        )
+
+      _ ->
+        fail(
+          state,
+          "unexpected_issue_prs_cleanup_failed",
+          "failed to close duplicate foreign-branch PRs for issue ##{state.issue.number}: #{details}; close failures: #{Enum.join(failures, ", ")}"
+        )
     end
   end
 
@@ -547,6 +654,12 @@ defmodule Conductor.RunServer do
     maybe_kill_worker(state)
     %{state | heartbeat_timer: nil, retry_timer: nil}
   end
+
+  defp branch_label(branch) when is_binary(branch) and branch != "", do: branch
+  defp branch_label(_branch), do: "unknown"
+
+  defp format_close_failure(reason) when is_binary(reason), do: reason
+  defp format_close_failure(reason), do: inspect(reason)
 
   defp maybe_kill_worker(state) do
     if function_exported?(worker_mod(), :kill, 1) do

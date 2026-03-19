@@ -56,7 +56,7 @@ defmodule Conductor.Prompt do
   defp initial_section(branch) do
     """
     ### Phase 1: Implementation
-    1. Create branch `#{branch}` from the repo default branch
+    1. Stay on the pre-created branch `#{branch}` for the entire lane; do not create or switch to any other branch
     2. Read the issue carefully — respect acceptance criteria and boundaries
     3. Implement with tests (TDD: red, green, refactor)
     4. Create a PR with semantic commit messages

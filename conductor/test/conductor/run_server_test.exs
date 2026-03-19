@@ -74,7 +74,21 @@ defmodule Conductor.RunServerTest do
     def pr_ci_failure_logs(_repo, _pr_number), do: {:ok, ""}
     def add_label(_repo, _pr_number, _label), do: :ok
     def close_issue(_repo, _issue_number), do: :ok
+
+    def close_pr(repo, pr_number, opts \\ []) do
+      closed = MockState.get(:closed_prs, [])
+      MockState.put(:closed_prs, closed ++ [{repo, pr_number, opts}])
+
+      case MockState.get({:close_pr_result, repo, pr_number}, :ok) do
+        :ok -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    end
+
     def open_prs(_repo), do: {:ok, []}
+
+    def issue_open_prs(repo, issue_number),
+      do: MockState.get({:issue_open_prs, repo, issue_number}, {:ok, []})
 
     def find_open_pr(repo, issue_number, expected_branch \\ nil) do
       result =
@@ -244,6 +258,13 @@ defmodule Conductor.RunServerTest do
   defp event_types(run_id) do
     Store.list_events(run_id)
     |> Enum.map(& &1["event_type"])
+  end
+
+  defp event_payload(run_id, event_type) do
+    Store.list_events(run_id)
+    |> Enum.find_value(fn event ->
+      if event["event_type"] == event_type, do: event["payload"], else: nil
+    end)
   end
 
   defp eventually(assert_fun, timeout_ms \\ 2_000, step_ms \\ 20) do
@@ -651,6 +672,31 @@ defmodule Conductor.RunServerTest do
       assert "pr_branch_mismatch" in event_types(run["run_id"])
     end
 
+    test "uses unknown when the PR head branch is missing" do
+      MockState.put({:dispatch_result, "test-sprite"}, {:ok, ""})
+
+      MockState.put(
+        {:open_pr_force, "test/repo", 42, "factory/42-1773840329"},
+        {:force_ok,
+         %{
+           "number" => 123,
+           "url" => "https://github.com/test/repo/pull/123",
+           "headRefName" => nil
+         }}
+      )
+
+      {:ok, pid} = start_run_server(existing_branch: "factory/42-1773840329")
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "failed"
+      assert "pr_branch_mismatch" in event_types(run["run_id"])
+
+      reason = event_payload(run["run_id"], "pr_branch_mismatch")["reason"]
+      assert reason =~ "unknown"
+      refute reason =~ "nil"
+    end
+
     test "finds the current run branch when an older factory PR also exists" do
       MockState.put({:dispatch_result, "test-sprite"}, {:ok, ""})
 
@@ -687,6 +733,258 @@ defmodule Conductor.RunServerTest do
       assert run["phase"] == "pr_opened"
       assert run["pr_number"] == 999
       assert "builder_pr_detected" in event_types(run["run_id"])
+    end
+  end
+
+  describe "duplicate non-factory PR after dispatch" do
+    test "closes the foreign PR and fails the run truthfully" do
+      MockState.put({:dispatch_result, "test-sprite"}, {:ok, ""})
+
+      MockState.put(
+        {:open_pr_exact, "test/repo", 42, "factory/42-1234567890"},
+        {:ok,
+         %{
+           "number" => 999,
+           "url" => "https://github.com/test/repo/pull/999",
+           "headRefName" => "factory/42-1234567890"
+         }}
+      )
+
+      MockState.put(
+        {:issue_open_prs, "test/repo", 42},
+        {:ok,
+         [
+           %{
+             "number" => 999,
+             "url" => "https://github.com/test/repo/pull/999",
+             "headRefName" => "factory/42-1234567890"
+           },
+           %{
+             "number" => 1000,
+             "url" => "https://github.com/test/repo/pull/1000",
+             "headRefName" => "cx/issue-42-shadow"
+           }
+         ]}
+      )
+
+      {:ok, pid} = start_run_server(existing_branch: "factory/42-1234567890")
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "failed"
+      assert "unexpected_issue_prs" in event_types(run["run_id"])
+
+      assert MockState.get(:closed_prs) == [
+               {"test/repo", 1000,
+                [
+                  comment:
+                    "Bitterblossom closed this PR because issue #42 is leased to `factory/42-1234567890` and duplicate foreign-branch PRs are not governable."
+                ]}
+             ]
+    end
+
+    test "fails truthfully when duplicate PR cleanup cannot close a foreign PR" do
+      MockState.put({:dispatch_result, "test-sprite"}, {:ok, ""})
+
+      MockState.put(
+        {:open_pr_exact, "test/repo", 42, "factory/42-1234567890"},
+        {:ok,
+         %{
+           "number" => 999,
+           "url" => "https://github.com/test/repo/pull/999",
+           "headRefName" => "factory/42-1234567890"
+         }}
+      )
+
+      MockState.put(
+        {:issue_open_prs, "test/repo", 42},
+        {:ok,
+         [
+           %{
+             "number" => 1000,
+             "url" => "https://github.com/test/repo/pull/1000",
+             "headRefName" => "cx/issue-42-shadow"
+           }
+         ]}
+      )
+
+      MockState.put({:close_pr_result, "test/repo", 1000}, {:error, :api_down})
+
+      {:ok, pid} = start_run_server(existing_branch: "factory/42-1234567890")
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "failed"
+      assert "unexpected_issue_prs_cleanup_failed" in event_types(run["run_id"])
+
+      reason = event_payload(run["run_id"], "unexpected_issue_prs_cleanup_failed")["reason"]
+      assert reason =~ "#1000 on cx/issue-42-shadow"
+      assert reason =~ "failed to close duplicate foreign-branch PRs"
+      assert reason =~ "close failed: :api_down"
+    end
+
+    test "closes every foreign PR tied to the issue" do
+      MockState.put({:dispatch_result, "test-sprite"}, {:ok, ""})
+
+      MockState.put(
+        {:open_pr_exact, "test/repo", 42, "factory/42-1234567890"},
+        {:ok,
+         %{
+           "number" => 999,
+           "url" => "https://github.com/test/repo/pull/999",
+           "headRefName" => "factory/42-1234567890"
+         }}
+      )
+
+      MockState.put(
+        {:issue_open_prs, "test/repo", 42},
+        {:ok,
+         [
+           %{
+             "number" => 1000,
+             "url" => "https://github.com/test/repo/pull/1000",
+             "headRefName" => "cx/issue-42-shadow"
+           },
+           %{
+             "number" => 1001,
+             "url" => "https://github.com/test/repo/pull/1001",
+             "headRefName" => "manual/42-fix"
+           }
+         ]}
+      )
+
+      {:ok, pid} = start_run_server(existing_branch: "factory/42-1234567890")
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "failed"
+      assert "unexpected_issue_prs" in event_types(run["run_id"])
+
+      reason = event_payload(run["run_id"], "unexpected_issue_prs")["reason"]
+      assert reason =~ "#1000 on cx/issue-42-shadow"
+      assert reason =~ "#1001 on manual/42-fix"
+      assert reason =~ "closed duplicate foreign-branch PRs"
+
+      assert MockState.get(:closed_prs) == [
+               {"test/repo", 1000,
+                [
+                  comment:
+                    "Bitterblossom closed this PR because issue #42 is leased to `factory/42-1234567890` and duplicate foreign-branch PRs are not governable."
+                ]},
+               {"test/repo", 1001,
+                [
+                  comment:
+                    "Bitterblossom closed this PR because issue #42 is leased to `factory/42-1234567890` and duplicate foreign-branch PRs are not governable."
+                ]}
+             ]
+    end
+  end
+
+  describe "duplicate PR discovery when expected PR is missing" do
+    test "continues to BLOCKED.md handling when no issue PRs exist" do
+      MockState.put({:dispatch_result, "test-sprite"}, {:ok, ""})
+      MockState.put({:issue_open_prs, "test/repo", 42}, {:ok, []})
+
+      {:ok, pid} = start_run_server()
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "failed"
+      assert "pr_not_found" in event_types(run["run_id"])
+    end
+
+    test "fails with branch mismatch when another factory PR exists" do
+      MockState.put({:dispatch_result, "test-sprite"}, {:ok, ""})
+
+      MockState.put(
+        {:issue_open_prs, "test/repo", 42},
+        {:ok,
+         [
+           %{
+             "number" => 1002,
+             "url" => "https://github.com/test/repo/pull/1002",
+             "headRefName" => "factory/42-other-run"
+           }
+         ]}
+      )
+
+      {:ok, pid} = start_run_server(existing_branch: "factory/42-1234567890")
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "failed"
+      assert "pr_branch_mismatch" in event_types(run["run_id"])
+    end
+
+    test "closes foreign PRs and fails when expected PR is missing but duplicates exist" do
+      MockState.put({:dispatch_result, "test-sprite"}, {:ok, ""})
+
+      MockState.put(
+        {:issue_open_prs, "test/repo", 42},
+        {:ok,
+         [
+           %{
+             "number" => 1000,
+             "url" => "https://github.com/test/repo/pull/1000",
+             "headRefName" => "cx/issue-42-shadow"
+           },
+           %{
+             "number" => 1002,
+             "url" => "https://github.com/test/repo/pull/1002",
+             "headRefName" => "factory/42-other-run"
+           }
+         ]}
+      )
+
+      {:ok, pid} = start_run_server(existing_branch: "factory/42-1234567890")
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "failed"
+      assert "unexpected_issue_prs" in event_types(run["run_id"])
+
+      reason = event_payload(run["run_id"], "unexpected_issue_prs")["reason"]
+      assert reason =~ "#1000 on cx/issue-42-shadow"
+      assert reason =~ "closed duplicate foreign-branch PRs"
+    end
+
+    test "fails when issue PR enumeration errors while expected PR is missing" do
+      MockState.put({:dispatch_result, "test-sprite"}, {:ok, ""})
+      MockState.put({:issue_open_prs, "test/repo", 42}, {:error, :api_error})
+
+      {:ok, pid} = start_run_server(existing_branch: "factory/42-1234567890")
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "failed"
+      assert "pr_detection_failed" in event_types(run["run_id"])
+      assert event_payload(run["run_id"], "pr_detection_failed")["reason"] =~ "api_error"
+    end
+  end
+
+  describe "duplicate PR enumeration errors" do
+    test "fails when issue PR enumeration errors after finding the expected PR" do
+      MockState.put({:dispatch_result, "test-sprite"}, {:ok, ""})
+
+      MockState.put(
+        {:open_pr_exact, "test/repo", 42, "factory/42-1234567890"},
+        {:ok,
+         %{
+           "number" => 999,
+           "url" => "https://github.com/test/repo/pull/999",
+           "headRefName" => "factory/42-1234567890"
+         }}
+      )
+
+      MockState.put({:issue_open_prs, "test/repo", 42}, {:error, :api_error})
+
+      {:ok, pid} = start_run_server(existing_branch: "factory/42-1234567890")
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "failed"
+      assert "pr_detection_failed" in event_types(run["run_id"])
+      assert event_payload(run["run_id"], "pr_detection_failed")["reason"] =~ "api_error"
     end
   end
 
