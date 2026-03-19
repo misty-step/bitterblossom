@@ -265,6 +265,8 @@ defmodule Conductor.Workspace do
 
   defp link_persona_skills_command(workspace, role_name) do
     launch_dir = persona_launch_dir(workspace, role_name)
+    agents_skills_dir = Path.join(workspace, ".agents/skills")
+    claude_skills_dir = Path.join(workspace, ".claude/skills")
 
     """
     set -e
@@ -272,13 +274,15 @@ defmodule Conductor.Workspace do
     ln -s ../.agents/skills #{shell_quote(Path.join(launch_dir, ".claude/skills"))}
     rm -f #{shell_quote(Path.join(workspace, ".claude/CLAUDE.md"))}
     ln -s #{shell_quote(Path.join(launch_dir, "CLAUDE.md"))} #{shell_quote(Path.join(workspace, ".claude/CLAUDE.md"))}
-    rm -rf #{shell_quote(Path.join(workspace, ".claude/skills"))}/bb-persona-#{role_name}-*
-    rm -rf #{shell_quote(Path.join(workspace, ".agents/skills"))}/bb-persona-#{role_name}-*
+    agents_skills_dir=#{shell_quote(agents_skills_dir)}
+    claude_skills_dir=#{shell_quote(claude_skills_dir)}
+    rm -rf "$claude_skills_dir"/bb-persona-#{role_name}-*
+    rm -rf "$agents_skills_dir"/bb-persona-#{role_name}-*
     for source in #{shell_quote(Path.join(launch_dir, ".agents/skills"))}/*; do
       [ -e "$source" ] || continue
       name=$(basename "$source")
-      agents_target=#{shell_quote(Path.join(workspace, ".agents/skills"))}/bb-persona-#{role_name}-$name
-      claude_target=#{shell_quote(Path.join(workspace, ".claude/skills"))}/bb-persona-#{role_name}-$name
+      agents_target="$agents_skills_dir/bb-persona-#{role_name}-$name"
+      claude_target="$claude_skills_dir/bb-persona-#{role_name}-$name"
       rm -rf "$agents_target" "$claude_target"
       ln -s "$source" "$agents_target"
       ln -s "$source" "$claude_target"

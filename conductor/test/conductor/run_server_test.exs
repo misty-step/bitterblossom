@@ -138,7 +138,7 @@ defmodule Conductor.RunServerTest do
     end
 
     def sync_persona(_sprite, _workspace, _role, _opts \\ []) do
-      :ok
+      MockState.get(:sync_persona_result, :ok)
     end
 
     defp remember_branch(repo, branch) do
@@ -490,6 +490,23 @@ defmodule Conductor.RunServerTest do
       assert event["payload"]["code"] == 4
       assert event["payload"]["reason"] == "builder dispatch failed (category=auth, exit 4)"
       refute String.contains?(event["payload"]["reason"], "TOKEN=abc123")
+    end
+  end
+
+  describe "persona sync failure" do
+    test "marks run failed when persona sync errors before dispatch" do
+      MockState.put(:sync_persona_result, {:error, "persona sync failed"})
+
+      log =
+        capture_log(fn ->
+          {:ok, pid} = start_run_server()
+          wait_for_exit(pid)
+        end)
+
+      run = find_run(42)
+      assert run["phase"] == "failed"
+      assert "builder_dispatch_failed" in event_types(run["run_id"])
+      assert log =~ "builder_dispatch_failed: exit 1: persona sync failed"
     end
   end
 
