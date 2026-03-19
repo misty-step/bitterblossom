@@ -147,7 +147,9 @@ defmodule Conductor.SelfUpdate do
              "files",
              "--jq",
              ".files[].path"
-           ], timeout: 30_000) do
+           ],
+           timeout: 30_000
+         ) do
       {:ok, output} ->
         output
         |> String.split("\n", trim: true)
