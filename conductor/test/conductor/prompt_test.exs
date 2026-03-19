@@ -59,8 +59,9 @@ defmodule Conductor.PromptTest do
       refute prompt =~ "Existing PR:"
     end
 
-    test "includes branch name in implementation instructions", %{prompt: prompt} do
-      assert prompt =~ "Create branch `factory/99-123`"
+    test "treats the branch as pre-created and forbids switching lanes", %{prompt: prompt} do
+      assert prompt =~ "Stay on the pre-created branch `factory/99-123`"
+      refute prompt =~ "Create branch `factory/99-123`"
     end
   end
 

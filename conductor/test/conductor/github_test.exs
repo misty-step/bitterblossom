@@ -333,6 +333,26 @@ defmodule Conductor.GitHubTest do
     end
   end
 
+  describe "issue_open_prs/2" do
+    test "returns every open PR mapped to the issue" do
+      with_fake_gh(
+        """
+        cat <<'JSON'
+        [
+          {"number":10,"title":"tracked","body":"","headRefName":"factory/42-1234567890","url":"http://example.com/10"},
+          {"number":11,"title":"duplicate","body":"Closes #42","headRefName":"cx/issue-42-shadow","url":"http://example.com/11"},
+          {"number":12,"title":"other","body":"Closes #99","headRefName":"factory/99-1234567890","url":"http://example.com/12"}
+        ]
+        JSON
+        """,
+        fn _tmp_dir, _args_path ->
+          assert {:ok, prs} = GitHub.issue_open_prs("misty-step/bitterblossom", 42)
+          assert Enum.map(prs, & &1["number"]) == [10, 11]
+        end
+      )
+    end
+  end
+
   describe "open_prs/1" do
     test "requests the unfiltered limit so all open PRs are considered" do
       with_fake_gh(

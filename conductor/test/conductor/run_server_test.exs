@@ -57,7 +57,17 @@ defmodule Conductor.RunServerTest do
     def pr_ci_failure_logs(_repo, _pr_number), do: {:ok, ""}
     def add_label(_repo, _pr_number, _label), do: :ok
     def close_issue(_repo, _issue_number), do: :ok
+
+    def close_pr(repo, pr_number, opts \\ []) do
+      closed = MockState.get(:closed_prs, [])
+      MockState.put(:closed_prs, closed ++ [{repo, pr_number, opts}])
+      :ok
+    end
+
     def open_prs(_repo), do: {:ok, []}
+
+    def issue_open_prs(repo, issue_number),
+      do: MockState.get({:issue_open_prs, repo, issue_number}, {:ok, []})
 
     def find_open_pr(repo, issue_number, expected_branch \\ nil) do
       result =
@@ -600,6 +610,54 @@ defmodule Conductor.RunServerTest do
       assert run["phase"] == "pr_opened"
       assert run["pr_number"] == 999
       assert "builder_pr_detected" in event_types(run["run_id"])
+    end
+  end
+
+  describe "duplicate non-factory PR after dispatch" do
+    test "closes the foreign PR and fails the run truthfully" do
+      MockState.put({:dispatch_result, "test-sprite"}, {:ok, ""})
+
+      MockState.put(
+        {:open_pr_exact, "test/repo", 42, "factory/42-1234567890"},
+        {:ok,
+         %{
+           "number" => 999,
+           "url" => "https://github.com/test/repo/pull/999",
+           "headRefName" => "factory/42-1234567890"
+         }}
+      )
+
+      MockState.put(
+        {:issue_open_prs, "test/repo", 42},
+        {:ok,
+         [
+           %{
+             "number" => 999,
+             "url" => "https://github.com/test/repo/pull/999",
+             "headRefName" => "factory/42-1234567890"
+           },
+           %{
+             "number" => 1000,
+             "url" => "https://github.com/test/repo/pull/1000",
+             "headRefName" => "cx/issue-42-shadow"
+           }
+         ]}
+      )
+
+      {:ok, pid} = start_run_server(existing_branch: "factory/42-1234567890")
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "failed"
+      assert "unexpected_issue_prs" in event_types(run["run_id"])
+
+      assert MockState.get(:closed_prs) == [
+               {"test/repo", 1000,
+                [
+                  comment:
+                    "Bitterblossom closed this PR because issue #42 is leased to `factory/42-1234567890` and duplicate foreign-branch PRs are not governable."
+                ]}
+             ]
     end
   end
 

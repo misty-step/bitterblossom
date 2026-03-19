@@ -23,19 +23,21 @@ defmodule Conductor.Workspace do
     end
   end
 
-  @spec prepare(binary(), binary(), binary(), binary()) :: {:ok, binary()} | {:error, term()}
-  def prepare(sprite, repo, run_id, branch) do
+  @spec prepare(binary(), binary(), binary(), binary(), keyword()) ::
+          {:ok, binary()} | {:error, term()}
+  def prepare(sprite, repo, run_id, branch, opts \\ []) do
     with :ok <- validate_input(repo),
          :ok <- validate_input(run_id),
          :ok <- validate_input(branch) do
-      do_prepare(sprite, repo, run_id, branch)
+      do_prepare(sprite, repo, run_id, branch, opts)
     end
   end
 
-  defp do_prepare(sprite, repo, run_id, branch) do
+  defp do_prepare(sprite, repo, run_id, branch, opts) do
     repo_name = repo |> String.split("/") |> List.last()
     mirror = Path.join(@mirror_base, repo_name)
     worktree = Path.join([mirror, ".bb", "conductor", run_id, "builder-worktree"])
+    exec_fn = Keyword.get(opts, :exec_fn, &Sprite.exec/3)
 
     commands = """
     set -e
@@ -46,14 +48,14 @@ defmodule Conductor.Workspace do
       rm -rf #{worktree} 2>/dev/null || true
       default_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed "s|refs/remotes/origin/||" || echo master)
       git worktree add -b #{branch} #{worktree} origin/$default_branch --quiet
+      #{install_branch_guard_commands(worktree, branch)}
     '
     echo #{worktree}
     """
 
-    case Sprite.exec(sprite, commands, timeout: 120_000) do
+    case exec_fn.(sprite, commands, timeout: 120_000) do
       {:ok, output} ->
-        path = output |> String.split("\n") |> List.last() |> String.trim()
-        {:ok, path}
+        {:ok, extract_path(output)}
 
       {:error, msg, code} ->
         {:error, "workspace preparation failed (#{code}): #{msg}"}
@@ -108,20 +110,21 @@ defmodule Conductor.Workspace do
   Prepare a worktree by checking out an existing remote branch (no -b flag).
   Used when adopting a PR branch from a prior run instead of building fresh.
   """
-  @spec adopt_branch(binary(), binary(), binary(), binary()) ::
+  @spec adopt_branch(binary(), binary(), binary(), binary(), keyword()) ::
           {:ok, binary()} | {:error, term()}
-  def adopt_branch(sprite, repo, run_id, branch) do
+  def adopt_branch(sprite, repo, run_id, branch, opts \\ []) do
     with :ok <- validate_input(repo),
          :ok <- validate_input(run_id),
          :ok <- validate_input(branch) do
-      do_adopt_branch(sprite, repo, run_id, branch)
+      do_adopt_branch(sprite, repo, run_id, branch, opts)
     end
   end
 
-  defp do_adopt_branch(sprite, repo, run_id, branch) do
+  defp do_adopt_branch(sprite, repo, run_id, branch, opts) do
     repo_name = repo |> String.split("/") |> List.last()
     mirror = Path.join(@mirror_base, repo_name)
     worktree = Path.join([mirror, ".bb", "conductor", run_id, "builder-worktree"])
+    exec_fn = Keyword.get(opts, :exec_fn, &Sprite.exec/3)
 
     commands = """
     set -e
@@ -131,14 +134,14 @@ defmodule Conductor.Workspace do
       git worktree prune 2>/dev/null || true
       rm -rf #{worktree} 2>/dev/null || true
       git worktree add #{worktree} #{branch} --quiet
+      #{install_branch_guard_commands(worktree, branch)}
     '
     echo #{worktree}
     """
 
-    case Sprite.exec(sprite, commands, timeout: 120_000) do
+    case exec_fn.(sprite, commands, timeout: 120_000) do
       {:ok, output} ->
-        path = output |> String.split("\n") |> List.last() |> String.trim()
-        {:ok, path}
+        {:ok, extract_path(output)}
 
       {:error, msg, code} ->
         {:error, "branch adoption failed (#{code}): #{msg}"}
@@ -181,4 +184,56 @@ defmodule Conductor.Workspace do
   # run-648-1773580938 → factory/648-1773580938
   defp run_id_to_branch("run-" <> rest), do: "factory/#{rest}"
   defp run_id_to_branch(_), do: nil
+
+  defp extract_path(output) do
+    output
+    |> String.split("\n", trim: true)
+    |> List.last()
+    |> String.trim()
+  end
+
+  defp install_branch_guard_commands(worktree, branch) do
+    """
+    hook_path=$(git -C #{worktree} rev-parse --git-path hooks/pre-push)
+    mkdir -p "$(dirname "$hook_path")"
+    cat <<'EOF' > "$hook_path"
+    #!/usr/bin/env bash
+    set -eu
+    expected_branch='#{branch}'
+    current_branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+
+    if [ "$current_branch" != "$expected_branch" ]; then
+      echo "Bitterblossom branch guard: refusing push from $current_branch; expected $expected_branch" >&2
+      exit 1
+    fi
+
+    while read -r local_ref local_sha remote_ref remote_sha; do
+      if [ -z "${local_ref:-}" ]; then
+        continue
+      fi
+
+      case "$local_ref" in
+        refs/heads/*)
+          local_branch=${local_ref#refs/heads/}
+          ;;
+        *)
+          echo "Bitterblossom branch guard: refusing non-branch push $local_ref" >&2
+          exit 1
+          ;;
+      esac
+
+      if [ "$local_branch" != "$expected_branch" ]; then
+        echo "Bitterblossom branch guard: refusing push from $local_branch; expected $expected_branch" >&2
+        exit 1
+      fi
+
+      if [ "$remote_ref" != "refs/heads/$expected_branch" ]; then
+        echo "Bitterblossom branch guard: refusing push to $remote_ref; expected refs/heads/$expected_branch" >&2
+        exit 1
+      fi
+    done
+    EOF
+    chmod +x "$hook_path"
+    """
+  end
 end
