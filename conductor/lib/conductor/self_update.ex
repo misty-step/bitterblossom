@@ -135,17 +135,19 @@ defmodule Conductor.SelfUpdate do
   defp repo_name(repo), do: repo |> String.split("/") |> List.last()
 
   defp changed_conductor_files?(pr_number, repo) do
-    case shell_module().cmd("gh", [
-           "pr",
-           "view",
-           to_string(pr_number),
-           "--repo",
-           repo,
-           "--json",
-           "files",
-           "--jq",
-           ".files[].path"
-         ]) do
+    case shell_module().cmd(
+           "gh",
+           [
+             "pr",
+             "view",
+             to_string(pr_number),
+             "--repo",
+             repo,
+             "--json",
+             "files",
+             "--jq",
+             ".files[].path"
+           ], timeout: 30_000) do
       {:ok, output} ->
         output
         |> String.split("\n", trim: true)

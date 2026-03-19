@@ -311,7 +311,7 @@ defmodule Conductor.SelfUpdateTest do
                   "files",
                   "--jq",
                   ".files[].path"
-                ], []},
+                ], [timeout: 30_000]},
                {"git", ["-C", @repo_root, "worktree", "list", "--porcelain"], [timeout: 10_000]},
                {"git", ["-C", @repo_root, "fetch", "origin", "master", "--quiet"],
                 [timeout: 30_000]},
