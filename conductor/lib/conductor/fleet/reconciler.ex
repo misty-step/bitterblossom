@@ -9,8 +9,7 @@ defmodule Conductor.Fleet.Reconciler do
   """
 
   require Logger
-  alias Conductor.{Sprite, Shell}
-  @repo_root Path.expand("../../../../", __DIR__)
+  alias Conductor.{Config, Sprite, Shell}
 
   @doc """
   Reconcile all declared sprites. Returns `{:ok, results}` where each
@@ -97,11 +96,13 @@ defmodule Conductor.Fleet.Reconciler do
   end
 
   defp run_setup(sprite) do
-    with {:ok, bb_path} <- find_bb(),
+    root = repo_root()
+
+    with {:ok, bb_path} <- find_bb(root),
          {:ok, persona_flag, tmp_file} <- build_persona_flag(sprite) do
       repo_flag = if sprite.repo, do: ["--repo", sprite.repo], else: []
       args = ["setup", sprite.name] ++ repo_flag ++ persona_flag ++ ["--force"]
-      result = shell_mod().cmd(bb_path, args, timeout: 300_000, cd: repo_root())
+      result = shell_mod().cmd(bb_path, args, timeout: 300_000, cd: root)
       if tmp_file, do: File.rm(tmp_file)
 
       case result do
@@ -123,9 +124,8 @@ defmodule Conductor.Fleet.Reconciler do
     end
   end
 
-  defp find_bb do
-    # Path.expand required: System.cmd/3 does not resolve ".." in executable paths
-    repo_bb = Path.join(repo_root(), "bin/bb")
+  defp find_bb(root) do
+    repo_bb = Path.join(root, "bin/bb")
     configured_bb = Application.get_env(:conductor, :bb_path)
 
     cond do
@@ -136,7 +136,7 @@ defmodule Conductor.Fleet.Reconciler do
     end
   end
 
-  defp repo_root, do: @repo_root
+  defp repo_root, do: Config.repo_root()
 
   defp shell_mod, do: Application.get_env(:conductor, :shell_module, Shell)
   defp sprite_mod, do: Application.get_env(:conductor, :sprite_module, Sprite)

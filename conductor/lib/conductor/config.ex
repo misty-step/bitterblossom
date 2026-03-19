@@ -48,6 +48,15 @@ defmodule Conductor.Config do
     Application.get_env(:conductor, :ci_status_log_interval_minutes, 5)
   end
 
+  @spec repo_root() :: binary()
+  def repo_root do
+    case Application.get_env(:conductor, :repo_root) do
+      nil -> detect_repo_root()
+      "" -> detect_repo_root()
+      root -> Path.expand(root)
+    end
+  end
+
   @spec pr_minimum_age() :: non_neg_integer()
   def pr_minimum_age do
     Application.get_env(:conductor, :pr_minimum_age_seconds, 300)
@@ -144,6 +153,19 @@ defmodule Conductor.Config do
       "" -> acc
       val -> [{target_key, val} | acc]
     end
+  end
+
+  defp detect_repo_root do
+    cwd = File.cwd!()
+
+    [cwd, Path.expand("..", cwd)]
+    |> Enum.find(cwd, &repo_root_candidate?/1)
+    |> Path.expand()
+  end
+
+  defp repo_root_candidate?(path) do
+    File.exists?(Path.join(path, "WORKFLOW.md")) and
+      File.exists?(Path.join(path, "CLAUDE.md"))
   end
 
   @spec normalize_workers([binary() | map()]) :: [worker_config()]
