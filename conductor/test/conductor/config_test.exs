@@ -75,6 +75,34 @@ defmodule Conductor.ConfigTest do
     end
   end
 
+  describe "repo_root/0" do
+    test "returns a normalized configured value" do
+      Application.put_env(:conductor, :repo_root, "./tmp/repo-root")
+      assert Config.repo_root() == Path.expand("./tmp/repo-root")
+    after
+      Application.delete_env(:conductor, :repo_root)
+    end
+
+    test "raises when no repository markers are found" do
+      dir =
+        Path.join(System.tmp_dir!(), "repo-root-missing-#{:erlang.unique_integer([:positive])}")
+
+      File.mkdir_p!(dir)
+
+      try do
+        File.cd!(dir, fn ->
+          Application.delete_env(:conductor, :repo_root)
+
+          assert_raise RuntimeError, ~r/unable to detect repository root/, fn ->
+            Config.repo_root()
+          end
+        end)
+      after
+        File.rm_rf(dir)
+      end
+    end
+  end
+
   describe "pr_minimum_age/0" do
     test "returns default of 300" do
       assert Config.pr_minimum_age() == 300

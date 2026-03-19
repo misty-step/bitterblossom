@@ -173,6 +173,18 @@ defmodule Conductor.PromptTest do
       assert prompt =~ "gh pr merge"
       assert prompt =~ "MUST NOT"
     end
+
+    test "routes Thorn through the context and invariant skills before coding" do
+      pr = %{"number" => 10, "title" => "Fix CI", "headRefName" => "factory/10-fix"}
+      prompt = Prompt.build_fixer_prompt(pr, "test failed", "issue body")
+
+      assert prompt =~ "/gather-pr-context"
+      assert prompt =~ "/diagnose-ci"
+      assert prompt =~ "/plan-fix"
+      assert prompt =~ "/verify-invariants"
+      assert prompt =~ ".claude/skills"
+      refute prompt =~ "Your only job is to fix the CI failure"
+    end
   end
 
   describe "governance restrictions in polisher prompt" do

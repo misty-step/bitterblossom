@@ -19,7 +19,7 @@ defmodule Conductor.Sprite do
 
   @behaviour Conductor.Worker
 
-  alias Conductor.{Shell, Config, Workspace}
+  alias Conductor.{Shell, Config, Persona, Workspace}
   @runtime_env_file ".bb-runtime-env"
 
   @impl Conductor.Worker
@@ -54,6 +54,7 @@ defmodule Conductor.Sprite do
   def dispatch(sprite, prompt, _repo, opts \\ []) do
     timeout_minutes = Keyword.get(opts, :timeout, Config.builder_timeout())
     workspace = Keyword.fetch!(opts, :workspace)
+    role = Keyword.get(opts, :role)
     harness = Keyword.get(opts, :harness, Conductor.Codex)
     harness_opts = Keyword.get(opts, :harness_opts, [])
     # Injected in tests to capture exec calls without a real sprite
@@ -68,13 +69,31 @@ defmodule Conductor.Sprite do
     runtime_env_path = Path.join(workspace, @runtime_env_file)
 
     # 2. Upload prompt and runtime env without embedding secrets in the remote argv
-    case upload_dispatch_files(exec_fn, sprite, prompt_path, prompt, runtime_env_path) do
+    with {:ok, persona_manifest} <- Persona.manifest(workspace, role),
+         :ok <- ensure_persona_dirs(exec_fn, sprite, persona_manifest.directories),
+         {:ok, _} <-
+           upload_dispatch_files(
+             exec_fn,
+             sprite,
+             prompt_path,
+             prompt,
+             runtime_env_path,
+             persona_manifest.uploads
+           ) do
+      # 3. Run agent
+      run_agent(sprite, workspace, prompt_path, harness, harness_opts, exec_fn, timeout_ms)
+    else
+      {:error, :invalid_role} ->
+        {:error, "dispatch persona sync failed: invalid role", 1}
+
+      {:error, {:missing_persona_file, path}} ->
+        {:error, "dispatch persona sync failed: missing #{path}", 1}
+
+      {:error, :persona_dirs, msg, code} ->
+        {:error, "dispatch persona directory setup failed: #{msg}", code}
+
       {:error, msg, code} ->
         {:error, "dispatch file upload failed: #{msg}", code}
-
-      {:ok, _} ->
-        # 3. Run agent
-        run_agent(sprite, workspace, prompt_path, harness, harness_opts, exec_fn, timeout_ms)
     end
   end
 
@@ -254,26 +273,49 @@ defmodule Conductor.Sprite do
     if body == "", do: "# managed by Conductor\n", else: body <> "\n"
   end
 
-  defp upload_dispatch_files(exec_fn, sprite, prompt_path, prompt, runtime_env_path) do
-    with_temp_file("sprite-prompt", prompt, fn prompt_file ->
-      with_temp_file("sprite-env", runtime_env_contents(), fn env_file ->
-        exec_fn.(sprite, "true",
-          files: [{prompt_file, prompt_path}, {env_file, runtime_env_path}],
-          timeout: 30_000
-        )
-      end)
+  defp ensure_persona_dirs(_exec_fn, _sprite, []), do: :ok
+
+  defp ensure_persona_dirs(exec_fn, sprite, dirs) do
+    cmd = "mkdir -p " <> Enum.map_join(dirs, " ", &shell_quote/1)
+
+    case exec_fn.(sprite, cmd, timeout: 30_000) do
+      {:ok, _} -> :ok
+      {:error, msg, code} -> {:error, :persona_dirs, msg, code}
+    end
+  end
+
+  defp upload_dispatch_files(
+         exec_fn,
+         sprite,
+         prompt_path,
+         prompt,
+         runtime_env_path,
+         extra_uploads
+       ) do
+    uploads = [
+      {prompt_path, prompt},
+      {runtime_env_path, runtime_env_contents()}
+      | extra_uploads
+    ]
+
+    with_temp_uploads(uploads, fn files ->
+      exec_fn.(sprite, "true", files: files, timeout: 30_000)
     end)
   end
 
-  defp with_temp_file(prefix, contents, fun) do
-    path = Path.join(System.tmp_dir!(), "#{prefix}-#{System.unique_integer([:positive])}")
-    File.write!(path, contents)
-    File.chmod!(path, 0o600)
+  defp with_temp_uploads(uploads, fun) do
+    temp_paths =
+      Enum.map(uploads, fn {dest, content} ->
+        path = Path.join(System.tmp_dir!(), "sprite-upload-#{System.unique_integer([:positive])}")
+        File.write!(path, content)
+        File.chmod!(path, 0o600)
+        {path, dest}
+      end)
 
     try do
-      fun.(path)
+      fun.(temp_paths)
     after
-      File.rm(path)
+      Enum.each(temp_paths, fn {path, _dest} -> File.rm(path) end)
     end
   end
 

@@ -116,8 +116,8 @@ sequenceDiagram
 
 ### Personas + Factory Inputs
 
-- [`sprites/*.md`](../sprites/)
-  - per-sprite personas / specializations
+- [`sprites/`](../sprites/)
+  - legacy single-file personas plus shared/role overlays and skill packs for dispatched sprites
 - [`compositions/`](../compositions/)
   - experimental team hypotheses and historical input, not current conductor scheduler truth
 - [`project.md`](../project.md)

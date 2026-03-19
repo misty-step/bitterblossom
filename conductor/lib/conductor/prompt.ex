@@ -83,7 +83,7 @@ defmodule Conductor.Prompt do
     PR: ##{pr["number"]} — #{safe_title}
     Branch: #{safe_branch}
 
-    ## Original Issue
+    ## PR Intent
 
     ~~~untrusted-data
     #{sanitize_fence(issue_body)}
@@ -97,19 +97,22 @@ defmodule Conductor.Prompt do
 
     ## Instructions
 
-    You are Thorn. Your only job is to fix the CI failure on this PR.
+    Follow the Thorn persona files and workspace skills before writing code.
+    If slash commands are unavailable in the current harness, read the matching workflow from `.claude/skills/.../SKILL.md` or `.codex/skills/.../SKILL.md` and follow it manually.
 
     1. Check out branch `#{safe_branch}`
-    2. Read the CI failure output above carefully
-    3. Investigate the root cause in the codebase
-    4. Fix the issue — do not change PR scope or add features
-    5. Run the failing tests/checks locally to verify the fix
-    6. Commit with message `fix: resolve CI failure` and push
-    7. CI will re-trigger automatically
+    2. Run `/gather-pr-context` to collect the linked issue, PR intent, review state, and prior fixer attempts
+    3. Run `/diagnose-ci` to classify the failure and state the root cause hypothesis
+    4. Run `/plan-fix` to define the minimal code change and the invariants that must stay intact
+    5. Implement the fix without expanding PR scope or weakening tests, gates, or security behavior
+    6. Run `/verify-invariants` and then rerun the failing checks locally
+    7. Commit with message `fix: resolve CI failure` and push
+    8. CI will re-trigger automatically
 
     Do NOT modify the PR description, title, or labels.
     Do NOT expand the scope of the PR.
-    Focus exclusively on making CI green.
+    Do NOT make CI green by lowering the quality bar.
+    Fix the code to satisfy the existing intent.
 
     #{governance_restrictions()}
 
