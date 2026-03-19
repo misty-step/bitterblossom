@@ -300,6 +300,28 @@ func TestSyncWorkspaceRepoWithRunnerBuildsSyncScript(t *testing.T) {
 	if !strings.Contains(r.script, `git pull --ff-only`) {
 		t.Fatalf("script = %q, want pull --ff-only", r.script)
 	}
+	if !strings.Contains(r.script, `git config --global --get-all safe.directory 2>/dev/null | grep -qxF "/tmp/ws" || git config --global --add safe.directory "/tmp/ws"`) {
+		t.Fatalf("script = %q, want idempotent safe.directory guard", r.script)
+	}
+}
+
+func TestPrepareDispatchWorkspaceWithRunnerDryRunValidatesRepoWorkspace(t *testing.T) {
+	t.Parallel()
+
+	r := &fakeSpriteScriptRunner{out: []byte("false\n"), exitCode: 0}
+	err := prepareDispatchWorkspaceWithRunner(context.Background(), r.run, "weaver", "owner/repo", "/tmp/ws", "", "main", true, nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !r.called {
+		t.Fatal("runner should be called")
+	}
+	if !strings.Contains(err.Error(), `repo workspace "/tmp/ws" is not ready on sprite "weaver"`) {
+		t.Fatalf("err = %q", err)
+	}
+	if !strings.Contains(r.script, `git -C "/tmp/ws" rev-parse --is-inside-work-tree`) {
+		t.Fatalf("script = %q", r.script)
+	}
 }
 
 func TestAgentDispatchCommandIncludesHeartbeatAndPIDCleanup(t *testing.T) {

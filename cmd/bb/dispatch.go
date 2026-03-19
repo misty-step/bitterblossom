@@ -104,8 +104,8 @@ func syncWorkspaceRepoWithRunner(ctx context.Context, run spriteScriptRunner, wo
 	output, exitCode, err := runDispatchCheck(ctx, run, dispatchCheck{
 		timeout: 45 * time.Second,
 		script: fmt.Sprintf(
-			`git config --global --add safe.directory %q 2>/dev/null; cd %q && git checkout %q && git pull --ff-only 2>&1`,
-			workspace, workspace, branch,
+			`git config --global --get-all safe.directory 2>/dev/null | grep -qxF %q || git config --global --add safe.directory %q 2>/dev/null; cd %q && git checkout %q && git pull --ff-only 2>&1`,
+			workspace, workspace, workspace, branch,
 		),
 	})
 	if err != nil {
@@ -113,6 +113,30 @@ func syncWorkspaceRepoWithRunner(ctx context.Context, run spriteScriptRunner, wo
 	}
 	if exitCode != 0 {
 		return fmt.Errorf("%s", output)
+	}
+	return nil
+}
+
+func prepareDispatchWorkspaceWithRunner(ctx context.Context, run spriteScriptRunner, spriteName, repo, workspace, workspaceOverride, defaultBranch string, dryRun bool, progress io.Writer) error {
+	if workspaceOverride != "" {
+		if err := ensureWorkspaceCheckoutReadyWithRunner(ctx, run, workspace); err != nil {
+			return fmt.Errorf("workspace override %q is not ready on sprite %q: %w", workspace, spriteName, err)
+		}
+		return nil
+	}
+
+	if dryRun {
+		if err := ensureWorkspaceCheckoutReadyWithRunner(ctx, run, workspace); err != nil {
+			return fmt.Errorf("repo workspace %q is not ready on sprite %q: %w", workspace, spriteName, err)
+		}
+		return nil
+	}
+
+	if progress != nil {
+		_, _ = fmt.Fprintf(progress, "syncing repo %s (branch: %s)...\n", repo, defaultBranch)
+	}
+	if err := syncWorkspaceRepoWithRunner(ctx, run, workspace, defaultBranch); err != nil {
+		return fmt.Errorf("repo sync failed: %w", err)
 	}
 	return nil
 }
@@ -137,34 +161,19 @@ func runDispatch(ctx context.Context, spriteName, prompt, repo, workspaceOverrid
 		return fmt.Errorf("sprite %q is currently working: %w", spriteName, err)
 	}
 
-	// Dry-run: all pre-flight checks passed — do not start the agent.
-	if dryRun {
-		_, _ = fmt.Fprintf(os.Stderr, "dry-run: sprite %q is ready to dispatch\n", spriteName)
-		return nil
-	}
-
-	// Detect the remote default branch once; used in both sync and verification.
-	defaultBranch, branchErr := detectDefaultBranchWithRunner(ctx, spriteBashRunner(s), workspace)
-	if branchErr != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "warning: could not detect default branch: %v — falling back to main\n", branchErr)
-		defaultBranch = "main"
-	}
-
-	if workspaceOverride == "" {
-		if dryRun {
-			if err := ensureWorkspaceCheckoutReadyWithRunner(ctx, spriteBashRunner(s), workspace); err != nil {
-				return fmt.Errorf("repo workspace %q is not ready on sprite %q: %w", workspace, spriteName, err)
-			}
+	defaultBranch := "main"
+	if !dryRun {
+		// Detect the remote default branch once; used in both sync and verification.
+		detectedBranch, branchErr := detectDefaultBranchWithRunner(ctx, spriteBashRunner(s), workspace)
+		if branchErr != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "warning: could not detect default branch: %v — falling back to main\n", branchErr)
 		} else {
-			_, _ = fmt.Fprintf(os.Stderr, "syncing repo %s (branch: %s)...\n", repo, defaultBranch)
-			if err := syncWorkspaceRepoWithRunner(ctx, spriteBashRunner(s), workspace, defaultBranch); err != nil {
-				return fmt.Errorf("repo sync failed: %w", err)
-			}
+			defaultBranch = detectedBranch
 		}
-	} else {
-		if err := ensureWorkspaceCheckoutReadyWithRunner(ctx, spriteBashRunner(s), workspace); err != nil {
-			return fmt.Errorf("workspace override %q is not ready on sprite %q: %w", workspace, spriteName, err)
-		}
+	}
+
+	if err := prepareDispatchWorkspaceWithRunner(ctx, spriteBashRunner(s), spriteName, repo, workspace, workspaceOverride, defaultBranch, dryRun, os.Stderr); err != nil {
+		return err
 	}
 
 	// Dry-run: readiness checks passed — do not start the agent.
