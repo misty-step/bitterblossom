@@ -353,6 +353,49 @@ defmodule Conductor.GitHubTest do
     end
   end
 
+  describe "close_pr/3" do
+    test "closes a PR without a comment" do
+      with_fake_gh(
+        """
+        printf '%s\n' "$@" > "$GH_ARGS_PATH"
+        """,
+        fn _tmp_dir, args_path ->
+          assert :ok = GitHub.close_pr("owner/repo", 42)
+          args = File.read!(args_path)
+
+          assert String.contains?(
+                   args,
+                   "pr\nclose\n42\n--repo\nowner/repo\n--delete-branch=false\n"
+                 )
+
+          refute String.contains?(args, "--comment\n")
+        end
+      )
+    end
+
+    test "closes a PR with a comment" do
+      with_fake_gh(
+        """
+        printf '%s\n' "$@" > "$GH_ARGS_PATH"
+        """,
+        fn _tmp_dir, args_path ->
+          assert :ok = GitHub.close_pr("owner/repo", 42, comment: "duplicate lane")
+          args = File.read!(args_path)
+          assert String.contains?(args, "--comment\nduplicate lane\n")
+        end
+      )
+    end
+
+    test "returns an error when gh pr close fails" do
+      with_fake_gh(
+        "echo boom >&2; exit 1",
+        fn _tmp_dir, _args_path ->
+          assert {:error, _} = GitHub.close_pr("owner/repo", 42, comment: "duplicate lane")
+        end
+      )
+    end
+  end
+
   describe "open_prs/1" do
     test "requests the unfiltered limit so all open PRs are considered" do
       with_fake_gh(

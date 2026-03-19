@@ -246,14 +246,14 @@ defmodule Conductor.RunServer do
         fail(
           state,
           "pr_branch_mismatch",
-          "Weaver opened PR on unexpected branch #{inspect(head_ref)} (expected #{inspect(state.branch)})"
+          "Weaver opened PR on unexpected branch #{branch_label(head_ref)} (expected #{inspect(state.branch)})"
         )
 
       {:ok, pr} ->
         fail(
           state,
           "pr_detection_failed",
-          "Weaver PR lookup returned incomplete data: #{inspect(Map.take(pr, ["number", "url", "headRefName"]))}"
+          "Weaver PR lookup returned incomplete data: #{inspect(Map.put(Map.take(pr, ["number", "url", "headRefName"]), "headRefName", branch_label(Map.get(pr, "headRefName"))))}"
         )
 
       {:error, :not_found} ->
@@ -284,8 +284,8 @@ defmodule Conductor.RunServer do
       {:ok, prs} ->
         unexpected =
           Enum.filter(prs, fn pr ->
-            branch = pr["headRefName"] || ""
-            branch != state.branch and not String.starts_with?(branch, "factory/")
+            branch = pr["headRefName"]
+            branch != state.branch and not factory_branch?(branch)
           end)
 
         close_and_fail_on_unexpected_prs(state, unexpected)
@@ -299,22 +299,22 @@ defmodule Conductor.RunServer do
     case code_host_mod().issue_open_prs(state.repo, state.issue.number) do
       {:ok, prs} ->
         case Enum.split_with(prs, fn pr ->
-               String.starts_with?(pr["headRefName"] || "", "factory/")
+               factory_branch?(pr["headRefName"])
              end) do
-          {_factory_prs, []} ->
+          {[], []} ->
             :continue
 
           {factory_prs, unexpected_prs} ->
             if unexpected_prs != [] do
               {:stop, close_and_fail_on_unexpected_prs(state, unexpected_prs)}
             else
-              branch = factory_prs |> List.first() |> Map.get("headRefName")
+              branch = factory_prs |> List.first() |> Map.get("headRefName", "unknown")
 
               {:stop,
                fail(
                  state,
                  "pr_branch_mismatch",
-                 "Weaver opened PR on unexpected branch #{inspect(branch)} (expected #{inspect(state.branch)})"
+                 "Weaver opened PR on unexpected branch #{branch_label(branch)} (expected #{inspect(state.branch)})"
                )}
             end
         end
@@ -330,20 +330,52 @@ defmodule Conductor.RunServer do
     comment =
       "Bitterblossom closed this PR because issue ##{state.issue.number} is leased to `#{state.branch}` and duplicate foreign-branch PRs are not governable."
 
-    Enum.each(unexpected_prs, fn pr ->
-      _ = code_host_mod().close_pr(state.repo, pr["number"], comment: comment)
-    end)
+    results =
+      Enum.map(unexpected_prs, fn pr ->
+        case code_host_mod().close_pr(state.repo, pr["number"], comment: comment) do
+          :ok -> {:ok, pr}
+          {:error, reason} -> {:error, pr, reason}
+        end
+      end)
 
     details =
-      unexpected_prs
-      |> Enum.map(fn pr -> "##{pr["number"]} on #{pr["headRefName"]}" end)
+      results
+      |> Enum.map(fn
+        {:ok, pr} ->
+          "##{pr["number"]} on #{branch_label(pr["headRefName"])}"
+
+        {:error, pr, reason} ->
+          "##{pr["number"]} on #{branch_label(pr["headRefName"])} (close failed: #{format_close_failure(reason)})"
+      end)
       |> Enum.join(", ")
 
-    fail(
-      state,
-      "unexpected_issue_prs",
-      "closed duplicate foreign-branch PRs for issue ##{state.issue.number}: #{details}"
-    )
+    failures =
+      results
+      |> Enum.flat_map(fn
+        {:error, pr, reason} ->
+          [
+            "##{pr["number"]} on #{branch_label(pr["headRefName"])}: #{format_close_failure(reason)}"
+          ]
+
+        _ ->
+          []
+      end)
+
+    case failures do
+      [] ->
+        fail(
+          state,
+          "unexpected_issue_prs",
+          "closed duplicate foreign-branch PRs for issue ##{state.issue.number}: #{details}"
+        )
+
+      _ ->
+        fail(
+          state,
+          "unexpected_issue_prs",
+          "failed to close duplicate foreign-branch PRs for issue ##{state.issue.number}: #{details}; close failures: #{Enum.join(failures, ", ")}"
+        )
+    end
   end
 
   defp handle_pr_ready(pr, state) do
@@ -418,6 +450,18 @@ defmodule Conductor.RunServer do
     maybe_kill_worker(state)
     %{state | heartbeat_timer: nil}
   end
+
+  defp factory_branch?(branch) when is_binary(branch) and branch != "" do
+    String.starts_with?(branch, "factory/")
+  end
+
+  defp factory_branch?(_branch), do: false
+
+  defp branch_label(branch) when is_binary(branch) and branch != "", do: branch
+  defp branch_label(_branch), do: "unknown"
+
+  defp format_close_failure(reason) when is_binary(reason), do: reason
+  defp format_close_failure(reason), do: inspect(reason)
 
   defp maybe_kill_worker(state) do
     if function_exported?(worker_mod(), :kill, 1) do
