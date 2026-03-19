@@ -12,7 +12,7 @@ Key modules:
 - `run_server.ex` — per-run GenServer state machine
 - `store.ex` — SQLite persistence (runs, leases, events)
 - `github.ex` — GitHub operations via `gh` CLI
-- `sprite.ex` — sprite operations via `bb` CLI
+- `sprite.ex` — sprite operations via the `sprite` CLI and `mix conductor`
 - `workspace.ex` — worktree lifecycle
 - `shell.ex` — subprocess execution with timeout
 
@@ -20,14 +20,15 @@ Key modules:
 
 ```mermaid
 flowchart TD
-    CLI["conductor.py\nCLI + orchestrator"] --> Tracker["conductorlib.tracker\nGitHub issue/PR boundary"]
-    CLI --> Workspace["conductorlib.workspace\nrun worktree boundary"]
-    CLI --> Governance["conductorlib.governance\nmerge/readiness boundary"]
-    CLI --> State["in-file state + lease helpers\npending later split"]
-
-    State --- DB["SQLite\nruns + leases + reviews + events"]
-    State --- Log["events.jsonl"]
-    Tracker --> GH["GitHub"]
+    CLI["mix conductor\nCLI entrypoint"] --> Orchestrator["Conductor.Orchestrator\nissue selection + dispatch"]
+    CLI --> Fleet["Conductor.Fleet\nloader + reconciler"]
+    Orchestrator --> RunServer["Conductor.RunServer\nper-run state machine"]
+    Orchestrator --> Workspace["Conductor.Workspace\nrun worktree boundary"]
+    Orchestrator --> Governance["Conductor.GitHub\nmerge/readiness boundary"]
+    Orchestrator --> Sprite["Conductor.Sprite\nsprite transport boundary"]
+    RunServer --- DB["SQLite\nruns + leases + reviews + events"]
+    RunServer --- Log[".bb/events.jsonl"]
+    Governance --> GH["GitHub"]
 ```
 
 ## Run State

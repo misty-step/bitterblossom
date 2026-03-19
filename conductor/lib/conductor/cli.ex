@@ -176,6 +176,8 @@ defmodule Conductor.CLI do
       case Conductor.Fleet.Loader.load(fleet_path) do
         {:ok, config} ->
           if opts[:reconcile] do
+            cmd_check_env()
+
             reconciler =
               Application.get_env(:conductor, :fleet_reconciler, Conductor.Fleet.Reconciler)
 
@@ -218,7 +220,7 @@ defmodule Conductor.CLI do
         ]
       )
 
-    if opts[:help] or positional == [] do
+    if Keyword.get(opts, :help, false) or positional == [] do
       IO.puts("""
       usage: mix conductor logs <sprite> [--follow] [--lines N]
 
@@ -230,8 +232,8 @@ defmodule Conductor.CLI do
       if opts[:help], do: :ok, else: System.halt(1)
     else
       case Conductor.Sprite.logs(hd(positional),
-             follow: opts[:follow] || false,
-             lines: opts[:lines] || 0
+             follow: Keyword.get(opts, :follow, false),
+             lines: Keyword.get(opts, :lines, 0)
            ) do
         :ok ->
           :ok

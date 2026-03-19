@@ -1,5 +1,5 @@
 defmodule Conductor.SpriteTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Conductor.Sprite
 
@@ -18,6 +18,12 @@ defmodule Conductor.SpriteTest do
     after
       0 -> Enum.reverse(acc)
     end
+  end
+
+  defp uploads_to?(opts, dest) do
+    opts
+    |> Keyword.get(:files, [])
+    |> Enum.any?(fn {_src, uploaded_dest} -> uploaded_dest == dest end)
   end
 
   test "status reports gh auth and harness readiness" do
@@ -215,6 +221,58 @@ defmodule Conductor.SpriteTest do
     end
   end
 
+  test "provision propagates failures from each setup step" do
+    prev_gh = System.get_env("GITHUB_TOKEN")
+    System.put_env("GITHUB_TOKEN", "ghp-test-token")
+
+    try do
+      cases = [
+        {"remote dir creation", "mkdir failed",
+         fn command, _opts -> String.contains?(command, "mkdir -p") end},
+        {"base config upload", "upload failed",
+         fn command, opts ->
+           command == "true" and uploads_to?(opts, "/home/sprite/workspace/PERSONA.md")
+         end},
+        {"codex install", "codex failed",
+         fn command, _opts -> String.contains?(command, "@openai/codex") end},
+        {"runtime env upload", "runtime env failed",
+         fn command, opts ->
+           command == "true" and uploads_to?(opts, "/home/sprite/.bitterblossom/runtime.env")
+         end},
+        {"git auth", "git auth failed",
+         fn command, _opts -> String.contains?(command, "gh auth login --with-token") end},
+        {"repo setup", "repo setup failed",
+         fn command, _opts ->
+           String.contains?(command, "git clone https://github.com/misty-step/bitterblossom.git")
+         end},
+        {"workspace metadata upload", "metadata upload failed",
+         fn command, opts ->
+           command == "true" and
+             uploads_to?(opts, "/home/sprite/workspace/bitterblossom/.bb/workspace.json")
+         end}
+      ]
+
+      Enum.each(cases, fn {stage, reason, matcher} ->
+        result =
+          Sprite.provision("bb-weaver",
+            repo: "misty-step/bitterblossom",
+            persona: "You are Weaver.",
+            force: true,
+            exec_fn: fn _sprite, command, opts ->
+              if matcher.(command, opts), do: {:error, reason, 1}, else: {:ok, ""}
+            end
+          )
+
+        assert result == {:error, reason},
+               "expected #{stage} failure to propagate, got: #{inspect(result)}"
+      end)
+    after
+      if prev_gh,
+        do: System.put_env("GITHUB_TOKEN", prev_gh),
+        else: System.delete_env("GITHUB_TOKEN")
+    end
+  end
+
   test "logs tails the workspace log file" do
     test_pid = self()
 
@@ -244,6 +302,93 @@ defmodule Conductor.SpriteTest do
 
     assert_received {:runner_called,
                      "touch '/tmp/worktree/ralph.log' && tail -n 25 '/tmp/worktree/ralph.log'"}
+  end
+
+  test "logs follows the workspace log file with the default tail window" do
+    test_pid = self()
+
+    exec_fn = fn _sprite, command, _opts ->
+      send(test_pid, {:exec_called, command})
+
+      cond do
+        String.contains?(command, "test -s '/tmp/worktree/ralph.log'") -> {:ok, ""}
+        true -> {:error, "", 1}
+      end
+    end
+
+    runner_fn = fn _sprite, command, _opts ->
+      send(test_pid, {:runner_called, command})
+      {:ok, ""}
+    end
+
+    assert :ok =
+             Sprite.logs("bb-weaver",
+               workspace: "/tmp/worktree",
+               follow: true,
+               exec_fn: exec_fn,
+               runner_fn: runner_fn
+             )
+
+    assert_received {:runner_called,
+                     "touch '/tmp/worktree/ralph.log' && tail -n 50 -f '/tmp/worktree/ralph.log'"}
+  end
+
+  test "logs follows the workspace log file with an explicit line window" do
+    test_pid = self()
+
+    exec_fn = fn _sprite, command, _opts ->
+      send(test_pid, {:exec_called, command})
+
+      cond do
+        String.contains?(command, "test -s '/tmp/worktree/ralph.log'") -> {:ok, ""}
+        true -> {:error, "", 1}
+      end
+    end
+
+    runner_fn = fn _sprite, command, _opts ->
+      send(test_pid, {:runner_called, command})
+      {:ok, ""}
+    end
+
+    assert :ok =
+             Sprite.logs("bb-weaver",
+               workspace: "/tmp/worktree",
+               follow: true,
+               lines: 10,
+               exec_fn: exec_fn,
+               runner_fn: runner_fn
+             )
+
+    assert_received {:runner_called,
+                     "touch '/tmp/worktree/ralph.log' && tail -n 10 -f '/tmp/worktree/ralph.log'"}
+  end
+
+  test "logs cats the whole workspace log file when no flags are given" do
+    test_pid = self()
+
+    exec_fn = fn _sprite, command, _opts ->
+      send(test_pid, {:exec_called, command})
+
+      cond do
+        String.contains?(command, "test -s '/tmp/worktree/ralph.log'") -> {:ok, ""}
+        true -> {:error, "", 1}
+      end
+    end
+
+    runner_fn = fn _sprite, command, _opts ->
+      send(test_pid, {:runner_called, command})
+      {:ok, ""}
+    end
+
+    assert :ok =
+             Sprite.logs("bb-weaver",
+               workspace: "/tmp/worktree",
+               exec_fn: exec_fn,
+               runner_fn: runner_fn
+             )
+
+    assert_received {:runner_called,
+                     "touch '/tmp/worktree/ralph.log' && cat '/tmp/worktree/ralph.log'"}
   end
 
   test "logs returns the idle message when no task is active and the log is empty" do

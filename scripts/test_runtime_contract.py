@@ -59,16 +59,23 @@ def _load_settings_profile() -> str:
 SETTINGS_PROFILE = _load_settings_profile()
 
 
+def _openrouter_claude_branch(content: str) -> str:
+    """Extract only the openrouter-claude branch body from scripts/lib.sh."""
+    branch = re.search(
+        r'elif provider == "openrouter-claude":(?P<body>.*?)(?:^elif\b|^else:|\Z)',
+        content,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert branch, "Could not find openrouter-claude branch in scripts/lib.sh"
+    return branch.group("body")
+
+
 def _load_runtime_model() -> str:
     """Read the exact runtime model identifier from scripts/lib.sh."""
     lib_path = REPO_ROOT / "scripts" / "lib.sh"
-    content = lib_path.read_text()
+    branch = _openrouter_claude_branch(lib_path.read_text())
 
-    match = re.search(
-        r'elif provider == "openrouter-claude":.*?env\["ANTHROPIC_MODEL"\]\s*=\s*"([^"]+)"',
-        content,
-        re.DOTALL,
-    )
+    match = re.search(r'env\["ANTHROPIC_MODEL"\]\s*=\s*"([^"]+)"', branch)
     assert match, f"Could not find openrouter-claude default model in {lib_path}"
     return match.group(1)
 
@@ -93,16 +100,8 @@ def test_runtime_model_matches_canonical():
 def test_lib_sh_openrouter_claude_default_matches_canonical():
     """scripts/lib.sh openrouter-claude fallback default must equal canonical model."""
     lib_path = REPO_ROOT / "scripts" / "lib.sh"
-    content = lib_path.read_text()
-
-    # Look for the openrouter-claude default assignment block:
-    #   env["ANTHROPIC_MODEL"] = "anthropic/claude-..."
-    # This appears inside the openrouter-claude elif branch (no model given).
-    match = re.search(
-        r'elif provider == "openrouter-claude":.*?env\["ANTHROPIC_MODEL"\]\s*=\s*"([^"]+)"',
-        content,
-        re.DOTALL,
-    )
+    branch = _openrouter_claude_branch(lib_path.read_text())
+    match = re.search(r'env\["ANTHROPIC_MODEL"\]\s*=\s*"([^"]+)"', branch)
     assert match, "Could not find openrouter-claude default model in scripts/lib.sh"
 
     lib_default = match.group(1)

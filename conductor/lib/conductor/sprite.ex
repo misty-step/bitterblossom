@@ -585,21 +585,30 @@ defmodule Conductor.Sprite do
   end
 
   defp base_uploads do
-    files =
-      [
-        {Path.join([@repo_root, "base", "CLAUDE.md"]),
-         Path.join(@sprite_claude_dir, "CLAUDE.md")},
-        {Path.join([@repo_root, "base", "codex-config.toml"]),
-         Path.join(@sprite_codex_dir, "config.toml")},
-        {Path.join([@repo_root, "base", "codex-instructions.md"]),
-         Path.join(@sprite_codex_dir, "instructions.md")}
-      ] ++
-        wildcard_uploads("base/hooks/*.py", Path.join(@sprite_claude_dir, "hooks")) ++
+    required_files = [
+      {Path.join([@repo_root, "base", "CLAUDE.md"]), Path.join(@sprite_claude_dir, "CLAUDE.md")},
+      {Path.join([@repo_root, "base", "codex-config.toml"]),
+       Path.join(@sprite_codex_dir, "config.toml")},
+      {Path.join([@repo_root, "base", "codex-instructions.md"]),
+       Path.join(@sprite_codex_dir, "instructions.md")}
+    ]
+
+    missing_required =
+      required_files
+      |> Enum.reject(fn {source, _dest} -> File.regular?(source) end)
+      |> Enum.map(&elem(&1, 0))
+
+    if missing_required != [] do
+      raise "missing required sprite base assets: #{Enum.join(missing_required, ", ")}"
+    end
+
+    optional_files =
+      wildcard_uploads("base/hooks/*.py", Path.join(@sprite_claude_dir, "hooks")) ++
         wildcard_uploads("base/commands/*.md", Path.join(@sprite_claude_dir, "commands")) ++
         wildcard_uploads("base/prompts/*.md", Path.join(@sprite_claude_dir, "prompts")) ++
         recursive_uploads("base/skills", Path.join(@sprite_claude_dir, "skills"))
 
-    Enum.filter(files, fn {source, _dest} -> File.regular?(source) end)
+    required_files ++ Enum.filter(optional_files, fn {source, _dest} -> File.regular?(source) end)
   end
 
   defp wildcard_uploads(pattern, dest_root) do
@@ -672,20 +681,21 @@ defmodule Conductor.Sprite do
   defp workspace_discovery_script do
     """
     set -euo pipefail
+    shopt -s globstar nullglob
 
-    meta=$(ls -dt #{@sprite_workspace_root}/*/#{@workspace_metadata_rel_path} 2>/dev/null | head -1 || true)
+    meta=$(ls -dt #{@sprite_workspace_root}/**/#{@workspace_metadata_rel_path} 2>/dev/null | head -1 || true)
     if [ -n "$meta" ]; then
       printf '%s\n' "${meta%/#{@workspace_metadata_rel_path}}"
       exit 0
     fi
 
-    prompt=$(ls -dt #{@sprite_workspace_root}/*/PROMPT.md 2>/dev/null | head -1 || true)
+    prompt=$(ls -dt #{@sprite_workspace_root}/**/PROMPT.md 2>/dev/null | head -1 || true)
     if [ -n "$prompt" ]; then
       printf '%s\n' "${prompt%/PROMPT.md}"
       exit 0
     fi
 
-    log=$(ls -dt #{@sprite_workspace_root}/*/#{@log_file} 2>/dev/null | head -1 || true)
+    log=$(ls -dt #{@sprite_workspace_root}/**/#{@log_file} 2>/dev/null | head -1 || true)
     if [ -n "$log" ]; then
       printf '%s\n' "${log%/#{@log_file}}"
       exit 0
