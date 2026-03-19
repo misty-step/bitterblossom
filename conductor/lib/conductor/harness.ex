@@ -34,4 +34,41 @@ defmodule Conductor.Harness do
   - `:model` — override the default model identifier
   """
   @callback continue_command(opts :: keyword()) :: [binary()] | nil
+
+  alias Conductor.Config
+
+  @spec classify_dispatch_failure(binary() | nil, integer() | nil) ::
+          {:transient | :permanent, atom()}
+  def classify_dispatch_failure(output, code) do
+    message = output |> to_string() |> String.downcase()
+
+    cond do
+      String.contains?(message, "timeout") or code == 124 ->
+        {:transient, :network_timeout}
+
+      String.contains?(message, "resource contention") or
+        String.contains?(message, "temporarily unavailable") or code in [70, 75] ->
+        {:transient, :resource_contention}
+
+      String.contains?(message, "busy") or String.contains?(message, "unavailable") ->
+        {:transient, :worker_unavailable}
+
+      String.contains?(message, "auth") or String.contains?(message, "permission denied") or
+          code == 4 ->
+        {:permanent, :auth}
+
+      String.contains?(message, "harness does not support continuation") ->
+        {:permanent, :harness_unsupported}
+
+      true ->
+        {:permanent, :unknown}
+    end
+  end
+
+  @spec retry_backoff_ms(pos_integer()) :: non_neg_integer()
+  def retry_backoff_ms(attempt) when attempt > 0 do
+    base = Config.builder_retry_backoff_base_ms()
+    exponent = min(attempt - 1, 2)
+    base * trunc(:math.pow(2, exponent))
+  end
 end
