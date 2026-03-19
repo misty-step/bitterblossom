@@ -62,7 +62,7 @@ defmodule Conductor.SelfUpdate do
           end
 
         {:error, msg, _} ->
-          Logger.debug("[self-update] fetch failed: #{msg}")
+          rate_limited_warning("[self-update] fetch failed: #{msg}")
           :noop
       end
     end
@@ -173,34 +173,43 @@ defmodule Conductor.SelfUpdate do
     else
       case maybe_refresh_remote_ref(opts) do
         :ok ->
-          case shell_module().cmd("git", ["-C", @repo_root, "reset", "--hard", @remote_ref],
-                 timeout: 30_000
-               ) do
-            {:ok, output} ->
-              Logger.info("[self-update] git reset --hard #{@remote_ref}: #{String.trim(output)}")
+          if primary_worktree_dirty?() do
+            :noop
+          else
+            case shell_module().cmd("git", ["-C", @repo_root, "reset", "--hard", @remote_ref],
+                   timeout: 30_000
+                 ) do
+              {:ok, output} ->
+                Logger.info(
+                  "[self-update] git reset --hard #{@remote_ref}: #{String.trim(output)}"
+                )
 
-              try do
-                case compiler_module().recompile() do
-                  :ok ->
-                    Logger.info(
-                      "[self-update] recompile complete, new code active on next message"
+                try do
+                  case compiler_module().recompile() do
+                    :ok ->
+                      Logger.info(
+                        "[self-update] recompile complete, new code active on next message"
+                      )
+
+                      :ok
+
+                    {:error, reason} ->
+                      rate_limited_warning("[self-update] recompile failed: #{inspect(reason)}")
+                      {:error, :recompile_failed}
+                  end
+                rescue
+                  e ->
+                    rate_limited_warning(
+                      "[self-update] recompile failed: #{Exception.message(e)}"
                     )
 
-                    :ok
-
-                  {:error, reason} ->
-                    rate_limited_warning("[self-update] recompile failed: #{inspect(reason)}")
                     {:error, :recompile_failed}
                 end
-              rescue
-                e ->
-                  rate_limited_warning("[self-update] recompile failed: #{Exception.message(e)}")
-                  {:error, :recompile_failed}
-              end
 
-            {:error, msg, _} ->
-              rate_limited_warning("[self-update] git reset failed: #{msg}")
-              :noop
+              {:error, msg, _} ->
+                rate_limited_warning("[self-update] git reset failed: #{msg}")
+                :noop
+            end
           end
 
         {:error, msg} ->
@@ -220,6 +229,28 @@ defmodule Conductor.SelfUpdate do
       end
     else
       :ok
+    end
+  end
+
+  defp primary_worktree_dirty? do
+    case shell_module().cmd("git", ["-C", @repo_root, "status", "--porcelain"], timeout: 10_000) do
+      {:ok, output} ->
+        if String.trim(output) == "" do
+          false
+        else
+          rate_limited_warning(
+            "[self-update] primary worktree is dirty, skipping reset to avoid discarding local changes"
+          )
+
+          true
+        end
+
+      {:error, msg, _} ->
+        rate_limited_warning(
+          "[self-update] primary worktree inspection failed, skipping reset to be safe: #{msg}"
+        )
+
+        true
     end
   end
 

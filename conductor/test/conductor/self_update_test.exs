@@ -112,6 +112,34 @@ defmodule Conductor.SelfUpdateTest do
       assert Process.get(:self_update_compile_calls, 0) == 0
     end
 
+    test "warns and throttles when fetch fails" do
+      Process.put(:self_update_shell_handler, fn
+        "git", ["-C", @repo_root, "worktree", "list", "--porcelain"], _opts ->
+          {:ok, "worktree #{@repo_root}\nHEAD abc123\nbranch refs/heads/master\n"}
+
+        "git", ["-C", @repo_root, "fetch", "origin", "master", "--quiet"], _opts ->
+          {:error, "network down", 1}
+
+        program, args, _opts ->
+          flunk("unexpected command: #{program} #{inspect(args)}")
+      end)
+
+      log =
+        capture_log(fn ->
+          Process.put(:self_update_now_ms, 0)
+          assert SelfUpdate.check_for_updates() == :noop
+
+          Process.put(:self_update_now_ms, 13_000)
+          assert SelfUpdate.check_for_updates() == :noop
+
+          Process.put(:self_update_now_ms, 61_000)
+          assert SelfUpdate.check_for_updates() == :noop
+        end)
+
+      assert Regex.scan(~r/\[self-update\] fetch failed: network down/, log) |> length() == 2
+      assert Process.get(:self_update_compile_calls, 0) == 0
+    end
+
     test "hard-resets to origin/master and recompiles when behind" do
       Process.put(:self_update_shell_handler, fn
         "git", ["-C", @repo_root, "worktree", "list", "--porcelain"], _opts ->
@@ -122,6 +150,9 @@ defmodule Conductor.SelfUpdateTest do
 
         "git", ["-C", @repo_root, "rev-list", "--count", "HEAD..origin/master"], _opts ->
           {:ok, "2\n"}
+
+        "git", ["-C", @repo_root, "status", "--porcelain"], _opts ->
+          {:ok, ""}
 
         "git", ["-C", @repo_root, "reset", "--hard", "origin/master"], _opts ->
           {:ok, "HEAD is now at abc123 update"}
@@ -138,6 +169,41 @@ defmodule Conductor.SelfUpdateTest do
       assert {"git", ["-C", @repo_root, "reset", "--hard", "origin/master"], [timeout: 30_000]} in calls
 
       refute Enum.any?(calls, fn {_program, args, _opts} -> Enum.member?(args, "pull") end)
+    end
+
+    test "skips reset and recompile when the primary worktree is dirty" do
+      Process.put(:self_update_shell_handler, fn
+        "git", ["-C", @repo_root, "worktree", "list", "--porcelain"], _opts ->
+          {:ok, "worktree #{@repo_root}\nHEAD abc123\nbranch refs/heads/master\n"}
+
+        "git", ["-C", @repo_root, "fetch", "origin", "master", "--quiet"], _opts ->
+          {:ok, ""}
+
+        "git", ["-C", @repo_root, "rev-list", "--count", "HEAD..origin/master"], _opts ->
+          {:ok, "1\n"}
+
+        "git", ["-C", @repo_root, "status", "--porcelain"], _opts ->
+          {:ok, " M conductor/lib/conductor/self_update.ex\n"}
+
+        program, args, _opts ->
+          flunk("unexpected command: #{program} #{inspect(args)}")
+      end)
+
+      log =
+        capture_log(fn ->
+          assert SelfUpdate.check_for_updates() == :noop
+        end)
+
+      assert log =~
+               "[self-update] primary worktree is dirty, skipping reset to avoid discarding local changes"
+
+      assert Process.get(:self_update_compile_calls, 0) == 0
+
+      calls = Process.get(:self_update_shell_calls)
+
+      refute Enum.any?(calls, fn {_program, args, _opts} ->
+               args == ["-C", @repo_root, "reset", "--hard", "origin/master"]
+             end)
     end
 
     test "returns :noop when HEAD is already up to date" do
@@ -176,6 +242,9 @@ defmodule Conductor.SelfUpdateTest do
         "git", ["-C", @repo_root, "rev-list", "--count", "HEAD..origin/master"], _opts ->
           {:ok, "1\n"}
 
+        "git", ["-C", @repo_root, "status", "--porcelain"], _opts ->
+          {:ok, ""}
+
         "git", ["-C", @repo_root, "reset", "--hard", "origin/master"], _opts ->
           {:error, "diverged", 1}
 
@@ -211,6 +280,9 @@ defmodule Conductor.SelfUpdateTest do
         "git", ["-C", @repo_root, "rev-list", "--count", "HEAD..origin/master"], _opts ->
           {:ok, "1\n"}
 
+        "git", ["-C", @repo_root, "status", "--porcelain"], _opts ->
+          {:ok, ""}
+
         "git", ["-C", @repo_root, "reset", "--hard", "origin/master"], _opts ->
           {:ok, "HEAD is now at abc123 update"}
 
@@ -239,6 +311,9 @@ defmodule Conductor.SelfUpdateTest do
 
         "git", ["-C", @repo_root, "rev-list", "--count", "HEAD..origin/master"], _opts ->
           {:ok, "1\n"}
+
+        "git", ["-C", @repo_root, "status", "--porcelain"], _opts ->
+          {:ok, ""}
 
         "git", ["-C", @repo_root, "reset", "--hard", "origin/master"], _opts ->
           {:ok, "HEAD is now at abc123 update"}
@@ -288,6 +363,9 @@ defmodule Conductor.SelfUpdateTest do
         "git", ["-C", @repo_root, "fetch", "origin", "master", "--quiet"], _opts ->
           {:ok, ""}
 
+        "git", ["-C", @repo_root, "status", "--porcelain"], _opts ->
+          {:ok, ""}
+
         "git", ["-C", @repo_root, "reset", "--hard", "origin/master"], _opts ->
           {:ok, "HEAD is now at fedcba merged update"}
 
@@ -315,6 +393,7 @@ defmodule Conductor.SelfUpdateTest do
                {"git", ["-C", @repo_root, "worktree", "list", "--porcelain"], [timeout: 10_000]},
                {"git", ["-C", @repo_root, "fetch", "origin", "master", "--quiet"],
                 [timeout: 30_000]},
+               {"git", ["-C", @repo_root, "status", "--porcelain"], [timeout: 10_000]},
                {"git", ["-C", @repo_root, "reset", "--hard", "origin/master"], [timeout: 30_000]}
              ]
     end
