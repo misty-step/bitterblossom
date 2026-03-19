@@ -23,6 +23,12 @@ defmodule Conductor.Workspace do
     end
   end
 
+  @spec workspace_for_branch(binary(), binary()) :: binary()
+  def workspace_for_branch(repo, _branch) do
+    repo_name = repo |> String.split("/") |> List.last()
+    "/home/sprite/workspace/#{repo_name}"
+  end
+
   @spec prepare(binary(), binary(), binary(), binary()) :: {:ok, binary()} | {:error, term()}
   def prepare(sprite, repo, run_id, branch) do
     with :ok <- validate_input(repo),
@@ -33,8 +39,7 @@ defmodule Conductor.Workspace do
   end
 
   defp do_prepare(sprite, repo, run_id, branch) do
-    repo_name = repo |> String.split("/") |> List.last()
-    mirror = Path.join(@mirror_base, repo_name)
+    mirror = Path.join(@mirror_base, repo |> String.split("/") |> List.last())
     worktree = Path.join([mirror, ".bb", "conductor", run_id, "builder-worktree"])
 
     commands = """
@@ -75,8 +80,7 @@ defmodule Conductor.Workspace do
   end
 
   defp do_rebase(sprite, repo, branch) do
-    repo_name = repo |> String.split("/") |> List.last()
-    mirror = Path.join(@mirror_base, repo_name)
+    mirror = Path.join(@mirror_base, repo |> String.split("/") |> List.last())
     safe = String.replace(branch, "/", "-")
     tmp = Path.join([mirror, ".bb", "rebase-#{safe}"])
 
@@ -119,8 +123,7 @@ defmodule Conductor.Workspace do
   end
 
   defp do_adopt_branch(sprite, repo, run_id, branch) do
-    repo_name = repo |> String.split("/") |> List.last()
-    mirror = Path.join(@mirror_base, repo_name)
+    mirror = Path.join(@mirror_base, repo |> String.split("/") |> List.last())
     worktree = Path.join([mirror, ".bb", "conductor", run_id, "builder-worktree"])
 
     commands = """
@@ -154,8 +157,7 @@ defmodule Conductor.Workspace do
   end
 
   defp do_cleanup(sprite, repo, run_id) do
-    repo_name = repo |> String.split("/") |> List.last()
-    mirror = Path.join(@mirror_base, repo_name)
+    mirror = Path.join(@mirror_base, repo |> String.split("/") |> List.last())
     # Extract branch name from run_id pattern: run-<issue>-<ts> → factory/<issue>-<ts>
     branch = run_id_to_branch(run_id)
 

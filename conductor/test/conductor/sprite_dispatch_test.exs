@@ -291,6 +291,31 @@ defmodule Conductor.SpriteDispatchTest do
       assert msg =~ "persona sync failed"
       assert msg =~ "sprites/bogus/CLAUDE.md"
     end
+
+    test "returns a clear error when persona directory setup fails" do
+      exec_fn =
+        make_exec_fn([
+          {"mkdir -p", {:error, "permission denied", 13}}
+        ])
+
+      result =
+        Sprite.dispatch("s1", "prompt", "org/repo",
+          workspace: "/ws",
+          role: :thorn,
+          harness: MockHarness,
+          exec_fn: exec_fn,
+          timeout: 1
+        )
+
+      assert {:error, msg, 13} = result
+      assert msg =~ "persona directory setup failed"
+      assert msg =~ "permission denied"
+
+      assert_received {:exec_called, _kill_cmd, _opts, _files}
+      assert_received {:exec_called, mkdir_cmd, _opts, _files}
+      assert mkdir_cmd =~ "mkdir -p"
+      refute_received {:exec_called, _upload_cmd, _upload_opts, _files}
+    end
   end
 
   describe "dispatch/4 retry on agent crash" do

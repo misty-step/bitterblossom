@@ -10,7 +10,7 @@ defmodule Conductor.Polisher do
   use GenServer
   require Logger
 
-  alias Conductor.{Config, Prompt, Store}
+  alias Conductor.{Config, Prompt, Store, Workspace}
 
   defstruct [
     :repo,
@@ -144,7 +144,7 @@ defmodule Conductor.Polisher do
         try do
           worker_mod().dispatch(state.polisher_sprite, prompt, state.repo,
             timeout: Config.polisher_timeout(),
-            workspace: workspace_for_branch(state.repo, branch),
+            workspace: Workspace.workspace_for_branch(state.repo, branch),
             harness_opts: [reasoning_effort: "high"]
           )
         rescue
@@ -167,11 +167,6 @@ defmodule Conductor.Polisher do
     end
 
     %{state | in_flight: in_flight}
-  end
-
-  defp workspace_for_branch(repo, _branch) do
-    repo_name = repo |> String.split("/") |> List.last()
-    "/home/sprite/workspace/#{repo_name}"
   end
 
   defp schedule_poll(_, delay) do

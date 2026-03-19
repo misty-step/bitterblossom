@@ -18,7 +18,7 @@ Make Thorn act like a quality guardian instead of a CI appeasement bot by stagin
 
 ## Verification
 
-Run from [`conductor/`](/Users/phaedrus/.codex/worktrees/a9a9/bitterblossom/conductor):
+Run from [`conductor/`](../../conductor):
 
 ```bash
 mix test test/conductor/sprite_dispatch_test.exs test/conductor/prompt_test.exs test/conductor/fixer_test.exs
@@ -27,9 +27,9 @@ mix test
 
 ## Persistent Checks
 
-- [`test/conductor/sprite_dispatch_test.exs`](/Users/phaedrus/.codex/worktrees/a9a9/bitterblossom/conductor/test/conductor/sprite_dispatch_test.exs) proves the Thorn overlay is copied into the workspace before execution.
-- [`test/conductor/prompt_test.exs`](/Users/phaedrus/.codex/worktrees/a9a9/bitterblossom/conductor/test/conductor/prompt_test.exs) proves the fixer prompt routes through the new skill workflow and fallback instructions.
-- [`test/conductor/fixer_test.exs`](/Users/phaedrus/.codex/worktrees/a9a9/bitterblossom/conductor/test/conductor/fixer_test.exs) proves fixer dispatch still works with the new role overlay option.
+- [`test/conductor/sprite_dispatch_test.exs`](../../conductor/test/conductor/sprite_dispatch_test.exs) proves the Thorn overlay is copied into the workspace before execution.
+- [`test/conductor/prompt_test.exs`](../../conductor/test/conductor/prompt_test.exs) proves the fixer prompt routes through the new skill workflow and fallback instructions.
+- [`test/conductor/fixer_test.exs`](../../conductor/test/conductor/fixer_test.exs) proves fixer dispatch still works with the new role overlay option.
 
 ## Residual Risk
 

@@ -28,6 +28,11 @@ defmodule Conductor.Config do
     Application.get_env(:conductor, :db_path, ".bb/conductor.db")
   end
 
+  @spec sprites_root() :: binary()
+  def sprites_root do
+    Application.get_env(:conductor, :sprites_root, Path.expand("../../..", __DIR__))
+  end
+
   @spec event_log_path() :: binary()
   def event_log_path do
     Application.get_env(:conductor, :event_log, ".bb/events.jsonl")

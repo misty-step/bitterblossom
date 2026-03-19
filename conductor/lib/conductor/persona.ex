@@ -9,7 +9,6 @@ defmodule Conductor.Persona do
   `.codex/skills/` so either harness can discover the same guidance surface.
   """
 
-  @repo_root Path.expand("../../..", __DIR__)
   @valid_role ~r/^[a-z0-9_-]+$/
 
   @type upload :: {binary(), binary()}
@@ -42,10 +41,12 @@ defmodule Conductor.Persona do
   defp normalize_role(_), do: {:error, :invalid_role}
 
   defp uploads(workspace, role) do
-    shared_root = Path.join(@repo_root, "sprites/shared")
-    role_root = Path.join(@repo_root, "sprites/#{role}")
+    root = Conductor.Config.sprites_root()
+    shared_root = Path.join(root, "sprites/shared")
+    role_root = Path.join(root, "sprites/#{role}")
 
-    with {:ok, root_uploads} <- combined_root_uploads(workspace, shared_root, role_root),
+    with :ok <- ensure_required_skills(shared_root, role_root, role),
+         {:ok, root_uploads} <- combined_root_uploads(workspace, shared_root, role_root),
          {:ok, shared_skill_uploads} <- skill_uploads(workspace, shared_root),
          {:ok, role_skill_uploads} <- skill_uploads(workspace, role_root) do
       {:ok, root_uploads ++ shared_skill_uploads ++ role_skill_uploads}
@@ -71,6 +72,23 @@ defmodule Conductor.Persona do
       {:error, _} = error -> error
     end
   end
+
+  defp ensure_required_skills(shared_root, role_root, "thorn") do
+    [
+      Path.join(shared_root, "skills/gather-pr-context/SKILL.md"),
+      Path.join(shared_root, "skills/verify-invariants/SKILL.md"),
+      Path.join(role_root, "skills/diagnose-ci/SKILL.md"),
+      Path.join(role_root, "skills/plan-fix/SKILL.md")
+    ]
+    |> Enum.reduce_while(:ok, fn path, :ok ->
+      case File.read(path) do
+        {:ok, _body} -> {:cont, :ok}
+        {:error, _reason} -> {:halt, {:error, {:missing_persona_file, path}}}
+      end
+    end)
+  end
+
+  defp ensure_required_skills(_shared_root, _role_root, _role), do: :ok
 
   defp skill_uploads(workspace, root) do
     root

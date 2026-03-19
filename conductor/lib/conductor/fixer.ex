@@ -11,7 +11,7 @@ defmodule Conductor.Fixer do
   use GenServer
   require Logger
 
-  alias Conductor.{Config, Prompt, Store}
+  alias Conductor.{Config, Prompt, Store, Workspace}
 
   defstruct [
     :repo,
@@ -143,7 +143,7 @@ defmodule Conductor.Fixer do
         try do
           worker_mod().dispatch(state.fixer_sprite, prompt, state.repo,
             timeout: Config.fixer_timeout(),
-            workspace: workspace_for_branch(state.repo, branch),
+            workspace: Workspace.workspace_for_branch(state.repo, branch),
             role: :thorn
           )
         rescue
@@ -172,11 +172,6 @@ defmodule Conductor.Fixer do
   defp extract_issue_body(pr) do
     # PR body typically contains the issue spec; use it as context
     pr["body"] || ""
-  end
-
-  defp workspace_for_branch(repo, _branch) do
-    repo_name = repo |> String.split("/") |> List.last()
-    "/home/sprite/workspace/#{repo_name}"
   end
 
   defp schedule_poll(_, delay) do
