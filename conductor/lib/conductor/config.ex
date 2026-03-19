@@ -158,9 +158,16 @@ defmodule Conductor.Config do
   defp detect_repo_root do
     cwd = File.cwd!()
 
-    [cwd, Path.expand("..", cwd)]
-    |> Enum.find(cwd, &repo_root_candidate?/1)
-    |> Path.expand()
+    case [cwd, Path.expand("..", cwd)] |> Enum.find(&repo_root_candidate?/1) do
+      nil ->
+        raise """
+        unable to detect repository root from #{cwd}; expected WORKFLOW.md and CLAUDE.md
+        or set :repo_root explicitly
+        """
+
+      root ->
+        Path.expand(root)
+    end
   end
 
   defp repo_root_candidate?(path) do
