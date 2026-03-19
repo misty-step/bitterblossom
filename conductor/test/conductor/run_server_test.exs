@@ -137,6 +137,10 @@ defmodule Conductor.RunServerTest do
       MockState.get(:workspace_result, {:ok, "/tmp/test-worktree"})
     end
 
+    def sync_persona(_sprite, _workspace, _role, _opts \\ []) do
+      :ok
+    end
+
     defp remember_branch(repo, branch) do
       case parse_issue_number(branch) do
         {:ok, issue_number} -> MockState.put({:prepared_branch, repo, issue_number}, branch)

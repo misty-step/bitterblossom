@@ -13,6 +13,9 @@ observations/archives/*/settings.json
 # Runtime state files
 .bb-agent/
 .bb/
+/.claude/CLAUDE.md
+/.claude/skills/bb-persona-*/
+/.agents/skills/bb-persona-*/
 
 # OS
 .DS_Store

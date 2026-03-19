@@ -419,6 +419,62 @@ defmodule Conductor.SpriteDispatchTest do
       refute String.contains?(agent_cmd, "model_reasoning_effort=medium")
     end
 
+    test "keeps execution rooted at the workspace and prepends AGENTS persona for codex" do
+      exec_fn = make_exec_fn()
+
+      Sprite.dispatch("s1", "prompt", "org/repo",
+        workspace: "/ws",
+        exec_fn: exec_fn,
+        persona_role: :thorn,
+        timeout: 1
+      )
+
+      assert_received {:exec_called, _, _, _}
+      assert_received {:exec_called, _, _, _}
+      assert_received {:exec_called, agent_cmd, _opts, _files}
+      assert String.contains?(agent_cmd, "cd '/ws'")
+
+      assert String.contains?(
+               agent_cmd,
+               "cat '/ws/.bb/persona/thorn/AGENTS.md' '/ws/PROMPT.md' | LEFTHOOK=0 codex exec"
+             )
+    end
+
+    test "rejects invalid persona roles early" do
+      exec_fn = make_exec_fn()
+
+      result =
+        Sprite.dispatch("s1", "prompt", "org/repo",
+          workspace: "/ws",
+          exec_fn: exec_fn,
+          persona_role: :unknown,
+          timeout: 1
+        )
+
+      assert {:error, msg, 1} = result
+      assert String.contains?(msg, "invalid persona role")
+      refute_received {:exec_called, _, _, _}
+    end
+
+    test "runs claude code from the workspace root without persona argv injection" do
+      exec_fn = make_exec_fn()
+
+      Sprite.dispatch("s1", "prompt", "org/repo",
+        workspace: "/ws",
+        harness: Conductor.ClaudeCode,
+        exec_fn: exec_fn,
+        persona_role: :fern,
+        timeout: 1
+      )
+
+      assert_received {:exec_called, _, _, _}
+      assert_received {:exec_called, _, _, _}
+      assert_received {:exec_called, agent_cmd, _opts, _files}
+      assert String.contains?(agent_cmd, "cd '/ws'")
+      assert String.contains?(agent_cmd, "< '/ws/PROMPT.md'")
+      refute String.contains?(agent_cmd, "--append-system-prompt")
+    end
+
     test "returns error on failure (no retry — codex has no continuation)" do
       exec_fn =
         make_exec_fn([

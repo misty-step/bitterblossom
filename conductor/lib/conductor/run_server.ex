@@ -166,7 +166,8 @@ defmodule Conductor.RunServer do
         state.run_id,
         state.branch,
         pr_number: state.pr_number,
-        repo_context: read_repo_context()
+        repo_context: read_repo_context(),
+        workspace_root: state.worktree_path
       )
 
     Store.record_event(state.run_id, "builder_dispatched", %{
@@ -187,11 +188,22 @@ defmodule Conductor.RunServer do
 
     task =
       Task.Supervisor.async_nolink(task_supervisor(), fn ->
-        worker_mod().dispatch(state.worker, prompt, state.repo,
-          timeout: Config.builder_timeout(),
-          workspace: state.worktree_path,
-          template: Config.prompt_template()
-        )
+        with :ok <- workspace_mod().sync_persona(state.worker, state.worktree_path, :weaver),
+             {:ok, output} <-
+               worker_mod().dispatch(
+                 state.worker,
+                 prompt,
+                 state.repo,
+                 workspace: state.worktree_path,
+                 persona_role: :weaver,
+                 timeout: Config.builder_timeout(),
+                 template: Config.prompt_template()
+               ) do
+          {:ok, output}
+        else
+          {:error, msg, code} -> {:error, msg, code}
+          {:error, reason} -> {:error, to_string(reason), 1}
+        end
       end)
 
     timer = start_heartbeat()

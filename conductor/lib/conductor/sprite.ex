@@ -19,7 +19,7 @@ defmodule Conductor.Sprite do
 
   @behaviour Conductor.Worker
 
-  alias Conductor.{Shell, Config, Persona, Workspace}
+  alias Conductor.{Shell, Config, Workspace}
   @runtime_env_file ".bb-runtime-env"
 
   @impl Conductor.Worker
@@ -54,7 +54,6 @@ defmodule Conductor.Sprite do
   def dispatch(sprite, prompt, _repo, opts \\ []) do
     timeout_minutes = Keyword.get(opts, :timeout, Config.builder_timeout())
     workspace = Keyword.fetch!(opts, :workspace)
-    role = Keyword.get(opts, :role)
     harness = Keyword.get(opts, :harness, Conductor.Codex)
     harness_opts = Keyword.get(opts, :harness_opts, [])
     # Injected in tests to capture exec calls without a real sprite
@@ -62,38 +61,34 @@ defmodule Conductor.Sprite do
 
     timeout_ms = timeout_minutes * 60_000
 
-    # 1. Kill stale agent processes from prior dispatches
-    exec_fn.(sprite, kill_agents_cmd(), timeout: 15_000)
+    with {:ok, persona_role} <- normalize_optional_persona_role(Keyword.get(opts, :persona_role)) do
+      # 1. Kill stale agent processes from prior dispatches
+      exec_fn.(sprite, kill_agents_cmd(), timeout: 15_000)
 
-    prompt_path = Path.join(workspace, "PROMPT.md")
-    runtime_env_path = Path.join(workspace, @runtime_env_file)
+      prompt_path = Path.join(workspace, "PROMPT.md")
+      runtime_env_path = Path.join(workspace, @runtime_env_file)
 
-    # 2. Upload prompt and runtime env without embedding secrets in the remote argv
-    with {:ok, persona_manifest} <- Persona.manifest(workspace, role),
-         :ok <- ensure_persona_dirs(exec_fn, sprite, persona_manifest.directories),
-         {:ok, _} <-
-           upload_dispatch_files(
-             exec_fn,
-             sprite,
-             prompt_path,
-             prompt,
-             runtime_env_path,
-             persona_manifest.uploads
-           ) do
-      # 3. Run agent
-      run_agent(sprite, workspace, prompt_path, harness, harness_opts, exec_fn, timeout_ms)
+      # 2. Upload prompt and runtime env without embedding secrets in the remote argv
+      case upload_dispatch_files(exec_fn, sprite, prompt_path, prompt, runtime_env_path) do
+        {:error, msg, code} ->
+          {:error, "dispatch file upload failed: #{msg}", code}
+
+        {:ok, _} ->
+          # 3. Run agent
+          run_agent(
+            sprite,
+            workspace,
+            prompt_path,
+            persona_role,
+            harness,
+            harness_opts,
+            exec_fn,
+            timeout_ms
+          )
+      end
     else
       {:error, :invalid_role} ->
-        {:error, "dispatch persona sync failed: invalid role", 1}
-
-      {:error, {:missing_persona_file, path}} ->
-        {:error, "dispatch persona sync failed: missing #{path}", 1}
-
-      {:error, :persona_dirs, msg, code} ->
-        {:error, "dispatch persona directory setup failed: #{msg}", code}
-
-      {:error, msg, code} ->
-        {:error, "dispatch file upload failed: #{msg}", code}
+        {:error, "invalid persona role: #{inspect(Keyword.get(opts, :persona_role))}", 1}
     end
   end
 
@@ -206,6 +201,7 @@ defmodule Conductor.Sprite do
   defp detect_agents_cmd do
     @agent_process_names
     |> Enum.map_join(" || ", &"pgrep -x #{&1} 2>/dev/null")
+    |> Kernel.<>(" || pgrep -f 'ralph\\.sh' 2>/dev/null")
   end
 
   defp harness_ready?(_sprite, nil, _exec_fn), do: true
@@ -233,8 +229,24 @@ defmodule Conductor.Sprite do
     end
   end
 
-  defp run_agent(sprite, workspace, prompt_path, harness, harness_opts, exec_fn, timeout_ms) do
-    cmd = agent_command(harness.dispatch_command(harness_opts), workspace, prompt_path)
+  defp run_agent(
+         sprite,
+         workspace,
+         prompt_path,
+         persona_role,
+         harness,
+         harness_opts,
+         exec_fn,
+         timeout_ms
+       ) do
+    cmd =
+      agent_command(
+        harness,
+        harness.dispatch_command(harness_opts),
+        workspace,
+        prompt_path,
+        persona_role
+      )
 
     case exec_fn.(sprite, cmd, timeout: timeout_ms) do
       {:ok, output} ->
@@ -247,17 +259,52 @@ defmodule Conductor.Sprite do
             {:error, "agent exited non-zero; harness does not support continuation", 1}
 
           continue_parts ->
-            retry_cmd = agent_command(continue_parts, workspace, prompt_path)
+            retry_cmd =
+              agent_command(harness, continue_parts, workspace, prompt_path, persona_role)
+
             exec_fn.(sprite, retry_cmd, timeout: timeout_ms)
         end
     end
   end
 
-  defp agent_command(cmd_parts, workspace, prompt_path) do
+  defp agent_command(harness, cmd_parts, workspace, prompt_path, persona_role) do
     cmd_str = Enum.join(cmd_parts, " ")
     runtime_env_path = Path.join(workspace, @runtime_env_file)
+    command_suffix = harness_command(harness, cmd_str, workspace, prompt_path, persona_role)
 
-    "cd '#{workspace}' && if [ -f '#{runtime_env_path}' ]; then set -a; . '#{runtime_env_path}'; set +a; fi && LEFTHOOK=0 #{cmd_str} < '#{prompt_path}'"
+    "cd #{shell_quote(workspace)} && if [ -f #{shell_quote(runtime_env_path)} ]; then set -a; . #{shell_quote(runtime_env_path)}; set +a; fi && #{command_suffix}"
+  end
+
+  defp harness_command(_harness, cmd_str, _workspace, prompt_path, nil) do
+    "LEFTHOOK=0 #{cmd_str} < #{shell_quote(prompt_path)}"
+  end
+
+  defp harness_command(Conductor.ClaudeCode, cmd_str, _workspace, prompt_path, _persona_role) do
+    "LEFTHOOK=0 #{cmd_str} < #{shell_quote(prompt_path)}"
+  end
+
+  defp harness_command(Conductor.Codex, cmd_str, workspace, prompt_path, persona_role) do
+    agents_path = persona_file_path(workspace, persona_role, "AGENTS.md")
+
+    "cat #{shell_quote(agents_path)} #{shell_quote(prompt_path)} | LEFTHOOK=0 #{cmd_str}"
+  end
+
+  defp harness_command(_harness, cmd_str, workspace, prompt_path, persona_role) do
+    agents_path = persona_file_path(workspace, persona_role, "AGENTS.md")
+
+    "cat #{shell_quote(agents_path)} #{shell_quote(prompt_path)} | LEFTHOOK=0 #{cmd_str}"
+  end
+
+  defp persona_file_path(workspace, persona_role, filename) do
+    workspace
+    |> Workspace.persona_launch_dir(persona_role)
+    |> Path.join(filename)
+  end
+
+  defp normalize_optional_persona_role(nil), do: {:ok, nil}
+
+  defp normalize_optional_persona_role(role) do
+    Workspace.normalize_persona_role(role)
   end
 
   defp shell_quote(value) do
@@ -273,49 +320,26 @@ defmodule Conductor.Sprite do
     if body == "", do: "# managed by Conductor\n", else: body <> "\n"
   end
 
-  defp ensure_persona_dirs(_exec_fn, _sprite, []), do: :ok
-
-  defp ensure_persona_dirs(exec_fn, sprite, dirs) do
-    cmd = "mkdir -p " <> Enum.map_join(dirs, " ", &shell_quote/1)
-
-    case exec_fn.(sprite, cmd, timeout: 30_000) do
-      {:ok, _} -> :ok
-      {:error, msg, code} -> {:error, :persona_dirs, msg, code}
-    end
-  end
-
-  defp upload_dispatch_files(
-         exec_fn,
-         sprite,
-         prompt_path,
-         prompt,
-         runtime_env_path,
-         extra_uploads
-       ) do
-    uploads = [
-      {prompt_path, prompt},
-      {runtime_env_path, runtime_env_contents()}
-      | extra_uploads
-    ]
-
-    with_temp_uploads(uploads, fn files ->
-      exec_fn.(sprite, "true", files: files, timeout: 30_000)
+  defp upload_dispatch_files(exec_fn, sprite, prompt_path, prompt, runtime_env_path) do
+    with_temp_file("sprite-prompt", prompt, fn prompt_file ->
+      with_temp_file("sprite-env", runtime_env_contents(), fn env_file ->
+        exec_fn.(sprite, "true",
+          files: [{prompt_file, prompt_path}, {env_file, runtime_env_path}],
+          timeout: 30_000
+        )
+      end)
     end)
   end
 
-  defp with_temp_uploads(uploads, fun) do
-    temp_paths =
-      Enum.map(uploads, fn {dest, content} ->
-        path = Path.join(System.tmp_dir!(), "sprite-upload-#{System.unique_integer([:positive])}")
-        File.write!(path, content)
-        File.chmod!(path, 0o600)
-        {path, dest}
-      end)
+  defp with_temp_file(prefix, contents, fun) do
+    path = Path.join(System.tmp_dir!(), "#{prefix}-#{System.unique_integer([:positive])}")
+    File.write!(path, contents)
+    File.chmod!(path, 0o600)
 
     try do
-      fun.(temp_paths)
+      fun.(path)
     after
-      Enum.each(temp_paths, fn {path, _dest} -> File.rm(path) end)
+      File.rm(path)
     end
   end
 

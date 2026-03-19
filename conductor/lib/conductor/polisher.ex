@@ -10,7 +10,7 @@ defmodule Conductor.Polisher do
   use GenServer
   require Logger
 
-  alias Conductor.{Config, Prompt, Store}
+  alias Conductor.{Config, Prompt, Store, Workspace}
 
   defstruct [
     :repo,
@@ -131,8 +131,14 @@ defmodule Conductor.Polisher do
 
     issue_body = pr["body"] || ""
     conductor_managed = conductor_managed?(state.repo, pr_number)
-    prompt = Prompt.build_polisher_prompt(pr, comments, issue_body, may_label: conductor_managed)
     branch = pr["headRefName"]
+    workspace = workspace_for_branch(state.repo, branch)
+
+    prompt =
+      Prompt.build_polisher_prompt(pr, comments, issue_body,
+        may_label: conductor_managed,
+        workspace_root: workspace
+      )
 
     Store.record_event("polisher", "polisher_dispatched", %{
       pr_number: pr_number,
@@ -142,11 +148,22 @@ defmodule Conductor.Polisher do
     task =
       Task.async(fn ->
         try do
-          worker_mod().dispatch(state.polisher_sprite, prompt, state.repo,
-            timeout: Config.polisher_timeout(),
-            workspace: workspace_for_branch(state.repo, branch),
-            harness_opts: [reasoning_effort: "high"]
-          )
+          with :ok <- workspace_mod().sync_persona(state.polisher_sprite, workspace, :fern),
+               {:ok, output} <-
+                 worker_mod().dispatch(
+                   state.polisher_sprite,
+                   prompt,
+                   state.repo,
+                   workspace: workspace,
+                   persona_role: :fern,
+                   timeout: Config.polisher_timeout(),
+                   harness_opts: [reasoning_effort: "high"]
+                 ) do
+            {:ok, output}
+          else
+            {:error, msg, code} -> {:error, msg, code}
+            {:error, reason} -> {:error, to_string(reason), 1}
+          end
         rescue
           e -> {:error, "polisher dispatch crashed: #{Exception.message(e)}", 1}
         end
@@ -170,8 +187,7 @@ defmodule Conductor.Polisher do
   end
 
   defp workspace_for_branch(repo, _branch) do
-    repo_name = repo |> String.split("/") |> List.last()
-    "/home/sprite/workspace/#{repo_name}"
+    Workspace.repo_root(repo)
   end
 
   defp schedule_poll(_, delay) do
@@ -199,4 +215,5 @@ defmodule Conductor.Polisher do
 
   defp code_host_mod, do: Application.get_env(:conductor, :code_host_module, Conductor.GitHub)
   defp worker_mod, do: Application.get_env(:conductor, :worker_module, Conductor.Sprite)
+  defp workspace_mod, do: Application.get_env(:conductor, :workspace_module, Workspace)
 end
