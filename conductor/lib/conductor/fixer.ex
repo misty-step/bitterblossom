@@ -143,7 +143,8 @@ defmodule Conductor.Fixer do
         try do
           worker_mod().dispatch(state.fixer_sprite, prompt, state.repo,
             timeout: Config.fixer_timeout(),
-            workspace: workspace_for_branch(state.repo, branch)
+            workspace: workspace_for_branch(state.repo, branch),
+            role: :thorn
           )
         rescue
           e -> {:error, "fixer dispatch crashed: #{Exception.message(e)}", 1}
