@@ -277,15 +277,11 @@ defmodule Conductor.Sprite do
   defp ensure_persona_dirs(_exec_fn, _sprite, []), do: :ok
 
   defp ensure_persona_dirs(exec_fn, sprite, dirs) do
-    if dirs == [] do
-      :ok
-    else
-      cmd = "mkdir -p " <> Enum.map_join(dirs, " ", &shell_quote/1)
+    cmd = "mkdir -p " <> Enum.map_join(dirs, " ", &shell_quote/1)
 
-      case exec_fn.(sprite, cmd, timeout: 30_000) do
-        {:ok, _} -> :ok
-        {:error, msg, code} -> {:error, :persona_dirs, msg, code}
-      end
+    case exec_fn.(sprite, cmd, timeout: 30_000) do
+      {:ok, _} -> :ok
+      {:error, msg, code} -> {:error, :persona_dirs, msg, code}
     end
   end
 

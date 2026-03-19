@@ -9,7 +9,6 @@ defmodule Conductor.Persona do
   `.codex/skills/` so either harness can discover the same guidance surface.
   """
 
-  @repo_root Path.expand("../../..", __DIR__)
   @valid_role ~r/^[a-z0-9_-]+$/
 
   @type upload :: {binary(), binary()}
@@ -42,8 +41,8 @@ defmodule Conductor.Persona do
   defp normalize_role(_), do: {:error, :invalid_role}
 
   defp uploads(workspace, role) do
-    shared_root = Path.join(@repo_root, "sprites/shared")
-    role_root = Path.join(@repo_root, "sprites/#{role}")
+    shared_root = Path.join(sprites_root(), "sprites/shared")
+    role_root = Path.join(sprites_root(), "sprites/#{role}")
 
     with {:ok, root_uploads} <- combined_root_uploads(workspace, shared_root, role_root),
          {:ok, shared_skill_uploads} <- skill_uploads(workspace, shared_root),
@@ -119,5 +118,9 @@ defmodule Conductor.Persona do
 
     String.starts_with?(name, ".") or String.ends_with?(name, "~") or
       String.ends_with?(name, ".swp") or String.ends_with?(name, ".tmp")
+  end
+
+  defp sprites_root do
+    Application.get_env(:conductor, :sprites_root, Path.expand("../../..", __DIR__))
   end
 end
