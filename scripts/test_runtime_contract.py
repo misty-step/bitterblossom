@@ -1,12 +1,11 @@
 """Runtime contract verification — guards against model/profile drift.
 
 Canonical sources:
-  - base/settings.json         — sprite-side Claude profile alias (`model`)
-  - cmd/bb/runtime_contract.go — exact provider/model identifier used by dispatch
+  - base/settings.json — sprite-side Claude profile alias (`model`)
+  - scripts/lib.sh     — exact provider/model identifier used by runtime setup
 
 Surfaces validated:
   - base/settings.json
-  - cmd/bb/runtime_contract.go
   - scripts/lib.sh
   - README.md
 
@@ -61,12 +60,16 @@ SETTINGS_PROFILE = _load_settings_profile()
 
 
 def _load_runtime_model() -> str:
-    """Read the exact runtime model identifier from Go's transport contract."""
-    go_path = REPO_ROOT / "cmd" / "bb" / "runtime_contract.go"
-    content = go_path.read_text()
+    """Read the exact runtime model identifier from scripts/lib.sh."""
+    lib_path = REPO_ROOT / "scripts" / "lib.sh"
+    content = lib_path.read_text()
 
-    match = re.search(r'const\s+spriteModel\s*=\s*"([^"]+)"', content)
-    assert match, f"Could not find spriteModel constant in {go_path}"
+    match = re.search(
+        r'elif provider == "openrouter-claude":.*?env\["ANTHROPIC_MODEL"\]\s*=\s*"([^"]+)"',
+        content,
+        re.DOTALL,
+    )
+    assert match, f"Could not find openrouter-claude default model in {lib_path}"
     return match.group(1)
 
 
@@ -81,27 +84,10 @@ def test_settings_json_uses_sonnet_profile():
     print(f"\n[ok] base/settings.json: model profile = {data['model']!r}")
 
 
-def test_go_runtime_constant_matches_canonical():
-    """cmd/bb/runtime_contract.go should keep the documented exact runtime model."""
+def test_runtime_model_matches_canonical():
+    """scripts/lib.sh should keep the documented exact runtime model."""
     assert RUNTIME_MODEL == "anthropic/claude-sonnet-4-6"
-    print(f"[ok] cmd/bb/runtime_contract.go: spriteModel = {RUNTIME_MODEL!r}")
-
-
-def test_dispatch_go_uses_sprite_model_constant():
-    """dispatch.go must not hardcode its own model string literals."""
-    dispatch_path = REPO_ROOT / "cmd" / "bb" / "dispatch.go"
-    content = dispatch_path.read_text()
-
-    # Find quoted strings that look like model IDs (provider/model-id pattern).
-    # These would be a sign of independent hardcoding outside runtime_contract.go.
-    model_pattern = re.compile(r'"([\w-]+/[\w.-]+-\d[\w.-]*)"')
-    hardcoded = [m.group(1) for m in model_pattern.finditer(content)]
-
-    assert not hardcoded, (
-        f"dispatch.go contains hardcoded model string(s): {hardcoded!r}\n"
-        "Use the spriteModel constant from runtime_contract.go instead."
-    )
-    print(f"[ok] cmd/bb/dispatch.go: no hardcoded model strings found")
+    print(f"[ok] scripts/lib.sh: openrouter-claude default = {RUNTIME_MODEL!r}")
 
 
 def test_lib_sh_openrouter_claude_default_matches_canonical():
@@ -122,7 +108,7 @@ def test_lib_sh_openrouter_claude_default_matches_canonical():
     lib_default = match.group(1)
     assert lib_default == RUNTIME_MODEL, (
         f"scripts/lib.sh openrouter-claude default={lib_default!r} "
-        f"!= runtime contract {RUNTIME_MODEL!r} from cmd/bb/runtime_contract.go"
+        f"!= runtime contract {RUNTIME_MODEL!r} from scripts/lib.sh"
     )
     print(f"[ok] scripts/lib.sh: openrouter-claude default = {lib_default!r}")
 
@@ -153,8 +139,7 @@ def test_canonical_source_is_base_settings_json():
     print(
         "Validated surfaces:"
         "\n  base/settings.json     (profile alias)"
-        "\n  cmd/bb/runtime_contract.go (exact model)"
-        "\n  scripts/lib.sh"
+        "\n  scripts/lib.sh         (exact model)"
         "\n  README.md"
     )
 

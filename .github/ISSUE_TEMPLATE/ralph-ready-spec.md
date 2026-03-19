@@ -58,7 +58,7 @@ func NewFunction(param string) (Result, error)
 ## Testing Checklist
 - [ ] Unit tests added/modified
 - [ ] Integration tests (if applicable)
-- [ ] Tested locally with `go test ./...`
+- [ ] Tested locally with the relevant project test command(s)
 
 ## Acceptance Criteria
 - [ ] All requirements implemented

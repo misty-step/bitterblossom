@@ -172,6 +172,23 @@ defmodule Conductor.SpriteDispatchTest do
       assert String.contains?(agent_cmd, "LEFTHOOK=0")
     end
 
+    test "tees agent output into ralph.log for later tailing" do
+      exec_fn = make_exec_fn()
+
+      Sprite.dispatch("s1", "prompt", "org/repo",
+        workspace: "/ws",
+        harness: MockHarness,
+        exec_fn: exec_fn,
+        timeout: 1
+      )
+
+      assert_received {:exec_called, _, _, _}
+      assert_received {:exec_called, _, _, _}
+      assert_received {:exec_called, agent_cmd, _opts, _files}
+      assert String.contains?(agent_cmd, "tee -a '/ws/ralph.log'")
+      assert String.contains?(agent_cmd, "set -o pipefail")
+    end
+
     test "does not inject GITHUB_TOKEN from env" do
       prev = System.get_env("GITHUB_TOKEN")
       System.put_env("GITHUB_TOKEN", "ghp_test123")

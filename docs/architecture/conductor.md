@@ -79,9 +79,9 @@ Current mitigation:
 
 ```mermaid
 flowchart TD
-    Probe["bb dispatch --dry-run"] --> Ok{"ready?"}
+    Probe["mix conductor fleet"] --> Ok{"ready?"}
     Ok -- yes --> Use["use sprite"]
-    Ok -- no --> Repair["bb setup <sprite> --repo <repo> --force"]
+    Ok -- no --> Repair["mix conductor fleet --reconcile"]
     Repair --> Reprobe["probe again"]
     Reprobe --> Ready{"ready now?"}
     Ready -- yes --> Use

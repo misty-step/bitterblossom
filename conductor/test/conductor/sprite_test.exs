@@ -11,6 +11,15 @@ defmodule Conductor.SpriteTest do
     end
   end
 
+  defp drain_exec_calls(acc \\ []) do
+    receive do
+      {:exec_called, command, opts, uploaded_files} ->
+        drain_exec_calls([{command, opts, uploaded_files} | acc])
+    after
+      0 -> Enum.reverse(acc)
+    end
+  end
+
   test "status reports gh auth and harness readiness" do
     status =
       Sprite.status("bb-weaver",
@@ -109,5 +118,147 @@ defmodule Conductor.SpriteTest do
                harness: "codex",
                exec_fn: fn _sprite, _command, _opts -> {:error, "timeout", 255} end
              )
+  end
+
+  test "provision uploads persona, settings, and metadata through sprite exec files" do
+    test_pid = self()
+    prev_gh = System.get_env("GITHUB_TOKEN")
+    System.put_env("GITHUB_TOKEN", "ghp-test-token")
+
+    try do
+      exec_fn = fn _sprite, command, opts ->
+        uploaded_files =
+          opts
+          |> Keyword.get(:files, [])
+          |> Enum.map(fn {src, dest} -> {dest, File.read!(src)} end)
+
+        send(test_pid, {:exec_called, command, opts, uploaded_files})
+        {:ok, ""}
+      end
+
+      assert :ok =
+               Sprite.provision("bb-weaver",
+                 repo: "misty-step/bitterblossom",
+                 persona: "You are Weaver.",
+                 force: true,
+                 exec_fn: exec_fn
+               )
+
+      calls = drain_exec_calls()
+      [{mkdir_cmd, _mkdir_opts, _mkdir_files} | _] = calls
+      assert mkdir_cmd =~ "mkdir -p"
+
+      {_, upload_opts, uploaded_files} =
+        Enum.find(calls, fn {_command, _opts, uploaded_files} ->
+          {"/home/sprite/workspace/PERSONA.md", "You are Weaver.\n"} in uploaded_files
+        end)
+
+      assert Keyword.has_key?(upload_opts, :files)
+      assert {"/home/sprite/workspace/PERSONA.md", "You are Weaver.\n"} in uploaded_files
+
+      assert Enum.any?(uploaded_files, fn
+               {"/home/sprite/.claude/settings.json", content} ->
+                 String.contains?(content, "\"model\"")
+
+               _ ->
+                 false
+             end)
+
+      {codex_cmd, _codex_opts, _codex_files} =
+        Enum.find(calls, fn {command, _opts, _files} ->
+          String.contains?(command, "@openai/codex")
+        end)
+
+      assert codex_cmd =~ "@openai/codex"
+
+      {git_auth_cmd, git_auth_opts, git_auth_files} =
+        Enum.find(calls, fn {command, _opts, _files} ->
+          String.contains?(command, "gh auth login --with-token")
+        end)
+
+      assert git_auth_cmd =~ "gh auth login --with-token"
+      assert Keyword.has_key?(git_auth_opts, :files)
+
+      assert Enum.any?(git_auth_files, fn
+               {dest, content} ->
+                 String.starts_with?(dest, "/tmp/bb-gh-token-") and content == "ghp-test-token\n"
+
+               _ ->
+                 false
+             end)
+
+      {repo_cmd, _repo_opts, _repo_files} =
+        Enum.find(calls, fn {command, _opts, _files} ->
+          String.contains?(command, "git clone https://github.com/misty-step/bitterblossom.git")
+        end)
+
+      assert repo_cmd =~ "git clone https://github.com/misty-step/bitterblossom.git"
+
+      {_, _metadata_opts, metadata_files} =
+        Enum.find(calls, fn {_command, _opts, uploaded_files} ->
+          Enum.any?(uploaded_files, fn {dest, _content} ->
+            dest == "/home/sprite/workspace/bitterblossom/.bb/workspace.json"
+          end)
+        end)
+
+      assert Enum.any?(metadata_files, fn
+               {"/home/sprite/workspace/bitterblossom/.bb/workspace.json", content} ->
+                 String.contains?(content, "\"repo\":\"misty-step/bitterblossom\"")
+
+               _ ->
+                 false
+             end)
+    after
+      if prev_gh,
+        do: System.put_env("GITHUB_TOKEN", prev_gh),
+        else: System.delete_env("GITHUB_TOKEN")
+    end
+  end
+
+  test "logs tails the workspace log file" do
+    test_pid = self()
+
+    exec_fn = fn _sprite, command, _opts ->
+      send(test_pid, {:exec_called, command})
+
+      cond do
+        String.contains?(command, "test -s '/tmp/worktree/ralph.log'") -> {:ok, ""}
+        true -> {:ok, "/tmp/worktree\n"}
+      end
+    end
+
+    runner_fn = fn _sprite, command, _opts ->
+      send(test_pid, {:runner_called, command})
+      {:ok, ""}
+    end
+
+    assert :ok =
+             Sprite.logs("bb-weaver",
+               workspace: "/tmp/worktree",
+               lines: 25,
+               exec_fn: exec_fn,
+               runner_fn: runner_fn
+             )
+
+    assert_received {:exec_called, "test -s '/tmp/worktree/ralph.log'"}
+
+    assert_received {:runner_called,
+                     "touch '/tmp/worktree/ralph.log' && tail -n 25 '/tmp/worktree/ralph.log'"}
+  end
+
+  test "logs returns the idle message when no task is active and the log is empty" do
+    exec_fn = fn _sprite, command, _opts ->
+      cond do
+        String.contains?(command, "test -s") -> {:error, "", 1}
+        String.contains?(command, "pgrep") -> {:error, "", 1}
+        true -> {:ok, ""}
+      end
+    end
+
+    assert {:error, reason} =
+             Sprite.logs("bb-weaver", workspace: "/tmp/worktree", exec_fn: exec_fn)
+
+    assert reason =~ ~s(No active task on "bb-weaver".)
+    assert reason =~ "dispatch log is empty"
   end
 end
