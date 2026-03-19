@@ -5,6 +5,8 @@ defmodule Conductor.CLIFleetTest do
 
   alias Conductor.{CLI, Store}
 
+  @conductor_dir Path.expand("../..", __DIR__)
+
   defmodule MockWorker do
     def status("bb-weaver-1", _opts),
       do:
@@ -50,6 +52,13 @@ defmodule Conductor.CLIFleetTest do
     def probe(_worker, _opts), do: {:error, "connection refused"}
   end
 
+  defmodule MockReconciler do
+    def reconcile_all(sprites, _opts \\ []) do
+      send(self(), {:reconciled, Enum.map(sprites, & &1.name)})
+      {:ok, Enum.map(sprites, &%{name: &1.name, healthy: true, action: :provisioned})}
+    end
+  end
+
   setup do
     db_path =
       Path.join(System.tmp_dir!(), "fleet_cli_test_#{System.unique_integer([:positive])}.db")
@@ -90,6 +99,7 @@ defmodule Conductor.CLIFleetTest do
     orig_db = Application.get_env(:conductor, :db_path)
     orig_log = Application.get_env(:conductor, :event_log)
     orig_worker = Application.get_env(:conductor, :worker_module)
+    orig_reconciler = Application.get_env(:conductor, :fleet_reconciler)
     Application.stop(:conductor)
     Application.put_env(:conductor, :db_path, db_path)
     Application.put_env(:conductor, :event_log, event_log)
@@ -114,6 +124,10 @@ defmodule Conductor.CLIFleetTest do
       if orig_worker,
         do: Application.put_env(:conductor, :worker_module, orig_worker),
         else: Application.delete_env(:conductor, :worker_module)
+
+      if orig_reconciler,
+        do: Application.put_env(:conductor, :fleet_reconciler, orig_reconciler),
+        else: Application.delete_env(:conductor, :fleet_reconciler)
 
       File.rm(db_path)
       File.rm(event_log)
@@ -164,5 +178,44 @@ defmodule Conductor.CLIFleetTest do
         do: Application.put_env(:conductor, :worker_module, orig_worker),
         else: Application.delete_env(:conductor, :worker_module)
     end
+  end
+
+  test "fleet --reconcile invokes the configured reconciler", %{fleet_path: fleet_path} do
+    Application.put_env(:conductor, :fleet_reconciler, MockReconciler)
+    prev_gh = System.get_env("GITHUB_TOKEN")
+    prev_sprite = System.get_env("SPRITE_TOKEN")
+
+    System.put_env("GITHUB_TOKEN", "ghp-test-token")
+    System.put_env("SPRITE_TOKEN", "sprite-test-token")
+
+    try do
+      capture_io(fn ->
+        CLI.main(["fleet", "--fleet", fleet_path, "--reconcile"])
+      end)
+    after
+      if prev_gh,
+        do: System.put_env("GITHUB_TOKEN", prev_gh),
+        else: System.delete_env("GITHUB_TOKEN")
+
+      if prev_sprite,
+        do: System.put_env("SPRITE_TOKEN", prev_sprite),
+        else: System.delete_env("SPRITE_TOKEN")
+    end
+
+    assert_received {:reconciled, ["bb-weaver-1", "bb-weaver-2", "bb-weaver-3", "bb-weaver-4"]}
+  end
+
+  test "mix conductor fleet --reconcile fails with environment preflight output", %{
+    fleet_path: fleet_path
+  } do
+    {output, status} =
+      System.cmd("mix", ["conductor", "fleet", "--fleet", fleet_path, "--reconcile"],
+        cd: @conductor_dir,
+        env: [{"MIX_ENV", "test"}, {"GITHUB_TOKEN", ""}],
+        stderr_to_stdout: true
+      )
+
+    assert status == 1
+    assert output =~ "environment check failed: missing: GITHUB_TOKEN"
   end
 end

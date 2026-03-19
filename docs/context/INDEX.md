@@ -1,92 +1,24 @@
 # Context Index
 
-This folder exists so a fresh agent can get oriented without guessing from stale session memory.
+## Primary Entry Points
 
-## Read Order
+- [`conductor/lib/conductor/`](../../conductor/lib/conductor/)
+- [`conductor/test/`](../../conductor/test/)
+- [`base/skills/`](../../base/skills/)
+- [`scripts/builder-prompt-template.md`](../../scripts/builder-prompt-template.md)
 
-Read in this order when you need the current architecture, not the historical one:
-
-1. [`docs/CODEBASE_MAP.md`](../CODEBASE_MAP.md)
-2. [`docs/architecture/README.md`](../architecture/README.md)
-3. [`docs/architecture/conductor.md`](../architecture/conductor.md)
-4. [`docs/architecture/bb-cli.md`](../architecture/bb-cli.md)
-5. [`docs/architecture/skills.md`](../architecture/skills.md)
-6. [`docs/CONDUCTOR.md`](../CONDUCTOR.md)
-7. [`docs/CLI-REFERENCE.md`](../CLI-REFERENCE.md)
-8. [`docs/COMPLETION-PROTOCOL.md`](../COMPLETION-PROTOCOL.md)
-9. [`AGENTS.md`](../../AGENTS.md)
-10. [`project.md`](../../project.md) *(vision, glossary, roadmap language)*
-11. [`docs/adr/002-architecture-minimalism.md`](../adr/002-architecture-minimalism.md)
-12. [`docs/adr/003-conductor-control-plane.md`](../adr/003-conductor-control-plane.md)
-13. [`docs/adr/004-bounded-review-governance.md`](../adr/004-bounded-review-governance.md) *(proposed direction, not current behavior)*
-14. Code entrypoints: [`conductor/lib/conductor/`](../../conductor/lib/conductor/), [`cmd/bb/*.go`](../../cmd/bb/)
-
-## Authority Ranking
-
-When sources disagree, trust them in this order:
-
-1. **Code**
-2. **Focused current docs** ([`docs/CODEBASE_MAP.md`](../CODEBASE_MAP.md), [`docs/context/*`](./), [`docs/architecture/*`](../architecture/), [`docs/CONDUCTOR.md`](../CONDUCTOR.md), [`docs/CLI-REFERENCE.md`](../CLI-REFERENCE.md), [`docs/COMPLETION-PROTOCOL.md`](../COMPLETION-PROTOCOL.md))
-3. **Repo framing docs** ([`AGENTS.md`](../../AGENTS.md), [`project.md`](../../project.md), [`README.md`](../../README.md))
-4. **Accepted ADRs**
-5. **Proposed ADRs / roadmap docs**
-6. **Everything else**
-
-## Fast Routing
-
-- Control-plane logic, leases, runs, review waves, merge policy:
-  - [`conductor/lib/conductor/`](../../conductor/lib/conductor/)
-  - [`docs/CONDUCTOR.md`](../CONDUCTOR.md)
-  - [`docs/architecture/conductor.md`](../architecture/conductor.md)
-- Sprite setup, dispatch, logs, status, recovery:
-  - [`cmd/bb/*.go`](../../cmd/bb/)
-  - [`docs/CLI-REFERENCE.md`](../CLI-REFERENCE.md)
-  - [`docs/architecture/bb-cli.md`](../architecture/bb-cli.md)
-- Runtime execution / signal files / off-rails behavior:
-  - [`cmd/bb/dispatch.go`](../../cmd/bb/dispatch.go)
-  - [`cmd/bb/dispatch_checks.go`](../../cmd/bb/dispatch_checks.go)
-  - [`cmd/bb/offrails.go`](../../cmd/bb/offrails.go)
-  - [`cmd/bb/stream_json.go`](../../cmd/bb/stream_json.go)
-  - [`docs/COMPLETION-PROTOCOL.md`](../COMPLETION-PROTOCOL.md)
-- Shared runtime config / hooks / agent instructions:
-  - [`base/settings.json`](../../base/settings.json)
-  - [`base/hooks/*`](../../base/hooks/)
-  - [`base/CLAUDE.md`](../../base/CLAUDE.md)
-- Skill system / agent guidance modules:
-  - [`base/skills/`](../../base/skills/)
-  - [`docs/architecture/skills.md`](../architecture/skills.md)
-- Persona / worker specialization:
-  - [`sprites/*.md`](../../sprites/)
-
-## Use With Caution
-
-These files and areas are still useful context, but they are not reliable truth for the live conductor-first architecture:
-
-- [`docs/archive/`](../archive/)
-- root [`glance.md`](../../glance.md)
-- [`docs/glance.md`](../glance.md)
-- [`scripts/glance.md`](../../scripts/glance.md)
-- [`reports/glance.md`](../../reports/glance.md)
-- [`cmd/bb/glance.md`](../../cmd/bb/glance.md)
-- [`base/glance.md`](../../base/glance.md)
-- [`QA.md`](../../QA.md)
-- [`base/skills/*`](../../base/skills/) when you need exact live CLI flags or command behavior
-- shell wrappers in [`scripts/`](../../scripts/) that preserve older workflows
-- [`compositions/`](../../compositions/) — experimental hypotheses; not the authoritative scheduler input for the conductor loop
-
-## Current Questions → Where To Look
+## Common Questions
 
 | Question | Start Here |
 |---|---|
-| Why did a run block or fail? | [`conductor/lib/conductor/`](../../conductor/lib/conductor/), [`docs/CONDUCTOR.md`](../CONDUCTOR.md), `.bb/conductor.db`, `.bb/events.jsonl` |
-| What does `bb dispatch` actually do? | [`cmd/bb/dispatch.go`](../../cmd/bb/dispatch.go), [`docs/architecture/bb-cli.md`](../architecture/bb-cli.md) |
-| How does setup/bootstrap work? | [`cmd/bb/setup.go`](../../cmd/bb/setup.go), [`docs/CLI-REFERENCE.md`](../CLI-REFERENCE.md) |
-| What files prove work completion? | [`docs/COMPLETION-PROTOCOL.md`](../COMPLETION-PROTOCOL.md), [`cmd/bb/dispatch_checks.go`](../../cmd/bb/dispatch_checks.go) |
-| Where do review artifacts live? | [`conductor/lib/conductor/`](../../conductor/lib/conductor/), [`docs/CODEBASE_MAP.md`](../CODEBASE_MAP.md) |
-| What is current vs planned? | [`project.md`](../../project.md), [`ADR-002`](../adr/002-architecture-minimalism.md), [`ADR-003`](../adr/003-conductor-control-plane.md), [`ADR-004`](../adr/004-bounded-review-governance.md) |
+| How does the conductor choose work? | [`orchestrator.ex`](../../conductor/lib/conductor/orchestrator.ex) |
+| How does one run progress? | [`run_server.ex`](../../conductor/lib/conductor/run_server.ex) |
+| How are sprites reconciled? | [`fleet/reconciler.ex`](../../conductor/lib/conductor/fleet/reconciler.ex) |
+| How are logs and provisioning handled? | [`sprite.ex`](../../conductor/lib/conductor/sprite.ex) |
+| Where is persistent state stored? | [`store.ex`](../../conductor/lib/conductor/store.ex) |
 
-## Companion Files
+## Supporting Docs
 
+- [`docs/CONDUCTOR.md`](../CONDUCTOR.md)
+- [`docs/CLI-REFERENCE.md`](../CLI-REFERENCE.md)
 - [`docs/CODEBASE_MAP.md`](../CODEBASE_MAP.md)
-- [`docs/context/ROUTING.md`](./ROUTING.md)
-- [`docs/context/DRIFT-WATCHLIST.md`](./DRIFT-WATCHLIST.md)

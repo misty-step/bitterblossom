@@ -290,7 +290,12 @@ defmodule Conductor.RunServerTest do
     db_path = Path.join(System.tmp_dir!(), "rs_test_#{:rand.uniform(999_999)}.db")
     event_log = Path.join(System.tmp_dir!(), "rs_test_#{:rand.uniform(999_999)}.jsonl")
 
-    if Process.whereis(Store), do: GenServer.stop(Store)
+    if pid = Process.whereis(Store) do
+      ref = Process.monitor(pid)
+      GenServer.stop(Store)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1_000
+    end
+
     {:ok, _} = Store.start_link(db_path: db_path, event_log: event_log)
     if Process.whereis(Conductor.TaskSupervisor), do: GenServer.stop(Conductor.TaskSupervisor)
     {:ok, _} = Task.Supervisor.start_link(name: Conductor.TaskSupervisor)

@@ -1,25 +1,17 @@
 # Bitterblossom QA Runbook
 
-This runbook covers the current Bitterblossom surface:
+This runbook covers the supported Bitterblossom surface:
 
-- `bb` is the thin sprite transport CLI
-- `scripts/conductor.py` is the run-centric control plane
+- `mix conductor ...` is the operator CLI
+- `Conductor.Fleet.Reconciler` provisions and repairs sprites
+- `Conductor.Sprite` owns remote exec, logs, and recovery helpers
 
-Legacy shell wrapper commands such as `bb provision`, `bb sync`, `bb teardown`, and `bb watchdog` are not part of the supported CLI.
-
-## Build and Regression Checks
+## Regression Checks
 
 ```bash
-make build
 make test
-make test-python
-make lint-python
-```
-
-For transport-only verification:
-
-```bash
-go test ./cmd/bb/...
+cd conductor && mix test
+python3 -m pytest -q base/hooks/ scripts/test_runtime_contract.py
 ```
 
 ## Required Environment
@@ -29,83 +21,42 @@ source .env.bb
 export GITHUB_TOKEN="$(gh auth token)"
 export SPRITE_TOKEN="..."         # preferred
 # or export FLY_API_TOKEN="..."   # fallback
-export OPENROUTER_API_KEY="..."   # required for bb setup
 ```
 
-## Transport Smoke Test
-
-1. Set up one sprite for a repo:
+## Fleet Smoke Test
 
 ```bash
-bb setup <sprite> --repo <owner/repo>
+cd conductor
+mix conductor fleet --fleet ../fleet.toml --reconcile
+mix conductor fleet --fleet ../fleet.toml
+mix conductor logs bb-weaver --lines 50
 ```
 
-2. Verify readiness without starting work:
+If a sprite is stuck, recover it from Elixir or a console:
 
-```bash
-bb dispatch <sprite> "dry-run readiness probe" --repo <owner/repo> --dry-run
-```
-
-3. Run one short task:
-
-```bash
-bb dispatch <sprite> "Describe the current branch state in TASK_COMPLETE and stop." --repo <owner/repo>
-```
-
-4. Inspect recovery surfaces:
-
-```bash
-bb status
-bb status <sprite>
-bb logs <sprite> --lines 50
-```
-
-5. If a dispatch was interrupted or left the sprite busy, recover with:
-
-```bash
-bb kill <sprite>
+```elixir
+Conductor.Sprite.kill("bb-weaver")
 ```
 
 ## Conductor Smoke Test
 
-Validate environment first:
-
 ```bash
-make conductor-check
+cd conductor
+mix conductor check-env
+mix conductor start --fleet ../fleet.toml
 ```
 
-Run the focused governance regression slice:
+In another shell:
 
 ```bash
-python3 -m pytest -q scripts/test_conductor.py -k 'acceptance_trace_bullet_run or duplicate_trusted_findings or low_severity_nit or novel_high_severity'
-```
-
-Then run one bounded conductor cycle on a prepared environment:
-
-```bash
-python3 scripts/conductor.py run-once \
-  --repo <owner/repo> \
-  --issue <number> \
-  --worker <builder-sprite> \
-  --reviewer <reviewer-a> \
-  --reviewer <reviewer-b> \
-  --reviewer <reviewer-c>
-```
-
-Inspect the run:
-
-```bash
-python3 scripts/conductor.py show-runs --limit 5
-python3 scripts/conductor.py show-run --run-id <run-id>
-python3 scripts/conductor.py show-events --run-id <run-id>
+cd conductor
+mix conductor show-runs --limit 5
+mix conductor show-events --run_id <run-id>
 ```
 
 ## Manual Checklist
 
-- `bb setup` uploads base config, persona, Ralph assets, and repo metadata.
-- `bb dispatch --dry-run` fails fast on auth or readiness problems.
-- `bb dispatch` streams output and exits `2` when the agent writes `BLOCKED.md`.
-- `bb status` shows fleet reachability and single-sprite git/signal details.
-- `bb logs` reads `ralph.log` and supports `--follow` and `--json`.
-- `bb kill` clears stale Ralph or Claude processes so the next dispatch can start.
-- `scripts/conductor.py` can acquire a run, dispatch the builder, collect review evidence, and surface run state through `show-runs` / `show-run` / `show-events`.
+- `mix conductor fleet --reconcile` provisions unhealthy sprites without `bb setup`.
+- `mix conductor logs <sprite> [--follow]` tails the sprite log file.
+- `mix conductor fleet` reports health truthfully after reconciliation.
+- Elixir tests pass without any Go build or `cmd/bb/` dependency.

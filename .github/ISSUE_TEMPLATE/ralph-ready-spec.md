@@ -30,12 +30,12 @@ Why is this needed? What problem does it solve?
 ### Files to Modify
 | File | Changes |
 |------|---------|
-| `path/to/file.go` | Description of changes |
+| `path/to/module` | Description of changes |
 
 ### New Files
 | File | Purpose |
 |------|---------|
-| `path/to/new_file.go` | Description |
+| `path/to/new_file` | Description |
 
 ### Key Design Decisions
 - Decision 1: Rationale
@@ -44,21 +44,20 @@ Why is this needed? What problem does it solve?
 ## Interface Changes
 
 ### New/Modified Types
-```go
-type NewType struct {
-    Field string
-}
+```text
+TypeOrStruct:
+  key_field: description
 ```
 
 ### New/Modified Functions
-```go
-func NewFunction(param string) (Result, error)
+```text
+function_or_method(param) -> result
 ```
 
 ## Testing Checklist
 - [ ] Unit tests added/modified
 - [ ] Integration tests (if applicable)
-- [ ] Tested locally with `go test ./...`
+- [ ] Tested locally with the relevant project test command(s)
 
 ## Acceptance Criteria
 - [ ] All requirements implemented

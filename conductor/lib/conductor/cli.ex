@@ -1,7 +1,7 @@
 defmodule Conductor.CLI do
   @moduledoc "Escript entry point. Parses args and delegates to Conductor."
 
-  @commands ~w(start pause resume shape fleet show-runs show-events show-incidents show-waivers check-env dashboard status)
+  @commands ~w(start pause resume shape fleet logs show-runs show-events show-incidents show-waivers check-env dashboard status)
 
   @doc "Dispatch the conductor CLI command selected by `args`."
   def main(args) do
@@ -31,6 +31,10 @@ defmodule Conductor.CLI do
       ["fleet" | rest] ->
         Application.ensure_all_started(:conductor)
         cmd_fleet(rest)
+
+      ["logs" | rest] ->
+        Application.ensure_all_started(:conductor)
+        cmd_logs(rest)
 
       ["show-runs" | rest] ->
         Application.ensure_all_started(:conductor)
@@ -150,35 +154,94 @@ defmodule Conductor.CLI do
     {opts, _, _} =
       OptionParser.parse(args,
         strict: [
-          fleet: :string
+          fleet: :string,
+          reconcile: :boolean,
+          help: :boolean
         ]
       )
 
-    fleet_path = Keyword.get(opts, :fleet, fleet_default_path())
+    if opts[:help] do
+      IO.puts("""
+      usage: mix conductor fleet [--fleet path] [--reconcile]
 
-    case Conductor.Fleet.Loader.load(fleet_path) do
-      {:ok, config} ->
-        assignments = active_builder_assignments(config.defaults.repo)
+      Options:
+        --fleet PATH      fleet.toml path
+        --reconcile       provision unhealthy sprites before printing status
+      """)
 
-        config.sprites
-        |> Enum.each(fn sprite ->
-          name = sprite_name(sprite)
-          display_name = name || "(unnamed sprite)"
-          role = Map.get(sprite, :role) || Map.get(sprite, "role") || "unknown"
+      :ok
+    else
+      fleet_path = Keyword.get(opts, :fleet, fleet_default_path())
 
-          tags =
-            format_tags(
-              Map.get(sprite, :capability_tags) || Map.get(sprite, "capability_tags") || []
-            )
+      case Conductor.Fleet.Loader.load(fleet_path) do
+        {:ok, config} ->
+          if opts[:reconcile] do
+            cmd_check_env()
 
-          health = probe_status(sprite)
-          assignment = if name, do: Map.get(assignments, name, "idle"), else: "idle"
-          IO.puts("#{display_name} role=#{role} #{health} assignment=#{assignment} #{tags}")
-        end)
+            reconciler =
+              Application.get_env(:conductor, :fleet_reconciler, Conductor.Fleet.Reconciler)
 
-      {:error, reason} ->
-        IO.puts("fleet failed: #{reason}")
-        System.halt(1)
+            {:ok, _results} = reconciler.reconcile_all(config.sprites)
+          end
+
+          assignments = active_builder_assignments(config.defaults.repo)
+
+          config.sprites
+          |> Enum.each(fn sprite ->
+            name = sprite_name(sprite)
+            display_name = name || "(unnamed sprite)"
+            role = Map.get(sprite, :role) || Map.get(sprite, "role") || "unknown"
+
+            tags =
+              format_tags(
+                Map.get(sprite, :capability_tags) || Map.get(sprite, "capability_tags") || []
+              )
+
+            health = probe_status(sprite)
+            assignment = if name, do: Map.get(assignments, name, "idle"), else: "idle"
+            IO.puts("#{display_name} role=#{role} #{health} assignment=#{assignment} #{tags}")
+          end)
+
+        {:error, reason} ->
+          IO.puts("fleet failed: #{reason}")
+          System.halt(1)
+      end
+    end
+  end
+
+  defp cmd_logs(args) do
+    {opts, positional, _} =
+      OptionParser.parse(args,
+        aliases: [f: :follow, n: :lines],
+        strict: [
+          follow: :boolean,
+          lines: :integer,
+          help: :boolean
+        ]
+      )
+
+    if Keyword.get(opts, :help, false) or positional == [] do
+      IO.puts("""
+      usage: mix conductor logs <sprite> [--follow] [--lines N]
+
+      Options:
+        --follow, -f      follow log output
+        --lines, -n N     last N lines (0 = all, default)
+      """)
+
+      if opts[:help], do: :ok, else: System.halt(1)
+    else
+      case Conductor.Sprite.logs(hd(positional),
+             follow: Keyword.get(opts, :follow, false),
+             lines: Keyword.get(opts, :lines, 0)
+           ) do
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          IO.puts(reason)
+          System.halt(1)
+      end
     end
   end
 
@@ -336,6 +399,13 @@ defmodule Conductor.CLI do
         rescue
           System.EnvError ->
             {:error, :missing_env}
+
+          error in RuntimeError ->
+            if String.starts_with?(Exception.message(error), "no sprite org:") do
+              {:error, :missing_env}
+            else
+              reraise error, __STACKTRACE__
+            end
         end
       else
         {:error, :missing_name}
@@ -367,6 +437,9 @@ defmodule Conductor.CLI do
 
       {:error, :missing_name} ->
         "invalid config (name missing)"
+
+      {:error, :missing_env} ->
+        "missing env"
 
       {:error, _} ->
         "unreachable"
