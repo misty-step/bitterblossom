@@ -54,7 +54,7 @@ Supporting evidence captured in the transcript:
 
 ## Residual Risk
 
-- `scripts/ralph.sh` still has to know the shell-side signal filenames, so the contract is centralized for Go callers, not fully generated across languages.
+- The workspace contract is still shared across Go transport code, prompt templates, and onboarding helpers, so changes still cross language boundaries even after the dead shell entrypoints were removed.
 - Process-pattern constants in `dispatch.go` and `kill.go` still encode the Ralph loop path separately; that is adjacent cleanup, not part of this PR.
 
 ## Merge Case

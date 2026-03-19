@@ -49,3 +49,11 @@ Delete the dead shell entrypoints that were superseded by the Elixir conductor s
   Mitigation: keep clearly archived docs intact unless they claim the deleted files are still current.
 - Risk: deleting files before updating tests hides the real breakage.
   Mitigation: use the remaining workspace/runtime tests as the first verification pass after the cut.
+
+## Implementation Notes
+
+- Current `scripts/` inventory on this branch was already reduced to `builder-prompt-template.md`, `lib.sh`, `onboard.sh`, `sentry-watcher.sh`, and `test_runtime_contract.py`; the cut-list shell entrypoints and `ralph-prompt-template.md` symlink were already absent.
+- The implemented slice therefore focused on two residual gaps:
+  - add a runtime-contract regression test that keeps the removed shell entrypoints absent and prevents supported surfaces from naming them again
+  - update supported docs and architecture notes so the repo no longer advertises the retired shell layer as current runtime surface
+- Archive/history material remains intentionally untouched unless it claims a removed shell asset is still part of the supported runtime path.

@@ -10,7 +10,7 @@ Bitterblossom has three surfaces:
 - `bb`: thin Go transport for sprite setup, dispatch, status, logs, and recovery
 - `base/skills/`: skill library provisioned onto every managed sprite
 
-The Python conductor (`scripts/conductor.py`) is deprecated as of [ADR-004](docs/adr/004-elixir-conductor-architecture.md); it remains as reference only.
+Legacy shell and Python entrypoints have been retired. The supported control plane is the Elixir conductor under `conductor/`, with `bb` kept as the thin sprite transport.
 
 The design is intentional:
 
@@ -29,7 +29,7 @@ Full artifact stack: [docs/architecture/README.md](docs/architecture/README.md)
 conductor/               Elixir/OTP orchestrator (control plane)
 cmd/bb/                  thin Go transport CLI (sprite edge)
 base/skills/             skill files provisioned onto sprites
-scripts/                 prompt templates, onboarding helpers, legacy Python conductor
+scripts/                 prompt templates, onboarding helpers, runtime contract tests
 sprites/                 per-sprite personas
 docs/adr/                architecture decisions
 docs/architecture/       system overview + per-module drill-downs
@@ -39,7 +39,7 @@ docs/                    operator docs and contracts
 ## How It Works
 
 1. `bb setup <sprite> --repo owner/repo` bootstraps persistent worker sprites with base configs, imported autonomy skills, and a role persona
-2. `scripts/conductor.py run-once|loop` reads GitHub issues and acquires a lease
+2. `mix conductor start --fleet ../fleet.toml` boots the Elixir control plane and starts leasing runnable issues
 3. the conductor dispatches a builder sprite with a branch contract
 4. the builder opens a PR on that branch; PR existence is the success signal
 5. three reviewer sprites run adversarial reviews and write review artifacts
@@ -82,15 +82,14 @@ export SPRITE_TOKEN="..."  # from https://sprites.dev/settings
 ./bin/bb setup council-sage-20260306 --repo misty-step/bitterblossom
 ./bin/bb setup council-thorn-20260306 --repo misty-step/bitterblossom
 
-# 3) Run one conductor cycle for a specific issue
-python3 scripts/conductor.py run-once \
-  --repo misty-step/bitterblossom \
-  --issue 123 \
-  --worker noble-blue-serpent \
-  --reviewer council-fern-20260306 \
-  --reviewer council-sage-20260306 \
-  --reviewer council-thorn-20260306
+# 3) Start the conductor
+cd conductor
+mix deps.get
+mix compile
+mix conductor start --fleet ../fleet.toml
 ```
+
+Use `mix conductor pause`, `mix conductor resume`, `mix conductor show-runs`, and `mix conductor show-events` to inspect or control the running pipeline.
 
 See [docs/CLI-REFERENCE.md](docs/CLI-REFERENCE.md) for `bb`, and [docs/CONDUCTOR.md](docs/CONDUCTOR.md) for the conductor loop.
 
@@ -208,13 +207,13 @@ GitHub Actions CI runs on pull requests and pushes to `master` with:
 - `ruff` + `pytest` for `base/hooks/`
 - `yamllint` for `compositions/`
 
-## Python Testing (Hooks + Conductor)
+## Python Testing (Hooks + Runtime Contract)
 
-Safety-critical hooks in `base/hooks/` and the conductor script are covered with pytest and ruff. Use the Makefile targets:
+Safety-critical hooks and the remaining Python runtime-contract checks are covered with pytest and ruff:
 
 ```bash
-make test-python   # pytest: base/hooks + scripts/test_conductor.py
-make lint-python   # ruff:   base/hooks + scripts/conductor.py + tests
+python3 -m pytest -q base/hooks/ scripts/test_runtime_contract.py
+ruff check base/hooks
 ```
 
 ## Troubleshooting
