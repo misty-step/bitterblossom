@@ -686,6 +686,46 @@ defmodule Conductor.RunServerTest do
       :ok
     end
 
+    test "ignores a stale task DOWN after scheduling a retry" do
+      Application.put_env(:conductor, :builder_retry_backoff_base_ms, 100)
+
+      on_exit(fn ->
+        Application.delete_env(:conductor, :builder_retry_backoff_base_ms)
+      end)
+
+      MockState.put(
+        {:dispatch_sequence, "test-sprite"},
+        [
+          {:error, "sprite busy", 75},
+          {:ok, "build complete"}
+        ]
+      )
+
+      {:ok, pid} = start_run_server()
+
+      run =
+        eventually(fn ->
+          assert run = find_run(42)
+          assert run["dispatch_attempt_count"] == 1
+          assert run["phase"] == "building"
+          run
+        end)
+
+      assert "builder_retry_scheduled" in event_types(run["run_id"])
+
+      Process.send(pid, {:DOWN, make_ref(), :process, self(), :normal}, [])
+
+      eventually(fn ->
+        assert Process.alive?(pid)
+      end)
+
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "pr_opened"
+      assert run["pr_number"] == 123
+    end
+
     @tag :retry_logic
     test "retries transient builder failures with backoff up to success" do
       MockState.put(

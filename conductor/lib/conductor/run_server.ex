@@ -243,6 +243,11 @@ defmodule Conductor.RunServer do
   end
 
   @impl true
+  def handle_info({:DOWN, _ref, :process, _pid, _reason}, state) do
+    {:noreply, state}
+  end
+
+  @impl true
   def handle_info(:heartbeat, state) do
     Store.heartbeat_run(state.run_id)
     timer = start_heartbeat()

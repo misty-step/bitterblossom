@@ -10,6 +10,9 @@ defmodule Conductor.HarnessTest do
 
     assert {:transient, :resource_contention} =
              Harness.classify_dispatch_failure("temporary resource contention", 75)
+
+    assert {:transient, :worker_unavailable} =
+             Harness.classify_dispatch_failure("sprite busy", 1)
   end
 
   @tag :backoff_strategy
@@ -22,6 +25,9 @@ defmodule Conductor.HarnessTest do
 
     assert {:permanent, :auth} =
              Harness.classify_dispatch_failure("gh auth failed on sprite", 4)
+
+    assert {:permanent, :unknown} =
+             Harness.classify_dispatch_failure("unexpected squirrel failure", 2)
   end
 
   @tag :backoff_strategy
