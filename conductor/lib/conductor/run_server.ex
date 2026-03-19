@@ -285,7 +285,7 @@ defmodule Conductor.RunServer do
         unexpected =
           Enum.filter(prs, fn pr ->
             branch = pr["headRefName"]
-            branch != state.branch and not factory_branch?(branch)
+            branch != state.branch and not Workspace.factory_branch?(branch)
           end)
 
         close_and_fail_on_unexpected_prs(state, unexpected)
@@ -299,7 +299,7 @@ defmodule Conductor.RunServer do
     case code_host_mod().issue_open_prs(state.repo, state.issue.number) do
       {:ok, prs} ->
         case Enum.split_with(prs, fn pr ->
-               factory_branch?(pr["headRefName"])
+               Workspace.factory_branch?(pr["headRefName"])
              end) do
           {[], []} ->
             :continue
@@ -450,12 +450,6 @@ defmodule Conductor.RunServer do
     maybe_kill_worker(state)
     %{state | heartbeat_timer: nil}
   end
-
-  defp factory_branch?(branch) when is_binary(branch) and branch != "" do
-    String.starts_with?(branch, "factory/")
-  end
-
-  defp factory_branch?(_branch), do: false
 
   defp branch_label(branch) when is_binary(branch) and branch != "", do: branch
   defp branch_label(_branch), do: "unknown"
