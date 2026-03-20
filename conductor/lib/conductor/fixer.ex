@@ -204,8 +204,9 @@ defmodule Conductor.Fixer do
         {:ok, logs} ->
           logs
 
-        {:error, reason} ->
-          Logger.warning("[thorn] failed to fetch CI logs for PR ##{pr_number}: #{reason}")
+        {:error, ci_logs_error} ->
+          Logger.warning("[thorn] failed to fetch CI logs for PR ##{pr_number}: #{ci_logs_error}")
+
           "(CI logs unavailable)"
       end
 
