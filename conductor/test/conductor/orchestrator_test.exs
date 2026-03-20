@@ -2124,7 +2124,7 @@ defmodule Conductor.OrchestratorTest do
     end
 
     test "conductor_tracked? returns false for non-conductor PR even with green CI", %{
-      orch_pid: orch_pid
+      orch_pid: _orch_pid
     } do
       # PR 400 has no Store run — conductor_tracked? returns false → merge skipped
       MockState.put(
