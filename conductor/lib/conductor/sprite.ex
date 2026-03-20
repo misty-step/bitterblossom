@@ -37,10 +37,14 @@ defmodule Conductor.Sprite do
   @spec exec(binary(), binary(), keyword()) :: {:ok, binary()} | {:error, binary(), integer()}
   def exec(sprite, command, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, 60_000)
-    org = Keyword.get(opts, :org, Config.sprites_org!())
+    org = Keyword.get_lazy(opts, :org, &Config.sprites_org!/0)
     files = Keyword.get(opts, :files, [])
 
-    Shell.cmd("sprite", exec_args(org, sprite, files, command), timeout: timeout)
+    shell_module().cmd(
+      "sprite",
+      exec_args(org, sprite, files, command),
+      exec_shell_opts(opts, timeout)
+    )
   end
 
   @doc false
@@ -317,6 +321,12 @@ defmodule Conductor.Sprite do
     []
     |> maybe_opt(:on_progress, Keyword.get(opts, :on_progress))
     |> maybe_opt(:progress_prefix, Keyword.get(opts, :progress_prefix))
+  end
+
+  defp exec_shell_opts(opts, timeout) do
+    opts
+    |> Keyword.take([:env, :cd, :on_progress, :progress_prefix])
+    |> Keyword.put(:timeout, timeout)
   end
 
   defp maybe_opt(opts, _key, nil), do: opts
@@ -779,4 +789,6 @@ defmodule Conductor.Sprite do
       ["--file", "#{source}:#{dest}"]
     end)
   end
+
+  defp shell_module, do: Application.get_env(:conductor, :shell_module, Shell)
 end
