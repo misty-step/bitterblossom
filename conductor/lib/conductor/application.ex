@@ -62,12 +62,17 @@ defmodule Conductor.Application do
         {:error, reason}
 
       {:ok, config} ->
-        boot_with_config(config, fleet_path, Reconciler)
+        boot_with_config(config, fleet_path, reconciler_mod: Reconciler)
     end
   end
 
-  defp boot_with_config(config, fleet_path, reconciler_mod) do
+  @doc false
+  def boot_with_config(config, fleet_path, opts \\ []) do
     alias Conductor.Fleet.Loader
+
+    reconciler_mod = Keyword.get(opts, :reconciler_mod, Conductor.Fleet.Reconciler)
+    orchestrator_mod = Keyword.get(opts, :orchestrator_mod, Conductor.Orchestrator)
+    phase_worker_starter = Keyword.get(opts, :phase_worker_starter, &start_phase_worker/3)
 
     sprites = config.sprites
     defaults = config.defaults
@@ -84,28 +89,26 @@ defmodule Conductor.Application do
       {:error, :no_healthy_sprites}
     else
       # 3. Start orchestrator
-      builders =
-        Loader.by_role(sprites, :builder)
-        |> Enum.filter(&MapSet.member?(healthy, &1.name))
+      builders = Loader.by_role(sprites, :builder)
 
       if builders != [] do
         maybe_warn_unfiltered_scope(repo, defaults.label)
 
-        Conductor.Orchestrator.configure_polling(
+        orchestrator_mod.configure_polling(
           repo: repo,
           workers: builders,
           label: defaults.label
         )
 
         Logger.info(
-          "[boot] orchestrator polling with weavers: #{Enum.map_join(builders, ", ", & &1.name)}"
+          "[boot] orchestrator polling with configured weavers: #{Enum.map_join(builders, ", ", & &1.name)}"
         )
       else
-        Logger.warning("[boot] no healthy weavers — orchestrator will not poll")
+        Logger.warning("[boot] no configured weavers — orchestrator will not poll")
       end
 
       # 4. Start phase workers (fixer + polisher)
-      start_phase_workers(sprites, healthy, repo)
+      start_phase_workers(sprites, healthy, repo, phase_worker_starter)
 
       # 5. Store fleet config for runtime queries
       Application.put_env(:conductor, :fleet_config, config)
@@ -123,23 +126,18 @@ defmodule Conductor.Application do
 
   defp maybe_warn_unfiltered_scope(_repo, _label), do: :ok
 
-  defp start_phase_workers(sprites, healthy, repo) do
+  defp start_phase_workers(sprites, healthy, repo, starter) do
     alias Conductor.Fleet.Loader
 
-    role_to_module = %{
-      fixer: {Conductor.Fixer, :fixer_sprite},
-      polisher: {Conductor.Polisher, :polisher_sprite}
-    }
-
-    for {role, {module, sprite_key}} <- role_to_module do
+    for role <- [:fixer, :polisher] do
       Loader.by_role(sprites, role)
       |> Enum.filter(&MapSet.member?(healthy, &1.name))
       |> Enum.each(fn sprite ->
-        case Supervisor.start_child(Conductor.Supervisor, {
-               module,
-               [{:repo, repo}, {sprite_key, sprite.name}]
-             }) do
+        case starter.(role, sprite, repo) do
           {:ok, _} ->
+            Logger.info("[boot] #{role_display_name(role)} started: #{sprite.name}")
+
+          :ok ->
             Logger.info("[boot] #{role_display_name(role)} started: #{sprite.name}")
 
           {:error, reason} ->
@@ -147,6 +145,16 @@ defmodule Conductor.Application do
         end
       end)
     end
+  end
+
+  defp start_phase_worker(role, sprite, repo) do
+    {module, sprite_key} =
+      case role do
+        :fixer -> {Conductor.Fixer, :fixer_sprite}
+        :polisher -> {Conductor.Polisher, :polisher_sprite}
+      end
+
+    Supervisor.start_child(Conductor.Supervisor, {module, [{:repo, repo}, {sprite_key, sprite.name}]})
   end
 
   @doc false
