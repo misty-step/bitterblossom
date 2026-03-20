@@ -3,7 +3,10 @@ defmodule Conductor.Config do
 
   @type worker_config :: %{
           name: binary(),
-          capability_tags: [binary()]
+          capability_tags: [binary()],
+          harness: binary() | nil,
+          model: binary() | nil,
+          reasoning_effort: binary() | nil
         }
 
   @spec github_token!() :: binary()
@@ -204,11 +207,15 @@ defmodule Conductor.Config do
           name: name,
           capability_tags:
             (Map.get(worker, :capability_tags) || Map.get(worker, "capability_tags") || [])
-            |> List.wrap()
+            |> List.wrap(),
+          harness: Map.get(worker, :harness) || Map.get(worker, "harness"),
+          model: Map.get(worker, :model) || Map.get(worker, "model"),
+          reasoning_effort:
+            Map.get(worker, :reasoning_effort) || Map.get(worker, "reasoning_effort")
         }
 
       name when is_binary(name) ->
-        %{name: name, capability_tags: []}
+        %{name: name, capability_tags: [], harness: nil, model: nil, reasoning_effort: nil}
     end)
   end
 

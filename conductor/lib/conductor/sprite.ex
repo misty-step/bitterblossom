@@ -18,8 +18,9 @@ defmodule Conductor.Sprite do
   """
 
   @behaviour Conductor.Worker
+  require Logger
 
-  alias Conductor.{Shell, Config, Workspace}
+  alias Conductor.{Shell, Config, Workspace, Harness}
   @runtime_env_file ".bb-runtime-env"
   @repo_root Path.expand("../../..", __DIR__)
   @sprite_home "/home/sprite"
@@ -65,7 +66,7 @@ defmodule Conductor.Sprite do
   def dispatch(sprite, prompt, _repo, opts \\ []) do
     timeout_minutes = Keyword.get(opts, :timeout, Config.builder_timeout())
     workspace = Keyword.fetch!(opts, :workspace)
-    harness = Keyword.get(opts, :harness, Conductor.Codex)
+    configured_harness = Keyword.get(opts, :harness, Conductor.Codex)
     harness_opts = Keyword.get(opts, :harness_opts, [])
     # Injected in tests to capture exec calls without a real sprite
     exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
@@ -85,17 +86,28 @@ defmodule Conductor.Sprite do
           {:error, "dispatch file upload failed: #{msg}", code}
 
         {:ok, _} ->
-          # 3. Run agent
-          run_agent(
-            sprite,
-            workspace,
-            prompt_path,
-            persona_role,
-            harness,
-            harness_opts,
-            exec_fn,
-            timeout_ms
-          )
+          case Harness.detect_dispatch_harness(sprite, configured_harness, exec_fn) do
+            {:ok, detected} ->
+              log_harness_diagnostics(sprite, detected.diagnostics)
+
+              selected_harness_opts =
+                selected_harness_opts(configured_harness, detected.harness, harness_opts)
+
+              run_agent(
+                sprite,
+                workspace,
+                prompt_path,
+                persona_role,
+                detected.harness,
+                selected_harness_opts,
+                exec_fn,
+                timeout_ms
+              )
+
+            {:error, msg, code} ->
+              Logger.error(msg)
+              {:error, msg, code}
+          end
       end
     else
       {:error, :invalid_role} ->
@@ -297,11 +309,11 @@ defmodule Conductor.Sprite do
       {:ok, output} ->
         {:ok, output}
 
-      {:error, _output, _code} ->
+      {:error, output, code} ->
         # Retry with session resumption if the harness supports it
         case harness.continue_command(harness_opts) do
           nil ->
-            {:error, "agent exited non-zero; harness does not support continuation", 1}
+            {:error, Harness.annotate_initial_failure(output, harness), code}
 
           continue_parts ->
             retry_cmd =
@@ -309,6 +321,24 @@ defmodule Conductor.Sprite do
 
             exec_fn.(sprite, retry_cmd, timeout: timeout_ms)
         end
+    end
+  end
+
+  defp log_harness_diagnostics(sprite, diagnostics) do
+    Enum.each(diagnostics, fn line ->
+      Logger.info("[sprite #{sprite}] #{line}")
+    end)
+  end
+
+  defp selected_harness_opts(configured_harness, selected_harness, harness_opts) do
+    if Harness.name(configured_harness) == Harness.name(selected_harness) do
+      harness_opts
+    else
+      Logger.info(
+        "[bb harness] dropping harness-specific opts for fallback from #{Harness.name(configured_harness)} to #{Harness.name(selected_harness)}"
+      )
+
+      []
     end
   end
 

@@ -36,8 +36,8 @@ defmodule Conductor.RunServerTest do
       end
     end
 
-    def dispatch(sprite, _prompt, _repo, _opts) do
-      send(MockState.get(:test_pid, self()), {:worker_dispatch, sprite})
+    def dispatch(sprite, _prompt, _repo, opts) do
+      send(MockState.get(:test_pid, self()), {:worker_dispatch, sprite, opts})
 
       case MockState.get({:dispatch_sequence, sprite}) do
         [next | rest] ->
@@ -508,6 +508,45 @@ defmodule Conductor.RunServerTest do
       assert event["payload"]["code"] == 4
       assert event["payload"]["reason"] == "builder dispatch failed (category=auth, exit 4)"
       refute String.contains?(event["payload"]["reason"], "TOKEN=abc123")
+    end
+
+    test "includes safe harness diagnostics in durable failure data" do
+      MockState.put(
+        {:dispatch_result, "test-sprite"},
+        {:error,
+         "[bb harness] configured harness codex on sprite test-sprite\n[bb harness] command -v codex -> ok\n[bb harness] selected harness codex has no continuation command; returning initial failure\nTOKEN=abc123\nboom",
+         1}
+      )
+
+      {:ok, pid} = start_run_server()
+      wait_for_exit(pid)
+
+      run = find_run(42)
+
+      assert run["builder_failure_reason"] =~
+               "harness: configured harness codex on sprite test-sprite"
+
+      refute run["builder_failure_reason"] =~ "TOKEN=abc123"
+    end
+  end
+
+  describe "builder harness selection" do
+    test "passes configured worker harness and opts into dispatch" do
+      {:ok, pid} =
+        start_run_server(
+          worker: "test-sprite",
+          worker_config: %{
+            name: "test-sprite",
+            harness: "claude-code",
+            model: "claude-sonnet-4-6"
+          },
+          workers: [%{name: "test-sprite", harness: "claude-code", model: "claude-sonnet-4-6"}]
+        )
+
+      assert_receive {:worker_dispatch, "test-sprite", opts}
+      assert opts[:harness] == Conductor.ClaudeCode
+      assert opts[:harness_opts] == [model: "claude-sonnet-4-6"]
+      wait_for_exit(pid)
     end
   end
 
@@ -1132,10 +1171,10 @@ defmodule Conductor.RunServerTest do
                  event["payload"]["to"] == "backup-sprite"
              end)
 
-      assert_received {:worker_dispatch, "test-sprite"}
-      assert_received {:worker_dispatch, "test-sprite"}
-      assert_received {:worker_dispatch, "test-sprite"}
-      assert_received {:worker_dispatch, "backup-sprite"}
+      assert_received {:worker_dispatch, "test-sprite", _}
+      assert_received {:worker_dispatch, "test-sprite", _}
+      assert_received {:worker_dispatch, "test-sprite", _}
+      assert_received {:worker_dispatch, "backup-sprite", _}
     end
 
     test "falls back immediately on a permanent failure" do
@@ -1167,8 +1206,8 @@ defmodule Conductor.RunServerTest do
              end)
 
       refute Enum.any?(events, &(&1["event_type"] == "builder_retry_scheduled"))
-      assert_received {:worker_dispatch, "test-sprite"}
-      assert_received {:worker_dispatch, "backup-sprite"}
+      assert_received {:worker_dispatch, "test-sprite", _}
+      assert_received {:worker_dispatch, "backup-sprite", _}
     end
 
     test "fails once all workers are exhausted" do
@@ -1200,8 +1239,8 @@ defmodule Conductor.RunServerTest do
       assert Enum.any?(events, &(&1["event_type"] == "builder_sprite_fallback"))
       assert "builder_dispatch_failed" in event_types(run["run_id"])
       refute Enum.any?(events, &(&1["event_type"] == "builder_retry_scheduled"))
-      assert_received {:worker_dispatch, "test-sprite"}
-      assert_received {:worker_dispatch, "backup-sprite"}
+      assert_received {:worker_dispatch, "test-sprite", _}
+      assert_received {:worker_dispatch, "backup-sprite", _}
     end
   end
 

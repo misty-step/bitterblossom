@@ -12,6 +12,7 @@ defmodule Conductor.Prompt do
   def build_builder_prompt(%Issue{} = issue, run_id, branch, opts \\ []) do
     pr_number = Keyword.get(opts, :pr_number)
     feedback = Keyword.get(opts, :feedback)
+    harness_context = Keyword.get(opts, :harness_context)
     repo_context = Keyword.get(opts, :repo_context)
     workspace_root = Keyword.get(opts, :workspace_root)
 
@@ -24,6 +25,7 @@ defmodule Conductor.Prompt do
     Branch: #{branch}
     #{workspace_root_line(workspace_root)}\
     #{if pr_number, do: "Existing PR: ##{pr_number}\n", else: ""}
+    #{if harness_context, do: "#{harness_context}\n", else: ""}
     ## Issue Specification
 
     ~~~untrusted-data
