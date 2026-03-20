@@ -142,6 +142,12 @@ defmodule Conductor.Store do
     GenServer.call(__MODULE__, {:list_active_runs, repo})
   end
 
+  @doc "Group all non-terminal runs by builder sprite."
+  @spec active_runs() :: %{optional(binary()) => [map()]}
+  def active_runs do
+    GenServer.call(__MODULE__, :active_runs)
+  end
+
   @doc "Leases held past run completion: process exited, lease persists, awaiting resolution."
   @spec list_held_leases(binary()) :: [map()]
   def list_held_leases(repo) do
@@ -522,6 +528,38 @@ defmodule Conductor.Store do
   end
 
   @impl true
+  def handle_call(:active_runs, _from, state) do
+    cutoff =
+      DateTime.add(
+        DateTime.utc_now(),
+        -Conductor.Config.stale_run_threshold_minutes() * 60,
+        :second
+      )
+
+    rows =
+      query_all(
+        state.conn,
+        """
+        SELECT * FROM runs
+        WHERE completed_at IS NULL
+          AND builder_sprite IS NOT NULL
+          AND builder_sprite != ''
+        ORDER BY picked_at ASC
+        """,
+        []
+      )
+      |> Enum.reject(fn run -> stale_heartbeat?(run["heartbeat_at"], cutoff) end)
+
+    grouped =
+      Enum.reduce(rows, %{}, fn row, acc ->
+        Map.update(acc, row["builder_sprite"], [row], &[row | &1])
+      end)
+      |> Map.new(fn {worker, worker_runs} -> {worker, Enum.reverse(worker_runs)} end)
+
+    {:reply, grouped, state}
+  end
+
+  @impl true
   def handle_call({:list_held_leases, repo}, _from, state) do
     rows =
       query_all(
@@ -660,6 +698,13 @@ defmodule Conductor.Store do
           ON runs(repo, completed_at, picked_at)
           """,
           """
+          CREATE INDEX IF NOT EXISTS idx_runs_active_by_builder_and_picked
+          ON runs(builder_sprite, picked_at)
+          WHERE completed_at IS NULL
+            AND builder_sprite IS NOT NULL
+            AND builder_sprite != ''
+          """,
+          """
           CREATE INDEX IF NOT EXISTS idx_runs_repo_pr
           ON runs(repo, pr_number)
           """
@@ -732,6 +777,15 @@ defmodule Conductor.Store do
 
   defp now_utc do
     DateTime.utc_now() |> DateTime.to_iso8601()
+  end
+
+  defp stale_heartbeat?(nil, _cutoff), do: true
+
+  defp stale_heartbeat?(heartbeat_at, cutoff) do
+    case DateTime.from_iso8601(heartbeat_at) do
+      {:ok, heartbeat, _offset} -> DateTime.compare(heartbeat, cutoff) == :lt
+      _ -> true
+    end
   end
 
   defp broadcast_update do

@@ -500,6 +500,48 @@ defmodule Conductor.OrchestratorTest do
   end
 
   describe "concurrent run management" do
+    test "skips workers that already have an active run in the store" do
+      orig_max = Application.get_env(:conductor, :max_concurrent_runs)
+      Application.put_env(:conductor, :max_concurrent_runs, 1)
+
+      on_exit(fn ->
+        if orig_max,
+          do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
+          else: Application.delete_env(:conductor, :max_concurrent_runs)
+      end)
+
+      {:ok, _run_id} =
+        Store.create_run(%{
+          repo: "other/repo",
+          issue_number: 999,
+          issue_title: "already running elsewhere",
+          builder_sprite: "sprite-1"
+        })
+
+      issue = %Conductor.Issue{
+        number: 401,
+        title: "new issue",
+        body: "## Problem\nx\n## Acceptance Criteria\ny",
+        url: "https://example.test/issues/401"
+      }
+
+      MockState.put({:eligible, "test/repo", nil}, [issue])
+
+      workers = [
+        %{name: "sprite-1", capability_tags: []},
+        %{name: "sprite-2", capability_tags: []}
+      ]
+
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: workers)
+
+      eventually(fn ->
+        assert MockState.get(:started_runs) == [{401, "sprite-2"}]
+      end)
+
+      assert_received {:probed, "sprite-2"}
+      refute_received {:probed, "sprite-1"}
+    end
+
     test "does not start more runs than max_concurrent_runs allows" do
       orig_max = Application.get_env(:conductor, :max_concurrent_runs)
       Application.put_env(:conductor, :max_concurrent_runs, 0)
@@ -552,6 +594,40 @@ defmodule Conductor.OrchestratorTest do
       eventually(fn ->
         assert MockState.get(:started_runs) == [{1, "sprite-1"}, {2, "sprite-2"}, {3, "sprite-3"}]
       end)
+    end
+
+    test "defers a second same-cycle dispatch when the only worker is already occupied" do
+      orig_max = Application.get_env(:conductor, :max_concurrent_runs)
+      Application.put_env(:conductor, :max_concurrent_runs, 2)
+
+      on_exit(fn ->
+        if orig_max,
+          do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
+          else: Application.delete_env(:conductor, :max_concurrent_runs)
+      end)
+
+      MockState.put(:run_lifetime_ms, 1_000)
+
+      issues =
+        Enum.map(501..502, fn number ->
+          %Conductor.Issue{
+            number: number,
+            title: "issue #{number}",
+            body: "## Problem\nx\n## Acceptance Criteria\ny",
+            url: "https://example.test/issues/#{number}"
+          }
+        end)
+
+      MockState.put({:eligible, "test/repo", nil}, issues)
+
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
+
+      eventually(fn ->
+        assert MockState.get(:started_runs) == [{501, "sprite-1"}]
+      end)
+
+      Process.sleep(150)
+      assert MockState.get(:started_runs) == [{501, "sprite-1"}]
     end
 
     test "drains unhealthy workers after consecutive probe failures and recovers on success",
@@ -1590,6 +1666,70 @@ defmodule Conductor.OrchestratorTest do
       active = Store.list_active_runs("test/repo")
       ids = Enum.map(active, & &1["run_id"])
       refute run_id in ids
+    end
+  end
+
+  describe "Store.active_runs/0" do
+    test "groups active runs by builder sprite" do
+      {:ok, run_a} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 30,
+          issue_title: "a",
+          builder_sprite: "sprite-1"
+        })
+
+      {:ok, run_b} =
+        Store.create_run(%{
+          repo: "other/repo",
+          issue_number: 31,
+          issue_title: "b",
+          builder_sprite: "sprite-1"
+        })
+
+      {:ok, run_c} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 32,
+          issue_title: "c",
+          builder_sprite: "sprite-2"
+        })
+
+      grouped = Store.active_runs()
+
+      assert grouped["sprite-1"] |> Enum.map(& &1["run_id"]) |> Enum.sort() ==
+               Enum.sort([run_a, run_b])
+
+      assert grouped["sprite-2"] |> Enum.map(& &1["run_id"]) == [run_c]
+    end
+
+    test "ignores stale runs from other repos" do
+      stale_heartbeat =
+        DateTime.utc_now() |> DateTime.add(-7200, :second) |> DateTime.to_iso8601()
+
+      {:ok, stale_run} =
+        Store.create_run(%{
+          repo: "other/repo",
+          issue_number: 33,
+          issue_title: "stale",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(stale_run, %{heartbeat_at: stale_heartbeat})
+
+      {:ok, fresh_run} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 34,
+          issue_title: "fresh",
+          builder_sprite: "sprite-1"
+        })
+
+      grouped = Store.active_runs()
+      sprite_1_run_ids = grouped["sprite-1"] |> Enum.map(& &1["run_id"])
+
+      assert sprite_1_run_ids == [fresh_run]
+      refute stale_run in sprite_1_run_ids
     end
   end
 
