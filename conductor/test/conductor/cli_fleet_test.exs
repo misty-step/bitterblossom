@@ -2,6 +2,7 @@ defmodule Conductor.CLIFleetTest do
   use ExUnit.Case, async: false
 
   import ExUnit.CaptureIO
+  import Conductor.TestSupport.ProcessHelpers
 
   alias Conductor.{CLI, Store}
 
@@ -118,8 +119,8 @@ defmodule Conductor.CLIFleetTest do
 
     on_exit(fn ->
       Application.stop(:conductor)
-      Application.put_env(:conductor, :db_path, orig_db)
-      Application.put_env(:conductor, :event_log, orig_log)
+      restore_env(:db_path, orig_db)
+      restore_env(:event_log, orig_log)
 
       if orig_worker,
         do: Application.put_env(:conductor, :worker_module, orig_worker),

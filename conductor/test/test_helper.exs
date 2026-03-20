@@ -43,6 +43,9 @@ defmodule Conductor.TestSupport.ProcessHelpers do
         assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, timeout
     end
   end
+
+  def restore_env(key, nil), do: Application.delete_env(:conductor, key)
+  def restore_env(key, value), do: Application.put_env(:conductor, key, value)
 end
 
 ExUnit.start()

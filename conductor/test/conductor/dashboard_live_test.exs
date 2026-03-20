@@ -37,8 +37,8 @@ defmodule Conductor.Web.DashboardLiveTest do
     start_supervised!(Conductor.Web.Endpoint)
 
     on_exit(fn ->
-      Application.put_env(:conductor, :db_path, orig_db)
-      Application.put_env(:conductor, :event_log, orig_log)
+      restore_env(:db_path, orig_db)
+      restore_env(:event_log, orig_log)
       File.rm(db_path)
       File.rm(event_log)
     end)
