@@ -79,6 +79,13 @@ defmodule Conductor.Store do
     GenServer.call(__MODULE__, {:acquire_lease, repo, issue_number, run_id})
   end
 
+  @doc "Atomically acquire the issue lease and the sprite lease needed to start a run."
+  @spec acquire_dispatch_leases(binary(), pos_integer(), binary(), binary()) ::
+          :ok | {:error, :already_leased | :sprite_already_leased}
+  def acquire_dispatch_leases(repo, issue_number, run_id, sprite) do
+    GenServer.call(__MODULE__, {:acquire_dispatch_leases, repo, issue_number, run_id, sprite})
+  end
+
   @spec release_lease(binary(), pos_integer()) :: :ok
   def release_lease(repo, issue_number) do
     GenServer.call(__MODULE__, {:release_lease, repo, issue_number})
@@ -87,6 +94,21 @@ defmodule Conductor.Store do
   @spec leased?(binary(), pos_integer()) :: boolean()
   def leased?(repo, issue_number) do
     GenServer.call(__MODULE__, {:leased?, repo, issue_number})
+  end
+
+  @spec acquire_sprite_lease(binary(), binary()) :: :ok | {:error, :already_leased}
+  def acquire_sprite_lease(sprite, run_id) do
+    GenServer.call(__MODULE__, {:acquire_sprite_lease, sprite, run_id})
+  end
+
+  @spec release_sprite_lease(binary(), binary()) :: :ok
+  def release_sprite_lease(sprite, run_id) do
+    GenServer.call(__MODULE__, {:release_sprite_lease, sprite, run_id})
+  end
+
+  @spec sprite_leased?(binary()) :: boolean()
+  def sprite_leased?(sprite) do
+    GenServer.call(__MODULE__, {:sprite_leased?, sprite})
   end
 
   @spec record_event(binary(), binary(), map()) :: :ok
@@ -285,6 +307,12 @@ defmodule Conductor.Store do
       [now, repo, issue_number]
     )
 
+    exec(
+      state.conn,
+      "UPDATE sprite_leases SET released_at = ?1 WHERE run_id = ?2 AND released_at IS NULL",
+      [now, run_id]
+    )
+
     exec(state.conn, "COMMIT", [])
 
     broadcast_update()
@@ -347,6 +375,40 @@ defmodule Conductor.Store do
   end
 
   @impl true
+  def handle_call({:acquire_dispatch_leases, repo, issue_number, run_id, sprite}, _from, state) do
+    now = now_utc()
+
+    exec(state.conn, "BEGIN IMMEDIATE", [])
+
+    result =
+      cond do
+        active_issue_lease?(state.conn, repo, issue_number) ->
+          {:error, :already_leased}
+
+        active_sprite_lease?(state.conn, sprite, run_id) ->
+          {:error, :sprite_already_leased}
+
+        true ->
+          exec(
+            state.conn,
+            "INSERT INTO leases (repo, issue_number, run_id, acquired_at) VALUES (?1, ?2, ?3, ?4)",
+            [repo, issue_number, run_id, now]
+          )
+
+          exec(
+            state.conn,
+            "INSERT INTO sprite_leases (sprite, run_id, acquired_at) VALUES (?1, ?2, ?3)",
+            [sprite, run_id, now]
+          )
+
+          :ok
+      end
+
+    finish_transaction(state.conn, result)
+    {:reply, result, state}
+  end
+
+  @impl true
   def handle_call({:release_lease, repo, issue_number}, _from, state) do
     exec(
       state.conn,
@@ -364,6 +426,56 @@ defmodule Conductor.Store do
         state.conn,
         "SELECT 1 FROM leases WHERE repo = ?1 AND issue_number = ?2 AND released_at IS NULL",
         [repo, issue_number]
+      )
+
+    {:reply, row != nil, state}
+  end
+
+  @impl true
+  def handle_call({:acquire_sprite_lease, sprite, run_id}, _from, state) do
+    now = now_utc()
+
+    exec(state.conn, "BEGIN IMMEDIATE", [])
+
+    result =
+      if active_sprite_lease?(state.conn, sprite, run_id) do
+        {:error, :already_leased}
+      else
+        exec(
+          state.conn,
+          "INSERT INTO sprite_leases (sprite, run_id, acquired_at) VALUES (?1, ?2, ?3)",
+          [sprite, run_id, now]
+        )
+
+        :ok
+      end
+
+    finish_transaction(state.conn, result)
+    {:reply, result, state}
+  end
+
+  @impl true
+  def handle_call({:release_sprite_lease, sprite, run_id}, _from, state) do
+    exec(
+      state.conn,
+      """
+      UPDATE sprite_leases
+      SET released_at = ?1
+      WHERE sprite = ?2 AND run_id = ?3 AND released_at IS NULL
+      """,
+      [now_utc(), sprite, run_id]
+    )
+
+    {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call({:sprite_leased?, sprite}, _from, state) do
+    row =
+      query_one(
+        state.conn,
+        "SELECT 1 FROM sprite_leases WHERE sprite = ?1 AND released_at IS NULL",
+        [sprite]
       )
 
     {:reply, row != nil, state}
@@ -566,6 +678,12 @@ defmodule Conductor.Store do
       [now, repo, issue_number]
     )
 
+    exec(
+      state.conn,
+      "UPDATE sprite_leases SET released_at = ?1 WHERE run_id = ?2 AND released_at IS NULL",
+      [now, run_id]
+    )
+
     append_event_log(state.event_log, %{
       run_id: run_id,
       event_type: "stale_run_detected",
@@ -618,6 +736,15 @@ defmodule Conductor.Store do
             released_at TEXT,
             blocked_at TEXT,
             PRIMARY KEY (repo, issue_number, run_id)
+          )
+          """,
+          """
+          CREATE TABLE IF NOT EXISTS sprite_leases (
+            sprite TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            acquired_at TEXT NOT NULL,
+            released_at TEXT,
+            PRIMARY KEY (sprite, run_id)
           )
           """,
           """
@@ -728,6 +855,33 @@ defmodule Conductor.Store do
   defp generate_run_id(issue_number) do
     ts = System.system_time(:second)
     "run-#{issue_number}-#{ts}"
+  end
+
+  defp active_issue_lease?(conn, repo, issue_number) do
+    query_one(
+      conn,
+      "SELECT run_id FROM leases WHERE repo = ?1 AND issue_number = ?2 AND released_at IS NULL",
+      [repo, issue_number]
+    ) != nil
+  end
+
+  defp active_sprite_lease?(conn, sprite, run_id) do
+    case query_one(
+           conn,
+           "SELECT run_id FROM sprite_leases WHERE sprite = ?1 AND released_at IS NULL",
+           [sprite]
+         ) do
+      nil -> false
+      %{"run_id" => ^run_id} -> false
+      _ -> true
+    end
+  end
+
+  defp finish_transaction(conn, :ok), do: exec(conn, "COMMIT", [])
+
+  defp finish_transaction(conn, {:error, _} = error) do
+    exec(conn, "ROLLBACK", [])
+    error
   end
 
   defp now_utc do

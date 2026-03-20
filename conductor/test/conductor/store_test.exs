@@ -100,6 +100,33 @@ defmodule Conductor.StoreTest do
     assert Store.leased?("test/repo", 10)
   end
 
+  test "acquire_dispatch_leases atomically reserves issue and sprite" do
+    :ok = Store.acquire_dispatch_leases("test/repo", 10, "run-10-1", "sprite-1")
+
+    assert Store.leased?("test/repo", 10)
+    assert Store.sprite_leased?("sprite-1")
+
+    assert {:error, :sprite_already_leased} =
+             Store.acquire_dispatch_leases("test/repo", 11, "run-11-1", "sprite-1")
+
+    refute Store.leased?("test/repo", 11)
+
+    assert {:error, :already_leased} =
+             Store.acquire_dispatch_leases("test/repo", 10, "run-10-2", "sprite-2")
+
+    refute Store.sprite_leased?("sprite-2")
+  end
+
+  test "sprite leases can be released independently" do
+    :ok = Store.acquire_sprite_lease("sprite-1", "run-1")
+    assert Store.sprite_leased?("sprite-1")
+
+    assert {:error, :already_leased} = Store.acquire_sprite_lease("sprite-1", "run-2")
+
+    :ok = Store.release_sprite_lease("sprite-1", "run-1")
+    refute Store.sprite_leased?("sprite-1")
+  end
+
   test "record and list events" do
     {:ok, run_id} =
       Store.create_run(%{
@@ -270,7 +297,9 @@ defmodule Conductor.StoreTest do
       })
 
     :ok = Store.acquire_lease("test/repo", 77, run_id)
+    :ok = Store.acquire_sprite_lease("sprite-1", run_id)
     assert Store.leased?("test/repo", 77)
+    assert Store.sprite_leased?("sprite-1")
 
     :ok = Store.terminate_run(run_id, "failed", "failed", "test/repo", 77)
 
@@ -278,6 +307,7 @@ defmodule Conductor.StoreTest do
     assert run["phase"] == "failed"
     assert run["completed_at"] != nil
     refute Store.leased?("test/repo", 77)
+    refute Store.sprite_leased?("sprite-1")
   end
 
   test "find_run_by_pr returns an error tuple when the database query fails" do

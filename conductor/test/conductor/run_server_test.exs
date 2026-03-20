@@ -398,6 +398,13 @@ defmodule Conductor.RunServerTest do
       assert Store.leased?("test/repo", 42)
     end
 
+    test "sprite lease is released after pr_opened cleanup" do
+      {:ok, pid} = start_run_server()
+      wait_for_exit(pid)
+
+      refute Store.sprite_leased?("test-sprite")
+    end
+
     test "logs Weaver-prefixed lifecycle messages" do
       log =
         capture_log(fn ->
@@ -1168,6 +1175,25 @@ defmodule Conductor.RunServerTest do
 
       refute Enum.any?(events, &(&1["event_type"] == "builder_retry_scheduled"))
       assert_received {:worker_dispatch, "test-sprite"}
+      assert_received {:worker_dispatch, "backup-sprite"}
+    end
+
+    test "switches to a different sprite when the initial sprite is already reserved" do
+      :ok = Store.acquire_sprite_lease("test-sprite", "run-100-1")
+      MockState.put({:dispatch_result, "backup-sprite"}, {:ok, "build complete"})
+
+      {:ok, pid} =
+        start_run_server(worker: "test-sprite", workers: ["test-sprite", "backup-sprite"])
+
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "pr_opened"
+      assert run["builder_sprite"] == "backup-sprite"
+      assert Store.leased?("test/repo", 42)
+      refute Store.sprite_leased?("backup-sprite")
+
+      refute_received {:worker_dispatch, "test-sprite"}
       assert_received {:worker_dispatch, "backup-sprite"}
     end
 
