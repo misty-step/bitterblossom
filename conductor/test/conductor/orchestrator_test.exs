@@ -1159,6 +1159,64 @@ defmodule Conductor.OrchestratorTest do
     end
   end
 
+  describe "worker status health" do
+    test "respects unhealthy and drained state returned by worker status" do
+      orig_max = Application.get_env(:conductor, :max_concurrent_runs)
+      Application.put_env(:conductor, :max_concurrent_runs, 1)
+
+      on_exit(fn ->
+        if orig_max,
+          do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
+          else: Application.delete_env(:conductor, :max_concurrent_runs)
+      end)
+
+      issue = %Conductor.Issue{
+        number: 204,
+        title: "status gated worker",
+        body: "## Problem\nx\n## Acceptance Criteria\ny",
+        url: "https://example.test/issues/204"
+      }
+
+      MockState.put({:eligible, "test/repo", nil}, [issue])
+
+      MockState.put(
+        {:status_result, "sprite-1"},
+        {:ok,
+         %{
+           sprite: "sprite-1",
+           reachable: true,
+           harness_ready: true,
+           gh_authenticated: true,
+           git_credential_helper: true,
+           healthy: false,
+           drained: true,
+           worktree_occupied: false,
+           active_branch: nil,
+           active_worktree: nil
+         }}
+      )
+
+      workers = [
+        %{name: "sprite-1", capability_tags: []},
+        %{name: "sprite-2", capability_tags: []}
+      ]
+
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: workers)
+
+      eventually(fn ->
+        assert MockState.get(:started_runs) == [{204, "sprite-2"}]
+      end)
+
+      eventually(fn ->
+        [unhealthy, healthy] = Orchestrator.fleet_status()
+        assert unhealthy.name == "sprite-1"
+        refute unhealthy.healthy
+        assert unhealthy.drained
+        assert healthy.name == "sprite-2"
+      end)
+    end
+  end
+
   describe "merge_conflict?/1" do
     test "detects 'not mergeable'" do
       assert Orchestrator.merge_conflict?("Pull Request is not mergeable")

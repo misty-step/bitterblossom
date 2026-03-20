@@ -9,46 +9,55 @@ defmodule Conductor.CLIFleetTest do
   @conductor_dir Path.expand("../..", __DIR__)
 
   defmodule MockWorker do
-    def status("bb-weaver-1", _opts),
-      do:
-        {:ok,
-         %{
-           sprite: "bb-weaver-1",
-           reachable: true,
-           harness_ready: true,
-           gh_authenticated: true,
-           git_credential_helper: true,
-           healthy: true,
-           worktree_occupied: true,
-           active_branch: "factory/622-1774029317",
-           active_worktree: "/tmp/bb-weaver-1-worktree"
-         }}
+    def status("bb-weaver-1", opts) do
+      send(self(), {:status_checked, "bb-weaver-1", opts})
 
-    def status("bb-weaver-2", _opts), do: {:error, "connection refused"}
+      {:ok,
+       %{
+         sprite: "bb-weaver-1",
+         reachable: true,
+         harness_ready: true,
+         gh_authenticated: true,
+         git_credential_helper: true,
+         healthy: true,
+         worktree_occupied: true,
+         active_branch: "factory/622-1774029317",
+         active_worktree: "/tmp/bb-weaver-1-worktree"
+       }}
+    end
 
-    def status("bb-weaver-3", _opts),
-      do:
-        {:ok,
-         %{
-           sprite: "bb-weaver-3",
-           reachable: true,
-           harness_ready: true,
-           gh_authenticated: false,
-           git_credential_helper: true,
-           healthy: false
-         }}
+    def status("bb-weaver-2", opts) do
+      send(self(), {:status_checked, "bb-weaver-2", opts})
+      {:error, "connection refused"}
+    end
 
-    def status("bb-weaver-4", _opts),
-      do:
-        {:ok,
-         %{
-           sprite: "bb-weaver-4",
-           reachable: true,
-           harness_ready: true,
-           gh_authenticated: true,
-           git_credential_helper: false,
-           healthy: false
-         }}
+    def status("bb-weaver-3", opts) do
+      send(self(), {:status_checked, "bb-weaver-3", opts})
+
+      {:ok,
+       %{
+         sprite: "bb-weaver-3",
+         reachable: true,
+         harness_ready: true,
+         gh_authenticated: false,
+         git_credential_helper: true,
+         healthy: false
+       }}
+    end
+
+    def status("bb-weaver-4", opts) do
+      send(self(), {:status_checked, "bb-weaver-4", opts})
+
+      {:ok,
+       %{
+         sprite: "bb-weaver-4",
+         reachable: true,
+         harness_ready: true,
+         gh_authenticated: true,
+         git_credential_helper: false,
+         healthy: false
+       }}
+    end
   end
 
   defmodule ProbeOnlyWorker do
@@ -166,6 +175,15 @@ defmodule Conductor.CLIFleetTest do
 
     assert output =~ "bb-weaver-4"
     assert output =~ "needs setup (git helper missing)"
+  end
+
+  test "fleet passes sprite repo into worker status probes", %{fleet_path: fleet_path} do
+    capture_io(fn ->
+      CLI.main(["fleet", "--fleet", fleet_path])
+    end)
+
+    assert_received {:status_checked, "bb-weaver-1", opts}
+    assert Keyword.get(opts, :repo) == "test/repo"
   end
 
   test "fleet keeps probe-only workers healthy", %{fleet_path: fleet_path} do

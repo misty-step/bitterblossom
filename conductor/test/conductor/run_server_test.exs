@@ -154,7 +154,7 @@ defmodule Conductor.RunServerTest do
       next_workspace_result()
     end
 
-    def cleanup_conflicting_branch(sprite, repo, branch) do
+    def cleanup_conflicting_branch(sprite, repo, branch, _opts \\ []) do
       send(
         MockState.get(:test_pid, self()),
         {:workspace_cleanup_conflicting_branch, sprite, repo, branch}
@@ -235,6 +235,19 @@ defmodule Conductor.RunServerTest do
     def kill(_sprite), do: :ok
   end
 
+  defmodule NoCleanupWorkspace do
+    alias Conductor.RunServerTest.MockWorkspace
+
+    def prepare(sprite, repo, run_id, branch),
+      do: MockWorkspace.prepare(sprite, repo, run_id, branch)
+
+    def adopt_branch(sprite, repo, run_id, branch),
+      do: MockWorkspace.adopt_branch(sprite, repo, run_id, branch)
+
+    def sync_persona(sprite, workspace, role, opts \\ []),
+      do: MockWorkspace.sync_persona(sprite, workspace, role, opts)
+  end
+
   # --- Crashing Worker for crash tests ---
 
   defmodule CrashingWorker do
@@ -293,6 +306,21 @@ defmodule Conductor.RunServerTest do
   defp eventually(assert_fun, timeout_ms \\ 2_000, step_ms \\ 20) do
     deadline = System.monotonic_time(:millisecond) + timeout_ms
     do_eventually(assert_fun, deadline, step_ms)
+  end
+
+  defp drain_workspace_messages(acc \\ []) do
+    receive do
+      {:workspace_prepare, _, _} = message ->
+        drain_workspace_messages(acc ++ [message])
+
+      {:workspace_adopt_branch, _, _} = message ->
+        drain_workspace_messages(acc ++ [message])
+
+      {:workspace_cleanup_conflicting_branch, _, _, _} = message ->
+        drain_workspace_messages(acc ++ [message])
+    after
+      0 -> acc
+    end
   end
 
   defp do_eventually(assert_fun, deadline, step_ms) do
@@ -606,7 +634,7 @@ defmodule Conductor.RunServerTest do
       MockState.put(
         :workspace_sequence,
         [
-          {:error, "branch already checked out"},
+          {:error, "ALREADY CHECKED OUT"},
           {:ok, "/tmp/test-worktree"}
         ]
       )
@@ -624,12 +652,100 @@ defmodule Conductor.RunServerTest do
       assert run["phase"] == "pr_opened"
       assert run["pr_number"] == 123
 
-      assert_received {:workspace_adopt_branch, "test/repo", "factory/42-1234567890"}
+      assert drain_workspace_messages() == [
+               {:workspace_adopt_branch, "test/repo", "factory/42-1234567890"},
+               {:workspace_cleanup_conflicting_branch, "test-sprite", "test/repo",
+                "factory/42-1234567890"},
+               {:workspace_adopt_branch, "test/repo", "factory/42-1234567890"}
+             ]
+    end
 
-      assert_received {:workspace_cleanup_conflicting_branch, "test-sprite", "test/repo",
-                       "factory/42-1234567890"}
+    test "fails when conflicting branch cleanup fails" do
+      MockState.put(:workspace_result, {:error, "branch already checked out"})
+      MockState.put(:workspace_cleanup_conflicting_branch_result, {:error, "cleanup failed"})
 
-      assert_received {:workspace_adopt_branch, "test/repo", "factory/42-1234567890"}
+      {:ok, pid} =
+        start_run_server(
+          existing_branch: "factory/42-1234567890",
+          existing_pr_number: 123,
+          existing_pr_url: "https://github.com/test/repo/pull/123"
+        )
+
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "failed"
+      assert "workspace_preparation_failed" in event_types(run["run_id"])
+
+      reason = event_payload(run["run_id"], "workspace_preparation_failed")["reason"]
+      assert reason =~ "already checked out"
+      assert reason =~ "cleanup failed"
+    end
+
+    test "fails after one cleanup retry when workspace preparation still conflicts" do
+      MockState.put(
+        :workspace_sequence,
+        [
+          {:error, "branch already checked out"},
+          {:error, "still failing"}
+        ]
+      )
+
+      {:ok, pid} =
+        start_run_server(
+          existing_branch: "factory/42-1234567890",
+          existing_pr_number: 123,
+          existing_pr_url: "https://github.com/test/repo/pull/123"
+        )
+
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "failed"
+
+      assert event_payload(run["run_id"], "workspace_preparation_failed")["reason"] =~
+               "still failing"
+
+      assert drain_workspace_messages() == [
+               {:workspace_adopt_branch, "test/repo", "factory/42-1234567890"},
+               {:workspace_cleanup_conflicting_branch, "test-sprite", "test/repo",
+                "factory/42-1234567890"},
+               {:workspace_adopt_branch, "test/repo", "factory/42-1234567890"}
+             ]
+    end
+
+    test "fails immediately for non-conflict workspace errors" do
+      MockState.put(:workspace_result, {:error, "disk full"})
+
+      {:ok, pid} = start_run_server()
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "failed"
+      assert event_payload(run["run_id"], "workspace_preparation_failed")["reason"] == "disk full"
+
+      assert [{:workspace_prepare, "test/repo", branch}] = drain_workspace_messages()
+      assert String.starts_with?(branch, "factory/42-")
+    end
+
+    test "fails when the workspace module cannot clean conflicting branches" do
+      orig_workspace = Application.get_env(:conductor, :workspace_module)
+      Application.put_env(:conductor, :workspace_module, NoCleanupWorkspace)
+
+      on_exit(fn ->
+        Application.put_env(:conductor, :workspace_module, orig_workspace || MockWorkspace)
+      end)
+
+      MockState.put(:workspace_result, {:error, "branch already checked out"})
+
+      {:ok, pid} = start_run_server()
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "failed"
+
+      reason = event_payload(run["run_id"], "workspace_preparation_failed")["reason"]
+      assert reason =~ "cleanup function not available"
     end
   end
 

@@ -197,7 +197,8 @@ defmodule Conductor.CLI do
                 Map.get(sprite, :capability_tags) || Map.get(sprite, "capability_tags") || []
               )
 
-            health = probe_status(sprite)
+            repo = Map.get(sprite, :repo) || Map.get(sprite, "repo")
+            health = probe_status(sprite, repo)
             assignment = if name, do: Map.get(assignments, name, "idle"), else: "idle"
             IO.puts("#{display_name} role=#{role} #{health} assignment=#{assignment} #{tags}")
           end)
@@ -325,7 +326,7 @@ defmodule Conductor.CLI do
 
     if fleet_sprites != [] do
       for s <- fleet_sprites do
-        case Conductor.Sprite.status(s.name, harness: s.harness) do
+        case Conductor.Sprite.status(s.name, harness: s.harness, repo: s.repo) do
           {:ok, status} ->
             auth = if status.gh_authenticated, do: "gh auth ok", else: "gh auth missing"
             git = if status.git_credential_helper, do: "git helper ok", else: "git helper missing"
@@ -381,7 +382,7 @@ defmodule Conductor.CLI do
     |> Map.new(fn run -> {run["builder_sprite"], "issue ##{run["issue_number"]}"} end)
   end
 
-  defp probe_status(sprite) do
+  defp probe_status(sprite, repo) do
     worker_mod = Application.get_env(:conductor, :worker_module, Conductor.Sprite)
     harness = Map.get(sprite, :harness) || Map.get(sprite, "harness")
     name = sprite_name(sprite)
@@ -391,7 +392,7 @@ defmodule Conductor.CLI do
         try do
           cond do
             function_exported?(worker_mod, :status, 2) ->
-              worker_mod.status(name, harness: harness)
+              worker_mod.status(name, harness: harness, repo: repo)
 
             function_exported?(worker_mod, :status, 1) ->
               worker_mod.status(name)

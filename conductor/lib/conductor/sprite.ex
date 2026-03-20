@@ -193,15 +193,17 @@ defmodule Conductor.Sprite do
         worktree_state = worktree_state(sprite, repo, exec_fn)
 
         {:ok,
-         %{
-           sprite: sprite,
-           reachable: true,
-           harness_ready: harness_ready,
-           gh_authenticated: gh_authenticated,
-           git_credential_helper: git_credential_helper,
-           healthy: harness_ready and gh_authenticated and git_credential_helper
-         }}
-        |> then(fn {:ok, status} -> {:ok, Map.merge(status, worktree_state)} end)
+         Map.merge(
+           %{
+             sprite: sprite,
+             reachable: true,
+             harness_ready: harness_ready,
+             gh_authenticated: gh_authenticated,
+             git_credential_helper: git_credential_helper,
+             healthy: harness_ready and gh_authenticated and git_credential_helper
+           },
+           worktree_state
+         )}
 
       {:error, reason} ->
         {:error, reason}

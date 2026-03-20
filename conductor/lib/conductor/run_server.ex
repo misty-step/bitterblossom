@@ -673,12 +673,13 @@ defmodule Conductor.RunServer do
   defp workspace_conflict_reason?(reason) do
     normalized =
       reason
-      |> to_string()
+      |> normalize_workspace_reason()
       |> String.downcase()
 
     String.contains?(normalized, "already checked out") or
-      String.contains?(normalized, "already exists") or
-      String.contains?(normalized, "worktree")
+      (String.contains?(normalized, "branch") and String.contains?(normalized, "already exists")) or
+      String.contains?(normalized, "already used by worktree") or
+      String.contains?(normalized, "existing worktree")
   end
 
   defp cleanup_conflicting_branch(state) do
@@ -690,9 +691,13 @@ defmodule Conductor.RunServer do
         workspace_mod().cleanup_conflicting_branch(state.worker, state.repo, state.branch)
 
       true ->
-        :ok
+        {:error, "cleanup function not available"}
     end
   end
+
+  defp normalize_workspace_reason(reason) when is_binary(reason), do: reason
+  defp normalize_workspace_reason(nil), do: ""
+  defp normalize_workspace_reason(reason), do: inspect(reason)
 
   defp cancel_dispatch(%{dispatch_task: %Task{} = task} = state) do
     cancel_heartbeat(state.heartbeat_timer)

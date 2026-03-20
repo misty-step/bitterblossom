@@ -558,8 +558,8 @@ defmodule Conductor.Orchestrator do
 
         updated = %{
           worker
-          | healthy: true,
-            drained: false,
+          | healthy: Map.get(status, :healthy, true),
+            drained: Map.get(status, :drained, false),
             consecutive_failures: 0,
             last_error: nil,
             worktree_occupied: Map.get(status, :worktree_occupied, false),

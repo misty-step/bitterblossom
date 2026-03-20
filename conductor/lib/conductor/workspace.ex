@@ -198,9 +198,8 @@ defmodule Conductor.Workspace do
 
     commands = """
     set -e
-    cd #{mirror}
-    flock .git/bb-worktree.lock bash -c '
-      target_branch=#{branch}
+    cd #{shell_quote(mirror)}
+    target_branch=#{shell_quote(branch)} conductor_root=#{shell_quote(conductor_root)} flock .git/bb-worktree.lock bash -c '
       current_path=""
       current_branch=""
 
@@ -211,7 +210,7 @@ defmodule Conductor.Workspace do
           "")
             if [ "$current_branch" = "$target_branch" ]; then
               case "$current_path" in
-                #{conductor_root}/*)
+                "$conductor_root"/*)
                   git worktree remove --force "$current_path" 2>/dev/null || true
                   ;;
               esac
@@ -224,7 +223,7 @@ defmodule Conductor.Workspace do
       done < <(git worktree list --porcelain; printf "\\n")
 
       git worktree prune 2>/dev/null || true
-      git branch -D "$target_branch" 2>/dev/null || true
+      #{if factory_branch?(branch), do: ~s(git branch -D "$target_branch" 2>/dev/null || true), else: "true"}
     '
     """
 
