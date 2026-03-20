@@ -12,6 +12,10 @@ defmodule Conductor.Polisher do
 
   alias Conductor.{Config, Prompt, Store, Workspace}
 
+  @green_conclusions ~w(SUCCESS NEUTRAL SKIPPED success neutral skipped)
+  @issue_body_reference ~r/\b(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)\s+(?:[[:alnum:]._-]+\/[[:alnum:]._-]+)?#(?<issue>\d+)\b/i
+  @issue_branch_reference ~r/^(?:issue[-_])?(?<issue>\d+)(?:[-_].*)?$/
+
   defstruct [
     :repo,
     :polisher_sprite,
@@ -94,8 +98,12 @@ defmodule Conductor.Polisher do
     else
       case code_host_mod().open_prs(state.repo) do
         {:ok, prs} ->
+          duplicate_groups = duplicate_issue_groups(prs)
+          duplicate_selections = duplicate_selections(duplicate_groups)
+          log_duplicate_prs(duplicate_groups, duplicate_selections)
+
           # Dispatch at most one PR per poll (single sprite, single workspace)
-          case Enum.find(prs, &needs_polish?(&1, state)) do
+          case select_pr_to_polish(prs, duplicate_groups, duplicate_selections) do
             nil -> state
             pr -> dispatch_polisher(state, pr)
           end
@@ -107,12 +115,155 @@ defmodule Conductor.Polisher do
     end
   end
 
-  defp needs_polish?(pr, _state) do
+  defp needs_polish?(pr) do
     labels = pr["labels"] || []
     label_names = Enum.map(labels, &String.downcase(&1["name"] || ""))
     checks = pr["statusCheckRollup"] |> List.wrap() |> Enum.filter(&is_map/1)
 
     "lgtm" not in label_names and Conductor.GitHub.evaluate_checks(checks)
+  end
+
+  defp select_pr_to_polish(prs, duplicate_groups, duplicate_selections) do
+    prs
+    |> collapse_duplicate_prs(duplicate_groups, duplicate_selections)
+    |> Enum.find(&needs_polish?/1)
+  end
+
+  defp collapse_duplicate_prs(prs, duplicate_groups, duplicate_selections) do
+    {collapsed, _seen_issue_numbers} =
+      Enum.reduce(prs, {[], MapSet.new()}, fn pr, {acc, seen_issue_numbers} ->
+        case referenced_issue_number(pr) do
+          issue_number when is_integer(issue_number) ->
+            if Map.has_key?(duplicate_groups, issue_number) do
+              if MapSet.member?(seen_issue_numbers, issue_number) do
+                {acc, seen_issue_numbers}
+              else
+                candidate = Map.fetch!(duplicate_selections, issue_number)
+                {[candidate | acc], MapSet.put(seen_issue_numbers, issue_number)}
+              end
+            else
+              {[pr | acc], seen_issue_numbers}
+            end
+
+          nil ->
+            {[pr | acc], seen_issue_numbers}
+        end
+      end)
+
+    Enum.reverse(collapsed)
+  end
+
+  defp log_duplicate_prs(duplicate_groups, duplicate_selections) do
+    Enum.each(duplicate_groups, fn {issue_number, issue_prs} ->
+      chosen_pr = Map.fetch!(duplicate_selections, issue_number)
+
+      pr_numbers =
+        issue_prs
+        |> Enum.map(&(&1["number"] || 0))
+        |> Enum.sort()
+
+      Logger.warning(
+        "[fern] duplicate open PRs for issue ##{issue_number}: #{inspect(pr_numbers)}; selecting PR ##{chosen_pr["number"]}"
+      )
+    end)
+  end
+
+  defp duplicate_issue_groups(prs) do
+    prs
+    |> Enum.group_by(&referenced_issue_number/1)
+    |> Map.delete(nil)
+    |> Enum.filter(fn {_issue_number, issue_prs} -> length(issue_prs) > 1 end)
+    |> Map.new()
+  end
+
+  defp duplicate_selections(duplicate_groups) do
+    Map.new(duplicate_groups, fn {issue_number, issue_prs} ->
+      {issue_number, select_best_duplicate_candidate(issue_prs)}
+    end)
+  end
+
+  defp select_best_duplicate_candidate(issue_prs) do
+    Enum.max_by(issue_prs, &duplicate_candidate_score/1)
+  end
+
+  defp duplicate_candidate_score(pr) do
+    # Higher tuple elements win in priority order:
+    # ready to polish -> newest green CI -> more commits -> most recently updated -> highest PR number.
+    {
+      if(needs_polish?(pr), do: 1, else: 0),
+      latest_green_check_timestamp(pr),
+      commit_count(pr),
+      parse_timestamp(pr["updatedAt"]) || 0,
+      pr["number"] || 0
+    }
+  end
+
+  defp latest_green_check_timestamp(pr) do
+    pr
+    |> Map.get("statusCheckRollup", [])
+    |> List.wrap()
+    |> Enum.filter(&green_check?/1)
+    |> Enum.map(&(parse_timestamp(&1["completedAt"]) || parse_timestamp(&1["startedAt"])))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.max(fn -> 0 end)
+  end
+
+  defp green_check?(check) do
+    is_map(check) and check["conclusion"] in @green_conclusions
+  end
+
+  defp commit_count(%{"commits" => commits}) when is_list(commits), do: length(commits)
+
+  defp commit_count(%{"commits" => %{"totalCount" => total_count}}) when is_integer(total_count),
+    do: total_count
+
+  defp commit_count(_pr), do: 0
+
+  defp parse_timestamp(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, _offset} -> DateTime.to_unix(datetime)
+      _ -> nil
+    end
+  end
+
+  defp parse_timestamp(_value), do: nil
+
+  defp referenced_issue_number(pr) do
+    branch_issue_number(pr["headRefName"]) || body_issue_number(pr["body"])
+  end
+
+  defp branch_issue_number(branch) when is_binary(branch) do
+    branch
+    |> String.split("/")
+    |> List.last()
+    |> case do
+      branch_name when is_binary(branch_name) ->
+        case Regex.named_captures(@issue_branch_reference, branch_name) do
+          %{"issue" => issue_number} -> parse_issue_number(issue_number)
+          _ -> nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp branch_issue_number(_branch), do: nil
+
+  defp body_issue_number(body) when is_binary(body) do
+    case Regex.named_captures(@issue_body_reference, body) do
+      %{"issue" => issue_number} -> parse_issue_number(issue_number)
+      _ -> nil
+    end
+  end
+
+  defp body_issue_number(_body), do: nil
+
+  defp parse_issue_number(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {issue_number, ""} -> issue_number
+      _ -> nil
+    end
   end
 
   defp dispatch_polisher(state, pr) do
