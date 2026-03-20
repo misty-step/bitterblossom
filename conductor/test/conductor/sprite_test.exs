@@ -3,6 +3,13 @@ defmodule Conductor.SpriteTest do
 
   alias Conductor.Sprite
 
+  defmodule MockShell do
+    def cmd(program, args, opts) do
+      send(self(), {:shell_cmd, program, args, opts})
+      {:ok, ""}
+    end
+  end
+
   defp exec_fn(responses) do
     fn _sprite, command, _opts ->
       Enum.find_value(responses, {:ok, ""}, fn {pattern, result} ->
@@ -115,6 +122,40 @@ defmodule Conductor.SpriteTest do
       args = Sprite.exec_args("org", "sprite", "cd /ws && mix test")
       assert List.last(args) == "cd /ws && mix test"
       assert Enum.at(args, -2) == "-lc"
+    end
+  end
+
+  describe "exec/3" do
+    setup do
+      original_shell_module = Application.get_env(:conductor, :shell_module)
+      Application.put_env(:conductor, :shell_module, MockShell)
+
+      on_exit(fn ->
+        if original_shell_module do
+          Application.put_env(:conductor, :shell_module, original_shell_module)
+        else
+          Application.delete_env(:conductor, :shell_module)
+        end
+      end)
+
+      :ok
+    end
+
+    test "forwards progress callbacks to the shell layer" do
+      progress_fn = fn _progress -> :ok end
+
+      assert {:ok, ""} =
+               Sprite.exec("bb-weaver", "echo ok",
+                 org: "test-org",
+                 timeout: 5_000,
+                 on_progress: progress_fn,
+                 progress_prefix: "PROGRESS:"
+               )
+
+      assert_received {:shell_cmd, "sprite", _args, shell_opts}
+      assert shell_opts[:timeout] == 5_000
+      assert shell_opts[:on_progress] == progress_fn
+      assert shell_opts[:progress_prefix] == "PROGRESS:"
     end
   end
 

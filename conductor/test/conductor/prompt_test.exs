@@ -158,6 +158,21 @@ defmodule Conductor.PromptTest do
       refute prompt =~ ~s("pr_number")
       refute prompt =~ ~s("pr_url")
     end
+
+    test "requires periodic progress updates for long-running work" do
+      prompt =
+        Prompt.build_builder_prompt(
+          @issue,
+          "run-99-progress",
+          "factory/99-progress"
+        )
+
+      assert prompt =~ "PROGRESS:"
+      assert prompt =~ "every 2-3 minutes"
+      assert prompt =~ "installing deps"
+      assert prompt =~ "waiting for CI"
+      assert prompt =~ "generating code"
+    end
   end
 
   describe "governance restrictions in builder prompt" do

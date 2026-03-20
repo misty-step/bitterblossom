@@ -73,6 +73,8 @@ defmodule Conductor.Prompt do
     ### Phase 3: Handoff
     When CI is green and reviews are addressed, write TASK_COMPLETE with a short summary.
     If blocked (cannot resolve feedback, need human input), write BLOCKED.md with the reason.
+
+    #{progress_reporting_section()}
     """
   end
 
@@ -240,6 +242,18 @@ defmodule Conductor.Prompt do
     3. Wait for CI to re-run
     4. Verify review threads are resolved
     5. Write TASK_COMPLETE when ready
+
+    #{progress_reporting_section()}
+    """
+  end
+
+  defp progress_reporting_section do
+    """
+    ### Progress Reporting
+    During any operation that may take more than 2 minutes, print a progress line to stdout in this exact format:
+    `PROGRESS: <current operation>`
+
+    Emit a fresh `PROGRESS:` line every 2-3 minutes while work continues, and always before long waits such as installing deps, waiting for CI, or generating code. Keep the operation concise and concrete.
     """
   end
 end
