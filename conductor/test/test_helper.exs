@@ -15,7 +15,7 @@ defmodule Conductor.TestSupport.ProcessHelpers do
         ref = Process.monitor(pid)
 
         try do
-          GenServer.stop(pid)
+          GenServer.stop(pid, :normal, timeout)
         catch
           :exit, _reason -> :ok
         end
