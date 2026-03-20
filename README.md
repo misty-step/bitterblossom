@@ -225,7 +225,7 @@ Run the conductor with `--health-port` (or `CONDUCTOR_HEALTH_PORT`) to expose
 monitor every 5 minutes:
 
 ```bash
-*/5 * * * * cd /path/to/bitterblossom && CONDUCTOR_HEALTH_PORT=4000 ./scripts/conductor-watchdog.sh
+*/5 * * * * cd /path/to/bitterblossom && CONDUCTOR_HEALTH_PORT=4000 ./scripts/conductor-health-probe.sh
 ```
 
 If `CONDUCTOR_ALERT_WEBHOOK` is set, the watchdog posts a failure notification to that
