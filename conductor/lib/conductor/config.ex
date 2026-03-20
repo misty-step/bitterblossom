@@ -58,6 +58,21 @@ defmodule Conductor.Config do
     Application.get_env(:conductor, :ci_status_log_interval_minutes, 5)
   end
 
+  @spec github_issue_cache_ttl_ms() :: non_neg_integer()
+  def github_issue_cache_ttl_ms do
+    Application.get_env(:conductor, :github_issue_cache_ttl_ms, 300_000)
+  end
+
+  @spec github_rate_limit_backoff_base_ms() :: pos_integer()
+  def github_rate_limit_backoff_base_ms do
+    Application.get_env(:conductor, :github_rate_limit_backoff_base_ms, 5_000)
+  end
+
+  @spec github_rate_limit_backoff_max_ms() :: pos_integer()
+  def github_rate_limit_backoff_max_ms do
+    Application.get_env(:conductor, :github_rate_limit_backoff_max_ms, 300_000)
+  end
+
   @spec repo_root() :: binary()
   def repo_root do
     case Application.get_env(:conductor, :repo_root) do

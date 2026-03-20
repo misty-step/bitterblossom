@@ -17,57 +17,57 @@ defmodule Conductor.GitHub do
   @default_labeled_limit 25
   @default_unfiltered_limit 1000
   @issues_page_size 100
+  @cache_table :conductor_github_cache
+  @backoff_table :conductor_github_backoff
+  @table_owner __MODULE__.TableOwner
+
+  @doc false
+  def reset_runtime_state do
+    reset_table(@cache_table)
+    reset_table(@backoff_table)
+    :ok
+  end
+
+  @doc false
+  @spec rate_limit_backoff_ms(pos_integer()) :: pos_integer()
+  def rate_limit_backoff_ms(attempt) when attempt > 0 do
+    base = Conductor.Config.github_rate_limit_backoff_base_ms()
+    max_ms = Conductor.Config.github_rate_limit_backoff_max_ms()
+    min(base * Integer.pow(2, attempt - 1), max_ms)
+  end
 
   @spec get_issue(binary(), pos_integer()) :: {:ok, Issue.t()} | {:error, term()}
   def get_issue(repo, number) do
-    case Shell.cmd("gh", [
-           "issue",
-           "view",
-           to_string(number),
-           "--repo",
-           repo,
-           "--json",
-           "number,title,body,url,labels"
-         ]) do
-      {:ok, json} ->
-        case Jason.decode(json) do
-          {:ok, data} -> {:ok, Issue.from_github(data)}
-          {:error, _} -> {:error, "invalid JSON from gh: #{String.slice(json, 0, 200)}"}
-        end
-
-      {:error, msg, _} ->
-        {:error, msg}
-    end
+    with_cached_issue(repo, number, fn ->
+      with {:ok, json} <-
+             run_gh([
+               "issue",
+               "view",
+               to_string(number),
+               "--repo",
+               repo,
+               "--json",
+               "number,title,body,url,labels"
+             ]),
+           {:ok, data} <- decode_issue_map(json) do
+        issue = Issue.from_github(data)
+        cache_issue(repo, issue)
+        {:ok, issue}
+      end
+    end)
   end
 
   @spec issue_has_label?(binary(), pos_integer(), binary()) :: {:ok, boolean()} | {:error, term()}
   def issue_has_label?(repo, issue_number, label) do
-    case Shell.cmd("gh", [
-           "issue",
-           "view",
-           to_string(issue_number),
-           "--repo",
-           repo,
-           "--json",
-           "labels"
-         ]) do
-      {:ok, json} ->
-        case Jason.decode(json) do
-          {:ok, data} ->
-            {:ok, label_present?(data, label)}
-
-          {:error, _} ->
-            {:error, "invalid JSON from gh: #{String.slice(json, 0, 200)}"}
-        end
-
-      {:error, msg, _} ->
-        {:error, msg}
+    case get_issue(repo, issue_number) do
+      {:ok, %Issue{} = issue} -> {:ok, label in issue.labels}
+      {:error, reason} -> {:error, reason}
     end
   end
 
   @spec issue_comments(binary(), pos_integer()) :: {:ok, [map()]} | {:error, term()}
   def issue_comments(repo, issue_number) do
-    case Shell.cmd("gh", [
+    case run_gh([
            "issue",
            "view",
            to_string(issue_number),
@@ -85,7 +85,7 @@ defmodule Conductor.GitHub do
             {:error, "invalid JSON from gh: #{String.slice(json, 0, 200)}"}
         end
 
-      {:error, msg, _} ->
+      {:error, msg} ->
         {:error, msg}
     end
   end
@@ -93,18 +93,18 @@ defmodule Conductor.GitHub do
   @spec list_issues(binary(), keyword()) :: {:ok, [Issue.t()]} | {:error, term()}
   def list_issues(repo, opts \\ []) do
     label = Keyword.get(opts, :label)
-    explicit_limit? = Keyword.has_key?(opts, :limit)
     limit = Keyword.get(opts, :limit, default_issue_limit(label))
+    normalized = normalized_label(label)
 
-    case {normalized_label(label), explicit_limit?} do
-      {nil, false} ->
-        list_all_open_issues(repo, limit)
-
-      {_label, _explicit_limit?} ->
+    with {:ok, _parts} <- repo_parts(repo) do
+      with_cached_issue_list(repo, normalized, limit, fn ->
         with {:ok, json} <- run_gh(list_issue_args(repo, opts)),
              {:ok, list} <- decode_issue_list(json) do
-          {:ok, Enum.map(list, &Issue.from_github/1)}
+          issues = Enum.map(list, &Issue.from_github/1)
+          cache_issue_list(repo, normalized, limit, issues)
+          {:ok, issues}
         end
+      end)
     end
   end
 
@@ -255,7 +255,7 @@ defmodule Conductor.GitHub do
 
   @spec get_pr_checks(binary(), pos_integer()) :: {:ok, [map()]} | {:error, term()}
   def get_pr_checks(repo, pr_number) do
-    case Shell.cmd("gh", [
+    case run_gh([
            "pr",
            "view",
            to_string(pr_number),
@@ -270,7 +270,7 @@ defmodule Conductor.GitHub do
           {:error, _} -> {:error, "invalid JSON from gh: #{String.slice(json, 0, 200)}"}
         end
 
-      {:error, msg, _} ->
+      {:error, msg} ->
         {:error, msg}
     end
   end
@@ -287,11 +287,72 @@ defmodule Conductor.GitHub do
   defp normalized_label(""), do: nil
   defp normalized_label(label), do: label
 
-  defp list_all_open_issues(repo, limit) do
-    with {:ok, {owner, name}} <- repo_parts(repo) do
-      empty_page_budget = ceil(limit / @issues_page_size)
-      fetch_issue_pages(owner, name, 1, limit, empty_page_budget, empty_page_budget, [])
+  defp with_cached_issue(repo, issue_number, fun) do
+    case fetch_cache({:issue, repo, issue_number}) do
+      {:ok, %Issue{} = issue} ->
+        {:ok, issue}
+
+      :miss ->
+        fun.()
     end
+  end
+
+  defp with_cached_issue_list(repo, label, limit, fun) do
+    case fetch_cache({:issue_list, repo, label, limit}) do
+      {:ok, issues} ->
+        {:ok, issues}
+
+      :miss ->
+        fun.()
+    end
+  end
+
+  defp cache_issue_list(repo, label, limit, issues) do
+    put_cache({:issue_list, repo, label, limit}, issues)
+    Enum.each(issues, &cache_issue(repo, &1))
+  end
+
+  defp cache_issue(repo, %Issue{} = issue) do
+    put_cache({:issue, repo, issue.number}, issue)
+  end
+
+  defp invalidate_issue_cache(repo, issue_number) do
+    table = ensure_table(@cache_table, [:named_table, :public, read_concurrency: true])
+
+    match_issue =
+      case issue_number do
+        nil -> {{:issue, repo, :_}, :_}
+        number -> {{:issue, repo, number}, :_}
+      end
+
+    :ets.match_delete(table, match_issue)
+    :ets.match_delete(table, {{:issue_list, repo, :_, :_}, :_})
+    :ok
+  end
+
+  defp fetch_cache(key) do
+    now = now_ms()
+    ttl_ms = Conductor.Config.github_issue_cache_ttl_ms()
+    table = ensure_table(@cache_table, [:named_table, :public, read_concurrency: true])
+
+    case :ets.lookup(table, key) do
+      [{^key, {written_at, value}}] ->
+        if now - written_at < ttl_ms do
+          {:ok, value}
+        else
+          :ets.delete(table, key)
+          :miss
+        end
+
+      [] ->
+        :miss
+    end
+  end
+
+  defp put_cache(key, value) do
+    table = ensure_table(@cache_table, [:named_table, :public, read_concurrency: true])
+    :ets.insert(table, {key, {now_ms(), value}})
+    :ok
   end
 
   defp decode_issue_list(json) do
@@ -307,10 +368,10 @@ defmodule Conductor.GitHub do
     end
   end
 
-  defp decode_issue_page(json) do
+  defp decode_issue_map(json) do
     case Jason.decode(json) do
-      {:ok, page} when is_list(page) ->
-        {:ok, page}
+      {:ok, data} when is_map(data) ->
+        {:ok, data}
 
       {:ok, _other} ->
         {:error, "invalid JSON from gh: #{String.slice(json, 0, 200)}"}
@@ -333,67 +394,6 @@ defmodule Conductor.GitHub do
     end
   end
 
-  defp fetch_issue_pages(
-         _owner,
-         _name,
-         _page,
-         remaining,
-         _max_empty_pages,
-         _empty_pages_left,
-         acc
-       )
-       when remaining <= 0 do
-    {:ok, Enum.reverse(acc)}
-  end
-
-  defp fetch_issue_pages(
-         _owner,
-         _name,
-         _page,
-         _remaining,
-         _max_empty_pages,
-         empty_pages_left,
-         acc
-       )
-       when empty_pages_left <= 0 do
-    {:ok, Enum.reverse(acc)}
-  end
-
-  defp fetch_issue_pages(owner, name, page, remaining, max_empty_pages, empty_pages_left, acc) do
-    args = [
-      "api",
-      "repos/#{owner}/#{name}/issues?state=open&per_page=#{@issues_page_size}&page=#{page}"
-    ]
-
-    with {:ok, json} <- run_gh(args),
-         {:ok, issues} <- decode_issue_page(json) do
-      page_issues =
-        issues
-        |> Enum.reject(&Map.has_key?(&1, "pull_request"))
-        |> Enum.take(remaining)
-        |> Enum.map(&Issue.from_github/1)
-
-      if issues == [] do
-        {:ok, Enum.reverse(acc)}
-      else
-        fetch_issue_pages(
-          owner,
-          name,
-          page + 1,
-          remaining - length(page_issues),
-          max_empty_pages,
-          next_empty_page_budget(max_empty_pages, empty_pages_left, page_issues),
-          Enum.reverse(page_issues) ++ acc
-        )
-      end
-    end
-  end
-
-  defp next_empty_page_budget(_max_empty_pages, empty_pages_left, []), do: empty_pages_left - 1
-
-  defp next_empty_page_budget(max_empty_pages, _empty_pages_left, _page_issues),
-    do: max_empty_pages
-
   defp repo_parts(repo) do
     case String.split(repo, "/") do
       [owner, name] when owner != "" and name != "" -> {:ok, {owner, name}}
@@ -402,9 +402,165 @@ defmodule Conductor.GitHub do
   end
 
   defp run_gh(args) do
-    case Shell.cmd("gh", args) do
+    case run_gh_cmd(args) do
       {:ok, output} -> {:ok, output}
       {:error, msg, _code} -> {:error, msg}
+    end
+  end
+
+  defp run_gh_cmd(args, opts \\ []) do
+    case active_rate_limit_backoff() do
+      {:active, remaining_ms} ->
+        {:error, "github api backoff active for #{remaining_ms}ms", 429}
+
+      :inactive ->
+        case Shell.cmd("gh", args, opts) do
+          {:ok, _output} = ok ->
+            clear_rate_limit_backoff()
+            ok
+
+          {:error, msg, code} = error ->
+            if rate_limited?(msg, code) do
+              delay_ms = register_rate_limit_backoff()
+
+              Logger.warning(
+                "[github] rate limited for #{delay_ms}ms on `gh #{Enum.join(args, " ")}`"
+              )
+
+              {:error, "#{msg} (backing off for #{delay_ms}ms)", code}
+            else
+              error
+            end
+        end
+    end
+  end
+
+  defp active_rate_limit_backoff do
+    table = ensure_table(@backoff_table, [:named_table, :public])
+
+    case :ets.lookup(table, :rate_limit_backoff) do
+      [{:rate_limit_backoff, %{until_ms: until_ms}}] ->
+        remaining_ms = until_ms - now_ms()
+
+        if remaining_ms > 0 do
+          {:active, remaining_ms}
+        else
+          :inactive
+        end
+
+      [] ->
+        :inactive
+    end
+  end
+
+  defp register_rate_limit_backoff do
+    table = ensure_table(@backoff_table, [:named_table, :public])
+
+    attempt =
+      case :ets.lookup(table, :rate_limit_backoff) do
+        [{:rate_limit_backoff, %{attempt: prior_attempt}}] -> prior_attempt + 1
+        [] -> 1
+      end
+
+    delay_ms = rate_limit_backoff_ms(attempt)
+
+    :ets.insert(table, {:rate_limit_backoff, %{attempt: attempt, until_ms: now_ms() + delay_ms}})
+    delay_ms
+  end
+
+  defp clear_rate_limit_backoff do
+    table = ensure_table(@backoff_table, [:named_table, :public])
+    :ets.delete(table, :rate_limit_backoff)
+    :ok
+  end
+
+  defp rate_limited?(msg, code) do
+    code == 429 or
+      msg
+      |> String.downcase()
+      |> then(fn downcased ->
+        String.contains?(downcased, "rate limit") or
+          String.contains?(downcased, "http 429") or
+          String.contains?(downcased, "status 429")
+      end)
+  end
+
+  defp ensure_table(name, options) do
+    owner = ensure_table_owner()
+    call_table_owner(owner, {:ensure_table, name, options})
+    name
+  end
+
+  defp reset_table(name) do
+    owner = ensure_table_owner()
+    call_table_owner(owner, {:reset_table, name})
+    :ok
+  end
+
+  defp now_ms, do: System.monotonic_time(:millisecond)
+
+  defp ensure_table_owner do
+    case Process.whereis(@table_owner) do
+      pid when is_pid(pid) ->
+        pid
+
+      nil ->
+        pid = spawn(fn -> table_owner_loop() end)
+
+        case Process.register(pid, @table_owner) do
+          true ->
+            pid
+
+          false ->
+            Process.exit(pid, :normal)
+            Process.whereis(@table_owner)
+        end
+    end
+  end
+
+  defp call_table_owner(owner, request) do
+    ref = make_ref()
+    send(owner, {self(), ref, request})
+
+    receive do
+      {^ref, reply} -> reply
+    after
+      5_000 -> raise "github table owner timeout for #{inspect(request)}"
+    end
+  end
+
+  defp table_owner_loop do
+    receive do
+      {caller, ref, {:ensure_table, name, options}} ->
+        maybe_create_table(name, options)
+        send(caller, {ref, name})
+        table_owner_loop()
+
+      {caller, ref, {:reset_table, name}} ->
+        case :ets.whereis(name) do
+          :undefined -> :ok
+          tid -> :ets.delete(tid)
+        end
+
+        send(caller, {ref, :ok})
+        table_owner_loop()
+
+      _other ->
+        table_owner_loop()
+    end
+  end
+
+  defp maybe_create_table(name, options) do
+    case :ets.whereis(name) do
+      :undefined ->
+        try do
+          :ets.new(name, options)
+        rescue
+          ArgumentError -> :ok
+        end
+
+      _tid ->
+        :ok
     end
   end
 
@@ -622,8 +778,7 @@ defmodule Conductor.GitHub do
     method = Keyword.get(opts, :method, "squash")
     delete_branch = if Keyword.get(opts, :delete_branch, true), do: ["--delete-branch"], else: []
 
-    case Shell.cmd(
-           "gh",
+    case run_gh_cmd(
            [
              "pr",
              "merge",
@@ -641,7 +796,7 @@ defmodule Conductor.GitHub do
   @doc "List open PRs with a specific label."
   @spec labeled_prs(binary(), binary()) :: {:ok, [map()]} | {:error, term()}
   def labeled_prs(repo, label) do
-    case Shell.cmd("gh", [
+    case run_gh([
            "pr",
            "list",
            "--repo",
@@ -651,7 +806,7 @@ defmodule Conductor.GitHub do
            "--label",
            label,
            "--json",
-           "number,title,headRefName"
+           "number,title,headRefName,statusCheckRollup"
          ]) do
       {:ok, json} ->
         case Jason.decode(json) do
@@ -659,7 +814,7 @@ defmodule Conductor.GitHub do
           {:error, _} -> {:error, "invalid JSON"}
         end
 
-      {:error, msg, _} ->
+      {:error, msg} ->
         {:error, msg}
     end
   end
@@ -667,7 +822,7 @@ defmodule Conductor.GitHub do
   @doc "List all open PRs with CI status and labels."
   @spec open_prs(binary()) :: {:ok, [map()]} | {:error, term()}
   def open_prs(repo) do
-    case Shell.cmd("gh", [
+    case run_gh([
            "pr",
            "list",
            "--repo",
@@ -691,7 +846,7 @@ defmodule Conductor.GitHub do
             {:error, "invalid JSON"}
         end
 
-      {:error, msg, _} ->
+      {:error, msg} ->
         {:error, msg}
     end
   end
@@ -699,7 +854,7 @@ defmodule Conductor.GitHub do
   @doc "Fetch review comments on a PR."
   @spec pr_review_comments(binary(), pos_integer()) :: {:ok, [map()]} | {:error, term()}
   def pr_review_comments(repo, pr_number) do
-    case Shell.cmd("gh", [
+    case run_gh([
            "pr",
            "view",
            to_string(pr_number),
@@ -719,7 +874,7 @@ defmodule Conductor.GitHub do
             {:error, "invalid JSON"}
         end
 
-      {:error, msg, _} ->
+      {:error, msg} ->
         {:error, msg}
     end
   end
@@ -727,22 +882,25 @@ defmodule Conductor.GitHub do
   @doc "Fetch CI failure logs for a PR."
   @spec pr_ci_failure_logs(binary(), pos_integer()) :: {:ok, binary()} | {:error, term()}
   def pr_ci_failure_logs(repo, pr_number) do
-    case Shell.cmd("gh", [
+    case run_gh_cmd([
            "pr",
            "checks",
            to_string(pr_number),
            "--repo",
            repo
          ]) do
-      {:ok, output} -> {:ok, output}
-      {:error, output, _} -> {:ok, output}
+      {:ok, output} ->
+        {:ok, output}
+
+      {:error, output, code} ->
+        if(rate_limited?(output, code), do: {:error, output}, else: {:ok, output})
     end
   end
 
   @doc "Add a label to a PR."
   @spec add_label(binary(), pos_integer(), binary()) :: :ok | {:error, term()}
   def add_label(repo, pr_number, label) do
-    case Shell.cmd("gh", [
+    case run_gh_cmd([
            "pr",
            "edit",
            to_string(pr_number),
@@ -751,23 +909,31 @@ defmodule Conductor.GitHub do
            "--add-label",
            label
          ]) do
-      {:ok, _} -> :ok
-      {:error, msg, _} -> {:error, msg}
+      {:ok, _} ->
+        invalidate_issue_cache(repo, pr_number)
+        :ok
+
+      {:error, msg, _} ->
+        {:error, msg}
     end
   end
 
   @doc "Close an issue."
   @spec close_issue(binary(), pos_integer()) :: :ok | {:error, term()}
   def close_issue(repo, issue_number) do
-    case Shell.cmd("gh", [
+    case run_gh_cmd([
            "issue",
            "close",
            to_string(issue_number),
            "--repo",
            repo
          ]) do
-      {:ok, _} -> :ok
-      {:error, msg, _} -> {:error, msg}
+      {:ok, _} ->
+        invalidate_issue_cache(repo, issue_number)
+        :ok
+
+      {:error, msg, _} ->
+        {:error, msg}
     end
   end
 
@@ -784,7 +950,7 @@ defmodule Conductor.GitHub do
         "--delete-branch=false"
       ] ++ if(comment = Keyword.get(opts, :comment), do: ["--comment", comment], else: [])
 
-    case Shell.cmd("gh", args) do
+    case run_gh_cmd(args) do
       {:ok, _} -> :ok
       {:error, msg, _} -> {:error, msg}
     end
@@ -800,7 +966,7 @@ defmodule Conductor.GitHub do
     File.write!(tmp, body)
 
     result =
-      case Shell.cmd("gh", [
+      case run_gh_cmd([
              "issue",
              "comment",
              to_string(issue_number),
@@ -809,8 +975,12 @@ defmodule Conductor.GitHub do
              "--body-file",
              tmp
            ]) do
-        {:ok, _} -> :ok
-        {:error, msg, _} -> {:error, msg}
+        {:ok, _} ->
+          invalidate_issue_cache(repo, issue_number)
+          :ok
+
+        {:error, msg, _} ->
+          {:error, msg}
       end
 
     File.rm(tmp)
@@ -823,7 +993,7 @@ defmodule Conductor.GitHub do
     File.write!(tmp, body)
 
     result =
-      case Shell.cmd("gh", [
+      case run_gh_cmd([
              "issue",
              "edit",
              to_string(issue_number),
@@ -832,8 +1002,12 @@ defmodule Conductor.GitHub do
              "--body-file",
              tmp
            ]) do
-        {:ok, _} -> :ok
-        {:error, msg, _} -> {:error, msg}
+        {:ok, _} ->
+          invalidate_issue_cache(repo, issue_number)
+          :ok
+
+        {:error, msg, _} ->
+          {:error, msg}
       end
 
     File.rm(tmp)
@@ -844,7 +1018,7 @@ defmodule Conductor.GitHub do
   @spec find_open_pr(binary(), pos_integer(), binary() | nil) ::
           {:ok, map()} | {:error, :not_found | :api_error}
   def find_open_pr(repo, issue_number, expected_branch \\ nil) do
-    case Shell.cmd("gh", [
+    case run_gh([
            "pr",
            "list",
            "--repo",
@@ -872,7 +1046,7 @@ defmodule Conductor.GitHub do
             {:error, :api_error}
         end
 
-      {:error, msg, _} ->
+      {:error, msg} ->
         Logger.warning("[github] failed to list PRs: #{msg}")
         {:error, :api_error}
     end
@@ -930,7 +1104,7 @@ defmodule Conductor.GitHub do
 
   @spec get_pr(binary(), pos_integer()) :: {:ok, map()} | {:error, term()}
   def get_pr(repo, pr_number) do
-    case Shell.cmd("gh", [
+    case run_gh([
            "pr",
            "view",
            to_string(pr_number),
@@ -945,7 +1119,7 @@ defmodule Conductor.GitHub do
           {:error, _} -> {:error, "invalid JSON from gh: #{String.slice(json, 0, 200)}"}
         end
 
-      {:error, msg, _} ->
+      {:error, msg} ->
         {:error, msg}
     end
   end
