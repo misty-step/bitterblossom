@@ -560,7 +560,7 @@ defmodule Conductor.Orchestrator do
   defp active_runs_by_worker(state) do
     store_runs =
       try do
-        {:ok, Store.active_runs()}
+        {:ok, store_mod().active_runs()}
       rescue
         exception ->
           {:error, Exception.message(exception)}
@@ -1399,6 +1399,7 @@ defmodule Conductor.Orchestrator do
   end
 
   defp tracker_mod, do: Application.get_env(:conductor, :tracker_module, Conductor.GitHub)
+  defp store_mod, do: Application.get_env(:conductor, :store_module, Conductor.Store)
   defp worker_mod, do: Application.get_env(:conductor, :worker_module, Conductor.Sprite)
   defp code_host_mod, do: Application.get_env(:conductor, :code_host_module, Conductor.GitHub)
   defp shaper_mod, do: Application.get_env(:conductor, :shaper_module, Conductor.Shaper)

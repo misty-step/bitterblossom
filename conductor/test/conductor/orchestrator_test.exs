@@ -176,6 +176,10 @@ defmodule Conductor.OrchestratorTest do
     end
   end
 
+  defmodule MockFailingActiveRunStore do
+    def active_runs, do: exit(:store_down)
+  end
+
   defmodule MockSelfUpdate do
     def check_for_updates, do: :noop
   end
@@ -233,6 +237,9 @@ defmodule Conductor.OrchestratorTest do
     orig_launcher = Application.get_env(:conductor, :run_launcher_module)
     Application.put_env(:conductor, :run_launcher_module, MockRunLauncher)
 
+    orig_store = Application.get_env(:conductor, :store_module)
+    Application.put_env(:conductor, :store_module, Store)
+
     orig_code_host = Application.get_env(:conductor, :code_host_module)
     Application.put_env(:conductor, :code_host_module, MockCodeHost)
 
@@ -279,6 +286,10 @@ defmodule Conductor.OrchestratorTest do
       if orig_launcher,
         do: Application.put_env(:conductor, :run_launcher_module, orig_launcher),
         else: Application.delete_env(:conductor, :run_launcher_module)
+
+      if orig_store,
+        do: Application.put_env(:conductor, :store_module, orig_store),
+        else: Application.delete_env(:conductor, :store_module)
 
       if orig_code_host,
         do: Application.put_env(:conductor, :code_host_module, orig_code_host),
@@ -629,6 +640,38 @@ defmodule Conductor.OrchestratorTest do
       eventually(fn ->
         assert MockState.get(:started_runs) == [{206, "sprite-1"}]
       end)
+    end
+
+    test "fails closed when active run lookup errors" do
+      orig_max = Application.get_env(:conductor, :max_concurrent_runs)
+      Application.put_env(:conductor, :max_concurrent_runs, 1)
+
+      on_exit(fn ->
+        if orig_max,
+          do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
+          else: Application.delete_env(:conductor, :max_concurrent_runs)
+      end)
+
+      Application.put_env(:conductor, :store_module, MockFailingActiveRunStore)
+
+      issue = %Conductor.Issue{
+        number: 207,
+        title: "store failure issue",
+        body: "## Problem\nx\n## Acceptance Criteria\ny",
+        url: "https://example.test/issues/207"
+      }
+
+      MockState.put({:eligible, "test/repo", nil}, [issue])
+
+      log =
+        capture_log(fn ->
+          :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
+          Process.sleep(100)
+        end)
+
+      assert log =~ "[dispatch] failed to read active runs"
+      assert MockState.get(:started_runs) == []
+      assert Process.alive?(Process.whereis(Orchestrator))
     end
 
     test "does not start more runs than max_concurrent_runs allows" do
