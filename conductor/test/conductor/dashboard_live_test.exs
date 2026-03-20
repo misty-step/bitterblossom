@@ -4,6 +4,7 @@ defmodule Conductor.Web.DashboardLiveTest do
   """
   use ExUnit.Case, async: false
 
+  import Conductor.TestSupport.ProcessHelpers
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
@@ -28,8 +29,10 @@ defmodule Conductor.Web.DashboardLiveTest do
       check_origin: false
     )
 
-    # Stop any running instances before re-starting
-    if Process.whereis(Conductor.Store), do: GenServer.stop(Conductor.Store)
+    # App-owning tests can leave globally named services running between modules.
+    stop_process(Conductor.Web.Endpoint)
+    stop_process(Conductor.Store)
+    stop_process(Conductor.PubSub)
 
     start_supervised!({Phoenix.PubSub, name: Conductor.PubSub})
     start_supervised!({Conductor.Store, db_path: db_path, event_log: event_log})

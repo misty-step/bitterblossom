@@ -1,6 +1,7 @@
 defmodule Conductor.PolisherTest do
   use ExUnit.Case, async: false
   import ExUnit.CaptureLog
+  import Conductor.TestSupport.ProcessHelpers
 
   alias Conductor.{Store, Polisher}
 
@@ -110,29 +111,10 @@ defmodule Conductor.PolisherTest do
     def issue_comments(_repo, _issue), do: {:ok, []}
   end
 
-  defp stop_process(name) do
-    case Process.whereis(name) do
-      nil ->
-        :ok
-
-      pid ->
-        ref = Process.monitor(pid)
-
-        try do
-          GenServer.stop(pid)
-        catch
-          :exit, _reason -> :ok
-        end
-
-        assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1_000
-    end
-  end
-
   setup do
     db_path = Path.join(System.tmp_dir!(), "polisher_test_#{:rand.uniform(999_999)}.db")
     event_log = Path.join(System.tmp_dir!(), "polisher_test_#{:rand.uniform(999_999)}.jsonl")
 
-    Application.stop(:conductor)
     stop_process(Polisher)
     stop_process(Store)
     {:ok, _} = Store.start_link(db_path: db_path, event_log: event_log)
