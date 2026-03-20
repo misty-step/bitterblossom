@@ -255,11 +255,14 @@ defmodule Conductor.Orchestrator do
   # --- Private ---
 
   defp run_issue(repo, issue, worker, trusted_surfaces) do
+    [worker_config] = Config.normalize_workers([worker])
+
     opts = [
       repo: repo,
       issue: issue,
-      worker: worker,
-      workers: [worker],
+      worker: worker_config.name,
+      worker_config: worker_config,
+      workers: [worker_config],
       trusted_surfaces: trusted_surfaces
     ]
 
@@ -454,6 +457,8 @@ defmodule Conductor.Orchestrator do
   end
 
   defp dispatch_run(state, issue, worker) do
+    worker_config = Map.fetch!(state.workers, worker)
+
     existing_pr =
       case code_host_mod().find_open_pr(state.repo, issue.number, nil) do
         {:ok, pr} ->
@@ -472,7 +477,8 @@ defmodule Conductor.Orchestrator do
         repo: state.repo,
         issue: issue,
         worker: worker,
-        workers: state.worker_order,
+        worker_config: worker_config,
+        workers: Enum.map(state.worker_order, &Map.fetch!(state.workers, &1)),
         trusted_surfaces: state.trusted_surfaces
       ] ++ adoption_opts(existing_pr)
 

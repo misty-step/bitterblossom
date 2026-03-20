@@ -85,6 +85,22 @@ defmodule Conductor.PromptTest do
     end
   end
 
+  describe "build_builder_prompt/4 with harness context" do
+    test "includes builder harness diagnostics guidance" do
+      prompt =
+        Prompt.build_builder_prompt(
+          @issue,
+          "run-99-654",
+          "factory/99-654",
+          harness_context:
+            "Configured Harness: claude-code\nSupported Harnesses: codex (`codex` CLI), claude-code (`claude` CLI)"
+        )
+
+      assert prompt =~ "Configured Harness: claude-code"
+      assert prompt =~ "Supported Harnesses: codex (`codex` CLI), claude-code (`claude` CLI)"
+    end
+  end
+
   describe "build_builder_prompt/4 with existing PR" do
     test "includes existing PR number" do
       prompt =

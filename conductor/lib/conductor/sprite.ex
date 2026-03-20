@@ -18,8 +18,9 @@ defmodule Conductor.Sprite do
   """
 
   @behaviour Conductor.Worker
+  require Logger
 
-  alias Conductor.{Shell, Config, Workspace}
+  alias Conductor.{Shell, Config, Workspace, Harness}
   @runtime_env_file ".bb-runtime-env"
   @repo_root Path.expand("../../..", __DIR__)
   @sprite_home "/home/sprite"
@@ -85,17 +86,25 @@ defmodule Conductor.Sprite do
           {:error, "dispatch file upload failed: #{msg}", code}
 
         {:ok, _} ->
-          # 3. Run agent
-          run_agent(
-            sprite,
-            workspace,
-            prompt_path,
-            persona_role,
-            harness,
-            harness_opts,
-            exec_fn,
-            timeout_ms
-          )
+          case Harness.detect_dispatch_harness(sprite, harness, exec_fn) do
+            {:ok, detected} ->
+              log_harness_diagnostics(sprite, detected.diagnostics)
+
+              run_agent(
+                sprite,
+                workspace,
+                prompt_path,
+                persona_role,
+                detected.harness,
+                harness_opts,
+                exec_fn,
+                timeout_ms
+              )
+
+            {:error, msg, code} ->
+              Logger.error(msg)
+              {:error, msg, code}
+          end
       end
     else
       {:error, :invalid_role} ->
@@ -297,11 +306,11 @@ defmodule Conductor.Sprite do
       {:ok, output} ->
         {:ok, output}
 
-      {:error, _output, _code} ->
+      {:error, output, code} ->
         # Retry with session resumption if the harness supports it
         case harness.continue_command(harness_opts) do
           nil ->
-            {:error, "agent exited non-zero; harness does not support continuation", 1}
+            {:error, Harness.annotate_initial_failure(output, harness), code}
 
           continue_parts ->
             retry_cmd =
@@ -310,6 +319,14 @@ defmodule Conductor.Sprite do
             exec_fn.(sprite, retry_cmd, timeout: timeout_ms)
         end
     end
+  end
+
+  defp log_harness_diagnostics(_sprite, []), do: :ok
+
+  defp log_harness_diagnostics(sprite, diagnostics) do
+    Enum.each(diagnostics, fn line ->
+      Logger.info("[sprite #{sprite}] #{line}")
+    end)
   end
 
   defp agent_command(harness, cmd_parts, workspace, prompt_path, persona_role) do

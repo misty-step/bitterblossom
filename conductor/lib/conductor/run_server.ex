@@ -30,6 +30,7 @@ defmodule Conductor.RunServer do
     :repo,
     :issue,
     :worker,
+    :worker_config,
     :workers,
     :branch,
     :existing_branch,
@@ -65,16 +66,20 @@ defmodule Conductor.RunServer do
   @impl true
   def init(opts) do
     worker = Keyword.fetch!(opts, :worker)
+    workers = normalize_workers(worker, Keyword.get(opts, :workers, [worker]))
+    worker_config = resolve_worker_config(worker, Keyword.get(opts, :worker_config), workers)
+    worker_name = worker_name(worker_config)
 
     state = %__MODULE__{
       repo: Keyword.fetch!(opts, :repo),
       issue: Keyword.fetch!(opts, :issue),
-      worker: worker,
-      workers: normalize_workers(worker, Keyword.get(opts, :workers, [worker])),
+      worker: worker_name,
+      worker_config: worker_config,
+      workers: workers,
       existing_branch: Keyword.get(opts, :existing_branch),
       pr_number: Keyword.get(opts, :existing_pr_number),
       pr_url: Keyword.get(opts, :existing_pr_url),
-      attempted_workers: [worker]
+      attempted_workers: [worker_name]
     }
 
     {:ok, state, {:continue, :acquire_lease}}
@@ -166,6 +171,7 @@ defmodule Conductor.RunServer do
         state.run_id,
         state.branch,
         pr_number: state.pr_number,
+        harness_context: builder_harness_context(state.worker_config),
         repo_context: read_repo_context(),
         workspace_root: state.worktree_path
       )
@@ -194,6 +200,8 @@ defmodule Conductor.RunServer do
                  state.worker,
                  prompt,
                  state.repo,
+                 harness: dispatch_harness(state.worker_config),
+                 harness_opts: dispatch_harness_opts(state.worker_config),
                  workspace: state.worktree_path,
                  persona_role: :weaver,
                  timeout: Config.builder_timeout(),
@@ -299,7 +307,7 @@ defmodule Conductor.RunServer do
     {default_failure_class, default_category} = Harness.classify_dispatch_failure(output, code)
     failure_class = Keyword.get(opts, :failure_class, default_failure_class)
     category = Keyword.get(opts, :category, default_category)
-    reason = dispatch_failure_reason(failure_class, category, code)
+    reason = dispatch_failure_reason(failure_class, category, code, output)
 
     Store.update_run(state.run_id, %{
       builder_failure_class: Atom.to_string(failure_class),
@@ -341,27 +349,28 @@ defmodule Conductor.RunServer do
 
         Store.record_event(state.run_id, "builder_sprite_fallback", %{
           from: state.worker,
-          to: next_worker,
+          to: worker_name(next_worker),
           attempt: state.dispatch_attempt_count,
           failure_class: Atom.to_string(failure_class),
           reason: reason
         })
 
         Store.update_run(state.run_id, %{
-          builder_sprite: next_worker,
+          builder_sprite: worker_name(next_worker),
           builder_failure_class: Atom.to_string(failure_class),
           builder_failure_reason: reason
         })
 
-        log(state, "builder fallback from #{state.worker} to #{next_worker}")
+        log(state, "builder fallback from #{state.worker} to #{worker_name(next_worker)}")
 
         {:noreply,
          %{
            state
-           | worker: next_worker,
+           | worker: worker_name(next_worker),
+             worker_config: next_worker,
              worktree_path: nil,
              worker_attempt_count: 0,
-             attempted_workers: Enum.uniq(state.attempted_workers ++ [next_worker])
+             attempted_workers: Enum.uniq(state.attempted_workers ++ [worker_name(next_worker)])
          }, {:continue, :prepare_workspace}}
 
       :fail ->
@@ -398,42 +407,46 @@ defmodule Conductor.RunServer do
 
   defp next_available_worker(state) do
     state.workers
-    |> Enum.reject(&(&1 in state.attempted_workers))
+    |> Enum.reject(&(worker_name(&1) in state.attempted_workers))
     |> Enum.find(&worker_available?/1)
   end
 
   defp worker_available?(worker) do
+    name = worker_name(worker)
+
     healthy? =
       if function_exported?(worker_mod(), :probe, 2) do
-        match?({:ok, _}, worker_mod().probe(worker, []))
+        match?({:ok, _}, worker_mod().probe(name, []))
       else
         true
       end
 
     not_busy? =
       cond do
-        function_exported?(worker_mod(), :busy?, 2) -> not worker_mod().busy?(worker, [])
-        function_exported?(worker_mod(), :busy?, 1) -> not worker_mod().busy?(worker)
+        function_exported?(worker_mod(), :busy?, 2) -> not worker_mod().busy?(name, [])
+        function_exported?(worker_mod(), :busy?, 1) -> not worker_mod().busy?(name)
         true -> true
       end
 
     healthy? and not_busy?
   end
 
-  defp dispatch_failure_reason(failure_class, category, nil) do
+  defp dispatch_failure_reason(failure_class, category, nil, output) do
     if failure_class == :transient and category == :crash do
       "builder dispatch crashed"
     else
       "builder dispatch failed (category=#{category})"
     end
+    |> Harness.attach_safe_diagnostics(output)
   end
 
-  defp dispatch_failure_reason(failure_class, category, code) do
+  defp dispatch_failure_reason(failure_class, category, code, output) do
     if failure_class == :transient and category == :crash do
       "builder dispatch crashed (exit #{code})"
     else
       "builder dispatch failed (category=#{category}, exit #{code})"
     end
+    |> Harness.attach_safe_diagnostics(output)
   end
 
   defp detect_pr(state) do
@@ -737,7 +750,52 @@ defmodule Conductor.RunServer do
 
   defp normalize_workers(primary_worker, workers) do
     [primary_worker | List.wrap(workers)]
-    |> Enum.uniq()
+    |> Config.normalize_workers()
+    |> Enum.uniq_by(&worker_name/1)
+  end
+
+  defp resolve_worker_config(worker, nil, workers) do
+    name = worker_name(worker)
+    Enum.find(workers, &(worker_name(&1) == name)) || %{name: name}
+  end
+
+  defp resolve_worker_config(_worker, worker_config, _workers) do
+    worker_config
+    |> List.wrap()
+    |> Config.normalize_workers()
+    |> List.first()
+  end
+
+  defp worker_name(%{name: name}) when is_binary(name), do: name
+  defp worker_name(name) when is_binary(name), do: name
+
+  defp dispatch_harness(worker_config) do
+    harness_name = Map.get(worker_config, :harness) || "codex"
+
+    case Harness.module_for_name(harness_name) do
+      {:ok, harness} -> harness
+      {:error, _} -> harness_name
+    end
+  end
+
+  defp dispatch_harness_opts(worker_config) do
+    []
+    |> maybe_put_opt(:model, Map.get(worker_config, :model))
+    |> maybe_put_opt(:reasoning_effort, Map.get(worker_config, :reasoning_effort))
+  end
+
+  defp maybe_put_opt(opts, _key, nil), do: opts
+  defp maybe_put_opt(opts, _key, ""), do: opts
+  defp maybe_put_opt(opts, key, value), do: Keyword.put(opts, key, value)
+
+  defp builder_harness_context(worker_config) do
+    configured = Map.get(worker_config, :harness) || "codex"
+
+    [
+      "Configured Harness: #{configured}",
+      "Supported Harnesses: #{Harness.supported_harness_summary()}"
+    ]
+    |> Enum.join("\n")
   end
 
   defp log(state, msg) do

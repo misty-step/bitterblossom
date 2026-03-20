@@ -336,6 +336,7 @@ defmodule Conductor.SpriteDispatchTest do
       # Drain kill and upload
       assert_received {:exec_called, _, _, _}
       assert_received {:exec_called, _, _, _}
+      assert_received {:exec_called, "command -v codex >/dev/null 2>&1", _, _}
 
       assert_received {:exec_called, agent_cmd, _opts, _files}
       assert String.contains?(agent_cmd, "codex exec --yolo --json")
@@ -356,6 +357,7 @@ defmodule Conductor.SpriteDispatchTest do
 
       assert_received {:exec_called, _, _, _}
       assert_received {:exec_called, _, _, _}
+      assert_received {:exec_called, "command -v codex >/dev/null 2>&1", _, _}
       assert_received {:exec_called, agent_cmd, _opts, _files}
       assert String.contains?(agent_cmd, "model_reasoning_effort=high")
       refute String.contains?(agent_cmd, "model_reasoning_effort=medium")
@@ -373,6 +375,7 @@ defmodule Conductor.SpriteDispatchTest do
 
       assert_received {:exec_called, _, _, _}
       assert_received {:exec_called, _, _, _}
+      assert_received {:exec_called, "command -v codex >/dev/null 2>&1", _, _}
       assert_received {:exec_called, agent_cmd, _opts, _files}
       assert String.contains?(agent_cmd, "cd '/ws'")
 
@@ -411,6 +414,7 @@ defmodule Conductor.SpriteDispatchTest do
 
       assert_received {:exec_called, _, _, _}
       assert_received {:exec_called, _, _, _}
+      assert_received {:exec_called, "command -v claude >/dev/null 2>&1", _, _}
       assert_received {:exec_called, agent_cmd, _opts, _files}
       assert String.contains?(agent_cmd, "cd '/ws'")
       assert String.contains?(agent_cmd, "< '/ws/PROMPT.md'")
@@ -432,7 +436,57 @@ defmodule Conductor.SpriteDispatchTest do
         )
 
       assert {:error, msg, _code} = result
-      assert String.contains?(msg, "continuation")
+      assert String.contains?(msg, "[bb harness] selected harness codex has no continuation")
+      assert String.contains?(msg, "codex crashed")
+    end
+
+    test "falls back to claude-code when the configured codex harness is unavailable" do
+      exec_fn =
+        make_exec_fn([
+          {"command -v codex", {:error, "", 127}},
+          {"command -v claude", {:ok, "/usr/bin/claude\n"}}
+        ])
+
+      assert {:ok, _} =
+               Sprite.dispatch("s1", "prompt", "org/repo",
+                 workspace: "/ws",
+                 harness: Conductor.Codex,
+                 exec_fn: exec_fn,
+                 timeout: 1
+               )
+
+      assert_received {:exec_called, _, _, _}
+      assert_received {:exec_called, _, _, _}
+      assert_received {:exec_called, "command -v codex >/dev/null 2>&1", _, _}
+      assert_received {:exec_called, "command -v claude >/dev/null 2>&1", _, _}
+      assert_received {:exec_called, agent_cmd, _opts, _files}
+      assert String.contains?(agent_cmd, "claude -p --dangerously-skip-permissions")
+    end
+
+    test "returns actionable error when no supported harness is available on the sprite" do
+      exec_fn =
+        make_exec_fn([
+          {"command -v codex", {:error, "", 127}},
+          {"command -v claude", {:error, "", 127}}
+        ])
+
+      result =
+        Sprite.dispatch("s1", "prompt", "org/repo",
+          workspace: "/ws",
+          harness: Conductor.Codex,
+          exec_fn: exec_fn,
+          timeout: 1
+        )
+
+      assert {:error, msg, 78} = result
+      assert String.contains?(msg, "configured harness codex unavailable on sprite s1")
+      assert String.contains?(msg, "command -v codex >/dev/null 2>&1 -> missing")
+      assert String.contains?(msg, "command -v claude >/dev/null 2>&1 -> missing")
+
+      assert String.contains?(
+               msg,
+               "supported harnesses: codex (codex CLI), claude-code (claude CLI)"
+             )
     end
   end
 

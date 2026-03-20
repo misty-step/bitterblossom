@@ -19,7 +19,7 @@ defmodule Conductor.HarnessTest do
   test "classifies permanent dispatch failures" do
     assert {:permanent, :harness_unsupported} =
              Harness.classify_dispatch_failure(
-               "agent exited non-zero; harness does not support continuation",
+               "[bb harness] configured harness codex unavailable on sprite bb-weaver\n[bb harness] command -v codex -> missing\n[bb harness] command -v claude -> missing\n[bb harness] supported harnesses: codex (codex CLI), claude-code (claude CLI)",
                1
              )
 
@@ -27,7 +27,22 @@ defmodule Conductor.HarnessTest do
              Harness.classify_dispatch_failure("gh auth failed on sprite", 4)
 
     assert {:permanent, :unknown} =
-             Harness.classify_dispatch_failure("unexpected squirrel failure", 2)
+             Harness.classify_dispatch_failure(
+               "[bb harness] selected harness codex has no continuation command; returning initial failure\nunexpected squirrel failure",
+               2
+             )
+  end
+
+  test "extracts safe harness diagnostics from dispatch output" do
+    output = """
+    [bb harness] configured harness codex on sprite bb-weaver
+    [bb harness] command -v codex -> ok
+    raw secret: TOKEN=abc123
+    [bb harness] selected harness codex has no continuation command; returning initial failure
+    """
+
+    assert Harness.safe_diagnostic_summary(output) ==
+             "configured harness codex on sprite bb-weaver | command -v codex -> ok | selected harness codex has no continuation command; returning initial failure"
   end
 
   @tag :backoff_strategy
