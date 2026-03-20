@@ -165,7 +165,11 @@ defmodule Conductor.OrchestratorTest do
     alias Conductor.OrchestratorTest.MockState
 
     def status(pid) do
-      MockState.get({:run_status, pid}, %{worker: nil})
+      case MockState.get({:run_status, pid}, %{worker: nil}) do
+        {:raise, error} -> raise error
+        {:exit, reason} -> exit(reason)
+        other -> other
+      end
     end
 
     def operator_block(pid, reason) do
@@ -173,6 +177,12 @@ defmodule Conductor.OrchestratorTest do
       MockState.put(:run_control_calls, calls ++ [{pid, reason}])
       Process.exit(pid, :shutdown)
       :ok
+    end
+  end
+
+  defmodule MockRunControlWithoutStatus do
+    def operator_block(pid, reason) do
+      Conductor.OrchestratorTest.MockRunControl.operator_block(pid, reason)
     end
   end
 
@@ -639,6 +649,100 @@ defmodule Conductor.OrchestratorTest do
 
       eventually(fn ->
         assert MockState.get(:started_runs) == [{206, "sprite-1"}]
+      end)
+    end
+
+    test "falls back to the stored worker when active run status raises" do
+      orig_max = Application.get_env(:conductor, :max_concurrent_runs)
+      Application.put_env(:conductor, :max_concurrent_runs, 2)
+
+      on_exit(fn ->
+        if orig_max,
+          do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
+          else: Application.delete_env(:conductor, :max_concurrent_runs)
+      end)
+
+      pid = spawn(fn -> Process.sleep(500) end)
+      ref = Process.monitor(pid)
+      MockState.put({:run_status, pid}, {:raise, RuntimeError.exception("status unavailable")})
+
+      :sys.replace_state(Orchestrator, fn state ->
+        %{
+          state
+          | active_runs: %{
+              901 => %{pid: pid, ref: ref, issue: 901, worker: "sprite-2"}
+            }
+        }
+      end)
+
+      issue = %Conductor.Issue{
+        number: 208,
+        title: "stored worker fallback",
+        body: "## Problem\nx\n## Acceptance Criteria\ny",
+        url: "https://example.test/issues/208"
+      }
+
+      MockState.put({:eligible, "test/repo", nil}, [issue])
+
+      workers = [
+        %{name: "sprite-1", capability_tags: []},
+        %{name: "sprite-2", capability_tags: []}
+      ]
+
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: workers)
+
+      eventually(fn ->
+        assert MockState.get(:started_runs) == [{208, "sprite-1"}]
+      end)
+    end
+
+    test "falls back to the stored worker when run control has no status callback" do
+      orig_max = Application.get_env(:conductor, :max_concurrent_runs)
+      Application.put_env(:conductor, :max_concurrent_runs, 2)
+
+      orig_run_control = Application.get_env(:conductor, :run_control_module)
+      Application.put_env(:conductor, :run_control_module, MockRunControlWithoutStatus)
+
+      on_exit(fn ->
+        if orig_max,
+          do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
+          else: Application.delete_env(:conductor, :max_concurrent_runs)
+
+        if orig_run_control,
+          do: Application.put_env(:conductor, :run_control_module, orig_run_control),
+          else: Application.delete_env(:conductor, :run_control_module)
+      end)
+
+      pid = spawn(fn -> Process.sleep(500) end)
+      ref = Process.monitor(pid)
+
+      :sys.replace_state(Orchestrator, fn state ->
+        %{
+          state
+          | active_runs: %{
+              902 => %{pid: pid, ref: ref, issue: 902, worker: "sprite-2"}
+            }
+        }
+      end)
+
+      issue = %Conductor.Issue{
+        number: 209,
+        title: "missing status callback",
+        body: "## Problem\nx\n## Acceptance Criteria\ny",
+        url: "https://example.test/issues/209"
+      }
+
+      MockState.put({:eligible, "test/repo", nil}, [issue])
+
+      workers = [
+        %{name: "sprite-1", capability_tags: []},
+        %{name: "sprite-2", capability_tags: []}
+      ]
+
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: workers)
+
+      eventually(fn ->
+        assert MockState.get(:started_runs) == [{209, "sprite-1"}]
       end)
     end
 
