@@ -135,54 +135,13 @@ defmodule Conductor.Harness do
              %{harness: configured.module, diagnostics: [configured_line, configured_result]}}
 
           {:error, configured_result} ->
-            alternates = Enum.reject(@harnesses, &(&1.name == configured.name))
-
-            {available, alternate_diagnostics} =
-              Enum.reduce(alternates, {nil, []}, fn alternate, {selected, diagnostics} ->
-                case command_available?(sprite, alternate.command, exec_fn) do
-                  {:ok, result} ->
-                    selected = selected || alternate
-                    {selected, diagnostics ++ [result]}
-
-                  {:error, result} ->
-                    {selected, diagnostics ++ [result]}
-                end
-              end)
-
-            case available do
-              nil ->
-                diagnostics =
-                  [
-                    configured_line,
-                    configured_result
-                  ] ++
-                    alternate_diagnostics ++
-                    [
-                      diagnostic_line(
-                        "configured harness #{configured.name} unavailable on sprite #{sprite}"
-                      ),
-                      diagnostic_line("supported harnesses: #{supported_harness_summary()}")
-                    ]
-
-                {:error, Enum.join(diagnostics, "\n"), 78}
-
-              alternate ->
-                {:ok,
-                 %{
-                   harness: alternate.module,
-                   diagnostics:
-                     [
-                       configured_line,
-                       configured_result
-                     ] ++
-                       alternate_diagnostics ++
-                       [
-                         diagnostic_line(
-                           "falling back to #{alternate.name} because #{configured.name} is unavailable"
-                         )
-                       ]
-                 }}
-            end
+            handle_unavailable_harness(
+              sprite,
+              configured,
+              configured_line,
+              configured_result,
+              exec_fn
+            )
         end
     end
   end
@@ -239,6 +198,59 @@ defmodule Conductor.Harness do
       {:ok, _} -> {:ok, diagnostic_line("#{check} -> ok")}
       {:error, _output, _code} -> {:error, diagnostic_line("#{check} -> missing")}
     end
+  end
+
+  defp handle_unavailable_harness(sprite, configured, configured_line, configured_result, exec_fn) do
+    alternates = Enum.reject(@harnesses, &(&1.name == configured.name))
+    {available, alternate_diagnostics} = detect_alternate_harness(sprite, alternates, exec_fn)
+
+    case available do
+      nil ->
+        diagnostics =
+          [
+            configured_line,
+            configured_result
+          ] ++
+            alternate_diagnostics ++
+            [
+              diagnostic_line(
+                "configured harness #{configured.name} unavailable on sprite #{sprite}"
+              ),
+              diagnostic_line("supported harnesses: #{supported_harness_summary()}")
+            ]
+
+        {:error, Enum.join(diagnostics, "\n"), 78}
+
+      alternate ->
+        {:ok,
+         %{
+           harness: alternate.module,
+           diagnostics:
+             [
+               configured_line,
+               configured_result
+             ] ++
+               alternate_diagnostics ++
+               [
+                 diagnostic_line(
+                   "falling back to #{alternate.name} because #{configured.name} is unavailable"
+                 )
+               ]
+         }}
+    end
+  end
+
+  defp detect_alternate_harness(sprite, alternates, exec_fn) do
+    Enum.reduce(alternates, {nil, []}, fn alternate, {selected, diagnostics} ->
+      case command_available?(sprite, alternate.command, exec_fn) do
+        {:ok, result} ->
+          selected = selected || alternate
+          {selected, diagnostics ++ [result]}
+
+        {:error, result} ->
+          {selected, diagnostics ++ [result]}
+      end
+    end)
   end
 
   defp diagnostic_line(message), do: @diagnostic_prefix <> message

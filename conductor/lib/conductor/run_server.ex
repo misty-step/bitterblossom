@@ -756,14 +756,18 @@ defmodule Conductor.RunServer do
 
   defp resolve_worker_config(worker, nil, workers) do
     name = worker_name(worker)
-    Enum.find(workers, &(worker_name(&1) == name)) || %{name: name}
+    Enum.find(workers, &(worker_name(&1) == name)) || default_worker_config(name)
   end
 
-  defp resolve_worker_config(_worker, worker_config, _workers) do
+  defp resolve_worker_config(_worker, worker_config, _workers) when is_map(worker_config) do
     worker_config
     |> List.wrap()
     |> Config.normalize_workers()
     |> List.first()
+  end
+
+  defp resolve_worker_config(worker, _worker_config, _workers) do
+    default_worker_config(worker_name(worker))
   end
 
   defp worker_name(%{name: name}) when is_binary(name), do: name
@@ -787,6 +791,11 @@ defmodule Conductor.RunServer do
   defp maybe_put_opt(opts, _key, nil), do: opts
   defp maybe_put_opt(opts, _key, ""), do: opts
   defp maybe_put_opt(opts, key, value), do: Keyword.put(opts, key, value)
+
+  defp default_worker_config(name) do
+    [worker_config] = Config.normalize_workers([name])
+    worker_config
+  end
 
   defp builder_harness_context(worker_config) do
     configured = Map.get(worker_config, :harness) || "codex"
