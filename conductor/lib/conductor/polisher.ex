@@ -99,10 +99,11 @@ defmodule Conductor.Polisher do
       case code_host_mod().open_prs(state.repo) do
         {:ok, prs} ->
           duplicate_groups = duplicate_issue_groups(prs)
-          log_duplicate_prs(duplicate_groups)
+          duplicate_selections = duplicate_selections(duplicate_groups)
+          log_duplicate_prs(duplicate_groups, duplicate_selections)
 
           # Dispatch at most one PR per poll (single sprite, single workspace)
-          case select_pr_to_polish(prs, duplicate_groups) do
+          case select_pr_to_polish(prs, duplicate_groups, duplicate_selections) do
             nil -> state
             pr -> dispatch_polisher(state, pr)
           end
@@ -122,13 +123,13 @@ defmodule Conductor.Polisher do
     "lgtm" not in label_names and Conductor.GitHub.evaluate_checks(checks)
   end
 
-  defp select_pr_to_polish(prs, duplicate_groups) do
+  defp select_pr_to_polish(prs, duplicate_groups, duplicate_selections) do
     prs
-    |> collapse_duplicate_prs(duplicate_groups)
+    |> collapse_duplicate_prs(duplicate_groups, duplicate_selections)
     |> Enum.find(&needs_polish?/1)
   end
 
-  defp collapse_duplicate_prs(prs, duplicate_groups) do
+  defp collapse_duplicate_prs(prs, duplicate_groups, duplicate_selections) do
     {collapsed, _seen_issue_numbers} =
       Enum.reduce(prs, {[], MapSet.new()}, fn pr, {acc, seen_issue_numbers} ->
         case referenced_issue_number(pr) do
@@ -137,9 +138,7 @@ defmodule Conductor.Polisher do
               if MapSet.member?(seen_issue_numbers, issue_number) do
                 {acc, seen_issue_numbers}
               else
-                candidate =
-                  select_best_duplicate_candidate(Map.fetch!(duplicate_groups, issue_number))
-
+                candidate = Map.fetch!(duplicate_selections, issue_number)
                 {[candidate | acc], MapSet.put(seen_issue_numbers, issue_number)}
               end
             else
@@ -154,9 +153,9 @@ defmodule Conductor.Polisher do
     Enum.reverse(collapsed)
   end
 
-  defp log_duplicate_prs(duplicate_groups) do
+  defp log_duplicate_prs(duplicate_groups, duplicate_selections) do
     Enum.each(duplicate_groups, fn {issue_number, issue_prs} ->
-      chosen_pr = select_best_duplicate_candidate(issue_prs)
+      chosen_pr = Map.fetch!(duplicate_selections, issue_number)
 
       pr_numbers =
         issue_prs
@@ -175,6 +174,12 @@ defmodule Conductor.Polisher do
     |> Map.delete(nil)
     |> Enum.filter(fn {_issue_number, issue_prs} -> length(issue_prs) > 1 end)
     |> Map.new()
+  end
+
+  defp duplicate_selections(duplicate_groups) do
+    Map.new(duplicate_groups, fn {issue_number, issue_prs} ->
+      {issue_number, select_best_duplicate_candidate(issue_prs)}
+    end)
   end
 
   defp select_best_duplicate_candidate(issue_prs) do
