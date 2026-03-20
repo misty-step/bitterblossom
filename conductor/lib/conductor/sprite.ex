@@ -64,13 +64,12 @@ defmodule Conductor.Sprite do
           {:ok, binary()} | {:error, binary(), integer()}
   def dispatch(sprite, prompt, _repo, opts \\ []) do
     timeout_minutes = Keyword.get(opts, :timeout, Config.builder_timeout())
+    timeout_ms = Keyword.get(opts, :timeout_ms, timeout_minutes * 60_000)
     workspace = Keyword.fetch!(opts, :workspace)
     harness = Keyword.get(opts, :harness, Conductor.Codex)
     harness_opts = Keyword.get(opts, :harness_opts, [])
     # Injected in tests to capture exec calls without a real sprite
     exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
-
-    timeout_ms = timeout_minutes * 60_000
 
     with {:ok, persona_role} <- normalize_optional_persona_role(Keyword.get(opts, :persona_role)) do
       # 1. Kill stale agent processes from prior dispatches
@@ -94,7 +93,8 @@ defmodule Conductor.Sprite do
             harness,
             harness_opts,
             exec_fn,
-            timeout_ms
+            timeout_ms,
+            progress_command_opts(opts)
           )
       end
     else
@@ -282,7 +282,8 @@ defmodule Conductor.Sprite do
          harness,
          harness_opts,
          exec_fn,
-         timeout_ms
+         timeout_ms,
+         progress_opts
        ) do
     cmd =
       agent_command(
@@ -293,7 +294,7 @@ defmodule Conductor.Sprite do
         persona_role
       )
 
-    case exec_fn.(sprite, cmd, timeout: timeout_ms) do
+    case exec_fn.(sprite, cmd, Keyword.merge([timeout: timeout_ms], progress_opts)) do
       {:ok, output} ->
         {:ok, output}
 
@@ -307,10 +308,19 @@ defmodule Conductor.Sprite do
             retry_cmd =
               agent_command(harness, continue_parts, workspace, prompt_path, persona_role)
 
-            exec_fn.(sprite, retry_cmd, timeout: timeout_ms)
+            exec_fn.(sprite, retry_cmd, Keyword.merge([timeout: timeout_ms], progress_opts))
         end
     end
   end
+
+  defp progress_command_opts(opts) do
+    []
+    |> maybe_opt(:on_progress, Keyword.get(opts, :on_progress))
+    |> maybe_opt(:progress_prefix, Keyword.get(opts, :progress_prefix))
+  end
+
+  defp maybe_opt(opts, _key, nil), do: opts
+  defp maybe_opt(opts, key, value), do: Keyword.put(opts, key, value)
 
   defp agent_command(harness, cmd_parts, workspace, prompt_path, persona_role) do
     cmd_str = Enum.join(cmd_parts, " ")

@@ -38,7 +38,11 @@ defmodule Conductor.RunServer do
     :pr_url,
     :dispatch_task,
     :heartbeat_timer,
+    :progress_timer,
     :retry_timer,
+    :dispatch_started_at,
+    :last_progress_at,
+    :last_progress_message,
     phase: :pending,
     turn_count: 0,
     dispatch_attempt_count: 0,
@@ -159,6 +163,8 @@ defmodule Conductor.RunServer do
 
     next_dispatch_attempt = state.dispatch_attempt_count + 1
     next_worker_attempt = state.worker_attempt_count + 1
+    server_pid = self()
+    now_ms = now_ms()
 
     prompt =
       Prompt.build_builder_prompt(
@@ -197,6 +203,11 @@ defmodule Conductor.RunServer do
                  workspace: state.worktree_path,
                  persona_role: :weaver,
                  timeout: Config.builder_timeout(),
+                 timeout_ms: Config.builder_timeout_ms(),
+                 on_progress: fn progress ->
+                   send(server_pid, {:builder_progress, progress})
+                 end,
+                 progress_prefix: "PROGRESS:",
                  template: Config.prompt_template()
                ) do
           {:ok, output}
@@ -207,12 +218,17 @@ defmodule Conductor.RunServer do
       end)
 
     timer = start_heartbeat()
+    progress_timer = start_progress_check()
 
     {:noreply,
      %{
        state
        | dispatch_task: task,
          heartbeat_timer: timer,
+         progress_timer: progress_timer,
+         dispatch_started_at: now_ms,
+         last_progress_at: now_ms,
+         last_progress_message: nil,
          turn_count: state.turn_count + 1,
          dispatch_attempt_count: next_dispatch_attempt,
          worker_attempt_count: next_worker_attempt
@@ -228,8 +244,15 @@ defmodule Conductor.RunServer do
   def handle_info({ref, result}, %{dispatch_task: %Task{ref: ref}} = state) do
     Process.demonitor(ref, [:flush])
     cancel_heartbeat(state.heartbeat_timer)
+    cancel_progress_check(state.progress_timer)
 
-    state = %{state | dispatch_task: nil, heartbeat_timer: nil}
+    state = %{
+      state
+      | dispatch_task: nil,
+        heartbeat_timer: nil,
+        progress_timer: nil,
+        dispatch_started_at: nil
+    }
 
     case result do
       {:ok, _output} ->
@@ -246,7 +269,15 @@ defmodule Conductor.RunServer do
   @impl true
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{dispatch_task: %Task{ref: ref}} = state) do
     cancel_heartbeat(state.heartbeat_timer)
-    state = %{state | dispatch_task: nil, heartbeat_timer: nil}
+    cancel_progress_check(state.progress_timer)
+
+    state = %{
+      state
+      | dispatch_task: nil,
+        heartbeat_timer: nil,
+        progress_timer: nil,
+        dispatch_started_at: nil
+    }
 
     handle_dispatch_failure(state, "dispatch task crashed: #{inspect(reason)}", nil,
       failure_class: :transient,
@@ -260,10 +291,65 @@ defmodule Conductor.RunServer do
   end
 
   @impl true
+  def handle_info({:builder_progress, _progress}, %{dispatch_task: nil} = state) do
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:builder_progress, progress}, state) do
+    message = normalize_progress_message(progress)
+
+    if message do
+      Store.record_event(state.run_id, "builder_progress", %{
+        sprite: state.worker,
+        attempt: state.dispatch_attempt_count,
+        worker_attempt: state.worker_attempt_count,
+        turn: state.turn_count,
+        message: message
+      })
+
+      role_log(:info, state, "builder progress: #{message}")
+    end
+
+    Store.heartbeat_run(state.run_id)
+
+    {:noreply,
+     %{
+       state
+       | last_progress_at: now_ms(),
+         last_progress_message: message || state.last_progress_message
+     }}
+  end
+
+  @impl true
   def handle_info(:heartbeat, state) do
     Store.heartbeat_run(state.run_id)
     timer = start_heartbeat()
     {:noreply, %{state | heartbeat_timer: timer}}
+  end
+
+  @impl true
+  def handle_info(:builder_progress_check, %{dispatch_task: nil} = state) do
+    {:noreply, %{state | progress_timer: nil}}
+  end
+
+  @impl true
+  def handle_info(:builder_progress_check, state) do
+    now_ms = now_ms()
+    elapsed_ms = now_ms - (state.dispatch_started_at || now_ms)
+    silence_ms = now_ms - (state.last_progress_at || now_ms)
+
+    cond do
+      elapsed_ms >= Config.builder_timeout_ms() ->
+        timeout_builder(state, :overall_timeout, elapsed_ms, silence_ms)
+
+      silence_ms >= Config.builder_progress_timeout_ms() ->
+        timeout_builder(state, :progress_timeout, elapsed_ms, silence_ms)
+
+      true ->
+        timer = start_progress_check()
+        {:noreply, %{state | progress_timer: timer}}
+    end
   end
 
   @impl true
@@ -642,17 +728,34 @@ defmodule Conductor.RunServer do
 
   defp cancel_dispatch(%{dispatch_task: %Task{} = task} = state) do
     cancel_heartbeat(state.heartbeat_timer)
+    cancel_progress_check(state.progress_timer)
     cancel_retry(state.retry_timer)
     Task.shutdown(task, :brutal_kill)
     maybe_kill_worker(state)
-    %{state | dispatch_task: nil, heartbeat_timer: nil, retry_timer: nil}
+
+    %{
+      state
+      | dispatch_task: nil,
+        heartbeat_timer: nil,
+        progress_timer: nil,
+        retry_timer: nil,
+        dispatch_started_at: nil
+    }
   end
 
   defp cancel_dispatch(state) do
     cancel_heartbeat(state.heartbeat_timer)
+    cancel_progress_check(state.progress_timer)
     cancel_retry(state.retry_timer)
     maybe_kill_worker(state)
-    %{state | heartbeat_timer: nil, retry_timer: nil}
+
+    %{
+      state
+      | heartbeat_timer: nil,
+        progress_timer: nil,
+        retry_timer: nil,
+        dispatch_started_at: nil
+    }
   end
 
   defp branch_label(branch) when is_binary(branch) and branch != "", do: branch
@@ -671,10 +774,54 @@ defmodule Conductor.RunServer do
     Process.send_after(self(), :heartbeat, @heartbeat_ms)
   end
 
+  defp start_progress_check do
+    Process.send_after(self(), :builder_progress_check, Config.builder_progress_check_ms())
+  end
+
   defp cancel_heartbeat(nil), do: :ok
   defp cancel_heartbeat(ref), do: Process.cancel_timer(ref)
+  defp cancel_progress_check(nil), do: :ok
+  defp cancel_progress_check(ref), do: Process.cancel_timer(ref)
   defp cancel_retry(nil), do: :ok
   defp cancel_retry(ref), do: Process.cancel_timer(ref)
+
+  defp timeout_builder(state, cause, elapsed_ms, silence_ms) do
+    cause_str = Atom.to_string(cause)
+
+    reason =
+      case cause do
+        :progress_timeout ->
+          "builder timed out after #{silence_ms}ms with no progress"
+
+        :overall_timeout ->
+          "builder exceeded timeout after #{elapsed_ms}ms"
+      end
+
+    state = cancel_dispatch(state)
+
+    Store.update_run(state.run_id, %{
+      builder_failure_class: "timeout",
+      builder_failure_reason: reason,
+      blocked_reason: reason
+    })
+
+    Store.record_event(state.run_id, "builder_timeout", %{
+      sprite: state.worker,
+      attempt: state.dispatch_attempt_count,
+      worker_attempt: state.worker_attempt_count,
+      cause: cause_str,
+      reason: reason,
+      elapsed_ms: elapsed_ms,
+      silence_ms: silence_ms,
+      last_progress_message: state.last_progress_message
+    })
+
+    role_log(:error, state, "builder_timeout: #{reason}")
+    Store.terminate_run(state.run_id, "timeout", "timeout", state.repo, state.issue.number)
+    cleanup_workspace(state)
+    Retro.analyze(state.run_id)
+    {:stop, :normal, %{state | phase: :timeout}}
+  end
 
   # Read CLAUDE.md and project.md from the repo root (one level above conductor/).
   # Returns nil if neither file exists. Truncated to ~8 KB to stay within prompt budget.
@@ -729,6 +876,12 @@ defmodule Conductor.RunServer do
       _ -> {:error, :not_found}
     end
   end
+
+  defp normalize_progress_message(%{message: message}), do: normalize_progress_message(message)
+  defp normalize_progress_message(message) when is_binary(message), do: String.trim(message)
+  defp normalize_progress_message(_message), do: nil
+
+  defp now_ms, do: System.monotonic_time(:millisecond)
 
   defp worker_mod, do: Application.get_env(:conductor, :worker_module, Conductor.Sprite)
 

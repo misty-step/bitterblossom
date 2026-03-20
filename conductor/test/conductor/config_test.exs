@@ -49,6 +49,45 @@ defmodule Conductor.ConfigTest do
     end
   end
 
+  describe "builder_timeout_ms/0" do
+    test "derives milliseconds from the minute timeout by default" do
+      assert Config.builder_timeout_ms() == 25 * 60_000
+    end
+
+    test "prefers an explicit millisecond override" do
+      Application.put_env(:conductor, :builder_timeout_ms, 12_345)
+      assert Config.builder_timeout_ms() == 12_345
+    after
+      Application.delete_env(:conductor, :builder_timeout_ms)
+    end
+  end
+
+  describe "builder_progress_timeout_ms/0" do
+    test "returns default of 6 minutes" do
+      assert Config.builder_progress_timeout_ms() == 6 * 60_000
+    end
+
+    test "returns configured value" do
+      Application.put_env(:conductor, :builder_progress_timeout_ms, 45_000)
+      assert Config.builder_progress_timeout_ms() == 45_000
+    after
+      Application.delete_env(:conductor, :builder_progress_timeout_ms)
+    end
+  end
+
+  describe "builder_progress_check_ms/0" do
+    test "returns default of 30 seconds" do
+      assert Config.builder_progress_check_ms() == 30_000
+    end
+
+    test "returns configured value" do
+      Application.put_env(:conductor, :builder_progress_check_ms, 5_000)
+      assert Config.builder_progress_check_ms() == 5_000
+    after
+      Application.delete_env(:conductor, :builder_progress_check_ms)
+    end
+  end
+
   describe "ci_timeout/0" do
     test "returns default of 30" do
       assert Config.ci_timeout() == 30

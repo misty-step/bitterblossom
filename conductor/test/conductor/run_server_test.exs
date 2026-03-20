@@ -213,6 +213,30 @@ defmodule Conductor.RunServerTest do
     def kill(_sprite), do: :ok
   end
 
+  defmodule ProgressWorker do
+    @behaviour Conductor.Worker
+    alias Conductor.RunServerTest.MockState
+
+    def exec(_sprite, _cmd, _opts), do: {:ok, ""}
+
+    def dispatch(sprite, _prompt, _repo, opts) do
+      send(MockState.get(:test_pid, self()), {:worker_dispatch, sprite})
+
+      progress_fn = Keyword.get(opts, :on_progress, fn _ -> :ok end)
+
+      Enum.each(MockState.get(:progress_messages, []), fn {delay_ms, message} ->
+        Process.sleep(delay_ms)
+        progress_fn.(%{message: message})
+      end)
+
+      Process.sleep(MockState.get(:dispatch_sleep_ms, 0))
+      MockState.get(:dispatch_result, {:ok, ""})
+    end
+
+    def cleanup(_sprite, _repo, _run_id), do: :ok
+    def kill(_sprite), do: :ok
+  end
+
   # --- Crashing Worker for crash tests ---
 
   defmodule CrashingWorker do
@@ -304,7 +328,10 @@ defmodule Conductor.RunServerTest do
       code_host: Application.get_env(:conductor, :code_host_module),
       task_supervisor: Application.get_env(:conductor, :task_supervisor),
       retry_max: Application.get_env(:conductor, :builder_retry_max_attempts),
-      retry_backoff_base_ms: Application.get_env(:conductor, :builder_retry_backoff_base_ms)
+      retry_backoff_base_ms: Application.get_env(:conductor, :builder_retry_backoff_base_ms),
+      builder_timeout_ms: Application.get_env(:conductor, :builder_timeout_ms),
+      builder_progress_timeout_ms: Application.get_env(:conductor, :builder_progress_timeout_ms),
+      builder_progress_check_ms: Application.get_env(:conductor, :builder_progress_check_ms)
     }
 
     Application.put_env(:conductor, :worker_module, MockWorker)
@@ -314,6 +341,9 @@ defmodule Conductor.RunServerTest do
     Application.put_env(:conductor, :task_supervisor, Conductor.TaskSupervisor)
     Application.put_env(:conductor, :builder_retry_max_attempts, 3)
     Application.put_env(:conductor, :builder_retry_backoff_base_ms, 0)
+    Application.put_env(:conductor, :builder_timeout_ms, 25 * 60_000)
+    Application.put_env(:conductor, :builder_progress_timeout_ms, 6 * 60_000)
+    Application.put_env(:conductor, :builder_progress_check_ms, 30_000)
 
     MockState.cleanup()
     MockState.put(:test_pid, self())
@@ -326,6 +356,9 @@ defmodule Conductor.RunServerTest do
           case key do
             :retry_max -> :builder_retry_max_attempts
             :retry_backoff_base_ms -> :builder_retry_backoff_base_ms
+            :builder_timeout_ms -> :builder_timeout_ms
+            :builder_progress_timeout_ms -> :builder_progress_timeout_ms
+            :builder_progress_check_ms -> :builder_progress_check_ms
             :task_supervisor -> :task_supervisor
             _ -> :"#{key}_module"
           end
@@ -1202,6 +1235,66 @@ defmodule Conductor.RunServerTest do
       refute Enum.any?(events, &(&1["event_type"] == "builder_retry_scheduled"))
       assert_received {:worker_dispatch, "test-sprite"}
       assert_received {:worker_dispatch, "backup-sprite"}
+    end
+  end
+
+  describe "builder progress monitoring" do
+    setup do
+      Application.put_env(:conductor, :worker_module, ProgressWorker)
+
+      MockState.put(
+        {:open_pr, "test/repo", 42},
+        {:ok,
+         %{
+           "number" => 123,
+           "url" => "https://github.com/test/repo/pull/123"
+         }}
+      )
+
+      :ok
+    end
+
+    test "records builder progress events end-to-end" do
+      MockState.put(:progress_messages, [{0, "installing deps"}, {10, "generating code"}])
+      MockState.put(:dispatch_sleep_ms, 10)
+      MockState.put(:dispatch_result, {:ok, "build complete"})
+
+      {:ok, pid} = start_run_server()
+      wait_for_exit(pid)
+
+      run = find_run(42)
+
+      progress_messages =
+        Store.list_events(run["run_id"])
+        |> Enum.filter(&(&1["event_type"] == "builder_progress"))
+        |> Enum.map(& &1["payload"]["message"])
+
+      assert progress_messages == ["installing deps", "generating code"]
+      assert run["phase"] == "pr_opened"
+    end
+
+    @tag :builder_timeout
+    test "times out when builder stops reporting progress" do
+      Application.put_env(:conductor, :builder_timeout_ms, 5_000)
+      Application.put_env(:conductor, :builder_progress_timeout_ms, 50)
+      Application.put_env(:conductor, :builder_progress_check_ms, 10)
+
+      MockState.put(:progress_messages, [])
+      MockState.put(:dispatch_sleep_ms, 200)
+      MockState.put(:dispatch_result, {:ok, "too late"})
+
+      {:ok, pid} = start_run_server()
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "timeout"
+      assert run["status"] == "timeout"
+      assert "builder_timeout" in event_types(run["run_id"])
+
+      timeout_payload = event_payload(run["run_id"], "builder_timeout")
+      assert timeout_payload["reason"] =~ "no progress"
+      assert timeout_payload["cause"] == "progress_timeout"
+      refute Store.leased?("test/repo", 42)
     end
   end
 
