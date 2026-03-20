@@ -305,6 +305,55 @@ defmodule Conductor.ConfigTest do
     end
   end
 
+  describe "check_env!/1" do
+    test "raises when OPENAI_API_KEY is missing" do
+      assert_raise RuntimeError, "missing: OPENAI_API_KEY", fn ->
+        Config.check_env!(
+          env_getter: fn
+            "GITHUB_TOKEN" -> "ghp_test123"
+            "OPENAI_API_KEY" -> nil
+            _ -> nil
+          end,
+          sprite_auth_available?: fn -> "sprite-cli" end,
+          find_executable: fn _ -> "/usr/bin/mock" end,
+          persona_source_root_available?: fn -> true end,
+          openai_validator: fn -> flunk("openai_validator should not run when key is missing") end
+        )
+      end
+    end
+
+    test "raises when OPENAI_API_KEY fails authentication" do
+      assert_raise RuntimeError, "invalid OPENAI_API_KEY: 401 Unauthorized", fn ->
+        Config.check_env!(
+          env_getter: fn
+            "GITHUB_TOKEN" -> "ghp_test123"
+            "OPENAI_API_KEY" -> "sk-test-123"
+            _ -> nil
+          end,
+          sprite_auth_available?: fn -> "sprite-cli" end,
+          find_executable: fn _ -> "/usr/bin/mock" end,
+          persona_source_root_available?: fn -> true end,
+          openai_validator: fn -> {:error, "401 Unauthorized"} end
+        )
+      end
+    end
+
+    test "returns ok when OPENAI_API_KEY passes authentication" do
+      assert :ok =
+               Config.check_env!(
+                 env_getter: fn
+                   "GITHUB_TOKEN" -> "ghp_test123"
+                   "OPENAI_API_KEY" -> "sk-test-123"
+                   _ -> nil
+                 end,
+                 sprite_auth_available?: fn -> "sprite-cli" end,
+                 find_executable: fn _ -> "/usr/bin/mock" end,
+                 persona_source_root_available?: fn -> true end,
+                 openai_validator: fn -> :ok end
+               )
+    end
+  end
+
   defp restore_home(nil), do: System.delete_env("HOME")
   defp restore_home(val), do: System.put_env("HOME", val)
 

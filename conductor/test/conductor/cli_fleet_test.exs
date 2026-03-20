@@ -196,11 +196,11 @@ defmodule Conductor.CLIFleetTest do
     {output, status} =
       System.cmd("mix", ["conductor", "fleet", "--fleet", fleet_path, "--reconcile"],
         cd: @conductor_dir,
-        env: [{"MIX_ENV", "test"}, {"GITHUB_TOKEN", ""}],
+        env: [{"MIX_ENV", "test"}, {"GITHUB_TOKEN", ""}, {"OPENAI_API_KEY", ""}],
         stderr_to_stdout: true
       )
 
     assert status == 1
-    assert output =~ "environment check failed: missing: GITHUB_TOKEN"
+    assert output =~ "environment check failed: missing: GITHUB_TOKEN, OPENAI_API_KEY"
   end
 end

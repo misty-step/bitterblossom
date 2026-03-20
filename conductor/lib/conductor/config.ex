@@ -212,20 +212,32 @@ defmodule Conductor.Config do
     end)
   end
 
-  @spec check_env!() :: :ok
-  def check_env! do
+  @type env_getter :: (binary() -> binary() | nil)
+  @type executable_finder :: (binary() -> binary() | nil)
+  @type availability_check :: (-> binary() | false | nil)
+  @type auth_validator :: (-> :ok | {:error, binary()})
+
+  @spec check_env!(keyword()) :: :ok
+  def check_env!(opts \\ []) do
+    env_getter_fn = Keyword.get(opts, :env_getter, &System.get_env/1)
+
+    sprite_auth_available_fn =
+      Keyword.get(opts, :sprite_auth_available?, &sprite_auth_available?/0)
+
+    find_executable_fn = Keyword.get(opts, :find_executable, &find_executable/1)
+
+    persona_source_root_available_fn =
+      Keyword.get(opts, :persona_source_root_available?, &persona_source_root_available?/0)
+
+    openai_validator_fn = Keyword.get(opts, :openai_validator, &validate_openai_api_key/0)
+
     checks = [
-      {"GITHUB_TOKEN", fn -> System.get_env("GITHUB_TOKEN") end},
-      {"SPRITE_TOKEN, FLY_API_TOKEN, or sprite CLI auth", fn -> sprite_auth_available?() end},
-      {"gh", fn -> find_executable("gh") end},
-      {"sprite", fn -> find_executable("sprite") end},
-      {"persona source root",
-       fn ->
-         case Application.get_env(:conductor, :persona_source_root) do
-           path when is_binary(path) -> File.dir?(path)
-           _ -> false
-         end
-       end}
+      {"GITHUB_TOKEN", fn -> env_getter_fn.("GITHUB_TOKEN") end},
+      {"OPENAI_API_KEY", fn -> env_getter_fn.("OPENAI_API_KEY") end},
+      {"SPRITE_TOKEN, FLY_API_TOKEN, or sprite CLI auth", fn -> sprite_auth_available_fn.() end},
+      {"gh", fn -> find_executable_fn.("gh") end},
+      {"sprite", fn -> find_executable_fn.("sprite") end},
+      {"persona source root", fn -> persona_source_root_available_fn.() end}
     ]
 
     results =
@@ -242,8 +254,17 @@ defmodule Conductor.Config do
 
     if failures == [] do
       Enum.each(results, fn {:ok, name} -> IO.puts("  ok  #{name}") end)
-      IO.puts("all checks passed")
-      :ok
+
+      case openai_validator_fn.() do
+        :ok ->
+          IO.puts("  ok  OPENAI_API_KEY authentication")
+          IO.puts("all checks passed")
+          :ok
+
+        {:error, reason} ->
+          IO.puts("  FAIL  OPENAI_API_KEY authentication")
+          raise "invalid OPENAI_API_KEY: #{reason}"
+      end
     else
       Enum.each(results, fn
         {:ok, name} -> IO.puts("  ok  #{name}")
@@ -269,4 +290,81 @@ defmodule Conductor.Config do
   defp find_executable(name) do
     System.find_executable(name)
   end
+
+  defp persona_source_root_available? do
+    case Application.get_env(:conductor, :persona_source_root) do
+      path when is_binary(path) -> File.dir?(path)
+      _ -> false
+    end
+  end
+
+  @spec validate_openai_api_key() :: :ok | {:error, binary()}
+  defp validate_openai_api_key do
+    case System.get_env("OPENAI_API_KEY") do
+      nil ->
+        {:error, "OPENAI_API_KEY missing"}
+
+      "" ->
+        {:error, "OPENAI_API_KEY missing"}
+
+      api_key ->
+        request_openai_api_key_validation(api_key)
+    end
+  end
+
+  defp request_openai_api_key_validation(api_key) do
+    with :ok <- ensure_http_clients_started(),
+         {:ok, status, body} <- openai_validation_request(api_key) do
+      case status do
+        200 -> :ok
+        401 -> {:error, openai_error_message(body, "401 Unauthorized")}
+        code -> {:error, openai_error_message(body, "unexpected status #{code}")}
+      end
+    else
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp ensure_http_clients_started do
+    with {:ok, _} <- Application.ensure_all_started(:ssl),
+         {:ok, _} <- Application.ensure_all_started(:inets) do
+      :ok
+    else
+      {:error, reason} ->
+        {:error, "could not start HTTP client dependencies: #{inspect(reason)}"}
+    end
+  end
+
+  defp openai_validation_request(api_key) do
+    url = ~c"https://api.openai.com/v1/models"
+
+    headers = [
+      {~c"authorization", ~c"Bearer " ++ String.to_charlist(api_key)},
+      {~c"accept", ~c"application/json"},
+      {~c"user-agent", ~c"bitterblossom-conductor"}
+    ]
+
+    http_opts = [timeout: 5_000, connect_timeout: 5_000]
+    request_opts = [body_format: :binary]
+
+    case :httpc.request(:get, {url, headers}, http_opts, request_opts) do
+      {:ok, {{_version, status, _reason_phrase}, _response_headers, body}} ->
+        {:ok, status, body}
+
+      {:error, reason} ->
+        {:error, "validation request failed: #{inspect(reason)}"}
+    end
+  end
+
+  defp openai_error_message(body, fallback) when is_binary(body) do
+    case Jason.decode(body) do
+      {:ok, %{"error" => %{"message" => message}}} when is_binary(message) and message != "" ->
+        message
+
+      _ ->
+        fallback
+    end
+  end
+
+  defp openai_error_message(_body, fallback), do: fallback
 end
