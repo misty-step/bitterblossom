@@ -1,6 +1,8 @@
 defmodule Conductor.SpriteWorkspaceLookupTest do
   use ExUnit.Case, async: false
 
+  import Conductor.TestSupport.ProcessHelpers
+
   alias Conductor.{Sprite, Store}
 
   setup do
@@ -18,14 +20,11 @@ defmodule Conductor.SpriteWorkspaceLookupTest do
         "sprite_workspace_lookup_#{System.unique_integer([:positive])}.jsonl"
       )
 
-    if Process.whereis(Store), do: GenServer.stop(Store)
+    stop_process(Store)
     {:ok, _pid} = Store.start_link(db_path: db_path, event_log: event_log)
 
     on_exit(fn ->
-      case Process.whereis(Store) do
-        nil -> :ok
-        pid when is_pid(pid) -> if Process.alive?(pid), do: GenServer.stop(Store), else: :ok
-      end
+      stop_process(Store)
 
       File.rm(db_path)
       File.rm(event_log)

@@ -1,6 +1,8 @@
 defmodule Conductor.StoreTest do
   use ExUnit.Case, async: false
 
+  import Conductor.TestSupport.ProcessHelpers
+
   alias Conductor.Store
 
   setup do
@@ -8,19 +10,13 @@ defmodule Conductor.StoreTest do
     db_path = Path.join(System.tmp_dir!(), "conductor_test_#{:rand.uniform(999_999)}.db")
     event_log = Path.join(System.tmp_dir!(), "conductor_test_#{:rand.uniform(999_999)}.jsonl")
 
-    # Stop any existing store
-    if Process.whereis(Store), do: GenServer.stop(Store)
+    # Stop any existing store before claiming the global name.
+    stop_process(Store)
 
     {:ok, _pid} = Store.start_link(db_path: db_path, event_log: event_log)
 
     on_exit(fn ->
-      case Process.whereis(Store) do
-        nil ->
-          :ok
-
-        pid when is_pid(pid) ->
-          if Process.alive?(pid), do: GenServer.stop(Store), else: :ok
-      end
+      stop_process(Store)
 
       File.rm(db_path)
       File.rm(event_log)
