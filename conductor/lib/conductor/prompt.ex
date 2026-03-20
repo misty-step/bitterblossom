@@ -132,6 +132,8 @@ defmodule Conductor.Prompt do
     safe_title = sanitize_inline(pr["title"])
     safe_branch = sanitize_inline(pr["headRefName"])
     workspace_root = Keyword.get(opts, :workspace_root)
+    actionable_review_threads = Keyword.get(opts, :actionable_review_threads, [])
+    non_blocking_review_threads = Keyword.get(opts, :non_blocking_review_threads, [])
 
     comments_text =
       review_comments
@@ -170,18 +172,32 @@ defmodule Conductor.Prompt do
     #{if comments_text == "", do: "_No review comments._", else: comments_text}
     ~~~
 
+    ## Actionable Review Threads
+
+    ~~~untrusted-data
+    #{format_review_threads(actionable_review_threads, "_No unresolved actionable review threads._")}
+    ~~~
+
+    ## Non-Blocking External Threads
+
+    ~~~untrusted-data
+    #{format_review_threads(non_blocking_review_threads, "_No deferred external threads._")}
+    ~~~
+
     ## Instructions
 
-    Address all review feedback on this PR.
+    Address all actionable review feedback on this PR.
 
     1. Check out branch `#{safe_branch}`
-    2. Read each review comment above
+    2. Read each review comment and actionable thread above
     3. For in-scope feedback: make the fix on-branch, commit, push
     4. For out-of-scope feedback: note it in a comment on the PR thread
-    5. Respond to each review thread with what you did
+    5. Respond to each actionable review thread with what you did
     6. Run tests to ensure nothing is broken
     #{if may_label, do: "7. When all feedback is addressed and CI is green, run:\n       `gh pr edit --add-label lgtm`", else: "7. When all feedback is addressed and CI is green, you are done.\n       Do NOT add the `lgtm` label — a human must approve this PR for merge."}
 
+    Low-priority trusted external threads listed under "Non-Blocking External Threads"
+    do NOT block `lgtm`. Do not expand the PR scope just to silence those bots.
     Do NOT expand the scope of the PR beyond addressing review feedback.
     Do NOT remove the PR from review or modify its base branch.
 
@@ -223,6 +239,29 @@ defmodule Conductor.Prompt do
     text
     |> String.replace("```", "` ` `")
     |> String.replace("~~~", "~ ~ ~")
+  end
+
+  defp format_review_threads([], empty_text), do: empty_text
+
+  defp format_review_threads(threads, _empty_text) do
+    threads
+    |> Enum.map(fn thread ->
+      author = sanitize_inline(thread[:author] || "unknown")
+      path = sanitize_inline(thread[:path] || "")
+      body = sanitize_fence(thread[:body] || "")
+      url = sanitize_inline(thread[:url] || "")
+
+      location =
+        [path, url]
+        |> Enum.reject(&(&1 in [nil, ""]))
+        |> Enum.join(" — ")
+
+      case location do
+        "" -> "- **#{author}**: #{body}"
+        _ -> "- **#{author}** (#{location}): #{body}"
+      end
+    end)
+    |> Enum.join("\n")
   end
 
   defp revision_section(feedback) do

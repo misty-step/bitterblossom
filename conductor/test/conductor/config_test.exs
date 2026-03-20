@@ -142,6 +142,20 @@ defmodule Conductor.ConfigTest do
     end
   end
 
+  describe "trusted_review_authors/0" do
+    test "returns defaults when unset" do
+      assert "github-actions" in Config.trusted_review_authors()
+      assert "coderabbitai" in Config.trusted_review_authors()
+    end
+
+    test "returns configured value" do
+      Application.put_env(:conductor, :trusted_review_authors, ["external-bot"])
+      assert Config.trusted_review_authors() == ["external-bot"]
+    after
+      Application.delete_env(:conductor, :trusted_review_authors)
+    end
+  end
+
   describe "normalize_workers/1" do
     test "coalesces nil capability tags to an empty list" do
       assert [%{name: "sprite-1", capability_tags: []}] =

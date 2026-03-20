@@ -52,8 +52,18 @@ defmodule Conductor.PolisherTest do
       MockState.get(:review_comments, {:ok, []})
     end
 
+    def pr_review_threads(_repo, _pr_number) do
+      MockState.get(:review_threads, {:ok, []})
+    end
+
     def pr_ci_failure_logs(_repo, _pr_number), do: {:ok, ""}
-    def add_label(_repo, _pr_number, _label), do: :ok
+
+    def add_label(repo, pr_number, label) do
+      calls = MockState.get(:add_label_calls, [])
+      MockState.put(:add_label_calls, calls ++ [{repo, pr_number, label}])
+      :ok
+    end
+
     def close_issue(_repo, _issue_number), do: :ok
     def close_pr(_repo, _pr_number, _opts \\ []), do: :ok
     def find_open_pr(_repo, _issue_number, _expected_branch \\ nil), do: {:error, :not_found}
@@ -201,6 +211,150 @@ defmodule Conductor.PolisherTest do
         end)
 
       assert log =~ "[fern] PR #42 is green, dispatching Fern"
+    end
+
+    test "auto-labels a conductor-tracked PR when only low-priority trusted external threads remain" do
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 99,
+          issue_title: "tracked issue",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(run_id, %{pr_number: 42, phase: "pr_opened", status: "pr_opened"})
+
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 42,
+             "headRefName" => "factory/99-12345",
+             "title" => "feat: implement feature",
+             "body" => "Closes #99",
+             "labels" => [],
+             "statusCheckRollup" => @green_checks
+           }
+         ]}
+      )
+
+      MockState.put(
+        :review_threads,
+        {:ok,
+         [
+           %{
+             author: "github-actions",
+             body: "P2 missing-coverage suggestion",
+             is_resolved: false,
+             is_outdated: false
+           }
+         ]}
+      )
+
+      {:ok, _pid} =
+        Polisher.start_link(
+          repo: "test/repo",
+          polisher_sprite: "bb-fern",
+          poll_ms: 50,
+          trusted_review_authors: ["github-actions"]
+        )
+
+      refute_receive {:dispatched, "bb-fern", _}, 300
+      assert MockState.get(:add_label_calls) == [{"test/repo", 42, "lgtm"}]
+    end
+
+    test "dispatches when a trusted external thread is still high priority" do
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 99,
+          issue_title: "tracked issue",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(run_id, %{pr_number: 42, phase: "pr_opened", status: "pr_opened"})
+
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 42,
+             "headRefName" => "factory/99-12345",
+             "title" => "feat: implement feature",
+             "body" => "Closes #99",
+             "labels" => [],
+             "statusCheckRollup" => @green_checks
+           }
+         ]}
+      )
+
+      MockState.put(
+        :review_threads,
+        {:ok,
+         [
+           %{
+             author: "coderabbitai",
+             body: "_⚠️ Potential issue_ | _🟠 Major_ Fix this before merge",
+             is_resolved: false,
+             is_outdated: false
+           }
+         ]}
+      )
+
+      {:ok, _pid} =
+        Polisher.start_link(
+          repo: "test/repo",
+          polisher_sprite: "bb-fern",
+          poll_ms: 50,
+          trusted_review_authors: ["coderabbitai"]
+        )
+
+      assert_receive {:dispatched, "bb-fern", prompt}, 2_000
+      assert prompt =~ "Non-Blocking External Threads"
+      assert MockState.get(:add_label_calls, []) == []
+    end
+
+    test "skips non-conductor PRs when only non-blocking external threads remain" do
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 55,
+             "headRefName" => "fix/cerberus-permissions",
+             "title" => "fix: cerberus permissions",
+             "body" => "Fixes permissions",
+             "labels" => [],
+             "statusCheckRollup" => @green_checks
+           }
+         ]}
+      )
+
+      MockState.put(
+        :review_threads,
+        {:ok,
+         [
+           %{
+             author: "github-actions",
+             body: "P2 missing-coverage suggestion",
+             is_resolved: false,
+             is_outdated: false
+           }
+         ]}
+      )
+
+      {:ok, _pid} =
+        Polisher.start_link(
+          repo: "test/repo",
+          polisher_sprite: "bb-fern",
+          poll_ms: 50,
+          trusted_review_authors: ["github-actions"]
+        )
+
+      refute_receive {:dispatched, _, _}, 300
+      assert MockState.get(:add_label_calls, []) == []
     end
 
     test "conductor-tracked PR gets lgtm authority in prompt" do

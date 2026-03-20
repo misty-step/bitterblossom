@@ -148,6 +148,54 @@ defmodule Conductor.GitHubTest do
     end
   end
 
+  describe "classify_review_threads/2" do
+    test "treats trusted P2 bot threads as non-blocking" do
+      threads = [
+        %{
+          author: "chatgpt-codex-connector",
+          body: "![P2 Badge] Search nested builder worktrees for log discovery",
+          is_resolved: false,
+          is_outdated: false
+        }
+      ]
+
+      result = GitHub.classify_review_threads(threads, ["chatgpt-codex-connector"])
+      assert length(result.non_blocking) == 1
+      assert result.actionable == []
+    end
+
+    test "keeps trusted major bot threads actionable" do
+      threads = [
+        %{
+          author: "coderabbitai",
+          body:
+            "_⚠️ Potential issue_ | _🟠 Major_ The runtime-contract guard still isn't part of required CI.",
+          is_resolved: false,
+          is_outdated: false
+        }
+      ]
+
+      result = GitHub.classify_review_threads(threads, ["coderabbitai"])
+      assert length(result.actionable) == 1
+      assert result.non_blocking == []
+    end
+
+    test "keeps human unresolved threads actionable" do
+      threads = [
+        %{
+          author: "phrazzld",
+          body: "Please rename this variable",
+          is_resolved: false,
+          is_outdated: false
+        }
+      ]
+
+      result = GitHub.classify_review_threads(threads, ["github-actions"])
+      assert length(result.actionable) == 1
+      assert result.non_blocking == []
+    end
+  end
+
   describe "summarize_checks/1" do
     test "reports green when every actionable check succeeded" do
       summary =
@@ -423,6 +471,31 @@ defmodule Conductor.GitHubTest do
         """,
         fn _tmp_dir, _args_path ->
           assert {:error, "invalid JSON"} = GitHub.open_prs("misty-step/bitterblossom")
+        end
+      )
+    end
+  end
+
+  describe "pr_review_threads/2" do
+    test "normalizes unresolved review threads from GraphQL" do
+      with_fake_gh(
+        """
+        printf '%s\n' "$@" > "$GH_ARGS_PATH"
+        cat <<'JSON'
+        {"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":false,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"github-actions"},"body":"P2 missing-coverage suggestion","path":"conductor/lib/conductor/polisher.ex","url":"https://example.test/thread"}]}}]}}}}}
+        JSON
+        """,
+        fn _tmp_dir, args_path ->
+          assert {:ok, [thread]} = GitHub.pr_review_threads("misty-step/bitterblossom", 743)
+          assert thread.author == "github-actions"
+          assert thread.path == "conductor/lib/conductor/polisher.ex"
+          assert thread.url == "https://example.test/thread"
+
+          args = File.read!(args_path)
+          assert String.contains?(args, "api\ngraphql\n")
+          assert String.contains?(args, "owner=misty-step\n")
+          assert String.contains?(args, "name=bitterblossom\n")
+          assert String.contains?(args, "number=743\n")
         end
       )
     end

@@ -16,7 +16,9 @@ defmodule Conductor.Polisher do
     :repo,
     :polisher_sprite,
     :poll_ms,
-    in_flight: %{}
+    :trusted_review_authors,
+    in_flight: %{},
+    lgtm_pending: MapSet.new()
   ]
 
   # --- Public API ---
@@ -38,10 +40,14 @@ defmodule Conductor.Polisher do
     polisher_sprite = Keyword.fetch!(opts, :polisher_sprite)
     poll_ms = Keyword.get(opts, :poll_ms, Config.poll_seconds() * 1_000)
 
+    trusted_review_authors =
+      Keyword.get(opts, :trusted_review_authors, Config.trusted_review_authors())
+
     state = %__MODULE__{
       repo: repo,
       polisher_sprite: polisher_sprite,
-      poll_ms: poll_ms
+      poll_ms: poll_ms,
+      trusted_review_authors: trusted_review_authors
     }
 
     schedule_poll(state, 0)
@@ -81,6 +87,8 @@ defmodule Conductor.Polisher do
      %{
        repo: state.repo,
        polisher_sprite: state.polisher_sprite,
+       trusted_review_authors: state.trusted_review_authors,
+       lgtm_pending: MapSet.to_list(state.lgtm_pending),
        in_flight: Map.keys(state.in_flight) |> Map.new(&{&1, :working})
      }, state}
   end
@@ -94,10 +102,12 @@ defmodule Conductor.Polisher do
     else
       case code_host_mod().open_prs(state.repo) do
         {:ok, prs} ->
-          # Dispatch at most one PR per poll (single sprite, single workspace)
-          case Enum.find(prs, &needs_polish?(&1, state)) do
+          state = reconcile_lgtm_pending(state, prs)
+
+          case Enum.find_value(prs, &next_action(&1, state)) do
             nil -> state
-            pr -> dispatch_polisher(state, pr)
+            {:auto_label, pr, review_state} -> auto_label_ready_pr(state, pr, review_state)
+            {:dispatch, pr, review_state} -> dispatch_polisher(state, pr, review_state)
           end
 
         {:error, reason} ->
@@ -107,15 +117,59 @@ defmodule Conductor.Polisher do
     end
   end
 
-  defp needs_polish?(pr, _state) do
+  defp next_action(pr, state) do
     labels = pr["labels"] || []
     label_names = Enum.map(labels, &String.downcase(&1["name"] || ""))
     checks = pr["statusCheckRollup"] |> List.wrap() |> Enum.filter(&is_map/1)
+    pr_number = pr["number"]
 
-    "lgtm" not in label_names and Conductor.GitHub.evaluate_checks(checks)
+    if "lgtm" in label_names or MapSet.member?(state.lgtm_pending, pr_number) or
+         not Conductor.GitHub.evaluate_checks(checks) do
+      nil
+    else
+      conductor_managed = conductor_managed?(state.repo, pr_number)
+
+      case review_state(state.repo, pr_number, state.trusted_review_authors) do
+        {:ok, %{actionable: [], non_blocking: [_ | _]} = review_state} ->
+          if conductor_managed do
+            {:auto_label, pr, review_state}
+          else
+            nil
+          end
+
+        {:ok, review_state} ->
+          {:dispatch, pr, review_state}
+
+        {:error, reason} ->
+          Logger.warning("[fern] failed to fetch review threads for PR ##{pr_number}: #{reason}")
+          {:dispatch, pr, empty_review_state()}
+      end
+    end
   end
 
-  defp dispatch_polisher(state, pr) do
+  defp auto_label_ready_pr(state, pr, review_state) do
+    pr_number = pr["number"]
+
+    Logger.info(
+      "[fern] PR ##{pr_number} only has non-blocking trusted external threads, adding lgtm"
+    )
+
+    case code_host_mod().add_label(state.repo, pr_number, "lgtm") do
+      :ok ->
+        Store.record_event("polisher", "polisher_auto_lgtm", %{
+          pr_number: pr_number,
+          non_blocking_review_threads: length(review_state.non_blocking)
+        })
+
+        %{state | lgtm_pending: MapSet.put(state.lgtm_pending, pr_number)}
+
+      {:error, reason} ->
+        Logger.warning("[fern] failed to add lgtm to PR ##{pr_number}: #{reason}")
+        state
+    end
+  end
+
+  defp dispatch_polisher(state, pr, review_state) do
     pr_number = pr["number"]
     Logger.info("[fern] PR ##{pr_number} is green, dispatching Fern")
 
@@ -137,7 +191,9 @@ defmodule Conductor.Polisher do
     prompt =
       Prompt.build_polisher_prompt(pr, comments, issue_body,
         may_label: conductor_managed,
-        workspace_root: workspace
+        workspace_root: workspace,
+        actionable_review_threads: review_state.actionable,
+        non_blocking_review_threads: review_state.non_blocking
       )
 
     Store.record_event("polisher", "polisher_dispatched", %{
@@ -170,6 +226,38 @@ defmodule Conductor.Polisher do
       end)
 
     %{state | in_flight: Map.put(state.in_flight, pr_number, task.ref)}
+  end
+
+  defp review_state(repo, pr_number, trusted_review_authors) do
+    case code_host_mod().pr_review_threads(repo, pr_number) do
+      {:ok, threads} ->
+        {:ok, Conductor.GitHub.classify_review_threads(threads, trusted_review_authors)}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp empty_review_state, do: %{actionable: [], non_blocking: []}
+
+  defp reconcile_lgtm_pending(state, prs) do
+    still_pending =
+      Enum.reduce(prs, MapSet.new(), fn pr, acc ->
+        label_names =
+          pr["labels"]
+          |> List.wrap()
+          |> Enum.map(&String.downcase(&1["name"] || ""))
+
+        pr_number = pr["number"]
+
+        if MapSet.member?(state.lgtm_pending, pr_number) and "lgtm" not in label_names do
+          MapSet.put(acc, pr_number)
+        else
+          acc
+        end
+      end)
+
+    %{state | lgtm_pending: still_pending}
   end
 
   defp complete_task(state, ref) do

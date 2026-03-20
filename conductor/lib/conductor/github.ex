@@ -469,6 +469,31 @@ defmodule Conductor.GitHub do
     real != [] and not pending and Enum.all?(real, fn c -> c["conclusion"] in @green end)
   end
 
+  @doc """
+  Split unresolved review threads into actionable work vs. low-priority trusted
+  external feedback that should not block `lgtm`.
+  """
+  @spec classify_review_threads([map()], [binary()]) :: %{
+          actionable: [map()],
+          non_blocking: [map()]
+        }
+  def classify_review_threads(threads, trusted_review_authors \\ []) do
+    threads
+    |> Enum.reject(&Map.get(&1, :is_resolved, false))
+    |> Enum.reduce(%{actionable: [], non_blocking: []}, fn thread, acc ->
+      bucket =
+        if low_priority_external_thread?(thread, trusted_review_authors) do
+          :non_blocking
+        else
+          :actionable
+        end
+
+      Map.update!(acc, bucket, &[thread | &1])
+    end)
+    |> Map.update!(:actionable, &Enum.reverse/1)
+    |> Map.update!(:non_blocking, &Enum.reverse/1)
+  end
+
   @doc false
   @spec summarize_checks([map()]) :: map()
   def summarize_checks(checks) do
@@ -563,6 +588,120 @@ defmodule Conductor.GitHub do
       "" -> nil
       sanitized -> sanitized
     end
+  end
+
+  defp review_threads_args(owner, name, pr_number) do
+    [
+      "api",
+      "graphql",
+      "-f",
+      "query=#{review_threads_query()}",
+      "-F",
+      "owner=#{owner}",
+      "-F",
+      "name=#{name}",
+      "-F",
+      "number=#{pr_number}"
+    ]
+  end
+
+  defp review_threads_query do
+    """
+    query($owner:String!, $name:String!, $number:Int!) {
+      repository(owner:$owner, name:$name) {
+        pullRequest(number:$number) {
+          reviewThreads(first:100) {
+            nodes {
+              isResolved
+              isOutdated
+              comments(first:20) {
+                nodes {
+                  author { login }
+                  body
+                  path
+                  url
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    """
+  end
+
+  defp decode_review_threads(%{
+         "data" => %{
+           "repository" => %{
+             "pullRequest" => %{
+               "reviewThreads" => %{"nodes" => nodes}
+             }
+           }
+         }
+       })
+       when is_list(nodes) do
+    Enum.map(nodes, &normalize_review_thread/1)
+  end
+
+  defp decode_review_threads(_), do: []
+
+  defp normalize_review_thread(thread) do
+    comments = get_in(thread, ["comments", "nodes"]) |> List.wrap()
+    first_comment = List.first(comments) || %{}
+
+    %{
+      author: get_in(first_comment, ["author", "login"]) || "unknown",
+      body: first_comment["body"] || "",
+      path: first_comment["path"],
+      url: first_comment["url"],
+      is_outdated: thread["isOutdated"] == true,
+      is_resolved: thread["isResolved"] == true
+    }
+  end
+
+  defp low_priority_external_thread?(thread, trusted_review_authors) do
+    trusted_review_author?(thread.author, trusted_review_authors) and
+      not blocking_priority_thread?(thread) and
+      (low_priority_thread?(thread) or thread.is_outdated)
+  end
+
+  defp trusted_review_author?(author, trusted_review_authors) when is_binary(author) do
+    normalized_author = String.downcase(author)
+    Enum.any?(trusted_review_authors, &(String.downcase(&1) == normalized_author))
+  end
+
+  defp trusted_review_author?(_, _), do: false
+
+  defp low_priority_thread?(thread) do
+    body = String.downcase(thread.body || "")
+
+    Enum.any?(
+      [
+        ~r/\bp2\b/u,
+        ~r/\bp3\b/u,
+        ~r/\bminor\b/u,
+        ~r/\bnit\b/u,
+        ~r/missing-coverage/u,
+        ~r/\bsuggestion\b/u
+      ],
+      &Regex.match?(&1, body)
+    )
+  end
+
+  defp blocking_priority_thread?(thread) do
+    body = String.downcase(thread.body || "")
+
+    Enum.any?(
+      [
+        ~r/\bp0\b/u,
+        ~r/\bp1\b/u,
+        ~r/\bcritical\b/u,
+        ~r/\bmajor\b/u,
+        ~r/high priority/u,
+        ~r/must fix/u
+      ],
+      &Regex.match?(&1, body)
+    )
   end
 
   defp status_context_status(state) when state in ["PENDING", "EXPECTED"], do: "PENDING"
@@ -721,6 +860,22 @@ defmodule Conductor.GitHub do
 
       {:error, msg, _} ->
         {:error, msg}
+    end
+  end
+
+  @doc "Fetch review threads on a PR."
+  @spec pr_review_threads(binary(), pos_integer()) :: {:ok, [map()]} | {:error, term()}
+  def pr_review_threads(repo, pr_number) do
+    with {:ok, {owner, name}} <- repo_parts(repo),
+         {:ok, json} <- run_gh(review_threads_args(owner, name, pr_number)),
+         {:ok, data} <- Jason.decode(json) do
+      {:ok, decode_review_threads(data)}
+    else
+      {:error, _reason} = error ->
+        error
+
+      {:ok, _other} ->
+        {:error, "invalid JSON from gh"}
     end
   end
 

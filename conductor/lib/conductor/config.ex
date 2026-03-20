@@ -125,6 +125,20 @@ defmodule Conductor.Config do
     Application.get_env(:conductor, :polisher_timeout_minutes, 15)
   end
 
+  @spec trusted_review_authors() :: [binary()]
+  def trusted_review_authors do
+    Application.get_env(
+      :conductor,
+      :trusted_review_authors,
+      [
+        "github-actions",
+        "coderabbitai",
+        "chatgpt-codex-connector",
+        "chatgpt-codex-connector[bot]"
+      ]
+    )
+  end
+
   @spec replay_delay_ms() :: pos_integer()
   def replay_delay_ms do
     Application.get_env(:conductor, :replay_delay_seconds, 120) * 1_000

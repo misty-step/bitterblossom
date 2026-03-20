@@ -64,6 +64,7 @@ defmodule Conductor.FixerTest do
     end
 
     def pr_review_comments(_repo, _pr_number), do: {:ok, []}
+    def pr_review_threads(_repo, _pr_number), do: {:ok, []}
     def add_label(_repo, _pr_number, _label), do: :ok
     def close_issue(_repo, _issue_number), do: :ok
     def close_pr(_repo, _pr_number, _opts \\ []), do: :ok
