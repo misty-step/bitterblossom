@@ -6,7 +6,7 @@ defmodule Conductor.SpriteWorkspaceLookupTest do
   alias Conductor.{Sprite, Store}
 
   setup do
-    Application.stop(:conductor)
+    stop_conductor_app()
 
     db_path =
       Path.join(

@@ -10,6 +10,8 @@ defmodule Conductor.StoreTest do
     db_path = Path.join(System.tmp_dir!(), "conductor_test_#{:rand.uniform(999_999)}.db")
     event_log = Path.join(System.tmp_dir!(), "conductor_test_#{:rand.uniform(999_999)}.jsonl")
 
+    stop_conductor_app()
+
     # Stop any existing store before claiming the global name.
     stop_process(Store)
 

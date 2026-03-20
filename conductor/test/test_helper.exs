@@ -23,6 +23,26 @@ defmodule Conductor.TestSupport.ProcessHelpers do
         assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, timeout
     end
   end
+
+  def stop_conductor_app(timeout \\ 1_000) do
+    case Process.whereis(Conductor.Supervisor) do
+      nil ->
+        case Application.stop(:conductor) do
+          :ok -> :ok
+          {:error, {:not_started, :conductor}} -> :ok
+        end
+
+      pid ->
+        ref = Process.monitor(pid)
+
+        case Application.stop(:conductor) do
+          :ok -> :ok
+          {:error, {:not_started, :conductor}} -> :ok
+        end
+
+        assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, timeout
+    end
+  end
 end
 
 ExUnit.start()

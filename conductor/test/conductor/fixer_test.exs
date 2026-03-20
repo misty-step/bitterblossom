@@ -127,6 +127,7 @@ defmodule Conductor.FixerTest do
     db_path = Path.join(System.tmp_dir!(), "fixer_test_#{:rand.uniform(999_999)}.db")
     event_log = Path.join(System.tmp_dir!(), "fixer_test_#{:rand.uniform(999_999)}.jsonl")
 
+    stop_conductor_app()
     stop_process(Fixer)
     stop_process(Store)
     {:ok, _} = Store.start_link(db_path: db_path, event_log: event_log)
