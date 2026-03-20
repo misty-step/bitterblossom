@@ -126,6 +126,22 @@ defmodule Conductor.SpriteTest do
              )
   end
 
+  test "create shells out with org and skip-console" do
+    test_pid = self()
+
+    shell_fn = fn program, args, opts ->
+      send(test_pid, {:shell_called, program, args, opts})
+      {:ok, ""}
+    end
+
+    assert :ok = Sprite.create("bb-weaver", org: "misty-step", shell_fn: shell_fn)
+
+    assert_received {:shell_called, "sprite",
+                     ["create", "-o", "misty-step", "--skip-console", "bb-weaver"], opts}
+
+    assert opts[:timeout] == 120_000
+  end
+
   test "provision uploads persona, settings, and metadata through sprite exec files" do
     test_pid = self()
     prev_gh = System.get_env("GITHUB_TOKEN")

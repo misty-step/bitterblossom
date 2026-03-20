@@ -38,12 +38,13 @@ mix conductor show-waivers --run_id <run-id>
 
 `mix conductor fleet --reconcile` is the supported repair path. It:
 
-1. probes sprite reachability
-2. uploads base config and skills
-3. installs Codex if needed
-4. configures GitHub auth and git credential helper
-5. ensures the repo mirror exists on the sprite
-6. writes workspace metadata
+1. probes each declared sprite from `fleet.toml`
+2. creates any declared sprite that does not exist yet
+3. uploads base config and skills
+4. installs Codex if needed
+5. configures GitHub auth and git credential helper
+6. ensures the repo mirror exists on the sprite
+7. writes workspace metadata
 
 There is no separate `bb setup` step anymore.
 
