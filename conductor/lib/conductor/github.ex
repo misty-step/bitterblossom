@@ -58,10 +58,7 @@ defmodule Conductor.GitHub do
 
   @spec issue_has_label?(binary(), pos_integer(), binary()) :: {:ok, boolean()} | {:error, term()}
   def issue_has_label?(repo, issue_number, label) do
-    with_cached_issue(repo, issue_number, fn ->
-      get_issue(repo, issue_number)
-    end)
-    |> case do
+    case get_issue(repo, issue_number) do
       {:ok, %Issue{} = issue} -> {:ok, label in issue.labels}
       {:error, reason} -> {:error, reason}
     end
