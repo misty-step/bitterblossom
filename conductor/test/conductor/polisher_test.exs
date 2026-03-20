@@ -51,6 +51,10 @@ defmodule Conductor.PolisherTest do
       MockState.get(:review_comments, {:ok, []})
     end
 
+    def pr_substantive_change_at(_repo, pr_number) do
+      MockState.get({:substantive_change_at, pr_number}, {:error, :not_found})
+    end
+
     def pr_ci_failure_logs(_repo, _pr_number), do: {:ok, ""}
     def add_label(_repo, _pr_number, _label), do: :ok
     def close_issue(_repo, _issue_number), do: :ok
@@ -365,6 +369,53 @@ defmodule Conductor.PolisherTest do
 
       assert_receive {:dispatched, "bb-fern", _}, 2_000
       refute_receive {:dispatched, "bb-fern", _}, 300
+    end
+
+    test "does not redispatch an already-polished PR until substantive activity changes" do
+      initial_change_at =
+        DateTime.utc_now()
+        |> DateTime.add(-60, :second)
+        |> DateTime.to_iso8601()
+
+      next_change_at =
+        DateTime.utc_now()
+        |> DateTime.add(60, :second)
+        |> DateTime.to_iso8601()
+
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 42,
+             "headRefName" => "factory/99-12345",
+             "title" => "feat: implement feature",
+             "body" => "Closes #99",
+             "labels" => [],
+             "statusCheckRollup" => @green_checks
+           }
+         ]}
+      )
+
+      MockState.put({:substantive_change_at, 42}, {:ok, initial_change_at})
+
+      {:ok, _pid} =
+        Polisher.start_link(
+          repo: "test/repo",
+          polisher_sprite: "bb-fern",
+          poll_ms: 50
+        )
+
+      assert_receive {:dispatched, "bb-fern", _prompt}, 2_000
+      refute_receive {:dispatched, "bb-fern", _prompt}, 300
+
+      assert {:ok, pr} = Store.get_pr_state("test/repo", 42)
+      assert pr["last_substantive_change_at"] == initial_change_at
+      assert is_binary(pr["polished_at"])
+
+      MockState.put({:substantive_change_at, 42}, {:ok, next_change_at})
+
+      assert_receive {:dispatched, "bb-fern", _prompt}, 2_000
     end
   end
 

@@ -63,6 +63,7 @@ defmodule Conductor.FixerTest do
     end
 
     def pr_review_comments(_repo, _pr_number), do: {:ok, []}
+    def pr_substantive_change_at(_repo, _pr_number), do: {:error, :not_found}
     def add_label(_repo, _pr_number, _label), do: :ok
     def close_issue(_repo, _issue_number), do: :ok
     def find_open_pr(_repo, _issue_number, _expected_branch \\ nil), do: {:error, :not_found}

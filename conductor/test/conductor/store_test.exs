@@ -278,4 +278,33 @@ defmodule Conductor.StoreTest do
 
     assert {:error, {:db_error, _}} = Store.find_run_by_pr("test/repo", 123)
   end
+
+  test "tracks PR polish timestamps independently of runs" do
+    assert {:error, :not_found} = Store.get_pr_state("test/repo", 42)
+
+    assert :ok =
+             Store.upsert_pr_state("test/repo", 42, %{
+               last_substantive_change_at: "2026-03-20T12:00:00Z"
+             })
+
+    assert {:ok, pr} = Store.get_pr_state("test/repo", 42)
+    assert pr["repo"] == "test/repo"
+    assert pr["pr_number"] == 42
+    assert pr["last_substantive_change_at"] == "2026-03-20T12:00:00Z"
+    assert is_nil(pr["polished_at"])
+
+    assert :ok = Store.mark_pr_polished("test/repo", 42, "2026-03-20T12:30:00Z")
+
+    assert {:ok, pr} = Store.get_pr_state("test/repo", 42)
+    assert pr["polished_at"] == "2026-03-20T12:30:00Z"
+
+    assert :ok =
+             Store.upsert_pr_state("test/repo", 42, %{
+               last_substantive_change_at: "2026-03-20T13:00:00Z"
+             })
+
+    assert {:ok, pr} = Store.get_pr_state("test/repo", 42)
+    assert pr["polished_at"] == "2026-03-20T12:30:00Z"
+    assert pr["last_substantive_change_at"] == "2026-03-20T13:00:00Z"
+  end
 end

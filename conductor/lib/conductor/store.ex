@@ -12,6 +12,7 @@ defmodule Conductor.Store do
   @valid_columns ~w(phase status branch pr_number pr_url turn_count worktree_path
                     replay_count builder_sprite heartbeat_at completed_at
                     ci_wait_started_at ci_last_reported_at blocked_reason)
+  @valid_pr_columns ~w(last_substantive_change_at polished_at)
 
   @doc "Validate that all map keys are in the column allowlist."
   @spec validate_columns(map()) :: :ok | {:error, :invalid_column}
@@ -19,6 +20,18 @@ defmodule Conductor.Store do
     keys = Enum.map(Map.keys(attrs), &to_string/1)
 
     if Enum.all?(keys, &(&1 in @valid_columns)) do
+      :ok
+    else
+      {:error, :invalid_column}
+    end
+  end
+
+  @doc "Validate that all PR state map keys are in the column allowlist."
+  @spec validate_pr_columns(map()) :: :ok | {:error, :invalid_column}
+  def validate_pr_columns(attrs) do
+    keys = Enum.map(Map.keys(attrs), &to_string/1)
+
+    if Enum.all?(keys, &(&1 in @valid_pr_columns)) do
       :ok
     else
       {:error, :invalid_column}
@@ -45,6 +58,22 @@ defmodule Conductor.Store do
   @spec find_run_by_pr(binary(), pos_integer()) :: {:ok, map()} | {:error, term()}
   def find_run_by_pr(repo, pr_number) do
     GenServer.call(__MODULE__, {:find_run_by_pr, repo, pr_number})
+  end
+
+  @spec get_pr_state(binary(), pos_integer()) :: {:ok, map()} | {:error, :not_found}
+  def get_pr_state(repo, pr_number) do
+    GenServer.call(__MODULE__, {:get_pr_state, repo, pr_number})
+  end
+
+  @spec upsert_pr_state(binary(), pos_integer(), map()) ::
+          :ok | {:error, :invalid_column | :empty_attrs}
+  def upsert_pr_state(repo, pr_number, attrs) do
+    GenServer.call(__MODULE__, {:upsert_pr_state, repo, pr_number, attrs})
+  end
+
+  @spec mark_pr_polished(binary(), pos_integer(), binary() | nil) :: :ok
+  def mark_pr_polished(repo, pr_number, polished_at \\ nil) do
+    GenServer.call(__MODULE__, {:mark_pr_polished, repo, pr_number, polished_at})
   end
 
   @spec complete_run(binary(), binary(), binary()) :: :ok
@@ -247,6 +276,76 @@ defmodule Conductor.Store do
       end
 
     {:reply, result, state}
+  end
+
+  @impl true
+  def handle_call({:get_pr_state, repo, pr_number}, _from, state) do
+    result =
+      case query_one(state.conn, "SELECT * FROM prs WHERE repo = ?1 AND pr_number = ?2", [
+             repo,
+             pr_number
+           ]) do
+        nil -> {:error, :not_found}
+        row -> {:ok, row}
+      end
+
+    {:reply, result, state}
+  end
+
+  @impl true
+  def handle_call({:upsert_pr_state, _repo, _pr_number, attrs}, _from, state)
+      when map_size(attrs) == 0 do
+    {:reply, {:error, :empty_attrs}, state}
+  end
+
+  @impl true
+  def handle_call({:upsert_pr_state, repo, pr_number, attrs}, _from, state) do
+    case validate_pr_columns(attrs) do
+      :ok ->
+        now = now_utc()
+        entries = Map.to_list(attrs)
+        columns = Enum.map(entries, fn {key, _value} -> to_string(key) end)
+        values = Enum.map(entries, fn {_key, value} -> value end)
+
+        assignments =
+          Enum.map_join(columns, ", ", fn column -> "#{column} = excluded.#{column}" end)
+
+        placeholders =
+          1..(length(columns) + 3)
+          |> Enum.map_join(", ", &"?#{&1}")
+
+        sql = """
+        INSERT INTO prs (repo, pr_number, #{Enum.join(columns, ", ")}, updated_at)
+        VALUES (#{placeholders})
+        ON CONFLICT(repo, pr_number) DO UPDATE
+        SET #{assignments}, updated_at = excluded.updated_at
+        """
+
+        exec(state.conn, sql, [repo, pr_number] ++ values ++ [now])
+        {:reply, :ok, state}
+
+      {:error, :invalid_column} ->
+        Logger.error("upsert_pr_state rejected: invalid column in #{inspect(Map.keys(attrs))}")
+        {:reply, {:error, :invalid_column}, state}
+    end
+  end
+
+  @impl true
+  def handle_call({:mark_pr_polished, repo, pr_number, polished_at}, _from, state) do
+    now = polished_at || now_utc()
+
+    exec(
+      state.conn,
+      """
+      INSERT INTO prs (repo, pr_number, polished_at, updated_at)
+      VALUES (?1, ?2, ?3, ?4)
+      ON CONFLICT(repo, pr_number) DO UPDATE
+      SET polished_at = excluded.polished_at, updated_at = excluded.updated_at
+      """,
+      [repo, pr_number, now, now]
+    )
+
+    {:reply, :ok, state}
   end
 
   @impl true
@@ -652,6 +751,16 @@ defmodule Conductor.Store do
           )
           """,
           """
+          CREATE TABLE IF NOT EXISTS prs (
+            repo TEXT NOT NULL,
+            pr_number INTEGER NOT NULL,
+            last_substantive_change_at TEXT,
+            polished_at TEXT,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (repo, pr_number)
+          )
+          """,
+          """
           CREATE INDEX IF NOT EXISTS idx_runs_repo_active
           ON runs(repo, completed_at, picked_at)
           """,
@@ -667,6 +776,12 @@ defmodule Conductor.Store do
       {"ci_wait_started_at", "TEXT"},
       {"ci_last_reported_at", "TEXT"},
       {"blocked_reason", "TEXT"}
+    ])
+
+    ensure_columns(conn, "prs", [
+      {"last_substantive_change_at", "TEXT"},
+      {"polished_at", "TEXT"},
+      {"updated_at", "TEXT NOT NULL DEFAULT ''"}
     ])
   end
 

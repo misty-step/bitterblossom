@@ -365,6 +365,52 @@ defmodule Conductor.GitHubTest do
     end
   end
 
+  describe "pr_substantive_change_at/2" do
+    test "returns the newest commit, review, or comment timestamp" do
+      with_fake_gh(
+        """
+        printf '%s\n' "$@" > "$GH_ARGS_PATH"
+        cat <<'JSON'
+        {
+          "commits": [
+            {"committedDate":"2026-03-20T11:00:00Z"},
+            {"committedDate":"2026-03-20T12:00:00Z"}
+          ],
+          "reviews": [
+            {"submittedAt":"2026-03-20T12:30:00Z"}
+          ],
+          "comments": [
+            {"createdAt":"2026-03-20T13:00:00Z"}
+          ]
+        }
+        JSON
+        """,
+        fn _tmp_dir, args_path ->
+          assert {:ok, "2026-03-20T13:00:00Z"} =
+                   GitHub.pr_substantive_change_at("misty-step/bitterblossom", 42)
+
+          args = File.read!(args_path)
+          assert String.contains?(args, "pr\nview\n42\n")
+          assert String.contains?(args, "--json\ncommits,reviews,comments\n")
+        end
+      )
+    end
+
+    test "returns an error when no substantive timestamps exist" do
+      with_fake_gh(
+        """
+        cat <<'JSON'
+        {"commits":[],"reviews":[],"comments":[]}
+        JSON
+        """,
+        fn _tmp_dir, _args_path ->
+          assert {:error, :not_found} =
+                   GitHub.pr_substantive_change_at("misty-step/bitterblossom", 42)
+        end
+      )
+    end
+  end
+
   describe "list_issues/2" do
     test "omits --label when label is nil and preserves an explicit limit" do
       with_fake_gh(

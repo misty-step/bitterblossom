@@ -253,6 +253,53 @@ defmodule Conductor.GitHub do
   defp comment_body(comment),
     do: get_in(comment, ["body", "text"]) || get_in(comment, ["body", "body"]) || ""
 
+  defp newest_substantive_timestamp(data) do
+    timestamps =
+      data
+      |> substantive_timestamps()
+      |> Enum.map(&parse_timestamp/1)
+      |> Enum.filter(&match?({:ok, _, _}, &1))
+
+    case timestamps do
+      [] ->
+        {:error, :not_found}
+
+      parsed ->
+        {:ok,
+         parsed
+         |> Enum.max_by(fn {:ok, datetime, _timestamp} -> datetime end)
+         |> elem(2)}
+    end
+  end
+
+  defp substantive_timestamps(data) do
+    commit_timestamps =
+      data
+      |> Map.get("commits", [])
+      |> Enum.map(& &1["committedDate"])
+
+    review_timestamps =
+      data
+      |> Map.get("reviews", [])
+      |> Enum.map(& &1["submittedAt"])
+
+    comment_timestamps =
+      data
+      |> Map.get("comments", [])
+      |> Enum.map(& &1["createdAt"])
+
+    commit_timestamps ++ review_timestamps ++ comment_timestamps
+  end
+
+  defp parse_timestamp(timestamp) when is_binary(timestamp) do
+    case DateTime.from_iso8601(timestamp) do
+      {:ok, datetime, _offset} -> {:ok, datetime, timestamp}
+      _ -> :error
+    end
+  end
+
+  defp parse_timestamp(_timestamp), do: :error
+
   @spec get_pr_checks(binary(), pos_integer()) :: {:ok, [map()]} | {:error, term()}
   def get_pr_checks(repo, pr_number) do
     case Shell.cmd("gh", [
@@ -717,6 +764,31 @@ defmodule Conductor.GitHub do
 
           {:error, _} ->
             {:error, "invalid JSON"}
+        end
+
+      {:error, msg, _} ->
+        {:error, msg}
+    end
+  end
+
+  @doc "Return the newest substantive PR activity timestamp."
+  @spec pr_substantive_change_at(binary(), pos_integer()) :: {:ok, binary()} | {:error, term()}
+  def pr_substantive_change_at(repo, pr_number) do
+    case Shell.cmd("gh", [
+           "pr",
+           "view",
+           to_string(pr_number),
+           "--repo",
+           repo,
+           "--json",
+           "commits,reviews,comments"
+         ]) do
+      {:ok, json} ->
+        with {:ok, data} <- Jason.decode(json),
+             {:ok, timestamp} <- newest_substantive_timestamp(data) do
+          {:ok, timestamp}
+        else
+          {:error, _reason} = error -> error
         end
 
       {:error, msg, _} ->

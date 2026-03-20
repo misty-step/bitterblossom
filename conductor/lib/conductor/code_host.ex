@@ -34,6 +34,10 @@ defmodule Conductor.CodeHost do
   @callback pr_review_comments(repo :: binary(), pr_number :: pos_integer()) ::
               {:ok, [map()]} | {:error, term()}
 
+  @doc "Return the newest substantive PR activity timestamp (commit or review discussion)."
+  @callback pr_substantive_change_at(repo :: binary(), pr_number :: pos_integer()) ::
+              {:ok, binary()} | {:error, term()}
+
   @doc "Fetch CI failure logs for a PR."
   @callback pr_ci_failure_logs(repo :: binary(), pr_number :: pos_integer()) ::
               {:ok, binary()} | {:error, term()}
