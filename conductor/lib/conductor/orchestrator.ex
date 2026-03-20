@@ -508,6 +508,7 @@ defmodule Conductor.Orchestrator do
 
   defp pick_worker(state) do
     count = length(state.worker_order)
+    occupied_workers = occupied_workers(state)
 
     0..(count - 1)
     |> Enum.reduce_while({:error, :no_available_workers, state}, fn offset,
@@ -515,7 +516,7 @@ defmodule Conductor.Orchestrator do
       candidate_index = rem(acc.worker_index + offset, count)
       worker_name = Enum.at(acc.worker_order, candidate_index)
 
-      case probe_and_reserve_worker(acc, worker_name, candidate_index) do
+      case probe_and_reserve_worker(acc, worker_name, candidate_index, occupied_workers) do
         {:ok, worker, next_state} ->
           {:halt, {:ok, worker, next_state}}
 
@@ -525,21 +526,49 @@ defmodule Conductor.Orchestrator do
     end)
   end
 
-  defp probe_and_reserve_worker(state, worker_name, candidate_index) do
-    {worker, state} = probe_worker(state, worker_name)
-
+  defp probe_and_reserve_worker(state, worker_name, candidate_index, occupied_workers) do
     cond do
-      not worker.healthy ->
-        {:error, state}
-
-      worker_busy?(worker.name) ->
-        Logger.info("worker #{worker.name} busy, skipping this cycle")
+      MapSet.member?(occupied_workers, worker_name) ->
+        Logger.info("worker #{worker_name} already has an active run, skipping this cycle")
         {:error, state}
 
       true ->
-        {:ok, worker,
-         %{state | worker_index: rem(candidate_index + 1, length(state.worker_order))}}
+        {worker, state} = probe_worker(state, worker_name)
+
+        cond do
+          not worker.healthy ->
+            {:error, state}
+
+          worker_busy?(worker.name) ->
+            Logger.info("worker #{worker.name} busy, skipping this cycle")
+            {:error, state}
+
+          true ->
+            {:ok, worker,
+             %{state | worker_index: rem(candidate_index + 1, length(state.worker_order))}}
+        end
     end
+  end
+
+  defp occupied_workers(state) do
+    state.active_runs
+    |> Enum.map(fn {_issue_number, run} -> run.worker end)
+    |> MapSet.new()
+    |> MapSet.union(store_active_workers())
+  end
+
+  defp store_active_workers do
+    Store.active_runs()
+    |> Map.keys()
+    |> MapSet.new()
+  rescue
+    exception ->
+      Logger.warning("[dispatch] failed to read active workers: #{Exception.message(exception)}")
+      MapSet.new()
+  catch
+    :exit, reason ->
+      Logger.warning("[dispatch] failed to read active workers: #{inspect(reason)}")
+      MapSet.new()
   end
 
   defp probe_worker(state, worker_name) do
