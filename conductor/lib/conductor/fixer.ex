@@ -111,42 +111,55 @@ defmodule Conductor.Fixer do
 
   defp needs_fix?(pr, state) do
     checks = pr["statusCheckRollup"] |> List.wrap() |> Enum.filter(&is_map/1)
+    checks_failed = Conductor.GitHub.evaluate_checks_failed(checks)
 
-    Conductor.GitHub.evaluate_checks_failed(checks) or
-      tracked_review_failure?(state.repo, pr["number"])
+    review_failed =
+      case tracked_review_failure?(state.repo, pr["number"]) do
+        {:ok, failed?} ->
+          failed?
+
+        {:error, reason} ->
+          pr_number = pr["number"]
+
+          Logger.warning(
+            "[thorn] failed to check review failures for PR ##{pr_number}: #{inspect(reason)}"
+          )
+
+          false
+      end
+
+    checks_failed or review_failed
   end
 
   defp tracked_review_failure?(repo, pr_number) when is_integer(pr_number) do
-    conductor_tracked?(repo, pr_number) and cerberus_review_failed?(repo, pr_number)
+    case conductor_tracked?(repo, pr_number) do
+      {:ok, true} -> cerberus_review_failed?(repo, pr_number)
+      {:ok, false} -> {:ok, false}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
-  defp tracked_review_failure?(_repo, _pr_number), do: false
+  defp tracked_review_failure?(_repo, _pr_number), do: {:ok, false}
 
   defp conductor_tracked?(repo, pr_number) do
     try do
-      match?({:ok, _}, Store.find_run_by_pr(repo, pr_number))
+      case Store.find_run_by_pr(repo, pr_number) do
+        {:ok, _run} -> {:ok, true}
+        {:error, :not_found} -> {:ok, false}
+        {:error, reason} -> {:error, reason}
+      end
     rescue
       exception ->
-        Logger.warning(
-          "[thorn] failed to find run for PR ##{pr_number}: #{Exception.message(exception)}"
-        )
-
-        false
+        {:error, exception}
     catch
       :exit, reason ->
-        Logger.warning("[thorn] failed to find run for PR ##{pr_number}: #{inspect(reason)}")
-        false
+        {:error, {:exit, reason}}
     end
   end
 
   defp cerberus_review_failed?(repo, pr_number) do
-    case code_host_mod().pr_review_comments(repo, pr_number) do
-      {:ok, comments} ->
-        Enum.any?(comments, &cerberus_failure_comment?/1)
-
-      {:error, reason} ->
-        Logger.warning("[thorn] failed to fetch reviews for PR ##{pr_number}: #{reason}")
-        false
+    with {:ok, comments} <- code_host_mod().pr_review_comments(repo, pr_number) do
+      {:ok, Enum.any?(comments, &cerberus_failure_comment?/1)}
     end
   end
 

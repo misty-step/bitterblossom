@@ -358,6 +358,50 @@ defmodule Conductor.FixerTest do
       refute_receive {:dispatched, _, _}, 300
     end
 
+    test "fails closed when Cerberus review lookup errors for a tracked PR" do
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 99,
+          issue_title: "Test issue 99",
+          builder_sprite: "bb-weaver"
+        })
+
+      :ok = Store.update_run(run_id, %{pr_number: 42, phase: "pr_opened", status: "pr_opened"})
+
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 42,
+             "headRefName" => "factory/99-12345",
+             "title" => "feat: implement feature",
+             "body" => "Closes #99",
+             "statusCheckRollup" => [
+               %{"name" => "CI", "conclusion" => "SUCCESS", "status" => "COMPLETED"}
+             ]
+           }
+         ]}
+      )
+
+      MockState.put(:review_comments, {:error, :api_down})
+
+      log =
+        capture_log(fn ->
+          {:ok, _pid} =
+            Fixer.start_link(
+              repo: "test/repo",
+              fixer_sprite: "bb-thorn",
+              poll_ms: 50
+            )
+
+          refute_receive {:dispatched, _, _}, 300
+        end)
+
+      assert log =~ "[thorn] failed to check review failures for PR #42: :api_down"
+    end
+
     test "does not dispatch when fixer is already working on a PR" do
       MockState.put(
         :open_prs,
