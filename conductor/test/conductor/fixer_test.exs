@@ -63,7 +63,7 @@ defmodule Conductor.FixerTest do
       MockState.get(:ci_failure_logs, {:ok, "Build failed: test_foo.ex:42 assertion error"})
     end
 
-    def pr_review_comments(_repo, _pr_number), do: {:ok, []}
+    def pr_review_comments(_repo, _pr_number), do: MockState.get(:review_comments, {:ok, []})
     def add_label(_repo, _pr_number, _label), do: :ok
     def close_issue(_repo, _issue_number), do: :ok
     def close_pr(_repo, _pr_number, _opts \\ []), do: :ok
@@ -168,23 +168,64 @@ defmodule Conductor.FixerTest do
     :ok
   end
 
+  defp put_open_pr(opts \\ []) do
+    MockState.put(:open_prs, {:ok, [pr_fixture(opts)]})
+  end
+
+  defp pr_fixture(opts) do
+    %{
+      "number" => Keyword.get(opts, :number, 42),
+      "headRefName" => Keyword.get(opts, :branch, "factory/99-12345"),
+      "title" => Keyword.get(opts, :title, "feat: implement feature"),
+      "body" => Keyword.get(opts, :body, "Closes #99"),
+      "statusCheckRollup" => [
+        %{
+          "name" => "CI",
+          "conclusion" => Keyword.get(opts, :ci_conclusion, "SUCCESS"),
+          "status" => "COMPLETED"
+        }
+      ]
+    }
+  end
+
+  defp put_cerberus_review(verdict) do
+    MockState.put(
+      :review_comments,
+      {:ok,
+       [
+         %{
+           "author" => %{"login" => "github-actions"},
+           "body" => """
+           <!-- cerberus:verdict-review sha=d5eed9e4e178 -->
+           **Cerberus inline comments** for `d5eed9e4e178`
+
+           - Inline comments posted: 1/1
+           - Canonical report: verdict report
+           - Cerberus verdict: `#{verdict}` (4 reviewers. Failures: 2, warnings: 0, skipped: 0.)
+           """
+         }
+       ]}
+    )
+  end
+
+  defp create_tracked_run(pr_number, issue_number \\ 99) do
+    {:ok, run_id} =
+      Store.create_run(%{
+        repo: "test/repo",
+        issue_number: issue_number,
+        issue_title: "Test issue #{issue_number}",
+        builder_sprite: "bb-weaver"
+      })
+
+    :ok =
+      Store.update_run(run_id, %{pr_number: pr_number, phase: "pr_opened", status: "pr_opened"})
+
+    run_id
+  end
+
   describe "poll triggers fixer dispatch" do
     test "dispatches fixer sprite when factory PR has failed CI" do
-      MockState.put(
-        :open_prs,
-        {:ok,
-         [
-           %{
-             "number" => 42,
-             "headRefName" => "factory/99-12345",
-             "title" => "feat: implement feature",
-             "body" => "Closes #99",
-             "statusCheckRollup" => [
-               %{"name" => "CI", "conclusion" => "FAILURE", "status" => "COMPLETED"}
-             ]
-           }
-         ]}
-      )
+      put_open_pr(ci_conclusion: "FAILURE")
 
       log =
         capture_log(fn ->
@@ -203,25 +244,11 @@ defmodule Conductor.FixerTest do
           assert prompt =~ "CI"
         end)
 
-      assert log =~ "[thorn] PR #42 has red CI, dispatching Thorn"
+      assert log =~ "[thorn] PR #42 needs fixes (CI failing), dispatching Thorn"
     end
 
     test "skips PRs when CI has not failed (green or pending)" do
-      MockState.put(
-        :open_prs,
-        {:ok,
-         [
-           %{
-             "number" => 42,
-             "headRefName" => "factory/99-12345",
-             "title" => "feat: implement feature",
-             "body" => "Closes #99",
-             "statusCheckRollup" => [
-               %{"name" => "CI", "conclusion" => "SUCCESS", "status" => "COMPLETED"}
-             ]
-           }
-         ]}
-      )
+      put_open_pr()
 
       {:ok, _pid} =
         Fixer.start_link(
@@ -234,20 +261,11 @@ defmodule Conductor.FixerTest do
     end
 
     test "dispatches fixer for non-factory PRs with failed CI" do
-      MockState.put(
-        :open_prs,
-        {:ok,
-         [
-           %{
-             "number" => 42,
-             "headRefName" => "fix/cerberus-permissions",
-             "title" => "fix: cerberus permissions",
-             "body" => "Fixes permissions",
-             "statusCheckRollup" => [
-               %{"name" => "CI", "conclusion" => "FAILURE", "status" => "COMPLETED"}
-             ]
-           }
-         ]}
+      put_open_pr(
+        branch: "fix/cerberus-permissions",
+        title: "fix: cerberus permissions",
+        body: "Fixes permissions",
+        ci_conclusion: "FAILURE"
       )
 
       {:ok, _pid} =
@@ -258,6 +276,63 @@ defmodule Conductor.FixerTest do
         )
 
       assert_receive {:dispatched, "bb-thorn", _prompt}, 2_000
+    end
+
+    test "dispatches fixer when a conductor-tracked PR has a Cerberus FAIL review verdict" do
+      create_tracked_run(42)
+      put_open_pr()
+      put_cerberus_review("FAIL")
+
+      log =
+        capture_log(fn ->
+          {:ok, _pid} =
+            Fixer.start_link(
+              repo: "test/repo",
+              fixer_sprite: "bb-thorn",
+              poll_ms: 50
+            )
+
+          assert_receive {:dispatched, "bb-thorn", prompt}, 2_000
+          assert prompt =~ "Branch: factory/99-12345"
+        end)
+
+      assert log =~
+               "[thorn] PR #42 needs fixes (Cerberus review verdict FAIL), dispatching Thorn"
+    end
+
+    test "does not dispatch on Cerberus review verdicts for untracked PRs" do
+      put_open_pr()
+      put_cerberus_review("FAIL")
+
+      {:ok, _pid} =
+        Fixer.start_link(
+          repo: "test/repo",
+          fixer_sprite: "bb-thorn",
+          poll_ms: 50
+        )
+
+      refute_receive {:dispatched, _, _}, 300
+    end
+
+    test "fails closed when Cerberus review lookup errors for a tracked PR" do
+      create_tracked_run(42)
+      put_open_pr()
+
+      MockState.put(:review_comments, {:error, :api_down})
+
+      log =
+        capture_log(fn ->
+          {:ok, _pid} =
+            Fixer.start_link(
+              repo: "test/repo",
+              fixer_sprite: "bb-thorn",
+              poll_ms: 50
+            )
+
+          refute_receive {:dispatched, _, _}, 300
+        end)
+
+      assert log =~ "[thorn] failed to check fix reason for PR #42: :api_down"
     end
 
     test "does not dispatch when fixer is already working on a PR" do
