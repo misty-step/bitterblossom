@@ -187,6 +187,8 @@ defmodule Conductor.Polisher do
   end
 
   defp duplicate_candidate_score(pr) do
+    # Higher tuple elements win in priority order:
+    # ready to polish -> newest green CI -> more commits -> most recently updated -> highest PR number.
     {
       if(needs_polish?(pr), do: 1, else: 0),
       latest_green_check_timestamp(pr),
