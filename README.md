@@ -86,7 +86,7 @@ export SPRITE_TOKEN="..."  # from https://sprites.dev/settings
 cd conductor
 mix deps.get
 mix compile
-mix conductor start --fleet ../fleet.toml
+mix conductor start --fleet ../fleet.toml --health-port 4000
 ```
 
 Use `cd conductor && mix conductor pause`, `cd conductor && mix conductor resume`, `cd conductor && mix conductor show-runs`, and `cd conductor && mix conductor show-events` to inspect or control the running pipeline.
@@ -217,6 +217,19 @@ ruff check base/hooks
 ```
 
 ## Troubleshooting
+
+## Watchdog
+
+Run the conductor with `--health-port` (or `CONDUCTOR_HEALTH_PORT`) to expose
+`/healthz` on `127.0.0.1`. Then run the external watchdog script from cron or another
+monitor every 5 minutes:
+
+```bash
+*/5 * * * * cd /path/to/bitterblossom && CONDUCTOR_HEALTH_PORT=4000 ./scripts/conductor-health-probe.sh
+```
+
+If `CONDUCTOR_ALERT_WEBHOOK` is set, the watchdog posts a failure notification to that
+webhook when the health check fails.
 
 ### Dispatch blocked by a stale agent process
 

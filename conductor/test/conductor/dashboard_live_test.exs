@@ -51,6 +51,17 @@ defmodule Conductor.Web.DashboardLiveTest do
     assert html =~ "Bitterblossom Dashboard"
   end
 
+  test "health endpoint returns ok json" do
+    conn = get(build_conn(), "/healthz")
+    body = json_response(conn, 200)
+
+    assert body == %{
+             "checked_at" => body["checked_at"],
+             "service" => "bitterblossom",
+             "status" => "ok"
+           }
+  end
+
   test "dashboard shows empty run table when no runs exist" do
     {:ok, _view, html} = live(build_conn(), "/")
     assert html =~ "No runs yet"

@@ -73,3 +73,16 @@ sprite exec coordinator -- bash -lc '
   mix conductor fleet --fleet ../fleet.toml --reconcile
 '
 ```
+
+## Health Probe
+
+Expose a local liveness endpoint when starting the conductor:
+
+```bash
+cd conductor
+mix conductor start --fleet ../fleet.toml --health-port 4000
+```
+
+This serves `http://127.0.0.1:4000/healthz` for an external watchdog. A cron-based probe is
+included at `scripts/conductor-health-probe.sh`; run it every 5 minutes and set
+`CONDUCTOR_ALERT_WEBHOOK` if you want webhook delivery on failure.

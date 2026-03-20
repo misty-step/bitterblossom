@@ -10,7 +10,7 @@ defmodule Conductor.Orchestrator do
   use GenServer
   require Logger
 
-  alias Conductor.{Store, Config, Issue, Workspace}
+  alias Conductor.{Store, Config, Issue, RunReconciler, Workspace}
 
   defmodule RunLauncher do
     @moduledoc false
@@ -147,6 +147,10 @@ defmodule Conductor.Orchestrator do
           trusted_surfaces: Keyword.get(opts, :trusted_surfaces, state.trusted_surfaces),
           mode: dispatch_mode()
       }
+
+      run_reconciler_mod().reconcile_stale_runs(repo,
+        active_issue_numbers: Map.keys(state.active_runs)
+      )
 
       maybe_warn_unfiltered_loop(state)
       schedule_poll(0)
@@ -629,7 +633,12 @@ defmodule Conductor.Orchestrator do
       state = %{state | active_runs: active}
 
       # 2. Detect and expire stale runs from the Store (covers restarts and orphans)
-      expire_stale_runs(state)
+      run_reconciler_mod().reconcile_stale_runs(
+        state.repo,
+        active_issue_numbers: Map.keys(state.active_runs)
+      )
+
+      state
     rescue
       exception ->
         Logger.warning("[reconcile] failed to read active runs: #{Exception.message(exception)}")
@@ -641,34 +650,8 @@ defmodule Conductor.Orchestrator do
     end
   end
 
-  defp expire_stale_runs(%{repo: nil} = state), do: state
-
-  defp expire_stale_runs(state) do
-    threshold = Config.stale_run_threshold_minutes()
-    cutoff = DateTime.add(DateTime.utc_now(), -threshold * 60, :second)
-
-    state.repo
-    |> Store.list_active_runs()
-    |> Enum.reject(fn run -> Map.has_key?(state.active_runs, run["issue_number"]) end)
-    |> Enum.filter(fn run -> stale_heartbeat?(run["heartbeat_at"], cutoff) end)
-    |> Enum.each(fn run ->
-      run_id = run["run_id"]
-      issue_number = run["issue_number"]
-
-      Logger.warning("[reconcile] stale run #{run_id} (issue ##{issue_number}), expiring lease")
-      Store.expire_stale_run(state.repo, run_id, issue_number, run["heartbeat_at"])
-    end)
-
-    state
-  end
-
-  defp stale_heartbeat?(nil, _cutoff), do: true
-
-  defp stale_heartbeat?(heartbeat_str, cutoff) do
-    case DateTime.from_iso8601(heartbeat_str) do
-      {:ok, dt, _} -> DateTime.compare(dt, cutoff) == :lt
-      _ -> true
-    end
+  defp run_reconciler_mod do
+    Application.get_env(:conductor, :run_reconciler_module, RunReconciler)
   end
 
   defp reconcile_held_leases(%{repo: nil}), do: :ok

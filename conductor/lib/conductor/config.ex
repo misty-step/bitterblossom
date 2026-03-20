@@ -77,6 +77,17 @@ defmodule Conductor.Config do
     Application.get_env(:conductor, :poll_seconds, 60)
   end
 
+  @spec health_check_port() :: pos_integer() | nil
+  def health_check_port do
+    case Application.get_env(:conductor, :health_check_port) ||
+           System.get_env("CONDUCTOR_HEALTH_PORT") do
+      nil -> nil
+      "" -> nil
+      port when is_integer(port) and port > 0 -> port
+      port when is_binary(port) -> parse_health_check_port(port)
+    end
+  end
+
   @spec max_concurrent_runs() :: pos_integer()
   def max_concurrent_runs do
     Application.get_env(:conductor, :max_concurrent_runs, 2)
@@ -194,6 +205,13 @@ defmodule Conductor.Config do
   defp repo_root_candidate?(path) do
     File.exists?(Path.join(path, "WORKFLOW.md")) and
       File.exists?(Path.join(path, "CLAUDE.md"))
+  end
+
+  defp parse_health_check_port(port) do
+    case Integer.parse(port) do
+      {value, ""} when value > 0 -> value
+      _ -> raise "invalid CONDUCTOR_HEALTH_PORT: #{inspect(port)}"
+    end
   end
 
   @spec normalize_workers([binary() | map()]) :: [worker_config()]
