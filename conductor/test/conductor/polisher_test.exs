@@ -438,6 +438,58 @@ defmodule Conductor.PolisherTest do
 
       assert log =~ "[fern] duplicate open PRs for issue #702: [728, 729]; selecting PR #729"
     end
+
+    test "falls back to commit count when duplicate PRs tie on green CI recency" do
+      shared_green_checks = [
+        %{
+          "name" => "Elixir Checks",
+          "conclusion" => "SUCCESS",
+          "status" => "COMPLETED",
+          "completedAt" => "2026-03-19T13:20:40Z"
+        }
+      ]
+
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 728,
+             "headRefName" => "factory/702-1773867376",
+             "title" => "refactor: remove dead shell scripts",
+             "body" => "Closes #702",
+             "labels" => [],
+             "statusCheckRollup" => shared_green_checks,
+             "updatedAt" => nil,
+             "commits" => [%{"oid" => "a1"}]
+           },
+           %{
+             "number" => 729,
+             "headRefName" => "cx/issue-702-delete-dead-scripts",
+             "title" => "refactor(runtime): remove dead script surface",
+             "body" => "Closes #702",
+             "labels" => [],
+             "statusCheckRollup" => shared_green_checks,
+             "updatedAt" => "2026-03-19T13:30:40Z",
+             "commits" => [%{"oid" => "b1"}, %{"oid" => "b2"}]
+           }
+         ]}
+      )
+
+      capture_log(fn ->
+        {:ok, _pid} =
+          Polisher.start_link(
+            repo: "test/repo",
+            polisher_sprite: "bb-fern",
+            poll_ms: 50
+          )
+
+        assert_receive {:review_comments_requested, 729}, 2_000
+        assert_receive {:dispatched, "bb-fern", prompt}, 2_000
+        assert prompt =~ "PR: #729"
+        refute prompt =~ "PR: #728"
+      end)
+    end
   end
 
   describe "status/0" do

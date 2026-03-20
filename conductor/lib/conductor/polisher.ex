@@ -193,7 +193,7 @@ defmodule Conductor.Polisher do
       if(needs_polish?(pr), do: 1, else: 0),
       latest_green_check_timestamp(pr),
       commit_count(pr),
-      parse_timestamp(pr["updatedAt"]),
+      parse_timestamp(pr["updatedAt"]) || 0,
       pr["number"] || 0
     }
   end
