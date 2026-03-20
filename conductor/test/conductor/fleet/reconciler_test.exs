@@ -2,6 +2,7 @@ defmodule Conductor.Fleet.ReconcilerTest do
   use ExUnit.Case, async: true
 
   alias Conductor.Fleet.Reconciler
+  @missing_sprite_reason "failed to start sprite command: sprite not found"
 
   @sprite %{
     name: "bb-weaver",
@@ -18,7 +19,7 @@ defmodule Conductor.Fleet.ReconcilerTest do
       case Process.get(:status_call_count, 0) do
         0 ->
           Process.put(:status_call_count, 1)
-          {:error, "failed to start sprite command: sprite not found"}
+          {:error, @missing_sprite_reason}
 
         _ ->
           {:ok, %{healthy: true}}
@@ -61,7 +62,7 @@ defmodule Conductor.Fleet.ReconcilerTest do
     result =
       Reconciler.reconcile_sprite(@sprite,
         status_fn: fn _name, _opts ->
-          {:error, "failed to start sprite command: sprite not found"}
+          {:error, @missing_sprite_reason}
         end,
         create_fn: fn _name, _opts -> {:error, "create failed"} end,
         provision_fn: fn _name, _opts -> flunk("provision_fn should not be called") end

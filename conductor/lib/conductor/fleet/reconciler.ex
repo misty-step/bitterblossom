@@ -11,6 +11,7 @@ defmodule Conductor.Fleet.Reconciler do
 
   require Logger
   alias Conductor.Sprite
+  @missing_sprite_error_fragment "sprite not found"
 
   @doc """
   Reconcile all declared sprites. Returns `{:ok, results}` where each
@@ -163,6 +164,6 @@ defmodule Conductor.Fleet.Reconciler do
   end
 
   defp missing_sprite_error?(reason) do
-    String.contains?(String.downcase(reason), "sprite not found")
+    String.contains?(String.downcase(reason), @missing_sprite_error_fragment)
   end
 end
