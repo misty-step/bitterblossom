@@ -1,6 +1,7 @@
 defmodule Conductor.RunServerTest do
   use ExUnit.Case, async: false
   import ExUnit.CaptureLog
+  import Conductor.TestSupport.ProcessHelpers
 
   alias Conductor.{Store, RunServer}
 
@@ -290,14 +291,10 @@ defmodule Conductor.RunServerTest do
     db_path = Path.join(System.tmp_dir!(), "rs_test_#{:rand.uniform(999_999)}.db")
     event_log = Path.join(System.tmp_dir!(), "rs_test_#{:rand.uniform(999_999)}.jsonl")
 
-    if pid = Process.whereis(Store) do
-      ref = Process.monitor(pid)
-      GenServer.stop(Store)
-      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1_000
-    end
-
+    stop_conductor_app()
+    stop_process(Store)
     {:ok, _} = Store.start_link(db_path: db_path, event_log: event_log)
-    if Process.whereis(Conductor.TaskSupervisor), do: GenServer.stop(Conductor.TaskSupervisor)
+    stop_process(Conductor.TaskSupervisor)
     {:ok, _} = Task.Supervisor.start_link(name: Conductor.TaskSupervisor)
 
     originals = %{
@@ -338,13 +335,8 @@ defmodule Conductor.RunServerTest do
           else: Application.delete_env(:conductor, config_key)
       end
 
-      if pid = Process.whereis(Store) do
-        if Process.alive?(pid), do: catch_exit(GenServer.stop(Store))
-      end
-
-      if pid = Process.whereis(Conductor.TaskSupervisor) do
-        if Process.alive?(pid), do: catch_exit(GenServer.stop(pid))
-      end
+      stop_process(Store)
+      stop_process(Conductor.TaskSupervisor)
 
       File.rm(db_path)
       File.rm(event_log)

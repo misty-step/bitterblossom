@@ -1,6 +1,7 @@
 defmodule Conductor.OrchestratorTest do
   use ExUnit.Case, async: false
   import ExUnit.CaptureLog
+  import Conductor.TestSupport.ProcessHelpers
 
   alias Conductor.{GitHub, Store, Orchestrator}
 
@@ -211,9 +212,11 @@ defmodule Conductor.OrchestratorTest do
     db_path = Path.join(System.tmp_dir!(), "orch_test_#{:rand.uniform(999_999)}.db")
     event_log = Path.join(System.tmp_dir!(), "orch_test_#{:rand.uniform(999_999)}.jsonl")
 
-    if Process.whereis(Store), do: GenServer.stop(Store)
+    stop_conductor_app()
+    stop_process(Orchestrator)
+    stop_process(Store)
     {:ok, _} = Store.start_link(db_path: db_path, event_log: event_log)
-    safe_stop(Process.whereis(Conductor.TaskSupervisor))
+    stop_process(Conductor.TaskSupervisor)
     {:ok, _} = Task.Supervisor.start_link(name: Conductor.TaskSupervisor)
 
     # Inject mock tracker so polls don't hit GitHub
@@ -257,9 +260,9 @@ defmodule Conductor.OrchestratorTest do
     {:ok, orch_pid} = Orchestrator.start_link([])
 
     on_exit(fn ->
-      safe_stop(Process.whereis(Orchestrator))
-      safe_stop(Process.whereis(Store))
-      safe_stop(Process.whereis(Conductor.TaskSupervisor))
+      stop_process(Orchestrator)
+      stop_process(Store)
+      stop_process(Conductor.TaskSupervisor)
 
       if orig_tracker,
         do: Application.put_env(:conductor, :tracker_module, orig_tracker),
@@ -2124,7 +2127,7 @@ defmodule Conductor.OrchestratorTest do
     end
 
     test "conductor_tracked? returns false for non-conductor PR even with green CI", %{
-      orch_pid: orch_pid
+      orch_pid: _orch_pid
     } do
       # PR 400 has no Store run — conductor_tracked? returns false → merge skipped
       MockState.put(

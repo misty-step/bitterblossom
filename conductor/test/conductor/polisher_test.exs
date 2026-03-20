@@ -1,6 +1,7 @@
 defmodule Conductor.PolisherTest do
   use ExUnit.Case, async: false
   import ExUnit.CaptureLog
+  import Conductor.TestSupport.ProcessHelpers
 
   alias Conductor.{Store, Polisher}
 
@@ -110,19 +111,13 @@ defmodule Conductor.PolisherTest do
     def issue_comments(_repo, _issue), do: {:ok, []}
   end
 
-  defp stop_process(name) do
-    try do
-      GenServer.stop(name)
-    catch
-      :exit, _reason -> :ok
-    end
-  end
-
   setup do
     db_path = Path.join(System.tmp_dir!(), "polisher_test_#{:rand.uniform(999_999)}.db")
     event_log = Path.join(System.tmp_dir!(), "polisher_test_#{:rand.uniform(999_999)}.jsonl")
 
-    if Process.whereis(Store), do: GenServer.stop(Store)
+    stop_conductor_app()
+    stop_process(Polisher)
+    stop_process(Store)
     {:ok, _} = Store.start_link(db_path: db_path, event_log: event_log)
 
     orig_code_host = Application.get_env(:conductor, :code_host_module)
@@ -138,10 +133,8 @@ defmodule Conductor.PolisherTest do
     MockState.put(:test_pid, self())
 
     on_exit(fn ->
-      if pid = Process.whereis(Polisher),
-        do: if(Process.alive?(pid), do: stop_process(pid))
-
-      if pid = Process.whereis(Store), do: if(Process.alive?(pid), do: stop_process(pid))
+      stop_process(Polisher)
+      stop_process(Store)
       MockState.cleanup()
 
       for {key, orig} <- [
