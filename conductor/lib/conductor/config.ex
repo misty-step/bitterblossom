@@ -301,14 +301,11 @@ defmodule Conductor.Config do
   @spec validate_openai_api_key() :: :ok | {:error, binary()}
   defp validate_openai_api_key do
     case System.get_env("OPENAI_API_KEY") do
-      nil ->
-        {:error, "OPENAI_API_KEY missing"}
-
-      "" ->
-        {:error, "OPENAI_API_KEY missing"}
-
-      api_key ->
+      api_key when is_binary(api_key) and api_key != "" ->
         request_openai_api_key_validation(api_key)
+
+      _ ->
+        {:error, "OPENAI_API_KEY missing"}
     end
   end
 
