@@ -289,35 +289,42 @@ defmodule Conductor.Orchestrator do
     max_runs = Config.max_concurrent_runs()
     slots = max_runs - map_size(state.active_runs)
 
-    state.repo
-    |> tracker_mod().list_eligible(label: state.label)
-    |> Enum.reject(&Store.leased?(state.repo, &1.number))
-    |> Enum.reject(&operator_blocked_issue?(state.repo, &1.number))
-    |> Enum.reduce({state, max(slots, 0)}, fn issue, {acc, remaining_slots} ->
-      {next_state, outcome} = consider_issue(acc, issue, remaining_slots)
+    {state, _slots, busy_deferrals} =
+      state.repo
+      |> tracker_mod().list_eligible(label: state.label)
+      |> Enum.reject(&Store.leased?(state.repo, &1.number))
+      |> Enum.reject(&operator_blocked_issue?(state.repo, &1.number))
+      |> Enum.reduce(
+        {state, max(slots, 0), %{count: 0, workers: MapSet.new()}},
+        fn issue, {acc, remaining_slots, busy_deferrals} ->
+          {next_state, outcome} = consider_issue(acc, issue, remaining_slots)
 
-      slots_left =
-        if outcome == :started, do: max(remaining_slots - 1, 0), else: remaining_slots
+          slots_left =
+            if outcome == :started, do: max(remaining_slots - 1, 0), else: remaining_slots
 
-      {next_state, slots_left}
-    end)
-    |> elem(0)
+          next_busy_deferrals =
+            case outcome do
+              {:deferred_busy, workers} ->
+                record_busy_deferral(busy_deferrals, workers)
+
+              _ ->
+                busy_deferrals
+            end
+
+          {next_state, slots_left, next_busy_deferrals}
+        end
+      )
+
+    log_busy_deferrals(busy_deferrals)
+    state
   end
 
   defp consider_issue(state, issue, remaining_slots) do
     case Issue.ready?(issue) do
       :ok ->
-        next_state =
-          state
-          |> clear_shape_attempt(issue.number)
-          |> maybe_start_ready_issue(issue, remaining_slots)
-
-        outcome =
-          if map_size(next_state.active_runs) > map_size(state.active_runs),
-            do: :started,
-            else: :skipped
-
-        {next_state, outcome}
+        state
+        |> clear_shape_attempt(issue.number)
+        |> maybe_start_ready_issue(issue, remaining_slots)
 
       {:error, failures} ->
         maybe_shape_issue(state, issue, failures)
@@ -416,7 +423,7 @@ defmodule Conductor.Orchestrator do
        when remaining_slots > 0,
        do: start_run(state, issue)
 
-  defp maybe_start_ready_issue(state, _issue, _remaining_slots), do: state
+  defp maybe_start_ready_issue(state, _issue, _remaining_slots), do: {state, :skipped}
 
   defp safe_shape_issue(repo, issue_number) do
     try do
@@ -445,11 +452,14 @@ defmodule Conductor.Orchestrator do
   defp start_run(state, issue) do
     case pick_worker(state) do
       {:ok, worker, state} ->
-        dispatch_run(state, issue, worker.name)
+        {dispatch_run(state, issue, worker.name), :started}
+
+      {:error, {:workers_busy, workers}, state} ->
+        {state, {:deferred_busy, workers}}
 
       {:error, :no_available_workers, state} ->
         Logger.info("no healthy worker available, deferring issue ##{issue.number}")
-        state
+        {state, :skipped}
     end
   end
 
@@ -510,8 +520,9 @@ defmodule Conductor.Orchestrator do
     count = length(state.worker_order)
 
     0..(count - 1)
-    |> Enum.reduce_while({:error, :no_available_workers, state}, fn offset,
-                                                                    {_status, _reason, acc} ->
+    |> Enum.reduce_while({:error, :no_available_workers, state, []}, fn offset,
+                                                                        {_status, _reason, acc,
+                                                                         busy_workers} ->
       candidate_index = rem(acc.worker_index + offset, count)
       worker_name = Enum.at(acc.worker_order, candidate_index)
 
@@ -519,10 +530,23 @@ defmodule Conductor.Orchestrator do
         {:ok, worker, next_state} ->
           {:halt, {:ok, worker, next_state}}
 
+        {:busy, worker_name, next_state} ->
+          {:cont, {:error, :no_available_workers, next_state, [worker_name | busy_workers]}}
+
         {:error, next_state} ->
-          {:cont, {:error, :no_available_workers, next_state}}
+          {:cont, {:error, :no_available_workers, next_state, busy_workers}}
       end
     end)
+    |> case do
+      {:error, :no_available_workers, next_state, []} ->
+        {:error, :no_available_workers, next_state}
+
+      {:error, :no_available_workers, next_state, busy_workers} ->
+        {:error, {:workers_busy, Enum.reverse(busy_workers)}, next_state}
+
+      other ->
+        other
+    end
   end
 
   defp probe_and_reserve_worker(state, worker_name, candidate_index) do
@@ -533,13 +557,32 @@ defmodule Conductor.Orchestrator do
         {:error, state}
 
       worker_busy?(worker.name) ->
-        Logger.info("worker #{worker.name} busy, skipping this cycle")
-        {:error, state}
+        {:busy, worker.name, state}
 
       true ->
         {:ok, worker,
          %{state | worker_index: rem(candidate_index + 1, length(state.worker_order))}}
     end
+  end
+
+  defp record_busy_deferral(summary, workers) do
+    %{
+      count: summary.count + 1,
+      workers: MapSet.union(summary.workers, MapSet.new(workers))
+    }
+  end
+
+  defp log_busy_deferrals(%{count: 0}), do: :ok
+
+  defp log_busy_deferrals(%{count: count, workers: workers}) do
+    worker_list =
+      workers
+      |> Enum.sort()
+      |> Enum.join(", ")
+
+    Logger.info(
+      "all healthy workers busy, deferred #{count} issue(s) this cycle; workers: #{worker_list}"
+    )
   end
 
   defp probe_worker(state, worker_name) do
