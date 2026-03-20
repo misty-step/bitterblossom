@@ -85,39 +85,10 @@ defmodule Conductor.RunServer do
     # Generate run_id first so the lease is immediately valid
     ts = System.system_time(:second)
     run_id = "run-#{state.issue.number}-#{ts}"
+    branch = state.existing_branch || "factory/#{state.issue.number}-#{ts}"
+    state = %{state | run_id: run_id, branch: branch}
 
-    case Store.acquire_lease(state.repo, state.issue.number, run_id) do
-      {:error, :already_leased} ->
-        Logger.warning("issue ##{state.issue.number} already leased, skipping")
-        {:stop, :normal, state}
-
-      :ok ->
-        case Store.create_run(%{
-               run_id: run_id,
-               repo: state.repo,
-               issue_number: state.issue.number,
-               issue_title: state.issue.title,
-               builder_sprite: state.worker
-             }) do
-          {:ok, ^run_id} ->
-            branch = state.existing_branch || "factory/#{state.issue.number}-#{ts}"
-            state = %{state | run_id: run_id, branch: branch}
-
-            Store.record_event(run_id, "lease_acquired", %{issue: state.issue.number})
-            log(state, "lease acquired for issue ##{state.issue.number}")
-
-            {:noreply, state, {:continue, :prepare_workspace}}
-
-          _ ->
-            Store.release_lease(state.repo, state.issue.number)
-
-            Logger.error(
-              "create_run failed after lease acquired for issue ##{state.issue.number}"
-            )
-
-            {:stop, :normal, state}
-        end
-    end
+    acquire_initial_dispatch_leases(state)
   end
 
   @impl true
@@ -217,6 +188,17 @@ defmodule Conductor.RunServer do
          dispatch_attempt_count: next_dispatch_attempt,
          worker_attempt_count: next_worker_attempt
      }}
+  end
+
+  @impl true
+  def handle_continue(:acquire_fallback_sprite, state) do
+    case Store.acquire_sprite_lease(state.worker, state.run_id) do
+      :ok ->
+        {:noreply, state, {:continue, :prepare_workspace}}
+
+      {:error, :already_leased} ->
+        maybe_shift_to_next_worker(state, "builder sprite lease unavailable")
+    end
   end
 
   # Governance (CI polling, review handling, merge) has been moved to the
@@ -338,6 +320,7 @@ defmodule Conductor.RunServer do
 
       {:fallback, next_worker} ->
         cleanup_workspace(state)
+        release_sprite_lease(state)
 
         Store.record_event(state.run_id, "builder_sprite_fallback", %{
           from: state.worker,
@@ -362,7 +345,7 @@ defmodule Conductor.RunServer do
              worktree_path: nil,
              worker_attempt_count: 0,
              attempted_workers: Enum.uniq(state.attempted_workers ++ [next_worker])
-         }, {:continue, :prepare_workspace}}
+         }, {:continue, :acquire_fallback_sprite}}
 
       :fail ->
         fail(state, "builder_dispatch_failed", reason, %{
@@ -410,6 +393,8 @@ defmodule Conductor.RunServer do
         true
       end
 
+    not_leased? = not Store.sprite_leased?(worker)
+
     not_busy? =
       cond do
         function_exported?(worker_mod(), :busy?, 2) -> not worker_mod().busy?(worker, [])
@@ -417,7 +402,72 @@ defmodule Conductor.RunServer do
         true -> true
       end
 
-    healthy? and not_busy?
+    healthy? and not_leased? and not_busy?
+  end
+
+  defp acquire_initial_dispatch_leases(state) do
+    case Store.create_run_with_dispatch_leases(%{
+           run_id: state.run_id,
+           repo: state.repo,
+           issue_number: state.issue.number,
+           issue_title: state.issue.title,
+           builder_sprite: state.worker
+         }) do
+      {:ok, run_id} when run_id == state.run_id ->
+        Store.record_event(run_id, "lease_acquired", %{issue: state.issue.number})
+        log(state, "lease acquired for issue ##{state.issue.number} on #{state.worker}")
+        {:noreply, state, {:continue, :prepare_workspace}}
+
+      {:error, :already_leased} ->
+        Logger.warning("issue ##{state.issue.number} already leased, skipping")
+        {:stop, :normal, state}
+
+      {:error, :sprite_already_leased} ->
+        maybe_shift_to_next_worker(state, "builder sprite already reserved", initial?: true)
+    end
+  end
+
+  defp maybe_shift_to_next_worker(state, reason, opts \\ []) do
+    case next_available_worker(state) do
+      nil ->
+        if Keyword.get(opts, :initial?, false) do
+          role_log(:info, state, "no alternate builder available: #{reason}")
+          {:stop, :normal, state}
+        else
+          fail(state, "builder_dispatch_failed", reason, %{
+            sprite: state.worker,
+            attempt: state.dispatch_attempt_count,
+            worker_attempt: state.worker_attempt_count,
+            failure_class: "transient",
+            reason: reason
+          })
+        end
+
+      next_worker ->
+        role_log(
+          :info,
+          state,
+          "switching builder from #{state.worker} to #{next_worker}: #{reason}"
+        )
+
+        next_state = %{
+          state
+          | worker: next_worker,
+            worktree_path: nil,
+            worker_attempt_count: 0,
+            attempted_workers: Enum.uniq(state.attempted_workers ++ [next_worker])
+        }
+
+        if Keyword.get(opts, :initial?, false) do
+          acquire_initial_dispatch_leases(next_state)
+        else
+          Store.update_run(state.run_id, %{
+            builder_sprite: next_worker
+          })
+
+          {:noreply, next_state, {:continue, :acquire_fallback_sprite}}
+        end
+    end
   end
 
   defp dispatch_failure_reason(failure_class, category, nil) do
@@ -584,14 +634,6 @@ defmodule Conductor.RunServer do
     pr_number = pr["number"]
     pr_url = pr["url"]
 
-    Store.complete_run(state.run_id, "pr_opened", "pr_opened")
-
-    Store.update_run(state.run_id, %{
-      pr_number: pr_number,
-      pr_url: pr_url,
-      turn_count: state.turn_count
-    })
-
     Store.record_event(state.run_id, "builder_pr_detected", %{
       pr_number: pr_number,
       pr_url: pr_url
@@ -599,14 +641,15 @@ defmodule Conductor.RunServer do
 
     log(state, "Weaver opened PR ##{pr_number}: #{pr_url}")
     cleanup_workspace(state)
+    Store.complete_pr_opened(state.run_id, pr_number, pr_url, state.turn_count)
     {:stop, :normal, %{state | phase: :pr_opened, pr_number: pr_number}}
   end
 
   defp fail(state, event_type, reason, payload \\ %{}) do
     role_log(:error, state, "#{event_type}: #{reason}")
     Store.record_event(state.run_id, event_type, Map.put(payload, :reason, reason))
-    Store.terminate_run(state.run_id, "failed", "failed", state.repo, state.issue.number)
     cleanup_workspace(state)
+    Store.terminate_run(state.run_id, "failed", "failed", state.repo, state.issue.number)
     Retro.analyze(state.run_id)
     {:stop, :normal, %{state | phase: :failed}}
   end
@@ -614,8 +657,8 @@ defmodule Conductor.RunServer do
   defp block(state, reason) do
     role_log(:warning, state, "blocked: #{reason}")
     Store.record_event(state.run_id, "run_blocked", %{reason: reason})
-    Store.terminate_run(state.run_id, "blocked", "blocked", state.repo, state.issue.number)
     cleanup_workspace(state)
+    Store.terminate_run(state.run_id, "blocked", "blocked", state.repo, state.issue.number)
 
     # Comment on the issue so the operator knows
     tracker_mod().comment(
@@ -638,6 +681,12 @@ defmodule Conductor.RunServer do
           Store.record_event(state.run_id, "workspace_cleanup_failed", %{reason: reason})
       end
     end
+  end
+
+  defp release_sprite_lease(%{run_id: nil}), do: :ok
+
+  defp release_sprite_lease(state) do
+    Store.release_sprite_lease(state.worker, state.run_id)
   end
 
   defp cancel_dispatch(%{dispatch_task: %Task{} = task} = state) do

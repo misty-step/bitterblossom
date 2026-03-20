@@ -554,6 +554,33 @@ defmodule Conductor.OrchestratorTest do
       end)
     end
 
+    test "skips a store-reserved worker and dispatches to the next healthy sprite" do
+      orig_max = Application.get_env(:conductor, :max_concurrent_runs)
+      Application.put_env(:conductor, :max_concurrent_runs, 1)
+
+      on_exit(fn ->
+        if orig_max,
+          do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
+          else: Application.delete_env(:conductor, :max_concurrent_runs)
+      end)
+
+      issue = %Conductor.Issue{
+        number: 150,
+        title: "reserved sprite",
+        body: "## Problem\nx\n## Acceptance Criteria\ny",
+        url: "https://example.test/issues/150"
+      }
+
+      :ok = Store.acquire_sprite_lease("sprite-1", "run-149-1")
+      MockState.put({:eligible, "test/repo", nil}, [issue])
+
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1", "sprite-2"])
+
+      eventually(fn ->
+        assert MockState.get(:started_runs) == [{150, "sprite-2"}]
+      end)
+    end
+
     test "drains unhealthy workers after consecutive probe failures and recovers on success",
          %{orch_pid: orch_pid} do
       orig_max = Application.get_env(:conductor, :max_concurrent_runs)

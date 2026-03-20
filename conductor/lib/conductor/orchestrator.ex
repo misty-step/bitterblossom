@@ -532,6 +532,10 @@ defmodule Conductor.Orchestrator do
       not worker.healthy ->
         {:error, state}
 
+      Store.sprite_leased?(worker.name) ->
+        Logger.info("worker #{worker.name} reserved, skipping this cycle")
+        {:error, state}
+
       worker_busy?(worker.name) ->
         Logger.info("worker #{worker.name} busy, skipping this cycle")
         {:error, state}
