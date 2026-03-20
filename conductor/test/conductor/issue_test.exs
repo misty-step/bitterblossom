@@ -91,6 +91,29 @@ defmodule Conductor.IssueTest do
       assert issue.assignees == ["phaedrus", "sprite-bot"]
     end
 
+    test "falls back to assignee names when login is absent" do
+      issue =
+        Issue.from_github(%{
+          "number" => 1,
+          "title" => "Assigned",
+          "assignees" => [%{"name" => "Phaedrus"}]
+        })
+
+      assert issue.assignees == ["Phaedrus"]
+    end
+
+    test "accepts plain string assignees and drops invalid entries" do
+      issue =
+        Issue.from_github(%{
+          "number" => 1,
+          "title" => "Assigned",
+          "assignees" => ["phaedrus", %{"id" => 7}]
+        })
+
+      assert issue.assignees == ["phaedrus"]
+      assert Issue.human_assigned?(issue)
+    end
+
     test "defaults assignees to empty list when missing" do
       issue = Issue.from_github(%{"number" => 1, "title" => "No assignees"})
 
@@ -191,6 +214,24 @@ defmodule Conductor.IssueTest do
 
       assert Issue.priority(issue) == :unlabeled
     end
+
+    test "returns :p0 and :p3 when those labels are present" do
+      high_issue = %Issue{number: 1, title: "t", body: "", url: "u", labels: ["p0"]}
+      low_issue = %Issue{number: 2, title: "t", body: "", url: "u", labels: ["p3"]}
+
+      assert Issue.priority(high_issue) == :p0
+      assert Issue.priority(low_issue) == :p3
+    end
+  end
+
+  describe "selection_sort_key/1" do
+    test "orders by priority rank then issue number" do
+      issue = %Issue{number: 42, title: "t", body: "", url: "u", labels: ["p2"]}
+      unlabeled = %Issue{number: 7, title: "t", body: "", url: "u", labels: []}
+
+      assert Issue.selection_sort_key(issue) == {2, 42}
+      assert Issue.selection_sort_key(unlabeled) == {4, 7}
+    end
   end
 
   describe "assigned?/1" do
@@ -204,6 +245,29 @@ defmodule Conductor.IssueTest do
       issue = %Issue{number: 1, title: "t", body: "", url: "u", assignees: []}
 
       refute Issue.assigned?(issue)
+    end
+  end
+
+  describe "human_assigned?/1" do
+    test "returns true for user assignees and false for bot assignees" do
+      human_issue =
+        Issue.from_github(%{
+          "number" => 1,
+          "title" => "Human",
+          "assignees" => [%{"login" => "phaedrus", "type" => "User"}]
+        })
+
+      bot_issue =
+        Issue.from_github(%{
+          "number" => 2,
+          "title" => "Bot",
+          "assignees" => [%{"login" => "renovate[bot]", "type" => "Bot"}]
+        })
+
+      assert Issue.human_assigned?(human_issue)
+      refute Issue.human_assigned?(bot_issue)
+      assert Issue.human_assignees(human_issue) == ["phaedrus"]
+      assert Issue.human_assignees(bot_issue) == []
     end
   end
 end

@@ -294,10 +294,15 @@ defmodule Conductor.Orchestrator do
     max_runs = Config.max_concurrent_runs()
     slots = max_runs - map_size(state.active_runs)
 
-    state.repo
-    |> tracker_mod().list_eligible(label: state.label)
-    |> Enum.reject(&skip_assigned_issue?(state, &1))
-    |> Enum.sort_by(&Issue.selection_sort_key/1)
+    eligible_issues =
+      state.repo
+      |> tracker_mod().list_eligible(label: state.label)
+      |> Enum.reject(&skip_assigned_issue?(state, &1))
+      |> Enum.sort_by(&Issue.selection_sort_key/1)
+
+    log_dispatch_candidates(eligible_issues)
+
+    eligible_issues
     |> Enum.reject(&Store.leased?(state.repo, &1.number))
     |> Enum.reject(&operator_blocked_issue?(state.repo, &1.number))
     |> Enum.reduce({state, max(slots, 0)}, fn issue, {acc, remaining_slots} ->
@@ -334,15 +339,28 @@ defmodule Conductor.Orchestrator do
   defp skip_assigned_issue?(%{include_assigned_issues: true}, _issue), do: false
 
   defp skip_assigned_issue?(_state, issue) do
-    if Issue.assigned?(issue) do
+    human_assignees = Issue.human_assignees(issue)
+
+    if human_assignees != [] do
       Logger.info(
-        "skipping issue ##{issue.number} because it is assigned to #{Enum.join(issue.assignees, ", ")}"
+        "skipping issue ##{issue.number} because it is assigned to #{Enum.join(human_assignees, ", ")}"
       )
 
       true
     else
       false
     end
+  end
+
+  defp log_dispatch_candidates([]), do: :ok
+
+  defp log_dispatch_candidates(eligible_issues) do
+    Logger.info(
+      "[dispatch] eligible issues after priority sort: " <>
+        Enum.map_join(eligible_issues, ", ", fn issue ->
+          "##{issue.number}(#{Issue.priority(issue)})"
+        end)
+    )
   end
 
   defp maybe_shape_issue(state, issue, failures) do

@@ -7,27 +7,31 @@ defmodule Conductor.Issue do
           body: binary(),
           url: binary(),
           labels: [binary()],
-          assignees: [binary()]
+          assignees: [binary()],
+          assignee_metadata: [map()]
         }
 
   @enforce_keys [:number, :title, :body, :url]
-  defstruct [:number, :title, :body, :url, labels: [], assignees: []]
+  defstruct [:number, :title, :body, :url, labels: [], assignees: [], assignee_metadata: []]
 
   @priority_order %{p0: 0, p1: 1, p2: 2, p3: 3, unlabeled: 4}
 
   @spec from_github(map()) :: t()
   def from_github(%{"number" => n, "title" => t} = data) do
+    assignee_metadata =
+      data["assignees"]
+      |> List.wrap()
+      |> Enum.map(&normalize_assignee/1)
+      |> Enum.reject(&(&1.name == ""))
+
     %__MODULE__{
       number: n,
       title: t,
       body: data["body"] || "",
       url: data["url"] || "https://github.com/unknown/issues/#{n}",
       labels: Enum.map(data["labels"] || [], &label_name/1),
-      assignees:
-        data["assignees"]
-        |> List.wrap()
-        |> Enum.map(&assignee_login/1)
-        |> Enum.reject(&(&1 == ""))
+      assignees: Enum.map(assignee_metadata, & &1.name),
+      assignee_metadata: assignee_metadata
     }
   end
 
@@ -95,6 +99,20 @@ defmodule Conductor.Issue do
   @spec assigned?(t()) :: boolean()
   def assigned?(%__MODULE__{assignees: assignees}), do: assignees != []
 
+  @doc "Returns only human assignee names."
+  @spec human_assignees(t()) :: [binary()]
+  def human_assignees(%__MODULE__{assignee_metadata: []} = issue), do: issue.assignees
+
+  def human_assignees(%__MODULE__{assignee_metadata: assignee_metadata}) do
+    assignee_metadata
+    |> Enum.filter(&human_assignee?/1)
+    |> Enum.map(& &1.name)
+  end
+
+  @doc "True when any human assignee is present on the issue."
+  @spec human_assigned?(t()) :: boolean()
+  def human_assigned?(%__MODULE__{} = issue), do: human_assignees(issue) != []
+
   defp has?(body, heading), do: String.contains?(body, heading)
 
   defp check_missing(acc, body, headings, msg) do
@@ -114,8 +132,43 @@ defmodule Conductor.Issue do
     end
   end
 
-  defp assignee_login(%{"login" => login}) when is_binary(login), do: login
-  defp assignee_login(%{"name" => name}) when is_binary(name), do: name
-  defp assignee_login(login) when is_binary(login), do: login
-  defp assignee_login(_), do: ""
+  defp normalize_assignee(%{"login" => login} = assignee) when is_binary(login) do
+    %{
+      name: login,
+      kind: assignee_kind(assignee, login)
+    }
+  end
+
+  defp normalize_assignee(%{"name" => name} = assignee) when is_binary(name) do
+    %{
+      name: name,
+      kind: assignee_kind(assignee, name)
+    }
+  end
+
+  defp normalize_assignee(login) when is_binary(login) do
+    %{
+      name: login,
+      kind: assignee_kind(%{}, login)
+    }
+  end
+
+  defp normalize_assignee(_), do: %{name: "", kind: :unknown}
+
+  defp assignee_kind(%{"type" => type}, _name) when is_binary(type) do
+    case String.downcase(type) do
+      "bot" -> :bot
+      "app" -> :app
+      "user" -> :human
+      _ -> :unknown
+    end
+  end
+
+  defp assignee_kind(_assignee, name) when is_binary(name) do
+    if String.ends_with?(String.downcase(name), "[bot]"), do: :bot, else: :human
+  end
+
+  defp human_assignee?(%{name: "", kind: _kind}), do: false
+  defp human_assignee?(%{kind: :human}), do: true
+  defp human_assignee?(_assignee), do: false
 end

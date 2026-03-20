@@ -585,6 +585,35 @@ defmodule Conductor.OrchestratorTest do
       end)
     end
 
+    test "does not skip bot-assigned issues by default" do
+      orig_max = Application.get_env(:conductor, :max_concurrent_runs)
+      Application.put_env(:conductor, :max_concurrent_runs, 1)
+
+      on_exit(fn ->
+        if orig_max,
+          do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
+          else: Application.delete_env(:conductor, :max_concurrent_runs)
+      end)
+
+      issue =
+        Conductor.Issue.from_github(%{
+          "number" => 703,
+          "title" => "bot-owned p1",
+          "body" => "## Problem\nx\n## Acceptance Criteria\ny",
+          "url" => "https://example.test/issues/703",
+          "labels" => [%{"name" => "p1"}],
+          "assignees" => [%{"login" => "renovate[bot]", "type" => "Bot"}]
+        })
+
+      MockState.put({:eligible, "test/repo", nil}, [issue])
+
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
+
+      eventually(fn ->
+        assert MockState.get(:started_runs) == [{703, "sprite-1"}]
+      end)
+    end
+
     test "does not start more runs than max_concurrent_runs allows" do
       orig_max = Application.get_env(:conductor, :max_concurrent_runs)
       Application.put_env(:conductor, :max_concurrent_runs, 0)
