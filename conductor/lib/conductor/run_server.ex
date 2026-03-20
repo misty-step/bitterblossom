@@ -433,8 +433,7 @@ defmodule Conductor.RunServer do
         {:noreply, state, {:continue, :prepare_workspace}}
 
       _ ->
-        Store.release_sprite_lease(state.worker, state.run_id)
-        Store.release_lease(state.repo, state.issue.number)
+        Store.release_dispatch_leases(state.repo, state.issue.number, state.run_id)
 
         Logger.error("create_run failed after lease acquired for issue ##{state.issue.number}")
 

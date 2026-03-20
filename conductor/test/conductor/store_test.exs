@@ -310,6 +310,17 @@ defmodule Conductor.StoreTest do
     refute Store.sprite_leased?("sprite-1")
   end
 
+  test "release_dispatch_leases atomically releases issue and sprite leases" do
+    :ok = Store.acquire_dispatch_leases("test/repo", 88, "run-88-1", "sprite-1")
+    assert Store.leased?("test/repo", 88)
+    assert Store.sprite_leased?("sprite-1")
+
+    :ok = Store.release_dispatch_leases("test/repo", 88, "run-88-1")
+
+    refute Store.leased?("test/repo", 88)
+    refute Store.sprite_leased?("sprite-1")
+  end
+
   test "find_run_by_pr returns an error tuple when the database query fails" do
     :sys.replace_state(Store, fn state -> %{state | conn: :invalid} end)
 

@@ -91,6 +91,12 @@ defmodule Conductor.Store do
     GenServer.call(__MODULE__, {:release_lease, repo, issue_number})
   end
 
+  @doc "Atomically release the issue lease and any sprite lease held for the run."
+  @spec release_dispatch_leases(binary(), pos_integer(), binary()) :: :ok
+  def release_dispatch_leases(repo, issue_number, run_id) do
+    GenServer.call(__MODULE__, {:release_dispatch_leases, repo, issue_number, run_id})
+  end
+
   @spec leased?(binary(), pos_integer()) :: boolean()
   def leased?(repo, issue_number) do
     GenServer.call(__MODULE__, {:leased?, repo, issue_number})
@@ -416,6 +422,32 @@ defmodule Conductor.Store do
       [now_utc(), repo, issue_number]
     )
 
+    {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call({:release_dispatch_leases, repo, issue_number, run_id}, _from, state) do
+    now = now_utc()
+
+    exec(state.conn, "BEGIN IMMEDIATE", [])
+
+    exec(
+      state.conn,
+      """
+      UPDATE leases
+      SET released_at = ?1
+      WHERE repo = ?2 AND issue_number = ?3 AND run_id = ?4 AND released_at IS NULL
+      """,
+      [now, repo, issue_number, run_id]
+    )
+
+    exec(
+      state.conn,
+      "UPDATE sprite_leases SET released_at = ?1 WHERE run_id = ?2 AND released_at IS NULL",
+      [now, run_id]
+    )
+
+    exec(state.conn, "COMMIT", [])
     {:reply, :ok, state}
   end
 
