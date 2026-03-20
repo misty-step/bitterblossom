@@ -117,6 +117,17 @@ defmodule Conductor.Sprite do
     end
   end
 
+  @spec create(binary(), keyword()) :: :ok | {:error, term()}
+  def create(sprite, opts \\ []) do
+    org = Keyword.get(opts, :org) || Config.sprites_org!()
+    shell_fn = Keyword.get(opts, :shell_fn, &Shell.cmd/3)
+
+    case shell_fn.("sprite", ["create", "-o", org, "--skip-console", sprite], timeout: 120_000) do
+      {:ok, _} -> :ok
+      {:error, msg, _code} -> {:error, msg}
+    end
+  end
+
   @spec provision(binary(), keyword()) :: :ok | {:error, term()}
   def provision(sprite, opts \\ []) do
     repo = Keyword.get(opts, :repo)

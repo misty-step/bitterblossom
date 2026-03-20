@@ -73,6 +73,10 @@ defmodule Conductor.Fleet.Reconciler do
         Logger.info("[fleet] #{name} healthy")
         %{name: name, role: sprite.role, healthy: true, action: :none}
 
+      {:missing, _reason} ->
+        Logger.info("[fleet] #{name} missing, creating...")
+        create_and_provision(sprite, opts)
+
       :needs_setup ->
         Logger.info("[fleet] #{name} needs setup, provisioning...")
         provision_and_verify(sprite, opts)
@@ -121,8 +125,12 @@ defmodule Conductor.Fleet.Reconciler do
       end)
 
     case status_fn.(sprite.name, harness: sprite.harness) do
-      {:error, _reason} ->
-        :unreachable
+      {:error, reason} ->
+        if is_binary(reason) and missing_sprite_error?(reason) do
+          {:missing, reason}
+        else
+          :unreachable
+        end
 
       {:ok, %{healthy: true}} ->
         :healthy
@@ -130,5 +138,31 @@ defmodule Conductor.Fleet.Reconciler do
       {:ok, _status} ->
         :needs_setup
     end
+  end
+
+  defp create_and_provision(sprite, opts) do
+    create_fn = Keyword.get(opts, :create_fn, &Sprite.create/2)
+
+    create_opts =
+      case Map.get(sprite, :org) do
+        nil -> []
+        org -> [org: org]
+      end
+
+    case create_fn.(sprite.name, create_opts) do
+      :ok ->
+        case provision_and_verify(sprite, opts) do
+          %{healthy: true} = result -> %{result | action: :created}
+          result -> result
+        end
+
+      {:error, reason} ->
+        Logger.error("[fleet] #{sprite.name} creation failed: #{reason}")
+        %{name: sprite.name, role: sprite.role, healthy: false, action: :failed}
+    end
+  end
+
+  defp missing_sprite_error?(reason) do
+    String.contains?(String.downcase(reason), "sprite not found")
   end
 end
