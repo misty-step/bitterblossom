@@ -650,6 +650,7 @@ defmodule Conductor.Sprite do
     gh auth status >/dev/null
     git config --global credential.helper '!gh auth git-credential'
     test "$(git config --global --get credential.helper)" = "!gh auth git-credential"
+    git config --global pull.rebase false
     git config --global user.name "bitterblossom[bot]"
     git config --global user.email "bitterblossom@misty-step.dev"
     git config --global --add safe.directory '*'

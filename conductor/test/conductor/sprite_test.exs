@@ -183,6 +183,7 @@ defmodule Conductor.SpriteTest do
         end)
 
       assert git_auth_cmd =~ "gh auth login --with-token"
+      assert git_auth_cmd =~ "git config --global pull.rebase false"
       assert Keyword.has_key?(git_auth_opts, :files)
 
       assert Enum.any?(git_auth_files, fn

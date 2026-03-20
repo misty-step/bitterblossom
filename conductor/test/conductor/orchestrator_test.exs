@@ -194,6 +194,13 @@ defmodule Conductor.OrchestratorTest do
       end
   end
 
+  defp count_occurrences(haystack, needle) do
+    haystack
+    |> String.split(needle)
+    |> length()
+    |> Kernel.-(1)
+  end
+
   defp safe_stop(nil), do: :ok
 
   defp safe_stop(pid) when is_pid(pid) do
@@ -552,6 +559,43 @@ defmodule Conductor.OrchestratorTest do
       eventually(fn ->
         assert MockState.get(:started_runs) == [{1, "sprite-1"}, {2, "sprite-2"}, {3, "sprite-3"}]
       end)
+    end
+
+    test "logs one busy-worker deferral summary per poll cycle" do
+      orig_max = Application.get_env(:conductor, :max_concurrent_runs)
+      Application.put_env(:conductor, :max_concurrent_runs, 3)
+
+      on_exit(fn ->
+        if orig_max,
+          do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
+          else: Application.delete_env(:conductor, :max_concurrent_runs)
+      end)
+
+      issues =
+        Enum.map(1..3, fn number ->
+          %Conductor.Issue{
+            number: number,
+            title: "issue #{number}",
+            body: "## Problem\nx\n## Acceptance Criteria\ny",
+            url: "https://example.test/issues/#{number}"
+          }
+        end)
+
+      MockState.put({:eligible, "test/repo", nil}, issues)
+      MockState.put({:busy, "sprite-1"}, true)
+
+      log =
+        capture_log(fn ->
+          :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
+          Process.sleep(100)
+        end)
+
+      assert count_occurrences(log, "all healthy workers busy, deferred 3 issue(s) this cycle") ==
+               1
+
+      assert log =~ "workers: sprite-1"
+      refute log =~ "worker sprite-1 busy, skipping this cycle"
+      assert MockState.get(:started_runs) == []
     end
 
     test "drains unhealthy workers after consecutive probe failures and recovers on success",
