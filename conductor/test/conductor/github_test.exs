@@ -853,9 +853,9 @@ defmodule Conductor.GitHubTest do
   end
 
   describe "rate limit handling" do
-    test "activates backoff after a rate-limited response" do
-      Application.put_env(:conductor, :github_rate_limit_backoff_base_ms, 1_000)
-      Application.put_env(:conductor, :github_rate_limit_backoff_max_ms, 1_000)
+    test "increases backoff after another rate-limited response once the wait expires" do
+      Application.put_env(:conductor, :github_rate_limit_backoff_base_ms, 20)
+      Application.put_env(:conductor, :github_rate_limit_backoff_max_ms, 80)
 
       with_fake_gh(
         """
@@ -865,13 +865,92 @@ defmodule Conductor.GitHubTest do
         """,
         fn _tmp_dir, args_path ->
           assert {:error, message} = GitHub.list_issues("misty-step/bitterblossom")
-          assert message =~ "rate limit"
+          assert message =~ "backing off for 20ms"
 
           assert {:error, message} = GitHub.list_issues("misty-step/bitterblossom")
           assert message =~ "backoff active"
 
+          Process.sleep(30)
+
+          assert {:error, message} = GitHub.list_issues("misty-step/bitterblossom")
+          assert message =~ "backing off for 40ms"
+
+          assert {:error, message} = GitHub.list_issues("misty-step/bitterblossom")
+          assert message =~ "backoff active for"
+
           args = File.read!(args_path)
-          assert length(String.split(args, "issue\nlist\n")) == 2
+          assert length(String.split(args, "issue\nlist\n")) == 3
+        end
+      )
+    end
+
+    test "clears backoff after a successful retry" do
+      Application.put_env(:conductor, :github_rate_limit_backoff_base_ms, 20)
+      Application.put_env(:conductor, :github_rate_limit_backoff_max_ms, 80)
+      Application.put_env(:conductor, :github_issue_cache_ttl_ms, 0)
+
+      with_fake_gh(
+        """
+        printf '%s\n' "$@" >> "$GH_ARGS_PATH"
+        state_dir="$(dirname "$0")"
+        attempts_file="$state_dir/list-attempts"
+        attempts=0
+
+        if [[ -f "$attempts_file" ]]; then
+          attempts="$(cat "$attempts_file")"
+        fi
+
+        attempts=$((attempts + 1))
+        printf '%s' "$attempts" > "$attempts_file"
+
+        if (( attempts == 1 )); then
+          echo 'GraphQL: API rate limit exceeded' >&2
+          exit 1
+        fi
+
+        cat <<'JSON'
+        []
+        JSON
+        """,
+        fn _tmp_dir, args_path ->
+          assert {:error, message} = GitHub.list_issues("misty-step/bitterblossom")
+          assert message =~ "backing off for 20ms"
+
+          assert {:error, message} = GitHub.list_issues("misty-step/bitterblossom")
+          assert message =~ "backoff active"
+
+          Process.sleep(30)
+
+          assert {:ok, []} = GitHub.list_issues("misty-step/bitterblossom")
+          assert {:ok, []} = GitHub.list_issues("misty-step/bitterblossom")
+
+          args = File.read!(args_path)
+          assert length(String.split(args, "issue\nlist\n")) == 4
+        end
+      )
+    end
+
+    test "returns an error for PR failure logs when rate limiting is active" do
+      Application.put_env(:conductor, :github_rate_limit_backoff_base_ms, 20)
+      Application.put_env(:conductor, :github_rate_limit_backoff_max_ms, 80)
+
+      with_fake_gh(
+        """
+        printf '%s\n' "$@" >> "$GH_ARGS_PATH"
+        echo 'GraphQL: API rate limit exceeded' >&2
+        exit 1
+        """,
+        fn _tmp_dir, args_path ->
+          assert {:error, message} = GitHub.pr_ci_failure_logs("misty-step/bitterblossom", 42)
+          assert message =~ "backing off for 20ms"
+
+          assert {:error, message} = GitHub.pr_ci_failure_logs("misty-step/bitterblossom", 42)
+          assert message =~ "backoff active"
+
+          args = File.read!(args_path)
+
+          assert length(String.split(args, "pr\nchecks\n42\n--repo\nmisty-step/bitterblossom\n")) ==
+                   2
         end
       )
     end
@@ -948,6 +1027,45 @@ defmodule Conductor.GitHubTest do
   end
 
   describe "close_issue/2" do
+    test "invalidates cached issue state after closing an issue" do
+      with_fake_gh(
+        """
+        state_dir="$(dirname "$0")"
+        view_count_file="$state_dir/issue-view-count"
+        view_count=0
+
+        if [[ -f "$view_count_file" ]]; then
+          view_count="$(cat "$view_count_file")"
+        fi
+
+        if [[ "$1 $2" == "issue view" ]]; then
+          view_count=$((view_count + 1))
+          printf '%s' "$view_count" > "$view_count_file"
+
+          if (( view_count == 1 )); then
+            cat <<'JSON'
+        {"number":42,"title":"before close","body":"draft","url":"https://example.test/issues/42","labels":[]}
+        JSON
+          else
+            cat <<'JSON'
+        {"number":42,"title":"after close","body":"draft","url":"https://example.test/issues/42","labels":[]}
+        JSON
+          fi
+        elif [[ "$1 $2 $3" == "issue close 42" ]]; then
+          exit 0
+        else
+          echo "unexpected gh args: $*" >&2
+          exit 1
+        fi
+        """,
+        fn _tmp_dir, _args_path ->
+          assert {:ok, %Issue{title: "before close"}} = GitHub.get_issue("owner/repo", 42)
+          assert :ok = GitHub.close_issue("owner/repo", 42)
+          assert {:ok, %Issue{title: "after close"}} = GitHub.get_issue("owner/repo", 42)
+        end
+      )
+    end
+
     test "closes the issue via gh" do
       with_fake_gh(
         """
@@ -965,6 +1083,90 @@ defmodule Conductor.GitHubTest do
         "exit 1",
         fn _tmp_dir, _args_path ->
           assert {:error, _} = GitHub.close_issue("owner/repo", 42)
+        end
+      )
+    end
+  end
+
+  describe "add_label/3" do
+    test "invalidates cached issue state for the updated pull request number" do
+      with_fake_gh(
+        """
+        state_dir="$(dirname "$0")"
+        view_count_file="$state_dir/issue-view-count"
+        view_count=0
+
+        if [[ -f "$view_count_file" ]]; then
+          view_count="$(cat "$view_count_file")"
+        fi
+
+        if [[ "$1 $2" == "issue view" ]]; then
+          view_count=$((view_count + 1))
+          printf '%s' "$view_count" > "$view_count_file"
+
+          if (( view_count == 1 )); then
+            cat <<'JSON'
+        {"number":42,"title":"before label","body":"draft","url":"https://example.test/issues/42","labels":[]}
+        JSON
+          else
+            cat <<'JSON'
+        {"number":42,"title":"after label","body":"draft","url":"https://example.test/issues/42","labels":[{"name":"lgtm"}]}
+        JSON
+          fi
+        elif [[ "$1 $2" == "pr edit" ]]; then
+          exit 0
+        else
+          echo "unexpected gh args: $*" >&2
+          exit 1
+        fi
+        """,
+        fn _tmp_dir, _args_path ->
+          assert {:ok, %Issue{title: "before label"}} = GitHub.get_issue("owner/repo", 42)
+          assert :ok = GitHub.add_label("owner/repo", 42, "lgtm")
+
+          assert {:ok, %Issue{title: "after label", labels: ["lgtm"]}} =
+                   GitHub.get_issue("owner/repo", 42)
+        end
+      )
+    end
+  end
+
+  describe "create_issue_comment/3" do
+    test "invalidates cached issue state after commenting" do
+      with_fake_gh(
+        """
+        state_dir="$(dirname "$0")"
+        view_count_file="$state_dir/issue-view-count"
+        view_count=0
+
+        if [[ -f "$view_count_file" ]]; then
+          view_count="$(cat "$view_count_file")"
+        fi
+
+        if [[ "$1 $2" == "issue view" ]]; then
+          view_count=$((view_count + 1))
+          printf '%s' "$view_count" > "$view_count_file"
+
+          if (( view_count == 1 )); then
+            cat <<'JSON'
+        {"number":42,"title":"before comment","body":"draft","url":"https://example.test/issues/42","labels":[]}
+        JSON
+          else
+            cat <<'JSON'
+        {"number":42,"title":"after comment","body":"draft","url":"https://example.test/issues/42","labels":[]}
+        JSON
+          fi
+        elif [[ "$1 $2" == "issue comment" ]]; then
+          exit 0
+        else
+          echo "unexpected gh args: $*" >&2
+          exit 1
+        fi
+        """,
+        fn _tmp_dir, _args_path ->
+          assert {:ok, %Issue{title: "before comment"}} = GitHub.get_issue("owner/repo", 42)
+          assert :ok = GitHub.create_issue_comment("owner/repo", 42, "hello")
+          assert {:ok, %Issue{title: "after comment"}} = GitHub.get_issue("owner/repo", 42)
         end
       )
     end

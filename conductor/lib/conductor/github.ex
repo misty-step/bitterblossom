@@ -19,6 +19,7 @@ defmodule Conductor.GitHub do
   @issues_page_size 100
   @cache_table :conductor_github_cache
   @backoff_table :conductor_github_backoff
+  @table_owner __MODULE__.TableOwner
 
   @doc false
   def reset_runtime_state do
@@ -32,7 +33,7 @@ defmodule Conductor.GitHub do
   def rate_limit_backoff_ms(attempt) when attempt > 0 do
     base = Conductor.Config.github_rate_limit_backoff_base_ms()
     max_ms = Conductor.Config.github_rate_limit_backoff_max_ms()
-    min(base * trunc(:math.pow(2, attempt - 1)), max_ms)
+    min(base * Integer.pow(2, attempt - 1), max_ms)
   end
 
   @spec get_issue(binary(), pos_integer()) :: {:ok, Issue.t()} | {:error, term()}
@@ -444,7 +445,6 @@ defmodule Conductor.GitHub do
         if remaining_ms > 0 do
           {:active, remaining_ms}
         else
-          :ets.delete(table, :rate_limit_backoff)
           :inactive
         end
 
@@ -486,27 +486,83 @@ defmodule Conductor.GitHub do
   end
 
   defp ensure_table(name, options) do
+    owner = ensure_table_owner()
+    call_table_owner(owner, {:ensure_table, name, options})
+    name
+  end
+
+  defp reset_table(name) do
+    owner = ensure_table_owner()
+    call_table_owner(owner, {:reset_table, name})
+    :ok
+  end
+
+  defp now_ms, do: System.monotonic_time(:millisecond)
+
+  defp ensure_table_owner do
+    case Process.whereis(@table_owner) do
+      pid when is_pid(pid) ->
+        pid
+
+      nil ->
+        pid = spawn(fn -> table_owner_loop() end)
+
+        case Process.register(pid, @table_owner) do
+          true ->
+            pid
+
+          false ->
+            Process.exit(pid, :normal)
+            Process.whereis(@table_owner)
+        end
+    end
+  end
+
+  defp call_table_owner(owner, request) do
+    ref = make_ref()
+    send(owner, {self(), ref, request})
+
+    receive do
+      {^ref, reply} -> reply
+    after
+      5_000 -> raise "github table owner timeout for #{inspect(request)}"
+    end
+  end
+
+  defp table_owner_loop do
+    receive do
+      {caller, ref, {:ensure_table, name, options}} ->
+        maybe_create_table(name, options)
+        send(caller, {ref, name})
+        table_owner_loop()
+
+      {caller, ref, {:reset_table, name}} ->
+        case :ets.whereis(name) do
+          :undefined -> :ok
+          tid -> :ets.delete(tid)
+        end
+
+        send(caller, {ref, :ok})
+        table_owner_loop()
+
+      _other ->
+        table_owner_loop()
+    end
+  end
+
+  defp maybe_create_table(name, options) do
     case :ets.whereis(name) do
       :undefined ->
         try do
           :ets.new(name, options)
         rescue
-          ArgumentError -> name
+          ArgumentError -> :ok
         end
 
-      tid ->
-        tid
+      _tid ->
+        :ok
     end
   end
-
-  defp reset_table(name) do
-    case :ets.whereis(name) do
-      :undefined -> :ok
-      tid -> :ets.delete(tid)
-    end
-  end
-
-  defp now_ms, do: System.monotonic_time(:millisecond)
 
   @green ~w(SUCCESS success NEUTRAL neutral SKIPPED skipped)
 
@@ -833,8 +889,11 @@ defmodule Conductor.GitHub do
            "--repo",
            repo
          ]) do
-      {:ok, output} -> {:ok, output}
-      {:error, output, _} -> {:ok, output}
+      {:ok, output} ->
+        {:ok, output}
+
+      {:error, output, code} ->
+        if(rate_limited?(output, code), do: {:error, output}, else: {:ok, output})
     end
   end
 
@@ -850,8 +909,12 @@ defmodule Conductor.GitHub do
            "--add-label",
            label
          ]) do
-      {:ok, _} -> :ok
-      {:error, msg, _} -> {:error, msg}
+      {:ok, _} ->
+        invalidate_issue_cache(repo, pr_number)
+        :ok
+
+      {:error, msg, _} ->
+        {:error, msg}
     end
   end
 

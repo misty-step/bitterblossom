@@ -98,8 +98,11 @@ defmodule Conductor.OrchestratorTest do
     def checks_green?(_repo, _pr), do: true
     def checks_failed?(_repo, _pr), do: false
 
-    def ci_status(_repo, pr_number),
-      do: MockState.get({:ci_status, pr_number}, {:ok, %{state: :green}})
+    def ci_status(_repo, pr_number) do
+      calls = MockState.get(:ci_status_calls, [])
+      MockState.put(:ci_status_calls, calls ++ [pr_number])
+      MockState.get({:ci_status, pr_number}, {:ok, %{state: :green}})
+    end
 
     def merge(_repo, pr_number, _opts) do
       merge_calls = MockState.get(:merge_calls, [])
@@ -252,6 +255,7 @@ defmodule Conductor.OrchestratorTest do
     MockState.put(:started_runs, [])
     MockState.put(:run_lifetime_ms, 150)
     MockState.put(:merge_calls, [])
+    MockState.put(:ci_status_calls, [])
     MockState.put(:close_issue_calls, [])
     MockState.put(:run_control_calls, [])
 
@@ -1722,6 +1726,75 @@ defmodule Conductor.OrchestratorTest do
   end
 
   describe "CI wait governance" do
+    test "reuses embedded statusCheckRollup data without calling ci_status/2" do
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 509,
+          issue_title: "embedded rollup",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(run_id, %{pr_number: 509, phase: "pr_opened", status: "pr_opened"})
+      Store.acquire_lease("test/repo", 509, run_id)
+
+      MockState.put(
+        {:labeled_prs, "test/repo", "lgtm"},
+        [
+          %{
+            "number" => 509,
+            "headRefName" => "factory/509-123",
+            "statusCheckRollup" => [
+              %{
+                "name" => "Elixir Checks",
+                "status" => "COMPLETED",
+                "conclusion" => "SUCCESS",
+                "detailsUrl" => "https://example.test/checks/509"
+              }
+            ]
+          }
+        ]
+      )
+
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
+
+      eventually(fn ->
+        assert MockState.get(:merge_calls) == [509]
+        assert MockState.get(:ci_status_calls) == []
+        {:ok, run} = Store.get_run(run_id)
+        assert run["phase"] == "merged"
+      end)
+    end
+
+    test "falls back to ci_status/2 when labeled PRs omit statusCheckRollup" do
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 510,
+          issue_title: "fallback ci lookup",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(run_id, %{pr_number: 510, phase: "pr_opened", status: "pr_opened"})
+      Store.acquire_lease("test/repo", 510, run_id)
+
+      MockState.put(
+        {:labeled_prs, "test/repo", "lgtm"},
+        [%{"number" => 510, "headRefName" => "factory/510-123"}]
+      )
+
+      MockState.put({:ci_status, 510}, {:ok, %{state: :green, summary: "all checks green"}})
+
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
+
+      eventually(fn ->
+        assert MockState.get(:merge_calls) == [510]
+        assert MockState.get(:ci_status_calls) == [510]
+        {:ok, run} = Store.get_run(run_id)
+        assert run["phase"] == "merged"
+      end)
+    end
+
     test "logs pending CI status with job URLs while waiting" do
       orig_interval = Application.get_env(:conductor, :ci_status_log_interval_minutes)
       Application.put_env(:conductor, :ci_status_log_interval_minutes, 0)
