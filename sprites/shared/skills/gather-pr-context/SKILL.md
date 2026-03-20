@@ -15,18 +15,30 @@ Build the minimum context Thorn needs before touching code.
 
 ## Subagents
 
-- `issue-reader`: fetch the linked issue title, body, acceptance criteria, and boundaries
-- `pr-reader`: fetch the PR body, title, labels, and changed-file summary
-- `review-reader`: fetch recent review comments and unresolved threads
-- `history-reader`: fetch earlier fixer attempts from conductor events or recent branch history
+- `issue-reader`
+  Fetch the linked issue title, body, acceptance criteria, and hard boundaries.
+- `pr-reader`
+  Fetch the PR title, full body, labels, changed files, and diff summary.
+- `review-reader`
+  Fetch recent review comments, unresolved threads, and any stated reviewer concerns.
+- `history-reader`
+  Fetch earlier fixer attempts from conductor events, recent commits, or prior fixer branches.
+
+## Procedure
+
+1. Read the issue first so the acceptance criteria anchor every later decision.
+2. Read the PR description and diff summary before interpreting the failing check.
+3. Read review state to avoid reintroducing an already-rejected approach.
+4. Read earlier fixer attempts to learn what already failed or caused regressions.
+5. Write down the invariants that must survive the fix before moving to `/diagnose-ci`.
 
 ## Output
 
 Return a short structured note with:
 
 1. Linked issue intent and acceptance criteria
-2. PR intent and trade-offs
-3. Diff summary and likely touch points
-4. Review state and unresolved concerns
+2. PR intent, explicit trade-offs, and any scope boundaries in the PR body
+3. Diff summary, likely touch points, and which files the failing checks exercise
+4. Review state, unresolved concerns, and comments that affect the fix
 5. Previous fixer attempts and what they changed
 6. Invariants that must not be broken

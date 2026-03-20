@@ -17,6 +17,10 @@ Do not edit code until this plan is written down.
    - security and policy gates
    - existing passing tests
    - PR scope and acceptance criteria
+6. Verification plan:
+   - failing checks to rerun
+   - nearby tests to rerun
+   - full suite command before push
 
 ## Self-Approval
 

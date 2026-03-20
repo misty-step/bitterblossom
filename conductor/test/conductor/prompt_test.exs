@@ -205,17 +205,16 @@ defmodule Conductor.PromptTest do
       refute prompt =~ "Focus exclusively on making CI green."
     end
 
-    test "keeps Thorn workflow guidance in persona files instead of inline prompt text" do
+    test "references the Thorn skill workflow inline" do
       pr = %{"number" => 10, "title" => "Fix CI", "headRefName" => "factory/10-fix"}
       prompt = Prompt.build_fixer_prompt(pr, "test failed", "issue body")
 
-      assert prompt =~ "Fix the CI failure on this PR."
-      assert prompt =~ "Investigate the root cause in the codebase"
-      refute prompt =~ "/gather-pr-context"
-      refute prompt =~ "/diagnose-ci"
-      refute prompt =~ "/plan-fix"
-      refute prompt =~ "/verify-invariants"
-      refute prompt =~ ".claude/skills"
+      assert prompt =~ "Use the synced Thorn persona and skill workflow in this workspace."
+      assert prompt =~ "/gather-pr-context"
+      assert prompt =~ "/diagnose-ci"
+      assert prompt =~ "/plan-fix"
+      assert prompt =~ "/verify-invariants"
+      assert prompt =~ "full test suite"
     end
   end
 

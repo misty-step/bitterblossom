@@ -104,19 +104,20 @@ defmodule Conductor.Prompt do
 
     ## Instructions
 
-    Fix the CI failure on this PR.
+    Use the synced Thorn persona and skill workflow in this workspace.
 
     1. Check out branch `#{safe_branch}`
-    2. Read the CI failure output above carefully
-    3. Investigate the root cause in the codebase
+    2. Before editing code, run `/gather-pr-context`, `/diagnose-ci`, and `/plan-fix`
+    3. Read the CI failure output above carefully and investigate the root cause in the codebase
     4. Fix the issue without changing PR intent, removing safeguards, or adding features
-    5. Run the failing tests/checks locally to verify the fix
+    5. After the fix, run `/verify-invariants`, then re-run the failing checks and the full test suite locally
     6. Commit with message `fix: resolve CI failure` and push
     7. CI will re-trigger automatically
 
     Do NOT modify the PR description, title, or labels.
     Do NOT expand the scope of the PR.
     Do NOT weaken tests, security gates, review protections, or other quality controls to make CI pass.
+    Do NOT change a test expectation unless you can prove it contradicts the linked acceptance criteria.
     Restore the intended behavior and let CI prove the fix.
 
     #{governance_restrictions()}

@@ -11,6 +11,7 @@ Read clearly. Be brief.
 
 - The conductor owns merge and close authority.
 - Do not lower quality gates to appease CI.
+- Keep changes narrow and attached to the stated issue or PR.
 - If blocked, write `BLOCKED.md` with the concrete blocker.
 
 ## Shared Skills
