@@ -98,10 +98,11 @@ defmodule Conductor.Polisher do
     else
       case code_host_mod().open_prs(state.repo) do
         {:ok, prs} ->
-          log_duplicate_prs(prs)
+          duplicate_groups = duplicate_issue_groups(prs)
+          log_duplicate_prs(duplicate_groups)
 
           # Dispatch at most one PR per poll (single sprite, single workspace)
-          case select_pr_to_polish(prs) do
+          case select_pr_to_polish(prs, duplicate_groups) do
             nil -> state
             pr -> dispatch_polisher(state, pr)
           end
@@ -121,15 +122,13 @@ defmodule Conductor.Polisher do
     "lgtm" not in label_names and Conductor.GitHub.evaluate_checks(checks)
   end
 
-  defp select_pr_to_polish(prs) do
+  defp select_pr_to_polish(prs, duplicate_groups) do
     prs
-    |> collapse_duplicate_prs()
+    |> collapse_duplicate_prs(duplicate_groups)
     |> Enum.find(&needs_polish?/1)
   end
 
-  defp collapse_duplicate_prs(prs) do
-    duplicate_groups = duplicate_issue_groups(prs)
-
+  defp collapse_duplicate_prs(prs, duplicate_groups) do
     {collapsed, _seen_issue_numbers} =
       Enum.reduce(prs, {[], MapSet.new()}, fn pr, {acc, seen_issue_numbers} ->
         case referenced_issue_number(pr) do
@@ -155,8 +154,8 @@ defmodule Conductor.Polisher do
     Enum.reverse(collapsed)
   end
 
-  defp log_duplicate_prs(prs) do
-    Enum.each(duplicate_issue_groups(prs), fn {issue_number, issue_prs} ->
+  defp log_duplicate_prs(duplicate_groups) do
+    Enum.each(duplicate_groups, fn {issue_number, issue_prs} ->
       chosen_pr = select_best_duplicate_candidate(issue_prs)
 
       pr_numbers =
@@ -172,24 +171,10 @@ defmodule Conductor.Polisher do
 
   defp duplicate_issue_groups(prs) do
     prs
-    |> Enum.reduce(%{}, fn pr, acc ->
-      case referenced_issue_number(pr) do
-        issue_number when is_integer(issue_number) ->
-          Map.update(acc, issue_number, [pr], &[pr | &1])
-
-        nil ->
-          acc
-      end
-    end)
-    |> Enum.reduce(%{}, fn {issue_number, issue_prs}, acc ->
-      issue_prs = Enum.reverse(issue_prs)
-
-      if length(issue_prs) > 1 do
-        Map.put(acc, issue_number, issue_prs)
-      else
-        acc
-      end
-    end)
+    |> Enum.group_by(&referenced_issue_number/1)
+    |> Map.delete(nil)
+    |> Enum.filter(fn {_issue_number, issue_prs} -> length(issue_prs) > 1 end)
+    |> Map.new()
   end
 
   defp select_best_duplicate_candidate(issue_prs) do
