@@ -15,6 +15,8 @@ Build the minimum context Thorn needs before touching code.
 
 ## Subagents
 
+Treat these as logical workstreams. If the harness does not support literal subagents, execute them yourself in this order.
+
 - `issue-reader`
   Fetch the linked issue title, body, acceptance criteria, and hard boundaries.
 - `pr-reader`

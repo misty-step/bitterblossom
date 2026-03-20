@@ -201,6 +201,8 @@ defmodule Conductor.PromptTest do
       prompt = Prompt.build_fixer_prompt(pr, "test failed", "issue body")
 
       assert prompt =~ "Do NOT weaken tests, security gates, review protections"
+      assert prompt =~ "Do NOT change a test expectation to fit the current behavior."
+      assert prompt =~ "write `BLOCKED.md` for human review"
       assert prompt =~ "Restore the intended behavior and let CI prove the fix."
       refute prompt =~ "Focus exclusively on making CI green."
     end
@@ -215,6 +217,17 @@ defmodule Conductor.PromptTest do
       assert prompt =~ "/plan-fix"
       assert prompt =~ "/verify-invariants"
       assert prompt =~ "full test suite"
+
+      gather_pos = :binary.match(prompt, "/gather-pr-context") |> elem(0)
+      diagnose_pos = :binary.match(prompt, "/diagnose-ci") |> elem(0)
+      plan_pos = :binary.match(prompt, "/plan-fix") |> elem(0)
+      verify_pos = :binary.match(prompt, "/verify-invariants") |> elem(0)
+      suite_pos = :binary.match(prompt, "full test suite") |> elem(0)
+
+      assert gather_pos < diagnose_pos
+      assert diagnose_pos < plan_pos
+      assert plan_pos < verify_pos
+      assert verify_pos < suite_pos
     end
   end
 

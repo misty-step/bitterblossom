@@ -107,8 +107,8 @@ defmodule Conductor.Prompt do
     Use the synced Thorn persona and skill workflow in this workspace.
 
     1. Check out branch `#{safe_branch}`
-    2. Before editing code, run `/gather-pr-context`, `/diagnose-ci`, and `/plan-fix`
-    3. Read the CI failure output above carefully and investigate the root cause in the codebase
+    2. Read the CI failure output above carefully, run `/gather-pr-context`, and use `/diagnose-ci` to investigate the root cause in the codebase
+    3. Before editing code, run `/plan-fix`
     4. Fix the issue without changing PR intent, removing safeguards, or adding features
     5. After the fix, run `/verify-invariants`, then re-run the failing checks and the full test suite locally
     6. Commit with message `fix: resolve CI failure` and push
@@ -117,7 +117,7 @@ defmodule Conductor.Prompt do
     Do NOT modify the PR description, title, or labels.
     Do NOT expand the scope of the PR.
     Do NOT weaken tests, security gates, review protections, or other quality controls to make CI pass.
-    Do NOT change a test expectation unless you can prove it contradicts the linked acceptance criteria.
+    Do NOT change a test expectation to fit the current behavior. If repository evidence suggests the test is wrong, stop and write `BLOCKED.md` for human review.
     Restore the intended behavior and let CI prove the fix.
 
     #{governance_restrictions()}
