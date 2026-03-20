@@ -201,6 +201,11 @@ defmodule Conductor.FixerTest do
           assert_receive {:dispatched, "bb-thorn", prompt}, 2_000
           assert prompt =~ "Repository Root: /home/sprite/workspace/repo"
           assert prompt =~ "CI"
+          assert prompt =~ "/gather-pr-context"
+          assert prompt =~ "/diagnose-ci"
+          assert prompt =~ "/plan-fix"
+          assert prompt =~ "/verify-invariants"
+          assert prompt =~ "full test suite"
         end)
 
       assert log =~ "[thorn] PR #42 has red CI, dispatching Thorn"

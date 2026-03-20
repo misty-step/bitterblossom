@@ -17,6 +17,11 @@ Do not edit code until this plan is written down.
    - security and policy gates
    - existing passing tests
    - PR scope and acceptance criteria
+6. Verification plan:
+   - run `/verify-invariants` after implementing the fix
+   - failing checks to rerun
+   - nearby tests to rerun
+   - full suite command before push
 
 ## Self-Approval
 
