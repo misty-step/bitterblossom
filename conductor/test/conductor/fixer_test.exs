@@ -63,7 +63,7 @@ defmodule Conductor.FixerTest do
       MockState.get(:ci_failure_logs, {:ok, "Build failed: test_foo.ex:42 assertion error"})
     end
 
-    def pr_review_comments(_repo, _pr_number), do: {:ok, []}
+    def pr_review_comments(_repo, _pr_number), do: MockState.get(:review_comments, {:ok, []})
     def add_label(_repo, _pr_number, _label), do: :ok
     def close_issue(_repo, _issue_number), do: :ok
     def close_pr(_repo, _pr_number, _opts \\ []), do: :ok
@@ -258,6 +258,104 @@ defmodule Conductor.FixerTest do
         )
 
       assert_receive {:dispatched, "bb-thorn", _prompt}, 2_000
+    end
+
+    test "dispatches fixer when a conductor-tracked PR has a Cerberus FAIL review verdict" do
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 99,
+          issue_title: "Test issue 99",
+          builder_sprite: "bb-weaver"
+        })
+
+      :ok = Store.update_run(run_id, %{pr_number: 42, phase: "pr_opened", status: "pr_opened"})
+
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 42,
+             "headRefName" => "factory/99-12345",
+             "title" => "feat: implement feature",
+             "body" => "Closes #99",
+             "statusCheckRollup" => [
+               %{"name" => "CI", "conclusion" => "SUCCESS", "status" => "COMPLETED"}
+             ]
+           }
+         ]}
+      )
+
+      MockState.put(
+        :review_comments,
+        {:ok,
+         [
+           %{
+             "author" => %{"login" => "github-actions"},
+             "body" => """
+             <!-- cerberus:verdict-review sha=d5eed9e4e178 -->
+             **Cerberus inline comments** for `d5eed9e4e178`
+
+             - Inline comments posted: 1/1
+             - Canonical report: verdict report
+             - Cerberus verdict: `FAIL` (4 reviewers. Failures: 2, warnings: 0, skipped: 0.)
+             """
+           }
+         ]}
+      )
+
+      {:ok, _pid} =
+        Fixer.start_link(
+          repo: "test/repo",
+          fixer_sprite: "bb-thorn",
+          poll_ms: 50
+        )
+
+      assert_receive {:dispatched, "bb-thorn", prompt}, 2_000
+      assert prompt =~ "Branch: factory/99-12345"
+    end
+
+    test "does not dispatch on Cerberus review verdicts for untracked PRs" do
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 42,
+             "headRefName" => "factory/99-12345",
+             "title" => "feat: implement feature",
+             "body" => "Closes #99",
+             "statusCheckRollup" => [
+               %{"name" => "CI", "conclusion" => "SUCCESS", "status" => "COMPLETED"}
+             ]
+           }
+         ]}
+      )
+
+      MockState.put(
+        :review_comments,
+        {:ok,
+         [
+           %{
+             "author" => %{"login" => "github-actions"},
+             "body" => """
+             <!-- cerberus:verdict-review sha=d5eed9e4e178 -->
+             **Cerberus inline comments** for `d5eed9e4e178`
+             - Cerberus verdict: `FAIL` (4 reviewers. Failures: 2, warnings: 0, skipped: 0.)
+             """
+           }
+         ]}
+      )
+
+      {:ok, _pid} =
+        Fixer.start_link(
+          repo: "test/repo",
+          fixer_sprite: "bb-thorn",
+          poll_ms: 50
+        )
+
+      refute_receive {:dispatched, _, _}, 300
     end
 
     test "does not dispatch when fixer is already working on a PR" do

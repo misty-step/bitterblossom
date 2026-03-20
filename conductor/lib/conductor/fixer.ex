@@ -109,10 +109,56 @@ defmodule Conductor.Fixer do
     end
   end
 
-  defp needs_fix?(pr, _state) do
+  defp needs_fix?(pr, state) do
     checks = pr["statusCheckRollup"] |> List.wrap() |> Enum.filter(&is_map/1)
-    Conductor.GitHub.evaluate_checks_failed(checks)
+
+    Conductor.GitHub.evaluate_checks_failed(checks) or
+      tracked_review_failure?(state.repo, pr["number"])
   end
+
+  defp tracked_review_failure?(repo, pr_number) when is_integer(pr_number) do
+    conductor_tracked?(repo, pr_number) and cerberus_review_failed?(repo, pr_number)
+  end
+
+  defp tracked_review_failure?(_repo, _pr_number), do: false
+
+  defp conductor_tracked?(repo, pr_number) do
+    try do
+      match?({:ok, _}, Store.find_run_by_pr(repo, pr_number))
+    rescue
+      exception ->
+        Logger.warning(
+          "[thorn] failed to find run for PR ##{pr_number}: #{Exception.message(exception)}"
+        )
+
+        false
+    catch
+      :exit, reason ->
+        Logger.warning("[thorn] failed to find run for PR ##{pr_number}: #{inspect(reason)}")
+        false
+    end
+  end
+
+  defp cerberus_review_failed?(repo, pr_number) do
+    case code_host_mod().pr_review_comments(repo, pr_number) do
+      {:ok, comments} ->
+        Enum.any?(comments, &cerberus_failure_comment?/1)
+
+      {:error, reason} ->
+        Logger.warning("[thorn] failed to fetch reviews for PR ##{pr_number}: #{reason}")
+        false
+    end
+  end
+
+  defp cerberus_failure_comment?(%{"body" => body}) when is_binary(body) do
+    verdict_comment? =
+      String.contains?(body, "<!-- cerberus:verdict-review") or
+        String.contains?(body, "<!-- cerberus:verdict -->")
+
+    verdict_comment? and Regex.match?(~r/Cerberus verdict:\s*`?FAIL`?/i, body)
+  end
+
+  defp cerberus_failure_comment?(_comment), do: false
 
   defp dispatch_fixer(state, pr) do
     pr_number = pr["number"]
