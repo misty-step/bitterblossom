@@ -82,6 +82,11 @@ defmodule Conductor.Config do
     Application.get_env(:conductor, :max_concurrent_runs, 2)
   end
 
+  @spec include_assigned_issues?() :: boolean()
+  def include_assigned_issues? do
+    Application.get_env(:conductor, :include_assigned_issues, false)
+  end
+
   @spec max_replays() :: pos_integer()
   def max_replays do
     Application.get_env(:conductor, :max_replays, 3)

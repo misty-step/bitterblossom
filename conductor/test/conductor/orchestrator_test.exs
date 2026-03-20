@@ -500,6 +500,91 @@ defmodule Conductor.OrchestratorTest do
   end
 
   describe "concurrent run management" do
+    test "dispatches highest-priority unassigned issues first" do
+      orig_max = Application.get_env(:conductor, :max_concurrent_runs)
+      Application.put_env(:conductor, :max_concurrent_runs, 2)
+
+      on_exit(fn ->
+        if orig_max,
+          do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
+          else: Application.delete_env(:conductor, :max_concurrent_runs)
+      end)
+
+      issues = [
+        %Conductor.Issue{
+          number: 702,
+          title: "assigned p1",
+          body: "## Problem\nx\n## Acceptance Criteria\ny",
+          url: "https://example.test/issues/702",
+          labels: ["p1"],
+          assignees: ["phaedrus"]
+        },
+        %Conductor.Issue{
+          number: 687,
+          title: "unassigned p2",
+          body: "## Problem\nx\n## Acceptance Criteria\ny",
+          url: "https://example.test/issues/687",
+          labels: ["p2"]
+        },
+        %Conductor.Issue{
+          number: 719,
+          title: "unassigned p1 later",
+          body: "## Problem\nx\n## Acceptance Criteria\ny",
+          url: "https://example.test/issues/719",
+          labels: ["p1"]
+        },
+        %Conductor.Issue{
+          number: 718,
+          title: "unassigned p1 earlier",
+          body: "## Problem\nx\n## Acceptance Criteria\ny",
+          url: "https://example.test/issues/718",
+          labels: ["p1"]
+        }
+      ]
+
+      MockState.put({:eligible, "test/repo", nil}, issues)
+
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1", "sprite-2"])
+
+      eventually(fn ->
+        assert MockState.get(:started_runs) == [{718, "sprite-1"}, {719, "sprite-2"}]
+      end)
+    end
+
+    test "can include assigned issues when explicitly configured" do
+      orig_max = Application.get_env(:conductor, :max_concurrent_runs)
+      orig_include_assigned = Application.get_env(:conductor, :include_assigned_issues)
+      Application.put_env(:conductor, :max_concurrent_runs, 1)
+      Application.put_env(:conductor, :include_assigned_issues, true)
+
+      on_exit(fn ->
+        if orig_max,
+          do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
+          else: Application.delete_env(:conductor, :max_concurrent_runs)
+
+        if orig_include_assigned != nil,
+          do: Application.put_env(:conductor, :include_assigned_issues, orig_include_assigned),
+          else: Application.delete_env(:conductor, :include_assigned_issues)
+      end)
+
+      issue = %Conductor.Issue{
+        number: 702,
+        title: "assigned p1",
+        body: "## Problem\nx\n## Acceptance Criteria\ny",
+        url: "https://example.test/issues/702",
+        labels: ["p1"],
+        assignees: ["phaedrus"]
+      }
+
+      MockState.put({:eligible, "test/repo", nil}, [issue])
+
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
+
+      eventually(fn ->
+        assert MockState.get(:started_runs) == [{702, "sprite-1"}]
+      end)
+    end
+
     test "does not start more runs than max_concurrent_runs allows" do
       orig_max = Application.get_env(:conductor, :max_concurrent_runs)
       Application.put_env(:conductor, :max_concurrent_runs, 0)

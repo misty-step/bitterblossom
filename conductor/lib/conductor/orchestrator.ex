@@ -30,6 +30,7 @@ defmodule Conductor.Orchestrator do
     :worker_order,
     :workers,
     :trusted_surfaces,
+    include_assigned_issues: false,
     mode: :idle,
     active_runs: %{},
     shape_attempts: %{},
@@ -122,7 +123,9 @@ defmodule Conductor.Orchestrator do
        label: Keyword.get(opts, :label),
        workers: worker_map(workers),
        worker_order: Enum.map(workers, & &1.name),
-       trusted_surfaces: Keyword.get(opts, :trusted_surfaces, [])
+       trusted_surfaces: Keyword.get(opts, :trusted_surfaces, []),
+       include_assigned_issues:
+         Keyword.get(opts, :include_assigned_issues, Config.include_assigned_issues?())
      }}
   end
 
@@ -145,6 +148,8 @@ defmodule Conductor.Orchestrator do
           workers: worker_map(workers),
           worker_order: Enum.map(workers, & &1.name),
           trusted_surfaces: Keyword.get(opts, :trusted_surfaces, state.trusted_surfaces),
+          include_assigned_issues:
+            Keyword.get(opts, :include_assigned_issues, Config.include_assigned_issues?()),
           mode: dispatch_mode()
       }
 
@@ -291,6 +296,8 @@ defmodule Conductor.Orchestrator do
 
     state.repo
     |> tracker_mod().list_eligible(label: state.label)
+    |> Enum.reject(&skip_assigned_issue?(state, &1))
+    |> Enum.sort_by(&Issue.selection_sort_key/1)
     |> Enum.reject(&Store.leased?(state.repo, &1.number))
     |> Enum.reject(&operator_blocked_issue?(state.repo, &1.number))
     |> Enum.reduce({state, max(slots, 0)}, fn issue, {acc, remaining_slots} ->
@@ -321,6 +328,20 @@ defmodule Conductor.Orchestrator do
 
       {:error, failures} ->
         maybe_shape_issue(state, issue, failures)
+    end
+  end
+
+  defp skip_assigned_issue?(%{include_assigned_issues: true}, _issue), do: false
+
+  defp skip_assigned_issue?(_state, issue) do
+    if Issue.assigned?(issue) do
+      Logger.info(
+        "skipping issue ##{issue.number} because it is assigned to #{Enum.join(issue.assignees, ", ")}"
+      )
+
+      true
+    else
+      false
     end
   end
 

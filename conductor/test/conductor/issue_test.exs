@@ -79,6 +79,23 @@ defmodule Conductor.IssueTest do
 
       assert issue.labels == []
     end
+
+    test "extracts assignee logins from map assignees" do
+      issue =
+        Issue.from_github(%{
+          "number" => 1,
+          "title" => "Assigned",
+          "assignees" => [%{"login" => "phaedrus"}, %{"login" => "sprite-bot"}]
+        })
+
+      assert issue.assignees == ["phaedrus", "sprite-bot"]
+    end
+
+    test "defaults assignees to empty list when missing" do
+      issue = Issue.from_github(%{"number" => 1, "title" => "No assignees"})
+
+      assert issue.assignees == []
+    end
   end
 
   describe "ready?/1" do
@@ -159,6 +176,34 @@ defmodule Conductor.IssueTest do
       nil_issue = %Issue{number: 1, title: "t", body: nil, url: "u"}
 
       assert Issue.revision_id(empty_issue) == Issue.revision_id(nil_issue)
+    end
+  end
+
+  describe "priority/1" do
+    test "returns the highest priority label on the issue" do
+      issue = %Issue{number: 1, title: "t", body: "", url: "u", labels: ["bug", "p2", "P1"]}
+
+      assert Issue.priority(issue) == :p1
+    end
+
+    test "returns :unlabeled when no priority label is present" do
+      issue = %Issue{number: 1, title: "t", body: "", url: "u", labels: ["bug"]}
+
+      assert Issue.priority(issue) == :unlabeled
+    end
+  end
+
+  describe "assigned?/1" do
+    test "returns true when the issue has assignees" do
+      issue = %Issue{number: 1, title: "t", body: "", url: "u", assignees: ["phaedrus"]}
+
+      assert Issue.assigned?(issue)
+    end
+
+    test "returns false when the issue has no assignees" do
+      issue = %Issue{number: 1, title: "t", body: "", url: "u", assignees: []}
+
+      refute Issue.assigned?(issue)
     end
   end
 end
