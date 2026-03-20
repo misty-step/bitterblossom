@@ -25,7 +25,7 @@ Resume dispatch after a pause.
 
 ### `mix conductor fleet [--fleet ../fleet.toml] [--reconcile]`
 
-Show declared sprite health. With `--reconcile`, provision unhealthy sprites before printing status.
+Show declared sprite health. With `--reconcile`, create any missing declared sprites, then provision unhealthy ones before printing status.
 
 Examples:
 

@@ -11,6 +11,7 @@ defmodule Conductor.Fleet.Reconciler do
 
   require Logger
   alias Conductor.Sprite
+  @missing_sprite_error_fragment "sprite not found"
 
   @doc """
   Reconcile all declared sprites. Returns `{:ok, results}` where each
@@ -73,6 +74,10 @@ defmodule Conductor.Fleet.Reconciler do
         Logger.info("[fleet] #{name} healthy")
         %{name: name, role: sprite.role, healthy: true, action: :none}
 
+      {:missing, _reason} ->
+        Logger.info("[fleet] #{name} missing, creating...")
+        create_and_provision(sprite, opts)
+
       :needs_setup ->
         Logger.info("[fleet] #{name} needs setup, provisioning...")
         provision_and_verify(sprite, opts)
@@ -102,7 +107,7 @@ defmodule Conductor.Fleet.Reconciler do
 
           status ->
             Logger.warning(
-              "[fleet] #{sprite.name} provisioned but health check returned #{status}"
+              "[fleet] #{sprite.name} provisioned but health check returned #{inspect(status)}"
             )
 
             %{name: sprite.name, role: sprite.role, healthy: false, action: :setup_incomplete}
@@ -121,8 +126,12 @@ defmodule Conductor.Fleet.Reconciler do
       end)
 
     case status_fn.(sprite.name, harness: sprite.harness) do
-      {:error, _reason} ->
-        :unreachable
+      {:error, reason} ->
+        if is_binary(reason) and missing_sprite_error?(reason) do
+          {:missing, reason}
+        else
+          :unreachable
+        end
 
       {:ok, %{healthy: true}} ->
         :healthy
@@ -131,4 +140,32 @@ defmodule Conductor.Fleet.Reconciler do
         :needs_setup
     end
   end
+
+  defp create_and_provision(sprite, opts) do
+    create_fn = Keyword.get(opts, :create_fn, &Sprite.create/2)
+
+    create_opts =
+      opts
+      |> Keyword.take([:org, :shell_fn])
+      |> put_sprite_org(Map.get(sprite, :org))
+
+    case create_fn.(sprite.name, create_opts) do
+      :ok ->
+        case provision_and_verify(sprite, opts) do
+          %{healthy: true} = result -> %{result | action: :created}
+          result -> Map.put(result, :created, true)
+        end
+
+      {:error, reason} ->
+        Logger.error("[fleet] #{sprite.name} creation failed: #{reason}")
+        %{name: sprite.name, role: sprite.role, healthy: false, action: :failed}
+    end
+  end
+
+  defp missing_sprite_error?(reason) do
+    String.contains?(String.downcase(reason), @missing_sprite_error_fragment)
+  end
+
+  defp put_sprite_org(opts, nil), do: opts
+  defp put_sprite_org(opts, org), do: Keyword.put(opts, :org, org)
 end

@@ -126,6 +126,59 @@ defmodule Conductor.SpriteTest do
              )
   end
 
+  test "create shells out with org and skip-console" do
+    test_pid = self()
+
+    shell_fn = fn program, args, opts ->
+      send(test_pid, {:shell_called, program, args, opts})
+      {:ok, ""}
+    end
+
+    assert :ok = Sprite.create("bb-weaver", org: "misty-step", shell_fn: shell_fn)
+
+    assert_received {:shell_called, "sprite",
+                     ["create", "-o", "misty-step", "--skip-console", "bb-weaver"], opts}
+
+    assert opts[:timeout] == 120_000
+  end
+
+  test "create falls back to configured sprite org when org option is omitted" do
+    test_pid = self()
+    prev_sprites_org = System.get_env("SPRITES_ORG")
+    prev_fly_org = System.get_env("FLY_ORG")
+
+    System.put_env("SPRITES_ORG", "fallback-org")
+    System.delete_env("FLY_ORG")
+
+    try do
+      shell_fn = fn program, args, opts ->
+        send(test_pid, {:shell_called, program, args, opts})
+        {:ok, ""}
+      end
+
+      assert :ok = Sprite.create("bb-weaver", shell_fn: shell_fn)
+
+      assert_received {:shell_called, "sprite",
+                       ["create", "-o", "fallback-org", "--skip-console", "bb-weaver"], _opts}
+    after
+      if prev_sprites_org,
+        do: System.put_env("SPRITES_ORG", prev_sprites_org),
+        else: System.delete_env("SPRITES_ORG")
+
+      if prev_fly_org,
+        do: System.put_env("FLY_ORG", prev_fly_org),
+        else: System.delete_env("FLY_ORG")
+    end
+  end
+
+  test "create returns the shell error message" do
+    assert {:error, "create failed"} =
+             Sprite.create("bb-weaver",
+               org: "misty-step",
+               shell_fn: fn _program, _args, _opts -> {:error, "create failed", 1} end
+             )
+  end
+
   test "provision uploads persona, settings, and metadata through sprite exec files" do
     test_pid = self()
     prev_gh = System.get_env("GITHUB_TOKEN")
