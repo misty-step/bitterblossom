@@ -4,6 +4,19 @@ defmodule Conductor.GitHubTest do
 
   alias Conductor.{GitHub, Issue}
 
+  setup do
+    GitHub.reset_runtime_state()
+
+    on_exit(fn ->
+      GitHub.reset_runtime_state()
+      Application.delete_env(:conductor, :github_issue_cache_ttl_ms)
+      Application.delete_env(:conductor, :github_rate_limit_backoff_base_ms)
+      Application.delete_env(:conductor, :github_rate_limit_backoff_max_ms)
+    end)
+
+    :ok
+  end
+
   defp with_fake_gh(script, fun) do
     tmp_dir = Path.join(System.tmp_dir!(), "github_test_#{System.unique_integer([:positive])}")
     gh_path = Path.join(tmp_dir, "gh")
@@ -27,6 +40,18 @@ defmodule Conductor.GitHubTest do
         else: System.delete_env("GH_ARGS_PATH")
 
       File.rm_rf!(tmp_dir)
+    end
+  end
+
+  describe "rate_limit_backoff_ms/1" do
+    test "grows exponentially and caps at the configured maximum" do
+      Application.put_env(:conductor, :github_rate_limit_backoff_base_ms, 100)
+      Application.put_env(:conductor, :github_rate_limit_backoff_max_ms, 500)
+
+      assert GitHub.rate_limit_backoff_ms(1) == 100
+      assert GitHub.rate_limit_backoff_ms(2) == 200
+      assert GitHub.rate_limit_backoff_ms(3) == 400
+      assert GitHub.rate_limit_backoff_ms(4) == 500
     end
   end
 
@@ -465,6 +490,91 @@ defmodule Conductor.GitHubTest do
       )
     end
 
+    test "caches issue list results within the configured TTL" do
+      Application.put_env(:conductor, :github_issue_cache_ttl_ms, 300_000)
+
+      with_fake_gh(
+        """
+        printf '%s\n' "$@" >> "$GH_ARGS_PATH"
+        cat <<'JSON'
+        [
+          {
+            "number": 42,
+            "title": "cached issue",
+            "body": "draft body",
+            "url": "https://example.test/issues/42",
+            "labels": [{"name": "hold"}]
+          }
+        ]
+        JSON
+        """,
+        fn _tmp_dir, args_path ->
+          assert {:ok, [%Issue{number: 42}]} = GitHub.list_issues("misty-step/bitterblossom")
+          assert {:ok, [%Issue{number: 42}]} = GitHub.list_issues("misty-step/bitterblossom")
+
+          args = File.read!(args_path)
+          assert length(String.split(args, "issue\nlist\n")) == 2
+        end
+      )
+    end
+
+    test "re-fetches the issue list after the TTL expires" do
+      Application.put_env(:conductor, :github_issue_cache_ttl_ms, 0)
+
+      with_fake_gh(
+        """
+        printf '%s\n' "$@" >> "$GH_ARGS_PATH"
+        cat <<'JSON'
+        [
+          {
+            "number": 42,
+            "title": "cached issue",
+            "body": "draft body",
+            "url": "https://example.test/issues/42",
+            "labels": [{"name": "hold"}]
+          }
+        ]
+        JSON
+        """,
+        fn _tmp_dir, args_path ->
+          assert {:ok, [%Issue{number: 42}]} = GitHub.list_issues("misty-step/bitterblossom")
+          assert {:ok, [%Issue{number: 42}]} = GitHub.list_issues("misty-step/bitterblossom")
+
+          args = File.read!(args_path)
+          assert length(String.split(args, "issue\nlist\n")) == 3
+        end
+      )
+    end
+
+    test "reuses cached issue state for label checks" do
+      Application.put_env(:conductor, :github_issue_cache_ttl_ms, 300_000)
+
+      with_fake_gh(
+        """
+        printf '%s\n' "$@" >> "$GH_ARGS_PATH"
+        cat <<'JSON'
+        [
+          {
+            "number": 42,
+            "title": "cached issue",
+            "body": "draft body",
+            "url": "https://example.test/issues/42",
+            "labels": [{"name": "hold"}]
+          }
+        ]
+        JSON
+        """,
+        fn _tmp_dir, args_path ->
+          assert {:ok, [%Issue{number: 42}]} = GitHub.list_issues("misty-step/bitterblossom")
+          assert {:ok, true} = GitHub.issue_has_label?("misty-step/bitterblossom", 42, "hold")
+
+          args = File.read!(args_path)
+          assert length(String.split(args, "issue\nlist\n")) == 2
+          refute String.contains?(args, "issue\nview\n42\n")
+        end
+      )
+    end
+
     test "includes --label when a label filter is provided" do
       with_fake_gh(
         """
@@ -483,12 +593,11 @@ defmodule Conductor.GitHubTest do
       )
     end
 
-    test "paginates all open issues by default and eligible_issues keeps unready issues" do
+    test "lists all open issues in one call by default and eligible_issues keeps unready issues" do
       with_fake_gh(
         """
         printf '%s\n' "$@" >> "$GH_ARGS_PATH"
-        if [[ "$*" == *"&page=1"* ]]; then
-          cat <<'JSON'
+        cat <<'JSON'
         [
           {
             "number": 7,
@@ -496,12 +605,7 @@ defmodule Conductor.GitHubTest do
             "body": "## Problem\\nx\\n\\n## Acceptance Criteria\\n- [ ] [test] y",
             "url": "https://example.test/issues/7",
             "labels": [{"name": "autopilot"}]
-          }
-        ]
-        JSON
-        elif [[ "$*" == *"&page=2"* ]]; then
-          cat <<'JSON'
-        [
+          },
           {
             "number": 6,
             "title": "unready issue",
@@ -511,9 +615,6 @@ defmodule Conductor.GitHubTest do
           }
         ]
         JSON
-        else
-          echo '[]'
-        fi
         """,
         fn _tmp_dir, args_path ->
           issues = GitHub.eligible_issues("misty-step/bitterblossom")
@@ -522,235 +623,9 @@ defmodule Conductor.GitHubTest do
           assert Enum.find(issues, &(&1.number == 6)).body == "draft body"
 
           args = File.read!(args_path)
-
-          assert String.contains?(
-                   args,
-                   "api\nrepos/misty-step/bitterblossom/issues?state=open&per_page=100&page=1\n"
-                 )
-
-          assert String.contains?(
-                   args,
-                   "api\nrepos/misty-step/bitterblossom/issues?state=open&per_page=100&page=2\n"
-                 )
-        end
-      )
-    end
-
-    test "caps unfiltered pagination at the default issue limit" do
-      with_fake_gh(
-        """
-        printf '%s\n' "$@" >> "$GH_ARGS_PATH"
-        page="$(printf '%s' "$*" | sed -n 's/.*page=\\([0-9][0-9]*\\).*/\\1/p')"
-
-        if [[ -z "$page" ]]; then
-          echo '[]'
-        elif (( page <= 11 )); then
-          start=$(( (page - 1) * 100 + 1 ))
-          finish=$(( start + 99 ))
-          printf '[\n'
-
-          for number in $(seq "$start" "$finish"); do
-            comma=","
-
-            if (( number == finish )); then
-              comma=""
-            fi
-
-            printf '{"number":%s,"title":"issue %s","body":"draft body","url":"https://example.test/issues/%s","labels":[]}%s\n' \
-              "$number" "$number" "$number" "$comma"
-          done
-
-          printf ']\n'
-        else
-          echo '[]'
-        fi
-        """,
-        fn _tmp_dir, args_path ->
-          assert {:ok, issues} = GitHub.list_issues("misty-step/bitterblossom")
-          assert length(issues) == 1000
-          assert Enum.at(issues, 0).number == 1
-          assert Enum.at(issues, -1).number == 1000
-
-          args = File.read!(args_path)
-          refute String.contains?(args, "page=11")
-        end
-      )
-    end
-
-    test "continues past the initial page budget when mixed issue pages still retain backlog items" do
-      with_fake_gh(
-        """
-        printf '%s\n' "$@" >> "$GH_ARGS_PATH"
-        page="$(printf '%s' "$*" | sed -n 's/.*page=\\([0-9][0-9]*\\).*/\\1/p')"
-
-        if [[ -z "$page" ]]; then
-          echo '[]'
-        elif (( page <= 10 )); then
-          start=$(( (page - 1) * 90 + 1 ))
-          finish=$(( start + 89 ))
-          printf '[\n'
-
-          first=1
-
-          for number in $(seq "$start" "$finish"); do
-            if (( first == 0 )); then
-              printf ',\n'
-            fi
-
-            first=0
-
-            printf '{"number":%s,"title":"issue %s","body":"draft body","url":"https://example.test/issues/%s","labels":[]}' \
-              "$number" "$number" "$number"
-          done
-
-          for pr_number in $(seq 1 10); do
-            printf ',\n{"number":%s,"title":"not an issue","body":"","url":"https://example.test/pull/%s","labels":[],"pull_request":{"url":"https://example.test/pull/%s"}}' \
-              "$(( page * 1000 + pr_number ))" "$(( page * 1000 + pr_number ))" "$(( page * 1000 + pr_number ))"
-          done
-
-          printf '\n]\n'
-        elif (( page == 11 )); then
-          start=901
-          finish=1000
-          printf '[\n'
-
-          first=1
-
-          for number in $(seq "$start" "$finish"); do
-            if (( first == 0 )); then
-              printf ',\n'
-            fi
-
-            first=0
-
-            printf '{"number":%s,"title":"issue %s","body":"draft body","url":"https://example.test/issues/%s","labels":[]}' \
-              "$number" "$number" "$number"
-          done
-
-          printf '\n]\n'
-        else
-          echo '[]'
-        fi
-        """,
-        fn _tmp_dir, args_path ->
-          assert {:ok, issues} = GitHub.list_issues("misty-step/bitterblossom")
-          assert length(issues) == 1000
-          assert Enum.at(issues, 0).number == 1
-          assert Enum.at(issues, -1).number == 1000
-
-          args = File.read!(args_path)
-          assert String.contains?(args, "page=11")
-          refute String.contains?(args, "page=12")
-        end
-      )
-    end
-
-    test "resets the PR-only page budget after a retained issue page" do
-      with_fake_gh(
-        """
-        printf '%s\n' "$@" >> "$GH_ARGS_PATH"
-        page="$(printf '%s' "$*" | sed -n 's/.*page=\\([0-9][0-9]*\\).*/\\1/p')"
-
-        if [[ -z "$page" ]]; then
-          echo '[]'
-        elif (( page == 1 )); then
-          cat <<'JSON'
-        [
-          {
-            "number": 1,
-            "title": "first issue",
-            "body": "draft body",
-            "url": "https://example.test/issues/1",
-            "labels": []
-          }
-        ]
-        JSON
-        elif (( page == 11 )); then
-          cat <<'JSON'
-        [
-          {
-            "number": 2,
-            "title": "middle issue",
-            "body": "draft body",
-            "url": "https://example.test/issues/2",
-            "labels": []
-          }
-        ]
-        JSON
-        elif (( page == 21 )); then
-          cat <<'JSON'
-        [
-          {
-            "number": 3,
-            "title": "late issue",
-            "body": "draft body",
-            "url": "https://example.test/issues/3",
-            "labels": []
-          }
-        ]
-        JSON
-        elif (( page < 21 )); then
-          cat <<'JSON'
-        [
-          {
-            "number": 9999,
-            "title": "not an issue",
-            "body": "",
-            "url": "https://example.test/pull/9999",
-            "labels": [],
-            "pull_request": {"url": "https://example.test/pull/9999"}
-          }
-        ]
-        JSON
-        else
-          echo '[]'
-        fi
-        """,
-        fn _tmp_dir, args_path ->
-          assert {:ok, issues} = GitHub.list_issues("misty-step/bitterblossom")
-          assert Enum.map(issues, & &1.number) == [1, 2, 3]
-
-          args = File.read!(args_path)
-          assert String.contains?(args, "page=11")
-          assert String.contains?(args, "page=21")
-          assert String.contains?(args, "page=22")
-          refute String.contains?(args, "page=23")
-        end
-      )
-    end
-
-    test "stops unfiltered pagination after the default page budget even when pages only contain pull requests" do
-      with_fake_gh(
-        """
-        printf '%s\n' "$@" >> "$GH_ARGS_PATH"
-        page="$(printf '%s' "$*" | sed -n 's/.*page=\\([0-9][0-9]*\\).*/\\1/p')"
-
-        if [[ -z "$page" ]]; then
-          echo '[]'
-        elif (( page <= 10 )); then
-          cat <<JSON
-        [
-          {
-            "number": $(( page + 100 )),
-            "title": "not an issue",
-            "body": "",
-            "url": "https://example.test/pull/$(( page + 100 ))",
-            "labels": [],
-            "pull_request": {"url": "https://example.test/pull/$(( page + 100 ))"}
-          }
-        ]
-        JSON
-        else
-          echo '[]'
-        fi
-        """,
-        fn _tmp_dir, args_path ->
-          assert {:ok, []} = GitHub.list_issues("misty-step/bitterblossom")
-
-          args = File.read!(args_path)
-          assert String.contains?(args, "page=1")
-          assert String.contains?(args, "page=10")
-          refute String.contains?(args, "page=11")
+          assert String.contains?(args, "issue\nlist\n")
+          assert String.contains?(args, "--limit\n1000\n")
+          assert length(String.split(args, "issue\nlist\n")) == 2
         end
       )
     end
@@ -920,11 +795,10 @@ defmodule Conductor.GitHubTest do
       )
     end
 
-    test "filters pull requests from paginated issue fetches" do
+    test "parses issue list responses into issues" do
       with_fake_gh(
         """
-        if [[ "$*" == *"&page=1"* ]]; then
-          cat <<'JSON'
+        cat <<'JSON'
         [
           {
             "number": 8,
@@ -932,20 +806,9 @@ defmodule Conductor.GitHubTest do
             "body": "draft body",
             "url": "https://example.test/issues/8",
             "labels": []
-          },
-          {
-            "number": 99,
-            "title": "not an issue",
-            "body": "",
-            "url": "https://example.test/pull/99",
-            "labels": [],
-            "pull_request": {"url": "https://example.test/pull/99"}
           }
         ]
         JSON
-        else
-          echo '[]'
-        fi
         """,
         fn _tmp_dir, _args_path ->
           assert {:ok, [%Issue{number: 8}]} = GitHub.list_issues("misty-step/bitterblossom")
@@ -986,6 +849,31 @@ defmodule Conductor.GitHubTest do
       assert capture_log(fn ->
                assert GitHub.eligible_issues("still-not-a-repo") == []
              end) =~ "failed to list issues"
+    end
+  end
+
+  describe "rate limit handling" do
+    test "activates backoff after a rate-limited response" do
+      Application.put_env(:conductor, :github_rate_limit_backoff_base_ms, 1_000)
+      Application.put_env(:conductor, :github_rate_limit_backoff_max_ms, 1_000)
+
+      with_fake_gh(
+        """
+        printf '%s\n' "$@" >> "$GH_ARGS_PATH"
+        echo 'GraphQL: API rate limit exceeded' >&2
+        exit 1
+        """,
+        fn _tmp_dir, args_path ->
+          assert {:error, message} = GitHub.list_issues("misty-step/bitterblossom")
+          assert message =~ "rate limit"
+
+          assert {:error, message} = GitHub.list_issues("misty-step/bitterblossom")
+          assert message =~ "backoff active"
+
+          args = File.read!(args_path)
+          assert length(String.split(args, "issue\nlist\n")) == 2
+        end
+      )
     end
   end
 

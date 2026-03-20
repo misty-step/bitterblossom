@@ -751,7 +751,7 @@ defmodule Conductor.Orchestrator do
         Enum.each(prs, fn pr ->
           pr_number = pr["number"]
 
-          case code_host_mod().ci_status(repo, pr_number) do
+          case ci_status_for_pr(repo, pr) do
             {:ok, %{state: :green}} ->
               cond do
                 ci_timeout_run?(repo, pr_number) ->
@@ -833,6 +833,14 @@ defmodule Conductor.Orchestrator do
       {:error, reason} ->
         Logger.warning("[merge] failed to check labeled PRs: #{reason}")
     end
+  end
+
+  defp ci_status_for_pr(_repo, %{"statusCheckRollup" => checks}) when is_list(checks) do
+    {:ok, Conductor.GitHub.summarize_checks(checks)}
+  end
+
+  defp ci_status_for_pr(repo, %{"number" => pr_number}) do
+    code_host_mod().ci_status(repo, pr_number)
   end
 
   # Returns true when a merge error message indicates a git conflict rather than

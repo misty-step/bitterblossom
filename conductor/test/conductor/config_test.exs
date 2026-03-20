@@ -75,6 +75,45 @@ defmodule Conductor.ConfigTest do
     end
   end
 
+  describe "github_issue_cache_ttl_ms/0" do
+    test "returns default of 300000" do
+      assert Config.github_issue_cache_ttl_ms() == 300_000
+    end
+
+    test "returns configured value" do
+      Application.put_env(:conductor, :github_issue_cache_ttl_ms, 1_000)
+      assert Config.github_issue_cache_ttl_ms() == 1_000
+    after
+      Application.delete_env(:conductor, :github_issue_cache_ttl_ms)
+    end
+  end
+
+  describe "github_rate_limit_backoff_base_ms/0" do
+    test "returns default of 5000" do
+      assert Config.github_rate_limit_backoff_base_ms() == 5_000
+    end
+
+    test "returns configured value" do
+      Application.put_env(:conductor, :github_rate_limit_backoff_base_ms, 250)
+      assert Config.github_rate_limit_backoff_base_ms() == 250
+    after
+      Application.delete_env(:conductor, :github_rate_limit_backoff_base_ms)
+    end
+  end
+
+  describe "github_rate_limit_backoff_max_ms/0" do
+    test "returns default of 300000" do
+      assert Config.github_rate_limit_backoff_max_ms() == 300_000
+    end
+
+    test "returns configured value" do
+      Application.put_env(:conductor, :github_rate_limit_backoff_max_ms, 2_500)
+      assert Config.github_rate_limit_backoff_max_ms() == 2_500
+    after
+      Application.delete_env(:conductor, :github_rate_limit_backoff_max_ms)
+    end
+  end
+
   describe "repo_root/0" do
     test "returns a normalized configured value" do
       Application.put_env(:conductor, :repo_root, "./tmp/repo-root")
