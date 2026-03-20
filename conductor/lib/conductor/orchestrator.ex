@@ -573,12 +573,34 @@ defmodule Conductor.Orchestrator do
       {:ok, runs_by_worker} ->
         state.active_runs
         |> Enum.reduce(runs_by_worker, fn {_issue_number, run}, acc ->
-          Map.update(acc, run.worker, [run], &[run | &1])
+          worker = current_run_worker(run)
+          Map.update(acc, worker, [run], &[run | &1])
         end)
         |> then(&{:ok, &1})
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp current_run_worker(run) do
+    case run_status(run.pid) do
+      {:ok, %{worker: worker}} when is_binary(worker) and worker != "" -> worker
+      _ -> run.worker
+    end
+  end
+
+  defp run_status(pid) when is_pid(pid) do
+    if function_exported?(run_control_mod(), :status, 1) do
+      try do
+        {:ok, run_control_mod().status(pid)}
+      rescue
+        _ -> :error
+      catch
+        :exit, _reason -> :error
+      end
+    else
+      :error
     end
   end
 

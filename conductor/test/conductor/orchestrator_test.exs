@@ -164,6 +164,10 @@ defmodule Conductor.OrchestratorTest do
   defmodule MockRunControl do
     alias Conductor.OrchestratorTest.MockState
 
+    def status(pid) do
+      MockState.get({:run_status, pid}, %{worker: nil})
+    end
+
     def operator_block(pid, reason) do
       calls = MockState.get(:run_control_calls, [])
       MockState.put(:run_control_calls, calls ++ [{pid, reason}])
@@ -580,6 +584,50 @@ defmodule Conductor.OrchestratorTest do
 
       eventually(fn ->
         assert MockState.get(:started_runs) == [{204, "sprite-2"}]
+      end)
+    end
+
+    test "uses the current run worker when an active run falls back to another sprite" do
+      orig_max = Application.get_env(:conductor, :max_concurrent_runs)
+      Application.put_env(:conductor, :max_concurrent_runs, 2)
+
+      on_exit(fn ->
+        if orig_max,
+          do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
+          else: Application.delete_env(:conductor, :max_concurrent_runs)
+      end)
+
+      pid = spawn(fn -> Process.sleep(500) end)
+      ref = Process.monitor(pid)
+      MockState.put({:run_status, pid}, %{worker: "sprite-2"})
+
+      :sys.replace_state(Orchestrator, fn state ->
+        %{
+          state
+          | active_runs: %{
+              900 => %{pid: pid, ref: ref, issue: 900, worker: "sprite-1"}
+            }
+        }
+      end)
+
+      issue = %Conductor.Issue{
+        number: 206,
+        title: "fallback freed original sprite",
+        body: "## Problem\nx\n## Acceptance Criteria\ny",
+        url: "https://example.test/issues/206"
+      }
+
+      MockState.put({:eligible, "test/repo", nil}, [issue])
+
+      workers = [
+        %{name: "sprite-1", capability_tags: []},
+        %{name: "sprite-2", capability_tags: []}
+      ]
+
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: workers)
+
+      eventually(fn ->
+        assert MockState.get(:started_runs) == [{206, "sprite-1"}]
       end)
     end
 
