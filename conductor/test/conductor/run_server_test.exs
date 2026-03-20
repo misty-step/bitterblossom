@@ -143,17 +143,39 @@ defmodule Conductor.RunServerTest do
     alias Conductor.RunServerTest.MockState
 
     def prepare(_sprite, repo, _run_id, branch) do
+      send(MockState.get(:test_pid, self()), {:workspace_prepare, repo, branch})
       remember_branch(repo, branch)
-      MockState.get(:workspace_result, {:ok, "/tmp/test-worktree"})
+      next_workspace_result()
     end
 
     def adopt_branch(_sprite, repo, _run_id, branch) do
+      send(MockState.get(:test_pid, self()), {:workspace_adopt_branch, repo, branch})
       remember_branch(repo, branch)
-      MockState.get(:workspace_result, {:ok, "/tmp/test-worktree"})
+      next_workspace_result()
+    end
+
+    def cleanup_conflicting_branch(sprite, repo, branch) do
+      send(
+        MockState.get(:test_pid, self()),
+        {:workspace_cleanup_conflicting_branch, sprite, repo, branch}
+      )
+
+      MockState.get(:workspace_cleanup_conflicting_branch_result, :ok)
     end
 
     def sync_persona(_sprite, _workspace, _role, _opts \\ []) do
       MockState.get(:sync_persona_result, :ok)
+    end
+
+    defp next_workspace_result do
+      case MockState.get(:workspace_sequence) do
+        [next | rest] ->
+          MockState.put(:workspace_sequence, rest)
+          next
+
+        _ ->
+          MockState.get(:workspace_result, {:ok, "/tmp/test-worktree"})
+      end
     end
 
     defp remember_branch(repo, branch) do
@@ -566,6 +588,48 @@ defmodule Conductor.RunServerTest do
       assert run["phase"] == "failed"
       assert "workspace_preparation_failed" in event_types(run["run_id"])
       refute Store.leased?("test/repo", 42)
+    end
+
+    test "cleans conflicting branch state and retries once" do
+      MockState.put(
+        {:open_pr_exact, "test/repo", 42, "factory/42-1234567890"},
+        {:ok,
+         %{
+           "headRefName" => "factory/42-1234567890",
+           "number" => 123,
+           "url" => "https://github.com/test/repo/pull/123"
+         }}
+      )
+
+      MockState.put({:dispatch_result, "test-sprite"}, {:ok, ""})
+
+      MockState.put(
+        :workspace_sequence,
+        [
+          {:error, "branch already checked out"},
+          {:ok, "/tmp/test-worktree"}
+        ]
+      )
+
+      {:ok, pid} =
+        start_run_server(
+          existing_branch: "factory/42-1234567890",
+          existing_pr_number: 123,
+          existing_pr_url: "https://github.com/test/repo/pull/123"
+        )
+
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "pr_opened"
+      assert run["pr_number"] == 123
+
+      assert_received {:workspace_adopt_branch, "test/repo", "factory/42-1234567890"}
+
+      assert_received {:workspace_cleanup_conflicting_branch, "test-sprite", "test/repo",
+                       "factory/42-1234567890"}
+
+      assert_received {:workspace_adopt_branch, "test/repo", "factory/42-1234567890"}
     end
   end
 

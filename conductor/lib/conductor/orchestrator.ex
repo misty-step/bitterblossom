@@ -532,6 +532,13 @@ defmodule Conductor.Orchestrator do
       not worker.healthy ->
         {:error, state}
 
+      worker.worktree_occupied ->
+        Logger.info(
+          "worker #{worker.name} has an occupied conductor worktree #{inspect(worker.active_branch)} at #{inspect(worker.active_worktree)}, skipping this cycle"
+        )
+
+        {:error, state}
+
       worker_busy?(worker.name) ->
         Logger.info("worker #{worker.name} busy, skipping this cycle")
         {:error, state}
@@ -547,12 +554,17 @@ defmodule Conductor.Orchestrator do
 
     case probe_worker_module(worker_mod(), worker.name, capability_tags: worker.capability_tags) do
       {:ok, _} ->
+        status = read_worker_status(worker, state.repo)
+
         updated = %{
           worker
           | healthy: true,
             drained: false,
             consecutive_failures: 0,
-            last_error: nil
+            last_error: nil,
+            worktree_occupied: Map.get(status, :worktree_occupied, false),
+            active_branch: Map.get(status, :active_branch),
+            active_worktree: Map.get(status, :active_worktree)
         }
 
         {updated, put_worker(state, updated)}
@@ -566,7 +578,10 @@ defmodule Conductor.Orchestrator do
           | healthy: false,
             drained: drained,
             consecutive_failures: failures,
-            last_error: to_string(reason)
+            last_error: to_string(reason),
+            worktree_occupied: false,
+            active_branch: nil,
+            active_worktree: nil
         }
 
         if drained do
@@ -609,11 +624,27 @@ defmodule Conductor.Orchestrator do
           healthy: true,
           drained: false,
           consecutive_failures: 0,
-          last_error: nil
+          last_error: nil,
+          worktree_occupied: false,
+          active_branch: nil,
+          active_worktree: nil
         },
         worker
       )
     end)
+  end
+
+  defp read_worker_status(worker, repo) do
+    if function_exported?(worker_mod(), :status, 2) do
+      harness = Map.get(worker, :harness) || Map.get(worker, "harness")
+
+      case worker_mod().status(worker.name, repo: repo, harness: harness) do
+        {:ok, status} when is_map(status) -> status
+        _ -> %{}
+      end
+    else
+      %{}
+    end
   end
 
   defp worker_map(workers), do: Map.new(workers, fn worker -> {worker.name, worker} end)

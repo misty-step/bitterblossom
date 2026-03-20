@@ -142,6 +142,26 @@ defmodule Conductor.OrchestratorTest do
       end
     end
 
+    def status(worker, opts \\ []) do
+      send(MockState.get(:test_pid, self()), {:status_checked, worker, opts})
+
+      MockState.get(
+        {:status_result, worker},
+        {:ok,
+         %{
+           sprite: worker,
+           reachable: true,
+           harness_ready: true,
+           gh_authenticated: true,
+           git_credential_helper: true,
+           healthy: true,
+           worktree_occupied: false,
+           active_branch: nil,
+           active_worktree: nil
+         }}
+      )
+    end
+
     def busy?(worker, _opts \\ []) do
       send(MockState.get(:test_pid, self()), {:busy_checked, worker})
       MockState.get({:busy, worker}, false)
@@ -627,6 +647,62 @@ defmodule Conductor.OrchestratorTest do
         assert recovered.drained == false
         assert recovered.consecutive_failures == 0
         assert recovered.healthy == true
+      end)
+    end
+
+    test "skips workers with occupied conductor worktrees before starting a run" do
+      orig_max = Application.get_env(:conductor, :max_concurrent_runs)
+      Application.put_env(:conductor, :max_concurrent_runs, 1)
+
+      on_exit(fn ->
+        if orig_max,
+          do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
+          else: Application.delete_env(:conductor, :max_concurrent_runs)
+      end)
+
+      issue = %Conductor.Issue{
+        number: 203,
+        title: "occupied worker",
+        body: "## Problem\nx\n## Acceptance Criteria\ny",
+        url: "https://example.test/issues/203"
+      }
+
+      MockState.put({:eligible, "test/repo", nil}, [issue])
+
+      MockState.put(
+        {:status_result, "sprite-1"},
+        {:ok,
+         %{
+           sprite: "sprite-1",
+           reachable: true,
+           harness_ready: true,
+           gh_authenticated: true,
+           git_credential_helper: true,
+           healthy: true,
+           worktree_occupied: true,
+           active_branch: "factory/101-1234567890",
+           active_worktree: "/tmp/stale-worktree"
+         }}
+      )
+
+      workers = [
+        %{name: "sprite-1", capability_tags: []},
+        %{name: "sprite-2", capability_tags: []}
+      ]
+
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: workers)
+
+      eventually(fn ->
+        assert MockState.get(:started_runs) == [{203, "sprite-2"}]
+      end)
+
+      eventually(fn ->
+        [occupied, available] = Orchestrator.fleet_status()
+        assert occupied.name == "sprite-1"
+        assert occupied.worktree_occupied == true
+        assert occupied.active_branch == "factory/101-1234567890"
+        assert occupied.active_worktree == "/tmp/stale-worktree"
+        assert available.name == "sprite-2"
       end)
     end
   end

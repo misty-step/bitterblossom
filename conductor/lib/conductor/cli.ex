@@ -330,7 +330,10 @@ defmodule Conductor.CLI do
             auth = if status.gh_authenticated, do: "gh auth ok", else: "gh auth missing"
             git = if status.git_credential_helper, do: "git helper ok", else: "git helper missing"
             health = if status.healthy, do: "healthy", else: "needs setup"
-            IO.puts("  #{s.name} (#{s.role}, #{s.harness}) — #{health}, #{auth}, #{git}")
+
+            IO.puts(
+              "  #{s.name} (#{s.role}, #{s.harness}) — #{health}, #{auth}, #{git}#{format_worktree_status(status)}"
+            )
 
           {:error, _reason} ->
             IO.puts("  #{s.name} (#{s.role}, #{s.harness}) — unreachable")
@@ -413,24 +416,27 @@ defmodule Conductor.CLI do
 
     case result do
       {:ok, %{healthy: true}} ->
-        "healthy"
+        "healthy" <> format_worktree_status(result |> elem(1))
 
       {:ok, status} when is_map(status) ->
-        if probe_only_status?(status) do
-          "healthy"
-        else
-          missing =
-            []
-            |> maybe_missing(status, :harness_ready, "harness")
-            |> maybe_missing(status, :gh_authenticated, "gh auth")
-            |> maybe_missing(status, :git_credential_helper, "git helper")
-
-          if missing == [] do
-            "needs setup"
+        base =
+          if probe_only_status?(status) do
+            "healthy"
           else
-            "needs setup (" <> Enum.join(missing, ", ") <> " missing)"
+            missing =
+              []
+              |> maybe_missing(status, :harness_ready, "harness")
+              |> maybe_missing(status, :gh_authenticated, "gh auth")
+              |> maybe_missing(status, :git_credential_helper, "git helper")
+
+            if missing == [] do
+              "needs setup"
+            else
+              "needs setup (" <> Enum.join(missing, ", ") <> " missing)"
+            end
           end
-        end
+
+        base <> format_worktree_status(status)
 
       {:ok, _} ->
         "healthy"
@@ -472,6 +478,19 @@ defmodule Conductor.CLI do
       not Map.has_key?(status, "git_credential_helper") and
       not Map.has_key?(status, :harness_ready) and
       not Map.has_key?(status, "harness_ready")
+  end
+
+  defp format_worktree_status(status) do
+    occupied =
+      Map.get(status, :worktree_occupied, Map.get(status, "worktree_occupied", false))
+
+    if occupied do
+      branch = Map.get(status, :active_branch, Map.get(status, "active_branch")) || "unknown"
+      path = Map.get(status, :active_worktree, Map.get(status, "active_worktree")) || "unknown"
+      ", worktree occupied (#{branch} @ #{path})"
+    else
+      ""
+    end
   end
 
   defp format_tags([]), do: "tags=-"

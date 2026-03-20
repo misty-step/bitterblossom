@@ -18,7 +18,10 @@ defmodule Conductor.CLIFleetTest do
            harness_ready: true,
            gh_authenticated: true,
            git_credential_helper: true,
-           healthy: true
+           healthy: true,
+           worktree_occupied: true,
+           active_branch: "factory/622-1774029317",
+           active_worktree: "/tmp/bb-weaver-1-worktree"
          }}
 
     def status("bb-weaver-2", _opts), do: {:error, "connection refused"}
@@ -150,6 +153,7 @@ defmodule Conductor.CLIFleetTest do
 
     assert output =~ "bb-weaver-1"
     assert output =~ "healthy"
+    assert output =~ "factory/622-1774029317"
     assert output =~ "issue #622"
     assert output =~ "tags=elixir"
 
