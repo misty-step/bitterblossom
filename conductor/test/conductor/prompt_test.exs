@@ -235,6 +235,31 @@ defmodule Conductor.PromptTest do
       assert prompt =~ "gh pr close"
       assert prompt =~ "MUST NOT"
     end
+
+    test "surfaces non-blocking external review threads explicitly" do
+      pr = %{"number" => 10, "title" => "Fix CI", "headRefName" => "factory/10-fix"}
+
+      prompt =
+        Prompt.build_polisher_prompt(pr, [], "issue body",
+          actionable_review_threads: [
+            %{author: "reviewer", body: "Rename this function", path: "lib/a.ex", url: "url-1"}
+          ],
+          non_blocking_review_threads: [
+            %{
+              author: "github-actions",
+              body: "P2 missing-coverage suggestion",
+              path: "lib/a.ex",
+              url: "url-2"
+            }
+          ]
+        )
+
+      assert prompt =~ "## Actionable Review Threads"
+      assert prompt =~ "## Non-Blocking External Threads"
+      assert prompt =~ "do NOT block `lgtm`"
+      assert prompt =~ "github-actions"
+      assert prompt =~ "Rename this function"
+    end
   end
 
   describe "build_builder_prompt/4 with repo_context (CLAUDE.md)" do

@@ -34,6 +34,10 @@ defmodule Conductor.CodeHost do
   @callback pr_review_comments(repo :: binary(), pr_number :: pos_integer()) ::
               {:ok, [map()]} | {:error, term()}
 
+  @doc "Fetch review threads on a PR."
+  @callback pr_review_threads(repo :: binary(), pr_number :: pos_integer()) ::
+              {:ok, [map()]} | {:error, term()}
+
   @doc "Fetch CI failure logs for a PR."
   @callback pr_ci_failure_logs(repo :: binary(), pr_number :: pos_integer()) ::
               {:ok, binary()} | {:error, term()}
