@@ -726,8 +726,10 @@ defmodule Conductor.Store do
   end
 
   defp generate_run_id(issue_number) do
-    ts = System.system_time(:second)
-    "run-#{issue_number}-#{ts}"
+    token =
+      "#{System.system_time(:millisecond)}-#{System.unique_integer([:positive, :monotonic])}"
+
+    "run-#{issue_number}-#{token}"
   end
 
   defp now_utc do

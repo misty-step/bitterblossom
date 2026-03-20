@@ -46,6 +46,26 @@ defmodule Conductor.StoreTest do
     assert run["builder_sprite"] == "test-sprite"
   end
 
+  test "generated run ids stay unique across immediate retries" do
+    {:ok, run_id_a} =
+      Store.create_run(%{
+        repo: "test/repo",
+        issue_number: 42,
+        issue_title: "Test issue",
+        builder_sprite: "test-sprite"
+      })
+
+    {:ok, run_id_b} =
+      Store.create_run(%{
+        repo: "test/repo",
+        issue_number: 42,
+        issue_title: "Test issue",
+        builder_sprite: "test-sprite"
+      })
+
+    assert run_id_a != run_id_b
+  end
+
   test "update run fields" do
     {:ok, run_id} =
       Store.create_run(%{

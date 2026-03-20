@@ -156,6 +156,12 @@ defmodule Conductor.RunServerTest do
       MockState.get(:sync_persona_result, :ok)
     end
 
+    def cleanup(_sprite, _repo, run_id, opts \\ []) do
+      cleanups = MockState.get(:workspace_cleanups, [])
+      MockState.put(:workspace_cleanups, cleanups ++ [{run_id, opts}])
+      :ok
+    end
+
     defp remember_branch(repo, branch) do
       case parse_issue_number(branch) do
         {:ok, issue_number} -> MockState.put({:prepared_branch, repo, issue_number}, branch)
@@ -443,6 +449,22 @@ defmodule Conductor.RunServerTest do
       assert "lease_acquired" in types
       assert "builder_workspace_prepared" in types
       assert "builder_pr_detected" in types
+    end
+
+    test "cleans the adopted worktree without deleting the existing branch" do
+      {:ok, pid} =
+        start_run_server(
+          existing_branch: "factory/42-1234567890",
+          existing_pr_number: 999,
+          existing_pr_url: "https://github.com/test/repo/pull/999"
+        )
+
+      wait_for_exit(pid)
+
+      [{run_id, opts}] = MockState.get(:workspace_cleanups)
+      assert String.starts_with?(run_id, "run-42-")
+      assert opts[:path] == "/tmp/test-worktree"
+      refute Keyword.has_key?(opts, :branch)
     end
   end
 
