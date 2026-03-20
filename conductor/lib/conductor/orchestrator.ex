@@ -443,7 +443,7 @@ defmodule Conductor.Orchestrator do
   defp maybe_warn_unfiltered_loop(_state), do: :ok
 
   defp start_run(state, issue) do
-    case pick_worker(state) do
+    case select_worker(state) do
       {:ok, worker, state} ->
         dispatch_run(state, issue, worker.name)
 
@@ -504,9 +504,20 @@ defmodule Conductor.Orchestrator do
     ]
   end
 
-  defp pick_worker(%{worker_order: []} = state), do: {:error, :no_available_workers, state}
+  defp select_worker(%{worker_order: []} = state), do: {:error, :no_available_workers, state}
 
-  defp pick_worker(state) do
+  defp select_worker(state) do
+    case active_runs_by_worker(state) do
+      {:ok, runs_by_worker} ->
+        do_select_worker(state, runs_by_worker)
+
+      {:error, reason} ->
+        Logger.warning("[dispatch] failed to read active runs: #{inspect(reason)}")
+        {:error, :no_available_workers, state}
+    end
+  end
+
+  defp do_select_worker(state, runs_by_worker) do
     count = length(state.worker_order)
 
     0..(count - 1)
@@ -515,7 +526,7 @@ defmodule Conductor.Orchestrator do
       candidate_index = rem(acc.worker_index + offset, count)
       worker_name = Enum.at(acc.worker_order, candidate_index)
 
-      case probe_and_reserve_worker(acc, worker_name, candidate_index) do
+      case probe_and_reserve_worker(acc, worker_name, candidate_index, runs_by_worker) do
         {:ok, worker, next_state} ->
           {:halt, {:ok, worker, next_state}}
 
@@ -525,7 +536,7 @@ defmodule Conductor.Orchestrator do
     end)
   end
 
-  defp probe_and_reserve_worker(state, worker_name, candidate_index) do
+  defp probe_and_reserve_worker(state, worker_name, candidate_index, runs_by_worker) do
     {worker, state} = probe_worker(state, worker_name)
 
     cond do
@@ -536,9 +547,60 @@ defmodule Conductor.Orchestrator do
         Logger.info("worker #{worker.name} busy, skipping this cycle")
         {:error, state}
 
+      Map.has_key?(runs_by_worker, worker.name) ->
+        Logger.info("worker #{worker.name} already has an active run, skipping this cycle")
+        {:error, state}
+
       true ->
         {:ok, worker,
          %{state | worker_index: rem(candidate_index + 1, length(state.worker_order))}}
+    end
+  end
+
+  defp active_runs_by_worker(state) do
+    store_runs =
+      try do
+        {:ok, store_mod().active_runs()}
+      rescue
+        exception ->
+          {:error, Exception.message(exception)}
+      catch
+        :exit, reason ->
+          {:error, reason}
+      end
+
+    case store_runs do
+      {:ok, runs_by_worker} ->
+        state.active_runs
+        |> Enum.reduce(runs_by_worker, fn {_issue_number, run}, acc ->
+          worker = current_run_worker(run)
+          Map.update(acc, worker, [run], &[run | &1])
+        end)
+        |> then(&{:ok, &1})
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp current_run_worker(run) do
+    case run_status(run.pid) do
+      {:ok, %{worker: worker}} when is_binary(worker) and worker != "" -> worker
+      _ -> run.worker
+    end
+  end
+
+  defp run_status(pid) when is_pid(pid) do
+    if function_exported?(run_control_mod(), :status, 1) do
+      try do
+        {:ok, run_control_mod().status(pid)}
+      rescue
+        _ -> :error
+      catch
+        :exit, _reason -> :error
+      end
+    else
+      :error
     end
   end
 
@@ -1337,6 +1399,7 @@ defmodule Conductor.Orchestrator do
   end
 
   defp tracker_mod, do: Application.get_env(:conductor, :tracker_module, Conductor.GitHub)
+  defp store_mod, do: Application.get_env(:conductor, :store_module, Conductor.Store)
   defp worker_mod, do: Application.get_env(:conductor, :worker_module, Conductor.Sprite)
   defp code_host_mod, do: Application.get_env(:conductor, :code_host_module, Conductor.GitHub)
   defp shaper_mod, do: Application.get_env(:conductor, :shaper_module, Conductor.Shaper)

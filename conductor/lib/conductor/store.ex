@@ -142,6 +142,12 @@ defmodule Conductor.Store do
     GenServer.call(__MODULE__, {:list_active_runs, repo})
   end
 
+  @doc "Group all non-terminal runs by assigned builder sprite."
+  @spec active_runs() :: %{optional(binary()) => [map()]}
+  def active_runs do
+    GenServer.call(__MODULE__, :active_runs)
+  end
+
   @doc "Leases held past run completion: process exited, lease persists, awaiting resolution."
   @spec list_held_leases(binary()) :: [map()]
   def list_held_leases(repo) do
@@ -519,6 +525,22 @@ defmodule Conductor.Store do
       )
 
     {:reply, rows, state}
+  end
+
+  @impl true
+  def handle_call(:active_runs, _from, state) do
+    rows =
+      query_all(
+        state.conn,
+        """
+        SELECT * FROM runs
+        WHERE completed_at IS NULL AND builder_sprite IS NOT NULL
+        ORDER BY picked_at ASC
+        """,
+        []
+      )
+
+    {:reply, Enum.group_by(rows, & &1["builder_sprite"]), state}
   end
 
   @impl true
