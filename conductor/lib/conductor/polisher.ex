@@ -18,7 +18,7 @@ defmodule Conductor.Polisher do
     :poll_ms,
     :trusted_review_authors,
     in_flight: %{},
-    lgtm_pending: MapSet.new()
+    lgtm_pending: %{}
   ]
 
   # --- Public API ---
@@ -88,7 +88,7 @@ defmodule Conductor.Polisher do
        repo: state.repo,
        polisher_sprite: state.polisher_sprite,
        trusted_review_authors: state.trusted_review_authors,
-       lgtm_pending: MapSet.to_list(state.lgtm_pending),
+       lgtm_pending: Map.keys(state.lgtm_pending),
        in_flight: Map.keys(state.in_flight) |> Map.new(&{&1, :working})
      }, state}
   end
@@ -123,7 +123,7 @@ defmodule Conductor.Polisher do
     checks = pr["statusCheckRollup"] |> List.wrap() |> Enum.filter(&is_map/1)
     pr_number = pr["number"]
 
-    if "lgtm" in label_names or MapSet.member?(state.lgtm_pending, pr_number) or
+    if "lgtm" in label_names or Map.has_key?(state.lgtm_pending, pr_number) or
          not Conductor.GitHub.evaluate_checks(checks) do
       nil
     else
@@ -161,7 +161,7 @@ defmodule Conductor.Polisher do
           non_blocking_review_threads: length(review_state.non_blocking)
         })
 
-        %{state | lgtm_pending: MapSet.put(state.lgtm_pending, pr_number)}
+        %{state | lgtm_pending: Map.put(state.lgtm_pending, pr_number, now_ms())}
 
       {:error, reason} ->
         Logger.warning("[fern] failed to add lgtm to PR ##{pr_number}: #{reason}")
@@ -239,17 +239,21 @@ defmodule Conductor.Polisher do
   end
 
   defp reconcile_lgtm_pending(state, prs) do
+    expiry_ms = max(state.poll_ms * 2, 1_000)
+    cutoff_ms = now_ms() - expiry_ms
+
     still_pending =
-      Enum.reduce(prs, MapSet.new(), fn pr, acc ->
+      Enum.reduce(prs, %{}, fn pr, acc ->
         label_names =
           pr["labels"]
           |> List.wrap()
           |> Enum.map(&String.downcase(&1["name"] || ""))
 
         pr_number = pr["number"]
+        pending_at = Map.get(state.lgtm_pending, pr_number)
 
-        if MapSet.member?(state.lgtm_pending, pr_number) and "lgtm" not in label_names do
-          MapSet.put(acc, pr_number)
+        if is_integer(pending_at) and "lgtm" not in label_names and pending_at > cutoff_ms do
+          Map.put(acc, pr_number, pending_at)
         else
           acc
         end
@@ -257,6 +261,8 @@ defmodule Conductor.Polisher do
 
     %{state | lgtm_pending: still_pending}
   end
+
+  defp now_ms, do: System.monotonic_time(:millisecond)
 
   defp complete_task(state, ref) do
     {pr_number, in_flight} =

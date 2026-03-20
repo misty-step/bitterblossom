@@ -194,6 +194,25 @@ defmodule Conductor.GitHubTest do
       assert length(result.actionable) == 1
       assert result.non_blocking == []
     end
+
+    test "keeps thread actionable when a human adds a later blocking reply" do
+      threads = [
+        %{
+          author: "github-actions",
+          body: "P2 missing-coverage suggestion",
+          comments: [
+            %{author: "github-actions", body: "P2 missing-coverage suggestion"},
+            %{author: "phrazzld", body: "This is actually blocking until tests land"}
+          ],
+          is_resolved: false,
+          is_outdated: false
+        }
+      ]
+
+      result = GitHub.classify_review_threads(threads, ["github-actions"])
+      assert length(result.actionable) == 1
+      assert result.non_blocking == []
+    end
   end
 
   describe "summarize_checks/1" do
@@ -490,6 +509,15 @@ defmodule Conductor.GitHubTest do
           assert thread.author == "github-actions"
           assert thread.path == "conductor/lib/conductor/polisher.ex"
           assert thread.url == "https://example.test/thread"
+
+          assert thread.comments == [
+                   %{
+                     author: "github-actions",
+                     body: "P2 missing-coverage suggestion",
+                     path: "conductor/lib/conductor/polisher.ex",
+                     url: "https://example.test/thread"
+                   }
+                 ]
 
           args = File.read!(args_path)
           assert String.contains?(args, "api\ngraphql\n")

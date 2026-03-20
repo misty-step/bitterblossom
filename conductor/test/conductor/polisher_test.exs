@@ -61,6 +61,32 @@ defmodule Conductor.PolisherTest do
     def add_label(repo, pr_number, label) do
       calls = MockState.get(:add_label_calls, [])
       MockState.put(:add_label_calls, calls ++ [{repo, pr_number, label}])
+
+      if MockState.get(:reflect_added_label?, true) do
+        case MockState.get(:open_prs, {:ok, []}) do
+          {:ok, prs} ->
+            updated_prs =
+              Enum.map(prs, fn pr ->
+                if pr["number"] == pr_number do
+                  labels = pr["labels"] |> List.wrap()
+
+                  if Enum.any?(labels, &((&1["name"] || "") == label)) do
+                    pr
+                  else
+                    Map.put(pr, "labels", labels ++ [%{"name" => label}])
+                  end
+                else
+                  pr
+                end
+              end)
+
+            MockState.put(:open_prs, {:ok, updated_prs})
+
+          _ ->
+            :ok
+        end
+      end
+
       :ok
     end
 
@@ -384,6 +410,60 @@ defmodule Conductor.PolisherTest do
 
       refute_receive {:dispatched, _, _}, 300
       assert MockState.get(:add_label_calls, []) == []
+    end
+
+    test "retries auto-label when the label does not materialize" do
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 99,
+          issue_title: "tracked issue",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(run_id, %{pr_number: 42, phase: "pr_opened", status: "pr_opened"})
+
+      MockState.put(:reflect_added_label?, false)
+
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 42,
+             "headRefName" => "factory/99-12345",
+             "title" => "feat: implement feature",
+             "body" => "Closes #99",
+             "labels" => [],
+             "statusCheckRollup" => @green_checks
+           }
+         ]}
+      )
+
+      MockState.put(
+        :review_threads,
+        {:ok,
+         [
+           %{
+             author: "github-actions",
+             body: "P2 missing-coverage suggestion",
+             comments: [%{author: "github-actions", body: "P2 missing-coverage suggestion"}],
+             is_resolved: false,
+             is_outdated: false
+           }
+         ]}
+      )
+
+      {:ok, _pid} =
+        Polisher.start_link(
+          repo: "test/repo",
+          polisher_sprite: "bb-fern",
+          poll_ms: 50,
+          trusted_review_authors: ["github-actions"]
+        )
+
+      Process.sleep(1_200)
+      assert length(MockState.get(:add_label_calls, [])) >= 2
     end
 
     test "conductor-tracked PR gets lgtm authority in prompt" do

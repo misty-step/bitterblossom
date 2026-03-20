@@ -638,23 +638,41 @@ defmodule Conductor.GitHub do
   defp decode_review_threads(_), do: []
 
   defp normalize_review_thread(thread) do
-    comments = get_in(thread, ["comments", "nodes"]) |> List.wrap()
+    comments =
+      thread
+      |> get_in(["comments", "nodes"])
+      |> List.wrap()
+      |> Enum.map(&normalize_review_thread_comment/1)
+
     first_comment = List.first(comments) || %{}
 
     %{
-      author: get_in(first_comment, ["author", "login"]) || "unknown",
-      body: first_comment["body"] || "",
-      path: first_comment["path"],
-      url: first_comment["url"],
+      author: first_comment[:author] || "unknown",
+      body: first_comment[:body] || "",
+      path: first_comment[:path],
+      url: first_comment[:url],
+      comments: comments,
       is_outdated: thread["isOutdated"] == true,
       is_resolved: thread["isResolved"] == true
     }
   end
 
+  defp normalize_review_thread_comment(comment) do
+    %{
+      author: get_in(comment, ["author", "login"]) || "unknown",
+      body: comment["body"] || "",
+      path: comment["path"],
+      url: comment["url"]
+    }
+  end
+
   defp low_priority_external_thread?(thread, trusted_review_authors) do
+    comments = Map.get(thread, :comments, [%{author: thread.author, body: thread.body}])
+
     trusted_review_author?(thread.author, trusted_review_authors) and
-      not blocking_priority_thread?(thread) and
-      (low_priority_thread?(thread) or thread.is_outdated)
+      Enum.all?(comments, &trusted_review_author?(&1.author, trusted_review_authors)) and
+      Enum.all?(comments, &(not blocking_priority_thread?(&1))) and
+      (Enum.any?(comments, &low_priority_thread?/1) or thread.is_outdated)
   end
 
   defp trusted_review_author?(author, trusted_review_authors) when is_binary(author) do
