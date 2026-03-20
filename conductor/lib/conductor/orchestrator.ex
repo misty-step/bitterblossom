@@ -568,7 +568,7 @@ defmodule Conductor.Orchestrator do
   defp record_busy_deferral(summary, workers) do
     %{
       count: summary.count + 1,
-      workers: Enum.reduce(workers, summary.workers, &MapSet.put(&2, &1))
+      workers: MapSet.union(summary.workers, MapSet.new(workers))
     }
   end
 
