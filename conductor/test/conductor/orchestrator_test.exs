@@ -500,6 +500,89 @@ defmodule Conductor.OrchestratorTest do
   end
 
   describe "concurrent run management" do
+    test "skips workers that already have active runs in the store" do
+      orig_max = Application.get_env(:conductor, :max_concurrent_runs)
+      Application.put_env(:conductor, :max_concurrent_runs, 1)
+
+      on_exit(fn ->
+        if orig_max,
+          do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
+          else: Application.delete_env(:conductor, :max_concurrent_runs)
+      end)
+
+      {:ok, _run_id} =
+        Store.create_run(%{
+          repo: "other/repo",
+          issue_number: 900,
+          issue_title: "existing work",
+          builder_sprite: "sprite-1"
+        })
+
+      issue = %Conductor.Issue{
+        number: 203,
+        title: "new issue",
+        body: "## Problem\nx\n## Acceptance Criteria\ny",
+        url: "https://example.test/issues/203"
+      }
+
+      MockState.put({:eligible, "test/repo", nil}, [issue])
+
+      workers = [
+        %{name: "sprite-1", capability_tags: []},
+        %{name: "sprite-2", capability_tags: []}
+      ]
+
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: workers)
+
+      eventually(fn ->
+        assert MockState.get(:started_runs) == [{203, "sprite-2"}]
+      end)
+    end
+
+    test "defers extra dispatch when concurrent attempts would reuse the same sprite" do
+      orig_max = Application.get_env(:conductor, :max_concurrent_runs)
+      Application.put_env(:conductor, :max_concurrent_runs, 2)
+
+      on_exit(fn ->
+        if orig_max,
+          do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
+          else: Application.delete_env(:conductor, :max_concurrent_runs)
+      end)
+
+      {:ok, _run_id} =
+        Store.create_run(%{
+          repo: "other/repo",
+          issue_number: 901,
+          issue_title: "existing work",
+          builder_sprite: "sprite-1"
+        })
+
+      MockState.put(:run_lifetime_ms, 500)
+
+      issues =
+        Enum.map(204..205, fn number ->
+          %Conductor.Issue{
+            number: number,
+            title: "issue #{number}",
+            body: "## Problem\nx\n## Acceptance Criteria\ny",
+            url: "https://example.test/issues/#{number}"
+          }
+        end)
+
+      MockState.put({:eligible, "test/repo", nil}, issues)
+
+      workers = [
+        %{name: "sprite-1", capability_tags: []},
+        %{name: "sprite-2", capability_tags: []}
+      ]
+
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: workers)
+
+      eventually(fn ->
+        assert MockState.get(:started_runs) == [{204, "sprite-2"}]
+      end)
+    end
+
     test "does not start more runs than max_concurrent_runs allows" do
       orig_max = Application.get_env(:conductor, :max_concurrent_runs)
       Application.put_env(:conductor, :max_concurrent_runs, 0)
@@ -1590,6 +1673,63 @@ defmodule Conductor.OrchestratorTest do
       active = Store.list_active_runs("test/repo")
       ids = Enum.map(active, & &1["run_id"])
       refute run_id in ids
+    end
+  end
+
+  describe "Store.active_runs/0" do
+    test "groups non-terminal runs by builder sprite across repos" do
+      {:ok, sprite_1_run_a} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 30,
+          issue_title: "a",
+          builder_sprite: "sprite-1"
+        })
+
+      {:ok, sprite_1_run_b} =
+        Store.create_run(%{
+          repo: "other/repo",
+          issue_number: 31,
+          issue_title: "b",
+          builder_sprite: "sprite-1"
+        })
+
+      {:ok, sprite_2_run} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 32,
+          issue_title: "c",
+          builder_sprite: "sprite-2"
+        })
+
+      {:ok, completed_run} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 33,
+          issue_title: "done",
+          builder_sprite: "sprite-3"
+        })
+
+      {:ok, unassigned_run} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 34,
+          issue_title: "pending assignment"
+        })
+
+      Store.complete_run(completed_run, "merged", "merged")
+
+      active = Store.active_runs()
+
+      assert active |> Map.fetch!("sprite-1") |> Enum.map(& &1["run_id"]) |> Enum.sort() ==
+               Enum.sort([sprite_1_run_a, sprite_1_run_b])
+
+      assert active |> Map.fetch!("sprite-2") |> Enum.map(& &1["run_id"]) == [sprite_2_run]
+      refute Map.has_key?(active, "sprite-3")
+
+      refute Enum.any?(Map.values(active), fn runs ->
+               Enum.any?(runs, &(&1["run_id"] == unassigned_run))
+             end)
     end
   end
 
