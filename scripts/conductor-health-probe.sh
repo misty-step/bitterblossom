@@ -19,9 +19,9 @@ fi
 message="bitterblossom conductor health check failed at ${timestamp}: ${health_url}"
 
 if [[ -n "${CONDUCTOR_ALERT_WEBHOOK:-}" ]]; then
-  escaped_message="${message//\\/\\\\}"
-  escaped_message="${escaped_message//\"/\\\"}"
-  payload="{\"text\":\"${escaped_message}\"}"
+  payload="$(
+    ALERT_MESSAGE="${message}" python3 -c 'import json, os; print(json.dumps({"text": os.environ["ALERT_MESSAGE"]}))'
+  )"
 
   curl \
     --fail --silent --show-error \

@@ -88,7 +88,16 @@ defmodule Conductor.CLI do
 
     # Validate environment before doing anything
     cmd_check_env()
-    maybe_start_health_endpoint(health_port)
+
+    case maybe_start_health_endpoint(health_port) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        IO.puts(
+          "warning: failed to start health endpoint: #{inspect(reason)}; continuing without /healthz"
+        )
+    end
 
     case Conductor.Application.boot_fleet(fleet_path) do
       :ok ->
@@ -117,9 +126,7 @@ defmodule Conductor.CLI do
     Application.put_env(:conductor, Conductor.Web.Endpoint,
       adapter: Bandit.PhoenixAdapter,
       http: [ip: {127, 0, 0, 1}, port: port],
-      secret_key_base:
-        System.get_env("DASHBOARD_SECRET_KEY_BASE") ||
-          "bitterblossom-dashboard-dev-key-must-be-at-least-64-chars-long-x",
+      secret_key_base: endpoint_secret_key_base(),
       live_view: [signing_salt: "bb_lv_salt"],
       server: true,
       check_origin: false
@@ -135,8 +142,7 @@ defmodule Conductor.CLI do
             :ok
 
           {:error, reason} ->
-            IO.puts("failed to start health endpoint: #{inspect(reason)}")
-            System.halt(1)
+            {:error, reason}
         end
 
       _pid ->
@@ -342,9 +348,7 @@ defmodule Conductor.CLI do
     Application.put_env(:conductor, Conductor.Web.Endpoint,
       adapter: Bandit.PhoenixAdapter,
       http: [ip: {127, 0, 0, 1}, port: port],
-      secret_key_base:
-        System.get_env("DASHBOARD_SECRET_KEY_BASE") ||
-          "bitterblossom-dashboard-dev-key-must-be-at-least-64-chars-long-x",
+      secret_key_base: endpoint_secret_key_base(),
       live_view: [signing_salt: "bb_lv_salt"],
       server: true
     )
@@ -352,6 +356,11 @@ defmodule Conductor.CLI do
     {:ok, _} = Supervisor.start_child(Conductor.Supervisor, Conductor.Web.Endpoint)
     IO.puts("dashboard running at http://localhost:#{port}")
     Process.sleep(:infinity)
+  end
+
+  defp endpoint_secret_key_base do
+    System.get_env("DASHBOARD_SECRET_KEY_BASE") ||
+      Base.url_encode64(:crypto.strong_rand_bytes(48), padding: false)
   end
 
   defp cmd_status do
