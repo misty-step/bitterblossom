@@ -37,6 +37,13 @@ defmodule Conductor.Store do
     GenServer.call(__MODULE__, {:create_run, attrs})
   end
 
+  @doc "Atomically create the run row and reserve both the issue and sprite needed to dispatch it."
+  @spec create_run_with_dispatch_leases(map()) ::
+          {:ok, binary()} | {:error, :already_leased | :sprite_already_leased}
+  def create_run_with_dispatch_leases(attrs) do
+    GenServer.call(__MODULE__, {:create_run_with_dispatch_leases, attrs})
+  end
+
   @spec update_run(binary(), map()) :: :ok | {:error, :invalid_column | :empty_attrs}
   def update_run(run_id, attrs) do
     GenServer.call(__MODULE__, {:update_run, run_id, attrs})
@@ -51,6 +58,12 @@ defmodule Conductor.Store do
   @spec complete_run(binary(), binary(), binary()) :: :ok
   def complete_run(run_id, phase, status) do
     GenServer.call(__MODULE__, {:complete_run, run_id, phase, status})
+  end
+
+  @doc "Mark the run pr_opened and release any active sprite lease in one transaction."
+  @spec complete_pr_opened(binary(), pos_integer(), binary(), non_neg_integer()) :: :ok
+  def complete_pr_opened(run_id, pr_number, pr_url, turn_count) do
+    GenServer.call(__MODULE__, {:complete_pr_opened, run_id, pr_number, pr_url, turn_count})
   end
 
   @doc "Atomically complete a run and release its lease. Prevents the class of bug where one is called without the other."
@@ -228,6 +241,59 @@ defmodule Conductor.Store do
   end
 
   @impl true
+  def handle_call({:create_run_with_dispatch_leases, attrs}, _from, state) do
+    run_id = attrs[:run_id] || generate_run_id(attrs[:issue_number])
+    now = now_utc()
+
+    exec(state.conn, "BEGIN IMMEDIATE", [])
+
+    result =
+      cond do
+        active_issue_lease?(state.conn, attrs[:repo], attrs[:issue_number]) ->
+          {:error, :already_leased}
+
+        active_sprite_lease?(state.conn, attrs[:builder_sprite], run_id) ->
+          {:error, :sprite_already_leased}
+
+        true ->
+          exec(
+            state.conn,
+            """
+              INSERT INTO runs (run_id, repo, issue_number, issue_title, phase, status,
+                                builder_sprite, picked_at, heartbeat_at, updated_at)
+              VALUES (?1, ?2, ?3, ?4, 'pending', 'pending', ?5, ?6, ?6, ?6)
+            """,
+            [
+              run_id,
+              attrs[:repo],
+              attrs[:issue_number],
+              attrs[:issue_title],
+              attrs[:builder_sprite],
+              now
+            ]
+          )
+
+          exec(
+            state.conn,
+            "INSERT INTO leases (repo, issue_number, run_id, acquired_at) VALUES (?1, ?2, ?3, ?4)",
+            [attrs[:repo], attrs[:issue_number], run_id, now]
+          )
+
+          exec(
+            state.conn,
+            "INSERT INTO sprite_leases (sprite, run_id, acquired_at) VALUES (?1, ?2, ?3)",
+            [attrs[:builder_sprite], run_id, now]
+          )
+
+          {:ok, run_id}
+      end
+
+    finish_transaction(state.conn, result)
+    broadcast_update()
+    {:reply, result, state}
+  end
+
+  @impl true
   def handle_call({:update_run, run_id, attrs}, _from, state) do
     case {map_size(attrs), validate_columns(attrs)} do
       {0, _} ->
@@ -290,6 +356,40 @@ defmodule Conductor.Store do
       """,
       [phase, status, now, run_id]
     )
+
+    broadcast_update()
+    {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call({:complete_pr_opened, run_id, pr_number, pr_url, turn_count}, _from, state) do
+    now = now_utc()
+
+    exec(state.conn, "BEGIN IMMEDIATE", [])
+
+    exec(
+      state.conn,
+      """
+        UPDATE runs
+        SET phase = 'pr_opened',
+            status = 'pr_opened',
+            pr_number = ?1,
+            pr_url = ?2,
+            turn_count = ?3,
+            completed_at = ?4,
+            updated_at = ?4
+        WHERE run_id = ?5
+      """,
+      [pr_number, pr_url, turn_count, now, run_id]
+    )
+
+    exec(
+      state.conn,
+      "UPDATE sprite_leases SET released_at = ?1 WHERE run_id = ?2 AND released_at IS NULL",
+      [now, run_id]
+    )
+
+    exec(state.conn, "COMMIT", [])
 
     broadcast_update()
     {:reply, :ok, state}
@@ -690,6 +790,8 @@ defmodule Conductor.Store do
     # Record event
     event_json = Jason.encode!(%{heartbeat_at: heartbeat_at})
 
+    exec(state.conn, "BEGIN IMMEDIATE", [])
+
     exec(
       state.conn,
       "INSERT INTO events (run_id, event_type, payload, created_at) VALUES (?1, ?2, ?3, ?4)",
@@ -715,6 +817,8 @@ defmodule Conductor.Store do
       "UPDATE sprite_leases SET released_at = ?1 WHERE run_id = ?2 AND released_at IS NULL",
       [now, run_id]
     )
+
+    exec(state.conn, "COMMIT", [])
 
     append_event_log(state.event_log, %{
       run_id: run_id,
@@ -910,6 +1014,11 @@ defmodule Conductor.Store do
   end
 
   defp finish_transaction(conn, :ok), do: exec(conn, "COMMIT", [])
+
+  defp finish_transaction(conn, {:ok, _} = ok) do
+    exec(conn, "COMMIT", [])
+    ok
+  end
 
   defp finish_transaction(conn, {:error, _} = error) do
     exec(conn, "ROLLBACK", [])

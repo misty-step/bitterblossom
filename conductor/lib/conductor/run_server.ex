@@ -406,21 +406,7 @@ defmodule Conductor.RunServer do
   end
 
   defp acquire_initial_dispatch_leases(state) do
-    case Store.acquire_dispatch_leases(state.repo, state.issue.number, state.run_id, state.worker) do
-      :ok ->
-        create_run_after_dispatch_reservation(state)
-
-      {:error, :already_leased} ->
-        Logger.warning("issue ##{state.issue.number} already leased, skipping")
-        {:stop, :normal, state}
-
-      {:error, :sprite_already_leased} ->
-        maybe_shift_to_next_worker(state, "builder sprite already reserved", initial?: true)
-    end
-  end
-
-  defp create_run_after_dispatch_reservation(state) do
-    case Store.create_run(%{
+    case Store.create_run_with_dispatch_leases(%{
            run_id: state.run_id,
            repo: state.repo,
            issue_number: state.issue.number,
@@ -432,12 +418,12 @@ defmodule Conductor.RunServer do
         log(state, "lease acquired for issue ##{state.issue.number} on #{state.worker}")
         {:noreply, state, {:continue, :prepare_workspace}}
 
-      _ ->
-        Store.release_dispatch_leases(state.repo, state.issue.number, state.run_id)
-
-        Logger.error("create_run failed after lease acquired for issue ##{state.issue.number}")
-
+      {:error, :already_leased} ->
+        Logger.warning("issue ##{state.issue.number} already leased, skipping")
         {:stop, :normal, state}
+
+      {:error, :sprite_already_leased} ->
+        maybe_shift_to_next_worker(state, "builder sprite already reserved", initial?: true)
     end
   end
 
@@ -648,14 +634,6 @@ defmodule Conductor.RunServer do
     pr_number = pr["number"]
     pr_url = pr["url"]
 
-    Store.complete_run(state.run_id, "pr_opened", "pr_opened")
-
-    Store.update_run(state.run_id, %{
-      pr_number: pr_number,
-      pr_url: pr_url,
-      turn_count: state.turn_count
-    })
-
     Store.record_event(state.run_id, "builder_pr_detected", %{
       pr_number: pr_number,
       pr_url: pr_url
@@ -663,7 +641,7 @@ defmodule Conductor.RunServer do
 
     log(state, "Weaver opened PR ##{pr_number}: #{pr_url}")
     cleanup_workspace(state)
-    release_sprite_lease(state)
+    Store.complete_pr_opened(state.run_id, pr_number, pr_url, state.turn_count)
     {:stop, :normal, %{state | phase: :pr_opened, pr_number: pr_number}}
   end
 
