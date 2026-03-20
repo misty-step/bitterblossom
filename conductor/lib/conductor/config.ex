@@ -127,16 +127,16 @@ defmodule Conductor.Config do
 
   @spec trusted_review_authors() :: [binary()]
   def trusted_review_authors do
-    Application.get_env(
-      :conductor,
-      :trusted_review_authors,
-      [
-        "github-actions",
-        "coderabbitai",
-        "chatgpt-codex-connector",
-        "chatgpt-codex-connector[bot]"
-      ]
-    )
+    default = [
+      "github-actions",
+      "coderabbitai",
+      "chatgpt-codex-connector",
+      "chatgpt-codex-connector[bot]"
+    ]
+
+    :conductor
+    |> Application.get_env(:trusted_review_authors, default)
+    |> normalize_trusted_review_authors(default)
   end
 
   @spec replay_delay_ms() :: pos_integer()
@@ -188,6 +188,19 @@ defmodule Conductor.Config do
       "" -> acc
       val -> [{target_key, val} | acc]
     end
+  end
+
+  defp normalize_trusted_review_authors(raw_authors, default) do
+    normalized =
+      raw_authors
+      |> List.wrap()
+      |> Enum.filter(&is_binary/1)
+      |> Enum.map(&String.trim/1)
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.map(&String.downcase/1)
+      |> Enum.uniq()
+
+    if normalized == [], do: default, else: normalized
   end
 
   defp detect_repo_root do

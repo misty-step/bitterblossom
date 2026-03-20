@@ -357,6 +357,35 @@ defmodule Conductor.PolisherTest do
       assert MockState.get(:add_label_calls, []) == []
     end
 
+    test "fails closed when review thread lookup errors" do
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 42,
+             "headRefName" => "factory/99-12345",
+             "title" => "feat: implement feature",
+             "body" => "Closes #99",
+             "labels" => [],
+             "statusCheckRollup" => @green_checks
+           }
+         ]}
+      )
+
+      MockState.put(:review_threads, {:error, "api down"})
+
+      {:ok, _pid} =
+        Polisher.start_link(
+          repo: "test/repo",
+          polisher_sprite: "bb-fern",
+          poll_ms: 50
+        )
+
+      refute_receive {:dispatched, _, _}, 300
+      assert MockState.get(:add_label_calls, []) == []
+    end
+
     test "conductor-tracked PR gets lgtm authority in prompt" do
       # Create a store run so conductor_managed? returns true
       {:ok, run_id} =

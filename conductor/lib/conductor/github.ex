@@ -480,18 +480,10 @@ defmodule Conductor.GitHub do
   def classify_review_threads(threads, trusted_review_authors \\ []) do
     threads
     |> Enum.reject(&Map.get(&1, :is_resolved, false))
-    |> Enum.reduce(%{actionable: [], non_blocking: []}, fn thread, acc ->
-      bucket =
-        if low_priority_external_thread?(thread, trusted_review_authors) do
-          :non_blocking
-        else
-          :actionable
-        end
-
-      Map.update!(acc, bucket, &[thread | &1])
+    |> Enum.split_with(&low_priority_external_thread?(&1, trusted_review_authors))
+    |> then(fn {non_blocking, actionable} ->
+      %{actionable: actionable, non_blocking: non_blocking}
     end)
-    |> Map.update!(:actionable, &Enum.reverse/1)
-    |> Map.update!(:non_blocking, &Enum.reverse/1)
   end
 
   @doc false

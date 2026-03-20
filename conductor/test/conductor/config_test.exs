@@ -144,13 +144,33 @@ defmodule Conductor.ConfigTest do
 
   describe "trusted_review_authors/0" do
     test "returns defaults when unset" do
-      assert "github-actions" in Config.trusted_review_authors()
-      assert "coderabbitai" in Config.trusted_review_authors()
+      assert Config.trusted_review_authors() == [
+               "github-actions",
+               "coderabbitai",
+               "chatgpt-codex-connector",
+               "chatgpt-codex-connector[bot]"
+             ]
     end
 
     test "returns configured value" do
       Application.put_env(:conductor, :trusted_review_authors, ["external-bot"])
       assert Config.trusted_review_authors() == ["external-bot"]
+    after
+      Application.delete_env(:conductor, :trusted_review_authors)
+    end
+
+    test "normalizes configured values and falls back when invalid" do
+      Application.put_env(:conductor, :trusted_review_authors, ["  GitHub-Actions  ", 123, ""])
+      assert Config.trusted_review_authors() == ["github-actions"]
+
+      Application.put_env(:conductor, :trusted_review_authors, [123, nil])
+
+      assert Config.trusted_review_authors() == [
+               "github-actions",
+               "coderabbitai",
+               "chatgpt-codex-connector",
+               "chatgpt-codex-connector[bot]"
+             ]
     after
       Application.delete_env(:conductor, :trusted_review_authors)
     end

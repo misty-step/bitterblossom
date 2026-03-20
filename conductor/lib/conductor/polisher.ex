@@ -142,7 +142,7 @@ defmodule Conductor.Polisher do
 
         {:error, reason} ->
           Logger.warning("[fern] failed to fetch review threads for PR ##{pr_number}: #{reason}")
-          {:dispatch, pr, empty_review_state()}
+          nil
       end
     end
   end
@@ -237,8 +237,6 @@ defmodule Conductor.Polisher do
         error
     end
   end
-
-  defp empty_review_state, do: %{actionable: [], non_blocking: []}
 
   defp reconcile_lgtm_pending(state, prs) do
     still_pending =
