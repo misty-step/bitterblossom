@@ -6,12 +6,14 @@ defmodule Conductor.RunServer do
 
       pending → building → pr_opened (terminal)
                             ├── blocked
-                            └── failed
+                            ├── failed
+                            └── timeout
 
   Lease lifecycle: the lease means "this issue is claimed" — it persists from
   dispatch through merge, block, or external resolution. RunServer exits at
   pr_opened but the lease holds. The orchestrator releases the lease at merge
-  or via reconciliation. fail/3 and block/2 release immediately (terminal).
+  or via reconciliation. fail/3, block/2, and timeout_builder/4 release
+  immediately (terminal).
   """
 
   use GenServer, restart: :temporary

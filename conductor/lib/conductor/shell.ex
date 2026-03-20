@@ -139,13 +139,12 @@ defmodule Conductor.Shell do
           complete_lines
           |> Enum.map(&String.trim_trailing(&1, "\r"))
           |> Enum.flat_map(fn line ->
-            case String.split(line, progress_prefix, parts: 2) do
-              [_before, message] ->
-                message = String.trim(message)
-                if message == "", do: [], else: [message]
-
-              _ ->
-                []
+            if String.starts_with?(line, progress_prefix) do
+              <<_prefix::binary-size(byte_size(progress_prefix)), message::binary>> = line
+              message = String.trim(message)
+              if message == "", do: [], else: [message]
+            else
+              []
             end
           end)
 
