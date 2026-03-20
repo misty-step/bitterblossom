@@ -135,10 +135,10 @@ defmodule Conductor.Application do
       |> Enum.each(fn sprite ->
         case starter.(role, sprite, repo) do
           {:ok, _} ->
-            Logger.info("[boot] #{role_display_name(role)} started: #{sprite.name}")
+            log_phase_worker_started(role, sprite.name)
 
           :ok ->
-            Logger.info("[boot] #{role_display_name(role)} started: #{sprite.name}")
+            log_phase_worker_started(role, sprite.name)
 
           {:error, reason} ->
             Logger.warning("[boot] #{role_display_name(role)} failed: #{inspect(reason)}")
@@ -154,7 +154,14 @@ defmodule Conductor.Application do
         :polisher -> {Conductor.Polisher, :polisher_sprite}
       end
 
-    Supervisor.start_child(Conductor.Supervisor, {module, [{:repo, repo}, {sprite_key, sprite.name}]})
+    Supervisor.start_child(
+      Conductor.Supervisor,
+      {module, [{:repo, repo}, {sprite_key, sprite.name}]}
+    )
+  end
+
+  defp log_phase_worker_started(role, sprite_name) do
+    Logger.info("[boot] #{role_display_name(role)} started: #{sprite_name}")
   end
 
   @doc false
