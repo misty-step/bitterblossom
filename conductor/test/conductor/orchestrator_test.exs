@@ -1696,6 +1696,35 @@ defmodule Conductor.OrchestratorTest do
 
       assert grouped["sprite-2"] |> Enum.map(& &1["run_id"]) == [run_c]
     end
+
+    test "ignores stale runs from other repos" do
+      stale_heartbeat =
+        DateTime.utc_now() |> DateTime.add(-7200, :second) |> DateTime.to_iso8601()
+
+      {:ok, stale_run} =
+        Store.create_run(%{
+          repo: "other/repo",
+          issue_number: 33,
+          issue_title: "stale",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(stale_run, %{heartbeat_at: stale_heartbeat})
+
+      {:ok, fresh_run} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 34,
+          issue_title: "fresh",
+          builder_sprite: "sprite-1"
+        })
+
+      grouped = Store.active_runs()
+      sprite_1_run_ids = grouped["sprite-1"] |> Enum.map(& &1["run_id"])
+
+      assert sprite_1_run_ids == [fresh_run]
+      refute stale_run in sprite_1_run_ids
+    end
   end
 
   describe "merge releases lease" do

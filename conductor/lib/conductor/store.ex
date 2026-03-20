@@ -529,6 +529,13 @@ defmodule Conductor.Store do
 
   @impl true
   def handle_call(:active_runs, _from, state) do
+    cutoff =
+      DateTime.add(
+        DateTime.utc_now(),
+        -Conductor.Config.stale_run_threshold_minutes() * 60,
+        :second
+      )
+
     rows =
       query_all(
         state.conn,
@@ -541,6 +548,7 @@ defmodule Conductor.Store do
         """,
         []
       )
+      |> Enum.reject(fn run -> stale_heartbeat?(run["heartbeat_at"], cutoff) end)
 
     grouped =
       Enum.reduce(rows, %{}, fn row, acc ->
@@ -762,6 +770,15 @@ defmodule Conductor.Store do
 
   defp now_utc do
     DateTime.utc_now() |> DateTime.to_iso8601()
+  end
+
+  defp stale_heartbeat?(nil, _cutoff), do: true
+
+  defp stale_heartbeat?(heartbeat_at, cutoff) do
+    case DateTime.from_iso8601(heartbeat_at) do
+      {:ok, heartbeat, _offset} -> DateTime.compare(heartbeat, cutoff) == :lt
+      _ -> true
+    end
   end
 
   defp broadcast_update do
