@@ -99,7 +99,12 @@ defmodule Conductor.Issue do
   @spec assigned?(t()) :: boolean()
   def assigned?(%__MODULE__{assignees: assignees}), do: assignees != []
 
-  @doc "Returns only human assignee names."
+  @doc """
+  Returns only human assignee names.
+
+  Falls back to the raw `assignees` list when metadata is unavailable, which
+  preserves direct struct construction in tests and legacy callers.
+  """
   @spec human_assignees(t()) :: [binary()]
   def human_assignees(%__MODULE__{assignee_metadata: []} = issue), do: issue.assignees
 
