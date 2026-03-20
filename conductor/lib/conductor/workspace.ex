@@ -211,7 +211,7 @@ defmodule Conductor.Workspace do
 
         case sync_persona(sprite, worktree, role, sync_opts) do
           :ok -> {:ok, worktree}
-          {:error, reason} -> {:error, reason}
+          {:error, reason} -> {:error, {:persona_sync_failed, worktree, reason}}
         end
     end
   end

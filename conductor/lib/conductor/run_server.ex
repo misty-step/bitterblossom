@@ -162,6 +162,9 @@ defmodule Conductor.RunServer do
 
         {:noreply, state, {:continue, :dispatch_builder}}
 
+      {:error, {:persona_sync_failed, path, reason}} ->
+        fail(%{state | worktree_path: path}, "workspace_preparation_failed", reason)
+
       {:error, reason} ->
         fail(state, "workspace_preparation_failed", reason)
     end

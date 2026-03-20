@@ -164,7 +164,7 @@ defmodule Conductor.RunServerTest do
         _role ->
           case MockState.get(:sync_persona_result, :ok) do
             :ok -> MockState.get(:workspace_result, {:ok, "/tmp/test-worktree"})
-            {:error, reason} -> {:error, reason}
+            {:error, reason} -> {:error, {:persona_sync_failed, "/tmp/test-worktree", reason}}
           end
       end
     end
@@ -537,6 +537,7 @@ defmodule Conductor.RunServerTest do
       run = find_run(42)
       assert run["phase"] == "failed"
       assert "workspace_preparation_failed" in event_types(run["run_id"])
+      assert "workspace_cleaned" in event_types(run["run_id"])
       assert log =~ "workspace_preparation_failed: persona sync failed"
     end
   end

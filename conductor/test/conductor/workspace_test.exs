@@ -127,6 +127,42 @@ defmodule Conductor.WorkspaceTest do
       assert File.read!(Path.join(Workspace.persona_launch_dir(workspace, :weaver), "CLAUDE.md")) ==
                "shared claude\nweaver claude\n"
     end
+
+    test "preserves the prepared worktree path when persona sync fails" do
+      workspace =
+        Path.join(System.tmp_dir!(), "workspace-test-#{System.unique_integer([:positive])}")
+
+      source_root = minimal_persona_source_root(:weaver)
+      File.mkdir_p!(workspace)
+
+      on_exit(fn ->
+        File.rm_rf(workspace)
+        File.rm_rf(source_root)
+      end)
+
+      assert {:error,
+              {:persona_sync_failed, ^workspace, "persona sync failed (75): upload failed"}} =
+               Workspace.prepare(
+                 "bb-weaver",
+                 "misty-step/bitterblossom",
+                 "run-42-1773867376",
+                 "factory/42-1773867376",
+                 source_root: source_root,
+                 persona_role: :weaver,
+                 exec_fn: fn _sprite, command, opts ->
+                   cond do
+                     String.contains?(command, "git worktree add -b factory/42-1773867376") ->
+                       {:ok, workspace <> "\n"}
+
+                     command == "true" and Keyword.has_key?(opts, :files) ->
+                       {:error, "upload failed", 75}
+
+                     true ->
+                       {:ok, ""}
+                   end
+                 end
+               )
+    end
   end
 
   describe "sync_persona/4" do
