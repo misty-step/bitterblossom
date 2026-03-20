@@ -97,9 +97,9 @@ defmodule Conductor.Fixer do
       case code_host_mod().open_prs(state.repo) do
         {:ok, prs} ->
           # Dispatch at most one PR per poll (single sprite, single workspace)
-          case Enum.find(prs, &needs_fix?(&1, state)) do
+          case next_fixable_pr(prs, state) do
             nil -> state
-            pr -> dispatch_fixer(state, pr)
+            {pr, reason} -> dispatch_fixer(state, pr, reason)
           end
 
         {:error, reason} ->
@@ -109,26 +109,42 @@ defmodule Conductor.Fixer do
     end
   end
 
-  defp needs_fix?(pr, state) do
+  defp next_fixable_pr(prs, state) do
+    Enum.find_value(prs, fn pr ->
+      case fix_reason(pr, state) do
+        {:ok, :none} ->
+          nil
+
+        {:ok, reason} ->
+          {pr, reason}
+
+        {:error, reason} ->
+          pr_number = pr["number"] || "unknown"
+
+          Logger.warning(
+            "[thorn] failed to check fix reason for PR ##{pr_number}: #{inspect(reason)}"
+          )
+
+          nil
+      end
+    end)
+  end
+
+  defp fix_reason(pr, state) do
     checks = pr["statusCheckRollup"] |> List.wrap() |> Enum.filter(&is_map/1)
     checks_failed = Conductor.GitHub.evaluate_checks_failed(checks)
 
-    review_failed =
-      case tracked_review_failure?(state.repo, pr["number"]) do
-        {:ok, failed?} ->
-          failed?
+    cond do
+      checks_failed ->
+        {:ok, :ci_failed}
 
-        {:error, reason} ->
-          pr_number = pr["number"]
-
-          Logger.warning(
-            "[thorn] failed to check review failures for PR ##{pr_number}: #{inspect(reason)}"
-          )
-
-          false
-      end
-
-    checks_failed or review_failed
+      true ->
+        case tracked_review_failure?(state.repo, pr["number"]) do
+          {:ok, true} -> {:ok, :review_failed}
+          {:ok, false} -> {:ok, :none}
+          {:error, reason} -> {:error, reason}
+        end
+    end
   end
 
   defp tracked_review_failure?(repo, pr_number) when is_integer(pr_number) do
@@ -173,9 +189,15 @@ defmodule Conductor.Fixer do
 
   defp cerberus_failure_comment?(_comment), do: false
 
-  defp dispatch_fixer(state, pr) do
+  defp dispatch_reason_text(:ci_failed), do: "CI failing"
+  defp dispatch_reason_text(:review_failed), do: "Cerberus review verdict FAIL"
+
+  defp dispatch_fixer(state, pr, reason) do
     pr_number = pr["number"]
-    Logger.info("[thorn] PR ##{pr_number} has red CI, dispatching Thorn")
+
+    Logger.info(
+      "[thorn] PR ##{pr_number} needs fixes (#{dispatch_reason_text(reason)}), dispatching Thorn"
+    )
 
     ci_logs =
       case code_host_mod().pr_ci_failure_logs(state.repo, pr_number) do
@@ -194,7 +216,8 @@ defmodule Conductor.Fixer do
 
     Store.record_event("fixer", "fixer_dispatched", %{
       pr_number: pr_number,
-      sprite: state.fixer_sprite
+      sprite: state.fixer_sprite,
+      reason: reason
     })
 
     task =

@@ -203,7 +203,7 @@ defmodule Conductor.FixerTest do
           assert prompt =~ "CI"
         end)
 
-      assert log =~ "[thorn] PR #42 has red CI, dispatching Thorn"
+      assert log =~ "[thorn] PR #42 needs fixes (CI failing), dispatching Thorn"
     end
 
     test "skips PRs when CI has not failed (green or pending)" do
@@ -305,15 +305,21 @@ defmodule Conductor.FixerTest do
          ]}
       )
 
-      {:ok, _pid} =
-        Fixer.start_link(
-          repo: "test/repo",
-          fixer_sprite: "bb-thorn",
-          poll_ms: 50
-        )
+      log =
+        capture_log(fn ->
+          {:ok, _pid} =
+            Fixer.start_link(
+              repo: "test/repo",
+              fixer_sprite: "bb-thorn",
+              poll_ms: 50
+            )
 
-      assert_receive {:dispatched, "bb-thorn", prompt}, 2_000
-      assert prompt =~ "Branch: factory/99-12345"
+          assert_receive {:dispatched, "bb-thorn", prompt}, 2_000
+          assert prompt =~ "Branch: factory/99-12345"
+        end)
+
+      assert log =~
+               "[thorn] PR #42 needs fixes (Cerberus review verdict FAIL), dispatching Thorn"
     end
 
     test "does not dispatch on Cerberus review verdicts for untracked PRs" do
@@ -399,7 +405,7 @@ defmodule Conductor.FixerTest do
           refute_receive {:dispatched, _, _}, 300
         end)
 
-      assert log =~ "[thorn] failed to check review failures for PR #42: :api_down"
+      assert log =~ "[thorn] failed to check fix reason for PR #42: :api_down"
     end
 
     test "does not dispatch when fixer is already working on a PR" do
