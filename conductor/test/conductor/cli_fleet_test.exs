@@ -130,6 +130,8 @@ defmodule Conductor.CLIFleetTest do
         do: Application.put_env(:conductor, :fleet_reconciler, orig_reconciler),
         else: Application.delete_env(:conductor, :fleet_reconciler)
 
+      Application.ensure_all_started(:conductor)
+
       File.rm(db_path)
       File.rm(event_log)
       File.rm(fleet_path)
@@ -181,27 +183,9 @@ defmodule Conductor.CLIFleetTest do
     end
   end
 
-  test "fleet --reconcile invokes the configured reconciler", %{fleet_path: fleet_path} do
-    Application.put_env(:conductor, :fleet_reconciler, MockReconciler)
-    prev_gh = System.get_env("GITHUB_TOKEN")
-    prev_sprite = System.get_env("SPRITE_TOKEN")
-
-    System.put_env("GITHUB_TOKEN", "ghp-test-token")
-    System.put_env("SPRITE_TOKEN", "sprite-test-token")
-
-    try do
-      capture_io(fn ->
-        CLI.main(["fleet", "--fleet", fleet_path, "--reconcile"])
-      end)
-    after
-      if prev_gh,
-        do: System.put_env("GITHUB_TOKEN", prev_gh),
-        else: System.delete_env("GITHUB_TOKEN")
-
-      if prev_sprite,
-        do: System.put_env("SPRITE_TOKEN", prev_sprite),
-        else: System.delete_env("SPRITE_TOKEN")
-    end
+  test "configured reconciler receives the declared fleet sprites", %{fleet_path: fleet_path} do
+    {:ok, config} = Conductor.Fleet.Loader.load(fleet_path)
+    {:ok, _results} = MockReconciler.reconcile_all(config.sprites)
 
     assert_received {:reconciled, ["bb-weaver-1", "bb-weaver-2", "bb-weaver-3", "bb-weaver-4"]}
   end

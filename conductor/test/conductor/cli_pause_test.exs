@@ -25,6 +25,7 @@ defmodule Conductor.CLIPauseTest do
       Application.stop(:conductor)
       restore_env(:db_path, orig_db)
       restore_env(:event_log, orig_log)
+      Application.ensure_all_started(:conductor)
       File.rm(db_path)
       File.rm(event_log)
     end)
