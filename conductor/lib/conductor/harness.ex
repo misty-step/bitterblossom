@@ -122,8 +122,18 @@ defmodule Conductor.Harness do
           {:ok, %{diagnostics: [binary()], harness: module()}} | {:error, binary(), integer()}
   def detect_dispatch_harness(sprite, configured_harness, exec_fn) do
     case known_harness(configured_harness) do
-      nil ->
+      nil when is_atom(configured_harness) ->
         {:ok, %{harness: configured_harness, diagnostics: []}}
+
+      nil ->
+        diagnostics = [
+          diagnostic_line(
+            "configured harness #{name(configured_harness)} is unsupported on sprite #{sprite}"
+          ),
+          diagnostic_line("supported harnesses: #{supported_harness_summary()}")
+        ]
+
+        {:error, Enum.join(diagnostics, "\n"), 78}
 
       configured ->
         configured_line =

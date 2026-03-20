@@ -45,6 +45,21 @@ defmodule Conductor.HarnessTest do
              "configured harness codex on sprite bb-weaver | command -v codex -> ok | selected harness codex has no continuation command; returning initial failure"
   end
 
+  test "rejects unknown configured harnesses with actionable diagnostics" do
+    exec_fn = fn _sprite, _command, _opts ->
+      flunk("unexpected command probe for unknown harness")
+    end
+
+    assert {:error, msg, 78} =
+             Harness.detect_dispatch_harness("bb-weaver", "claude_code", exec_fn)
+
+    assert msg =~ "configured harness claude_code is unsupported on sprite bb-weaver"
+    assert msg =~ "supported harnesses: codex (codex CLI), claude-code (claude CLI)"
+
+    assert {:permanent, :harness_unsupported} =
+             Harness.classify_dispatch_failure(msg, 78)
+  end
+
   @tag :backoff_strategy
   test "computes bounded retry backoff by attempt" do
     Application.put_env(:conductor, :builder_retry_backoff_base_ms, 1_000)

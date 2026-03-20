@@ -66,7 +66,7 @@ defmodule Conductor.Sprite do
   def dispatch(sprite, prompt, _repo, opts \\ []) do
     timeout_minutes = Keyword.get(opts, :timeout, Config.builder_timeout())
     workspace = Keyword.fetch!(opts, :workspace)
-    harness = Keyword.get(opts, :harness, Conductor.Codex)
+    configured_harness = Keyword.get(opts, :harness, Conductor.Codex)
     harness_opts = Keyword.get(opts, :harness_opts, [])
     # Injected in tests to capture exec calls without a real sprite
     exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
@@ -86,9 +86,12 @@ defmodule Conductor.Sprite do
           {:error, "dispatch file upload failed: #{msg}", code}
 
         {:ok, _} ->
-          case Harness.detect_dispatch_harness(sprite, harness, exec_fn) do
+          case Harness.detect_dispatch_harness(sprite, configured_harness, exec_fn) do
             {:ok, detected} ->
               log_harness_diagnostics(sprite, detected.diagnostics)
+
+              selected_harness_opts =
+                selected_harness_opts(configured_harness, detected.harness, harness_opts)
 
               run_agent(
                 sprite,
@@ -96,7 +99,7 @@ defmodule Conductor.Sprite do
                 prompt_path,
                 persona_role,
                 detected.harness,
-                harness_opts,
+                selected_harness_opts,
                 exec_fn,
                 timeout_ms
               )
@@ -321,12 +324,22 @@ defmodule Conductor.Sprite do
     end
   end
 
-  defp log_harness_diagnostics(_sprite, []), do: :ok
-
   defp log_harness_diagnostics(sprite, diagnostics) do
     Enum.each(diagnostics, fn line ->
       Logger.info("[sprite #{sprite}] #{line}")
     end)
+  end
+
+  defp selected_harness_opts(configured_harness, selected_harness, harness_opts) do
+    if Harness.name(configured_harness) == Harness.name(selected_harness) do
+      harness_opts
+    else
+      Logger.info(
+        "[bb harness] dropping harness-specific opts for fallback from #{Harness.name(configured_harness)} to #{Harness.name(selected_harness)}"
+      )
+
+      []
+    end
   end
 
   defp agent_command(harness, cmd_parts, workspace, prompt_path, persona_role) do

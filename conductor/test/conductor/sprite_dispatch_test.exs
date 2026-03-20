@@ -363,6 +363,46 @@ defmodule Conductor.SpriteDispatchTest do
       refute String.contains?(agent_cmd, "model_reasoning_effort=medium")
     end
 
+    test "drops harness opts when falling back to a different harness" do
+      exec_fn =
+        make_exec_fn([
+          {"command -v codex", {:error, "", 1}},
+          {"command -v claude", {:ok, ""}}
+        ])
+
+      Sprite.dispatch("s1", "prompt", "org/repo",
+        workspace: "/ws",
+        exec_fn: exec_fn,
+        harness: "codex",
+        harness_opts: [model: "gpt-5.4", reasoning_effort: "high"],
+        timeout: 1
+      )
+
+      assert_received {:exec_called, _, _, _}
+      assert_received {:exec_called, _, _, _}
+      assert_received {:exec_called, "command -v codex >/dev/null 2>&1", _, _}
+      assert_received {:exec_called, "command -v claude >/dev/null 2>&1", _, _}
+      assert_received {:exec_called, agent_cmd, _opts, _files}
+      assert String.contains?(agent_cmd, "claude -p --dangerously-skip-permissions")
+      refute String.contains?(agent_cmd, "--model gpt-5.4")
+      refute String.contains?(agent_cmd, "model_reasoning_effort=high")
+    end
+
+    test "returns actionable error for unsupported configured harness names" do
+      exec_fn = make_exec_fn()
+
+      assert {:error, msg, 78} =
+               Sprite.dispatch("s1", "prompt", "org/repo",
+                 workspace: "/ws",
+                 exec_fn: exec_fn,
+                 harness: "claude_code",
+                 timeout: 1
+               )
+
+      assert msg =~ "configured harness claude_code is unsupported on sprite s1"
+      assert msg =~ "supported harnesses: codex (codex CLI), claude-code (claude CLI)"
+    end
+
     test "keeps execution rooted at the workspace and prepends AGENTS persona for codex" do
       exec_fn = make_exec_fn()
 
