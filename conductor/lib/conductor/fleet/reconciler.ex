@@ -107,7 +107,7 @@ defmodule Conductor.Fleet.Reconciler do
 
           status ->
             Logger.warning(
-              "[fleet] #{sprite.name} provisioned but health check returned #{status}"
+              "[fleet] #{sprite.name} provisioned but health check returned #{inspect(status)}"
             )
 
             %{name: sprite.name, role: sprite.role, healthy: false, action: :setup_incomplete}
@@ -145,16 +145,15 @@ defmodule Conductor.Fleet.Reconciler do
     create_fn = Keyword.get(opts, :create_fn, &Sprite.create/2)
 
     create_opts =
-      case Map.get(sprite, :org) do
-        nil -> []
-        org -> [org: org]
-      end
+      opts
+      |> Keyword.take([:org, :shell_fn])
+      |> put_sprite_org(Map.get(sprite, :org))
 
     case create_fn.(sprite.name, create_opts) do
       :ok ->
         case provision_and_verify(sprite, opts) do
           %{healthy: true} = result -> %{result | action: :created}
-          result -> result
+          result -> Map.put(result, :created, true)
         end
 
       {:error, reason} ->
@@ -166,4 +165,7 @@ defmodule Conductor.Fleet.Reconciler do
   defp missing_sprite_error?(reason) do
     String.contains?(String.downcase(reason), @missing_sprite_error_fragment)
   end
+
+  defp put_sprite_org(opts, nil), do: opts
+  defp put_sprite_org(opts, org), do: Keyword.put(opts, :org, org)
 end
