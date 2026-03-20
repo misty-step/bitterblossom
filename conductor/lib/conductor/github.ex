@@ -27,7 +27,7 @@ defmodule Conductor.GitHub do
            "--repo",
            repo,
            "--json",
-           "number,title,body,url,labels"
+           "number,title,body,url,labels,assignees"
          ]) do
       {:ok, json} ->
         case Jason.decode(json) do
@@ -138,7 +138,7 @@ defmodule Conductor.GitHub do
       "--state",
       "open",
       "--json",
-      "number,title,body,url,labels",
+      "number,title,body,url,labels,assignees",
       "--limit",
       to_string(limit)
     ] ++ maybe_label_filter(label)

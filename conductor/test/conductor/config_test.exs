@@ -142,6 +142,19 @@ defmodule Conductor.ConfigTest do
     end
   end
 
+  describe "include_assigned_issues?/0" do
+    test "returns false by default" do
+      refute Config.include_assigned_issues?()
+    end
+
+    test "returns configured value" do
+      Application.put_env(:conductor, :include_assigned_issues, true)
+      assert Config.include_assigned_issues?()
+    after
+      Application.delete_env(:conductor, :include_assigned_issues)
+    end
+  end
+
   describe "normalize_workers/1" do
     test "coalesces nil capability tags to an empty list" do
       assert [%{name: "sprite-1", capability_tags: []}] =
