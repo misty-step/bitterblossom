@@ -142,18 +142,31 @@ defmodule Conductor.RunServerTest do
   defmodule MockWorkspace do
     alias Conductor.RunServerTest.MockState
 
-    def prepare(_sprite, repo, _run_id, branch) do
+    def prepare(_sprite, repo, _run_id, branch, opts \\ []) do
       remember_branch(repo, branch)
-      MockState.get(:workspace_result, {:ok, "/tmp/test-worktree"})
+      maybe_prepare_result(opts)
     end
 
-    def adopt_branch(_sprite, repo, _run_id, branch) do
+    def adopt_branch(_sprite, repo, _run_id, branch, opts \\ []) do
       remember_branch(repo, branch)
-      MockState.get(:workspace_result, {:ok, "/tmp/test-worktree"})
+      maybe_prepare_result(opts)
     end
 
     def sync_persona(_sprite, _workspace, _role, _opts \\ []) do
       MockState.get(:sync_persona_result, :ok)
+    end
+
+    defp maybe_prepare_result(opts) do
+      case Keyword.get(opts, :persona_role) do
+        nil ->
+          MockState.get(:workspace_result, {:ok, "/tmp/test-worktree"})
+
+        _role ->
+          case MockState.get(:sync_persona_result, :ok) do
+            :ok -> MockState.get(:workspace_result, {:ok, "/tmp/test-worktree"})
+            {:error, reason} -> {:error, {:persona_sync_failed, "/tmp/test-worktree", reason}}
+          end
+      end
     end
 
     defp remember_branch(repo, branch) do
@@ -512,7 +525,7 @@ defmodule Conductor.RunServerTest do
   end
 
   describe "persona sync failure" do
-    test "marks run failed when persona sync errors before dispatch" do
+    test "marks run failed when persona sync errors during workspace preparation" do
       MockState.put(:sync_persona_result, {:error, "persona sync failed"})
 
       log =
@@ -523,9 +536,9 @@ defmodule Conductor.RunServerTest do
 
       run = find_run(42)
       assert run["phase"] == "failed"
-      assert "builder_dispatch_failed" in event_types(run["run_id"])
-      assert log =~ "builder_dispatch_failed: builder dispatch failed (category=unknown, exit 1)"
-      refute log =~ "persona sync failed"
+      assert "workspace_preparation_failed" in event_types(run["run_id"])
+      assert "workspace_cleaned" in event_types(run["run_id"])
+      assert log =~ "workspace_preparation_failed: persona sync failed"
     end
   end
 

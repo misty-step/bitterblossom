@@ -28,8 +28,9 @@ defmodule Conductor.Workspace do
   def prepare(sprite, repo, run_id, branch, opts \\ []) do
     with :ok <- validate_input(repo),
          :ok <- validate_input(run_id),
-         :ok <- validate_input(branch) do
-      do_prepare(sprite, repo, run_id, branch, opts)
+         :ok <- validate_input(branch),
+         {:ok, worktree} <- do_prepare(sprite, repo, run_id, branch, opts) do
+      maybe_sync_prepare_persona(sprite, worktree, opts)
     end
   end
 
@@ -115,8 +116,9 @@ defmodule Conductor.Workspace do
   def adopt_branch(sprite, repo, run_id, branch, opts \\ []) do
     with :ok <- validate_input(repo),
          :ok <- validate_input(run_id),
-         :ok <- validate_input(branch) do
-      do_adopt_branch(sprite, repo, run_id, branch, opts)
+         :ok <- validate_input(branch),
+         {:ok, worktree} <- do_adopt_branch(sprite, repo, run_id, branch, opts) do
+      maybe_sync_prepare_persona(sprite, worktree, opts)
     end
   end
 
@@ -197,6 +199,21 @@ defmodule Conductor.Workspace do
     |> String.split("\n", trim: true)
     |> List.last()
     |> String.trim()
+  end
+
+  defp maybe_sync_prepare_persona(sprite, worktree, opts) do
+    case Keyword.get(opts, :persona_role) do
+      nil ->
+        {:ok, worktree}
+
+      role ->
+        sync_opts = Keyword.drop(opts, [:persona_role])
+
+        case sync_persona(sprite, worktree, role, sync_opts) do
+          :ok -> {:ok, worktree}
+          {:error, reason} -> {:error, {:persona_sync_failed, worktree, reason}}
+        end
+    end
   end
 
   defp install_branch_guard_commands(worktree, branch) do
