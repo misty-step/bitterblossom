@@ -777,8 +777,15 @@ defmodule Conductor.RunServer do
     harness_name = Map.get(worker_config, :harness) || "codex"
 
     case Harness.module_for_name(harness_name) do
-      {:ok, harness} -> harness
-      {:error, _} -> harness_name
+      {:ok, harness} ->
+        harness
+
+      {:error, _} ->
+        Logger.warning(
+          "unknown harness #{inspect(harness_name)} in worker config; using raw harness name for dispatch"
+        )
+
+        harness_name
     end
   end
 
