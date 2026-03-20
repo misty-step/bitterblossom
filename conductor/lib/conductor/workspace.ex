@@ -201,11 +201,6 @@ defmodule Conductor.Workspace do
     |> String.trim()
   end
 
-  defp maybe_sync_prepare_persona(_sprite, worktree, opts)
-       when not is_list(opts) do
-    {:ok, worktree}
-  end
-
   defp maybe_sync_prepare_persona(sprite, worktree, opts) do
     case Keyword.get(opts, :persona_role) do
       nil ->
