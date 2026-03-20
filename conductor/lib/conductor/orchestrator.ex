@@ -508,22 +508,28 @@ defmodule Conductor.Orchestrator do
 
   defp pick_worker(state) do
     count = length(state.worker_order)
-    occupied_workers = occupied_workers(state)
 
-    0..(count - 1)
-    |> Enum.reduce_while({:error, :no_available_workers, state}, fn offset,
-                                                                    {_status, _reason, acc} ->
-      candidate_index = rem(acc.worker_index + offset, count)
-      worker_name = Enum.at(acc.worker_order, candidate_index)
+    case occupied_workers(state) do
+      {:ok, occupied_workers} ->
+        0..(count - 1)
+        |> Enum.reduce_while({:error, :no_available_workers, state}, fn offset,
+                                                                        {_status, _reason, acc} ->
+          candidate_index = rem(acc.worker_index + offset, count)
+          worker_name = Enum.at(acc.worker_order, candidate_index)
 
-      case probe_and_reserve_worker(acc, worker_name, candidate_index, occupied_workers) do
-        {:ok, worker, next_state} ->
-          {:halt, {:ok, worker, next_state}}
+          case probe_and_reserve_worker(acc, worker_name, candidate_index, occupied_workers) do
+            {:ok, worker, next_state} ->
+              {:halt, {:ok, worker, next_state}}
 
-        {:error, next_state} ->
-          {:cont, {:error, :no_available_workers, next_state}}
-      end
-    end)
+            {:error, next_state} ->
+              {:cont, {:error, :no_available_workers, next_state}}
+          end
+        end)
+
+      {:error, reason} ->
+        Logger.warning("[dispatch] failed to read active workers: #{inspect(reason)}")
+        {:error, :no_available_workers, state}
+    end
   end
 
   defp probe_and_reserve_worker(state, worker_name, candidate_index, occupied_workers) do
@@ -551,24 +557,28 @@ defmodule Conductor.Orchestrator do
   end
 
   defp occupied_workers(state) do
-    state.active_runs
-    |> Enum.map(fn {_issue_number, run} -> run.worker end)
-    |> MapSet.new()
-    |> MapSet.union(store_active_workers())
+    in_memory_workers =
+      state.active_runs
+      |> Enum.map(fn {_issue_number, run} -> run.worker end)
+      |> MapSet.new()
+
+    case store_active_workers() do
+      {:ok, store_workers} -> {:ok, MapSet.union(in_memory_workers, store_workers)}
+      {:error, _reason} = error -> error
+    end
   end
 
   defp store_active_workers do
-    Store.active_runs()
-    |> Map.keys()
-    |> MapSet.new()
+    {:ok,
+     Store.active_runs()
+     |> Map.keys()
+     |> MapSet.new()}
   rescue
     exception ->
-      Logger.warning("[dispatch] failed to read active workers: #{Exception.message(exception)}")
-      MapSet.new()
+      {:error, {:exception, Exception.message(exception)}}
   catch
     :exit, reason ->
-      Logger.warning("[dispatch] failed to read active workers: #{inspect(reason)}")
-      MapSet.new()
+      {:error, {:exit, reason}}
   end
 
   defp probe_worker(state, worker_name) do

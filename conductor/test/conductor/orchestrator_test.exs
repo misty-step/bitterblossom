@@ -534,6 +534,9 @@ defmodule Conductor.OrchestratorTest do
       eventually(fn ->
         assert MockState.get(:started_runs) == [{401, "sprite-2"}]
       end)
+
+      assert_received {:probed, "sprite-2"}
+      refute_received {:probed, "sprite-1"}
     end
 
     test "does not start more runs than max_concurrent_runs allows" do

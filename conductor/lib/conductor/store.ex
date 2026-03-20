@@ -698,6 +698,13 @@ defmodule Conductor.Store do
           ON runs(repo, completed_at, picked_at)
           """,
           """
+          CREATE INDEX IF NOT EXISTS idx_runs_active_by_builder_and_picked
+          ON runs(builder_sprite, picked_at)
+          WHERE completed_at IS NULL
+            AND builder_sprite IS NOT NULL
+            AND builder_sprite != ''
+          """,
+          """
           CREATE INDEX IF NOT EXISTS idx_runs_repo_pr
           ON runs(repo, pr_number)
           """
