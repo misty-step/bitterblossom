@@ -83,8 +83,8 @@ defmodule Conductor.RunServer do
   @impl true
   def handle_continue(:acquire_lease, state) do
     # Generate run_id first so the lease is immediately valid
-    ts = System.system_time(:second)
-    run_id = "run-#{state.issue.number}-#{ts}"
+    token = run_token()
+    run_id = "run-#{state.issue.number}-#{token}"
 
     case Store.acquire_lease(state.repo, state.issue.number, run_id) do
       {:error, :already_leased} ->
@@ -100,7 +100,7 @@ defmodule Conductor.RunServer do
                builder_sprite: state.worker
              }) do
           {:ok, ^run_id} ->
-            branch = state.existing_branch || "factory/#{state.issue.number}-#{ts}"
+            branch = state.existing_branch || "factory/#{state.issue.number}-#{token}"
             state = %{state | run_id: run_id, branch: branch}
 
             Store.record_event(run_id, "lease_acquired", %{issue: state.issue.number})
@@ -630,7 +630,11 @@ defmodule Conductor.RunServer do
 
   defp cleanup_workspace(state) do
     if state.worktree_path do
-      case worker_mod().cleanup(state.worker, state.repo, state.run_id) do
+      cleanup_opts =
+        [path: state.worktree_path]
+        |> maybe_put_cleanup_branch(state)
+
+      case workspace_mod().cleanup(state.worker, state.repo, state.run_id, cleanup_opts) do
         :ok ->
           Store.record_event(state.run_id, "workspace_cleaned", %{})
 
@@ -675,6 +679,13 @@ defmodule Conductor.RunServer do
   defp cancel_heartbeat(ref), do: Process.cancel_timer(ref)
   defp cancel_retry(nil), do: :ok
   defp cancel_retry(ref), do: Process.cancel_timer(ref)
+
+  defp maybe_put_cleanup_branch(opts, %{existing_branch: branch}) when is_binary(branch), do: opts
+
+  defp maybe_put_cleanup_branch(opts, %{branch: branch}) when is_binary(branch),
+    do: [{:branch, branch} | opts]
+
+  defp maybe_put_cleanup_branch(opts, _state), do: opts
 
   # Read CLAUDE.md and project.md from the repo root (one level above conductor/).
   # Returns nil if neither file exists. Truncated to ~8 KB to stay within prompt budget.
@@ -731,6 +742,10 @@ defmodule Conductor.RunServer do
   end
 
   defp worker_mod, do: Application.get_env(:conductor, :worker_module, Conductor.Sprite)
+
+  defp run_token do
+    "#{System.system_time(:millisecond)}-#{System.unique_integer([:positive, :monotonic])}"
+  end
 
   defp task_supervisor,
     do: Application.get_env(:conductor, :task_supervisor, Conductor.TaskSupervisor)

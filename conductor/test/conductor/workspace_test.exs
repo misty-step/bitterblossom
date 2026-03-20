@@ -29,6 +29,30 @@ defmodule Conductor.WorkspaceTest do
       assert command =~ "refs/heads/$expected_branch"
       assert command =~ "refusing push from"
     end
+
+    test "checks for an existing worktree registration before creating the branch" do
+      parent = self()
+
+      exec_fn = fn _sprite, command, _opts ->
+        send(parent, {:prepare_command, command})
+        {:ok, "/tmp/test-worktree\n"}
+      end
+
+      assert {:ok, "/tmp/test-worktree"} =
+               Workspace.prepare(
+                 "bb-weaver",
+                 "misty-step/bitterblossom",
+                 "run-42-1773867376",
+                 "factory/42-1773867376",
+                 exec_fn: exec_fn
+               )
+
+      assert_received {:prepare_command, command}
+      assert command =~ "git worktree list --porcelain"
+      assert command =~ "refs/heads/factory/42-1773867376"
+      assert command =~ "git worktree remove --force"
+      assert command =~ "git branch -D factory/42-1773867376"
+    end
   end
 
   describe "adopt_branch/5" do
@@ -52,6 +76,56 @@ defmodule Conductor.WorkspaceTest do
       assert_received {:adopt_command, command}
       assert command =~ "config --worktree core.hooksPath .bb-hooks"
       assert command =~ "expected_branch=\"factory/42-1773867376\""
+    end
+
+    test "checks for an existing worktree registration before adopting the branch" do
+      parent = self()
+
+      exec_fn = fn _sprite, command, _opts ->
+        send(parent, {:adopt_command, command})
+        {:ok, "/tmp/test-worktree\n"}
+      end
+
+      assert {:ok, "/tmp/test-worktree"} =
+               Workspace.adopt_branch(
+                 "bb-weaver",
+                 "misty-step/bitterblossom",
+                 "run-42-1773867376",
+                 "factory/42-1773867376",
+                 exec_fn: exec_fn
+               )
+
+      assert_received {:adopt_command, command}
+      assert command =~ "git worktree list --porcelain"
+      assert command =~ "refs/heads/factory/42-1773867376"
+      assert command =~ "git worktree remove --force"
+      refute command =~ "git branch -D factory/42-1773867376"
+    end
+  end
+
+  describe "cleanup/4" do
+    test "removes the explicit worktree path and branch when provided" do
+      parent = self()
+
+      exec_fn = fn _sprite, command, _opts ->
+        send(parent, {:cleanup_command, command})
+        {:ok, ""}
+      end
+
+      assert :ok =
+               Workspace.cleanup(
+                 "bb-weaver",
+                 "misty-step/bitterblossom",
+                 "run-42-1773867376",
+                 branch: "factory/42-1773867376",
+                 path: "/tmp/custom-worktree",
+                 exec_fn: exec_fn
+               )
+
+      assert_received {:cleanup_command, command}
+      assert command =~ "worktree_dir='/tmp/custom-worktree'"
+      assert command =~ "git worktree remove --force \"$worktree_dir\""
+      assert command =~ "git branch -D factory/42-1773867376"
     end
   end
 
