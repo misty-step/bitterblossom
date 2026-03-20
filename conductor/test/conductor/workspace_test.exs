@@ -29,6 +29,45 @@ defmodule Conductor.WorkspaceTest do
       assert command =~ "refs/heads/$expected_branch"
       assert command =~ "refusing push from"
     end
+
+    test "syncs persona into the prepared builder worktree when a role is provided" do
+      workspace =
+        Path.join(System.tmp_dir!(), "workspace-test-#{System.unique_integer([:positive])}")
+
+      source_root = minimal_persona_source_root(:weaver)
+      File.mkdir_p!(workspace)
+
+      on_exit(fn ->
+        File.rm_rf(workspace)
+        File.rm_rf(source_root)
+      end)
+
+      exec_fn = fn _sprite, command, opts ->
+        if String.contains?(command, "git worktree add -b factory/42-1773867376") do
+          {:ok, workspace <> "\n"}
+        else
+          local_exec("local", command, opts)
+        end
+      end
+
+      assert {:ok, ^workspace} =
+               Workspace.prepare(
+                 "bb-weaver",
+                 "misty-step/bitterblossom",
+                 "run-42-1773867376",
+                 "factory/42-1773867376",
+                 exec_fn: exec_fn,
+                 persona_role: :weaver,
+                 source_root: source_root
+               )
+
+      launch_dir = Workspace.persona_launch_dir(workspace, :weaver)
+      assert File.read!(Path.join(launch_dir, "AGENTS.md")) == "shared agents\nweaver agents\n"
+
+      assert File.exists?(
+               Path.join(workspace, ".claude/skills/bb-persona-weaver-implement-issue")
+             )
+    end
   end
 
   describe "adopt_branch/5" do
@@ -52,6 +91,41 @@ defmodule Conductor.WorkspaceTest do
       assert_received {:adopt_command, command}
       assert command =~ "config --worktree core.hooksPath .bb-hooks"
       assert command =~ "expected_branch=\"factory/42-1773867376\""
+    end
+
+    test "syncs persona when adopting an existing builder branch" do
+      workspace =
+        Path.join(System.tmp_dir!(), "workspace-test-#{System.unique_integer([:positive])}")
+
+      source_root = minimal_persona_source_root(:weaver)
+      File.mkdir_p!(workspace)
+
+      on_exit(fn ->
+        File.rm_rf(workspace)
+        File.rm_rf(source_root)
+      end)
+
+      exec_fn = fn _sprite, command, opts ->
+        if String.contains?(command, "git worktree add ") do
+          {:ok, workspace <> "\n"}
+        else
+          local_exec("local", command, opts)
+        end
+      end
+
+      assert {:ok, ^workspace} =
+               Workspace.adopt_branch(
+                 "bb-weaver",
+                 "misty-step/bitterblossom",
+                 "run-42-1773867376",
+                 "factory/42-1773867376",
+                 exec_fn: exec_fn,
+                 persona_role: :weaver,
+                 source_root: source_root
+               )
+
+      assert File.read!(Path.join(Workspace.persona_launch_dir(workspace, :weaver), "CLAUDE.md")) ==
+               "shared claude\nweaver claude\n"
     end
   end
 
@@ -262,11 +336,28 @@ defmodule Conductor.WorkspaceTest do
 
     write_workspace_file(source_root, "shared/CLAUDE.md", "shared claude\n")
     write_workspace_file(source_root, "shared/AGENTS.md", "shared agents\n")
+
+    write_workspace_file(
+      source_root,
+      "shared/skills/gather-pr-context/SKILL.md",
+      "shared skill\n"
+    )
+
     write_workspace_file(source_root, "#{role_name}/CLAUDE.md", "#{role_name} claude\n")
     write_workspace_file(source_root, "#{role_name}/AGENTS.md", "#{role_name} agents\n")
 
+    write_workspace_file(
+      source_root,
+      "#{role_name}/skills/#{role_skill_name(role_name)}/SKILL.md",
+      "#{role_name} skill\n"
+    )
+
     source_root
   end
+
+  defp role_skill_name("weaver"), do: "implement-issue"
+  defp role_skill_name("thorn"), do: "diagnose-ci"
+  defp role_skill_name("fern"), do: "settle-reviews"
 
   defp local_exec(_sprite, command, opts) do
     for {source, destination} <- Keyword.get(opts, :files, []) do

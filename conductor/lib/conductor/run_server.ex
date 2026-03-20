@@ -127,10 +127,24 @@ defmodule Conductor.RunServer do
     prepare_fn =
       if state.existing_branch do
         fn ->
-          workspace_mod().adopt_branch(state.worker, state.repo, state.run_id, state.branch)
+          workspace_mod().adopt_branch(
+            state.worker,
+            state.repo,
+            state.run_id,
+            state.branch,
+            persona_role: :weaver
+          )
         end
       else
-        fn -> workspace_mod().prepare(state.worker, state.repo, state.run_id, state.branch) end
+        fn ->
+          workspace_mod().prepare(
+            state.worker,
+            state.repo,
+            state.run_id,
+            state.branch,
+            persona_role: :weaver
+          )
+        end
       end
 
     case prepare_fn.() do
@@ -188,8 +202,7 @@ defmodule Conductor.RunServer do
 
     task =
       Task.Supervisor.async_nolink(task_supervisor(), fn ->
-        with :ok <- workspace_mod().sync_persona(state.worker, state.worktree_path, :weaver),
-             {:ok, output} <-
+        with {:ok, output} <-
                worker_mod().dispatch(
                  state.worker,
                  prompt,
