@@ -183,22 +183,27 @@ defmodule Conductor.Sprite do
   def status(sprite, opts \\ []) do
     exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
     harness = Keyword.get(opts, :harness)
+    repo = Keyword.get(opts, :repo)
 
     case probe(sprite, exec_fn: exec_fn) do
       {:ok, %{reachable: true}} ->
         harness_ready = harness_ready?(sprite, harness, exec_fn)
         gh_authenticated = gh_authenticated?(sprite, exec_fn)
         git_credential_helper = git_credential_helper_ready?(sprite, exec_fn)
+        worktree_state = worktree_state(sprite, repo, exec_fn)
 
         {:ok,
-         %{
-           sprite: sprite,
-           reachable: true,
-           harness_ready: harness_ready,
-           gh_authenticated: gh_authenticated,
-           git_credential_helper: git_credential_helper,
-           healthy: harness_ready and gh_authenticated and git_credential_helper
-         }}
+         Map.merge(
+           %{
+             sprite: sprite,
+             reachable: true,
+             harness_ready: harness_ready,
+             gh_authenticated: gh_authenticated,
+             git_credential_helper: git_credential_helper,
+             healthy: harness_ready and gh_authenticated and git_credential_helper
+           },
+           worktree_state
+         )}
 
       {:error, reason} ->
         {:error, reason}
@@ -271,6 +276,92 @@ defmodule Conductor.Sprite do
     case exec_fn.(sprite, "git config --global --get credential.helper", timeout: 15_000) do
       {:ok, output} -> output == "!gh auth git-credential"
       _ -> false
+    end
+  end
+
+  defp worktree_state(sprite, nil, _exec_fn) do
+    run = active_worktree_run(sprite)
+    path = run && run["worktree_path"]
+
+    if is_binary(path) and path != "" do
+      branch = run && run["branch"]
+      branch = if is_binary(branch) and branch != "", do: branch, else: nil
+
+      %{
+        worktree_occupied: true,
+        active_branch: branch,
+        active_worktree: path,
+        worktrees: [%{branch: branch, path: path}]
+      }
+    else
+      empty_worktree_state()
+    end
+  end
+
+  defp worktree_state(sprite, repo, exec_fn) do
+    with :ok <- validate_repo(repo),
+         {:ok, output} <-
+           exec_fn.(sprite, worktree_status_script(sprite_repo_workspace(repo)), timeout: 15_000) do
+      output
+      |> parse_conductor_worktrees()
+      |> build_worktree_state()
+    else
+      _ -> worktree_state(sprite, nil, exec_fn)
+    end
+  end
+
+  defp empty_worktree_state do
+    %{
+      worktree_occupied: false,
+      active_branch: nil,
+      active_worktree: nil,
+      worktrees: []
+    }
+  end
+
+  defp build_worktree_state([]), do: empty_worktree_state()
+
+  defp build_worktree_state(worktrees) do
+    primary = List.first(worktrees)
+
+    %{
+      worktree_occupied: true,
+      active_branch: primary.branch,
+      active_worktree: primary.path,
+      worktrees: worktrees
+    }
+  end
+
+  defp parse_conductor_worktrees(output) do
+    output
+    |> String.split(~r/\n{2,}/, trim: true)
+    |> Enum.map(&parse_worktree_entry/1)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp parse_worktree_entry(entry) do
+    lines = String.split(entry, "\n", trim: true)
+
+    path =
+      lines
+      |> Enum.find(&String.starts_with?(&1, "worktree "))
+      |> case do
+        nil -> nil
+        value -> String.replace_prefix(value, "worktree ", "")
+      end
+
+    branch =
+      lines
+      |> Enum.find(&String.starts_with?(&1, "branch refs/heads/"))
+      |> case do
+        nil -> nil
+        value -> String.replace_prefix(value, "branch refs/heads/", "")
+      end
+
+    if is_binary(path) and String.contains?(path, "/.bb/conductor/") do
+      %{path: path, branch: branch}
+    else
+      nil
     end
   end
 
@@ -526,14 +617,22 @@ defmodule Conductor.Sprite do
   end
 
   defp active_worktree(sprite) do
-    Conductor.Store.list_runs(limit: 50)
-    |> Enum.find(fn run ->
-      run["builder_sprite"] == sprite and run["worktree_path"] not in [nil, ""] and
-        run["status"] not in ["merged", "blocked", "failed"]
-    end)
+    active_worktree_run(sprite)
     |> case do
       %{"worktree_path" => path} -> {:ok, path}
       _ -> :error
+    end
+  end
+
+  defp active_worktree_run(sprite) do
+    try do
+      Conductor.Store.list_runs(limit: 50)
+      |> Enum.find(fn run ->
+        run["builder_sprite"] == sprite and run["worktree_path"] not in [nil, ""] and
+          run["status"] not in ["merged", "blocked", "failed"]
+      end)
+    catch
+      :exit, _ -> nil
     end
   end
 
@@ -725,6 +824,19 @@ defmodule Conductor.Sprite do
 
     ws=$(ls -d #{@sprite_workspace_root}/*/ 2>/dev/null | head -1 || true)
     printf '%s\n' "${ws%/}"
+    """
+  end
+
+  defp worktree_status_script(repo_dir) do
+    """
+    set -euo pipefail
+    repo_dir=#{shell_quote(repo_dir)}
+
+    if [ ! -d "$repo_dir/.git" ]; then
+      exit 0
+    fi
+
+    git -C "$repo_dir" worktree list --porcelain
     """
   end
 

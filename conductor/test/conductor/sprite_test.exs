@@ -95,6 +95,103 @@ defmodule Conductor.SpriteTest do
             }} = status
   end
 
+  test "status exposes active conductor worktree branch and path" do
+    status =
+      Sprite.status("bb-weaver",
+        repo: "misty-step/bitterblossom",
+        harness: "codex",
+        exec_fn:
+          exec_fn([
+            {"echo ok", {:ok, "ok\n"}},
+            {"command -v codex", {:ok, "/usr/bin/codex\n"}},
+            {"gh auth status", {:ok, "github.com\n"}},
+            {"git config --global --get credential.helper", {:ok, "!gh auth git-credential"}},
+            {"worktree list --porcelain",
+             {:ok,
+              """
+              worktree /home/sprite/workspace/bitterblossom
+              HEAD abc123
+              branch refs/heads/master
+
+              worktree /home/sprite/workspace/bitterblossom/.bb/conductor/run-42-1234567890/builder-worktree
+              HEAD def456
+              branch refs/heads/factory/42-1234567890
+              """}}
+          ])
+      )
+
+    assert {:ok,
+            %{
+              reachable: true,
+              harness_ready: true,
+              gh_authenticated: true,
+              git_credential_helper: true,
+              healthy: true,
+              worktree_occupied: true,
+              active_branch: "factory/42-1234567890",
+              active_worktree:
+                "/home/sprite/workspace/bitterblossom/.bb/conductor/run-42-1234567890/builder-worktree"
+            }} = status
+  end
+
+  test "status reports empty worktree state when the repo has no conductor worktrees" do
+    status =
+      Sprite.status("bb-weaver",
+        repo: "misty-step/bitterblossom",
+        harness: "codex",
+        exec_fn:
+          exec_fn([
+            {"echo ok", {:ok, "ok\n"}},
+            {"command -v codex", {:ok, "/usr/bin/codex\n"}},
+            {"gh auth status", {:ok, "github.com\n"}},
+            {"git config --global --get credential.helper", {:ok, "!gh auth git-credential"}},
+            {"worktree list --porcelain",
+             {:ok,
+              """
+              worktree /home/sprite/workspace/bitterblossom
+              HEAD abc123
+              branch refs/heads/master
+              """}}
+          ])
+      )
+
+    assert {:ok,
+            %{
+              worktree_occupied: false,
+              active_branch: nil,
+              active_worktree: nil,
+              worktrees: []
+            }} = status
+  end
+
+  test "status ignores non-conductor worktrees when reporting occupancy" do
+    status =
+      Sprite.status("bb-weaver",
+        repo: "misty-step/bitterblossom",
+        harness: "codex",
+        exec_fn:
+          exec_fn([
+            {"echo ok", {:ok, "ok\n"}},
+            {"command -v codex", {:ok, "/usr/bin/codex\n"}},
+            {"gh auth status", {:ok, "github.com\n"}},
+            {"git config --global --get credential.helper", {:ok, "!gh auth git-credential"}},
+            {"worktree list --porcelain",
+             {:ok,
+              """
+              worktree /home/sprite/workspace/bitterblossom/.bb/review/run-1
+              HEAD abc123
+              branch refs/heads/factory/1-1234567890
+
+              worktree /home/sprite/workspace/bitterblossom/.bb/conductor/run-42-1234567890/builder-worktree
+              HEAD def456
+              branch refs/heads/factory/42-1234567890
+              """}}
+          ])
+      )
+
+    assert {:ok, %{worktrees: [%{branch: "factory/42-1234567890"}]}} = status
+  end
+
   describe "exec_args/3 argument construction" do
     test "includes -- separator before bash to prevent flag parsing" do
       args = Sprite.exec_args("my-org", "my-sprite", "echo hello")

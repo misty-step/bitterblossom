@@ -40,6 +40,7 @@ defmodule Conductor.RunServer do
     :heartbeat_timer,
     :retry_timer,
     phase: :pending,
+    prepare_attempt_count: 0,
     turn_count: 0,
     dispatch_attempt_count: 0,
     worker_attempt_count: 0,
@@ -140,7 +141,8 @@ defmodule Conductor.RunServer do
         Store.update_run(state.run_id, %{
           phase: "building",
           branch: state.branch,
-          builder_sprite: state.worker
+          builder_sprite: state.worker,
+          worktree_path: path
         })
 
         state = %{state | worktree_path: path, phase: :building}
@@ -149,7 +151,7 @@ defmodule Conductor.RunServer do
         {:noreply, state, {:continue, :dispatch_builder}}
 
       {:error, reason} ->
-        fail(state, "workspace_preparation_failed", reason)
+        handle_workspace_preparation_failure(state, reason)
     end
   end
 
@@ -639,6 +641,63 @@ defmodule Conductor.RunServer do
       end
     end
   end
+
+  defp handle_workspace_preparation_failure(state, reason) do
+    if state.prepare_attempt_count < 1 and workspace_conflict_reason?(reason) do
+      case cleanup_conflicting_branch(state) do
+        :ok ->
+          Store.record_event(state.run_id, "workspace_preparation_retry", %{
+            branch: state.branch,
+            reason: reason,
+            attempt: state.prepare_attempt_count + 1
+          })
+
+          log(state, "workspace preparation failed, cleaned conflicting branch and retrying")
+
+          {:noreply,
+           %{state | prepare_attempt_count: state.prepare_attempt_count + 1, worktree_path: nil},
+           {:continue, :prepare_workspace}}
+
+        {:error, cleanup_reason} ->
+          fail(
+            state,
+            "workspace_preparation_failed",
+            "#{reason}; cleanup failed: #{cleanup_reason}"
+          )
+      end
+    else
+      fail(state, "workspace_preparation_failed", reason)
+    end
+  end
+
+  defp workspace_conflict_reason?(reason) do
+    normalized =
+      reason
+      |> normalize_workspace_reason()
+      |> String.downcase()
+
+    String.contains?(normalized, "already checked out") or
+      (String.contains?(normalized, "branch") and String.contains?(normalized, "already exists")) or
+      String.contains?(normalized, "already used by worktree") or
+      String.contains?(normalized, "existing worktree")
+  end
+
+  defp cleanup_conflicting_branch(state) do
+    cond do
+      function_exported?(workspace_mod(), :cleanup_conflicting_branch, 4) ->
+        workspace_mod().cleanup_conflicting_branch(state.worker, state.repo, state.branch, [])
+
+      function_exported?(workspace_mod(), :cleanup_conflicting_branch, 3) ->
+        workspace_mod().cleanup_conflicting_branch(state.worker, state.repo, state.branch)
+
+      true ->
+        {:error, "cleanup function not available"}
+    end
+  end
+
+  defp normalize_workspace_reason(reason) when is_binary(reason), do: reason
+  defp normalize_workspace_reason(nil), do: ""
+  defp normalize_workspace_reason(reason), do: inspect(reason)
 
   defp cancel_dispatch(%{dispatch_task: %Task{} = task} = state) do
     cancel_heartbeat(state.heartbeat_timer)

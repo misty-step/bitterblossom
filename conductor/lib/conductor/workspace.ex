@@ -156,6 +156,15 @@ defmodule Conductor.Workspace do
     end
   end
 
+  @spec cleanup_conflicting_branch(binary(), binary(), binary(), keyword()) ::
+          :ok | {:error, term()}
+  def cleanup_conflicting_branch(sprite, repo, branch, opts \\ []) do
+    with :ok <- validate_input(repo),
+         :ok <- validate_input(branch) do
+      do_cleanup_conflicting_branch(sprite, repo, branch, opts)
+    end
+  end
+
   defp do_cleanup(sprite, repo, run_id) do
     repo_name = repo |> String.split("/") |> List.last()
     mirror = Path.join(@mirror_base, repo_name)
@@ -176,6 +185,49 @@ defmodule Conductor.Workspace do
     """
 
     case Sprite.exec(sprite, commands, timeout: 60_000) do
+      {:ok, _} -> :ok
+      {:error, msg, _} -> {:error, msg}
+    end
+  end
+
+  defp do_cleanup_conflicting_branch(sprite, repo, branch, opts) do
+    repo_name = repo |> String.split("/") |> List.last()
+    mirror = Path.join(@mirror_base, repo_name)
+    conductor_root = Path.join(mirror, ".bb/conductor")
+    exec_fn = Keyword.get(opts, :exec_fn, &Sprite.exec/3)
+
+    commands = """
+    set -e
+    cd #{shell_quote(mirror)}
+    target_branch=#{shell_quote(branch)} conductor_root=#{shell_quote(conductor_root)} flock .git/bb-worktree.lock bash -c '
+      current_path=""
+      current_branch=""
+
+      while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+          "worktree "*) current_path="${line#worktree }" ;;
+          "branch refs/heads/"*) current_branch="${line#branch refs/heads/}" ;;
+          "")
+            if [ "$current_branch" = "$target_branch" ]; then
+              case "$current_path" in
+                "$conductor_root"/*)
+                  git worktree remove --force "$current_path" 2>/dev/null || true
+                  ;;
+              esac
+            fi
+
+            current_path=""
+            current_branch=""
+            ;;
+        esac
+      done < <(git worktree list --porcelain; printf "\\n")
+
+      git worktree prune 2>/dev/null || true
+      #{if factory_branch?(branch), do: ~s(git branch -D "$target_branch" 2>/dev/null || true), else: "true"}
+    '
+    """
+
+    case exec_fn.(sprite, commands, timeout: 60_000) do
       {:ok, _} -> :ok
       {:error, msg, _} -> {:error, msg}
     end

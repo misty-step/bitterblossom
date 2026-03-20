@@ -55,6 +55,51 @@ defmodule Conductor.WorkspaceTest do
     end
   end
 
+  describe "cleanup_conflicting_branch/4" do
+    test "quotes derived paths and only deletes conductor factory branches" do
+      parent = self()
+
+      exec_fn = fn _sprite, command, _opts ->
+        send(parent, {:cleanup_command, command})
+        {:ok, ""}
+      end
+
+      assert :ok =
+               Workspace.cleanup_conflicting_branch(
+                 "bb-weaver",
+                 "misty-step/bitterblossom",
+                 "factory/42-1773867376",
+                 exec_fn: exec_fn
+               )
+
+      assert_received {:cleanup_command, command}
+      assert command =~ "cd '/home/sprite/workspace/bitterblossom'"
+      assert command =~ "target_branch='factory/42-1773867376'"
+      assert command =~ "conductor_root='/home/sprite/workspace/bitterblossom/.bb/conductor'"
+      assert command =~ "git branch -D \"$target_branch\""
+    end
+
+    test "does not delete non-factory branches during conflict cleanup" do
+      parent = self()
+
+      exec_fn = fn _sprite, command, _opts ->
+        send(parent, {:cleanup_command, command})
+        {:ok, ""}
+      end
+
+      assert :ok =
+               Workspace.cleanup_conflicting_branch(
+                 "bb-weaver",
+                 "misty-step/bitterblossom",
+                 "feature/42-1773867376",
+                 exec_fn: exec_fn
+               )
+
+      assert_received {:cleanup_command, command}
+      refute command =~ "git branch -D \"$target_branch\""
+    end
+  end
+
   describe "sync_persona/4" do
     test "materializes a role-specific launch dir from deterministic local persona sources" do
       workspace =
