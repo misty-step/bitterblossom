@@ -176,6 +176,19 @@ defmodule Conductor.OrchestratorTest do
     def check_for_updates, do: :noop
   end
 
+  defmodule MockRunReconciler do
+    alias Conductor.OrchestratorTest.MockState
+
+    def reconcile_stale_runs(repo, opts \\ []) do
+      send(
+        MockState.get(:test_pid, self()),
+        {:startup_reconciled, repo, Keyword.get(opts, :active_issue_numbers, [])}
+      )
+
+      :ok
+    end
+  end
+
   # Retry an assertion block until it passes or timeout elapses.
   defp eventually(assert_fun, timeout_ms \\ 1_000, step_ms \\ 20) do
     deadline = System.monotonic_time(:millisecond) + timeout_ms
@@ -400,6 +413,20 @@ defmodule Conductor.OrchestratorTest do
   end
 
   describe "reconcile — stale run detection" do
+    test "configure_polling reconciles stale runs before polling begins" do
+      orig_reconciler = Application.get_env(:conductor, :run_reconciler_module)
+      Application.put_env(:conductor, :run_reconciler_module, MockRunReconciler)
+
+      on_exit(fn ->
+        if orig_reconciler,
+          do: Application.put_env(:conductor, :run_reconciler_module, orig_reconciler),
+          else: Application.delete_env(:conductor, :run_reconciler_module)
+      end)
+
+      assert :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
+      assert_received {:startup_reconciled, "test/repo", []}
+    end
+
     test "expires lease and marks failed for run with old heartbeat" do
       # Create a run with a heartbeat 2 hours old (> 60-minute threshold)
       old_heartbeat =

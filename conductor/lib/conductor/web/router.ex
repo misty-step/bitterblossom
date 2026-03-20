@@ -12,6 +12,10 @@ defmodule Conductor.Web.Router do
   end
 
   scope "/" do
+    get("/healthz", Conductor.Web.HealthPlug, [])
+  end
+
+  scope "/" do
     pipe_through(:browser)
     live("/", Conductor.Web.DashboardLive, :index)
   end

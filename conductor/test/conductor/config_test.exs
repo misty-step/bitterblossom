@@ -129,6 +129,31 @@ defmodule Conductor.ConfigTest do
     end
   end
 
+  describe "health_check_port/0" do
+    test "returns nil when unset" do
+      Application.delete_env(:conductor, :health_check_port)
+      System.delete_env("CONDUCTOR_HEALTH_PORT")
+      assert Config.health_check_port() == nil
+    end
+
+    test "prefers configured app env" do
+      Application.put_env(:conductor, :health_check_port, 4100)
+      System.put_env("CONDUCTOR_HEALTH_PORT", "4200")
+      assert Config.health_check_port() == 4100
+    after
+      Application.delete_env(:conductor, :health_check_port)
+      System.delete_env("CONDUCTOR_HEALTH_PORT")
+    end
+
+    test "parses CONDUCTOR_HEALTH_PORT when set" do
+      Application.delete_env(:conductor, :health_check_port)
+      System.put_env("CONDUCTOR_HEALTH_PORT", "4300")
+      assert Config.health_check_port() == 4300
+    after
+      System.delete_env("CONDUCTOR_HEALTH_PORT")
+    end
+  end
+
   describe "max_concurrent_runs/0" do
     test "returns default of 2" do
       assert Config.max_concurrent_runs() == 2
