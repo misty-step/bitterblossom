@@ -278,26 +278,21 @@ defmodule Conductor.Sprite do
   end
 
   defp worktree_state(sprite, nil, _exec_fn) do
-    case active_worktree_run(sprite) do
-      %{"branch" => branch, "worktree_path" => path}
-      when is_binary(branch) and branch != "" and is_binary(path) and path != "" ->
-        %{
-          worktree_occupied: true,
-          active_branch: branch,
-          active_worktree: path,
-          worktrees: [%{branch: branch, path: path}]
-        }
+    run = active_worktree_run(sprite)
+    path = run && run["worktree_path"]
 
-      %{"worktree_path" => path} when is_binary(path) and path != "" ->
-        %{
-          worktree_occupied: true,
-          active_branch: nil,
-          active_worktree: path,
-          worktrees: [%{branch: nil, path: path}]
-        }
+    if is_binary(path) and path != "" do
+      branch = run && run["branch"]
+      branch = if is_binary(branch) and branch != "", do: branch, else: nil
 
-      _ ->
-        empty_worktree_state()
+      %{
+        worktree_occupied: true,
+        active_branch: branch,
+        active_worktree: path,
+        worktrees: [%{branch: branch, path: path}]
+      }
+    else
+      empty_worktree_state()
     end
   end
 
