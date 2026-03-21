@@ -257,18 +257,31 @@ defmodule Conductor.CLI do
   end
 
   defp cmd_show_events(args) do
-    {opts, _, _} = OptionParser.parse(args, strict: [run_id: :string])
-    run_id = Keyword.fetch!(opts, :run_id)
+    {opts, _, _} = OptionParser.parse(args, strict: [run_id: :string, limit: :integer])
 
-    events = Conductor.Store.list_events(run_id)
+    case Keyword.get(opts, :run_id) do
+      nil ->
+        limit = Keyword.get(opts, :limit, 50)
+        events = Conductor.Store.list_all_events(limit: limit)
 
-    IO.puts(
-      Jason.encode!(%{
-        run_id: run_id,
-        event_count: length(events),
-        events: events
-      })
-    )
+        IO.puts(
+          Jason.encode!(%{
+            event_count: length(events),
+            events: events
+          })
+        )
+
+      run_id ->
+        events = Conductor.Store.list_events(run_id)
+
+        IO.puts(
+          Jason.encode!(%{
+            run_id: run_id,
+            event_count: length(events),
+            events: events
+          })
+        )
+    end
   end
 
   defp cmd_show_incidents(args) do
