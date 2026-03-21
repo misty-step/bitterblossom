@@ -14,7 +14,8 @@ defmodule Conductor.Application do
         Conductor.Retro,
         {Task.Supervisor, name: Conductor.TaskSupervisor},
         {DynamicSupervisor, name: Conductor.RunSupervisor, strategy: :one_for_one},
-        Conductor.Orchestrator
+        Conductor.Orchestrator,
+        Conductor.Fleet.HealthMonitor
       ] ++ dashboard_children()
 
     result = Supervisor.start_link(children, strategy: :one_for_one, name: Conductor.Supervisor)
@@ -107,7 +108,14 @@ defmodule Conductor.Application do
       # 4. Start phase workers (fixer + polisher)
       start_phase_workers(sprites, healthy, repo)
 
-      # 5. Store fleet config for runtime queries
+      # 5. Configure health monitor for periodic sprite recovery
+      Conductor.Fleet.HealthMonitor.configure(
+        sprites: sprites,
+        repo: repo,
+        healthy: healthy
+      )
+
+      # 6. Store fleet config for runtime queries
       Application.put_env(:conductor, :fleet_config, config)
       Application.put_env(:conductor, :fleet_sprites, sprites)
       Application.put_env(:conductor, :fleet_workers, builders)
