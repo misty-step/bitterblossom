@@ -15,6 +15,7 @@ defmodule Conductor.Fleet.HealthMonitor do
   defstruct [
     :repo,
     :interval_ms,
+    :timer_ref,
     sprites: [],
     known_health: %{}
   ]
@@ -72,8 +73,9 @@ defmodule Conductor.Fleet.HealthMonitor do
         {s.name, if(MapSet.member?(initial_healthy, s.name), do: :healthy, else: :unhealthy)}
       end)
 
-    state = %{state | sprites: sprites, repo: repo, known_health: known_health}
-    schedule_check(state.interval_ms)
+    if state.timer_ref, do: Process.cancel_timer(state.timer_ref)
+    ref = schedule_check(state.interval_ms)
+    state = %{state | sprites: sprites, repo: repo, known_health: known_health, timer_ref: ref}
     {:reply, :ok, state}
   end
 
@@ -90,8 +92,8 @@ defmodule Conductor.Fleet.HealthMonitor do
   @impl true
   def handle_info(:check, state) do
     state = check_and_recover(state)
-    schedule_check(state.interval_ms)
-    {:noreply, state}
+    ref = schedule_check(state.interval_ms)
+    {:noreply, %{state | timer_ref: ref}}
   end
 
   @impl true
@@ -190,7 +192,7 @@ defmodule Conductor.Fleet.HealthMonitor do
     %{state | known_health: Map.put(state.known_health, name, health)}
   end
 
-  defp schedule_check(interval_ms) do
+  defp schedule_check(interval_ms) when is_integer(interval_ms) do
     Process.send_after(self(), :check, interval_ms)
   end
 
