@@ -134,12 +134,7 @@ defmodule Conductor.Application do
   defp start_phase_workers(sprites, healthy, repo) do
     alias Conductor.Fleet.Loader
 
-    role_to_module = %{
-      fixer: {Conductor.Fixer, :fixer_sprite},
-      polisher: {Conductor.Polisher, :polisher_sprite}
-    }
-
-    for {role, {module, sprite_key}} <- role_to_module do
+    for {role, {module, sprite_key}} <- Conductor.Fleet.HealthMonitor.role_to_module() do
       Loader.by_role(sprites, role)
       |> Enum.filter(&MapSet.member?(healthy, &1.name))
       |> Enum.each(fn sprite ->

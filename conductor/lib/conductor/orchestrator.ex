@@ -921,7 +921,7 @@ defmodule Conductor.Orchestrator do
           cutoff = DateTime.add(DateTime.utc_now(), -cooldown_minutes * 60, :second)
 
           if DateTime.compare(failed_at, cutoff) == :gt do
-            Logger.info(
+            Logger.debug(
               "[governor] issue ##{issue_number} in cooldown (streak=#{streak}, #{cooldown_minutes}m)"
             )
 
