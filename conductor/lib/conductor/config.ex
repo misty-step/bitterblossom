@@ -125,6 +125,21 @@ defmodule Conductor.Config do
     Application.get_env(:conductor, :polisher_timeout_minutes, 15)
   end
 
+  @spec max_starts_per_tick() :: pos_integer()
+  def max_starts_per_tick do
+    Application.get_env(:conductor, :max_starts_per_tick, 1)
+  end
+
+  @spec issue_cooldown_cap_minutes() :: pos_integer()
+  def issue_cooldown_cap_minutes do
+    Application.get_env(:conductor, :issue_cooldown_cap_minutes, 120)
+  end
+
+  @spec fleet_health_check_interval_ms() :: pos_integer()
+  def fleet_health_check_interval_ms do
+    Application.get_env(:conductor, :fleet_health_check_interval_ms, 120_000)
+  end
+
   @spec replay_delay_ms() :: pos_integer()
   def replay_delay_ms do
     Application.get_env(:conductor, :replay_delay_seconds, 120) * 1_000

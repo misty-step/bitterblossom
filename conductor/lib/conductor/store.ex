@@ -99,6 +99,21 @@ defmodule Conductor.Store do
     GenServer.call(__MODULE__, {:list_events, run_id})
   end
 
+  @doc "List recent events across all runs, newest first."
+  @spec list_all_events(keyword()) :: [map()]
+  def list_all_events(opts \\ []) do
+    GenServer.call(__MODULE__, {:list_all_events, opts})
+  end
+
+  @doc """
+  Count consecutive failed runs for an issue since its last success.
+  Returns `{streak, last_failed_at}` where streak is 0 if no recent failures.
+  """
+  @spec issue_failure_streak(binary(), pos_integer()) :: {non_neg_integer(), binary() | nil}
+  def issue_failure_streak(repo, issue_number) do
+    GenServer.call(__MODULE__, {:issue_failure_streak, repo, issue_number})
+  end
+
   @spec record_incident(binary(), map()) :: :ok
   def record_incident(run_id, attrs) do
     GenServer.call(__MODULE__, {:record_incident, run_id, attrs})
@@ -405,6 +420,51 @@ defmodule Conductor.Store do
       end)
 
     {:reply, events, state}
+  end
+
+  @impl true
+  def handle_call({:list_all_events, opts}, _from, state) do
+    limit = Keyword.get(opts, :limit, 100)
+
+    rows =
+      query_all(
+        state.conn,
+        "SELECT * FROM events ORDER BY created_at DESC LIMIT ?1",
+        [limit]
+      )
+
+    events =
+      Enum.map(rows, fn row ->
+        Map.update(row, "payload", %{}, fn
+          val when is_binary(val) -> Jason.decode!(val)
+          val -> val
+        end)
+      end)
+
+    {:reply, events, state}
+  end
+
+  @impl true
+  def handle_call({:issue_failure_streak, repo, issue_number}, _from, state) do
+    row =
+      query_one(
+        state.conn,
+        """
+        SELECT COUNT(*) AS streak, MAX(completed_at) AS last_failed_at
+        FROM runs
+        WHERE repo = ?1 AND issue_number = ?2 AND status = 'failed'
+          AND completed_at > (
+            SELECT COALESCE(MAX(completed_at), '1970-01-01')
+            FROM runs
+            WHERE repo = ?1 AND issue_number = ?2 AND status IN ('pr_opened', 'merged')
+          )
+        """,
+        [repo, issue_number]
+      )
+
+    streak = (row && row["streak"]) || 0
+    last_failed_at = row && row["last_failed_at"]
+    {:reply, {streak, last_failed_at}, state}
   end
 
   @impl true
