@@ -111,13 +111,18 @@ defmodule Conductor.Fleet.HealthMonitor do
         old_health == :unhealthy and new_health == :healthy ->
           Logger.info("[health] #{sprite.name} recovered, starting phase worker")
 
-          Store.record_event("fleet", "sprite_recovered", %{
-            name: sprite.name,
-            role: to_string(sprite.role)
-          })
+          case ensure_phase_worker(sprite, acc.repo) do
+            :ok ->
+              Store.record_event("fleet", "sprite_recovered", %{
+                name: sprite.name,
+                role: to_string(sprite.role)
+              })
 
-          ensure_phase_worker(sprite, acc.repo)
-          put_health(acc, sprite.name, :healthy)
+              put_health(acc, sprite.name, :healthy)
+
+            :error ->
+              acc
+          end
 
         old_health == :healthy and new_health == :unhealthy ->
           Logger.warning("[health] #{sprite.name} degraded")
@@ -142,6 +147,7 @@ defmodule Conductor.Fleet.HealthMonitor do
     end
   end
 
+  @spec ensure_phase_worker(map(), binary()) :: :ok | :error
   defp ensure_phase_worker(sprite, repo) do
     case Map.get(@role_to_module, sprite.role) do
       nil ->
@@ -158,16 +164,19 @@ defmodule Conductor.Fleet.HealthMonitor do
                  ) do
               {:ok, _} ->
                 Logger.info("[health] started #{inspect(module)} for #{sprite.name}")
+                :ok
 
               {:error, {:already_started, _}} ->
                 :ok
 
               {:error, reason} ->
                 Logger.warning("[health] failed to start #{inspect(module)}: #{inspect(reason)}")
+                :error
             end
           catch
             :exit, _ ->
               Logger.warning("[health] supervisor unavailable, cannot start #{inspect(module)}")
+              :error
           end
         end
     end

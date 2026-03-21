@@ -451,7 +451,7 @@ defmodule Conductor.PolisherTest do
       assert status.health == :degraded
       assert status.failure_count == 1
 
-      Process.alive?(pid)
+      assert Process.alive?(pid)
     end
 
     test "survives task crash (async_nolink)" do

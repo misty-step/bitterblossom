@@ -36,6 +36,24 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     end
   end
 
+  defmodule NoopWorker do
+    def dispatch(_, _, _, _), do: {:ok, ""}
+    def exec(_, _, _), do: {:ok, ""}
+    def cleanup(_, _, _), do: :ok
+    def busy?(_, _), do: false
+  end
+
+  defmodule NoopCodeHost do
+    def open_prs(_), do: {:ok, []}
+    def labeled_prs(_, _), do: {:ok, []}
+    def checks_green?(_, _), do: false
+    def checks_failed?(_, _), do: false
+  end
+
+  defmodule NoopWorkspace do
+    def sync_persona(_, _, _, _ \\ []), do: :ok
+  end
+
   setup do
     db_path = Path.join(System.tmp_dir!(), "health_mon_test_#{:rand.uniform(999_999)}.db")
     event_log = Path.join(System.tmp_dir!(), "health_mon_test_#{:rand.uniform(999_999)}.jsonl")
@@ -45,17 +63,42 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     stop_process(Store)
     {:ok, _} = Store.start_link(db_path: db_path, event_log: event_log)
 
+    # Start a test supervisor so ensure_phase_worker can start children
+    stop_process(Conductor.Supervisor)
+    {:ok, _} = Supervisor.start_link([], strategy: :one_for_one, name: Conductor.Supervisor)
+    stop_process(Conductor.TaskSupervisor)
+    {:ok, _} = Task.Supervisor.start_link(name: Conductor.TaskSupervisor)
+
     orig_reconciler = Application.get_env(:conductor, :reconciler_module)
     Application.put_env(:conductor, :reconciler_module, MockReconciler)
 
+    orig_worker = Application.get_env(:conductor, :worker_module)
+    orig_workspace = Application.get_env(:conductor, :workspace_module)
+    orig_code_host = Application.get_env(:conductor, :code_host_module)
+
+    Application.put_env(:conductor, :worker_module, NoopWorker)
+    Application.put_env(:conductor, :workspace_module, NoopWorkspace)
+    Application.put_env(:conductor, :code_host_module, NoopCodeHost)
+
     on_exit(fn ->
+      stop_process(Conductor.Polisher)
+      stop_process(Conductor.Fixer)
       stop_process(HealthMonitor)
+      stop_process(Conductor.TaskSupervisor)
+      stop_process(Conductor.Supervisor)
       stop_process(Store)
       MockState.cleanup()
 
-      if orig_reconciler,
-        do: Application.put_env(:conductor, :reconciler_module, orig_reconciler),
-        else: Application.delete_env(:conductor, :reconciler_module)
+      for {key, orig} <- [
+            {:reconciler_module, orig_reconciler},
+            {:worker_module, orig_worker},
+            {:workspace_module, orig_workspace},
+            {:code_host_module, orig_code_host}
+          ] do
+        if orig,
+          do: Application.put_env(:conductor, key, orig),
+          else: Application.delete_env(:conductor, key)
+      end
 
       File.rm(db_path)
       File.rm(event_log)

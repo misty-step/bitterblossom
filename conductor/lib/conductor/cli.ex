@@ -263,25 +263,14 @@ defmodule Conductor.CLI do
       nil ->
         limit = Keyword.get(opts, :limit, 50)
         events = Conductor.Store.list_all_events(limit: limit)
-
-        IO.puts(
-          Jason.encode!(%{
-            event_count: length(events),
-            events: events
-          })
-        )
+        %{event_count: length(events), events: events}
 
       run_id ->
         events = Conductor.Store.list_events(run_id)
-
-        IO.puts(
-          Jason.encode!(%{
-            run_id: run_id,
-            event_count: length(events),
-            events: events
-          })
-        )
+        %{run_id: run_id, event_count: length(events), events: events}
     end
+    |> Jason.encode!()
+    |> IO.puts()
   end
 
   defp cmd_show_incidents(args) do
