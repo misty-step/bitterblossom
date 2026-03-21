@@ -130,7 +130,9 @@ defmodule Conductor.FixerTest do
     stop_conductor_app()
     stop_process(Fixer)
     stop_process(Store)
+    stop_process(Conductor.TaskSupervisor)
     {:ok, _} = Store.start_link(db_path: db_path, event_log: event_log)
+    {:ok, _} = Task.Supervisor.start_link(name: Conductor.TaskSupervisor)
 
     # Inject mocks
     orig_code_host = Application.get_env(:conductor, :code_host_module)
@@ -147,6 +149,7 @@ defmodule Conductor.FixerTest do
 
     on_exit(fn ->
       stop_process(Fixer)
+      stop_process(Conductor.TaskSupervisor)
       stop_process(Store)
       MockState.cleanup()
 
@@ -295,7 +298,7 @@ defmodule Conductor.FixerTest do
   end
 
   describe "status/0" do
-    test "returns current fixer state" do
+    test "returns current fixer state with health" do
       {:ok, _pid} =
         Fixer.start_link(
           repo: "test/repo",
@@ -307,6 +310,106 @@ defmodule Conductor.FixerTest do
       assert status.repo == "test/repo"
       assert status.fixer_sprite == "bb-thorn"
       assert is_map(status.in_flight)
+      assert status.health == :healthy
+      assert status.failure_count == 0
+    end
+  end
+
+  describe "dispatch failure backoff" do
+    defmodule FailingWorker do
+      @behaviour Conductor.Worker
+      alias Conductor.FixerTest.MockState
+
+      def exec(_worker, _cmd, _opts), do: {:ok, ""}
+
+      def dispatch(_worker, _prompt, _repo, _opts) do
+        send(MockState.get(:test_pid, self()), :dispatch_attempted)
+        {:error, "sprite unreachable", 1}
+      end
+
+      def cleanup(_worker, _repo, _run_id), do: :ok
+      def busy?(_worker, _opts), do: false
+    end
+
+    test "backs off after dispatch failure" do
+      Application.put_env(:conductor, :worker_module, FailingWorker)
+
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 100,
+             "headRefName" => "factory/100-12345",
+             "title" => "test",
+             "body" => "",
+             "statusCheckRollup" => [
+               %{"name" => "CI", "conclusion" => "FAILURE", "status" => "COMPLETED"}
+             ]
+           }
+         ]}
+      )
+
+      {:ok, pid} =
+        Fixer.start_link(
+          repo: "test/repo",
+          fixer_sprite: "bb-thorn",
+          poll_ms: 50
+        )
+
+      assert_receive :dispatch_attempted, 2_000
+
+      status = Fixer.status()
+      assert status.health == :degraded
+      assert status.failure_count == 1
+      assert Process.alive?(pid)
+    end
+
+    test "survives task crash (async_nolink)" do
+      defmodule CrashingWorker do
+        @behaviour Conductor.Worker
+        alias Conductor.FixerTest.MockState
+
+        def exec(_worker, _cmd, _opts), do: {:ok, ""}
+
+        def dispatch(_worker, _prompt, _repo, _opts) do
+          send(MockState.get(:test_pid, self()), :crash_dispatch)
+          raise "boom"
+        end
+
+        def cleanup(_worker, _repo, _run_id), do: :ok
+        def busy?(_worker, _opts), do: false
+      end
+
+      Application.put_env(:conductor, :worker_module, CrashingWorker)
+
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 101,
+             "headRefName" => "factory/101-12345",
+             "title" => "test",
+             "body" => "",
+             "statusCheckRollup" => [
+               %{"name" => "CI", "conclusion" => "FAILURE", "status" => "COMPLETED"}
+             ]
+           }
+         ]}
+      )
+
+      {:ok, pid} =
+        Fixer.start_link(
+          repo: "test/repo",
+          fixer_sprite: "bb-thorn",
+          poll_ms: 50
+        )
+
+      assert_receive :crash_dispatch, 2_000
+      Process.sleep(100)
+
+      assert Process.alive?(pid)
     end
   end
 end
