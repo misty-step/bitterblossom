@@ -314,4 +314,34 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     assert builder.consecutive_failures == 1
     assert MockState.get(:reconciled_sprites, []) == []
   end
+
+  test "does not emit a recovery event for a first healthy probe from unknown state" do
+    start_monitor(interval_ms: 60_000)
+
+    sprites = [
+      %{name: "bb-weaver", role: :builder, harness: "codex", repo: "test/repo"}
+    ]
+
+    MockState.put({:sprite_status, "bb-weaver"}, {:ok, %{healthy: true}})
+
+    HealthMonitor.configure(
+      sprites: sprites,
+      repo: "test/repo",
+      healthy: MapSet.new()
+    )
+
+    :sys.replace_state(HealthMonitor, fn state ->
+      %{state | sprite_statuses: Map.delete(state.sprite_statuses, "bb-weaver")}
+    end)
+
+    log =
+      capture_log(fn ->
+        HealthMonitor.check_now()
+        Process.sleep(100)
+      end)
+
+    refute log =~ "bb-weaver recovered"
+    assert Store.list_events("fleet") == []
+    assert HealthMonitor.status().sprites["bb-weaver"].status == :healthy
+  end
 end

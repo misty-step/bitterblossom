@@ -430,5 +430,16 @@ defmodule Conductor.StoreTest do
 
       assert Enum.map(events, & &1["run_id"]) == ["run-123"]
     end
+
+    test "filters to a single synthetic source" do
+      Store.record_event("fleet", "sprite_degraded", %{name: "bb-thorn"})
+      Store.record_event("fixer", "fixer_failed", %{pr: 42})
+      Store.record_event("run-123", "builder_complete", %{issue: 123})
+
+      events = Store.list_all_events(limit: 10, source: "fleet")
+
+      assert Enum.map(events, & &1["run_id"]) == ["fleet"]
+      assert Enum.map(events, & &1["event_type"]) == ["sprite_degraded"]
+    end
   end
 end

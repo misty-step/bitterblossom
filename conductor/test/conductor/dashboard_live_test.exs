@@ -56,6 +56,30 @@ defmodule Conductor.Web.DashboardLiveTest do
     def sync_persona(_, _, _, _ \\ []), do: :ok
   end
 
+  defmodule NoStatusWorker do
+  end
+
+  defmodule DurationIssueSource do
+    def list_issues(_repo, _opts) do
+      {:ok,
+       [
+         issue(101, "Seconds branch"),
+         issue(102, "Minutes branch"),
+         issue(103, "Hours branch")
+       ]}
+    end
+
+    defp issue(number, title) do
+      %Conductor.Issue{
+        number: number,
+        title: title,
+        body: "",
+        url: "https://github.com/test/repo/issues/#{number}",
+        labels: []
+      }
+    end
+  end
+
   setup do
     db_path = Path.join(System.tmp_dir!(), "dash_test_#{:rand.uniform(999_999)}.db")
     event_log = Path.join(System.tmp_dir!(), "dash_test_#{:rand.uniform(999_999)}.jsonl")
@@ -66,6 +90,7 @@ defmodule Conductor.Web.DashboardLiveTest do
     orig_worker = Application.get_env(:conductor, :worker_module)
     orig_workspace = Application.get_env(:conductor, :workspace_module)
     orig_code_host = Application.get_env(:conductor, :code_host_module)
+    orig_phase_worker_specs = Application.get_env(:conductor, :dashboard_phase_worker_specs)
     orig_start_dashboard = Application.get_env(:conductor, :start_dashboard)
 
     Application.put_env(:conductor, :db_path, db_path)
@@ -102,6 +127,7 @@ defmodule Conductor.Web.DashboardLiveTest do
       restore_env(:worker_module, orig_worker)
       restore_env(:workspace_module, orig_workspace)
       restore_env(:code_host_module, orig_code_host)
+      restore_env(:dashboard_phase_worker_specs, orig_phase_worker_specs)
       restore_env(:start_dashboard, orig_start_dashboard)
       File.rm(db_path)
       File.rm(event_log)
@@ -339,6 +365,20 @@ defmodule Conductor.Web.DashboardLiveTest do
     end
   end
 
+  test "dashboard tolerates phase worker modules without status/0" do
+    Application.put_env(:conductor, :dashboard_phase_worker_specs, [
+      {NoStatusWorker, "Thorn", :fixer_sprite, "–"},
+      {NoStatusWorker, "Fern", :polisher_sprite, "–"}
+    ])
+
+    {:ok, _view, html} = live(build_conn(), "/")
+
+    assert html =~ "Phase Workers"
+    assert html =~ "Thorn"
+    assert html =~ "Fern"
+    assert html =~ "stopped"
+  end
+
   test "source filters query matching events before truncation" do
     insert_event!("fleet", "sprite_degraded", %{name: "bb-thorn"}, "2026-03-22T00:00:00Z")
 
@@ -360,6 +400,21 @@ defmodule Conductor.Web.DashboardLiveTest do
 
     assert html =~ "sprite_degraded"
     refute html =~ "run_progress"
+  end
+
+  test "governor renders second, minute, and hour cooldown durations" do
+    Application.put_env(:conductor, :dashboard_issue_source_module, DurationIssueSource)
+
+    insert_failed_runs!(101, 1, 100)
+    insert_failed_runs!(102, 6, 1_205)
+    insert_failed_runs!(103, 7, 605)
+
+    {:ok, _view, html} = live(build_conn(), "/")
+
+    assert html =~ "Governor"
+    assert html =~ ~r/>1[89]s</
+    assert html =~ ~r/>4[34]m</
+    assert html =~ ~r/>1h 4[89]m</
   end
 
   # Poll helper for async assertions
@@ -388,5 +443,30 @@ defmodule Conductor.Web.DashboardLiveTest do
     :ok = Exqlite.Sqlite3.bind(stmt, [run_id, event_type, Jason.encode!(payload), created_at])
     :done = Exqlite.Sqlite3.step(conn, stmt)
     :ok = Exqlite.Sqlite3.release(conn, stmt)
+  end
+
+  defp insert_failed_runs!(issue_number, count, latest_age_seconds) do
+    for index <- 1..count do
+      {:ok, run_id} =
+        Conductor.Store.create_run(%{
+          repo: "test/repo",
+          issue_number: issue_number,
+          issue_title: "Issue #{issue_number}",
+          builder_sprite: "bb-weaver",
+          run_id: "run-#{issue_number}-#{index}"
+        })
+
+      Conductor.Store.update_run(run_id, %{
+        phase: "failed",
+        status: "failed",
+        completed_at: failed_at_iso(latest_age_seconds + count - index)
+      })
+    end
+  end
+
+  defp failed_at_iso(age_seconds) do
+    DateTime.utc_now()
+    |> DateTime.add(-age_seconds, :second)
+    |> DateTime.to_iso8601()
   end
 end

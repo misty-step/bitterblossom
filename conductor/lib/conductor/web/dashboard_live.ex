@@ -346,10 +346,10 @@ defmodule Conductor.Web.DashboardLive do
   end
 
   defp phase_worker_statuses do
-    [
-      worker_status(Conductor.Fixer, "Thorn", :fixer_sprite, "–"),
-      worker_status(Conductor.Polisher, "Fern", :polisher_sprite, "–")
-    ]
+    phase_worker_specs()
+    |> Enum.map(fn {module, label, sprite_key, fallback_sprite} ->
+      worker_status(module, label, sprite_key, fallback_sprite)
+    end)
   end
 
   defp worker_status(module, label, sprite_key, fallback_sprite) do
@@ -534,6 +534,13 @@ defmodule Conductor.Web.DashboardLive do
 
   defp issue_source_mod do
     Application.get_env(:conductor, :dashboard_issue_source_module, Conductor.GitHub)
+  end
+
+  defp phase_worker_specs do
+    Application.get_env(:conductor, :dashboard_phase_worker_specs, [
+      {Conductor.Fixer, "Thorn", :fixer_sprite, "–"},
+      {Conductor.Polisher, "Fern", :polisher_sprite, "–"}
+    ])
   end
 
   defp role_sort_key(:builder), do: 0

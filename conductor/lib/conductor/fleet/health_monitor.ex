@@ -272,7 +272,7 @@ defmodule Conductor.Fleet.HealthMonitor do
     %{
       name: sprite.name,
       role: sprite.role,
-      status: :degraded,
+      status: :unknown,
       last_probe_at: nil,
       consecutive_failures: 0
     }
@@ -281,7 +281,8 @@ defmodule Conductor.Fleet.HealthMonitor do
   defp healthy?(:healthy), do: true
   defp healthy?(_), do: false
 
-  defp recovered?(old_status, new_status), do: not healthy?(old_status) and healthy?(new_status)
+  defp recovered?(old_status, :healthy), do: old_status in [:degraded, :unavailable]
+  defp recovered?(_old_status, _new_status), do: false
 
   defp maybe_worker_start_note(role) when role in [:fixer, :polisher],
     do: ", starting phase worker"
