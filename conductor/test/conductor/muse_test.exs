@@ -471,7 +471,7 @@ defmodule Conductor.MuseTest do
     assert Muse.status().queue_length == 2
   end
 
-  test "stale retry messages are ignored" do
+  test "stale retry messages do not clear a newer backoff" do
     run_1 = create_merged_run(790, "Initial retry")
     run_2 = create_merged_run(791, "Queued behind retry")
 
@@ -496,12 +496,16 @@ defmodule Conductor.MuseTest do
     Muse.observe(run_2)
     fire_retry(stale_token)
 
-    eventually(fn ->
-      status = Muse.status()
-      assert status.failure_count == 2
-      assert status.queue_length == 2
-      assert current_retry_token() != stale_token
-    end)
+    new_retry_token =
+      eventually(fn ->
+        status = Muse.status()
+        assert status.failure_count == 2
+        assert status.queue_length == 2
+
+        token = current_retry_token()
+        assert token != stale_token
+        token
+      end)
 
     send(Muse, {:retry, stale_token})
     Process.sleep(100)
@@ -509,6 +513,43 @@ defmodule Conductor.MuseTest do
     assert length(MockState.get(:dispatches, [])) == 2
     assert Muse.status().failure_count == 2
     assert Muse.status().queue_length == 2
+    assert current_retry_token() == new_retry_token
+  end
+
+  test "task crashes record a failed observation and back off" do
+    run_id = create_merged_run(792, "Task crash")
+
+    MockState.put(:dispatch_fun, fn _worker, prompt ->
+      if String.contains?(prompt, "# Muse Observe Task") do
+        exit(:dispatch_crashed)
+      else
+        {:error, "unexpected prompt", 1}
+      end
+    end)
+
+    {:ok, _pid} = start_muse()
+
+    Muse.observe(run_id)
+
+    assert_receive {:dispatched, "bb-muse", _prompt}, 2_000
+
+    eventually(fn ->
+      status = Muse.status()
+      assert status.failure_count == 1
+      assert status.health == :degraded
+      assert status.queue_length == 1
+    end)
+
+    assert_retry_window(2_000)
+
+    eventually(fn ->
+      [event] =
+        Store.list_all_events(limit: 10)
+        |> Enum.filter(&(&1["event_type"] == "muse_observation_failed"))
+
+      assert event["run_id"] == run_id
+      assert event["payload"]["error"] =~ "task_crashed: :dispatch_crashed"
+    end)
   end
 
   test "observation accepts fenced JSON payloads", %{repo_root: repo_root} do
@@ -1076,13 +1117,43 @@ defmodule Conductor.MuseTest do
     end)
   end
 
-  test "stale synthesis ticks are ignored" do
+  test "stale synthesis ticks are ignored after rescheduling" do
+    reflection_dir =
+      Path.join(Application.fetch_env!(:conductor, :repo_root), ".bb/muse/reflections")
+
+    File.mkdir_p!(reflection_dir)
+    File.write!(Path.join(reflection_dir, "#{Date.utc_today()}-run-1.md"), "# Reflection 1\n")
+
     {:ok, _pid} = start_muse()
 
-    send(Muse, {:synthesis_tick, make_ref()})
+    stale_token = current_synthesis_token()
+
+    send(Muse, {:synthesis_tick, stale_token})
+
+    eventually(fn ->
+      dispatches =
+        MockState.get(:dispatches, [])
+        |> Enum.filter(&String.contains?(&1, "# Muse Synthesis Task"))
+
+      assert length(dispatches) == 1
+
+      [event] =
+        Store.list_all_events(limit: 10)
+        |> Enum.filter(&(&1["event_type"] == "muse_synthesis_complete"))
+
+      assert event["payload"]["action_count"] == 3
+    end)
+
+    assert current_synthesis_token() != stale_token
+
+    send(Muse, {:synthesis_tick, stale_token})
     Process.sleep(100)
 
-    assert MockState.get(:dispatches, []) == []
+    assert Enum.count(
+             MockState.get(:dispatches, []),
+             &String.contains?(&1, "# Muse Synthesis Task")
+           ) == 1
+
     refute Muse.status().pending_synthesis
   end
 
@@ -1127,6 +1198,12 @@ defmodule Conductor.MuseTest do
     %{retry_token: retry_token} = :sys.get_state(Muse)
     assert is_reference(retry_token)
     retry_token
+  end
+
+  defp current_synthesis_token do
+    %{synthesis_token: synthesis_token} = :sys.get_state(Muse)
+    assert is_reference(synthesis_token)
+    synthesis_token
   end
 
   defp fire_retry(token \\ current_retry_token()) do
