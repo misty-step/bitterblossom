@@ -111,6 +111,23 @@ defmodule Conductor.PolisherTest do
     end
   end
 
+  defp wait_for_pr_state(repo, pr_number, attempts \\ 20)
+
+  defp wait_for_pr_state(_repo, _pr_number, 0) do
+    flunk("timed out waiting for persisted PR state")
+  end
+
+  defp wait_for_pr_state(repo, pr_number, attempts) do
+    case Store.get_pr_state(repo, pr_number) do
+      {:ok, %{"polished_at" => polished_at} = pr} when is_binary(polished_at) ->
+        pr
+
+      _ ->
+        Process.sleep(25)
+        wait_for_pr_state(repo, pr_number, attempts - 1)
+    end
+  end
+
   setup do
     db_path = Path.join(System.tmp_dir!(), "polisher_test_#{:rand.uniform(999_999)}.db")
     event_log = Path.join(System.tmp_dir!(), "polisher_test_#{:rand.uniform(999_999)}.jsonl")
@@ -407,11 +424,21 @@ defmodule Conductor.PolisherTest do
         )
 
       assert_receive {:dispatched, "bb-fern", _prompt}, 2_000
-      refute_receive {:dispatched, "bb-fern", _prompt}, 300
 
-      assert {:ok, pr} = Store.get_pr_state("test/repo", 42)
+      pr = wait_for_pr_state("test/repo", 42)
       assert pr["last_substantive_change_at"] == initial_change_at
       assert is_binary(pr["polished_at"])
+
+      stop_process(Polisher)
+
+      {:ok, _pid} =
+        Polisher.start_link(
+          repo: "test/repo",
+          polisher_sprite: "bb-fern",
+          poll_ms: 50
+        )
+
+      refute_receive {:dispatched, "bb-fern", _prompt}, 300
 
       MockState.put({:substantive_change_at, 42}, {:ok, next_change_at})
 
