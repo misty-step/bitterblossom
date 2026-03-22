@@ -6,11 +6,12 @@ defmodule Conductor.Issue do
           title: binary(),
           body: binary(),
           url: binary(),
-          labels: [binary()]
+          labels: [binary()],
+          state: binary()
         }
 
   @enforce_keys [:number, :title, :body, :url]
-  defstruct [:number, :title, :body, :url, labels: []]
+  defstruct [:number, :title, :body, :url, labels: [], state: "OPEN"]
 
   @spec from_github(map()) :: t()
   def from_github(%{"number" => n, "title" => t} = data) do
@@ -19,8 +20,19 @@ defmodule Conductor.Issue do
       title: t,
       body: data["body"] || "",
       url: data["url"] || "https://github.com/unknown/issues/#{n}",
-      labels: Enum.map(data["labels"] || [], &label_name/1)
+      labels: Enum.map(data["labels"] || [], &label_name/1),
+      state: normalize_state(data["state"])
     }
+  end
+
+  @doc "Check issue lifecycle state for dispatch."
+  @spec lifecycle_valid?(t()) :: :ok | {:error, [binary()]}
+  def lifecycle_valid?(%__MODULE__{state: state}) do
+    case normalize_state(state) do
+      "OPEN" -> :ok
+      "CLOSED" -> {:error, ["issue is closed"]}
+      other -> {:error, ["issue is #{String.downcase(other)}"]}
+    end
   end
 
   @doc """
@@ -73,6 +85,11 @@ defmodule Conductor.Issue do
   defp check_missing(acc, body, headings, msg) do
     if Enum.any?(headings, &has?(body, &1)), do: acc, else: [msg | acc]
   end
+
+  defp normalize_state(nil), do: "OPEN"
+  defp normalize_state(""), do: "OPEN"
+  defp normalize_state(state) when is_binary(state), do: String.upcase(state)
+  defp normalize_state(state), do: state |> to_string() |> String.upcase()
 
   defp label_name(%{"name" => n}), do: n
   defp label_name(n) when is_binary(n), do: n

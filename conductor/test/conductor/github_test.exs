@@ -860,6 +860,68 @@ defmodule Conductor.GitHubTest do
       )
     end
 
+    test "eligible_issues auto-closes open issues resolved by merged PR bodies" do
+      with_fake_gh(
+        """
+        printf '%s\\n' "$@" >> "$GH_ARGS_PATH"
+
+        if [[ "$*" == issue\\ list* ]]; then
+          cat <<'JSON'
+        [
+          {
+            "number": 10,
+            "title": "retro orphan",
+            "body": "## Problem\\nx\\n\\n## Acceptance Criteria\\n- [ ] [test] y",
+            "url": "https://example.test/issues/10",
+            "labels": [{"name": "autopilot"}],
+            "state": "OPEN"
+          },
+          {
+            "number": 11,
+            "title": "still open",
+            "body": "## Problem\\nx\\n\\n## Acceptance Criteria\\n- [ ] [test] y",
+            "url": "https://example.test/issues/11",
+            "labels": [{"name": "autopilot"}],
+            "state": "OPEN"
+          }
+        ]
+        JSON
+        elif [[ "$*" == *"pulls?state=closed&per_page=100&page=1"* ]]; then
+          cat <<'JSON'
+        [
+          {
+            "merged_at": "2026-03-18T14:00:00Z",
+            "title": "retro fix",
+            "body": "Closes #10",
+            "head": {"ref": "fix/retro-closure"},
+            "base": {"ref": "master"}
+          }
+        ]
+        JSON
+        elif [[ "$*" == issue\\ close* ]]; then
+          echo 'closed'
+        elif [[ "$*" == *"pulls?state=closed&per_page=100&page=2"* ]]; then
+          echo '[]'
+        else
+          echo '[]'
+        fi
+        """,
+        fn _tmp_dir, args_path ->
+          issues =
+            GitHub.eligible_issues(
+              "misty-step/bitterblossom",
+              label: "autopilot",
+              limit: 25
+            )
+
+          assert Enum.map(issues, & &1.number) == [11]
+
+          args = File.read!(args_path)
+          assert args =~ "issue\nclose\n10\n--repo\nmisty-step/bitterblossom\n"
+        end
+      )
+    end
+
     test "eligible_issues scans older merged PR pages and stops after all open issues are matched" do
       with_fake_gh(
         """

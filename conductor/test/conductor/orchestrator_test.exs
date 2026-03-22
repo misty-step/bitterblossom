@@ -638,6 +638,36 @@ defmodule Conductor.OrchestratorTest do
     end
   end
 
+  describe "issue lifecycle validation" do
+    test "skips closed issues returned by the tracker and dispatches only open work" do
+      closed_issue = %Conductor.Issue{
+        number: 320,
+        title: "already closed",
+        body: "## Problem\nx\n## Acceptance Criteria\ny",
+        url: "https://example.test/issues/320",
+        state: "CLOSED"
+      }
+
+      open_issue = %Conductor.Issue{
+        number: 321,
+        title: "still open",
+        body: "## Problem\nx\n## Acceptance Criteria\ny",
+        url: "https://example.test/issues/321",
+        state: "OPEN"
+      }
+
+      MockState.put({:eligible, "test/repo", nil}, [closed_issue, open_issue])
+
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
+
+      eventually(fn ->
+        assert MockState.get(:started_runs) == [{321, "sprite-1"}]
+      end)
+
+      refute_receive {:shape_attempted, "test/repo", 320}, 200
+    end
+  end
+
   describe "shape-before-skip" do
     test "attempts shaping once for an unready issue and dispatches it on the next poll when shaping succeeds" do
       orig_max = Application.get_env(:conductor, :max_concurrent_runs)

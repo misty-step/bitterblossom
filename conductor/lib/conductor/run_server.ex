@@ -106,7 +106,7 @@ defmodule Conductor.RunServer do
             Store.record_event(run_id, "lease_acquired", %{issue: state.issue.number})
             log(state, "lease acquired for issue ##{state.issue.number}")
 
-            {:noreply, state, {:continue, :prepare_workspace}}
+            {:noreply, state, {:continue, :validate_issue}}
 
           _ ->
             Store.release_lease(state.repo, state.issue.number)
@@ -117,6 +117,23 @@ defmodule Conductor.RunServer do
 
             {:stop, :normal, state}
         end
+    end
+  end
+
+  @impl true
+  def handle_continue(:validate_issue, state) do
+    case tracker_mod().get_issue(state.repo, state.issue.number) do
+      {:ok, latest_issue} ->
+        case Conductor.Issue.lifecycle_valid?(latest_issue) do
+          :ok ->
+            {:noreply, %{state | issue: latest_issue}, {:continue, :prepare_workspace}}
+
+          {:error, failures} ->
+            block(%{state | issue: latest_issue}, Enum.join(failures, ", "))
+        end
+
+      {:error, _reason} ->
+        {:noreply, state, {:continue, :prepare_workspace}}
     end
   end
 

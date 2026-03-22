@@ -27,7 +27,7 @@ defmodule Conductor.GitHub do
            "--repo",
            repo,
            "--json",
-           "number,title,body,url,labels"
+           "number,title,body,url,labels,state"
          ]) do
       {:ok, json} ->
         case Jason.decode(json) do
@@ -117,7 +117,7 @@ defmodule Conductor.GitHub do
     case list_issues(repo, opts) do
       {:ok, issues} ->
         issues
-        |> reject_issues_with_merged_factory_prs(repo)
+        |> reject_resolved_open_issues(repo)
         |> sort_eligible_issues()
 
       {:error, reason} ->
@@ -138,7 +138,7 @@ defmodule Conductor.GitHub do
       "--state",
       "open",
       "--json",
-      "number,title,body,url,labels",
+      "number,title,body,url,labels,state",
       "--limit",
       to_string(limit)
     ] ++ maybe_label_filter(label)
@@ -146,15 +146,22 @@ defmodule Conductor.GitHub do
 
   defp sort_eligible_issues(issues), do: Enum.sort_by(issues, & &1.number)
 
-  defp reject_issues_with_merged_factory_prs([], _repo), do: []
+  defp reject_resolved_open_issues([], _repo), do: []
 
-  defp reject_issues_with_merged_factory_prs(issues, repo) do
+  defp reject_resolved_open_issues(issues, repo) do
     issue_numbers = issues |> Enum.map(& &1.number) |> MapSet.new()
-    merged_issue_numbers = merged_factory_issue_numbers(repo, issue_numbers)
-    Enum.reject(issues, &MapSet.member?(merged_issue_numbers, &1.number))
+    resolved_issue_numbers = merged_issue_numbers(repo, issue_numbers)
+
+    Enum.each(issues, fn issue ->
+      if MapSet.member?(resolved_issue_numbers, issue.number) do
+        auto_close_resolved_issue(repo, issue.number)
+      end
+    end)
+
+    Enum.reject(issues, &MapSet.member?(resolved_issue_numbers, &1.number))
   end
 
-  defp fetch_merged_factory_issue_numbers(owner, name, page, remaining_issue_numbers, acc) do
+  defp fetch_merged_issue_numbers(owner, name, page, remaining_issue_numbers, acc) do
     if MapSet.size(remaining_issue_numbers) == 0 do
       {:ok, acc}
     else
@@ -170,10 +177,10 @@ defmodule Conductor.GitHub do
         else
           page_matches =
             prs
-            |> Enum.filter(&merged_factory_pr?/1)
-            |> Enum.map(&factory_issue_number_from_branch(pr_branch_name(&1)))
-            |> Enum.reject(&is_nil/1)
-            |> MapSet.new()
+            |> Enum.filter(&merged_pr?/1)
+            |> Enum.reduce(MapSet.new(), fn pr, matches ->
+              MapSet.union(matches, resolved_issue_numbers_from_pr(pr, remaining_issue_numbers))
+            end)
 
           matched_issue_numbers = MapSet.intersection(page_matches, remaining_issue_numbers)
           next_acc = MapSet.union(acc, matched_issue_numbers)
@@ -182,20 +189,20 @@ defmodule Conductor.GitHub do
           if length(prs) < @issues_page_size do
             {:ok, next_acc}
           else
-            fetch_merged_factory_issue_numbers(owner, name, page + 1, next_remaining, next_acc)
+            fetch_merged_issue_numbers(owner, name, page + 1, next_remaining, next_acc)
           end
         end
       end
     end
   end
 
-  defp merged_factory_issue_numbers(repo, issue_numbers) do
+  defp merged_issue_numbers(repo, issue_numbers) do
     if MapSet.size(issue_numbers) == 0 do
       MapSet.new()
     else
       with {:ok, {owner, name}} <- repo_parts(repo),
            {:ok, merged_issue_numbers} <-
-             fetch_merged_factory_issue_numbers(owner, name, 1, issue_numbers, MapSet.new()) do
+             fetch_merged_issue_numbers(owner, name, 1, issue_numbers, MapSet.new()) do
         merged_issue_numbers
       else
         {:error, reason} ->
@@ -205,8 +212,8 @@ defmodule Conductor.GitHub do
     end
   end
 
-  defp merged_factory_pr?(pr) do
-    is_binary(pr_merged_at(pr)) and String.starts_with?(pr_branch_name(pr), "factory/")
+  defp merged_pr?(pr) do
+    is_binary(pr_merged_at(pr))
   end
 
   defp pr_merged_at(%{"merged_at" => merged_at}) when is_binary(merged_at), do: merged_at
@@ -231,6 +238,43 @@ defmodule Conductor.GitHub do
   end
 
   defp factory_issue_number_from_branch(_branch), do: nil
+
+  defp resolved_issue_numbers_from_pr(pr, remaining_issue_numbers) do
+    branch_matches =
+      case factory_issue_number_from_branch(pr_branch_name(pr)) do
+        nil -> MapSet.new()
+        issue_number -> MapSet.new([issue_number])
+      end
+
+    keyword_matches =
+      Enum.reduce(remaining_issue_numbers, MapSet.new(), fn issue_number, matches ->
+        if pr_closes_issue?(pr, issue_number) do
+          MapSet.put(matches, issue_number)
+        else
+          matches
+        end
+      end)
+
+    MapSet.union(branch_matches, keyword_matches)
+  end
+
+  defp pr_closes_issue?(pr, issue_number) do
+    body_closes_issue?(pr["body"], issue_number)
+  end
+
+  defp auto_close_resolved_issue(repo, issue_number) do
+    case close_issue(repo, issue_number) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "[github] failed to auto-close issue ##{issue_number} resolved by a merged PR: #{inspect(reason)}"
+        )
+
+        :ok
+    end
+  end
 
   def label_present?(data, label) do
     data

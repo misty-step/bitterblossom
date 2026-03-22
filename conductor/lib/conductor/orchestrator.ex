@@ -54,26 +54,33 @@ defmodule Conductor.Orchestrator do
 
     case tracker_mod().get_issue(repo, issue_number) do
       {:ok, issue} ->
-        case Issue.ready?(issue) do
+        case Issue.lifecycle_valid?(issue) do
           :ok ->
-            run_issue(repo, issue, worker, trusted_surfaces)
+            case Issue.ready?(issue) do
+              :ok ->
+                run_issue(repo, issue, worker, trusted_surfaces)
 
-          {:error, failures} ->
-            case safe_shape_issue(repo, issue_number) do
-              {:ok, result} when result in [:shaped, :already_shaped] ->
-                IO.puts(
-                  "issue ##{issue_number} not ready: #{Enum.join(failures, ", ")}; " <>
-                    "shaping #{result} and deferring execution until the next fetch"
-                )
+              {:error, failures} ->
+                case safe_shape_issue(repo, issue_number) do
+                  {:ok, result} when result in [:shaped, :already_shaped] ->
+                    IO.puts(
+                      "issue ##{issue_number} not ready: #{Enum.join(failures, ", ")}; " <>
+                        "shaping #{result} and deferring execution until the next fetch"
+                    )
 
-              {:error, reason} ->
-                IO.puts(
-                  "issue ##{issue_number} not ready: #{Enum.join(failures, ", ")}; " <>
-                    "shaping failed: #{inspect(reason)}"
-                )
+                  {:error, reason} ->
+                    IO.puts(
+                      "issue ##{issue_number} not ready: #{Enum.join(failures, ", ")}; " <>
+                        "shaping failed: #{inspect(reason)}"
+                    )
+                end
+
+                {:error, :not_ready}
             end
 
-            {:error, :not_ready}
+          {:error, failures} ->
+            IO.puts("issue ##{issue_number} not dispatchable: #{Enum.join(failures, ", ")}")
+            {:error, :not_dispatchable}
         end
 
       {:error, reason} ->
@@ -306,22 +313,32 @@ defmodule Conductor.Orchestrator do
   end
 
   defp consider_issue(state, issue, remaining_slots) do
-    case Issue.ready?(issue) do
+    case Issue.lifecycle_valid?(issue) do
       :ok ->
-        next_state =
-          state
-          |> clear_shape_attempt(issue.number)
-          |> maybe_start_ready_issue(issue, remaining_slots)
+        case Issue.ready?(issue) do
+          :ok ->
+            next_state =
+              state
+              |> clear_shape_attempt(issue.number)
+              |> maybe_start_ready_issue(issue, remaining_slots)
 
-        outcome =
-          if map_size(next_state.active_runs) > map_size(state.active_runs),
-            do: :started,
-            else: :skipped
+            outcome =
+              if map_size(next_state.active_runs) > map_size(state.active_runs),
+                do: :started,
+                else: :skipped
 
-        {next_state, outcome}
+            {next_state, outcome}
+
+          {:error, failures} ->
+            maybe_shape_issue(state, issue, failures)
+        end
 
       {:error, failures} ->
-        maybe_shape_issue(state, issue, failures)
+        Logger.info(
+          "issue ##{issue.number} not dispatchable (#{Enum.join(failures, ", ")}), skipping"
+        )
+
+        {clear_shape_attempt(state, issue.number), :skipped}
     end
   end
 
