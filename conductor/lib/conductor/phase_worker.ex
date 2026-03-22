@@ -70,7 +70,13 @@ defmodule Conductor.PhaseWorker do
     repo = Keyword.fetch!(opts, :repo)
     role_module = Roles.fetch!(Keyword.fetch!(opts, :role_module))
     poll_ms = Keyword.get(opts, :poll_ms, Config.poll_seconds() * 1_000)
-    sprites = opts |> Keyword.get(:sprites, []) |> Enum.uniq() |> Enum.sort()
+
+    sprites =
+      opts
+      |> Keyword.get(:sprites, [])
+      |> stored_sprites(role_module)
+      |> Enum.uniq()
+      |> Enum.sort()
 
     state = %__MODULE__{
       repo: repo,
@@ -335,5 +341,20 @@ defmodule Conductor.PhaseWorker do
 
   defp workspace_mod do
     Application.get_env(:conductor, :workspace_module, Workspace)
+  end
+
+  defp stored_sprites(default, role_module) do
+    supervisor =
+      Application.get_env(
+        :conductor,
+        :phase_worker_supervisor,
+        Conductor.PhaseWorker.Supervisor
+      )
+
+    if function_exported?(supervisor, :stored_sprites, 2) do
+      supervisor.stored_sprites(role_module, default)
+    else
+      default
+    end
   end
 end

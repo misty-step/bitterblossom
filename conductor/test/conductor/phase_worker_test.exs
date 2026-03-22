@@ -97,6 +97,8 @@ defmodule Conductor.PhaseWorkerTest do
     orig_code_host = Application.get_env(:conductor, :code_host_module)
     orig_worker = Application.get_env(:conductor, :worker_module)
     orig_workspace = Application.get_env(:conductor, :workspace_module)
+    orig_phase_worker_supervisor = Application.get_env(:conductor, :phase_worker_supervisor)
+    orig_phase_worker_sprites = Application.get_env(:conductor, :phase_worker_sprites)
 
     Application.put_env(:conductor, :code_host_module, MockCodeHost)
     Application.put_env(:conductor, :worker_module, MockWorker)
@@ -113,6 +115,8 @@ defmodule Conductor.PhaseWorkerTest do
       restore_env(:code_host_module, orig_code_host)
       restore_env(:worker_module, orig_worker)
       restore_env(:workspace_module, orig_workspace)
+      restore_env(:phase_worker_supervisor, orig_phase_worker_supervisor)
+      restore_env(:phase_worker_sprites, orig_phase_worker_sprites)
 
       File.rm(db_path)
       File.rm(event_log)
@@ -213,6 +217,48 @@ defmodule Conductor.PhaseWorkerTest do
 
       assert log =~ "[fern] PR #42 is green, dispatching Fern"
     end
+
+    test "skips PRs that already have lgtm label" do
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 42,
+             "headRefName" => "factory/99-12345",
+             "title" => "feat: implement feature",
+             "body" => "Closes #99",
+             "labels" => [%{"name" => "lgtm"}],
+             "statusCheckRollup" => @green_checks
+           }
+         ]}
+      )
+
+      start_phase_worker(Roles.Polisher, ["bb-fern"])
+
+      refute_receive {:dispatched, _, _}, 300
+    end
+
+    test "skips PRs with LGTM label case-insensitively" do
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 42,
+             "headRefName" => "factory/99-12345",
+             "title" => "feat: implement feature",
+             "body" => "Closes #99",
+             "labels" => [%{"name" => "LGTM"}],
+             "statusCheckRollup" => @green_checks
+           }
+         ]}
+      )
+
+      start_phase_worker(Roles.Polisher, ["bb-fern"])
+
+      refute_receive {:dispatched, _, _}, 300
+    end
   end
 
   describe "status/1" do
@@ -270,6 +316,21 @@ defmodule Conductor.PhaseWorkerTest do
       def busy?(_worker, _opts), do: false
     end
 
+    defmodule CrashingWorker do
+      @behaviour Conductor.Worker
+      alias Conductor.PhaseWorkerTest.MockState
+
+      def exec(_worker, _cmd, _opts), do: {:ok, ""}
+
+      def dispatch(_worker, _prompt, _repo, _opts) do
+        send(MockState.get(:test_pid, self()), :crash_dispatch)
+        exit(:boom)
+      end
+
+      def cleanup(_worker, _repo, _run_id), do: :ok
+      def busy?(_worker, _opts), do: false
+    end
+
     test "backs off after dispatch failure" do
       orig_worker = Application.get_env(:conductor, :worker_module)
       Application.put_env(:conductor, :worker_module, FailingWorker)
@@ -299,6 +360,75 @@ defmodule Conductor.PhaseWorkerTest do
       status = PhaseWorker.status(Roles.Fixer)
       assert status.health == :degraded
       assert status.failure_count == 1
+    end
+
+    test "marks the worker unavailable after repeated dispatch failures" do
+      orig_worker = Application.get_env(:conductor, :worker_module)
+      Application.put_env(:conductor, :worker_module, FailingWorker)
+
+      on_exit(fn -> restore_env(:worker_module, orig_worker) end)
+
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 100,
+             "headRefName" => "factory/100-12345",
+             "title" => "test",
+             "body" => "",
+             "statusCheckRollup" => [
+               %{"name" => "CI", "conclusion" => "FAILURE", "status" => "COMPLETED"}
+             ]
+           }
+         ]}
+      )
+
+      {:ok, pid} = start_phase_worker(Roles.Fixer, ["bb-thorn"], poll_ms: 10)
+
+      assert_receive :dispatch_attempted, 2_000
+      assert_receive :dispatch_attempted, 2_000
+      assert_receive :dispatch_attempted, 2_000
+
+      Process.sleep(50)
+
+      status = PhaseWorker.status(Roles.Fixer)
+      assert status.health == :unavailable
+      assert status.failure_count >= 3
+      assert Process.alive?(pid)
+    end
+
+    test "survives task crashes from async_nolink dispatch tasks" do
+      orig_worker = Application.get_env(:conductor, :worker_module)
+      Application.put_env(:conductor, :worker_module, CrashingWorker)
+
+      on_exit(fn -> restore_env(:worker_module, orig_worker) end)
+
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 101,
+             "headRefName" => "factory/101-12345",
+             "title" => "test",
+             "body" => "",
+             "statusCheckRollup" => [
+               %{"name" => "CI", "conclusion" => "FAILURE", "status" => "COMPLETED"}
+             ]
+           }
+         ]}
+      )
+
+      {:ok, pid} = start_phase_worker(Roles.Fixer, ["bb-thorn"])
+
+      assert_receive :crash_dispatch, 2_000
+      Process.sleep(100)
+
+      status = PhaseWorker.status(Roles.Fixer)
+      assert status.health == :degraded
+      assert status.failure_count >= 1
+      assert Process.alive?(pid)
     end
   end
 

@@ -3,6 +3,9 @@ defmodule Conductor.Fleet.HealthMonitor do
   Periodic fleet health re-check. Detects sprite recovery and auto-starts
   phase workers (Fixer, Polisher) that were skipped at boot due to unhealthy sprites.
 
+  Health recovery and phase-worker lifecycle are intentionally coupled so the
+  role worker pool tracks the current healthy sprite set.
+
   Deep module: hides all sprite lifecycle recovery behind a simple status/0 interface.
   """
 
@@ -107,18 +110,13 @@ defmodule Conductor.Fleet.HealthMonitor do
 
           updated = put_health(acc, sprite.name, :healthy)
 
-          case sync_phase_worker(updated, sprite.role) do
-            :ok ->
-              Store.record_event("fleet", "sprite_recovered", %{
-                name: sprite.name,
-                role: to_string(sprite.role)
-              })
+          Store.record_event("fleet", "sprite_recovered", %{
+            name: sprite.name,
+            role: to_string(sprite.role)
+          })
 
-              updated
-
-            :error ->
-              acc
-          end
+          sync_phase_worker(updated, sprite.role)
+          updated
 
         old_health == :healthy and new_health == :unhealthy ->
           Logger.warning("[health] #{sprite.name} degraded")
@@ -130,10 +128,8 @@ defmodule Conductor.Fleet.HealthMonitor do
 
           updated = put_health(acc, sprite.name, :unhealthy)
 
-          case sync_phase_worker(updated, sprite.role) do
-            :ok -> updated
-            :error -> acc
-          end
+          sync_phase_worker(updated, sprite.role)
+          updated
 
         true ->
           acc

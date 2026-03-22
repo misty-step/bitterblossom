@@ -56,6 +56,10 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     def sync_persona(_, _, _, _ \\ []), do: :ok
   end
 
+  defmodule FailingPhaseWorkerSupervisor do
+    def ensure_worker(_role_module, _repo, _sprites), do: {:error, :sync_failed}
+  end
+
   setup do
     db_path = Path.join(System.tmp_dir!(), "health_mon_test_#{:rand.uniform(999_999)}.db")
     event_log = Path.join(System.tmp_dir!(), "health_mon_test_#{:rand.uniform(999_999)}.jsonl")
@@ -79,6 +83,8 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     orig_worker = Application.get_env(:conductor, :worker_module)
     orig_workspace = Application.get_env(:conductor, :workspace_module)
     orig_code_host = Application.get_env(:conductor, :code_host_module)
+    orig_phase_worker_supervisor = Application.get_env(:conductor, :phase_worker_supervisor)
+    orig_phase_worker_sprites = Application.get_env(:conductor, :phase_worker_sprites)
 
     Application.put_env(:conductor, :worker_module, NoopWorker)
     Application.put_env(:conductor, :workspace_module, NoopWorkspace)
@@ -96,7 +102,9 @@ defmodule Conductor.Fleet.HealthMonitorTest do
             {:reconciler_module, orig_reconciler},
             {:worker_module, orig_worker},
             {:workspace_module, orig_workspace},
-            {:code_host_module, orig_code_host}
+            {:code_host_module, orig_code_host},
+            {:phase_worker_supervisor, orig_phase_worker_supervisor},
+            {:phase_worker_sprites, orig_phase_worker_sprites}
           ] do
         if orig,
           do: Application.put_env(:conductor, key, orig),
@@ -265,5 +273,34 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     Process.sleep(100)
 
     assert PhaseWorker.status(Roles.Polisher).sprites == ["bb-polisher-1", "bb-polisher-2"]
+  end
+
+  test "keeps degraded health state when phase worker sync fails" do
+    Application.put_env(:conductor, :phase_worker_supervisor, FailingPhaseWorkerSupervisor)
+
+    start_monitor(interval_ms: 60_000)
+
+    sprites = [
+      %{name: "bb-fixer", role: :fixer, harness: "codex", repo: "test/repo"}
+    ]
+
+    MockState.put({:sprite_health, "bb-fixer"}, :unhealthy)
+
+    HealthMonitor.configure(
+      sprites: sprites,
+      repo: "test/repo",
+      healthy: MapSet.new(["bb-fixer"])
+    )
+
+    assert HealthMonitor.status().sprites["bb-fixer"] == :healthy
+
+    log =
+      capture_log(fn ->
+        HealthMonitor.check_now()
+        Process.sleep(100)
+      end)
+
+    assert log =~ "failed to sync"
+    assert HealthMonitor.status().sprites["bb-fixer"] == :unhealthy
   end
 end
