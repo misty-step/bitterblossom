@@ -22,6 +22,9 @@ defmodule Conductor.WorkspaceTest do
                )
 
       assert_received {:prepare_command, command}
+      assert command =~ "git worktree list --porcelain"
+      assert command =~ "git checkout \"$default_branch\" --quiet"
+      assert command =~ "git worktree remove --force \"$path\""
       assert command =~ "config extensions.worktreeConfig true"
       assert command =~ "config --worktree core.hooksPath .bb-hooks"
       assert command =~ "hook_path=\"$hook_dir/pre-push\""
@@ -50,6 +53,7 @@ defmodule Conductor.WorkspaceTest do
                )
 
       assert_received {:adopt_command, command}
+      assert command =~ "git worktree list --porcelain"
       assert command =~ "config --worktree core.hooksPath .bb-hooks"
       assert command =~ "expected_branch=\"factory/42-1773867376\""
     end
@@ -245,6 +249,57 @@ defmodule Conductor.WorkspaceTest do
                      else: {:ok, ""}
                  end
                )
+    end
+  end
+
+  describe "cleanup/4" do
+    test "removes all worktrees for the run branch before deleting the branch" do
+      parent = self()
+
+      exec_fn = fn _sprite, command, _opts ->
+        send(parent, {:cleanup_command, command})
+        {:ok, ""}
+      end
+
+      assert :ok =
+               Workspace.cleanup(
+                 "bb-weaver",
+                 "misty-step/bitterblossom",
+                 "run-42-1773867376",
+                 exec_fn: exec_fn
+               )
+
+      assert_received {:cleanup_command, command}
+      assert command =~ "git worktree list --porcelain"
+      assert command =~ "git checkout \"$default_branch\" --quiet"
+      assert command =~ "git worktree remove --force \"$path\""
+      assert command =~ "git branch -D factory/42-1773867376"
+    end
+  end
+
+  describe "health_check/4" do
+    test "returns clean when no worktree is attached to the branch" do
+      assert {:ok, :clean} =
+               Workspace.health_check(
+                 "bb-weaver",
+                 "misty-step/bitterblossom",
+                 "factory/42-1773867376",
+                 exec_fn: fn _sprite, _command, _opts -> {:ok, ""} end
+               )
+    end
+
+    test "reports stale worktree paths when the branch is still attached" do
+      assert {:error, {:stale_worktrees, paths}} =
+               Workspace.health_check(
+                 "bb-weaver",
+                 "misty-step/bitterblossom",
+                 "factory/42-1773867376",
+                 exec_fn: fn _sprite, _command, _opts ->
+                   {:ok, "/home/sprite/workspace/bitterblossom\n/tmp/run-42\n"}
+                 end
+               )
+
+      assert paths == ["/home/sprite/workspace/bitterblossom", "/tmp/run-42"]
     end
   end
 
