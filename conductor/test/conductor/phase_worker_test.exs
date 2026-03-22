@@ -675,7 +675,7 @@ defmodule Conductor.PhaseWorkerTest do
       assert log =~ "unexpected result for PR #42: :unexpected"
     end
 
-    test "ignores task completions for unknown refs" do
+    test "logs and ignores task completions for unknown refs" do
       {:ok, pid} = start_phase_worker(Roles.Fixer, ["bb-thorn"], poll_ms: 60_000)
 
       initial_state =
@@ -687,10 +687,14 @@ defmodule Conductor.PhaseWorkerTest do
           end
         end)
 
-      send(pid, {make_ref(), {:ok, "done"}})
-      Process.sleep(50)
+      log =
+        capture_log(fn ->
+          send(pid, {make_ref(), {:ok, "done"}})
+          Process.sleep(50)
+        end)
 
       state = :sys.get_state(pid)
+      assert log =~ "received task completion for unknown ref"
       assert state.in_flight == initial_state.in_flight
       assert state.ref_to_sprite == initial_state.ref_to_sprite
       assert state.failure_count == initial_state.failure_count

@@ -293,6 +293,7 @@ defmodule Conductor.PhaseWorker do
           apply_backoff(state)
       end
     else
+      Logger.warning("[#{log_prefix(state)}] received task completion for unknown ref")
       state
     end
   end
