@@ -35,8 +35,7 @@ defmodule Conductor.Workspace do
   end
 
   defp do_prepare(sprite, repo, run_id, branch, opts) do
-    repo_name = repo |> String.split("/") |> List.last()
-    mirror = Path.join(@mirror_base, repo_name)
+    mirror = repo_root(repo)
     worktree = Path.join([mirror, ".bb", "conductor", run_id, "builder-worktree"])
     exec_fn = Keyword.get(opts, :exec_fn, &Sprite.exec/3)
 
@@ -45,6 +44,7 @@ defmodule Conductor.Workspace do
     cd #{mirror}
     flock .git/bb-worktree.lock bash -c '
       git fetch --all --prune --quiet 2>/dev/null || true
+      #{default_branch_command()}
       #{cleanup_branch_commands(run_id, branch)}
       git worktree add -b #{branch} #{worktree} origin/$default_branch --quiet
     '
@@ -120,8 +120,7 @@ defmodule Conductor.Workspace do
   end
 
   defp do_adopt_branch(sprite, repo, run_id, branch, opts) do
-    repo_name = repo |> String.split("/") |> List.last()
-    mirror = Path.join(@mirror_base, repo_name)
+    mirror = repo_root(repo)
     worktree = Path.join([mirror, ".bb", "conductor", run_id, "builder-worktree"])
     exec_fn = Keyword.get(opts, :exec_fn, &Sprite.exec/3)
 
@@ -130,7 +129,8 @@ defmodule Conductor.Workspace do
     cd #{mirror}
     flock .git/bb-worktree.lock bash -c '
       git fetch origin --quiet
-      #{cleanup_branch_commands(run_id, branch)}
+      #{default_branch_command()}
+      #{detach_stale_worktrees_commands(run_id, branch)}
       git worktree add #{worktree} #{branch} --quiet
     '
     #{install_branch_guard_commands(worktree, branch)}
@@ -155,8 +155,7 @@ defmodule Conductor.Workspace do
   end
 
   defp do_cleanup(sprite, repo, run_id, opts) do
-    repo_name = repo |> String.split("/") |> List.last()
-    mirror = Path.join(@mirror_base, repo_name)
+    mirror = repo_root(repo)
     branch = run_id_to_branch(run_id)
     exec_fn = Keyword.get(opts, :exec_fn, &Sprite.exec/3)
 
@@ -240,20 +239,25 @@ defmodule Conductor.Workspace do
   end
 
   defp cleanup_branch_commands(run_id, nil) do
-    """
-    worktree_dir=".bb/conductor/#{run_id}/builder-worktree"
-    if [ -d "$worktree_dir" ]; then
-      git worktree remove --force "$worktree_dir" 2>/dev/null || true
-    fi
-    rm -rf "$worktree_dir" 2>/dev/null || true
-    git worktree prune 2>/dev/null || true
-    """
+    cleanup_worktree_dir_commands(run_id)
   end
 
   defp cleanup_branch_commands(run_id, branch) do
     """
-    worktree_dir=".bb/conductor/#{run_id}/builder-worktree"
-    default_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed "s|refs/remotes/origin/||" || echo master)
+    #{detach_stale_worktrees_commands(run_id, branch)}
+    git branch -D "#{branch}" 2>/dev/null || true
+    """
+  end
+
+  defp detach_stale_worktrees_commands(run_id, branch) do
+    """
+    #{stale_worktree_cleanup_commands(branch)}
+    #{cleanup_worktree_dir_commands(run_id)}
+    """
+  end
+
+  defp stale_worktree_cleanup_commands(branch) do
+    """
     #{stale_worktree_list_command(branch)} | while IFS= read -r path; do
       [ -n "$path" ] || continue
       if [ "$path" = "$(pwd)" ]; then
@@ -263,25 +267,39 @@ defmodule Conductor.Workspace do
         rm -rf "$path" 2>/dev/null || true
       fi
     done
+    """
+  end
+
+  defp cleanup_worktree_dir_commands(run_id) do
+    """
+    worktree_dir=".bb/conductor/#{run_id}/builder-worktree"
     if [ -d "$worktree_dir" ]; then
       git worktree remove --force "$worktree_dir" 2>/dev/null || true
     fi
     rm -rf "$worktree_dir" 2>/dev/null || true
     git worktree prune 2>/dev/null || true
-    git branch -D #{branch} 2>/dev/null || true
+    """
+  end
+
+  defp default_branch_command do
+    """
+    default_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed "s|refs/remotes/origin/||" || echo master)
     """
   end
 
   defp stale_worktree_list_command(branch) do
     """
+    branch_ref="refs/heads/#{branch}"
     worktree_path=""
     git worktree list --porcelain | while IFS= read -r line; do
       case "$line" in
         worktree\\ *)
           worktree_path=${line#worktree }
           ;;
-        branch\\ refs/heads/#{branch})
-          printf '%s\\n' "$worktree_path"
+        branch\\ *)
+          if [ "$line" = "branch $branch_ref" ]; then
+            printf '%s\\n' "$worktree_path"
+          fi
           ;;
       esac
     done

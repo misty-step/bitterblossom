@@ -56,6 +56,7 @@ defmodule Conductor.WorkspaceTest do
       assert command =~ "git worktree list --porcelain"
       assert command =~ "config --worktree core.hooksPath .bb-hooks"
       assert command =~ "expected_branch=\"factory/42-1773867376\""
+      refute command =~ "git branch -D"
     end
   end
 
@@ -273,7 +274,7 @@ defmodule Conductor.WorkspaceTest do
       assert command =~ "git worktree list --porcelain"
       assert command =~ "git checkout \"$default_branch\" --quiet"
       assert command =~ "git worktree remove --force \"$path\""
-      assert command =~ "git branch -D factory/42-1773867376"
+      assert command =~ "git branch -D \"factory/42-1773867376\""
     end
   end
 
@@ -300,6 +301,16 @@ defmodule Conductor.WorkspaceTest do
                )
 
       assert paths == ["/home/sprite/workspace/bitterblossom", "/tmp/run-42"]
+    end
+
+    test "propagates health check command failures" do
+      assert {:error, "workspace health check failed (73): permission denied"} =
+               Workspace.health_check(
+                 "bb-weaver",
+                 "misty-step/bitterblossom",
+                 "factory/42-1773867376",
+                 exec_fn: fn _sprite, _command, _opts -> {:error, "permission denied", 73} end
+               )
     end
   end
 
