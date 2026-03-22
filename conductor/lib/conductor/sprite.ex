@@ -18,6 +18,7 @@ defmodule Conductor.Sprite do
   """
 
   @behaviour Conductor.Worker
+  require Logger
 
   alias Conductor.{Shell, Config, Workspace}
   @runtime_env_file ".bb-runtime-env"
@@ -184,7 +185,7 @@ defmodule Conductor.Sprite do
     exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
     harness = Keyword.get(opts, :harness)
 
-    case probe(sprite, exec_fn: exec_fn) do
+    case probe(sprite, Keyword.put(opts, :exec_fn, exec_fn)) do
       {:ok, %{reachable: true}} ->
         harness_ready = harness_ready?(sprite, harness, exec_fn)
         gh_authenticated = gh_authenticated?(sprite, exec_fn)
@@ -205,11 +206,43 @@ defmodule Conductor.Sprite do
     end
   end
 
+  @spec gc_checkpoints(binary(), keyword()) :: :ok | {:error, term()}
+  def gc_checkpoints(sprite, opts \\ []) do
+    org = Keyword.get(opts, :org, Config.sprites_org!())
+    shell_fn = Keyword.get(opts, :shell_fn, &Shell.cmd/3)
+    max_keep = Keyword.get(opts, :max_keep, Config.max_checkpoints_per_sprite())
+
+    with {:ok, checkpoints} <- list_checkpoints(shell_fn, org, sprite),
+         {:ok, stale_checkpoints} <- stale_checkpoints(checkpoints, max_keep) do
+      stale_checkpoints
+      |> Enum.reduce([], fn checkpoint, errors ->
+        case delete_checkpoint(shell_fn, org, sprite, checkpoint) do
+          :ok ->
+            errors
+
+          {:error, reason} ->
+            log_checkpoint_gc_failure(sprite, reason)
+            [reason | errors]
+        end
+      end)
+      |> case do
+        [] -> :ok
+        [reason | _] -> {:error, reason}
+      end
+    else
+      {:error, reason} = error ->
+        log_checkpoint_gc_failure(sprite, reason)
+        error
+    end
+  end
+
   @spec probe(binary(), keyword()) :: {:ok, map()} | {:error, term()}
   def probe(sprite, opts \\ []) do
     exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
+    state_fn = Keyword.get(opts, :state_fn, &sprite_state/2)
+    timeout = if(state_fn.(sprite, opts) == :cold, do: 60_000, else: 15_000)
 
-    case exec_fn.(sprite, "echo ok", timeout: 15_000) do
+    case exec_fn.(sprite, "echo ok", timeout: timeout) do
       {:ok, _} -> {:ok, %{sprite: sprite, reachable: true}}
       {:error, msg, _} -> {:error, msg}
     end
@@ -247,6 +280,168 @@ defmodule Conductor.Sprite do
     @agent_process_names
     |> Enum.map_join(" || ", &"pgrep -x #{&1} 2>/dev/null")
     |> Kernel.<>(" || pgrep -f 'ralph\\.sh' 2>/dev/null")
+  end
+
+  defp sprite_state(sprite, opts) do
+    org = Keyword.get(opts, :org, Config.sprites_org!())
+    shell_fn = Keyword.get(opts, :shell_fn, &Shell.cmd/3)
+
+    case shell_fn.("sprite", ["api", "-o", org, "-s", sprite, "/sprites"], timeout: 15_000) do
+      {:ok, json} ->
+        with {:ok, payload} <- Jason.decode(json) do
+          extract_sprite_state(payload, sprite)
+        else
+          _ -> :unknown
+        end
+
+      _ ->
+        :unknown
+    end
+  end
+
+  defp extract_sprite_state(%{"status" => status}, _sprite), do: normalize_sprite_state(status)
+
+  defp extract_sprite_state(%{"sprite" => sprite_payload}, sprite),
+    do: extract_sprite_state(sprite_payload, sprite)
+
+  defp extract_sprite_state(%{"sprites" => sprites}, sprite) when is_list(sprites),
+    do: extract_sprite_state(sprites, sprite)
+
+  defp extract_sprite_state(sprites, sprite) when is_list(sprites) do
+    sprites
+    |> Enum.find(&(sprite_name(&1) == sprite))
+    |> case do
+      nil -> :unknown
+      payload -> extract_sprite_state(payload, sprite)
+    end
+  end
+
+  defp extract_sprite_state(_, _sprite), do: :unknown
+
+  defp normalize_sprite_state("cold"), do: :cold
+  defp normalize_sprite_state("warm"), do: :warm
+  defp normalize_sprite_state("running"), do: :running
+  defp normalize_sprite_state(_), do: :unknown
+
+  defp sprite_name(%{"name" => name}) when is_binary(name), do: name
+  defp sprite_name(%{name: name}) when is_binary(name), do: name
+  defp sprite_name(_), do: nil
+
+  defp list_checkpoints(shell_fn, org, sprite) do
+    case shell_fn.("sprite", ["api", "-o", org, "-s", sprite, "/checkpoints"], timeout: 30_000) do
+      {:ok, json} ->
+        with {:ok, payload} <- Jason.decode(json),
+             {:ok, checkpoints} <- normalize_checkpoints(payload) do
+          {:ok, checkpoints}
+        else
+          {:error, %Jason.DecodeError{} = error} -> {:error, Exception.message(error)}
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:error, msg, _code} ->
+        {:error, msg}
+    end
+  end
+
+  defp normalize_checkpoints(checkpoints) when is_list(checkpoints), do: {:ok, checkpoints}
+
+  defp normalize_checkpoints(%{"checkpoints" => checkpoints}) when is_list(checkpoints),
+    do: {:ok, checkpoints}
+
+  defp normalize_checkpoints(%{"data" => checkpoints}) when is_list(checkpoints),
+    do: {:ok, checkpoints}
+
+  defp normalize_checkpoints(_), do: {:error, "unexpected checkpoint payload"}
+
+  defp stale_checkpoints(checkpoints, max_keep) when is_integer(max_keep) and max_keep >= 0 do
+    delete_count = max(length(checkpoints) - max_keep, 0)
+
+    checkpoints
+    |> Enum.sort_by(&checkpoint_sort_key/1, :asc)
+    |> Enum.take(delete_count)
+    |> then(&{:ok, &1})
+  end
+
+  defp stale_checkpoints(_checkpoints, _max_keep),
+    do: {:error, "invalid checkpoint retention count"}
+
+  defp checkpoint_sort_key(checkpoint) do
+    {checkpoint_created_at(checkpoint), checkpoint_sequence(checkpoint),
+     checkpoint_id(checkpoint) || ""}
+  end
+
+  defp checkpoint_created_at(checkpoint) do
+    checkpoint
+    |> checkpoint_field(["created_at", "createdAt", "created"])
+    |> case do
+      value when is_binary(value) ->
+        case DateTime.from_iso8601(value) do
+          {:ok, datetime, _offset} -> DateTime.to_unix(datetime)
+          _ -> -1
+        end
+
+      _ ->
+        -1
+    end
+  end
+
+  defp checkpoint_sequence(checkpoint) do
+    checkpoint
+    |> checkpoint_id()
+    |> case do
+      <<"v", rest::binary>> ->
+        case Integer.parse(rest) do
+          {number, ""} -> number
+          _ -> -1
+        end
+
+      _ ->
+        -1
+    end
+  end
+
+  defp checkpoint_id(checkpoint) do
+    checkpoint_field(checkpoint, ["id", "checkpoint_id", "version"])
+    |> case do
+      value when is_binary(value) -> value
+      value when is_integer(value) -> Integer.to_string(value)
+      _ -> nil
+    end
+  end
+
+  defp checkpoint_field(checkpoint, keys) when is_map(checkpoint) do
+    Enum.find_value(keys, fn key ->
+      Map.get(checkpoint, key) || Map.get(checkpoint, checkpoint_atom_key(key))
+    end)
+  end
+
+  defp checkpoint_atom_key("created_at"), do: :created_at
+  defp checkpoint_atom_key("createdAt"), do: :createdAt
+  defp checkpoint_atom_key("created"), do: :created
+  defp checkpoint_atom_key("id"), do: :id
+  defp checkpoint_atom_key("checkpoint_id"), do: :checkpoint_id
+  defp checkpoint_atom_key("version"), do: :version
+  defp checkpoint_atom_key(_), do: nil
+
+  defp delete_checkpoint(shell_fn, org, sprite, checkpoint) do
+    case checkpoint_id(checkpoint) do
+      nil ->
+        {:error, "checkpoint missing id"}
+
+      checkpoint_id ->
+        case shell_fn.(
+               "sprite",
+               ["-o", org, "-s", sprite, "checkpoint", "delete", checkpoint_id],
+               timeout: 30_000
+             ) do
+          {:ok, _} -> :ok
+          {:error, msg, _code} -> {:error, msg}
+        end
+    end
+  end
+
+  defp log_checkpoint_gc_failure(sprite, reason) do
+    Logger.warning("[sprite] checkpoint gc failed for #{sprite}: #{inspect(reason)}")
   end
 
   defp harness_ready?(_sprite, nil, _exec_fn), do: true

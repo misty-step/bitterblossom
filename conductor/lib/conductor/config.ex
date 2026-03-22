@@ -102,6 +102,11 @@ defmodule Conductor.Config do
     Application.get_env(:conductor, :fleet_probe_failure_threshold, 3)
   end
 
+  @spec max_checkpoints_per_sprite() :: non_neg_integer()
+  def max_checkpoints_per_sprite do
+    Application.get_env(:conductor, :max_checkpoints_per_sprite, 5)
+  end
+
   @doc """
   Minutes of heartbeat silence before a run is considered stale and its lease expired.
   Defaults to builder_timeout + ci_timeout + 10 minutes of buffer.

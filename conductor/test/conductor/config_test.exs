@@ -75,6 +75,19 @@ defmodule Conductor.ConfigTest do
     end
   end
 
+  describe "max_checkpoints_per_sprite/0" do
+    test "returns default of 5" do
+      assert Config.max_checkpoints_per_sprite() == 5
+    end
+
+    test "returns configured value" do
+      Application.put_env(:conductor, :max_checkpoints_per_sprite, 2)
+      assert Config.max_checkpoints_per_sprite() == 2
+    after
+      Application.delete_env(:conductor, :max_checkpoints_per_sprite)
+    end
+  end
+
   describe "repo_root/0" do
     test "returns a normalized configured value" do
       Application.put_env(:conductor, :repo_root, "./tmp/repo-root")

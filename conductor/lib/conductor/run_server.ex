@@ -637,6 +637,14 @@ defmodule Conductor.RunServer do
         {:error, reason} ->
           Store.record_event(state.run_id, "workspace_cleanup_failed", %{reason: reason})
       end
+
+      case sprite_mod().gc_checkpoints(state.worker) do
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          Store.record_event(state.run_id, "checkpoint_gc_failed", %{reason: inspect(reason)})
+      end
     end
   end
 
@@ -731,6 +739,7 @@ defmodule Conductor.RunServer do
   end
 
   defp worker_mod, do: Application.get_env(:conductor, :worker_module, Conductor.Sprite)
+  defp sprite_mod, do: Application.get_env(:conductor, :sprite_module, Conductor.Sprite)
 
   defp task_supervisor,
     do: Application.get_env(:conductor, :task_supervisor, Conductor.TaskSupervisor)

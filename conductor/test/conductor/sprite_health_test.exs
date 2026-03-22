@@ -9,6 +9,7 @@ defmodule Conductor.SpriteHealthTest do
 
       assert {:ok, %{sprite: "test-sprite", reachable: true}} =
                Sprite.probe("test-sprite",
+                 state_fn: fn _, _ -> :warm end,
                  exec_fn: fn sprite, cmd, _opts ->
                    send(test_pid, {:probe_called, sprite, cmd})
                    {:ok, "ok\n"}
@@ -21,10 +22,41 @@ defmodule Conductor.SpriteHealthTest do
     test "returns an error when the sprite cannot be reached" do
       assert {:error, "connection refused"} =
                Sprite.probe("test-sprite",
+                 state_fn: fn _, _ -> :warm end,
                  exec_fn: fn _sprite, _cmd, _opts ->
                    {:error, "connection refused", 255}
                  end
                )
+    end
+
+    test "uses a longer timeout for cold sprites" do
+      test_pid = self()
+
+      assert {:ok, %{sprite: "test-sprite", reachable: true}} =
+               Sprite.probe("test-sprite",
+                 state_fn: fn _, _ -> :cold end,
+                 exec_fn: fn _sprite, _cmd, opts ->
+                   send(test_pid, {:probe_timeout, Keyword.fetch!(opts, :timeout)})
+                   {:ok, "ok\n"}
+                 end
+               )
+
+      assert_received {:probe_timeout, 60_000}
+    end
+
+    test "keeps the fast timeout for warm sprites" do
+      test_pid = self()
+
+      assert {:ok, %{sprite: "test-sprite", reachable: true}} =
+               Sprite.probe("test-sprite",
+                 state_fn: fn _, _ -> :warm end,
+                 exec_fn: fn _sprite, _cmd, opts ->
+                   send(test_pid, {:probe_timeout, Keyword.fetch!(opts, :timeout)})
+                   {:ok, "ok\n"}
+                 end
+               )
+
+      assert_received {:probe_timeout, 15_000}
     end
   end
 

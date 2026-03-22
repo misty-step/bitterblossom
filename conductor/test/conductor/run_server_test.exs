@@ -61,6 +61,16 @@ defmodule Conductor.RunServerTest do
     end
   end
 
+  defmodule MockSprite do
+    alias Conductor.RunServerTest.MockState
+
+    def gc_checkpoints(sprite, _opts \\ []) do
+      calls = MockState.get(:gc_calls, [])
+      MockState.put(:gc_calls, calls ++ [sprite])
+      MockState.get({:gc_result, sprite}, :ok)
+    end
+  end
+
   defmodule MockCodeHost do
     @behaviour Conductor.CodeHost
     alias Conductor.RunServerTest.MockState
@@ -302,6 +312,7 @@ defmodule Conductor.RunServerTest do
       workspace: Application.get_env(:conductor, :workspace_module),
       tracker: Application.get_env(:conductor, :tracker_module),
       code_host: Application.get_env(:conductor, :code_host_module),
+      sprite: Application.get_env(:conductor, :sprite_module),
       task_supervisor: Application.get_env(:conductor, :task_supervisor),
       retry_max: Application.get_env(:conductor, :builder_retry_max_attempts),
       retry_backoff_base_ms: Application.get_env(:conductor, :builder_retry_backoff_base_ms)
@@ -311,6 +322,7 @@ defmodule Conductor.RunServerTest do
     Application.put_env(:conductor, :workspace_module, MockWorkspace)
     Application.put_env(:conductor, :tracker_module, MockTracker)
     Application.put_env(:conductor, :code_host_module, MockCodeHost)
+    Application.put_env(:conductor, :sprite_module, MockSprite)
     Application.put_env(:conductor, :task_supervisor, Conductor.TaskSupervisor)
     Application.put_env(:conductor, :builder_retry_max_attempts, 3)
     Application.put_env(:conductor, :builder_retry_backoff_base_ms, 0)
@@ -327,6 +339,7 @@ defmodule Conductor.RunServerTest do
             :retry_max -> :builder_retry_max_attempts
             :retry_backoff_base_ms -> :builder_retry_backoff_base_ms
             :task_supervisor -> :task_supervisor
+            :sprite -> :sprite_module
             _ -> :"#{key}_module"
           end
 
@@ -1229,5 +1242,19 @@ defmodule Conductor.RunServerTest do
       assert "run_blocked" in event_types(run["run_id"])
       refute Store.leased?("test/repo", 42)
     end
+  end
+
+  test "successful runs trigger checkpoint gc for the worker sprite" do
+    MockState.put({:dispatch_result, "test-sprite"}, {:ok, "build complete"})
+
+    MockState.put(
+      {:open_pr, "test/repo", 42},
+      {:ok, %{"number" => 123, "url" => "https://github.com/test/repo/pull/123"}}
+    )
+
+    {:ok, pid} = start_run_server()
+    wait_for_exit(pid)
+
+    assert MockState.get(:gc_calls, []) == ["test-sprite"]
   end
 end

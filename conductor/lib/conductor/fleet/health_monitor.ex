@@ -17,7 +17,8 @@ defmodule Conductor.Fleet.HealthMonitor do
     :interval_ms,
     :timer_ref,
     sprites: [],
-    known_health: %{}
+    known_health: %{},
+    gc_counter: 0
   ]
 
   @role_to_module %{
@@ -75,7 +76,16 @@ defmodule Conductor.Fleet.HealthMonitor do
 
     if state.timer_ref, do: Process.cancel_timer(state.timer_ref)
     ref = schedule_check(state.interval_ms)
-    state = %{state | sprites: sprites, repo: repo, known_health: known_health, timer_ref: ref}
+
+    state = %{
+      state
+      | sprites: sprites,
+        repo: repo,
+        known_health: known_health,
+        timer_ref: ref,
+        gc_counter: 0
+    }
+
     {:reply, :ok, state}
   end
 
@@ -105,7 +115,8 @@ defmodule Conductor.Fleet.HealthMonitor do
     # Only re-probe non-builder sprites (builders are probed by the Orchestrator)
     phase_sprites = Enum.filter(state.sprites, &(&1.role in [:fixer, :polisher]))
 
-    Enum.reduce(phase_sprites, state, fn sprite, acc ->
+    phase_sprites
+    |> Enum.reduce(state, fn sprite, acc ->
       new_health = probe_sprite(sprite)
       old_health = Map.get(acc.known_health, sprite.name, :unhealthy)
 
@@ -140,6 +151,7 @@ defmodule Conductor.Fleet.HealthMonitor do
           acc
       end
     end)
+    |> maybe_gc_checkpoints()
   end
 
   defp probe_sprite(sprite) do
@@ -192,11 +204,48 @@ defmodule Conductor.Fleet.HealthMonitor do
     %{state | known_health: Map.put(state.known_health, name, health)}
   end
 
+  defp maybe_gc_checkpoints(state) do
+    gc_counter = state.gc_counter + 1
+    state = %{state | gc_counter: gc_counter}
+
+    if rem(gc_counter, gc_cycle_interval(state.interval_ms)) == 0 do
+      Enum.each(healthy_sprites(state), fn sprite ->
+        case sprite_mod().gc_checkpoints(sprite.name) do
+          :ok ->
+            :ok
+
+          {:error, reason} ->
+            Logger.warning("[health] checkpoint gc failed for #{sprite.name}: #{inspect(reason)}")
+        end
+      end)
+    end
+
+    state
+  end
+
+  defp healthy_sprites(state) do
+    Enum.filter(state.sprites, fn sprite ->
+      Map.get(state.known_health, sprite.name) == :healthy
+    end)
+  end
+
+  defp gc_cycle_interval(interval_ms) when is_integer(interval_ms) and interval_ms > 0 do
+    ceil_div(30 * 60_000, interval_ms)
+  end
+
+  defp gc_cycle_interval(_interval_ms), do: 1
+
+  defp ceil_div(dividend, divisor), do: div(dividend + divisor - 1, divisor)
+
   defp schedule_check(interval_ms) when is_integer(interval_ms) do
     Process.send_after(self(), :check, interval_ms)
   end
 
   defp reconciler_mod do
     Application.get_env(:conductor, :reconciler_module, Reconciler)
+  end
+
+  defp sprite_mod do
+    Application.get_env(:conductor, :sprite_module, Conductor.Sprite)
   end
 end

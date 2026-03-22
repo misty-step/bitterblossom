@@ -20,6 +20,15 @@ defmodule Conductor.SpriteTest do
     end
   end
 
+  defp drain_shell_calls(acc \\ []) do
+    receive do
+      {:shell_called, args, opts} ->
+        drain_shell_calls([{args, opts} | acc])
+    after
+      0 -> Enum.reverse(acc)
+    end
+  end
+
   defp uploads_to?(opts, dest) do
     opts
     |> Keyword.get(:files, [])
@@ -30,6 +39,7 @@ defmodule Conductor.SpriteTest do
     status =
       Sprite.status("bb-weaver",
         harness: "codex",
+        state_fn: fn _, _ -> :warm end,
         exec_fn:
           exec_fn([
             {"echo ok", {:ok, "ok\n"}},
@@ -53,6 +63,7 @@ defmodule Conductor.SpriteTest do
     status =
       Sprite.status("bb-weaver",
         harness: "codex",
+        state_fn: fn _, _ -> :warm end,
         exec_fn:
           exec_fn([
             {"echo ok", {:ok, "ok\n"}},
@@ -76,6 +87,7 @@ defmodule Conductor.SpriteTest do
     status =
       Sprite.status("bb-weaver",
         harness: "codex",
+        state_fn: fn _, _ -> :warm end,
         exec_fn:
           exec_fn([
             {"echo ok", {:ok, "ok\n"}},
@@ -122,8 +134,52 @@ defmodule Conductor.SpriteTest do
     assert {:error, "timeout"} =
              Sprite.status("bb-weaver",
                harness: "codex",
+               state_fn: fn _, _ -> :warm end,
                exec_fn: fn _sprite, _command, _opts -> {:error, "timeout", 255} end
              )
+  end
+
+  describe "gc_checkpoints/2" do
+    test "prunes oldest checkpoints and keeps the newest configured count" do
+      test_pid = self()
+      original = Application.get_env(:conductor, :max_checkpoints_per_sprite)
+      Application.put_env(:conductor, :max_checkpoints_per_sprite, 2)
+
+      checkpoints_json =
+        Jason.encode!([
+          %{"id" => "v1", "created_at" => "2026-03-15T01:56:00Z"},
+          %{"id" => "v2", "created_at" => "2026-03-16T01:56:00Z"},
+          %{"id" => "v3", "created_at" => "2026-03-17T01:56:00Z"},
+          %{"id" => "v4", "created_at" => "2026-03-18T01:56:00Z"}
+        ])
+
+      shell_fn = fn "sprite", args, opts ->
+        send(test_pid, {:shell_called, args, opts})
+
+        case args do
+          ["api", "-o", "misty-step", "-s", "bb-builder", "/checkpoints"] ->
+            {:ok, checkpoints_json}
+
+          ["-o", "misty-step", "-s", "bb-builder", "checkpoint", "delete", checkpoint_id] ->
+            {:ok, checkpoint_id}
+        end
+      end
+
+      try do
+        assert :ok =
+                 Sprite.gc_checkpoints("bb-builder", org: "misty-step", shell_fn: shell_fn)
+
+        assert [
+                 {["api", "-o", "misty-step", "-s", "bb-builder", "/checkpoints"], _},
+                 {["-o", "misty-step", "-s", "bb-builder", "checkpoint", "delete", "v1"], _},
+                 {["-o", "misty-step", "-s", "bb-builder", "checkpoint", "delete", "v2"], _}
+               ] = drain_shell_calls()
+      after
+        if is_nil(original),
+          do: Application.delete_env(:conductor, :max_checkpoints_per_sprite),
+          else: Application.put_env(:conductor, :max_checkpoints_per_sprite, original)
+      end
+    end
   end
 
   test "provision uploads persona, settings, and metadata through sprite exec files" do
