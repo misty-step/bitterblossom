@@ -40,16 +40,60 @@ defmodule Conductor.Sprite do
     timeout = Keyword.get(opts, :timeout, 60_000)
     org = sprite_org(opts)
     files = Keyword.get(opts, :files, [])
+    transport = Keyword.get(opts, :transport, :websocket)
+    shell_cmd_fn = Keyword.get(opts, :shell_cmd_fn, &Shell.cmd/3)
 
-    Shell.cmd("sprite", exec_args(org, sprite, files, command), timeout: timeout)
+    case shell_cmd_fn.(
+           "sprite",
+           exec_args(org, sprite, files, command, transport: transport),
+           timeout: timeout
+         ) do
+      {:ok, _} = ok ->
+        ok
+
+      {:error, msg, _code} = error ->
+        if wake_recoverable?(msg) and transport == :websocket do
+          with :ok <-
+                 wake(sprite,
+                   org: org,
+                   timeout: 15_000,
+                   shell_cmd_fn: shell_cmd_fn
+                 ) do
+            shell_cmd_fn.(
+              "sprite",
+              exec_args(org, sprite, files, command, transport: :http_post),
+              timeout: timeout
+            )
+          else
+            {:error, _reason} -> error
+          end
+        else
+          error
+        end
+    end
   end
 
   @doc false
+  @spec exec_args(binary(), binary(), binary()) :: [binary()]
+  def exec_args(org, sprite, command), do: exec_args(org, sprite, [], command, [])
+
+  @doc false
   @spec exec_args(binary(), binary(), list(), binary()) :: [binary()]
-  def exec_args(org, sprite, files \\ [], command) do
+  def exec_args(org, sprite, files, command), do: exec_args(org, sprite, files, command, [])
+
+  @doc false
+  @spec exec_args(binary(), binary(), list(), binary(), keyword()) :: [binary()]
+  def exec_args(org, sprite, files, command, opts) do
+    transport_args =
+      case Keyword.get(opts, :transport, :websocket) do
+        :http_post -> ["--http-post"]
+        _ -> []
+      end
+
     # "--" separates sprite CLI flags from the bash command.
     # Without it, bash's "-lc" is parsed as a sprite CLI flag.
-    ["-o", org, "-s", sprite, "exec"] ++ file_args(files) ++ ["--", "bash", "-lc", command]
+    ["-o", org, "-s", sprite, "exec"] ++
+      transport_args ++ file_args(files) ++ ["--", "bash", "-lc", command]
   end
 
   @spec exec!(binary(), binary(), keyword()) :: binary()
@@ -113,6 +157,14 @@ defmodule Conductor.Sprite do
   @spec kill(binary()) :: :ok | {:error, term()}
   def kill(sprite) do
     case exec(sprite, kill_agents_cmd(), timeout: 15_000) do
+      {:ok, _} -> :ok
+      {:error, msg, _} -> {:error, msg}
+    end
+  end
+
+  @spec wake(binary(), keyword()) :: :ok | {:error, term()}
+  def wake(sprite, opts \\ []) do
+    case exec(sprite, "true", Keyword.merge([timeout: 15_000, transport: :http_post], opts)) do
       {:ok, _} -> :ok
       {:error, msg, _} -> {:error, msg}
     end
@@ -277,7 +329,7 @@ defmodule Conductor.Sprite do
     state = state_fn.(sprite, opts)
     timeout = if(state in [:cold, :unknown], do: 60_000, else: 15_000)
 
-    case exec_fn.(sprite, "echo ok", timeout: timeout) do
+    case exec_fn.(sprite, "echo ok", timeout: timeout, transport: :http_post) do
       {:ok, _} -> {:ok, %{sprite: sprite, reachable: true}}
       {:error, msg, _} -> {:error, msg}
     end
@@ -1135,5 +1187,12 @@ defmodule Conductor.Sprite do
     Enum.flat_map(files, fn {source, dest} ->
       ["--file", "#{source}:#{dest}"]
     end)
+  end
+
+  # The sprite CLI currently exposes these transport failures as stderr text, not
+  # typed exit codes. Keep the accepted phrases narrow and covered by tests so the
+  # wake fallback does not silently drift if the CLI wording changes.
+  defp wake_recoverable?(message) when is_binary(message) do
+    String.contains?(message, ["bad handshake", "HTTP 502", "failed to connect"])
   end
 end
