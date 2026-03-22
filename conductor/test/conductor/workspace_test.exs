@@ -75,14 +75,18 @@ defmodule Conductor.WorkspaceTest do
 
     test "removes managed stale worktrees before creating the replacement worktree" do
       repo = "test/workspace-managed-#{System.unique_integer([:positive])}"
-      repo_dir = prepare_mirror_repo(repo)
+
+      mirror_base =
+        Path.join(System.tmp_dir!(), "workspace-mirror-#{System.unique_integer([:positive])}")
+
+      repo_dir = prepare_mirror_repo(repo, mirror_base)
       branch = "factory/42-1773867376"
       stale_run_id = "run-42-stale-1773867376"
       stale_path = Path.join([repo_dir, ".bb", "conductor", stale_run_id, "builder-worktree"])
       run_id = "run-42-1773867376"
       new_path = Path.join([repo_dir, ".bb", "conductor", run_id, "builder-worktree"])
 
-      on_exit(fn -> File.rm_rf(repo_dir) end)
+      on_exit(fn -> File.rm_rf(mirror_base) end)
 
       {_, 0} =
         System.cmd("git", [
@@ -100,7 +104,10 @@ defmodule Conductor.WorkspaceTest do
       assert worktree_registered?(repo_dir, stale_path)
 
       assert {:ok, ^new_path} =
-               Workspace.prepare("local", repo, run_id, branch, exec_fn: &local_exec/3)
+               Workspace.prepare("local", repo, run_id, branch,
+                 exec_fn: &local_exec/3,
+                 mirror_base: mirror_base
+               )
 
       assert File.dir?(new_path)
       refute File.exists?(stale_path)
@@ -420,9 +427,9 @@ defmodule Conductor.WorkspaceTest do
     source_root
   end
 
-  defp prepare_mirror_repo(repo) do
+  defp prepare_mirror_repo(repo, mirror_base) do
     repo_name = repo |> String.split("/") |> List.last()
-    repo_dir = Path.join("/home/sprite/workspace", repo_name)
+    repo_dir = Path.join(mirror_base, repo_name)
 
     remote_dir =
       Path.join(System.tmp_dir!(), "#{repo_name}-remote-#{System.unique_integer([:positive])}")

@@ -34,8 +34,8 @@ defmodule Conductor.Workspace do
   end
 
   defp do_prepare(sprite, repo, run_id, branch, opts) do
-    mirror = repo_mirror(repo)
-    worktree = worktree_path(repo, run_id)
+    mirror = repo_mirror(repo, opts)
+    worktree = worktree_path(repo, run_id, opts)
     exec_fn = Keyword.get(opts, :exec_fn, &Sprite.exec/3)
     managed_prefix = "#{mirror}/.bb/conductor/"
 
@@ -128,8 +128,8 @@ defmodule Conductor.Workspace do
   end
 
   defp do_adopt_branch(sprite, repo, run_id, branch, opts) do
-    mirror = repo_mirror(repo)
-    worktree = worktree_path(repo, run_id)
+    mirror = repo_mirror(repo, opts)
+    worktree = worktree_path(repo, run_id, opts)
     exec_fn = Keyword.get(opts, :exec_fn, &Sprite.exec/3)
     managed_prefix = "#{mirror}/.bb/conductor/"
 
@@ -176,8 +176,8 @@ defmodule Conductor.Workspace do
   end
 
   defp do_cleanup(sprite, repo, run_id, opts) do
-    mirror = repo_mirror(repo)
-    worktree = Keyword.get(opts, :path, worktree_path(repo, run_id))
+    mirror = repo_mirror(repo, opts)
+    worktree = Keyword.get(opts, :path, worktree_path(repo, run_id, opts))
     branch = branch_option(opts)
     exec_fn = Keyword.get(opts, :exec_fn, &Sprite.exec/3)
 
@@ -228,15 +228,19 @@ defmodule Conductor.Workspace do
     |> String.trim()
   end
 
-  defp repo_mirror(repo) do
+  defp repo_mirror(repo, opts) do
     repo
     |> String.split("/")
     |> List.last()
-    |> then(&Path.join(@mirror_base, &1))
+    |> then(&Path.join(mirror_base(opts), &1))
   end
 
-  defp worktree_path(repo, run_id) do
-    Path.join([repo_mirror(repo), ".bb", "conductor", run_id, "builder-worktree"])
+  defp worktree_path(repo, run_id, opts) do
+    Path.join([repo_mirror(repo, opts), ".bb", "conductor", run_id, "builder-worktree"])
+  end
+
+  defp mirror_base(opts) do
+    Keyword.get(opts, :mirror_base, @mirror_base)
   end
 
   defp clear_existing_branch_worktree_commands(opts \\ []) do
