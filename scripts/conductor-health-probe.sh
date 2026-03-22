@@ -1,6 +1,63 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+json_escape() {
+  local input="$1"
+  local output=""
+  local char=""
+  local code=0
+  local i=0
+  local original_lc_all="${LC_ALL-}"
+
+  LC_ALL=C
+
+  for ((i = 0; i < ${#input}; i++)); do
+    char="${input:i:1}"
+
+    case "${char}" in
+      '"')
+        output+='\"'
+        ;;
+      "\\")
+        output+='\\'
+        ;;
+      $'\b')
+        output+='\b'
+        ;;
+      $'\f')
+        output+='\f'
+        ;;
+      $'\n')
+        output+='\n'
+        ;;
+      $'\r')
+        output+='\r'
+        ;;
+      $'\t')
+        output+='\t'
+        ;;
+      *)
+        printf -v code '%d' "'${char}"
+
+        if ((code < 32)); then
+          printf -v char '\\u%04x' "${code}"
+          output+="${char}"
+        else
+          output+="${char}"
+        fi
+        ;;
+    esac
+  done
+
+  if [[ -n "${original_lc_all}" ]]; then
+    LC_ALL="${original_lc_all}"
+  else
+    unset LC_ALL
+  fi
+
+  printf '%s' "${output}"
+}
+
 health_url="${1:-${CONDUCTOR_HEALTHCHECK_URL:-}}"
 
 if [[ -z "${health_url}" ]]; then
@@ -19,9 +76,7 @@ fi
 message="bitterblossom conductor health check failed at ${timestamp}: ${health_url}"
 
 if [[ -n "${CONDUCTOR_ALERT_WEBHOOK:-}" ]]; then
-  payload="$(
-    ALERT_MESSAGE="${message}" python3 -c 'import json, os; print(json.dumps({"text": os.environ["ALERT_MESSAGE"]}))'
-  )"
+  payload="{\"text\":\"$(json_escape "${message}")\"}"
 
   curl \
     --fail --silent --show-error \
