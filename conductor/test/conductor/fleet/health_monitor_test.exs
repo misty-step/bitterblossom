@@ -41,9 +41,27 @@ defmodule Conductor.Fleet.HealthMonitorTest do
   defmodule MockSprite do
     alias Conductor.Fleet.HealthMonitorTest.MockState
 
-    def status(name, _opts) do
+    def status(name, opts) do
+      calls = [{name, opts} | MockState.get(:sprite_status_calls, [])]
+      MockState.put(:sprite_status_calls, calls)
       MockState.get({:sprite_status, name}, {:ok, %{healthy: true}})
     end
+  end
+
+  defmodule MockSpriteStatus1 do
+    alias Conductor.Fleet.HealthMonitorTest.MockState
+
+    def status(name) do
+      calls = [name | MockState.get(:sprite_status_1_calls, [])]
+      MockState.put(:sprite_status_1_calls, calls)
+      MockState.get({:sprite_status, name}, {:ok, %{healthy: true}})
+    end
+  end
+
+  defmodule UnsupportedSprite do
+  end
+
+  defmodule MissingSupervisor do
   end
 
   defmodule NoopWorker do
@@ -87,6 +105,7 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     orig_worker = Application.get_env(:conductor, :worker_module)
     orig_workspace = Application.get_env(:conductor, :workspace_module)
     orig_code_host = Application.get_env(:conductor, :code_host_module)
+    orig_supervisor_name = Application.get_env(:conductor, :supervisor_name)
 
     Application.put_env(:conductor, :worker_module, NoopWorker)
     Application.put_env(:conductor, :workspace_module, NoopWorkspace)
@@ -106,7 +125,8 @@ defmodule Conductor.Fleet.HealthMonitorTest do
             {:sprite_module, orig_sprite},
             {:worker_module, orig_worker},
             {:workspace_module, orig_workspace},
-            {:code_host_module, orig_code_host}
+            {:code_host_module, orig_code_host},
+            {:supervisor_name, orig_supervisor_name}
           ] do
         if orig,
           do: Application.put_env(:conductor, key, orig),
@@ -182,8 +202,8 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     # Trigger check — sprite is now healthy
     log =
       capture_log(fn ->
-        send(Process.whereis(HealthMonitor), :check)
-        Process.sleep(100)
+        HealthMonitor.check_now()
+        eventually(fn -> HealthMonitor.status().sprites["bb-polisher"].status == :healthy end)
       end)
 
     assert log =~ "bb-polisher recovered"
@@ -215,8 +235,8 @@ defmodule Conductor.Fleet.HealthMonitorTest do
 
     log =
       capture_log(fn ->
-        send(Process.whereis(HealthMonitor), :check)
-        Process.sleep(100)
+        HealthMonitor.check_now()
+        eventually(fn -> HealthMonitor.status().sprites["bb-fixer"].status == :degraded end)
       end)
 
     assert log =~ "bb-fixer degraded"
@@ -254,7 +274,7 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     assert HealthMonitor.status().sprites["bb-polisher"].status == :degraded
 
     HealthMonitor.check_now()
-    Process.sleep(100)
+    eventually(fn -> HealthMonitor.status().sprites["bb-polisher"].status == :healthy end)
 
     status = HealthMonitor.status()
     polisher = status.sprites["bb-polisher"]
@@ -278,10 +298,21 @@ defmodule Conductor.Fleet.HealthMonitorTest do
       healthy: MapSet.new(["bb-fixer"])
     )
 
-    for _ <- 1..threshold do
-      HealthMonitor.check_now()
-      Process.sleep(100)
+    if threshold > 1 do
+      for _ <- 1..(threshold - 1), do: HealthMonitor.check_now()
+
+      eventually(fn ->
+        sprite = HealthMonitor.status().sprites["bb-fixer"]
+        sprite.status == :degraded and sprite.consecutive_failures == threshold - 1
+      end)
     end
+
+    HealthMonitor.check_now()
+
+    eventually(fn ->
+      sprite = HealthMonitor.status().sprites["bb-fixer"]
+      sprite.status == :unavailable and sprite.consecutive_failures == threshold
+    end)
 
     status = HealthMonitor.status()
     fixer = status.sprites["bb-fixer"]
@@ -289,7 +320,7 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     assert fixer.consecutive_failures == threshold
   end
 
-  test "checks builders without running reconciler" do
+  test "checks builders via status/2 without running reconciler" do
     start_monitor(interval_ms: 60_000)
 
     sprites = [
@@ -305,14 +336,110 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     )
 
     HealthMonitor.check_now()
-    Process.sleep(100)
+
+    eventually(fn ->
+      sprite = HealthMonitor.status().sprites["bb-weaver"]
+      sprite.status == :degraded and sprite.consecutive_failures == 1
+    end)
 
     status = HealthMonitor.status()
     builder = status.sprites["bb-weaver"]
     assert builder.status == :degraded
     assert builder.last_probe_at
     assert builder.consecutive_failures == 1
+    assert MockState.get(:sprite_status_calls, []) == [{"bb-weaver", [harness: "codex"]}]
     assert MockState.get(:reconciled_sprites, []) == []
+  end
+
+  test "falls back to builder status/1 when status/2 is unavailable" do
+    Application.put_env(:conductor, :sprite_module, MockSpriteStatus1)
+    start_monitor(interval_ms: 60_000)
+
+    sprites = [
+      %{name: "bb-weaver", role: :builder, harness: "codex", repo: "test/repo"}
+    ]
+
+    MockState.put({:sprite_status, "bb-weaver"}, {:ok, %{healthy: false}})
+
+    HealthMonitor.configure(
+      sprites: sprites,
+      repo: "test/repo",
+      healthy: MapSet.new(["bb-weaver"])
+    )
+
+    HealthMonitor.check_now()
+
+    eventually(fn ->
+      sprite = HealthMonitor.status().sprites["bb-weaver"]
+      sprite.status == :degraded and sprite.consecutive_failures == 1
+    end)
+
+    assert MockState.get(:sprite_status_1_calls, []) == ["bb-weaver"]
+    assert MockState.get(:reconciled_sprites, []) == []
+  end
+
+  test "unsupported builder status probes degrade before the configured threshold" do
+    Application.put_env(:conductor, :sprite_module, UnsupportedSprite)
+    start_monitor(interval_ms: 60_000)
+
+    sprites = [
+      %{name: "bb-weaver", role: :builder, harness: "codex", repo: "test/repo"}
+    ]
+
+    threshold = Conductor.Config.fleet_probe_failure_threshold()
+
+    HealthMonitor.configure(
+      sprites: sprites,
+      repo: "test/repo",
+      healthy: MapSet.new(["bb-weaver"])
+    )
+
+    if threshold > 1 do
+      for _ <- 1..(threshold - 1), do: HealthMonitor.check_now()
+
+      eventually(fn ->
+        sprite = HealthMonitor.status().sprites["bb-weaver"]
+        sprite.status == :degraded and sprite.consecutive_failures == threshold - 1
+      end)
+    end
+
+    HealthMonitor.check_now()
+
+    eventually(fn ->
+      sprite = HealthMonitor.status().sprites["bb-weaver"]
+      sprite.status == :unavailable and sprite.consecutive_failures == threshold
+    end)
+
+    builder = HealthMonitor.status().sprites["bb-weaver"]
+    assert builder.status == :unavailable
+    assert builder.consecutive_failures == threshold
+    assert MockState.get(:reconciled_sprites, []) == []
+  end
+
+  test "persists recovered health even when phase worker restart fails" do
+    Application.put_env(:conductor, :supervisor_name, MissingSupervisor)
+    start_monitor(interval_ms: 60_000)
+
+    sprites = [
+      %{name: "bb-polisher", role: :polisher, harness: "codex", repo: "test/repo"}
+    ]
+
+    MockState.put({:sprite_health, "bb-polisher"}, :healthy)
+
+    HealthMonitor.configure(
+      sprites: sprites,
+      repo: "test/repo",
+      healthy: MapSet.new()
+    )
+
+    HealthMonitor.check_now()
+
+    eventually(fn -> HealthMonitor.status().sprites["bb-polisher"].status == :healthy end)
+
+    polisher = HealthMonitor.status().sprites["bb-polisher"]
+    assert polisher.status == :healthy
+    assert polisher.consecutive_failures == 0
+    assert Store.list_events("fleet") == []
   end
 
   test "does not emit a recovery event for a first healthy probe from unknown state" do
@@ -337,11 +464,29 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     log =
       capture_log(fn ->
         HealthMonitor.check_now()
-        Process.sleep(100)
+        eventually(fn -> HealthMonitor.status().sprites["bb-weaver"].status == :healthy end)
       end)
 
     refute log =~ "bb-weaver recovered"
     assert Store.list_events("fleet") == []
     assert HealthMonitor.status().sprites["bb-weaver"].status == :healthy
+  end
+
+  defp eventually(fun, timeout_ms \\ 1_000, step_ms \\ 10) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_eventually(fun, deadline, step_ms)
+  end
+
+  defp do_eventually(fun, deadline, step_ms) do
+    if fun.() do
+      :ok
+    else
+      if System.monotonic_time(:millisecond) < deadline do
+        Process.sleep(step_ms)
+        do_eventually(fun, deadline, step_ms)
+      else
+        flunk("condition not met before timeout")
+      end
+    end
   end
 end

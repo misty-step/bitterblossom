@@ -33,7 +33,10 @@ defmodule Conductor.Web.DashboardLive do
   end
 
   @impl true
-  def handle_info(:runs_updated, socket), do: {:noreply, refresh_runs_and_events(socket)}
+  def handle_info(:runs_updated, socket),
+    do: {:noreply, refresh_runs_and_events(socket, force_governor_refresh: true)}
+
+  def handle_info(:events_updated, socket), do: {:noreply, refresh_runs_and_events(socket)}
 
   def handle_info(:refresh, socket), do: {:noreply, refresh_dashboard(socket)}
 

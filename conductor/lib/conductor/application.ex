@@ -170,40 +170,42 @@ defmodule Conductor.Application do
   def ensure_dashboard_endpoint_config do
     endpoint_config = Application.get_env(:conductor, Conductor.Web.Endpoint, [])
 
-    secret_key_base =
-      Keyword.get(endpoint_config, :secret_key_base) || generated_secret_key_base()
+    case Keyword.get(endpoint_config, :secret_key_base) do
+      secret_key_base when is_binary(secret_key_base) and secret_key_base != "" ->
+        Application.put_env(
+          :conductor,
+          Conductor.Web.Endpoint,
+          endpoint_config
+          |> Keyword.put(:secret_key_base, secret_key_base)
+          |> Keyword.put(:server, true)
+        )
 
-    Application.put_env(
-      :conductor,
-      Conductor.Web.Endpoint,
-      endpoint_config
-      |> Keyword.put(:secret_key_base, secret_key_base)
-      |> Keyword.put(:server, true)
-    )
+        :ok
+
+      _ ->
+        {:error, :missing_dashboard_secret_key_base}
+    end
   end
 
   @doc false
   def start_dashboard(opts \\ []) do
     if Application.get_env(:conductor, :start_dashboard, true) do
       port = maybe_override_dashboard_port(opts)
-      ensure_dashboard_endpoint_config()
 
-      if Process.whereis(dashboard_endpoint_module()) do
-        {:ok, port}
-      else
-        case Supervisor.start_child(Conductor.Supervisor, dashboard_endpoint_module()) do
-          {:ok, _pid} -> {:ok, port}
-          {:error, {:already_started, _pid}} -> {:ok, port}
-          {:error, reason} -> {:error, reason}
+      with :ok <- ensure_dashboard_endpoint_config() do
+        if Process.whereis(dashboard_endpoint_module()) do
+          {:ok, port}
+        else
+          case Supervisor.start_child(Conductor.Supervisor, dashboard_endpoint_module()) do
+            {:ok, _pid} -> {:ok, port}
+            {:error, {:already_started, _pid}} -> {:ok, port}
+            {:error, reason} -> {:error, reason}
+          end
         end
       end
     else
       :ok
     end
-  end
-
-  defp generated_secret_key_base do
-    :crypto.strong_rand_bytes(64) |> Base.encode64(padding: false)
   end
 
   defp maybe_override_dashboard_port(opts) do

@@ -220,7 +220,7 @@ defmodule Conductor.Store do
       ]
     )
 
-    broadcast_update()
+    broadcast_update(:runs_updated)
     {:reply, {:ok, run_id}, state}
   end
 
@@ -240,7 +240,7 @@ defmodule Conductor.Store do
           vals
         )
 
-        broadcast_update()
+        broadcast_update(:runs_updated)
         {:reply, :ok, state}
 
       {_, {:error, :invalid_column}} ->
@@ -288,7 +288,7 @@ defmodule Conductor.Store do
       [phase, status, now, run_id]
     )
 
-    broadcast_update()
+    broadcast_update(:runs_updated)
     {:reply, :ok, state}
   end
 
@@ -312,7 +312,7 @@ defmodule Conductor.Store do
 
     exec(state.conn, "COMMIT", [])
 
-    broadcast_update()
+    broadcast_update(:runs_updated)
     {:reply, :ok, state}
   end
 
@@ -416,7 +416,7 @@ defmodule Conductor.Store do
       created_at: now
     })
 
-    broadcast_update()
+    broadcast_update(:events_updated)
 
     {:reply, :ok, state}
   end
@@ -646,7 +646,7 @@ defmodule Conductor.Store do
       created_at: now
     })
 
-    broadcast_update()
+    broadcast_update(:runs_updated)
     {:reply, :ok, state}
   end
 
@@ -803,9 +803,9 @@ defmodule Conductor.Store do
     "run-#{issue_number}-#{ts}"
   end
 
-  defp broadcast_update do
+  defp broadcast_update(message) do
     if Code.ensure_loaded?(Phoenix.PubSub) and Process.whereis(Conductor.PubSub) do
-      Phoenix.PubSub.broadcast(Conductor.PubSub, "dashboard", :runs_updated)
+      Phoenix.PubSub.broadcast(Conductor.PubSub, "dashboard", message)
     end
 
     :ok

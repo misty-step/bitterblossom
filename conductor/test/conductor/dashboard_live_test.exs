@@ -182,7 +182,7 @@ defmodule Conductor.Web.DashboardLiveTest do
         builder_sprite: "sprite-1"
       })
 
-    # Store broadcasts :runs_updated; the LiveView re-fetches
+    # Store broadcasts a dashboard update; the LiveView re-fetches.
     assert eventually(fn -> render(view) =~ "#99" end)
   end
 
@@ -299,6 +299,28 @@ defmodule Conductor.Web.DashboardLiveTest do
     Conductor.Store.record_event("fleet", "sprite_recovered", %{name: "bb-thorn"})
 
     assert eventually(fn -> render(view) =~ "sprite_recovered" end)
+  end
+
+  test "dashboard refreshes governor cooldowns when run state changes" do
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    assert render(view) =~ "No issues in cooldown"
+
+    {:ok, failed_run} =
+      Conductor.Store.create_run(%{
+        repo: "test/repo",
+        issue_number: 779,
+        issue_title: "Dashboard visibility",
+        builder_sprite: "bb-weaver"
+      })
+
+    Conductor.Store.update_run(failed_run, %{
+      phase: "failed",
+      status: "failed",
+      completed_at: DateTime.utc_now() |> DateTime.to_iso8601()
+    })
+
+    assert eventually(fn -> render(view) =~ "Dashboard visibility" end)
   end
 
   test "governor cooldowns fall back to empty when issue loading fails" do

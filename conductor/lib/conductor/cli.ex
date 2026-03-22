@@ -96,6 +96,7 @@ defmodule Conductor.CLI do
 
       {:error, reason} ->
         IO.puts("dashboard start failed: #{inspect(reason)}")
+        System.halt(1)
     end
 
     case Conductor.Application.boot_fleet(fleet_path) do

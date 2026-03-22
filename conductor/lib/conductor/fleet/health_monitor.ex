@@ -148,6 +148,8 @@ defmodule Conductor.Fleet.HealthMonitor do
               "[health] #{sprite.name} recovered#{maybe_worker_start_note(sprite.role)}"
             )
 
+            acc = put_sprite_status(acc, sprite.name, updated)
+
             case maybe_start_phase_worker(sprite, acc.repo) do
               :ok ->
                 Store.record_event("fleet", "sprite_recovered", %{
@@ -155,7 +157,7 @@ defmodule Conductor.Fleet.HealthMonitor do
                   role: to_string(sprite.role)
                 })
 
-                put_sprite_status(acc, sprite.name, updated)
+                acc
 
               :error ->
                 acc
