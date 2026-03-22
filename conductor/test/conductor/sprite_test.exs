@@ -168,6 +168,26 @@ defmodule Conductor.SpriteTest do
     assert List.last(retry_args) == "echo ok"
   end
 
+  test "exec returns non-recoverable websocket errors without attempting wake" do
+    parent = self()
+
+    shell_cmd_fn = fn "sprite", args, opts ->
+      send(parent, {:shell_cmd, args, opts})
+      {:error, "permission denied", 1}
+    end
+
+    assert {:error, "permission denied", 1} =
+             Sprite.exec("bb-weaver", "echo ok",
+               org: "misty-step",
+               shell_cmd_fn: shell_cmd_fn
+             )
+
+    assert_received {:shell_cmd, first_args, _opts}
+    refute "--http-post" in first_args
+    assert List.last(first_args) == "echo ok"
+    refute_received {:shell_cmd, _, _}
+  end
+
   test "provision uploads persona, settings, and metadata through sprite exec files" do
     test_pid = self()
     prev_gh = System.get_env("GITHUB_TOKEN")

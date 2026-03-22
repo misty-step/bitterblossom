@@ -822,6 +822,9 @@ defmodule Conductor.Sprite do
     end)
   end
 
+  # The sprite CLI currently exposes these transport failures as stderr text, not
+  # typed exit codes. Keep the accepted phrases narrow and covered by tests so the
+  # wake fallback does not silently drift if the CLI wording changes.
   defp wake_recoverable?(message) when is_binary(message) do
     String.contains?(message, ["bad handshake", "HTTP 502", "failed to connect"])
   end
