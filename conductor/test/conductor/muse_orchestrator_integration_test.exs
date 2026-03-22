@@ -57,6 +57,8 @@ defmodule Conductor.MuseOrchestratorIntegrationTest do
 
     def labeled_prs(repo, label) do
       key = {:labeled_prs, repo, label}
+      calls_key = {:labeled_prs_calls, repo, label}
+      MockState.put(calls_key, MockState.get(calls_key, 0) + 1)
       prs = MockState.get(key, [])
       MockState.put(key, [])
       {:ok, prs}
@@ -111,17 +113,6 @@ defmodule Conductor.MuseOrchestratorIntegrationTest do
 
     orig_poll_seconds = Application.get_env(:conductor, :poll_seconds)
 
-    stop_conductor_app()
-    stop_process(Orchestrator)
-    stop_process(Store)
-    stop_process(Conductor.TaskSupervisor)
-    stop_process(Conductor.RunSupervisor)
-    Application.put_env(:conductor, :poll_seconds, 1)
-    {:ok, _} = Store.start_link(db_path: db_path, event_log: event_log)
-    {:ok, _} = Task.Supervisor.start_link(name: Conductor.TaskSupervisor)
-    {:ok, _} = DynamicSupervisor.start_link(strategy: :one_for_one, name: Conductor.RunSupervisor)
-    {:ok, _} = Orchestrator.start_link()
-
     originals = %{
       tracker_module: Application.get_env(:conductor, :tracker_module),
       code_host_module: Application.get_env(:conductor, :code_host_module),
@@ -131,12 +122,22 @@ defmodule Conductor.MuseOrchestratorIntegrationTest do
       muse_module: Application.get_env(:conductor, :muse_module)
     }
 
+    stop_conductor_app()
+    stop_process(Orchestrator)
+    stop_process(Store)
+    stop_process(Conductor.TaskSupervisor)
+    stop_process(Conductor.RunSupervisor)
+    Application.put_env(:conductor, :poll_seconds, 1)
     Application.put_env(:conductor, :tracker_module, MockTracker)
     Application.put_env(:conductor, :code_host_module, MockCodeHost)
     Application.put_env(:conductor, :worker_module, MockWorker)
     Application.put_env(:conductor, :run_launcher_module, MockRunLauncher)
     Application.put_env(:conductor, :run_control_module, MockRunControl)
     Application.put_env(:conductor, :muse_module, MockMuse)
+    {:ok, _} = Store.start_link(db_path: db_path, event_log: event_log)
+    {:ok, _} = Task.Supervisor.start_link(name: Conductor.TaskSupervisor)
+    {:ok, _} = DynamicSupervisor.start_link(strategy: :one_for_one, name: Conductor.RunSupervisor)
+    {:ok, _} = Orchestrator.start_link()
 
     on_exit(fn ->
       stop_process(Orchestrator)
@@ -173,9 +174,11 @@ defmodule Conductor.MuseOrchestratorIntegrationTest do
     )
 
     :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["bb-weaver"])
+    send(Orchestrator, :poll)
 
     eventually(fn ->
       assert MockState.get(:observe_calls, []) == [merged_run_id]
+      assert MockState.get({:labeled_prs_calls, "test/repo", "lgtm"}, 0) >= 1
       {:ok, run} = Store.get_run(merged_run_id)
       assert run["phase"] == "merged"
     end)
@@ -195,9 +198,13 @@ defmodule Conductor.MuseOrchestratorIntegrationTest do
       completed_at: DateTime.utc_now() |> DateTime.to_iso8601()
     })
 
-    Process.sleep(1_100)
+    prior_poll_calls = MockState.get({:labeled_prs_calls, "test/repo", "lgtm"}, 0)
+    send(Orchestrator, :poll)
 
-    assert MockState.get(:observe_calls, []) == [merged_run_id]
+    eventually(fn ->
+      assert MockState.get({:labeled_prs_calls, "test/repo", "lgtm"}, 0) > prior_poll_calls
+      assert MockState.get(:observe_calls, []) == [merged_run_id]
+    end)
   end
 
   defp eventually(assert_fun, timeout_ms \\ 1_500, step_ms \\ 25) do
