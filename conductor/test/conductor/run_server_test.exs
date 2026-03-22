@@ -247,7 +247,8 @@ defmodule Conductor.RunServerTest do
       number: number,
       title: "test issue #{number}",
       body: "## Problem\ntest\n## Acceptance Criteria\ntest",
-      url: "https://example.test/issues/#{number}"
+      url: "https://example.test/issues/#{number}",
+      state: "OPEN"
     }
   end
 

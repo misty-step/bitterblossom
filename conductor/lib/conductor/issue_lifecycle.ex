@@ -7,6 +7,7 @@ defmodule Conductor.IssueLifecycle do
 
   alias Conductor.Issue
 
+  @doc "Return the set of issue numbers represented by the current issue list."
   @spec issue_numbers([Issue.t()]) :: MapSet.t(pos_integer())
   def issue_numbers(issues) do
     issues
@@ -14,11 +15,13 @@ defmodule Conductor.IssueLifecycle do
     |> MapSet.new()
   end
 
+  @doc "Select the issues whose numbers are already resolved by merged code."
   @spec resolved_issues([Issue.t()], MapSet.t(pos_integer())) :: [Issue.t()]
   def resolved_issues(issues, resolved_issue_numbers) do
     Enum.filter(issues, &MapSet.member?(resolved_issue_numbers, &1.number))
   end
 
+  @doc "Attempt to close resolved issues and return the subset closed successfully."
   @spec auto_closed_issue_numbers(
           binary(),
           [Issue.t()],
@@ -43,11 +46,13 @@ defmodule Conductor.IssueLifecycle do
     end)
   end
 
+  @doc "Reject issues whose numbers are present in the given set."
   @spec reject_issue_numbers([Issue.t()], MapSet.t(pos_integer())) :: [Issue.t()]
   def reject_issue_numbers(issues, issue_numbers) do
     Enum.reject(issues, &MapSet.member?(issue_numbers, &1.number))
   end
 
+  @doc "Collect locally resolved issue numbers from a PR branch name and closing signals."
   @spec resolved_issue_numbers_from_pr(map(), MapSet.t(pos_integer())) :: MapSet.t(pos_integer())
   def resolved_issue_numbers_from_pr(pr, remaining_issue_numbers) do
     branch_matches =
@@ -70,7 +75,7 @@ defmodule Conductor.IssueLifecycle do
 
   defp factory_issue_number_from_branch("factory/" <> rest) do
     case String.split(rest, "-", parts: 2) do
-      [issue_number, _suffix] ->
+      [issue_number, suffix] when suffix != "" ->
         case Integer.parse(issue_number) do
           {value, ""} -> value
           _ -> nil
@@ -85,8 +90,7 @@ defmodule Conductor.IssueLifecycle do
 
   defp pr_local_closing_issue_numbers(pr) do
     pr
-    |> Map.get("body")
-    |> to_string()
+    |> pr_resolution_text()
     |> then(fn body ->
       Regex.scan(
         ~r/\b(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)\s+#(\d+)\b/i,
@@ -101,4 +105,27 @@ defmodule Conductor.IssueLifecycle do
       end
     end)
   end
+
+  defp pr_resolution_text(pr) do
+    [
+      Map.get(pr, "body"),
+      Map.get(pr, "merge_commit_message"),
+      Map.get(pr, "mergeCommitMessage")
+      | pr_commit_messages(pr)
+    ]
+    |> Enum.filter(&(is_binary(&1) and &1 != ""))
+    |> Enum.join("\n")
+  end
+
+  defp pr_commit_messages(pr) do
+    pr
+    |> Map.get("commits", [])
+    |> List.wrap()
+    |> Enum.map(&commit_message/1)
+    |> Enum.filter(&is_binary/1)
+  end
+
+  defp commit_message(%{"message" => message}) when is_binary(message), do: message
+  defp commit_message(%{"commit" => %{"message" => message}}) when is_binary(message), do: message
+  defp commit_message(_commit), do: nil
 end

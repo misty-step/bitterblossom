@@ -169,6 +169,12 @@ defmodule Conductor.IssueTest do
 
       assert {:error, ["issue is closed"]} = Issue.lifecycle_valid?(issue)
     end
+
+    test "rejects unknown issue states with a normalized message" do
+      issue = %Issue{number: 1, title: "t", body: "", url: "u", state: "locked"}
+
+      assert {:error, ["issue is locked"]} = Issue.lifecycle_valid?(issue)
+    end
   end
 
   describe "revision_id/1" do

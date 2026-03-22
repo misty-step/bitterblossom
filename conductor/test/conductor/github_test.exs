@@ -796,7 +796,11 @@ defmodule Conductor.GitHubTest do
         """
         printf '%s\\n' "$@" >> "$GH_ARGS_PATH"
 
-        if [[ "$*" == issue\\ list* ]]; then
+        if [[ "$*" == "api repos/misty-step/bitterblossom" ]]; then
+          cat <<'JSON'
+        {"default_branch":"master"}
+        JSON
+        elif [[ "$*" == issue\\ list* ]]; then
           cat <<'JSON'
         [
           {
@@ -820,11 +824,13 @@ defmodule Conductor.GitHubTest do
         [
           {
             "merged_at": "2026-03-18T14:00:00Z",
-            "head": {"ref": "factory/10-1773840330"}
+            "head": {"ref": "factory/10-1773840330"},
+            "base": {"ref": "master"}
           },
           {
             "merged_at": "2026-03-18T14:00:01Z",
-            "head": {"ref": "factory/999-1773840331"}
+            "head": {"ref": "factory/999-1773840331"},
+            "base": {"ref": "master"}
           }
         ]
         JSON
@@ -865,7 +871,11 @@ defmodule Conductor.GitHubTest do
         """
         printf '%s\\n' "$@" >> "$GH_ARGS_PATH"
 
-        if [[ "$*" == issue\\ list* ]]; then
+        if [[ "$*" == "api repos/misty-step/bitterblossom" ]]; then
+          cat <<'JSON'
+        {"default_branch":"master"}
+        JSON
+        elif [[ "$*" == issue\\ list* ]]; then
           cat <<'JSON'
         [
           {
@@ -894,10 +904,13 @@ defmodule Conductor.GitHubTest do
             "title": "retro fix",
             "body": "Closes #10",
             "head": {"ref": "fix/retro-closure"},
+            "number": 200,
             "base": {"ref": "master"}
           }
         ]
         JSON
+        elif [[ "$*" == "api repos/misty-step/bitterblossom/pulls/200/commits?per_page=100" ]]; then
+          echo '[]'
         elif [[ "$*" == issue\\ close* ]]; then
           echo 'closed'
         elif [[ "$*" == *"pulls?state=closed&per_page=100&page=2"* ]]; then
@@ -927,7 +940,11 @@ defmodule Conductor.GitHubTest do
         """
         printf '%s\\n' "$@" >> "$GH_ARGS_PATH"
 
-        if [[ "$*" == issue\\ list* ]]; then
+        if [[ "$*" == "api repos/misty-step/bitterblossom" ]]; then
+          cat <<'JSON'
+        {"default_branch":"master"}
+        JSON
+        elif [[ "$*" == issue\\ list* ]]; then
           cat <<'JSON'
         [
           {
@@ -964,10 +981,13 @@ defmodule Conductor.GitHubTest do
             "title": "combo fix",
             "body": "Closes #11",
             "head": {"ref": "factory/10-1773840330"},
+            "number": 201,
             "base": {"ref": "master"}
           }
         ]
         JSON
+        elif [[ "$*" == "api repos/misty-step/bitterblossom/pulls/201/commits?per_page=100" ]]; then
+          echo '[]'
         elif [[ "$*" == issue\\ close* ]]; then
           echo 'closed'
         elif [[ "$*" == *"pulls?state=closed&per_page=100&page=2"* ]]; then
@@ -998,7 +1018,11 @@ defmodule Conductor.GitHubTest do
         """
         printf '%s\\n' "$@" >> "$GH_ARGS_PATH"
 
-        if [[ "$*" == issue\\ list* ]]; then
+        if [[ "$*" == "api repos/misty-step/bitterblossom" ]]; then
+          cat <<'JSON'
+        {"default_branch":"master"}
+        JSON
+        elif [[ "$*" == issue\\ list* ]]; then
           cat <<'JSON'
         [
           {
@@ -1026,10 +1050,14 @@ defmodule Conductor.GitHubTest do
             "merged_at": "2026-03-18T14:00:00Z",
             "title": "malformed refs",
             "body": "Closes #abc\\nCloses #\\nCloses #123abc\\nCloses other-org/other-repo#10",
-            "head": {"ref": "fix/malformed-refs"}
+            "head": {"ref": "fix/malformed-refs"},
+            "base": {"ref": "master"},
+            "number": 202
           }
         ]
         JSON
+        elif [[ "$*" == "api repos/misty-step/bitterblossom/pulls/202/commits?per_page=100" ]]; then
+          echo '[]'
         else
           echo '[]'
         fi
@@ -1048,12 +1076,16 @@ defmodule Conductor.GitHubTest do
       )
     end
 
-    test "eligible_issues logs and leaves the issue eligible when auto-close fails" do
+    test "eligible_issues logs and filters resolved issues even when auto-close fails" do
       with_fake_gh(
         """
         printf '%s\\n' "$@" >> "$GH_ARGS_PATH"
 
-        if [[ "$*" == issue\\ list* ]]; then
+        if [[ "$*" == "api repos/misty-step/bitterblossom" ]]; then
+          cat <<'JSON'
+        {"default_branch":"master"}
+        JSON
+        elif [[ "$*" == issue\\ list* ]]; then
           cat <<'JSON'
         [
           {
@@ -1073,10 +1105,14 @@ defmodule Conductor.GitHubTest do
             "merged_at": "2026-03-18T14:00:00Z",
             "title": "retro fix",
             "body": "Closes #10",
-            "head": {"ref": "fix/retro-closure"}
+            "head": {"ref": "fix/retro-closure"},
+            "base": {"ref": "master"},
+            "number": 203
           }
         ]
         JSON
+        elif [[ "$*" == "api repos/misty-step/bitterblossom/pulls/203/commits?per_page=100" ]]; then
+          echo '[]'
         elif [[ "$*" == issue\\ close* ]]; then
           echo 'boom' >&2
           exit 1
@@ -1092,7 +1128,7 @@ defmodule Conductor.GitHubTest do
                        label: "autopilot",
                        limit: 25
                      )
-                     |> Enum.map(& &1.number) == [10]
+                     |> Enum.map(& &1.number) == []
             end)
 
           assert log =~ "failed to auto-close issue #10 resolved by a merged PR"
@@ -1107,7 +1143,11 @@ defmodule Conductor.GitHubTest do
         """
         printf '%s\\n' "$@" >> "$GH_ARGS_PATH"
 
-        if [[ "$*" == issue\\ list* ]]; then
+        if [[ "$*" == "api repos/misty-step/bitterblossom" ]]; then
+          cat <<'JSON'
+        {"default_branch":"master"}
+        JSON
+        elif [[ "$*" == issue\\ list* ]]; then
           cat <<'JSON'
         [
           {
@@ -1127,10 +1167,14 @@ defmodule Conductor.GitHubTest do
             "merged_at": "2026-03-18T14:00:00Z",
             "title": "cross repo fix",
             "body": "Closes other-org/other-repo#10",
-            "head": {"ref": "fix/cross-repo"}
+            "head": {"ref": "fix/cross-repo"},
+            "base": {"ref": "master"},
+            "number": 204
           }
         ]
         JSON
+        elif [[ "$*" == "api repos/misty-step/bitterblossom/pulls/204/commits?per_page=100" ]]; then
+          echo '[]'
         else
           echo '[]'
         fi
@@ -1154,7 +1198,11 @@ defmodule Conductor.GitHubTest do
         """
         printf '%s\\n' "$@" >> "$GH_ARGS_PATH"
 
-        if [[ "$*" == issue\\ list* ]]; then
+        if [[ "$*" == "api repos/misty-step/bitterblossom" ]]; then
+          cat <<'JSON'
+        {"default_branch":"master"}
+        JSON
+        elif [[ "$*" == issue\\ list* ]]; then
           cat <<'JSON'
         [
           {
@@ -1176,7 +1224,7 @@ defmodule Conductor.GitHubTest do
               comma=""
             fi
 
-            printf '{"merged_at":"2026-03-18T13:59:00Z","head":{"ref":"factory/%s-1773840331"}}%s\n' \
+            printf '{"merged_at":"2026-03-18T13:59:00Z","head":{"ref":"factory/%s-1773840331"},"base":{"ref":"master"}}%s\n' \
               "$(( 1000 + n ))" "$comma"
           done
 
@@ -1186,7 +1234,8 @@ defmodule Conductor.GitHubTest do
         [
           {
             "merged_at": "2026-03-18T14:00:00Z",
-            "head": {"ref": "factory/10-1773840330"}
+            "head": {"ref": "factory/10-1773840330"},
+            "base": {"ref": "master"}
           }
         ]
         JSON
@@ -1205,6 +1254,121 @@ defmodule Conductor.GitHubTest do
           assert String.contains?(args, "page=1")
           assert String.contains?(args, "page=2")
           refute String.contains?(args, "page=3")
+        end
+      )
+    end
+
+    test "eligible_issues ignores merged PRs outside the repo default branch" do
+      with_fake_gh(
+        """
+        printf '%s\\n' "$@" >> "$GH_ARGS_PATH"
+
+        if [[ "$*" == "api repos/misty-step/bitterblossom" ]]; then
+          cat <<'JSON'
+        {"default_branch":"master"}
+        JSON
+        elif [[ "$*" == issue\\ list* ]]; then
+          cat <<'JSON'
+        [
+          {
+            "number": 10,
+            "title": "still open on default branch",
+            "body": "## Problem\\nx\\n\\n## Acceptance Criteria\\n- [ ] [test] y",
+            "url": "https://example.test/issues/10",
+            "labels": [{"name": "autopilot"}],
+            "state": "OPEN"
+          }
+        ]
+        JSON
+        elif [[ "$*" == *"pulls?state=closed&per_page=100&page=1"* ]]; then
+          cat <<'JSON'
+        [
+          {
+            "merged_at": "2026-03-18T14:00:00Z",
+            "title": "release backport",
+            "body": "Closes #10",
+            "head": {"ref": "fix/release-backport"},
+            "base": {"ref": "release/1.0"},
+            "number": 205
+          }
+        ]
+        JSON
+        else
+          echo '[]'
+        fi
+        """,
+        fn _tmp_dir, args_path ->
+          issues =
+            GitHub.eligible_issues("misty-step/bitterblossom", label: "autopilot", limit: 25)
+
+          assert Enum.map(issues, & &1.number) == [10]
+          refute File.read!(args_path) =~ "issue\nclose\n10\n--repo\nmisty-step/bitterblossom\n"
+        end
+      )
+    end
+
+    test "eligible_issues auto-closes open issues resolved only by the merged commit message" do
+      with_fake_gh(
+        """
+        printf '%s\\n' "$@" >> "$GH_ARGS_PATH"
+
+        if [[ "$*" == "api repos/misty-step/bitterblossom" ]]; then
+          cat <<'JSON'
+        {"default_branch":"master"}
+        JSON
+        elif [[ "$*" == issue\\ list* ]]; then
+          cat <<'JSON'
+        [
+          {
+            "number": 10,
+            "title": "resolved by merge commit",
+            "body": "## Problem\\nx\\n\\n## Acceptance Criteria\\n- [ ] [test] y",
+            "url": "https://example.test/issues/10",
+            "labels": [{"name": "autopilot"}],
+            "state": "OPEN"
+          },
+          {
+            "number": 11,
+            "title": "still open",
+            "body": "## Problem\\nx\\n\\n## Acceptance Criteria\\n- [ ] [test] y",
+            "url": "https://example.test/issues/11",
+            "labels": [{"name": "autopilot"}],
+            "state": "OPEN"
+          }
+        ]
+        JSON
+        elif [[ "$*" == *"pulls?state=closed&per_page=100&page=1"* ]]; then
+          cat <<'JSON'
+        [
+          {
+            "number": 206,
+            "merged_at": "2026-03-18T14:00:00Z",
+            "title": "squash merge",
+            "body": "",
+            "head": {"ref": "fix/merge-commit-only"},
+            "base": {"ref": "master"},
+            "merge_commit_sha": "abc123"
+          }
+        ]
+        JSON
+        elif [[ "$*" == "api repos/misty-step/bitterblossom/commits/abc123" ]]; then
+          cat <<'JSON'
+        {"commit":{"message":"Closes #10"}}
+        JSON
+        elif [[ "$*" == "api repos/misty-step/bitterblossom/pulls/206/commits?per_page=100" ]]; then
+          echo '[]'
+        elif [[ "$*" == issue\\ close* ]]; then
+          echo 'closed'
+        else
+          echo '[]'
+        fi
+        """,
+        fn _tmp_dir, args_path ->
+          issues =
+            GitHub.eligible_issues("misty-step/bitterblossom", label: "autopilot", limit: 25)
+
+          assert Enum.map(issues, & &1.number) == [11]
+          assert File.read!(args_path) =~ "issue\nclose\n10\n--repo\nmisty-step/bitterblossom\n"
         end
       )
     end
