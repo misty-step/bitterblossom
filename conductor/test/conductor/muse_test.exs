@@ -387,7 +387,7 @@ defmodule Conductor.MuseTest do
 
     assert_retry_window(2_000)
 
-    send(Muse, :retry)
+    fire_retry()
 
     eventually(fn ->
       status = Muse.status()
@@ -397,7 +397,7 @@ defmodule Conductor.MuseTest do
 
     assert_retry_window(4_000)
 
-    send(Muse, :retry)
+    fire_retry()
 
     eventually(fn ->
       status = Muse.status()
@@ -468,6 +468,46 @@ defmodule Conductor.MuseTest do
     Process.sleep(100)
 
     assert length(MockState.get(:dispatches, [])) == 1
+    assert Muse.status().queue_length == 2
+  end
+
+  test "stale retry messages are ignored" do
+    run_1 = create_merged_run(790, "Initial retry")
+    run_2 = create_merged_run(791, "Queued behind retry")
+
+    MockState.put(:dispatch_fun, fn _worker, prompt ->
+      if String.contains?(prompt, "# Muse Observe Task") do
+        {:ok, ~s({"summary":"missing reflection"})}
+      else
+        {:error, "unexpected prompt", 1}
+      end
+    end)
+
+    {:ok, _pid} = start_muse()
+
+    Muse.observe(run_1)
+
+    eventually(fn ->
+      assert Muse.status().failure_count == 1
+    end)
+
+    stale_token = current_retry_token()
+
+    Muse.observe(run_2)
+    fire_retry(stale_token)
+
+    eventually(fn ->
+      status = Muse.status()
+      assert status.failure_count == 2
+      assert status.queue_length == 2
+      assert current_retry_token() != stale_token
+    end)
+
+    send(Muse, {:retry, stale_token})
+    Process.sleep(100)
+
+    assert length(MockState.get(:dispatches, [])) == 2
+    assert Muse.status().failure_count == 2
     assert Muse.status().queue_length == 2
   end
 
@@ -557,7 +597,7 @@ defmodule Conductor.MuseTest do
       assert status.pending_synthesis
     end)
 
-    send(Muse, :retry)
+    fire_retry()
 
     eventually(fn ->
       status = Muse.status()
@@ -624,7 +664,7 @@ defmodule Conductor.MuseTest do
              &String.contains?(&1, "# Muse Synthesis Task")
            ) == 1
 
-    send(Muse, :retry)
+    fire_retry()
 
     eventually(fn ->
       status = Muse.status()
@@ -716,6 +756,52 @@ defmodule Conductor.MuseTest do
 
       assert MockState.get({:comments, "test/repo", 999}, []) == [
                "Muse synthesis matched an existing open issue.\n\nSecond body"
+             ]
+    end)
+  end
+
+  test "synthesis refreshes open issues before applying actions", %{repo_root: repo_root} do
+    reflection_dir = Path.join(repo_root, ".bb/muse/reflections")
+    File.mkdir_p!(reflection_dir)
+    File.write!(Path.join(reflection_dir, "#{Date.utc_today()}-run-1.md"), "# Reflection 1\n")
+
+    MockState.put({:issues, "test/repo"}, [])
+
+    MockState.put(:dispatch_fun, fn _worker, prompt ->
+      if String.contains?(prompt, "# Muse Synthesis Task") do
+        MockState.put(
+          {:issues, "test/repo"},
+          [
+            %Conductor.Issue{
+              number: 779,
+              title: "[muse] Emerging synthesis issue",
+              body: "",
+              url: "https://example.test/issues/779"
+            }
+          ]
+        )
+
+        {:ok,
+         Jason.encode!(%{
+           summary: "refresh issue snapshot",
+           actions: [
+             %{action: "create_issue", title: "Emerging synthesis issue", body: "Body"}
+           ]
+         })}
+      else
+        {:error, "unexpected prompt", 1}
+      end
+    end)
+
+    {:ok, _pid} = start_muse()
+
+    Muse.synthesize()
+
+    eventually(fn ->
+      assert MockState.get(:shell_calls, []) == []
+
+      assert MockState.get({:comments, "test/repo", 779}, []) == [
+               "Muse synthesis matched an existing open issue.\n\nBody"
              ]
     end)
   end
@@ -906,6 +992,90 @@ defmodule Conductor.MuseTest do
     end)
   end
 
+  test "issue titles with invalid characters are skipped before gh issue creation", %{
+    repo_root: repo_root
+  } do
+    reflection_dir = Path.join(repo_root, ".bb/muse/reflections")
+    File.mkdir_p!(reflection_dir)
+    File.write!(Path.join(reflection_dir, "#{Date.utc_today()}-run-1.md"), "# Reflection 1\n")
+
+    MockState.put(:dispatch_fun, fn _worker, prompt ->
+      if String.contains?(prompt, "# Muse Synthesis Task") do
+        {:ok,
+         Jason.encode!(%{
+           summary: "title validation",
+           actions: [
+             %{action: "create_issue", title: "Bad\ntitle", body: "Body"}
+           ]
+         })}
+      else
+        {:error, "unexpected prompt", 1}
+      end
+    end)
+
+    {:ok, _pid} = start_muse()
+
+    Muse.synthesize()
+
+    eventually(fn ->
+      [event] =
+        Store.list_all_events(limit: 20)
+        |> Enum.filter(&(&1["event_type"] == "muse_synthesis_complete"))
+
+      assert event["payload"]["actions_taken"] == [
+               %{
+                 "action" => "none",
+                 "skipped_reason" => ":invalid_title_characters",
+                 "title" => "Bad\ntitle"
+               }
+             ]
+
+      assert MockState.get(:shell_calls, []) == []
+    end)
+  end
+
+  test "non-map synthesis actions degrade to no-ops instead of crashing", %{repo_root: repo_root} do
+    reflection_dir = Path.join(repo_root, ".bb/muse/reflections")
+    File.mkdir_p!(reflection_dir)
+    File.write!(Path.join(reflection_dir, "#{Date.utc_today()}-run-1.md"), "# Reflection 1\n")
+
+    MockState.put(:dispatch_fun, fn _worker, prompt ->
+      if String.contains?(prompt, "# Muse Synthesis Task") do
+        {:ok,
+         Jason.encode!(%{
+           summary: "ignore malformed actions",
+           actions: [
+             "oops",
+             %{action: "comment_issue", issue_number: 601, title: "Valid action", body: "Body"}
+           ]
+         })}
+      else
+        {:error, "unexpected prompt", 1}
+      end
+    end)
+
+    {:ok, _pid} = start_muse()
+
+    Muse.synthesize()
+
+    eventually(fn ->
+      [event] =
+        Store.list_all_events(limit: 20)
+        |> Enum.filter(&(&1["event_type"] == "muse_synthesis_complete"))
+
+      assert event["payload"]["actions_taken"] == [
+               %{"action" => "none", "title" => "oops"},
+               %{
+                 "action" => "comment_issue",
+                 "existing_issue" => "#601",
+                 "title" => "Valid action"
+               }
+             ]
+
+      assert MockState.get({:comments, "test/repo", 601}, []) == ["Body"]
+    end)
+  end
+
   test "stale synthesis ticks are ignored" do
     {:ok, _pid} = start_muse()
 
@@ -951,6 +1121,16 @@ defmodule Conductor.MuseTest do
     assert is_integer(remaining_ms)
     assert remaining_ms > 0
     assert remaining_ms <= expected_ms
+  end
+
+  defp current_retry_token do
+    %{retry_token: retry_token} = :sys.get_state(Muse)
+    assert is_reference(retry_token)
+    retry_token
+  end
+
+  defp fire_retry(token \\ current_retry_token()) do
+    send(Muse, {:retry, token})
   end
 
   defp eventually(assert_fun, timeout_ms \\ 1_500, step_ms \\ 25) do

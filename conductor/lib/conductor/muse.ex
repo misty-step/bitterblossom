@@ -20,6 +20,7 @@ defmodule Conductor.Muse do
     :timer_ref,
     :synthesis_token,
     :retry_ref,
+    :retry_token,
     queue: :queue.new(),
     pending_synthesis: false,
     synthesis_progress: nil,
@@ -34,6 +35,7 @@ defmodule Conductor.Muse do
   @max_actions 3
   @max_issue_title_bytes 249
   @max_issue_body_bytes 65_536
+  @issue_title_pattern ~r/\A[\p{L}\p{N}][\p{L}\p{N} \-\.\,\:\;\!\?'"()\/#&]*\z/u
 
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -127,9 +129,16 @@ defmodule Conductor.Muse do
   def handle_info({:synthesis_tick, _stale_token}, state), do: {:noreply, state}
 
   @impl true
-  def handle_info(:retry, state) do
-    {:noreply, state |> Map.put(:retry_ref, nil) |> maybe_dispatch()}
+  def handle_info({:retry, token}, %{retry_token: token} = state) do
+    {:noreply,
+     state
+     |> Map.put(:retry_ref, nil)
+     |> Map.put(:retry_token, nil)
+     |> maybe_dispatch()}
   end
+
+  @impl true
+  def handle_info({:retry, _stale_token}, state), do: {:noreply, state}
 
   @impl true
   def handle_info({ref, result}, state) when is_reference(ref) do
@@ -328,8 +337,16 @@ defmodule Conductor.Muse do
 
     if state.retry_ref, do: Process.cancel_timer(state.retry_ref)
 
-    retry_ref = Process.send_after(self(), :retry, backoff_ms)
-    %{state | failure_count: count, health: health, retry_ref: retry_ref}
+    retry_token = make_ref()
+    retry_ref = Process.send_after(self(), {:retry, retry_token}, backoff_ms)
+
+    %{
+      state
+      | failure_count: count,
+        health: health,
+        retry_ref: retry_ref,
+        retry_token: retry_token
+    }
   end
 
   defp reset_health(state) do
@@ -339,7 +356,7 @@ defmodule Conductor.Muse do
 
     if state.retry_ref, do: Process.cancel_timer(state.retry_ref)
 
-    %{state | failure_count: 0, health: :healthy, retry_ref: nil}
+    %{state | failure_count: 0, health: :healthy, retry_ref: nil, retry_token: nil}
   end
 
   defp observe_run(repo, muse_sprite, run_id) do
@@ -389,13 +406,15 @@ defmodule Conductor.Muse do
            ),
          {:ok, parsed} <- parse_synthesis(output),
          {:ok, progress} <-
-           execute_actions(repo, %{
+           refresh_synthesis_progress(repo, %{
              summary: parsed.summary,
              actions: Enum.take(parsed.actions, @max_actions),
              open_issues: open_issues,
              actions_taken: [],
              last_applied_action_index: -1
            }),
+         {:ok, progress} <-
+           execute_actions(repo, progress),
          {:ok, path} <- write_synthesis(progress.summary, progress.actions_taken) do
       {:ok, %{summary: progress.summary, actions_taken: progress.actions_taken, path: path}}
     else
@@ -412,6 +431,7 @@ defmodule Conductor.Muse do
 
   defp run_synthesis(repo, _muse_sprite, progress) do
     with :ok <- ensure_muse_dirs(),
+         {:ok, progress} <- refresh_synthesis_progress(repo, progress),
          {:ok, progress} <- execute_actions(repo, progress),
          {:ok, path} <- write_synthesis(progress.summary, progress.actions_taken) do
       {:ok, %{summary: progress.summary, actions_taken: progress.actions_taken, path: path}}
@@ -532,6 +552,10 @@ defmodule Conductor.Muse do
     end
   end
 
+  defp execute_action(_repo, action, open_issues) when not is_map(action) do
+    {:ok, %{action: "none", title: action_string(action, "title")}, open_issues}
+  end
+
   defp execute_action(repo, action, open_issues) do
     case Map.get(action, "action") do
       "comment_issue" ->
@@ -571,6 +595,7 @@ defmodule Conductor.Muse do
       action
       |> action_string("title", "Muse follow-up")
       |> default_issue_title()
+      |> normalize_issue_title()
 
     body = action_string(action, "body")
 
@@ -597,7 +622,7 @@ defmodule Conductor.Muse do
   end
 
   defp create_issue(repo, title, body) do
-    tmp = Path.join(System.tmp_dir!(), "muse-issue-#{System.unique_integer([:positive])}.md")
+    tmp = Path.join(System.tmp_dir!(), "muse-issue-#{strong_random_suffix()}.md")
     File.write!(tmp, body)
 
     try do
@@ -716,7 +741,8 @@ defmodule Conductor.Muse do
   end
 
   defp reflection_path(run_id) do
-    Path.join([repo_root(), @reflection_dir, "#{Date.utc_today()}-#{run_id}.md"])
+    safe_run_id = sanitize_filename_component(run_id)
+    Path.join([repo_root(), @reflection_dir, "#{Date.utc_today()}-#{safe_run_id}.md"])
   end
 
   defp read_recent_reflections do
@@ -756,6 +782,11 @@ defmodule Conductor.Muse do
   defp default_issue_title(""), do: "Muse follow-up"
   defp default_issue_title(title), do: title
 
+  defp normalize_issue_title(title) do
+    title
+    |> String.trim()
+  end
+
   defp validate_issue_payload(title, body) do
     cond do
       byte_size(title) == 0 ->
@@ -763,6 +794,9 @@ defmodule Conductor.Muse do
 
       byte_size(title) > @max_issue_title_bytes ->
         {:error, :title_too_long}
+
+      not valid_issue_title?(title) ->
+        {:error, :invalid_title_characters}
 
       byte_size(body) > @max_issue_body_bytes ->
         {:error, :body_too_long}
@@ -772,7 +806,56 @@ defmodule Conductor.Muse do
     end
   end
 
-  defp action_string(action, key, default \\ "") do
+  defp refresh_synthesis_progress(repo, progress) do
+    with {:ok, fresh_open_issues} <- open_issues(repo) do
+      {:ok, %{progress | open_issues: merge_open_issues(fresh_open_issues, progress.open_issues)}}
+    end
+  end
+
+  defp merge_open_issues(fresh_open_issues, progress_open_issues) do
+    Enum.reduce(progress_open_issues, fresh_open_issues, fn issue, merged_issues ->
+      case issue_title(issue) do
+        "" ->
+          merged_issues
+
+        title ->
+          if find_duplicate_issue(merged_issues, title) do
+            merged_issues
+          else
+            [issue | merged_issues]
+          end
+      end
+    end)
+  end
+
+  defp issue_title(issue), do: Map.get(issue, :title) || Map.get(issue, "title", "")
+
+  defp strong_random_suffix do
+    16
+    |> :crypto.strong_rand_bytes()
+    |> Base.url_encode64(padding: false)
+  end
+
+  defp sanitize_filename_component(value) do
+    value
+    |> to_string()
+    |> Path.basename()
+    |> String.replace(~r/[^A-Za-z0-9._-]/u, "_")
+  end
+
+  defp valid_issue_title?(title), do: String.match?(title, @issue_title_pattern)
+
+  defp action_string(action, key, default \\ "")
+
+  defp action_string(action, _key, default) when not is_map(action) do
+    case action do
+      value when is_binary(value) -> value
+      nil -> default
+      value -> to_string(value)
+    end
+  end
+
+  defp action_string(action, key, default) do
     case Map.get(action, key, default) do
       value when is_binary(value) -> value
       nil -> default
