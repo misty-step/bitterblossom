@@ -105,9 +105,9 @@ defmodule Conductor.Polisher do
       case code_host_mod().open_prs(state.repo) do
         {:ok, prs} ->
           # Dispatch at most one PR per poll (single sprite, single workspace)
-          case Enum.find(prs, &needs_polish?(&1, state)) do
+          case next_eligible_pr(prs, state.repo) do
             nil -> state
-            pr -> dispatch_polisher(state, pr)
+            {pr, substantive_change_at} -> dispatch_polisher(state, pr, substantive_change_at)
           end
 
         {:error, reason} ->
@@ -117,17 +117,28 @@ defmodule Conductor.Polisher do
     end
   end
 
-  defp needs_polish?(pr, state) do
+  defp next_eligible_pr(prs, repo) do
+    Enum.find_value(prs, fn pr ->
+      case needs_polish?(pr, repo) do
+        {:ok, substantive_change_at} -> {pr, substantive_change_at}
+        :skip -> nil
+      end
+    end)
+  end
+
+  defp needs_polish?(pr, repo) do
     labels = pr["labels"] || []
     label_names = Enum.map(labels, &String.downcase(&1["name"] || ""))
     checks = pr["statusCheckRollup"] |> List.wrap() |> Enum.filter(&is_map/1)
 
-    "lgtm" not in label_names and
-      Conductor.GitHub.evaluate_checks(checks) and
-      polish_eligible?(state.repo, pr["number"])
+    if "lgtm" in label_names or not Conductor.GitHub.evaluate_checks(checks) do
+      :skip
+    else
+      polish_eligible?(repo, pr["number"])
+    end
   end
 
-  defp dispatch_polisher(state, pr) do
+  defp dispatch_polisher(state, pr, substantive_change_at) do
     pr_number = pr["number"]
     Logger.info("[fern] PR ##{pr_number} is green, dispatching Fern")
 
@@ -181,13 +192,25 @@ defmodule Conductor.Polisher do
         end
       end)
 
-    %{state | in_flight: Map.put(state.in_flight, pr_number, task.ref)}
+    %{
+      state
+      | in_flight:
+          Map.put(state.in_flight, pr_number, %{
+            ref: task.ref,
+            substantive_change_at: substantive_change_at
+          })
+    }
   end
 
   defp complete_task(state, ref, result) do
-    {pr_number, in_flight} =
-      Enum.reduce(state.in_flight, {nil, %{}}, fn {pr, r}, {found, acc} ->
-        if r == ref, do: {pr, acc}, else: {found, Map.put(acc, pr, r)}
+    {pr_number, in_flight_entry, in_flight} =
+      Enum.reduce(state.in_flight, {nil, nil, %{}}, fn {pr, entry},
+                                                       {found_pr, found_entry, acc} ->
+        if entry.ref == ref do
+          {pr, entry, acc}
+        else
+          {found_pr, found_entry, Map.put(acc, pr, entry)}
+        end
       end)
 
     state = %{state | in_flight: in_flight}
@@ -195,7 +218,7 @@ defmodule Conductor.Polisher do
     if pr_number do
       case result do
         {:ok, _} ->
-          maybe_mark_polished(state.repo, pr_number, result)
+          maybe_mark_polished(state.repo, pr_number, in_flight_entry, result)
           Logger.info("[fern] completed work on PR ##{pr_number}")
           Store.record_event("polisher", "polisher_complete", %{pr_number: pr_number})
           reset_health(state)
@@ -239,18 +262,43 @@ defmodule Conductor.Polisher do
              last_substantive_change_at: substantive_change_at
            }),
          {:ok, pr_state} <- Store.get_pr_state(repo, pr_number) do
-      needs_polish_after_change?(pr_state)
+      if needs_polish_after_change?(pr_state) do
+        {:ok, substantive_change_at}
+      else
+        :skip
+      end
     else
       {:error, reason} ->
         Logger.warning(
           "[fern] failed to evaluate polish state for PR ##{pr_number}: #{inspect(reason)}"
         )
 
-        true
+        fallback_polish_eligibility(repo, pr_number)
     end
   end
 
-  defp polish_eligible?(_repo, _pr_number), do: true
+  defp polish_eligible?(_repo, _pr_number), do: {:ok, nil}
+
+  defp fallback_polish_eligibility(repo, pr_number) do
+    case Store.get_pr_state(repo, pr_number) do
+      {:ok, pr_state} ->
+        if needs_polish_after_change?(pr_state) do
+          {:ok, pr_state["last_substantive_change_at"]}
+        else
+          :skip
+        end
+
+      {:error, :not_found} ->
+        {:ok, nil}
+
+      {:error, reason} ->
+        Logger.warning(
+          "[fern] failed to read stored polish state for PR ##{pr_number}: #{inspect(reason)}"
+        )
+
+        {:ok, nil}
+    end
+  end
 
   defp needs_polish_after_change?(%{"polished_at" => nil}), do: true
   defp needs_polish_after_change?(%{"last_substantive_change_at" => nil}), do: true
@@ -267,11 +315,34 @@ defmodule Conductor.Polisher do
     end
   end
 
-  defp maybe_mark_polished(repo, pr_number, {:ok, _output}) do
-    Store.mark_pr_polished(repo, pr_number)
+  defp maybe_mark_polished(
+         repo,
+         pr_number,
+         %{substantive_change_at: substantive_change_at},
+         {:ok, _output}
+       ) do
+    case Store.get_pr_state(repo, pr_number) do
+      {:ok, %{"last_substantive_change_at" => current_change_at}} ->
+        if compare_timestamps(substantive_change_at, current_change_at) == :eq do
+          Store.mark_pr_polished(repo, pr_number, substantive_change_at)
+        else
+          Logger.info(
+            "[fern] skipping polished_at update for PR ##{pr_number}; substantive activity changed during polish"
+          )
+
+          :ok
+        end
+
+      {:error, reason} ->
+        Logger.warning(
+          "[fern] failed to load stored polish state for PR ##{pr_number}: #{inspect(reason)}"
+        )
+
+        :ok
+    end
   end
 
-  defp maybe_mark_polished(_repo, _pr_number, _result), do: :ok
+  defp maybe_mark_polished(_repo, _pr_number, _in_flight_entry, _result), do: :ok
 
   defp compare_timestamps(left, right) when is_binary(left) and is_binary(right) do
     with {:ok, left_dt, _} <- DateTime.from_iso8601(left),

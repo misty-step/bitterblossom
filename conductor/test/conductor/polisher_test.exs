@@ -132,6 +132,21 @@ defmodule Conductor.PolisherTest do
     end
   end
 
+  defp wait_until(fun, attempts \\ 20)
+
+  defp wait_until(_fun, 0) do
+    flunk("timed out waiting for condition")
+  end
+
+  defp wait_until(fun, attempts) do
+    if fun.() do
+      :ok
+    else
+      Process.sleep(25)
+      wait_until(fun, attempts - 1)
+    end
+  end
+
   setup do
     db_path = Path.join(System.tmp_dir!(), "polisher_test_#{:rand.uniform(999_999)}.db")
     event_log = Path.join(System.tmp_dir!(), "polisher_test_#{:rand.uniform(999_999)}.jsonl")
@@ -457,6 +472,101 @@ defmodule Conductor.PolisherTest do
       MockState.put({:substantive_change_at, 42}, {:ok, next_change_at})
 
       assert_receive {:dispatched, "bb-fern", _prompt}, 2_000
+    end
+
+    test "does not mark a PR polished when substantive activity changes during polish" do
+      initial_change_at =
+        DateTime.utc_now()
+        |> DateTime.add(-60, :second)
+        |> DateTime.to_iso8601()
+
+      updated_change_at =
+        DateTime.utc_now()
+        |> DateTime.add(60, :second)
+        |> DateTime.to_iso8601()
+
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 42,
+             "headRefName" => "factory/99-12345",
+             "title" => "feat: implement feature",
+             "body" => "Closes #99",
+             "labels" => [],
+             "statusCheckRollup" => @green_checks
+           }
+         ]}
+      )
+
+      MockState.put({:substantive_change_at, 42}, {:ok, initial_change_at})
+      MockState.put(:dispatch_delay_ms, 150)
+
+      {:ok, _pid} =
+        Polisher.start_link(
+          repo: "test/repo",
+          polisher_sprite: "bb-fern",
+          poll_ms: 500
+        )
+
+      Process.sleep(50)
+      MockState.put({:substantive_change_at, 42}, {:ok, updated_change_at})
+
+      assert :ok =
+               Store.upsert_pr_state("test/repo", 42, %{
+                 last_substantive_change_at: updated_change_at
+               })
+
+      assert_receive {:dispatched, "bb-fern", _prompt}, 2_000
+
+      wait_until(fn ->
+        case Store.get_pr_state("test/repo", 42) do
+          {:ok, pr} ->
+            pr["last_substantive_change_at"] == updated_change_at and is_nil(pr["polished_at"])
+
+          _ ->
+            false
+        end
+      end)
+    end
+
+    test "uses stored polish state when GitHub substantive activity lookup fails" do
+      substantive_change_at =
+        DateTime.utc_now()
+        |> DateTime.add(-60, :second)
+        |> DateTime.to_iso8601()
+
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 42,
+             "headRefName" => "factory/99-12345",
+             "title" => "feat: implement feature",
+             "body" => "Closes #99",
+             "labels" => [],
+             "statusCheckRollup" => @green_checks
+           }
+         ]}
+      )
+
+      assert :ok =
+               Store.upsert_pr_state("test/repo", 42, %{
+                 last_substantive_change_at: substantive_change_at
+               })
+
+      assert :ok = Store.mark_pr_polished("test/repo", 42, substantive_change_at)
+
+      {:ok, _pid} =
+        Polisher.start_link(
+          repo: "test/repo",
+          polisher_sprite: "bb-fern",
+          poll_ms: 50
+        )
+
+      refute_receive {:dispatched, "bb-fern", _prompt}, 300
     end
   end
 
