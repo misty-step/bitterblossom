@@ -232,7 +232,8 @@ defmodule Conductor.Polisher do
   end
 
   defp polish_eligible?(repo, pr_number) when is_integer(pr_number) do
-    with {:ok, substantive_change_at} <- code_host_mod().pr_substantive_change_at(repo, pr_number),
+    with {:ok, substantive_change_at} <-
+           code_host_mod().pr_substantive_change_at(repo, pr_number),
          :ok <-
            Store.upsert_pr_state(repo, pr_number, %{
              last_substantive_change_at: substantive_change_at
