@@ -82,10 +82,10 @@ defmodule Conductor.Prompt do
     """
     # Muse Observe Task
 
-    Run ID: #{prompt_value(run, "run_id")}
-    Issue: ##{prompt_value(run, "issue_number")} — #{prompt_value(run, "issue_title")}
-    Repository Root: #{workspace_root}
-    PR: #{prompt_value(run, "pr_number", "none")}
+    Run ID: #{inline_prompt_value(run, "run_id")}
+    Issue: ##{inline_prompt_value(run, "issue_number")} — #{inline_prompt_value(run, "issue_title")}
+    Repository Root: #{sanitize_inline(workspace_root)}
+    PR: #{inline_prompt_value(run, "pr_number", "none")}
 
     ## Run Events
 
@@ -124,8 +124,8 @@ defmodule Conductor.Prompt do
     """
     # Muse Synthesis Task
 
-    Repo: #{repo}
-    Repository Root: #{workspace_root}
+    Repo: #{sanitize_inline(repo)}
+    Repository Root: #{sanitize_inline(workspace_root)}
 
     ## Recent Reflections
 
@@ -327,7 +327,7 @@ defmodule Conductor.Prompt do
     |> String.replace("~~~", "~ ~ ~")
   end
 
-  defp prompt_value(map, key, default \\ "") do
+  defp prompt_value(map, key, default) do
     map
     |> Map.get(key)
     |> case do
@@ -345,6 +345,12 @@ defmodule Conductor.Prompt do
     end
     |> to_string()
     |> sanitize_fence()
+  end
+
+  defp inline_prompt_value(map, key, default \\ "") do
+    map
+    |> prompt_value(key, default)
+    |> sanitize_inline()
   end
 
   defp format_events(events) do

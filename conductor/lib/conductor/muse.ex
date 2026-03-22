@@ -22,6 +22,7 @@ defmodule Conductor.Muse do
     :retry_ref,
     queue: :queue.new(),
     pending_synthesis: false,
+    synthesis_progress: nil,
     in_flight: %{},
     failure_count: 0,
     health: :healthy
@@ -187,6 +188,7 @@ defmodule Conductor.Muse do
     end
   end
 
+  defp maybe_dispatch(%{retry_ref: retry_ref} = state) when is_reference(retry_ref), do: state
   defp maybe_dispatch(%{in_flight: in_flight} = state) when map_size(in_flight) > 0, do: state
 
   defp maybe_dispatch(%{queue: queue} = state) do
@@ -199,22 +201,33 @@ defmodule Conductor.Muse do
             observe_run(state.repo, state.muse_sprite, run_id)
           end)
 
-        %{state | queue: rest, in_flight: %{{:observe, run_id} => task.ref}}
+        %{
+          state
+          | queue: rest,
+            in_flight: Map.put(state.in_flight, {:observe, run_id}, task.ref)
+        }
 
       {:empty, _queue} ->
         maybe_dispatch_synthesis(state)
     end
   end
 
+  defp maybe_dispatch_synthesis(%{retry_ref: retry_ref} = state) when is_reference(retry_ref),
+    do: state
+
   defp maybe_dispatch_synthesis(%{pending_synthesis: true} = state) do
     Logger.info("[muse] dispatching synthesis")
 
     task =
       Task.Supervisor.async_nolink(Conductor.TaskSupervisor, fn ->
-        run_synthesis(state.repo, state.muse_sprite)
+        run_synthesis(state.repo, state.muse_sprite, state.synthesis_progress)
       end)
 
-    %{state | pending_synthesis: false, in_flight: %{synthesis: task.ref}}
+    %{
+      state
+      | pending_synthesis: false,
+        in_flight: Map.put(state.in_flight, :synthesis, task.ref)
+    }
   end
 
   defp maybe_dispatch_synthesis(state), do: state
@@ -224,12 +237,12 @@ defmodule Conductor.Muse do
       case Enum.find(state.in_flight, fn {_key, task_ref} -> task_ref == ref end) do
         {{:observe, run_id}, _task_ref} ->
           state
-          |> Map.put(:in_flight, %{})
+          |> remove_in_flight_task({:observe, run_id})
           |> handle_observation_result(run_id, result)
 
         {:synthesis, _task_ref} ->
           state
-          |> Map.put(:in_flight, %{})
+          |> remove_in_flight_task(:synthesis)
           |> handle_synthesis_result(result)
 
         nil ->
@@ -252,6 +265,10 @@ defmodule Conductor.Muse do
     reset_health(state)
   end
 
+  defp handle_observation_result(state, run_id, {:error, reason, _code}) do
+    handle_observation_result(state, run_id, {:error, reason})
+  end
+
   defp handle_observation_result(state, run_id, {:error, reason}) do
     Logger.warning("[muse] observation failed for #{run_id}: #{inspect(reason)}")
     Store.record_event(run_id, "muse_observation_failed", %{error: inspect(reason)})
@@ -269,14 +286,33 @@ defmodule Conductor.Muse do
       synthesis_path: metadata.path
     })
 
-    reset_health(state)
+    state
+    |> Map.put(:synthesis_progress, nil)
+    |> reset_health()
   end
 
   defp handle_synthesis_result(state, {:error, reason}) do
+    retry_synthesis(state, reason, state.synthesis_progress)
+  end
+
+  defp handle_synthesis_result(state, {:error, reason, progress}) when is_map(progress) do
+    retry_synthesis(state, reason, progress)
+  end
+
+  defp handle_synthesis_result(state, {:error, reason, _code}) do
+    retry_synthesis(state, reason, state.synthesis_progress)
+  end
+
+  defp retry_synthesis(state, reason, progress) do
     Logger.warning("[muse] synthesis failed: #{inspect(reason)}")
-    Store.record_event("muse", "muse_synthesis_failed", %{error: inspect(reason)})
+
+    Store.record_event("muse", "muse_synthesis_failed", %{
+      error: inspect(reason),
+      last_applied_action_index: synthesis_progress_index(progress)
+    })
 
     state
+    |> Map.put(:synthesis_progress, progress)
     |> Map.put(:pending_synthesis, true)
     |> apply_backoff()
   end
@@ -308,7 +344,7 @@ defmodule Conductor.Muse do
 
   defp observe_run(repo, muse_sprite, run_id) do
     with {:ok, run} <- Store.get_run(run_id),
-         events <- Store.list_events(run_id),
+         events <- Store.list_events(run_id) |> Enum.reject(&muse_event?/1),
          :ok <- ensure_muse_dirs(),
          prompt <- Prompt.build_muse_observe_prompt(run, events, workspace_root(repo)),
          :ok <- workspace_mod().sync_persona(muse_sprite, workspace_root(repo), :muse),
@@ -330,7 +366,7 @@ defmodule Conductor.Muse do
     end
   end
 
-  defp run_synthesis(repo, muse_sprite) do
+  defp run_synthesis(repo, muse_sprite, nil) do
     with :ok <- ensure_muse_dirs(),
          {:ok, open_issues} <- open_issues(repo),
          reflections <- read_recent_reflections(),
@@ -352,13 +388,36 @@ defmodule Conductor.Muse do
              harness_opts: [reasoning_effort: "high"]
            ),
          {:ok, parsed} <- parse_synthesis(output),
-         {:ok, actions_taken} <-
-           execute_actions(repo, parsed.actions |> Enum.take(@max_actions), open_issues),
-         {:ok, path} <- write_synthesis(parsed.summary, actions_taken) do
-      {:ok, %{summary: parsed.summary, actions_taken: actions_taken, path: path}}
+         {:ok, progress} <-
+           execute_actions(repo, %{
+             summary: parsed.summary,
+             actions: Enum.take(parsed.actions, @max_actions),
+             open_issues: open_issues,
+             actions_taken: [],
+             last_applied_action_index: -1
+           }),
+         {:ok, path} <- write_synthesis(progress.summary, progress.actions_taken) do
+      {:ok, %{summary: progress.summary, actions_taken: progress.actions_taken, path: path}}
     else
-      {:error, msg, code} -> {:error, "dispatch failed (#{code}): #{msg}"}
-      {:error, reason} -> {:error, reason}
+      {:error, reason, progress} when is_map(progress) ->
+        {:error, reason, progress}
+
+      {:error, msg, code} when is_binary(msg) and is_integer(code) ->
+        {:error, "dispatch failed (#{code}): #{msg}"}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp run_synthesis(repo, _muse_sprite, progress) do
+    with :ok <- ensure_muse_dirs(),
+         {:ok, progress} <- execute_actions(repo, progress),
+         {:ok, path} <- write_synthesis(progress.summary, progress.actions_taken) do
+      {:ok, %{summary: progress.summary, actions_taken: progress.actions_taken, path: path}}
+    else
+      {:error, reason, progress} -> {:error, reason, progress}
+      {:error, reason} -> {:error, reason, progress}
     end
   end
 
@@ -390,7 +449,7 @@ defmodule Conductor.Muse do
   end
 
   defp unwrap_json_fence(output) do
-    case Regex.run(~r/\A```(?:json)?\s*(.*?)\s*```\z/is, output, capture: :all_but_first) do
+    case Regex.run(~r/```(?:json)?\s*(.*?)\s*```/is, output, capture: :all_but_first) do
       [json] -> json
       _ -> output
     end
@@ -451,22 +510,25 @@ defmodule Conductor.Muse do
     "- #{action.action}: #{action.title}#{issue}"
   end
 
-  defp execute_actions(repo, actions, open_issues) do
-    actions
-    |> Enum.reduce_while({:ok, [], open_issues}, fn action, {:ok, taken, current_open_issues} ->
-      result = execute_action(repo, action, current_open_issues)
+  defp execute_actions(repo, progress) do
+    start_index = progress.last_applied_action_index + 1
 
-      case result do
+    progress.actions
+    |> Enum.with_index()
+    |> Enum.drop(start_index)
+    |> Enum.reduce_while({:ok, progress}, fn {action, index}, {:ok, current_progress} ->
+      case execute_action(repo, action, current_progress.open_issues) do
         {:ok, action_taken, next_open_issues} ->
-          {:cont, {:ok, [action_taken | taken], next_open_issues}}
+          {:cont,
+           {:ok, record_synthesis_action(current_progress, index, action_taken, next_open_issues)}}
 
         {:error, reason} ->
-          {:halt, {:error, reason}}
+          {:halt, {:error, reason, current_progress}}
       end
     end)
     |> case do
-      {:ok, taken, _open_issues} -> {:ok, Enum.reverse(taken)}
-      {:error, reason} -> {:error, reason}
+      {:ok, next_progress} -> {:ok, next_progress}
+      {:error, reason, failed_progress} -> {:error, reason, failed_progress}
     end
   end
 
@@ -552,12 +614,14 @@ defmodule Conductor.Muse do
              tmp
            ]) do
         {:ok, url} ->
-          {:ok,
-           %{
-             number: parse_issue_number(url),
-             title: "[muse] #{title}",
-             url: String.trim(url)
-           }}
+          with {:ok, issue_number} <- parse_issue_number(url) do
+            {:ok,
+             %{
+               number: issue_number,
+               title: "[muse] #{title}",
+               url: String.trim(url)
+             }}
+          end
 
         {:error, msg, code} ->
           {:error, {:issue_creation_failed, code, msg}}
@@ -577,7 +641,8 @@ defmodule Conductor.Muse do
         other -> {:error, {:list_issues_failed, other}}
       end
     else
-      {:ok, []}
+      Logger.warning("[muse] tracker #{inspect(issue_client)} does not implement list_issues/2")
+      {:error, :unsupported_list_issues}
     end
   end
 
@@ -639,8 +704,8 @@ defmodule Conductor.Muse do
 
   defp parse_issue_number(url) do
     case Regex.run(~r{/issues/(\d+)\s*$}, String.trim(url), capture: :all_but_first) do
-      [issue_number] -> String.to_integer(issue_number)
-      _ -> nil
+      [issue_number] -> {:ok, String.to_integer(issue_number)}
+      _ -> {:error, {:invalid_issue_url, String.trim(url)}}
     end
   end
 
@@ -729,6 +794,35 @@ defmodule Conductor.Muse do
             nil
         end)
     end
+  end
+
+  defp muse_event?(event) do
+    event_type = Map.get(event, "event_type") || Map.get(event, :event_type, "")
+    String.starts_with?(to_string(event_type), "muse_")
+  end
+
+  defp record_synthesis_action(progress, index, action_taken, open_issues) do
+    Store.record_event("muse", "muse_synthesis_action_applied", %{
+      index: index,
+      action: action_taken.action,
+      title: action_taken.title,
+      existing_issue: Map.get(action_taken, :existing_issue),
+      skipped_reason: Map.get(action_taken, :skipped_reason)
+    })
+
+    %{
+      progress
+      | actions_taken: progress.actions_taken ++ [action_taken],
+        open_issues: open_issues,
+        last_applied_action_index: index
+    }
+  end
+
+  defp synthesis_progress_index(nil), do: -1
+  defp synthesis_progress_index(progress), do: Map.get(progress, :last_applied_action_index, -1)
+
+  defp remove_in_flight_task(state, key) do
+    %{state | in_flight: Map.delete(state.in_flight, key)}
   end
 
   defp queue_contains?(queue, run_id) do

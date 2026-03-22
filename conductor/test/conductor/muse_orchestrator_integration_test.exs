@@ -55,7 +55,12 @@ defmodule Conductor.MuseOrchestratorIntegrationTest do
     def get_pr_checks(_repo, _pr_number), do: {:ok, []}
     def ci_status(_repo, _pr_number), do: {:ok, %{state: :green, summary: "green", pending: []}}
 
-    def labeled_prs(repo, label), do: {:ok, MockState.get({:labeled_prs, repo, label}, [])}
+    def labeled_prs(repo, label) do
+      key = {:labeled_prs, repo, label}
+      prs = MockState.get(key, [])
+      MockState.put(key, [])
+      {:ok, prs}
+    end
 
     def merge(_repo, pr_number, _opts) do
       merges = MockState.get(:merge_calls, [])
@@ -104,11 +109,14 @@ defmodule Conductor.MuseOrchestratorIntegrationTest do
     event_log =
       Path.join(System.tmp_dir!(), "muse_orch_#{System.unique_integer([:positive])}.jsonl")
 
+    orig_poll_seconds = Application.get_env(:conductor, :poll_seconds)
+
     stop_conductor_app()
     stop_process(Orchestrator)
     stop_process(Store)
     stop_process(Conductor.TaskSupervisor)
     stop_process(Conductor.RunSupervisor)
+    Application.put_env(:conductor, :poll_seconds, 1)
     {:ok, _} = Store.start_link(db_path: db_path, event_log: event_log)
     {:ok, _} = Task.Supervisor.start_link(name: Conductor.TaskSupervisor)
     {:ok, _} = DynamicSupervisor.start_link(strategy: :one_for_one, name: Conductor.RunSupervisor)
@@ -138,6 +146,7 @@ defmodule Conductor.MuseOrchestratorIntegrationTest do
       MockState.cleanup()
 
       Enum.each(originals, fn {key, value} -> restore_env(key, value) end)
+      restore_env(:poll_seconds, orig_poll_seconds)
 
       File.rm(db_path)
       File.rm(event_log)
@@ -185,6 +194,8 @@ defmodule Conductor.MuseOrchestratorIntegrationTest do
       status: "ci_timeout",
       completed_at: DateTime.utc_now() |> DateTime.to_iso8601()
     })
+
+    Process.sleep(1_100)
 
     assert MockState.get(:observe_calls, []) == [merged_run_id]
   end

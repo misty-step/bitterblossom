@@ -145,12 +145,27 @@ defmodule Conductor.MuseTest do
     def issue_comments(_repo, _issue_number), do: {:ok, []}
   end
 
+  defmodule NoListIssuesGitHub do
+    def list_eligible(_repo, _opts), do: []
+    def get_issue(_repo, _number), do: {:error, :unsupported}
+    def transition(_repo, _id, _state), do: :ok
+    def issue_has_label?(_repo, _issue_number, _label), do: {:ok, false}
+    def issue_comments(_repo, _issue_number), do: {:ok, []}
+  end
+
   defmodule MockShell do
     alias Conductor.MuseTest.MockState
 
     def cmd(program, args, _opts \\ []) do
       MockState.append(:shell_calls, {program, args})
-      MockState.get(:shell_result, {:ok, "https://example.test/issues/999"})
+
+      case MockState.get(:shell_fun) do
+        fun when is_function(fun, 2) ->
+          fun.(program, args)
+
+        _ ->
+          MockState.get(:shell_result, {:ok, "https://example.test/issues/999"})
+      end
     end
   end
 
@@ -399,12 +414,69 @@ defmodule Conductor.MuseTest do
     end)
   end
 
-  test "observation accepts fenced JSON payloads", %{repo_root: repo_root} do
-    run_id = create_merged_run(783, "Fenced observation")
+  test "invalid JSON observation payload records failure and retries" do
+    run_id = create_merged_run(784, "Observation parse failure")
 
     MockState.put(:dispatch_fun, fn _worker, prompt ->
       if String.contains?(prompt, "# Muse Observe Task") do
-        {:ok, "```json\n#{MockWorker.observe_payload()}\n```"}
+        {:ok, "{invalid"}
+      else
+        {:error, "unexpected prompt", 1}
+      end
+    end)
+
+    {:ok, _pid} = start_muse()
+
+    Muse.observe(run_id)
+
+    eventually(fn ->
+      status = Muse.status()
+      assert status.failure_count == 1
+      assert status.queue_length == 1
+    end)
+
+    eventually(fn ->
+      [event] =
+        Store.list_all_events(limit: 10)
+        |> Enum.filter(&(&1["event_type"] == "muse_observation_failed"))
+
+      assert event["payload"]["error"] =~ "invalid_observation_payload"
+    end)
+  end
+
+  test "backoff blocks new observation dispatches until retry" do
+    blocked_run_id = create_merged_run(785, "Blocked by backoff")
+    queued_run_id = create_merged_run(786, "Queued during backoff")
+
+    MockState.put(:dispatch_fun, fn _worker, prompt ->
+      if String.contains?(prompt, "# Muse Observe Task") do
+        {:ok, ~s({"summary":"missing reflection"})}
+      else
+        {:error, "unexpected prompt", 1}
+      end
+    end)
+
+    {:ok, _pid} = start_muse()
+
+    Muse.observe(blocked_run_id)
+
+    eventually(fn ->
+      assert Muse.status().failure_count == 1
+    end)
+
+    Muse.observe(queued_run_id)
+    Process.sleep(100)
+
+    assert length(MockState.get(:dispatches, [])) == 1
+    assert Muse.status().queue_length == 2
+  end
+
+  test "observation accepts fenced JSON payloads", %{repo_root: repo_root} do
+    run_id = create_merged_run(787, "Fenced observation")
+
+    MockState.put(:dispatch_fun, fn _worker, prompt ->
+      if String.contains?(prompt, "# Muse Observe Task") do
+        {:ok, "Muse summary follows.\n```json\n#{MockWorker.observe_payload()}\n```\nDone."}
       else
         {:error, "unexpected prompt", 1}
       end
@@ -421,6 +493,36 @@ defmodule Conductor.MuseTest do
       assert File.exists?(reflection_file)
       assert Muse.status().health == :healthy
     end)
+  end
+
+  test "observation retries when writing the reflection file fails", %{repo_root: repo_root} do
+    run_id = create_merged_run(788, "Reflection write failure")
+    reflection_dir = Path.join(repo_root, ".bb/muse/reflections")
+    File.mkdir_p!(reflection_dir)
+    File.mkdir_p!(Path.join(reflection_dir, "#{Date.utc_today()}-#{run_id}.md"))
+
+    {:ok, _pid} = start_muse()
+
+    Muse.observe(run_id)
+
+    eventually(fn ->
+      status = Muse.status()
+      assert status.failure_count == 1
+      assert status.queue_length == 1
+    end)
+  end
+
+  test "Muse observation prompts exclude Muse-generated events" do
+    run_id = create_merged_run(789, "Filter Muse events")
+    Store.record_event(run_id, "muse_observation_failed", %{error: "previous failure"})
+
+    {:ok, _pid} = start_muse()
+
+    Muse.observe(run_id)
+
+    assert_receive {:dispatched, "bb-muse", prompt}, 2_000
+    assert prompt =~ "[merged]"
+    refute prompt =~ "muse_observation_failed"
   end
 
   test "invalid synthesis payload retries and clears failure state after a successful retry", %{
@@ -467,6 +569,78 @@ defmodule Conductor.MuseTest do
     eventually(fn ->
       assert Path.wildcard(Path.join(repo_root, ".bb/muse/syntheses/*.md")) != []
     end)
+  end
+
+  test "synthesis retries resume from the next unapplied action", %{repo_root: repo_root} do
+    reflection_dir = Path.join(repo_root, ".bb/muse/reflections")
+    File.mkdir_p!(reflection_dir)
+    File.write!(Path.join(reflection_dir, "#{Date.utc_today()}-run-1.md"), "# Reflection 1\n")
+
+    MockState.put(:dispatch_fun, fn _worker, prompt ->
+      if String.contains?(prompt, "# Muse Synthesis Task") do
+        {:ok,
+         Jason.encode!(%{
+           summary: "resume actions",
+           actions: [
+             %{
+               action: "comment_issue",
+               issue_number: 601,
+               title: "Comment once",
+               body: "Comment should not duplicate."
+             },
+             %{action: "create_issue", title: "Retryable follow-up", body: "Body"}
+           ]
+         })}
+      else
+        {:error, "unexpected prompt", 1}
+      end
+    end)
+
+    MockState.put(:shell_fun, fn "gh", _args ->
+      attempts = MockState.get(:create_attempts, 0)
+      MockState.put(:create_attempts, attempts + 1)
+
+      if attempts == 0 do
+        {:error, "gh unavailable", 1}
+      else
+        {:ok, "https://example.test/issues/1001"}
+      end
+    end)
+
+    {:ok, _pid} = start_muse()
+
+    Muse.synthesize()
+
+    eventually(fn ->
+      status = Muse.status()
+      assert status.failure_count == 1
+      assert status.pending_synthesis
+    end)
+
+    assert MockState.get({:comments, "test/repo", 601}, []) == ["Comment should not duplicate."]
+
+    assert Enum.count(
+             MockState.get(:dispatches, []),
+             &String.contains?(&1, "# Muse Synthesis Task")
+           ) == 1
+
+    send(Muse, :retry)
+
+    eventually(fn ->
+      status = Muse.status()
+      assert status.failure_count == 0
+      assert status.health == :healthy
+      refute status.pending_synthesis
+    end)
+
+    assert MockState.get({:comments, "test/repo", 601}, []) == ["Comment should not duplicate."]
+
+    assert Enum.count(
+             MockState.get(:dispatches, []),
+             &String.contains?(&1, "# Muse Synthesis Task")
+           ) == 1
+
+    assert length(MockState.get(:shell_calls, [])) == 2
   end
 
   test "comment_issue actions without an issue number are recorded as no-ops", %{
@@ -652,11 +826,106 @@ defmodule Conductor.MuseTest do
     end)
   end
 
-  defp start_muse do
+  test "synthesis fails closed when tracker cannot list open issues", %{repo_root: repo_root} do
+    reflection_dir = Path.join(repo_root, ".bb/muse/reflections")
+    File.mkdir_p!(reflection_dir)
+    File.write!(Path.join(reflection_dir, "#{Date.utc_today()}-run-1.md"), "# Reflection 1\n")
+
+    tracker_module = Application.get_env(:conductor, :tracker_module)
+    Application.put_env(:conductor, :tracker_module, NoListIssuesGitHub)
+
+    on_exit(fn ->
+      Application.put_env(:conductor, :tracker_module, tracker_module)
+    end)
+
+    {:ok, _pid} = start_muse()
+
+    Muse.synthesize()
+
+    eventually(fn ->
+      status = Muse.status()
+      assert status.failure_count == 1
+      assert status.pending_synthesis
+    end)
+
+    assert MockState.get(:shell_calls, []) == []
+  end
+
+  test "issue payload limits allow exact boundaries and skip oversized payloads", %{
+    repo_root: repo_root
+  } do
+    reflection_dir = Path.join(repo_root, ".bb/muse/reflections")
+    File.mkdir_p!(reflection_dir)
+    File.write!(Path.join(reflection_dir, "#{Date.utc_today()}-run-1.md"), "# Reflection 1\n")
+
+    exact_title = String.duplicate("t", 249)
+    over_title = String.duplicate("t", 250)
+    exact_body = String.duplicate("b", 65_536)
+    over_body = String.duplicate("b", 65_537)
+
+    MockState.put(:dispatch_fun, fn _worker, prompt ->
+      if String.contains?(prompt, "# Muse Synthesis Task") do
+        {:ok,
+         Jason.encode!(%{
+           summary: "payload limits",
+           actions: [
+             %{action: "create_issue", title: exact_title, body: exact_body},
+             %{action: "create_issue", title: over_title, body: "Body"},
+             %{action: "create_issue", title: "Valid title", body: over_body}
+           ]
+         })}
+      else
+        {:error, "unexpected prompt", 1}
+      end
+    end)
+
+    {:ok, _pid} = start_muse()
+
+    Muse.synthesize()
+
+    eventually(fn ->
+      [event] =
+        Store.list_all_events(limit: 20)
+        |> Enum.filter(&(&1["event_type"] == "muse_synthesis_complete"))
+
+      assert event["payload"]["actions_taken"] == [
+               %{"action" => "create_issue", "title" => exact_title},
+               %{
+                 "action" => "none",
+                 "skipped_reason" => ":title_too_long",
+                 "title" => over_title
+               },
+               %{
+                 "action" => "none",
+                 "skipped_reason" => ":body_too_long",
+                 "title" => "Valid title"
+               }
+             ]
+
+      assert length(MockState.get(:shell_calls, [])) == 1
+    end)
+  end
+
+  test "stale synthesis ticks are ignored" do
+    {:ok, _pid} = start_muse()
+
+    send(Muse, {:synthesis_tick, make_ref()})
+    Process.sleep(100)
+
+    assert MockState.get(:dispatches, []) == []
+    refute Muse.status().pending_synthesis
+  end
+
+  defp start_muse(opts \\ []) do
     Muse.start_link(
-      repo: "test/repo",
-      muse_sprite: "bb-muse",
-      synthesis_interval_ms: 60_000
+      Keyword.merge(
+        [
+          repo: "test/repo",
+          muse_sprite: "bb-muse",
+          synthesis_interval_ms: 60_000
+        ],
+        opts
+      )
     )
   end
 
