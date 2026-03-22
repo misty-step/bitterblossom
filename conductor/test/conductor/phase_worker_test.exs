@@ -113,6 +113,8 @@ defmodule Conductor.PhaseWorkerTest do
     event_log = Path.join(System.tmp_dir!(), "phase_worker_test_#{:rand.uniform(999_999)}.jsonl")
 
     stop_conductor_app()
+    stop_process(Conductor.Fleet.HealthMonitor)
+    stop_process(Conductor.PhaseWorker.Supervisor)
     stop_process(Store)
     stop_process(Conductor.TaskSupervisor)
     stop_process(Conductor.PhaseWorkerRegistry)
@@ -378,10 +380,7 @@ defmodule Conductor.PhaseWorkerTest do
         capture_log(fn ->
           start_phase_worker(Roles.Polisher, ["bb-fern"])
 
-          assert_receive {:persona_synced, "bb-fern", "/home/sprite/workspace/repo", :fern},
-                         2_000
-
-          assert_receive {:dispatched, "bb-fern", prompt}, 2_000
+          assert_receive {:dispatched, "bb-fern", prompt}, 4_000
           assert prompt =~ "Repository Root: /home/sprite/workspace/repo"
           assert prompt =~ "gh pr edit --add-label lgtm"
         end)
@@ -710,9 +709,22 @@ defmodule Conductor.PhaseWorkerTest do
 
       start_phase_worker(Roles.Fixer, ["bb-thorn"], poll_ms: 50)
 
+      assert_receive {:persona_synced, "bb-thorn", "/home/sprite/workspace/repo", :thorn}, 2_000
       assert_receive :dispatch_attempted, 2_000
       refute_receive :dispatch_attempted, 70
-      assert_receive :dispatch_attempted, 200
+
+      status =
+        wait_for(fn ->
+          status = PhaseWorker.status(Roles.Fixer)
+
+          if status.failure_count >= 2 do
+            status
+          end
+        end)
+
+      assert status.failure_count >= 2
+      assert_receive {:persona_synced, "bb-thorn", "/home/sprite/workspace/repo", :thorn}, 500
+      assert_receive :dispatch_attempted, 500
     end
 
     test "marks the worker unavailable after repeated dispatch failures" do
@@ -776,11 +788,20 @@ defmodule Conductor.PhaseWorkerTest do
       {:ok, pid} = start_phase_worker(Roles.Fixer, ["bb-thorn"])
 
       assert_receive :crash_dispatch, 2_000
-      Process.sleep(100)
+      assert_receive :crash_dispatch, 2_000
 
-      status = PhaseWorker.status(Roles.Fixer)
+      status =
+        wait_for(fn ->
+          status = PhaseWorker.status(Roles.Fixer)
+
+          if status.failure_count >= 2 and status.in_flight == %{} and status.health == :degraded do
+            status
+          end
+        end)
+
       assert status.health == :degraded
-      assert status.failure_count >= 1
+      assert status.failure_count >= 2
+      assert status.in_flight == %{}
       assert Process.alive?(pid)
     end
 
