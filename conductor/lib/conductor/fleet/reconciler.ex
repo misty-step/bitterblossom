@@ -10,7 +10,7 @@ defmodule Conductor.Fleet.Reconciler do
   """
 
   require Logger
-  alias Conductor.Sprite
+  alias Conductor.{Config, Sprite, Store}
 
   @doc """
   Reconcile all declared sprites. Returns `{:ok, results}` where each
@@ -78,8 +78,7 @@ defmodule Conductor.Fleet.Reconciler do
         provision_and_verify(sprite, opts)
 
       :unreachable ->
-        Logger.error("[fleet] #{name} unreachable")
-        %{name: name, role: sprite.role, healthy: false, action: :unreachable}
+        recover_unreachable_sprite(sprite, opts)
     end
   end
 
@@ -129,6 +128,111 @@ defmodule Conductor.Fleet.Reconciler do
 
       {:ok, _status} ->
         :needs_setup
+    end
+  end
+
+  defp recover_unreachable_sprite(sprite, opts) do
+    max_attempts = Keyword.get(opts, :max_attempts, Config.fleet_recovery_max_attempts())
+    sleep_fn = Keyword.get(opts, :sleep_fn, &Process.sleep/1)
+    wake_fn = Keyword.get(opts, :wake_fn, &Sprite.wake/2)
+
+    do_recover_unreachable_sprite(sprite, opts, wake_fn, sleep_fn, 1, max_attempts, nil)
+  end
+
+  defp do_recover_unreachable_sprite(
+         sprite,
+         opts,
+         wake_fn,
+         sleep_fn,
+         attempt,
+         max_attempts,
+         reason
+       ) do
+    Logger.warning("[fleet] #{sprite.name} unreachable, wake attempt #{attempt}/#{max_attempts}")
+
+    latest_reason =
+      case wake_fn.(sprite.name, wake_opts(sprite, opts)) do
+        :ok ->
+          case check_health(sprite, opts) do
+            :healthy ->
+              Logger.info("[fleet] #{sprite.name} recovered after wake")
+              return_woken(sprite)
+
+            :needs_setup ->
+              Logger.info("[fleet] #{sprite.name} reachable after wake, provisioning...")
+              provision_and_verify(sprite, opts)
+
+            :unreachable ->
+              {:retry, "still unreachable after wake"}
+          end
+
+        {:error, wake_reason} ->
+          {:retry, wake_reason}
+      end
+
+    case latest_reason do
+      %{healthy: true} = result ->
+        result
+
+      %{healthy: false} = result ->
+        result
+
+      {:retry, latest_reason} when attempt < max_attempts ->
+        backoff_ms = recovery_backoff_ms(attempt)
+
+        Logger.warning(
+          "[fleet] #{sprite.name} wake attempt #{attempt}/#{max_attempts} failed: #{latest_reason}; retrying in #{backoff_ms}ms"
+        )
+
+        sleep_fn.(backoff_ms)
+
+        do_recover_unreachable_sprite(
+          sprite,
+          opts,
+          wake_fn,
+          sleep_fn,
+          attempt + 1,
+          max_attempts,
+          latest_reason
+        )
+
+      {:retry, latest_reason} ->
+        log_recovery_failure(sprite, max_attempts, latest_reason || reason || "unknown")
+        %{name: sprite.name, role: sprite.role, healthy: false, action: :unreachable}
+    end
+  end
+
+  defp wake_opts(sprite, opts) do
+    [harness: sprite.harness]
+    |> maybe_put(:org, Keyword.get(opts, :org))
+  end
+
+  defp maybe_put(opts, _key, nil), do: opts
+  defp maybe_put(opts, _key, ""), do: opts
+  defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
+
+  defp return_woken(sprite) do
+    %{name: sprite.name, role: sprite.role, healthy: true, action: :woken}
+  end
+
+  defp recovery_backoff_ms(attempt) do
+    base = Config.fleet_recovery_backoff_base_ms()
+    cap = Config.fleet_recovery_backoff_cap_ms()
+    min(trunc(base * :math.pow(2, attempt - 1)), cap)
+  end
+
+  defp log_recovery_failure(sprite, attempts, reason) do
+    Logger.error(
+      "[fleet] #{sprite.name} unreachable after #{attempts} wake attempt(s); operator attention required"
+    )
+
+    if Process.whereis(Store) do
+      Store.record_event("fleet", "sprite_recovery_failed", %{
+        name: sprite.name,
+        role: to_string(sprite.role),
+        attempts: attempts,
+        reason: to_string(reason)
+      })
     end
   end
 end

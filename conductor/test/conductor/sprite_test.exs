@@ -116,6 +116,11 @@ defmodule Conductor.SpriteTest do
       assert List.last(args) == "cd /ws && mix test"
       assert Enum.at(args, -2) == "-lc"
     end
+
+    test "supports HTTP POST transport for wake-safe execs" do
+      args = Sprite.exec_args("org", "sprite", [], "echo hello", transport: :http_post)
+      assert "--http-post" in args
+    end
   end
 
   test "status returns error when sprite is unreachable" do

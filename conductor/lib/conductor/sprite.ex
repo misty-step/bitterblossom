@@ -39,16 +39,34 @@ defmodule Conductor.Sprite do
     timeout = Keyword.get(opts, :timeout, 60_000)
     org = Keyword.get(opts, :org, Config.sprites_org!())
     files = Keyword.get(opts, :files, [])
+    transport = Keyword.get(opts, :transport, :http_post)
 
-    Shell.cmd("sprite", exec_args(org, sprite, files, command), timeout: timeout)
+    Shell.cmd("sprite", exec_args(org, sprite, files, command, transport: transport),
+      timeout: timeout
+    )
   end
 
   @doc false
+  @spec exec_args(binary(), binary(), binary()) :: [binary()]
+  def exec_args(org, sprite, command), do: exec_args(org, sprite, [], command, [])
+
+  @doc false
   @spec exec_args(binary(), binary(), list(), binary()) :: [binary()]
-  def exec_args(org, sprite, files \\ [], command) do
+  def exec_args(org, sprite, files, command), do: exec_args(org, sprite, files, command, [])
+
+  @doc false
+  @spec exec_args(binary(), binary(), list(), binary(), keyword()) :: [binary()]
+  def exec_args(org, sprite, files, command, opts) do
+    transport_args =
+      case Keyword.get(opts, :transport, :websocket) do
+        :http_post -> ["--http-post"]
+        _ -> []
+      end
+
     # "--" separates sprite CLI flags from the bash command.
     # Without it, bash's "-lc" is parsed as a sprite CLI flag.
-    ["-o", org, "-s", sprite, "exec"] ++ file_args(files) ++ ["--", "bash", "-lc", command]
+    ["-o", org, "-s", sprite, "exec"] ++
+      transport_args ++ file_args(files) ++ ["--", "bash", "-lc", command]
   end
 
   @spec exec!(binary(), binary(), keyword()) :: binary()
@@ -112,6 +130,14 @@ defmodule Conductor.Sprite do
   @spec kill(binary()) :: :ok | {:error, term()}
   def kill(sprite) do
     case exec(sprite, kill_agents_cmd(), timeout: 15_000) do
+      {:ok, _} -> :ok
+      {:error, msg, _} -> {:error, msg}
+    end
+  end
+
+  @spec wake(binary(), keyword()) :: :ok | {:error, term()}
+  def wake(sprite, opts \\ []) do
+    case exec(sprite, "true", Keyword.merge([timeout: 15_000, transport: :http_post], opts)) do
       {:ok, _} -> :ok
       {:error, msg, _} -> {:error, msg}
     end
@@ -209,7 +235,7 @@ defmodule Conductor.Sprite do
   def probe(sprite, opts \\ []) do
     exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
 
-    case exec_fn.(sprite, "echo ok", timeout: 15_000) do
+    case exec_fn.(sprite, "echo ok", timeout: 15_000, transport: :http_post) do
       {:ok, _} -> {:ok, %{sprite: sprite, reachable: true}}
       {:error, msg, _} -> {:error, msg}
     end
