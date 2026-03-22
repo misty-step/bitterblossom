@@ -16,7 +16,10 @@ defmodule Conductor.Polisher do
     :repo,
     :polisher_sprite,
     :poll_ms,
-    in_flight: %{}
+    :base_poll_ms,
+    in_flight: %{},
+    failure_count: 0,
+    health: :healthy
   ]
 
   # --- Public API ---
@@ -41,7 +44,8 @@ defmodule Conductor.Polisher do
     state = %__MODULE__{
       repo: repo,
       polisher_sprite: polisher_sprite,
-      poll_ms: poll_ms
+      poll_ms: poll_ms,
+      base_poll_ms: poll_ms
     }
 
     schedule_poll(state, 0)
@@ -56,19 +60,23 @@ defmodule Conductor.Polisher do
   end
 
   @impl true
-  def handle_info({ref, _result}, state) when is_reference(ref) do
+  def handle_info({ref, result}, state) when is_reference(ref) do
     Process.demonitor(ref, [:flush])
-    state = complete_task(state, ref)
+    state = complete_task(state, ref, result)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:DOWN, _ref, :process, _pid, reason}, state)
+      when reason in [:normal, :shutdown] do
+    # Normal exit — result already handled by {ref, result} handler
     {:noreply, state}
   end
 
   @impl true
   def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
-    if reason not in [:normal, :shutdown] do
-      Logger.warning("[fern] dispatch task exited: #{inspect(reason)}")
-    end
-
-    state = complete_task(state, ref)
+    Logger.warning("[fern] dispatch task crashed: #{inspect(reason)}")
+    state = complete_task(state, ref, {:error, "task_crashed: #{inspect(reason)}", 1})
     {:noreply, state}
   end
 
@@ -81,7 +89,9 @@ defmodule Conductor.Polisher do
      %{
        repo: state.repo,
        polisher_sprite: state.polisher_sprite,
-       in_flight: Map.keys(state.in_flight) |> Map.new(&{&1, :working})
+       in_flight: Map.keys(state.in_flight) |> Map.new(&{&1, :working}),
+       health: state.health,
+       failure_count: state.failure_count
      }, state}
   end
 
@@ -146,7 +156,7 @@ defmodule Conductor.Polisher do
     })
 
     task =
-      Task.async(fn ->
+      Task.Supervisor.async_nolink(Conductor.TaskSupervisor, fn ->
         try do
           with :ok <- workspace_mod().sync_persona(state.polisher_sprite, workspace, :fern),
                {:ok, output} <-
@@ -172,18 +182,50 @@ defmodule Conductor.Polisher do
     %{state | in_flight: Map.put(state.in_flight, pr_number, task.ref)}
   end
 
-  defp complete_task(state, ref) do
+  defp complete_task(state, ref, result) do
     {pr_number, in_flight} =
       Enum.reduce(state.in_flight, {nil, %{}}, fn {pr, r}, {found, acc} ->
         if r == ref, do: {pr, acc}, else: {found, Map.put(acc, pr, r)}
       end)
 
+    state = %{state | in_flight: in_flight}
+
     if pr_number do
-      Logger.info("[fern] completed work on PR ##{pr_number}")
-      Store.record_event("polisher", "polisher_complete", %{pr_number: pr_number})
+      case result do
+        {:ok, _} ->
+          Logger.info("[fern] completed work on PR ##{pr_number}")
+          Store.record_event("polisher", "polisher_complete", %{pr_number: pr_number})
+          reset_health(state)
+
+        {:error, msg, _code} ->
+          Logger.warning("[fern] dispatch failed for PR ##{pr_number}: #{msg}")
+          Store.record_event("polisher", "polisher_failed", %{pr_number: pr_number, error: msg})
+          apply_backoff(state)
+
+        other ->
+          Logger.warning("[fern] unexpected result for PR ##{pr_number}: #{inspect(other)}")
+          apply_backoff(state)
+      end
+    else
+      state
+    end
+  end
+
+  defp apply_backoff(state) do
+    count = state.failure_count + 1
+    backoff_ms = min(trunc(state.base_poll_ms * :math.pow(2, count)), 600_000)
+    health = if count >= 3, do: :unavailable, else: :degraded
+
+    Logger.info("[fern] backoff: failures=#{count}, next_poll=#{backoff_ms}ms, health=#{health}")
+    %{state | failure_count: count, poll_ms: backoff_ms, health: health}
+  end
+
+  defp reset_health(state) do
+    if state.failure_count > 0 do
+      Logger.info("[fern] recovered, resetting to healthy")
     end
 
-    %{state | in_flight: in_flight}
+    %{state | failure_count: 0, poll_ms: state.base_poll_ms, health: :healthy}
   end
 
   defp workspace_for_branch(repo, _branch) do

@@ -287,12 +287,13 @@ defmodule Conductor.Orchestrator do
 
   defp maybe_start_runs(state) do
     max_runs = Config.max_concurrent_runs()
-    slots = max_runs - map_size(state.active_runs)
+    slots = min(max_runs - map_size(state.active_runs), Config.max_starts_per_tick())
 
     state.repo
     |> tracker_mod().list_eligible(label: state.label)
     |> Enum.reject(&Store.leased?(state.repo, &1.number))
     |> Enum.reject(&operator_blocked_issue?(state.repo, &1.number))
+    |> Enum.reject(&issue_in_cooldown?(state.repo, &1.number))
     |> Enum.reduce({state, max(slots, 0)}, fn issue, {acc, remaining_slots} ->
       {next_state, outcome} = consider_issue(acc, issue, remaining_slots)
 
@@ -904,6 +905,41 @@ defmodule Conductor.Orchestrator do
       {:error, reason} ->
         Logger.warning("[merge] rebase failed for PR ##{pr_number}: #{reason}")
         mark_conflict_blocked(repo, pr_number)
+    end
+  end
+
+  defp issue_in_cooldown?(repo, issue_number) do
+    {streak, last_failed_at} = Store.issue_failure_streak(repo, issue_number)
+
+    if streak == 0 do
+      false
+    else
+      cap = Config.issue_cooldown_cap_minutes()
+      # Cap exponent to avoid :math.pow overflow (badarith at large streak values)
+      cooldown_minutes = min(trunc(:math.pow(2, min(streak, 20))), cap)
+
+      case DateTime.from_iso8601(last_failed_at || "") do
+        {:ok, failed_at, _} ->
+          cutoff = DateTime.add(DateTime.utc_now(), -cooldown_minutes * 60, :second)
+
+          if DateTime.compare(failed_at, cutoff) == :gt do
+            Logger.debug(
+              "[governor] issue ##{issue_number} in cooldown (streak=#{streak}, #{cooldown_minutes}m)"
+            )
+
+            true
+          else
+            false
+          end
+
+        _ ->
+          # Fail-closed: if timestamp is corrupt, treat as still cooling down
+          Logger.warning(
+            "[governor] issue ##{issue_number} has unparseable failure timestamp, skipping"
+          )
+
+          true
+      end
     end
   end
 

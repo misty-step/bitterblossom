@@ -523,10 +523,17 @@ defmodule Conductor.OrchestratorTest do
       orig_max = Application.get_env(:conductor, :max_concurrent_runs)
       Application.put_env(:conductor, :max_concurrent_runs, 3)
 
+      orig_starts = Application.get_env(:conductor, :max_starts_per_tick)
+      Application.put_env(:conductor, :max_starts_per_tick, 3)
+
       on_exit(fn ->
         if orig_max,
           do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
           else: Application.delete_env(:conductor, :max_concurrent_runs)
+
+        if orig_starts,
+          do: Application.put_env(:conductor, :max_starts_per_tick, orig_starts),
+          else: Application.delete_env(:conductor, :max_starts_per_tick)
       end)
 
       issues =
@@ -2351,6 +2358,58 @@ defmodule Conductor.OrchestratorTest do
       started = MockState.get(:started_runs, [])
       issue_numbers = Enum.map(started, fn {n, _w} -> n end)
       refute 900 in issue_numbers
+    end
+  end
+
+  describe "issue cooldown governor" do
+    test "skips issues with consecutive failures in cooldown period" do
+      # Plant 3 consecutive failures for issue 555
+      for i <- 1..3 do
+        {:ok, rid} =
+          Store.create_run(%{
+            repo: "test/repo",
+            issue_number: 555,
+            issue_title: "failing",
+            builder_sprite: "s",
+            run_id: "cool-fail-#{i}"
+          })
+
+        Store.complete_run(rid, "failed", "failed")
+      end
+
+      issue = %Conductor.Issue{
+        number: 555,
+        title: "failing issue",
+        body: "## Problem\nsomething\n## Acceptance Criteria\n- [ ] works",
+        url: "https://example.test/issues/555"
+      }
+
+      MockState.put({:eligible, "test/repo", nil}, [issue])
+
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
+      Process.sleep(200)
+
+      started = MockState.get(:started_runs, [])
+      issue_numbers = Enum.map(started, fn {n, _w} -> n end)
+      refute 555 in issue_numbers
+    end
+
+    test "does not skip issues with zero failures" do
+      issue = %Conductor.Issue{
+        number: 556,
+        title: "fresh issue",
+        body: "## Problem\nsomething\n## Acceptance Criteria\n- [ ] works",
+        url: "https://example.test/issues/556"
+      }
+
+      MockState.put({:eligible, "test/repo", nil}, [issue])
+
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
+      Process.sleep(200)
+
+      started = MockState.get(:started_runs, [])
+      issue_numbers = Enum.map(started, fn {n, _w} -> n end)
+      assert 556 in issue_numbers
     end
   end
 end
