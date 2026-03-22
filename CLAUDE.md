@@ -42,7 +42,7 @@ conductor/
     cli.ex               CLI commands
 
 cmd/bb/                  Go transport (transitional, see #621)
-scripts/                 Prompt templates, onboarding helpers, legacy Python conductor
+scripts/                 Prompt templates, onboarding helpers, runtime contract tests
 ```
 
 ## Operating Model

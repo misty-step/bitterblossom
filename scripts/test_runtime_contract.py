@@ -1,12 +1,11 @@
 """Runtime contract verification — guards against model/profile drift.
 
 Canonical sources:
-  - base/settings.json         — sprite-side Claude profile alias (`model`)
-  - cmd/bb/runtime_contract.go — exact provider/model identifier used by dispatch
+  - base/settings.json — sprite-side Claude profile alias (`model`)
+  - scripts/lib.sh     — exact provider/model identifier used by runtime setup
 
 Surfaces validated:
   - base/settings.json
-  - cmd/bb/runtime_contract.go
   - scripts/lib.sh
   - README.md
 
@@ -19,6 +18,35 @@ import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent
+REMOVED_SHELL_ENTRYPOINTS = (
+    "scripts/dispatch.sh",
+    "scripts/ralph.sh",
+    "scripts/sprite-agent.sh",
+    "scripts/sprite-bootstrap.sh",
+    "scripts/watchdog.sh",
+    "scripts/watchdog-v2.sh",
+    "scripts/pr-shepherd.sh",
+    "scripts/fleet-status.sh",
+    "scripts/refresh-dashboard.sh",
+    "scripts/webhook-receiver.sh",
+    "scripts/preflight.sh",
+    "scripts/health-check.sh",
+    "scripts/tail-logs.sh",
+    "scripts/ralph-prompt-template.md",
+)
+LIVE_REFERENCE_SURFACES = (
+    REPO_ROOT / "README.md",
+    REPO_ROOT / "AGENTS.md",
+    REPO_ROOT / "CLAUDE.md",
+    REPO_ROOT / "docs" / "CONDUCTOR.md",
+    REPO_ROOT / "docs" / "CLI-REFERENCE.md",
+    REPO_ROOT / "docs" / "CODEBASE_MAP.md",
+    REPO_ROOT / "docs" / "architecture" / "README.md",
+    REPO_ROOT / "docs" / "architecture" / "bb-cli.md",
+    REPO_ROOT / "docs" / "architecture" / "conductor.md",
+    REPO_ROOT / "docs" / "architecture" / "skills.md",
+    REPO_ROOT / "docs" / "adr" / "002-architecture-minimalism.md",
+)
 
 
 def _load_settings_profile() -> str:
@@ -31,13 +59,24 @@ def _load_settings_profile() -> str:
 SETTINGS_PROFILE = _load_settings_profile()
 
 
-def _load_runtime_model() -> str:
-    """Read the exact runtime model identifier from Go's transport contract."""
-    go_path = REPO_ROOT / "cmd" / "bb" / "runtime_contract.go"
-    content = go_path.read_text()
+def _openrouter_claude_branch(content: str) -> str:
+    """Extract only the openrouter-claude branch body from scripts/lib.sh."""
+    branch = re.search(
+        r'elif provider == "openrouter-claude":(?P<body>.*?)(?:^elif\b|^else:|\Z)',
+        content,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert branch, "Could not find openrouter-claude branch in scripts/lib.sh"
+    return branch.group("body")
 
-    match = re.search(r'const\s+spriteModel\s*=\s*"([^"]+)"', content)
-    assert match, f"Could not find spriteModel constant in {go_path}"
+
+def _load_runtime_model() -> str:
+    """Read the exact runtime model identifier from scripts/lib.sh."""
+    lib_path = REPO_ROOT / "scripts" / "lib.sh"
+    branch = _openrouter_claude_branch(lib_path.read_text())
+
+    match = re.search(r'env\["ANTHROPIC_MODEL"\]\s*=\s*"([^"]+)"', branch)
+    assert match, f"Could not find openrouter-claude default model in {lib_path}"
     return match.group(1)
 
 
@@ -52,48 +91,23 @@ def test_settings_json_uses_sonnet_profile():
     print(f"\n[ok] base/settings.json: model profile = {data['model']!r}")
 
 
-def test_go_runtime_constant_matches_canonical():
-    """cmd/bb/runtime_contract.go should keep the documented exact runtime model."""
+def test_runtime_model_matches_canonical():
+    """scripts/lib.sh should keep the documented exact runtime model."""
     assert RUNTIME_MODEL == "anthropic/claude-sonnet-4-6"
-    print(f"[ok] cmd/bb/runtime_contract.go: spriteModel = {RUNTIME_MODEL!r}")
-
-
-def test_dispatch_go_uses_sprite_model_constant():
-    """dispatch.go must not hardcode its own model string literals."""
-    dispatch_path = REPO_ROOT / "cmd" / "bb" / "dispatch.go"
-    content = dispatch_path.read_text()
-
-    # Find quoted strings that look like model IDs (provider/model-id pattern).
-    # These would be a sign of independent hardcoding outside runtime_contract.go.
-    model_pattern = re.compile(r'"([\w-]+/[\w.-]+-\d[\w.-]*)"')
-    hardcoded = [m.group(1) for m in model_pattern.finditer(content)]
-
-    assert not hardcoded, (
-        f"dispatch.go contains hardcoded model string(s): {hardcoded!r}\n"
-        "Use the spriteModel constant from runtime_contract.go instead."
-    )
-    print(f"[ok] cmd/bb/dispatch.go: no hardcoded model strings found")
+    print(f"[ok] scripts/lib.sh: openrouter-claude default = {RUNTIME_MODEL!r}")
 
 
 def test_lib_sh_openrouter_claude_default_matches_canonical():
     """scripts/lib.sh openrouter-claude fallback default must equal canonical model."""
     lib_path = REPO_ROOT / "scripts" / "lib.sh"
-    content = lib_path.read_text()
-
-    # Look for the openrouter-claude default assignment block:
-    #   env["ANTHROPIC_MODEL"] = "anthropic/claude-..."
-    # This appears inside the openrouter-claude elif branch (no model given).
-    match = re.search(
-        r'elif provider == "openrouter-claude":.*?env\["ANTHROPIC_MODEL"\]\s*=\s*"([^"]+)"',
-        content,
-        re.DOTALL,
-    )
+    branch = _openrouter_claude_branch(lib_path.read_text())
+    match = re.search(r'env\["ANTHROPIC_MODEL"\]\s*=\s*"([^"]+)"', branch)
     assert match, "Could not find openrouter-claude default model in scripts/lib.sh"
 
     lib_default = match.group(1)
     assert lib_default == RUNTIME_MODEL, (
         f"scripts/lib.sh openrouter-claude default={lib_default!r} "
-        f"!= runtime contract {RUNTIME_MODEL!r} from cmd/bb/runtime_contract.go"
+        f"!= runtime contract {RUNTIME_MODEL!r} from scripts/lib.sh"
     )
     print(f"[ok] scripts/lib.sh: openrouter-claude default = {lib_default!r}")
 
@@ -124,7 +138,24 @@ def test_canonical_source_is_base_settings_json():
     print(
         "Validated surfaces:"
         "\n  base/settings.json     (profile alias)"
-        "\n  cmd/bb/runtime_contract.go (exact model)"
-        "\n  scripts/lib.sh"
+        "\n  scripts/lib.sh         (exact model)"
         "\n  README.md"
     )
+
+
+def test_removed_shell_entrypoints_and_symlink_stay_deleted():
+    """Dead shell entrypoints should not reappear on the supported scripts surface."""
+    for relative_path in REMOVED_SHELL_ENTRYPOINTS:
+        assert not (REPO_ROOT / relative_path).exists(), f"{relative_path} should stay deleted"
+
+
+def test_supported_surfaces_do_not_reference_removed_shell_entrypoints():
+    """Core docs and transport surfaces should not advertise removed shell entrypoints."""
+    for path in LIVE_REFERENCE_SURFACES:
+        assert path.exists(), f"Expected supported surface is missing: {path}"
+        content = path.read_text()
+
+        for relative_path in REMOVED_SHELL_ENTRYPOINTS:
+            basename = relative_path.replace("scripts/", "")
+            assert relative_path not in content, f"{path} still references {relative_path}"
+            assert basename not in content, f"{path} still references {basename}"

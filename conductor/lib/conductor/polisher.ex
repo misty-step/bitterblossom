@@ -10,13 +10,16 @@ defmodule Conductor.Polisher do
   use GenServer
   require Logger
 
-  alias Conductor.{Config, Prompt, Store}
+  alias Conductor.{Config, Prompt, Store, Workspace}
 
   defstruct [
     :repo,
     :polisher_sprite,
     :poll_ms,
-    in_flight: %{}
+    :base_poll_ms,
+    in_flight: %{},
+    failure_count: 0,
+    health: :healthy
   ]
 
   # --- Public API ---
@@ -41,7 +44,8 @@ defmodule Conductor.Polisher do
     state = %__MODULE__{
       repo: repo,
       polisher_sprite: polisher_sprite,
-      poll_ms: poll_ms
+      poll_ms: poll_ms,
+      base_poll_ms: poll_ms
     }
 
     schedule_poll(state, 0)
@@ -63,12 +67,16 @@ defmodule Conductor.Polisher do
   end
 
   @impl true
-  def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
-    if reason not in [:normal, :shutdown] do
-      Logger.warning("[fern] dispatch task exited: #{inspect(reason)}")
-    end
+  def handle_info({:DOWN, _ref, :process, _pid, reason}, state)
+      when reason in [:normal, :shutdown] do
+    # Normal exit — result already handled by {ref, result} handler
+    {:noreply, state}
+  end
 
-    state = complete_task(state, ref, {:error, reason})
+  @impl true
+  def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
+    Logger.warning("[fern] dispatch task crashed: #{inspect(reason)}")
+    state = complete_task(state, ref, {:error, "task_crashed: #{inspect(reason)}", 1})
     {:noreply, state}
   end
 
@@ -81,7 +89,9 @@ defmodule Conductor.Polisher do
      %{
        repo: state.repo,
        polisher_sprite: state.polisher_sprite,
-       in_flight: Map.keys(state.in_flight) |> Map.new(&{&1, :working})
+       in_flight: Map.keys(state.in_flight) |> Map.new(&{&1, :working}),
+       health: state.health,
+       failure_count: state.failure_count
      }, state}
   end
 
@@ -133,8 +143,14 @@ defmodule Conductor.Polisher do
 
     issue_body = pr["body"] || ""
     conductor_managed = conductor_managed?(state.repo, pr_number)
-    prompt = Prompt.build_polisher_prompt(pr, comments, issue_body, may_label: conductor_managed)
     branch = pr["headRefName"]
+    workspace = workspace_for_branch(state.repo, branch)
+
+    prompt =
+      Prompt.build_polisher_prompt(pr, comments, issue_body,
+        may_label: conductor_managed,
+        workspace_root: workspace
+      )
 
     Store.record_event("polisher", "polisher_dispatched", %{
       pr_number: pr_number,
@@ -142,13 +158,24 @@ defmodule Conductor.Polisher do
     })
 
     task =
-      Task.async(fn ->
+      Task.Supervisor.async_nolink(Conductor.TaskSupervisor, fn ->
         try do
-          worker_mod().dispatch(state.polisher_sprite, prompt, state.repo,
-            timeout: Config.polisher_timeout(),
-            workspace: workspace_for_branch(state.repo, branch),
-            harness_opts: [reasoning_effort: "high"]
-          )
+          with :ok <- workspace_mod().sync_persona(state.polisher_sprite, workspace, :fern),
+               {:ok, output} <-
+                 worker_mod().dispatch(
+                   state.polisher_sprite,
+                   prompt,
+                   state.repo,
+                   workspace: workspace,
+                   persona_role: :fern,
+                   timeout: Config.polisher_timeout(),
+                   harness_opts: [reasoning_effort: "high"]
+                 ) do
+            {:ok, output}
+          else
+            {:error, msg, code} -> {:error, msg, code}
+            {:error, reason} -> {:error, to_string(reason), 1}
+          end
         rescue
           e -> {:error, "polisher dispatch crashed: #{Exception.message(e)}", 1}
         end
@@ -163,13 +190,45 @@ defmodule Conductor.Polisher do
         if r == ref, do: {pr, acc}, else: {found, Map.put(acc, pr, r)}
       end)
 
+    state = %{state | in_flight: in_flight}
+
     if pr_number do
-      maybe_mark_polished(state.repo, pr_number, result)
-      Logger.info("[fern] completed work on PR ##{pr_number}")
-      Store.record_event("polisher", "polisher_complete", %{pr_number: pr_number})
+      case result do
+        {:ok, _} ->
+          maybe_mark_polished(state.repo, pr_number, result)
+          Logger.info("[fern] completed work on PR ##{pr_number}")
+          Store.record_event("polisher", "polisher_complete", %{pr_number: pr_number})
+          reset_health(state)
+
+        {:error, msg, _code} ->
+          Logger.warning("[fern] dispatch failed for PR ##{pr_number}: #{msg}")
+          Store.record_event("polisher", "polisher_failed", %{pr_number: pr_number, error: msg})
+          apply_backoff(state)
+
+        other ->
+          Logger.warning("[fern] unexpected result for PR ##{pr_number}: #{inspect(other)}")
+          apply_backoff(state)
+      end
+    else
+      state
+    end
+  end
+
+  defp apply_backoff(state) do
+    count = state.failure_count + 1
+    backoff_ms = min(trunc(state.base_poll_ms * :math.pow(2, count)), 600_000)
+    health = if count >= 3, do: :unavailable, else: :degraded
+
+    Logger.info("[fern] backoff: failures=#{count}, next_poll=#{backoff_ms}ms, health=#{health}")
+    %{state | failure_count: count, poll_ms: backoff_ms, health: health}
+  end
+
+  defp reset_health(state) do
+    if state.failure_count > 0 do
+      Logger.info("[fern] recovered, resetting to healthy")
     end
 
-    %{state | in_flight: in_flight}
+    %{state | failure_count: 0, poll_ms: state.base_poll_ms, health: :healthy}
   end
 
   defp polish_eligible?(repo, pr_number) when is_integer(pr_number) do
@@ -225,8 +284,7 @@ defmodule Conductor.Polisher do
   defp compare_timestamps(_left, _right), do: :error
 
   defp workspace_for_branch(repo, _branch) do
-    repo_name = repo |> String.split("/") |> List.last()
-    "/home/sprite/workspace/#{repo_name}"
+    Workspace.repo_root(repo)
   end
 
   defp schedule_poll(_, delay) do
@@ -254,4 +312,5 @@ defmodule Conductor.Polisher do
 
   defp code_host_mod, do: Application.get_env(:conductor, :code_host_module, Conductor.GitHub)
   defp worker_mod, do: Application.get_env(:conductor, :worker_module, Conductor.Sprite)
+  defp workspace_mod, do: Application.get_env(:conductor, :workspace_module, Workspace)
 end

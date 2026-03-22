@@ -1,5 +1,5 @@
 # Codex CLI configuration for sprites (headless VMs).
-# Uploaded to ~/.codex/config.toml during bb setup.
+# Uploaded to ~/.codex/config.toml during conductor fleet reconciliation.
 # Auth: OPENAI_API_KEY/CODEX_API_KEY are sourced from the sprite runtime env file.
 #
 # Note: model, reasoning_effort, web_search, and sandbox are set

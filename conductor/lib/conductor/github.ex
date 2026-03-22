@@ -724,7 +724,7 @@ defmodule Conductor.GitHub do
            "--limit",
            to_string(@default_unfiltered_limit),
            "--json",
-           "number,title,body,headRefName,labels,statusCheckRollup"
+           "number,title,body,headRefName,url,labels,statusCheckRollup"
          ]) do
       {:ok, json} ->
         case Jason.decode(json) do
@@ -843,6 +843,25 @@ defmodule Conductor.GitHub do
     end
   end
 
+  @doc "Close a pull request without merging it."
+  @spec close_pr(binary(), pos_integer(), keyword()) :: :ok | {:error, term()}
+  def close_pr(repo, pr_number, opts \\ []) do
+    args =
+      [
+        "pr",
+        "close",
+        to_string(pr_number),
+        "--repo",
+        repo,
+        "--delete-branch=false"
+      ] ++ if(comment = Keyword.get(opts, :comment), do: ["--comment", comment], else: [])
+
+    case Shell.cmd("gh", args) do
+      {:ok, _} -> :ok
+      {:error, msg, _} -> {:error, msg}
+    end
+  end
+
   # Conductor.Tracker callback — delegates to create_issue_comment/3.
   @spec comment(binary(), pos_integer(), binary()) :: :ok | {:error, term()}
   def comment(repo, issue_number, body), do: create_issue_comment(repo, issue_number, body)
@@ -928,6 +947,15 @@ defmodule Conductor.GitHub do
       {:error, msg, _} ->
         Logger.warning("[github] failed to list PRs: #{msg}")
         {:error, :api_error}
+    end
+  end
+
+  @doc "List all open PRs that map to the issue by branch or closing keywords."
+  @spec issue_open_prs(binary(), pos_integer()) :: {:ok, [map()]} | {:error, term()}
+  def issue_open_prs(repo, issue_number) do
+    case open_prs(repo) do
+      {:ok, prs} -> {:ok, Enum.filter(prs, &pr_matches_issue?(&1, issue_number))}
+      {:error, reason} -> {:error, reason}
     end
   end
 

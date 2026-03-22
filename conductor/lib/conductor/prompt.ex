@@ -13,14 +13,16 @@ defmodule Conductor.Prompt do
     pr_number = Keyword.get(opts, :pr_number)
     feedback = Keyword.get(opts, :feedback)
     repo_context = Keyword.get(opts, :repo_context)
+    workspace_root = Keyword.get(opts, :workspace_root)
 
     """
-    #{if repo_context, do: repo_context_section(repo_context), else: ""}# Weaver Task
+    #{if repo_context, do: repo_context_section(repo_context), else: ""}# Builder Task
 
     Run ID: #{run_id}
     Issue: ##{issue.number} — #{issue.title}
     Issue URL: #{issue.url}
     Branch: #{branch}
+    #{workspace_root_line(workspace_root)}\
     #{if pr_number, do: "Existing PR: ##{pr_number}\n", else: ""}
     ## Issue Specification
 
@@ -30,7 +32,7 @@ defmodule Conductor.Prompt do
 
     ## Instructions
 
-    You are Weaver. Implement the issue and deliver a mergeable PR.
+    Implement the issue and deliver a mergeable PR.
     #{if feedback, do: revision_section(feedback), else: initial_section(branch)}
 
     #{governance_restrictions()}
@@ -48,10 +50,13 @@ defmodule Conductor.Prompt do
     """
   end
 
+  defp workspace_root_line(nil), do: ""
+  defp workspace_root_line(workspace_root), do: "Repository Root: #{workspace_root}\n"
+
   defp initial_section(branch) do
     """
     ### Phase 1: Implementation
-    1. Create branch `#{branch}` from the repo default branch
+    1. Stay on the pre-created branch `#{branch}` for the entire lane; do not create or switch to any other branch
     2. Read the issue carefully — respect acceptance criteria and boundaries
     3. Implement with tests (TDD: red, green, refactor)
     4. Create a PR with semantic commit messages
@@ -72,16 +77,18 @@ defmodule Conductor.Prompt do
   end
 
   @doc "Build prompt for the fixer sprite: CI failure context + fix instructions."
-  @spec build_fixer_prompt(map(), binary(), binary()) :: binary()
-  def build_fixer_prompt(pr, ci_failure_logs, issue_body) do
+  @spec build_fixer_prompt(map(), binary(), binary(), keyword()) :: binary()
+  def build_fixer_prompt(pr, ci_failure_logs, issue_body, opts \\ []) do
     safe_title = sanitize_inline(pr["title"])
     safe_branch = sanitize_inline(pr["headRefName"])
+    workspace_root = Keyword.get(opts, :workspace_root)
 
     """
-    # Thorn Task
+    # Fixer Task
 
     PR: ##{pr["number"]} — #{safe_title}
     Branch: #{safe_branch}
+    #{workspace_root_line(workspace_root)}\
 
     ## Original Issue
 
@@ -97,19 +104,20 @@ defmodule Conductor.Prompt do
 
     ## Instructions
 
-    You are Thorn. Your only job is to fix the CI failure on this PR.
+    Fix the CI failure on this PR.
 
     1. Check out branch `#{safe_branch}`
     2. Read the CI failure output above carefully
     3. Investigate the root cause in the codebase
-    4. Fix the issue — do not change PR scope or add features
+    4. Fix the issue without changing PR intent, removing safeguards, or adding features
     5. Run the failing tests/checks locally to verify the fix
     6. Commit with message `fix: resolve CI failure` and push
     7. CI will re-trigger automatically
 
     Do NOT modify the PR description, title, or labels.
     Do NOT expand the scope of the PR.
-    Focus exclusively on making CI green.
+    Do NOT weaken tests, security gates, review protections, or other quality controls to make CI pass.
+    Restore the intended behavior and let CI prove the fix.
 
     #{governance_restrictions()}
 
@@ -123,6 +131,7 @@ defmodule Conductor.Prompt do
     may_label = Keyword.get(opts, :may_label, true)
     safe_title = sanitize_inline(pr["title"])
     safe_branch = sanitize_inline(pr["headRefName"])
+    workspace_root = Keyword.get(opts, :workspace_root)
 
     comments_text =
       review_comments
@@ -143,10 +152,11 @@ defmodule Conductor.Prompt do
       |> Enum.join("\n")
 
     """
-    # Fern Task
+    # Polisher Task
 
     PR: ##{pr["number"]} — #{safe_title}
     Branch: #{safe_branch}
+    #{workspace_root_line(workspace_root)}\
 
     ## Original Issue
 
@@ -162,7 +172,7 @@ defmodule Conductor.Prompt do
 
     ## Instructions
 
-    You are Fern. Your job is to address all review feedback on this PR.
+    Address all review feedback on this PR.
 
     1. Check out branch `#{safe_branch}`
     2. Read each review comment above

@@ -11,7 +11,8 @@ defmodule Conductor.Store do
 
   @valid_columns ~w(phase status branch pr_number pr_url turn_count worktree_path
                     replay_count builder_sprite heartbeat_at completed_at
-                    ci_wait_started_at ci_last_reported_at blocked_reason)
+                    ci_wait_started_at ci_last_reported_at blocked_reason
+                    dispatch_attempt_count builder_failure_class builder_failure_reason)
   @valid_pr_columns ~w(last_substantive_change_at polished_at)
 
   @doc "Validate that all map keys are in the column allowlist."
@@ -125,6 +126,21 @@ defmodule Conductor.Store do
   @spec list_events(binary()) :: [map()]
   def list_events(run_id) do
     GenServer.call(__MODULE__, {:list_events, run_id})
+  end
+
+  @doc "List recent events across all runs, newest first."
+  @spec list_all_events(keyword()) :: [map()]
+  def list_all_events(opts \\ []) do
+    GenServer.call(__MODULE__, {:list_all_events, opts})
+  end
+
+  @doc """
+  Count consecutive failed runs for an issue since its last success.
+  Returns `{streak, last_failed_at}` where streak is 0 if no recent failures.
+  """
+  @spec issue_failure_streak(binary(), pos_integer()) :: {non_neg_integer(), binary() | nil}
+  def issue_failure_streak(repo, issue_number) do
+    GenServer.call(__MODULE__, {:issue_failure_streak, repo, issue_number})
   end
 
   @spec record_incident(binary(), map()) :: :ok
@@ -506,6 +522,51 @@ defmodule Conductor.Store do
   end
 
   @impl true
+  def handle_call({:list_all_events, opts}, _from, state) do
+    limit = Keyword.get(opts, :limit, 100)
+
+    rows =
+      query_all(
+        state.conn,
+        "SELECT * FROM events ORDER BY created_at DESC LIMIT ?1",
+        [limit]
+      )
+
+    events =
+      Enum.map(rows, fn row ->
+        Map.update(row, "payload", %{}, fn
+          val when is_binary(val) -> Jason.decode!(val)
+          val -> val
+        end)
+      end)
+
+    {:reply, events, state}
+  end
+
+  @impl true
+  def handle_call({:issue_failure_streak, repo, issue_number}, _from, state) do
+    row =
+      query_one(
+        state.conn,
+        """
+        SELECT COUNT(*) AS streak, MAX(completed_at) AS last_failed_at
+        FROM runs
+        WHERE repo = ?1 AND issue_number = ?2 AND status = 'failed'
+          AND completed_at > (
+            SELECT COALESCE(MAX(completed_at), '1970-01-01')
+            FROM runs
+            WHERE repo = ?1 AND issue_number = ?2 AND status IN ('pr_opened', 'merged')
+          )
+        """,
+        [repo, issue_number]
+      )
+
+    streak = (row && row["streak"]) || 0
+    last_failed_at = row && row["last_failed_at"]
+    {:reply, {streak, last_failed_at}, state}
+  end
+
+  @impl true
   def handle_call({:record_incident, run_id, attrs}, _from, state) do
     now = now_utc()
 
@@ -695,6 +756,9 @@ defmodule Conductor.Store do
             turn_count INTEGER DEFAULT 0,
             semantic_ready INTEGER DEFAULT NULL,
             replay_count INTEGER DEFAULT 0,
+            dispatch_attempt_count INTEGER DEFAULT 0,
+            builder_failure_class TEXT,
+            builder_failure_reason TEXT,
             picked_at TEXT,
             completed_at TEXT,
             heartbeat_at TEXT,
@@ -775,7 +839,10 @@ defmodule Conductor.Store do
     ensure_columns(conn, "runs", [
       {"ci_wait_started_at", "TEXT"},
       {"ci_last_reported_at", "TEXT"},
-      {"blocked_reason", "TEXT"}
+      {"blocked_reason", "TEXT"},
+      {"dispatch_attempt_count", "INTEGER DEFAULT 0"},
+      {"builder_failure_class", "TEXT"},
+      {"builder_failure_reason", "TEXT"}
     ])
 
     ensure_columns(conn, "prs", [

@@ -265,15 +265,11 @@ defmodule Conductor.Shaper do
            "find",
            [
              "conductor/lib",
-             "cmd/bb",
              "-type",
              "f",
              "(",
              "-name",
              "*.ex",
-             "-o",
-             "-name",
-             "*.go",
              ")"
            ],
            cd: @repo_root

@@ -7,7 +7,8 @@ config :conductor,
   builder_timeout_minutes: 25,
   ci_timeout_minutes: 30,
   pr_minimum_age_seconds: 300,
-  max_concurrent_runs: 2
+  max_concurrent_runs: 2,
+  persona_source_root: Path.expand("../../sprites", __DIR__)
 
 config :conductor, Conductor.Web.Endpoint,
   adapter: Bandit.PhoenixAdapter,

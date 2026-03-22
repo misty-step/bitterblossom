@@ -50,6 +50,10 @@ defmodule Conductor.CodeHost do
   @callback close_issue(repo :: binary(), issue_number :: pos_integer()) ::
               :ok | {:error, term()}
 
+  @doc "Close a pull request without merging it."
+  @callback close_pr(repo :: binary(), pr_number :: pos_integer(), opts :: keyword()) ::
+              :ok | {:error, term()}
+
   @doc "Find an open PR for an issue, optionally constrained to an exact branch."
   @callback find_open_pr(
               repo :: binary(),
@@ -57,6 +61,10 @@ defmodule Conductor.CodeHost do
               expected_branch :: binary() | nil
             ) ::
               {:ok, map()} | {:error, :not_found}
+
+  @doc "List all open PRs currently mapped to an issue."
+  @callback issue_open_prs(repo :: binary(), issue_number :: pos_integer()) ::
+              {:ok, [map()]} | {:error, term()}
 
   @doc "Return the state of a PR: OPEN, MERGED, or CLOSED."
   @callback pr_state(repo :: binary(), pr_number :: pos_integer()) ::

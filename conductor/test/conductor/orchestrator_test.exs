@@ -1,6 +1,7 @@
 defmodule Conductor.OrchestratorTest do
   use ExUnit.Case, async: false
   import ExUnit.CaptureLog
+  import Conductor.TestSupport.ProcessHelpers
 
   alias Conductor.{GitHub, Store, Orchestrator}
 
@@ -119,8 +120,12 @@ defmodule Conductor.OrchestratorTest do
       MockState.get({:close_issue_result, repo, issue_number}, :ok)
     end
 
+    def close_pr(_repo, _pr_number, _opts \\ []), do: :ok
+
     def find_open_pr(_repo, issue_number, _expected_branch \\ nil),
       do: MockState.get({:open_pr, issue_number}, {:error, :not_found})
+
+    def issue_open_prs(_repo, _issue_number), do: {:ok, []}
 
     def pr_state(_repo, pr_number),
       do: MockState.get({:pr_state, pr_number}, {:ok, "OPEN"})
@@ -208,9 +213,11 @@ defmodule Conductor.OrchestratorTest do
     db_path = Path.join(System.tmp_dir!(), "orch_test_#{:rand.uniform(999_999)}.db")
     event_log = Path.join(System.tmp_dir!(), "orch_test_#{:rand.uniform(999_999)}.jsonl")
 
-    if Process.whereis(Store), do: GenServer.stop(Store)
+    stop_conductor_app()
+    stop_process(Orchestrator)
+    stop_process(Store)
     {:ok, _} = Store.start_link(db_path: db_path, event_log: event_log)
-    safe_stop(Process.whereis(Conductor.TaskSupervisor))
+    stop_process(Conductor.TaskSupervisor)
     {:ok, _} = Task.Supervisor.start_link(name: Conductor.TaskSupervisor)
 
     # Inject mock tracker so polls don't hit GitHub
@@ -254,9 +261,9 @@ defmodule Conductor.OrchestratorTest do
     {:ok, orch_pid} = Orchestrator.start_link([])
 
     on_exit(fn ->
-      safe_stop(Process.whereis(Orchestrator))
-      safe_stop(Process.whereis(Store))
-      safe_stop(Process.whereis(Conductor.TaskSupervisor))
+      stop_process(Orchestrator)
+      stop_process(Store)
+      stop_process(Conductor.TaskSupervisor)
 
       if orig_tracker,
         do: Application.put_env(:conductor, :tracker_module, orig_tracker),
@@ -517,10 +524,17 @@ defmodule Conductor.OrchestratorTest do
       orig_max = Application.get_env(:conductor, :max_concurrent_runs)
       Application.put_env(:conductor, :max_concurrent_runs, 3)
 
+      orig_starts = Application.get_env(:conductor, :max_starts_per_tick)
+      Application.put_env(:conductor, :max_starts_per_tick, 3)
+
       on_exit(fn ->
         if orig_max,
           do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
           else: Application.delete_env(:conductor, :max_concurrent_runs)
+
+        if orig_starts,
+          do: Application.put_env(:conductor, :max_starts_per_tick, orig_starts),
+          else: Application.delete_env(:conductor, :max_starts_per_tick)
       end)
 
       issues =
@@ -2121,7 +2135,7 @@ defmodule Conductor.OrchestratorTest do
     end
 
     test "conductor_tracked? returns false for non-conductor PR even with green CI", %{
-      orch_pid: orch_pid
+      orch_pid: _orch_pid
     } do
       # PR 400 has no Store run — conductor_tracked? returns false → merge skipped
       MockState.put(
@@ -2345,6 +2359,58 @@ defmodule Conductor.OrchestratorTest do
       started = MockState.get(:started_runs, [])
       issue_numbers = Enum.map(started, fn {n, _w} -> n end)
       refute 900 in issue_numbers
+    end
+  end
+
+  describe "issue cooldown governor" do
+    test "skips issues with consecutive failures in cooldown period" do
+      # Plant 3 consecutive failures for issue 555
+      for i <- 1..3 do
+        {:ok, rid} =
+          Store.create_run(%{
+            repo: "test/repo",
+            issue_number: 555,
+            issue_title: "failing",
+            builder_sprite: "s",
+            run_id: "cool-fail-#{i}"
+          })
+
+        Store.complete_run(rid, "failed", "failed")
+      end
+
+      issue = %Conductor.Issue{
+        number: 555,
+        title: "failing issue",
+        body: "## Problem\nsomething\n## Acceptance Criteria\n- [ ] works",
+        url: "https://example.test/issues/555"
+      }
+
+      MockState.put({:eligible, "test/repo", nil}, [issue])
+
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
+      Process.sleep(200)
+
+      started = MockState.get(:started_runs, [])
+      issue_numbers = Enum.map(started, fn {n, _w} -> n end)
+      refute 555 in issue_numbers
+    end
+
+    test "does not skip issues with zero failures" do
+      issue = %Conductor.Issue{
+        number: 556,
+        title: "fresh issue",
+        body: "## Problem\nsomething\n## Acceptance Criteria\n- [ ] works",
+        url: "https://example.test/issues/556"
+      }
+
+      MockState.put({:eligible, "test/repo", nil}, [issue])
+
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
+      Process.sleep(200)
+
+      started = MockState.get(:started_runs, [])
+      issue_numbers = Enum.map(started, fn {n, _w} -> n end)
+      assert 556 in issue_numbers
     end
   end
 end

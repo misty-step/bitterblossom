@@ -14,9 +14,11 @@ defmodule Conductor.SelfUpdate do
   require Logger
 
   @repo_root Path.expand("../../..", __DIR__)
+  @remote_ref "origin/master"
+  @warning_interval_ms 60_000
 
   @doc """
-  Check if a merged PR changed conductor code, and if so, pull + recompile.
+  Check if a merged PR changed conductor code, and if so, sync + recompile.
 
   Called by the orchestrator after each successful label-driven merge.
   """
@@ -26,7 +28,7 @@ defmodule Conductor.SelfUpdate do
       case changed_conductor_files?(pr_number, repo) do
         true ->
           Logger.info("[self-update] PR ##{pr_number} changed conductor code, hot-reloading")
-          pull_and_recompile()
+          reset_and_recompile(refresh_remote?: true)
 
         false ->
           :noop
@@ -37,27 +39,67 @@ defmodule Conductor.SelfUpdate do
   end
 
   @doc """
-  Check if origin/master has diverged from HEAD. If so, pull and recompile.
+  Check if origin/master has diverged from HEAD. If so, sync and recompile.
 
   Called on every poll tick so externally merged changes (human force-merge,
   other conductor instances) are picked up without waiting for a conductor-initiated merge.
   """
   @spec check_for_updates() :: :ok | :noop | {:error, :recompile_failed}
   def check_for_updates do
-    case Conductor.Shell.cmd("git", ["-C", @repo_root, "fetch", "origin", "master", "--quiet"],
-           timeout: 30_000
-         ) do
-      {:ok, _} ->
-        if local_behind_remote?() do
-          Logger.info("[self-update] HEAD behind origin/master, pulling")
-          pull_and_recompile()
-        else
+    if active_worktrees?() do
+      Logger.debug("[self-update] active worktrees present, skipping")
+      :noop
+    else
+      case shell_module().cmd("git", ["-C", @repo_root, "fetch", "origin", "master", "--quiet"],
+             timeout: 30_000
+           ) do
+        {:ok, _} ->
+          if local_behind_remote?() do
+            Logger.info("[self-update] HEAD behind #{@remote_ref}, resetting")
+            reset_and_recompile(refresh_remote?: false)
+          else
+            :noop
+          end
+
+        {:error, msg, _} ->
+          rate_limited_warning("[self-update] fetch failed: #{msg}")
           :noop
-        end
+      end
+    end
+  end
+
+  @spec shell_module() :: module()
+  defp shell_module do
+    Application.get_env(:conductor, :self_update_shell_module, Conductor.Shell)
+  end
+
+  @spec compiler_module() :: module()
+  defp compiler_module do
+    Application.get_env(:conductor, :self_update_compiler_module, Conductor.SelfUpdate.Compiler)
+  end
+
+  @spec clock_module() :: module()
+  defp clock_module do
+    Application.get_env(:conductor, :self_update_clock_module, System)
+  end
+
+  defp active_worktrees? do
+    case shell_module().cmd("git", ["-C", @repo_root, "worktree", "list", "--porcelain"],
+           timeout: 10_000
+         ) do
+      {:ok, output} ->
+        output
+        |> String.split("\n", trim: true)
+        |> Enum.filter(&String.starts_with?(&1, "worktree "))
+        |> Enum.map(&String.replace_prefix(&1, "worktree ", ""))
+        |> Enum.any?(fn path -> Path.expand(path) != @repo_root end)
 
       {:error, msg, _} ->
-        Logger.debug("[self-update] fetch failed: #{msg}")
-        :noop
+        rate_limited_warning(
+          "[self-update] worktree inspection failed, skipping update to be safe: #{msg}"
+        )
+
+        true
     end
   end
 
@@ -66,9 +108,9 @@ defmodule Conductor.SelfUpdate do
   defp local_behind_remote? do
     # Counts commits on origin/master not reachable from HEAD.
     # Returns "0\n" when at or ahead, ">0\n" only when truly behind.
-    case Conductor.Shell.cmd(
+    case shell_module().cmd(
            "git",
-           ["-C", @repo_root, "rev-list", "--count", "HEAD..origin/master"],
+           ["-C", @repo_root, "rev-list", "--count", "HEAD..#{@remote_ref}"],
            timeout: 10_000
          ) do
       {:ok, output} ->
@@ -82,7 +124,7 @@ defmodule Conductor.SelfUpdate do
   defp self_repo?(repo) do
     # The conductor is always working on its own repo when repo matches
     # the git remote of the checkout it's running from.
-    case Conductor.Shell.cmd("git", ["-C", @repo_root, "remote", "get-url", "origin"],
+    case shell_module().cmd("git", ["-C", @repo_root, "remote", "get-url", "origin"],
            timeout: 10_000
          ) do
       {:ok, url} -> String.contains?(url, repo_name(repo))
@@ -93,17 +135,21 @@ defmodule Conductor.SelfUpdate do
   defp repo_name(repo), do: repo |> String.split("/") |> List.last()
 
   defp changed_conductor_files?(pr_number, repo) do
-    case Conductor.Shell.cmd("gh", [
-           "pr",
-           "view",
-           to_string(pr_number),
-           "--repo",
-           repo,
-           "--json",
-           "files",
-           "--jq",
-           ".files[].path"
-         ]) do
+    case shell_module().cmd(
+           "gh",
+           [
+             "pr",
+             "view",
+             to_string(pr_number),
+             "--repo",
+             repo,
+             "--json",
+             "files",
+             "--jq",
+             ".files[].path"
+           ],
+           timeout: 30_000
+         ) do
       {:ok, output} ->
         output
         |> String.split("\n", trim: true)
@@ -120,26 +166,114 @@ defmodule Conductor.SelfUpdate do
     end
   end
 
-  defp pull_and_recompile do
-    case Conductor.Shell.cmd("git", ["-C", @repo_root, "pull", "origin", "master"],
-           timeout: 30_000
-         ) do
-      {:ok, output} ->
-        Logger.info("[self-update] git pull: #{String.trim(output)}")
+  defp reset_and_recompile(opts) do
+    if active_worktrees?() do
+      Logger.debug("[self-update] active worktrees present, skipping")
+      :noop
+    else
+      case maybe_refresh_remote_ref(opts) do
+        :ok ->
+          if primary_worktree_dirty?() do
+            :noop
+          else
+            case shell_module().cmd("git", ["-C", @repo_root, "reset", "--hard", @remote_ref],
+                   timeout: 30_000
+                 ) do
+              {:ok, output} ->
+                Logger.info(
+                  "[self-update] git reset --hard #{@remote_ref}: #{String.trim(output)}"
+                )
 
-        try do
-          Mix.Task.rerun("compile", ["--force"])
-          Logger.info("[self-update] recompile complete, new code active on next message")
-          :ok
-        rescue
-          e ->
-            Logger.warning("[self-update] recompile failed: #{Exception.message(e)}")
-            {:error, :recompile_failed}
+                try do
+                  case compiler_module().recompile() do
+                    :ok ->
+                      Logger.info(
+                        "[self-update] recompile complete, new code active on next message"
+                      )
+
+                      :ok
+
+                    {:error, reason} ->
+                      rate_limited_warning("[self-update] recompile failed: #{inspect(reason)}")
+                      {:error, :recompile_failed}
+                  end
+                rescue
+                  e ->
+                    rate_limited_warning(
+                      "[self-update] recompile failed: #{Exception.message(e)}"
+                    )
+
+                    {:error, :recompile_failed}
+                end
+
+              {:error, msg, _} ->
+                rate_limited_warning("[self-update] git reset failed: #{msg}")
+                :noop
+            end
+          end
+
+        {:error, msg} ->
+          rate_limited_warning("[self-update] git fetch failed before reset: #{msg}")
+          :noop
+      end
+    end
+  end
+
+  defp maybe_refresh_remote_ref(opts) do
+    if Keyword.get(opts, :refresh_remote?, true) do
+      case shell_module().cmd("git", ["-C", @repo_root, "fetch", "origin", "master", "--quiet"],
+             timeout: 30_000
+           ) do
+        {:ok, _} -> :ok
+        {:error, msg, _} -> {:error, msg}
+      end
+    else
+      :ok
+    end
+  end
+
+  defp primary_worktree_dirty? do
+    case shell_module().cmd("git", ["-C", @repo_root, "status", "--porcelain"], timeout: 10_000) do
+      {:ok, output} ->
+        if String.trim(output) == "" do
+          false
+        else
+          rate_limited_warning(
+            "[self-update] primary worktree is dirty, skipping reset to avoid discarding local changes"
+          )
+
+          true
         end
 
       {:error, msg, _} ->
-        Logger.warning("[self-update] git pull failed: #{msg}")
-        :noop
+        rate_limited_warning(
+          "[self-update] primary worktree inspection failed, skipping reset to be safe: #{msg}"
+        )
+
+        true
+    end
+  end
+
+  defp rate_limited_warning(message) do
+    now_ms = clock_module().system_time(:millisecond)
+    last_logged_ms = Process.get({__MODULE__, :last_warning_ms})
+
+    if is_nil(last_logged_ms) or now_ms - last_logged_ms >= @warning_interval_ms do
+      Logger.warning(message)
+      Process.put({__MODULE__, :last_warning_ms}, now_ms)
+    end
+  end
+end
+
+defmodule Conductor.SelfUpdate.Compiler do
+  @moduledoc false
+
+  def recompile do
+    case Mix.Task.rerun("compile", ["--force"]) do
+      {:ok, _diagnostics} -> :ok
+      {:noop, _diagnostics} -> :ok
+      {:error, diagnostics} -> {:error, diagnostics}
+      other -> {:error, other}
     end
   end
 end

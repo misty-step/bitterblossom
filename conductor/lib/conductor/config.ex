@@ -38,6 +38,16 @@ defmodule Conductor.Config do
     Application.get_env(:conductor, :builder_timeout_minutes, 25)
   end
 
+  @spec builder_retry_max_attempts() :: pos_integer()
+  def builder_retry_max_attempts do
+    Application.get_env(:conductor, :builder_retry_max_attempts, 3)
+  end
+
+  @spec builder_retry_backoff_base_ms() :: pos_integer()
+  def builder_retry_backoff_base_ms do
+    Application.get_env(:conductor, :builder_retry_backoff_base_ms, 1_000)
+  end
+
   @spec ci_timeout() :: pos_integer()
   def ci_timeout do
     Application.get_env(:conductor, :ci_timeout_minutes, 30)
@@ -46,6 +56,15 @@ defmodule Conductor.Config do
   @spec ci_status_log_interval() :: non_neg_integer()
   def ci_status_log_interval do
     Application.get_env(:conductor, :ci_status_log_interval_minutes, 5)
+  end
+
+  @spec repo_root() :: binary()
+  def repo_root do
+    case Application.get_env(:conductor, :repo_root) do
+      nil -> detect_repo_root()
+      "" -> detect_repo_root()
+      root -> Path.expand(root)
+    end
   end
 
   @spec pr_minimum_age() :: non_neg_integer()
@@ -106,6 +125,21 @@ defmodule Conductor.Config do
     Application.get_env(:conductor, :polisher_timeout_minutes, 15)
   end
 
+  @spec max_starts_per_tick() :: pos_integer()
+  def max_starts_per_tick do
+    Application.get_env(:conductor, :max_starts_per_tick, 1)
+  end
+
+  @spec issue_cooldown_cap_minutes() :: pos_integer()
+  def issue_cooldown_cap_minutes do
+    Application.get_env(:conductor, :issue_cooldown_cap_minutes, 120)
+  end
+
+  @spec fleet_health_check_interval_ms() :: pos_integer()
+  def fleet_health_check_interval_ms do
+    Application.get_env(:conductor, :fleet_health_check_interval_ms, 120_000)
+  end
+
   @spec replay_delay_ms() :: pos_integer()
   def replay_delay_ms do
     Application.get_env(:conductor, :replay_delay_seconds, 120) * 1_000
@@ -115,6 +149,17 @@ defmodule Conductor.Config do
   def prompt_template do
     System.get_env("CONDUCTOR_PROMPT_TEMPLATE") ||
       Path.expand("../scripts/builder-prompt-template.md")
+  end
+
+  @spec persona_source_root!() :: binary()
+  def persona_source_root! do
+    path = Application.fetch_env!(:conductor, :persona_source_root)
+
+    if File.dir?(path) do
+      path
+    else
+      raise "persona source root missing: #{path}"
+    end
   end
 
   @spec dispatch_env() :: [{binary(), binary()}]
@@ -146,6 +191,26 @@ defmodule Conductor.Config do
     end
   end
 
+  defp detect_repo_root do
+    cwd = File.cwd!()
+
+    case [cwd, Path.expand("..", cwd)] |> Enum.find(&repo_root_candidate?/1) do
+      nil ->
+        raise """
+        unable to detect repository root from #{cwd}; expected WORKFLOW.md and CLAUDE.md
+        or set :repo_root explicitly
+        """
+
+      root ->
+        Path.expand(root)
+    end
+  end
+
+  defp repo_root_candidate?(path) do
+    File.exists?(Path.join(path, "WORKFLOW.md")) and
+      File.exists?(Path.join(path, "CLAUDE.md"))
+  end
+
   @spec normalize_workers([binary() | map()]) :: [worker_config()]
   def normalize_workers(workers) do
     Enum.map(workers, fn
@@ -168,7 +233,14 @@ defmodule Conductor.Config do
       {"GITHUB_TOKEN", fn -> System.get_env("GITHUB_TOKEN") end},
       {"SPRITE_TOKEN, FLY_API_TOKEN, or sprite CLI auth", fn -> sprite_auth_available?() end},
       {"gh", fn -> find_executable("gh") end},
-      {"sprite", fn -> find_executable("sprite") end}
+      {"sprite", fn -> find_executable("sprite") end},
+      {"persona source root",
+       fn ->
+         case Application.get_env(:conductor, :persona_source_root) do
+           path when is_binary(path) -> File.dir?(path)
+           _ -> false
+         end
+       end}
     ]
 
     results =

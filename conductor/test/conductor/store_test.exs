@@ -1,6 +1,8 @@
 defmodule Conductor.StoreTest do
   use ExUnit.Case, async: false
 
+  import Conductor.TestSupport.ProcessHelpers
+
   alias Conductor.Store
 
   setup do
@@ -8,19 +10,15 @@ defmodule Conductor.StoreTest do
     db_path = Path.join(System.tmp_dir!(), "conductor_test_#{:rand.uniform(999_999)}.db")
     event_log = Path.join(System.tmp_dir!(), "conductor_test_#{:rand.uniform(999_999)}.jsonl")
 
-    # Stop any existing store
-    if Process.whereis(Store), do: GenServer.stop(Store)
+    stop_conductor_app()
+
+    # Stop any existing store before claiming the global name.
+    stop_process(Store)
 
     {:ok, _pid} = Store.start_link(db_path: db_path, event_log: event_log)
 
     on_exit(fn ->
-      case Process.whereis(Store) do
-        nil ->
-          :ok
-
-        pid when is_pid(pid) ->
-          if Process.alive?(pid), do: GenServer.stop(Store), else: :ok
-      end
+      stop_process(Store)
 
       File.rm(db_path)
       File.rm(event_log)
@@ -57,11 +55,20 @@ defmodule Conductor.StoreTest do
         builder_sprite: "s"
       })
 
-    Store.update_run(run_id, %{phase: "building", branch: "factory/1-123"})
+    Store.update_run(run_id, %{
+      phase: "building",
+      branch: "factory/1-123",
+      dispatch_attempt_count: 2,
+      builder_failure_class: "transient",
+      builder_failure_reason: "network timeout"
+    })
 
     {:ok, run} = Store.get_run(run_id)
     assert run["phase"] == "building"
     assert run["branch"] == "factory/1-123"
+    assert run["dispatch_attempt_count"] == 2
+    assert run["builder_failure_class"] == "transient"
+    assert run["builder_failure_reason"] == "network timeout"
   end
 
   test "complete run sets terminal state" do
@@ -306,5 +313,128 @@ defmodule Conductor.StoreTest do
     assert {:ok, pr} = Store.get_pr_state("test/repo", 42)
     assert pr["polished_at"] == "2026-03-20T12:30:00Z"
     assert pr["last_substantive_change_at"] == "2026-03-20T13:00:00Z"
+  end
+
+  describe "issue_failure_streak/2" do
+    test "returns zero streak when no runs exist" do
+      assert {0, nil} = Store.issue_failure_streak("test/repo", 999)
+    end
+
+    test "counts consecutive failures" do
+      for i <- 1..3 do
+        {:ok, rid} =
+          Store.create_run(%{
+            repo: "test/repo",
+            issue_number: 50,
+            issue_title: "t",
+            builder_sprite: "s",
+            run_id: "fail-#{i}"
+          })
+
+        Store.complete_run(rid, "failed", "failed")
+      end
+
+      {streak, last} = Store.issue_failure_streak("test/repo", 50)
+      assert streak == 3
+      assert is_binary(last)
+    end
+
+    test "resets streak after success" do
+      {:ok, r1} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 60,
+          issue_title: "t",
+          builder_sprite: "s",
+          run_id: "f1"
+        })
+
+      Store.complete_run(r1, "failed", "failed")
+
+      {:ok, r2} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 60,
+          issue_title: "t",
+          builder_sprite: "s",
+          run_id: "s1"
+        })
+
+      Store.complete_run(r2, "pr_opened", "pr_opened")
+
+      {:ok, r3} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 60,
+          issue_title: "t",
+          builder_sprite: "s",
+          run_id: "f2"
+        })
+
+      Store.complete_run(r3, "failed", "failed")
+
+      {streak, _} = Store.issue_failure_streak("test/repo", 60)
+      assert streak == 1
+    end
+
+    test "different repos are independent" do
+      {:ok, r1} =
+        Store.create_run(%{
+          repo: "repo/a",
+          issue_number: 70,
+          issue_title: "t",
+          builder_sprite: "s",
+          run_id: "ra1"
+        })
+
+      Store.complete_run(r1, "failed", "failed")
+
+      {:ok, r2} =
+        Store.create_run(%{
+          repo: "repo/b",
+          issue_number: 70,
+          issue_title: "t",
+          builder_sprite: "s",
+          run_id: "rb1"
+        })
+
+      Store.complete_run(r2, "failed", "failed")
+
+      {streak_a, _} = Store.issue_failure_streak("repo/a", 70)
+      {streak_b, _} = Store.issue_failure_streak("repo/b", 70)
+      assert streak_a == 1
+      assert streak_b == 1
+    end
+  end
+
+  describe "list_all_events/1" do
+    test "returns empty list when no events" do
+      assert [] = Store.list_all_events()
+    end
+
+    test "lists events across runs, newest first" do
+      Store.record_event("run-1", "started", %{a: 1})
+      Store.record_event("polisher", "polisher_dispatched", %{pr: 100})
+      Store.record_event("run-2", "completed", %{b: 2})
+
+      events = Store.list_all_events(limit: 10)
+      assert length(events) == 3
+      # Newest first
+      assert hd(events)["event_type"] == "completed"
+    end
+
+    test "respects limit" do
+      for i <- 1..5, do: Store.record_event("r-#{i}", "ev", %{i: i})
+
+      events = Store.list_all_events(limit: 3)
+      assert length(events) == 3
+    end
+
+    test "decodes payload JSON" do
+      Store.record_event("r", "test", %{key: "val"})
+
+      [event] = Store.list_all_events(limit: 1)
+      assert event["payload"]["key"] == "val"
+    end
   end
 end

@@ -1,6 +1,7 @@
 defmodule Conductor.FixerTest do
   use ExUnit.Case, async: false
   import ExUnit.CaptureLog
+  import Conductor.TestSupport.ProcessHelpers
 
   alias Conductor.{Store, Fixer}
 
@@ -66,7 +67,9 @@ defmodule Conductor.FixerTest do
     def pr_substantive_change_at(_repo, _pr_number), do: {:error, :not_found}
     def add_label(_repo, _pr_number, _label), do: :ok
     def close_issue(_repo, _issue_number), do: :ok
+    def close_pr(_repo, _pr_number, _opts \\ []), do: :ok
     def find_open_pr(_repo, _issue_number, _expected_branch \\ nil), do: {:error, :not_found}
+    def issue_open_prs(_repo, _issue_number), do: {:ok, []}
     def pr_state(_repo, _pr_number), do: {:ok, "OPEN"}
 
     def get_pr_checks(_repo, _pr_number) do
@@ -92,6 +95,15 @@ defmodule Conductor.FixerTest do
     def busy?(_worker, _opts), do: false
   end
 
+  defmodule MockWorkspace do
+    alias Conductor.FixerTest.MockState
+
+    def sync_persona(worker, workspace, role, _opts \\ []) do
+      send(MockState.get(:test_pid, self()), {:persona_synced, worker, workspace, role})
+      :ok
+    end
+  end
+
   # Mock tracker
   defmodule MockTracker do
     @behaviour Conductor.Tracker
@@ -112,41 +124,41 @@ defmodule Conductor.FixerTest do
     def issue_comments(_repo, _issue), do: {:ok, []}
   end
 
-  defp stop_process(name) do
-    try do
-      GenServer.stop(name)
-    catch
-      :exit, _reason -> :ok
-    end
-  end
-
   setup do
     db_path = Path.join(System.tmp_dir!(), "fixer_test_#{:rand.uniform(999_999)}.db")
     event_log = Path.join(System.tmp_dir!(), "fixer_test_#{:rand.uniform(999_999)}.jsonl")
 
-    if Process.whereis(Store), do: GenServer.stop(Store)
+    stop_conductor_app()
+    stop_process(Fixer)
+    stop_process(Store)
+    stop_process(Conductor.TaskSupervisor)
     {:ok, _} = Store.start_link(db_path: db_path, event_log: event_log)
+    {:ok, _} = Task.Supervisor.start_link(name: Conductor.TaskSupervisor)
 
     # Inject mocks
     orig_code_host = Application.get_env(:conductor, :code_host_module)
     orig_worker = Application.get_env(:conductor, :worker_module)
     orig_tracker = Application.get_env(:conductor, :tracker_module)
+    orig_workspace = Application.get_env(:conductor, :workspace_module)
 
     Application.put_env(:conductor, :code_host_module, MockCodeHost)
     Application.put_env(:conductor, :worker_module, MockWorker)
     Application.put_env(:conductor, :tracker_module, MockTracker)
+    Application.put_env(:conductor, :workspace_module, MockWorkspace)
 
     MockState.put(:test_pid, self())
 
     on_exit(fn ->
-      if pid = Process.whereis(Fixer), do: if(Process.alive?(pid), do: stop_process(pid))
-      if pid = Process.whereis(Store), do: if(Process.alive?(pid), do: stop_process(pid))
+      stop_process(Fixer)
+      stop_process(Conductor.TaskSupervisor)
+      stop_process(Store)
       MockState.cleanup()
 
       for {key, orig} <- [
             {:code_host_module, orig_code_host},
             {:worker_module, orig_worker},
-            {:tracker_module, orig_tracker}
+            {:tracker_module, orig_tracker},
+            {:workspace_module, orig_workspace}
           ] do
         if orig,
           do: Application.put_env(:conductor, key, orig),
@@ -187,7 +199,11 @@ defmodule Conductor.FixerTest do
               poll_ms: 50
             )
 
+          assert_receive {:persona_synced, "bb-thorn", "/home/sprite/workspace/repo", :thorn},
+                         2_000
+
           assert_receive {:dispatched, "bb-thorn", prompt}, 2_000
+          assert prompt =~ "Repository Root: /home/sprite/workspace/repo"
           assert prompt =~ "CI"
         end)
 
@@ -283,7 +299,7 @@ defmodule Conductor.FixerTest do
   end
 
   describe "status/0" do
-    test "returns current fixer state" do
+    test "returns current fixer state with health" do
       {:ok, _pid} =
         Fixer.start_link(
           repo: "test/repo",
@@ -295,6 +311,106 @@ defmodule Conductor.FixerTest do
       assert status.repo == "test/repo"
       assert status.fixer_sprite == "bb-thorn"
       assert is_map(status.in_flight)
+      assert status.health == :healthy
+      assert status.failure_count == 0
+    end
+  end
+
+  describe "dispatch failure backoff" do
+    defmodule FailingWorker do
+      @behaviour Conductor.Worker
+      alias Conductor.FixerTest.MockState
+
+      def exec(_worker, _cmd, _opts), do: {:ok, ""}
+
+      def dispatch(_worker, _prompt, _repo, _opts) do
+        send(MockState.get(:test_pid, self()), :dispatch_attempted)
+        {:error, "sprite unreachable", 1}
+      end
+
+      def cleanup(_worker, _repo, _run_id), do: :ok
+      def busy?(_worker, _opts), do: false
+    end
+
+    test "backs off after dispatch failure" do
+      Application.put_env(:conductor, :worker_module, FailingWorker)
+
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 100,
+             "headRefName" => "factory/100-12345",
+             "title" => "test",
+             "body" => "",
+             "statusCheckRollup" => [
+               %{"name" => "CI", "conclusion" => "FAILURE", "status" => "COMPLETED"}
+             ]
+           }
+         ]}
+      )
+
+      {:ok, pid} =
+        Fixer.start_link(
+          repo: "test/repo",
+          fixer_sprite: "bb-thorn",
+          poll_ms: 50
+        )
+
+      assert_receive :dispatch_attempted, 2_000
+
+      status = Fixer.status()
+      assert status.health == :degraded
+      assert status.failure_count == 1
+      assert Process.alive?(pid)
+    end
+
+    test "survives task crash (async_nolink)" do
+      defmodule CrashingWorker do
+        @behaviour Conductor.Worker
+        alias Conductor.FixerTest.MockState
+
+        def exec(_worker, _cmd, _opts), do: {:ok, ""}
+
+        def dispatch(_worker, _prompt, _repo, _opts) do
+          send(MockState.get(:test_pid, self()), :crash_dispatch)
+          raise "boom"
+        end
+
+        def cleanup(_worker, _repo, _run_id), do: :ok
+        def busy?(_worker, _opts), do: false
+      end
+
+      Application.put_env(:conductor, :worker_module, CrashingWorker)
+
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 101,
+             "headRefName" => "factory/101-12345",
+             "title" => "test",
+             "body" => "",
+             "statusCheckRollup" => [
+               %{"name" => "CI", "conclusion" => "FAILURE", "status" => "COMPLETED"}
+             ]
+           }
+         ]}
+      )
+
+      {:ok, pid} =
+        Fixer.start_link(
+          repo: "test/repo",
+          fixer_sprite: "bb-thorn",
+          poll_ms: 50
+        )
+
+      assert_receive :crash_dispatch, 2_000
+      Process.sleep(100)
+
+      assert Process.alive?(pid)
     end
   end
 end

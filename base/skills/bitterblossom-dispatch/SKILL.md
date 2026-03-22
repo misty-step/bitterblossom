@@ -1,7 +1,7 @@
 ---
 name: bitterblossom-dispatch
 user-invocable: true
-description: "Dispatch a GitHub issue or prompt to a Bitterblossom sprite with explicit skill mounting, safe dry-run planning, and wait-mode monitoring."
+description: "Operate the conductor dispatch loop and repair fleet readiness before work starts."
 allowed-tools:
   - Read
   - Grep
@@ -11,54 +11,48 @@ allowed-tools:
 
 # Bitterblossom Dispatch
 
-Run this skill when you want a sprite to execute a coding task through `bb dispatch`.
+Run this skill when you need to prepare the fleet and start the conductor loop. Direct ad hoc `bb dispatch` is no longer a supported surface.
 
 ## Preflight
 
 ```bash
 source .env.bb
-bb status
-bb dispatch <sprite> "dry-run readiness probe" --repo <owner/repo> --dry-run
+cd conductor
+mix conductor check-env
+mix conductor fleet --fleet ../fleet.toml --reconcile
 ```
 
 Confirm:
+
 - `GITHUB_TOKEN` is set.
-- `SPRITE_TOKEN` is preferred, or `FLY_API_TOKEN` is available as fallback auth.
-- Target sprite is already set up for the repo (`bb setup <sprite> --repo <owner/repo>`).
+- sprite auth is available through `SPRITE_TOKEN`, `FLY_API_TOKEN`, or `sprite auth login`.
+- declared sprites show healthy in `mix conductor fleet`.
 
 ## Workflow
 
-1. Probe readiness first:
+1. Reconcile fleet readiness:
 
 ```bash
-bb dispatch <sprite> "dry-run readiness probe" --repo <owner/repo> --dry-run
+cd conductor
+mix conductor fleet --fleet ../fleet.toml --reconcile
 ```
 
-2. Dispatch the real task:
+2. Start the control loop:
 
 ```bash
-bb dispatch <sprite> "Implement feature X" --repo <owner/repo>
+cd conductor
+mix conductor start --fleet ../fleet.toml
 ```
 
-3. Follow progress and verify output:
+3. Follow progress from another shell:
 
 ```bash
-bb logs <sprite> --follow
-bb status <sprite>
+cd conductor
+mix conductor logs <sprite> --follow
+mix conductor show-runs --limit 10
 ```
 
 ## Failure Handling
 
-- If readiness fails, re-run setup:
-
-```bash
-bb setup <sprite> --repo <owner/repo> --force
-```
-
-- If dispatch was interrupted or the sprite is stuck, recover with:
-
-```bash
-bb kill <sprite>
-bb logs <sprite> --lines 50
-bb status <sprite>
-```
+- If fleet readiness fails, inspect `mix conductor fleet` output and fix auth/tooling gaps.
+- If a sprite gets stuck, recover it from an Elixir shell with `Conductor.Sprite.kill/1`.

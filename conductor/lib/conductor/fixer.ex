@@ -11,13 +11,16 @@ defmodule Conductor.Fixer do
   use GenServer
   require Logger
 
-  alias Conductor.{Config, Prompt, Store}
+  alias Conductor.{Config, Prompt, Store, Workspace}
 
   defstruct [
     :repo,
     :fixer_sprite,
     :poll_ms,
-    in_flight: %{}
+    :base_poll_ms,
+    in_flight: %{},
+    failure_count: 0,
+    health: :healthy
   ]
 
   # --- Public API ---
@@ -42,7 +45,8 @@ defmodule Conductor.Fixer do
     state = %__MODULE__{
       repo: repo,
       fixer_sprite: fixer_sprite,
-      poll_ms: poll_ms
+      poll_ms: poll_ms,
+      base_poll_ms: poll_ms
     }
 
     schedule_poll(state, 0)
@@ -57,20 +61,22 @@ defmodule Conductor.Fixer do
   end
 
   @impl true
-  def handle_info({ref, _result}, state) when is_reference(ref) do
-    # Task completed — remove from in_flight
+  def handle_info({ref, result}, state) when is_reference(ref) do
     Process.demonitor(ref, [:flush])
-    state = complete_task(state, ref)
+    state = complete_task(state, ref, result)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:DOWN, _ref, :process, _pid, reason}, state)
+      when reason in [:normal, :shutdown] do
     {:noreply, state}
   end
 
   @impl true
   def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
-    if reason not in [:normal, :shutdown] do
-      Logger.warning("[thorn] dispatch task exited: #{inspect(reason)}")
-    end
-
-    state = complete_task(state, ref)
+    Logger.warning("[thorn] dispatch task crashed: #{inspect(reason)}")
+    state = complete_task(state, ref, {:error, "task_crashed: #{inspect(reason)}", 1})
     {:noreply, state}
   end
 
@@ -83,7 +89,9 @@ defmodule Conductor.Fixer do
      %{
        repo: state.repo,
        fixer_sprite: state.fixer_sprite,
-       in_flight: Map.keys(state.in_flight) |> Map.new(&{&1, :working})
+       in_flight: Map.keys(state.in_flight) |> Map.new(&{&1, :working}),
+       health: state.health,
+       failure_count: state.failure_count
      }, state}
   end
 
@@ -128,10 +136,10 @@ defmodule Conductor.Fixer do
           "(CI logs unavailable)"
       end
 
-    issue_body = extract_issue_body(pr)
-
-    prompt = Prompt.build_fixer_prompt(pr, ci_logs, issue_body)
     branch = pr["headRefName"]
+    workspace = workspace_for_branch(state.repo, branch)
+    issue_body = extract_issue_body(pr)
+    prompt = Prompt.build_fixer_prompt(pr, ci_logs, issue_body, workspace_root: workspace)
 
     Store.record_event("fixer", "fixer_dispatched", %{
       pr_number: pr_number,
@@ -139,12 +147,23 @@ defmodule Conductor.Fixer do
     })
 
     task =
-      Task.async(fn ->
+      Task.Supervisor.async_nolink(Conductor.TaskSupervisor, fn ->
         try do
-          worker_mod().dispatch(state.fixer_sprite, prompt, state.repo,
-            timeout: Config.fixer_timeout(),
-            workspace: workspace_for_branch(state.repo, branch)
-          )
+          with :ok <- workspace_mod().sync_persona(state.fixer_sprite, workspace, :thorn),
+               {:ok, output} <-
+                 worker_mod().dispatch(
+                   state.fixer_sprite,
+                   prompt,
+                   state.repo,
+                   workspace: workspace,
+                   persona_role: :thorn,
+                   timeout: Config.fixer_timeout()
+                 ) do
+            {:ok, output}
+          else
+            {:error, msg, code} -> {:error, msg, code}
+            {:error, reason} -> {:error, to_string(reason), 1}
+          end
         rescue
           e -> {:error, "fixer dispatch crashed: #{Exception.message(e)}", 1}
         end
@@ -153,19 +172,50 @@ defmodule Conductor.Fixer do
     %{state | in_flight: Map.put(state.in_flight, pr_number, task.ref)}
   end
 
-  defp complete_task(state, ref) do
+  defp complete_task(state, ref, result) do
     {pr_number, in_flight} =
       Enum.reduce(state.in_flight, {nil, %{}}, fn {pr, r}, {found, acc} ->
         if r == ref, do: {pr, acc}, else: {found, Map.put(acc, pr, r)}
       end)
 
-    if pr_number do
-      Logger.info("[thorn] completed work on PR ##{pr_number}")
+    state = %{state | in_flight: in_flight}
 
-      Store.record_event("fixer", "fixer_complete", %{pr_number: pr_number})
+    if pr_number do
+      case result do
+        {:ok, _} ->
+          Logger.info("[thorn] completed work on PR ##{pr_number}")
+          Store.record_event("fixer", "fixer_complete", %{pr_number: pr_number})
+          reset_health(state)
+
+        {:error, msg, _code} ->
+          Logger.warning("[thorn] dispatch failed for PR ##{pr_number}: #{msg}")
+          Store.record_event("fixer", "fixer_failed", %{pr_number: pr_number, error: msg})
+          apply_backoff(state)
+
+        other ->
+          Logger.warning("[thorn] unexpected result for PR ##{pr_number}: #{inspect(other)}")
+          apply_backoff(state)
+      end
+    else
+      state
+    end
+  end
+
+  defp apply_backoff(state) do
+    count = state.failure_count + 1
+    backoff_ms = min(trunc(state.base_poll_ms * :math.pow(2, count)), 600_000)
+    health = if count >= 3, do: :unavailable, else: :degraded
+
+    Logger.info("[thorn] backoff: failures=#{count}, next_poll=#{backoff_ms}ms, health=#{health}")
+    %{state | failure_count: count, poll_ms: backoff_ms, health: health}
+  end
+
+  defp reset_health(state) do
+    if state.failure_count > 0 do
+      Logger.info("[thorn] recovered, resetting to healthy")
     end
 
-    %{state | in_flight: in_flight}
+    %{state | failure_count: 0, poll_ms: state.base_poll_ms, health: :healthy}
   end
 
   defp extract_issue_body(pr) do
@@ -174,8 +224,7 @@ defmodule Conductor.Fixer do
   end
 
   defp workspace_for_branch(repo, _branch) do
-    repo_name = repo |> String.split("/") |> List.last()
-    "/home/sprite/workspace/#{repo_name}"
+    Workspace.repo_root(repo)
   end
 
   defp schedule_poll(_, delay) do
@@ -184,4 +233,5 @@ defmodule Conductor.Fixer do
 
   defp code_host_mod, do: Application.get_env(:conductor, :code_host_module, Conductor.GitHub)
   defp worker_mod, do: Application.get_env(:conductor, :worker_module, Conductor.Sprite)
+  defp workspace_mod, do: Application.get_env(:conductor, :workspace_module, Workspace)
 end

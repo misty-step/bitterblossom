@@ -1,6 +1,7 @@
 defmodule Conductor.PolisherTest do
   use ExUnit.Case, async: false
   import ExUnit.CaptureLog
+  import Conductor.TestSupport.ProcessHelpers
 
   alias Conductor.{Store, Polisher}
 
@@ -58,7 +59,9 @@ defmodule Conductor.PolisherTest do
     def pr_ci_failure_logs(_repo, _pr_number), do: {:ok, ""}
     def add_label(_repo, _pr_number, _label), do: :ok
     def close_issue(_repo, _issue_number), do: :ok
+    def close_pr(_repo, _pr_number, _opts \\ []), do: :ok
     def find_open_pr(_repo, _issue_number, _expected_branch \\ nil), do: {:error, :not_found}
+    def issue_open_prs(_repo, _issue_number), do: {:ok, []}
     def pr_state(_repo, _pr_number), do: {:ok, "OPEN"}
 
     def get_pr_checks(_repo, _pr_number) do
@@ -84,6 +87,15 @@ defmodule Conductor.PolisherTest do
     def busy?(_worker, _opts), do: false
   end
 
+  defmodule MockWorkspace do
+    alias Conductor.PolisherTest.MockState
+
+    def sync_persona(worker, workspace, role, _opts \\ []) do
+      send(MockState.get(:test_pid, self()), {:persona_synced, worker, workspace, role})
+      :ok
+    end
+  end
+
   defmodule MockTracker do
     @behaviour Conductor.Tracker
     def list_eligible(_repo, _opts), do: []
@@ -101,14 +113,6 @@ defmodule Conductor.PolisherTest do
     def comment(_repo, _issue, _body), do: :ok
     def issue_has_label?(_repo, _issue, _label), do: {:ok, false}
     def issue_comments(_repo, _issue), do: {:ok, []}
-  end
-
-  defp stop_process(name) do
-    try do
-      GenServer.stop(name)
-    catch
-      :exit, _reason -> :ok
-    end
   end
 
   defp wait_for_pr_state(repo, pr_number, attempts \\ 20)
@@ -132,30 +136,36 @@ defmodule Conductor.PolisherTest do
     db_path = Path.join(System.tmp_dir!(), "polisher_test_#{:rand.uniform(999_999)}.db")
     event_log = Path.join(System.tmp_dir!(), "polisher_test_#{:rand.uniform(999_999)}.jsonl")
 
-    if Process.whereis(Store), do: GenServer.stop(Store)
+    stop_conductor_app()
+    stop_process(Polisher)
+    stop_process(Store)
+    stop_process(Conductor.TaskSupervisor)
     {:ok, _} = Store.start_link(db_path: db_path, event_log: event_log)
+    {:ok, _} = Task.Supervisor.start_link(name: Conductor.TaskSupervisor)
 
     orig_code_host = Application.get_env(:conductor, :code_host_module)
     orig_worker = Application.get_env(:conductor, :worker_module)
     orig_tracker = Application.get_env(:conductor, :tracker_module)
+    orig_workspace = Application.get_env(:conductor, :workspace_module)
 
     Application.put_env(:conductor, :code_host_module, MockCodeHost)
     Application.put_env(:conductor, :worker_module, MockWorker)
     Application.put_env(:conductor, :tracker_module, MockTracker)
+    Application.put_env(:conductor, :workspace_module, MockWorkspace)
 
     MockState.put(:test_pid, self())
 
     on_exit(fn ->
-      if pid = Process.whereis(Polisher),
-        do: if(Process.alive?(pid), do: stop_process(pid))
-
-      if pid = Process.whereis(Store), do: if(Process.alive?(pid), do: stop_process(pid))
+      stop_process(Polisher)
+      stop_process(Conductor.TaskSupervisor)
+      stop_process(Store)
       MockState.cleanup()
 
       for {key, orig} <- [
             {:code_host_module, orig_code_host},
             {:worker_module, orig_worker},
-            {:tracker_module, orig_tracker}
+            {:tracker_module, orig_tracker},
+            {:workspace_module, orig_workspace}
           ] do
         if orig,
           do: Application.put_env(:conductor, key, orig),
@@ -206,7 +216,11 @@ defmodule Conductor.PolisherTest do
               poll_ms: 50
             )
 
+          assert_receive {:persona_synced, "bb-fern", "/home/sprite/workspace/repo", :fern},
+                         2_000
+
           assert_receive {:dispatched, "bb-fern", prompt}, 2_000
+          assert prompt =~ "Repository Root: /home/sprite/workspace/repo"
           assert prompt =~ "review"
         end)
 
@@ -447,7 +461,7 @@ defmodule Conductor.PolisherTest do
   end
 
   describe "status/0" do
-    test "returns current polisher state" do
+    test "returns current polisher state with health" do
       {:ok, _pid} =
         Polisher.start_link(
           repo: "test/repo",
@@ -459,6 +473,110 @@ defmodule Conductor.PolisherTest do
       assert status.repo == "test/repo"
       assert status.polisher_sprite == "bb-fern"
       assert is_map(status.in_flight)
+      assert status.health == :healthy
+      assert status.failure_count == 0
+    end
+  end
+
+  describe "dispatch failure backoff" do
+    @green_checks [%{"name" => "CI", "conclusion" => "SUCCESS", "status" => "COMPLETED"}]
+
+    defmodule FailingWorker do
+      @behaviour Conductor.Worker
+      alias Conductor.PolisherTest.MockState
+
+      def exec(_worker, _cmd, _opts), do: {:ok, ""}
+
+      def dispatch(_worker, _prompt, _repo, _opts) do
+        send(MockState.get(:test_pid, self()), :dispatch_attempted)
+        {:error, "sprite unreachable", 1}
+      end
+
+      def cleanup(_worker, _repo, _run_id), do: :ok
+      def busy?(_worker, _opts), do: false
+    end
+
+    test "backs off after dispatch failure" do
+      Application.put_env(:conductor, :worker_module, FailingWorker)
+
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 100,
+             "headRefName" => "factory/100-12345",
+             "title" => "test",
+             "body" => "",
+             "labels" => [],
+             "statusCheckRollup" => @green_checks
+           }
+         ]}
+      )
+
+      {:ok, pid} =
+        Polisher.start_link(
+          repo: "test/repo",
+          polisher_sprite: "bb-fern",
+          poll_ms: 50
+        )
+
+      # First dispatch attempt
+      assert_receive :dispatch_attempted, 2_000
+
+      # Check status shows degraded
+      status = Polisher.status()
+      assert status.health == :degraded
+      assert status.failure_count == 1
+
+      assert Process.alive?(pid)
+    end
+
+    test "survives task crash (async_nolink)" do
+      defmodule CrashingWorker do
+        @behaviour Conductor.Worker
+        alias Conductor.PolisherTest.MockState
+
+        def exec(_worker, _cmd, _opts), do: {:ok, ""}
+
+        def dispatch(_worker, _prompt, _repo, _opts) do
+          send(MockState.get(:test_pid, self()), :crash_dispatch)
+          raise "boom"
+        end
+
+        def cleanup(_worker, _repo, _run_id), do: :ok
+        def busy?(_worker, _opts), do: false
+      end
+
+      Application.put_env(:conductor, :worker_module, CrashingWorker)
+
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 101,
+             "headRefName" => "factory/101-12345",
+             "title" => "test",
+             "body" => "",
+             "labels" => [],
+             "statusCheckRollup" => @green_checks
+           }
+         ]}
+      )
+
+      {:ok, pid} =
+        Polisher.start_link(
+          repo: "test/repo",
+          polisher_sprite: "bb-fern",
+          poll_ms: 50
+        )
+
+      assert_receive :crash_dispatch, 2_000
+      Process.sleep(100)
+
+      # GenServer should still be alive after task crash
+      assert Process.alive?(pid)
     end
   end
 end

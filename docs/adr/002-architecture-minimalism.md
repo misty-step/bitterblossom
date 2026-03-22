@@ -20,19 +20,19 @@ Three architectures were evaluated:
 
 ## Decision
 
-**Keep `bb` as thin deterministic transport (<1k LOC).** Intelligence lives in Claude Code skills and the ralph loop script. Don't add features to `bb` — if logic requires judgment, it belongs in a skill.
+**Keep `bb` as thin deterministic transport (<1k LOC).** Intelligence lives in Claude Code skills and the conductor-managed agent harness. Don't add features to `bb` — if logic requires judgment, it belongs in a skill.
 
 The CLI stays small:
 
 | Command | Purpose |
 |---------|---------|
-| `dispatch` | Probe, sync, upload prompt, run ralph loop |
-| `setup` | Configure sprite with configs, persona, ralph script |
+| `dispatch` | Probe, sync, upload prompt, stream the configured agent harness |
+| `setup` | Configure sprite with configs, persona, and runtime assets |
 | `logs` | Stream agent output from the sprite |
 | `status` | Fleet overview or single sprite detail |
 | `version` | Print version |
 
-Plus `scripts/ralph.sh`: the iteration loop that invokes the agent harness, checks signal files, enforces time/iteration limits.
+The transport still owns the remote prompt upload, signal cleanup, and streaming execution contract that the agent harness consumes on-sprite.
 
 ## Rationale
 
@@ -51,5 +51,5 @@ Plus `scripts/ralph.sh`: the iteration loop that invokes the agent harness, chec
 - **Don't add Go packages.** No `internal/` directory. All logic lives in `cmd/bb/`.
 - **Avoid new commands.** If you're tempted to add `bb foo`, write a skill instead.
 - **Skills own intelligence.** Prompt rendering, persona selection, task decomposition, PR review — these belong in Claude Code skills, not Go code.
-- **Ralph loop is sacred.** The bash script is the core value proposition. Changes require careful review.
+- **The remote harness contract is sacred.** Prompt upload, signal handling, and long-running agent execution are the core value proposition. Changes require careful review.
 - **Test at integration level.** With a <1k LOC CLI and no internal packages, unit tests add less value than e2e dispatch tests against real sprites.
