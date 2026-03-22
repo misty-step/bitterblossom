@@ -20,6 +20,7 @@ defmodule Conductor.PhaseWorker do
     :sprite_generation,
     sprites: [],
     in_flight: %{},
+    ref_to_sprite: %{},
     failure_count: 0,
     health: :healthy
   ]
@@ -245,20 +246,18 @@ defmodule Conductor.PhaseWorker do
       end)
 
     task_info = %{ref: task.ref, run_id: run_id, work_ref: work_ref}
-    %{state | in_flight: Map.put(state.in_flight, sprite, task_info)}
+
+    %{
+      state
+      | in_flight: Map.put(state.in_flight, sprite, task_info),
+        ref_to_sprite: Map.put(state.ref_to_sprite, task.ref, sprite)
+    }
   end
 
   defp complete_task(state, ref, result) do
-    {sprite, task_info, in_flight} =
-      Enum.reduce(state.in_flight, {nil, nil, %{}}, fn
-        {sprite, %{ref: ^ref} = task_info}, {_found_sprite, _found_task, acc} ->
-          {sprite, task_info, acc}
-
-        {sprite, task_info}, {found_sprite, found_task, acc} ->
-          {found_sprite, found_task, Map.put(acc, sprite, task_info)}
-      end)
-
-    state = %{state | in_flight: in_flight}
+    {sprite, ref_to_sprite} = Map.pop(state.ref_to_sprite, ref)
+    {task_info, in_flight} = pop_in_flight(state.in_flight, sprite)
+    state = %{state | in_flight: in_flight, ref_to_sprite: ref_to_sprite}
 
     if task_info do
       work_ref = task_info.work_ref
@@ -297,6 +296,12 @@ defmodule Conductor.PhaseWorker do
   defp idle_sprites(state) do
     busy = Map.keys(state.in_flight) |> MapSet.new()
     Enum.reject(state.sprites, &MapSet.member?(busy, &1))
+  end
+
+  defp pop_in_flight(in_flight, nil), do: {nil, in_flight}
+
+  defp pop_in_flight(in_flight, sprite) do
+    Map.pop(in_flight, sprite)
   end
 
   defp status_map(state) do

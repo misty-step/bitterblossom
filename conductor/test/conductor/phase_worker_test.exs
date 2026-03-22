@@ -461,6 +461,33 @@ defmodule Conductor.PhaseWorkerTest do
       refute_receive {:dispatched, "bb-thorn", _prompt}, 300
     end
 
+    test "clears the task ref index after a successful completion" do
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 42,
+             "headRefName" => "factory/99-12345",
+             "title" => "feat: implement feature",
+             "body" => "Closes #99",
+             "statusCheckRollup" => [
+               %{"name" => "CI", "conclusion" => "FAILURE", "status" => "COMPLETED"}
+             ]
+           }
+         ]}
+      )
+
+      {:ok, pid} = start_phase_worker(Roles.Fixer, ["bb-thorn"])
+
+      assert_receive {:dispatched, "bb-thorn", _prompt}, 2_000
+      Process.sleep(100)
+
+      state = :sys.get_state(pid)
+      assert state.in_flight == %{}
+      assert state.ref_to_sprite == %{}
+    end
+
     defmodule FailingWorker do
       @behaviour Conductor.Worker
       alias Conductor.PhaseWorkerTest.MockState
