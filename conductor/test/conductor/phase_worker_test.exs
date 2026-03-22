@@ -582,6 +582,39 @@ defmodule Conductor.PhaseWorkerTest do
       refute_receive {:dispatched, "bb-thorn", _prompt}, 300
     end
 
+    test "logs find_work errors and keeps polling on later cycles" do
+      MockState.put(:open_prs, {:error, :network_error})
+
+      log =
+        capture_log(fn ->
+          {:ok, pid} = start_phase_worker(Roles.Fixer, ["bb-thorn"], poll_ms: 60_000)
+
+          refute_receive {:dispatched, _, _}, 100
+
+          MockState.put(
+            :open_prs,
+            {:ok,
+             [
+               %{
+                 "number" => 42,
+                 "headRefName" => "factory/99-12345",
+                 "title" => "feat: implement feature",
+                 "body" => "Closes #99",
+                 "statusCheckRollup" => [
+                   %{"name" => "CI", "conclusion" => "FAILURE", "status" => "COMPLETED"}
+                 ]
+               }
+             ]}
+          )
+
+          send(pid, :poll)
+
+          assert_receive {:dispatched, "bb-thorn", _prompt}, 2_000
+        end)
+
+      assert log =~ "failed to list open PRs: network_error"
+    end
+
     test "clears the task ref index after a successful completion" do
       MockState.put(
         :open_prs,
@@ -640,6 +673,29 @@ defmodule Conductor.PhaseWorkerTest do
       state = :sys.get_state(pid)
       assert state.ref_to_sprite == %{}
       assert log =~ "unexpected result for PR #42: :unexpected"
+    end
+
+    test "ignores task completions for unknown refs" do
+      {:ok, pid} = start_phase_worker(Roles.Fixer, ["bb-thorn"], poll_ms: 60_000)
+
+      initial_state =
+        wait_for(fn ->
+          state = :sys.get_state(pid)
+
+          if state.in_flight == %{} and state.ref_to_sprite == %{} do
+            state
+          end
+        end)
+
+      send(pid, {make_ref(), {:ok, "done"}})
+      Process.sleep(50)
+
+      state = :sys.get_state(pid)
+      assert state.in_flight == initial_state.in_flight
+      assert state.ref_to_sprite == initial_state.ref_to_sprite
+      assert state.failure_count == initial_state.failure_count
+      assert state.health == initial_state.health
+      assert state.sprites == initial_state.sprites
     end
 
     defmodule FailingWorker do
