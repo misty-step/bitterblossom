@@ -231,7 +231,7 @@ defmodule Conductor.Polisher do
   defp review_state(repo, pr_number, trusted_review_authors) do
     case code_host_mod().pr_review_threads(repo, pr_number) do
       {:ok, threads} ->
-        {:ok, Conductor.GitHub.classify_review_threads(threads, trusted_review_authors)}
+        {:ok, code_host_mod().classify_review_threads(threads, trusted_review_authors)}
 
       {:error, _reason} = error ->
         error

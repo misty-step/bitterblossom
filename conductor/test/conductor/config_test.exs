@@ -1,5 +1,6 @@
 defmodule Conductor.ConfigTest do
   use ExUnit.Case, async: false
+  import ExUnit.CaptureLog
 
   alias Conductor.Config
 
@@ -159,18 +160,37 @@ defmodule Conductor.ConfigTest do
       Application.delete_env(:conductor, :trusted_review_authors)
     end
 
+    test "normalizes a configured binary value" do
+      Application.put_env(:conductor, :trusted_review_authors, "  GitHub-Actions  ")
+      assert Config.trusted_review_authors() == ["github-actions"]
+    after
+      Application.delete_env(:conductor, :trusted_review_authors)
+    end
+
+    test "allows an explicit empty list to disable trusted authors" do
+      Application.put_env(:conductor, :trusted_review_authors, [])
+      assert Config.trusted_review_authors() == []
+    after
+      Application.delete_env(:conductor, :trusted_review_authors)
+    end
+
     test "normalizes configured values and falls back when invalid" do
       Application.put_env(:conductor, :trusted_review_authors, ["  GitHub-Actions  ", 123, ""])
       assert Config.trusted_review_authors() == ["github-actions"]
 
       Application.put_env(:conductor, :trusted_review_authors, [123, nil])
 
-      assert Config.trusted_review_authors() == [
-               "github-actions",
-               "coderabbitai",
-               "chatgpt-codex-connector",
-               "chatgpt-codex-connector[bot]"
-             ]
+      log =
+        capture_log(fn ->
+          assert Config.trusted_review_authors() == [
+                   "github-actions",
+                   "coderabbitai",
+                   "chatgpt-codex-connector",
+                   "chatgpt-codex-connector[bot]"
+                 ]
+        end)
+
+      assert log =~ "invalid :trusted_review_authors config"
     after
       Application.delete_env(:conductor, :trusted_review_authors)
     end

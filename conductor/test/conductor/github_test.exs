@@ -195,6 +195,51 @@ defmodule Conductor.GitHubTest do
       assert result.non_blocking == []
     end
 
+    test "treats outdated trusted bot threads as non-blocking without priority keywords" do
+      threads = [
+        %{
+          author: "github-actions",
+          body: "This thread is now stale",
+          is_resolved: false,
+          is_outdated: true
+        }
+      ]
+
+      result = GitHub.classify_review_threads(threads, ["github-actions"])
+      assert length(result.non_blocking) == 1
+      assert result.actionable == []
+    end
+
+    test "drops resolved threads from both buckets" do
+      threads = [
+        %{
+          author: "github-actions",
+          body: "P2 missing-coverage suggestion",
+          is_resolved: true,
+          is_outdated: false
+        }
+      ]
+
+      result = GitHub.classify_review_threads(threads, ["github-actions"])
+      assert result.actionable == []
+      assert result.non_blocking == []
+    end
+
+    test "does not match missing-coverage substrings" do
+      threads = [
+        %{
+          author: "github-actions",
+          body: "not-missing-coverage-here",
+          is_resolved: false,
+          is_outdated: false
+        }
+      ]
+
+      result = GitHub.classify_review_threads(threads, ["github-actions"])
+      assert length(result.actionable) == 1
+      assert result.non_blocking == []
+    end
+
     test "keeps thread actionable when a human adds a later blocking reply" do
       threads = [
         %{
@@ -524,6 +569,56 @@ defmodule Conductor.GitHubTest do
           assert String.contains?(args, "owner=misty-step\n")
           assert String.contains?(args, "name=bitterblossom\n")
           assert String.contains?(args, "number=743\n")
+        end
+      )
+    end
+
+    test "paginates review threads and nested comments" do
+      with_fake_gh(
+        """
+        printf '%s\\n' "$@" >> "$GH_ARGS_PATH"
+        args="$*"
+
+        if [[ "$args" == *"threadId=THREAD_1"* ]]; then
+          cat <<'JSON'
+        {"data":{"node":{"comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"author":{"login":"github-actions"},"body":"follow-up context","path":"conductor/lib/conductor/polisher.ex","url":"https://example.test/thread/1/comment/2"}]}}}}
+        JSON
+        elif [[ "$args" == *"threadsCursor=THREADS_CURSOR_1"* ]]; then
+          cat <<'JSON'
+        {"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"THREAD_2","isResolved":false,"isOutdated":true,"comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"author":{"login":"coderabbitai"},"body":"minor follow-up","path":"conductor/lib/conductor/github.ex","url":"https://example.test/thread/2"}]}}]}}}}}
+        JSON
+        else
+          cat <<'JSON'
+        {"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":true,"endCursor":"THREADS_CURSOR_1"},"nodes":[{"id":"THREAD_1","isResolved":false,"isOutdated":false,"comments":{"pageInfo":{"hasNextPage":true,"endCursor":"COMMENTS_CURSOR_1"},"nodes":[{"author":{"login":"github-actions"},"body":"P2 missing-coverage suggestion","path":"conductor/lib/conductor/polisher.ex","url":"https://example.test/thread/1/comment/1"}]}}]}}}}}
+        JSON
+        fi
+        """,
+        fn _tmp_dir, args_path ->
+          assert {:ok, [first, second]} =
+                   GitHub.pr_review_threads("misty-step/bitterblossom", 743)
+
+          assert first.comments == [
+                   %{
+                     author: "github-actions",
+                     body: "P2 missing-coverage suggestion",
+                     path: "conductor/lib/conductor/polisher.ex",
+                     url: "https://example.test/thread/1/comment/1"
+                   },
+                   %{
+                     author: "github-actions",
+                     body: "follow-up context",
+                     path: "conductor/lib/conductor/polisher.ex",
+                     url: "https://example.test/thread/1/comment/2"
+                   }
+                 ]
+
+          assert second.author == "coderabbitai"
+          assert second.is_outdated == true
+
+          args = File.read!(args_path)
+          assert String.contains?(args, "threadsCursor=THREADS_CURSOR_1\n")
+          assert String.contains?(args, "threadId=THREAD_1\n")
+          assert String.contains?(args, "commentsCursor=COMMENTS_CURSOR_1\n")
         end
       )
     end

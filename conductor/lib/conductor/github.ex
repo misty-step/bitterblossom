@@ -473,6 +473,7 @@ defmodule Conductor.GitHub do
   Split unresolved review threads into actionable work vs. low-priority trusted
   external feedback that should not block `lgtm`.
   """
+  @impl Conductor.CodeHost
   @spec classify_review_threads([map()], [binary()]) :: %{
           actionable: [map()],
           non_blocking: [map()]
@@ -582,7 +583,7 @@ defmodule Conductor.GitHub do
     end
   end
 
-  defp review_threads_args(owner, name, pr_number) do
+  defp review_threads_args(owner, name, pr_number, cursor) do
     [
       "api",
       "graphql",
@@ -594,19 +595,42 @@ defmodule Conductor.GitHub do
       "name=#{name}",
       "-F",
       "number=#{pr_number}"
-    ]
+    ] ++ maybe_graphql_cursor("threadsCursor", cursor)
   end
+
+  defp review_thread_comments_args(thread_id, cursor) do
+    [
+      "api",
+      "graphql",
+      "-f",
+      "query=#{review_thread_comments_query()}",
+      "-F",
+      "threadId=#{thread_id}"
+    ] ++ maybe_graphql_cursor("commentsCursor", cursor)
+  end
+
+  defp maybe_graphql_cursor(_name, nil), do: []
+  defp maybe_graphql_cursor(name, cursor), do: ["-F", "#{name}=#{cursor}"]
 
   defp review_threads_query do
     """
-    query($owner:String!, $name:String!, $number:Int!) {
+    query($owner:String!, $name:String!, $number:Int!, $threadsCursor:String) {
       repository(owner:$owner, name:$name) {
         pullRequest(number:$number) {
-          reviewThreads(first:100) {
+          reviewThreads(first:100, after:$threadsCursor) {
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
             nodes {
+              id
               isResolved
               isOutdated
-              comments(first:20) {
+              comments(first:100) {
+                pageInfo {
+                  hasNextPage
+                  endCursor
+                }
                 nodes {
                   author { login }
                   body
@@ -622,39 +646,166 @@ defmodule Conductor.GitHub do
     """
   end
 
-  defp decode_review_threads(%{
+  defp review_thread_comments_query do
+    """
+    query($threadId:ID!, $commentsCursor:String) {
+      node(id:$threadId) {
+        ... on PullRequestReviewThread {
+          comments(first:100, after:$commentsCursor) {
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+            nodes {
+              author { login }
+              body
+              path
+              url
+            }
+          }
+        }
+      }
+    }
+    """
+  end
+
+  defp decode_review_threads_page(%{
          "data" => %{
            "repository" => %{
              "pullRequest" => %{
-               "reviewThreads" => %{"nodes" => nodes}
+               "reviewThreads" => %{"nodes" => nodes} = review_threads
              }
            }
          }
        })
        when is_list(nodes) do
-    Enum.map(nodes, &normalize_review_thread/1)
+    page_info = Map.get(review_threads, "pageInfo", %{})
+
+    %{
+      nodes: nodes,
+      has_next_page: page_info["hasNextPage"] == true,
+      end_cursor: page_info["endCursor"]
+    }
   end
 
-  defp decode_review_threads(_), do: []
+  defp decode_review_threads_page(_), do: %{nodes: [], has_next_page: false, end_cursor: nil}
+
+  defp decode_review_thread_comments_page(%{
+         "data" => %{
+           "node" => %{
+             "comments" => %{"nodes" => nodes} = comments
+           }
+         }
+       })
+       when is_list(nodes) do
+    page_info = Map.get(comments, "pageInfo", %{})
+
+    %{
+      nodes: nodes,
+      has_next_page: page_info["hasNextPage"] == true,
+      end_cursor: page_info["endCursor"]
+    }
+  end
+
+  defp decode_review_thread_comments_page(_),
+    do: %{nodes: [], has_next_page: false, end_cursor: nil}
+
+  defp fetch_review_threads(owner, name, pr_number, cursor \\ nil, acc \\ []) do
+    with {:ok, json} <- run_gh(review_threads_args(owner, name, pr_number, cursor)),
+         {:ok, data} <- Jason.decode(json) do
+      page = decode_review_threads_page(data)
+
+      with {:ok, threads} <- normalize_review_threads(page.nodes) do
+        next_acc = acc ++ threads
+
+        if page.has_next_page do
+          fetch_review_threads(owner, name, pr_number, page.end_cursor, next_acc)
+        else
+          {:ok, next_acc}
+        end
+      end
+    else
+      {:error, _reason} = error ->
+        error
+
+      {:ok, _other} ->
+        {:error, "invalid JSON from gh"}
+    end
+  end
+
+  defp normalize_review_threads(nodes) do
+    nodes
+    |> Enum.reduce_while({:ok, []}, fn thread, {:ok, acc} ->
+      case normalize_review_thread(thread) do
+        {:ok, normalized_thread} -> {:cont, {:ok, [normalized_thread | acc]}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+    |> then(fn
+      {:ok, threads} -> {:ok, Enum.reverse(threads)}
+      {:error, _reason} = error -> error
+    end)
+  end
 
   defp normalize_review_thread(thread) do
-    comments =
+    with {:ok, comments} <- fetch_review_thread_comments(thread) do
+      first_comment = List.first(comments) || %{}
+
+      {:ok,
+       %{
+         author: first_comment[:author] || "unknown",
+         body: first_comment[:body] || "",
+         path: first_comment[:path],
+         url: first_comment[:url],
+         comments: comments,
+         is_outdated: thread["isOutdated"] == true,
+         is_resolved: thread["isResolved"] == true
+       }}
+    end
+  end
+
+  defp fetch_review_thread_comments(thread) do
+    initial_comments =
       thread
       |> get_in(["comments", "nodes"])
       |> List.wrap()
       |> Enum.map(&normalize_review_thread_comment/1)
 
-    first_comment = List.first(comments) || %{}
+    page_info = get_in(thread, ["comments", "pageInfo"]) || %{}
 
-    %{
-      author: first_comment[:author] || "unknown",
-      body: first_comment[:body] || "",
-      path: first_comment[:path],
-      url: first_comment[:url],
-      comments: comments,
-      is_outdated: thread["isOutdated"] == true,
-      is_resolved: thread["isResolved"] == true
-    }
+    if page_info["hasNextPage"] == true do
+      case thread["id"] do
+        id when is_binary(id) ->
+          fetch_review_thread_comments(id, page_info["endCursor"], initial_comments)
+
+        _ ->
+          {:error, "review thread missing id for pagination"}
+      end
+    else
+      {:ok, initial_comments}
+    end
+  end
+
+  defp fetch_review_thread_comments(thread_id, cursor, acc) do
+    with {:ok, json} <- run_gh(review_thread_comments_args(thread_id, cursor)),
+         {:ok, data} <- Jason.decode(json) do
+      page = decode_review_thread_comments_page(data)
+
+      next_acc =
+        acc ++ Enum.map(List.wrap(page.nodes), &normalize_review_thread_comment/1)
+
+      if page.has_next_page do
+        fetch_review_thread_comments(thread_id, page.end_cursor, next_acc)
+      else
+        {:ok, next_acc}
+      end
+    else
+      {:error, _reason} = error ->
+        error
+
+      {:ok, _other} ->
+        {:error, "invalid JSON from gh"}
+    end
   end
 
   defp normalize_review_thread_comment(comment) do
@@ -691,7 +842,7 @@ defmodule Conductor.GitHub do
         ~r/\bp3\b/u,
         ~r/\bminor\b/u,
         ~r/\bnit\b/u,
-        ~r/missing-coverage/u,
+        ~r/(?:^|[^[:alnum:]_-])missing-coverage(?:[^[:alnum:]_-]|$)/u,
         ~r/\bsuggestion\b/u
       ],
       &Regex.match?(&1, body)
@@ -874,18 +1025,11 @@ defmodule Conductor.GitHub do
   end
 
   @doc "Fetch review threads on a PR."
+  @impl Conductor.CodeHost
   @spec pr_review_threads(binary(), pos_integer()) :: {:ok, [map()]} | {:error, term()}
   def pr_review_threads(repo, pr_number) do
-    with {:ok, {owner, name}} <- repo_parts(repo),
-         {:ok, json} <- run_gh(review_threads_args(owner, name, pr_number)),
-         {:ok, data} <- Jason.decode(json) do
-      {:ok, decode_review_threads(data)}
-    else
-      {:error, _reason} = error ->
-        error
-
-      {:ok, _other} ->
-        {:error, "invalid JSON from gh"}
+    with {:ok, {owner, name}} <- repo_parts(repo) do
+      fetch_review_threads(owner, name, pr_number)
     end
   end
 

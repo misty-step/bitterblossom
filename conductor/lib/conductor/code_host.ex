@@ -38,6 +38,13 @@ defmodule Conductor.CodeHost do
   @callback pr_review_threads(repo :: binary(), pr_number :: pos_integer()) ::
               {:ok, [map()]} | {:error, term()}
 
+  @doc "Classify unresolved review threads as actionable or non-blocking."
+  @callback classify_review_threads(threads :: [map()], trusted_review_authors :: [binary()]) ::
+              %{
+                actionable: [map()],
+                non_blocking: [map()]
+              }
+
   @doc "Fetch CI failure logs for a PR."
   @callback pr_ci_failure_logs(repo :: binary(), pr_number :: pos_integer()) ::
               {:ok, binary()} | {:error, term()}

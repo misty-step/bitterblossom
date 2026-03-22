@@ -56,6 +56,13 @@ defmodule Conductor.PolisherTest do
       MockState.get(:review_threads, {:ok, []})
     end
 
+    def classify_review_threads(threads, trusted_review_authors) do
+      case MockState.get(:classify_review_threads) do
+        fun when is_function(fun, 2) -> fun.(threads, trusted_review_authors)
+        _ -> Conductor.GitHub.classify_review_threads(threads, trusted_review_authors)
+      end
+    end
+
     def pr_ci_failure_logs(_repo, _pr_number), do: {:ok, ""}
 
     def add_label(repo, pr_number, label) do
@@ -340,6 +347,49 @@ defmodule Conductor.PolisherTest do
       assert_receive {:dispatched, "bb-fern", prompt}, 2_000
       assert prompt =~ "Non-Blocking External Threads"
       assert MockState.get(:add_label_calls, []) == []
+    end
+
+    test "routes thread classification through the configured code host" do
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 99,
+          issue_title: "tracked issue",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(run_id, %{pr_number: 42, phase: "pr_opened", status: "pr_opened"})
+
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 42,
+             "headRefName" => "factory/99-12345",
+             "title" => "feat: implement feature",
+             "body" => "Closes #99",
+             "labels" => [],
+             "statusCheckRollup" => @green_checks
+           }
+         ]}
+      )
+
+      MockState.put(:review_threads, {:ok, [%{author: "nobody", body: "ignored"}]})
+
+      MockState.put(:classify_review_threads, fn _threads, _trusted_review_authors ->
+        %{actionable: [], non_blocking: [%{author: "mock-bot", body: "safe"}]}
+      end)
+
+      {:ok, _pid} =
+        Polisher.start_link(
+          repo: "test/repo",
+          polisher_sprite: "bb-fern",
+          poll_ms: 50
+        )
+
+      refute_receive {:dispatched, _, _}, 300
+      assert MockState.get(:add_label_calls) == [{"test/repo", 42, "lgtm"}]
     end
 
     test "skips non-conductor PRs when only non-blocking external threads remain" do

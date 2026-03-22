@@ -260,6 +260,14 @@ defmodule Conductor.PromptTest do
       assert prompt =~ "github-actions"
       assert prompt =~ "Rename this function"
     end
+
+    test "shows empty review thread sections when there are no unresolved threads" do
+      pr = %{"number" => 10, "title" => "Fix CI", "headRefName" => "factory/10-fix"}
+      prompt = Prompt.build_polisher_prompt(pr, [], "issue body")
+
+      assert prompt =~ "_No unresolved actionable review threads._"
+      assert prompt =~ "_No deferred external threads._"
+    end
   end
 
   describe "build_builder_prompt/4 with repo_context (CLAUDE.md)" do

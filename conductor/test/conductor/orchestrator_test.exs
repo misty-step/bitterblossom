@@ -111,6 +111,10 @@ defmodule Conductor.OrchestratorTest do
     def open_prs(_repo), do: {:ok, []}
     def pr_review_comments(_repo, _pr), do: {:ok, []}
     def pr_review_threads(_repo, _pr), do: {:ok, []}
+
+    def classify_review_threads(threads, trusted_review_authors),
+      do: Conductor.GitHub.classify_review_threads(threads, trusted_review_authors)
+
     def pr_ci_failure_logs(_repo, _pr), do: {:ok, ""}
     def add_label(_repo, _pr, _label), do: :ok
 

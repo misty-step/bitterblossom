@@ -1,5 +1,13 @@
 defmodule Conductor.Config do
   @moduledoc "Runtime configuration from environment and application config."
+  require Logger
+
+  @default_trusted_review_authors [
+    "github-actions",
+    "coderabbitai",
+    "chatgpt-codex-connector",
+    "chatgpt-codex-connector[bot]"
+  ]
 
   @type worker_config :: %{
           name: binary(),
@@ -125,18 +133,30 @@ defmodule Conductor.Config do
     Application.get_env(:conductor, :polisher_timeout_minutes, 15)
   end
 
+  @doc """
+  Return the trusted review authors allowlist used to classify low-priority
+  external threads.
+
+  When unset, the built-in trusted bot list is used. Set
+  `:trusted_review_authors` to `[]` to disable trusted external auto-labeling.
+  Invalid non-empty values log a warning and fall back to defaults.
+  """
   @spec trusted_review_authors() :: [binary()]
   def trusted_review_authors do
-    default = [
-      "github-actions",
-      "coderabbitai",
-      "chatgpt-codex-connector",
-      "chatgpt-codex-connector[bot]"
-    ]
+    raw_authors =
+      Application.get_env(:conductor, :trusted_review_authors, @default_trusted_review_authors)
 
-    :conductor
-    |> Application.get_env(:trusted_review_authors, default)
-    |> normalize_trusted_review_authors(default)
+    case normalize_trusted_review_authors(raw_authors) do
+      {:ok, authors} ->
+        authors
+
+      {:error, reason} ->
+        Logger.warning(
+          "invalid :trusted_review_authors config (#{reason}); falling back to defaults"
+        )
+
+        @default_trusted_review_authors
+    end
   end
 
   @spec replay_delay_ms() :: pos_integer()
@@ -190,17 +210,32 @@ defmodule Conductor.Config do
     end
   end
 
-  defp normalize_trusted_review_authors(raw_authors, default) do
-    normalized =
-      raw_authors
-      |> List.wrap()
-      |> Enum.filter(&is_binary/1)
-      |> Enum.map(&String.trim/1)
-      |> Enum.reject(&(&1 == ""))
-      |> Enum.map(&String.downcase/1)
-      |> Enum.uniq()
+  defp normalize_trusted_review_authors(raw_authors) when is_binary(raw_authors) do
+    case normalize_trusted_review_author_list([raw_authors]) do
+      [] -> {:error, "empty binary value"}
+      authors -> {:ok, authors}
+    end
+  end
 
-    if normalized == [], do: default, else: normalized
+  defp normalize_trusted_review_authors(raw_authors) when is_list(raw_authors) do
+    authors = normalize_trusted_review_author_list(raw_authors)
+
+    cond do
+      raw_authors == [] -> {:ok, []}
+      authors != [] -> {:ok, authors}
+      true -> {:error, "no valid author names"}
+    end
+  end
+
+  defp normalize_trusted_review_authors(_raw_authors), do: {:error, "expected a binary or list"}
+
+  defp normalize_trusted_review_author_list(raw_authors) do
+    raw_authors
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.map(&String.downcase/1)
+    |> Enum.uniq()
   end
 
   defp detect_repo_root do

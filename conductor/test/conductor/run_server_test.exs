@@ -73,6 +73,10 @@ defmodule Conductor.RunServerTest do
     def factory_prs(_repo), do: {:ok, []}
     def pr_review_comments(_repo, _pr_number), do: {:ok, []}
     def pr_review_threads(_repo, _pr_number), do: {:ok, []}
+
+    def classify_review_threads(threads, trusted_review_authors),
+      do: Conductor.GitHub.classify_review_threads(threads, trusted_review_authors)
+
     def pr_ci_failure_logs(_repo, _pr_number), do: {:ok, ""}
     def add_label(_repo, _pr_number, _label), do: :ok
     def close_issue(_repo, _issue_number), do: :ok
