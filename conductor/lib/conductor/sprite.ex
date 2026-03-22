@@ -394,6 +394,9 @@ defmodule Conductor.Sprite do
   defp extract_sprite_state(%{"sprites" => sprites}, sprite) when is_list(sprites),
     do: extract_sprite_state(sprites, sprite)
 
+  defp extract_sprite_state(%{"data" => sprites}, sprite) when is_list(sprites),
+    do: extract_sprite_state(sprites, sprite)
+
   defp extract_sprite_state(sprites, sprite) when is_list(sprites) do
     sprites
     |> Enum.find(&(sprite_name(&1) == sprite))

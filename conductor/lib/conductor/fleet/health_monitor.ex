@@ -156,7 +156,6 @@ defmodule Conductor.Fleet.HealthMonitor do
       role: to_string(sprite.role)
     })
 
-    broadcast_health_update()
     state
   end
 
@@ -172,7 +171,6 @@ defmodule Conductor.Fleet.HealthMonitor do
           role: to_string(sprite.role)
         })
 
-        broadcast_health_update()
         state
 
       :error ->
@@ -188,7 +186,6 @@ defmodule Conductor.Fleet.HealthMonitor do
       role: to_string(sprite.role)
     })
 
-    broadcast_health_update()
     state
   end
 
@@ -254,12 +251,6 @@ defmodule Conductor.Fleet.HealthMonitor do
     end
 
     state
-  end
-
-  defp broadcast_health_update do
-    if Process.whereis(Conductor.PubSub) do
-      Phoenix.PubSub.broadcast(Conductor.PubSub, "dashboard", :runs_updated)
-    end
   end
 
   defp healthy_sprites(state) do

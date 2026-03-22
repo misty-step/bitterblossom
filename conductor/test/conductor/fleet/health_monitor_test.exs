@@ -26,7 +26,20 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     alias Conductor.Fleet.HealthMonitorTest.MockState
 
     def reconcile_sprite(sprite) do
-      case MockState.get({:sprite_health, sprite.name}, :healthy) do
+      calls = MockState.get(:reconcile_calls, [])
+      MockState.put(:reconcile_calls, calls ++ [sprite.name])
+
+      health =
+        case MockState.get({:reconcile_script, sprite.name}) do
+          [next | rest] ->
+            MockState.put({:reconcile_script, sprite.name}, rest)
+            next
+
+          _ ->
+            MockState.get({:sprite_health, sprite.name}, :healthy)
+        end
+
+      case health do
         :healthy ->
           %{name: sprite.name, role: sprite.role, healthy: true, action: :none}
 
@@ -55,15 +68,7 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     def check_stuck(sprite, _opts \\ []) do
       calls = MockState.get(:stuck_calls, [])
       MockState.put(:stuck_calls, calls ++ [sprite])
-
-      case MockState.get({:check_stuck_result, sprite}, {:ok, :not_stuck}) do
-        {:ok, :recreated} = result ->
-          MockState.put({:sprite_health, sprite}, :healthy)
-          result
-
-        other ->
-          other
-      end
+      MockState.get({:check_stuck_result, sprite}, {:ok, :not_stuck})
     end
   end
 
@@ -324,7 +329,7 @@ defmodule Conductor.Fleet.HealthMonitorTest do
       }
     ]
 
-    MockState.put({:sprite_health, "bb-polisher"}, :unhealthy)
+    MockState.put({:reconcile_script, "bb-polisher"}, [:unhealthy, :healthy])
     MockState.put({:check_stuck_result, "bb-polisher"}, {:ok, :recreated})
 
     HealthMonitor.configure(
@@ -342,6 +347,41 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     assert log =~ "bb-polisher was stuck; recreating sprite"
     assert log =~ "bb-polisher recovered"
     assert HealthMonitor.status().sprites["bb-polisher"] == :healthy
+    assert MockState.get(:reconcile_calls, []) == ["bb-polisher", "bb-polisher"]
+    assert MockState.get(:stuck_calls, []) == ["bb-polisher"]
+  end
+
+  test "logs stuck-check failures and marks the sprite unhealthy" do
+    start_monitor(interval_ms: 60_000)
+
+    sprites = [
+      %{
+        name: "bb-polisher",
+        role: :polisher,
+        org: "misty-step",
+        harness: "codex",
+        repo: "test/repo"
+      }
+    ]
+
+    MockState.put({:sprite_health, "bb-polisher"}, :unhealthy)
+    MockState.put({:check_stuck_result, "bb-polisher"}, {:error, "api timeout"})
+
+    HealthMonitor.configure(
+      sprites: sprites,
+      repo: "test/repo",
+      healthy: MapSet.new(["bb-polisher"])
+    )
+
+    log =
+      capture_log(fn ->
+        send(Process.whereis(HealthMonitor), :check)
+        Process.sleep(100)
+      end)
+
+    assert log =~ "stuck check failed for bb-polisher"
+    assert log =~ "bb-polisher degraded"
+    assert HealthMonitor.status().sprites["bb-polisher"] == :unhealthy
     assert MockState.get(:stuck_calls, []) == ["bb-polisher"]
   end
 
