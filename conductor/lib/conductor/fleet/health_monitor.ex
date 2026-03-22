@@ -112,54 +112,87 @@ defmodule Conductor.Fleet.HealthMonitor do
   # --- Private ---
 
   defp check_and_recover(state) do
-    # Only re-probe non-builder sprites (builders are probed by the Orchestrator)
-    phase_sprites = Enum.filter(state.sprites, &(&1.role in [:fixer, :polisher]))
-
-    phase_sprites
+    state.sprites
     |> Enum.reduce(state, fn sprite, acc ->
-      new_health = probe_sprite(sprite)
       old_health = Map.get(acc.known_health, sprite.name, :unhealthy)
+      {new_health, recovery_action} = probe_sprite(sprite)
 
-      cond do
-        old_health == :unhealthy and new_health == :healthy ->
-          Logger.info("[health] #{sprite.name} recovered, starting phase worker")
-
-          case ensure_phase_worker(sprite, acc.repo) do
-            :ok ->
-              Store.record_event("fleet", "sprite_recovered", %{
-                name: sprite.name,
-                role: to_string(sprite.role)
-              })
-
-              put_health(acc, sprite.name, :healthy)
-
-            :error ->
-              acc
-          end
-
-        old_health == :healthy and new_health == :unhealthy ->
-          Logger.warning("[health] #{sprite.name} degraded")
-
-          Store.record_event("fleet", "sprite_degraded", %{
-            name: sprite.name,
-            role: to_string(sprite.role)
-          })
-
-          put_health(acc, sprite.name, :unhealthy)
-
-        true ->
-          acc
-      end
+      acc
+      |> maybe_record_recovery_action(sprite, recovery_action)
+      |> maybe_handle_transition(sprite, old_health, new_health)
+      |> put_health(sprite.name, new_health)
     end)
     |> maybe_gc_checkpoints()
   end
 
   defp probe_sprite(sprite) do
     case reconciler_mod().reconcile_sprite(sprite) do
-      %{healthy: true} -> :healthy
-      _ -> :unhealthy
+      %{healthy: true} ->
+        {:healthy, :none}
+
+      _ ->
+        case sprite_mod().check_stuck(sprite.name, org: Map.get(sprite, :org)) do
+          {:ok, :recreated} ->
+            case reconciler_mod().reconcile_sprite(sprite) do
+              %{healthy: true} -> {:healthy, :recreated}
+              _ -> {:unhealthy, :recreated}
+            end
+
+          {:ok, :not_stuck} ->
+            {:unhealthy, :none}
+
+          {:error, reason} ->
+            Logger.warning("[health] stuck check failed for #{sprite.name}: #{inspect(reason)}")
+            {:unhealthy, {:stuck_check_failed, reason}}
+        end
     end
   end
+
+  defp maybe_record_recovery_action(state, sprite, :recreated) do
+    Logger.warning("[health] #{sprite.name} was stuck; recreating sprite")
+
+    Store.record_event("fleet", "sprite_recreated", %{
+      name: sprite.name,
+      role: to_string(sprite.role)
+    })
+
+    broadcast_health_update()
+    state
+  end
+
+  defp maybe_record_recovery_action(state, _sprite, _recovery_action), do: state
+
+  defp maybe_handle_transition(state, sprite, :unhealthy, :healthy) do
+    Logger.info("[health] #{sprite.name} recovered, starting phase worker")
+
+    case ensure_phase_worker(sprite, state.repo) do
+      :ok ->
+        Store.record_event("fleet", "sprite_recovered", %{
+          name: sprite.name,
+          role: to_string(sprite.role)
+        })
+
+        broadcast_health_update()
+        state
+
+      :error ->
+        state
+    end
+  end
+
+  defp maybe_handle_transition(state, sprite, :healthy, :unhealthy) do
+    Logger.warning("[health] #{sprite.name} degraded")
+
+    Store.record_event("fleet", "sprite_degraded", %{
+      name: sprite.name,
+      role: to_string(sprite.role)
+    })
+
+    broadcast_health_update()
+    state
+  end
+
+  defp maybe_handle_transition(state, _sprite, _old_health, _new_health), do: state
 
   @spec ensure_phase_worker(map(), binary()) :: :ok | :error
   defp ensure_phase_worker(sprite, repo) do
@@ -221,6 +254,12 @@ defmodule Conductor.Fleet.HealthMonitor do
     end
 
     state
+  end
+
+  defp broadcast_health_update do
+    if Process.whereis(Conductor.PubSub) do
+      Phoenix.PubSub.broadcast(Conductor.PubSub, "dashboard", :runs_updated)
+    end
   end
 
   defp healthy_sprites(state) do

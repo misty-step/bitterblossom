@@ -51,6 +51,20 @@ defmodule Conductor.Fleet.HealthMonitorTest do
       MockState.put(:gc_calls, calls ++ [sprite])
       :ok
     end
+
+    def check_stuck(sprite, _opts \\ []) do
+      calls = MockState.get(:stuck_calls, [])
+      MockState.put(:stuck_calls, calls ++ [sprite])
+
+      case MockState.get({:check_stuck_result, sprite}, {:ok, :not_stuck}) do
+        {:ok, :recreated} = result ->
+          MockState.put({:sprite_health, sprite}, :healthy)
+          result
+
+        other ->
+          other
+      end
+    end
   end
 
   defmodule NoopCodeHost do
@@ -295,5 +309,76 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     end)
 
     assert MockState.get(:gc_calls, []) == ["bb-builder", "bb-polisher"]
+  end
+
+  test "recreates stuck sprites before marking them degraded" do
+    start_monitor(interval_ms: 60_000)
+
+    sprites = [
+      %{
+        name: "bb-polisher",
+        role: :polisher,
+        org: "misty-step",
+        harness: "codex",
+        repo: "test/repo"
+      }
+    ]
+
+    MockState.put({:sprite_health, "bb-polisher"}, :unhealthy)
+    MockState.put({:check_stuck_result, "bb-polisher"}, {:ok, :recreated})
+
+    HealthMonitor.configure(
+      sprites: sprites,
+      repo: "test/repo",
+      healthy: MapSet.new()
+    )
+
+    log =
+      capture_log(fn ->
+        send(Process.whereis(HealthMonitor), :check)
+        Process.sleep(100)
+      end)
+
+    assert log =~ "bb-polisher was stuck; recreating sprite"
+    assert log =~ "bb-polisher recovered"
+    assert HealthMonitor.status().sprites["bb-polisher"] == :healthy
+    assert MockState.get(:stuck_calls, []) == ["bb-polisher"]
+  end
+
+  test "builder health is refreshed before periodic checkpoint gc" do
+    start_monitor(interval_ms: 120_000)
+
+    sprites = [
+      %{
+        name: "bb-builder",
+        role: :builder,
+        org: "misty-step",
+        harness: "codex",
+        repo: "test/repo"
+      },
+      %{
+        name: "bb-polisher",
+        role: :polisher,
+        org: "misty-step",
+        harness: "codex",
+        repo: "test/repo"
+      }
+    ]
+
+    MockState.put({:sprite_health, "bb-builder"}, :unhealthy)
+    MockState.put({:sprite_health, "bb-polisher"}, :healthy)
+
+    HealthMonitor.configure(
+      sprites: sprites,
+      repo: "test/repo",
+      healthy: MapSet.new(["bb-builder", "bb-polisher"])
+    )
+
+    Enum.each(1..15, fn _ ->
+      send(Process.whereis(HealthMonitor), :check)
+      Process.sleep(20)
+    end)
+
+    assert MockState.get(:gc_calls, []) == ["bb-polisher"]
   end
 end

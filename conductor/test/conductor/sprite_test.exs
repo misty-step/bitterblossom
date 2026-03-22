@@ -415,6 +415,111 @@ defmodule Conductor.SpriteTest do
     end
   end
 
+  describe "check_stuck/2" do
+    test "recreates sprites that are old enough and report last_running_at null" do
+      test_pid = self()
+
+      sprites_json =
+        Jason.encode!(%{
+          "sprites" => [
+            %{
+              "name" => "bb-fixer",
+              "created_at" => "2026-03-22T11:50:00Z",
+              "last_running_at" => nil
+            }
+          ]
+        })
+
+      shell_fn = fn "sprite", args, opts ->
+        send(test_pid, {:shell_called, args, opts})
+
+        case args do
+          ["api", "-o", "misty-step", "/sprites"] ->
+            {:ok, sprites_json}
+
+          ["destroy", "-o", "misty-step", "--force", "bb-fixer"] ->
+            {:ok, "destroyed"}
+
+          ["create", "-o", "misty-step", "--skip-console", "bb-fixer"] ->
+            {:ok, "created"}
+
+          _ ->
+            send(test_pid, {:unexpected_shell_args, args, opts})
+            {:error, "unexpected shell args: #{inspect(args)}", 1}
+        end
+      end
+
+      assert {:ok, :recreated} =
+               Sprite.check_stuck("bb-fixer",
+                 org: "misty-step",
+                 shell_fn: shell_fn,
+                 now_fn: fn -> ~U[2026-03-22 12:00:00Z] end
+               )
+
+      assert [
+               {["api", "-o", "misty-step", "/sprites"], _},
+               {["destroy", "-o", "misty-step", "--force", "bb-fixer"], _},
+               {["create", "-o", "misty-step", "--skip-console", "bb-fixer"], _}
+             ] = drain_shell_calls()
+
+      refute_received {:unexpected_shell_args, _, _}
+    end
+
+    test "does not recreate sprites that are still recent or have run before" do
+      test_pid = self()
+
+      sprites_json =
+        Jason.encode!(%{
+          "sprites" => [
+            %{
+              "name" => "bb-fixer",
+              "created_at" => "2026-03-22T11:58:00Z",
+              "last_running_at" => nil
+            },
+            %{
+              "name" => "bb-polisher",
+              "created_at" => "2026-03-22T11:00:00Z",
+              "last_running_at" => "2026-03-22T11:59:00Z"
+            }
+          ]
+        })
+
+      shell_fn = fn "sprite", args, opts ->
+        send(test_pid, {:shell_called, args, opts})
+
+        case args do
+          ["api", "-o", "misty-step", "/sprites"] ->
+            {:ok, sprites_json}
+
+          _ ->
+            send(test_pid, {:unexpected_shell_args, args, opts})
+            {:error, "unexpected shell args: #{inspect(args)}", 1}
+        end
+      end
+
+      assert {:ok, :not_stuck} =
+               Sprite.check_stuck("bb-fixer",
+                 org: "misty-step",
+                 shell_fn: shell_fn,
+                 now_fn: fn -> ~U[2026-03-22 12:00:00Z] end
+               )
+
+      assert {:ok, :not_stuck} =
+               Sprite.check_stuck("bb-polisher",
+                 org: "misty-step",
+                 shell_fn: shell_fn,
+                 now_fn: fn -> ~U[2026-03-22 12:00:00Z] end
+               )
+
+      assert [
+               {["api", "-o", "misty-step", "/sprites"], _},
+               {["api", "-o", "misty-step", "/sprites"], _}
+             ] = drain_shell_calls()
+
+      refute_received {:unexpected_shell_args, _, _}
+    end
+  end
+
   test "provision uploads persona, settings, and metadata through sprite exec files" do
     test_pid = self()
     prev_gh = System.get_env("GITHUB_TOKEN")

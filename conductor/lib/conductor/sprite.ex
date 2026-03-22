@@ -206,11 +206,14 @@ defmodule Conductor.Sprite do
     end
   end
 
+  @doc """
+  Prune stale checkpoints on a sprite, keeping the most recent configured count.
+  """
   @spec gc_checkpoints(binary(), keyword()) :: :ok | {:error, term()}
   def gc_checkpoints(sprite, opts \\ []) do
     org = sprite_org(opts)
     shell_fn = Keyword.get(opts, :shell_fn, &Shell.cmd/3)
-    max_keep = Keyword.get(opts, :max_keep, Config.max_checkpoints_per_sprite())
+    max_keep = Keyword.get_lazy(opts, :max_keep, fn -> Config.max_checkpoints_per_sprite() end)
 
     with {:ok, checkpoints} <- list_checkpoints(shell_fn, org, sprite),
          {:ok, stale_checkpoints} <- stale_checkpoints(checkpoints, max_keep) do
@@ -233,6 +236,37 @@ defmodule Conductor.Sprite do
       {:error, reason} = error ->
         log_checkpoint_gc_failure(sprite, reason)
         error
+    end
+  end
+
+  @doc """
+  Recreate a sprite when the API reports the stuck lifecycle signature.
+
+  A sprite is considered stuck when `last_running_at` is explicitly `null` and the
+  sprite was created at least five minutes ago. Callers should only use this after
+  a failed `sprite exec` probe so healthy cold starts are not treated as failures.
+  """
+  @spec check_stuck(binary(), keyword()) :: {:ok, :not_stuck | :recreated} | {:error, term()}
+  def check_stuck(sprite, opts \\ []) do
+    org = sprite_org(opts)
+    shell_fn = Keyword.get(opts, :shell_fn, &Shell.cmd/3)
+    now_fn = Keyword.get(opts, :now_fn, &DateTime.utc_now/0)
+    min_age_seconds = Keyword.get(opts, :min_age_seconds, 300)
+
+    with {:ok, sprites} <- list_sprites(shell_fn, org),
+         {:ok, sprite_payload} <- find_sprite_payload(sprites, sprite) do
+      if stuck_sprite?(sprite_payload, now_fn.(), min_age_seconds) do
+        case recreate_sprite(shell_fn, org, sprite) do
+          :ok ->
+            Logger.warning("[sprite] recreated stuck sprite #{sprite}")
+            {:ok, :recreated}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+      else
+        {:ok, :not_stuck}
+      end
     end
   end
 
@@ -343,6 +377,85 @@ defmodule Conductor.Sprite do
     end
   end
 
+  defp list_sprites(shell_fn, org) do
+    case shell_fn.("sprite", ["api", "-o", org, "/sprites"], timeout: 15_000) do
+      {:ok, json} ->
+        with {:ok, payload} <- Jason.decode(json),
+             {:ok, sprites} <- normalize_sprites(payload) do
+          {:ok, sprites}
+        else
+          {:error, %Jason.DecodeError{} = error} -> {:error, Exception.message(error)}
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:error, msg, _code} ->
+        {:error, msg}
+    end
+  end
+
+  defp normalize_sprites(%{"sprites" => sprites}) when is_list(sprites), do: {:ok, sprites}
+  defp normalize_sprites(%{"data" => sprites}) when is_list(sprites), do: {:ok, sprites}
+  defp normalize_sprites(sprites) when is_list(sprites), do: {:ok, sprites}
+  defp normalize_sprites(_), do: {:error, "unexpected sprite payload"}
+
+  defp find_sprite_payload(sprites, sprite) when is_list(sprites) do
+    sprites
+    |> Enum.find(&(sprite_name(&1) == sprite))
+    |> case do
+      nil -> {:error, "sprite not found"}
+      payload when is_map(payload) -> {:ok, payload}
+      _ -> {:error, "unexpected sprite payload"}
+    end
+  end
+
+  defp stuck_sprite?(sprite_payload, now, min_age_seconds)
+       when is_map(sprite_payload) and is_struct(now, DateTime) and is_integer(min_age_seconds) and
+              min_age_seconds >= 0 do
+    case {sprite_created_at(sprite_payload), last_running_at_state(sprite_payload)} do
+      {{:ok, created_at}, :null} ->
+        DateTime.diff(now, created_at, :second) >= min_age_seconds
+
+      _ ->
+        false
+    end
+  end
+
+  defp stuck_sprite?(_sprite_payload, _now, _min_age_seconds), do: false
+
+  defp sprite_created_at(sprite_payload) do
+    sprite_payload
+    |> sprite_field(["created_at", "createdAt"])
+    |> case do
+      value when is_binary(value) ->
+        case DateTime.from_iso8601(value) do
+          {:ok, datetime, _offset} -> {:ok, datetime}
+          _ -> :error
+        end
+
+      _ ->
+        :error
+    end
+  end
+
+  defp last_running_at_state(sprite_payload) do
+    case sprite_field(sprite_payload, ["last_running_at", "lastRunningAt"], :missing) do
+      :missing -> :missing
+      nil -> :null
+      _value -> :present
+    end
+  end
+
+  defp recreate_sprite(shell_fn, org, sprite) do
+    with {:ok, _} <-
+           shell_fn.("sprite", ["destroy", "-o", org, "--force", sprite], timeout: 60_000),
+         {:ok, _} <-
+           shell_fn.("sprite", ["create", "-o", org, "--skip-console", sprite], timeout: 120_000) do
+      :ok
+    else
+      {:error, msg, _code} -> {:error, msg}
+    end
+  end
+
   defp list_checkpoints(shell_fn, org, sprite) do
     case shell_fn.("sprite", ["api", "-o", org, "-s", sprite, "/checkpoints"], timeout: 30_000) do
       {:ok, json} ->
@@ -441,11 +554,34 @@ defmodule Conductor.Sprite do
     end
   end
 
+  defp sprite_field(sprite, keys, default \\ nil) when is_map(sprite) do
+    Enum.reduce_while(keys, default, fn key, _acc ->
+      atom_key = sprite_atom_key(key)
+
+      cond do
+        Map.has_key?(sprite, key) ->
+          {:halt, Map.get(sprite, key)}
+
+        atom_key && Map.has_key?(sprite, atom_key) ->
+          {:halt, Map.get(sprite, atom_key)}
+
+        true ->
+          {:cont, default}
+      end
+    end)
+  end
+
   defp checkpoint_field(checkpoint, keys) when is_map(checkpoint) do
     Enum.find_value(keys, fn key ->
       Map.get(checkpoint, key) || Map.get(checkpoint, checkpoint_atom_key(key))
     end)
   end
+
+  defp sprite_atom_key("created_at"), do: :created_at
+  defp sprite_atom_key("createdAt"), do: :createdAt
+  defp sprite_atom_key("last_running_at"), do: :last_running_at
+  defp sprite_atom_key("lastRunningAt"), do: :lastRunningAt
+  defp sprite_atom_key(_), do: nil
 
   defp checkpoint_atom_key("created_at"), do: :created_at
   defp checkpoint_atom_key("createdAt"), do: :createdAt
