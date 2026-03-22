@@ -274,10 +274,17 @@ defmodule Conductor.Workspace do
 
   defp stale_worktree_list_command(branch) do
     """
-    git worktree list --porcelain | awk -v branch="refs/heads/#{branch}" '
-      /^worktree / {path=substr($0, 10)}
-      /^branch / {if ($0 == "branch " branch) print path}
-    '
+    worktree_path=""
+    git worktree list --porcelain | while IFS= read -r line; do
+      case "$line" in
+        worktree\\ *)
+          worktree_path=${line#worktree }
+          ;;
+        branch\\ refs/heads/#{branch})
+          printf '%s\\n' "$worktree_path"
+          ;;
+      esac
+    done
     """
   end
 
