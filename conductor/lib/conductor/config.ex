@@ -140,6 +140,21 @@ defmodule Conductor.Config do
     Application.get_env(:conductor, :fleet_health_check_interval_ms, 120_000)
   end
 
+  @spec fleet_recovery_max_attempts() :: pos_integer()
+  def fleet_recovery_max_attempts do
+    Application.get_env(:conductor, :fleet_recovery_max_attempts, 3)
+  end
+
+  @spec fleet_recovery_backoff_base_ms() :: pos_integer()
+  def fleet_recovery_backoff_base_ms do
+    Application.get_env(:conductor, :fleet_recovery_backoff_base_ms, 1_000)
+  end
+
+  @spec fleet_recovery_backoff_cap_ms() :: pos_integer()
+  def fleet_recovery_backoff_cap_ms do
+    Application.get_env(:conductor, :fleet_recovery_backoff_cap_ms, 30_000)
+  end
+
   @spec replay_delay_ms() :: pos_integer()
   def replay_delay_ms do
     Application.get_env(:conductor, :replay_delay_seconds, 120) * 1_000
