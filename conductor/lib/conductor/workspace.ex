@@ -246,13 +246,13 @@ defmodule Conductor.Workspace do
     existing_worktree=$(
       git worktree list --porcelain | while IFS= read -r line; do
         case "$line" in
-          worktree\ *)
+          worktree\\ *)
             current_worktree=${line#worktree }
             ;;
-          branch\ *)
+          branch\\ *)
             current_branch=${line#branch }
             if [ "$current_branch" = "refs/heads/$branch_name" ]; then
-              printf '%s\n' "$current_worktree"
+              printf '%s\\n' "$current_worktree"
               break
             fi
             ;;
@@ -260,16 +260,13 @@ defmodule Conductor.Workspace do
       done
     )
     if [ -n "$existing_worktree" ] && [ "$existing_worktree" != "$worktree_dir" ]; then
-      case "$existing_worktree" in
-        "$managed_prefix"*/builder-worktree)
-          git worktree remove --force "$existing_worktree" 2>/dev/null || rm -rf "$existing_worktree" 2>/dev/null || true
-          git worktree prune 2>/dev/null || true
-          ;;
-        *)
-          echo "branch $branch_name already uses worktree $existing_worktree" >&2
-          exit 17
-          ;;
-      esac
+      if [[ "$existing_worktree" == "$managed_prefix"*"/builder-worktree" ]]; then
+        git worktree remove --force "$existing_worktree" 2>/dev/null || rm -rf "$existing_worktree" 2>/dev/null || true
+        git worktree prune 2>/dev/null || true
+      else
+        echo "branch $branch_name already uses worktree $existing_worktree" >&2
+        exit 17
+      fi
     fi
     #{if delete_branch?, do: delete_branch_command(:use_branch_name_var), else: ""}
     """

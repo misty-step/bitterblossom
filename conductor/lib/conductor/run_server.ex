@@ -21,7 +21,6 @@ defmodule Conductor.RunServer do
 
   defp tracker_mod, do: Application.get_env(:conductor, :tracker_module, Conductor.GitHub)
   defp code_host_mod, do: Application.get_env(:conductor, :code_host_module, Conductor.GitHub)
-  defp workspace_mod, do: Application.get_env(:conductor, :workspace_module, Workspace)
 
   @heartbeat_ms 30_000
 
@@ -742,6 +741,9 @@ defmodule Conductor.RunServer do
   end
 
   defp worker_mod, do: Application.get_env(:conductor, :worker_module, Conductor.Sprite)
+
+  defp workspace_mod,
+    do: Application.get_env(:conductor, :workspace_module, Conductor.Workspace)
 
   defp run_token do
     "#{System.system_time(:millisecond)}-#{System.unique_integer([:positive, :monotonic])}"

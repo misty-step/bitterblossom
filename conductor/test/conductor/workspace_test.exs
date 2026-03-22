@@ -54,6 +54,59 @@ defmodule Conductor.WorkspaceTest do
       assert command =~ "git worktree remove --force"
       assert command =~ "git branch -D \"$branch_name\""
     end
+
+    test "returns the conflict error when a branch already uses an external worktree" do
+      exec_fn = fn _sprite, _command, _opts ->
+        {:error, "branch factory/42 already uses worktree /tmp/external", 17}
+      end
+
+      assert {:error, reason} =
+               Workspace.prepare(
+                 "bb-weaver",
+                 "misty-step/bitterblossom",
+                 "run-42-1773867376",
+                 "factory/42-1773867376",
+                 exec_fn: exec_fn
+               )
+
+      assert reason =~ "workspace preparation failed (17)"
+      assert reason =~ "already uses worktree /tmp/external"
+    end
+
+    test "removes managed stale worktrees before creating the replacement worktree" do
+      repo = "test/workspace-managed-#{System.unique_integer([:positive])}"
+      repo_dir = prepare_mirror_repo(repo)
+      branch = "factory/42-1773867376"
+      stale_run_id = "run-42-stale-1773867376"
+      stale_path = Path.join([repo_dir, ".bb", "conductor", stale_run_id, "builder-worktree"])
+      run_id = "run-42-1773867376"
+      new_path = Path.join([repo_dir, ".bb", "conductor", run_id, "builder-worktree"])
+
+      on_exit(fn -> File.rm_rf(repo_dir) end)
+
+      {_, 0} =
+        System.cmd("git", [
+          "-C",
+          repo_dir,
+          "worktree",
+          "add",
+          stale_path,
+          "-b",
+          branch,
+          "origin/master"
+        ])
+
+      assert File.dir?(stale_path)
+      assert worktree_registered?(repo_dir, stale_path)
+
+      assert {:ok, ^new_path} =
+               Workspace.prepare("local", repo, run_id, branch, exec_fn: &local_exec/3)
+
+      assert File.dir?(new_path)
+      refute File.exists?(stale_path)
+      refute worktree_registered?(repo_dir, stale_path)
+      assert worktree_registered?(repo_dir, new_path)
+    end
   end
 
   describe "adopt_branch/5" do
@@ -151,24 +204,6 @@ defmodule Conductor.WorkspaceTest do
       assert_received {:cleanup_command, command}
       refute command =~ "branch_name="
       refute command =~ "git branch -D"
-    end
-
-    test "returns the conflict error when a branch already uses an external worktree" do
-      exec_fn = fn _sprite, _command, _opts ->
-        {:error, "branch factory/42 already uses worktree /tmp/external", 17}
-      end
-
-      assert {:error, reason} =
-               Workspace.prepare(
-                 "bb-weaver",
-                 "misty-step/bitterblossom",
-                 "run-42-1773867376",
-                 "factory/42-1773867376",
-                 exec_fn: exec_fn
-               )
-
-      assert reason =~ "workspace preparation failed (17)"
-      assert reason =~ "already uses worktree /tmp/external"
     end
   end
 
@@ -383,6 +418,44 @@ defmodule Conductor.WorkspaceTest do
     write_workspace_file(source_root, "#{role_name}/AGENTS.md", "#{role_name} agents\n")
 
     source_root
+  end
+
+  defp prepare_mirror_repo(repo) do
+    repo_name = repo |> String.split("/") |> List.last()
+    repo_dir = Path.join("/home/sprite/workspace", repo_name)
+
+    remote_dir =
+      Path.join(System.tmp_dir!(), "#{repo_name}-remote-#{System.unique_integer([:positive])}")
+
+    seed_dir =
+      Path.join(System.tmp_dir!(), "#{repo_name}-seed-#{System.unique_integer([:positive])}")
+
+    File.rm_rf(repo_dir)
+    File.rm_rf(remote_dir)
+    File.rm_rf(seed_dir)
+
+    File.mkdir_p!(Path.dirname(repo_dir))
+
+    {_, 0} = System.cmd("git", ["init", "--bare", remote_dir])
+    {_, 0} = System.cmd("git", ["init", seed_dir])
+    {_, 0} = System.cmd("git", ["-C", seed_dir, "config", "user.name", "Test User"])
+    {_, 0} = System.cmd("git", ["-C", seed_dir, "config", "user.email", "test@example.com"])
+    File.write!(Path.join(seed_dir, "README.md"), "# test\n")
+    {_, 0} = System.cmd("git", ["-C", seed_dir, "add", "README.md"])
+    {_, 0} = System.cmd("git", ["-C", seed_dir, "commit", "-m", "init"])
+    {_, 0} = System.cmd("git", ["-C", seed_dir, "remote", "add", "origin", remote_dir])
+    {_, 0} = System.cmd("git", ["-C", seed_dir, "push", "origin", "HEAD:master"])
+    {_, 0} = System.cmd("git", ["-C", remote_dir, "symbolic-ref", "HEAD", "refs/heads/master"])
+    {_, 0} = System.cmd("git", ["clone", remote_dir, repo_dir])
+
+    File.rm_rf(remote_dir)
+    File.rm_rf(seed_dir)
+    repo_dir
+  end
+
+  defp worktree_registered?(repo_dir, worktree_path) do
+    {output, 0} = System.cmd("git", ["-C", repo_dir, "worktree", "list", "--porcelain"])
+    String.contains?(output, "worktree #{worktree_path}")
   end
 
   defp local_exec(_sprite, command, opts) do
