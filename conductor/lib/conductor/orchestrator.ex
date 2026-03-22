@@ -313,6 +313,9 @@ defmodule Conductor.Orchestrator do
   end
 
   defp consider_issue(state, issue, remaining_slots) do
+    # Defense in depth: list_eligible/2 should already exclude closed issues, but
+    # this stale-snapshot guard prevents shaping work before RunServer re-validates
+    # the issue state with a fresh tracker fetch.
     case Issue.lifecycle_valid?(issue) do
       :ok ->
         case Issue.ready?(issue) do

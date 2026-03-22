@@ -133,7 +133,7 @@ defmodule Conductor.RunServer do
         end
 
       {:error, reason} ->
-        block(state, "failed to re-validate issue state: #{inspect(reason)}")
+        block_issue_revalidation_failure(state, reason)
     end
   end
 
@@ -626,6 +626,11 @@ defmodule Conductor.RunServer do
     cleanup_workspace(state)
     Retro.analyze(state.run_id)
     {:stop, :normal, %{state | phase: :failed}}
+  end
+
+  defp block_issue_revalidation_failure(state, reason) do
+    role_log(:warning, state, "issue re-validation failed: #{inspect(reason)}")
+    block(state, "failed to re-validate issue state: tracker unavailable")
   end
 
   defp block(state, reason) do

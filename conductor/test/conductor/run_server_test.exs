@@ -405,13 +405,14 @@ defmodule Conductor.RunServerTest do
       assert run["phase"] == "blocked"
 
       assert event_payload(run["run_id"], "run_blocked")["reason"] ==
-               "failed to re-validate issue state: :github_down"
+               "failed to re-validate issue state: tracker unavailable"
 
       assert MockState.get({:comments, 42}, []) == [
-               "Bitterblossom blocked `#{run["run_id"]}`: failed to re-validate issue state: :github_down"
+               "Bitterblossom blocked `#{run["run_id"]}`: failed to re-validate issue state: tracker unavailable"
              ]
 
-      assert log =~ "blocked: failed to re-validate issue state: :github_down"
+      assert log =~ "issue re-validation failed: :github_down"
+      assert log =~ "blocked: failed to re-validate issue state: tracker unavailable"
     end
   end
 
