@@ -275,7 +275,7 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     assert PhaseWorker.status(Roles.Polisher).sprites == ["bb-polisher-1", "bb-polisher-2"]
   end
 
-  test "keeps degraded health state when phase worker sync fails" do
+  test "records degradation when phase worker sync fails" do
     Application.put_env(:conductor, :phase_worker_supervisor, FailingPhaseWorkerSupervisor)
 
     start_monitor(interval_ms: 60_000)

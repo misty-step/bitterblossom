@@ -157,6 +157,7 @@ defmodule Conductor.Fleet.HealthMonitor do
             :ok
 
           {:error, reason} ->
+            # Health probes remain authoritative even if worker-pool sync fails.
             Logger.warning("[health] failed to sync #{inspect(role_module)}: #{inspect(reason)}")
             :error
         end

@@ -135,6 +135,35 @@ defmodule Conductor.PhaseWorkerTest do
       )
   end
 
+  defp create_run_for_pr(pr_number) do
+    {:ok, run_id} =
+      Store.create_run(%{
+        repo: "test/repo",
+        issue_number: pr_number,
+        issue_title: "tracked issue #{pr_number}",
+        builder_sprite: "sprite-1"
+      })
+
+    Store.update_run(run_id, %{pr_number: pr_number, phase: "pr_opened", status: "pr_opened"})
+    run_id
+  end
+
+  defp event_types(run_id) do
+    Store.list_events(run_id)
+    |> Enum.map(& &1["event_type"])
+  end
+
+  describe "child_spec/1" do
+    test "returns the role-keyed child spec used by the supervisor" do
+      opts = [repo: "test/repo", role_module: Roles.Fixer, sprites: ["bb-thorn"]]
+
+      assert %{
+               id: {PhaseWorker, Roles.Fixer},
+               start: {PhaseWorker, :start_link, [^opts]}
+             } = PhaseWorker.child_spec(opts)
+    end
+  end
+
   describe "fixer role" do
     test "dispatches thorn when a PR has failed CI" do
       MockState.put(
@@ -166,6 +195,64 @@ defmodule Conductor.PhaseWorkerTest do
         end)
 
       assert log =~ "[thorn] PR #42 has red CI, dispatching Thorn"
+    end
+
+    test "records fixer events on the tracked run instead of the role prefix bucket" do
+      run_id = create_run_for_pr(42)
+
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 42,
+             "headRefName" => "factory/99-12345",
+             "title" => "feat: implement feature",
+             "body" => "Closes #99",
+             "statusCheckRollup" => [
+               %{"name" => "CI", "conclusion" => "FAILURE", "status" => "COMPLETED"}
+             ]
+           }
+         ]}
+      )
+
+      start_phase_worker(Roles.Fixer, ["bb-thorn"])
+
+      assert_receive {:dispatched, "bb-thorn", _prompt}, 2_000
+      Process.sleep(100)
+
+      assert "fixer_dispatched" in event_types(run_id)
+      assert "fixer_complete" in event_types(run_id)
+      assert Store.list_events("fixer") == []
+    end
+
+    test "skips PRs when CI has not failed" do
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 42,
+             "headRefName" => "factory/99-12345",
+             "title" => "green",
+             "body" => "",
+             "statusCheckRollup" => [
+               %{"name" => "CI", "conclusion" => "SUCCESS", "status" => "COMPLETED"}
+             ]
+           },
+           %{
+             "number" => 43,
+             "headRefName" => "factory/100-12345",
+             "title" => "pending",
+             "body" => "",
+             "statusCheckRollup" => [%{"name" => "CI", "conclusion" => nil, "status" => "QUEUED"}]
+           }
+         ]}
+      )
+
+      start_phase_worker(Roles.Fixer, ["bb-thorn"])
+
+      refute_receive {:dispatched, _, _}, 300
     end
   end
 
@@ -259,6 +346,29 @@ defmodule Conductor.PhaseWorkerTest do
 
       refute_receive {:dispatched, _, _}, 300
     end
+
+    test "skips PRs with red CI" do
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 42,
+             "headRefName" => "factory/99-12345",
+             "title" => "feat: implement feature",
+             "body" => "Closes #99",
+             "labels" => [],
+             "statusCheckRollup" => [
+               %{"name" => "CI", "conclusion" => "FAILURE", "status" => "COMPLETED"}
+             ]
+           }
+         ]}
+      )
+
+      start_phase_worker(Roles.Polisher, ["bb-fern"])
+
+      refute_receive {:dispatched, _, _}, 300
+    end
   end
 
   describe "status/1" do
@@ -275,7 +385,35 @@ defmodule Conductor.PhaseWorkerTest do
     end
   end
 
+  describe "statuses/0" do
+    test "returns all running role workers" do
+      start_phase_worker(Roles.Fixer, ["bb-thorn"], poll_ms: 60_000)
+      start_phase_worker(Roles.Polisher, ["bb-fern"], poll_ms: 60_000)
+
+      statuses =
+        PhaseWorker.statuses()
+        |> Enum.sort_by(& &1.role)
+
+      assert Enum.map(statuses, & &1.role) == [:fixer, :polisher]
+      assert Enum.map(statuses, & &1.sprites) == [["bb-thorn"], ["bb-fern"]]
+    end
+  end
+
   describe "shared worker behavior" do
+    defmodule NoStoredSpritesSupervisor do
+    end
+
+    test "uses provided sprites when the configured supervisor does not expose stored pools" do
+      orig_supervisor = Application.get_env(:conductor, :phase_worker_supervisor)
+      Application.put_env(:conductor, :phase_worker_supervisor, NoStoredSpritesSupervisor)
+
+      on_exit(fn -> restore_env(:phase_worker_supervisor, orig_supervisor) end)
+
+      start_phase_worker(Roles.Fixer, ["bb-thorn"], poll_ms: 60_000)
+
+      assert PhaseWorker.status(Roles.Fixer).sprites == ["bb-thorn"]
+    end
+
     test "does not redispatch work while the only sprite is busy" do
       MockState.put(
         :open_prs,

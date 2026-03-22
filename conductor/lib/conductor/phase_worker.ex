@@ -22,7 +22,7 @@ defmodule Conductor.PhaseWorker do
     health: :healthy
   ]
 
-  @type task_info :: %{ref: reference(), work_ref: pos_integer()}
+  @type task_info :: %{ref: reference(), run_id: binary() | nil, work_ref: pos_integer()}
 
   def start_link(opts) do
     role_module = Keyword.fetch!(opts, :role_module)
@@ -70,13 +70,16 @@ defmodule Conductor.PhaseWorker do
     repo = Keyword.fetch!(opts, :repo)
     role_module = Roles.fetch!(Keyword.fetch!(opts, :role_module))
     poll_ms = Keyword.get(opts, :poll_ms, Config.poll_seconds() * 1_000)
+    provided_sprites = Keyword.get(opts, :sprites, []) |> Enum.uniq() |> Enum.sort()
+    provided_generation = Keyword.get(opts, :sprite_generation, 0)
+    stored_generation = stored_sprite_generation(provided_generation, role_module)
 
     sprites =
-      opts
-      |> Keyword.get(:sprites, [])
-      |> stored_sprites(role_module)
-      |> Enum.uniq()
-      |> Enum.sort()
+      if stored_generation > provided_generation do
+        stored_sprites(provided_sprites, role_module)
+      else
+        provided_sprites
+      end
 
     state = %__MODULE__{
       repo: repo,
@@ -184,13 +187,14 @@ defmodule Conductor.PhaseWorker do
   defp dispatch_work(state, sprite, work_item) do
     role_module = state.role_module
     work_ref = role_module.work_ref(work_item)
+    run_id = run_id_for_work(state.repo, work_ref)
     workspace = workspace_for_branch(state.repo, work_item["headRefName"])
     context = role_module.enrich_context(work_item, state.repo, code_host_mod())
     prompt = role_module.build_prompt(work_item, context, workspace_root: workspace)
 
     Logger.info("[#{log_prefix(state)}] #{role_module.dispatch_log_message(work_item)}")
 
-    Store.record_event(role_module.event_prefix(), "#{role_module.event_prefix()}_dispatched", %{
+    record_task_event(run_id, "#{role_module.event_prefix()}_dispatched", %{
       pr_number: work_ref,
       sprite: sprite
     })
@@ -217,7 +221,7 @@ defmodule Conductor.PhaseWorker do
         end
       end)
 
-    task_info = %{ref: task.ref, work_ref: work_ref}
+    task_info = %{ref: task.ref, run_id: run_id, work_ref: work_ref}
     %{state | in_flight: Map.put(state.in_flight, sprite, task_info)}
   end
 
@@ -235,18 +239,19 @@ defmodule Conductor.PhaseWorker do
 
     if task_info do
       work_ref = task_info.work_ref
+      run_id = task_info.run_id
       event_prefix = state.role_module.event_prefix()
 
       case result do
         {:ok, _output} ->
           Logger.info("[#{log_prefix(state)}] completed work on PR ##{work_ref}")
-          Store.record_event(event_prefix, "#{event_prefix}_complete", %{pr_number: work_ref})
+          record_task_event(run_id, "#{event_prefix}_complete", %{pr_number: work_ref})
           reset_health(state)
 
         {:error, msg, _code} ->
           Logger.warning("[#{log_prefix(state)}] dispatch failed for PR ##{work_ref}: #{msg}")
 
-          Store.record_event(event_prefix, "#{event_prefix}_failed", %{
+          record_task_event(run_id, "#{event_prefix}_failed", %{
             pr_number: work_ref,
             error: msg,
             sprite: sprite
@@ -343,6 +348,50 @@ defmodule Conductor.PhaseWorker do
     Application.get_env(:conductor, :workspace_module, Workspace)
   end
 
+  defp record_task_event(nil, _event_type, _payload), do: :ok
+
+  defp record_task_event(run_id, event_type, payload) do
+    Store.record_event(run_id, event_type, payload)
+  end
+
+  defp run_id_for_work(repo, work_ref) do
+    case Store.find_run_by_pr(repo, work_ref) do
+      {:ok, %{"run_id" => run_id}} when is_binary(run_id) ->
+        run_id
+
+      {:ok, %{run_id: run_id}} when is_binary(run_id) ->
+        run_id
+
+      {:ok, _run} ->
+        Logger.warning("[phase-worker] tracked PR ##{work_ref} is missing run_id")
+        nil
+
+      {:error, :not_found} ->
+        nil
+
+      {:error, reason} ->
+        Logger.warning(
+          "[phase-worker] failed to look up run for PR ##{work_ref}: #{inspect(reason)}"
+        )
+
+        nil
+    end
+  rescue
+    exception ->
+      Logger.warning(
+        "[phase-worker] failed to look up run for PR ##{work_ref}: #{Exception.message(exception)}"
+      )
+
+      nil
+  catch
+    :exit, reason ->
+      Logger.warning(
+        "[phase-worker] failed to look up run for PR ##{work_ref}: #{inspect(reason)}"
+      )
+
+      nil
+  end
+
   defp stored_sprites(default, role_module) do
     supervisor =
       Application.get_env(
@@ -353,6 +402,21 @@ defmodule Conductor.PhaseWorker do
 
     if function_exported?(supervisor, :stored_sprites, 2) do
       supervisor.stored_sprites(role_module, default)
+    else
+      default
+    end
+  end
+
+  defp stored_sprite_generation(default, role_module) do
+    supervisor =
+      Application.get_env(
+        :conductor,
+        :phase_worker_supervisor,
+        Conductor.PhaseWorker.Supervisor
+      )
+
+    if function_exported?(supervisor, :stored_sprite_generation, 2) do
+      supervisor.stored_sprite_generation(role_module, default)
     else
       default
     end
