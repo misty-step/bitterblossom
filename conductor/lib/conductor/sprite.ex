@@ -673,7 +673,7 @@ defmodule Conductor.Sprite do
     """
     rm -rf #{shell_quote(repo_dir)} &&
       cd #{shell_quote(@sprite_workspace_root)} &&
-      git clone #{shell_quote(repo_clone_url(repo))}
+      git clone #{shell_quote(repo_clone_url(repo))} &&
       #{repo_startup_cleanup_script(repo_dir)}
     """
   end
@@ -687,7 +687,7 @@ defmodule Conductor.Sprite do
     else
       cd #{shell_quote(@sprite_workspace_root)} &&
         git clone #{shell_quote(repo_clone_url(repo))}
-    fi
+    fi &&
     #{repo_startup_cleanup_script(repo_dir)}
     """
   end
@@ -696,16 +696,20 @@ defmodule Conductor.Sprite do
     managed_root = Path.join(repo_dir, ".bb/conductor")
 
     """
-    && cd #{shell_quote(repo_dir)} &&
-      flock .git/bb-worktree.lock bash -c '
+    cd #{shell_quote(repo_dir)} &&
+      export managed_root=#{shell_quote(managed_root)} &&
+      flock .git/bb-worktree.lock bash <<'EOF'
+        set -e
         git worktree prune 2>/dev/null || true
-        find #{shell_quote(managed_root)} -mindepth 2 -maxdepth 2 -type d -name builder-worktree -print 2>/dev/null |
-          while IFS= read -r worktree_dir; do
-            [ -n "$worktree_dir" ] || continue
-            git worktree remove --force "$worktree_dir" 2>/dev/null || rm -rf "$worktree_dir" 2>/dev/null || true
-          done
+        if [ -d "$managed_root" ]; then
+          find "$managed_root" -mindepth 2 -maxdepth 2 -type d -name builder-worktree -print 2>/dev/null |
+            while IFS= read -r worktree_dir; do
+              [ -n "$worktree_dir" ] || continue
+              git worktree remove --force "$worktree_dir" 2>/dev/null || rm -rf "$worktree_dir" 2>/dev/null || true
+            done
+        fi
         git worktree prune 2>/dev/null || true
-      '
+      EOF
     """
   end
 

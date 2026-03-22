@@ -48,10 +48,11 @@ defmodule Conductor.WorkspaceTest do
                )
 
       assert_received {:prepare_command, command}
+      assert command =~ "flock .git/bb-worktree.lock bash <<'EOF'"
       assert command =~ "git worktree list --porcelain"
-      assert command =~ "refs/heads/factory/42-1773867376"
+      assert command =~ "refs/heads/$branch_name"
       assert command =~ "git worktree remove --force"
-      assert command =~ "git branch -D factory/42-1773867376"
+      assert command =~ "git branch -D \"$branch_name\""
     end
   end
 
@@ -96,10 +97,11 @@ defmodule Conductor.WorkspaceTest do
                )
 
       assert_received {:adopt_command, command}
+      assert command =~ "flock .git/bb-worktree.lock bash <<'EOF'"
       assert command =~ "git worktree list --porcelain"
-      assert command =~ "refs/heads/factory/42-1773867376"
+      assert command =~ "refs/heads/$branch_name"
       assert command =~ "git worktree remove --force"
-      refute command =~ "git branch -D factory/42-1773867376"
+      refute command =~ "git branch -D \"$branch_name\""
     end
   end
 
@@ -123,9 +125,32 @@ defmodule Conductor.WorkspaceTest do
                )
 
       assert_received {:cleanup_command, command}
+      assert command =~ "flock .git/bb-worktree.lock bash <<'EOF'"
       assert command =~ "worktree_dir='/tmp/custom-worktree'"
       assert command =~ "git worktree remove --force \"$worktree_dir\""
       assert command =~ "git branch -D factory/42-1773867376"
+    end
+
+    test "keeps adopted branches when branch is omitted" do
+      parent = self()
+
+      exec_fn = fn _sprite, command, _opts ->
+        send(parent, {:cleanup_command, command})
+        {:ok, ""}
+      end
+
+      assert :ok =
+               Workspace.cleanup(
+                 "bb-weaver",
+                 "misty-step/bitterblossom",
+                 "run-42-1773867376",
+                 path: "/tmp/custom-worktree",
+                 exec_fn: exec_fn
+               )
+
+      assert_received {:cleanup_command, command}
+      refute command =~ "branch_name="
+      refute command =~ "git branch -D"
     end
   end
 

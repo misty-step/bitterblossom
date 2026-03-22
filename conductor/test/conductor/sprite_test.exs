@@ -199,9 +199,12 @@ defmodule Conductor.SpriteTest do
         end)
 
       assert repo_cmd =~ "git clone 'https://github.com/misty-step/bitterblossom.git'"
+      assert repo_cmd =~ "git clone 'https://github.com/misty-step/bitterblossom.git' &&"
       assert repo_cmd =~ "git worktree prune"
       assert repo_cmd =~ ".bb/conductor"
       assert repo_cmd =~ "git worktree remove --force"
+      assert repo_cmd =~ "flock .git/bb-worktree.lock bash <<'EOF'"
+      refute repo_cmd =~ "&& cd '/home/sprite/workspace/bitterblossom'"
 
       {_, _metadata_opts, metadata_files} =
         Enum.find(calls, fn {_command, _opts, uploaded_files} ->

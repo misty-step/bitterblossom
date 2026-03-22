@@ -37,20 +37,27 @@ defmodule Conductor.Workspace do
     mirror = repo_mirror(repo)
     worktree = worktree_path(repo, run_id)
     exec_fn = Keyword.get(opts, :exec_fn, &Sprite.exec/3)
+    managed_prefix = "#{mirror}/.bb/conductor/"
 
     commands = """
     set -e
-    cd #{shell_quote(mirror)}
-    flock .git/bb-worktree.lock bash -c '
+    mirror=#{shell_quote(mirror)}
+    worktree_dir=#{shell_quote(worktree)}
+    branch_name=#{shell_quote(branch)}
+    managed_prefix=#{shell_quote(managed_prefix)}
+    cd "$mirror"
+    export worktree_dir branch_name managed_prefix
+    flock .git/bb-worktree.lock bash <<'EOF'
+      set -e
       git fetch --all --prune --quiet 2>/dev/null || true
       git worktree prune 2>/dev/null || true
-      #{clear_existing_branch_worktree_commands(mirror, worktree, branch, delete_branch?: true)}
-      rm -rf #{shell_quote(worktree)} 2>/dev/null || true
+      #{clear_existing_branch_worktree_commands(delete_branch?: true)}
+      rm -rf "$worktree_dir" 2>/dev/null || true
       default_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed "s|refs/remotes/origin/||" || echo master)
-      git worktree add -b #{branch} #{shell_quote(worktree)} origin/$default_branch --quiet
-    '
+      git worktree add -b "$branch_name" "$worktree_dir" origin/$default_branch --quiet
+    EOF
     #{install_branch_guard_commands(worktree, branch)}
-    echo #{shell_quote(worktree)}
+    echo "$worktree_dir"
     """
 
     case exec_fn.(sprite, commands, timeout: 120_000) do
@@ -124,19 +131,26 @@ defmodule Conductor.Workspace do
     mirror = repo_mirror(repo)
     worktree = worktree_path(repo, run_id)
     exec_fn = Keyword.get(opts, :exec_fn, &Sprite.exec/3)
+    managed_prefix = "#{mirror}/.bb/conductor/"
 
     commands = """
     set -e
-    cd #{shell_quote(mirror)}
-    flock .git/bb-worktree.lock bash -c '
+    mirror=#{shell_quote(mirror)}
+    worktree_dir=#{shell_quote(worktree)}
+    branch_name=#{shell_quote(branch)}
+    managed_prefix=#{shell_quote(managed_prefix)}
+    cd "$mirror"
+    export worktree_dir branch_name managed_prefix
+    flock .git/bb-worktree.lock bash <<'EOF'
+      set -e
       git fetch origin --quiet
       git worktree prune 2>/dev/null || true
-      #{clear_existing_branch_worktree_commands(mirror, worktree, branch)}
-      rm -rf #{shell_quote(worktree)} 2>/dev/null || true
-      git worktree add #{shell_quote(worktree)} #{branch} --quiet
-    '
+      #{clear_existing_branch_worktree_commands()}
+      rm -rf "$worktree_dir" 2>/dev/null || true
+      git worktree add "$worktree_dir" "$branch_name" --quiet
+    EOF
     #{install_branch_guard_commands(worktree, branch)}
-    echo #{shell_quote(worktree)}
+    echo "$worktree_dir"
     """
 
     case exec_fn.(sprite, commands, timeout: 120_000) do
@@ -148,11 +162,15 @@ defmodule Conductor.Workspace do
     end
   end
 
+  @spec cleanup(binary(), binary(), binary()) :: :ok | {:error, term()}
+  def cleanup(sprite, repo, run_id),
+    do: cleanup(sprite, repo, run_id, branch: run_id_to_branch(run_id))
+
   @spec cleanup(binary(), binary(), binary(), keyword()) :: :ok | {:error, term()}
-  def cleanup(sprite, repo, run_id, opts \\ []) do
+  def cleanup(sprite, repo, run_id, opts) do
     with :ok <- validate_input(repo),
          :ok <- validate_input(run_id),
-         :ok <- validate_optional_branch(Keyword.get(opts, :branch)) do
+         :ok <- validate_optional_branch(branch_option(opts)) do
       do_cleanup(sprite, repo, run_id, opts)
     end
   end
@@ -160,14 +178,18 @@ defmodule Conductor.Workspace do
   defp do_cleanup(sprite, repo, run_id, opts) do
     mirror = repo_mirror(repo)
     worktree = Keyword.get(opts, :path, worktree_path(repo, run_id))
-    branch = Keyword.get(opts, :branch, run_id_to_branch(run_id))
+    branch = branch_option(opts)
     exec_fn = Keyword.get(opts, :exec_fn, &Sprite.exec/3)
 
     commands = """
     set -e
-    cd #{shell_quote(mirror)}
-    flock .git/bb-worktree.lock bash -c '
-      worktree_dir=#{shell_quote(worktree)}
+    mirror=#{shell_quote(mirror)}
+    worktree_dir=#{shell_quote(worktree)}
+    cd "$mirror"
+    export worktree_dir
+    #{cleanup_branch_assignment(branch)}
+    flock .git/bb-worktree.lock bash <<'EOF'
+      set -e
       if git worktree list --porcelain | grep -F "worktree $worktree_dir" >/dev/null 2>&1; then
         git worktree remove --force "$worktree_dir" 2>/dev/null || true
       fi
@@ -176,7 +198,7 @@ defmodule Conductor.Workspace do
       fi
       git worktree prune 2>/dev/null || true
       #{delete_branch_command(branch)}
-    '
+    EOF
     """
 
     case exec_fn.(sprite, commands, timeout: 60_000) do
@@ -217,35 +239,65 @@ defmodule Conductor.Workspace do
     Path.join([repo_mirror(repo), ".bb", "conductor", run_id, "builder-worktree"])
   end
 
-  defp clear_existing_branch_worktree_commands(mirror, worktree, branch, opts \\ []) do
+  defp clear_existing_branch_worktree_commands(opts \\ []) do
     delete_branch? = Keyword.get(opts, :delete_branch?, false)
-    managed_prefix = "#{mirror}/.bb/conductor/"
 
     """
-    existing_worktree=$(git worktree list --porcelain | awk -v branch_ref="refs/heads/#{branch}" '
-      /^worktree / { current=$2 }
-      /^branch / && $2 == branch_ref { print current; exit }
-    ')
-    if [ -n "$existing_worktree" ] && [ "$existing_worktree" != #{shell_quote(worktree)} ]; then
+    existing_worktree=$(
+      git worktree list --porcelain | while IFS= read -r line; do
+        case "$line" in
+          worktree\ *)
+            current_worktree=${line#worktree }
+            ;;
+          branch\ *)
+            current_branch=${line#branch }
+            if [ "$current_branch" = "refs/heads/$branch_name" ]; then
+              printf '%s\n' "$current_worktree"
+              break
+            fi
+            ;;
+        esac
+      done
+    )
+    if [ -n "$existing_worktree" ] && [ "$existing_worktree" != "$worktree_dir" ]; then
       case "$existing_worktree" in
-        #{shell_quote(managed_prefix)}*/builder-worktree)
+        "$managed_prefix"*/builder-worktree)
           git worktree remove --force "$existing_worktree" 2>/dev/null || rm -rf "$existing_worktree" 2>/dev/null || true
           git worktree prune 2>/dev/null || true
           ;;
         *)
-          echo "branch #{branch} already uses worktree $existing_worktree" >&2
+          echo "branch $branch_name already uses worktree $existing_worktree" >&2
           exit 17
           ;;
       esac
     fi
-    #{if delete_branch?, do: delete_branch_command(branch), else: ""}
+    #{if delete_branch?, do: delete_branch_command(:branch_name), else: ""}
     """
   end
 
   defp delete_branch_command(nil), do: ""
 
+  defp delete_branch_command(:branch_name),
+    do: "git branch -D \"$branch_name\" 2>/dev/null || true"
+
   defp delete_branch_command(branch) do
     "git branch -D #{branch} 2>/dev/null || true"
+  end
+
+  defp branch_option(opts) do
+    case Keyword.fetch(opts, :branch) do
+      {:ok, branch} -> branch
+      :error -> nil
+    end
+  end
+
+  defp cleanup_branch_assignment(nil), do: ""
+
+  defp cleanup_branch_assignment(branch) do
+    """
+    branch_name=#{shell_quote(branch)}
+    export branch_name
+    """
   end
 
   defp install_branch_guard_commands(worktree, branch) do
