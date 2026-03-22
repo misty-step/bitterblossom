@@ -91,6 +91,23 @@ defmodule Conductor.PhaseWorkerTest do
     def find_run_by_pr(_repo, _work_ref), do: exit(:store_down)
   end
 
+  defmodule SecondCallRaisingStore do
+    alias Conductor.PhaseWorkerTest.MockState
+
+    def record_event(_run_id, _event_type, _payload), do: :ok
+
+    def find_run_by_pr(repo, work_ref) do
+      key = {:find_run_calls, repo, work_ref}
+      calls = MockState.get(key, 0)
+      MockState.put(key, calls + 1)
+
+      case calls do
+        0 -> {:ok, %{"run_id" => "run-#{work_ref}"}}
+        _ -> raise("store exploded")
+      end
+    end
+  end
+
   setup do
     db_path = Path.join(System.tmp_dir!(), "phase_worker_test_#{:rand.uniform(999_999)}.db")
     event_log = Path.join(System.tmp_dir!(), "phase_worker_test_#{:rand.uniform(999_999)}.jsonl")
@@ -385,6 +402,36 @@ defmodule Conductor.PhaseWorkerTest do
         end)
 
       assert log =~ "failed to fetch reviews for PR #42: timeout"
+    end
+
+    test "sanitizes store lookup errors when Fern checks conductor ownership" do
+      Application.put_env(:conductor, :store_module, SecondCallRaisingStore)
+
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 42,
+             "headRefName" => "factory/99-12345",
+             "title" => "feat: implement feature",
+             "body" => "Closes #99",
+             "labels" => [],
+             "statusCheckRollup" => @green_checks
+           }
+         ]}
+      )
+
+      log =
+        capture_log(fn ->
+          start_phase_worker(Roles.Polisher, ["bb-fern"])
+
+          assert_receive {:dispatched, "bb-fern", prompt}, 2_000
+          refute prompt =~ "gh pr edit --add-label lgtm"
+        end)
+
+      assert log =~ "failed to find run for PR #42; treating it as unmanaged"
+      refute log =~ "store exploded"
     end
 
     test "skips PRs that already have lgtm label" do
@@ -752,6 +799,40 @@ defmodule Conductor.PhaseWorkerTest do
       status = PhaseWorker.status(Roles.Fixer)
       assert status.health == :degraded
       assert status.in_flight == %{}
+    end
+
+    test "sanitizes task crash reasons in logs" do
+      orig_worker = Application.get_env(:conductor, :worker_module)
+      Application.put_env(:conductor, :worker_module, ShuttingDownWorker)
+
+      on_exit(fn -> restore_env(:worker_module, orig_worker) end)
+
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 101,
+             "headRefName" => "factory/101-12345",
+             "title" => "test",
+             "body" => "",
+             "statusCheckRollup" => [
+               %{"name" => "CI", "conclusion" => "FAILURE", "status" => "COMPLETED"}
+             ]
+           }
+         ]}
+      )
+
+      log =
+        capture_log(fn ->
+          start_phase_worker(Roles.Fixer, ["bb-thorn"], poll_ms: 10)
+          assert_receive :shutdown_dispatch, 2_000
+          Process.sleep(100)
+        end)
+
+      assert log =~ "dispatch task crashed"
+      assert log =~ "dispatch failed for PR #101: task_crashed"
+      refute log =~ ":shutdown"
     end
 
     test "logs and skips missing run_id when store lookup raises" do

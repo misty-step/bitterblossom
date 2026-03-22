@@ -149,9 +149,9 @@ defmodule Conductor.PhaseWorker do
   end
 
   @impl true
-  def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
-    Logger.warning("[#{log_prefix(state)}] dispatch task crashed: #{inspect(reason)}")
-    {:noreply, complete_task(state, ref, {:error, "task_crashed: #{inspect(reason)}", 1})}
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, state) do
+    Logger.warning("[#{log_prefix(state)}] dispatch task crashed")
+    {:noreply, complete_task(state, ref, {:error, "task_crashed", 1})}
   end
 
   @impl true
@@ -242,8 +242,10 @@ defmodule Conductor.PhaseWorker do
             {:error, reason} -> {:error, to_string(reason), 1}
           end
         rescue
-          e ->
-            {:error, "#{role_module.event_prefix()} dispatch crashed: #{Exception.message(e)}", 1}
+          _exception ->
+            Logger.warning("[#{log_prefix(state)}] dispatch handler raised an exception")
+
+            {:error, "dispatch_crashed", 1}
         end
       end)
 

@@ -68,18 +68,23 @@ defmodule Conductor.PhaseWorker.Roles.Polisher do
 
   defp conductor_managed?(repo, pr_number) do
     try do
-      match?({:ok, _}, Store.find_run_by_pr(repo, pr_number))
+      match?({:ok, _}, store_mod().find_run_by_pr(repo, pr_number))
     rescue
-      exception ->
-        Logger.warning(
-          "[fern] failed to find run for PR ##{pr_number}: #{Exception.message(exception)}"
-        )
-
+      _exception ->
+        log_unmanaged_lookup_failure(pr_number)
         false
     catch
-      :exit, reason ->
-        Logger.warning("[fern] failed to find run for PR ##{pr_number}: #{inspect(reason)}")
+      :exit, _reason ->
+        log_unmanaged_lookup_failure(pr_number)
         false
     end
+  end
+
+  defp log_unmanaged_lookup_failure(pr_number) do
+    Logger.warning("[fern] failed to find run for PR ##{pr_number}; treating it as unmanaged")
+  end
+
+  defp store_mod do
+    Application.get_env(:conductor, :store_module, Store)
   end
 end
