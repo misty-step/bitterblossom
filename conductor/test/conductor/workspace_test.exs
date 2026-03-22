@@ -128,7 +128,7 @@ defmodule Conductor.WorkspaceTest do
       assert command =~ "flock .git/bb-worktree.lock bash <<'EOF'"
       assert command =~ "worktree_dir='/tmp/custom-worktree'"
       assert command =~ "git worktree remove --force \"$worktree_dir\""
-      assert command =~ "git branch -D factory/42-1773867376"
+      assert command =~ "git branch -D 'factory/42-1773867376'"
     end
 
     test "keeps adopted branches when branch is omitted" do
@@ -151,6 +151,24 @@ defmodule Conductor.WorkspaceTest do
       assert_received {:cleanup_command, command}
       refute command =~ "branch_name="
       refute command =~ "git branch -D"
+    end
+
+    test "returns the conflict error when a branch already uses an external worktree" do
+      exec_fn = fn _sprite, _command, _opts ->
+        {:error, "branch factory/42 already uses worktree /tmp/external", 17}
+      end
+
+      assert {:error, reason} =
+               Workspace.prepare(
+                 "bb-weaver",
+                 "misty-step/bitterblossom",
+                 "run-42-1773867376",
+                 "factory/42-1773867376",
+                 exec_fn: exec_fn
+               )
+
+      assert reason =~ "workspace preparation failed (17)"
+      assert reason =~ "already uses worktree /tmp/external"
     end
   end
 

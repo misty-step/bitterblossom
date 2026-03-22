@@ -271,17 +271,17 @@ defmodule Conductor.Workspace do
           ;;
       esac
     fi
-    #{if delete_branch?, do: delete_branch_command(:branch_name), else: ""}
+    #{if delete_branch?, do: delete_branch_command(:use_branch_name_var), else: ""}
     """
   end
 
   defp delete_branch_command(nil), do: ""
 
-  defp delete_branch_command(:branch_name),
+  defp delete_branch_command(:use_branch_name_var),
     do: "git branch -D \"$branch_name\" 2>/dev/null || true"
 
   defp delete_branch_command(branch) do
-    "git branch -D #{branch} 2>/dev/null || true"
+    "git branch -D #{shell_quote(branch)} 2>/dev/null || true"
   end
 
   defp branch_option(opts) do
