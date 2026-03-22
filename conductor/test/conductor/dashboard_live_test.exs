@@ -65,7 +65,8 @@ defmodule Conductor.Web.DashboardLiveTest do
        [
          issue(101, "Seconds branch"),
          issue(102, "Minutes branch"),
-         issue(103, "Hours branch")
+         issue(103, "Hours branch"),
+         issue(104, "Capped branch")
        ]}
     end
 
@@ -301,6 +302,18 @@ defmodule Conductor.Web.DashboardLiveTest do
     assert eventually(fn -> render(view) =~ "sprite_recovered" end)
   end
 
+  test "invalid event sources fall back to the all-events view" do
+    Conductor.Store.record_event("fleet", "sprite_recovered", %{name: "bb-thorn"})
+    Conductor.Store.record_event("run-123", "builder_complete", %{issue: 123})
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    html = render_click(view, "filter-events", %{"source" => "bogus"})
+
+    assert html =~ "sprite_recovered"
+    assert html =~ "builder_complete"
+  end
+
   test "dashboard refreshes governor cooldowns when run state changes" do
     {:ok, view, _html} = live(build_conn(), "/")
 
@@ -424,12 +437,33 @@ defmodule Conductor.Web.DashboardLiveTest do
     refute html =~ "run_progress"
   end
 
+  test "event payload rendering handles empty and nested payloads" do
+    Conductor.Store.record_event("fleet", "empty_payload", %{})
+
+    Conductor.Store.record_event("fleet", "nested_payload", %{
+      empty: %{},
+      nested: %{stage: "probe"}
+    })
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    html =
+      view
+      |> element("button[phx-value-source='fleet']")
+      |> render_click()
+
+    assert html =~ ~r/empty_payload<\/td>\s*<td>–<\/td>/s
+    assert html =~ "empty=%{}"
+    assert html =~ "nested=%{&quot;stage&quot; =&gt; &quot;probe&quot;}"
+  end
+
   test "governor renders second, minute, and hour cooldown durations" do
     Application.put_env(:conductor, :dashboard_issue_source_module, DurationIssueSource)
 
     insert_failed_runs!(101, 1, 100)
     insert_failed_runs!(102, 6, 1_205)
     insert_failed_runs!(103, 7, 605)
+    insert_failed_runs!(104, 25, 1)
 
     {:ok, _view, html} = live(build_conn(), "/")
 
@@ -437,6 +471,7 @@ defmodule Conductor.Web.DashboardLiveTest do
     assert html =~ ~r/#101.*?<td>1<\/td>.*?<td>2m<\/td>.*?<td>\d+s<\/td>/s
     assert html =~ ~r/#102.*?<td>6<\/td>.*?<td>64m<\/td>.*?<td>\d+m<\/td>/s
     assert html =~ ~r/#103.*?<td>7<\/td>.*?<td>120m<\/td>.*?<td>1h \d+m<\/td>/s
+    assert html =~ ~r/#104.*?<td>25<\/td>.*?<td>120m<\/td>/s
   end
 
   # Poll helper for async assertions

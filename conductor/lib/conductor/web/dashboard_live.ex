@@ -596,6 +596,7 @@ defmodule Conductor.Web.DashboardLive do
   end
 
   defp format_duration(seconds) when is_integer(seconds), do: "#{seconds}s"
+  defp format_duration(_seconds), do: "–"
 
   defp phase_class(nil), do: "phase-pending"
   defp phase_class(phase), do: "phase-#{phase}"
