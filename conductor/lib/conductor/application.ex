@@ -157,11 +157,64 @@ defmodule Conductor.Application do
   def role_display_name(:polisher), do: "fern"
   def role_display_name(role), do: to_string(role)
 
-  defp dashboard_children do
-    if Application.get_env(:conductor, :start_dashboard, false) do
-      [Conductor.Web.Endpoint]
+  defp dashboard_children, do: []
+
+  @doc false
+  def ensure_dashboard_endpoint_config do
+    endpoint_config = Application.get_env(:conductor, Conductor.Web.Endpoint, [])
+
+    secret_key_base =
+      Keyword.get(endpoint_config, :secret_key_base) ||
+        System.get_env("DASHBOARD_SECRET_KEY_BASE") ||
+        generated_secret_key_base()
+
+    Application.put_env(
+      :conductor,
+      Conductor.Web.Endpoint,
+      endpoint_config
+      |> Keyword.put(:secret_key_base, secret_key_base)
+      |> Keyword.put(:server, true)
+    )
+  end
+
+  @doc false
+  def start_dashboard(opts \\ []) do
+    if Application.get_env(:conductor, :start_dashboard, true) do
+      maybe_override_dashboard_port(opts)
+      ensure_dashboard_endpoint_config()
+
+      if Process.whereis(Conductor.Web.Endpoint) do
+        :ok
+      else
+        case Supervisor.start_child(Conductor.Supervisor, Conductor.Web.Endpoint) do
+          {:ok, _pid} -> :ok
+          {:error, {:already_started, _pid}} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+      end
     else
-      []
+      :ok
+    end
+  end
+
+  defp generated_secret_key_base do
+    :crypto.strong_rand_bytes(64) |> Base.encode64(padding: false)
+  end
+
+  defp maybe_override_dashboard_port(opts) do
+    case Keyword.fetch(opts, :port) do
+      {:ok, port} ->
+        endpoint_config = Application.get_env(:conductor, Conductor.Web.Endpoint, [])
+        http_config = Keyword.get(endpoint_config, :http, [])
+
+        Application.put_env(
+          :conductor,
+          Conductor.Web.Endpoint,
+          Keyword.put(endpoint_config, :http, Keyword.put(http_config, :port, port))
+        )
+
+      :error ->
+        :ok
     end
   end
 end

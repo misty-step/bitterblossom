@@ -118,6 +118,8 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     status = HealthMonitor.status()
     assert status.sprites == %{}
     assert status.repo == nil
+    assert status.interval_ms == 60_000
+    assert status.last_check_at == nil
   end
 
   test "configure sets sprites and initial health" do
@@ -135,8 +137,14 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     )
 
     status = HealthMonitor.status()
-    assert status.sprites["bb-polisher"] == :healthy
-    assert status.sprites["bb-fixer"] == :unhealthy
+    polisher = status.sprites["bb-polisher"]
+    fixer = status.sprites["bb-fixer"]
+    assert polisher.status == :healthy
+    assert polisher.role == :polisher
+    assert polisher.last_probe_at == nil
+    assert fixer.status == :degraded
+    assert fixer.role == :fixer
+    assert fixer.consecutive_failures == 0
   end
 
   test "detects unhealthy→healthy transition and logs recovery" do
@@ -156,7 +164,7 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     )
 
     # Verify starts unhealthy
-    assert HealthMonitor.status().sprites["bb-polisher"] == :unhealthy
+    assert HealthMonitor.status().sprites["bb-polisher"].status == :degraded
 
     # Trigger check — sprite is now healthy
     log =
@@ -166,7 +174,12 @@ defmodule Conductor.Fleet.HealthMonitorTest do
       end)
 
     assert log =~ "bb-polisher recovered"
-    assert HealthMonitor.status().sprites["bb-polisher"] == :healthy
+    status = HealthMonitor.status()
+    polisher = status.sprites["bb-polisher"]
+    assert polisher.status == :healthy
+    assert polisher.last_probe_at
+    assert polisher.consecutive_failures == 0
+    assert status.last_check_at
   end
 
   test "detects healthy→unhealthy transition and logs degradation" do
@@ -185,7 +198,7 @@ defmodule Conductor.Fleet.HealthMonitorTest do
       healthy: MapSet.new(["bb-fixer"])
     )
 
-    assert HealthMonitor.status().sprites["bb-fixer"] == :healthy
+    assert HealthMonitor.status().sprites["bb-fixer"].status == :healthy
 
     log =
       capture_log(fn ->
@@ -194,7 +207,10 @@ defmodule Conductor.Fleet.HealthMonitorTest do
       end)
 
     assert log =~ "bb-fixer degraded"
-    assert HealthMonitor.status().sprites["bb-fixer"] == :unhealthy
+    status = HealthMonitor.status()
+    fixer = status.sprites["bb-fixer"]
+    assert fixer.status == :degraded
+    assert fixer.consecutive_failures == 1
   end
 
   test "no-ops when sprites list is empty" do
@@ -222,11 +238,40 @@ defmodule Conductor.Fleet.HealthMonitorTest do
       healthy: MapSet.new()
     )
 
-    assert HealthMonitor.status().sprites["bb-polisher"] == :unhealthy
+    assert HealthMonitor.status().sprites["bb-polisher"].status == :degraded
 
     HealthMonitor.check_now()
     Process.sleep(100)
 
-    assert HealthMonitor.status().sprites["bb-polisher"] == :healthy
+    status = HealthMonitor.status()
+    polisher = status.sprites["bb-polisher"]
+    assert polisher.status == :healthy
+    assert polisher.last_probe_at
+  end
+
+  test "marks repeated probe failures as unavailable" do
+    start_monitor(interval_ms: 60_000)
+
+    sprites = [
+      %{name: "bb-fixer", role: :fixer, harness: "codex", repo: "test/repo"}
+    ]
+
+    MockState.put({:sprite_health, "bb-fixer"}, :unhealthy)
+
+    HealthMonitor.configure(
+      sprites: sprites,
+      repo: "test/repo",
+      healthy: MapSet.new(["bb-fixer"])
+    )
+
+    for _ <- 1..3 do
+      HealthMonitor.check_now()
+      Process.sleep(100)
+    end
+
+    status = HealthMonitor.status()
+    fixer = status.sprites["bb-fixer"]
+    assert fixer.status == :unavailable
+    assert fixer.consecutive_failures == 3
   end
 end

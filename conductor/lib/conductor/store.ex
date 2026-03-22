@@ -402,6 +402,10 @@ defmodule Conductor.Store do
       created_at: now
     })
 
+    if Code.ensure_loaded?(Phoenix.PubSub) and Process.whereis(Conductor.PubSub) do
+      Phoenix.PubSub.broadcast(Conductor.PubSub, "dashboard", :runs_updated)
+    end
+
     {:reply, :ok, state}
   end
 

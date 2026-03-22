@@ -312,6 +312,9 @@ defmodule Conductor.FixerTest do
       assert is_map(status.in_flight)
       assert status.health == :healthy
       assert status.failure_count == 0
+      assert status.poll_ms == 60_000
+      assert status.last_dispatch_at == nil
+      assert status.last_completion_at == nil
     end
   end
 
@@ -362,6 +365,8 @@ defmodule Conductor.FixerTest do
       status = Fixer.status()
       assert status.health == :degraded
       assert status.failure_count == 1
+      assert status.last_dispatch_at
+      assert status.last_completion_at
       assert Process.alive?(pid)
     end
 

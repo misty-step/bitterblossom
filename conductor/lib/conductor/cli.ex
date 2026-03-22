@@ -87,6 +87,11 @@ defmodule Conductor.CLI do
     # Validate environment before doing anything
     cmd_check_env()
 
+    case Conductor.Application.start_dashboard() do
+      :ok -> :ok
+      {:error, reason} -> IO.puts("dashboard start failed: #{inspect(reason)}")
+    end
+
     case Conductor.Application.boot_fleet(fleet_path) do
       :ok ->
         IO.puts("bitterblossom running. Press Ctrl+C to stop.")
@@ -305,17 +310,8 @@ defmodule Conductor.CLI do
     {opts, _, _} = OptionParser.parse(args, strict: [port: :integer])
     port = Keyword.get(opts, :port, 4000)
 
-    Application.put_env(:conductor, Conductor.Web.Endpoint,
-      adapter: Bandit.PhoenixAdapter,
-      http: [ip: {127, 0, 0, 1}, port: port],
-      secret_key_base:
-        System.get_env("DASHBOARD_SECRET_KEY_BASE") ||
-          "bitterblossom-dashboard-dev-key-must-be-at-least-64-chars-long-x",
-      live_view: [signing_salt: "bb_lv_salt"],
-      server: true
-    )
-
-    {:ok, _} = Supervisor.start_child(Conductor.Supervisor, Conductor.Web.Endpoint)
+    Application.put_env(:conductor, :start_dashboard, true)
+    :ok = Conductor.Application.start_dashboard(port: port)
     IO.puts("dashboard running at http://localhost:#{port}")
     Process.sleep(:infinity)
   end

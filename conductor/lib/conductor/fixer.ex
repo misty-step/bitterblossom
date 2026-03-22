@@ -18,6 +18,8 @@ defmodule Conductor.Fixer do
     :fixer_sprite,
     :poll_ms,
     :base_poll_ms,
+    :last_dispatch_at,
+    :last_completion_at,
     in_flight: %{},
     failure_count: 0,
     health: :healthy
@@ -91,7 +93,10 @@ defmodule Conductor.Fixer do
        fixer_sprite: state.fixer_sprite,
        in_flight: Map.keys(state.in_flight) |> Map.new(&{&1, :working}),
        health: state.health,
-       failure_count: state.failure_count
+       failure_count: state.failure_count,
+       poll_ms: state.poll_ms,
+       last_dispatch_at: state.last_dispatch_at,
+       last_completion_at: state.last_completion_at
      }, state}
   end
 
@@ -169,7 +174,11 @@ defmodule Conductor.Fixer do
         end
       end)
 
-    %{state | in_flight: Map.put(state.in_flight, pr_number, task.ref)}
+    %{
+      state
+      | in_flight: Map.put(state.in_flight, pr_number, task.ref),
+        last_dispatch_at: now_utc()
+    }
   end
 
   defp complete_task(state, ref, result) do
@@ -178,7 +187,7 @@ defmodule Conductor.Fixer do
         if r == ref, do: {pr, acc}, else: {found, Map.put(acc, pr, r)}
       end)
 
-    state = %{state | in_flight: in_flight}
+    state = %{state | in_flight: in_flight, last_completion_at: now_utc()}
 
     if pr_number do
       case result do
@@ -234,4 +243,6 @@ defmodule Conductor.Fixer do
   defp code_host_mod, do: Application.get_env(:conductor, :code_host_module, Conductor.GitHub)
   defp worker_mod, do: Application.get_env(:conductor, :worker_module, Conductor.Sprite)
   defp workspace_mod, do: Application.get_env(:conductor, :workspace_module, Workspace)
+
+  defp now_utc, do: DateTime.utc_now() |> DateTime.to_iso8601()
 end

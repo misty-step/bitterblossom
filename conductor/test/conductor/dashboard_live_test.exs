@@ -4,11 +4,53 @@ defmodule Conductor.Web.DashboardLiveTest do
   """
   use ExUnit.Case, async: false
 
+  alias Conductor.Fleet.HealthMonitor
+
   import Conductor.TestSupport.ProcessHelpers
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
   @endpoint Conductor.Web.Endpoint
+
+  defmodule MockIssueSource do
+    def list_issues(_repo, _opts) do
+      {:ok,
+       [
+         %Conductor.Issue{
+           number: 779,
+           title: "Dashboard visibility",
+           body: "",
+           url: "https://github.com/test/repo/issues/779",
+           labels: []
+         },
+         %Conductor.Issue{
+           number: 780,
+           title: "Muse",
+           body: "",
+           url: "https://github.com/test/repo/issues/780",
+           labels: []
+         }
+       ]}
+    end
+  end
+
+  defmodule NoopWorker do
+    def dispatch(_, _, _, _), do: {:ok, ""}
+    def exec(_, _, _), do: {:ok, ""}
+    def cleanup(_, _, _), do: :ok
+    def busy?(_, _), do: false
+  end
+
+  defmodule NoopCodeHost do
+    def open_prs(_), do: {:ok, []}
+    def labeled_prs(_, _), do: {:ok, []}
+    def checks_green?(_, _), do: false
+    def checks_failed?(_, _), do: false
+  end
+
+  defmodule NoopWorkspace do
+    def sync_persona(_, _, _, _ \\ []), do: :ok
+  end
 
   setup do
     db_path = Path.join(System.tmp_dir!(), "dash_test_#{:rand.uniform(999_999)}.db")
@@ -16,9 +58,19 @@ defmodule Conductor.Web.DashboardLiveTest do
 
     orig_db = Application.get_env(:conductor, :db_path)
     orig_log = Application.get_env(:conductor, :event_log)
+    orig_issue_source = Application.get_env(:conductor, :dashboard_issue_source_module)
+    orig_worker = Application.get_env(:conductor, :worker_module)
+    orig_workspace = Application.get_env(:conductor, :workspace_module)
+    orig_code_host = Application.get_env(:conductor, :code_host_module)
+    orig_start_dashboard = Application.get_env(:conductor, :start_dashboard)
 
     Application.put_env(:conductor, :db_path, db_path)
     Application.put_env(:conductor, :event_log, event_log)
+    Application.put_env(:conductor, :dashboard_issue_source_module, MockIssueSource)
+    Application.put_env(:conductor, :worker_module, NoopWorker)
+    Application.put_env(:conductor, :workspace_module, NoopWorkspace)
+    Application.put_env(:conductor, :code_host_module, NoopCodeHost)
+    Application.put_env(:conductor, :start_dashboard, false)
 
     Application.put_env(:conductor, Conductor.Web.Endpoint,
       adapter: Bandit.PhoenixAdapter,
@@ -37,8 +89,16 @@ defmodule Conductor.Web.DashboardLiveTest do
     start_supervised!(Conductor.Web.Endpoint)
 
     on_exit(fn ->
+      stop_process(Conductor.Polisher)
+      stop_process(Conductor.Fixer)
+      stop_process(HealthMonitor)
       restore_env(:db_path, orig_db)
       restore_env(:event_log, orig_log)
+      restore_env(:dashboard_issue_source_module, orig_issue_source)
+      restore_env(:worker_module, orig_worker)
+      restore_env(:workspace_module, orig_workspace)
+      restore_env(:code_host_module, orig_code_host)
+      restore_env(:start_dashboard, orig_start_dashboard)
       File.rm(db_path)
       File.rm(event_log)
     end)
@@ -125,6 +185,90 @@ defmodule Conductor.Web.DashboardLiveTest do
 
     {:ok, _view, html} = live(build_conn(), "/")
     assert html =~ "Blocked"
+  end
+
+  test "dashboard renders operator panels with live runtime state" do
+    start_supervised!({HealthMonitor, interval_ms: 60_000})
+
+    HealthMonitor.configure(
+      repo: "test/repo",
+      sprites: [
+        %{name: "bb-weaver", role: :builder, harness: "codex"},
+        %{name: "bb-thorn", role: :fixer, harness: "codex"},
+        %{name: "bb-fern", role: :polisher, harness: "codex"}
+      ],
+      healthy: MapSet.new(["bb-weaver", "bb-thorn", "bb-fern"])
+    )
+
+    start_supervised!(
+      {Conductor.Fixer, repo: "test/repo", fixer_sprite: "bb-thorn", poll_ms: 60_000}
+    )
+
+    start_supervised!(
+      {Conductor.Polisher, repo: "test/repo", polisher_sprite: "bb-fern", poll_ms: 60_000}
+    )
+
+    {:ok, failed_run} =
+      Conductor.Store.create_run(%{
+        repo: "test/repo",
+        issue_number: 779,
+        issue_title: "Dashboard visibility",
+        builder_sprite: "bb-weaver"
+      })
+
+    Conductor.Store.update_run(failed_run, %{
+      phase: "failed",
+      status: "failed",
+      completed_at: DateTime.utc_now() |> DateTime.to_iso8601()
+    })
+
+    {:ok, merged_run} =
+      Conductor.Store.create_run(%{
+        repo: "test/repo",
+        issue_number: 780,
+        issue_title: "Muse synthesis",
+        builder_sprite: "bb-weaver"
+      })
+
+    Conductor.Store.update_run(merged_run, %{
+      phase: "merged",
+      status: "merged",
+      completed_at: DateTime.utc_now() |> DateTime.to_iso8601()
+    })
+
+    Conductor.Store.record_event("fleet", "sprite_degraded", %{name: "bb-thorn"})
+    Conductor.Store.record_event("fixer", "fixer_failed", %{pr_number: 42})
+
+    {:ok, view, html} = live(build_conn(), "/")
+
+    assert html =~ "Fleet Health"
+    assert html =~ "Phase Workers"
+    assert html =~ "Governor"
+    assert html =~ "Recent Events"
+    assert html =~ "Run Timeline"
+    assert html =~ "bb-thorn"
+    assert html =~ "bb-fern"
+    assert html =~ "#779"
+    assert html =~ "sprite_degraded"
+    assert html =~ "fixer_failed"
+
+    html =
+      view
+      |> element("button[phx-value-source='fleet']")
+      |> render_click()
+
+    assert html =~ "sprite_degraded"
+    refute html =~ "fixer_failed"
+  end
+
+  test "dashboard refreshes event stream when a new event is recorded" do
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    refute render(view) =~ "sprite_recovered"
+
+    Conductor.Store.record_event("fleet", "sprite_recovered", %{name: "bb-thorn"})
+
+    assert eventually(fn -> render(view) =~ "sprite_recovered" end)
   end
 
   # Poll helper for async assertions

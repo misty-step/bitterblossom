@@ -16,8 +16,9 @@ defmodule Conductor.Fleet.HealthMonitor do
     :repo,
     :interval_ms,
     :timer_ref,
+    :last_check_at,
     sprites: [],
-    known_health: %{}
+    sprite_statuses: %{}
   ]
 
   @role_to_module %{
@@ -68,20 +69,42 @@ defmodule Conductor.Fleet.HealthMonitor do
     repo = Keyword.fetch!(opts, :repo)
     initial_healthy = Keyword.get(opts, :healthy, MapSet.new())
 
-    known_health =
+    sprite_statuses =
       Map.new(sprites, fn s ->
-        {s.name, if(MapSet.member?(initial_healthy, s.name), do: :healthy, else: :unhealthy)}
+        {s.name,
+         %{
+           name: s.name,
+           role: s.role,
+           status: if(MapSet.member?(initial_healthy, s.name), do: :healthy, else: :degraded),
+           last_probe_at: nil,
+           consecutive_failures: 0
+         }}
       end)
 
     if state.timer_ref, do: Process.cancel_timer(state.timer_ref)
     ref = schedule_check(state.interval_ms)
-    state = %{state | sprites: sprites, repo: repo, known_health: known_health, timer_ref: ref}
+
+    state = %{
+      state
+      | sprites: sprites,
+        repo: repo,
+        sprite_statuses: sprite_statuses,
+        timer_ref: ref,
+        last_check_at: nil
+    }
+
     {:reply, :ok, state}
   end
 
   @impl true
   def handle_call(:status, _from, state) do
-    {:reply, %{sprites: state.known_health, repo: state.repo}, state}
+    {:reply,
+     %{
+       sprites: state.sprite_statuses,
+       repo: state.repo,
+       interval_ms: state.interval_ms,
+       last_check_at: state.last_check_at
+     }, state}
   end
 
   @impl true
@@ -102,55 +125,77 @@ defmodule Conductor.Fleet.HealthMonitor do
   # --- Private ---
 
   defp check_and_recover(state) do
-    # Only re-probe non-builder sprites (builders are probed by the Orchestrator)
-    phase_sprites = Enum.filter(state.sprites, &(&1.role in [:fixer, :polisher]))
+    checked_at = now_utc()
 
-    Enum.reduce(phase_sprites, state, fn sprite, acc ->
-      new_health = probe_sprite(sprite)
-      old_health = Map.get(acc.known_health, sprite.name, :unhealthy)
+    state =
+      Enum.reduce(state.sprites, state, fn sprite, acc ->
+        previous = Map.get(acc.sprite_statuses, sprite.name, default_sprite_status(sprite))
+        next_failure_count = previous.consecutive_failures + 1
+        new_status = probe_sprite(sprite, next_failure_count)
 
-      cond do
-        old_health == :unhealthy and new_health == :healthy ->
-          Logger.info("[health] #{sprite.name} recovered, starting phase worker")
+        updated =
+          %{
+            previous
+            | role: sprite.role,
+              status: new_status,
+              last_probe_at: checked_at,
+              consecutive_failures: if(new_status == :healthy, do: 0, else: next_failure_count)
+          }
 
-          case ensure_phase_worker(sprite, acc.repo) do
-            :ok ->
-              Store.record_event("fleet", "sprite_recovered", %{
-                name: sprite.name,
-                role: to_string(sprite.role)
-              })
+        cond do
+          recovered?(previous.status, new_status) ->
+            Logger.info(
+              "[health] #{sprite.name} recovered#{maybe_worker_start_note(sprite.role)}"
+            )
 
-              put_health(acc, sprite.name, :healthy)
+            case maybe_start_phase_worker(sprite, acc.repo) do
+              :ok ->
+                Store.record_event("fleet", "sprite_recovered", %{
+                  name: sprite.name,
+                  role: to_string(sprite.role)
+                })
 
-            :error ->
-              acc
-          end
+                put_sprite_status(acc, sprite.name, updated)
 
-        old_health == :healthy and new_health == :unhealthy ->
-          Logger.warning("[health] #{sprite.name} degraded")
+              :error ->
+                acc
+            end
 
-          Store.record_event("fleet", "sprite_degraded", %{
-            name: sprite.name,
-            role: to_string(sprite.role)
-          })
+          healthy?(previous.status) and not healthy?(new_status) ->
+            Logger.warning("[health] #{sprite.name} degraded")
 
-          put_health(acc, sprite.name, :unhealthy)
+            Store.record_event("fleet", "sprite_degraded", %{
+              name: sprite.name,
+              role: to_string(sprite.role)
+            })
 
-        true ->
-          acc
-      end
-    end)
+            put_sprite_status(acc, sprite.name, updated)
+
+          true ->
+            put_sprite_status(acc, sprite.name, updated)
+        end
+      end)
+
+    %{state | last_check_at: checked_at}
   end
 
-  defp probe_sprite(sprite) do
+  defp probe_sprite(sprite, failure_count) do
     case reconciler_mod().reconcile_sprite(sprite) do
-      %{healthy: true} -> :healthy
-      _ -> :unhealthy
+      %{healthy: true} ->
+        :healthy
+
+      _ ->
+        if failure_count >= Config.fleet_probe_failure_threshold(),
+          do: :unavailable,
+          else: :degraded
     end
   end
 
-  @spec ensure_phase_worker(map(), binary()) :: :ok | :error
-  defp ensure_phase_worker(sprite, repo) do
+  @spec maybe_start_phase_worker(map(), binary()) :: :ok | :error
+  defp maybe_start_phase_worker(%{role: role}, _repo) when role not in [:fixer, :polisher],
+    do: :ok
+
+  defp maybe_start_phase_worker(sprite, repo) do
     case Map.get(@role_to_module, sprite.role) do
       nil ->
         :ok
@@ -188,8 +233,8 @@ defmodule Conductor.Fleet.HealthMonitor do
     Application.get_env(:conductor, :supervisor_name, Conductor.Supervisor)
   end
 
-  defp put_health(state, name, health) do
-    %{state | known_health: Map.put(state.known_health, name, health)}
+  defp put_sprite_status(state, name, sprite_status) do
+    %{state | sprite_statuses: Map.put(state.sprite_statuses, name, sprite_status)}
   end
 
   defp schedule_check(interval_ms) when is_integer(interval_ms) do
@@ -199,4 +244,26 @@ defmodule Conductor.Fleet.HealthMonitor do
   defp reconciler_mod do
     Application.get_env(:conductor, :reconciler_module, Reconciler)
   end
+
+  defp default_sprite_status(sprite) do
+    %{
+      name: sprite.name,
+      role: sprite.role,
+      status: :degraded,
+      last_probe_at: nil,
+      consecutive_failures: 0
+    }
+  end
+
+  defp healthy?(:healthy), do: true
+  defp healthy?(_), do: false
+
+  defp recovered?(old_status, new_status), do: not healthy?(old_status) and healthy?(new_status)
+
+  defp maybe_worker_start_note(role) when role in [:fixer, :polisher],
+    do: ", starting phase worker"
+
+  defp maybe_worker_start_note(_role), do: ""
+
+  defp now_utc, do: DateTime.utc_now() |> DateTime.to_iso8601()
 end
