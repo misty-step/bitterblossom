@@ -315,6 +315,11 @@ defmodule Conductor.StoreTest do
     assert pr["last_substantive_change_at"] == "2026-03-20T13:00:00Z"
   end
 
+  test "rejects invalid PR state columns" do
+    assert {:error, :invalid_column} =
+             Store.upsert_pr_state("test/repo", 42, %{bogus: "value"})
+  end
+
   describe "issue_failure_streak/2" do
     test "returns zero streak when no runs exist" do
       assert {0, nil} = Store.issue_failure_streak("test/repo", 999)

@@ -56,6 +56,8 @@ defmodule Conductor.PolisherTest do
       MockState.get({:substantive_change_at, pr_number}, {:error, :not_found})
     end
 
+    def evaluate_checks(checks), do: Conductor.GitHub.evaluate_checks(checks)
+
     def pr_ci_failure_logs(_repo, _pr_number), do: {:ok, ""}
     def add_label(_repo, _pr_number, _label), do: :ok
     def close_issue(_repo, _issue_number), do: :ok
@@ -567,6 +569,45 @@ defmodule Conductor.PolisherTest do
         )
 
       refute_receive {:dispatched, "bb-fern", _prompt}, 300
+    end
+
+    test "redispatches when stored polish timestamps are malformed" do
+      substantive_change_at =
+        DateTime.utc_now()
+        |> DateTime.add(-60, :second)
+        |> DateTime.to_iso8601()
+
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 42,
+             "headRefName" => "factory/99-12345",
+             "title" => "feat: implement feature",
+             "body" => "Closes #99",
+             "labels" => [],
+             "statusCheckRollup" => @green_checks
+           }
+         ]}
+      )
+
+      assert :ok =
+               Store.upsert_pr_state("test/repo", 42, %{
+                 last_substantive_change_at: substantive_change_at
+               })
+
+      assert :ok = Store.mark_pr_polished("test/repo", 42, "not-a-timestamp")
+      MockState.put({:substantive_change_at, 42}, {:ok, substantive_change_at})
+
+      {:ok, _pid} =
+        Polisher.start_link(
+          repo: "test/repo",
+          polisher_sprite: "bb-fern",
+          poll_ms: 50
+        )
+
+      assert_receive {:dispatched, "bb-fern", _prompt}, 2_000
     end
   end
 

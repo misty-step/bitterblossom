@@ -119,23 +119,27 @@ defmodule Conductor.Polisher do
 
   defp next_eligible_pr(prs, repo) do
     Enum.find_value(prs, fn pr ->
-      case needs_polish?(pr, repo) do
+      case eligible_pr(pr, repo) do
         {:ok, substantive_change_at} -> {pr, substantive_change_at}
         :skip -> nil
       end
     end)
   end
 
-  defp needs_polish?(pr, repo) do
+  defp eligible_pr(pr, repo) do
+    if polish_candidate?(pr) do
+      evaluate_polish_state(repo, pr["number"])
+    else
+      :skip
+    end
+  end
+
+  defp polish_candidate?(pr) do
     labels = pr["labels"] || []
     label_names = Enum.map(labels, &String.downcase(&1["name"] || ""))
     checks = pr["statusCheckRollup"] |> List.wrap() |> Enum.filter(&is_map/1)
 
-    if "lgtm" in label_names or not Conductor.GitHub.evaluate_checks(checks) do
-      :skip
-    else
-      polish_eligible?(repo, pr["number"])
-    end
+    not ("lgtm" in label_names or not code_host_mod().evaluate_checks(checks))
   end
 
   defp dispatch_polisher(state, pr, substantive_change_at) do
@@ -254,14 +258,9 @@ defmodule Conductor.Polisher do
     %{state | failure_count: 0, poll_ms: state.base_poll_ms, health: :healthy}
   end
 
-  defp polish_eligible?(repo, pr_number) when is_integer(pr_number) do
-    with {:ok, substantive_change_at} <-
-           code_host_mod().pr_substantive_change_at(repo, pr_number),
-         :ok <-
-           Store.upsert_pr_state(repo, pr_number, %{
-             last_substantive_change_at: substantive_change_at
-           }),
-         {:ok, pr_state} <- Store.get_pr_state(repo, pr_number) do
+  defp evaluate_polish_state(repo, pr_number) when is_integer(pr_number) do
+    with {:ok, substantive_change_at} <- fetch_substantive_change_at(repo, pr_number),
+         {:ok, pr_state} <- persist_pr_state(repo, pr_number, substantive_change_at) do
       if needs_polish_after_change?(pr_state) do
         {:ok, substantive_change_at}
       else
@@ -277,7 +276,21 @@ defmodule Conductor.Polisher do
     end
   end
 
-  defp polish_eligible?(_repo, _pr_number), do: {:ok, nil}
+  defp evaluate_polish_state(_repo, _pr_number), do: {:ok, nil}
+
+  defp fetch_substantive_change_at(repo, pr_number) do
+    code_host_mod().pr_substantive_change_at(repo, pr_number)
+  end
+
+  defp persist_pr_state(repo, pr_number, substantive_change_at) do
+    with :ok <-
+           Store.upsert_pr_state(repo, pr_number, %{
+             last_substantive_change_at: substantive_change_at
+           }),
+         {:ok, pr_state} <- Store.get_pr_state(repo, pr_number) do
+      {:ok, pr_state}
+    end
+  end
 
   defp fallback_polish_eligibility(repo, pr_number) do
     case Store.get_pr_state(repo, pr_number) do

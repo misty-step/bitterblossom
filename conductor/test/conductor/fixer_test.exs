@@ -58,6 +58,7 @@ defmodule Conductor.FixerTest do
     def labeled_prs(_repo, _label), do: {:ok, []}
 
     def open_prs(_repo), do: MockState.get(:open_prs, {:ok, []})
+    def evaluate_checks(checks), do: Conductor.GitHub.evaluate_checks(checks)
 
     def pr_ci_failure_logs(_repo, _pr_number) do
       MockState.get(:ci_failure_logs, {:ok, "Build failed: test_foo.ex:42 assertion error"})

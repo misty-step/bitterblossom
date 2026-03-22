@@ -71,6 +71,7 @@ defmodule Conductor.RunServerTest do
     def merge(_repo, _pr_number, _opts), do: :ok
     def labeled_prs(_repo, _label), do: {:ok, []}
     def factory_prs(_repo), do: {:ok, []}
+    def evaluate_checks(checks), do: Conductor.GitHub.evaluate_checks(checks)
     def pr_review_comments(_repo, _pr_number), do: {:ok, []}
     def pr_substantive_change_at(_repo, _pr_number), do: {:error, :not_found}
     def pr_ci_failure_logs(_repo, _pr_number), do: {:ok, ""}

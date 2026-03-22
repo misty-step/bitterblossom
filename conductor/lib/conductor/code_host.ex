@@ -38,6 +38,9 @@ defmodule Conductor.CodeHost do
   @callback pr_substantive_change_at(repo :: binary(), pr_number :: pos_integer()) ::
               {:ok, binary()} | {:error, term()}
 
+  @doc "Return true when a PR's status checks represent a green state."
+  @callback evaluate_checks(checks :: [map()]) :: boolean()
+
   @doc "Fetch CI failure logs for a PR."
   @callback pr_ci_failure_logs(repo :: binary(), pr_number :: pos_integer()) ::
               {:ok, binary()} | {:error, term()}

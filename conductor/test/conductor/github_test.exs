@@ -472,6 +472,31 @@ defmodule Conductor.GitHubTest do
         end
       )
     end
+
+    test "ignores malformed timestamps and returns the newest valid one" do
+      with_fake_gh(
+        """
+        cat <<'JSON'
+        {
+          "commits": [
+            {"committedDate":"not-a-timestamp"},
+            {"committedDate":"2026-03-20T12:00:00Z"}
+          ],
+          "reviews": [
+            {"submittedAt":"still-not-a-timestamp"}
+          ],
+          "comments": [
+            {"createdAt":"2026-03-20T13:00:00Z"}
+          ]
+        }
+        JSON
+        """,
+        fn _tmp_dir, _args_path ->
+          assert {:ok, "2026-03-20T13:00:00Z"} =
+                   GitHub.pr_substantive_change_at("misty-step/bitterblossom", 42)
+        end
+      )
+    end
   end
 
   describe "list_issues/2" do
