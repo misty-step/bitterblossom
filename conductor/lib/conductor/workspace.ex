@@ -163,6 +163,7 @@ defmodule Conductor.Workspace do
     set -e
     cd #{mirror}
     flock .git/bb-worktree.lock bash -c '
+      #{default_branch_command()}
       #{cleanup_branch_commands(run_id, branch)}
     '
     """

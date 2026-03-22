@@ -276,6 +276,56 @@ defmodule Conductor.WorkspaceTest do
       assert command =~ "git worktree remove --force \"$path\""
       assert command =~ "git branch -D \"factory/42-1773867376\""
     end
+
+    test "returns an error when cleanup health check still finds stale worktrees" do
+      parent = self()
+
+      exec_fn = fn _sprite, command, _opts ->
+        send(parent, {:cleanup_command, command})
+
+        if String.contains?(command, "git worktree list --porcelain") do
+          {:ok, "/home/sprite/workspace/bitterblossom\n/tmp/run-42\n"}
+        else
+          {:ok, ""}
+        end
+      end
+
+      assert {:error,
+              "branch still attached to worktree(s): /home/sprite/workspace/bitterblossom, /tmp/run-42"} =
+               Workspace.cleanup(
+                 "bb-weaver",
+                 "misty-step/bitterblossom",
+                 "run-42-1773867376",
+                 exec_fn: exec_fn
+               )
+
+      assert_received {:cleanup_command, cleanup_command}
+      assert cleanup_command =~ "default_branch=$(git symbolic-ref refs/remotes/origin/HEAD"
+      assert_received {:cleanup_command, health_check_command}
+      assert health_check_command =~ "branch_ref=\"refs/heads/factory/42-1773867376\""
+    end
+
+    test "skips branch deletion when the run id does not map to a factory branch" do
+      parent = self()
+
+      exec_fn = fn _sprite, command, _opts ->
+        send(parent, {:cleanup_command, command})
+        {:ok, ""}
+      end
+
+      assert :ok =
+               Workspace.cleanup(
+                 "bb-weaver",
+                 "misty-step/bitterblossom",
+                 "custom-123",
+                 exec_fn: exec_fn
+               )
+
+      assert_received {:cleanup_command, command}
+      assert command =~ "default_branch=$(git symbolic-ref refs/remotes/origin/HEAD"
+      refute command =~ "git branch -D"
+      refute command =~ "git worktree list --porcelain"
+    end
   end
 
   describe "health_check/4" do
