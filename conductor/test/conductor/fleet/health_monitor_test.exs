@@ -324,4 +324,51 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     assert log =~ "failed to sync"
     assert HealthMonitor.status().sprites["bb-fixer"] == :unhealthy
   end
+
+  test "keeps recovery pending until phase worker sync succeeds" do
+    Application.put_env(:conductor, :phase_worker_supervisor, FailingPhaseWorkerSupervisor)
+
+    start_monitor(interval_ms: 60_000)
+
+    sprites = [
+      %{name: "bb-polisher", role: :polisher, harness: "codex", repo: "test/repo"}
+    ]
+
+    MockState.put({:sprite_health, "bb-polisher"}, :healthy)
+
+    HealthMonitor.configure(
+      sprites: sprites,
+      repo: "test/repo",
+      healthy: MapSet.new()
+    )
+
+    assert HealthMonitor.status().sprites["bb-polisher"] == :unhealthy
+
+    log =
+      capture_log(fn ->
+        HealthMonitor.check_now()
+        Process.sleep(100)
+      end)
+
+    assert log =~ "failed to sync"
+    assert HealthMonitor.status().sprites["bb-polisher"] == :unhealthy
+    assert PhaseWorker.whereis(Roles.Polisher) == nil
+    refute Enum.any?(Store.list_events("fleet"), &(&1["event_type"] == "sprite_recovered"))
+
+    Application.put_env(:conductor, :phase_worker_supervisor, Conductor.PhaseWorker.Supervisor)
+
+    HealthMonitor.check_now()
+
+    wait_for(fn ->
+      status = HealthMonitor.status()
+      worker = PhaseWorker.whereis(Roles.Polisher)
+
+      if (status.sprites["bb-polisher"] == :healthy and worker) &&
+           PhaseWorker.status(Roles.Polisher).sprites == ["bb-polisher"] do
+        :ok
+      end
+    end)
+
+    assert Enum.any?(Store.list_events("fleet"), &(&1["event_type"] == "sprite_recovered"))
+  end
 end

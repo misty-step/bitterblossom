@@ -110,13 +110,19 @@ defmodule Conductor.Fleet.HealthMonitor do
 
           updated = put_health(acc, sprite.name, :healthy)
 
-          Store.record_event("fleet", "sprite_recovered", %{
-            name: sprite.name,
-            role: to_string(sprite.role)
-          })
+          case sync_phase_worker(updated, sprite.role) do
+            :ok ->
+              Store.record_event("fleet", "sprite_recovered", %{
+                name: sprite.name,
+                role: to_string(sprite.role)
+              })
 
-          sync_phase_worker(updated, sprite.role)
-          updated
+              updated
+
+            :error ->
+              # Keep the sprite unhealthy so the next successful probe retries recovery sync.
+              acc
+          end
 
         old_health == :healthy and new_health == :unhealthy ->
           Logger.warning("[health] #{sprite.name} degraded")
