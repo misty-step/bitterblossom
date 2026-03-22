@@ -22,7 +22,8 @@ defmodule Conductor.Fleet.HealthMonitor do
 
   @role_to_module %{
     fixer: {Conductor.Fixer, :fixer_sprite},
-    polisher: {Conductor.Polisher, :polisher_sprite}
+    polisher: {Conductor.Polisher, :polisher_sprite},
+    triage: {Conductor.Muse, :muse_sprite}
   }
 
   # --- Public API ---
@@ -103,7 +104,7 @@ defmodule Conductor.Fleet.HealthMonitor do
 
   defp check_and_recover(state) do
     # Only re-probe non-builder sprites (builders are probed by the Orchestrator)
-    phase_sprites = Enum.filter(state.sprites, &(&1.role in [:fixer, :polisher]))
+    phase_sprites = Enum.filter(state.sprites, &(&1.role in [:fixer, :polisher, :triage]))
 
     Enum.reduce(phase_sprites, state, fn sprite, acc ->
       new_health = probe_sprite(sprite)

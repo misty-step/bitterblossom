@@ -1198,7 +1198,6 @@ defmodule Conductor.Orchestrator do
 
       Store.terminate_run(run_id, "ci_timeout", "ci_timeout", repo, issue_number)
       maybe_comment_ci_timeout(repo, issue_number, run_id, reason)
-      Conductor.Retro.analyze(run_id)
     end
   end
 
@@ -1320,7 +1319,7 @@ defmodule Conductor.Orchestrator do
             })
 
             Store.terminate_run(run_id, "merged", "merged", repo, issue_number)
-            Conductor.Retro.analyze(run_id)
+            muse_mod().observe(run_id)
 
             :ok
 
@@ -1356,6 +1355,10 @@ defmodule Conductor.Orchestrator do
 
         false
     end
+  end
+
+  defp muse_mod do
+    Application.get_env(:conductor, :muse_module, Conductor.Muse)
   end
 
   defp close_issue_after_merge(repo, issue_number, pr_number, context) do

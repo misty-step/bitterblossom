@@ -76,6 +76,108 @@ defmodule Conductor.Prompt do
     """
   end
 
+  @doc "Build prompt for Muse observation after a merged run."
+  @spec build_muse_observe_prompt(map(), [map()], binary()) :: binary()
+  def build_muse_observe_prompt(run, events, workspace_root) do
+    """
+    # Muse Observe Task
+
+    Run ID: #{run["run_id"]}
+    Issue: ##{run["issue_number"]} — #{run["issue_title"]}
+    Repository Root: #{workspace_root}
+    PR: #{run["pr_number"] || "none"}
+
+    ## Run Events
+
+    ~~~untrusted-data
+    #{sanitize_fence(format_events(events))}
+    ~~~
+
+    ## Instructions
+
+    Reflect on this completed run.
+
+    1. Identify the most important frictions, patterns, and architectural signals.
+    2. Do NOT modify code, open issues, comment on GitHub, or take external actions.
+    3. Return ONLY JSON with keys `summary` and `reflection`.
+    4. `reflection` must be markdown and should be concise but specific.
+    """
+  end
+
+  @doc "Build prompt for Muse daily synthesis over recent reflections."
+  @spec build_muse_synthesis_prompt(binary(), map(), binary()) :: binary()
+  def build_muse_synthesis_prompt(repo, context, workspace_root) do
+    reflections_text =
+      context.reflections
+      |> Enum.map_join("\n\n", fn entry ->
+        "### #{Path.basename(entry.path)}\n\n#{entry.body}"
+      end)
+
+    open_issue_lines =
+      context.open_issues
+      |> Enum.map_join("\n", fn issue ->
+        number = Map.get(issue, :number) || Map.get(issue, "number")
+        title = Map.get(issue, :title) || Map.get(issue, "title")
+        "- ##{number} #{title}"
+      end)
+
+    """
+    # Muse Synthesis Task
+
+    Repo: #{repo}
+    Repository Root: #{workspace_root}
+
+    ## Recent Reflections
+
+    ~~~untrusted-data
+    #{sanitize_fence(reflections_text)}
+    ~~~
+
+    ## Project Context
+
+    ~~~untrusted-data
+    #{sanitize_fence(context.project_context || "(no project.md found)")}
+    ~~~
+
+    ## BACKLOG.md
+
+    ~~~untrusted-data
+    #{sanitize_fence(context.backlog || "(no BACKLOG.md found)")}
+    ~~~
+
+    ## Open Issues
+
+    ~~~untrusted-data
+    #{sanitize_fence(open_issue_lines)}
+    ~~~
+
+    ## Instructions
+
+    Synthesize the recent reflections into at most 3 decisions.
+
+    1. Prefer `comment_issue` over `create_issue`.
+    2. Use `create_issue` only for a genuinely new recurring pattern.
+    3. Use `none` freely when a reflection is not yet actionable.
+    4. NEVER duplicate an existing open issue.
+    5. Do NOT modify code or perform GitHub actions yourself.
+    6. Return ONLY JSON:
+
+    ```json
+    {
+      "summary": "one-line synthesis",
+      "actions": [
+        {
+          "action": "comment_issue|create_issue|none",
+          "issue_number": 123,
+          "title": "short title",
+          "body": "comment body or issue body"
+        }
+      ]
+    }
+    ```
+    """
+  end
+
   @doc "Build prompt for the fixer sprite: CI failure context + fix instructions."
   @spec build_fixer_prompt(map(), binary(), binary(), keyword()) :: binary()
   def build_fixer_prompt(pr, ci_failure_logs, issue_body, opts \\ []) do
@@ -223,6 +325,12 @@ defmodule Conductor.Prompt do
     text
     |> String.replace("```", "` ` `")
     |> String.replace("~~~", "~ ~ ~")
+  end
+
+  defp format_events(events) do
+    Enum.map_join(events, "\n", fn event ->
+      "- [#{event["event_type"]}] #{event["created_at"]} #{inspect(event["payload"])}"
+    end)
   end
 
   defp revision_section(feedback) do

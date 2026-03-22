@@ -9,7 +9,7 @@ defmodule Conductor.Workspace do
   alias Conductor.{Config, Sprite}
   @mirror_base "/home/sprite/workspace"
   @safe_input ~r/^[a-zA-Z0-9_\-\.\/]+$/
-  @persona_roles ~w(weaver thorn fern)
+  @persona_roles ~w(weaver thorn fern muse)
 
   @doc "Validate that a string is safe for shell interpolation. Rejects metacharacters, path traversal, absolute paths, and leading dashes."
   @spec validate_input(binary()) :: :ok | {:error, :invalid_input}

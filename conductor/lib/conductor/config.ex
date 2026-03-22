@@ -125,6 +125,21 @@ defmodule Conductor.Config do
     Application.get_env(:conductor, :polisher_timeout_minutes, 15)
   end
 
+  @spec muse_observation_timeout() :: pos_integer()
+  def muse_observation_timeout do
+    Application.get_env(:conductor, :muse_observation_timeout_minutes, 15)
+  end
+
+  @spec muse_synthesis_timeout() :: pos_integer()
+  def muse_synthesis_timeout do
+    Application.get_env(:conductor, :muse_synthesis_timeout_minutes, 20)
+  end
+
+  @spec muse_synthesis_interval_ms() :: pos_integer()
+  def muse_synthesis_interval_ms do
+    Application.get_env(:conductor, :muse_synthesis_interval_minutes, 1_440) * 60 * 1_000
+  end
+
   @spec max_starts_per_tick() :: pos_integer()
   def max_starts_per_tick do
     Application.get_env(:conductor, :max_starts_per_tick, 1)

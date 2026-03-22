@@ -11,7 +11,6 @@ defmodule Conductor.Application do
       [
         {Phoenix.PubSub, name: Conductor.PubSub},
         Conductor.Store,
-        Conductor.Retro,
         {Task.Supervisor, name: Conductor.TaskSupervisor},
         {DynamicSupervisor, name: Conductor.RunSupervisor, strategy: :one_for_one},
         Conductor.Orchestrator,
@@ -155,6 +154,7 @@ defmodule Conductor.Application do
   @doc false
   def role_display_name(:fixer), do: "thorn"
   def role_display_name(:polisher), do: "fern"
+  def role_display_name(:triage), do: "muse"
   def role_display_name(role), do: to_string(role)
 
   defp dashboard_children do
