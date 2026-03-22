@@ -22,6 +22,11 @@ mix conductor fleet --fleet ../fleet.toml --reconcile
 mix conductor start --fleet ../fleet.toml
 ```
 
+`mix conductor start` also starts the operator dashboard on `127.0.0.1:4000` by default
+outside `:test`. Override the port with `mix conductor dashboard --port <port>` for
+manual runs, and set `DASHBOARD_SECRET_KEY_BASE` in persistent deployments if you need a
+stable secret across restarts.
+
 Inspection commands:
 
 ```bash

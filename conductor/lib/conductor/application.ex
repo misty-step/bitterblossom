@@ -157,6 +157,13 @@ defmodule Conductor.Application do
   def role_display_name(:polisher), do: "fern"
   def role_display_name(role), do: to_string(role)
 
+  @doc false
+  def dashboard_port do
+    Application.get_env(:conductor, Conductor.Web.Endpoint, [])
+    |> Keyword.get(:http, [])
+    |> Keyword.get(:port)
+  end
+
   defp dashboard_children, do: []
 
   @doc false
@@ -178,15 +185,15 @@ defmodule Conductor.Application do
   @doc false
   def start_dashboard(opts \\ []) do
     if Application.get_env(:conductor, :start_dashboard, true) do
-      maybe_override_dashboard_port(opts)
+      port = maybe_override_dashboard_port(opts)
       ensure_dashboard_endpoint_config()
 
-      if Process.whereis(Conductor.Web.Endpoint) do
-        :ok
+      if Process.whereis(dashboard_endpoint_module()) do
+        {:ok, port}
       else
-        case Supervisor.start_child(Conductor.Supervisor, Conductor.Web.Endpoint) do
-          {:ok, _pid} -> :ok
-          {:error, {:already_started, _pid}} -> :ok
+        case Supervisor.start_child(Conductor.Supervisor, dashboard_endpoint_module()) do
+          {:ok, _pid} -> {:ok, port}
+          {:error, {:already_started, _pid}} -> {:ok, port}
           {:error, reason} -> {:error, reason}
         end
       end
@@ -211,8 +218,14 @@ defmodule Conductor.Application do
           Keyword.put(endpoint_config, :http, Keyword.put(http_config, :port, port))
         )
 
+        port
+
       :error ->
-        :ok
+        dashboard_port()
     end
+  end
+
+  defp dashboard_endpoint_module do
+    Application.get_env(:conductor, :dashboard_endpoint_module, Conductor.Web.Endpoint)
   end
 end

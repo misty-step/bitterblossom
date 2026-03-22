@@ -14,6 +14,15 @@ defmodule Conductor.Store do
                     replay_count builder_sprite heartbeat_at completed_at
                     ci_wait_started_at ci_last_reported_at blocked_reason
                     dispatch_attempt_count builder_failure_class builder_failure_reason)
+  # These synthetic run IDs back operator-level event streams rather than builder runs.
+  @synthetic_run_ids ~w(fleet fixer polisher)
+  @synthetic_run_placeholders Enum.map_join(1..length(@synthetic_run_ids), ", ", &"?#{&1}")
+  @run_events_query """
+  SELECT * FROM events
+  WHERE run_id NOT IN (#{@synthetic_run_placeholders})
+  ORDER BY created_at DESC
+  LIMIT ?#{length(@synthetic_run_ids) + 1}
+  """
 
   @doc "Validate that all map keys are in the column allowlist."
   @spec validate_columns(map()) :: :ok | {:error, :invalid_column}
@@ -806,13 +815,12 @@ defmodule Conductor.Store do
     {"SELECT * FROM events ORDER BY created_at DESC LIMIT ?1", [limit]}
   end
 
-  defp all_events_query(source, limit) when source in ["fleet", "fixer", "polisher"] do
+  defp all_events_query(source, limit) when source in @synthetic_run_ids do
     {"SELECT * FROM events WHERE run_id = ?1 ORDER BY created_at DESC LIMIT ?2", [source, limit]}
   end
 
   defp all_events_query("runs", limit) do
-    {"SELECT * FROM events WHERE run_id NOT IN ('fleet', 'fixer', 'polisher') ORDER BY created_at DESC LIMIT ?1",
-     [limit]}
+    {@run_events_query, @synthetic_run_ids ++ [limit]}
   end
 
   defp all_events_query(_, limit), do: all_events_query("all", limit)

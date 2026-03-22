@@ -319,20 +319,36 @@ defmodule Conductor.Web.DashboardLiveTest do
     assert html =~ "No issues in cooldown"
   end
 
+  test "dashboard tolerates crashing phase worker status calls" do
+    pid =
+      spawn(fn ->
+        receive do
+          _message -> exit(:boom)
+        end
+      end)
+
+    Process.register(pid, Conductor.Fixer)
+
+    try do
+      {:ok, _view, html} = live(build_conn(), "/")
+
+      assert html =~ "Phase Workers"
+      assert html =~ "Thorn"
+    after
+      if pid = Process.whereis(Conductor.Fixer), do: Process.exit(pid, :kill)
+    end
+  end
+
   test "source filters query matching events before truncation" do
-    Conductor.Store.record_event("fleet", "sprite_degraded", %{name: "bb-thorn"})
-    Process.sleep(1_100)
+    insert_event!("fleet", "sprite_degraded", %{name: "bb-thorn"}, "2026-03-22T00:00:00Z")
 
     for index <- 1..55 do
-      {:ok, run_id} =
-        Conductor.Store.create_run(%{
-          repo: "test/repo",
-          issue_number: 800 + index,
-          issue_title: "Run event #{index}",
-          builder_sprite: "bb-weaver"
-        })
-
-      Conductor.Store.record_event(run_id, "run_progress", %{step: index})
+      insert_event!(
+        "run-#{index}",
+        "run_progress",
+        %{step: index},
+        "2026-03-22T00:00:#{String.pad_leading(to_string(index), 2, "0")}Z"
+      )
     end
 
     {:ok, view, _html} = live(build_conn(), "/")
@@ -358,5 +374,19 @@ defmodule Conductor.Web.DashboardLiveTest do
         false
       end
     end
+  end
+
+  defp insert_event!(run_id, event_type, payload, created_at) do
+    %{conn: conn} = :sys.get_state(Conductor.Store)
+
+    {:ok, stmt} =
+      Exqlite.Sqlite3.prepare(
+        conn,
+        "INSERT INTO events (run_id, event_type, payload, created_at) VALUES (?1, ?2, ?3, ?4)"
+      )
+
+    :ok = Exqlite.Sqlite3.bind(stmt, [run_id, event_type, Jason.encode!(payload), created_at])
+    :done = Exqlite.Sqlite3.step(conn, stmt)
+    :ok = Exqlite.Sqlite3.release(conn, stmt)
   end
 end

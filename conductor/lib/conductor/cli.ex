@@ -88,8 +88,14 @@ defmodule Conductor.CLI do
     cmd_check_env()
 
     case Conductor.Application.start_dashboard() do
-      :ok -> :ok
-      {:error, reason} -> IO.puts("dashboard start failed: #{inspect(reason)}")
+      {:ok, port} when is_integer(port) ->
+        IO.puts("dashboard running at http://localhost:#{port}")
+
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        IO.puts("dashboard start failed: #{inspect(reason)}")
     end
 
     case Conductor.Application.boot_fleet(fleet_path) do
@@ -313,8 +319,12 @@ defmodule Conductor.CLI do
     Application.put_env(:conductor, :start_dashboard, true)
 
     case Conductor.Application.start_dashboard(port: port) do
+      {:ok, actual_port} when is_integer(actual_port) ->
+        IO.puts("dashboard running at http://localhost:#{actual_port}")
+        Process.sleep(:infinity)
+
       :ok ->
-        IO.puts("dashboard running at http://localhost:#{port}")
+        IO.puts("dashboard running")
         Process.sleep(:infinity)
 
       {:error, reason} ->

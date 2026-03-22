@@ -118,6 +118,19 @@ defmodule Conductor.StoreTest do
     assert List.last(events)["event_type"] == "builder_dispatched"
   end
 
+  test "run and event writes tolerate a missing dashboard pubsub process" do
+    {:ok, run_id} =
+      Store.create_run(%{
+        repo: "test/repo",
+        issue_number: 31,
+        issue_title: "dashboard guard",
+        builder_sprite: "s"
+      })
+
+    assert :ok = Store.record_event(run_id, "started", %{step: 1})
+    assert [%{"event_type" => "started"}] = Store.list_events(run_id)
+  end
+
   test "list runs returns most recent first" do
     for i <- 1..3 do
       Store.create_run(%{
@@ -406,6 +419,16 @@ defmodule Conductor.StoreTest do
 
       [event] = Store.list_all_events(limit: 1)
       assert event["payload"]["key"] == "val"
+    end
+
+    test "filters synthetic sources out of the runs view" do
+      Store.record_event("fleet", "sprite_degraded", %{name: "bb-thorn"})
+      Store.record_event("fixer", "fixer_failed", %{pr: 42})
+      Store.record_event("run-123", "builder_complete", %{issue: 123})
+
+      events = Store.list_all_events(limit: 10, source: "runs")
+
+      assert Enum.map(events, & &1["run_id"]) == ["run-123"]
     end
   end
 end
