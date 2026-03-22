@@ -221,16 +221,16 @@ defmodule Conductor.Workspace do
         Logger.info("[workspace] cleanup verified for #{branch} on #{sprite}")
         :ok
 
-      {:error, {:stale_worktrees, paths}} ->
-        reason = "branch still attached to worktree(s): #{Enum.join(paths, ", ")}"
-
-        Logger.warning(
-          "[workspace] cleanup health check failed for #{branch} on #{sprite}: #{reason}"
-        )
-
-        {:error, reason}
-
       {:error, reason} ->
+        reason =
+          case reason do
+            {:stale_worktrees, paths} ->
+              "branch still attached to worktree(s): #{Enum.join(paths, ", ")}"
+
+            other ->
+              other
+          end
+
         Logger.warning(
           "[workspace] cleanup health check failed for #{branch} on #{sprite}: #{reason}"
         )
@@ -254,17 +254,10 @@ defmodule Conductor.Workspace do
     """
     worktree_dir=".bb/conductor/#{run_id}/builder-worktree"
     default_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed "s|refs/remotes/origin/||" || echo master)
-    current_branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)
-    if [ "$current_branch" = "#{branch}" ]; then
-      git checkout "$default_branch" --quiet 2>/dev/null || true
-    fi
     #{stale_worktree_list_command(branch)} | while IFS= read -r path; do
       [ -n "$path" ] || continue
       if [ "$path" = "$(pwd)" ]; then
-        current_branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)
-        if [ "$current_branch" = "#{branch}" ]; then
-          git checkout "$default_branch" --quiet 2>/dev/null || true
-        fi
+        git checkout "$default_branch" --quiet 2>/dev/null || true
       else
         git worktree remove --force "$path" 2>/dev/null || true
         rm -rf "$path" 2>/dev/null || true
