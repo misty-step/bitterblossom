@@ -152,13 +152,10 @@ defmodule Conductor.GitHub do
     issue_numbers = issues |> Enum.map(& &1.number) |> MapSet.new()
     resolved_issue_numbers = merged_issue_numbers(repo, issue_numbers)
 
-    Enum.each(issues, fn issue ->
-      if MapSet.member?(resolved_issue_numbers, issue.number) do
-        auto_close_resolved_issue(repo, issue.number)
-      end
+    Enum.reject(issues, fn issue ->
+      MapSet.member?(resolved_issue_numbers, issue.number) and
+        auto_close_resolved_issue(repo, issue.number) == :ok
     end)
-
-    Enum.reject(issues, &MapSet.member?(resolved_issue_numbers, &1.number))
   end
 
   defp fetch_merged_issue_numbers(owner, name, page, remaining_issue_numbers, acc) do
@@ -283,7 +280,7 @@ defmodule Conductor.GitHub do
           "[github] failed to auto-close issue ##{issue_number} resolved by a merged PR: #{inspect(reason)}"
         )
 
-        :ok
+        {:error, reason}
     end
   end
 

@@ -1048,7 +1048,7 @@ defmodule Conductor.GitHubTest do
       )
     end
 
-    test "eligible_issues logs and continues when auto-close fails" do
+    test "eligible_issues logs and leaves the issue eligible when auto-close fails" do
       with_fake_gh(
         """
         printf '%s\\n' "$@" >> "$GH_ARGS_PATH"
@@ -1091,7 +1091,8 @@ defmodule Conductor.GitHubTest do
                        "misty-step/bitterblossom",
                        label: "autopilot",
                        limit: 25
-                     ) == []
+                     )
+                     |> Enum.map(& &1.number) == [10]
             end)
 
           assert log =~ "failed to auto-close issue #10 resolved by a merged PR"

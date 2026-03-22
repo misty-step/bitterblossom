@@ -1,5 +1,6 @@
 defmodule Conductor.OrchestratorTest do
   use ExUnit.Case, async: false
+  import ExUnit.CaptureIO
   import ExUnit.CaptureLog
   import Conductor.TestSupport.ProcessHelpers
 
@@ -354,6 +355,29 @@ defmodule Conductor.OrchestratorTest do
       assert :ok = Orchestrator.configure_polling(repo: "other/repo", workers: ["sprite-1"])
 
       assert :sys.get_state(Orchestrator).shape_attempts == %{}
+    end
+  end
+
+  describe "run_once/1" do
+    test "returns not_dispatchable for a closed issue without dispatching" do
+      issue = %Conductor.Issue{
+        number: 82,
+        title: "already closed",
+        body: "## Problem\nx\n\n## Acceptance Criteria\n- [ ] [test] y",
+        url: "https://example.test/issues/82",
+        state: "CLOSED"
+      }
+
+      MockState.put({:issue, "test/repo", 82}, issue)
+
+      output =
+        capture_io(fn ->
+          assert Orchestrator.run_once(repo: "test/repo", issue: 82, worker: "sprite-1") ==
+                   {:error, :not_dispatchable}
+        end)
+
+      assert output =~ "issue #82 not dispatchable: issue is closed"
+      assert MockState.get(:started_runs) == []
     end
   end
 
