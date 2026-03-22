@@ -383,6 +383,7 @@ defmodule Conductor.RunServerTest do
 
       run = find_run(42)
       assert run["phase"] == "blocked"
+      refute Store.leased?("test/repo", 42)
       types = event_types(run["run_id"])
       assert "run_blocked" in types
       refute "builder_workspace_prepared" in types
@@ -407,7 +408,9 @@ defmodule Conductor.RunServerTest do
 
       run = find_run(42)
       assert run["phase"] == "blocked"
+      refute Store.leased?("test/repo", 42)
       types = event_types(run["run_id"])
+      assert "run_blocked" in types
       refute "builder_workspace_prepared" in types
       refute "builder_dispatched" in types
 
