@@ -38,7 +38,7 @@ defmodule Conductor.Sprite do
   @spec exec(binary(), binary(), keyword()) :: {:ok, binary()} | {:error, binary(), integer()}
   def exec(sprite, command, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, 60_000)
-    org = Keyword.get(opts, :org, Config.sprites_org!())
+    org = sprite_org(opts)
     files = Keyword.get(opts, :files, [])
 
     Shell.cmd("sprite", exec_args(org, sprite, files, command), timeout: timeout)
@@ -208,7 +208,7 @@ defmodule Conductor.Sprite do
 
   @spec gc_checkpoints(binary(), keyword()) :: :ok | {:error, term()}
   def gc_checkpoints(sprite, opts \\ []) do
-    org = Keyword.get(opts, :org, Config.sprites_org!())
+    org = sprite_org(opts)
     shell_fn = Keyword.get(opts, :shell_fn, &Shell.cmd/3)
     max_keep = Keyword.get(opts, :max_keep, Config.max_checkpoints_per_sprite())
 
@@ -283,7 +283,7 @@ defmodule Conductor.Sprite do
   end
 
   defp sprite_state(sprite, opts) do
-    org = Keyword.get(opts, :org, Config.sprites_org!())
+    org = sprite_org(opts)
     shell_fn = Keyword.get(opts, :shell_fn, &Shell.cmd/3)
 
     case shell_fn.("sprite", ["api", "-o", org, "-s", sprite, "/sprites"], timeout: 15_000) do
@@ -771,7 +771,7 @@ defmodule Conductor.Sprite do
   end
 
   defp stream_exec(sprite, command, opts) do
-    org = Keyword.get(opts, :org, Config.sprites_org!())
+    org = sprite_org(opts)
     args = exec_args(org, sprite, Keyword.get(opts, :files, []), command)
     into = Keyword.get(opts, :into, IO.stream(:stdio, :line))
     {output, code} = System.cmd("sprite", args, stderr_to_stdout: true, into: into)
@@ -807,6 +807,10 @@ defmodule Conductor.Sprite do
         recursive_uploads("base/skills", Path.join(@sprite_claude_dir, "skills"))
 
     required_files ++ Enum.filter(optional_files, fn {source, _dest} -> File.regular?(source) end)
+  end
+
+  defp sprite_org(opts) do
+    Keyword.get_lazy(opts, :org, &Config.sprites_org!/0)
   end
 
   defp wildcard_uploads(pattern, dest_root) do
