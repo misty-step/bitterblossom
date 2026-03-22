@@ -922,6 +922,185 @@ defmodule Conductor.GitHubTest do
       )
     end
 
+    test "eligible_issues combines factory branch and local closing keywords from one merged PR" do
+      with_fake_gh(
+        """
+        printf '%s\\n' "$@" >> "$GH_ARGS_PATH"
+
+        if [[ "$*" == issue\\ list* ]]; then
+          cat <<'JSON'
+        [
+          {
+            "number": 10,
+            "title": "resolved by branch",
+            "body": "## Problem\\nx\\n\\n## Acceptance Criteria\\n- [ ] [test] y",
+            "url": "https://example.test/issues/10",
+            "labels": [{"name": "autopilot"}],
+            "state": "OPEN"
+          },
+          {
+            "number": 11,
+            "title": "resolved by keyword",
+            "body": "## Problem\\nx\\n\\n## Acceptance Criteria\\n- [ ] [test] y",
+            "url": "https://example.test/issues/11",
+            "labels": [{"name": "autopilot"}],
+            "state": "OPEN"
+          },
+          {
+            "number": 12,
+            "title": "still open",
+            "body": "## Problem\\nx\\n\\n## Acceptance Criteria\\n- [ ] [test] y",
+            "url": "https://example.test/issues/12",
+            "labels": [{"name": "autopilot"}],
+            "state": "OPEN"
+          }
+        ]
+        JSON
+        elif [[ "$*" == *"pulls?state=closed&per_page=100&page=1"* ]]; then
+          cat <<'JSON'
+        [
+          {
+            "merged_at": "2026-03-18T14:00:00Z",
+            "title": "combo fix",
+            "body": "Closes #11",
+            "head": {"ref": "factory/10-1773840330"},
+            "base": {"ref": "master"}
+          }
+        ]
+        JSON
+        elif [[ "$*" == issue\\ close* ]]; then
+          echo 'closed'
+        elif [[ "$*" == *"pulls?state=closed&per_page=100&page=2"* ]]; then
+          echo '[]'
+        else
+          echo '[]'
+        fi
+        """,
+        fn _tmp_dir, args_path ->
+          issues =
+            GitHub.eligible_issues(
+              "misty-step/bitterblossom",
+              label: "autopilot",
+              limit: 25
+            )
+
+          assert Enum.map(issues, & &1.number) == [12]
+
+          args = File.read!(args_path)
+          assert args =~ "issue\nclose\n10\n--repo\nmisty-step/bitterblossom\n"
+          assert args =~ "issue\nclose\n11\n--repo\nmisty-step/bitterblossom\n"
+        end
+      )
+    end
+
+    test "eligible_issues ignores malformed local closing keywords" do
+      with_fake_gh(
+        """
+        printf '%s\\n' "$@" >> "$GH_ARGS_PATH"
+
+        if [[ "$*" == issue\\ list* ]]; then
+          cat <<'JSON'
+        [
+          {
+            "number": 10,
+            "title": "first issue",
+            "body": "## Problem\\nx\\n\\n## Acceptance Criteria\\n- [ ] [test] y",
+            "url": "https://example.test/issues/10",
+            "labels": [{"name": "autopilot"}],
+            "state": "OPEN"
+          },
+          {
+            "number": 123,
+            "title": "second issue",
+            "body": "## Problem\\nx\\n\\n## Acceptance Criteria\\n- [ ] [test] y",
+            "url": "https://example.test/issues/123",
+            "labels": [{"name": "autopilot"}],
+            "state": "OPEN"
+          }
+        ]
+        JSON
+        elif [[ "$*" == *"pulls?state=closed&per_page=100&page=1"* ]]; then
+          cat <<'JSON'
+        [
+          {
+            "merged_at": "2026-03-18T14:00:00Z",
+            "title": "malformed refs",
+            "body": "Closes #abc\\nCloses #\\nCloses #123abc\\nCloses other-org/other-repo#10",
+            "head": {"ref": "fix/malformed-refs"}
+          }
+        ]
+        JSON
+        else
+          echo '[]'
+        fi
+        """,
+        fn _tmp_dir, args_path ->
+          issues =
+            GitHub.eligible_issues(
+              "misty-step/bitterblossom",
+              label: "autopilot",
+              limit: 25
+            )
+
+          assert Enum.map(issues, & &1.number) == [10, 123]
+          refute File.read!(args_path) =~ "issue\nclose\n"
+        end
+      )
+    end
+
+    test "eligible_issues logs and continues when auto-close fails" do
+      with_fake_gh(
+        """
+        printf '%s\\n' "$@" >> "$GH_ARGS_PATH"
+
+        if [[ "$*" == issue\\ list* ]]; then
+          cat <<'JSON'
+        [
+          {
+            "number": 10,
+            "title": "resolved issue",
+            "body": "## Problem\\nx\\n\\n## Acceptance Criteria\\n- [ ] [test] y",
+            "url": "https://example.test/issues/10",
+            "labels": [{"name": "autopilot"}],
+            "state": "OPEN"
+          }
+        ]
+        JSON
+        elif [[ "$*" == *"pulls?state=closed&per_page=100&page=1"* ]]; then
+          cat <<'JSON'
+        [
+          {
+            "merged_at": "2026-03-18T14:00:00Z",
+            "title": "retro fix",
+            "body": "Closes #10",
+            "head": {"ref": "fix/retro-closure"}
+          }
+        ]
+        JSON
+        elif [[ "$*" == issue\\ close* ]]; then
+          echo 'boom' >&2
+          exit 1
+        else
+          echo '[]'
+        fi
+        """,
+        fn _tmp_dir, args_path ->
+          log =
+            capture_log(fn ->
+              assert GitHub.eligible_issues(
+                       "misty-step/bitterblossom",
+                       label: "autopilot",
+                       limit: 25
+                     ) == []
+            end)
+
+          assert log =~ "failed to auto-close issue #10 resolved by a merged PR"
+          assert log =~ "boom"
+          assert File.read!(args_path) =~ "issue\nclose\n10\n--repo\nmisty-step/bitterblossom\n"
+        end
+      )
+    end
+
     test "eligible_issues ignores merged PR close keywords for other repositories" do
       with_fake_gh(
         """
