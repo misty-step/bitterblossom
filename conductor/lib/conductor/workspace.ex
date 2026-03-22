@@ -24,6 +24,11 @@ defmodule Conductor.Workspace do
     end
   end
 
+  @doc """
+  Prepare an isolated worktree for a fresh factory branch.
+
+  Any stale worktrees or builder directories for the run are removed first.
+  """
   @spec prepare(binary(), binary(), binary(), binary(), keyword()) ::
           {:ok, binary()} | {:error, term()}
   def prepare(sprite, repo, run_id, branch, opts \\ []) do
@@ -76,8 +81,7 @@ defmodule Conductor.Workspace do
   end
 
   defp do_rebase(sprite, repo, branch) do
-    repo_name = repo |> String.split("/") |> List.last()
-    mirror = Path.join(@mirror_base, repo_name)
+    mirror = repo_root(repo)
     safe = String.replace(branch, "/", "-")
     tmp = Path.join([mirror, ".bb", "rebase-#{safe}"])
 
@@ -146,6 +150,9 @@ defmodule Conductor.Workspace do
     end
   end
 
+  @doc """
+  Remove the run worktree and verify that its factory branch is no longer attached.
+  """
   @spec cleanup(binary(), binary(), binary(), keyword()) :: :ok | {:error, term()}
   def cleanup(sprite, repo, run_id, opts \\ []) do
     with :ok <- validate_input(repo),
@@ -178,6 +185,9 @@ defmodule Conductor.Workspace do
     end
   end
 
+  @doc """
+  Report whether a factory branch is still attached to any local git worktrees.
+  """
   @spec health_check(binary(), binary(), binary(), keyword()) ::
           {:ok, :clean} | {:error, {:stale_worktrees, [binary()]}} | {:error, term()}
   def health_check(sprite, repo, branch, opts \\ []) do
@@ -288,6 +298,10 @@ defmodule Conductor.Workspace do
     """
   end
 
+  # `git worktree list --porcelain` emits stateful records where a `worktree`
+  # line is followed by its `branch` line. The piped `while` runs in a subshell,
+  # so `worktree_path` stays inside the loop until a matching `branch_ref`
+  # arrives and prints the path to stdout for capture.
   defp stale_worktree_list_command(branch) do
     """
     branch_ref="refs/heads/#{branch}"
@@ -314,6 +328,7 @@ defmodule Conductor.Workspace do
     |> Enum.reject(&(&1 == ""))
   end
 
+  @doc "Return true when the branch name belongs to Bitterblossom's factory namespace."
   @spec factory_branch?(binary() | nil) :: boolean()
   def factory_branch?(branch) when is_binary(branch) and branch != "" do
     String.starts_with?(branch, "factory/")
@@ -376,6 +391,7 @@ defmodule Conductor.Workspace do
     """
   end
 
+  @doc "Return the warm mirror root for a validated `owner/repo` identifier."
   @spec repo_root(binary()) :: binary()
   def repo_root(repo) do
     case validate_input(repo) do
@@ -389,6 +405,9 @@ defmodule Conductor.Workspace do
     end
   end
 
+  @doc """
+  Materialize the merged persona files and linked skills for the workspace role.
+  """
   @spec sync_persona(binary(), binary(), atom() | binary(), keyword()) :: :ok | {:error, term()}
   def sync_persona(sprite, workspace, role, opts \\ []) do
     exec_fn = Keyword.get(opts, :exec_fn, &Sprite.exec/3)
@@ -422,6 +441,7 @@ defmodule Conductor.Workspace do
     end
   end
 
+  @doc "Normalize a supported persona role to its string form."
   @spec normalize_persona_role(atom() | binary()) :: {:ok, binary()} | {:error, :invalid_role}
   def normalize_persona_role(role) when is_atom(role),
     do: normalize_persona_role(Atom.to_string(role))
@@ -434,6 +454,7 @@ defmodule Conductor.Workspace do
     end
   end
 
+  @doc "Return the workspace-local launch directory for a supported persona role."
   @spec persona_launch_dir(binary(), atom() | binary()) :: binary()
   def persona_launch_dir(workspace, role) do
     role_name =
