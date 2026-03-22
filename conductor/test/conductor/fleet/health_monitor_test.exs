@@ -146,7 +146,14 @@ defmodule Conductor.Fleet.HealthMonitorTest do
   end
 
   defp start_monitor(opts \\ []) do
-    {:ok, pid} = HealthMonitor.start_link(interval_ms: Keyword.get(opts, :interval_ms, 60_000))
+    now_ms_fn = Keyword.get(opts, :now_ms_fn, fn -> MockState.get(:now_ms, 0) end)
+
+    {:ok, pid} =
+      HealthMonitor.start_link(
+        interval_ms: Keyword.get(opts, :interval_ms, 60_000),
+        now_ms_fn: now_ms_fn
+      )
+
     pid
   end
 
@@ -269,7 +276,8 @@ defmodule Conductor.Fleet.HealthMonitorTest do
   end
 
   test "runs checkpoint gc every 30 minutes for healthy sprites" do
-    start_monitor(interval_ms: 120_000)
+    MockState.put(:now_ms, 0)
+    start_monitor(interval_ms: 20 * 60_000)
 
     sprites = [
       %{name: "bb-builder", role: :builder, harness: "codex", repo: "test/repo"},
@@ -284,13 +292,13 @@ defmodule Conductor.Fleet.HealthMonitorTest do
       healthy: MapSet.new(["bb-builder", "bb-polisher"])
     )
 
-    Enum.each(1..14, fn _ ->
-      send(Process.whereis(HealthMonitor), :check)
-      Process.sleep(20)
-    end)
+    MockState.put(:now_ms, 20 * 60_000)
+    send(Process.whereis(HealthMonitor), :check)
+    Process.sleep(50)
 
     assert MockState.get(:gc_calls, []) == []
 
+    MockState.put(:now_ms, 30 * 60_000)
     send(Process.whereis(HealthMonitor), :check)
     Process.sleep(50)
 
@@ -298,6 +306,7 @@ defmodule Conductor.Fleet.HealthMonitorTest do
   end
 
   test "checkpoint gc skips unhealthy sprites" do
+    MockState.put(:now_ms, 0)
     start_monitor(interval_ms: 120_000)
 
     sprites = [
@@ -314,10 +323,9 @@ defmodule Conductor.Fleet.HealthMonitorTest do
 
     MockState.put({:sprite_health, "bb-fixer"}, :unhealthy)
 
-    Enum.each(1..15, fn _ ->
-      send(Process.whereis(HealthMonitor), :check)
-      Process.sleep(20)
-    end)
+    MockState.put(:now_ms, 30 * 60_000)
+    send(Process.whereis(HealthMonitor), :check)
+    Process.sleep(50)
 
     assert MockState.get(:gc_calls, []) == ["bb-builder", "bb-polisher"]
   end
@@ -424,7 +432,43 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     assert MockState.get(:stuck_calls, []) == ["bb-polisher"]
   end
 
-  test "builder health is refreshed before periodic checkpoint gc" do
+  test "keeps sprites unhealthy when phase-worker startup fails" do
+    orig_supervisor_name = Application.get_env(:conductor, :supervisor_name)
+    Application.put_env(:conductor, :supervisor_name, MissingSupervisor)
+
+    on_exit(fn ->
+      if orig_supervisor_name,
+        do: Application.put_env(:conductor, :supervisor_name, orig_supervisor_name),
+        else: Application.delete_env(:conductor, :supervisor_name)
+    end)
+
+    start_monitor(interval_ms: 60_000)
+
+    sprites = [
+      %{name: "bb-polisher", role: :polisher, harness: "codex", repo: "test/repo"}
+    ]
+
+    MockState.put({:sprite_health, "bb-polisher"}, :healthy)
+
+    HealthMonitor.configure(
+      sprites: sprites,
+      repo: "test/repo",
+      healthy: MapSet.new()
+    )
+
+    log =
+      capture_log(fn ->
+        send(Process.whereis(HealthMonitor), :check)
+        Process.sleep(100)
+      end)
+
+    assert log =~ "bb-polisher recovered"
+    assert log =~ "supervisor unavailable"
+    assert HealthMonitor.status().sprites["bb-polisher"] == :unhealthy
+  end
+
+  test "builder health is refreshed before periodic checkpoint gc without phase-worker recovery" do
+    MockState.put(:now_ms, 0)
     start_monitor(interval_ms: 120_000)
 
     sprites = [
@@ -453,11 +497,16 @@ defmodule Conductor.Fleet.HealthMonitorTest do
       healthy: MapSet.new(["bb-builder", "bb-polisher"])
     )
 
-    Enum.each(1..15, fn _ ->
-      send(Process.whereis(HealthMonitor), :check)
-      Process.sleep(20)
-    end)
+    MockState.put(:now_ms, 30 * 60_000)
 
+    log =
+      capture_log(fn ->
+        send(Process.whereis(HealthMonitor), :check)
+        Process.sleep(100)
+      end)
+
+    refute log =~ "bb-builder recovered"
+    refute log =~ "bb-builder degraded"
     assert MockState.get(:gc_calls, []) == ["bb-polisher"]
   end
 end

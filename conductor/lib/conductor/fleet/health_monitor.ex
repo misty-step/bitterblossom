@@ -15,16 +15,18 @@ defmodule Conductor.Fleet.HealthMonitor do
   defstruct [
     :repo,
     :interval_ms,
+    :now_ms_fn,
     :timer_ref,
     sprites: [],
     known_health: %{},
-    gc_counter: 0
+    last_gc_at_ms: nil
   ]
 
   @role_to_module %{
     fixer: {Conductor.Fixer, :fixer_sprite},
     polisher: {Conductor.Polisher, :polisher_sprite}
   }
+  @phase_worker_roles Map.keys(@role_to_module)
 
   # --- Public API ---
 
@@ -60,7 +62,8 @@ defmodule Conductor.Fleet.HealthMonitor do
   @impl true
   def init(opts) do
     interval_ms = Keyword.get(opts, :interval_ms, Config.fleet_health_check_interval_ms())
-    {:ok, %__MODULE__{interval_ms: interval_ms}}
+    now_ms_fn = Keyword.get(opts, :now_ms_fn, fn -> System.monotonic_time(:millisecond) end)
+    {:ok, %__MODULE__{interval_ms: interval_ms, now_ms_fn: now_ms_fn}}
   end
 
   @impl true
@@ -83,7 +86,7 @@ defmodule Conductor.Fleet.HealthMonitor do
         repo: repo,
         known_health: known_health,
         timer_ref: ref,
-        gc_counter: 0
+        last_gc_at_ms: state.now_ms_fn.()
     }
 
     {:reply, :ok, state}
@@ -120,7 +123,6 @@ defmodule Conductor.Fleet.HealthMonitor do
       acc
       |> maybe_record_recovery_action(sprite, recovery_action)
       |> maybe_handle_transition(sprite, old_health, new_health)
-      |> put_health(sprite.name, new_health)
     end)
     |> maybe_gc_checkpoints()
   end
@@ -164,7 +166,8 @@ defmodule Conductor.Fleet.HealthMonitor do
 
   defp maybe_record_recovery_action(state, _sprite, _recovery_action), do: state
 
-  defp maybe_handle_transition(state, sprite, :unhealthy, :healthy) do
+  defp maybe_handle_transition(state, sprite, :unhealthy, :healthy)
+       when sprite.role in @phase_worker_roles do
     Logger.info("[health] #{sprite.name} recovered, starting phase worker")
 
     case ensure_phase_worker(sprite, state.repo) do
@@ -174,14 +177,15 @@ defmodule Conductor.Fleet.HealthMonitor do
           role: to_string(sprite.role)
         })
 
-        state
+        put_health(state, sprite.name, :healthy)
 
       :error ->
-        state
+        put_health(state, sprite.name, :unhealthy)
     end
   end
 
-  defp maybe_handle_transition(state, sprite, :healthy, :unhealthy) do
+  defp maybe_handle_transition(state, sprite, :healthy, :unhealthy)
+       when sprite.role in @phase_worker_roles do
     Logger.warning("[health] #{sprite.name} degraded")
 
     Store.record_event("fleet", "sprite_degraded", %{
@@ -189,10 +193,11 @@ defmodule Conductor.Fleet.HealthMonitor do
       role: to_string(sprite.role)
     })
 
-    state
+    put_health(state, sprite.name, :unhealthy)
   end
 
-  defp maybe_handle_transition(state, _sprite, _old_health, _new_health), do: state
+  defp maybe_handle_transition(state, sprite, _old_health, new_health),
+    do: put_health(state, sprite.name, new_health)
 
   @spec ensure_phase_worker(map(), binary()) :: :ok | :error
   defp ensure_phase_worker(sprite, repo) do
@@ -238,10 +243,10 @@ defmodule Conductor.Fleet.HealthMonitor do
   end
 
   defp maybe_gc_checkpoints(state) do
-    gc_counter = state.gc_counter + 1
-    state = %{state | gc_counter: gc_counter}
+    now_ms = state.now_ms_fn.()
+    last_gc_at_ms = state.last_gc_at_ms || now_ms
 
-    if rem(gc_counter, gc_cycle_interval(state.interval_ms)) == 0 do
+    if now_ms - last_gc_at_ms >= 30 * 60_000 do
       Enum.each(healthy_sprites(state), fn sprite ->
         case sprite_mod().gc_checkpoints(sprite.name) do
           :ok ->
@@ -251,9 +256,11 @@ defmodule Conductor.Fleet.HealthMonitor do
             Logger.warning("[health] checkpoint gc failed for #{sprite.name}: #{inspect(reason)}")
         end
       end)
-    end
 
-    state
+      %{state | last_gc_at_ms: now_ms}
+    else
+      %{state | last_gc_at_ms: last_gc_at_ms}
+    end
   end
 
   defp healthy_sprites(state) do
@@ -261,21 +268,6 @@ defmodule Conductor.Fleet.HealthMonitor do
       Map.get(state.known_health, sprite.name) == :healthy
     end)
   end
-
-  defp gc_cycle_interval(interval_ms) when is_integer(interval_ms) and interval_ms > 0 do
-    ceil_div(30 * 60_000, interval_ms)
-  end
-
-  defp gc_cycle_interval(interval_ms) do
-    Logger.warning(
-      "[health] invalid fleet health interval #{inspect(interval_ms)}; " <>
-        "falling back to checkpoint GC every check. Verify Config.fleet_health_check_interval_ms/0"
-    )
-
-    1
-  end
-
-  defp ceil_div(dividend, divisor), do: div(dividend + divisor - 1, divisor)
 
   defp schedule_check(interval_ms) when is_integer(interval_ms) do
     Process.send_after(self(), :check, interval_ms)
