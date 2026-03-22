@@ -383,7 +383,10 @@ defmodule Conductor.RunServerTest do
 
       run = find_run(42)
       assert run["phase"] == "blocked"
-      assert "run_blocked" in event_types(run["run_id"])
+      types = event_types(run["run_id"])
+      assert "run_blocked" in types
+      refute "builder_workspace_prepared" in types
+      refute "builder_dispatched" in types
       assert event_payload(run["run_id"], "run_blocked")["reason"] == "issue is closed"
 
       assert MockState.get({:comments, 42}, []) == [
@@ -404,6 +407,9 @@ defmodule Conductor.RunServerTest do
 
       run = find_run(42)
       assert run["phase"] == "blocked"
+      types = event_types(run["run_id"])
+      refute "builder_workspace_prepared" in types
+      refute "builder_dispatched" in types
 
       assert event_payload(run["run_id"], "run_blocked")["reason"] ==
                "failed to re-validate issue state: tracker unavailable"
