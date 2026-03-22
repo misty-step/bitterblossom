@@ -32,6 +32,17 @@ defmodule Conductor.WorkspaceTest do
       assert command =~ "refs/heads/$expected_branch"
       assert command =~ "refusing push from"
     end
+
+    test "propagates stale cleanup failures before creating a new worktree" do
+      assert {:error, "workspace preparation failed (1): cleanup failed"} =
+               Workspace.prepare(
+                 "bb-weaver",
+                 "misty-step/bitterblossom",
+                 "run-42-1773867376",
+                 "factory/42-1773867376",
+                 exec_fn: fn _sprite, _command, _opts -> {:error, "cleanup failed", 1} end
+               )
+    end
   end
 
   describe "adopt_branch/5" do
@@ -57,6 +68,17 @@ defmodule Conductor.WorkspaceTest do
       assert command =~ "config --worktree core.hooksPath .bb-hooks"
       assert command =~ "expected_branch=\"factory/42-1773867376\""
       refute command =~ "git branch -D"
+    end
+
+    test "propagates stale cleanup failures before adopting the branch" do
+      assert {:error, "branch adoption failed (1): cleanup failed"} =
+               Workspace.adopt_branch(
+                 "bb-weaver",
+                 "misty-step/bitterblossom",
+                 "run-42-1773867376",
+                 "factory/42-1773867376",
+                 exec_fn: fn _sprite, _command, _opts -> {:error, "cleanup failed", 1} end
+               )
     end
   end
 
@@ -305,6 +327,24 @@ defmodule Conductor.WorkspaceTest do
       assert health_check_command =~ "branch_ref=\"refs/heads/factory/42-1773867376\""
     end
 
+    test "returns the health check error when verification fails for another reason" do
+      exec_fn = fn _sprite, _command, opts ->
+        if Keyword.fetch!(opts, :timeout) == 30_000 do
+          {:error, "disk full", 73}
+        else
+          {:ok, ""}
+        end
+      end
+
+      assert {:error, "workspace health check failed (73): disk full"} =
+               Workspace.cleanup(
+                 "bb-weaver",
+                 "misty-step/bitterblossom",
+                 "run-42-1773867376",
+                 exec_fn: exec_fn
+               )
+    end
+
     test "skips branch deletion when the run id does not map to a factory branch" do
       parent = self()
 
@@ -360,6 +400,22 @@ defmodule Conductor.WorkspaceTest do
                  "misty-step/bitterblossom",
                  "factory/42-1773867376",
                  exec_fn: fn _sprite, _command, _opts -> {:error, "permission denied", 73} end
+               )
+    end
+
+    test "rejects invalid repo and branch inputs" do
+      assert {:error, :invalid_input} =
+               Workspace.health_check(
+                 "bb-weaver",
+                 "../misty-step/bitterblossom",
+                 "factory/42-1773867376"
+               )
+
+      assert {:error, :invalid_input} =
+               Workspace.health_check(
+                 "bb-weaver",
+                 "misty-step/bitterblossom",
+                 "factory/42-1773867376;rm -rf /"
                )
     end
   end
