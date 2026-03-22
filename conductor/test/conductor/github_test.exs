@@ -922,6 +922,53 @@ defmodule Conductor.GitHubTest do
       )
     end
 
+    test "eligible_issues ignores merged PR close keywords for other repositories" do
+      with_fake_gh(
+        """
+        printf '%s\\n' "$@" >> "$GH_ARGS_PATH"
+
+        if [[ "$*" == issue\\ list* ]]; then
+          cat <<'JSON'
+        [
+          {
+            "number": 10,
+            "title": "local issue",
+            "body": "## Problem\\nx\\n\\n## Acceptance Criteria\\n- [ ] [test] y",
+            "url": "https://example.test/issues/10",
+            "labels": [{"name": "autopilot"}],
+            "state": "OPEN"
+          }
+        ]
+        JSON
+        elif [[ "$*" == *"pulls?state=closed&per_page=100&page=1"* ]]; then
+          cat <<'JSON'
+        [
+          {
+            "merged_at": "2026-03-18T14:00:00Z",
+            "title": "cross repo fix",
+            "body": "Closes other-org/other-repo#10",
+            "head": {"ref": "fix/cross-repo"}
+          }
+        ]
+        JSON
+        else
+          echo '[]'
+        fi
+        """,
+        fn _tmp_dir, args_path ->
+          issues =
+            GitHub.eligible_issues(
+              "misty-step/bitterblossom",
+              label: "autopilot",
+              limit: 25
+            )
+
+          assert Enum.map(issues, & &1.number) == [10]
+          refute File.read!(args_path) =~ "issue\nclose\n10\n--repo\nmisty-step/bitterblossom\n"
+        end
+      )
+    end
+
     test "eligible_issues scans older merged PR pages and stops after all open issues are matched" do
       with_fake_gh(
         """

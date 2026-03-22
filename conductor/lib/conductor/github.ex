@@ -247,19 +247,30 @@ defmodule Conductor.GitHub do
       end
 
     keyword_matches =
-      Enum.reduce(remaining_issue_numbers, MapSet.new(), fn issue_number, matches ->
-        if pr_closes_issue?(pr, issue_number) do
-          MapSet.put(matches, issue_number)
-        else
-          matches
-        end
-      end)
+      pr
+      |> pr_local_closing_issue_numbers()
+      |> MapSet.intersection(remaining_issue_numbers)
 
     MapSet.union(branch_matches, keyword_matches)
   end
 
-  defp pr_closes_issue?(pr, issue_number) do
-    body_closes_issue?(pr["body"], issue_number)
+  defp pr_local_closing_issue_numbers(pr) do
+    pr
+    |> Map.get("body")
+    |> to_string()
+    |> then(fn body ->
+      Regex.scan(
+        ~r/\b(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)\s+#(\d+)\b/i,
+        body,
+        capture: :all_but_first
+      )
+    end)
+    |> Enum.reduce(MapSet.new(), fn [issue_number], matches ->
+      case Integer.parse(issue_number) do
+        {value, ""} -> MapSet.put(matches, value)
+        _ -> matches
+      end
+    end)
   end
 
   defp auto_close_resolved_issue(repo, issue_number) do

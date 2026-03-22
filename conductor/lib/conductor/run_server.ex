@@ -132,8 +132,8 @@ defmodule Conductor.RunServer do
             block(%{state | issue: latest_issue}, Enum.join(failures, ", "))
         end
 
-      {:error, _reason} ->
-        {:noreply, state, {:continue, :prepare_workspace}}
+      {:error, reason} ->
+        block(state, "failed to re-validate issue state: #{inspect(reason)}")
     end
   end
 

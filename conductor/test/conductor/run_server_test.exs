@@ -186,7 +186,17 @@ defmodule Conductor.RunServerTest do
     alias Conductor.RunServerTest.MockState
 
     def get_issue(repo, number) do
-      MockState.get({:tracker_issue, repo, number}, {:error, :not_found})
+      MockState.get(
+        {:tracker_issue, repo, number},
+        {:ok,
+         %Conductor.Issue{
+           number: number,
+           title: "test issue #{number}",
+           body: "## Problem\ntest\n## Acceptance Criteria\ntest",
+           url: "https://example.test/issues/#{number}",
+           state: "OPEN"
+         }}
+      )
     end
 
     def list_eligible(_repo, _opts), do: []
@@ -380,6 +390,28 @@ defmodule Conductor.RunServerTest do
              ]
 
       assert log =~ "blocked: issue is closed"
+    end
+
+    test "blocks when the issue state cannot be re-validated" do
+      MockState.put({:tracker_issue, "test/repo", 42}, {:error, :github_down})
+
+      log =
+        capture_log(fn ->
+          {:ok, pid} = start_run_server()
+          wait_for_exit(pid)
+        end)
+
+      run = find_run(42)
+      assert run["phase"] == "blocked"
+
+      assert event_payload(run["run_id"], "run_blocked")["reason"] ==
+               "failed to re-validate issue state: :github_down"
+
+      assert MockState.get({:comments, 42}, []) == [
+               "Bitterblossom blocked `#{run["run_id"]}`: failed to re-validate issue state: :github_down"
+             ]
+
+      assert log =~ "blocked: failed to re-validate issue state: :github_down"
     end
   end
 
