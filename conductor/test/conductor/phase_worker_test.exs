@@ -81,6 +81,16 @@ defmodule Conductor.PhaseWorkerTest do
     end
   end
 
+  defmodule RaisingStore do
+    def record_event(_run_id, _event_type, _payload), do: :ok
+    def find_run_by_pr(_repo, _work_ref), do: raise("store exploded")
+  end
+
+  defmodule ExitingStore do
+    def record_event(_run_id, _event_type, _payload), do: :ok
+    def find_run_by_pr(_repo, _work_ref), do: exit(:store_down)
+  end
+
   setup do
     db_path = Path.join(System.tmp_dir!(), "phase_worker_test_#{:rand.uniform(999_999)}.db")
     event_log = Path.join(System.tmp_dir!(), "phase_worker_test_#{:rand.uniform(999_999)}.jsonl")
@@ -95,12 +105,14 @@ defmodule Conductor.PhaseWorkerTest do
     {:ok, _} = Task.Supervisor.start_link(name: Conductor.TaskSupervisor)
 
     orig_code_host = Application.get_env(:conductor, :code_host_module)
+    orig_store = Application.get_env(:conductor, :store_module)
     orig_worker = Application.get_env(:conductor, :worker_module)
     orig_workspace = Application.get_env(:conductor, :workspace_module)
     orig_phase_worker_supervisor = Application.get_env(:conductor, :phase_worker_supervisor)
     orig_phase_worker_sprites = Application.get_env(:conductor, :phase_worker_sprites)
 
     Application.put_env(:conductor, :code_host_module, MockCodeHost)
+    Application.put_env(:conductor, :store_module, Store)
     Application.put_env(:conductor, :worker_module, MockWorker)
     Application.put_env(:conductor, :workspace_module, MockWorkspace)
 
@@ -113,6 +125,7 @@ defmodule Conductor.PhaseWorkerTest do
       MockState.cleanup()
 
       restore_env(:code_host_module, orig_code_host)
+      restore_env(:store_module, orig_store)
       restore_env(:worker_module, orig_worker)
       restore_env(:workspace_module, orig_workspace)
       restore_env(:phase_worker_supervisor, orig_phase_worker_supervisor)
@@ -128,10 +141,13 @@ defmodule Conductor.PhaseWorkerTest do
   defp start_phase_worker(role_module, sprites, opts \\ []) do
     {:ok, _pid} =
       PhaseWorker.start_link(
-        repo: "test/repo",
-        role_module: role_module,
-        sprites: sprites,
-        poll_ms: Keyword.get(opts, :poll_ms, 50)
+        [
+          repo: "test/repo",
+          role_module: role_module,
+          sprites: sprites
+        ]
+        |> Keyword.merge(opts)
+        |> Keyword.put_new(:poll_ms, 50)
       )
   end
 
@@ -161,6 +177,12 @@ defmodule Conductor.PhaseWorkerTest do
                id: {PhaseWorker, Roles.Fixer},
                start: {PhaseWorker, :start_link, [^opts]}
              } = PhaseWorker.child_spec(opts)
+    end
+  end
+
+  describe "role registry" do
+    test "raises on unknown roles" do
+      assert_raise KeyError, fn -> Roles.fetch!(:unknown_role) end
     end
   end
 
@@ -469,6 +491,21 @@ defmodule Conductor.PhaseWorkerTest do
       def busy?(_worker, _opts), do: false
     end
 
+    defmodule ShuttingDownWorker do
+      @behaviour Conductor.Worker
+      alias Conductor.PhaseWorkerTest.MockState
+
+      def exec(_worker, _cmd, _opts), do: {:ok, ""}
+
+      def dispatch(_worker, _prompt, _repo, _opts) do
+        send(MockState.get(:test_pid, self()), :shutdown_dispatch)
+        exit(:shutdown)
+      end
+
+      def cleanup(_worker, _repo, _run_id), do: :ok
+      def busy?(_worker, _opts), do: false
+    end
+
     test "backs off after dispatch failure" do
       orig_worker = Application.get_env(:conductor, :worker_module)
       Application.put_env(:conductor, :worker_module, FailingWorker)
@@ -498,6 +535,35 @@ defmodule Conductor.PhaseWorkerTest do
       status = PhaseWorker.status(Roles.Fixer)
       assert status.health == :degraded
       assert status.failure_count == 1
+    end
+
+    test "re-arms the next poll immediately when backoff changes poll_ms" do
+      orig_worker = Application.get_env(:conductor, :worker_module)
+      Application.put_env(:conductor, :worker_module, FailingWorker)
+
+      on_exit(fn -> restore_env(:worker_module, orig_worker) end)
+
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 100,
+             "headRefName" => "factory/100-12345",
+             "title" => "test",
+             "body" => "",
+             "statusCheckRollup" => [
+               %{"name" => "CI", "conclusion" => "FAILURE", "status" => "COMPLETED"}
+             ]
+           }
+         ]}
+      )
+
+      start_phase_worker(Roles.Fixer, ["bb-thorn"], poll_ms: 50)
+
+      assert_receive :dispatch_attempted, 2_000
+      refute_receive :dispatch_attempted, 70
+      assert_receive :dispatch_attempted, 200
     end
 
     test "marks the worker unavailable after repeated dispatch failures" do
@@ -567,6 +633,111 @@ defmodule Conductor.PhaseWorkerTest do
       assert status.health == :degraded
       assert status.failure_count >= 1
       assert Process.alive?(pid)
+    end
+
+    test "treats shutdown exits as task failures so capacity is released" do
+      orig_worker = Application.get_env(:conductor, :worker_module)
+      Application.put_env(:conductor, :worker_module, ShuttingDownWorker)
+
+      on_exit(fn -> restore_env(:worker_module, orig_worker) end)
+
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 101,
+             "headRefName" => "factory/101-12345",
+             "title" => "test",
+             "body" => "",
+             "statusCheckRollup" => [
+               %{"name" => "CI", "conclusion" => "FAILURE", "status" => "COMPLETED"}
+             ]
+           }
+         ]}
+      )
+
+      start_phase_worker(Roles.Fixer, ["bb-thorn"], poll_ms: 10)
+
+      assert_receive :shutdown_dispatch, 2_000
+      assert_receive :shutdown_dispatch, 2_000
+
+      status = PhaseWorker.status(Roles.Fixer)
+      assert status.health == :degraded
+      assert status.in_flight == %{}
+    end
+
+    test "logs and skips missing run_id when store lookup raises" do
+      Application.put_env(:conductor, :store_module, RaisingStore)
+
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 42,
+             "headRefName" => "factory/99-12345",
+             "title" => "feat: implement feature",
+             "body" => "Closes #99",
+             "statusCheckRollup" => [
+               %{"name" => "CI", "conclusion" => "FAILURE", "status" => "COMPLETED"}
+             ]
+           }
+         ]}
+      )
+
+      log =
+        capture_log(fn ->
+          start_phase_worker(Roles.Fixer, ["bb-thorn"])
+          assert_receive {:dispatched, "bb-thorn", _prompt}, 2_000
+        end)
+
+      assert log =~ "failed to look up run for PR #42: store exploded"
+    end
+
+    test "logs and skips missing run_id when store lookup exits" do
+      Application.put_env(:conductor, :store_module, ExitingStore)
+
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 42,
+             "headRefName" => "factory/99-12345",
+             "title" => "feat: implement feature",
+             "body" => "Closes #99",
+             "statusCheckRollup" => [
+               %{"name" => "CI", "conclusion" => "FAILURE", "status" => "COMPLETED"}
+             ]
+           }
+         ]}
+      )
+
+      log =
+        capture_log(fn ->
+          start_phase_worker(Roles.Fixer, ["bb-thorn"])
+          assert_receive {:dispatched, "bb-thorn", _prompt}, 2_000
+        end)
+
+      assert log =~ "failed to look up run for PR #42: :store_down"
+    end
+  end
+
+  describe "sprite updates" do
+    test "ignores stale sprite pools by generation" do
+      start_phase_worker(
+        Roles.Fixer,
+        ["bb-thorn-current"],
+        poll_ms: 60_000,
+        sprite_generation: 2
+      )
+
+      assert :ok = PhaseWorker.update_sprites(Roles.Fixer, ["bb-thorn-stale"], 1)
+      assert PhaseWorker.status(Roles.Fixer).sprites == ["bb-thorn-current"]
+
+      assert :ok = PhaseWorker.update_sprites(Roles.Fixer, ["bb-thorn-fresh"], 3)
+      assert PhaseWorker.status(Roles.Fixer).sprites == ["bb-thorn-fresh"]
     end
   end
 

@@ -37,10 +37,17 @@ defmodule Conductor.PhaseWorker.Supervisor do
         ] ++ opts
 
       case DynamicSupervisor.start_child(__MODULE__, {PhaseWorker, child_opts}) do
-        {:ok, _pid} -> :ok
-        {:error, {:already_started, _pid}} -> PhaseWorker.update_sprites(role_module, sprites)
-        {:error, {:already_present, _pid}} -> PhaseWorker.update_sprites(role_module, sprites)
-        {:error, reason} -> {:error, reason}
+        {:ok, _pid} ->
+          :ok
+
+        {:error, {:already_started, _pid}} ->
+          PhaseWorker.update_sprites(role_module, pool.sprites, pool.generation)
+
+        {:error, {:already_present, _pid}} ->
+          PhaseWorker.update_sprites(role_module, pool.sprites, pool.generation)
+
+        {:error, reason} ->
+          {:error, reason}
       end
     end
   end

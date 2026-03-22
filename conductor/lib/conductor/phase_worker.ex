@@ -16,6 +16,8 @@ defmodule Conductor.PhaseWorker do
     :role_module,
     :poll_ms,
     :base_poll_ms,
+    :timer_ref,
+    :sprite_generation,
     sprites: [],
     in_flight: %{},
     failure_count: 0,
@@ -50,9 +52,10 @@ defmodule Conductor.PhaseWorker do
     |> Enum.map(&status/1)
   end
 
-  @spec update_sprites(atom() | module(), [binary()]) :: :ok
-  def update_sprites(role_module, sprites) do
-    GenServer.call(via_name(role_module), {:update_sprites, Enum.uniq(sprites) |> Enum.sort()})
+  @spec update_sprites(atom() | module(), [binary()], integer() | nil) :: :ok
+  def update_sprites(role_module, sprites, generation \\ nil) do
+    normalized = Enum.uniq(sprites) |> Enum.sort()
+    GenServer.call(via_name(role_module), {:update_sprites, normalized, generation})
   end
 
   @spec whereis(atom() | module()) :: pid() | nil
@@ -60,8 +63,11 @@ defmodule Conductor.PhaseWorker do
     role_key = role_key(role_module)
 
     case Registry.lookup(registry_name(), role_key) do
-      [{pid, _value}] -> pid
-      [] -> nil
+      [{pid, _value}] when is_pid(pid) ->
+        if Process.alive?(pid), do: pid, else: nil
+
+      [] ->
+        nil
     end
   end
 
@@ -86,11 +92,12 @@ defmodule Conductor.PhaseWorker do
       role_module: role_module,
       poll_ms: poll_ms,
       base_poll_ms: poll_ms,
+      timer_ref: nil,
+      sprite_generation: max(provided_generation, stored_generation),
       sprites: sprites
     }
 
-    schedule_poll(0)
-    {:ok, state}
+    {:ok, reschedule_poll(state, 0)}
   end
 
   @impl true
@@ -99,14 +106,31 @@ defmodule Conductor.PhaseWorker do
   end
 
   @impl true
-  def handle_call({:update_sprites, sprites}, _from, state) do
-    {:reply, :ok, %{state | sprites: sprites}}
+  def handle_call({:update_sprites, _sprites, generation}, _from, state)
+      when is_integer(generation) and generation < state.sprite_generation do
+    {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call({:update_sprites, sprites, generation}, _from, state) do
+    state =
+      if is_integer(generation) do
+        %{state | sprites: sprites, sprite_generation: generation}
+      else
+        %{state | sprites: sprites}
+      end
+
+    {:reply, :ok, state}
   end
 
   @impl true
   def handle_info(:poll, state) do
-    state = poll_and_dispatch(state)
-    schedule_poll(state.poll_ms)
+    state =
+      state
+      |> Map.put(:timer_ref, nil)
+      |> poll_and_dispatch()
+      |> reschedule_poll()
+
     {:noreply, state}
   end
 
@@ -117,8 +141,7 @@ defmodule Conductor.PhaseWorker do
   end
 
   @impl true
-  def handle_info({:DOWN, _ref, :process, _pid, reason}, state)
-      when reason in [:normal, :shutdown] do
+  def handle_info({:DOWN, _ref, :process, _pid, :normal}, state) do
     {:noreply, state}
   end
 
@@ -297,7 +320,9 @@ defmodule Conductor.PhaseWorker do
       "[#{log_prefix(state)}] backoff: failures=#{count}, next_poll=#{backoff_ms}ms, health=#{health}"
     )
 
-    %{state | failure_count: count, poll_ms: backoff_ms, health: health}
+    state
+    |> Map.merge(%{failure_count: count, poll_ms: backoff_ms, health: health})
+    |> reschedule_poll()
   end
 
   defp reset_health(state) do
@@ -305,7 +330,9 @@ defmodule Conductor.PhaseWorker do
       Logger.info("[#{log_prefix(state)}] recovered, resetting to healthy")
     end
 
-    %{state | failure_count: 0, poll_ms: state.base_poll_ms, health: :healthy}
+    state
+    |> Map.merge(%{failure_count: 0, poll_ms: state.base_poll_ms, health: :healthy})
+    |> reschedule_poll()
   end
 
   defp workspace_for_branch(repo, _branch) do
@@ -314,6 +341,23 @@ defmodule Conductor.PhaseWorker do
 
   defp schedule_poll(delay) do
     Process.send_after(self(), :poll, delay)
+  end
+
+  defp reschedule_poll(state, delay \\ nil) do
+    cancel_poll(state.timer_ref)
+    %{state | timer_ref: schedule_poll(delay || state.poll_ms)}
+  end
+
+  defp cancel_poll(nil), do: :ok
+
+  defp cancel_poll(ref) do
+    Process.cancel_timer(ref)
+
+    receive do
+      :poll -> :ok
+    after
+      0 -> :ok
+    end
   end
 
   defp log_prefix(state) do
@@ -348,14 +392,18 @@ defmodule Conductor.PhaseWorker do
     Application.get_env(:conductor, :workspace_module, Workspace)
   end
 
+  defp store_mod do
+    Application.get_env(:conductor, :store_module, Store)
+  end
+
   defp record_task_event(nil, _event_type, _payload), do: :ok
 
   defp record_task_event(run_id, event_type, payload) do
-    Store.record_event(run_id, event_type, payload)
+    store_mod().record_event(run_id, event_type, payload)
   end
 
   defp run_id_for_work(repo, work_ref) do
-    case Store.find_run_by_pr(repo, work_ref) do
+    case store_mod().find_run_by_pr(repo, work_ref) do
       {:ok, %{"run_id" => run_id}} when is_binary(run_id) ->
         run_id
 
