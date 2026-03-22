@@ -324,8 +324,8 @@ defmodule Conductor.CLI do
         Process.sleep(:infinity)
 
       :ok ->
-        IO.puts("dashboard running")
-        Process.sleep(:infinity)
+        IO.puts("dashboard disabled (start_dashboard=false)")
+        System.halt(1)
 
       {:error, reason} ->
         IO.puts("dashboard failed to start: #{inspect(reason)}")

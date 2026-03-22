@@ -13,7 +13,8 @@ Required:
 
 ### `mix conductor start --fleet ../fleet.toml`
 
-Boot the full conductor pipeline against a fleet file.
+Boot the full conductor pipeline against a fleet file and start the operator
+dashboard on the configured endpoint.
 
 ### `mix conductor pause`
 

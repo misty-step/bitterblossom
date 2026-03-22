@@ -39,7 +39,7 @@ docs/                    operator docs and contracts
 ## How It Works
 
 1. `bb setup <sprite> --repo owner/repo` bootstraps persistent worker sprites with base configs, imported autonomy skills, and a role persona
-2. `cd conductor && mix conductor start --fleet ../fleet.toml` boots the Elixir control plane and starts leasing runnable issues
+2. `cd conductor && mix conductor start --fleet ../fleet.toml` boots the Elixir control plane, starts the operator dashboard, and begins leasing runnable issues
 3. the conductor dispatches a builder sprite with a branch contract
 4. the builder opens a PR on that branch; PR existence is the success signal
 5. three reviewer sprites run adversarial reviews and write review artifacts
