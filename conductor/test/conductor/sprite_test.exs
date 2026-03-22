@@ -131,6 +131,43 @@ defmodule Conductor.SpriteTest do
              )
   end
 
+  test "exec wakes and retries over HTTP POST after websocket handshake failure" do
+    parent = self()
+
+    shell_cmd_fn = fn "sprite", args, opts ->
+      send(parent, {:shell_cmd, args, opts})
+
+      cond do
+        "--http-post" in args and List.last(args) == "true" ->
+          {:ok, ""}
+
+        "--http-post" in args ->
+          {:ok, "recovered"}
+
+        true ->
+          {:error, "websocket: bad handshake (HTTP 502)", 1}
+      end
+    end
+
+    assert {:ok, "recovered"} =
+             Sprite.exec("bb-weaver", "echo ok",
+               org: "misty-step",
+               shell_cmd_fn: shell_cmd_fn
+             )
+
+    assert_received {:shell_cmd, first_args, _opts}
+    refute "--http-post" in first_args
+    assert List.last(first_args) == "echo ok"
+
+    assert_received {:shell_cmd, wake_args, _opts}
+    assert "--http-post" in wake_args
+    assert List.last(wake_args) == "true"
+
+    assert_received {:shell_cmd, retry_args, _opts}
+    assert "--http-post" in retry_args
+    assert List.last(retry_args) == "echo ok"
+  end
+
   test "provision uploads persona, settings, and metadata through sprite exec files" do
     test_pid = self()
     prev_gh = System.get_env("GITHUB_TOKEN")

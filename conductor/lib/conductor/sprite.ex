@@ -37,13 +37,39 @@ defmodule Conductor.Sprite do
   @spec exec(binary(), binary(), keyword()) :: {:ok, binary()} | {:error, binary(), integer()}
   def exec(sprite, command, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, 60_000)
-    org = Keyword.get(opts, :org, Config.sprites_org!())
+    org = keyword_fetch_or(opts, :org, &Config.sprites_org!/0)
     files = Keyword.get(opts, :files, [])
-    transport = Keyword.get(opts, :transport, :http_post)
+    transport = Keyword.get(opts, :transport, :websocket)
+    shell_cmd_fn = Keyword.get(opts, :shell_cmd_fn, &Shell.cmd/3)
 
-    Shell.cmd("sprite", exec_args(org, sprite, files, command, transport: transport),
-      timeout: timeout
-    )
+    case shell_cmd_fn.(
+           "sprite",
+           exec_args(org, sprite, files, command, transport: transport),
+           timeout: timeout
+         ) do
+      {:ok, _} = ok ->
+        ok
+
+      {:error, msg, _code} = error ->
+        if wake_recoverable?(msg) and transport == :websocket do
+          with :ok <-
+                 wake(sprite,
+                   org: org,
+                   timeout: 15_000,
+                   shell_cmd_fn: shell_cmd_fn
+                 ) do
+            shell_cmd_fn.(
+              "sprite",
+              exec_args(org, sprite, files, command, transport: :http_post),
+              timeout: timeout
+            )
+          else
+            {:error, _reason} -> error
+          end
+        else
+          error
+        end
+    end
   end
 
   @doc false
@@ -602,7 +628,7 @@ defmodule Conductor.Sprite do
   end
 
   defp stream_exec(sprite, command, opts) do
-    org = Keyword.get(opts, :org, Config.sprites_org!())
+    org = keyword_fetch_or(opts, :org, &Config.sprites_org!/0)
     args = exec_args(org, sprite, Keyword.get(opts, :files, []), command)
     into = Keyword.get(opts, :into, IO.stream(:stdio, :line))
     {output, code} = System.cmd("sprite", args, stderr_to_stdout: true, into: into)
@@ -794,5 +820,16 @@ defmodule Conductor.Sprite do
     Enum.flat_map(files, fn {source, dest} ->
       ["--file", "#{source}:#{dest}"]
     end)
+  end
+
+  defp wake_recoverable?(message) when is_binary(message) do
+    String.contains?(message, ["bad handshake", "HTTP 502", "failed to connect"])
+  end
+
+  defp keyword_fetch_or(opts, key, fallback) do
+    case Keyword.fetch(opts, key) do
+      {:ok, value} -> value
+      :error -> fallback.()
+    end
   end
 end
