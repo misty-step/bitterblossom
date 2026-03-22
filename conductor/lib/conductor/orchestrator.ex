@@ -914,7 +914,9 @@ defmodule Conductor.Orchestrator do
     if streak == 0 do
       false
     else
-      cooldown_minutes = min(trunc(:math.pow(2, streak)), Config.issue_cooldown_cap_minutes())
+      cap = Config.issue_cooldown_cap_minutes()
+      # Cap exponent to avoid :math.pow overflow (badarith at large streak values)
+      cooldown_minutes = min(trunc(:math.pow(2, min(streak, 20))), cap)
 
       case DateTime.from_iso8601(last_failed_at || "") do
         {:ok, failed_at, _} ->

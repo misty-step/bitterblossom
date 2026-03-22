@@ -68,11 +68,14 @@ defmodule Conductor.Fixer do
   end
 
   @impl true
-  def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
-    if reason not in [:normal, :shutdown] do
-      Logger.warning("[thorn] dispatch task crashed: #{inspect(reason)}")
-    end
+  def handle_info({:DOWN, _ref, :process, _pid, reason}, state)
+      when reason in [:normal, :shutdown] do
+    {:noreply, state}
+  end
 
+  @impl true
+  def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
+    Logger.warning("[thorn] dispatch task crashed: #{inspect(reason)}")
     state = complete_task(state, ref, {:error, "task_crashed: #{inspect(reason)}", 1})
     {:noreply, state}
   end

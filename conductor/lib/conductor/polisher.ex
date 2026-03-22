@@ -67,11 +67,15 @@ defmodule Conductor.Polisher do
   end
 
   @impl true
-  def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
-    if reason not in [:normal, :shutdown] do
-      Logger.warning("[fern] dispatch task crashed: #{inspect(reason)}")
-    end
+  def handle_info({:DOWN, _ref, :process, _pid, reason}, state)
+      when reason in [:normal, :shutdown] do
+    # Normal exit — result already handled by {ref, result} handler
+    {:noreply, state}
+  end
 
+  @impl true
+  def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
+    Logger.warning("[fern] dispatch task crashed: #{inspect(reason)}")
     state = complete_task(state, ref, {:error, "task_crashed: #{inspect(reason)}", 1})
     {:noreply, state}
   end
