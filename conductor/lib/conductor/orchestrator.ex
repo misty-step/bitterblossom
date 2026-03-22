@@ -933,7 +933,12 @@ defmodule Conductor.Orchestrator do
           end
 
         _ ->
-          false
+          # Fail-closed: if timestamp is corrupt, treat as still cooling down
+          Logger.warning(
+            "[governor] issue ##{issue_number} has unparseable failure timestamp, skipping"
+          )
+
+          true
       end
     end
   end

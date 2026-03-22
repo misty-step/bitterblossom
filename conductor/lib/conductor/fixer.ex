@@ -191,6 +191,10 @@ defmodule Conductor.Fixer do
           Logger.warning("[thorn] dispatch failed for PR ##{pr_number}: #{msg}")
           Store.record_event("fixer", "fixer_failed", %{pr_number: pr_number, error: msg})
           apply_backoff(state)
+
+        other ->
+          Logger.warning("[thorn] unexpected result for PR ##{pr_number}: #{inspect(other)}")
+          apply_backoff(state)
       end
     else
       state

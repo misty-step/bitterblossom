@@ -201,6 +201,10 @@ defmodule Conductor.Polisher do
           Logger.warning("[fern] dispatch failed for PR ##{pr_number}: #{msg}")
           Store.record_event("polisher", "polisher_failed", %{pr_number: pr_number, error: msg})
           apply_backoff(state)
+
+        other ->
+          Logger.warning("[fern] unexpected result for PR ##{pr_number}: #{inspect(other)}")
+          apply_backoff(state)
       end
     else
       state
