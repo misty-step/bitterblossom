@@ -64,6 +64,8 @@ role = "muse"
 ### Sprite Math
 5 sprites (2 Weavers + 1 Thorn + 1 Fern + 1 Muse) can serve 4 repos. Scale by adding Weavers for throughput, not by adding per-repo sprites.
 
+- **Early builder validation checkpoints** — If a builder run will ultimately produce no PR, detect this within 2-3 minutes rather than running full build cycles. Validate issue feasibility, code access, and basic setup before deep work.
+
 ## Someday / Maybe
 
 - **Promptfoo-based model comparison and regression testing** — Declarative LLM evals with CI/CD integration. Depends on behaviours (#613, closed). Source: #620, groom.
