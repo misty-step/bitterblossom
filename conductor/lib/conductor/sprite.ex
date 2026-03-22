@@ -279,24 +279,7 @@ defmodule Conductor.Sprite do
     end
   end
 
-  defp worktree_state(sprite, nil, _exec_fn) do
-    run = active_worktree_run(sprite)
-    path = run && run["worktree_path"]
-
-    if is_binary(path) and path != "" do
-      branch = run && run["branch"]
-      branch = if is_binary(branch) and branch != "", do: branch, else: nil
-
-      %{
-        worktree_occupied: true,
-        active_branch: branch,
-        active_worktree: path,
-        worktrees: [%{branch: branch, path: path}]
-      }
-    else
-      empty_worktree_state()
-    end
-  end
+  defp worktree_state(_sprite, nil, _exec_fn), do: empty_worktree_state()
 
   defp worktree_state(sprite, repo, exec_fn) do
     with :ok <- validate_repo(repo),
@@ -305,8 +288,9 @@ defmodule Conductor.Sprite do
       output
       |> parse_conductor_worktrees()
       |> build_worktree_state()
+      |> add_worktree_status_text()
     else
-      _ -> worktree_state(sprite, nil, exec_fn)
+      _ -> empty_worktree_state()
     end
   end
 
@@ -315,7 +299,8 @@ defmodule Conductor.Sprite do
       worktree_occupied: false,
       active_branch: nil,
       active_worktree: nil,
-      worktrees: []
+      worktrees: [],
+      worktree_status: ""
     }
   end
 
@@ -331,6 +316,14 @@ defmodule Conductor.Sprite do
       worktrees: worktrees
     }
   end
+
+  defp add_worktree_status_text(%{worktree_occupied: true} = state) do
+    branch = state.active_branch || "unknown"
+    path = state.active_worktree || "unknown"
+    Map.put(state, :worktree_status, ", worktree occupied (#{branch} @ #{path})")
+  end
+
+  defp add_worktree_status_text(state), do: Map.put_new(state, :worktree_status, "")
 
   defp parse_conductor_worktrees(output) do
     output
@@ -593,7 +586,9 @@ defmodule Conductor.Sprite do
         {:ok, workspace}
 
       _ ->
-        case active_worktree(sprite) do
+        workspace_lookup_fn = Keyword.get(opts, :workspace_lookup_fn, fn _sprite -> :error end)
+
+        case workspace_lookup_fn.(sprite) do
           {:ok, path} ->
             {:ok, path}
 
@@ -613,26 +608,6 @@ defmodule Conductor.Sprite do
                 {:error, msg}
             end
         end
-    end
-  end
-
-  defp active_worktree(sprite) do
-    active_worktree_run(sprite)
-    |> case do
-      %{"worktree_path" => path} -> {:ok, path}
-      _ -> :error
-    end
-  end
-
-  defp active_worktree_run(sprite) do
-    try do
-      Conductor.Store.list_runs(limit: 50)
-      |> Enum.find(fn run ->
-        run["builder_sprite"] == sprite and run["worktree_path"] not in [nil, ""] and
-          run["status"] not in ["merged", "blocked", "failed"]
-      end)
-    catch
-      :exit, _ -> nil
     end
   end
 

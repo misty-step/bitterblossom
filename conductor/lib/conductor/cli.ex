@@ -232,9 +232,13 @@ defmodule Conductor.CLI do
 
       if opts[:help], do: :ok, else: System.halt(1)
     else
-      case Conductor.Sprite.logs(hd(positional),
+      worker_mod = Application.get_env(:conductor, :worker_module, Conductor.Sprite)
+      sprite = hd(positional)
+
+      case worker_mod.logs(sprite,
              follow: Keyword.get(opts, :follow, false),
-             lines: Keyword.get(opts, :lines, 0)
+             lines: Keyword.get(opts, :lines, 0),
+             workspace_lookup_fn: &active_builder_worktree/1
            ) do
         :ok ->
           :ok
@@ -333,7 +337,7 @@ defmodule Conductor.CLI do
             health = if status.healthy, do: "healthy", else: "needs setup"
 
             IO.puts(
-              "  #{s.name} (#{s.role}, #{s.harness}) — #{health}, #{auth}, #{git}#{format_worktree_status(status)}"
+              "  #{s.name} (#{s.role}, #{s.harness}) — #{health}, #{auth}, #{git}#{worktree_status_text(status)}"
             )
 
           {:error, _reason} ->
@@ -382,6 +386,18 @@ defmodule Conductor.CLI do
     |> Map.new(fn run -> {run["builder_sprite"], "issue ##{run["issue_number"]}"} end)
   end
 
+  defp active_builder_worktree(sprite) do
+    Conductor.Store.list_runs(limit: 50)
+    |> Enum.find(fn run ->
+      run["builder_sprite"] == sprite and run["worktree_path"] not in [nil, ""] and
+        run["completed_at"] in [nil, ""]
+    end)
+    |> case do
+      %{"worktree_path" => path} -> {:ok, path}
+      _ -> :error
+    end
+  end
+
   defp probe_status(sprite, repo) do
     worker_mod = Application.get_env(:conductor, :worker_module, Conductor.Sprite)
     harness = Map.get(sprite, :harness) || Map.get(sprite, "harness")
@@ -417,7 +433,7 @@ defmodule Conductor.CLI do
 
     case result do
       {:ok, %{healthy: true}} ->
-        "healthy" <> format_worktree_status(result |> elem(1))
+        "healthy" <> worktree_status_text(elem(result, 1))
 
       {:ok, status} when is_map(status) ->
         base =
@@ -437,7 +453,7 @@ defmodule Conductor.CLI do
             end
           end
 
-        base <> format_worktree_status(status)
+        base <> worktree_status_text(status)
 
       {:ok, _} ->
         "healthy"
@@ -481,18 +497,8 @@ defmodule Conductor.CLI do
       not Map.has_key?(status, "harness_ready")
   end
 
-  defp format_worktree_status(status) do
-    occupied =
-      Map.get(status, :worktree_occupied, Map.get(status, "worktree_occupied", false))
-
-    if occupied do
-      branch = Map.get(status, :active_branch, Map.get(status, "active_branch")) || "unknown"
-      path = Map.get(status, :active_worktree, Map.get(status, "active_worktree")) || "unknown"
-      ", worktree occupied (#{branch} @ #{path})"
-    else
-      ""
-    end
-  end
+  defp worktree_status_text(status),
+    do: Map.get(status, :worktree_status, Map.get(status, "worktree_status", ""))
 
   defp format_tags([]), do: "tags=-"
   defp format_tags(tags), do: "tags=#{Enum.join(tags, ",")}"

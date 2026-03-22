@@ -1,53 +1,9 @@
 defmodule Conductor.SpriteWorkspaceLookupTest do
   use ExUnit.Case, async: false
 
-  import Conductor.TestSupport.ProcessHelpers
+  alias Conductor.Sprite
 
-  alias Conductor.{Sprite, Store}
-
-  setup do
-    stop_conductor_app()
-
-    db_path =
-      Path.join(
-        System.tmp_dir!(),
-        "sprite_workspace_lookup_#{System.unique_integer([:positive])}.db"
-      )
-
-    event_log =
-      Path.join(
-        System.tmp_dir!(),
-        "sprite_workspace_lookup_#{System.unique_integer([:positive])}.jsonl"
-      )
-
-    stop_process(Store)
-    {:ok, _pid} = Store.start_link(db_path: db_path, event_log: event_log)
-
-    on_exit(fn ->
-      stop_process(Store)
-
-      File.rm(db_path)
-      File.rm(event_log)
-    end)
-
-    :ok
-  end
-
-  test "logs uses the active worktree recorded in Store before remote discovery" do
-    {:ok, run_id} =
-      Store.create_run(%{
-        repo: "misty-step/bitterblossom",
-        issue_number: 736,
-        issue_title: "remove Go bb transport",
-        builder_sprite: "bb-weaver"
-      })
-
-    :ok =
-      Store.update_run(run_id, %{
-        status: "building",
-        worktree_path: "/tmp/store-worktree"
-      })
-
+  test "logs uses an injected workspace lookup before remote discovery" do
     test_pid = self()
 
     exec_fn = fn _sprite, command, _opts ->
@@ -70,7 +26,13 @@ defmodule Conductor.SpriteWorkspaceLookupTest do
       {:ok, ""}
     end
 
-    assert :ok = Sprite.logs("bb-weaver", exec_fn: exec_fn, runner_fn: runner_fn)
+    assert :ok =
+             Sprite.logs("bb-weaver",
+               exec_fn: exec_fn,
+               runner_fn: runner_fn,
+               workspace_lookup_fn: fn "bb-weaver" -> {:ok, "/tmp/store-worktree"} end
+             )
+
     assert_received {:exec_called, "test -s '/tmp/store-worktree/ralph.log'"}
 
     assert_received {:runner_called,

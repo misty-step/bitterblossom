@@ -22,7 +22,9 @@ defmodule Conductor.CLIFleetTest do
          healthy: true,
          worktree_occupied: true,
          active_branch: "factory/622-1774029317",
-         active_worktree: "/tmp/bb-weaver-1-worktree"
+         active_worktree: "/tmp/bb-weaver-1-worktree",
+         worktree_status:
+           ", worktree occupied (factory/622-1774029317 @ /tmp/bb-weaver-1-worktree)"
        }}
     end
 
