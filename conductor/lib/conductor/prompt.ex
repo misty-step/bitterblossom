@@ -82,10 +82,10 @@ defmodule Conductor.Prompt do
     """
     # Muse Observe Task
 
-    Run ID: #{run["run_id"]}
-    Issue: ##{run["issue_number"]} — #{run["issue_title"]}
+    Run ID: #{prompt_value(run, "run_id")}
+    Issue: ##{prompt_value(run, "issue_number")} — #{prompt_value(run, "issue_title")}
     Repository Root: #{workspace_root}
-    PR: #{run["pr_number"] || "none"}
+    PR: #{prompt_value(run, "pr_number", "none")}
 
     ## Run Events
 
@@ -325,6 +325,26 @@ defmodule Conductor.Prompt do
     text
     |> String.replace("```", "` ` `")
     |> String.replace("~~~", "~ ~ ~")
+  end
+
+  defp prompt_value(map, key, default \\ "") do
+    map
+    |> Map.get(key)
+    |> case do
+      nil ->
+        Enum.find_value(map, default, fn
+          {field, value} ->
+            if is_atom(field) and Atom.to_string(field) == key, do: value
+
+          _ ->
+            nil
+        end)
+
+      value ->
+        value
+    end
+    |> to_string()
+    |> sanitize_fence()
   end
 
   defp format_events(events) do

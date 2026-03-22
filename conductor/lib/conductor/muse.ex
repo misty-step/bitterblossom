@@ -18,7 +18,9 @@ defmodule Conductor.Muse do
     :muse_sprite,
     :synthesis_interval_ms,
     :timer_ref,
-    queue: [],
+    :synthesis_token,
+    :retry_ref,
+    queue: :queue.new(),
     pending_synthesis: false,
     in_flight: %{},
     failure_count: 0,
@@ -29,6 +31,8 @@ defmodule Conductor.Muse do
   @reflection_dir Path.join(@journal_root, "reflections")
   @synthesis_dir Path.join(@journal_root, "syntheses")
   @max_actions 3
+  @max_issue_title_bytes 249
+  @max_issue_body_bytes 65_536
 
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -99,7 +103,7 @@ defmodule Conductor.Muse do
      %{
        repo: state.repo,
        muse_sprite: state.muse_sprite,
-       queue_length: length(state.queue),
+       queue_length: queue_length(state.queue),
        in_flight: state.in_flight,
        pending_synthesis: state.pending_synthesis,
        health: state.health,
@@ -108,7 +112,7 @@ defmodule Conductor.Muse do
   end
 
   @impl true
-  def handle_info(:synthesis_tick, state) do
+  def handle_info({:synthesis_tick, token}, %{synthesis_token: token} = state) do
     state =
       state
       |> schedule_synthesis()
@@ -119,8 +123,11 @@ defmodule Conductor.Muse do
   end
 
   @impl true
+  def handle_info({:synthesis_tick, _stale_token}, state), do: {:noreply, state}
+
+  @impl true
   def handle_info(:retry, state) do
-    {:noreply, maybe_dispatch(state)}
+    {:noreply, state |> Map.put(:retry_ref, nil) |> maybe_dispatch()}
   end
 
   @impl true
@@ -167,32 +174,39 @@ defmodule Conductor.Muse do
   defp schedule_synthesis(state) do
     if state.timer_ref, do: Process.cancel_timer(state.timer_ref)
 
-    ref = Process.send_after(self(), :synthesis_tick, state.synthesis_interval_ms)
-    %{state | timer_ref: ref}
+    token = make_ref()
+    ref = Process.send_after(self(), {:synthesis_tick, token}, state.synthesis_interval_ms)
+    %{state | timer_ref: ref, synthesis_token: token}
   end
 
   defp enqueue_run(state, run_id) do
-    if run_id in state.queue or Map.has_key?(state.in_flight, {:observe, run_id}) do
+    if queue_contains?(state.queue, run_id) or Map.has_key?(state.in_flight, {:observe, run_id}) do
       state
     else
-      %{state | queue: state.queue ++ [run_id]}
+      %{state | queue: :queue.in(run_id, state.queue)}
     end
   end
 
   defp maybe_dispatch(%{in_flight: in_flight} = state) when map_size(in_flight) > 0, do: state
 
-  defp maybe_dispatch(%{queue: [run_id | rest]} = state) do
-    Logger.info("[muse] dispatching observation for #{run_id}")
+  defp maybe_dispatch(%{queue: queue} = state) do
+    case :queue.out(queue) do
+      {{:value, run_id}, rest} ->
+        Logger.info("[muse] dispatching observation for #{run_id}")
 
-    task =
-      Task.Supervisor.async_nolink(Conductor.TaskSupervisor, fn ->
-        observe_run(state.repo, state.muse_sprite, run_id)
-      end)
+        task =
+          Task.Supervisor.async_nolink(Conductor.TaskSupervisor, fn ->
+            observe_run(state.repo, state.muse_sprite, run_id)
+          end)
 
-    %{state | queue: rest, in_flight: %{{:observe, run_id} => task.ref}}
+        %{state | queue: rest, in_flight: %{{:observe, run_id} => task.ref}}
+
+      {:empty, _queue} ->
+        maybe_dispatch_synthesis(state)
+    end
   end
 
-  defp maybe_dispatch(%{pending_synthesis: true} = state) do
+  defp maybe_dispatch_synthesis(%{pending_synthesis: true} = state) do
     Logger.info("[muse] dispatching synthesis")
 
     task =
@@ -203,24 +217,29 @@ defmodule Conductor.Muse do
     %{state | pending_synthesis: false, in_flight: %{synthesis: task.ref}}
   end
 
-  defp maybe_dispatch(state), do: state
+  defp maybe_dispatch_synthesis(state), do: state
 
   defp complete_task(state, ref, result) do
-    case Enum.find(state.in_flight, fn {_key, task_ref} -> task_ref == ref end) do
-      {{:observe, run_id}, _task_ref} ->
-        state
-        |> Map.put(:in_flight, %{})
-        |> handle_observation_result(run_id, result)
-        |> maybe_dispatch()
+    next_state =
+      case Enum.find(state.in_flight, fn {_key, task_ref} -> task_ref == ref end) do
+        {{:observe, run_id}, _task_ref} ->
+          state
+          |> Map.put(:in_flight, %{})
+          |> handle_observation_result(run_id, result)
 
-      {:synthesis, _task_ref} ->
-        state
-        |> Map.put(:in_flight, %{})
-        |> handle_synthesis_result(result)
-        |> maybe_dispatch()
+        {:synthesis, _task_ref} ->
+          state
+          |> Map.put(:in_flight, %{})
+          |> handle_synthesis_result(result)
 
-      nil ->
-        state
+        nil ->
+          state
+      end
+
+    if next_state.retry_ref do
+      next_state
+    else
+      maybe_dispatch(next_state)
     end
   end
 
@@ -271,8 +290,10 @@ defmodule Conductor.Muse do
       "[muse] backoff: failures=#{count}, next_attempt=#{backoff_ms}ms, health=#{health}"
     )
 
-    Process.send_after(self(), :retry, backoff_ms)
-    %{state | failure_count: count, health: health}
+    if state.retry_ref, do: Process.cancel_timer(state.retry_ref)
+
+    retry_ref = Process.send_after(self(), :retry, backoff_ms)
+    %{state | failure_count: count, health: health, retry_ref: retry_ref}
   end
 
   defp reset_health(state) do
@@ -280,7 +301,9 @@ defmodule Conductor.Muse do
       Logger.info("[muse] recovered, resetting to healthy")
     end
 
-    %{state | failure_count: 0, health: :healthy}
+    if state.retry_ref, do: Process.cancel_timer(state.retry_ref)
+
+    %{state | failure_count: 0, health: :healthy, retry_ref: nil}
   end
 
   defp observe_run(repo, muse_sprite, run_id) do
@@ -309,11 +332,12 @@ defmodule Conductor.Muse do
 
   defp run_synthesis(repo, muse_sprite) do
     with :ok <- ensure_muse_dirs(),
+         {:ok, open_issues} <- open_issues(repo),
          reflections <- read_recent_reflections(),
          prompt <-
            Prompt.build_muse_synthesis_prompt(
              repo,
-             synthesis_context(repo, reflections),
+             synthesis_context(reflections, open_issues),
              workspace_root(repo)
            ),
          :ok <- workspace_mod().sync_persona(muse_sprite, workspace_root(repo), :muse),
@@ -328,7 +352,8 @@ defmodule Conductor.Muse do
              harness_opts: [reasoning_effort: "high"]
            ),
          {:ok, parsed} <- parse_synthesis(output),
-         actions_taken <- execute_actions(repo, parsed.actions |> Enum.take(@max_actions)),
+         {:ok, actions_taken} <-
+           execute_actions(repo, parsed.actions |> Enum.take(@max_actions), open_issues),
          {:ok, path} <- write_synthesis(parsed.summary, actions_taken) do
       {:ok, %{summary: parsed.summary, actions_taken: actions_taken, path: path}}
     else
@@ -360,7 +385,15 @@ defmodule Conductor.Muse do
   defp decode_json(output) do
     output
     |> String.trim()
+    |> unwrap_json_fence()
     |> Jason.decode()
+  end
+
+  defp unwrap_json_fence(output) do
+    case Regex.run(~r/\A```(?:json)?\s*(.*?)\s*```\z/is, output, capture: :all_but_first) do
+      [json] -> json
+      _ -> output
+    end
   end
 
   defp write_reflection(run_id, run, parsed) do
@@ -370,7 +403,7 @@ defmodule Conductor.Muse do
     # Muse Reflection
 
     - Run ID: #{run_id}
-    - Issue: ##{run["issue_number"]} - #{run["issue_title"]}
+    - Issue: ##{run_field(run, "issue_number", "unknown")} - #{run_field(run, "issue_title", "(unknown issue)")}
     - Summary: #{parsed.summary}
     - Recorded At: #{DateTime.utc_now() |> DateTime.to_iso8601()}
 
@@ -418,58 +451,86 @@ defmodule Conductor.Muse do
     "- #{action.action}: #{action.title}#{issue}"
   end
 
-  defp execute_actions(repo, actions) do
-    open_issues = open_issues(repo)
+  defp execute_actions(repo, actions, open_issues) do
+    actions
+    |> Enum.reduce_while({:ok, [], open_issues}, fn action, {:ok, taken, current_open_issues} ->
+      result = execute_action(repo, action, current_open_issues)
 
-    Enum.map(actions, fn action ->
-      case Map.get(action, "action") do
-        "comment_issue" ->
-          comment_existing_issue(repo, action)
+      case result do
+        {:ok, action_taken, next_open_issues} ->
+          {:cont, {:ok, [action_taken | taken], next_open_issues}}
 
-        "create_issue" ->
-          maybe_create_issue(repo, action, open_issues)
-
-        _ ->
-          %{action: "none", title: Map.get(action, "title")}
+        {:error, reason} ->
+          {:halt, {:error, reason}}
       end
     end)
+    |> case do
+      {:ok, taken, _open_issues} -> {:ok, Enum.reverse(taken)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp execute_action(repo, action, open_issues) do
+    case Map.get(action, "action") do
+      "comment_issue" ->
+        with {:ok, action_taken} <- comment_existing_issue(repo, action) do
+          {:ok, action_taken, open_issues}
+        end
+
+      "create_issue" ->
+        maybe_create_issue(repo, action, open_issues)
+
+      _ ->
+        {:ok, %{action: "none", title: action_string(action, "title")}, open_issues}
+    end
   end
 
   defp comment_existing_issue(repo, action) do
     case Map.get(action, "issue_number") do
       issue_number when is_integer(issue_number) ->
-        :ok = issue_client_comment(repo, issue_number, Map.get(action, "body", ""))
-
-        %{
-          action: "comment_issue",
-          title: Map.get(action, "title"),
-          existing_issue: "##{issue_number}"
-        }
+        with :ok <- issue_client_comment(repo, issue_number, action_string(action, "body")) do
+          {:ok,
+           %{
+             action: "comment_issue",
+             title: action_string(action, "title"),
+             existing_issue: "##{issue_number}"
+           }}
+        else
+          {:error, reason} -> {:error, {:comment_issue_failed, issue_number, reason}}
+        end
 
       _ ->
-        %{action: "none", title: Map.get(action, "title")}
+        {:ok, %{action: "none", title: action_string(action, "title")}}
     end
   end
 
   defp maybe_create_issue(repo, action, open_issues) do
-    title = Map.get(action, "title", "Muse follow-up")
-    body = Map.get(action, "body", "")
+    title =
+      action
+      |> action_string("title", "Muse follow-up")
+      |> default_issue_title()
 
-    case find_duplicate_issue(open_issues, title) do
-      nil ->
-        create_issue(repo, title, body)
-        %{action: "create_issue", title: title}
+    body = action_string(action, "body")
 
-      issue ->
-        note = "Muse synthesis matched an existing open issue.\n\n#{body}"
-        :ok = issue_client_comment(repo, issue.number, note)
+    case validate_issue_payload(title, body) do
+      :ok ->
+        case find_duplicate_issue(open_issues, title) do
+          nil ->
+            with {:ok, created_issue} <- create_issue(repo, title, body) do
+              {:ok, %{action: "create_issue", title: title}, [created_issue | open_issues]}
+            end
 
-        %{
-          action: "comment_issue",
-          title: title,
-          existing_issue: "##{issue.number}",
-          deduplicated: true
-        }
+          issue ->
+            comment_duplicate_issue(repo, issue, title, body, open_issues)
+        end
+
+      {:error, reason} ->
+        {:ok,
+         %{
+           action: "none",
+           title: title,
+           skipped_reason: inspect(reason)
+         }, open_issues}
     end
   end
 
@@ -478,7 +539,7 @@ defmodule Conductor.Muse do
     File.write!(tmp, body)
 
     try do
-      case Shell.cmd("gh", [
+      case shell_mod().cmd("gh", [
              "issue",
              "create",
              "--repo",
@@ -490,8 +551,16 @@ defmodule Conductor.Muse do
              "--body-file",
              tmp
            ]) do
-        {:ok, _url} -> :ok
-        {:error, msg, _code} -> raise "issue creation failed: #{msg}"
+        {:ok, url} ->
+          {:ok,
+           %{
+             number: parse_issue_number(url),
+             title: "[muse] #{title}",
+             url: String.trim(url)
+           }}
+
+        {:error, msg, code} ->
+          {:error, {:issue_creation_failed, code, msg}}
       end
     after
       File.rm(tmp)
@@ -503,11 +572,12 @@ defmodule Conductor.Muse do
 
     if function_exported?(issue_client, :list_issues, 2) do
       case issue_client.list_issues(repo, limit: 100) do
-        {:ok, issues} -> issues
-        _ -> []
+        {:ok, issues} -> {:ok, issues}
+        {:error, reason} -> {:error, {:list_issues_failed, reason}}
+        other -> {:error, {:list_issues_failed, other}}
       end
     else
-      []
+      {:ok, []}
     end
   end
 
@@ -516,7 +586,7 @@ defmodule Conductor.Muse do
 
     Enum.find(open_issues, fn issue ->
       issue_title = Map.get(issue, :title) || Map.get(issue, "title", "")
-      normalize_title(issue_title) in [normalized, normalize_title("[muse] #{title}")]
+      normalize_title(issue_title) == normalized
     end)
   end
 
@@ -539,7 +609,38 @@ defmodule Conductor.Muse do
         issue_client.comment(repo, issue_number, body)
 
       true ->
-        :ok
+        {:error, :unsupported_issue_comment}
+    end
+  end
+
+  defp comment_duplicate_issue(repo, issue, title, body, open_issues) do
+    case issue_number(issue) do
+      issue_number when is_integer(issue_number) ->
+        note = "Muse synthesis matched an existing open issue.\n\n#{body}"
+
+        with :ok <- issue_client_comment(repo, issue_number, note) do
+          {:ok,
+           %{
+             action: "comment_issue",
+             title: title,
+             existing_issue: "##{issue_number}",
+             deduplicated: true
+           }, open_issues}
+        else
+          {:error, reason} -> {:error, {:comment_issue_failed, issue_number, reason}}
+        end
+
+      _ ->
+        {:ok, %{action: "none", title: title, deduplicated: true}, open_issues}
+    end
+  end
+
+  defp issue_number(issue), do: Map.get(issue, :number) || Map.get(issue, "number")
+
+  defp parse_issue_number(url) do
+    case Regex.run(~r{/issues/(\d+)\s*$}, String.trim(url), capture: :all_but_first) do
+      [issue_number] -> String.to_integer(issue_number)
+      _ -> nil
     end
   end
 
@@ -558,17 +659,25 @@ defmodule Conductor.Muse do
     |> Path.wildcard()
     |> Enum.sort(:desc)
     |> Enum.take(20)
-    |> Enum.map(fn path ->
-      %{path: path, body: File.read!(path)}
+    |> Enum.reduce([], fn path, reflections ->
+      case File.read(path) do
+        {:ok, body} ->
+          [%{path: path, body: body} | reflections]
+
+        {:error, reason} ->
+          Logger.warning("[muse] skipping reflection #{path}: #{inspect(reason)}")
+          reflections
+      end
     end)
+    |> Enum.reverse()
   end
 
-  defp synthesis_context(repo, reflections) do
+  defp synthesis_context(reflections, open_issues) do
     %{
       reflections: reflections,
       project_context: read_repo_file("project.md", 4_000),
       backlog: read_repo_file(".groom/BACKLOG.md", 2_000),
-      open_issues: open_issues(repo)
+      open_issues: open_issues
     }
   end
 
@@ -579,9 +688,61 @@ defmodule Conductor.Muse do
     end
   end
 
+  defp default_issue_title(""), do: "Muse follow-up"
+  defp default_issue_title(title), do: title
+
+  defp validate_issue_payload(title, body) do
+    cond do
+      byte_size(title) == 0 ->
+        {:error, :blank_title}
+
+      byte_size(title) > @max_issue_title_bytes ->
+        {:error, :title_too_long}
+
+      byte_size(body) > @max_issue_body_bytes ->
+        {:error, :body_too_long}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp action_string(action, key, default \\ "") do
+    case Map.get(action, key, default) do
+      value when is_binary(value) -> value
+      nil -> default
+      value -> to_string(value)
+    end
+  end
+
+  defp run_field(run, key, default) do
+    case Map.fetch(run, key) do
+      {:ok, value} ->
+        value
+
+      :error ->
+        Enum.find_value(run, default, fn
+          {field, value} ->
+            if is_atom(field) and Atom.to_string(field) == key, do: value
+
+          _ ->
+            nil
+        end)
+    end
+  end
+
+  defp queue_contains?(queue, run_id) do
+    queue
+    |> :queue.to_list()
+    |> Enum.any?(&(&1 == run_id))
+  end
+
+  defp queue_length(queue), do: :queue.len(queue)
+
   defp repo_root, do: Config.repo_root()
   defp workspace_root(repo), do: Workspace.repo_root(repo)
   defp worker_mod, do: Application.get_env(:conductor, :worker_module, Conductor.Sprite)
   defp workspace_mod, do: Application.get_env(:conductor, :workspace_module, Workspace)
   defp issue_client_mod, do: Application.get_env(:conductor, :tracker_module, Conductor.GitHub)
+  defp shell_mod, do: Application.get_env(:conductor, :muse_shell_module, Shell)
 end
