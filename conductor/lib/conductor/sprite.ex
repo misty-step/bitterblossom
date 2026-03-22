@@ -670,24 +670,18 @@ defmodule Conductor.Sprite do
   defp validate_repo(repo), do: {:error, "invalid repo format: #{inspect(repo)}"}
 
   defp repo_setup_script(repo_dir, repo, true) do
-    """
-    rm -rf #{shell_quote(repo_dir)} &&
-      cd #{shell_quote(@sprite_workspace_root)} &&
-      git clone #{shell_quote(repo_clone_url(repo))}
-    """
+    "rm -rf #{shell_quote(repo_dir)}" <>
+      " && cd #{shell_quote(@sprite_workspace_root)}" <>
+      " && git clone #{shell_quote(repo_clone_url(repo))}"
   end
 
   defp repo_setup_script(repo_dir, repo, false) do
-    """
-    if [ -d #{shell_quote(repo_dir)} ]; then
-      cd #{shell_quote(repo_dir)} &&
-        (git checkout master 2>/dev/null || git checkout main 2>/dev/null) &&
-        git pull --ff-only
-    else
-      cd #{shell_quote(@sprite_workspace_root)} &&
-        git clone #{shell_quote(repo_clone_url(repo))}
-    fi
-    """
+    "if [ -d #{shell_quote(repo_dir)} ]; then" <>
+      " cd #{shell_quote(repo_dir)}" <>
+      " && (git checkout master 2>/dev/null || git checkout main 2>/dev/null)" <>
+      " && git pull --ff-only;" <>
+      " else cd #{shell_quote(@sprite_workspace_root)}" <>
+      " && git clone #{shell_quote(repo_clone_url(repo))}; fi"
   end
 
   defp repo_clone_url(repo), do: "https://github.com/#{repo}.git"
