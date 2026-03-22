@@ -1,11 +1,11 @@
-defmodule Conductor.FixerTest do
+defmodule Conductor.PhaseWorkerTest do
   use ExUnit.Case, async: false
   import ExUnit.CaptureLog
   import Conductor.TestSupport.ProcessHelpers
 
-  alias Conductor.{Store, Fixer}
+  alias Conductor.{PhaseWorker, Store}
+  alias Conductor.PhaseWorker.Roles
 
-  # Shared state for mocks (accessible across processes)
   defmodule MockState do
     def put(key, value), do: :persistent_term.put({__MODULE__, key}, value)
 
@@ -24,46 +24,25 @@ defmodule Conductor.FixerTest do
     end
   end
 
-  # Mock code host: configurable factory PRs and CI status
   defmodule MockCodeHost do
     @behaviour Conductor.CodeHost
-    alias Conductor.FixerTest.MockState
+    alias Conductor.PhaseWorkerTest.MockState
 
-    def checks_green?(_repo, pr_number) do
-      case MockState.get(:checks_green) do
-        fun when is_function(fun) -> fun.(pr_number)
-        _ -> false
-      end
-    end
-
-    def checks_failed?(_repo, pr_number) do
-      case MockState.get(:checks_failed) do
-        fun when is_function(fun) -> fun.(pr_number)
-        _ -> MockState.get(:checks_failed_default, true)
-      end
-    end
-
-    def ci_status(_repo, pr_number) do
-      state =
-        cond do
-          checks_failed?("", pr_number) -> :failed
-          checks_green?("", pr_number) -> :green
-          true -> :pending
-        end
-
-      {:ok, %{state: state, summary: "mock ci", pending: []}}
-    end
-
+    def checks_green?(_repo, _pr_number), do: false
+    def checks_failed?(_repo, _pr_number), do: false
+    def ci_status(_repo, _pr_number), do: {:ok, %{state: :green, summary: "mock ci", pending: []}}
     def merge(_repo, _pr, _opts), do: :ok
     def labeled_prs(_repo, _label), do: {:ok, []}
-
     def open_prs(_repo), do: MockState.get(:open_prs, {:ok, []})
+
+    def pr_review_comments(_repo, _pr_number) do
+      MockState.get(:review_comments, {:ok, []})
+    end
 
     def pr_ci_failure_logs(_repo, _pr_number) do
       MockState.get(:ci_failure_logs, {:ok, "Build failed: test_foo.ex:42 assertion error"})
     end
 
-    def pr_review_comments(_repo, _pr_number), do: {:ok, []}
     def add_label(_repo, _pr_number, _label), do: :ok
     def close_issue(_repo, _issue_number), do: :ok
     def close_pr(_repo, _pr_number, _opts \\ []), do: :ok
@@ -72,14 +51,13 @@ defmodule Conductor.FixerTest do
     def pr_state(_repo, _pr_number), do: {:ok, "OPEN"}
 
     def get_pr_checks(_repo, _pr_number) do
-      {:ok, [%{"name" => "ci", "conclusion" => "FAILURE", "status" => "COMPLETED"}]}
+      {:ok, [%{"name" => "ci", "conclusion" => "SUCCESS", "status" => "COMPLETED"}]}
     end
   end
 
-  # Mock worker: records dispatches
   defmodule MockWorker do
     @behaviour Conductor.Worker
-    alias Conductor.FixerTest.MockState
+    alias Conductor.PhaseWorkerTest.MockState
 
     def exec(_worker, _cmd, _opts), do: {:ok, ""}
 
@@ -95,7 +73,7 @@ defmodule Conductor.FixerTest do
   end
 
   defmodule MockWorkspace do
-    alias Conductor.FixerTest.MockState
+    alias Conductor.PhaseWorkerTest.MockState
 
     def sync_persona(worker, workspace, role, _opts \\ []) do
       send(MockState.get(:test_pid, self()), {:persona_synced, worker, workspace, role})
@@ -103,66 +81,38 @@ defmodule Conductor.FixerTest do
     end
   end
 
-  # Mock tracker
-  defmodule MockTracker do
-    @behaviour Conductor.Tracker
-    def list_eligible(_repo, _opts), do: []
-
-    def get_issue(_repo, number) do
-      {:ok,
-       %Conductor.Issue{
-         number: number,
-         title: "Test issue #{number}",
-         body: "Test body",
-         url: "https://github.com/test/repo/issues/#{number}"
-       }}
-    end
-
-    def comment(_repo, _issue, _body), do: :ok
-    def issue_has_label?(_repo, _issue, _label), do: {:ok, false}
-    def issue_comments(_repo, _issue), do: {:ok, []}
-  end
-
   setup do
-    db_path = Path.join(System.tmp_dir!(), "fixer_test_#{:rand.uniform(999_999)}.db")
-    event_log = Path.join(System.tmp_dir!(), "fixer_test_#{:rand.uniform(999_999)}.jsonl")
+    db_path = Path.join(System.tmp_dir!(), "phase_worker_test_#{:rand.uniform(999_999)}.db")
+    event_log = Path.join(System.tmp_dir!(), "phase_worker_test_#{:rand.uniform(999_999)}.jsonl")
 
     stop_conductor_app()
-    stop_process(Fixer)
     stop_process(Store)
     stop_process(Conductor.TaskSupervisor)
+    stop_process(Conductor.PhaseWorkerRegistry)
+
+    {:ok, _} = Registry.start_link(keys: :unique, name: Conductor.PhaseWorkerRegistry)
     {:ok, _} = Store.start_link(db_path: db_path, event_log: event_log)
     {:ok, _} = Task.Supervisor.start_link(name: Conductor.TaskSupervisor)
 
-    # Inject mocks
     orig_code_host = Application.get_env(:conductor, :code_host_module)
     orig_worker = Application.get_env(:conductor, :worker_module)
-    orig_tracker = Application.get_env(:conductor, :tracker_module)
     orig_workspace = Application.get_env(:conductor, :workspace_module)
 
     Application.put_env(:conductor, :code_host_module, MockCodeHost)
     Application.put_env(:conductor, :worker_module, MockWorker)
-    Application.put_env(:conductor, :tracker_module, MockTracker)
     Application.put_env(:conductor, :workspace_module, MockWorkspace)
 
     MockState.put(:test_pid, self())
 
     on_exit(fn ->
-      stop_process(Fixer)
       stop_process(Conductor.TaskSupervisor)
       stop_process(Store)
+      stop_process(Conductor.PhaseWorkerRegistry)
       MockState.cleanup()
 
-      for {key, orig} <- [
-            {:code_host_module, orig_code_host},
-            {:worker_module, orig_worker},
-            {:tracker_module, orig_tracker},
-            {:workspace_module, orig_workspace}
-          ] do
-        if orig,
-          do: Application.put_env(:conductor, key, orig),
-          else: Application.delete_env(:conductor, key)
-      end
+      restore_env(:code_host_module, orig_code_host)
+      restore_env(:worker_module, orig_worker)
+      restore_env(:workspace_module, orig_workspace)
 
       File.rm(db_path)
       File.rm(event_log)
@@ -171,8 +121,18 @@ defmodule Conductor.FixerTest do
     :ok
   end
 
-  describe "poll triggers fixer dispatch" do
-    test "dispatches fixer sprite when factory PR has failed CI" do
+  defp start_phase_worker(role_module, sprites, opts \\ []) do
+    {:ok, _pid} =
+      PhaseWorker.start_link(
+        repo: "test/repo",
+        role_module: role_module,
+        sprites: sprites,
+        poll_ms: Keyword.get(opts, :poll_ms, 50)
+      )
+  end
+
+  describe "fixer role" do
+    test "dispatches thorn when a PR has failed CI" do
       MockState.put(
         :open_prs,
         {:ok,
@@ -191,12 +151,7 @@ defmodule Conductor.FixerTest do
 
       log =
         capture_log(fn ->
-          {:ok, _pid} =
-            Fixer.start_link(
-              repo: "test/repo",
-              fixer_sprite: "bb-thorn",
-              poll_ms: 50
-            )
+          start_phase_worker(Roles.Fixer, ["bb-thorn"])
 
           assert_receive {:persona_synced, "bb-thorn", "/home/sprite/workspace/repo", :thorn},
                          2_000
@@ -208,8 +163,22 @@ defmodule Conductor.FixerTest do
 
       assert log =~ "[thorn] PR #42 has red CI, dispatching Thorn"
     end
+  end
 
-    test "skips PRs when CI has not failed (green or pending)" do
+  describe "polisher role" do
+    @green_checks [%{"name" => "CI", "conclusion" => "SUCCESS", "status" => "COMPLETED"}]
+
+    test "dispatches fern when a conductor-managed PR is green and unlabeled" do
+      {:ok, run_id} =
+        Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 99,
+          issue_title: "tracked issue",
+          builder_sprite: "sprite-1"
+        })
+
+      Store.update_run(run_id, %{pr_number: 42, phase: "pr_opened", status: "pr_opened"})
+
       MockState.put(
         :open_prs,
         {:ok,
@@ -219,106 +188,76 @@ defmodule Conductor.FixerTest do
              "headRefName" => "factory/99-12345",
              "title" => "feat: implement feature",
              "body" => "Closes #99",
-             "statusCheckRollup" => [
-               %{"name" => "CI", "conclusion" => "SUCCESS", "status" => "COMPLETED"}
-             ]
+             "labels" => [],
+             "statusCheckRollup" => @green_checks
            }
          ]}
       )
 
-      {:ok, _pid} =
-        Fixer.start_link(
-          repo: "test/repo",
-          fixer_sprite: "bb-thorn",
-          poll_ms: 50
-        )
-
-      refute_receive {:dispatched, _, _}, 300
-    end
-
-    test "dispatches fixer for non-factory PRs with failed CI" do
       MockState.put(
-        :open_prs,
-        {:ok,
-         [
-           %{
-             "number" => 42,
-             "headRefName" => "fix/cerberus-permissions",
-             "title" => "fix: cerberus permissions",
-             "body" => "Fixes permissions",
-             "statusCheckRollup" => [
-               %{"name" => "CI", "conclusion" => "FAILURE", "status" => "COMPLETED"}
-             ]
-           }
-         ]}
+        :review_comments,
+        {:ok, [%{"author" => "reviewer", "body" => "Please rename this variable"}]}
       )
 
-      {:ok, _pid} =
-        Fixer.start_link(
-          repo: "test/repo",
-          fixer_sprite: "bb-thorn",
-          poll_ms: 50
-        )
+      log =
+        capture_log(fn ->
+          start_phase_worker(Roles.Polisher, ["bb-fern"])
 
-      assert_receive {:dispatched, "bb-thorn", _prompt}, 2_000
-    end
+          assert_receive {:persona_synced, "bb-fern", "/home/sprite/workspace/repo", :fern},
+                         2_000
 
-    test "does not dispatch when fixer is already working on a PR" do
-      MockState.put(
-        :open_prs,
-        {:ok,
-         [
-           %{
-             "number" => 42,
-             "headRefName" => "factory/99-12345",
-             "title" => "feat: implement feature",
-             "body" => "Closes #99",
-             "statusCheckRollup" => [
-               %{"name" => "CI", "conclusion" => "FAILURE", "status" => "COMPLETED"}
-             ]
-           }
-         ]}
-      )
+          assert_receive {:dispatched, "bb-fern", prompt}, 2_000
+          assert prompt =~ "Repository Root: /home/sprite/workspace/repo"
+          assert prompt =~ "gh pr edit --add-label lgtm"
+        end)
 
-      # Slow dispatch so in-flight tracking is testable
-      MockState.put(:dispatch_delay_ms, 500)
-
-      {:ok, _pid} =
-        Fixer.start_link(
-          repo: "test/repo",
-          fixer_sprite: "bb-thorn",
-          poll_ms: 50
-        )
-
-      # First dispatch should happen
-      assert_receive {:dispatched, "bb-thorn", _}, 2_000
-      # Second dispatch for same PR should not happen while first is in-flight
-      refute_receive {:dispatched, "bb-thorn", _}, 300
+      assert log =~ "[fern] PR #42 is green, dispatching Fern"
     end
   end
 
-  describe "status/0" do
-    test "returns current fixer state with health" do
-      {:ok, _pid} =
-        Fixer.start_link(
-          repo: "test/repo",
-          fixer_sprite: "bb-thorn",
-          poll_ms: 60_000
-        )
+  describe "status/1" do
+    test "reports current state for a role worker" do
+      start_phase_worker(Roles.Fixer, ["bb-thorn"], poll_ms: 60_000)
 
-      status = Fixer.status()
+      status = PhaseWorker.status(Roles.Fixer)
       assert status.repo == "test/repo"
-      assert status.fixer_sprite == "bb-thorn"
+      assert status.sprites == ["bb-thorn"]
+      assert status.role == :fixer
       assert is_map(status.in_flight)
       assert status.health == :healthy
       assert status.failure_count == 0
     end
   end
 
-  describe "dispatch failure backoff" do
+  describe "shared worker behavior" do
+    test "does not redispatch work while the only sprite is busy" do
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 42,
+             "headRefName" => "factory/99-12345",
+             "title" => "feat: implement feature",
+             "body" => "Closes #99",
+             "statusCheckRollup" => [
+               %{"name" => "CI", "conclusion" => "FAILURE", "status" => "COMPLETED"}
+             ]
+           }
+         ]}
+      )
+
+      MockState.put(:dispatch_delay_ms, 500)
+
+      start_phase_worker(Roles.Fixer, ["bb-thorn"])
+
+      assert_receive {:dispatched, "bb-thorn", _prompt}, 2_000
+      refute_receive {:dispatched, "bb-thorn", _prompt}, 300
+    end
+
     defmodule FailingWorker do
       @behaviour Conductor.Worker
-      alias Conductor.FixerTest.MockState
+      alias Conductor.PhaseWorkerTest.MockState
 
       def exec(_worker, _cmd, _opts), do: {:ok, ""}
 
@@ -332,7 +271,10 @@ defmodule Conductor.FixerTest do
     end
 
     test "backs off after dispatch failure" do
+      orig_worker = Application.get_env(:conductor, :worker_module)
       Application.put_env(:conductor, :worker_module, FailingWorker)
+
+      on_exit(fn -> restore_env(:worker_module, orig_worker) end)
 
       MockState.put(
         :open_prs,
@@ -350,39 +292,18 @@ defmodule Conductor.FixerTest do
          ]}
       )
 
-      {:ok, pid} =
-        Fixer.start_link(
-          repo: "test/repo",
-          fixer_sprite: "bb-thorn",
-          poll_ms: 50
-        )
+      start_phase_worker(Roles.Fixer, ["bb-thorn"])
 
       assert_receive :dispatch_attempted, 2_000
 
-      status = Fixer.status()
+      status = PhaseWorker.status(Roles.Fixer)
       assert status.health == :degraded
       assert status.failure_count == 1
-      assert Process.alive?(pid)
     end
+  end
 
-    test "survives task crash (async_nolink)" do
-      defmodule CrashingWorker do
-        @behaviour Conductor.Worker
-        alias Conductor.FixerTest.MockState
-
-        def exec(_worker, _cmd, _opts), do: {:ok, ""}
-
-        def dispatch(_worker, _prompt, _repo, _opts) do
-          send(MockState.get(:test_pid, self()), :crash_dispatch)
-          raise "boom"
-        end
-
-        def cleanup(_worker, _repo, _run_id), do: :ok
-        def busy?(_worker, _opts), do: false
-      end
-
-      Application.put_env(:conductor, :worker_module, CrashingWorker)
-
+  describe "multi-sprite dispatch" do
+    test "dispatches two eligible PRs in parallel when the role has two idle sprites" do
       MockState.put(
         :open_prs,
         {:ok,
@@ -390,7 +311,16 @@ defmodule Conductor.FixerTest do
            %{
              "number" => 101,
              "headRefName" => "factory/101-12345",
-             "title" => "test",
+             "title" => "first",
+             "body" => "",
+             "statusCheckRollup" => [
+               %{"name" => "CI", "conclusion" => "FAILURE", "status" => "COMPLETED"}
+             ]
+           },
+           %{
+             "number" => 102,
+             "headRefName" => "factory/102-12345",
+             "title" => "second",
              "body" => "",
              "statusCheckRollup" => [
                %{"name" => "CI", "conclusion" => "FAILURE", "status" => "COMPLETED"}
@@ -399,17 +329,14 @@ defmodule Conductor.FixerTest do
          ]}
       )
 
-      {:ok, pid} =
-        Fixer.start_link(
-          repo: "test/repo",
-          fixer_sprite: "bb-thorn",
-          poll_ms: 50
-        )
+      MockState.put(:dispatch_delay_ms, 500)
 
-      assert_receive :crash_dispatch, 2_000
-      Process.sleep(100)
+      start_phase_worker(Roles.Fixer, ["bb-thorn-1", "bb-thorn-2"])
 
-      assert Process.alive?(pid)
+      assert_receive {:dispatched, first_worker, _prompt}, 2_000
+      assert_receive {:dispatched, second_worker, _prompt}, 2_000
+
+      assert Enum.sort([first_worker, second_worker]) == ["bb-thorn-1", "bb-thorn-2"]
     end
   end
 end

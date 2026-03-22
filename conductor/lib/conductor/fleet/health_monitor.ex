@@ -11,6 +11,7 @@ defmodule Conductor.Fleet.HealthMonitor do
 
   alias Conductor.{Config, Store}
   alias Conductor.Fleet.Reconciler
+  alias Conductor.PhaseWorker.Roles
 
   defstruct [
     :repo,
@@ -19,11 +20,6 @@ defmodule Conductor.Fleet.HealthMonitor do
     sprites: [],
     known_health: %{}
   ]
-
-  @role_to_module %{
-    fixer: {Conductor.Fixer, :fixer_sprite},
-    polisher: {Conductor.Polisher, :polisher_sprite}
-  }
 
   # --- Public API ---
 
@@ -49,10 +45,6 @@ defmodule Conductor.Fleet.HealthMonitor do
     send(__MODULE__, :check)
     :ok
   end
-
-  @doc "Role-to-module mapping for phase workers."
-  @spec role_to_module() :: map()
-  def role_to_module, do: @role_to_module
 
   # --- GenServer Callbacks ---
 
@@ -113,14 +105,16 @@ defmodule Conductor.Fleet.HealthMonitor do
         old_health == :unhealthy and new_health == :healthy ->
           Logger.info("[health] #{sprite.name} recovered, starting phase worker")
 
-          case ensure_phase_worker(sprite, acc.repo) do
+          updated = put_health(acc, sprite.name, :healthy)
+
+          case sync_phase_worker(updated, sprite.role) do
             :ok ->
               Store.record_event("fleet", "sprite_recovered", %{
                 name: sprite.name,
                 role: to_string(sprite.role)
               })
 
-              put_health(acc, sprite.name, :healthy)
+              updated
 
             :error ->
               acc
@@ -134,7 +128,12 @@ defmodule Conductor.Fleet.HealthMonitor do
             role: to_string(sprite.role)
           })
 
-          put_health(acc, sprite.name, :unhealthy)
+          updated = put_health(acc, sprite.name, :unhealthy)
+
+          case sync_phase_worker(updated, sprite.role) do
+            :ok -> updated
+            :error -> acc
+          end
 
         true ->
           acc
@@ -149,43 +148,32 @@ defmodule Conductor.Fleet.HealthMonitor do
     end
   end
 
-  @spec ensure_phase_worker(map(), binary()) :: :ok | :error
-  defp ensure_phase_worker(sprite, repo) do
-    case Map.get(@role_to_module, sprite.role) do
+  defp sync_phase_worker(state, role) do
+    case Roles.by_role(role) do
       nil ->
         :ok
 
-      {module, sprite_key} ->
-        if Process.whereis(module) do
-          :ok
-        else
-          try do
-            case Supervisor.start_child(
-                   supervisor_name(),
-                   {module, [{:repo, repo}, {sprite_key, sprite.name}]}
-                 ) do
-              {:ok, _} ->
-                Logger.info("[health] started #{inspect(module)} for #{sprite.name}")
-                :ok
+      role_module ->
+        sprites = healthy_sprites_for_role(state, role)
 
-              {:error, {:already_started, _}} ->
-                :ok
+        case phase_worker_supervisor().ensure_worker(role_module, state.repo, sprites) do
+          :ok ->
+            :ok
 
-              {:error, reason} ->
-                Logger.warning("[health] failed to start #{inspect(module)}: #{inspect(reason)}")
-                :error
-            end
-          catch
-            :exit, _ ->
-              Logger.warning("[health] supervisor unavailable, cannot start #{inspect(module)}")
-              :error
-          end
+          {:error, reason} ->
+            Logger.warning("[health] failed to sync #{inspect(role_module)}: #{inspect(reason)}")
+            :error
         end
     end
   end
 
-  defp supervisor_name do
-    Application.get_env(:conductor, :supervisor_name, Conductor.Supervisor)
+  defp healthy_sprites_for_role(state, role) do
+    state.sprites
+    |> Enum.filter(fn sprite ->
+      sprite.role == role and Map.get(state.known_health, sprite.name) == :healthy
+    end)
+    |> Enum.map(& &1.name)
+    |> Enum.sort()
   end
 
   defp put_health(state, name, health) do
@@ -198,5 +186,13 @@ defmodule Conductor.Fleet.HealthMonitor do
 
   defp reconciler_mod do
     Application.get_env(:conductor, :reconciler_module, Reconciler)
+  end
+
+  defp phase_worker_supervisor do
+    Application.get_env(
+      :conductor,
+      :phase_worker_supervisor,
+      Conductor.PhaseWorker.Supervisor
+    )
   end
 end

@@ -4,6 +4,8 @@ defmodule Conductor.Fleet.HealthMonitorTest do
   import Conductor.TestSupport.ProcessHelpers
 
   alias Conductor.Fleet.HealthMonitor
+  alias Conductor.PhaseWorker
+  alias Conductor.PhaseWorker.Roles
   alias Conductor.Store
 
   defmodule MockState do
@@ -63,10 +65,12 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     stop_process(Store)
     {:ok, _} = Store.start_link(db_path: db_path, event_log: event_log)
 
-    # Start a test supervisor so ensure_phase_worker can start children
-    stop_process(Conductor.Supervisor)
-    {:ok, _} = Supervisor.start_link([], strategy: :one_for_one, name: Conductor.Supervisor)
+    stop_process(Conductor.PhaseWorker.Supervisor)
+    stop_process(Conductor.PhaseWorkerRegistry)
     stop_process(Conductor.TaskSupervisor)
+
+    {:ok, _} = Registry.start_link(keys: :unique, name: Conductor.PhaseWorkerRegistry)
+    {:ok, _} = Conductor.PhaseWorker.Supervisor.start_link()
     {:ok, _} = Task.Supervisor.start_link(name: Conductor.TaskSupervisor)
 
     orig_reconciler = Application.get_env(:conductor, :reconciler_module)
@@ -81,11 +85,10 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     Application.put_env(:conductor, :code_host_module, NoopCodeHost)
 
     on_exit(fn ->
-      stop_process(Conductor.Polisher)
-      stop_process(Conductor.Fixer)
       stop_process(HealthMonitor)
       stop_process(Conductor.TaskSupervisor)
-      stop_process(Conductor.Supervisor)
+      stop_process(Conductor.PhaseWorker.Supervisor)
+      stop_process(Conductor.PhaseWorkerRegistry)
       stop_process(Store)
       MockState.cleanup()
 
@@ -167,6 +170,8 @@ defmodule Conductor.Fleet.HealthMonitorTest do
 
     assert log =~ "bb-polisher recovered"
     assert HealthMonitor.status().sprites["bb-polisher"] == :healthy
+    assert PhaseWorker.whereis(Roles.Polisher)
+    assert PhaseWorker.status(Roles.Polisher).sprites == ["bb-polisher"]
   end
 
   test "detects healthy→unhealthy transition and logs degradation" do
@@ -228,5 +233,37 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     Process.sleep(100)
 
     assert HealthMonitor.status().sprites["bb-polisher"] == :healthy
+  end
+
+  test "recovered sprite joins the existing role worker instead of starting a second singleton" do
+    start_monitor(interval_ms: 60_000)
+
+    sprites = [
+      %{name: "bb-polisher-1", role: :polisher, harness: "codex", repo: "test/repo"},
+      %{name: "bb-polisher-2", role: :polisher, harness: "codex", repo: "test/repo"}
+    ]
+
+    MockState.put({:sprite_health, "bb-polisher-1"}, :healthy)
+    MockState.put({:sprite_health, "bb-polisher-2"}, :healthy)
+
+    HealthMonitor.configure(
+      sprites: sprites,
+      repo: "test/repo",
+      healthy: MapSet.new(["bb-polisher-1"])
+    )
+
+    :ok =
+      Conductor.PhaseWorker.Supervisor.ensure_worker(
+        Roles.Polisher,
+        "test/repo",
+        ["bb-polisher-1"]
+      )
+
+    assert PhaseWorker.status(Roles.Polisher).sprites == ["bb-polisher-1"]
+
+    HealthMonitor.check_now()
+    Process.sleep(100)
+
+    assert PhaseWorker.status(Roles.Polisher).sprites == ["bb-polisher-1", "bb-polisher-2"]
   end
 end

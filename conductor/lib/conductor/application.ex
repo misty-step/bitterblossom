@@ -12,8 +12,10 @@ defmodule Conductor.Application do
         {Phoenix.PubSub, name: Conductor.PubSub},
         Conductor.Store,
         Conductor.Retro,
+        {Registry, keys: :unique, name: Conductor.PhaseWorkerRegistry},
         {Task.Supervisor, name: Conductor.TaskSupervisor},
         {DynamicSupervisor, name: Conductor.RunSupervisor, strategy: :one_for_one},
+        Conductor.PhaseWorker.Supervisor,
         Conductor.Orchestrator,
         Conductor.Fleet.HealthMonitor
       ] ++ dashboard_children()
@@ -133,22 +135,28 @@ defmodule Conductor.Application do
 
   defp start_phase_workers(sprites, healthy, repo) do
     alias Conductor.Fleet.Loader
+    alias Conductor.PhaseWorker.Roles
 
-    for {role, {module, sprite_key}} <- Conductor.Fleet.HealthMonitor.role_to_module() do
-      Loader.by_role(sprites, role)
-      |> Enum.filter(&MapSet.member?(healthy, &1.name))
-      |> Enum.each(fn sprite ->
-        case Supervisor.start_child(Conductor.Supervisor, {
-               module,
-               [{:repo, repo}, {sprite_key, sprite.name}]
-             }) do
-          {:ok, _} ->
-            Logger.info("[boot] #{role_display_name(role)} started: #{sprite.name}")
+    for role_module <- Roles.all() do
+      role = role_module.role()
 
-          {:error, reason} ->
-            Logger.warning("[boot] #{role_display_name(role)} failed: #{inspect(reason)}")
-        end
-      end)
+      phase_sprites =
+        Loader.by_role(sprites, role)
+        |> Enum.filter(&MapSet.member?(healthy, &1.name))
+        |> Enum.map(& &1.name)
+
+      case Conductor.PhaseWorker.Supervisor.ensure_worker(role_module, repo, phase_sprites) do
+        :ok when phase_sprites != [] ->
+          Logger.info(
+            "[boot] #{role_display_name(role)} started: #{Enum.join(phase_sprites, ", ")}"
+          )
+
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          Logger.warning("[boot] #{role_display_name(role)} failed: #{inspect(reason)}")
+      end
     end
   end
 
