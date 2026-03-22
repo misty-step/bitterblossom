@@ -609,6 +609,39 @@ defmodule Conductor.PhaseWorkerTest do
       assert state.ref_to_sprite == %{}
     end
 
+    test "applies backoff for unexpected task result shapes" do
+      {:ok, pid} = start_phase_worker(Roles.Fixer, ["bb-thorn"], poll_ms: 60_000)
+      ref = make_ref()
+
+      :sys.replace_state(pid, fn state ->
+        %{
+          state
+          | in_flight: %{"bb-thorn" => %{ref: ref, run_id: nil, work_ref: 42}},
+            ref_to_sprite: %{ref => "bb-thorn"}
+        }
+      end)
+
+      log =
+        capture_log(fn ->
+          send(pid, {ref, :unexpected})
+
+          status =
+            wait_for(fn ->
+              status = PhaseWorker.status(Roles.Fixer)
+
+              if status.failure_count == 1 and status.in_flight == %{} do
+                status
+              end
+            end)
+
+          assert status.health == :degraded
+        end)
+
+      state = :sys.get_state(pid)
+      assert state.ref_to_sprite == %{}
+      assert log =~ "unexpected result for PR #42: :unexpected"
+    end
+
     defmodule FailingWorker do
       @behaviour Conductor.Worker
       alias Conductor.PhaseWorkerTest.MockState

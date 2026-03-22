@@ -123,6 +123,21 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     pid
   end
 
+  defp wait_for(fun, attempts \\ 20)
+
+  defp wait_for(_fun, 0), do: flunk("timed out waiting for health monitor state")
+
+  defp wait_for(fun, attempts) do
+    case fun.() do
+      nil ->
+        Process.sleep(25)
+        wait_for(fun, attempts - 1)
+
+      value ->
+        value
+    end
+  end
+
   test "starts with empty state and reports status" do
     start_monitor()
 
@@ -238,9 +253,12 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     assert HealthMonitor.status().sprites["bb-polisher"] == :unhealthy
 
     HealthMonitor.check_now()
-    Process.sleep(100)
 
-    assert HealthMonitor.status().sprites["bb-polisher"] == :healthy
+    wait_for(fn ->
+      if HealthMonitor.status().sprites["bb-polisher"] == :healthy do
+        :ok
+      end
+    end)
   end
 
   test "recovered sprite joins the existing role worker instead of starting a second singleton" do
@@ -270,9 +288,12 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     assert PhaseWorker.status(Roles.Polisher).sprites == ["bb-polisher-1"]
 
     HealthMonitor.check_now()
-    Process.sleep(100)
 
-    assert PhaseWorker.status(Roles.Polisher).sprites == ["bb-polisher-1", "bb-polisher-2"]
+    wait_for(fn ->
+      if PhaseWorker.status(Roles.Polisher).sprites == ["bb-polisher-1", "bb-polisher-2"] do
+        :ok
+      end
+    end)
   end
 
   test "records degradation when phase worker sync fails" do
