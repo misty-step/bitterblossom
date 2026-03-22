@@ -1257,4 +1257,22 @@ defmodule Conductor.RunServerTest do
 
     assert MockState.get(:gc_calls, []) == ["test-sprite"]
   end
+
+  test "checkpoint gc failures are recorded after a successful run" do
+    MockState.put({:dispatch_result, "test-sprite"}, {:ok, "build complete"})
+    MockState.put({:gc_result, "test-sprite"}, {:error, "disk full"})
+
+    MockState.put(
+      {:open_pr, "test/repo", 42},
+      {:ok, %{"number" => 123, "url" => "https://github.com/test/repo/pull/123"}}
+    )
+
+    {:ok, pid} = start_run_server()
+    wait_for_exit(pid)
+
+    run = find_run(42)
+    assert MockState.get(:gc_calls, []) == ["test-sprite"]
+    assert "checkpoint_gc_failed" in event_types(run["run_id"])
+    assert event_payload(run["run_id"], "checkpoint_gc_failed")["reason"] =~ "disk full"
+  end
 end

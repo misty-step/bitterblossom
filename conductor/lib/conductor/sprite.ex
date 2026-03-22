@@ -185,7 +185,7 @@ defmodule Conductor.Sprite do
     exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
     harness = Keyword.get(opts, :harness)
 
-    case probe(sprite, Keyword.put(opts, :exec_fn, exec_fn)) do
+    case probe(sprite, opts) do
       {:ok, %{reachable: true}} ->
         harness_ready = harness_ready?(sprite, harness, exec_fn)
         gh_authenticated = gh_authenticated?(sprite, exec_fn)
@@ -239,8 +239,9 @@ defmodule Conductor.Sprite do
   @spec probe(binary(), keyword()) :: {:ok, map()} | {:error, term()}
   def probe(sprite, opts \\ []) do
     exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
-    state_fn = Keyword.get(opts, :state_fn, &sprite_state/2)
-    timeout = if(state_fn.(sprite, opts) == :cold, do: 60_000, else: 15_000)
+    state_fn = probe_state_fn(opts)
+    state = state_fn.(sprite, opts)
+    timeout = if(state in [:cold, :unknown], do: 60_000, else: 15_000)
 
     case exec_fn.(sprite, "echo ok", timeout: timeout) do
       {:ok, _} -> {:ok, %{sprite: sprite, reachable: true}}
@@ -327,6 +328,21 @@ defmodule Conductor.Sprite do
   defp sprite_name(%{name: name}) when is_binary(name), do: name
   defp sprite_name(_), do: nil
 
+  defp probe_state_fn(opts) do
+    cond do
+      Keyword.has_key?(opts, :state_fn) ->
+        Keyword.fetch!(opts, :state_fn)
+
+      # When callers inject exec_fn for isolation, stay on that dependency path
+      # unless they explicitly provide state_fn as well.
+      Keyword.has_key?(opts, :exec_fn) ->
+        fn _, _ -> :unknown end
+
+      true ->
+        &sprite_state/2
+    end
+  end
+
   defp list_checkpoints(shell_fn, org, sprite) do
     case shell_fn.("sprite", ["api", "-o", org, "-s", sprite, "/checkpoints"], timeout: 30_000) do
       {:ok, json} ->
@@ -343,15 +359,24 @@ defmodule Conductor.Sprite do
     end
   end
 
-  defp normalize_checkpoints(checkpoints) when is_list(checkpoints), do: {:ok, checkpoints}
+  defp normalize_checkpoints(checkpoints) when is_list(checkpoints),
+    do: validate_checkpoints(checkpoints)
 
   defp normalize_checkpoints(%{"checkpoints" => checkpoints}) when is_list(checkpoints),
-    do: {:ok, checkpoints}
+    do: validate_checkpoints(checkpoints)
 
   defp normalize_checkpoints(%{"data" => checkpoints}) when is_list(checkpoints),
-    do: {:ok, checkpoints}
+    do: validate_checkpoints(checkpoints)
 
   defp normalize_checkpoints(_), do: {:error, "unexpected checkpoint payload"}
+
+  defp validate_checkpoints(checkpoints) do
+    if Enum.all?(checkpoints, &is_map/1) do
+      {:ok, checkpoints}
+    else
+      {:error, "unexpected checkpoint entry"}
+    end
+  end
 
   defp stale_checkpoints(checkpoints, max_keep) when is_integer(max_keep) and max_keep >= 0 do
     delete_count = max(length(checkpoints) - max_keep, 0)
@@ -366,6 +391,9 @@ defmodule Conductor.Sprite do
     do: {:error, "invalid checkpoint retention count"}
 
   defp checkpoint_sort_key(checkpoint) do
+    # Unknown or corrupt timestamps deliberately sort first because gc_checkpoints/2
+    # prunes the oldest entries. That makes malformed checkpoint records the first
+    # candidates for deletion instead of letting them accumulate indefinitely.
     {checkpoint_created_at(checkpoint), checkpoint_sequence(checkpoint),
      checkpoint_id(checkpoint) || ""}
   end
@@ -377,6 +405,8 @@ defmodule Conductor.Sprite do
       value when is_binary(value) ->
         case DateTime.from_iso8601(value) do
           {:ok, datetime, _offset} -> DateTime.to_unix(datetime)
+          # Parse failures fall back to -1 so checkpoint_sort_key/1 treats the
+          # record as older than any valid timestamp and gc_checkpoints/2 prunes it first.
           _ -> -1
         end
 
@@ -389,6 +419,8 @@ defmodule Conductor.Sprite do
     checkpoint
     |> checkpoint_id()
     |> case do
+      # Sprite checkpoints are expected to look like "v12"; anything else gets a
+      # low tiebreaker so created_at remains authoritative when the ID shape drifts.
       <<"v", rest::binary>> ->
         case Integer.parse(rest) do
           {number, ""} -> number

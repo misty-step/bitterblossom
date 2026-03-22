@@ -139,6 +139,23 @@ defmodule Conductor.SpriteTest do
              )
   end
 
+  test "status stays on the injected exec path when no state_fn is provided" do
+    status =
+      Sprite.status("bb-weaver",
+        harness: "codex",
+        shell_fn: fn _, _, _ -> flunk("unexpected shell state lookup") end,
+        exec_fn:
+          exec_fn([
+            {"echo ok", {:ok, "ok\n"}},
+            {"command -v codex", {:ok, "/usr/bin/codex\n"}},
+            {"gh auth status", {:ok, "github.com\n"}},
+            {"git config --global --get credential.helper", {:ok, "!gh auth git-credential"}}
+          ])
+      )
+
+    assert {:ok, %{reachable: true, healthy: true}} = status
+  end
+
   describe "gc_checkpoints/2" do
     test "prunes oldest checkpoints and keeps the newest configured count" do
       test_pid = self()
@@ -172,6 +189,220 @@ defmodule Conductor.SpriteTest do
                  org: "misty-step",
                  shell_fn: shell_fn,
                  max_keep: 2
+               )
+
+      assert [
+               {["api", "-o", "misty-step", "-s", "bb-builder", "/checkpoints"], _},
+               {["-o", "misty-step", "-s", "bb-builder", "checkpoint", "delete", "v1"], _},
+               {["-o", "misty-step", "-s", "bb-builder", "checkpoint", "delete", "v2"], _}
+             ] = drain_shell_calls()
+
+      refute_received {:unexpected_shell_args, _, _}
+    end
+
+    test "accepts nested checkpoint payload shapes" do
+      test_pid = self()
+
+      Enum.each(["checkpoints", "data"], fn key ->
+        checkpoints_json =
+          Jason.encode!(%{
+            key => [
+              %{"id" => "v1", "created_at" => "2026-03-15T01:56:00Z"},
+              %{"id" => "v2", "created_at" => "2026-03-16T01:56:00Z"}
+            ]
+          })
+
+        shell_fn = fn "sprite", args, opts ->
+          send(test_pid, {:shell_called, args, opts})
+
+          case args do
+            ["api", "-o", "misty-step", "-s", "bb-builder", "/checkpoints"] ->
+              {:ok, checkpoints_json}
+
+            ["-o", "misty-step", "-s", "bb-builder", "checkpoint", "delete", "v1"] ->
+              {:ok, "v1"}
+
+            _ ->
+              send(test_pid, {:unexpected_shell_args, args, opts})
+              {:error, "unexpected shell args: #{inspect(args)}", 1}
+          end
+        end
+
+        assert :ok =
+                 Sprite.gc_checkpoints("bb-builder",
+                   org: "misty-step",
+                   shell_fn: shell_fn,
+                   max_keep: 1
+                 )
+
+        assert [
+                 {["api", "-o", "misty-step", "-s", "bb-builder", "/checkpoints"], _},
+                 {["-o", "misty-step", "-s", "bb-builder", "checkpoint", "delete", "v1"], _}
+               ] = drain_shell_calls()
+      end)
+
+      refute_received {:unexpected_shell_args, _, _}
+    end
+
+    test "returns ok without delete calls when there are no stale checkpoints" do
+      test_pid = self()
+      checkpoints_json = Jason.encode!([])
+
+      shell_fn = fn "sprite", args, opts ->
+        send(test_pid, {:shell_called, args, opts})
+
+        case args do
+          ["api", "-o", "misty-step", "-s", "bb-builder", "/checkpoints"] ->
+            {:ok, checkpoints_json}
+
+          _ ->
+            send(test_pid, {:unexpected_shell_args, args, opts})
+            {:error, "unexpected shell args: #{inspect(args)}", 1}
+        end
+      end
+
+      assert :ok =
+               Sprite.gc_checkpoints("bb-builder",
+                 org: "misty-step",
+                 shell_fn: shell_fn,
+                 max_keep: 2
+               )
+
+      assert [
+               {["api", "-o", "misty-step", "-s", "bb-builder", "/checkpoints"], _}
+             ] = drain_shell_calls()
+
+      refute_received {:unexpected_shell_args, _, _}
+    end
+
+    test "returns an error when checkpoint listing fails" do
+      test_pid = self()
+
+      shell_fn = fn "sprite", args, opts ->
+        send(test_pid, {:shell_called, args, opts})
+
+        case args do
+          ["api", "-o", "misty-step", "-s", "bb-builder", "/checkpoints"] ->
+            {:error, "sprite api unavailable", 1}
+
+          _ ->
+            send(test_pid, {:unexpected_shell_args, args, opts})
+            {:error, "unexpected shell args: #{inspect(args)}", 1}
+        end
+      end
+
+      assert {:error, "sprite api unavailable"} =
+               Sprite.gc_checkpoints("bb-builder",
+                 org: "misty-step",
+                 shell_fn: shell_fn,
+                 max_keep: 2
+               )
+
+      assert [
+               {["api", "-o", "misty-step", "-s", "bb-builder", "/checkpoints"], _}
+             ] = drain_shell_calls()
+
+      refute_received {:unexpected_shell_args, _, _}
+    end
+
+    test "returns an error when checkpoint payload is invalid json" do
+      test_pid = self()
+
+      shell_fn = fn "sprite", args, opts ->
+        send(test_pid, {:shell_called, args, opts})
+
+        case args do
+          ["api", "-o", "misty-step", "-s", "bb-builder", "/checkpoints"] ->
+            {:ok, "{not-json"}
+
+          _ ->
+            send(test_pid, {:unexpected_shell_args, args, opts})
+            {:error, "unexpected shell args: #{inspect(args)}", 1}
+        end
+      end
+
+      assert {:error, reason} =
+               Sprite.gc_checkpoints("bb-builder",
+                 org: "misty-step",
+                 shell_fn: shell_fn,
+                 max_keep: 2
+               )
+
+      assert is_binary(reason)
+      assert reason != ""
+
+      assert [
+               {["api", "-o", "misty-step", "-s", "bb-builder", "/checkpoints"], _}
+             ] = drain_shell_calls()
+
+      refute_received {:unexpected_shell_args, _, _}
+    end
+
+    test "returns an error when checkpoint payload contains non-map entries" do
+      test_pid = self()
+      checkpoints_json = Jason.encode!(["v1", nil])
+
+      shell_fn = fn "sprite", args, opts ->
+        send(test_pid, {:shell_called, args, opts})
+
+        case args do
+          ["api", "-o", "misty-step", "-s", "bb-builder", "/checkpoints"] ->
+            {:ok, checkpoints_json}
+
+          _ ->
+            send(test_pid, {:unexpected_shell_args, args, opts})
+            {:error, "unexpected shell args: #{inspect(args)}", 1}
+        end
+      end
+
+      assert {:error, "unexpected checkpoint entry"} =
+               Sprite.gc_checkpoints("bb-builder",
+                 org: "misty-step",
+                 shell_fn: shell_fn,
+                 max_keep: 2
+               )
+
+      assert [
+               {["api", "-o", "misty-step", "-s", "bb-builder", "/checkpoints"], _}
+             ] = drain_shell_calls()
+
+      refute_received {:unexpected_shell_args, _, _}
+    end
+
+    test "returns the first delete error after partial checkpoint pruning" do
+      test_pid = self()
+
+      checkpoints_json =
+        Jason.encode!([
+          %{"id" => "v1", "created_at" => "2026-03-15T01:56:00Z"},
+          %{"id" => "v2", "created_at" => "2026-03-16T01:56:00Z"},
+          %{"id" => "v3", "created_at" => "2026-03-17T01:56:00Z"}
+        ])
+
+      shell_fn = fn "sprite", args, opts ->
+        send(test_pid, {:shell_called, args, opts})
+
+        case args do
+          ["api", "-o", "misty-step", "-s", "bb-builder", "/checkpoints"] ->
+            {:ok, checkpoints_json}
+
+          ["-o", "misty-step", "-s", "bb-builder", "checkpoint", "delete", "v1"] ->
+            {:ok, "v1"}
+
+          ["-o", "misty-step", "-s", "bb-builder", "checkpoint", "delete", "v2"] ->
+            {:error, "delete failed", 1}
+
+          _ ->
+            send(test_pid, {:unexpected_shell_args, args, opts})
+            {:error, "unexpected shell args: #{inspect(args)}", 1}
+        end
+      end
+
+      assert {:error, "delete failed"} =
+               Sprite.gc_checkpoints("bb-builder",
+                 org: "misty-step",
+                 shell_fn: shell_fn,
+                 max_keep: 1
                )
 
       assert [

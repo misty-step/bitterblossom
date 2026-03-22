@@ -58,6 +58,36 @@ defmodule Conductor.SpriteHealthTest do
 
       assert_received {:probe_timeout, 15_000}
     end
+
+    test "keeps the fast timeout for running sprites" do
+      test_pid = self()
+
+      assert {:ok, %{sprite: "test-sprite", reachable: true}} =
+               Sprite.probe("test-sprite",
+                 state_fn: fn _, _ -> :running end,
+                 exec_fn: fn _sprite, _cmd, opts ->
+                   send(test_pid, {:probe_timeout, Keyword.fetch!(opts, :timeout)})
+                   {:ok, "ok\n"}
+                 end
+               )
+
+      assert_received {:probe_timeout, 15_000}
+    end
+
+    test "uses the conservative timeout when sprite state is unknown" do
+      test_pid = self()
+
+      assert {:ok, %{sprite: "test-sprite", reachable: true}} =
+               Sprite.probe("test-sprite",
+                 state_fn: fn _, _ -> :unknown end,
+                 exec_fn: fn _sprite, _cmd, opts ->
+                   send(test_pid, {:probe_timeout, Keyword.fetch!(opts, :timeout)})
+                   {:ok, "ok\n"}
+                 end
+               )
+
+      assert_received {:probe_timeout, 60_000}
+    end
   end
 
   describe "busy?/1" do

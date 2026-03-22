@@ -271,4 +271,29 @@ defmodule Conductor.Fleet.HealthMonitorTest do
 
     assert MockState.get(:gc_calls, []) == ["bb-builder", "bb-polisher"]
   end
+
+  test "checkpoint gc skips unhealthy sprites" do
+    start_monitor(interval_ms: 120_000)
+
+    sprites = [
+      %{name: "bb-builder", role: :builder, harness: "codex", repo: "test/repo"},
+      %{name: "bb-polisher", role: :polisher, harness: "codex", repo: "test/repo"},
+      %{name: "bb-fixer", role: :fixer, harness: "codex", repo: "test/repo"}
+    ]
+
+    HealthMonitor.configure(
+      sprites: sprites,
+      repo: "test/repo",
+      healthy: MapSet.new(["bb-builder", "bb-polisher"])
+    )
+
+    MockState.put({:sprite_health, "bb-fixer"}, :unhealthy)
+
+    Enum.each(1..15, fn _ ->
+      send(Process.whereis(HealthMonitor), :check)
+      Process.sleep(20)
+    end)
+
+    assert MockState.get(:gc_calls, []) == ["bb-builder", "bb-polisher"]
+  end
 end
