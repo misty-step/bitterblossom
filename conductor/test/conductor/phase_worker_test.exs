@@ -687,6 +687,24 @@ defmodule Conductor.PhaseWorkerTest do
       def busy?(_worker, _opts), do: false
     end
 
+    defmodule BlockingWorker do
+      @behaviour Conductor.Worker
+      alias Conductor.PhaseWorkerTest.MockState
+
+      def exec(_worker, _cmd, _opts), do: {:ok, ""}
+
+      def dispatch(_worker, _prompt, _repo, _opts) do
+        send(MockState.get(:test_pid, self()), {:blocking_dispatch, self()})
+
+        receive do
+          :finish -> {:ok, "done"}
+        end
+      end
+
+      def cleanup(_worker, _repo, _run_id), do: :ok
+      def busy?(_worker, _opts), do: false
+    end
+
     test "backs off after dispatch failure" do
       orig_worker = Application.get_env(:conductor, :worker_module)
       Application.put_env(:conductor, :worker_module, FailingWorker)
@@ -910,6 +928,64 @@ defmodule Conductor.PhaseWorkerTest do
       assert log =~ "dispatch task crashed"
       assert log =~ "dispatch failed for PR #101: task_crashed"
       refute log =~ ":shutdown"
+    end
+
+    test "backs off and clears in-flight state for unexpected task results" do
+      orig_worker = Application.get_env(:conductor, :worker_module)
+      Application.put_env(:conductor, :worker_module, BlockingWorker)
+
+      on_exit(fn -> restore_env(:worker_module, orig_worker) end)
+
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 42,
+             "headRefName" => "factory/99-12345",
+             "title" => "feat: implement feature",
+             "body" => "Closes #99",
+             "statusCheckRollup" => [
+               %{"name" => "CI", "conclusion" => "FAILURE", "status" => "COMPLETED"}
+             ]
+           }
+         ]}
+      )
+
+      {:ok, pid} = start_phase_worker(Roles.Fixer, ["bb-thorn"], poll_ms: 60_000)
+
+      assert_receive {:blocking_dispatch, task_pid}, 2_000
+
+      ref =
+        wait_for(fn ->
+          case :sys.get_state(pid).in_flight do
+            %{"bb-thorn" => %{ref: ref}} -> ref
+            _ -> nil
+          end
+        end)
+
+      log =
+        capture_log(fn ->
+          send(pid, {ref, :weird_return})
+
+          status =
+            wait_for(fn ->
+              status = PhaseWorker.status(Roles.Fixer)
+
+              if status.failure_count == 1 and status.in_flight == %{} and
+                   status.health == :degraded do
+                status
+              end
+            end)
+
+          assert status.failure_count == 1
+          assert status.health == :degraded
+          assert status.in_flight == %{}
+        end)
+
+      send(task_pid, :finish)
+
+      assert log =~ "unexpected result for PR #42: :weird_return"
     end
 
     test "logs and skips missing run_id when store lookup raises" do

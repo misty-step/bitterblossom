@@ -22,6 +22,15 @@ defmodule Conductor.PhaseWorkerSupervisorTest do
     def sync_persona(_, _, _, _ \\ []), do: :ok
   end
 
+  defmodule SlowStoredPool do
+    def stored_sprites(_role_module, default), do: default
+
+    def stored_sprite_generation(_role_module, default) do
+      Process.sleep(150)
+      default
+    end
+  end
+
   setup do
     stop_conductor_app()
     stop_process(Supervisor)
@@ -79,6 +88,27 @@ defmodule Conductor.PhaseWorkerSupervisorTest do
 
     assert PhaseWorker.whereis(Roles.Fixer) == pid
     assert PhaseWorker.status(Roles.Fixer).sprites == ["bb-thorn", "bb-thorn-2"]
+  end
+
+  test "concurrent ensure_worker calls converge on the latest sprite pool during startup" do
+    orig_phase_worker_supervisor = Application.get_env(:conductor, :phase_worker_supervisor)
+    Application.put_env(:conductor, :phase_worker_supervisor, SlowStoredPool)
+
+    on_exit(fn ->
+      restore_env(:phase_worker_supervisor, orig_phase_worker_supervisor)
+    end)
+
+    first =
+      Task.async(fn ->
+        Supervisor.ensure_worker(Roles.Fixer, "test/repo", ["bb-thorn"])
+      end)
+
+    Process.sleep(25)
+
+    assert :ok = Supervisor.ensure_worker(Roles.Fixer, "test/repo", ["bb-thorn-2"])
+    assert :ok = Task.await(first, 2_000)
+
+    assert PhaseWorker.status(Roles.Fixer).sprites == ["bb-thorn-2"]
   end
 
   test "restores the latest sprite pool after a worker restart" do
