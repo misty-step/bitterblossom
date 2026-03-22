@@ -142,8 +142,6 @@ defmodule Conductor.SpriteTest do
   describe "gc_checkpoints/2" do
     test "prunes oldest checkpoints and keeps the newest configured count" do
       test_pid = self()
-      original = Application.get_env(:conductor, :max_checkpoints_per_sprite)
-      Application.put_env(:conductor, :max_checkpoints_per_sprite, 2)
 
       checkpoints_json =
         Jason.encode!([
@@ -165,20 +163,18 @@ defmodule Conductor.SpriteTest do
         end
       end
 
-      try do
-        assert :ok =
-                 Sprite.gc_checkpoints("bb-builder", org: "misty-step", shell_fn: shell_fn)
+      assert :ok =
+               Sprite.gc_checkpoints("bb-builder",
+                 org: "misty-step",
+                 shell_fn: shell_fn,
+                 max_keep: 2
+               )
 
-        assert [
-                 {["api", "-o", "misty-step", "-s", "bb-builder", "/checkpoints"], _},
-                 {["-o", "misty-step", "-s", "bb-builder", "checkpoint", "delete", "v1"], _},
-                 {["-o", "misty-step", "-s", "bb-builder", "checkpoint", "delete", "v2"], _}
-               ] = drain_shell_calls()
-      after
-        if is_nil(original),
-          do: Application.delete_env(:conductor, :max_checkpoints_per_sprite),
-          else: Application.put_env(:conductor, :max_checkpoints_per_sprite, original)
-      end
+      assert [
+               {["api", "-o", "misty-step", "-s", "bb-builder", "/checkpoints"], _},
+               {["-o", "misty-step", "-s", "bb-builder", "checkpoint", "delete", "v1"], _},
+               {["-o", "misty-step", "-s", "bb-builder", "checkpoint", "delete", "v2"], _}
+             ] = drain_shell_calls()
     end
   end
 
