@@ -52,7 +52,7 @@ Observed on this branch:
 
 - the dashboard endpoint is started from the `mix conductor start` lane rather than a separate manual command
 - the page renders dedicated sections for fleet health, phase workers, governor cooldowns, recent events, run timeline, and recent runs
-- dashboard event rows refresh on store event broadcasts without waiting for the 30 second fallback poll
+- dashboard event rows refresh on store event broadcasts without waiting for the 30-second fallback poll
 
 ## Verification
 

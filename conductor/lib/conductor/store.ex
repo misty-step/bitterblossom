@@ -8,6 +8,7 @@ defmodule Conductor.Store do
 
   use GenServer
   require Logger
+  alias Conductor.Time
 
   @valid_columns ~w(phase status branch pr_number pr_url turn_count worktree_path
                     replay_count builder_sprite heartbeat_at completed_at
@@ -191,7 +192,7 @@ defmodule Conductor.Store do
   @impl true
   def handle_call({:create_run, attrs}, _from, state) do
     run_id = attrs[:run_id] || generate_run_id(attrs[:issue_number])
-    now = now_utc()
+    now = Time.now_utc()
 
     exec(
       state.conn,
@@ -222,7 +223,7 @@ defmodule Conductor.Store do
 
       {_, :ok} ->
         sets = Enum.map_join(attrs, ", ", fn {k, _} -> "#{k} = ?" end)
-        vals = Map.values(attrs) ++ [now_utc(), run_id]
+        vals = Map.values(attrs) ++ [Time.now_utc(), run_id]
 
         exec(
           state.conn,
@@ -267,7 +268,7 @@ defmodule Conductor.Store do
 
   @impl true
   def handle_call({:complete_run, run_id, phase, status}, _from, state) do
-    now = now_utc()
+    now = Time.now_utc()
 
     exec(
       state.conn,
@@ -284,7 +285,7 @@ defmodule Conductor.Store do
 
   @impl true
   def handle_call({:terminate_run, run_id, phase, status, repo, issue_number}, _from, state) do
-    now = now_utc()
+    now = Time.now_utc()
 
     exec(state.conn, "BEGIN IMMEDIATE", [])
 
@@ -308,7 +309,11 @@ defmodule Conductor.Store do
 
   @impl true
   def handle_call({:heartbeat_run, run_id}, _from, state) do
-    exec(state.conn, "UPDATE runs SET heartbeat_at = ?1 WHERE run_id = ?2", [now_utc(), run_id])
+    exec(state.conn, "UPDATE runs SET heartbeat_at = ?1 WHERE run_id = ?2", [
+      Time.now_utc(),
+      run_id
+    ])
+
     {:reply, :ok, state}
   end
 
@@ -354,7 +359,7 @@ defmodule Conductor.Store do
       exec(
         state.conn,
         "INSERT INTO leases (repo, issue_number, run_id, acquired_at) VALUES (?1, ?2, ?3, ?4)",
-        [repo, issue_number, run_id, now_utc()]
+        [repo, issue_number, run_id, Time.now_utc()]
       )
 
       {:reply, :ok, state}
@@ -366,7 +371,7 @@ defmodule Conductor.Store do
     exec(
       state.conn,
       "UPDATE leases SET released_at = ?1 WHERE repo = ?2 AND issue_number = ?3 AND released_at IS NULL",
-      [now_utc(), repo, issue_number]
+      [Time.now_utc(), repo, issue_number]
     )
 
     {:reply, :ok, state}
@@ -386,7 +391,7 @@ defmodule Conductor.Store do
 
   @impl true
   def handle_call({:record_event, run_id, event_type, payload}, _from, state) do
-    now = now_utc()
+    now = Time.now_utc()
     json = Jason.encode!(payload)
 
     exec(
@@ -402,9 +407,7 @@ defmodule Conductor.Store do
       created_at: now
     })
 
-    if Code.ensure_loaded?(Phoenix.PubSub) and Process.whereis(Conductor.PubSub) do
-      Phoenix.PubSub.broadcast(Conductor.PubSub, "dashboard", :runs_updated)
-    end
+    broadcast_update()
 
     {:reply, :ok, state}
   end
@@ -429,13 +432,10 @@ defmodule Conductor.Store do
   @impl true
   def handle_call({:list_all_events, opts}, _from, state) do
     limit = Keyword.get(opts, :limit, 100)
+    source = Keyword.get(opts, :source, "all")
+    {sql, params} = all_events_query(source, limit)
 
-    rows =
-      query_all(
-        state.conn,
-        "SELECT * FROM events ORDER BY created_at DESC LIMIT ?1",
-        [limit]
-      )
+    rows = query_all(state.conn, sql, params)
 
     events =
       Enum.map(rows, fn row ->
@@ -473,7 +473,7 @@ defmodule Conductor.Store do
 
   @impl true
   def handle_call({:record_incident, run_id, attrs}, _from, state) do
-    now = now_utc()
+    now = Time.now_utc()
 
     exec(
       state.conn,
@@ -507,7 +507,7 @@ defmodule Conductor.Store do
 
   @impl true
   def handle_call({:record_waiver, run_id, attrs}, _from, state) do
-    now = now_utc()
+    now = Time.now_utc()
 
     exec(
       state.conn,
@@ -543,7 +543,7 @@ defmodule Conductor.Store do
     exec(
       state.conn,
       "UPDATE runs SET semantic_ready = 1, updated_at = ?1 WHERE run_id = ?2",
-      [now_utc(), run_id]
+      [Time.now_utc(), run_id]
     )
 
     {:reply, :ok, state}
@@ -551,7 +551,7 @@ defmodule Conductor.Store do
 
   @impl true
   def handle_call({:set_dispatch_paused, paused?}, _from, state) do
-    now = now_utc()
+    now = Time.now_utc()
     value = if paused?, do: "true", else: "false"
 
     exec(
@@ -605,7 +605,7 @@ defmodule Conductor.Store do
 
   @impl true
   def handle_call({:expire_stale_run, repo, run_id, issue_number, heartbeat_at}, _from, state) do
-    now = now_utc()
+    now = Time.now_utc()
 
     # Record event
     event_json = Jason.encode!(%{heartbeat_at: heartbeat_at})
@@ -794,17 +794,28 @@ defmodule Conductor.Store do
     "run-#{issue_number}-#{ts}"
   end
 
-  defp now_utc do
-    DateTime.utc_now() |> DateTime.to_iso8601()
-  end
-
   defp broadcast_update do
-    if Process.whereis(Conductor.PubSub) do
+    if Code.ensure_loaded?(Phoenix.PubSub) and Process.whereis(Conductor.PubSub) do
       Phoenix.PubSub.broadcast(Conductor.PubSub, "dashboard", :runs_updated)
     end
 
     :ok
   end
+
+  defp all_events_query("all", limit) do
+    {"SELECT * FROM events ORDER BY created_at DESC LIMIT ?1", [limit]}
+  end
+
+  defp all_events_query(source, limit) when source in ["fleet", "fixer", "polisher"] do
+    {"SELECT * FROM events WHERE run_id = ?1 ORDER BY created_at DESC LIMIT ?2", [source, limit]}
+  end
+
+  defp all_events_query("runs", limit) do
+    {"SELECT * FROM events WHERE run_id NOT IN ('fleet', 'fixer', 'polisher') ORDER BY created_at DESC LIMIT ?1",
+     [limit]}
+  end
+
+  defp all_events_query(_, limit), do: all_events_query("all", limit)
 
   defp append_event_log(path, event) do
     File.mkdir_p!(Path.dirname(path))

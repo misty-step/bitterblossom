@@ -311,9 +311,16 @@ defmodule Conductor.CLI do
     port = Keyword.get(opts, :port, 4000)
 
     Application.put_env(:conductor, :start_dashboard, true)
-    :ok = Conductor.Application.start_dashboard(port: port)
-    IO.puts("dashboard running at http://localhost:#{port}")
-    Process.sleep(:infinity)
+
+    case Conductor.Application.start_dashboard(port: port) do
+      :ok ->
+        IO.puts("dashboard running at http://localhost:#{port}")
+        Process.sleep(:infinity)
+
+      {:error, reason} ->
+        IO.puts("dashboard failed to start: #{inspect(reason)}")
+        System.halt(1)
+    end
   end
 
   defp cmd_status do

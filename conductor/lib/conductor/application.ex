@@ -164,9 +164,7 @@ defmodule Conductor.Application do
     endpoint_config = Application.get_env(:conductor, Conductor.Web.Endpoint, [])
 
     secret_key_base =
-      Keyword.get(endpoint_config, :secret_key_base) ||
-        System.get_env("DASHBOARD_SECRET_KEY_BASE") ||
-        generated_secret_key_base()
+      Keyword.get(endpoint_config, :secret_key_base) || generated_secret_key_base()
 
     Application.put_env(
       :conductor,

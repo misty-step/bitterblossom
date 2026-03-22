@@ -26,6 +26,8 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     alias Conductor.Fleet.HealthMonitorTest.MockState
 
     def reconcile_sprite(sprite) do
+      MockState.put(:reconciled_sprites, [sprite.name | MockState.get(:reconciled_sprites, [])])
+
       case MockState.get({:sprite_health, sprite.name}, :healthy) do
         :healthy ->
           %{name: sprite.name, role: sprite.role, healthy: true, action: :none}
@@ -33,6 +35,14 @@ defmodule Conductor.Fleet.HealthMonitorTest do
         :unhealthy ->
           %{name: sprite.name, role: sprite.role, healthy: false, action: :unreachable}
       end
+    end
+  end
+
+  defmodule MockSprite do
+    alias Conductor.Fleet.HealthMonitorTest.MockState
+
+    def status(name, _opts) do
+      MockState.get({:sprite_status, name}, {:ok, %{healthy: true}})
     end
   end
 
@@ -70,7 +80,9 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     {:ok, _} = Task.Supervisor.start_link(name: Conductor.TaskSupervisor)
 
     orig_reconciler = Application.get_env(:conductor, :reconciler_module)
+    orig_sprite = Application.get_env(:conductor, :sprite_module)
     Application.put_env(:conductor, :reconciler_module, MockReconciler)
+    Application.put_env(:conductor, :sprite_module, MockSprite)
 
     orig_worker = Application.get_env(:conductor, :worker_module)
     orig_workspace = Application.get_env(:conductor, :workspace_module)
@@ -91,6 +103,7 @@ defmodule Conductor.Fleet.HealthMonitorTest do
 
       for {key, orig} <- [
             {:reconciler_module, orig_reconciler},
+            {:sprite_module, orig_sprite},
             {:worker_module, orig_worker},
             {:workspace_module, orig_workspace},
             {:code_host_module, orig_code_host}
@@ -251,6 +264,7 @@ defmodule Conductor.Fleet.HealthMonitorTest do
 
   test "marks repeated probe failures as unavailable" do
     start_monitor(interval_ms: 60_000)
+    threshold = Conductor.Config.fleet_probe_failure_threshold()
 
     sprites = [
       %{name: "bb-fixer", role: :fixer, harness: "codex", repo: "test/repo"}
@@ -264,7 +278,7 @@ defmodule Conductor.Fleet.HealthMonitorTest do
       healthy: MapSet.new(["bb-fixer"])
     )
 
-    for _ <- 1..3 do
+    for _ <- 1..threshold do
       HealthMonitor.check_now()
       Process.sleep(100)
     end
@@ -272,6 +286,32 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     status = HealthMonitor.status()
     fixer = status.sprites["bb-fixer"]
     assert fixer.status == :unavailable
-    assert fixer.consecutive_failures == 3
+    assert fixer.consecutive_failures == threshold
+  end
+
+  test "checks builders without running reconciler" do
+    start_monitor(interval_ms: 60_000)
+
+    sprites = [
+      %{name: "bb-weaver", role: :builder, harness: "codex", repo: "test/repo"}
+    ]
+
+    MockState.put({:sprite_status, "bb-weaver"}, {:ok, %{healthy: false}})
+
+    HealthMonitor.configure(
+      sprites: sprites,
+      repo: "test/repo",
+      healthy: MapSet.new(["bb-weaver"])
+    )
+
+    HealthMonitor.check_now()
+    Process.sleep(100)
+
+    status = HealthMonitor.status()
+    builder = status.sprites["bb-weaver"]
+    assert builder.status == :degraded
+    assert builder.last_probe_at
+    assert builder.consecutive_failures == 1
+    assert MockState.get(:reconciled_sprites, []) == []
   end
 end

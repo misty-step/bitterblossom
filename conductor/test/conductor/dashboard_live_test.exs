@@ -34,6 +34,10 @@ defmodule Conductor.Web.DashboardLiveTest do
     end
   end
 
+  defmodule ErrorIssueSource do
+    def list_issues(_repo, _opts), do: {:error, :timeout}
+  end
+
   defmodule NoopWorker do
     def dispatch(_, _, _, _), do: {:ok, ""}
     def exec(_, _, _), do: {:ok, ""}
@@ -269,6 +273,77 @@ defmodule Conductor.Web.DashboardLiveTest do
     Conductor.Store.record_event("fleet", "sprite_recovered", %{name: "bb-thorn"})
 
     assert eventually(fn -> render(view) =~ "sprite_recovered" end)
+  end
+
+  test "governor cooldowns fall back to empty when issue loading fails" do
+    Application.put_env(:conductor, :dashboard_issue_source_module, ErrorIssueSource)
+
+    {:ok, failed_run} =
+      Conductor.Store.create_run(%{
+        repo: "test/repo",
+        issue_number: 779,
+        issue_title: "Dashboard visibility",
+        builder_sprite: "bb-weaver"
+      })
+
+    Conductor.Store.update_run(failed_run, %{
+      phase: "failed",
+      status: "failed",
+      completed_at: DateTime.utc_now() |> DateTime.to_iso8601()
+    })
+
+    {:ok, _view, html} = live(build_conn(), "/")
+
+    assert html =~ "Governor"
+    assert html =~ "No issues in cooldown"
+  end
+
+  test "governor ignores cooldown entries with invalid timestamps" do
+    {:ok, failed_run} =
+      Conductor.Store.create_run(%{
+        repo: "test/repo",
+        issue_number: 779,
+        issue_title: "Dashboard visibility",
+        builder_sprite: "bb-weaver"
+      })
+
+    Conductor.Store.update_run(failed_run, %{
+      phase: "failed",
+      status: "failed",
+      completed_at: "not-a-timestamp"
+    })
+
+    {:ok, _view, html} = live(build_conn(), "/")
+
+    assert html =~ "Governor"
+    assert html =~ "No issues in cooldown"
+  end
+
+  test "source filters query matching events before truncation" do
+    Conductor.Store.record_event("fleet", "sprite_degraded", %{name: "bb-thorn"})
+    Process.sleep(1_100)
+
+    for index <- 1..55 do
+      {:ok, run_id} =
+        Conductor.Store.create_run(%{
+          repo: "test/repo",
+          issue_number: 800 + index,
+          issue_title: "Run event #{index}",
+          builder_sprite: "bb-weaver"
+        })
+
+      Conductor.Store.record_event(run_id, "run_progress", %{step: index})
+    end
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    html =
+      view
+      |> element("button[phx-value-source='fleet']")
+      |> render_click()
+
+    assert html =~ "sprite_degraded"
+    refute html =~ "run_progress"
   end
 
   # Poll helper for async assertions

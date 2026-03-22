@@ -33,13 +33,14 @@ defmodule Conductor.Web.DashboardLive do
   end
 
   @impl true
-  def handle_info(:runs_updated, socket), do: {:noreply, refresh_dashboard(socket)}
+  def handle_info(:runs_updated, socket), do: {:noreply, refresh_runs_and_events(socket)}
 
   def handle_info(:refresh, socket), do: {:noreply, refresh_dashboard(socket)}
 
   @impl true
   def handle_event("filter-events", %{"source" => source}, socket) do
-    {:noreply, refresh_dashboard(assign(socket, event_source: source))}
+    socket = assign(socket, event_source: normalize_event_source(source))
+    {:noreply, assign(socket, events: list_events(socket.assigns.event_source))}
   end
 
   @impl true
@@ -152,7 +153,7 @@ defmodule Conductor.Web.DashboardLive do
         <tbody>
           <tr :for={issue <- @governor.cooldowns}>
             <td>
-              <a href={issue.url} target="_blank" style="color: #58a6ff;">
+              <a href={issue.url} target="_blank" rel="noopener noreferrer" style="color: #58a6ff;">
                 #<%= issue.number %>
               </a>
               <%= if issue.title, do: " – #{issue.title}" %>
@@ -260,7 +261,7 @@ defmodule Conductor.Web.DashboardLive do
             <td><code><%= short_id(run["run_id"]) %></code></td>
             <td><%= run["repo"] %></td>
             <td>
-              <a href={"https://github.com/#{run["repo"]}/issues/#{run["issue_number"]}"} target="_blank" style="color: #58a6ff;">
+              <a href={"https://github.com/#{run["repo"]}/issues/#{run["issue_number"]}"} target="_blank" rel="noopener noreferrer" style="color: #58a6ff;">
                 #<%= run["issue_number"] %>
               </a>
               <%= if run["issue_title"], do: " – #{run["issue_title"]}" %>
@@ -270,7 +271,7 @@ defmodule Conductor.Web.DashboardLive do
             <td><%= run["builder_sprite"] || "–" %></td>
             <td><%= run["turn_count"] || 0 %></td>
             <td>
-              <a :if={run["pr_url"]} href={run["pr_url"]} target="_blank" style="color: #58a6ff;">
+              <a :if={run["pr_url"]} href={run["pr_url"]} target="_blank" rel="noopener noreferrer" style="color: #58a6ff;">
                 #<%= run["pr_number"] %>
               </a>
               <span :if={!run["pr_url"]}>–</span>
@@ -289,26 +290,28 @@ defmodule Conductor.Web.DashboardLive do
   end
 
   defp refresh_dashboard(socket) do
+    fleet = fleet_status()
+    phase_workers = phase_worker_statuses()
+
+    socket
+    |> assign(fleet: fleet, phase_workers: phase_workers)
+    |> refresh_runs_and_events(force_governor_refresh: true)
+  end
+
+  defp refresh_runs_and_events(socket, opts \\ []) do
     event_source = socket.assigns[:event_source] || "all"
     runs = Store.list_runs(limit: @run_limit)
     history_runs = Store.list_runs(limit: @history_limit)
-    fleet = fleet_status()
-    phase_workers = phase_worker_statuses()
+    fleet = socket.assigns[:fleet] || %{repo: nil, sprites: []}
+    phase_workers = socket.assigns[:phase_workers] || []
     repo = detect_repo(fleet, phase_workers, runs)
-    events = list_events(event_source)
+    governor = governor_snapshot(socket.assigns[:governor], repo, opts)
 
     assign(socket,
       runs: runs,
       stats: compute_stats(runs),
-      fleet: fleet,
-      phase_workers: phase_workers,
-      governor: %{
-        repo: repo,
-        cooldowns: governor_cooldowns(repo),
-        max_starts_per_tick: Config.max_starts_per_tick(),
-        max_concurrent_runs: Config.max_concurrent_runs()
-      },
-      events: events,
+      governor: governor,
+      events: list_events(event_source),
       history: run_history(history_runs),
       event_filters: @event_filters
     )
@@ -388,9 +391,10 @@ defmodule Conductor.Web.DashboardLive do
 
   defp cooldown_entry(repo, issue) do
     issue_number = Map.get(issue, :number) || issue["number"]
-    {streak, last_failed_at} = Store.issue_failure_streak(repo, issue_number)
 
-    with true <- streak > 0,
+    with issue_number when is_integer(issue_number) <- issue_number,
+         {streak, last_failed_at} <- Store.issue_failure_streak(repo, issue_number),
+         true <- streak > 0,
          {:ok, cooldown_minutes, remaining_seconds} <- cooldown_window(streak, last_failed_at),
          true <- remaining_seconds > 0 do
       %{
@@ -411,7 +415,7 @@ defmodule Conductor.Web.DashboardLive do
 
   defp cooldown_window(streak, last_failed_at) do
     cooldown_minutes =
-      min(trunc(:math.pow(2, min(streak, 20))), Config.issue_cooldown_cap_minutes())
+      min(Integer.pow(2, min(streak, 20)), Config.issue_cooldown_cap_minutes())
 
     case DateTime.from_iso8601(last_failed_at || "") do
       {:ok, failed_at, _} ->
@@ -424,12 +428,8 @@ defmodule Conductor.Web.DashboardLive do
   end
 
   defp list_events(event_source) do
-    Store.list_all_events(limit: @event_limit)
-    |> Enum.filter(fn event -> event_matches_filter?(event, event_source) end)
+    Store.list_all_events(limit: @event_limit, source: normalize_event_source(event_source))
   end
-
-  defp event_matches_filter?(_event, "all"), do: true
-  defp event_matches_filter?(event, filter), do: event_source(event) == filter
 
   defp event_source(%{"run_id" => run_id}) when run_id in ["fleet", "fixer", "polisher"],
     do: run_id
@@ -498,7 +498,7 @@ defmodule Conductor.Web.DashboardLive do
   end
 
   defp safe_status(module) do
-    if Process.whereis(module) && function_exported?(module, :status, 0) do
+    if function_exported?(module, :status, 0) do
       try do
         module.status()
       rescue
@@ -507,6 +507,29 @@ defmodule Conductor.Web.DashboardLive do
         :exit, _ -> nil
       end
     end
+  end
+
+  defp governor_snapshot(current_governor, repo, opts) do
+    refresh? =
+      Keyword.get(opts, :force_governor_refresh, false) or
+        is_nil(current_governor) or current_governor.repo != repo
+
+    if refresh? do
+      %{
+        repo: repo,
+        cooldowns: governor_cooldowns(repo),
+        max_starts_per_tick: Config.max_starts_per_tick(),
+        max_concurrent_runs: Config.max_concurrent_runs()
+      }
+    else
+      %{current_governor | repo: repo}
+    end
+  end
+
+  defp normalize_event_source(source) do
+    allowed = Enum.map(@event_filters, &elem(&1, 0))
+
+    if source in allowed, do: source, else: "all"
   end
 
   defp issue_source_mod do

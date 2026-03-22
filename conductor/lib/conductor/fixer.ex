@@ -11,7 +11,7 @@ defmodule Conductor.Fixer do
   use GenServer
   require Logger
 
-  alias Conductor.{Config, Prompt, Store, Workspace}
+  alias Conductor.{Config, Prompt, Store, Time, Workspace}
 
   defstruct [
     :repo,
@@ -177,7 +177,7 @@ defmodule Conductor.Fixer do
     %{
       state
       | in_flight: Map.put(state.in_flight, pr_number, task.ref),
-        last_dispatch_at: now_utc()
+        last_dispatch_at: Time.now_utc()
     }
   end
 
@@ -187,7 +187,7 @@ defmodule Conductor.Fixer do
         if r == ref, do: {pr, acc}, else: {found, Map.put(acc, pr, r)}
       end)
 
-    state = %{state | in_flight: in_flight, last_completion_at: now_utc()}
+    state = %{state | in_flight: in_flight, last_completion_at: Time.now_utc()}
 
     if pr_number do
       case result do
@@ -243,6 +243,4 @@ defmodule Conductor.Fixer do
   defp code_host_mod, do: Application.get_env(:conductor, :code_host_module, Conductor.GitHub)
   defp worker_mod, do: Application.get_env(:conductor, :worker_module, Conductor.Sprite)
   defp workspace_mod, do: Application.get_env(:conductor, :workspace_module, Workspace)
-
-  defp now_utc, do: DateTime.utc_now() |> DateTime.to_iso8601()
 end

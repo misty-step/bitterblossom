@@ -9,7 +9,7 @@ defmodule Conductor.Fleet.HealthMonitor do
   use GenServer
   require Logger
 
-  alias Conductor.{Config, Store}
+  alias Conductor.{Config, Store, Time}
   alias Conductor.Fleet.Reconciler
 
   defstruct [
@@ -125,7 +125,7 @@ defmodule Conductor.Fleet.HealthMonitor do
   # --- Private ---
 
   defp check_and_recover(state) do
-    checked_at = now_utc()
+    checked_at = Time.now_utc()
 
     state =
       Enum.reduce(state.sprites, state, fn sprite, acc ->
@@ -179,15 +179,34 @@ defmodule Conductor.Fleet.HealthMonitor do
     %{state | last_check_at: checked_at}
   end
 
+  defp probe_sprite(%{role: :builder} = sprite, failure_count) do
+    harness = Map.get(sprite, :harness) || Map.get(sprite, "harness")
+
+    result =
+      cond do
+        function_exported?(sprite_mod(), :status, 2) ->
+          sprite_mod().status(sprite.name, harness: harness)
+
+        function_exported?(sprite_mod(), :status, 1) ->
+          sprite_mod().status(sprite.name)
+
+        true ->
+          {:error, :unsupported_status_probe}
+      end
+
+    case result do
+      {:ok, %{healthy: true}} -> :healthy
+      _ -> failure_status(failure_count)
+    end
+  end
+
   defp probe_sprite(sprite, failure_count) do
     case reconciler_mod().reconcile_sprite(sprite) do
       %{healthy: true} ->
         :healthy
 
       _ ->
-        if failure_count >= Config.fleet_probe_failure_threshold(),
-          do: :unavailable,
-          else: :degraded
+        failure_status(failure_count)
     end
   end
 
@@ -245,6 +264,10 @@ defmodule Conductor.Fleet.HealthMonitor do
     Application.get_env(:conductor, :reconciler_module, Reconciler)
   end
 
+  defp sprite_mod do
+    Application.get_env(:conductor, :sprite_module, Conductor.Sprite)
+  end
+
   defp default_sprite_status(sprite) do
     %{
       name: sprite.name,
@@ -265,5 +288,9 @@ defmodule Conductor.Fleet.HealthMonitor do
 
   defp maybe_worker_start_note(_role), do: ""
 
-  defp now_utc, do: DateTime.utc_now() |> DateTime.to_iso8601()
+  defp failure_status(failure_count) do
+    if failure_count >= Config.fleet_probe_failure_threshold(),
+      do: :unavailable,
+      else: :degraded
+  end
 end
