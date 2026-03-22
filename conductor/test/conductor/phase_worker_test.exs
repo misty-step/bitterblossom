@@ -186,6 +186,21 @@ defmodule Conductor.PhaseWorkerTest do
     |> Enum.map(& &1["event_type"])
   end
 
+  defp wait_for(fun, attempts \\ 20)
+
+  defp wait_for(_fun, 0), do: flunk("timed out waiting for phase worker state")
+
+  defp wait_for(fun, attempts) do
+    case fun.() do
+      nil ->
+        Process.sleep(25)
+        wait_for(fun, attempts - 1)
+
+      value ->
+        value
+    end
+  end
+
   describe "child_spec/1" do
     test "returns the role-keyed child spec used by the supervisor" do
       opts = [repo: "test/repo", role_module: Roles.Fixer, sprites: ["bb-thorn"]]
@@ -796,7 +811,15 @@ defmodule Conductor.PhaseWorkerTest do
       assert_receive :shutdown_dispatch, 2_000
       assert_receive :shutdown_dispatch, 2_000
 
-      status = PhaseWorker.status(Roles.Fixer)
+      status =
+        wait_for(fn ->
+          status = PhaseWorker.status(Roles.Fixer)
+
+          if status.failure_count >= 2 and status.in_flight == %{} do
+            status
+          end
+        end)
+
       assert status.health == :degraded
       assert status.in_flight == %{}
     end
