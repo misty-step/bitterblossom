@@ -374,6 +374,42 @@ defmodule Conductor.SpriteTest do
       refute_received {:unexpected_shell_args, _, _}
     end
 
+    test "returns an error when a stale checkpoint is missing an id" do
+      test_pid = self()
+
+      checkpoints_json =
+        Jason.encode!([
+          %{"id" => "v2", "created_at" => "2026-03-16T01:56:00Z"},
+          %{"created_at" => "2026-03-15T01:56:00Z"}
+        ])
+
+      shell_fn = fn "sprite", args, opts ->
+        send(test_pid, {:shell_called, args, opts})
+
+        case args do
+          ["api", "-o", "misty-step", "-s", "bb-builder", "/checkpoints"] ->
+            {:ok, checkpoints_json}
+
+          _ ->
+            send(test_pid, {:unexpected_shell_args, args, opts})
+            {:error, "unexpected shell args: #{inspect(args)}", 1}
+        end
+      end
+
+      assert {:error, "checkpoint missing id"} =
+               Sprite.gc_checkpoints("bb-builder",
+                 org: "misty-step",
+                 shell_fn: shell_fn,
+                 max_keep: 1
+               )
+
+      assert [
+               {["api", "-o", "misty-step", "-s", "bb-builder", "/checkpoints"], _}
+             ] = drain_shell_calls()
+
+      refute_received {:unexpected_shell_args, _, _}
+    end
+
     test "returns the first delete error after partial checkpoint pruning" do
       test_pid = self()
 
@@ -512,6 +548,208 @@ defmodule Conductor.SpriteTest do
       end
 
       assert {:ok, :recreated} =
+               Sprite.check_stuck("bb-fixer",
+                 org: "misty-step",
+                 shell_fn: shell_fn,
+                 now_fn: fn -> ~U[2026-03-22 12:00:00Z] end
+               )
+
+      assert [
+               {["api", "-o", "misty-step", "/sprites"], _},
+               {["destroy", "-o", "misty-step", "--force", "bb-fixer"], _},
+               {["create", "-o", "misty-step", "--skip-console", "bb-fixer"], _}
+             ] = drain_shell_calls()
+
+      refute_received {:unexpected_shell_args, _, _}
+    end
+
+    test "returns an error when listing sprites fails" do
+      test_pid = self()
+
+      shell_fn = fn "sprite", args, opts ->
+        send(test_pid, {:shell_called, args, opts})
+
+        case args do
+          ["api", "-o", "misty-step", "/sprites"] ->
+            {:error, "sprite api unavailable", 1}
+
+          _ ->
+            send(test_pid, {:unexpected_shell_args, args, opts})
+            {:error, "unexpected shell args: #{inspect(args)}", 1}
+        end
+      end
+
+      assert {:error, "sprite api unavailable"} =
+               Sprite.check_stuck("bb-fixer",
+                 org: "misty-step",
+                 shell_fn: shell_fn
+               )
+
+      assert [{["api", "-o", "misty-step", "/sprites"], _}] = drain_shell_calls()
+      refute_received {:unexpected_shell_args, _, _}
+    end
+
+    test "returns an error when the target sprite is missing from the payload" do
+      test_pid = self()
+      sprites_json = Jason.encode!(%{"sprites" => [%{"name" => "bb-polisher"}]})
+
+      shell_fn = fn "sprite", args, opts ->
+        send(test_pid, {:shell_called, args, opts})
+
+        case args do
+          ["api", "-o", "misty-step", "/sprites"] ->
+            {:ok, sprites_json}
+
+          _ ->
+            send(test_pid, {:unexpected_shell_args, args, opts})
+            {:error, "unexpected shell args: #{inspect(args)}", 1}
+        end
+      end
+
+      assert {:error, "sprite not found"} =
+               Sprite.check_stuck("bb-fixer",
+                 org: "misty-step",
+                 shell_fn: shell_fn
+               )
+
+      assert [{["api", "-o", "misty-step", "/sprites"], _}] = drain_shell_calls()
+      refute_received {:unexpected_shell_args, _, _}
+    end
+
+    test "falls back to the configured org when opts pass nil or blank orgs" do
+      test_pid = self()
+
+      sprites_json =
+        Jason.encode!(%{"sprites" => [%{"name" => "bb-fixer", "last_running_at" => nil}]})
+
+      previous_sprites_org = System.get_env("SPRITES_ORG")
+      previous_fly_org = System.get_env("FLY_ORG")
+
+      shell_fn = fn "sprite", args, opts ->
+        send(test_pid, {:shell_called, args, opts})
+
+        case args do
+          ["api", "-o", "fallback-org", "/sprites"] ->
+            {:ok, sprites_json}
+
+          _ ->
+            send(test_pid, {:unexpected_shell_args, args, opts})
+            {:error, "unexpected shell args: #{inspect(args)}", 1}
+        end
+      end
+
+      try do
+        System.put_env("SPRITES_ORG", "fallback-org")
+        System.delete_env("FLY_ORG")
+
+        Enum.each([nil, ""], fn org ->
+          assert {:ok, :not_stuck} =
+                   Sprite.check_stuck("bb-fixer",
+                     org: org,
+                     shell_fn: shell_fn
+                   )
+        end)
+      after
+        if previous_sprites_org do
+          System.put_env("SPRITES_ORG", previous_sprites_org)
+        else
+          System.delete_env("SPRITES_ORG")
+        end
+
+        if previous_fly_org do
+          System.put_env("FLY_ORG", previous_fly_org)
+        else
+          System.delete_env("FLY_ORG")
+        end
+      end
+
+      assert [
+               {["api", "-o", "fallback-org", "/sprites"], _},
+               {["api", "-o", "fallback-org", "/sprites"], _}
+             ] = drain_shell_calls()
+
+      refute_received {:unexpected_shell_args, _, _}
+    end
+
+    test "returns an error when destroying a stuck sprite fails" do
+      test_pid = self()
+
+      sprites_json =
+        Jason.encode!(%{
+          "sprites" => [
+            %{
+              "name" => "bb-fixer",
+              "created_at" => "2026-03-22T11:50:00Z",
+              "last_running_at" => nil
+            }
+          ]
+        })
+
+      shell_fn = fn "sprite", args, opts ->
+        send(test_pid, {:shell_called, args, opts})
+
+        case args do
+          ["api", "-o", "misty-step", "/sprites"] ->
+            {:ok, sprites_json}
+
+          ["destroy", "-o", "misty-step", "--force", "bb-fixer"] ->
+            {:error, "destroy failed", 1}
+
+          _ ->
+            send(test_pid, {:unexpected_shell_args, args, opts})
+            {:error, "unexpected shell args: #{inspect(args)}", 1}
+        end
+      end
+
+      assert {:error, "destroy failed"} =
+               Sprite.check_stuck("bb-fixer",
+                 org: "misty-step",
+                 shell_fn: shell_fn,
+                 now_fn: fn -> ~U[2026-03-22 12:00:00Z] end
+               )
+
+      assert [
+               {["api", "-o", "misty-step", "/sprites"], _},
+               {["destroy", "-o", "misty-step", "--force", "bb-fixer"], _}
+             ] = drain_shell_calls()
+
+      refute_received {:unexpected_shell_args, _, _}
+    end
+
+    test "returns an error when recreating a stuck sprite fails after destroy" do
+      test_pid = self()
+
+      sprites_json =
+        Jason.encode!(%{
+          "sprites" => [
+            %{
+              "name" => "bb-fixer",
+              "created_at" => "2026-03-22T11:50:00Z",
+              "last_running_at" => nil
+            }
+          ]
+        })
+
+      shell_fn = fn "sprite", args, opts ->
+        send(test_pid, {:shell_called, args, opts})
+
+        case args do
+          ["api", "-o", "misty-step", "/sprites"] ->
+            {:ok, sprites_json}
+
+          ["destroy", "-o", "misty-step", "--force", "bb-fixer"] ->
+            {:ok, "destroyed"}
+
+          ["create", "-o", "misty-step", "--skip-console", "bb-fixer"] ->
+            {:error, "create failed", 1}
+
+          _ ->
+            send(test_pid, {:unexpected_shell_args, args, opts})
+            {:error, "unexpected shell args: #{inspect(args)}", 1}
+        end
+      end
+
+      assert {:error, "create failed"} =
                Sprite.check_stuck("bb-fixer",
                  org: "misty-step",
                  shell_fn: shell_fn,

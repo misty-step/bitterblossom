@@ -1033,7 +1033,10 @@ defmodule Conductor.Sprite do
   end
 
   defp sprite_org(opts) do
-    Keyword.get_lazy(opts, :org, &Config.sprites_org!/0)
+    case Keyword.get(opts, :org) do
+      org when is_binary(org) and org != "" -> org
+      _ -> Config.sprites_org!()
+    end
   end
 
   defp wildcard_uploads(pattern, dest_root) do

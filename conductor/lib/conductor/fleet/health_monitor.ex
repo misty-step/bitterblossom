@@ -130,7 +130,7 @@ defmodule Conductor.Fleet.HealthMonitor do
       %{healthy: true} ->
         {:healthy, :none}
 
-      _ ->
+      %{action: :unreachable} ->
         case sprite_mod().check_stuck(sprite.name, org: Map.get(sprite, :org)) do
           {:ok, :recreated} ->
             case reconciler_mod().reconcile_sprite(sprite) do
@@ -145,6 +145,9 @@ defmodule Conductor.Fleet.HealthMonitor do
             Logger.warning("[health] stuck check failed for #{sprite.name}: #{inspect(reason)}")
             {:unhealthy, {:stuck_check_failed, reason}}
         end
+
+      _ ->
+        {:unhealthy, :none}
     end
   end
 

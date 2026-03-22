@@ -39,13 +39,19 @@ defmodule Conductor.Fleet.HealthMonitorTest do
             MockState.get({:sprite_health, sprite.name}, :healthy)
         end
 
-      case health do
-        :healthy ->
-          %{name: sprite.name, role: sprite.role, healthy: true, action: :none}
+      reconcile_result(sprite, health)
+    end
 
-        :unhealthy ->
-          %{name: sprite.name, role: sprite.role, healthy: false, action: :unreachable}
-      end
+    defp reconcile_result(sprite, :healthy) do
+      %{name: sprite.name, role: sprite.role, healthy: true, action: :none}
+    end
+
+    defp reconcile_result(sprite, :unhealthy) do
+      %{name: sprite.name, role: sprite.role, healthy: false, action: :unreachable}
+    end
+
+    defp reconcile_result(sprite, {:unhealthy, action}) do
+      %{name: sprite.name, role: sprite.role, healthy: false, action: action}
     end
   end
 
@@ -349,6 +355,39 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     assert HealthMonitor.status().sprites["bb-polisher"] == :healthy
     assert MockState.get(:reconcile_calls, []) == ["bb-polisher", "bb-polisher"]
     assert MockState.get(:stuck_calls, []) == ["bb-polisher"]
+  end
+
+  test "does not run stuck recovery for non-unreachable reconciler failures" do
+    start_monitor(interval_ms: 60_000)
+
+    sprites = [
+      %{
+        name: "bb-polisher",
+        role: :polisher,
+        org: "misty-step",
+        harness: "codex",
+        repo: "test/repo"
+      }
+    ]
+
+    MockState.put({:reconcile_script, "bb-polisher"}, [{:unhealthy, :setup_incomplete}])
+
+    HealthMonitor.configure(
+      sprites: sprites,
+      repo: "test/repo",
+      healthy: MapSet.new(["bb-polisher"])
+    )
+
+    log =
+      capture_log(fn ->
+        send(Process.whereis(HealthMonitor), :check)
+        Process.sleep(100)
+      end)
+
+    assert log =~ "bb-polisher degraded"
+    assert HealthMonitor.status().sprites["bb-polisher"] == :unhealthy
+    assert MockState.get(:stuck_calls, []) == []
+    assert MockState.get(:reconcile_calls, []) == ["bb-polisher"]
   end
 
   test "logs stuck-check failures and marks the sprite unhealthy" do
