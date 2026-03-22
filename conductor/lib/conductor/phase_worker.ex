@@ -141,6 +141,8 @@ defmodule Conductor.PhaseWorker do
     {:noreply, complete_task(state, ref, result)}
   end
 
+  # A dispatch task that exits with :shutdown before replying still owns a sprite
+  # slot; let it fall through the crash path so in-flight capacity is released.
   @impl true
   def handle_info({:DOWN, _ref, :process, _pid, :normal}, state) do
     {:noreply, state}

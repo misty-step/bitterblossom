@@ -219,6 +219,36 @@ defmodule Conductor.PhaseWorkerTest do
       assert log =~ "[thorn] PR #42 has red CI, dispatching Thorn"
     end
 
+    test "uses the CI log fallback when fetching failure output fails" do
+      MockState.put(:ci_failure_logs, {:error, :network_error})
+
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 42,
+             "headRefName" => "factory/99-12345",
+             "title" => "feat: implement feature",
+             "body" => "Closes #99",
+             "statusCheckRollup" => [
+               %{"name" => "CI", "conclusion" => "FAILURE", "status" => "COMPLETED"}
+             ]
+           }
+         ]}
+      )
+
+      log =
+        capture_log(fn ->
+          start_phase_worker(Roles.Fixer, ["bb-thorn"])
+
+          assert_receive {:dispatched, "bb-thorn", prompt}, 2_000
+          assert prompt =~ "(CI logs unavailable)"
+        end)
+
+      assert log =~ "failed to fetch CI logs for PR #42: network_error"
+    end
+
     test "records fixer events on the tracked run instead of the role prefix bucket" do
       run_id = create_run_for_pr(42)
 
@@ -325,6 +355,36 @@ defmodule Conductor.PhaseWorkerTest do
         end)
 
       assert log =~ "[fern] PR #42 is green, dispatching Fern"
+    end
+
+    test "uses an empty review list when fetching review comments fails" do
+      create_run_for_pr(42)
+      MockState.put(:review_comments, {:error, :timeout})
+
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 42,
+             "headRefName" => "factory/99-12345",
+             "title" => "feat: implement feature",
+             "body" => "Closes #99",
+             "labels" => [],
+             "statusCheckRollup" => @green_checks
+           }
+         ]}
+      )
+
+      log =
+        capture_log(fn ->
+          start_phase_worker(Roles.Polisher, ["bb-fern"])
+
+          assert_receive {:dispatched, "bb-fern", prompt}, 2_000
+          assert prompt =~ "_No review comments._"
+        end)
+
+      assert log =~ "failed to fetch reviews for PR #42: timeout"
     end
 
     test "skips PRs that already have lgtm label" do

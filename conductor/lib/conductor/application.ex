@@ -56,7 +56,7 @@ defmodule Conductor.Application do
   """
   @spec boot_fleet(binary()) :: :ok | {:error, term()}
   def boot_fleet(fleet_path) do
-    alias Conductor.Fleet.{Loader, Reconciler}
+    alias Conductor.Fleet.Loader
 
     # 1. Load and validate fleet.toml
     case Loader.load(fleet_path) do
@@ -65,7 +65,7 @@ defmodule Conductor.Application do
         {:error, reason}
 
       {:ok, config} ->
-        boot_with_config(config, fleet_path, Reconciler)
+        boot_with_config(config, fleet_path, fleet_reconciler())
     end
   end
 
@@ -145,7 +145,7 @@ defmodule Conductor.Application do
         |> Enum.filter(&MapSet.member?(healthy, &1.name))
         |> Enum.map(& &1.name)
 
-      case Conductor.PhaseWorker.Supervisor.ensure_worker(role_module, repo, phase_sprites) do
+      case phase_worker_supervisor().ensure_worker(role_module, repo, phase_sprites) do
         :ok when phase_sprites != [] ->
           Logger.info(
             "[boot] #{role_display_name(role)} started: #{Enum.join(phase_sprites, ", ")}"
@@ -164,6 +164,18 @@ defmodule Conductor.Application do
   def role_display_name(:fixer), do: "thorn"
   def role_display_name(:polisher), do: "fern"
   def role_display_name(role), do: to_string(role)
+
+  defp fleet_reconciler do
+    Application.get_env(:conductor, :fleet_reconciler, Conductor.Fleet.Reconciler)
+  end
+
+  defp phase_worker_supervisor do
+    Application.get_env(
+      :conductor,
+      :phase_worker_supervisor,
+      Conductor.PhaseWorker.Supervisor
+    )
+  end
 
   defp dashboard_children do
     if Application.get_env(:conductor, :start_dashboard, false) do
