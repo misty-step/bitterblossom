@@ -160,6 +160,10 @@ defmodule Conductor.SpriteTest do
 
           ["-o", "misty-step", "-s", "bb-builder", "checkpoint", "delete", checkpoint_id] ->
             {:ok, checkpoint_id}
+
+          _ ->
+            send(test_pid, {:unexpected_shell_args, args, opts})
+            {:error, "unexpected shell args: #{inspect(args)}", 1}
         end
       end
 
@@ -175,6 +179,8 @@ defmodule Conductor.SpriteTest do
                {["-o", "misty-step", "-s", "bb-builder", "checkpoint", "delete", "v1"], _},
                {["-o", "misty-step", "-s", "bb-builder", "checkpoint", "delete", "v2"], _}
              ] = drain_shell_calls()
+
+      refute_received {:unexpected_shell_args, _, _}
     end
   end
 

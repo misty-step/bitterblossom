@@ -233,7 +233,14 @@ defmodule Conductor.Fleet.HealthMonitor do
     ceil_div(30 * 60_000, interval_ms)
   end
 
-  defp gc_cycle_interval(_interval_ms), do: 1
+  defp gc_cycle_interval(interval_ms) do
+    Logger.warning(
+      "[health] invalid fleet health interval #{inspect(interval_ms)}; " <>
+        "falling back to checkpoint GC every check. Verify Config.fleet_health_check_interval_ms/0"
+    )
+
+    1
+  end
 
   defp ceil_div(dividend, divisor), do: div(dividend + divisor - 1, divisor)
 
