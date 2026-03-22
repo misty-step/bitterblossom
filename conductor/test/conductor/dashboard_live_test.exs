@@ -412,9 +412,9 @@ defmodule Conductor.Web.DashboardLiveTest do
     {:ok, _view, html} = live(build_conn(), "/")
 
     assert html =~ "Governor"
-    assert html =~ ~r/Seconds branch.*?>\d+s</s
-    assert html =~ ~r/Minutes branch.*?>\d+m</s
-    assert html =~ ~r/Hours branch.*?>\d+h \d+m</s
+    assert html =~ ~r/#101.*?<td>1<\/td>.*?<td>2m<\/td>.*?<td>\d+s<\/td>/s
+    assert html =~ ~r/#102.*?<td>6<\/td>.*?<td>64m<\/td>.*?<td>\d+m<\/td>/s
+    assert html =~ ~r/#103.*?<td>7<\/td>.*?<td>120m<\/td>.*?<td>1h \d+m<\/td>/s
   end
 
   # Poll helper for async assertions
