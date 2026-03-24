@@ -18,11 +18,13 @@ import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent
+REMOVED_SENTRY_WATCHER = "sentry-" "watcher.sh"
 REMOVED_SHELL_ENTRYPOINTS = (
     "scripts/dispatch.sh",
     "scripts/ralph.sh",
     "scripts/sprite-agent.sh",
     "scripts/sprite-bootstrap.sh",
+    f"scripts/{REMOVED_SENTRY_WATCHER}",
     "scripts/watchdog.sh",
     "scripts/watchdog-v2.sh",
     "scripts/pr-shepherd.sh",
