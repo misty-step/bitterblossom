@@ -18,6 +18,7 @@ import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent
+# Keep the literal split so live-surface grep checks ignore this guardrail.
 REMOVED_SENTRY_WATCHER = "sentry-" "watcher.sh"
 REMOVED_SHELL_ENTRYPOINTS = (
     "scripts/dispatch.sh",
