@@ -321,6 +321,9 @@ defmodule Conductor.CLI do
   end
 
   defp cmd_status do
+    alias Conductor.PhaseWorker
+    alias Conductor.PhaseWorker.Roles
+
     IO.puts("=== Fleet ===")
 
     fleet_sprites = Application.get_env(:conductor, :fleet_sprites, [])
@@ -344,19 +347,19 @@ defmodule Conductor.CLI do
 
     IO.puts("\n=== Phase Workers ===")
 
-    if Process.whereis(Conductor.Fixer) do
-      fixer = Conductor.Fixer.status()
-      IO.puts("  thorn: #{fixer.fixer_sprite} — #{map_size(fixer.in_flight)} in-flight")
-    else
-      IO.puts("  thorn: not running")
-    end
+    for role_module <- [Roles.Fixer, Roles.Polisher] do
+      role = role_module.role()
+      display_name = Conductor.Application.role_display_name(role)
 
-    if Process.whereis(Conductor.Polisher) do
-      polisher = Conductor.Polisher.status()
+      case PhaseWorker.whereis(role_module) do
+        nil ->
+          IO.puts("  #{display_name}: not running")
 
-      IO.puts("  fern: #{polisher.polisher_sprite} — #{map_size(polisher.in_flight)} in-flight")
-    else
-      IO.puts("  fern: not running")
+        _pid ->
+          status = PhaseWorker.status(role_module)
+          sprites = Enum.join(status.sprites, ", ")
+          IO.puts("  #{display_name}: #{sprites} — #{map_size(status.in_flight)} in-flight")
+      end
     end
 
     IO.puts("\n=== Recent Runs ===")

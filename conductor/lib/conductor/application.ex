@@ -12,8 +12,10 @@ defmodule Conductor.Application do
         {Phoenix.PubSub, name: Conductor.PubSub},
         Conductor.Store,
         Conductor.Retro,
+        {Registry, keys: :unique, name: Conductor.PhaseWorkerRegistry},
         {Task.Supervisor, name: Conductor.TaskSupervisor},
         {DynamicSupervisor, name: Conductor.RunSupervisor, strategy: :one_for_one},
+        Conductor.PhaseWorker.Supervisor,
         Conductor.Orchestrator,
         Conductor.Fleet.HealthMonitor
       ] ++ dashboard_children()
@@ -54,7 +56,7 @@ defmodule Conductor.Application do
   """
   @spec boot_fleet(binary()) :: :ok | {:error, term()}
   def boot_fleet(fleet_path) do
-    alias Conductor.Fleet.{Loader, Reconciler}
+    alias Conductor.Fleet.Loader
 
     # 1. Load and validate fleet.toml
     case Loader.load(fleet_path) do
@@ -63,7 +65,7 @@ defmodule Conductor.Application do
         {:error, reason}
 
       {:ok, config} ->
-        boot_with_config(config, fleet_path, Reconciler)
+        boot_with_config(config, fleet_path, fleet_reconciler())
     end
   end
 
@@ -133,22 +135,28 @@ defmodule Conductor.Application do
 
   defp start_phase_workers(sprites, healthy, repo) do
     alias Conductor.Fleet.Loader
+    alias Conductor.PhaseWorker.Roles
 
-    for {role, {module, sprite_key}} <- Conductor.Fleet.HealthMonitor.role_to_module() do
-      Loader.by_role(sprites, role)
-      |> Enum.filter(&MapSet.member?(healthy, &1.name))
-      |> Enum.each(fn sprite ->
-        case Supervisor.start_child(Conductor.Supervisor, {
-               module,
-               [{:repo, repo}, {sprite_key, sprite.name}]
-             }) do
-          {:ok, _} ->
-            Logger.info("[boot] #{role_display_name(role)} started: #{sprite.name}")
+    for role_module <- Roles.all() do
+      role = role_module.role()
 
-          {:error, reason} ->
-            Logger.warning("[boot] #{role_display_name(role)} failed: #{inspect(reason)}")
-        end
-      end)
+      phase_sprites =
+        Loader.by_role(sprites, role)
+        |> Enum.filter(&MapSet.member?(healthy, &1.name))
+        |> Enum.map(& &1.name)
+
+      case phase_worker_supervisor().ensure_worker(role_module, repo, phase_sprites) do
+        :ok when phase_sprites != [] ->
+          Logger.info(
+            "[boot] #{role_display_name(role)} started: #{Enum.join(phase_sprites, ", ")}"
+          )
+
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          Logger.warning("[boot] #{role_display_name(role)} failed: #{inspect(reason)}")
+      end
     end
   end
 
@@ -156,6 +164,18 @@ defmodule Conductor.Application do
   def role_display_name(:fixer), do: "thorn"
   def role_display_name(:polisher), do: "fern"
   def role_display_name(role), do: to_string(role)
+
+  defp fleet_reconciler do
+    Application.get_env(:conductor, :fleet_reconciler, Conductor.Fleet.Reconciler)
+  end
+
+  defp phase_worker_supervisor do
+    Application.get_env(
+      :conductor,
+      :phase_worker_supervisor,
+      Conductor.PhaseWorker.Supervisor
+    )
+  end
 
   defp dashboard_children do
     if Application.get_env(:conductor, :start_dashboard, false) do

@@ -4,6 +4,8 @@ defmodule Conductor.Fleet.HealthMonitorTest do
   import Conductor.TestSupport.ProcessHelpers
 
   alias Conductor.Fleet.HealthMonitor
+  alias Conductor.PhaseWorker
+  alias Conductor.PhaseWorker.Roles
   alias Conductor.Store
 
   defmodule MockState do
@@ -54,6 +56,10 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     def sync_persona(_, _, _, _ \\ []), do: :ok
   end
 
+  defmodule FailingPhaseWorkerSupervisor do
+    def ensure_worker(_role_module, _repo, _sprites), do: {:error, :sync_failed}
+  end
+
   setup do
     db_path = Path.join(System.tmp_dir!(), "health_mon_test_#{:rand.uniform(999_999)}.db")
     event_log = Path.join(System.tmp_dir!(), "health_mon_test_#{:rand.uniform(999_999)}.jsonl")
@@ -63,10 +69,12 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     stop_process(Store)
     {:ok, _} = Store.start_link(db_path: db_path, event_log: event_log)
 
-    # Start a test supervisor so ensure_phase_worker can start children
-    stop_process(Conductor.Supervisor)
-    {:ok, _} = Supervisor.start_link([], strategy: :one_for_one, name: Conductor.Supervisor)
+    stop_process(Conductor.PhaseWorker.Supervisor)
+    stop_process(Conductor.PhaseWorkerRegistry)
     stop_process(Conductor.TaskSupervisor)
+
+    {:ok, _} = Registry.start_link(keys: :unique, name: Conductor.PhaseWorkerRegistry)
+    {:ok, _} = Conductor.PhaseWorker.Supervisor.start_link()
     {:ok, _} = Task.Supervisor.start_link(name: Conductor.TaskSupervisor)
 
     orig_reconciler = Application.get_env(:conductor, :reconciler_module)
@@ -75,17 +83,18 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     orig_worker = Application.get_env(:conductor, :worker_module)
     orig_workspace = Application.get_env(:conductor, :workspace_module)
     orig_code_host = Application.get_env(:conductor, :code_host_module)
+    orig_phase_worker_supervisor = Application.get_env(:conductor, :phase_worker_supervisor)
+    orig_phase_worker_sprites = Application.get_env(:conductor, :phase_worker_sprites)
 
     Application.put_env(:conductor, :worker_module, NoopWorker)
     Application.put_env(:conductor, :workspace_module, NoopWorkspace)
     Application.put_env(:conductor, :code_host_module, NoopCodeHost)
 
     on_exit(fn ->
-      stop_process(Conductor.Polisher)
-      stop_process(Conductor.Fixer)
       stop_process(HealthMonitor)
       stop_process(Conductor.TaskSupervisor)
-      stop_process(Conductor.Supervisor)
+      stop_process(Conductor.PhaseWorker.Supervisor)
+      stop_process(Conductor.PhaseWorkerRegistry)
       stop_process(Store)
       MockState.cleanup()
 
@@ -93,7 +102,9 @@ defmodule Conductor.Fleet.HealthMonitorTest do
             {:reconciler_module, orig_reconciler},
             {:worker_module, orig_worker},
             {:workspace_module, orig_workspace},
-            {:code_host_module, orig_code_host}
+            {:code_host_module, orig_code_host},
+            {:phase_worker_supervisor, orig_phase_worker_supervisor},
+            {:phase_worker_sprites, orig_phase_worker_sprites}
           ] do
         if orig,
           do: Application.put_env(:conductor, key, orig),
@@ -110,6 +121,21 @@ defmodule Conductor.Fleet.HealthMonitorTest do
   defp start_monitor(opts \\ []) do
     {:ok, pid} = HealthMonitor.start_link(interval_ms: Keyword.get(opts, :interval_ms, 60_000))
     pid
+  end
+
+  defp wait_for(fun, attempts \\ 20)
+
+  defp wait_for(_fun, 0), do: flunk("timed out waiting for health monitor state")
+
+  defp wait_for(fun, attempts) do
+    case fun.() do
+      nil ->
+        Process.sleep(25)
+        wait_for(fun, attempts - 1)
+
+      value ->
+        value
+    end
   end
 
   test "starts with empty state and reports status" do
@@ -167,6 +193,8 @@ defmodule Conductor.Fleet.HealthMonitorTest do
 
     assert log =~ "bb-polisher recovered"
     assert HealthMonitor.status().sprites["bb-polisher"] == :healthy
+    assert PhaseWorker.whereis(Roles.Polisher)
+    assert PhaseWorker.status(Roles.Polisher).sprites == ["bb-polisher"]
   end
 
   test "detects healthy→unhealthy transition and logs degradation" do
@@ -225,8 +253,122 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     assert HealthMonitor.status().sprites["bb-polisher"] == :unhealthy
 
     HealthMonitor.check_now()
-    Process.sleep(100)
 
-    assert HealthMonitor.status().sprites["bb-polisher"] == :healthy
+    wait_for(fn ->
+      if HealthMonitor.status().sprites["bb-polisher"] == :healthy do
+        :ok
+      end
+    end)
+  end
+
+  test "recovered sprite joins the existing role worker instead of starting a second singleton" do
+    start_monitor(interval_ms: 60_000)
+
+    sprites = [
+      %{name: "bb-polisher-1", role: :polisher, harness: "codex", repo: "test/repo"},
+      %{name: "bb-polisher-2", role: :polisher, harness: "codex", repo: "test/repo"}
+    ]
+
+    MockState.put({:sprite_health, "bb-polisher-1"}, :healthy)
+    MockState.put({:sprite_health, "bb-polisher-2"}, :healthy)
+
+    HealthMonitor.configure(
+      sprites: sprites,
+      repo: "test/repo",
+      healthy: MapSet.new(["bb-polisher-1"])
+    )
+
+    :ok =
+      Conductor.PhaseWorker.Supervisor.ensure_worker(
+        Roles.Polisher,
+        "test/repo",
+        ["bb-polisher-1"]
+      )
+
+    assert PhaseWorker.status(Roles.Polisher).sprites == ["bb-polisher-1"]
+
+    HealthMonitor.check_now()
+
+    wait_for(fn ->
+      if PhaseWorker.status(Roles.Polisher).sprites == ["bb-polisher-1", "bb-polisher-2"] do
+        :ok
+      end
+    end)
+  end
+
+  test "records degradation when phase worker sync fails" do
+    Application.put_env(:conductor, :phase_worker_supervisor, FailingPhaseWorkerSupervisor)
+
+    start_monitor(interval_ms: 60_000)
+
+    sprites = [
+      %{name: "bb-fixer", role: :fixer, harness: "codex", repo: "test/repo"}
+    ]
+
+    MockState.put({:sprite_health, "bb-fixer"}, :unhealthy)
+
+    HealthMonitor.configure(
+      sprites: sprites,
+      repo: "test/repo",
+      healthy: MapSet.new(["bb-fixer"])
+    )
+
+    assert HealthMonitor.status().sprites["bb-fixer"] == :healthy
+
+    log =
+      capture_log(fn ->
+        HealthMonitor.check_now()
+        Process.sleep(100)
+      end)
+
+    assert log =~ "failed to sync"
+    assert HealthMonitor.status().sprites["bb-fixer"] == :unhealthy
+  end
+
+  test "keeps recovery pending until phase worker sync succeeds" do
+    Application.put_env(:conductor, :phase_worker_supervisor, FailingPhaseWorkerSupervisor)
+
+    start_monitor(interval_ms: 60_000)
+
+    sprites = [
+      %{name: "bb-polisher", role: :polisher, harness: "codex", repo: "test/repo"}
+    ]
+
+    MockState.put({:sprite_health, "bb-polisher"}, :healthy)
+
+    HealthMonitor.configure(
+      sprites: sprites,
+      repo: "test/repo",
+      healthy: MapSet.new()
+    )
+
+    assert HealthMonitor.status().sprites["bb-polisher"] == :unhealthy
+
+    log =
+      capture_log(fn ->
+        HealthMonitor.check_now()
+        Process.sleep(100)
+      end)
+
+    assert log =~ "failed to sync"
+    assert HealthMonitor.status().sprites["bb-polisher"] == :unhealthy
+    assert PhaseWorker.whereis(Roles.Polisher) == nil
+    refute Enum.any?(Store.list_events("fleet"), &(&1["event_type"] == "sprite_recovered"))
+
+    Application.put_env(:conductor, :phase_worker_supervisor, Conductor.PhaseWorker.Supervisor)
+
+    HealthMonitor.check_now()
+
+    wait_for(fn ->
+      status = HealthMonitor.status()
+      worker = PhaseWorker.whereis(Roles.Polisher)
+
+      if (status.sprites["bb-polisher"] == :healthy and worker) &&
+           PhaseWorker.status(Roles.Polisher).sprites == ["bb-polisher"] do
+        :ok
+      end
+    end)
+
+    assert Enum.any?(Store.list_events("fleet"), &(&1["event_type"] == "sprite_recovered"))
   end
 end
