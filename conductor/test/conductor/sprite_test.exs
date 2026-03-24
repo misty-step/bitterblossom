@@ -3,6 +3,28 @@ defmodule Conductor.SpriteTest do
 
   alias Conductor.Sprite
 
+  setup do
+    original_env =
+      for key <- ~w(CODEX_HOME OPENAI_API_KEY GITHUB_TOKEN), into: %{} do
+        {key, System.get_env(key)}
+      end
+
+    codex_home =
+      Path.join(System.tmp_dir!(), "codex_home_#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(codex_home)
+    System.put_env("CODEX_HOME", codex_home)
+    System.delete_env("OPENAI_API_KEY")
+    System.delete_env("GITHUB_TOKEN")
+
+    on_exit(fn ->
+      File.rm_rf(codex_home)
+      Enum.each(original_env, fn {key, value} -> restore_env(key, value) end)
+    end)
+
+    :ok
+  end
+
   defp exec_fn(responses) do
     fn _sprite, command, _opts ->
       Enum.find_value(responses, {:ok, ""}, fn {pattern, result} ->
@@ -26,7 +48,9 @@ defmodule Conductor.SpriteTest do
     |> Enum.any?(fn {_src, uploaded_dest} -> uploaded_dest == dest end)
   end
 
-  test "status reports gh auth and harness readiness" do
+  test "status reports gh auth, Codex auth, and harness readiness" do
+    System.put_env("OPENAI_API_KEY", "sk-test")
+
     status =
       Sprite.status("bb-weaver",
         harness: "codex",
@@ -43,6 +67,7 @@ defmodule Conductor.SpriteTest do
             %{
               reachable: true,
               harness_ready: true,
+              codex_auth_ready: true,
               gh_authenticated: true,
               git_credential_helper: true,
               healthy: true
@@ -50,6 +75,8 @@ defmodule Conductor.SpriteTest do
   end
 
   test "status marks missing gh auth as unhealthy" do
+    System.put_env("OPENAI_API_KEY", "sk-test")
+
     status =
       Sprite.status("bb-weaver",
         harness: "codex",
@@ -66,6 +93,7 @@ defmodule Conductor.SpriteTest do
             %{
               reachable: true,
               harness_ready: true,
+              codex_auth_ready: true,
               gh_authenticated: false,
               git_credential_helper: true,
               healthy: false
@@ -73,6 +101,8 @@ defmodule Conductor.SpriteTest do
   end
 
   test "status marks missing git credential helper as unhealthy" do
+    System.put_env("OPENAI_API_KEY", "sk-test")
+
     status =
       Sprite.status("bb-weaver",
         harness: "codex",
@@ -89,9 +119,60 @@ defmodule Conductor.SpriteTest do
             %{
               reachable: true,
               harness_ready: true,
+              codex_auth_ready: true,
               gh_authenticated: true,
               git_credential_helper: false,
               healthy: false
+            }} = status
+  end
+
+  test "status marks missing Codex auth as unhealthy" do
+    status =
+      Sprite.status("bb-weaver",
+        harness: "codex",
+        exec_fn:
+          exec_fn([
+            {"echo ok", {:ok, "ok\n"}},
+            {"command -v codex", {:ok, "/usr/bin/codex\n"}},
+            {"test -s '/home/sprite/.codex/auth.json'", {:error, "", 1}},
+            {"gh auth status", {:ok, "github.com\n"}},
+            {"git config --global --get credential.helper", {:ok, "!gh auth git-credential"}}
+          ])
+      )
+
+    assert {:ok,
+            %{
+              reachable: true,
+              harness_ready: true,
+              codex_auth_ready: false,
+              gh_authenticated: true,
+              git_credential_helper: true,
+              healthy: false
+            }} = status
+  end
+
+  test "status treats an existing remote auth cache as healthy without API key fallback" do
+    status =
+      Sprite.status("bb-weaver",
+        harness: "codex",
+        exec_fn:
+          exec_fn([
+            {"echo ok", {:ok, "ok\n"}},
+            {"command -v codex", {:ok, "/usr/bin/codex\n"}},
+            {"test -s '/home/sprite/.codex/auth.json'", {:ok, ""}},
+            {"gh auth status", {:ok, "github.com\n"}},
+            {"git config --global --get credential.helper", {:ok, "!gh auth git-credential"}}
+          ])
+      )
+
+    assert {:ok,
+            %{
+              reachable: true,
+              harness_ready: true,
+              codex_auth_ready: true,
+              gh_authenticated: true,
+              git_credential_helper: true,
+              healthy: true
             }} = status
   end
 
@@ -275,6 +356,104 @@ defmodule Conductor.SpriteTest do
 
                _ ->
                  false
+             end)
+    after
+      if prev_gh,
+        do: System.put_env("GITHUB_TOKEN", prev_gh),
+        else: System.delete_env("GITHUB_TOKEN")
+    end
+  end
+
+  test "provision uploads Codex auth.json when local ChatGPT auth is available and remote auth is missing" do
+    test_pid = self()
+    prev_gh = System.get_env("GITHUB_TOKEN")
+    System.put_env("GITHUB_TOKEN", "ghp-test-token")
+    write_auth_json(%{"auth_mode" => "chatgpt", "refresh_token" => "rt-test"})
+
+    try do
+      exec_fn = fn _sprite, command, opts ->
+        uploaded_files =
+          opts
+          |> Keyword.get(:files, [])
+          |> Enum.map(fn {src, dest} -> {dest, File.read!(src)} end)
+
+        send(test_pid, {:exec_called, command, opts, uploaded_files})
+
+        case command do
+          "test -s '/home/sprite/.codex/auth.json'" -> {:error, "", 1}
+          _ -> {:ok, ""}
+        end
+      end
+
+      assert :ok =
+               Sprite.provision("bb-weaver",
+                 repo: "misty-step/bitterblossom",
+                 persona: "You are Weaver.",
+                 force: true,
+                 exec_fn: exec_fn
+               )
+
+      calls = drain_exec_calls()
+
+      {auth_cmd, _auth_opts, auth_files} =
+        Enum.find(calls, fn {_command, _opts, uploaded_files} ->
+          Enum.any?(uploaded_files, fn {dest, _content} ->
+            dest == "/home/sprite/.codex/auth.json"
+          end)
+        end)
+
+      assert auth_cmd == "chmod 600 '/home/sprite/.codex/auth.json'"
+
+      assert Enum.any?(auth_files, fn
+               {"/home/sprite/.codex/auth.json", content} ->
+                 String.contains?(content, "\"auth_mode\":\"chatgpt\"") and
+                   String.contains?(content, "\"refresh_token\":\"rt-test\"")
+
+               _ ->
+                 false
+             end)
+    after
+      if prev_gh,
+        do: System.put_env("GITHUB_TOKEN", prev_gh),
+        else: System.delete_env("GITHUB_TOKEN")
+    end
+  end
+
+  test "provision preserves an existing remote Codex auth cache" do
+    test_pid = self()
+    prev_gh = System.get_env("GITHUB_TOKEN")
+    System.put_env("GITHUB_TOKEN", "ghp-test-token")
+    write_auth_json(%{"auth_mode" => "chatgpt", "refresh_token" => "rt-test"})
+
+    try do
+      exec_fn = fn _sprite, command, opts ->
+        uploaded_files =
+          opts
+          |> Keyword.get(:files, [])
+          |> Enum.map(fn {src, dest} -> {dest, File.read!(src)} end)
+
+        send(test_pid, {:exec_called, command, opts, uploaded_files})
+
+        case command do
+          "test -s '/home/sprite/.codex/auth.json'" -> {:ok, ""}
+          _ -> {:ok, ""}
+        end
+      end
+
+      assert :ok =
+               Sprite.provision("bb-weaver",
+                 repo: "misty-step/bitterblossom",
+                 persona: "You are Weaver.",
+                 force: true,
+                 exec_fn: exec_fn
+               )
+
+      calls = drain_exec_calls()
+
+      refute Enum.any?(calls, fn {_command, _opts, uploaded_files} ->
+               Enum.any?(uploaded_files, fn {dest, _content} ->
+                 dest == "/home/sprite/.codex/auth.json"
+               end)
              end)
     after
       if prev_gh,
@@ -517,4 +696,12 @@ defmodule Conductor.SpriteTest do
     assert {:error, "connection refused"} =
              Sprite.logs("bb-weaver", workspace: "/tmp/worktree", exec_fn: exec_fn)
   end
+
+  defp write_auth_json(payload) do
+    path = Path.join(System.fetch_env!("CODEX_HOME"), "auth.json")
+    File.write!(path, Jason.encode!(payload))
+  end
+
+  defp restore_env(key, nil), do: System.delete_env(key)
+  defp restore_env(key, value), do: System.put_env(key, value)
 end

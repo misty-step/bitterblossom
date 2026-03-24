@@ -1,10 +1,11 @@
 # Codex CLI configuration for sprites (headless VMs).
 # Uploaded to ~/.codex/config.toml during conductor fleet reconciliation.
-# Auth: OPENAI_API_KEY/CODEX_API_KEY are sourced from the sprite runtime env file.
+# Auth defaults to ChatGPT account auth via ~/.codex/auth.json.
+# OPENAI_API_KEY/CODEX_API_KEY are injected only as a compatibility fallback.
 #
 # Note: model, reasoning_effort, web_search, and sandbox are set
 # via CLI flags by the conductor (Conductor.Codex module).
 # Only values NOT overridden by the conductor belong here.
 
-preferred_auth_method = "apikey"
+cli_auth_credentials_store = "file"
 approval_policy = "never"

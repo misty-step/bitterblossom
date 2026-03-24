@@ -5,6 +5,7 @@ defmodule Conductor.Config do
           name: binary(),
           capability_tags: [binary()]
         }
+  @type codex_auth_source :: {:chatgpt, binary()} | {:api_key, binary()} | :missing
 
   @spec github_token!() :: binary()
   def github_token!, do: System.fetch_env!("GITHUB_TOKEN")
@@ -177,32 +178,68 @@ defmodule Conductor.Config do
     end
   end
 
+  @spec codex_auth_file() :: binary()
+  def codex_auth_file do
+    codex_home()
+    |> Path.join("auth.json")
+    |> Path.expand()
+  end
+
+  @spec codex_auth_source() :: codex_auth_source
+  def codex_auth_source do
+    case chatgpt_auth_file() do
+      {:ok, path} ->
+        {:chatgpt, path}
+
+      {:error, _reason} ->
+        case nonempty_env("OPENAI_API_KEY") do
+          nil -> :missing
+          api_key -> {:api_key, api_key}
+        end
+    end
+  end
+
   @spec dispatch_env() :: [{binary(), binary()}]
   def dispatch_env do
     # Render only the runtime API keys the harness still needs into the
     # sprite-side env file. GitHub auth is persisted separately during setup.
     []
-    |> maybe_env("OPENAI_API_KEY")
-    |> maybe_env_as("OPENAI_API_KEY", "CODEX_API_KEY")
+    |> maybe_codex_api_env()
     |> maybe_env("EXA_API_KEY")
     |> Enum.reverse()
   end
 
   defp maybe_env(acc, key) do
-    case System.get_env(key) do
+    case nonempty_env(key) do
       nil -> acc
-      "" -> acc
       val -> [{key, val} | acc]
     end
   end
 
-  # Inject a local env var under a different name on the sprite.
-  # Used for OPENAI_API_KEY → CODEX_API_KEY (Codex CLI reads CODEX_API_KEY).
-  defp maybe_env_as(acc, source_key, target_key) do
-    case System.get_env(source_key) do
-      nil -> acc
-      "" -> acc
-      val -> [{target_key, val} | acc]
+  defp maybe_codex_api_env(acc) do
+    case codex_auth_source() do
+      {:api_key, api_key} ->
+        [{"CODEX_API_KEY", api_key}, {"OPENAI_API_KEY", api_key} | acc]
+
+      _ ->
+        acc
+    end
+  end
+
+  defp nonempty_env(key) do
+    case System.get_env(key) do
+      nil -> nil
+      "" -> nil
+      val -> val
+    end
+  end
+
+  @spec codex_auth_available?() :: binary() | false
+  def codex_auth_available? do
+    case codex_auth_source() do
+      {:chatgpt, path} -> path
+      {:api_key, _} -> "OPENAI_API_KEY"
+      :missing -> false
     end
   end
 
@@ -247,6 +284,7 @@ defmodule Conductor.Config do
     checks = [
       {"GITHUB_TOKEN", fn -> System.get_env("GITHUB_TOKEN") end},
       {"SPRITE_TOKEN, FLY_API_TOKEN, or sprite CLI auth", fn -> sprite_auth_available?() end},
+      {"Codex ChatGPT auth cache or OPENAI_API_KEY", fn -> codex_auth_available?() end},
       {"gh", fn -> find_executable("gh") end},
       {"sprite", fn -> find_executable("sprite") end},
       {"persona source root",
@@ -294,6 +332,26 @@ defmodule Conductor.Config do
       System.get_env("FLY_API_TOKEN") ||
       (Conductor.SpriteCLIAuth.authenticated?() && "sprite-cli") ||
       false
+  end
+
+  defp chatgpt_auth_file do
+    path = codex_auth_file()
+
+    with true <- File.regular?(path),
+         {:ok, body} <- File.read(path),
+         {:ok, auth} <- Jason.decode(body),
+         "chatgpt" <- auth["auth_mode"],
+         refresh when is_binary(refresh) and refresh != "" <- auth["refresh_token"] do
+      {:ok, path}
+    else
+      false -> {:error, :missing}
+      {:error, _reason} = error -> error
+      _ -> {:error, :invalid}
+    end
+  end
+
+  defp codex_home do
+    System.get_env("CODEX_HOME") || Path.join(System.user_home!(), ".codex")
   end
 
   defp find_executable(name) do

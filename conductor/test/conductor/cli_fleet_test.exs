@@ -193,14 +193,28 @@ defmodule Conductor.CLIFleetTest do
   test "mix conductor fleet --reconcile fails with environment preflight output", %{
     fleet_path: fleet_path
   } do
+    codex_home =
+      Path.join(System.tmp_dir!(), "codex_home_#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(codex_home)
+
     {output, status} =
       System.cmd("mix", ["conductor", "fleet", "--fleet", fleet_path, "--reconcile"],
         cd: @conductor_dir,
-        env: [{"MIX_ENV", "test"}, {"GITHUB_TOKEN", ""}],
+        env: [
+          {"MIX_ENV", "test"},
+          {"GITHUB_TOKEN", ""},
+          {"OPENAI_API_KEY", ""},
+          {"CODEX_HOME", codex_home},
+          {"SPRITE_TOKEN", "sprite-test"}
+        ],
         stderr_to_stdout: true
       )
 
+    File.rm_rf(codex_home)
+
     assert status == 1
     assert output =~ "environment check failed: missing: GITHUB_TOKEN"
+    assert output =~ "Codex ChatGPT auth cache or OPENAI_API_KEY"
   end
 end

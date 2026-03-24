@@ -14,6 +14,29 @@ defmodule Conductor.SpriteDispatchTest do
 
   alias Conductor.Sprite
 
+  setup do
+    original_env =
+      for key <- ~w(CODEX_HOME OPENAI_API_KEY GITHUB_TOKEN EXA_API_KEY), into: %{} do
+        {key, System.get_env(key)}
+      end
+
+    codex_home =
+      Path.join(System.tmp_dir!(), "codex_home_#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(codex_home)
+    System.put_env("CODEX_HOME", codex_home)
+    System.delete_env("OPENAI_API_KEY")
+    System.delete_env("GITHUB_TOKEN")
+    System.delete_env("EXA_API_KEY")
+
+    on_exit(fn ->
+      File.rm_rf(codex_home)
+      Enum.each(original_env, fn {key, value} -> restore_env(key, value) end)
+    end)
+
+    :ok
+  end
+
   # ---------------------------------------------------------------------------
   # Mock Harness
   # ---------------------------------------------------------------------------
@@ -77,48 +100,61 @@ defmodule Conductor.SpriteDispatchTest do
     end
 
     test "uploads prompt and runtime env files without embedding secret contents in argv" do
-      prev_openai = System.get_env("OPENAI_API_KEY")
-      prev_exa = System.get_env("EXA_API_KEY")
       System.put_env("OPENAI_API_KEY", "sk-test-123")
       System.put_env("EXA_API_KEY", "exa-test-456")
 
-      try do
-        exec_fn = make_exec_fn()
+      exec_fn = make_exec_fn()
 
-        Sprite.dispatch("s1", "my test prompt", "org/repo",
-          workspace: "/my/ws",
-          harness: MockHarness,
-          exec_fn: exec_fn,
-          timeout: 1
-        )
+      Sprite.dispatch("s1", "my test prompt", "org/repo",
+        workspace: "/my/ws",
+        harness: MockHarness,
+        exec_fn: exec_fn,
+        timeout: 1
+      )
 
-        assert_received {:exec_called, _kill_cmd, _opts, _files}
-        assert_received {:exec_called, upload_cmd, upload_opts, uploaded_files}
-        assert upload_cmd == "true"
-        assert Keyword.has_key?(upload_opts, :files)
+      assert_received {:exec_called, _kill_cmd, _opts, _files}
+      assert_received {:exec_called, upload_cmd, upload_opts, uploaded_files}
+      assert upload_cmd == "true"
+      assert Keyword.has_key?(upload_opts, :files)
 
-        assert {"/my/ws/PROMPT.md", "my test prompt"} in uploaded_files
+      assert {"/my/ws/PROMPT.md", "my test prompt"} in uploaded_files
 
-        assert {"/my/ws/.bb-runtime-env", runtime_env} =
-                 Enum.find(uploaded_files, fn {dest, _content} ->
-                   dest == "/my/ws/.bb-runtime-env"
-                 end)
+      assert {"/my/ws/.bb-runtime-env", runtime_env} =
+               Enum.find(uploaded_files, fn {dest, _content} ->
+                 dest == "/my/ws/.bb-runtime-env"
+               end)
 
-        assert runtime_env =~ "export OPENAI_API_KEY='sk-test-123'"
-        assert runtime_env =~ "export CODEX_API_KEY='sk-test-123'"
-        assert runtime_env =~ "export EXA_API_KEY='exa-test-456'"
-        refute runtime_env =~ "GITHUB_TOKEN"
-        refute upload_cmd =~ "sk-test-123"
-        refute upload_cmd =~ "exa-test-456"
-      after
-        if prev_openai,
-          do: System.put_env("OPENAI_API_KEY", prev_openai),
-          else: System.delete_env("OPENAI_API_KEY")
+      assert runtime_env =~ "export OPENAI_API_KEY='sk-test-123'"
+      assert runtime_env =~ "export CODEX_API_KEY='sk-test-123'"
+      assert runtime_env =~ "export EXA_API_KEY='exa-test-456'"
+      refute runtime_env =~ "GITHUB_TOKEN"
+      refute upload_cmd =~ "sk-test-123"
+      refute upload_cmd =~ "exa-test-456"
+    end
 
-        if prev_exa,
-          do: System.put_env("EXA_API_KEY", prev_exa),
-          else: System.delete_env("EXA_API_KEY")
-      end
+    test "omits OpenAI key exports when ChatGPT auth cache is present" do
+      write_auth_json(%{"auth_mode" => "chatgpt", "refresh_token" => "rt-test"})
+      System.put_env("OPENAI_API_KEY", "sk-test-123")
+
+      exec_fn = make_exec_fn()
+
+      Sprite.dispatch("s1", "my test prompt", "org/repo",
+        workspace: "/my/ws",
+        harness: MockHarness,
+        exec_fn: exec_fn,
+        timeout: 1
+      )
+
+      assert_received {:exec_called, _kill_cmd, _opts, _files}
+      assert_received {:exec_called, _upload_cmd, _upload_opts, uploaded_files}
+
+      assert {"/my/ws/.bb-runtime-env", runtime_env} =
+               Enum.find(uploaded_files, fn {dest, _content} ->
+                 dest == "/my/ws/.bb-runtime-env"
+               end)
+
+      refute runtime_env =~ "OPENAI_API_KEY"
+      refute runtime_env =~ "CODEX_API_KEY"
     end
 
     test "uploads prompt to workspace/PROMPT.md" do
@@ -455,4 +491,12 @@ defmodule Conductor.SpriteDispatchTest do
       assert String.contains?(msg, "dispatch file upload failed")
     end
   end
+
+  defp write_auth_json(payload) do
+    path = Path.join(System.fetch_env!("CODEX_HOME"), "auth.json")
+    File.write!(path, Jason.encode!(payload))
+  end
+
+  defp restore_env(key, nil), do: System.delete_env(key)
+  defp restore_env(key, value), do: System.put_env(key, value)
 end

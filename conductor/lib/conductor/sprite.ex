@@ -25,6 +25,7 @@ defmodule Conductor.Sprite do
   @sprite_home "/home/sprite"
   @sprite_claude_dir Path.join(@sprite_home, ".claude")
   @sprite_codex_dir Path.join(@sprite_home, ".codex")
+  @sprite_codex_auth_path Path.join(@sprite_codex_dir, "auth.json")
   @sprite_runtime_dir Path.join(@sprite_home, ".bitterblossom")
   @sprite_runtime_env_path Path.join(@sprite_runtime_dir, "runtime.env")
   @sprite_workspace_root Path.join(@sprite_home, "workspace")
@@ -179,6 +180,7 @@ defmodule Conductor.Sprite do
     with :ok <- ensure_remote_dirs(sprite, exec_fn),
          :ok <- upload_base_configs(sprite, persona, exec_fn),
          :ok <- ensure_codex(sprite, force, exec_fn),
+         :ok <- maybe_sync_codex_auth(sprite, exec_fn),
          :ok <- upload_runtime_env(sprite, exec_fn),
          :ok <- configure_git_auth(sprite, exec_fn),
          :ok <- maybe_setup_repo(sprite, repo, persona, force, exec_fn) do
@@ -239,6 +241,7 @@ defmodule Conductor.Sprite do
     case probe(sprite, exec_fn: exec_fn) do
       {:ok, %{reachable: true}} ->
         harness_ready = harness_ready?(sprite, harness, exec_fn)
+        codex_auth_ready = codex_auth_ready?(sprite, harness, exec_fn)
         gh_authenticated = gh_authenticated?(sprite, exec_fn)
         git_credential_helper = git_credential_helper_ready?(sprite, exec_fn)
 
@@ -247,9 +250,11 @@ defmodule Conductor.Sprite do
            sprite: sprite,
            reachable: true,
            harness_ready: harness_ready,
+           codex_auth_ready: codex_auth_ready,
            gh_authenticated: gh_authenticated,
            git_credential_helper: git_credential_helper,
-           healthy: harness_ready and gh_authenticated and git_credential_helper
+           healthy:
+             harness_ready and codex_auth_ready and gh_authenticated and git_credential_helper
          }}
 
       {:error, reason} ->
@@ -313,6 +318,20 @@ defmodule Conductor.Sprite do
       end
 
     match?({:ok, _}, exec_fn.(sprite, harness_cmd, timeout: 15_000))
+  end
+
+  defp codex_auth_ready?(_sprite, harness, _exec_fn) when harness not in ["codex"], do: true
+
+  defp codex_auth_ready?(sprite, "codex", exec_fn) do
+    remote_codex_auth_present?(sprite, exec_fn) or
+      match?({:api_key, _}, Config.codex_auth_source())
+  end
+
+  defp remote_codex_auth_present?(sprite, exec_fn) do
+    match?(
+      {:ok, _},
+      exec_fn.(sprite, "test -s #{shell_quote(@sprite_codex_auth_path)}", timeout: 15_000)
+    )
   end
 
   defp gh_authenticated?(sprite, exec_fn) do
@@ -473,6 +492,33 @@ defmodule Conductor.Sprite do
     case exec_fn.(sprite, install_cmd, timeout: 120_000) do
       {:ok, _} -> :ok
       {:error, msg, _code} -> {:error, msg}
+    end
+  end
+
+  defp maybe_sync_codex_auth(sprite, exec_fn) do
+    case Config.codex_auth_source() do
+      {:chatgpt, local_auth_path} ->
+        case exec_fn.(sprite, "test -s #{shell_quote(@sprite_codex_auth_path)}", timeout: 15_000) do
+          {:ok, _} ->
+            :ok
+
+          {:error, "", 1} ->
+            case exec_fn.(
+                   sprite,
+                   "chmod 600 #{shell_quote(@sprite_codex_auth_path)}",
+                   files: [{local_auth_path, @sprite_codex_auth_path}],
+                   timeout: 30_000
+                 ) do
+              {:ok, _} -> :ok
+              {:error, msg, _code} -> {:error, msg}
+            end
+
+          {:error, msg, _code} ->
+            {:error, msg}
+        end
+
+      _ ->
+        :ok
     end
   end
 
