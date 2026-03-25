@@ -52,6 +52,16 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     def checks_failed?(_, _), do: false
   end
 
+  defmodule MockOrchestrator do
+    alias Conductor.Fleet.HealthMonitorTest.MockState
+
+    def configure_polling(opts) do
+      calls = MockState.get(:configure_polling_calls, [])
+      MockState.put(:configure_polling_calls, [opts | calls])
+      :ok
+    end
+  end
+
   defmodule NoopWorkspace do
     def sync_persona(_, _, _, _ \\ []), do: :ok
   end
@@ -83,12 +93,14 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     orig_worker = Application.get_env(:conductor, :worker_module)
     orig_workspace = Application.get_env(:conductor, :workspace_module)
     orig_code_host = Application.get_env(:conductor, :code_host_module)
+    orig_orchestrator = Application.get_env(:conductor, :orchestrator_module)
     orig_phase_worker_supervisor = Application.get_env(:conductor, :phase_worker_supervisor)
     orig_phase_worker_sprites = Application.get_env(:conductor, :phase_worker_sprites)
 
     Application.put_env(:conductor, :worker_module, NoopWorker)
     Application.put_env(:conductor, :workspace_module, NoopWorkspace)
     Application.put_env(:conductor, :code_host_module, NoopCodeHost)
+    Application.put_env(:conductor, :orchestrator_module, MockOrchestrator)
 
     on_exit(fn ->
       stop_process(HealthMonitor)
@@ -103,6 +115,7 @@ defmodule Conductor.Fleet.HealthMonitorTest do
             {:worker_module, orig_worker},
             {:workspace_module, orig_workspace},
             {:code_host_module, orig_code_host},
+            {:orchestrator_module, orig_orchestrator},
             {:phase_worker_supervisor, orig_phase_worker_supervisor},
             {:phase_worker_sprites, orig_phase_worker_sprites}
           ] do
@@ -292,6 +305,38 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     wait_for(fn ->
       if PhaseWorker.status(Roles.Polisher).sprites == ["bb-polisher-1", "bb-polisher-2"] do
         :ok
+      end
+    end)
+  end
+
+  test "builder recovery preserves the configured label filter" do
+    start_monitor(interval_ms: 60_000)
+
+    sprites = [
+      %{name: "bb-weaver", role: :builder, harness: "codex", repo: "test/repo"}
+    ]
+
+    MockState.put({:sprite_health, "bb-weaver"}, :healthy)
+
+    HealthMonitor.configure(
+      sprites: sprites,
+      repo: "test/repo",
+      label: "ready",
+      healthy: MapSet.new()
+    )
+
+    assert HealthMonitor.status().sprites["bb-weaver"] == :unhealthy
+
+    HealthMonitor.check_now()
+
+    wait_for(fn ->
+      case MockState.get(:configure_polling_calls, []) do
+        [[repo: "test/repo", workers: [builder], label: "ready"] | _]
+        when builder.name == "bb-weaver" ->
+          :ok
+
+        _ ->
+          nil
       end
     end)
   end

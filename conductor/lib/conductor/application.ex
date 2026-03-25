@@ -116,6 +116,7 @@ defmodule Conductor.Application do
     Conductor.Fleet.HealthMonitor.configure(
       sprites: sprites,
       repo: repo,
+      label: defaults.label,
       healthy: healthy
     )
 

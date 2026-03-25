@@ -18,6 +18,7 @@ defmodule Conductor.Fleet.HealthMonitor do
 
   defstruct [
     :repo,
+    :label,
     :interval_ms,
     :timer_ref,
     sprites: [],
@@ -61,6 +62,7 @@ defmodule Conductor.Fleet.HealthMonitor do
   def handle_call({:configure, opts}, _from, state) do
     sprites = Keyword.get(opts, :sprites, [])
     repo = Keyword.fetch!(opts, :repo)
+    label = Keyword.get(opts, :label)
     initial_healthy = Keyword.get(opts, :healthy, MapSet.new())
 
     known_health =
@@ -70,7 +72,16 @@ defmodule Conductor.Fleet.HealthMonitor do
 
     if state.timer_ref, do: Process.cancel_timer(state.timer_ref)
     ref = schedule_check(state.interval_ms)
-    state = %{state | sprites: sprites, repo: repo, known_health: known_health, timer_ref: ref}
+
+    state = %{
+      state
+      | sprites: sprites,
+        repo: repo,
+        label: label,
+        known_health: known_health,
+        timer_ref: ref
+    }
+
     {:reply, :ok, state}
   end
 
@@ -153,14 +164,24 @@ defmodule Conductor.Fleet.HealthMonitor do
   defp sync_phase_worker(state, :builder) do
     healthy_builders =
       state.sprites
-      |> Enum.filter(fn s -> s.role == :builder and Map.get(state.known_health, s.name) == :healthy end)
+      |> Enum.filter(fn s ->
+        s.role == :builder and Map.get(state.known_health, s.name) == :healthy
+      end)
 
     if healthy_builders == [] do
       :ok
     else
       try do
-        Conductor.Orchestrator.configure_polling(repo: state.repo, workers: healthy_builders)
-        Logger.info("[health] orchestrator configured with #{length(healthy_builders)} builder(s)")
+        orchestrator_mod().configure_polling(
+          repo: state.repo,
+          workers: healthy_builders,
+          label: state.label
+        )
+
+        Logger.info(
+          "[health] orchestrator configured with #{length(healthy_builders)} builder(s)"
+        )
+
         :ok
       catch
         :exit, _ ->
@@ -216,5 +237,9 @@ defmodule Conductor.Fleet.HealthMonitor do
       :phase_worker_supervisor,
       Conductor.PhaseWorker.Supervisor
     )
+  end
+
+  defp orchestrator_mod do
+    Application.get_env(:conductor, :orchestrator_module, Conductor.Orchestrator)
   end
 end
