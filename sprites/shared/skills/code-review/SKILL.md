@@ -30,7 +30,9 @@ Optional external reviewers: Think Tank CLI, Cerberus CLI.
 
 ### 1. Gather the diff
 
-Get the diff via `git diff main...HEAD` or the specified scope.
+Resolve the default branch first, for example
+`default_branch=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')`,
+then get the diff via `git diff "$default_branch"...HEAD` or the specified scope.
 
 ### 2. Launch all reviewers in parallel
 
@@ -106,7 +108,8 @@ After review passes, if diff > 200 LOC net:
 ## Gotchas
 
 - **Self-review leniency:** Models consistently overrate their own work. The critic must be a separate sub-agent, not the builder evaluating itself.
-- **Reviewing the whole codebase:** Review the diff, not the repo. `git diff main...HEAD` is the scope.
+- **Reviewing the whole codebase:** Review the diff, not the repo. Resolve the default
+  branch, then use `git diff "$default_branch"...HEAD` as the default scope.
 - **Vague feedback:** "Needs improvement" is useless. Every concern must have file:line + specific fix.
 - **Infinite loop:** Cap at 3 review iterations. If still blocked, escalate — the issue needs human judgment.
 - **Skipping the bench:** Running only the critic misses structural issues. The philosophy agents add perspectives the critic doesn't cover.

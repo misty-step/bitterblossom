@@ -18,7 +18,7 @@ defmodule Conductor.Application do
         Conductor.PhaseWorker.Supervisor,
         Conductor.Orchestrator,
         Conductor.Fleet.HealthMonitor
-      ] ++ dashboard_children()
+      ]
 
     result = Supervisor.start_link(children, strategy: :one_for_one, name: Conductor.Supervisor)
 
@@ -167,6 +167,20 @@ defmodule Conductor.Application do
   def role_display_name(:polisher), do: "fern"
   def role_display_name(role), do: to_string(role)
 
+  @doc false
+  @spec start_dashboard() :: :ok | {:error, term()}
+  def start_dashboard do
+    if Application.get_env(:conductor, :start_dashboard, false) do
+      case Supervisor.start_child(Conductor.Supervisor, Conductor.Web.Endpoint) do
+        {:ok, _pid} -> :ok
+        {:error, {:already_started, _pid}} -> :ok
+        other -> other
+      end
+    else
+      :ok
+    end
+  end
+
   defp fleet_reconciler do
     Application.get_env(:conductor, :fleet_reconciler, Conductor.Fleet.Reconciler)
   end
@@ -177,13 +191,5 @@ defmodule Conductor.Application do
       :phase_worker_supervisor,
       Conductor.PhaseWorker.Supervisor
     )
-  end
-
-  defp dashboard_children do
-    if Application.get_env(:conductor, :start_dashboard, false) do
-      [Conductor.Web.Endpoint]
-    else
-      []
-    end
   end
 end

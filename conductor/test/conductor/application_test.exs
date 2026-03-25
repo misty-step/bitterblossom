@@ -46,6 +46,8 @@ defmodule Conductor.ApplicationTest do
     orig_log = Application.get_env(:conductor, :event_log)
     orig_reconciler = Application.get_env(:conductor, :fleet_reconciler)
     orig_phase_worker_supervisor = Application.get_env(:conductor, :phase_worker_supervisor)
+    orig_start_dashboard = Application.get_env(:conductor, :start_dashboard)
+    orig_endpoint = Application.get_env(:conductor, Conductor.Web.Endpoint)
 
     Application.put_env(:conductor, :db_path, db_path)
     Application.put_env(:conductor, :event_log, event_log)
@@ -59,6 +61,14 @@ defmodule Conductor.ApplicationTest do
       restore_env(:event_log, orig_log)
       restore_env(:fleet_reconciler, orig_reconciler)
       restore_env(:phase_worker_supervisor, orig_phase_worker_supervisor)
+      restore_env(:start_dashboard, orig_start_dashboard)
+
+      if orig_endpoint do
+        Application.put_env(:conductor, Conductor.Web.Endpoint, orig_endpoint)
+      else
+        Application.delete_env(:conductor, Conductor.Web.Endpoint)
+      end
+
       File.rm(db_path)
       File.rm(event_log)
       File.rm(fleet_path)
@@ -84,5 +94,33 @@ defmodule Conductor.ApplicationTest do
       end)
 
     assert log =~ "[boot] thorn failed: :eacces"
+  end
+
+  test "application boot does not auto-start the dashboard endpoint" do
+    Application.put_env(:conductor, :start_dashboard, true)
+
+    refute Enum.any?(Supervisor.which_children(Conductor.Supervisor), fn {id, _, _, _} ->
+             id == Conductor.Web.Endpoint
+           end)
+  end
+
+  test "start_dashboard/0 starts the dashboard endpoint when enabled" do
+    Application.put_env(:conductor, :start_dashboard, true)
+
+    Application.put_env(:conductor, Conductor.Web.Endpoint,
+      adapter: Bandit.PhoenixAdapter,
+      http: [ip: {127, 0, 0, 1}, port: 0],
+      secret_key_base:
+        System.get_env("DASHBOARD_SECRET_KEY_BASE") ||
+          "bitterblossom-dashboard-dev-key-must-be-at-least-64-chars-long-x",
+      live_view: [signing_salt: "bb_lv_salt"],
+      server: true
+    )
+
+    assert :ok = Conductor.Application.start_dashboard()
+
+    assert Enum.any?(Supervisor.which_children(Conductor.Supervisor), fn {id, _, _, _} ->
+             id == Conductor.Web.Endpoint
+           end)
   end
 end

@@ -35,23 +35,42 @@ If first argument matches a keyword, route directly to that reference:
 
 ### No sub-capability (default): MANDATORY PARALLEL FANOUT
 
-**You MUST fan out to multiple sources. A single WebSearch is NOT research.**
+**You MUST fan out to multiple sources. A single WebSearch is NOT the default research path.**
 
 Research means gathering signal from many vantage points simultaneously.
-WebSearch alone is a lookup, not research. The whole point of this skill is
-multi-source triangulation.
+WebSearch alone is a lookup, not default-mode research. The whole point of
+this skill is multi-source triangulation unless the user explicitly asks for a
+single-source lookup or the task is a narrow version/fact check.
 
 **REQUIRED: Launch ALL of these in a single message (parallel Agent/Bash calls):**
 
-1. **Exa search** — Bash: `curl -s https://api.exa.ai/search -H "x-api-key: $EXA_API_KEY" ...`
-   See `references/exa-tools.md` for request format. WebSearch is fallback ONLY if curl fails.
-2. **Thinktank** — Write question to `/tmp/research-q.md`, create stub `/tmp/research-ctx.md`, then:
-   Bash: `thinktank /tmp/research-q.md /tmp/research-ctx.md --synthesis --quiet --output-dir /tmp/thinktank-out`
-   Note: thinktank requires a target path (use stub for pure questions). Always set `--output-dir /tmp/...` to avoid dumping in CWD.
-3. **xAI / social pulse** — Bash: `curl -s https://api.x.ai/v1/responses -H "Authorization: Bearer $XAI_API_KEY" ...`
-   Model MUST be `grok-4.20-beta-latest-non-reasoning` (only grok-4 supports tool use).
-   See `references/xai-search.md` for request format. Skip ONLY for purely technical/code queries.
-4. **Codebase** — Grep/Glob for what the project already does (skip only if query is unrelated to codebase)
+1. **Exa search** — Before launch, confirm `EXA_API_KEY` is present. If it is,
+   run Bash: `curl -s https://api.exa.ai/search -H "x-api-key: $EXA_API_KEY" ...`
+   See `references/exa-tools.md` for request format. If `EXA_API_KEY` is
+   missing or the curl call fails, record the skip reason in
+   `/tmp/research-ctx.md` or `/tmp/research-fallback.log`, then fall back to
+   WebSearch rather than blocking the run.
+2. **Thinktank** — Write question to `/tmp/research-q.md`, create stub
+   `/tmp/research-ctx.md`, then first confirm the `thinktank` binary is
+   available. If it is, run:
+   `thinktank /tmp/research-q.md /tmp/research-ctx.md --synthesis --quiet --output-dir /tmp/thinktank-out`
+   Note: thinktank requires a target path (use stub for pure questions). Always
+   set `--output-dir /tmp/...` to avoid dumping in CWD. If the binary is
+   missing, append a stub note to `/tmp/research-ctx.md` (or
+   `/tmp/research-fallback.log`) explaining that thinktank was skipped and
+   continue the rest of the fanout without blocking.
+3. **xAI / social pulse** — Before launch, confirm `XAI_API_KEY` is present.
+   If it is, run Bash:
+   `curl -s https://api.x.ai/v1/responses -H "Authorization: Bearer $XAI_API_KEY" ...`
+   Model MUST be `grok-4.20-beta-latest-non-reasoning` (only grok-4 supports
+   tool use). See `references/xai-search.md` for request format. Skip for
+   purely technical/code queries, or when `XAI_API_KEY` is missing, but record
+   the skipped-source reason in `/tmp/research-ctx.md` or
+   `/tmp/research-fallback.log` before proceeding.
+4. **Codebase** — Grep/Glob for what the project already does. Skip only if the
+   query is unrelated to the codebase, and record that skip reason in
+   `/tmp/research-ctx.md` or `/tmp/research-fallback.log` so the parallel
+   runner still has a complete ledger of what ran.
 
 **Then produce a sourced report** using the mandatory structure below.
 
@@ -90,8 +109,10 @@ Readers must be able to see what each tool contributed independently.
 - The user explicitly names one (e.g., "/research web-search [query]")
 - It's a version/fact lookup (e.g., "what version is X?")
 
-**If you catch yourself about to return results from only WebSearch — STOP.
-That means you skipped the fanout. Go back and launch the other sources.**
+**If you catch yourself about to return results from only WebSearch in the
+default path — STOP.** That means you skipped the fanout. Go back and launch
+the other sources, unless the user explicitly requested a single-source lookup
+or the task is a narrow version/fact check.
 
 ## Use When
 
@@ -108,8 +129,9 @@ That means you skipped the fanout. Go back and launch the other sources.**
 ## Decision Framework
 
 **If you're about to assert something from training data that could be wrong,
-invoke `/research web-search` first.** The cost of a search is negligible;
-the cost of hallucination is high.
+invoke `/research` first, or `/research web-search` only for a narrow
+single-source fact lookup.** The cost of a search is negligible; the cost of
+hallucination is high.
 
 This applies especially to:
 - Model names and versions (stale within months)

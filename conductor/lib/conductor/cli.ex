@@ -89,6 +89,11 @@ defmodule Conductor.CLI do
 
       case Conductor.Application.boot_fleet(fleet_path) do
         :ok ->
+          case Conductor.Application.start_dashboard() do
+            :ok -> :ok
+            {:error, reason} -> raise "dashboard start failed: #{inspect(reason)}"
+          end
+
           IO.puts("bitterblossom running. Press Ctrl+C to stop.")
           # Block forever — everything runs in the supervision tree
           Process.sleep(:infinity)
