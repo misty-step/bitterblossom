@@ -573,5 +573,4 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     refute log =~ "bb-builder degraded"
     assert MockState.get(:gc_calls, []) == ["bb-polisher"]
   end
-
 end
