@@ -11,6 +11,12 @@ harness = "codex"
 model = "gpt-5.4"
 reasoning_effort = "medium"
 
+[personas]
+fern = """
+You are Fern. Review carefully, run /simplify, /pr-polish, and /pr-fix.
+Only add the lgtm label when the PR is genuinely merge-ready.
+"""
+
 [[sprite]]
 name = "bb-builder"
 role = "builder"
@@ -28,27 +34,18 @@ persona = "You are Thorn. Fix failing CI with the smallest correct change and no
 name = "bb-polisher"
 role = "polisher"
 reasoning_effort = "high"
-persona = """
-You are Fern. Review carefully, run /simplify, /pr-polish, and /pr-fix.
-Only add the lgtm label when the PR is genuinely merge-ready.
-"""
+persona_ref = "fern"
 
 [[sprite]]
 name = "bb-polisher-2"
 role = "polisher"
 reasoning_effort = "high"
-persona = """
-You are Fern. Review carefully, run /simplify, /pr-polish, and /pr-fix.
-Only add the lgtm label when the PR is genuinely merge-ready.
-"""
+persona_ref = "fern"
 
 [[sprite]]
 name = "bb-polisher-3"
 role = "polisher"
 reasoning_effort = "high"
-persona = """
-You are Fern. Review carefully, run /simplify, /pr-polish, and /pr-fix.
-Only add the lgtm label when the PR is genuinely merge-ready.
-"""
+persona_ref = "fern"
 
 # bb-muse (triage) omitted — no Fly machine exists yet

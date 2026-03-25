@@ -13,6 +13,9 @@ defmodule Conductor.Fleet.LoaderTest do
   model = "gpt-5.4"
   reasoning_effort = "medium"
 
+  [personas]
+  fern = "Review carefully."
+
   [[sprite]]
   name = "bb-weaver"
   role = "builder"
@@ -27,6 +30,7 @@ defmodule Conductor.Fleet.LoaderTest do
   name = "bb-fern"
   role = "polisher"
   reasoning_effort = "high"
+  persona_ref = "fern"
 
   [[sprite]]
   name = "bb-muse"
@@ -65,6 +69,7 @@ defmodule Conductor.Fleet.LoaderTest do
       assert polisher.name == "bb-fern"
       assert polisher.role == :polisher
       assert polisher.reasoning_effort == "high"
+      assert polisher.persona == "Review carefully."
 
       assert muse.name == "bb-muse"
       assert muse.role == :triage
@@ -130,6 +135,44 @@ defmodule Conductor.Fleet.LoaderTest do
 
       assert {:error, msg} = Loader.load(path)
       assert msg =~ "no [[sprite]] entries"
+    end
+
+    test "returns error for unknown persona_ref", %{path: path} do
+      File.write!(path, """
+      version = "1"
+
+      [defaults]
+      repo = "test/repo"
+
+      [[sprite]]
+      name = "bb-fern"
+      role = "polisher"
+      persona_ref = "missing"
+      """)
+
+      assert {:error, msg} = Loader.load(path)
+      assert msg =~ "references unknown persona 'missing'"
+    end
+
+    test "returns error when sprite sets both persona and persona_ref", %{path: path} do
+      File.write!(path, """
+      version = "1"
+
+      [defaults]
+      repo = "test/repo"
+
+      [personas]
+      fern = "Review carefully."
+
+      [[sprite]]
+      name = "bb-fern"
+      role = "polisher"
+      persona = "inline"
+      persona_ref = "fern"
+      """)
+
+      assert {:error, msg} = Loader.load(path)
+      assert msg =~ "must not set both 'persona' and 'persona_ref'"
     end
 
     test "returns error for invalid role", %{path: path} do
