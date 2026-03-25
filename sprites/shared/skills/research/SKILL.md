@@ -63,10 +63,10 @@ single-source lookup or the task is a narrow version/fact check.
 3. **xAI / social pulse** — Before launch, confirm `XAI_API_KEY` is present.
    If it is, run Bash:
    `curl -s https://api.x.ai/v1/responses -H "Authorization: Bearer $XAI_API_KEY" ...`
-   Model MUST be `grok-4.20-beta-latest-non-reasoning` (only grok-4 supports
-   tool use). See `references/xai-search.md` for request format. Skip for
-   purely technical/code queries, or when `XAI_API_KEY` is missing, but record
-   the skipped-source reason in `/tmp/research-ctx.md` or
+   Set `XAI_MODEL_ID` using `references/xai-search.md` and use that variable in
+   the request rather than hardcoding a model inline. Skip for purely
+   technical/code queries, or when `XAI_API_KEY` is missing, but record the
+   skipped-source reason in `/tmp/research-ctx.md` or
    `/tmp/research-fallback.log` before proceeding.
 4. **Codebase** — Grep/Glob for what the project already does. Skip only if the
    query is unrelated to the codebase, and record that skip reason in
