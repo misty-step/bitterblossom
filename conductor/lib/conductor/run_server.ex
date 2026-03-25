@@ -293,6 +293,12 @@ defmodule Conductor.RunServer do
     end
   end
 
+  @impl true
+  def terminate(reason, state) do
+    cleanup_interrupted_run(reason, state)
+    :ok
+  end
+
   # --- Private ---
 
   defp handle_dispatch_failure(state, output, code, opts \\ []) do
@@ -640,10 +646,35 @@ defmodule Conductor.RunServer do
     end
   end
 
+  defp cleanup_interrupted_run(_reason, %{run_id: nil}), do: :ok
+
+  defp cleanup_interrupted_run(reason, %{phase: phase} = state)
+       when phase in [:pending, :building] do
+    reason_string = inspect(reason)
+
+    try do
+      cancel_heartbeat(state.heartbeat_timer)
+      cancel_retry(state.retry_timer)
+      shutdown_dispatch_task(state.dispatch_task)
+      maybe_kill_worker(state)
+
+      Store.record_event(state.run_id, "run_interrupted", %{reason: reason_string})
+      Store.terminate_run(state.run_id, "failed", "failed", state.repo, state.issue.number)
+      cleanup_workspace(state)
+    rescue
+      error ->
+        Logger.warning(
+          "[weaver][#{state.run_id}] shutdown cleanup failed: #{Exception.message(error)}"
+        )
+    end
+  end
+
+  defp cleanup_interrupted_run(_reason, _state), do: :ok
+
   defp cancel_dispatch(%{dispatch_task: %Task{} = task} = state) do
     cancel_heartbeat(state.heartbeat_timer)
     cancel_retry(state.retry_timer)
-    Task.shutdown(task, :brutal_kill)
+    shutdown_dispatch_task(task)
     maybe_kill_worker(state)
     %{state | dispatch_task: nil, heartbeat_timer: nil, retry_timer: nil}
   end
@@ -665,6 +696,13 @@ defmodule Conductor.RunServer do
     if function_exported?(worker_mod(), :kill, 1) do
       _ = worker_mod().kill(state.worker)
     end
+  end
+
+  defp shutdown_dispatch_task(nil), do: :ok
+
+  defp shutdown_dispatch_task(%Task{} = task) do
+    _ = Task.shutdown(task, :brutal_kill)
+    :ok
   end
 
   defp start_heartbeat do

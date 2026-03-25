@@ -1205,6 +1205,32 @@ defmodule Conductor.RunServerTest do
     end
   end
 
+  describe "shutdown cleanup" do
+    test "releases the lease and marks an active run failed when the server exits mid-build" do
+      prev_trap_exit = Process.flag(:trap_exit, true)
+      on_exit(fn -> Process.flag(:trap_exit, prev_trap_exit) end)
+
+      Application.put_env(:conductor, :worker_module, SlowWorker)
+
+      {:ok, pid} = start_run_server()
+
+      eventually(fn ->
+        status = RunServer.status(pid)
+        assert status.phase == :building
+      end)
+
+      :ok = GenServer.stop(pid, :shutdown)
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert run["phase"] == "failed"
+      assert run["status"] == "failed"
+      assert "run_interrupted" in event_types(run["run_id"])
+      assert "workspace_cleaned" in event_types(run["run_id"])
+      refute Store.leased?("test/repo", 42)
+    end
+  end
+
   describe "operator_block/2" do
     test "blocks active run and records reason" do
       Application.put_env(:conductor, :worker_module, SlowWorker)
