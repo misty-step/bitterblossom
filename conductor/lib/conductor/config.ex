@@ -341,13 +341,17 @@ defmodule Conductor.Config do
          {:ok, body} <- File.read(path),
          {:ok, auth} <- Jason.decode(body),
          "chatgpt" <- auth["auth_mode"],
-         refresh when is_binary(refresh) and refresh != "" <- auth["refresh_token"] do
+         refresh when is_binary(refresh) and refresh != "" <- auth_refresh_token(auth) do
       {:ok, path}
     else
       false -> {:error, :missing}
       {:error, _reason} = error -> error
       _ -> {:error, :invalid}
     end
+  end
+
+  defp auth_refresh_token(auth) when is_map(auth) do
+    auth["refresh_token"] || get_in(auth, ["tokens", "refresh_token"])
   end
 
   defp codex_home do

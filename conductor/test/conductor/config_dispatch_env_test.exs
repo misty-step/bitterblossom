@@ -28,7 +28,11 @@ defmodule Conductor.ConfigDispatchEnvTest do
 
   describe "dispatch_env/0" do
     test "omits OPENAI_API_KEY and CODEX_API_KEY when ChatGPT auth cache is present" do
-      write_auth_json(%{"auth_mode" => "chatgpt", "refresh_token" => "rt-test"})
+      write_auth_json(%{
+        "auth_mode" => "chatgpt",
+        "tokens" => %{"refresh_token" => "rt-test"}
+      })
+
       System.put_env("OPENAI_API_KEY", "sk-test-123")
 
       env = Config.dispatch_env()

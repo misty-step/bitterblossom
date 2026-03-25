@@ -33,6 +33,8 @@ defmodule Conductor.Sprite do
   @sprite_prompt_template_path Path.join(@sprite_workspace_root, ".builder-prompt-template.md")
   @workspace_metadata_rel_path ".bb/workspace.json"
   @log_file "ralph.log"
+  @probe_marker "__bb_probe__"
+  @wake_marker "__bb_wake__"
 
   @impl Conductor.Worker
   @spec exec(binary(), binary(), keyword()) :: {:ok, binary()} | {:error, binary(), integer()}
@@ -164,9 +166,13 @@ defmodule Conductor.Sprite do
 
   @spec wake(binary(), keyword()) :: :ok | {:error, term()}
   def wake(sprite, opts \\ []) do
-    case exec(sprite, "true", Keyword.merge([timeout: 15_000, transport: :http_post], opts)) do
+    case marker_exec(
+           sprite,
+           @wake_marker,
+           Keyword.merge([timeout: 15_000, transport: :http_post], opts)
+         ) do
       {:ok, _} -> :ok
-      {:error, msg, _} -> {:error, msg}
+      {:error, msg} -> {:error, msg}
     end
   end
 
@@ -266,9 +272,9 @@ defmodule Conductor.Sprite do
   def probe(sprite, opts \\ []) do
     exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
 
-    case exec_fn.(sprite, "echo ok", timeout: 15_000, transport: :http_post) do
+    case marker_exec(exec_fn, sprite, @probe_marker, timeout: 15_000, transport: :http_post) do
       {:ok, _} -> {:ok, %{sprite: sprite, reachable: true}}
-      {:error, msg, _} -> {:error, msg}
+      {:error, msg} -> {:error, msg}
     end
   end
 
@@ -557,8 +563,11 @@ defmodule Conductor.Sprite do
       repo_dir = sprite_repo_workspace(repo)
 
       setup_cmd =
-        repo_setup_script(repo_dir, repo, force) <>
-          " && mkdir -p #{shell_quote(Path.join(repo_dir, ".claude/skills"))} #{shell_quote(Path.join(repo_dir, ".claude/commands"))} #{shell_quote(Path.join(repo_dir, ".bb"))}"
+        [
+          repo_setup_script(repo_dir, repo, force) |> String.trim(),
+          "mkdir -p #{shell_quote(Path.join(repo_dir, ".claude/skills"))} #{shell_quote(Path.join(repo_dir, ".claude/commands"))} #{shell_quote(Path.join(repo_dir, ".bb"))}"
+        ]
+        |> Enum.join(" && ")
 
       setup_result =
         case exec_fn.(sprite, setup_cmd, timeout: 120_000) do
@@ -873,6 +882,33 @@ defmodule Conductor.Sprite do
   # wake fallback does not silently drift if the CLI wording changes.
   defp wake_recoverable?(message) when is_binary(message) do
     String.contains?(message, ["bad handshake", "HTTP 502", "failed to connect"])
+  end
+
+  defp marker_exec(sprite, marker, opts) do
+    exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
+    marker_exec(exec_fn, sprite, marker, opts)
+  end
+
+  defp marker_exec(exec_fn, sprite, marker, opts) do
+    case exec_fn.(sprite, marker_command(marker), opts) do
+      {:ok, _} = ok ->
+        ok
+
+      {:error, message, _code} ->
+        if marker_false_negative?(message, marker) do
+          {:ok, message}
+        else
+          {:error, message}
+        end
+    end
+  end
+
+  defp marker_command(marker) do
+    "printf #{shell_quote(marker)}"
+  end
+
+  defp marker_false_negative?(message, marker) when is_binary(message) do
+    String.contains?(message, marker) and String.contains?(message, "no exit frame received")
   end
 
   defp keyword_fetch_or(opts, key, fallback) do

@@ -56,7 +56,7 @@ defmodule Conductor.SpriteTest do
         harness: "codex",
         exec_fn:
           exec_fn([
-            {"echo ok", {:ok, "ok\n"}},
+            {"__bb_probe__", {:ok, "__bb_probe__"}},
             {"command -v codex", {:ok, "/usr/bin/codex\n"}},
             {"gh auth status", {:ok, "github.com\n"}},
             {"git config --global --get credential.helper", {:ok, "!gh auth git-credential"}}
@@ -82,7 +82,7 @@ defmodule Conductor.SpriteTest do
         harness: "codex",
         exec_fn:
           exec_fn([
-            {"echo ok", {:ok, "ok\n"}},
+            {"__bb_probe__", {:ok, "__bb_probe__"}},
             {"command -v codex", {:ok, "/usr/bin/codex\n"}},
             {"gh auth status", {:error, "not logged in", 1}},
             {"git config --global --get credential.helper", {:ok, "!gh auth git-credential"}}
@@ -108,7 +108,7 @@ defmodule Conductor.SpriteTest do
         harness: "codex",
         exec_fn:
           exec_fn([
-            {"echo ok", {:ok, "ok\n"}},
+            {"__bb_probe__", {:ok, "__bb_probe__"}},
             {"command -v codex", {:ok, "/usr/bin/codex\n"}},
             {"gh auth status", {:ok, "github.com\n"}},
             {"git config --global --get credential.helper", {:ok, "cache"}}
@@ -132,7 +132,7 @@ defmodule Conductor.SpriteTest do
         harness: "codex",
         exec_fn:
           exec_fn([
-            {"echo ok", {:ok, "ok\n"}},
+            {"__bb_probe__", {:ok, "__bb_probe__"}},
             {"command -v codex", {:ok, "/usr/bin/codex\n"}},
             {"test -s '/home/sprite/.codex/auth.json'", {:error, "", 1}},
             {"gh auth status", {:ok, "github.com\n"}},
@@ -157,7 +157,7 @@ defmodule Conductor.SpriteTest do
         harness: "codex",
         exec_fn:
           exec_fn([
-            {"echo ok", {:ok, "ok\n"}},
+            {"__bb_probe__", {:ok, "__bb_probe__"}},
             {"command -v codex", {:ok, "/usr/bin/codex\n"}},
             {"test -s '/home/sprite/.codex/auth.json'", {:ok, ""}},
             {"gh auth status", {:ok, "github.com\n"}},
@@ -212,6 +212,28 @@ defmodule Conductor.SpriteTest do
              )
   end
 
+  test "probe treats a missing HTTP exit frame as reachable when the marker was printed" do
+    assert {:ok, %{reachable: true}} =
+             Sprite.probe("bb-weaver",
+               exec_fn: fn _sprite, command, _opts ->
+                 assert command == "printf '__bb_probe__'"
+                 {:error, "__bb_probe__\nError: no exit frame received", 1}
+               end
+             )
+  end
+
+  test "wake treats a missing HTTP exit frame as success when the marker was printed" do
+    shell_cmd_fn = fn "sprite", _args, _opts ->
+      {:error, "__bb_wake__\nError: no exit frame received", 1}
+    end
+
+    assert :ok =
+             Sprite.wake("bb-weaver",
+               org: "misty-step",
+               shell_cmd_fn: shell_cmd_fn
+             )
+  end
+
   test "exec wakes and retries over HTTP POST after websocket handshake failure" do
     parent = self()
 
@@ -242,7 +264,7 @@ defmodule Conductor.SpriteTest do
 
     assert_received {:shell_cmd, wake_args, _opts}
     assert "--http-post" in wake_args
-    assert List.last(wake_args) == "true"
+    assert List.last(wake_args) == "printf '__bb_wake__'"
 
     assert_received {:shell_cmd, retry_args, _opts}
     assert "--http-post" in retry_args
@@ -342,6 +364,7 @@ defmodule Conductor.SpriteTest do
         end)
 
       assert repo_cmd =~ "git clone 'https://github.com/misty-step/bitterblossom.git'"
+      refute repo_cmd =~ "\n && mkdir -p"
 
       {_, _metadata_opts, metadata_files} =
         Enum.find(calls, fn {_command, _opts, uploaded_files} ->
@@ -368,7 +391,7 @@ defmodule Conductor.SpriteTest do
     test_pid = self()
     prev_gh = System.get_env("GITHUB_TOKEN")
     System.put_env("GITHUB_TOKEN", "ghp-test-token")
-    write_auth_json(%{"auth_mode" => "chatgpt", "refresh_token" => "rt-test"})
+    write_auth_json(%{"auth_mode" => "chatgpt", "tokens" => %{"refresh_token" => "rt-test"}})
 
     try do
       exec_fn = fn _sprite, command, opts ->
@@ -423,7 +446,7 @@ defmodule Conductor.SpriteTest do
     test_pid = self()
     prev_gh = System.get_env("GITHUB_TOKEN")
     System.put_env("GITHUB_TOKEN", "ghp-test-token")
-    write_auth_json(%{"auth_mode" => "chatgpt", "refresh_token" => "rt-test"})
+    write_auth_json(%{"auth_mode" => "chatgpt", "tokens" => %{"refresh_token" => "rt-test"}})
 
     try do
       exec_fn = fn _sprite, command, opts ->

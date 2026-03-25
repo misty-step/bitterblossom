@@ -315,9 +315,21 @@ defmodule Conductor.ConfigTest do
 
   describe "codex_auth_source/0" do
     test "prefers a valid ChatGPT auth cache over OPENAI_API_KEY" do
-      codex_home = make_codex_home(%{"auth_mode" => "chatgpt", "refresh_token" => "rt-test"})
+      codex_home =
+        make_codex_home(%{
+          "auth_mode" => "chatgpt",
+          "tokens" => %{"refresh_token" => "rt-test"}
+        })
+
       System.put_env("CODEX_HOME", codex_home)
       System.put_env("OPENAI_API_KEY", "sk-test-123")
+
+      assert Config.codex_auth_source() == {:chatgpt, Path.join(codex_home, "auth.json")}
+    end
+
+    test "accepts legacy top-level refresh_token auth caches" do
+      codex_home = make_codex_home(%{"auth_mode" => "chatgpt", "refresh_token" => "rt-test"})
+      System.put_env("CODEX_HOME", codex_home)
 
       assert Config.codex_auth_source() == {:chatgpt, Path.join(codex_home, "auth.json")}
     end
