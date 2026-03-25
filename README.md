@@ -76,16 +76,21 @@ export OPENROUTER_API_KEY="..."
 # FLY_API_TOKEN is a more fragile fallback.
 export SPRITE_TOKEN="..."  # from https://sprites.dev/settings
 
-# 2) Bootstrap one builder + three reviewers
-./bin/bb setup noble-blue-serpent --repo misty-step/bitterblossom
-./bin/bb setup council-fern-20260306 --repo misty-step/bitterblossom
-./bin/bb setup council-sage-20260306 --repo misty-step/bitterblossom
-./bin/bb setup council-thorn-20260306 --repo misty-step/bitterblossom
+# 2) Log into Codex locally so the conductor can seed managed sprites.
+# The file-backed auth cache is the default path; OPENAI_API_KEY remains
+# a compatibility fallback when local Codex auth is unavailable.
+mkdir -p "${CODEX_HOME:-$HOME/.codex}"
+grep -q 'cli_auth_credentials_store = "file"' "${CODEX_HOME:-$HOME/.codex}/config.toml" 2>/dev/null || \
+  printf '\ncli_auth_credentials_store = "file"\n' >> "${CODEX_HOME:-$HOME/.codex}/config.toml"
+codex login
 
-# 3) Start the conductor
+# 3) Reconcile the managed fleet
 cd conductor
 mix deps.get
 mix compile
+mix conductor fleet --fleet ../fleet.toml --reconcile
+
+# 4) Start the conductor
 mix conductor start --fleet ../fleet.toml
 ```
 
@@ -199,6 +204,8 @@ Compositions live in `compositions/`. When patterns suggest a change, create a n
 Secret detection runs on every PR and push to master via [TruffleHog](https://github.com/trufflesecurity/trufflehog). See [docs/SECRETS.md](docs/SECRETS.md) for local usage, leak response runbook, and how sprite auth tokens work.
 
 API keys are never stored in git. `base/settings.json` uses a placeholder rendered at provision/sync time from `$OPENROUTER_API_KEY` (with `$ANTHROPIC_AUTH_TOKEN` accepted as a legacy fallback).
+
+Codex account auth is also never stored in git. The conductor seeds managed sprites from the local `${CODEX_HOME:-~/.codex}/auth.json` cache when it is available; treat that file like a password. Never commit it, paste it into tickets, or log its contents. If local Codex auth is unavailable, Bitterblossom falls back to `OPENAI_API_KEY` for Codex dispatches.
 
 ## CI Pipeline
 

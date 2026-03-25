@@ -1,6 +1,8 @@
 # Stop the application so tests can manage their own Store instances
 Application.stop(:conductor)
 
+Code.require_file("support/env_helpers.ex", __DIR__)
+
 defmodule Conductor.TestSupport.ProcessHelpers do
   @moduledoc false
 

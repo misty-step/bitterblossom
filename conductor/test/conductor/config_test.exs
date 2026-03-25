@@ -2,11 +2,20 @@ defmodule Conductor.ConfigTest do
   use ExUnit.Case, async: false
 
   alias Conductor.Config
+  import Conductor.TestSupport.EnvHelpers
 
   # Restore HOME after every test (some tests mutate it for sprite CLI auth).
   setup do
     original_home = System.get_env("HOME")
-    on_exit(fn -> restore_home(original_home) end)
+    original_codex_home = System.get_env("CODEX_HOME")
+    original_openai_key = System.get_env("OPENAI_API_KEY")
+
+    on_exit(fn ->
+      restore_home(original_home)
+      restore_env("CODEX_HOME", original_codex_home)
+      restore_env("OPENAI_API_KEY", original_openai_key)
+    end)
+
     :ok
   end
 
@@ -305,6 +314,99 @@ defmodule Conductor.ConfigTest do
     end
   end
 
+  describe "codex_auth_source/0" do
+    test "prefers a valid ChatGPT auth cache over OPENAI_API_KEY" do
+      codex_home =
+        make_codex_home(%{
+          "auth_mode" => "chatgpt",
+          "tokens" => %{"refresh_token" => "rt-test"}
+        })
+
+      System.put_env("CODEX_HOME", codex_home)
+      System.put_env("OPENAI_API_KEY", "sk-test-123")
+
+      assert Config.codex_auth_source() == {:chatgpt, Path.join(codex_home, "auth.json")}
+    end
+
+    test "accepts legacy top-level refresh_token auth caches" do
+      codex_home = make_codex_home(%{"auth_mode" => "chatgpt", "refresh_token" => "rt-test"})
+      System.put_env("CODEX_HOME", codex_home)
+
+      assert Config.codex_auth_source() == {:chatgpt, Path.join(codex_home, "auth.json")}
+    end
+
+    test "falls back to OPENAI_API_KEY when auth cache is missing" do
+      codex_home = make_codex_home(nil)
+      System.put_env("CODEX_HOME", codex_home)
+      System.put_env("OPENAI_API_KEY", "sk-test-123")
+
+      assert Config.codex_auth_source() == {:api_key, "sk-test-123"}
+    end
+
+    test "falls back to OPENAI_API_KEY when auth cache is invalid" do
+      codex_home = make_codex_home(%{"auth_mode" => "chatgpt"})
+      System.put_env("CODEX_HOME", codex_home)
+      System.put_env("OPENAI_API_KEY", "sk-test-123")
+
+      assert Config.codex_auth_source() == {:api_key, "sk-test-123"}
+    end
+
+    test "falls back to OPENAI_API_KEY when auth cache JSON is malformed" do
+      codex_home = make_codex_home(nil)
+      File.write!(Path.join(codex_home, "auth.json"), "{")
+      System.put_env("CODEX_HOME", codex_home)
+      System.put_env("OPENAI_API_KEY", "sk-test-123")
+
+      assert Config.codex_auth_source() == {:api_key, "sk-test-123"}
+    end
+
+    test "returns :missing when neither auth cache nor API key are available" do
+      codex_home = make_codex_home(nil)
+      System.put_env("CODEX_HOME", codex_home)
+      System.delete_env("OPENAI_API_KEY")
+
+      assert Config.codex_auth_source() == :missing
+    end
+  end
+
+  describe "codex_auth_available?/0" do
+    test "returns the auth cache path when ChatGPT auth is available" do
+      codex_home =
+        make_codex_home(%{
+          "auth_mode" => "chatgpt",
+          "tokens" => %{"refresh_token" => "rt-test"}
+        })
+
+      System.put_env("CODEX_HOME", codex_home)
+
+      assert Config.codex_auth_available?() == Path.join(codex_home, "auth.json")
+    end
+
+    test "returns OPENAI_API_KEY when API auth is selected" do
+      codex_home = make_codex_home(nil)
+      System.put_env("CODEX_HOME", codex_home)
+      System.put_env("OPENAI_API_KEY", "sk-test-123")
+
+      assert Config.codex_auth_available?() == "OPENAI_API_KEY"
+    end
+
+    test "returns false when no Codex auth source is available" do
+      codex_home = make_codex_home(nil)
+      System.put_env("CODEX_HOME", codex_home)
+      System.delete_env("OPENAI_API_KEY")
+
+      assert Config.codex_auth_available?() == false
+    end
+  end
+
+  describe "codex_auth_file/0" do
+    test "falls back to HOME/.codex/auth.json when CODEX_HOME is unset" do
+      System.delete_env("CODEX_HOME")
+
+      assert Config.codex_auth_file() == Path.join(System.user_home!(), ".codex/auth.json")
+    end
+  end
+
   defp restore_home(nil), do: System.delete_env("HOME")
   defp restore_home(val), do: System.put_env("HOME", val)
 
@@ -315,6 +417,18 @@ defmodule Conductor.ConfigTest do
     sprites_dir = Path.join(home, ".sprites")
     File.mkdir_p!(sprites_dir)
     File.write!(Path.join(sprites_dir, "sprites.json"), Jason.encode!(config))
+    home
+  end
+
+  defp make_codex_home(nil) do
+    home = Path.join(System.tmp_dir!(), "codex_home_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(home)
+    home
+  end
+
+  defp make_codex_home(auth_payload) do
+    home = make_codex_home(nil)
+    File.write!(Path.join(home, "auth.json"), Jason.encode!(auth_payload))
     home
   end
 end

@@ -22,6 +22,7 @@ defmodule Conductor.WorkspaceTest do
                )
 
       assert_received {:prepare_command, command}
+      assert_bash_syntax!(command)
       assert command =~ "git worktree list --porcelain"
       assert command =~ "git checkout \"$default_branch\" --quiet"
       assert command =~ "git worktree remove --force \"$path\""
@@ -64,6 +65,7 @@ defmodule Conductor.WorkspaceTest do
                )
 
       assert_received {:adopt_command, command}
+      assert_bash_syntax!(command)
       assert command =~ "git worktree list --porcelain"
       assert command =~ "config --worktree core.hooksPath .bb-hooks"
       assert command =~ "expected_branch=\"factory/42-1773867376\""
@@ -293,6 +295,7 @@ defmodule Conductor.WorkspaceTest do
                )
 
       assert_received {:cleanup_command, command}
+      assert_bash_syntax!(command)
       assert command =~ "git worktree list --porcelain"
       assert command =~ "git checkout \"$default_branch\" --quiet"
       assert command =~ "git worktree remove --force \"$path\""
@@ -449,6 +452,22 @@ defmodule Conductor.WorkspaceTest do
     case System.cmd("bash", ["-lc", command], stderr_to_stdout: true) do
       {output, 0} -> {:ok, output}
       {output, code} -> {:error, output, code}
+    end
+  end
+
+  defp assert_bash_syntax!(command) do
+    path =
+      Path.join(
+        System.tmp_dir!(),
+        "workspace-command-#{System.unique_integer([:positive])}.sh"
+      )
+
+    File.write!(path, command)
+    on_exit(fn -> File.rm(path) end)
+
+    case System.cmd("bash", ["-n", path], stderr_to_stdout: true) do
+      {_output, 0} -> :ok
+      {output, _code} -> flunk("generated shell command is invalid:\n#{output}\n#{command}")
     end
   end
 end

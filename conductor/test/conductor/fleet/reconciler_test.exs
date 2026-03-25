@@ -98,7 +98,12 @@ defmodule Conductor.Fleet.ReconcilerTest do
     assert_received {:wake_called, "bb-weaver", _wake_opts}
 
     assert_received {:provision_called, "bb-weaver",
-                     [repo: "misty-step/bitterblossom", persona: "You are Weaver.", force: true]}
+                     [
+                       repo: "misty-step/bitterblossom",
+                       persona: "You are Weaver.",
+                       harness: "codex",
+                       force: true
+                     ]}
 
     assert result == %{name: "bb-weaver", role: "builder", healthy: true, action: :provisioned}
   end
@@ -224,7 +229,12 @@ defmodule Conductor.Fleet.ReconcilerTest do
       )
 
     assert_received {:provision_called, "bb-weaver",
-                     [repo: "misty-step/bitterblossom", persona: "You are Weaver.", force: true]}
+                     [
+                       repo: "misty-step/bitterblossom",
+                       persona: "You are Weaver.",
+                       harness: "codex",
+                       force: true
+                     ]}
 
     assert result == %{name: "bb-weaver", role: "builder", healthy: false, action: :failed}
   end

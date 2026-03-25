@@ -25,6 +25,7 @@ defmodule Conductor.Sprite do
   @sprite_home "/home/sprite"
   @sprite_claude_dir Path.join(@sprite_home, ".claude")
   @sprite_codex_dir Path.join(@sprite_home, ".codex")
+  @sprite_codex_auth_path Path.join(@sprite_codex_dir, "auth.json")
   @sprite_runtime_dir Path.join(@sprite_home, ".bitterblossom")
   @sprite_runtime_env_path Path.join(@sprite_runtime_dir, "runtime.env")
   @sprite_workspace_root Path.join(@sprite_home, "workspace")
@@ -32,6 +33,8 @@ defmodule Conductor.Sprite do
   @sprite_prompt_template_path Path.join(@sprite_workspace_root, ".builder-prompt-template.md")
   @workspace_metadata_rel_path ".bb/workspace.json"
   @log_file "ralph.log"
+  @probe_marker "__bb_probe__"
+  @wake_marker "__bb_wake__"
 
   @impl Conductor.Worker
   @spec exec(binary(), binary(), keyword()) :: {:ok, binary()} | {:error, binary(), integer()}
@@ -163,9 +166,13 @@ defmodule Conductor.Sprite do
 
   @spec wake(binary(), keyword()) :: :ok | {:error, term()}
   def wake(sprite, opts \\ []) do
-    case exec(sprite, "true", Keyword.merge([timeout: 15_000, transport: :http_post], opts)) do
+    case marker_exec(
+           sprite,
+           @wake_marker,
+           Keyword.merge([timeout: 15_000, transport: :http_post], opts)
+         ) do
       {:ok, _} -> :ok
-      {:error, msg, _} -> {:error, msg}
+      {:error, msg} -> {:error, msg}
     end
   end
 
@@ -173,12 +180,14 @@ defmodule Conductor.Sprite do
   def provision(sprite, opts \\ []) do
     repo = Keyword.get(opts, :repo)
     persona = Keyword.get(opts, :persona)
+    harness = Keyword.get(opts, :harness)
     force = Keyword.get(opts, :force, false)
     exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
 
     with :ok <- ensure_remote_dirs(sprite, exec_fn),
          :ok <- upload_base_configs(sprite, persona, exec_fn),
          :ok <- ensure_codex(sprite, force, exec_fn),
+         :ok <- maybe_sync_codex_auth(sprite, harness, exec_fn),
          :ok <- upload_runtime_env(sprite, exec_fn),
          :ok <- configure_git_auth(sprite, exec_fn),
          :ok <- maybe_setup_repo(sprite, repo, persona, force, exec_fn) do
@@ -239,6 +248,7 @@ defmodule Conductor.Sprite do
     case probe(sprite, exec_fn: exec_fn) do
       {:ok, %{reachable: true}} ->
         harness_ready = harness_ready?(sprite, harness, exec_fn)
+        codex_auth_ready = codex_auth_ready?(sprite, harness, exec_fn)
         gh_authenticated = gh_authenticated?(sprite, exec_fn)
         git_credential_helper = git_credential_helper_ready?(sprite, exec_fn)
 
@@ -247,9 +257,11 @@ defmodule Conductor.Sprite do
            sprite: sprite,
            reachable: true,
            harness_ready: harness_ready,
+           codex_auth_ready: codex_auth_ready,
            gh_authenticated: gh_authenticated,
            git_credential_helper: git_credential_helper,
-           healthy: harness_ready and gh_authenticated and git_credential_helper
+           healthy:
+             harness_ready and codex_auth_ready and gh_authenticated and git_credential_helper
          }}
 
       {:error, reason} ->
@@ -261,9 +273,9 @@ defmodule Conductor.Sprite do
   def probe(sprite, opts \\ []) do
     exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
 
-    case exec_fn.(sprite, "echo ok", timeout: 15_000, transport: :http_post) do
+    case marker_exec(exec_fn, sprite, @probe_marker, timeout: 15_000, transport: :http_post) do
       {:ok, _} -> {:ok, %{sprite: sprite, reachable: true}}
-      {:error, msg, _} -> {:error, msg}
+      {:error, msg} -> {:error, msg}
     end
   end
 
@@ -313,6 +325,21 @@ defmodule Conductor.Sprite do
       end
 
     match?({:ok, _}, exec_fn.(sprite, harness_cmd, timeout: 15_000))
+  end
+
+  defp codex_auth_ready?(_sprite, harness, _exec_fn) when harness not in [nil, "", "codex"],
+    do: true
+
+  defp codex_auth_ready?(sprite, harness, exec_fn) when harness in [nil, "", "codex"] do
+    remote_codex_auth_present?(sprite, exec_fn) or
+      match?({:api_key, _}, Config.codex_auth_source())
+  end
+
+  defp remote_codex_auth_present?(sprite, exec_fn) do
+    match?(
+      {:ok, _},
+      exec_fn.(sprite, "test -s #{shell_quote(@sprite_codex_auth_path)}", timeout: 15_000)
+    )
   end
 
   defp gh_authenticated?(sprite, exec_fn) do
@@ -476,6 +503,36 @@ defmodule Conductor.Sprite do
     end
   end
 
+  defp maybe_sync_codex_auth(_sprite, harness, _exec_fn) when harness not in [nil, "", "codex"],
+    do: :ok
+
+  defp maybe_sync_codex_auth(sprite, _harness, exec_fn) do
+    case Config.codex_auth_source() do
+      {:chatgpt, local_auth_path} ->
+        case exec_fn.(sprite, "test -s #{shell_quote(@sprite_codex_auth_path)}", timeout: 15_000) do
+          {:ok, _} ->
+            :ok
+
+          {:error, "", 1} ->
+            case exec_fn.(
+                   sprite,
+                   "chmod 600 #{shell_quote(@sprite_codex_auth_path)}",
+                   files: [{local_auth_path, @sprite_codex_auth_path}],
+                   timeout: 30_000
+                 ) do
+              {:ok, _} -> :ok
+              {:error, msg, _code} -> {:error, msg}
+            end
+
+          {:error, msg, _code} ->
+            {:error, msg}
+        end
+
+      _ ->
+        :ok
+    end
+  end
+
   defp upload_runtime_env(sprite, exec_fn) do
     with_temp_file("sprite-runtime-env", runtime_env_contents(), fn runtime_env_file ->
       case exec_fn.(sprite, "true",
@@ -511,8 +568,11 @@ defmodule Conductor.Sprite do
       repo_dir = sprite_repo_workspace(repo)
 
       setup_cmd =
-        repo_setup_script(repo_dir, repo, force) <>
-          " && mkdir -p #{shell_quote(Path.join(repo_dir, ".claude/skills"))} #{shell_quote(Path.join(repo_dir, ".claude/commands"))} #{shell_quote(Path.join(repo_dir, ".bb"))}"
+        [
+          repo_setup_script(repo_dir, repo, force) |> String.trim(),
+          "mkdir -p #{shell_quote(Path.join(repo_dir, ".claude/skills"))} #{shell_quote(Path.join(repo_dir, ".claude/commands"))} #{shell_quote(Path.join(repo_dir, ".bb"))}"
+        ]
+        |> Enum.join(" && ")
 
       setup_result =
         case exec_fn.(sprite, setup_cmd, timeout: 120_000) do
@@ -827,6 +887,33 @@ defmodule Conductor.Sprite do
   # wake fallback does not silently drift if the CLI wording changes.
   defp wake_recoverable?(message) when is_binary(message) do
     String.contains?(message, ["bad handshake", "HTTP 502", "failed to connect"])
+  end
+
+  defp marker_exec(sprite, marker, opts) do
+    exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
+    marker_exec(exec_fn, sprite, marker, opts)
+  end
+
+  defp marker_exec(exec_fn, sprite, marker, opts) do
+    case exec_fn.(sprite, marker_command(marker), opts) do
+      {:ok, _} = ok ->
+        ok
+
+      {:error, message, _code} ->
+        if marker_false_negative?(message, marker) do
+          {:ok, message}
+        else
+          {:error, message}
+        end
+    end
+  end
+
+  defp marker_command(marker) do
+    "printf #{shell_quote(marker)}"
+  end
+
+  defp marker_false_negative?(message, marker) when is_binary(message) do
+    String.contains?(message, marker) and String.contains?(message, "no exit frame received")
   end
 
   defp keyword_fetch_or(opts, key, fallback) do

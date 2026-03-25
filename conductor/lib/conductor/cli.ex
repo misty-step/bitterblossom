@@ -60,9 +60,9 @@ defmodule Conductor.CLI do
         Application.ensure_all_started(:conductor)
         cmd_status()
 
-      ["check-env" | _] ->
+      ["check-env" | rest] ->
         Application.ensure_all_started(:conductor)
-        cmd_check_env()
+        cmd_check_env(rest)
 
       [cmd | _] ->
         IO.puts("unknown command: #{cmd}\navailable: #{Enum.join(@commands, ", ")}")
@@ -84,17 +84,22 @@ defmodule Conductor.CLI do
 
     IO.puts("bitterblossom starting — fleet: #{fleet_path}")
 
-    # Validate environment before doing anything
-    cmd_check_env()
+    with {:ok, config} <- Conductor.Fleet.Loader.load(fleet_path) do
+      run_check_env(require_codex_auth: requires_codex_auth?(config.sprites))
 
-    case Conductor.Application.boot_fleet(fleet_path) do
-      :ok ->
-        IO.puts("bitterblossom running. Press Ctrl+C to stop.")
-        # Block forever — everything runs in the supervision tree
-        Process.sleep(:infinity)
+      case Conductor.Application.boot_fleet(fleet_path) do
+        :ok ->
+          IO.puts("bitterblossom running. Press Ctrl+C to stop.")
+          # Block forever — everything runs in the supervision tree
+          Process.sleep(:infinity)
 
+        {:error, reason} ->
+          IO.puts("boot failed: #{inspect(reason)}")
+          System.halt(1)
+      end
+    else
       {:error, reason} ->
-        IO.puts("boot failed: #{inspect(reason)}")
+        IO.puts("fleet failed: #{reason}")
         System.halt(1)
     end
   end
@@ -176,7 +181,7 @@ defmodule Conductor.CLI do
       case Conductor.Fleet.Loader.load(fleet_path) do
         {:ok, config} ->
           if opts[:reconcile] do
-            cmd_check_env()
+            run_check_env(require_codex_auth: requires_codex_auth?(config.sprites))
 
             reconciler =
               Application.get_env(:conductor, :fleet_reconciler, Conductor.Fleet.Reconciler)
@@ -369,12 +374,41 @@ defmodule Conductor.CLI do
     end
   end
 
-  defp cmd_check_env do
-    Conductor.Config.check_env!()
+  defp cmd_check_env(args) do
+    {opts, _, _} = OptionParser.parse(args, strict: [fleet: :string])
+
+    opts =
+      case Keyword.get(opts, :fleet) do
+        nil ->
+          opts
+
+        fleet_path ->
+          case Conductor.Fleet.Loader.load(fleet_path) do
+            {:ok, config} ->
+              Keyword.put(opts, :require_codex_auth, requires_codex_auth?(config.sprites))
+
+            {:error, reason} ->
+              IO.puts("fleet failed: #{reason}")
+              System.halt(1)
+          end
+      end
+
+    run_check_env(opts)
+  end
+
+  defp run_check_env(opts) do
+    Conductor.Config.check_env!(opts)
   rescue
     e ->
       IO.puts("environment check failed: #{Exception.message(e)}")
       System.halt(1)
+  end
+
+  defp requires_codex_auth?(sprites) do
+    Enum.any?(sprites, fn sprite ->
+      harness = Map.get(sprite, :harness) || Map.get(sprite, "harness") || "codex"
+      harness == "codex"
+    end)
   end
 
   defp active_builder_assignments(repo) do

@@ -22,6 +22,17 @@ mix conductor fleet --fleet ../fleet.toml --reconcile
 mix conductor start --fleet ../fleet.toml
 ```
 
+Before reconciling or starting the fleet, log into Codex locally with file-backed credentials so the conductor can seed `~/.codex/auth.json` onto managed sprites:
+
+```bash
+mkdir -p "${CODEX_HOME:-$HOME/.codex}"
+grep -q 'cli_auth_credentials_store = "file"' "${CODEX_HOME:-$HOME/.codex}/config.toml" 2>/dev/null || \
+  printf '\ncli_auth_credentials_store = "file"\n' >> "${CODEX_HOME:-$HOME/.codex}/config.toml"
+codex login
+```
+
+If local Codex auth is unavailable, the conductor falls back to `OPENAI_API_KEY` for Codex dispatches.
+
 Inspection commands:
 
 ```bash
@@ -41,9 +52,10 @@ mix conductor show-waivers --run_id <run-id>
 1. probes sprite reachability
 2. uploads base config and skills
 3. installs Codex if needed
-4. configures GitHub auth and git credential helper
-5. ensures the repo mirror exists on the sprite
-6. writes workspace metadata
+4. seeds `~/.codex/auth.json` when local Codex account auth is available
+5. configures GitHub auth and git credential helper
+6. ensures the repo mirror exists on the sprite
+7. writes workspace metadata
 
 There is no separate `bb setup` step anymore.
 

@@ -293,6 +293,12 @@ defmodule Conductor.RunServer do
     end
   end
 
+  @impl true
+  def terminate(reason, state) do
+    cleanup_interrupted_run(reason, state)
+    :ok
+  end
+
   # --- Private ---
 
   defp handle_dispatch_failure(state, output, code, opts \\ []) do
@@ -604,8 +610,8 @@ defmodule Conductor.RunServer do
 
   defp fail(state, event_type, reason, payload \\ %{}) do
     role_log(:error, state, "#{event_type}: #{reason}")
-    Store.record_event(state.run_id, event_type, Map.put(payload, :reason, reason))
-    Store.terminate_run(state.run_id, "failed", "failed", state.repo, state.issue.number)
+    terminate_run(state, "failed", "failed")
+    safe_record_event(state.run_id, event_type, Map.put(payload, :reason, reason))
     cleanup_workspace(state)
     Retro.analyze(state.run_id)
     {:stop, :normal, %{state | phase: :failed}}
@@ -613,8 +619,8 @@ defmodule Conductor.RunServer do
 
   defp block(state, reason) do
     role_log(:warning, state, "blocked: #{reason}")
-    Store.record_event(state.run_id, "run_blocked", %{reason: reason})
-    Store.terminate_run(state.run_id, "blocked", "blocked", state.repo, state.issue.number)
+    terminate_run(state, "blocked", "blocked")
+    safe_record_event(state.run_id, "run_blocked", %{reason: reason})
     cleanup_workspace(state)
 
     # Comment on the issue so the operator knows
@@ -640,10 +646,63 @@ defmodule Conductor.RunServer do
     end
   end
 
+  defp cleanup_interrupted_run(_reason, %{run_id: nil}), do: :ok
+
+  defp cleanup_interrupted_run(reason, state) do
+    cond do
+      state.phase not in [:pending, :building] ->
+        :ok
+
+      durable_run_terminal?(state.run_id) ->
+        :ok
+
+      true ->
+        reason_string = inspect(reason)
+
+        try do
+          cancel_heartbeat(state.heartbeat_timer)
+          cancel_retry(state.retry_timer)
+          shutdown_dispatch_task(state.dispatch_task)
+          maybe_kill_worker(state)
+
+          terminate_run(state, "failed", "failed")
+          safe_record_event(state.run_id, "run_interrupted", %{reason: reason_string})
+          cleanup_workspace(state)
+        rescue
+          error ->
+            Logger.warning(
+              "[weaver][#{state.run_id}] shutdown cleanup failed: #{Exception.message(error)}"
+            )
+        end
+    end
+  end
+
+  defp terminate_run(state, phase, status) do
+    Store.terminate_run(state.run_id, phase, status, state.repo, state.issue.number)
+  end
+
+  defp durable_run_terminal?(run_id) do
+    case Store.get_run(run_id) do
+      {:ok, %{"phase" => phase}} -> phase in ~w(pr_opened blocked failed)
+      _ -> false
+    end
+  rescue
+    _ -> false
+  end
+
+  defp safe_record_event(run_id, event_type, payload) do
+    Store.record_event(run_id, event_type, payload)
+  rescue
+    error ->
+      Logger.warning(
+        "[weaver][#{run_id}] failed to record #{event_type}: #{Exception.message(error)}"
+      )
+  end
+
   defp cancel_dispatch(%{dispatch_task: %Task{} = task} = state) do
     cancel_heartbeat(state.heartbeat_timer)
     cancel_retry(state.retry_timer)
-    Task.shutdown(task, :brutal_kill)
+    shutdown_dispatch_task(task)
     maybe_kill_worker(state)
     %{state | dispatch_task: nil, heartbeat_timer: nil, retry_timer: nil}
   end
@@ -665,6 +724,13 @@ defmodule Conductor.RunServer do
     if function_exported?(worker_mod(), :kill, 1) do
       _ = worker_mod().kill(state.worker)
     end
+  end
+
+  defp shutdown_dispatch_task(nil), do: :ok
+
+  defp shutdown_dispatch_task(%Task{} = task) do
+    _ = Task.shutdown(task, :brutal_kill)
+    :ok
   end
 
   defp start_heartbeat do
