@@ -33,4 +33,22 @@ You are Fern. Review carefully, run /simplify, /pr-polish, and /pr-fix.
 Only add the lgtm label when the PR is genuinely merge-ready.
 """
 
+[[sprite]]
+name = "bb-polisher-2"
+role = "polisher"
+reasoning_effort = "high"
+persona = """
+You are Fern. Review carefully, run /simplify, /pr-polish, and /pr-fix.
+Only add the lgtm label when the PR is genuinely merge-ready.
+"""
+
+[[sprite]]
+name = "bb-polisher-3"
+role = "polisher"
+reasoning_effort = "high"
+persona = """
+You are Fern. Review carefully, run /simplify, /pr-polish, and /pr-fix.
+Only add the lgtm label when the PR is genuinely merge-ready.
+"""
+
 # bb-muse (triage) omitted — no Fly machine exists yet

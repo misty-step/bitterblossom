@@ -83,48 +83,49 @@ defmodule Conductor.Application do
     healthy = MapSet.new(for r <- results, r.healthy, do: r.name)
 
     if MapSet.size(healthy) == 0 do
-      Logger.error("[boot] no healthy sprites after reconciliation — cannot start")
-      {:error, :no_healthy_sprites}
-    else
-      # 3. Start orchestrator
-      builders =
-        Loader.by_role(sprites, :builder)
-        |> Enum.filter(&MapSet.member?(healthy, &1.name))
+      Logger.warning(
+        "[boot] no healthy sprites after reconciliation — HealthMonitor will recover"
+      )
+    end
 
-      if builders != [] do
-        maybe_warn_unfiltered_scope(repo, defaults.label)
+    # 3. Start orchestrator (with whatever builders are healthy, possibly none)
+    builders =
+      Loader.by_role(sprites, :builder)
+      |> Enum.filter(&MapSet.member?(healthy, &1.name))
 
-        Conductor.Orchestrator.configure_polling(
-          repo: repo,
-          workers: builders,
-          label: defaults.label
-        )
+    if builders != [] do
+      maybe_warn_unfiltered_scope(repo, defaults.label)
 
-        Logger.info(
-          "[boot] orchestrator polling with weavers: #{Enum.map_join(builders, ", ", & &1.name)}"
-        )
-      else
-        Logger.warning("[boot] no healthy weavers — orchestrator will not poll")
-      end
-
-      # 4. Start phase workers (fixer + polisher)
-      start_phase_workers(sprites, healthy, repo)
-
-      # 5. Configure health monitor for periodic sprite recovery
-      Conductor.Fleet.HealthMonitor.configure(
-        sprites: sprites,
+      Conductor.Orchestrator.configure_polling(
         repo: repo,
-        healthy: healthy
+        workers: builders,
+        label: defaults.label
       )
 
-      # 6. Store fleet config for runtime queries
-      Application.put_env(:conductor, :fleet_config, config)
-      Application.put_env(:conductor, :fleet_sprites, sprites)
-      Application.put_env(:conductor, :fleet_workers, builders)
-
-      Logger.info("[boot] bitterblossom running — #{MapSet.size(healthy)} healthy sprites")
-      :ok
+      Logger.info(
+        "[boot] orchestrator polling with weavers: #{Enum.map_join(builders, ", ", & &1.name)}"
+      )
+    else
+      Logger.warning("[boot] no healthy weavers — orchestrator idle until HealthMonitor recovers")
     end
+
+    # 4. Start phase workers (fixer + polisher) for any healthy sprites
+    start_phase_workers(sprites, healthy, repo)
+
+    # 5. Configure health monitor — will recover unhealthy sprites on its cycle
+    Conductor.Fleet.HealthMonitor.configure(
+      sprites: sprites,
+      repo: repo,
+      healthy: healthy
+    )
+
+    # 6. Store fleet config for runtime queries
+    Application.put_env(:conductor, :fleet_config, config)
+    Application.put_env(:conductor, :fleet_sprites, sprites)
+    Application.put_env(:conductor, :fleet_workers, builders)
+
+    Logger.info("[boot] bitterblossom running — #{MapSet.size(healthy)} healthy sprites")
+    :ok
   end
 
   defp maybe_warn_unfiltered_scope(repo, label) when label in [nil, ""] do

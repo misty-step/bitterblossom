@@ -97,8 +97,8 @@ defmodule Conductor.Fleet.HealthMonitor do
   # --- Private ---
 
   defp check_and_recover(state) do
-    # Only re-probe non-builder sprites (builders are probed by the Orchestrator)
-    phase_sprites = Enum.filter(state.sprites, &(&1.role in [:fixer, :polisher]))
+    # Probe ALL sprites — builders need recovery too when cold at boot
+    phase_sprites = state.sprites
 
     Enum.reduce(phase_sprites, state, fn sprite, acc ->
       new_health = probe_sprite(sprite)
@@ -106,7 +106,7 @@ defmodule Conductor.Fleet.HealthMonitor do
 
       cond do
         old_health == :unhealthy and new_health == :healthy ->
-          Logger.info("[health] #{sprite.name} recovered, starting phase worker")
+          Logger.info("[health] #{sprite.name} recovered")
 
           updated = put_health(acc, sprite.name, :healthy)
 
@@ -150,6 +150,26 @@ defmodule Conductor.Fleet.HealthMonitor do
     end
   end
 
+  defp sync_phase_worker(state, :builder) do
+    healthy_builders =
+      state.sprites
+      |> Enum.filter(fn s -> s.role == :builder and Map.get(state.known_health, s.name) == :healthy end)
+
+    if healthy_builders == [] do
+      :ok
+    else
+      try do
+        Conductor.Orchestrator.configure_polling(repo: state.repo, workers: healthy_builders)
+        Logger.info("[health] orchestrator configured with #{length(healthy_builders)} builder(s)")
+        :ok
+      catch
+        :exit, _ ->
+          Logger.warning("[health] orchestrator unavailable, cannot configure builders")
+          :error
+      end
+    end
+  end
+
   defp sync_phase_worker(state, role) do
     case Roles.by_role(role) do
       nil ->
@@ -163,7 +183,6 @@ defmodule Conductor.Fleet.HealthMonitor do
             :ok
 
           {:error, reason} ->
-            # Health probes remain authoritative even if worker-pool sync fails.
             Logger.warning("[health] failed to sync #{inspect(role_module)}: #{inspect(reason)}")
             :error
         end
