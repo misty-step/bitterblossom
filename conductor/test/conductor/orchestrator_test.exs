@@ -1,5 +1,6 @@
 defmodule Conductor.OrchestratorTest do
   use ExUnit.Case, async: false
+  import ExUnit.CaptureIO
   import ExUnit.CaptureLog
   import Conductor.TestSupport.ProcessHelpers
 
@@ -366,6 +367,29 @@ defmodule Conductor.OrchestratorTest do
     end
   end
 
+  describe "run_once/1" do
+    test "returns not_dispatchable for a closed issue without dispatching" do
+      issue = %Conductor.Issue{
+        number: 82,
+        title: "already closed",
+        body: "## Problem\nx\n\n## Acceptance Criteria\n- [ ] [test] y",
+        url: "https://example.test/issues/82",
+        state: "CLOSED"
+      }
+
+      MockState.put({:issue, "test/repo", 82}, issue)
+
+      output =
+        capture_io(fn ->
+          assert Orchestrator.run_once(repo: "test/repo", issue: 82, worker: "sprite-1") ==
+                   {:error, :not_dispatchable}
+        end)
+
+      assert output =~ "issue #82 not dispatchable: issue is closed"
+      assert MockState.get(:started_runs) == []
+    end
+  end
+
   describe "pause/resume dispatch" do
     test "pause prevents new runs and resume restarts polling", %{orch_pid: orch_pid} do
       issue = %Conductor.Issue{
@@ -644,6 +668,36 @@ defmodule Conductor.OrchestratorTest do
         assert recovered.consecutive_failures == 0
         assert recovered.healthy == true
       end)
+    end
+  end
+
+  describe "issue lifecycle validation" do
+    test "skips closed issues returned by the tracker and dispatches only open work" do
+      closed_issue = %Conductor.Issue{
+        number: 320,
+        title: "already closed",
+        body: "## Problem\nx\n## Acceptance Criteria\ny",
+        url: "https://example.test/issues/320",
+        state: "CLOSED"
+      }
+
+      open_issue = %Conductor.Issue{
+        number: 321,
+        title: "still open",
+        body: "## Problem\nx\n## Acceptance Criteria\ny",
+        url: "https://example.test/issues/321",
+        state: "OPEN"
+      }
+
+      MockState.put({:eligible, "test/repo", nil}, [closed_issue, open_issue])
+
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
+
+      eventually(fn ->
+        assert MockState.get(:started_runs) == [{321, "sprite-1"}]
+      end)
+
+      refute_receive {:shape_attempted, "test/repo", 320}, 200
     end
   end
 

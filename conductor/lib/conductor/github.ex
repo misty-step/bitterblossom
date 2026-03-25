@@ -11,7 +11,7 @@ defmodule Conductor.GitHub do
   @behaviour Conductor.Tracker
   @behaviour Conductor.CodeHost
 
-  alias Conductor.{Shell, Issue}
+  alias Conductor.{Shell, Issue, IssueLifecycle}
   require Logger
 
   @default_labeled_limit 25
@@ -27,7 +27,7 @@ defmodule Conductor.GitHub do
            "--repo",
            repo,
            "--json",
-           "number,title,body,url,labels"
+           "number,title,body,url,labels,state"
          ]) do
       {:ok, json} ->
         case Jason.decode(json) do
@@ -116,8 +116,12 @@ defmodule Conductor.GitHub do
   def eligible_issues(repo, opts \\ []) do
     case list_issues(repo, opts) do
       {:ok, issues} ->
+        resolved_issue_numbers = resolved_open_issue_numbers(repo, issues)
+
+        _ = auto_close_resolved_open_issues(repo, issues, resolved_issue_numbers)
+
         issues
-        |> reject_issues_with_merged_factory_prs(repo)
+        |> IssueLifecycle.reject_issue_numbers(resolved_issue_numbers)
         |> sort_eligible_issues()
 
       {:error, reason} ->
@@ -138,7 +142,7 @@ defmodule Conductor.GitHub do
       "--state",
       "open",
       "--json",
-      "number,title,body,url,labels",
+      "number,title,body,url,labels,state",
       "--limit",
       to_string(limit)
     ] ++ maybe_label_filter(label)
@@ -146,15 +150,26 @@ defmodule Conductor.GitHub do
 
   defp sort_eligible_issues(issues), do: Enum.sort_by(issues, & &1.number)
 
-  defp reject_issues_with_merged_factory_prs([], _repo), do: []
+  defp resolved_open_issue_numbers(_repo, []), do: MapSet.new()
 
-  defp reject_issues_with_merged_factory_prs(issues, repo) do
-    issue_numbers = issues |> Enum.map(& &1.number) |> MapSet.new()
-    merged_issue_numbers = merged_factory_issue_numbers(repo, issue_numbers)
-    Enum.reject(issues, &MapSet.member?(merged_issue_numbers, &1.number))
+  defp resolved_open_issue_numbers(repo, issues) do
+    issues
+    |> IssueLifecycle.issue_numbers()
+    |> merged_issue_numbers(repo)
   end
 
-  defp fetch_merged_factory_issue_numbers(owner, name, page, remaining_issue_numbers, acc) do
+  defp auto_close_resolved_open_issues(_repo, [], _resolved_issue_numbers), do: MapSet.new()
+
+  defp auto_close_resolved_open_issues(repo, issues, resolved_issue_numbers) do
+    IssueLifecycle.auto_closed_issue_numbers(
+      repo,
+      issues,
+      resolved_issue_numbers,
+      &close_issue/2
+    )
+  end
+
+  defp fetch_merged_issue_numbers(owner, name, default_branch, page, remaining_issue_numbers, acc) do
     if MapSet.size(remaining_issue_numbers) == 0 do
       {:ok, acc}
     else
@@ -170,10 +185,15 @@ defmodule Conductor.GitHub do
         else
           page_matches =
             prs
-            |> Enum.filter(&merged_factory_pr?/1)
-            |> Enum.map(&factory_issue_number_from_branch(pr_branch_name(&1)))
-            |> Enum.reject(&is_nil/1)
-            |> MapSet.new()
+            |> Enum.filter(&merged_pr?(&1, default_branch))
+            |> Enum.reduce(MapSet.new(), fn pr, matches ->
+              pr = enrich_pr_resolution_signals(owner, name, pr)
+
+              MapSet.union(
+                matches,
+                IssueLifecycle.resolved_issue_numbers_from_pr(pr, remaining_issue_numbers)
+              )
+            end)
 
           matched_issue_numbers = MapSet.intersection(page_matches, remaining_issue_numbers)
           next_acc = MapSet.union(acc, matched_issue_numbers)
@@ -182,20 +202,35 @@ defmodule Conductor.GitHub do
           if length(prs) < @issues_page_size do
             {:ok, next_acc}
           else
-            fetch_merged_factory_issue_numbers(owner, name, page + 1, next_remaining, next_acc)
+            fetch_merged_issue_numbers(
+              owner,
+              name,
+              default_branch,
+              page + 1,
+              next_remaining,
+              next_acc
+            )
           end
         end
       end
     end
   end
 
-  defp merged_factory_issue_numbers(repo, issue_numbers) do
+  defp merged_issue_numbers(issue_numbers, repo) do
     if MapSet.size(issue_numbers) == 0 do
       MapSet.new()
     else
       with {:ok, {owner, name}} <- repo_parts(repo),
+           {:ok, default_branch} <- repo_default_branch(owner, name),
            {:ok, merged_issue_numbers} <-
-             fetch_merged_factory_issue_numbers(owner, name, 1, issue_numbers, MapSet.new()) do
+             fetch_merged_issue_numbers(
+               owner,
+               name,
+               default_branch,
+               1,
+               issue_numbers,
+               MapSet.new()
+             ) do
         merged_issue_numbers
       else
         {:error, reason} ->
@@ -205,32 +240,123 @@ defmodule Conductor.GitHub do
     end
   end
 
-  defp merged_factory_pr?(pr) do
-    is_binary(pr_merged_at(pr)) and String.starts_with?(pr_branch_name(pr), "factory/")
+  defp merged_pr?(pr, default_branch) do
+    is_binary(pr_merged_at(pr)) and pr_base_ref(pr) == default_branch
   end
 
   defp pr_merged_at(%{"merged_at" => merged_at}) when is_binary(merged_at), do: merged_at
   defp pr_merged_at(%{"mergedAt" => merged_at}) when is_binary(merged_at), do: merged_at
   defp pr_merged_at(_pr), do: nil
 
-  defp pr_branch_name(%{"headRefName" => branch}) when is_binary(branch), do: branch
-  defp pr_branch_name(%{"head" => %{"ref" => branch}}) when is_binary(branch), do: branch
-  defp pr_branch_name(_pr), do: ""
+  defp pr_base_ref(%{"base" => %{"ref" => base_ref}}) when is_binary(base_ref), do: base_ref
+  defp pr_base_ref(%{"baseRefName" => base_ref}) when is_binary(base_ref), do: base_ref
+  defp pr_base_ref(_pr), do: nil
 
-  defp factory_issue_number_from_branch("factory/" <> rest) do
-    case String.split(rest, "-", parts: 2) do
-      [issue_number, _suffix] ->
-        case Integer.parse(issue_number) do
-          {value, ""} -> value
-          _ -> nil
+  defp enrich_pr_resolution_signals(owner, name, pr) do
+    pr
+    |> maybe_put_merge_commit_message(owner, name)
+    |> maybe_put_pr_commit_messages(owner, name)
+  end
+
+  defp maybe_put_merge_commit_message(pr, owner, name) do
+    case pr_merge_commit_sha(pr) do
+      nil ->
+        pr
+
+      sha ->
+        case fetch_commit_message(owner, name, sha) do
+          {:ok, message} when is_binary(message) and message != "" ->
+            Map.put_new(pr, "merge_commit_message", message)
+
+          {:ok, _message} ->
+            pr
+
+          {:error, reason} ->
+            Logger.warning(
+              "[github] failed to fetch merge commit message for #{pr_label(pr)}: #{inspect(reason)}"
+            )
+
+            pr
         end
-
-      _ ->
-        nil
     end
   end
 
-  defp factory_issue_number_from_branch(_branch), do: nil
+  defp maybe_put_pr_commit_messages(%{"commits" => commits} = pr, _owner, _name)
+       when is_list(commits),
+       do: pr
+
+  defp maybe_put_pr_commit_messages(pr, owner, name) do
+    case pr_number(pr) do
+      nil ->
+        pr
+
+      number ->
+        case fetch_pr_commits(owner, name, number) do
+          {:ok, commits} ->
+            Map.put(pr, "commits", commits)
+
+          {:error, reason} ->
+            Logger.warning(
+              "[github] failed to fetch commit messages for #{pr_label(pr)}: #{inspect(reason)}"
+            )
+
+            pr
+        end
+    end
+  end
+
+  defp pr_merge_commit_sha(%{"merge_commit_sha" => sha}) when is_binary(sha) and sha != "",
+    do: sha
+
+  defp pr_merge_commit_sha(_pr), do: nil
+
+  defp pr_number(%{"number" => number}) when is_integer(number), do: number
+
+  defp pr_number(%{"number" => number}) when is_binary(number) do
+    case Integer.parse(number) do
+      {value, ""} -> value
+      _ -> nil
+    end
+  end
+
+  defp pr_number(_pr), do: nil
+
+  defp pr_label(pr) do
+    case pr_number(pr) do
+      nil -> "merged PR"
+      number -> "PR ##{number}"
+    end
+  end
+
+  defp repo_default_branch(owner, name) do
+    with {:ok, json} <- run_gh(["api", "repos/#{owner}/#{name}"]),
+         {:ok, repo} <- decode_json_object(json),
+         default_branch when is_binary(default_branch) <- Map.get(repo, "default_branch") do
+      {:ok, default_branch}
+    else
+      nil -> {:error, "missing default_branch in repo metadata"}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp fetch_commit_message(owner, name, sha) do
+    with {:ok, json} <- run_gh(["api", "repos/#{owner}/#{name}/commits/#{sha}"]),
+         {:ok, commit} <- decode_json_object(json),
+         message when is_binary(message) <- get_in(commit, ["commit", "message"]) do
+      {:ok, message}
+    else
+      nil -> {:error, "missing commit message for #{sha}"}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp fetch_pr_commits(owner, name, number) do
+    with {:ok, json} <-
+           run_gh(["api", "repos/#{owner}/#{name}/pulls/#{number}/commits?per_page=100"]),
+         {:ok, commits} <- decode_pr_page(json) do
+      {:ok, commits}
+    end
+  end
 
   def label_present?(data, label) do
     data
@@ -324,6 +450,19 @@ defmodule Conductor.GitHub do
     case Jason.decode(json) do
       {:ok, page} when is_list(page) ->
         {:ok, page}
+
+      {:ok, _other} ->
+        {:error, "invalid JSON from gh: #{String.slice(json, 0, 200)}"}
+
+      {:error, _reason} ->
+        {:error, "invalid JSON from gh: #{String.slice(json, 0, 200)}"}
+    end
+  end
+
+  defp decode_json_object(json) do
+    case Jason.decode(json) do
+      {:ok, data} when is_map(data) ->
+        {:ok, data}
 
       {:ok, _other} ->
         {:error, "invalid JSON from gh: #{String.slice(json, 0, 200)}"}

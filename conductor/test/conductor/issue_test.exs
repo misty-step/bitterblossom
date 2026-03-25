@@ -79,6 +79,23 @@ defmodule Conductor.IssueTest do
 
       assert issue.labels == []
     end
+
+    test "defaults state to OPEN when missing" do
+      issue = Issue.from_github(%{"number" => 1, "title" => "No state"})
+
+      assert issue.state == "OPEN"
+    end
+
+    test "normalizes state from github payload" do
+      issue =
+        Issue.from_github(%{
+          "number" => 1,
+          "title" => "Closed",
+          "state" => "closed"
+        })
+
+      assert issue.state == "CLOSED"
+    end
   end
 
   describe "ready?/1" do
@@ -137,6 +154,26 @@ defmodule Conductor.IssueTest do
       # Has Problem but not Acceptance Criteria, has Intent Contract but not Product Spec
       # Neither complete format matches, so this should fail
       assert {:error, _} = Issue.ready?(issue)
+    end
+  end
+
+  describe "lifecycle_valid?/1" do
+    test "accepts open issues" do
+      issue = %Issue{number: 1, title: "t", body: "", url: "u", state: "OPEN"}
+
+      assert :ok = Issue.lifecycle_valid?(issue)
+    end
+
+    test "rejects closed issues" do
+      issue = %Issue{number: 1, title: "t", body: "", url: "u", state: "CLOSED"}
+
+      assert {:error, ["issue is closed"]} = Issue.lifecycle_valid?(issue)
+    end
+
+    test "rejects unknown issue states with a normalized message" do
+      issue = %Issue{number: 1, title: "t", body: "", url: "u", state: "locked"}
+
+      assert {:error, ["issue is locked"]} = Issue.lifecycle_valid?(issue)
     end
   end
 

@@ -185,7 +185,20 @@ defmodule Conductor.RunServerTest do
     @behaviour Conductor.Tracker
     alias Conductor.RunServerTest.MockState
 
-    def get_issue(_repo, _number), do: {:error, :not_found}
+    def get_issue(repo, number) do
+      MockState.get(
+        {:tracker_issue, repo, number},
+        {:ok,
+         %Conductor.Issue{
+           number: number,
+           title: "test issue #{number}",
+           body: "## Problem\ntest\n## Acceptance Criteria\ntest",
+           url: "https://example.test/issues/#{number}",
+           state: "OPEN"
+         }}
+      )
+    end
+
     def list_eligible(_repo, _opts), do: []
     def issue_has_label?(_repo, _issue, _label), do: {:ok, false}
     def issue_comments(_repo, _issue), do: {:ok, []}
@@ -234,7 +247,8 @@ defmodule Conductor.RunServerTest do
       number: number,
       title: "test issue #{number}",
       body: "## Problem\ntest\n## Acceptance Criteria\ntest",
-      url: "https://example.test/issues/#{number}"
+      url: "https://example.test/issues/#{number}",
+      state: "OPEN"
     }
   end
 
@@ -346,6 +360,71 @@ defmodule Conductor.RunServerTest do
   end
 
   # --- AC1: pending → building → pr_opened lifecycle ---
+
+  describe "pre-dispatch issue lifecycle validation" do
+    test "blocks before workspace preparation when the issue closed after selection" do
+      MockState.put(
+        {:tracker_issue, "test/repo", 42},
+        {:ok,
+         %Conductor.Issue{
+           number: 42,
+           title: "closed upstream",
+           body: "## Problem\ntest\n## Acceptance Criteria\ntest",
+           url: "https://example.test/issues/42",
+           state: "CLOSED"
+         }}
+      )
+
+      log =
+        capture_log(fn ->
+          {:ok, pid} = start_run_server()
+          wait_for_exit(pid)
+        end)
+
+      run = find_run(42)
+      assert run["phase"] == "blocked"
+      refute Store.leased?("test/repo", 42)
+      types = event_types(run["run_id"])
+      assert "run_blocked" in types
+      refute "builder_workspace_prepared" in types
+      refute "builder_dispatched" in types
+      assert event_payload(run["run_id"], "run_blocked")["reason"] == "issue is closed"
+
+      assert MockState.get({:comments, 42}, []) == [
+               "Bitterblossom blocked `#{run["run_id"]}`: issue is closed"
+             ]
+
+      assert log =~ "blocked: issue is closed"
+    end
+
+    test "blocks when the issue state cannot be re-validated" do
+      MockState.put({:tracker_issue, "test/repo", 42}, {:error, :github_down})
+
+      log =
+        capture_log(fn ->
+          {:ok, pid} = start_run_server()
+          wait_for_exit(pid)
+        end)
+
+      run = find_run(42)
+      assert run["phase"] == "blocked"
+      refute Store.leased?("test/repo", 42)
+      types = event_types(run["run_id"])
+      assert "run_blocked" in types
+      refute "builder_workspace_prepared" in types
+      refute "builder_dispatched" in types
+
+      assert event_payload(run["run_id"], "run_blocked")["reason"] ==
+               "failed to re-validate issue state: tracker unavailable"
+
+      assert MockState.get({:comments, 42}, []) == [
+               "Bitterblossom blocked `#{run["run_id"]}`: failed to re-validate issue state: tracker unavailable"
+             ]
+
+      assert log =~ "issue re-validation failed: :github_down"
+      assert log =~ "blocked: failed to re-validate issue state: tracker unavailable"
+    end
+  end
 
   describe "AC1: successful lifecycle" do
     setup do
