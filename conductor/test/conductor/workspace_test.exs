@@ -4,6 +4,27 @@ defmodule Conductor.WorkspaceTest do
   alias Conductor.Workspace
 
   describe "prepare/5" do
+    test "emits bash-parseable workspace preparation commands" do
+      parent = self()
+
+      exec_fn = fn _sprite, command, _opts ->
+        send(parent, {:prepare_command, command})
+        {:ok, "/tmp/test-worktree\n"}
+      end
+
+      assert {:ok, "/tmp/test-worktree"} =
+               Workspace.prepare(
+                 "bb-weaver",
+                 "misty-step/bitterblossom",
+                 "run-42-1773867376",
+                 "factory/42-1773867376",
+                 exec_fn: exec_fn
+               )
+
+      assert_received {:prepare_command, command}
+      assert_bash_valid(command)
+    end
+
     test "installs a branch guard hook for the prepared branch" do
       parent = self()
 
@@ -46,6 +67,27 @@ defmodule Conductor.WorkspaceTest do
   end
 
   describe "adopt_branch/5" do
+    test "emits bash-parseable branch adoption commands" do
+      parent = self()
+
+      exec_fn = fn _sprite, command, _opts ->
+        send(parent, {:adopt_command, command})
+        {:ok, "/tmp/test-worktree\n"}
+      end
+
+      assert {:ok, "/tmp/test-worktree"} =
+               Workspace.adopt_branch(
+                 "bb-weaver",
+                 "misty-step/bitterblossom",
+                 "run-42-1773867376",
+                 "factory/42-1773867376",
+                 exec_fn: exec_fn
+               )
+
+      assert_received {:adopt_command, command}
+      assert_bash_valid(command)
+    end
+
     test "installs the same branch guard when adopting an existing branch" do
       parent = self()
 
@@ -276,6 +318,26 @@ defmodule Conductor.WorkspaceTest do
   end
 
   describe "cleanup/4" do
+    test "emits bash-parseable cleanup commands" do
+      parent = self()
+
+      exec_fn = fn _sprite, command, _opts ->
+        send(parent, {:cleanup_command, command})
+        {:ok, ""}
+      end
+
+      assert :ok =
+               Workspace.cleanup(
+                 "bb-weaver",
+                 "misty-step/bitterblossom",
+                 "custom-123",
+                 exec_fn: exec_fn
+               )
+
+      assert_received {:cleanup_command, command}
+      assert_bash_valid(command)
+    end
+
     test "removes all worktrees for the run branch before deleting the branch" do
       parent = self()
 
@@ -449,6 +511,13 @@ defmodule Conductor.WorkspaceTest do
     case System.cmd("bash", ["-lc", command], stderr_to_stdout: true) do
       {output, 0} -> {:ok, output}
       {output, code} -> {:error, output, code}
+    end
+  end
+
+  defp assert_bash_valid(command) do
+    case System.cmd("bash", ["-n", "-c", command], stderr_to_stdout: true) do
+      {_output, 0} -> :ok
+      {output, code} -> flunk("expected valid bash script, got exit #{code}: #{output}")
     end
   end
 end
