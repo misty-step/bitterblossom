@@ -27,6 +27,9 @@ defmodule Conductor.Fleet.HealthMonitor do
 
   # --- Public API ---
 
+  @doc """
+  Start the fleet health monitor GenServer.
+  """
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end

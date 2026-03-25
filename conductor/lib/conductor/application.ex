@@ -4,7 +4,9 @@ defmodule Conductor.Application do
   use Application
   require Logger
 
-  @doc false
+  @doc """
+  Start the conductor supervision tree.
+  """
   @impl true
   def start(_type, _args) do
     children =
@@ -30,7 +32,9 @@ defmodule Conductor.Application do
     result
   end
 
-  @doc false
+  @doc """
+  Attach the optional canary client when the required environment variables are present.
+  """
   def attach_canary do
     with endpoint when is_binary(endpoint) <- System.get_env("CANARY_ENDPOINT"),
          api_key when is_binary(api_key) <- System.get_env("CANARY_API_KEY") do
@@ -162,12 +166,16 @@ defmodule Conductor.Application do
     end
   end
 
-  @doc false
+  @doc """
+  Translate internal phase-worker roles to the operator-facing sprite names used in logs and CLI output.
+  """
   def role_display_name(:fixer), do: "thorn"
   def role_display_name(:polisher), do: "fern"
   def role_display_name(role), do: to_string(role)
 
-  @doc false
+  @doc """
+  Start the dashboard endpoint under the main supervisor when dashboard startup is enabled.
+  """
   @spec start_dashboard() :: :ok | {:error, term()}
   def start_dashboard do
     if Application.get_env(:conductor, :start_dashboard, false) do
