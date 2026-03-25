@@ -135,10 +135,10 @@ defmodule Conductor.Fleet.HealthMonitor do
       %{action: :unreachable} ->
         case sprite_mod().check_stuck(sprite.name, org: Map.get(sprite, :org)) do
           {:ok, :recreated} ->
-            case reconciler_mod().reconcile_sprite(sprite) do
-              %{healthy: true} -> {:healthy, :recreated}
-              _ -> {:unhealthy, :recreated}
-            end
+            # Freshly recreated sprites start cold, so this cycle treats the
+            # recreate itself as the recovery signal and lets the next pass
+            # perform the authoritative health probe.
+            {:healthy, :recreated}
 
           {:ok, :not_stuck} ->
             {:unhealthy, :none}

@@ -280,6 +280,47 @@ defmodule Conductor.SpriteTest do
       refute_received {:unexpected_shell_args, _, _}
     end
 
+    test "deletes every checkpoint when retention is set to zero" do
+      test_pid = self()
+
+      checkpoints_json =
+        Jason.encode!([
+          %{"id" => "v1", "created_at" => "2026-03-15T01:56:00Z"},
+          %{"id" => "v2", "created_at" => "2026-03-16T01:56:00Z"}
+        ])
+
+      shell_fn = fn "sprite", args, opts ->
+        send(test_pid, {:shell_called, args, opts})
+
+        case args do
+          ["api", "-o", "misty-step", "-s", "bb-builder", "/checkpoints"] ->
+            {:ok, checkpoints_json}
+
+          ["-o", "misty-step", "-s", "bb-builder", "checkpoint", "delete", checkpoint_id] ->
+            {:ok, checkpoint_id}
+
+          _ ->
+            send(test_pid, {:unexpected_shell_args, args, opts})
+            {:error, "unexpected shell args: #{inspect(args)}", 1}
+        end
+      end
+
+      assert :ok =
+               Sprite.gc_checkpoints("bb-builder",
+                 org: "misty-step",
+                 shell_fn: shell_fn,
+                 max_keep: 0
+               )
+
+      assert [
+               {["api", "-o", "misty-step", "-s", "bb-builder", "/checkpoints"], _},
+               {["-o", "misty-step", "-s", "bb-builder", "checkpoint", "delete", "v1"], _},
+               {["-o", "misty-step", "-s", "bb-builder", "checkpoint", "delete", "v2"], _}
+             ] = drain_shell_calls()
+
+      refute_received {:unexpected_shell_args, _, _}
+    end
+
     test "returns an error when checkpoint listing fails" do
       test_pid = self()
 
@@ -616,6 +657,55 @@ defmodule Conductor.SpriteTest do
       refute_received {:unexpected_shell_args, _, _}
     end
 
+    test "accepts sprite payloads nested under data" do
+      test_pid = self()
+
+      sprites_json =
+        Jason.encode!(%{
+          "data" => [
+            %{
+              "name" => "bb-fixer",
+              "created_at" => "2026-03-22T11:50:00Z",
+              "last_running_at" => nil
+            }
+          ]
+        })
+
+      shell_fn = fn "sprite", args, opts ->
+        send(test_pid, {:shell_called, args, opts})
+
+        case args do
+          ["api", "-o", "misty-step", "/sprites"] ->
+            {:ok, sprites_json}
+
+          ["destroy", "-o", "misty-step", "--force", "bb-fixer"] ->
+            {:ok, "destroyed"}
+
+          ["create", "-o", "misty-step", "--skip-console", "bb-fixer"] ->
+            {:ok, "created"}
+
+          _ ->
+            send(test_pid, {:unexpected_shell_args, args, opts})
+            {:error, "unexpected shell args: #{inspect(args)}", 1}
+        end
+      end
+
+      assert {:ok, :recreated} =
+               Sprite.check_stuck("bb-fixer",
+                 org: "misty-step",
+                 shell_fn: shell_fn,
+                 now_fn: fn -> ~U[2026-03-22 12:00:00Z] end
+               )
+
+      assert [
+               {["api", "-o", "misty-step", "/sprites"], _},
+               {["destroy", "-o", "misty-step", "--force", "bb-fixer"], _},
+               {["create", "-o", "misty-step", "--skip-console", "bb-fixer"], _}
+             ] = drain_shell_calls()
+
+      refute_received {:unexpected_shell_args, _, _}
+    end
+
     test "falls back to the configured org when opts pass nil or blank orgs" do
       test_pid = self()
 
@@ -816,6 +906,44 @@ defmodule Conductor.SpriteTest do
                {["api", "-o", "misty-step", "/sprites"], _}
              ] = drain_shell_calls()
 
+      refute_received {:unexpected_shell_args, _, _}
+    end
+
+    test "treats malformed created_at values as not stuck" do
+      test_pid = self()
+
+      sprites_json =
+        Jason.encode!(%{
+          "sprites" => [
+            %{
+              "name" => "bb-fixer",
+              "created_at" => "not-a-timestamp",
+              "last_running_at" => nil
+            }
+          ]
+        })
+
+      shell_fn = fn "sprite", args, opts ->
+        send(test_pid, {:shell_called, args, opts})
+
+        case args do
+          ["api", "-o", "misty-step", "/sprites"] ->
+            {:ok, sprites_json}
+
+          _ ->
+            send(test_pid, {:unexpected_shell_args, args, opts})
+            {:error, "unexpected shell args: #{inspect(args)}", 1}
+        end
+      end
+
+      assert {:ok, :not_stuck} =
+               Sprite.check_stuck("bb-fixer",
+                 org: "misty-step",
+                 shell_fn: shell_fn,
+                 now_fn: fn -> ~U[2026-03-22 12:00:00Z] end
+               )
+
+      assert [{["api", "-o", "misty-step", "/sprites"], _}] = drain_shell_calls()
       refute_received {:unexpected_shell_args, _, _}
     end
   end

@@ -68,7 +68,6 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     def gc_checkpoints(sprite, _opts \\ []) do
       calls = MockState.get(:gc_calls, [])
       MockState.put(:gc_calls, calls ++ [sprite])
-
       MockState.get({:gc_result, sprite}, :ok)
     end
 
@@ -373,7 +372,7 @@ defmodule Conductor.Fleet.HealthMonitorTest do
       }
     ]
 
-    MockState.put({:reconcile_script, "bb-polisher"}, [:unhealthy, :healthy])
+    MockState.put({:reconcile_script, "bb-polisher"}, [:unhealthy])
     MockState.put({:check_stuck_result, "bb-polisher"}, {:ok, :recreated})
 
     HealthMonitor.configure(
@@ -391,7 +390,42 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     assert log =~ "bb-polisher was stuck; recreating sprite"
     assert log =~ "bb-polisher recovered"
     assert HealthMonitor.status().sprites["bb-polisher"] == :healthy
-    assert MockState.get(:reconcile_calls, []) == ["bb-polisher", "bb-polisher"]
+    assert MockState.get(:reconcile_calls, []) == ["bb-polisher"]
+    assert MockState.get(:stuck_calls, []) == ["bb-polisher"]
+  end
+
+  test "recreated sprites do not immediately degrade while the new machine is still cold" do
+    start_monitor(interval_ms: 60_000)
+
+    sprites = [
+      %{
+        name: "bb-polisher",
+        role: :polisher,
+        org: "misty-step",
+        harness: "codex",
+        repo: "test/repo"
+      }
+    ]
+
+    MockState.put({:reconcile_script, "bb-polisher"}, [:unhealthy])
+    MockState.put({:check_stuck_result, "bb-polisher"}, {:ok, :recreated})
+
+    HealthMonitor.configure(
+      sprites: sprites,
+      repo: "test/repo",
+      healthy: MapSet.new(["bb-polisher"])
+    )
+
+    log =
+      capture_log(fn ->
+        send(Process.whereis(HealthMonitor), :check)
+        Process.sleep(100)
+      end)
+
+    assert log =~ "bb-polisher was stuck; recreating sprite"
+    refute log =~ "bb-polisher degraded"
+    assert HealthMonitor.status().sprites["bb-polisher"] == :healthy
+    assert MockState.get(:reconcile_calls, []) == ["bb-polisher"]
     assert MockState.get(:stuck_calls, []) == ["bb-polisher"]
   end
 
@@ -539,4 +573,5 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     refute log =~ "bb-builder degraded"
     assert MockState.get(:gc_calls, []) == ["bb-polisher"]
   end
+
 end
