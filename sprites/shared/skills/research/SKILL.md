@@ -21,7 +21,7 @@ This skill consolidates: `web-search`, `delegate`, `thinktank`, `introspect`,
 
 ## Routing
 
-### Explicit sub-capability (user names one)
+### Explicit subcapability (user names one)
 
 If first argument matches a keyword, route directly to that reference:
 
@@ -34,7 +34,7 @@ If first argument matches a keyword, route directly to that reference:
 | `readwise` | `references/readwise.md` |
 | `xai` | `references/xai-search.md` |
 
-### No sub-capability (default): MANDATORY PARALLEL FANOUT
+### No subcapability (default): MANDATORY PARALLEL FANOUT
 
 **You MUST fan out to multiple sources. A single WebSearch is NOT the default research path.**
 
