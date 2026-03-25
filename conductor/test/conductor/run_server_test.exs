@@ -49,7 +49,7 @@ defmodule Conductor.RunServerTest do
       end
     end
 
-    def cleanup(_sprite, _repo, _run_id), do: :ok
+    def cleanup(_sprite, _repo, _run_id), do: MockState.get(:cleanup_result, :ok)
     def kill(_sprite), do: :ok
 
     def probe(sprite, _opts \\ []) do
@@ -408,6 +408,17 @@ defmodule Conductor.RunServerTest do
       assert log =~ "[weaver][run-42-"
       assert log =~ "dispatching Weaver"
       assert log =~ "Weaver opened PR #123"
+    end
+
+    test "records cleanup failure when workspace teardown fails" do
+      MockState.put(:cleanup_result, {:error, "branch still attached"})
+
+      {:ok, pid} = start_run_server()
+      wait_for_exit(pid)
+
+      run = find_run(42)
+      assert "workspace_cleanup_failed" in event_types(run["run_id"])
+      refute "workspace_cleaned" in event_types(run["run_id"])
     end
   end
 

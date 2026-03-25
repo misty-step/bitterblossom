@@ -6,6 +6,7 @@ defmodule Conductor.Workspace do
   Preparation and cleanup are idempotent — stale state is cleaned first.
   """
 
+  require Logger
   alias Conductor.{Config, Sprite}
   @mirror_base "/home/sprite/workspace"
   @safe_input ~r/^[a-zA-Z0-9_\-\.\/]+$/
@@ -23,6 +24,11 @@ defmodule Conductor.Workspace do
     end
   end
 
+  @doc """
+  Prepare an isolated worktree for a fresh factory branch.
+
+  Any stale worktrees or builder directories for the run are removed first.
+  """
   @spec prepare(binary(), binary(), binary(), binary(), keyword()) ::
           {:ok, binary()} | {:error, term()}
   def prepare(sprite, repo, run_id, branch, opts \\ []) do
@@ -34,8 +40,7 @@ defmodule Conductor.Workspace do
   end
 
   defp do_prepare(sprite, repo, run_id, branch, opts) do
-    repo_name = repo |> String.split("/") |> List.last()
-    mirror = Path.join(@mirror_base, repo_name)
+    mirror = repo_root(repo)
     worktree = Path.join([mirror, ".bb", "conductor", run_id, "builder-worktree"])
     exec_fn = Keyword.get(opts, :exec_fn, &Sprite.exec/3)
 
@@ -44,9 +49,8 @@ defmodule Conductor.Workspace do
     cd #{mirror}
     flock .git/bb-worktree.lock bash -c '
       git fetch --all --prune --quiet 2>/dev/null || true
-      git worktree prune 2>/dev/null || true
-      rm -rf #{worktree} 2>/dev/null || true
-      default_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed "s|refs/remotes/origin/||" || echo master)
+      #{default_branch_command()}
+      #{cleanup_branch_commands(run_id, branch)}
       git worktree add -b #{branch} #{worktree} origin/$default_branch --quiet
     '
     #{install_branch_guard_commands(worktree, branch)}
@@ -77,8 +81,7 @@ defmodule Conductor.Workspace do
   end
 
   defp do_rebase(sprite, repo, branch) do
-    repo_name = repo |> String.split("/") |> List.last()
-    mirror = Path.join(@mirror_base, repo_name)
+    mirror = repo_root(repo)
     safe = String.replace(branch, "/", "-")
     tmp = Path.join([mirror, ".bb", "rebase-#{safe}"])
 
@@ -121,8 +124,7 @@ defmodule Conductor.Workspace do
   end
 
   defp do_adopt_branch(sprite, repo, run_id, branch, opts) do
-    repo_name = repo |> String.split("/") |> List.last()
-    mirror = Path.join(@mirror_base, repo_name)
+    mirror = repo_root(repo)
     worktree = Path.join([mirror, ".bb", "conductor", run_id, "builder-worktree"])
     exec_fn = Keyword.get(opts, :exec_fn, &Sprite.exec/3)
 
@@ -131,8 +133,8 @@ defmodule Conductor.Workspace do
     cd #{mirror}
     flock .git/bb-worktree.lock bash -c '
       git fetch origin --quiet
-      git worktree prune 2>/dev/null || true
-      rm -rf #{worktree} 2>/dev/null || true
+      #{default_branch_command()}
+      #{detach_stale_worktrees_commands(run_id, branch)}
       git worktree add #{worktree} #{branch} --quiet
     '
     #{install_branch_guard_commands(worktree, branch)}
@@ -148,36 +150,50 @@ defmodule Conductor.Workspace do
     end
   end
 
-  @spec cleanup(binary(), binary(), binary()) :: :ok | {:error, term()}
-  def cleanup(sprite, repo, run_id) do
+  @doc """
+  Remove the run worktree and verify that its factory branch is no longer attached.
+  """
+  @spec cleanup(binary(), binary(), binary(), keyword()) :: :ok | {:error, term()}
+  def cleanup(sprite, repo, run_id, opts \\ []) do
     with :ok <- validate_input(repo),
          :ok <- validate_input(run_id) do
-      do_cleanup(sprite, repo, run_id)
+      do_cleanup(sprite, repo, run_id, opts)
     end
   end
 
-  defp do_cleanup(sprite, repo, run_id) do
-    repo_name = repo |> String.split("/") |> List.last()
-    mirror = Path.join(@mirror_base, repo_name)
-    # Extract branch name from run_id pattern: run-<issue>-<ts> → factory/<issue>-<ts>
+  defp do_cleanup(sprite, repo, run_id, opts) do
+    mirror = repo_root(repo)
     branch = run_id_to_branch(run_id)
+    exec_fn = Keyword.get(opts, :exec_fn, &Sprite.exec/3)
 
     commands = """
     set -e
     cd #{mirror}
     flock .git/bb-worktree.lock bash -c '
-      worktree_dir=".bb/conductor/#{run_id}/builder-worktree"
-      if [ -d "$worktree_dir" ]; then
-        git worktree remove --force "$worktree_dir" 2>/dev/null || true
-      fi
-      git worktree prune 2>/dev/null || true
-      #{if branch, do: "git branch -D #{branch} 2>/dev/null || true", else: ""}
+      #{default_branch_command()}
+      #{cleanup_branch_commands(run_id, branch)}
     '
     """
 
-    case Sprite.exec(sprite, commands, timeout: 60_000) do
-      {:ok, _} -> :ok
-      {:error, msg, _} -> {:error, msg}
+    case exec_fn.(sprite, commands, timeout: 60_000) do
+      {:ok, _} ->
+        verify_cleanup_health(sprite, repo, branch, opts)
+
+      {:error, msg, _} ->
+        Logger.warning("[workspace] cleanup command failed for #{run_id} on #{sprite}: #{msg}")
+        {:error, msg}
+    end
+  end
+
+  @doc """
+  Report whether a factory branch is still attached to any local git worktrees.
+  """
+  @spec health_check(binary(), binary(), binary(), keyword()) ::
+          {:ok, :clean} | {:error, {:stale_worktrees, [binary()]}} | {:error, term()}
+  def health_check(sprite, repo, branch, opts \\ []) do
+    with :ok <- validate_input(repo),
+         :ok <- validate_input(branch) do
+      do_health_check(sprite, repo, branch, opts)
     end
   end
 
@@ -185,6 +201,134 @@ defmodule Conductor.Workspace do
   defp run_id_to_branch("run-" <> rest), do: "factory/#{rest}"
   defp run_id_to_branch(_), do: nil
 
+  defp do_health_check(sprite, repo, branch, opts) do
+    mirror = repo_root(repo)
+    exec_fn = Keyword.get(opts, :exec_fn, &Sprite.exec/3)
+
+    commands = """
+    set -e
+    cd #{mirror}
+    #{stale_worktree_list_command(branch)}
+    """
+
+    case exec_fn.(sprite, commands, timeout: 30_000) do
+      {:ok, output} ->
+        case parse_stale_worktrees(output) do
+          [] -> {:ok, :clean}
+          paths -> {:error, {:stale_worktrees, paths}}
+        end
+
+      {:error, msg, code} ->
+        {:error, "workspace health check failed (#{code}): #{msg}"}
+    end
+  end
+
+  defp verify_cleanup_health(_sprite, _repo, nil, _opts), do: :ok
+
+  defp verify_cleanup_health(sprite, repo, branch, opts) do
+    case health_check(sprite, repo, branch, opts) do
+      {:ok, :clean} ->
+        Logger.info("[workspace] cleanup verified for #{branch} on #{sprite}")
+        :ok
+
+      {:error, reason} ->
+        reason =
+          case reason do
+            {:stale_worktrees, paths} ->
+              "branch still attached to worktree(s): #{Enum.join(paths, ", ")}"
+
+            other ->
+              other
+          end
+
+        Logger.warning(
+          "[workspace] cleanup health check failed for #{branch} on #{sprite}: #{reason}"
+        )
+
+        {:error, reason}
+    end
+  end
+
+  defp cleanup_branch_commands(run_id, nil) do
+    cleanup_worktree_dir_commands(run_id)
+  end
+
+  defp cleanup_branch_commands(run_id, branch) do
+    """
+    #{detach_stale_worktrees_commands(run_id, branch)}
+    git branch -D "#{branch}" 2>/dev/null || true
+    """
+  end
+
+  defp detach_stale_worktrees_commands(run_id, branch) do
+    """
+    #{stale_worktree_cleanup_commands(branch)}
+    #{cleanup_worktree_dir_commands(run_id)}
+    """
+  end
+
+  defp stale_worktree_cleanup_commands(branch) do
+    """
+    #{stale_worktree_list_command(branch)} | while IFS= read -r path; do
+      [ -n "$path" ] || continue
+      if [ "$path" = "$(pwd)" ]; then
+        git checkout "$default_branch" --quiet 2>/dev/null || true
+      else
+        git worktree remove --force "$path" 2>/dev/null || true
+        rm -rf "$path" 2>/dev/null || true
+      fi
+    done
+    """
+  end
+
+  defp cleanup_worktree_dir_commands(run_id) do
+    """
+    worktree_dir=".bb/conductor/#{run_id}/builder-worktree"
+    if [ -d "$worktree_dir" ]; then
+      git worktree remove --force "$worktree_dir" 2>/dev/null || true
+    fi
+    rm -rf "$worktree_dir" 2>/dev/null || true
+    git worktree prune 2>/dev/null || true
+    """
+  end
+
+  defp default_branch_command do
+    """
+    default_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed "s|refs/remotes/origin/||" || echo master)
+    """
+  end
+
+  # `git worktree list --porcelain` emits stateful records where a `worktree`
+  # line is followed by its `branch` line. The piped `while` runs in a subshell,
+  # so `worktree_path` stays inside the loop until a matching `branch_ref`
+  # arrives and prints the path to stdout for capture.
+  defp stale_worktree_list_command(branch) do
+    """
+    branch_ref="refs/heads/#{branch}"
+    worktree_path=""
+    git worktree list --porcelain | while IFS= read -r line; do
+      case "$line" in
+        worktree\\ *)
+          worktree_path=${line#worktree }
+          ;;
+        branch\\ *)
+          if [ "$line" = "branch $branch_ref" ]; then
+            printf '%s\\n' "$worktree_path"
+          fi
+          ;;
+      esac
+    done
+    """
+  end
+
+  defp parse_stale_worktrees(output) do
+    output
+    |> String.split("\n", trim: true)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  @doc "Return true when the branch name belongs to Bitterblossom's factory namespace."
   @spec factory_branch?(binary() | nil) :: boolean()
   def factory_branch?(branch) when is_binary(branch) and branch != "" do
     String.starts_with?(branch, "factory/")
@@ -247,18 +391,23 @@ defmodule Conductor.Workspace do
     """
   end
 
+  @doc "Return the warm mirror root for a validated `owner/repo` identifier."
   @spec repo_root(binary()) :: binary()
   def repo_root(repo) do
     case validate_input(repo) do
       :ok ->
-        repo_name = repo |> String.split("/") |> List.last()
-        Path.join(@mirror_base, repo_name)
+        repo
+        |> Path.basename()
+        |> then(&Path.join(@mirror_base, &1))
 
       {:error, :invalid_input} ->
         raise ArgumentError, "invalid repo path: #{inspect(repo)}"
     end
   end
 
+  @doc """
+  Materialize the merged persona files and linked skills for the workspace role.
+  """
   @spec sync_persona(binary(), binary(), atom() | binary(), keyword()) :: :ok | {:error, term()}
   def sync_persona(sprite, workspace, role, opts \\ []) do
     exec_fn = Keyword.get(opts, :exec_fn, &Sprite.exec/3)
@@ -292,6 +441,7 @@ defmodule Conductor.Workspace do
     end
   end
 
+  @doc "Normalize a supported persona role to its string form."
   @spec normalize_persona_role(atom() | binary()) :: {:ok, binary()} | {:error, :invalid_role}
   def normalize_persona_role(role) when is_atom(role),
     do: normalize_persona_role(Atom.to_string(role))
@@ -304,6 +454,7 @@ defmodule Conductor.Workspace do
     end
   end
 
+  @doc "Return the workspace-local launch directory for a supported persona role."
   @spec persona_launch_dir(binary(), atom() | binary()) :: binary()
   def persona_launch_dir(workspace, role) do
     role_name =
