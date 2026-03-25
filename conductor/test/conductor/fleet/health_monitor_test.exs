@@ -68,7 +68,8 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     def gc_checkpoints(sprite, _opts \\ []) do
       calls = MockState.get(:gc_calls, [])
       MockState.put(:gc_calls, calls ++ [sprite])
-      :ok
+
+      MockState.get({:gc_result, sprite}, :ok)
     end
 
     def check_stuck(sprite, _opts \\ []) do
@@ -328,6 +329,35 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     Process.sleep(50)
 
     assert MockState.get(:gc_calls, []) == ["bb-builder", "bb-polisher"]
+  end
+
+  test "checkpoint gc retries on the next health check after a failure" do
+    MockState.put(:now_ms, 0)
+    start_monitor(interval_ms: 120_000)
+
+    sprites = [
+      %{name: "bb-builder", role: :builder, harness: "codex", repo: "test/repo"}
+    ]
+
+    HealthMonitor.configure(
+      sprites: sprites,
+      repo: "test/repo",
+      healthy: MapSet.new(["bb-builder"])
+    )
+
+    MockState.put({:gc_result, "bb-builder"}, {:error, "disk full"})
+    MockState.put(:now_ms, 30 * 60_000)
+    send(Process.whereis(HealthMonitor), :check)
+    Process.sleep(50)
+
+    assert MockState.get(:gc_calls, []) == ["bb-builder"]
+
+    MockState.put({:gc_result, "bb-builder"}, :ok)
+    MockState.put(:now_ms, 32 * 60_000)
+    send(Process.whereis(HealthMonitor), :check)
+    Process.sleep(50)
+
+    assert MockState.get(:gc_calls, []) == ["bb-builder", "bb-builder"]
   end
 
   test "recreates stuck sprites before marking them degraded" do

@@ -247,20 +247,28 @@ defmodule Conductor.Fleet.HealthMonitor do
     last_gc_at_ms = state.last_gc_at_ms || now_ms
 
     if now_ms - last_gc_at_ms >= 30 * 60_000 do
-      Enum.each(healthy_sprites(state), fn sprite ->
-        case sprite_mod().gc_checkpoints(sprite.name) do
-          :ok ->
-            :ok
-
-          {:error, reason} ->
-            Logger.warning("[health] checkpoint gc failed for #{sprite.name}: #{inspect(reason)}")
-        end
-      end)
-
-      %{state | last_gc_at_ms: now_ms}
+      if gc_healthy_sprites(healthy_sprites(state)) == :ok do
+        %{state | last_gc_at_ms: now_ms}
+      else
+        %{state | last_gc_at_ms: last_gc_at_ms}
+      end
     else
       %{state | last_gc_at_ms: last_gc_at_ms}
     end
+  end
+
+  defp gc_healthy_sprites(sprites) do
+    sprites
+    |> Enum.reduce(:ok, fn sprite, result ->
+      case sprite_mod().gc_checkpoints(sprite.name) do
+        :ok ->
+          result
+
+        {:error, reason} ->
+          Logger.warning("[health] checkpoint gc failed for #{sprite.name}: #{inspect(reason)}")
+          :error
+      end
+    end)
   end
 
   defp healthy_sprites(state) do
