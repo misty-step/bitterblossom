@@ -57,6 +57,7 @@ defmodule Conductor.Shell do
       |> Kernel.<>(" </dev/null")
 
     shell = System.find_executable("zsh") || System.find_executable("bash") || "/bin/sh"
+    Logger.debug("Conductor.Shell selected #{shell} for sprite stdin-safe exec")
     {shell, ["-c", command]}
   end
 

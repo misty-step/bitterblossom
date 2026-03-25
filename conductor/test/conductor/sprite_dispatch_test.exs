@@ -13,6 +13,7 @@ defmodule Conductor.SpriteDispatchTest do
   """
 
   alias Conductor.Sprite
+  import Conductor.TestSupport.EnvHelpers
 
   setup do
     original_env =
@@ -491,12 +492,4 @@ defmodule Conductor.SpriteDispatchTest do
       assert String.contains?(msg, "dispatch file upload failed")
     end
   end
-
-  defp write_auth_json(payload) do
-    path = Path.join(System.fetch_env!("CODEX_HOME"), "auth.json")
-    File.write!(path, Jason.encode!(payload))
-  end
-
-  defp restore_env(key, nil), do: System.delete_env(key)
-  defp restore_env(key, value), do: System.put_env(key, value)
 end

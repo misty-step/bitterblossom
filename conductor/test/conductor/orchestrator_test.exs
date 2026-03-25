@@ -147,7 +147,11 @@ defmodule Conductor.OrchestratorTest do
       MockState.get({:busy, worker}, false)
     end
 
-    def kill_and_revoke(_worker, _opts \\ []), do: :ok
+    def kill_and_revoke(worker, opts \\ []) do
+      calls = MockState.get(:kill_and_revoke_calls, [])
+      MockState.put(:kill_and_revoke_calls, calls ++ [{worker, opts}])
+      :ok
+    end
   end
 
   defmodule MockRunLauncher do
@@ -255,6 +259,7 @@ defmodule Conductor.OrchestratorTest do
     MockState.put(:run_lifetime_ms, 150)
     MockState.put(:merge_calls, [])
     MockState.put(:close_issue_calls, [])
+    MockState.put(:kill_and_revoke_calls, [])
     MockState.put(:run_control_calls, [])
 
     # Restart the Orchestrator under the global name so configure_polling/1 works
@@ -320,6 +325,8 @@ defmodule Conductor.OrchestratorTest do
     test "stopping orchestrator with workers calls kill_fleet_agents" do
       :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
       safe_stop(Process.whereis(Orchestrator))
+
+      assert MockState.get(:kill_and_revoke_calls) == [{"sprite-1", []}]
     end
   end
 

@@ -1,6 +1,8 @@
 defmodule Conductor.Config do
   @moduledoc "Runtime configuration from environment and application config."
 
+  require Logger
+
   @type worker_config :: %{
           name: binary(),
           capability_tags: [binary()]
@@ -178,11 +180,17 @@ defmodule Conductor.Config do
     end
   end
 
-  @spec codex_auth_file() :: binary()
+  @spec codex_auth_file() :: binary() | nil
   def codex_auth_file do
-    codex_home()
-    |> Path.join("auth.json")
-    |> Path.expand()
+    case codex_home() do
+      nil ->
+        nil
+
+      home ->
+        home
+        |> Path.join("auth.json")
+        |> Path.expand()
+    end
   end
 
   @spec codex_auth_source() :: codex_auth_source
@@ -338,18 +346,39 @@ defmodule Conductor.Config do
   end
 
   defp chatgpt_auth_file do
-    path = codex_auth_file()
+    case codex_auth_file() do
+      nil ->
+        {:error, :missing}
 
-    with true <- File.regular?(path),
-         {:ok, body} <- File.read(path),
-         {:ok, auth} <- Jason.decode(body),
-         "chatgpt" <- auth["auth_mode"],
-         refresh when is_binary(refresh) and refresh != "" <- auth_refresh_token(auth) do
-      {:ok, path}
+      path ->
+        with true <- File.regular?(path),
+             {:ok, body} <- File.read(path),
+             {:ok, auth} <- Jason.decode(body),
+             :ok <- validate_chatgpt_auth(path, auth) do
+          {:ok, path}
+        else
+          false ->
+            {:error, :missing}
+
+          {:error, _reason} = error ->
+            error
+
+          {:invalid, details} ->
+            Logger.debug("chatgpt_auth_file invalid Codex auth cache at #{path}: #{details}")
+            {:error, :invalid}
+        end
+    end
+  end
+
+  defp validate_chatgpt_auth(_path, auth) when is_map(auth) do
+    auth_mode = auth["auth_mode"]
+    refresh_token = auth_refresh_token(auth)
+
+    if auth_mode == "chatgpt" and is_binary(refresh_token) and refresh_token != "" do
+      :ok
     else
-      false -> {:error, :missing}
-      {:error, _reason} = error -> error
-      _ -> {:error, :invalid}
+      {:invalid,
+       "auth_mode=#{inspect(auth_mode)} refresh_token=#{inspect(refresh_token)} auth=#{inspect(auth)}"}
     end
   end
 
@@ -366,7 +395,11 @@ defmodule Conductor.Config do
   end
 
   defp codex_home do
-    System.get_env("CODEX_HOME") || Path.join(System.user_home!(), ".codex")
+    nonempty_env("CODEX_HOME") ||
+      case System.user_home() do
+        nil -> nil
+        home -> Path.join(home, ".codex")
+      end
   end
 
   defp find_executable(name) do

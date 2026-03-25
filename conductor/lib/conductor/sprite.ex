@@ -327,9 +327,10 @@ defmodule Conductor.Sprite do
     match?({:ok, _}, exec_fn.(sprite, harness_cmd, timeout: 15_000))
   end
 
-  defp codex_auth_ready?(_sprite, harness, _exec_fn) when harness not in ["codex"], do: true
+  defp codex_auth_ready?(_sprite, harness, _exec_fn) when harness not in [nil, "", "codex"],
+    do: true
 
-  defp codex_auth_ready?(sprite, "codex", exec_fn) do
+  defp codex_auth_ready?(sprite, harness, exec_fn) when harness in [nil, "", "codex"] do
     remote_codex_auth_present?(sprite, exec_fn) or
       match?({:api_key, _}, Config.codex_auth_source())
   end

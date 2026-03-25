@@ -2,6 +2,7 @@ defmodule Conductor.ConfigDispatchEnvTest do
   use ExUnit.Case, async: false
 
   alias Conductor.Config
+  import Conductor.TestSupport.EnvHelpers
 
   setup do
     original_env =
@@ -82,12 +83,4 @@ defmodule Conductor.ConfigDispatchEnvTest do
       assert {"EXA_API_KEY", "exa-test-key"} in env
     end
   end
-
-  defp write_auth_json(payload) do
-    path = Path.join(System.fetch_env!("CODEX_HOME"), "auth.json")
-    File.write!(path, Jason.encode!(payload))
-  end
-
-  defp restore_env(key, nil), do: System.delete_env(key)
-  defp restore_env(key, value), do: System.put_env(key, value)
 end

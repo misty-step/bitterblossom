@@ -2,6 +2,7 @@ defmodule Conductor.SpriteTest do
   use ExUnit.Case, async: false
 
   alias Conductor.Sprite
+  import Conductor.TestSupport.EnvHelpers
 
   setup do
     original_env =
@@ -134,6 +135,30 @@ defmodule Conductor.SpriteTest do
           exec_fn([
             {"__bb_probe__", {:ok, "__bb_probe__"}},
             {"command -v codex", {:ok, "/usr/bin/codex\n"}},
+            {"test -s '/home/sprite/.codex/auth.json'", {:error, "", 1}},
+            {"gh auth status", {:ok, "github.com\n"}},
+            {"git config --global --get credential.helper", {:ok, "!gh auth git-credential"}}
+          ])
+      )
+
+    assert {:ok,
+            %{
+              reachable: true,
+              harness_ready: true,
+              codex_auth_ready: false,
+              gh_authenticated: true,
+              git_credential_helper: true,
+              healthy: false
+            }} = status
+  end
+
+  test "status treats an implicit Codex harness as missing auth when the remote cache is absent" do
+    status =
+      Sprite.status("bb-weaver",
+        harness: nil,
+        exec_fn:
+          exec_fn([
+            {"echo ok", {:ok, "ok\n"}},
             {"test -s '/home/sprite/.codex/auth.json'", {:error, "", 1}},
             {"gh auth status", {:ok, "github.com\n"}},
             {"git config --global --get credential.helper", {:ok, "!gh auth git-credential"}}
@@ -788,12 +813,4 @@ defmodule Conductor.SpriteTest do
     assert {:error, "connection refused"} =
              Sprite.logs("bb-weaver", workspace: "/tmp/worktree", exec_fn: exec_fn)
   end
-
-  defp write_auth_json(payload) do
-    path = Path.join(System.fetch_env!("CODEX_HOME"), "auth.json")
-    File.write!(path, Jason.encode!(payload))
-  end
-
-  defp restore_env(key, nil), do: System.delete_env(key)
-  defp restore_env(key, value), do: System.put_env(key, value)
 end

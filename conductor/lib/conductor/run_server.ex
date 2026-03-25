@@ -648,31 +648,46 @@ defmodule Conductor.RunServer do
 
   defp cleanup_interrupted_run(_reason, %{run_id: nil}), do: :ok
 
-  defp cleanup_interrupted_run(reason, %{phase: phase} = state)
-       when phase in [:pending, :building] do
-    reason_string = inspect(reason)
+  defp cleanup_interrupted_run(reason, state) do
+    cond do
+      state.phase not in [:pending, :building] ->
+        :ok
 
-    try do
-      cancel_heartbeat(state.heartbeat_timer)
-      cancel_retry(state.retry_timer)
-      shutdown_dispatch_task(state.dispatch_task)
-      maybe_kill_worker(state)
+      durable_run_terminal?(state.run_id) ->
+        :ok
 
-      terminate_run(state, "failed", "failed")
-      safe_record_event(state.run_id, "run_interrupted", %{reason: reason_string})
-      cleanup_workspace(state)
-    rescue
-      error ->
-        Logger.warning(
-          "[weaver][#{state.run_id}] shutdown cleanup failed: #{Exception.message(error)}"
-        )
+      true ->
+        reason_string = inspect(reason)
+
+        try do
+          cancel_heartbeat(state.heartbeat_timer)
+          cancel_retry(state.retry_timer)
+          shutdown_dispatch_task(state.dispatch_task)
+          maybe_kill_worker(state)
+
+          terminate_run(state, "failed", "failed")
+          safe_record_event(state.run_id, "run_interrupted", %{reason: reason_string})
+          cleanup_workspace(state)
+        rescue
+          error ->
+            Logger.warning(
+              "[weaver][#{state.run_id}] shutdown cleanup failed: #{Exception.message(error)}"
+            )
+        end
     end
   end
 
-  defp cleanup_interrupted_run(_reason, _state), do: :ok
-
   defp terminate_run(state, phase, status) do
     Store.terminate_run(state.run_id, phase, status, state.repo, state.issue.number)
+  end
+
+  defp durable_run_terminal?(run_id) do
+    case Store.get_run(run_id) do
+      {:ok, %{"phase" => phase}} -> phase in ~w(pr_opened blocked failed)
+      _ -> false
+    end
+  rescue
+    _ -> false
   end
 
   defp safe_record_event(run_id, event_type, payload) do

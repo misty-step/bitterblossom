@@ -2,6 +2,7 @@ defmodule Conductor.ConfigTest do
   use ExUnit.Case, async: false
 
   alias Conductor.Config
+  import Conductor.TestSupport.EnvHelpers
 
   # Restore HOME after every test (some tests mutate it for sprite CLI auth).
   setup do
@@ -408,8 +409,6 @@ defmodule Conductor.ConfigTest do
 
   defp restore_home(nil), do: System.delete_env("HOME")
   defp restore_home(val), do: System.put_env("HOME", val)
-  defp restore_env(key, nil), do: System.delete_env(key)
-  defp restore_env(key, value), do: System.put_env(key, value)
 
   defp make_sprite_cli_home(config) do
     home =
