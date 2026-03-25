@@ -7,7 +7,7 @@ defmodule Conductor.Workspace do
   """
 
   require Logger
-  alias Conductor.{Config, Sprite}
+  alias Conductor.{Config, Shell, Sprite}
   @mirror_base "/home/sprite/workspace"
   @safe_input ~r/^[a-zA-Z0-9_\-\.\/]+$/
   @persona_roles ~w(weaver thorn fern)
@@ -57,12 +57,15 @@ defmodule Conductor.Workspace do
     echo #{worktree}
     """
 
-    case exec_fn.(sprite, commands, timeout: 120_000) do
-      {:ok, output} ->
-        {:ok, extract_path(output)}
-
+    with :ok <- validate_workspace_command(commands, "workspace preparation"),
+         {:ok, output} <- exec_fn.(sprite, commands, timeout: 120_000) do
+      {:ok, extract_path(output)}
+    else
       {:error, msg, code} ->
         {:error, "workspace preparation failed (#{code}): #{msg}"}
+
+      {:error, msg} ->
+        {:error, msg}
     end
   end
 
@@ -141,12 +144,15 @@ defmodule Conductor.Workspace do
     echo #{worktree}
     """
 
-    case exec_fn.(sprite, commands, timeout: 120_000) do
-      {:ok, output} ->
-        {:ok, extract_path(output)}
-
+    with :ok <- validate_workspace_command(commands, "branch adoption"),
+         {:ok, output} <- exec_fn.(sprite, commands, timeout: 120_000) do
+      {:ok, extract_path(output)}
+    else
       {:error, msg, code} ->
         {:error, "branch adoption failed (#{code}): #{msg}"}
+
+      {:error, msg} ->
+        {:error, msg}
     end
   end
 
@@ -175,12 +181,15 @@ defmodule Conductor.Workspace do
     '
     """
 
-    case exec_fn.(sprite, commands, timeout: 60_000) do
-      {:ok, _} ->
-        verify_cleanup_health(sprite, repo, branch, opts)
-
+    with :ok <- validate_workspace_command(commands, "workspace cleanup"),
+         {:ok, _} <- exec_fn.(sprite, commands, timeout: 60_000) do
+      verify_cleanup_health(sprite, repo, branch, opts)
+    else
       {:error, msg, _} ->
         Logger.warning("[workspace] cleanup command failed for #{run_id} on #{sprite}: #{msg}")
+        {:error, msg}
+
+      {:error, msg} ->
         {:error, msg}
     end
   end
@@ -211,15 +220,18 @@ defmodule Conductor.Workspace do
     #{stale_worktree_list_command(branch)}
     """
 
-    case exec_fn.(sprite, commands, timeout: 30_000) do
-      {:ok, output} ->
-        case parse_stale_worktrees(output) do
-          [] -> {:ok, :clean}
-          paths -> {:error, {:stale_worktrees, paths}}
-        end
-
+    with :ok <- validate_workspace_command(commands, "workspace health check"),
+         {:ok, output} <- exec_fn.(sprite, commands, timeout: 30_000) do
+      case parse_stale_worktrees(output) do
+        [] -> {:ok, :clean}
+        paths -> {:error, {:stale_worktrees, paths}}
+      end
+    else
       {:error, msg, code} ->
         {:error, "workspace health check failed (#{code}): #{msg}"}
+
+      {:error, msg} ->
+        {:error, msg}
     end
   end
 
@@ -269,7 +281,7 @@ defmodule Conductor.Workspace do
 
   defp stale_worktree_cleanup_commands(branch) do
     """
-    #{stale_worktree_list_command(branch)} | while IFS= read -r path; do
+    while IFS= read -r path; do
       [ -n "$path" ] || continue
       if [ "$path" = "$(pwd)" ]; then
         git checkout "$default_branch" --quiet 2>/dev/null || true
@@ -277,7 +289,9 @@ defmodule Conductor.Workspace do
         git worktree remove --force "$path" 2>/dev/null || true
         rm -rf "$path" 2>/dev/null || true
       fi
-    done
+    done < <(
+      #{stale_worktree_list_command(branch)}
+    )
     """
   end
 
@@ -584,5 +598,12 @@ defmodule Conductor.Workspace do
   defp shell_quote(value) do
     escaped = value |> to_string() |> String.replace("'", "'\"'\"'")
     "'#{escaped}'"
+  end
+
+  defp validate_workspace_command(command, context) do
+    case Shell.validate_bash(command) do
+      :ok -> :ok
+      {:error, message} -> {:error, "#{context} command failed bash validation: #{message}"}
+    end
   end
 end

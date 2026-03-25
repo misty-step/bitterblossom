@@ -29,4 +29,13 @@ defmodule Conductor.ShellTest do
     assert {:ok, "stdin-closed"} =
              Shell.cmd("sprite", ["ignored"], env: [{"PATH", path_env}], timeout: 1_000)
   end
+
+  test "validate_bash accepts valid bash" do
+    assert :ok = Shell.validate_bash("echo ok\nif true; then\n  echo still-ok\nfi")
+  end
+
+  test "validate_bash rejects malformed bash" do
+    assert {:error, message} = Shell.validate_bash("if true; then\n  echo broken\n")
+    assert message =~ "unexpected end of file"
+  end
 end

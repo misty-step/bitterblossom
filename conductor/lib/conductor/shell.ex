@@ -47,6 +47,16 @@ defmodule Conductor.Shell do
     end
   end
 
+  @spec validate_bash(binary(), keyword()) :: :ok | {:error, binary()}
+  def validate_bash(command, opts \\ []) do
+    timeout = Keyword.get(opts, :timeout, 10_000)
+
+    case cmd("bash", ["-n", "-c", command], timeout: timeout) do
+      {:ok, _output} -> :ok
+      {:error, output, _code} -> {:error, String.trim(output)}
+    end
+  end
+
   defp maybe_cd(opts, nil), do: opts
   defp maybe_cd(opts, cd), do: [{:cd, cd} | opts]
 
