@@ -16,7 +16,8 @@ Retrieval-first research, multi-AI orchestration, and expert validation.
 
 ## Absorbed Skills
 
-This skill consolidates: `web-search`, `delegate`, `thinktank`, `introspect`.
+This skill consolidates: `web-search`, `delegate`, `thinktank`, `introspect`,
+`readwise`, `xai`.
 
 ## Routing
 
@@ -80,7 +81,7 @@ Every research report MUST have one labeled section per source that ran,
 followed by a synthesis. Omit a section only if that source was explicitly
 skipped — and state why it was skipped in the Synthesis section.
 
-```
+```md
 ## Exa (neural search)
 [Findings with inline URLs. What did Exa specifically surface?]
 
