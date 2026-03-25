@@ -4,7 +4,7 @@ defmodule Conductor.SpriteHealthTest do
   alias Conductor.Sprite
 
   describe "probe/2" do
-    test "uses echo ok to wake and verify the sprite" do
+    test "uses the probe marker command to verify the sprite" do
       test_pid = self()
 
       assert {:ok, %{sprite: "test-sprite", reachable: true}} =
@@ -15,7 +15,7 @@ defmodule Conductor.SpriteHealthTest do
                  end
                )
 
-      assert_received {:probe_called, "test-sprite", "echo ok"}
+      assert_received {:probe_called, "test-sprite", "printf '__bb_probe__'"}
     end
 
     test "returns an error when the sprite cannot be reached" do

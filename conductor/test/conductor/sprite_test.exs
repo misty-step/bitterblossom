@@ -485,6 +485,75 @@ defmodule Conductor.SpriteTest do
     end
   end
 
+  test "provision skips Codex auth sync on non-codex harnesses" do
+    test_pid = self()
+    prev_gh = System.get_env("GITHUB_TOKEN")
+    System.put_env("GITHUB_TOKEN", "ghp-test-token")
+    write_auth_json(%{"auth_mode" => "chatgpt", "tokens" => %{"refresh_token" => "rt-test"}})
+
+    try do
+      exec_fn = fn _sprite, command, opts ->
+        uploaded_files =
+          opts
+          |> Keyword.get(:files, [])
+          |> Enum.map(fn {src, dest} -> {dest, File.read!(src)} end)
+
+        send(test_pid, {:exec_called, command, opts, uploaded_files})
+        {:ok, ""}
+      end
+
+      assert :ok =
+               Sprite.provision("bb-weaver",
+                 repo: "misty-step/bitterblossom",
+                 persona: "You are Weaver.",
+                 harness: "claude-code",
+                 force: true,
+                 exec_fn: exec_fn
+               )
+
+      calls = drain_exec_calls()
+
+      refute Enum.any?(calls, fn {command, _opts, uploaded_files} ->
+               command == "test -s '/home/sprite/.codex/auth.json'" or
+                 Enum.any?(uploaded_files, fn {dest, _content} ->
+                   dest == "/home/sprite/.codex/auth.json"
+                 end)
+             end)
+    after
+      if prev_gh,
+        do: System.put_env("GITHUB_TOKEN", prev_gh),
+        else: System.delete_env("GITHUB_TOKEN")
+    end
+  end
+
+  test "provision returns the chmod failure when syncing Codex auth" do
+    prev_gh = System.get_env("GITHUB_TOKEN")
+    System.put_env("GITHUB_TOKEN", "ghp-test-token")
+    write_auth_json(%{"auth_mode" => "chatgpt", "tokens" => %{"refresh_token" => "rt-test"}})
+
+    try do
+      exec_fn = fn _sprite, command, _opts ->
+        case command do
+          "test -s '/home/sprite/.codex/auth.json'" -> {:error, "", 1}
+          "chmod 600 '/home/sprite/.codex/auth.json'" -> {:error, "Permission denied", 1}
+          _ -> {:ok, ""}
+        end
+      end
+
+      assert {:error, "Permission denied"} =
+               Sprite.provision("bb-weaver",
+                 repo: "misty-step/bitterblossom",
+                 persona: "You are Weaver.",
+                 force: true,
+                 exec_fn: exec_fn
+               )
+    after
+      if prev_gh,
+        do: System.put_env("GITHUB_TOKEN", prev_gh),
+        else: System.delete_env("GITHUB_TOKEN")
+    end
+  end
+
   test "provision propagates failures from each setup step" do
     prev_gh = System.get_env("GITHUB_TOKEN")
     System.put_env("GITHUB_TOKEN", "ghp-test-token")

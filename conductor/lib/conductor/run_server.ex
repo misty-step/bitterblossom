@@ -610,8 +610,8 @@ defmodule Conductor.RunServer do
 
   defp fail(state, event_type, reason, payload \\ %{}) do
     role_log(:error, state, "#{event_type}: #{reason}")
-    Store.record_event(state.run_id, event_type, Map.put(payload, :reason, reason))
-    Store.terminate_run(state.run_id, "failed", "failed", state.repo, state.issue.number)
+    terminate_run(state, "failed", "failed")
+    safe_record_event(state.run_id, event_type, Map.put(payload, :reason, reason))
     cleanup_workspace(state)
     Retro.analyze(state.run_id)
     {:stop, :normal, %{state | phase: :failed}}
@@ -619,8 +619,8 @@ defmodule Conductor.RunServer do
 
   defp block(state, reason) do
     role_log(:warning, state, "blocked: #{reason}")
-    Store.record_event(state.run_id, "run_blocked", %{reason: reason})
-    Store.terminate_run(state.run_id, "blocked", "blocked", state.repo, state.issue.number)
+    terminate_run(state, "blocked", "blocked")
+    safe_record_event(state.run_id, "run_blocked", %{reason: reason})
     cleanup_workspace(state)
 
     # Comment on the issue so the operator knows
@@ -658,8 +658,8 @@ defmodule Conductor.RunServer do
       shutdown_dispatch_task(state.dispatch_task)
       maybe_kill_worker(state)
 
-      Store.record_event(state.run_id, "run_interrupted", %{reason: reason_string})
-      Store.terminate_run(state.run_id, "failed", "failed", state.repo, state.issue.number)
+      terminate_run(state, "failed", "failed")
+      safe_record_event(state.run_id, "run_interrupted", %{reason: reason_string})
       cleanup_workspace(state)
     rescue
       error ->
@@ -670,6 +670,19 @@ defmodule Conductor.RunServer do
   end
 
   defp cleanup_interrupted_run(_reason, _state), do: :ok
+
+  defp terminate_run(state, phase, status) do
+    Store.terminate_run(state.run_id, phase, status, state.repo, state.issue.number)
+  end
+
+  defp safe_record_event(run_id, event_type, payload) do
+    Store.record_event(run_id, event_type, payload)
+  rescue
+    error ->
+      Logger.warning(
+        "[weaver][#{run_id}] failed to record #{event_type}: #{Exception.message(error)}"
+      )
+  end
 
   defp cancel_dispatch(%{dispatch_task: %Task{} = task} = state) do
     cancel_heartbeat(state.heartbeat_timer)

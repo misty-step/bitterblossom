@@ -217,4 +217,80 @@ defmodule Conductor.CLIFleetTest do
     assert output =~ "environment check failed: missing: GITHUB_TOKEN"
     assert output =~ "Codex ChatGPT auth cache or OPENAI_API_KEY"
   end
+
+  test "mix conductor fleet --reconcile skips Codex auth preflight for claude-only fleets" do
+    fleet_path =
+      Path.join(System.tmp_dir!(), "fleet_cli_test_#{System.unique_integer([:positive])}.toml")
+
+    File.write!(
+      fleet_path,
+      """
+      version = "1"
+
+      [defaults]
+      repo = "test/repo"
+      harness = "claude-code"
+
+      [[sprite]]
+      name = "bb-fern-1"
+      role = "polisher"
+      """
+    )
+
+    {output, status} =
+      System.cmd("mix", ["conductor", "fleet", "--fleet", fleet_path, "--reconcile"],
+        cd: @conductor_dir,
+        env: [
+          {"MIX_ENV", "test"},
+          {"GITHUB_TOKEN", ""},
+          {"OPENAI_API_KEY", ""},
+          {"SPRITE_TOKEN", "sprite-test"}
+        ],
+        stderr_to_stdout: true
+      )
+
+    File.rm_rf(fleet_path)
+
+    assert status == 1
+    assert output =~ "environment check failed: missing: GITHUB_TOKEN"
+    refute output =~ "Codex ChatGPT auth cache or OPENAI_API_KEY"
+  end
+
+  test "mix conductor start skips Codex auth preflight for claude-only fleets" do
+    fleet_path =
+      Path.join(System.tmp_dir!(), "fleet_cli_test_#{System.unique_integer([:positive])}.toml")
+
+    File.write!(
+      fleet_path,
+      """
+      version = "1"
+
+      [defaults]
+      repo = "test/repo"
+      harness = "claude-code"
+
+      [[sprite]]
+      name = "bb-fern-1"
+      role = "polisher"
+      """
+    )
+
+    {output, status} =
+      System.cmd("mix", ["conductor", "start", "--fleet", fleet_path],
+        cd: @conductor_dir,
+        env: [
+          {"MIX_ENV", "test"},
+          {"GITHUB_TOKEN", ""},
+          {"OPENAI_API_KEY", ""},
+          {"SPRITE_TOKEN", "sprite-test"}
+        ],
+        stderr_to_stdout: true
+      )
+
+    File.rm_rf(fleet_path)
+
+    assert status == 1
+    assert output =~ "environment check failed: missing: GITHUB_TOKEN"
+    refute output =~ "Codex ChatGPT auth cache or OPENAI_API_KEY"
+  end
 end

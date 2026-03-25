@@ -279,22 +279,25 @@ defmodule Conductor.Config do
     end)
   end
 
-  @spec check_env!() :: :ok
-  def check_env! do
-    checks = [
-      {"GITHUB_TOKEN", fn -> System.get_env("GITHUB_TOKEN") end},
-      {"SPRITE_TOKEN, FLY_API_TOKEN, or sprite CLI auth", fn -> sprite_auth_available?() end},
-      {"Codex ChatGPT auth cache or OPENAI_API_KEY", fn -> codex_auth_available?() end},
-      {"gh", fn -> find_executable("gh") end},
-      {"sprite", fn -> find_executable("sprite") end},
-      {"persona source root",
-       fn ->
-         case Application.get_env(:conductor, :persona_source_root) do
-           path when is_binary(path) -> File.dir?(path)
-           _ -> false
-         end
-       end}
-    ]
+  @spec check_env!(keyword()) :: :ok
+  def check_env!(opts \\ []) do
+    checks =
+      [
+        {"GITHUB_TOKEN", fn -> System.get_env("GITHUB_TOKEN") end},
+        {"SPRITE_TOKEN, FLY_API_TOKEN, or sprite CLI auth", fn -> sprite_auth_available?() end}
+      ] ++
+        maybe_codex_auth_check(opts) ++
+        [
+          {"gh", fn -> find_executable("gh") end},
+          {"sprite", fn -> find_executable("sprite") end},
+          {"persona source root",
+           fn ->
+             case Application.get_env(:conductor, :persona_source_root) do
+               path when is_binary(path) -> File.dir?(path)
+               _ -> false
+             end
+           end}
+        ]
 
     results =
       Enum.map(checks, fn {name, check} ->
@@ -352,6 +355,14 @@ defmodule Conductor.Config do
 
   defp auth_refresh_token(auth) when is_map(auth) do
     auth["refresh_token"] || get_in(auth, ["tokens", "refresh_token"])
+  end
+
+  defp maybe_codex_auth_check(opts) do
+    if Keyword.get(opts, :require_codex_auth, true) do
+      [{"Codex ChatGPT auth cache or OPENAI_API_KEY", fn -> codex_auth_available?() end}]
+    else
+      []
+    end
   end
 
   defp codex_home do

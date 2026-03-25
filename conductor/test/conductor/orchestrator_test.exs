@@ -146,6 +146,8 @@ defmodule Conductor.OrchestratorTest do
       send(MockState.get(:test_pid, self()), {:busy_checked, worker})
       MockState.get({:busy, worker}, false)
     end
+
+    def kill_and_revoke(_worker, _opts \\ []), do: :ok
   end
 
   defmodule MockRunLauncher do

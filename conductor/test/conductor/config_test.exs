@@ -350,12 +350,59 @@ defmodule Conductor.ConfigTest do
       assert Config.codex_auth_source() == {:api_key, "sk-test-123"}
     end
 
+    test "falls back to OPENAI_API_KEY when auth cache JSON is malformed" do
+      codex_home = make_codex_home(nil)
+      File.write!(Path.join(codex_home, "auth.json"), "{")
+      System.put_env("CODEX_HOME", codex_home)
+      System.put_env("OPENAI_API_KEY", "sk-test-123")
+
+      assert Config.codex_auth_source() == {:api_key, "sk-test-123"}
+    end
+
     test "returns :missing when neither auth cache nor API key are available" do
       codex_home = make_codex_home(nil)
       System.put_env("CODEX_HOME", codex_home)
       System.delete_env("OPENAI_API_KEY")
 
       assert Config.codex_auth_source() == :missing
+    end
+  end
+
+  describe "codex_auth_available?/0" do
+    test "returns the auth cache path when ChatGPT auth is available" do
+      codex_home =
+        make_codex_home(%{
+          "auth_mode" => "chatgpt",
+          "tokens" => %{"refresh_token" => "rt-test"}
+        })
+
+      System.put_env("CODEX_HOME", codex_home)
+
+      assert Config.codex_auth_available?() == Path.join(codex_home, "auth.json")
+    end
+
+    test "returns OPENAI_API_KEY when API auth is selected" do
+      codex_home = make_codex_home(nil)
+      System.put_env("CODEX_HOME", codex_home)
+      System.put_env("OPENAI_API_KEY", "sk-test-123")
+
+      assert Config.codex_auth_available?() == "OPENAI_API_KEY"
+    end
+
+    test "returns false when no Codex auth source is available" do
+      codex_home = make_codex_home(nil)
+      System.put_env("CODEX_HOME", codex_home)
+      System.delete_env("OPENAI_API_KEY")
+
+      assert Config.codex_auth_available?() == false
+    end
+  end
+
+  describe "codex_auth_file/0" do
+    test "falls back to HOME/.codex/auth.json when CODEX_HOME is unset" do
+      System.delete_env("CODEX_HOME")
+
+      assert Config.codex_auth_file() == Path.join(System.user_home!(), ".codex/auth.json")
     end
   end
 

@@ -90,6 +90,7 @@ defmodule Conductor.Fleet.Reconciler do
     case provision_fn.(sprite.name,
            repo: sprite.repo,
            persona: sprite.persona,
+           harness: sprite.harness,
            force: true
          ) do
       :ok ->

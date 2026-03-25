@@ -180,13 +180,14 @@ defmodule Conductor.Sprite do
   def provision(sprite, opts \\ []) do
     repo = Keyword.get(opts, :repo)
     persona = Keyword.get(opts, :persona)
+    harness = Keyword.get(opts, :harness)
     force = Keyword.get(opts, :force, false)
     exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
 
     with :ok <- ensure_remote_dirs(sprite, exec_fn),
          :ok <- upload_base_configs(sprite, persona, exec_fn),
          :ok <- ensure_codex(sprite, force, exec_fn),
-         :ok <- maybe_sync_codex_auth(sprite, exec_fn),
+         :ok <- maybe_sync_codex_auth(sprite, harness, exec_fn),
          :ok <- upload_runtime_env(sprite, exec_fn),
          :ok <- configure_git_auth(sprite, exec_fn),
          :ok <- maybe_setup_repo(sprite, repo, persona, force, exec_fn) do
@@ -501,7 +502,10 @@ defmodule Conductor.Sprite do
     end
   end
 
-  defp maybe_sync_codex_auth(sprite, exec_fn) do
+  defp maybe_sync_codex_auth(_sprite, harness, _exec_fn) when harness not in [nil, "", "codex"],
+    do: :ok
+
+  defp maybe_sync_codex_auth(sprite, _harness, exec_fn) do
     case Config.codex_auth_source() do
       {:chatgpt, local_auth_path} ->
         case exec_fn.(sprite, "test -s #{shell_quote(@sprite_codex_auth_path)}", timeout: 15_000) do
