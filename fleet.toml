@@ -10,6 +10,7 @@ repo = "misty-step/bitterblossom"
 harness = "codex"
 model = "gpt-5.4"
 reasoning_effort = "medium"
+spellbook = "phrazzld/spellbook"
 
 [personas]
 fern = """

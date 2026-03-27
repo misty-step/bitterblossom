@@ -190,7 +190,8 @@ defmodule Conductor.Sprite do
          :ok <- maybe_sync_codex_auth(sprite, harness, exec_fn),
          :ok <- upload_runtime_env(sprite, exec_fn),
          :ok <- configure_git_auth(sprite, exec_fn),
-         :ok <- maybe_setup_repo(sprite, repo, persona, force, exec_fn) do
+         :ok <- maybe_setup_repo(sprite, repo, persona, force, exec_fn),
+         :ok <- Conductor.Bootstrap.ensure_spellbook(sprite, exec_fn: exec_fn) do
       :ok
     end
   end
