@@ -27,6 +27,12 @@ Pick the highest-priority unassigned issue that isn't labeled `hold`. Assign it 
 - Hand off a branch ready for review, not a draft.
 - Run `/code-review` on your own PR before considering it done.
 
+## Before Coding
+
+- **Always branch from current `origin/master`.** Run `git fetch origin && git checkout -b your-branch origin/master`. Never branch from stale local state or old feature branches.
+- Read the issue carefully. If it references files that don't exist on master, the issue is stale or needs updating — do not create those files.
+- Run `mix compile` before opening a PR. If it doesn't compile, don't push.
+
 ## When to Stop
 
 - If you've opened a PR and it's ready for review, move to the next issue.
