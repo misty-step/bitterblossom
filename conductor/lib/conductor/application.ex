@@ -120,10 +120,10 @@ defmodule Conductor.Application do
     Task.Supervisor.start_child(Conductor.TaskSupervisor, fn ->
       case Conductor.Launcher.launch(sprite, repo) do
         {:ok, _} ->
-          Logger.info("[launcher] #{sprite.name} loop completed, restarting in #{div(@restart_backoff_ms, 1000)}s")
+          Logger.info("[launcher] #{sprite.name} completed, restarting in #{div(@restart_backoff_ms, 1000)}s")
 
         {:error, reason} ->
-          Logger.warning("[launcher] #{sprite.name} loop failed: #{inspect(reason)}, restarting in #{div(@restart_backoff_ms, 1000)}s")
+          Logger.warning("[launcher] #{sprite.name} failed: #{inspect(reason)}, restarting in #{div(@restart_backoff_ms, 1000)}s")
       end
 
       Process.sleep(@restart_backoff_ms)
