@@ -58,12 +58,12 @@ defmodule Conductor.Sprite do
           with :ok <-
                  wake(sprite,
                    org: org,
-                   timeout: 15_000,
+                   timeout: 45_000,
                    shell_cmd_fn: shell_cmd_fn
                  ) do
             shell_cmd_fn.(
               "sprite",
-              exec_args(org, sprite, files, command, transport: :http_post),
+              exec_args(org, sprite, files, command, transport: :websocket),
               timeout: timeout
             )
           else
@@ -169,7 +169,7 @@ defmodule Conductor.Sprite do
     case marker_exec(
            sprite,
            @wake_marker,
-           Keyword.merge([timeout: 15_000, transport: :http_post], opts)
+           Keyword.merge([timeout: 45_000], opts)
          ) do
       {:ok, _} -> :ok
       {:error, msg} -> {:error, msg}
@@ -292,7 +292,7 @@ defmodule Conductor.Sprite do
   def probe(sprite, opts \\ []) do
     exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
 
-    case marker_exec(exec_fn, sprite, @probe_marker, timeout: 15_000, transport: :http_post) do
+    case marker_exec(exec_fn, sprite, @probe_marker, timeout: 45_000) do
       {:ok, _} -> {:ok, %{sprite: sprite, reachable: true}}
       {:error, msg} -> {:error, msg}
     end

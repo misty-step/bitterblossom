@@ -71,12 +71,7 @@ defmodule Conductor.Application do
     )
 
     for sprite <- healthy_sprites do
-      Task.Supervisor.start_child(Conductor.TaskSupervisor, fn ->
-        case Conductor.Launcher.launch(sprite, repo) do
-          {:ok, _} -> Logger.info("[boot] #{sprite.name} loop completed")
-          {:error, reason} -> Logger.warning("[boot] #{sprite.name} loop failed: #{inspect(reason)}")
-        end
-      end)
+      launch_with_restart(sprite, repo)
     end
 
     # 4. Store fleet config for runtime queries
@@ -116,6 +111,24 @@ defmodule Conductor.Application do
     else
       :ok
     end
+  end
+
+  @restart_backoff_ms 30_000
+
+  @doc false
+  def launch_with_restart(sprite, repo) do
+    Task.Supervisor.start_child(Conductor.TaskSupervisor, fn ->
+      case Conductor.Launcher.launch(sprite, repo) do
+        {:ok, _} ->
+          Logger.info("[launcher] #{sprite.name} loop completed, restarting in #{div(@restart_backoff_ms, 1000)}s")
+
+        {:error, reason} ->
+          Logger.warning("[launcher] #{sprite.name} loop failed: #{inspect(reason)}, restarting in #{div(@restart_backoff_ms, 1000)}s")
+      end
+
+      Process.sleep(@restart_backoff_ms)
+      launch_with_restart(sprite, repo)
+    end)
   end
 
   defp fleet_reconciler do
