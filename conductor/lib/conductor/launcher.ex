@@ -20,25 +20,24 @@ defmodule Conductor.Launcher do
   4. Dispatch with loop prompt
   """
   @spec launch(map(), binary(), keyword()) :: {:ok, binary()} | {:error, term()}
-  def launch(sprite_config, repo, opts \\ []) do
+  def launch(sprite_config, repo, _opts \\ []) do
     sprite = sprite_config.name
     role = sprite_config.role
-    harness = Keyword.get(opts, :harness, Conductor.Codex)
-    exec_fn = Keyword.get(opts, :exec_fn, &Sprite.exec/3)
 
     Logger.info("[launcher] launching #{sprite} (#{role})")
 
     workspace = Workspace.repo_root(repo)
 
-    with :ok <- Sprite.provision(sprite, repo: repo, harness: to_string(harness_name(harness))),
-         :ok <- Bootstrap.ensure_spellbook(sprite, exec_fn: exec_fn),
-         :ok <- Workspace.sync_persona(sprite, workspace, role) do
+    # Reconciliation already provisioned the sprite. We just need spellbook + persona + dispatch.
+    persona = persona_for_role(role)
+
+    with :ok <- Bootstrap.ensure_spellbook(sprite),
+         :ok <- Workspace.sync_persona(sprite, workspace, persona) do
       prompt = loop_prompt(sprite_config, repo)
 
       case Sprite.dispatch(sprite, prompt, repo,
              workspace: workspace,
-             harness: harness,
-             persona_role: role,
+             persona_role: persona,
              timeout: Config.session_timeout_minutes()
            ) do
         {:ok, output} ->
@@ -74,12 +73,14 @@ defmodule Conductor.Launcher do
     """
   end
 
+  defp persona_for_role(:builder), do: :weaver
+  defp persona_for_role(:fixer), do: :thorn
+  defp persona_for_role(:polisher), do: :fern
+  defp persona_for_role(role), do: role
+
   defp role_display_name(:builder), do: "Weaver"
   defp role_display_name(:fixer), do: "Thorn"
   defp role_display_name(:polisher), do: "Fern"
   defp role_display_name(role), do: to_string(role) |> String.capitalize()
 
-  defp harness_name(Conductor.Codex), do: "codex"
-  defp harness_name(Conductor.ClaudeCode), do: "claude"
-  defp harness_name(_), do: "codex"
 end

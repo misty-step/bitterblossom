@@ -61,14 +61,20 @@ defmodule Conductor.Application do
       healthy: healthy
     )
 
-    # 3. Dispatch agent loops for healthy sprites
+    # 3. Dispatch agent loops for all healthy sprites
+    #    Unhealthy sprites will be re-launched by HealthMonitor when they recover.
     healthy_sprites = Enum.filter(sprites, &MapSet.member?(healthy, &1.name))
+
+    Logger.info(
+      "[boot] launching #{length(healthy_sprites)} agent loop(s), " <>
+        "#{length(sprites) - length(healthy_sprites)} deferred to HealthMonitor"
+    )
 
     for sprite <- healthy_sprites do
       Task.Supervisor.start_child(Conductor.TaskSupervisor, fn ->
         case Conductor.Launcher.launch(sprite, repo) do
           {:ok, _} -> Logger.info("[boot] #{sprite.name} loop completed")
-          {:error, reason} -> Logger.warning("[boot] #{sprite.name} loop failed: #{reason}")
+          {:error, reason} -> Logger.warning("[boot] #{sprite.name} loop failed: #{inspect(reason)}")
         end
       end)
     end
@@ -77,7 +83,7 @@ defmodule Conductor.Application do
     Application.put_env(:conductor, :fleet_config, config)
     Application.put_env(:conductor, :fleet_sprites, sprites)
 
-    Logger.info("[boot] #{MapSet.size(healthy)} sprite(s) launched")
+    Logger.info("[boot] bitterblossom running")
     :ok
   end
 
