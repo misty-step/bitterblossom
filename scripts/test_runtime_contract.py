@@ -139,7 +139,10 @@ def test_makefile_test_conductor_bootstraps_dependencies():
     assert "test-conductor: ensure-mix" in content, (
         "Makefile test-conductor target must depend on ensure-mix before running conductor tests."
     )
-    assert "conductor-check: ensure-mix" in content, (
+    conductor_rule = re.search(
+        r"^conductor-check:\s+ensure-mix(?:\s|$)", content, re.MULTILINE
+    )
+    assert conductor_rule, (
         "Makefile conductor-check target must depend on ensure-mix before running conductor commands."
     )
 
