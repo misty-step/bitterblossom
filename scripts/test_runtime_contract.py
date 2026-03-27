@@ -15,12 +15,11 @@ Run:
 """
 
 import json
+import pytest
 import re
 import shutil
 import subprocess
 from pathlib import Path
-
-import pytest
 
 REPO_ROOT = Path(__file__).parent.parent
 # Keep the literal split so live-surface grep checks ignore this guardrail.
@@ -136,9 +135,22 @@ def test_makefile_test_conductor_bootstraps_dependencies():
     """The supported root test path must bootstrap Elixir deps itself."""
     makefile_path = REPO_ROOT / "Makefile"
     content = makefile_path.read_text()
-    target = re.search(r"^test-conductor:\n((?:\t.*\n)+)", content, re.MULTILINE)
-    assert target, "Makefile missing test-conductor target"
-    body = target.group(1)
+    assert "ensure-mix:" in content, "Makefile must define an ensure-mix preflight target"
+    assert "test-conductor: ensure-mix" in content, (
+        "Makefile test-conductor target must depend on ensure-mix before running conductor tests."
+    )
+    assert "conductor-check: ensure-mix" in content, (
+        "Makefile conductor-check target must depend on ensure-mix before running conductor commands."
+    )
+
+    ensure_target = re.search(r"^ensure-mix:\n((?:\t.*\n)+)", content, re.MULTILINE)
+    assert ensure_target, "Makefile missing ensure-mix target"
+    ensure_body = ensure_target.group(1)
+    assert "command -v mix" in ensure_body, "ensure-mix must check whether mix exists in PATH"
+
+    test_rule = re.search(r"^test-conductor: ensure-mix\n((?:\t.*\n)+)", content, re.MULTILINE)
+    assert test_rule, "Makefile missing test-conductor recipe"
+    body = test_rule.group(1)
 
     assert "mix deps.get && mix test" in body, (
         "Makefile test-conductor target must run 'mix deps.get' before 'mix test' "
@@ -162,18 +174,22 @@ def test_readme_documents_supported_repo_verification_command():
 def test_make_test_succeeds_from_clean_checkout_state():
     """The supported root verification command must work after clearing conductor build state."""
     if shutil.which("mix") is None:
-        pytest.skip("mix is not installed in this environment")
+        pytest.skip("Elixir toolchain (`mix`) is not installed in this environment")
 
     shutil.rmtree(REPO_ROOT / "conductor" / "deps", ignore_errors=True)
     shutil.rmtree(REPO_ROOT / "conductor" / "_build", ignore_errors=True)
 
-    result = subprocess.run(
-        ["make", "test"],
-        cwd=REPO_ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["make", "test"],
+            cwd=REPO_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=900,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AssertionError("'make test' timed out after 900 seconds") from exc
 
     assert result.returncode == 0, (
         "'make test' must succeed after removing conductor/deps and conductor/_build.\n"
