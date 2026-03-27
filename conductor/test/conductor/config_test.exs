@@ -421,9 +421,7 @@ defmodule Conductor.ConfigTest do
   end
 
   defp make_codex_home(nil) do
-    home = Path.join(System.tmp_dir!(), "codex_home_#{System.unique_integer([:positive])}")
-    File.mkdir_p!(home)
-    home
+    fresh_codex_home()
   end
 
   defp make_codex_home(auth_payload) do

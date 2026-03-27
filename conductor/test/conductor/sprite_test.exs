@@ -10,10 +10,7 @@ defmodule Conductor.SpriteTest do
         {key, System.get_env(key)}
       end
 
-    codex_home =
-      Path.join(System.tmp_dir!(), "codex_home_#{System.unique_integer([:positive])}")
-
-    File.mkdir_p!(codex_home)
+    codex_home = fresh_codex_home()
     System.put_env("CODEX_HOME", codex_home)
     System.delete_env("OPENAI_API_KEY")
     System.delete_env("GITHUB_TOKEN")
