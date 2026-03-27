@@ -44,6 +44,7 @@ defmodule Conductor.PhaseWorkerTest do
     end
 
     def add_label(_repo, _pr_number, _label), do: :ok
+    def remove_label(_repo, _pr_number, _label), do: :ok
     def close_issue(_repo, _issue_number), do: :ok
     def close_pr(_repo, _pr_number, _opts \\ []), do: :ok
     def find_open_pr(_repo, _issue_number, _expected_branch \\ nil), do: {:error, :not_found}
@@ -312,7 +313,7 @@ defmodule Conductor.PhaseWorkerTest do
       assert Store.list_events("fixer") == []
     end
 
-    test "skips PRs when CI has not failed" do
+    test "skips merge-ready PRs" do
       MockState.put(
         :open_prs,
         {:ok,
@@ -322,16 +323,10 @@ defmodule Conductor.PhaseWorkerTest do
              "headRefName" => "factory/99-12345",
              "title" => "green",
              "body" => "",
+             "mergeable" => "MERGEABLE",
              "statusCheckRollup" => [
                %{"name" => "CI", "conclusion" => "SUCCESS", "status" => "COMPLETED"}
              ]
-           },
-           %{
-             "number" => 43,
-             "headRefName" => "factory/100-12345",
-             "title" => "pending",
-             "body" => "",
-             "statusCheckRollup" => [%{"name" => "CI", "conclusion" => nil, "status" => "QUEUED"}]
            }
          ]}
       )
@@ -339,6 +334,30 @@ defmodule Conductor.PhaseWorkerTest do
       start_phase_worker(Roles.Fixer, ["bb-thorn"])
 
       refute_receive {:dispatched, _, _}, 300
+    end
+
+    test "dispatches for conflicting PRs even with green CI" do
+      MockState.put(
+        :open_prs,
+        {:ok,
+         [
+           %{
+             "number" => 44,
+             "headRefName" => "factory/101-12345",
+             "title" => "conflicting",
+             "body" => "",
+             "mergeable" => "CONFLICTING",
+             "statusCheckRollup" => [
+               %{"name" => "CI", "conclusion" => "SUCCESS", "status" => "COMPLETED"}
+             ]
+           }
+         ]}
+      )
+
+      start_phase_worker(Roles.Fixer, ["bb-thorn"])
+
+      assert_receive {:dispatched, "bb-thorn", prompt}, 2_000
+      assert prompt =~ "Mergeable: CONFLICTING"
     end
   end
 

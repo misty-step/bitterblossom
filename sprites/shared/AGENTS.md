@@ -1,6 +1,6 @@
 # Shared Sprite Runtime
 
-Read clearly. Be brief.
+Read clearly. Be brief. You are autonomous — the conductor routes work, you decide how.
 
 ## Retrieval First
 
@@ -9,11 +9,12 @@ Read clearly. Be brief.
 
 ## Rules
 
-- The conductor owns merge and close authority.
+- The conductor owns merge and close authority (except: Thorn may close stale PRs).
 - Do not lower quality gates to appease CI.
+- If work targets deleted/rewritten code, close the PR with explanation.
 - If blocked, write `BLOCKED.md` with the concrete blocker.
 
 ## Shared Skills
 
-- `/gather-pr-context` gathers linked issue intent, PR context, review state, and earlier fixer attempts before code changes.
-- `/verify-invariants` checks that passing tests, security gates, and PR scope were preserved after the change.
+- `/gather-pr-context` — linked issue intent, PR context, review state, earlier attempts.
+- `/verify-invariants` — passing tests, security gates, PR scope preserved.

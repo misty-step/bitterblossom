@@ -113,6 +113,7 @@ defmodule Conductor.OrchestratorTest do
     def pr_review_comments(_repo, _pr), do: {:ok, []}
     def pr_ci_failure_logs(_repo, _pr), do: {:ok, ""}
     def add_label(_repo, _pr, _label), do: :ok
+    def remove_label(_repo, _pr, _label), do: :ok
 
     def close_issue(repo, issue_number) do
       close_calls = MockState.get(:close_issue_calls, [])

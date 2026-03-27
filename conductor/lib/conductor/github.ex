@@ -816,7 +816,7 @@ defmodule Conductor.GitHub do
            "--limit",
            to_string(@default_unfiltered_limit),
            "--json",
-           "number,title,body,headRefName,url,labels,statusCheckRollup"
+           "number,title,body,headRefName,url,labels,mergeable,statusCheckRollup"
          ]) do
       {:ok, json} ->
         case Jason.decode(json) do
@@ -875,6 +875,23 @@ defmodule Conductor.GitHub do
          ]) do
       {:ok, output} -> {:ok, output}
       {:error, output, _} -> {:ok, output}
+    end
+  end
+
+  @doc "Remove a label from a PR."
+  @spec remove_label(binary(), pos_integer(), binary()) :: :ok | {:error, term()}
+  def remove_label(repo, pr_number, label) do
+    case Shell.cmd("gh", [
+           "pr",
+           "edit",
+           to_string(pr_number),
+           "--repo",
+           repo,
+           "--remove-label",
+           label
+         ]) do
+      {:ok, _} -> :ok
+      {:error, msg, _} -> {:error, msg}
     end
   end
 

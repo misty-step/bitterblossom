@@ -8,6 +8,7 @@ config :conductor,
   ci_timeout_minutes: 30,
   pr_minimum_age_seconds: 300,
   max_concurrent_runs: 2,
+  session_timeout_minutes: 60,
   start_dashboard: true,
   persona_source_root: Path.expand("../../sprites", __DIR__)
 

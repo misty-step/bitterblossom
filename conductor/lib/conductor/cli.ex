@@ -76,11 +76,20 @@ defmodule Conductor.CLI do
     {opts, _, _} =
       OptionParser.parse(args,
         strict: [
-          fleet: :string
+          fleet: :string,
+          timeout: :integer,
+          no_timeout: :boolean
         ]
       )
 
     fleet_path = Keyword.get(opts, :fleet, fleet_default_path())
+
+    timeout_minutes =
+      cond do
+        opts[:no_timeout] -> :infinity
+        opts[:timeout] -> opts[:timeout]
+        true -> Conductor.Config.session_timeout_minutes()
+      end
 
     IO.puts("bitterblossom starting — fleet: #{fleet_path}")
 
@@ -94,9 +103,17 @@ defmodule Conductor.CLI do
             {:error, reason} -> raise "dashboard start failed: #{inspect(reason)}"
           end
 
-          IO.puts("bitterblossom running. Press Ctrl+C to stop.")
-          # Block forever — everything runs in the supervision tree
-          Process.sleep(:infinity)
+          case timeout_minutes do
+            :infinity ->
+              IO.puts("bitterblossom running (no timeout). Press Ctrl+C to stop.")
+              Process.sleep(:infinity)
+
+            minutes ->
+              IO.puts("bitterblossom running (#{minutes}m timeout). Press Ctrl+C to stop.")
+              Process.sleep(minutes * 60_000)
+              IO.puts("[session] timeout after #{minutes} minutes — shutting down gracefully")
+              System.stop(0)
+          end
 
         {:error, reason} ->
           IO.puts("boot failed: #{inspect(reason)}")

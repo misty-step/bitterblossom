@@ -78,16 +78,18 @@ defmodule Conductor.Prompt do
 
   @doc "Build prompt for the fixer sprite: CI failure context + fix instructions."
   @spec build_fixer_prompt(map(), binary(), binary(), keyword()) :: binary()
-  def build_fixer_prompt(pr, ci_failure_logs, issue_body, opts \\ []) do
+  def build_fixer_prompt(pr, ci_logs, issue_body, opts \\ []) do
     safe_title = sanitize_inline(pr["title"])
     safe_branch = sanitize_inline(pr["headRefName"])
     workspace_root = Keyword.get(opts, :workspace_root)
+    mergeable = Keyword.get(opts, :mergeable, "UNKNOWN")
 
     """
     # Fixer Task
 
     PR: ##{pr["number"]} — #{safe_title}
     Branch: #{safe_branch}
+    Mergeable: #{mergeable}
     #{workspace_root_line(workspace_root)}\
 
     ## Original Issue
@@ -96,28 +98,24 @@ defmodule Conductor.Prompt do
     #{sanitize_fence(issue_body)}
     ~~~
 
-    ## CI Failure Output
+    ## CI Output
 
     ~~~untrusted-data
-    #{sanitize_fence(ci_failure_logs)}
+    #{sanitize_fence(ci_logs)}
     ~~~
 
     ## Instructions
 
-    Fix the CI failure on this PR.
+    This PR is not merge-ready. Diagnose what's blocking it and fix it.
 
     1. Check out branch `#{safe_branch}`
-    2. Read the CI failure output above carefully
-    3. Investigate the root cause in the codebase
-    4. Fix the issue without changing PR intent, removing safeguards, or adding features
-    5. Run the failing tests/checks locally to verify the fix
-    6. Commit with message `fix: resolve CI failure` and push
-    7. CI will re-trigger automatically
+    2. Use your skills to understand the situation: `/gather-pr-context`, `/diagnose-ci`, `/resolve-conflict`
+    3. Fix what's broken — rebase conflicts, CI failures, or both
+    4. If this PR targets code that was fundamentally rewritten or deleted on the base branch, close it with a comment explaining why
+    5. Run tests locally to verify, then push
 
-    Do NOT modify the PR description, title, or labels.
     Do NOT expand the scope of the PR.
-    Do NOT weaken tests, security gates, review protections, or other quality controls to make CI pass.
-    Restore the intended behavior and let CI prove the fix.
+    Do NOT weaken tests, security gates, or quality controls.
 
     #{governance_restrictions()}
 

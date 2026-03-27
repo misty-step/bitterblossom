@@ -196,26 +196,22 @@ defmodule Conductor.PromptTest do
       refute prompt =~ "You are Thorn"
     end
 
-    test "prohibits weakening safeguards just to clear CI" do
+    test "prohibits weakening safeguards" do
       pr = %{"number" => 10, "title" => "Fix CI", "headRefName" => "factory/10-fix"}
       prompt = Prompt.build_fixer_prompt(pr, "test failed", "issue body")
 
-      assert prompt =~ "Do NOT weaken tests, security gates, review protections"
-      assert prompt =~ "Restore the intended behavior and let CI prove the fix."
-      refute prompt =~ "Focus exclusively on making CI green."
+      assert prompt =~ "Do NOT weaken tests, security gates, or quality controls"
     end
 
-    test "keeps Thorn workflow guidance in persona files instead of inline prompt text" do
+    test "provides state-based context and references agent skills" do
       pr = %{"number" => 10, "title" => "Fix CI", "headRefName" => "factory/10-fix"}
       prompt = Prompt.build_fixer_prompt(pr, "test failed", "issue body")
 
-      assert prompt =~ "Fix the CI failure on this PR."
-      assert prompt =~ "Investigate the root cause in the codebase"
-      refute prompt =~ "/gather-pr-context"
-      refute prompt =~ "/diagnose-ci"
-      refute prompt =~ "/plan-fix"
-      refute prompt =~ "/verify-invariants"
-      refute prompt =~ ".claude/skills"
+      assert prompt =~ "not merge-ready"
+      assert prompt =~ "Mergeable:"
+      assert prompt =~ "/gather-pr-context"
+      assert prompt =~ "/diagnose-ci"
+      assert prompt =~ "/resolve-conflict"
     end
   end
 

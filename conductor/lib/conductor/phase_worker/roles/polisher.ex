@@ -25,7 +25,9 @@ defmodule Conductor.PhaseWorker.Roles.Polisher do
     label_names = Enum.map(labels, &String.downcase(&1["name"] || ""))
     checks = pr["statusCheckRollup"] |> List.wrap() |> Enum.filter(&is_map/1)
 
-    "lgtm" not in label_names and Conductor.GitHub.evaluate_checks(checks)
+    "lgtm" not in label_names and
+      pr["mergeable"] != "CONFLICTING" and
+      Conductor.GitHub.evaluate_checks(checks)
   end
 
   @impl true

@@ -74,6 +74,7 @@ defmodule Conductor.RunServerTest do
     def pr_review_comments(_repo, _pr_number), do: {:ok, []}
     def pr_ci_failure_logs(_repo, _pr_number), do: {:ok, ""}
     def add_label(_repo, _pr_number, _label), do: :ok
+    def remove_label(_repo, _pr_number, _label), do: :ok
     def close_issue(_repo, _issue_number), do: :ok
 
     def close_pr(repo, pr_number, opts \\ []) do

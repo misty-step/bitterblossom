@@ -868,6 +868,15 @@ defmodule Conductor.Orchestrator do
   def mark_conflict_blocked(repo, pr_number) do
     Logger.warning("[merge] PR ##{pr_number} blocked: merge_conflict_unresolvable")
 
+    # Remove LGTM so the PR exits the merge poll loop and re-enters Thorn's queue
+    case code_host_mod().remove_label(repo, pr_number, "lgtm") do
+      :ok ->
+        Logger.info("[merge] removed lgtm from PR ##{pr_number} (conflict → Thorn)")
+
+      {:error, reason} ->
+        Logger.warning("[merge] failed to remove lgtm from PR ##{pr_number}: #{reason}")
+    end
+
     case Store.find_run_by_pr(repo, pr_number) do
       {:ok, %{"run_id" => run_id, "issue_number" => issue_number}} ->
         Store.record_event(run_id, "merge_conflict_blocked", %{

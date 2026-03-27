@@ -18,9 +18,9 @@ The conductor owns workflow judgment and durable run state. `bb` is transitional
 
 ## Sprite Names
 
-- **Weaver** (`bb-weaver`) — implements issues, writes code, opens PRs
-- **Thorn** (`bb-thorn`) — watches failing CI and pushes narrow fixes
-- **Fern** (`bb-fern`) — reviews PRs, polishes diffs, adds `lgtm` when warranted
+- **Weaver** (`bb-builder`) — implements issues, writes code, opens PRs
+- **Thorn** (`bb-fixer`) — makes PRs merge-ready: resolves conflicts, fixes CI, closes stale PRs
+- **Fern** (`bb-polisher`, `bb-polisher-2`, `bb-polisher-3`) — makes merge-ready PRs excellent: reviews, simplifies, refactors, adds `lgtm`
 - **Muse** (`bb-muse`) — reflects on runs and synthesizes learning for the factory
 
 ## Architecture
@@ -73,7 +73,26 @@ The conductor owns five authorities. Nothing else may perform these:
 
 The entity doing the work cannot judge the work. Weaver doesn't know the merge policy.
 
-## Gotchas (earned by pain, 2026-03-14)
+## Orchestration Philosophy
+
+The conductor routes; agents reason. Deterministic heuristics for routing, agent judgment for everything else.
+
+**Conductor authority** — fleet management, work routing, merge plumbing. The conductor answers "who gets this work?" but never "what should be done about it?"
+
+**Agent authority** — Thorn decides how to make a PR merge-ready. Fern decides what quality means. Weaver decides how to implement. The conductor passes state (mergeable status, CI status, context); the agent reasons about action.
+
+**Routing is binary:**
+- PR not merge-ready (conflicts, red CI, any blocker) → **Thorn**
+- PR merge-ready but no LGTM → **Fern**
+- No PR yet (open issue) → **Weaver**
+
+**Skills are tools, not forced workflows.** Agents choose which skills to invoke based on what they observe. `/diagnose-ci` and `/resolve-conflict` are in Thorn's toolbox, not a mandatory sequence.
+
+**Self-healing cycles.** Thorn rebases → CI reruns → Fern polishes → LGTM → conductor merges → new conflicts appear → Thorn handles them. No dead ends.
+
+**Prompts provide state, not instructions.** The conductor tells Thorn "this PR is not merge-ready, here's its state." It does NOT say "run git rebase" or "fix the CI failure." The agent figures out the right action.
+
+## Gotchas (earned by pain)
 
 - **Go/Elixir coupling on file paths.** The Go transport (`cmd/bb/`) and Elixir conductor still share runtime path assumptions such as workspace roots, prompt-template paths, and signal filenames. Always grep both `cmd/bb/` and `conductor/` when changing those contracts.
 - **Closing a PR doesn't stop the conductor.** The conductor doesn't monitor PR state — it only checks CI status. To stop a merge, use the `hold` label on the issue (#637). Closing the PR is not communication.
