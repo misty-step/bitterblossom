@@ -787,6 +787,7 @@ defmodule Conductor.Sprite do
       cd #{shell_quote(@sprite_workspace_root)} &&
       git clone #{shell_quote(repo_clone_url(repo))}
     """
+    |> String.trim()
   end
 
   defp repo_setup_script(repo_dir, repo, false) do
@@ -800,6 +801,7 @@ defmodule Conductor.Sprite do
         git clone #{shell_quote(repo_clone_url(repo))}
     fi
     """
+    |> String.trim()
   end
 
   defp repo_clone_url(repo), do: "https://github.com/#{repo}.git"
