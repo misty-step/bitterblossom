@@ -20,6 +20,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).parent.parent
 # Keep the literal split so live-surface grep checks ignore this guardrail.
 REMOVED_SENTRY_WATCHER = "sentry-" "watcher.sh"
@@ -159,6 +161,9 @@ def test_readme_documents_supported_repo_verification_command():
 
 def test_make_test_succeeds_from_clean_checkout_state():
     """The supported root verification command must work after clearing conductor build state."""
+    if shutil.which("mix") is None:
+        pytest.skip("mix is not installed in this environment")
+
     shutil.rmtree(REPO_ROOT / "conductor" / "deps", ignore_errors=True)
     shutil.rmtree(REPO_ROOT / "conductor" / "_build", ignore_errors=True)
 

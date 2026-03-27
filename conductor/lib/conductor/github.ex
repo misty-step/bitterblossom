@@ -109,7 +109,9 @@ defmodule Conductor.GitHub do
   @spec eligible_issues(binary(), keyword()) :: [map()]
   def eligible_issues(repo, opts \\ []) do
     case list_issues(repo, opts) do
-      {:ok, issues} -> Enum.sort_by(issues, & &1["number"])
+      {:ok, issues} ->
+        Enum.sort_by(issues, & &1["number"])
+
       {:error, reason} ->
         Logger.warning("failed to list issues: #{inspect(reason)}")
         []
