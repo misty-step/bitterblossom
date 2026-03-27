@@ -57,4 +57,5 @@ defmodule Conductor.Bootstrap do
       {:error, msg, _code} -> {:error, "spellbook bootstrap failed: #{msg}"}
     end
   end
+
 end

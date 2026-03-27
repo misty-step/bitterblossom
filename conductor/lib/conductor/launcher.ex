@@ -83,4 +83,5 @@ defmodule Conductor.Launcher do
   defp role_display_name(:fixer), do: "Thorn"
   defp role_display_name(:polisher), do: "Fern"
   defp role_display_name(role), do: to_string(role) |> String.capitalize()
+
 end
