@@ -296,23 +296,25 @@ defmodule Conductor.Orchestrator do
     max_runs = Config.max_concurrent_runs()
     slots = min(max_runs - map_size(state.active_runs), Config.max_starts_per_tick())
 
-    state.repo
-    |> tracker_mod().list_eligible(label: state.label)
-    |> Enum.reject(&Store.leased?(state.repo, &1.number))
-    |> Enum.reject(&operator_blocked_issue?(state.repo, &1.number))
-    |> Enum.reject(&issue_in_cooldown?(state.repo, &1.number))
-    |> Enum.reduce({state, max(slots, 0)}, fn issue, {acc, remaining_slots} ->
-      {next_state, outcome} = consider_issue(acc, issue, remaining_slots)
+    state
+    |> repos()
+    |> Enum.reduce({state, max(slots, 0)}, fn repo, {acc, remaining_slots} ->
+      repo
+      |> tracker_mod().list_eligible(label: acc.label)
+      |> Enum.reject(&Store.leased?(repo, &1.number))
+      |> Enum.reject(&operator_blocked_issue?(repo, &1.number))
+      |> Enum.reject(&issue_in_cooldown?(repo, &1.number))
+      |> Enum.reduce({acc, remaining_slots}, fn issue, {repo_state, repo_slots} ->
+        {next_state, outcome} = consider_issue(repo_state, repo, issue, repo_slots)
 
-      slots_left =
-        if outcome == :started, do: max(remaining_slots - 1, 0), else: remaining_slots
-
-      {next_state, slots_left}
+        slots_left = if outcome == :started, do: max(repo_slots - 1, 0), else: repo_slots
+        {next_state, slots_left}
+      end)
     end)
     |> elem(0)
   end
 
-  defp consider_issue(state, issue, remaining_slots) do
+  defp consider_issue(state, repo, issue, remaining_slots) do
     # Defense in depth: list_eligible/2 should already exclude closed issues, but
     # this stale-snapshot guard prevents shaping work before RunServer re-validates
     # the issue state with a fresh tracker fetch.
@@ -323,7 +325,7 @@ defmodule Conductor.Orchestrator do
             next_state =
               state
               |> clear_shape_attempt(issue.number)
-              |> maybe_start_ready_issue(issue, remaining_slots)
+              |> maybe_start_ready_issue(repo, issue, remaining_slots)
 
             outcome =
               if map_size(next_state.active_runs) > map_size(state.active_runs),
@@ -333,7 +335,7 @@ defmodule Conductor.Orchestrator do
             {next_state, outcome}
 
           {:error, failures} ->
-            maybe_shape_issue(state, issue, failures)
+            maybe_shape_issue(state, repo, issue, failures)
         end
 
       {:error, failures} ->
@@ -345,7 +347,7 @@ defmodule Conductor.Orchestrator do
     end
   end
 
-  defp maybe_shape_issue(state, issue, failures) do
+  defp maybe_shape_issue(state, repo, issue, failures) do
     revision_id = Issue.revision_id(issue)
 
     cond do
@@ -363,13 +365,13 @@ defmodule Conductor.Orchestrator do
 
         task =
           Task.Supervisor.async_nolink(task_supervisor(), fn ->
-            safe_shape_issue(state.repo, issue.number)
+            safe_shape_issue(repo, issue.number)
           end)
 
         next_state =
           state
           |> put_shape_attempt(issue.number, revision_id)
-          |> put_shape_task(task, state.repo, issue.number, revision_id, failures)
+          |> put_shape_task(task, repo, issue.number, revision_id, failures)
 
         {next_state, :shaped}
     end
@@ -433,11 +435,11 @@ defmodule Conductor.Orchestrator do
     Application.get_env(:conductor, :task_supervisor, Conductor.TaskSupervisor)
   end
 
-  defp maybe_start_ready_issue(state, issue, remaining_slots)
+  defp maybe_start_ready_issue(state, repo, issue, remaining_slots)
        when remaining_slots > 0,
-       do: start_run(state, issue)
+       do: start_run(state, repo, issue)
 
-  defp maybe_start_ready_issue(state, _issue, _remaining_slots), do: state
+  defp maybe_start_ready_issue(state, _repo, _issue, _remaining_slots), do: state
 
   defp safe_shape_issue(repo, issue_number) do
     try do
@@ -463,10 +465,10 @@ defmodule Conductor.Orchestrator do
 
   defp maybe_warn_unfiltered_loop(_state), do: :ok
 
-  defp start_run(state, issue) do
-    case pick_worker(state) do
+  defp start_run(state, repo, issue) do
+    case pick_worker(state, repo) do
       {:ok, worker, state} ->
-        dispatch_run(state, issue, worker.name)
+        dispatch_run(state, repo, issue, worker.name)
 
       {:error, :no_available_workers, state} ->
         Logger.info("no healthy worker available, deferring issue ##{issue.number}")
@@ -474,9 +476,9 @@ defmodule Conductor.Orchestrator do
     end
   end
 
-  defp dispatch_run(state, issue, worker) do
+  defp dispatch_run(state, repo, issue, worker) do
     existing_pr =
-      case code_host_mod().find_open_pr(state.repo, issue.number, nil) do
+      case code_host_mod().find_open_pr(repo, issue.number, nil) do
         {:ok, pr} ->
           Logger.info(
             "found existing PR ##{pr["number"]} for issue ##{issue.number}, adopting branch #{pr["headRefName"]}"
@@ -490,23 +492,23 @@ defmodule Conductor.Orchestrator do
 
     opts =
       [
-        repo: state.repo,
+        repo: repo,
         issue: issue,
         worker: worker,
-        workers: state.worker_order,
+        workers: repo_worker_names(state, repo),
         trusted_surfaces: state.trusted_surfaces
       ] ++ adoption_opts(existing_pr)
 
     case run_launcher().start(opts) do
       {:ok, pid} ->
         ref = Process.monitor(pid)
-        run_entry = %{pid: pid, ref: ref, issue: issue.number, worker: worker}
+        run_entry = %{pid: pid, ref: ref, repo: repo, issue: issue.number, worker: worker}
 
         Logger.info("started run for issue ##{issue.number} on #{worker}")
 
         %{
           state
-          | active_runs: Map.put(state.active_runs, issue.number, run_entry)
+          | active_runs: Map.put(state.active_runs, active_run_key(repo, issue.number), run_entry)
         }
 
       {:error, reason} ->
@@ -525,28 +527,33 @@ defmodule Conductor.Orchestrator do
     ]
   end
 
-  defp pick_worker(%{worker_order: []} = state), do: {:error, :no_available_workers, state}
+  defp pick_worker(%{worker_order: []} = state, _repo), do: {:error, :no_available_workers, state}
 
-  defp pick_worker(state) do
-    count = length(state.worker_order)
+  defp pick_worker(state, repo) do
+    worker_names = repo_worker_names(state, repo)
+    count = length(worker_names)
 
-    0..(count - 1)
-    |> Enum.reduce_while({:error, :no_available_workers, state}, fn offset,
-                                                                    {_status, _reason, acc} ->
-      candidate_index = rem(acc.worker_index + offset, count)
-      worker_name = Enum.at(acc.worker_order, candidate_index)
+    if count == 0 do
+      {:error, :no_available_workers, state}
+    else
+      0..(count - 1)
+      |> Enum.reduce_while({:error, :no_available_workers, state}, fn offset,
+                                                                      {_status, _reason, acc} ->
+        candidate_index = rem(acc.worker_index + offset, count)
+        worker_name = Enum.at(worker_names, candidate_index)
 
-      case probe_and_reserve_worker(acc, worker_name, candidate_index) do
-        {:ok, worker, next_state} ->
-          {:halt, {:ok, worker, next_state}}
+        case probe_and_reserve_worker(acc, worker_name, candidate_index, count) do
+          {:ok, worker, next_state} ->
+            {:halt, {:ok, worker, next_state}}
 
-        {:error, next_state} ->
-          {:cont, {:error, :no_available_workers, next_state}}
-      end
-    end)
+          {:error, next_state} ->
+            {:cont, {:error, :no_available_workers, next_state}}
+        end
+      end)
+    end
   end
 
-  defp probe_and_reserve_worker(state, worker_name, candidate_index) do
+  defp probe_and_reserve_worker(state, worker_name, candidate_index, count) do
     {worker, state} = probe_worker(state, worker_name)
 
     cond do
@@ -559,7 +566,7 @@ defmodule Conductor.Orchestrator do
 
       true ->
         {:ok, worker,
-         %{state | worker_index: rem(candidate_index + 1, length(state.worker_order))}}
+         %{state | worker_index: rem(candidate_index + 1, count)}}
     end
   end
 
@@ -639,6 +646,23 @@ defmodule Conductor.Orchestrator do
 
   defp worker_map(workers), do: Map.new(workers, fn worker -> {worker.name, worker} end)
 
+  defp active_run_key(repo, issue_number), do: {repo, issue_number}
+
+  defp repo_worker_names(state, repo) do
+    Enum.filter(state.worker_order, fn worker_name ->
+      worker = Map.fetch!(state.workers, worker_name)
+      (worker.repo || state.repo) == repo
+    end)
+  end
+
+  defp repos(state) do
+    state.workers
+    |> Map.values()
+    |> Enum.map(&(&1.repo || state.repo))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
+
   defp reconcile(state) do
     try do
       # 1. Remove in-memory entries for dead processes
@@ -662,22 +686,26 @@ defmodule Conductor.Orchestrator do
     end
   end
 
-  defp expire_stale_runs(%{repo: nil} = state), do: state
+  defp expire_stale_runs(%{repo: nil} = state) when map_size(state.workers) == 0, do: state
 
   defp expire_stale_runs(state) do
     threshold = Config.stale_run_threshold_minutes()
     cutoff = DateTime.add(DateTime.utc_now(), -threshold * 60, :second)
 
-    state.repo
-    |> Store.list_active_runs()
-    |> Enum.reject(fn run -> Map.has_key?(state.active_runs, run["issue_number"]) end)
-    |> Enum.filter(fn run -> stale_heartbeat?(run["heartbeat_at"], cutoff) end)
-    |> Enum.each(fn run ->
-      run_id = run["run_id"]
-      issue_number = run["issue_number"]
+    Enum.each(repos(state), fn repo ->
+      repo
+      |> Store.list_active_runs()
+      |> Enum.reject(fn run ->
+        Map.has_key?(state.active_runs, active_run_key(repo, run["issue_number"]))
+      end)
+      |> Enum.filter(fn run -> stale_heartbeat?(run["heartbeat_at"], cutoff) end)
+      |> Enum.each(fn run ->
+        run_id = run["run_id"]
+        issue_number = run["issue_number"]
 
-      Logger.warning("[reconcile] stale run #{run_id} (issue ##{issue_number}), expiring lease")
-      Store.expire_stale_run(state.repo, run_id, issue_number, run["heartbeat_at"])
+        Logger.warning("[reconcile] stale run #{run_id} (issue ##{issue_number}), expiring lease")
+        Store.expire_stale_run(repo, run_id, issue_number, run["heartbeat_at"])
+      end)
     end)
 
     state
@@ -692,38 +720,40 @@ defmodule Conductor.Orchestrator do
     end
   end
 
-  defp reconcile_held_leases(%{repo: nil}), do: :ok
+  defp reconcile_held_leases(%{repo: nil} = state) when map_size(state.workers) == 0, do: :ok
 
-  defp reconcile_held_leases(%{repo: repo}) do
-    repo
-    |> Store.list_held_leases()
-    |> Enum.each(fn lease ->
-      issue_number = lease["issue_number"]
-      run_id = lease["run_id"]
-      pr_number = lease["pr_number"]
+  defp reconcile_held_leases(state) do
+    Enum.each(repos(state), fn repo ->
+      repo
+      |> Store.list_held_leases()
+      |> Enum.each(fn lease ->
+        issue_number = lease["issue_number"]
+        run_id = lease["run_id"]
+        pr_number = lease["pr_number"]
 
-      resolution = resolve_held_lease(repo, pr_number, issue_number)
+        resolution = resolve_held_lease(repo, pr_number, issue_number)
 
-      case resolution do
-        :hold ->
-          :ok
+        case resolution do
+          :hold ->
+            :ok
 
-        {"external_merge", _reason} = merged_resolution ->
-          case close_issue_after_merge(repo, issue_number, pr_number, "external merge") do
-            :ok ->
-              release_reconciled_lease(repo, run_id, issue_number, pr_number, merged_resolution)
+          {"external_merge", _reason} = merged_resolution ->
+            case close_issue_after_merge(repo, issue_number, pr_number, "external merge") do
+              :ok ->
+                release_reconciled_lease(repo, run_id, issue_number, pr_number, merged_resolution)
 
-            {:error, reason} ->
-              Logger.warning(
-                "[reconcile] keeping lease for issue ##{issue_number} after external merge of PR ##{pr_number}; issue closure will retry on the next poll: #{inspect(reason)}"
-              )
+              {:error, reason} ->
+                Logger.warning(
+                  "[reconcile] keeping lease for issue ##{issue_number} after external merge of PR ##{pr_number}; issue closure will retry on the next poll: #{inspect(reason)}"
+                )
 
-              :ok
-          end
+                :ok
+            end
 
-        {event_type, _reason} ->
-          release_reconciled_lease(repo, run_id, issue_number, pr_number, {event_type, nil})
-      end
+          {event_type, _reason} ->
+            release_reconciled_lease(repo, run_id, issue_number, pr_number, {event_type, nil})
+        end
+      end)
     end)
   rescue
     exception ->
@@ -764,12 +794,13 @@ defmodule Conductor.Orchestrator do
 
   # --- Label-Driven Merge ---
 
-  defp merge_labeled_prs(%{repo: nil}), do: :ok
+  defp merge_labeled_prs(%{repo: nil} = state) when map_size(state.workers) == 0, do: :ok
 
-  defp merge_labeled_prs(%{repo: repo} = state) do
-    case code_host_mod().labeled_prs(repo, "lgtm") do
-      {:ok, prs} ->
-        Enum.each(prs, fn pr ->
+  defp merge_labeled_prs(state) do
+    Enum.each(repos(state), fn repo ->
+      case code_host_mod().labeled_prs(repo, "lgtm") do
+        {:ok, prs} ->
+          Enum.each(prs, fn pr ->
           pr_number = pr["number"]
 
           case code_host_mod().ci_status(repo, pr_number) do
@@ -849,11 +880,12 @@ defmodule Conductor.Orchestrator do
                 "[merge] failed to inspect CI for PR ##{pr_number}: #{inspect(reason)}"
               )
           end
-        end)
+          end)
 
-      {:error, reason} ->
-        Logger.warning("[merge] failed to check labeled PRs: #{reason}")
-    end
+        {:error, reason} ->
+          Logger.warning("[merge] failed to check labeled PRs: #{reason}")
+      end
+    end)
   end
 
   # Returns true when a merge error message indicates a git conflict rather than
@@ -978,16 +1010,16 @@ defmodule Conductor.Orchestrator do
     end
   end
 
-  defp cancel_active_runs(%{repo: nil} = state), do: state
+  defp cancel_active_runs(%{repo: nil} = state) when map_size(state.workers) == 0, do: state
 
   defp cancel_active_runs(state) do
     active_runs =
-      Enum.reduce(state.active_runs, state.active_runs, fn {issue_number, run}, acc ->
-        if active_run_cancelled?(state.repo, issue_number) do
+      Enum.reduce(state.active_runs, state.active_runs, fn {{repo, issue_number}, run}, acc ->
+        if active_run_cancelled?(repo, issue_number) do
           case run_control_mod().operator_block(run.pid, "operator_cancel") do
             :ok ->
               Logger.warning("[dispatch] active issue ##{issue_number} blocked: operator_cancel")
-              Map.delete(acc, issue_number)
+              Map.delete(acc, {repo, issue_number})
 
             {:error, reason} ->
               Logger.warning(

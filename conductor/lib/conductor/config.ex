@@ -5,7 +5,8 @@ defmodule Conductor.Config do
 
   @type worker_config :: %{
           name: binary(),
-          capability_tags: [binary()]
+          capability_tags: [binary()],
+          repo: binary() | nil
         }
   @type codex_auth_source :: {:chatgpt, binary()} | {:api_key, binary()} | :missing
 
@@ -277,13 +278,14 @@ defmodule Conductor.Config do
       %{name: name} = worker ->
         %{
           name: name,
+          repo: Map.get(worker, :repo) || Map.get(worker, "repo"),
           capability_tags:
             (Map.get(worker, :capability_tags) || Map.get(worker, "capability_tags") || [])
             |> List.wrap()
         }
 
       name when is_binary(name) ->
-        %{name: name, capability_tags: []}
+        %{name: name, repo: nil, capability_tags: []}
     end)
   end
 

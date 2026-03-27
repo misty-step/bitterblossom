@@ -161,6 +161,9 @@ defmodule Conductor.OrchestratorTest do
     def start(opts) do
       started = MockState.get(:started_runs, [])
       MockState.put(:started_runs, started ++ [{opts[:issue].number, opts[:worker]}])
+      started_opts = MockState.get(:started_run_opts, [])
+      started_opt = opts |> Enum.into(%{}) |> Map.take([:repo, :worker, :workers])
+      MockState.put(:started_run_opts, started_opts ++ [started_opt])
 
       lifetime_ms = MockState.get(:run_lifetime_ms, 150)
       pid = spawn(fn -> Process.sleep(lifetime_ms) end)
@@ -667,6 +670,56 @@ defmodule Conductor.OrchestratorTest do
         assert recovered.drained == false
         assert recovered.consecutive_failures == 0
         assert recovered.healthy == true
+      end)
+    end
+
+    test "dispatches issues within each worker repo and passes repo-scoped workers" do
+      repo_a_issue = %Conductor.Issue{
+        number: 601,
+        title: "repo a issue",
+        body: "## Problem\nx\n## Acceptance Criteria\ny",
+        url: "https://example.test/issues/601"
+      }
+
+      repo_b_issue = %Conductor.Issue{
+        number: 701,
+        title: "repo b issue",
+        body: "## Problem\nx\n## Acceptance Criteria\ny",
+        url: "https://example.test/issues/701"
+      }
+
+      workers = [
+        %{name: "sprite-a", repo: "test/repo", capability_tags: []},
+        %{name: "sprite-b", repo: "other/repo", capability_tags: []}
+      ]
+
+      orig_max = Application.get_env(:conductor, :max_concurrent_runs)
+      orig_starts = Application.get_env(:conductor, :max_starts_per_tick)
+      Application.put_env(:conductor, :max_concurrent_runs, 2)
+      Application.put_env(:conductor, :max_starts_per_tick, 2)
+
+      on_exit(fn ->
+        if orig_max,
+          do: Application.put_env(:conductor, :max_concurrent_runs, orig_max),
+          else: Application.delete_env(:conductor, :max_concurrent_runs)
+
+        if orig_starts,
+          do: Application.put_env(:conductor, :max_starts_per_tick, orig_starts),
+          else: Application.delete_env(:conductor, :max_starts_per_tick)
+      end)
+
+      MockState.put({:eligible, "test/repo", nil}, [repo_a_issue])
+      MockState.put({:eligible, "other/repo", nil}, [repo_b_issue])
+
+      :ok = Orchestrator.configure_polling(repo: "test/repo", workers: workers)
+
+      eventually(fn ->
+        assert MockState.get(:started_runs) == [{601, "sprite-a"}, {701, "sprite-b"}]
+
+        assert MockState.get(:started_run_opts) == [
+                 %{repo: "test/repo", worker: "sprite-a", workers: ["sprite-a"]},
+                 %{repo: "other/repo", worker: "sprite-b", workers: ["sprite-b"]}
+               ]
       end)
     end
   end

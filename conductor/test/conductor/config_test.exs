@@ -158,6 +158,18 @@ defmodule Conductor.ConfigTest do
                  %{name: "sprite-1", capability_tags: nil}
                ])
     end
+
+    test "preserves per-worker repo overrides" do
+      assert [%{name: "sprite-1", repo: "alt/repo", capability_tags: []}] =
+               Config.normalize_workers([
+                 %{name: "sprite-1", repo: "alt/repo", capability_tags: nil}
+               ])
+    end
+
+    test "defaults bare worker names to nil repo" do
+      assert [%{name: "sprite-1", repo: nil, capability_tags: []}] =
+               Config.normalize_workers(["sprite-1"])
+    end
   end
 
   describe "prompt_template/0" do
@@ -422,6 +434,7 @@ defmodule Conductor.ConfigTest do
 
   defp make_codex_home(nil) do
     home = Path.join(System.tmp_dir!(), "codex_home_#{System.unique_integer([:positive])}")
+    File.rm_rf!(home)
     File.mkdir_p!(home)
     home
   end
