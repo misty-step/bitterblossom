@@ -85,6 +85,16 @@ defmodule Conductor.Config do
     Application.get_env(:conductor, :max_concurrent_runs, 2)
   end
 
+  @spec session_timeout_minutes() :: pos_integer() | :infinity
+  def session_timeout_minutes do
+    Application.get_env(:conductor, :session_timeout_minutes, 60)
+  end
+
+  @spec spellbook_repo() :: binary()
+  def spellbook_repo do
+    Application.get_env(:conductor, :spellbook_repo, "phrazzld/spellbook")
+  end
+
   @spec max_replays() :: pos_integer()
   def max_replays do
     Application.get_env(:conductor, :max_replays, 3)

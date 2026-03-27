@@ -30,6 +30,7 @@ defmodule Conductor.Web.Layouts do
           .phase-failed { color: #f85149; }
           .refresh-note { color: #8b949e; font-size: 0.75em; margin-top: 24px; }
         </style>
+        <meta name="csrf-token" content={Phoenix.Controller.get_csrf_token()} />
         <script src="/assets/phoenix/phoenix.min.js"></script>
         <script src="/assets/live_view/phoenix_live_view.min.js"></script>
         <script>
@@ -37,7 +38,6 @@ defmodule Conductor.Web.Layouts do
           liveSocket.connect();
           window.liveSocket = liveSocket;
         </script>
-        <meta name="csrf-token" content={Phoenix.Controller.get_csrf_token()} />
       </head>
       <body>
         {@inner_content}

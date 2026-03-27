@@ -1,10 +1,9 @@
 defmodule Conductor.Fleet.HealthMonitor do
   @moduledoc """
-  Periodic fleet health re-check. Detects sprite recovery and auto-starts
-  phase workers (Fixer, Polisher) that were skipped at boot due to unhealthy sprites.
+  Periodic fleet health monitor. Probes sprites and tracks recovery/degradation.
 
-  Health recovery and phase-worker lifecycle are intentionally coupled so the
-  role worker pool tracks the current healthy sprite set.
+  When a sprite recovers, logs the event and re-launches its agent loop.
+  When a sprite degrades, logs the event.
 
   Deep module: hides all sprite lifecycle recovery behind a simple status/0 interface.
   """
@@ -14,7 +13,6 @@ defmodule Conductor.Fleet.HealthMonitor do
 
   alias Conductor.{Config, Store}
   alias Conductor.Fleet.Reconciler
-  alias Conductor.PhaseWorker.Roles
 
   defstruct [
     :repo,
@@ -30,19 +28,16 @@ defmodule Conductor.Fleet.HealthMonitor do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
-  @doc "Configure the monitor with fleet sprites and repo. Called from boot_fleet/1."
   @spec configure(keyword()) :: :ok
   def configure(opts) do
     GenServer.call(__MODULE__, {:configure, opts})
   end
 
-  @doc "Current fleet health state."
   @spec status() :: map()
   def status do
     GenServer.call(__MODULE__, :status)
   end
 
-  @doc "Force immediate health re-check."
   @spec check_now() :: :ok
   def check_now do
     send(__MODULE__, :check)
@@ -70,7 +65,15 @@ defmodule Conductor.Fleet.HealthMonitor do
 
     if state.timer_ref, do: Process.cancel_timer(state.timer_ref)
     ref = schedule_check(state.interval_ms)
-    state = %{state | sprites: sprites, repo: repo, known_health: known_health, timer_ref: ref}
+
+    state = %{
+      state
+      | sprites: sprites,
+        repo: repo,
+        known_health: known_health,
+        timer_ref: ref
+    }
+
     {:reply, :ok, state}
   end
 
@@ -80,9 +83,7 @@ defmodule Conductor.Fleet.HealthMonitor do
   end
 
   @impl true
-  def handle_info(:check, %{sprites: []} = state) do
-    {:noreply, state}
-  end
+  def handle_info(:check, %{sprites: []} = state), do: {:noreply, state}
 
   @impl true
   def handle_info(:check, state) do
@@ -97,32 +98,27 @@ defmodule Conductor.Fleet.HealthMonitor do
   # --- Private ---
 
   defp check_and_recover(state) do
-    # Only re-probe non-builder sprites (builders are probed by the Orchestrator)
-    phase_sprites = Enum.filter(state.sprites, &(&1.role in [:fixer, :polisher]))
-
-    Enum.reduce(phase_sprites, state, fn sprite, acc ->
+    Enum.reduce(state.sprites, state, fn sprite, acc ->
       new_health = probe_sprite(sprite)
       old_health = Map.get(acc.known_health, sprite.name, :unhealthy)
 
       cond do
         old_health == :unhealthy and new_health == :healthy ->
-          Logger.info("[health] #{sprite.name} recovered, starting phase worker")
+          Logger.info("[health] #{sprite.name} recovered")
 
-          updated = put_health(acc, sprite.name, :healthy)
+          Store.record_event("fleet", "sprite_recovered", %{
+            name: sprite.name,
+            role: to_string(sprite.role)
+          })
 
-          case sync_phase_worker(updated, sprite.role) do
-            :ok ->
-              Store.record_event("fleet", "sprite_recovered", %{
-                name: sprite.name,
-                role: to_string(sprite.role)
-              })
-
-              updated
-
-            :error ->
-              # Keep the sprite unhealthy so the next successful probe retries recovery sync.
-              acc
+          # Re-launch the agent loop for the recovered sprite
+          if acc.repo do
+            Task.Supervisor.start_child(Conductor.TaskSupervisor, fn ->
+              Conductor.Launcher.launch(sprite, acc.repo)
+            end)
           end
+
+          put_health(acc, sprite.name, :healthy)
 
         old_health == :healthy and new_health == :unhealthy ->
           Logger.warning("[health] #{sprite.name} degraded")
@@ -132,10 +128,7 @@ defmodule Conductor.Fleet.HealthMonitor do
             role: to_string(sprite.role)
           })
 
-          updated = put_health(acc, sprite.name, :unhealthy)
-
-          sync_phase_worker(updated, sprite.role)
-          updated
+          put_health(acc, sprite.name, :unhealthy)
 
         true ->
           acc
@@ -150,35 +143,6 @@ defmodule Conductor.Fleet.HealthMonitor do
     end
   end
 
-  defp sync_phase_worker(state, role) do
-    case Roles.by_role(role) do
-      nil ->
-        :ok
-
-      role_module ->
-        sprites = healthy_sprites_for_role(state, role)
-
-        case phase_worker_supervisor().ensure_worker(role_module, state.repo, sprites) do
-          :ok ->
-            :ok
-
-          {:error, reason} ->
-            # Health probes remain authoritative even if worker-pool sync fails.
-            Logger.warning("[health] failed to sync #{inspect(role_module)}: #{inspect(reason)}")
-            :error
-        end
-    end
-  end
-
-  defp healthy_sprites_for_role(state, role) do
-    state.sprites
-    |> Enum.filter(fn sprite ->
-      sprite.role == role and Map.get(state.known_health, sprite.name) == :healthy
-    end)
-    |> Enum.map(& &1.name)
-    |> Enum.sort()
-  end
-
   defp put_health(state, name, health) do
     %{state | known_health: Map.put(state.known_health, name, health)}
   end
@@ -189,13 +153,5 @@ defmodule Conductor.Fleet.HealthMonitor do
 
   defp reconciler_mod do
     Application.get_env(:conductor, :reconciler_module, Reconciler)
-  end
-
-  defp phase_worker_supervisor do
-    Application.get_env(
-      :conductor,
-      :phase_worker_supervisor,
-      Conductor.PhaseWorker.Supervisor
-    )
   end
 end

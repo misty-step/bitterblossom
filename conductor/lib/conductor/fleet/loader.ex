@@ -30,7 +30,8 @@ defmodule Conductor.Fleet.Loader do
   def load(path) do
     with {:ok, raw} <- read_toml(path),
          {:ok, defaults} <- parse_defaults(raw),
-         {:ok, sprites} <- parse_sprites(raw, defaults) do
+         {:ok, personas} <- parse_personas(raw),
+         {:ok, sprites} <- parse_sprites(raw, defaults, personas) do
       {:ok, %{sprites: sprites, defaults: defaults}}
     end
   end
@@ -96,7 +97,26 @@ defmodule Conductor.Fleet.Loader do
     end
   end
 
-  defp parse_sprites(raw, defaults) do
+  defp parse_personas(raw) do
+    case Map.get(raw, "personas", %{}) do
+      personas when is_map(personas) ->
+        invalid_entries =
+          for {name, value} <- personas,
+              not (is_binary(name) and is_binary(value)),
+              do: {name, value}
+
+        if invalid_entries == [] do
+          {:ok, personas}
+        else
+          {:error, "[personas] entries must be string = string pairs"}
+        end
+
+      other ->
+        {:error, "[personas] must be a TOML table, got: #{inspect(other)}"}
+    end
+  end
+
+  defp parse_sprites(raw, defaults, personas) do
     case Map.get(raw, "sprite") do
       nil ->
         {:error, "no [[sprite]] entries in fleet.toml"}
@@ -105,7 +125,7 @@ defmodule Conductor.Fleet.Loader do
         results =
           Enum.with_index(sprites, 1)
           |> Enum.map(fn
-            {entry, _idx} when is_map(entry) -> parse_one_sprite(entry, defaults)
+            {entry, _idx} when is_map(entry) -> parse_one_sprite(entry, defaults, personas)
             {_entry, idx} -> {:error, "sprite entry ##{idx} is not a TOML table"}
           end)
 
@@ -122,7 +142,7 @@ defmodule Conductor.Fleet.Loader do
     end
   end
 
-  defp parse_one_sprite(raw_sprite, defaults) do
+  defp parse_one_sprite(raw_sprite, defaults, personas) do
     name = raw_sprite["name"]
     role_str = raw_sprite["role"]
 
@@ -140,6 +160,8 @@ defmodule Conductor.Fleet.Loader do
       true ->
         harness = raw_sprite["harness"] || defaults.harness
         capability_tags = raw_sprite["capability_tags"] || []
+        persona = raw_sprite["persona"]
+        persona_ref = raw_sprite["persona_ref"]
 
         cond do
           harness not in @valid_harnesses ->
@@ -148,6 +170,15 @@ defmodule Conductor.Fleet.Loader do
 
           not valid_capability_tags?(capability_tags) ->
             {:error, "sprite #{name} capability_tags must be an array of strings"}
+
+          not is_nil(persona) and not is_nil(persona_ref) ->
+            {:error, "sprite #{name} must not set both 'persona' and 'persona_ref'"}
+
+          not is_nil(persona_ref) and not is_binary(persona_ref) ->
+            {:error, "sprite #{name} persona_ref must be a string"}
+
+          not is_nil(persona_ref) and not Map.has_key?(personas, persona_ref) ->
+            {:error, "sprite #{name} references unknown persona '#{persona_ref}'"}
 
           true ->
             {:ok,
@@ -161,7 +192,7 @@ defmodule Conductor.Fleet.Loader do
                model: raw_sprite["model"] || defaults.model,
                reasoning_effort: raw_sprite["reasoning_effort"] || defaults.reasoning_effort,
                label: raw_sprite["label"] || defaults.label,
-               persona: raw_sprite["persona"]
+               persona: persona || personas[persona_ref]
              }}
         end
     end

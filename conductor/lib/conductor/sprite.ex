@@ -17,7 +17,7 @@ defmodule Conductor.Sprite do
   4. On non-zero exit, retry once using the harness `continue_command`
   """
 
-  @behaviour Conductor.Worker
+  # Sprite execution, dispatch, and health management.
 
   alias Conductor.{Shell, Config, Workspace}
   @runtime_env_file ".bb-runtime-env"
@@ -36,7 +36,7 @@ defmodule Conductor.Sprite do
   @probe_marker "__bb_probe__"
   @wake_marker "__bb_wake__"
 
-  @impl Conductor.Worker
+
   @spec exec(binary(), binary(), keyword()) :: {:ok, binary()} | {:error, binary(), integer()}
   def exec(sprite, command, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, 60_000)
@@ -106,7 +106,7 @@ defmodule Conductor.Sprite do
     end
   end
 
-  @impl Conductor.Worker
+
   @spec dispatch(binary(), binary(), binary(), keyword()) ::
           {:ok, binary()} | {:error, binary(), integer()}
   def dispatch(sprite, prompt, _repo, opts \\ []) do
@@ -150,7 +150,7 @@ defmodule Conductor.Sprite do
     end
   end
 
-  @impl Conductor.Worker
+
   @spec cleanup(binary(), binary(), binary()) :: :ok | {:error, term()}
   def cleanup(sprite, repo, run_id) do
     Workspace.cleanup(sprite, repo, run_id)
@@ -190,7 +190,8 @@ defmodule Conductor.Sprite do
          :ok <- maybe_sync_codex_auth(sprite, harness, exec_fn),
          :ok <- upload_runtime_env(sprite, exec_fn),
          :ok <- configure_git_auth(sprite, exec_fn),
-         :ok <- maybe_setup_repo(sprite, repo, persona, force, exec_fn) do
+         :ok <- maybe_setup_repo(sprite, repo, persona, force, exec_fn),
+         :ok <- Conductor.Bootstrap.ensure_spellbook(sprite, exec_fn: exec_fn) do
       :ok
     end
   end
@@ -213,15 +214,33 @@ defmodule Conductor.Sprite do
   end
 
   @doc """
-  Kill agent processes and revoke GitHub auth on a sprite.
+  Force-upload the local codex auth.json to a sprite.
 
-  Used during conductor shutdown to ensure surviving sprite processes
-  cannot exercise merge authority. Defense in depth for governance
-  invariant: the entity doing the work cannot judge the work.
-
-  Best-effort: logs failures but always returns :ok so shutdown proceeds.
-  Uses 5s timeouts to stay within GenServer terminate budget.
+  Always overwrites — handles stale tokens from refresh_token_reused errors.
+  No-ops if the harness isn't codex or no local auth is available.
   """
+  @spec force_sync_codex_auth(binary(), keyword()) :: :ok | {:error, term()}
+  def force_sync_codex_auth(sprite, opts \\ []) do
+    exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
+
+    case Config.codex_auth_source() do
+      {:chatgpt, local_auth_path} ->
+        case exec_fn.(
+               sprite,
+               "chmod 600 #{shell_quote(@sprite_codex_auth_path)}",
+               files: [{local_auth_path, @sprite_codex_auth_path}],
+               timeout: 30_000
+             ) do
+          {:ok, _} -> :ok
+          {:error, msg, _code} -> {:error, msg}
+        end
+
+      _ ->
+        :ok
+    end
+  end
+
+  @doc "Kill agent processes and revoke GitHub auth. Best-effort, always returns :ok."
   @spec kill_and_revoke(binary(), keyword()) :: :ok
   def kill_and_revoke(sprite, opts \\ []) do
     require Logger

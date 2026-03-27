@@ -42,6 +42,10 @@ defmodule Conductor.CodeHost do
   @callback add_label(repo :: binary(), pr_number :: pos_integer(), label :: binary()) ::
               :ok | {:error, term()}
 
+  @doc "Remove a label from a PR."
+  @callback remove_label(repo :: binary(), pr_number :: pos_integer(), label :: binary()) ::
+              :ok | {:error, term()}
+
   @doc "Close an issue after successful merge reconciliation."
   @callback close_issue(repo :: binary(), issue_number :: pos_integer()) ::
               :ok | {:error, term()}

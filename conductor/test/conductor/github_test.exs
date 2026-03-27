@@ -518,8 +518,8 @@ defmodule Conductor.GitHubTest do
         fn _tmp_dir, args_path ->
           issues = GitHub.eligible_issues("misty-step/bitterblossom")
 
-          assert Enum.map(issues, & &1.number) == [6, 7]
-          assert Enum.find(issues, &(&1.number == 6)).body == "draft body"
+          assert Enum.map(issues, & &1["number"]) == [6, 7]
+          assert Enum.find(issues, &(&1["number"] == 6))["body"] == "draft body"
 
           args = File.read!(args_path)
 
@@ -568,8 +568,8 @@ defmodule Conductor.GitHubTest do
         fn _tmp_dir, args_path ->
           assert {:ok, issues} = GitHub.list_issues("misty-step/bitterblossom")
           assert length(issues) == 1000
-          assert Enum.at(issues, 0).number == 1
-          assert Enum.at(issues, -1).number == 1000
+          assert Enum.at(issues, 0)["number"] ==1
+          assert Enum.at(issues, -1)["number"] ==1000
 
           args = File.read!(args_path)
           refute String.contains?(args, "page=11")
@@ -635,8 +635,8 @@ defmodule Conductor.GitHubTest do
         fn _tmp_dir, args_path ->
           assert {:ok, issues} = GitHub.list_issues("misty-step/bitterblossom")
           assert length(issues) == 1000
-          assert Enum.at(issues, 0).number == 1
-          assert Enum.at(issues, -1).number == 1000
+          assert Enum.at(issues, 0)["number"] ==1
+          assert Enum.at(issues, -1)["number"] ==1000
 
           args = File.read!(args_path)
           assert String.contains?(args, "page=11")
@@ -708,7 +708,7 @@ defmodule Conductor.GitHubTest do
         """,
         fn _tmp_dir, args_path ->
           assert {:ok, issues} = GitHub.list_issues("misty-step/bitterblossom")
-          assert Enum.map(issues, & &1.number) == [1, 2, 3]
+          assert Enum.map(issues, & &1["number"]) == [1, 2, 3]
 
           args = File.read!(args_path)
           assert String.contains?(args, "page=11")
@@ -785,8 +785,8 @@ defmodule Conductor.GitHubTest do
               limit: 25
             )
 
-          assert Enum.map(issues, & &1.number) == [10, 20]
-          assert Enum.find(issues, &(&1.number == 10)).body == "draft body"
+          assert Enum.map(issues, & &1["number"]) == [10, 20]
+          assert Enum.find(issues, &(&1["number"] == 10))["body"] == "draft body"
         end
       )
     end
@@ -848,7 +848,7 @@ defmodule Conductor.GitHubTest do
               limit: 25
             )
 
-          assert Enum.map(issues, & &1.number) == [11]
+          assert Enum.map(issues, & &1["number"]) == [11]
 
           args = File.read!(args_path)
           assert String.contains?(args, "issue\nlist\n")
@@ -1401,7 +1401,7 @@ defmodule Conductor.GitHubTest do
         fi
         """,
         fn _tmp_dir, _args_path ->
-          assert {:ok, [%Issue{number: 8}]} = GitHub.list_issues("misty-step/bitterblossom")
+          assert {:ok, [%{"number" => 8}]} = GitHub.list_issues("misty-step/bitterblossom")
         end
       )
     end
