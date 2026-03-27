@@ -37,16 +37,7 @@ role = "polisher"
 reasoning_effort = "high"
 persona_ref = "fern"
 
-[[sprite]]
-name = "bb-polisher-2"
-role = "polisher"
-reasoning_effort = "high"
-persona_ref = "fern"
-
-[[sprite]]
-name = "bb-polisher-3"
-role = "polisher"
-reasoning_effort = "high"
-persona_ref = "fern"
+# bb-polisher-2 and bb-polisher-3 available but not in default fleet.
+# Scale up by uncommenting when PR backlog grows.
 
 # bb-muse (triage) omitted — no Fly machine exists yet
