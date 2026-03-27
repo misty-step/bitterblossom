@@ -226,32 +226,6 @@ defmodule Conductor.GitHub do
     end
   end
 
-  defp decode_pr_page(json) do
-    case Jason.decode(json) do
-      {:ok, page} when is_list(page) ->
-        {:ok, page}
-
-      {:ok, _other} ->
-        {:error, "invalid JSON from gh: #{String.slice(json, 0, 200)}"}
-
-      {:error, _reason} ->
-        {:error, "invalid JSON from gh: #{String.slice(json, 0, 200)}"}
-    end
-  end
-
-  defp decode_json_object(json) do
-    case Jason.decode(json) do
-      {:ok, data} when is_map(data) ->
-        {:ok, data}
-
-      {:ok, _other} ->
-        {:error, "invalid JSON from gh: #{String.slice(json, 0, 200)}"}
-
-      {:error, _reason} ->
-        {:error, "invalid JSON from gh: #{String.slice(json, 0, 200)}"}
-    end
-  end
-
   defp fetch_issue_pages(
          _owner,
          _name,
