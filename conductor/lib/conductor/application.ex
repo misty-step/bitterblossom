@@ -133,30 +133,34 @@ defmodule Conductor.Application do
 
   defp maybe_warn_unfiltered_scope(_repo, _label), do: :ok
 
-  defp start_phase_workers(sprites, healthy, repo) do
+  defp start_phase_workers(sprites, healthy, default_repo) do
     alias Conductor.Fleet.Loader
     alias Conductor.PhaseWorker.Roles
 
     for role_module <- Roles.all() do
       role = role_module.role()
 
-      phase_sprites =
-        Loader.by_role(sprites, role)
-        |> Enum.filter(&MapSet.member?(healthy, &1.name))
-        |> Enum.map(& &1.name)
+      Loader.by_role(sprites, role)
+      |> Enum.filter(&MapSet.member?(healthy, &1.name))
+      |> Enum.group_by(&(&1.repo || default_repo))
+      |> Enum.each(fn {repo, phase_sprite_configs} ->
+        phase_sprites = Enum.map(phase_sprite_configs, & &1.name)
 
-      case phase_worker_supervisor().ensure_worker(role_module, repo, phase_sprites) do
-        :ok when phase_sprites != [] ->
-          Logger.info(
-            "[boot] #{role_display_name(role)} started: #{Enum.join(phase_sprites, ", ")}"
-          )
+        case phase_worker_supervisor().ensure_worker(role_module, repo, phase_sprites) do
+          :ok when phase_sprites != [] ->
+            Logger.info(
+              "[boot] #{role_display_name(role)} started for #{repo}: #{Enum.join(phase_sprites, ", ")}"
+            )
 
-        :ok ->
-          :ok
+          :ok ->
+            :ok
 
-        {:error, reason} ->
-          Logger.warning("[boot] #{role_display_name(role)} failed: #{inspect(reason)}")
-      end
+          {:error, reason} ->
+            Logger.warning(
+              "[boot] #{role_display_name(role)} failed for #{repo}: #{inspect(reason)}"
+            )
+        end
+      end)
     end
   end
 

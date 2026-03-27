@@ -60,6 +60,18 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     def ensure_worker(_role_module, _repo, _sprites), do: {:error, :sync_failed}
   end
 
+  defmodule CapturingPhaseWorkerSupervisor do
+    alias Conductor.Fleet.HealthMonitorTest.MockState
+
+    def ensure_worker(role_module, repo, sprites) do
+      if pid = MockState.get(:test_pid) do
+        send(pid, {:ensure_worker, role_module, repo, sprites})
+      end
+
+      :ok
+    end
+  end
+
   setup do
     db_path = Path.join(System.tmp_dir!(), "health_mon_test_#{:rand.uniform(999_999)}.db")
     event_log = Path.join(System.tmp_dir!(), "health_mon_test_#{:rand.uniform(999_999)}.jsonl")
@@ -89,6 +101,7 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     Application.put_env(:conductor, :worker_module, NoopWorker)
     Application.put_env(:conductor, :workspace_module, NoopWorkspace)
     Application.put_env(:conductor, :code_host_module, NoopCodeHost)
+    MockState.put(:test_pid, self())
 
     on_exit(fn ->
       stop_process(HealthMonitor)
@@ -370,5 +383,50 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     end)
 
     assert Enum.any?(Store.list_events("fleet"), &(&1["event_type"] == "sprite_recovered"))
+  end
+
+  test "recovery sync uses the recovered sprite repo instead of the fleet default" do
+    Application.put_env(:conductor, :phase_worker_supervisor, CapturingPhaseWorkerSupervisor)
+    start_monitor(interval_ms: 60_000)
+
+    sprites = [
+      %{name: "bb-fixer", role: :fixer, harness: "codex", repo: "other/repo"}
+    ]
+
+    MockState.put({:sprite_health, "bb-fixer"}, :healthy)
+
+    HealthMonitor.configure(
+      sprites: sprites,
+      repo: "test/repo",
+      healthy: MapSet.new()
+    )
+
+    HealthMonitor.check_now()
+
+    assert_receive {:ensure_worker, Roles.Fixer, "other/repo", ["bb-fixer"]}
+  end
+
+  test "recovery sync keeps separate fixer pools per repo" do
+    Application.put_env(:conductor, :phase_worker_supervisor, CapturingPhaseWorkerSupervisor)
+    start_monitor(interval_ms: 60_000)
+
+    sprites = [
+      %{name: "bb-fixer-a", role: :fixer, harness: "codex", repo: "test/repo"},
+      %{name: "bb-fixer-b", role: :fixer, harness: "codex", repo: "other/repo"}
+    ]
+
+    MockState.put({:sprite_health, "bb-fixer-a"}, :healthy)
+    MockState.put({:sprite_health, "bb-fixer-b"}, :healthy)
+
+    HealthMonitor.configure(
+      sprites: sprites,
+      repo: "test/repo",
+      healthy: MapSet.new()
+    )
+
+    HealthMonitor.check_now()
+
+    assert_receive {:ensure_worker, Roles.Fixer, "test/repo", ["bb-fixer-a"]}
+    assert_receive {:ensure_worker, Roles.Fixer, "other/repo", ["bb-fixer-b"]}
   end
 end

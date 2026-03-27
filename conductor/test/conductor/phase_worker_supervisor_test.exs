@@ -75,19 +75,19 @@ defmodule Conductor.PhaseWorkerSupervisorTest do
   test "starts a role worker when sprites are present" do
     assert :ok = Supervisor.ensure_worker(Roles.Fixer, "test/repo", ["bb-thorn"])
 
-    assert pid = PhaseWorker.whereis(Roles.Fixer)
+    assert pid = PhaseWorker.whereis(Roles.Fixer, "test/repo")
     assert Process.alive?(pid)
-    assert PhaseWorker.status(Roles.Fixer).sprites == ["bb-thorn"]
+    assert PhaseWorker.status(Roles.Fixer, "test/repo").sprites == ["bb-thorn"]
   end
 
   test "updates an existing worker through the already_started path" do
     assert :ok = Supervisor.ensure_worker(Roles.Fixer, "test/repo", ["bb-thorn"])
-    pid = PhaseWorker.whereis(Roles.Fixer)
+    pid = PhaseWorker.whereis(Roles.Fixer, "test/repo")
 
     assert :ok = Supervisor.ensure_worker(Roles.Fixer, "test/repo", ["bb-thorn-2", "bb-thorn"])
 
-    assert PhaseWorker.whereis(Roles.Fixer) == pid
-    assert PhaseWorker.status(Roles.Fixer).sprites == ["bb-thorn", "bb-thorn-2"]
+    assert PhaseWorker.whereis(Roles.Fixer, "test/repo") == pid
+    assert PhaseWorker.status(Roles.Fixer, "test/repo").sprites == ["bb-thorn", "bb-thorn-2"]
   end
 
   test "concurrent ensure_worker calls converge on the latest sprite pool during startup" do
@@ -108,12 +108,12 @@ defmodule Conductor.PhaseWorkerSupervisorTest do
     assert :ok = Supervisor.ensure_worker(Roles.Fixer, "test/repo", ["bb-thorn-2"])
     assert :ok = Task.await(first, 2_000)
 
-    assert PhaseWorker.status(Roles.Fixer).sprites == ["bb-thorn-2"]
+    assert PhaseWorker.status(Roles.Fixer, "test/repo").sprites == ["bb-thorn-2"]
   end
 
   test "restores the latest sprite pool after a worker restart" do
     assert :ok = Supervisor.ensure_worker(Roles.Fixer, "test/repo", ["bb-thorn"])
-    pid = PhaseWorker.whereis(Roles.Fixer)
+    pid = PhaseWorker.whereis(Roles.Fixer, "test/repo")
 
     assert :ok = Supervisor.ensure_worker(Roles.Fixer, "test/repo", ["bb-thorn", "bb-thorn-2"])
 
@@ -121,7 +121,7 @@ defmodule Conductor.PhaseWorkerSupervisorTest do
 
     restarted_pid =
       wait_for(fn ->
-        case PhaseWorker.whereis(Roles.Fixer) do
+        case PhaseWorker.whereis(Roles.Fixer, "test/repo") do
           nil -> nil
           ^pid -> nil
           new_pid -> new_pid
@@ -129,7 +129,17 @@ defmodule Conductor.PhaseWorkerSupervisorTest do
       end)
 
     assert Process.alive?(restarted_pid)
-    assert PhaseWorker.status(Roles.Fixer).sprites == ["bb-thorn", "bb-thorn-2"]
+    assert PhaseWorker.status(Roles.Fixer, "test/repo").sprites == ["bb-thorn", "bb-thorn-2"]
+  end
+
+  test "starts separate workers for the same role across repos" do
+    assert :ok = Supervisor.ensure_worker(Roles.Fixer, "test/repo", ["bb-thorn-a"])
+    assert :ok = Supervisor.ensure_worker(Roles.Fixer, "other/repo", ["bb-thorn-b"])
+
+    assert PhaseWorker.whereis(Roles.Fixer, "test/repo")
+    assert PhaseWorker.whereis(Roles.Fixer, "other/repo")
+    assert PhaseWorker.status(Roles.Fixer, "test/repo").sprites == ["bb-thorn-a"]
+    assert PhaseWorker.status(Roles.Fixer, "other/repo").sprites == ["bb-thorn-b"]
   end
 
   test "returns an error when the worker cannot start" do

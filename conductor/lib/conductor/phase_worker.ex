@@ -29,46 +29,89 @@ defmodule Conductor.PhaseWorker do
 
   def start_link(opts) do
     role_module = Keyword.fetch!(opts, :role_module)
-    GenServer.start_link(__MODULE__, opts, name: via_name(role_module))
+    repo = Keyword.fetch!(opts, :repo)
+    GenServer.start_link(__MODULE__, opts, name: via_name(role_module, repo))
   end
 
   def child_spec(opts) do
     role_module = Keyword.fetch!(opts, :role_module)
+    repo = Keyword.fetch!(opts, :repo)
 
     %{
-      id: {__MODULE__, role_module},
+      id: {__MODULE__, {role_module, repo}},
       start: {__MODULE__, :start_link, [opts]}
     }
   end
 
-  @spec status(atom() | module()) :: map()
-  def status(role_module) do
-    GenServer.call(via_name(role_module), :status)
+  @spec status(atom() | module(), binary() | nil) :: map()
+  def status(role_module, repo \\ nil) do
+    GenServer.call(via_name(role_module, resolve_repo!(role_module, repo)), :status)
   end
 
   @spec statuses() :: [map()]
   def statuses do
-    Roles.all()
-    |> Enum.filter(&whereis/1)
-    |> Enum.map(&status/1)
+    Registry.select(registry_name(), [
+      {{:"$1", :"$2", :_}, [], [{{:"$1", :"$2"}}]}
+    ])
+    |> Enum.map(fn {{role, repo}, _pid} -> status(role, repo) end)
   end
 
   @spec update_sprites(atom() | module(), [binary()], integer() | nil) :: :ok
   def update_sprites(role_module, sprites, generation \\ nil) do
-    normalized = Enum.uniq(sprites) |> Enum.sort()
-    GenServer.call(via_name(role_module), {:update_sprites, normalized, generation})
+    repo = resolve_repo!(role_module, nil)
+    update_sprites(role_module, repo, sprites, generation)
   end
 
-  @spec whereis(atom() | module()) :: pid() | nil
-  def whereis(role_module) do
-    role_key = role_key(role_module)
+  @spec update_sprites(atom() | module(), binary(), [binary()], integer() | nil) :: :ok
+  def update_sprites(role_module, repo, sprites, generation) do
+    normalized = Enum.uniq(sprites) |> Enum.sort()
+    GenServer.call(via_name(role_module, repo), {:update_sprites, normalized, generation})
+  end
 
-    case Registry.lookup(registry_name(), role_key) do
-      [{pid, _value}] when is_pid(pid) ->
+  @spec whereis(atom() | module(), binary() | nil) :: pid() | nil
+  def whereis(role_module, repo \\ nil) do
+    role_module = Roles.fetch!(role_module)
+
+    matches =
+      case repo do
+        nil ->
+          Registry.select(registry_name(), [
+            {{{role_key(role_module), :"$1"}, :"$2", :_}, [], [{{:"$1", :"$2"}}]}
+          ])
+
+        repo ->
+          case Registry.lookup(registry_name(), {role_key(role_module), repo}) do
+            [{pid, _value}] -> [{repo, pid}]
+            [] -> []
+          end
+      end
+
+    case matches do
+      [{_repo, pid}] when is_pid(pid) ->
         if Process.alive?(pid), do: pid, else: nil
 
-      [] ->
+      _ ->
         nil
+    end
+  end
+
+  defp resolve_repo!(_role_module, repo) when is_binary(repo), do: repo
+
+  defp resolve_repo!(role_module, nil) do
+    role_module = Roles.fetch!(role_module)
+
+    case Registry.select(registry_name(), [
+           {{{role_key(role_module), :"$1"}, :"$2", :_}, [], [{{:"$1", :"$2"}}]}
+         ]) do
+      [{repo, pid}] when is_pid(pid) ->
+        repo
+
+      [] ->
+        raise ArgumentError, "no phase worker running for #{inspect(role_key(role_module))}"
+
+      _ ->
+        raise ArgumentError,
+              "multiple phase workers running for #{inspect(role_key(role_module))}; repo is required"
     end
   end
 
@@ -79,11 +122,11 @@ defmodule Conductor.PhaseWorker do
     poll_ms = Keyword.get(opts, :poll_ms, Config.poll_seconds() * 1_000)
     provided_sprites = Keyword.get(opts, :sprites, []) |> Enum.uniq() |> Enum.sort()
     provided_generation = Keyword.get(opts, :sprite_generation, 0)
-    stored_generation = stored_sprite_generation(provided_generation, role_module)
+    stored_generation = stored_sprite_generation(provided_generation, role_module, repo)
 
     sprites =
       if stored_generation > provided_generation do
-        stored_sprites(provided_sprites, role_module)
+        stored_sprites(provided_sprites, role_module, repo)
       else
         provided_sprites
       end
@@ -378,8 +421,8 @@ defmodule Conductor.PhaseWorker do
     Roles.fetch!(role_module).role()
   end
 
-  defp via_name(role_module) do
-    {:via, Registry, {registry_name(), role_key(role_module)}}
+  defp via_name(role_module, repo) do
+    {:via, Registry, {registry_name(), {role_key(role_module), repo}}}
   end
 
   defp registry_name do
@@ -450,7 +493,7 @@ defmodule Conductor.PhaseWorker do
       nil
   end
 
-  defp stored_sprites(default, role_module) do
+  defp stored_sprites(default, role_module, repo) do
     supervisor =
       Application.get_env(
         :conductor,
@@ -458,14 +501,19 @@ defmodule Conductor.PhaseWorker do
         Conductor.PhaseWorker.Supervisor
       )
 
-    if function_exported?(supervisor, :stored_sprites, 2) do
-      supervisor.stored_sprites(role_module, default)
-    else
-      default
+    cond do
+      function_exported?(supervisor, :stored_sprites, 3) ->
+        supervisor.stored_sprites(role_module, repo, default)
+
+      function_exported?(supervisor, :stored_sprites, 2) ->
+        supervisor.stored_sprites(role_module, default)
+
+      true ->
+        default
     end
   end
 
-  defp stored_sprite_generation(default, role_module) do
+  defp stored_sprite_generation(default, role_module, repo) do
     supervisor =
       Application.get_env(
         :conductor,
@@ -473,10 +521,15 @@ defmodule Conductor.PhaseWorker do
         Conductor.PhaseWorker.Supervisor
       )
 
-    if function_exported?(supervisor, :stored_sprite_generation, 2) do
-      supervisor.stored_sprite_generation(role_module, default)
-    else
-      default
+    cond do
+      function_exported?(supervisor, :stored_sprite_generation, 3) ->
+        supervisor.stored_sprite_generation(role_module, repo, default)
+
+      function_exported?(supervisor, :stored_sprite_generation, 2) ->
+        supervisor.stored_sprite_generation(role_module, default)
+
+      true ->
+        default
     end
   end
 end

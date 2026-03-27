@@ -324,7 +324,7 @@ defmodule Conductor.Orchestrator do
           :ok ->
             next_state =
               state
-              |> clear_shape_attempt(issue.number)
+              |> clear_shape_attempt(repo, issue.number)
               |> maybe_start_ready_issue(repo, issue, remaining_slots)
 
             outcome =
@@ -343,18 +343,19 @@ defmodule Conductor.Orchestrator do
           "issue ##{issue.number} not dispatchable (#{Enum.join(failures, ", ")}), skipping"
         )
 
-        {clear_shape_attempt(state, issue.number), :skipped}
+        {clear_shape_attempt(state, repo, issue.number), :skipped}
     end
   end
 
   defp maybe_shape_issue(state, repo, issue, failures) do
     revision_id = Issue.revision_id(issue)
+    issue_key = shape_issue_key(repo, issue.number)
 
     cond do
-      shape_in_flight?(state, issue.number) ->
+      shape_in_flight?(state, issue_key) ->
         {state, :skipped}
 
-      Map.get(state.shape_attempts, issue.number) == revision_id ->
+      Map.get(state.shape_attempts, issue_key) == revision_id ->
         Logger.info("issue ##{issue.number} still unready after prior shaping attempt, skipping")
         {state, :skipped}
 
@@ -370,19 +371,22 @@ defmodule Conductor.Orchestrator do
 
         next_state =
           state
-          |> put_shape_attempt(issue.number, revision_id)
+          |> put_shape_attempt(issue_key, revision_id)
           |> put_shape_task(task, repo, issue.number, revision_id, failures)
 
         {next_state, :shaped}
     end
   end
 
-  defp clear_shape_attempt(state, issue_number) do
-    %{state | shape_attempts: Map.delete(state.shape_attempts, issue_number)}
+  defp clear_shape_attempt(state, repo, issue_number) do
+    %{
+      state
+      | shape_attempts: Map.delete(state.shape_attempts, shape_issue_key(repo, issue_number))
+    }
   end
 
-  defp put_shape_attempt(state, issue_number, revision_id) do
-    %{state | shape_attempts: Map.put(state.shape_attempts, issue_number, revision_id)}
+  defp put_shape_attempt(state, issue_key, revision_id) do
+    %{state | shape_attempts: Map.put(state.shape_attempts, issue_key, revision_id)}
   end
 
   defp put_shape_task(state, %Task{} = task, repo, issue_number, revision_id, failures) do
@@ -411,9 +415,13 @@ defmodule Conductor.Orchestrator do
     %{state | shape_attempts: %{}, shape_tasks: %{}}
   end
 
-  defp shape_in_flight?(state, issue_number) do
-    Enum.any?(state.shape_tasks, fn {_ref, meta} -> meta.issue_number == issue_number end)
+  defp shape_in_flight?(state, issue_key) do
+    Enum.any?(state.shape_tasks, fn {_ref, meta} ->
+      shape_issue_key(meta.repo, meta.issue_number) == issue_key
+    end)
   end
+
+  defp shape_issue_key(repo, issue_number), do: {repo, issue_number}
 
   defp log_shape_result(task_meta, {:ok, result}) when result in [:shaped, :already_shaped] do
     Logger.info("issue ##{task_meta.issue_number} shaped successfully, deferring until next poll")
@@ -565,8 +573,7 @@ defmodule Conductor.Orchestrator do
         {:error, state}
 
       true ->
-        {:ok, worker,
-         %{state | worker_index: rem(candidate_index + 1, count)}}
+        {:ok, worker, %{state | worker_index: rem(candidate_index + 1, count)}}
     end
   end
 
@@ -801,85 +808,85 @@ defmodule Conductor.Orchestrator do
       case code_host_mod().labeled_prs(repo, "lgtm") do
         {:ok, prs} ->
           Enum.each(prs, fn pr ->
-          pr_number = pr["number"]
+            pr_number = pr["number"]
 
-          case code_host_mod().ci_status(repo, pr_number) do
-            {:ok, %{state: :green}} ->
-              cond do
-                ci_timeout_run?(repo, pr_number) ->
-                  Logger.warning(
-                    "[merge] PR ##{pr_number} previously timed out waiting for CI, skipping"
-                  )
+            case code_host_mod().ci_status(repo, pr_number) do
+              {:ok, %{state: :green}} ->
+                cond do
+                  ci_timeout_run?(repo, pr_number) ->
+                    Logger.warning(
+                      "[merge] PR ##{pr_number} previously timed out waiting for CI, skipping"
+                    )
 
-                not conductor_tracked?(repo, pr_number) ->
-                  Logger.debug(
-                    "[merge] PR ##{pr_number} has lgtm but is not conductor-tracked, skipping"
-                  )
+                  not conductor_tracked?(repo, pr_number) ->
+                    Logger.debug(
+                      "[merge] PR ##{pr_number} has lgtm but is not conductor-tracked, skipping"
+                    )
 
-                true ->
-                  clear_ci_wait_tracking(repo, pr_number)
+                  true ->
+                    clear_ci_wait_tracking(repo, pr_number)
 
-                  case operator_merge_decision(repo, pr) do
-                    :allow ->
-                      Logger.info("[merge] PR ##{pr_number} has lgtm + green CI, merging")
+                    case operator_merge_decision(repo, pr) do
+                      :allow ->
+                        Logger.info("[merge] PR ##{pr_number} has lgtm + green CI, merging")
 
-                      case code_host_mod().merge(repo, pr_number, []) do
-                        :ok ->
-                          Logger.info("[merge] PR ##{pr_number} merged successfully")
+                        case code_host_mod().merge(repo, pr_number, []) do
+                          :ok ->
+                            Logger.info("[merge] PR ##{pr_number} merged successfully")
 
-                          case record_merge(repo, pr_number) do
-                            :ok ->
-                              Conductor.SelfUpdate.maybe_reload(repo, pr_number)
+                            case record_merge(repo, pr_number) do
+                              :ok ->
+                                Conductor.SelfUpdate.maybe_reload(repo, pr_number)
 
-                            {:error, reason} ->
-                              Logger.warning(
-                                "[merge] PR ##{pr_number} merged but post-merge reconciliation is incomplete: #{inspect(reason)}"
+                              {:error, reason} ->
+                                Logger.warning(
+                                  "[merge] PR ##{pr_number} merged but post-merge reconciliation is incomplete: #{inspect(reason)}"
+                                )
+                            end
+
+                          {:error, reason} ->
+                            if merge_conflict?(reason) do
+                              attempt_rebase_merge(
+                                repo,
+                                pr_number,
+                                pr["headRefName"],
+                                state.worker_order
                               )
-                          end
+                            else
+                              Logger.warning("[merge] PR ##{pr_number} merge failed: #{reason}")
+                            end
+                        end
 
-                        {:error, reason} ->
-                          if merge_conflict?(reason) do
-                            attempt_rebase_merge(
-                              repo,
-                              pr_number,
-                              pr["headRefName"],
-                              state.worker_order
-                            )
-                          else
-                            Logger.warning("[merge] PR ##{pr_number} merge failed: #{reason}")
-                          end
-                      end
+                      {:blocked, reason} ->
+                        mark_operator_blocked(repo, pr_number, reason)
 
-                    {:blocked, reason} ->
-                      mark_operator_blocked(repo, pr_number, reason)
+                      :skip ->
+                        Logger.warning(
+                          "[merge] PR ##{pr_number} operator checks unavailable, skipping"
+                        )
+                    end
+                end
 
-                    :skip ->
-                      Logger.warning(
-                        "[merge] PR ##{pr_number} operator checks unavailable, skipping"
-                      )
-                  end
-              end
+              {:ok, %{state: :pending} = ci_status} ->
+                maybe_handle_pending_ci(repo, pr_number, ci_status)
 
-            {:ok, %{state: :pending} = ci_status} ->
-              maybe_handle_pending_ci(repo, pr_number, ci_status)
+              {:ok, %{state: :failed} = ci_status} ->
+                clear_ci_wait_tracking(repo, pr_number)
 
-            {:ok, %{state: :failed} = ci_status} ->
-              clear_ci_wait_tracking(repo, pr_number)
+                Logger.debug(
+                  "[merge] PR ##{pr_number} has lgtm but CI failed: #{ci_status.summary}"
+                )
 
-              Logger.debug(
-                "[merge] PR ##{pr_number} has lgtm but CI failed: #{ci_status.summary}"
-              )
+              {:ok, %{state: :unknown} = ci_status} ->
+                Logger.debug(
+                  "[merge] PR ##{pr_number} has lgtm but CI is still unclear: #{ci_status.summary}"
+                )
 
-            {:ok, %{state: :unknown} = ci_status} ->
-              Logger.debug(
-                "[merge] PR ##{pr_number} has lgtm but CI is still unclear: #{ci_status.summary}"
-              )
-
-            {:error, reason} ->
-              Logger.warning(
-                "[merge] failed to inspect CI for PR ##{pr_number}: #{inspect(reason)}"
-              )
-          end
+              {:error, reason} ->
+                Logger.warning(
+                  "[merge] failed to inspect CI for PR ##{pr_number}: #{inspect(reason)}"
+                )
+            end
           end)
 
         {:error, reason} ->

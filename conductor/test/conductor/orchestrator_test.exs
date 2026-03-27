@@ -361,7 +361,7 @@ defmodule Conductor.OrchestratorTest do
       assert :ok = Orchestrator.configure_polling(repo: "test/repo", workers: ["sprite-1"])
 
       :sys.replace_state(Orchestrator, fn state ->
-        %{state | shape_attempts: %{123 => :crypto.hash(:sha256, "draft body")}}
+        %{state | shape_attempts: %{{"test/repo", 123} => :crypto.hash(:sha256, "draft body")}}
       end)
 
       assert :ok = Orchestrator.configure_polling(repo: "other/repo", workers: ["sprite-1"])
@@ -850,6 +850,39 @@ defmodule Conductor.OrchestratorTest do
 
       Process.sleep(100)
       assert MockState.get(:started_runs) == []
+    end
+
+    test "tracks shaping independently for matching issue numbers across repos" do
+      issue_a = %Conductor.Issue{
+        number: 350,
+        title: "repo a underspecified",
+        body: "draft body",
+        url: "https://example.test/issues/350"
+      }
+
+      issue_b = %Conductor.Issue{
+        number: 350,
+        title: "repo b underspecified",
+        body: "draft body",
+        url: "https://example.test/other/issues/350"
+      }
+
+      MockState.put({:eligible, "test/repo", nil}, [issue_a])
+      MockState.put({:eligible, "other/repo", nil}, [issue_b])
+      MockState.put({:shape_result, "test/repo", 350}, {:sleep, 500, {:error, :llm_unavailable}})
+      MockState.put({:shape_result, "other/repo", 350}, {:error, :llm_unavailable})
+
+      :ok =
+        Orchestrator.configure_polling(
+          repo: "test/repo",
+          workers: [
+            %{name: "sprite-a", repo: "test/repo"},
+            %{name: "sprite-b", repo: "other/repo"}
+          ]
+        )
+
+      assert_receive {:shape_attempted, "test/repo", 350}, 1_000
+      assert_receive {:shape_attempted, "other/repo", 350}, 1_000
     end
 
     test "slow shaping does not block orchestrator calls" do

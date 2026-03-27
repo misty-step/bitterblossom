@@ -23,9 +23,9 @@ defmodule Conductor.PhaseWorker.Supervisor do
   def ensure_worker(role_module, repo, sprites, opts \\ []) do
     role_module = Roles.fetch!(role_module)
     sprites = sprites |> Enum.uniq() |> Enum.sort()
-    pool = store_sprites(role_module, sprites)
+    pool = store_sprites(role_module, repo, sprites)
 
-    if sprites == [] and PhaseWorker.whereis(role_module) == nil do
+    if sprites == [] and PhaseWorker.whereis(role_module, repo) == nil do
       :ok
     else
       child_opts =
@@ -41,10 +41,10 @@ defmodule Conductor.PhaseWorker.Supervisor do
           :ok
 
         {:error, {:already_started, _pid}} ->
-          PhaseWorker.update_sprites(role_module, pool.sprites, pool.generation)
+          PhaseWorker.update_sprites(role_module, repo, pool.sprites, pool.generation)
 
         {:error, {:already_present, _pid}} ->
-          PhaseWorker.update_sprites(role_module, pool.sprites, pool.generation)
+          PhaseWorker.update_sprites(role_module, repo, pool.sprites, pool.generation)
 
         {:error, reason} ->
           {:error, reason}
@@ -54,10 +54,13 @@ defmodule Conductor.PhaseWorker.Supervisor do
 
   @spec stored_sprites(atom() | module(), [binary()]) :: [binary()]
   def stored_sprites(role_module, default \\ []) do
-    role = Roles.fetch!(role_module).role()
+    stored_sprites(role_module, nil, default)
+  end
 
+  @spec stored_sprites(atom() | module(), binary() | nil, [binary()]) :: [binary()]
+  def stored_sprites(role_module, repo, default) do
     Application.get_env(:conductor, @sprite_pool_env, %{})
-    |> Map.get(role)
+    |> Map.get(pool_key(role_module, repo))
     |> case do
       %{sprites: sprites} -> sprites
       nil -> default
@@ -67,21 +70,32 @@ defmodule Conductor.PhaseWorker.Supervisor do
 
   @spec stored_sprite_generation(atom() | module(), integer()) :: integer()
   def stored_sprite_generation(role_module, default \\ 0) do
-    role = Roles.fetch!(role_module).role()
+    stored_sprite_generation(role_module, nil, default)
+  end
 
+  @spec stored_sprite_generation(atom() | module(), binary() | nil, integer()) :: integer()
+  def stored_sprite_generation(role_module, repo, default) do
     Application.get_env(:conductor, @sprite_pool_env, %{})
-    |> Map.get(role)
+    |> Map.get(pool_key(role_module, repo))
     |> case do
       %{generation: generation} when is_integer(generation) -> generation
       _ -> default
     end
   end
 
-  defp store_sprites(role_module, sprites) do
-    role = role_module.role()
+  defp store_sprites(role_module, repo, sprites) do
     stored = Application.get_env(:conductor, @sprite_pool_env, %{})
     pool = %{sprites: sprites, generation: System.unique_integer([:positive, :monotonic])}
-    Application.put_env(:conductor, @sprite_pool_env, Map.put(stored, role, pool))
+
+    Application.put_env(
+      :conductor,
+      @sprite_pool_env,
+      Map.put(stored, pool_key(role_module, repo), pool)
+    )
+
     pool
   end
+
+  defp pool_key(role_module, nil), do: Roles.fetch!(role_module).role()
+  defp pool_key(role_module, repo), do: {Roles.fetch!(role_module).role(), repo}
 end

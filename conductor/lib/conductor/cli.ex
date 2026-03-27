@@ -352,19 +352,23 @@ defmodule Conductor.CLI do
 
     IO.puts("\n=== Phase Workers ===")
 
-    for role_module <- [Roles.Fixer, Roles.Polisher] do
-      role = role_module.role()
-      display_name = Conductor.Application.role_display_name(role)
-
-      case PhaseWorker.whereis(role_module) do
-        nil ->
+    case Enum.sort_by(PhaseWorker.statuses(), fn status -> {status.role, status.repo} end) do
+      [] ->
+        for role_module <- [Roles.Fixer, Roles.Polisher] do
+          role = role_module.role()
+          display_name = Conductor.Application.role_display_name(role)
           IO.puts("  #{display_name}: not running")
+        end
 
-        _pid ->
-          status = PhaseWorker.status(role_module)
+      statuses ->
+        Enum.each(statuses, fn status ->
+          display_name = Conductor.Application.role_display_name(status.role)
           sprites = Enum.join(status.sprites, ", ")
-          IO.puts("  #{display_name}: #{sprites} — #{map_size(status.in_flight)} in-flight")
-      end
+
+          IO.puts(
+            "  #{display_name} (#{status.repo}): #{sprites} — #{map_size(status.in_flight)} in-flight"
+          )
+        end)
     end
 
     IO.puts("\n=== Recent Runs ===")

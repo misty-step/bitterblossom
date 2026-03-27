@@ -156,27 +156,33 @@ defmodule Conductor.Fleet.HealthMonitor do
         :ok
 
       role_module ->
-        sprites = healthy_sprites_for_role(state, role)
+        role_sprite_configs(state, role)
+        |> Enum.group_by(&(&1.repo || state.repo))
+        |> Enum.reduce_while(:ok, fn {repo, sprite_configs}, :ok ->
+          sprites =
+            sprite_configs
+            |> Enum.filter(&(Map.get(state.known_health, &1.name) == :healthy))
+            |> Enum.map(& &1.name)
+            |> Enum.sort()
 
-        case phase_worker_supervisor().ensure_worker(role_module, state.repo, sprites) do
-          :ok ->
-            :ok
+          case phase_worker_supervisor().ensure_worker(role_module, repo, sprites) do
+            :ok ->
+              {:cont, :ok}
 
-          {:error, reason} ->
-            # Health probes remain authoritative even if worker-pool sync fails.
-            Logger.warning("[health] failed to sync #{inspect(role_module)}: #{inspect(reason)}")
-            :error
-        end
+            {:error, reason} ->
+              Logger.warning(
+                "[health] failed to sync #{inspect(role_module)} for #{repo}: #{inspect(reason)}"
+              )
+
+              {:halt, :error}
+          end
+        end)
     end
   end
 
-  defp healthy_sprites_for_role(state, role) do
+  defp role_sprite_configs(state, role) do
     state.sprites
-    |> Enum.filter(fn sprite ->
-      sprite.role == role and Map.get(state.known_health, sprite.name) == :healthy
-    end)
-    |> Enum.map(& &1.name)
-    |> Enum.sort()
+    |> Enum.filter(&(&1.role == role))
   end
 
   defp put_health(state, name, health) do

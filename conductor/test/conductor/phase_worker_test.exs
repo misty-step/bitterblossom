@@ -208,7 +208,7 @@ defmodule Conductor.PhaseWorkerTest do
       opts = [repo: "test/repo", role_module: Roles.Fixer, sprites: ["bb-thorn"]]
 
       assert %{
-               id: {PhaseWorker, Roles.Fixer},
+               id: {PhaseWorker, {Roles.Fixer, "test/repo"}},
                start: {PhaseWorker, :start_link, [^opts]}
              } = PhaseWorker.child_spec(opts)
     end
