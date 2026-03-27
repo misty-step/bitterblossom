@@ -2,13 +2,9 @@ defmodule Conductor.GitHub do
   @moduledoc """
   GitHub operations via the `gh` CLI.
 
-  Deep module: hides all GitHub API details, argument construction,
-  and JSON parsing. Callers see Elixir structs and maps.
-
-  Implements `Conductor.CodeHost`.
+  GitHub operations via the `gh` CLI. Used by infrastructure (fleet, health)
+  and available to agents via the CLI directly.
   """
-
-  @behaviour Conductor.CodeHost
 
   alias Conductor.Shell
   require Logger
