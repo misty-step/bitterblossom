@@ -259,21 +259,27 @@ defmodule Conductor.SpriteTest do
              )
   end
 
-  test "exec wakes and retries over HTTP POST after websocket handshake failure" do
+  test "exec wakes and retries via websocket after handshake failure" do
     parent = self()
+    call_count = :counters.new(1, [:atomics])
 
     shell_cmd_fn = fn "sprite", args, opts ->
+      :counters.add(call_count, 1, 1)
+      count = :counters.get(call_count, 1)
       send(parent, {:shell_cmd, args, opts})
 
       cond do
-        "--http-post" in args and List.last(args) == "true" ->
+        # Wake call (printf marker)
+        List.last(args) == "printf '__bb_wake__'" ->
           {:ok, ""}
 
-        "--http-post" in args ->
-          {:ok, "recovered"}
-
-        true ->
+        # First exec fails (cold sprite 502)
+        count == 1 ->
           {:error, "websocket: bad handshake (HTTP 502)", 1}
+
+        # Retry succeeds after wake
+        true ->
+          {:ok, "recovered"}
       end
     end
 
@@ -288,11 +294,11 @@ defmodule Conductor.SpriteTest do
     assert List.last(first_args) == "echo ok"
 
     assert_received {:shell_cmd, wake_args, _opts}
-    assert "--http-post" in wake_args
+    refute "--http-post" in wake_args
     assert List.last(wake_args) == "printf '__bb_wake__'"
 
     assert_received {:shell_cmd, retry_args, _opts}
-    assert "--http-post" in retry_args
+    refute "--http-post" in retry_args
     assert List.last(retry_args) == "echo ok"
   end
 
