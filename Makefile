@@ -10,7 +10,7 @@ test-hooks:
 	fi
 
 test-conductor:
-	cd conductor && mix test
+	cd conductor && mix deps.get && mix test
 
 conductor-check:
 	cd conductor && mix conductor check-env

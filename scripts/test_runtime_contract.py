@@ -7,6 +7,7 @@ Canonical sources:
 Surfaces validated:
   - base/settings.json
   - scripts/lib.sh
+  - Makefile
   - README.md
 
 Run:
@@ -15,6 +16,8 @@ Run:
 
 import json
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -125,6 +128,54 @@ def test_readme_documents_canonical_model():
         "Update the 'Runtime profile' section to match base/settings.json."
     )
     print(f"[ok] README.md: references {RUNTIME_MODEL!r}")
+
+
+def test_makefile_test_conductor_bootstraps_dependencies():
+    """The supported root test path must bootstrap Elixir deps itself."""
+    makefile_path = REPO_ROOT / "Makefile"
+    content = makefile_path.read_text()
+    target = re.search(r"^test-conductor:\n((?:\t.*\n)+)", content, re.MULTILINE)
+    assert target, "Makefile missing test-conductor target"
+    body = target.group(1)
+
+    assert "mix deps.get && mix test" in body, (
+        "Makefile test-conductor target must run 'mix deps.get' before 'mix test' "
+        "so 'make test' works from a fresh clone."
+    )
+    print("[ok] Makefile: test-conductor bootstraps deps before mix test")
+
+
+def test_readme_documents_supported_repo_verification_command():
+    """README.md should document `make test` as the root verification command."""
+    readme_path = REPO_ROOT / "README.md"
+    content = readme_path.read_text()
+
+    assert "## Repo Verification" in content, "README.md must include a Repo Verification section"
+    assert "Use `make test` as the supported repo-level verification command." in content, (
+        "README.md must explicitly name 'make test' as the supported repo-level verification command."
+    )
+    print("[ok] README.md: documents make test as repo-level verification")
+
+
+def test_make_test_succeeds_from_clean_checkout_state():
+    """The supported root verification command must work after clearing conductor build state."""
+    shutil.rmtree(REPO_ROOT / "conductor" / "deps", ignore_errors=True)
+    shutil.rmtree(REPO_ROOT / "conductor" / "_build", ignore_errors=True)
+
+    result = subprocess.run(
+        ["make", "test"],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, (
+        "'make test' must succeed after removing conductor/deps and conductor/_build.\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    print("[ok] make test: succeeds from a clean conductor checkout state")
 
 
 def test_canonical_source_is_base_settings_json():
