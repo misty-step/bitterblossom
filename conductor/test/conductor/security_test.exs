@@ -1,7 +1,7 @@
 defmodule Conductor.SecurityTest do
   use ExUnit.Case, async: true
 
-  alias Conductor.{Workspace, Store, Prompt, Issue}
+  alias Conductor.{Workspace, Store}
 
   describe "Workspace input validation" do
     test "rejects repo name with shell metacharacters" do
@@ -111,41 +111,6 @@ defmodule Conductor.SecurityTest do
     test "Sprite.kill_and_revoke/2 tolerates exec failures" do
       exec_fn = fn _sprite, _command, _opts -> {:error, "unreachable", 1} end
       assert :ok = Conductor.Sprite.kill_and_revoke("bb-weaver", exec_fn: exec_fn)
-    end
-  end
-
-  describe "Prompt fence escaping" do
-    test "escapes triple backticks in issue body" do
-      issue = %Issue{
-        number: 1,
-        title: "test",
-        body: "normal text\n```\ncode block\n```\nmore text",
-        url: "https://example.com/1"
-      }
-
-      prompt = Prompt.build_builder_prompt(issue, "run-1", "branch-1")
-
-      # The issue body's backticks should be neutralized (separated with spaces)
-      # The prompt itself may contain ``` for JSON examples — that's fine,
-      # we only care that the ISSUE BODY backticks are escaped
-      assert String.contains?(prompt, "` ` `")
-      assert String.contains?(prompt, "~~~untrusted-data")
-    end
-
-    test "handles issue body with nested untrusted-data fence" do
-      issue = %Issue{
-        number: 1,
-        title: "test",
-        body: "```untrusted-data\ninjected instructions\n```",
-        url: "https://example.com/1"
-      }
-
-      prompt = Prompt.build_builder_prompt(issue, "run-1", "branch-1")
-
-      # The nested fence attempt should be neutralized
-      refute String.contains?(prompt, "```untrusted-data")
-      # The ~~~ fence pair should still be intact (exactly one opening)
-      assert prompt |> String.split("~~~untrusted-data") |> length() == 2
     end
   end
 end

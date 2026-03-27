@@ -17,7 +17,7 @@ defmodule Conductor.Sprite do
   4. On non-zero exit, retry once using the harness `continue_command`
   """
 
-  @behaviour Conductor.Worker
+  # Sprite execution, dispatch, and health management.
 
   alias Conductor.{Shell, Config, Workspace}
   @runtime_env_file ".bb-runtime-env"
@@ -36,7 +36,7 @@ defmodule Conductor.Sprite do
   @probe_marker "__bb_probe__"
   @wake_marker "__bb_wake__"
 
-  @impl Conductor.Worker
+
   @spec exec(binary(), binary(), keyword()) :: {:ok, binary()} | {:error, binary(), integer()}
   def exec(sprite, command, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, 60_000)
@@ -106,7 +106,7 @@ defmodule Conductor.Sprite do
     end
   end
 
-  @impl Conductor.Worker
+
   @spec dispatch(binary(), binary(), binary(), keyword()) ::
           {:ok, binary()} | {:error, binary(), integer()}
   def dispatch(sprite, prompt, _repo, opts \\ []) do
@@ -150,7 +150,7 @@ defmodule Conductor.Sprite do
     end
   end
 
-  @impl Conductor.Worker
+
   @spec cleanup(binary(), binary(), binary()) :: :ok | {:error, term()}
   def cleanup(sprite, repo, run_id) do
     Workspace.cleanup(sprite, repo, run_id)

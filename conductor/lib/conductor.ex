@@ -1,11 +1,12 @@
 defmodule Conductor do
   @moduledoc """
-  Bitterblossom conductor — always-on issue-to-merged-PR service.
+  Bitterblossom — agent-first software factory.
 
-  Start with `mix conductor start`. The conductor reads fleet.toml,
-  provisions sprites, and runs continuously: picking issues, building,
-  polishing, and merging.
+  Infrastructure layer: provisions sprites, bootstraps harnesses,
+  dispatches autonomous agent loops, monitors health.
+
+  Start with `mix conductor start --fleet ../fleet.toml`.
   """
 
-  defdelegate boot_fleet(fleet_path), to: Conductor.Application
+  defdelegate launch_fleet(fleet_path), to: Conductor.Application
 end
