@@ -214,15 +214,33 @@ defmodule Conductor.Sprite do
   end
 
   @doc """
-  Kill agent processes and revoke GitHub auth on a sprite.
+  Force-upload the local codex auth.json to a sprite.
 
-  Used during conductor shutdown to ensure surviving sprite processes
-  cannot exercise merge authority. Defense in depth for governance
-  invariant: the entity doing the work cannot judge the work.
-
-  Best-effort: logs failures but always returns :ok so shutdown proceeds.
-  Uses 5s timeouts to stay within GenServer terminate budget.
+  Always overwrites — handles stale tokens from refresh_token_reused errors.
+  No-ops if the harness isn't codex or no local auth is available.
   """
+  @spec force_sync_codex_auth(binary(), keyword()) :: :ok | {:error, term()}
+  def force_sync_codex_auth(sprite, opts \\ []) do
+    exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
+
+    case Config.codex_auth_source() do
+      {:chatgpt, local_auth_path} ->
+        case exec_fn.(
+               sprite,
+               "chmod 600 #{shell_quote(@sprite_codex_auth_path)}",
+               files: [{local_auth_path, @sprite_codex_auth_path}],
+               timeout: 30_000
+             ) do
+          {:ok, _} -> :ok
+          {:error, msg, _code} -> {:error, msg}
+        end
+
+      _ ->
+        :ok
+    end
+  end
+
+  @doc "Kill agent processes and revoke GitHub auth. Best-effort, always returns :ok."
   @spec kill_and_revoke(binary(), keyword()) :: :ok
   def kill_and_revoke(sprite, opts \\ []) do
     require Logger

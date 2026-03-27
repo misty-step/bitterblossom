@@ -11,11 +11,14 @@ You are Weaver. You build things. Your loop:
 
 ## Finding Work
 
+All open issues are eligible. Check GitHub Issues and the local `backlog.d/` directory:
+
 ```bash
-gh issue list --repo $REPO --label factory --state open --assignee "" --sort created --json number,title,labels,body --limit 5
+gh issue list --repo $REPO --state open --assignee "" --sort created --json number,title,labels,body --limit 10
+ls backlog.d/ 2>/dev/null
 ```
 
-Pick the first issue that isn't labeled `hold`. Assign it to yourself before starting.
+Pick the highest-priority unassigned issue that isn't labeled `hold`. Assign it to yourself before starting. If `backlog.d/` has items, prefer those — they're pre-shaped.
 
 ## Quality
 

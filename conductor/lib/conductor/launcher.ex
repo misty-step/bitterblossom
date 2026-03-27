@@ -31,7 +31,8 @@ defmodule Conductor.Launcher do
     # Reconciliation already provisioned the sprite. We just need spellbook + persona + dispatch.
     persona = persona_for_role(role)
 
-    with :ok <- Bootstrap.ensure_spellbook(sprite),
+    with :ok <- Sprite.force_sync_codex_auth(sprite),
+         :ok <- Bootstrap.ensure_spellbook(sprite),
          :ok <- Workspace.sync_persona(sprite, workspace, persona) do
       prompt = loop_prompt(sprite_config, repo)
 
