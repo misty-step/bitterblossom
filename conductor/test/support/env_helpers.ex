@@ -1,6 +1,13 @@
 defmodule Conductor.TestSupport.EnvHelpers do
   @moduledoc false
 
+  def fresh_codex_home do
+    home = Path.join(System.tmp_dir!(), "codex_home_#{System.unique_integer([:positive])}")
+    File.rm_rf!(home)
+    File.mkdir_p!(home)
+    home
+  end
+
   def write_auth_json(payload) do
     path = Path.join(System.fetch_env!("CODEX_HOME"), "auth.json")
     File.write!(path, Jason.encode!(payload))

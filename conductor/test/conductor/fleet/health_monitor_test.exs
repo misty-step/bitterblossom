@@ -27,8 +27,11 @@ defmodule Conductor.Fleet.HealthMonitorTest do
 
     def reconcile_sprite(sprite) do
       case MockState.get({:sprite_health, sprite.name}, :healthy) do
-        :healthy -> %{name: sprite.name, role: sprite.role, healthy: true, action: :none}
-        :unhealthy -> %{name: sprite.name, role: sprite.role, healthy: false, action: :unreachable}
+        :healthy ->
+          %{name: sprite.name, role: sprite.role, healthy: true, action: :none}
+
+        :unhealthy ->
+          %{name: sprite.name, role: sprite.role, healthy: false, action: :unreachable}
       end
     end
   end

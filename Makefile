@@ -1,4 +1,4 @@
-.PHONY: test test-hooks test-conductor conductor-check
+.PHONY: test test-hooks test-conductor conductor-check ensure-mix
 
 test: test-hooks test-conductor
 
@@ -9,8 +9,17 @@ test-hooks:
 		python3 -m pytest -q base/hooks/; \
 	fi
 
-test-conductor:
-	cd conductor && mix test
+ensure-mix:
+	@if command -v mix >/dev/null 2>&1; then \
+		:; \
+	else \
+		echo "error: Elixir tooling missing: 'mix' not found in PATH" >&2; \
+		echo "hint: install Elixir/OTP before running conductor targets" >&2; \
+		exit 127; \
+	fi
 
-conductor-check:
+test-conductor: ensure-mix
+	cd conductor && mix deps.get && mix test
+
+conductor-check: ensure-mix
 	cd conductor && mix conductor check-env

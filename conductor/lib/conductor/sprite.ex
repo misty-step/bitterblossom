@@ -36,7 +36,6 @@ defmodule Conductor.Sprite do
   @probe_marker "__bb_probe__"
   @wake_marker "__bb_wake__"
 
-
   @spec exec(binary(), binary(), keyword()) :: {:ok, binary()} | {:error, binary(), integer()}
   def exec(sprite, command, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, 60_000)
@@ -106,7 +105,6 @@ defmodule Conductor.Sprite do
     end
   end
 
-
   @spec dispatch(binary(), binary(), binary(), keyword()) ::
           {:ok, binary()} | {:error, binary(), integer()}
   def dispatch(sprite, prompt, _repo, opts \\ []) do
@@ -149,7 +147,6 @@ defmodule Conductor.Sprite do
         {:error, "invalid persona role: #{inspect(Keyword.get(opts, :persona_role))}", 1}
     end
   end
-
 
   @spec cleanup(binary(), binary(), binary()) :: :ok | {:error, term()}
   def cleanup(sprite, repo, run_id) do

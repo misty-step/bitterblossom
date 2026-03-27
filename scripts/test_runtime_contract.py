@@ -7,6 +7,7 @@ Canonical sources:
 Surfaces validated:
   - base/settings.json
   - scripts/lib.sh
+  - Makefile
   - README.md
 
 Run:
@@ -14,7 +15,10 @@ Run:
 """
 
 import json
+import pytest
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -125,6 +129,77 @@ def test_readme_documents_canonical_model():
         "Update the 'Runtime profile' section to match base/settings.json."
     )
     print(f"[ok] README.md: references {RUNTIME_MODEL!r}")
+
+
+def test_makefile_test_conductor_bootstraps_dependencies():
+    """The supported root test path must bootstrap Elixir deps itself."""
+    makefile_path = REPO_ROOT / "Makefile"
+    content = makefile_path.read_text()
+    assert "ensure-mix:" in content, "Makefile must define an ensure-mix preflight target"
+    assert "test-conductor: ensure-mix" in content, (
+        "Makefile test-conductor target must depend on ensure-mix before running conductor tests."
+    )
+    conductor_rule = re.search(
+        r"^conductor-check:\s+ensure-mix(?:\s|$)", content, re.MULTILINE
+    )
+    assert conductor_rule, (
+        "Makefile conductor-check target must depend on ensure-mix before running conductor commands."
+    )
+
+    ensure_target = re.search(r"^ensure-mix:\n((?:\t.*\n)+)", content, re.MULTILINE)
+    assert ensure_target, "Makefile missing ensure-mix target"
+    ensure_body = ensure_target.group(1)
+    assert "command -v mix" in ensure_body, "ensure-mix must check whether mix exists in PATH"
+
+    test_rule = re.search(r"^test-conductor: ensure-mix\n((?:\t.*\n)+)", content, re.MULTILINE)
+    assert test_rule, "Makefile missing test-conductor recipe"
+    body = test_rule.group(1)
+
+    assert "mix deps.get && mix test" in body, (
+        "Makefile test-conductor target must run 'mix deps.get' before 'mix test' "
+        "so 'make test' works from a fresh clone."
+    )
+    print("[ok] Makefile: test-conductor bootstraps deps before mix test")
+
+
+def test_readme_documents_supported_repo_verification_command():
+    """README.md should document `make test` as the root verification command."""
+    readme_path = REPO_ROOT / "README.md"
+    content = readme_path.read_text()
+
+    assert "## Repo Verification" in content, "README.md must include a Repo Verification section"
+    assert "Use `make test` as the supported repo-level verification command." in content, (
+        "README.md must explicitly name 'make test' as the supported repo-level verification command."
+    )
+    print("[ok] README.md: documents make test as repo-level verification")
+
+
+def test_make_test_succeeds_from_clean_checkout_state():
+    """The supported root verification command must work after clearing conductor build state."""
+    if shutil.which("mix") is None:
+        pytest.skip("Elixir toolchain (`mix`) is not installed in this environment")
+
+    shutil.rmtree(REPO_ROOT / "conductor" / "deps", ignore_errors=True)
+    shutil.rmtree(REPO_ROOT / "conductor" / "_build", ignore_errors=True)
+
+    try:
+        result = subprocess.run(
+            ["make", "test"],
+            cwd=REPO_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=900,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AssertionError("'make test' timed out after 900 seconds") from exc
+
+    assert result.returncode == 0, (
+        "'make test' must succeed after removing conductor/deps and conductor/_build.\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    print("[ok] make test: succeeds from a clean conductor checkout state")
 
 
 def test_canonical_source_is_base_settings_json():

@@ -40,7 +40,9 @@ defmodule Conductor.CLI do
         IO.puts("unknown command: #{cmd}\navailable: #{Enum.join(@commands, ", ")}")
 
       [] ->
-        IO.puts("usage: bitterblossom <command> [options]\navailable: #{Enum.join(@commands, ", ")}")
+        IO.puts(
+          "usage: bitterblossom <command> [options]\navailable: #{Enum.join(@commands, ", ")}"
+        )
     end
   end
 

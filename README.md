@@ -214,6 +214,13 @@ GitHub Actions CI runs on pull requests and pushes to `master` with:
 - `ruff` + `pytest` for `base/hooks/`
 - `yamllint` for `compositions/`
 
+## Repo Verification
+
+Use `make test` as the supported repo-level verification command. It runs
+hook tests and conductor tests from the repo root, including conductor
+dependency bootstrap in the command path. It assumes the required repo
+toolchains are already installed, including Elixir for the conductor tests.
+
 ## Python Testing (Hooks + Runtime Contract)
 
 Safety-critical hooks and the remaining Python runtime-contract checks are covered with pytest and ruff:

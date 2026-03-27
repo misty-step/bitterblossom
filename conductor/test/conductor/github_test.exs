@@ -2,7 +2,7 @@ defmodule Conductor.GitHubTest do
   use ExUnit.Case, async: false
   import ExUnit.CaptureLog
 
-  alias Conductor.{GitHub, Issue}
+  alias Conductor.GitHub
 
   defp with_fake_gh(script, fun) do
     tmp_dir = Path.join(System.tmp_dir!(), "github_test_#{System.unique_integer([:positive])}")
@@ -568,8 +568,8 @@ defmodule Conductor.GitHubTest do
         fn _tmp_dir, args_path ->
           assert {:ok, issues} = GitHub.list_issues("misty-step/bitterblossom")
           assert length(issues) == 1000
-          assert Enum.at(issues, 0)["number"] ==1
-          assert Enum.at(issues, -1)["number"] ==1000
+          assert Enum.at(issues, 0)["number"] == 1
+          assert Enum.at(issues, -1)["number"] == 1000
 
           args = File.read!(args_path)
           refute String.contains?(args, "page=11")
@@ -635,8 +635,8 @@ defmodule Conductor.GitHubTest do
         fn _tmp_dir, args_path ->
           assert {:ok, issues} = GitHub.list_issues("misty-step/bitterblossom")
           assert length(issues) == 1000
-          assert Enum.at(issues, 0)["number"] ==1
-          assert Enum.at(issues, -1)["number"] ==1000
+          assert Enum.at(issues, 0)["number"] == 1
+          assert Enum.at(issues, -1)["number"] == 1000
 
           args = File.read!(args_path)
           assert String.contains?(args, "page=11")
