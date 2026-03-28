@@ -1,6 +1,11 @@
 # CLI Reference
 
-The supported operator surface is `mix conductor ...` from the `conductor/` directory.
+The supported operator surface is `mix conductor ...` from the `conductor/`
+directory. The current transition state is:
+
+- `mix conductor start` still boots the legacy always-on conductor session
+- `mix conductor fleet ...` and `mix conductor sprite ...` are the agent-first
+  operator surface for truthful inspection and per-sprite lifecycle control
 
 ## Environment
 
@@ -27,9 +32,39 @@ mix conductor fleet --fleet ../fleet.toml
 mix conductor fleet --fleet ../fleet.toml --reconcile
 ```
 
+### `mix conductor fleet audit [--fleet ../fleet.toml] [--json]`
+
+Emit the fleet view as JSON, including summary counts for total sprites,
+reachable sprites, healthy sprites, paused sprites, running sprites, and
+available capacity.
+
 ### `mix conductor status`
 
-Show health for the currently loaded fleet in the active conductor application.
+Alias for `mix conductor fleet status`. It does not require a previously
+started local conductor process.
+
+### `mix conductor sprite status <sprite> [--fleet ../fleet.toml] [--json]`
+
+Inspect one declared sprite, including lifecycle status (`idle`, `running`,
+`paused`, `draining`) and setup health.
+
+### `mix conductor sprite start <sprite> [--fleet ../fleet.toml]`
+
+Provision a declared sprite if needed, sync its persona, and launch its loop in
+detached mode. The command returns after the remote loop has been started.
+
+### `mix conductor sprite pause <sprite> [--fleet ../fleet.toml] [--wait]`
+
+Mark a sprite paused so future loop starts are refused. With `--wait`, also
+stop the current loop before returning.
+
+### `mix conductor sprite resume <sprite> [--fleet ../fleet.toml]`
+
+Remove the pause marker so the sprite can be started again.
+
+### `mix conductor sprite stop <sprite> [--fleet ../fleet.toml]`
+
+Stop the current loop without changing pause state.
 
 ### `mix conductor logs <sprite> [--follow] [--lines N]`
 
@@ -43,6 +78,10 @@ mix conductor logs bb-weaver
 mix conductor logs bb-weaver --lines 50
 mix conductor logs bb-weaver --follow
 ```
+
+### `mix conductor sprite logs <sprite> [--follow] [--lines N]`
+
+Alias for `mix conductor logs ...`.
 
 ### `mix conductor show-events [--limit N]`
 
@@ -62,3 +101,5 @@ Run the local LiveView dashboard.
 - Sprite setup is no longer a separate Go CLI command.
 - Stale agent recovery is handled by `Conductor.Sprite.kill/1` and by dispatch preflight.
 - The historical `bb` transport no longer exists.
+- `fleet.toml` still uses `[[sprite]]` entries in this sprint-1 slice. Template
+  catalog, clone, create, destroy, and scale flows remain follow-up work.

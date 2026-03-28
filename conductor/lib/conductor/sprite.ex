@@ -28,6 +28,8 @@ defmodule Conductor.Sprite do
   @sprite_codex_auth_path Path.join(@sprite_codex_dir, "auth.json")
   @sprite_runtime_dir Path.join(@sprite_home, ".bitterblossom")
   @sprite_runtime_env_path Path.join(@sprite_runtime_dir, "runtime.env")
+  @sprite_pause_path Path.join(@sprite_runtime_dir, "paused")
+  @sprite_loop_pid_path Path.join(@sprite_runtime_dir, "loop.pid")
   @sprite_workspace_root Path.join(@sprite_home, "workspace")
   @sprite_persona_path Path.join(@sprite_workspace_root, "PERSONA.md")
   @sprite_prompt_template_path Path.join(@sprite_workspace_root, ".builder-prompt-template.md")
@@ -145,6 +147,109 @@ defmodule Conductor.Sprite do
     else
       {:error, :invalid_role} ->
         {:error, "invalid persona role: #{inspect(Keyword.get(opts, :persona_role))}", 1}
+    end
+  end
+
+  @spec start_loop(binary(), binary(), binary(), keyword()) ::
+          {:ok, binary()} | {:error, binary(), integer()}
+  def start_loop(sprite, prompt, _repo, opts \\ []) do
+    workspace = Keyword.fetch!(opts, :workspace)
+    harness = Keyword.get(opts, :harness, Conductor.Codex)
+    harness_opts = Keyword.get(opts, :harness_opts, [])
+    exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
+
+    with {:ok, persona_role} <- normalize_optional_persona_role(Keyword.get(opts, :persona_role)) do
+      cond do
+        paused?(sprite, exec_fn: exec_fn) ->
+          {:error, "sprite is paused", 1}
+
+        busy?(sprite, exec_fn: exec_fn) ->
+          {:error, "sprite already has an active loop", 1}
+
+        true ->
+          prompt_path = Path.join(workspace, "PROMPT.md")
+          runtime_env_path = Path.join(workspace, @runtime_env_file)
+
+          case upload_dispatch_files(exec_fn, sprite, prompt_path, prompt, runtime_env_path) do
+            {:error, msg, code} ->
+              {:error, "dispatch file upload failed: #{msg}", code}
+
+            {:ok, _} ->
+              detached_cmd =
+                detached_agent_command(
+                  harness,
+                  harness.dispatch_command(harness_opts),
+                  workspace,
+                  prompt_path,
+                  persona_role
+                )
+
+              exec_fn.(sprite, detached_cmd, timeout: 30_000)
+          end
+      end
+    else
+      {:error, :invalid_role} ->
+        {:error, "invalid persona role: #{inspect(Keyword.get(opts, :persona_role))}", 1}
+    end
+  end
+
+  @spec stop_loop(binary(), keyword()) :: :ok | {:error, term()}
+  def stop_loop(sprite, opts \\ []) do
+    exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
+
+    command = """
+    set -e
+    if [ -s #{shell_quote(@sprite_loop_pid_path)} ]; then
+      pid=$(cat #{shell_quote(@sprite_loop_pid_path)})
+      kill "$pid" 2>/dev/null || true
+      sleep 1
+      kill -9 "$pid" 2>/dev/null || true
+    fi
+    #{kill_agents_cmd()}
+    rm -f #{shell_quote(@sprite_loop_pid_path)}
+    """
+
+    case exec_fn.(sprite, command, timeout: 15_000) do
+      {:ok, _} -> :ok
+      {:error, msg, _code} -> {:error, msg}
+    end
+  end
+
+  @spec pause(binary(), keyword()) :: :ok | {:error, term()}
+  def pause(sprite, opts \\ []) do
+    exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
+
+    case exec_fn.(
+           sprite,
+           "mkdir -p #{shell_quote(@sprite_runtime_dir)} && touch #{shell_quote(@sprite_pause_path)}",
+           timeout: 15_000
+         ) do
+      {:ok, _} -> :ok
+      {:error, msg, _code} -> {:error, msg}
+    end
+  end
+
+  @spec resume(binary(), keyword()) :: :ok | {:error, term()}
+  def resume(sprite, opts \\ []) do
+    exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
+
+    case exec_fn.(sprite, "rm -f #{shell_quote(@sprite_pause_path)}", timeout: 15_000) do
+      {:ok, _} -> :ok
+      {:error, msg, _code} -> {:error, msg}
+    end
+  end
+
+  @spec paused?(binary(), keyword()) :: boolean()
+  def paused?(sprite, opts \\ []) do
+    exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
+
+    case exec_fn.(
+           sprite,
+           "if [ -e #{shell_quote(@sprite_pause_path)} ]; then printf 'paused'; fi",
+           timeout: 15_000
+         ) do
+      {:ok, output} -> String.trim(output) == "paused"
+      _ -> false
     end
   end
 
@@ -267,6 +372,9 @@ defmodule Conductor.Sprite do
         codex_auth_ready = codex_auth_ready?(sprite, harness, exec_fn)
         gh_authenticated = gh_authenticated?(sprite, exec_fn)
         git_credential_helper = git_credential_helper_ready?(sprite, exec_fn)
+        paused = paused?(sprite, exec_fn: exec_fn)
+        busy = busy?(sprite, exec_fn: exec_fn)
+        loop_pid = loop_pid(sprite, exec_fn)
 
         {:ok,
          %{
@@ -276,6 +384,10 @@ defmodule Conductor.Sprite do
            codex_auth_ready: codex_auth_ready,
            gh_authenticated: gh_authenticated,
            git_credential_helper: git_credential_helper,
+           paused: paused,
+           busy: busy,
+           loop_pid: loop_pid,
+           lifecycle_status: lifecycle_status(paused, busy),
            healthy:
              harness_ready and codex_auth_ready and gh_authenticated and git_credential_helper
          }}
@@ -328,6 +440,43 @@ defmodule Conductor.Sprite do
     |> Enum.map_join(" || ", &"pgrep -x #{&1} 2>/dev/null")
     |> Kernel.<>(" || pgrep -f 'ralph\\.sh' 2>/dev/null")
   end
+
+  defp loop_pid(sprite, exec_fn) do
+    case exec_fn.(
+           sprite,
+           """
+           if [ -s #{shell_quote(@sprite_loop_pid_path)} ]; then
+             pid=$(cat #{shell_quote(@sprite_loop_pid_path)})
+             if kill -0 "$pid" 2>/dev/null; then
+               printf '%s' "$pid"
+             fi
+           fi
+           """,
+           timeout: 15_000
+         ) do
+      {:ok, output} ->
+        output
+        |> String.trim()
+        |> case do
+          "" ->
+            nil
+
+          pid ->
+            case Integer.parse(pid) do
+              {value, ""} -> value
+              _ -> nil
+            end
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp lifecycle_status(true, true), do: "draining"
+  defp lifecycle_status(true, false), do: "paused"
+  defp lifecycle_status(false, true), do: "running"
+  defp lifecycle_status(false, false), do: "idle"
 
   defp harness_ready?(_sprite, nil, _exec_fn), do: true
   defp harness_ready?(_sprite, "", _exec_fn), do: true
@@ -414,6 +563,22 @@ defmodule Conductor.Sprite do
     command_suffix = harness_command(harness, cmd_str, workspace, prompt_path, persona_role)
 
     "cd #{shell_quote(workspace)} && : > #{shell_quote(log_path)} && if [ -f #{shell_quote(runtime_env_path)} ]; then set -a; . #{shell_quote(runtime_env_path)}; set +a; fi && set -o pipefail && #{command_suffix} 2>&1 | tee -a #{shell_quote(log_path)}"
+  end
+
+  defp detached_agent_command(harness, cmd_parts, workspace, prompt_path, persona_role) do
+    command_suffix = agent_command(harness, cmd_parts, workspace, prompt_path, persona_role)
+
+    """
+    set -e
+    mkdir -p #{shell_quote(@sprite_runtime_dir)}
+    rm -f #{shell_quote(@sprite_loop_pid_path)}
+    nohup bash -lc #{shell_quote("""
+    echo $$ > #{@sprite_loop_pid_path}
+    trap 'rm -f #{@sprite_loop_pid_path}' EXIT
+    #{command_suffix}
+    """)} >/dev/null 2>&1 </dev/null &
+    printf '%s\\n' "$!"
+    """
   end
 
   defp harness_command(_harness, cmd_str, _workspace, prompt_path, nil) do
