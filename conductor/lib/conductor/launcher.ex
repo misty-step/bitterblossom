@@ -31,7 +31,8 @@ defmodule Conductor.Launcher do
     # Reconciliation already provisioned the sprite. We just need spellbook + persona + dispatch.
     persona = persona_for_role(role)
 
-    with :ok <- Sprite.force_sync_codex_auth(sprite),
+    with :ok <- reset_workspace(sprite, workspace),
+         :ok <- Sprite.force_sync_codex_auth(sprite),
          :ok <- Bootstrap.ensure_spellbook(sprite),
          :ok <- Workspace.sync_persona(sprite, workspace, persona) do
       prompt = loop_prompt(sprite_config, repo)
@@ -72,6 +73,21 @@ defmodule Conductor.Launcher do
 
     Your skills are installed. Use them.
     """
+  end
+
+  defp reset_workspace(sprite, workspace) do
+    cmd =
+      "cd #{workspace} && git fetch origin --quiet && git checkout master --quiet && git reset --hard origin/master --quiet && git clean -fd --quiet"
+
+    case Sprite.exec(sprite, cmd, timeout: 30_000) do
+      {:ok, _} ->
+        Logger.info("[launcher] #{sprite} workspace reset to origin/master")
+        :ok
+
+      {:error, msg, _code} ->
+        Logger.warning("[launcher] #{sprite} workspace reset failed: #{msg}")
+        {:error, "workspace reset failed: #{msg}"}
+    end
   end
 
   defp persona_for_role(:builder), do: :weaver
