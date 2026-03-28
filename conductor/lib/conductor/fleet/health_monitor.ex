@@ -112,9 +112,11 @@ defmodule Conductor.Fleet.HealthMonitor do
           })
 
           # Re-launch the agent loop for the recovered sprite
-          if sprite_repo(sprite, acc.repo) do
+          repo = sprite_repo(sprite, acc.repo)
+
+          if repo do
             Task.Supervisor.start_child(Conductor.TaskSupervisor, fn ->
-              launcher_mod().launch(sprite, sprite_repo(sprite, acc.repo))
+              launcher_mod().launch(sprite, repo)
             end)
           end
 

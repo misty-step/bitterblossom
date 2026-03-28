@@ -5,7 +5,7 @@ defmodule Conductor.ApplicationTest do
 
   defmodule MockReconciler do
     def reconcile_all(sprites, _opts \\ []) do
-      {:ok, Enum.map(sprites, &%{name: &1.name, healthy: true, action: :none})}
+      {:ok, Enum.map(sprites, &%{name: &1.name, role: &1.role, healthy: true, action: :none})}
     end
   end
 
