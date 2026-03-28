@@ -7,7 +7,12 @@ defmodule Conductor.Fleet.Config do
   """
 
   @spec sprite_repo(map(), binary() | nil) :: binary() | nil
-  def sprite_repo(sprite, fallback_repo), do: Map.get(sprite, :repo, fallback_repo)
+  def sprite_repo(sprite, fallback_repo) do
+    case Map.get(sprite, :repo) do
+      repo when is_binary(repo) and repo != "" -> repo
+      _ -> fallback_repo
+    end
+  end
 
   @spec launcher_module() :: module()
   def launcher_module do

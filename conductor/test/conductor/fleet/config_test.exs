@@ -11,6 +11,10 @@ defmodule Conductor.Fleet.ConfigTest do
     assert Config.sprite_repo(%{}, "default/repo") == "default/repo"
   end
 
+  test "sprite_repo/2 ignores blank sprite overrides" do
+    assert Config.sprite_repo(%{repo: ""}, "default/repo") == "default/repo"
+  end
+
   test "launcher_module/0 returns the configured launcher" do
     original = Application.get_env(:conductor, :launcher_module)
     Application.put_env(:conductor, :launcher_module, __MODULE__.MockLauncher)
