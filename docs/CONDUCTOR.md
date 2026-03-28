@@ -37,12 +37,10 @@ Inspection commands:
 
 ```bash
 cd conductor
+mix conductor status
 mix conductor fleet --fleet ../fleet.toml
 mix conductor logs bb-weaver --follow
-mix conductor show-runs --limit 10
-mix conductor show-events --run_id <run-id>
-mix conductor show-incidents --run_id <run-id>
-mix conductor show-waivers --run_id <run-id>
+mix conductor show-events --limit 50
 ```
 
 ## Fleet Reconciliation
