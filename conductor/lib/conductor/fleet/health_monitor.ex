@@ -12,6 +12,7 @@ defmodule Conductor.Fleet.HealthMonitor do
   require Logger
 
   alias Conductor.{Config, Store}
+  alias Conductor.Fleet.Config, as: FleetConfig
   alias Conductor.Fleet.Reconciler
 
   defstruct [
@@ -112,11 +113,9 @@ defmodule Conductor.Fleet.HealthMonitor do
           })
 
           # Re-launch the agent loop for the recovered sprite
-          repo = sprite_repo(sprite, acc.repo)
-
-          if repo do
+          if repo = FleetConfig.sprite_repo(sprite, acc.repo) do
             Task.Supervisor.start_child(Conductor.TaskSupervisor, fn ->
-              launcher_mod().launch(sprite, repo)
+              FleetConfig.launcher_module().launch(sprite, repo)
             end)
           end
 
@@ -151,12 +150,6 @@ defmodule Conductor.Fleet.HealthMonitor do
 
   defp schedule_check(interval_ms) when is_integer(interval_ms) do
     Process.send_after(self(), :check, interval_ms)
-  end
-
-  defp sprite_repo(sprite, fallback_repo), do: Map.get(sprite, :repo, fallback_repo)
-
-  defp launcher_mod do
-    Application.get_env(:conductor, :launcher_module, Conductor.Launcher)
   end
 
   defp reconciler_mod do
