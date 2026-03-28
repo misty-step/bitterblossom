@@ -39,7 +39,7 @@ mix conductor fleet --fleet ../fleet.toml --reconcile
 mix conductor start --fleet ../fleet.toml
 ```
 
-Use `mix conductor fleet`, `mix conductor logs <sprite>`, `mix conductor show-events --run_id <id>`, and `mix conductor dashboard` to inspect the live system.
+Use `mix conductor fleet`, `mix conductor logs <sprite>`, `mix conductor show-events --limit 50`, and `mix conductor dashboard` to inspect the live system.
 
 ## Repo Layout
 
