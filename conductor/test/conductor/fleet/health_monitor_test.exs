@@ -36,6 +36,16 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     end
   end
 
+  defmodule MockLauncher do
+    alias Conductor.Fleet.HealthMonitorTest.MockState
+
+    def launch(sprite, repo) do
+      MockState.put({:launch, sprite.name}, repo)
+      send(MockState.get(:test_pid), {:launched, sprite.name, repo})
+      {:ok, "launched"}
+    end
+  end
+
   setup do
     db_path = Path.join(System.tmp_dir!(), "health_mon_test_#{:rand.uniform(999_999)}.db")
     event_log = Path.join(System.tmp_dir!(), "health_mon_test_#{:rand.uniform(999_999)}.jsonl")
@@ -49,7 +59,10 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     {:ok, _} = Task.Supervisor.start_link(name: Conductor.TaskSupervisor)
 
     orig_reconciler = Application.get_env(:conductor, :reconciler_module)
+    orig_launcher = Application.get_env(:conductor, :launcher_module)
     Application.put_env(:conductor, :reconciler_module, MockReconciler)
+    Application.put_env(:conductor, :launcher_module, MockLauncher)
+    MockState.put(:test_pid, self())
 
     on_exit(fn ->
       stop_process(HealthMonitor)
@@ -60,6 +73,10 @@ defmodule Conductor.Fleet.HealthMonitorTest do
       if orig_reconciler,
         do: Application.put_env(:conductor, :reconciler_module, orig_reconciler),
         else: Application.delete_env(:conductor, :reconciler_module)
+
+      if orig_launcher,
+        do: Application.put_env(:conductor, :launcher_module, orig_launcher),
+        else: Application.delete_env(:conductor, :launcher_module)
 
       File.rm(db_path)
       File.rm(event_log)
@@ -199,5 +216,17 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     end)
 
     assert Enum.any?(Store.list_events("fleet"), &(&1["event_type"] == "sprite_recovered"))
+  end
+
+  test "relaunches a recovered sprite with its configured repo override" do
+    start_monitor(interval_ms: 60_000)
+
+    sprites = [%{name: "bb-polisher", role: :polisher, harness: "codex", repo: "other/repo"}]
+    MockState.put({:sprite_health, "bb-polisher"}, :healthy)
+
+    HealthMonitor.configure(sprites: sprites, repo: "default/repo", healthy: MapSet.new())
+    HealthMonitor.check_now()
+
+    assert_receive {:launched, "bb-polisher", "other/repo"}
   end
 end

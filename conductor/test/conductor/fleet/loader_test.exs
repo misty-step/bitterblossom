@@ -86,6 +86,30 @@ defmodule Conductor.Fleet.LoaderTest do
       assert builder.capability_tags == ["elixir", "ci"]
     end
 
+    test "sprite-level repo overrides defaults", %{path: path} do
+      File.write!(path, """
+      version = "1"
+
+      [defaults]
+      repo = "test/default"
+
+      [[sprite]]
+      name = "bb-weaver"
+      role = "builder"
+
+      [[sprite]]
+      name = "bb-thorn"
+      role = "fixer"
+      repo = "test/override"
+      """)
+
+      {:ok, config} = Loader.load(path)
+      [builder, fixer] = config.sprites
+
+      assert builder.repo == "test/default"
+      assert fixer.repo == "test/override"
+    end
+
     test "label stays optional when configured explicitly", %{path: path} do
       File.write!(path, """
       version = "1"

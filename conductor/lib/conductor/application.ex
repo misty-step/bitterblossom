@@ -71,7 +71,7 @@ defmodule Conductor.Application do
     )
 
     for sprite <- healthy_sprites do
-      launch_with_restart(sprite, repo)
+      launch_with_restart(sprite, sprite_repo(sprite, repo))
     end
 
     # 4. Store fleet config for runtime queries
@@ -118,7 +118,7 @@ defmodule Conductor.Application do
   @doc false
   def launch_with_restart(sprite, repo) do
     Task.Supervisor.start_child(Conductor.TaskSupervisor, fn ->
-      case Conductor.Launcher.launch(sprite, repo) do
+      case launcher_mod().launch(sprite, repo) do
         {:ok, _} ->
           Logger.info(
             "[launcher] #{sprite.name} completed, restarting in #{div(@restart_backoff_ms, 1000)}s"
@@ -133,6 +133,12 @@ defmodule Conductor.Application do
       Process.sleep(@restart_backoff_ms)
       launch_with_restart(sprite, repo)
     end)
+  end
+
+  defp sprite_repo(sprite, fallback_repo), do: Map.get(sprite, :repo, fallback_repo)
+
+  defp launcher_mod do
+    Application.get_env(:conductor, :launcher_module, Conductor.Launcher)
   end
 
   defp fleet_reconciler do
