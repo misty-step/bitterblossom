@@ -63,6 +63,12 @@ The default `fleet.toml` declares:
 
 The conductor provisions only the sprites named in `fleet.toml`. Repo assignment, model, reasoning effort, and persona prompt come from that file.
 
+## Runtime Profile
+
+Managed sprites use the stable profile alias `sonnet` from `base/settings.json`.
+The current canonical OpenRouter Claude model identifier behind that profile is
+`anthropic/claude-sonnet-4-6`, as configured in `scripts/lib.sh`.
+
 ## Skills and Personas
 
 Managed sprites receive:
