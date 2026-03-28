@@ -1,6 +1,9 @@
 # Bitterblossom
 
-Bitterblossom is an Elixir conductor for an agent-run software factory. It reconciles a fleet of sprites, dispatches their autonomous loops, and exposes truthful operator surfaces for health, logs, and run state.
+Bitterblossom is an Elixir infrastructure layer for an agent-run software
+factory. It reconciles a fleet of sprites, can still boot the legacy
+always-on conductor session, and now exposes agent-first operator surfaces for
+truthful fleet inspection and per-sprite lifecycle control.
 
 ## Supported Surfaces
 
@@ -41,6 +44,18 @@ mix conductor start --fleet ../fleet.toml
 
 Use `mix conductor fleet`, `mix conductor logs <sprite>`, `mix conductor show-events --limit 50`, and `mix conductor dashboard` to inspect the live system.
 
+For direct sprite lifecycle control on declared fleet entries:
+
+```bash
+cd conductor
+mix conductor fleet audit --fleet ../fleet.toml
+mix conductor sprite status bb-builder --fleet ../fleet.toml --json
+mix conductor sprite start bb-builder --fleet ../fleet.toml
+mix conductor sprite pause bb-builder --fleet ../fleet.toml --wait
+mix conductor sprite resume bb-builder --fleet ../fleet.toml
+mix conductor sprite stop bb-builder --fleet ../fleet.toml
+```
+
 ## Repo Layout
 
 ```text
@@ -61,7 +76,10 @@ The default `fleet.toml` declares:
 - `bb-fixer` running the Thorn loop
 - `bb-polisher` running the Fern loop
 
-The conductor provisions only the sprites named in `fleet.toml`. Repo assignment, model, reasoning effort, and persona prompt come from that file.
+The conductor currently provisions and manages only the sprites named in
+`fleet.toml`. Repo assignment, model, reasoning effort, and persona prompt come
+from that file. Template-based create/clone/scale is planned, but not part of
+this sprint-1 slice.
 
 ## Runtime Profile
 
