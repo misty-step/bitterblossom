@@ -76,10 +76,27 @@ defmodule Conductor.Launcher do
   end
 
   defp reset_workspace(sprite, workspace) do
-    cmd =
-      "cd #{workspace} && git fetch origin --quiet && git checkout -f master --quiet && git reset --hard origin/master --quiet && git clean -fd --quiet"
+    rescue_cmd = rescue_unpushed_script(workspace)
 
-    case Sprite.exec(sprite, cmd, timeout: 30_000) do
+    reset_cmd =
+      "cd #{workspace} && git checkout -f master --quiet && git reset --hard origin/master --quiet && git clean -fd --quiet"
+
+    # 1. Rescue any unpushed work from a prior agent loop
+    case Sprite.exec(sprite, rescue_cmd, timeout: 30_000) do
+      {:ok, output} ->
+        output = String.trim(output)
+
+        if output != "" and output != "nothing to rescue",
+          do: Logger.info("[launcher] #{sprite} #{output}")
+
+      {:error, _, _} ->
+        :ok
+    end
+
+    # 2. Fetch latest and reset to origin/master
+    case Sprite.exec(sprite, "cd #{workspace} && git fetch origin --quiet && #{reset_cmd}",
+           timeout: 30_000
+         ) do
       {:ok, _} ->
         Logger.info("[launcher] #{sprite} workspace reset to origin/master")
         :ok
@@ -88,6 +105,29 @@ defmodule Conductor.Launcher do
         Logger.warning("[launcher] #{sprite} workspace reset failed: #{msg}")
         {:error, "workspace reset failed: #{msg}"}
     end
+  end
+
+  defp rescue_unpushed_script(workspace) do
+    """
+    cd #{workspace}
+    branch=$(git branch --show-current 2>/dev/null || echo master)
+    if [ "$branch" = "master" ] || [ "$branch" = "main" ] || [ -z "$branch" ]; then
+      echo "nothing to rescue"
+      exit 0
+    fi
+    # Check if there are commits ahead of origin/master
+    ahead=$(git rev-list origin/master..HEAD --count 2>/dev/null || echo 0)
+    if [ "$ahead" = "0" ]; then
+      echo "nothing to rescue"
+      exit 0
+    fi
+    # Commit any dirty files so they're not lost
+    git add -A 2>/dev/null
+    git diff --cached --quiet 2>/dev/null || git commit -m "rescue: uncommitted work before workspace reset" --quiet 2>/dev/null
+    # Push to a rescue branch
+    rescue_branch="rescue/$(date +%s)-$branch"
+    git push origin "HEAD:$rescue_branch" --quiet 2>&1 && echo "rescued $ahead commit(s) from $branch to $rescue_branch" || echo "rescue push failed"
+    """
   end
 
   defp persona_for_role(:builder), do: :weaver
