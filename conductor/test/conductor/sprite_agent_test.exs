@@ -78,14 +78,8 @@ defmodule Conductor.SpriteAgentTest do
       send(test_pid, {:exec_called, command, opts, uploaded_files})
 
       cond do
-        String.contains?(command, "printf 'paused'") ->
-          {:ok, ""}
-
-        String.contains?(command, "pgrep -x codex") ->
-          {:error, "", 1}
-
         String.contains?(command, "nohup bash -lc") ->
-          {:ok, "123\n"}
+          {:ok, "__bb_started__:123\n"}
 
         true ->
           {:ok, ""}
@@ -100,13 +94,6 @@ defmodule Conductor.SpriteAgentTest do
                exec_fn: exec_fn
              )
 
-    assert_received {:exec_called,
-                     "if [ -e '/home/sprite/.bitterblossom/paused' ]; then printf 'paused'; fi",
-                     _, _}
-
-    assert_received {:exec_called, detect_cmd, _, _}
-    assert detect_cmd =~ "pgrep -x codex"
-
     assert_received {:exec_called, "true", upload_opts, uploaded_files}
     assert Keyword.has_key?(upload_opts, :files)
     assert {"/tmp/worktree/PROMPT.md", "# Loop prompt"} in uploaded_files
@@ -120,6 +107,10 @@ defmodule Conductor.SpriteAgentTest do
            end)
 
     assert_received {:exec_called, detached_cmd, _, _}
+    assert detached_cmd =~ "flock -n 9"
+    assert detached_cmd =~ "__bb_started__:"
+    assert detached_cmd =~ "__bb_busy__"
+    assert detached_cmd =~ "__bb_paused__"
     assert detached_cmd =~ "nohup bash -lc"
     assert detached_cmd =~ "/home/sprite/.bitterblossom/loop.pid"
     assert detached_cmd =~ "codex exec"
@@ -130,12 +121,7 @@ defmodule Conductor.SpriteAgentTest do
 
     exec_fn = fn _sprite, command, _opts ->
       send(test_pid, {:exec_called, command})
-
-      if String.contains?(command, "printf 'paused'") do
-        {:ok, "paused"}
-      else
-        {:ok, ""}
-      end
+      {:ok, "__bb_paused__"}
     end
 
     assert {:error, "sprite is paused", 1} =
@@ -146,10 +132,9 @@ defmodule Conductor.SpriteAgentTest do
                exec_fn: exec_fn
              )
 
-    assert_received {:exec_called,
-                     "if [ -e '/home/sprite/.bitterblossom/paused' ]; then printf 'paused'; fi"}
-
-    refute_received {:exec_called, "true"}
+    assert_received {:exec_called, "true"}
+    assert_received {:exec_called, detached_cmd}
+    assert detached_cmd =~ "flock -n 9"
   end
 
   test "start_loop refuses to launch when another loop is active" do
@@ -157,17 +142,7 @@ defmodule Conductor.SpriteAgentTest do
 
     exec_fn = fn _sprite, command, _opts ->
       send(test_pid, {:exec_called, command})
-
-      cond do
-        String.contains?(command, "printf 'paused'") ->
-          {:ok, ""}
-
-        String.contains?(command, "pgrep -x codex") ->
-          {:ok, "4242\n"}
-
-        true ->
-          {:ok, ""}
-      end
+      if command == "true", do: {:ok, ""}, else: {:ok, "__bb_busy__"}
     end
 
     assert {:error, "sprite already has an active loop", 1} =
@@ -178,12 +153,9 @@ defmodule Conductor.SpriteAgentTest do
                exec_fn: exec_fn
              )
 
-    assert_received {:exec_called,
-                     "if [ -e '/home/sprite/.bitterblossom/paused' ]; then printf 'paused'; fi"}
-
-    assert_received {:exec_called, detect_cmd}
-    assert detect_cmd =~ "pgrep -x codex"
-    refute_received {:exec_called, "true"}
+    assert_received {:exec_called, "true"}
+    assert_received {:exec_called, detached_cmd}
+    assert detached_cmd =~ "flock -n 9"
   end
 
   test "pause, resume, and stop_loop use the runtime markers" do

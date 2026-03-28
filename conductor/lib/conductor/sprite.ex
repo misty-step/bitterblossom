@@ -29,6 +29,7 @@ defmodule Conductor.Sprite do
   @sprite_runtime_dir Path.join(@sprite_home, ".bitterblossom")
   @sprite_runtime_env_path Path.join(@sprite_runtime_dir, "runtime.env")
   @sprite_pause_path Path.join(@sprite_runtime_dir, "paused")
+  @sprite_loop_lock_path Path.join(@sprite_runtime_dir, "loop.lock")
   @sprite_loop_pid_path Path.join(@sprite_runtime_dir, "loop.pid")
   @sprite_workspace_root Path.join(@sprite_home, "workspace")
   @sprite_persona_path Path.join(@sprite_workspace_root, "PERSONA.md")
@@ -37,6 +38,9 @@ defmodule Conductor.Sprite do
   @log_file "ralph.log"
   @probe_marker "__bb_probe__"
   @wake_marker "__bb_wake__"
+  @start_loop_started_prefix "__bb_started__:"
+  @start_loop_paused_marker "__bb_paused__"
+  @start_loop_busy_marker "__bb_busy__"
 
   @spec exec(binary(), binary(), keyword()) :: {:ok, binary()} | {:error, binary(), integer()}
   def exec(sprite, command, opts \\ []) do
@@ -159,32 +163,29 @@ defmodule Conductor.Sprite do
     exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
 
     with {:ok, persona_role} <- normalize_optional_persona_role(Keyword.get(opts, :persona_role)) do
-      cond do
-        paused?(sprite, exec_fn: exec_fn) ->
-          {:error, "sprite is paused", 1}
+      prompt_path = Path.join(workspace, "PROMPT.md")
+      runtime_env_path = Path.join(workspace, @runtime_env_file)
 
-        busy?(sprite, exec_fn: exec_fn) ->
-          {:error, "sprite already has an active loop", 1}
+      case upload_dispatch_files(exec_fn, sprite, prompt_path, prompt, runtime_env_path) do
+        {:error, msg, code} ->
+          {:error, "dispatch file upload failed: #{msg}", code}
 
-        true ->
-          prompt_path = Path.join(workspace, "PROMPT.md")
-          runtime_env_path = Path.join(workspace, @runtime_env_file)
+        {:ok, _} ->
+          detached_cmd =
+            detached_agent_command(
+              harness,
+              harness.dispatch_command(harness_opts),
+              workspace,
+              prompt_path,
+              persona_role
+            )
 
-          case upload_dispatch_files(exec_fn, sprite, prompt_path, prompt, runtime_env_path) do
+          case exec_fn.(sprite, detached_cmd, timeout: 30_000) do
+            {:ok, output} when is_binary(output) ->
+              parse_start_loop_output(output)
+
             {:error, msg, code} ->
-              {:error, "dispatch file upload failed: #{msg}", code}
-
-            {:ok, _} ->
-              detached_cmd =
-                detached_agent_command(
-                  harness,
-                  harness.dispatch_command(harness_opts),
-                  workspace,
-                  prompt_path,
-                  persona_role
-                )
-
-              exec_fn.(sprite, detached_cmd, timeout: 30_000)
+              {:error, msg, code}
           end
       end
     else
@@ -571,14 +572,52 @@ defmodule Conductor.Sprite do
     """
     set -e
     mkdir -p #{shell_quote(@sprite_runtime_dir)}
+    exec 9>#{shell_quote(@sprite_loop_lock_path)}
+    if ! flock -n 9; then
+      printf '%s' #{shell_quote(@start_loop_busy_marker)}
+      exit 0
+    fi
+    if [ -e #{shell_quote(@sprite_pause_path)} ]; then
+      printf '%s' #{shell_quote(@start_loop_paused_marker)}
+      exit 0
+    fi
+    if [ -s #{shell_quote(@sprite_loop_pid_path)} ]; then
+      pid=$(cat #{shell_quote(@sprite_loop_pid_path)})
+      if kill -0 "$pid" 2>/dev/null; then
+        printf '%s' #{shell_quote(@start_loop_busy_marker)}
+        exit 0
+      fi
+    fi
+    if #{detect_agents_cmd()}; then
+      printf '%s' #{shell_quote(@start_loop_busy_marker)}
+      exit 0
+    fi
     rm -f #{shell_quote(@sprite_loop_pid_path)}
     nohup bash -lc #{shell_quote("""
     echo $$ > #{@sprite_loop_pid_path}
     trap 'rm -f #{@sprite_loop_pid_path}' EXIT
     #{command_suffix}
     """)} >/dev/null 2>&1 </dev/null &
-    printf '%s\\n' "$!"
+    printf '%s%s\\n' #{shell_quote(@start_loop_started_prefix)} "$!"
     """
+  end
+
+  defp parse_start_loop_output(output) do
+    trimmed = String.trim(output)
+
+    cond do
+      trimmed == @start_loop_paused_marker ->
+        {:error, "sprite is paused", 1}
+
+      trimmed == @start_loop_busy_marker ->
+        {:error, "sprite already has an active loop", 1}
+
+      String.starts_with?(output, @start_loop_started_prefix) ->
+        {:ok, String.replace_prefix(output, @start_loop_started_prefix, "")}
+
+      true ->
+        {:error, "detached loop launch returned unexpected output: #{trimmed}", 1}
+    end
   end
 
   defp harness_command(_harness, cmd_str, _workspace, prompt_path, nil) do

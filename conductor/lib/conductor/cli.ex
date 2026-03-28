@@ -127,12 +127,12 @@ defmodule Conductor.CLI do
       IO.puts("usage: bitterblossom fleet [status|audit] [--fleet path] [--reconcile] [--json]")
       System.halt(1)
     else
-      {opts, positional, _} =
+      {opts, positional, invalid} =
         OptionParser.parse(args,
           strict: [fleet: :string, reconcile: :boolean, help: :boolean, json: :boolean]
         )
 
-      if Keyword.get(opts, :help, false) or positional != [] do
+      if invalid != [] or Keyword.get(opts, :help, false) or positional != [] do
         IO.puts("usage: bitterblossom fleet [status|audit] [--fleet path] [--reconcile] [--json]")
         if opts[:help], do: :ok, else: System.halt(1)
       else
@@ -196,13 +196,13 @@ defmodule Conductor.CLI do
   end
 
   defp cmd_logs(args) do
-    {opts, positional, _} =
+    {opts, positional, invalid} =
       OptionParser.parse(args,
         aliases: [f: :follow, n: :lines],
         strict: [follow: :boolean, lines: :integer, help: :boolean]
       )
 
-    if Keyword.get(opts, :help, false) or positional == [] do
+    if invalid != [] or Keyword.get(opts, :help, false) or positional == [] do
       IO.puts("usage: bitterblossom logs <sprite> [--follow] [--lines N]")
       if opts[:help], do: :ok, else: System.halt(1)
     else
@@ -264,14 +264,9 @@ defmodule Conductor.CLI do
 
   defp cmd_sprite_start(args) do
     with {:ok, sprite, _opts, _config} <- fetch_sprite_args(args),
-         :ok <- run_check_env_for_sprite(sprite),
-         :ok <-
-           sprite_module().provision(sprite.name,
-             repo: sprite.repo,
-             persona: sprite.persona,
-             harness: sprite.harness
-           ),
-         :ok <- maybe_force_sync_codex_auth(sprite),
+         status <- probe_status(sprite, sprite_module()),
+         :ok <- ensure_start_admissible(status),
+         :ok <- ensure_sprite_ready_for_start(sprite, status),
          :ok <-
            workspace_module().sync_persona(
              sprite.name,
@@ -486,13 +481,13 @@ defmodule Conductor.CLI do
   end
 
   defp fetch_sprite_args(args, extra_opts \\ []) do
-    {opts, positional, _} =
+    {opts, positional, invalid} =
       OptionParser.parse(args,
         strict: Keyword.merge([fleet: :string, help: :boolean], extra_opts)
       )
 
     cond do
-      Keyword.get(opts, :help, false) or positional == [] ->
+      invalid != [] or Keyword.get(opts, :help, false) or positional == [] ->
         {:error, "usage: bitterblossom sprite <command> <sprite> [--fleet path]"}
 
       true ->
@@ -519,6 +514,25 @@ defmodule Conductor.CLI do
 
   defp maybe_stop_after_pause(sprite_name, opts) do
     if opts[:wait], do: sprite_module().stop_loop(sprite_name), else: :ok
+  end
+
+  defp ensure_start_admissible(%{paused: true}), do: {:error, "sprite is paused"}
+  defp ensure_start_admissible(%{busy: true}), do: {:error, "sprite already has an active loop"}
+  defp ensure_start_admissible(_status), do: :ok
+
+  defp ensure_sprite_ready_for_start(_sprite, %{reachable: true, healthy: true}), do: :ok
+
+  defp ensure_sprite_ready_for_start(sprite, _status) do
+    with :ok <- run_check_env_for_sprite(sprite),
+         :ok <-
+           sprite_module().provision(sprite.name,
+             repo: sprite.repo,
+             persona: sprite.persona,
+             harness: sprite.harness
+           ),
+         :ok <- maybe_force_sync_codex_auth(sprite) do
+      :ok
+    end
   end
 
   defp persona_for_role(:builder), do: :weaver

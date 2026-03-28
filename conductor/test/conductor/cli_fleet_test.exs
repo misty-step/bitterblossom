@@ -77,6 +77,22 @@ defmodule Conductor.CLIFleetTest do
        }}
     end
 
+    def status("bb-weaver-3", _opts) do
+      {:ok,
+       %{
+         sprite: "bb-weaver-3",
+         reachable: true,
+         harness_ready: true,
+         codex_auth_ready: false,
+         gh_authenticated: false,
+         git_credential_helper: true,
+         healthy: false,
+         paused: false,
+         busy: false,
+         lifecycle_status: "idle"
+       }}
+    end
+
     def status(name, _opts) do
       {:ok,
        %{
@@ -328,7 +344,7 @@ defmodule Conductor.CLIFleetTest do
     assert_received {:stop_called, "bb-weaver-1"}
   end
 
-  test "sprite start provisions, syncs persona, and launches a detached loop", %{
+  test "sprite start uses the fast path for a healthy declared sprite", %{
     fleet_path: fleet_path
   } do
     Application.put_env(:conductor, :sprite_module, MockSpriteModule)
@@ -338,22 +354,42 @@ defmodule Conductor.CLIFleetTest do
 
     output =
       capture_io(fn ->
-        CLI.main(["sprite", "start", "bb-weaver-1", "--fleet", fleet_path])
+        CLI.main(["sprite", "start", "bb-weaver-2", "--fleet", fleet_path])
       end)
 
-    assert output =~ "started bb-weaver-1 (pid 123)"
+    assert output =~ "started bb-weaver-2 (pid 123)"
+    refute_received {:provision_called, _, _}
+    refute_received {:force_sync_called, _}
+    assert_received {:sync_persona_called, "bb-weaver-2", "/tmp/repo", :weaver}
 
-    assert_received {:provision_called, "bb-weaver-1",
-                     [repo: "test/repo", persona: nil, harness: "codex"]}
-
-    assert_received {:force_sync_called, "bb-weaver-1"}
-    assert_received {:sync_persona_called, "bb-weaver-1", "/tmp/repo", :weaver}
-
-    assert_received {:start_loop_called, "bb-weaver-1", prompt, "test/repo", opts}
+    assert_received {:start_loop_called, "bb-weaver-2", prompt, "test/repo", opts}
     assert prompt =~ "# Weaver Loop"
     assert opts[:workspace] == "/tmp/repo"
     assert opts[:persona_role] == :weaver
     assert opts[:harness] == Conductor.Codex
+  end
+
+  test "sprite start provisions an unhealthy declared sprite before launch", %{
+    fleet_path: fleet_path
+  } do
+    Application.put_env(:conductor, :sprite_module, MockSpriteModule)
+    Application.put_env(:conductor, :workspace_module, MockWorkspaceModule)
+    Application.put_env(:conductor, :config_module, MockConfigModule)
+    Application.put_env(:conductor, :sprite_test_pid, self())
+
+    output =
+      capture_io(fn ->
+        CLI.main(["sprite", "start", "bb-weaver-3", "--fleet", fleet_path])
+      end)
+
+    assert output =~ "started bb-weaver-3 (pid 123)"
+
+    assert_received {:provision_called, "bb-weaver-3",
+                     [repo: "test/repo", persona: nil, harness: "codex"]}
+
+    assert_received {:force_sync_called, "bb-weaver-3"}
+    assert_received {:sync_persona_called, "bb-weaver-3", "/tmp/repo", :weaver}
+    assert_received {:start_loop_called, "bb-weaver-3", _, "test/repo", _}
   end
 
   test "sprite resume resumes a declared sprite", %{fleet_path: fleet_path} do
@@ -555,5 +591,33 @@ defmodule Conductor.CLIFleetTest do
 
     assert output =~
              "usage: bitterblossom fleet [status|audit] [--fleet path] [--reconcile] [--json]"
+  end
+
+  test "mix conductor fleet rejects unknown flags with exit 1" do
+    {output, status} =
+      System.cmd("mix", ["conductor", "fleet", "--bogus"],
+        cd: @conductor_dir,
+        env: [{"MIX_ENV", "test"}],
+        stderr_to_stdout: true
+      )
+
+    assert status == 1
+
+    assert output =~
+             "usage: bitterblossom fleet [status|audit] [--fleet path] [--reconcile] [--json]"
+  end
+
+  test "mix conductor sprite status rejects unknown flags with exit 1" do
+    {output, status} =
+      System.cmd(
+        "mix",
+        ["conductor", "sprite", "status", "bb-builder", "--fleet", "../fleet.toml", "--bogus"],
+        cd: @conductor_dir,
+        env: [{"MIX_ENV", "test"}],
+        stderr_to_stdout: true
+      )
+
+    assert status == 1
+    assert output =~ "usage: bitterblossom sprite <command> <sprite> [--fleet path]"
   end
 end
