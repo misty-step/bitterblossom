@@ -76,7 +76,8 @@ defmodule Conductor.Launcher do
   end
 
   defp reset_workspace(sprite, workspace) do
-    cmd = "cd #{workspace} && git fetch origin --quiet && git checkout master --quiet && git reset --hard origin/master --quiet && git clean -fd --quiet"
+    cmd =
+      "cd #{workspace} && git fetch origin --quiet && git checkout master --quiet && git reset --hard origin/master --quiet && git clean -fd --quiet"
 
     case Sprite.exec(sprite, cmd, timeout: 30_000) do
       {:ok, _} ->
