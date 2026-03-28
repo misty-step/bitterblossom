@@ -12,7 +12,7 @@ Current Bitterblossom is a conductor-first system.
 | [`fleet.toml`](../fleet.toml) | Declared fleet membership, repo assignment, and persona configuration |
 | [`WORKFLOW.md`](../WORKFLOW.md) | Repo-owned runtime contract |
 
-Historical note: [`cmd/bb/`](../cmd/bb/) remains in-tree as legacy material pending [#703](https://github.com/misty-step/bitterblossom/issues/703). It is not the supported operator surface.
+Historical note: [`cmd/bb/`](../cmd/bb/) remains in-tree as legacy material pending #703. It is not the supported operator surface.
 
 ## High-Level Flow
 

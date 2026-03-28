@@ -8,7 +8,7 @@ Bitterblossom is an Elixir conductor for an agent-run software factory. It recon
 - `base/`: shared runtime config, hooks, and skills uploaded to managed sprites
 - `sprites/`: repo-owned agent personas and loop instructions
 
-Historical note: `cmd/bb/` still exists in the repo, but it is legacy surface pending [#703](https://github.com/misty-step/bitterblossom/issues/703). Root docs should treat the conductor as the supported path.
+Historical note: [`cmd/bb/`](cmd/bb/) still exists in the repo, but it is legacy surface pending #703. Root docs should treat the conductor as the supported path.
 
 ## What Runs Today
 
@@ -74,7 +74,7 @@ The current canonical OpenRouter Claude model identifier behind that profile is
 Managed sprites receive:
 
 - repo-owned loop instructions from `sprites/`
-- shared runtime guidance from `WORKFLOW.md`, `AGENTS.md`, and `project.md`
+- shared runtime guidance from [WORKFLOW.md](WORKFLOW.md), [AGENTS.md](AGENTS.md), and [project.md](project.md)
 - uploaded skill packs from `base/` and the configured spellbook
 
 This keeps judgment in the agent layer while the conductor stays responsible for provisioning, dispatch, health, and operator visibility.
