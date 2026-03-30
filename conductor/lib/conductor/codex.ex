@@ -37,5 +37,4 @@ defmodule Conductor.Codex do
       "model_reasoning_effort=#{reasoning}"
     ]
   end
-
 end

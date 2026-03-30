@@ -29,5 +29,4 @@ defmodule Conductor.CodexTest do
       refute "model_reasoning_effort=medium" in cmd
     end
   end
-
 end

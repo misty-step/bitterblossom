@@ -22,5 +22,4 @@ defmodule Conductor.Harness do
   - `:model` — override the default model identifier
   """
   @callback dispatch_command(opts :: keyword()) :: [binary()]
-
 end
