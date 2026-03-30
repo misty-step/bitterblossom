@@ -31,18 +31,6 @@ defmodule Conductor.Store do
     GenServer.call(__MODULE__, {:list_all_events, opts})
   end
 
-  @doc "Persist whether new dispatch is paused."
-  @spec set_dispatch_paused(boolean()) :: :ok
-  def set_dispatch_paused(paused?) do
-    GenServer.call(__MODULE__, {:set_dispatch_paused, paused?})
-  end
-
-  @doc "Return true when dispatch is paused."
-  @spec dispatch_paused?() :: boolean()
-  def dispatch_paused? do
-    GenServer.call(__MODULE__, :dispatch_paused?)
-  end
-
   # --- GenServer Callbacks ---
 
   @impl true
@@ -119,53 +107,22 @@ defmodule Conductor.Store do
     {:reply, events, state}
   end
 
-  @impl true
-  def handle_call({:set_dispatch_paused, paused?}, _from, state) do
-    now = now_utc()
-    value = if paused?, do: "true", else: "false"
-
-    exec(
-      state.conn,
-      """
-      INSERT INTO control (key, value, updated_at)
-      VALUES ('dispatch_paused', ?1, ?2)
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-      """,
-      [value, now]
-    )
-
-    {:reply, :ok, state}
-  end
-
-  @impl true
-  def handle_call(:dispatch_paused?, _from, state) do
-    row = query_one(state.conn, "SELECT value FROM control WHERE key = 'dispatch_paused'", [])
-    {:reply, row != nil and row["value"] == "true", state}
-  end
-
   # --- Private ---
 
   defp create_tables(conn) do
-    for sql <- [
-          """
-          CREATE TABLE IF NOT EXISTS events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            run_id TEXT NOT NULL,
-            event_type TEXT NOT NULL,
-            payload TEXT NOT NULL DEFAULT '{}',
-            created_at TEXT NOT NULL
-          )
-          """,
-          """
-          CREATE TABLE IF NOT EXISTS control (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-          )
-          """
-        ] do
-      exec(conn, sql, [])
-    end
+    exec(
+      conn,
+      """
+      CREATE TABLE IF NOT EXISTS events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        payload TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL
+      )
+      """,
+      []
+    )
   end
 
   defp exec(conn, sql, params) do
@@ -182,13 +139,6 @@ defmodule Conductor.Store do
     rows = collect_rows(conn, stmt, columns, [])
     :ok = Exqlite.Sqlite3.release(conn, stmt)
     rows
-  end
-
-  defp query_one(conn, sql, params) do
-    case query_all(conn, sql, params) do
-      [row | _] -> row
-      [] -> nil
-    end
   end
 
   defp collect_rows(conn, stmt, columns, acc) do

@@ -160,6 +160,8 @@ defmodule Conductor.CLIFleetTest do
 
       :ok
     end
+
+    defdelegate persona_for_role(role), to: Conductor.Workspace
   end
 
   defmodule MockConfigModule do

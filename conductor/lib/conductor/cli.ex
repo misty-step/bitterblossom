@@ -271,13 +271,13 @@ defmodule Conductor.CLI do
            workspace_module().sync_persona(
              sprite.name,
              workspace_module().repo_root(sprite.repo),
-             persona_for_role(sprite.role)
+             workspace_module().persona_for_role(sprite.role)
            ) do
       prompt = Conductor.Launcher.loop_prompt(sprite, sprite.repo)
 
       case sprite_module().start_loop(sprite.name, prompt, sprite.repo,
              workspace: workspace_module().repo_root(sprite.repo),
-             persona_role: persona_for_role(sprite.role),
+             persona_role: workspace_module().persona_for_role(sprite.role),
              harness: harness_module(sprite.harness),
              harness_opts: [reasoning_effort: sprite.reasoning_effort]
            ) do
@@ -534,11 +534,6 @@ defmodule Conductor.CLI do
       :ok
     end
   end
-
-  defp persona_for_role(:builder), do: :weaver
-  defp persona_for_role(:fixer), do: :thorn
-  defp persona_for_role(:polisher), do: :fern
-  defp persona_for_role(role), do: role
 
   defp harness_module("claude-code"), do: Conductor.ClaudeCode
   defp harness_module(_), do: Conductor.Codex

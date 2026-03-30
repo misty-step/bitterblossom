@@ -35,16 +35,6 @@ defmodule Conductor.StoreTest do
     assert List.last(events)["event_type"] == "sprite_healthy"
   end
 
-  test "dispatch pause flag defaults false and can be toggled" do
-    refute Store.dispatch_paused?()
-
-    :ok = Store.set_dispatch_paused(true)
-    assert Store.dispatch_paused?()
-
-    :ok = Store.set_dispatch_paused(false)
-    refute Store.dispatch_paused?()
-  end
-
   describe "list_all_events/1" do
     test "returns empty list when no events" do
       assert [] = Store.list_all_events()

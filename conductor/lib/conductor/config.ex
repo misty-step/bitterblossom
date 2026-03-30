@@ -3,10 +3,6 @@ defmodule Conductor.Config do
 
   require Logger
 
-  @type worker_config :: %{
-          name: binary(),
-          capability_tags: [binary()]
-        }
   @type codex_auth_source :: {:chatgpt, binary()} | {:api_key, binary()} | :missing
 
   @spec github_token!() :: binary()
@@ -44,11 +40,6 @@ defmodule Conductor.Config do
   @spec spellbook_repo() :: binary()
   def spellbook_repo do
     Application.get_env(:conductor, :spellbook_repo, "phrazzld/spellbook")
-  end
-
-  @spec fleet_probe_failure_threshold() :: pos_integer()
-  def fleet_probe_failure_threshold do
-    Application.get_env(:conductor, :fleet_probe_failure_threshold, 3)
   end
 
   @spec fleet_health_check_interval_ms() :: pos_integer()
@@ -157,22 +148,6 @@ defmodule Conductor.Config do
       {:api_key, _} -> "OPENAI_API_KEY"
       :missing -> false
     end
-  end
-
-  @spec normalize_workers([binary() | map()]) :: [worker_config()]
-  def normalize_workers(workers) do
-    Enum.map(workers, fn
-      %{name: name} = worker ->
-        %{
-          name: name,
-          capability_tags:
-            (Map.get(worker, :capability_tags) || Map.get(worker, "capability_tags") || [])
-            |> List.wrap()
-        }
-
-      name when is_binary(name) ->
-        %{name: name, capability_tags: []}
-    end)
   end
 
   @spec check_env!(keyword()) :: :ok

@@ -945,10 +945,7 @@ defmodule Conductor.Sprite do
     """
   end
 
-  defp shell_quote(value) do
-    escaped = value |> to_string() |> String.replace("'", "'\"'\"'")
-    "'#{escaped}'"
-  end
+  defp shell_quote(value), do: Shell.quote_arg(to_string(value))
 
   defp runtime_env_contents do
     body =

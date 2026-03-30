@@ -26,7 +26,7 @@ defmodule Conductor.Launcher do
     Logger.info("[launcher] launching #{sprite} (#{role})")
 
     workspace = Workspace.repo_root(repo)
-    persona = persona_for_role(role)
+    persona = Workspace.persona_for_role(role)
 
     with :ok <- Sprite.force_sync_codex_auth(sprite),
          :ok <- Bootstrap.ensure_spellbook(sprite),
@@ -69,11 +69,6 @@ defmodule Conductor.Launcher do
     Your skills are installed. Use them.
     """
   end
-
-  defp persona_for_role(:builder), do: :weaver
-  defp persona_for_role(:fixer), do: :thorn
-  defp persona_for_role(:polisher), do: :fern
-  defp persona_for_role(role), do: role
 
   defp role_display_name(:builder), do: "Weaver"
   defp role_display_name(:fixer), do: "Thorn"

@@ -73,7 +73,11 @@ defmodule Conductor.Shell do
 
   defp maybe_wrap_stdin_sensitive_command(program, args), do: {program, args}
 
-  defp shell_escape(arg) when is_binary(arg) do
+  @doc "Single-quote a value for safe shell interpolation."
+  @spec quote_arg(binary()) :: binary()
+  def quote_arg(arg) when is_binary(arg) do
     "'" <> String.replace(arg, "'", "'\"'\"'") <> "'"
   end
+
+  defp shell_escape(arg), do: quote_arg(arg)
 end

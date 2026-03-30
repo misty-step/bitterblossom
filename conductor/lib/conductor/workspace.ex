@@ -6,7 +6,7 @@ defmodule Conductor.Workspace do
   sprite definitions onto remote sprites, and provides workspace path resolution.
   """
 
-  alias Conductor.{Config, Sprite}
+  alias Conductor.{Config, Shell, Sprite}
   @mirror_base "/home/sprite/workspace"
   @safe_input ~r/^[a-zA-Z0-9_\-\.\/]+$/
   @persona_roles ~w(weaver thorn fern)
@@ -97,6 +97,13 @@ defmodule Conductor.Workspace do
 
     Path.join([workspace, ".bb", "persona", role_name])
   end
+
+  @doc "Map a fleet role atom to its persona name."
+  @spec persona_for_role(atom()) :: atom()
+  def persona_for_role(:builder), do: :weaver
+  def persona_for_role(:fixer), do: :thorn
+  def persona_for_role(:polisher), do: :fern
+  def persona_for_role(role), do: role
 
   # --- Private ---
 
@@ -215,8 +222,5 @@ defmodule Conductor.Workspace do
     end)
   end
 
-  defp shell_quote(value) do
-    escaped = value |> to_string() |> String.replace("'", "'\"'\"'")
-    "'#{escaped}'"
-  end
+  defp shell_quote(value), do: Shell.quote_arg(to_string(value))
 end
