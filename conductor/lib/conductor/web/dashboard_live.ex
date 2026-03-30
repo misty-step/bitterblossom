@@ -22,7 +22,7 @@ defmodule Conductor.Web.DashboardLive do
   end
 
   @impl true
-  def handle_info(:runs_updated, socket) do
+  def handle_info(:store_updated, socket) do
     events = Conductor.Store.list_all_events(limit: @event_limit)
     {:noreply, assign(socket, events: events)}
   end

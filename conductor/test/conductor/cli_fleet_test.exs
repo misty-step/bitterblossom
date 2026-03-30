@@ -4,7 +4,7 @@ defmodule Conductor.CLIFleetTest do
   import ExUnit.CaptureIO
   import Conductor.TestSupport.ProcessHelpers
 
-  alias Conductor.{CLI, Store}
+  alias Conductor.CLI
 
   @conductor_dir Path.expand("../..", __DIR__)
 

@@ -208,7 +208,7 @@ defmodule Conductor.Store do
 
   defp broadcast_update do
     if Process.whereis(Conductor.PubSub) do
-      Phoenix.PubSub.broadcast(Conductor.PubSub, "dashboard", :runs_updated)
+      Phoenix.PubSub.broadcast(Conductor.PubSub, "dashboard", :store_updated)
     end
 
     :ok

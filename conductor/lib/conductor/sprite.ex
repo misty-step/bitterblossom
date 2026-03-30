@@ -2,22 +2,12 @@ defmodule Conductor.Sprite do
   @moduledoc """
   Sprite operations via the `sprite` CLI.
 
-  Deep module: hides all sprite protocol details — exec, dispatch,
-  and process cleanup.
+  Deep module: hides all sprite protocol details — exec, lifecycle,
+  and process management.
 
-  Implements `Conductor.Worker`.
-
-  ## Dispatch sequence
-
-  `dispatch/4` performs the full sequence via direct `sprite exec` calls:
-
-  1. Kill stale agent processes (all known harnesses)
-  2. Upload prompt and runtime env file via `sprite exec --file`
-  3. Run agent via `Conductor.Harness` (e.g. `claude -p < PROMPT.md`)
-  4. On non-zero exit, retry once using the harness `continue_command`
+  Core operations: `exec/3`, `start_loop/4`, `stop_loop/1`,
+  `pause/1`, `resume/1`, `provision/2`, `status/2`, `logs/2`.
   """
-
-  # Sprite execution, dispatch, and health management.
 
   alias Conductor.{Shell, Config, Workspace}
   @runtime_env_file ".bb-runtime-env"
