@@ -217,16 +217,6 @@ defmodule Conductor.CLIFleetTest do
     Application.put_env(:conductor, :worker_module, MockWorker)
     Application.ensure_all_started(:conductor)
 
-    {:ok, run_id} =
-      Store.create_run(%{
-        repo: "test/repo",
-        issue_number: 622,
-        issue_title: "fleet status",
-        builder_sprite: "bb-weaver-1"
-      })
-
-    Store.update_run(run_id, %{phase: "building"})
-
     on_exit(fn ->
       Application.stop(:conductor)
       restore_env(:db_path, orig_db)

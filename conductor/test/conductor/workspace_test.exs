@@ -3,87 +3,6 @@ defmodule Conductor.WorkspaceTest do
 
   alias Conductor.Workspace
 
-  describe "prepare/5" do
-    test "installs a branch guard hook for the prepared branch" do
-      parent = self()
-
-      exec_fn = fn _sprite, command, _opts ->
-        send(parent, {:prepare_command, command})
-        {:ok, "/tmp/test-worktree\n"}
-      end
-
-      assert {:ok, "/tmp/test-worktree"} =
-               Workspace.prepare(
-                 "bb-weaver",
-                 "misty-step/bitterblossom",
-                 "run-42-1773867376",
-                 "factory/42-1773867376",
-                 exec_fn: exec_fn
-               )
-
-      assert_received {:prepare_command, command}
-      assert_bash_syntax!(command)
-      assert command =~ "git worktree list --porcelain"
-      assert command =~ "git checkout \"$default_branch\" --quiet"
-      assert command =~ "git worktree remove --force \"$path\""
-      assert command =~ "config extensions.worktreeConfig true"
-      assert command =~ "config --worktree core.hooksPath .bb-hooks"
-      assert command =~ "hook_path=\"$hook_dir/pre-push\""
-      assert command =~ "expected_branch=\"factory/42-1773867376\""
-      assert command =~ "refs/heads/$expected_branch"
-      assert command =~ "refusing push from"
-    end
-
-    test "propagates stale cleanup failures before creating a new worktree" do
-      assert {:error, "workspace preparation failed (1): cleanup failed"} =
-               Workspace.prepare(
-                 "bb-weaver",
-                 "misty-step/bitterblossom",
-                 "run-42-1773867376",
-                 "factory/42-1773867376",
-                 exec_fn: fn _sprite, _command, _opts -> {:error, "cleanup failed", 1} end
-               )
-    end
-  end
-
-  describe "adopt_branch/5" do
-    test "installs the same branch guard when adopting an existing branch" do
-      parent = self()
-
-      exec_fn = fn _sprite, command, _opts ->
-        send(parent, {:adopt_command, command})
-        {:ok, "/tmp/test-worktree\n"}
-      end
-
-      assert {:ok, "/tmp/test-worktree"} =
-               Workspace.adopt_branch(
-                 "bb-weaver",
-                 "misty-step/bitterblossom",
-                 "run-42-1773867376",
-                 "factory/42-1773867376",
-                 exec_fn: exec_fn
-               )
-
-      assert_received {:adopt_command, command}
-      assert_bash_syntax!(command)
-      assert command =~ "git worktree list --porcelain"
-      assert command =~ "config --worktree core.hooksPath .bb-hooks"
-      assert command =~ "expected_branch=\"factory/42-1773867376\""
-      refute command =~ "git branch -D"
-    end
-
-    test "propagates stale cleanup failures before adopting the branch" do
-      assert {:error, "branch adoption failed (1): cleanup failed"} =
-               Workspace.adopt_branch(
-                 "bb-weaver",
-                 "misty-step/bitterblossom",
-                 "run-42-1773867376",
-                 "factory/42-1773867376",
-                 exec_fn: fn _sprite, _command, _opts -> {:error, "cleanup failed", 1} end
-               )
-    end
-  end
-
   describe "sync_persona/4" do
     test "materializes a role-specific launch dir from deterministic local persona sources" do
       workspace =
@@ -277,151 +196,44 @@ defmodule Conductor.WorkspaceTest do
     end
   end
 
-  describe "cleanup/4" do
-    test "removes all worktrees for the run branch before deleting the branch" do
-      parent = self()
-
-      exec_fn = fn _sprite, command, _opts ->
-        send(parent, {:cleanup_command, command})
-        {:ok, ""}
-      end
-
-      assert :ok =
-               Workspace.cleanup(
-                 "bb-weaver",
-                 "misty-step/bitterblossom",
-                 "run-42-1773867376",
-                 exec_fn: exec_fn
-               )
-
-      assert_received {:cleanup_command, command}
-      assert_bash_syntax!(command)
-      assert command =~ "git worktree list --porcelain"
-      assert command =~ "git checkout \"$default_branch\" --quiet"
-      assert command =~ "git worktree remove --force \"$path\""
-      assert command =~ "git branch -D \"factory/42-1773867376\""
+  describe "validate_input/1" do
+    test "accepts valid identifiers" do
+      assert :ok = Workspace.validate_input("misty-step/bitterblossom")
+      assert :ok = Workspace.validate_input("run-625-1773502623")
+      assert :ok = Workspace.validate_input("factory/625-1773502623")
     end
 
-    test "returns an error when cleanup health check still finds stale worktrees" do
-      parent = self()
-
-      exec_fn = fn _sprite, command, _opts ->
-        send(parent, {:cleanup_command, command})
-
-        if String.contains?(command, "git worktree list --porcelain") do
-          {:ok, "/home/sprite/workspace/bitterblossom\n/tmp/run-42\n"}
-        else
-          {:ok, ""}
-        end
-      end
-
-      assert {:error,
-              "branch still attached to worktree(s): /home/sprite/workspace/bitterblossom, /tmp/run-42"} =
-               Workspace.cleanup(
-                 "bb-weaver",
-                 "misty-step/bitterblossom",
-                 "run-42-1773867376",
-                 exec_fn: exec_fn
-               )
-
-      assert_received {:cleanup_command, cleanup_command}
-      assert cleanup_command =~ "default_branch=$(git symbolic-ref refs/remotes/origin/HEAD"
-      assert_received {:cleanup_command, health_check_command}
-      assert health_check_command =~ "branch_ref=\"refs/heads/factory/42-1773867376\""
+    test "rejects shell metacharacters" do
+      assert {:error, :invalid_input} = Workspace.validate_input("owner/repo; rm -rf /")
     end
 
-    test "returns the health check error when verification fails for another reason" do
-      exec_fn = fn _sprite, _command, opts ->
-        if Keyword.fetch!(opts, :timeout) == 30_000 do
-          {:error, "disk full", 73}
-        else
-          {:ok, ""}
-        end
-      end
-
-      assert {:error, "workspace health check failed (73): disk full"} =
-               Workspace.cleanup(
-                 "bb-weaver",
-                 "misty-step/bitterblossom",
-                 "run-42-1773867376",
-                 exec_fn: exec_fn
-               )
+    test "rejects path traversal" do
+      assert {:error, :invalid_input} = Workspace.validate_input("../../etc/passwd")
     end
 
-    test "skips branch deletion when the run id does not map to a factory branch" do
-      parent = self()
+    test "rejects absolute paths" do
+      assert {:error, :invalid_input} = Workspace.validate_input("/etc/passwd")
+    end
 
-      exec_fn = fn _sprite, command, _opts ->
-        send(parent, {:cleanup_command, command})
-        {:ok, ""}
-      end
-
-      assert :ok =
-               Workspace.cleanup(
-                 "bb-weaver",
-                 "misty-step/bitterblossom",
-                 "custom-123",
-                 exec_fn: exec_fn
-               )
-
-      assert_received {:cleanup_command, command}
-      assert command =~ "default_branch=$(git symbolic-ref refs/remotes/origin/HEAD"
-      refute command =~ "git branch -D"
-      refute command =~ "git worktree list --porcelain"
+    test "rejects leading dash" do
+      assert {:error, :invalid_input} = Workspace.validate_input("--force")
     end
   end
 
-  describe "health_check/4" do
-    test "returns clean when no worktree is attached to the branch" do
-      assert {:ok, :clean} =
-               Workspace.health_check(
-                 "bb-weaver",
-                 "misty-step/bitterblossom",
-                 "factory/42-1773867376",
-                 exec_fn: fn _sprite, _command, _opts -> {:ok, ""} end
-               )
+  describe "repo_root/1" do
+    test "returns mirror path for valid repo" do
+      assert Workspace.repo_root("misty-step/bitterblossom") ==
+               "/home/sprite/workspace/bitterblossom"
     end
 
-    test "reports stale worktree paths when the branch is still attached" do
-      assert {:error, {:stale_worktrees, paths}} =
-               Workspace.health_check(
-                 "bb-weaver",
-                 "misty-step/bitterblossom",
-                 "factory/42-1773867376",
-                 exec_fn: fn _sprite, _command, _opts ->
-                   {:ok, "/home/sprite/workspace/bitterblossom\n/tmp/run-42\n"}
-                 end
-               )
-
-      assert paths == ["/home/sprite/workspace/bitterblossom", "/tmp/run-42"]
-    end
-
-    test "propagates health check command failures" do
-      assert {:error, "workspace health check failed (73): permission denied"} =
-               Workspace.health_check(
-                 "bb-weaver",
-                 "misty-step/bitterblossom",
-                 "factory/42-1773867376",
-                 exec_fn: fn _sprite, _command, _opts -> {:error, "permission denied", 73} end
-               )
-    end
-
-    test "rejects invalid repo and branch inputs" do
-      assert {:error, :invalid_input} =
-               Workspace.health_check(
-                 "bb-weaver",
-                 "../misty-step/bitterblossom",
-                 "factory/42-1773867376"
-               )
-
-      assert {:error, :invalid_input} =
-               Workspace.health_check(
-                 "bb-weaver",
-                 "misty-step/bitterblossom",
-                 "factory/42-1773867376;rm -rf /"
-               )
+    test "raises for invalid repo" do
+      assert_raise ArgumentError, fn ->
+        Workspace.repo_root("../etc/passwd")
+      end
     end
   end
+
+  # --- Helpers ---
 
   defp write_workspace_file(workspace, relative_path, contents) do
     path = Path.join(workspace, relative_path)
@@ -452,22 +264,6 @@ defmodule Conductor.WorkspaceTest do
     case System.cmd("bash", ["-lc", command], stderr_to_stdout: true) do
       {output, 0} -> {:ok, output}
       {output, code} -> {:error, output, code}
-    end
-  end
-
-  defp assert_bash_syntax!(command) do
-    path =
-      Path.join(
-        System.tmp_dir!(),
-        "workspace-command-#{System.unique_integer([:positive])}.sh"
-      )
-
-    File.write!(path, command)
-    on_exit(fn -> File.rm(path) end)
-
-    case System.cmd("bash", ["-n", path], stderr_to_stdout: true) do
-      {_output, 0} -> :ok
-      {output, _code} -> flunk("generated shell command is invalid:\n#{output}\n#{command}")
     end
   end
 end

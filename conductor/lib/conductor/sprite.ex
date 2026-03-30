@@ -111,49 +111,6 @@ defmodule Conductor.Sprite do
     end
   end
 
-  @spec dispatch(binary(), binary(), binary(), keyword()) ::
-          {:ok, binary()} | {:error, binary(), integer()}
-  def dispatch(sprite, prompt, _repo, opts \\ []) do
-    timeout_minutes = Keyword.get(opts, :timeout, Config.builder_timeout())
-    workspace = Keyword.fetch!(opts, :workspace)
-    harness = Keyword.get(opts, :harness, Conductor.Codex)
-    harness_opts = Keyword.get(opts, :harness_opts, [])
-    # Injected in tests to capture exec calls without a real sprite
-    exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
-
-    timeout_ms = timeout_minutes * 60_000
-
-    with {:ok, persona_role} <- normalize_optional_persona_role(Keyword.get(opts, :persona_role)) do
-      # 1. Kill stale agent processes from prior dispatches
-      exec_fn.(sprite, kill_agents_cmd(), timeout: 15_000)
-
-      prompt_path = Path.join(workspace, "PROMPT.md")
-      runtime_env_path = Path.join(workspace, @runtime_env_file)
-
-      # 2. Upload prompt and runtime env without embedding secrets in the remote argv
-      case upload_dispatch_files(exec_fn, sprite, prompt_path, prompt, runtime_env_path) do
-        {:error, msg, code} ->
-          {:error, "dispatch file upload failed: #{msg}", code}
-
-        {:ok, _} ->
-          # 3. Run agent
-          run_agent(
-            sprite,
-            workspace,
-            prompt_path,
-            persona_role,
-            harness,
-            harness_opts,
-            exec_fn,
-            timeout_ms
-          )
-      end
-    else
-      {:error, :invalid_role} ->
-        {:error, "invalid persona role: #{inspect(Keyword.get(opts, :persona_role))}", 1}
-    end
-  end
-
   @spec start_loop(binary(), binary(), binary(), keyword()) ::
           {:ok, binary()} | {:error, binary(), integer()}
   def start_loop(sprite, prompt, _repo, opts \\ []) do
@@ -252,11 +209,6 @@ defmodule Conductor.Sprite do
       {:ok, output} -> String.trim(output) == "paused"
       _ -> false
     end
-  end
-
-  @spec cleanup(binary(), binary(), binary()) :: :ok | {:error, term()}
-  def cleanup(sprite, repo, run_id) do
-    Workspace.cleanup(sprite, repo, run_id)
   end
 
   @spec kill(binary()) :: :ok | {:error, term()}
@@ -519,55 +471,14 @@ defmodule Conductor.Sprite do
     end
   end
 
-  defp run_agent(
-         sprite,
-         workspace,
-         prompt_path,
-         persona_role,
-         harness,
-         harness_opts,
-         exec_fn,
-         timeout_ms
-       ) do
-    cmd =
-      agent_command(
-        harness,
-        harness.dispatch_command(harness_opts),
-        workspace,
-        prompt_path,
-        persona_role
-      )
-
-    case exec_fn.(sprite, cmd, timeout: timeout_ms) do
-      {:ok, output} ->
-        {:ok, output}
-
-      {:error, _output, _code} ->
-        # Retry with session resumption if the harness supports it
-        case harness.continue_command(harness_opts) do
-          nil ->
-            {:error, "agent exited non-zero; harness does not support continuation", 1}
-
-          continue_parts ->
-            retry_cmd =
-              agent_command(harness, continue_parts, workspace, prompt_path, persona_role)
-
-            exec_fn.(sprite, retry_cmd, timeout: timeout_ms)
-        end
-    end
-  end
-
-  defp agent_command(harness, cmd_parts, workspace, prompt_path, persona_role) do
+  defp detached_agent_command(harness, cmd_parts, workspace, prompt_path, persona_role) do
     cmd_str = Enum.join(cmd_parts, " ")
     runtime_env_path = Path.join(workspace, @runtime_env_file)
     log_path = Path.join(workspace, @log_file)
     command_suffix = harness_command(harness, cmd_str, workspace, prompt_path, persona_role)
 
-    "cd #{shell_quote(workspace)} && : > #{shell_quote(log_path)} && if [ -f #{shell_quote(runtime_env_path)} ]; then set -a; . #{shell_quote(runtime_env_path)}; set +a; fi && set -o pipefail && #{command_suffix} 2>&1 | tee -a #{shell_quote(log_path)}"
-  end
-
-  defp detached_agent_command(harness, cmd_parts, workspace, prompt_path, persona_role) do
-    command_suffix = agent_command(harness, cmd_parts, workspace, prompt_path, persona_role)
+    agent_cmd =
+      "cd #{shell_quote(workspace)} && : > #{shell_quote(log_path)} && if [ -f #{shell_quote(runtime_env_path)} ]; then set -a; . #{shell_quote(runtime_env_path)}; set +a; fi && set -o pipefail && #{command_suffix} 2>&1 | tee -a #{shell_quote(log_path)}"
 
     """
     set -e
@@ -596,7 +507,7 @@ defmodule Conductor.Sprite do
     nohup bash -lc #{shell_quote("""
     echo $$ > #{@sprite_loop_pid_path}
     trap 'rm -f #{@sprite_loop_pid_path}' EXIT
-    #{command_suffix}
+    #{agent_cmd}
     """)} >/dev/null 2>&1 </dev/null &
     printf '%s%s\\n' #{shell_quote(@start_loop_started_prefix)} "$!"
     """
@@ -834,38 +745,20 @@ defmodule Conductor.Sprite do
         {:ok, workspace}
 
       _ ->
-        case active_worktree(sprite) do
-          {:ok, path} ->
-            {:ok, path}
+        case exec_fn.(sprite, workspace_discovery_script(), timeout: 15_000) do
+          {:ok, output} ->
+            workspace = String.trim(output)
 
-          :error ->
-            case exec_fn.(sprite, workspace_discovery_script(), timeout: 15_000) do
-              {:ok, output} ->
-                workspace = String.trim(output)
-
-                if workspace == "" do
-                  {:error,
-                   ~s(sprite "#{sprite}" has no workspace repo; reconcile the fleet before tailing logs)}
-                else
-                  {:ok, String.trim_trailing(workspace, "/")}
-                end
-
-              {:error, msg, _code} ->
-                {:error, msg}
+            if workspace == "" do
+              {:error,
+               ~s(sprite "#{sprite}" has no workspace repo; reconcile the fleet before tailing logs)}
+            else
+              {:ok, String.trim_trailing(workspace, "/")}
             end
-        end
-    end
-  end
 
-  defp active_worktree(sprite) do
-    Conductor.Store.list_runs(limit: 50)
-    |> Enum.find(fn run ->
-      run["builder_sprite"] == sprite and run["worktree_path"] not in [nil, ""] and
-        run["status"] not in ["merged", "blocked", "failed"]
-    end)
-    |> case do
-      %{"worktree_path" => path} -> {:ok, path}
-      _ -> :error
+          {:error, msg, _code} ->
+            {:error, msg}
+        end
     end
   end
 
