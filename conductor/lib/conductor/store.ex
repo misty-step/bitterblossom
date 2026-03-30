@@ -1,6 +1,6 @@
 defmodule Conductor.Store do
   @moduledoc """
-  Durable event and control persistence over SQLite.
+  Durable event persistence over SQLite.
 
   Deep module: all SQL is hidden. Callers see only Elixir maps and tuples.
   Serializes all writes through a GenServer to avoid SQLite concurrency issues.
@@ -73,7 +73,7 @@ defmodule Conductor.Store do
     rows =
       query_all(
         state.conn,
-        "SELECT * FROM events WHERE run_id = ?1 ORDER BY created_at ASC",
+        "SELECT * FROM events WHERE run_id = ?1 ORDER BY created_at ASC, id ASC",
         [source]
       )
 
@@ -92,7 +92,7 @@ defmodule Conductor.Store do
     rows =
       query_all(
         state.conn,
-        "SELECT * FROM events ORDER BY created_at DESC LIMIT ?1",
+        "SELECT * FROM events ORDER BY created_at DESC, id DESC LIMIT ?1",
         [limit]
       )
 

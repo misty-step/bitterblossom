@@ -739,7 +739,7 @@ defmodule Conductor.Sprite do
           {:ok, output} ->
             workspace = String.trim(output)
 
-            if workspace == "" do
+            if workspace in ["", "."] do
               {:error,
                ~s(sprite "#{sprite}" has no workspace repo; reconcile the fleet before tailing logs)}
             else
