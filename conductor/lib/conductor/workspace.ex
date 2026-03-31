@@ -28,9 +28,7 @@ defmodule Conductor.Workspace do
   def repo_root(repo) do
     case validate_input(repo) do
       :ok ->
-        repo
-        |> Path.basename()
-        |> then(&Path.join(@mirror_base, &1))
+        Path.join(@mirror_base, repo)
 
       {:error, :invalid_input} ->
         raise ArgumentError, "invalid repo path: #{inspect(repo)}"

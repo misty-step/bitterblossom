@@ -100,7 +100,8 @@ defmodule Conductor.SpriteAgentTest do
 
     assert Enum.any?(uploaded_files, fn
              {"/tmp/worktree/.bb-runtime-env", content} ->
-               String.contains?(content, "export EXA_API_KEY='exa-test-456'")
+               String.contains?(content, "export EXA_API_KEY='exa-test-456'") and
+                 String.contains?(content, "export REPO='test/repo'")
 
              _ ->
                false

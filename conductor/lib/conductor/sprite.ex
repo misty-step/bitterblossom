@@ -103,7 +103,7 @@ defmodule Conductor.Sprite do
 
   @spec start_loop(binary(), binary(), binary(), keyword()) ::
           {:ok, binary()} | {:error, binary(), integer()}
-  def start_loop(sprite, prompt, _repo, opts \\ []) do
+  def start_loop(sprite, prompt, repo, opts \\ []) do
     workspace = Keyword.fetch!(opts, :workspace)
     harness = Keyword.get(opts, :harness, Conductor.Codex)
     harness_opts = Keyword.get(opts, :harness_opts, [])
@@ -113,7 +113,7 @@ defmodule Conductor.Sprite do
       prompt_path = Path.join(workspace, "PROMPT.md")
       runtime_env_path = Path.join(workspace, @runtime_env_file)
 
-      case upload_dispatch_files(exec_fn, sprite, prompt_path, prompt, runtime_env_path) do
+      case upload_dispatch_files(exec_fn, sprite, prompt_path, prompt, runtime_env_path, repo) do
         {:error, msg, code} ->
           {:error, "dispatch file upload failed: #{msg}", code}
 
@@ -233,7 +233,7 @@ defmodule Conductor.Sprite do
          :ok <- upload_base_configs(sprite, persona, exec_fn),
          :ok <- ensure_codex(sprite, force, exec_fn),
          :ok <- maybe_sync_codex_auth(sprite, harness, exec_fn),
-         :ok <- upload_runtime_env(sprite, exec_fn),
+         :ok <- upload_runtime_env(sprite, repo, exec_fn),
          :ok <- configure_git_auth(sprite, exec_fn),
          :ok <- maybe_setup_repo(sprite, repo, persona, force, exec_fn),
          :ok <- Conductor.Bootstrap.ensure_spellbook(sprite, exec_fn: exec_fn) do
@@ -657,8 +657,8 @@ defmodule Conductor.Sprite do
     end
   end
 
-  defp upload_runtime_env(sprite, exec_fn) do
-    with_temp_file("sprite-runtime-env", runtime_env_contents(), fn runtime_env_file ->
+  defp upload_runtime_env(sprite, repo, exec_fn) do
+    with_temp_file("sprite-runtime-env", runtime_env_contents(repo), fn runtime_env_file ->
       case exec_fn.(sprite, "true",
              files: [{runtime_env_file, @sprite_runtime_env_path}],
              timeout: 30_000
@@ -889,22 +889,24 @@ defmodule Conductor.Sprite do
 
   defp repo_setup_script(repo_dir, repo, true) do
     """
-    rm -rf #{shell_quote(repo_dir)} &&
-      cd #{shell_quote(@sprite_workspace_root)} &&
-      git clone #{shell_quote(repo_clone_url(repo))}
+    mkdir -p #{shell_quote(Path.dirname(repo_dir))} &&
+      rm -rf #{shell_quote(repo_dir)} &&
+      git clone #{shell_quote(repo_clone_url(repo))} #{shell_quote(repo_dir)}
     """
     |> String.trim()
   end
 
   defp repo_setup_script(repo_dir, repo, false) do
     """
-    if [ -d #{shell_quote(repo_dir)} ]; then
+    if [ -d #{shell_quote(Path.join(repo_dir, ".git"))} ]; then
       cd #{shell_quote(repo_dir)} &&
+        git remote set-url origin #{shell_quote(repo_clone_url(repo))} &&
         (git checkout master 2>/dev/null || git checkout main 2>/dev/null) &&
         git pull --ff-only
     else
-      cd #{shell_quote(@sprite_workspace_root)} &&
-        git clone #{shell_quote(repo_clone_url(repo))}
+      mkdir -p #{shell_quote(Path.dirname(repo_dir))} &&
+        rm -rf #{shell_quote(repo_dir)} &&
+        git clone #{shell_quote(repo_clone_url(repo))} #{shell_quote(repo_dir)}
     fi
     """
     |> String.trim()
@@ -913,7 +915,7 @@ defmodule Conductor.Sprite do
   defp repo_clone_url(repo), do: "https://github.com/#{repo}.git"
 
   defp sprite_repo_workspace(repo) do
-    repo |> String.split("/") |> List.last() |> then(&Path.join(@sprite_workspace_root, &1))
+    Path.join(@sprite_workspace_root, repo)
   end
 
   defp valid_repo_segment?(segment) do
@@ -943,6 +945,12 @@ defmodule Conductor.Sprite do
       exit 0
     fi
 
+    gitdir=$(find #{@sprite_workspace_root} -mindepth 2 -maxdepth 3 -type d -name .git 2>/dev/null | head -1 || true)
+    if [ -n "$gitdir" ]; then
+      printf '%s\n' "${gitdir%/.git}"
+      exit 0
+    fi
+
     ws=$(ls -d #{@sprite_workspace_root}/*/ 2>/dev/null | head -1 || true)
     printf '%s\n' "${ws%/}"
     """
@@ -950,17 +958,18 @@ defmodule Conductor.Sprite do
 
   defp shell_quote(value), do: Shell.quote_arg(to_string(value))
 
-  defp runtime_env_contents do
+  defp runtime_env_contents(repo) do
     body =
-      Config.dispatch_env()
+      (repo_env(repo) ++
+         Config.dispatch_env())
       |> Enum.map_join("\n", fn {key, value} -> "export #{key}=#{shell_quote(value)}" end)
 
     if body == "", do: "# managed by Conductor\n", else: body <> "\n"
   end
 
-  defp upload_dispatch_files(exec_fn, sprite, prompt_path, prompt, runtime_env_path) do
+  defp upload_dispatch_files(exec_fn, sprite, prompt_path, prompt, runtime_env_path, repo) do
     with_temp_file("sprite-prompt", prompt, fn prompt_file ->
-      with_temp_file("sprite-env", runtime_env_contents(), fn env_file ->
+      with_temp_file("sprite-env", runtime_env_contents(repo), fn env_file ->
         exec_fn.(sprite, "true",
           files: [{prompt_file, prompt_path}, {env_file, runtime_env_path}],
           timeout: 30_000
@@ -986,6 +995,10 @@ defmodule Conductor.Sprite do
       ["--file", "#{source}:#{dest}"]
     end)
   end
+
+  defp repo_env(nil), do: []
+  defp repo_env(""), do: []
+  defp repo_env(repo), do: [{"REPO", repo}]
 
   # The sprite CLI currently exposes these transport failures as stderr text, not
   # typed exit codes. Keep the accepted phrases narrow and covered by tests so the
