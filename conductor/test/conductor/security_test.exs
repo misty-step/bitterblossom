@@ -1,7 +1,7 @@
 defmodule Conductor.SecurityTest do
   use ExUnit.Case, async: true
 
-  alias Conductor.{Workspace, Store}
+  alias Conductor.Workspace
 
   describe "Workspace input validation" do
     test "rejects repo name with shell metacharacters" do
@@ -45,49 +45,6 @@ defmodule Conductor.SecurityTest do
 
     test "rejects leading dash (git argument injection)" do
       assert {:error, :invalid_input} = Workspace.validate_input("--force")
-    end
-  end
-
-  describe "Workspace.rebase/3 and adopt_branch/4 input validation" do
-    # rebase and adopt_branch both call validate_input on repo and branch,
-    # so injection attempts should be caught before any sprite exec.
-
-    test "rebase rejects invalid repo" do
-      assert {:error, :invalid_input} = Workspace.rebase("sprite-1", "bad repo;", "factory/1-ts")
-    end
-
-    test "rebase rejects invalid branch" do
-      assert {:error, :invalid_input} = Workspace.rebase("sprite-1", "owner/repo", "bad branch;")
-    end
-
-    test "adopt_branch rejects invalid repo" do
-      assert {:error, :invalid_input} =
-               Workspace.adopt_branch("sprite-1", "bad repo;", "run-1", "factory/1-ts")
-    end
-
-    test "adopt_branch rejects invalid branch" do
-      assert {:error, :invalid_input} =
-               Workspace.adopt_branch("sprite-1", "owner/repo", "run-1", "bad branch;")
-    end
-  end
-
-  describe "Store column allowlist" do
-    test "rejects SQL injection in column names" do
-      assert {:error, :invalid_column} =
-               Store.validate_columns(%{"phase; DROP TABLE runs--" => "x"})
-    end
-
-    test "rejects column names with spaces" do
-      assert {:error, :invalid_column} =
-               Store.validate_columns(%{"phase = 'hacked' --" => "x"})
-    end
-
-    test "accepts valid atom columns" do
-      assert :ok = Store.validate_columns(%{phase: "building", branch: "factory/1"})
-    end
-
-    test "accepts valid string columns that match allowlist" do
-      assert :ok = Store.validate_columns(%{"phase" => "building", "branch" => "factory/1"})
     end
   end
 

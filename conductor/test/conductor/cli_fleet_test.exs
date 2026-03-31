@@ -4,7 +4,7 @@ defmodule Conductor.CLIFleetTest do
   import ExUnit.CaptureIO
   import Conductor.TestSupport.ProcessHelpers
 
-  alias Conductor.{CLI, Store}
+  alias Conductor.CLI
 
   @conductor_dir Path.expand("../..", __DIR__)
 
@@ -160,6 +160,8 @@ defmodule Conductor.CLIFleetTest do
 
       :ok
     end
+
+    defdelegate persona_for_role(role), to: Conductor.Workspace
   end
 
   defmodule MockConfigModule do
@@ -216,16 +218,6 @@ defmodule Conductor.CLIFleetTest do
     Application.put_env(:conductor, :event_log, event_log)
     Application.put_env(:conductor, :worker_module, MockWorker)
     Application.ensure_all_started(:conductor)
-
-    {:ok, run_id} =
-      Store.create_run(%{
-        repo: "test/repo",
-        issue_number: 622,
-        issue_title: "fleet status",
-        builder_sprite: "bb-weaver-1"
-      })
-
-    Store.update_run(run_id, %{phase: "building"})
 
     on_exit(fn ->
       Application.stop(:conductor)

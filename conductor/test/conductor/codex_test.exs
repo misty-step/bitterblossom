@@ -29,10 +29,4 @@ defmodule Conductor.CodexTest do
       refute "model_reasoning_effort=medium" in cmd
     end
   end
-
-  describe "continue_command/1" do
-    test "returns nil (codex has no session resumption)" do
-      assert Codex.continue_command([]) == nil
-    end
-  end
 end

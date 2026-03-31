@@ -41,11 +41,25 @@ defmodule Conductor.Fleet.Reconciler do
 
         {{:ok, {:error, reason}}, sprite} ->
           Logger.error("[fleet] #{sprite.name} reconcile crashed: #{inspect(reason)}")
-          %{name: sprite.name, role: sprite.role, healthy: false, action: :failed}
+
+          %{
+            name: sprite.name,
+            role: sprite.role,
+            healthy: false,
+            loop_alive: false,
+            action: :failed
+          }
 
         {{:exit, reason}, sprite} ->
           Logger.error("[fleet] #{sprite.name} reconcile crashed: #{inspect(reason)}")
-          %{name: sprite.name, role: sprite.role, healthy: false, action: :failed}
+
+          %{
+            name: sprite.name,
+            role: sprite.role,
+            healthy: false,
+            loop_alive: false,
+            action: :failed
+          }
       end)
 
     healthy = Enum.count(results, & &1.healthy)
@@ -69,9 +83,9 @@ defmodule Conductor.Fleet.Reconciler do
     Logger.info("[fleet] reconciling #{name} (role=#{sprite.role})")
 
     case check_health(sprite, opts) do
-      :healthy ->
+      {:healthy, loop_alive} ->
         Logger.info("[fleet] #{name} healthy")
-        %{name: name, role: sprite.role, healthy: true, action: :none}
+        %{name: name, role: sprite.role, healthy: true, loop_alive: loop_alive, action: :none}
 
       :needs_setup ->
         Logger.info("[fleet] #{name} needs setup, provisioning...")
@@ -96,21 +110,41 @@ defmodule Conductor.Fleet.Reconciler do
       :ok ->
         # Re-check health after provisioning to confirm it actually worked
         case check_health(sprite, opts) do
-          :healthy ->
+          {:healthy, loop_alive} ->
             Logger.info("[fleet] #{sprite.name} provisioned and verified healthy")
-            %{name: sprite.name, role: sprite.role, healthy: true, action: :provisioned}
+
+            %{
+              name: sprite.name,
+              role: sprite.role,
+              healthy: true,
+              loop_alive: loop_alive,
+              action: :provisioned
+            }
 
           status ->
             Logger.warning(
-              "[fleet] #{sprite.name} provisioned but health check returned #{status}"
+              "[fleet] #{sprite.name} provisioned but health check returned #{inspect(status)}"
             )
 
-            %{name: sprite.name, role: sprite.role, healthy: false, action: :setup_incomplete}
+            %{
+              name: sprite.name,
+              role: sprite.role,
+              healthy: false,
+              loop_alive: false,
+              action: :setup_incomplete
+            }
         end
 
       {:error, reason} ->
         Logger.error("[fleet] #{sprite.name} provisioning failed: #{reason}")
-        %{name: sprite.name, role: sprite.role, healthy: false, action: :failed}
+
+        %{
+          name: sprite.name,
+          role: sprite.role,
+          healthy: false,
+          loop_alive: false,
+          action: :failed
+        }
     end
   end
 
@@ -124,8 +158,8 @@ defmodule Conductor.Fleet.Reconciler do
       {:error, _reason} ->
         :unreachable
 
-      {:ok, %{healthy: true}} ->
-        :healthy
+      {:ok, %{healthy: true} = status} ->
+        {:healthy, Map.get(status, :loop_alive, false)}
 
       {:ok, _status} ->
         :needs_setup
@@ -157,9 +191,9 @@ defmodule Conductor.Fleet.Reconciler do
       case wake_fn.(sprite.name, wake_opts(sprite, opts)) do
         :ok ->
           case check_health(sprite, opts) do
-            :healthy ->
+            {:healthy, loop_alive} ->
               Logger.info("[fleet] #{sprite.name} recovered after wake")
-              return_woken(sprite)
+              return_woken(sprite, loop_alive)
 
             :needs_setup ->
               Logger.info("[fleet] #{sprite.name} reachable after wake, provisioning...")
@@ -209,7 +243,13 @@ defmodule Conductor.Fleet.Reconciler do
           event_fn
         )
 
-        %{name: sprite.name, role: sprite.role, healthy: false, action: :unreachable}
+        %{
+          name: sprite.name,
+          role: sprite.role,
+          healthy: false,
+          loop_alive: false,
+          action: :unreachable
+        }
     end
   end
 
@@ -222,8 +262,8 @@ defmodule Conductor.Fleet.Reconciler do
   defp maybe_put(opts, _key, ""), do: opts
   defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
 
-  defp return_woken(sprite) do
-    %{name: sprite.name, role: sprite.role, healthy: true, action: :woken}
+  defp return_woken(sprite, loop_alive) do
+    %{name: sprite.name, role: sprite.role, healthy: true, loop_alive: loop_alive, action: :woken}
   end
 
   defp recovery_backoff_ms(attempt) do

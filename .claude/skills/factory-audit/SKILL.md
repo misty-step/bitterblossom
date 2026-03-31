@@ -11,59 +11,59 @@ allowed-tools:
 
 # Factory Audit
 
-Run one Bitterblossom issue as a supervised conductor exercise. Treat the run as both delivery and diagnosis: prove the issue ships, then prove the factory handled it elegantly.
+Run one Bitterblossom work item through the conductor as a supervised exercise. Treat the run as both delivery and diagnosis: prove the work ships, then prove the factory handled it elegantly.
 
 ## Workflow
 
 ### 1. Preflight the control plane
 
-- Read `README.md`, `docs/CONDUCTOR.md`, and the target issue.
-- Load `source .env.bb` and `export GITHUB_TOKEN="$(gh auth token)"`.
-- Build `bb` if the transport changed: `go build -o ./bin/bb ./cmd/bb`.
-- Pick a healthy prepared worker. If no worker is both reachable and prepared, record that as friction before fixing it.
+- Read `CLAUDE.md`, `WORKFLOW.md`, and the target work item.
+- Verify environment: `GITHUB_TOKEN`, `SPRITE_TOKEN`, Codex auth, fleet.toml.
+- Pick a work item: scan `backlog.d/` for ready items sorted by priority. The operator may specify one directly.
+- Check fleet health: `cd conductor && mix conductor fleet --fleet ../fleet.toml` to verify sprite reachability. If no sprite is healthy, record that as friction before fixing it.
 
-### 2. Launch a deliberate run
+### 2. Launch the conductor
 
-- Prefer the highest-priority open issue unless the operator specifies one. Any open issue is eligible — there is no label gate.
-- Use `cd conductor && mix conductor start` so the full pipeline runs (builder → fixer → polisher → merge).
-- Record the start timestamp, chosen worker, issue number, and reviewers up front.
+- Use `cd conductor && mix conductor start --fleet ../fleet.toml` to dispatch the fleet.
+- Sprites pick their own work autonomously (Weaver → issues, Thorn → PR fixes, Fern → polish+merge).
+- Record: start timestamp, fleet composition, target backlog item, sprite assignments.
 
 ### 3. Watch the run continuously
 
-- Poll the run with `.claude/skills/factory-audit/scripts/collect_run_snapshot.py` instead of guessing from one surface.
-- Check builder, council, PR, CI, external review, and merge policy transitions.
-- Treat silence, lag, stale state, skipped reviews, dirty workspaces, or misleading output as findings even when the run eventually succeeds.
+- Poll fleet health: `mix conductor fleet --fleet ../fleet.toml --json`
+- Poll store events: `mix conductor events --limit 50`
+- Check sprite logs for autonomous loop progress.
+- Check GitHub for PRs opened, CI status, reviews, merge state.
+- Treat silence, lag, stale health state, failed launches, loop exits, dirty workspaces, or misleading output as findings even when the run eventually succeeds.
 
 ### 4. Verify the terminal state
 
-- Confirm the GitHub issue, PR, run ledger, and latest checks all agree.
+- Confirm the backlog item, GitHub PR, health monitor state, and store events all agree.
 - If the PR merged, verify whether it merged at the right time, not merely whether it merged.
-- If the run blocked or failed, identify whether the factory surfaced the reason cleanly and whether recovery was obvious.
+- If a sprite failed or stalled, identify whether the conductor detected it (health transitions, events) and whether recovery was automatic.
+- Check: did the health monitor detect loop exits? Did launch preflight clean stale processes? Did the tri-state (launching/healthy/unhealthy) track correctly?
 
 ### 5. Update the backlog
 
-- Use `references/backlog-rules.md` to decide: new issue, comment on existing issue, or no action.
-- File new issues for real P0-P2 findings.
-- Comment on existing issues when the run provides stronger evidence, sharper scope, or revised priority.
-- Do not create duplicate issues for cosmetic nits unless they reveal a broader system pattern.
+- Use `references/backlog-rules.md` to decide: new backlog item, update existing item, or no action.
+- Create new `backlog.d/` items for real P0-P2 findings.
+- Update existing items when the run provides stronger evidence, sharper scope, or revised priority.
+- Do not create duplicate items for cosmetic nits unless they reveal a broader system pattern.
 
 ### 6. Leave a durable artifact
 
 - Write a report from `templates/factory-audit-report.md`.
-- Include the run id, issue, PR, timestamps, observed friction, and the exact issue numbers filed or updated.
+- Include: fleet composition, backlog item, PRs, timestamps, observed friction, and the exact backlog items created or updated.
 
 ## Key Principles
 
 - Separate evidence from interpretation. Capture timestamps, statuses, and artifacts before judging them.
 - Delivery is not enough. A run that ships while being confusing, brittle, or overly manual is still a useful failure.
-- Prefer comments on existing backlog items over duplicate issues when the problem is already known.
+- Prefer updating existing backlog items over creating duplicates when the problem is already known.
+- The conductor is thin infrastructure — all judgment lives in sprites. Audit both layers: did the infrastructure keep sprites alive, and did the sprites make good decisions?
 
 ## References
 
 - `references/watchpoints.md` - phase-by-phase failure patterns and what to inspect
-- `references/backlog-rules.md` - when to file, comment, reprioritize, or ignore
+- `references/backlog-rules.md` - when to file, update, reprioritize, or ignore
 - `templates/factory-audit-report.md` - durable report structure
-
-## Scripts
-
-- `./.claude/skills/factory-audit/scripts/collect_run_snapshot.py` - collect run, event, PR, thread, and issue state into one JSON snapshot

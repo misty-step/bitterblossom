@@ -10,7 +10,6 @@ defmodule Conductor.Codex do
   Accepts `:reasoning_effort` opt to override the default (`"medium"`).
   The polisher uses `"high"`.
 
-  Codex has no session resumption — `continue_command/1` returns nil.
   """
 
   @behaviour Conductor.Harness
@@ -38,7 +37,4 @@ defmodule Conductor.Codex do
       "model_reasoning_effort=#{reasoning}"
     ]
   end
-
-  @impl Conductor.Harness
-  def continue_command(_opts), do: nil
 end

@@ -54,14 +54,15 @@ defmodule Conductor.Application do
       Logger.warning("[boot] no healthy sprites — HealthMonitor will recover")
     end
 
-    # 2. Configure health monitor
+    # 2. Configure health monitor — seed dispatched sprites as :launching, not :healthy.
+    #    Only the health probe (after loop confirmed alive) promotes to :healthy.
     Conductor.Fleet.HealthMonitor.configure(
       sprites: sprites,
       repo: repo,
-      healthy: healthy
+      launching: healthy
     )
 
-    # 3. Dispatch agent loops for all healthy sprites
+    # 3. Dispatch agent loops for all ready sprites
     #    Unhealthy sprites will be re-launched by HealthMonitor when they recover.
     healthy_sprites = Enum.filter(sprites, &MapSet.member?(healthy, &1.name))
 
@@ -71,7 +72,9 @@ defmodule Conductor.Application do
     )
 
     for sprite <- healthy_sprites do
-      launch_with_restart(sprite, sprite_repo(sprite, repo))
+      Task.Supervisor.start_child(Conductor.TaskSupervisor, fn ->
+        launcher_mod().launch(sprite, sprite_repo(sprite, repo))
+      end)
     end
 
     # 4. Store fleet config for runtime queries
@@ -111,28 +114,6 @@ defmodule Conductor.Application do
     else
       :ok
     end
-  end
-
-  @restart_backoff_ms 30_000
-
-  @doc false
-  def launch_with_restart(sprite, repo) do
-    Task.Supervisor.start_child(Conductor.TaskSupervisor, fn ->
-      case launcher_mod().launch(sprite, repo) do
-        {:ok, _} ->
-          Logger.info(
-            "[launcher] #{sprite.name} completed, restarting in #{div(@restart_backoff_ms, 1000)}s"
-          )
-
-        {:error, reason} ->
-          Logger.warning(
-            "[launcher] #{sprite.name} failed: #{inspect(reason)}, restarting in #{div(@restart_backoff_ms, 1000)}s"
-          )
-      end
-
-      Process.sleep(@restart_backoff_ms)
-      launch_with_restart(sprite, repo)
-    end)
   end
 
   defp sprite_repo(sprite, fallback_repo), do: Map.get(sprite, :repo, fallback_repo)

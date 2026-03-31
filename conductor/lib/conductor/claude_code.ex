@@ -30,19 +30,4 @@ defmodule Conductor.ClaudeCode do
       "--verbose"
     ]
   end
-
-  @impl Conductor.Harness
-  def continue_command(opts) do
-    model = Keyword.get(opts, :model, @default_model)
-
-    [
-      "claude",
-      "--continue",
-      "-p",
-      "--dangerously-skip-permissions",
-      "--model",
-      model,
-      "--verbose"
-    ]
-  end
 end
