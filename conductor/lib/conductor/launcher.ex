@@ -28,6 +28,16 @@ defmodule Conductor.Launcher do
     workspace = Workspace.repo_root(repo)
     persona = Workspace.persona_for_role(role)
 
+    # Preflight: kill stale processes and pid files from any previous run.
+    # Best-effort — don't fail launch if cleanup errors.
+    case Sprite.stop_loop(sprite) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.debug("[launcher] #{sprite} preflight cleanup: #{inspect(reason)}")
+    end
+
     with :ok <- Sprite.force_sync_codex_auth(sprite),
          :ok <- Bootstrap.ensure_spellbook(sprite),
          :ok <- Workspace.sync_persona(sprite, workspace, persona) do

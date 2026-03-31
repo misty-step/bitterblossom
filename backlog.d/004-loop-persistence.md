@@ -1,32 +1,47 @@
-# Sprite session continuity
+# Conductor loop liveness and launch safety
 
-Priority: medium
-Status: ready
+Priority: critical
+Status: in-progress
 Estimate: M
 
 ## Goal
-When a sprite's session times out, the conductor automatically re-launches it. Sprites are stateless across sessions — they re-observe repo state on each start. The conductor's job is just to keep them alive.
+Close the three gaps exposed by the orchestration-layer refactor (012):
+1. Sprites marked healthy before loop starts — failed launches never retried
+2. Health ignores loop liveness — crashed/timed-out sessions never restarted
+3. No launch preflight — stale processes and pid files block relaunch
 
-## Non-Goals
-- State persistence across sessions (sprites re-observe, don't resume)
-- Infinite sessions (timeout is a safety net against runaway agents)
-- Conductor-side retry logic or backoff (simple re-launch on exit)
+## Design: Hybrid responsibility split
+
+**Conductor owns** (process-level, can't be in-band):
+- Launch state tracking (`:launching` → `:healthy` → `:unhealthy`)
+- Process-level liveness detection (`loop_pid` alive?)
+- Launch preflight (kill stale processes, clear pid/lock artifacts)
+- Restart trigger with backoff
+
+**Sprites own** (semantic, requires agent judgment):
+- Progress heartbeats (follow-on: 016-sprite-heartbeat-protocol)
+- Role-specific workspace cleanup
+- Recovery classification (retry vs escalate)
 
 ## Sequence
-- [ ] HealthMonitor detects sprite session ended (health probe returns stopped/exited)
-- [ ] HealthMonitor triggers re-launch via Launcher (provision check → bootstrap → start_loop)
-- [ ] Add `auto_restart: true | false` per sprite in fleet.toml (default true)
-- [ ] Add circuit breaker: if a sprite crashes 3 times in 10 minutes, stop re-launching and emit a notification event
-- [ ] Test: kill a sprite session, verify it restarts within one health check interval
+- [ ] Add `loop_alive` field to `Sprite.status/2` (derived from `loop_pid != nil`)
+- [ ] Upgrade `HealthMonitor` from binary `:healthy/:unhealthy` to tri-state `:launching/:healthy/:unhealthy`
+- [ ] Seed launched sprites as `:launching` in `Application.launch_with_config/2`
+- [ ] Add `stop_loop/2` preflight in `Launcher.launch/3` before `start_loop`
+- [ ] Add launch timeout: if sprite stays `:launching` for N probe cycles, mark `:unhealthy`
+- [ ] Tests for: failed launch, loop death, stale process cleanup, launch timeout
 
 ## Oracle
-- [ ] A sprite that times out is automatically re-launched within `fleet_health_check_interval_ms`
-- [ ] `auto_restart: false` in fleet.toml prevents re-launch
-- [ ] A sprite that crashes 3x in 10 minutes is NOT re-launched (circuit breaker)
-- [ ] Circuit breaker emits a `sprite_circuit_open` event to PubSub
+- [ ] A sprite whose launch fails is NOT marked `:healthy` — it stays `:launching` then degrades to `:unhealthy`
+- [ ] A sprite whose loop exits is detected within one health check interval and relaunched
+- [ ] Stale agent processes from a previous run are killed before a new loop starts
+- [ ] A sprite stuck in `:launching` for >3 probe cycles transitions to `:unhealthy`
 - [ ] `mix test` passes
+- [ ] `mix compile --warnings-as-errors` passes
 
 ## Notes
-Reshaped from original "loop persistence" item. Under the thin-wrapper vision, this is simpler: the conductor doesn't manage loop state, it just notices a sprite stopped and re-starts it. HealthMonitor already has the detection; this adds the re-launch trigger.
-
-Depends on 012 (kill orchestration layer) — the current auto-restart loop in Application is part of the orchestration that gets deleted. This item replaces it with a simpler HealthMonitor-driven approach.
+Replaces the old "sprite session continuity" item. The analysis (adversarial review + thinktank + codex) concluded:
+- Process liveness must stay in the conductor — dead agents can't self-heal
+- Semantic health should move to sprites (follow-on item)
+- A janitor sprite would just recreate the orchestration layer in a different costume
+- The fixes are small: existing signals (`loop_pid`, `stop_loop/2`) just need wiring

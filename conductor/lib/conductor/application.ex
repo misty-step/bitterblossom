@@ -54,14 +54,15 @@ defmodule Conductor.Application do
       Logger.warning("[boot] no healthy sprites — HealthMonitor will recover")
     end
 
-    # 2. Configure health monitor
+    # 2. Configure health monitor — seed dispatched sprites as :launching, not :healthy.
+    #    Only the health probe (after loop confirmed alive) promotes to :healthy.
     Conductor.Fleet.HealthMonitor.configure(
       sprites: sprites,
       repo: repo,
-      healthy: healthy
+      launching: healthy
     )
 
-    # 3. Dispatch agent loops for all healthy sprites
+    # 3. Dispatch agent loops for all ready sprites
     #    Unhealthy sprites will be re-launched by HealthMonitor when they recover.
     healthy_sprites = Enum.filter(sprites, &MapSet.member?(healthy, &1.name))
 

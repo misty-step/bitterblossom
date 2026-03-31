@@ -319,6 +319,8 @@ defmodule Conductor.Sprite do
         busy = busy?(sprite, exec_fn: exec_fn)
         loop_pid = loop_pid(sprite, exec_fn)
 
+        loop_alive = loop_pid != nil
+
         {:ok,
          %{
            sprite: sprite,
@@ -330,6 +332,7 @@ defmodule Conductor.Sprite do
            paused: paused,
            busy: busy,
            loop_pid: loop_pid,
+           loop_alive: loop_alive,
            lifecycle_status: lifecycle_status(paused, busy),
            healthy:
              harness_ready and codex_auth_ready and gh_authenticated and git_credential_helper

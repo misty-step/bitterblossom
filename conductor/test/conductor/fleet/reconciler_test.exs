@@ -44,7 +44,13 @@ defmodule Conductor.Fleet.ReconcilerTest do
         provision_fn: fn _name, _opts -> flunk("provision_fn should not be called") end
       )
 
-    assert result == %{name: "bb-weaver", role: "builder", healthy: false, action: :unreachable}
+    assert result == %{
+             name: "bb-weaver",
+             role: "builder",
+             healthy: false,
+             loop_alive: false,
+             action: :unreachable
+           }
   end
 
   test "reconcile_sprite wakes an unreachable sprite before marking it degraded" do
@@ -68,7 +74,14 @@ defmodule Conductor.Fleet.ReconcilerTest do
 
     assert_received {:wake_called, "bb-weaver", wake_opts}
     assert wake_opts[:harness] == "codex"
-    assert result == %{name: "bb-weaver", role: "builder", healthy: true, action: :woken}
+
+    assert result == %{
+             name: "bb-weaver",
+             role: "builder",
+             healthy: true,
+             loop_alive: false,
+             action: :woken
+           }
   end
 
   test "reconcile_sprite provisions a sprite that is reachable after wake but still needs setup" do
@@ -105,7 +118,13 @@ defmodule Conductor.Fleet.ReconcilerTest do
                        force: true
                      ]}
 
-    assert result == %{name: "bb-weaver", role: "builder", healthy: true, action: :provisioned}
+    assert result == %{
+             name: "bb-weaver",
+             role: "builder",
+             healthy: true,
+             loop_alive: false,
+             action: :provisioned
+           }
   end
 
   test "reconcile_sprite logs and records a fleet event after recovery retries are exhausted" do
@@ -123,6 +142,7 @@ defmodule Conductor.Fleet.ReconcilerTest do
                  name: "bb-weaver",
                  role: "builder",
                  healthy: false,
+                 loop_alive: false,
                  action: :unreachable
                }
       end)
@@ -155,7 +175,14 @@ defmodule Conductor.Fleet.ReconcilerTest do
         end
       )
 
-    assert result == %{name: "bb-weaver", role: "builder", healthy: false, action: :unreachable}
+    assert result == %{
+             name: "bb-weaver",
+             role: "builder",
+             healthy: false,
+             loop_alive: false,
+             action: :unreachable
+           }
+
     assert_received {:event_called, "bb-weaver", 1, "start failed manual check required"}
   end
 
@@ -176,6 +203,7 @@ defmodule Conductor.Fleet.ReconcilerTest do
                  name: "bb-weaver",
                  role: "builder",
                  healthy: false,
+                 loop_alive: false,
                  action: :unreachable
                }
       end)
@@ -210,7 +238,14 @@ defmodule Conductor.Fleet.ReconcilerTest do
         event_fn: fn _sprite, _attempts, _reason -> :ok end
       )
 
-    assert result == %{name: "bb-weaver", role: "builder", healthy: false, action: :unreachable}
+    assert result == %{
+             name: "bb-weaver",
+             role: "builder",
+             healthy: false,
+             loop_alive: false,
+             action: :unreachable
+           }
+
     assert_received {:sleep_called, 100}
     assert_received {:sleep_called, 200}
     assert_received {:sleep_called, 250}
@@ -236,7 +271,13 @@ defmodule Conductor.Fleet.ReconcilerTest do
                        force: true
                      ]}
 
-    assert result == %{name: "bb-weaver", role: "builder", healthy: false, action: :failed}
+    assert result == %{
+             name: "bb-weaver",
+             role: "builder",
+             healthy: false,
+             loop_alive: false,
+             action: :failed
+           }
   end
 
   test "reconcile_all degrades sprites whose reconcile task crashes" do
@@ -246,6 +287,12 @@ defmodule Conductor.Fleet.ReconcilerTest do
         provision_fn: fn _name, _opts -> raise "boom" end
       )
 
-    assert result == %{name: "bb-weaver", role: "builder", healthy: false, action: :failed}
+    assert result == %{
+             name: "bb-weaver",
+             role: "builder",
+             healthy: false,
+             loop_alive: false,
+             action: :failed
+           }
   end
 end

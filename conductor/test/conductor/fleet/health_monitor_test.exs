@@ -28,10 +28,24 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     def reconcile_sprite(sprite) do
       case MockState.get({:sprite_health, sprite.name}, :healthy) do
         :healthy ->
-          %{name: sprite.name, role: sprite.role, healthy: true, action: :none}
+          loop_alive = MockState.get({:loop_alive, sprite.name}, false)
+
+          %{
+            name: sprite.name,
+            role: sprite.role,
+            healthy: true,
+            loop_alive: loop_alive,
+            action: :none
+          }
 
         :unhealthy ->
-          %{name: sprite.name, role: sprite.role, healthy: false, action: :unreachable}
+          %{
+            name: sprite.name,
+            role: sprite.role,
+            healthy: false,
+            loop_alive: false,
+            action: :unreachable
+          }
       end
     end
   end
@@ -112,7 +126,7 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     assert status.repo == nil
   end
 
-  test "configure sets sprites and initial health" do
+  test "configure sets sprites and initial health with launching state" do
     start_monitor()
 
     sprites = [
@@ -123,21 +137,121 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     HealthMonitor.configure(
       sprites: sprites,
       repo: "test/repo",
-      healthy: MapSet.new(["bb-polisher"])
+      launching: MapSet.new(["bb-polisher"])
     )
 
     status = HealthMonitor.status()
-    assert status.sprites["bb-polisher"] == :healthy
+    assert status.sprites["bb-polisher"] == :launching
     assert status.sprites["bb-fixer"] == :unhealthy
   end
 
-  test "detects unhealthy→healthy transition and logs recovery" do
+  test "launching sprite with loop alive transitions to healthy" do
     start_monitor(interval_ms: 60_000)
 
     sprites = [%{name: "bb-polisher", role: :polisher, harness: "codex"}]
     MockState.put({:sprite_health, "bb-polisher"}, :healthy)
+    MockState.put({:loop_alive, "bb-polisher"}, true)
 
-    HealthMonitor.configure(sprites: sprites, repo: "test/repo", healthy: MapSet.new())
+    HealthMonitor.configure(
+      sprites: sprites,
+      repo: "test/repo",
+      launching: MapSet.new(["bb-polisher"])
+    )
+
+    assert HealthMonitor.status().sprites["bb-polisher"] == :launching
+
+    log =
+      capture_log(fn ->
+        send(Process.whereis(HealthMonitor), :check)
+        Process.sleep(100)
+      end)
+
+    assert log =~ "bb-polisher loop confirmed"
+    assert HealthMonitor.status().sprites["bb-polisher"] == :healthy
+  end
+
+  test "launching sprite without loop stays launching" do
+    start_monitor(interval_ms: 60_000)
+
+    sprites = [%{name: "bb-polisher", role: :polisher, harness: "codex"}]
+    MockState.put({:sprite_health, "bb-polisher"}, :healthy)
+    MockState.put({:loop_alive, "bb-polisher"}, false)
+
+    HealthMonitor.configure(
+      sprites: sprites,
+      repo: "test/repo",
+      launching: MapSet.new(["bb-polisher"])
+    )
+
+    send(Process.whereis(HealthMonitor), :check)
+    Process.sleep(100)
+
+    assert HealthMonitor.status().sprites["bb-polisher"] == :launching
+  end
+
+  test "launching sprite times out after max ticks" do
+    start_monitor(interval_ms: 60_000)
+
+    sprites = [%{name: "bb-polisher", role: :polisher, harness: "codex"}]
+    MockState.put({:sprite_health, "bb-polisher"}, :healthy)
+    MockState.put({:loop_alive, "bb-polisher"}, false)
+
+    HealthMonitor.configure(
+      sprites: sprites,
+      repo: "test/repo",
+      launching: MapSet.new(["bb-polisher"])
+    )
+
+    log =
+      capture_log(fn ->
+        # Tick 3 times to exceed @max_launch_ticks (3)
+        for _ <- 1..3 do
+          send(Process.whereis(HealthMonitor), :check)
+          Process.sleep(100)
+        end
+      end)
+
+    assert log =~ "launch timed out"
+    assert HealthMonitor.status().sprites["bb-polisher"] == :unhealthy
+  end
+
+  test "healthy sprite with loop exiting transitions to unhealthy" do
+    start_monitor(interval_ms: 60_000)
+
+    sprites = [%{name: "bb-polisher", role: :polisher, harness: "codex"}]
+    MockState.put({:sprite_health, "bb-polisher"}, :healthy)
+    MockState.put({:loop_alive, "bb-polisher"}, true)
+
+    # Start as healthy (with confirmed loop)
+    HealthMonitor.configure(
+      sprites: sprites,
+      repo: "test/repo",
+      healthy: MapSet.new(["bb-polisher"])
+    )
+
+    assert HealthMonitor.status().sprites["bb-polisher"] == :healthy
+
+    # Simulate loop death
+    MockState.put({:loop_alive, "bb-polisher"}, false)
+
+    log =
+      capture_log(fn ->
+        send(Process.whereis(HealthMonitor), :check)
+        Process.sleep(100)
+      end)
+
+    assert log =~ "bb-polisher loop exited"
+    assert HealthMonitor.status().sprites["bb-polisher"] == :unhealthy
+  end
+
+  test "detects unhealthy→recovered and relaunches when no loop" do
+    start_monitor(interval_ms: 60_000)
+
+    sprites = [%{name: "bb-polisher", role: :polisher, harness: "codex"}]
+    MockState.put({:sprite_health, "bb-polisher"}, :healthy)
+    MockState.put({:loop_alive, "bb-polisher"}, false)
+
+    HealthMonitor.configure(sprites: sprites, repo: "test/repo")
 
     assert HealthMonitor.status().sprites["bb-polisher"] == :unhealthy
 
@@ -147,7 +261,29 @@ defmodule Conductor.Fleet.HealthMonitorTest do
         Process.sleep(100)
       end)
 
-    assert log =~ "bb-polisher recovered"
+    assert log =~ "bb-polisher recovered, relaunching loop"
+    assert HealthMonitor.status().sprites["bb-polisher"] == :launching
+    assert_receive {:launched, "bb-polisher", "test/repo"}
+  end
+
+  test "detects unhealthy→recovered with loop already running" do
+    start_monitor(interval_ms: 60_000)
+
+    sprites = [%{name: "bb-polisher", role: :polisher, harness: "codex"}]
+    MockState.put({:sprite_health, "bb-polisher"}, :healthy)
+    MockState.put({:loop_alive, "bb-polisher"}, true)
+
+    HealthMonitor.configure(sprites: sprites, repo: "test/repo")
+
+    assert HealthMonitor.status().sprites["bb-polisher"] == :unhealthy
+
+    log =
+      capture_log(fn ->
+        send(Process.whereis(HealthMonitor), :check)
+        Process.sleep(100)
+      end)
+
+    assert log =~ "bb-polisher recovered (loop already running)"
     assert HealthMonitor.status().sprites["bb-polisher"] == :healthy
   end
 
@@ -189,8 +325,9 @@ defmodule Conductor.Fleet.HealthMonitorTest do
 
     sprites = [%{name: "bb-polisher", role: :polisher, harness: "codex"}]
     MockState.put({:sprite_health, "bb-polisher"}, :healthy)
+    MockState.put({:loop_alive, "bb-polisher"}, true)
 
-    HealthMonitor.configure(sprites: sprites, repo: "test/repo", healthy: MapSet.new())
+    HealthMonitor.configure(sprites: sprites, repo: "test/repo")
 
     assert HealthMonitor.status().sprites["bb-polisher"] == :unhealthy
 
@@ -206,8 +343,9 @@ defmodule Conductor.Fleet.HealthMonitorTest do
 
     sprites = [%{name: "bb-polisher", role: :polisher, harness: "codex"}]
     MockState.put({:sprite_health, "bb-polisher"}, :healthy)
+    MockState.put({:loop_alive, "bb-polisher"}, true)
 
-    HealthMonitor.configure(sprites: sprites, repo: "test/repo", healthy: MapSet.new())
+    HealthMonitor.configure(sprites: sprites, repo: "test/repo")
 
     HealthMonitor.check_now()
 
@@ -223,8 +361,9 @@ defmodule Conductor.Fleet.HealthMonitorTest do
 
     sprites = [%{name: "bb-polisher", role: :polisher, harness: "codex", repo: "other/repo"}]
     MockState.put({:sprite_health, "bb-polisher"}, :healthy)
+    MockState.put({:loop_alive, "bb-polisher"}, false)
 
-    HealthMonitor.configure(sprites: sprites, repo: "default/repo", healthy: MapSet.new())
+    HealthMonitor.configure(sprites: sprites, repo: "default/repo")
     HealthMonitor.check_now()
 
     assert_receive {:launched, "bb-polisher", "other/repo"}
