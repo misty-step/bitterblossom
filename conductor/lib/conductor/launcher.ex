@@ -11,6 +11,11 @@ defmodule Conductor.Launcher do
 
   alias Conductor.{Bootstrap, Sprite, Workspace}
 
+  @harness_modules %{
+    "claude-code" => Conductor.ClaudeCode
+  }
+  @default_harness Conductor.Codex
+
   @doc """
   Launch a single sprite with its autonomous agent loop.
 
@@ -43,9 +48,14 @@ defmodule Conductor.Launcher do
          :ok <- Workspace.sync_persona(sprite, workspace, persona) do
       prompt = loop_prompt(sprite_config, repo)
 
+      harness = Map.get(@harness_modules, sprite_config[:harness], @default_harness)
+      harness_opts = [reasoning_effort: sprite_config[:reasoning_effort] || "medium"]
+
       case Sprite.start_loop(sprite, prompt, repo, [
              {:workspace, workspace},
-             {:persona_role, persona} | opts
+             {:persona_role, persona},
+             {:harness, harness},
+             {:harness_opts, harness_opts} | opts
            ]) do
         {:ok, output} ->
           Logger.info("[launcher] #{sprite} loop started")

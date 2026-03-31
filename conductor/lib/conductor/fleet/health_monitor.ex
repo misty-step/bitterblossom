@@ -77,10 +77,7 @@ defmodule Conductor.Fleet.HealthMonitor do
         end
       end)
 
-    launch_ticks =
-      Map.new(sprites, fn s ->
-        {s.name, if(MapSet.member?(initial_launching, s.name), do: 0, else: 0)}
-      end)
+    launch_ticks = Map.new(sprites, fn s -> {s.name, 0} end)
 
     if state.timer_ref, do: Process.cancel_timer(state.timer_ref)
     ref = schedule_check(state.interval_ms)
@@ -133,10 +130,7 @@ defmodule Conductor.Fleet.HealthMonitor do
   defp transition(state, sprite, :launching, true, true) do
     Logger.info("[health] #{sprite.name} loop confirmed")
 
-    Store.record_event("fleet", "sprite_loop_confirmed", %{
-      name: sprite.name,
-      role: to_string(sprite.role)
-    })
+    record_fleet_event("sprite_loop_confirmed", sprite)
 
     state
     |> put_health(sprite.name, :healthy)
@@ -150,11 +144,7 @@ defmodule Conductor.Fleet.HealthMonitor do
     if ticks >= @max_launch_ticks do
       Logger.warning("[health] #{sprite.name} launch timed out after #{ticks} probe(s)")
 
-      Store.record_event("fleet", "sprite_launch_timeout", %{
-        name: sprite.name,
-        role: to_string(sprite.role),
-        ticks: ticks
-      })
+      record_fleet_event("sprite_launch_timeout", sprite, %{ticks: ticks})
 
       state
       |> put_health(sprite.name, :unhealthy)
@@ -168,10 +158,7 @@ defmodule Conductor.Fleet.HealthMonitor do
   defp transition(state, sprite, :launching, false, _loop_alive) do
     Logger.warning("[health] #{sprite.name} degraded during launch")
 
-    Store.record_event("fleet", "sprite_degraded", %{
-      name: sprite.name,
-      role: to_string(sprite.role)
-    })
+    record_fleet_event("sprite_degraded", sprite)
 
     state
     |> put_health(sprite.name, :unhealthy)
@@ -185,10 +172,7 @@ defmodule Conductor.Fleet.HealthMonitor do
   defp transition(state, sprite, :healthy, true, false) do
     Logger.warning("[health] #{sprite.name} loop exited")
 
-    Store.record_event("fleet", "sprite_loop_exited", %{
-      name: sprite.name,
-      role: to_string(sprite.role)
-    })
+    record_fleet_event("sprite_loop_exited", sprite)
 
     put_health(state, sprite.name, :unhealthy)
   end
@@ -197,10 +181,7 @@ defmodule Conductor.Fleet.HealthMonitor do
   defp transition(state, sprite, :healthy, false, _loop_alive) do
     Logger.warning("[health] #{sprite.name} degraded")
 
-    Store.record_event("fleet", "sprite_degraded", %{
-      name: sprite.name,
-      role: to_string(sprite.role)
-    })
+    record_fleet_event("sprite_degraded", sprite)
 
     put_health(state, sprite.name, :unhealthy)
   end
@@ -209,10 +190,7 @@ defmodule Conductor.Fleet.HealthMonitor do
   defp transition(state, sprite, :unhealthy, true, true) do
     Logger.info("[health] #{sprite.name} recovered (loop already running)")
 
-    Store.record_event("fleet", "sprite_recovered", %{
-      name: sprite.name,
-      role: to_string(sprite.role)
-    })
+    record_fleet_event("sprite_recovered", sprite)
 
     put_health(state, sprite.name, :healthy)
   end
@@ -221,10 +199,7 @@ defmodule Conductor.Fleet.HealthMonitor do
   defp transition(state, sprite, :unhealthy, true, false) do
     Logger.info("[health] #{sprite.name} recovered, relaunching loop")
 
-    Store.record_event("fleet", "sprite_recovered", %{
-      name: sprite.name,
-      role: to_string(sprite.role)
-    })
+    record_fleet_event("sprite_recovered", sprite)
 
     repo = sprite_repo(sprite, state.repo)
 
@@ -268,6 +243,16 @@ defmodule Conductor.Fleet.HealthMonitor do
 
   defp schedule_check(interval_ms) when is_integer(interval_ms) do
     Process.send_after(self(), :check, interval_ms)
+  end
+
+  defp record_fleet_event(event_type, sprite, extra \\ %{}) do
+    payload = Map.merge(%{name: sprite.name, role: to_string(sprite.role)}, extra)
+
+    try do
+      Store.record_event("fleet", event_type, payload)
+    catch
+      :exit, _ -> :ok
+    end
   end
 
   defp sprite_repo(sprite, fallback_repo), do: Map.get(sprite, :repo, fallback_repo)

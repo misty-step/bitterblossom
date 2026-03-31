@@ -35,7 +35,7 @@ Close the three gaps exposed by the orchestration-layer refactor (012):
 - [ ] A sprite whose launch fails is NOT marked `:healthy` — it stays `:launching` then degrades to `:unhealthy`
 - [ ] A sprite whose loop exits is detected within one health check interval and relaunched
 - [ ] Stale agent processes from a previous run are killed before a new loop starts
-- [ ] A sprite stuck in `:launching` for >3 probe cycles transitions to `:unhealthy`
+- [ ] A sprite stuck in `:launching` for >=3 probe cycles transitions to `:unhealthy`
 - [ ] `mix test` passes
 - [ ] `mix compile --warnings-as-errors` passes
 
