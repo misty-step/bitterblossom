@@ -3,25 +3,30 @@
 ## Summary
 
 - Date:
-- Run ID:
-- Issue:
-- PR:
-- Worker:
-- Reviewers:
-- Terminal State:
+- Backlog item:
+- Fleet:
+- Sprites dispatched:
+- PRs opened:
+- Terminal state:
 
 ## Timeline
 
 | Time | Event | Notes |
 |------|-------|-------|
-| | run start | |
+| | conductor start | |
+
+## Health Monitor Observations
+
+- Initial health states:
+- Transitions observed:
+- Stuck states:
 
 ## Findings
 
 ### Finding: [title]
 
 - Severity:
-- Existing issue or new issue:
+- Existing backlog item or new:
 - Observed:
 - Expected:
 - Why it matters:
@@ -29,8 +34,8 @@
 
 ## Backlog Actions
 
-- New issues:
-- Existing issues commented:
+- New items created:
+- Existing items updated:
 - Priority changes:
 
 ## Reflection
