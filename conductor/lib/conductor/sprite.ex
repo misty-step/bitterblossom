@@ -938,11 +938,6 @@ defmodule Conductor.Sprite do
       exit 0
     fi
 
-    gitdir=$(ls -dt #{@sprite_workspace_root}/**/.git 2>/dev/null | head -1 || true)
-    if [ -n "$gitdir" ]; then
-      printf '%s\n' "${gitdir%/.git}"
-      exit 0
-    fi
     """
   end
 
@@ -950,8 +945,8 @@ defmodule Conductor.Sprite do
 
   defp runtime_env_contents(repo) do
     body =
-      (repo_env(repo) ++
-         Config.dispatch_env())
+      (Config.dispatch_env() ++
+         repo_env(repo))
       |> Enum.map_join("\n", fn {key, value} -> "export #{key}=#{shell_quote(value)}" end)
 
     if body == "", do: "# managed by Conductor\n", else: body <> "\n"

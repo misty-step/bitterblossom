@@ -150,7 +150,7 @@ defmodule Conductor.CLIFleetTest do
 
   defmodule MockWorkspaceModule do
     def repo_root(repo) do
-      "/tmp/#{repo |> Path.basename()}"
+      Path.join("/tmp", repo)
     end
 
     def sync_persona(sprite, workspace, role) do
@@ -353,11 +353,11 @@ defmodule Conductor.CLIFleetTest do
     assert output =~ "started bb-weaver-2 (pid 123)"
     refute_received {:provision_called, _, _}
     refute_received {:force_sync_called, _}
-    assert_received {:sync_persona_called, "bb-weaver-2", "/tmp/repo", :weaver}
+    assert_received {:sync_persona_called, "bb-weaver-2", "/tmp/test/repo", :weaver}
 
     assert_received {:start_loop_called, "bb-weaver-2", prompt, "test/repo", opts}
     assert prompt =~ "# Weaver Loop"
-    assert opts[:workspace] == "/tmp/repo"
+    assert opts[:workspace] == "/tmp/test/repo"
     assert opts[:persona_role] == :weaver
     assert opts[:harness] == Conductor.Codex
   end
@@ -381,10 +381,10 @@ defmodule Conductor.CLIFleetTest do
                      [repo: "other/other-repo", persona: nil, harness: "codex"]}
 
     assert_received {:force_sync_called, "bb-weaver-3"}
-    assert_received {:sync_persona_called, "bb-weaver-3", "/tmp/other-repo", :weaver}
+    assert_received {:sync_persona_called, "bb-weaver-3", "/tmp/other/other-repo", :weaver}
     assert_received {:start_loop_called, "bb-weaver-3", prompt, "other/other-repo", opts}
     assert prompt =~ "Repository: other/other-repo"
-    assert opts[:workspace] == "/tmp/other-repo"
+    assert opts[:workspace] == "/tmp/other/other-repo"
   end
 
   test "sprite resume resumes a declared sprite", %{fleet_path: fleet_path} do

@@ -238,5 +238,5 @@ defmodule Conductor.Workspace do
 
   defp shell_quote(value), do: Shell.quote_arg(to_string(value))
 
-  defp valid_repo_segment?(segment), do: Regex.match?(@repo_segment, segment)
+  defp valid_repo_segment?(segment), do: segment != "." and Regex.match?(@repo_segment, segment)
 end

@@ -68,6 +68,7 @@ defmodule Conductor.SpriteAgentTest do
 
   test "start_loop uploads prompt/env and launches a detached loop wrapper" do
     test_pid = self()
+    System.put_env("OPENAI_API_KEY", "sk-test-123")
 
     exec_fn = fn _sprite, command, opts ->
       uploaded_files =
@@ -100,8 +101,13 @@ defmodule Conductor.SpriteAgentTest do
 
     assert Enum.any?(uploaded_files, fn
              {"/tmp/worktree/.bb-runtime-env", content} ->
-               String.contains?(content, "export EXA_API_KEY='exa-test-456'") and
-                 String.contains?(content, "export REPO='test/repo'")
+               exa_index = :binary.match(content, "export EXA_API_KEY='exa-test-456'")
+               repo_index = :binary.match(content, "export REPO='test/repo'")
+
+               String.contains?(content, "export OPENAI_API_KEY='sk-test-123'") and
+                 String.contains?(content, "export CODEX_API_KEY='sk-test-123'") and
+                 match?({_, _}, exa_index) and match?({_, _}, repo_index) and
+                 elem(exa_index, 0) < elem(repo_index, 0)
 
              _ ->
                false

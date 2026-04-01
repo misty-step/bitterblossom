@@ -245,6 +245,16 @@ defmodule Conductor.WorkspaceTest do
         Workspace.repo_root("../etc/passwd")
       end
     end
+
+    test "raises for dot path segments" do
+      assert_raise ArgumentError, fn ->
+        Workspace.repo_root("./repo")
+      end
+
+      assert_raise ArgumentError, fn ->
+        Workspace.repo_root("owner/.")
+      end
+    end
   end
 
   # --- Helpers ---
