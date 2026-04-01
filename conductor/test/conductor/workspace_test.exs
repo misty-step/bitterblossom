@@ -223,12 +223,36 @@ defmodule Conductor.WorkspaceTest do
   describe "repo_root/1" do
     test "returns mirror path for valid repo" do
       assert Workspace.repo_root("misty-step/bitterblossom") ==
-               "/home/sprite/workspace/bitterblossom"
+               "/home/sprite/workspace/misty-step/bitterblossom"
+    end
+
+    test "keeps same-basename repos distinct" do
+      assert Workspace.repo_root("alpha/shared") != Workspace.repo_root("beta/shared")
+    end
+
+    test "raises for non owner-repo identifiers" do
+      assert_raise ArgumentError, fn ->
+        Workspace.repo_root("bitterblossom")
+      end
+
+      assert_raise ArgumentError, fn ->
+        Workspace.repo_root("alpha/shared/extra")
+      end
     end
 
     test "raises for invalid repo" do
       assert_raise ArgumentError, fn ->
         Workspace.repo_root("../etc/passwd")
+      end
+    end
+
+    test "raises for dot path segments" do
+      assert_raise ArgumentError, fn ->
+        Workspace.repo_root("./repo")
+      end
+
+      assert_raise ArgumentError, fn ->
+        Workspace.repo_root("owner/.")
       end
     end
   end

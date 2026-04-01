@@ -14,6 +14,7 @@ defmodule Conductor.SpriteWorkspaceLookupTest do
           assert command =~ "/home/sprite/workspace/**/.bb/workspace.json"
           assert command =~ "/home/sprite/workspace/**/PROMPT.md"
           assert command =~ "/home/sprite/workspace/**/ralph.log"
+          refute command =~ "/home/sprite/workspace/**/.git"
           {:ok, "/tmp/repo/.bb/conductor/run-1/builder-worktree\n"}
 
         String.contains?(
@@ -36,5 +37,16 @@ defmodule Conductor.SpriteWorkspaceLookupTest do
 
     assert_received {:runner_called,
                      "touch '/tmp/repo/.bb/conductor/run-1/builder-worktree/ralph.log' && cat '/tmp/repo/.bb/conductor/run-1/builder-worktree/ralph.log'"}
+  end
+
+  test "logs discovery fails when no workspace markers exist" do
+    exec_fn = fn _sprite, command, _opts ->
+      if String.contains?(command, "shopt -s globstar nullglob"),
+        do: {:ok, "\n"},
+        else: {:error, "", 1}
+    end
+
+    assert {:error, reason} = Sprite.logs("bb-weaver", exec_fn: exec_fn)
+    assert reason =~ ~s(sprite "bb-weaver" has no workspace repo)
   end
 end

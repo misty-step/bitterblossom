@@ -9,7 +9,7 @@ defmodule Conductor.Launcher do
 
   require Logger
 
-  alias Conductor.{Bootstrap, Sprite, Workspace}
+  alias Conductor.{Bootstrap, Shell, Sprite, Workspace}
 
   @harness_modules %{
     "claude-code" => Conductor.ClaudeCode
@@ -30,12 +30,12 @@ defmodule Conductor.Launcher do
 
     Logger.info("[launcher] launching #{sprite} (#{role})")
 
-    workspace = Workspace.repo_root(repo)
-    persona = Workspace.persona_for_role(role)
+    workspace = workspace_module().repo_root(repo)
+    persona = workspace_module().persona_for_role(role)
 
     # Preflight: kill stale processes and pid files from any previous run.
     # Best-effort — don't fail launch if cleanup errors.
-    case Sprite.stop_loop(sprite) do
+    case sprite_module().stop_loop(sprite) do
       :ok ->
         :ok
 
@@ -43,15 +43,16 @@ defmodule Conductor.Launcher do
         Logger.debug("[launcher] #{sprite} preflight cleanup: #{inspect(reason)}")
     end
 
-    with :ok <- Sprite.force_sync_codex_auth(sprite),
-         :ok <- Bootstrap.ensure_spellbook(sprite),
-         :ok <- Workspace.sync_persona(sprite, workspace, persona) do
+    with :ok <- sprite_module().force_sync_codex_auth(sprite),
+         :ok <- bootstrap_module().ensure_spellbook(sprite),
+         :ok <- ensure_repo_checkout(sprite_config, repo, workspace),
+         :ok <- workspace_module().sync_persona(sprite, workspace, persona) do
       prompt = loop_prompt(sprite_config, repo)
 
       harness = Map.get(@harness_modules, sprite_config[:harness], @default_harness)
       harness_opts = [reasoning_effort: sprite_config[:reasoning_effort] || "medium"]
 
-      case Sprite.start_loop(sprite, prompt, repo, [
+      case sprite_module().start_loop(sprite, prompt, repo, [
              {:workspace, workspace},
              {:persona_role, persona},
              {:harness, harness},
@@ -94,4 +95,40 @@ defmodule Conductor.Launcher do
   defp role_display_name(:fixer), do: "Thorn"
   defp role_display_name(:polisher), do: "Fern"
   defp role_display_name(role), do: to_string(role) |> String.capitalize()
+
+  defp ensure_repo_checkout(sprite_config, repo, workspace) do
+    sprite = sprite_config.name
+    git_dir = Path.join(workspace, ".git")
+
+    case sprite_module().exec(sprite, "test -d #{shell_quote(git_dir)}", timeout: 15_000) do
+      {:ok, _} ->
+        :ok
+
+      {:error, reason, _code} ->
+        Logger.info(
+          "[launcher] #{sprite} repo checkout missing at #{workspace}, reprovisioning: #{reason}"
+        )
+
+        sprite_module().provision(sprite,
+          repo: repo,
+          persona: sprite_config.persona,
+          harness: sprite_config.harness,
+          force: false
+        )
+    end
+  end
+
+  defp sprite_module do
+    Application.get_env(:conductor, :sprite_module, Sprite)
+  end
+
+  defp bootstrap_module do
+    Application.get_env(:conductor, :bootstrap_module, Bootstrap)
+  end
+
+  defp workspace_module do
+    Application.get_env(:conductor, :workspace_module, Workspace)
+  end
+
+  defp shell_quote(value), do: Shell.quote_arg(to_string(value))
 end

@@ -392,17 +392,32 @@ defmodule Conductor.SpriteTest do
         end)
 
       assert repo_cmd =~ "git clone 'https://github.com/misty-step/bitterblossom.git'"
-      refute repo_cmd =~ "\n && mkdir -p"
+      assert repo_cmd =~ "/home/sprite/workspace/misty-step/bitterblossom"
+
+      {_, _runtime_env_opts, runtime_env_files} =
+        Enum.find(calls, fn {_command, _opts, uploaded_files} ->
+          Enum.any?(uploaded_files, fn {dest, _content} ->
+            dest == "/home/sprite/.bitterblossom/runtime.env"
+          end)
+        end)
+
+      assert Enum.any?(runtime_env_files, fn
+               {"/home/sprite/.bitterblossom/runtime.env", content} ->
+                 String.contains?(content, "export REPO='misty-step/bitterblossom'")
+
+               _ ->
+                 false
+             end)
 
       {_, _metadata_opts, metadata_files} =
         Enum.find(calls, fn {_command, _opts, uploaded_files} ->
           Enum.any?(uploaded_files, fn {dest, _content} ->
-            dest == "/home/sprite/workspace/bitterblossom/.bb/workspace.json"
+            dest == "/home/sprite/workspace/misty-step/bitterblossom/.bb/workspace.json"
           end)
         end)
 
       assert Enum.any?(metadata_files, fn
-               {"/home/sprite/workspace/bitterblossom/.bb/workspace.json", content} ->
+               {"/home/sprite/workspace/misty-step/bitterblossom/.bb/workspace.json", content} ->
                  String.contains?(content, "\"repo\":\"misty-step/bitterblossom\"")
 
                _ ->
@@ -612,7 +627,10 @@ defmodule Conductor.SpriteTest do
         {"workspace metadata upload", "metadata upload failed",
          fn command, opts ->
            command == "true" and
-             uploads_to?(opts, "/home/sprite/workspace/bitterblossom/.bb/workspace.json")
+             uploads_to?(
+               opts,
+               "/home/sprite/workspace/misty-step/bitterblossom/.bb/workspace.json"
+             )
          end}
       ]
 

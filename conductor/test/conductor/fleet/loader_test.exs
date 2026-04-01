@@ -110,6 +110,29 @@ defmodule Conductor.Fleet.LoaderTest do
       assert fixer.repo == "test/override"
     end
 
+    test "allows sprite repos that share a basename", %{path: path} do
+      File.write!(path, """
+      version = "1"
+
+      [defaults]
+      repo = "alpha/shared"
+
+      [[sprite]]
+      name = "bb-weaver"
+      role = "builder"
+
+      [[sprite]]
+      name = "bb-thorn"
+      role = "fixer"
+      repo = "beta/shared"
+      """)
+
+      assert {:ok, config} = Loader.load(path)
+      [builder, fixer] = config.sprites
+      assert builder.repo == "alpha/shared"
+      assert fixer.repo == "beta/shared"
+    end
+
     test "label stays optional when configured explicitly", %{path: path} do
       File.write!(path, """
       version = "1"
