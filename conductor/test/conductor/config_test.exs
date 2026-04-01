@@ -155,10 +155,13 @@ defmodule Conductor.ConfigTest do
       System.delete_env("SPRITE_TOKEN")
     end
 
-    test "returns token when FLY_API_TOKEN set" do
+    test "FLY_API_TOKEN alone is not sufficient" do
       System.delete_env("SPRITE_TOKEN")
       System.put_env("FLY_API_TOKEN", "fly_test")
-      assert Config.sprite_auth_available?() == "fly_test"
+      # FLY_API_TOKEN is not used by the sprite CLI — it needs keyring auth.
+      # sprite_auth_available? should only return truthy via SPRITE_TOKEN or live CLI check.
+      result = Config.sprite_auth_available?()
+      assert result != "fly_test"
     after
       System.delete_env("SPRITE_TOKEN")
       System.delete_env("FLY_API_TOKEN")

@@ -197,15 +197,32 @@ defmodule Conductor.Config do
   end
 
   @doc """
-  Returns a truthy value if any sprite auth method is available:
-  SPRITE_TOKEN env, FLY_API_TOKEN env, or sprite CLI session.
+  Returns a truthy value if sprite CLI auth is available.
+
+  Checks SPRITE_TOKEN env, then verifies the sprite CLI can actually
+  list sprites for the configured org. FLY_API_TOKEN is not checked —
+  the sprite CLI ignores it.
   """
   @spec sprite_auth_available?() :: binary() | false
   def sprite_auth_available? do
     System.get_env("SPRITE_TOKEN") ||
-      System.get_env("FLY_API_TOKEN") ||
-      (Conductor.SpriteCLIAuth.authenticated?() && "sprite-cli") ||
+      sprite_cli_auth_live?() ||
       false
+  end
+
+  defp sprite_cli_auth_live? do
+    org = System.get_env("SPRITES_ORG") || System.get_env("FLY_ORG")
+
+    case org do
+      nil ->
+        Conductor.SpriteCLIAuth.authenticated?() && "sprite-cli"
+
+      org ->
+        case System.cmd("sprite", ["ls", "-o", org], stderr_to_stdout: true) do
+          {_, 0} -> "sprite-cli"
+          _ -> false
+        end
+    end
   end
 
   defp chatgpt_auth_file do

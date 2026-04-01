@@ -105,6 +105,7 @@ defmodule Conductor.Fleet.Reconciler do
            repo: sprite.repo,
            persona: sprite.persona,
            harness: sprite.harness,
+           org: sprite.org,
            force: true
          ) do
       :ok ->
@@ -154,7 +155,7 @@ defmodule Conductor.Fleet.Reconciler do
         Sprite.status(name, status_opts)
       end)
 
-    case status_fn.(sprite.name, harness: sprite.harness) do
+    case status_fn.(sprite.name, harness: sprite.harness, org: sprite.org) do
       {:error, _reason} ->
         :unreachable
 
@@ -254,7 +255,7 @@ defmodule Conductor.Fleet.Reconciler do
   end
 
   defp wake_opts(sprite, opts) do
-    [harness: sprite.harness]
+    [harness: sprite.harness, org: sprite.org]
     |> maybe_put(:org, Keyword.get(opts, :org))
   end
 

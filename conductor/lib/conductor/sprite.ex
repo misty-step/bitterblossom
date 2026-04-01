@@ -154,7 +154,8 @@ defmodule Conductor.Sprite do
       kill -9 "$pid" 2>/dev/null || true
     fi
     #{kill_agents_cmd()}
-    rm -f #{shell_quote(@sprite_loop_pid_path)}
+    sleep 1
+    rm -f #{shell_quote(@sprite_loop_pid_path)} #{shell_quote(@sprite_loop_lock_path)}
     """
 
     case exec_fn.(sprite, command, timeout: 15_000) do

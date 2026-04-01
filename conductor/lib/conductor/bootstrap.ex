@@ -24,6 +24,7 @@ defmodule Conductor.Bootstrap do
     exec_fn = Keyword.get(opts, :exec_fn, &Sprite.exec/3)
 
     with :ok <- clone_or_pull(sprite, repo, exec_fn),
+         :ok <- clean_broken_symlinks(sprite, exec_fn),
          :ok <- run_bootstrap(sprite, exec_fn) do
       Logger.info("[bootstrap] spellbook ready on #{sprite}")
       :ok
@@ -46,6 +47,18 @@ defmodule Conductor.Bootstrap do
     case exec_fn.(sprite, cmd, timeout: 60_000) do
       {:ok, _} -> :ok
       {:error, msg, _code} -> {:error, "spellbook clone failed: #{msg}"}
+    end
+  end
+
+  defp clean_broken_symlinks(sprite, exec_fn) do
+    cmd = """
+    find /home/sprite/.claude/skills /home/sprite/.codex/skills \
+      -type l ! -e 2>/dev/null | xargs rm -f 2>/dev/null; true
+    """
+
+    case exec_fn.(sprite, cmd, timeout: 15_000) do
+      {:ok, _} -> :ok
+      {:error, _, _} -> :ok
     end
   end
 
