@@ -155,7 +155,7 @@ defmodule Conductor.Config do
     checks =
       [
         {"GITHUB_TOKEN", fn -> System.get_env("GITHUB_TOKEN") end},
-        {"SPRITE_TOKEN, FLY_API_TOKEN, or sprite CLI auth", fn -> sprite_auth_available?() end}
+        {"SPRITE_TOKEN or sprite CLI auth", fn -> sprite_auth_available?() end}
       ] ++
         maybe_codex_auth_check(opts) ++
         [
@@ -218,9 +218,13 @@ defmodule Conductor.Config do
         Conductor.SpriteCLIAuth.authenticated?() && "sprite-cli"
 
       org ->
-        case System.cmd("sprite", ["ls", "-o", org], stderr_to_stdout: true) do
-          {_, 0} -> "sprite-cli"
-          _ -> false
+        if System.find_executable("sprite") do
+          case System.cmd("sprite", ["ls", "-o", org], stderr_to_stdout: true) do
+            {_, 0} -> "sprite-cli"
+            _ -> false
+          end
+        else
+          false
         end
     end
   end

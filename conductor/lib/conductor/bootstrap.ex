@@ -53,7 +53,7 @@ defmodule Conductor.Bootstrap do
   defp clean_broken_symlinks(sprite, exec_fn) do
     cmd = """
     find /home/sprite/.claude/skills /home/sprite/.codex/skills \
-      -type l ! -e 2>/dev/null | xargs rm -f 2>/dev/null; true
+      -xtype l 2>/dev/null | xargs rm -f 2>/dev/null; true
     """
 
     case exec_fn.(sprite, cmd, timeout: 15_000) do
