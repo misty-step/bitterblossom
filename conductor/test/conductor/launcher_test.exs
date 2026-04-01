@@ -56,7 +56,7 @@ defmodule Conductor.LauncherTest do
     def persona_for_role(:builder), do: :weaver
     def persona_for_role(role), do: role
 
-    def sync_persona(sprite, workspace, role) do
+    def sync_persona(sprite, workspace, role, _opts \\ []) do
       if pid = Application.get_env(:conductor, :launcher_test_pid) do
         send(pid, {:sync_persona_called, sprite, workspace, role})
       end
@@ -102,6 +102,9 @@ defmodule Conductor.LauncherTest do
 
     assert {:ok, "123\n"} = Launcher.launch(sprite, "misty-step/bitterblossom")
 
+    assert_received {:stop_loop_called, "bb-builder"}
+    assert_received {:force_sync_called, "bb-builder"}
+
     assert_received {:exec_called, "bb-builder",
                      "test -d '/tmp/workspaces/misty-step/bitterblossom/.git'"}
 
@@ -134,6 +137,9 @@ defmodule Conductor.LauncherTest do
     }
 
     assert {:ok, "123\n"} = Launcher.launch(sprite, "misty-step/bitterblossom")
+
+    assert_received {:stop_loop_called, "bb-builder"}
+    assert_received {:force_sync_called, "bb-builder"}
 
     assert_received {:exec_called, "bb-builder",
                      "test -d '/tmp/workspaces/misty-step/bitterblossom/.git'"}

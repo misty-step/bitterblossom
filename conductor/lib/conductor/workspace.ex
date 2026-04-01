@@ -9,6 +9,7 @@ defmodule Conductor.Workspace do
   alias Conductor.{Config, Shell, Sprite}
   @mirror_base "/home/sprite/workspace"
   @safe_input ~r/^[a-zA-Z0-9_\-\.\/]+$/
+  @repo_segment ~r/^[A-Za-z0-9_.-]+$/
   @persona_roles ~w(weaver thorn fern)
 
   @doc "Validate that a string is safe for shell interpolation. Rejects metacharacters, path traversal, absolute paths, and leading dashes."
@@ -23,14 +24,29 @@ defmodule Conductor.Workspace do
     end
   end
 
+  @doc "Validate an `owner/repo` identifier for workspace and clone operations."
+  @spec validate_repo(binary()) :: :ok | {:error, :invalid_repo}
+  def validate_repo(repo) when is_binary(repo) do
+    with :ok <- validate_input(repo),
+         [owner, name] <- String.split(repo, "/", parts: 2),
+         true <- valid_repo_segment?(owner),
+         true <- valid_repo_segment?(name) do
+      :ok
+    else
+      _ -> {:error, :invalid_repo}
+    end
+  end
+
+  def validate_repo(_repo), do: {:error, :invalid_repo}
+
   @doc "Return the warm mirror root for a validated `owner/repo` identifier."
   @spec repo_root(binary()) :: binary()
   def repo_root(repo) do
-    case validate_input(repo) do
+    case validate_repo(repo) do
       :ok ->
         Path.join(@mirror_base, repo)
 
-      {:error, :invalid_input} ->
+      {:error, :invalid_repo} ->
         raise ArgumentError, "invalid repo path: #{inspect(repo)}"
     end
   end
@@ -221,4 +237,6 @@ defmodule Conductor.Workspace do
   end
 
   defp shell_quote(value), do: Shell.quote_arg(to_string(value))
+
+  defp valid_repo_segment?(segment), do: Regex.match?(@repo_segment, segment)
 end

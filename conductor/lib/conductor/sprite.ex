@@ -875,10 +875,7 @@ defmodule Conductor.Sprite do
   end
 
   defp validate_repo(repo) when is_binary(repo) do
-    with :ok <- Workspace.validate_input(repo),
-         [owner, name] <- String.split(repo, "/", parts: 2),
-         true <- valid_repo_segment?(owner),
-         true <- valid_repo_segment?(name) do
+    with :ok <- Workspace.validate_repo(repo) do
       :ok
     else
       _ -> {:error, "invalid repo format: #{inspect(repo)}"}
@@ -918,10 +915,6 @@ defmodule Conductor.Sprite do
     Path.join(@sprite_workspace_root, repo)
   end
 
-  defp valid_repo_segment?(segment) do
-    Regex.match?(~r/^[A-Za-z0-9_.-]+$/, segment)
-  end
-
   defp workspace_discovery_script do
     """
     set -euo pipefail
@@ -945,14 +938,11 @@ defmodule Conductor.Sprite do
       exit 0
     fi
 
-    gitdir=$(find #{@sprite_workspace_root} -mindepth 2 -maxdepth 3 -type d -name .git 2>/dev/null | head -1 || true)
+    gitdir=$(ls -dt #{@sprite_workspace_root}/**/.git 2>/dev/null | head -1 || true)
     if [ -n "$gitdir" ]; then
       printf '%s\n' "${gitdir%/.git}"
       exit 0
     fi
-
-    ws=$(ls -d #{@sprite_workspace_root}/*/ 2>/dev/null | head -1 || true)
-    printf '%s\n' "${ws%/}"
     """
   end
 

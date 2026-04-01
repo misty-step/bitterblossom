@@ -230,6 +230,16 @@ defmodule Conductor.WorkspaceTest do
       assert Workspace.repo_root("alpha/shared") != Workspace.repo_root("beta/shared")
     end
 
+    test "raises for non owner-repo identifiers" do
+      assert_raise ArgumentError, fn ->
+        Workspace.repo_root("bitterblossom")
+      end
+
+      assert_raise ArgumentError, fn ->
+        Workspace.repo_root("alpha/shared/extra")
+      end
+    end
+
     test "raises for invalid repo" do
       assert_raise ArgumentError, fn ->
         Workspace.repo_root("../etc/passwd")
