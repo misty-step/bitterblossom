@@ -18,7 +18,7 @@ Agents are capable. The infrastructure is plumbing.
 
 ## Sprite Names
 
-- **Weaver** (`bb-builder`) — autonomous builder: picks issues, shapes, implements via `/autopilot`, opens PRs
+- **Weaver** (`bb-builder`) — autonomous builder: picks `backlog.d/` items, shapes, implements via `/autopilot`, opens PRs
 - **Thorn** (`bb-fixer`) — autonomous fixer: scans PRs for merge blockers, resolves conflicts, fixes CI via `/settle`
 - **Fern** (`bb-polisher`, `bb-polisher-2`, `bb-polisher-3`) — autonomous quality + merger: reviews, polishes, refactors, squash-merges via `/settle`
 - **Muse** (`bb-muse`) — reflects on runs and synthesizes learning for the factory
@@ -51,7 +51,7 @@ base/                        Skills/configs uploaded to all sprites
 
 1. `cd conductor && mix conductor start --fleet ../fleet.toml` provisions sprites, bootstraps spellbook, dispatches agent loops
 2. Each sprite runs its own autonomous loop (defined in its AGENTS.md)
-3. Weaver picks issues → Thorn fixes PRs → Fern polishes and merges
+3. Weaver picks `backlog.d/` items → Thorn fixes PRs → Fern polishes and merges
 4. Self-healing: conflicts/CI failures → Thorn → Fern re-polishes → merge
 
 ## Build & Test
@@ -62,7 +62,7 @@ cd conductor && mix deps.get && mix compile && mix test
 
 ## Agent-First Philosophy
 
-**Agents are capable.** They can pick issues, classify failures, decide what to fix, evaluate quality, and merge. The infrastructure exists only to give them a healthy environment.
+**Agents are capable.** They can pick backlog items, classify failures, decide what to fix, evaluate quality, and merge. The infrastructure exists only to give them a healthy environment.
 
 **No conductor judgment.** The conductor doesn't decide which issues to work, how to fix CI, whether to retry, or what merge policy to apply. Agents make all those decisions via their AGENTS.md definitions and skills.
 
@@ -70,7 +70,7 @@ cd conductor && mix deps.get && mix compile && mix test
 
 **Spellbook is the canonical skill set.** `phrazzld/spellbook` defines the skills and agents. Sprites are bootstrapped with it before every dispatch.
 
-**Self-healing cycles.** Weaver opens PR → Thorn fixes blockers → Fern polishes → merge → new issues → Weaver picks them up. No dead ends, no stuck states.
+**Self-healing cycles.** Weaver opens PR → Thorn fixes blockers → Fern polishes → merge. `backlog.d/` is the canonical work source. No dead ends, no stuck states.
 
 ## Gotchas (earned by pain)
 

@@ -29,7 +29,8 @@ Close the three gaps exposed by the orchestration-layer refactor (012):
 - [ ] Seed launched sprites as `:launching` in `Application.launch_with_config/2`
 - [ ] Add `stop_loop/2` preflight in `Launcher.launch/3` before `start_loop`
 - [ ] Add launch timeout: if sprite stays `:launching` for N probe cycles, mark `:unhealthy`
-- [ ] Tests for: failed launch, loop death, stale process cleanup, launch timeout
+- [ ] Distinguish clean exit (no work) from crash exit — back off relaunch when sprites repeatedly exit cleanly within one health cycle
+- [ ] Tests for: failed launch, loop death, stale process cleanup, launch timeout, clean-exit backoff
 
 ## Oracle
 - [ ] A sprite whose launch fails is NOT marked `:healthy` — it stays `:launching` then degrades to `:unhealthy`
@@ -38,6 +39,9 @@ Close the three gaps exposed by the orchestration-layer refactor (012):
 - [ ] A sprite stuck in `:launching` for >=3 probe cycles transitions to `:unhealthy`
 - [ ] `mix test` passes
 - [ ] `mix compile --warnings-as-errors` passes
+
+## Evidence (2026-04-01 factory audit)
+bb-fixer and bb-polisher exit within ~4 min of launch when no PRs exist. HealthMonitor detects exit, relaunches immediately, creating an infinite restart cycle. Each cycle burns ~4 min of context-reading and API tokens. The health monitor correctly detects the exit but doesn't distinguish "no work available" from "crashed loop" — both get the same immediate relaunch treatment.
 
 ## Notes
 Replaces the old "sprite session continuity" item. The analysis (adversarial review + thinktank + codex) concluded:

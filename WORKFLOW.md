@@ -85,7 +85,7 @@ If another document disagrees with this file about execution flow, phases, artif
 **Required skill(s):** `shape`, optionally `autopilot`
 
 **Inputs:**
-- GitHub issue or operator request
+- `backlog.d/` item or operator request
 - `project.md`
 - repo architecture/docs/context
 - related code and tests
