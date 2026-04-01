@@ -211,21 +211,20 @@ defmodule Conductor.Config do
   end
 
   defp sprite_cli_auth_live? do
-    org = System.get_env("SPRITES_ORG") || System.get_env("FLY_ORG")
-
-    case org do
-      nil ->
-        Conductor.SpriteCLIAuth.authenticated?() && "sprite-cli"
-
-      org ->
-        if System.find_executable("sprite") do
-          case System.cmd("sprite", ["ls", "-o", org], stderr_to_stdout: true) do
-            {_, 0} -> "sprite-cli"
-            _ -> false
-          end
-        else
-          false
+    org =
+      System.get_env("SPRITES_ORG") ||
+        System.get_env("FLY_ORG") ||
+        case Conductor.SpriteCLIAuth.current_org() do
+          {:ok, cli_org} -> cli_org
+          {:error, _} -> nil
         end
+
+    with org when is_binary(org) <- org,
+         sprite when is_binary(sprite) <- System.find_executable("sprite"),
+         {_, 0} <- System.cmd(sprite, ["ls", "-o", org], stderr_to_stdout: true) do
+      "sprite-cli"
+    else
+      _ -> false
     end
   end
 

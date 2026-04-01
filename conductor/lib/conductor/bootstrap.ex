@@ -53,12 +53,16 @@ defmodule Conductor.Bootstrap do
   defp clean_broken_symlinks(sprite, exec_fn) do
     cmd = """
     find /home/sprite/.claude/skills /home/sprite/.codex/skills \
-      -xtype l 2>/dev/null | xargs rm -f 2>/dev/null; true
+      -xtype l -print0 2>/dev/null | xargs -0 -r rm -f 2>/dev/null; true
     """
 
     case exec_fn.(sprite, cmd, timeout: 15_000) do
-      {:ok, _} -> :ok
-      {:error, _, _} -> :ok
+      {:ok, _} ->
+        :ok
+
+      {:error, msg, _code} ->
+        Logger.debug("[bootstrap] broken symlink cleanup failed on #{sprite}: #{msg}")
+        :ok
     end
   end
 
