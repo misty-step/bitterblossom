@@ -155,7 +155,7 @@ defmodule Conductor.Config do
     checks =
       [
         {"GITHUB_TOKEN", fn -> System.get_env("GITHUB_TOKEN") end},
-        {"SPRITE_TOKEN, FLY_API_TOKEN, or sprite CLI auth", fn -> sprite_auth_available?() end}
+        {"SPRITE_TOKEN or sprite CLI auth", fn -> sprite_auth_available?() end}
       ] ++
         maybe_codex_auth_check(opts) ++
         [
@@ -197,15 +197,35 @@ defmodule Conductor.Config do
   end
 
   @doc """
-  Returns a truthy value if any sprite auth method is available:
-  SPRITE_TOKEN env, FLY_API_TOKEN env, or sprite CLI session.
+  Returns a truthy value if sprite CLI auth is available.
+
+  Checks SPRITE_TOKEN env, then verifies the sprite CLI can actually
+  list sprites for the configured org. FLY_API_TOKEN is not checked —
+  the sprite CLI ignores it.
   """
   @spec sprite_auth_available?() :: binary() | false
   def sprite_auth_available? do
     System.get_env("SPRITE_TOKEN") ||
-      System.get_env("FLY_API_TOKEN") ||
-      (Conductor.SpriteCLIAuth.authenticated?() && "sprite-cli") ||
+      sprite_cli_auth_live?() ||
       false
+  end
+
+  defp sprite_cli_auth_live? do
+    org =
+      System.get_env("SPRITES_ORG") ||
+        System.get_env("FLY_ORG") ||
+        case Conductor.SpriteCLIAuth.current_org() do
+          {:ok, cli_org} -> cli_org
+          {:error, _} -> nil
+        end
+
+    with org when is_binary(org) <- org,
+         sprite when is_binary(sprite) <- System.find_executable("sprite"),
+         {_, 0} <- System.cmd(sprite, ["ls", "-o", org], stderr_to_stdout: true) do
+      "sprite-cli"
+    else
+      _ -> false
+    end
   end
 
   defp chatgpt_auth_file do

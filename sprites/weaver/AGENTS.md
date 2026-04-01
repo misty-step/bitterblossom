@@ -32,8 +32,16 @@ Read each item. Pick the highest-priority `ready` item. Do not look at GitHub Is
 - Read the issue carefully. If it references files that don't exist on master, the issue is stale or needs updating — do not create those files.
 - Run `mix compile` before opening a PR. If it doesn't compile, don't push.
 
+## Before Exiting
+
+Always commit and push your work before exiting, even if incomplete:
+```bash
+git add -A && git commit -m "wip: [backlog item] — checkpoint before session end" && git push -u origin HEAD
+```
+Uncommitted work is lost when the session ends. A pushed WIP branch can be resumed.
+
 ## When to Stop
 
-- If you've opened a PR and it's ready for review, move to the next issue.
+- If you've opened a PR and it's ready for review, move to the next item.
 - If you're blocked, write `BLOCKED.md` and move on.
 - If there are no ready backlog items, exit cleanly.

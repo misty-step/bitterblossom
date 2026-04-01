@@ -9,6 +9,7 @@ defmodule Conductor.Fleet.ReconcilerTest do
   @sprite %{
     name: "bb-weaver",
     role: "builder",
+    org: "misty-step",
     repo: "misty-step/bitterblossom",
     persona: "You are Weaver.",
     harness: "codex"
@@ -115,6 +116,7 @@ defmodule Conductor.Fleet.ReconcilerTest do
                        repo: "misty-step/bitterblossom",
                        persona: "You are Weaver.",
                        harness: "codex",
+                       org: "misty-step",
                        force: true
                      ]}
 
@@ -268,6 +270,7 @@ defmodule Conductor.Fleet.ReconcilerTest do
                        repo: "misty-step/bitterblossom",
                        persona: "You are Weaver.",
                        harness: "codex",
+                       org: "misty-step",
                        force: true
                      ]}
 
