@@ -79,7 +79,7 @@ defmodule Conductor.SpriteAgentTest do
       send(test_pid, {:exec_called, command, opts, uploaded_files})
 
       cond do
-        String.contains?(command, "nohup bash -lc") ->
+        String.contains?(command, "setsid bash -lc") ->
           {:ok, "__bb_started__:123\n"}
 
         true ->
@@ -118,7 +118,7 @@ defmodule Conductor.SpriteAgentTest do
     assert detached_cmd =~ "__bb_started__:"
     assert detached_cmd =~ "__bb_busy__"
     assert detached_cmd =~ "__bb_paused__"
-    assert detached_cmd =~ "nohup bash -lc"
+    assert detached_cmd =~ "setsid bash -lc"
     assert detached_cmd =~ "/home/sprite/.bitterblossom/loop.pid"
     assert detached_cmd =~ "codex exec"
   end
@@ -184,6 +184,6 @@ defmodule Conductor.SpriteAgentTest do
     assert :ok = Sprite.stop_loop("bb-weaver", exec_fn: exec_fn)
     assert_received {:exec_called, stop_cmd}
     assert stop_cmd =~ "/home/sprite/.bitterblossom/loop.pid"
-    assert stop_cmd =~ "pkill -9 -f codex"
+    assert stop_cmd =~ "kill -- -"
   end
 end

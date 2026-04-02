@@ -21,6 +21,9 @@ defmodule Conductor.Fleet.HealthMonitor do
   alias Conductor.Fleet.Reconciler
 
   @max_launch_ticks 3
+  @rapid_exit_threshold_ms 120_000
+  @max_rapid_exits 3
+  @rapid_exit_backoff_cap_ms 1_800_000
 
   defstruct [
     :repo,
@@ -28,7 +31,9 @@ defmodule Conductor.Fleet.HealthMonitor do
     :timer_ref,
     sprites: [],
     known_health: %{},
-    launch_ticks: %{}
+    launch_ticks: %{},
+    launch_times: %{},
+    rapid_exit_counts: %{}
   ]
 
   # --- Public API ---
@@ -78,6 +83,8 @@ defmodule Conductor.Fleet.HealthMonitor do
       end)
 
     launch_ticks = Map.new(sprites, fn s -> {s.name, 0} end)
+    launch_times = Map.new(sprites, fn s -> {s.name, nil} end)
+    rapid_exit_counts = Map.new(sprites, fn s -> {s.name, 0} end)
 
     if state.timer_ref, do: Process.cancel_timer(state.timer_ref)
     ref = schedule_check(state.interval_ms)
@@ -88,6 +95,8 @@ defmodule Conductor.Fleet.HealthMonitor do
         repo: repo,
         known_health: known_health,
         launch_ticks: launch_ticks,
+        launch_times: launch_times,
+        rapid_exit_counts: rapid_exit_counts,
         timer_ref: ref
     }
 
@@ -135,6 +144,7 @@ defmodule Conductor.Fleet.HealthMonitor do
     state
     |> put_health(sprite.name, :healthy)
     |> put_launch_ticks(sprite.name, 0)
+    |> put_launch_time(sprite.name, System.monotonic_time(:millisecond))
   end
 
   # :launching + ready + no loop → stay :launching (still starting), but timeout
@@ -170,11 +180,25 @@ defmodule Conductor.Fleet.HealthMonitor do
 
   # :healthy + ready + no loop → :unhealthy (loop exited)
   defp transition(state, sprite, :healthy, true, false) do
-    Logger.warning("[health] #{sprite.name} loop exited")
+    launch_time = Map.get(state.launch_times, sprite.name)
+    rapid? = rapid_exit?(launch_time)
 
-    record_fleet_event("sprite_loop_exited", sprite)
+    if rapid? do
+      count = Map.get(state.rapid_exit_counts, sprite.name, 0) + 1
+      Logger.warning("[health] #{sprite.name} rapid exit (#{count}x) — likely no work available")
+      record_fleet_event("sprite_loop_exited", sprite, %{rapid: true, count: count})
 
-    put_health(state, sprite.name, :unhealthy)
+      state
+      |> put_health(sprite.name, :unhealthy)
+      |> put_rapid_exit_count(sprite.name, count)
+    else
+      Logger.warning("[health] #{sprite.name} loop exited")
+      record_fleet_event("sprite_loop_exited", sprite)
+
+      state
+      |> put_health(sprite.name, :unhealthy)
+      |> put_rapid_exit_count(sprite.name, 0)
+    end
   end
 
   # :healthy + unhealthy → :unhealthy (degraded)
@@ -195,23 +219,35 @@ defmodule Conductor.Fleet.HealthMonitor do
     put_health(state, sprite.name, :healthy)
   end
 
-  # :unhealthy + ready + no loop → :launching + relaunch
+  # :unhealthy + ready + no loop → :launching + relaunch (with backoff)
   defp transition(state, sprite, :unhealthy, true, false) do
-    Logger.info("[health] #{sprite.name} recovered, relaunching loop")
+    rapid_count = Map.get(state.rapid_exit_counts, sprite.name, 0)
 
-    record_fleet_event("sprite_recovered", sprite)
+    if rapid_count >= @max_rapid_exits and not backoff_elapsed?(state, sprite) do
+      backoff_ms = rapid_exit_backoff_ms(rapid_count)
 
-    repo = sprite_repo(sprite, state.repo)
+      Logger.info(
+        "[health] #{sprite.name} backing off relaunch (#{rapid_count} rapid exits, #{div(backoff_ms, 1000)}s)"
+      )
 
-    if repo do
-      Task.Supervisor.start_child(Conductor.TaskSupervisor, fn ->
-        launcher_mod().launch(sprite, repo)
-      end)
+      state
+    else
+      Logger.info("[health] #{sprite.name} recovered, relaunching loop")
+
+      record_fleet_event("sprite_recovered", sprite)
+
+      repo = sprite_repo(sprite, state.repo)
+
+      if repo do
+        Task.Supervisor.start_child(Conductor.TaskSupervisor, fn ->
+          launcher_mod().launch(sprite, repo)
+        end)
+      end
+
+      state
+      |> put_health(sprite.name, :launching)
+      |> put_launch_ticks(sprite.name, 0)
     end
-
-    state
-    |> put_health(sprite.name, :launching)
-    |> put_launch_ticks(sprite.name, 0)
   end
 
   # :unhealthy + unhealthy → no-op
@@ -253,6 +289,35 @@ defmodule Conductor.Fleet.HealthMonitor do
     catch
       :exit, _ -> :ok
     end
+  end
+
+  defp put_launch_time(state, name, time) do
+    %{state | launch_times: Map.put(state.launch_times, name, time)}
+  end
+
+  defp put_rapid_exit_count(state, name, count) do
+    %{state | rapid_exit_counts: Map.put(state.rapid_exit_counts, name, count)}
+  end
+
+  defp rapid_exit?(nil), do: false
+
+  defp rapid_exit?(launch_time) do
+    System.monotonic_time(:millisecond) - launch_time < @rapid_exit_threshold_ms
+  end
+
+  defp backoff_elapsed?(state, sprite) do
+    launch_time = Map.get(state.launch_times, sprite.name)
+    rapid_count = Map.get(state.rapid_exit_counts, sprite.name, 0)
+
+    case launch_time do
+      nil -> true
+      t -> System.monotonic_time(:millisecond) - t >= rapid_exit_backoff_ms(rapid_count)
+    end
+  end
+
+  defp rapid_exit_backoff_ms(count) do
+    base = Config.fleet_health_check_interval_ms()
+    min(trunc(base * :math.pow(2, count - @max_rapid_exits)), @rapid_exit_backoff_cap_ms)
   end
 
   defp sprite_repo(sprite, fallback_repo), do: Map.get(sprite, :repo, fallback_repo)
