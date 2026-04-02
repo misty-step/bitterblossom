@@ -368,4 +368,64 @@ defmodule Conductor.Fleet.HealthMonitorTest do
 
     assert_receive {:launched, "bb-polisher", "other/repo"}
   end
+
+  test "rapid exit detection and backoff suppresses relaunch after repeated fast exits" do
+    start_monitor(interval_ms: 60_000)
+
+    sprites = [%{name: "bb-polisher", role: :polisher, harness: "codex"}]
+    MockState.put({:sprite_health, "bb-polisher"}, :healthy)
+    MockState.put({:loop_alive, "bb-polisher"}, true)
+
+    HealthMonitor.configure(
+      sprites: sprites,
+      repo: "test/repo",
+      launching: MapSet.new(["bb-polisher"])
+    )
+
+    # Cycle 3 rapid exits: launching → healthy (confirm) → unhealthy (rapid exit)
+    for i <- 1..3 do
+      # Confirm loop alive → :healthy (sets launch_time)
+      MockState.put({:loop_alive, "bb-polisher"}, true)
+
+      capture_log(fn ->
+        send(Process.whereis(HealthMonitor), :check)
+        Process.sleep(100)
+      end)
+
+      assert HealthMonitor.status().sprites["bb-polisher"] == :healthy
+
+      # Kill loop → :unhealthy (rapid exit, since launch_time was just set)
+      MockState.put({:loop_alive, "bb-polisher"}, false)
+
+      log =
+        capture_log(fn ->
+          send(Process.whereis(HealthMonitor), :check)
+          Process.sleep(100)
+        end)
+
+      assert log =~ "rapid exit (#{i}x)"
+      assert HealthMonitor.status().sprites["bb-polisher"] == :unhealthy
+
+      # Recovery → relaunch (count < 3 allows it)
+      if i < 3 do
+        capture_log(fn ->
+          send(Process.whereis(HealthMonitor), :check)
+          Process.sleep(100)
+        end)
+
+        assert HealthMonitor.status().sprites["bb-polisher"] == :launching
+      end
+    end
+
+    # After 3 rapid exits, relaunch should be suppressed (backoff)
+    log =
+      capture_log(fn ->
+        send(Process.whereis(HealthMonitor), :check)
+        Process.sleep(100)
+      end)
+
+    assert log =~ "backing off relaunch"
+    # Should stay :unhealthy, not transition to :launching
+    assert HealthMonitor.status().sprites["bb-polisher"] == :unhealthy
+  end
 end
