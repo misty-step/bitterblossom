@@ -1,2 +1,4 @@
 {"date":"2026-04-02","pr":null,"correctness":9,"depth":8,"simplicity":8,"craft":8,"verdict":"ship"}
 {"date":"2026-04-02","pr":null,"correctness":9,"depth":8,"simplicity":9,"craft":8,"verdict":"ship"}
+{"date":"2026-04-01","pr":829,"correctness":8,"depth":8,"simplicity":9,"craft":7,"verdict":"ship"}
+{"date":"2026-04-02","pr":830,"correctness":9,"depth":9,"simplicity":8,"craft":8,"verdict":"ship"}
