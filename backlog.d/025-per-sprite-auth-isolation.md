@@ -1,7 +1,7 @@
 # Per-sprite auth isolation — stop token contention cascade
 
 Priority: critical
-Status: ready
+Status: done
 Estimate: M
 
 ## Goal

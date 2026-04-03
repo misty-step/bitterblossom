@@ -18,7 +18,7 @@ defmodule Conductor.CodexTest do
       assert "--yolo" in cmd
       assert "--json" in cmd
       assert "--model" in cmd
-      assert "gpt-5.4-mini" in cmd
+      assert "gpt-5.4" in cmd
       assert "web_search=live" in cmd
       assert "model_reasoning_effort=medium" in cmd
     end

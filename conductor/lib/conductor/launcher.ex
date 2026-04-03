@@ -111,7 +111,7 @@ defmodule Conductor.Launcher do
 
     case sprite_module().exec(sprite, "test -d #{shell_quote(git_dir)}", timeout: 15_000) do
       {:ok, _} ->
-        :ok
+        refresh_workspace(sprite, workspace)
 
       {:error, reason, _code} ->
         Logger.info(
@@ -124,6 +124,24 @@ defmodule Conductor.Launcher do
           harness: sprite_config.harness,
           force: false
         )
+    end
+  end
+
+  defp refresh_workspace(sprite, workspace) do
+    refresh_cmd =
+      "cd #{shell_quote(workspace)} && " <>
+        "git fetch origin && " <>
+        "git checkout -f origin/master && " <>
+        "git clean -fd"
+
+    case sprite_module().exec(sprite, refresh_cmd, timeout: 60_000) do
+      {:ok, _} ->
+        Logger.info("[launcher] #{sprite} workspace refreshed to origin/master")
+        :ok
+
+      {:error, msg, _code} ->
+        Logger.warning("[launcher] #{sprite} workspace refresh failed: #{msg}")
+        {:error, msg}
     end
   end
 

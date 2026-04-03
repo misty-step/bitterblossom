@@ -1,7 +1,7 @@
 # Auth self-healing for ChatGPT OAuth token rotation
 
 Priority: critical
-Status: ready
+Status: done
 Estimate: M
 
 ## Goal
