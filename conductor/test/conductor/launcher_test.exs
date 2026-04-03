@@ -144,7 +144,7 @@ defmodule Conductor.LauncherTest do
     assert opts[:workspace] == "/tmp/workspaces/misty-step/bitterblossom"
   end
 
-  test "launch skips reprovision when the expected repo checkout already exists" do
+  test "launch refreshes workspace to origin/master when repo checkout exists" do
     Application.put_env(:conductor, :launcher_repo_checkout_present, true)
 
     sprite = %{
@@ -164,6 +164,12 @@ defmodule Conductor.LauncherTest do
 
     assert_received {:exec_called, "bb-builder",
                      "test -d '/tmp/workspaces/misty-step/bitterblossom/.git'"}
+
+    # Workspace refresh: git fetch + checkout origin/master + clean
+    assert_received {:exec_called, "bb-builder", refresh_cmd}
+    assert refresh_cmd =~ "git fetch origin"
+    assert refresh_cmd =~ "git checkout -f origin/master"
+    assert refresh_cmd =~ "git clean -fd"
 
     refute_received {:provision_called, _, _}
     assert_received {:start_loop_called, "bb-builder", _, "misty-step/bitterblossom", _}
@@ -194,6 +200,7 @@ defmodule Conductor.LauncherTest do
 
     assert log =~ "auth failure detected"
     assert log =~ "refresh_token_reused"
+    assert log =~ "workspace refreshed"
     assert_received {:detect_auth_failure_called, "bb-builder"}
     assert_received {:force_sync_called, "bb-builder"}
   end
@@ -216,6 +223,12 @@ defmodule Conductor.LauncherTest do
     assert_received {:stop_loop_called, "bb-builder"}
     assert_received {:detect_auth_failure_called, "bb-builder"}
     refute_received {:force_sync_called, _}
+
+    assert_received {:exec_called, "bb-builder",
+                     "test -d '/tmp/workspaces/misty-step/bitterblossom/.git'"}
+
+    assert_received {:exec_called, "bb-builder", refresh_cmd}
+    assert refresh_cmd =~ "git fetch origin"
     assert_received {:start_loop_called, "bb-builder", _, "misty-step/bitterblossom", _}
   end
 

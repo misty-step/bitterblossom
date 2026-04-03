@@ -14,7 +14,7 @@ defmodule Conductor.Codex do
 
   @behaviour Conductor.Harness
 
-  @default_model "gpt-5.4-mini"
+  @default_model "gpt-5.4"
   @default_reasoning "medium"
 
   @impl Conductor.Harness
