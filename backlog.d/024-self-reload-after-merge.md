@@ -1,7 +1,7 @@
 # Self-reload after merge
 
 Priority: critical
-Status: done
+Status: ready
 Estimate: M
 
 ## Goal
