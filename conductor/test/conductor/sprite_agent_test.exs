@@ -185,5 +185,6 @@ defmodule Conductor.SpriteAgentTest do
     assert_received {:exec_called, stop_cmd}
     assert stop_cmd =~ "/home/sprite/.bitterblossom/loop.pid"
     assert stop_cmd =~ "kill -- -"
+    assert stop_cmd =~ "pkill -9 -f codex"
   end
 end

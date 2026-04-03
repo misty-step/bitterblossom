@@ -224,7 +224,7 @@ defmodule Conductor.Fleet.HealthMonitor do
     rapid_count = Map.get(state.rapid_exit_counts, sprite.name, 0)
 
     if rapid_count >= @max_rapid_exits and not backoff_elapsed?(state, sprite) do
-      backoff_ms = rapid_exit_backoff_ms(rapid_count)
+      backoff_ms = rapid_exit_backoff_ms(rapid_count, state.interval_ms)
 
       Logger.info(
         "[health] #{sprite.name} backing off relaunch (#{rapid_count} rapid exits, #{div(backoff_ms, 1000)}s)"
@@ -244,9 +244,15 @@ defmodule Conductor.Fleet.HealthMonitor do
         end)
       end
 
+      # Reset rapid exit counter only when relaunching after backoff elapsed,
+      # not on normal relaunches (counter < threshold). This gives the sprite
+      # a fresh budget of rapid exits after it's waited out the backoff.
+      reset_count = rapid_count >= @max_rapid_exits
+
       state
       |> put_health(sprite.name, :launching)
       |> put_launch_ticks(sprite.name, 0)
+      |> then(fn s -> if reset_count, do: put_rapid_exit_count(s, sprite.name, 0), else: s end)
     end
   end
 
@@ -311,13 +317,12 @@ defmodule Conductor.Fleet.HealthMonitor do
 
     case launch_time do
       nil -> true
-      t -> System.monotonic_time(:millisecond) - t >= rapid_exit_backoff_ms(rapid_count)
+      t -> System.monotonic_time(:millisecond) - t >= rapid_exit_backoff_ms(rapid_count, state.interval_ms)
     end
   end
 
-  defp rapid_exit_backoff_ms(count) do
-    base = Config.fleet_health_check_interval_ms()
-    min(trunc(base * :math.pow(2, count - @max_rapid_exits)), @rapid_exit_backoff_cap_ms)
+  defp rapid_exit_backoff_ms(count, interval_ms) do
+    min(trunc(interval_ms * :math.pow(2, count - @max_rapid_exits)), @rapid_exit_backoff_cap_ms)
   end
 
   defp sprite_repo(sprite, fallback_repo), do: Map.get(sprite, :repo, fallback_repo)
