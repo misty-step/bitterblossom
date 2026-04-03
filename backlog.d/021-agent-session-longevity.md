@@ -1,7 +1,7 @@
 # Agent session longevity — fix premature budget exhaustion
 
 Priority: critical
-Status: ready
+Status: in-progress
 Estimate: M
 
 ## Goal
