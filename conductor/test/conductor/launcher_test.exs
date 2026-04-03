@@ -1,5 +1,6 @@
 defmodule Conductor.LauncherTest do
   use ExUnit.Case, async: false
+  import ExUnit.CaptureLog
 
   alias Conductor.Launcher
 
@@ -7,6 +8,15 @@ defmodule Conductor.LauncherTest do
     def stop_loop(name) do
       notify({:stop_loop_called, name})
       :ok
+    end
+
+    def detect_auth_failure(name, _opts \\ []) do
+      notify({:detect_auth_failure_called, name})
+
+      case Application.get_env(:conductor, :launcher_auth_failure_result, :ok) do
+        :ok -> :ok
+        {:auth_failure, _} = result -> result
+      end
     end
 
     def force_sync_codex_auth(name) do
@@ -71,6 +81,7 @@ defmodule Conductor.LauncherTest do
     orig_workspace_module = Application.get_env(:conductor, :workspace_module)
     orig_test_pid = Application.get_env(:conductor, :launcher_test_pid)
     orig_checkout_present = Application.get_env(:conductor, :launcher_repo_checkout_present)
+    orig_auth_failure = Application.get_env(:conductor, :launcher_auth_failure_result)
 
     Application.put_env(:conductor, :sprite_module, MockSpriteModule)
     Application.put_env(:conductor, :bootstrap_module, MockBootstrapModule)
@@ -83,6 +94,7 @@ defmodule Conductor.LauncherTest do
       restore_env(:workspace_module, orig_workspace_module)
       restore_env(:launcher_test_pid, orig_test_pid)
       restore_env(:launcher_repo_checkout_present, orig_checkout_present)
+      restore_env(:launcher_auth_failure_result, orig_auth_failure)
     end)
 
     :ok
@@ -103,6 +115,7 @@ defmodule Conductor.LauncherTest do
     assert {:ok, "123\n"} = Launcher.launch(sprite, "misty-step/bitterblossom")
 
     assert_received {:stop_loop_called, "bb-builder"}
+    assert_received {:detect_auth_failure_called, "bb-builder"}
     assert_received {:force_sync_called, "bb-builder"}
 
     assert_received {:exec_called, "bb-builder",
@@ -139,6 +152,7 @@ defmodule Conductor.LauncherTest do
     assert {:ok, "123\n"} = Launcher.launch(sprite, "misty-step/bitterblossom")
 
     assert_received {:stop_loop_called, "bb-builder"}
+    assert_received {:detect_auth_failure_called, "bb-builder"}
     assert_received {:force_sync_called, "bb-builder"}
 
     assert_received {:exec_called, "bb-builder",
@@ -146,6 +160,35 @@ defmodule Conductor.LauncherTest do
 
     refute_received {:provision_called, _, _}
     assert_received {:start_loop_called, "bb-builder", _, "misty-step/bitterblossom", _}
+  end
+
+  test "launch logs auth failure detection before force sync" do
+    Application.put_env(:conductor, :launcher_repo_checkout_present, true)
+
+    Application.put_env(
+      :conductor,
+      :launcher_auth_failure_result,
+      {:auth_failure, "refresh_token_reused"}
+    )
+
+    sprite = %{
+      name: "bb-builder",
+      role: :builder,
+      repo: "misty-step/bitterblossom",
+      harness: "codex",
+      reasoning_effort: "medium",
+      persona: "You are Weaver."
+    }
+
+    log =
+      capture_log(fn ->
+        assert {:ok, "123\n"} = Launcher.launch(sprite, "misty-step/bitterblossom")
+      end)
+
+    assert log =~ "auth failure detected"
+    assert log =~ "refresh_token_reused"
+    assert_received {:detect_auth_failure_called, "bb-builder"}
+    assert_received {:force_sync_called, "bb-builder"}
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:conductor, key)

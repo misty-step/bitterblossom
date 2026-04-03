@@ -31,6 +31,8 @@ defmodule Conductor.Sprite do
   @start_loop_started_prefix "__bb_started__:"
   @start_loop_paused_marker "__bb_paused__"
   @start_loop_busy_marker "__bb_busy__"
+  @auth_error_patterns ~w(refresh_token_reused auth_error) ++
+                         ["Failed to refresh token", "401"]
 
   @spec exec(binary(), binary(), keyword()) :: {:ok, binary()} | {:error, binary(), integer()}
   def exec(sprite, command, opts \\ []) do
@@ -286,6 +288,32 @@ defmodule Conductor.Sprite do
     end
   end
 
+  @doc """
+  Check sprite logs for auth failure patterns.
+
+  Execs on the sprite to grep the last 50 lines of ralph.log for known
+  auth error signatures. Returns `{:auth_failure, reason}` or `:ok`.
+  """
+  @spec detect_auth_failure(binary(), keyword()) :: :ok | {:auth_failure, binary()}
+  def detect_auth_failure(sprite, opts \\ []) do
+    exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
+
+    command =
+      "find #{@sprite_workspace_root} -name #{@log_file} -print -quit 2>/dev/null" <>
+        " | head -1 | xargs -I{} tail -n 50 {} 2>/dev/null || true"
+
+    case exec_fn.(sprite, command, timeout: 15_000) do
+      {:ok, output} ->
+        case Enum.find(@auth_error_patterns, &String.contains?(output, &1)) do
+          nil -> :ok
+          pattern -> {:auth_failure, pattern}
+        end
+
+      {:error, _msg, _code} ->
+        :ok
+    end
+  end
+
   @doc "Kill agent processes and revoke GitHub auth. Best-effort, always returns :ok."
   @spec kill_and_revoke(binary(), keyword()) :: :ok
   def kill_and_revoke(sprite, opts \\ []) do
@@ -501,7 +529,12 @@ defmodule Conductor.Sprite do
     setsid bash -lc #{shell_quote("""
     echo $$ > #{@sprite_loop_pid_path}
     trap 'rm -f #{@sprite_loop_pid_path}' EXIT
-    #{agent_cmd}
+    for attempt in 1 2 3; do
+      #{agent_cmd}
+      exit_code=$?
+      if [ $exit_code -eq 0 ]; then break; fi
+      sleep 10
+    done
     """)} >/dev/null 2>&1 </dev/null &
     printf '%s%s\\n' #{shell_quote(@start_loop_started_prefix)} "$!"
     """
