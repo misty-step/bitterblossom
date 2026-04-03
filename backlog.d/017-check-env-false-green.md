@@ -28,15 +28,18 @@ Factory audit 2026-04-01: `FLY_API_TOKEN` set, `check-env` passed, all 3 sprites
 - [x] `mix compile --warnings-as-errors` passes
 
 ## What Was Built
-- `Conductor.CLI` now forwards declared fleet sprites into environment preflight from all relevant paths: `start`, `fleet --reconcile`, and `check-env --fleet`.
+- `Conductor.CLI` now forwards one declared sprite name into environment preflight from all relevant paths: `start`, `fleet --reconcile`, `check-env --fleet`, and per-sprite start recovery.
 - `Conductor.Config.check_env!/1` now performs sprite auth checks with context-aware behavior:
-  - declared sprites present: probe one via `Conductor.Sprite.exec(..., "printf ok", ...)`
-  - no declared sprites: fallback to `sprite ls -o <org>`
+  - declared sprite probe target present: run a lightweight `sprite exec ... printf ok`
+  - explicit auth failures from that exec fail preflight immediately
+  - inconclusive exec failures fall back to `sprite ls -o <org>` so auth checks do not become sprite-liveness checks
+  - no declared sprites: use `sprite ls -o <org>` directly
 - Tests now cover:
   - declared-sprite exec probe success path
-  - declared-sprite exec failure without silent fallback to org listing
+  - declared-sprite auth failure without silent fallback to org listing
+  - declared-sprite non-auth exec failure with fallback to org listing
   - no-sprite fallback to org listing
-  - CLI forwarding of declared sprites for `check-env --fleet` and `fleet --reconcile`
+  - CLI forwarding of probe targets for `check-env --fleet`, `fleet --reconcile`, and unhealthy `sprite start`
 
 ## Verification
 - [x] `cd conductor && mix test test/conductor/config_test.exs test/conductor/cli_fleet_test.exs`

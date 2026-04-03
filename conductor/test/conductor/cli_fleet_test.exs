@@ -382,6 +382,9 @@ defmodule Conductor.CLIFleetTest do
       end)
 
     assert output =~ "started bb-weaver-3 (pid 123)"
+    assert_received {:check_env_called, opts}
+    assert opts[:require_codex_auth] == true
+    assert opts[:sprite_auth_probe_target] == "bb-weaver-3"
 
     assert_received {:provision_called, "bb-weaver-3",
                      [repo: "other/other-repo", persona: nil, harness: "codex"]}
@@ -437,13 +440,7 @@ defmodule Conductor.CLIFleetTest do
 
     assert_received {:check_env_called, opts}
     assert opts[:require_codex_auth] == true
-
-    assert Enum.map(opts[:sprites], & &1.name) == [
-             "bb-weaver-1",
-             "bb-weaver-2",
-             "bb-weaver-3",
-             "bb-weaver-4"
-           ]
+    assert opts[:sprite_auth_probe_target] == "bb-weaver-1"
   end
 
   test "mix conductor fleet --reconcile fails with environment preflight output", %{

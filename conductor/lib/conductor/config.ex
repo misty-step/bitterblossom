@@ -254,7 +254,12 @@ defmodule Conductor.Config do
   defp sprite_auth_failure?(output) when is_binary(output) do
     output
     |> String.downcase()
-    |> String.contains?(["no token found", "unauthorized", "authentication required", "forbidden"])
+    |> String.contains?([
+      "no token found",
+      "unauthorized",
+      "authentication required",
+      "forbidden"
+    ])
   end
 
   defp chatgpt_auth_file do
