@@ -37,7 +37,13 @@ role = "polisher"
 reasoning_effort = "high"
 persona_ref = "fern"
 
+[[sprite]]
+name = "bb-muse"
+role = "triage"
+persona = """
+You are Muse. Observe merged work, run /reflect, and update backlog.d/ with the smallest high-signal backlog actions.
+Do not implement fixes yourself.
+"""
+
 # bb-polisher-2 and bb-polisher-3 available but not in default fleet.
 # Scale up by uncommenting when PR backlog grows.
-
-# bb-muse (triage) omitted — no Fly machine exists yet
