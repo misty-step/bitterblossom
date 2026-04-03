@@ -43,6 +43,15 @@ defmodule Conductor.Launcher do
         Logger.debug("[launcher] #{sprite} preflight cleanup: #{inspect(reason)}")
     end
 
+    # Detect auth failures from previous run before re-sync.
+    case sprite_module().detect_auth_failure(sprite) do
+      {:auth_failure, reason} ->
+        Logger.warning("[launcher] #{sprite} auth failure detected: #{reason}")
+
+      :ok ->
+        :ok
+    end
+
     with :ok <- sprite_module().force_sync_codex_auth(sprite),
          :ok <- bootstrap_module().ensure_spellbook(sprite),
          :ok <- ensure_repo_checkout(sprite_config, repo, workspace),
