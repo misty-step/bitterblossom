@@ -34,7 +34,6 @@ defmodule Conductor.Sprite do
   @auth_error_patterns ~w(refresh_token_reused auth_error) ++
                          ["Failed to refresh token", "401"]
 
-
   @spec exec(binary(), binary(), keyword()) :: {:ok, binary()} | {:error, binary(), integer()}
   def exec(sprite, command, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, 60_000)
