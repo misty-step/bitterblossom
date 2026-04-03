@@ -9,11 +9,13 @@ defmodule Conductor.ConfigTest do
     original_home = System.get_env("HOME")
     original_codex_home = System.get_env("CODEX_HOME")
     original_openai_key = System.get_env("OPENAI_API_KEY")
+    original_path = System.get_env("PATH")
 
     on_exit(fn ->
       restore_home(original_home)
       restore_env("CODEX_HOME", original_codex_home)
       restore_env("OPENAI_API_KEY", original_openai_key)
+      restore_env("PATH", original_path)
     end)
 
     :ok
@@ -216,6 +218,84 @@ defmodule Conductor.ConfigTest do
       System.delete_env("SPRITE_TOKEN")
       System.delete_env("FLY_API_TOKEN")
     end
+
+    test "uses sprite exec against a declared sprite when provided" do
+      System.delete_env("SPRITE_TOKEN")
+      System.delete_env("FLY_API_TOKEN")
+      System.put_env("SPRITES_ORG", "personal")
+
+      install_fake_sprite_cli(
+        exec_status: 0,
+        exec_output: "ok",
+        ls_status: 1,
+        ls_output: "ls denied"
+      )
+
+      assert Config.sprite_auth_available?(sprite_auth_probe_target: "bb-declared") ==
+               "sprite-cli"
+    after
+      System.delete_env("SPRITE_TOKEN")
+      System.delete_env("FLY_API_TOKEN")
+      System.delete_env("SPRITES_ORG")
+    end
+
+    test "does not fall back to org listing when a declared sprite exec probe fails" do
+      System.delete_env("SPRITE_TOKEN")
+      System.put_env("FLY_API_TOKEN", "fly_test")
+      System.put_env("SPRITES_ORG", "personal")
+
+      install_fake_sprite_cli(
+        exec_status: 1,
+        exec_output: "no token found for organization personal",
+        ls_status: 0,
+        ls_output: "listed"
+      )
+
+      assert Config.sprite_auth_available?(sprite_auth_probe_target: "bb-declared") == false
+    after
+      System.delete_env("SPRITE_TOKEN")
+      System.delete_env("FLY_API_TOKEN")
+      System.delete_env("SPRITES_ORG")
+    end
+
+    test "falls back to sprite ls when no declared sprites are provided" do
+      System.delete_env("SPRITE_TOKEN")
+      System.delete_env("FLY_API_TOKEN")
+      System.put_env("SPRITES_ORG", "personal")
+
+      install_fake_sprite_cli(
+        exec_status: 1,
+        exec_output: "exec denied",
+        ls_status: 0,
+        ls_output: "listed"
+      )
+
+      assert Config.sprite_auth_available?(sprite_auth_probe_target: nil) == "sprite-cli"
+    after
+      System.delete_env("SPRITE_TOKEN")
+      System.delete_env("FLY_API_TOKEN")
+      System.delete_env("SPRITES_ORG")
+    end
+
+    test "falls back to sprite ls when exec fails for non-auth reasons" do
+      System.delete_env("SPRITE_TOKEN")
+      System.delete_env("FLY_API_TOKEN")
+      System.put_env("SPRITES_ORG", "personal")
+
+      install_fake_sprite_cli(
+        exec_status: 1,
+        exec_output: "sprite not running",
+        ls_status: 0,
+        ls_output: "listed"
+      )
+
+      assert Config.sprite_auth_available?(sprite_auth_probe_target: "bb-declared") ==
+               "sprite-cli"
+    after
+      System.delete_env("SPRITE_TOKEN")
+      System.delete_env("FLY_API_TOKEN")
+      System.delete_env("SPRITES_ORG")
+    end
   end
 
   describe "codex_auth_source/0" do
@@ -332,5 +412,35 @@ defmodule Conductor.ConfigTest do
     home = make_codex_home(nil)
     File.write!(Path.join(home, "auth.json"), Jason.encode!(auth_payload))
     home
+  end
+
+  defp install_fake_sprite_cli(opts) do
+    dir = Path.join(System.tmp_dir!(), "fake_sprite_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf(dir) end)
+
+    sprite_path = Path.join(dir, "sprite")
+
+    File.write!(
+      sprite_path,
+      """
+      #!/bin/sh
+      if [ "$1" = "-o" ] && [ "$3" = "-s" ] && [ "$5" = "exec" ]; then
+        printf '%s' '#{Keyword.fetch!(opts, :exec_output)}'
+        exit #{Keyword.fetch!(opts, :exec_status)}
+      fi
+
+      if [ "$1" = "ls" ] && [ "$2" = "-o" ]; then
+        printf '%s' '#{Keyword.fetch!(opts, :ls_output)}'
+        exit #{Keyword.fetch!(opts, :ls_status)}
+      fi
+
+      printf '%s' "unexpected args: $*"
+      exit 64
+      """
+    )
+
+    File.chmod!(sprite_path, 0o755)
+    System.put_env("PATH", dir <> ":" <> System.get_env("PATH", ""))
   end
 end

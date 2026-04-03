@@ -155,7 +155,7 @@ defmodule Conductor.Config do
     checks =
       [
         {"GITHUB_TOKEN", fn -> System.get_env("GITHUB_TOKEN") end},
-        {"SPRITE_TOKEN or sprite CLI auth", fn -> sprite_auth_available?() end}
+        {"SPRITE_TOKEN or sprite CLI auth", fn -> sprite_auth_available?(opts) end}
       ] ++
         maybe_codex_auth_check(opts) ++
         [
@@ -204,13 +204,14 @@ defmodule Conductor.Config do
   the sprite CLI ignores it.
   """
   @spec sprite_auth_available?() :: binary() | false
-  def sprite_auth_available? do
+  @spec sprite_auth_available?(keyword()) :: binary() | false
+  def sprite_auth_available?(opts \\ []) do
     System.get_env("SPRITE_TOKEN") ||
-      sprite_cli_auth_live?() ||
+      sprite_cli_auth_live?(opts) ||
       false
   end
 
-  defp sprite_cli_auth_live? do
+  defp sprite_cli_auth_live?(opts) do
     org =
       System.get_env("SPRITES_ORG") ||
         System.get_env("FLY_ORG") ||
@@ -221,11 +222,39 @@ defmodule Conductor.Config do
 
     with org when is_binary(org) <- org,
          sprite when is_binary(sprite) <- System.find_executable("sprite"),
-         {_, 0} <- System.cmd(sprite, ["ls", "-o", org], stderr_to_stdout: true) do
+         true <- sprite_cli_probe(sprite, org, Keyword.get(opts, :sprite_auth_probe_target)) do
       "sprite-cli"
     else
       _ -> false
     end
+  end
+
+  defp sprite_cli_probe(sprite, org, nil) do
+    match?({_, 0}, System.cmd(sprite, ["ls", "-o", org], stderr_to_stdout: true))
+  end
+
+  defp sprite_cli_probe(sprite, org, sprite_name) do
+    case System.cmd(
+           sprite,
+           Conductor.Sprite.exec_args(org, sprite_name, "printf ok"),
+           stderr_to_stdout: true
+         ) do
+      {_, 0} ->
+        true
+
+      {output, _code} ->
+        if sprite_auth_failure?(output) do
+          false
+        else
+          sprite_cli_probe(sprite, org, nil)
+        end
+    end
+  end
+
+  defp sprite_auth_failure?(output) when is_binary(output) do
+    output
+    |> String.downcase()
+    |> String.contains?(["no token found", "unauthorized", "authentication required", "forbidden"])
   end
 
   defp chatgpt_auth_file do

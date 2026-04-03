@@ -72,7 +72,10 @@ defmodule Conductor.CLI do
     IO.puts("bitterblossom starting — fleet: #{fleet_path}")
 
     with {:ok, config} <- Conductor.Fleet.Loader.load(fleet_path) do
-      run_check_env(require_codex_auth: requires_codex_auth?(config.sprites))
+      run_check_env(
+        require_codex_auth: requires_codex_auth?(config.sprites),
+        sprites: config.sprites
+      )
 
       case Conductor.Application.launch_fleet(fleet_path) do
         :ok ->
@@ -141,7 +144,10 @@ defmodule Conductor.CLI do
         case Conductor.Fleet.Loader.load(fleet_path) do
           {:ok, config} ->
             if opts[:reconcile] do
-              run_check_env(require_codex_auth: requires_codex_auth?(config.sprites))
+              run_check_env(
+                require_codex_auth: requires_codex_auth?(config.sprites),
+                sprites: config.sprites
+              )
 
               reconciler =
                 Application.get_env(:conductor, :fleet_reconciler, Conductor.Fleet.Reconciler)
@@ -351,7 +357,14 @@ defmodule Conductor.CLI do
         fleet_path ->
           case Conductor.Fleet.Loader.load(fleet_path) do
             {:ok, config} ->
-              Keyword.put(opts, :require_codex_auth, requires_codex_auth?(config.sprites))
+              probe_target =
+                Enum.find_value(config.sprites, fn sprite ->
+                  Map.get(sprite, :name) || Map.get(sprite, "name")
+                end)
+
+              opts
+              |> Keyword.put(:require_codex_auth, requires_codex_auth?(config.sprites))
+              |> maybe_put_sprite_auth_probe_target(probe_target)
 
             {:error, reason} ->
               IO.puts("fleet failed: #{reason}")
@@ -381,6 +394,9 @@ defmodule Conductor.CLI do
   defp run_check_env_for_sprite(sprite) do
     run_check_env(require_codex_auth: requires_codex_auth?([sprite]))
   end
+
+  defp maybe_put_sprite_auth_probe_target(opts, nil), do: opts
+  defp maybe_put_sprite_auth_probe_target(opts, sprite_name), do: Keyword.put(opts, :sprite_auth_probe_target, sprite_name)
 
   defp requires_codex_auth?(sprites) do
     Enum.any?(sprites, fn sprite ->
