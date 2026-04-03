@@ -257,6 +257,12 @@ defmodule Conductor.WorkspaceTest do
     end
   end
 
+  describe "persona_for_role/1" do
+    test "maps triage sprites to the muse persona" do
+      assert Workspace.persona_for_role(:triage) == :muse
+    end
+  end
+
   # --- Helpers ---
 
   defp write_workspace_file(workspace, relative_path, contents) do

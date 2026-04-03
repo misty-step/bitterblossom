@@ -236,6 +236,20 @@ defmodule Conductor.Fleet.LoaderTest do
       assert msg =~ "invalid role"
     end
 
+    test "rejects reviewer as an invalid role", %{path: path} do
+      File.write!(path, """
+      [defaults]
+      repo = "test/repo"
+
+      [[sprite]]
+      name = "bb-reviewer"
+      role = "reviewer"
+      """)
+
+      assert {:error, msg} = Loader.load(path)
+      assert msg =~ "invalid role 'reviewer'"
+    end
+
     test "returns error for missing name", %{path: path} do
       File.write!(path, """
       [defaults]
