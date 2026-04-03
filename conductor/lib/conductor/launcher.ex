@@ -52,7 +52,7 @@ defmodule Conductor.Launcher do
         :ok
     end
 
-    with :ok <- sprite_module().force_sync_codex_auth(sprite),
+    with :ok <- maybe_sync_codex_auth(sprite),
          :ok <- bootstrap_module().ensure_spellbook(sprite),
          :ok <- ensure_repo_checkout(sprite_config, repo, workspace),
          :ok <- workspace_module().sync_persona(sprite, workspace, persona) do
@@ -137,6 +137,14 @@ defmodule Conductor.Launcher do
 
   defp workspace_module do
     Application.get_env(:conductor, :workspace_module, Workspace)
+  end
+
+  defp maybe_sync_codex_auth(sprite) do
+    if System.get_env("OPENAI_API_KEY") do
+      :ok
+    else
+      sprite_module().force_sync_codex_auth(sprite)
+    end
   end
 
   defp shell_quote(value), do: Shell.quote_arg(to_string(value))

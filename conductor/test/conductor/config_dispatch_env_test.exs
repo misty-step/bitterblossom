@@ -25,7 +25,7 @@ defmodule Conductor.ConfigDispatchEnvTest do
   end
 
   describe "dispatch_env/0" do
-    test "omits OPENAI_API_KEY and CODEX_API_KEY when ChatGPT auth cache is present" do
+    test "includes OPENAI_API_KEY even when ChatGPT auth cache is present" do
       write_auth_json(%{
         "auth_mode" => "chatgpt",
         "tokens" => %{"refresh_token" => "rt-test"}
@@ -35,8 +35,8 @@ defmodule Conductor.ConfigDispatchEnvTest do
 
       env = Config.dispatch_env()
 
-      refute {"OPENAI_API_KEY", "sk-test-123"} in env
-      refute {"CODEX_API_KEY", "sk-test-123"} in env
+      assert {"OPENAI_API_KEY", "sk-test-123"} in env
+      assert {"CODEX_API_KEY", "sk-test-123"} in env
     end
 
     test "includes OPENAI_API_KEY when API key fallback is active" do
@@ -54,7 +54,7 @@ defmodule Conductor.ConfigDispatchEnvTest do
       refute Enum.any?(env, fn {k, _} -> k == "CODEX_API_KEY" end)
     end
 
-    test "does not inject GITHUB_TOKEN even when API key fallback is active" do
+    test "does not inject GITHUB_TOKEN even when API key is set" do
       System.put_env("GITHUB_TOKEN", "ghp_test")
       System.put_env("OPENAI_API_KEY", "sk-test")
 
@@ -64,7 +64,7 @@ defmodule Conductor.ConfigDispatchEnvTest do
       assert {"OPENAI_API_KEY", "sk-test"} in env
     end
 
-    test "maps OPENAI_API_KEY to CODEX_API_KEY for Codex CLI in fallback mode" do
+    test "maps OPENAI_API_KEY to CODEX_API_KEY for Codex CLI" do
       System.put_env("OPENAI_API_KEY", "sk-test-codex")
 
       env = Config.dispatch_env()

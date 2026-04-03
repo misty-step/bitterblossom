@@ -10,7 +10,7 @@ defmodule Conductor.Fleet.LoaderTest do
   org = "test-org"
   repo = "test-org/test-repo"
   harness = "codex"
-  model = "gpt-5.4"
+  model = "gpt-5.4-mini"
   reasoning_effort = "medium"
 
   [personas]
@@ -58,7 +58,7 @@ defmodule Conductor.Fleet.LoaderTest do
       assert builder.role == :builder
       assert builder.org == "test-org"
       assert builder.harness == "codex"
-      assert builder.model == "gpt-5.4"
+      assert builder.model == "gpt-5.4-mini"
       assert builder.reasoning_effort == "medium"
       assert builder.capability_tags == ["elixir", "ci"]
       assert builder.persona == "Build things."
