@@ -316,8 +316,12 @@ defmodule Conductor.Fleet.HealthMonitor do
     rapid_count = Map.get(state.rapid_exit_counts, sprite.name, 0)
 
     case launch_time do
-      nil -> true
-      t -> System.monotonic_time(:millisecond) - t >= rapid_exit_backoff_ms(rapid_count, state.interval_ms)
+      nil ->
+        true
+
+      t ->
+        System.monotonic_time(:millisecond) - t >=
+          rapid_exit_backoff_ms(rapid_count, state.interval_ms)
     end
   end
 
