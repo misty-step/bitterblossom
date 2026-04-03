@@ -149,9 +149,9 @@ defmodule Conductor.Sprite do
     set -e
     if [ -s #{shell_quote(@sprite_loop_pid_path)} ]; then
       pid=$(cat #{shell_quote(@sprite_loop_pid_path)})
-      kill "$pid" 2>/dev/null || true
+      kill -- -"$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
       sleep 1
-      kill -9 "$pid" 2>/dev/null || true
+      kill -9 -- -"$pid" 2>/dev/null || kill -9 "$pid" 2>/dev/null || true
     fi
     #{kill_agents_cmd()}
     sleep 1
@@ -498,7 +498,7 @@ defmodule Conductor.Sprite do
       exit 0
     fi
     rm -f #{shell_quote(@sprite_loop_pid_path)}
-    nohup bash -lc #{shell_quote("""
+    setsid bash -lc #{shell_quote("""
     echo $$ > #{@sprite_loop_pid_path}
     trap 'rm -f #{@sprite_loop_pid_path}' EXIT
     #{agent_cmd}
