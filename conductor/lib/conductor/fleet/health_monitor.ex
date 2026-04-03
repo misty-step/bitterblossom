@@ -11,13 +11,18 @@ defmodule Conductor.Fleet.HealthMonitor do
   - If loop already alive → `:healthy` (external restart)
   - If no loop → `:launching` + relaunch
 
+  Self-reload: polls `origin/master` once per health check cycle.
+  When new commits are detected, idle sprites (reachable + no loop) are
+  re-provisioned with fresh code and relaunched. Active sprites are
+  left alone — they pick up new code on their next relaunch.
+
   Deep module: hides all sprite lifecycle recovery behind a simple status/0 interface.
   """
 
   use GenServer
   require Logger
 
-  alias Conductor.{Config, Store}
+  alias Conductor.{Config, Store, Workspace}
   alias Conductor.Fleet.Reconciler
 
   @max_launch_ticks 3
@@ -29,6 +34,7 @@ defmodule Conductor.Fleet.HealthMonitor do
     :repo,
     :interval_ms,
     :timer_ref,
+    :master_sha,
     sprites: [],
     known_health: %{},
     launch_ticks: %{},
@@ -124,12 +130,102 @@ defmodule Conductor.Fleet.HealthMonitor do
   # --- Private ---
 
   defp check_and_recover(state) do
-    Enum.reduce(state.sprites, state, fn sprite, acc ->
-      {ready?, loop_alive?} = probe_sprite(sprite)
+    # 1. Poll origin/master SHA (one fetch per cycle)
+    {state, reload_needed} = poll_master_sha(state)
+
+    # 2. Probe all sprites, collect results
+    probed =
+      Enum.map(state.sprites, fn sprite ->
+        {ready?, loop_alive?} = probe_sprite(sprite)
+        {sprite, ready?, loop_alive?}
+      end)
+
+    # 3. Process each sprite: reload idle ones if needed, else normal transition
+    Enum.reduce(probed, state, fn {sprite, ready?, loop_alive?}, acc ->
       old = Map.get(acc.known_health, sprite.name, :unhealthy)
 
-      transition(acc, sprite, old, ready?, loop_alive?)
+      if reload_needed and ready? and not loop_alive? do
+        reload_sprite(acc, sprite)
+      else
+        transition(acc, sprite, old, ready?, loop_alive?)
+      end
     end)
+  end
+
+  # Poll origin/master SHA on one reachable sprite. One fetch per cycle.
+  # Returns {updated_state, reload_needed_boolean}.
+  defp poll_master_sha(%{sprites: []} = state), do: {state, false}
+
+  defp poll_master_sha(state) do
+    case find_reachable_sprite(state) do
+      nil ->
+        {state, false}
+
+      sprite ->
+        cmd = "git fetch origin --quiet 2>&1; git rev-parse origin/master 2>/dev/null"
+
+        case sprite_mod().exec(sprite.name, cmd, timeout: 30_000) do
+          {:ok, output} ->
+            sha = String.trim(output)
+
+            cond do
+              state.master_sha == nil ->
+                {%{state | master_sha: sha}, false}
+
+              sha != state.master_sha ->
+                Logger.info(
+                  "[health] new commits on origin/master: #{String.slice(state.master_sha, 0, 7)}..#{String.slice(sha, 0, 7)}"
+                )
+
+                record_fleet_reload_event(state.master_sha, sha)
+                {%{state | master_sha: sha}, true}
+
+              true ->
+                {state, false}
+            end
+
+          {:error, _msg, _code} ->
+            {state, false}
+        end
+    end
+  end
+
+  defp find_reachable_sprite(state) do
+    Enum.find(state.sprites, fn sprite ->
+      Map.get(state.known_health, sprite.name) in [:healthy, :launching]
+    end) || List.first(state.sprites)
+  end
+
+  # Re-provision an idle sprite with fresh code from master.
+  defp reload_sprite(state, sprite) do
+    repo = sprite_repo(sprite, state.repo)
+    workspace = Workspace.repo_root(repo)
+    pull_cmd = "cd #{workspace} && git pull --ff-only --quiet 2>&1"
+
+    case sprite_mod().exec(sprite.name, pull_cmd, timeout: 30_000) do
+      {:ok, _} ->
+        bootstrap_mod().ensure_spellbook(sprite.name)
+
+        Task.Supervisor.start_child(Conductor.TaskSupervisor, fn ->
+          launcher_mod().launch(sprite, repo)
+        end)
+
+        state
+        |> put_health(sprite.name, :launching)
+        |> put_launch_ticks(sprite.name, 0)
+
+      {:error, msg, _code} ->
+        Logger.warning("[health] #{sprite.name} reload pull failed: #{msg}")
+        state
+    end
+  end
+
+  defp record_fleet_reload_event(old_sha, new_sha) do
+    try do
+      Store.record_event("fleet", "fleet_reload", %{old_sha: old_sha, new_sha: new_sha})
+    catch
+      :exit, _ -> :ok
+    end
   end
 
   # --- Transition table ---
@@ -354,5 +450,9 @@ defmodule Conductor.Fleet.HealthMonitor do
       :ok ->
         :ok
     end
+  end
+
+  defp bootstrap_mod do
+    Application.get_env(:conductor, :bootstrap_module, Conductor.Bootstrap)
   end
 end

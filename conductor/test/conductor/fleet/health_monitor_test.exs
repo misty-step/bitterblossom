@@ -63,10 +63,32 @@ defmodule Conductor.Fleet.HealthMonitorTest do
   defmodule MockSprite do
     alias Conductor.Fleet.HealthMonitorTest.MockState
 
+    def exec(sprite, command, _opts \\ []) do
+      send(MockState.get(:test_pid), {:sprite_exec, sprite, command})
+
+      cond do
+        String.contains?(command, "git fetch") ->
+          sha = MockState.get(:remote_master_sha, "abc123")
+          {:ok, sha}
+
+        true ->
+          {:ok, "ok"}
+      end
+    end
+
     def detect_auth_failure(name, _opts \\ []) do
       result = MockState.get({:auth_failure, name}, :ok)
       send(MockState.get(:test_pid), {:detect_auth_failure_called, name})
       result
+    end
+  end
+
+  defmodule MockBootstrap do
+    alias Conductor.Fleet.HealthMonitorTest.MockState
+
+    def ensure_spellbook(sprite, _opts \\ []) do
+      send(MockState.get(:test_pid), {:bootstrap, sprite})
+      :ok
     end
   end
 
@@ -85,9 +107,11 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     orig_reconciler = Application.get_env(:conductor, :reconciler_module)
     orig_launcher = Application.get_env(:conductor, :launcher_module)
     orig_sprite = Application.get_env(:conductor, :sprite_module)
+    orig_bootstrap = Application.get_env(:conductor, :bootstrap_module)
     Application.put_env(:conductor, :reconciler_module, MockReconciler)
     Application.put_env(:conductor, :launcher_module, MockLauncher)
     Application.put_env(:conductor, :sprite_module, MockSprite)
+    Application.put_env(:conductor, :bootstrap_module, MockBootstrap)
     MockState.put(:test_pid, self())
 
     on_exit(fn ->
@@ -107,6 +131,10 @@ defmodule Conductor.Fleet.HealthMonitorTest do
       if orig_sprite,
         do: Application.put_env(:conductor, :sprite_module, orig_sprite),
         else: Application.delete_env(:conductor, :sprite_module)
+
+      if orig_bootstrap,
+        do: Application.put_env(:conductor, :bootstrap_module, orig_bootstrap),
+        else: Application.delete_env(:conductor, :bootstrap_module)
 
       File.rm(db_path)
       File.rm(event_log)
@@ -445,67 +473,326 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     assert HealthMonitor.status().sprites["bb-polisher"] == :unhealthy
   end
 
-  test "loop exit with auth failure emits sprite_auth_failure event" do
-    start_monitor(interval_ms: 60_000)
+  # --- Reload tests ---
 
-    sprites = [%{name: "bb-polisher", role: :polisher, harness: "codex"}]
-    MockState.put({:sprite_health, "bb-polisher"}, :healthy)
-    MockState.put({:loop_alive, "bb-polisher"}, true)
-    MockState.put({:auth_failure, "bb-polisher"}, {:auth_failure, "refresh_token_reused"})
+  describe "self-reload after merge" do
+    test "detects SHA change and triggers reload for idle sprites" do
+      start_monitor(interval_ms: 60_000)
 
-    HealthMonitor.configure(
-      sprites: sprites,
-      repo: "test/repo",
-      healthy: MapSet.new(["bb-polisher"])
-    )
+      sprites = [%{name: "bb-polisher", role: :polisher, harness: "codex"}]
+      MockState.put({:sprite_health, "bb-polisher"}, :healthy)
+      MockState.put({:loop_alive, "bb-polisher"}, false)
 
-    assert HealthMonitor.status().sprites["bb-polisher"] == :healthy
+      # Initial SHA
+      MockState.put(:remote_master_sha, "aaa111")
 
-    # Simulate loop death
-    MockState.put({:loop_alive, "bb-polisher"}, false)
+      HealthMonitor.configure(
+        sprites: sprites,
+        repo: "test/repo",
+        healthy: MapSet.new(["bb-polisher"])
+      )
 
-    log =
+      # First check: establishes initial SHA, sprite is idle (healthy + no loop)
+      # First cycle with no prior SHA just records it — no reload
       capture_log(fn ->
         send(Process.whereis(HealthMonitor), :check)
         Process.sleep(100)
       end)
 
-    assert log =~ "auth failure detected"
-    assert log =~ "refresh_token_reused"
-    assert HealthMonitor.status().sprites["bb-polisher"] == :unhealthy
+      # Drain messages from first check
+      flush_messages()
 
-    # Verify sprite_auth_failure event was recorded
-    events = Store.list_events("fleet")
+      # Simulate new commit on origin/master
+      MockState.put(:remote_master_sha, "bbb222")
 
-    assert Enum.any?(events, fn e ->
-             e["event_type"] == "sprite_auth_failure" and
-               e["payload"]["reason"] == "refresh_token_reused"
-           end)
+      # Second check: detects SHA change, triggers reload for idle sprite
+      log =
+        capture_log(fn ->
+          send(Process.whereis(HealthMonitor), :check)
+          Process.sleep(200)
+        end)
+
+      assert log =~ "new commits on origin/master"
+
+      # Collect all messages from second check
+      msgs = flush_messages()
+      exec_cmds = for {:sprite_exec, _, cmd} <- msgs, do: cmd
+      assert Enum.any?(exec_cmds, &String.contains?(&1, "git pull"))
+
+      # Should have re-bootstrapped
+      assert Enum.any?(msgs, &match?({:bootstrap, "bb-polisher"}, &1))
+
+      # Should have relaunched
+      assert Enum.any?(msgs, &match?({:launched, "bb-polisher", "test/repo"}, &1))
+    end
+
+    test "does not interrupt active sprites on reload" do
+      start_monitor(interval_ms: 60_000)
+
+      sprites = [
+        %{name: "bb-polisher", role: :polisher, harness: "codex"},
+        %{name: "bb-builder", role: :builder, harness: "codex"}
+      ]
+
+      MockState.put({:sprite_health, "bb-polisher"}, :healthy)
+      MockState.put({:loop_alive, "bb-polisher"}, true)
+      MockState.put({:sprite_health, "bb-builder"}, :healthy)
+      MockState.put({:loop_alive, "bb-builder"}, false)
+
+      MockState.put(:remote_master_sha, "aaa111")
+
+      HealthMonitor.configure(
+        sprites: sprites,
+        repo: "test/repo",
+        healthy: MapSet.new(["bb-polisher", "bb-builder"])
+      )
+
+      # First check: establishes SHA
+      capture_log(fn ->
+        send(Process.whereis(HealthMonitor), :check)
+        Process.sleep(100)
+      end)
+
+      flush_messages()
+
+      # Change SHA
+      MockState.put(:remote_master_sha, "ccc333")
+
+      # Second check: only idle sprite (bb-builder) should be reloaded
+      capture_log(fn ->
+        send(Process.whereis(HealthMonitor), :check)
+        Process.sleep(200)
+      end)
+
+      msgs = flush_messages()
+
+      # bb-builder (idle) should be relaunched
+      assert Enum.any?(msgs, &match?({:launched, "bb-builder", "test/repo"}, &1))
+      # bb-polisher (active) should NOT be relaunched
+      refute Enum.any?(msgs, &match?({:launched, "bb-polisher", _}, &1))
+    end
+
+    test "records fleet_reload event in store" do
+      start_monitor(interval_ms: 60_000)
+
+      sprites = [%{name: "bb-polisher", role: :polisher, harness: "codex"}]
+      MockState.put({:sprite_health, "bb-polisher"}, :healthy)
+      MockState.put({:loop_alive, "bb-polisher"}, false)
+      MockState.put(:remote_master_sha, "aaa111")
+
+      HealthMonitor.configure(
+        sprites: sprites,
+        repo: "test/repo",
+        healthy: MapSet.new(["bb-polisher"])
+      )
+
+      # First check: establishes SHA
+      capture_log(fn ->
+        send(Process.whereis(HealthMonitor), :check)
+        Process.sleep(100)
+      end)
+
+      # Change SHA
+      MockState.put(:remote_master_sha, "ddd444")
+
+      # Second check: triggers reload
+      capture_log(fn ->
+        send(Process.whereis(HealthMonitor), :check)
+        Process.sleep(200)
+      end)
+
+      events = Store.list_events("fleet")
+
+      reload_event =
+        Enum.find(events, &(&1["event_type"] == "fleet_reload"))
+
+      assert reload_event
+      assert reload_event["payload"]["old_sha"] == "aaa111"
+      assert reload_event["payload"]["new_sha"] == "ddd444"
+    end
+
+    test "no reload when SHA unchanged" do
+      start_monitor(interval_ms: 60_000)
+
+      sprites = [%{name: "bb-polisher", role: :polisher, harness: "codex"}]
+      MockState.put({:sprite_health, "bb-polisher"}, :healthy)
+      MockState.put({:loop_alive, "bb-polisher"}, false)
+      MockState.put(:remote_master_sha, "aaa111")
+
+      HealthMonitor.configure(
+        sprites: sprites,
+        repo: "test/repo",
+        healthy: MapSet.new(["bb-polisher"])
+      )
+
+      # First check: establishes SHA
+      capture_log(fn ->
+        send(Process.whereis(HealthMonitor), :check)
+        Process.sleep(100)
+      end)
+
+      # SHA stays the same — clear any existing messages
+      flush_messages()
+
+      # Second check: same SHA, no reload
+      log =
+        capture_log(fn ->
+          send(Process.whereis(HealthMonitor), :check)
+          Process.sleep(100)
+        end)
+
+      refute log =~ "new commits on origin/master"
+
+      events = Store.list_events("fleet")
+      refute Enum.any?(events, &(&1["event_type"] == "fleet_reload"))
+    end
+
+    test "updates master_sha after reload so subsequent checks are no-ops" do
+      start_monitor(interval_ms: 60_000)
+
+      sprites = [%{name: "bb-polisher", role: :polisher, harness: "codex"}]
+      MockState.put({:sprite_health, "bb-polisher"}, :healthy)
+      MockState.put({:loop_alive, "bb-polisher"}, false)
+      MockState.put(:remote_master_sha, "aaa111")
+
+      HealthMonitor.configure(
+        sprites: sprites,
+        repo: "test/repo",
+        healthy: MapSet.new(["bb-polisher"])
+      )
+
+      # First check: establishes SHA
+      capture_log(fn ->
+        send(Process.whereis(HealthMonitor), :check)
+        Process.sleep(100)
+      end)
+
+      # Change SHA
+      MockState.put(:remote_master_sha, "eee555")
+
+      # Second check: triggers reload, updates SHA
+      capture_log(fn ->
+        send(Process.whereis(HealthMonitor), :check)
+        Process.sleep(200)
+      end)
+
+      # Verify reload happened
+      events = Store.list_events("fleet")
+      assert Enum.any?(events, &(&1["event_type"] == "fleet_reload"))
+
+      # Third check: same SHA as updated, no new reload event
+      reload_count_before = Enum.count(events, &(&1["event_type"] == "fleet_reload"))
+
+      # Need sprite to be healthy again for a meaningful test
+      MockState.put({:loop_alive, "bb-polisher"}, true)
+
+      capture_log(fn ->
+        send(Process.whereis(HealthMonitor), :check)
+        Process.sleep(100)
+      end)
+
+      events_after = Store.list_events("fleet")
+      reload_count_after = Enum.count(events_after, &(&1["event_type"] == "fleet_reload"))
+
+      assert reload_count_after == reload_count_before
+    end
+
+    test "fetches once per cycle not per sprite" do
+      start_monitor(interval_ms: 60_000)
+
+      sprites = [
+        %{name: "bb-polisher", role: :polisher, harness: "codex"},
+        %{name: "bb-builder", role: :builder, harness: "codex"}
+      ]
+
+      MockState.put({:sprite_health, "bb-polisher"}, :healthy)
+      MockState.put({:loop_alive, "bb-polisher"}, false)
+      MockState.put({:sprite_health, "bb-builder"}, :healthy)
+      MockState.put({:loop_alive, "bb-builder"}, false)
+      MockState.put(:remote_master_sha, "aaa111")
+
+      HealthMonitor.configure(
+        sprites: sprites,
+        repo: "test/repo",
+        healthy: MapSet.new(["bb-polisher", "bb-builder"])
+      )
+
+      # Run one check cycle
+      capture_log(fn ->
+        send(Process.whereis(HealthMonitor), :check)
+        Process.sleep(100)
+      end)
+
+      # Count fetch commands — should be exactly one per check cycle
+      msgs = flush_messages()
+
+      fetch_count =
+        Enum.count(msgs, fn
+          {:sprite_exec, _, cmd} -> String.contains?(cmd, "git fetch")
+          _ -> false
+        end)
+
+      assert fetch_count == 1
+    end
   end
 
-  test "loop exit without auth failure does not emit sprite_auth_failure event" do
-    start_monitor(interval_ms: 60_000)
+  defp flush_messages(acc \\ []) do
+    receive do
+      msg -> flush_messages([msg | acc])
+    after
+      0 -> Enum.reverse(acc)
+    end
+  end
 
-    sprites = [%{name: "bb-polisher", role: :polisher, harness: "codex"}]
-    MockState.put({:sprite_health, "bb-polisher"}, :healthy)
-    MockState.put({:loop_alive, "bb-polisher"}, true)
-    # No auth failure set — defaults to :ok
+  describe "auth failure detection" do
+    test "loop exit with auth failure emits sprite_auth_failure event" do
+      start_monitor(interval_ms: 60_000)
 
-    HealthMonitor.configure(
-      sprites: sprites,
-      repo: "test/repo",
-      healthy: MapSet.new(["bb-polisher"])
-    )
+      sprites = [%{name: "bb-polisher", role: :polisher, harness: "codex"}]
+      MockState.put({:sprite_health, "bb-polisher"}, :healthy)
+      MockState.put({:loop_alive, "bb-polisher"}, true)
+      MockState.put({:auth_failure, "bb-polisher"}, {:auth_failure, "refresh_token_reused"})
 
-    MockState.put({:loop_alive, "bb-polisher"}, false)
+      HealthMonitor.configure(
+        sprites: sprites,
+        repo: "test/repo",
+        healthy: MapSet.new(["bb-polisher"])
+      )
 
-    capture_log(fn ->
-      send(Process.whereis(HealthMonitor), :check)
-      Process.sleep(100)
-    end)
+      # Simulate loop death
+      MockState.put({:loop_alive, "bb-polisher"}, false)
 
-    events = Store.list_events("fleet")
+      log =
+        capture_log(fn ->
+          send(Process.whereis(HealthMonitor), :check)
+          Process.sleep(100)
+        end)
 
-    refute Enum.any?(events, fn e -> e["event_type"] == "sprite_auth_failure" end)
+      assert log =~ "auth failure detected"
+      assert Enum.any?(Store.list_events("fleet"), &(&1["event_type"] == "sprite_auth_failure"))
+    end
+
+    test "loop exit without auth failure does not emit sprite_auth_failure event" do
+      start_monitor(interval_ms: 60_000)
+
+      sprites = [%{name: "bb-polisher", role: :polisher, harness: "codex"}]
+      MockState.put({:sprite_health, "bb-polisher"}, :healthy)
+      MockState.put({:loop_alive, "bb-polisher"}, true)
+
+      HealthMonitor.configure(
+        sprites: sprites,
+        repo: "test/repo",
+        healthy: MapSet.new(["bb-polisher"])
+      )
+
+      MockState.put({:loop_alive, "bb-polisher"}, false)
+
+      capture_log(fn ->
+        send(Process.whereis(HealthMonitor), :check)
+        Process.sleep(100)
+      end)
+
+      refute Enum.any?(Store.list_events("fleet"), &(&1["event_type"] == "sprite_auth_failure"))
+    end
   end
 end
