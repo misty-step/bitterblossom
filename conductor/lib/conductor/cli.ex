@@ -72,7 +72,7 @@ defmodule Conductor.CLI do
     IO.puts("bitterblossom starting — fleet: #{fleet_path}")
 
     with {:ok, config} <- Conductor.Fleet.Loader.load(fleet_path) do
-      run_check_env(require_codex_auth: requires_codex_auth?(config.sprites))
+      run_check_env(env_check_opts(config.sprites))
 
       case Conductor.Application.launch_fleet(fleet_path) do
         :ok ->
@@ -141,7 +141,7 @@ defmodule Conductor.CLI do
         case Conductor.Fleet.Loader.load(fleet_path) do
           {:ok, config} ->
             if opts[:reconcile] do
-              run_check_env(require_codex_auth: requires_codex_auth?(config.sprites))
+              run_check_env(env_check_opts(config.sprites))
 
               reconciler =
                 Application.get_env(:conductor, :fleet_reconciler, Conductor.Fleet.Reconciler)
@@ -351,7 +351,7 @@ defmodule Conductor.CLI do
         fleet_path ->
           case Conductor.Fleet.Loader.load(fleet_path) do
             {:ok, config} ->
-              Keyword.put(opts, :require_codex_auth, requires_codex_auth?(config.sprites))
+              env_check_opts(config.sprites, opts)
 
             {:error, reason} ->
               IO.puts("fleet failed: #{reason}")
@@ -379,7 +379,24 @@ defmodule Conductor.CLI do
   end
 
   defp run_check_env_for_sprite(sprite) do
-    run_check_env(require_codex_auth: requires_codex_auth?([sprite]))
+    run_check_env(env_check_opts([sprite]))
+  end
+
+  defp env_check_opts(sprites, opts \\ []) do
+    opts
+    |> Keyword.put(:require_codex_auth, requires_codex_auth?(sprites))
+    |> maybe_put_sprite_auth_probe_target(sprite_auth_probe_target(sprites))
+  end
+
+  defp maybe_put_sprite_auth_probe_target(opts, nil), do: opts
+
+  defp maybe_put_sprite_auth_probe_target(opts, sprite_name),
+    do: Keyword.put(opts, :sprite_auth_probe_target, sprite_name)
+
+  defp sprite_auth_probe_target(sprites) do
+    Enum.find_value(sprites, fn sprite ->
+      Map.get(sprite, :name) || Map.get(sprite, "name")
+    end)
   end
 
   defp requires_codex_auth?(sprites) do

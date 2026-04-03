@@ -165,7 +165,13 @@ defmodule Conductor.CLIFleetTest do
   end
 
   defmodule MockConfigModule do
-    def check_env!(_opts), do: :ok
+    def check_env!(opts) do
+      if pid = Application.get_env(:conductor, :sprite_test_pid) do
+        send(pid, {:check_env_called, opts})
+      end
+
+      :ok
+    end
   end
 
   setup do
@@ -376,6 +382,9 @@ defmodule Conductor.CLIFleetTest do
       end)
 
     assert output =~ "started bb-weaver-3 (pid 123)"
+    assert_received {:check_env_called, opts}
+    assert opts[:require_codex_auth] == true
+    assert opts[:sprite_auth_probe_target] == "bb-weaver-3"
 
     assert_received {:provision_called, "bb-weaver-3",
                      [repo: "other/other-repo", persona: nil, harness: "codex"]}
@@ -418,6 +427,20 @@ defmodule Conductor.CLIFleetTest do
     {:ok, _results} = MockReconciler.reconcile_all(config.sprites)
 
     assert_received {:reconciled, ["bb-weaver-1", "bb-weaver-2", "bb-weaver-3", "bb-weaver-4"]}
+  end
+
+  test "fleet --reconcile forwards declared sprites to config checks", %{fleet_path: fleet_path} do
+    Application.put_env(:conductor, :config_module, MockConfigModule)
+    Application.put_env(:conductor, :fleet_reconciler, MockReconciler)
+    Application.put_env(:conductor, :sprite_test_pid, self())
+
+    capture_io(fn ->
+      CLI.main(["fleet", "--fleet", fleet_path, "--reconcile"])
+    end)
+
+    assert_received {:check_env_called, opts}
+    assert opts[:require_codex_auth] == true
+    assert opts[:sprite_auth_probe_target] == "bb-weaver-1"
   end
 
   test "mix conductor fleet --reconcile fails with environment preflight output", %{
@@ -560,6 +583,19 @@ defmodule Conductor.CLIFleetTest do
     assert status == 1
     assert output =~ "environment check failed: missing: GITHUB_TOKEN"
     refute output =~ "Codex ChatGPT auth cache or OPENAI_API_KEY"
+  end
+
+  test "check-env forwards declared sprites to config checks", %{fleet_path: fleet_path} do
+    Application.put_env(:conductor, :config_module, MockConfigModule)
+    Application.put_env(:conductor, :sprite_test_pid, self())
+
+    capture_io(fn ->
+      CLI.main(["check-env", "--fleet", fleet_path])
+    end)
+
+    assert_received {:check_env_called, opts}
+    assert opts[:require_codex_auth] == true
+    assert opts[:sprite_auth_probe_target] == "bb-weaver-1"
   end
 
   test "mix conductor sprite rejects unknown subcommands with exit 1" do
