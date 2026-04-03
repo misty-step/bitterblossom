@@ -501,7 +501,12 @@ defmodule Conductor.Sprite do
     setsid bash -lc #{shell_quote("""
     echo $$ > #{@sprite_loop_pid_path}
     trap 'rm -f #{@sprite_loop_pid_path}' EXIT
-    #{agent_cmd}
+    for attempt in 1 2 3; do
+      #{agent_cmd}
+      exit_code=$?
+      if [ $exit_code -eq 0 ]; then break; fi
+      sleep 10
+    done
     """)} >/dev/null 2>&1 </dev/null &
     printf '%s%s\\n' #{shell_quote(@start_loop_started_prefix)} "$!"
     """
