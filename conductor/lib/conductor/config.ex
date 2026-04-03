@@ -124,12 +124,9 @@ defmodule Conductor.Config do
   end
 
   defp maybe_codex_api_env(acc) do
-    case codex_auth_source() do
-      {:api_key, api_key} ->
-        [{"CODEX_API_KEY", api_key}, {"OPENAI_API_KEY", api_key} | acc]
-
-      _ ->
-        acc
+    case nonempty_env("OPENAI_API_KEY") do
+      nil -> acc
+      api_key -> [{"CODEX_API_KEY", api_key}, {"OPENAI_API_KEY", api_key} | acc]
     end
   end
 

@@ -90,7 +90,7 @@ defmodule Conductor.Fleet.Loader do
          org: Map.get(defaults, "org", "misty-step"),
          repo: repo,
          harness: Map.get(defaults, "harness", "codex"),
-         model: Map.get(defaults, "model", "gpt-5.4"),
+         model: Map.get(defaults, "model", "gpt-5.4-mini"),
          reasoning_effort: Map.get(defaults, "reasoning_effort", "medium"),
          label: Map.get(defaults, "label")
        }}

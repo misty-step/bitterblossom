@@ -8,7 +8,7 @@ version = "1"
 org = "misty-step"
 repo = "misty-step/bitterblossom"
 harness = "codex"
-model = "gpt-5.4"
+model = "gpt-5.4-mini"
 reasoning_effort = "medium"  # "low" conserves tokens for builder tasks; "high" for polisher review
 spellbook = "phrazzld/spellbook"
 

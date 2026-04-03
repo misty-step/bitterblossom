@@ -82,6 +82,8 @@ defmodule Conductor.LauncherTest do
     orig_test_pid = Application.get_env(:conductor, :launcher_test_pid)
     orig_checkout_present = Application.get_env(:conductor, :launcher_repo_checkout_present)
     orig_auth_failure = Application.get_env(:conductor, :launcher_auth_failure_result)
+    orig_openai_key = System.get_env("OPENAI_API_KEY")
+    System.delete_env("OPENAI_API_KEY")
 
     Application.put_env(:conductor, :sprite_module, MockSpriteModule)
     Application.put_env(:conductor, :bootstrap_module, MockBootstrapModule)
@@ -95,6 +97,11 @@ defmodule Conductor.LauncherTest do
       restore_env(:launcher_test_pid, orig_test_pid)
       restore_env(:launcher_repo_checkout_present, orig_checkout_present)
       restore_env(:launcher_auth_failure_result, orig_auth_failure)
+
+      case orig_openai_key do
+        nil -> System.delete_env("OPENAI_API_KEY")
+        val -> System.put_env("OPENAI_API_KEY", val)
+      end
     end)
 
     :ok
@@ -189,6 +196,27 @@ defmodule Conductor.LauncherTest do
     assert log =~ "refresh_token_reused"
     assert_received {:detect_auth_failure_called, "bb-builder"}
     assert_received {:force_sync_called, "bb-builder"}
+  end
+
+  test "launch skips force_sync_codex_auth when OPENAI_API_KEY is set" do
+    Application.put_env(:conductor, :launcher_repo_checkout_present, true)
+    System.put_env("OPENAI_API_KEY", "sk-test-api-key")
+
+    sprite = %{
+      name: "bb-builder",
+      role: :builder,
+      repo: "misty-step/bitterblossom",
+      harness: "codex",
+      reasoning_effort: "medium",
+      persona: "You are Weaver."
+    }
+
+    assert {:ok, "123\n"} = Launcher.launch(sprite, "misty-step/bitterblossom")
+
+    assert_received {:stop_loop_called, "bb-builder"}
+    assert_received {:detect_auth_failure_called, "bb-builder"}
+    refute_received {:force_sync_called, _}
+    assert_received {:start_loop_called, "bb-builder", _, "misty-step/bitterblossom", _}
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:conductor, key)
