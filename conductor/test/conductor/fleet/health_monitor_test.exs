@@ -519,10 +519,7 @@ defmodule Conductor.Fleet.HealthMonitorTest do
       exec_cmds = for {:sprite_exec, _, cmd} <- msgs, do: cmd
       assert Enum.any?(exec_cmds, &String.contains?(&1, "git pull"))
 
-      # Should have re-bootstrapped
-      assert Enum.any?(msgs, &match?({:bootstrap, "bb-polisher"}, &1))
-
-      # Should have relaunched
+      # Should have relaunched (launcher handles bootstrap internally)
       assert Enum.any?(msgs, &match?({:launched, "bb-polisher", "test/repo"}, &1))
     end
 

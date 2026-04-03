@@ -162,7 +162,9 @@ defmodule Conductor.Fleet.HealthMonitor do
         {state, false}
 
       sprite ->
-        cmd = "git fetch origin --quiet 2>&1; git rev-parse origin/master 2>/dev/null"
+        repo = sprite_repo(sprite, state.repo)
+        workspace = Conductor.Workspace.repo_root(repo)
+        cmd = "cd #{workspace} && git fetch origin --quiet && git rev-parse origin/master"
 
         case sprite_mod().exec(sprite.name, cmd, timeout: 30_000) do
           {:ok, output} ->
@@ -197,27 +199,27 @@ defmodule Conductor.Fleet.HealthMonitor do
   end
 
   # Re-provision an idle sprite with fresh code from master.
+  # All heavy work (git pull, bootstrap, launch) runs in a background task
+  # to avoid blocking the health monitor GenServer loop.
   defp reload_sprite(state, sprite) do
     repo = sprite_repo(sprite, state.repo)
-    workspace = Workspace.repo_root(repo)
-    pull_cmd = "cd #{workspace} && git pull --ff-only --quiet 2>&1"
 
-    case sprite_mod().exec(sprite.name, pull_cmd, timeout: 30_000) do
-      {:ok, _} ->
-        bootstrap_mod().ensure_spellbook(sprite.name)
+    Task.Supervisor.start_child(Conductor.TaskSupervisor, fn ->
+      workspace = Workspace.repo_root(repo)
+      pull_cmd = "cd #{workspace} && git pull --ff-only --quiet"
 
-        Task.Supervisor.start_child(Conductor.TaskSupervisor, fn ->
+      case sprite_mod().exec(sprite.name, pull_cmd, timeout: 30_000) do
+        {:ok, _} ->
           launcher_mod().launch(sprite, repo)
-        end)
 
-        state
-        |> put_health(sprite.name, :launching)
-        |> put_launch_ticks(sprite.name, 0)
+        {:error, msg, _code} ->
+          Logger.warning("[health] #{sprite.name} reload pull failed: #{msg}")
+      end
+    end)
 
-      {:error, msg, _code} ->
-        Logger.warning("[health] #{sprite.name} reload pull failed: #{msg}")
-        state
-    end
+    state
+    |> put_health(sprite.name, :launching)
+    |> put_launch_ticks(sprite.name, 0)
   end
 
   defp record_fleet_reload_event(old_sha, new_sha) do
@@ -450,9 +452,5 @@ defmodule Conductor.Fleet.HealthMonitor do
       :ok ->
         :ok
     end
-  end
-
-  defp bootstrap_mod do
-    Application.get_env(:conductor, :bootstrap_module, Conductor.Bootstrap)
   end
 end
