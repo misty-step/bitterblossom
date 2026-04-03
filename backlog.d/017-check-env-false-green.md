@@ -1,7 +1,7 @@
 # check-env false-green on sprite CLI auth
 
 Priority: critical
-Status: ready
+Status: in-progress
 Estimate: S
 
 ## Goal
