@@ -60,6 +60,16 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     end
   end
 
+  defmodule MockSprite do
+    alias Conductor.Fleet.HealthMonitorTest.MockState
+
+    def detect_auth_failure(name, _opts \\ []) do
+      result = MockState.get({:auth_failure, name}, :ok)
+      send(MockState.get(:test_pid), {:detect_auth_failure_called, name})
+      result
+    end
+  end
+
   setup do
     db_path = Path.join(System.tmp_dir!(), "health_mon_test_#{:rand.uniform(999_999)}.db")
     event_log = Path.join(System.tmp_dir!(), "health_mon_test_#{:rand.uniform(999_999)}.jsonl")
@@ -74,8 +84,10 @@ defmodule Conductor.Fleet.HealthMonitorTest do
 
     orig_reconciler = Application.get_env(:conductor, :reconciler_module)
     orig_launcher = Application.get_env(:conductor, :launcher_module)
+    orig_sprite = Application.get_env(:conductor, :sprite_module)
     Application.put_env(:conductor, :reconciler_module, MockReconciler)
     Application.put_env(:conductor, :launcher_module, MockLauncher)
+    Application.put_env(:conductor, :sprite_module, MockSprite)
     MockState.put(:test_pid, self())
 
     on_exit(fn ->
@@ -91,6 +103,10 @@ defmodule Conductor.Fleet.HealthMonitorTest do
       if orig_launcher,
         do: Application.put_env(:conductor, :launcher_module, orig_launcher),
         else: Application.delete_env(:conductor, :launcher_module)
+
+      if orig_sprite,
+        do: Application.put_env(:conductor, :sprite_module, orig_sprite),
+        else: Application.delete_env(:conductor, :sprite_module)
 
       File.rm(db_path)
       File.rm(event_log)
@@ -427,5 +443,69 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     assert log =~ "backing off relaunch"
     # Should stay :unhealthy, not transition to :launching
     assert HealthMonitor.status().sprites["bb-polisher"] == :unhealthy
+  end
+
+  test "loop exit with auth failure emits sprite_auth_failure event" do
+    start_monitor(interval_ms: 60_000)
+
+    sprites = [%{name: "bb-polisher", role: :polisher, harness: "codex"}]
+    MockState.put({:sprite_health, "bb-polisher"}, :healthy)
+    MockState.put({:loop_alive, "bb-polisher"}, true)
+    MockState.put({:auth_failure, "bb-polisher"}, {:auth_failure, "refresh_token_reused"})
+
+    HealthMonitor.configure(
+      sprites: sprites,
+      repo: "test/repo",
+      healthy: MapSet.new(["bb-polisher"])
+    )
+
+    assert HealthMonitor.status().sprites["bb-polisher"] == :healthy
+
+    # Simulate loop death
+    MockState.put({:loop_alive, "bb-polisher"}, false)
+
+    log =
+      capture_log(fn ->
+        send(Process.whereis(HealthMonitor), :check)
+        Process.sleep(100)
+      end)
+
+    assert log =~ "auth failure detected"
+    assert log =~ "refresh_token_reused"
+    assert HealthMonitor.status().sprites["bb-polisher"] == :unhealthy
+
+    # Verify sprite_auth_failure event was recorded
+    events = Store.list_events("fleet")
+
+    assert Enum.any?(events, fn e ->
+             e["event_type"] == "sprite_auth_failure" and
+               e["payload"]["reason"] == "refresh_token_reused"
+           end)
+  end
+
+  test "loop exit without auth failure does not emit sprite_auth_failure event" do
+    start_monitor(interval_ms: 60_000)
+
+    sprites = [%{name: "bb-polisher", role: :polisher, harness: "codex"}]
+    MockState.put({:sprite_health, "bb-polisher"}, :healthy)
+    MockState.put({:loop_alive, "bb-polisher"}, true)
+    # No auth failure set — defaults to :ok
+
+    HealthMonitor.configure(
+      sprites: sprites,
+      repo: "test/repo",
+      healthy: MapSet.new(["bb-polisher"])
+    )
+
+    MockState.put({:loop_alive, "bb-polisher"}, false)
+
+    capture_log(fn ->
+      send(Process.whereis(HealthMonitor), :check)
+      Process.sleep(100)
+    end)
+
+    events = Store.list_events("fleet")
+
+    refute Enum.any?(events, fn e -> e["event_type"] == "sprite_auth_failure" end)
   end
 end

@@ -183,6 +183,8 @@ defmodule Conductor.Fleet.HealthMonitor do
     launch_time = Map.get(state.launch_times, sprite.name)
     rapid? = rapid_exit?(launch_time)
 
+    check_auth_failure(sprite)
+
     if rapid? do
       count = Map.get(state.rapid_exit_counts, sprite.name, 0) + 1
       Logger.warning("[health] #{sprite.name} rapid exit (#{count}x) — likely no work available")
@@ -337,5 +339,20 @@ defmodule Conductor.Fleet.HealthMonitor do
 
   defp reconciler_mod do
     Application.get_env(:conductor, :reconciler_module, Reconciler)
+  end
+
+  defp sprite_mod do
+    Application.get_env(:conductor, :sprite_module, Conductor.Sprite)
+  end
+
+  defp check_auth_failure(sprite) do
+    case sprite_mod().detect_auth_failure(sprite.name) do
+      {:auth_failure, reason} ->
+        Logger.warning("[health] #{sprite.name} auth failure detected: #{reason}")
+        record_fleet_event("sprite_auth_failure", sprite, %{reason: reason})
+
+      :ok ->
+        :ok
+    end
   end
 end
