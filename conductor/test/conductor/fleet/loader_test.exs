@@ -236,7 +236,7 @@ defmodule Conductor.Fleet.LoaderTest do
       assert msg =~ "invalid role"
     end
 
-    test "rejects reviewer role because no reviewer persona exists", %{path: path} do
+    test "rejects reviewer as an invalid role", %{path: path} do
       File.write!(path, """
       [defaults]
       repo = "test/repo"
