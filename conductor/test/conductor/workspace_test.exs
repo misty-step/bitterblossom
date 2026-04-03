@@ -102,6 +102,30 @@ defmodule Conductor.WorkspaceTest do
       assert File.exists?(Path.join(workspace, ".agents/skills/bb-persona-fern-keep"))
     end
 
+    test "supports muse personas" do
+      workspace =
+        Path.join(System.tmp_dir!(), "workspace-test-#{System.unique_integer([:positive])}")
+
+      source_root = minimal_persona_source_root(:muse)
+      File.mkdir_p!(workspace)
+
+      on_exit(fn ->
+        File.rm_rf(workspace)
+        File.rm_rf(source_root)
+      end)
+
+      assert :ok =
+               Workspace.sync_persona("local", workspace, :muse,
+                 exec_fn: &local_exec/3,
+                 source_root: source_root
+               )
+
+      launch_dir = Workspace.persona_launch_dir(workspace, :muse)
+
+      assert File.read!(Path.join(launch_dir, "CLAUDE.md")) == "shared claude\nmuse claude\n"
+      assert File.read!(Path.join(launch_dir, "AGENTS.md")) == "shared agents\nmuse agents\n"
+    end
+
     test "rejects unknown persona roles" do
       assert {:error, :invalid_role} =
                Workspace.sync_persona("local", "/tmp/ws", :unknown, exec_fn: &local_exec/3)
@@ -254,6 +278,12 @@ defmodule Conductor.WorkspaceTest do
       assert_raise ArgumentError, fn ->
         Workspace.repo_root("owner/.")
       end
+    end
+  end
+
+  describe "persona_for_role/1" do
+    test "maps triage to muse" do
+      assert Workspace.persona_for_role(:triage) == :muse
     end
   end
 

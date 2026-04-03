@@ -64,6 +64,7 @@ defmodule Conductor.LauncherTest do
   defmodule MockWorkspaceModule do
     def repo_root(repo), do: "/tmp/workspaces/#{repo}"
     def persona_for_role(:builder), do: :weaver
+    def persona_for_role(:triage), do: :muse
     def persona_for_role(role), do: role
 
     def sync_persona(sprite, workspace, role, _opts \\ []) do
@@ -189,6 +190,28 @@ defmodule Conductor.LauncherTest do
     assert log =~ "refresh_token_reused"
     assert_received {:detect_auth_failure_called, "bb-builder"}
     assert_received {:force_sync_called, "bb-builder"}
+  end
+
+  test "launch uses the muse persona for triage sprites" do
+    Application.put_env(:conductor, :launcher_repo_checkout_present, true)
+
+    sprite = %{
+      name: "bb-muse",
+      role: :triage,
+      repo: "misty-step/bitterblossom",
+      harness: "codex",
+      reasoning_effort: "medium",
+      persona: "You are Muse. Observe, reflect, and improve."
+    }
+
+    assert {:ok, "123\n"} = Launcher.launch(sprite, "misty-step/bitterblossom")
+
+    assert_received {:sync_persona_called, "bb-muse", "/tmp/workspaces/misty-step/bitterblossom",
+                     :muse}
+
+    assert_received {:start_loop_called, "bb-muse", prompt, "misty-step/bitterblossom", opts}
+    assert prompt =~ "You are Muse."
+    assert opts[:persona_role] == :muse
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:conductor, key)
