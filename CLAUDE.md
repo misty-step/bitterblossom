@@ -7,6 +7,13 @@ Also read:
 - `AGENTS.md` (canonical repo context)
 - `docs/adr/004-elixir-conductor-architecture.md` (Elixir conductor design)
 
+## Current Direction Lock
+
+Bitterblossom is currently focused on one lane: `Tansy` watches Canary,
+investigates incidents, fixes the correct repository, and verifies recovery.
+The older builder/fixer/polisher lanes remain as prior art and may return, but
+they are not the active product priority right now.
+
 ## What This Is
 
 Bitterblossom is an agent-first software factory. Autonomous AI agents (sprites) pick work, implement it, review it, and merge it. The codebase has two concerns:
@@ -18,10 +25,11 @@ Agents are capable. The infrastructure is plumbing.
 
 ## Sprite Names
 
-- **Weaver** (`bb-builder`) — autonomous builder: picks `backlog.d/` items, shapes, implements via `/autopilot`, opens PRs
-- **Thorn** (`bb-fixer`) — autonomous fixer: scans PRs for merge blockers, resolves conflicts, fixes CI via `/settle`
-- **Fern** (`bb-polisher`, `bb-polisher-2`, `bb-polisher-3`) — autonomous quality + merger: reviews, polishes, refactors, squash-merges via `/settle`
+- **Weaver** (`bb-builder`) — autonomous builder: picks `backlog.d/` items, shapes, implements via `/autopilot`, and prepares branches for local review
+- **Thorn** (`bb-fixer`) — autonomous fixer: scans local finding ledgers and verification failures, resolves blockers, and restores land-readiness via `/settle`
+- **Fern** (`bb-polisher`, `bb-polisher-2`, `bb-polisher-3`) — autonomous quality + merger: reviews, polishes, refactors, and squash-lands via `/settle`
 - **Muse** (`bb-muse`) — reflects on runs and synthesizes learning for the factory
+- **Tansy** (`bb-tansy`) — Canary incident responder: claims incidents, investigates root causes, repairs target repos, and verifies recovery
 
 ## Architecture
 
@@ -33,7 +41,6 @@ conductor/                   Infrastructure only — no judgment
     bootstrap.ex             Spellbook clone + bootstrap on sprites
     launcher.ex              Dispatch agent loops, monitor health
     store.ex                 SQLite event log for observability
-    github.ex                gh CLI wrapper
     fleet/                   Fleet loading, reconciliation, health
     config.ex                Runtime configuration
     cli.ex                   bitterblossom start/stop/status
@@ -43,6 +50,7 @@ sprites/                     Agent definitions — where the logic lives
   weaver/                    Autonomous builder loop
   thorn/                     Autonomous fixer loop
   fern/                      Autonomous polisher+merger loop
+  tansy/                     Autonomous Canary incident responder loop
 
 base/                        Skills/configs uploaded to all sprites
 ```
@@ -51,8 +59,10 @@ base/                        Skills/configs uploaded to all sprites
 
 1. `cd conductor && mix conductor start --fleet ../fleet.toml` provisions sprites, bootstraps spellbook, dispatches agent loops
 2. Each sprite runs its own autonomous loop (defined in its AGENTS.md)
-3. Weaver picks `backlog.d/` items → Thorn fixes PRs → Fern polishes and merges
-4. Self-healing: conflicts/CI failures → Thorn → Fern re-polishes → merge
+3. Weaver picks `backlog.d/` items → Thorn fixes local blockers → Fern polishes and lands
+4. Self-healing: verification failures or conflicts → Thorn → Fern re-polishes → land
+
+For the current direction lock, the default fleet runs only `bb-tansy`.
 
 ## Build & Test
 
@@ -70,13 +80,11 @@ cd conductor && mix deps.get && mix compile && mix test
 
 **Spellbook is the canonical skill set.** `phrazzld/spellbook` defines the skills and agents. Sprites are bootstrapped with it before every dispatch.
 
-**Self-healing cycles.** Weaver opens PR → Thorn fixes blockers → Fern polishes → merge. `backlog.d/` is the canonical work source. No dead ends, no stuck states.
+**Self-healing cycles.** Weaver prepares a branch → Thorn fixes blockers → Fern polishes and lands locally. `backlog.d/` is the canonical work source. No dead ends, no stuck states.
 
 ## Gotchas (earned by pain)
 
 - **Stale agent processes block dispatch.** Sprite agent processes may linger after a run completes. Kill before re-dispatch.
-- **`statusCheckRollup` contains null entries.** External review tools (CodeRabbit) report checks with null conclusions. Handle nulls.
-- **Closing a PR doesn't communicate intent.** Use the `hold` label to pause work on an issue.
 - **Issue boundaries must not contradict AC.** Ensure acceptance criteria are achievable within stated constraints.
 
 ## Coding Standards

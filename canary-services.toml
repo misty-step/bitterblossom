@@ -1,0 +1,33 @@
+# Canary service catalog
+#
+# This file is the repo-owned authority for `service -> repo + rollout policy`.
+# Tansy resolves incidents through this catalog rather than guessing from repo
+# names or shell folklore.
+#
+# Rules:
+# - Commands are argv arrays, not shell strings.
+# - `auto_merge` and `auto_deploy` default to false.
+# - Only enable `auto_deploy` when `deploy_cmd` and `rollback_cmd` are both
+#   present and the recovery oracle is trustworthy.
+
+[[service]]
+name = "bitterblossom"
+repo = "misty-step/bitterblossom"
+clone_url = "https://github.com/misty-step/bitterblossom.git"
+default_branch = "master"
+test_cmd = ["make", "test"]
+auto_merge = false
+auto_deploy = false
+stabilization_window_s = 600
+
+[[service]]
+name = "canary"
+repo = "misty-step/canary"
+clone_url = "https://github.com/misty-step/canary.git"
+default_branch = "master"
+test_cmd = ["./bin/validate"]
+deploy_cmd = ["flyctl", "deploy", "--app", "canary-obs", "--remote-only"]
+rollback_cmd = ["flyctl", "releases", "rollback", "--app", "canary-obs"]
+auto_merge = false
+auto_deploy = false
+stabilization_window_s = 900

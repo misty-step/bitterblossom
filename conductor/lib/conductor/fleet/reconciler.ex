@@ -103,6 +103,8 @@ defmodule Conductor.Fleet.Reconciler do
 
     case provision_fn.(sprite.name,
            repo: sprite.repo,
+           clone_url: Map.get(sprite, :clone_url),
+           default_branch: Map.get(sprite, :default_branch),
            persona: sprite.persona,
            harness: sprite.harness,
            org: sprite.org,
@@ -155,7 +157,12 @@ defmodule Conductor.Fleet.Reconciler do
         Sprite.status(name, status_opts)
       end)
 
-    case status_fn.(sprite.name, harness: sprite.harness, org: sprite.org) do
+    case status_fn.(sprite.name,
+           harness: sprite.harness,
+           org: sprite.org,
+           repo: sprite.repo,
+           clone_url: Map.get(sprite, :clone_url)
+         ) do
       {:error, _reason} ->
         :unreachable
 

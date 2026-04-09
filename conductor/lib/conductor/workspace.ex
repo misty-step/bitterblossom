@@ -10,7 +10,8 @@ defmodule Conductor.Workspace do
   @mirror_base "/home/sprite/workspace"
   @safe_input ~r/^[a-zA-Z0-9_\-\.\/]+$/
   @repo_segment ~r/^[A-Za-z0-9_.-]+$/
-  @persona_roles ~w(weaver thorn fern muse)
+  @branch_segment ~r/^[A-Za-z0-9_.-]+$/
+  @persona_roles ~w(weaver thorn fern muse tansy)
 
   @doc "Validate that a string is safe for shell interpolation. Rejects metacharacters, path traversal, absolute paths, and leading dashes."
   @spec validate_input(binary()) :: :ok | {:error, :invalid_input}
@@ -24,13 +25,16 @@ defmodule Conductor.Workspace do
     end
   end
 
-  @doc "Validate an `owner/repo` identifier for workspace and clone operations."
+  @doc "Validate a repo workspace key used for workspace and clone operations."
   @spec validate_repo(binary()) :: :ok | {:error, :invalid_repo}
   def validate_repo(repo) when is_binary(repo) do
+    segments = String.split(repo, "/", trim: true)
+
     with :ok <- validate_input(repo),
-         [owner, name] <- String.split(repo, "/", parts: 2),
-         true <- valid_repo_segment?(owner),
-         true <- valid_repo_segment?(name) do
+         false <- String.contains?(repo, "//"),
+         false <- String.ends_with?(repo, "/"),
+         false <- segments == [],
+         true <- Enum.all?(segments, &valid_repo_segment?/1) do
       :ok
     else
       _ -> {:error, :invalid_repo}
@@ -39,7 +43,50 @@ defmodule Conductor.Workspace do
 
   def validate_repo(_repo), do: {:error, :invalid_repo}
 
-  @doc "Return the warm mirror root for a validated `owner/repo` identifier."
+  @doc "Validate a fleet or service branch name before it reaches git shell commands."
+  @spec validate_branch(binary()) :: :ok | {:error, :invalid_branch}
+  def validate_branch(branch) when is_binary(branch) do
+    segments = String.split(branch, "/", trim: true)
+
+    cond do
+      branch == "" -> {:error, :invalid_branch}
+      not Regex.match?(@safe_input, branch) -> {:error, :invalid_branch}
+      String.contains?(branch, ["..", "@{", "\\", "//"]) -> {:error, :invalid_branch}
+      String.starts_with?(branch, ["/", ".", "-"]) -> {:error, :invalid_branch}
+      String.ends_with?(branch, ["/", "."]) -> {:error, :invalid_branch}
+      segments == [] -> {:error, :invalid_branch}
+      not Enum.all?(segments, &valid_branch_segment?/1) -> {:error, :invalid_branch}
+      true -> :ok
+    end
+  end
+
+  def validate_branch(_branch), do: {:error, :invalid_branch}
+
+  @doc "Return the quoted git checkout fallback used to refresh a validated branch."
+  @spec checkout_branch_command(binary()) :: binary()
+  def checkout_branch_command(branch) do
+    case validate_branch(branch) do
+      :ok ->
+        origin_ref = origin_branch_ref(branch)
+
+        "(git checkout -f #{shell_quote(origin_ref)} 2>/dev/null || " <>
+          "git checkout -f #{shell_quote(branch)} 2>/dev/null)"
+
+      {:error, :invalid_branch} ->
+        raise ArgumentError, "invalid branch: #{inspect(branch)}"
+    end
+  end
+
+  @doc "Return the remote-tracking ref for a validated branch."
+  @spec origin_branch_ref(binary()) :: binary()
+  def origin_branch_ref(branch) do
+    case validate_branch(branch) do
+      :ok -> "origin/#{branch}"
+      {:error, :invalid_branch} -> raise ArgumentError, "invalid branch: #{inspect(branch)}"
+    end
+  end
+
+  @doc "Return the warm mirror root for a validated repo workspace key."
   @spec repo_root(binary()) :: binary()
   def repo_root(repo) do
     case validate_repo(repo) do
@@ -118,6 +165,7 @@ defmodule Conductor.Workspace do
   def persona_for_role(:fixer), do: :thorn
   def persona_for_role(:polisher), do: :fern
   def persona_for_role(:triage), do: :muse
+  def persona_for_role(:responder), do: :tansy
   def persona_for_role(role), do: role
 
   # --- Private ---
@@ -240,4 +288,11 @@ defmodule Conductor.Workspace do
   defp shell_quote(value), do: Shell.quote_arg(to_string(value))
 
   defp valid_repo_segment?(segment), do: segment != "." and Regex.match?(@repo_segment, segment)
+
+  defp valid_branch_segment?(segment) do
+    segment not in [".", ".."] and
+      Regex.match?(@branch_segment, segment) and
+      not String.starts_with?(segment, ".") and
+      not String.ends_with?(segment, [".", ".lock"])
+  end
 end

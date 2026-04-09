@@ -220,23 +220,52 @@ defmodule Conductor.WorkspaceTest do
     end
   end
 
+  describe "validate_branch/1" do
+    test "accepts slash-separated branch names" do
+      assert :ok = Workspace.validate_branch("main")
+      assert :ok = Workspace.validate_branch("release/2026-04")
+      assert :ok = Workspace.validate_branch("feature/tansy-responder")
+    end
+
+    test "rejects shell metacharacters and unsafe ref shapes" do
+      assert {:error, :invalid_branch} = Workspace.validate_branch("main; rm -rf /")
+      assert {:error, :invalid_branch} = Workspace.validate_branch("../main")
+      assert {:error, :invalid_branch} = Workspace.validate_branch("feature//oops")
+      assert {:error, :invalid_branch} = Workspace.validate_branch(".hidden")
+      assert {:error, :invalid_branch} = Workspace.validate_branch("release.lock")
+    end
+  end
+
+  describe "checkout_branch_command/1" do
+    test "quotes both local and remote refs" do
+      assert Workspace.checkout_branch_command("release/2026-04") ==
+               "(git checkout -f 'origin/release/2026-04' 2>/dev/null || " <>
+                 "git checkout -f 'release/2026-04' 2>/dev/null)"
+    end
+  end
+
   describe "repo_root/1" do
     test "returns mirror path for valid repo" do
       assert Workspace.repo_root("misty-step/bitterblossom") ==
                "/home/sprite/workspace/misty-step/bitterblossom"
     end
 
+    test "accepts a single-segment repo key" do
+      assert Workspace.repo_root("bitterblossom") == "/home/sprite/workspace/bitterblossom"
+    end
+
+    test "accepts nested repo keys" do
+      assert Workspace.repo_root("services/api/bitterblossom") ==
+               "/home/sprite/workspace/services/api/bitterblossom"
+    end
+
     test "keeps same-basename repos distinct" do
       assert Workspace.repo_root("alpha/shared") != Workspace.repo_root("beta/shared")
     end
 
-    test "raises for non owner-repo identifiers" do
+    test "rejects doubled path separators" do
       assert_raise ArgumentError, fn ->
-        Workspace.repo_root("bitterblossom")
-      end
-
-      assert_raise ArgumentError, fn ->
-        Workspace.repo_root("alpha/shared/extra")
+        Workspace.repo_root("alpha//shared")
       end
     end
 
@@ -260,6 +289,10 @@ defmodule Conductor.WorkspaceTest do
   describe "persona_for_role/1" do
     test "maps triage sprites to the muse persona" do
       assert Workspace.persona_for_role(:triage) == :muse
+    end
+
+    test "maps responder sprites to the tansy persona" do
+      assert Workspace.persona_for_role(:responder) == :tansy
     end
   end
 

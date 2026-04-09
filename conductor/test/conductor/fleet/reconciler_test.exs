@@ -114,6 +114,8 @@ defmodule Conductor.Fleet.ReconcilerTest do
     assert_received {:provision_called, "bb-weaver",
                      [
                        repo: "misty-step/bitterblossom",
+                       clone_url: nil,
+                       default_branch: nil,
                        persona: "You are Weaver.",
                        harness: "codex",
                        org: "misty-step",
@@ -268,6 +270,8 @@ defmodule Conductor.Fleet.ReconcilerTest do
     assert_received {:provision_called, "bb-weaver",
                      [
                        repo: "misty-step/bitterblossom",
+                       clone_url: nil,
+                       default_branch: nil,
                        persona: "You are Weaver.",
                        harness: "codex",
                        org: "misty-step",

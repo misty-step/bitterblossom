@@ -16,8 +16,7 @@ defmodule Conductor.CLIFleetTest do
            sprite: "bb-weaver-1",
            reachable: true,
            harness_ready: true,
-           gh_authenticated: true,
-           git_credential_helper: true,
+           git_ready: true,
            healthy: true
          }}
 
@@ -30,8 +29,7 @@ defmodule Conductor.CLIFleetTest do
            sprite: "bb-weaver-3",
            reachable: true,
            harness_ready: true,
-           gh_authenticated: false,
-           git_credential_helper: true,
+           git_ready: false,
            healthy: false
          }}
 
@@ -42,8 +40,7 @@ defmodule Conductor.CLIFleetTest do
            sprite: "bb-weaver-4",
            reachable: true,
            harness_ready: true,
-           gh_authenticated: true,
-           git_credential_helper: false,
+           git_ready: false,
            healthy: false
          }}
   end
@@ -68,8 +65,7 @@ defmodule Conductor.CLIFleetTest do
          reachable: true,
          harness_ready: true,
          codex_auth_ready: true,
-         gh_authenticated: true,
-         git_credential_helper: true,
+         git_ready: true,
          healthy: true,
          paused: false,
          busy: true,
@@ -84,8 +80,7 @@ defmodule Conductor.CLIFleetTest do
          reachable: true,
          harness_ready: true,
          codex_auth_ready: false,
-         gh_authenticated: false,
-         git_credential_helper: true,
+         git_ready: false,
          healthy: false,
          paused: false,
          busy: false,
@@ -100,8 +95,7 @@ defmodule Conductor.CLIFleetTest do
          reachable: true,
          harness_ready: true,
          codex_auth_ready: true,
-         gh_authenticated: true,
-         git_credential_helper: true,
+         git_ready: true,
          healthy: true,
          paused: false,
          busy: false,
@@ -191,6 +185,8 @@ defmodule Conductor.CLIFleetTest do
 
       [defaults]
       repo = "test/repo"
+      clone_url = "https://git.example.com/test/repo.git"
+      default_branch = "main"
 
       [[sprite]]
       name = "bb-weaver-1"
@@ -205,6 +201,8 @@ defmodule Conductor.CLIFleetTest do
       name = "bb-weaver-3"
       role = "builder"
       repo = "other/other-repo"
+      clone_url = "https://git.example.com/other/other-repo.git"
+      default_branch = "release"
 
       [[sprite]]
       name = "bb-weaver-4"
@@ -387,13 +385,60 @@ defmodule Conductor.CLIFleetTest do
     assert opts[:sprite_auth_probe_target] == "bb-weaver-3"
 
     assert_received {:provision_called, "bb-weaver-3",
-                     [repo: "other/other-repo", persona: nil, harness: "codex"]}
+                     [
+                       repo: "other/other-repo",
+                       clone_url: "https://git.example.com/other/other-repo.git",
+                       default_branch: "release",
+                       persona: nil,
+                       persona_role: :weaver,
+                       harness: "codex"
+                     ]}
 
     assert_received {:force_sync_called, "bb-weaver-3"}
     assert_received {:sync_persona_called, "bb-weaver-3", "/tmp/other/other-repo", :weaver}
     assert_received {:start_loop_called, "bb-weaver-3", prompt, "other/other-repo", opts}
     assert prompt =~ "Repository: other/other-repo"
     assert opts[:workspace] == "/tmp/other/other-repo"
+  end
+
+  test "sprite start runs preflight for healthy responder sprites" do
+    responder_fleet_path =
+      Path.join(
+        System.tmp_dir!(),
+        "fleet_cli_responder_#{System.unique_integer([:positive])}.toml"
+      )
+
+    File.write!(
+      responder_fleet_path,
+      """
+      version = "1"
+
+      [defaults]
+      repo = "test/repo"
+      clone_url = "https://git.example.com/test/repo.git"
+
+      [[sprite]]
+      name = "bb-tansy"
+      role = "responder"
+      """
+    )
+
+    Application.put_env(:conductor, :sprite_module, MockSpriteModule)
+    Application.put_env(:conductor, :workspace_module, MockWorkspaceModule)
+    Application.put_env(:conductor, :config_module, MockConfigModule)
+    Application.put_env(:conductor, :sprite_test_pid, self())
+
+    output =
+      capture_io(fn ->
+        CLI.main(["sprite", "start", "bb-tansy", "--fleet", responder_fleet_path])
+      end)
+
+    assert output =~ "started bb-tansy (pid 123)"
+    assert_received {:check_env_called, opts}
+    assert opts[:require_canary_auth] == true
+    assert opts[:sprite_auth_probe_target] == "bb-tansy"
+
+    File.rm(responder_fleet_path)
   end
 
   test "sprite resume resumes a declared sprite", %{fleet_path: fleet_path} do
@@ -456,7 +501,6 @@ defmodule Conductor.CLIFleetTest do
         cd: @conductor_dir,
         env: [
           {"MIX_ENV", "test"},
-          {"GITHUB_TOKEN", ""},
           {"OPENAI_API_KEY", ""},
           {"CODEX_HOME", codex_home},
           {"SPRITE_TOKEN", "sprite-test"}
@@ -467,7 +511,10 @@ defmodule Conductor.CLIFleetTest do
     File.rm_rf(codex_home)
 
     assert status == 1
-    assert output =~ "environment check failed: missing: GITHUB_TOKEN"
+
+    assert output =~
+             "environment check failed: missing: Codex ChatGPT auth cache or OPENAI_API_KEY"
+
     assert output =~ "Codex ChatGPT auth cache or OPENAI_API_KEY"
   end
 
@@ -482,6 +529,7 @@ defmodule Conductor.CLIFleetTest do
 
       [defaults]
       repo = "test/repo"
+      clone_url = "https://git.example.com/test/repo.git"
       harness = "claude-code"
 
       [[sprite]]
@@ -495,9 +543,7 @@ defmodule Conductor.CLIFleetTest do
         cd: @conductor_dir,
         env: [
           {"MIX_ENV", "test"},
-          {"GITHUB_TOKEN", ""},
-          {"OPENAI_API_KEY", ""},
-          {"SPRITE_TOKEN", "sprite-test"}
+          {"OPENAI_API_KEY", ""}
         ],
         stderr_to_stdout: true
       )
@@ -505,7 +551,7 @@ defmodule Conductor.CLIFleetTest do
     File.rm_rf(fleet_path)
 
     assert status == 1
-    assert output =~ "environment check failed: missing: GITHUB_TOKEN"
+    assert output =~ "environment check failed: missing: SPRITE_TOKEN or sprite CLI auth"
     refute output =~ "Codex ChatGPT auth cache or OPENAI_API_KEY"
   end
 
@@ -520,6 +566,7 @@ defmodule Conductor.CLIFleetTest do
 
       [defaults]
       repo = "test/repo"
+      clone_url = "https://git.example.com/test/repo.git"
       harness = "claude-code"
 
       [[sprite]]
@@ -533,9 +580,7 @@ defmodule Conductor.CLIFleetTest do
         cd: @conductor_dir,
         env: [
           {"MIX_ENV", "test"},
-          {"GITHUB_TOKEN", ""},
-          {"OPENAI_API_KEY", ""},
-          {"SPRITE_TOKEN", "sprite-test"}
+          {"OPENAI_API_KEY", ""}
         ],
         stderr_to_stdout: true
       )
@@ -543,7 +588,7 @@ defmodule Conductor.CLIFleetTest do
     File.rm_rf(fleet_path)
 
     assert status == 1
-    assert output =~ "environment check failed: missing: GITHUB_TOKEN"
+    assert output =~ "environment check failed: missing: SPRITE_TOKEN or sprite CLI auth"
     refute output =~ "Codex ChatGPT auth cache or OPENAI_API_KEY"
   end
 
@@ -558,6 +603,7 @@ defmodule Conductor.CLIFleetTest do
 
       [defaults]
       repo = "test/repo"
+      clone_url = "https://git.example.com/test/repo.git"
       harness = "claude-code"
 
       [[sprite]]
@@ -571,9 +617,7 @@ defmodule Conductor.CLIFleetTest do
         cd: @conductor_dir,
         env: [
           {"MIX_ENV", "test"},
-          {"GITHUB_TOKEN", ""},
-          {"OPENAI_API_KEY", ""},
-          {"SPRITE_TOKEN", "sprite-test"}
+          {"OPENAI_API_KEY", ""}
         ],
         stderr_to_stdout: true
       )
@@ -581,7 +625,7 @@ defmodule Conductor.CLIFleetTest do
     File.rm_rf(fleet_path)
 
     assert status == 1
-    assert output =~ "environment check failed: missing: GITHUB_TOKEN"
+    assert output =~ "environment check failed: missing: SPRITE_TOKEN or sprite CLI auth"
     refute output =~ "Codex ChatGPT auth cache or OPENAI_API_KEY"
   end
 
@@ -596,6 +640,43 @@ defmodule Conductor.CLIFleetTest do
     assert_received {:check_env_called, opts}
     assert opts[:require_codex_auth] == true
     assert opts[:sprite_auth_probe_target] == "bb-weaver-1"
+  end
+
+  test "check-env requires Canary auth for responder fleets" do
+    responder_fleet_path =
+      Path.join(
+        System.tmp_dir!(),
+        "fleet_cli_responder_#{System.unique_integer([:positive])}.toml"
+      )
+
+    File.write!(
+      responder_fleet_path,
+      """
+      version = "1"
+
+      [defaults]
+      repo = "test/repo"
+      clone_url = "https://git.example.com/test/repo.git"
+
+      [[sprite]]
+      name = "bb-tansy"
+      role = "responder"
+      """
+    )
+
+    Application.put_env(:conductor, :config_module, MockConfigModule)
+    Application.put_env(:conductor, :sprite_test_pid, self())
+
+    capture_io(fn ->
+      CLI.main(["check-env", "--fleet", responder_fleet_path])
+    end)
+
+    assert_received {:check_env_called, opts}
+    assert opts[:require_codex_auth] == true
+    assert opts[:require_canary_auth] == true
+    assert opts[:sprite_auth_probe_target] == "bb-tansy"
+
+    File.rm(responder_fleet_path)
   end
 
   test "mix conductor sprite rejects unknown subcommands with exit 1" do

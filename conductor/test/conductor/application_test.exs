@@ -97,6 +97,7 @@ defmodule Conductor.ApplicationTest do
 
       [defaults]
       repo = "default/repo"
+      clone_url = "https://git.example.com/default/repo.git"
 
       [[sprite]]
       name = "bb-builder"
@@ -106,6 +107,7 @@ defmodule Conductor.ApplicationTest do
       name = "bb-fixer"
       role = "fixer"
       repo = "other/repo"
+      clone_url = "https://git.example.com/other/repo.git"
       """
     )
 

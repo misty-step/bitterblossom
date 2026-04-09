@@ -1,5 +1,5 @@
 ---
-version: 1
+version: 2
 control_surface: repo-owned
 factory:
   default_workspace_model: one-work-item-one-workspace
@@ -8,112 +8,120 @@ factory:
     - build
     - review
     - fix
-    - merge
+    - land
     - recover
+    - reflect
   workers:
-    shape: moss
-    build: bramble
-    review: thorn
-    fix: willow
-    merge: fern
-    recover: foxglove
+    shape: weaver
+    build: weaver
+    review: fern
+    fix: thorn
+    land: fern
+    recover: tansy
+    reflect: muse
   required_skills:
     - shape
-    - build
-    - pr
-    - pr-walkthrough
-    - debug
-    - pr-fix
-    - pr-polish
     - autopilot
-  merge_policy:
-    separate_semantic_readiness_from_mechanical_checks: true
-    known_false_reds_require_incident_reference: true
-    merge_method: squash
+    - code-review
+    - debug
+    - settle
+  landing_policy:
+    verification_surface: dagger
+    verdict_ref_required: true
+    landing_method: squash
 ---
 
 # Bitterblossom Workflow Contract
 
 This file is the primary agent-facing runtime contract for Bitterblossom.
 
-If another document disagrees with this file about execution flow, phases, artifacts, or merge policy, prefer this file unless a more specific task instruction overrides it.
+If another document disagrees with this file about execution flow, artifacts, or
+landing policy, prefer this file unless a more specific task instruction
+overrides it.
 
 ## Primary Principles
 
 1. **One work item, one durable workspace.**
-   - Every issue lane, PR-fix lane, review lane, and recovery lane gets its own workspace by default.
+   - Every backlog lane, incident lane, review lane, and recovery lane gets its
+     own workspace by default.
    - Do not reuse a dirty workspace for unrelated work.
 
-2. **Small deterministic kernel, agent-forward semantics.**
-   - The kernel owns leasing, workspace lifecycle, retries, scheduling, merge execution, and audit state.
-   - Agents own shaping, implementation, review interpretation, remediation, and follow-up issue generation through imported skills.
+2. **Local-first truth surfaces.**
+   - The repo is the source of truth for work, evidence, and landing state.
+   - Treat hosted remotes as transport only. Publishing is not the same thing as
+     landing.
 
 3. **Phase-specialized workers.**
-   - Shape work before building.
-   - Build work before reviewing.
-   - Review and fix before merge.
-   - Recovery is a first-class phase, not an ad hoc operator patch.
+   - Shape before build.
+   - Build before review.
+   - Review and fix before land.
+   - Recovery and reflection are first-class phases, not operator cleanup.
 
 4. **Truth over convenience.**
-   - Keep semantic readiness, policy mergeability, and mechanical GitHub check state distinct.
-   - Never pretend a red check is a semantic blocker if it is a known false-red.
-   - Never pretend a green check means the PR is semantically good if review evidence disagrees.
+   - Keep semantic readiness, verdict state, and mechanical Dagger results
+     distinct.
+   - Never treat a passing Dagger run as proof the change is semantically good
+     if review evidence disagrees.
+   - Never treat a favorable review as enough to land if verification is stale.
 
-## Planning and Workpad Expectations
+## Planning And Workpad Expectations
 
 - Non-trivial work starts with a written plan or workpad.
 - Shape output should leave behind a durable planning artifact such as:
-  - an issue update,
+  - a backlog item update,
   - a repo doc under `docs/plans/`, or
   - a workspace `PLAN.md` when the work is still local to one lane.
-- That plan should capture:
+- That artifact should capture:
   - the problem statement,
   - acceptance criteria,
   - the next bounded implementation slice,
   - open questions or risks.
-- Build, fix, and recover lanes should update that workpad when the plan changes materially instead of silently drifting.
-- Completion notes should record what changed, what was verified, and what remains deferred.
+- Build, fix, and recover lanes should update that artifact when the plan changes
+  materially instead of silently drifting.
+- Completion notes should record what changed, what was verified, and what
+  remains deferred.
 
 ## Phase Contract
 
 ### 1. Shape
 
-**Goal:** Turn a raw issue or prompt into a buildable, reviewable work item.
+**Goal:** Turn a raw prompt, backlog item, or incident into a buildable local
+lane.
 
-**Default worker:** `moss`
+**Default worker:** `weaver`
 
 **Required skill(s):** `shape`, optionally `autopilot`
 
 **Inputs:**
-- `backlog.d/` item or operator request
+- `backlog.d/` item, operator request, or Canary incident
 - `project.md`
-- repo architecture/docs/context
-- related code and tests
+- repo architecture and current code
+- related tests and evidence
 
 **Outputs:**
 - clarified problem statement
-- intent contract
 - acceptance criteria
 - durable plan or workpad reference
-- confidence / uncertainty note
-- updated issue context if needed
+- next bounded implementation slice
+- confidence and uncertainty notes
 
 **Stop conditions:**
 - unresolved product ambiguity remains too high
-- issue is already satisfied or should not route into fresh work
+- the work is already satisfied, superseded, or should not route into a fresh
+  lane
 
 ### 2. Build
 
 **Goal:** Implement the shaped work with bounded scope and verification.
 
-**Default worker:** `bramble`
+**Default worker:** `weaver`
 
-**Required skill(s):** `build`, `pr`
+**Required skill(s):** `autopilot`
 
 **Outputs:**
-- code change in isolated workspace
+- code change in an isolated branch
 - tests and verification evidence
-- PR-ready branch state
+- a branch ready for local review
 
 **Rules:**
 - prefer TDD for non-trivial fixes
@@ -122,109 +130,119 @@ If another document disagrees with this file about execution flow, phases, artif
 
 ### 3. Review
 
-**Goal:** Interpret review surfaces semantically, not mechanically.
+**Goal:** Review semantically and leave a durable local verdict.
 
-**Default worker:** `thorn`
+**Default worker:** `fern`
 
-**Required skill(s):** `pr-walkthrough`, `debug`
+**Required skill(s):** `code-review`
 
 **Outputs:**
-- semantic finding ledger:
-  - active merge-blocking findings
+- a finding ledger:
+  - active land-blocking findings
   - non-blocking suggestions
   - duplicates
   - already addressed findings
   - defer-to-follow-up candidates
+- a verdict ref for the branch
+- evidence under `.evidence/`
 
 **Rules:**
-- unresolved threads are not automatically merge-blocking
+- local review findings matter more than transport metadata
 - duplicate chatter is not new work
 - maintainability nits are not correctness failures by default
 
 ### 4. Fix
 
-**Goal:** Resolve active blocking findings and polish merge-ready work.
+**Goal:** Resolve active blocking findings and restore land-readiness.
 
-**Default worker:** `willow`
+**Default worker:** `thorn`
 
-**Required skill(s):** `pr-fix`, `pr-polish`
+**Required skill(s):** `settle`, `debug`
 
 **Outputs:**
 - addressed blocking findings
-- narrower diff where possible
-- refreshed verification
-- documented follow-up issues for non-blockers worth keeping
+- refreshed verification evidence
+- updated verdict when branch state changed materially
+- documented follow-up work for worthwhile non-blockers
 
-### 5. Merge
+### 5. Land
 
-**Goal:** Merge when policy says merge, not only when GitHub UI happens to be clean.
+**Goal:** Squash-land locally when the branch is semantically ready and Dagger is
+fresh.
 
 **Default worker:** `fern`
 
-**Required skill(s):** `pr`, `autopilot`
+**Required skill(s):** `settle`
 
 **Outputs:**
-- squash merge via CLI
-- run reconciliation
-- durable merge audit trail
+- local squash landing onto the default branch
+- refreshed evidence bundle
+- optional publish step when policy requires a remote update
 
 **Rules:**
-- distinguish:
-  - semantic readiness
-  - policy mergeability
-  - mechanical mergeability
-- known false-reds on trusted surfaces may be waived if:
-  - semantic review is clean
-  - repo-side checks are clean
-  - upstream incident is linked
-  - waiver is recorded in run artifacts or PR comments
+- landing requires a valid verdict ref and fresh Dagger evidence
+- publish only after local landing is complete
+- use repo-native landing surfaces such as `scripts/land.sh`
+- trusted CI runners that execute the Dagger wrapper must set
+  `BB_ALLOW_PRIVILEGED_DAGGER_IN_CI=1`
 
 ### 6. Recover
 
-**Goal:** Handle replay, retriable failures, and external incidents truthfully.
+**Goal:** Handle retriable failures, regressions, and production incidents
+truthfully.
 
-**Default worker:** `foxglove`
+**Default worker:** `tansy`
 
 **Required skill(s):** `debug`, optionally `autopilot`
 
 **Outputs:**
-- classified incident or failure type
-- replay decision, waiver decision, or escalation
+- classified failure or incident
+- replay, rollback, waiver, or escalation decision
 - updated run state with explicit reason
 
 **Failure classes:**
 - transient infra
-- auth/config
+- auth or config
 - semantic code failure
-- flaky check
-- known false-red trusted surface
+- verification failure
+- deploy regression
 - human-policy block
 - unknown
 
-## PR Policy
+### 7. Reflect
 
-Every implementation or remediation lane should converge on exactly one of these outcomes:
-- merge
+**Goal:** Turn completed lanes into harness and backlog improvements.
+
+**Default worker:** `muse`
+
+**Required skill(s):** `reflect`
+
+**Outputs:**
+- retro note
+- backlog updates
+- codification targets for repeated failures or wasted work
+
+## Landing Policy
+
+Every implementation or remediation lane should converge on exactly one of
+these outcomes:
+- land locally
+- defer with a follow-up item
 - close as superseded or already satisfied
-- defer with follow-up issue
-- block with explicit reason
+- block with an explicit reason
 
-Do not leave ambiguous “open but maybe done” lanes behind.
+Do not leave ambiguous "maybe done" branches behind.
 
-## False-Red Policy
+Verdict refs live under `refs/verdicts/<branch>`. Evidence bundles live under
+`.evidence/<branch>/<date>/`.
 
-A trusted external check may be treated as non-blocking when all are true:
-- failure matches a known incident signature
-- upstream issue exists and is open
-- semantic review is clean
-- repo-side checks are green
-- no active merge-blocking findings remain
-
-If policy allows override, merge via CLI and record the waiver rationale.
+Landing requires a fresh `ship` verdict for the exact branch tip. Conditional,
+`dont-ship`, or stale verdicts block `scripts/land.sh`.
 
 ## Operator Notes
 
-- `README.md` explains the product and provisioning surface.
-- `docs/CONDUCTOR.md` explains the kernel/operator runtime.
+- [README.md](README.md) explains the product and provisioning surface.
+- [docs/CONDUCTOR.md](docs/CONDUCTOR.md) explains the kernel and operator
+  runtime.
 - `sprites/*.md` define worker specialization and imported skill packs.
 - This file defines the workflow contract that ties those pieces together.

@@ -9,13 +9,14 @@ You are autonomous. You own your loop. Observe, decide, act.
 
 ## Rules
 
-- Do not lower quality gates to appease CI.
-- Do not force-push or push to main without verification.
-- If work targets deleted/rewritten code, close the PR with explanation.
+- Do not lower quality gates to appease verification.
+- Do not rewrite published history or land the default branch without
+  verification.
+- If work targets deleted or rewritten code, close the lane with explanation.
 - If blocked, write `BLOCKED.md` with the concrete blocker.
 
 ## Skills
 
-Use these as tools — invoke based on what you observe:
+Use these as tools based on what you observe:
 `/autopilot`, `/settle`, `/code-review`, `/debug`, `/shape`, `/reflect`,
-`/gather-pr-context`, `/verify-invariants`
+`/verify-invariants`, `/research`

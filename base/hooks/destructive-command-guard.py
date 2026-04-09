@@ -9,6 +9,7 @@ Git operations are dangerous because they affect shared remote state.
 PreToolUse hook — runs before Bash commands execute.
 """
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -118,6 +119,7 @@ GIT_GLOBAL_FLAGS = {
 }
 
 PUSH_ALL_FLAGS = {"--all", "--mirror"}
+ALLOW_PROTECTED_PUSH_ENV = "BB_ALLOW_PROTECTED_PUSH"
 
 
 def _shell_split(cmd: str) -> list[str]:
@@ -329,12 +331,13 @@ def check_push_protection(cmd: str) -> tuple[bool, str]:
     if args is None:
         return False, ""
 
+    if os.environ.get(ALLOW_PROTECTED_PUSH_ENV) == "1":
+        return False, ""
+
     push_all = next((a for a in _iter_option_args(args) if a in PUSH_ALL_FLAGS), None)
     if push_all:
         return True, (
-            f"{push_all} can update protected branches. Use PR workflow:\n"
-            "  git push origin <feature-branch>\n"
-            "  gh pr create"
+            f"{push_all} can update protected branches. Push an explicit branch instead."
         )
 
     targets = _extract_push_targets(args)
@@ -343,15 +346,15 @@ def check_push_protection(cmd: str) -> tuple[bool, str]:
         if ":" in normalized:
             branch = _normalize_branch_ref(normalized.rsplit(":", 1)[1])
             if branch in PROTECTED_BRANCHES:
-                return True, f"Refspec targeting {branch} blocked. Use PR workflow."
+                return True, (
+                    f"Refspec targeting {branch} blocked. Land locally first, then publish via scripts/land.sh --publish."
+                )
             continue
 
         branch = _normalize_branch_ref(normalized)
         if branch in PROTECTED_BRANCHES:
             return True, (
-                f"Direct push to {branch} blocked. Use PR workflow:\n"
-                "  git push origin <feature-branch>\n"
-                "  gh pr create"
+                f"Direct push to {branch} blocked. Land locally first, then publish via scripts/land.sh --publish."
             )
 
     # On protected branch with bare push
@@ -360,9 +363,7 @@ def check_push_protection(cmd: str) -> tuple[bool, str]:
         if not targets and not _has_push_tags_flag(args):
             return True, (
                 f"On {current}. Direct push blocked.\n"
-                "Switch to feature branch:\n"
-                f"  git checkout -b <feature>\n"
-                "  git push -u origin <feature>"
+                "Use scripts/land.sh --publish after verdict validation and Dagger verification."
             )
 
     return False, ""

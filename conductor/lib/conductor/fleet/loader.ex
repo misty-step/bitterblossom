@@ -6,13 +6,16 @@ defmodule Conductor.Fleet.Loader do
   details. Callers get a list of sprite config maps or a clear error.
   """
 
-  @valid_roles ~w(builder fixer polisher triage)
+  alias Conductor.Workspace
+  @valid_roles ~w(builder fixer polisher triage responder)
   @valid_harnesses ~w(codex claude-code)
   @type sprite_config :: %{
           name: binary(),
           role: atom(),
           org: binary(),
           repo: binary(),
+          clone_url: binary() | nil,
+          default_branch: binary(),
           capability_tags: [binary()],
           harness: binary(),
           model: binary(),
@@ -80,15 +83,16 @@ defmodule Conductor.Fleet.Loader do
   end
 
   defp parse_defaults_map(defaults) do
-    repo = Map.get(defaults, "repo")
-
-    if is_nil(repo) or repo == "" do
-      {:error, "[defaults] must specify 'repo' (e.g. repo = \"org/repo\")"}
-    else
+    with {:ok, repo} <- required_repo(defaults, "[defaults]"),
+         {:ok, clone_url} <- required_clone_url(defaults, "[defaults]"),
+         {:ok, default_branch} <-
+           validate_default_branch(Map.get(defaults, "default_branch", "master"), "[defaults]") do
       {:ok,
        %{
          org: Map.get(defaults, "org", "misty-step"),
          repo: repo,
+         clone_url: clone_url,
+         default_branch: default_branch,
          harness: Map.get(defaults, "harness", "codex"),
          model: Map.get(defaults, "model", "gpt-5.4-mini"),
          reasoning_effort: Map.get(defaults, "reasoning_effort", "medium"),
@@ -132,7 +136,12 @@ defmodule Conductor.Fleet.Loader do
         errors = for {:error, msg} <- results, do: msg
 
         if errors == [] do
-          {:ok, for({:ok, s} <- results, do: s)}
+          parsed = for({:ok, s} <- results, do: s)
+
+          case ensure_single_responder(parsed) do
+            :ok -> {:ok, parsed}
+            {:error, reason} -> {:error, reason}
+          end
         else
           {:error, "sprite validation errors:\n  #{Enum.join(errors, "\n  ")}"}
         end
@@ -181,23 +190,92 @@ defmodule Conductor.Fleet.Loader do
             {:error, "sprite #{name} references unknown persona '#{persona_ref}'"}
 
           true ->
-            {:ok,
-             %{
-               name: name,
-               role: String.to_atom(role_str),
-               org: raw_sprite["org"] || defaults.org,
-               repo: raw_sprite["repo"] || defaults.repo,
-               capability_tags: capability_tags,
-               harness: harness,
-               model: raw_sprite["model"] || defaults.model,
-               reasoning_effort: raw_sprite["reasoning_effort"] || defaults.reasoning_effort,
-               label: raw_sprite["label"] || defaults.label,
-               persona: persona || personas[persona_ref]
-             }}
+            repo = raw_sprite["repo"] || defaults.repo
+            clone_url = raw_sprite["clone_url"] || defaults.clone_url
+
+            with {:ok, validated_repo} <- validate_repo(repo, "sprite #{name}"),
+                 {:ok, validated_clone_url} <- validate_clone_url(clone_url, "sprite #{name}"),
+                 {:ok, validated_default_branch} <-
+                   validate_default_branch(
+                     raw_sprite["default_branch"] || defaults.default_branch,
+                     "sprite #{name}"
+                   ) do
+              {:ok,
+               %{
+                 name: name,
+                 role: String.to_atom(role_str),
+                 org: raw_sprite["org"] || defaults.org,
+                 repo: validated_repo,
+                 clone_url: validated_clone_url,
+                 default_branch: validated_default_branch,
+                 capability_tags: capability_tags,
+                 harness: harness,
+                 model: raw_sprite["model"] || defaults.model,
+                 reasoning_effort: raw_sprite["reasoning_effort"] || defaults.reasoning_effort,
+                 label: raw_sprite["label"] || defaults.label,
+                 persona: persona || personas[persona_ref]
+               }}
+            end
         end
     end
   end
 
   defp valid_capability_tags?(tags) when is_list(tags), do: Enum.all?(tags, &is_binary/1)
   defp valid_capability_tags?(_), do: false
+
+  defp required_repo(map, scope) do
+    case Map.get(map, "repo") do
+      repo when is_binary(repo) and repo != "" ->
+        validate_repo(repo, scope)
+
+      _ ->
+        {:error, "#{scope} must specify 'repo' (e.g. repo = \"service/bitterblossom\")"}
+    end
+  end
+
+  defp required_clone_url(map, scope) do
+    case Map.get(map, "clone_url") do
+      clone_url when is_binary(clone_url) and clone_url != "" ->
+        {:ok, clone_url}
+
+      _ ->
+        {:error, "#{scope} must specify 'clone_url' (the explicit transport remote)"}
+    end
+  end
+
+  defp validate_repo(repo, scope) do
+    case Workspace.validate_repo(repo) do
+      :ok -> {:ok, repo}
+      {:error, :invalid_repo} -> {:error, "#{scope} has invalid repo '#{repo}'"}
+    end
+  end
+
+  defp validate_clone_url(clone_url, _scope) when is_binary(clone_url) and clone_url != "" do
+    {:ok, clone_url}
+  end
+
+  defp validate_clone_url(_clone_url, scope) do
+    {:error, "#{scope} must set clone_url explicitly"}
+  end
+
+  defp validate_default_branch(branch, scope) when is_binary(branch) do
+    case Workspace.validate_branch(branch) do
+      :ok -> {:ok, branch}
+      {:error, :invalid_branch} -> {:error, "#{scope} has invalid default_branch '#{branch}'"}
+    end
+  end
+
+  defp validate_default_branch(branch, scope) do
+    {:error, "#{scope} has invalid default_branch '#{inspect(branch)}'"}
+  end
+
+  defp ensure_single_responder(sprites) do
+    responders = Enum.filter(sprites, &(&1.role == :responder))
+
+    case responders do
+      [_single] -> :ok
+      [] -> :ok
+      many -> {:error, "fleet.toml v1 supports only one responder sprite, found #{length(many)}"}
+    end
+  end
 end

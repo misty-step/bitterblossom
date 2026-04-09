@@ -15,6 +15,7 @@ Run:
 """
 
 import json
+import os
 import pytest
 import re
 import shutil
@@ -54,6 +55,48 @@ LIVE_REFERENCE_SURFACES = (
     REPO_ROOT / "docs" / "architecture" / "skills.md",
     REPO_ROOT / "docs" / "adr" / "002-architecture-minimalism.md",
 )
+
+
+def _run(cmd: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        cmd,
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def _init_temp_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    for cmd in (
+        ["git", "init", "-b", "main"],
+        ["git", "config", "user.name", "Bitterblossom Tests"],
+        ["git", "config", "user.email", "tests@example.com"],
+    ):
+        result = _run(cmd, repo)
+        assert result.returncode == 0, result.stderr
+
+    return repo
+
+
+def _commit_file(repo: Path, relative_path: str, content: str, message: str) -> None:
+    path = repo / relative_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+
+    for cmd in (["git", "add", relative_path], ["git", "commit", "-m", message]):
+        result = _run(cmd, repo)
+        assert result.returncode == 0, result.stderr
+
+
+def _copy_script(repo: Path, source: Path, destination: str) -> None:
+    target = repo / destination
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
+    target.chmod(0o755)
 
 
 def _load_settings_profile() -> str:
@@ -202,6 +245,947 @@ def test_make_test_succeeds_from_clean_checkout_state():
     print("[ok] make test: succeeds from a clean conductor checkout state")
 
 
+def test_verdict_validate_requires_ship_by_default(tmp_path: Path):
+    """verdict_validate should reject non-ship verdicts unless explicitly allowed."""
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed in this environment")
+
+    repo = _init_temp_repo(tmp_path)
+    _commit_file(repo, "README.md", "main\n", "chore: seed repo")
+
+    result = _run(["git", "checkout", "-b", "feature"], repo)
+    assert result.returncode == 0, result.stderr
+    _commit_file(repo, "README.md", "feature\n", "feat: update readme")
+
+    verdicts = REPO_ROOT / "scripts" / "lib" / "verdicts.sh"
+    head_sha = _run(["git", "rev-parse", "feature"], repo).stdout.strip()
+
+    dont_ship = json.dumps(
+        {
+            "branch": "feature",
+            "base": "main",
+            "verdict": "dont-ship",
+            "reviewers": ["gemini"],
+            "scores": {"correctness": 2},
+            "sha": head_sha,
+            "date": "2026-04-08T23:59:00Z",
+        }
+    )
+
+    result = _run(
+        [
+            "bash",
+            "-lc",
+            f"source {verdicts} && verdict_write feature '{dont_ship}' >/dev/null && verdict_validate feature",
+        ],
+        repo,
+    )
+    assert result.returncode != 0
+    assert "verdict dont-ship is not allowed" in (result.stdout + result.stderr)
+
+    ship = json.dumps(
+        {
+            "branch": "feature",
+            "base": "main",
+            "verdict": "ship",
+            "reviewers": ["gemini"],
+            "scores": {"correctness": 9},
+            "sha": head_sha,
+            "date": "2026-04-08T23:59:10Z",
+        }
+    )
+
+    result = _run(
+        [
+            "bash",
+            "-lc",
+            f"source {verdicts} && verdict_write feature '{ship}' >/dev/null && verdict_validate feature",
+        ],
+        repo,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_land_script_blocks_non_ship_verdicts_before_merge(tmp_path: Path):
+    """scripts/land.sh must refuse to land branches with non-ship verdicts."""
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed in this environment")
+
+    repo = _init_temp_repo(tmp_path)
+    _copy_script(repo, REPO_ROOT / "scripts" / "land.sh", "scripts/land.sh")
+    _copy_script(repo, REPO_ROOT / "scripts" / "lib" / "verdicts.sh", "scripts/lib/verdicts.sh")
+
+    dagger_stub = repo / "scripts" / "ci" / "dagger-call.sh"
+    dagger_stub.parent.mkdir(parents=True, exist_ok=True)
+    dagger_stub.write_text("#!/usr/bin/env bash\nexit 0\n")
+    dagger_stub.chmod(0o755)
+
+    _commit_file(repo, "README.md", "main\n", "chore: seed repo")
+    _commit_file(repo, "scripts/land.sh", (repo / "scripts" / "land.sh").read_text(), "chore: add land script")
+    _commit_file(
+        repo,
+        "scripts/lib/verdicts.sh",
+        (repo / "scripts" / "lib" / "verdicts.sh").read_text(),
+        "chore: add verdict helpers",
+    )
+    _commit_file(
+        repo,
+        "scripts/ci/dagger-call.sh",
+        dagger_stub.read_text(),
+        "chore: add dagger stub",
+    )
+
+    result = _run(["git", "checkout", "-b", "feature"], repo)
+    assert result.returncode == 0, result.stderr
+    _commit_file(repo, "app.txt", "feature\n", "feat: change app")
+
+    verdicts = repo / "scripts" / "lib" / "verdicts.sh"
+    head_sha = _run(["git", "rev-parse", "feature"], repo).stdout.strip()
+    payload = json.dumps(
+        {
+            "branch": "feature",
+            "base": "main",
+            "verdict": "dont-ship",
+            "reviewers": ["gemini"],
+            "scores": {"correctness": 2},
+            "sha": head_sha,
+            "date": "2026-04-08T23:59:20Z",
+        }
+    )
+
+    result = _run(
+        [
+            "bash",
+            "-lc",
+            f"source {verdicts} && verdict_write feature '{payload}' >/dev/null && bash scripts/land.sh feature",
+        ],
+        repo,
+    )
+    assert result.returncode != 0
+    assert "verdict dont-ship is not allowed" in (result.stdout + result.stderr)
+
+
+def test_verdict_validate_rejects_symbolic_revisions(tmp_path: Path):
+    """verdict validation must anchor to a local branch ref, not a moving symbolic rev."""
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed in this environment")
+
+    repo = _init_temp_repo(tmp_path)
+    _commit_file(repo, "README.md", "main\n", "chore: seed repo")
+
+    result = _run(["git", "checkout", "-b", "feature"], repo)
+    assert result.returncode == 0, result.stderr
+    _commit_file(repo, "README.md", "feature\n", "feat: update readme")
+
+    verdicts = REPO_ROOT / "scripts" / "lib" / "verdicts.sh"
+    head_sha = _run(["git", "rev-parse", "feature"], repo).stdout.strip()
+    payload = json.dumps(
+        {
+            "branch": "HEAD",
+            "base": "main",
+            "verdict": "ship",
+            "reviewers": ["internal-bench"],
+            "scores": {"correctness": 9},
+            "sha": head_sha,
+            "date": "2026-04-09T00:00:30Z",
+        }
+    )
+
+    result = _run(
+        [
+            "bash",
+            "-lc",
+            f"source {verdicts} && verdict_write HEAD '{payload}' >/dev/null && verdict_validate HEAD",
+        ],
+        repo,
+    )
+    assert result.returncode != 0
+    assert "unknown local branch: HEAD" in (result.stdout + result.stderr)
+
+
+def test_land_script_verifies_the_merge_candidate(tmp_path: Path):
+    """scripts/land.sh must verify the squashed merge result, not just the feature tip."""
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed in this environment")
+
+    repo = _init_temp_repo(tmp_path)
+    _copy_script(repo, REPO_ROOT / "scripts" / "land.sh", "scripts/land.sh")
+    _copy_script(repo, REPO_ROOT / "scripts" / "lib" / "verdicts.sh", "scripts/lib/verdicts.sh")
+
+    dagger_stub = repo / "scripts" / "ci" / "dagger-call.sh"
+    dagger_stub.parent.mkdir(parents=True, exist_ok=True)
+    dagger_stub.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+common_dir="$(git rev-parse --git-common-dir)"
+if [[ "$(cat README.md)" != "main" ]]; then
+  echo "expected verification to run from the default-branch base" >&2
+  exit 1
+fi
+if [[ "$(cat app.txt)" != "feature" ]]; then
+  echo "expected squashed feature content in verification worktree" >&2
+  exit 1
+fi
+if [[ "$(cat base.txt)" != "main-base" ]]; then
+  echo "expected latest default-branch content in verification worktree" >&2
+  exit 1
+fi
+printf 'ok\n' > "$common_dir/verified-merge.txt"
+"""
+    )
+    dagger_stub.chmod(0o755)
+
+    _commit_file(repo, "README.md", "main\n", "chore: seed repo")
+    _commit_file(repo, "scripts/land.sh", (repo / "scripts" / "land.sh").read_text(), "chore: add land script")
+    _commit_file(
+        repo,
+        "scripts/lib/verdicts.sh",
+        (repo / "scripts" / "lib" / "verdicts.sh").read_text(),
+        "chore: add verdict helpers",
+    )
+    _commit_file(
+        repo,
+        "scripts/ci/dagger-call.sh",
+        dagger_stub.read_text(),
+        "chore: add dagger stub",
+    )
+
+    result = _run(["git", "checkout", "-b", "feature"], repo)
+    assert result.returncode == 0, result.stderr
+    _commit_file(repo, "app.txt", "feature\n", "feat: change app")
+    result = _run(["git", "checkout", "main"], repo)
+    assert result.returncode == 0, result.stderr
+    _commit_file(repo, "base.txt", "main-base\n", "chore: advance base")
+    result = _run(["git", "checkout", "feature"], repo)
+    assert result.returncode == 0, result.stderr
+
+    head_sha = _run(["git", "rev-parse", "feature"], repo).stdout.strip()
+    payload = json.dumps(
+        {
+            "branch": "feature",
+            "base": "main",
+            "verdict": "ship",
+            "reviewers": ["internal-bench"],
+            "scores": {"correctness": 9},
+            "sha": head_sha,
+            "date": "2026-04-08T23:59:30Z",
+        }
+    )
+
+    verdicts = repo / "scripts" / "lib" / "verdicts.sh"
+    result = _run(["git", "checkout", "main"], repo)
+    assert result.returncode == 0, result.stderr
+
+    result = _run(
+        [
+            "bash",
+            "-lc",
+            f"source {verdicts} && verdict_write feature '{payload}' >/dev/null && bash scripts/land.sh feature",
+        ],
+        repo,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (repo / ".git" / "verified-merge.txt").read_text().strip() == "ok"
+    assert _run(["git", "show", "main:app.txt"], repo).stdout.strip() == "feature"
+
+
+def test_dagger_wrapper_declares_trusted_ci_override():
+    """The Dagger wrapper must gate privileged CI usage behind an explicit override."""
+    wrapper = (REPO_ROOT / "scripts" / "ci" / "dagger-call.sh").read_text()
+    assert "BB_ALLOW_PRIVILEGED_DAGGER_IN_CI" in wrapper
+
+
+def test_dagger_wrapper_includes_untracked_files_and_engine_config(tmp_path: Path):
+    """The wrapper must pass untracked files and the repo engine config into dagger."""
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed in this environment")
+
+    repo = _init_temp_repo(tmp_path)
+    _copy_script(repo, REPO_ROOT / "scripts" / "ci" / "dagger-call.sh", "scripts/ci/dagger-call.sh")
+    (repo / "dagger").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(REPO_ROOT / "dagger" / "engine.json", repo / "dagger" / "engine.json")
+    _commit_file(repo, "tracked.txt", "tracked\n", "chore: seed repo")
+
+    (repo / "untracked.txt").write_text("untracked\n")
+
+    bin_dir = repo / "bin"
+    bin_dir.mkdir()
+
+    (bin_dir / "docker").write_text("#!/usr/bin/env bash\nexit 0\n")
+    (bin_dir / "rsync").write_text(
+        """#!/usr/bin/env python3
+import pathlib
+import shutil
+import sys
+
+source_root = pathlib.Path(sys.argv[-2]).resolve()
+dest_root = pathlib.Path(sys.argv[-1]).resolve()
+
+data = sys.stdin.buffer.read().split(b"\\0")
+for raw in data:
+    if not raw:
+        continue
+    relative = raw.decode()
+    source = source_root / relative
+    destination = dest_root / relative
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+"""
+    )
+    (bin_dir / "dagger").write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ ! -f "$PWD/untracked.txt" ]]; then
+  echo "missing untracked file in snapshot" >&2
+  exit 1
+fi
+if [[ ! -f "$XDG_CONFIG_HOME/dagger/engine.json" ]]; then
+  echo "missing engine config" >&2
+  exit 1
+fi
+"""
+    )
+
+    for executable in ("docker", "rsync", "dagger"):
+        (bin_dir / executable).chmod(0o755)
+
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+
+    result = subprocess.run(
+        ["bash", "scripts/ci/dagger-call.sh", "check"],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_dagger_wrapper_falls_back_to_reachable_docker_context(tmp_path: Path):
+    """The wrapper should switch contexts only when the operator opts into a fallback."""
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed in this environment")
+
+    repo = _init_temp_repo(tmp_path)
+    _copy_script(repo, REPO_ROOT / "scripts" / "ci" / "dagger-call.sh", "scripts/ci/dagger-call.sh")
+    (repo / "dagger").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(REPO_ROOT / "dagger" / "engine.json", repo / "dagger" / "engine.json")
+    _commit_file(repo, "tracked.txt", "tracked\n", "chore: seed repo")
+
+    bin_dir = repo / "bin"
+    bin_dir.mkdir()
+
+    (bin_dir / "docker").write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "context" && "${2:-}" == "show" ]]; then
+  printf 'desktop-linux\\n'
+  exit 0
+fi
+if [[ "${1:-}" == "context" && "${2:-}" == "ls" ]]; then
+  printf 'desktop-linux\\ncolima\\n'
+  exit 0
+fi
+if [[ "${1:-}" == "version" ]]; then
+  if [[ "${DOCKER_CONTEXT:-desktop-linux}" == "colima" ]]; then
+    exit 0
+  fi
+  echo "dead context" >&2
+  exit 1
+fi
+exit 0
+"""
+    )
+    (bin_dir / "rsync").write_text(
+        """#!/usr/bin/env python3
+import pathlib
+import shutil
+import sys
+
+source_root = pathlib.Path(sys.argv[-2]).resolve()
+dest_root = pathlib.Path(sys.argv[-1]).resolve()
+
+data = sys.stdin.buffer.read().split(b"\\0")
+for raw in data:
+    if not raw:
+        continue
+    relative = raw.decode()
+    source = source_root / relative
+    destination = dest_root / relative
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+"""
+    )
+    (bin_dir / "dagger").write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${DOCKER_CONTEXT:-}" != "colima" ]]; then
+  echo "expected colima fallback, got ${DOCKER_CONTEXT:-<unset>}" >&2
+  exit 1
+fi
+"""
+    )
+
+    for executable in ("docker", "rsync", "dagger"):
+        (bin_dir / executable).chmod(0o755)
+
+    git_dir = str(Path(shutil.which("git")).parent)
+    env = {"PATH": f"{bin_dir}:{git_dir}:/usr/bin:/bin"}
+    env.pop("DOCKER_CONTEXT", None)
+    env.pop("DOCKER_HOST", None)
+    env["BB_DOCKER_CONTEXT_FALLBACK"] = "colima"
+
+    result = subprocess.run(
+        ["bash", "scripts/ci/dagger-call.sh", "check"],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "using explicit fallback colima" in (result.stdout + result.stderr)
+
+
+def test_dagger_wrapper_fails_closed_without_explicit_docker_context_fallback(tmp_path: Path):
+    """The wrapper must not silently switch Docker contexts when the current one is down."""
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed in this environment")
+
+    repo = _init_temp_repo(tmp_path)
+    _copy_script(repo, REPO_ROOT / "scripts" / "ci" / "dagger-call.sh", "scripts/ci/dagger-call.sh")
+    (repo / "dagger").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(REPO_ROOT / "dagger" / "engine.json", repo / "dagger" / "engine.json")
+    _commit_file(repo, "tracked.txt", "tracked\n", "chore: seed repo")
+
+    bin_dir = repo / "bin"
+    bin_dir.mkdir()
+
+    (bin_dir / "docker").write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "context" && "${2:-}" == "show" ]]; then
+  printf 'desktop-linux\\n'
+  exit 0
+fi
+if [[ "${1:-}" == "context" && "${2:-}" == "ls" ]]; then
+  printf 'desktop-linux\\ncolima\\n'
+  exit 0
+fi
+if [[ "${1:-}" == "version" ]]; then
+  if [[ "${DOCKER_CONTEXT:-desktop-linux}" == "colima" ]]; then
+    exit 0
+  fi
+  echo "dead context" >&2
+  exit 1
+fi
+exit 0
+"""
+    )
+    (bin_dir / "rsync").write_text(
+        """#!/usr/bin/env python3
+import pathlib
+import shutil
+import sys
+
+source_root = pathlib.Path(sys.argv[-2]).resolve()
+dest_root = pathlib.Path(sys.argv[-1]).resolve()
+
+data = sys.stdin.buffer.read().split(b"\\0")
+for raw in data:
+    if not raw:
+        continue
+    relative = raw.decode()
+    source = source_root / relative
+    destination = dest_root / relative
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+"""
+    )
+    (bin_dir / "dagger").write_text("#!/usr/bin/env bash\nexit 0\n")
+
+    for executable in ("docker", "rsync", "dagger"):
+        (bin_dir / executable).chmod(0o755)
+
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env.pop("DOCKER_CONTEXT", None)
+    env.pop("DOCKER_HOST", None)
+    env.pop("BB_DOCKER_CONTEXT_FALLBACK", None)
+
+    result = subprocess.run(
+        ["bash", "scripts/ci/dagger-call.sh", "check"],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+    assert result.returncode != 0
+    assert "set BB_DOCKER_CONTEXT_FALLBACK=<context>" in (result.stdout + result.stderr)
+
+
+def test_dagger_wrapper_uses_colima_shim_when_docker_cli_is_missing(tmp_path: Path):
+    """The wrapper should synthesize a docker CLI via Colima when PATH has no docker binary."""
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed in this environment")
+
+    repo = _init_temp_repo(tmp_path)
+    _copy_script(repo, REPO_ROOT / "scripts" / "ci" / "dagger-call.sh", "scripts/ci/dagger-call.sh")
+    (repo / "dagger").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(REPO_ROOT / "dagger" / "engine.json", repo / "dagger" / "engine.json")
+    _commit_file(repo, "tracked.txt", "tracked\n", "chore: seed repo")
+
+    bin_dir = repo / "bin"
+    bin_dir.mkdir()
+
+    (bin_dir / "colima").write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "status" ]]; then
+  exit 0
+fi
+if [[ "${1:-}" == "ssh" && "${2:-}" == "--" && "${3:-}" == "docker" ]]; then
+  exit 0
+fi
+exit 1
+"""
+    )
+    (bin_dir / "rsync").write_text(
+        """#!/usr/bin/env python3
+import pathlib
+import shutil
+import sys
+
+source_root = pathlib.Path(sys.argv[-2]).resolve()
+dest_root = pathlib.Path(sys.argv[-1]).resolve()
+
+data = sys.stdin.buffer.read().split(b"\\0")
+for raw in data:
+    if not raw:
+        continue
+    relative = raw.decode()
+    source = source_root / relative
+    destination = dest_root / relative
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+"""
+    )
+    (bin_dir / "dagger").write_text("#!/usr/bin/env bash\nexit 0\n")
+
+    for executable in ("colima", "rsync", "dagger"):
+        (bin_dir / executable).chmod(0o755)
+
+    git_dir = str(Path(shutil.which("git")).parent)
+    env = {"PATH": f"{bin_dir}:{git_dir}:/usr/bin:/bin"}
+    env.pop("DOCKER_CONTEXT", None)
+    env.pop("DOCKER_HOST", None)
+
+    result = subprocess.run(
+        ["bash", "scripts/ci/dagger-call.sh", "check"],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "using Colima docker shim" in (result.stdout + result.stderr)
+
+
+def test_land_script_rejects_symbolic_revisions_as_branch_arguments(tmp_path: Path):
+    """scripts/land.sh must only accept real local branch names for landing."""
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed in this environment")
+
+    repo = _init_temp_repo(tmp_path)
+    _copy_script(repo, REPO_ROOT / "scripts" / "land.sh", "scripts/land.sh")
+    _copy_script(repo, REPO_ROOT / "scripts" / "lib" / "verdicts.sh", "scripts/lib/verdicts.sh")
+
+    dagger_stub = repo / "scripts" / "ci" / "dagger-call.sh"
+    dagger_stub.parent.mkdir(parents=True, exist_ok=True)
+    dagger_stub.write_text("#!/usr/bin/env bash\nexit 0\n")
+    dagger_stub.chmod(0o755)
+
+    _commit_file(repo, "README.md", "main\n", "chore: seed repo")
+    _commit_file(repo, "scripts/land.sh", (repo / "scripts" / "land.sh").read_text(), "chore: add land script")
+    _commit_file(
+        repo,
+        "scripts/lib/verdicts.sh",
+        (repo / "scripts" / "lib" / "verdicts.sh").read_text(),
+        "chore: add verdict helpers",
+    )
+    _commit_file(
+        repo,
+        "scripts/ci/dagger-call.sh",
+        dagger_stub.read_text(),
+        "chore: add dagger stub",
+    )
+
+    result = _run(["git", "checkout", "-b", "feature"], repo)
+    assert result.returncode == 0, result.stderr
+    _commit_file(repo, "app.txt", "feature\n", "feat: change app")
+
+    head_sha = _run(["git", "rev-parse", "feature"], repo).stdout.strip()
+    payload = json.dumps(
+        {
+            "branch": "feature",
+            "base": "main",
+            "verdict": "ship",
+            "reviewers": ["internal-bench"],
+            "scores": {"correctness": 9},
+            "sha": head_sha,
+            "date": "2026-04-09T00:00:40Z",
+        }
+    )
+
+    verdicts = repo / "scripts" / "lib" / "verdicts.sh"
+    result = _run(
+        [
+            "bash",
+            "-lc",
+            f"source {verdicts} && verdict_write feature '{payload}' >/dev/null && bash scripts/land.sh HEAD",
+        ],
+        repo,
+    )
+    assert result.returncode != 0
+    assert "unknown local branch: HEAD" in (result.stdout + result.stderr)
+
+
+def test_land_script_prefers_origin_head_over_stale_local_branch_names(tmp_path: Path):
+    """scripts/land.sh must land into the branch named by origin/HEAD when available."""
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed in this environment")
+
+    repo = _init_temp_repo(tmp_path)
+    _copy_script(repo, REPO_ROOT / "scripts" / "land.sh", "scripts/land.sh")
+    _copy_script(repo, REPO_ROOT / "scripts" / "lib" / "verdicts.sh", "scripts/lib/verdicts.sh")
+
+    dagger_stub = repo / "scripts" / "ci" / "dagger-call.sh"
+    dagger_stub.parent.mkdir(parents=True, exist_ok=True)
+    dagger_stub.write_text("#!/usr/bin/env bash\nexit 0\n")
+    dagger_stub.chmod(0o755)
+
+    _commit_file(repo, "README.md", "main\n", "chore: seed repo")
+    _commit_file(repo, "scripts/land.sh", (repo / "scripts" / "land.sh").read_text(), "chore: add land script")
+    _commit_file(
+        repo,
+        "scripts/lib/verdicts.sh",
+        (repo / "scripts" / "lib" / "verdicts.sh").read_text(),
+        "chore: add verdict helpers",
+    )
+    _commit_file(
+        repo,
+        "scripts/ci/dagger-call.sh",
+        dagger_stub.read_text(),
+        "chore: add dagger stub",
+    )
+
+    result = _run(["git", "branch", "master"], repo)
+    assert result.returncode == 0, result.stderr
+    result = _run(["git", "update-ref", "refs/remotes/origin/main", "main"], repo)
+    assert result.returncode == 0, result.stderr
+    result = _run(["git", "update-ref", "refs/remotes/origin/master", "master"], repo)
+    assert result.returncode == 0, result.stderr
+    result = _run(["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"], repo)
+    assert result.returncode == 0, result.stderr
+
+    result = _run(["git", "checkout", "-b", "feature"], repo)
+    assert result.returncode == 0, result.stderr
+    _commit_file(repo, "app.txt", "feature\n", "feat: change app")
+
+    head_sha = _run(["git", "rev-parse", "feature"], repo).stdout.strip()
+    payload = json.dumps(
+        {
+            "branch": "feature",
+            "base": "main",
+            "verdict": "ship",
+            "reviewers": ["internal-bench"],
+            "scores": {"correctness": 9},
+            "sha": head_sha,
+            "date": "2026-04-09T00:00:00Z",
+        }
+    )
+
+    verdicts = repo / "scripts" / "lib" / "verdicts.sh"
+    result = _run(["git", "checkout", "main"], repo)
+    assert result.returncode == 0, result.stderr
+
+    result = _run(
+        [
+            "bash",
+            "-lc",
+            f"source {verdicts} && verdict_write feature '{payload}' >/dev/null && bash scripts/land.sh feature",
+        ],
+        repo,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _run(["git", "show", "main:app.txt"], repo).stdout.strip() == "feature"
+    assert _run(["git", "show", "master:app.txt"], repo).returncode != 0
+
+
+def test_land_script_prefers_main_over_master_without_origin_head(tmp_path: Path):
+    """scripts/land.sh must prefer local main over master when origin/HEAD is absent."""
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed in this environment")
+
+    repo = _init_temp_repo(tmp_path)
+    _copy_script(repo, REPO_ROOT / "scripts" / "land.sh", "scripts/land.sh")
+    _copy_script(repo, REPO_ROOT / "scripts" / "lib" / "verdicts.sh", "scripts/lib/verdicts.sh")
+
+    dagger_stub = repo / "scripts" / "ci" / "dagger-call.sh"
+    dagger_stub.parent.mkdir(parents=True, exist_ok=True)
+    dagger_stub.write_text("#!/usr/bin/env bash\nexit 0\n")
+    dagger_stub.chmod(0o755)
+
+    _commit_file(repo, "README.md", "main\n", "chore: seed repo")
+    _commit_file(repo, "scripts/land.sh", (repo / "scripts" / "land.sh").read_text(), "chore: add land script")
+    _commit_file(
+        repo,
+        "scripts/lib/verdicts.sh",
+        (repo / "scripts" / "lib" / "verdicts.sh").read_text(),
+        "chore: add verdict helpers",
+    )
+    _commit_file(
+        repo,
+        "scripts/ci/dagger-call.sh",
+        dagger_stub.read_text(),
+        "chore: add dagger stub",
+    )
+
+    result = _run(["git", "branch", "master"], repo)
+    assert result.returncode == 0, result.stderr
+
+    result = _run(["git", "checkout", "-b", "feature"], repo)
+    assert result.returncode == 0, result.stderr
+    _commit_file(repo, "app.txt", "feature\n", "feat: change app")
+
+    head_sha = _run(["git", "rev-parse", "feature"], repo).stdout.strip()
+    payload = json.dumps(
+        {
+            "branch": "feature",
+            "base": "main",
+            "verdict": "ship",
+            "reviewers": ["internal-bench"],
+            "scores": {"correctness": 9},
+            "sha": head_sha,
+            "date": "2026-04-09T00:01:00Z",
+        }
+    )
+
+    verdicts = repo / "scripts" / "lib" / "verdicts.sh"
+    result = _run(["git", "checkout", "main"], repo)
+    assert result.returncode == 0, result.stderr
+
+    result = _run(
+        [
+            "bash",
+            "-lc",
+            f"source {verdicts} && verdict_write feature '{payload}' >/dev/null && bash scripts/land.sh feature",
+        ],
+        repo,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _run(["git", "show", "main:app.txt"], repo).stdout.strip() == "feature"
+    assert _run(["git", "show", "master:app.txt"], repo).returncode != 0
+
+
+def test_land_script_requires_sync_origin_before_fetching_origin(tmp_path: Path):
+    """scripts/land.sh should not require a reachable origin in default local-first mode."""
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed in this environment")
+
+    repo = _init_temp_repo(tmp_path)
+    _copy_script(repo, REPO_ROOT / "scripts" / "land.sh", "scripts/land.sh")
+    _copy_script(repo, REPO_ROOT / "scripts" / "lib" / "verdicts.sh", "scripts/lib/verdicts.sh")
+
+    dagger_stub = repo / "scripts" / "ci" / "dagger-call.sh"
+    dagger_stub.parent.mkdir(parents=True, exist_ok=True)
+    dagger_stub.write_text("#!/usr/bin/env bash\nexit 0\n")
+    dagger_stub.chmod(0o755)
+
+    _commit_file(repo, "README.md", "main\n", "chore: seed repo")
+    _commit_file(repo, "scripts/land.sh", (repo / "scripts" / "land.sh").read_text(), "chore: add land script")
+    _commit_file(
+        repo,
+        "scripts/lib/verdicts.sh",
+        (repo / "scripts" / "lib" / "verdicts.sh").read_text(),
+        "chore: add verdict helpers",
+    )
+    _commit_file(
+        repo,
+        "scripts/ci/dagger-call.sh",
+        dagger_stub.read_text(),
+        "chore: add dagger stub",
+    )
+
+    result = _run(["git", "remote", "add", "origin", "https://git.example.com/test/repo.git"], repo)
+    assert result.returncode == 0, result.stderr
+
+    result = _run(["git", "checkout", "-b", "feature"], repo)
+    assert result.returncode == 0, result.stderr
+    _commit_file(repo, "app.txt", "feature\n", "feat: change app")
+
+    head_sha = _run(["git", "rev-parse", "feature"], repo).stdout.strip()
+    payload = json.dumps(
+        {
+            "branch": "feature",
+            "base": "main",
+            "verdict": "ship",
+            "reviewers": ["internal-bench"],
+            "scores": {"correctness": 9},
+            "sha": head_sha,
+            "date": "2026-04-09T00:01:10Z",
+        }
+    )
+
+    verdicts = repo / "scripts" / "lib" / "verdicts.sh"
+    result = _run(["git", "checkout", "main"], repo)
+    assert result.returncode == 0, result.stderr
+
+    result = _run(
+        [
+            "bash",
+            "-lc",
+            f"source {verdicts} && verdict_write feature '{payload}' >/dev/null && bash scripts/land.sh feature",
+        ],
+        repo,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_land_script_sync_origin_fails_closed_on_fetch_errors(tmp_path: Path):
+    """scripts/land.sh --sync-origin must fail closed when origin fetch fails."""
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed in this environment")
+
+    repo = _init_temp_repo(tmp_path)
+    _copy_script(repo, REPO_ROOT / "scripts" / "land.sh", "scripts/land.sh")
+    _copy_script(repo, REPO_ROOT / "scripts" / "lib" / "verdicts.sh", "scripts/lib/verdicts.sh")
+
+    dagger_stub = repo / "scripts" / "ci" / "dagger-call.sh"
+    dagger_stub.parent.mkdir(parents=True, exist_ok=True)
+    dagger_stub.write_text("#!/usr/bin/env bash\nexit 0\n")
+    dagger_stub.chmod(0o755)
+
+    _commit_file(repo, "README.md", "main\n", "chore: seed repo")
+    _commit_file(repo, "scripts/land.sh", (repo / "scripts" / "land.sh").read_text(), "chore: add land script")
+    _commit_file(
+        repo,
+        "scripts/lib/verdicts.sh",
+        (repo / "scripts" / "lib" / "verdicts.sh").read_text(),
+        "chore: add verdict helpers",
+    )
+    _commit_file(
+        repo,
+        "scripts/ci/dagger-call.sh",
+        dagger_stub.read_text(),
+        "chore: add dagger stub",
+    )
+
+    result = _run(["git", "remote", "add", "origin", "https://git.example.com/test/repo.git"], repo)
+    assert result.returncode == 0, result.stderr
+
+    result = _run(["git", "checkout", "-b", "feature"], repo)
+    assert result.returncode == 0, result.stderr
+    _commit_file(repo, "app.txt", "feature\n", "feat: change app")
+
+    head_sha = _run(["git", "rev-parse", "feature"], repo).stdout.strip()
+    payload = json.dumps(
+        {
+            "branch": "feature",
+            "base": "main",
+            "verdict": "ship",
+            "reviewers": ["internal-bench"],
+            "scores": {"correctness": 9},
+            "sha": head_sha,
+            "date": "2026-04-09T00:01:20Z",
+        }
+    )
+
+    verdicts = repo / "scripts" / "lib" / "verdicts.sh"
+    result = _run(["git", "checkout", "main"], repo)
+    assert result.returncode == 0, result.stderr
+
+    result = _run(
+        [
+            "bash",
+            "-lc",
+            f"source {verdicts} && verdict_write feature '{payload}' >/dev/null && bash scripts/land.sh feature --sync-origin",
+        ],
+        repo,
+    )
+    assert result.returncode != 0
+    assert "failed to fetch origin before landing" in (result.stdout + result.stderr)
+    assert _run(["git", "show", "main:app.txt"], repo).returncode != 0
+
+
+def test_land_script_publish_fails_before_mutating_without_origin(tmp_path: Path):
+    """scripts/land.sh --publish must fail before the squash commit when no origin exists."""
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed in this environment")
+
+    repo = _init_temp_repo(tmp_path)
+    _copy_script(repo, REPO_ROOT / "scripts" / "land.sh", "scripts/land.sh")
+    _copy_script(repo, REPO_ROOT / "scripts" / "lib" / "verdicts.sh", "scripts/lib/verdicts.sh")
+
+    dagger_stub = repo / "scripts" / "ci" / "dagger-call.sh"
+    dagger_stub.parent.mkdir(parents=True, exist_ok=True)
+    dagger_stub.write_text("#!/usr/bin/env bash\nexit 0\n")
+    dagger_stub.chmod(0o755)
+
+    _commit_file(repo, "README.md", "main\n", "chore: seed repo")
+    _commit_file(repo, "scripts/land.sh", (repo / "scripts" / "land.sh").read_text(), "chore: add land script")
+    _commit_file(
+        repo,
+        "scripts/lib/verdicts.sh",
+        (repo / "scripts" / "lib" / "verdicts.sh").read_text(),
+        "chore: add verdict helpers",
+    )
+    _commit_file(
+        repo,
+        "scripts/ci/dagger-call.sh",
+        dagger_stub.read_text(),
+        "chore: add dagger stub",
+    )
+
+    result = _run(["git", "checkout", "-b", "feature"], repo)
+    assert result.returncode == 0, result.stderr
+    _commit_file(repo, "app.txt", "feature\n", "feat: change app")
+
+    head_sha = _run(["git", "rev-parse", "feature"], repo).stdout.strip()
+    payload = json.dumps(
+        {
+            "branch": "feature",
+            "base": "main",
+            "verdict": "ship",
+            "reviewers": ["internal-bench"],
+            "scores": {"correctness": 9},
+            "sha": head_sha,
+            "date": "2026-04-09T00:01:30Z",
+        }
+    )
+
+    verdicts = repo / "scripts" / "lib" / "verdicts.sh"
+    result = _run(["git", "checkout", "main"], repo)
+    assert result.returncode == 0, result.stderr
+    before = _run(["git", "rev-parse", "main"], repo).stdout.strip()
+
+    result = _run(
+        [
+            "bash",
+            "-lc",
+            f"source {verdicts} && verdict_write feature '{payload}' >/dev/null && bash scripts/land.sh feature --publish",
+        ],
+        repo,
+    )
+    assert result.returncode != 0
+    assert "--publish requires an origin remote" in (result.stdout + result.stderr)
+    assert _run(["git", "rev-parse", "main"], repo).stdout.strip() == before
+
+
 def test_canonical_source_is_base_settings_json():
     """Smoke test: base/settings.json must exist and define the sprite profile alias."""
     settings_path = REPO_ROOT / "base" / "settings.json"
@@ -225,6 +1209,13 @@ def test_removed_shell_entrypoints_and_symlink_stay_deleted():
     """Dead shell entrypoints should not reappear on the supported scripts surface."""
     for relative_path in REMOVED_SHELL_ENTRYPOINTS:
         assert not (REPO_ROOT / relative_path).exists(), f"{relative_path} should stay deleted"
+
+
+def test_land_script_is_checked_in_executable():
+    """The documented landing entrypoint must be directly executable."""
+    land_path = REPO_ROOT / "scripts" / "land.sh"
+    assert land_path.exists(), "scripts/land.sh is missing"
+    assert land_path.stat().st_mode & 0o111, "scripts/land.sh must keep an executable mode bit"
 
 
 def test_supported_surfaces_do_not_reference_removed_shell_entrypoints():

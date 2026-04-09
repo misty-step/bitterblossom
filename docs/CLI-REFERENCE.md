@@ -1,18 +1,23 @@
 # CLI Reference
 
 The supported operator surface is `mix conductor ...` from the `conductor/`
-directory. The current transition state is:
+directory. Repo-level verification and landing stay local:
 
-- `mix conductor start` still boots the legacy always-on conductor session
-- `mix conductor fleet ...` and `mix conductor sprite ...` are the agent-first
-  operator surface for truthful inspection and per-sprite lifecycle control
+- `make ci-fast` for the fast Dagger lane
+- `make ci` for the full Dagger lane
+- `scripts/land.sh <branch>` for verdict validation and local squash landing
 
 ## Environment
 
 Required:
 
-- `GITHUB_TOKEN`
+- `dagger`
+- Codex auth via `codex login` or `OPENAI_API_KEY`
 - one of `SPRITE_TOKEN`, `FLY_API_TOKEN`, or a logged-in `sprite` CLI session
+
+Optional, depending on the repo transport in use:
+
+- remote git credentials for clone or publish operations
 
 ## Core Commands
 
@@ -22,7 +27,8 @@ Boot the full conductor pipeline against a fleet file.
 
 ### `mix conductor fleet [--fleet ../fleet.toml] [--reconcile]`
 
-Show declared sprite health. With `--reconcile`, provision unhealthy sprites before printing status.
+Show declared sprite health. With `--reconcile`, provision unhealthy sprites
+before printing status.
 
 Examples:
 
@@ -68,15 +74,16 @@ Stop the current loop without changing pause state.
 
 ### `mix conductor logs <sprite> [--follow] [--lines N]`
 
-Read `${WORKSPACE}/ralph.log` for the active or most recent workspace on a sprite.
+Read `${WORKSPACE}/ralph.log` for the active or most recent workspace on a
+sprite.
 
 Examples:
 
 ```bash
 cd conductor
-mix conductor logs bb-weaver
-mix conductor logs bb-weaver --lines 50
-mix conductor logs bb-weaver --follow
+mix conductor logs bb-tansy
+mix conductor logs bb-tansy --lines 50
+mix conductor logs bb-tansy --follow
 ```
 
 ### `mix conductor sprite logs <sprite> [--follow] [--lines N]`
@@ -85,21 +92,46 @@ Alias for `mix conductor logs ...`.
 
 ### `mix conductor show-events [--limit N]`
 
-Print recent events as JSON. The current CLI supports `--limit`; it does not yet
-filter by `run_id`.
+Print recent events as JSON. The current CLI supports `--limit`; it does not
+yet filter by `run_id`.
 
 ### `mix conductor check-env`
 
-Validate local runtime prerequisites.
+Validate local runtime prerequisites for the conductor surface.
 
 ### `mix conductor dashboard [--port 4000]`
 
 Run the local LiveView dashboard.
 
+## Local Verification And Landing
+
+### `make ci-fast`
+
+Run the fast Dagger verification lane from the repo root.
+
+### `make ci`
+
+Run the full Dagger verification lane from the repo root.
+
+If you run this on a trusted CI runner, set `BB_ALLOW_PRIVILEGED_DAGGER_IN_CI=1`
+so the wrapper can opt into Dagger's privileged engine path explicitly.
+
+### `scripts/land.sh <branch> [--message "..."] [--push] [--delete-branch]`
+
+Validate `refs/verdicts/<branch>`, run the full Dagger lane, and squash-land the
+branch onto the default branch locally.
+
+Landing requires a fresh `ship` verdict for the branch tip. Conditional or
+stale verdicts must be refreshed first.
+
+Verdict refs live under `refs/verdicts/<branch>`. Evidence bundles mirror them
+under `.evidence/<branch>/<date>/`.
+
 ## Notes
 
 - Sprite setup is no longer a separate Go CLI command.
-- Stale agent recovery is handled by `Conductor.Sprite.kill/1` and by dispatch preflight.
+- Stale agent recovery is handled by `Conductor.Sprite.kill/1` and by dispatch
+  preflight.
 - The historical `bb` transport no longer exists.
-- `fleet.toml` still uses `[[sprite]]` entries in this sprint-1 slice. Template
-  catalog, clone, create, destroy, and scale flows remain follow-up work.
+- Hosted remotes are transport only. Landing, review evidence, and verification
+  are local-first concerns.

@@ -39,6 +39,11 @@ class TestPushProtection:
         blocked, _ = check(cmd)
         assert blocked, f"should block: {cmd}"
 
+    def test_allows_explicit_publish_override(self, monkeypatch):
+        monkeypatch.setenv("BB_ALLOW_PROTECTED_PUSH", "1")
+        blocked, _ = check("git push origin master")
+        assert not blocked
+
     @pytest.mark.parametrize("cmd", [
         "git push origin feature-branch",
         "git push origin main-dev",

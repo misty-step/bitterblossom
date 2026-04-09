@@ -6,17 +6,33 @@ defmodule Conductor.SpriteTest do
 
   setup do
     original_env =
-      for key <- ~w(CODEX_HOME OPENAI_API_KEY GITHUB_TOKEN), into: %{} do
+      for key <- ~w(CODEX_HOME OPENAI_API_KEY), into: %{} do
         {key, System.get_env(key)}
       end
 
+    original_spellbook_source = Application.get_env(:conductor, :spellbook_source)
     codex_home = fresh_codex_home()
+
+    spellbook_source =
+      Path.join(System.tmp_dir!(), "spellbook-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(Path.join(spellbook_source, "skills/demo"))
+    File.write!(Path.join(spellbook_source, "bootstrap.sh"), "echo ready\n")
+    File.write!(Path.join(spellbook_source, "skills/demo/SKILL.md"), "demo\n")
+
     System.put_env("CODEX_HOME", codex_home)
     System.delete_env("OPENAI_API_KEY")
-    System.delete_env("GITHUB_TOKEN")
+    Application.put_env(:conductor, :spellbook_source, spellbook_source)
 
     on_exit(fn ->
       File.rm_rf(codex_home)
+      File.rm_rf(spellbook_source)
+
+      case original_spellbook_source do
+        nil -> Application.delete_env(:conductor, :spellbook_source)
+        value -> Application.put_env(:conductor, :spellbook_source, value)
+      end
+
       Enum.each(original_env, fn {key, value} -> restore_env(key, value) end)
     end)
 
@@ -46,7 +62,7 @@ defmodule Conductor.SpriteTest do
     |> Enum.any?(fn {_src, uploaded_dest} -> uploaded_dest == dest end)
   end
 
-  test "status reports gh auth, Codex auth, and harness readiness" do
+  test "status reports git, Codex auth, and harness readiness" do
     System.put_env("OPENAI_API_KEY", "sk-test")
 
     status =
@@ -56,8 +72,7 @@ defmodule Conductor.SpriteTest do
           exec_fn([
             {"__bb_probe__", {:ok, "__bb_probe__"}},
             {"command -v codex", {:ok, "/usr/bin/codex\n"}},
-            {"gh auth status", {:ok, "github.com\n"}},
-            {"git config --global --get credential.helper", {:ok, "!gh auth git-credential"}}
+            {"command -v git", {:ok, "/usr/bin/git\n"}}
           ])
       )
 
@@ -66,13 +81,12 @@ defmodule Conductor.SpriteTest do
               reachable: true,
               harness_ready: true,
               codex_auth_ready: true,
-              gh_authenticated: true,
-              git_credential_helper: true,
+              git_ready: true,
               healthy: true
             }} = status
   end
 
-  test "status marks missing gh auth as unhealthy" do
+  test "status marks missing git readiness as unhealthy" do
     System.put_env("OPENAI_API_KEY", "sk-test")
 
     status =
@@ -82,8 +96,7 @@ defmodule Conductor.SpriteTest do
           exec_fn([
             {"__bb_probe__", {:ok, "__bb_probe__"}},
             {"command -v codex", {:ok, "/usr/bin/codex\n"}},
-            {"gh auth status", {:error, "not logged in", 1}},
-            {"git config --global --get credential.helper", {:ok, "!gh auth git-credential"}}
+            {"command -v git", {:error, "", 1}}
           ])
       )
 
@@ -92,34 +105,7 @@ defmodule Conductor.SpriteTest do
               reachable: true,
               harness_ready: true,
               codex_auth_ready: true,
-              gh_authenticated: false,
-              git_credential_helper: true,
-              healthy: false
-            }} = status
-  end
-
-  test "status marks missing git credential helper as unhealthy" do
-    System.put_env("OPENAI_API_KEY", "sk-test")
-
-    status =
-      Sprite.status("bb-weaver",
-        harness: "codex",
-        exec_fn:
-          exec_fn([
-            {"__bb_probe__", {:ok, "__bb_probe__"}},
-            {"command -v codex", {:ok, "/usr/bin/codex\n"}},
-            {"gh auth status", {:ok, "github.com\n"}},
-            {"git config --global --get credential.helper", {:ok, "cache"}}
-          ])
-      )
-
-    assert {:ok,
-            %{
-              reachable: true,
-              harness_ready: true,
-              codex_auth_ready: true,
-              gh_authenticated: true,
-              git_credential_helper: false,
+              git_ready: false,
               healthy: false
             }} = status
   end
@@ -133,8 +119,7 @@ defmodule Conductor.SpriteTest do
             {"__bb_probe__", {:ok, "__bb_probe__"}},
             {"command -v codex", {:ok, "/usr/bin/codex\n"}},
             {"test -s '/home/sprite/.codex/auth.json'", {:error, "", 1}},
-            {"gh auth status", {:ok, "github.com\n"}},
-            {"git config --global --get credential.helper", {:ok, "!gh auth git-credential"}}
+            {"command -v git", {:ok, "/usr/bin/git\n"}}
           ])
       )
 
@@ -143,8 +128,7 @@ defmodule Conductor.SpriteTest do
               reachable: true,
               harness_ready: true,
               codex_auth_ready: false,
-              gh_authenticated: true,
-              git_credential_helper: true,
+              git_ready: true,
               healthy: false
             }} = status
   end
@@ -157,8 +141,7 @@ defmodule Conductor.SpriteTest do
           exec_fn([
             {"echo ok", {:ok, "ok\n"}},
             {"test -s '/home/sprite/.codex/auth.json'", {:error, "", 1}},
-            {"gh auth status", {:ok, "github.com\n"}},
-            {"git config --global --get credential.helper", {:ok, "!gh auth git-credential"}}
+            {"command -v git", {:ok, "/usr/bin/git\n"}}
           ])
       )
 
@@ -167,8 +150,7 @@ defmodule Conductor.SpriteTest do
               reachable: true,
               harness_ready: true,
               codex_auth_ready: false,
-              gh_authenticated: true,
-              git_credential_helper: true,
+              git_ready: true,
               healthy: false
             }} = status
   end
@@ -182,8 +164,7 @@ defmodule Conductor.SpriteTest do
             {"__bb_probe__", {:ok, "__bb_probe__"}},
             {"command -v codex", {:ok, "/usr/bin/codex\n"}},
             {"test -s '/home/sprite/.codex/auth.json'", {:ok, ""}},
-            {"gh auth status", {:ok, "github.com\n"}},
-            {"git config --global --get credential.helper", {:ok, "!gh auth git-credential"}}
+            {"command -v git", {:ok, "/usr/bin/git\n"}}
           ])
       )
 
@@ -192,8 +173,62 @@ defmodule Conductor.SpriteTest do
               reachable: true,
               harness_ready: true,
               codex_auth_ready: true,
-              gh_authenticated: true,
-              git_credential_helper: true,
+              git_ready: true,
+              healthy: true
+            }} = status
+  end
+
+  test "status marks repo access unhealthy when the configured origin drifts" do
+    System.put_env("OPENAI_API_KEY", "sk-test")
+
+    status =
+      Sprite.status("bb-weaver",
+        harness: "codex",
+        repo: "misty-step/bitterblossom",
+        clone_url: "https://git.example.com/misty-step/bitterblossom.git",
+        exec_fn:
+          exec_fn([
+            {"__bb_probe__", {:ok, "__bb_probe__"}},
+            {"command -v codex", {:ok, "/usr/bin/codex\n"}},
+            {"command -v git", {:ok, "/usr/bin/git\n"}},
+            {"test -d '/home/sprite/workspace/misty-step/bitterblossom/.git'", {:ok, ""}},
+            {"git remote get-url origin", {:error, "", 1}}
+          ])
+      )
+
+    assert {:ok,
+            %{
+              reachable: true,
+              harness_ready: true,
+              codex_auth_ready: true,
+              git_ready: true,
+              repo_access_ready: false,
+              healthy: false
+            }} = status
+  end
+
+  test "status treats equivalent origin URLs as healthy after normalization" do
+    System.put_env("OPENAI_API_KEY", "sk-test")
+
+    status =
+      Sprite.status("bb-weaver",
+        harness: "codex",
+        repo: "misty-step/bitterblossom",
+        clone_url: "https://git.example.com/misty-step/bitterblossom.git",
+        exec_fn:
+          exec_fn([
+            {"__bb_probe__", {:ok, "__bb_probe__"}},
+            {"command -v codex", {:ok, "/usr/bin/codex\n"}},
+            {"command -v git", {:ok, "/usr/bin/git\n"}},
+            {"test -d '/home/sprite/workspace/misty-step/bitterblossom/.git'", {:ok, ""}},
+            {"git remote get-url origin",
+             {:ok, "https://git.example.com/misty-step/bitterblossom\n"}}
+          ])
+      )
+
+    assert {:ok,
+            %{
+              repo_access_ready: true,
               healthy: true
             }} = status
   end
@@ -321,371 +356,375 @@ defmodule Conductor.SpriteTest do
 
   test "provision uploads persona, settings, and metadata through sprite exec files" do
     test_pid = self()
-    prev_gh = System.get_env("GITHUB_TOKEN")
-    System.put_env("GITHUB_TOKEN", "ghp-test-token")
 
-    try do
-      exec_fn = fn _sprite, command, opts ->
-        uploaded_files =
-          opts
-          |> Keyword.get(:files, [])
-          |> Enum.map(fn {src, dest} -> {dest, File.read!(src)} end)
+    exec_fn = fn _sprite, command, opts ->
+      uploaded_files =
+        opts
+        |> Keyword.get(:files, [])
+        |> Enum.map(fn {src, dest} -> {dest, File.read!(src)} end)
 
-        send(test_pid, {:exec_called, command, opts, uploaded_files})
-        {:ok, ""}
-      end
-
-      assert :ok =
-               Sprite.provision("bb-weaver",
-                 repo: "misty-step/bitterblossom",
-                 persona: "You are Weaver.",
-                 force: true,
-                 exec_fn: exec_fn
-               )
-
-      calls = drain_exec_calls()
-      [{mkdir_cmd, _mkdir_opts, _mkdir_files} | _] = calls
-      assert mkdir_cmd =~ "mkdir -p"
-
-      {_, upload_opts, uploaded_files} =
-        Enum.find(calls, fn {_command, _opts, uploaded_files} ->
-          {"/home/sprite/workspace/PERSONA.md", "You are Weaver.\n"} in uploaded_files
-        end)
-
-      assert Keyword.has_key?(upload_opts, :files)
-      assert {"/home/sprite/workspace/PERSONA.md", "You are Weaver.\n"} in uploaded_files
-
-      assert Enum.any?(uploaded_files, fn
-               {"/home/sprite/.claude/settings.json", content} ->
-                 String.contains?(content, "\"model\"")
-
-               _ ->
-                 false
-             end)
-
-      {codex_cmd, _codex_opts, _codex_files} =
-        Enum.find(calls, fn {command, _opts, _files} ->
-          String.contains?(command, "@openai/codex")
-        end)
-
-      assert codex_cmd =~ "@openai/codex"
-
-      {git_auth_cmd, git_auth_opts, git_auth_files} =
-        Enum.find(calls, fn {command, _opts, _files} ->
-          String.contains?(command, "gh auth login --with-token")
-        end)
-
-      assert git_auth_cmd =~ "gh auth login --with-token"
-      assert Keyword.has_key?(git_auth_opts, :files)
-
-      assert Enum.any?(git_auth_files, fn
-               {dest, content} ->
-                 String.starts_with?(dest, "/tmp/bb-gh-token-") and content == "ghp-test-token\n"
-
-               _ ->
-                 false
-             end)
-
-      {repo_cmd, _repo_opts, _repo_files} =
-        Enum.find(calls, fn {command, _opts, _files} ->
-          String.contains?(command, "git clone 'https://github.com/misty-step/bitterblossom.git'")
-        end)
-
-      assert repo_cmd =~ "git clone 'https://github.com/misty-step/bitterblossom.git'"
-      assert repo_cmd =~ "/home/sprite/workspace/misty-step/bitterblossom"
-
-      {_, _runtime_env_opts, runtime_env_files} =
-        Enum.find(calls, fn {_command, _opts, uploaded_files} ->
-          Enum.any?(uploaded_files, fn {dest, _content} ->
-            dest == "/home/sprite/.bitterblossom/runtime.env"
-          end)
-        end)
-
-      assert Enum.any?(runtime_env_files, fn
-               {"/home/sprite/.bitterblossom/runtime.env", content} ->
-                 String.contains?(content, "export REPO='misty-step/bitterblossom'")
-
-               _ ->
-                 false
-             end)
-
-      {_, _metadata_opts, metadata_files} =
-        Enum.find(calls, fn {_command, _opts, uploaded_files} ->
-          Enum.any?(uploaded_files, fn {dest, _content} ->
-            dest == "/home/sprite/workspace/misty-step/bitterblossom/.bb/workspace.json"
-          end)
-        end)
-
-      assert Enum.any?(metadata_files, fn
-               {"/home/sprite/workspace/misty-step/bitterblossom/.bb/workspace.json", content} ->
-                 String.contains?(content, "\"repo\":\"misty-step/bitterblossom\"")
-
-               _ ->
-                 false
-             end)
-    after
-      if prev_gh,
-        do: System.put_env("GITHUB_TOKEN", prev_gh),
-        else: System.delete_env("GITHUB_TOKEN")
+      send(test_pid, {:exec_called, command, opts, uploaded_files})
+      {:ok, ""}
     end
+
+    assert :ok =
+             Sprite.provision("bb-weaver",
+               repo: "misty-step/bitterblossom",
+               clone_url: "https://git.example.com/misty-step/bitterblossom.git",
+               persona: "You are Weaver.",
+               force: true,
+               exec_fn: exec_fn
+             )
+
+    calls = drain_exec_calls()
+    [{mkdir_cmd, _mkdir_opts, _mkdir_files} | _] = calls
+    assert mkdir_cmd =~ "mkdir -p"
+
+    {_, upload_opts, uploaded_files} =
+      Enum.find(calls, fn {_command, _opts, uploaded_files} ->
+        {"/home/sprite/workspace/PERSONA.md", "You are Weaver.\n"} in uploaded_files
+      end)
+
+    assert Keyword.has_key?(upload_opts, :files)
+    assert {"/home/sprite/workspace/PERSONA.md", "You are Weaver.\n"} in uploaded_files
+
+    assert Enum.any?(uploaded_files, fn
+             {"/home/sprite/.claude/settings.json", content} ->
+               String.contains?(content, "\"model\"")
+
+             _ ->
+               false
+           end)
+
+    {codex_cmd, _codex_opts, _codex_files} =
+      Enum.find(calls, fn {command, _opts, _files} ->
+        String.contains?(command, "@openai/codex")
+      end)
+
+    assert codex_cmd =~ "@openai/codex"
+
+    {git_setup_cmd, git_setup_opts, _git_setup_files} =
+      Enum.find(calls, fn {command, _opts, _files} ->
+        String.contains?(command, "git config --global user.name")
+      end)
+
+    assert git_setup_cmd =~ ~s(git config --global user.name "bitterblossom[bot]")
+
+    case Keyword.get(git_setup_opts, :files, []) do
+      [] ->
+        :ok
+
+      files ->
+        assert match?([{_, "/home/sprite/.git-credentials"}], files)
+    end
+
+    {repo_cmd, _repo_opts, _repo_files} =
+      Enum.find(calls, fn {command, _opts, _files} ->
+        String.contains?(
+          command,
+          "git clone 'https://git.example.com/misty-step/bitterblossom.git'"
+        )
+      end)
+
+    assert repo_cmd =~ "git clone 'https://git.example.com/misty-step/bitterblossom.git'"
+
+    assert repo_cmd =~
+             "git config --global --add safe.directory '/home/sprite/workspace/misty-step/bitterblossom'"
+
+    assert repo_cmd =~ "/home/sprite/workspace/misty-step/bitterblossom"
+
+    {_, _runtime_env_opts, runtime_env_files} =
+      Enum.find(calls, fn {_command, _opts, uploaded_files} ->
+        Enum.any?(uploaded_files, fn {dest, _content} ->
+          dest == "/home/sprite/.bitterblossom/runtime.env"
+        end)
+      end)
+
+    assert Enum.any?(runtime_env_files, fn
+             {"/home/sprite/.bitterblossom/runtime.env", content} ->
+               String.contains?(content, "export REPO='misty-step/bitterblossom'")
+
+             _ ->
+               false
+           end)
+
+    {_, _metadata_opts, metadata_files} =
+      Enum.find(calls, fn {_command, _opts, uploaded_files} ->
+        Enum.any?(uploaded_files, fn {dest, _content} ->
+          dest == "/home/sprite/workspace/misty-step/bitterblossom/.bb/workspace.json"
+        end)
+      end)
+
+    assert Enum.any?(metadata_files, fn
+             {"/home/sprite/workspace/misty-step/bitterblossom/.bb/workspace.json", content} ->
+               String.contains?(content, "\"repo\":\"misty-step/bitterblossom\"")
+
+             _ ->
+               false
+           end)
   end
 
   test "provision uploads Codex auth.json when local ChatGPT auth is available and remote auth is missing" do
     test_pid = self()
-    prev_gh = System.get_env("GITHUB_TOKEN")
-    System.put_env("GITHUB_TOKEN", "ghp-test-token")
     write_auth_json(%{"auth_mode" => "chatgpt", "tokens" => %{"refresh_token" => "rt-test"}})
 
-    try do
-      exec_fn = fn _sprite, command, opts ->
-        uploaded_files =
-          opts
-          |> Keyword.get(:files, [])
-          |> Enum.map(fn {src, dest} -> {dest, File.read!(src)} end)
+    exec_fn = fn _sprite, command, opts ->
+      uploaded_files =
+        opts
+        |> Keyword.get(:files, [])
+        |> Enum.map(fn {src, dest} -> {dest, File.read!(src)} end)
 
-        send(test_pid, {:exec_called, command, opts, uploaded_files})
+      send(test_pid, {:exec_called, command, opts, uploaded_files})
 
-        case command do
-          "test -s '/home/sprite/.codex/auth.json'" -> {:error, "", 1}
-          _ -> {:ok, ""}
-        end
+      case command do
+        "test -s '/home/sprite/.codex/auth.json'" -> {:error, "", 1}
+        _ -> {:ok, ""}
       end
-
-      assert :ok =
-               Sprite.provision("bb-weaver",
-                 repo: "misty-step/bitterblossom",
-                 persona: "You are Weaver.",
-                 force: true,
-                 exec_fn: exec_fn
-               )
-
-      calls = drain_exec_calls()
-
-      {auth_cmd, _auth_opts, auth_files} =
-        Enum.find(calls, fn {_command, _opts, uploaded_files} ->
-          Enum.any?(uploaded_files, fn {dest, _content} ->
-            dest == "/home/sprite/.codex/auth.json"
-          end)
-        end)
-
-      assert auth_cmd == "chmod 600 '/home/sprite/.codex/auth.json'"
-
-      assert Enum.any?(auth_files, fn
-               {"/home/sprite/.codex/auth.json", content} ->
-                 String.contains?(content, "\"auth_mode\":\"chatgpt\"") and
-                   String.contains?(content, "\"refresh_token\":\"rt-test\"")
-
-               _ ->
-                 false
-             end)
-    after
-      if prev_gh,
-        do: System.put_env("GITHUB_TOKEN", prev_gh),
-        else: System.delete_env("GITHUB_TOKEN")
     end
+
+    assert :ok =
+             Sprite.provision("bb-weaver",
+               repo: "misty-step/bitterblossom",
+               clone_url: "https://git.example.com/misty-step/bitterblossom.git",
+               persona: "You are Weaver.",
+               force: true,
+               exec_fn: exec_fn
+             )
+
+    calls = drain_exec_calls()
+
+    {auth_cmd, _auth_opts, auth_files} =
+      Enum.find(calls, fn {_command, _opts, uploaded_files} ->
+        Enum.any?(uploaded_files, fn {dest, _content} ->
+          dest == "/home/sprite/.codex/auth.json"
+        end)
+      end)
+
+    assert auth_cmd == "chmod 600 '/home/sprite/.codex/auth.json'"
+
+    assert Enum.any?(auth_files, fn
+             {"/home/sprite/.codex/auth.json", content} ->
+               String.contains?(content, "\"auth_mode\":\"chatgpt\"") and
+                 String.contains?(content, "\"refresh_token\":\"rt-test\"")
+
+             _ ->
+               false
+           end)
   end
 
   test "provision preserves an existing remote Codex auth cache" do
     test_pid = self()
-    prev_gh = System.get_env("GITHUB_TOKEN")
-    System.put_env("GITHUB_TOKEN", "ghp-test-token")
     write_auth_json(%{"auth_mode" => "chatgpt", "tokens" => %{"refresh_token" => "rt-test"}})
 
-    try do
-      exec_fn = fn _sprite, command, opts ->
-        uploaded_files =
-          opts
-          |> Keyword.get(:files, [])
-          |> Enum.map(fn {src, dest} -> {dest, File.read!(src)} end)
+    exec_fn = fn _sprite, command, opts ->
+      uploaded_files =
+        opts
+        |> Keyword.get(:files, [])
+        |> Enum.map(fn {src, dest} -> {dest, File.read!(src)} end)
 
-        send(test_pid, {:exec_called, command, opts, uploaded_files})
+      send(test_pid, {:exec_called, command, opts, uploaded_files})
 
-        case command do
-          "test -s '/home/sprite/.codex/auth.json'" -> {:ok, ""}
-          _ -> {:ok, ""}
-        end
+      case command do
+        "test -s '/home/sprite/.codex/auth.json'" -> {:ok, ""}
+        _ -> {:ok, ""}
       end
-
-      assert :ok =
-               Sprite.provision("bb-weaver",
-                 repo: "misty-step/bitterblossom",
-                 persona: "You are Weaver.",
-                 force: true,
-                 exec_fn: exec_fn
-               )
-
-      calls = drain_exec_calls()
-
-      refute Enum.any?(calls, fn {_command, _opts, uploaded_files} ->
-               Enum.any?(uploaded_files, fn {dest, _content} ->
-                 dest == "/home/sprite/.codex/auth.json"
-               end)
-             end)
-    after
-      if prev_gh,
-        do: System.put_env("GITHUB_TOKEN", prev_gh),
-        else: System.delete_env("GITHUB_TOKEN")
     end
+
+    assert :ok =
+             Sprite.provision("bb-weaver",
+               repo: "misty-step/bitterblossom",
+               clone_url: "https://git.example.com/misty-step/bitterblossom.git",
+               persona: "You are Weaver.",
+               force: true,
+               exec_fn: exec_fn
+             )
+
+    calls = drain_exec_calls()
+
+    refute Enum.any?(calls, fn {_command, _opts, uploaded_files} ->
+             Enum.any?(uploaded_files, fn {dest, _content} ->
+               dest == "/home/sprite/.codex/auth.json"
+             end)
+           end)
   end
 
   test "provision skips Codex auth sync on non-codex harnesses" do
     test_pid = self()
-    prev_gh = System.get_env("GITHUB_TOKEN")
-    System.put_env("GITHUB_TOKEN", "ghp-test-token")
     write_auth_json(%{"auth_mode" => "chatgpt", "tokens" => %{"refresh_token" => "rt-test"}})
 
-    try do
-      exec_fn = fn _sprite, command, opts ->
-        uploaded_files =
-          opts
-          |> Keyword.get(:files, [])
-          |> Enum.map(fn {src, dest} -> {dest, File.read!(src)} end)
+    exec_fn = fn _sprite, command, opts ->
+      uploaded_files =
+        opts
+        |> Keyword.get(:files, [])
+        |> Enum.map(fn {src, dest} -> {dest, File.read!(src)} end)
 
-        send(test_pid, {:exec_called, command, opts, uploaded_files})
-        {:ok, ""}
-      end
-
-      assert :ok =
-               Sprite.provision("bb-weaver",
-                 repo: "misty-step/bitterblossom",
-                 persona: "You are Weaver.",
-                 harness: "claude-code",
-                 force: true,
-                 exec_fn: exec_fn
-               )
-
-      calls = drain_exec_calls()
-
-      refute Enum.any?(calls, fn {command, _opts, uploaded_files} ->
-               command == "test -s '/home/sprite/.codex/auth.json'" or
-                 Enum.any?(uploaded_files, fn {dest, _content} ->
-                   dest == "/home/sprite/.codex/auth.json"
-                 end)
-             end)
-    after
-      if prev_gh,
-        do: System.put_env("GITHUB_TOKEN", prev_gh),
-        else: System.delete_env("GITHUB_TOKEN")
+      send(test_pid, {:exec_called, command, opts, uploaded_files})
+      {:ok, ""}
     end
+
+    assert :ok =
+             Sprite.provision("bb-weaver",
+               repo: "misty-step/bitterblossom",
+               clone_url: "https://git.example.com/misty-step/bitterblossom.git",
+               persona: "You are Weaver.",
+               harness: "claude-code",
+               force: true,
+               exec_fn: exec_fn
+             )
+
+    calls = drain_exec_calls()
+
+    refute Enum.any?(calls, fn {command, _opts, uploaded_files} ->
+             command == "test -s '/home/sprite/.codex/auth.json'" or
+               Enum.any?(uploaded_files, fn {dest, _content} ->
+                 dest == "/home/sprite/.codex/auth.json"
+               end)
+           end)
   end
 
   test "provision returns the chmod failure when syncing Codex auth" do
-    prev_gh = System.get_env("GITHUB_TOKEN")
-    System.put_env("GITHUB_TOKEN", "ghp-test-token")
     write_auth_json(%{"auth_mode" => "chatgpt", "tokens" => %{"refresh_token" => "rt-test"}})
 
-    try do
-      exec_fn = fn _sprite, command, _opts ->
-        case command do
-          "test -s '/home/sprite/.codex/auth.json'" -> {:error, "", 1}
-          "chmod 600 '/home/sprite/.codex/auth.json'" -> {:error, "Permission denied", 1}
-          _ -> {:ok, ""}
-        end
+    exec_fn = fn _sprite, command, _opts ->
+      case command do
+        "test -s '/home/sprite/.codex/auth.json'" -> {:error, "", 1}
+        "chmod 600 '/home/sprite/.codex/auth.json'" -> {:error, "Permission denied", 1}
+        _ -> {:ok, ""}
       end
-
-      assert {:error, "Permission denied"} =
-               Sprite.provision("bb-weaver",
-                 repo: "misty-step/bitterblossom",
-                 persona: "You are Weaver.",
-                 force: true,
-                 exec_fn: exec_fn
-               )
-    after
-      if prev_gh,
-        do: System.put_env("GITHUB_TOKEN", prev_gh),
-        else: System.delete_env("GITHUB_TOKEN")
     end
+
+    assert {:error, "Permission denied"} =
+             Sprite.provision("bb-weaver",
+               repo: "misty-step/bitterblossom",
+               clone_url: "https://git.example.com/misty-step/bitterblossom.git",
+               persona: "You are Weaver.",
+               force: true,
+               exec_fn: exec_fn
+             )
   end
 
   test "provision propagates failures from each setup step" do
-    prev_gh = System.get_env("GITHUB_TOKEN")
-    System.put_env("GITHUB_TOKEN", "ghp-test-token")
+    cases = [
+      {"remote dir creation", "mkdir failed",
+       fn command, _opts -> String.contains?(command, "mkdir -p") end},
+      {"base config upload", "upload failed",
+       fn command, opts ->
+         command == "true" and uploads_to?(opts, "/home/sprite/workspace/PERSONA.md")
+       end},
+      {"codex install", "codex failed",
+       fn command, _opts -> String.contains?(command, "@openai/codex") end},
+      {"runtime env upload", "runtime env failed",
+       fn command, opts ->
+         command == "true" and uploads_to?(opts, "/home/sprite/.bitterblossom/runtime.env")
+       end},
+      {"git setup", "git setup failed",
+       fn command, _opts -> String.contains?(command, "git config --global user.name") end},
+      {"repo setup", "repo setup failed",
+       fn command, _opts ->
+         String.contains?(
+           command,
+           "git clone 'https://git.example.com/misty-step/bitterblossom.git'"
+         )
+       end},
+      {"workspace metadata upload", "metadata upload failed",
+       fn command, opts ->
+         command == "true" and
+           uploads_to?(opts, "/home/sprite/workspace/misty-step/bitterblossom/.bb/workspace.json")
+       end}
+    ]
 
-    try do
-      cases = [
-        {"remote dir creation", "mkdir failed",
-         fn command, _opts -> String.contains?(command, "mkdir -p") end},
-        {"base config upload", "upload failed",
-         fn command, opts ->
-           command == "true" and uploads_to?(opts, "/home/sprite/workspace/PERSONA.md")
-         end},
-        {"codex install", "codex failed",
-         fn command, _opts -> String.contains?(command, "@openai/codex") end},
-        {"runtime env upload", "runtime env failed",
-         fn command, opts ->
-           command == "true" and uploads_to?(opts, "/home/sprite/.bitterblossom/runtime.env")
-         end},
-        {"git auth", "git auth failed",
-         fn command, _opts -> String.contains?(command, "gh auth login --with-token") end},
-        {"repo setup", "repo setup failed",
-         fn command, _opts ->
-           String.contains?(
-             command,
-             "git clone 'https://github.com/misty-step/bitterblossom.git'"
-           )
-         end},
-        {"workspace metadata upload", "metadata upload failed",
-         fn command, opts ->
-           command == "true" and
-             uploads_to?(
-               opts,
-               "/home/sprite/workspace/misty-step/bitterblossom/.bb/workspace.json"
-             )
-         end}
-      ]
+    Enum.each(cases, fn {stage, reason, matcher} ->
+      result =
+        Sprite.provision("bb-weaver",
+          repo: "misty-step/bitterblossom",
+          clone_url: "https://git.example.com/misty-step/bitterblossom.git",
+          persona: "You are Weaver.",
+          force: true,
+          exec_fn: fn _sprite, command, opts ->
+            if matcher.(command, opts), do: {:error, reason, 1}, else: {:ok, ""}
+          end
+        )
 
-      Enum.each(cases, fn {stage, reason, matcher} ->
-        result =
-          Sprite.provision("bb-weaver",
-            repo: "misty-step/bitterblossom",
-            persona: "You are Weaver.",
-            force: true,
-            exec_fn: fn _sprite, command, opts ->
-              if matcher.(command, opts), do: {:error, reason, 1}, else: {:ok, ""}
-            end
-          )
-
-        assert result == {:error, reason},
-               "expected #{stage} failure to propagate, got: #{inspect(result)}"
-      end)
-    after
-      if prev_gh,
-        do: System.put_env("GITHUB_TOKEN", prev_gh),
-        else: System.delete_env("GITHUB_TOKEN")
-    end
+      assert result == {:error, reason},
+             "expected #{stage} failure to propagate, got: #{inspect(result)}"
+    end)
   end
 
   test "provision rejects invalid repo formats before clone commands" do
     test_pid = self()
-    prev_gh = System.get_env("GITHUB_TOKEN")
-    System.put_env("GITHUB_TOKEN", "ghp-test-token")
 
-    try do
-      exec_fn = fn _sprite, command, _opts ->
-        send(test_pid, {:exec_called, command})
-        {:ok, ""}
-      end
-
-      assert {:error, reason} =
-               Sprite.provision("bb-weaver",
-                 repo: "bad repo;",
-                 persona: "You are Weaver.",
-                 force: true,
-                 exec_fn: exec_fn
-               )
-
-      assert reason =~ "invalid repo format"
-
-      calls = drain_exec_calls()
-
-      refute Enum.any?(calls, fn {command, _opts, _files} ->
-               String.contains?(command, "git clone")
-             end)
-    after
-      if prev_gh,
-        do: System.put_env("GITHUB_TOKEN", prev_gh),
-        else: System.delete_env("GITHUB_TOKEN")
+    exec_fn = fn _sprite, command, _opts ->
+      send(test_pid, {:exec_called, command})
+      {:ok, ""}
     end
+
+    assert {:error, reason} =
+             Sprite.provision("bb-weaver",
+               repo: "bad repo;",
+               persona: "You are Weaver.",
+               force: true,
+               exec_fn: exec_fn
+             )
+
+    assert reason =~ "invalid repo format"
+
+    calls = drain_exec_calls()
+
+    refute Enum.any?(calls, fn {command, _opts, _files} ->
+             String.contains?(command, "git clone")
+           end)
+  end
+
+  test "provision requires an explicit clone_url before clone commands" do
+    test_pid = self()
+
+    exec_fn = fn _sprite, command, _opts ->
+      send(test_pid, {:exec_called, command})
+      {:ok, ""}
+    end
+
+    assert {:error, reason} =
+             Sprite.provision("bb-weaver",
+               repo: "misty-step/bitterblossom",
+               persona: "You are Weaver.",
+               force: true,
+               exec_fn: exec_fn
+             )
+
+    assert reason =~ "missing clone_url"
+
+    calls = drain_exec_calls()
+
+    refute Enum.any?(calls, fn {command, _opts, _files} ->
+             String.contains?(command, "git clone")
+           end)
+  end
+
+  test "provision rejects invalid default_branch values before clone commands" do
+    test_pid = self()
+
+    exec_fn = fn _sprite, command, _opts ->
+      send(test_pid, {:exec_called, command})
+      {:ok, ""}
+    end
+
+    assert {:error, reason} =
+             Sprite.provision("bb-weaver",
+               repo: "misty-step/bitterblossom",
+               clone_url: "https://git.example.com/misty-step/bitterblossom.git",
+               default_branch: "main; rm -rf /",
+               persona: "You are Weaver.",
+               force: true,
+               exec_fn: exec_fn
+             )
+
+    assert reason =~ "invalid default_branch"
+
+    calls = drain_exec_calls()
+
+    refute Enum.any?(calls, fn {command, _opts, _files} ->
+             String.contains?(command, "git clone")
+           end)
   end
 
   test "logs tails the workspace log file" do

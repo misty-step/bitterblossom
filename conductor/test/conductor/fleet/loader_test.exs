@@ -9,6 +9,8 @@ defmodule Conductor.Fleet.LoaderTest do
   [defaults]
   org = "test-org"
   repo = "test-org/test-repo"
+  clone_url = "https://git.example.com/test-org/test-repo.git"
+  default_branch = "main"
   harness = "codex"
   model = "gpt-5.4-mini"
   reasoning_effort = "medium"
@@ -35,6 +37,10 @@ defmodule Conductor.Fleet.LoaderTest do
   [[sprite]]
   name = "bb-muse"
   role = "triage"
+
+  [[sprite]]
+  name = "bb-tansy"
+  role = "responder"
   """
 
   setup do
@@ -49,15 +55,17 @@ defmodule Conductor.Fleet.LoaderTest do
       File.write!(path, @valid_toml)
       assert {:ok, config} = Loader.load(path)
 
-      assert length(config.sprites) == 4
+      assert length(config.sprites) == 5
       assert config.defaults.org == "test-org"
       assert config.defaults.repo == "test-org/test-repo"
 
-      [builder, fixer, polisher, muse] = config.sprites
+      [builder, fixer, polisher, muse, tansy] = config.sprites
       assert builder.name == "bb-weaver"
       assert builder.role == :builder
       assert builder.org == "test-org"
       assert builder.harness == "codex"
+      assert builder.clone_url == "https://git.example.com/test-org/test-repo.git"
+      assert builder.default_branch == "main"
       assert builder.model == "gpt-5.4-mini"
       assert builder.reasoning_effort == "medium"
       assert builder.capability_tags == ["elixir", "ci"]
@@ -73,6 +81,9 @@ defmodule Conductor.Fleet.LoaderTest do
 
       assert muse.name == "bb-muse"
       assert muse.role == :triage
+
+      assert tansy.name == "bb-tansy"
+      assert tansy.role == :responder
     end
 
     test "sprite inherits defaults when not overridden", %{path: path} do
@@ -82,6 +93,8 @@ defmodule Conductor.Fleet.LoaderTest do
 
       assert builder.org == "test-org"
       assert builder.repo == "test-org/test-repo"
+      assert builder.clone_url == "https://git.example.com/test-org/test-repo.git"
+      assert builder.default_branch == "main"
       assert builder.label == nil
       assert builder.capability_tags == ["elixir", "ci"]
     end
@@ -92,6 +105,8 @@ defmodule Conductor.Fleet.LoaderTest do
 
       [defaults]
       repo = "test/default"
+      clone_url = "https://git.example.com/test/default.git"
+      default_branch = "main"
 
       [[sprite]]
       name = "bb-weaver"
@@ -101,13 +116,19 @@ defmodule Conductor.Fleet.LoaderTest do
       name = "bb-thorn"
       role = "fixer"
       repo = "test/override"
+      clone_url = "ssh://git@example.com/test/override.git"
+      default_branch = "release"
       """)
 
       {:ok, config} = Loader.load(path)
       [builder, fixer] = config.sprites
 
       assert builder.repo == "test/default"
+      assert builder.clone_url == "https://git.example.com/test/default.git"
+      assert builder.default_branch == "main"
       assert fixer.repo == "test/override"
+      assert fixer.clone_url == "ssh://git@example.com/test/override.git"
+      assert fixer.default_branch == "release"
     end
 
     test "allows sprite repos that share a basename", %{path: path} do
@@ -116,6 +137,7 @@ defmodule Conductor.Fleet.LoaderTest do
 
       [defaults]
       repo = "alpha/shared"
+      clone_url = "https://git.example.com/alpha/shared.git"
 
       [[sprite]]
       name = "bb-weaver"
@@ -139,6 +161,7 @@ defmodule Conductor.Fleet.LoaderTest do
 
       [defaults]
       repo = "test/repo"
+      clone_url = "https://git.example.com/test/repo.git"
       label = "hold"
 
       [[sprite]]
@@ -162,6 +185,7 @@ defmodule Conductor.Fleet.LoaderTest do
       version = "1"
       [defaults]
       org = "test"
+      clone_url = "https://git.example.com/test/repo.git"
 
       [[sprite]]
       name = "bb-test"
@@ -172,12 +196,46 @@ defmodule Conductor.Fleet.LoaderTest do
       assert msg =~ "must specify 'repo'"
     end
 
+    test "returns error for missing clone_url in defaults", %{path: path} do
+      File.write!(path, """
+      version = "1"
+      [defaults]
+      repo = "test/repo"
+
+      [[sprite]]
+      name = "bb-test"
+      role = "builder"
+      """)
+
+      assert {:error, msg} = Loader.load(path)
+      assert msg =~ "must specify 'clone_url'"
+    end
+
+    test "rejects invalid default_branch values in defaults", %{path: path} do
+      File.write!(path, """
+      version = "1"
+
+      [defaults]
+      repo = "test/repo"
+      clone_url = "https://git.example.com/test/repo.git"
+      default_branch = "main; rm -rf /"
+
+      [[sprite]]
+      name = "bb-test"
+      role = "builder"
+      """)
+
+      assert {:error, msg} = Loader.load(path)
+      assert msg =~ "[defaults] has invalid default_branch"
+    end
+
     test "returns error for missing sprites", %{path: path} do
       File.write!(path, """
       version = "1"
       [defaults]
       org = "test"
       repo = "test/repo"
+      clone_url = "https://git.example.com/test/repo.git"
       """)
 
       assert {:error, msg} = Loader.load(path)
@@ -190,6 +248,7 @@ defmodule Conductor.Fleet.LoaderTest do
 
       [defaults]
       repo = "test/repo"
+      clone_url = "https://git.example.com/test/repo.git"
 
       [[sprite]]
       name = "bb-fern"
@@ -207,6 +266,7 @@ defmodule Conductor.Fleet.LoaderTest do
 
       [defaults]
       repo = "test/repo"
+      clone_url = "https://git.example.com/test/repo.git"
 
       [personas]
       fern = "Review carefully."
@@ -226,6 +286,7 @@ defmodule Conductor.Fleet.LoaderTest do
       File.write!(path, """
       [defaults]
       repo = "test/repo"
+      clone_url = "https://git.example.com/test/repo.git"
 
       [[sprite]]
       name = "bb-test"
@@ -240,6 +301,7 @@ defmodule Conductor.Fleet.LoaderTest do
       File.write!(path, """
       [defaults]
       repo = "test/repo"
+      clone_url = "https://git.example.com/test/repo.git"
 
       [[sprite]]
       name = "bb-reviewer"
@@ -250,10 +312,45 @@ defmodule Conductor.Fleet.LoaderTest do
       assert msg =~ "invalid role 'reviewer'"
     end
 
+    test "accepts responder as a valid role", %{path: path} do
+      File.write!(path, """
+      [defaults]
+      repo = "test/repo"
+      clone_url = "https://git.example.com/test/repo.git"
+
+      [[sprite]]
+      name = "bb-tansy"
+      role = "responder"
+      """)
+
+      assert {:ok, config} = Loader.load(path)
+      assert [%{name: "bb-tansy", role: :responder}] = config.sprites
+    end
+
+    test "rejects fleets with more than one responder", %{path: path} do
+      File.write!(path, """
+      [defaults]
+      repo = "test/repo"
+      clone_url = "https://git.example.com/test/repo.git"
+
+      [[sprite]]
+      name = "bb-tansy-1"
+      role = "responder"
+
+      [[sprite]]
+      name = "bb-tansy-2"
+      role = "responder"
+      """)
+
+      assert {:error, msg} = Loader.load(path)
+      assert msg =~ "supports only one responder sprite"
+    end
+
     test "returns error for missing name", %{path: path} do
       File.write!(path, """
       [defaults]
       repo = "test/repo"
+      clone_url = "https://git.example.com/test/repo.git"
 
       [[sprite]]
       role = "builder"
@@ -286,6 +383,10 @@ defmodule Conductor.Fleet.LoaderTest do
       fixers = Loader.by_role(config.sprites, :fixer)
       assert length(fixers) == 1
       assert hd(fixers).name == "bb-thorn"
+
+      responders = Loader.by_role(config.sprites, :responder)
+      assert length(responders) == 1
+      assert hd(responders).name == "bb-tansy"
     end
   end
 end

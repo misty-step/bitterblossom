@@ -56,69 +56,6 @@ normalize_csv_list() {
     fi
 }
 
-# resolve_sprite_pr_authors returns configured PR author usernames, one per line.
-resolve_sprite_pr_authors() {
-    local fallback="${SPRITE_GITHUB_DEFAULT_USER:-misty-step-sprites}"
-    local csv="${SPRITE_PR_AUTHORS:-${SPRITE_PR_AUTHOR:-$fallback}}"
-    normalize_csv_list "$csv"
-}
-
-# resolve_sprite_github_auth resolves GitHub identity and token for one sprite.
-# Output: "<user>\t<email>\t<token>"
-resolve_sprite_github_auth() {
-    local sprite_name="$1"
-    local env_key
-    env_key="$(sprite_env_key "$sprite_name")"
-
-    local user_var="SPRITE_GITHUB_USER_${env_key}"
-    local email_var="SPRITE_GITHUB_EMAIL_${env_key}"
-    local token_var="SPRITE_GITHUB_TOKEN_${env_key}"
-
-    local user="${!user_var-}"
-    local user_from_default=true
-    if [[ -z "$user" ]]; then
-        user="${SPRITE_GITHUB_DEFAULT_USER:-misty-step-sprites}"
-    else
-        user_from_default=false
-    fi
-
-    local email="${!email_var-}"
-    if [[ -z "$email" ]]; then
-        if [[ "$user_from_default" == true ]]; then
-            email="${SPRITE_GITHUB_DEFAULT_EMAIL:-${user}@users.noreply.github.com}"
-        else
-            email="${user}@users.noreply.github.com"
-        fi
-    fi
-
-    local token="${!token_var-}"
-    if [[ -z "$token" ]]; then
-        token="${SPRITE_GITHUB_DEFAULT_TOKEN:-${GITHUB_TOKEN:-}}"
-    fi
-    if [[ -z "$token" ]]; then
-        token="$(gh auth token 2>/dev/null || true)"
-    fi
-
-    if [[ -z "$user" ]]; then
-        err "GitHub user missing for sprite '$sprite_name'."
-        err "Set $user_var or SPRITE_GITHUB_DEFAULT_USER."
-        return 1
-    fi
-    if [[ -z "$email" ]]; then
-        err "GitHub email missing for sprite '$sprite_name'."
-        err "Set $email_var or SPRITE_GITHUB_DEFAULT_EMAIL."
-        return 1
-    fi
-    if [[ -z "$token" ]]; then
-        err "GitHub token missing for sprite '$sprite_name'."
-        err "Set $token_var, SPRITE_GITHUB_DEFAULT_TOKEN, or GITHUB_TOKEN."
-        err "Fallback to \`gh auth token\` also failed."
-        return 1
-    fi
-
-    printf '%s\t%s\t%s\n' "$user" "$email" "$token"
-}
-
 # get_provider_for_sprite returns the provider configuration for a sprite.
 # Checks for per-sprite provider env vars first, then falls back to global defaults.
 # Output: "<provider>\t<model>"

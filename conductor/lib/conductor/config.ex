@@ -4,10 +4,6 @@ defmodule Conductor.Config do
   require Logger
 
   @type codex_auth_source :: {:chatgpt, binary()} | {:api_key, binary()} | :missing
-
-  @spec github_token!() :: binary()
-  def github_token!, do: System.fetch_env!("GITHUB_TOKEN")
-
   @spec sprites_org!() :: binary()
   def sprites_org! do
     System.get_env("SPRITES_ORG") ||
@@ -32,15 +28,35 @@ defmodule Conductor.Config do
     Application.get_env(:conductor, :event_log, ".bb/events.jsonl")
   end
 
+  @spec canary_services_path() :: binary()
+  def canary_services_path do
+    Application.get_env(:conductor, :canary_services_path, "../canary-services.toml")
+  end
+
+  @spec canary_endpoint() :: binary() | nil
+  def canary_endpoint do
+    nonempty_env("CANARY_ENDPOINT")
+  end
+
+  @spec canary_api_key() :: binary() | nil
+  def canary_api_key do
+    nonempty_env("CANARY_API_KEY")
+  end
+
   @spec session_timeout_minutes() :: pos_integer() | :infinity
   def session_timeout_minutes do
     Application.get_env(:conductor, :session_timeout_minutes, 60)
   end
 
-  @spec spellbook_repo() :: binary()
-  def spellbook_repo do
-    Application.get_env(:conductor, :spellbook_repo, "phrazzld/spellbook")
+  @spec spellbook_source() :: binary() | nil
+  def spellbook_source do
+    Application.get_env(:conductor, :spellbook_source) ||
+      default_local_spellbook_source() ||
+      Application.get_env(:conductor, :spellbook_repo)
   end
+
+  @spec spellbook_repo() :: binary() | nil
+  def spellbook_repo, do: spellbook_source()
 
   @spec fleet_health_check_interval_ms() :: pos_integer()
   def fleet_health_check_interval_ms do
@@ -107,11 +123,13 @@ defmodule Conductor.Config do
   end
 
   @spec dispatch_env() :: [{binary(), binary()}]
-  def dispatch_env do
-    # Render only the runtime API keys the harness still needs into the
-    # sprite-side env file. GitHub auth is persisted separately during setup.
+  @spec dispatch_env(keyword()) :: [{binary(), binary()}]
+  def dispatch_env(opts \\ []) do
+    # Render only runtime API keys the harness still needs into the sprite-side
+    # env file. Git transport is configured separately during setup.
     []
     |> maybe_codex_api_env()
+    |> maybe_canary_env(opts)
     |> maybe_env("EXA_API_KEY")
     |> Enum.reverse()
   end
@@ -130,6 +148,18 @@ defmodule Conductor.Config do
     end
   end
 
+  defp maybe_canary_env(acc, opts) do
+    if canary_capability_role?(Keyword.get(opts, :persona_role)) do
+      acc
+      |> maybe_env("CANARY_ENDPOINT")
+      |> maybe_env("CANARY_API_KEY")
+    else
+      acc
+    end
+  end
+
+  defp canary_capability_role?(role), do: role in [:tansy, :responder, "tansy", "responder"]
+
   defp nonempty_env(key) do
     case System.get_env(key) do
       nil -> nil
@@ -147,16 +177,30 @@ defmodule Conductor.Config do
     end
   end
 
+  @spec git_credentials_entries() :: [binary()]
+  def git_credentials_entries do
+    case nonempty_env("BB_GIT_CREDENTIALS") || nonempty_env("GIT_CREDENTIALS") do
+      nil ->
+        []
+
+      raw ->
+        raw
+        |> String.split("\n", trim: true)
+        |> Enum.reject(&(&1 == ""))
+    end
+  end
+
   @spec check_env!(keyword()) :: :ok
   def check_env!(opts \\ []) do
     checks =
       [
-        {"GITHUB_TOKEN", fn -> System.get_env("GITHUB_TOKEN") end},
         {"SPRITE_TOKEN or sprite CLI auth", fn -> sprite_auth_available?(opts) end}
       ] ++
         maybe_codex_auth_check(opts) ++
+        maybe_canary_auth_check(opts) ++
         [
-          {"gh", fn -> find_executable("gh") end},
+          {"spellbook source", fn -> spellbook_source_ready?() end},
+          {"git", fn -> find_executable("git") end},
           {"sprite", fn -> find_executable("sprite") end},
           {"persona source root",
            fn ->
@@ -206,6 +250,19 @@ defmodule Conductor.Config do
     System.get_env("SPRITE_TOKEN") ||
       sprite_cli_auth_live?(opts) ||
       false
+  end
+
+  defp spellbook_source_ready? do
+    case spellbook_source() do
+      source when is_binary(source) and source != "" ->
+        cond do
+          path_like_source?(source) -> File.dir?(Path.expand(source))
+          true -> true
+        end
+
+      _ ->
+        false
+    end
   end
 
   defp sprite_cli_auth_live?(opts) do
@@ -300,9 +357,33 @@ defmodule Conductor.Config do
     auth["refresh_token"] || get_in(auth, ["tokens", "refresh_token"])
   end
 
+  defp path_like_source?(source) do
+    String.starts_with?(source, ["/", "./", "../", "~/"])
+  end
+
+  defp default_local_spellbook_source do
+    source =
+      __DIR__
+      |> Path.join("../../../../spellbook")
+      |> Path.expand()
+
+    if File.dir?(source), do: source
+  end
+
   defp maybe_codex_auth_check(opts) do
     if Keyword.get(opts, :require_codex_auth, true) do
       [{"Codex ChatGPT auth cache or OPENAI_API_KEY", fn -> codex_auth_available?() end}]
+    else
+      []
+    end
+  end
+
+  defp maybe_canary_auth_check(opts) do
+    if Keyword.get(opts, :require_canary_auth, false) do
+      [
+        {"CANARY_ENDPOINT", fn -> canary_endpoint() end},
+        {"CANARY_API_KEY", fn -> canary_api_key() end}
+      ]
     else
       []
     end

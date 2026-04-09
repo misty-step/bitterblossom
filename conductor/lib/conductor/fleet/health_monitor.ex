@@ -11,7 +11,7 @@ defmodule Conductor.Fleet.HealthMonitor do
   - If loop already alive → `:healthy` (external restart)
   - If no loop → `:launching` + relaunch
 
-  Self-reload: polls `origin/master` once per health check cycle.
+  Self-reload: polls the configured remote branch once per health check cycle.
   When new commits are detected, idle sprites (reachable + no loop) are
   re-provisioned with fresh code and relaunched. Active sprites are
   left alone — they pick up new code on their next relaunch.
@@ -22,7 +22,7 @@ defmodule Conductor.Fleet.HealthMonitor do
   use GenServer
   require Logger
 
-  alias Conductor.{Config, Store, Workspace}
+  alias Conductor.{Config, Shell, Store, Workspace}
   alias Conductor.Fleet.Reconciler
 
   @max_launch_ticks 3
@@ -34,8 +34,8 @@ defmodule Conductor.Fleet.HealthMonitor do
     :repo,
     :interval_ms,
     :timer_ref,
-    :master_sha,
     sprites: [],
+    tracked_heads: %{},
     known_health: %{},
     launch_ticks: %{},
     launch_times: %{},
@@ -95,10 +95,15 @@ defmodule Conductor.Fleet.HealthMonitor do
     if state.timer_ref, do: Process.cancel_timer(state.timer_ref)
     ref = schedule_check(state.interval_ms)
 
+    tracked_heads =
+      state.tracked_heads
+      |> Map.take(Enum.map(sprites, &sprite_ref_key(&1, repo)))
+
     state = %{
       state
       | sprites: sprites,
         repo: repo,
+        tracked_heads: tracked_heads,
         known_health: known_health,
         launch_ticks: launch_ticks,
         launch_times: launch_times,
@@ -130,8 +135,8 @@ defmodule Conductor.Fleet.HealthMonitor do
   # --- Private ---
 
   defp check_and_recover(state) do
-    # 1. Poll origin/master SHA (one fetch per cycle)
-    {state, reload_needed} = poll_master_sha(state)
+    # 1. Poll each configured repo/branch ref once per cycle
+    {state, changed_refs} = poll_remote_heads(state)
 
     # 2. Probe all sprites, collect results
     probed =
@@ -143,8 +148,9 @@ defmodule Conductor.Fleet.HealthMonitor do
     # 3. Process each sprite: reload idle ones if needed, else normal transition
     Enum.reduce(probed, state, fn {sprite, ready?, loop_alive?}, acc ->
       old = Map.get(acc.known_health, sprite.name, :unhealthy)
+      ref_changed? = MapSet.member?(changed_refs, sprite_ref_key(sprite, acc.repo))
 
-      if reload_needed and ready? and not loop_alive? do
+      if ref_changed? and ready? and not loop_alive? do
         reload_sprite(acc, sprite)
       else
         transition(acc, sprite, old, ready?, loop_alive?)
@@ -152,50 +158,69 @@ defmodule Conductor.Fleet.HealthMonitor do
     end)
   end
 
-  # Poll origin/master SHA on one reachable sprite. One fetch per cycle.
-  # Returns {updated_state, reload_needed_boolean}.
-  defp poll_master_sha(%{sprites: []} = state), do: {state, false}
+  # Poll each configured repo/branch head on one representative sprite per ref.
+  # Returns {updated_state, changed_ref_keys}.
+  defp poll_remote_heads(%{sprites: []} = state), do: {state, MapSet.new()}
 
-  defp poll_master_sha(state) do
-    case find_reachable_sprite(state) do
-      nil ->
-        {state, false}
+  defp poll_remote_heads(state) do
+    state.sprites
+    |> Enum.group_by(&sprite_ref_key(&1, state.repo))
+    |> Enum.reduce({state, MapSet.new()}, fn {{repo, branch} = ref_key, sprites},
+                                             {acc, changed} ->
+      case find_probe_sprite(acc, sprites) do
+        nil ->
+          {acc, changed}
 
-      sprite ->
-        repo = sprite_repo(sprite, state.repo)
-        workspace = Conductor.Workspace.repo_root(repo)
-        cmd = "cd #{workspace} && git fetch origin --quiet && git rev-parse origin/master"
+        sprite ->
+          workspace = Conductor.Workspace.repo_root(repo)
 
-        case sprite_mod().exec(sprite.name, cmd, timeout: 30_000) do
-          {:ok, output} ->
-            sha = String.trim(output)
+          case Workspace.validate_branch(branch) do
+            :ok ->
+              cmd =
+                "cd #{shell_quote(workspace)} && git fetch origin --quiet && " <>
+                  "git rev-parse #{shell_quote(Workspace.origin_branch_ref(branch))}"
 
-            cond do
-              state.master_sha == nil ->
-                {%{state | master_sha: sha}, false}
+              case sprite_mod().exec(sprite.name, cmd, timeout: 30_000) do
+                {:ok, output} ->
+                  sha = String.trim(output)
+                  previous_sha = Map.get(acc.tracked_heads, ref_key)
 
-              sha != state.master_sha ->
-                Logger.info(
-                  "[health] new commits on origin/master: #{String.slice(state.master_sha, 0, 7)}..#{String.slice(sha, 0, 7)}"
-                )
+                  cond do
+                    previous_sha == nil ->
+                      {%{acc | tracked_heads: Map.put(acc.tracked_heads, ref_key, sha)}, changed}
 
-                record_fleet_reload_event(state.master_sha, sha)
-                {%{state | master_sha: sha}, true}
+                    sha != previous_sha ->
+                      Logger.info(
+                        "[health] new commits on #{repo}@origin/#{branch}: #{String.slice(previous_sha, 0, 7)}..#{String.slice(sha, 0, 7)}"
+                      )
 
-              true ->
-                {state, false}
-            end
+                      record_fleet_reload_event(previous_sha, sha, repo, branch)
 
-          {:error, _msg, _code} ->
-            {state, false}
-        end
-    end
+                      {put_in(acc.tracked_heads[ref_key], sha), MapSet.put(changed, ref_key)}
+
+                    true ->
+                      {acc, changed}
+                  end
+
+                {:error, _msg, _code} ->
+                  {acc, changed}
+              end
+
+            {:error, :invalid_branch} ->
+              Logger.warning(
+                "[health] invalid default_branch for #{sprite.name}: #{inspect(branch)}"
+              )
+
+              {acc, changed}
+          end
+      end
+    end)
   end
 
-  defp find_reachable_sprite(state) do
-    Enum.find(state.sprites, fn sprite ->
+  defp find_probe_sprite(state, sprites) do
+    Enum.find(sprites, fn sprite ->
       Map.get(state.known_health, sprite.name) in [:healthy, :launching]
-    end) || List.first(state.sprites)
+    end) || List.first(sprites)
   end
 
   # Re-provision an idle sprite with fresh code from master.
@@ -203,17 +228,28 @@ defmodule Conductor.Fleet.HealthMonitor do
   # to avoid blocking the health monitor GenServer loop.
   defp reload_sprite(state, sprite) do
     repo = sprite_repo(sprite, state.repo)
+    branch = sprite_default_branch(sprite)
 
     Task.Supervisor.start_child(Conductor.TaskSupervisor, fn ->
       workspace = Workspace.repo_root(repo)
-      pull_cmd = "cd #{workspace} && git pull --ff-only --quiet"
 
-      case sprite_mod().exec(sprite.name, pull_cmd, timeout: 30_000) do
-        {:ok, _} ->
-          launcher_mod().launch(sprite, repo)
+      case Workspace.validate_branch(branch) do
+        :ok ->
+          pull_cmd =
+            "cd #{shell_quote(workspace)} && git fetch origin --quiet && " <>
+              "#{Workspace.checkout_branch_command(branch)} && " <>
+              "git clean -fd"
 
-        {:error, msg, _code} ->
-          Logger.warning("[health] #{sprite.name} reload pull failed: #{msg}")
+          case sprite_mod().exec(sprite.name, pull_cmd, timeout: 30_000) do
+            {:ok, _} ->
+              launcher_mod().launch(sprite, repo)
+
+            {:error, msg, _code} ->
+              Logger.warning("[health] #{sprite.name} reload pull failed: #{msg}")
+          end
+
+        {:error, :invalid_branch} ->
+          Logger.warning("[health] invalid default_branch for #{sprite.name}: #{inspect(branch)}")
       end
     end)
 
@@ -222,9 +258,14 @@ defmodule Conductor.Fleet.HealthMonitor do
     |> put_launch_ticks(sprite.name, 0)
   end
 
-  defp record_fleet_reload_event(old_sha, new_sha) do
+  defp record_fleet_reload_event(old_sha, new_sha, repo, branch) do
     try do
-      Store.record_event("fleet", "fleet_reload", %{old_sha: old_sha, new_sha: new_sha})
+      Store.record_event("fleet", "fleet_reload", %{
+        old_sha: old_sha,
+        new_sha: new_sha,
+        repo: repo,
+        branch: branch
+      })
     catch
       :exit, _ -> :ok
     end
@@ -430,6 +471,12 @@ defmodule Conductor.Fleet.HealthMonitor do
   end
 
   defp sprite_repo(sprite, fallback_repo), do: Map.get(sprite, :repo, fallback_repo)
+  defp sprite_default_branch(sprite), do: Map.get(sprite, :default_branch, "master")
+
+  defp sprite_ref_key(sprite, fallback_repo),
+    do: {sprite_repo(sprite, fallback_repo), sprite_default_branch(sprite)}
+
+  defp shell_quote(value), do: Shell.quote_arg(to_string(value))
 
   defp launcher_mod do
     Application.get_env(:conductor, :launcher_module, Conductor.Launcher)

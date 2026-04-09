@@ -24,8 +24,8 @@ mix conductor fleet --fleet ../fleet.toml --reconcile
 
 Confirm:
 
-- `GITHUB_TOKEN` is set.
 - sprite auth is available through `SPRITE_TOKEN`, `FLY_API_TOKEN`, or `sprite auth login`.
+- local verification tools are available (`git`, `sprite`, Dagger prerequisites from repo docs).
 - declared sprites show healthy in `mix conductor fleet`.
 
 ## Workflow

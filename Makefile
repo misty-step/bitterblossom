@@ -1,6 +1,21 @@
-.PHONY: test test-hooks test-conductor conductor-check ensure-mix
+.PHONY: ci ci-fast test test-hooks test-conductor conductor-check ensure-mix ensure-dagger
 
-test: test-hooks test-conductor
+ci: ensure-dagger
+	./scripts/ci/dagger-call.sh check
+
+ci-fast: ensure-dagger
+	./scripts/ci/dagger-call.sh fast
+
+test: ci
+
+ensure-dagger:
+	@if command -v dagger >/dev/null 2>&1; then \
+		:; \
+	else \
+		echo "error: Dagger CLI missing: 'dagger' not found in PATH" >&2; \
+		echo "hint: install Dagger before running repo-level CI" >&2; \
+		exit 127; \
+	fi
 
 test-hooks:
 	@if command -v pytest >/dev/null 2>&1; then \

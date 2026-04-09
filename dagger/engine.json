@@ -1,0 +1,12 @@
+{
+  "gc": {
+    "maxUsedSpace": "20GB",
+    "reservedSpace": "5GB",
+    "minFreeSpace": "10GB"
+  },
+  "registries": {
+    "docker.io": {
+      "mirrors": ["mirror.gcr.io"]
+    }
+  }
+}

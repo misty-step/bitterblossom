@@ -53,6 +53,7 @@ defmodule Conductor.Launcher do
     end
 
     with :ok <- maybe_sync_codex_auth(sprite),
+         :ok <- ensure_launch_env(role),
          :ok <- bootstrap_module().ensure_spellbook(sprite),
          :ok <- ensure_repo_checkout(sprite_config, repo, workspace),
          :ok <- workspace_module().sync_persona(sprite, workspace, persona) do
@@ -104,7 +105,18 @@ defmodule Conductor.Launcher do
   defp role_display_name(:fixer), do: "Thorn"
   defp role_display_name(:polisher), do: "Fern"
   defp role_display_name(:triage), do: "Muse"
+  defp role_display_name(:responder), do: "Tansy"
   defp role_display_name(role), do: to_string(role) |> String.capitalize()
+
+  defp ensure_launch_env(:responder) do
+    if Conductor.Config.canary_endpoint() && Conductor.Config.canary_api_key() do
+      :ok
+    else
+      {:error, "missing Canary responder credentials"}
+    end
+  end
+
+  defp ensure_launch_env(_role), do: :ok
 
   defp ensure_repo_checkout(sprite_config, repo, workspace) do
     sprite = sprite_config.name
@@ -112,7 +124,12 @@ defmodule Conductor.Launcher do
 
     case sprite_module().exec(sprite, "test -d #{shell_quote(git_dir)}", timeout: 15_000) do
       {:ok, _} ->
-        refresh_workspace(sprite, workspace)
+        refresh_workspace(
+          sprite,
+          workspace,
+          Map.get(sprite_config, :clone_url),
+          Map.get(sprite_config, :default_branch)
+        )
 
       {:error, reason, _code} ->
         Logger.info(
@@ -121,28 +138,49 @@ defmodule Conductor.Launcher do
 
         sprite_module().provision(sprite,
           repo: repo,
-          persona: sprite_config.persona,
+          clone_url: Map.get(sprite_config, :clone_url),
+          default_branch: Map.get(sprite_config, :default_branch, "master"),
+          persona: Map.get(sprite_config, :persona),
+          persona_role: workspace_module().persona_for_role(sprite_config.role),
           harness: sprite_config.harness,
           force: false
         )
     end
   end
 
-  defp refresh_workspace(sprite, workspace) do
-    refresh_cmd =
-      "cd #{shell_quote(workspace)} && " <>
-        "git fetch origin && " <>
-        "git checkout -f origin/master && " <>
-        "git clean -fd"
+  defp refresh_workspace(sprite, workspace, clone_url, default_branch) do
+    case Workspace.validate_branch(default_branch) do
+      :ok ->
+        remote_sync =
+          case clone_url do
+            url when is_binary(url) and url != "" ->
+              "if git remote get-url origin >/dev/null 2>&1; then " <>
+                "git remote set-url origin #{shell_quote(url)}; " <>
+                "else git remote add origin #{shell_quote(url)}; fi && "
 
-    case sprite_module().exec(sprite, refresh_cmd, timeout: 60_000) do
-      {:ok, _} ->
-        Logger.info("[launcher] #{sprite} workspace refreshed to origin/master")
-        :ok
+            _ ->
+              ""
+          end
 
-      {:error, msg, _code} ->
-        Logger.warning("[launcher] #{sprite} workspace refresh failed: #{msg}")
-        {:error, msg}
+        refresh_cmd =
+          "cd #{shell_quote(workspace)} && " <>
+            remote_sync <>
+            "git fetch origin --quiet && " <>
+            "#{Workspace.checkout_branch_command(default_branch)} && " <>
+            "git clean -fd"
+
+        case sprite_module().exec(sprite, refresh_cmd, timeout: 60_000) do
+          {:ok, _} ->
+            Logger.info("[launcher] #{sprite} workspace refreshed to origin/#{default_branch}")
+            :ok
+
+          {:error, msg, _code} ->
+            Logger.warning("[launcher] #{sprite} workspace refresh failed: #{msg}")
+            {:error, msg}
+        end
+
+      {:error, :invalid_branch} ->
+        {:error, "invalid default_branch: #{inspect(default_branch)}"}
     end
   end
 

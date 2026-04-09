@@ -5,8 +5,6 @@ defmodule Conductor.CLILogsTest do
 
   alias Conductor.CLI
 
-  @conductor_dir Path.expand("../..", __DIR__)
-
   test "logs help prints usage without exiting" do
     output =
       capture_io(fn ->

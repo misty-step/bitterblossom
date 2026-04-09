@@ -23,6 +23,7 @@ defmodule Conductor.MixProject do
     [
       {:exqlite, "~> 0.27"},
       {:jason, "~> 1.4"},
+      {:req, "~> 0.5"},
       {:phoenix, "~> 1.7"},
       {:phoenix_live_view, "~> 1.0"},
       {:phoenix_html, "~> 4.1"},

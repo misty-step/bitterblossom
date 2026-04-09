@@ -9,12 +9,16 @@ defmodule Conductor.ConfigTest do
     original_home = System.get_env("HOME")
     original_codex_home = System.get_env("CODEX_HOME")
     original_openai_key = System.get_env("OPENAI_API_KEY")
+    original_canary_endpoint = System.get_env("CANARY_ENDPOINT")
+    original_canary_api_key = System.get_env("CANARY_API_KEY")
     original_path = System.get_env("PATH")
 
     on_exit(fn ->
       restore_home(original_home)
       restore_env("CODEX_HOME", original_codex_home)
       restore_env("OPENAI_API_KEY", original_openai_key)
+      restore_env("CANARY_ENDPOINT", original_canary_endpoint)
+      restore_env("CANARY_API_KEY", original_canary_api_key)
       restore_env("PATH", original_path)
     end)
 
@@ -47,6 +51,84 @@ defmodule Conductor.ConfigTest do
     end
   end
 
+  describe "canary_services_path/0" do
+    test "returns default when no app config" do
+      original = Application.get_env(:conductor, :canary_services_path)
+
+      try do
+        Application.delete_env(:conductor, :canary_services_path)
+        assert Config.canary_services_path() == "../canary-services.toml"
+      after
+        if original,
+          do: Application.put_env(:conductor, :canary_services_path, original),
+          else: Application.delete_env(:conductor, :canary_services_path)
+      end
+    end
+
+    test "returns configured value" do
+      Application.put_env(:conductor, :canary_services_path, "/tmp/canary-services.toml")
+      assert Config.canary_services_path() == "/tmp/canary-services.toml"
+    after
+      Application.delete_env(:conductor, :canary_services_path)
+    end
+  end
+
+  describe "canary_endpoint/0 and canary_api_key/0" do
+    test "read non-empty Canary credentials from the environment" do
+      System.put_env("CANARY_ENDPOINT", "https://canary-obs.fly.dev")
+      System.put_env("CANARY_API_KEY", "canary-test-key")
+
+      assert Config.canary_endpoint() == "https://canary-obs.fly.dev"
+      assert Config.canary_api_key() == "canary-test-key"
+    after
+      System.delete_env("CANARY_ENDPOINT")
+      System.delete_env("CANARY_API_KEY")
+    end
+
+    test "treat empty Canary credentials as missing" do
+      System.put_env("CANARY_ENDPOINT", "")
+      System.put_env("CANARY_API_KEY", "")
+
+      assert Config.canary_endpoint() == nil
+      assert Config.canary_api_key() == nil
+    after
+      System.delete_env("CANARY_ENDPOINT")
+      System.delete_env("CANARY_API_KEY")
+    end
+  end
+
+  describe "spellbook_source/0" do
+    test "prefers an explicitly configured spellbook source" do
+      Application.put_env(:conductor, :spellbook_source, "/tmp/spellbook-source")
+      assert Config.spellbook_source() == "/tmp/spellbook-source"
+    after
+      Application.delete_env(:conductor, :spellbook_source)
+    end
+  end
+
+  describe "git_credentials_entries/0" do
+    test "reads newline-delimited explicit git credentials" do
+      System.put_env(
+        "BB_GIT_CREDENTIALS",
+        "https://token@code.example.com/org/repo.git\nhttps://token@code.example.com/other/repo.git"
+      )
+
+      assert Config.git_credentials_entries() == [
+               "https://token@code.example.com/org/repo.git",
+               "https://token@code.example.com/other/repo.git"
+             ]
+    after
+      System.delete_env("BB_GIT_CREDENTIALS")
+    end
+
+    test "does not synthesize git credentials from GITHUB_TOKEN" do
+      System.put_env("GITHUB_TOKEN", "ghp_test")
+      assert Config.git_credentials_entries() == []
+    after
+      System.delete_env("GITHUB_TOKEN")
+    end
+  end
+
   describe "prompt_template/0" do
     test "returns env var when set" do
       System.put_env("CONDUCTOR_PROMPT_TEMPLATE", "/custom/template.md")
@@ -74,23 +156,6 @@ defmodule Conductor.ConfigTest do
       end
     after
       Application.delete_env(:conductor, :persona_source_root)
-    end
-  end
-
-  describe "github_token!/0" do
-    test "returns token when set" do
-      System.put_env("GITHUB_TOKEN", "ghp_test123")
-      assert Config.github_token!() == "ghp_test123"
-    after
-      System.delete_env("GITHUB_TOKEN")
-    end
-
-    test "raises when missing" do
-      System.delete_env("GITHUB_TOKEN")
-
-      assert_raise System.EnvError, fn ->
-        Config.github_token!()
-      end
     end
   end
 
@@ -388,6 +453,49 @@ defmodule Conductor.ConfigTest do
       System.delete_env("CODEX_HOME")
 
       assert Config.codex_auth_file() == Path.join(System.user_home!(), ".codex/auth.json")
+    end
+  end
+
+  describe "check_env!/1" do
+    test "requires Canary credentials when responder fleets need them" do
+      original_persona_source_root = Application.get_env(:conductor, :persona_source_root)
+
+      on_exit(fn ->
+        if original_persona_source_root,
+          do: Application.put_env(:conductor, :persona_source_root, original_persona_source_root),
+          else: Application.delete_env(:conductor, :persona_source_root)
+      end)
+
+      dir = Path.join(System.tmp_dir!(), "fake_cli_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      for cli <- ~w(git sprite) do
+        path = Path.join(dir, cli)
+        File.write!(path, "#!/bin/sh\nexit 0\n")
+        File.chmod!(path, 0o755)
+      end
+
+      System.put_env("PATH", dir <> ":" <> System.get_env("PATH", ""))
+      System.put_env("SPRITE_TOKEN", "sprite_test")
+      System.put_env("OPENAI_API_KEY", "sk-test")
+      System.delete_env("CANARY_ENDPOINT")
+      System.delete_env("CANARY_API_KEY")
+
+      Application.put_env(
+        :conductor,
+        :persona_source_root,
+        Path.expand("../../../sprites", __DIR__)
+      )
+
+      assert_raise RuntimeError, ~r/missing: CANARY_ENDPOINT, CANARY_API_KEY/, fn ->
+        Config.check_env!(require_canary_auth: true)
+      end
+    after
+      System.delete_env("SPRITE_TOKEN")
+      System.delete_env("OPENAI_API_KEY")
+      System.delete_env("CANARY_ENDPOINT")
+      System.delete_env("CANARY_API_KEY")
     end
   end
 

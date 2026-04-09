@@ -1,12 +1,19 @@
 # Project: Bitterblossom
 
+## Direction Lock
+
+**Current direction lock (2026-04-08):** Bitterblossom is temporarily focused
+on one job only: `Tansy` listens to Canary, investigates live incidents,
+repairs the correct repo, and verifies recovery. Backlog-clearing factory lanes
+remain in the codebase, but they are not the active product priority.
+
 ## Vision
-Bitterblossom is the conductor for a single-repo software factory: it routes GitHub work to persistent sprites, drives implementation and review, and merges only when governance says the run is truly done.
+Bitterblossom is the conductor for a single-repo software factory: it routes repo-owned work to persistent sprites, drives implementation and review, and lands only when governance says the run is truly done.
 
 **North Star:** An always-on remote conductor clears a fully agent-runnable backlog end-to-end with truthful run state, isolated execution, and human-auditable decisions.
 **Target User:** An operator or autonomous agent supervising a persistent sprite workforce for one repository.
 **Current Focus:** Make the single-repo factory trustworthy enough to run 24/7 without a laptop in the loop.
-**Key Differentiators:** Thin transport CLI, run-centric control plane, persistent sprites, GitHub as the work ledger, explicit governance instead of “Weaver says done.”
+**Key Differentiators:** Thin transport CLI, run-centric control plane, persistent sprites, repo-owned work and evidence, explicit governance instead of “Weaver says done.”
 
 ## Design Philosophy
 
@@ -28,16 +35,16 @@ Bitterblossom is a **cybernetic governor** for software production. The conducto
 | Worker Sprite | A persistent remote execution surface used by named sprites such as Weaver, Thorn, Fern, and Muse. |
 | Review Council | The independent reviewer set that audits a builder result before merge. |
 | Run | One durable execution record with a `run_id`, explicit phase, artifacts, and event history. |
-| Lease | The machine-facing claim that one run currently owns one GitHub issue. |
+| Lease | The machine-facing claim that one run currently owns one repo-local work item or incident lane. |
 | Profile | The runtime configuration chosen by the router: model, provider, persona, prompt pack, tools, and budget policy. |
 | Variant | One parallel implementation path for the same issue under a different profile. |
-| Trace Bullet | The narrow proof path for the factory: lease issue, build, review, revise, pass CI, merge, reconcile. |
+| Trace Bullet | The narrow proof path for the factory: claim work, build, review, revise, pass Dagger, land, reconcile. |
 
 ## Active Focus
 
-- **Milestone:** `Now: Current Sprint` for operational quality foundation, with `Next: Up Next` carrying behaviour extraction and Go absorption.
-- **Key Issues:** [#625](https://github.com/misty-step/bitterblossom/issues/625) (Elixir CI), [#626](https://github.com/misty-step/bitterblossom/issues/626) (RunServer tests), [#627](https://github.com/misty-step/bitterblossom/issues/627) (security hardening), [#628](https://github.com/misty-step/bitterblossom/issues/628) (prompt context), [#553](https://github.com/misty-step/bitterblossom/issues/553) (CI/Auth)
-- **Theme:** Make the Elixir conductor trustworthy: CI pipeline, test coverage on critical paths, security hardening, Weaver prompt enrichment. The architecture is validated — now harden the operational foundation.
+- **Milestone:** `Tansy v1` — one always-on Canary responder sprite with an explicit service catalog and recovery verification loop.
+- **Key Issues:** role wiring for `responder`, typed `canary-services.toml`, Tansy persona/skill path, and a safe path to opt-in merge/deploy.
+- **Theme:** Truthful incident response over generic factory throughput. Canary is the work queue; incidents come before backlog.
 
 ## Architecture Artifacts
 
@@ -52,8 +59,8 @@ Bitterblossom is a **cybernetic governor** for software production. The conducto
 
 ## Quality Bar
 
-- [ ] Every issue the conductor can lease is runnable by sprites without clarification loops.
-- [ ] Autopilot-ready issues carry `## Product Spec` and `### Intent Contract`, and routing surfaces explicit reasons when an issue is not ready.
+- [ ] Every work item the conductor can claim is runnable by sprites without clarification loops.
+- [ ] Autopilot-ready work items carry a durable local spec and intent contract, and routing surfaces explicit reasons when a lane is not ready.
 - [ ] Run state tells the truth: phase, heartbeat, blocking reason, review status, and merge outcome are inspectable.
 - [ ] Builder and reviewer execution is isolated per run; stale workspace state cannot leak forward.
 - [ ] The full trace bullet can be reproduced on demand against a target repository.

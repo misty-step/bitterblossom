@@ -49,7 +49,7 @@ defmodule Conductor.SecurityTest do
   end
 
   describe "governance: sprite merge lockout" do
-    test "Sprite.kill_and_revoke/2 kills agents and revokes gh auth" do
+    test "Sprite.kill_and_revoke/2 kills agents without requiring gh cleanup" do
       commands_run = :ets.new(:kill_revoke_cmds, [:bag, :public])
 
       exec_fn = fn _sprite, command, _opts ->
@@ -61,7 +61,7 @@ defmodule Conductor.SecurityTest do
 
       cmds = :ets.tab2list(commands_run) |> Enum.map(fn {:cmd, c} -> c end)
       assert Enum.any?(cmds, &String.contains?(&1, "pkill"))
-      assert Enum.any?(cmds, &String.contains?(&1, "gh auth logout"))
+      refute Enum.any?(cmds, &String.contains?(&1, "gh auth logout"))
       :ets.delete(commands_run)
     end
 

@@ -16,6 +16,7 @@ defmodule Conductor.Sprite do
   @sprite_claude_dir Path.join(@sprite_home, ".claude")
   @sprite_codex_dir Path.join(@sprite_home, ".codex")
   @sprite_codex_auth_path Path.join(@sprite_codex_dir, "auth.json")
+  @sprite_git_credentials_path Path.join(@sprite_home, ".git-credentials")
   @sprite_runtime_dir Path.join(@sprite_home, ".bitterblossom")
   @sprite_runtime_env_path Path.join(@sprite_runtime_dir, "runtime.env")
   @sprite_pause_path Path.join(@sprite_runtime_dir, "paused")
@@ -115,7 +116,15 @@ defmodule Conductor.Sprite do
       prompt_path = Path.join(workspace, "PROMPT.md")
       runtime_env_path = Path.join(workspace, @runtime_env_file)
 
-      case upload_dispatch_files(exec_fn, sprite, prompt_path, prompt, runtime_env_path, repo) do
+      case upload_dispatch_files(
+             exec_fn,
+             sprite,
+             prompt_path,
+             prompt,
+             runtime_env_path,
+             repo,
+             opts
+           ) do
         {:error, msg, code} ->
           {:error, "dispatch file upload failed: #{msg}", code}
 
@@ -227,7 +236,10 @@ defmodule Conductor.Sprite do
   @spec provision(binary(), keyword()) :: :ok | {:error, term()}
   def provision(sprite, opts \\ []) do
     repo = Keyword.get(opts, :repo)
+    clone_url = Keyword.get(opts, :clone_url)
+    default_branch = Keyword.get(opts, :default_branch, "master")
     persona = Keyword.get(opts, :persona)
+    persona_role = Keyword.get(opts, :persona_role)
     harness = Keyword.get(opts, :harness)
     force = Keyword.get(opts, :force, false)
     exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
@@ -236,9 +248,10 @@ defmodule Conductor.Sprite do
          :ok <- upload_base_configs(sprite, persona, exec_fn),
          :ok <- ensure_codex(sprite, force, exec_fn),
          :ok <- maybe_sync_codex_auth(sprite, harness, exec_fn),
-         :ok <- upload_runtime_env(sprite, repo, exec_fn),
-         :ok <- configure_git_auth(sprite, exec_fn),
-         :ok <- maybe_setup_repo(sprite, repo, persona, force, exec_fn),
+         :ok <- upload_runtime_env(sprite, repo, exec_fn, persona_role: persona_role),
+         :ok <- configure_git_runtime(sprite, exec_fn),
+         :ok <-
+           maybe_setup_repo(sprite, repo, clone_url, default_branch, persona, force, exec_fn),
          :ok <- Conductor.Bootstrap.ensure_spellbook(sprite, exec_fn: exec_fn) do
       :ok
     end
@@ -314,7 +327,7 @@ defmodule Conductor.Sprite do
     end
   end
 
-  @doc "Kill agent processes and revoke GitHub auth. Best-effort, always returns :ok."
+  @doc "Kill agent processes. Best-effort, always returns :ok."
   @spec kill_and_revoke(binary(), keyword()) :: :ok
   def kill_and_revoke(sprite, opts \\ []) do
     require Logger
@@ -325,11 +338,6 @@ defmodule Conductor.Sprite do
       {:error, msg, _} -> Logger.warning("[shutdown] kill agents on #{sprite}: #{msg}")
     end
 
-    case exec_fn.(sprite, "gh auth logout --hostname github.com", timeout: 5_000) do
-      {:ok, _} -> :ok
-      {:error, msg, _} -> Logger.warning("[shutdown] gh auth logout on #{sprite}: #{msg}")
-    end
-
     :ok
   end
 
@@ -337,13 +345,15 @@ defmodule Conductor.Sprite do
   def status(sprite, opts \\ []) do
     exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
     harness = Keyword.get(opts, :harness)
+    repo = Keyword.get(opts, :repo)
+    clone_url = Keyword.get(opts, :clone_url)
 
     case probe(sprite, exec_fn: exec_fn) do
       {:ok, %{reachable: true}} ->
         harness_ready = harness_ready?(sprite, harness, exec_fn)
         codex_auth_ready = codex_auth_ready?(sprite, harness, exec_fn)
-        gh_authenticated = gh_authenticated?(sprite, exec_fn)
-        git_credential_helper = git_credential_helper_ready?(sprite, exec_fn)
+        git_ready = git_ready?(sprite, exec_fn)
+        repo_access_ready = repo_access_ready?(sprite, repo, clone_url, exec_fn)
         paused = paused?(sprite, exec_fn: exec_fn)
         busy = busy?(sprite, exec_fn: exec_fn)
         loop_pid = loop_pid(sprite, exec_fn)
@@ -356,15 +366,14 @@ defmodule Conductor.Sprite do
            reachable: true,
            harness_ready: harness_ready,
            codex_auth_ready: codex_auth_ready,
-           gh_authenticated: gh_authenticated,
-           git_credential_helper: git_credential_helper,
+           git_ready: git_ready,
+           repo_access_ready: repo_access_ready,
            paused: paused,
            busy: busy,
            loop_pid: loop_pid,
            loop_alive: loop_alive,
            lifecycle_status: lifecycle_status(paused, busy),
-           healthy:
-             harness_ready and codex_auth_ready and gh_authenticated and git_credential_helper
+           healthy: harness_ready and codex_auth_ready and git_ready and repo_access_ready
          }}
 
       {:error, reason} ->
@@ -482,14 +491,60 @@ defmodule Conductor.Sprite do
     )
   end
 
-  defp gh_authenticated?(sprite, exec_fn) do
-    match?({:ok, _}, exec_fn.(sprite, "gh auth status >/dev/null 2>&1", timeout: 15_000))
+  defp git_ready?(sprite, exec_fn) do
+    command = """
+    command -v git >/dev/null 2>&1 &&
+    test -n "$(git config --global --get user.name)" &&
+    test -n "$(git config --global --get user.email)"
+    """
+
+    match?({:ok, _}, exec_fn.(sprite, command, timeout: 15_000))
   end
 
-  defp git_credential_helper_ready?(sprite, exec_fn) do
-    case exec_fn.(sprite, "git config --global --get credential.helper", timeout: 15_000) do
-      {:ok, output} -> output == "!gh auth git-credential"
-      _ -> false
+  defp repo_access_ready?(_sprite, nil, _clone_url, _exec_fn), do: true
+  defp repo_access_ready?(_sprite, "", _clone_url, _exec_fn), do: true
+
+  defp repo_access_ready?(sprite, repo, clone_url, exec_fn) do
+    repo_dir = sprite_repo_workspace(repo)
+
+    clone_target =
+      case validate_clone_url(clone_url, repo) do
+        {:ok, value} -> value
+        {:error, _reason} -> nil
+      end
+
+    repo_ready? =
+      match?(
+        {:ok, _},
+        exec_fn.(sprite, "test -d #{shell_quote(Path.join(repo_dir, ".git"))}", timeout: 15_000)
+      )
+
+    if repo_ready? do
+      case clone_target do
+        nil ->
+          false
+
+        _ ->
+          command =
+            "cd #{shell_quote(repo_dir)} && " <>
+              "current=$(git remote get-url origin 2>/dev/null || true) && " <>
+              "current=$(printf '%s' \"$current\" | sed -E 's#^(https?://)[^/@]+@#\\1#') && " <>
+              "expected=$(printf '%s' #{shell_quote(clone_target)} | sed -E 's#^(https?://)[^/@]+@#\\1#') && " <>
+              "current=${current%/} && current=${current%.git} && " <>
+              "expected=${expected%/} && expected=${expected%.git} && " <>
+              "test \"$current\" = \"$expected\""
+
+          match?({:ok, _}, exec_fn.(sprite, command, timeout: 15_000))
+      end
+    else
+      with clone_target when is_binary(clone_target) <- clone_target do
+        command =
+          "GIT_TERMINAL_PROMPT=0 git ls-remote #{shell_quote(clone_target)} >/dev/null 2>&1"
+
+        match?({:ok, _}, exec_fn.(sprite, command, timeout: 15_000))
+      else
+        _ -> false
+      end
     end
   end
 
@@ -691,8 +746,8 @@ defmodule Conductor.Sprite do
     end
   end
 
-  defp upload_runtime_env(sprite, repo, exec_fn) do
-    with_temp_file("sprite-runtime-env", runtime_env_contents(repo), fn runtime_env_file ->
+  defp upload_runtime_env(sprite, repo, exec_fn, opts) do
+    with_temp_file("sprite-runtime-env", runtime_env_contents(repo, opts), fn runtime_env_file ->
       case exec_fn.(sprite, "true",
              files: [{runtime_env_file, @sprite_runtime_env_path}],
              timeout: 30_000
@@ -703,31 +758,46 @@ defmodule Conductor.Sprite do
     end)
   end
 
-  defp configure_git_auth(sprite, exec_fn) do
-    token = Config.github_token!()
-    token_path = "/tmp/bb-gh-token-#{System.unique_integer([:positive])}"
+  defp configure_git_runtime(sprite, exec_fn) do
+    case Config.git_credentials_entries() do
+      [] ->
+        case exec_fn.(sprite, persist_git_runtime_script(false), timeout: 30_000) do
+          {:ok, _} -> :ok
+          {:error, msg, _code} -> {:error, msg}
+        end
 
-    with_temp_file("sprite-gh-token", token <> "\n", fn token_file ->
-      case exec_fn.(sprite, persist_git_auth_script(token_path),
-             files: [{token_file, token_path}],
-             timeout: 30_000
-           ) do
-        {:ok, _} -> :ok
-        {:error, msg, _code} -> {:error, msg}
-      end
-    end)
+      entries ->
+        with_temp_file(
+          "sprite-git-credentials",
+          Enum.join(entries, "\n") <> "\n",
+          fn credentials ->
+            case exec_fn.(sprite, persist_git_runtime_script(true),
+                   files: [{credentials, @sprite_git_credentials_path}],
+                   timeout: 30_000
+                 ) do
+              {:ok, _} -> :ok
+              {:error, msg, _code} -> {:error, msg}
+            end
+          end
+        )
+    end
   end
 
-  defp maybe_setup_repo(_sprite, nil, _persona, _force, _exec_fn), do: :ok
-  defp maybe_setup_repo(_sprite, "", _persona, _force, _exec_fn), do: :ok
+  defp maybe_setup_repo(_sprite, nil, _clone_url, _default_branch, _persona, _force, _exec_fn),
+    do: :ok
 
-  defp maybe_setup_repo(sprite, repo, persona, force, exec_fn) do
-    with :ok <- validate_repo(repo) do
+  defp maybe_setup_repo(_sprite, "", _clone_url, _default_branch, _persona, _force, _exec_fn),
+    do: :ok
+
+  defp maybe_setup_repo(sprite, repo, clone_url, default_branch, persona, force, exec_fn) do
+    with :ok <- validate_repo(repo),
+         {:ok, clone_target} <- validate_clone_url(clone_url, repo),
+         :ok <- validate_default_branch(default_branch) do
       repo_dir = sprite_repo_workspace(repo)
 
       setup_cmd =
         [
-          repo_setup_script(repo_dir, repo, force) |> String.trim(),
+          repo_setup_script(repo_dir, clone_target, default_branch, force) |> String.trim(),
           "mkdir -p #{shell_quote(Path.join(repo_dir, ".claude/skills"))} #{shell_quote(Path.join(repo_dir, ".claude/commands"))} #{shell_quote(Path.join(repo_dir, ".bb"))}"
         ]
         |> Enum.join(" && ")
@@ -894,17 +964,29 @@ defmodule Conductor.Sprite do
     "You are #{sprite}. Read CLAUDE.md and WORKFLOW.md before acting.\n"
   end
 
-  defp persist_git_auth_script(token_path) do
+  defp persist_git_runtime_script(with_credentials?) do
+    credentials_setup =
+      if with_credentials? do
+        """
+        chmod 600 #{shell_quote(@sprite_git_credentials_path)}
+        git config --global credential.helper store
+        git config --global credential.useHttpPath true
+        """
+      else
+        """
+        rm -f #{shell_quote(@sprite_git_credentials_path)}
+        git config --global --unset-all credential.helper >/dev/null 2>&1 || true
+        git config --global --unset-all credential.useHttpPath >/dev/null 2>&1 || true
+        """
+      end
+
     """
     set -e
-    trap 'rm -f #{shell_quote(token_path)}' EXIT
-    gh auth login --with-token < #{shell_quote(token_path)} >/dev/null
-    gh auth status >/dev/null
-    git config --global credential.helper '!gh auth git-credential'
-    test "$(git config --global --get credential.helper)" = "!gh auth git-credential"
+    #{credentials_setup}
     git config --global user.name "bitterblossom[bot]"
     git config --global user.email "bitterblossom@misty-step.dev"
-    git config --global --add safe.directory '*'
+    test "$(git config --global --get user.name)" = "bitterblossom[bot]"
+    test "$(git config --global --get user.email)" = "bitterblossom@misty-step.dev"
     """
   end
 
@@ -918,32 +1000,63 @@ defmodule Conductor.Sprite do
 
   defp validate_repo(repo), do: {:error, "invalid repo format: #{inspect(repo)}"}
 
-  defp repo_setup_script(repo_dir, repo, true) do
+  defp validate_default_branch(branch) do
+    case Workspace.validate_branch(branch) do
+      :ok -> :ok
+      {:error, :invalid_branch} -> {:error, "invalid default_branch: #{inspect(branch)}"}
+    end
+  end
+
+  defp validate_clone_url(clone_url, _repo) when is_binary(clone_url) and clone_url != "" do
+    {:ok, clone_url}
+  end
+
+  defp validate_clone_url(_clone_url, repo) do
+    {:error, "missing clone_url for repo #{inspect(repo)}"}
+  end
+
+  defp repo_setup_script(repo_dir, clone_url, default_branch, true) do
     """
     mkdir -p #{shell_quote(Path.dirname(repo_dir))} &&
       rm -rf #{shell_quote(repo_dir)} &&
-      git clone #{shell_quote(repo_clone_url(repo))} #{shell_quote(repo_dir)}
+      git clone #{shell_quote(clone_url)} #{shell_quote(repo_dir)} &&
+      #{repo_safe_directory_command(repo_dir)} &&
+      cd #{shell_quote(repo_dir)} &&
+      git fetch origin --quiet &&
+      #{Workspace.checkout_branch_command(default_branch)} &&
+      git clean -fd
     """
     |> String.trim()
   end
 
-  defp repo_setup_script(repo_dir, repo, false) do
+  defp repo_setup_script(repo_dir, clone_url, default_branch, false) do
     """
     if [ -d #{shell_quote(Path.join(repo_dir, ".git"))} ]; then
+      #{repo_safe_directory_command(repo_dir)} &&
       cd #{shell_quote(repo_dir)} &&
-        git remote set-url origin #{shell_quote(repo_clone_url(repo))} &&
-        (git checkout master 2>/dev/null || git checkout main 2>/dev/null) &&
-        git pull --ff-only
+        git remote set-url origin #{shell_quote(clone_url)} &&
+        git fetch origin --quiet &&
+        #{Workspace.checkout_branch_command(default_branch)} &&
+        git clean -fd
     else
       mkdir -p #{shell_quote(Path.dirname(repo_dir))} &&
-        rm -rf #{shell_quote(repo_dir)} &&
-        git clone #{shell_quote(repo_clone_url(repo))} #{shell_quote(repo_dir)}
+      rm -rf #{shell_quote(repo_dir)} &&
+        git clone #{shell_quote(clone_url)} #{shell_quote(repo_dir)} &&
+        #{repo_safe_directory_command(repo_dir)} &&
+        cd #{shell_quote(repo_dir)} &&
+        git fetch origin --quiet &&
+        #{Workspace.checkout_branch_command(default_branch)} &&
+        git clean -fd
     fi
     """
     |> String.trim()
   end
 
-  defp repo_clone_url(repo), do: "https://github.com/#{repo}.git"
+  defp repo_safe_directory_command(repo_dir) do
+    "if ! git config --global --get-all safe.directory 2>/dev/null | " <>
+      "grep -Fx -- #{shell_quote(repo_dir)} >/dev/null; then " <>
+      "git config --global --add safe.directory #{shell_quote(repo_dir)}; fi"
+  end
 
   defp sprite_repo_workspace(repo) do
     Path.join(@sprite_workspace_root, repo)
@@ -977,18 +1090,18 @@ defmodule Conductor.Sprite do
 
   defp shell_quote(value), do: Shell.quote_arg(to_string(value))
 
-  defp runtime_env_contents(repo) do
+  defp runtime_env_contents(repo, opts) do
     body =
-      (Config.dispatch_env() ++
+      (Config.dispatch_env(persona_role: Keyword.get(opts, :persona_role)) ++
          repo_env(repo))
       |> Enum.map_join("\n", fn {key, value} -> "export #{key}=#{shell_quote(value)}" end)
 
     if body == "", do: "# managed by Conductor\n", else: body <> "\n"
   end
 
-  defp upload_dispatch_files(exec_fn, sprite, prompt_path, prompt, runtime_env_path, repo) do
+  defp upload_dispatch_files(exec_fn, sprite, prompt_path, prompt, runtime_env_path, repo, opts) do
     with_temp_file("sprite-prompt", prompt, fn prompt_file ->
-      with_temp_file("sprite-env", runtime_env_contents(repo), fn env_file ->
+      with_temp_file("sprite-env", runtime_env_contents(repo, opts), fn env_file ->
         exec_fn.(sprite, "true",
           files: [{prompt_file, prompt_path}, {env_file, runtime_env_path}],
           timeout: 30_000

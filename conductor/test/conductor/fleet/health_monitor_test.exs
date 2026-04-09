@@ -68,11 +68,33 @@ defmodule Conductor.Fleet.HealthMonitorTest do
 
       cond do
         String.contains?(command, "git fetch") ->
-          sha = MockState.get(:remote_master_sha, "abc123")
+          repo = extract_repo(command)
+          branch = extract_branch(command)
+
+          sha =
+            MockState.get({:remote_head_sha, repo, branch}) ||
+              MockState.get(:remote_master_sha, "abc123")
+
           {:ok, sha}
 
         true ->
           {:ok, "ok"}
+      end
+    end
+
+    defp extract_repo(command) do
+      case Regex.run(~r{cd '?/home/sprite/workspace/([^']+)'? &&}, command,
+             capture: :all_but_first
+           ) do
+        [repo] -> repo
+        _ -> "test/repo"
+      end
+    end
+
+    defp extract_branch(command) do
+      case Regex.run(~r{origin/([^']+)'?$}, command, capture: :all_but_first) do
+        [branch] -> branch
+        _ -> "master"
       end
     end
 
@@ -479,12 +501,15 @@ defmodule Conductor.Fleet.HealthMonitorTest do
     test "detects SHA change and triggers reload for idle sprites" do
       start_monitor(interval_ms: 60_000)
 
-      sprites = [%{name: "bb-polisher", role: :polisher, harness: "codex"}]
+      sprites = [
+        %{name: "bb-polisher", role: :polisher, harness: "codex", default_branch: "main"}
+      ]
+
       MockState.put({:sprite_health, "bb-polisher"}, :healthy)
       MockState.put({:loop_alive, "bb-polisher"}, false)
 
       # Initial SHA
-      MockState.put(:remote_master_sha, "aaa111")
+      MockState.put({:remote_head_sha, "test/repo", "main"}, "aaa111")
 
       HealthMonitor.configure(
         sprites: sprites,
@@ -502,8 +527,8 @@ defmodule Conductor.Fleet.HealthMonitorTest do
       # Drain messages from first check
       flush_messages()
 
-      # Simulate new commit on origin/master
-      MockState.put(:remote_master_sha, "bbb222")
+      # Simulate new commit on the configured origin branch
+      MockState.put({:remote_head_sha, "test/repo", "main"}, "bbb222")
 
       # Second check: detects SHA change, triggers reload for idle sprite
       log =
@@ -512,12 +537,12 @@ defmodule Conductor.Fleet.HealthMonitorTest do
           Process.sleep(200)
         end)
 
-      assert log =~ "new commits on origin/master"
+      assert log =~ "new commits on test/repo@origin/main"
 
       # Collect all messages from second check
       msgs = flush_messages()
       exec_cmds = for {:sprite_exec, _, cmd} <- msgs, do: cmd
-      assert Enum.any?(exec_cmds, &String.contains?(&1, "git pull"))
+      assert Enum.any?(exec_cmds, &String.contains?(&1, "git checkout -f 'origin/main'"))
 
       # Should have relaunched (launcher handles bootstrap internally)
       assert Enum.any?(msgs, &match?({:launched, "bb-polisher", "test/repo"}, &1))
@@ -730,6 +755,63 @@ defmodule Conductor.Fleet.HealthMonitorTest do
         end)
 
       assert fetch_count == 1
+    end
+
+    test "reload only applies to sprites on the changed repo and branch" do
+      start_monitor(interval_ms: 60_000)
+
+      sprites = [
+        %{
+          name: "bb-polisher",
+          role: :polisher,
+          harness: "codex",
+          repo: "test/repo",
+          default_branch: "main"
+        },
+        %{
+          name: "bb-builder",
+          role: :builder,
+          harness: "codex",
+          repo: "other/repo",
+          default_branch: "main"
+        }
+      ]
+
+      Enum.each(["bb-polisher", "bb-builder"], fn name ->
+        MockState.put({:sprite_health, name}, :healthy)
+        MockState.put({:loop_alive, name}, false)
+      end)
+
+      MockState.put({:remote_head_sha, "test/repo", "main"}, "aaa111")
+      MockState.put({:remote_head_sha, "other/repo", "main"}, "zzz999")
+
+      HealthMonitor.configure(
+        sprites: sprites,
+        repo: "fallback/repo",
+        launching: MapSet.new(["bb-polisher", "bb-builder"])
+      )
+
+      capture_log(fn ->
+        send(Process.whereis(HealthMonitor), :check)
+        Process.sleep(100)
+      end)
+
+      flush_messages()
+
+      MockState.put({:remote_head_sha, "test/repo", "main"}, "bbb222")
+      MockState.put({:remote_head_sha, "other/repo", "main"}, "zzz999")
+
+      log =
+        capture_log(fn ->
+          send(Process.whereis(HealthMonitor), :check)
+          Process.sleep(200)
+        end)
+
+      assert log =~ "new commits on test/repo@origin/main"
+
+      msgs = flush_messages()
+      assert Enum.any?(msgs, &match?({:launched, "bb-polisher", "test/repo"}, &1))
+      refute Enum.any?(msgs, &match?({:launched, "bb-builder", _}, &1))
     end
   end
 
