@@ -53,6 +53,7 @@ defmodule Conductor.Launcher do
     end
 
     with :ok <- maybe_sync_codex_auth(sprite),
+         :ok <- ensure_launch_env(role),
          :ok <- bootstrap_module().ensure_spellbook(sprite),
          :ok <- ensure_repo_checkout(sprite_config, repo, workspace),
          :ok <- workspace_module().sync_persona(sprite, workspace, persona) do
@@ -104,7 +105,18 @@ defmodule Conductor.Launcher do
   defp role_display_name(:fixer), do: "Thorn"
   defp role_display_name(:polisher), do: "Fern"
   defp role_display_name(:triage), do: "Muse"
+  defp role_display_name(:responder), do: "Tansy"
   defp role_display_name(role), do: to_string(role) |> String.capitalize()
+
+  defp ensure_launch_env(:responder) do
+    if Conductor.Config.canary_endpoint() && Conductor.Config.canary_api_key() do
+      :ok
+    else
+      {:error, "missing Canary responder credentials"}
+    end
+  end
+
+  defp ensure_launch_env(_role), do: :ok
 
   defp ensure_repo_checkout(sprite_config, repo, workspace) do
     sprite = sprite_config.name
@@ -122,6 +134,7 @@ defmodule Conductor.Launcher do
         sprite_module().provision(sprite,
           repo: repo,
           persona: sprite_config.persona,
+          persona_role: workspace_module().persona_for_role(sprite_config.role),
           harness: sprite_config.harness,
           force: false
         )

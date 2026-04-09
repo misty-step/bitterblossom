@@ -10,7 +10,7 @@ defmodule Conductor.Workspace do
   @mirror_base "/home/sprite/workspace"
   @safe_input ~r/^[a-zA-Z0-9_\-\.\/]+$/
   @repo_segment ~r/^[A-Za-z0-9_.-]+$/
-  @persona_roles ~w(weaver thorn fern muse)
+  @persona_roles ~w(weaver thorn fern muse tansy)
 
   @doc "Validate that a string is safe for shell interpolation. Rejects metacharacters, path traversal, absolute paths, and leading dashes."
   @spec validate_input(binary()) :: :ok | {:error, :invalid_input}
@@ -118,6 +118,7 @@ defmodule Conductor.Workspace do
   def persona_for_role(:fixer), do: :thorn
   def persona_for_role(:polisher), do: :fern
   def persona_for_role(:triage), do: :muse
+  def persona_for_role(:responder), do: :tansy
   def persona_for_role(role), do: role
 
   # --- Private ---

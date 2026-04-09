@@ -115,7 +115,15 @@ defmodule Conductor.Sprite do
       prompt_path = Path.join(workspace, "PROMPT.md")
       runtime_env_path = Path.join(workspace, @runtime_env_file)
 
-      case upload_dispatch_files(exec_fn, sprite, prompt_path, prompt, runtime_env_path, repo) do
+      case upload_dispatch_files(
+             exec_fn,
+             sprite,
+             prompt_path,
+             prompt,
+             runtime_env_path,
+             repo,
+             opts
+           ) do
         {:error, msg, code} ->
           {:error, "dispatch file upload failed: #{msg}", code}
 
@@ -228,6 +236,7 @@ defmodule Conductor.Sprite do
   def provision(sprite, opts \\ []) do
     repo = Keyword.get(opts, :repo)
     persona = Keyword.get(opts, :persona)
+    persona_role = Keyword.get(opts, :persona_role)
     harness = Keyword.get(opts, :harness)
     force = Keyword.get(opts, :force, false)
     exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
@@ -236,7 +245,7 @@ defmodule Conductor.Sprite do
          :ok <- upload_base_configs(sprite, persona, exec_fn),
          :ok <- ensure_codex(sprite, force, exec_fn),
          :ok <- maybe_sync_codex_auth(sprite, harness, exec_fn),
-         :ok <- upload_runtime_env(sprite, repo, exec_fn),
+         :ok <- upload_runtime_env(sprite, repo, exec_fn, persona_role: persona_role),
          :ok <- configure_git_auth(sprite, exec_fn),
          :ok <- maybe_setup_repo(sprite, repo, persona, force, exec_fn),
          :ok <- Conductor.Bootstrap.ensure_spellbook(sprite, exec_fn: exec_fn) do
@@ -691,8 +700,8 @@ defmodule Conductor.Sprite do
     end
   end
 
-  defp upload_runtime_env(sprite, repo, exec_fn) do
-    with_temp_file("sprite-runtime-env", runtime_env_contents(repo), fn runtime_env_file ->
+  defp upload_runtime_env(sprite, repo, exec_fn, opts) do
+    with_temp_file("sprite-runtime-env", runtime_env_contents(repo, opts), fn runtime_env_file ->
       case exec_fn.(sprite, "true",
              files: [{runtime_env_file, @sprite_runtime_env_path}],
              timeout: 30_000
@@ -977,18 +986,18 @@ defmodule Conductor.Sprite do
 
   defp shell_quote(value), do: Shell.quote_arg(to_string(value))
 
-  defp runtime_env_contents(repo) do
+  defp runtime_env_contents(repo, opts) do
     body =
-      (Config.dispatch_env() ++
+      (Config.dispatch_env(persona_role: Keyword.get(opts, :persona_role)) ++
          repo_env(repo))
       |> Enum.map_join("\n", fn {key, value} -> "export #{key}=#{shell_quote(value)}" end)
 
     if body == "", do: "# managed by Conductor\n", else: body <> "\n"
   end
 
-  defp upload_dispatch_files(exec_fn, sprite, prompt_path, prompt, runtime_env_path, repo) do
+  defp upload_dispatch_files(exec_fn, sprite, prompt_path, prompt, runtime_env_path, repo, opts) do
     with_temp_file("sprite-prompt", prompt, fn prompt_file ->
-      with_temp_file("sprite-env", runtime_env_contents(repo), fn env_file ->
+      with_temp_file("sprite-env", runtime_env_contents(repo, opts), fn env_file ->
         exec_fn.(sprite, "true",
           files: [{prompt_file, prompt_path}, {env_file, runtime_env_path}],
           timeout: 30_000

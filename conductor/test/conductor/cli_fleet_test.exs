@@ -387,13 +387,57 @@ defmodule Conductor.CLIFleetTest do
     assert opts[:sprite_auth_probe_target] == "bb-weaver-3"
 
     assert_received {:provision_called, "bb-weaver-3",
-                     [repo: "other/other-repo", persona: nil, harness: "codex"]}
+                     [
+                       repo: "other/other-repo",
+                       persona: nil,
+                       persona_role: :weaver,
+                       harness: "codex"
+                     ]}
 
     assert_received {:force_sync_called, "bb-weaver-3"}
     assert_received {:sync_persona_called, "bb-weaver-3", "/tmp/other/other-repo", :weaver}
     assert_received {:start_loop_called, "bb-weaver-3", prompt, "other/other-repo", opts}
     assert prompt =~ "Repository: other/other-repo"
     assert opts[:workspace] == "/tmp/other/other-repo"
+  end
+
+  test "sprite start runs preflight for healthy responder sprites" do
+    responder_fleet_path =
+      Path.join(
+        System.tmp_dir!(),
+        "fleet_cli_responder_#{System.unique_integer([:positive])}.toml"
+      )
+
+    File.write!(
+      responder_fleet_path,
+      """
+      version = "1"
+
+      [defaults]
+      repo = "test/repo"
+
+      [[sprite]]
+      name = "bb-tansy"
+      role = "responder"
+      """
+    )
+
+    Application.put_env(:conductor, :sprite_module, MockSpriteModule)
+    Application.put_env(:conductor, :workspace_module, MockWorkspaceModule)
+    Application.put_env(:conductor, :config_module, MockConfigModule)
+    Application.put_env(:conductor, :sprite_test_pid, self())
+
+    output =
+      capture_io(fn ->
+        CLI.main(["sprite", "start", "bb-tansy", "--fleet", responder_fleet_path])
+      end)
+
+    assert output =~ "started bb-tansy (pid 123)"
+    assert_received {:check_env_called, opts}
+    assert opts[:require_canary_auth] == true
+    assert opts[:sprite_auth_probe_target] == "bb-tansy"
+
+    File.rm(responder_fleet_path)
   end
 
   test "sprite resume resumes a declared sprite", %{fleet_path: fleet_path} do
@@ -596,6 +640,42 @@ defmodule Conductor.CLIFleetTest do
     assert_received {:check_env_called, opts}
     assert opts[:require_codex_auth] == true
     assert opts[:sprite_auth_probe_target] == "bb-weaver-1"
+  end
+
+  test "check-env requires Canary auth for responder fleets" do
+    responder_fleet_path =
+      Path.join(
+        System.tmp_dir!(),
+        "fleet_cli_responder_#{System.unique_integer([:positive])}.toml"
+      )
+
+    File.write!(
+      responder_fleet_path,
+      """
+      version = "1"
+
+      [defaults]
+      repo = "test/repo"
+
+      [[sprite]]
+      name = "bb-tansy"
+      role = "responder"
+      """
+    )
+
+    Application.put_env(:conductor, :config_module, MockConfigModule)
+    Application.put_env(:conductor, :sprite_test_pid, self())
+
+    capture_io(fn ->
+      CLI.main(["check-env", "--fleet", responder_fleet_path])
+    end)
+
+    assert_received {:check_env_called, opts}
+    assert opts[:require_codex_auth] == true
+    assert opts[:require_canary_auth] == true
+    assert opts[:sprite_auth_probe_target] == "bb-tansy"
+
+    File.rm(responder_fleet_path)
   end
 
   test "mix conductor sprite rejects unknown subcommands with exit 1" do

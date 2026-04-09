@@ -6,7 +6,7 @@ defmodule Conductor.Fleet.Loader do
   details. Callers get a list of sprite config maps or a clear error.
   """
 
-  @valid_roles ~w(builder fixer polisher triage)
+  @valid_roles ~w(builder fixer polisher triage responder)
   @valid_harnesses ~w(codex claude-code)
   @type sprite_config :: %{
           name: binary(),
@@ -132,7 +132,12 @@ defmodule Conductor.Fleet.Loader do
         errors = for {:error, msg} <- results, do: msg
 
         if errors == [] do
-          {:ok, for({:ok, s} <- results, do: s)}
+          parsed = for({:ok, s} <- results, do: s)
+
+          case ensure_single_responder(parsed) do
+            :ok -> {:ok, parsed}
+            {:error, reason} -> {:error, reason}
+          end
         else
           {:error, "sprite validation errors:\n  #{Enum.join(errors, "\n  ")}"}
         end
@@ -200,4 +205,14 @@ defmodule Conductor.Fleet.Loader do
 
   defp valid_capability_tags?(tags) when is_list(tags), do: Enum.all?(tags, &is_binary/1)
   defp valid_capability_tags?(_), do: false
+
+  defp ensure_single_responder(sprites) do
+    responders = Enum.filter(sprites, &(&1.role == :responder))
+
+    case responders do
+      [_single] -> :ok
+      [] -> :ok
+      many -> {:error, "fleet.toml v1 supports only one responder sprite, found #{length(many)}"}
+    end
+  end
 end
