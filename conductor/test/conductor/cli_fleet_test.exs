@@ -71,6 +71,7 @@ defmodule Conductor.CLIFleetTest do
          healthy: true,
          paused: false,
          busy: true,
+         loop_alive: true,
          lifecycle_status: "running"
        }}
     end
@@ -88,7 +89,26 @@ defmodule Conductor.CLIFleetTest do
          healthy: false,
          paused: false,
          busy: false,
+         loop_alive: false,
          lifecycle_status: "idle"
+       }}
+    end
+
+    def status("bb-weaver-4", opts) do
+      notify({:status_called, "bb-weaver-4", opts})
+
+      {:ok,
+       %{
+         sprite: "bb-weaver-4",
+         reachable: true,
+         harness_ready: true,
+         codex_auth_ready: true,
+         git_ready: true,
+         healthy: true,
+         paused: false,
+         busy: false,
+         loop_alive: true,
+         lifecycle_status: "running"
        }}
     end
 
@@ -105,6 +125,7 @@ defmodule Conductor.CLIFleetTest do
          healthy: true,
          paused: false,
          busy: false,
+         loop_alive: false,
          lifecycle_status: "idle"
        }}
     end
@@ -338,6 +359,26 @@ defmodule Conductor.CLIFleetTest do
     assert length(payload["sprites"]) == 4
   end
 
+  test "fleet audit excludes loop-owned sprites from available capacity", %{
+    fleet_path: fleet_path
+  } do
+    Application.put_env(:conductor, :worker_module, MockSpriteModule)
+
+    output =
+      capture_io(fn ->
+        CLI.main(["fleet", "audit", "--fleet", fleet_path])
+      end)
+
+    payload = Jason.decode!(output)
+    assert payload["summary"]["running"] == 2
+    assert payload["summary"]["available_capacity"] == 1
+
+    assert Enum.any?(payload["sprites"], fn row ->
+             row["name"] == "bb-weaver-4" and row["loop_alive"] == true and
+               row["busy"] == false and row["lifecycle_status"] == "running"
+           end)
+  end
+
   test "sprite status emits json with lifecycle state", %{fleet_path: fleet_path} do
     Application.put_env(:conductor, :sprite_module, MockSpriteModule)
     Application.put_env(:conductor, :sprite_test_pid, self())
@@ -354,6 +395,7 @@ defmodule Conductor.CLIFleetTest do
 
     payload = Jason.decode!(output)
     assert payload["name"] == "bb-weaver-1"
+    assert payload["loop_alive"] == true
     assert payload["lifecycle_status"] == "running"
     assert payload["healthy"] == true
   end

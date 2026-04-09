@@ -42,7 +42,8 @@ mix conductor fleet --fleet ../fleet.toml --reconcile
 
 Emit the fleet view as JSON, including summary counts for total sprites,
 reachable sprites, healthy sprites, paused sprites, running sprites, and
-available capacity.
+available capacity. `running` is based on loop ownership, not on whether the
+sprite happens to be inside a transient `codex` subprocess at that instant.
 
 ### `mix conductor status`
 
@@ -52,7 +53,9 @@ started local conductor process.
 ### `mix conductor sprite status <sprite> [--fleet ../fleet.toml] [--json]`
 
 Inspect one declared sprite, including lifecycle status (`idle`, `running`,
-`paused`, `draining`) and setup health.
+`paused`, `draining`) and setup health. The JSON payload also carries `busy`
+and `loop_alive` so operators can distinguish "owns a live loop" from
+"actively executing an agent right now."
 
 ### `mix conductor sprite start <sprite> [--fleet ../fleet.toml]`
 

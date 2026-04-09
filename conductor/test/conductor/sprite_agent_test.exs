@@ -66,6 +66,62 @@ defmodule Conductor.SpriteAgentTest do
     assert status.lifecycle_status == "draining"
   end
 
+  test "status keeps loop-owned sprites running between agent invocations" do
+    test_pid = self()
+
+    assert {:ok, status} =
+             Sprite.status("bb-tansy",
+               harness: "codex",
+               org: "misty-step",
+               repo: "misty-step/bitterblossom",
+               clone_url: "https://github.com/misty-step/bitterblossom.git",
+               exec_fn: fn _sprite, command, opts ->
+                 send(test_pid, {:exec_called, command, opts})
+
+                 cond do
+                   command == "printf '__bb_probe__'" ->
+                     {:ok, "__bb_probe__"}
+
+                   String.contains?(command, "command -v codex") ->
+                     {:ok, "/usr/bin/codex\n"}
+
+                   String.contains?(command, "test -s '/home/sprite/.codex/auth.json'") ->
+                     {:ok, ""}
+
+                   String.contains?(command, "command -v git") ->
+                     {:ok, "/usr/bin/git\n"}
+
+                   String.contains?(
+                     command,
+                     "test -d '/home/sprite/workspace/misty-step/bitterblossom/.git'"
+                   ) ->
+                     {:ok, ""}
+
+                   String.contains?(command, "git remote get-url origin") ->
+                     {:ok, ""}
+
+                   String.contains?(command, "printf 'paused'") ->
+                     {:ok, ""}
+
+                   String.contains?(command, "pgrep -x codex") ->
+                     {:error, "", 1}
+
+                   String.contains?(command, "kill -0 \"$pid\"") ->
+                     {:ok, "2288"}
+
+                   true ->
+                     flunk("unexpected command: #{command}")
+                 end
+               end
+             )
+
+    assert_received {:exec_called, "printf '__bb_probe__'", opts}
+    assert opts[:org] == "misty-step"
+    assert status.busy == false
+    assert status.loop_alive == true
+    assert status.lifecycle_status == "running"
+  end
+
   test "start_loop uploads prompt/env and launches a detached loop wrapper" do
     test_pid = self()
     System.put_env("OPENAI_API_KEY", "sk-test-123")

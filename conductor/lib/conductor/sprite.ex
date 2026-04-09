@@ -206,7 +206,7 @@ defmodule Conductor.Sprite do
     case exec_fn.(
            sprite,
            "if [ -e #{shell_quote(@sprite_pause_path)} ]; then printf 'paused'; fi",
-           timeout: 15_000
+           exec_opts(opts, timeout: 15_000)
          ) do
       {:ok, output} -> String.trim(output) == "paused"
       _ -> false
@@ -347,16 +347,17 @@ defmodule Conductor.Sprite do
     harness = Keyword.get(opts, :harness)
     repo = Keyword.get(opts, :repo)
     clone_url = Keyword.get(opts, :clone_url)
+    remote_opts = remote_exec_opts(opts)
 
-    case probe(sprite, exec_fn: exec_fn) do
+    case probe(sprite, Keyword.merge([exec_fn: exec_fn], remote_opts)) do
       {:ok, %{reachable: true}} ->
-        harness_ready = harness_ready?(sprite, harness, exec_fn)
-        codex_auth_ready = codex_auth_ready?(sprite, harness, exec_fn)
-        git_ready = git_ready?(sprite, exec_fn)
-        repo_access_ready = repo_access_ready?(sprite, repo, clone_url, exec_fn)
-        paused = paused?(sprite, exec_fn: exec_fn)
-        busy = busy?(sprite, exec_fn: exec_fn)
-        loop_pid = loop_pid(sprite, exec_fn)
+        harness_ready = harness_ready?(sprite, harness, exec_fn, remote_opts)
+        codex_auth_ready = codex_auth_ready?(sprite, harness, exec_fn, remote_opts)
+        git_ready = git_ready?(sprite, exec_fn, remote_opts)
+        repo_access_ready = repo_access_ready?(sprite, repo, clone_url, exec_fn, remote_opts)
+        paused = paused?(sprite, Keyword.merge([exec_fn: exec_fn], remote_opts))
+        busy = busy?(sprite, Keyword.merge([exec_fn: exec_fn], remote_opts))
+        loop_pid = loop_pid(sprite, exec_fn, remote_opts)
 
         loop_alive = loop_pid != nil
 
@@ -372,7 +373,7 @@ defmodule Conductor.Sprite do
            busy: busy,
            loop_pid: loop_pid,
            loop_alive: loop_alive,
-           lifecycle_status: lifecycle_status(paused, busy),
+           lifecycle_status: lifecycle_status(paused, loop_alive),
            healthy: harness_ready and codex_auth_ready and git_ready and repo_access_ready
          }}
 
@@ -385,7 +386,7 @@ defmodule Conductor.Sprite do
   def probe(sprite, opts \\ []) do
     exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
 
-    case marker_exec(exec_fn, sprite, @probe_marker, timeout: 45_000) do
+    case marker_exec(exec_fn, sprite, @probe_marker, exec_opts(opts, timeout: 45_000)) do
       {:ok, _} -> {:ok, %{sprite: sprite, reachable: true}}
       {:error, msg} -> {:error, msg}
     end
@@ -401,7 +402,7 @@ defmodule Conductor.Sprite do
   def busy?(sprite, opts \\ []) do
     exec_fn = Keyword.get(opts, :exec_fn, &exec/3)
 
-    case exec_fn.(sprite, detect_agents_cmd(), timeout: 15_000) do
+    case exec_fn.(sprite, detect_agents_cmd(), exec_opts(opts, timeout: 15_000)) do
       {:ok, output} -> String.trim(output) != ""
       _ -> false
     end
@@ -425,7 +426,7 @@ defmodule Conductor.Sprite do
     |> Kernel.<>(" || pgrep -f 'ralph\\.sh' 2>/dev/null")
   end
 
-  defp loop_pid(sprite, exec_fn) do
+  defp loop_pid(sprite, exec_fn, opts) do
     case exec_fn.(
            sprite,
            """
@@ -436,7 +437,7 @@ defmodule Conductor.Sprite do
              fi
            fi
            """,
-           timeout: 15_000
+           exec_opts(opts, timeout: 15_000)
          ) do
       {:ok, output} ->
         output
@@ -462,10 +463,10 @@ defmodule Conductor.Sprite do
   defp lifecycle_status(false, true), do: "running"
   defp lifecycle_status(false, false), do: "idle"
 
-  defp harness_ready?(_sprite, nil, _exec_fn), do: true
-  defp harness_ready?(_sprite, "", _exec_fn), do: true
+  defp harness_ready?(_sprite, nil, _exec_fn, _opts), do: true
+  defp harness_ready?(_sprite, "", _exec_fn, _opts), do: true
 
-  defp harness_ready?(sprite, harness, exec_fn) do
+  defp harness_ready?(sprite, harness, exec_fn, opts) do
     harness_cmd =
       case harness do
         "codex" -> "command -v codex"
@@ -473,38 +474,43 @@ defmodule Conductor.Sprite do
         _ -> "echo ok"
       end
 
-    match?({:ok, _}, exec_fn.(sprite, harness_cmd, timeout: 15_000))
+    match?({:ok, _}, exec_fn.(sprite, harness_cmd, exec_opts(opts, timeout: 15_000)))
   end
 
-  defp codex_auth_ready?(_sprite, harness, _exec_fn) when harness not in [nil, "", "codex"],
-    do: true
+  defp codex_auth_ready?(_sprite, harness, _exec_fn, _opts)
+       when harness not in [nil, "", "codex"],
+       do: true
 
-  defp codex_auth_ready?(sprite, harness, exec_fn) when harness in [nil, "", "codex"] do
-    remote_codex_auth_present?(sprite, exec_fn) or
+  defp codex_auth_ready?(sprite, harness, exec_fn, opts) when harness in [nil, "", "codex"] do
+    remote_codex_auth_present?(sprite, exec_fn, opts) or
       match?({:api_key, _}, Config.codex_auth_source())
   end
 
-  defp remote_codex_auth_present?(sprite, exec_fn) do
+  defp remote_codex_auth_present?(sprite, exec_fn, opts) do
     match?(
       {:ok, _},
-      exec_fn.(sprite, "test -s #{shell_quote(@sprite_codex_auth_path)}", timeout: 15_000)
+      exec_fn.(
+        sprite,
+        "test -s #{shell_quote(@sprite_codex_auth_path)}",
+        exec_opts(opts, timeout: 15_000)
+      )
     )
   end
 
-  defp git_ready?(sprite, exec_fn) do
+  defp git_ready?(sprite, exec_fn, opts) do
     command = """
     command -v git >/dev/null 2>&1 &&
     test -n "$(git config --global --get user.name)" &&
     test -n "$(git config --global --get user.email)"
     """
 
-    match?({:ok, _}, exec_fn.(sprite, command, timeout: 15_000))
+    match?({:ok, _}, exec_fn.(sprite, command, exec_opts(opts, timeout: 15_000)))
   end
 
-  defp repo_access_ready?(_sprite, nil, _clone_url, _exec_fn), do: true
-  defp repo_access_ready?(_sprite, "", _clone_url, _exec_fn), do: true
+  defp repo_access_ready?(_sprite, nil, _clone_url, _exec_fn, _opts), do: true
+  defp repo_access_ready?(_sprite, "", _clone_url, _exec_fn, _opts), do: true
 
-  defp repo_access_ready?(sprite, repo, clone_url, exec_fn) do
+  defp repo_access_ready?(sprite, repo, clone_url, exec_fn, opts) do
     repo_dir = sprite_repo_workspace(repo)
 
     clone_target =
@@ -516,7 +522,11 @@ defmodule Conductor.Sprite do
     repo_ready? =
       match?(
         {:ok, _},
-        exec_fn.(sprite, "test -d #{shell_quote(Path.join(repo_dir, ".git"))}", timeout: 15_000)
+        exec_fn.(
+          sprite,
+          "test -d #{shell_quote(Path.join(repo_dir, ".git"))}",
+          exec_opts(opts, timeout: 15_000)
+        )
       )
 
     if repo_ready? do
@@ -534,18 +544,28 @@ defmodule Conductor.Sprite do
               "expected=${expected%/} && expected=${expected%.git} && " <>
               "test \"$current\" = \"$expected\""
 
-          match?({:ok, _}, exec_fn.(sprite, command, timeout: 15_000))
+          match?({:ok, _}, exec_fn.(sprite, command, exec_opts(opts, timeout: 15_000)))
       end
     else
       with clone_target when is_binary(clone_target) <- clone_target do
         command =
           "GIT_TERMINAL_PROMPT=0 git ls-remote #{shell_quote(clone_target)} >/dev/null 2>&1"
 
-        match?({:ok, _}, exec_fn.(sprite, command, timeout: 15_000))
+        match?({:ok, _}, exec_fn.(sprite, command, exec_opts(opts, timeout: 15_000)))
       else
         _ -> false
       end
     end
+  end
+
+  defp remote_exec_opts(opts) do
+    opts
+    |> Keyword.take([:org])
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+  end
+
+  defp exec_opts(opts, extra_opts) do
+    Keyword.merge(remote_exec_opts(opts), extra_opts)
   end
 
   defp detached_agent_command(harness, cmd_parts, workspace, prompt_path, persona_role) do

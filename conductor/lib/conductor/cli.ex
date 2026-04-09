@@ -507,7 +507,7 @@ defmodule Conductor.CLI do
 
   defp cmd_sprite_status(args) do
     with {:ok, sprite, opts, _config} <- fetch_sprite_args(args, json: :boolean) do
-      row = fleet_row(sprite, sprite_module())
+      row = declared_sprite_row(sprite, sprite_module())
 
       if opts[:json] do
         IO.puts(Jason.encode!(row))
@@ -523,7 +523,7 @@ defmodule Conductor.CLI do
 
   defp cmd_sprite_start(args) do
     with {:ok, sprite, _opts, _config} <- fetch_sprite_args(args),
-         status <- probe_status(sprite, sprite_module()),
+         status <- declared_sprite_status(sprite, sprite_module()),
          :ok <- ensure_start_admissible(status),
          :ok <- ensure_start_preflight(sprite),
          :ok <- ensure_sprite_ready_for_start(sprite, status),
@@ -711,6 +711,24 @@ defmodule Conductor.CLI do
       healthy: Map.get(status, :healthy, false),
       paused: Map.get(status, :paused, false),
       busy: Map.get(status, :busy, false),
+      loop_alive: Map.get(status, :loop_alive, false),
+      lifecycle_status: Map.get(status, :lifecycle_status, "unknown"),
+      health: health_label(status)
+    }
+  end
+
+  defp declared_sprite_row(sprite, probe_module) do
+    status = declared_sprite_status(sprite, probe_module)
+
+    %{
+      name: sprite.name,
+      role: sprite.role,
+      repo: Map.get(sprite, :repo),
+      reachable: Map.get(status, :reachable, false),
+      healthy: Map.get(status, :healthy, false),
+      paused: Map.get(status, :paused, false),
+      busy: Map.get(status, :busy, false),
+      loop_alive: Map.get(status, :loop_alive, false),
       lifecycle_status: Map.get(status, :lifecycle_status, "unknown"),
       health: health_label(status)
     }
@@ -726,10 +744,10 @@ defmodule Conductor.CLI do
       reachable: Enum.count(rows, & &1.reachable),
       healthy: Enum.count(rows, & &1.healthy),
       paused: Enum.count(rows, & &1.paused),
-      running: Enum.count(rows, &(&1.lifecycle_status in ["running", "draining"])),
+      running: Enum.count(rows, & &1.loop_alive),
       available_capacity:
         Enum.count(rows, fn row ->
-          row.reachable and row.healthy and not row.paused and not row.busy
+          row.reachable and row.healthy and not row.paused and not row.loop_alive and not row.busy
         end)
     }
   end
@@ -737,6 +755,33 @@ defmodule Conductor.CLI do
   defp health_label(%{reachable: false}), do: "unreachable"
   defp health_label(%{healthy: true}), do: "healthy"
   defp health_label(_status), do: "needs setup"
+
+  defp declared_sprite_status(sprite, Conductor.Sprite) do
+    sprite
+    |> status_call(&Conductor.Sprite.status/2)
+    |> normalize_status(sprite.name)
+  rescue
+    _ -> unreachable_status(sprite.name)
+  end
+
+  defp declared_sprite_status(sprite, probe_module) do
+    cond do
+      function_exported?(probe_module, :status, 2) ->
+        sprite
+        |> status_call(&probe_module.status/2)
+        |> normalize_status(sprite.name)
+
+      function_exported?(probe_module, :status, 1) ->
+        probe_module
+        |> apply(:status, [sprite.name])
+        |> normalize_status(sprite.name)
+
+      true ->
+        probe_status(sprite, probe_module)
+    end
+  rescue
+    _ -> unreachable_status(sprite.name)
+  end
 
   defp probe_status(sprite, probe_module) do
     name = sprite.name
@@ -763,37 +808,57 @@ defmodule Conductor.CLI do
       end
 
     case result do
-      {:ok, status} when is_map(status) ->
-        %{
-          sprite: name,
-          reachable: Map.get(status, :reachable, true),
-          healthy: Map.get(status, :healthy, Map.get(status, :reachable, true)),
-          paused: Map.get(status, :paused, false),
-          busy: Map.get(status, :busy, false),
-          lifecycle_status: Map.get(status, :lifecycle_status, "idle")
-        }
-
-      {:error, reason} ->
-        %{
-          sprite: name,
-          reachable: false,
-          healthy: false,
-          paused: false,
-          busy: false,
-          lifecycle_status: "unreachable",
-          error: reason
-        }
+      result ->
+        normalize_status(result, name)
     end
   rescue
-    _ ->
-      %{
-        sprite: sprite.name,
-        reachable: false,
-        healthy: false,
-        paused: false,
-        busy: false,
-        lifecycle_status: "unreachable"
-      }
+    _ -> unreachable_status(sprite.name)
+  end
+
+  defp status_call(sprite, status_fn) do
+    status_fn.(sprite.name,
+      harness: Map.get(sprite, :harness),
+      org: Map.get(sprite, :org),
+      repo: Map.get(sprite, :repo),
+      clone_url: Map.get(sprite, :clone_url)
+    )
+  end
+
+  defp normalize_status({:ok, status}, name) when is_map(status) do
+    paused = Map.get(status, :paused, false)
+    busy = Map.get(status, :busy, false)
+    loop_alive = Map.get(status, :loop_alive, false)
+
+    %{
+      sprite: name,
+      reachable: Map.get(status, :reachable, true),
+      healthy: Map.get(status, :healthy, Map.get(status, :reachable, true)),
+      paused: paused,
+      busy: busy,
+      loop_alive: loop_alive,
+      lifecycle_status:
+        Map.get(status, :lifecycle_status, inferred_lifecycle_status(paused, loop_alive))
+    }
+  end
+
+  defp normalize_status({:error, reason}, name), do: unreachable_status(name, reason)
+
+  defp inferred_lifecycle_status(true, true), do: "draining"
+  defp inferred_lifecycle_status(true, false), do: "paused"
+  defp inferred_lifecycle_status(false, true), do: "running"
+  defp inferred_lifecycle_status(false, false), do: "idle"
+
+  defp unreachable_status(name, reason \\ nil) do
+    %{
+      sprite: name,
+      reachable: false,
+      healthy: false,
+      paused: false,
+      busy: false,
+      loop_alive: false,
+      lifecycle_status: "unreachable",
+      error: reason
+    }
   end
 
   defp fetch_sprite_args(args, extra_opts \\ []) do
