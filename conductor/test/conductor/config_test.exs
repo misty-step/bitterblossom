@@ -53,7 +53,8 @@ defmodule Conductor.ConfigTest do
 
   describe "canary_services_path/0" do
     test "returns default when no app config" do
-      assert Config.canary_services_path() == "../canary-services.toml"
+      assert Config.canary_services_path() ==
+               Application.fetch_env!(:conductor, :canary_services_path)
     end
 
     test "returns configured value" do

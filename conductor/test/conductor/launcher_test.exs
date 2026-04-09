@@ -287,9 +287,10 @@ defmodule Conductor.LauncherTest do
     assert_received {:sync_persona_called, "bb-tansy", "/tmp/workspaces/misty-step/bitterblossom",
                      :tansy}
 
-    assert_received {:start_loop_called, "bb-tansy", prompt, "misty-step/bitterblossom", _opts}
+    assert_received {:start_loop_called, "bb-tansy", prompt, "misty-step/bitterblossom", opts}
     assert prompt =~ "# Tansy Loop"
     assert prompt =~ "You are Tansy."
+    assert opts[:persona_role] == :tansy
   end
 
   test "launch fails fast for responder sprites when Canary credentials are missing" do

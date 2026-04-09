@@ -183,6 +183,26 @@ defmodule Conductor.CLICanaryTest do
     assert output =~ "test_cmd: make test"
   end
 
+  test "uses the configured default catalog path", %{path: path} do
+    original_path = Application.get_env(:conductor, :canary_services_path)
+
+    on_exit(fn ->
+      if original_path,
+        do: Application.put_env(:conductor, :canary_services_path, original_path),
+        else: Application.delete_env(:conductor, :canary_services_path)
+    end)
+
+    Application.put_env(:conductor, :canary_services_path, path)
+
+    output =
+      capture_io(fn ->
+        CLI.main(["canary", "service", "volume", "--json"])
+      end)
+
+    assert {:ok, decoded} = Jason.decode(output)
+    assert decoded["name"] == "volume"
+  end
+
   test "prints incidents and forwards annotation filters" do
     output =
       capture_io(fn ->
@@ -348,6 +368,28 @@ defmodule Conductor.CLICanaryTest do
 
     assert status == 1
     assert output =~ "missing required --action"
+  end
+
+  test "validates missing annotation agent" do
+    {output, status} =
+      System.cmd(
+        "mix",
+        [
+          "conductor",
+          "canary",
+          "annotate",
+          "incident",
+          "INC-123",
+          "--action",
+          "bitterblossom.claimed"
+        ],
+        cd: @conductor_dir,
+        env: [{"MIX_ENV", "test"}],
+        stderr_to_stdout: true
+      )
+
+    assert status == 1
+    assert output =~ "missing required --agent"
   end
 
   test "validates annotation metadata json" do
