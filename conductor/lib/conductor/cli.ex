@@ -646,6 +646,7 @@ defmodule Conductor.CLI do
     opts
     |> Keyword.put(:require_codex_auth, requires_codex_auth?(sprites))
     |> Keyword.put(:require_canary_auth, requires_canary_auth?(sprites))
+    |> Keyword.put(:sprite_auth_probes, sprite_auth_probes(sprites))
     |> maybe_put_sprite_auth_probe_target(sprite_auth_probe_target(sprites))
   end
 
@@ -658,6 +659,31 @@ defmodule Conductor.CLI do
     Enum.find_value(sprites, fn sprite ->
       Map.get(sprite, :name) || Map.get(sprite, "name")
     end)
+  end
+
+  defp sprite_auth_probes(sprites) do
+    {_, probes} =
+      Enum.reduce(sprites, {MapSet.new(), []}, fn sprite, {seen_orgs, acc} ->
+        org = Map.get(sprite, :org) || Map.get(sprite, "org")
+
+        cond do
+          not (is_binary(org) and org != "") ->
+            {seen_orgs, acc}
+
+          MapSet.member?(seen_orgs, org) ->
+            {seen_orgs, acc}
+
+          true ->
+            probe = %{
+              org: org,
+              sprite: Map.get(sprite, :name) || Map.get(sprite, "name")
+            }
+
+            {MapSet.put(seen_orgs, org), [probe | acc]}
+        end
+      end)
+
+    Enum.reverse(probes)
   end
 
   defp requires_codex_auth?(sprites) do
@@ -721,6 +747,7 @@ defmodule Conductor.CLI do
         function_exported?(probe_module, :status, 2) ->
           probe_module.status(name,
             harness: harness,
+            org: Map.get(sprite, :org),
             repo: Map.get(sprite, :repo),
             clone_url: Map.get(sprite, :clone_url)
           )
@@ -729,7 +756,7 @@ defmodule Conductor.CLI do
           probe_module.status(name)
 
         function_exported?(probe_module, :probe, 2) ->
-          probe_module.probe(name, [])
+          probe_module.probe(name, org: Map.get(sprite, :org))
 
         true ->
           probe_module.probe(name)

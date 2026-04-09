@@ -1,6 +1,6 @@
 ---
 name: canary-responder
-description: Handle one Canary incident end to end: claim, investigate, fix, review, verify, and annotate.
+description: "Handle one Canary incident end to end: claim, investigate, fix, review, verify, and annotate."
 ---
 
 # /canary-responder

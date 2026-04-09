@@ -58,7 +58,9 @@ defmodule Conductor.CLIFleetTest do
   end
 
   defmodule MockSpriteModule do
-    def status("bb-weaver-1", _opts) do
+    def status("bb-weaver-1", opts) do
+      notify({:status_called, "bb-weaver-1", opts})
+
       {:ok,
        %{
          sprite: "bb-weaver-1",
@@ -73,7 +75,9 @@ defmodule Conductor.CLIFleetTest do
        }}
     end
 
-    def status("bb-weaver-3", _opts) do
+    def status("bb-weaver-3", opts) do
+      notify({:status_called, "bb-weaver-3", opts})
+
       {:ok,
        %{
          sprite: "bb-weaver-3",
@@ -88,7 +92,9 @@ defmodule Conductor.CLIFleetTest do
        }}
     end
 
-    def status(name, _opts) do
+    def status(name, opts) do
+      notify({:status_called, name, opts})
+
       {:ok,
        %{
          sprite: name,
@@ -263,6 +269,25 @@ defmodule Conductor.CLIFleetTest do
     %{fleet_path: fleet_path}
   end
 
+  defp make_failing_sprite_cli_dir do
+    dir = Path.join(System.tmp_dir!(), "fake_sprite_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+
+    sprite_path = Path.join(dir, "sprite")
+
+    File.write!(
+      sprite_path,
+      """
+      #!/bin/sh
+      printf '%s' 'no token found for organization'
+      exit 1
+      """
+    )
+
+    File.chmod!(sprite_path, 0o755)
+    dir
+  end
+
   test "fleet prints declared workers with health status", %{fleet_path: fleet_path} do
     output =
       capture_io(fn ->
@@ -315,11 +340,17 @@ defmodule Conductor.CLIFleetTest do
 
   test "sprite status emits json with lifecycle state", %{fleet_path: fleet_path} do
     Application.put_env(:conductor, :sprite_module, MockSpriteModule)
+    Application.put_env(:conductor, :sprite_test_pid, self())
 
     output =
       capture_io(fn ->
         CLI.main(["sprite", "status", "bb-weaver-1", "--fleet", fleet_path, "--json"])
       end)
+
+    assert_received {:status_called, "bb-weaver-1", opts}
+    assert opts[:org] == "misty-step"
+    assert opts[:repo] == "test/repo"
+    assert opts[:clone_url] == "https://git.example.com/test/repo.git"
 
     payload = Jason.decode!(output)
     assert payload["name"] == "bb-weaver-1"
@@ -382,6 +413,7 @@ defmodule Conductor.CLIFleetTest do
     assert output =~ "started bb-weaver-3 (pid 123)"
     assert_received {:check_env_called, opts}
     assert opts[:require_codex_auth] == true
+    assert opts[:sprite_auth_probes] == [%{org: "misty-step", sprite: "bb-weaver-3"}]
     assert opts[:sprite_auth_probe_target] == "bb-weaver-3"
 
     assert_received {:provision_called, "bb-weaver-3",
@@ -436,6 +468,7 @@ defmodule Conductor.CLIFleetTest do
     assert output =~ "started bb-tansy (pid 123)"
     assert_received {:check_env_called, opts}
     assert opts[:require_canary_auth] == true
+    assert opts[:sprite_auth_probes] == [%{org: "misty-step", sprite: "bb-tansy"}]
     assert opts[:sprite_auth_probe_target] == "bb-tansy"
 
     File.rm(responder_fleet_path)
@@ -485,6 +518,7 @@ defmodule Conductor.CLIFleetTest do
 
     assert_received {:check_env_called, opts}
     assert opts[:require_codex_auth] == true
+    assert opts[:sprite_auth_probes] == [%{org: "misty-step", sprite: "bb-weaver-1"}]
     assert opts[:sprite_auth_probe_target] == "bb-weaver-1"
   end
 
@@ -522,6 +556,8 @@ defmodule Conductor.CLIFleetTest do
     fleet_path =
       Path.join(System.tmp_dir!(), "fleet_cli_test_#{System.unique_integer([:positive])}.toml")
 
+    sprite_dir = make_failing_sprite_cli_dir()
+
     File.write!(
       fleet_path,
       """
@@ -543,12 +579,14 @@ defmodule Conductor.CLIFleetTest do
         cd: @conductor_dir,
         env: [
           {"MIX_ENV", "test"},
-          {"OPENAI_API_KEY", ""}
+          {"OPENAI_API_KEY", ""},
+          {"PATH", sprite_dir <> ":" <> System.get_env("PATH", "")}
         ],
         stderr_to_stdout: true
       )
 
     File.rm_rf(fleet_path)
+    File.rm_rf(sprite_dir)
 
     assert status == 1
     assert output =~ "environment check failed: missing: SPRITE_TOKEN or sprite CLI auth"
@@ -558,6 +596,8 @@ defmodule Conductor.CLIFleetTest do
   test "mix conductor start skips Codex auth preflight for claude-only fleets" do
     fleet_path =
       Path.join(System.tmp_dir!(), "fleet_cli_test_#{System.unique_integer([:positive])}.toml")
+
+    sprite_dir = make_failing_sprite_cli_dir()
 
     File.write!(
       fleet_path,
@@ -580,12 +620,14 @@ defmodule Conductor.CLIFleetTest do
         cd: @conductor_dir,
         env: [
           {"MIX_ENV", "test"},
-          {"OPENAI_API_KEY", ""}
+          {"OPENAI_API_KEY", ""},
+          {"PATH", sprite_dir <> ":" <> System.get_env("PATH", "")}
         ],
         stderr_to_stdout: true
       )
 
     File.rm_rf(fleet_path)
+    File.rm_rf(sprite_dir)
 
     assert status == 1
     assert output =~ "environment check failed: missing: SPRITE_TOKEN or sprite CLI auth"
@@ -595,6 +637,8 @@ defmodule Conductor.CLIFleetTest do
   test "mix conductor check-env --fleet skips Codex auth preflight for claude-only fleets" do
     fleet_path =
       Path.join(System.tmp_dir!(), "fleet_cli_test_#{System.unique_integer([:positive])}.toml")
+
+    sprite_dir = make_failing_sprite_cli_dir()
 
     File.write!(
       fleet_path,
@@ -617,12 +661,14 @@ defmodule Conductor.CLIFleetTest do
         cd: @conductor_dir,
         env: [
           {"MIX_ENV", "test"},
-          {"OPENAI_API_KEY", ""}
+          {"OPENAI_API_KEY", ""},
+          {"PATH", sprite_dir <> ":" <> System.get_env("PATH", "")}
         ],
         stderr_to_stdout: true
       )
 
     File.rm_rf(fleet_path)
+    File.rm_rf(sprite_dir)
 
     assert status == 1
     assert output =~ "environment check failed: missing: SPRITE_TOKEN or sprite CLI auth"
@@ -639,7 +685,54 @@ defmodule Conductor.CLIFleetTest do
 
     assert_received {:check_env_called, opts}
     assert opts[:require_codex_auth] == true
+    assert opts[:sprite_auth_probes] == [%{org: "misty-step", sprite: "bb-weaver-1"}]
     assert opts[:sprite_auth_probe_target] == "bb-weaver-1"
+  end
+
+  test "check-env forwards one sprite auth probe per declared org" do
+    fleet_path =
+      Path.join(System.tmp_dir!(), "fleet_cli_orgs_#{System.unique_integer([:positive])}.toml")
+
+    File.write!(
+      fleet_path,
+      """
+      version = "1"
+
+      [defaults]
+      org = "alpha"
+      repo = "test/repo"
+      clone_url = "https://git.example.com/test/repo.git"
+
+      [[sprite]]
+      name = "bb-alpha-1"
+      role = "builder"
+
+      [[sprite]]
+      name = "bb-alpha-2"
+      role = "fixer"
+
+      [[sprite]]
+      name = "bb-beta-1"
+      role = "polisher"
+      org = "beta"
+      """
+    )
+
+    Application.put_env(:conductor, :config_module, MockConfigModule)
+    Application.put_env(:conductor, :sprite_test_pid, self())
+
+    capture_io(fn ->
+      CLI.main(["check-env", "--fleet", fleet_path])
+    end)
+
+    assert_received {:check_env_called, opts}
+
+    assert opts[:sprite_auth_probes] == [
+             %{org: "alpha", sprite: "bb-alpha-1"},
+             %{org: "beta", sprite: "bb-beta-1"}
+           ]
+
+    File.rm(fleet_path)
   end
 
   test "check-env requires Canary auth for responder fleets" do
@@ -674,6 +767,7 @@ defmodule Conductor.CLIFleetTest do
     assert_received {:check_env_called, opts}
     assert opts[:require_codex_auth] == true
     assert opts[:require_canary_auth] == true
+    assert opts[:sprite_auth_probes] == [%{org: "misty-step", sprite: "bb-tansy"}]
     assert opts[:sprite_auth_probe_target] == "bb-tansy"
 
     File.rm(responder_fleet_path)

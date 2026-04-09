@@ -361,6 +361,37 @@ defmodule Conductor.ConfigTest do
       System.delete_env("FLY_API_TOKEN")
       System.delete_env("SPRITES_ORG")
     end
+
+    test "uses explicit fleet auth probes instead of the sprite CLI current selection" do
+      System.delete_env("SPRITE_TOKEN")
+      System.delete_env("FLY_API_TOKEN")
+      System.delete_env("SPRITES_ORG")
+      System.delete_env("FLY_ORG")
+
+      home =
+        make_sprite_cli_home(%{
+          "current_selection" => %{"url" => "https://api.machines.dev", "org" => "wrong-org"},
+          "urls" => %{}
+        })
+
+      System.put_env("HOME", home)
+
+      install_fake_sprite_cli(
+        exec_status: 0,
+        exec_output: "ok",
+        ls_status: 1,
+        ls_output: "ls denied"
+      )
+
+      assert Config.sprite_auth_available?(
+               sprite_auth_probes: [%{org: "fleet-org", sprite: "bb-declared"}]
+             ) == "sprite-cli"
+    after
+      System.delete_env("SPRITE_TOKEN")
+      System.delete_env("FLY_API_TOKEN")
+      System.delete_env("SPRITES_ORG")
+      System.delete_env("FLY_ORG")
+    end
   end
 
   describe "codex_auth_source/0" do

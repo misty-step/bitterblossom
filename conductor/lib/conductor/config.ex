@@ -266,22 +266,69 @@ defmodule Conductor.Config do
   end
 
   defp sprite_cli_auth_live?(opts) do
-    org =
-      System.get_env("SPRITES_ORG") ||
-        System.get_env("FLY_ORG") ||
-        case Conductor.SpriteCLIAuth.current_org() do
-          {:ok, cli_org} -> cli_org
-          {:error, _} -> nil
-        end
+    probes = sprite_auth_probes(opts)
 
-    with org when is_binary(org) <- org,
+    with [_ | _] <- probes,
          sprite when is_binary(sprite) <- System.find_executable("sprite"),
-         true <- sprite_cli_probe(sprite, org, Keyword.get(opts, :sprite_auth_probe_target)) do
+         true <- Enum.all?(probes, &sprite_cli_probe(sprite, &1.org, &1.sprite)) do
       "sprite-cli"
     else
       _ -> false
     end
   end
+
+  defp sprite_auth_probes(opts) do
+    case Keyword.get(opts, :sprite_auth_probes) do
+      probes when is_list(probes) ->
+        probes
+        |> Enum.flat_map(&normalize_sprite_auth_probe/1)
+        |> case do
+          [] -> fallback_sprite_auth_probes(opts)
+          normalized -> normalized
+        end
+
+      _ ->
+        fallback_sprite_auth_probes(opts)
+    end
+  end
+
+  defp normalize_sprite_auth_probe(%{org: org} = probe) when is_binary(org) and org != "" do
+    [%{org: org, sprite: normalize_probe_sprite(Map.get(probe, :sprite))}]
+  end
+
+  defp normalize_sprite_auth_probe(%{"org" => org} = probe) when is_binary(org) and org != "" do
+    [%{org: org, sprite: normalize_probe_sprite(Map.get(probe, "sprite"))}]
+  end
+
+  defp normalize_sprite_auth_probe(_), do: []
+
+  defp fallback_sprite_auth_probes(opts) do
+    case sprite_auth_org(opts) do
+      org when is_binary(org) ->
+        [
+          %{
+            org: org,
+            sprite: normalize_probe_sprite(Keyword.get(opts, :sprite_auth_probe_target))
+          }
+        ]
+
+      _ ->
+        []
+    end
+  end
+
+  defp sprite_auth_org(opts) do
+    Keyword.get(opts, :sprite_auth_org) ||
+      System.get_env("SPRITES_ORG") ||
+      System.get_env("FLY_ORG") ||
+      case Conductor.SpriteCLIAuth.current_org() do
+        {:ok, cli_org} -> cli_org
+        {:error, _} -> nil
+      end
+  end
+
+  defp normalize_probe_sprite(sprite) when is_binary(sprite) and sprite != "", do: sprite
+  defp normalize_probe_sprite(_), do: nil
 
   defp sprite_cli_probe(sprite, org, nil) do
     match?({_, 0}, System.cmd(sprite, ["ls", "-o", org], stderr_to_stdout: true))
