@@ -82,7 +82,11 @@ defmodule Conductor.LauncherTest do
     orig_checkout_present = Application.get_env(:conductor, :launcher_repo_checkout_present)
     orig_auth_failure = Application.get_env(:conductor, :launcher_auth_failure_result)
     orig_openai_key = System.get_env("OPENAI_API_KEY")
+    orig_canary_endpoint = System.get_env("CANARY_ENDPOINT")
+    orig_canary_api_key = System.get_env("CANARY_API_KEY")
     System.delete_env("OPENAI_API_KEY")
+    System.delete_env("CANARY_ENDPOINT")
+    System.delete_env("CANARY_API_KEY")
 
     Application.put_env(:conductor, :sprite_module, MockSpriteModule)
     Application.put_env(:conductor, :bootstrap_module, MockBootstrapModule)
@@ -100,6 +104,16 @@ defmodule Conductor.LauncherTest do
       case orig_openai_key do
         nil -> System.delete_env("OPENAI_API_KEY")
         val -> System.put_env("OPENAI_API_KEY", val)
+      end
+
+      case orig_canary_endpoint do
+        nil -> System.delete_env("CANARY_ENDPOINT")
+        val -> System.put_env("CANARY_ENDPOINT", val)
+      end
+
+      case orig_canary_api_key do
+        nil -> System.delete_env("CANARY_API_KEY")
+        val -> System.put_env("CANARY_API_KEY", val)
       end
     end)
 
@@ -131,6 +145,7 @@ defmodule Conductor.LauncherTest do
                      [
                        repo: "misty-step/bitterblossom",
                        persona: "You are Weaver.",
+                       persona_role: :weaver,
                        harness: "codex",
                        force: false
                      ]}
@@ -255,6 +270,8 @@ defmodule Conductor.LauncherTest do
 
   test "launch maps responder sprites to Tansy persona and prompt" do
     Application.put_env(:conductor, :launcher_repo_checkout_present, false)
+    System.put_env("CANARY_ENDPOINT", "https://canary-obs.fly.dev")
+    System.put_env("CANARY_API_KEY", "canary-test-key")
 
     sprite = %{
       name: "bb-tansy",
@@ -273,6 +290,22 @@ defmodule Conductor.LauncherTest do
     assert_received {:start_loop_called, "bb-tansy", prompt, "misty-step/bitterblossom", _opts}
     assert prompt =~ "# Tansy Loop"
     assert prompt =~ "You are Tansy."
+  end
+
+  test "launch fails fast for responder sprites when Canary credentials are missing" do
+    Application.put_env(:conductor, :launcher_repo_checkout_present, false)
+
+    sprite = %{
+      name: "bb-tansy",
+      role: :responder,
+      repo: "misty-step/bitterblossom",
+      harness: "codex",
+      reasoning_effort: "medium",
+      persona: "You are Tansy."
+    }
+
+    assert {:error, "missing Canary responder credentials"} =
+             Launcher.launch(sprite, "misty-step/bitterblossom")
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:conductor, key)

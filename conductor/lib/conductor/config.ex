@@ -122,13 +122,13 @@ defmodule Conductor.Config do
   end
 
   @spec dispatch_env() :: [{binary(), binary()}]
-  def dispatch_env do
+  @spec dispatch_env(keyword()) :: [{binary(), binary()}]
+  def dispatch_env(opts \\ []) do
     # Render only the runtime API keys the harness still needs into the
     # sprite-side env file. GitHub auth is persisted separately during setup.
     []
     |> maybe_codex_api_env()
-    |> maybe_env("CANARY_ENDPOINT")
-    |> maybe_env("CANARY_API_KEY")
+    |> maybe_canary_env(opts)
     |> maybe_env("EXA_API_KEY")
     |> Enum.reverse()
   end
@@ -146,6 +146,18 @@ defmodule Conductor.Config do
       api_key -> [{"CODEX_API_KEY", api_key}, {"OPENAI_API_KEY", api_key} | acc]
     end
   end
+
+  defp maybe_canary_env(acc, opts) do
+    if canary_capability_role?(Keyword.get(opts, :persona_role)) do
+      acc
+      |> maybe_env("CANARY_ENDPOINT")
+      |> maybe_env("CANARY_API_KEY")
+    else
+      acc
+    end
+  end
+
+  defp canary_capability_role?(role), do: role in [:tansy, :responder, "tansy", "responder"]
 
   defp nonempty_env(key) do
     case System.get_env(key) do

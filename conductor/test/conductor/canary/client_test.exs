@@ -42,6 +42,11 @@ defmodule Conductor.Canary.ClientTest do
           |> put_resp_content_type("application/json")
           |> send_resp(422, Jason.encode!(%{detail: "Invalid q parameter."}))
 
+        "map-error" ->
+          conn
+          |> put_resp_content_type("application/json")
+          |> send_resp(500, Jason.encode!(%{code: "boom"}))
+
         _ ->
           json(conn, %{status: "degraded", summary: "1 service degraded."})
       end
@@ -173,11 +178,23 @@ defmodule Conductor.Canary.ClientTest do
     assert {:error, "Canary API 422: Invalid q parameter."} = Client.report(q: "bad")
   end
 
+  test "maps Canary map-shaped errors without detail" do
+    assert {:error, ~s(Canary API 500: {"code":"boom"})} = Client.report(q: "map-error")
+  end
+
   test "fails clearly when Canary credentials are missing" do
     System.delete_env("CANARY_ENDPOINT")
     System.delete_env("CANARY_API_KEY")
 
     assert {:error, "CANARY_ENDPOINT and CANARY_API_KEY must be set"} = Client.report()
+  end
+
+  test "surfaces transport failures" do
+    unused_port = free_port()
+    System.put_env("CANARY_ENDPOINT", "http://127.0.0.1:#{unused_port}")
+
+    assert {:error, message} = Client.report()
+    assert message =~ "connection refused"
   end
 
   defp free_port do

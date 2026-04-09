@@ -164,4 +164,22 @@ defmodule Conductor.Canary.ServiceCatalogTest do
     assert {:error, msg} = ServiceCatalog.load(path)
     assert msg =~ "enables auto_deploy without rollback_cmd"
   end
+
+  test "requires deploy command for auto deploy", %{path: path} do
+    File.write!(
+      path,
+      """
+      [[service]]
+      name = "canary"
+      repo = "misty-step/canary"
+      default_branch = "master"
+      test_cmd = ["./bin/validate"]
+      auto_deploy = true
+      rollback_cmd = ["flyctl", "releases", "rollback", "--app", "canary-obs"]
+      """
+    )
+
+    assert {:error, msg} = ServiceCatalog.load(path)
+    assert msg =~ "enables auto_deploy without deploy_cmd"
+  end
 end

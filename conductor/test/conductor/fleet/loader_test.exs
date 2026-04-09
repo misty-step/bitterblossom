@@ -271,6 +271,24 @@ defmodule Conductor.Fleet.LoaderTest do
       assert [%{name: "bb-tansy", role: :responder}] = config.sprites
     end
 
+    test "rejects fleets with more than one responder", %{path: path} do
+      File.write!(path, """
+      [defaults]
+      repo = "test/repo"
+
+      [[sprite]]
+      name = "bb-tansy-1"
+      role = "responder"
+
+      [[sprite]]
+      name = "bb-tansy-2"
+      role = "responder"
+      """)
+
+      assert {:error, msg} = Loader.load(path)
+      assert msg =~ "supports only one responder sprite"
+    end
+
     test "returns error for missing name", %{path: path} do
       File.write!(path, """
       [defaults]

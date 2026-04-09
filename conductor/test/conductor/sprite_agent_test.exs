@@ -73,8 +73,6 @@ defmodule Conductor.SpriteAgentTest do
   test "start_loop uploads prompt/env and launches a detached loop wrapper" do
     test_pid = self()
     System.put_env("OPENAI_API_KEY", "sk-test-123")
-    System.put_env("CANARY_ENDPOINT", "https://canary-obs.fly.dev")
-    System.put_env("CANARY_API_KEY", "canary-test-123")
 
     exec_fn = fn _sprite, command, opts ->
       uploaded_files =
@@ -107,19 +105,13 @@ defmodule Conductor.SpriteAgentTest do
 
     assert Enum.any?(uploaded_files, fn
              {"/tmp/worktree/.bb-runtime-env", content} ->
-               canary_endpoint_index =
-                 :binary.match(content, "export CANARY_ENDPOINT='https://canary-obs.fly.dev'")
-
-               canary_api_key_index =
-                 :binary.match(content, "export CANARY_API_KEY='canary-test-123'")
-
                exa_index = :binary.match(content, "export EXA_API_KEY='exa-test-456'")
                repo_index = :binary.match(content, "export REPO='test/repo'")
 
                String.contains?(content, "export OPENAI_API_KEY='sk-test-123'") and
                  String.contains?(content, "export CODEX_API_KEY='sk-test-123'") and
-                 match?({_, _}, canary_endpoint_index) and
-                 match?({_, _}, canary_api_key_index) and
+                 not String.contains?(content, "export CANARY_ENDPOINT=") and
+                 not String.contains?(content, "export CANARY_API_KEY=") and
                  match?({_, _}, exa_index) and match?({_, _}, repo_index) and
                  elem(exa_index, 0) < elem(repo_index, 0)
 
@@ -135,6 +127,46 @@ defmodule Conductor.SpriteAgentTest do
     assert detached_cmd =~ "setsid bash -lc"
     assert detached_cmd =~ "/home/sprite/.bitterblossom/loop.pid"
     assert detached_cmd =~ "codex exec"
+  end
+
+  test "start_loop injects Canary credentials only for the responder persona" do
+    test_pid = self()
+    System.put_env("CANARY_ENDPOINT", "https://canary-obs.fly.dev")
+    System.put_env("CANARY_API_KEY", "canary-test-123")
+
+    exec_fn = fn _sprite, command, opts ->
+      uploaded_files =
+        opts
+        |> Keyword.get(:files, [])
+        |> Enum.map(fn {src, dest} -> {dest, File.read!(src)} end)
+
+      send(test_pid, {:exec_called, command, uploaded_files})
+
+      if String.contains?(command, "setsid bash -lc") do
+        {:ok, "__bb_started__:123\n"}
+      else
+        {:ok, ""}
+      end
+    end
+
+    assert {:ok, "123\n"} =
+             Sprite.start_loop("bb-tansy", "# Loop prompt", "misty-step/bitterblossom",
+               workspace: "/tmp/worktree",
+               persona_role: :tansy,
+               harness: Conductor.Codex,
+               exec_fn: exec_fn
+             )
+
+    assert_received {:exec_called, "true", uploaded_files}
+
+    assert Enum.any?(uploaded_files, fn
+             {"/tmp/worktree/.bb-runtime-env", content} ->
+               String.contains?(content, "export CANARY_ENDPOINT='https://canary-obs.fly.dev'") and
+                 String.contains?(content, "export CANARY_API_KEY='canary-test-123'")
+
+             _ ->
+               false
+           end)
   end
 
   test "start_loop refuses to launch when the sprite is paused" do

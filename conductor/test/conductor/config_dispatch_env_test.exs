@@ -84,11 +84,21 @@ defmodule Conductor.ConfigDispatchEnvTest do
       assert {"EXA_API_KEY", "exa-test-key"} in env
     end
 
-    test "includes Canary credentials when set" do
+    test "does not include Canary credentials by default even when set" do
       System.put_env("CANARY_ENDPOINT", "https://canary-obs.fly.dev")
       System.put_env("CANARY_API_KEY", "canary-test-key")
 
       env = Config.dispatch_env()
+
+      refute {"CANARY_ENDPOINT", "https://canary-obs.fly.dev"} in env
+      refute {"CANARY_API_KEY", "canary-test-key"} in env
+    end
+
+    test "includes Canary credentials for the responder persona" do
+      System.put_env("CANARY_ENDPOINT", "https://canary-obs.fly.dev")
+      System.put_env("CANARY_API_KEY", "canary-test-key")
+
+      env = Config.dispatch_env(persona_role: :tansy)
 
       assert {"CANARY_ENDPOINT", "https://canary-obs.fly.dev"} in env
       assert {"CANARY_API_KEY", "canary-test-key"} in env

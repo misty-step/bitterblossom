@@ -522,6 +522,7 @@ defmodule Conductor.CLI do
     with {:ok, sprite, _opts, _config} <- fetch_sprite_args(args),
          status <- probe_status(sprite, sprite_module()),
          :ok <- ensure_start_admissible(status),
+         :ok <- ensure_start_preflight(sprite),
          :ok <- ensure_sprite_ready_for_start(sprite, status),
          :ok <-
            workspace_module().sync_persona(
@@ -801,6 +802,13 @@ defmodule Conductor.CLI do
   defp ensure_start_admissible(%{busy: true}), do: {:error, "sprite already has an active loop"}
   defp ensure_start_admissible(_status), do: :ok
 
+  defp ensure_start_preflight(%{role: :responder} = sprite), do: run_check_env_for_sprite(sprite)
+
+  defp ensure_start_preflight(%{"role" => "responder"} = sprite),
+    do: run_check_env_for_sprite(sprite)
+
+  defp ensure_start_preflight(_sprite), do: :ok
+
   defp ensure_sprite_ready_for_start(_sprite, %{reachable: true, healthy: true}), do: :ok
 
   defp ensure_sprite_ready_for_start(sprite, _status) do
@@ -809,6 +817,7 @@ defmodule Conductor.CLI do
            sprite_module().provision(sprite.name,
              repo: sprite.repo,
              persona: sprite.persona,
+             persona_role: workspace_module().persona_for_role(sprite.role),
              harness: sprite.harness
            ),
          :ok <- maybe_force_sync_codex_auth(sprite) do
