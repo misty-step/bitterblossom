@@ -35,6 +35,10 @@ defmodule Conductor.Fleet.LoaderTest do
   [[sprite]]
   name = "bb-muse"
   role = "triage"
+
+  [[sprite]]
+  name = "bb-tansy"
+  role = "responder"
   """
 
   setup do
@@ -49,11 +53,11 @@ defmodule Conductor.Fleet.LoaderTest do
       File.write!(path, @valid_toml)
       assert {:ok, config} = Loader.load(path)
 
-      assert length(config.sprites) == 4
+      assert length(config.sprites) == 5
       assert config.defaults.org == "test-org"
       assert config.defaults.repo == "test-org/test-repo"
 
-      [builder, fixer, polisher, muse] = config.sprites
+      [builder, fixer, polisher, muse, tansy] = config.sprites
       assert builder.name == "bb-weaver"
       assert builder.role == :builder
       assert builder.org == "test-org"
@@ -73,6 +77,9 @@ defmodule Conductor.Fleet.LoaderTest do
 
       assert muse.name == "bb-muse"
       assert muse.role == :triage
+
+      assert tansy.name == "bb-tansy"
+      assert tansy.role == :responder
     end
 
     test "sprite inherits defaults when not overridden", %{path: path} do
@@ -250,6 +257,20 @@ defmodule Conductor.Fleet.LoaderTest do
       assert msg =~ "invalid role 'reviewer'"
     end
 
+    test "accepts responder as a valid role", %{path: path} do
+      File.write!(path, """
+      [defaults]
+      repo = "test/repo"
+
+      [[sprite]]
+      name = "bb-tansy"
+      role = "responder"
+      """)
+
+      assert {:ok, config} = Loader.load(path)
+      assert [%{name: "bb-tansy", role: :responder}] = config.sprites
+    end
+
     test "returns error for missing name", %{path: path} do
       File.write!(path, """
       [defaults]
@@ -286,6 +307,10 @@ defmodule Conductor.Fleet.LoaderTest do
       fixers = Loader.by_role(config.sprites, :fixer)
       assert length(fixers) == 1
       assert hd(fixers).name == "bb-thorn"
+
+      responders = Loader.by_role(config.sprites, :responder)
+      assert length(responders) == 1
+      assert hd(responders).name == "bb-tansy"
     end
   end
 end

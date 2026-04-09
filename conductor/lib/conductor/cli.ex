@@ -4,7 +4,7 @@ defmodule Conductor.CLI do
   No judgment — just infrastructure plumbing.
   """
 
-  @commands ~w(start fleet status check-env dashboard logs show-events sprite)
+  @commands ~w(start fleet status check-env dashboard logs show-events sprite canary)
 
   def main(args) do
     case args do
@@ -39,6 +39,10 @@ defmodule Conductor.CLI do
       ["sprite" | rest] ->
         Application.ensure_all_started(:conductor)
         cmd_sprite(rest)
+
+      ["canary" | rest] ->
+        Application.ensure_all_started(:conductor)
+        cmd_canary(rest)
 
       [cmd | _] ->
         IO.puts("unknown command: #{cmd}\navailable: #{Enum.join(@commands, ", ")}")
@@ -246,6 +250,258 @@ defmodule Conductor.CLI do
     end
   end
 
+  defp cmd_canary(args) do
+    case args do
+      ["service" | rest] ->
+        cmd_canary_service(rest)
+
+      ["incidents" | rest] ->
+        cmd_canary_incidents(rest)
+
+      ["report" | rest] ->
+        cmd_canary_report(rest)
+
+      ["timeline" | rest] ->
+        cmd_canary_timeline(rest)
+
+      ["annotations" | rest] ->
+        cmd_canary_annotations(rest)
+
+      ["annotate" | rest] ->
+        cmd_canary_annotate(rest)
+
+      _ ->
+        IO.puts(
+          "usage: bitterblossom canary <service|incidents|report|timeline|annotations|annotate> ..."
+        )
+
+        System.halt(1)
+    end
+  end
+
+  defp cmd_canary_service(args) do
+    {opts, positional, invalid} =
+      OptionParser.parse(args, strict: [catalog: :string, json: :boolean, help: :boolean])
+
+    if invalid != [] or Keyword.get(opts, :help, false) or length(positional) != 1 do
+      IO.puts("usage: bitterblossom canary service <service> [--catalog path] [--json]")
+      if opts[:help], do: :ok, else: System.halt(1)
+    else
+      service_name = hd(positional)
+      path = Keyword.get(opts, :catalog, Conductor.Config.canary_services_path())
+
+      with {:ok, services} <- Conductor.Canary.ServiceCatalog.load(path),
+           {:ok, service} <- Conductor.Canary.ServiceCatalog.fetch(services, service_name) do
+        if opts[:json] do
+          IO.puts(Jason.encode!(service))
+        else
+          IO.puts("service: #{service.name}")
+          IO.puts("repo: #{service.repo}")
+          IO.puts("default_branch: #{service.default_branch}")
+          IO.puts("test_cmd: #{Enum.join(service.test_cmd, " ")}")
+          IO.puts("auto_merge: #{service.auto_merge}")
+          IO.puts("auto_deploy: #{service.auto_deploy}")
+
+          if service.deploy_cmd do
+            IO.puts("deploy_cmd: #{Enum.join(service.deploy_cmd, " ")}")
+          end
+
+          if service.rollback_cmd do
+            IO.puts("rollback_cmd: #{Enum.join(service.rollback_cmd, " ")}")
+          end
+        end
+      else
+        {:error, :not_found} ->
+          IO.puts("unknown Canary service: #{service_name}")
+          System.halt(1)
+
+        {:error, reason} ->
+          IO.puts("canary catalog failed: #{reason}")
+          System.halt(1)
+      end
+    end
+  end
+
+  defp cmd_canary_incidents(args) do
+    {opts, positional, invalid} =
+      OptionParser.parse(args,
+        strict: [
+          with_annotation: :string,
+          without_annotation: :string,
+          json: :boolean,
+          help: :boolean
+        ]
+      )
+
+    if invalid != [] or Keyword.get(opts, :help, false) or positional != [] do
+      IO.puts(
+        "usage: bitterblossom canary incidents [--with-annotation action] [--without-annotation action] [--json]"
+      )
+
+      if opts[:help], do: :ok, else: System.halt(1)
+    else
+      with {:ok, response} <-
+             canary_client_module().incidents(
+               with_annotation: opts[:with_annotation],
+               without_annotation: opts[:without_annotation]
+             ) do
+        if opts[:json] do
+          IO.puts(Jason.encode!(response))
+        else
+          render_incidents(response)
+        end
+      else
+        {:error, reason} ->
+          IO.puts(reason)
+          System.halt(1)
+      end
+    end
+  end
+
+  defp cmd_canary_report(args) do
+    {opts, positional, invalid} =
+      OptionParser.parse(args,
+        strict: [
+          window: :string,
+          q: :string,
+          limit: :integer,
+          cursor: :string,
+          json: :boolean,
+          help: :boolean
+        ]
+      )
+
+    if invalid != [] or Keyword.get(opts, :help, false) or positional != [] do
+      IO.puts(
+        "usage: bitterblossom canary report [--window window] [--q query] [--limit n] [--cursor token] [--json]"
+      )
+
+      if opts[:help], do: :ok, else: System.halt(1)
+    else
+      with {:ok, response} <-
+             canary_client_module().report(
+               window: opts[:window],
+               q: opts[:q],
+               limit: opts[:limit],
+               cursor: opts[:cursor]
+             ) do
+        if opts[:json] do
+          IO.puts(Jason.encode!(response))
+        else
+          render_report(response)
+        end
+      else
+        {:error, reason} ->
+          IO.puts(reason)
+          System.halt(1)
+      end
+    end
+  end
+
+  defp cmd_canary_timeline(args) do
+    {opts, positional, invalid} =
+      OptionParser.parse(args,
+        strict: [
+          service: :string,
+          window: :string,
+          limit: :integer,
+          after: :string,
+          event_type: :string,
+          json: :boolean,
+          help: :boolean
+        ]
+      )
+
+    if invalid != [] or Keyword.get(opts, :help, false) or positional != [] do
+      IO.puts(
+        "usage: bitterblossom canary timeline [--service service] [--window window] [--limit n] [--after cursor] [--event-type type] [--json]"
+      )
+
+      if opts[:help], do: :ok, else: System.halt(1)
+    else
+      with {:ok, response} <-
+             canary_client_module().timeline(
+               service: opts[:service],
+               window: opts[:window],
+               limit: opts[:limit],
+               after: opts[:after],
+               event_type: opts[:event_type]
+             ) do
+        if opts[:json] do
+          IO.puts(Jason.encode!(response))
+        else
+          render_timeline(response)
+        end
+      else
+        {:error, reason} ->
+          IO.puts(reason)
+          System.halt(1)
+      end
+    end
+  end
+
+  defp cmd_canary_annotations(args) do
+    {opts, positional, invalid} =
+      OptionParser.parse(args, strict: [json: :boolean, help: :boolean])
+
+    if invalid != [] or Keyword.get(opts, :help, false) or
+         match_canary_annotations_args?(positional) == false do
+      IO.puts("usage: bitterblossom canary annotations incident <incident-id> [--json]")
+      if opts[:help], do: :ok, else: System.halt(1)
+    else
+      ["incident", incident_id] = positional
+
+      with {:ok, response} <- canary_client_module().incident_annotations(incident_id) do
+        if opts[:json] do
+          IO.puts(Jason.encode!(response))
+        else
+          render_annotations(response)
+        end
+      else
+        {:error, reason} ->
+          IO.puts(reason)
+          System.halt(1)
+      end
+    end
+  end
+
+  defp cmd_canary_annotate(args) do
+    {opts, positional, invalid} =
+      OptionParser.parse(args,
+        strict: [
+          agent: :string,
+          action: :string,
+          metadata: :string,
+          json: :boolean,
+          help: :boolean
+        ]
+      )
+
+    if invalid != [] or Keyword.get(opts, :help, false) or
+         match_canary_annotations_args?(positional) == false do
+      IO.puts(
+        "usage: bitterblossom canary annotate incident <incident-id> --agent name --action action [--metadata json] [--json]"
+      )
+
+      if opts[:help], do: :ok, else: System.halt(1)
+    else
+      ["incident", incident_id] = positional
+
+      with {:ok, attrs} <- build_annotation_attrs(opts),
+           {:ok, response} <- canary_client_module().annotate_incident(incident_id, attrs) do
+        if opts[:json] do
+          IO.puts(Jason.encode!(response))
+        else
+          render_annotation(response)
+        end
+      else
+        {:error, reason} ->
+          IO.puts(reason)
+          System.halt(1)
+      end
+    end
+  end
+
   defp cmd_sprite_status(args) do
     with {:ok, sprite, opts, _config} <- fetch_sprite_args(args, json: :boolean) do
       row = fleet_row(sprite, sprite_module())
@@ -385,6 +641,7 @@ defmodule Conductor.CLI do
   defp env_check_opts(sprites, opts \\ []) do
     opts
     |> Keyword.put(:require_codex_auth, requires_codex_auth?(sprites))
+    |> Keyword.put(:require_canary_auth, requires_canary_auth?(sprites))
     |> maybe_put_sprite_auth_probe_target(sprite_auth_probe_target(sprites))
   end
 
@@ -403,6 +660,13 @@ defmodule Conductor.CLI do
     Enum.any?(sprites, fn sprite ->
       harness = Map.get(sprite, :harness) || Map.get(sprite, "harness") || "codex"
       harness == "codex"
+    end)
+  end
+
+  defp requires_canary_auth?(sprites) do
+    Enum.any?(sprites, fn sprite ->
+      role = Map.get(sprite, :role) || Map.get(sprite, "role")
+      role in [:responder, "responder"]
     end)
   end
 
@@ -567,7 +831,89 @@ defmodule Conductor.CLI do
     Application.get_env(:conductor, :config_module, Conductor.Config)
   end
 
+  defp canary_client_module do
+    Application.get_env(:conductor, :canary_client_module, Conductor.Canary.Client)
+  end
+
   defp sprite_module do
     Application.get_env(:conductor, :sprite_module, Conductor.Sprite)
   end
+
+  defp match_canary_annotations_args?(["incident", _incident_id]), do: true
+  defp match_canary_annotations_args?(_), do: false
+
+  defp build_annotation_attrs(opts) do
+    with {:ok, agent} <- required_canary_opt(opts, :agent),
+         {:ok, action} <- required_canary_opt(opts, :action),
+         {:ok, metadata} <- parse_annotation_metadata(opts[:metadata]) do
+      {:ok, %{agent: agent, action: action, metadata: metadata}}
+    end
+  end
+
+  defp required_canary_opt(opts, key) do
+    case Keyword.get(opts, key) do
+      value when is_binary(value) and value != "" -> {:ok, value}
+      _ -> {:error, "missing required --#{key}"}
+    end
+  end
+
+  defp parse_annotation_metadata(nil), do: {:ok, nil}
+
+  defp parse_annotation_metadata(raw) do
+    case Jason.decode(raw) do
+      {:ok, metadata} when is_map(metadata) -> {:ok, metadata}
+      {:ok, _} -> {:error, "--metadata must be a JSON object"}
+      {:error, _} -> {:error, "invalid JSON for --metadata"}
+    end
+  end
+
+  defp render_incidents(%{"incidents" => []}), do: IO.puts("no active incidents")
+
+  defp render_incidents(%{"incidents" => incidents}) when is_list(incidents) do
+    Enum.each(incidents, fn incident ->
+      IO.puts(
+        "#{incident["id"]} #{incident["service"]} #{incident["severity"]} #{incident["state"]} #{incident["title"]}"
+      )
+    end)
+  end
+
+  defp render_incidents(response), do: IO.puts(Jason.encode!(response))
+
+  defp render_report(%{"status" => status, "summary" => summary} = response) do
+    IO.puts("status: #{status}")
+    IO.puts("summary: #{summary}")
+    IO.puts("incidents: #{response |> Map.get("incidents", []) |> length()}")
+    IO.puts("error_groups: #{response |> Map.get("error_groups", []) |> length()}")
+    IO.puts("targets: #{response |> Map.get("targets", []) |> length()}")
+  end
+
+  defp render_report(response), do: IO.puts(Jason.encode!(response))
+
+  defp render_timeline(%{"summary" => summary, "events" => events}) when is_list(events) do
+    IO.puts("summary: #{summary}")
+
+    Enum.each(events, fn event ->
+      IO.puts(
+        "#{event["created_at"]} #{event["service"]} #{event["event"]} #{event["severity"]} #{event["summary"]}"
+      )
+    end)
+  end
+
+  defp render_timeline(response), do: IO.puts(Jason.encode!(response))
+
+  defp render_annotations(%{"annotations" => []}), do: IO.puts("no annotations")
+
+  defp render_annotations(%{"annotations" => annotations}) when is_list(annotations) do
+    Enum.each(annotations, fn annotation ->
+      IO.puts("#{annotation["created_at"]} #{annotation["agent"]} #{annotation["action"]}")
+    end)
+  end
+
+  defp render_annotations(response), do: IO.puts(Jason.encode!(response))
+
+  defp render_annotation(%{"created_at" => created_at, "agent" => agent, "action" => action}) do
+    IO.puts("#{created_at} #{agent} #{action}")
+  end
+
+  defp render_annotation(response), do: IO.puts(Jason.encode!(response))
 end

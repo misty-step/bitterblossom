@@ -6,7 +6,9 @@ defmodule Conductor.ConfigDispatchEnvTest do
 
   setup do
     original_env =
-      for key <- ~w(CODEX_HOME OPENAI_API_KEY GITHUB_TOKEN EXA_API_KEY), into: %{} do
+      for key <-
+            ~w(CODEX_HOME OPENAI_API_KEY GITHUB_TOKEN EXA_API_KEY CANARY_ENDPOINT CANARY_API_KEY),
+          into: %{} do
         {key, System.get_env(key)}
       end
 
@@ -15,6 +17,8 @@ defmodule Conductor.ConfigDispatchEnvTest do
     System.delete_env("OPENAI_API_KEY")
     System.delete_env("GITHUB_TOKEN")
     System.delete_env("EXA_API_KEY")
+    System.delete_env("CANARY_ENDPOINT")
+    System.delete_env("CANARY_API_KEY")
 
     on_exit(fn ->
       File.rm_rf(codex_home)
@@ -78,6 +82,16 @@ defmodule Conductor.ConfigDispatchEnvTest do
       env = Config.dispatch_env()
 
       assert {"EXA_API_KEY", "exa-test-key"} in env
+    end
+
+    test "includes Canary credentials when set" do
+      System.put_env("CANARY_ENDPOINT", "https://canary-obs.fly.dev")
+      System.put_env("CANARY_API_KEY", "canary-test-key")
+
+      env = Config.dispatch_env()
+
+      assert {"CANARY_ENDPOINT", "https://canary-obs.fly.dev"} in env
+      assert {"CANARY_API_KEY", "canary-test-key"} in env
     end
   end
 end

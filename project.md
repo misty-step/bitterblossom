@@ -1,5 +1,12 @@
 # Project: Bitterblossom
 
+## Direction Lock
+
+**Current direction lock (2026-04-08):** Bitterblossom is temporarily focused
+on one job only: `Tansy` listens to Canary, investigates live incidents,
+repairs the correct repo, and verifies recovery. Backlog-clearing factory lanes
+remain in the codebase, but they are not the active product priority.
+
 ## Vision
 Bitterblossom is the conductor for a single-repo software factory: it routes GitHub work to persistent sprites, drives implementation and review, and merges only when governance says the run is truly done.
 
@@ -35,9 +42,9 @@ Bitterblossom is a **cybernetic governor** for software production. The conducto
 
 ## Active Focus
 
-- **Milestone:** `Now: Current Sprint` for operational quality foundation, with `Next: Up Next` carrying behaviour extraction and Go absorption.
-- **Key Issues:** [#625](https://github.com/misty-step/bitterblossom/issues/625) (Elixir CI), [#626](https://github.com/misty-step/bitterblossom/issues/626) (RunServer tests), [#627](https://github.com/misty-step/bitterblossom/issues/627) (security hardening), [#628](https://github.com/misty-step/bitterblossom/issues/628) (prompt context), [#553](https://github.com/misty-step/bitterblossom/issues/553) (CI/Auth)
-- **Theme:** Make the Elixir conductor trustworthy: CI pipeline, test coverage on critical paths, security hardening, Weaver prompt enrichment. The architecture is validated — now harden the operational foundation.
+- **Milestone:** `Tansy v1` — one always-on Canary responder sprite with an explicit service catalog and recovery verification loop.
+- **Key Issues:** role wiring for `responder`, typed `canary-services.toml`, Tansy persona/skill path, and a safe path to opt-in merge/deploy.
+- **Theme:** Truthful incident response over generic factory throughput. Canary is the work queue; incidents come before backlog.
 
 ## Architecture Artifacts
 

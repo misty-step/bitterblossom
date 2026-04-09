@@ -261,6 +261,10 @@ defmodule Conductor.WorkspaceTest do
     test "maps triage sprites to the muse persona" do
       assert Workspace.persona_for_role(:triage) == :muse
     end
+
+    test "maps responder sprites to the tansy persona" do
+      assert Workspace.persona_for_role(:responder) == :tansy
+    end
   end
 
   # --- Helpers ---

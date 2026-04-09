@@ -6,7 +6,9 @@ defmodule Conductor.SpriteAgentTest do
 
   setup do
     original_env =
-      for key <- ~w(CODEX_HOME OPENAI_API_KEY GITHUB_TOKEN EXA_API_KEY), into: %{} do
+      for key <-
+            ~w(CODEX_HOME OPENAI_API_KEY GITHUB_TOKEN EXA_API_KEY CANARY_ENDPOINT CANARY_API_KEY),
+          into: %{} do
         {key, System.get_env(key)}
       end
 
@@ -15,6 +17,8 @@ defmodule Conductor.SpriteAgentTest do
     System.delete_env("OPENAI_API_KEY")
     System.delete_env("GITHUB_TOKEN")
     System.put_env("EXA_API_KEY", "exa-test-456")
+    System.delete_env("CANARY_ENDPOINT")
+    System.delete_env("CANARY_API_KEY")
 
     on_exit(fn ->
       File.rm_rf(codex_home)
@@ -69,6 +73,8 @@ defmodule Conductor.SpriteAgentTest do
   test "start_loop uploads prompt/env and launches a detached loop wrapper" do
     test_pid = self()
     System.put_env("OPENAI_API_KEY", "sk-test-123")
+    System.put_env("CANARY_ENDPOINT", "https://canary-obs.fly.dev")
+    System.put_env("CANARY_API_KEY", "canary-test-123")
 
     exec_fn = fn _sprite, command, opts ->
       uploaded_files =
@@ -101,11 +107,19 @@ defmodule Conductor.SpriteAgentTest do
 
     assert Enum.any?(uploaded_files, fn
              {"/tmp/worktree/.bb-runtime-env", content} ->
+               canary_endpoint_index =
+                 :binary.match(content, "export CANARY_ENDPOINT='https://canary-obs.fly.dev'")
+
+               canary_api_key_index =
+                 :binary.match(content, "export CANARY_API_KEY='canary-test-123'")
+
                exa_index = :binary.match(content, "export EXA_API_KEY='exa-test-456'")
                repo_index = :binary.match(content, "export REPO='test/repo'")
 
                String.contains?(content, "export OPENAI_API_KEY='sk-test-123'") and
                  String.contains?(content, "export CODEX_API_KEY='sk-test-123'") and
+                 match?({_, _}, canary_endpoint_index) and
+                 match?({_, _}, canary_api_key_index) and
                  match?({_, _}, exa_index) and match?({_, _}, repo_index) and
                  elem(exa_index, 0) < elem(repo_index, 0)
 
@@ -197,7 +211,9 @@ defmodule Conductor.SpriteRetryLoopTest do
 
   setup do
     original_env =
-      for key <- ~w(CODEX_HOME OPENAI_API_KEY GITHUB_TOKEN EXA_API_KEY), into: %{} do
+      for key <-
+            ~w(CODEX_HOME OPENAI_API_KEY GITHUB_TOKEN EXA_API_KEY CANARY_ENDPOINT CANARY_API_KEY),
+          into: %{} do
         {key, System.get_env(key)}
       end
 
@@ -206,6 +222,8 @@ defmodule Conductor.SpriteRetryLoopTest do
     System.put_env("OPENAI_API_KEY", "sk-test-123")
     System.delete_env("GITHUB_TOKEN")
     System.put_env("EXA_API_KEY", "exa-test-456")
+    System.delete_env("CANARY_ENDPOINT")
+    System.delete_env("CANARY_API_KEY")
 
     on_exit(fn ->
       File.rm_rf(codex_home)

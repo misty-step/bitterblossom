@@ -104,6 +104,7 @@ defmodule Conductor.Launcher do
   defp role_display_name(:fixer), do: "Thorn"
   defp role_display_name(:polisher), do: "Fern"
   defp role_display_name(:triage), do: "Muse"
+  defp role_display_name(:responder), do: "Tansy"
   defp role_display_name(role), do: to_string(role) |> String.capitalize()
 
   defp ensure_repo_checkout(sprite_config, repo, workspace) do

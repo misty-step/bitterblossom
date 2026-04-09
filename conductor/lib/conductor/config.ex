@@ -32,6 +32,21 @@ defmodule Conductor.Config do
     Application.get_env(:conductor, :event_log, ".bb/events.jsonl")
   end
 
+  @spec canary_services_path() :: binary()
+  def canary_services_path do
+    Application.get_env(:conductor, :canary_services_path, "../canary-services.toml")
+  end
+
+  @spec canary_endpoint() :: binary() | nil
+  def canary_endpoint do
+    nonempty_env("CANARY_ENDPOINT")
+  end
+
+  @spec canary_api_key() :: binary() | nil
+  def canary_api_key do
+    nonempty_env("CANARY_API_KEY")
+  end
+
   @spec session_timeout_minutes() :: pos_integer() | :infinity
   def session_timeout_minutes do
     Application.get_env(:conductor, :session_timeout_minutes, 60)
@@ -112,6 +127,8 @@ defmodule Conductor.Config do
     # sprite-side env file. GitHub auth is persisted separately during setup.
     []
     |> maybe_codex_api_env()
+    |> maybe_env("CANARY_ENDPOINT")
+    |> maybe_env("CANARY_API_KEY")
     |> maybe_env("EXA_API_KEY")
     |> Enum.reverse()
   end
@@ -155,6 +172,7 @@ defmodule Conductor.Config do
         {"SPRITE_TOKEN or sprite CLI auth", fn -> sprite_auth_available?(opts) end}
       ] ++
         maybe_codex_auth_check(opts) ++
+        maybe_canary_auth_check(opts) ++
         [
           {"gh", fn -> find_executable("gh") end},
           {"sprite", fn -> find_executable("sprite") end},
@@ -303,6 +321,17 @@ defmodule Conductor.Config do
   defp maybe_codex_auth_check(opts) do
     if Keyword.get(opts, :require_codex_auth, true) do
       [{"Codex ChatGPT auth cache or OPENAI_API_KEY", fn -> codex_auth_available?() end}]
+    else
+      []
+    end
+  end
+
+  defp maybe_canary_auth_check(opts) do
+    if Keyword.get(opts, :require_canary_auth, false) do
+      [
+        {"CANARY_ENDPOINT", fn -> canary_endpoint() end},
+        {"CANARY_API_KEY", fn -> canary_api_key() end}
+      ]
     else
       []
     end

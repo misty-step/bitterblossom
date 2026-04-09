@@ -7,6 +7,13 @@ Also read:
 - `AGENTS.md` (canonical repo context)
 - `docs/adr/004-elixir-conductor-architecture.md` (Elixir conductor design)
 
+## Current Direction Lock
+
+Bitterblossom is currently focused on one lane: `Tansy` watches Canary,
+investigates incidents, fixes the correct repository, and verifies recovery.
+The older builder/fixer/polisher lanes remain as prior art and may return, but
+they are not the active product priority right now.
+
 ## What This Is
 
 Bitterblossom is an agent-first software factory. Autonomous AI agents (sprites) pick work, implement it, review it, and merge it. The codebase has two concerns:
@@ -22,6 +29,7 @@ Agents are capable. The infrastructure is plumbing.
 - **Thorn** (`bb-fixer`) — autonomous fixer: scans PRs for merge blockers, resolves conflicts, fixes CI via `/settle`
 - **Fern** (`bb-polisher`, `bb-polisher-2`, `bb-polisher-3`) — autonomous quality + merger: reviews, polishes, refactors, squash-merges via `/settle`
 - **Muse** (`bb-muse`) — reflects on runs and synthesizes learning for the factory
+- **Tansy** (`bb-tansy`) — Canary incident responder: claims incidents, investigates root causes, repairs target repos, and verifies recovery
 
 ## Architecture
 
@@ -43,6 +51,7 @@ sprites/                     Agent definitions — where the logic lives
   weaver/                    Autonomous builder loop
   thorn/                     Autonomous fixer loop
   fern/                      Autonomous polisher+merger loop
+  tansy/                     Autonomous Canary incident responder loop
 
 base/                        Skills/configs uploaded to all sprites
 ```
@@ -53,6 +62,8 @@ base/                        Skills/configs uploaded to all sprites
 2. Each sprite runs its own autonomous loop (defined in its AGENTS.md)
 3. Weaver picks `backlog.d/` items → Thorn fixes PRs → Fern polishes and merges
 4. Self-healing: conflicts/CI failures → Thorn → Fern re-polishes → merge
+
+For the current direction lock, the default fleet runs only `bb-tansy`.
 
 ## Build & Test
 

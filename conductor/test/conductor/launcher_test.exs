@@ -253,6 +253,28 @@ defmodule Conductor.LauncherTest do
     assert prompt =~ "You are Muse."
   end
 
+  test "launch maps responder sprites to Tansy persona and prompt" do
+    Application.put_env(:conductor, :launcher_repo_checkout_present, false)
+
+    sprite = %{
+      name: "bb-tansy",
+      role: :responder,
+      repo: "misty-step/bitterblossom",
+      harness: "codex",
+      reasoning_effort: "medium",
+      persona: "You are Tansy."
+    }
+
+    assert {:ok, "123\n"} = Launcher.launch(sprite, "misty-step/bitterblossom")
+
+    assert_received {:sync_persona_called, "bb-tansy", "/tmp/workspaces/misty-step/bitterblossom",
+                     :tansy}
+
+    assert_received {:start_loop_called, "bb-tansy", prompt, "misty-step/bitterblossom", _opts}
+    assert prompt =~ "# Tansy Loop"
+    assert prompt =~ "You are Tansy."
+  end
+
   defp restore_env(key, nil), do: Application.delete_env(:conductor, key)
   defp restore_env(key, value), do: Application.put_env(:conductor, key, value)
 end

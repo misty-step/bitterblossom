@@ -3,6 +3,7 @@ import Config
 config :conductor,
   db_path: ".bb/conductor.db",
   event_log: ".bb/events.jsonl",
+  canary_services_path: Path.expand("../../canary-services.toml", __DIR__),
   poll_seconds: 60,
   builder_timeout_minutes: 25,
   ci_timeout_minutes: 30,

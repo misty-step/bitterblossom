@@ -6,7 +6,7 @@ defmodule Conductor.Fleet.Loader do
   details. Callers get a list of sprite config maps or a clear error.
   """
 
-  @valid_roles ~w(builder fixer polisher triage)
+  @valid_roles ~w(builder fixer polisher triage responder)
   @valid_harnesses ~w(codex claude-code)
   @type sprite_config :: %{
           name: binary(),
