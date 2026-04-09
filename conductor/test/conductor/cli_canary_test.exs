@@ -418,6 +418,20 @@ defmodule Conductor.CLICanaryTest do
     assert output =~ "--metadata must be a JSON object"
   end
 
+  test "rejects empty incident ids for annotations" do
+    {output, status} =
+      System.cmd(
+        "mix",
+        ["conductor", "canary", "annotations", "incident", ""],
+        cd: @conductor_dir,
+        env: [{"MIX_ENV", "test"}],
+        stderr_to_stdout: true
+      )
+
+    assert status == 1
+    assert output =~ "incident id must not be empty"
+  end
+
   test "prints usage on missing canary subcommands" do
     {output, status} =
       System.cmd("mix", ["conductor", "canary"],

@@ -160,6 +160,13 @@ defmodule Conductor.Canary.ClientTest do
     assert_received {:request, :incident_annotations, "Bearer canary-test-key"}
   end
 
+  test "rejects empty incident ids before building annotation routes" do
+    assert {:error, "incident id must not be empty"} = Client.incident_annotations("")
+
+    assert {:error, "incident id must not be empty"} =
+             Client.annotate_incident("  ", %{agent: "tansy", action: "bitterblossom.claimed"})
+  end
+
   test "creates incident annotations with json metadata" do
     assert {:ok, %{"agent" => "tansy", "action" => "bitterblossom.claimed"}} =
              Client.annotate_incident("INC-123", %{

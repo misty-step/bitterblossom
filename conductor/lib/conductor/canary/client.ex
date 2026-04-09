@@ -29,12 +29,16 @@ defmodule Conductor.Canary.Client do
 
   @spec incident_annotations(binary()) :: {:ok, body()} | {:error, binary()}
   def incident_annotations(incident_id) when is_binary(incident_id) do
-    get("/api/v1/incidents/#{incident_id}/annotations")
+    with :ok <- validate_incident_id(incident_id) do
+      get("/api/v1/incidents/#{incident_id}/annotations")
+    end
   end
 
   @spec annotate_incident(binary(), map()) :: {:ok, body()} | {:error, binary()}
   def annotate_incident(incident_id, attrs) when is_binary(incident_id) and is_map(attrs) do
-    post("/api/v1/incidents/#{incident_id}/annotations", attrs)
+    with :ok <- validate_incident_id(incident_id) do
+      post("/api/v1/incidents/#{incident_id}/annotations", attrs)
+    end
   end
 
   defp get(path, opts \\ []) do
@@ -92,5 +96,13 @@ defmodule Conductor.Canary.Client do
 
   defp format_http_error(status, body) do
     "Canary API #{status}: #{inspect(body)}"
+  end
+
+  defp validate_incident_id(incident_id) do
+    if String.trim(incident_id) == "" do
+      {:error, "incident id must not be empty"}
+    else
+      :ok
+    end
   end
 end
