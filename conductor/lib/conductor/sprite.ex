@@ -864,18 +864,31 @@ defmodule Conductor.Sprite do
       _ ->
         case exec_fn.(sprite, workspace_discovery_script(), timeout: 15_000) do
           {:ok, output} ->
-            workspace = String.trim(output)
-
-            if workspace in ["", "."] do
-              {:error,
-               ~s(sprite "#{sprite}" has no workspace repo; reconcile the fleet before tailing logs)}
-            else
-              {:ok, String.trim_trailing(workspace, "/")}
-            end
+            normalize_workspace_lookup(sprite, output)
 
           {:error, msg, _code} ->
-            {:error, msg}
+            case normalize_workspace_lookup(sprite, msg) do
+              {:ok, workspace} -> {:ok, workspace}
+              {:error, _reason} -> {:error, msg}
+            end
         end
+    end
+  end
+
+  defp normalize_workspace_lookup(sprite, output) do
+    workspace =
+      output
+      |> to_string()
+      |> String.split("\n", trim: true)
+      |> List.first("")
+      |> String.trim()
+      |> String.trim_trailing("/")
+
+    if workspace in ["", "."] do
+      {:error,
+       ~s(sprite "#{sprite}" has no workspace repo; reconcile the fleet before tailing logs)}
+    else
+      {:ok, workspace}
     end
   end
 

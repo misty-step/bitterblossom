@@ -531,25 +531,12 @@ defmodule Conductor.CLI do
          status <- declared_sprite_status(sprite, sprite_module()),
          :ok <- ensure_start_admissible(status),
          :ok <- ensure_start_preflight(sprite),
-         :ok <- ensure_sprite_ready_for_start(sprite, status),
-         :ok <-
-           workspace_module().sync_persona(
-             sprite.name,
-             workspace_module().repo_root(sprite.repo),
-             workspace_module().persona_for_role(sprite.role)
-           ) do
-      prompt = Conductor.Launcher.loop_prompt(sprite, sprite.repo)
-
-      case sprite_module().start_loop(sprite.name, prompt, sprite.repo,
-             workspace: workspace_module().repo_root(sprite.repo),
-             persona_role: workspace_module().persona_for_role(sprite.role),
-             harness: harness_module(sprite.harness),
-             harness_opts: [reasoning_effort: sprite.reasoning_effort]
-           ) do
+         :ok <- ensure_sprite_ready_for_start(sprite, status) do
+      case launcher_module().launch(sprite, sprite.repo) do
         {:ok, pid} ->
           IO.puts("started #{sprite.name} (pid #{String.trim(pid)})")
 
-        {:error, reason, _code} ->
+        {:error, reason} ->
           IO.puts(reason)
           System.halt(1)
       end
@@ -931,9 +918,6 @@ defmodule Conductor.CLI do
     end
   end
 
-  defp harness_module("claude-code"), do: Conductor.ClaudeCode
-  defp harness_module(_), do: Conductor.Codex
-
   defp fleet_probe_module do
     Application.get_env(:conductor, :worker_module, sprite_module())
   end
@@ -948,6 +932,10 @@ defmodule Conductor.CLI do
 
   defp canary_client_module do
     Application.get_env(:conductor, :canary_client_module, Conductor.Canary.Client)
+  end
+
+  defp launcher_module do
+    Application.get_env(:conductor, :launcher_module, Conductor.Launcher)
   end
 
   defp sprite_module do

@@ -140,6 +140,11 @@ defmodule Conductor.CLIFleetTest do
       :ok
     end
 
+    def detect_auth_failure(name) do
+      notify({:detect_auth_failure_called, name})
+      :ok
+    end
+
     def resume(name) do
       notify({:resume_called, name})
       :ok
@@ -155,6 +160,11 @@ defmodule Conductor.CLIFleetTest do
     def provision(name, opts) do
       notify({:provision_called, name, opts})
       :ok
+    end
+
+    def exec(name, command, _opts) do
+      notify({:exec_called, name, command})
+      {:ok, ""}
     end
 
     def start_loop(name, prompt, repo, opts) do
@@ -189,6 +199,16 @@ defmodule Conductor.CLIFleetTest do
     def check_env!(opts) do
       if pid = Application.get_env(:conductor, :sprite_test_pid) do
         send(pid, {:check_env_called, opts})
+      end
+
+      :ok
+    end
+  end
+
+  defmodule MockBootstrapModule do
+    def ensure_spellbook(name) do
+      if pid = Application.get_env(:conductor, :sprite_test_pid) do
+        send(pid, {:ensure_spellbook_called, name})
       end
 
       :ok
@@ -245,7 +265,14 @@ defmodule Conductor.CLIFleetTest do
     orig_sprite_test_pid = Application.get_env(:conductor, :sprite_test_pid)
     orig_workspace_module = Application.get_env(:conductor, :workspace_module)
     orig_config_module = Application.get_env(:conductor, :config_module)
+    orig_bootstrap_module = Application.get_env(:conductor, :bootstrap_module)
+    orig_openai_key = System.get_env("OPENAI_API_KEY")
+    orig_canary_endpoint = System.get_env("CANARY_ENDPOINT")
+    orig_canary_api_key = System.get_env("CANARY_API_KEY")
     Application.stop(:conductor)
+    System.delete_env("OPENAI_API_KEY")
+    System.delete_env("CANARY_ENDPOINT")
+    System.delete_env("CANARY_API_KEY")
     Application.put_env(:conductor, :db_path, db_path)
     Application.put_env(:conductor, :event_log, event_log)
     Application.put_env(:conductor, :worker_module, MockWorker)
@@ -279,6 +306,25 @@ defmodule Conductor.CLIFleetTest do
       if orig_config_module,
         do: Application.put_env(:conductor, :config_module, orig_config_module),
         else: Application.delete_env(:conductor, :config_module)
+
+      if orig_bootstrap_module,
+        do: Application.put_env(:conductor, :bootstrap_module, orig_bootstrap_module),
+        else: Application.delete_env(:conductor, :bootstrap_module)
+
+      case orig_openai_key do
+        nil -> System.delete_env("OPENAI_API_KEY")
+        value -> System.put_env("OPENAI_API_KEY", value)
+      end
+
+      case orig_canary_endpoint do
+        nil -> System.delete_env("CANARY_ENDPOINT")
+        value -> System.put_env("CANARY_ENDPOINT", value)
+      end
+
+      case orig_canary_api_key do
+        nil -> System.delete_env("CANARY_API_KEY")
+        value -> System.put_env("CANARY_API_KEY", value)
+      end
 
       Application.ensure_all_started(:conductor)
 
@@ -420,6 +466,7 @@ defmodule Conductor.CLIFleetTest do
     Application.put_env(:conductor, :sprite_module, MockSpriteModule)
     Application.put_env(:conductor, :workspace_module, MockWorkspaceModule)
     Application.put_env(:conductor, :config_module, MockConfigModule)
+    Application.put_env(:conductor, :bootstrap_module, MockBootstrapModule)
     Application.put_env(:conductor, :sprite_test_pid, self())
 
     output =
@@ -429,7 +476,14 @@ defmodule Conductor.CLIFleetTest do
 
     assert output =~ "started bb-weaver-2 (pid 123)"
     refute_received {:provision_called, _, _}
-    refute_received {:force_sync_called, _}
+    assert_received {:force_sync_called, "bb-weaver-2"}
+    assert_received {:ensure_spellbook_called, "bb-weaver-2"}
+    assert_received {:exec_called, "bb-weaver-2", git_probe_cmd}
+    assert git_probe_cmd =~ "test -d '/tmp/test/repo/.git'"
+    assert_received {:exec_called, "bb-weaver-2", refresh_cmd}
+    assert refresh_cmd =~ "git fetch origin --quiet"
+    assert refresh_cmd =~ "git checkout -f 'origin/main'"
+    assert refresh_cmd =~ "git clean -fd"
     assert_received {:sync_persona_called, "bb-weaver-2", "/tmp/test/repo", :weaver}
 
     assert_received {:start_loop_called, "bb-weaver-2", prompt, "test/repo", opts}
@@ -445,6 +499,7 @@ defmodule Conductor.CLIFleetTest do
     Application.put_env(:conductor, :sprite_module, MockSpriteModule)
     Application.put_env(:conductor, :workspace_module, MockWorkspaceModule)
     Application.put_env(:conductor, :config_module, MockConfigModule)
+    Application.put_env(:conductor, :bootstrap_module, MockBootstrapModule)
     Application.put_env(:conductor, :sprite_test_pid, self())
 
     output =
@@ -468,6 +523,12 @@ defmodule Conductor.CLIFleetTest do
                        harness: "codex"
                      ]}
 
+    assert_received {:ensure_spellbook_called, "bb-weaver-3"}
+    assert_received {:exec_called, "bb-weaver-3", git_probe_cmd}
+    assert git_probe_cmd =~ "test -d '/tmp/other/other-repo/.git'"
+    assert_received {:exec_called, "bb-weaver-3", refresh_cmd}
+    assert refresh_cmd =~ "git fetch origin --quiet"
+    assert refresh_cmd =~ "git checkout -f 'origin/release'"
     assert_received {:force_sync_called, "bb-weaver-3"}
     assert_received {:sync_persona_called, "bb-weaver-3", "/tmp/other/other-repo", :weaver}
     assert_received {:start_loop_called, "bb-weaver-3", prompt, "other/other-repo", opts}
@@ -500,7 +561,10 @@ defmodule Conductor.CLIFleetTest do
     Application.put_env(:conductor, :sprite_module, MockSpriteModule)
     Application.put_env(:conductor, :workspace_module, MockWorkspaceModule)
     Application.put_env(:conductor, :config_module, MockConfigModule)
+    Application.put_env(:conductor, :bootstrap_module, MockBootstrapModule)
     Application.put_env(:conductor, :sprite_test_pid, self())
+    System.put_env("CANARY_ENDPOINT", "https://canary.example.test")
+    System.put_env("CANARY_API_KEY", "test-canary-key")
 
     output =
       capture_io(fn ->
@@ -512,6 +576,7 @@ defmodule Conductor.CLIFleetTest do
     assert opts[:require_canary_auth] == true
     assert opts[:sprite_auth_probes] == [%{org: "misty-step", sprite: "bb-tansy"}]
     assert opts[:sprite_auth_probe_target] == "bb-tansy"
+    assert_received {:ensure_spellbook_called, "bb-tansy"}
 
     File.rm(responder_fleet_path)
   end

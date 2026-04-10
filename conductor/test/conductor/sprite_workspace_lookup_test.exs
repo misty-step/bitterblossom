@@ -49,4 +49,36 @@ defmodule Conductor.SpriteWorkspaceLookupTest do
     assert {:error, reason} = Sprite.logs("bb-weaver", exec_fn: exec_fn)
     assert reason =~ ~s(sprite "bb-weaver" has no workspace repo)
   end
+
+  test "logs discovery accepts a printed workspace path even when the transport exits non-zero" do
+    test_pid = self()
+
+    exec_fn = fn _sprite, command, _opts ->
+      send(test_pid, {:exec_called, command})
+
+      cond do
+        String.contains?(command, "shopt -s globstar nullglob") ->
+          {:error, "/tmp/repo/.bb/conductor/run-1/builder-worktree\n", 1}
+
+        String.contains?(
+          command,
+          "test -s '/tmp/repo/.bb/conductor/run-1/builder-worktree/ralph.log'"
+        ) ->
+          {:ok, ""}
+
+        true ->
+          {:error, "", 1}
+      end
+    end
+
+    runner_fn = fn _sprite, command, _opts ->
+      send(test_pid, {:runner_called, command})
+      {:ok, ""}
+    end
+
+    assert :ok = Sprite.logs("bb-weaver", exec_fn: exec_fn, runner_fn: runner_fn)
+
+    assert_received {:runner_called,
+                     "touch '/tmp/repo/.bb/conductor/run-1/builder-worktree/ralph.log' && cat '/tmp/repo/.bb/conductor/run-1/builder-worktree/ralph.log'"}
+  end
 end
