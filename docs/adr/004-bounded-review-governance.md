@@ -6,16 +6,20 @@
 
 ## Context
 
-Bitterblossom currently merges through a semantic gate, not through GitHub's raw "all conversations resolved" setting.
+Bitterblossom now lands through repo-owned verdict refs plus local Dagger
+verification, not through hosted branch-protection state.
 
 That is intentional. Recent review cycles on [PR #495](https://github.com/misty-step/bitterblossom/pull/495) exposed the core tradeoff:
 
 - multiple bot reviewers can emit fresh conversations after each fix
 - late low-severity comments can reopen a PR that is already locally correct
 - duplicate findings across review surfaces create bookkeeping churn
-- GitHub conversation count is a poor proxy for actual merge risk
+- transport conversation count is a poor proxy for actual merge risk
 
-Turning on branch protection's `conversation_resolution` requirement immediately would harden the wrong contract. It would reward endless bot churn and create a scrupulosity loop where "more comments exist" is treated as "quality is lower," even when the comments are duplicates, nits, or late restatements.
+Treating hosted checks or hosted conversation-resolution state as the merge
+oracle would harden the wrong contract. It would reward endless bot churn and
+create a scrupulosity loop where "more comments exist" is treated as "quality
+is lower," even when the comments are duplicates, nits, or late restatements.
 
 At the same time, doing nothing is also weak. The repo still needs strong guarantees that real blocking findings are addressed before merge.
 
@@ -23,7 +27,9 @@ The problem is not "should reviews matter?" The problem is "what is the bounded 
 
 ## Decision
 
-**Bitterblossom will use bounded review governance, with `merge-gate` as the merge contract and GitHub conversations as evidence inputs, not the source of truth.**
+**Bitterblossom will use bounded review governance, with local verdict refs as
+the merge contract and transport conversations as optional evidence inputs, not
+the source of truth.**
 
 The merge contract will be:
 
@@ -47,21 +53,23 @@ The merge contract will be:
 4. **Quiet-window convergence**
    - Merge requires:
      - zero active blocking findings
-     - required checks green
+     - fresh local Dagger evidence
      - configured review surfaces settled or timed out
      - no new blocking findings during the quiet window
 
-5. **GitHub conversations remain operator-visible**
-   - Threads are still replied to and resolved for transparency.
+5. **Transport conversations remain operator-visible when present**
+   - Remote threads can still be replied to or mirrored for transparency.
    - But raw thread count is not the merge invariant.
 
-6. **Do not enable raw GitHub conversation-resolution branch protection yet**
-   - Keep `merge-gate` as the required branch-protection status.
-   - Revisit branch protection only after bounded review governance proves convergence in practice.
+6. **Hosted remotes do not define landing truth**
+   - Do not require hosted status checks or remote conversation-resolution state
+     for local squash landing.
+   - Remote publishing may mirror evidence, but it must not overrule local
+     readiness.
 
 ## Why
 
-### 1. GitHub thread mechanics are too shallow
+### 1. Hosted thread mechanics are too shallow
 
 Thread existence tells us that someone commented. It does not tell us:
 
@@ -71,7 +79,7 @@ Thread existence tells us that someone commented. It does not tell us:
 - whether it is already addressed in a later commit
 - whether it arrived after the review window should have closed
 
-That means GitHub thread count is too noisy to be the merge contract.
+That means remote thread count is too noisy to be the merge contract.
 
 ### 2. Merge needs semantic finality
 
@@ -198,14 +206,14 @@ This preserves safety without punishing every late bot cycle.
 
 1. Add a review-ledger model to conductor state.
 2. Fingerprint review findings so duplicates can collapse across surfaces.
-3. Make `merge-gate` read ledger state, not raw thread counts.
-4. Preserve GitHub replies/resolution behavior for transparency.
+3. Make verdict generation read ledger state, not raw thread counts.
+4. Preserve optional remote replies/resolution behavior for transparency.
 5. Add end-to-end tests proving convergence with:
    - duplicate findings
    - late-arriving nits
    - late-arriving real blockers
    - quiet-window completion
-6. Only revisit branch protection after those tests pass reliably.
+6. Only add remote mirrors after those tests pass reliably.
 
 ## Verification
 
@@ -222,4 +230,4 @@ Issue #102 should carry the end-to-end proof for these scenarios.
 ## Follow-Up
 
 - issue #102: prove the full single-repo factory trace bullet end-to-end
-- issue #498: decide whether branch protection should require conversation resolution after bounded governance exists
+- follow-up: decide which remote evidence, if any, should mirror local verdict state after bounded governance proves convergence

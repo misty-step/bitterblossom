@@ -296,6 +296,11 @@ defmodule Conductor.CLI do
           IO.puts(Jason.encode!(service))
         else
           IO.puts("service: #{service.name}")
+
+          if service.aliases != [] do
+            IO.puts("aliases: #{Enum.join(service.aliases, ", ")}")
+          end
+
           IO.puts("repo: #{service.repo}")
           IO.puts("clone_url: #{service.clone_url}")
           IO.puts("default_branch: #{service.default_branch}")

@@ -33,14 +33,13 @@ Required repo artifacts:
 
 ### 1. Claim
 
-Pick one active incident that does not already carry a live
-`bitterblossom.claimed` annotation.
+Pick one active incident after inspecting its annotations.
 
 Prefer:
 
 ```bash
 cd conductor
-mix conductor canary incidents --without-annotation bitterblossom.claimed --json
+mix conductor canary incidents --json
 ```
 
 Write a claim annotation immediately with:
@@ -50,6 +49,14 @@ Write a claim annotation immediately with:
 - metadata: `run_id`, `service`, `claimed_at`, `sprite`
 
 Then write `bitterblossom.investigating` before any repo mutation.
+
+Selection rules:
+
+- skip incidents with terminal annotations:
+  `bitterblossom.resolved`, `bitterblossom.escalated`, `bitterblossom.rollback`
+- prefer incidents with no `bitterblossom.claimed`
+- if the current sprite previously wrote `bitterblossom.claimed` and no later
+  state transition exists, resume that incident instead of leaving it orphaned
 
 ### 2. Gather Truth
 
@@ -146,6 +153,7 @@ Otherwise annotate `bitterblossom.escalated` with the reason.
 ## Anti-Patterns
 
 - Guessing the repo from the service name
+- Abandoning a self-claimed incident because the claim annotation exists
 - Treating webhooks as truth
 - Skipping investigation and jumping straight to `/autopilot`
 - Auto-merging because the patch “looks small”

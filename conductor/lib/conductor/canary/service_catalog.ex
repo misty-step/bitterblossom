@@ -11,6 +11,7 @@ defmodule Conductor.Canary.ServiceCatalog do
 
   @allowed_keys ~w(
     name
+    aliases
     repo
     clone_url
     default_branch
@@ -24,6 +25,7 @@ defmodule Conductor.Canary.ServiceCatalog do
 
   @type service :: %{
           name: binary(),
+          aliases: [binary()],
           repo: binary(),
           clone_url: binary(),
           default_branch: binary(),
@@ -58,7 +60,7 @@ defmodule Conductor.Canary.ServiceCatalog do
 
   @spec fetch([service()], binary()) :: {:ok, service()} | {:error, :not_found}
   def fetch(services, name) when is_list(services) and is_binary(name) do
-    case Enum.find(services, &(&1.name == name)) do
+    case Enum.find(services, &service_matches?(&1, name)) do
       nil -> {:error, :not_found}
       service -> {:ok, service}
     end
@@ -89,10 +91,11 @@ defmodule Conductor.Canary.ServiceCatalog do
         {:error, "no [[service]] entries in canary-services.toml"}
 
       services when is_list(services) ->
-        with :ok <- ensure_unique_service_names(services),
-             results <- Enum.with_index(services, 1) |> Enum.map(&parse_one_service/1),
-             [] <- Enum.filter(results, &match?({:error, _}, &1)) do
-          {:ok, Enum.map(results, fn {:ok, service} -> service end)}
+        with results <- Enum.with_index(services, 1) |> Enum.map(&parse_one_service/1),
+             [] <- Enum.filter(results, &match?({:error, _}, &1)),
+             parsed <- Enum.map(results, fn {:ok, service} -> service end),
+             :ok <- ensure_unique_service_identifiers(parsed) do
+          {:ok, parsed}
         else
           [{:error, _} | _] = errors ->
             {:error,
@@ -108,23 +111,23 @@ defmodule Conductor.Canary.ServiceCatalog do
     end
   end
 
-  defp ensure_unique_service_names(services) do
-    duplicates =
+  defp ensure_unique_service_identifiers(services) do
+    duplicate =
       services
-      |> Enum.map(&Map.get(&1, "name"))
-      |> Enum.reject(&is_nil/1)
+      |> Enum.flat_map(fn service -> [service.name | service.aliases] end)
       |> Enum.frequencies()
-      |> Enum.filter(fn {_name, count} -> count > 1 end)
+      |> Enum.find(fn {_name, count} -> count > 1 end)
 
-    case duplicates do
-      [] -> :ok
-      [{name, _} | _] -> {:error, "duplicate service name '#{name}'"}
+    case duplicate do
+      nil -> :ok
+      {name, _} -> {:error, "duplicate service identifier '#{name}'"}
     end
   end
 
   defp parse_one_service({entry, idx}) when is_map(entry) do
     with :ok <- validate_allowed_keys(entry, idx),
          {:ok, name} <- validate_required_string(entry, "name", idx),
+         {:ok, aliases} <- validate_aliases(entry, idx, name),
          {:ok, repo} <- validate_repo(entry, idx),
          {:ok, clone_url} <- validate_required_string(entry, "clone_url", idx),
          {:ok, branch} <- validate_default_branch(entry, idx),
@@ -139,6 +142,7 @@ defmodule Conductor.Canary.ServiceCatalog do
       {:ok,
        %{
          name: name,
+         aliases: aliases,
          repo: repo,
          clone_url: clone_url,
          default_branch: branch,
@@ -167,6 +171,31 @@ defmodule Conductor.Canary.ServiceCatalog do
     case Map.get(entry, key) do
       value when is_binary(value) and value != "" -> {:ok, value}
       _ -> {:error, "service entry ##{idx} missing required '#{key}'"}
+    end
+  end
+
+  defp validate_aliases(entry, idx, name) do
+    case Map.get(entry, "aliases", []) do
+      aliases when is_list(aliases) ->
+        cond do
+          aliases == [] ->
+            {:ok, []}
+
+          not Enum.all?(aliases, &(is_binary(&1) and &1 != "")) ->
+            {:error, "service entry ##{idx} aliases must be a non-empty array of strings"}
+
+          length(Enum.uniq(aliases)) != length(aliases) ->
+            {:error, "service entry ##{idx} aliases must be unique"}
+
+          name in aliases ->
+            {:error, "service entry ##{idx} aliases must not repeat '#{name}'"}
+
+          true ->
+            {:ok, aliases}
+        end
+
+      _ ->
+        {:error, "service entry ##{idx} aliases must be a non-empty array of strings"}
     end
   end
 
@@ -243,4 +272,8 @@ defmodule Conductor.Canary.ServiceCatalog do
   end
 
   defp validate_auto_deploy_requirements(true, _deploy_cmd, _rollback_cmd, _idx), do: :ok
+
+  defp service_matches?(service, name) do
+    service.name == name or name in service.aliases
+  end
 end

@@ -123,6 +123,7 @@ defmodule Conductor.CLICanaryTest do
     File.write!(path, """
     [[service]]
     name = "volume"
+    aliases = ["volume-web"]
     repo = "misty-step/volume"
     clone_url = "https://git.example.com/misty-step/volume.git"
     default_branch = "main"
@@ -165,6 +166,7 @@ defmodule Conductor.CLICanaryTest do
 
     assert {:ok, decoded} = Jason.decode(output)
     assert decoded["name"] == "volume"
+    assert decoded["aliases"] == ["volume-web"]
     assert decoded["repo"] == "misty-step/volume"
     assert decoded["clone_url"] == "https://git.example.com/misty-step/volume.git"
     assert decoded["default_branch"] == "main"
@@ -180,6 +182,7 @@ defmodule Conductor.CLICanaryTest do
       end)
 
     assert output =~ "service: volume"
+    assert output =~ "aliases: volume-web"
     assert output =~ "repo: misty-step/volume"
     assert output =~ "clone_url: https://git.example.com/misty-step/volume.git"
     assert output =~ "default_branch: main"
@@ -204,6 +207,17 @@ defmodule Conductor.CLICanaryTest do
 
     assert {:ok, decoded} = Jason.decode(output)
     assert decoded["name"] == "volume"
+  end
+
+  test "resolves aliases through the CLI", %{path: path} do
+    output =
+      capture_io(fn ->
+        CLI.main(["canary", "service", "volume-web", "--catalog", path, "--json"])
+      end)
+
+    assert {:ok, decoded} = Jason.decode(output)
+    assert decoded["name"] == "volume"
+    assert decoded["aliases"] == ["volume-web"]
   end
 
   test "prints incidents and forwards annotation filters" do

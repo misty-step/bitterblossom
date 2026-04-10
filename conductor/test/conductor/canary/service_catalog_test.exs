@@ -14,7 +14,7 @@ defmodule Conductor.Canary.ServiceCatalogTest do
     %{path: path}
   end
 
-  test "loads valid services with defaults", %{path: path} do
+  test "loads valid services with defaults and aliases", %{path: path} do
     File.write!(
       path,
       """
@@ -27,6 +27,7 @@ defmodule Conductor.Canary.ServiceCatalogTest do
 
       [[service]]
       name = "canary"
+      aliases = ["canary-triage"]
       repo = "misty-step/canary"
       clone_url = "https://git.example.com/misty-step/canary.git"
       default_branch = "master"
@@ -50,6 +51,9 @@ defmodule Conductor.Canary.ServiceCatalogTest do
     assert linejam.stabilization_window_s == 600
 
     assert {:ok, canary} = ServiceCatalog.resolve(services, "canary")
+    assert {:ok, aliased_canary} = ServiceCatalog.resolve(services, "canary-triage")
+    assert aliased_canary == canary
+    assert canary.aliases == ["canary-triage"]
     assert canary.auto_merge == true
     assert canary.auto_deploy == true
     assert canary.deploy_cmd == ["flyctl", "deploy", "--app", "canary-obs", "--remote-only"]
@@ -80,7 +84,7 @@ defmodule Conductor.Canary.ServiceCatalogTest do
     assert msg =~ "no [[service]] entries"
   end
 
-  test "rejects duplicate service names", %{path: path} do
+  test "rejects duplicate service identifiers", %{path: path} do
     File.write!(
       path,
       """
@@ -92,7 +96,8 @@ defmodule Conductor.Canary.ServiceCatalogTest do
       test_cmd = ["pnpm", "test"]
 
       [[service]]
-      name = "linejam"
+      name = "canary"
+      aliases = ["linejam"]
       repo = "misty-step/linejam"
       clone_url = "https://git.example.com/misty-step/linejam.git"
       default_branch = "master"
@@ -101,7 +106,25 @@ defmodule Conductor.Canary.ServiceCatalogTest do
     )
 
     assert {:error, msg} = ServiceCatalog.load(path)
-    assert msg =~ "duplicate service name 'linejam'"
+    assert msg =~ "duplicate service identifier 'linejam'"
+  end
+
+  test "rejects invalid aliases", %{path: path} do
+    File.write!(
+      path,
+      """
+      [[service]]
+      name = "linejam"
+      aliases = ["", "linejam"]
+      repo = "misty-step/linejam"
+      clone_url = "https://git.example.com/misty-step/linejam.git"
+      default_branch = "master"
+      test_cmd = ["pnpm", "test"]
+      """
+    )
+
+    assert {:error, msg} = ServiceCatalog.load(path)
+    assert msg =~ "aliases must be a non-empty array of strings"
   end
 
   test "rejects unknown keys", %{path: path} do

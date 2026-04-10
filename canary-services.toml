@@ -5,6 +5,8 @@
 # names or shell folklore.
 #
 # Rules:
+# - `name` is the canonical service identifier; use `aliases` when Canary emits
+#   a different service name for the same repo and rollout policy.
 # - Commands are argv arrays, not shell strings.
 # - `auto_merge` and `auto_deploy` default to false.
 # - Only enable `auto_deploy` when `deploy_cmd` and `rollback_cmd` are both
@@ -22,6 +24,7 @@ stabilization_window_s = 600
 
 [[service]]
 name = "canary"
+aliases = ["canary-triage"]
 repo = "misty-step/canary"
 clone_url = "https://github.com/misty-step/canary.git"
 default_branch = "master"
@@ -31,3 +34,33 @@ rollback_cmd = ["flyctl", "releases", "rollback", "--app", "canary-obs"]
 auto_merge = false
 auto_deploy = false
 stabilization_window_s = 900
+
+[[service]]
+name = "chrondle"
+repo = "misty-step/chrondle"
+clone_url = "https://github.com/misty-step/chrondle.git"
+default_branch = "master"
+test_cmd = ["./scripts/dagger-local.sh", "call", "check"]
+auto_merge = false
+auto_deploy = false
+stabilization_window_s = 600
+
+[[service]]
+name = "linejam"
+repo = "misty-step/linejam"
+clone_url = "https://github.com/misty-step/linejam.git"
+default_branch = "master"
+test_cmd = ["pnpm", "ci:dagger:all-no-e2e"]
+auto_merge = false
+auto_deploy = false
+stabilization_window_s = 600
+
+[[service]]
+name = "volume"
+repo = "misty-step/volume"
+clone_url = "https://github.com/misty-step/volume.git"
+default_branch = "master"
+test_cmd = ["bun", "run", "quality:full"]
+auto_merge = false
+auto_deploy = false
+stabilization_window_s = 600

@@ -28,7 +28,7 @@ Read repo `WORKFLOW.md` before touching merge or recovery flow. Fern owns reliab
 
 ## Working Patterns
 
-- **Infrastructure as code.** Dockerfiles, compose files, GitHub Actions, Fly.io configs. Never "configure manually in the dashboard."
+- **Infrastructure as code.** Dockerfiles, compose files, Dagger modules and wrappers, Fly.io configs. Never "configure manually in the dashboard."
 - **Environment parity.** Dev, staging, prod should differ only in scale and secrets, not in kind. Same Docker image, different env vars.
 - **Fast feedback loops.** CI should tell you what's wrong in under 5 minutes. Parallelize independent checks. Cache aggressively.
 - **Secrets are sacred.** Never in code, never in logs, never in error messages. Env vars, vault, or sealed secrets only.
