@@ -87,6 +87,26 @@ cd conductor && mix deps.get && mix compile && mix test
 - **Stale agent processes block dispatch.** Sprite agent processes may linger after a run completes. Kill before re-dispatch.
 - **Issue boundaries must not contradict AC.** Ensure acceptance criteria are achievable within stated constraints.
 
+## Edit Discipline (codified from session history)
+
+Top failure mode in this repo is Elixir module thrashing driven by
+compile/test loops: `orchestrator.ex` 23×, `github.ex` 20×,
+`health_monitor.ex` 16×, with 21 error-loops across sessions.
+
+- **Two-failure rule on Elixir modules.** After `mix compile` or
+  `mix test` fails twice on the same module, stop editing. Inspect:
+  pattern-match shape, GenServer state, supervisor children, `@spec` and
+  actual return shape. Don't touch the file again until you can state
+  the failure cause in one sentence.
+- **Compile early, compile often.** Run `mix compile --warnings-as-errors`
+  after every non-trivial edit. Elixir compile cycles are cheap; letting
+  warnings and type mismatches accumulate across edits is how modules
+  end up edited 20+ times.
+- **Supervisor/GenServer changes are not tweaks.** If you're editing a
+  supervisor tree or GenServer callback, read the full file plus its
+  children/callers before the first edit. These failures cascade —
+  iterative patching is the wrong mental model here.
+
 ## Coding Standards
 
 - Elixir 1.16+, `mix format`, deep modules (Ousterhout)
