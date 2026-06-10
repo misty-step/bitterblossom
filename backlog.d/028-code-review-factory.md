@@ -46,6 +46,18 @@ control — expensive and noisy).
   where it fits; substrate choice (Pi vs OpenCode vs Goose) goes through a
   Daedalus-style eval, not vibes — Cloudflare chose OpenCode for open
   source + programmatic-session SDK + familiarity; run our equivalent.
+- **Candidate engine: harness-native headless orchestration.** Claude Code
+  dynamic workflows run in `claude -p` / Agent SDK (GA June 2026): one
+  saved workflow script can be the entire fan-out + adversarial
+  cross-check + coordinator-filter, resumable, with per-stage model
+  routing. Evaluate it against a hand-built coordinator before writing
+  one — but it's Claude-only, so it competes as one engine, not the
+  architecture.
+- **Multi-harness is the plane's contract.** The factory's runner layer
+  must outfit lanes with arbitrary harnesses — Claude, Codex, Pi,
+  OpenCode, Droid, Antigravity, Grok, Cursor — so reviewer diversity is a
+  config choice, not a rewrite. Harness-kit's `/roster` skill documents
+  the headless invocation for each.
 
 ## Shared contracts
 
