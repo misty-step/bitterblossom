@@ -1,8 +1,11 @@
 # Shape and build the Rust event-plane spine
 
 Priority: P0
-Status: pending
+Status: ready
 Estimate: XL
+
+Context packet: `docs/plans/2026-06-10-031-event-plane-spine.md`
+(shaped + critiqued 2026-06-10; consume via `/deliver`).
 
 ## Goal
 A small Rust service + CLI that implements the v3 primitives — task, agent,
@@ -25,8 +28,10 @@ end to end.
   export hook.
 
 ## Oracle
-- [ ] `/shape` produces a context packet (data model, substrate contract,
-      crate layout) reviewed before implementation starts
+- [x] `/shape` produces a context packet (data model, substrate contract,
+      crate layout) reviewed before implementation starts —
+      `docs/plans/2026-06-10-031-event-plane-spine.md`, codex critique
+      receipt e12ad318
 - [ ] A demo task defined purely in config runs end to end via all three
       ingress forms (webhook, cron, CLI) with one durable run row each
 - [ ] Killing the service mid-run yields an `orphaned`/recoverable run, not

@@ -1,0 +1,319 @@
+Reading additional input from stdin...
+OpenAI Codex v0.137.0
+--------
+workdir: /Users/phaedrus/Development/bitterblossom
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 019eb295-fd7e-70f1-9bae-fbdafe1bcbea
+--------
+user
+Role: adversarial design critic (fresh context — you have ONLY this card and the packet below).
+Objective: find the production failure that would embarrass us. You are reviewing a context packet for a small Rust control plane ("bitterblossom v3") that runs event-triggered AI agent workloads on Fly.io sprite VMs.
+Scope: read-only critique of the packet at docs/plans/2026-06-10-031-event-plane-spine.md in this repo. Do not modify any files.
+Focus your attack on: (1) the run state machine + idempotency + recovery semantics — what corrupts or loses work; (2) the substrate trait boundary — what leaks; (3) budgets — what overspends despite the controls; (4) the config-as-data claim ("adding a workload touches zero Rust") — name a realistic workload that breaks it; (5) anything under-specified that the builder will have to invent (a load-bearing "decide during implementation").
+Not in scope: style nits, naming, prose quality, alternative tech stacks (the Rust decision is locked by the operator).
+Output shape: numbered findings, each with severity (blocking / serious / minor), the concrete failure scenario, and the smallest packet change that fixes it. Max 600 words. If you find nothing blocking, say so explicitly.
+
+hook: SessionStart
+hook: SessionStart Completed
+codex
+I’ll act as the fresh critic and keep this read-only. I’m going to inspect only the packet plus minimal repo context if the packet references local contracts needed to judge it.
+exec
+/bin/zsh -lc "sed -n '1,260p' docs/plans/2026-06-10-031-event-plane-spine.md" in /Users/phaedrus/Development/bitterblossom
+ succeeded in 0ms:
+# Context Packet: Bitterblossom v3 Rust Event-Plane Spine
+
+Deliverable: code — a Rust service + CLI (`bb`) implementing the v3
+primitives well enough to carry workload #1 (backlog 028) end to end.
+Consumed by `/deliver` against backlog 031.
+
+## Goal
+
+An operator defines a task, binds an agent, attaches a trigger — all as
+files — and the plane runs it durably on a sprite with cost, budget, and
+trace visible from the CLI.
+
+## Non-Goals
+
+- No workload logic in the plane (the review coordinator, incident
+  judgment, etc. live in task specs and agent prompts — 028's problem).
+- No dashboard/UI in v1; CLI with stable `--json` is the operator surface.
+- No multi-tenancy, no auth beyond a shared ingress token + webhook HMAC.
+- No LLM proxy or per-provider usage metering (Olympus `llm-proxy.ts`) in
+  v1 — cost comes from harness output parsing; proxy is a later milestone.
+- No Daedalus arena integration beyond emitting consumable run telemetry.
+- No checkpoint *baking* — golden-checkpoint creation stays in harness-kit
+  `/sprites` tooling; the plane only restores and verifies.
+
+## Constraints (invariants)
+
+- A run row exists in SQLite before any trigger gets its ack (Olympus's
+  load-bearing lesson; their `workflow_runs` promoted from metrics store
+  to ledger only after crash-recovery pain).
+- Ingress is idempotent: `UNIQUE(task, idempotency_key)`; duplicates are
+  recorded (`ingress_events`), never re-dispatched.
+- One run at a time per host: per-task serialization queues; a shared
+  sprite never handles overlapping jobs.
+- Sprite credentials are per-exec and temporary; nothing persists on the
+  sprite. Sprite exec transport is WebSocket, never `--http-post` (cold
+  sprites 502 on HTTP POST — earned in this repo).
+- Every Mode B flow runs ad hoc from a terminal with no webhook
+  (harness-kit `meta/CONTRACTS.md`).
+- Tasks/agents/triggers are data. Adding a workload touches zero Rust.
+- The plane holds no judgment: it never decides what to fix, retry
+  semantics are mechanical, agents own their own decomposition.
+- Spine stays small — target ≤ ~5k LOC. The Python-conductor postmortem
+  (20k LOC/7 days) is the anti-pattern; if a feature fights for a layer,
+  it goes to the task spec or to harness-kit.
+
+## Repo Anchors
+
+Prior art to follow (read these before building):
+
+- `adminifi/olympus/orchestrator/src/execution-substrate.ts` — the
+  substrate trait: capabilities, acquire/ensure/execute/probe/cancel/
+  read+write artifact/release. Port this shape to a Rust trait.
+- `adminifi/olympus/orchestrator/src/db.ts:628-800` — proven ledger
+  schema: `workflow_runs`, `run_ingress_events`, `jobs`, `pipeline_events`,
+  `dead_letters`, `budget_events`. Adopt simplified.
+- `adminifi/olympus/orchestrator/src/agent-specs.ts` — versioned agent
+  spec (runtime, model, substrate ref, prompt ref, triggers, secrets refs,
+  cost policy, trace identity). v3's agent file is this minus the
+  per-lane TS `hooks` — the hooks are what config replaces.
+- `adminifi/olympus/orchestrator/src/agent-runtimes.ts` — harness adapter:
+  `buildCommand` per runtime (`codex exec` / `claude -p` / `pi -p`),
+  output parsing for tokens/cost.
+- `adminifi/olympus/orchestrator/src/job-queue.ts` — per-lane serialized
+  drain with dispatch timeout that releases the drain but never silently
+  drops the run.
+- `harness-kit/skills/sprites/templates/lane-card.md` — the task-spec
+  contract (shared with Mode A; the card is the agent's entire context).
+- `harness-kit/skills/sprites/references/provisioning.md` — sprite
+  lifecycle facts (golden checkpoints, wake semantics) the Elixir
+  conductor learned the hard way.
+- `docs/archive/` + `conductor/` (this repo) — prior art only; do not
+  extend.
+
+## Alternatives
+
+**A. Bespoke Rust spine (recommended).** axum + rusqlite + tokio in one
+binary. Fails if we over-build it — mitigated by the LOC budget and the
+"workload = zero Rust" invariant forcing thinness.
+
+**B. Fork/generalize Olympus.** Boring path; it's in production. Fails:
+TypeScript (direction locked to Rust by the operator, 2026-06-10);
+adminifi-shaped tenancy/repos baked through env and lane hooks; every
+workload still requires TS dispatcher/preparer code — the exact coupling
+v3 exists to remove. Verdict: steal its schema and seams, not its runtime.
+
+**C. Durable-execution platform (Inngest/Trigger.dev/Temporal), utah-style.**
+Fails: orchestrates in-process functions, so the hard 20% (sprite prepare,
+harness exec, receipt collection) is still ours; adds a server/SaaS
+dependency to a personal plane; SSPL/cloud coupling; non-Rust. Researched
+2026-06-10 — nothing off-the-shelf dispatches a coding harness onto a
+remote sandbox. Verdict: borrow `inngest/utah`'s trigger ergonomics, skip
+the platform.
+
+**D. No daemon: cron + CI + `dispatch-agent` scripts.** The truly boring
+inversion — no resident process at all. Fails: no durable ledger or dedup
+across triggers, no budget accounting, no dead-letter replay, and webhook
+ingress needs a listening process anyway. Named because it sets the bar:
+every spine feature must beat "a crontab and a shell script" on operator
+value or it doesn't ship.
+
+## Design
+
+One Rust crate, one binary, two personalities: `bb serve` (the plane) and
+`bb <verb>` (operator/agent CLI sharing the same core). Modules, not
+microcrates: `ingress`, `ledger`, `queue`, `dispatch`, `substrate`,
+`harness`, `spec` (task/agent/trigger loading), `budget`, `notify`, `cli`.
+Root becomes a Cargo workspace when — not before — a second crate earns
+existence.
+
+**Config surface (the product):**
+
+```
+plane.toml                  # db path, ingress tokens, notify webhook, global budget
+agents/<name>.toml          # versioned: harness, model, reasoning, skills/prompt ref
+tasks/<name>/card.md        # lane card (harness-kit template) — the agent's context
+tasks/<name>/task.toml      # repos, substrate host, budgets, agent binding, triggers
+```
+
+Trigger kinds: `webhook` (named route + HMAC/token), `cron` (in-process
+tokio scheduler), `manual` (`bb run <task>`, the degenerate trigger). All
+three converge on the same ingress fn: validate → idempotency check →
+durable run row → ack → enqueue.
+
+**Run state machine** (Olympus's, verbatim): `pending → running →
+success | failure | awaiting_recovery`; `orphaned` for runs inherited by a
+new process; `kill_requested` flag; boot re-enqueues `pending`, marks
+inherited `running` as `orphaned`. Retries: bounded mechanical re-dispatch
+(2 after initial), then dead-letter with full payload + attempts, replayable
+via `bb dlq replay <id>`.
+
+**Substrate trait** (port of `ExecutionSubstrateAdapter`):
+`capabilities()`, `acquire`, `ensure`, `prepare` (checkpoint restore +
+repo hard-reset to declared ref + temp credentials), `execute`, `cancel`,
+`read_artifact`/`write_artifact`, `release`. Two adapters in v1:
+`sprites` (shell out to the `sprite` CLI over WebSocket exec; HTTP API
+adapter is a later swap behind the same trait) and `local` (process in a
+temp worktree — this is what makes every task terminal-runnable and tests
+cheap).
+
+**Harness adapter:** `build_command(card, agent, budgets) -> Vec<String>`
+plus `parse_output(stream) -> {result, turns, tokens, cost}` per runtime
+id (`codex`, `claude`, `pi` at minimum). Harness ids and flags live in one
+module; adding a harness is one adapter impl, not a schema change.
+
+**Budgets:** per-task `{timeout_minutes, turn_cap, max_cost_per_run_usd,
+max_runs_per_day}` + a global daily ceiling in `plane.toml`. Enforced
+pre-dispatch (runs/day, ceiling) and post-run (cost recorded; breach emits
+a `budget_events` row and a notification, and parks the task —
+`status=parked` — until the operator clears it).
+
+**Ledger (SQLite, WAL):** `runs` (ledger + idempotency + trace_id),
+`ingress_events` (every delivery incl. duplicates), `attempts` (per
+dispatch: agent spec id+version, harness, model, timing, tokens, cost,
+exit, artifact paths), `run_events` (milestones), `dead_letters`,
+`budget_events`. Trace ID seeded at ingress, carried through retries and
+receipts. Receipts also append to the harness-kit delegation-receipt JSONL
+shape so Mode A tooling reads them.
+
+**Observability:** `bb runs list|show --json` (agents are CLI users),
+`GET /health` (queue depth, oldest pending, stalled drain), notification
+webhook on state transitions only (dead-letter, budget breach, orphan at
+boot, recovery) — workload #014's contract. Telemetry export for Daedalus
+is a flat JSONL dump per run (`bb runs export`), OTel/Langfuse deferred.
+
+**ADR decision:** record as ADR 005 (Rust event plane; supersedes ADR 004
+Elixir conductor).
+
+## Oracle
+
+Phased; each phase is a commit-able milestone with its own gate.
+
+1. **Spec + ledger + local substrate.** `bb run demo-task` (task defined
+   only in config, agent = claude or codex) executes on the local adapter,
+   writes `runs`/`attempts` rows with cost+duration; `bb runs show --json`
+   returns them. `cargo test` covers state machine + idempotency
+   (duplicate `bb run --idempotency-key X` creates one run, two ingress
+   events).
+2. **Sprites substrate.** Same demo task with `substrate = "sprites"`
+   restores checkpoint, hard-resets repo, executes, collects artifacts;
+   run row identical in shape to local. Kill `bb serve` mid-run → on
+   restart the run is `orphaned`, visible, and replayable.
+3. **Ingress.** Webhook POST (valid HMAC) and a cron entry both produce
+   durable runs through the same path; invalid signature is rejected with
+   no row; a forced dispatch failure dead-letters after bounded retries
+   and `bb dlq replay` re-runs it.
+4. **Budgets + swap.** Exceeding `max_runs_per_day` parks the task and
+   fires the notification webhook; swapping the demo task's agent binding
+   (codex → claude) is one config edit, and `bb runs list` shows which
+   agent spec id+version produced which run.
+5. CI gate (backlog 030) green on the Rust crate: fmt, clippy
+   `-D warnings`, test.
+
+## Premise Source
+
+sha256:e8c61e70a12cc5217cb4b8883646b510ad62010bbfb0abdeba82c8ecf9f8c380 project.md
+
+## Risks + Rollout
+
+- **Risk: spine bloat.** The conductor died of it twice (Python 20k, then
+  Elixir mothballed). Tripwire: any PR adding a workload-specific branch
+  to dispatch/queue/substrate is wrong by definition; LOC budget reviewed
+  at each milestone.
+- **Risk: sprite CLI drift.** Transport is behind the substrate trait;
+  provisioning facts live in harness-kit's reference, refresh before M2.
+- **Risk: cost parsing per harness is fragile.** Mitigate: treat
+  unparseable output as `failure` with raw output preserved on the attempt
+  row (Olympus does this), never as silent zero-cost success.
+- **Rollout:** v3 lives at repo root alongside `conductor/` until M2
+  passes, then 032 (teardown) unblocks and removes the Elixir surface.
+  Undo path: the spine is additive until 032 lands; reverting is deleting
+  the crate.
+
+exec
+/bin/zsh -lc "pwd && rg --files -g 'docs/plans/2026-06-10-031-event-plane-spine.md' -g 'AGENTS.md' -g 'WORKFLOW.md' -g 'docs/adr/004-elixir-conductor-architecture.md'" in /Users/phaedrus/Development/bitterblossom
+ succeeded in 0ms:
+/Users/phaedrus/Development/bitterblossom
+WORKFLOW.md
+docs/adr/004-elixir-conductor-architecture.md
+docs/plans/2026-06-10-031-event-plane-spine.md
+sprites/tansy/AGENTS.md
+sprites/fern/AGENTS.md
+sprites/shared/AGENTS.md
+sprites/thorn/AGENTS.md
+sprites/muse/AGENTS.md
+sprites/weaver/AGENTS.md
+
+codex
+1. **Blocking: orphan recovery can lose or duplicate real work.**  
+   Scenario: `bb serve` dies after `execute` finishes on the sprite but before artifact collection/state transition. On restart, inherited `running` becomes `orphaned` and “replayable.” Replaying may run the same agent action twice, while the first run’s repo changes, PR/comment, or external side effects already happened. “Orphaned visible and replayable” is not a recovery semantic.  
+   Smallest packet change: define attempt phases with persisted checkpoints: `acquired`, `prepared`, `executing`, `collecting_artifacts`, `finalizing`, `released`. Recovery must first probe/read artifacts/receipts for the existing attempt, then classify as `success`, `failure`, or `needs_manual_recovery`; only pre-execute attempts are mechanically replayable.
+
+2. **Blocking: idempotency key scope is too weak for cron/manual/webhook reality.**  
+   Scenario: webhook providers retry with different delivery IDs, cron ticks overlap after downtime, and `bb run` may omit a key. `UNIQUE(task, idempotency_key)` prevents only perfect duplicates. A crash before ack is handled, but semantic duplicate events still create multiple runs and can double-dispatch expensive agents.  
+   Smallest packet change: require each trigger spec to define its dedupe key derivation and window. Examples: webhook header/body expression, cron scheduled timestamp, manual explicit key or generated non-deduped run. Store `trigger_id`, `source_event_id`, payload hash, and dedupe window in `ingress_events`.
+
+3. **Blocking: budget controls do not stop in-flight overspend.**  
+   Scenario: an agent exceeds turn/cost limits during execution. The packet says budgets are enforced pre-dispatch and post-run, with no LLM proxy in v1 and cost from harness output parsing. A runaway harness can consume far past `max_cost_per_run_usd`; post-run parking only prevents the next run.  
+   Smallest packet change: split budgets into enforceable vs advisory. Enforce timeout with process cancellation. Enforce turn cap only if the harness adapter can interrupt on streamed turn count; otherwise mark it advisory. State that per-run cost is not hard-enforced until proxy/provider metering exists, and add a hard wall-clock/attempt timeout as the v1 spend backstop.
+
+4. **Serious: substrate trait leaks workload-specific repo preparation.**  
+   Scenario: `prepare` includes “repo hard-reset to declared ref + temp credentials.” That works for single-repo coding tasks, but incident response may need multiple repos, generated patches, preflight commands, or preserving dirty diagnostic artifacts. The substrate now knows repo semantics instead of only environment/session semantics.  
+   Smallest packet change: move repo checkout/reset into a declarative `workspace` spec consumed by a generic preparer, or define `prepare(input: WorkspacePlan)` explicitly. The substrate should acquire/exec/artifact/release; workspace materialization should be data-driven and testable across local/sprites.
+
+5. **Serious: “adding a workload touches zero Rust” breaks on event-shaped workloads.**  
+   Scenario: a GitHub review coordinator workload needs to react to `pull_request_review_comment`, fetch PR diff/context, post threaded replies, and dedupe by comment ID plus head SHA. A Canary incident responder needs to claim incidents, mutate incident state, and verify recovery across another service. Those require source-specific payload normalization and side-effect adapters unless every task shell script hand-rolls it.  
+   Smallest packet change: narrow the claim: zero Rust for workloads expressible as lane-card execution over declared repos, secrets, triggers, and artifacts. Add a `pre_command`/`post_command` or “task adapter command” data hook boundary for source-specific normalization without editing plane Rust.
+
+6. **Serious: per-task serialization conflicts with “one run at a time per host.”**  
+   Scenario: two tasks point at the same shared sprite host. Per-task queues serialize each task independently, so both can dispatch concurrently onto the same sprite despite the invariant.  
+   Smallest packet change: define the lock key as substrate resource identity, not task. Queue/drain must acquire a durable host/workspace lease before dispatch; per-task ordering is separate from per-host mutual exclusion.
+
+7. **Serious: dead-letter replay is underspecified around attempts and idempotency.**  
+   Scenario: `bb dlq replay <id>` could reuse the original idempotency key and be suppressed, or mint a new run and lose trace continuity. It may also replay against a newer agent spec/ref without saying so.  
+   Smallest packet change: specify replay creates a new run with `parent_run_id`, same `trace_id` or linked trace, explicit replay idempotency key, and operator-selected policy for original vs current task/agent versions.
+
+8. **Minor: builder must invent task parking semantics.**  
+   Scenario: `status=parked` is mentioned but no table/config source of truth says whether parked rejects ingress, records but does not enqueue, or dead-letters.  
+   Smallest packet change: define parked behavior: ingress events are recorded, run rows become `blocked_budget` or no run is created, CLI shows reason, and unpark behavior is explicit.
+tokens used
+29,177
+1. **Blocking: orphan recovery can lose or duplicate real work.**  
+   Scenario: `bb serve` dies after `execute` finishes on the sprite but before artifact collection/state transition. On restart, inherited `running` becomes `orphaned` and “replayable.” Replaying may run the same agent action twice, while the first run’s repo changes, PR/comment, or external side effects already happened. “Orphaned visible and replayable” is not a recovery semantic.  
+   Smallest packet change: define attempt phases with persisted checkpoints: `acquired`, `prepared`, `executing`, `collecting_artifacts`, `finalizing`, `released`. Recovery must first probe/read artifacts/receipts for the existing attempt, then classify as `success`, `failure`, or `needs_manual_recovery`; only pre-execute attempts are mechanically replayable.
+
+2. **Blocking: idempotency key scope is too weak for cron/manual/webhook reality.**  
+   Scenario: webhook providers retry with different delivery IDs, cron ticks overlap after downtime, and `bb run` may omit a key. `UNIQUE(task, idempotency_key)` prevents only perfect duplicates. A crash before ack is handled, but semantic duplicate events still create multiple runs and can double-dispatch expensive agents.  
+   Smallest packet change: require each trigger spec to define its dedupe key derivation and window. Examples: webhook header/body expression, cron scheduled timestamp, manual explicit key or generated non-deduped run. Store `trigger_id`, `source_event_id`, payload hash, and dedupe window in `ingress_events`.
+
+3. **Blocking: budget controls do not stop in-flight overspend.**  
+   Scenario: an agent exceeds turn/cost limits during execution. The packet says budgets are enforced pre-dispatch and post-run, with no LLM proxy in v1 and cost from harness output parsing. A runaway harness can consume far past `max_cost_per_run_usd`; post-run parking only prevents the next run.  
+   Smallest packet change: split budgets into enforceable vs advisory. Enforce timeout with process cancellation. Enforce turn cap only if the harness adapter can interrupt on streamed turn count; otherwise mark it advisory. State that per-run cost is not hard-enforced until proxy/provider metering exists, and add a hard wall-clock/attempt timeout as the v1 spend backstop.
+
+4. **Serious: substrate trait leaks workload-specific repo preparation.**  
+   Scenario: `prepare` includes “repo hard-reset to declared ref + temp credentials.” That works for single-repo coding tasks, but incident response may need multiple repos, generated patches, preflight commands, or preserving dirty diagnostic artifacts. The substrate now knows repo semantics instead of only environment/session semantics.  
+   Smallest packet change: move repo checkout/reset into a declarative `workspace` spec consumed by a generic preparer, or define `prepare(input: WorkspacePlan)` explicitly. The substrate should acquire/exec/artifact/release; workspace materialization should be data-driven and testable across local/sprites.
+
+5. **Serious: “adding a workload touches zero Rust” breaks on event-shaped workloads.**  
+   Scenario: a GitHub review coordinator workload needs to react to `pull_request_review_comment`, fetch PR diff/context, post threaded replies, and dedupe by comment ID plus head SHA. A Canary incident responder needs to claim incidents, mutate incident state, and verify recovery across another service. Those require source-specific payload normalization and side-effect adapters unless every task shell script hand-rolls it.  
+   Smallest packet change: narrow the claim: zero Rust for workloads expressible as lane-card execution over declared repos, secrets, triggers, and artifacts. Add a `pre_command`/`post_command` or “task adapter command” data hook boundary for source-specific normalization without editing plane Rust.
+
+6. **Serious: per-task serialization conflicts with “one run at a time per host.”**  
+   Scenario: two tasks point at the same shared sprite host. Per-task queues serialize each task independently, so both can dispatch concurrently onto the same sprite despite the invariant.  
+   Smallest packet change: define the lock key as substrate resource identity, not task. Queue/drain must acquire a durable host/workspace lease before dispatch; per-task ordering is separate from per-host mutual exclusion.
+
+7. **Serious: dead-letter replay is underspecified around attempts and idempotency.**  
+   Scenario: `bb dlq replay <id>` could reuse the original idempotency key and be suppressed, or mint a new run and lose trace continuity. It may also replay against a newer agent spec/ref without saying so.  
+   Smallest packet change: specify replay creates a new run with `parent_run_id`, same `trace_id` or linked trace, explicit replay idempotency key, and operator-selected policy for original vs current task/agent versions.
+
+8. **Minor: builder must invent task parking semantics.**  
+   Scenario: `status=parked` is mentioned but no table/config source of truth says whether parked rejects ingress, records but does not enqueue, or dead-letters.  
+   Smallest packet change: define parked behavior: ingress events are recorded, run rows become `blocked_budget` or no run is created, CLI shows reason, and unpark behavior is explicit.
+2026-06-10T17:31:11.781195Z ERROR rmcp::transport::streamable_http_client: fail to delete session: unexpected server response: DELETE returned HTTP 400 session_id="RH6J4NP266WUJ2BE4DVLLP7GO4"
