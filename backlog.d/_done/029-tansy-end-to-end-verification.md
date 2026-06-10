@@ -1,7 +1,7 @@
 # Verify the Tansy lane end-to-end against a live or replayed Canary incident
 
 Priority: P1
-Status: pending
+Status: abandoned
 Estimate: M
 
 ## Goal

@@ -1,7 +1,7 @@
 # Adopt sprites-ex Elixir SDK as transport layer
 
 Priority: high
-Status: ready
+Status: abandoned
 Estimate: M
 
 ## Goal

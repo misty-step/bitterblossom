@@ -1,7 +1,7 @@
 # Add Repo Boundary Guardrails
 
 Priority: medium
-Status: ready
+Status: abandoned
 Estimate: M
 
 ## Goal

@@ -1,7 +1,7 @@
 # Workspace freshness before dispatch
 
 Priority: high
-Status: ready
+Status: abandoned
 Estimate: S
 
 ## Goal

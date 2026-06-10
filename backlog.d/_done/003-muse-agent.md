@@ -1,7 +1,7 @@
 # Muse agent: post-completion reflection + backlog management
 
 Priority: high
-Status: ready
+Status: abandoned
 Estimate: M
 
 ## Goal

@@ -1,7 +1,7 @@
 # Make Repo Verification Clone-Clean
 
 Priority: high
-Status: ready
+Status: abandoned
 Estimate: S
 
 ## Goal

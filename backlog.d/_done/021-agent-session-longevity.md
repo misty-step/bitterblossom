@@ -1,7 +1,7 @@
 # Agent session longevity — fix premature budget exhaustion
 
 Priority: critical
-Status: pending
+Status: abandoned
 Estimate: M
 
 > Groom 2026-06-10: demoted from in-progress — no commits since 2026-04-03

@@ -1,7 +1,7 @@
 # Define a Canary triage sprite
 
 Priority: high
-Status: blocked
+Status: abandoned
 Estimate: L
 
 ## Goal

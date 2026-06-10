@@ -1,7 +1,7 @@
 # Sprite heartbeat protocol
 
 Priority: medium
-Status: ready
+Status: abandoned
 Estimate: M
 
 ## Goal

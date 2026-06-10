@@ -1,7 +1,7 @@
 # Harness-agnostic dispatch
 
 Priority: high
-Status: ready
+Status: abandoned
 Estimate: M
 
 ## Goal

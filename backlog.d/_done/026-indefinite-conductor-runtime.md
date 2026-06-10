@@ -1,7 +1,7 @@
 # Support indefinite conductor runtime
 
 Priority: high
-Status: ready
+Status: abandoned
 Estimate: S
 
 ## Goal

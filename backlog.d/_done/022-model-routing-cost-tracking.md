@@ -1,7 +1,7 @@
 # Model routing and cost tracking
 
 Priority: high
-Status: ready
+Status: abandoned
 Estimate: L
 
 ## Goal
