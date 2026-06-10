@@ -1,114 +1,85 @@
 # CLAUDE.md
 
-Claude-family tools may read this file first. Keep it aligned w `AGENTS.md`.
+Claude-family tools read this file first. `AGENTS.md` symlinks here.
 
 Also read:
-- `WORKFLOW.md` (repo-owned runtime workflow contract)
-- `AGENTS.md` (canonical repo context)
-- `docs/adr/004-elixir-conductor-architecture.md` (Elixir conductor design)
-
-## Current Direction Lock
-
-Bitterblossom is currently focused on one lane: `Tansy` watches Canary,
-investigates incidents, fixes the correct repository, and verifies recovery.
-The older builder/fixer/polisher lanes remain as prior art and may return, but
-they are not the active product priority right now.
+- `project.md` — the v3 vision (2026-06-10 direction lock)
+- `docs/spine.md` — the operator contract for `bb`
+- `docs/adr/005-rust-event-plane.md` — why this shape
+- `docs/plans/2026-06-10-031-event-plane-spine.md` — design + critique record
 
 ## What This Is
 
-Bitterblossom is an agent-first software factory. Autonomous AI agents (sprites) pick work, implement it, review it, and merge it. The codebase has two concerns:
+Bitterblossom is the **event plane** for agent workloads: define a task,
+bind an agent, attach a trigger — all as files — and the plane runs it
+durably on a Fly Sprite (or a local process) with cost, budget, and trace
+visible from the CLI.
 
-1. **Infrastructure** (`conductor/`): Elixir/OTP — provisions sprites, bootstraps harnesses, dispatches agent loops, monitors health. Thin. No judgment.
-2. **Agent definitions** (`sprites/`): AGENTS.md, CLAUDE.md, and skill files that define what each agent does. This is where the real logic lives.
+One Rust crate, one binary (`bb`), two personalities:
 
-Agents are capable. The infrastructure is plumbing.
+- `bb serve` — webhook ingress, cron scheduler, queue, dispatch.
+- `bb <verb>` — operator/agent CLI on the same core (`run`, `runs`,
+  `dlq`, `task`, `recover`, `check`). Every workflow also runs ad hoc
+  from a terminal with no webhook.
 
-## Sprite Names
+Mode boundary (harness-kit `meta/CONTRACTS.md`): ad-hoc operator sessions
+live in harness-kit (Mode A); recurring event-driven workflows live here
+(Mode B). The plane holds **no judgment** — no workload logic, mechanical
+retries only, agents own their own decomposition.
 
-- **Weaver** (`bb-builder`) — autonomous builder: picks `backlog.d/` items, shapes, implements via `/autopilot`, and prepares branches for local review
-- **Thorn** (`bb-fixer`) — autonomous fixer: scans local finding ledgers and verification failures, resolves blockers, and restores land-readiness via `/settle`
-- **Fern** (`bb-polisher`, `bb-polisher-2`, `bb-polisher-3`) — autonomous quality + merger: reviews, polishes, refactors, and squash-lands via `/settle`
-- **Muse** (`bb-muse`) — reflects on runs and synthesizes learning for the factory
-- **Tansy** (`bb-tansy`) — Canary incident responder: claims incidents, investigates root causes, repairs target repos, and verifies recovery
-
-## Architecture
+## Layout
 
 ```text
-conductor/                   Infrastructure only — no judgment
-  lib/conductor/
-    sprite.ex                Sprite provisioning, exec, health
-    workspace.ex             Worktree lifecycle on sprites
-    bootstrap.ex             Spellbook clone + bootstrap on sprites
-    launcher.ex              Dispatch agent loops, monitor health
-    store.ex                 SQLite event log for observability
-    fleet/                   Fleet loading, reconciliation, health
-    config.ex                Runtime configuration
-    cli.ex                   bitterblossom start/stop/status
-
-sprites/                     Agent definitions — where the logic lives
-  shared/                    Shared CLAUDE.md, AGENTS.md, skills
-  weaver/                    Autonomous builder loop
-  thorn/                     Autonomous fixer loop
-  fern/                      Autonomous polisher+merger loop
-  tansy/                     Autonomous Canary incident responder loop
-
-base/                        Skills/configs uploaded to all sprites
+src/                 The spine (≤ ~5k LOC budget)
+  spec.rs            Config loading: plane.toml, agents/, tasks/
+  ledger.rs          SQLite run ledger, state machine, leases, dead letters
+  ingress.rs         Webhook HMAC + dedupe, cron schedules
+  dispatch.rs        Budget check → lease → prepare → execute → collect
+  substrate/         local + sprites adapters (WorkspacePlan seam)
+  harness.rs         claude/codex/pi command building + output parsing
+  budget.rs          Enforced vs advisory tiers, named honestly
+  recovery.rs        Boot classification of inherited runs (probe, no orphaning)
+  serve.rs           tiny_http + cron + dispatch threads
+  notify.rs          State-transition webhook (curl, best-effort)
+tests/               e2e (local + stubbed sprites), ingress, recovery, budgets
+examples/demo-plane/ Complete commented config surface (`bb check` validates)
+backlog.d/           Work source; _done/ is the archive
+docs/                Vision, ADRs, plans, spine contract, archive/
 ```
-
-## Operating Model
-
-1. `cd conductor && mix conductor start --fleet ../fleet.toml` provisions sprites, bootstraps spellbook, dispatches agent loops
-2. Each sprite runs its own autonomous loop (defined in its AGENTS.md)
-3. Weaver picks `backlog.d/` items → Thorn fixes local blockers → Fern polishes and lands
-4. Self-healing: verification failures or conflicts → Thorn → Fern re-polishes → land
-
-For the current direction lock, the default fleet runs only `bb-tansy`.
 
 ## Build & Test
 
 ```bash
-cd conductor && mix deps.get && mix compile && mix test
+cargo build                                 # binary: target/debug/bb
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test                                  # 37 tests, no network, no tokens
 ```
 
-## Agent-First Philosophy
-
-**Agents are capable.** They can pick backlog items, classify failures, decide what to fix, evaluate quality, and merge. The infrastructure exists only to give them a healthy environment.
-
-**No conductor judgment.** The conductor doesn't decide which issues to work, how to fix CI, whether to retry, or what merge policy to apply. Agents make all those decisions via their AGENTS.md definitions and skills.
-
-**Skills are the unit of capability.** `/autopilot`, `/settle`, `/code-review`, `/debug`, `/shape`, `/reflect` — these are the building blocks. Agents compose them based on what they observe.
-
-**Spellbook is the canonical skill set.** `phrazzld/spellbook` defines the skills and agents. Sprites are bootstrapped with it before every dispatch.
-
-**Self-healing cycles.** Weaver prepares a branch → Thorn fixes blockers → Fern polishes and lands locally. `backlog.d/` is the canonical work source. No dead ends, no stuck states.
+CI (`.github/workflows/ci.yml`) runs exactly those three gates.
 
 ## Gotchas (earned by pain)
 
-- **Stale agent processes block dispatch.** Sprite agent processes may linger after a run completes. Kill before re-dispatch.
-- **Issue boundaries must not contradict AC.** Ensure acceptance criteria are achievable within stated constraints.
-
-## Edit Discipline (codified from session history)
-
-Top failure mode in this repo is Elixir module thrashing driven by
-compile/test loops: `orchestrator.ex` 23×, `github.ex` 20×,
-`health_monitor.ex` 16×, with 21 error-loops across sessions.
-
-- **Two-failure rule on Elixir modules.** After `mix compile` or
-  `mix test` fails twice on the same module, stop editing. Inspect:
-  pattern-match shape, GenServer state, supervisor children, `@spec` and
-  actual return shape. Don't touch the file again until you can state
-  the failure cause in one sentence.
-- **Compile early, compile often.** Run `mix compile --warnings-as-errors`
-  after every non-trivial edit. Elixir compile cycles are cheap; letting
-  warnings and type mismatches accumulate across edits is how modules
-  end up edited 20+ times.
-- **Supervisor/GenServer changes are not tweaks.** If you're editing a
-  supervisor tree or GenServer callback, read the full file plus its
-  children/callers before the first edit. These failures cascade —
-  iterative patching is the wrong mental model here.
+- **Sprite exec transport is WebSocket** — never `--http-post` (cold
+  sprites 502). The sprite CLI needs `--` before the remote command or it
+  eats remote args as its own flags, and it resolves its org from the
+  *cwd path history* — the adapter runs the relay from `$HOME`; use
+  `org/name` host syntax to pin the org.
+- **Secrets and prompts travel on stdin**, never argv: argv is visible in
+  process tables and CLI telemetry. The heredoc delimiter is unguessable
+  by design.
+- **"Re-run it" is not a recovery semantic.** Agent runs have external
+  side effects; only pre-execute failures retry mechanically. Everything
+  at/after execute is operator-resolved (`bb runs resolve`).
+- **A workload-specific branch in dispatch/queue/substrate is wrong by
+  definition.** Workloads are task specs (config + lane card). The Python
+  conductor (20k LOC) and the Elixir persona fleet both died of spine
+  bloat — see `docs/archive/` and git history for the prior art.
 
 ## Coding Standards
 
-- Elixir 1.16+, `mix format`, deep modules (Ousterhout)
-- Semantic commits: `feat:`, `fix:`, `test:`, `docs:`, `refactor:`
-- Code is a liability — every line fights for its life
+- Rust stable, `cargo fmt`, clippy clean with `-D warnings`
+- Deep modules (Ousterhout); code is a liability — every line fights for
+  its life
+- Semantic commits: `feat:`, `fix:`, `test:`, `docs:`, `refactor:`;
+  backlog closure via `git interpret-trailers` (`Closes-backlog: <id>`)
