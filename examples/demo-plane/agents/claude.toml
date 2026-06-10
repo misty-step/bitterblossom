@@ -1,0 +1,4 @@
+version = 1
+harness = "claude"
+model = "claude-fable-5"
+secrets = ["ANTHROPIC_API_KEY"]   # resolved per-exec, never persisted

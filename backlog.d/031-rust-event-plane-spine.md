@@ -1,7 +1,7 @@
 # Shape and build the Rust event-plane spine
 
 Priority: P0
-Status: ready
+Status: done
 Estimate: XL
 
 Context packet: `docs/plans/2026-06-10-031-event-plane-spine.md`
@@ -32,14 +32,24 @@ end to end.
       crate layout) reviewed before implementation starts —
       `docs/plans/2026-06-10-031-event-plane-spine.md`, codex critique
       receipt e12ad318
-- [ ] A demo task defined purely in config runs end to end via all three
-      ingress forms (webhook, cron, CLI) with one durable run row each
-- [ ] Killing the service mid-run yields an `orphaned`/recoverable run, not
-      silent loss; a failing dispatch dead-letters after bounded retries
-      and is replayable from the CLI
-- [ ] Swapping the demo task's agent binding (e.g. codex → claude) requires
-      only a config change and is visible in the run ledger
-- [ ] Cost and duration for each run are queryable via `bb runs --json`
+- [x] A demo task defined purely in config runs end to end via all three
+      ingress forms (webhook, cron, CLI) with one durable run row each —
+      live QA 2026-06-10: webhook 202 + dedupe, two cron fires, manual;
+      real codex run on sprite lane-1 (`BB-M2-OK`); tests/e2e_local.rs,
+      tests/e2e_sprites.rs, tests/ingress.rs
+- [x] Killing the service mid-run yields a classified (never silently
+      lost) run — boot recovery probes the host: pre-execute dead-letters
+      for mechanical replay, executing parks in awaiting_recovery; `bb dlq
+      replay` mints a linked run (parent_run_id) — tests/recovery.rs +
+      live dlq replay QA
+- [x] Swapping the demo task's agent binding is one task.toml edit, both
+      bindings visible in the ledger with name + version — tests/budgets.rs
+- [x] Cost and duration per run queryable via `bb runs list/show --json`
+      and `bb runs export` (JSONL) — live QA: $0.0421 / 309ms recorded
+- [x] CI gate (030): .github/workflows/ci.yml — fmt, clippy -D warnings,
+      test
+- [x] Cross-model adversarial review: codex receipts 56b12e44 (8 findings,
+      all fixed) + 471f9eae (4 residuals fixed, remaining holds verified)
 
 ## Notes
 Study before shaping: olympus `orchestrator/src/index.ts` +
@@ -50,3 +60,9 @@ way). Absorbs the intents of abandoned tickets 022 (cost/model routing),
 023 (harness-agnostic agent binding), 027 (workspace freshness = substrate
 prepare contract). The 20K-LOC Python conductor postmortem applies: shape
 first, keep the spine under a few thousand lines, no judgment in the plane.
+
+Loop guardrails are a spine contract, not a per-task nicety (harness-kit
+`meta/CONTRACTS.md` §6, 2026-06-10): every unattended loop names max
+iterations, no-progress detection, and a token/dollar budget before it
+runs; a halted loop files what it found and stops. The budget-burn CLI and
+retry/dead-letter scope above are where these land.

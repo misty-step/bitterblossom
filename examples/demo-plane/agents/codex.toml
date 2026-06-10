@@ -1,0 +1,6 @@
+# A versioned agent binding. Swap a task's agent by editing task.toml;
+# bump version on any change — it is recorded on every attempt.
+version = 1
+harness = "codex"            # codex | claude | pi
+model = "gpt-5.5"
+bin = "/home/sprite/.local/bin/codex"   # sprite-side path

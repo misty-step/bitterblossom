@@ -1,0 +1,185 @@
+//! Harness adapters: build the CLI invocation for an agent binding and
+//! parse its output into result + cost/token stats. Harness ids and flags
+//! live here and nowhere else; adding a harness is one adapter, not a
+//! schema change.
+
+use anyhow::{bail, Context, Result};
+use serde_json::Value;
+
+use crate::ledger::AttemptStats;
+use crate::spec::{AgentSpec, TaskBudget};
+
+#[derive(Debug)]
+pub struct ParsedOutput {
+    pub result: String,
+    pub stats: AttemptStats,
+}
+
+pub const HARNESSES: &[&str] = &["claude", "codex", "pi"];
+
+/// The lane card is passed on stdin; the command must read its prompt from
+/// stdin so card size never hits argv limits.
+pub fn build_command(agent: &AgentSpec, budget: &TaskBudget) -> Result<Vec<String>> {
+    let bin = agent.bin.clone().unwrap_or_else(|| agent.harness.clone());
+    let mut cmd = match agent.harness.as_str() {
+        "claude" => {
+            let mut c = vec![
+                bin,
+                "-p".into(),
+                "--output-format".into(),
+                "json".into(),
+                "--model".into(),
+                agent.model.clone(),
+                "--dangerously-skip-permissions".into(),
+            ];
+            if let Some(turns) = budget.turn_cap {
+                c.push("--max-turns".into());
+                c.push(turns.to_string());
+            }
+            c
+        }
+        "codex" => vec![
+            bin,
+            "exec".into(),
+            "--json".into(),
+            "--dangerously-bypass-approvals-and-sandbox".into(),
+            "--model".into(),
+            agent.model.clone(),
+            "-".into(),
+        ],
+        "pi" => vec![bin, "--mode".into(), "json".into(), "-p".into()],
+        other => bail!(
+            "unknown harness '{other}' (known: {})",
+            HARNESSES.join(", ")
+        ),
+    };
+    cmd.extend(agent.args.iter().cloned());
+    Ok(cmd)
+}
+
+/// Unparseable output is an error — the attempt fails with raw output
+/// preserved. Never a silent zero-cost success.
+pub fn parse_output(harness: &str, stdout: &str) -> Result<ParsedOutput> {
+    match harness {
+        "claude" => parse_claude(stdout),
+        "codex" => parse_codex(stdout),
+        "pi" => parse_pi(stdout),
+        other => bail!("unknown harness '{other}'"),
+    }
+}
+
+/// `claude -p --output-format json` emits one JSON object:
+/// `{"type":"result","result":...,"total_cost_usd":...,"num_turns":...,"usage":{...}}`
+fn parse_claude(stdout: &str) -> Result<ParsedOutput> {
+    let v = last_json_object(stdout).context("claude output: no JSON object found")?;
+    if v.get("is_error").and_then(Value::as_bool) == Some(true) {
+        bail!("claude reported is_error=true");
+    }
+    let result = v
+        .get("result")
+        .and_then(Value::as_str)
+        .context("claude output: result object has no 'result' string")?
+        .to_string();
+    if result.trim().is_empty() {
+        bail!("claude output: empty result");
+    }
+    let usage = v.get("usage").cloned().unwrap_or(Value::Null);
+    Ok(ParsedOutput {
+        result,
+        stats: AttemptStats {
+            tokens_in: usage.get("input_tokens").and_then(Value::as_i64),
+            tokens_out: usage.get("output_tokens").and_then(Value::as_i64),
+            turns: v.get("num_turns").and_then(Value::as_i64),
+            cost_usd: v.get("total_cost_usd").and_then(Value::as_f64),
+        },
+    })
+}
+
+/// `codex exec --json` emits JSONL events; token usage arrives on
+/// `turn.completed`, the answer on `item.completed` agent messages.
+fn parse_codex(stdout: &str) -> Result<ParsedOutput> {
+    let mut tokens_in: i64 = 0;
+    let mut tokens_out: i64 = 0;
+    let mut turns: i64 = 0;
+    let mut result = String::new();
+    let mut saw_event = false;
+    for line in stdout.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        saw_event = true;
+        match v.get("type").and_then(Value::as_str) {
+            Some("turn.completed") => {
+                turns += 1;
+                if let Some(u) = v.get("usage") {
+                    tokens_in += u.get("input_tokens").and_then(Value::as_i64).unwrap_or(0);
+                    tokens_out += u.get("output_tokens").and_then(Value::as_i64).unwrap_or(0);
+                }
+            }
+            Some("item.completed") => {
+                if let Some(item) = v.get("item") {
+                    if item.get("type").and_then(Value::as_str) == Some("agent_message") {
+                        if let Some(text) = item.get("text").and_then(Value::as_str) {
+                            result = text.to_string();
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if !saw_event {
+        bail!("codex output: no JSONL events found");
+    }
+    if result.is_empty() {
+        bail!("codex output: events present but no agent_message — incomplete run");
+    }
+    Ok(ParsedOutput {
+        result,
+        stats: AttemptStats {
+            tokens_in: Some(tokens_in),
+            tokens_out: Some(tokens_out),
+            turns: Some(turns),
+            // codex does not report dollar cost; unknown, not zero.
+            cost_usd: None,
+        },
+    })
+}
+
+/// pi `--mode json` emits a final JSON object with `result` and `usage`.
+fn parse_pi(stdout: &str) -> Result<ParsedOutput> {
+    let v = last_json_object(stdout).context("pi output: no JSON object found")?;
+    let result = v
+        .get("result")
+        .or_else(|| v.get("output"))
+        .and_then(Value::as_str)
+        .context("pi output: no 'result' or 'output' string")?
+        .to_string();
+    if result.trim().is_empty() {
+        bail!("pi output: empty result");
+    }
+    let usage = v.get("usage").cloned().unwrap_or(Value::Null);
+    Ok(ParsedOutput {
+        result,
+        stats: AttemptStats {
+            tokens_in: usage.get("input_tokens").and_then(Value::as_i64),
+            tokens_out: usage.get("output_tokens").and_then(Value::as_i64),
+            turns: v.get("num_turns").and_then(Value::as_i64),
+            cost_usd: v.get("total_cost_usd").and_then(Value::as_f64),
+        },
+    })
+}
+
+/// Find the last parseable JSON object in output (harnesses may print
+/// noise before the final result object).
+fn last_json_object(stdout: &str) -> Option<Value> {
+    for line in stdout.lines().rev() {
+        let line = line.trim();
+        if line.starts_with('{') {
+            if let Ok(v) = serde_json::from_str::<Value>(line) {
+                return Some(v);
+            }
+        }
+    }
+    serde_json::from_str(stdout.trim()).ok()
+}

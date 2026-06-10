@@ -1,0 +1,3440 @@
+Reading additional input from stdin...
+OpenAI Codex v0.137.0
+--------
+workdir: /Users/phaedrus/Development/bitterblossom
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 019eb31d-2884-7f70-a6f8-9ec9804c5f19
+--------
+user
+Fresh-context adversarial re-review. A prior review found 8 issues in an event-plane service (Rust, SQLite WAL, multi-thread + multi-process): non-atomic run claiming, ingress dedupe race, lease released while remote process alive, ignored post_command failures, secrets in argv, child-only timeout kill, empty-result success, non-atomic dead-letter replay.
+
+The attached diff claims to fix all 8. Verify each fix is actually correct — especially: (1) does the ON CONFLICT partial-index upsert + IMMEDIATE transaction really close the dedupe race; (2) is the compare-and-set transition correct for ALL transitions (any state-machine hole introduced?); (3) the stdin script with heredoc — quoting/injection bugs, what happens if the prompt contains the delimiter; (4) process_group(0) + kill(-pid) semantics; (5) any NEW bug introduced by the diff. Report BLOCKING/SERIOUS findings only with file:line. If the fixes hold, say so explicitly.
+diff --git a/src/dispatch.rs b/src/dispatch.rs
+index f24dee3..d1daf0e 100644
+--- a/src/dispatch.rs
++++ b/src/dispatch.rs
+@@ -43,7 +43,11 @@ pub fn dispatch_run(plane: &Plane, ledger: &mut Ledger, run_id: &str) -> Result<
+         return ledger.run(run_id);
+     }
+ 
+-    ledger.transition(run_id, "running", None)?;
++    // Atomic claim: if another worker (or another plane process) already
++    // moved this run out of pending, walk away without a second attempt.
++    if !ledger.try_transition(run_id, "running", None)? {
++        return ledger.run(run_id);
++    }
+     ledger.set_run_agent(run_id, &task.agent_name, task.agent.version)?;
+     let started = Instant::now();
+ 
+@@ -305,13 +309,36 @@ fn attempt_on_host(
+ 
+     ledger.set_attempt_phase(attempt_id, "finalizing")?;
+     if let Some(post) = &plan.post_command {
++        // post_command is finalization (publish artifacts, post replies);
++        // a failed finalization must not masquerade as a successful run.
+         let post_result = session.execute(
+             &["sh".into(), "-c".into(), post.clone()],
+             None,
+             Duration::from_secs(600),
+         );
+-        if let Err(e) = post_result {
+-            ledger.record_event(run_id, "post_command_error", Some(&e.to_string()))?;
++        let post_error = match post_result {
++            Ok(res) if res.exit_code == 0 => None,
++            Ok(res) => Some(format!(
++                "post_command exit {}: {}",
++                res.exit_code,
++                truncate(res.stderr.trim(), 500)
++            )),
++            Err(e) => Some(format!("post_command: {e:#}")),
++        };
++        if let Some(error) = post_error {
++            let _ = session.release();
++            ledger.finish_attempt(
++                attempt_id,
++                "failure",
++                Some(&error),
++                Some(exec.exit_code),
++                &parsed.stats,
++                Some(&artifact_dir),
++            )?;
++            return Ok(AttemptOutcome::Failure {
++                phase_executed: true,
++                error,
++            });
+         }
+     }
+     session.release().context("release session")?;
+diff --git a/src/harness.rs b/src/harness.rs
+index d280165..cb39576 100644
+--- a/src/harness.rs
++++ b/src/harness.rs
+@@ -72,10 +72,13 @@ pub fn parse_output(harness: &str, stdout: &str) -> Result<ParsedOutput> {
+ /// `{"type":"result","result":...,"total_cost_usd":...,"num_turns":...,"usage":{...}}`
+ fn parse_claude(stdout: &str) -> Result<ParsedOutput> {
+     let v = last_json_object(stdout).context("claude output: no JSON object found")?;
++    if v.get("is_error").and_then(Value::as_bool) == Some(true) {
++        bail!("claude reported is_error=true");
++    }
+     let result = v
+         .get("result")
+         .and_then(Value::as_str)
+-        .unwrap_or_default()
++        .context("claude output: result object has no 'result' string")?
+         .to_string();
+     let usage = v.get("usage").cloned().unwrap_or(Value::Null);
+     Ok(ParsedOutput {
+@@ -125,6 +128,9 @@ fn parse_codex(stdout: &str) -> Result<ParsedOutput> {
+     if !saw_event {
+         bail!("codex output: no JSONL events found");
+     }
++    if result.is_empty() {
++        bail!("codex output: events present but no agent_message — incomplete run");
++    }
+     Ok(ParsedOutput {
+         result,
+         stats: AttemptStats {
+@@ -144,7 +150,7 @@ fn parse_pi(stdout: &str) -> Result<ParsedOutput> {
+         .get("result")
+         .or_else(|| v.get("output"))
+         .and_then(Value::as_str)
+-        .unwrap_or_default()
++        .context("pi output: no 'result' or 'output' string")?
+         .to_string();
+     let usage = v.get("usage").cloned().unwrap_or(Value::Null);
+     Ok(ParsedOutput {
+diff --git a/src/ledger.rs b/src/ledger.rs
+index bec1630..04e90b8 100644
+--- a/src/ledger.rs
++++ b/src/ledger.rs
+@@ -243,55 +243,57 @@ impl Ledger {
+     /// a duplicate dedupe key resolves to the existing run and is never
+     /// re-dispatched. The run row is durable before the caller acks.
+     pub fn ingest(&mut self, req: IngressRequest<'_>) -> Result<IngressOutcome> {
+-        let tx = self.conn.transaction()?;
++        // IMMEDIATE: take the write lock up front so concurrent
++        // redeliveries serialize instead of racing the dedupe check.
++        let tx = self
++            .conn
++            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+         let ts = now();
+ 
+-        let existing: Option<String> = match req.idempotency_key {
+-            Some(key) => tx
+-                .query_row(
+-                    "SELECT id FROM runs WHERE task = ?1 AND idempotency_key = ?2",
+-                    params![req.task, key],
+-                    |r| r.get(0),
+-                )
+-                .optional()?,
+-            None => None,
++        let candidate_id = new_id();
++        let trace_id = new_id();
++        let parked: Option<String> = tx
++            .query_row(
++                "SELECT reason FROM parked_tasks WHERE task = ?1",
++                params![req.task],
++                |r| r.get(0),
++            )
++            .optional()?;
++        let (state, reason) = match &parked {
++            Some(reason) => ("blocked_budget", Some(format!("task parked: {reason}"))),
++            None => ("pending", None),
+         };
+-
+-        let (run_id, duplicate) = match existing {
+-            Some(id) => (id, true),
+-            None => {
+-                let id = new_id();
+-                let trace_id = new_id();
+-                let parked: Option<String> = tx
+-                    .query_row(
+-                        "SELECT reason FROM parked_tasks WHERE task = ?1",
+-                        params![req.task],
+-                        |r| r.get(0),
+-                    )
+-                    .optional()?;
+-                let (state, reason) = match &parked {
+-                    Some(reason) => ("blocked_budget", Some(format!("task parked: {reason}"))),
+-                    None => ("pending", None),
+-                };
+-                tx.execute(
+-                    "INSERT INTO runs (id, task, trigger_kind, idempotency_key, state,
+-                       state_reason, trace_id, parent_run_id, payload, created_at, updated_at)
+-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
+-                    params![
+-                        id,
+-                        req.task,
+-                        req.trigger_kind,
+-                        req.idempotency_key,
+-                        state,
+-                        reason,
+-                        trace_id,
+-                        req.parent_run_id,
+-                        req.payload,
+-                        ts
+-                    ],
+-                )?;
+-                (id, false)
+-            }
++        // ON CONFLICT DO NOTHING against the partial unique index makes the
++        // dedupe atomic even across processes.
++        let inserted = tx.execute(
++            "INSERT INTO runs (id, task, trigger_kind, idempotency_key, state,
++               state_reason, trace_id, parent_run_id, payload, created_at, updated_at)
++             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)
++             ON CONFLICT(task, idempotency_key) WHERE idempotency_key IS NOT NULL
++             DO NOTHING",
++            params![
++                candidate_id,
++                req.task,
++                req.trigger_kind,
++                req.idempotency_key,
++                state,
++                reason,
++                trace_id,
++                req.parent_run_id,
++                req.payload,
++                ts
++            ],
++        )?;
++        let (run_id, duplicate) = if inserted == 1 {
++            (candidate_id, false)
++        } else {
++            let key = req.idempotency_key.expect("conflict implies a key");
++            let existing: String = tx.query_row(
++                "SELECT id FROM runs WHERE task = ?1 AND idempotency_key = ?2",
++                params![req.task, key],
++                |r| r.get(0),
++            )?;
++            (existing, true)
+         };
+ 
+         tx.execute(
+@@ -331,17 +333,41 @@ impl Ledger {
+             .with_context(|| format!("run {run_id} not found"))
+     }
+ 
++    /// Atomic compare-and-set transition: the UPDATE only fires when the
++    /// current state is a legal source for `to`, so two workers can never
++    /// both claim the same run. Returns false when the run was not in a
++    /// legal source state (already claimed, already terminal).
++    pub fn try_transition(&self, run_id: &str, to: &str, reason: Option<&str>) -> Result<bool> {
++        let sources: Vec<&str> = RUN_STATES
++            .iter()
++            .copied()
++            .filter(|from| transition_allowed(from, to))
++            .collect();
++        if sources.is_empty() {
++            bail!("no legal transition into state '{to}'");
++        }
++        // The IN-list is built from our own state constants, not input.
++        let list: Vec<String> = sources.iter().map(|s| format!("'{s}'")).collect();
++        let sql = format!(
++            "UPDATE runs SET state = ?2, state_reason = ?3, updated_at = ?4
++             WHERE id = ?1 AND state IN ({})",
++            list.join(", "),
++        );
++        let changed = self
++            .conn
++            .execute(&sql, params![run_id, to, reason, now()])?;
++        if changed == 1 {
++            self.record_event(run_id, &format!("state:{to}"), reason)?;
++        }
++        Ok(changed == 1)
++    }
++
+     /// Enforced state transition; illegal moves are bugs, not data.
+     pub fn transition(&self, run_id: &str, to: &str, reason: Option<&str>) -> Result<()> {
+-        let from = self.run_state(run_id)?;
+-        if !transition_allowed(&from, to) {
++        if !self.try_transition(run_id, to, reason)? {
++            let from = self.run_state(run_id)?;
+             bail!("illegal run transition {from} -> {to} for {run_id}");
+         }
+-        self.conn.execute(
+-            "UPDATE runs SET state = ?2, state_reason = ?3, updated_at = ?4 WHERE id = ?1",
+-            params![run_id, to, reason, now()],
+-        )?;
+-        self.record_event(run_id, &format!("state:{to}"), reason)?;
+         Ok(())
+     }
+ 
+@@ -550,11 +576,21 @@ impl Ledger {
+         Ok(rows)
+     }
+ 
+-    pub fn mark_dead_letter_replayed(&self, id: i64, new_run_id: &str) -> Result<()> {
+-        self.conn.execute(
+-            "UPDATE dead_letters SET replayed_run_id = ?2 WHERE id = ?1",
++    /// Atomic claim: only the first marker wins; a concurrent replay of
++    /// the same dead letter sees false and must not dispatch.
++    pub fn mark_dead_letter_replayed(&self, id: i64, new_run_id: &str) -> Result<bool> {
++        let changed = self.conn.execute(
++            "UPDATE dead_letters SET replayed_run_id = ?2
++             WHERE id = ?1 AND (replayed_run_id IS NULL OR replayed_run_id = ?2)",
+             params![id, new_run_id],
+         )?;
++        Ok(changed == 1)
++    }
++
++    /// Free every host lease held by a run (operator resolution path).
++    pub fn release_leases_for_run(&self, run_id: &str) -> Result<()> {
++        self.conn
++            .execute("DELETE FROM host_leases WHERE run_id = ?1", params![run_id])?;
+         Ok(())
+     }
+ 
+@@ -616,10 +652,12 @@ impl Ledger {
+         )?)
+     }
+ 
++    /// Daily spend sums attempts, not runs: a failed run's tokens were
++    /// still spent and must count against the ceiling.
+     pub fn cost_today(&self) -> Result<f64> {
+         let day = &now()[..10];
+         Ok(self.conn.query_row(
+-            "SELECT COALESCE(SUM(cost_usd), 0.0) FROM runs WHERE substr(created_at, 1, 10) = ?1",
++            "SELECT COALESCE(SUM(cost_usd), 0.0) FROM attempts WHERE substr(started_at, 1, 10) = ?1",
+             params![day],
+             |r| r.get(0),
+         )?)
+@@ -938,6 +976,43 @@ mod tests {
+         assert_eq!(replay_row.parent_run_id.as_deref(), Some(run.as_str()));
+     }
+ 
++    #[test]
++    fn claim_is_atomic_second_claimer_loses() {
++        let mut ledger = Ledger::open_in_memory().unwrap();
++        let run = ingest_manual(&mut ledger, "demo", None).run_id;
++        assert!(ledger.try_transition(&run, "running", None).unwrap());
++        // A second worker racing for the same pending run must lose.
++        assert!(!ledger.try_transition(&run, "running", None).unwrap());
++        assert_eq!(ledger.run_state(&run).unwrap(), "running");
++    }
++
++    #[test]
++    fn dead_letter_replay_claim_is_atomic() {
++        let mut ledger = Ledger::open_in_memory().unwrap();
++        let run = ingest_manual(&mut ledger, "demo", None).run_id;
++        let dl = ledger
++            .record_dead_letter(&run, "demo", None, "boom")
++            .unwrap();
++        assert!(ledger.mark_dead_letter_replayed(dl, "replay-a").unwrap());
++        // Same run id is idempotent; a different claimer loses.
++        assert!(ledger.mark_dead_letter_replayed(dl, "replay-a").unwrap());
++        assert!(!ledger.mark_dead_letter_replayed(dl, "replay-b").unwrap());
++    }
++
++    #[test]
++    fn cross_handle_ingest_dedupes_on_disk() {
++        let dir = tempfile::tempdir().unwrap();
++        let db = dir.path().join("plane.db");
++        let mut a = Ledger::open(&db).unwrap();
++        let mut b = Ledger::open(&db).unwrap();
++        let first = ingest_manual(&mut a, "demo", Some("K"));
++        let second = ingest_manual(&mut b, "demo", Some("K"));
++        assert!(!first.duplicate);
++        assert!(second.duplicate);
++        assert_eq!(first.run_id, second.run_id);
++        assert_eq!(a.ingress_event_count("demo").unwrap(), 2);
++    }
++
+     #[test]
+     fn attempt_phase_ordering() {
+         assert!(phase_reached("executing", "executing"));
+diff --git a/src/main.rs b/src/main.rs
+index dae1beb..506acff 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -216,6 +216,9 @@ fn run() -> Result<()> {
+                 reason,
+             } => {
+                 ledger.transition(&run_id, &outcome, Some(&reason))?;
++                // An Unknown boot probe keeps the host lease until the
++                // operator resolves; free it now.
++                ledger.release_leases_for_run(&run_id)?;
+                 println!("run {run_id} resolved: {outcome}");
+             }
+             RunsCommand::Export => {
+@@ -250,7 +253,9 @@ fn run() -> Result<()> {
+                 if let Some(prev) = &dl.replayed_run_id {
+                     bail!("dead letter {id} already replayed as run {prev}");
+                 }
+-                let replay_key = format!("replay:{id}:{}", ledger::new_id());
++                // Deterministic key: concurrent replays of the same dead
++                // letter dedupe at ingress instead of minting twin runs.
++                let replay_key = format!("replay:dl-{id}");
+                 let outcome = ledger.ingest(IngressRequest {
+                     task: &dl.task,
+                     trigger_kind: "replay",
+@@ -259,7 +264,13 @@ fn run() -> Result<()> {
+                     payload: dl.payload.as_deref(),
+                     parent_run_id: Some(&dl.run_id),
+                 })?;
+-                ledger.mark_dead_letter_replayed(id, &outcome.run_id)?;
++                if !ledger.mark_dead_letter_replayed(id, &outcome.run_id)? {
++                    bail!("dead letter {id} was claimed by a concurrent replay");
++                }
++                if outcome.duplicate {
++                    println!("replay already in flight as run {}", outcome.run_id);
++                    return Ok(());
++                }
+                 println!("replaying dead letter {id} as run {}", outcome.run_id);
+                 let run = dispatch::dispatch_run(&plane, &mut ledger, &outcome.run_id)?;
+                 println!("run {} {}", run.id, run.state);
+diff --git a/src/recovery.rs b/src/recovery.rs
+index 9623372..55527ff 100644
+--- a/src/recovery.rs
++++ b/src/recovery.rs
+@@ -32,11 +32,15 @@ pub fn recover_inherited_runs(plane: &Plane, ledger: &mut Ledger) -> Result<Vec<
+     for run in ledger.runs_in_state("running")? {
+         let attempts = ledger.attempts(&run.id)?;
+         let latest = attempts.last();
+-
+-        // Whatever happens, a dead plane's lease must not wedge the host.
+-        if let Ok(task) = plane.task(&run.task) {
+-            ledger.release_host_lease(&task.host(), &run.id)?;
+-        }
++        // The lease is released per-disposition below: a probe that finds
++        // the inherited process still alive must keep the host locked, or
++        // a new run could execute concurrently on the same resource.
++        let release_lease = |ledger: &Ledger| -> Result<()> {
++            if let Ok(task) = plane.task(&run.task) {
++                ledger.release_host_lease(&task.host(), &run.id)?;
++            }
++            Ok(())
++        };
+ 
+         let report = match latest {
+             None => {
+@@ -51,6 +55,7 @@ pub fn recover_inherited_runs(plane: &Plane, ledger: &mut Ledger) -> Result<Vec<
+                     "failure",
+                     Some(&format!("dead_letter:{dl} recovered at boot, pre-attempt")),
+                 )?;
++                release_lease(ledger)?;
+                 RecoveryReport {
+                     run_id: run.id.clone(),
+                     task: run.task.clone(),
+@@ -71,6 +76,7 @@ pub fn recover_inherited_runs(plane: &Plane, ledger: &mut Ledger) -> Result<Vec<
+                     "failure",
+                     Some(&format!("dead_letter:{dl} recovered at boot, pre-execute")),
+                 )?;
++                release_lease(ledger)?;
+                 RecoveryReport {
+                     run_id: run.id.clone(),
+                     task: run.task.clone(),
+@@ -99,10 +105,15 @@ pub fn recover_inherited_runs(plane: &Plane, ledger: &mut Ledger) -> Result<Vec<
+                 ledger.record_event(&run.id, "boot_probe", Some(&probe_desc))?;
+ 
+                 let disposition = if probe == ProbeResult::Alive {
+-                    // Still executing on the host; leave it running. The
+-                    // operator sees it via `bb runs list --state running`.
++                    // Still executing on the host; leave it running WITH its
++                    // lease held — the host is genuinely busy.
+                     "still_running".to_string()
+                 } else {
++                    if probe == ProbeResult::Dead {
++                        // Process confirmed gone; the host is free. Unknown
++                        // probes keep the lease until the operator resolves.
++                        release_lease(ledger)?;
++                    }
+                     ledger.transition(
+                         &run.id,
+                         "awaiting_recovery",
+diff --git a/src/substrate/local.rs b/src/substrate/local.rs
+index 8f76b7a..89aeb74 100644
+--- a/src/substrate/local.rs
++++ b/src/substrate/local.rs
+@@ -171,6 +171,12 @@ pub(crate) fn run_with_timeout(
+         })
+         .stdout(std::fs::File::create(&stdout_path)?)
+         .stderr(std::fs::File::create(&stderr_path)?);
++    // Own process group so a timeout kills the harness AND everything it
++    // spawned — a surviving grandchild is hidden concurrent work.
++    {
++        use std::os::unix::process::CommandExt;
++        command.process_group(0);
++    }
+     for (k, v) in envs {
+         command.env(k, v);
+     }
+@@ -195,6 +201,10 @@ pub(crate) fn run_with_timeout(
+         }
+         if started.elapsed() >= timeout {
+             timed_out = true;
++            // Kill the whole process group, not just the direct child.
++            unsafe {
++                libc::kill(-(child.id() as i32), libc::SIGKILL);
++            }
+             let _ = child.kill();
+             let status = child.wait()?;
+             break status.code().unwrap_or(-1) as i64;
+diff --git a/src/substrate/sprites.rs b/src/substrate/sprites.rs
+index 44ccc00..f9b2da0 100644
+--- a/src/substrate/sprites.rs
++++ b/src/substrate/sprites.rs
+@@ -218,22 +218,31 @@ impl Session for SpriteSession {
+         stdin: Option<&str>,
+         timeout: Duration,
+     ) -> Result<ExecResult> {
+-        // Per-exec credentials are inlined as env assignments in the remote
+-        // script (never persisted on the sprite); the pidfile makes the
++        // The whole script travels on stdin — secrets and prompt never
++        // appear in local or remote argv (argv is visible in process
++        // tables and CLI telemetry). The prompt reaches the harness via a
++        // heredoc with a per-attempt delimiter; the pidfile makes the
+         // attempt probeable and cancellable after a plane restart.
+-        let envs: String = self
++        let exports: String = self
+             .secrets
+             .iter()
+-            .map(|(k, v)| format!("{k}={} ", shell_quote(v)))
++            .map(|(k, v)| format!("export {k}={}\n", shell_quote(v)))
+             .collect();
+         let quoted: Vec<String> = cmd.iter().map(|c| shell_quote(c)).collect();
++        let delimiter = format!("BB_STDIN_EOF_{}", self.marker);
++        let body = match stdin {
++            Some(input) => format!(
++                "exec {cmd} <<'{delimiter}'\n{input}\n{delimiter}\n",
++                cmd = quoted.join(" "),
++            ),
++            None => format!("exec {} < /dev/null\n", quoted.join(" ")),
++        };
+         let script = format!(
+-            "cd {ws} && echo $$ > /tmp/{marker}.pid && exec env {envs}{cmd}",
++            "cd {ws} || exit 1\necho $$ > /tmp/{marker}.pid\n{exports}{body}",
+             ws = shell_quote(&self.workspace),
+             marker = self.marker,
+-            cmd = quoted.join(" "),
+         );
+-        let result = self.sprite_exec(&["sh".into(), "-c".into(), script], stdin, timeout)?;
++        let result = self.sprite_exec(&["sh".into()], Some(&script), timeout)?;
+         if result.timed_out {
+             // The local relay died but the remote process may live on;
+             // best-effort remote kill via the pidfile.
+diff --git a/tests/e2e_sprites.rs b/tests/e2e_sprites.rs
+index 6ee8279..afc9c85 100644
+--- a/tests/e2e_sprites.rs
++++ b/tests/e2e_sprites.rs
+@@ -40,6 +40,11 @@ case "$cmd" in
+     while [ $# -gt 0 ]; do
+       rest+=("${1//\/home\/sprite/$home}"); shift
+     done
++    # Bare `sh` means the script arrives on stdin; rewrite paths there too.
++    if [ "${rest[0]}" = "sh" ] && [ "${#rest[@]}" -eq 1 ]; then
++      sed "s|/home/sprite|$home|g" | sh
++      exit $?
++    fi
+     exec "${rest[@]}";;
+   *)
+     echo "stub: unknown command $cmd" >&2; exit 64;;
+@@ -48,6 +53,8 @@ esac
+ 
+ const CLAUDE_STUB: &str = r#"#!/bin/sh
+ cat > /dev/null
++# Per-exec secret must arrive via the environment (stdin script exports).
++[ "$BB_TEST_SECRET" = "s3cret" ] || { echo "secret missing" >&2; exit 5; }
+ echo '{"type":"result","subtype":"success","result":"sprite says hi","total_cost_usd":0.005,"num_turns":1,"usage":{"input_tokens":10,"output_tokens":5}}'
+ "#;
+ 
+@@ -126,8 +133,12 @@ fn sprites_task_runs_end_to_end_with_identical_row_shape() {
+         log_text.contains("restore -s test-sprite v999"),
+         "{log_text}"
+     );
+-    // The secret was inlined per-exec, never persisted in plane state.
+-    assert!(log_text.contains("BB_TEST_SECRET="));
++    // The secret reached the harness (the stub asserts it) but never
++    // appeared in argv — the stub logs every argv it sees — nor in the db.
++    assert!(
++        !log_text.contains("s3cret"),
++        "secret leaked into argv: {log_text}"
++    );
+     let db_bytes = fs::read(plane.db_path()).unwrap();
+     assert!(!String::from_utf8_lossy(&db_bytes).contains("s3cret"));
+ 
+diff --git a/tests/recovery.rs b/tests/recovery.rs
+index 95e796b..39ba408 100644
+--- a/tests/recovery.rs
++++ b/tests/recovery.rs
+@@ -107,10 +107,16 @@ fn executing_inherited_run_with_live_process_stays_running() {
+     let adir = attempt_dir(&plane, &run_id, 1);
+     fs::create_dir_all(&adir).unwrap();
+     fs::write(adir.join("harness.pid"), std::process::id().to_string()).unwrap();
++    assert!(ledger.try_acquire_host_lease("local", &run_id).unwrap());
+ 
+     let reports = recover_inherited_runs(&plane, &mut ledger).unwrap();
+     assert_eq!(reports[0].disposition, "still_running");
+     assert_eq!(ledger.run_state(&run_id).unwrap(), "running");
++    // The host is genuinely busy: the lease must survive recovery.
++    assert_eq!(
++        ledger.lease_holder("local").unwrap().as_deref(),
++        Some(run_id.as_str())
++    );
+ }
+ 
+ #[test]
+
+2026-06-10T19:58:14.921725Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when UnexpectedContentType(Some("text/plain; body: token revoked"))
+hook: SessionStart
+hook: SessionStart Completed
+codex
+Goal: verify the attached fixes against the eight prior findings, assuming the diff is intended to be production-ready and the repo’s current code around these hunks may matter more than the patch excerpt alone. I’ll read the live state machine, schema/indexes, sprite execution path, and local process timeout code before judging.
+exec
+/bin/zsh -lc 'git diff -- src/dispatch.rs src/harness.rs src/ledger.rs src/main.rs src/recovery.rs src/substrate/local.rs src/substrate/sprites.rs tests/e2e_sprites.rs tests/recovery.rs' in /Users/phaedrus/Development/bitterblossom
+ succeeded in 0ms:
+exec
+/bin/zsh -lc "sed -n '1,240p' src/ledger.rs" in /Users/phaedrus/Development/bitterblossom
+ succeeded in 0ms:
+//! The durable run ledger (SQLite, WAL). A run row exists before any
+//! trigger gets its ack; everything the operator can see flows from here.
+
+use std::path::Path;
+
+use anyhow::{bail, Context, Result};
+use rusqlite::{params, Connection, OptionalExtension};
+use serde::Serialize;
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
+
+pub fn now() -> String {
+    OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .expect("rfc3339 format")
+}
+
+/// Run states. `blocked_budget` is set at ingress for parked tasks and
+/// unparks back to `pending`; `awaiting_recovery` requires an operator.
+pub const RUN_STATES: &[&str] = &[
+    "pending",
+    "running",
+    "success",
+    "failure",
+    "awaiting_recovery",
+    "blocked_budget",
+];
+
+fn transition_allowed(from: &str, to: &str) -> bool {
+    matches!(
+        (from, to),
+        ("pending", "running")
+            | ("pending", "failure")
+            | ("pending", "blocked_budget")
+            | ("running", "success")
+            | ("running", "failure")
+            | ("running", "awaiting_recovery")
+            | ("blocked_budget", "pending")
+            | ("awaiting_recovery", "success")
+            | ("awaiting_recovery", "failure")
+    )
+}
+
+/// Attempt phase checkpoints, in order. Failures before `executing` are
+/// mechanically retryable; at or after it, recovery is an operator act.
+pub const ATTEMPT_PHASES: &[&str] = &[
+    "acquired",
+    "prepared",
+    "executing",
+    "collecting",
+    "finalizing",
+    "released",
+];
+
+pub fn phase_reached(phase: &str, milestone: &str) -> bool {
+    let idx = |p| ATTEMPT_PHASES.iter().position(|&x| x == p);
+    match (idx(phase), idx(milestone)) {
+        (Some(a), Some(b)) => a >= b,
+        _ => false,
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct RunRow {
+    pub id: String,
+    pub task: String,
+    pub trigger_kind: String,
+    pub idempotency_key: Option<String>,
+    pub state: String,
+    pub state_reason: Option<String>,
+    pub trace_id: String,
+    pub parent_run_id: Option<String>,
+    pub agent_name: Option<String>,
+    pub agent_version: Option<i64>,
+    pub cost_usd: Option<f64>,
+    pub duration_ms: Option<i64>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AttemptRow {
+    pub id: i64,
+    pub run_id: String,
+    pub n: i64,
+    pub agent_name: String,
+    pub agent_version: i64,
+    pub harness: String,
+    pub model: String,
+    pub phase: String,
+    pub outcome: Option<String>,
+    pub error: Option<String>,
+    pub exit_code: Option<i64>,
+    pub tokens_in: Option<i64>,
+    pub tokens_out: Option<i64>,
+    pub turns: Option<i64>,
+    pub cost_usd: Option<f64>,
+    pub artifact_dir: Option<String>,
+    pub started_at: String,
+    pub ended_at: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RunEventRow {
+    pub run_id: String,
+    pub kind: String,
+    pub data: Option<String>,
+    pub at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DeadLetterRow {
+    pub id: i64,
+    pub run_id: String,
+    pub task: String,
+    pub payload: Option<String>,
+    pub error: String,
+    pub created_at: String,
+    pub replayed_run_id: Option<String>,
+}
+
+pub struct Ledger {
+    conn: Connection,
+}
+
+const SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS runs (
+  id TEXT PRIMARY KEY,
+  task TEXT NOT NULL,
+  trigger_kind TEXT NOT NULL,
+  idempotency_key TEXT,
+  state TEXT NOT NULL,
+  state_reason TEXT,
+  trace_id TEXT NOT NULL,
+  parent_run_id TEXT,
+  agent_name TEXT,
+  agent_version INTEGER,
+  payload TEXT,
+  cost_usd REAL,
+  duration_ms INTEGER,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS runs_idempotency
+  ON runs(task, idempotency_key) WHERE idempotency_key IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS ingress_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT,
+  task TEXT NOT NULL,
+  trigger_kind TEXT NOT NULL,
+  source_event_id TEXT,
+  dedupe_key TEXT,
+  payload_hash TEXT,
+  duplicate INTEGER NOT NULL DEFAULT 0,
+  received_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS attempts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL REFERENCES runs(id),
+  n INTEGER NOT NULL,
+  agent_name TEXT NOT NULL,
+  agent_version INTEGER NOT NULL,
+  harness TEXT NOT NULL,
+  model TEXT NOT NULL,
+  phase TEXT NOT NULL,
+  outcome TEXT,
+  error TEXT,
+  exit_code INTEGER,
+  tokens_in INTEGER,
+  tokens_out INTEGER,
+  turns INTEGER,
+  cost_usd REAL,
+  artifact_dir TEXT,
+  started_at TEXT NOT NULL,
+  ended_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS run_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  data TEXT,
+  at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS dead_letters (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL,
+  task TEXT NOT NULL,
+  payload TEXT,
+  error TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  replayed_run_id TEXT
+);
+
+CREATE TABLE IF NOT EXISTS budget_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task TEXT,
+  kind TEXT NOT NULL,
+  detail TEXT,
+  at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS parked_tasks (
+  task TEXT PRIMARY KEY,
+  reason TEXT NOT NULL,
+  at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS host_leases (
+  host TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  acquired_at TEXT NOT NULL
+);
+";
+
+impl Ledger {
+    pub fn open(path: &Path) -> Result<Self> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let conn =
+            Connection::open(path).with_context(|| format!("open ledger {}", path.display()))?;
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.pragma_update(None, "busy_timeout", 5000_i64)?;
+        conn.pragma_update(None, "foreign_keys", "ON")?;
+        conn.execute_batch(SCHEMA)?;
+        Ok(Self { conn })
+    }
+
+    #[cfg(test)]
+    pub fn open_in_memory() -> Result<Self> {
+        let conn = Connection::open_in_memory()?;
+        conn.execute_batch(SCHEMA)?;
+        Ok(Self { conn })
+    }
+
+    // ---- ingress -------------------------------------------------------
+
+exec
+/bin/zsh -lc 'rg -n "RUN_STATES|transition_allowed|CREATE.*runs|idempotency|unique|dead_letters|host_leases|mark_dead_letter_replayed|try_transition|process_group|sprite_exec|struct SpriteSession|fn sprite_exec" src tests -S' in /Users/phaedrus/Development/bitterblossom
+ succeeded in 0ms:
+tests/ingress.rs:2://! idempotency. No socket needed — the HTTP layer is plumbing.
+tests/budgets.rs:70:            idempotency_key: None,
+tests/budgets.rs:143:            idempotency_key: None,
+src/ledger.rs:20:pub const RUN_STATES: &[&str] = &[
+src/ledger.rs:29:fn transition_allowed(from: &str, to: &str) -> bool {
+src/ledger.rs:68:    pub idempotency_key: Option<String>,
+src/ledger.rs:127:CREATE TABLE IF NOT EXISTS runs (
+src/ledger.rs:131:  idempotency_key TEXT,
+src/ledger.rs:144:CREATE UNIQUE INDEX IF NOT EXISTS runs_idempotency
+src/ledger.rs:145:  ON runs(task, idempotency_key) WHERE idempotency_key IS NOT NULL;
+src/ledger.rs:188:CREATE TABLE IF NOT EXISTS dead_letters (
+src/ledger.rs:212:CREATE TABLE IF NOT EXISTS host_leases (
+src/ledger.rs:266:        // ON CONFLICT DO NOTHING against the partial unique index makes the
+src/ledger.rs:269:            "INSERT INTO runs (id, task, trigger_kind, idempotency_key, state,
+src/ledger.rs:272:             ON CONFLICT(task, idempotency_key) WHERE idempotency_key IS NOT NULL
+src/ledger.rs:278:                req.idempotency_key,
+src/ledger.rs:290:            let key = req.idempotency_key.expect("conflict implies a key");
+src/ledger.rs:292:                "SELECT id FROM runs WHERE task = ?1 AND idempotency_key = ?2",
+src/ledger.rs:308:                req.idempotency_key,
+src/ledger.rs:340:    pub fn try_transition(&self, run_id: &str, to: &str, reason: Option<&str>) -> Result<bool> {
+src/ledger.rs:341:        let sources: Vec<&str> = RUN_STATES
+src/ledger.rs:344:            .filter(|from| transition_allowed(from, to))
+src/ledger.rs:367:        if !self.try_transition(run_id, to, reason)? {
+src/ledger.rs:494:            "INSERT INTO host_leases (host, run_id, acquired_at) VALUES (?1, ?2, ?3)
+src/ledger.rs:503:            "DELETE FROM host_leases WHERE host = ?1 AND run_id = ?2",
+src/ledger.rs:513:                "SELECT run_id FROM host_leases WHERE host = ?1",
+src/ledger.rs:530:            "INSERT INTO dead_letters (run_id, task, payload, error, created_at)
+src/ledger.rs:541:                 FROM dead_letters WHERE id = ?1",
+src/ledger.rs:558:    pub fn list_dead_letters(&self) -> Result<Vec<DeadLetterRow>> {
+src/ledger.rs:561:             FROM dead_letters ORDER BY id DESC",
+src/ledger.rs:581:    pub fn mark_dead_letter_replayed(&self, id: i64, new_run_id: &str) -> Result<bool> {
+src/ledger.rs:583:            "UPDATE dead_letters SET replayed_run_id = ?2
+src/ledger.rs:593:            .execute("DELETE FROM host_leases WHERE run_id = ?1", params![run_id])?;
+src/ledger.rs:780:const RUN_SELECT: &str = "SELECT id, task, trigger_kind, idempotency_key, state, state_reason,
+src/ledger.rs:789:        idempotency_key: r.get(3)?,
+src/ledger.rs:806:    pub idempotency_key: Option<&'a str>,
+src/ledger.rs:847:                idempotency_key: key,
+src/ledger.rs:856:    fn duplicate_idempotency_key_creates_one_run_two_ingress_events() {
+src/ledger.rs:964:                idempotency_key: Some("replay:1:abc"),
+src/ledger.rs:971:            .mark_dead_letter_replayed(dl, &replay.run_id)
+src/ledger.rs:983:        assert!(ledger.try_transition(&run, "running", None).unwrap());
+src/ledger.rs:985:        assert!(!ledger.try_transition(&run, "running", None).unwrap());
+src/ledger.rs:996:        assert!(ledger.mark_dead_letter_replayed(dl, "replay-a").unwrap());
+src/ledger.rs:998:        assert!(ledger.mark_dead_letter_replayed(dl, "replay-a").unwrap());
+src/ledger.rs:999:        assert!(!ledger.mark_dead_letter_replayed(dl, "replay-b").unwrap());
+src/dispatch.rs:48:    if !ledger.try_transition(run_id, "running", None)? {
+tests/e2e_sprites.rs:109:            idempotency_key: None,
+src/substrate/sprites.rs:56:        let out = session.sprite_exec(&["true".into()], None, Duration::from_secs(120))?;
+src/substrate/sprites.rs:89:pub struct SpriteSession {
+src/substrate/sprites.rs:100:    fn sprite_exec_with(
+src/substrate/sprites.rs:116:    fn sprite_exec(
+src/substrate/sprites.rs:122:        self.sprite_exec_with(&[], remote, stdin, timeout)
+src/substrate/sprites.rs:126:        self.sprite_exec(&["sh".into(), "-c".into(), script.into()], None, timeout)
+src/substrate/sprites.rs:195:        let out = self.sprite_exec_with(
+src/substrate/sprites.rs:245:        let result = self.sprite_exec(&["sh".into()], Some(&script), timeout)?;
+tests/e2e_local.rs:64:            idempotency_key: key,
+tests/e2e_local.rs:124:fn pre_execute_failure_dead_letters_after_bounded_retries_and_replays() {
+tests/e2e_local.rs:142:    let dls = ledger.list_dead_letters().unwrap();
+tests/e2e_local.rs:148:        .mark_dead_letter_replayed(dls[0].id, &replay_id)
+src/main.rs:33:        idempotency_key: Option<String>,
+src/main.rs:142:            idempotency_key,
+src/main.rs:149:                idempotency_key: idempotency_key.as_deref(),
+src/main.rs:156:                    "duplicate idempotency key; existing run {} ({})",
+src/main.rs:234:                let rows = ledger.list_dead_letters()?;
+src/main.rs:262:                    idempotency_key: Some(&replay_key),
+src/main.rs:267:                if !ledger.mark_dead_letter_replayed(id, &outcome.run_id)? {
+tests/recovery.rs:35:            idempotency_key: None,
+tests/recovery.rs:47:fn pre_execute_inherited_run_dead_letters_for_replay() {
+tests/recovery.rs:62:    assert_eq!(ledger.list_dead_letters().unwrap().len(), 1);
+tests/recovery.rs:86:    assert!(ledger.list_dead_letters().unwrap().is_empty());
+tests/recovery.rs:123:fn recovery_releases_stale_host_leases() {
+src/substrate/local.rs:178:        command.process_group(0);
+src/ingress.rs:21:/// Locate the unique (task, webhook trigger) pair for a route. Route
+src/ingress.rs:86:        idempotency_key: key.as_deref(),
+src/ingress.rs:205:        idempotency_key: Some(&key),
+
+exec
+/bin/zsh -lc "sed -n '1,320p' src/substrate/sprites.rs" in /Users/phaedrus/Development/bitterblossom
+ succeeded in 0ms:
+//! Fly Sprites substrate: shell out to the `sprite` CLI, which talks
+//! WebSocket exec (never `--http-post`; cold sprites 502 on HTTP POST —
+//! earned in this repo). Workspaces persist on the sprite overlay between
+//! wakes: repos sync with fetch + hard-reset instead of re-cloning.
+
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use anyhow::{bail, Context, Result};
+
+use super::local::{run_with_timeout, shell_quote};
+use super::{ExecResult, ProbeResult, Session, Substrate, WorkspacePlan, CARD_FILENAME};
+
+/// Override the sprite binary (tests point this at a stub; the real CLI is
+/// an external network boundary).
+pub const SPRITE_BIN_ENV: &str = "BB_SPRITE_BIN";
+
+fn sprite_bin() -> String {
+    std::env::var(SPRITE_BIN_ENV).unwrap_or_else(|_| "sprite".to_string())
+}
+
+/// `-o org -s name` for a `org/name` host, `-s host` otherwise.
+fn selector_args(host: &str) -> Vec<String> {
+    match host.split_once('/') {
+        Some((org, name)) => vec!["-o".into(), org.into(), "-s".into(), name.into()],
+        None => vec!["-s".into(), host.into()],
+    }
+}
+
+/// The sprite CLI resolves its org from cwd path history; a temp-dir cwd
+/// picks the wrong org. Run the relay from $HOME, where the operator's
+/// default resolution lives.
+fn relay_cwd() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+}
+
+pub struct SpritesSubstrate;
+
+impl Substrate for SpritesSubstrate {
+    fn name(&self) -> &'static str {
+        "sprites"
+    }
+
+    fn acquire(&self, host: &str, attempt_dir: &Path) -> Result<Box<dyn Session>> {
+        std::fs::create_dir_all(attempt_dir)?;
+        let session = SpriteSession {
+            host: host.to_string(),
+            artifacts: attempt_dir.to_path_buf(),
+            workspace: String::new(),
+            marker: String::new(),
+            secrets: Vec::new(),
+        };
+        // Wake-on-exec: a cold sprite takes a few seconds to wake.
+        let out = session.sprite_exec(&["true".into()], None, Duration::from_secs(120))?;
+        if out.exit_code != 0 {
+            bail!(
+                "sprite '{host}' unreachable: {}",
+                out.stderr.trim().lines().last().unwrap_or("")
+            );
+        }
+        Ok(Box::new(session))
+    }
+
+    fn probe(&self, host: &str, _attempt_dir: &Path, marker: &str) -> ProbeResult {
+        let script = format!(
+            "[ -f /tmp/{marker}.pid ] || exit 3; \
+             kill -0 \"$(cat /tmp/{marker}.pid)\" 2>/dev/null && exit 0 || exit 4"
+        );
+        let mut cmd = vec![sprite_bin(), "exec".into()];
+        cmd.extend(selector_args(host));
+        cmd.extend(["--".into(), "sh".into(), "-c".into(), script]);
+        match run_with_timeout(&cmd, None, &relay_cwd(), &[], None, Duration::from_secs(60)) {
+            Ok(out) => match out.exit_code {
+                0 => ProbeResult::Alive,
+                4 => ProbeResult::Dead,
+                3 => ProbeResult::Unknown(format!("no pidfile /tmp/{marker}.pid on {host}")),
+                code => ProbeResult::Unknown(format!(
+                    "probe exit {code}: {}",
+                    out.stderr.trim().lines().last().unwrap_or("")
+                )),
+            },
+            Err(e) => ProbeResult::Unknown(format!("probe failed: {e:#}")),
+        }
+    }
+}
+
+pub struct SpriteSession {
+    host: String,
+    artifacts: PathBuf,
+    workspace: String,
+    marker: String,
+    secrets: Vec<(String, String)>,
+}
+
+impl SpriteSession {
+    /// Run a command on the sprite via the CLI relay; extra_args go before
+    /// the remote command (e.g. --file uploads).
+    fn sprite_exec_with(
+        &self,
+        extra_args: &[String],
+        remote: &[String],
+        stdin: Option<&str>,
+        timeout: Duration,
+    ) -> Result<ExecResult> {
+        let mut cmd = vec![sprite_bin(), "exec".into()];
+        cmd.extend(selector_args(&self.host));
+        cmd.extend(extra_args.iter().cloned());
+        // The sprite CLI parses remote args as its own flags without this.
+        cmd.push("--".into());
+        cmd.extend(remote.iter().cloned());
+        run_with_timeout(&cmd, stdin, &relay_cwd(), &[], None, timeout)
+    }
+
+    fn sprite_exec(
+        &self,
+        remote: &[String],
+        stdin: Option<&str>,
+        timeout: Duration,
+    ) -> Result<ExecResult> {
+        self.sprite_exec_with(&[], remote, stdin, timeout)
+    }
+
+    fn remote_shell(&self, script: &str, timeout: Duration) -> Result<ExecResult> {
+        self.sprite_exec(&["sh".into(), "-c".into(), script.into()], None, timeout)
+    }
+}
+
+impl Session for SpriteSession {
+    fn prepare(&mut self, plan: &WorkspacePlan) -> Result<()> {
+        self.workspace = plan.remote_workspace.clone();
+        self.marker = plan.marker.clone();
+        self.secrets = plan.secrets.clone();
+
+        if let Some(checkpoint) = &plan.checkpoint {
+            let mut cmd = vec![sprite_bin(), "restore".into()];
+            cmd.extend(selector_args(&self.host));
+            cmd.push(checkpoint.clone());
+            let out = run_with_timeout(
+                &cmd,
+                None,
+                &relay_cwd(),
+                &[],
+                None,
+                Duration::from_secs(300),
+            )?;
+            if out.exit_code != 0 {
+                bail!(
+                    "checkpoint restore {checkpoint} failed: {}",
+                    out.stderr.trim()
+                );
+            }
+        }
+
+        let ws = shell_quote(&self.workspace);
+        let out = self.remote_shell(&format!("mkdir -p {ws}"), Duration::from_secs(60))?;
+        if out.exit_code != 0 {
+            bail!("mkdir workspace failed: {}", out.stderr.trim());
+        }
+
+        for repo in &plan.repos {
+            let dir = repo_dir_name(&repo.url);
+            let dest = shell_quote(&format!("{}/{dir}", self.workspace));
+            let url = shell_quote(&repo.url);
+            let r#ref = shell_quote(&repo.r#ref);
+            // Overlay persists between wakes: fetch + hard-reset + clean on
+            // reuse beats re-clone.
+            let script = format!(
+                "if [ -d {dest}/.git ]; then \
+                   git -C {dest} fetch origin {ref_} --depth 1 && \
+                   git -C {dest} checkout -q FETCH_HEAD && \
+                   git -C {dest} reset --hard && git -C {dest} clean -fd; \
+                 else \
+                   git clone --depth 1 --branch {ref_} {url} {dest}; \
+                 fi",
+                dest = dest,
+                url = url,
+                ref_ = r#ref,
+            );
+            let out = self.remote_shell(&script, Duration::from_secs(600))?;
+            if out.exit_code != 0 {
+                bail!("repo sync {} failed: {}", repo.url, out.stderr.trim());
+            }
+        }
+
+        // Upload the lane card via --file (write locally, upload on exec).
+        let card_local = self.artifacts.join(CARD_FILENAME);
+        std::fs::write(&card_local, &plan.card)?;
+        let upload = format!(
+            "{}:{}/{CARD_FILENAME}",
+            card_local.display(),
+            self.workspace
+        );
+        let out = self.sprite_exec_with(
+            &["--file".into(), upload],
+            &["true".into()],
+            None,
+            Duration::from_secs(120),
+        )?;
+        if out.exit_code != 0 {
+            bail!("card upload failed: {}", out.stderr.trim());
+        }
+
+        if let Some(pre) = &plan.pre_command {
+            let script = format!("cd {ws} && {pre}");
+            let out = self.remote_shell(&script, Duration::from_secs(600))?;
+            if out.exit_code != 0 {
+                bail!("pre_command failed: {}", out.stderr.trim());
+            }
+        }
+        Ok(())
+    }
+
+    fn execute(
+        &mut self,
+        cmd: &[String],
+        stdin: Option<&str>,
+        timeout: Duration,
+    ) -> Result<ExecResult> {
+        // The whole script travels on stdin — secrets and prompt never
+        // appear in local or remote argv (argv is visible in process
+        // tables and CLI telemetry). The prompt reaches the harness via a
+        // heredoc with a per-attempt delimiter; the pidfile makes the
+        // attempt probeable and cancellable after a plane restart.
+        let exports: String = self
+            .secrets
+            .iter()
+            .map(|(k, v)| format!("export {k}={}\n", shell_quote(v)))
+            .collect();
+        let quoted: Vec<String> = cmd.iter().map(|c| shell_quote(c)).collect();
+        let delimiter = format!("BB_STDIN_EOF_{}", self.marker);
+        let body = match stdin {
+            Some(input) => format!(
+                "exec {cmd} <<'{delimiter}'\n{input}\n{delimiter}\n",
+                cmd = quoted.join(" "),
+            ),
+            None => format!("exec {} < /dev/null\n", quoted.join(" ")),
+        };
+        let script = format!(
+            "cd {ws} || exit 1\necho $$ > /tmp/{marker}.pid\n{exports}{body}",
+            ws = shell_quote(&self.workspace),
+            marker = self.marker,
+        );
+        let result = self.sprite_exec(&["sh".into()], Some(&script), timeout)?;
+        if result.timed_out {
+            // The local relay died but the remote process may live on;
+            // best-effort remote kill via the pidfile.
+            let kill = format!(
+                "kill -9 \"$(cat /tmp/{}.pid 2>/dev/null)\" 2>/dev/null; true",
+                self.marker
+            );
+            let _ = self.remote_shell(&kill, Duration::from_secs(30));
+        }
+        Ok(result)
+    }
+
+    fn write_artifact(&mut self, name: &str, data: &[u8]) -> Result<()> {
+        let path = self.artifacts.join(name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).context("artifact dir")?;
+        }
+        std::fs::write(path, data)?;
+        Ok(())
+    }
+
+    fn release(&mut self) -> Result<()> {
+        if !self.marker.is_empty() {
+            let _ = self.remote_shell(
+                &format!("rm -f /tmp/{}.pid", self.marker),
+                Duration::from_secs(30),
+            );
+        }
+        Ok(())
+    }
+}
+
+fn repo_dir_name(url: &str) -> String {
+    url.trim_end_matches('/')
+        .trim_end_matches(".git")
+        .rsplit('/')
+        .next()
+        .unwrap_or("repo")
+        .to_string()
+}
+
+codex
+Initial read shows the patch is present in the working tree or current commit, so I’m reviewing live files rather than only the pasted diff. The highest-risk areas are the generated SQL for transitions, the replay ordering in `main`, and the remote stdin script construction.
+exec
+/bin/zsh -lc "nl -ba src/ledger.rs | sed -n '240,380p'" in /Users/phaedrus/Development/bitterblossom
+ succeeded in 0ms:
+   240	    // ---- ingress -------------------------------------------------------
+   241	
+   242	    /// Idempotent ingress: every delivery records an `ingress_events` row;
+   243	    /// a duplicate dedupe key resolves to the existing run and is never
+   244	    /// re-dispatched. The run row is durable before the caller acks.
+   245	    pub fn ingest(&mut self, req: IngressRequest<'_>) -> Result<IngressOutcome> {
+   246	        // IMMEDIATE: take the write lock up front so concurrent
+   247	        // redeliveries serialize instead of racing the dedupe check.
+   248	        let tx = self
+   249	            .conn
+   250	            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+   251	        let ts = now();
+   252	
+   253	        let candidate_id = new_id();
+   254	        let trace_id = new_id();
+   255	        let parked: Option<String> = tx
+   256	            .query_row(
+   257	                "SELECT reason FROM parked_tasks WHERE task = ?1",
+   258	                params![req.task],
+   259	                |r| r.get(0),
+   260	            )
+   261	            .optional()?;
+   262	        let (state, reason) = match &parked {
+   263	            Some(reason) => ("blocked_budget", Some(format!("task parked: {reason}"))),
+   264	            None => ("pending", None),
+   265	        };
+   266	        // ON CONFLICT DO NOTHING against the partial unique index makes the
+   267	        // dedupe atomic even across processes.
+   268	        let inserted = tx.execute(
+   269	            "INSERT INTO runs (id, task, trigger_kind, idempotency_key, state,
+   270	               state_reason, trace_id, parent_run_id, payload, created_at, updated_at)
+   271	             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)
+   272	             ON CONFLICT(task, idempotency_key) WHERE idempotency_key IS NOT NULL
+   273	             DO NOTHING",
+   274	            params![
+   275	                candidate_id,
+   276	                req.task,
+   277	                req.trigger_kind,
+   278	                req.idempotency_key,
+   279	                state,
+   280	                reason,
+   281	                trace_id,
+   282	                req.parent_run_id,
+   283	                req.payload,
+   284	                ts
+   285	            ],
+   286	        )?;
+   287	        let (run_id, duplicate) = if inserted == 1 {
+   288	            (candidate_id, false)
+   289	        } else {
+   290	            let key = req.idempotency_key.expect("conflict implies a key");
+   291	            let existing: String = tx.query_row(
+   292	                "SELECT id FROM runs WHERE task = ?1 AND idempotency_key = ?2",
+   293	                params![req.task, key],
+   294	                |r| r.get(0),
+   295	            )?;
+   296	            (existing, true)
+   297	        };
+   298	
+   299	        tx.execute(
+   300	            "INSERT INTO ingress_events (run_id, task, trigger_kind, source_event_id,
+   301	               dedupe_key, payload_hash, duplicate, received_at)
+   302	             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+   303	            params![
+   304	                run_id,
+   305	                req.task,
+   306	                req.trigger_kind,
+   307	                req.source_event_id,
+   308	                req.idempotency_key,
+   309	                req.payload.map(payload_hash),
+   310	                duplicate as i64,
+   311	                ts
+   312	            ],
+   313	        )?;
+   314	        tx.commit()?;
+   315	
+   316	        let state = self.run_state(&run_id)?;
+   317	        Ok(IngressOutcome {
+   318	            run_id,
+   319	            duplicate,
+   320	            state,
+   321	        })
+   322	    }
+   323	
+   324	    // ---- run state machine ----------------------------------------------
+   325	
+   326	    pub fn run_state(&self, run_id: &str) -> Result<String> {
+   327	        self.conn
+   328	            .query_row(
+   329	                "SELECT state FROM runs WHERE id = ?1",
+   330	                params![run_id],
+   331	                |r| r.get(0),
+   332	            )
+   333	            .with_context(|| format!("run {run_id} not found"))
+   334	    }
+   335	
+   336	    /// Atomic compare-and-set transition: the UPDATE only fires when the
+   337	    /// current state is a legal source for `to`, so two workers can never
+   338	    /// both claim the same run. Returns false when the run was not in a
+   339	    /// legal source state (already claimed, already terminal).
+   340	    pub fn try_transition(&self, run_id: &str, to: &str, reason: Option<&str>) -> Result<bool> {
+   341	        let sources: Vec<&str> = RUN_STATES
+   342	            .iter()
+   343	            .copied()
+   344	            .filter(|from| transition_allowed(from, to))
+   345	            .collect();
+   346	        if sources.is_empty() {
+   347	            bail!("no legal transition into state '{to}'");
+   348	        }
+   349	        // The IN-list is built from our own state constants, not input.
+   350	        let list: Vec<String> = sources.iter().map(|s| format!("'{s}'")).collect();
+   351	        let sql = format!(
+   352	            "UPDATE runs SET state = ?2, state_reason = ?3, updated_at = ?4
+   353	             WHERE id = ?1 AND state IN ({})",
+   354	            list.join(", "),
+   355	        );
+   356	        let changed = self
+   357	            .conn
+   358	            .execute(&sql, params![run_id, to, reason, now()])?;
+   359	        if changed == 1 {
+   360	            self.record_event(run_id, &format!("state:{to}"), reason)?;
+   361	        }
+   362	        Ok(changed == 1)
+   363	    }
+   364	
+   365	    /// Enforced state transition; illegal moves are bugs, not data.
+   366	    pub fn transition(&self, run_id: &str, to: &str, reason: Option<&str>) -> Result<()> {
+   367	        if !self.try_transition(run_id, to, reason)? {
+   368	            let from = self.run_state(run_id)?;
+   369	            bail!("illegal run transition {from} -> {to} for {run_id}");
+   370	        }
+   371	        Ok(())
+   372	    }
+   373	
+   374	    pub fn finalize_run(
+   375	        &self,
+   376	        run_id: &str,
+   377	        cost_usd: Option<f64>,
+   378	        duration_ms: i64,
+   379	    ) -> Result<()> {
+   380	        self.conn.execute(
+
+exec
+/bin/zsh -lc "nl -ba src/substrate/sprites.rs | sed -n '210,270p'" in /Users/phaedrus/Development/bitterblossom
+exec
+/bin/zsh -lc "nl -ba src/substrate/local.rs | sed -n '150,220p'" in /Users/phaedrus/Development/bitterblossom
+ succeeded in 0ms:
+   150	    pidfile: Option<&Path>,
+   151	    timeout: Duration,
+   152	) -> Result<ExecResult> {
+   153	    use std::sync::atomic::{AtomicU64, Ordering};
+   154	    static CAPTURE_SEQ: AtomicU64 = AtomicU64::new(0);
+   155	
+   156	    let (program, args) = cmd.split_first().context("empty command")?;
+   157	    let seq = CAPTURE_SEQ.fetch_add(1, Ordering::Relaxed);
+   158	    let capture = |stream: &str| {
+   159	        std::env::temp_dir().join(format!("bb-cap-{}-{seq}.{stream}", std::process::id()))
+   160	    };
+   161	    let stdout_path = capture("out");
+   162	    let stderr_path = capture("err");
+   163	    let mut command = Command::new(program);
+   164	    command
+   165	        .args(args)
+   166	        .current_dir(cwd)
+   167	        .stdin(if stdin.is_some() {
+   168	            Stdio::piped()
+   169	        } else {
+   170	            Stdio::null()
+   171	        })
+   172	        .stdout(std::fs::File::create(&stdout_path)?)
+   173	        .stderr(std::fs::File::create(&stderr_path)?);
+   174	    // Own process group so a timeout kills the harness AND everything it
+   175	    // spawned — a surviving grandchild is hidden concurrent work.
+   176	    {
+   177	        use std::os::unix::process::CommandExt;
+   178	        command.process_group(0);
+   179	    }
+   180	    for (k, v) in envs {
+   181	        command.env(k, v);
+   182	    }
+   183	    let mut child = command
+   184	        .spawn()
+   185	        .with_context(|| format!("spawn {program}"))?;
+   186	    if let Some(path) = pidfile {
+   187	        let _ = std::fs::write(path, child.id().to_string());
+   188	    }
+   189	
+   190	    if let Some(input) = stdin {
+   191	        let mut pipe = child.stdin.take().context("stdin pipe")?;
+   192	        pipe.write_all(input.as_bytes())?;
+   193	        // Drop closes the pipe so the child sees EOF.
+   194	    }
+   195	
+   196	    let started = Instant::now();
+   197	    let mut timed_out = false;
+   198	    let exit_code = loop {
+   199	        if let Some(status) = child.try_wait()? {
+   200	            break status.code().unwrap_or(-1) as i64;
+   201	        }
+   202	        if started.elapsed() >= timeout {
+   203	            timed_out = true;
+   204	            // Kill the whole process group, not just the direct child.
+   205	            unsafe {
+   206	                libc::kill(-(child.id() as i32), libc::SIGKILL);
+   207	            }
+   208	            let _ = child.kill();
+   209	            let status = child.wait()?;
+   210	            break status.code().unwrap_or(-1) as i64;
+   211	        }
+   212	        std::thread::sleep(Duration::from_millis(100));
+   213	    };
+   214	
+   215	    let stdout = std::fs::read_to_string(&stdout_path).unwrap_or_default();
+   216	    let stderr = std::fs::read_to_string(&stderr_path).unwrap_or_default();
+   217	    let _ = std::fs::remove_file(&stdout_path);
+   218	    let _ = std::fs::remove_file(&stderr_path);
+   219	    Ok(ExecResult {
+   220	        exit_code,
+
+ succeeded in 0ms:
+   210	            }
+   211	        }
+   212	        Ok(())
+   213	    }
+   214	
+   215	    fn execute(
+   216	        &mut self,
+   217	        cmd: &[String],
+   218	        stdin: Option<&str>,
+   219	        timeout: Duration,
+   220	    ) -> Result<ExecResult> {
+   221	        // The whole script travels on stdin — secrets and prompt never
+   222	        // appear in local or remote argv (argv is visible in process
+   223	        // tables and CLI telemetry). The prompt reaches the harness via a
+   224	        // heredoc with a per-attempt delimiter; the pidfile makes the
+   225	        // attempt probeable and cancellable after a plane restart.
+   226	        let exports: String = self
+   227	            .secrets
+   228	            .iter()
+   229	            .map(|(k, v)| format!("export {k}={}\n", shell_quote(v)))
+   230	            .collect();
+   231	        let quoted: Vec<String> = cmd.iter().map(|c| shell_quote(c)).collect();
+   232	        let delimiter = format!("BB_STDIN_EOF_{}", self.marker);
+   233	        let body = match stdin {
+   234	            Some(input) => format!(
+   235	                "exec {cmd} <<'{delimiter}'\n{input}\n{delimiter}\n",
+   236	                cmd = quoted.join(" "),
+   237	            ),
+   238	            None => format!("exec {} < /dev/null\n", quoted.join(" ")),
+   239	        };
+   240	        let script = format!(
+   241	            "cd {ws} || exit 1\necho $$ > /tmp/{marker}.pid\n{exports}{body}",
+   242	            ws = shell_quote(&self.workspace),
+   243	            marker = self.marker,
+   244	        );
+   245	        let result = self.sprite_exec(&["sh".into()], Some(&script), timeout)?;
+   246	        if result.timed_out {
+   247	            // The local relay died but the remote process may live on;
+   248	            // best-effort remote kill via the pidfile.
+   249	            let kill = format!(
+   250	                "kill -9 \"$(cat /tmp/{}.pid 2>/dev/null)\" 2>/dev/null; true",
+   251	                self.marker
+   252	            );
+   253	            let _ = self.remote_shell(&kill, Duration::from_secs(30));
+   254	        }
+   255	        Ok(result)
+   256	    }
+   257	
+   258	    fn write_artifact(&mut self, name: &str, data: &[u8]) -> Result<()> {
+   259	        let path = self.artifacts.join(name);
+   260	        if let Some(parent) = path.parent() {
+   261	            std::fs::create_dir_all(parent).context("artifact dir")?;
+   262	        }
+   263	        std::fs::write(path, data)?;
+   264	        Ok(())
+   265	    }
+   266	
+   267	    fn release(&mut self) -> Result<()> {
+   268	        if !self.marker.is_empty() {
+   269	            let _ = self.remote_shell(
+   270	                &format!("rm -f /tmp/{}.pid", self.marker),
+
+exec
+/bin/zsh -lc "nl -ba src/main.rs | sed -n '220,285p'" in /Users/phaedrus/Development/bitterblossom
+ succeeded in 0ms:
+   220	                // operator resolves; free it now.
+   221	                ledger.release_leases_for_run(&run_id)?;
+   222	                println!("run {run_id} resolved: {outcome}");
+   223	            }
+   224	            RunsCommand::Export => {
+   225	                for r in ledger.list_runs(None, None)? {
+   226	                    let attempts = ledger.attempts(&r.id)?;
+   227	                    let line = serde_json::json!({ "run": r, "attempts": attempts });
+   228	                    println!("{line}");
+   229	                }
+   230	            }
+   231	        },
+   232	        Command::Dlq { command } => match command {
+   233	            DlqCommand::List { json } => {
+   234	                let rows = ledger.list_dead_letters()?;
+   235	                if json {
+   236	                    println!("{}", serde_json::to_string_pretty(&rows)?);
+   237	                } else {
+   238	                    for d in rows {
+   239	                        println!(
+   240	                            "{}  #{} run={} task={} replayed={}  {}",
+   241	                            d.created_at,
+   242	                            d.id,
+   243	                            d.run_id,
+   244	                            d.task,
+   245	                            d.replayed_run_id.as_deref().unwrap_or("-"),
+   246	                            d.error,
+   247	                        );
+   248	                    }
+   249	                }
+   250	            }
+   251	            DlqCommand::Replay { id } => {
+   252	                let dl = ledger.dead_letter(id)?;
+   253	                if let Some(prev) = &dl.replayed_run_id {
+   254	                    bail!("dead letter {id} already replayed as run {prev}");
+   255	                }
+   256	                // Deterministic key: concurrent replays of the same dead
+   257	                // letter dedupe at ingress instead of minting twin runs.
+   258	                let replay_key = format!("replay:dl-{id}");
+   259	                let outcome = ledger.ingest(IngressRequest {
+   260	                    task: &dl.task,
+   261	                    trigger_kind: "replay",
+   262	                    idempotency_key: Some(&replay_key),
+   263	                    source_event_id: None,
+   264	                    payload: dl.payload.as_deref(),
+   265	                    parent_run_id: Some(&dl.run_id),
+   266	                })?;
+   267	                if !ledger.mark_dead_letter_replayed(id, &outcome.run_id)? {
+   268	                    bail!("dead letter {id} was claimed by a concurrent replay");
+   269	                }
+   270	                if outcome.duplicate {
+   271	                    println!("replay already in flight as run {}", outcome.run_id);
+   272	                    return Ok(());
+   273	                }
+   274	                println!("replaying dead letter {id} as run {}", outcome.run_id);
+   275	                let run = dispatch::dispatch_run(&plane, &mut ledger, &outcome.run_id)?;
+   276	                println!("run {} {}", run.id, run.state);
+   277	            }
+   278	        },
+   279	        Command::Task { command } => match command {
+   280	            TaskCommand::Park { task, reason } => {
+   281	                plane.task(&task)?;
+   282	                ledger.park_task(&task, &reason)?;
+   283	                ledger.record_budget_event(Some(&task), "parked", &reason)?;
+   284	                println!("parked {task}");
+   285	            }
+
+exec
+/bin/zsh -lc "nl -ba src/ledger.rs | sed -n '480,610p'" in /Users/phaedrus/Development/bitterblossom
+ succeeded in 0ms:
+   480	    pub fn attempt_count(&self, run_id: &str) -> Result<i64> {
+   481	        Ok(self.conn.query_row(
+   482	            "SELECT COUNT(*) FROM attempts WHERE run_id = ?1",
+   483	            params![run_id],
+   484	            |r| r.get(0),
+   485	        )?)
+   486	    }
+   487	
+   488	    // ---- host leases ------------------------------------------------------
+   489	
+   490	    /// Durable host lease keyed by substrate resource identity. Returns
+   491	    /// false when the host is already leased (caller waits or requeues).
+   492	    pub fn try_acquire_host_lease(&self, host: &str, run_id: &str) -> Result<bool> {
+   493	        let n = self.conn.execute(
+   494	            "INSERT INTO host_leases (host, run_id, acquired_at) VALUES (?1, ?2, ?3)
+   495	             ON CONFLICT(host) DO NOTHING",
+   496	            params![host, run_id, now()],
+   497	        )?;
+   498	        Ok(n == 1)
+   499	    }
+   500	
+   501	    pub fn release_host_lease(&self, host: &str, run_id: &str) -> Result<()> {
+   502	        self.conn.execute(
+   503	            "DELETE FROM host_leases WHERE host = ?1 AND run_id = ?2",
+   504	            params![host, run_id],
+   505	        )?;
+   506	        Ok(())
+   507	    }
+   508	
+   509	    pub fn lease_holder(&self, host: &str) -> Result<Option<String>> {
+   510	        Ok(self
+   511	            .conn
+   512	            .query_row(
+   513	                "SELECT run_id FROM host_leases WHERE host = ?1",
+   514	                params![host],
+   515	                |r| r.get(0),
+   516	            )
+   517	            .optional()?)
+   518	    }
+   519	
+   520	    // ---- dead letters ------------------------------------------------------
+   521	
+   522	    pub fn record_dead_letter(
+   523	        &self,
+   524	        run_id: &str,
+   525	        task: &str,
+   526	        payload: Option<&str>,
+   527	        error: &str,
+   528	    ) -> Result<i64> {
+   529	        self.conn.execute(
+   530	            "INSERT INTO dead_letters (run_id, task, payload, error, created_at)
+   531	             VALUES (?1, ?2, ?3, ?4, ?5)",
+   532	            params![run_id, task, payload, error, now()],
+   533	        )?;
+   534	        Ok(self.conn.last_insert_rowid())
+   535	    }
+   536	
+   537	    pub fn dead_letter(&self, id: i64) -> Result<DeadLetterRow> {
+   538	        self.conn
+   539	            .query_row(
+   540	                "SELECT id, run_id, task, payload, error, created_at, replayed_run_id
+   541	                 FROM dead_letters WHERE id = ?1",
+   542	                params![id],
+   543	                |r| {
+   544	                    Ok(DeadLetterRow {
+   545	                        id: r.get(0)?,
+   546	                        run_id: r.get(1)?,
+   547	                        task: r.get(2)?,
+   548	                        payload: r.get(3)?,
+   549	                        error: r.get(4)?,
+   550	                        created_at: r.get(5)?,
+   551	                        replayed_run_id: r.get(6)?,
+   552	                    })
+   553	                },
+   554	            )
+   555	            .with_context(|| format!("dead letter {id} not found"))
+   556	    }
+   557	
+   558	    pub fn list_dead_letters(&self) -> Result<Vec<DeadLetterRow>> {
+   559	        let mut stmt = self.conn.prepare(
+   560	            "SELECT id, run_id, task, payload, error, created_at, replayed_run_id
+   561	             FROM dead_letters ORDER BY id DESC",
+   562	        )?;
+   563	        let rows = stmt
+   564	            .query_map([], |r| {
+   565	                Ok(DeadLetterRow {
+   566	                    id: r.get(0)?,
+   567	                    run_id: r.get(1)?,
+   568	                    task: r.get(2)?,
+   569	                    payload: r.get(3)?,
+   570	                    error: r.get(4)?,
+   571	                    created_at: r.get(5)?,
+   572	                    replayed_run_id: r.get(6)?,
+   573	                })
+   574	            })?
+   575	            .collect::<rusqlite::Result<Vec<_>>>()?;
+   576	        Ok(rows)
+   577	    }
+   578	
+   579	    /// Atomic claim: only the first marker wins; a concurrent replay of
+   580	    /// the same dead letter sees false and must not dispatch.
+   581	    pub fn mark_dead_letter_replayed(&self, id: i64, new_run_id: &str) -> Result<bool> {
+   582	        let changed = self.conn.execute(
+   583	            "UPDATE dead_letters SET replayed_run_id = ?2
+   584	             WHERE id = ?1 AND (replayed_run_id IS NULL OR replayed_run_id = ?2)",
+   585	            params![id, new_run_id],
+   586	        )?;
+   587	        Ok(changed == 1)
+   588	    }
+   589	
+   590	    /// Free every host lease held by a run (operator resolution path).
+   591	    pub fn release_leases_for_run(&self, run_id: &str) -> Result<()> {
+   592	        self.conn
+   593	            .execute("DELETE FROM host_leases WHERE run_id = ?1", params![run_id])?;
+   594	        Ok(())
+   595	    }
+   596	
+   597	    // ---- budgets & parking ---------------------------------------------------
+   598	
+   599	    pub fn record_budget_event(&self, task: Option<&str>, kind: &str, detail: &str) -> Result<()> {
+   600	        self.conn.execute(
+   601	            "INSERT INTO budget_events (task, kind, detail, at) VALUES (?1, ?2, ?3, ?4)",
+   602	            params![task, kind, detail, now()],
+   603	        )?;
+   604	        Ok(())
+   605	    }
+   606	
+   607	    pub fn park_task(&self, task: &str, reason: &str) -> Result<()> {
+   608	        self.conn.execute(
+   609	            "INSERT INTO parked_tasks (task, reason, at) VALUES (?1, ?2, ?3)
+   610	             ON CONFLICT(task) DO UPDATE SET reason = ?2, at = ?3",
+
+exec
+/bin/zsh -lc "nl -ba src/recovery.rs | sed -n '25,130p'" in /Users/phaedrus/Development/bitterblossom
+ succeeded in 0ms:
+    25	    pub attempt_phase: Option<String>,
+    26	    pub probe: Option<String>,
+    27	    pub disposition: String,
+    28	}
+    29	
+    30	pub fn recover_inherited_runs(plane: &Plane, ledger: &mut Ledger) -> Result<Vec<RecoveryReport>> {
+    31	    let mut reports = Vec::new();
+    32	    for run in ledger.runs_in_state("running")? {
+    33	        let attempts = ledger.attempts(&run.id)?;
+    34	        let latest = attempts.last();
+    35	        // The lease is released per-disposition below: a probe that finds
+    36	        // the inherited process still alive must keep the host locked, or
+    37	        // a new run could execute concurrently on the same resource.
+    38	        let release_lease = |ledger: &Ledger| -> Result<()> {
+    39	            if let Ok(task) = plane.task(&run.task) {
+    40	                ledger.release_host_lease(&task.host(), &run.id)?;
+    41	            }
+    42	            Ok(())
+    43	        };
+    44	
+    45	        let report = match latest {
+    46	            None => {
+    47	                let dl = ledger.record_dead_letter(
+    48	                    &run.id,
+    49	                    &run.task,
+    50	                    ledger.run_payload(&run.id)?.as_deref(),
+    51	                    "plane died before any attempt started",
+    52	                )?;
+    53	                ledger.transition(
+    54	                    &run.id,
+    55	                    "failure",
+    56	                    Some(&format!("dead_letter:{dl} recovered at boot, pre-attempt")),
+    57	                )?;
+    58	                release_lease(ledger)?;
+    59	                RecoveryReport {
+    60	                    run_id: run.id.clone(),
+    61	                    task: run.task.clone(),
+    62	                    attempt_phase: None,
+    63	                    probe: None,
+    64	                    disposition: format!("dead_letter:{dl}"),
+    65	                }
+    66	            }
+    67	            Some(attempt) if !phase_reached(&attempt.phase, "executing") => {
+    68	                let dl = ledger.record_dead_letter(
+    69	                    &run.id,
+    70	                    &run.task,
+    71	                    ledger.run_payload(&run.id)?.as_deref(),
+    72	                    &format!("plane died pre-execute (phase {})", attempt.phase),
+    73	                )?;
+    74	                ledger.transition(
+    75	                    &run.id,
+    76	                    "failure",
+    77	                    Some(&format!("dead_letter:{dl} recovered at boot, pre-execute")),
+    78	                )?;
+    79	                release_lease(ledger)?;
+    80	                RecoveryReport {
+    81	                    run_id: run.id.clone(),
+    82	                    task: run.task.clone(),
+    83	                    attempt_phase: Some(attempt.phase.clone()),
+    84	                    probe: None,
+    85	                    disposition: format!("dead_letter:{dl}"),
+    86	                }
+    87	            }
+    88	            Some(attempt) => {
+    89	                let probe = match plane.task(&run.task) {
+    90	                    Ok(task) => match substrate::for_task(&task.spec.substrate) {
+    91	                        Ok(sub) => sub.probe(
+    92	                            &task.host(),
+    93	                            &attempt_dir(plane, &run.id, attempt.n),
+    94	                            &attempt_marker(attempt.id),
+    95	                        ),
+    96	                        Err(e) => ProbeResult::Unknown(e.to_string()),
+    97	                    },
+    98	                    Err(e) => ProbeResult::Unknown(e.to_string()),
+    99	                };
+   100	                let probe_desc = match &probe {
+   101	                    ProbeResult::Alive => "alive".to_string(),
+   102	                    ProbeResult::Dead => "dead".to_string(),
+   103	                    ProbeResult::Unknown(why) => format!("unknown: {why}"),
+   104	                };
+   105	                ledger.record_event(&run.id, "boot_probe", Some(&probe_desc))?;
+   106	
+   107	                let disposition = if probe == ProbeResult::Alive {
+   108	                    // Still executing on the host; leave it running WITH its
+   109	                    // lease held — the host is genuinely busy.
+   110	                    "still_running".to_string()
+   111	                } else {
+   112	                    if probe == ProbeResult::Dead {
+   113	                        // Process confirmed gone; the host is free. Unknown
+   114	                        // probes keep the lease until the operator resolves.
+   115	                        release_lease(ledger)?;
+   116	                    }
+   117	                    ledger.transition(
+   118	                        &run.id,
+   119	                        "awaiting_recovery",
+   120	                        Some(&format!(
+   121	                            "plane died at phase {}; probe: {probe_desc}; resolve with \
+   122	                             `bb runs resolve {} success|failure`",
+   123	                            attempt.phase, run.id
+   124	                        )),
+   125	                    )?;
+   126	                    "awaiting_recovery".to_string()
+   127	                };
+   128	                RecoveryReport {
+   129	                    run_id: run.id.clone(),
+   130	                    task: run.task.clone(),
+
+exec
+/bin/zsh -lc "sed -n '1,260p' src/dispatch.rs" in /Users/phaedrus/Development/bitterblossom
+exec
+/bin/zsh -lc "rg -n \"fn attempt_marker|attempt_marker\\(|marker\" src -S" in /Users/phaedrus/Development/bitterblossom
+ succeeded in 0ms:
+src/substrate/local.rs:34:    fn probe(&self, _host: &str, attempt_dir: &Path, _marker: &str) -> ProbeResult {
+src/dispatch.rs:206:        marker: attempt_marker(attempt_id),
+src/dispatch.rs:360:pub fn attempt_marker(attempt_id: i64) -> String {
+src/substrate/mod.rs:24:    /// Per-attempt marker used for pidfiles: the probe and cancel key.
+src/substrate/mod.rs:25:    pub marker: String,
+src/substrate/mod.rs:58:    /// Probe an attempt by its marker: used at boot to classify inherited
+src/substrate/mod.rs:60:    fn probe(&self, host: &str, attempt_dir: &Path, marker: &str) -> ProbeResult;
+src/substrate/sprites.rs:52:            marker: String::new(),
+src/substrate/sprites.rs:66:    fn probe(&self, host: &str, _attempt_dir: &Path, marker: &str) -> ProbeResult {
+src/substrate/sprites.rs:68:            "[ -f /tmp/{marker}.pid ] || exit 3; \
+src/substrate/sprites.rs:69:             kill -0 \"$(cat /tmp/{marker}.pid)\" 2>/dev/null && exit 0 || exit 4"
+src/substrate/sprites.rs:78:                3 => ProbeResult::Unknown(format!("no pidfile /tmp/{marker}.pid on {host}")),
+src/substrate/sprites.rs:93:    marker: String,
+src/substrate/sprites.rs:133:        self.marker = plan.marker.clone();
+src/substrate/sprites.rs:232:        let delimiter = format!("BB_STDIN_EOF_{}", self.marker);
+src/substrate/sprites.rs:241:            "cd {ws} || exit 1\necho $$ > /tmp/{marker}.pid\n{exports}{body}",
+src/substrate/sprites.rs:243:            marker = self.marker,
+src/substrate/sprites.rs:251:                self.marker
+src/substrate/sprites.rs:268:        if !self.marker.is_empty() {
+src/substrate/sprites.rs:270:                &format!("rm -f /tmp/{}.pid", self.marker),
+src/ledger.rs:579:    /// Atomic claim: only the first marker wins; a concurrent replay of
+src/recovery.rs:16:use crate::dispatch::{attempt_dir, attempt_marker};
+src/recovery.rs:94:                            &attempt_marker(attempt.id),
+
+ succeeded in 0ms:
+//! Dispatch: take a pending run through budget check, host lease,
+//! prepare, execute, collect, finalize. Mechanical — no judgment about
+//! what to fix or whether the agent did a good job.
+
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
+use anyhow::{Context, Result};
+
+use crate::budget;
+use crate::harness;
+use crate::ledger::{AttemptStats, Ledger, RunRow};
+use crate::spec::{Plane, Task};
+use crate::substrate::{self, WorkspacePlan, CARD_FILENAME};
+
+/// Mechanical retries after the initial attempt, for pre-execute failures only.
+const MAX_RETRIES: i64 = 2;
+const DEFAULT_TIMEOUT_MINUTES: u64 = 60;
+const LEASE_WAIT: Duration = Duration::from_secs(60);
+const LEASE_POLL: Duration = Duration::from_millis(250);
+
+/// Outcome of one attempt, with the phase it died in.
+enum AttemptOutcome {
+    Success { stats: AttemptStats },
+    Failure { phase_executed: bool, error: String },
+}
+
+pub fn dispatch_run(plane: &Plane, ledger: &mut Ledger, run_id: &str) -> Result<RunRow> {
+    let run = ledger.run(run_id)?;
+    let task = plane.task(&run.task)?;
+
+    if let Some(v) = budget::pre_dispatch_check(plane, ledger, task)? {
+        ledger.record_budget_event(Some(&task.name), v.kind, &v.detail)?;
+        if v.kind == "max_runs_per_day" {
+            ledger.park_task(&task.name, &v.detail)?;
+        }
+        ledger.transition(run_id, "blocked_budget", Some(&v.detail))?;
+        crate::notify::notify(
+            plane,
+            "budget_blocked",
+            &serde_json::json!({ "run_id": run_id, "task": task.name, "kind": v.kind, "detail": v.detail }),
+        );
+        return ledger.run(run_id);
+    }
+
+    // Atomic claim: if another worker (or another plane process) already
+    // moved this run out of pending, walk away without a second attempt.
+    if !ledger.try_transition(run_id, "running", None)? {
+        return ledger.run(run_id);
+    }
+    ledger.set_run_agent(run_id, &task.agent_name, task.agent.version)?;
+    let started = Instant::now();
+
+    let mut attempt_n = ledger.attempt_count(run_id)?;
+    loop {
+        attempt_n += 1;
+        let outcome = run_attempt(plane, ledger, run_id, task, attempt_n)?;
+        match outcome {
+            AttemptOutcome::Success { stats } => {
+                ledger.finalize_run(
+                    run_id,
+                    stats.cost_usd,
+                    started.elapsed().as_millis() as i64,
+                )?;
+                ledger.transition(run_id, "success", None)?;
+                if let Some(v) = budget::post_run_check(task, stats.cost_usd) {
+                    ledger.record_budget_event(Some(&task.name), v.kind, &v.detail)?;
+                    ledger.park_task(&task.name, &v.detail)?;
+                    crate::notify::notify(
+                        plane,
+                        "budget_breach_parked",
+                        &serde_json::json!({ "run_id": run_id, "task": task.name, "detail": v.detail }),
+                    );
+                }
+                break;
+            }
+            AttemptOutcome::Failure {
+                phase_executed: true,
+                error,
+            } => {
+                // The agent may have had external side effects; "re-run it"
+                // is not a recovery semantic. No mechanical retry.
+                ledger.finalize_run(run_id, None, started.elapsed().as_millis() as i64)?;
+                ledger.transition(run_id, "failure", Some(&error))?;
+                break;
+            }
+            AttemptOutcome::Failure {
+                phase_executed: false,
+                error,
+            } => {
+                if attempt_n - 1 < MAX_RETRIES {
+                    ledger.record_event(run_id, "retry", Some(&error))?;
+                    continue;
+                }
+                let payload = ledger.run_payload(run_id)?;
+                let dl =
+                    ledger.record_dead_letter(run_id, &task.name, payload.as_deref(), &error)?;
+                ledger.finalize_run(run_id, None, started.elapsed().as_millis() as i64)?;
+                ledger.transition(
+                    run_id,
+                    "failure",
+                    Some(&format!("dead_letter:{dl} {error}")),
+                )?;
+                crate::notify::notify(
+                    plane,
+                    "run_dead_lettered",
+                    &serde_json::json!({ "run_id": run_id, "task": task.name, "dead_letter": dl, "error": error }),
+                );
+                break;
+            }
+        }
+    }
+    ledger.run(run_id)
+}
+
+fn run_attempt(
+    plane: &Plane,
+    ledger: &Ledger,
+    run_id: &str,
+    task: &Task,
+    n: i64,
+) -> Result<AttemptOutcome> {
+    let host = task.host();
+    let lease_started = Instant::now();
+    loop {
+        if ledger.try_acquire_host_lease(&host, run_id)? {
+            break;
+        }
+        if lease_started.elapsed() >= LEASE_WAIT {
+            return Ok(AttemptOutcome::Failure {
+                phase_executed: false,
+                error: format!(
+                    "host '{host}' lease held by run {:?}",
+                    ledger.lease_holder(&host)?
+                ),
+            });
+        }
+        std::thread::sleep(LEASE_POLL);
+    }
+
+    let result = attempt_on_host(plane, ledger, run_id, task, n);
+    ledger.release_host_lease(&host, run_id)?;
+    result
+}
+
+fn attempt_on_host(
+    plane: &Plane,
+    ledger: &Ledger,
+    run_id: &str,
+    task: &Task,
+    n: i64,
+) -> Result<AttemptOutcome> {
+    let attempt_dir = attempt_dir(plane, run_id, n);
+    std::fs::create_dir_all(&attempt_dir)?;
+
+    let attempt_id = ledger.create_attempt(
+        run_id,
+        n,
+        &task.agent_name,
+        task.agent.version,
+        &task.agent.harness,
+        &task.agent.model,
+    )?;
+    let artifact_dir = attempt_dir.to_string_lossy().into_owned();
+
+    let fail = |phase_executed: bool, error: String| -> Result<AttemptOutcome> {
+        ledger.finish_attempt(
+            attempt_id,
+            "failure",
+            Some(&error),
+            None,
+            &AttemptStats::default(),
+            Some(&artifact_dir),
+        )?;
+        Ok(AttemptOutcome::Failure {
+            phase_executed,
+            error,
+        })
+    };
+
+    let substrate = match substrate::for_task(&task.spec.substrate) {
+        Ok(s) => s,
+        Err(e) => return fail(false, e.to_string()),
+    };
+    let mut session = match substrate.acquire(&task.host(), &attempt_dir) {
+        Ok(s) => s,
+        Err(e) => return fail(false, format!("acquire: {e:#}")),
+    };
+
+    let mut secrets = Vec::new();
+    for name in &task.agent.secrets {
+        match std::env::var(name) {
+            Ok(value) => secrets.push((name.clone(), value)),
+            Err(_) => {
+                let _ = session.release();
+                return fail(false, format!("secret env var '{name}' not set"));
+            }
+        }
+    }
+    let plan = WorkspacePlan {
+        host: task.host(),
+        repos: task.spec.workspace.repos.clone(),
+        card: task.card.clone(),
+        pre_command: task.spec.pre_command.clone(),
+        post_command: task.spec.post_command.clone(),
+        marker: attempt_marker(attempt_id),
+        remote_workspace: format!("/home/sprite/bb/{}", task.name),
+        checkpoint: task.spec.workspace.checkpoint.clone(),
+        secrets,
+    };
+    if let Err(e) = session.prepare(&plan) {
+        let _ = session.release();
+        return fail(false, format!("prepare: {e:#}"));
+    }
+    ledger.set_attempt_phase(attempt_id, "prepared")?;
+
+    let cmd = match harness::build_command(&task.agent, &task.spec.budget) {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = session.release();
+            return fail(false, format!("build_command: {e:#}"));
+        }
+    };
+
+    ledger.set_attempt_phase(attempt_id, "executing")?;
+    let timeout = Duration::from_secs(
+        60 * task
+            .spec
+            .budget
+            .timeout_minutes
+            .unwrap_or(DEFAULT_TIMEOUT_MINUTES),
+    );
+    let card_prompt = format!(
+        "Read {CARD_FILENAME} in this directory — it is your entire commission. Execute it.\n\n{}",
+        task.card
+    );
+    let exec = match session.execute(&cmd, Some(&card_prompt), timeout) {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = session.release();
+            // The process may or may not have started; treat as executed —
+            // side effects are possible once we tried to spawn the agent.
+            return fail(true, format!("execute: {e:#}"));
+        }
+    };
+
+    ledger.set_attempt_phase(attempt_id, "collecting")?;
+    session.write_artifact("stdout.txt", exec.stdout.as_bytes())?;
+    session.write_artifact("stderr.txt", exec.stderr.as_bytes())?;
+
+    if exec.timed_out {
+        let _ = session.release();
+        ledger.finish_attempt(
+            attempt_id,
+            "failure",
+            Some("wall-clock timeout (killed)"),
+            Some(exec.exit_code),
+            &AttemptStats::default(),
+            Some(&artifact_dir),
+        )?;
+
+exec
+/bin/zsh -lc "sed -n '260,380p' src/dispatch.rs" in /Users/phaedrus/Development/bitterblossom
+ succeeded in 0ms:
+        )?;
+        return Ok(AttemptOutcome::Failure {
+            phase_executed: true,
+            error: format!("timeout after {}s", timeout.as_secs()),
+        });
+    }
+    if exec.exit_code != 0 {
+        let _ = session.release();
+        let error = format!(
+            "harness exit {}: {}",
+            exec.exit_code,
+            truncate(exec.stderr.trim(), 500)
+        );
+        ledger.finish_attempt(
+            attempt_id,
+            "failure",
+            Some(&error),
+            Some(exec.exit_code),
+            &AttemptStats::default(),
+            Some(&artifact_dir),
+        )?;
+        return Ok(AttemptOutcome::Failure {
+            phase_executed: true,
+            error,
+        });
+    }
+
+    let parsed = match harness::parse_output(&task.agent.harness, &exec.stdout) {
+        Ok(p) => p,
+        Err(e) => {
+            // Unparseable output is a failure with raw output preserved —
+            // never a silent zero-cost success.
+            let _ = session.release();
+            let error = format!("unparseable harness output: {e:#}");
+            ledger.finish_attempt(
+                attempt_id,
+                "failure",
+                Some(&error),
+                Some(exec.exit_code),
+                &AttemptStats::default(),
+                Some(&artifact_dir),
+            )?;
+            return Ok(AttemptOutcome::Failure {
+                phase_executed: true,
+                error,
+            });
+        }
+    };
+    session.write_artifact("result.md", parsed.result.as_bytes())?;
+
+    ledger.set_attempt_phase(attempt_id, "finalizing")?;
+    if let Some(post) = &plan.post_command {
+        // post_command is finalization (publish artifacts, post replies);
+        // a failed finalization must not masquerade as a successful run.
+        let post_result = session.execute(
+            &["sh".into(), "-c".into(), post.clone()],
+            None,
+            Duration::from_secs(600),
+        );
+        let post_error = match post_result {
+            Ok(res) if res.exit_code == 0 => None,
+            Ok(res) => Some(format!(
+                "post_command exit {}: {}",
+                res.exit_code,
+                truncate(res.stderr.trim(), 500)
+            )),
+            Err(e) => Some(format!("post_command: {e:#}")),
+        };
+        if let Some(error) = post_error {
+            let _ = session.release();
+            ledger.finish_attempt(
+                attempt_id,
+                "failure",
+                Some(&error),
+                Some(exec.exit_code),
+                &parsed.stats,
+                Some(&artifact_dir),
+            )?;
+            return Ok(AttemptOutcome::Failure {
+                phase_executed: true,
+                error,
+            });
+        }
+    }
+    session.release().context("release session")?;
+
+    ledger.finish_attempt(
+        attempt_id,
+        "success",
+        None,
+        Some(exec.exit_code),
+        &parsed.stats,
+        Some(&artifact_dir),
+    )?;
+    ledger.set_attempt_phase(attempt_id, "released")?;
+    Ok(AttemptOutcome::Success {
+        stats: parsed.stats,
+    })
+}
+
+pub fn attempt_marker(attempt_id: i64) -> String {
+    format!("bb-attempt-{attempt_id}")
+}
+
+pub fn attempt_dir(plane: &Plane, run_id: &str, n: i64) -> PathBuf {
+    plane
+        .root
+        .join(".bb/runs")
+        .join(run_id)
+        .join(format!("attempt-{n}"))
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &s[..end])
+
+exec
+/bin/zsh -lc "sed -n '1,140p' src/substrate/mod.rs" in /Users/phaedrus/Development/bitterblossom
+ succeeded in 0ms:
+//! Execution substrates. The substrate knows environments and sessions,
+//! not repos: workspace materialization is a declarative `WorkspacePlan`
+//! executed by the adapter, testable identically on every adapter.
+
+pub mod local;
+pub mod sprites;
+
+use std::path::Path;
+use std::time::Duration;
+
+use anyhow::Result;
+
+use crate::spec::RepoSpec;
+
+#[derive(Debug, Clone)]
+pub struct WorkspacePlan {
+    /// Substrate resource identity — the host-lease key.
+    pub host: String,
+    pub repos: Vec<RepoSpec>,
+    /// Lane card content, materialized into the workspace.
+    pub card: String,
+    pub pre_command: Option<String>,
+    pub post_command: Option<String>,
+    /// Per-attempt marker used for pidfiles: the probe and cancel key.
+    pub marker: String,
+    /// Remote workspace directory (sprites); the local adapter ignores it.
+    pub remote_workspace: String,
+    /// Checkpoint to restore before preparing (sprites only).
+    pub checkpoint: Option<String>,
+    /// Resolved per-exec credentials (env name, value). Never persisted.
+    pub secrets: Vec<(String, String)>,
+}
+
+#[derive(Debug)]
+pub struct ExecResult {
+    pub exit_code: i64,
+    pub stdout: String,
+    pub stderr: String,
+    pub timed_out: bool,
+}
+
+/// What a probe of a (possibly dead) attempt's host found.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ProbeResult {
+    /// The attempt's process is still running on the host.
+    Alive,
+    /// The host is reachable and the process is gone.
+    Dead,
+    /// The host could not be probed (unreachable, no pidfile).
+    Unknown(String),
+}
+
+pub trait Substrate {
+    fn name(&self) -> &'static str;
+    /// Acquire a session on `host`. The durable host lease lives in the
+    /// ledger; this is resource setup (wake sprite, create workspace dir).
+    fn acquire(&self, host: &str, attempt_dir: &Path) -> Result<Box<dyn Session>>;
+    /// Probe an attempt by its marker: used at boot to classify inherited
+    /// `running` runs instead of blindly orphaning them.
+    fn probe(&self, host: &str, attempt_dir: &Path, marker: &str) -> ProbeResult;
+}
+
+pub trait Session {
+    /// Materialize the workspace: checkpoint restore, repo checkouts at
+    /// declared refs, card file, pre_command. Nothing here may start the
+    /// agent.
+    fn prepare(&mut self, plan: &WorkspacePlan) -> Result<()>;
+    /// Run a command in the workspace with a wall-clock timeout — the v1
+    /// spend backstop. Timeout kills the process (best-effort remotely)
+    /// and reports `timed_out`.
+    fn execute(
+        &mut self,
+        cmd: &[String],
+        stdin: Option<&str>,
+        timeout: Duration,
+    ) -> Result<ExecResult>;
+    fn write_artifact(&mut self, name: &str, data: &[u8]) -> Result<()>;
+    fn release(&mut self) -> Result<()>;
+}
+
+/// Path to the lane card inside a prepared workspace.
+pub const CARD_FILENAME: &str = "LANE_CARD.md";
+
+pub fn for_task(kind: &str) -> Result<Box<dyn Substrate>> {
+    match kind {
+        "local" => Ok(Box::new(local::LocalSubstrate)),
+        "sprites" => Ok(Box::new(sprites::SpritesSubstrate)),
+        other => anyhow::bail!("unknown substrate '{other}' (known: local, sprites)"),
+    }
+}
+
+exec
+/bin/zsh -lc "sed -n '1,170p' src/substrate/local.rs" in /Users/phaedrus/Development/bitterblossom
+exec
+/bin/zsh -lc 'rg -n "process_group|run_with_timeout|timed_out|kill -9|pidfile|harness.pid" tests src -S' in /Users/phaedrus/Development/bitterblossom
+ succeeded in 0ms:
+//! Local-process substrate: a workspace directory on this machine. The
+//! degenerate case that keeps every task terminal-runnable and tests cheap.
+
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
+use anyhow::{Context, Result};
+
+use super::{ExecResult, ProbeResult, Session, Substrate, WorkspacePlan, CARD_FILENAME};
+
+/// Pidfile written next to the artifacts so a restarted plane can probe
+/// whether the harness process survived.
+pub const PIDFILE: &str = "harness.pid";
+
+pub struct LocalSubstrate;
+
+impl Substrate for LocalSubstrate {
+    fn name(&self) -> &'static str {
+        "local"
+    }
+
+    fn acquire(&self, _host: &str, attempt_dir: &Path) -> Result<Box<dyn Session>> {
+        let workspace = attempt_dir.join("workspace");
+        std::fs::create_dir_all(&workspace)?;
+        Ok(Box::new(LocalSession {
+            workspace,
+            artifacts: attempt_dir.to_path_buf(),
+            secrets: Vec::new(),
+        }))
+    }
+
+    fn probe(&self, _host: &str, attempt_dir: &Path, _marker: &str) -> ProbeResult {
+        let pidfile = attempt_dir.join(PIDFILE);
+        let Ok(content) = std::fs::read_to_string(&pidfile) else {
+            return ProbeResult::Unknown(format!("no pidfile at {}", pidfile.display()));
+        };
+        let Ok(pid) = content.trim().parse::<i32>() else {
+            return ProbeResult::Unknown("unparseable pidfile".into());
+        };
+        // kill(pid, 0): existence check without signaling.
+        if unsafe { libc::kill(pid, 0) } == 0 {
+            ProbeResult::Alive
+        } else {
+            ProbeResult::Dead
+        }
+    }
+}
+
+pub struct LocalSession {
+    workspace: PathBuf,
+    artifacts: PathBuf,
+    secrets: Vec<(String, String)>,
+}
+
+impl LocalSession {
+    fn run_shell(&self, script: &str, timeout: Duration) -> Result<ExecResult> {
+        run_with_timeout(
+            &["sh".into(), "-c".into(), script.into()],
+            None,
+            &self.workspace,
+            &[],
+            None,
+            timeout,
+        )
+    }
+}
+
+impl Session for LocalSession {
+    fn prepare(&mut self, plan: &WorkspacePlan) -> Result<()> {
+        self.secrets = plan.secrets.clone();
+        for repo in &plan.repos {
+            let dest = self
+                .workspace
+                .join(repo_dir_name(&repo.url))
+                .to_string_lossy()
+                .into_owned();
+            let clone = format!(
+                "git clone --depth 1 --branch {ref_} {url} {dest} && git -C {dest} reset --hard",
+                ref_ = shell_quote(&repo.r#ref),
+                url = shell_quote(&repo.url),
+                dest = shell_quote(&dest),
+            );
+            let out = self.run_shell(&clone, Duration::from_secs(300))?;
+            if out.exit_code != 0 {
+                anyhow::bail!("clone {} failed: {}", repo.url, out.stderr.trim());
+            }
+        }
+        std::fs::write(self.workspace.join(CARD_FILENAME), &plan.card)?;
+        if let Some(pre) = &plan.pre_command {
+            let out = self.run_shell(pre, Duration::from_secs(600))?;
+            if out.exit_code != 0 {
+                anyhow::bail!("pre_command failed: {}", out.stderr.trim());
+            }
+        }
+        Ok(())
+    }
+
+    fn execute(
+        &mut self,
+        cmd: &[String],
+        stdin: Option<&str>,
+        timeout: Duration,
+    ) -> Result<ExecResult> {
+        run_with_timeout(
+            cmd,
+            stdin,
+            &self.workspace,
+            &self.secrets,
+            Some(&self.artifacts.join(PIDFILE)),
+            timeout,
+        )
+    }
+
+    fn write_artifact(&mut self, name: &str, data: &[u8]) -> Result<()> {
+        let path = self.artifacts.join(name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, data)?;
+        Ok(())
+    }
+
+    fn release(&mut self) -> Result<()> {
+        // Workspace is kept on disk under the attempt dir for diagnosis;
+        // nothing to tear down for a local process.
+        Ok(())
+    }
+}
+
+fn repo_dir_name(url: &str) -> String {
+    url.trim_end_matches('/')
+        .trim_end_matches(".git")
+        .rsplit('/')
+        .next()
+        .unwrap_or("repo")
+        .to_string()
+}
+
+pub(crate) fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+pub(crate) fn run_with_timeout(
+    cmd: &[String],
+    stdin: Option<&str>,
+    cwd: &Path,
+    envs: &[(String, String)],
+    pidfile: Option<&Path>,
+    timeout: Duration,
+) -> Result<ExecResult> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static CAPTURE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    let (program, args) = cmd.split_first().context("empty command")?;
+    let seq = CAPTURE_SEQ.fetch_add(1, Ordering::Relaxed);
+    let capture = |stream: &str| {
+        std::env::temp_dir().join(format!("bb-cap-{}-{seq}.{stream}", std::process::id()))
+    };
+    let stdout_path = capture("out");
+    let stderr_path = capture("err");
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .current_dir(cwd)
+        .stdin(if stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+
+ succeeded in 0ms:
+src/substrate/sprites.rs:11:use super::local::{run_with_timeout, shell_quote};
+src/substrate/sprites.rs:74:        match run_with_timeout(&cmd, None, &relay_cwd(), &[], None, Duration::from_secs(60)) {
+src/substrate/sprites.rs:78:                3 => ProbeResult::Unknown(format!("no pidfile /tmp/{marker}.pid on {host}")),
+src/substrate/sprites.rs:113:        run_with_timeout(&cmd, stdin, &relay_cwd(), &[], None, timeout)
+src/substrate/sprites.rs:140:            let out = run_with_timeout(
+src/substrate/sprites.rs:224:        // heredoc with a per-attempt delimiter; the pidfile makes the
+src/substrate/sprites.rs:246:        if result.timed_out {
+src/substrate/sprites.rs:248:            // best-effort remote kill via the pidfile.
+src/substrate/sprites.rs:250:                "kill -9 \"$(cat /tmp/{}.pid 2>/dev/null)\" 2>/dev/null; true",
+src/substrate/mod.rs:24:    /// Per-attempt marker used for pidfiles: the probe and cancel key.
+src/substrate/mod.rs:39:    pub timed_out: bool,
+src/substrate/mod.rs:49:    /// The host could not be probed (unreachable, no pidfile).
+src/substrate/mod.rs:70:    /// and reports `timed_out`.
+src/substrate/local.rs:13:/// Pidfile written next to the artifacts so a restarted plane can probe
+src/substrate/local.rs:15:pub const PIDFILE: &str = "harness.pid";
+src/substrate/local.rs:35:        let pidfile = attempt_dir.join(PIDFILE);
+src/substrate/local.rs:36:        let Ok(content) = std::fs::read_to_string(&pidfile) else {
+src/substrate/local.rs:37:            return ProbeResult::Unknown(format!("no pidfile at {}", pidfile.display()));
+src/substrate/local.rs:40:            return ProbeResult::Unknown("unparseable pidfile".into());
+src/substrate/local.rs:59:        run_with_timeout(
+src/substrate/local.rs:106:        run_with_timeout(
+src/substrate/local.rs:111:            Some(&self.artifacts.join(PIDFILE)),
+src/substrate/local.rs:145:pub(crate) fn run_with_timeout(
+src/substrate/local.rs:150:    pidfile: Option<&Path>,
+src/substrate/local.rs:178:        command.process_group(0);
+src/substrate/local.rs:186:    if let Some(path) = pidfile {
+src/substrate/local.rs:197:    let mut timed_out = false;
+src/substrate/local.rs:203:            timed_out = true;
+src/substrate/local.rs:223:        timed_out,
+src/dispatch.rs:251:    if exec.timed_out {
+tests/recovery.rs:76:    // A pidfile pointing at a long-gone pid: probe says Dead.
+tests/recovery.rs:79:    fs::write(adir.join("harness.pid"), "999999").unwrap();
+tests/recovery.rs:109:    fs::write(adir.join("harness.pid"), std::process::id().to_string()).unwrap();
+
+exec
+/bin/zsh -lc 'rg -n "post_command|parse_claude|parse_codex|parse_pi|result" tests src -S' in /Users/phaedrus/Development/bitterblossom
+ succeeded in 0ms:
+tests/e2e_sprites.rs:58:echo '{"type":"result","subtype":"success","result":"sprite says hi","total_cost_usd":0.005,"num_turns":1,"usage":{"input_tokens":10,"output_tokens":5}}'
+src/main.rs:3:use anyhow::{bail, Result};
+src/main.rs:130:fn run() -> Result<()> {
+src/main.rs:350:fn print_run(ledger: &Ledger, run_id: &str, json: bool) -> Result<()> {
+tests/budgets.rs:15:echo '{"type":"result","result":"ok","total_cost_usd":0.0123,"num_turns":2,"usage":{"input_tokens":50,"output_tokens":20}}'
+src/harness.rs:2://! parse its output into result + cost/token stats. Harness ids and flags
+src/harness.rs:6:use anyhow::{bail, Context, Result};
+src/harness.rs:14:    pub result: String,
+src/harness.rs:22:pub fn build_command(agent: &AgentSpec, budget: &TaskBudget) -> Result<Vec<String>> {
+src/harness.rs:62:pub fn parse_output(harness: &str, stdout: &str) -> Result<ParsedOutput> {
+src/harness.rs:64:        "claude" => parse_claude(stdout),
+src/harness.rs:65:        "codex" => parse_codex(stdout),
+src/harness.rs:66:        "pi" => parse_pi(stdout),
+src/harness.rs:72:/// `{"type":"result","result":...,"total_cost_usd":...,"num_turns":...,"usage":{...}}`
+src/harness.rs:73:fn parse_claude(stdout: &str) -> Result<ParsedOutput> {
+src/harness.rs:78:    let result = v
+src/harness.rs:79:        .get("result")
+src/harness.rs:81:        .context("claude output: result object has no 'result' string")?
+src/harness.rs:85:        result,
+src/harness.rs:97:fn parse_codex(stdout: &str) -> Result<ParsedOutput> {
+src/harness.rs:101:    let mut result = String::new();
+src/harness.rs:120:                            result = text.to_string();
+src/harness.rs:131:    if result.is_empty() {
+src/harness.rs:135:        result,
+src/harness.rs:146:/// pi `--mode json` emits a final JSON object with `result` and `usage`.
+src/harness.rs:147:fn parse_pi(stdout: &str) -> Result<ParsedOutput> {
+src/harness.rs:149:    let result = v
+src/harness.rs:150:        .get("result")
+src/harness.rs:153:        .context("pi output: no 'result' or 'output' string")?
+src/harness.rs:157:        result,
+src/harness.rs:168:/// noise before the final result object).
+tests/e2e_local.rs:15:# Claude-shaped result object on stdout; ignores its arguments.
+tests/e2e_local.rs:17:echo '{"type":"result","subtype":"success","result":"commission complete","total_cost_usd":0.0123,"num_turns":3,"usage":{"input_tokens":120,"output_tokens":45}}'
+tests/e2e_local.rs:99:    let result = fs::read_to_string(artifact_dir.join("result.md")).unwrap();
+tests/e2e_local.rs:100:    assert_eq!(result, "commission complete");
+src/budget.rs:7:use anyhow::Result;
+src/budget.rs:23:) -> Result<Option<Violation>> {
+src/substrate/sprites.rs:9:use anyhow::{bail, Context, Result};
+src/substrate/sprites.rs:12:use super::{ExecResult, ProbeResult, Session, Substrate, WorkspacePlan, CARD_FILENAME};
+src/substrate/sprites.rs:46:    fn acquire(&self, host: &str, attempt_dir: &Path) -> Result<Box<dyn Session>> {
+src/substrate/sprites.rs:66:    fn probe(&self, host: &str, _attempt_dir: &Path, marker: &str) -> ProbeResult {
+src/substrate/sprites.rs:76:                0 => ProbeResult::Alive,
+src/substrate/sprites.rs:77:                4 => ProbeResult::Dead,
+src/substrate/sprites.rs:78:                3 => ProbeResult::Unknown(format!("no pidfile /tmp/{marker}.pid on {host}")),
+src/substrate/sprites.rs:79:                code => ProbeResult::Unknown(format!(
+src/substrate/sprites.rs:84:            Err(e) => ProbeResult::Unknown(format!("probe failed: {e:#}")),
+src/substrate/sprites.rs:106:    ) -> Result<ExecResult> {
+src/substrate/sprites.rs:121:    ) -> Result<ExecResult> {
+src/substrate/sprites.rs:125:    fn remote_shell(&self, script: &str, timeout: Duration) -> Result<ExecResult> {
+src/substrate/sprites.rs:131:    fn prepare(&mut self, plan: &WorkspacePlan) -> Result<()> {
+src/substrate/sprites.rs:220:    ) -> Result<ExecResult> {
+src/substrate/sprites.rs:245:        let result = self.sprite_exec(&["sh".into()], Some(&script), timeout)?;
+src/substrate/sprites.rs:246:        if result.timed_out {
+src/substrate/sprites.rs:255:        Ok(result)
+src/substrate/sprites.rs:258:    fn write_artifact(&mut self, name: &str, data: &[u8]) -> Result<()> {
+src/substrate/sprites.rs:267:    fn release(&mut self) -> Result<()> {
+src/substrate/mod.rs:11:use anyhow::Result;
+src/substrate/mod.rs:23:    pub post_command: Option<String>,
+src/substrate/mod.rs:35:pub struct ExecResult {
+src/substrate/mod.rs:44:pub enum ProbeResult {
+src/substrate/mod.rs:57:    fn acquire(&self, host: &str, attempt_dir: &Path) -> Result<Box<dyn Session>>;
+src/substrate/mod.rs:60:    fn probe(&self, host: &str, attempt_dir: &Path, marker: &str) -> ProbeResult;
+src/substrate/mod.rs:67:    fn prepare(&mut self, plan: &WorkspacePlan) -> Result<()>;
+src/substrate/mod.rs:76:    ) -> Result<ExecResult>;
+src/substrate/mod.rs:77:    fn write_artifact(&mut self, name: &str, data: &[u8]) -> Result<()>;
+src/substrate/mod.rs:78:    fn release(&mut self) -> Result<()>;
+src/substrate/mod.rs:84:pub fn for_task(kind: &str) -> Result<Box<dyn Substrate>> {
+src/ledger.rs:6:use anyhow::{bail, Context, Result};
+src/ledger.rs:220:    pub fn open(path: &Path) -> Result<Self> {
+src/ledger.rs:234:    pub fn open_in_memory() -> Result<Self> {
+src/ledger.rs:245:    pub fn ingest(&mut self, req: IngressRequest<'_>) -> Result<IngressOutcome> {
+src/ledger.rs:326:    pub fn run_state(&self, run_id: &str) -> Result<String> {
+src/ledger.rs:340:    pub fn try_transition(&self, run_id: &str, to: &str, reason: Option<&str>) -> Result<bool> {
+src/ledger.rs:366:    pub fn transition(&self, run_id: &str, to: &str, reason: Option<&str>) -> Result<()> {
+src/ledger.rs:379:    ) -> Result<()> {
+src/ledger.rs:387:    pub fn set_run_agent(&self, run_id: &str, agent_name: &str, agent_version: u32) -> Result<()> {
+src/ledger.rs:395:    pub fn record_event(&self, run_id: &str, kind: &str, data: Option<&str>) -> Result<()> {
+src/ledger.rs:413:    ) -> Result<i64> {
+src/ledger.rs:431:    pub fn set_attempt_phase(&self, attempt_id: i64, phase: &str) -> Result<()> {
+src/ledger.rs:442:    pub fn attempt_phase(&self, attempt_id: i64) -> Result<String> {
+src/ledger.rs:459:    ) -> Result<()> {
+src/ledger.rs:480:    pub fn attempt_count(&self, run_id: &str) -> Result<i64> {
+src/ledger.rs:492:    pub fn try_acquire_host_lease(&self, host: &str, run_id: &str) -> Result<bool> {
+src/ledger.rs:501:    pub fn release_host_lease(&self, host: &str, run_id: &str) -> Result<()> {
+src/ledger.rs:509:    pub fn lease_holder(&self, host: &str) -> Result<Option<String>> {
+src/ledger.rs:528:    ) -> Result<i64> {
+src/ledger.rs:537:    pub fn dead_letter(&self, id: i64) -> Result<DeadLetterRow> {
+src/ledger.rs:558:    pub fn list_dead_letters(&self) -> Result<Vec<DeadLetterRow>> {
+src/ledger.rs:575:            .collect::<rusqlite::Result<Vec<_>>>()?;
+src/ledger.rs:581:    pub fn mark_dead_letter_replayed(&self, id: i64, new_run_id: &str) -> Result<bool> {
+src/ledger.rs:591:    pub fn release_leases_for_run(&self, run_id: &str) -> Result<()> {
+src/ledger.rs:599:    pub fn record_budget_event(&self, task: Option<&str>, kind: &str, detail: &str) -> Result<()> {
+src/ledger.rs:607:    pub fn park_task(&self, task: &str, reason: &str) -> Result<()> {
+src/ledger.rs:616:    pub fn unpark_task(&self, task: &str) -> Result<Vec<String>> {
+src/ledger.rs:624:            .collect::<rusqlite::Result<Vec<_>>>()?;
+src/ledger.rs:631:    pub fn parked_reason(&self, task: &str) -> Result<Option<String>> {
+src/ledger.rs:644:    pub fn runs_today(&self, task: &str) -> Result<i64> {
+src/ledger.rs:657:    pub fn cost_today(&self) -> Result<f64> {
+src/ledger.rs:668:    pub fn run(&self, run_id: &str) -> Result<RunRow> {
+src/ledger.rs:678:    pub fn run_payload(&self, run_id: &str) -> Result<Option<String>> {
+src/ledger.rs:686:    pub fn list_runs(&self, task: Option<&str>, state: Option<&str>) -> Result<Vec<RunRow>> {
+src/ledger.rs:701:            .collect::<rusqlite::Result<Vec<_>>>()?;
+src/ledger.rs:705:    pub fn runs_in_state(&self, state: &str) -> Result<Vec<RunRow>> {
+src/ledger.rs:710:    pub fn pending_runs_oldest_first(&self) -> Result<Vec<RunRow>> {
+src/ledger.rs:716:            .collect::<rusqlite::Result<Vec<_>>>()?;
+src/ledger.rs:720:    pub fn attempts(&self, run_id: &str) -> Result<Vec<AttemptRow>> {
+src/ledger.rs:750:            .collect::<rusqlite::Result<Vec<_>>>()?;
+src/ledger.rs:754:    pub fn events(&self, run_id: &str) -> Result<Vec<RunEventRow>> {
+src/ledger.rs:767:            .collect::<rusqlite::Result<Vec<_>>>()?;
+src/ledger.rs:771:    pub fn ingress_event_count(&self, task: &str) -> Result<i64> {
+src/ledger.rs:784:fn row_to_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<RunRow> {
+src/substrate/local.rs:9:use anyhow::{Context, Result};
+src/substrate/local.rs:11:use super::{ExecResult, ProbeResult, Session, Substrate, WorkspacePlan, CARD_FILENAME};
+src/substrate/local.rs:24:    fn acquire(&self, _host: &str, attempt_dir: &Path) -> Result<Box<dyn Session>> {
+src/substrate/local.rs:34:    fn probe(&self, _host: &str, attempt_dir: &Path, _marker: &str) -> ProbeResult {
+src/substrate/local.rs:37:            return ProbeResult::Unknown(format!("no pidfile at {}", pidfile.display()));
+src/substrate/local.rs:40:            return ProbeResult::Unknown("unparseable pidfile".into());
+src/substrate/local.rs:44:            ProbeResult::Alive
+src/substrate/local.rs:46:            ProbeResult::Dead
+src/substrate/local.rs:58:    fn run_shell(&self, script: &str, timeout: Duration) -> Result<ExecResult> {
+src/substrate/local.rs:71:    fn prepare(&mut self, plan: &WorkspacePlan) -> Result<()> {
+src/substrate/local.rs:105:    ) -> Result<ExecResult> {
+src/substrate/local.rs:116:    fn write_artifact(&mut self, name: &str, data: &[u8]) -> Result<()> {
+src/substrate/local.rs:125:    fn release(&mut self) -> Result<()> {
+src/substrate/local.rs:152:) -> Result<ExecResult> {
+src/substrate/local.rs:219:    Ok(ExecResult {
+src/serve.rs:10:use anyhow::{Context, Result};
+src/serve.rs:22:pub fn serve(root: &Path) -> Result<()> {
+src/serve.rs:147:    let result = (|| -> Result<()> {
+src/serve.rs:156:    if let Err(e) = result {
+src/serve.rs:161:fn http_loop(root: &Path, plane: &Plane) -> Result<()> {
+src/serve.rs:184:fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16, String)> {
+src/recovery.rs:13:use anyhow::Result;
+src/recovery.rs:19:use crate::substrate::{self, ProbeResult};
+src/recovery.rs:30:pub fn recover_inherited_runs(plane: &Plane, ledger: &mut Ledger) -> Result<Vec<RecoveryReport>> {
+src/recovery.rs:38:        let release_lease = |ledger: &Ledger| -> Result<()> {
+src/recovery.rs:96:                        Err(e) => ProbeResult::Unknown(e.to_string()),
+src/recovery.rs:98:                    Err(e) => ProbeResult::Unknown(e.to_string()),
+src/recovery.rs:101:                    ProbeResult::Alive => "alive".to_string(),
+src/recovery.rs:102:                    ProbeResult::Dead => "dead".to_string(),
+src/recovery.rs:103:                    ProbeResult::Unknown(why) => format!("unknown: {why}"),
+src/recovery.rs:107:                let disposition = if probe == ProbeResult::Alive {
+src/recovery.rs:112:                    if probe == ProbeResult::Dead {
+src/spec.rs:7:use anyhow::{bail, Context, Result};
+src/spec.rs:96:    pub post_command: Option<String>,
+src/spec.rs:181:    pub fn load(root: &Path) -> Result<Self> {
+src/spec.rs:280:    pub fn task(&self, name: &str) -> Result<&Task> {
+src/ingress.rs:6:use anyhow::{bail, Context, Result};
+src/ingress.rs:44:) -> Result<WebhookResponse> {
+src/ingress.rs:104:pub fn derive_dedupe_key(expr: &str, headers: &[(String, String)], body: &str) -> Result<String> {
+src/ingress.rs:160:fn hex_decode(s: &str) -> Result<Vec<u8>> {
+src/ingress.rs:174:pub fn parse_schedule(expr: &str) -> Result<cron::Schedule> {
+src/ingress.rs:200:) -> Result<IngressOutcome> {
+src/dispatch.rs:8:use anyhow::{Context, Result};
+src/dispatch.rs:28:pub fn dispatch_run(plane: &Plane, ledger: &mut Ledger, run_id: &str) -> Result<RunRow> {
+src/dispatch.rs:122:) -> Result<AttemptOutcome> {
+src/dispatch.rs:141:    let result = attempt_on_host(plane, ledger, run_id, task, n);
+src/dispatch.rs:143:    result
+src/dispatch.rs:152:) -> Result<AttemptOutcome> {
+src/dispatch.rs:166:    let fail = |phase_executed: bool, error: String| -> Result<AttemptOutcome> {
+src/dispatch.rs:205:        post_command: task.spec.post_command.clone(),
+src/dispatch.rs:308:    session.write_artifact("result.md", parsed.result.as_bytes())?;
+src/dispatch.rs:311:    if let Some(post) = &plan.post_command {
+src/dispatch.rs:312:        // post_command is finalization (publish artifacts, post replies);
+src/dispatch.rs:314:        let post_result = session.execute(
+src/dispatch.rs:319:        let post_error = match post_result {
+src/dispatch.rs:322:                "post_command exit {}: {}",
+src/dispatch.rs:326:            Err(e) => Some(format!("post_command: {e:#}")),
+
+codex
+One likely blocker is emerging in dead-letter replay: the deterministic ingress key dedupes duplicate replays, but the command treats “duplicate” as “already in flight” even if the original replay run was only inserted and never dispatched. I’m checking whether another dispatcher would necessarily pick that pending replay run before calling it blocking.
+exec
+/bin/zsh -lc "rg -n \"pending_runs_oldest_first|dispatch_run\\(|Command::|start|loop\" src -S" in /Users/phaedrus/Development/bitterblossom
+ succeeded in 0ms:
+src/main.rs:64:    /// dispatch loop.
+src/main.rs:140:        Command::Run {
+src/main.rs:167:            let run = dispatch::dispatch_run(&plane, &mut ledger, &outcome.run_id)?;
+src/main.rs:191:        Command::Runs { command } => match command {
+src/main.rs:192:            RunsCommand::List { task, state, json } => {
+src/main.rs:210:            RunsCommand::Show { run_id, json } => {
+src/main.rs:213:            RunsCommand::Resolve {
+src/main.rs:224:            RunsCommand::Export => {
+src/main.rs:232:        Command::Dlq { command } => match command {
+src/main.rs:233:            DlqCommand::List { json } => {
+src/main.rs:251:            DlqCommand::Replay { id } => {
+src/main.rs:275:                let run = dispatch::dispatch_run(&plane, &mut ledger, &outcome.run_id)?;
+src/main.rs:279:        Command::Task { command } => match command {
+src/main.rs:280:            TaskCommand::Park { task, reason } => {
+src/main.rs:286:            TaskCommand::Unpark { task } => {
+src/main.rs:298:        Command::Recover { json } => {
+src/main.rs:317:        Command::Serve => {
+src/main.rs:321:        Command::Check { json } => {
+src/harness.rs:172:        if line.starts_with('{') {
+src/substrate/sprites.rs:225:        // attempt probeable and cancellable after a plane restart.
+src/substrate/mod.rs:65:    /// declared refs, card file, pre_command. Nothing here may start the
+src/substrate/local.rs:13:/// Pidfile written next to the artifacts so a restarted plane can probe
+src/substrate/local.rs:163:    let mut command = Command::new(program);
+src/substrate/local.rs:196:    let started = Instant::now();
+src/substrate/local.rs:198:    let exit_code = loop {
+src/substrate/local.rs:202:        if started.elapsed() >= timeout {
+src/recovery.rs:51:                    "plane died before any attempt started",
+src/dispatch.rs:28:pub fn dispatch_run(plane: &Plane, ledger: &mut Ledger, run_id: &str) -> Result<RunRow> {
+src/dispatch.rs:52:    let started = Instant::now();
+src/dispatch.rs:55:    loop {
+src/dispatch.rs:63:                    started.elapsed().as_millis() as i64,
+src/dispatch.rs:83:                ledger.finalize_run(run_id, None, started.elapsed().as_millis() as i64)?;
+src/dispatch.rs:98:                ledger.finalize_run(run_id, None, started.elapsed().as_millis() as i64)?;
+src/dispatch.rs:124:    let lease_started = Instant::now();
+src/dispatch.rs:125:    loop {
+src/dispatch.rs:129:        if lease_started.elapsed() >= LEASE_WAIT {
+src/dispatch.rs:241:            // The process may or may not have started; treat as executed —
+src/ledger.rs:99:    pub started_at: String,
+src/ledger.rs:176:  started_at TEXT NOT NULL,
+src/ledger.rs:416:               phase, started_at)
+src/ledger.rs:660:            "SELECT COALESCE(SUM(cost_usd), 0.0) FROM attempts WHERE substr(started_at, 1, 10) = ?1",
+src/ledger.rs:710:    pub fn pending_runs_oldest_first(&self) -> Result<Vec<RunRow>> {
+src/ledger.rs:724:               artifact_dir, started_at, ended_at
+src/ledger.rs:746:                    started_at: r.get(16)?,
+src/serve.rs:2://! scheduler, and the dispatch loop. Plumbing only; every decision lives
+src/serve.rs:53:            .spawn(move || cron_loop(&root))?;
+src/serve.rs:59:            .spawn(move || dispatch_loop(&root))?;
+src/serve.rs:62:    http_loop(&root_buf, &plane)
+src/serve.rs:65:fn cron_loop(root: &Path) {
+src/serve.rs:82:    loop {
+src/serve.rs:100:fn dispatch_loop(root: &Path) {
+src/serve.rs:106:    loop {
+src/serve.rs:108:        let pending = match ledger.pending_runs_oldest_first() {
+src/serve.rs:152:        let run = dispatch::dispatch_run(&plane, &mut ledger, run_id)?;
+src/serve.rs:161:fn http_loop(root: &Path, plane: &Plane) -> Result<()> {
+src/notify.rs:28:    let spawned = Command::new(bin)
+
+exec
+/bin/zsh -lc "nl -ba src/serve.rs | sed -n '1,230p'" in /Users/phaedrus/Development/bitterblossom
+ succeeded in 0ms:
+     1	//! `bb serve` — the resident plane: boot recovery, webhook ingress, cron
+     2	//! scheduler, and the dispatch loop. Plumbing only; every decision lives
+     3	//! in `ingress`/`dispatch`/`recovery`, which run identically from the CLI.
+     4	
+     5	use std::collections::HashSet;
+     6	use std::path::Path;
+     7	use std::sync::{Arc, Mutex};
+     8	use std::time::Duration;
+     9	
+    10	use anyhow::{Context, Result};
+    11	use chrono::Utc;
+    12	
+    13	use crate::ingress;
+    14	use crate::ledger::Ledger;
+    15	use crate::recovery;
+    16	use crate::spec::{Plane, TriggerSpec};
+    17	use crate::{dispatch, notify};
+    18	
+    19	const DISPATCH_POLL: Duration = Duration::from_millis(500);
+    20	const CRON_POLL: Duration = Duration::from_secs(10);
+    21	
+    22	pub fn serve(root: &Path) -> Result<()> {
+    23	    let plane = Plane::load(root)?;
+    24	    let mut ledger = Ledger::open(&plane.db_path())?;
+    25	
+    26	    let reports = recovery::recover_inherited_runs(&plane, &mut ledger)?;
+    27	    for r in &reports {
+    28	        eprintln!(
+    29	            "recovered run {} task={} phase={} probe={} -> {}",
+    30	            r.run_id,
+    31	            r.task,
+    32	            r.attempt_phase.as_deref().unwrap_or("-"),
+    33	            r.probe.as_deref().unwrap_or("-"),
+    34	            r.disposition,
+    35	        );
+    36	        notify::notify(
+    37	            &plane,
+    38	            "run_recovered_at_boot",
+    39	            &serde_json::json!({
+    40	                "run_id": r.run_id,
+    41	                "task": r.task,
+    42	                "disposition": r.disposition,
+    43	            }),
+    44	        );
+    45	    }
+    46	    drop(ledger);
+    47	
+    48	    let root_buf = root.to_path_buf();
+    49	    {
+    50	        let root = root_buf.clone();
+    51	        std::thread::Builder::new()
+    52	            .name("bb-cron".into())
+    53	            .spawn(move || cron_loop(&root))?;
+    54	    }
+    55	    {
+    56	        let root = root_buf.clone();
+    57	        std::thread::Builder::new()
+    58	            .name("bb-dispatch".into())
+    59	            .spawn(move || dispatch_loop(&root))?;
+    60	    }
+    61	
+    62	    http_loop(&root_buf, &plane)
+    63	}
+    64	
+    65	fn cron_loop(root: &Path) {
+    66	    let Ok(plane) = Plane::load(root) else { return };
+    67	    let Ok(mut ledger) = Ledger::open(&plane.db_path()) else {
+    68	        return;
+    69	    };
+    70	    let mut schedules = Vec::new();
+    71	    for task in plane.tasks.values() {
+    72	        for trigger in &task.spec.triggers {
+    73	            if let TriggerSpec::Cron { schedule } = trigger {
+    74	                match ingress::parse_schedule(schedule) {
+    75	                    Ok(s) => schedules.push((task.name.clone(), s)),
+    76	                    Err(e) => eprintln!("cron: task {}: {e:#}", task.name),
+    77	                }
+    78	            }
+    79	        }
+    80	    }
+    81	    let mut last = Utc::now();
+    82	    loop {
+    83	        std::thread::sleep(CRON_POLL);
+    84	        let now = Utc::now();
+    85	        for (task, schedule) in &schedules {
+    86	            for fire in ingress::due_fires(schedule, last, now) {
+    87	                match ingress::ingest_cron_fire(&mut ledger, task, fire) {
+    88	                    Ok(o) if !o.duplicate => {
+    89	                        eprintln!("cron: task {task} fire {fire} -> run {}", o.run_id)
+    90	                    }
+    91	                    Ok(_) => {}
+    92	                    Err(e) => eprintln!("cron: task {task}: {e:#}"),
+    93	                }
+    94	            }
+    95	        }
+    96	        last = now;
+    97	    }
+    98	}
+    99	
+   100	fn dispatch_loop(root: &Path) {
+   101	    let in_flight: Arc<Mutex<HashSet<String>>> = Arc::default();
+   102	    let Ok(plane) = Plane::load(root) else { return };
+   103	    let Ok(ledger) = Ledger::open(&plane.db_path()) else {
+   104	        return;
+   105	    };
+   106	    loop {
+   107	        std::thread::sleep(DISPATCH_POLL);
+   108	        let pending = match ledger.pending_runs_oldest_first() {
+   109	            Ok(p) => p,
+   110	            Err(e) => {
+   111	                eprintln!("dispatch: {e:#}");
+   112	                continue;
+   113	            }
+   114	        };
+   115	        for run in pending {
+   116	            {
+   117	                // Per-task FIFO: one run per task in flight; older runs in
+   118	                // the same task block newer ones.
+   119	                let mut guard = in_flight.lock().expect("in_flight lock");
+   120	                if guard.contains(&run.task) {
+   121	                    continue;
+   122	                }
+   123	                guard.insert(run.task.clone());
+   124	            }
+   125	            let root = root.to_path_buf();
+   126	            let in_flight_worker = Arc::clone(&in_flight);
+   127	            let task_name = run.task.clone();
+   128	            let run_id = run.id.clone();
+   129	            let spawned = std::thread::Builder::new()
+   130	                .name(format!("bb-run-{run_id}"))
+   131	                .spawn(move || {
+   132	                    run_one(&root, &run_id);
+   133	                    in_flight_worker
+   134	                        .lock()
+   135	                        .expect("in_flight lock")
+   136	                        .remove(&task_name);
+   137	                });
+   138	            if let Err(e) = spawned {
+   139	                eprintln!("dispatch: spawn failed: {e}");
+   140	                in_flight.lock().expect("in_flight lock").remove(&run.task);
+   141	            }
+   142	        }
+   143	    }
+   144	}
+   145	
+   146	fn run_one(root: &Path, run_id: &str) {
+   147	    let result = (|| -> Result<()> {
+   148	        let plane = Plane::load(root)?;
+   149	        let mut ledger = Ledger::open(&plane.db_path())?;
+   150	        // dispatch_run owns state-transition notifications (dead letters,
+   151	        // budget parks), so the CLI path notifies identically.
+   152	        let run = dispatch::dispatch_run(&plane, &mut ledger, run_id)?;
+   153	        eprintln!("run {} {} (task={})", run.id, run.state, run.task);
+   154	        Ok(())
+   155	    })();
+   156	    if let Err(e) = result {
+   157	        eprintln!("run {run_id}: {e:#}");
+   158	    }
+   159	}
+   160	
+   161	fn http_loop(root: &Path, plane: &Plane) -> Result<()> {
+   162	    let bind = plane.spec.ingress.bind.clone();
+   163	    let server = tiny_http::Server::http(&bind).map_err(|e| anyhow::anyhow!("bind {bind}: {e}"))?;
+   164	    eprintln!("bb serve listening on {bind}");
+   165	
+   166	    for mut request in server.incoming_requests() {
+   167	        let response = handle_request(root, &mut request);
+   168	        let (status, body) = match response {
+   169	            Ok(r) => r,
+   170	            Err(e) => (500, format!("{{\"error\":\"{e}\"}}")),
+   171	        };
+   172	        let _ = request.respond(
+   173	            tiny_http::Response::from_string(body)
+   174	                .with_status_code(status)
+   175	                .with_header(
+   176	                    tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+   177	                        .expect("static header"),
+   178	                ),
+   179	        );
+   180	    }
+   181	    Ok(())
+   182	}
+   183	
+   184	fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16, String)> {
+   185	    let method = request.method().to_string();
+   186	    let url = request.url().to_string();
+   187	
+   188	    if method == "GET" && url == "/health" {
+   189	        let plane = Plane::load(root)?;
+   190	        let ledger = Ledger::open(&plane.db_path())?;
+   191	        let pending = ledger.runs_in_state("pending")?;
+   192	        let running = ledger.runs_in_state("running")?;
+   193	        let oldest_pending = pending.last().map(|r| r.created_at.clone());
+   194	        return Ok((
+   195	            200,
+   196	            serde_json::json!({
+   197	                "pending": pending.len(),
+   198	                "running": running.len(),
+   199	                "oldest_pending": oldest_pending,
+   200	            })
+   201	            .to_string(),
+   202	        ));
+   203	    }
+   204	
+   205	    if method == "POST" {
+   206	        if let Some(route) = url.strip_prefix("/hooks/") {
+   207	            let route = route.trim_end_matches('/').to_string();
+   208	            let headers: Vec<(String, String)> = request
+   209	                .headers()
+   210	                .iter()
+   211	                .map(|h| {
+   212	                    (
+   213	                        h.field.as_str().as_str().to_string(),
+   214	                        h.value.as_str().to_string(),
+   215	                    )
+   216	                })
+   217	                .collect();
+   218	            let mut body = String::new();
+   219	            request
+   220	                .as_reader()
+   221	                .read_to_string(&mut body)
+   222	                .context("read body")?;
+   223	            let plane = Plane::load(root)?;
+   224	            let mut ledger = Ledger::open(&plane.db_path())?;
+   225	            let resp = ingress::handle_webhook(&plane, &mut ledger, &route, &headers, &body)?;
+   226	            return Ok((resp.status, resp.body));
+   227	        }
+   228	    }
+   229	
+   230	    Ok((404, "{\"error\":\"not found\"}".to_string()))
+
+exec
+/bin/zsh -lc "nl -ba src/main.rs | sed -n '1,220p'" in /Users/phaedrus/Development/bitterblossom
+ succeeded in 0ms:
+     1	use std::path::PathBuf;
+     2	
+     3	use anyhow::{bail, Result};
+     4	use bitterblossom::{dispatch, ledger, recovery, serve, spec};
+     5	use clap::{Parser, Subcommand};
+     6	
+     7	use ledger::{IngressRequest, Ledger};
+     8	use spec::Plane;
+     9	
+    10	#[derive(Parser)]
+    11	#[command(
+    12	    name = "bb",
+    13	    version,
+    14	    about = "Bitterblossom event plane: tasks + agents + triggers as files"
+    15	)]
+    16	struct Cli {
+    17	    /// Plane config directory (contains plane.toml). Defaults to
+    18	    /// $BB_PLANE_DIR or the current directory.
+    19	    #[arg(long, global = true)]
+    20	    config: Option<PathBuf>,
+    21	    #[command(subcommand)]
+    22	    command: Command,
+    23	}
+    24	
+    25	#[derive(Subcommand)]
+    26	enum Command {
+    27	    /// Trigger a task manually (the degenerate trigger).
+    28	    Run {
+    29	        task: String,
+    30	        /// Dedupe key: a second run with the same key records an ingress
+    31	        /// event but creates no second run.
+    32	        #[arg(long)]
+    33	        idempotency_key: Option<String>,
+    34	        #[arg(long)]
+    35	        json: bool,
+    36	    },
+    37	    /// Inspect the run ledger.
+    38	    Runs {
+    39	        #[command(subcommand)]
+    40	        command: RunsCommand,
+    41	    },
+    42	    /// Dead letters: dispatches that failed before executing.
+    43	    Dlq {
+    44	        #[command(subcommand)]
+    45	        command: DlqCommand,
+    46	    },
+    47	    /// Park/unpark tasks (budget breaches park; unpark is explicit).
+    48	    Task {
+    49	        #[command(subcommand)]
+    50	        command: TaskCommand,
+    51	    },
+    52	    /// Validate the plane config and print what's loaded.
+    53	    Check {
+    54	        #[arg(long)]
+    55	        json: bool,
+    56	    },
+    57	    /// Classify runs inherited in `running` state (host probe + attempt
+    58	    /// phase), instead of blindly orphaning them. Also runs at serve boot.
+    59	    Recover {
+    60	        #[arg(long)]
+    61	        json: bool,
+    62	    },
+    63	    /// Run the plane: boot recovery, webhook ingress, cron scheduler,
+    64	    /// dispatch loop.
+    65	    Serve,
+    66	}
+    67	
+    68	#[derive(Subcommand)]
+    69	enum RunsCommand {
+    70	    List {
+    71	        #[arg(long)]
+    72	        task: Option<String>,
+    73	        #[arg(long)]
+    74	        state: Option<String>,
+    75	        #[arg(long)]
+    76	        json: bool,
+    77	    },
+    78	    Show {
+    79	        run_id: String,
+    80	        #[arg(long)]
+    81	        json: bool,
+    82	    },
+    83	    /// Flat JSONL dump (run + attempts per line) for downstream analysis.
+    84	    Export,
+    85	    /// Resolve an `awaiting_recovery` run after inspecting its side
+    86	    /// effects (an operator judgment the plane refuses to make).
+    87	    Resolve {
+    88	        run_id: String,
+    89	        #[arg(value_parser = ["success", "failure"])]
+    90	        outcome: String,
+    91	        #[arg(long, default_value = "resolved by operator")]
+    92	        reason: String,
+    93	    },
+    94	}
+    95	
+    96	#[derive(Subcommand)]
+    97	enum DlqCommand {
+    98	    List {
+    99	        #[arg(long)]
+   100	        json: bool,
+   101	    },
+   102	    /// Mint a new run linked to the dead-lettered one via parent_run_id.
+   103	    Replay { id: i64 },
+   104	}
+   105	
+   106	#[derive(Subcommand)]
+   107	enum TaskCommand {
+   108	    Park {
+   109	        task: String,
+   110	        #[arg(long, default_value = "parked by operator")]
+   111	        reason: String,
+   112	    },
+   113	    Unpark {
+   114	        task: String,
+   115	    },
+   116	}
+   117	
+   118	fn main() {
+   119	    // Die quietly on SIGPIPE (e.g. `bb runs export | head`) like other
+   120	    // Unix CLIs instead of panicking on a broken-pipe write.
+   121	    unsafe {
+   122	        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+   123	    }
+   124	    if let Err(e) = run() {
+   125	        eprintln!("error: {e:#}");
+   126	        std::process::exit(1);
+   127	    }
+   128	}
+   129	
+   130	fn run() -> Result<()> {
+   131	    let cli = Cli::parse();
+   132	    let root = cli
+   133	        .config
+   134	        .or_else(|| std::env::var_os("BB_PLANE_DIR").map(PathBuf::from))
+   135	        .unwrap_or_else(|| PathBuf::from("."));
+   136	    let plane = Plane::load(&root)?;
+   137	    let mut ledger = Ledger::open(&plane.db_path())?;
+   138	
+   139	    match cli.command {
+   140	        Command::Run {
+   141	            task,
+   142	            idempotency_key,
+   143	            json,
+   144	        } => {
+   145	            plane.task(&task)?;
+   146	            let outcome = ledger.ingest(IngressRequest {
+   147	                task: &task,
+   148	                trigger_kind: "manual",
+   149	                idempotency_key: idempotency_key.as_deref(),
+   150	                source_event_id: None,
+   151	                payload: None,
+   152	                parent_run_id: None,
+   153	            })?;
+   154	            if outcome.duplicate {
+   155	                eprintln!(
+   156	                    "duplicate idempotency key; existing run {} ({})",
+   157	                    outcome.run_id, outcome.state
+   158	                );
+   159	                print_run(&ledger, &outcome.run_id, json)?;
+   160	                return Ok(());
+   161	            }
+   162	            if outcome.state == "blocked_budget" {
+   163	                eprintln!("run {} blocked: task is parked", outcome.run_id);
+   164	                print_run(&ledger, &outcome.run_id, json)?;
+   165	                return Ok(());
+   166	            }
+   167	            let run = dispatch::dispatch_run(&plane, &mut ledger, &outcome.run_id)?;
+   168	            if json {
+   169	                print_run(&ledger, &run.id, true)?;
+   170	            } else {
+   171	                println!(
+   172	                    "run {} {} (task={} agent={}@v{} cost={} duration_ms={})",
+   173	                    run.id,
+   174	                    run.state,
+   175	                    run.task,
+   176	                    run.agent_name.as_deref().unwrap_or("-"),
+   177	                    run.agent_version.unwrap_or(0),
+   178	                    run.cost_usd
+   179	                        .map(|c| format!("${c:.4}"))
+   180	                        .unwrap_or_else(|| "-".into()),
+   181	                    run.duration_ms.unwrap_or(0),
+   182	                );
+   183	                if run.state != "success" {
+   184	                    eprintln!("reason: {}", run.state_reason.as_deref().unwrap_or("-"));
+   185	                }
+   186	            }
+   187	            if run.state == "failure" {
+   188	                std::process::exit(2);
+   189	            }
+   190	        }
+   191	        Command::Runs { command } => match command {
+   192	            RunsCommand::List { task, state, json } => {
+   193	                let runs = ledger.list_runs(task.as_deref(), state.as_deref())?;
+   194	                if json {
+   195	                    println!("{}", serde_json::to_string_pretty(&runs)?);
+   196	                } else {
+   197	                    for r in runs {
+   198	                        let agent = format!(
+   199	                            "{}@v{}",
+   200	                            r.agent_name.as_deref().unwrap_or("-"),
+   201	                            r.agent_version.unwrap_or(0)
+   202	                        );
+   203	                        println!(
+   204	                            "{}  {:<18} {:<10} {:<14} {}  {}",
+   205	                            r.created_at, r.task, r.trigger_kind, r.state, agent, r.id,
+   206	                        );
+   207	                    }
+   208	                }
+   209	            }
+   210	            RunsCommand::Show { run_id, json } => {
+   211	                print_run(&ledger, &run_id, json)?;
+   212	            }
+   213	            RunsCommand::Resolve {
+   214	                run_id,
+   215	                outcome,
+   216	                reason,
+   217	            } => {
+   218	                ledger.transition(&run_id, &outcome, Some(&reason))?;
+   219	                // An Unknown boot probe keeps the host lease until the
+   220	                // operator resolves; free it now.
+
+exec
+/bin/zsh -lc "nl -ba src/harness.rs | sed -n '70,165p'" in /Users/phaedrus/Development/bitterblossom
+ succeeded in 0ms:
+    70	
+    71	/// `claude -p --output-format json` emits one JSON object:
+    72	/// `{"type":"result","result":...,"total_cost_usd":...,"num_turns":...,"usage":{...}}`
+    73	fn parse_claude(stdout: &str) -> Result<ParsedOutput> {
+    74	    let v = last_json_object(stdout).context("claude output: no JSON object found")?;
+    75	    if v.get("is_error").and_then(Value::as_bool) == Some(true) {
+    76	        bail!("claude reported is_error=true");
+    77	    }
+    78	    let result = v
+    79	        .get("result")
+    80	        .and_then(Value::as_str)
+    81	        .context("claude output: result object has no 'result' string")?
+    82	        .to_string();
+    83	    let usage = v.get("usage").cloned().unwrap_or(Value::Null);
+    84	    Ok(ParsedOutput {
+    85	        result,
+    86	        stats: AttemptStats {
+    87	            tokens_in: usage.get("input_tokens").and_then(Value::as_i64),
+    88	            tokens_out: usage.get("output_tokens").and_then(Value::as_i64),
+    89	            turns: v.get("num_turns").and_then(Value::as_i64),
+    90	            cost_usd: v.get("total_cost_usd").and_then(Value::as_f64),
+    91	        },
+    92	    })
+    93	}
+    94	
+    95	/// `codex exec --json` emits JSONL events; token usage arrives on
+    96	/// `turn.completed`, the answer on `item.completed` agent messages.
+    97	fn parse_codex(stdout: &str) -> Result<ParsedOutput> {
+    98	    let mut tokens_in: i64 = 0;
+    99	    let mut tokens_out: i64 = 0;
+   100	    let mut turns: i64 = 0;
+   101	    let mut result = String::new();
+   102	    let mut saw_event = false;
+   103	    for line in stdout.lines() {
+   104	        let Ok(v) = serde_json::from_str::<Value>(line) else {
+   105	            continue;
+   106	        };
+   107	        saw_event = true;
+   108	        match v.get("type").and_then(Value::as_str) {
+   109	            Some("turn.completed") => {
+   110	                turns += 1;
+   111	                if let Some(u) = v.get("usage") {
+   112	                    tokens_in += u.get("input_tokens").and_then(Value::as_i64).unwrap_or(0);
+   113	                    tokens_out += u.get("output_tokens").and_then(Value::as_i64).unwrap_or(0);
+   114	                }
+   115	            }
+   116	            Some("item.completed") => {
+   117	                if let Some(item) = v.get("item") {
+   118	                    if item.get("type").and_then(Value::as_str) == Some("agent_message") {
+   119	                        if let Some(text) = item.get("text").and_then(Value::as_str) {
+   120	                            result = text.to_string();
+   121	                        }
+   122	                    }
+   123	                }
+   124	            }
+   125	            _ => {}
+   126	        }
+   127	    }
+   128	    if !saw_event {
+   129	        bail!("codex output: no JSONL events found");
+   130	    }
+   131	    if result.is_empty() {
+   132	        bail!("codex output: events present but no agent_message — incomplete run");
+   133	    }
+   134	    Ok(ParsedOutput {
+   135	        result,
+   136	        stats: AttemptStats {
+   137	            tokens_in: Some(tokens_in),
+   138	            tokens_out: Some(tokens_out),
+   139	            turns: Some(turns),
+   140	            // codex does not report dollar cost; unknown, not zero.
+   141	            cost_usd: None,
+   142	        },
+   143	    })
+   144	}
+   145	
+   146	/// pi `--mode json` emits a final JSON object with `result` and `usage`.
+   147	fn parse_pi(stdout: &str) -> Result<ParsedOutput> {
+   148	    let v = last_json_object(stdout).context("pi output: no JSON object found")?;
+   149	    let result = v
+   150	        .get("result")
+   151	        .or_else(|| v.get("output"))
+   152	        .and_then(Value::as_str)
+   153	        .context("pi output: no 'result' or 'output' string")?
+   154	        .to_string();
+   155	    let usage = v.get("usage").cloned().unwrap_or(Value::Null);
+   156	    Ok(ParsedOutput {
+   157	        result,
+   158	        stats: AttemptStats {
+   159	            tokens_in: usage.get("input_tokens").and_then(Value::as_i64),
+   160	            tokens_out: usage.get("output_tokens").and_then(Value::as_i64),
+   161	            turns: v.get("num_turns").and_then(Value::as_i64),
+   162	            cost_usd: v.get("total_cost_usd").and_then(Value::as_f64),
+   163	        },
+   164	    })
+   165	}
+
+exec
+/bin/zsh -lc 'rg -n "rusqlite|sqlite" Cargo.toml Cargo.lock -S' in /Users/phaedrus/Development/bitterblossom
+ succeeded in 0ms:
+Cargo.toml:19:rusqlite = { version = "0.32", features = ["bundled"] }
+Cargo.lock:110: "rusqlite",
+Cargo.lock:499:name = "libsqlite3-sys"
+Cargo.lock:623:name = "rusqlite"
+Cargo.lock:632: "libsqlite3-sys",
+
+exec
+/bin/zsh -lc 'cargo test cross_handle_ingest_dedupes_on_disk dead_letter_replay_claim_is_atomic claim_is_atomic_second_claimer_loses -- --nocapture' in /Users/phaedrus/Development/bitterblossom
+ exited 1 in 102ms:
+codex
+The targeted `cargo test` invocation failed because Cargo accepts one test-name filter, not several. That doesn’t affect the review; I’ll rerun the relevant tests with a broader filter or the full suite if needed after finishing the code-level checks.
+exec
+/bin/zsh -lc 'cargo test --test recovery -- --nocapture' in /Users/phaedrus/Development/bitterblossom
+exec
+/bin/zsh -lc 'cargo test --lib -- --nocapture' in /Users/phaedrus/Development/bitterblossom
+exec
+/bin/zsh -lc 'cargo test --test e2e_sprites -- --nocapture' in /Users/phaedrus/Development/bitterblossom
+ succeeded in 503ms:
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on artifact directory
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.37s
+     Running tests/recovery.rs (target/debug/deps/recovery-3cea201d591233ab)
+
+running 4 tests
+test pre_execute_inherited_run_dead_letters_for_replay ... ok
+test recovery_releases_stale_host_leases ... ok
+test executing_inherited_run_with_live_process_stays_running ... ok
+test executing_inherited_run_with_dead_process_awaits_recovery ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+
+ succeeded in 521ms:
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on artifact directory
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.39s
+     Running unittests src/lib.rs (target/debug/deps/bitterblossom-54fe1aa5c4d6f9f9)
+
+running 14 tests
+test ledger::tests::attempt_phase_ordering ... ok
+test ledger::tests::host_lease_is_exclusive_until_released ... ok
+test ledger::tests::pending_cannot_jump_to_success ... ok
+test ledger::tests::claim_is_atomic_second_claimer_loses ... ok
+test ledger::tests::dead_letter_replay_claim_is_atomic ... ok
+test ledger::tests::dead_letter_replay_lineage ... ok
+test ledger::tests::duplicate_idempotency_key_creates_one_run_two_ingress_events ... ok
+test ledger::tests::legal_lifecycle_transitions ... ok
+test ledger::tests::keyless_ingress_always_creates_a_run ... ok
+test ledger::tests::parked_task_ingress_is_blocked_and_unpark_releases ... ok
+test ledger::tests::awaiting_recovery_resolves_by_operator ... ok
+test ledger::tests::same_key_different_task_is_not_a_duplicate ... ok
+test ledger::tests::terminal_states_reject_transitions ... ok
+test ledger::tests::cross_handle_ingest_dedupes_on_disk ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+
+ succeeded in 1486ms:
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.32s
+     Running tests/e2e_sprites.rs (target/debug/deps/e2e_sprites-8bf3ff6148672d43)
+
+running 1 test
+test sprites_task_runs_end_to_end_with_identical_row_shape ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.08s
+
+
+codex
+**Findings**
+
+BLOCKING: [src/substrate/sprites.rs](/Users/phaedrus/Development/bitterblossom/src/substrate/sprites.rs:234) still has a heredoc delimiter injection/truncation bug. `stdin` is inserted raw into a shell script; if the prompt/card contains a line exactly equal to `BB_STDIN_EOF_bb-attempt-N`, the heredoc closes early and following prompt lines execute as shell. The delimiter is predictable from the attempt id, so this does not safely remove prompt from argv.
+
+BLOCKING: [src/substrate/sprites.rs](/Users/phaedrus/Development/bitterblossom/src/substrate/sprites.rs:250) still kills only the remote harness PID on sprite timeout. The local `process_group(0)` fix covers the local relay process group, but remote grandchildren can survive `kill -9 "$(cat pid)"`; then [src/dispatch.rs](/Users/phaedrus/Development/bitterblossom/src/dispatch.rs:142) releases the host lease after `attempt_on_host` returns. This leaves the original “remote process alive after lease release” class unfixed for sprites.
+
+SERIOUS: [src/main.rs](/Users/phaedrus/Development/bitterblossom/src/main.rs:259) dead-letter replay is still not crash-atomic. A process can insert the deterministic replay run, crash before dispatch, and a concurrent/later replay sees `outcome.duplicate`, marks the DLQ row replayed, then returns at [src/main.rs](/Users/phaedrus/Development/bitterblossom/src/main.rs:270). With no `serve` loop running, the dead letter is now marked replayed while the replay run remains merely pending and future `bb dlq replay` bails.
+
+SERIOUS: [src/harness.rs](/Users/phaedrus/Development/bitterblossom/src/harness.rs:78) and [src/harness.rs](/Users/phaedrus/Development/bitterblossom/src/harness.rs:149) fix missing Claude/Pi result fields, but not empty result strings. `{"result":""}` still becomes a successful parsed output for Claude/Pi, so the “empty-result success” fix is incomplete.
+
+**Verified Holds**
+
+The SQLite ingress dedupe shape looks correct: `BEGIN IMMEDIATE` plus the partial unique-index upsert closes the cross-process duplicate insert race, and the added disk cross-handle test passes.
+
+The compare-and-set state transition does not appear to introduce a state-machine hole for the declared transitions. It derives legal source states from `transition_allowed`, so pending claim, budget block/unblock, terminal transitions, and operator recovery transitions remain constrained.
+
+Local `process_group(0)` plus `kill(-pid, SIGKILL)` semantics are correct for the local subprocess group.
+
+Verification run:
+`cargo test --lib -- --nocapture`
+`cargo test --test recovery -- --nocapture`
+`cargo test --test e2e_sprites -- --nocapture`
+tokens used
+128,268
+**Findings**
+
+BLOCKING: [src/substrate/sprites.rs](/Users/phaedrus/Development/bitterblossom/src/substrate/sprites.rs:234) still has a heredoc delimiter injection/truncation bug. `stdin` is inserted raw into a shell script; if the prompt/card contains a line exactly equal to `BB_STDIN_EOF_bb-attempt-N`, the heredoc closes early and following prompt lines execute as shell. The delimiter is predictable from the attempt id, so this does not safely remove prompt from argv.
+
+BLOCKING: [src/substrate/sprites.rs](/Users/phaedrus/Development/bitterblossom/src/substrate/sprites.rs:250) still kills only the remote harness PID on sprite timeout. The local `process_group(0)` fix covers the local relay process group, but remote grandchildren can survive `kill -9 "$(cat pid)"`; then [src/dispatch.rs](/Users/phaedrus/Development/bitterblossom/src/dispatch.rs:142) releases the host lease after `attempt_on_host` returns. This leaves the original “remote process alive after lease release” class unfixed for sprites.
+
+SERIOUS: [src/main.rs](/Users/phaedrus/Development/bitterblossom/src/main.rs:259) dead-letter replay is still not crash-atomic. A process can insert the deterministic replay run, crash before dispatch, and a concurrent/later replay sees `outcome.duplicate`, marks the DLQ row replayed, then returns at [src/main.rs](/Users/phaedrus/Development/bitterblossom/src/main.rs:270). With no `serve` loop running, the dead letter is now marked replayed while the replay run remains merely pending and future `bb dlq replay` bails.
+
+SERIOUS: [src/harness.rs](/Users/phaedrus/Development/bitterblossom/src/harness.rs:78) and [src/harness.rs](/Users/phaedrus/Development/bitterblossom/src/harness.rs:149) fix missing Claude/Pi result fields, but not empty result strings. `{"result":""}` still becomes a successful parsed output for Claude/Pi, so the “empty-result success” fix is incomplete.
+
+**Verified Holds**
+
+The SQLite ingress dedupe shape looks correct: `BEGIN IMMEDIATE` plus the partial unique-index upsert closes the cross-process duplicate insert race, and the added disk cross-handle test passes.
+
+The compare-and-set state transition does not appear to introduce a state-machine hole for the declared transitions. It derives legal source states from `transition_allowed`, so pending claim, budget block/unblock, terminal transitions, and operator recovery transitions remain constrained.
+
+Local `process_group(0)` plus `kill(-pid, SIGKILL)` semantics are correct for the local subprocess group.
+
+Verification run:
+`cargo test --lib -- --nocapture`
+`cargo test --test recovery -- --nocapture`
+`cargo test --test e2e_sprites -- --nocapture`

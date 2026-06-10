@@ -29,3 +29,9 @@ e2e-reports/
 # Ephemeral /research thinktank output
 thinktank.log
 .claude/worktrees/
+
+
+# Added by cargo
+
+/target
+/target

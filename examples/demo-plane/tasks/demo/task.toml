@@ -1,0 +1,25 @@
+agent = "codex"
+substrate = "sprites"        # local | sprites
+
+[workspace]
+host = "lane-1"              # the host-lease key; "org/name" also works
+# checkpoint = "v3"          # optional golden-checkpoint restore
+repos = []                   # checked out at declared refs during prepare
+
+[budget]
+timeout_minutes = 10         # enforced: wall-clock kill
+max_runs_per_day = 24        # enforced pre-dispatch
+max_cost_per_run_usd = 2.0   # advisory: breach parks the task
+
+[[trigger]]
+kind = "manual"              # bb run demo
+
+[[trigger]]
+kind = "cron"
+schedule = "0 */6 * * *"     # dedupe key = scheduled timestamp
+
+[[trigger]]
+kind = "webhook"             # POST /hooks/demo
+route = "demo"
+secret_env = "BB_HOOK_DEMO"
+dedupe_key = "header:X-GitHub-Delivery"

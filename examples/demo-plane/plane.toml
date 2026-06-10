@@ -1,0 +1,12 @@
+# The plane: db location, ingress bind, notifications, global budget.
+db_path = ".bb/plane.db"
+
+[ingress]
+bind = "127.0.0.1:7077"
+
+[notify]
+# State transitions only (dead letter, budget park, boot recovery).
+# webhook_url = "https://ntfy.sh/my-plane"
+
+[budget]
+max_cost_per_day_usd = 25.0
