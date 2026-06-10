@@ -4,6 +4,10 @@ Priority: P1
 Status: pending
 Estimate: XL
 
+> Groom 2026-06-10: this is workload #1 on the v3 Rust event-plane spine
+> (031). The spine carries ingress/ledger/queue/substrate; this ticket
+> keeps the review-specific design (coordinator, tiering, tokenomics).
+
 ## Goal
 
 A CI/event-triggered code review system on the bitterblossom plane:

@@ -2,105 +2,112 @@
 
 ## Direction Lock
 
-**Current direction lock (2026-06-09): mothballed.** Ad-hoc sprite dispatch
-is superseded by the Harness Kit `/sprites` skill (`sprite-lane` runner,
-golden-checkpoint provisioning); the conductor's hard-won lifecycle knowledge
-is preserved in `harness-kit/skills/sprites/references/provisioning.md`.
-The Tansy/Canary responder job, if revived, becomes "Canary webhook → thin
-intake → sprite-lane with the tansy card" — durable intake à la olympus, not
-a resident OTP fleet reconciler. Do not extend the conductor.
-
-Previous lock (2026-04-08): Bitterblossom focused on one job only: `Tansy`
-listens to Canary, investigates live incidents, repairs the correct repo, and
-verifies recovery.
+**Current direction lock (2026-06-10): reimagined as the event plane.**
+Bitterblossom is the Mode B runtime in the portfolio boundary
+(harness-kit `meta/CONTRACTS.md`): an opinionated, thin control plane for
+**event-driven agent workloads** — Olympus's shape, generalized beyond one
+company's repos, rewritten in Rust. The Elixir conductor, the persona fleet
+(Weaver/Thorn/Fern/Muse/Tansy as resident sprites), and the autonomous
+backlog factory are prior art, not the product. Do not extend them.
 
 ## Vision
-Bitterblossom is the conductor for a single-repo software factory: it routes repo-owned work to persistent sprites, drives implementation and review, and lands only when governance says the run is truly done.
 
-**North Star:** An always-on remote conductor clears a fully agent-runnable backlog end-to-end with truthful run state, isolated execution, and human-auditable decisions.
-**Target User:** An operator or autonomous agent supervising a persistent sprite workforce for one repository.
-**Current Focus:** Make the single-repo factory trustworthy enough to run 24/7 without a laptop in the loop.
-**Key Differentiators:** Thin transport CLI, run-centric control plane, persistent sprites, repo-owned work and evidence, explicit governance instead of “Weaver says done.”
+There are two ways to work with agents:
 
-## Design Philosophy
+1. **Ad hoc** — an operator on a machine spins up a session, talks to it,
+   work gets done. That is harness-kit's job (Mode A).
+2. **Event-driven** — a trigger fires (cron, webhook, CI event) and a
+   bespoke agent workflow executes on isolated infrastructure, unattended.
+   That is bitterblossom's job (Mode B).
 
-Bitterblossom is a **cybernetic governor** for software production. The conductor doesn't write code — it designs and operates the feedback control loop that closes at the architectural level.
+Bitterblossom is optimized for the second and usable for the first: every
+workload is also runnable from a terminal, and local ad-hoc agents can use
+the same surface to spin up sprites for heavy lifting they don't want to do
+locally.
 
-**The cybernetics pattern:** Stop turning the valve. Steer. Each time this pattern appears in history (Watt's governor, Kubernetes, agent harnesses), it's because someone built a sensor and actuator powerful enough to close the loop at a new layer. LLMs are the first sensor+actuator that can operate at the level of architectural judgment — not just “does it compile?” but “does this change fit the system?”
+**North Star:** Define a task, bind an agent to it, attach a trigger — and
+then watch it: durable run ledger, budgets, traces, receipts. Swap the
+agent without touching the task. Change the task without touching the
+plane. Daedalus-generated agents drop in as launch contracts, and run
+telemetry feeds back to the lab for iteration.
 
-**The calibration problem:** The hard work isn't getting the basic loop running (CI, tests, dispatch). It's encoding system-specific knowledge: what “good” means for this codebase, which patterns the architecture rewards, which it avoids. If you don't externalize this judgment, agents make the same mistakes on the hundredth run as the first. CLAUDE.md, project.md, WORKFLOW.md, and the retro loop are the calibration surface.
+**Target user:** The operator (and their ad-hoc agents) running a portfolio
+of repos with a handful of recurring agent workloads — code review,
+incident response, docs sync, scheduled probes.
 
-**The drift trap:** Without codified architectural constraints, agents amplify drift at machine speed. You can't use agents to clean up the mess if the agents don't know what clean looks like. The retro loop's architectural guard (“symptom or root cause?”) is the anti-drift sensor.
+**Key differentiators:** Tasks/agents/triggers are *data, not code* — a new
+workload should not require writing runtime code. Local-first triggers
+(webhook is one ingress among several). Budgets and cost per run are
+first-class. Substrate-abstracted (Fly Sprites first, local exec as the
+degenerate substrate).
 
-**The adaptive harness:** The conductor doesn't just govern itself — it governs arbitrary repos. For each target, it must detect the harness (tests, CI, docs, conventions), build a calibration profile, and adapt its feedback loop. A repo with no tests gets harness investment before feature work. A repo with strong CI gets backlog clearing at speed. The conductor's value scales with its ability to calibrate to unfamiliar systems.
+## Primitives
 
-## Domain Glossary
+| Primitive | What it is |
+|---|---|
+| **Task** | A workload spec, lane-card-shaped (goal, oracle, boundaries, repos, budget). Versioned in git. |
+| **Agent** | A binding of harness + model + prompt/skills — ideally a Daedalus launch contract. Swappable independently of the task. |
+| **Trigger** | cron, webhook, or manual CLI invocation. Many triggers may point at one task. |
+| **Run** | One accepted unit of work: durable ledger row before ack, trace ID surviving retries, status machine, cost, receipts, artifacts, dead-letter on exhaustion. |
+| **Substrate** | Where the run executes. Fly Sprites (checkpoint restore + repo sync) first; local process as fallback. One contract, no host-specific branches in workloads. |
 
-| Term | Definition |
-|------|-----------|
-| Conductor | The always-on Elixir/OTP control plane in `conductor/` that owns intake, leases, routing, governance, and merge decisions. |
-| Worker Sprite | A persistent remote execution surface used by named sprites such as Weaver, Thorn, Fern, and Muse. |
-| Review Council | The independent reviewer set that audits a builder result before merge. |
-| Run | One durable execution record with a `run_id`, explicit phase, artifacts, and event history. |
-| Lease | The machine-facing claim that one run currently owns one repo-local work item or incident lane. |
-| Profile | The runtime configuration chosen by the router: model, provider, persona, prompt pack, tools, and budget policy. |
-| Variant | One parallel implementation path for the same issue under a different profile. |
-| Trace Bullet | The narrow proof path for the factory: claim work, build, review, revise, pass Dagger, land, reconcile. |
+## What we imitate from Olympus (proven in production)
 
-## Active Focus
+- Durable run ledger (SQLite) written before the webhook returns `202`.
+- Per-workload serialization queues; retry wrapper; dead-letter visibility
+  and operator replay.
+- Sprite checkpoint restore + hard-reset repo prep before every agent exec;
+  temporary per-exec credentials, nothing persisted on disk.
+- An execution-substrate boundary so lanes never construct host clients.
+- Operator CLI with stable `--json` (agents are CLI users too), plus
+  metrics routes and a dashboard for humans.
+- Cost, tokens, and timing recorded per job; trace ID seeded at ingress.
+- Scheduled (cron) work flowing through the same ledger/queue/retry shell
+  as webhook work.
 
-- **Milestone:** `Tansy v1` — one always-on Canary responder sprite with an explicit service catalog and recovery verification loop.
-- **Key Issues:** role wiring for `responder`, typed `canary-services.toml`, Tansy persona/skill path, and a safe path to opt-in merge/deploy.
-- **Theme:** Truthful incident response over generic factory throughput. Canary is the work queue; incidents come before backlog.
+## What we do differently
 
-## Architecture Artifacts
+- **Generic, not adminifi-shaped.** Olympus lanes are TypeScript code; here
+  a workload is a task file + agent binding + trigger row.
+- **Daedalus integration.** Agents arrive as evaluated launch contracts;
+  run outcomes (cost, scores, failures) export back to the lab. Langfuse /
+  OTel-shaped telemetry from day one.
+- **Rust.** The spine is a small Rust service (ingress + ledger + queue +
+  dispatch + CLI). Olympus and the 1.6K-LOC Elixir conductor both prove the
+  spine is small; the moat is the contracts, not the framework. Build-vs-
+  borrow was researched (2026-06-10): Temporal/Inngest/Trigger.dev
+  orchestrate in-process functions and add a server/SaaS dependency;
+  Cloudflare's SDK owns its own substrate. None of them dispatch a coding
+  harness onto a remote sandbox — that part is ours either way. Closest
+  prior art to borrow from: `inngest/utah`, Olympus `orchestrator/`.
+- **Notification-first observability.** The operator gets pinged; the
+  dashboard is drill-down, not a pane of glass to watch.
 
-- [Architecture Overview](docs/architecture/README.md)
-- [Architecture Glance](docs/architecture/glance.md)
-- [Conductor Drill Down](docs/architecture/conductor.md)
-- [bb CLI Transport Drill Down](docs/architecture/bb-cli.md)
-- [Codebase Map](docs/CODEBASE_MAP.md)
-- [Context Index](docs/context/INDEX.md)
-- [Routing Guide](docs/context/ROUTING.md)
-- [Drift Watchlist](docs/context/DRIFT-WATCHLIST.md)
+## Shared contracts
 
-## Quality Bar
+Harness-kit defines, bitterblossom consumes: `backlog.d/` + closure
+trailers, lane cards, delegation receipts, evidence paths
+(harness-kit `meta/CONTRACTS.md`). Every workload must be runnable ad hoc
+from a terminal with no webhook.
 
-- [ ] Every work item the conductor can claim is runnable by sprites without clarification loops.
-- [ ] Autopilot-ready work items carry a durable local spec and intent contract, and routing surfaces explicit reasons when a lane is not ready.
-- [ ] Run state tells the truth: phase, heartbeat, blocking reason, review status, and merge outcome are inspectable.
-- [ ] Builder and reviewer execution is isolated per run; stale workspace state cannot leak forward.
-- [ ] The full trace bullet can be reproduced on demand against a target repository.
+## Workload roadmap
 
-## Patterns to Follow
+1. **Code review factory** (backlog 028, absorbed Cerberus mission):
+   coordinator + tiered reviewers, Cloudflare economics ($1–2/review).
+2. **Canary incident responder** (Tansy's mission as a workload spec, not a
+   resident sprite): incident webhook → investigate → repair → verify.
+3. Monitor/deploy watchers and the unattended outer loop (the retired
+   `/flywheel`), per the Mode B roadmap in CONTRACTS.md.
 
-### Run-Centric State
-```elixir
-Store.update_run(run_id, %{phase: "governing", pr_number: pr_number, pr_url: pr_url})
-Store.record_event(run_id, "governance_complete", %{verdict: verdict, reason: reason})
-```
+## Quality bar
 
-The conductor exposes explicit state transitions via `RunServer` `handle_continue` chains instead of inferring truth from ad hoc shell behavior.
+- [ ] Accepted work is durable before the trigger gets its ack
+- [ ] A new workload requires zero runtime-code changes
+- [ ] An agent can be swapped on a task with one config change, and the
+      run ledger shows which agent produced which outcome
+- [ ] Cost, budget burn, retries, dead letters, and queue pressure are
+      visible from the CLI without log spelunking
+- [ ] Every workload runs from a terminal with no webhook
+- [ ] Run telemetry exports in a shape Daedalus can consume
 
-### Thin Edge, Rich Control Plane
-```elixir
-# Orchestrator dispatches to RunServer GenServers
-{:ok, pid} = DynamicSupervisor.start_child(Conductor.RunSupervisor, {RunServer, opts})
-# RunServer owns the full lifecycle: lease -> workspace -> dispatch -> govern -> merge
-```
-
-Keep transport logic thin and deterministic. Workflow judgment lives in the Elixir conductor, not in `cmd/bb/`.
-
-## Lessons Learned
-
-| Decision | Outcome | Lesson |
-|----------|---------|--------|
-| Registry/fleet/proxy-heavy architecture | Rejected and largely deleted | Keep Bitterblossom focused on the conductor path, not general fleet management. |
-| Shared worker checkout per run | Causes state leakage and brittle cleanup | Persistent mirrors are fine; execution surfaces must be isolated per run. |
-| Local-only orchestration | Good for proving the loop, bad for 24/7 operation | Production orchestration belongs on a remote coordinator runtime. |
-| Generic status strings and hidden failure modes | Erode operator trust | Surface explicit run phases, review outcomes, and blocking reasons. |
-| Python conductor (20K LOC in 7 days) | Replaced by 1,649 LOC Elixir | Architecture critique before implementation prevents complexity spirals. OTP is the natural fit for agent orchestration. |
-
----
-*Last updated: 2026-03-14*
-*Updated during: /groom session*
+_Last updated: 2026-06-10, during the v3 reimagining session._
