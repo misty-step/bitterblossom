@@ -1,8 +1,13 @@
 # Agent session longevity — fix premature budget exhaustion
 
 Priority: critical
-Status: in-progress
+Status: pending
 Estimate: M
+
+> Groom 2026-06-10: demoted from in-progress — no commits since 2026-04-03
+> (68 days) and Weaver is not in the active fleet (direction lock runs
+> bb-tansy only). The budget problem is real for any long-running sprite,
+> including Tansy; re-promote when a lane hits it again.
 
 ## Goal
 Agents should run for hours on a single session, not exhaust their budget in 10 minutes reading context files. Investigate and fix the harness/prompt configuration so Weaver completes at least one full backlog item per session.
