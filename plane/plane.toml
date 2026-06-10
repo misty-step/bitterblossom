@@ -1,0 +1,8 @@
+# The bitterblossom plane for this machine. Run: bb --config plane serve
+db_path = ".bb/plane.db"
+
+[ingress]
+bind = "127.0.0.1:7077"
+
+[budget]
+max_cost_per_day_usd = 25.0

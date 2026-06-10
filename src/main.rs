@@ -31,6 +31,10 @@ enum Command {
         /// event but creates no second run.
         #[arg(long)]
         idempotency_key: Option<String>,
+        /// JSON payload materialized as EVENT.json in the workspace —
+        /// the manual equivalent of a webhook body.
+        #[arg(long)]
+        payload: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -82,6 +86,12 @@ enum RunsCommand {
     },
     /// Flat JSONL dump (run + attempts per line) for downstream analysis.
     Export,
+    /// Cancel a run that has not dispatched yet (state `pending`).
+    Cancel {
+        run_id: String,
+        #[arg(long, default_value = "canceled by operator")]
+        reason: String,
+    },
     /// Resolve an `awaiting_recovery` run after inspecting its side
     /// effects (an operator judgment the plane refuses to make).
     Resolve {
@@ -140,6 +150,7 @@ fn run() -> Result<()> {
         Command::Run {
             task,
             idempotency_key,
+            payload,
             json,
         } => {
             plane.task(&task)?;
@@ -148,7 +159,7 @@ fn run() -> Result<()> {
                 trigger_kind: "manual",
                 idempotency_key: idempotency_key.as_deref(),
                 source_event_id: None,
-                payload: None,
+                payload: payload.as_deref(),
                 parent_run_id: None,
             })?;
             if outcome.duplicate {
@@ -209,6 +220,20 @@ fn run() -> Result<()> {
             }
             RunsCommand::Show { run_id, json } => {
                 print_run(&ledger, &run_id, json)?;
+            }
+            RunsCommand::Cancel { run_id, reason } => {
+                let state = ledger.run(&run_id)?.state;
+                if state != "pending" {
+                    bail!("run {run_id} is {state}; only pending runs can be canceled");
+                }
+                if !ledger.try_transition(
+                    &run_id,
+                    "failure",
+                    Some(&format!("canceled: {reason}")),
+                )? {
+                    bail!("run {run_id} was claimed by a dispatcher before cancel");
+                }
+                println!("run {run_id} canceled");
             }
             RunsCommand::Resolve {
                 run_id,

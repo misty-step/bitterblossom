@@ -1,0 +1,5 @@
+# Review coordinator: claude headless — native subagent fan-out makes the
+# coordinator-as-filter pattern a single harness run.
+version = 1
+harness = "claude"
+model = "claude-fable-5"

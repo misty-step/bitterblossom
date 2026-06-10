@@ -1,0 +1,16 @@
+agent = "review-coordinator"
+substrate = "local"
+
+[budget]
+timeout_minutes = 15
+max_runs_per_day = 20
+max_cost_per_run_usd = 3.0   # advisory; Cloudflare tokenomics target is $1-2 median
+
+[[trigger]]
+kind = "manual"              # bb --config plane run review --payload '{"repo":"o/r","pr":N}'
+
+[[trigger]]
+kind = "webhook"             # POST /hooks/review (GitHub pull_request events)
+route = "review"
+secret_env = "BB_HOOK_REVIEW"
+dedupe_key = "json:/pull_request/head/sha"

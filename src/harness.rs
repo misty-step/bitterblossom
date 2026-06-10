@@ -173,6 +173,16 @@ fn parse_pi(stdout: &str) -> Result<ParsedOutput> {
 /// Find the last parseable JSON object in output (harnesses may print
 /// noise before the final result object).
 fn last_json_object(stdout: &str) -> Option<Value> {
+    fn result_from_array(v: Value) -> Option<Value> {
+        match v {
+            Value::Array(items) => items
+                .iter()
+                .rev()
+                .find(|v| v.get("type").and_then(Value::as_str) == Some("result"))
+                .cloned(),
+            other => Some(other),
+        }
+    }
     for line in stdout.lines().rev() {
         let line = line.trim();
         if line.starts_with('{') {
@@ -180,6 +190,52 @@ fn last_json_object(stdout: &str) -> Option<Value> {
                 return Some(v);
             }
         }
+        // claude (mid-2026) wraps the transcript in a JSON array whose
+        // `type: "result"` element carries the verdict and usage.
+        if line.starts_with('[') {
+            if let Ok(v) = serde_json::from_str::<Value>(line) {
+                if let Some(result) = result_from_array(v) {
+                    return Some(result);
+                }
+            }
+        }
     }
-    serde_json::from_str(stdout.trim()).ok()
+    serde_json::from_str::<Value>(stdout.trim())
+        .ok()
+        .and_then(result_from_array)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_claude_bare_object() {
+        let out = r#"{"type":"result","result":"done","total_cost_usd":0.01,"num_turns":2,"usage":{"input_tokens":5,"output_tokens":3}}"#;
+        let parsed = parse_output("claude", out).unwrap();
+        assert_eq!(parsed.result, "done");
+        assert_eq!(parsed.stats.cost_usd, Some(0.01));
+    }
+
+    #[test]
+    fn parse_claude_transcript_array() {
+        // claude ≥ mid-2026 wraps the transcript in a JSON array; the
+        // `type: "result"` element carries verdict + usage.
+        let out = r#"[{"type":"system","subtype":"init"},{"type":"assistant","message":"..."},{"type":"result","subtype":"success","result":"review posted","total_cost_usd":2.0459,"num_turns":12,"usage":{"input_tokens":9216,"output_tokens":6598}}]"#;
+        let parsed = parse_output("claude", out).unwrap();
+        assert_eq!(parsed.result, "review posted");
+        assert_eq!(parsed.stats.cost_usd, Some(2.0459));
+        assert_eq!(parsed.stats.tokens_out, Some(6598));
+    }
+
+    #[test]
+    fn parse_claude_rejects_empty_and_error() {
+        assert!(parse_output("claude", r#"{"type":"result","result":""}"#).is_err());
+        assert!(parse_output(
+            "claude",
+            r#"{"type":"result","result":"x","is_error":true}"#
+        )
+        .is_err());
+        assert!(parse_output("claude", "not json at all").is_err());
+    }
 }

@@ -1,7 +1,7 @@
 # Build the event-driven code review factory (absorbed Cerberus mission)
 
 Priority: P1
-Status: pending
+Status: done
 Estimate: XL
 
 > Groom 2026-06-10: this is workload #1 on the v3 Rust event-plane spine
@@ -66,8 +66,28 @@ backlog trailers, evidence paths.
 
 ## Oracle
 
-- [ ] One real PR reviewed end-to-end: trigger → tiered reviewers →
-      coordinator filter → single structured review posted → receipt on
-      disk.
-- [ ] Cost per review measured and reported for a medium diff.
-- [ ] Same workload invoked locally with no webhook.
+- [x] One real PR reviewed end-to-end: misty-step/bitterblossom#843 —
+      manual trigger → claude coordinator spawned reviewer subagents
+      (correctness/security/simplification, each with ignore-lists) →
+      coordinator filter → ONE structured review posted per run →
+      receipts in plane/.bb/runs/<id>/ + ledger rows (runs 6b1b89ccc2d6,
+      bcd8f5ee8552). The reviews caught every planted flaw plus a real
+      cross-file NULL-cost crash verified against src/ledger.rs.
+- [x] Cost per review measured: $2.46 small diff (12 lines), $3.09
+      medium diff (140 lines / 2 files, ~228s). The $3.09 run breached
+      the advisory max_cost_per_run and parked the task — the budget
+      tier worked in production. Above the $1–2 target: tokenomics
+      tuning spun out to ticket 034.
+- [x] Same workload invoked locally with no webhook:
+      `bb --config plane run review --payload '{"repo":"o/r","pr":N}'`
+      — the webhook trigger (POST /hooks/review, HMAC, dedupe on
+      /pull_request/head/sha) is declared in the same task.toml.
+
+## Shipped shape (2026-06-10)
+
+Pure config on the 031 spine: `plane/tasks/review/{card.md,task.toml}` +
+`plane/agents/review-coordinator.toml`. The coordinator-as-filter,
+risk-tiered fan-out, and ignore-lists live in the lane card; the engine
+is claude headless (native subagent fan-out) — competing engines remain
+swappable via the agent binding. Spine grew two generic features for it:
+trigger payload materialized as EVENT.json, and `bb runs cancel`.

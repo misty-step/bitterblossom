@@ -102,6 +102,32 @@ fn demo_task_runs_end_to_end_with_cost_and_artifacts() {
 }
 
 #[test]
+fn trigger_payload_materializes_as_event_json_in_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_plane(dir.path(), CLAUDE_STUB, "");
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+
+    let run_id = ledger
+        .ingest(IngressRequest {
+            task: "demo",
+            trigger_kind: "manual",
+            idempotency_key: None,
+            source_event_id: None,
+            payload: Some(r#"{"pr":7,"action":"opened"}"#),
+            parent_run_id: None,
+        })
+        .unwrap()
+        .run_id;
+    let run = dispatch::dispatch_run(&plane, &mut ledger, &run_id).unwrap();
+    assert_eq!(run.state, "success");
+
+    let attempts = ledger.attempts(&run_id).unwrap();
+    let artifact_dir = std::path::Path::new(attempts[0].artifact_dir.as_deref().unwrap());
+    let event = fs::read_to_string(artifact_dir.join("workspace/EVENT.json")).unwrap();
+    assert_eq!(event, r#"{"pr":7,"action":"opened"}"#);
+}
+
+#[test]
 fn unparseable_harness_output_is_failure_not_silent_success() {
     let dir = tempfile::tempdir().unwrap();
     let plane = make_plane(dir.path(), BROKEN_STUB, "");

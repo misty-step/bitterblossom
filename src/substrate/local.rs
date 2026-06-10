@@ -88,6 +88,9 @@ impl Session for LocalSession {
             }
         }
         std::fs::write(self.workspace.join(CARD_FILENAME), &plan.card)?;
+        if let Some(payload) = &plan.payload {
+            std::fs::write(self.workspace.join(super::EVENT_FILENAME), payload)?;
+        }
         if let Some(pre) = &plan.pre_command {
             let out = self.run_shell(pre, Duration::from_secs(600))?;
             if out.exit_code != 0 {

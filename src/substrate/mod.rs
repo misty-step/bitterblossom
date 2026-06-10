@@ -19,6 +19,9 @@ pub struct WorkspacePlan {
     pub repos: Vec<RepoSpec>,
     /// Lane card content, materialized into the workspace.
     pub card: String,
+    /// Trigger payload (webhook body, replay payload), materialized as
+    /// EVENT.json so the agent can read what fired it.
+    pub payload: Option<String>,
     pub pre_command: Option<String>,
     pub post_command: Option<String>,
     /// Per-attempt marker used for pidfiles: the probe and cancel key.
@@ -80,6 +83,8 @@ pub trait Session {
 
 /// Path to the lane card inside a prepared workspace.
 pub const CARD_FILENAME: &str = "LANE_CARD.md";
+/// Path to the trigger payload inside a prepared workspace.
+pub const EVENT_FILENAME: &str = "EVENT.json";
 
 pub fn for_task(kind: &str) -> Result<Box<dyn Substrate>> {
     match kind {

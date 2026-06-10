@@ -202,6 +202,26 @@ impl Session for SpriteSession {
             bail!("card upload failed: {}", out.stderr.trim());
         }
 
+        if let Some(payload) = &plan.payload {
+            let event_local = self.artifacts.join(super::EVENT_FILENAME);
+            std::fs::write(&event_local, payload)?;
+            let upload = format!(
+                "{}:{}/{}",
+                event_local.display(),
+                self.workspace,
+                super::EVENT_FILENAME
+            );
+            let out = self.sprite_exec_with(
+                &["--file".into(), upload],
+                &["true".into()],
+                None,
+                Duration::from_secs(120),
+            )?;
+            if out.exit_code != 0 {
+                bail!("event payload upload failed: {}", out.stderr.trim());
+            }
+        }
+
         if let Some(pre) = &plan.pre_command {
             let script = format!("cd {ws} && {pre}");
             let out = self.remote_shell(&script, Duration::from_secs(600))?;

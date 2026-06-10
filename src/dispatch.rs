@@ -206,6 +206,7 @@ fn attempt_on_host(
         host: task.host(),
         repos: task.spec.workspace.repos.clone(),
         card: task.card.clone(),
+        payload: ledger.run_payload(run_id)?,
         pre_command: task.spec.pre_command.clone(),
         post_command: task.spec.post_command.clone(),
         marker: attempt_marker(attempt_id),
