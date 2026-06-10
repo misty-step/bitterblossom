@@ -1,0 +1,1 @@
+{"base":"master","branch":"feat/tansy-canary-responder","date":"2026-04-09T13:20:00Z","reviewers":["ousterhout","grug","beck","carmack"],"scores":{"correctness":9,"craft":8,"depth":8,"simplicity":8},"sha":"93056595c72f18e0bbd50625eb0ec763eeddc25e","verdict":"ship"}
