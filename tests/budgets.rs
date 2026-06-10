@@ -168,6 +168,21 @@ fn runs_per_day_park_fires_notification() {
 }
 
 #[test]
+fn dead_letter_fires_notification_webhook() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = setup(
+        dir.path(),
+        "[notify]\nwebhook_url = \"http://example.invalid/hook\"\n",
+        "pre_command = \"exit 9\"\n",
+    );
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+
+    let (run, notify_log) = with_notify_stub(dir.path(), || run_task(&plane, &mut ledger));
+    assert_eq!(run.state, "failure");
+    assert!(notify_log.contains("run_dead_lettered"), "{notify_log}");
+}
+
+#[test]
 fn agent_swap_is_one_config_edit_and_visible_in_ledger() {
     let dir = tempfile::tempdir().unwrap();
     let plane = setup(dir.path(), "", "");
