@@ -2,10 +2,17 @@
 
 ## Direction Lock
 
-**Current direction lock (2026-04-08):** Bitterblossom is temporarily focused
-on one job only: `Tansy` listens to Canary, investigates live incidents,
-repairs the correct repo, and verifies recovery. Backlog-clearing factory lanes
-remain in the codebase, but they are not the active product priority.
+**Current direction lock (2026-06-09): mothballed.** Ad-hoc sprite dispatch
+is superseded by the Harness Kit `/sprites` skill (`sprite-lane` runner,
+golden-checkpoint provisioning); the conductor's hard-won lifecycle knowledge
+is preserved in `harness-kit/skills/sprites/references/provisioning.md`.
+The Tansy/Canary responder job, if revived, becomes "Canary webhook → thin
+intake → sprite-lane with the tansy card" — durable intake à la olympus, not
+a resident OTP fleet reconciler. Do not extend the conductor.
+
+Previous lock (2026-04-08): Bitterblossom focused on one job only: `Tansy`
+listens to Canary, investigates live incidents, repairs the correct repo, and
+verifies recovery.
 
 ## Vision
 Bitterblossom is the conductor for a single-repo software factory: it routes repo-owned work to persistent sprites, drives implementation and review, and lands only when governance says the run is truly done.

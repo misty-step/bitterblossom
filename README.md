@@ -1,5 +1,14 @@
 # Bitterblossom
 
+> **Status (2026-06-09): mothballed — superseded for ad-hoc work by the
+> Harness Kit `/sprites` skill** (`harness-kit/skills/sprites/`, the
+> `sprite-lane` runner with golden-checkpoint provisioning). The conductor's
+> operational knowledge lives on in
+> `harness-kit/skills/sprites/references/provisioning.md`. Revisit this repo
+> only when unattended intake exists (webhook/cron events), and then as a
+> thin intake service that calls the same `sprite-lane` primitive — the
+> olympus shape, not a resident fleet reconciler.
+
 Bitterblossom is an Elixir infrastructure layer for an agent-run software
 factory. It reconciles a fleet of sprites, supports a local-first workflow, and
 exposes operator surfaces for truthful fleet inspection and per-sprite lifecycle
