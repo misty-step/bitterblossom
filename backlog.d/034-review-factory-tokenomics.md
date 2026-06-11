@@ -27,3 +27,11 @@ exists, verify it engages), incremental re-review with prior context
 instead of full re-review. Remaining 028 design depth (engine eval via
 Daedalus, thinktank fan-out, multi-harness bench, won't-fix dialogue)
 rides behind this — cost first, then breadth.
+
+## Update 2026-06-11 (post-036)
+The rebind landed: Kimi K2.6 via pi/OpenRouter measured $0.0034 (small,
+partial accounting), ~$0.03 (medium, summed), $0.0795 (webhook review of
+a 5.6k-addition PR) — 30-90x under the claude baseline and already under
+the $1-2 target per run. Remaining oracle work is just the 10+-review
+median and the trivial-diff tier check; gather from the ledger as real
+reviews accumulate.
