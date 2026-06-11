@@ -234,6 +234,20 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
                 Ok((200, serde_json::to_string(&runs)?))
             }
             "/api/dlq" => Ok((200, serde_json::to_string(&ledger.list_dead_letters()?)?)),
+            "/api/gate" => {
+                let id = match (query_param(&url, "submission"), query_param(&url, "change")) {
+                    (Some(id), _) => id,
+                    (None, Some(change)) => match ledger.latest_submission(&change)? {
+                        Some(sub) => sub.id,
+                        None => return Ok((404, "{\"error\":\"no submissions\"}".into())),
+                    },
+                    (None, None) => {
+                        return Ok((400, "{\"error\":\"pass submission= or change=\"}".into()))
+                    }
+                };
+                let report = crate::submit::evaluate(&plane, &ledger, &id)?;
+                Ok((200, serde_json::to_string(&report)?))
+            }
             "/api/tasks" => Ok((200, serde_json::to_string(&tasks_view(&plane, &ledger)?)?)),
             _ => {
                 if let Some(id) = path.strip_prefix("/api/runs/") {

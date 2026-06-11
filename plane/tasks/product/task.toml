@@ -1,0 +1,14 @@
+agent = "storm-product"
+substrate = "sprites"
+verdict = "product"
+
+[workspace]
+host = "lane-3"
+
+[budget]
+timeout_minutes = 20
+max_runs_per_day = 40
+max_cost_per_run_usd = 0.25
+
+[[trigger]]
+kind = "manual"

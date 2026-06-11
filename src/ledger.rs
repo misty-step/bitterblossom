@@ -120,7 +120,9 @@ pub struct DeadLetterRow {
 }
 
 pub struct Ledger {
-    conn: Connection,
+    // Visible to submit.rs, which keeps submission/verdict/gate data
+    // mechanics in their own module on the same connection.
+    pub(crate) conn: Connection,
 }
 
 const SCHEMA: &str = "
@@ -213,6 +215,40 @@ CREATE TABLE IF NOT EXISTS host_leases (
   host TEXT PRIMARY KEY,
   run_id TEXT NOT NULL,
   acquired_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS submissions (
+  id TEXT PRIMARY KEY,
+  change_key TEXT NOT NULL,
+  rev TEXT NOT NULL,
+  round INTEGER NOT NULL,
+  state TEXT NOT NULL,
+  context TEXT,
+  prior_report_json TEXT,
+  report_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS submissions_one_open
+  ON submissions(change_key) WHERE state = 'open';
+
+CREATE TABLE IF NOT EXISTS verdicts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  submission_id TEXT NOT NULL REFERENCES submissions(id),
+  run_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  verdict TEXT NOT NULL,
+  findings_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (submission_id, kind)
+);
+
+CREATE TABLE IF NOT EXISTS rejections (
+  change_key TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (change_key, fingerprint)
 );
 ";
 

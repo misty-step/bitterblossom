@@ -22,6 +22,9 @@ pub struct WorkspacePlan {
     /// Trigger payload (webhook body, replay payload), materialized as
     /// EVENT.json so the agent can read what fired it.
     pub payload: Option<String>,
+    /// Prior-round gate report for verdict tasks, materialized as
+    /// REPORT.json — the canonical snapshot, never driver-rewritten.
+    pub report: Option<String>,
     pub pre_command: Option<String>,
     pub post_command: Option<String>,
     /// Per-attempt marker used for pidfiles: the probe and cancel key.
@@ -90,6 +93,8 @@ pub trait Session {
 pub const CARD_FILENAME: &str = "LANE_CARD.md";
 /// Path to the trigger payload inside a prepared workspace.
 pub const EVENT_FILENAME: &str = "EVENT.json";
+/// Path to the prior-round gate report inside a prepared workspace.
+pub const REPORT_FILENAME: &str = "REPORT.json";
 
 pub fn for_task(kind: &str) -> Result<Box<dyn Substrate>> {
     match kind {

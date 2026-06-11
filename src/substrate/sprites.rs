@@ -214,15 +214,14 @@ impl Session for SpriteSession {
             bail!("card upload failed: {}", out.stderr.trim());
         }
 
-        if let Some(payload) = &plan.payload {
-            let event_local = self.artifacts.join(super::EVENT_FILENAME);
-            std::fs::write(&event_local, payload)?;
-            let upload = format!(
-                "{}:{}/{}",
-                event_local.display(),
-                self.workspace,
-                super::EVENT_FILENAME
-            );
+        for (name, content) in [
+            (super::EVENT_FILENAME, &plan.payload),
+            (super::REPORT_FILENAME, &plan.report),
+        ] {
+            let Some(content) = content else { continue };
+            let local = self.artifacts.join(name);
+            std::fs::write(&local, content)?;
+            let upload = format!("{}:{}/{}", local.display(), self.workspace, name);
             let out = self.sprite_exec_with(
                 &["--file".into(), upload],
                 &["true".into()],
@@ -230,7 +229,7 @@ impl Session for SpriteSession {
                 Duration::from_secs(120),
             )?;
             if out.exit_code != 0 {
-                bail!("event payload upload failed: {}", out.stderr.trim());
+                bail!("{name} upload failed: {}", out.stderr.trim());
             }
         }
 

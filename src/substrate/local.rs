@@ -128,6 +128,9 @@ impl Session for LocalSession {
         if let Some(payload) = &plan.payload {
             std::fs::write(self.workspace.join(super::EVENT_FILENAME), payload)?;
         }
+        if let Some(report) = &plan.report {
+            std::fs::write(self.workspace.join(super::REPORT_FILENAME), report)?;
+        }
         if let Some(pre) = &plan.pre_command {
             // pre_command is workload code: it gets the workload env, not
             // the plane's (the repo clones above are plane machinery and

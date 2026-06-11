@@ -1,0 +1,5 @@
+# Storm member: hermetic api-auth reflex-class agent (cheap OpenRouter
+# model; different families across members for decorrelated judgment).
+harness = "pi"
+model = "x-ai/grok-4.3-fast"
+secrets = ["OPENROUTER_API_KEY", "GH_TOKEN"]

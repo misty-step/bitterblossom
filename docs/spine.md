@@ -132,6 +132,72 @@ experimental and both add infra the ≤5k LOC spine doesn't need; if
 deeper traces are wanted later, `bb runs export` is the integration
 seam (map attempts onto `gen_ai.*` spans then).
 
+## The submission loop
+
+Completed agent work is quality-assured and landed by a **verdict storm**
+plus a **mechanical gate** — no human reads the code, no PR is the
+channel. The spine holds the data mechanics only (submissions, verdicts,
+gate arithmetic); what a reviewer looks for lives in cards.
+
+**Submissions.** `bb submit open --change <key> --rev <sha>` creates a
+submission: `open → clear | blocked | escalated | abandoned`, at most one
+non-terminal submission per change key (CAS-enforced). The change key and
+rev are opaque strings (branch + SHA today; jj change IDs later, zero
+spine change). Round numbering is plane-owned: reopening after `blocked`
+increments the round and snapshots the prior gate report — the driver
+cannot soften or omit prior findings; verdict tasks receive the canonical
+report as `REPORT.json` next to `EVENT.json`.
+
+**Verdict tasks.** A task with `verdict = "<kind>"` in task.toml is a
+storm member. Its payload is `{"submission": "<id>", ...}` and its parsed
+result MUST be verdict JSON:
+
+```json
+{"verdict": "pass|blocking|advisory",
+ "findings": [{"severity": "blocking|serious|minor",
+               "file": "src/x.rs", "line": 42,
+               "claim": "...", "evidence": "...",
+               "fingerprint": "<from REPORT.json when re-raising, else omitted>"}]}
+```
+
+Unparseable verdict JSON fails the run, raw output preserved. The plane
+fingerprints findings (`sha256(kind|file|claim)`) when absent. The
+`command` harness maps an exit code to a verdict with no LLM (exit 0 →
+`pass`, non-zero → one `blocking` finding carrying the stderr tail) — a
+deterministic gate like `verify.sh` is never mediated by an agent.
+
+**The gate.** `plane.toml` declares policy; `bb gate --change <key>`
+evaluates pure data:
+
+```toml
+[gate]
+required = ["verify", "correctness", "security", "simplification", "product"]
+max_rounds = 3                    # rounds 1..=max_rounds may run
+arbiter = "arbiter"               # verdict kind that settles disputes
+```
+
+- A required kind without a terminal run → `pending` (per-kind states
+  listed). A required kind whose run is terminal `failure` → the
+  submission **escalates** (one notify): infrastructure failure is loud,
+  never an eternal pending. `clear` is only emitted over a complete round.
+- **Only `blocking`-severity findings block — every round.** Fresh
+  blockers are never demoted by recency; termination rests solely on the
+  round cap. `serious`/`minor` never block (anti-needling is mechanical).
+- A rejected fingerprint (`bb submit reject`) cannot block again — but
+  rejecting a `blocking` finding only takes effect once an **arbiter**
+  verdict independently sustains the rejection. Rejections and reasons
+  appear verbatim in every subsequent report.
+- `blocked` at `round == max_rounds` → `escalated` (one notify).
+
+**The driver (convention, not spine).** On judging work complete: push
+the branch → `bb submit open` → fire required storm members as parallel
+`bb run <kind> --idempotency-key storm:<submission>:<kind> --payload
+'{"submission":"<id>", ...}'` → `bb gate` (safe to call any time) → on
+`clear`: file advisories to backlog.d, squash-land (`clear` is terminal);
+on `blocked`: fix, push, `bb submit open` for the next round; on
+`escalated`: stop — the operator is already notified. Judgment (what to
+fix, what to reject) stays with the agent; arithmetic lives in `bb gate`.
+
 ## Run lifecycle
 
 A durable run row exists in SQLite **before any trigger gets its ack**.
@@ -165,6 +231,10 @@ bb runs show <run-id> [--json]                    # run + attempts + events
 bb runs export [--since ...]                      # flat JSONL for Daedalus
 bb dlq list|replay <id>
 bb task park|unpark <task>
+bb submit open --change K --rev SHA [--context TEXT]
+bb submit reject --change K --fingerprint FP --reason TEXT
+bb submit abandon --change K
+bb gate --change K | --submission ID [--json]     # also GET /api/gate?change=K
 bb serve                                          # webhook + cron + queue
 ```
 
