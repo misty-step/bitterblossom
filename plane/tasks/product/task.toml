@@ -3,7 +3,7 @@ substrate = "sprites"
 verdict = "product"
 
 [workspace]
-host = "lane-3"
+host = "bb-polisher-3"
 
 [budget]
 timeout_minutes = 20
