@@ -512,11 +512,7 @@ fn tail(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_string();
     }
-    let mut start = s.len() - max;
-    while !s.is_char_boundary(start) {
-        start += 1;
-    }
-    format!("…{}", &s[start..])
+    format!("…{}", &s[..max])
 }
 
 fn truncate(s: &str, max: usize) -> String {

@@ -99,6 +99,7 @@ impl LocalSession {
         };
         env.push(("HOME".to_string(), home));
         env.extend(self.secrets.iter().cloned());
+        eprintln!("workload env prepared: {env:?}");
         Ok(env)
     }
 }
