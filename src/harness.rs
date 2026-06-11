@@ -71,12 +71,17 @@ pub fn build_command(agent: &AgentSpec, budget: &TaskBudget) -> Result<Vec<Strin
                 .iter()
                 .map(|a| crate::substrate::local::shell_quote(a))
                 .collect();
+            // The exit-status file keeps pi's own exit code authoritative —
+            // a bare pipeline would report grep's (POSIX sh has no
+            // pipefail). cwd is the workspace on every substrate.
             return Ok(vec![
                 "sh".into(),
                 "-c".into(),
                 format!(
-                    "{} | grep -v -F '\"type\":\"message_update\"'",
-                    quoted.join(" ")
+                    "{{ {pi}; echo $? > .bb-harness-exit; }} \
+                     | grep -v -F '\"type\":\"message_update\"'; \
+                     exit \"$(cat .bb-harness-exit)\"",
+                    pi = quoted.join(" ")
                 ),
                 "sh".into(),
             ]);

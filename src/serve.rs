@@ -201,8 +201,9 @@ fn read_authorized(request: &tiny_http::Request, url: &str) -> bool {
             && h.value.as_str() == format!("Bearer {token}")
     });
     // ?token= lets a browser reach the HTML view; tokens in URLs are
-    // weaker than headers — fine for a loopback operator page.
-    header_ok || url.contains(&format!("token={token}"))
+    // weaker than headers — fine for a loopback operator page. Parsed as
+    // a real query param: substring matching authorized `?notoken=...`.
+    header_ok || query_param(url, "token").as_deref() == Some(token.as_str())
 }
 
 fn query_param(url: &str, name: &str) -> Option<String> {
@@ -395,4 +396,24 @@ a{{color:#9db4ff}} .success{{color:#7dce82}} .failure{{color:#e07a7a}}
 {run_rows}</table>
 </body></html>"#
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::query_param;
+
+    #[test]
+    fn token_param_is_parsed_not_substring_matched() {
+        assert_eq!(
+            query_param("/api/runs?token=abc", "token").as_deref(),
+            Some("abc")
+        );
+        // The bypass shape: a param whose *name* merely ends in "token".
+        assert_eq!(query_param("/api/runs?notoken=abc", "token"), None);
+        assert_eq!(query_param("/api/runs", "token"), None);
+        assert_eq!(
+            query_param("/?a=1&token=t2", "token").as_deref(),
+            Some("t2")
+        );
+    }
 }

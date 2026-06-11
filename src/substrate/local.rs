@@ -129,7 +129,18 @@ impl Session for LocalSession {
             std::fs::write(self.workspace.join(super::EVENT_FILENAME), payload)?;
         }
         if let Some(pre) = &plan.pre_command {
-            let out = self.run_shell(pre, Duration::from_secs(600))?;
+            // pre_command is workload code: it gets the workload env, not
+            // the plane's (the repo clones above are plane machinery and
+            // keep plane credentials).
+            let out = run_with_timeout(
+                &["sh".into(), "-c".into(), pre.clone()],
+                None,
+                &self.workspace,
+                &self.workload_env()?,
+                true,
+                None,
+                Duration::from_secs(600),
+            )?;
             if out.exit_code != 0 {
                 anyhow::bail!("pre_command failed: {}", out.stderr.trim());
             }

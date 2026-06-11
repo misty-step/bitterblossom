@@ -287,3 +287,46 @@ fn max_runs_per_day_parks_task_and_blocks_dispatch() {
     let r3 = manual_run(&mut ledger, "demo", None);
     assert_eq!(ledger.run(&r3).unwrap().state, "blocked_budget");
 }
+
+#[test]
+fn pi_exit_code_survives_the_flood_filter_pipeline() {
+    // A pi that emits a parseable message_end and then dies must fail the
+    // run — the grep filter's exit status must not mask the harness's.
+    const DYING_PI: &str = r#"#!/bin/sh
+cat > /dev/null
+printf '{"type":"turn_end"}\n{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"looks done"}],"usage":{"input":1,"output":1,"cost":{"total":0.001}}}}\n'
+exit 3
+"#;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join("agents")).unwrap();
+    fs::create_dir_all(root.join("tasks/demo")).unwrap();
+    fs::write(root.join("plane.toml"), "dev = true\n").unwrap();
+    let stub_path = root.join("dying-pi.sh");
+    write_executable(&stub_path, DYING_PI);
+    fs::write(
+        root.join("agents/stub.toml"),
+        format!(
+            "harness = \"pi\"\nmodel = \"m\"\nbin = \"{}\"\n",
+            stub_path.display()
+        ),
+    )
+    .unwrap();
+    fs::write(root.join("tasks/demo/card.md"), "card\n").unwrap();
+    fs::write(
+        root.join("tasks/demo/task.toml"),
+        "agent = \"stub\"\nsubstrate = \"local\"\n[[trigger]]\nkind = \"manual\"\n",
+    )
+    .unwrap();
+    let plane = Plane::load(root).unwrap();
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+
+    let run_id = manual_run(&mut ledger, "demo", None);
+    let run = dispatch::dispatch_run(&plane, &mut ledger, &run_id).unwrap();
+    assert_eq!(run.state, "failure", "{:?}", run.state_reason);
+    assert!(
+        run.state_reason.as_deref().unwrap().contains("exit 3"),
+        "{:?}",
+        run.state_reason
+    );
+}
