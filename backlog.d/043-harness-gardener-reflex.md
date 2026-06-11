@@ -1,6 +1,6 @@
 # Build the harness-gardener reflex: mine the ledger, improve the system
 
-Priority: P3 · Status: blocked · Estimate: M
+Priority: P3 · Status: pending · Estimate: M
 
 ## Goal
 
