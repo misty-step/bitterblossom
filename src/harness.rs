@@ -187,6 +187,12 @@ fn parse_pi(stdout: &str) -> Result<ParsedOutput> {
     let mut turns: i64 = 0;
     let mut last_message: Option<Value> = None;
     let mut saw_event = false;
+    // Each assistant message_end carries that API call's usage, not a
+    // running total — cost and tokens must sum across the run (verified
+    // live 2026-06-10: a 12-minute review reported only its final
+    // message's cost until this summed).
+    let (mut tokens_in, mut tokens_out, mut cost) = (0i64, 0i64, 0f64);
+    let mut saw_usage = false;
     for line in stdout.lines() {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
@@ -197,6 +203,16 @@ fn parse_pi(stdout: &str) -> Result<ParsedOutput> {
             Some("message_end") => {
                 if let Some(m) = v.get("message") {
                     if m.get("role").and_then(Value::as_str) == Some("assistant") {
+                        if let Some(u) = m.get("usage") {
+                            saw_usage = true;
+                            tokens_in += u.get("input").and_then(Value::as_i64).unwrap_or(0);
+                            tokens_out += u.get("output").and_then(Value::as_i64).unwrap_or(0);
+                            cost += u
+                                .get("cost")
+                                .and_then(|c| c.get("total"))
+                                .and_then(Value::as_f64)
+                                .unwrap_or(0.0);
+                        }
                         last_message = Some(m.clone());
                     }
                 }
@@ -224,17 +240,13 @@ fn parse_pi(stdout: &str) -> Result<ParsedOutput> {
     if result.is_empty() {
         bail!("pi output: assistant message has no text content");
     }
-    let usage = message.get("usage").cloned().unwrap_or(Value::Null);
     Ok(ParsedOutput {
         result,
         stats: AttemptStats {
-            tokens_in: usage.get("input").and_then(Value::as_i64),
-            tokens_out: usage.get("output").and_then(Value::as_i64),
+            tokens_in: saw_usage.then_some(tokens_in),
+            tokens_out: saw_usage.then_some(tokens_out),
             turns: Some(turns),
-            cost_usd: usage
-                .get("cost")
-                .and_then(|c| c.get("total"))
-                .and_then(Value::as_f64),
+            cost_usd: saw_usage.then_some(cost),
         },
     })
 }
@@ -312,12 +324,17 @@ mod tests {
     }
 
     #[test]
-    fn parse_pi_jsonl_events() {
-        // Condensed from a live pi run via OpenRouter (2026-06-10).
+    fn parse_pi_jsonl_events_sums_usage_across_messages() {
+        // Condensed from a live pi run via OpenRouter (2026-06-10). Each
+        // assistant message_end carries per-call usage; totals must sum.
         let out = concat!(
             r#"{"type":"message_update","assistantMessageEvent":{"type":"text_delta"}}"#,
             "\n",
-            r#"{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"..."},{"type":"text","text":" BB-PI-OK"}],"usage":{"input":1117,"output":21,"totalTokens":1138,"cost":{"input":0.0007,"output":0.00007,"total":0.000835848}}}}"#,
+            r#"{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"thinking about it"},{"type":"toolCall","name":"bash"}],"usage":{"input":1000,"output":50,"cost":{"total":0.001}}}}"#,
+            "\n",
+            r#"{"type":"turn_end","message":{"role":"assistant"}}"#,
+            "\n",
+            r#"{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"..."},{"type":"text","text":" BB-PI-OK"}],"usage":{"input":1117,"output":21,"totalTokens":1138,"cost":{"input":0.0007,"output":0.00007,"total":0.0008}}}}"#,
             "\n",
             r#"{"type":"turn_end","message":{"role":"assistant"}}"#,
             "\n",
@@ -325,10 +342,10 @@ mod tests {
         );
         let parsed = parse_output("pi", out).unwrap();
         assert_eq!(parsed.result, "BB-PI-OK");
-        assert_eq!(parsed.stats.tokens_in, Some(1117));
-        assert_eq!(parsed.stats.tokens_out, Some(21));
-        assert_eq!(parsed.stats.turns, Some(1));
-        assert_eq!(parsed.stats.cost_usd, Some(0.000835848));
+        assert_eq!(parsed.stats.tokens_in, Some(2117));
+        assert_eq!(parsed.stats.tokens_out, Some(71));
+        assert_eq!(parsed.stats.turns, Some(2));
+        assert_eq!(parsed.stats.cost_usd, Some(0.0018));
     }
 
     #[test]
