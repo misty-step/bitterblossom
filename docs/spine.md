@@ -4,7 +4,11 @@ Bitterblossom v3 is one Rust binary, `bb`, with two personalities:
 
 - `bb serve` — the plane: webhook ingress, cron scheduler, queue, dispatch.
 - `bb <verb>` — the operator/agent CLI sharing the same core, so every
-  workflow also runs ad hoc from a terminal with no webhook.
+  workflow also runs as dispatch work from a terminal with no webhook.
+
+Vocabulary: **reflex** work is standing and trigger-fired (webhook/cron);
+**dispatch** work is deliberate, operator- or agent-initiated (`bb run`).
+The model & auth policy below hangs on that distinction.
 
 The product is the config surface. A workload is files, not Rust:
 
@@ -65,7 +69,7 @@ Two auth classes, two work classes:
 
 ```toml
 agent = "reviewer"                # agents/reviewer.toml
-substrate = "local"               # local | sprites
+substrate = "sprites"             # remote-only; "local" needs plane dev = true
 
 [workspace]                       # materialized by the substrate preparer
 host = "bb-demo"                  # sprites: the sprite name (host lease key)
@@ -90,9 +94,43 @@ route = "demo"                    # POST /hooks/demo
 secret_env = "BB_HOOK_DEMO"       # HMAC-SHA256 secret env var
 dedupe_key = "header:X-GitHub-Delivery"   # or "json:<pointer>"
 
+# Containment filters (ANDed; fail-closed on missing pointers). An
+# authenticated delivery failing any filter is acknowledged with 200
+# but never becomes a run — scope lives in config, not card prose.
+[[trigger.filter]]
+pointer = "/repository/full_name"
+any_of = ["misty-step/bitterblossom"]
+[[trigger.filter]]
+pointer = "/pull_request/draft"
+equals = false
+[[trigger.filter]]
+pointer = "/pull_request/additions"
+max = 4000
+
 pre_command = ""                  # optional adapter commands run in the
 post_command = ""                 # workspace before/after the agent
 ```
+
+## Observability
+
+The ledger is the system of record; everything reads from it:
+
+- `GET /` — server-rendered HTML operator view (tasks, budgets, parked
+  state, recent runs; auto-refreshes).
+- `GET /api/runs[?task=&state=]`, `GET /api/runs/<id>` (run + attempts +
+  events), `GET /api/dlq`, `GET /api/tasks` — the agent-facing read API,
+  same shapes as the `--json` CLI.
+- Auth: set `BB_API_TOKEN` on the plane and send
+  `Authorization: Bearer <token>` (browsers may use `?token=`). Unset =
+  open, acceptable only on the loopback default bind.
+
+Cost attribution rides OpenRouter's per-response usage accounting
+(`usage.cost` arrives with every pi response — no extra calls), parsed
+per attempt into the ledger. Decision 2026-06-10: no OTel/Langfuse
+sidecar for now — the OTel GenAI semantic conventions are still
+experimental and both add infra the ≤5k LOC spine doesn't need; if
+deeper traces are wanted later, `bb runs export` is the integration
+seam (map attempts onto `gen_ai.*` spans then).
 
 ## Run lifecycle
 

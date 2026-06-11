@@ -19,8 +19,11 @@ One Rust crate, one binary (`bb`), two personalities:
 
 - `bb serve` — webhook ingress, cron scheduler, queue, dispatch.
 - `bb <verb>` — operator/agent CLI on the same core (`run`, `runs`,
-  `dlq`, `task`, `recover`, `check`). Every workflow also runs ad hoc
-  from a terminal with no webhook.
+  `dlq`, `task`, `recover`, `check`). Every workflow also runs as
+  dispatch work from a terminal with no webhook. Reflex work =
+  trigger-fired (webhook/cron), api-auth agents on cheap OpenRouter
+  models, hermetic. Dispatch work = operator-initiated, may use
+  claude/codex on subscription auth. Never Anthropic/OpenAI API keys.
 
 Mode boundary (harness-kit `meta/CONTRACTS.md`): ad-hoc operator sessions
 live in harness-kit (Mode A); recurring event-driven workflows live here
@@ -35,7 +38,7 @@ src/                 The spine (≤ ~5k LOC budget)
   ledger.rs          SQLite run ledger, state machine, leases, dead letters
   ingress.rs         Webhook HMAC + dedupe, cron schedules
   dispatch.rs        Budget check → lease → prepare → execute → collect
-  substrate/         local + sprites adapters (WorkspacePlan seam)
+  substrate/         sprites adapter + dev/test local exec (WorkspacePlan seam)
   harness.rs         claude/codex/pi command building + output parsing
   budget.rs          Enforced vs advisory tiers, named honestly
   recovery.rs        Boot classification of inherited runs (probe, no orphaning)
@@ -47,16 +50,35 @@ backlog.d/           Work source; _done/ is the archive
 docs/                Vision, ADRs, plans, spine contract, archive/
 ```
 
-## Build & Test
+## Verification
+
+The repo gate is one entrypoint, identical locally and in CI
+(`.github/workflows/ci.yml`):
 
 ```bash
-cargo build                                 # binary: target/debug/bb
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test                                  # 37 tests, no network, no tokens
+./scripts/verify.sh    # fmt, clippy, tests, bb check on both planes, LOC budget
 ```
 
-CI (`.github/workflows/ci.yml`) runs exactly those three gates.
+A green gate is necessary, never sufficient. Changes to dispatch,
+substrate, harness, or workload config also need **live evidence** —
+exact recipes, all repeatable:
+
+- **Reflex/dispatch run, end to end**: `export GH_TOKEN=$(gh auth token)`
+  (plus `OPENROUTER_API_KEY` in env), then
+  `bb --config plane run review --payload '{"repo":"o/r","pr":N}'`.
+  Evidence = ledger row (`bb runs show <id>`: state, cost, tokens) AND
+  the externally visible effect (the PR comment).
+- **Containment storm drill**: dev plane + stub harness, N rapid signed
+  webhook deliveries vs a small `max_runs_per_day`; assert FIFO runs,
+  `blocked_budget` rows, parked task, `budget_blocked` notifications.
+  (Worked example: 2026-06-10 drill — 5 events, 3 ran, 2 blocked.)
+- **Read API / HTML QA**: `bb serve` + curl every `/api/*` route and `/`
+  with and without `BB_API_TOKEN`.
+
+Feedback loop after shipping a workload change: run one live review,
+then check `/api/runs` (or `bb runs list --json`) for cost and outcome —
+the ledger is the system of record, OpenRouter usage accounting feeds it
+per attempt.
 
 ## Gotchas (earned by pain)
 

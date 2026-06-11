@@ -2,8 +2,15 @@
 
 The event plane for agent workloads. Define a **task**, bind an **agent**,
 attach a **trigger** — all as files — and the plane runs it durably on a
-Fly Sprite (or a local process) with cost, budget, and trace visible from
-the CLI.
+remote substrate (Fly Sprites today) with cost, budget, and trace visible
+from the CLI.
+
+Two kinds of work, named so we can talk about them:
+
+- **Reflex** work — standing, trigger-fired (webhook/cron). The plane
+  reacts without judgment, on cheap open-weight models, hermetically.
+- **Dispatch** work — deliberate, operator- or agent-initiated from a
+  terminal (`bb run`). May run as the operator on subscription auth.
 
 ```
 plane.toml                  # db path, ingress bind, notify webhook, global budget
@@ -16,7 +23,7 @@ One Rust binary, two personalities:
 
 ```bash
 bb serve                    # the plane: webhook ingress, cron, queue, dispatch
-bb run <task>               # the same workflow, ad hoc from a terminal
+bb run <task>               # the same workflow as dispatch work, from a terminal
 bb runs list --json         # durable ledger: state, agent@version, cost, duration
 bb dlq replay <id>          # dead letters replay as new runs with lineage
 bb task park|unpark <task>  # budget breaches park; unpark is explicit
@@ -32,10 +39,12 @@ cargo build
 ./target/debug/bb --config examples/demo-plane run demo
 ```
 
-`examples/demo-plane/` is a complete commented config. The `local`
-substrate keeps every task terminal-runnable and tests cheap; the
-`sprites` substrate restores checkpoints, syncs repos, and executes the
-harness on a [Fly Sprite](https://sprites.dev) over WebSocket exec.
+`examples/demo-plane/` is a complete commented config. Production
+planes dispatch to a remote substrate only: `sprites` restores
+checkpoints, syncs repos, and executes the harness on a
+[Fly Sprite](https://sprites.dev) over WebSocket exec. The `local`
+substrate is dev/test machinery, rejected unless plane.toml sets
+`dev = true`.
 
 ## Guarantees
 
