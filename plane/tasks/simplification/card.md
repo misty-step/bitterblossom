@@ -19,7 +19,9 @@ re-raise without the fingerprint is a process failure.
 ## Fetch the change
 
 ```
-git clone "https://x-access-token:${GH_TOKEN}@github.com/<repo>.git" target
+git -c credential.helper= \
+    -c 'credential.helper=!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f' \
+    clone "https://github.com/<repo>.git" target
 cd target && git fetch origin <rev> && git checkout -q FETCH_HEAD
 git fetch origin master && git diff origin/master...HEAD
 ```

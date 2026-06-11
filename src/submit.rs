@@ -117,7 +117,7 @@ impl Ledger {
         let prev: Option<(String, i64, Option<String>)> = tx
             .query_row(
                 "SELECT state, round, report_json FROM submissions
-                 WHERE change_key = ?1 ORDER BY round DESC, created_at DESC LIMIT 1",
+                 WHERE change_key = ?1 ORDER BY rowid DESC LIMIT 1",
                 params![change_key],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
@@ -158,7 +158,7 @@ impl Ledger {
             .query_row(
                 &format!(
                     "{SUBMISSION_SELECT} WHERE change_key = ?1
-                     ORDER BY round DESC, created_at DESC LIMIT 1"
+                     ORDER BY rowid DESC LIMIT 1"
                 ),
                 params![change_key],
                 row_to_submission,
@@ -187,11 +187,14 @@ impl Ledger {
         doc: &VerdictDoc,
     ) -> Result<()> {
         self.submission(submission_id)?;
+        // Keyed by run as well: a re-run can never overwrite the verdict
+        // the canonical storm run produced (rerun-roulette is a gaming
+        // vector; the gate only honors the canonical run's verdict).
         self.conn.execute(
             "INSERT INTO verdicts (submission_id, run_id, kind, verdict, findings_json, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT(submission_id, kind) DO UPDATE SET
-               run_id = ?2, verdict = ?4, findings_json = ?5, created_at = ?6",
+             ON CONFLICT(submission_id, kind, run_id) DO UPDATE SET
+               verdict = ?4, findings_json = ?5, created_at = ?6",
             params![
                 submission_id,
                 run_id,
@@ -229,6 +232,30 @@ impl Ledger {
                 })
             })
             .collect()
+    }
+
+    /// Fingerprints legitimately known for a submission: everything in
+    /// the prior-round report plus everything already recorded on this
+    /// submission. A reviewer-supplied fingerprint outside this set is
+    /// recomputed — reusing a rejected fingerprint cannot hide a fresh
+    /// blocking finding.
+    pub fn known_fingerprints(
+        &self,
+        sub: &SubmissionRow,
+    ) -> Result<std::collections::BTreeSet<String>> {
+        let mut known = std::collections::BTreeSet::new();
+        if let Some(report) = &sub.prior_report_json {
+            let v: serde_json::Value = serde_json::from_str(report)?;
+            collect_fingerprints(&v, &mut known);
+        }
+        for verdict in self.verdicts(&sub.id)? {
+            for f in verdict.findings {
+                if let Some(fp) = f.fingerprint {
+                    known.insert(fp);
+                }
+            }
+        }
+        Ok(known)
     }
 
     pub fn reject_finding(&self, change_key: &str, fp: &str, reason: &str) -> Result<()> {
@@ -294,6 +321,37 @@ impl Ledger {
     }
 }
 
+fn collect_fingerprints(v: &serde_json::Value, out: &mut std::collections::BTreeSet<String>) {
+    match v {
+        serde_json::Value::Object(map) => {
+            if let Some(serde_json::Value::String(fp)) = map.get("fingerprint") {
+                out.insert(fp.clone());
+            }
+            map.values().for_each(|v| collect_fingerprints(v, out));
+        }
+        serde_json::Value::Array(items) => {
+            items.iter().for_each(|v| collect_fingerprints(v, out));
+        }
+        _ => {}
+    }
+}
+
+/// Recompute any reviewer-supplied fingerprint the plane has never seen
+/// for this submission (see `known_fingerprints`).
+pub fn enforce_fingerprints(
+    doc: &mut VerdictDoc,
+    kind: &str,
+    known: &std::collections::BTreeSet<String>,
+) {
+    for f in &mut doc.findings {
+        if let Some(fp) = &f.fingerprint {
+            if !known.contains(fp) {
+                f.fingerprint = Some(fingerprint(kind, f.file.as_deref(), &f.claim));
+            }
+        }
+    }
+}
+
 const SUBMISSION_SELECT: &str = "SELECT id, change_key, rev, round, state, context,
   prior_report_json, report_json, created_at, updated_at FROM submissions";
 
@@ -352,10 +410,12 @@ pub fn evaluate(plane: &Plane, ledger: &Ledger, submission_id: &str) -> Result<G
     let rejections = ledger.rejections(&sub.change_key)?;
 
     let verdicts = ledger.verdicts(submission_id)?;
-    let by_kind: std::collections::BTreeMap<&str, &VerdictRow> =
-        verdicts.iter().map(|v| (v.kind.as_str(), v)).collect();
 
+    // Only the verdict produced by the canonical storm run counts: a
+    // member re-run under a different key can neither overwrite a
+    // blocking verdict nor stand in for a failed required run.
     let mut members = Vec::new();
+    let mut counted: Vec<&VerdictRow> = Vec::new();
     let mut pending = false;
     let mut infra_failure = false;
     for kind in &gate.required {
@@ -366,21 +426,27 @@ pub fn evaluate(plane: &Plane, ledger: &Ledger, submission_id: &str) -> Result<G
             .with_context(|| format!("no task declares verdict = \"{kind}\""))?;
         let key = format!("storm:{submission_id}:{kind}");
         let run = ledger.storm_run(&task.name, &key)?;
-        let (status, run_id, cost) = match (by_kind.get(kind.as_str()), run) {
-            (Some(v), run) => (
-                format!("verdict:{}", v.verdict),
-                Some(v.run_id.clone()),
-                run.and_then(|(_, _, c)| c),
-            ),
-            (None, Some((id, state, cost))) => {
-                if state == "failure" {
-                    infra_failure = true;
-                } else {
-                    pending = true;
+        let (status, run_id, cost) = match run {
+            Some((id, state, cost)) => {
+                let canonical = verdicts
+                    .iter()
+                    .find(|v| v.kind == *kind && v.run_id == id && state == "success");
+                match canonical {
+                    Some(v) => {
+                        counted.push(v);
+                        (format!("verdict:{}", v.verdict), Some(id), cost)
+                    }
+                    None => {
+                        if state == "failure" {
+                            infra_failure = true;
+                        } else {
+                            pending = true;
+                        }
+                        (format!("run:{state}"), Some(id), cost)
+                    }
                 }
-                (format!("run:{state}"), Some(id), cost)
             }
-            (None, None) => {
+            None => {
                 pending = true;
                 ("not_started".to_string(), None, None)
             }
@@ -396,10 +462,7 @@ pub fn evaluate(plane: &Plane, ledger: &Ledger, submission_id: &str) -> Result<G
     let mut blocking = Vec::new();
     let mut advisory = Vec::new();
     let mut rejected = Vec::new();
-    for v in &verdicts {
-        if v.kind == gate.arbiter {
-            continue; // arbiter findings are meta, not code findings
-        }
+    for v in counted {
         for f in &v.findings {
             let fp = f.fingerprint.as_deref().unwrap_or("");
             let rejection = rejections.iter().find(|(r, _)| r == fp);

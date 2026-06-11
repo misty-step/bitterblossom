@@ -240,7 +240,7 @@ CREATE TABLE IF NOT EXISTS verdicts (
   verdict TEXT NOT NULL,
   findings_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  UNIQUE (submission_id, kind)
+  UNIQUE (submission_id, kind, run_id)
 );
 
 CREATE TABLE IF NOT EXISTS rejections (

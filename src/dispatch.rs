@@ -217,7 +217,24 @@ fn attempt_on_host(
         host: task.host(),
         repos: task.spec.workspace.repos.clone(),
         card: task.card.clone(),
-        payload: ledger.run_payload(run_id)?,
+        payload: match (&submission, ledger.run_payload(run_id)?) {
+            // The plane owns the review target: submission/change/rev in
+            // EVENT.json come from the submission row, never the driver —
+            // a storm member can't be pointed at a different rev than the
+            // one the gate will clear.
+            (Some(sub), Some(raw)) => {
+                let mut v: serde_json::Value = serde_json::from_str(&raw)?;
+                let obj = v.as_object_mut().context("verdict payload not an object")?;
+                obj.insert("submission".into(), sub.id.clone().into());
+                obj.insert("change".into(), sub.change_key.clone().into());
+                obj.insert("rev".into(), sub.rev.clone().into());
+                if let Some(ctx) = &sub.context {
+                    obj.entry("context").or_insert_with(|| ctx.clone().into());
+                }
+                Some(v.to_string())
+            }
+            (_, payload) => payload,
+        },
         report: submission
             .as_ref()
             .and_then(|s| s.prior_report_json.clone()),
@@ -306,7 +323,12 @@ fn attempt_on_host(
                     line: None,
                     fingerprint: Some(submit::fingerprint(kind, None, &claim)),
                     claim,
-                    evidence: Some(truncate(exec.stderr.trim(), 2000)),
+                    // Build tools fail on stdout as often as stderr.
+                    evidence: Some(if exec.stderr.trim().is_empty() {
+                        tail(exec.stdout.trim(), 2000)
+                    } else {
+                        tail(exec.stderr.trim(), 2000)
+                    }),
                 }],
             }
         };
@@ -374,7 +396,14 @@ fn attempt_on_host(
     // is a failure with raw output preserved — never a silent pass.
     if let (Some(sub), Some(kind)) = (&submission, task.spec.verdict.as_deref()) {
         match submit::parse_verdict(kind, &parsed.result) {
-            Ok(doc) => ledger.record_verdict(&sub.id, run_id, kind, &doc)?,
+            Ok(mut doc) => {
+                // A supplied fingerprint must already be known to this
+                // submission (prior report or recorded verdicts) or it is
+                // recomputed — rejected fingerprints can't be reused to
+                // smuggle fresh blocking findings past the gate.
+                submit::enforce_fingerprints(&mut doc, kind, &ledger.known_fingerprints(sub)?);
+                ledger.record_verdict(&sub.id, run_id, kind, &doc)?
+            }
             Err(e) => {
                 let _ = session.release();
                 let error = format!("invalid verdict JSON: {e:#}");
@@ -476,6 +505,18 @@ pub fn attempt_dir(plane: &Plane, run_id: &str, n: i64) -> PathBuf {
         .join(".bb/runs")
         .join(run_id)
         .join(format!("attempt-{n}"))
+}
+
+/// Last `max` bytes (char-aligned) — failures print at the end of output.
+fn tail(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut start = s.len() - max;
+    while !s.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("…{}", &s[start..])
 }
 
 fn truncate(s: &str, max: usize) -> String {

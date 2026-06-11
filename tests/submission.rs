@@ -92,15 +92,36 @@ fn with_findings(verdict: &str, findings: Vec<Finding>) -> VerdictDoc {
     }
 }
 
-/// Record verdicts for every required kind: `overrides` wins, others pass.
-fn fill_round(ledger: &Ledger, sub: &str, overrides: &[(&str, &VerdictDoc)]) {
+/// Mint the canonical storm run for a member and drive it to `success` —
+/// the gate only honors verdicts bound to this run.
+fn canonical_run(ledger: &mut Ledger, sub: &str, kind: &str) -> String {
+    let run = ledger
+        .ingest(IngressRequest {
+            task: kind,
+            trigger_kind: "manual",
+            idempotency_key: Some(&format!("storm:{sub}:{kind}")),
+            source_event_id: None,
+            payload: Some(&format!("{{\"submission\":\"{sub}\"}}")),
+            parent_run_id: None,
+        })
+        .unwrap()
+        .run_id;
+    ledger.transition(&run, "running", None).unwrap();
+    ledger.transition(&run, "success", None).unwrap();
+    run
+}
+
+/// Complete a round: canonical run + verdict per required kind
+/// (`overrides` wins, others pass).
+fn fill_round(ledger: &mut Ledger, sub: &str, overrides: &[(&str, &VerdictDoc)]) {
     for kind in REQUIRED {
         let doc = overrides
             .iter()
             .find(|(k, _)| k == kind)
             .map(|(_, d)| (*d).clone())
             .unwrap_or_else(pass);
-        ledger.record_verdict(sub, "run-x", kind, &doc).unwrap();
+        let run = canonical_run(ledger, sub, kind);
+        ledger.record_verdict(sub, &run, kind, &doc).unwrap();
     }
 }
 
@@ -133,7 +154,7 @@ fn blocked_round_increments_plane_side_and_snapshots_report() {
 
     let r1 = ledger.open_submission("feat/x", "sha1", None).unwrap();
     fill_round(
-        &ledger,
+        &mut ledger,
         &r1.id,
         &[(
             "correctness",
@@ -158,8 +179,9 @@ fn gate_is_pending_with_member_states_until_round_is_complete() {
     let sub = ledger.open_submission("feat/x", "sha1", None).unwrap();
 
     // One verdict in, one member not even started: pending, never clear.
+    let run_a = canonical_run(&mut ledger, &sub.id, "correctness");
     ledger
-        .record_verdict(&sub.id, "run-a", "correctness", &pass())
+        .record_verdict(&sub.id, &run_a, "correctness", &pass())
         .unwrap();
     let report = submit::evaluate(&plane, &ledger, &sub.id).unwrap();
     assert_eq!(report.decision, "pending");
@@ -209,8 +231,9 @@ fn required_member_terminal_failure_escalates_with_one_notify() {
     );
     std::env::set_var("BB_NOTIFY_BIN", &notify_stub);
 
+    let run_a = canonical_run(&mut ledger, &sub.id, "correctness");
     ledger
-        .record_verdict(&sub.id, "run-a", "correctness", &pass())
+        .record_verdict(&sub.id, &run_a, "correctness", &pass())
         .unwrap();
     let run = ledger
         .ingest(IngressRequest {
@@ -258,7 +281,7 @@ fn fresh_blocking_finding_blocks_in_any_round() {
     // Round 1 blocked on one planting.
     let r1 = ledger.open_submission("feat/x", "sha1", None).unwrap();
     fill_round(
-        &ledger,
+        &mut ledger,
         &r1.id,
         &[(
             "correctness",
@@ -273,7 +296,7 @@ fn fresh_blocking_finding_blocks_in_any_round() {
     // Round 2: bug A fixed, but a FRESH blocker surfaces late — it blocks.
     let r2 = ledger.open_submission("feat/x", "sha2", None).unwrap();
     fill_round(
-        &ledger,
+        &mut ledger,
         &r2.id,
         &[(
             "security",
@@ -292,7 +315,7 @@ fn serious_and_minor_findings_never_block() {
     let mut ledger = Ledger::open(&plane.db_path()).unwrap();
     let sub = ledger.open_submission("feat/x", "sha1", None).unwrap();
     fill_round(
-        &ledger,
+        &mut ledger,
         &sub.id,
         &[(
             "correctness",
@@ -318,7 +341,7 @@ fn rejected_blocking_finding_blocks_until_arbiter_sustains() {
     let f = finding("blocking", "disputed claim");
     let fp = f.fingerprint.clone().unwrap();
     fill_round(
-        &ledger,
+        &mut ledger,
         &sub.id,
         &[("correctness", &with_findings("blocking", vec![f.clone()]))],
     );
@@ -333,7 +356,7 @@ fn rejected_blocking_finding_blocks_until_arbiter_sustains() {
     // Arbiter sustains the rejection on the next round → no longer blocks.
     let r2 = ledger.open_submission("feat/x", "sha2", None).unwrap();
     fill_round(
-        &ledger,
+        &mut ledger,
         &r2.id,
         &[("correctness", &with_findings("blocking", vec![f.clone()]))],
     );
@@ -368,7 +391,7 @@ fn rejected_non_blocking_finding_moves_to_rejected_without_arbiter() {
         .reject_finding("feat/x", &fp, "not our style rule")
         .unwrap();
     fill_round(
-        &ledger,
+        &mut ledger,
         &sub.id,
         &[("correctness", &with_findings("advisory", vec![f]))],
     );
@@ -395,7 +418,7 @@ fn blocked_at_max_rounds_escalates() {
 
     let block = with_findings("blocking", vec![finding("blocking", "persistent bug")]);
     let r1 = ledger.open_submission("feat/x", "sha1", None).unwrap();
-    fill_round(&ledger, &r1.id, &[("correctness", &block)]);
+    fill_round(&mut ledger, &r1.id, &[("correctness", &block)]);
     assert_eq!(
         submit::evaluate(&plane, &ledger, &r1.id).unwrap().decision,
         "blocked"
@@ -404,7 +427,7 @@ fn blocked_at_max_rounds_escalates() {
     // Round 2 == max_rounds: still blocking → escalated, not round 3.
     let r2 = ledger.open_submission("feat/x", "sha2", None).unwrap();
     assert_eq!(r2.round, 2);
-    fill_round(&ledger, &r2.id, &[("correctness", &block)]);
+    fill_round(&mut ledger, &r2.id, &[("correctness", &block)]);
     let report = submit::evaluate(&plane, &ledger, &r2.id).unwrap();
     std::env::remove_var("BB_NOTIFY_BIN");
     assert_eq!(report.decision, "escalated");
@@ -603,10 +626,11 @@ echo '{"type":"result","result":"{\"verdict\":\"pass\",\"findings\":[]}"}'
 
     // Round 1 blocked with a named planting.
     let r1 = ledger.open_submission("feat/x", "sha1", None).unwrap();
+    let run_a = canonical_run(&mut ledger, &r1.id, "correctness");
     ledger
         .record_verdict(
             &r1.id,
-            "run-a",
+            &run_a,
             "correctness",
             &with_findings("blocking", vec![finding("blocking", "planted flaw")]),
         )
@@ -657,4 +681,164 @@ fn verdict_task_without_submission_payload_fails_before_executing() {
     let run = dispatch::dispatch_run(&plane, &mut ledger, &run_id).unwrap();
     assert_eq!(run.state, "failure");
     assert!(run.state_reason.as_deref().unwrap().contains("payload"));
+}
+
+// ---- regressions from the 2026-06-11 codex adversarial review ----------
+
+#[test]
+fn non_canonical_run_verdict_never_counts_for_the_gate() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_gate_plane(dir.path(), 3, false);
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    let sub = ledger.open_submission("feat/x", "sha1", None).unwrap();
+    fill_round(&mut ledger, &sub.id, &[]);
+
+    // A rogue re-run (different key) recording `pass` over a member whose
+    // canonical verdict was blocking must not flip the gate.
+    let sub2 = ledger.open_submission("feat/y", "sha1", None).unwrap();
+    let canonical = canonical_run(&mut ledger, &sub2.id, "correctness");
+    ledger
+        .record_verdict(
+            &sub2.id,
+            &canonical,
+            "correctness",
+            &with_findings("blocking", vec![finding("blocking", "real bug")]),
+        )
+        .unwrap();
+    let rogue = ledger
+        .ingest(IngressRequest {
+            task: "correctness",
+            trigger_kind: "manual",
+            idempotency_key: Some("rogue-rerun"),
+            source_event_id: None,
+            payload: Some(&format!("{{\"submission\":\"{}\"}}", sub2.id)),
+            parent_run_id: None,
+        })
+        .unwrap()
+        .run_id;
+    ledger
+        .record_verdict(&sub2.id, &rogue, "correctness", &pass())
+        .unwrap();
+    let run_b = canonical_run(&mut ledger, &sub2.id, "security");
+    ledger
+        .record_verdict(&sub2.id, &run_b, "security", &pass())
+        .unwrap();
+    let report = submit::evaluate(&plane, &ledger, &sub2.id).unwrap();
+    assert_eq!(report.decision, "blocked");
+    assert!(report.blocking.iter().any(|f| f.claim == "real bug"));
+}
+
+#[test]
+fn unknown_supplied_fingerprints_are_recomputed() {
+    // A reviewer reusing a rejected/sustained fingerprint on a FRESH
+    // finding cannot inherit its rejection: the plane recomputes any
+    // fingerprint it has never seen for this submission.
+    let mut doc = submit::parse_verdict(
+        "correctness",
+        r#"{"verdict":"blocking","findings":[{"severity":"blocking","file":"a.rs","claim":"new bug","fingerprint":"stolen-rejected-fp"}]}"#,
+    )
+    .unwrap();
+    let known: std::collections::BTreeSet<String> = ["legit-fp".to_string()].into();
+    submit::enforce_fingerprints(&mut doc, "correctness", &known);
+    assert_ne!(
+        doc.findings[0].fingerprint.as_deref(),
+        Some("stolen-rejected-fp")
+    );
+
+    // A known fingerprint (a true re-raise) survives.
+    let mut doc = submit::parse_verdict(
+        "correctness",
+        r#"{"verdict":"blocking","findings":[{"severity":"blocking","file":"a.rs","claim":"same bug","fingerprint":"legit-fp"}]}"#,
+    )
+    .unwrap();
+    submit::enforce_fingerprints(&mut doc, "correctness", &known);
+    assert_eq!(doc.findings[0].fingerprint.as_deref(), Some("legit-fp"));
+}
+
+#[test]
+fn latest_submission_is_insertion_order_not_round_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_gate_plane(dir.path(), 3, false);
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+
+    // Chain 1 reaches round 2 and clears.
+    let r1 = ledger.open_submission("feat/x", "sha1", None).unwrap();
+    fill_round(
+        &mut ledger,
+        &r1.id,
+        &[(
+            "correctness",
+            &with_findings("blocking", vec![finding("blocking", "bug")]),
+        )],
+    );
+    submit::evaluate(&plane, &ledger, &r1.id).unwrap();
+    let r2 = ledger.open_submission("feat/x", "sha2", None).unwrap();
+    assert_eq!(r2.round, 2);
+    fill_round(&mut ledger, &r2.id, &[]);
+    assert_eq!(
+        submit::evaluate(&plane, &ledger, &r2.id).unwrap().decision,
+        "clear"
+    );
+
+    // A fresh chain opens at round 1 — and IS the latest submission,
+    // despite the older round-2 row.
+    let r3 = ledger.open_submission("feat/x", "sha3", None).unwrap();
+    assert_eq!(r3.round, 1);
+    let latest = ledger.latest_submission("feat/x").unwrap().unwrap();
+    assert_eq!(latest.id, r3.id);
+}
+
+#[test]
+fn plane_forces_submission_rev_into_event_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let stub = dir.path().join("stub.sh");
+    write_executable(
+        &stub,
+        r#"#!/bin/sh
+cat > /dev/null
+echo '{"type":"result","result":"{\"verdict\":\"pass\",\"findings\":[]}"}'
+"#,
+    );
+    let plane = make_storm_plane(
+        dir.path(),
+        &format!(
+            "harness = \"claude\"\nmodel = \"m\"\nbin = \"{}\"\n",
+            stub.display()
+        ),
+        "correctness",
+    );
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    let sub = ledger
+        .open_submission("feat/x", "the-real-sha", None)
+        .unwrap();
+
+    // The driver lies about the rev in the payload; the workspace's
+    // EVENT.json carries the submission's rev anyway.
+    let run_id = ledger
+        .ingest(IngressRequest {
+            task: "correctness",
+            trigger_kind: "manual",
+            idempotency_key: None,
+            source_event_id: None,
+            payload: Some(&format!(
+                "{{\"submission\":\"{}\",\"repo\":\"o/r\",\"rev\":\"a-known-good-sha\"}}",
+                sub.id
+            )),
+            parent_run_id: None,
+        })
+        .unwrap()
+        .run_id;
+    let run = dispatch::dispatch_run(&plane, &mut ledger, &run_id).unwrap();
+    assert_eq!(run.state, "success");
+    let attempts = ledger.attempts(&run_id).unwrap();
+    let event = fs::read_to_string(
+        Path::new(attempts[0].artifact_dir.as_deref().unwrap()).join("workspace/EVENT.json"),
+    )
+    .unwrap();
+    assert!(event.contains("the-real-sha"), "{event}");
+    assert!(!event.contains("a-known-good-sha"), "{event}");
+    assert!(
+        event.contains("\"repo\":\"o/r\""),
+        "driver extras survive: {event}"
+    );
 }
