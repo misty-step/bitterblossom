@@ -31,6 +31,7 @@ fn write_executable(path: &Path, content: &str) {
 fn make_plane(root: &Path, stub: &str, task_extra: &str) -> Plane {
     fs::create_dir_all(root.join("agents")).unwrap();
     fs::create_dir_all(root.join("tasks/demo")).unwrap();
+    fs::write(root.join("plane.toml"), "dev = true\n").unwrap();
     let stub_path = root.join("stub-harness.sh");
     write_executable(&stub_path, stub);
     fs::write(
@@ -214,6 +215,7 @@ printf '{"type":"message_end","message":{"role":"assistant","content":[{"type":"
     let root = dir.path();
     fs::create_dir_all(root.join("agents")).unwrap();
     fs::create_dir_all(root.join("tasks/demo")).unwrap();
+    fs::write(root.join("plane.toml"), "dev = true\n").unwrap();
     let stub_path = root.join("stub-pi.sh");
     write_executable(&stub_path, PI_ENV_STUB);
     fs::write(

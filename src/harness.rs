@@ -47,17 +47,40 @@ pub fn build_command(agent: &AgentSpec, budget: &TaskBudget) -> Result<Vec<Strin
             agent.model.clone(),
             "-".into(),
         ],
-        "pi" => vec![
-            bin,
-            "--provider".into(),
-            agent.provider().into(),
-            "--model".into(),
-            agent.model.clone(),
-            "--no-session".into(),
-            "--mode".into(),
-            "json".into(),
-            "-p".into(),
-        ],
+        "pi" => {
+            // pi --mode json re-streams the entire partial message on every
+            // token (`message_update`): a 15-minute run produced 718 MB of
+            // stdout (measured live 2026-06-10). Drop those deltas before
+            // they hit the capture file; everything the parser needs
+            // (message_end, turn_end) passes through. The pipeline makes
+            // grep's exit status the command's — pi crashes still surface
+            // because a stream with no assistant message_end fails parsing.
+            let mut inner = vec![
+                bin,
+                "--provider".into(),
+                agent.provider().into(),
+                "--model".into(),
+                agent.model.clone(),
+                "--no-session".into(),
+                "--mode".into(),
+                "json".into(),
+                "-p".into(),
+            ];
+            inner.extend(agent.args.iter().cloned());
+            let quoted: Vec<String> = inner
+                .iter()
+                .map(|a| crate::substrate::local::shell_quote(a))
+                .collect();
+            return Ok(vec![
+                "sh".into(),
+                "-c".into(),
+                format!(
+                    "{} | grep -v -F '\"type\":\"message_update\"'",
+                    quoted.join(" ")
+                ),
+                "sh".into(),
+            ]);
+        }
         other => bail!(
             "unknown harness '{other}' (known: {})",
             HARNESSES.join(", ")
@@ -280,9 +303,12 @@ mod tests {
             toml::from_str("harness = \"pi\"\nmodel = \"moonshotai/kimi-k2.6\"\n").unwrap();
         let cmd = build_command(&agent, &crate::spec::TaskBudget::default()).unwrap();
         let joined = cmd.join(" ");
-        assert!(joined.contains("--provider openrouter"), "{joined}");
-        assert!(joined.contains("--model moonshotai/kimi-k2.6"), "{joined}");
+        assert!(joined.contains("--provider' 'openrouter"), "{joined}");
+        assert!(joined.contains("moonshotai/kimi-k2.6"), "{joined}");
         assert!(joined.contains("--no-session"), "{joined}");
+        // The message_update flood filter wraps the invocation.
+        assert_eq!(cmd[0], "sh");
+        assert!(joined.contains("grep -v -F"), "{joined}");
     }
 
     #[test]

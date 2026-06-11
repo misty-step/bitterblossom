@@ -11,6 +11,11 @@ use serde::{Deserialize, Serialize};
 pub struct PlaneSpec {
     #[serde(default = "default_db_path")]
     pub db_path: String,
+    /// Dev planes may run workloads as local processes (tests, config
+    /// hacking). Production planes always dispatch to a remote substrate —
+    /// the plane never manages workload processes on the operator's machine.
+    #[serde(default)]
+    pub dev: bool,
     #[serde(default)]
     pub ingress: IngressSpec,
     #[serde(default)]
@@ -23,6 +28,7 @@ impl Default for PlaneSpec {
     fn default() -> Self {
         Self {
             db_path: default_db_path(),
+            dev: false,
             ingress: IngressSpec::default(),
             notify: NotifySpec::default(),
             budget: GlobalBudget::default(),
@@ -175,7 +181,69 @@ pub enum TriggerSpec {
         secret_env: String,
         /// Dedupe key derivation: "header:<Name>" or "json:<pointer>".
         dedupe_key: Option<String>,
+        /// Payload conditions, ANDed; a delivery failing any is
+        /// acknowledged but never becomes a run. Fail-closed: a missing
+        /// pointer rejects. Workload-agnostic containment — repo
+        /// allowlists, action filters, size caps — lives here, not in
+        /// card prose an agent may or may not honor.
+        #[serde(default)]
+        filter: Vec<FilterSpec>,
     },
+}
+
+/// One payload condition: an RFC 6901 pointer plus exactly one predicate.
+#[derive(Debug, Clone, Deserialize)]
+pub struct FilterSpec {
+    pub pointer: String,
+    pub equals: Option<serde_json::Value>,
+    pub any_of: Option<Vec<serde_json::Value>>,
+    /// Numeric ceiling (inclusive): e.g. cap PR additions.
+    pub max: Option<f64>,
+}
+
+impl FilterSpec {
+    fn validate(&self) -> Result<()> {
+        let n = [
+            self.equals.is_some(),
+            self.any_of.is_some(),
+            self.max.is_some(),
+        ]
+        .iter()
+        .filter(|b| **b)
+        .count();
+        if n != 1 {
+            bail!(
+                "filter on '{}' needs exactly one of equals / any_of / max",
+                self.pointer
+            );
+        }
+        Ok(())
+    }
+
+    /// `Some(reason)` when the payload fails this condition.
+    pub fn reject_reason(&self, payload: &serde_json::Value) -> Option<String> {
+        let Some(found) = payload.pointer(&self.pointer) else {
+            return Some(format!("pointer '{}' missing from payload", self.pointer));
+        };
+        if let Some(expected) = &self.equals {
+            if found != expected {
+                return Some(format!("'{}' is {found}, want {expected}", self.pointer));
+            }
+        }
+        if let Some(allowed) = &self.any_of {
+            if !allowed.contains(found) {
+                return Some(format!("'{}' is {found}, not in allowlist", self.pointer));
+            }
+        }
+        if let Some(max) = self.max {
+            match found.as_f64() {
+                Some(v) if v <= max => {}
+                Some(v) => return Some(format!("'{}' is {v}, max {max}", self.pointer)),
+                None => return Some(format!("'{}' is not numeric", self.pointer)),
+            }
+        }
+        None
+    }
 }
 
 /// A fully loaded task: spec + lane card + resolved agent.
@@ -212,6 +280,11 @@ impl Plane {
     /// plane.toml is allowed — defaults apply — but a missing agent
     /// referenced by a task is an error.
     pub fn load(root: &Path) -> Result<Self> {
+        // Absolute root: artifact paths cross process-cwd boundaries (the
+        // sprite relay runs from $HOME), so relative roots corrupt uploads.
+        let root = &root
+            .canonicalize()
+            .with_context(|| format!("plane root {}", root.display()))?;
         let plane_path = root.join("plane.toml");
         let spec: PlaneSpec = if plane_path.exists() {
             toml::from_str(&std::fs::read_to_string(&plane_path)?)
@@ -269,6 +342,13 @@ impl Plane {
                     .clone();
                 if task_spec.substrate == "sprites" && task_spec.workspace.host.is_none() {
                     bail!("task '{name}': substrate = \"sprites\" requires workspace.host");
+                }
+                if task_spec.substrate == "local" && !spec.dev {
+                    bail!(
+                        "task '{name}': the local substrate is dev/test machinery — \
+                         production planes dispatch to a remote substrate (sprites). \
+                         Set `dev = true` in plane.toml only for a development plane."
+                    );
                 }
                 tasks.insert(
                     name.clone(),
@@ -333,9 +413,13 @@ impl Plane {
             }
             for trigger in &task.spec.triggers {
                 match trigger {
-                    TriggerSpec::Webhook { route, .. } => {
+                    TriggerSpec::Webhook { route, filter, .. } => {
                         if !routes.insert(route.clone()) {
                             bail!("webhook route '{route}' declared by more than one trigger");
+                        }
+                        for f in filter {
+                            f.validate()
+                                .with_context(|| format!("task '{}'", task.name))?;
                         }
                     }
                     TriggerSpec::Cron { schedule } => {

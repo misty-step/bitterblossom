@@ -10,6 +10,7 @@ use bitterblossom::spec::Plane;
 fn plane_with(root: &Path, agent_toml: &str, task_toml: &str) -> anyhow::Result<Plane> {
     fs::create_dir_all(root.join("agents")).unwrap();
     fs::create_dir_all(root.join("tasks/t")).unwrap();
+    fs::write(root.join("plane.toml"), "dev = true\n").unwrap();
     fs::write(root.join("agents/a.toml"), agent_toml).unwrap();
     fs::write(root.join("tasks/t/card.md"), "card\n").unwrap();
     fs::write(root.join("tasks/t/task.toml"), task_toml).unwrap();
@@ -82,4 +83,27 @@ fn pi_cannot_claim_subscription_auth() {
     )
     .unwrap_err();
     assert!(err.to_string().contains("no subscription auth"), "{err}");
+}
+
+#[test]
+fn local_substrate_is_rejected_outside_dev_planes() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join("agents")).unwrap();
+    fs::create_dir_all(root.join("tasks/t")).unwrap();
+    // No dev flag: this is a production plane.
+    fs::write(root.join("plane.toml"), "").unwrap();
+    fs::write(
+        root.join("agents/a.toml"),
+        "harness = \"pi\"\nmodel = \"m\"\n",
+    )
+    .unwrap();
+    fs::write(root.join("tasks/t/card.md"), "card\n").unwrap();
+    fs::write(
+        root.join("tasks/t/task.toml"),
+        "agent = \"a\"\nsubstrate = \"local\"\n[[trigger]]\nkind = \"manual\"\n",
+    )
+    .unwrap();
+    let err = Plane::load(root).unwrap_err();
+    assert!(err.to_string().contains("dev/test machinery"), "{err}");
 }

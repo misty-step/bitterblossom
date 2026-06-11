@@ -13,6 +13,7 @@ use bitterblossom::spec::Plane;
 fn make_plane(root: &Path) -> Plane {
     fs::create_dir_all(root.join("agents")).unwrap();
     fs::create_dir_all(root.join("tasks/demo")).unwrap();
+    fs::write(root.join("plane.toml"), "dev = true\n").unwrap();
     fs::write(
         root.join("agents/a.toml"),
         "harness = \"claude\"\nmodel = \"m\"\n",

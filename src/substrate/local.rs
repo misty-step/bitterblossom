@@ -179,7 +179,7 @@ fn repo_dir_name(url: &str) -> String {
         .to_string()
 }
 
-pub(crate) fn shell_quote(s: &str) -> String {
+pub fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
