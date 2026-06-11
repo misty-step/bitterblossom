@@ -74,6 +74,17 @@ exact recipes, all repeatable:
   (Worked example: 2026-06-10 drill — 5 events, 3 ran, 2 blocked.)
 - **Read API / HTML QA**: `bb serve` + curl every `/api/*` route and `/`
   with and without `BB_API_TOKEN`.
+- **Submission-loop drill** (dev plane + stub harnesses, minutes,
+  repeatable): seeded-flaw change → `bb submit open` → storm members via
+  `bb run <kind> --idempotency-key "storm:<sub>:<kind>" --payload
+  '{"submission":"<id>",...}'` → `bb gate` blocked naming the plantings →
+  fix → round 2 `clear`. Then the termination drill (blockers persist →
+  `escalated` exactly at max_rounds, one notify; dead-lettered required
+  member → `escalated`, never eternal pending) and the arbiter drill
+  (reject a blocking fingerprint → still blocks → arbiter `pass` naming
+  it → rejected). Worked example: 2026-06-11 dev-plane drill. Live storm
+  runs use the same recipe against `plane/` (sprites, real models);
+  evidence = gate JSON both rounds + per-member costs.
 
 Feedback loop after shipping a workload change: run one live review,
 then check `/api/runs` (or `bb runs list --json`) for cost and outcome —
