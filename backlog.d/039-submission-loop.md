@@ -7,7 +7,8 @@ Priority: P1 · Status: ready · Estimate: L
 Completed agent work gets autonomously quality-assured and landed — a
 storm of verdict tasks attacks the change, `bb gate` decides
 mechanically, the implementing agent loops on the report, and
-termination is guaranteed by monotone-blocking rules and a round cap.
+termination is guaranteed by the round cap and escalation — never by
+silencing fresh blockers.
 No human code-reading; no PR required for coordination.
 
 ## Oracle
