@@ -1,0 +1,425 @@
+Reading additional input from stdin...
+OpenAI Codex v0.137.0
+--------
+workdir: /Users/phaedrus/Development/bitterblossom
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 019eb778-e341-79e0-b6df-0c34876a8130
+--------
+user
+You are an adversarial design critic. Below is a context packet (a build specification) for a Rust event-plane repo, plus its premise transcript. Attack the DESIGN, not the prose: what production failure, unbounded loop, gamed incentive, or false termination guarantee would embarrass us? Specifically scrutinize:
+1. The monotone-blocking/demotion rule — can a genuinely fatal round-2 discovery slip through? Can a reviewer game `regression: true`? Does the fingerprint scheme actually prevent oscillating nitpicks?
+2. The gate state machine — missing states? What happens with concurrent submissions of the same change key, stale rounds, or a storm member that dead-letters?
+3. The driver convention — the implementing agent both fixes and fires the storm; does self-interest corrupt the loop anywhere mechanical rules don't cover?
+4. Spine constitution: does anything here smuggle workload judgment into the spine?
+Severity-tag findings (blocking|serious|minor) with one-line evidence each. End with a one-line verdict. Ignore style/wording.
+=== PACKET ===
+# Context Packet: The submission loop — verdict storm, mechanical gate, bounded rounds
+
+## Goal
+
+Completed agent work gets autonomously quality-assured and landed: a
+storm of independent verdict-producing tasks attacks a submitted change,
+a mechanical gate decides blocking vs. clear, the implementing agent
+loops on the report, and the loop provably terminates — no human reads
+the code, no pull request is required for coordination.
+
+## Non-Goals
+
+- **Push-event reflex ingress** (GitHub App or post-receive hook on a
+  self-hosted remote). v1 is dispatch-driven by operator decision
+  (AskUserQuestion, 2026-06-11): the implementing agent fires the storm.
+  The trigger seam is the plane's existing trigger table; reflex arrives
+  as a follow-up ticket once the plane has a durable home.
+- **Plane deployment.** The loop runs from a laptop plane + sprite fleet.
+- **PR integration.** No comments posted anywhere. A PR may exist for
+  external visibility; it is never the channel. (The fallback "old mode"
+  — PR + CI + comment storm — is explicitly not built here.)
+- **git-notes export** of verdicts. The ledger is canonical; a notes
+  export step can ride in a marshal card later without spine changes.
+- **An agentic-QA storm member** (drives the running app). Needs a
+  per-repo runnable-app harness; v2.
+- **Multi-repo gate config.** One `[gate]` per plane in v1.
+
+## Constraints (invariants that survive)
+
+- **No workload logic in the spine.** Verdict storage, gate arithmetic,
+  and round bookkeeping are generic data mechanics (like budgets).
+  What a reviewer looks for, what counts as evidence, how findings are
+  phrased — cards only.
+- **Model & auth policy holds**: storm members are reflex-class work —
+  api-auth agents, cheap OpenRouter models, hermetic. (They run via
+  `bb run` in v1, but they are built as reflex-eligible tasks so the
+  later trigger swap is config-only.)
+- **Spine LOC budget ≤ 5k** (currently 4,032). If this change cannot fit
+  in ~+600 LOC, stop and surface the budget conversation explicitly.
+- **Unparseable output is failure** — a verdict task whose result is not
+  valid verdict JSON fails the run; never a silent pass.
+- **`change` keys are opaque strings** to the spine. v1 drivers pass a
+  stable topic key (branch name or ticket id) plus the per-round `rev`
+  SHA; the jj migration later swaps in change IDs with zero spine change.
+
+## Repo Anchors
+
+- `src/spec.rs` — config loading + load-time validation; where
+  `verdict = "<kind>"` on TaskSpec and `[gate]` on PlaneSpec land.
+- `src/dispatch.rs` — `attempt_on_host` collecting phase; where a
+  successful verdict-task run parses result.md into a verdict row.
+- `src/ledger.rs` — table + accessor patterns (runs/attempts/budget
+  tables; CAS transitions); the `verdicts` table follows these.
+- `src/serve.rs` — read API shapes (`/api/runs`, `tasks_view`); add
+  `/api/gate` and `/api/verdicts` in the same style.
+- `src/main.rs` — CLI verb patterns (`runs list --json`); add
+  `bb verdicts list` / `bb gate`.
+- `plane/tasks/review/card.md` + `task.toml` — the exemplar verdict task
+  (its JSON summary final answer is already verdict-shaped); storm cards
+  derive from it, minus the `gh pr comment` step.
+- `tests/e2e_local.rs` — stub-harness e2e pattern for loop tests.
+- `CLAUDE.md` (Verification) — the live-evidence contract this work
+  extends.
+
+## Alternatives
+
+1. **Old mode: PR + GitHub CI + comment storm.** Open a PR, wait for
+   checks, bots comment, implementer reacts. Works today, zero spine
+   change. Fails the premise three ways: vendor-locked coordination,
+   markdown threads as the data model (lossy for agents), and no
+   mechanical termination — the needling loop lives in prose. Kept as
+   the documented fallback, not built.
+2. **Orchestrated fan-out/join in the spine** (run groups: one event
+   spawns N runs, a join collects them). Fails the no-judgment
+   constitution — joins, round state machines, and report assembly are
+   workflow semantics that grow without bound (the Python conductor died
+   of exactly this). Rejected.
+3. **Pure git-notes blackboard, no spine change** — storm cards push
+   verdict notes; the gate is a script reading notes. Most git-native,
+   zero LOC. Fails operationally: notes refs contend under parallel
+   writers, sprites need push credentials to write notes, nothing is
+   queryable from the API/ledger, and the termination rules end up in
+   card prose — policy as intent, the exact failure this arc exists to
+   kill. Rejected for v1; notes become an *export* later.
+4. **Blackboard via ledger: verdicts as data, gate as query, loop driven
+   by the implementing agent** (chosen). Each storm member is an
+   ordinary task whose final answer is verdict JSON; the plane records
+   it mechanically; `bb gate` evaluates required-set + termination rules
+   as pure data policy; the driver (implementing agent) fires rounds and
+   acts on the report. Coordination through the artifact, no
+   orchestrator. The spine grows one table and one evaluator — both
+   generic.
+
+## Design
+
+**Verdict tasks.** `task.toml` gains `verdict = "<kind>"` (e.g.
+`correctness`). For such tasks, a successful run's parsed result MUST be
+JSON:
+
+```json
+{"verdict": "pass|blocking|advisory",
+ "findings": [{"severity": "blocking|serious|minor",
+               "file": "src/x.rs", "line": 42,
+               "claim": "...", "evidence": "...",
+               "regression": false,
+               "fingerprint": "<carried from prior report, else omitted>"}]}
+```
+
+Dispatch (collecting phase) parses and records a `verdicts` row:
+`(id, run_id, task, kind, change_key, rev, round, verdict, findings_json,
+created_at)`. `change_key`, `rev`, and `round` come from the trigger
+payload (contract: `{"repo": "...", "change": "<stable key>",
+"rev": "<sha>", "round": N, "base": "<sha>", "context": "..."}`); the
+spine treats all three as opaque data. Missing payload fields or
+unparseable verdict JSON fail the run with the raw output preserved.
+Fingerprints: plane computes `sha256(kind|file|claim)` when absent;
+cards are instructed to copy fingerprints verbatim from the prior report
+when re-raising.
+
+**The gate.** `plane.toml` gains:
+
+```toml
+[gate]
+required = ["verify", "correctness", "security", "simplification", "product"]
+max_rounds = 3
+```
+
+`bb gate --change <key> [--json]` (and `GET /api/gate?change=`)
+evaluates, for the highest round with any verdicts:
+
+- any required kind missing at that round → `pending` (names the gaps);
+- round 1: any `blocking` finding → `blocked`;
+- round N>1: a finding is blocking-eligible only if its fingerprint was
+  blocking in round N−1 (unfixed) or it carries `"regression": true`.
+  Fresh non-regression blockers are **demoted** to advisory and labeled
+  as demoted in the output — this is the monotone rule that kills
+  oscillating nitpicks mechanically;
+- round > `max_rounds` with eligible blockers → `escalate` (fires the
+  notify webhook once);
+- otherwise → `clear`.
+
+Output is the report: findings grouped `blocking / demoted / advisory`,
+with rounds, costs (joined from runs), and what's missing. The
+fix-before-merge / log-for-later / not-worth-recording triage maps to
+blocking / advisory-the-driver-files / demoted-and-dropped.
+
+**Storm config (pure files).** Five tasks in `plane/tasks/`: `verify`
+(card: run `./scripts/verify.sh` in the workspace, emit verdict from the
+result — an LLM-wrapped shell command in v1; a no-LLM `command` harness
+is a noted future economy), `correctness`, `security`, `simplification`
+(derived from the existing review card, single pass each, different
+model families across them for decorrelation — Kimi K2.6 / DeepSeek V4 /
+GLM per current bindings research), and `product` (does the diff serve
+the stated goal in `context`; scope creep; missing acceptance evidence).
+Each binds its own sprite host (`bb-polisher`, `bb-polisher-2`, …) so
+storm members parallelize — host leases serialize per host, so
+parallelism is a hosting choice, not a spine change. All are
+`[[trigger]] kind = "manual"` in v1 with reflex triggers addable later.
+
+**The driver (convention, documented in docs/spine.md).** The
+implementing agent, on judging work complete: pushes its branch; for
+round 1..=3: fires the five storm members as parallel `bb run`
+background processes with the payload contract above; runs `bb gate`;
+on `clear` → squash-land and push; on `blocked` → fix, push (new `rev`,
+same `change`), next round, carrying the report (with fingerprints and
+dispositions) into each card's `context`; on `escalate` → stop, the
+operator is notified. Advisory findings get filed to `backlog.d/` by the
+driver before landing. The driver is prose + a few commands — judgment
+stays with the agent, arithmetic stays in `bb gate`.
+
+**Why this decomposition**: CI, review, red-team, and product critique
+are all the same shape (verdict task); the merge gate is a query;
+"waiting for CI before the storm" collapses into wave ordering the
+driver controls (fire `verify` first if token thrift matters; v1 fires
+all five — a red `verify` makes the gate `blocked` regardless).
+
+## Oracle (Definition of Done)
+
+Commands that must all exit 0:
+
+- `./scripts/verify.sh` — the repo gate, including new tests:
+  - verdict parsing: valid JSON → row recorded with payload's
+    change/rev/round; invalid JSON on a verdict task → run failure with
+    raw output preserved;
+  - gate rules, each as its own test: `pending` on missing kind;
+    round-1 `blocked` on any blocking finding; round-2 demotion of a
+    fresh non-regression blocker; round-2 `blocked` on a carried
+    fingerprint; `regression: true` blocks in any round; `escalate`
+    past `max_rounds`; `clear` when required set present and no
+    eligible blockers.
+- `bb check` on `plane/` validates the five storm tasks and `[gate]`.
+- LOC tripwire: `find src -name '*.rs' | xargs cat | grep -vc '^\s*$'`
+  ≤ 5000.
+
+Live evidence (the verification harness is `scripts/verify.sh` plus the
+CLAUDE.md live-evidence contract; both updated as part of this work):
+
+- **Full loop on a seeded change in this repo**: a branch with ≥2
+  planted flaws (one correctness, one security) → round-1 storm of all
+  five members runs with ≥2 members executing concurrently on distinct
+  sprites (overlapping ledger timestamps) → `bb gate --json` returns
+  `blocked` naming the plantings → fix → round 2 → `clear` → branch
+  squash-lands on master. Evidence: gate JSON both rounds, `bb runs
+  list` rows with per-member cost, total loop cost recorded (expected
+  ≤ ~$1).
+- **Termination drill**: a stub-harness dev-plane loop where a reviewer
+  re-raises a rejected finding and invents a fresh round-3 blocker —
+  gate output shows demotion, then `escalate` exactly at
+  `max_rounds + 1`, with one notify webhook delivery.
+
+## Premise Source
+
+Premise Source: sha256:19be5adb56ca265fe00c943a64988b285fe737d96cd0ed34cd36a0089d93e0a3 docs/plans/2026-06-11-039-premise-transcript.md
+
+Voice Transcript Metadata:
+- source_kind: voice
+- source_hash: sha256:19be5adb56ca265fe00c943a64988b285fe737d96cd0ed34cd36a0089d93e0a3
+- transcript_model: unknown
+- transcript_confidence: unknown
+- audio_duration_seconds: unknown
+- redaction_status: sanitized
+- redaction_tool: agent-transcript
+- created_at: 2026-06-11T04:30:00Z
+- residual_risk: Transcript accuracy unverified; dictation was compressed
+  to load-bearing excerpts and the surrounding brainstorm (PR
+  decomposition, blackboard coordination, rung ladder) is paraphrased in
+  this session's conversation rather than quoted.
+
+## Risks + Rollout
+
+- **Fingerprint fragility.** Hash(kind|file|claim) misses re-phrasings;
+  carried fingerprints depend on card discipline. Mitigation: cards
+  receive the prior report verbatim and are graded (termination drill)
+  on copying fingerprints; accept some false-fresh findings — they get
+  demoted, which fails safe (toward landing, with the finding preserved
+  as advisory). Watch the first ten real loops for demotion abuse.
+- **Demotion failing toward landing is a real bug class**: a genuine
+  round-2 discovery gets demoted unless flagged `regression: true`.
+  Mitigation: `regression` is the falsifiable escape hatch and the
+  quorum is cheap (any reviewer can flag it); residual risk accepted
+  consciously — the alternative (fresh blockers always block) is the
+  unbounded needling loop the operator explicitly rejected.
+- **Spine growth.** Verdicts + gate ≈ +400–600 LOC against a 968-LOC
+  headroom. Tripwire in the oracle; if exceeded, stop and renegotiate
+  the budget rather than trimming tests.
+- **Stop conditions for the builder**: payload contract needs a field
+  not listed here → stop and surface; gate rules need workload-specific
+  branches (e.g. "security findings never demote") → stop, that's
+  config-vs-constitution tension to resolve explicitly, not improvise;
+  storm cost per round exceeds ~$1 → stop and rebind models before
+  iterating.
+- **Rollback**: the table and gate are additive; reverting the squash
+  commit restores the prior spine. Storm tasks are files; deleting them
+  removes the workload. No migration risk — new SQLite table only.
+=== PREMISE TRANSCRIPT ===
+# Premise transcript (sanitized excerpts) — submission loop direction
+
+Operator voice dictation, 2026-06-11 session, sanitized for repo storage.
+Key passages preserved verbatim where load-bearing; filler removed.
+
+On the actual scarce resource:
+
+> "The scarce resource is actually tokens because I am not personally
+> reviewing this code. [...] I am setting up a system that should all
+> but guarantee that we are working on things that are important, that
+> are fleshed out, and that actually work and add value and don't break
+> anything."
+
+On the loop:
+
+> "We are trying to take the work that gets done and [...] create some
+> kind of trigger, a reflex that takes work when it is complete and runs
+> it through this storm of adversarial reviews and quality checks. QA
+> agents should be spun up, code reviewing agents should be spun up, red
+> team agents should be spun up, product owner agents should be spun up.
+> We need to just attack the work and create all of this feedback that
+> actually is useful for the implementing agent."
+
+On termination:
+
+> "If you ask an agent to be an adversarial reviewer, it will often just
+> say that it is not good enough. [...] You don't want to get hung up
+> forever addressing nitpicks, especially since frequently they will
+> nitpick one thing and you fix it and then they nitpick the opposite
+> thing. [...] There needs to be some sanity checking so that we don't
+> just get endlessly needled into submission."
+
+On the report contract:
+
+> "Everything in the report is either something that needs to be done
+> before the merge, that needs to be logged to be done later, or is
+> something that is not even worth logging."
+
+On the loop's exit:
+
+> "This loops until some standard of quality is achieved, until the
+> report does not contain anything that is blocking to the merge."
+
+On the PR as primitive:
+
+> "I am not convinced that the pull request is necessarily the best
+> primitive for this, because the pull request by nature is a GitHub
+> thing and not a Git thing. [...] The fundamental purpose of GitHub is
+> that it is where your remotes live. [Agents] don't necessarily need to
+> query GitHub for pull requests — they can just look at diffs;
+> everything is just SHAs."
+
+On the fallback:
+
+> "If we wind up spinning our wheels on this, we can just put a pin in
+> it and open a pull request [...] the PR waits for CI to complete, and
+> once CI completes, that triggers the storm of adversarial review
+> agents [...] and this loops until some standard of quality is
+> achieved."
+
+Design assumptions ratified for brainstorming and carried into the shape:
+humans neither read nor write code; humans manage agent planes, reflex
+definitions, and dispatch sessions; agents coordinate across substrates;
+git remains; GitHub is not assumed. jj migration is anticipated ("we're
+also moving off of git and onto jj — it uses git under the hood").
+
+v1 trigger decision (AskUserQuestion, this session): dispatch-driven
+first — the implementing agent fires the storm; reflex ingress follows
+once the plane has a durable home.
+
+2026-06-11T16:16:56.121741Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when UnexpectedContentType(Some("text/plain; body: token revoked"))
+hook: SessionStart
+hook: SessionStart Completed
+codex
+Goal: stress the design for production failure modes, assuming the packet is the intended build contract and not yet implemented.
+
+**Findings**
+
+`blocking` Fatal round-2 discoveries can be mechanically cleared if the reviewer does not label them `regression: true`; evidence: round `N>1` only treats carried fingerprints or `regression: true` as blocking-eligible, so a newly discovered auth bypass, data-loss path, or false-positive round-1 verify miss becomes advisory by default.
+
+`blocking` `regression: true` is an unaudited reviewer-controlled override, so the monotone rule is only as strong as prompt compliance; evidence: the gate accepts a boolean from verdict JSON with no mechanical proof that the issue was introduced by the fix or absent in the prior rev.
+
+`serious` The fingerprint scheme does not prevent oscillating nitpicks, it only suppresses exact `kind|file|claim` repeats; evidence: same issue can reappear under changed wording, different file attribution, split/merged claims, or “security” vs “correctness” kind and be treated as fresh each time.
+
+`serious` Conversely, carried fingerprints can preserve stale blockers after the underlying issue changed shape; evidence: cards are instructed to copy fingerprints verbatim, but the gate does not verify that the new evidence still matches the old claim/rev.
+
+`blocking` Gate evaluates “highest round with any verdicts,” which makes partial or stale rounds authoritative too early; evidence: if one round-2 verdict arrives before the rest, `bb gate` switches away from complete round 1 and returns `pending`, creating a race-sensitive gate result.
+
+`blocking` Concurrent submissions for the same `change_key` can collide because `rev` is opaque but `bb gate --change` is keyed only by change; evidence: two agents or two pushed revisions for the same branch/ticket can interleave verdict rows, and the evaluator selects by highest round rather than a locked submission instance.
+
+`serious` There is no explicit submitted/closed/landed/abandoned gate lifecycle, so stale verdicts can be reused accidentally; evidence: the table records verdict rows but no gate session state, active rev, terminal status, or CAS ownership around “this is the submission currently being judged.”
+
+`serious` Dead-lettered storm members can produce permanent `pending` without escalation semantics; evidence: required kind missing means `pending`, but the design only escalates on `round > max_rounds` with eligible blockers, not on irrecoverable required-task failure.
+
+`serious` The driver can choose when to call `bb gate`, which makes pending/clear races exploitable by timing; evidence: implementing agent fires background processes, then runs `bb gate`, but no mechanical barrier says all five required task runs for the intended round have reached terminal success/failure.
+
+`blocking` The implementing agent controls the context packet passed into later rounds, including prior report, dispositions, and fingerprints; evidence: the same agent that wants to land can omit, soften, or misclassify prior blockers before reviewers see them, while the gate depends on carried fingerprints and `regression` labels.
+
+`serious` Advisory filing is outside the mechanical gate and therefore gameable; evidence: “Advisory findings get filed to backlog.d/ by the driver before landing,” but `bb gate` clear does not verify those backlog artifacts exist.
+
+`serious` “Verify” as an LLM-wrapped shell command smuggles judgment into a required gate member; evidence: a deterministic command result is mediated by verdict JSON from an agent, so parseable but incorrect verdicts can turn a red command into non-blocking output unless raw exit status is separately bound.
+
+`minor` The termination drill description is internally ambiguous about `max_rounds`; evidence: gate says `round > max_rounds` escalates, but driver loops `1..=3` when `max_rounds = 3`, while the drill expects escalation at `max_rounds + 1`.
+
+`minor` The design claims “provably terminates,” but operationally it can park forever in `pending`; evidence: missing required verdicts, dead-lettered tasks, parse failures, or unavailable sprite hosts have no bounded transition to blocked/escalate/failed.
+
+`serious` The single `[gate]` per plane may leak workload policy into global infrastructure as soon as two repos need different reviewer sets or round budgets; evidence: v1 explicitly rejects multi-repo gate config while using the plane as the authority for required kinds and max rounds.
+
+`minor` “Product” and “simplification” are workload-judgment categories embedded in the global required set; evidence: the spine arithmetic is generic, but the plane-level gate hardcodes qualitative review dimensions as required for every submission on that plane.
+
+Verdict: promising blackboard shape, but not production-safe until submissions become explicit gate sessions, reviewer-supplied escape hatches are mechanically constrained, and fatal fresh findings cannot be silently demoted by default.
+tokens used
+29,141
+Goal: stress the design for production failure modes, assuming the packet is the intended build contract and not yet implemented.
+
+**Findings**
+
+`blocking` Fatal round-2 discoveries can be mechanically cleared if the reviewer does not label them `regression: true`; evidence: round `N>1` only treats carried fingerprints or `regression: true` as blocking-eligible, so a newly discovered auth bypass, data-loss path, or false-positive round-1 verify miss becomes advisory by default.
+
+`blocking` `regression: true` is an unaudited reviewer-controlled override, so the monotone rule is only as strong as prompt compliance; evidence: the gate accepts a boolean from verdict JSON with no mechanical proof that the issue was introduced by the fix or absent in the prior rev.
+
+`serious` The fingerprint scheme does not prevent oscillating nitpicks, it only suppresses exact `kind|file|claim` repeats; evidence: same issue can reappear under changed wording, different file attribution, split/merged claims, or “security” vs “correctness” kind and be treated as fresh each time.
+
+`serious` Conversely, carried fingerprints can preserve stale blockers after the underlying issue changed shape; evidence: cards are instructed to copy fingerprints verbatim, but the gate does not verify that the new evidence still matches the old claim/rev.
+
+`blocking` Gate evaluates “highest round with any verdicts,” which makes partial or stale rounds authoritative too early; evidence: if one round-2 verdict arrives before the rest, `bb gate` switches away from complete round 1 and returns `pending`, creating a race-sensitive gate result.
+
+`blocking` Concurrent submissions for the same `change_key` can collide because `rev` is opaque but `bb gate --change` is keyed only by change; evidence: two agents or two pushed revisions for the same branch/ticket can interleave verdict rows, and the evaluator selects by highest round rather than a locked submission instance.
+
+`serious` There is no explicit submitted/closed/landed/abandoned gate lifecycle, so stale verdicts can be reused accidentally; evidence: the table records verdict rows but no gate session state, active rev, terminal status, or CAS ownership around “this is the submission currently being judged.”
+
+`serious` Dead-lettered storm members can produce permanent `pending` without escalation semantics; evidence: required kind missing means `pending`, but the design only escalates on `round > max_rounds` with eligible blockers, not on irrecoverable required-task failure.
+
+`serious` The driver can choose when to call `bb gate`, which makes pending/clear races exploitable by timing; evidence: implementing agent fires background processes, then runs `bb gate`, but no mechanical barrier says all five required task runs for the intended round have reached terminal success/failure.
+
+`blocking` The implementing agent controls the context packet passed into later rounds, including prior report, dispositions, and fingerprints; evidence: the same agent that wants to land can omit, soften, or misclassify prior blockers before reviewers see them, while the gate depends on carried fingerprints and `regression` labels.
+
+`serious` Advisory filing is outside the mechanical gate and therefore gameable; evidence: “Advisory findings get filed to backlog.d/ by the driver before landing,” but `bb gate` clear does not verify those backlog artifacts exist.
+
+`serious` “Verify” as an LLM-wrapped shell command smuggles judgment into a required gate member; evidence: a deterministic command result is mediated by verdict JSON from an agent, so parseable but incorrect verdicts can turn a red command into non-blocking output unless raw exit status is separately bound.
+
+`minor` The termination drill description is internally ambiguous about `max_rounds`; evidence: gate says `round > max_rounds` escalates, but driver loops `1..=3` when `max_rounds = 3`, while the drill expects escalation at `max_rounds + 1`.
+
+`minor` The design claims “provably terminates,” but operationally it can park forever in `pending`; evidence: missing required verdicts, dead-lettered tasks, parse failures, or unavailable sprite hosts have no bounded transition to blocked/escalate/failed.
+
+`serious` The single `[gate]` per plane may leak workload policy into global infrastructure as soon as two repos need different reviewer sets or round budgets; evidence: v1 explicitly rejects multi-repo gate config while using the plane as the authority for required kinds and max rounds.
+
+`minor` “Product” and “simplification” are workload-judgment categories embedded in the global required set; evidence: the spine arithmetic is generic, but the plane-level gate hardcodes qualitative review dimensions as required for every submission on that plane.
+
+Verdict: promising blackboard shape, but not production-safe until submissions become explicit gate sessions, reviewer-supplied escape hatches are mechanically constrained, and fatal fresh findings cannot be silently demoted by default.
