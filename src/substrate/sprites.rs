@@ -71,7 +71,15 @@ impl Substrate for SpritesSubstrate {
         let mut cmd = vec![sprite_bin(), "exec".into()];
         cmd.extend(selector_args(host));
         cmd.extend(["--".into(), "sh".into(), "-c".into(), script]);
-        match run_with_timeout(&cmd, None, &relay_cwd(), &[], None, Duration::from_secs(60)) {
+        match run_with_timeout(
+            &cmd,
+            None,
+            &relay_cwd(),
+            &[],
+            false,
+            None,
+            Duration::from_secs(60),
+        ) {
             Ok(out) => match out.exit_code {
                 0 => ProbeResult::Alive,
                 4 => ProbeResult::Dead,
@@ -110,7 +118,7 @@ impl SpriteSession {
         // The sprite CLI parses remote args as its own flags without this.
         cmd.push("--".into());
         cmd.extend(remote.iter().cloned());
-        run_with_timeout(&cmd, stdin, &relay_cwd(), &[], None, timeout)
+        run_with_timeout(&cmd, stdin, &relay_cwd(), &[], false, None, timeout)
     }
 
     fn sprite_exec(
@@ -142,6 +150,7 @@ impl Session for SpriteSession {
                 None,
                 &relay_cwd(),
                 &[],
+                false,
                 None,
                 Duration::from_secs(300),
             )?;

@@ -18,7 +18,7 @@ fn make_plane(root: &Path) -> Plane {
     fs::create_dir_all(root.join("tasks/demo")).unwrap();
     fs::write(
         root.join("agents/a.toml"),
-        "harness = \"claude\"\nmodel = \"m\"\n",
+        "harness = \"pi\"\nmodel = \"m\"\n",
     )
     .unwrap();
     fs::write(root.join("tasks/demo/card.md"), "card\n").unwrap();
@@ -163,7 +163,7 @@ fn five_field_cron_schedules_are_accepted_and_bad_ones_fail_at_load() {
     fs::create_dir_all(root.join("tasks/bad")).unwrap();
     fs::write(
         root.join("agents/a.toml"),
-        "harness = \"claude\"\nmodel = \"m\"\n",
+        "harness = \"pi\"\nmodel = \"m\"\n",
     )
     .unwrap();
     fs::write(root.join("tasks/bad/card.md"), "card\n").unwrap();

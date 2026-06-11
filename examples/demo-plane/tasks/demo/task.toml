@@ -1,4 +1,4 @@
-agent = "codex"
+agent = "pi"               # reflex triggers require an api-auth agent
 substrate = "sprites"        # local | sprites
 
 [workspace]

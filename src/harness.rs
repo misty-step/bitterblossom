@@ -47,7 +47,17 @@ pub fn build_command(agent: &AgentSpec, budget: &TaskBudget) -> Result<Vec<Strin
             agent.model.clone(),
             "-".into(),
         ],
-        "pi" => vec![bin, "--mode".into(), "json".into(), "-p".into()],
+        "pi" => vec![
+            bin,
+            "--provider".into(),
+            agent.provider().into(),
+            "--model".into(),
+            agent.model.clone(),
+            "--no-session".into(),
+            "--mode".into(),
+            "json".into(),
+            "-p".into(),
+        ],
         other => bail!(
             "unknown harness '{other}' (known: {})",
             HARNESSES.join(", ")
@@ -146,26 +156,62 @@ fn parse_codex(stdout: &str) -> Result<ParsedOutput> {
     })
 }
 
-/// pi `--mode json` emits a final JSON object with `result` and `usage`.
+/// pi `--mode json` emits JSONL events (verified live 2026-06-10 against
+/// pi via OpenRouter): the final assistant message rides on `message_end`
+/// with `message.content[]` text items and `message.usage`
+/// `{input, output, cost: {total}}`; turns close with `turn_end`.
 fn parse_pi(stdout: &str) -> Result<ParsedOutput> {
-    let v = last_json_object(stdout).context("pi output: no JSON object found")?;
-    let result = v
-        .get("result")
-        .or_else(|| v.get("output"))
-        .and_then(Value::as_str)
-        .context("pi output: no 'result' or 'output' string")?
-        .to_string();
-    if result.trim().is_empty() {
-        bail!("pi output: empty result");
+    let mut turns: i64 = 0;
+    let mut last_message: Option<Value> = None;
+    let mut saw_event = false;
+    for line in stdout.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        saw_event = true;
+        match v.get("type").and_then(Value::as_str) {
+            Some("turn_end") => turns += 1,
+            Some("message_end") => {
+                if let Some(m) = v.get("message") {
+                    if m.get("role").and_then(Value::as_str) == Some("assistant") {
+                        last_message = Some(m.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
     }
-    let usage = v.get("usage").cloned().unwrap_or(Value::Null);
+    if !saw_event {
+        bail!("pi output: no JSONL events found");
+    }
+    let message = last_message.context("pi output: no assistant message_end — incomplete run")?;
+    let result: String = message
+        .get("content")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter(|c| c.get("type").and_then(Value::as_str) == Some("text"))
+                .filter_map(|c| c.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+    let result = result.trim().to_string();
+    if result.is_empty() {
+        bail!("pi output: assistant message has no text content");
+    }
+    let usage = message.get("usage").cloned().unwrap_or(Value::Null);
     Ok(ParsedOutput {
         result,
         stats: AttemptStats {
-            tokens_in: usage.get("input_tokens").and_then(Value::as_i64),
-            tokens_out: usage.get("output_tokens").and_then(Value::as_i64),
-            turns: v.get("num_turns").and_then(Value::as_i64),
-            cost_usd: v.get("total_cost_usd").and_then(Value::as_f64),
+            tokens_in: usage.get("input").and_then(Value::as_i64),
+            tokens_out: usage.get("output").and_then(Value::as_i64),
+            turns: Some(turns),
+            cost_usd: usage
+                .get("cost")
+                .and_then(|c| c.get("total"))
+                .and_then(Value::as_f64),
         },
     })
 }
@@ -226,6 +272,47 @@ mod tests {
         assert_eq!(parsed.result, "review posted");
         assert_eq!(parsed.stats.cost_usd, Some(2.0459));
         assert_eq!(parsed.stats.tokens_out, Some(6598));
+    }
+
+    #[test]
+    fn pi_command_carries_provider_and_model() {
+        let agent: crate::spec::AgentSpec =
+            toml::from_str("harness = \"pi\"\nmodel = \"moonshotai/kimi-k2.6\"\n").unwrap();
+        let cmd = build_command(&agent, &crate::spec::TaskBudget::default()).unwrap();
+        let joined = cmd.join(" ");
+        assert!(joined.contains("--provider openrouter"), "{joined}");
+        assert!(joined.contains("--model moonshotai/kimi-k2.6"), "{joined}");
+        assert!(joined.contains("--no-session"), "{joined}");
+    }
+
+    #[test]
+    fn parse_pi_jsonl_events() {
+        // Condensed from a live pi run via OpenRouter (2026-06-10).
+        let out = concat!(
+            r#"{"type":"message_update","assistantMessageEvent":{"type":"text_delta"}}"#,
+            "\n",
+            r#"{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"..."},{"type":"text","text":" BB-PI-OK"}],"usage":{"input":1117,"output":21,"totalTokens":1138,"cost":{"input":0.0007,"output":0.00007,"total":0.000835848}}}}"#,
+            "\n",
+            r#"{"type":"turn_end","message":{"role":"assistant"}}"#,
+            "\n",
+            r#"{"type":"agent_end","messages":[]}"#,
+        );
+        let parsed = parse_output("pi", out).unwrap();
+        assert_eq!(parsed.result, "BB-PI-OK");
+        assert_eq!(parsed.stats.tokens_in, Some(1117));
+        assert_eq!(parsed.stats.tokens_out, Some(21));
+        assert_eq!(parsed.stats.turns, Some(1));
+        assert_eq!(parsed.stats.cost_usd, Some(0.000835848));
+    }
+
+    #[test]
+    fn parse_pi_rejects_incomplete_runs() {
+        assert!(parse_output("pi", "not json").is_err());
+        // Events but no assistant message_end: incomplete.
+        assert!(parse_output("pi", r#"{"type":"message_update"}"#).is_err());
+        // Assistant message with no text content.
+        let no_text = r#"{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"x"}],"usage":{}}}"#;
+        assert!(parse_output("pi", no_text).is_err());
     }
 
     #[test]

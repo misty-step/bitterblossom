@@ -68,6 +68,12 @@ pub struct AgentSpec {
     pub version: u32,
     pub harness: String,
     pub model: String,
+    /// Model provider for open harnesses (pi); defaults to "openrouter".
+    pub provider: Option<String>,
+    /// "subscription" (operator identity: claude/codex OAuth) or "api"
+    /// (hermetic: only declared secrets cross the exec boundary).
+    /// Defaults by harness: claude/codex → subscription, pi → api.
+    pub auth: Option<String>,
     pub bin: Option<String>,
     #[serde(default)]
     pub args: Vec<String>,
@@ -75,6 +81,33 @@ pub struct AgentSpec {
     /// passed per-exec; values are never persisted (on disk or remotely).
     #[serde(default)]
     pub secrets: Vec<String>,
+}
+
+/// How an agent authenticates — the policy hinge. Subscription agents act
+/// as the operator and may only run dispatch (manual) work; api agents are
+/// hermetic and are the only class allowed on reflex (webhook/cron) work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthClass {
+    Subscription,
+    Api,
+}
+
+impl AgentSpec {
+    pub fn auth_class(&self) -> Result<AuthClass> {
+        match self.auth.as_deref() {
+            Some("subscription") => Ok(AuthClass::Subscription),
+            Some("api") => Ok(AuthClass::Api),
+            Some(other) => bail!("unknown auth '{other}' (known: subscription, api)"),
+            None => Ok(match self.harness.as_str() {
+                "claude" | "codex" => AuthClass::Subscription,
+                _ => AuthClass::Api,
+            }),
+        }
+    }
+
+    pub fn provider(&self) -> &str {
+        self.provider.as_deref().unwrap_or("openrouter")
+    }
 }
 
 fn default_version() -> u32 {
@@ -250,9 +283,54 @@ impl Plane {
             }
         }
 
+        // Model & auth policy is code, not intent: violations fail at load
+        // (and therefore at `bb check`), never at first dispatch.
+        for (name, agent) in &agents {
+            let auth = agent
+                .auth_class()
+                .with_context(|| format!("agent '{name}'"))?;
+            match (agent.harness.as_str(), auth) {
+                ("claude" | "codex", AuthClass::Api) => bail!(
+                    "agent '{name}': {} runs on subscription auth only — \
+                     Anthropic/OpenAI API keys are forbidden on this plane",
+                    agent.harness
+                ),
+                ("pi", AuthClass::Subscription) => {
+                    bail!("agent '{name}': pi has no subscription auth; use auth = \"api\"")
+                }
+                _ => {}
+            }
+            for secret in &agent.secrets {
+                if secret == "ANTHROPIC_API_KEY" || secret == "OPENAI_API_KEY" {
+                    bail!(
+                        "agent '{name}': secret '{secret}' is forbidden — \
+                         claude/codex run on subscription auth, never API keys"
+                    );
+                }
+            }
+        }
+
         // Bad trigger config fails at load, not at first delivery.
         let mut routes = std::collections::BTreeSet::new();
         for task in tasks.values() {
+            let auth = task
+                .agent
+                .auth_class()
+                .with_context(|| format!("task '{}'", task.name))?;
+            let reflex = task
+                .spec
+                .triggers
+                .iter()
+                .any(|t| !matches!(t, TriggerSpec::Manual));
+            if reflex && auth == AuthClass::Subscription {
+                bail!(
+                    "task '{}': reflex triggers (webhook/cron) require an auth = \"api\" \
+                     agent on an open harness — subscription agents ({}) run dispatch \
+                     (manual) work only",
+                    task.name,
+                    task.agent_name
+                );
+            }
             for trigger in &task.spec.triggers {
                 match trigger {
                     TriggerSpec::Webhook { route, .. } => {

@@ -50,6 +50,12 @@ harness on a [Fly Sprite](https://sprites.dev) over WebSocket exec.
   per-run cost is advisory — a breach parks the task and notifies.
 - Secrets are resolved per-exec from the plane's environment and travel
   on stdin, never argv, never persisted.
+- Model & auth policy is code, not intent: claude/codex run on the
+  operator's subscription auth only (`ANTHROPIC_API_KEY` /
+  `OPENAI_API_KEY` are rejected as agent secrets), reflex triggers
+  (webhook/cron) bind only `auth = "api"` agents — cheap open-weight
+  models via OpenRouter on open harnesses (pi). Api-auth execs are
+  hermetic: scrubbed env, workspace-local HOME, declared secrets only.
 - The plane holds no judgment: workloads are config, agents own their own
   decomposition, and a workload-specific branch in the spine is wrong by
   definition.

@@ -1,5 +1,9 @@
-# Review coordinator: claude headless — native subagent fan-out makes the
-# coordinator-as-filter pattern a single harness run.
-version = 1
-harness = "claude"
-model = "claude-fable-5"
+# Review coordinator: pi via OpenRouter. Reflex work runs hermetic on
+# cheap open-weight models — never subscription auth, never
+# Anthropic/OpenAI API keys (the plane rejects both at `bb check`).
+# Model choice 2026-06: Kimi K2.6 — strongest agentic tool-use of the
+# cheap open-weight cluster (~$0.95/$4.00 per 1M via OpenRouter).
+version = 2
+harness = "pi"
+model = "moonshotai/kimi-k2.6"
+secrets = ["OPENROUTER_API_KEY", "GH_TOKEN"]

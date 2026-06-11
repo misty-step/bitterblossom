@@ -34,14 +34,32 @@ max_cost_per_day_usd = 25.0       # global daily ceiling, enforced pre-dispatch
 
 ```toml
 version = 1                       # bump on any change; recorded on every attempt
-harness = "claude"                # claude | codex | pi
-model = "claude-fable-5"
-bin = "claude"                    # optional: override the harness binary path
+harness = "pi"                    # claude | codex | pi
+model = "moonshotai/kimi-k2.6"
+provider = "openrouter"           # pi only; defaults to "openrouter"
+auth = "api"                      # api | subscription (defaults by harness)
+bin = "pi"                        # optional: override the harness binary path
 args = []                         # optional: extra CLI args appended verbatim
+secrets = ["OPENROUTER_API_KEY"]  # env names resolved per-exec, never persisted
 ```
 
 Swapping a task's agent is a one-line edit to `task.toml`; the ledger
 records which agent name + version produced every attempt.
+
+### Model & auth policy (enforced at load — `bb check` fails, not dispatch)
+
+Two auth classes, two work classes:
+
+- **`subscription`** (claude/codex default): the agent runs *as* the
+  operator on OAuth subscription auth. API keys are forbidden —
+  `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` as agent secrets fail the load, as
+  does `auth = "api"` on those harnesses. Subscription agents bind only
+  to manual-only tasks (**dispatch** work).
+- **`api`** (pi default): cheap open-weight models via OpenRouter. The
+  only class allowed on webhook/cron triggers (**reflex** work). Execs
+  are hermetic: scrubbed environment, workspace-local HOME, declared
+  secrets only — nothing of the operator's identity crosses the exec
+  boundary.
 
 ## tasks/<name>/task.toml
 

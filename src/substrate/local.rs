@@ -28,6 +28,7 @@ impl Substrate for LocalSubstrate {
             workspace,
             artifacts: attempt_dir.to_path_buf(),
             secrets: Vec::new(),
+            hermetic: true,
         }))
     }
 
@@ -52,6 +53,7 @@ pub struct LocalSession {
     workspace: PathBuf,
     artifacts: PathBuf,
     secrets: Vec<(String, String)>,
+    hermetic: bool,
 }
 
 impl LocalSession {
@@ -61,15 +63,50 @@ impl LocalSession {
             None,
             &self.workspace,
             &[],
+            false,
             None,
             timeout,
         )
+    }
+
+    /// The only env vars that cross the exec boundary. Provider API keys in
+    /// the plane's environment (OPENAI_API_KEY, ANTHROPIC_API_KEY, …) never
+    /// reach a workload unless declared as agent secrets.
+    fn workload_env(&self) -> Result<Vec<(String, String)>> {
+        const PASS: &[&str] = &[
+            "PATH",
+            "TMPDIR",
+            "TERM",
+            "COLORTERM",
+            "LANG",
+            "LC_ALL",
+            "LC_CTYPE",
+            "USER",
+            "LOGNAME",
+            "SHELL",
+            "TZ",
+        ];
+        let mut env: Vec<(String, String)> = PASS
+            .iter()
+            .filter_map(|k| std::env::var(k).ok().map(|v| (k.to_string(), v)))
+            .collect();
+        let home = if self.hermetic {
+            let home = self.workspace.join(".home");
+            std::fs::create_dir_all(&home)?;
+            home.to_string_lossy().into_owned()
+        } else {
+            std::env::var("HOME").context("HOME not set")?
+        };
+        env.push(("HOME".to_string(), home));
+        env.extend(self.secrets.iter().cloned());
+        Ok(env)
     }
 }
 
 impl Session for LocalSession {
     fn prepare(&mut self, plan: &WorkspacePlan) -> Result<()> {
         self.secrets = plan.secrets.clone();
+        self.hermetic = plan.hermetic;
         for repo in &plan.repos {
             let dest = self
                 .workspace
@@ -110,7 +147,8 @@ impl Session for LocalSession {
             cmd,
             stdin,
             &self.workspace,
-            &self.secrets,
+            &self.workload_env()?,
+            true,
             Some(&self.artifacts.join(PIDFILE)),
             timeout,
         )
@@ -150,6 +188,7 @@ pub(crate) fn run_with_timeout(
     stdin: Option<&str>,
     cwd: &Path,
     envs: &[(String, String)],
+    clear_env: bool,
     pidfile: Option<&Path>,
     timeout: Duration,
 ) -> Result<ExecResult> {
@@ -179,6 +218,9 @@ pub(crate) fn run_with_timeout(
     {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
+    }
+    if clear_env {
+        command.env_clear();
     }
     for (k, v) in envs {
         command.env(k, v);
