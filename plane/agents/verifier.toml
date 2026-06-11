@@ -1,0 +1,10 @@
+# Deterministic gate member: runs the repo gate directly — no LLM ever
+# mediates verify.sh. Exit code IS the verdict (command harness).
+# The token travels via a credential helper that reads $GH_TOKEN at call
+# time: never in argv, never persisted into .git/config. The target dir
+# is scrubbed first so re-runs on persistent sprite workspaces judge the
+# submitted rev, not residue.
+harness = "command"
+bin = "sh"
+args = ["-c", "rev=$(grep -o '\"rev\": *\"[^\"]*\"' EVENT.json | head -1 | sed 's/.*\"\\([^\"]*\\)\"$/\\1/'); repo=$(grep -o '\"repo\": *\"[^\"]*\"' EVENT.json | head -1 | sed 's/.*\"\\([^\"]*\\)\"$/\\1/'); rm -rf target && git -c credential.helper= -c 'credential.helper=!f() { echo username=x-access-token; echo \"password=$GH_TOKEN\"; }; f' clone \"https://github.com/${repo}.git\" target && cd target && git fetch origin \"$rev\" && git checkout -q FETCH_HEAD && ./scripts/verify.sh"]
+secrets = ["GH_TOKEN"]

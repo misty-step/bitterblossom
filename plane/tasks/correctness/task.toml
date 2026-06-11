@@ -1,0 +1,14 @@
+agent = "storm-correctness"
+substrate = "sprites"
+verdict = "correctness"
+
+[workspace]
+host = "lane-1"
+
+[budget]
+timeout_minutes = 45
+max_runs_per_day = 40
+max_cost_per_run_usd = 0.60
+
+[[trigger]]
+kind = "manual"

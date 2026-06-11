@@ -11,4 +11,5 @@ pub mod notify;
 pub mod recovery;
 pub mod serve;
 pub mod spec;
+pub mod submit;
 pub mod substrate;

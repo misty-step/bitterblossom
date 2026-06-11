@@ -22,6 +22,8 @@ pub struct PlaneSpec {
     pub notify: NotifySpec,
     #[serde(default)]
     pub budget: GlobalBudget,
+    /// Merge-gate policy for the submission loop (None = no gate).
+    pub gate: Option<GateSpec>,
 }
 
 impl Default for PlaneSpec {
@@ -32,8 +34,30 @@ impl Default for PlaneSpec {
             ingress: IngressSpec::default(),
             notify: NotifySpec::default(),
             budget: GlobalBudget::default(),
+            gate: None,
         }
     }
+}
+
+/// Gate arithmetic config. Only `blocking`-severity findings block;
+/// termination rests solely on the round cap — see docs/spine.md.
+#[derive(Debug, Clone, Deserialize)]
+pub struct GateSpec {
+    /// Verdict kinds that must reach a terminal run before any `clear`.
+    pub required: Vec<String>,
+    #[serde(default = "default_max_rounds")]
+    pub max_rounds: u32,
+    /// Verdict kind whose `pass` sustains a rejected blocking finding.
+    #[serde(default = "default_arbiter")]
+    pub arbiter: String,
+}
+
+fn default_max_rounds() -> u32 {
+    3
+}
+
+fn default_arbiter() -> String {
+    "arbiter".to_string()
 }
 
 fn default_db_path() -> String {
@@ -73,6 +97,8 @@ pub struct AgentSpec {
     #[serde(default = "default_version")]
     pub version: u32,
     pub harness: String,
+    /// Required for LLM harnesses; the command harness runs no model.
+    #[serde(default)]
     pub model: String,
     /// Model provider for open harnesses (pi); defaults to "openrouter".
     pub provider: Option<String>,
@@ -133,6 +159,9 @@ pub struct TaskSpec {
     pub triggers: Vec<TriggerSpec>,
     pub pre_command: Option<String>,
     pub post_command: Option<String>,
+    /// Storm-member marker: a successful run's result must be verdict
+    /// JSON, recorded against the submission named in the payload.
+    pub verdict: Option<String>,
 }
 
 fn default_substrate() -> String {
@@ -369,6 +398,16 @@ impl Plane {
             let auth = agent
                 .auth_class()
                 .with_context(|| format!("agent '{name}'"))?;
+            if agent.harness == "command" {
+                if agent.bin.is_none() {
+                    bail!("agent '{name}': harness = \"command\" requires bin");
+                }
+            } else if agent.model.is_empty() {
+                bail!(
+                    "agent '{name}': model is required for harness '{}'",
+                    agent.harness
+                );
+            }
             match (agent.harness.as_str(), auth) {
                 ("claude" | "codex", AuthClass::Api) => bail!(
                     "agent '{name}': {} runs on subscription auth only — \
@@ -427,6 +466,26 @@ impl Plane {
                             .with_context(|| format!("task '{}': bad cron trigger", task.name))?;
                     }
                     TriggerSpec::Manual => {}
+                }
+            }
+        }
+
+        // Gate policy must resolve to real verdict tasks at load time.
+        if let Some(gate) = &spec.gate {
+            for kind in &gate.required {
+                if !tasks
+                    .values()
+                    .any(|t| t.spec.verdict.as_deref() == Some(kind.as_str()))
+                {
+                    bail!("[gate] requires verdict kind '{kind}' but no task declares it");
+                }
+            }
+        }
+        let mut kinds = std::collections::BTreeSet::new();
+        for task in tasks.values() {
+            if let Some(kind) = &task.spec.verdict {
+                if !kinds.insert(kind.clone()) {
+                    bail!("verdict kind '{kind}' declared by more than one task");
                 }
             }
         }

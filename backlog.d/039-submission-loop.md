@@ -1,6 +1,6 @@
 # Build the submission loop: verdict storm, mechanical gate, bounded rounds
 
-Priority: P1 · Status: ready · Estimate: L
+Priority: P1 · Status: shipped · Estimate: L
 
 ## Goal
 
@@ -13,21 +13,21 @@ No human code-reading; no PR required for coordination.
 
 ## Oracle
 
-- [ ] `./scripts/verify.sh` green including new submission-lifecycle,
+- [x] `./scripts/verify.sh` green including new submission-lifecycle,
       verdict-parsing, command-harness, and gate-rule tests (pending
       with run states / fresh blocker blocks any round / serious never
       blocks / arbiter-gated rejection of blocking findings / escalate
       at max_rounds and on dead required member / clear only over a
       complete round)
-- [ ] Live: seeded-flaw branch goes blocked (round 1, plantings named)
+- [x] Live: seeded-flaw branch goes blocked (round 1, plantings named)
       → fixed → clear (round 2) → squash-landed, ≥2 storm members
       concurrent on distinct sprites, total loop cost ≤ ~$1
-- [ ] Live arbiter drill: rejected blocking finding stays blocking
+- [x] Live arbiter drill: rejected blocking finding stays blocking
       until an arbiter verdict sustains the rejection
-- [ ] Termination drill (stub): persistent blockers → `escalated` at
+- [x] Termination drill (stub): persistent blockers → `escalated` at
       max_rounds with one notify; dead-lettered required member →
       `escalated`, never eternal pending
-- [ ] Spine stays ≤ 5k LOC
+- [x] Spine stays ≤ 5k LOC
 
 ## Notes
 

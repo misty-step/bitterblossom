@@ -53,6 +53,21 @@ enum Command {
         #[command(subcommand)]
         command: TaskCommand,
     },
+    /// Submission lifecycle for the verdict-storm loop (docs/spine.md).
+    Submit {
+        #[command(subcommand)]
+        command: SubmitCommand,
+    },
+    /// Evaluate the merge gate over a submission's verdicts.
+    Gate {
+        #[arg(long)]
+        submission: Option<String>,
+        /// Resolve the change's most recent submission.
+        #[arg(long)]
+        change: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Validate the plane config and print what's loaded.
     Check {
         #[arg(long)]
@@ -114,6 +129,36 @@ enum DlqCommand {
 }
 
 #[derive(Subcommand)]
+enum SubmitCommand {
+    /// Open a submission (round N+1 after `blocked`; fresh chain otherwise).
+    Open {
+        #[arg(long)]
+        change: String,
+        #[arg(long)]
+        rev: String,
+        #[arg(long)]
+        context: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Reject a finding by fingerprint. Rejecting a blocking finding only
+    /// takes effect once an arbiter verdict sustains it.
+    Reject {
+        #[arg(long)]
+        change: String,
+        #[arg(long)]
+        fingerprint: String,
+        #[arg(long)]
+        reason: String,
+    },
+    /// Abandon the open submission for a change.
+    Abandon {
+        #[arg(long)]
+        change: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum TaskCommand {
     Park {
         task: String,
@@ -162,13 +207,22 @@ fn run() -> Result<()> {
                 payload: payload.as_deref(),
                 parent_run_id: None,
             })?;
-            if outcome.duplicate {
+            if outcome.duplicate && outcome.state != "pending" {
                 eprintln!(
                     "duplicate idempotency key; existing run {} ({})",
                     outcome.run_id, outcome.state
                 );
                 print_run(&ledger, &outcome.run_id, json)?;
                 return Ok(());
+            }
+            if outcome.duplicate {
+                // Still pending (e.g. unparked after a budget block, or a
+                // prior invocation died before dispatching): converge by
+                // dispatching it — the atomic claim makes this race-safe.
+                eprintln!(
+                    "duplicate idempotency key; dispatching pending run {}",
+                    outcome.run_id
+                );
             }
             if outcome.state == "blocked_budget" {
                 eprintln!("run {} blocked: task is parked", outcome.run_id);
@@ -320,6 +374,100 @@ fn run() -> Result<()> {
                 }
             }
         },
+        Command::Submit { command } => match command {
+            SubmitCommand::Open {
+                change,
+                rev,
+                context,
+                json,
+            } => {
+                let sub = ledger.open_submission(&change, &rev, context.as_deref())?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&sub)?);
+                } else {
+                    println!(
+                        "submission {} change={} rev={} round={}",
+                        sub.id, sub.change_key, sub.rev, sub.round
+                    );
+                }
+            }
+            SubmitCommand::Reject {
+                change,
+                fingerprint,
+                reason,
+            } => {
+                ledger.reject_finding(&change, &fingerprint, &reason)?;
+                println!("rejected {fingerprint} on {change} (blocking findings stay blocking until an arbiter sustains)");
+            }
+            SubmitCommand::Abandon { change } => {
+                let sub = ledger
+                    .latest_submission(&change)?
+                    .ok_or_else(|| anyhow::anyhow!("no submissions for change '{change}'"))?;
+                if !ledger.settle_submission(&sub.id, "abandoned", "{}")? {
+                    bail!("submission {} is {}, not open", sub.id, sub.state);
+                }
+                println!("submission {} abandoned", sub.id);
+            }
+        },
+        Command::Gate {
+            submission,
+            change,
+            json,
+        } => {
+            let id = match (submission, change) {
+                (Some(id), _) => id,
+                (None, Some(change)) => {
+                    ledger
+                        .latest_submission(&change)?
+                        .ok_or_else(|| anyhow::anyhow!("no submissions for change '{change}'"))?
+                        .id
+                }
+                (None, None) => bail!("pass --submission or --change"),
+            };
+            let report = bitterblossom::submit::evaluate(&plane, &ledger, &id)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!(
+                    "gate {}: {} (round {}/{})",
+                    report.change_key, report.decision, report.round, report.max_rounds
+                );
+                for m in &report.members {
+                    println!(
+                        "  {:<16} {:<20} cost={}",
+                        m.kind,
+                        m.status,
+                        m.cost_usd
+                            .map(|c| format!("${c:.4}"))
+                            .unwrap_or_else(|| "-".into()),
+                    );
+                }
+                for f in &report.blocking {
+                    println!(
+                        "  BLOCKING [{}] {} ({})",
+                        f.fingerprint.as_deref().unwrap_or("-"),
+                        f.claim,
+                        f.file.as_deref().unwrap_or("-"),
+                    );
+                }
+                for f in &report.advisory {
+                    println!(
+                        "  advisory [{}] {}: {}",
+                        f.fingerprint.as_deref().unwrap_or("-"),
+                        f.severity,
+                        f.claim,
+                    );
+                }
+                for (f, reason) in &report.rejected {
+                    println!(
+                        "  rejected [{}] {} — {}",
+                        f.fingerprint.as_deref().unwrap_or("-"),
+                        f.claim,
+                        reason,
+                    );
+                }
+            }
+        }
         Command::Recover { json } => {
             let reports = recovery::recover_inherited_runs(&plane, &mut ledger)?;
             if json {

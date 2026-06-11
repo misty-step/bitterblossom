@@ -11,6 +11,7 @@ use crate::budget;
 use crate::harness;
 use crate::ledger::{AttemptStats, Ledger, RunRow};
 use crate::spec::{Plane, Task};
+use crate::submit;
 use crate::substrate::{self, WorkspacePlan, CARD_FILENAME};
 
 /// Mechanical retries after the initial attempt, for pre-execute failures only.
@@ -126,12 +127,23 @@ fn run_attempt(
     n: i64,
 ) -> Result<AttemptOutcome> {
     let host = task.host();
+    // Two tasks sharing a host serialize by design; the predecessor may
+    // legitimately run for its whole timeout. Waiting only LEASE_WAIT
+    // dead-lettered co-hosted storm members (live, 2026-06-11) — wait as
+    // long as the predecessor could possibly hold the lease.
+    let lease_wait = LEASE_WAIT.max(Duration::from_secs(
+        60 * task
+            .spec
+            .budget
+            .timeout_minutes
+            .unwrap_or(DEFAULT_TIMEOUT_MINUTES),
+    ));
     let lease_started = Instant::now();
     loop {
         if ledger.try_acquire_host_lease(&host, run_id)? {
             break;
         }
-        if lease_started.elapsed() >= LEASE_WAIT {
+        if lease_started.elapsed() >= lease_wait {
             return Ok(AttemptOutcome::Failure {
                 phase_executed: false,
                 error: format!(
@@ -192,6 +204,16 @@ fn attempt_on_host(
         Err(e) => return fail(false, format!("acquire: {e:#}")),
     };
 
+    // Verdict tasks run against a submission named in the payload; the
+    // prior round's gate report rides into the workspace untouched.
+    let submission = match verdict_submission(ledger, run_id, task) {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = session.release();
+            return fail(false, format!("verdict task: {e:#}"));
+        }
+    };
+
     let mut secrets = Vec::new();
     for name in &task.agent.secrets {
         match std::env::var(name) {
@@ -206,7 +228,27 @@ fn attempt_on_host(
         host: task.host(),
         repos: task.spec.workspace.repos.clone(),
         card: task.card.clone(),
-        payload: ledger.run_payload(run_id)?,
+        payload: match (&submission, ledger.run_payload(run_id)?) {
+            // The plane owns the review target: submission/change/rev in
+            // EVENT.json come from the submission row, never the driver —
+            // a storm member can't be pointed at a different rev than the
+            // one the gate will clear.
+            (Some(sub), Some(raw)) => {
+                let mut v: serde_json::Value = serde_json::from_str(&raw)?;
+                let obj = v.as_object_mut().context("verdict payload not an object")?;
+                obj.insert("submission".into(), sub.id.clone().into());
+                obj.insert("change".into(), sub.change_key.clone().into());
+                obj.insert("rev".into(), sub.rev.clone().into());
+                if let Some(ctx) = &sub.context {
+                    obj.entry("context").or_insert_with(|| ctx.clone().into());
+                }
+                Some(v.to_string())
+            }
+            (_, payload) => payload,
+        },
+        report: submission
+            .as_ref()
+            .and_then(|s| s.prior_report_json.clone()),
         pre_command: task.spec.pre_command.clone(),
         post_command: task.spec.post_command.clone(),
         marker: attempt_marker(attempt_id),
@@ -270,6 +312,53 @@ fn attempt_on_host(
             error: format!("timeout after {}s", timeout.as_secs()),
         });
     }
+    // Command-harness verdict members: the exit code IS the verdict —
+    // a deterministic gate is never mediated by an agent's JSON.
+    if let (Some(sub), "command", Some(kind)) = (
+        &submission,
+        task.agent.harness.as_str(),
+        task.spec.verdict.as_deref(),
+    ) {
+        let doc = if exec.exit_code == 0 {
+            submit::VerdictDoc {
+                verdict: "pass".into(),
+                findings: vec![],
+            }
+        } else {
+            let claim = format!("{kind} failed (non-zero exit)");
+            submit::VerdictDoc {
+                verdict: "blocking".into(),
+                findings: vec![submit::Finding {
+                    severity: "blocking".into(),
+                    file: None,
+                    line: None,
+                    fingerprint: Some(submit::fingerprint(kind, None, &claim)),
+                    claim,
+                    // Build tools fail on stdout as often as stderr.
+                    evidence: Some(if exec.stderr.trim().is_empty() {
+                        tail(exec.stdout.trim(), 2000)
+                    } else {
+                        tail(exec.stderr.trim(), 2000)
+                    }),
+                }],
+            }
+        };
+        ledger.record_verdict(&sub.id, run_id, kind, &doc)?;
+        session.release().context("release session")?;
+        ledger.finish_attempt(
+            attempt_id,
+            "success",
+            None,
+            Some(exec.exit_code),
+            &AttemptStats::default(),
+            Some(&artifact_dir),
+        )?;
+        ledger.set_attempt_phase(attempt_id, "released")?;
+        return Ok(AttemptOutcome::Success {
+            stats: AttemptStats::default(),
+        });
+    }
+
     if exec.exit_code != 0 {
         let _ = session.release();
         let error = format!(
@@ -313,6 +402,37 @@ fn attempt_on_host(
         }
     };
     session.write_artifact("result.md", parsed.result.as_bytes())?;
+
+    // LLM verdict members: the result MUST be verdict JSON. Unparseable
+    // is a failure with raw output preserved — never a silent pass.
+    if let (Some(sub), Some(kind)) = (&submission, task.spec.verdict.as_deref()) {
+        match submit::parse_verdict(kind, &parsed.result) {
+            Ok(mut doc) => {
+                // A supplied fingerprint must already be known to this
+                // submission (prior report or recorded verdicts) or it is
+                // recomputed — rejected fingerprints can't be reused to
+                // smuggle fresh blocking findings past the gate.
+                submit::enforce_fingerprints(&mut doc, kind, &ledger.known_fingerprints(sub)?);
+                ledger.record_verdict(&sub.id, run_id, kind, &doc)?
+            }
+            Err(e) => {
+                let _ = session.release();
+                let error = format!("invalid verdict JSON: {e:#}");
+                ledger.finish_attempt(
+                    attempt_id,
+                    "failure",
+                    Some(&error),
+                    Some(exec.exit_code),
+                    &parsed.stats,
+                    Some(&artifact_dir),
+                )?;
+                return Ok(AttemptOutcome::Failure {
+                    phase_executed: true,
+                    error,
+                });
+            }
+        }
+    }
 
     ledger.set_attempt_phase(attempt_id, "finalizing")?;
     if let Some(post) = &plan.post_command {
@@ -364,6 +484,28 @@ fn attempt_on_host(
     })
 }
 
+/// Resolve the submission a verdict task targets (None for ordinary
+/// tasks). A verdict run without a valid `{"submission": "<id>"}` in its
+/// payload can never produce a usable verdict — fail before executing.
+fn verdict_submission(
+    ledger: &Ledger,
+    run_id: &str,
+    task: &Task,
+) -> Result<Option<crate::submit::SubmissionRow>> {
+    if task.spec.verdict.is_none() {
+        return Ok(None);
+    }
+    let payload = ledger
+        .run_payload(run_id)?
+        .context("payload required (with a 'submission' field)")?;
+    let v: serde_json::Value = serde_json::from_str(&payload).context("payload not JSON")?;
+    let id = v
+        .get("submission")
+        .and_then(serde_json::Value::as_str)
+        .context("payload has no 'submission' field")?;
+    Ok(Some(ledger.submission(id)?))
+}
+
 pub fn attempt_marker(attempt_id: i64) -> String {
     format!("bb-attempt-{attempt_id}")
 }
@@ -374,6 +516,18 @@ pub fn attempt_dir(plane: &Plane, run_id: &str, n: i64) -> PathBuf {
         .join(".bb/runs")
         .join(run_id)
         .join(format!("attempt-{n}"))
+}
+
+/// Last `max` bytes (char-aligned) — failures print at the end of output.
+fn tail(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut start = s.len() - max;
+    while !s.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("…{}", &s[start..])
 }
 
 fn truncate(s: &str, max: usize) -> String {

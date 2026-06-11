@@ -10,3 +10,11 @@ bind = "127.0.0.1:7077"
 
 [budget]
 max_cost_per_day_usd = 25.0
+
+# Submission-loop merge gate (docs/spine.md). Uncomment with verdict
+# tasks: a task with `verdict = "<kind>"` becomes a storm member whose
+# result must be verdict JSON; `bb gate --change <key>` is the arithmetic.
+# [gate]
+# required = ["verify", "correctness"]   # kinds that must report before clear
+# max_rounds = 3                         # rounds 1..=max_rounds, then escalate
+# arbiter = "arbiter"                    # kind whose `pass` sustains a rejection

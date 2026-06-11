@@ -15,13 +15,16 @@ pub struct ParsedOutput {
     pub stats: AttemptStats,
 }
 
-pub const HARNESSES: &[&str] = &["claude", "codex", "pi"];
+pub const HARNESSES: &[&str] = &["claude", "codex", "pi", "command"];
 
 /// The lane card is passed on stdin; the command must read its prompt from
 /// stdin so card size never hits argv limits.
 pub fn build_command(agent: &AgentSpec, budget: &TaskBudget) -> Result<Vec<String>> {
     let bin = agent.bin.clone().unwrap_or_else(|| agent.harness.clone());
     let mut cmd = match agent.harness.as_str() {
+        // No LLM: run bin+args directly. On verdict tasks the exit code
+        // *is* the verdict (dispatch maps it); never mediated by an agent.
+        "command" => vec![bin],
         "claude" => {
             let mut c = vec![
                 bin,
@@ -102,6 +105,11 @@ pub fn parse_output(harness: &str, stdout: &str) -> Result<ParsedOutput> {
         "claude" => parse_claude(stdout),
         "codex" => parse_codex(stdout),
         "pi" => parse_pi(stdout),
+        // A command's output is its result verbatim; no tokens, no cost.
+        "command" => Ok(ParsedOutput {
+            result: stdout.trim().to_string(),
+            stats: AttemptStats::default(),
+        }),
         other => bail!("unknown harness '{other}'"),
     }
 }
