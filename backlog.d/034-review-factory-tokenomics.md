@@ -17,9 +17,11 @@ median cost per review without losing finding quality.
 
 ## Notes
 Measured baseline 2026-06-10: $2.46 small diff, $3.09 medium (claude
-coordinator + subagent fan-out, claude-fable-5 for every lane). Levers,
-in expected order of leverage: cheaper models for reviewer lanes (tiered
-stack — the card already tiers compute but not models), prompt-cache
+coordinator + subagent fan-out, claude-fable-5 for every lane). The
+biggest lever — rebinding the agent to a cheap OpenRouter model on an
+open harness — is now ticket 036 (model & auth policy); this ticket is
+the measurement gate that proves the median after 036 lands. Remaining
+levers here: prompt-cache
 reuse across lanes, skipping the bench on trivial diffs (tier-1 already
 exists, verify it engages), incremental re-review with prior context
 instead of full re-review. Remaining 028 design depth (engine eval via
