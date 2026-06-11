@@ -51,6 +51,7 @@ pub fn handle_webhook(
     let TriggerSpec::Webhook {
         secret_env,
         dedupe_key,
+        filter,
         ..
     } = trigger
     else {
@@ -71,6 +72,30 @@ pub fn handle_webhook(
             status: 401,
             body: "{\"error\":\"invalid signature\"}".to_string(),
         });
+    }
+
+    // Containment filters run after authentication: a verified delivery
+    // that fails any condition is acknowledged (2xx, so the sender does
+    // not retry) but never becomes a run. Fail-closed on unparseable
+    // payloads and missing pointers.
+    if !filter.is_empty() {
+        let payload: serde_json::Value = match serde_json::from_str(body) {
+            Ok(v) => v,
+            Err(_) => {
+                return Ok(WebhookResponse {
+                    status: 200,
+                    body: "{\"filtered\":\"payload is not JSON\"}".to_string(),
+                })
+            }
+        };
+        for f in filter {
+            if let Some(reason) = f.reject_reason(&payload) {
+                return Ok(WebhookResponse {
+                    status: 200,
+                    body: serde_json::json!({ "filtered": reason }).to_string(),
+                });
+            }
+        }
     }
 
     let derived = match dedupe_key {

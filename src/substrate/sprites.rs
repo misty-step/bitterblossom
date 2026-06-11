@@ -51,6 +51,7 @@ impl Substrate for SpritesSubstrate {
             workspace: String::new(),
             marker: String::new(),
             secrets: Vec::new(),
+            hermetic: false,
         };
         // Wake-on-exec: a cold sprite takes a few seconds to wake.
         let out = session.sprite_exec(&["true".into()], None, Duration::from_secs(120))?;
@@ -71,7 +72,15 @@ impl Substrate for SpritesSubstrate {
         let mut cmd = vec![sprite_bin(), "exec".into()];
         cmd.extend(selector_args(host));
         cmd.extend(["--".into(), "sh".into(), "-c".into(), script]);
-        match run_with_timeout(&cmd, None, &relay_cwd(), &[], None, Duration::from_secs(60)) {
+        match run_with_timeout(
+            &cmd,
+            None,
+            &relay_cwd(),
+            &[],
+            false,
+            None,
+            Duration::from_secs(60),
+        ) {
             Ok(out) => match out.exit_code {
                 0 => ProbeResult::Alive,
                 4 => ProbeResult::Dead,
@@ -92,6 +101,7 @@ pub struct SpriteSession {
     workspace: String,
     marker: String,
     secrets: Vec<(String, String)>,
+    hermetic: bool,
 }
 
 impl SpriteSession {
@@ -110,7 +120,7 @@ impl SpriteSession {
         // The sprite CLI parses remote args as its own flags without this.
         cmd.push("--".into());
         cmd.extend(remote.iter().cloned());
-        run_with_timeout(&cmd, stdin, &relay_cwd(), &[], None, timeout)
+        run_with_timeout(&cmd, stdin, &relay_cwd(), &[], false, None, timeout)
     }
 
     fn sprite_exec(
@@ -132,6 +142,7 @@ impl Session for SpriteSession {
         self.workspace = plan.remote_workspace.clone();
         self.marker = plan.marker.clone();
         self.secrets = plan.secrets.clone();
+        self.hermetic = plan.hermetic;
 
         if let Some(checkpoint) = &plan.checkpoint {
             let mut cmd = vec![sprite_bin(), "restore".into()];
@@ -142,6 +153,7 @@ impl Session for SpriteSession {
                 None,
                 &relay_cwd(),
                 &[],
+                false,
                 None,
                 Duration::from_secs(300),
             )?;
@@ -223,8 +235,13 @@ impl Session for SpriteSession {
         }
 
         if let Some(pre) = &plan.pre_command {
-            let script = format!("cd {ws} && {pre}");
-            let out = self.remote_shell(&script, Duration::from_secs(600))?;
+            // pre_command is workload code: hermetic plans run it through
+            // execute() so it gets the same scrubbed env as the harness.
+            let out = self.execute(
+                &["sh".into(), "-c".into(), pre.clone()],
+                None,
+                Duration::from_secs(600),
+            )?;
             if out.exit_code != 0 {
                 bail!("pre_command failed: {}", out.stderr.trim());
             }
@@ -268,8 +285,20 @@ impl Session for SpriteSession {
             ),
             None => format!("exec {} < /dev/null\n", quoted.join(" ")),
         };
+        // Hermetic execs scrub the sprite's inherited environment down to
+        // an allowlist and point HOME at the workspace — whatever the
+        // sprite image has baked in (tokens from prior bakes, CLI auth)
+        // never reaches an api-auth workload. Secrets export after the
+        // scrub, still via stdin.
+        let scrub = if self.hermetic {
+            "for v in $(env | cut -d= -f1); do case \"$v\" in \
+             PATH|TERM|LANG|LC_ALL|PWD|SHLVL|TMPDIR) ;; *) unset \"$v\" 2>/dev/null;; esac; done\n\
+             mkdir -p .home && export HOME=\"$PWD/.home\"\n"
+        } else {
+            ""
+        };
         let script = format!(
-            "cd {ws} || exit 1\necho $$ > /tmp/{marker}.pid\n{exports}{body}",
+            "cd {ws} || exit 1\necho $$ > /tmp/{marker}.pid\n{scrub}{exports}{body}",
             ws = shell_quote(&self.workspace),
             marker = self.marker,
         );

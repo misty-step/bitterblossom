@@ -47,7 +47,45 @@ pub fn build_command(agent: &AgentSpec, budget: &TaskBudget) -> Result<Vec<Strin
             agent.model.clone(),
             "-".into(),
         ],
-        "pi" => vec![bin, "--mode".into(), "json".into(), "-p".into()],
+        "pi" => {
+            // pi --mode json re-streams the entire partial message on every
+            // token (`message_update`): a 15-minute run produced 718 MB of
+            // stdout (measured live 2026-06-10). Drop those deltas before
+            // they hit the capture file; everything the parser needs
+            // (message_end, turn_end) passes through. The pipeline makes
+            // grep's exit status the command's — pi crashes still surface
+            // because a stream with no assistant message_end fails parsing.
+            let mut inner = vec![
+                bin,
+                "--provider".into(),
+                agent.provider().into(),
+                "--model".into(),
+                agent.model.clone(),
+                "--no-session".into(),
+                "--mode".into(),
+                "json".into(),
+                "-p".into(),
+            ];
+            inner.extend(agent.args.iter().cloned());
+            let quoted: Vec<String> = inner
+                .iter()
+                .map(|a| crate::substrate::local::shell_quote(a))
+                .collect();
+            // The exit-status file keeps pi's own exit code authoritative —
+            // a bare pipeline would report grep's (POSIX sh has no
+            // pipefail). cwd is the workspace on every substrate.
+            return Ok(vec![
+                "sh".into(),
+                "-c".into(),
+                format!(
+                    "{{ {pi}; echo $? > .bb-harness-exit; }} \
+                     | grep -v -F '\"type\":\"message_update\"'; \
+                     exit \"$(cat .bb-harness-exit)\"",
+                    pi = quoted.join(" ")
+                ),
+                "sh".into(),
+            ]);
+        }
         other => bail!(
             "unknown harness '{other}' (known: {})",
             HARNESSES.join(", ")
@@ -146,26 +184,74 @@ fn parse_codex(stdout: &str) -> Result<ParsedOutput> {
     })
 }
 
-/// pi `--mode json` emits a final JSON object with `result` and `usage`.
+/// pi `--mode json` emits JSONL events (verified live 2026-06-10 against
+/// pi via OpenRouter): the final assistant message rides on `message_end`
+/// with `message.content[]` text items and `message.usage`
+/// `{input, output, cost: {total}}`; turns close with `turn_end`.
 fn parse_pi(stdout: &str) -> Result<ParsedOutput> {
-    let v = last_json_object(stdout).context("pi output: no JSON object found")?;
-    let result = v
-        .get("result")
-        .or_else(|| v.get("output"))
-        .and_then(Value::as_str)
-        .context("pi output: no 'result' or 'output' string")?
-        .to_string();
-    if result.trim().is_empty() {
-        bail!("pi output: empty result");
+    let mut turns: i64 = 0;
+    let mut last_message: Option<Value> = None;
+    let mut saw_event = false;
+    // Each assistant message_end carries that API call's usage, not a
+    // running total — cost and tokens must sum across the run (verified
+    // live 2026-06-10: a 12-minute review reported only its final
+    // message's cost until this summed).
+    let (mut tokens_in, mut tokens_out, mut cost) = (0i64, 0i64, 0f64);
+    let mut saw_usage = false;
+    for line in stdout.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        saw_event = true;
+        match v.get("type").and_then(Value::as_str) {
+            Some("turn_end") => turns += 1,
+            Some("message_end") => {
+                if let Some(m) = v.get("message") {
+                    if m.get("role").and_then(Value::as_str) == Some("assistant") {
+                        if let Some(u) = m.get("usage") {
+                            saw_usage = true;
+                            tokens_in += u.get("input").and_then(Value::as_i64).unwrap_or(0);
+                            tokens_out += u.get("output").and_then(Value::as_i64).unwrap_or(0);
+                            cost += u
+                                .get("cost")
+                                .and_then(|c| c.get("total"))
+                                .and_then(Value::as_f64)
+                                .unwrap_or(0.0);
+                        }
+                        last_message = Some(m.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
     }
-    let usage = v.get("usage").cloned().unwrap_or(Value::Null);
+    if !saw_event {
+        bail!("pi output: no JSONL events found");
+    }
+    let message = last_message.context("pi output: no assistant message_end — incomplete run")?;
+    let result: String = message
+        .get("content")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter(|c| c.get("type").and_then(Value::as_str) == Some("text"))
+                .filter_map(|c| c.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+    let result = result.trim().to_string();
+    if result.is_empty() {
+        bail!("pi output: assistant message has no text content");
+    }
     Ok(ParsedOutput {
         result,
         stats: AttemptStats {
-            tokens_in: usage.get("input_tokens").and_then(Value::as_i64),
-            tokens_out: usage.get("output_tokens").and_then(Value::as_i64),
-            turns: v.get("num_turns").and_then(Value::as_i64),
-            cost_usd: v.get("total_cost_usd").and_then(Value::as_f64),
+            tokens_in: saw_usage.then_some(tokens_in),
+            tokens_out: saw_usage.then_some(tokens_out),
+            turns: Some(turns),
+            cost_usd: saw_usage.then_some(cost),
         },
     })
 }
@@ -226,6 +312,55 @@ mod tests {
         assert_eq!(parsed.result, "review posted");
         assert_eq!(parsed.stats.cost_usd, Some(2.0459));
         assert_eq!(parsed.stats.tokens_out, Some(6598));
+    }
+
+    #[test]
+    fn pi_command_carries_provider_and_model() {
+        let agent: crate::spec::AgentSpec =
+            toml::from_str("harness = \"pi\"\nmodel = \"moonshotai/kimi-k2.6\"\n").unwrap();
+        let cmd = build_command(&agent, &crate::spec::TaskBudget::default()).unwrap();
+        let joined = cmd.join(" ");
+        assert!(joined.contains("--provider' 'openrouter"), "{joined}");
+        assert!(joined.contains("moonshotai/kimi-k2.6"), "{joined}");
+        assert!(joined.contains("--no-session"), "{joined}");
+        // The message_update flood filter wraps the invocation.
+        assert_eq!(cmd[0], "sh");
+        assert!(joined.contains("grep -v -F"), "{joined}");
+    }
+
+    #[test]
+    fn parse_pi_jsonl_events_sums_usage_across_messages() {
+        // Condensed from a live pi run via OpenRouter (2026-06-10). Each
+        // assistant message_end carries per-call usage; totals must sum.
+        let out = concat!(
+            r#"{"type":"message_update","assistantMessageEvent":{"type":"text_delta"}}"#,
+            "\n",
+            r#"{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"thinking about it"},{"type":"toolCall","name":"bash"}],"usage":{"input":1000,"output":50,"cost":{"total":0.001}}}}"#,
+            "\n",
+            r#"{"type":"turn_end","message":{"role":"assistant"}}"#,
+            "\n",
+            r#"{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"..."},{"type":"text","text":" BB-PI-OK"}],"usage":{"input":1117,"output":21,"totalTokens":1138,"cost":{"input":0.0007,"output":0.00007,"total":0.0008}}}}"#,
+            "\n",
+            r#"{"type":"turn_end","message":{"role":"assistant"}}"#,
+            "\n",
+            r#"{"type":"agent_end","messages":[]}"#,
+        );
+        let parsed = parse_output("pi", out).unwrap();
+        assert_eq!(parsed.result, "BB-PI-OK");
+        assert_eq!(parsed.stats.tokens_in, Some(2117));
+        assert_eq!(parsed.stats.tokens_out, Some(71));
+        assert_eq!(parsed.stats.turns, Some(2));
+        assert_eq!(parsed.stats.cost_usd, Some(0.0018));
+    }
+
+    #[test]
+    fn parse_pi_rejects_incomplete_runs() {
+        assert!(parse_output("pi", "not json").is_err());
+        // Events but no assistant message_end: incomplete.
+        assert!(parse_output("pi", r#"{"type":"message_update"}"#).is_err());
+        // Assistant message with no text content.
+        let no_text = r#"{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"x"}],"usage":{}}}"#;
+        assert!(parse_output("pi", no_text).is_err());
     }
 
     #[test]

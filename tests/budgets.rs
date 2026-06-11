@@ -56,9 +56,7 @@ fn setup(root: &Path, plane_toml: &str, budget_toml: &str) -> Plane {
         ),
     )
     .unwrap();
-    if !plane_toml.is_empty() {
-        fs::write(root.join("plane.toml"), plane_toml).unwrap();
-    }
+    fs::write(root.join("plane.toml"), format!("dev = true\n{plane_toml}")).unwrap();
     Plane::load(root).unwrap()
 }
 

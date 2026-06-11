@@ -16,9 +16,10 @@ const SECRET_ENV: &str = "BB_TEST_HOOK_SECRET";
 fn make_plane(root: &Path) -> Plane {
     fs::create_dir_all(root.join("agents")).unwrap();
     fs::create_dir_all(root.join("tasks/demo")).unwrap();
+    fs::write(root.join("plane.toml"), "dev = true\n").unwrap();
     fs::write(
         root.join("agents/a.toml"),
-        "harness = \"claude\"\nmodel = \"m\"\n",
+        "harness = \"pi\"\nmodel = \"m\"\n",
     )
     .unwrap();
     fs::write(root.join("tasks/demo/card.md"), "card\n").unwrap();
@@ -163,7 +164,7 @@ fn five_field_cron_schedules_are_accepted_and_bad_ones_fail_at_load() {
     fs::create_dir_all(root.join("tasks/bad")).unwrap();
     fs::write(
         root.join("agents/a.toml"),
-        "harness = \"claude\"\nmodel = \"m\"\n",
+        "harness = \"pi\"\nmodel = \"m\"\n",
     )
     .unwrap();
     fs::write(root.join("tasks/bad/card.md"), "card\n").unwrap();
@@ -173,4 +174,56 @@ fn five_field_cron_schedules_are_accepted_and_bad_ones_fail_at_load() {
     )
     .unwrap();
     assert!(Plane::load(root).is_err());
+}
+
+#[test]
+fn webhook_filters_reject_out_of_scope_deliveries_without_a_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join("agents")).unwrap();
+    fs::create_dir_all(root.join("tasks/rev")).unwrap();
+    fs::write(root.join("plane.toml"), "dev = true\n").unwrap();
+    fs::write(
+        root.join("agents/a.toml"),
+        "harness = \"pi\"\nmodel = \"m\"\n",
+    )
+    .unwrap();
+    fs::write(root.join("tasks/rev/card.md"), "card\n").unwrap();
+    fs::write(
+        root.join("tasks/rev/task.toml"),
+        "agent = \"a\"\nsubstrate = \"local\"\n\n\
+         [[trigger]]\nkind = \"webhook\"\nroute = \"rev\"\nsecret_env = \"BB_TEST_FILTER_SECRET\"\n\
+         [[trigger.filter]]\npointer = \"/repository/full_name\"\nany_of = [\"good/repo\"]\n\
+         [[trigger.filter]]\npointer = \"/action\"\nany_of = [\"opened\", \"synchronize\"]\n\
+         [[trigger.filter]]\npointer = \"/pull_request/draft\"\nequals = false\n\
+         [[trigger.filter]]\npointer = \"/pull_request/additions\"\nmax = 4000\n",
+    )
+    .unwrap();
+    let plane = Plane::load(root).unwrap();
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    std::env::set_var("BB_TEST_FILTER_SECRET", "s3cret");
+
+    let deliver = |ledger: &mut Ledger, body: &str| {
+        let sig = sign_hmac("s3cret", body.as_bytes());
+        handle_webhook(&plane, ledger, "rev", &headers(&sig, "d1"), body).unwrap()
+    };
+
+    let in_scope = r#"{"action":"opened","repository":{"full_name":"good/repo"},"pull_request":{"draft":false,"additions":12,"head":{"sha":"a1"}}}"#;
+    assert_eq!(deliver(&mut ledger, in_scope).status, 202);
+
+    // Wrong repo, draft PR, ignored action, oversized diff, missing field:
+    // all acknowledged with 200 and no run row.
+    let cases = [
+        r#"{"action":"opened","repository":{"full_name":"evil/repo"},"pull_request":{"draft":false,"additions":1}}"#,
+        r#"{"action":"opened","repository":{"full_name":"good/repo"},"pull_request":{"draft":true,"additions":1}}"#,
+        r#"{"action":"labeled","repository":{"full_name":"good/repo"},"pull_request":{"draft":false,"additions":1}}"#,
+        r#"{"action":"opened","repository":{"full_name":"good/repo"},"pull_request":{"draft":false,"additions":99999}}"#,
+        r#"{"action":"opened","repository":{"full_name":"good/repo"}}"#,
+    ];
+    for body in cases {
+        let resp = deliver(&mut ledger, body);
+        assert_eq!(resp.status, 200, "{body} -> {}", resp.body);
+        assert!(resp.body.contains("filtered"), "{}", resp.body);
+    }
+    assert_eq!(ledger.list_runs(None, None).unwrap().len(), 1);
 }

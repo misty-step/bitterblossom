@@ -32,6 +32,11 @@ pub struct WorkspacePlan {
     pub checkpoint: Option<String>,
     /// Resolved per-exec credentials (env name, value). Never persisted.
     pub secrets: Vec<(String, String)>,
+    /// Hermetic execs (auth = "api" agents) get a scrubbed environment and
+    /// a workspace-local HOME: nothing of the operator's identity crosses
+    /// the exec boundary except the declared secrets. Subscription agents
+    /// keep the real HOME — they run *as* the operator by design.
+    pub hermetic: bool,
 }
 
 #[derive(Debug)]

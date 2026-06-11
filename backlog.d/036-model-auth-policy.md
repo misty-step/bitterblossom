@@ -1,6 +1,6 @@
 # Enforce the model & auth policy in the plane, not in prose
 
-Priority: P0 · Status: pending · Estimate: L
+Priority: P0 · Status: done · Estimate: L
 
 ## Goal
 The plane mechanically enforces who may spend what: event-triggered
@@ -9,20 +9,20 @@ claude/codex run only on subscription auth, never API keys — a
 misconfigured task fails `bb check`, it does not quietly burn money.
 
 ## Oracle
-- [ ] `agents/<name>.toml` carries the binding explicitly (provider /
+- [x] `agents/<name>.toml` carries the binding explicitly (provider /
       auth fields), and `bb check` fails a plane where a task with a
       webhook or cron trigger binds an agent whose model is an
       Anthropic/OpenAI API model
-- [ ] Dispatch refuses to start a claude/codex harness run when
+- [x] Dispatch refuses to start a claude/codex harness run when
       `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` would reach the workload
       env; subscription (OAuth) auth is the only path for those
       harnesses — test proves the key never crosses the exec boundary
-- [ ] The pi adapter passes the agent's model through (today
+- [x] The pi adapter passes the agent's model through (today
       `harness.rs` builds pi's argv with no `--model` — the binding is
       silently ignored) and an OpenRouter-bound agent
       (e.g. `moonshotai/kimi-k2.6` or `deepseek/v4-flash`) completes a
       real run with cost/tokens in the ledger
-- [ ] The review agent is rebound to a cheap model and a seeded-flaw PR
+- [x] The review agent is rebound to a cheap model and a seeded-flaw PR
       still gets all plantings flagged (the 034 quality gate), with
       per-run cost in the ledger at a fraction of the $2.46–3.09 claude
       baseline
@@ -49,3 +49,17 @@ $75/1M out. Model facts rot; re-verify at delivery. Note the "Anthropic
 tax": Anthropic discourages subscription auth from third-party
 harnesses, which is exactly why claude-on-subscription stays an ad-hoc
 (operator-initiated) privilege and event workloads go OpenRouter.
+
+## Evidence (2026-06-11)
+- Policy at load: tests/policy.rs (claude+api rejected, forbidden
+  secrets, reflex-requires-api, pi defaults). Hermetic exec proven in
+  tests/e2e_local.rs + tests/e2e_sprites.rs (env scrubbed both
+  substrates, HOME relocated, declared secrets only).
+- pi adapter: provider/model passthrough, JSONL parse, usage summed
+  per-call, message_update flood filtered (718 MB observed pre-filter),
+  exit code preserved. Live: review-coordinator@v2 on Kimi K2.6 —
+  $0.0034-0.03/review vs $2.46-3.09 claude baseline; seeded-flaw PR #843
+  still fully flagged (SQL injection + unquoted rm -rf caught).
+- Codex adversarial review round (receipt
+  20260611T030135-codex-35cecb5e): 2 blocking + 2 serious, all fixed
+  with regression tests.

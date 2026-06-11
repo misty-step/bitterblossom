@@ -1,4 +1,7 @@
+# A subscription-auth agent: claude on the operator's OAuth. Subscription
+# agents run *as* the operator and bind only to manual-only (dispatch)
+# tasks — the plane rejects them on reflex triggers, and rejects
+# ANTHROPIC_API_KEY / OPENAI_API_KEY as secrets outright.
 version = 1
 harness = "claude"
 model = "claude-fable-5"
-secrets = ["ANTHROPIC_API_KEY"]   # resolved per-exec, never persisted

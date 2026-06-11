@@ -31,6 +31,7 @@ fn write_executable(path: &Path, content: &str) {
 fn make_plane(root: &Path, stub: &str, task_extra: &str) -> Plane {
     fs::create_dir_all(root.join("agents")).unwrap();
     fs::create_dir_all(root.join("tasks/demo")).unwrap();
+    fs::write(root.join("plane.toml"), "dev = true\n").unwrap();
     let stub_path = root.join("stub-harness.sh");
     write_executable(&stub_path, stub);
     fs::write(
@@ -198,6 +199,58 @@ fn timeout_kills_the_harness_and_fails_the_run() {
 }
 
 #[test]
+fn hermetic_exec_passes_secrets_but_never_the_planes_env() {
+    // The stub echoes back what it sees: a plane env var that must NOT
+    // cross, the declared secret that must, and HOME which must be
+    // workspace-local for api-auth (hermetic) agents.
+    const PI_ENV_STUB: &str = r#"#!/bin/sh
+cat > /dev/null
+printf '{"type":"turn_end"}\n'
+printf '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"leak=[%s] secret=[%s] home=[%s]"}],"usage":{"input":1,"output":2,"cost":{"total":0.0001}}}}\n' "$BB_TEST_LEAK" "$BB_TEST_SECRET" "$HOME"
+"#;
+    std::env::set_var("BB_TEST_LEAK", "plane-private");
+    std::env::set_var("BB_TEST_SECRET", "declared-secret");
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join("agents")).unwrap();
+    fs::create_dir_all(root.join("tasks/demo")).unwrap();
+    fs::write(root.join("plane.toml"), "dev = true\n").unwrap();
+    let stub_path = root.join("stub-pi.sh");
+    write_executable(&stub_path, PI_ENV_STUB);
+    fs::write(
+        root.join("agents/stub.toml"),
+        format!(
+            "harness = \"pi\"\nmodel = \"m\"\nbin = \"{}\"\nsecrets = [\"BB_TEST_SECRET\"]\n",
+            stub_path.display()
+        ),
+    )
+    .unwrap();
+    fs::write(root.join("tasks/demo/card.md"), "card\n").unwrap();
+    fs::write(
+        root.join("tasks/demo/task.toml"),
+        "agent = \"stub\"\nsubstrate = \"local\"\n[[trigger]]\nkind = \"manual\"\n",
+    )
+    .unwrap();
+    let plane = Plane::load(root).unwrap();
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+
+    let run_id = manual_run(&mut ledger, "demo", None);
+    let run = dispatch::dispatch_run(&plane, &mut ledger, &run_id).unwrap();
+    assert_eq!(run.state, "success", "{:?}", run.state_reason);
+
+    let attempts = ledger.attempts(&run_id).unwrap();
+    let artifact_dir = Path::new(attempts[0].artifact_dir.as_deref().unwrap());
+    let result = fs::read_to_string(artifact_dir.join("result.md")).unwrap();
+    assert!(result.contains("leak=[]"), "plane env leaked: {result}");
+    assert!(result.contains("secret=[declared-secret]"), "{result}");
+    assert!(
+        result.contains("workspace/.home"),
+        "HOME not hermetic: {result}"
+    );
+}
+
+#[test]
 fn duplicate_manual_key_yields_one_run_two_ingress_events() {
     let dir = tempfile::tempdir().unwrap();
     let plane = make_plane(dir.path(), CLAUDE_STUB, "");
@@ -233,4 +286,47 @@ fn max_runs_per_day_parks_task_and_blocks_dispatch() {
     // Ingress while parked records the event but never dispatches.
     let r3 = manual_run(&mut ledger, "demo", None);
     assert_eq!(ledger.run(&r3).unwrap().state, "blocked_budget");
+}
+
+#[test]
+fn pi_exit_code_survives_the_flood_filter_pipeline() {
+    // A pi that emits a parseable message_end and then dies must fail the
+    // run — the grep filter's exit status must not mask the harness's.
+    const DYING_PI: &str = r#"#!/bin/sh
+cat > /dev/null
+printf '{"type":"turn_end"}\n{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"looks done"}],"usage":{"input":1,"output":1,"cost":{"total":0.001}}}}\n'
+exit 3
+"#;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join("agents")).unwrap();
+    fs::create_dir_all(root.join("tasks/demo")).unwrap();
+    fs::write(root.join("plane.toml"), "dev = true\n").unwrap();
+    let stub_path = root.join("dying-pi.sh");
+    write_executable(&stub_path, DYING_PI);
+    fs::write(
+        root.join("agents/stub.toml"),
+        format!(
+            "harness = \"pi\"\nmodel = \"m\"\nbin = \"{}\"\n",
+            stub_path.display()
+        ),
+    )
+    .unwrap();
+    fs::write(root.join("tasks/demo/card.md"), "card\n").unwrap();
+    fs::write(
+        root.join("tasks/demo/task.toml"),
+        "agent = \"stub\"\nsubstrate = \"local\"\n[[trigger]]\nkind = \"manual\"\n",
+    )
+    .unwrap();
+    let plane = Plane::load(root).unwrap();
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+
+    let run_id = manual_run(&mut ledger, "demo", None);
+    let run = dispatch::dispatch_run(&plane, &mut ledger, &run_id).unwrap();
+    assert_eq!(run.state, "failure", "{:?}", run.state_reason);
+    assert!(
+        run.state_reason.as_deref().unwrap().contains("exit 3"),
+        "{:?}",
+        run.state_reason
+    );
 }

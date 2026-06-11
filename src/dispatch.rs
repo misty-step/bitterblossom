@@ -213,6 +213,7 @@ fn attempt_on_host(
         remote_workspace: format!("/home/sprite/bb/{}", task.name),
         checkpoint: task.spec.workspace.checkpoint.clone(),
         secrets,
+        hermetic: matches!(task.agent.auth_class(), Ok(crate::spec::AuthClass::Api)),
     };
     if let Err(e) = session.prepare(&plan) {
         let _ = session.release();

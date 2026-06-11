@@ -1,0 +1,6 @@
+# An api-auth agent: pi on OpenRouter. The only agent class allowed on
+# reflex (webhook/cron) triggers — hermetic exec, declared secrets only.
+version = 1
+harness = "pi"
+model = "moonshotai/kimi-k2.6"   # provider defaults to "openrouter"
+secrets = ["OPENROUTER_API_KEY"] # resolved per-exec, never persisted
