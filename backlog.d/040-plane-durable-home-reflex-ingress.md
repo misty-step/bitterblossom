@@ -11,9 +11,10 @@ with no tunnel ceremony.
 
 ## Oracle
 
-- [ ] `bb serve` runs on a durable host (Fly machine or dedicated
-      sprite) and survives operator-laptop shutdown; `/api/tasks`
-      reachable (token-gated) from the laptop
+- [ ] `bb serve` runs on a durable host (Fly machine, dedicated sprite,
+      or any always-on box — the host is config, not architecture) and
+      survives operator-laptop shutdown; `/api/tasks` reachable
+      (token-gated) from the laptop
 - [ ] A `pull_request` event from a real repo produces a posted review
       with no manually-started tunnel in the path (GitHub App ingress,
       or post-receive hook on a self-hosted bare remote — decided at

@@ -25,10 +25,15 @@ declares what the workspace needs.
 **Why:** from the Ona research (2026-06-11) — Ona environments are
 devcontainer-defined, which makes any repo "agent-ready" by an industry
 standard instead of by provisioning lore (our sprite checkpoints are
-bespoke knowledge that lives in harness-kit references). Premise
-challenge to resolve at shape time: sprites are Fly machines, not
-container hosts — full devcontainer semantics (image, features) may
+bespoke knowledge that lives in harness-kit references). It is also the
+substrate-neutral environment contract: checkpoints are a sprites-only
+concept, while devcontainer.json travels with the repo to any future
+substrate (Cloudflare containers would honor it natively — see 044).
+Premise challenge to resolve at shape time: sprites are Fly machines,
+not container hosts — full devcontainer semantics (image, features) may
 require docker-in-VM and is likely not worth it; partial conformance
-(postCreateCommand + declared tools) may capture most of the value.
-If shaping concludes even that is thin value for one operator's repos,
-abandon with the verdict recorded — the checkpoint flow already works.
+(postCreateCommand + declared tools) may capture most of the value, and
+the conformance scope should live in the substrate adapter, not the
+spine. If shaping concludes even that is thin value for one operator's
+repos, abandon with the verdict recorded — the checkpoint flow already
+works.
