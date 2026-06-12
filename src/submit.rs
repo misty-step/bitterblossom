@@ -1,16 +1,9 @@
-//! The submission loop: submissions, verdicts, rejections, and the gate
-//! evaluator. All of it is generic data mechanics — what a reviewer looks
-//! for lives in cards; what blocks a merge is arithmetic over rows here.
-
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::ledger::{new_id, now, Ledger};
 use crate::spec::Plane;
-
-/// Submission lifecycle. `open` is the only non-terminal state; at most
-/// one non-terminal submission exists per change key (unique index).
 pub const SUBMISSION_STATES: &[&str] = &["open", "clear", "blocked", "escalated", "abandoned"];
 
 pub const VERDICTS: &[&str] = &["pass", "blocking", "advisory"];
@@ -40,8 +33,6 @@ pub struct Finding {
     pub claim: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence: Option<String>,
-    /// Stable identity across rounds; copied from REPORT.json when a
-    /// reviewer re-raises, computed by the plane when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fingerprint: Option<String>,
 }
@@ -67,15 +58,8 @@ pub fn fingerprint(kind: &str, file: Option<&str>, claim: &str) -> String {
     h.update(format!("{kind}|{}|{claim}", file.unwrap_or("")));
     format!("{:x}", h.finalize())[..16].to_string()
 }
-
-/// Parse a verdict task's result into a validated VerdictDoc. LLMs wrap
-/// JSON in prose or fences; everything outside the outermost braces is
-/// tolerated, anything malformed inside them is a run failure.
 pub fn parse_verdict(kind: &str, raw: &str) -> Result<VerdictDoc> {
     let end = raw.rfind('}').context("no JSON object in verdict output")?;
-    // Prose before the JSON may itself contain braces (live failure
-    // 2026-06-11: a model quoted `{env:?}` in its preamble); try each
-    // `{` until one parses as a verdict document.
     let mut parsed: Option<VerdictDoc> = None;
     let mut idx = 0;
     while let Some(off) = raw[idx..end].find('{') {
@@ -110,10 +94,6 @@ pub fn parse_verdict(kind: &str, raw: &str) -> Result<VerdictDoc> {
 }
 
 impl Ledger {
-    /// Open a submission. Round numbering is plane-owned: after `blocked`
-    /// the round increments and the prior gate report is snapshotted so
-    /// the driver cannot soften or omit findings; any other terminal
-    /// state starts a fresh chain at round 1.
     pub fn open_submission(
         &mut self,
         change_key: &str,
@@ -159,8 +139,6 @@ impl Ledger {
             )
             .with_context(|| format!("submission {id} not found"))
     }
-
-    /// The change's most recent submission (any state).
     pub fn latest_submission(&self, change_key: &str) -> Result<Option<SubmissionRow>> {
         Ok(self
             .conn
@@ -174,8 +152,6 @@ impl Ledger {
             )
             .optional()?)
     }
-
-    /// CAS out of `open`; false when another evaluator got there first.
     pub fn settle_submission(&self, id: &str, state: &str, report_json: &str) -> Result<bool> {
         if !SUBMISSION_STATES.contains(&state) || state == "open" {
             bail!("illegal submission state '{state}'");
@@ -196,9 +172,6 @@ impl Ledger {
         doc: &VerdictDoc,
     ) -> Result<()> {
         self.submission(submission_id)?;
-        // Keyed by run as well: a re-run can never overwrite the verdict
-        // the canonical storm run produced (rerun-roulette is a gaming
-        // vector; the gate only honors the canonical run's verdict).
         self.conn.execute(
             "INSERT INTO verdicts (submission_id, run_id, kind, verdict, findings_json, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -242,12 +215,6 @@ impl Ledger {
             })
             .collect()
     }
-
-    /// Fingerprints legitimately known for a submission: everything in
-    /// the prior-round report plus everything already recorded on this
-    /// submission. A reviewer-supplied fingerprint outside this set is
-    /// recomputed — reusing a rejected fingerprint cannot hide a fresh
-    /// blocking finding.
     pub fn known_fingerprints(
         &self,
         sub: &SubmissionRow,
@@ -286,11 +253,6 @@ impl Ledger {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
-
-    /// True when an arbiter verdict anywhere in this change's history
-    /// sustains the rejection of `fp` (verdict `pass` naming the
-    /// fingerprint). Overrules simply never sustain — the finding keeps
-    /// blocking, bounded by the round cap.
     fn arbiter_sustains(&self, change_key: &str, arbiter_kind: &str, fp: &str) -> Result<bool> {
         let mut stmt = self.conn.prepare(
             "SELECT v.verdict, v.findings_json FROM verdicts v
@@ -344,9 +306,6 @@ fn collect_fingerprints(v: &serde_json::Value, out: &mut std::collections::BTree
         _ => {}
     }
 }
-
-/// Recompute any reviewer-supplied fingerprint the plane has never seen
-/// for this submission (see `known_fingerprints`).
 pub fn enforce_fingerprints(
     doc: &mut VerdictDoc,
     kind: &str,
@@ -382,7 +341,6 @@ fn row_to_submission(r: &rusqlite::Row<'_>) -> rusqlite::Result<SubmissionRow> {
 #[derive(Debug, Serialize)]
 pub struct MemberStatus {
     pub kind: String,
-    /// "verdict:<pass|blocking|advisory>", "run:<state>", or "not_started".
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
@@ -397,18 +355,12 @@ pub struct GateReport {
     pub rev: String,
     pub round: i64,
     pub max_rounds: u32,
-    /// pending | blocked | clear | escalated
     pub decision: String,
     pub members: Vec<MemberStatus>,
     pub blocking: Vec<Finding>,
     pub advisory: Vec<Finding>,
-    /// Rejected blocking findings with arbiter sustain: (finding, reason).
     pub rejected: Vec<(Finding, String)>,
 }
-
-/// Evaluate the gate over one submission's verdicts — pure data policy.
-/// When the submission is `open` and the decision is terminal, the
-/// submission settles atomically (and `escalated` notifies, once).
 pub fn evaluate(plane: &Plane, ledger: &Ledger, submission_id: &str) -> Result<GateReport> {
     let gate = plane
         .spec
@@ -419,10 +371,6 @@ pub fn evaluate(plane: &Plane, ledger: &Ledger, submission_id: &str) -> Result<G
     let rejections = ledger.rejections(&sub.change_key)?;
 
     let verdicts = ledger.verdicts(submission_id)?;
-
-    // Only the verdict produced by the canonical storm run counts: a
-    // member re-run under a different key can neither overwrite a
-    // blocking verdict nor stand in for a failed required run.
     let mut members = Vec::new();
     let mut counted: Vec<&VerdictRow> = Vec::new();
     let mut pending = false;

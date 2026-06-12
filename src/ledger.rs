@@ -1,6 +1,3 @@
-//! The durable run ledger (SQLite, WAL). A run row exists before any
-//! trigger gets its ack; everything the operator can see flows from here.
-
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
@@ -14,9 +11,6 @@ pub fn now() -> String {
         .format(&Rfc3339)
         .expect("rfc3339 format")
 }
-
-/// Run states. `blocked_budget` is set at ingress for parked tasks and
-/// unparks back to `pending`; `awaiting_recovery` requires an operator.
 pub const RUN_STATES: &[&str] = &[
     "pending",
     "running",
@@ -40,9 +34,6 @@ fn transition_allowed(from: &str, to: &str) -> bool {
             | ("awaiting_recovery", "failure")
     )
 }
-
-/// Attempt phase checkpoints, in order. Failures before `executing` are
-/// mechanically retryable; at or after it, recovery is an operator act.
 pub const ATTEMPT_PHASES: &[&str] = &[
     "acquired",
     "prepared",
@@ -72,6 +63,8 @@ pub struct RunRow {
     pub parent_run_id: Option<String>,
     pub agent_name: Option<String>,
     pub agent_version: Option<i64>,
+    pub config_source_repo: Option<String>,
+    pub config_source_ref: Option<String>,
     pub cost_usd: Option<f64>,
     pub duration_ms: Option<i64>,
     pub created_at: String,
@@ -120,8 +113,6 @@ pub struct DeadLetterRow {
 }
 
 pub struct Ledger {
-    // Visible to submit.rs, which keeps submission/verdict/gate data
-    // mechanics in their own module on the same connection.
     pub(crate) conn: Connection,
 }
 
@@ -137,6 +128,8 @@ CREATE TABLE IF NOT EXISTS runs (
   parent_run_id TEXT,
   agent_name TEXT,
   agent_version INTEGER,
+  config_source_repo TEXT,
+  config_source_ref TEXT,
   payload TEXT,
   cost_usd REAL,
   duration_ms INTEGER,
@@ -263,6 +256,8 @@ impl Ledger {
         conn.pragma_update(None, "busy_timeout", 5000_i64)?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(SCHEMA)?;
+        ensure_column(&conn, "runs", "config_source_repo", "TEXT")?;
+        ensure_column(&conn, "runs", "config_source_ref", "TEXT")?;
         Ok(Self { conn })
     }
 
@@ -272,15 +267,7 @@ impl Ledger {
         conn.execute_batch(SCHEMA)?;
         Ok(Self { conn })
     }
-
-    // ---- ingress -------------------------------------------------------
-
-    /// Idempotent ingress: every delivery records an `ingress_events` row;
-    /// a duplicate dedupe key resolves to the existing run and is never
-    /// re-dispatched. The run row is durable before the caller acks.
     pub fn ingest(&mut self, req: IngressRequest<'_>) -> Result<IngressOutcome> {
-        // IMMEDIATE: take the write lock up front so concurrent
-        // redeliveries serialize instead of racing the dedupe check.
         let tx = self
             .conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -299,8 +286,6 @@ impl Ledger {
             Some(reason) => ("blocked_budget", Some(format!("task parked: {reason}"))),
             None => ("pending", None),
         };
-        // ON CONFLICT DO NOTHING against the partial unique index makes the
-        // dedupe atomic even across processes.
         let inserted = tx.execute(
             "INSERT INTO runs (id, task, trigger_kind, idempotency_key, state,
                state_reason, trace_id, parent_run_id, payload, created_at, updated_at)
@@ -357,8 +342,6 @@ impl Ledger {
         })
     }
 
-    // ---- run state machine ----------------------------------------------
-
     pub fn run_state(&self, run_id: &str) -> Result<String> {
         self.conn
             .query_row(
@@ -368,11 +351,6 @@ impl Ledger {
             )
             .with_context(|| format!("run {run_id} not found"))
     }
-
-    /// Atomic compare-and-set transition: the UPDATE only fires when the
-    /// current state is a legal source for `to`, so two workers can never
-    /// both claim the same run. Returns false when the run was not in a
-    /// legal source state (already claimed, already terminal).
     pub fn try_transition(&self, run_id: &str, to: &str, reason: Option<&str>) -> Result<bool> {
         let sources: Vec<&str> = RUN_STATES
             .iter()
@@ -382,7 +360,6 @@ impl Ledger {
         if sources.is_empty() {
             bail!("no legal transition into state '{to}'");
         }
-        // The IN-list is built from our own state constants, not input.
         let list: Vec<String> = sources.iter().map(|s| format!("'{s}'")).collect();
         let sql = format!(
             "UPDATE runs SET state = ?2, state_reason = ?3, updated_at = ?4
@@ -397,8 +374,6 @@ impl Ledger {
         }
         Ok(changed == 1)
     }
-
-    /// Enforced state transition; illegal moves are bugs, not data.
     pub fn transition(&self, run_id: &str, to: &str, reason: Option<&str>) -> Result<()> {
         if !self.try_transition(run_id, to, reason)? {
             let from = self.run_state(run_id)?;
@@ -428,6 +403,15 @@ impl Ledger {
         Ok(())
     }
 
+    pub fn set_run_config_source(&self, run_id: &str, repo: &str, ref_: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE runs SET config_source_repo = ?2, config_source_ref = ?3,
+               updated_at = ?4 WHERE id = ?1",
+            params![run_id, repo, ref_, now()],
+        )?;
+        Ok(())
+    }
+
     pub fn record_event(&self, run_id: &str, kind: &str, data: Option<&str>) -> Result<()> {
         self.conn.execute(
             "INSERT INTO run_events (run_id, kind, data, at) VALUES (?1, ?2, ?3, ?4)",
@@ -435,8 +419,6 @@ impl Ledger {
         )?;
         Ok(())
     }
-
-    // ---- attempts --------------------------------------------------------
 
     pub fn create_attempt(
         &self,
@@ -520,11 +502,6 @@ impl Ledger {
             |r| r.get(0),
         )?)
     }
-
-    // ---- host leases ------------------------------------------------------
-
-    /// Durable host lease keyed by substrate resource identity. Returns
-    /// false when the host is already leased (caller waits or requeues).
     pub fn try_acquire_host_lease(&self, host: &str, run_id: &str) -> Result<bool> {
         let n = self.conn.execute(
             "INSERT INTO host_leases (host, run_id, acquired_at) VALUES (?1, ?2, ?3)
@@ -552,8 +529,6 @@ impl Ledger {
             )
             .optional()?)
     }
-
-    // ---- dead letters ------------------------------------------------------
 
     pub fn record_dead_letter(
         &self,
@@ -611,9 +586,6 @@ impl Ledger {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
-
-    /// Atomic claim: only the first marker wins; a concurrent replay of
-    /// the same dead letter sees false and must not dispatch.
     pub fn mark_dead_letter_replayed(&self, id: i64, new_run_id: &str) -> Result<bool> {
         let changed = self.conn.execute(
             "UPDATE dead_letters SET replayed_run_id = ?2
@@ -622,15 +594,11 @@ impl Ledger {
         )?;
         Ok(changed == 1)
     }
-
-    /// Free every host lease held by a run (operator resolution path).
     pub fn release_leases_for_run(&self, run_id: &str) -> Result<()> {
         self.conn
             .execute("DELETE FROM host_leases WHERE run_id = ?1", params![run_id])?;
         Ok(())
     }
-
-    // ---- budgets & parking ---------------------------------------------------
 
     pub fn record_budget_event(&self, task: Option<&str>, kind: &str, detail: &str) -> Result<()> {
         self.conn.execute(
@@ -674,9 +642,6 @@ impl Ledger {
             )
             .optional()?)
     }
-
-    /// Runs that actually began dispatch today — pending (not yet
-    /// dispatched) and blocked ingress don't consume the daily budget.
     pub fn runs_today(&self, task: &str) -> Result<i64> {
         let day = &now()[..10];
         Ok(self.conn.query_row(
@@ -687,9 +652,6 @@ impl Ledger {
             |r| r.get(0),
         )?)
     }
-
-    /// Daily spend sums attempts, not runs: a failed run's tokens were
-    /// still spent and must count against the ceiling.
     pub fn cost_today(&self) -> Result<f64> {
         let day = &now()[..10];
         Ok(self.conn.query_row(
@@ -698,8 +660,6 @@ impl Ledger {
             |r| r.get(0),
         )?)
     }
-
-    // ---- queries -----------------------------------------------------------
 
     pub fn run(&self, run_id: &str) -> Result<RunRow> {
         self.conn
@@ -741,8 +701,6 @@ impl Ledger {
     pub fn runs_in_state(&self, state: &str) -> Result<Vec<RunRow>> {
         self.list_runs(None, Some(state))
     }
-
-    /// Dispatch order: oldest pending first, across all tasks.
     pub fn pending_runs_oldest_first(&self) -> Result<Vec<RunRow>> {
         let mut stmt = self.conn.prepare(&format!(
             "{RUN_SELECT} WHERE state = 'pending' ORDER BY created_at ASC"
@@ -814,7 +772,8 @@ impl Ledger {
 }
 
 const RUN_SELECT: &str = "SELECT id, task, trigger_kind, idempotency_key, state, state_reason,
-  trace_id, parent_run_id, agent_name, agent_version, cost_usd, duration_ms,
+  trace_id, parent_run_id, agent_name, agent_version, config_source_repo, config_source_ref,
+  cost_usd, duration_ms,
   created_at, updated_at FROM runs";
 
 fn row_to_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<RunRow> {
@@ -829,11 +788,24 @@ fn row_to_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<RunRow> {
         parent_run_id: r.get(7)?,
         agent_name: r.get(8)?,
         agent_version: r.get(9)?,
-        cost_usd: r.get(10)?,
-        duration_ms: r.get(11)?,
-        created_at: r.get(12)?,
-        updated_at: r.get(13)?,
+        config_source_repo: r.get(10)?,
+        config_source_ref: r.get(11)?,
+        cost_usd: r.get(12)?,
+        duration_ms: r.get(13)?,
+        created_at: r.get(14)?,
+        updated_at: r.get(15)?,
     })
+}
+
+fn ensure_column(conn: &Connection, table: &str, column: &str, ty: &str) -> Result<()> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let cols = stmt
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if !cols.iter().any(|c| c == column) {
+        conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {ty}"), [])?;
+    }
+    Ok(())
 }
 
 pub struct IngressRequest<'a> {
@@ -1017,7 +989,6 @@ mod tests {
         let mut ledger = Ledger::open_in_memory().unwrap();
         let run = ingest_manual(&mut ledger, "demo", None).run_id;
         assert!(ledger.try_transition(&run, "running", None).unwrap());
-        // A second worker racing for the same pending run must lose.
         assert!(!ledger.try_transition(&run, "running", None).unwrap());
         assert_eq!(ledger.run_state(&run).unwrap(), "running");
     }
@@ -1030,7 +1001,6 @@ mod tests {
             .record_dead_letter(&run, "demo", None, "boom")
             .unwrap();
         assert!(ledger.mark_dead_letter_replayed(dl, "replay-a").unwrap());
-        // Same run id is idempotent; a different claimer loses.
         assert!(ledger.mark_dead_letter_replayed(dl, "replay-a").unwrap());
         assert!(!ledger.mark_dead_letter_replayed(dl, "replay-b").unwrap());
     }

@@ -1,15 +1,3 @@
-//! Boot recovery: classify runs inherited in `running` state instead of
-//! blindly orphaning them. Agent runs have external side effects (pushed
-//! commits, posted comments) — "re-run it" is not a recovery semantic.
-//!
-//! Classification per the latest attempt:
-//! - never reached `executing` → safe to replay mechanically: the run
-//!   fails into a dead letter (`bb dlq replay` mints a linked run).
-//! - reached `executing` → probe the host: a still-running process stays
-//!   `running` (report only); otherwise the run parks in
-//!   `awaiting_recovery` with the probe evidence, and an operator
-//!   resolves it via `bb runs resolve`.
-
 use anyhow::Result;
 use serde::Serialize;
 
@@ -32,9 +20,6 @@ pub fn recover_inherited_runs(plane: &Plane, ledger: &mut Ledger) -> Result<Vec<
     for run in ledger.runs_in_state("running")? {
         let attempts = ledger.attempts(&run.id)?;
         let latest = attempts.last();
-        // The lease is released per-disposition below: a probe that finds
-        // the inherited process still alive must keep the host locked, or
-        // a new run could execute concurrently on the same resource.
         let release_lease = |ledger: &Ledger| -> Result<()> {
             if let Ok(task) = plane.task(&run.task) {
                 ledger.release_host_lease(&task.host(), &run.id)?;
@@ -105,13 +90,9 @@ pub fn recover_inherited_runs(plane: &Plane, ledger: &mut Ledger) -> Result<Vec<
                 ledger.record_event(&run.id, "boot_probe", Some(&probe_desc))?;
 
                 let disposition = if probe == ProbeResult::Alive {
-                    // Still executing on the host; leave it running WITH its
-                    // lease held — the host is genuinely busy.
                     "still_running".to_string()
                 } else {
                     if probe == ProbeResult::Dead {
-                        // Process confirmed gone; the host is free. Unknown
-                        // probes keep the lease until the operator resolves.
                         release_lease(ledger)?;
                     }
                     ledger.transition(

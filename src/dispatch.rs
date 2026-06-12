@@ -1,7 +1,3 @@
-//! Dispatch: take a pending run through budget check, host lease,
-//! prepare, execute, collect, finalize. Mechanical — no judgment about
-//! what to fix or whether the agent did a good job.
-
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -13,14 +9,10 @@ use crate::ledger::{AttemptStats, Ledger, RunRow};
 use crate::spec::{Plane, Task};
 use crate::submit;
 use crate::substrate::{self, WorkspacePlan, CARD_FILENAME};
-
-/// Mechanical retries after the initial attempt, for pre-execute failures only.
 const MAX_RETRIES: i64 = 2;
 const DEFAULT_TIMEOUT_MINUTES: u64 = 60;
 const LEASE_WAIT: Duration = Duration::from_secs(60);
 const LEASE_POLL: Duration = Duration::from_millis(250);
-
-/// Outcome of one attempt, with the phase it died in.
 enum AttemptOutcome {
     Success { stats: AttemptStats },
     Failure { phase_executed: bool, error: String },
@@ -29,11 +21,12 @@ enum AttemptOutcome {
 pub fn dispatch_run(plane: &Plane, ledger: &mut Ledger, run_id: &str) -> Result<RunRow> {
     let run = ledger.run(run_id)?;
     if run.state != "pending" {
-        // Replays and racing workers land here; never re-dispatch a run
-        // that already left pending.
         return Ok(run);
     }
     let task = plane.task(&run.task)?;
+    if let Some(source) = &task.source {
+        ledger.set_run_config_source(run_id, &source.repo, &source.r#ref)?;
+    }
 
     if let Some(v) = budget::pre_dispatch_check(plane, ledger, task)? {
         ledger.record_budget_event(Some(&task.name), v.kind, &v.detail)?;
@@ -48,9 +41,6 @@ pub fn dispatch_run(plane: &Plane, ledger: &mut Ledger, run_id: &str) -> Result<
         );
         return ledger.run(run_id);
     }
-
-    // Atomic claim: if another worker (or another plane process) already
-    // moved this run out of pending, walk away without a second attempt.
     if !ledger.try_transition(run_id, "running", None)? {
         return ledger.run(run_id);
     }
@@ -84,8 +74,6 @@ pub fn dispatch_run(plane: &Plane, ledger: &mut Ledger, run_id: &str) -> Result<
                 phase_executed: true,
                 error,
             } => {
-                // The agent may have had external side effects; "re-run it"
-                // is not a recovery semantic. No mechanical retry.
                 ledger.finalize_run(run_id, None, started.elapsed().as_millis() as i64)?;
                 ledger.transition(run_id, "failure", Some(&error))?;
                 break;
@@ -127,10 +115,6 @@ fn run_attempt(
     n: i64,
 ) -> Result<AttemptOutcome> {
     let host = task.host();
-    // Two tasks sharing a host serialize by design; the predecessor may
-    // legitimately run for its whole timeout. Waiting only LEASE_WAIT
-    // dead-lettered co-hosted storm members (live, 2026-06-11) — wait as
-    // long as the predecessor could possibly hold the lease.
     let lease_wait = LEASE_WAIT.max(Duration::from_secs(
         60 * task
             .spec
@@ -203,9 +187,6 @@ fn attempt_on_host(
         Ok(s) => s,
         Err(e) => return fail(false, format!("acquire: {e:#}")),
     };
-
-    // Verdict tasks run against a submission named in the payload; the
-    // prior round's gate report rides into the workspace untouched.
     let submission = match verdict_submission(ledger, run_id, task) {
         Ok(s) => s,
         Err(e) => {
@@ -229,10 +210,6 @@ fn attempt_on_host(
         repos: task.spec.workspace.repos.clone(),
         card: task.card.clone(),
         payload: match (&submission, ledger.run_payload(run_id)?) {
-            // The plane owns the review target: submission/change/rev in
-            // EVENT.json come from the submission row, never the driver —
-            // a storm member can't be pointed at a different rev than the
-            // one the gate will clear.
             (Some(sub), Some(raw)) => {
                 let mut v: serde_json::Value = serde_json::from_str(&raw)?;
                 let obj = v.as_object_mut().context("verdict payload not an object")?;
@@ -287,8 +264,6 @@ fn attempt_on_host(
         Ok(r) => r,
         Err(e) => {
             let _ = session.release();
-            // The process may or may not have started; treat as executed —
-            // side effects are possible once we tried to spawn the agent.
             return fail(true, format!("execute: {e:#}"));
         }
     };
@@ -312,8 +287,6 @@ fn attempt_on_host(
             error: format!("timeout after {}s", timeout.as_secs()),
         });
     }
-    // Command-harness verdict members: the exit code IS the verdict —
-    // a deterministic gate is never mediated by an agent's JSON.
     if let (Some(sub), "command", Some(kind)) = (
         &submission,
         task.agent.harness.as_str(),
@@ -334,7 +307,6 @@ fn attempt_on_host(
                     line: None,
                     fingerprint: Some(submit::fingerprint(kind, None, &claim)),
                     claim,
-                    // Build tools fail on stdout as often as stderr.
                     evidence: Some(if exec.stderr.trim().is_empty() {
                         tail(exec.stdout.trim(), 2000)
                     } else {
@@ -383,8 +355,6 @@ fn attempt_on_host(
     let parsed = match harness::parse_output(&task.agent.harness, &exec.stdout) {
         Ok(p) => p,
         Err(e) => {
-            // Unparseable output is a failure with raw output preserved —
-            // never a silent zero-cost success.
             let _ = session.release();
             let error = format!("unparseable harness output: {e:#}");
             ledger.finish_attempt(
@@ -402,16 +372,9 @@ fn attempt_on_host(
         }
     };
     session.write_artifact("result.md", parsed.result.as_bytes())?;
-
-    // LLM verdict members: the result MUST be verdict JSON. Unparseable
-    // is a failure with raw output preserved — never a silent pass.
     if let (Some(sub), Some(kind)) = (&submission, task.spec.verdict.as_deref()) {
         match submit::parse_verdict(kind, &parsed.result) {
             Ok(mut doc) => {
-                // A supplied fingerprint must already be known to this
-                // submission (prior report or recorded verdicts) or it is
-                // recomputed — rejected fingerprints can't be reused to
-                // smuggle fresh blocking findings past the gate.
                 submit::enforce_fingerprints(&mut doc, kind, &ledger.known_fingerprints(sub)?);
                 ledger.record_verdict(&sub.id, run_id, kind, &doc)?
             }
@@ -436,8 +399,6 @@ fn attempt_on_host(
 
     ledger.set_attempt_phase(attempt_id, "finalizing")?;
     if let Some(post) = &plan.post_command {
-        // post_command is finalization (publish artifacts, post replies);
-        // a failed finalization must not masquerade as a successful run.
         let post_result = session.execute(
             &["sh".into(), "-c".into(), post.clone()],
             None,
@@ -483,10 +444,6 @@ fn attempt_on_host(
         stats: parsed.stats,
     })
 }
-
-/// Resolve the submission a verdict task targets (None for ordinary
-/// tasks). A verdict run without a valid `{"submission": "<id>"}` in its
-/// payload can never produce a usable verdict — fail before executing.
 fn verdict_submission(
     ledger: &Ledger,
     run_id: &str,
@@ -517,8 +474,6 @@ pub fn attempt_dir(plane: &Plane, run_id: &str, n: i64) -> PathBuf {
         .join(run_id)
         .join(format!("attempt-{n}"))
 }
-
-/// Last `max` bytes (char-aligned) — failures print at the end of output.
 fn tail(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_string();

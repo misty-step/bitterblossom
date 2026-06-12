@@ -1,7 +1,3 @@
-//! `bb serve` — the resident plane: boot recovery, webhook ingress, cron
-//! scheduler, and the dispatch loop. Plumbing only; every decision lives
-//! in `ingress`/`dispatch`/`recovery`, which run identically from the CLI.
-
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -67,24 +63,26 @@ pub fn serve(root: &Path) -> Result<()> {
 }
 
 fn cron_loop(root: &Path) {
-    let Ok(plane) = Plane::load(root) else { return };
-    let Ok(mut ledger) = Ledger::open(&plane.db_path()) else {
-        return;
-    };
-    let mut schedules = Vec::new();
-    for task in plane.tasks.values() {
-        for trigger in &task.spec.triggers {
-            if let TriggerSpec::Cron { schedule } = trigger {
-                match ingress::parse_schedule(schedule) {
-                    Ok(s) => schedules.push((task.name.clone(), s)),
-                    Err(e) => eprintln!("cron: task {}: {e:#}", task.name),
-                }
-            }
-        }
-    }
     let mut last = Utc::now();
     loop {
         std::thread::sleep(CRON_POLL);
+        let Ok(plane) = Plane::load(root) else {
+            continue;
+        };
+        let Ok(mut ledger) = Ledger::open(&plane.db_path()) else {
+            continue;
+        };
+        let mut schedules = Vec::new();
+        for task in plane.tasks.values() {
+            for trigger in &task.spec.triggers {
+                if let TriggerSpec::Cron { schedule } = trigger {
+                    match ingress::parse_schedule(schedule) {
+                        Ok(s) => schedules.push((task.name.clone(), s)),
+                        Err(e) => eprintln!("cron: task {}: {e:#}", task.name),
+                    }
+                }
+            }
+        }
         let now = Utc::now();
         for (task, schedule) in &schedules {
             for fire in ingress::due_fires(schedule, last, now) {
@@ -118,8 +116,6 @@ fn dispatch_loop(root: &Path) {
         };
         for run in pending {
             {
-                // Per-task FIFO: one run per task in flight; older runs in
-                // the same task block newer ones.
                 let mut guard = in_flight.lock().expect("in_flight lock");
                 if guard.contains(&run.task) {
                     continue;
@@ -151,8 +147,6 @@ fn run_one(root: &Path, run_id: &str) {
     let result = (|| -> Result<()> {
         let plane = Plane::load(root)?;
         let mut ledger = Ledger::open(&plane.db_path())?;
-        // dispatch_run owns state-transition notifications (dead letters,
-        // budget parks), so the CLI path notifies identically.
         let run = dispatch::dispatch_run(&plane, &mut ledger, run_id)?;
         eprintln!("run {} {} (task={})", run.id, run.state, run.task);
         Ok(())
@@ -212,10 +206,6 @@ fn bind_is_loopback(bind: &str) -> bool {
 fn api_token() -> Option<String> {
     std::env::var(API_TOKEN_ENV).ok().filter(|t| !t.is_empty())
 }
-
-/// Bearer-token gate for the read surface. With BB_API_TOKEN unset the
-/// surface is open — acceptable only because the default bind is
-/// loopback; set the token before binding wider.
 fn read_authorized(request: &tiny_http::Request, url: &str) -> bool {
     let Some(token) = api_token() else {
         return true;
@@ -227,9 +217,6 @@ fn read_authorized(request: &tiny_http::Request, url: &str) -> bool {
             .eq_ignore_ascii_case("authorization")
             && h.value.as_str() == format!("Bearer {token}")
     });
-    // ?token= lets a browser reach the HTML view; tokens in URLs are
-    // weaker than headers — fine for a loopback operator page. Parsed as
-    // a real query param: substring matching authorized `?notoken=...`.
     header_ok || query_param(url, "token").as_deref() == Some(token.as_str())
 }
 
@@ -336,8 +323,6 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
 
     Ok((404, "{\"error\":\"not found\"}".to_string()))
 }
-
-/// Per-task posture: agent binding, parked state, today's runs, budgets.
 fn tasks_view(plane: &Plane, ledger: &Ledger) -> Result<Vec<serde_json::Value>> {
     let mut out = Vec::new();
     for task in plane.tasks.values() {
@@ -347,6 +332,7 @@ fn tasks_view(plane: &Plane, ledger: &Ledger) -> Result<Vec<serde_json::Value>> 
             "harness": task.agent.harness,
             "model": task.agent.model,
             "substrate": task.spec.substrate,
+            "source": task.source,
             "parked": ledger.parked_reason(&task.name)?,
             "runs_today": ledger.runs_today(&task.name)?,
             "max_runs_per_day": task.spec.budget.max_runs_per_day,
@@ -356,8 +342,6 @@ fn tasks_view(plane: &Plane, ledger: &Ledger) -> Result<Vec<serde_json::Value>> 
     }
     Ok(out)
 }
-
-/// The operator view: one server-rendered page, no JS, no build step.
 fn html_view(plane: &Plane, ledger: &Ledger) -> Result<String> {
     let esc = |s: &str| {
         s.replace('&', "&amp;")
@@ -449,7 +433,6 @@ mod tests {
             query_param("/api/runs?token=abc", "token").as_deref(),
             Some("abc")
         );
-        // The bypass shape: a param whose *name* merely ends in "token".
         assert_eq!(query_param("/api/runs?notoken=abc", "token"), None);
         assert_eq!(query_param("/api/runs", "token"), None);
         assert_eq!(

@@ -1,8 +1,3 @@
-//! Harness adapters: build the CLI invocation for an agent binding and
-//! parse its output into result + cost/token stats. Harness ids and flags
-//! live here and nowhere else; adding a harness is one adapter, not a
-//! schema change.
-
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 
@@ -16,14 +11,9 @@ pub struct ParsedOutput {
 }
 
 pub const HARNESSES: &[&str] = &["claude", "codex", "pi", "command"];
-
-/// The lane card is passed on stdin; the command must read its prompt from
-/// stdin so card size never hits argv limits.
 pub fn build_command(agent: &AgentSpec, budget: &TaskBudget) -> Result<Vec<String>> {
     let bin = agent.bin.clone().unwrap_or_else(|| agent.harness.clone());
     let mut cmd = match agent.harness.as_str() {
-        // No LLM: run bin+args directly. On verdict tasks the exit code
-        // *is* the verdict (dispatch maps it); never mediated by an agent.
         "command" => vec![bin],
         "claude" => {
             let mut c = vec![
@@ -51,13 +41,6 @@ pub fn build_command(agent: &AgentSpec, budget: &TaskBudget) -> Result<Vec<Strin
             "-".into(),
         ],
         "pi" => {
-            // pi --mode json re-streams the entire partial message on every
-            // token (`message_update`): a 15-minute run produced 718 MB of
-            // stdout (measured live 2026-06-10). Drop those deltas before
-            // they hit the capture file; everything the parser needs
-            // (message_end, turn_end) passes through. The pipeline makes
-            // grep's exit status the command's — pi crashes still surface
-            // because a stream with no assistant message_end fails parsing.
             let mut inner = vec![
                 bin,
                 "--provider".into(),
@@ -74,9 +57,6 @@ pub fn build_command(agent: &AgentSpec, budget: &TaskBudget) -> Result<Vec<Strin
                 .iter()
                 .map(|a| crate::substrate::local::shell_quote(a))
                 .collect();
-            // The exit-status file keeps pi's own exit code authoritative —
-            // a bare pipeline would report grep's (POSIX sh has no
-            // pipefail). cwd is the workspace on every substrate.
             return Ok(vec![
                 "sh".into(),
                 "-c".into(),
@@ -97,15 +77,11 @@ pub fn build_command(agent: &AgentSpec, budget: &TaskBudget) -> Result<Vec<Strin
     cmd.extend(agent.args.iter().cloned());
     Ok(cmd)
 }
-
-/// Unparseable output is an error — the attempt fails with raw output
-/// preserved. Never a silent zero-cost success.
 pub fn parse_output(harness: &str, stdout: &str) -> Result<ParsedOutput> {
     match harness {
         "claude" => parse_claude(stdout),
         "codex" => parse_codex(stdout),
         "pi" => parse_pi(stdout),
-        // A command's output is its result verbatim; no tokens, no cost.
         "command" => Ok(ParsedOutput {
             result: stdout.trim().to_string(),
             stats: AttemptStats::default(),
@@ -113,9 +89,6 @@ pub fn parse_output(harness: &str, stdout: &str) -> Result<ParsedOutput> {
         other => bail!("unknown harness '{other}'"),
     }
 }
-
-/// `claude -p --output-format json` emits one JSON object:
-/// `{"type":"result","result":...,"total_cost_usd":...,"num_turns":...,"usage":{...}}`
 fn parse_claude(stdout: &str) -> Result<ParsedOutput> {
     let v = last_json_object(stdout).context("claude output: no JSON object found")?;
     if v.get("is_error").and_then(Value::as_bool) == Some(true) {
@@ -140,9 +113,6 @@ fn parse_claude(stdout: &str) -> Result<ParsedOutput> {
         },
     })
 }
-
-/// `codex exec --json` emits JSONL events; token usage arrives on
-/// `turn.completed`, the answer on `item.completed` agent messages.
 fn parse_codex(stdout: &str) -> Result<ParsedOutput> {
     let mut tokens_in: i64 = 0;
     let mut tokens_out: i64 = 0;
@@ -186,24 +156,14 @@ fn parse_codex(stdout: &str) -> Result<ParsedOutput> {
             tokens_in: Some(tokens_in),
             tokens_out: Some(tokens_out),
             turns: Some(turns),
-            // codex does not report dollar cost; unknown, not zero.
             cost_usd: None,
         },
     })
 }
-
-/// pi `--mode json` emits JSONL events (verified live 2026-06-10 against
-/// pi via OpenRouter): the final assistant message rides on `message_end`
-/// with `message.content[]` text items and `message.usage`
-/// `{input, output, cost: {total}}`; turns close with `turn_end`.
 fn parse_pi(stdout: &str) -> Result<ParsedOutput> {
     let mut turns: i64 = 0;
     let mut last_message: Option<Value> = None;
     let mut saw_event = false;
-    // Each assistant message_end carries that API call's usage, not a
-    // running total — cost and tokens must sum across the run (verified
-    // live 2026-06-10: a 12-minute review reported only its final
-    // message's cost until this summed).
     let (mut tokens_in, mut tokens_out, mut cost) = (0i64, 0i64, 0f64);
     let mut saw_usage = false;
     for line in stdout.lines() {
@@ -263,9 +223,6 @@ fn parse_pi(stdout: &str) -> Result<ParsedOutput> {
         },
     })
 }
-
-/// Find the last parseable JSON object in output (harnesses may print
-/// noise before the final result object).
 fn last_json_object(stdout: &str) -> Option<Value> {
     fn result_from_array(v: Value) -> Option<Value> {
         match v {
@@ -284,8 +241,6 @@ fn last_json_object(stdout: &str) -> Option<Value> {
                 return Some(v);
             }
         }
-        // claude (mid-2026) wraps the transcript in a JSON array whose
-        // `type: "result"` element carries the verdict and usage.
         if line.starts_with('[') {
             if let Ok(v) = serde_json::from_str::<Value>(line) {
                 if let Some(result) = result_from_array(v) {
@@ -313,8 +268,6 @@ mod tests {
 
     #[test]
     fn parse_claude_transcript_array() {
-        // claude ≥ mid-2026 wraps the transcript in a JSON array; the
-        // `type: "result"` element carries verdict + usage.
         let out = r#"[{"type":"system","subtype":"init"},{"type":"assistant","message":"..."},{"type":"result","subtype":"success","result":"review posted","total_cost_usd":2.0459,"num_turns":12,"usage":{"input_tokens":9216,"output_tokens":6598}}]"#;
         let parsed = parse_output("claude", out).unwrap();
         assert_eq!(parsed.result, "review posted");
@@ -331,15 +284,12 @@ mod tests {
         assert!(joined.contains("--provider' 'openrouter"), "{joined}");
         assert!(joined.contains("moonshotai/kimi-k2.6"), "{joined}");
         assert!(joined.contains("--no-session"), "{joined}");
-        // The message_update flood filter wraps the invocation.
         assert_eq!(cmd[0], "sh");
         assert!(joined.contains("grep -v -F"), "{joined}");
     }
 
     #[test]
     fn parse_pi_jsonl_events_sums_usage_across_messages() {
-        // Condensed from a live pi run via OpenRouter (2026-06-10). Each
-        // assistant message_end carries per-call usage; totals must sum.
         let out = concat!(
             r#"{"type":"message_update","assistantMessageEvent":{"type":"text_delta"}}"#,
             "\n",
@@ -364,9 +314,7 @@ mod tests {
     #[test]
     fn parse_pi_rejects_incomplete_runs() {
         assert!(parse_output("pi", "not json").is_err());
-        // Events but no assistant message_end: incomplete.
         assert!(parse_output("pi", r#"{"type":"message_update"}"#).is_err());
-        // Assistant message with no text content.
         let no_text = r#"{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"x"}],"usage":{}}}"#;
         assert!(parse_output("pi", no_text).is_err());
     }
