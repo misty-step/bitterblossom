@@ -18,9 +18,13 @@ use crate::{dispatch, notify};
 
 const DISPATCH_POLL: Duration = Duration::from_millis(500);
 const CRON_POLL: Duration = Duration::from_secs(10);
+const INGRESS_BIND_ENV: &str = "BB_INGRESS_BIND";
+const API_TOKEN_ENV: &str = "BB_API_TOKEN";
 
 pub fn serve(root: &Path) -> Result<()> {
     let plane = Plane::load(root)?;
+    let bind = ingress_bind(&plane.spec.ingress.bind);
+    enforce_public_bind_token(&bind)?;
     let mut ledger = Ledger::open(&plane.db_path())?;
 
     let reports = recovery::recover_inherited_runs(&plane, &mut ledger)?;
@@ -59,7 +63,7 @@ pub fn serve(root: &Path) -> Result<()> {
             .spawn(move || dispatch_loop(&root))?;
     }
 
-    http_loop(&root_buf, &plane)
+    http_loop(&root_buf, &bind)
 }
 
 fn cron_loop(root: &Path) {
@@ -158,9 +162,8 @@ fn run_one(root: &Path, run_id: &str) {
     }
 }
 
-fn http_loop(root: &Path, plane: &Plane) -> Result<()> {
-    let bind = plane.spec.ingress.bind.clone();
-    let server = tiny_http::Server::http(&bind).map_err(|e| anyhow::anyhow!("bind {bind}: {e}"))?;
+fn http_loop(root: &Path, bind: &str) -> Result<()> {
+    let server = tiny_http::Server::http(bind).map_err(|e| anyhow::anyhow!("bind {bind}: {e}"))?;
     eprintln!("bb serve listening on {bind}");
 
     for mut request in server.incoming_requests() {
@@ -186,11 +189,35 @@ fn http_loop(root: &Path, plane: &Plane) -> Result<()> {
     Ok(())
 }
 
+fn ingress_bind(configured: &str) -> String {
+    std::env::var(INGRESS_BIND_ENV).unwrap_or_else(|_| configured.to_string())
+}
+
+fn enforce_public_bind_token(bind: &str) -> Result<()> {
+    if bind_is_loopback(bind) || api_token().is_some() {
+        return Ok(());
+    }
+    anyhow::bail!("{API_TOKEN_ENV} must be set before binding non-loopback address {bind}");
+}
+
+fn bind_is_loopback(bind: &str) -> bool {
+    if let Ok(addr) = bind.parse::<std::net::SocketAddr>() {
+        return addr.ip().is_loopback();
+    }
+    bind.rsplit_once(':')
+        .map(|(host, _)| host == "localhost")
+        .unwrap_or(bind == "localhost")
+}
+
+fn api_token() -> Option<String> {
+    std::env::var(API_TOKEN_ENV).ok().filter(|t| !t.is_empty())
+}
+
 /// Bearer-token gate for the read surface. With BB_API_TOKEN unset the
 /// surface is open — acceptable only because the default bind is
 /// loopback; set the token before binding wider.
 fn read_authorized(request: &tiny_http::Request, url: &str) -> bool {
-    let Ok(token) = std::env::var("BB_API_TOKEN") else {
+    let Some(token) = api_token() else {
         return true;
     };
     let header_ok = request.headers().iter().any(|h| {
