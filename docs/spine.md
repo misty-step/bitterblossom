@@ -132,6 +132,42 @@ adapter owns every environment-specific choice behind that plan:
 `sprites` maps the workspace name onto its remote overlay and handles the
 sprite CLI transport entirely inside `src/substrate/sprites.rs`.
 
+## Durable reflex deployment
+
+The operator plane runs as the Fly app `bitterblossom-plane`, not as a
+laptop process. The checked-in [plane/plane.toml](../plane/plane.toml) stays
+loopback-local for safe ad hoc use; Fly sets `BB_INGRESS_BIND=0.0.0.0:8080`
+so its public URL can reach `bb serve`. Set `BB_API_TOKEN` before binding
+wider: the read API and HTML operator view are token-gated, and `bb serve`
+refuses non-loopback binds without it. `/health` stays unauthenticated for
+liveness and exposes only coarse queue counts; webhook ingress is
+authenticated by each trigger's HMAC secret.
+
+Deployment contract:
+
+- Host: Fly app `bitterblossom-plane` in org `misty-step`, one always-on
+  `dfw` machine, command `bb --config plane serve`.
+- State: encrypted Fly volume `bb_plane_data` mounted at `/app/plane/.bb`, so
+  the checked-in relative `db_path = ".bb/plane.db"` is volume-backed in
+  production.
+- Image: [Dockerfile](../Dockerfile) builds the Rust `bb` binary and installs
+  the pinned Linux Sprite CLI; [fly.toml](../fly.toml) sets `BB_SPRITE_BIN`.
+- Runtime secrets live on Fly, never in git: `BB_API_TOKEN`,
+  `BB_HOOK_REVIEW`, `OPENROUTER_API_KEY`, `GH_TOKEN`, and `SPRITE_TOKEN`.
+- GitHub `pull_request` webhooks for the reviewed repo subset point at
+  `https://bitterblossom-plane.fly.dev/hooks/review`; the current subset is
+  `misty-step/bitterblossom`, enforced again by the task filter.
+- Health and recovery checks after a host restart are: unauthenticated
+  `GET /health`, `GET /api/tasks` with `Authorization: Bearer $BB_API_TOKEN`,
+  `flyctl status --app bitterblossom-plane`, `flyctl volumes list --app
+  bitterblossom-plane`, and `bb --config plane recover` inside the Fly
+  machine.
+
+The GitHub webhook is deliberately a per-repo hook for v1, not a GitHub
+App. It exercises the same HMAC/dedupe/filter path as a future App
+delivery and keeps the reviewed subset operator-editable in GitHub's hook
+configuration while the plane remains workload-agnostic.
+
 ## Observability
 
 The ledger is the system of record; everything reads from it:

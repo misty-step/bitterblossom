@@ -1,0 +1,10 @@
+target
+.git
+.bb
+.env
+.env.*
+.DS_Store
+*.secret
+*.key
+e2e-reports
+thinktank.log
