@@ -976,14 +976,14 @@ mod tests {
     #[test]
     fn host_lease_is_exclusive_until_released() {
         let ledger = Ledger::open_in_memory().unwrap();
-        assert!(ledger.try_acquire_host_lease("sprite-1", "run-a").unwrap());
-        assert!(!ledger.try_acquire_host_lease("sprite-1", "run-b").unwrap());
+        assert!(ledger.try_acquire_host_lease("host-1", "run-a").unwrap());
+        assert!(!ledger.try_acquire_host_lease("host-1", "run-b").unwrap());
         assert_eq!(
-            ledger.lease_holder("sprite-1").unwrap().as_deref(),
+            ledger.lease_holder("host-1").unwrap().as_deref(),
             Some("run-a")
         );
-        ledger.release_host_lease("sprite-1", "run-a").unwrap();
-        assert!(ledger.try_acquire_host_lease("sprite-1", "run-b").unwrap());
+        ledger.release_host_lease("host-1", "run-a").unwrap();
+        assert!(ledger.try_acquire_host_lease("host-1", "run-b").unwrap());
     }
 
     #[test]
