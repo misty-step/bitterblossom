@@ -252,7 +252,7 @@ fn attempt_on_host(
         pre_command: task.spec.pre_command.clone(),
         post_command: task.spec.post_command.clone(),
         marker: attempt_marker(attempt_id),
-        remote_workspace: format!("/home/sprite/bb/{}", task.name),
+        workspace_name: task.name.clone(),
         checkpoint: task.spec.workspace.checkpoint.clone(),
         secrets,
         hermetic: matches!(task.agent.auth_class(), Ok(crate::spec::AuthClass::Api)),

@@ -139,7 +139,7 @@ impl SpriteSession {
 
 impl Session for SpriteSession {
     fn prepare(&mut self, plan: &WorkspacePlan) -> Result<()> {
-        self.workspace = plan.remote_workspace.clone();
+        self.workspace = remote_workspace_path(&plan.workspace_name);
         self.marker = plan.marker.clone();
         self.secrets = plan.secrets.clone();
         self.hermetic = plan.hermetic;
@@ -341,6 +341,10 @@ impl Session for SpriteSession {
     }
 }
 
+fn remote_workspace_path(name: &str) -> String {
+    format!("/home/sprite/bb/{name}")
+}
+
 fn repo_dir_name(url: &str) -> String {
     url.trim_end_matches('/')
         .trim_end_matches(".git")
@@ -348,4 +352,15 @@ fn repo_dir_name(url: &str) -> String {
         .next()
         .unwrap_or("repo")
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn remote_workspace_path_is_owned_by_the_sprites_adapter() {
+        assert_eq!(
+            super::remote_workspace_path("review"),
+            "/home/sprite/bb/review"
+        );
+    }
 }

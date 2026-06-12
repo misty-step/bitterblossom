@@ -29,9 +29,11 @@ pub struct WorkspacePlan {
     pub post_command: Option<String>,
     /// Per-attempt marker used for pidfiles: the probe and cancel key.
     pub marker: String,
-    /// Remote workspace directory (sprites); the local adapter ignores it.
-    pub remote_workspace: String,
-    /// Checkpoint to restore before preparing (sprites only).
+    /// Stable task workspace name. Adapters map it to their own path or
+    /// resource; dispatch never constructs substrate-specific paths.
+    pub workspace_name: String,
+    /// Snapshot to restore before preparing; adapters without snapshots
+    /// ignore it.
     pub checkpoint: Option<String>,
     /// Resolved per-exec credentials (env name, value). Never persisted.
     pub secrets: Vec<(String, String)>,
@@ -72,8 +74,8 @@ pub trait Substrate {
 }
 
 pub trait Session {
-    /// Materialize the workspace: checkpoint restore, repo checkouts at
-    /// declared refs, card file, pre_command. Nothing here may start the
+    /// Materialize the workspace: optional snapshot restore, repo checkouts
+    /// at declared refs, card file, pre_command. Nothing here may start the
     /// agent.
     fn prepare(&mut self, plan: &WorkspacePlan) -> Result<()>;
     /// Run a command in the workspace with a wall-clock timeout — the v1

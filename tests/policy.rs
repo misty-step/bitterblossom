@@ -107,3 +107,20 @@ fn local_substrate_is_rejected_outside_dev_planes() {
     let err = Plane::load(root).unwrap_err();
     assert!(err.to_string().contains("dev/test machinery"), "{err}");
 }
+
+#[test]
+fn non_local_substrates_require_explicit_host_generically() {
+    let dir = tempfile::tempdir().unwrap();
+    let err = plane_with(
+        dir.path(),
+        "harness = \"pi\"\nmodel = \"m\"\n",
+        "agent = \"a\"\nsubstrate = \"ssh\"\n[[trigger]]\nkind = \"manual\"\n",
+    )
+    .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("substrate 'ssh' requires workspace.host"),
+        "{msg}"
+    );
+    assert!(!msg.contains("sprites"), "{msg}");
+}

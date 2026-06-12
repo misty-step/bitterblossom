@@ -171,11 +171,11 @@ fn default_substrate() -> String {
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct WorkspaceSpec {
     /// Substrate resource identity: the host-lease key. Local substrate
-    /// defaults to "local"; sprites substrate requires the sprite name.
+    /// defaults to "local"; non-local substrates require an explicit host.
     pub host: Option<String>,
     #[serde(default)]
     pub repos: Vec<RepoSpec>,
-    /// Sprite checkpoint to restore during prepare (sprites substrate).
+    /// Snapshot to restore during prepare; adapters without snapshots ignore it.
     pub checkpoint: Option<String>,
 }
 
@@ -309,8 +309,8 @@ impl Plane {
     /// plane.toml is allowed — defaults apply — but a missing agent
     /// referenced by a task is an error.
     pub fn load(root: &Path) -> Result<Self> {
-        // Absolute root: artifact paths cross process-cwd boundaries (the
-        // sprite relay runs from $HOME), so relative roots corrupt uploads.
+        // Absolute root: artifact paths cross process-cwd boundaries when
+        // adapters invoke external relays, so relative roots corrupt uploads.
         let root = &root
             .canonicalize()
             .with_context(|| format!("plane root {}", root.display()))?;
@@ -369,13 +369,16 @@ impl Plane {
                         format!("task '{name}' binds unknown agent '{}'", task_spec.agent)
                     })?
                     .clone();
-                if task_spec.substrate == "sprites" && task_spec.workspace.host.is_none() {
-                    bail!("task '{name}': substrate = \"sprites\" requires workspace.host");
+                if task_spec.substrate != "local" && task_spec.workspace.host.is_none() {
+                    bail!(
+                        "task '{name}': substrate '{}' requires workspace.host",
+                        task_spec.substrate
+                    );
                 }
                 if task_spec.substrate == "local" && !spec.dev {
                     bail!(
                         "task '{name}': the local substrate is dev/test machinery — \
-                         production planes dispatch to a remote substrate (sprites). \
+                         production planes dispatch to a configured remote substrate. \
                          Set `dev = true` in plane.toml only for a development plane."
                     );
                 }

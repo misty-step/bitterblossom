@@ -71,9 +71,10 @@ Two auth classes, two work classes:
 agent = "reviewer"                # agents/reviewer.toml
 substrate = "sprites"             # remote-only; "local" needs plane dev = true
 
-[workspace]                       # materialized by the substrate preparer
-host = "bb-demo"                  # sprites: the sprite name (host lease key)
+[workspace]                       # materialized by the substrate adapter
+host = "bb-demo"                  # substrate resource identity / host lease key
 repos = [{ url = "https://github.com/o/r.git", ref = "master" }]
+checkpoint = "v3"                 # optional snapshot; ignored by adapters without snapshots
 
 [budget]
 timeout_minutes = 30              # enforced: wall-clock cancel
@@ -110,6 +111,26 @@ max = 4000
 pre_command = ""                  # optional adapter commands run in the
 post_command = ""                 # workspace before/after the agent
 ```
+
+## Substrate contract
+
+Dispatch supplies a declarative `WorkspacePlan`: task workspace name,
+declared repos, card, EVENT/REPORT payloads, pre/post commands, probe
+marker, optional checkpoint, resolved secrets, and hermeticity. The
+adapter owns every environment-specific choice behind that plan:
+
+- Map the workspace name to the adapter's own workspace location or
+  resource. Dispatch never constructs host paths.
+- Restore the checkpoint before prepare when the adapter supports
+  snapshots; adapters without snapshots ignore it.
+- Materialize repos at declared refs plus `LANE_CARD.md`, `EVENT.json`,
+  and `REPORT.json`; run `pre_command` without starting the agent.
+- Execute the harness in the prepared workspace with a wall-clock kill
+  and probe marker, write artifacts, then release adapter resources.
+
+`local` keeps a workspace under the attempt directory for dev/test planes.
+`sprites` maps the workspace name onto its remote overlay and handles the
+sprite CLI transport entirely inside `src/substrate/sprites.rs`.
 
 ## Observability
 
