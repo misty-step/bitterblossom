@@ -173,6 +173,29 @@ adapter owns every environment-specific choice behind that plan:
 `sprites` maps the workspace name onto its remote overlay and handles the
 sprite CLI transport entirely inside `src/substrate/sprites.rs`.
 
+## Environment Contract
+
+The v1 environment contract is the task `WorkspacePlan`: declared repos,
+optional sprite checkpoint, task `pre_command`, card, event, report,
+declared secrets, and task `post_command`. The plane does not honor
+`devcontainer.json`.
+
+That omission is deliberate. The Dev Container spec describes a container
+environment, including image/build settings, Feature installation, and
+lifecycle commands. Features are self-contained install units with
+metadata plus an `install.sh`, and lifecycle commands such as
+`postCreateCommand` run after the container has been created. A Fly Sprite
+workspace is not a container build; it is a restored machine plus repo
+sync. Running only `postCreateCommand` would mimic one lifecycle hook
+while ignoring image, Feature, mount, user, and container semantics, which
+is worse than an honest unsupported boundary.
+
+For repo-specific setup today, use a task `pre_command` for per-run
+workspace preparation or a sprite checkpoint for machine-level tools.
+Reconsider devcontainer support only behind a substrate that can delegate
+to a real devcontainer implementation or container runtime without moving
+Feature/package judgment into the Rust spine.
+
 ## Durable reflex deployment
 
 The operator plane runs as the Fly app `bitterblossom-plane`, not as a
