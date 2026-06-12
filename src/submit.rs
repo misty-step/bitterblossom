@@ -52,6 +52,19 @@ pub struct VerdictRow {
     pub findings: Vec<Finding>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct RejectionRow {
+    pub fingerprint: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SubmissionBundle {
+    pub submission: SubmissionRow,
+    pub verdicts: Vec<VerdictRow>,
+    pub rejections: Vec<RejectionRow>,
+}
+
 pub fn fingerprint(kind: &str, file: Option<&str>, claim: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
@@ -215,6 +228,34 @@ impl Ledger {
             })
             .collect()
     }
+
+    pub fn list_submissions(&self, limit: i64) -> Result<Vec<SubmissionBundle>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "{SUBMISSION_SELECT} ORDER BY created_at DESC LIMIT ?1"
+        ))?;
+        let submissions = stmt
+            .query_map(params![limit], row_to_submission)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        submissions
+            .into_iter()
+            .map(|submission| {
+                let rejections = self
+                    .rejections(&submission.change_key)?
+                    .into_iter()
+                    .map(|(fingerprint, reason)| RejectionRow {
+                        fingerprint,
+                        reason,
+                    })
+                    .collect();
+                Ok(SubmissionBundle {
+                    verdicts: self.verdicts(&submission.id)?,
+                    rejections,
+                    submission,
+                })
+            })
+            .collect()
+    }
+
     pub fn known_fingerprints(
         &self,
         sub: &SubmissionRow,

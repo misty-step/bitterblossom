@@ -216,8 +216,9 @@ The ledger is the system of record; everything reads from it:
 - `GET /` — server-rendered HTML operator view (tasks, budgets, parked
   state, recent runs; auto-refreshes).
 - `GET /api/runs[?task=&state=]`, `GET /api/runs/<id>` (run + attempts +
-  events), `GET /api/dlq`, `GET /api/tasks` — the agent-facing read API,
-  same shapes as the `--json` CLI.
+  events), `GET /api/dlq`, `GET /api/tasks`, `GET /api/submissions`
+  (submissions + verdicts + rejection reasons) — the agent-facing read
+  API, same shapes as the `--json` CLI.
 - Auth: set `BB_API_TOKEN` on the plane and send
   `Authorization: Bearer <token>` (browsers may use `?token=`). Unset =
   open, acceptable only on the loopback default bind.

@@ -16,6 +16,7 @@ observations/archives/*/settings.json
 /.claude/CLAUDE.md
 /.claude/skills/bb-persona-*/
 /.agents/skills/bb-persona-*/
+.pi/
 
 # OS
 .DS_Store

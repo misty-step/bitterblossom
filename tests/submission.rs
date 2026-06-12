@@ -147,6 +147,43 @@ fn cas_at_most_one_open_submission_per_change() {
 }
 
 #[test]
+fn list_submissions_includes_verdict_rows_for_gardener_api() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_gate_plane(dir.path(), 3, false);
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    let sub = ledger.open_submission("feat/x", "sha1", None).unwrap();
+    let run = canonical_run(&mut ledger, &sub.id, "correctness");
+    ledger
+        .record_verdict(
+            &sub.id,
+            &run,
+            "correctness",
+            &with_findings("advisory", vec![finding("serious", "recurring test gap")]),
+        )
+        .unwrap();
+    let fp = submit::fingerprint("correctness", Some("src/x.rs"), "recurring test gap");
+    ledger
+        .reject_finding("feat/x", &fp, "not reproducible in live gate")
+        .unwrap();
+
+    let listed = ledger.list_submissions(10).unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].submission.id, sub.id);
+    assert_eq!(listed[0].verdicts.len(), 1);
+    assert_eq!(listed[0].verdicts[0].kind, "correctness");
+    assert_eq!(
+        listed[0].verdicts[0].findings[0].claim,
+        "recurring test gap"
+    );
+    assert_eq!(listed[0].rejections.len(), 1);
+    assert_eq!(listed[0].rejections[0].fingerprint, fp);
+    assert_eq!(
+        listed[0].rejections[0].reason,
+        "not reproducible in live gate"
+    );
+}
+
+#[test]
 fn blocked_round_increments_plane_side_and_snapshots_report() {
     let dir = tempfile::tempdir().unwrap();
     let plane = make_gate_plane(dir.path(), 3, false);
