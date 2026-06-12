@@ -248,6 +248,16 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
                 Ok((200, serde_json::to_string(&runs)?))
             }
             "/api/dlq" => Ok((200, serde_json::to_string(&ledger.list_dead_letters()?)?)),
+            "/api/submissions" => {
+                let limit = query_param(&url, "limit")
+                    .and_then(|s| s.parse::<i64>().ok())
+                    .unwrap_or(50)
+                    .clamp(1, 200);
+                Ok((
+                    200,
+                    serde_json::to_string(&ledger.list_submissions(limit)?)?,
+                ))
+            }
             "/api/gate" => {
                 let id = match (query_param(&url, "submission"), query_param(&url, "change")) {
                     (Some(id), _) => id,

@@ -1,0 +1,17 @@
+agent = "gardener"
+substrate = "sprites"
+
+[workspace]
+host = "lane-1"
+
+[budget]
+timeout_minutes = 20
+max_runs_per_day = 2
+max_cost_per_run_usd = 0.25
+
+[[trigger]]
+kind = "manual"
+
+[[trigger]]
+kind = "cron"
+schedule = "0 15 * * 1"

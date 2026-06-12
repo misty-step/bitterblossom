@@ -1,0 +1,3 @@
+harness = "pi"
+model = "deepseek/deepseek-v4-flash"
+secrets = ["OPENROUTER_API_KEY", "GH_TOKEN", "BB_API_TOKEN"]
