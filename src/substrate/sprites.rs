@@ -1,8 +1,3 @@
-//! Fly Sprites substrate: shell out to the `sprite` CLI, which talks
-//! WebSocket exec (never `--http-post`; cold sprites 502 on HTTP POST —
-//! earned in this repo). Workspaces persist on the sprite overlay between
-//! wakes: repos sync with fetch + hard-reset instead of re-cloning.
-
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -10,26 +5,17 @@ use anyhow::{bail, Context, Result};
 
 use super::local::{run_with_timeout, shell_quote};
 use super::{ExecResult, ProbeResult, Session, Substrate, WorkspacePlan, CARD_FILENAME};
-
-/// Override the sprite binary (tests point this at a stub; the real CLI is
-/// an external network boundary).
 pub const SPRITE_BIN_ENV: &str = "BB_SPRITE_BIN";
 
 fn sprite_bin() -> String {
     std::env::var(SPRITE_BIN_ENV).unwrap_or_else(|_| "sprite".to_string())
 }
-
-/// `-o org -s name` for a `org/name` host, `-s host` otherwise.
 fn selector_args(host: &str) -> Vec<String> {
     match host.split_once('/') {
         Some((org, name)) => vec!["-o".into(), org.into(), "-s".into(), name.into()],
         None => vec!["-s".into(), host.into()],
     }
 }
-
-/// The sprite CLI resolves its org from cwd path history; a temp-dir cwd
-/// picks the wrong org. Run the relay from $HOME, where the operator's
-/// default resolution lives.
 fn relay_cwd() -> PathBuf {
     std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -53,7 +39,6 @@ impl Substrate for SpritesSubstrate {
             secrets: Vec::new(),
             hermetic: false,
         };
-        // Wake-on-exec: a cold sprite takes a few seconds to wake.
         let out = session.sprite_exec(&["true".into()], None, Duration::from_secs(120))?;
         if out.exit_code != 0 {
             bail!(
@@ -105,8 +90,6 @@ pub struct SpriteSession {
 }
 
 impl SpriteSession {
-    /// Run a command on the sprite via the CLI relay; extra_args go before
-    /// the remote command (e.g. --file uploads).
     fn sprite_exec_with(
         &self,
         extra_args: &[String],
@@ -117,7 +100,6 @@ impl SpriteSession {
         let mut cmd = vec![sprite_bin(), "exec".into()];
         cmd.extend(selector_args(&self.host));
         cmd.extend(extra_args.iter().cloned());
-        // The sprite CLI parses remote args as its own flags without this.
         cmd.push("--".into());
         cmd.extend(remote.iter().cloned());
         run_with_timeout(&cmd, stdin, &relay_cwd(), &[], false, None, timeout)
@@ -176,8 +158,6 @@ impl Session for SpriteSession {
             let dest = shell_quote(&format!("{}/{dir}", self.workspace));
             let url = shell_quote(&repo.url);
             let r#ref = shell_quote(&repo.r#ref);
-            // Overlay persists between wakes: fetch + hard-reset + clean on
-            // reuse beats re-clone.
             let script = format!(
                 "if [ -d {dest}/.git ]; then \
                    git -C {dest} fetch origin {ref_} --depth 1 && \
@@ -195,8 +175,6 @@ impl Session for SpriteSession {
                 bail!("repo sync {} failed: {}", repo.url, out.stderr.trim());
             }
         }
-
-        // Upload the lane card via --file (write locally, upload on exec).
         let card_local = self.artifacts.join(CARD_FILENAME);
         std::fs::write(&card_local, &plan.card)?;
         let upload = format!(
@@ -234,8 +212,6 @@ impl Session for SpriteSession {
         }
 
         if let Some(pre) = &plan.pre_command {
-            // pre_command is workload code: hermetic plans run it through
-            // execute() so it gets the same scrubbed env as the harness.
             let out = self.execute(
                 &["sh".into(), "-c".into(), pre.clone()],
                 None,
@@ -254,20 +230,12 @@ impl Session for SpriteSession {
         stdin: Option<&str>,
         timeout: Duration,
     ) -> Result<ExecResult> {
-        // The whole script travels on stdin — secrets and prompt never
-        // appear in local or remote argv (argv is visible in process
-        // tables and CLI telemetry). The prompt reaches the harness via a
-        // heredoc with a per-attempt delimiter; the pidfile makes the
-        // attempt probeable and cancellable after a plane restart.
         let exports: String = self
             .secrets
             .iter()
             .map(|(k, v)| format!("export {k}={}\n", shell_quote(v)))
             .collect();
         let quoted: Vec<String> = cmd.iter().map(|c| shell_quote(c)).collect();
-        // Unguessable delimiter, re-rolled on the astronomically unlikely
-        // collision, so prompt content can never close the heredoc early
-        // and execute as shell.
         let delimiter = loop {
             let candidate = format!("BB_STDIN_EOF_{}", crate::ledger::new_id());
             let collides = stdin
@@ -284,11 +252,6 @@ impl Session for SpriteSession {
             ),
             None => format!("exec {} < /dev/null\n", quoted.join(" ")),
         };
-        // Hermetic execs scrub the sprite's inherited environment down to
-        // an allowlist and point HOME at the workspace — whatever the
-        // sprite image has baked in (tokens from prior bakes, CLI auth)
-        // never reaches an api-auth workload. Secrets export after the
-        // scrub, still via stdin.
         let scrub = if self.hermetic {
             "for v in $(env | cut -d= -f1); do case \"$v\" in \
              PATH|TERM|LANG|LC_ALL|PWD|SHLVL|TMPDIR) ;; *) unset \"$v\" 2>/dev/null;; esac; done\n\
@@ -301,17 +264,12 @@ impl Session for SpriteSession {
             ws = shell_quote(&self.workspace),
             marker = self.marker,
         );
-        // `setsid -w sh` makes the remote shell a session leader whose pid
-        // is the pidfile pid, so the timeout kill below takes out the whole
-        // process group — grandchildren included, exit status propagated.
         let result = self.sprite_exec(
             &["setsid".into(), "-w".into(), "sh".into()],
             Some(&script),
             timeout,
         )?;
         if result.timed_out {
-            // The local relay died but the remote process may live on;
-            // best-effort remote kill via the pidfile.
             let kill = format!(
                 "pid=\"$(cat /tmp/{}.pid 2>/dev/null)\" && kill -9 -- \"-$pid\" 2>/dev/null; true",
                 self.marker

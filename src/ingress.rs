@@ -1,8 +1,3 @@
-//! Ingress: webhook, cron, and manual all converge on the same path —
-//! validate → trigger-defined dedupe key → durable run row → ack. The
-//! HTTP/scheduler plumbing lives in `serve`; everything here is testable
-//! without a socket.
-
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
@@ -10,16 +5,11 @@ use sha2::Sha256;
 
 use crate::ledger::{IngressOutcome, IngressRequest, Ledger};
 use crate::spec::{Plane, Task, TriggerSpec};
-
-/// A webhook response the HTTP layer can serialize directly.
 #[derive(Debug)]
 pub struct WebhookResponse {
     pub status: u16,
     pub body: String,
 }
-
-/// Locate the unique (task, webhook trigger) pair for a route. Route
-/// collisions are a config error caught at plane load.
 pub fn webhook_target<'p>(plane: &'p Plane, route: &str) -> Option<(&'p Task, &'p TriggerSpec)> {
     for task in plane.tasks.values() {
         for trigger in &task.spec.triggers {
@@ -32,9 +22,6 @@ pub fn webhook_target<'p>(plane: &'p Plane, route: &str) -> Option<(&'p Task, &'
     }
     None
 }
-
-/// Handle a webhook delivery. The run row is durable before this returns
-/// a 2xx; an invalid signature is rejected with no row at all.
 pub fn handle_webhook(
     plane: &Plane,
     ledger: &mut Ledger,
@@ -73,11 +60,6 @@ pub fn handle_webhook(
             body: "{\"error\":\"invalid signature\"}".to_string(),
         });
     }
-
-    // Containment filters run after authentication: a verified delivery
-    // that fails any condition is acknowledged (2xx, so the sender does
-    // not retry) but never becomes a run. Fail-closed on unparseable
-    // payloads and missing pointers.
     if !filter.is_empty() {
         let payload: serde_json::Value = match serde_json::from_str(body) {
             Ok(v) => v,
@@ -100,7 +82,6 @@ pub fn handle_webhook(
 
     let derived = match dedupe_key {
         Some(expr) => Some(derive_dedupe_key(expr, headers, body)?),
-        // No derivation declared: the body hash is the event identity.
         None => Some(format!("body:{}", body_hash(body))),
     };
     let key = derived.map(|k| format!("wh:{route}:{k}"));
@@ -123,9 +104,6 @@ pub fn handle_webhook(
         .to_string(),
     })
 }
-
-/// Trigger-defined dedupe key derivation: `header:<Name>` or
-/// `json:<pointer>` (RFC 6901, e.g. `json:/pull_request/head/sha`).
 pub fn derive_dedupe_key(expr: &str, headers: &[(String, String)], body: &str) -> Result<String> {
     match expr.split_once(':') {
         Some(("header", name)) => header(headers, &name.to_ascii_lowercase())
@@ -151,8 +129,6 @@ fn header(headers: &[(String, String)], name: &str) -> Option<String> {
         .find(|(k, _)| k.eq_ignore_ascii_case(name))
         .map(|(_, v)| v.clone())
 }
-
-/// GitHub-style `sha256=<hex>` HMAC over the raw body.
 pub fn verify_hmac(secret: &str, body: &[u8], signature_header: &str) -> bool {
     let Some(hex_sig) = signature_header.strip_prefix("sha256=") else {
         return false;
@@ -191,11 +167,6 @@ fn hex_decode(s: &str) -> Result<Vec<u8>> {
         .map(|i| u8::from_str_radix(&s[i..i + 2], 16).context("bad hex"))
         .collect()
 }
-
-// ---- cron -----------------------------------------------------------------
-
-/// Parse a cron schedule; 5-field standard expressions get a seconds
-/// column prepended (the `cron` crate wants 6/7 fields).
 pub fn parse_schedule(expr: &str) -> Result<cron::Schedule> {
     let normalized = if expr.split_whitespace().count() == 5 {
         format!("0 {expr}")
@@ -206,9 +177,6 @@ pub fn parse_schedule(expr: &str) -> Result<cron::Schedule> {
         .parse::<cron::Schedule>()
         .with_context(|| format!("invalid cron schedule '{expr}'"))
 }
-
-/// Fire times due in `(after, until]`. The scheduled timestamp is the
-/// dedupe key, so a delayed or repeated tick can never double-fire.
 pub fn due_fires(
     schedule: &cron::Schedule,
     after: DateTime<Utc>,
@@ -216,8 +184,6 @@ pub fn due_fires(
 ) -> Vec<DateTime<Utc>> {
     schedule.after(&after).take_while(|t| *t <= until).collect()
 }
-
-/// Ingest one cron fire; idempotent on the scheduled timestamp.
 pub fn ingest_cron_fire(
     ledger: &mut Ledger,
     task: &str,

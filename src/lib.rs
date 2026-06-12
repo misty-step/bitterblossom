@@ -1,7 +1,3 @@
-//! Bitterblossom v3: the event plane spine. Tasks, agents, and triggers
-//! are files; runs are durable ledger rows; substrates execute. See
-//! docs/spine.md for the operator contract.
-
 pub mod budget;
 pub mod dispatch;
 pub mod harness;

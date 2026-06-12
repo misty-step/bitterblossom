@@ -171,8 +171,6 @@ enum TaskCommand {
 }
 
 fn main() {
-    // Die quietly on SIGPIPE (e.g. `bb runs export | head`) like other
-    // Unix CLIs instead of panicking on a broken-pipe write.
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
@@ -216,9 +214,6 @@ fn run() -> Result<()> {
                 return Ok(());
             }
             if outcome.duplicate {
-                // Still pending (e.g. unparked after a budget block, or a
-                // prior invocation died before dispatching): converge by
-                // dispatching it — the atomic claim makes this race-safe.
                 eprintln!(
                     "duplicate idempotency key; dispatching pending run {}",
                     outcome.run_id
@@ -295,8 +290,6 @@ fn run() -> Result<()> {
                 reason,
             } => {
                 ledger.transition(&run_id, &outcome, Some(&reason))?;
-                // An Unknown boot probe keeps the host lease until the
-                // operator resolves; free it now.
                 ledger.release_leases_for_run(&run_id)?;
                 println!("run {run_id} resolved: {outcome}");
             }
@@ -332,8 +325,6 @@ fn run() -> Result<()> {
                 if let Some(prev) = &dl.replayed_run_id {
                     bail!("dead letter {id} already replayed as run {prev}");
                 }
-                // Deterministic key: concurrent replays of the same dead
-                // letter dedupe at ingress instead of minting twin runs.
                 let replay_key = format!("replay:dl-{id}");
                 let outcome = ledger.ingest(IngressRequest {
                     task: &dl.task,
@@ -347,10 +338,6 @@ fn run() -> Result<()> {
                     bail!("dead letter {id} was claimed by a concurrent replay");
                 }
                 println!("replaying dead letter {id} as run {}", outcome.run_id);
-                // Always attempt dispatch — if a previous replay crashed
-                // after minting the run, this picks the pending run up; if
-                // it is already running/terminal, the atomic claim inside
-                // dispatch_run walks away without a second attempt.
                 let run = dispatch::dispatch_run(&plane, &mut ledger, &outcome.run_id)?;
                 println!("run {} {}", run.id, run.state);
             }
@@ -493,11 +480,25 @@ fn run() -> Result<()> {
         }
         Command::Check { json } => {
             if json {
+                let task_details: Vec<_> = plane
+                    .tasks
+                    .values()
+                    .map(|t| {
+                        serde_json::json!({
+                            "name": t.name,
+                            "agent": t.agent_name,
+                            "substrate": t.spec.substrate,
+                            "triggers": t.spec.triggers.len(),
+                            "source": t.source,
+                        })
+                    })
+                    .collect();
                 let summary = serde_json::json!({
                     "root": plane.root,
                     "db_path": plane.db_path(),
                     "agents": plane.agents.keys().collect::<Vec<_>>(),
                     "tasks": plane.tasks.keys().collect::<Vec<_>>(),
+                    "task_details": task_details,
                 });
                 println!("{}", serde_json::to_string_pretty(&summary)?);
             } else {
@@ -507,11 +508,17 @@ fn run() -> Result<()> {
                     println!("agent {name}@v{}: {} {}", a.version, a.harness, a.model);
                 }
                 for (name, t) in &plane.tasks {
+                    let source = t
+                        .source
+                        .as_ref()
+                        .map(|s| format!(" source={}@{}", s.repo, s.r#ref))
+                        .unwrap_or_default();
                     println!(
-                        "task {name}: agent={} substrate={} triggers={}",
+                        "task {name}: agent={} substrate={} triggers={}{}",
                         t.agent_name,
                         t.spec.substrate,
                         t.spec.triggers.len(),
+                        source,
                     );
                 }
             }
@@ -544,6 +551,13 @@ fn print_run(ledger: &Ledger, run_id: &str, json: bool) -> Result<()> {
                 .unwrap_or_else(|| "-".into()),
             run.duration_ms.unwrap_or(0),
         );
+        if let Some(repo) = &run.config_source_repo {
+            println!(
+                "source={}@{}",
+                repo,
+                run.config_source_ref.as_deref().unwrap_or("-")
+            );
+        }
         for a in attempts {
             println!(
                 "  attempt {} {}@v{} {} {} phase={} outcome={} cost={} artifacts={}",

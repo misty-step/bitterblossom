@@ -19,6 +19,47 @@ tasks/<name>/card.md        # lane card — the agent's entire context
 tasks/<name>/task.toml      # agent binding, substrate, workspace, budgets, triggers
 ```
 
+Target repos may also own task definitions under `.bb/`, while the plane
+keeps the trust boundary:
+
+```
+target-repo/.bb/tasks/<name>/card.md
+target-repo/.bb/tasks/<name>/task.toml
+```
+
+The plane opt-in is explicit:
+
+```toml
+[[workload_repo]]
+name = "target"                   # tasks load as target/<name>
+path = "../target-repo"           # local checkout path visible to the plane
+repo_url = "https://github.com/o/r.git"   # optional; workspace clone URL, defaults to path
+ref = "main"                      # default: master; recorded on every run
+agent = "reviewer"                # plane-owned binding
+substrate = "sprites"             # plane-owned substrate
+
+[workload_repo.workspace]         # plane-owned workspace authority
+host = "bb-target"
+checkpoint = "v3"
+
+[workload_repo.budget_caps]       # ceilings/defaults granted to repo tasks
+timeout_minutes = 30
+max_runs_per_day = 10
+max_cost_per_run_usd = 2.0
+turn_cap = 50
+```
+
+Repo-owned `task.toml` owns the card, triggers, adapter commands, verdict
+marker, and optional budget requests that stay within the plane-granted
+caps. Agent binding, substrate, workspace host/repos/checkpoint, and budget
+ceilings remain plane-owned. `bb check` fails when a repo task names an
+unknown or ungranted agent, requests `substrate = "local"` (unless the
+plane granted local on a dev plane), exceeds a budget cap, or attempts to
+declare workspace authority. Removing a `[[workload_repo]]` entry removes
+its namespaced tasks and trigger routes on the next config load; dispatch
+workers reload config for each run, HTTP ingress reloads per request, and
+cron refreshes on a bounded poll.
+
 ## plane.toml
 
 ```toml

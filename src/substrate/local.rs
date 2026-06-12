@@ -1,6 +1,3 @@
-//! Local-process substrate: a workspace directory on this machine. The
-//! degenerate case that keeps every task terminal-runnable and tests cheap.
-
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -9,9 +6,6 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 
 use super::{ExecResult, ProbeResult, Session, Substrate, WorkspacePlan, CARD_FILENAME};
-
-/// Pidfile written next to the artifacts so a restarted plane can probe
-/// whether the harness process survived.
 pub const PIDFILE: &str = "harness.pid";
 
 pub struct LocalSubstrate;
@@ -40,7 +34,6 @@ impl Substrate for LocalSubstrate {
         let Ok(pid) = content.trim().parse::<i32>() else {
             return ProbeResult::Unknown("unparseable pidfile".into());
         };
-        // kill(pid, 0): existence check without signaling.
         if unsafe { libc::kill(pid, 0) } == 0 {
             ProbeResult::Alive
         } else {
@@ -68,10 +61,6 @@ impl LocalSession {
             timeout,
         )
     }
-
-    /// The only env vars that cross the exec boundary. Provider API keys in
-    /// the plane's environment (OPENAI_API_KEY, ANTHROPIC_API_KEY, …) never
-    /// reach a workload unless declared as agent secrets.
     fn workload_env(&self) -> Result<Vec<(String, String)>> {
         const PASS: &[&str] = &[
             "PATH",
@@ -132,9 +121,6 @@ impl Session for LocalSession {
             std::fs::write(self.workspace.join(super::REPORT_FILENAME), report)?;
         }
         if let Some(pre) = &plan.pre_command {
-            // pre_command is workload code: it gets the workload env, not
-            // the plane's (the repo clones above are plane machinery and
-            // keep plane credentials).
             let out = run_with_timeout(
                 &["sh".into(), "-c".into(), pre.clone()],
                 None,
@@ -178,8 +164,6 @@ impl Session for LocalSession {
     }
 
     fn release(&mut self) -> Result<()> {
-        // Workspace is kept on disk under the attempt dir for diagnosis;
-        // nothing to tear down for a local process.
         Ok(())
     }
 }
@@ -227,8 +211,6 @@ pub(crate) fn run_with_timeout(
         })
         .stdout(std::fs::File::create(&stdout_path)?)
         .stderr(std::fs::File::create(&stderr_path)?);
-    // Own process group so a timeout kills the harness AND everything it
-    // spawned — a surviving grandchild is hidden concurrent work.
     {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
@@ -249,7 +231,6 @@ pub(crate) fn run_with_timeout(
     if let Some(input) = stdin {
         let mut pipe = child.stdin.take().context("stdin pipe")?;
         pipe.write_all(input.as_bytes())?;
-        // Drop closes the pipe so the child sees EOF.
     }
 
     let started = Instant::now();
@@ -260,7 +241,6 @@ pub(crate) fn run_with_timeout(
         }
         if started.elapsed() >= timeout {
             timed_out = true;
-            // Kill the whole process group, not just the direct child.
             unsafe {
                 libc::kill(-(child.id() as i32), libc::SIGKILL);
             }

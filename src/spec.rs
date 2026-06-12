@@ -1,6 +1,3 @@
-//! Config loading: plane.toml, agents/<name>.toml, tasks/<name>/{task.toml,card.md}.
-//! Tasks, agents, and triggers are data; the plane holds no workload logic.
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -11,9 +8,6 @@ use serde::{Deserialize, Serialize};
 pub struct PlaneSpec {
     #[serde(default = "default_db_path")]
     pub db_path: String,
-    /// Dev planes may run workloads as local processes (tests, config
-    /// hacking). Production planes always dispatch to a remote substrate —
-    /// the plane never manages workload processes on the operator's machine.
     #[serde(default)]
     pub dev: bool,
     #[serde(default)]
@@ -22,7 +16,8 @@ pub struct PlaneSpec {
     pub notify: NotifySpec,
     #[serde(default)]
     pub budget: GlobalBudget,
-    /// Merge-gate policy for the submission loop (None = no gate).
+    #[serde(default, rename = "workload_repo")]
+    pub workload_repos: Vec<WorkloadRepoSpec>,
     pub gate: Option<GateSpec>,
 }
 
@@ -34,20 +29,33 @@ impl Default for PlaneSpec {
             ingress: IngressSpec::default(),
             notify: NotifySpec::default(),
             budget: GlobalBudget::default(),
+            workload_repos: Vec::new(),
             gate: None,
         }
     }
 }
 
-/// Gate arithmetic config. Only `blocking`-severity findings block;
-/// termination rests solely on the round cap — see docs/spine.md.
+#[derive(Debug, Clone, Deserialize)]
+pub struct WorkloadRepoSpec {
+    pub name: String,
+    pub path: Option<String>,
+    pub url: Option<String>,
+    pub repo_url: Option<String>,
+    #[serde(default = "default_ref")]
+    pub r#ref: String,
+    pub agent: String,
+    #[serde(default = "default_substrate")]
+    pub substrate: String,
+    #[serde(default)]
+    pub workspace: WorkspaceSpec,
+    #[serde(default)]
+    pub budget_caps: TaskBudget,
+}
 #[derive(Debug, Clone, Deserialize)]
 pub struct GateSpec {
-    /// Verdict kinds that must reach a terminal run before any `clear`.
     pub required: Vec<String>,
     #[serde(default = "default_max_rounds")]
     pub max_rounds: u32,
-    /// Verdict kind whose `pass` sustains a rejected blocking finding.
     #[serde(default = "default_arbiter")]
     pub arbiter: String,
 }
@@ -97,27 +105,16 @@ pub struct AgentSpec {
     #[serde(default = "default_version")]
     pub version: u32,
     pub harness: String,
-    /// Required for LLM harnesses; the command harness runs no model.
     #[serde(default)]
     pub model: String,
-    /// Model provider for open harnesses (pi); defaults to "openrouter".
     pub provider: Option<String>,
-    /// "subscription" (operator identity: claude/codex OAuth) or "api"
-    /// (hermetic: only declared secrets cross the exec boundary).
-    /// Defaults by harness: claude/codex → subscription, pi → api.
     pub auth: Option<String>,
     pub bin: Option<String>,
     #[serde(default)]
     pub args: Vec<String>,
-    /// Env var names resolved from the plane's environment at dispatch and
-    /// passed per-exec; values are never persisted (on disk or remotely).
     #[serde(default)]
     pub secrets: Vec<String>,
 }
-
-/// How an agent authenticates — the policy hinge. Subscription agents act
-/// as the operator and may only run dispatch (manual) work; api agents are
-/// hermetic and are the only class allowed on reflex (webhook/cron) work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthClass {
     Subscription,
@@ -159,8 +156,6 @@ pub struct TaskSpec {
     pub triggers: Vec<TriggerSpec>,
     pub pre_command: Option<String>,
     pub post_command: Option<String>,
-    /// Storm-member marker: a successful run's result must be verdict
-    /// JSON, recorded against the submission named in the payload.
     pub verdict: Option<String>,
 }
 
@@ -170,12 +165,9 @@ fn default_substrate() -> String {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct WorkspaceSpec {
-    /// Substrate resource identity: the host-lease key. Local substrate
-    /// defaults to "local"; non-local substrates require an explicit host.
     pub host: Option<String>,
     #[serde(default)]
     pub repos: Vec<RepoSpec>,
-    /// Snapshot to restore during prepare; adapters without snapshots ignore it.
     pub checkpoint: Option<String>,
 }
 
@@ -208,25 +200,16 @@ pub enum TriggerSpec {
     Webhook {
         route: String,
         secret_env: String,
-        /// Dedupe key derivation: "header:<Name>" or "json:<pointer>".
         dedupe_key: Option<String>,
-        /// Payload conditions, ANDed; a delivery failing any is
-        /// acknowledged but never becomes a run. Fail-closed: a missing
-        /// pointer rejects. Workload-agnostic containment — repo
-        /// allowlists, action filters, size caps — lives here, not in
-        /// card prose an agent may or may not honor.
         #[serde(default)]
         filter: Vec<FilterSpec>,
     },
 }
-
-/// One payload condition: an RFC 6901 pointer plus exactly one predicate.
 #[derive(Debug, Clone, Deserialize)]
 pub struct FilterSpec {
     pub pointer: String,
     pub equals: Option<serde_json::Value>,
     pub any_of: Option<Vec<serde_json::Value>>,
-    /// Numeric ceiling (inclusive): e.g. cap PR additions.
     pub max: Option<f64>,
 }
 
@@ -248,8 +231,6 @@ impl FilterSpec {
         }
         Ok(())
     }
-
-    /// `Some(reason)` when the payload fails this condition.
     pub fn reject_reason(&self, payload: &serde_json::Value) -> Option<String> {
         let Some(found) = payload.pointer(&self.pointer) else {
             return Some(format!("pointer '{}' missing from payload", self.pointer));
@@ -274,8 +255,6 @@ impl FilterSpec {
         None
     }
 }
-
-/// A fully loaded task: spec + lane card + resolved agent.
 #[derive(Debug, Clone)]
 pub struct Task {
     pub name: String,
@@ -283,6 +262,14 @@ pub struct Task {
     pub card: String,
     pub agent_name: String,
     pub agent: AgentSpec,
+    pub source: Option<TaskSource>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TaskSource {
+    pub repo: String,
+    #[serde(rename = "ref")]
+    pub r#ref: String,
 }
 
 impl Task {
@@ -294,8 +281,6 @@ impl Task {
             .unwrap_or_else(|| "local".to_string())
     }
 }
-
-/// The plane's config directory, loaded eagerly so bad config fails fast.
 #[derive(Debug, Clone)]
 pub struct Plane {
     pub root: PathBuf,
@@ -305,12 +290,7 @@ pub struct Plane {
 }
 
 impl Plane {
-    /// Load from `root` (a directory containing plane.toml). Missing
-    /// plane.toml is allowed — defaults apply — but a missing agent
-    /// referenced by a task is an error.
     pub fn load(root: &Path) -> Result<Self> {
-        // Absolute root: artifact paths cross process-cwd boundaries when
-        // adapters invoke external relays, so relative roots corrupt uploads.
         let root = &root
             .canonicalize()
             .with_context(|| format!("plane root {}", root.display()))?;
@@ -369,19 +349,6 @@ impl Plane {
                         format!("task '{name}' binds unknown agent '{}'", task_spec.agent)
                     })?
                     .clone();
-                if task_spec.substrate != "local" && task_spec.workspace.host.is_none() {
-                    bail!(
-                        "task '{name}': substrate '{}' requires workspace.host",
-                        task_spec.substrate
-                    );
-                }
-                if task_spec.substrate == "local" && !spec.dev {
-                    bail!(
-                        "task '{name}': the local substrate is dev/test machinery — \
-                         production planes dispatch to a configured remote substrate. \
-                         Set `dev = true` in plane.toml only for a development plane."
-                    );
-                }
                 tasks.insert(
                     name.clone(),
                     Task {
@@ -390,13 +357,12 @@ impl Plane {
                         agent,
                         spec: task_spec,
                         card,
+                        source: None,
                     },
                 );
             }
         }
-
-        // Model & auth policy is code, not intent: violations fail at load
-        // (and therefore at `bb check`), never at first dispatch.
+        load_workload_repo_tasks(root, &spec, &agents, &mut tasks)?;
         for (name, agent) in &agents {
             let auth = agent
                 .auth_class()
@@ -431,10 +397,23 @@ impl Plane {
                 }
             }
         }
-
-        // Bad trigger config fails at load, not at first delivery.
         let mut routes = std::collections::BTreeSet::new();
         for task in tasks.values() {
+            if task.spec.substrate != "local" && task.spec.workspace.host.is_none() {
+                bail!(
+                    "task '{}': substrate '{}' requires workspace.host",
+                    task.name,
+                    task.spec.substrate
+                );
+            }
+            if task.spec.substrate == "local" && !spec.dev {
+                bail!(
+                    "task '{}': the local substrate is dev/test machinery — \
+                         production planes dispatch to a configured remote substrate. \
+                         Set `dev = true` in plane.toml only for a development plane.",
+                    task.name
+                );
+            }
             let auth = task
                 .agent
                 .auth_class()
@@ -472,8 +451,6 @@ impl Plane {
                 }
             }
         }
-
-        // Gate policy must resolve to real verdict tasks at load time.
         if let Some(gate) = &spec.gate {
             for kind in &gate.required {
                 if !tasks
@@ -516,4 +493,277 @@ impl Plane {
             self.root.join(p)
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RepoOwnedTaskSpec {
+    pub agent: Option<String>,
+    pub substrate: Option<String>,
+    #[serde(default)]
+    pub workspace: WorkspaceSpec,
+    #[serde(default)]
+    pub budget: TaskBudget,
+    #[serde(default, rename = "trigger")]
+    pub triggers: Vec<TriggerSpec>,
+    pub pre_command: Option<String>,
+    pub post_command: Option<String>,
+    pub verdict: Option<String>,
+}
+
+fn load_workload_repo_tasks(
+    plane_root: &Path,
+    plane_spec: &PlaneSpec,
+    agents: &BTreeMap<String, AgentSpec>,
+    tasks: &mut BTreeMap<String, Task>,
+) -> Result<()> {
+    let mut names = std::collections::BTreeSet::new();
+    for repo in &plane_spec.workload_repos {
+        if !names.insert(repo.name.clone()) {
+            bail!(
+                "workload repo '{}': name declared more than once",
+                repo.name
+            );
+        }
+        if repo.name.contains('/') || repo.name.trim().is_empty() {
+            bail!(
+                "workload repo '{}': name must be a non-empty namespace segment",
+                repo.name
+            );
+        }
+        if repo.url.is_some() {
+            bail!(
+                "workload repo '{}': url checkout is not in v1; use path to a checked-out repo",
+                repo.name
+            );
+        }
+        if repo.path.is_none() {
+            bail!("workload repo '{}': path is required", repo.name);
+        }
+        if repo.substrate == "local" && !plane_spec.dev {
+            bail!(
+                "workload repo '{}': local substrate is dev/test machinery; set dev = true only for a development plane",
+                repo.name
+            );
+        }
+        let (repo_dir, source_repo) = workload_repo_dir(plane_root, repo)?;
+        let workspace_repo = repo.repo_url.as_ref().unwrap_or(&source_repo);
+        let task_root = repo_dir.join(".bb/tasks");
+        if !task_root.is_dir() {
+            continue;
+        }
+        for entry in std::fs::read_dir(&task_root)? {
+            let dir = entry?.path();
+            if !dir.is_dir() {
+                continue;
+            }
+            let short = dir
+                .file_name()
+                .and_then(|s| s.to_str())
+                .context("repo task dir name")?;
+            let name = format!("{}/{}", repo.name, short);
+            let spec_path = dir.join("task.toml");
+            if !spec_path.exists() {
+                continue;
+            }
+            let raw: RepoOwnedTaskSpec = toml::from_str(&std::fs::read_to_string(&spec_path)?)
+                .with_context(|| {
+                    format!(
+                        "workload repo '{}': parse {}",
+                        repo.name,
+                        spec_path.display()
+                    )
+                })?;
+            let spec = repo_task_spec(repo, workspace_repo, short, raw, agents)?;
+            let card_path = dir.join("card.md");
+            let card = std::fs::read_to_string(&card_path).with_context(|| {
+                format!(
+                    "workload repo '{}': read {}",
+                    repo.name,
+                    card_path.display()
+                )
+            })?;
+            let agent = agents
+                .get(&spec.agent)
+                .with_context(|| format!("workload repo '{}': agent '{}'", repo.name, spec.agent))?
+                .clone();
+            if tasks.contains_key(&name) {
+                bail!("task '{name}' declared by more than one source");
+            }
+            tasks.insert(
+                name.clone(),
+                Task {
+                    name,
+                    agent_name: spec.agent.clone(),
+                    agent,
+                    spec,
+                    card,
+                    source: Some(TaskSource {
+                        repo: source_repo.clone(),
+                        r#ref: repo.r#ref.clone(),
+                    }),
+                },
+            );
+        }
+    }
+    Ok(())
+}
+
+fn repo_task_spec(
+    repo: &WorkloadRepoSpec,
+    workspace_repo: &str,
+    task_name: &str,
+    raw: RepoOwnedTaskSpec,
+    agents: &BTreeMap<String, AgentSpec>,
+) -> Result<TaskSpec> {
+    if raw.workspace.host.is_some()
+        || raw.workspace.checkpoint.is_some()
+        || !raw.workspace.repos.is_empty()
+    {
+        bail!(
+            "workload repo '{}': task '{task_name}' declares workspace authority; workspace is plane-owned",
+            repo.name
+        );
+    }
+    if let Some(agent) = &raw.agent {
+        if !agents.contains_key(agent) {
+            bail!(
+                "workload repo '{}': task '{task_name}' binds unknown agent '{agent}'",
+                repo.name
+            );
+        }
+        if agent != &repo.agent {
+            bail!(
+                "workload repo '{}': task '{task_name}' requests agent '{agent}' but plane grants '{}'",
+                repo.name,
+                repo.agent
+            );
+        }
+    }
+    if let Some(substrate) = &raw.substrate {
+        if substrate != &repo.substrate {
+            bail!(
+                "workload repo '{}': task '{task_name}' requests substrate '{substrate}' but plane grants '{}'",
+                repo.name,
+                repo.substrate
+            );
+        }
+    }
+    Ok(TaskSpec {
+        agent: repo.agent.clone(),
+        substrate: repo.substrate.clone(),
+        workspace: WorkspaceSpec {
+            host: repo.workspace.host.clone(),
+            repos: vec![RepoSpec {
+                url: workspace_repo.to_string(),
+                r#ref: repo.r#ref.clone(),
+            }],
+            checkpoint: repo.workspace.checkpoint.clone(),
+        },
+        budget: bounded_budget(&repo.name, task_name, &raw.budget, &repo.budget_caps)?,
+        triggers: raw.triggers,
+        pre_command: raw.pre_command,
+        post_command: raw.post_command,
+        verdict: raw.verdict,
+    })
+}
+
+fn bounded_budget(
+    repo: &str,
+    task: &str,
+    req: &TaskBudget,
+    cap: &TaskBudget,
+) -> Result<TaskBudget> {
+    Ok(TaskBudget {
+        timeout_minutes: cap_u64(
+            repo,
+            task,
+            "timeout_minutes",
+            req.timeout_minutes,
+            cap.timeout_minutes,
+        )?,
+        max_runs_per_day: cap_u32(
+            repo,
+            task,
+            "max_runs_per_day",
+            req.max_runs_per_day,
+            cap.max_runs_per_day,
+        )?,
+        max_cost_per_run_usd: cap_f64(
+            repo,
+            task,
+            "max_cost_per_run_usd",
+            req.max_cost_per_run_usd,
+            cap.max_cost_per_run_usd,
+        )?,
+        turn_cap: cap_u32(repo, task, "turn_cap", req.turn_cap, cap.turn_cap)?,
+    })
+}
+
+fn cap_u64(
+    repo: &str,
+    task: &str,
+    field: &str,
+    req: Option<u64>,
+    cap: Option<u64>,
+) -> Result<Option<u64>> {
+    match (req, cap) {
+        (Some(r), Some(c)) if r > c => {
+            bail!("workload repo '{repo}': task '{task}' budget {field} {r} exceeds plane cap {c}")
+        }
+        (Some(_), None) => bail!(
+            "workload repo '{repo}': task '{task}' budget {field} requested but plane cap is unset"
+        ),
+        (Some(r), Some(_)) => Ok(Some(r)),
+        (None, c) => Ok(c),
+    }
+}
+
+fn cap_u32(
+    repo: &str,
+    task: &str,
+    field: &str,
+    req: Option<u32>,
+    cap: Option<u32>,
+) -> Result<Option<u32>> {
+    cap_u64(repo, task, field, req.map(u64::from), cap.map(u64::from)).map(|v| v.map(|n| n as u32))
+}
+
+fn cap_f64(
+    repo: &str,
+    task: &str,
+    field: &str,
+    req: Option<f64>,
+    cap: Option<f64>,
+) -> Result<Option<f64>> {
+    match (req, cap) {
+        (Some(r), Some(c)) if r > c => {
+            bail!("workload repo '{repo}': task '{task}' budget {field} {r} exceeds plane cap {c}")
+        }
+        (Some(_), None) => bail!(
+            "workload repo '{repo}': task '{task}' budget {field} requested but plane cap is unset"
+        ),
+        (Some(r), Some(_)) => Ok(Some(r)),
+        (None, c) => Ok(c),
+    }
+}
+
+fn workload_repo_dir(root: &Path, repo: &WorkloadRepoSpec) -> Result<(PathBuf, String)> {
+    let path = repo.path.as_ref().expect("validated path");
+    let p = Path::new(path);
+    let dir = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        root.join(p)
+    };
+    if !dir.is_dir() {
+        bail!(
+            "workload repo '{}': path {} is not a directory",
+            repo.name,
+            dir.display()
+        );
+    }
+    let dir = dir.canonicalize()?;
+    let source = dir.to_string_lossy().into_owned();
+    Ok((dir, source))
 }

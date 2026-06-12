@@ -1,15 +1,7 @@
-//! Budget enforcement, named honestly. Enforced pre-dispatch: per-task
-//! runs/day and the global daily cost ceiling. Enforced in-flight: the
-//! wall-clock timeout (substrate kill) — the v1 spend backstop. Advisory:
-//! per-run cost, checked post-hoc from parsed output; a breach parks the
-//! task so the damage is bounded to one run.
-
 use anyhow::Result;
 
 use crate::ledger::Ledger;
 use crate::spec::{Plane, Task};
-
-/// A budget refusal: why this run must not dispatch.
 #[derive(Debug)]
 pub struct Violation {
     pub kind: &'static str,
@@ -47,9 +39,6 @@ pub fn pre_dispatch_check(
     }
     Ok(None)
 }
-
-/// Advisory per-run cost check, post-hoc. Returns the violation if the
-/// task should be parked.
 pub fn post_run_check(task: &Task, cost_usd: Option<f64>) -> Option<Violation> {
     let (Some(max), Some(cost)) = (task.spec.budget.max_cost_per_run_usd, cost_usd) else {
         return None;

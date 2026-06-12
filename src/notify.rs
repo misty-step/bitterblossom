@@ -1,14 +1,7 @@
-//! Notification webhook: state transitions only — dead letters, budget
-//! breaches, boot recovery. No heartbeats, no per-run noise. The operator
-//! gets pinged instead of watching anything.
-
 use std::io::Write as _;
 use std::process::{Command, Stdio};
 
 use crate::spec::Plane;
-
-/// Fire-and-forget POST of `{event, ...detail}` to the configured webhook.
-/// Failures are logged, never fatal: notification is best-effort by design.
 pub fn notify(plane: &Plane, event: &str, detail: &serde_json::Value) {
     let Some(url) = &plane.spec.notify.webhook_url else {
         return;
@@ -20,10 +13,6 @@ pub fn notify(plane: &Plane, event: &str, detail: &serde_json::Value) {
         }
     }
     let body = payload.to_string();
-
-    // curl keeps the plane free of an HTTP-client dependency; this is a
-    // best-effort one-shot POST, not a transport abstraction. Tests
-    // override the transport binary via BB_NOTIFY_BIN.
     let bin = std::env::var("BB_NOTIFY_BIN").unwrap_or_else(|_| "curl".into());
     let spawned = Command::new(bin)
         .args([
