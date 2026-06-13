@@ -77,10 +77,12 @@ Hard requirements:
   --json
 ```
 
-Then run required members with the returned submission id:
+Then run required members with the returned submission id. Use `GH_TOKEN`
+for the whole storm unless you have checked the task specs and know a member
+does not need it; even command-backed verifier tasks may shell out to GitHub:
 
 ```bash
-./target/debug/bb --config plane run verify \
+GH_TOKEN=$(gh auth token) ./target/debug/bb --config plane run verify \
   --idempotency-key "storm:<submission>:verify" \
   --payload '{"submission":"<submission>","repo":"misty-step/bitterblossom","rev":"<git-sha>","change":"<change-key>"}' \
   --json

@@ -324,3 +324,64 @@ Backlog implications:
   command/docs parity checks, and containment/storm drills.
 - The process-test cleanup guard pattern should be reused for future `bb serve`
   live QA tests.
+
+## Update 2026-06-13: bearer-auth submission storm
+
+Change: `8c1be3a1747a34a5d32864c152b101e750ec0ba5`
+(`fix: reject query-token read auth`).
+
+Submission attempts:
+
+- First submission `4f6a9da5b948` exposed an operator error: I ran canonical
+  `verify` without `GH_TOKEN`. Run `0d5c50785324` failed before execution and
+  dead-lettered as `6`.
+- `GH_TOKEN=$(gh auth token) ./target/debug/bb --config plane dlq replay 6`
+  created replay run `9b7982da52fa`, which succeeded in 45.394s.
+- `bb gate --submission 4f6a9da5b948 --json` still returned
+  `decision: escalated` because the gate honors only the canonical
+  `storm:<submission>:verify` run; the successful replay did not repair that
+  member.
+- Clean submission `955383bfcda1` then ran the available member set with
+  `GH_TOKEN` from the start.
+
+Clean submission results:
+
+- `verify`: `verdict:pass`, run `101d51ef08a1`, duration 40.628s.
+- `correctness`: `verdict:pass`, run `2963e813a6c9`, cost `$0.0537442645`,
+  duration 157.123s, 110750 input tokens, 6006 output tokens.
+- `simplification`: `verdict:pass`, run `8715c27a366b`, cost
+  `$0.0171592283`, duration 150.413s, 87171 input tokens, 8333 output tokens.
+- `product`: `verdict:pass`, run `b50adf735ba1`, cost `$0.0342742`,
+  duration 32.095s, 10940 input tokens, 2024 output tokens.
+- `security`: `not_started`; task stayed parked because the prior run cost
+  `$0.2539` exceeded `max_cost_per_run_usd $0.25`.
+- `bb gate --submission 955383bfcda1 --json` returned `decision: pending`
+  with no blocking/advisory findings.
+
+Friction:
+
+- The dogfood skill incorrectly showed `verify` without `GH_TOKEN`, even
+  though the verifier task needs GitHub access. Fixed in the skill after this
+  run.
+- Canonical storm member failure is intentionally strict, but the recovery UX
+  is not obvious: replay proves the command can pass yet cannot make the gate
+  count that member.
+- `bb dlq replay 6 --json` failed with `unexpected argument '--json'`, unlike
+  the read-heavy operator commands.
+- Long verdict runs still have no heartbeat in the foreground command; the
+  operator waits silently for minutes before seeing the final JSON.
+
+Delight:
+
+- The canonical-key behavior is rigorous once understood: the gate did not
+  silently forgive a failed required member just because a non-canonical replay
+  passed.
+- The clean submission gave a compact, auditable packet: exact run ids, costs,
+  durations, token counts, and a pending gate explained solely by the parked
+  security member.
+
+Backlog implications:
+
+- Added `backlog.d/059-submission-retry-and-operator-heartbeats.md` for
+  canonical retry guidance, `dlq replay --json` parity, and long-run heartbeat
+  feedback.
