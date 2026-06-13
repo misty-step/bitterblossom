@@ -32,6 +32,33 @@ fail confidently without crashing.
   signal quality or setup cost to earn a vendor dependency.
 - Workshop (their open-source local tool) may be the cheap on-ramp.
 
+## Update 2026-06-13
+
+Current Raindrop docs still match the ticket premise: Raindrop Cloud is
+hosted production observability for AI features, the HTTP API accepts
+events at `https://api.raindrop.ai/v1` with a write key, the Python and
+TypeScript SDKs can track AI interactions, the MCP server lets a coding
+agent query Raindrop investigations, and Workshop is a local debugger
+installed with `curl -fsSL https://raindrop.sh/install | bash`.
+
+Local prerequisite check:
+
+- No `raindrop`, `workshop`, or `raindrop-workshop` binary is installed.
+- No `RAINDROP_WRITE_KEY`, `RAINDROP_API_KEY`, or adjacent Raindrop env var
+  is present in this shell.
+- No existing Raindrop/Workshop instrumentation was found in Bitterblossom
+  or the sampled nearby product repos.
+
+Trial target: use the Bitterblossom review factory itself as the first
+AI-feature product. It already has real production-like agent runs, cost
+ledger rows, PR comments, and known behavior-level failures from backlog
+034 (reviewer timeout from repo clone/fetch, hidden final JSON, and shell
+interpolated comment bodies) that exception logging alone would not have
+caught as product-quality regressions.
+
+Trial packet:
+[docs/plans/2026-06-13-033-raindrop-trial-plan.md](/docs/plans/2026-06-13-033-raindrop-trial-plan.md).
+
 ## Oracle
 
 - [ ] One product instrumented; at least one real behavior-level issue
