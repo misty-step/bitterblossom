@@ -254,6 +254,12 @@ experimental and both add infra the ≤5k LOC spine doesn't need; if
 deeper traces are wanted later, `bb runs export` is the integration
 seam (map attempts onto `gen_ai.*` spans then).
 
+The review workload also supports explicit manual tokenomics probes:
+`bb --config plane run review --payload '{"repo":"o/r","pr":N,"measurement":true}'`.
+Measurement mode runs the same real PR review path but suppresses the
+GitHub comment and leaves the full findings in `result.md`; webhook
+reviews always post exactly one PR comment.
+
 ## The submission loop
 
 Completed agent work is quality-assured and landed by a **verdict storm**
