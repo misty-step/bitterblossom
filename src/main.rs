@@ -130,7 +130,11 @@ enum DlqCommand {
         json: bool,
     },
     /// Mint a new run linked to the dead-lettered one via parent_run_id.
-    Replay { id: i64 },
+    Replay {
+        id: i64,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -327,7 +331,7 @@ fn run() -> Result<()> {
                     }
                 }
             }
-            DlqCommand::Replay { id } => {
+            DlqCommand::Replay { id, json } => {
                 let dl = ledger.dead_letter(id)?;
                 if let Some(prev) = &dl.replayed_run_id {
                     bail!("dead letter {id} already replayed as run {prev}");
@@ -344,9 +348,13 @@ fn run() -> Result<()> {
                 if !ledger.mark_dead_letter_replayed(id, &outcome.run_id)? {
                     bail!("dead letter {id} was claimed by a concurrent replay");
                 }
-                println!("replaying dead letter {id} as run {}", outcome.run_id);
                 let run = dispatch::dispatch_run(&plane, &mut ledger, &outcome.run_id)?;
-                println!("run {} {}", run.id, run.state);
+                if json {
+                    print_run(&ledger, &run.id, true)?;
+                } else {
+                    println!("replaying dead letter {id} as run {}", outcome.run_id);
+                    println!("run {} {}", run.id, run.state);
+                }
             }
         },
         Command::Task { command } => match command {

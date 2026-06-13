@@ -385,3 +385,40 @@ Backlog implications:
 - Added `backlog.d/059-submission-retry-and-operator-heartbeats.md` for
   canonical retry guidance, `dlq replay --json` parity, and long-run heartbeat
   feedback.
+
+## Update 2026-06-13: 059 dlq replay JSON
+
+Backlog item: `059-submission-retry-and-operator-heartbeats`, child 3.
+
+Work:
+
+- Added `bb dlq replay <id> --json`.
+- JSON replay output now matches the existing run bundle shape:
+  `run`, `attempts`, and `events`.
+- Updated `docs/spine.md`, `skills/bitterblossom/SKILL.md`, and the operator
+  recipes so agents can rely on the JSON replay surface.
+
+Verification:
+
+- Red test first: `cargo test --test dlq_cli
+  dlq_replay_json_returns_replayed_run_bundle -- --nocapture` failed with
+  `unexpected argument '--json'`.
+- Focused green: `cargo test --test dlq_cli -- --nocapture`.
+- Help check: `bb --config plane dlq replay --help` now shows
+  `Usage: bb dlq replay [OPTIONS] <ID>` and `--json`.
+
+Friction:
+
+- Before this change, replay was the one recovery action in the dogfood path
+  that forced text parsing or a follow-up `runs show` command.
+
+Delight:
+
+- The implementation could reuse `print_run`, so the replay surface now shares
+  the same schema as the other run receipts instead of introducing another
+  shape.
+
+Backlog implications:
+
+- 059 still needs canonical storm failure guidance, gate/status safe actions,
+  long-run human heartbeat output, and the final retry-path documentation.

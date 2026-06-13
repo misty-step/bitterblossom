@@ -111,10 +111,11 @@ List pre-execute failures:
 bb --config <plane> dlq list --json
 ```
 
-Replay only when the pre-execute failure is understood:
+Replay only when the pre-execute failure is understood. Use `--json` when an
+agent or script needs the replayed run, attempt, and event bundle:
 
 ```bash
-bb --config <plane> dlq replay <run-id>
+bb --config <plane> dlq replay <id> --json
 ```
 
 After a host restart:

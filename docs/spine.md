@@ -343,7 +343,8 @@ recovery semantic:
   `awaiting_recovery`; replay is an explicit operator act.
 - On boot, inherited `running` runs are classified by probing the host and
   reading attempt artifacts — never blindly orphaned.
-- `bb dlq replay <id>` mints a **new** run linked via `parent_run_id`.
+- `bb dlq replay <id> [--json]` mints a **new** run linked via
+  `parent_run_id`; JSON mode returns the replayed run + attempts + events.
 
 Host mutual exclusion is a durable lease keyed by substrate resource
 identity (the sprite/host), not by task: two tasks sharing a host never
@@ -359,7 +360,8 @@ bb status [--json]                                # task/run/queue/DLQ health
 bb runs list [--task T] [--state S] [--json]
 bb runs show <run-id> [--json]                    # run + attempts + events
 bb runs export                                    # flat JSONL for downstream analysis
-bb dlq list|replay <id>
+bb dlq list [--json]
+bb dlq replay <id> [--json]
 bb task park|unpark <task>
 bb submit open --change K --rev SHA [--context TEXT]
 bb submit reject --change K --fingerprint FP --reason TEXT

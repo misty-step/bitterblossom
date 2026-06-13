@@ -14,7 +14,7 @@ pre-execute mistake or a remote verdict run takes minutes.
       retry path that creates a clean replacement submission/member.
 - [ ] `bb gate --json` explains when a canonical member failed for
       infrastructure/operator reasons and names the next safe command.
-- [ ] `bb dlq replay` has a JSON output mode, or its help/docs state that it is
+- [x] `bb dlq replay` has a JSON output mode, or its help/docs state that it is
       intentionally text-only and must be followed by `bb runs show`.
 - [ ] Long-running `bb run` invocations expose an early run id and periodic
       status/heartbeat in human mode without corrupting final `--json` output.
@@ -27,7 +27,7 @@ pre-execute mistake or a remote verdict run takes minutes.
    dispatch, or whether canonical retry should always open a new submission.
 2. Add gate/status safe-next-action text for `run:failure` storm members.
 3. Add `--json` support or explicit documented text-only behavior for
-   `bb dlq replay`.
+   `bb dlq replay`. (done 2026-06-13)
 4. Add human-mode heartbeat output for long `bb run` waits.
 5. Update the dogfood skill and operator recipes with the settled recovery
    path.
@@ -49,3 +49,10 @@ Evidence:
 - `bb dlq replay 6 --json` failed with `unexpected argument '--json'`.
 - Long correctness and simplification runs produced no foreground heartbeat for
   multiple minutes before returning final JSON.
+
+Delivery notes:
+
+- 2026-06-13: `bb dlq replay <id> --json` now returns the replayed run bundle
+  with `run`, `attempts`, and `events`, matching `bb run --json` and
+  `bb runs show --json`. `tests/dlq_cli.rs` covers a pre-execute DLQ replay
+  that preserves `parent_run_id` lineage.

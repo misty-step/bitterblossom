@@ -55,7 +55,7 @@ Read the output for:
 | Task inventory, parked state, budgets | `bb --config <plane> task list --json` |
 | Trigger manual work | `bb --config <plane> run <task> --payload '<json>' --json` |
 | Inspect ledger | `bb --config <plane> runs list --json`; `bb --config <plane> runs show <id> --json` |
-| Handle pre-execute failures | `bb --config <plane> dlq list --json`; `bb --config <plane> dlq replay <id>` |
+| Handle pre-execute failures | `bb --config <plane> dlq list --json`; `bb --config <plane> dlq replay <id> --json` |
 | Park or unpark workload dispatch | `bb --config <plane> task park|unpark <task>` |
 | Classify inherited running rows after host restart | `bb --config <plane> recover` |
 | Run webhook/cron plane | `bb --config <plane> serve` |
@@ -99,7 +99,8 @@ correct; the invocation was wrong.
 
 - `bb recover` classifies inherited `running` rows after a host restart.
 - `bb runs resolve` is for `awaiting_recovery` after side-effect inspection.
-- `bb dlq replay` mints a new run linked to a pre-execute dead letter.
+- `bb dlq replay --json` mints a new run linked to a pre-execute dead letter
+  and returns the replayed run bundle.
 - There may be no "acknowledge this intentional failed probe" command yet;
   record the run id and reason in closeout instead of hiding it.
 
