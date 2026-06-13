@@ -422,3 +422,49 @@ Backlog implications:
 
 - 059 still needs canonical storm failure guidance, gate/status safe actions,
   long-run human heartbeat output, and the final retry-path documentation.
+
+Submission storm:
+
+- Change: `3d9ef4939718de8f10c5298471d339653848fec2`
+  (`feat: add json dlq replay output`).
+- Submission: `./target/debug/bb --config plane submit open --change
+  dlq-replay-json-3d9ef49 --rev
+  3d9ef4939718de8f10c5298471d339653848fec2 --context ... --json`
+  created `20a3b600d4d3`.
+- `verify`: `verdict:pass`, run `26c1b7ab0dc6`, duration 47.648s,
+  attempt `99`, artifact dir `plane/.bb/runs/26c1b7ab0dc6/attempt-1`.
+- `correctness`: `verdict:pass`, run `92cd4e5ab313`, cost
+  `$0.031799428`, duration 312.092s, 52782 input tokens, 8551 output
+  tokens.
+- `simplification`: `verdict:pass`, run `932fa9b230ab`, cost
+  `$0.0160832835`, duration 172.094s, 89341 input tokens, 8060 output
+  tokens.
+- `product`: `verdict:pass`, run `34586597ae2b`, cost `$0.04957295`,
+  duration 34.039s, 15085 input tokens, 2231 output tokens.
+- `security`: `not_started`; task stayed parked because the prior run cost
+  `$0.2539` exceeded `max_cost_per_run_usd $0.25`.
+- `bb gate --submission 20a3b600d4d3 --json` returned
+  `decision: pending` with no blocking, advisory, or rejected findings.
+
+Additional friction:
+
+- A broad `pi` fresh critic returned a useful compact `pass`, but the
+  narrower follow-up critic ignored the requested output shape, wandered into
+  local file exploration, and had to be stopped with Ctrl-C. Cross-model
+  critique is valuable, but the local harness needs stronger output bounding
+  or timeout/default receipt behavior for critic lanes.
+- Foreground `bb run --json` remained silent during long remote lanes:
+  `correctness` waited more than five minutes and `simplification` nearly
+  three minutes before returning the final bundle. The ledger proved progress,
+  but the operator had to run a separate `runs list` read.
+- A quick `task list --json` `jq` probe used the wrong field names and returned
+  nulls for task name and parked reason. The data is present, but the schema is
+  not self-describing enough for ad hoc shell consumers.
+
+Additional delight:
+
+- The new `dlq replay --json` shape fits naturally into the existing
+  `run`/`attempts`/`events` receipt model; no new parser path is needed.
+- Sequentially running `simplification` and `product` avoided the host lease
+  contention seen in earlier dogfood storms while preserving exact costs and
+  artifacts.
