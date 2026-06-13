@@ -203,3 +203,69 @@ Backlog implications:
   API/HTML QA.
 - 033 can now compare Raindrop against a local baseline instead of raw ledger
   rows.
+
+## Update 2026-06-13: 052 submission storm
+
+Change: `48ed241c015bdab2e9f23539ae530c90d625ab18`
+(`feat: add ledger-native status surface`).
+
+First submission:
+
+- `./target/debug/bb --config plane submit open --change
+  status-surface-48ed241 --rev 48ed241c015bdab2e9f23539ae530c90d625ab18
+  --context ... --json` created submission `6b49226eca48`.
+- `verify` passed as run `0039140763d2`, duration 48.480s.
+- I incorrectly ran `correctness` and `simplification` without
+  `GH_TOKEN=$(gh auth token)`. Both failed pre-execute and dead-lettered:
+  `correctness` run `52d9928eada2`, DLQ `5`; `simplification` run
+  `a1ef389c96e1`, DLQ `4`.
+- `bb gate --submission 6b49226eca48 --json` returned
+  `decision: escalated` because the canonical required members were
+  terminal failures.
+
+Rerun submission:
+
+- `./target/debug/bb --config plane submit open --change
+  status-surface-48ed241-rerun --rev
+  48ed241c015bdab2e9f23539ae530c90d625ab18 --context ... --json`
+  created submission `52a45f27efb6`.
+- With `GH_TOKEN=$(gh auth token)`, available members passed:
+  `verify` run `72db597e1b2b`, duration 41.333s;
+  `correctness` run `db20c05119c2`, cost $0.1506, duration 259.554s;
+  `simplification` run `197e1586e24a`, cost $0.0198, duration 129.804s;
+  `product` run `61de1f78d539`, cost $0.0737, duration 36.939s.
+- `./target/debug/bb --config plane gate --submission 52a45f27efb6 --json`
+  returned `decision: pending`: all unparked members were `verdict:pass`,
+  while `security` remained `not_started` because the task is parked.
+- `./target/debug/bb --config plane status` reported
+  `tasks=8 parked=1 open_dlq=4 cost_today=$0.2441` and surfaced replay
+  actions for the new `GH_TOKEN` DLQs.
+
+Friction:
+
+- Forgetting `GH_TOKEN=$(gh auth token)` is still too easy. The task specs
+  know the required secret, but `bb run` only discovers the missing env after
+  creating and retrying the canonical storm member.
+- Once a canonical storm member dead-letters from pre-execute operator error,
+  `bb gate` escalates and there is no obvious same-submission recovery path
+  that keeps the canonical `storm:<submission>:<kind>` key.
+- Long remote verdict runs are still silent until completion; `correctness`
+  ran for more than four minutes with no heartbeat.
+
+Delight:
+
+- `bb status` made the failed first storm legible immediately: open DLQ count
+  moved from 2 to 4, and the affected tasks named `replay_pre_execute_dlq`
+  plus `inspect_artifact`.
+- The rerun storm showed the submission loop can run the available member set
+  cleanly on Misty Step Sprites and preserve exact costs, durations, run ids,
+  and artifacts.
+
+Backlog implications:
+
+- 050/053 should add a pre-dispatch secret availability check or a clearer
+  operator preflight for verdict tasks so missing env is caught before a
+  canonical storm key is consumed.
+- 052 follow-up: status could join open submissions/gate state too. Today it
+  explains task/DLQ health, but a pending gate still requires a separate
+  `bb gate` read.
