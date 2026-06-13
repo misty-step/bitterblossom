@@ -27,14 +27,15 @@ cargo build
 ```bash
 bb --config <plane> check
 bb --config <plane> check --json
+bb --config <plane> status --json
 bb --config <plane> task list --json
 bb --config <plane> runs list --json
 bb --config <plane> dlq list --json
 ```
 
-Read `task list` first when deciding whether it is safe to dispatch. It shows
-agent version, substrate, trigger count, verdict kind, parked state, runs today,
-and budget ceilings.
+Read `status --json` first when triaging. It clusters tasks, recent run states,
+cost, queue age, parked reasons, DLQ rows, and safe next actions. Use raw
+`task list`, `runs list`, and `dlq list` when you need the underlying rows.
 
 ## Manual Dispatch
 
@@ -136,6 +137,7 @@ Loopback development:
 ```bash
 bb --config <plane> serve
 curl http://127.0.0.1:7077/health
+curl http://127.0.0.1:7077/api/status
 curl http://127.0.0.1:7077/api/tasks
 ```
 

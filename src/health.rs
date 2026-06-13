@@ -1,0 +1,200 @@
+use std::collections::BTreeMap;
+
+use anyhow::Result;
+use serde_json::{json, Value};
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+
+use crate::ledger::{DeadLetterRow, Ledger, RunRow};
+use crate::spec::Plane;
+
+pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
+    let runs = ledger.list_runs(None, None)?;
+    let dead_letters = ledger.list_dead_letters()?;
+    let generated_at = OffsetDateTime::now_utc();
+    let open_dlq = dead_letters
+        .iter()
+        .filter(|d| d.replayed_run_id.is_none())
+        .count();
+    let mut parked_tasks = 0usize;
+    let mut tasks = Vec::new();
+
+    for task in plane.tasks.values() {
+        let task_runs: Vec<&RunRow> = runs.iter().filter(|r| r.task == task.name).collect();
+        let task_dlq: Vec<&DeadLetterRow> = dead_letters
+            .iter()
+            .filter(|d| d.task == task.name)
+            .collect();
+        let parked = ledger.parked_reason(&task.name)?;
+        if parked.is_some() {
+            parked_tasks += 1;
+        }
+        let by_state = state_counts(&task_runs);
+        let latest_open_dlq = task_dlq
+            .iter()
+            .copied()
+            .find(|d| d.replayed_run_id.is_none());
+        let latest_failure = task_runs.iter().copied().find(|r| r.state == "failure");
+        let latest_recovery = task_runs
+            .iter()
+            .copied()
+            .find(|r| r.state == "awaiting_recovery");
+        let pending = task_runs.iter().filter(|r| r.state == "pending").count();
+        let running = task_runs.iter().filter(|r| r.state == "running").count();
+        let blocked_budget = task_runs
+            .iter()
+            .filter(|r| r.state == "blocked_budget")
+            .count();
+        let oldest_pending = task_runs
+            .iter()
+            .filter(|r| r.state == "pending")
+            .map(|r| r.created_at.as_str())
+            .min();
+        let oldest_pending_age_seconds = oldest_pending
+            .and_then(|at| OffsetDateTime::parse(at, &Rfc3339).ok())
+            .map(|at| (generated_at - at).whole_seconds().max(0));
+        let open_task_dlq = task_dlq
+            .iter()
+            .filter(|d| d.replayed_run_id.is_none())
+            .count();
+
+        tasks.push(json!({
+            "task": task.name,
+            "agent": format!("{}@v{}", task.agent_name, task.agent.version),
+            "harness": task.agent.harness,
+            "model": task.agent.model,
+            "substrate": task.spec.substrate,
+            "verdict": task.spec.verdict,
+            "parked": parked,
+            "budget": {
+                "runs_today": ledger.runs_today(&task.name)?,
+                "max_runs_per_day": task.spec.budget.max_runs_per_day,
+                "max_cost_per_run_usd": task.spec.budget.max_cost_per_run_usd,
+                "timeout_minutes": task.spec.budget.timeout_minutes,
+            },
+            "runs": {
+                "recent": task_runs.len(),
+                "by_state": by_state,
+                "latest": task_runs.first().map(|r| run_summary(r)),
+                "latest_failure": latest_failure.map(run_summary),
+                "cost_usd": task_runs.iter().filter_map(|r| r.cost_usd).sum::<f64>(),
+                "duration_ms": task_runs.iter().filter_map(|r| r.duration_ms).sum::<i64>(),
+            },
+            "queue": {
+                "pending": pending,
+                "running": running,
+                "blocked_budget": blocked_budget,
+                "oldest_pending_created_at": oldest_pending,
+                "oldest_pending_age_seconds": oldest_pending_age_seconds,
+            },
+            "dlq": {
+                "open": open_task_dlq,
+                "total": task_dlq.len(),
+                "latest_open": latest_open_dlq.map(dlq_summary),
+            },
+            "safe_next_actions": safe_actions(
+                &task.name,
+                parked.as_deref(),
+                latest_open_dlq,
+                latest_recovery,
+                latest_failure,
+                pending,
+            ),
+        }));
+    }
+
+    Ok(json!({
+        "generated_at": generated_at.format(&Rfc3339)?,
+        "summary": {
+            "tasks": plane.tasks.len(),
+            "parked_tasks": parked_tasks,
+            "open_dlq": open_dlq,
+            "cost_today_usd": ledger.cost_today()?,
+            "max_cost_per_day_usd": plane.spec.budget.max_cost_per_day_usd,
+        },
+        "tasks": tasks,
+    }))
+}
+
+fn state_counts(runs: &[&RunRow]) -> BTreeMap<String, usize> {
+    let mut out = BTreeMap::new();
+    for r in runs {
+        *out.entry(r.state.clone()).or_default() += 1;
+    }
+    out
+}
+
+fn run_summary(r: &RunRow) -> Value {
+    json!({
+        "id": r.id,
+        "state": r.state,
+        "reason": r.state_reason,
+        "agent": r.agent_name.as_ref().zip(r.agent_version).map(|(n, v)| format!("{n}@v{v}")),
+        "cost_usd": r.cost_usd,
+        "duration_ms": r.duration_ms,
+        "created_at": r.created_at,
+        "updated_at": r.updated_at,
+    })
+}
+
+fn dlq_summary(d: &DeadLetterRow) -> Value {
+    json!({
+        "id": d.id,
+        "run_id": d.run_id,
+        "error": d.error,
+        "created_at": d.created_at,
+    })
+}
+
+fn safe_actions(
+    task: &str,
+    parked: Option<&str>,
+    dlq: Option<&DeadLetterRow>,
+    recovery: Option<&RunRow>,
+    failure: Option<&RunRow>,
+    pending: usize,
+) -> Vec<Value> {
+    let mut out = Vec::new();
+    if let Some(reason) = parked {
+        out.push(json!({
+            "kind": "unpark_after_reason_cleared",
+            "reason": reason,
+            "command": format!("bb task unpark {task}"),
+        }));
+    }
+    if let Some(d) = dlq {
+        out.push(json!({
+            "kind": "replay_pre_execute_dlq",
+            "reason": d.error,
+            "command": format!("bb dlq replay {}", d.id),
+        }));
+    }
+    if let Some(r) = recovery {
+        out.push(json!({
+            "kind": "resolve_after_side_effect_inspection",
+            "reason": r.state_reason,
+            "command": format!("bb runs resolve {} success|failure", r.id),
+        }));
+    }
+    if let Some(r) = failure {
+        out.push(json!({
+            "kind": "inspect_artifact",
+            "reason": r.state_reason,
+            "command": format!("bb runs show {} --json", r.id),
+        }));
+    }
+    if pending > 0 {
+        out.push(json!({
+            "kind": "wait_or_cancel_pending",
+            "reason": format!("{pending} pending run(s)"),
+            "command": "bb runs list --state pending --json",
+        }));
+    }
+    if out.is_empty() {
+        out.push(json!({
+            "kind": "monitor",
+            "reason": "no operator action suggested",
+            "command": "bb status --json",
+        }));
+    }
+    out
+}

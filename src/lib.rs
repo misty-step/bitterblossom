@@ -1,6 +1,7 @@
 pub mod budget;
 pub mod dispatch;
 pub mod harness;
+pub mod health;
 pub mod ingress;
 pub mod ledger;
 pub mod notify;

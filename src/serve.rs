@@ -247,6 +247,10 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
                 let runs = ledger.list_runs(task.as_deref(), state.as_deref())?;
                 Ok((200, serde_json::to_string(&runs)?))
             }
+            "/api/status" => Ok((
+                200,
+                serde_json::to_string(&crate::health::status_view(&plane, &ledger)?)?,
+            )),
             "/api/dlq" => Ok((200, serde_json::to_string(&ledger.list_dead_letters()?)?)),
             "/api/submissions" => {
                 let limit = query_param(&url, "limit")

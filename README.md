@@ -24,6 +24,7 @@ One Rust binary, two personalities:
 ```bash
 bb serve                    # the plane: webhook ingress, cron, queue, dispatch
 bb run <task>               # the same workflow as dispatch work, from a terminal
+bb status --json            # operator truth: tasks, runs, queue, parked, DLQ
 bb runs list --json         # durable ledger: state, agent@version, cost, duration
 bb dlq replay <id>          # dead letters replay as new runs with lineage
 bb task park|unpark <task>  # budget breaches park; unpark is explicit

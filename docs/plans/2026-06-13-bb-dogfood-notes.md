@@ -147,3 +147,59 @@ Backlog implications:
 - 053 should include contract tests for verdict-task invocation recipes so
   `verify` cannot be documented as a generic `bb run` target without the
   submission payload shape.
+
+## Update 2026-06-13: backlog 052 status surface
+
+Backlog item: `052-ledger-native-operator-truth-surface`.
+
+Work:
+
+- Added `bb status [--json]` and `GET /api/status`.
+- Added a generic `src/health.rs` report that groups each task's recent run
+  states, cost, duration, latest failure reason, parked state, queue counts,
+  oldest pending age, DLQ counts, and safe next actions.
+- Updated the Bitterblossom skill, dogfood skill, operator recipes, README,
+  and spine command docs to point agents at `bb status --json`.
+- Moved ledger and harness parser tests from in-source unit modules to
+  integration tests so the new surface could land without breaking the
+  5k-line spine budget.
+
+Verification:
+
+- Red test first: `cargo test --test status_cli` failed on
+  `unrecognized subcommand 'status'`.
+- Focused green: `cargo test --test status_cli --test status_view
+  --test skill_artifacts`.
+- Full gate: `./scripts/verify.sh` passed with `src LOC: 4992`.
+- Live read: `./target/debug/bb --config plane status` reported
+  `tasks=8 parked=1 open_dlq=2`; `security` now carries
+  `unpark_after_reason_cleared`, and `product`/`verify` carry
+  `replay_pre_execute_dlq` plus `inspect_artifact`.
+
+Friction:
+
+- The 5k source budget did its job, but it forced an immediate decision:
+  either keep adding spine code or move non-spine test scaffolding out of
+  `src`. That was useful pressure, but it made a small product surface feel
+  like a refactor until the right move was obvious.
+- `git diff --stat` hid untracked new files, so it understated the change
+  until `git status --untracked-files=all` was read. This is generic Git
+  friction, but it matters in dogfood closeout because untracked tests are
+  easy to miss.
+
+Delight:
+
+- The first text `bb status` output immediately replaced three manual joins:
+  task list, run list, and DLQ list. It named `security` as parked and pointed
+  at replay/inspect actions for open DLQs.
+- The LOC gate pushed the implementation toward a deeper module with one
+  reusable report consumed by CLI and API, rather than parallel ad hoc
+  surfaces.
+
+Backlog implications:
+
+- 050 still needs the remaining hardening children: bearer-only read auth,
+  panic-safe in-flight cleanup, bounded notifications, and live loopback
+  API/HTML QA.
+- 033 can now compare Raindrop against a local baseline instead of raw ledger
+  rows.

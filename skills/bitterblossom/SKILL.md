@@ -51,6 +51,7 @@ Read the output for:
 | Need | Use |
 |---|---|
 | Validate config and see loaded agents/tasks | `bb --config <plane> check` |
+| Decision-ready task/run/DLQ health | `bb --config <plane> status --json` |
 | Task inventory, parked state, budgets | `bb --config <plane> task list --json` |
 | Trigger manual work | `bb --config <plane> run <task> --payload '<json>' --json` |
 | Inspect ledger | `bb --config <plane> runs list --json`; `bb --config <plane> runs show <id> --json` |
@@ -111,6 +112,7 @@ non-loopback binds without it.
 Useful API mirrors:
 
 - `GET /api/tasks`
+- `GET /api/status`
 - `GET /api/runs`
 - `GET /api/runs/<id>`
 - `GET /api/dlq`

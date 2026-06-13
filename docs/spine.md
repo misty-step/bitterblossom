@@ -353,10 +353,11 @@ overlap. Per-task FIFO ordering is layered above that lease.
 All read commands take `--json` and emit stable shapes (agents are users).
 
 ```
-bb run <task> [--idempotency-key K] [--var k=v]   # manual trigger
+bb run <task> [--idempotency-key K] [--payload JSON] # manual trigger
+bb status [--json]                                # task/run/queue/DLQ health
 bb runs list [--task T] [--state S] [--json]
 bb runs show <run-id> [--json]                    # run + attempts + events
-bb runs export [--since ...]                      # flat JSONL for Daedalus
+bb runs export                                    # flat JSONL for downstream analysis
 bb dlq list|replay <id>
 bb task park|unpark <task>
 bb submit open --change K --rev SHA [--context TEXT]

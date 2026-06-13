@@ -36,6 +36,7 @@ sprite use -o misty-step lane-1
 sprite org list
 sprite exec -- whoami
 ./target/debug/bb --config plane check
+./target/debug/bb --config plane status --json
 ./target/debug/bb --config plane task list --json
 ./target/debug/bb --config plane runs list --json
 ./target/debug/bb --config plane dlq list --json
@@ -105,7 +106,7 @@ For every dogfood run, capture:
 - exact `bb` binary and plane path;
 - Sprite org/account state and sprite name;
 - backlog item, commit, and submission id;
-- commands run, run ids, gate output, costs, parked tasks, and DLQ state;
+- commands run, run ids, status output, gate output, costs, parked tasks, and DLQ state;
 - friction, bugs, missing affordances, and delightful moments;
 - whether each observation becomes backlog, docs, or no action.
 

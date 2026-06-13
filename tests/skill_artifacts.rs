@@ -12,6 +12,7 @@ fn bitterblossom_skill_is_exportable_agent_interface() {
     assert!(skill.contains("name: bitterblossom"));
     assert!(skill.contains("description: |"));
     assert!(skill.contains("bb --config <plane> check"));
+    assert!(skill.contains("bb --config <plane> status --json"));
     assert!(skill.contains("bb --config <plane> task list --json"));
     assert!(skill.contains("bb --config <plane> run <task> --payload '<json>' --json"));
     assert!(skill.contains("skills/bitterblossom/"));

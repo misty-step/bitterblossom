@@ -68,6 +68,11 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Summarize task, run, queue, parked, and dead-letter health.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
     /// Validate the plane config and print what's loaded.
     Check {
         #[arg(long)]
@@ -467,6 +472,14 @@ fn run() -> Result<()> {
                 }
             }
         }
+        Command::Status { json } => {
+            let doc = bitterblossom::health::status_view(&plane, &ledger)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&doc)?);
+            } else {
+                print_status(&doc);
+            }
+        }
         Command::Recover { json } => {
             let reports = recovery::recover_inherited_runs(&plane, &mut ledger)?;
             if json {
@@ -524,6 +537,36 @@ fn run() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn print_status(doc: &serde_json::Value) {
+    let summary = &doc["summary"];
+    println!(
+        "tasks={} parked={} open_dlq={} cost_today=${:.4}",
+        summary["tasks"].as_u64().unwrap_or(0),
+        summary["parked_tasks"].as_u64().unwrap_or(0),
+        summary["open_dlq"].as_u64().unwrap_or(0),
+        summary["cost_today_usd"].as_f64().unwrap_or(0.0),
+    );
+    for task in doc["tasks"].as_array().into_iter().flatten() {
+        let actions = task["safe_next_actions"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v["kind"].as_str())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            })
+            .unwrap_or_default();
+        println!(
+            "{:<18} parked={} recent={} dlq_open={} action={}",
+            task["task"].as_str().unwrap_or("-"),
+            task["parked"].as_str().unwrap_or("-"),
+            task["runs"]["recent"].as_u64().unwrap_or(0),
+            task["dlq"]["open"].as_u64().unwrap_or(0),
+            actions,
+        );
+    }
 }
 
 fn print_run(ledger: &Ledger, run_id: &str, json: bool) -> Result<()> {
