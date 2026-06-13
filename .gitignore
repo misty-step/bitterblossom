@@ -12,6 +12,7 @@ observations/archives/*/settings.json
 
 # Runtime state files
 .bb-agent/
+.sprite
 .bb/
 /.claude/CLAUDE.md
 /.claude/skills/bb-persona-*/

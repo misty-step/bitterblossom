@@ -41,3 +41,57 @@ Backlog `045`: add `bb task list` with text and JSON output.
   tasks, recent runs, DLQ, parked state, and gate status.
 - Parked verdict tasks need an operational follow-up path: `bb task list`
   reveals the state, but it does not tell me whether unpark is safe.
+
+## Update 2026-06-13: backlog dogfood goal + skill creation
+
+Goal: use Bitterblossom to work through its own backlog and capture primary
+user experience notes while doing it.
+
+Preflight:
+
+- `flyctl orgs list` showed the Misty Step Fly org is available.
+- `sprite org list` initially reported `adminifi` as the selected Sprite org,
+  even though `misty-step` is configured. This is dangerous for dogfood work.
+- `sprite use -o misty-step lane-1` fixed the checkout context; subsequent
+  `sprite org list` reported `misty-step`, and both bare `sprite exec -- whoami`
+  and explicit `sprite -o misty-step -s lane-1 exec -- whoami` returned
+  `sprite`.
+- `./target/debug/bb --config plane task list --json` made the current parked
+  `security` verdict task obvious:
+  `run cost $0.2539 > max_cost_per_run_usd $0.25`.
+- `./target/debug/bb --config plane dlq list --json` still shows the prior
+  direct `verify` invocation dead-lettered because the payload lacked a
+  `submission` field.
+
+Friction:
+
+- Sprite has an account footgun: a user can have multiple org tokens and the
+  selected org may be wrong for the repo. Dogfood runs need an explicit
+  `misty-step` preflight before any remote execution.
+- The skill-creator init command is not executable directly on this machine;
+  it had to be run through `python3`.
+- Passing `$bitterblossom-dogfood` through a shell command without escaping
+  `$` caused the generated OpenAI default prompt to become `Use -dogfood...`.
+- `bb runs list --json` is complete but too raw for a human to triage during a
+  dogfood run; this reinforces backlog 052.
+- The submission gate is mechanically clear, but a parked required member
+  leaves the operator needing judgment: should we unpark, run a partial storm,
+  or stop? The system tells the truth but does not yet guide the safe action.
+
+Delight:
+
+- `bb task list --json` immediately surfaced the parked verdict task and budget
+  reason; this is exactly the sort of agent-readable truth surface to lean into.
+- `sprite use -o misty-step lane-1` made the local checkout context explicit
+  and verifiable.
+- The submission loop docs make the earlier failed direct `verify` run easy to
+  understand after the fact: verdict members require a submission payload.
+
+Backlog implications:
+
+- 052 should include a concise dogfood snapshot view that joins task health,
+  DLQ, recent failures, and safe next actions.
+- 053 should keep tightening skill/test parity so generated skill metadata does
+  not drift or lose `$skill` references through shell expansion.
+- 054 should include Sprite account/org preflight in production operation
+  runbooks.
