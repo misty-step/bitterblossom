@@ -26,3 +26,11 @@ Evidence from the 2026-06-13 groom:
 - Live help exposes `bb runs export [OPTIONS]` with only `--config`.
 - `docs/spine.md:356` still says `--var k=v`.
 - `docs/spine.md:359` still says `runs export [--since ...]`.
+
+## Mega groom disposition 2026-06-13
+
+This is now part of the P0 contract work in
+`backlog.d/050-event-plane-hardening-before-growth.md` and the broader docs
+sweep in `backlog.d/057-current-contract-docs-and-noise-sweep.md`. Fixing the
+two stale snippets is necessary but not sufficient; the durable outcome is a
+cheap parity gate across live help, docs, and the exported skill recipes.

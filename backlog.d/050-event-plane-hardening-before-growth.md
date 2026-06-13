@@ -1,0 +1,58 @@
+# Prove event-plane hardening before growing reflex workloads
+
+Priority: P0 | Status: ready | Estimate: XL
+
+## Goal
+
+Make `bb serve` safe enough to be the recurring event plane by removing
+credential-leaking auth paths, preventing dispatch starvation, bounding
+notification fan-out, and locking the operator contract to live CLI/API
+behavior.
+
+## Oracle
+
+- [ ] Read API and HTML auth accept bearer headers and reject `?token=`; tests
+      and docs cover loopback, public bind, missing token, bad token, and bearer
+      success.
+- [ ] Dispatch in-flight bookkeeping is panic-safe; a regression test proves a
+      worker panic cannot strand the task and the next pending run drains.
+- [ ] Notification execution is bounded or synchronously accounted; a storm
+      test proves the process cannot spawn unbounded `curl` waiters.
+- [ ] CLI/docs/skill parity tests cover `bb run --payload`, no stale `--var`,
+      `bb runs export` without `--since`, and selected `--json` examples.
+- [ ] A minimal generic health/read surface clusters recent runs by task,
+      state, reason, cost, duration, parked state, and DLQ status, with safe
+      operator actions.
+- [ ] Verification includes `./scripts/verify.sh` plus live loopback API/HTML
+      QA with and without `BB_API_TOKEN`.
+
+## Children
+
+1. Remove query-token read auth and update docs/skill recipes.
+2. Add panic-safe in-flight cleanup around run workers.
+3. Bound notification dispatch and record failed/saturated notification
+   attempts.
+4. Add help/doc/skill parity tests for the stale command examples.
+5. Add the first ledger-native health report needed by operators and agents.
+6. Run a containment/storm drill against the dev plane.
+
+## Notes
+
+Why: product, UX, runtime, architecture, ops, agent-readiness, and premise
+challenge lanes all converged here.
+
+Evidence:
+
+- `src/serve.rs:103-140` inserts a task into `in_flight` and removes it only
+  after `run_one` returns; worker panic can strand the task until restart.
+- `src/serve.rs:209-220` accepts `?token=` and `docs/spine.md:245-247`
+  documents it for browsers.
+- `src/notify.rs:16-48` spawns a `curl` process and a detached wait thread per
+  notification with no concurrency bound.
+- `docs/spine.md:356` still documents `--var`; live `bb run --help` exposes
+  `--payload`.
+- `docs/spine.md:359` still documents `runs export [--since ...]`; live
+  `bb runs export --help` has no `--since`.
+
+Disposition: this epic absorbs the core of 047, 048, and 049 without deleting
+those evidence packets.

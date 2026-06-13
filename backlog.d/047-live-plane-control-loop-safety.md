@@ -40,3 +40,11 @@ Evidence from the 2026-06-13 groom:
 
 Keep the spine generic. This is dispatch/serve/notify hardening, not
 review-workload logic.
+
+## Mega groom disposition 2026-06-13
+
+This remains the first concrete child of
+`backlog.d/050-event-plane-hardening-before-growth.md`. Do not treat 047 as
+the whole strategy: the mega-groom widened it into a hardening-before-growth
+epic that also includes CLI/API contract drift, the first ledger-native health
+surface, and live API/HTML QA.

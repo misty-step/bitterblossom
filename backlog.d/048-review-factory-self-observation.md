@@ -30,3 +30,10 @@ facts but force every operator or agent to rebuild the clustering logic.
 Do not add review-specific branches to dispatch, substrate, or harness. The
 surface should be a generic run-health view that Raindrop export, the gardener
 task, or a human can consume.
+
+## Mega groom disposition 2026-06-13
+
+This becomes the seed for
+`backlog.d/052-ledger-native-operator-truth-surface.md`. The review factory is
+the first evidence source, but the resulting surface must stay generic enough
+for any workload, the Bitterblossom skill, and future observer tasks.
