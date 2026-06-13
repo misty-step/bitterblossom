@@ -14,8 +14,6 @@ use spec::Plane;
     about = "Bitterblossom event plane: tasks + agents + triggers as files"
 )]
 struct Cli {
-    /// Plane config directory (contains plane.toml). Defaults to
-    /// $BB_PLANE_DIR or the current directory.
     #[arg(long, global = true)]
     config: Option<PathBuf>,
     #[command(subcommand)]
@@ -24,68 +22,51 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Trigger a task manually (the degenerate trigger).
     Run {
         task: String,
-        /// Dedupe key: a second run with the same key records an ingress
-        /// event but creates no second run.
         #[arg(long)]
         idempotency_key: Option<String>,
-        /// JSON payload materialized as EVENT.json in the workspace —
-        /// the manual equivalent of a webhook body.
         #[arg(long)]
         payload: Option<String>,
         #[arg(long)]
         json: bool,
     },
-    /// Inspect the run ledger.
     Runs {
         #[command(subcommand)]
         command: RunsCommand,
     },
-    /// Dead letters: dispatches that failed before executing.
     Dlq {
         #[command(subcommand)]
         command: DlqCommand,
     },
-    /// Park/unpark tasks (budget breaches park; unpark is explicit).
     Task {
         #[command(subcommand)]
         command: TaskCommand,
     },
-    /// Submission lifecycle for the verdict-storm loop (docs/spine.md).
     Submit {
         #[command(subcommand)]
         command: SubmitCommand,
     },
-    /// Evaluate the merge gate over a submission's verdicts.
     Gate {
         #[arg(long)]
         submission: Option<String>,
-        /// Resolve the change's most recent submission.
         #[arg(long)]
         change: Option<String>,
         #[arg(long)]
         json: bool,
     },
-    /// Summarize task, run, queue, parked, and dead-letter health.
     Status {
         #[arg(long)]
         json: bool,
     },
-    /// Validate the plane config and print what's loaded.
     Check {
         #[arg(long)]
         json: bool,
     },
-    /// Classify runs inherited in `running` state (host probe + attempt
-    /// phase), instead of blindly orphaning them. Also runs at serve boot.
     Recover {
         #[arg(long)]
         json: bool,
     },
-    /// Run the plane: boot recovery, webhook ingress, cron scheduler,
-    /// dispatch loop.
     Serve,
 }
 
@@ -559,18 +540,20 @@ fn start_run_progress(db_path: PathBuf, run_id: String) {
         .unwrap_or_else(|| Duration::from_secs(30));
     let _ = thread::spawn(move || loop {
         thread::sleep(interval);
-        if let Ok(ledger) = Ledger::open(&db_path) {
-            if let Ok(run) = ledger.run(&run_id) {
-                let phase = ledger
-                    .attempts(&run_id)
-                    .ok()
-                    .and_then(|a| a.last().map(|a| a.phase.clone()))
-                    .unwrap_or_else(|| "-".into());
-                eprintln!("run {run_id} heartbeat state={} phase={phase}", run.state);
-                if run.state != "pending" && run.state != "running" {
-                    break;
-                }
-            }
+        let Ok(ledger) = Ledger::open(&db_path) else {
+            continue;
+        };
+        let Ok(run) = ledger.run(&run_id) else {
+            continue;
+        };
+        let phase = ledger
+            .attempts(&run_id)
+            .ok()
+            .and_then(|a| a.last().map(|a| a.phase.clone()))
+            .unwrap_or_else(|| "-".into());
+        eprintln!("run {run_id} heartbeat state={} phase={phase}", run.state);
+        if !matches!(run.state.as_str(), "pending" | "running") {
+            break;
         }
     });
 }

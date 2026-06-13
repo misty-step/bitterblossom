@@ -558,3 +558,56 @@ Additional delight:
   `security` remains parked.
 - The heartbeat change did not disturb the submission run bundle shape; all
   member receipts were the same `run`/`attempts`/`events` JSON as before.
+
+## Update 2026-06-13: 059 gate safe action
+
+Backlog item: `059-submission-retry-and-operator-heartbeats`, child 2.
+
+Work:
+
+- Added `safe_next_command` and `safe_next_reason` to `bb gate --json` member
+  entries when a canonical storm member is `run:failure`.
+- The safe command opens a clean replacement submission for the same change and
+  revision after the operator fixes the infrastructure issue. It does not
+  suggest DLQ replay as gate recovery.
+- Updated `docs/spine.md`, the Bitterblossom skill, operator recipes, and
+  backlog `059`.
+
+Verification:
+
+- Red test first: `cargo test --test submission
+  required_member_terminal_failure_escalates_with_one_notify -- --nocapture`
+  failed because `MemberStatus` had no safe-action fields.
+- Focused green: the same test now proves both the Rust report struct and the
+  serialized JSON include `safe_next_command`.
+- Fresh critic: `pi --provider openrouter --model deepseek/deepseek-v4-flash`
+  found no blocking issues. Nonblocking note: the generated command relies on
+  ambient plane config because it does not include `--config`.
+- Full gate: first `./scripts/verify.sh` hit a one-off
+  `ConnectionReset` in `read_api_requires_bearer_and_rejects_query_token`;
+  focused rerun passed, and the second full `./scripts/verify.sh` passed with
+  `src LOC: 4996`.
+
+Friction:
+
+- The first richer `safe_next_actions` array was more future-proof than the
+  immediate need, but it exceeded the 5k spine cap. The final scalar
+  `safe_next_command`/`safe_next_reason` shape is narrower and better matched
+  to this recovery path.
+- The source LOC cap forced another cleanup of redundant CLI doc comments.
+  That is acceptable, but it is a reminder that every new operator affordance
+  competes with existing inline explanation.
+- The critic lane emitted a useful verdict, but the peer CLI streamed internal
+  event/reasoning noise before the JSON and then exited nonzero with an
+  `Extension ctx is stale` watchdog error. The model result was usable; the
+  receipt surface was not.
+- The live-server test flake did not reproduce, but the failure mode was
+  expensive: a full green gate became a focused diagnosis loop because one
+  readiness race surfaced as `ConnectionReset` instead of a clear server-start
+  failure.
+
+Delight:
+
+- The gate can now say the thing I had to infer during dogfood: a replay may
+  prove the failed pre-execute path, but a clean replacement submission is the
+  canonical gate recovery path.

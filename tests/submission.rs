@@ -290,6 +290,32 @@ fn required_member_terminal_failure_escalates_with_one_notify() {
     std::env::remove_var("BB_NOTIFY_BIN");
     assert_eq!(report.decision, "escalated");
     assert_eq!(ledger.submission(&sub.id).unwrap().state, "escalated");
+    let failed = report
+        .members
+        .iter()
+        .find(|m| m.kind == "security")
+        .unwrap();
+    assert_eq!(failed.status, "run:failure");
+    assert_eq!(
+        failed.safe_next_command.as_deref(),
+        Some("bb submit open --change feat/x --rev sha1 --json")
+    );
+    assert!(failed
+        .safe_next_reason
+        .as_deref()
+        .unwrap()
+        .contains("canonical security run"));
+    let json = serde_json::to_value(&report).unwrap();
+    let security = json["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["kind"] == "security")
+        .unwrap();
+    assert_eq!(
+        security["safe_next_command"],
+        "bb submit open --change feat/x --rev sha1 --json"
+    );
 
     // Notify is async fire-and-forget; the `>>` redirect creates the log
     // before cat copies stdin, so poll for content, not existence.

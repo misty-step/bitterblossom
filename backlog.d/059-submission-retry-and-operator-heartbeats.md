@@ -12,7 +12,7 @@ pre-execute mistake or a remote verdict run takes minutes.
 - [ ] A missing declared secret is caught before consuming the canonical
       `storm:<submission>:<kind>` gate key, or the CLI gives a first-class
       retry path that creates a clean replacement submission/member.
-- [ ] `bb gate --json` explains when a canonical member failed for
+- [x] `bb gate --json` explains when a canonical member failed for
       infrastructure/operator reasons and names the next safe command.
 - [x] `bb dlq replay` has a JSON output mode, or its help/docs state that it is
       intentionally text-only and must be followed by `bb runs show`.
@@ -26,6 +26,7 @@ pre-execute mistake or a remote verdict run takes minutes.
 1. Decide whether missing-secret checks belong before run insertion for manual
    dispatch, or whether canonical retry should always open a new submission.
 2. Add gate/status safe-next-action text for `run:failure` storm members.
+   (done 2026-06-13)
 3. Add `--json` support or explicit documented text-only behavior for
    `bb dlq replay`. (done 2026-06-13)
 4. Add human-mode heartbeat output for long `bb run` waits. (done 2026-06-13)
@@ -60,3 +61,7 @@ Delivery notes:
   periodic stderr heartbeats while the run is pending/running. `bb run --json`
   remains quiet until the final machine-readable run bundle. `tests/run_cli.rs`
   covers both surfaces.
+- 2026-06-13: `bb gate --json` now adds `safe_next_command` and
+  `safe_next_reason` to failed canonical members. The command points at a
+  clean replacement submission, not DLQ replay, so the canonical gate key stays
+  rigorous while the operator gets an explicit recovery path.

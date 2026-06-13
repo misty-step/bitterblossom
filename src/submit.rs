@@ -65,6 +65,8 @@ pub struct SubmissionBundle {
     pub rejections: Vec<RejectionRow>,
 }
 
+type StormRun = (String, String, Option<f64>, Option<String>);
+
 pub fn fingerprint(kind: &str, file: Option<&str>, claim: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
@@ -320,14 +322,14 @@ impl Ledger {
         Ok(false)
     }
 
-    fn storm_run(&self, task: &str, key: &str) -> Result<Option<(String, String, Option<f64>)>> {
+    fn storm_run(&self, task: &str, key: &str) -> Result<Option<StormRun>> {
         Ok(self
             .conn
             .query_row(
-                "SELECT id, state, cost_usd FROM runs
+                "SELECT id, state, cost_usd, state_reason FROM runs
                  WHERE task = ?1 AND idempotency_key = ?2",
                 params![task, key],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .optional()?)
     }
@@ -387,6 +389,10 @@ pub struct MemberStatus {
     pub run_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub safe_next_command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub safe_next_reason: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -424,29 +430,36 @@ pub fn evaluate(plane: &Plane, ledger: &Ledger, submission_id: &str) -> Result<G
             .with_context(|| format!("no task declares verdict = \"{kind}\""))?;
         let key = format!("storm:{submission_id}:{kind}");
         let run = ledger.storm_run(&task.name, &key)?;
-        let (status, run_id, cost) = match run {
-            Some((id, state, cost)) => {
+        let (status, run_id, cost, safe_next_command, safe_next_reason) = match run {
+            Some((id, state, cost, reason)) => {
                 let canonical = verdicts
                     .iter()
                     .find(|v| v.kind == *kind && v.run_id == id && state == "success");
                 match canonical {
                     Some(v) => {
                         counted.push(v);
-                        (format!("verdict:{}", v.verdict), Some(id), cost)
+                        (format!("verdict:{}", v.verdict), Some(id), cost, None, None)
                     }
                     None => {
                         if state == "failure" {
                             infra_failure = true;
+                            let why = reason.clone().unwrap_or_else(|| "run failed".into());
+                            let cmd = format!(
+                                "bb submit open --change {} --rev {} --json",
+                                sub.change_key, sub.rev
+                            );
+                            let why = format!("canonical {kind} run {id} failed: {why}");
+                            (format!("run:{state}"), Some(id), cost, Some(cmd), Some(why))
                         } else {
                             pending = true;
+                            (format!("run:{state}"), Some(id), cost, None, None)
                         }
-                        (format!("run:{state}"), Some(id), cost)
                     }
                 }
             }
             None => {
                 pending = true;
-                ("not_started".to_string(), None, None)
+                ("not_started".to_string(), None, None, None, None)
             }
         };
         members.push(MemberStatus {
@@ -454,6 +467,8 @@ pub fn evaluate(plane: &Plane, ledger: &Ledger, submission_id: &str) -> Result<G
             status,
             run_id,
             cost_usd: cost,
+            safe_next_command,
+            safe_next_reason,
         });
     }
 

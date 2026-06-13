@@ -106,7 +106,10 @@ bb --config <plane> gate --submission <submission> --json
 ```
 
 If the gate blocks, fix the underlying issue and open the next round. Do not
-delete or rewrite prior verdict rows.
+delete or rewrite prior verdict rows. If a canonical member failed before
+producing a verdict, `gate --json` escalates and the failed member carries
+`safe_next_command`; fix the operator or infrastructure issue, then run that
+clean replacement submission command instead of trying to make a replay count.
 
 ## Dead Letters and Recovery
 

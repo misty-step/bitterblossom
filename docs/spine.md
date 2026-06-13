@@ -308,7 +308,10 @@ arbiter = "arbiter"               # verdict kind that settles disputes
 - A required kind without a terminal run → `pending` (per-kind states
   listed). A required kind whose run is terminal `failure` → the
   submission **escalates** (one notify): infrastructure failure is loud,
-  never an eternal pending. `clear` is only emitted over a complete round.
+  never an eternal pending. The failed member includes `safe_next_command`
+  in JSON, normally a clean `bb submit open --change K --rev SHA --json`
+  retry after the operator fixes the infrastructure issue. `clear` is only
+  emitted over a complete round.
 - **Only `blocking`-severity findings block — every round.** Fresh
   blockers are never demoted by recency; termination rests solely on the
   round cap. `serious`/`minor` never block (anti-needling is mechanical).
