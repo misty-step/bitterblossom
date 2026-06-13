@@ -160,6 +160,10 @@ enum SubmitCommand {
 
 #[derive(Subcommand)]
 enum TaskCommand {
+    List {
+        #[arg(long)]
+        json: bool,
+    },
     Park {
         task: String,
         #[arg(long, default_value = "parked by operator")]
@@ -171,9 +175,7 @@ enum TaskCommand {
 }
 
 fn main() {
-    unsafe {
-        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
-    }
+    unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
     if let Err(e) = run() {
         eprintln!("error: {e:#}");
         std::process::exit(1);
@@ -343,6 +345,16 @@ fn run() -> Result<()> {
             }
         },
         Command::Task { command } => match command {
+            TaskCommand::List { json } => {
+                let rows = serve::tasks_view(&plane, &ledger)?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&rows)?);
+                } else {
+                    for row in rows {
+                        println!("{row}");
+                    }
+                }
+            }
             TaskCommand::Park { task, reason } => {
                 plane.task(&task)?;
                 ledger.park_task(&task, &reason)?;
@@ -480,25 +492,12 @@ fn run() -> Result<()> {
         }
         Command::Check { json } => {
             if json {
-                let task_details: Vec<_> = plane
-                    .tasks
-                    .values()
-                    .map(|t| {
-                        serde_json::json!({
-                            "name": t.name,
-                            "agent": t.agent_name,
-                            "substrate": t.spec.substrate,
-                            "triggers": t.spec.triggers.len(),
-                            "source": t.source,
-                        })
-                    })
-                    .collect();
                 let summary = serde_json::json!({
                     "root": plane.root,
                     "db_path": plane.db_path(),
                     "agents": plane.agents.keys().collect::<Vec<_>>(),
                     "tasks": plane.tasks.keys().collect::<Vec<_>>(),
-                    "task_details": task_details,
+                    "task_details": serve::tasks_view(&plane, &ledger)?,
                 });
                 println!("{}", serde_json::to_string_pretty(&summary)?);
             } else {

@@ -333,7 +333,7 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
 
     Ok((404, "{\"error\":\"not found\"}".to_string()))
 }
-fn tasks_view(plane: &Plane, ledger: &Ledger) -> Result<Vec<serde_json::Value>> {
+pub fn tasks_view(plane: &Plane, ledger: &Ledger) -> Result<Vec<serde_json::Value>> {
     let mut out = Vec::new();
     for task in plane.tasks.values() {
         out.push(serde_json::json!({
@@ -342,6 +342,8 @@ fn tasks_view(plane: &Plane, ledger: &Ledger) -> Result<Vec<serde_json::Value>> 
             "harness": task.agent.harness,
             "model": task.agent.model,
             "substrate": task.spec.substrate,
+            "triggers": task.spec.triggers.len(),
+            "verdict": task.spec.verdict,
             "source": task.source,
             "parked": ledger.parked_reason(&task.name)?,
             "runs_today": ledger.runs_today(&task.name)?,
