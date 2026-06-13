@@ -1,7 +1,7 @@
 # Evaluate Raindrop as the production-error ingress for the diagnose watcher
 
 Priority: P2
-Status: pending
+Status: blocked
 Estimate: M
 
 ## Goal
@@ -58,6 +58,13 @@ caught as product-quality regressions.
 
 Trial packet:
 [docs/plans/2026-06-13-033-raindrop-trial-plan.md](/docs/plans/2026-06-13-033-raindrop-trial-plan.md).
+
+## Groom status 2026-06-13
+
+Blocked, not abandoned. The trial still needs Raindrop cloud credentials or
+an explicit local Workshop install, confirmation that the review factory is
+the trial target, and seven calendar days of signal. Do not treat this as
+the next implementation item until those inputs exist.
 
 ## Oracle
 
