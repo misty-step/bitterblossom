@@ -269,3 +269,58 @@ Backlog implications:
 - 052 follow-up: status could join open submissions/gate state too. Today it
   explains task/DLQ health, but a pending gate still requires a separate
   `bb gate` read.
+
+## Update 2026-06-13: 050 bearer-only read auth
+
+Backlog item: `050-event-plane-hardening-before-growth`, child 1.
+
+Work:
+
+- Removed query-string read auth from `bb serve`; read APIs and the HTML
+  operator view now accept only `Authorization: Bearer <BB_API_TOKEN>` when a
+  token is configured.
+- Added a live-server regression test proving missing token, bad bearer, and
+  `?token=` are rejected while bearer auth succeeds for `/api/runs` and `/`.
+- Updated `docs/spine.md` and the Bitterblossom operator recipe so agents and
+  humans no longer learn the unsafe URL-token path.
+- Updated backlog 050 to mark the bearer-auth child done while leaving the
+  larger hardening epic open.
+
+Verification:
+
+- Red test first: `cargo test --test serve
+  read_api_requires_bearer_and_rejects_query_token -- --nocapture` failed
+  because `/api/runs?token=test-token` returned `200`.
+- Focused green: `cargo test --test serve`.
+- Full gate: `./scripts/verify.sh` passed with `src LOC: 4991`.
+- Live bearer QA:
+  - `GET /api/status` without header -> `401`.
+  - `GET /api/status?token=test-token` -> `401`.
+  - bad bearer -> `401`.
+  - bearer `/api/status` -> status JSON with `8 tasks, parked=1, dlq=4`.
+  - bearer `/` -> `200`.
+  - no-token loopback `/api/status` and `/` remain open for local dev.
+
+Friction:
+
+- A failing live-server test can leave a spawned `bb serve` behind unless the
+  test owns child cleanup explicitly. The new test now uses a drop guard, but
+  this is easy to miss when writing process-level tests.
+- The existing query-param helper is still needed for safe non-secret filters
+  like `task`, `state`, `submission`, and `change`; the code needed careful
+  wording so removing query-token auth did not look like deleting query
+  parsing wholesale.
+
+Delight:
+
+- The red test was exact: it failed only on the unsafe query-token path, then
+  passed after a one-line auth change.
+- The live QA path was straightforward because `/api/status` now provides a
+  compact proof response; no manual task/run/DLQ synthesis was needed.
+
+Backlog implications:
+
+- 050 still needs panic-safe in-flight cleanup, bounded notification dispatch,
+  command/docs parity checks, and containment/storm drills.
+- The process-test cleanup guard pattern should be reused for future `bb serve`
+  live QA tests.

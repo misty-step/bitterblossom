@@ -147,6 +147,9 @@ Non-loopback serving needs `BB_API_TOKEN`. Query with:
 curl -H "Authorization: Bearer $BB_API_TOKEN" "$BB_URL/api/runs"
 ```
 
+Do not put `BB_API_TOKEN` in a query string. Read APIs and the HTML view accept
+only the bearer header when a token is configured.
+
 ## Parked Tasks
 
 ```bash

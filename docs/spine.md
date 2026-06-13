@@ -243,7 +243,8 @@ The ledger is the system of record; everything reads from it:
   (submissions + verdicts + rejection reasons) — the agent-facing read
   API, same shapes as the `--json` CLI.
 - Auth: set `BB_API_TOKEN` on the plane and send
-  `Authorization: Bearer <token>` (browsers may use `?token=`). Unset =
+  `Authorization: Bearer <token>`. Query-string tokens are rejected so
+  credentials do not leak through URLs, logs, or browser history. Unset =
   open, acceptable only on the loopback default bind.
 
 Cost attribution rides OpenRouter's per-response usage accounting

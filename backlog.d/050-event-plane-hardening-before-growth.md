@@ -11,7 +11,7 @@ behavior.
 
 ## Oracle
 
-- [ ] Read API and HTML auth accept bearer headers and reject `?token=`; tests
+- [x] Read API and HTML auth accept bearer headers and reject `?token=`; tests
       and docs cover loopback, public bind, missing token, bad token, and bearer
       success.
 - [ ] Dispatch in-flight bookkeeping is panic-safe; a regression test proves a
@@ -20,7 +20,7 @@ behavior.
       test proves the process cannot spawn unbounded `curl` waiters.
 - [ ] CLI/docs/skill parity tests cover `bb run --payload`, no stale `--var`,
       `bb runs export` without `--since`, and selected `--json` examples.
-- [ ] A minimal generic health/read surface clusters recent runs by task,
+- [x] A minimal generic health/read surface clusters recent runs by task,
       state, reason, cost, duration, parked state, and DLQ status, with safe
       operator actions.
 - [ ] Verification includes `./scripts/verify.sh` plus live loopback API/HTML
@@ -28,12 +28,14 @@ behavior.
 
 ## Children
 
-1. Remove query-token read auth and update docs/skill recipes.
+1. Remove query-token read auth and update docs/skill recipes. (done
+   2026-06-13)
 2. Add panic-safe in-flight cleanup around run workers.
 3. Bound notification dispatch and record failed/saturated notification
    attempts.
 4. Add help/doc/skill parity tests for the stale command examples.
 5. Add the first ledger-native health report needed by operators and agents.
+   (done 2026-06-13; see backlog 052)
 6. Run a containment/storm drill against the dev plane.
 
 ## Notes
@@ -45,8 +47,9 @@ Evidence:
 
 - `src/serve.rs:103-140` inserts a task into `in_flight` and removes it only
   after `run_one` returns; worker panic can strand the task until restart.
-- `src/serve.rs:209-220` accepts `?token=` and `docs/spine.md:245-247`
-  documents it for browsers.
+- `src/serve.rs:209-220` accepted `?token=` and `docs/spine.md:245-247`
+  documented it for browsers; fixed 2026-06-13 with bearer-only API/HTML
+  auth and live loopback QA.
 - `src/notify.rs:16-48` spawns a `curl` process and a detached wait thread per
   notification with no concurrency bound.
 - `docs/spine.md:356` still documents `--var`; live `bb run --help` exposes
@@ -56,3 +59,24 @@ Evidence:
 
 Disposition: this epic absorbs the core of 047, 048, and 049 without deleting
 those evidence packets.
+
+## Delivery Notes
+
+### 2026-06-13 bearer-only read auth
+
+- Removed query-string read auth from `bb serve`; `/`, `/api/*`, and HTML read
+  surfaces now accept only `Authorization: Bearer <BB_API_TOKEN>` when a token
+  is configured.
+- Added `tests/serve.rs` coverage for missing token, bad bearer, rejected
+  `?token=`, successful bearer API, and successful bearer HTML.
+- Updated `docs/spine.md` and `skills/bitterblossom/references/operator-recipes.md`
+  so consumers no longer learn the unsafe URL-token path.
+- Verification: `./scripts/verify.sh` passed with `src LOC: 4991`; live
+  loopback QA confirmed missing/bad/query-token requests return `401`, bearer
+  `/api/status` returns the status JSON, bearer `/` returns `200`, and no-token
+  loopback remains open for dev.
+
+### 2026-06-13 status surface
+
+- `bb status [--json]` and `/api/status` shipped in backlog 052, providing the
+  generic health/read surface named by this epic.

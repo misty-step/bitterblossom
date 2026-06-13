@@ -206,18 +206,17 @@ fn bind_is_loopback(bind: &str) -> bool {
 fn api_token() -> Option<String> {
     std::env::var(API_TOKEN_ENV).ok().filter(|t| !t.is_empty())
 }
-fn read_authorized(request: &tiny_http::Request, url: &str) -> bool {
+fn read_authorized(request: &tiny_http::Request) -> bool {
     let Some(token) = api_token() else {
         return true;
     };
-    let header_ok = request.headers().iter().any(|h| {
+    request.headers().iter().any(|h| {
         h.field
             .as_str()
             .as_str()
             .eq_ignore_ascii_case("authorization")
             && h.value.as_str() == format!("Bearer {token}")
-    });
-    header_ok || query_param(url, "token").as_deref() == Some(token.as_str())
+    })
 }
 
 fn query_param(url: &str, name: &str) -> Option<String> {
@@ -233,7 +232,7 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
     let url = request.url().to_string();
 
     if method == "GET" && (url.starts_with("/api/") || url == "/" || url.starts_with("/?")) {
-        if !read_authorized(request, &url) {
+        if !read_authorized(request) {
             return Ok((401, "{\"error\":\"missing or bad bearer token\"}".into()));
         }
         let plane = Plane::load(root)?;
@@ -444,16 +443,16 @@ mod tests {
     use super::query_param;
 
     #[test]
-    fn token_param_is_parsed_not_substring_matched() {
+    fn query_param_is_parsed_not_substring_matched() {
         assert_eq!(
-            query_param("/api/runs?token=abc", "token").as_deref(),
-            Some("abc")
+            query_param("/api/gate?submission=sub1", "submission").as_deref(),
+            Some("sub1")
         );
-        assert_eq!(query_param("/api/runs?notoken=abc", "token"), None);
-        assert_eq!(query_param("/api/runs", "token"), None);
+        assert_eq!(query_param("/api/gate?notsubmission=x", "submission"), None);
+        assert_eq!(query_param("/api/gate", "submission"), None);
         assert_eq!(
-            query_param("/?a=1&token=t2", "token").as_deref(),
-            Some("t2")
+            query_param("/api/runs?a=1&state=success", "state").as_deref(),
+            Some("success")
         );
     }
 }
