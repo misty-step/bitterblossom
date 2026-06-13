@@ -48,6 +48,7 @@ tests/               e2e (local + stubbed sprites), ingress, recovery, budgets
 examples/demo-plane/ Complete commented config surface (`bb check` validates)
 backlog.d/           Work source; _done/ is the archive
 docs/                Vision, ADRs, plans, spine contract, archive/
+skills/              Product-owned exportable agent interface for `bb`
 ```
 
 ## Verification
