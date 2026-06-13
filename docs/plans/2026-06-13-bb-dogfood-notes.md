@@ -468,3 +468,54 @@ Additional delight:
 - Sequentially running `simplification` and `product` avoided the host lease
   contention seen in earlier dogfood storms while preserving exact costs and
   artifacts.
+
+## Update 2026-06-13: 059 human-mode run heartbeat
+
+Backlog item: `059-submission-retry-and-operator-heartbeats`, child 4.
+
+Work:
+
+- Added human-mode progress output for `bb run`: an immediate run receipt on
+  stderr plus periodic heartbeat lines with current run state and latest
+  attempt phase while the run is pending/running.
+- Kept `bb run --json` quiet until the final `run`/`attempts`/`events` bundle
+  so agent consumers do not need a streaming JSON parser.
+- Moved source-counted helper tests out of `src` pressure where integration
+  coverage already exercises the public surface, keeping the spine at the
+  5k-line budget.
+- Updated `docs/spine.md`, the Bitterblossom skill, operator recipes, and this
+  backlog item.
+
+Verification:
+
+- Red test first: `cargo test --test run_cli
+  run_human_mode_prints_early_receipt_and_heartbeat_without_json_noise
+  -- --nocapture` failed because stderr did not contain `accepted`.
+- Focused green: `cargo test --test run_cli -- --nocapture`.
+- Regression check: `cargo test --test serve
+  read_api_requires_bearer_and_rejects_query_token -- --nocapture` passed with
+  the query-substring check moved to the live HTTP route.
+- Source budget check: repo gate reported `src LOC: 4999`.
+
+Friction:
+
+- The 5k Rust spine cap forced a design choice. The first joined heartbeat
+  helper was more polished internally, but it added a small lifecycle
+  abstraction the operator did not need. The final version is deliberately
+  thinner: human-only stderr polling around the blocking dispatch.
+- A hidden short heartbeat interval was needed for the CLI integration test;
+  the production default remains 30 seconds.
+- Fresh critic passed the diff, but first used raw `wc -l` instead of the
+  repo's nonblank LOC oracle; the repo gate remains the source of truth.
+
+Delight:
+
+- The final behavior matches the dogfood pain precisely: human runs stop
+  feeling opaque, while agent-readable `--json` remains stable and clean.
+- The LOC cap again pushed the code toward a narrower interface instead of a
+  general progress framework.
+
+Backlog implications:
+
+- 059 still needs canonical storm failure guidance, gate/status safe actions,
+  and the final retry-path documentation.

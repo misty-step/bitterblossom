@@ -141,6 +141,10 @@ fn read_api_requires_bearer_and_rejects_query_token() {
     assert_eq!(http_get(port, "/api/runs", None).0, 401);
     assert_eq!(http_get(port, "/api/runs", Some("wrong")).0, 401);
     assert_eq!(http_get(port, "/api/runs?token=test-token", None).0, 401);
+    assert_eq!(
+        http_get(port, "/api/gate?notsubmission=x", Some("test-token")).0,
+        400
+    );
     let (status, body) = http_get(port, "/api/runs", Some("test-token"));
     assert_eq!(status, 200, "{body}");
     let (status, body) = http_get(port, "/", Some("test-token"));

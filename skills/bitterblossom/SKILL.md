@@ -26,6 +26,8 @@ Agents are CLI users, so prefer stable `--json` surfaces over prose parsing.
 - New workload behavior should be a task/card/agent change, not a Rust branch.
 - Use `--config <plane>` explicitly unless the user has set `BB_PLANE_DIR`.
 - Use `--json` for agent-readable output. Text is for humans.
+- Human-mode `bb run` prints an early run id and periodic stderr heartbeats;
+  `bb run --json` stays quiet until it emits the final run bundle.
 - If `bb` is not on `PATH`, use `cargo run --quiet --` from the source repo or
   `./target/debug/bb` after `cargo build`.
 

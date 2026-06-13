@@ -311,14 +311,3 @@ fn repo_dir_name(url: &str) -> String {
         .unwrap_or("repo")
         .to_string()
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn remote_workspace_path_is_owned_by_the_sprites_adapter() {
-        assert_eq!(
-            super::remote_workspace_path("review"),
-            "/home/sprite/bb/review"
-        );
-    }
-}

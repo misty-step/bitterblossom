@@ -16,7 +16,7 @@ pre-execute mistake or a remote verdict run takes minutes.
       infrastructure/operator reasons and names the next safe command.
 - [x] `bb dlq replay` has a JSON output mode, or its help/docs state that it is
       intentionally text-only and must be followed by `bb runs show`.
-- [ ] Long-running `bb run` invocations expose an early run id and periodic
+- [x] Long-running `bb run` invocations expose an early run id and periodic
       status/heartbeat in human mode without corrupting final `--json` output.
 - [ ] Dogfood docs cover the canonical failure/retry path with a real
       submission example.
@@ -28,7 +28,7 @@ pre-execute mistake or a remote verdict run takes minutes.
 2. Add gate/status safe-next-action text for `run:failure` storm members.
 3. Add `--json` support or explicit documented text-only behavior for
    `bb dlq replay`. (done 2026-06-13)
-4. Add human-mode heartbeat output for long `bb run` waits.
+4. Add human-mode heartbeat output for long `bb run` waits. (done 2026-06-13)
 5. Update the dogfood skill and operator recipes with the settled recovery
    path.
 
@@ -56,3 +56,7 @@ Delivery notes:
   with `run`, `attempts`, and `events`, matching `bb run --json` and
   `bb runs show --json`. `tests/dlq_cli.rs` covers a pre-execute DLQ replay
   that preserves `parent_run_id` lineage.
+- 2026-06-13: human-mode `bb run` now prints an immediate run receipt and
+  periodic stderr heartbeats while the run is pending/running. `bb run --json`
+  remains quiet until the final machine-readable run bundle. `tests/run_cli.rs`
+  covers both surfaces.

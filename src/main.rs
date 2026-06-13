@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, thread, time::Duration};
 
 use anyhow::{bail, Result};
 use bitterblossom::{dispatch, ledger, recovery, serve, spec};
@@ -234,6 +234,9 @@ fn run() -> Result<()> {
                 eprintln!("run {} blocked: task is parked", outcome.run_id);
                 print_run(&ledger, &outcome.run_id, json)?;
                 return Ok(());
+            }
+            if !json {
+                start_run_progress(plane.db_path(), outcome.run_id.clone());
             }
             let run = dispatch::dispatch_run(&plane, &mut ledger, &outcome.run_id)?;
             if json {
@@ -545,6 +548,31 @@ fn run() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn start_run_progress(db_path: PathBuf, run_id: String) {
+    eprintln!("run {run_id} accepted; inspect with `bb runs show {run_id} --json`");
+    let interval = std::env::var("BB_RUN_HEARTBEAT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .map(Duration::from_millis)
+        .unwrap_or_else(|| Duration::from_secs(30));
+    let _ = thread::spawn(move || loop {
+        thread::sleep(interval);
+        if let Ok(ledger) = Ledger::open(&db_path) {
+            if let Ok(run) = ledger.run(&run_id) {
+                let phase = ledger
+                    .attempts(&run_id)
+                    .ok()
+                    .and_then(|a| a.last().map(|a| a.phase.clone()))
+                    .unwrap_or_else(|| "-".into());
+                eprintln!("run {run_id} heartbeat state={} phase={phase}", run.state);
+                if run.state != "pending" && run.state != "running" {
+                    break;
+                }
+            }
+        }
+    });
 }
 
 fn print_status(doc: &serde_json::Value) {

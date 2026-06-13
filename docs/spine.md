@@ -353,9 +353,12 @@ overlap. Per-task FIFO ordering is layered above that lease.
 ## Operator CLI
 
 All read commands take `--json` and emit stable shapes (agents are users).
+`bb run --json` prints only the final run bundle; human-mode `bb run` prints an
+early run id plus periodic heartbeat lines on stderr while dispatch is in
+progress.
 
 ```
-bb run <task> [--idempotency-key K] [--payload JSON] # manual trigger
+bb run <task> [--idempotency-key K] [--payload JSON] [--json] # manual trigger
 bb status [--json]                                # task/run/queue/DLQ health
 bb runs list [--task T] [--state S] [--json]
 bb runs show <run-id> [--json]                    # run + attempts + events

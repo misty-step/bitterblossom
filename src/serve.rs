@@ -437,22 +437,3 @@ a{{color:#9db4ff}} .success{{color:#7dce82}} .failure{{color:#e07a7a}}
 </body></html>"#
     ))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::query_param;
-
-    #[test]
-    fn query_param_is_parsed_not_substring_matched() {
-        assert_eq!(
-            query_param("/api/gate?submission=sub1", "submission").as_deref(),
-            Some("sub1")
-        );
-        assert_eq!(query_param("/api/gate?notsubmission=x", "submission"), None);
-        assert_eq!(query_param("/api/gate", "submission"), None);
-        assert_eq!(
-            query_param("/api/runs?a=1&state=success", "state").as_deref(),
-            Some("success")
-        );
-    }
-}

@@ -53,6 +53,11 @@ as the receipt, then inspect it:
 bb --config <plane> runs show <run-id> --json
 ```
 
+For human-supervised long runs, omit `--json`: `bb run` prints the run id
+immediately and emits heartbeat lines on stderr while the run is pending or
+running. Keep `--json` for agents and scripts; it stays quiet until the final
+`run`/`attempts`/`events` bundle is ready.
+
 ## Review Workload
 
 For a real review comment:
