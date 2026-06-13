@@ -18,7 +18,7 @@ pre-execute mistake or a remote verdict run takes minutes.
       intentionally text-only and must be followed by `bb runs show`.
 - [x] Long-running `bb run` invocations expose an early run id and periodic
       status/heartbeat in human mode without corrupting final `--json` output.
-- [ ] Dogfood docs cover the canonical failure/retry path with a real
+- [x] Dogfood docs cover the canonical failure/retry path with a real
       submission example.
 
 ## Children
@@ -31,7 +31,11 @@ pre-execute mistake or a remote verdict run takes minutes.
    `bb dlq replay`. (done 2026-06-13)
 4. Add human-mode heartbeat output for long `bb run` waits. (done 2026-06-13)
 5. Update the dogfood skill and operator recipes with the settled recovery
-   path.
+   path. (done 2026-06-13)
+6. Follow-up: make safe actions self-contained for agents. The current
+   `safe_next_command` names the right recovery path, but dogfood showed it
+   relies on ambient `--config` context; consider structured argv plus display
+   text instead of a bare shell command string.
 
 ## Notes
 
@@ -65,3 +69,9 @@ Delivery notes:
   `safe_next_reason` to failed canonical members. The command points at a
   clean replacement submission, not DLQ replay, so the canonical gate key stays
   rigorous while the operator gets an explicit recovery path.
+- 2026-06-13: live dogfood submission `9dd735ad16ce` hit canonical
+  `simplification` failure `e9edd6960249` (`harness exit 1: Error:
+  connection closed`). `bb gate --json` escalated and included the clean
+  replacement command/reason. Replacement submission `02e587ec4533` ran all
+  unparked members to pass and stayed pending only because `security` remains
+  parked.

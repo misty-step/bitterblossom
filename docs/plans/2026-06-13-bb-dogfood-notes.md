@@ -611,3 +611,59 @@ Delight:
 - The gate can now say the thing I had to infer during dogfood: a replay may
   prove the failed pre-execute path, but a clean replacement submission is the
   canonical gate recovery path.
+
+Submission storm:
+
+- Change: `e0f8fecf329af8b99475a041fc8fea89f4bcd215`
+  (`feat: add gate safe recovery command`).
+- Submission `9dd735ad16ce` ran `verify` and `correctness` successfully:
+  `verify` run `39f404d8f879`, duration 50.649s; `correctness` run
+  `7c2511a4539e`, cost `$0.18108557`, duration 247.467s.
+- Canonical `simplification` run `e9edd6960249` failed in 68.922s with
+  `harness exit 1: Error: connection closed`.
+- `bb gate --submission 9dd735ad16ce --json` returned
+  `decision: escalated` and the failed member carried:
+  `safe_next_command: bb submit open --change gate-safe-action-e0f8fec --rev
+  e0f8fecf329af8b99475a041fc8fea89f4bcd215 --json` and
+  `safe_next_reason: canonical simplification run e9edd6960249 failed:
+  harness exit 1: Error: connection closed`.
+- Replacement submission `02e587ec4533` was opened with `--config plane`
+  added manually. Available members then passed:
+  `verify` run `a131ef006aea`, duration 43.851s;
+  `correctness` run `ec4e8cb11b50`, cost `$0.37316533`, duration 419.171s;
+  `simplification` run `267b841b4cc8`, cost `$0.0319799066`, duration
+  228.989s; `product` run `d44541cca3eb`, cost `$0.07496845`, duration
+  35.205s.
+- `bb gate --submission 02e587ec4533 --json` returned `decision: pending`:
+  all unparked members were `verdict:pass`, while `security` remained
+  `not_started` because it is still parked.
+
+Additional friction:
+
+- The generated `safe_next_command` is directionally right but not
+  self-contained in this repo checkout: it omitted `--config plane`, so the
+  command needed manual context before it would run from the repo root.
+- A plain command string is probably the wrong final safe-action primitive.
+  If Bitterblossom wants agent-grade recovery, it should consider structured
+  argv plus display text, or a shell-escaped command that includes plane
+  context.
+- The transient `connection closed` failure consumed the canonical
+  `simplification` key exactly like a real operator/infrastructure failure.
+  The new gate guidance made recovery obvious, but the replacement storm still
+  required rerunning every unparked member for the new submission.
+
+Additional delight:
+
+- This slice dogfooded itself: the first live storm hit a canonical member
+  failure, and the new JSON fields immediately explained the clean replacement
+  path.
+- The strict canonical-key model felt good once the recovery command existed:
+  the plane stayed rigorous without forcing the operator to reverse-engineer
+  what to do next.
+
+Backlog implications:
+
+- 059 child 5 is satisfied by the skill/recipe updates plus this real
+  submission example.
+- Follow-up: safe actions should become self-contained agent actions, not only
+  human-readable command strings with ambient config assumptions.
