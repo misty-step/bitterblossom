@@ -519,3 +519,42 @@ Backlog implications:
 
 - 059 still needs canonical storm failure guidance, gate/status safe actions,
   and the final retry-path documentation.
+
+Submission storm:
+
+- Change: `18c7697ccadaa2ae493d0d9b6e3d5ddc61ef5a00`
+  (`feat: add human run heartbeat`).
+- Submission: `./target/debug/bb --config plane submit open --change
+  run-heartbeat-18c7697 --rev
+  18c7697ccadaa2ae493d0d9b6e3d5ddc61ef5a00 --context ... --json`
+  created `6f745ee1b606`.
+- `verify`: `verdict:pass`, run `2fb6d23b297f`, duration 51.880s,
+  artifact dir `plane/.bb/runs/2fb6d23b297f/attempt-1`.
+- `correctness`: `verdict:pass`, run `0e3eba5cd9ad`, cost
+  `$0.075776449`, duration 201.781s, 152243 input tokens, 10116 output
+  tokens.
+- `simplification`: `verdict:pass`, run `bf843f0d06f8`, cost
+  `$0.0166148673`, duration 226.221s, 97759 input tokens, 11044 output
+  tokens.
+- `product`: `verdict:pass`, run `3bbc8b9c0ac8`, cost `$0.03993955`,
+  duration 25.552s, 12543 input tokens, 1968 output tokens.
+- `security`: `not_started`; task stayed parked because the prior run cost
+  `$0.2539` exceeded `max_cost_per_run_usd $0.25`.
+- `bb gate --submission 6f745ee1b606 --json` returned
+  `decision: pending` with no blocking, advisory, or rejected findings.
+
+Additional friction:
+
+- The critic lane again ignored the compact-output request for a long stretch
+  and invoked its own shell commands. It eventually returned a useful `pass`,
+  but the operator experience still needs bounded critic receipts.
+- The storm itself used `--json`, so the new heartbeat did not apply. That is
+  the intended contract, but it means agent-mode silence is still expected and
+  must be paired with separate ledger reads when a human wants progress.
+
+Additional delight:
+
+- The gate stayed clean across the exact member set we can safely run while
+  `security` remains parked.
+- The heartbeat change did not disturb the submission run bundle shape; all
+  member receipts were the same `run`/`attempts`/`events` JSON as before.
