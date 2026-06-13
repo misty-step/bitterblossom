@@ -95,3 +95,55 @@ Backlog implications:
   not drift or lose `$skill` references through shell expansion.
 - 054 should include Sprite account/org preflight in production operation
   runbooks.
+
+## Update 2026-06-13: first dogfood submission for the dogfood skill
+
+Change: `fcb490012288acad9fa8763a25b9413af0926990`
+(`docs: add bitterblossom dogfood skill`).
+
+Submission:
+
+- `./target/debug/bb --config plane submit open --change dogfood-skill-fcb4900
+  --rev fcb490012288acad9fa8763a25b9413af0926990 --context ... --json`
+  created submission `df17211fcfb3`.
+- `GH_TOKEN=$(gh auth token) ./target/debug/bb --config plane run verify
+  --idempotency-key storm:df17211fcfb3:verify --payload
+  '{"submission":"df17211fcfb3","repo":"misty-step/bitterblossom","rev":"fcb490012288acad9fa8763a25b9413af0926990","change":"dogfood-skill-fcb4900"}'
+  --json` ran on the Sprites substrate and returned success.
+- Verify run: `d7c33f8f86f4`, exit code 0, duration 49.802s, attempt phase
+  `released`, artifact dir
+  `plane/.bb/runs/d7c33f8f86f4/attempt-1`.
+- `./target/debug/bb --config plane gate --submission df17211fcfb3 --json`
+  returned `decision: pending`; `verify` was `verdict:pass`, while
+  `correctness`, `security`, `simplification`, and `product` were
+  `not_started`.
+- `./target/debug/bb --config plane task list --json` still shows `security`
+  parked with `run cost $0.2539 > max_cost_per_run_usd $0.25`.
+
+Friction:
+
+- `bb run --json` emitted no progress for about 50 seconds while the remote
+  verifier was running. The final JSON was good, but the wait was opaque.
+- The gate output says required members are `not_started`; it does not combine
+  that with task parked state, so the operator has to run `task list` and join
+  the explanation manually.
+- The safe path around a parked required member is still a judgment call. The
+  dogfood skill now says not to unpark just to make the gate pass, but the
+  product should eventually guide that decision.
+
+Delight:
+
+- The submission-shaped verify run worked cleanly and quickly once invoked
+  correctly. The previous direct-verdict dead letter now reads like a useful
+  teaching failure rather than a mystery.
+- The run receipt is precise: run id, trace id, attempt id, duration, artifact
+  dir, state events, and exit code were all available from one `bb run --json`
+  / `runs show --json` path.
+
+Backlog implications:
+
+- 052 should include a joined gate/task snapshot: pending member + parked
+  reason + safe next action in one response.
+- 053 should include contract tests for verdict-task invocation recipes so
+  `verify` cannot be documented as a generic `bb run` target without the
+  submission payload shape.
