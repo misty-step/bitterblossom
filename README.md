@@ -31,6 +31,13 @@ bb recover                  # classify runs inherited from a dead plane
 bb check                    # validate the config surface
 ```
 
+## Agent skill
+
+Agents that need to operate Bitterblossom can load the portable skill folder at
+[`skills/bitterblossom/`](skills/bitterblossom/). Copy or symlink the whole
+folder into a harness skill root; do not copy only `SKILL.md`, because the
+recipes and UI metadata are part of the interface.
+
 ## Quick start
 
 ```bash
