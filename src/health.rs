@@ -7,6 +7,8 @@ use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use crate::ledger::{DeadLetterRow, Ledger, RunRow};
 use crate::spec::Plane;
 
+const RECOVERY_STALE_SECONDS: i64 = 3600;
+
 pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
     let runs = ledger.list_runs(None, None)?;
     let dead_letters = ledger.list_dead_letters()?;
@@ -98,6 +100,7 @@ pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
                 latest_recovery,
                 latest_failure,
                 pending,
+                generated_at,
             ),
         }));
     }
@@ -152,6 +155,7 @@ fn safe_actions(
     recovery: Option<&RunRow>,
     failure: Option<&RunRow>,
     pending: usize,
+    generated_at: OffsetDateTime,
 ) -> Vec<Value> {
     let mut out = Vec::new();
     if let Some(reason) = parked {
@@ -169,9 +173,15 @@ fn safe_actions(
         }));
     }
     if let Some(r) = recovery {
+        let age_seconds = OffsetDateTime::parse(&r.updated_at, &Rfc3339)
+            .map(|at| (generated_at - at).whole_seconds().max(0))
+            .unwrap_or(0);
+        let stale = age_seconds >= RECOVERY_STALE_SECONDS;
         out.push(json!({
-            "kind": "resolve_after_side_effect_inspection",
+            "kind": if stale { "escalate_stale_recovery" } else { "resolve_after_side_effect_inspection" },
             "reason": r.state_reason,
+            "age_seconds": age_seconds,
+            "stale_after_seconds": RECOVERY_STALE_SECONDS,
             "command": format!("bb runs resolve {} success|failure", r.id),
         }));
     }

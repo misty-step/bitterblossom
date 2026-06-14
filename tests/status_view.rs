@@ -3,6 +3,8 @@ use std::fs;
 use bitterblossom::health;
 use bitterblossom::ledger::{IngressRequest, Ledger};
 use bitterblossom::spec::Plane;
+use rusqlite::params;
+use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
 
 fn write_plane(root: &std::path::Path) {
     fs::create_dir_all(root.join("agents")).unwrap();
@@ -12,7 +14,15 @@ fn write_plane(root: &std::path::Path) {
     )
     .unwrap();
     fs::write(root.join("plane.toml"), "dev = true\n").unwrap();
-    for task in ["review", "security", "verify", "product", "correctness"] {
+    for task in [
+        "review",
+        "security",
+        "verify",
+        "product",
+        "correctness",
+        "recovery",
+        "fresh-recovery",
+    ] {
         let dir = root.join("tasks").join(task);
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("card.md"), "card\n").unwrap();
@@ -53,6 +63,15 @@ fn finish(ledger: &mut Ledger, task: &str, state: &str, reason: Option<&str>, co
     ledger.transition(&run, state, reason).unwrap();
 }
 
+fn awaiting_recovery(ledger: &mut Ledger, task: &str) -> String {
+    let run = ingest(ledger, task);
+    ledger.transition(&run, "running", None).unwrap();
+    ledger
+        .transition(&run, "awaiting_recovery", Some("probe: unknown"))
+        .unwrap();
+    run
+}
+
 #[test]
 fn status_view_covers_operator_truth_fixtures() {
     let dir = tempfile::tempdir().unwrap();
@@ -82,6 +101,18 @@ fn status_view_covers_operator_truth_fixtures() {
         .unwrap();
     ledger.park_task("security", "cost cap").unwrap();
     ingest(&mut ledger, "security");
+    let stale_recovery = awaiting_recovery(&mut ledger, "recovery");
+    awaiting_recovery(&mut ledger, "fresh-recovery");
+    let stale_at = (OffsetDateTime::now_utc() - Duration::hours(2))
+        .format(&Rfc3339)
+        .unwrap();
+    rusqlite::Connection::open(plane.db_path())
+        .unwrap()
+        .execute(
+            "UPDATE runs SET updated_at = ?1 WHERE id = ?2",
+            params![stale_at, stale_recovery],
+        )
+        .unwrap();
 
     let doc = health::status_view(&plane, &ledger).unwrap();
     let tasks = doc["tasks"].as_array().unwrap();
@@ -104,4 +135,12 @@ fn status_view_covers_operator_truth_fixtures() {
         by_task("product")["safe_next_actions"][0]["kind"],
         "replay_pre_execute_dlq"
     );
+    assert_eq!(
+        by_task("fresh-recovery")["safe_next_actions"][0]["kind"],
+        "resolve_after_side_effect_inspection"
+    );
+    let recovery_action = &by_task("recovery")["safe_next_actions"][0];
+    assert_eq!(recovery_action["kind"], "escalate_stale_recovery");
+    assert!(recovery_action["age_seconds"].as_i64().unwrap() >= 3600);
+    assert_eq!(recovery_action["stale_after_seconds"], 3600);
 }

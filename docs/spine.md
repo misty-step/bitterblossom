@@ -350,6 +350,11 @@ recovery semantic:
   `awaiting_recovery` and releases the host lease, and `unknown: ...` moves to
   `awaiting_recovery` while retaining the lease because the plane cannot prove
   the agent process is gone. Missing or malformed pidfiles are unknown.
+- `bb status --json` is the stale recovery visibility surface: after one hour,
+  an `awaiting_recovery` run's safe action changes from
+  `resolve_after_side_effect_inspection` to `escalate_stale_recovery`, with
+  `age_seconds` and `stale_after_seconds` included. The plane does not resolve
+  or replay side-effecting work automatically.
 - `bb dlq replay <id> [--json]` mints a **new** run linked via
   `parent_run_id`; JSON mode returns the replayed run + attempts + events.
 

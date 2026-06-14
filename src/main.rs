@@ -85,9 +85,7 @@ enum RunsCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Flat JSONL dump (run + attempts per line) for downstream analysis.
     Export,
-    /// Cancel a run that has not dispatched yet (state `pending`).
     Cancel {
         run_id: String,
         #[arg(long, default_value = "canceled by operator")]
@@ -109,7 +107,6 @@ enum DlqCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Mint a new run linked to the dead-lettered one via parent_run_id.
     Replay {
         id: i64,
         #[arg(long)]
@@ -119,7 +116,6 @@ enum DlqCommand {
 
 #[derive(Subcommand)]
 enum SubmitCommand {
-    /// Open a submission (round N+1 after `blocked`; fresh chain otherwise).
     Open {
         #[arg(long)]
         change: String,
@@ -130,7 +126,6 @@ enum SubmitCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Reject a finding; blocking rejections need an arbiter sustain verdict.
     Reject {
         #[arg(long)]
         change: String,
@@ -139,7 +134,6 @@ enum SubmitCommand {
         #[arg(long)]
         reason: String,
     },
-    /// Abandon the open submission for a change.
     Abandon {
         #[arg(long)]
         change: String,

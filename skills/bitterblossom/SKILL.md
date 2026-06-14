@@ -109,6 +109,9 @@ another cwd.
 
 - `bb recover` classifies inherited `running` rows after a host restart.
 - `bb runs resolve` is for `awaiting_recovery` after side-effect inspection.
+- `bb status --json` marks `awaiting_recovery` older than one hour as
+  `escalate_stale_recovery`, with age fields, but the operator still resolves
+  the run only after inspecting side effects.
 - `bb dlq replay --json` mints a new run linked to a pre-execute dead letter
   and returns the replayed run bundle.
 - There may be no "acknowledge this intentional failed probe" command yet;

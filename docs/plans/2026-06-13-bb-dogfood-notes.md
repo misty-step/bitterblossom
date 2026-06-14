@@ -1183,3 +1183,70 @@ Storm UX notes:
 - Mitigate: 051/054 should consider an operator-safe host probe or production
   smoke command that reports task host reachability without dispatching a
   workload.
+
+## Update 2026-06-14: 051 stale recovery status visibility
+
+Backlog item: `051-deterministic-recovery-and-probe-contract`, stale
+`awaiting_recovery` visibility slice.
+
+Preflight:
+
+- `git status --short --branch --untracked-files=all`: clean
+  `## master...origin/master`.
+- `flyctl orgs list`: `Misty Step` / `misty-step` available.
+- `sprite org list`: selected org `misty-step`; `sprite use -o misty-step
+  lane-1` confirmed the repo context; `sprite exec -- whoami` returned
+  `sprite`.
+- `./target/debug/bb --config plane check`: green.
+- `./target/debug/bb --config plane status --json`: `cost_today_usd:
+  0.8296652888`, `open_dlq: 5`, `parked_tasks: 1`, no active queues.
+- `security` remains parked for `run cost $0.2539 > max_cost_per_run_usd
+  $0.25`.
+
+Work:
+
+- Added a status fixture proving fresh recovery rows keep
+  `resolve_after_side_effect_inspection`, while recovery rows older than one
+  hour emit `escalate_stale_recovery`.
+- Added `age_seconds` and `stale_after_seconds` to the recovery safe action so
+  agents do not need to infer staleness from timestamps.
+- Kept stale recovery as visibility only. The plane still does not replay or
+  resolve side-effecting work without operator inspection.
+- Updated `docs/spine.md`, `skills/bitterblossom/`, the operator recipe, and
+  backlog 051 with the status policy.
+
+Verification so far:
+
+- Red proof: `cargo test --test status_view
+  status_view_covers_operator_truth_fixtures -- --nocapture` failed because the
+  stale row still reported `resolve_after_side_effect_inspection`.
+- Focused green: the same test now passes.
+- Focused status checks:
+  - `cargo test --test status_view -- --nocapture`
+  - `cargo test --test status_cli -- --nocapture`
+- Full gate: `./scripts/verify.sh` passed with `src LOC: 5000`.
+- Fresh-context critic:
+  - `codex exec --sandbox read-only --ephemeral` failed before producing a
+    verdict because the local Codex CLI hit a usage limit after emitting plugin
+    warnings.
+  - `pi --provider openrouter --model deepseek/deepseek-v4-flash --thinking
+    off --no-tools --no-context-files --no-skills --no-extensions --no-session
+    -p` returned `BLOCKING: <none>; SERIOUS-NONBLOCKING: <none>; VERDICT:
+    pass`.
+
+UX notes:
+
+- Friction: the 5k Rust budget is now tight enough that even a small status
+  affordance forced source trimming. This is useful pressure, but it means
+  recovery UX work must keep deleting or moving non-spine surface as it adds
+  operator affordances.
+- Friction: `bb runs list --json` remains too raw for agent triage during
+  preflight; `bb status --json` is the correct surface, but it still needs gate
+  joins and host reachability to avoid manual joins.
+- Friction: the Codex peer critic path is currently noisy and quota-sensitive;
+  `pi` produced the compact artifact-only verdict the workflow needed.
+- Delight: adding the policy to `bb status` reused the existing operator truth
+  surface instead of creating another recovery command.
+- Lean in: safe actions are becoming the right agent interface: action kind,
+  reason, command, and now age metadata give agents concrete next moves without
+  hiding judgment.

@@ -158,6 +158,11 @@ agent process is dead; inspect `bb runs show <run-id> --json` for the
 `boot_probe` event and leave the host lease in place until side effects are
 understood. Missing or malformed pidfiles are unknown, not dead.
 
+`bb status --json` is the ongoing recovery queue. Fresh recovery rows suggest
+`resolve_after_side_effect_inspection`; after one hour the action becomes
+`escalate_stale_recovery` and includes `age_seconds` plus
+`stale_after_seconds`. Escalation is visibility, not automatic replay.
+
 ## Serve and Read APIs
 
 Loopback development:

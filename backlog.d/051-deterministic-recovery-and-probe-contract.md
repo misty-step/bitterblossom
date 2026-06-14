@@ -23,8 +23,10 @@ auditable operator states instead of indefinite ambiguity.
 
 1. Specify the probe-result state machine for local and sprite substrates.
 2. Add fixture tests for malformed and stale probe artifacts. (malformed local
-   and sprite pidfile coverage started 2026-06-14)
-3. Add stale `awaiting_recovery` visibility and escalation rules.
+   and sprite pidfile coverage started 2026-06-14; stale recovery visibility
+   covered in `bb status --json`)
+3. Add stale `awaiting_recovery` visibility and escalation rules. (started:
+   one-hour status escalation action)
 4. Update the skill/operator recipes for recovery decisions.
 
 ## Notes
@@ -58,3 +60,15 @@ Evidence:
   unknown, not dead.
 - Remaining 051 scope: stale-age policy/escalation, full probe state-machine
   spec, and any additional malformed/missing/stale fixture coverage.
+
+### 2026-06-14 stale recovery status slice
+
+- Added `bb status --json` stale recovery visibility: an `awaiting_recovery`
+  run keeps the normal `resolve_after_side_effect_inspection` action while
+  fresh, then becomes `escalate_stale_recovery` after one hour.
+- The action includes `age_seconds` and `stale_after_seconds` so agents can
+  tell fresh uncertainty from operator-stale uncertainty without parsing prose.
+- This is deliberately not automatic replay or resolution; side-effecting runs
+  still require operator inspection and `bb runs resolve`.
+- Remaining 051 scope: full probe state-machine spec plus broader
+  missing/probe-command-failure/stale fixture coverage.
