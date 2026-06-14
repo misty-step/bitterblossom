@@ -75,6 +75,8 @@ exact recipes, all repeatable:
   (Worked example: 2026-06-10 drill — 5 events, 3 ran, 2 blocked.)
 - **Read API / HTML QA**: `bb serve` + curl every `/api/*` route and `/`
   with and without `BB_API_TOKEN`.
+  Repeatable local control-loop drill:
+  `./scripts/control-loop-drill.sh`.
 - **Submission-loop drill** (dev plane + stub harnesses, minutes,
   repeatable): seeded-flaw change → `bb submit open` → storm members via
   `bb run <kind> --idempotency-key "storm:<sub>:<kind>" --payload

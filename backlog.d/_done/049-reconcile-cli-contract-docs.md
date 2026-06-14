@@ -1,6 +1,6 @@
 # Reconcile the spine CLI contract with live bb help
 
-Priority: P2 · Status: ready · Estimate: S
+Priority: P2 · Status: done · Estimate: S
 
 ## Goal
 
@@ -34,3 +34,9 @@ This is now part of the P0 contract work in
 sweep in `backlog.d/057-current-contract-docs-and-noise-sweep.md`. Fixing the
 two stale snippets is necessary but not sufficient; the durable outcome is a
 cheap parity gate across live help, docs, and the exported skill recipes.
+
+## Closure 2026-06-14
+
+Closed through `050-event-plane-hardening-before-growth`: live-help parity tests
+now cover `bb run --payload`, `bb runs export` without `--since`, and selected
+current docs/skill recipes.

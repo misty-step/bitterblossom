@@ -682,7 +682,7 @@ Work:
 - Updated `docs/spine.md`, the Bitterblossom skill, operator recipes, and
   backlog `059`.
 
-Verification so far:
+Local verification:
 
 - Red test first: `cargo test --test submission
   required_member_terminal_failure_escalates_with_one_notify -- --nocapture`
@@ -973,3 +973,65 @@ More UX notes:
 - Delight: the gate output gave the exact safe next command and safe next
   reason, so I did not have to infer whether DLQ replay would count for the
   canonical member. It would not.
+
+## Update 2026-06-14: 050 live control-loop drill
+
+Backlog item: `050-event-plane-hardening-before-growth`, child 6 and final
+verification oracle.
+
+Work:
+
+- Added `scripts/control-loop-drill.sh`, a repeatable live drill for the
+  control-loop evidence that should not live only in prose memory.
+- The script creates a temp dev plane with a local command harness, starts
+  `bb serve`, curls open-loopback read API/HTML, fires five signed webhook
+  deliveries against a `max_runs_per_day = 1` task, asserts containment, then
+  restarts with `BB_API_TOKEN` and verifies bearer-only read access.
+- Updated `CLAUDE.md` verification guidance and backlog `050` with the new
+  drill command and evidence.
+
+Verification so far:
+
+- `./scripts/control-loop-drill.sh` passed:
+  open-loopback `/health`, `/api/status`, `/api/tasks`, `/api/runs`,
+  `/api/dlq`, `/api/submissions`, and `/` returned `200`.
+- The webhook storm accepted five signed deliveries with `202`, then settled
+  to one `success` and four `blocked_budget` runs; the task parked with
+  `1 runs today >= max_runs_per_day 1` and the notify stub recorded four
+  `budget_blocked` notifications.
+- With `BB_API_TOKEN`, `/health` remained `200` unauthenticated;
+  no-token `/api/status`, `?token=`, and bad bearer returned `401`; bearer
+  `/api/status`, `/api/tasks`, `/api/runs`, `/api/dlq`, `/api/submissions`,
+  and `/` returned `200`.
+- `./scripts/verify.sh` passed with `src LOC: 4999`.
+- Fresh-context critic: a read-only Claude CLI lane produced no output after
+  roughly 90 seconds and was stopped; `pi --no-tools --no-context-files
+  --no-skills --no-extensions --no-session -p` reviewed the artifact-only diff
+  and returned `BLOCKING: none`, `SERIOUS-NONBLOCKING: none`, `VERDICT: pass`.
+
+Friction:
+
+- This was exactly the kind of evidence that belonged in a script. Re-running
+  the live loopback and storm checks from notes would otherwise require
+  rebuilding temp configs, HMAC signing, curl assertions, and JSON state checks
+  by hand.
+- The storm exposes current behavior honestly: once a task is parked, later
+  pending rows also emit `budget_blocked` notifications with `task_parked`
+  semantics. Useful, but the notification event name is broad.
+- Peer CLI critic tools were uneven: Claude stalled without output, and an
+  initial `pi` critic returned a pass verdict but then crashed in the
+  ops-watchdog extension with a stale extension context. Disabling extensions
+  made `pi` reliable for this artifact-only review.
+
+Delight:
+
+- A command-harness temp plane lets the full `serve -> webhook -> ledger ->
+  dispatch -> notify -> read API` loop run in a few seconds with no model
+  credentials and no permanent ledger mutation.
+- This gives future dogfood runs one crisp command for the control-loop proof.
+
+Backlog cleanup:
+
+- `047`, `048`, `049`, and `050` moved to `_done/`: 047 and 049 were direct
+  children of 050, 048 was delivered by 052, and 050 now has its final live
+  verification evidence.

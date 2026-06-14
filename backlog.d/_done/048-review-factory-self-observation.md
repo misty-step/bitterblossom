@@ -1,6 +1,6 @@
 # Make the review factory explain its own failures before external observability
 
-Priority: P1 · Status: pending · Estimate: L
+Priority: P1 · Status: done · Estimate: L
 
 ## Goal
 
@@ -37,3 +37,9 @@ This becomes the seed for
 `backlog.d/052-ledger-native-operator-truth-surface.md`. The review factory is
 the first evidence source, but the resulting surface must stay generic enough
 for any workload, the Bitterblossom skill, and future observer tasks.
+
+## Closure 2026-06-14
+
+Closed through `052-ledger-native-operator-truth-surface`: `bb status --json`
+and `/api/status` now cluster task health, recent run state, costs, parked
+state, DLQ status, and safe next actions with fixture coverage.

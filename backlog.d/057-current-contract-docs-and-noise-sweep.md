@@ -27,18 +27,21 @@ or superseded.
 1. Build the stale-doc inventory.
 2. Mark old ADRs as superseded by ADR 005 and the spine contract.
 3. Archive or remove duplicate terminal walkthrough transcripts.
-4. Reconcile live CLI snippets after 050.
-5. Add a cheap stale-command regression check if 050 has not already covered
-   it.
+4. Audit remaining live CLI snippets after 050's parity checks.
+5. Extend the stale-command regression check only for gaps not already covered
+   by 050.
 
 ## Notes
 
 Why: docs and simplification lanes found stale current-looking guidance. This
-is not the P0 because 050 must first fix the live contract it will document.
+is not the P0 because 050 first fixed the live command examples and exported
+skill recipes it depends on.
 
 Evidence:
 
-- `docs/spine.md:355-360` has stale CLI snippets.
+- 050 added a live-help parity gate for the known `--payload` and
+  `runs export` examples; this sweep should look for remaining current-looking
+  stale material outside that covered surface.
 - `docs/walkthroughs/` contains paired markdown and `*-terminal.txt`
   transcripts.
 - Some older ADRs still describe pre-v3 harness/control-plane assumptions at

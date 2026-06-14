@@ -1,6 +1,6 @@
 # Prove event-plane hardening before growing reflex workloads
 
-Priority: P0 | Status: ready | Estimate: XL
+Priority: P0 | Status: done | Estimate: XL
 
 ## Goal
 
@@ -23,7 +23,7 @@ behavior.
 - [x] A minimal generic health/read surface clusters recent runs by task,
       state, reason, cost, duration, parked state, and DLQ status, with safe
       operator actions.
-- [ ] Verification includes `./scripts/verify.sh` plus live loopback API/HTML
+- [x] Verification includes `./scripts/verify.sh` plus live loopback API/HTML
       QA with and without `BB_API_TOKEN`.
 
 ## Children
@@ -37,7 +37,7 @@ behavior.
    2026-06-14)
 5. Add the first ledger-native health report needed by operators and agents.
    (done 2026-06-13; see backlog 052)
-6. Run a containment/storm drill against the dev plane.
+6. Run a containment/storm drill against the dev plane. (done 2026-06-14)
 
 ## Notes
 
@@ -58,8 +58,8 @@ Evidence:
 - `docs/spine.md:359` still documents `runs export [--since ...]`; live
   `bb runs export --help` has no `--since`.
 
-Disposition: this epic absorbs the core of 047, 048, and 049 without deleting
-those evidence packets.
+Disposition: this epic absorbs the core of 047, 048, and 049; those evidence
+packets are archived with closure notes.
 
 ## Delivery Notes
 
@@ -118,3 +118,17 @@ those evidence packets.
   before any waiter finished.
 - Focused verification: `cargo test --test budgets -- --nocapture` and
   `cargo test --test submission -- --nocapture` pass.
+
+### 2026-06-14 live control-loop drill
+
+- Added `scripts/control-loop-drill.sh`, a repeatable temp-plane drill that
+  starts `bb serve`, exercises open-loopback read API/HTML, fires five signed
+  webhook deliveries against a `max_runs_per_day = 1` task, and restarts the
+  server with `BB_API_TOKEN` to verify bearer-only read access.
+- Live evidence: `./scripts/control-loop-drill.sh` passed with one `success`
+  run, four `blocked_budget` rows, a parked task reason
+  `1 runs today >= max_runs_per_day 1`, four `budget_blocked` notifications,
+  no-token `/api/status` returning `401`, query-token `/api/status` returning
+  `401`, bad bearer returning `401`, and bearer `/api/status`, `/api/tasks`,
+  `/api/runs`, `/api/dlq`, `/api/submissions`, and `/` returning `200`.
+  Unauthenticated `/health` returned `200`.

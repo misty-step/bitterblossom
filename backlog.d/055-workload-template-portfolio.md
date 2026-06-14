@@ -40,4 +40,6 @@ Evidence:
 - `plane/` has real review/verdict tasks but is production-owned, not a clean
   starter template.
 
-Depends on 050; do not increase reflex volume before hardening.
+050 is complete. Before increasing real reflex volume, pair these templates
+with the recovery and operations evidence from 051/054 rather than treating
+template creation alone as production readiness.

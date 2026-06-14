@@ -1,6 +1,6 @@
 # Harden the live plane's control-loop safety before adding more reflex workloads
 
-Priority: P0 · Status: ready · Estimate: L
+Priority: P0 · Status: done · Estimate: L
 
 ## Goal
 
@@ -48,3 +48,10 @@ This remains the first concrete child of
 the whole strategy: the mega-groom widened it into a hardening-before-growth
 epic that also includes CLI/API contract drift, the first ledger-native health
 surface, and live API/HTML QA.
+
+## Closure 2026-06-14
+
+Closed through `050-event-plane-hardening-before-growth`: bearer-only read auth,
+panic-safe in-flight cleanup, synchronous notification accounting, and the
+repeatable `./scripts/control-loop-drill.sh` live API/HTML plus webhook storm
+drill all landed there.
