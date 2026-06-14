@@ -862,3 +862,22 @@ Delight:
   memory of what `bb` used to accept.
 - The critic's untracked-file note was exactly the kind of mechanical closeout
   check that keeps a dogfood slice honest.
+
+Submission storm:
+
+- Commit: `87c959e41e2dbae2f2619474a1e98d5bff0b7eaf`
+  (`test: lock bb cli skill parity`), pushed to `master`.
+- Submission: `./target/debug/bb --config plane submit open --change
+  cli-skill-parity-87c959e --rev
+  87c959e41e2dbae2f2619474a1e98d5bff0b7eaf --context ... --json` created
+  `d03da5f2c8d3`.
+- Available members passed on Misty Step Sprites:
+  `verify` run `8635f92d89e2`, duration 51.416s;
+  `product` run `794f4610d32d`, cost `$0.03753575`, duration 28.814s;
+  `correctness` run `e3b346a9f5cd`, cost `$0.041094914`, duration 117.859s;
+  `simplification` run `bdb2b17139cf`, cost `$0.0102486382`, duration
+  166.469s.
+- `bb gate --submission d03da5f2c8d3 --json` returned `decision: pending`:
+  all unparked members were `verdict:pass`, while `security` remained
+  `not_started` because it is still parked for
+  `run cost $0.2539 > max_cost_per_run_usd $0.25`.
