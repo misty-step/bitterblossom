@@ -782,3 +782,35 @@ Delight:
   process, two real pending ledger rows, and no mocked dispatcher.
 - The fix preserves the useful panic signal while removing the operational
   starvation hazard.
+
+Submission storm:
+
+- Commit: `eecb169b108d1edbd5a252cd589013168252b472`
+  (`fix: release in-flight task on worker panic`), pushed to `master`.
+- Preflight: `flyctl orgs list` showed Misty Step, `sprite org list` selected
+  `misty-step`, `sprite use -o misty-step lane-1` succeeded, and
+  `sprite exec -- whoami` returned `sprite`.
+- Submission: `./target/debug/bb --config plane submit open --change
+  serve-panic-cleanup-eecb169 --rev
+  eecb169b108d1edbd5a252cd589013168252b472 --context ... --json` created
+  `b1286039a7de`.
+- Available members passed on Misty Step Sprites:
+  `verify` run `6320e959d4db`, duration 52.559s;
+  `correctness` run `eebac44e4518`, cost `$0.115813849`, duration 288.139s;
+  `simplification` run `151a5f65de3f`, cost `$0.0236074608`, duration
+  204.706s; `product` run `eb95dc0ac445`, cost `$0.0268762`, duration
+  25.618s.
+- `bb gate --submission b1286039a7de --json` returned `decision: pending`:
+  all unparked members were `verdict:pass`, while `security` remained
+  `not_started` because it is still parked for
+  `run cost $0.2539 > max_cost_per_run_usd $0.25`.
+
+More UX notes:
+
+- Friction: `bb run --json` is perfect for scripts but gives the supervising
+  operator no heartbeat during multi-minute verdict runs; I had to poll
+  `bb status --json` from another shell to distinguish "quiet by design" from
+  "stuck process".
+- Delight: the ledger made that workaround reliable. Status showed the exact
+  running task and run id (`eebac44e4518`, then `151a5f65de3f`) without
+  disturbing the blocking `bb run --json` process.
