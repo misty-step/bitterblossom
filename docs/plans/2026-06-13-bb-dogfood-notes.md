@@ -1250,3 +1250,43 @@ UX notes:
 - Lean in: safe actions are becoming the right agent interface: action kind,
   reason, command, and now age metadata give agents concrete next moves without
   hiding judgment.
+
+Submission storm:
+
+- Commit: `953587afe49b880b6c1ee28ea0b90df7afcd7609`
+  (`feat: surface stale recovery in status`).
+- Host probes before dispatch:
+  - `lane-1`: `sprite`.
+  - `bb-polisher-2`: `sprite`.
+  - `bb-polisher-3`: eventually returned `sprite` after about 54 seconds.
+- `./target/debug/bb --config plane submit open --change
+  stale-recovery-953587a --rev
+  953587afe49b880b6c1ee28ea0b90df7afcd7609 --context ... --json` created
+  submission `3a88dabcc30a`.
+- Available members:
+  - `verify`: pass, run `321c5ee57c87`, duration `51581ms`.
+  - `correctness`: pass, run `eb62587e30bf`, cost `$0.099956243`,
+    duration `259850ms`.
+  - `product`: pass, run `54f4006b4f69`, cost `$0.0295518`, duration
+    `28076ms`.
+  - `simplification`: pass, run `616ad2dfe296`, cost `$0.0214522481`,
+    duration `171038ms`.
+- `security` was not run because it remains parked for
+  `run cost $0.2539 > max_cost_per_run_usd $0.25`.
+- `./target/debug/bb --config plane gate --submission 3a88dabcc30a --json`
+  returned `decision: pending`; all unparked members were `verdict:pass`,
+  `security` was `not_started`, and there were no blocking, advisory, or
+  rejected findings.
+
+Storm UX notes:
+
+- Friction: `bb-polisher-3` was eventually healthy but slow to probe; the
+  first-class status surface still cannot tell me host reachability or probe
+  latency before dispatch.
+- Friction: the gate still reports `security` as `not_started` without joining
+  the parked reason, so a separate `bb status --json` read remains necessary.
+- Delight: staggering `product` and `simplification` on `bb-polisher-3` avoided
+  the host lease DLQ seen in prior storms while still collecting both verdicts.
+- Lean in: `bb` receipts made this storm easy to audit: run ids, costs,
+  durations, token counts, artifact dirs, and the final gate report were all
+  ledger-native.
