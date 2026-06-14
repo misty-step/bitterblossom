@@ -814,3 +814,51 @@ More UX notes:
 - Delight: the ledger made that workaround reliable. Status showed the exact
   running task and run id (`eebac44e4518`, then `151a5f65de3f`) without
   disturbing the blocking `bb run --json` process.
+
+## Update 2026-06-14: 050 CLI/docs/skill parity
+
+Backlog item: `050-event-plane-hardening-before-growth`, child 4.
+
+Work:
+
+- Added `tests/cli_contract_docs.rs` to execute live `bb` help for
+  `run`, `runs export`, and `gate`, then scan current user-facing docs and
+  skills for stale or missing agent-facing examples.
+- Updated `skills/bitterblossom/SKILL.md` and
+  `skills/bitterblossom/references/operator-recipes.md` so the portable skill
+  names `bb --config <plane> runs export` and keeps submission placeholders
+  consistent.
+- Updated backlog `050` to mark the CLI/docs/skill parity oracle complete.
+
+Verification so far:
+
+- Red test first: `cargo test --test cli_contract_docs -- --nocapture` failed
+  because the portable skill did not document `bb --config <plane> runs export`.
+- Focused green: the same test now passes.
+- Full local gate: `./scripts/verify.sh` passed with `src LOC: 5000`.
+- Live help read before edits: `bb run --help` exposed `--payload <PAYLOAD>`
+  and `--json`; `bb runs export --help` exposed no `--since`; `bb gate --help`
+  exposed `--submission`, `--change`, and `--json`.
+- Fresh critic: a headless Codex artifact-only review returned
+  `BLOCKING: none` and `VERDICT: pass`; it also caught that the new test file
+  was still untracked before staging.
+
+Friction:
+
+- The current docs were already fixed, but the skill was missing the export
+  seam entirely. A stale-command grep would not have caught an omitted command;
+  the parity test had to assert required positive examples too.
+- Backlog and archival docs intentionally contain stale strings as evidence, so
+  the regression has to scope itself to current user-facing contracts instead
+  of sweeping the whole repo.
+- The headless Codex critic worked this time, but emitted noisy plugin/token
+  warnings before the final verdict.
+
+Delight:
+
+- This is a compact, cheap gate for the agent interface. It caught a real skill
+  omission without spending model or Sprite time.
+- The live help output is now the oracle; skills and docs no longer rely on
+  memory of what `bb` used to accept.
+- The critic's untracked-file note was exactly the kind of mechanical closeout
+  check that keeps a dogfood slice honest.

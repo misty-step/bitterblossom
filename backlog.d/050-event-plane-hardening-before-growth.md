@@ -18,7 +18,7 @@ behavior.
       worker panic cannot strand the task and the next pending run drains.
 - [ ] Notification execution is bounded or synchronously accounted; a storm
       test proves the process cannot spawn unbounded `curl` waiters.
-- [ ] CLI/docs/skill parity tests cover `bb run --payload`, no stale `--var`,
+- [x] CLI/docs/skill parity tests cover `bb run --payload`, no stale `--var`,
       `bb runs export` without `--since`, and selected `--json` examples.
 - [x] A minimal generic health/read surface clusters recent runs by task,
       state, reason, cost, duration, parked state, and DLQ status, with safe
@@ -33,7 +33,8 @@ behavior.
 2. Add panic-safe in-flight cleanup around run workers. (done 2026-06-14)
 3. Bound notification dispatch and record failed/saturated notification
    attempts.
-4. Add help/doc/skill parity tests for the stale command examples.
+4. Add help/doc/skill parity tests for the stale command examples. (done
+   2026-06-14)
 5. Add the first ledger-native health report needed by operators and agents.
    (done 2026-06-13; see backlog 052)
 6. Run a containment/storm drill against the dev plane.
@@ -91,3 +92,15 @@ those evidence packets.
 - Verification: `cargo test --test serve
   dispatch_worker_panic_does_not_strand_task_in_flight -- --nocapture` and
   `./scripts/verify.sh` pass.
+
+### 2026-06-14 CLI/docs/skill parity
+
+- Added `tests/cli_contract_docs.rs`, which executes live `bb run --help`,
+  `bb runs export --help`, and `bb gate --help`, then checks current
+  user-facing docs and skills for the matching examples.
+- Updated `skills/bitterblossom/` so consuming agents see `runs export` as the
+  no-`--since` telemetry export seam and use the same `<submission>` placeholder
+  across submission examples.
+- Red proof: `cargo test --test cli_contract_docs -- --nocapture` failed on
+  missing `bb --config <plane> runs export` in the portable skill.
+- Verification: `cargo test --test cli_contract_docs -- --nocapture` passes.

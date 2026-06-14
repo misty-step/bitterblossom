@@ -57,6 +57,7 @@ Read the output for:
 | Task inventory, parked state, budgets | `bb --config <plane> task list --json` |
 | Trigger manual work | `bb --config <plane> run <task> --payload '<json>' --json` |
 | Inspect ledger | `bb --config <plane> runs list --json`; `bb --config <plane> runs show <id> --json` |
+| Export run telemetry | `bb --config <plane> runs export` |
 | Handle pre-execute failures | `bb --config <plane> dlq list --json`; `bb --config <plane> dlq replay <id> --json` |
 | Park or unpark workload dispatch | `bb --config <plane> task park|unpark <task>` |
 | Classify inherited running rows after host restart | `bb --config <plane> recover` |
@@ -90,8 +91,8 @@ Shape:
 
 ```bash
 bb --config <plane> submit open --change <change> --rev <rev> --json
-bb --config <plane> run correctness --payload '{"submission":"<id>"}' --json
-bb --config <plane> gate --submission <id> --json
+bb --config <plane> run correctness --payload '{"submission":"<submission>"}' --json
+bb --config <plane> gate --submission <submission> --json
 ```
 
 If a verdict task fails with `payload has no 'submission' field`, the plane is

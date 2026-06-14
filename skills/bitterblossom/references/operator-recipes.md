@@ -58,6 +58,17 @@ immediately and emits heartbeat lines on stderr while the run is pending or
 running. Keep `--json` for agents and scripts; it stays quiet until the final
 `run`/`attempts`/`events` bundle is ready.
 
+## Ledger Export
+
+Export run and attempt telemetry as JSONL for downstream analysis:
+
+```bash
+bb --config <plane> runs export
+```
+
+`runs export` currently takes only `--config`; use `runs list --json` and
+`runs show --json` for filtered interactive inspection.
+
 ## Review Workload
 
 For a real review comment:
