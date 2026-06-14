@@ -10,6 +10,8 @@ use bitterblossom::dispatch;
 use bitterblossom::ledger::{IngressRequest, Ledger};
 use bitterblossom::spec::Plane;
 
+static NOTIFY_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 const CLAUDE_STUB: &str = r#"#!/bin/sh
 cat > /dev/null
 echo '{"type":"result","result":"ok","total_cost_usd":0.0123,"num_turns":2,"usage":{"input_tokens":50,"output_tokens":20}}'
@@ -20,6 +22,12 @@ echo '{"type":"result","result":"ok","total_cost_usd":0.0123,"num_turns":2,"usag
 const NOTIFY_STUB: &str = r#"#!/bin/sh
 cat >> "$BB_NOTIFY_LOG"
 echo >> "$BB_NOTIFY_LOG"
+"#;
+
+const SLOW_NOTIFY_STUB: &str = r#"#!/bin/sh
+cat > /dev/null
+sleep 0.1
+echo done >> "$BB_NOTIFY_LOG"
 "#;
 
 fn write_executable(path: &Path, content: &str) {
@@ -78,15 +86,15 @@ fn run_task(plane: &Plane, ledger: &mut Ledger) -> bitterblossom::ledger::RunRow
 fn with_notify_stub<T>(root: &Path, f: impl FnOnce() -> T) -> (T, String) {
     // Env vars are process-global; tests touching BB_NOTIFY_BIN must not
     // overlap.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = NOTIFY_ENV_LOCK.lock().unwrap();
     let notify_stub = root.join("notify-stub.sh");
     write_executable(&notify_stub, NOTIFY_STUB);
     let log = root.join("notify.log");
     std::env::set_var("BB_NOTIFY_BIN", &notify_stub);
     std::env::set_var("BB_NOTIFY_LOG", &log);
     let out = f();
-    // The notify child runs async; poll for its write.
+    // Notifications are synchronous, so the log should be present when the
+    // triggering work returns. Keep a short poll for filesystem latency.
     let mut text = String::new();
     for _ in 0..40 {
         text = fs::read_to_string(&log).unwrap_or_default();
@@ -96,7 +104,37 @@ fn with_notify_stub<T>(root: &Path, f: impl FnOnce() -> T) -> (T, String) {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
     std::env::remove_var("BB_NOTIFY_BIN");
+    std::env::remove_var("BB_NOTIFY_LOG");
     (out, text)
+}
+
+#[test]
+fn notification_storm_is_synchronously_accounted() {
+    let _guard = NOTIFY_ENV_LOCK.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let plane = setup(
+        dir.path(),
+        "[notify]\nwebhook_url = \"http://example.invalid/hook\"\n",
+        "",
+    );
+    let notify_stub = dir.path().join("slow-notify-stub.sh");
+    write_executable(&notify_stub, SLOW_NOTIFY_STUB);
+    let log = dir.path().join("notify-storm.log");
+    std::env::set_var("BB_NOTIFY_BIN", &notify_stub);
+    std::env::set_var("BB_NOTIFY_LOG", &log);
+
+    for i in 0..8 {
+        bitterblossom::notify::notify(&plane, "storm_probe", &serde_json::json!({ "sequence": i }));
+    }
+
+    let finished = fs::read_to_string(&log).unwrap_or_default();
+    std::env::remove_var("BB_NOTIFY_BIN");
+    std::env::remove_var("BB_NOTIFY_LOG");
+    assert_eq!(
+        finished.lines().count(),
+        8,
+        "notify() returned before all curl waiters were accounted"
+    );
 }
 
 #[test]

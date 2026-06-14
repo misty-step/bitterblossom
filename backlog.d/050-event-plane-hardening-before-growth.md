@@ -16,7 +16,7 @@ behavior.
       success.
 - [x] Dispatch in-flight bookkeeping is panic-safe; a regression test proves a
       worker panic cannot strand the task and the next pending run drains.
-- [ ] Notification execution is bounded or synchronously accounted; a storm
+- [x] Notification execution is bounded or synchronously accounted; a storm
       test proves the process cannot spawn unbounded `curl` waiters.
 - [x] CLI/docs/skill parity tests cover `bb run --payload`, no stale `--var`,
       `bb runs export` without `--since`, and selected `--json` examples.
@@ -31,8 +31,8 @@ behavior.
 1. Remove query-token read auth and update docs/skill recipes. (done
    2026-06-13)
 2. Add panic-safe in-flight cleanup around run workers. (done 2026-06-14)
-3. Bound notification dispatch and record failed/saturated notification
-   attempts.
+3. Bound notification dispatch and synchronously account failed attempts.
+   (done 2026-06-14)
 4. Add help/doc/skill parity tests for the stale command examples. (done
    2026-06-14)
 5. Add the first ledger-native health report needed by operators and agents.
@@ -104,3 +104,17 @@ those evidence packets.
 - Red proof: `cargo test --test cli_contract_docs -- --nocapture` failed on
   missing `bb --config <plane> runs export` in the portable skill.
 - Verification: `cargo test --test cli_contract_docs -- --nocapture` passes.
+
+### 2026-06-14 bounded notification accounting
+
+- Removed the detached waiter thread from `notify::notify`; notifications still
+  shell out to `curl -m 10`, but the caller now waits for the child and logs
+  non-zero or wait failures before returning.
+- Added `tests/budgets.rs` coverage that fires a burst through a slow fake
+  notification binary and proves all `curl` children are accounted before
+  `notify()` returns.
+- Red proof: `cargo test --test budgets notification_storm_is_synchronously_accounted -- --nocapture`
+  failed with `left: 0`, `right: 8` because the old implementation returned
+  before any waiter finished.
+- Focused verification: `cargo test --test budgets -- --nocapture` and
+  `cargo test --test submission -- --nocapture` pass.

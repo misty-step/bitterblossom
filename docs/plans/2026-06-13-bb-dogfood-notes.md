@@ -881,3 +881,51 @@ Submission storm:
   all unparked members were `verdict:pass`, while `security` remained
   `not_started` because it is still parked for
   `run cost $0.2539 > max_cost_per_run_usd $0.25`.
+
+## Update 2026-06-14: 050 bounded notification accounting
+
+Backlog item: `050-event-plane-hardening-before-growth`, child 3.
+
+Work:
+
+- Removed the detached waiter thread from `notify::notify`; notification
+  delivery still uses the dependency-free `curl -m 10` seam, but the caller now
+  waits for the child and logs non-zero or wait failures before returning.
+- Added `notification_storm_is_synchronously_accounted`, which uses a slow fake
+  `BB_NOTIFY_BIN` and asserts a burst cannot return while child processes are
+  still outstanding.
+- Updated backlog `050` to mark the notification accounting oracle complete.
+
+Verification so far:
+
+- Red test first: `cargo test --test budgets
+  notification_storm_is_synchronously_accounted -- --nocapture` failed with
+  `left: 0`, `right: 8`; no fake notify children had finished when `notify()`
+  returned.
+- Focused green: the same test now passes.
+- Affected suites: `cargo test --test budgets -- --nocapture` and
+  `cargo test --test submission -- --nocapture` pass.
+- Full local gate: `./scripts/verify.sh` passed with `src LOC: 4999`.
+
+Friction:
+
+- The existing `curl -m 10` already bounded child lifetime, so the bug was not
+  obvious from a casual read; the actual hazard was the unbounded detached
+  waiter thread per notification.
+- The backlog wording asked for failed or saturated notification attempts to be
+  recorded. A durable notification-attempt ledger would be a larger observability
+  feature; this slice stayed inside the existing `curl` seam and synchronously
+  logs failures instead.
+
+Delight:
+
+- `BB_NOTIFY_BIN` made the storm regression cheap and hermetic: no network, no
+  server process, no sleeps in production code.
+- The small fix reduces spine LOC instead of consuming more of the 5k budget.
+
+Residual:
+
+- Synchronous notification means a bad webhook can now block the caller for up
+  to the existing `curl -m 10` timeout per notification. That is intentionally
+  bounded, but a future operator setting for timeout/concurrency may be worth
+  shaping if storms become frequent.

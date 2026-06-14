@@ -31,19 +31,18 @@ pub fn notify(plane: &Plane, event: &str, detail: &serde_json::Value) {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn();
-    let event = event.to_string();
     match spawned {
         Ok(mut child) => {
             if let Some(mut stdin) = child.stdin.take() {
                 let _ = stdin.write_all(body.as_bytes());
             }
-            std::thread::spawn(move || {
-                if let Ok(status) = child.wait() {
-                    if !status.success() {
-                        eprintln!("notify: webhook POST failed (exit {status}) event={event}");
-                    }
+            match child.wait() {
+                Ok(status) if status.success() => {}
+                Ok(status) => {
+                    eprintln!("notify: webhook POST failed (exit {status}) event={event}")
                 }
-            });
+                Err(e) => eprintln!("notify: cannot wait for curl: {e} event={event}"),
+            }
         }
         Err(e) => eprintln!("notify: cannot spawn curl: {e}"),
     }
