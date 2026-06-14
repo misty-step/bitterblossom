@@ -1035,3 +1035,47 @@ Backlog cleanup:
 - `047`, `048`, `049`, and `050` moved to `_done/`: 047 and 049 were direct
   children of 050, 048 was delivered by 052, and 050 now has its final live
   verification evidence.
+
+Submission storm:
+
+- Commit: `8a144608a0a61fab08a781f4186ed37e242a88ec`
+  (`test: add live control-loop drill`).
+- Misty Step preflight stayed correct: `sprite org list` selected
+  `misty-step`, and `sprite exec -- whoami` plus explicit host probes for
+  `lane-1`, `bb-polisher-2`, and `bb-polisher-3` returned `sprite`.
+- `./target/debug/bb --config plane submit open --change
+  control-loop-drill-8a14460 --rev
+  8a144608a0a61fab08a781f4186ed37e242a88ec --context ... --json` created
+  submission `b339972dfea1`.
+- Available members:
+  - `verify`: pass, run `b907ea21b8ef`, duration `48671ms`.
+  - `correctness`: pass, run `8d639e8fdf39`, cost `$0.06311096`, duration
+    `300059ms`.
+  - `product`: pass, run `8bd946ed1214`, cost `$0.05243745`, duration
+    `43158ms`.
+  - `simplification`: advisory, run `b8c44e5f53cb`, cost `$0.0201310126`,
+    duration `190781ms`.
+- `security` was not run because the task remains parked with
+  `run cost $0.2539 > max_cost_per_run_usd $0.25`.
+- `./target/debug/bb --config plane gate --submission b339972dfea1 --json`
+  returned `decision: pending`, no blocking findings, two minor advisory
+  findings from simplification, and `security` as `not_started`.
+- Post-storm `bb status --json`: `cost_today_usd: 0.7120934888`,
+  `open_dlq: 5`, `parked_tasks: 1`, and no active pending/running queues.
+
+Storm UX notes:
+
+- Friction: `bb gate` still reports parked required work as `not_started`
+  without joining the task's parked reason. I had to read `bb status --json`
+  and `bb task list --json` to confirm the safe decision was to leave security
+  parked.
+- Friction: the simplification advisory claimed `webhook_url` was dead because
+  `BB_NOTIFY_BIN` was set, but `notify::notify` still requires `webhook_url`
+  to emit anything; this is a reviewer false positive that the gate preserved
+  as advisory rather than blocking.
+- Delight: probing each Sprite host before dispatch avoided repeating the
+  previous `bb-polisher-3` acquire DLQ, and staggering product/simplification
+  on the shared host produced a clean available-member storm.
+- Lean in: the gate's advisory structure is useful even when I reject an
+  advisory; fingerprinted minor findings are easy to discuss without
+  conflating them with blocking correctness.
