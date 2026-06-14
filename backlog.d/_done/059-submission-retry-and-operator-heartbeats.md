@@ -1,6 +1,6 @@
 # Make submission retry and long-run feedback operator-grade
 
-Priority: P1 | Status: ready | Estimate: M
+Priority: P1 | Status: done | Estimate: M
 
 ## Goal
 

@@ -708,3 +708,28 @@ Delight:
 - The fix was tiny because the gate evaluator already has the canonical
   `Plane`; the product lesson from the previous storm could be folded back into
   the exact JSON surface that caused the friction.
+
+Submission storm:
+
+- Change: `ed14c9b6b343d7973e2d52431046ce171b50593b`
+  (`fix: include plane config in gate recovery`).
+- Submission: `./target/debug/bb --config plane submit open --change
+  gate-config-safe-command-ed14c9b --rev
+  ed14c9b6b343d7973e2d52431046ce171b50593b --context ... --json`
+  created `14418aa38938`.
+- Available members passed on Misty Step Sprites:
+  `verify` run `9668dd6d2256`, duration 48.216s;
+  `correctness` run `ef5d73e24bff`, cost `$0.096619474`, duration
+  219.380s; `simplification` run `b7de92bace1b`, cost `$0.0179772326`,
+  duration 224.407s; `product` run `d72ecd1c8963`, cost `$0.0432494`,
+  duration 29.878s.
+- `bb gate --submission 14418aa38938 --json` returned `decision: pending`:
+  all unparked members were `verdict:pass`, while `security` remained
+  `not_started` because it is still parked.
+
+Backlog implications:
+
+- `backlog.d/059-submission-retry-and-operator-heartbeats.md` is complete and
+  moved to `backlog.d/_done/`.
+- Backlog 053 remains the right place to upgrade action-shaped JSON from a
+  human command string to a versioned structured argv/schema contract.
