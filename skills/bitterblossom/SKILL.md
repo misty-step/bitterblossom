@@ -100,7 +100,9 @@ correct; the invocation was wrong.
 If `bb gate --json` reports a canonical member as `run:failure`, read that
 member's `safe_next_command`. Replays prove the failed pre-execute path can run,
 but they do not count for the canonical gate key; the safe recovery is a clean
-replacement submission after fixing the operator or infrastructure issue.
+replacement submission after fixing the operator or infrastructure issue. The
+command includes the loaded plane's `--config` path so an agent can run it from
+another cwd.
 
 ## Recovery
 

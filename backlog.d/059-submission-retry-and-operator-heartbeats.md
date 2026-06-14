@@ -9,7 +9,7 @@ pre-execute mistake or a remote verdict run takes minutes.
 
 ## Oracle
 
-- [ ] A missing declared secret is caught before consuming the canonical
+- [x] A missing declared secret is caught before consuming the canonical
       `storm:<submission>:<kind>` gate key, or the CLI gives a first-class
       retry path that creates a clean replacement submission/member.
 - [x] `bb gate --json` explains when a canonical member failed for
@@ -25,6 +25,7 @@ pre-execute mistake or a remote verdict run takes minutes.
 
 1. Decide whether missing-secret checks belong before run insertion for manual
    dispatch, or whether canonical retry should always open a new submission.
+   (done 2026-06-13; settled on explicit clean replacement submission)
 2. Add gate/status safe-next-action text for `run:failure` storm members.
    (done 2026-06-13)
 3. Add `--json` support or explicit documented text-only behavior for
@@ -32,10 +33,8 @@ pre-execute mistake or a remote verdict run takes minutes.
 4. Add human-mode heartbeat output for long `bb run` waits. (done 2026-06-13)
 5. Update the dogfood skill and operator recipes with the settled recovery
    path. (done 2026-06-13)
-6. Follow-up: make safe actions self-contained for agents. The current
-   `safe_next_command` names the right recovery path, but dogfood showed it
-   relies on ambient `--config` context; consider structured argv plus display
-   text instead of a bare shell command string.
+6. Make safe actions self-contained for agents by including plane context in
+   the emitted command. (done 2026-06-13)
 
 ## Notes
 
@@ -75,3 +74,6 @@ Delivery notes:
   replacement command/reason. Replacement submission `02e587ec4533` ran all
   unparked members to pass and stayed pending only because `security` remains
   parked.
+- 2026-06-13: `safe_next_command` now includes the loaded plane's
+  `--config` path, making the emitted retry command runnable from another cwd.
+  Structured argv remains a better long-term schema candidate for backlog 053.

@@ -110,6 +110,7 @@ delete or rewrite prior verdict rows. If a canonical member failed before
 producing a verdict, `gate --json` escalates and the failed member carries
 `safe_next_command`; fix the operator or infrastructure issue, then run that
 clean replacement submission command instead of trying to make a replay count.
+The command includes the plane `--config` path used for the gate evaluation.
 
 ## Dead Letters and Recovery
 

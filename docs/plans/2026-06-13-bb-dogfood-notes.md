@@ -667,3 +667,44 @@ Backlog implications:
   submission example.
 - Follow-up: safe actions should become self-contained agent actions, not only
   human-readable command strings with ambient config assumptions.
+
+## Update 2026-06-13: 059 self-contained gate safe command
+
+Backlog item: `059-submission-retry-and-operator-heartbeats`, child 6.
+
+Work:
+
+- Changed failed-member `safe_next_command` to include the loaded plane
+  `--config` path, shell-quoted in the displayed command, so an agent can run
+  the suggested clean replacement submission command from another cwd.
+- Kept the existing scalar `safe_next_command`/`safe_next_reason` JSON shape
+  instead of adding a new structured argv field in this slice.
+- Updated `docs/spine.md`, the Bitterblossom skill, operator recipes, and
+  backlog `059`.
+
+Verification so far:
+
+- Red test first: `cargo test --test submission
+  required_member_terminal_failure_escalates_with_one_notify -- --nocapture`
+  failed because the command omitted `--config <plane-root>`.
+- Focused green: the same test now proves the report struct and serialized JSON
+  include the loaded plane path in `safe_next_command`.
+- Source budget check after implementation: repo LOC oracle returned
+  `src LOC: 4998`; full `./scripts/verify.sh` later passed with
+  `src LOC: 4996`.
+- Fresh critic: Claude found no blocking issues. Nonblocking notes: Rust
+  `Debug` formatting is ordinary path quoting rather than a full shell-escape
+  contract, and the test shares the same formatting primitive as production.
+
+Friction:
+
+- The plain command string remains less agent-native than structured argv; it
+  still depends on shell interpretation. This is acceptable for the immediate
+  retry path, but versioned agent schemas in backlog 053 should revisit action
+  shape.
+
+Delight:
+
+- The fix was tiny because the gate evaluator already has the canonical
+  `Plane`; the product lesson from the previous storm could be folded back into
+  the exact JSON surface that caused the friction.

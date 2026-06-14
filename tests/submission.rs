@@ -295,10 +295,14 @@ fn required_member_terminal_failure_escalates_with_one_notify() {
         .iter()
         .find(|m| m.kind == "security")
         .unwrap();
+    let expected_cmd = format!(
+        "bb --config {:?} submit open --change feat/x --rev sha1 --json",
+        plane.root
+    );
     assert_eq!(failed.status, "run:failure");
     assert_eq!(
         failed.safe_next_command.as_deref(),
-        Some("bb submit open --change feat/x --rev sha1 --json")
+        Some(expected_cmd.as_str())
     );
     assert!(failed
         .safe_next_reason
@@ -312,10 +316,7 @@ fn required_member_terminal_failure_escalates_with_one_notify() {
         .iter()
         .find(|m| m["kind"] == "security")
         .unwrap();
-    assert_eq!(
-        security["safe_next_command"],
-        "bb submit open --change feat/x --rev sha1 --json"
-    );
+    assert_eq!(security["safe_next_command"], expected_cmd);
 
     // Notify is async fire-and-forget; the `>>` redirect creates the log
     // before cat copies stdin, so poll for content, not existence.

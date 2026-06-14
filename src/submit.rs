@@ -445,8 +445,8 @@ pub fn evaluate(plane: &Plane, ledger: &Ledger, submission_id: &str) -> Result<G
                             infra_failure = true;
                             let why = reason.clone().unwrap_or_else(|| "run failed".into());
                             let cmd = format!(
-                                "bb submit open --change {} --rev {} --json",
-                                sub.change_key, sub.rev
+                                "bb --config {:?} submit open --change {} --rev {} --json",
+                                plane.root, sub.change_key, sub.rev
                             );
                             let why = format!("canonical {kind} run {id} failed: {why}");
                             (format!("run:{state}"), Some(id), cost, Some(cmd), Some(why))
