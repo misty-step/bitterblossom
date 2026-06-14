@@ -4,12 +4,76 @@ use std::net::{TcpListener, TcpStream};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
+use bitterblossom::ledger::{IngressRequest, Ledger};
+use bitterblossom::spec::Plane;
+
 fn write_plane(root: &std::path::Path) {
     fs::write(
         root.join("plane.toml"),
         "dev = true\n[ingress]\nbind = \"127.0.0.1:0\"\n",
     )
     .unwrap();
+}
+
+fn write_dispatch_plane(root: &std::path::Path) {
+    write_plane(root);
+    fs::create_dir_all(root.join("agents")).unwrap();
+    fs::create_dir_all(root.join("tasks/demo")).unwrap();
+    let stub = root.join("stub.sh");
+    fs::write(&stub, "#!/bin/sh\ncat >/dev/null\necho ok\n").unwrap();
+    let mut perms = fs::metadata(&stub).unwrap().permissions();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        perms.set_mode(0o755);
+        fs::set_permissions(&stub, perms).unwrap();
+    }
+    fs::write(
+        root.join("agents/stub.toml"),
+        format!(
+            "harness = \"command\"\nmodel = \"\"\nbin = \"{}\"\n",
+            stub.display()
+        ),
+    )
+    .unwrap();
+    fs::write(root.join("tasks/demo/card.md"), "demo\n").unwrap();
+    fs::write(
+        root.join("tasks/demo/task.toml"),
+        "agent = \"stub\"\nsubstrate = \"local\"\n[[trigger]]\nkind = \"manual\"\n",
+    )
+    .unwrap();
+}
+
+fn enqueue(root: &std::path::Path, task: &str) -> String {
+    let plane = Plane::load(root).unwrap();
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    ledger
+        .ingest(IngressRequest {
+            task,
+            trigger_kind: "manual",
+            idempotency_key: None,
+            source_event_id: None,
+            payload: None,
+            parent_run_id: None,
+        })
+        .unwrap()
+        .run_id
+}
+
+fn wait_for_run_state(root: &std::path::Path, run_id: &str, state: &str, timeout: Duration) {
+    let plane = Plane::load(root).unwrap();
+    let ledger = Ledger::open(&plane.db_path()).unwrap();
+    let deadline = Instant::now() + timeout;
+    loop {
+        let run = ledger.run(run_id).unwrap();
+        if run.state == state {
+            return;
+        }
+        if Instant::now() >= deadline {
+            panic!("run {run_id} stayed {} instead of {state}", run.state);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 fn wait_for_exit(mut child: Child, timeout: Duration) -> Output {
@@ -77,6 +141,29 @@ impl Drop for ChildGuard {
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
+}
+
+#[test]
+fn dispatch_worker_panic_does_not_strand_task_in_flight() {
+    let dir = tempfile::tempdir().unwrap();
+    write_dispatch_plane(dir.path());
+    let first = enqueue(dir.path(), "demo");
+    let second = enqueue(dir.path(), "demo");
+    let port = free_loopback_port();
+
+    let child = Command::new(env!("CARGO_BIN_EXE_bb"))
+        .args(["--config", dir.path().to_str().unwrap(), "serve"])
+        .env("BB_INGRESS_BIND", format!("127.0.0.1:{port}"))
+        .env("BB_TEST_PANIC_AFTER_RUN_ID", &first)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let _child = ChildGuard(child);
+    wait_for_http(port);
+
+    wait_for_run_state(dir.path(), &first, "success", Duration::from_secs(8));
+    wait_for_run_state(dir.path(), &second, "success", Duration::from_secs(8));
 }
 
 #[test]

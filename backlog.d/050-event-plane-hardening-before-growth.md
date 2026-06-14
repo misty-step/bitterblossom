@@ -14,7 +14,7 @@ behavior.
 - [x] Read API and HTML auth accept bearer headers and reject `?token=`; tests
       and docs cover loopback, public bind, missing token, bad token, and bearer
       success.
-- [ ] Dispatch in-flight bookkeeping is panic-safe; a regression test proves a
+- [x] Dispatch in-flight bookkeeping is panic-safe; a regression test proves a
       worker panic cannot strand the task and the next pending run drains.
 - [ ] Notification execution is bounded or synchronously accounted; a storm
       test proves the process cannot spawn unbounded `curl` waiters.
@@ -30,7 +30,7 @@ behavior.
 
 1. Remove query-token read auth and update docs/skill recipes. (done
    2026-06-13)
-2. Add panic-safe in-flight cleanup around run workers.
+2. Add panic-safe in-flight cleanup around run workers. (done 2026-06-14)
 3. Bound notification dispatch and record failed/saturated notification
    attempts.
 4. Add help/doc/skill parity tests for the stale command examples.
@@ -80,3 +80,14 @@ those evidence packets.
 
 - `bb status [--json]` and `/api/status` shipped in backlog 052, providing the
   generic health/read surface named by this epic.
+
+### 2026-06-14 panic-safe in-flight cleanup
+
+- Wrapped `bb serve` run workers with panic cleanup: the worker removes its
+  task from the in-memory `in_flight` set before resuming an unwind.
+- Added `tests/serve.rs` coverage that seeds two pending runs for the same task,
+  forces the first worker to panic after dispatch, and proves the second run
+  still drains to `success`.
+- Verification: `cargo test --test serve
+  dispatch_worker_panic_does_not_strand_task_in_flight -- --nocapture` and
+  `./scripts/verify.sh` pass.

@@ -129,11 +129,12 @@ fn dispatch_loop(root: &Path) {
             let spawned = std::thread::Builder::new()
                 .name(format!("bb-run-{run_id}"))
                 .spawn(move || {
-                    run_one(&root, &run_id);
-                    in_flight_worker
+                    let panic = std::panic::catch_unwind(|| run_one(&root, &run_id));
+                    let _ = in_flight_worker
                         .lock()
                         .expect("in_flight lock")
                         .remove(&task_name);
+                    panic.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
                 });
             if let Err(e) = spawned {
                 eprintln!("dispatch: spawn failed: {e}");
@@ -148,6 +149,11 @@ fn run_one(root: &Path, run_id: &str) {
         let plane = Plane::load(root)?;
         let mut ledger = Ledger::open(&plane.db_path())?;
         let run = dispatch::dispatch_run(&plane, &mut ledger, run_id)?;
+        if cfg!(debug_assertions)
+            && std::env::var("BB_TEST_PANIC_AFTER_RUN_ID").as_deref() == Ok(run_id)
+        {
+            panic!("BB_TEST_PANIC_AFTER_RUN_ID");
+        }
         eprintln!("run {} {} (task={})", run.id, run.state, run.task);
         Ok(())
     })();

@@ -93,8 +93,7 @@ enum RunsCommand {
         #[arg(long, default_value = "canceled by operator")]
         reason: String,
     },
-    /// Resolve an `awaiting_recovery` run after inspecting its side
-    /// effects (an operator judgment the plane refuses to make).
+    /// Resolve `awaiting_recovery` after operator side-effect inspection.
     Resolve {
         run_id: String,
         #[arg(value_parser = ["success", "failure"])]
@@ -131,8 +130,7 @@ enum SubmitCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Reject a finding by fingerprint. Rejecting a blocking finding only
-    /// takes effect once an arbiter verdict sustains it.
+    /// Reject a finding; blocking rejections need an arbiter sustain verdict.
     Reject {
         #[arg(long)]
         change: String,

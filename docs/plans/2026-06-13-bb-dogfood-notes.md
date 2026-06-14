@@ -733,3 +733,52 @@ Backlog implications:
   moved to `backlog.d/_done/`.
 - Backlog 053 remains the right place to upgrade action-shaped JSON from a
   human command string to a versioned structured argv/schema contract.
+
+## Update 2026-06-14: 050 panic-safe dispatch in-flight cleanup
+
+Backlog item: `050-event-plane-hardening-before-growth`, child 2.
+
+Work:
+
+- Made `bb serve` run workers remove their task from the in-memory `in_flight`
+  set even when the worker panics after dispatching a run, then resume the
+  unwind so the panic remains visible.
+- Added a live-server regression that seeds two pending runs for the same task,
+  forces the first worker to panic after dispatch, and proves the second run
+  still drains.
+- Updated backlog `050` to mark the in-flight cleanup oracle complete.
+
+Verification so far:
+
+- Red test first: `cargo test --test serve
+  dispatch_worker_panic_does_not_strand_task_in_flight -- --nocapture` failed
+  because the second run stayed `pending`.
+- Focused green: the same test now passes.
+- Full local gate: `./scripts/verify.sh` passed; final source budget output was
+  `src LOC: 5000`.
+- Fresh critic status: an earlier Claude critic found no blockers and caught
+  an overzealous CLI help cleanup. After the final mutex-lifetime fix, two peer
+  CLI critic attempts (`claude -p`, then `pi -p`) hung without output and were
+  stopped; a native read-only critic lane then failed at launch because its
+  fixed model was unavailable on this Codex account.
+
+Friction:
+
+- Testing a true Rust worker panic through the binary required a debug-only
+  `BB_TEST_PANIC_AFTER_RUN_ID` seam because ordinary harness failures are
+  correctly modeled as run failures, not thread panics.
+- The 5000-line spine cap forced another small cleanup loop. The first cleanup
+  removed useful Clap help comments; the critic caught that as operator-facing
+  scope creep, so the final cleanup preserved the help and recovered the budget
+  from incidental formatting.
+- Peer harness CLIs were a bad critic path in this run: both Claude and Pi
+  accepted the prompt but produced no output before manual cancellation.
+- Native critic lanes can fail before review when the role pins a model that
+  the current account cannot use; the tool surfaced this only after launch.
+
+Delight:
+
+- The failure was easy to reproduce once the seam existed: one live `bb serve`
+  process, two real pending ledger rows, and no mocked dispatcher.
+- The fix preserves the useful panic signal while removing the operational
+  starvation hazard.
