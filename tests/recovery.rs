@@ -4,6 +4,7 @@
 
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 
 use bitterblossom::dispatch::{attempt_dir, attempt_marker};
 use bitterblossom::ledger::{IngressRequest, Ledger};
@@ -42,6 +43,13 @@ fn running_run(ledger: &mut Ledger, task: &str) -> String {
         .run_id;
     ledger.transition(&run_id, "running", None).unwrap();
     run_id
+}
+
+fn bb(args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_bb"))
+        .args(args)
+        .output()
+        .unwrap()
 }
 
 #[test]
@@ -91,6 +99,61 @@ fn executing_inherited_run_with_dead_process_awaits_recovery() {
         .transition(&run_id, "success", Some("verified externally"))
         .unwrap();
     let _ = attempt_marker(attempt);
+}
+
+#[test]
+fn unknown_probe_evidence_is_visible_for_operator_resolution() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+
+    let run_id = running_run(&mut ledger, "demo");
+    let attempt = ledger
+        .create_attempt(&run_id, 1, "a", 1, "claude", "m")
+        .unwrap();
+    ledger.set_attempt_phase(attempt, "executing").unwrap();
+    let adir = attempt_dir(&plane, &run_id, 1);
+    fs::create_dir_all(&adir).unwrap();
+    fs::write(adir.join("harness.pid"), "not-a-pid").unwrap();
+    assert!(ledger.try_acquire_host_lease("local", &run_id).unwrap());
+    drop(ledger);
+
+    let root = dir.path().to_str().unwrap();
+    let recovered = bb(&["--config", root, "recover", "--json"]);
+    assert!(
+        recovered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&recovered.stderr)
+    );
+    let reports: serde_json::Value = serde_json::from_slice(&recovered.stdout).unwrap();
+    assert_eq!(reports[0]["disposition"], "awaiting_recovery");
+    assert!(reports[0]["probe"]
+        .as_str()
+        .unwrap()
+        .starts_with("unknown: unparseable pidfile"));
+
+    let shown = bb(&["--config", root, "runs", "show", &run_id, "--json"]);
+    assert!(shown.status.success());
+    let doc: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    assert_eq!(doc["run"]["state"], "awaiting_recovery");
+    assert!(doc["run"]["state_reason"]
+        .as_str()
+        .unwrap()
+        .contains("probe: unknown: unparseable pidfile"));
+    assert!(doc["events"].as_array().unwrap().iter().any(|e| {
+        e["kind"] == "boot_probe"
+            && e["data"]
+                .as_str()
+                .unwrap()
+                .starts_with("unknown: unparseable pidfile")
+    }));
+
+    let ledger = Ledger::open(&plane.db_path()).unwrap();
+    assert_eq!(
+        ledger.lease_holder("local").unwrap().as_deref(),
+        Some(run_id.as_str()),
+        "unknown probes must not release a possibly live host lease"
+    );
 }
 
 #[test]

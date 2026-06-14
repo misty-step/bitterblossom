@@ -50,10 +50,7 @@ impl Substrate for SpritesSubstrate {
     }
 
     fn probe(&self, host: &str, _attempt_dir: &Path, marker: &str) -> ProbeResult {
-        let script = format!(
-            "[ -f /tmp/{marker}.pid ] || exit 3; \
-             kill -0 \"$(cat /tmp/{marker}.pid)\" 2>/dev/null && exit 0 || exit 4"
-        );
+        let script = format!("pid=\"$(cat /tmp/{marker}.pid 2>/dev/null)\" || exit 3; case \"$pid\" in ''|*[!0-9]*) exit 5;; esac; kill -0 \"$pid\" 2>/dev/null && exit 0 || exit 4");
         let mut cmd = vec![sprite_bin(), "exec".into()];
         cmd.extend(selector_args(host));
         cmd.extend(["--".into(), "sh".into(), "-c".into(), script]);
@@ -70,6 +67,7 @@ impl Substrate for SpritesSubstrate {
                 0 => ProbeResult::Alive,
                 4 => ProbeResult::Dead,
                 3 => ProbeResult::Unknown(format!("no pidfile /tmp/{marker}.pid on {host}")),
+                5 => ProbeResult::Unknown(format!("malformed pidfile /tmp/{marker}.pid on {host}")),
                 code => ProbeResult::Unknown(format!(
                     "probe exit {code}: {}",
                     out.stderr.trim().lines().last().unwrap_or("")

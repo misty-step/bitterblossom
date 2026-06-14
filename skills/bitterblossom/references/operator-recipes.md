@@ -142,6 +142,7 @@ After a host restart:
 
 ```bash
 bb --config <plane> recover
+bb --config <plane> recover --json
 bb --config <plane> runs list --json
 ```
 
@@ -150,6 +151,12 @@ Resolve `awaiting_recovery` only after inspecting side effects:
 ```bash
 bb --config <plane> runs resolve <run-id> success --reason "<why>"
 ```
+
+`recover --json` reports `attempt_phase`, `probe`, and `disposition` for each
+inherited run. `probe: "unknown: ..."` means the substrate could not prove the
+agent process is dead; inspect `bb runs show <run-id> --json` for the
+`boot_probe` event and leave the host lease in place until side effects are
+understood. Missing or malformed pidfiles are unknown, not dead.
 
 ## Serve and Read APIs
 

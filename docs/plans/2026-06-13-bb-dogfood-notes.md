@@ -1079,3 +1079,70 @@ Storm UX notes:
 - Lean in: the gate's advisory structure is useful even when I reject an
   advisory; fingerprinted minor findings are easy to discuss without
   conflating them with blocking correctness.
+
+## Update 2026-06-14: 051 malformed recovery probe evidence
+
+Backlog item: `051-deterministic-recovery-and-probe-contract`, malformed
+probe/evidence slice.
+
+Preflight:
+
+- `git status --short --branch --untracked-files=all`: clean
+  `## master...origin/master`.
+- `flyctl orgs list`: `Misty Step` / `misty-step` available.
+- `sprite org list`: selected org `misty-step`; `sprite use -o misty-step
+  lane-1` confirmed the repo context; `sprite exec -- whoami` returned
+  `sprite`.
+- `./target/debug/bb --config plane check`: green.
+- `./target/debug/bb --config plane status --json`: `cost_today_usd:
+  0.7120934888`, `open_dlq: 5`, `parked_tasks: 1`, no active queues.
+- `./target/debug/bb --config plane task list --json`: `security` remains
+  parked for `run cost $0.2539 > max_cost_per_run_usd $0.25`.
+
+Work:
+
+- Selected 051 because 050 is closed and the next custom-spine proof
+  obligation is recovery trust under uncertain substrate probes.
+- Added a Sprite probe regression test proving malformed remote pidfiles are
+  `Unknown`, not `Dead`.
+- Added a CLI-level recovery test proving malformed local pidfile evidence is
+  visible in `recover --json`, `runs show --json`, and the `boot_probe` event,
+  while the host lease remains held.
+- Fixed `src/substrate/sprites.rs` so a non-numeric remote pidfile cannot
+  release a host lease as if the process were proven dead.
+- Updated `docs/spine.md`, `skills/bitterblossom/references/operator-recipes.md`,
+  and backlog 051 with the unknown-probe contract.
+
+Verification so far:
+
+- Red proof: `cargo test --test e2e_sprites
+  sprite_probe_treats_malformed_pidfile_as_unknown -- --nocapture` failed
+  with `malformed pidfile must be unknown, got Dead`.
+- Green focused tests:
+  - `cargo test --test e2e_sprites
+    sprite_probe_treats_malformed_pidfile_as_unknown -- --nocapture`
+  - `cargo test --test recovery
+    unknown_probe_evidence_is_visible_for_operator_resolution -- --nocapture`
+- `cargo test --test e2e_sprites -- --nocapture` passed after cleaning up
+  test env vars noted by the critic.
+- `./scripts/verify.sh` passed with `src LOC: 4997`.
+- Fresh-context critic: `pi --no-tools --no-context-files --no-skills
+  --no-extensions --no-session -p` stalled with no output and was stopped;
+  `codex exec --sandbox read-only --ephemeral` returned `BLOCKING: none` and
+  `VERDICT: pass`, with one nonblocking test-env cleanup that was fixed.
+
+UX notes:
+
+- Friction: the recovery backlog is large enough that a single turn should not
+  pretend to close it. I kept 051 open and recorded this as a slice because
+  stale-age escalation and a full probe state-machine spec still remain.
+- Friction: the source budget immediately shaped the implementation. It caught
+  a small growth in `src` and forced the fix to stay at the substrate seam.
+- Friction: the peer-critic path is still noisy. `pi` stalled this time, while
+  `codex exec` completed but emitted a large volume of plugin/MCP warnings
+  before the useful verdict.
+- Delight: `runs show --json` already had the right event bundle; the missing
+  piece was a test that proved the `boot_probe` evidence actually reached the
+  operator.
+- Mitigate: 051 still needs stale `awaiting_recovery` policy and broader
+  malformed/missing/stale fixture coverage before it can move to `_done/`.

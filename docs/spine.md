@@ -346,6 +346,10 @@ recovery semantic:
   `awaiting_recovery`; replay is an explicit operator act.
 - On boot, inherited `running` runs are classified by probing the host and
   reading attempt artifacts — never blindly orphaned.
+- Probe results are explicit: `alive` remains `running`, `dead` moves to
+  `awaiting_recovery` and releases the host lease, and `unknown: ...` moves to
+  `awaiting_recovery` while retaining the lease because the plane cannot prove
+  the agent process is gone. Missing or malformed pidfiles are unknown.
 - `bb dlq replay <id> [--json]` mints a **new** run linked via
   `parent_run_id`; JSON mode returns the replayed run + attempts + events.
 

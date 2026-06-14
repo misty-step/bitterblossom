@@ -22,7 +22,8 @@ auditable operator states instead of indefinite ambiguity.
 ## Children
 
 1. Specify the probe-result state machine for local and sprite substrates.
-2. Add fixture tests for malformed and stale probe artifacts.
+2. Add fixture tests for malformed and stale probe artifacts. (malformed local
+   and sprite pidfile coverage started 2026-06-14)
 3. Add stale `awaiting_recovery` visibility and escalation rules.
 4. Update the skill/operator recipes for recovery decisions.
 
@@ -41,3 +42,19 @@ Evidence:
   contract tests.
 - `src/substrate/local.rs` and `src/substrate/sprites.rs` own adapter-specific
   probe assumptions.
+
+## Delivery Notes
+
+### 2026-06-14 malformed probe evidence slice
+
+- Fixed `sprites` probing so a malformed remote `/tmp/<marker>.pid` returns
+  `Unknown` rather than `Dead`; this prevents recovery from releasing a host
+  lease when the probe evidence is corrupt.
+- Added recovery coverage proving a malformed local pidfile moves the run to
+  `awaiting_recovery`, preserves the host lease, and exposes the `boot_probe`
+  event through `bb runs show --json`.
+- Updated the operator recipe and spine contract so agents know that unknown
+  probes require side-effect inspection and that missing/malformed pidfiles are
+  unknown, not dead.
+- Remaining 051 scope: stale-age policy/escalation, full probe state-machine
+  spec, and any additional malformed/missing/stale fixture coverage.

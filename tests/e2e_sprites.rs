@@ -10,6 +10,8 @@ use std::path::Path;
 use bitterblossom::dispatch;
 use bitterblossom::ledger::{IngressRequest, Ledger};
 use bitterblossom::spec::Plane;
+use bitterblossom::substrate::sprites::SpritesSubstrate;
+use bitterblossom::substrate::{ProbeResult, Substrate};
 
 const SPRITE_STUB: &str = r#"#!/bin/bash
 # Fake sprite CLI. Usage it must understand:
@@ -224,4 +226,37 @@ fn hermetic_sprite_exec_scrubs_inherited_env_and_relocates_home() {
     std::env::remove_var("BB_SPRITE_BIN");
     std::env::remove_var("BB_SPRITE_LEAK");
     std::env::remove_var("BB_TEST_SECRET2");
+}
+
+#[test]
+fn sprite_probe_treats_malformed_pidfile_as_unknown() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let fake_home = root.join("fake-sprite-home");
+    fs::create_dir_all(&fake_home).unwrap();
+    let sprite_stub = root.join("sprite-stub.sh");
+    write_executable(&sprite_stub, SPRITE_STUB);
+
+    let log = root.join("sprite-stub-probe.log");
+    std::env::set_var("BB_SPRITE_BIN", &sprite_stub);
+    std::env::set_var("SPRITE_STUB_LOG", &log);
+    std::env::set_var("SPRITE_FAKE_HOME", &fake_home);
+
+    let marker = format!("bb-probe-test-{}", std::process::id());
+    let pidfile = std::path::PathBuf::from(format!("/tmp/{marker}.pid"));
+    fs::write(&pidfile, "not-a-pid").unwrap();
+
+    let probe = SpritesSubstrate.probe("test-sprite", root, &marker);
+    match probe {
+        ProbeResult::Unknown(reason) => {
+            assert!(reason.contains("malformed pidfile"), "{reason}");
+        }
+        other => panic!("malformed pidfile must be unknown, got {other:?}"),
+    }
+
+    let _ = fs::remove_file(pidfile);
+    std::env::remove_var("BB_SPRITE_BIN");
+    std::env::remove_var("SPRITE_STUB_LOG");
+    std::env::remove_var("SPRITE_FAKE_HOME");
 }
