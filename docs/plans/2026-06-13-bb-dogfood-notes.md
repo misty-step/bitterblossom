@@ -1146,3 +1146,40 @@ UX notes:
   operator.
 - Mitigate: 051 still needs stale `awaiting_recovery` policy and broader
   malformed/missing/stale fixture coverage before it can move to `_done/`.
+
+Submission storm:
+
+- Commit: `82618d769fc608e6c5a0ae2b4eb005f85881b1fe`
+  (`fix: keep malformed sprite probes unknown`).
+- Host probes before dispatch:
+  - `lane-1`: `sprite`.
+  - `bb-polisher-2`: `sprite`.
+  - `bb-polisher-3`: failed after about 60s with
+    `failed to connect ... i/o timeout`.
+- `./target/debug/bb --config plane submit open --change
+  malformed-probe-82618d7 --rev 82618d769fc608e6c5a0ae2b4eb005f85881b1fe
+  --context ... --json` created submission `d98e75753cf3`.
+- Available members:
+  - `verify`: pass, run `0bea26171ddc`, duration `49076ms`.
+  - `correctness`: pass, run `aa402b054b05`, cost `$0.1175718`, duration
+    `245269ms`.
+- `security` was not run because it remains parked for
+  `run cost $0.2539 > max_cost_per_run_usd $0.25`.
+- `product` and `simplification` were not run because both use
+  `bb-polisher-3`, which failed the pre-dispatch host probe. I avoided creating
+  another predictable acquire DLQ.
+- `./target/debug/bb --config plane gate --submission d98e75753cf3 --json`
+  returned `decision: pending`, `verify` and `correctness` as pass, no
+  blocking or advisory findings, and `security`, `simplification`, and
+  `product` as `not_started`.
+
+Storm UX notes:
+
+- Friction: `bb` has no first-class "probe this task host" command, so I had
+  to use `sprite -o misty-step -s <host> exec -- whoami` outside the plane to
+  decide whether product/simplification were safe to run.
+- Delight: doing that host probe before `bb run` prevented another open DLQ
+  for a known-unreachable shared Sprite.
+- Mitigate: 051/054 should consider an operator-safe host probe or production
+  smoke command that reports task host reachability without dispatching a
+  workload.
