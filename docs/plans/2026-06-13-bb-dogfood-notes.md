@@ -929,3 +929,47 @@ Residual:
   to the existing `curl -m 10` timeout per notification. That is intentionally
   bounded, but a future operator setting for timeout/concurrency may be worth
   shaping if storms become frequent.
+
+Submission storm:
+
+- Commit: `4b15d57433e57e6012b266673ac65c870487d5cd`
+  (`fix: account notification delivery synchronously`), pushed to `master`.
+- Fresh critic: headless Codex artifact-only review returned
+  `BLOCKING: <none>`, `SERIOUS: <none>`, `VERDICT: pass`.
+- First submission: `./target/debug/bb --config plane submit open --change
+  notify-accounting-4b15d57 --rev
+  4b15d57433e57e6012b266673ac65c870487d5cd --context ... --json` created
+  `dcb0632a4f86`.
+- First storm results: `verify` run `e90c2ea30689` passed in 53.286s;
+  `correctness` run `df0df09cfff7` passed with cost `$0.067627101` in
+  169.151s; `product` run `ea5c03e825cb` failed before execution after three
+  acquire attempts because `bb-polisher-3` was unreachable, creating DLQ `7`.
+- First gate: `./target/debug/bb --config plane gate --submission
+  dcb0632a4f86 --json` returned `decision: escalated` and included the safe
+  next command to open a clean replacement submission.
+- Host recovery check: `sprite -o misty-step -s bb-polisher-3 exec -- whoami`
+  then returned `sprite`.
+- Replacement submission: `8d56e6cc6a13`.
+- Replacement available members passed on Misty Step Sprites:
+  `verify` run `bdd50c064401`, duration 45.793s;
+  `product` run `becd95dae3ca`, cost `$0.02678975`, duration 22.786s;
+  `correctness` run `0460ed26d870`, cost `$0.052301152`, duration 147.042s;
+  `simplification` run `5e4b0b978242`, cost `$0.0166731446`, duration
+  191.033s.
+- Replacement gate: `./target/debug/bb --config plane gate --submission
+  8d56e6cc6a13 --json` returned `decision: pending`: all unparked members were
+  `verdict:pass`, while `security` remained `not_started` because it is still
+  parked for `run cost $0.2539 > max_cost_per_run_usd $0.25`.
+
+More UX notes:
+
+- Friction: a pre-execute DLQ on a canonical storm member escalates the
+  submission correctly, but the safe-next replacement came back as `round: 1`
+  with `prior_report_json: null`; the operator has to preserve the escalated
+  context manually in notes.
+- Friction: `bb-polisher-3` recovered immediately under a direct Sprite probe
+  after three timed-out product acquire attempts. The storm told the truth, but
+  there is no built-in "probe this task host" action in `bb status`.
+- Delight: the gate output gave the exact safe next command and safe next
+  reason, so I did not have to infer whether DLQ replay would count for the
+  canonical member. It would not.
