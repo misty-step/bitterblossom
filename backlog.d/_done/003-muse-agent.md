@@ -4,6 +4,14 @@ Priority: high
 Status: abandoned
 Estimate: M
 
+## Archive disposition
+
+The Muse persona was implemented in the factory/conductor era and PR #841 later
+tried to mark this item as shipped backlog hygiene. The current v3 Rust
+event-plane direction retired that conductor/persona fleet, so the historical
+implementation evidence stays in git history while this archived item remains
+`abandoned` for the active product surface.
+
 ## Goal
 After any sprite completes work (PR merged, issue closed), Muse runs `/reflect` on the completed work and updates the backlog:
 - Consolidate backlog items that are now redundant
