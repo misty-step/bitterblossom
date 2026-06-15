@@ -68,8 +68,9 @@ on 2026-06-15. Current useful facts:
   output, tools and structured output support.
 - `z-ai/glm-5.1`: 203k context, $0.98/M input and $3.08/M output, tool and
   reasoning parameters.
-- `z-ai/glm-5.2`: visible on OpenRouter's Z.ai page as releasing 2026-06-16,
-  but not present in the API catalog on 2026-06-15.
+- `z-ai/glm-5.2`: visible on OpenRouter's Z.ai page on 2026-06-15 as a
+  released model, with API access releasing 2026-06-16; not present in the
+  API catalog on 2026-06-15.
 - `openrouter/fusion`: suitable as an architecture/research council, not a
   drop-in coding model. OpenRouter says coding models should call it
   selectively for questions worth multi-model deliberation.
@@ -117,7 +118,8 @@ Add a lifecycle reflex pack after the current branch:
    - Use DeepSeek V4 Pro for long-context correctness/security.
    - Use Kimi K2.7 Code for coding-aware coordinator/build support where a
      current local smoke exists.
-   - Treat GLM 5.2 as pending until the API catalog and local smoke prove it.
+   - Treat GLM 5.2 as page-visible/API-pending until the API catalog and local
+     smoke prove it.
    - Use Fusion only for architecture/research decisions where its extra
      multi-model cost is justified.
 

@@ -60,8 +60,8 @@ Model posture:
 - Use DeepSeek V4 Pro for long-context correctness/security.
 - Use Kimi K2.7 Code for coding-aware orchestration where local smoke evidence
   exists.
-- Treat GLM 5.2 as pending until it appears in the API catalog and passes a
-  local harness smoke.
+- Treat GLM 5.2 as page-visible/API-pending until it appears in the API catalog
+  and passes a local harness smoke.
 - Use Fusion only for architecture/research council questions, not routine
   coding or deterministic gates.
 
