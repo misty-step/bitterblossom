@@ -1,4 +1,3 @@
-use std::io::Write as _;
 use std::process::{Command, Stdio};
 
 use crate::spec::Plane;
@@ -30,12 +29,14 @@ pub fn notify(plane: &Plane, event: &str, detail: &serde_json::Value) {
     match spawned {
         Ok(mut child) => {
             if let Some(mut stdin) = child.stdin.take() {
-                let _ = stdin.write_all(body.as_bytes());
+                let _ = std::io::Write::write_all(&mut stdin, body.as_bytes());
             }
-            if let Ok(status) = child.wait() {
-                if !status.success() {
+            match child.wait() {
+                Ok(status) if !status.success() => {
                     eprintln!("notify: webhook POST failed (exit {status}) event={event}")
                 }
+                Err(e) => eprintln!("notify: cannot wait for curl: {e} event={event}"),
+                _ => {}
             }
         }
         Err(e) => eprintln!("notify: cannot spawn curl: {e}"),
