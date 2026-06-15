@@ -5,7 +5,6 @@ use sha2::Sha256;
 
 use crate::ledger::{IngressOutcome, IngressRequest, Ledger};
 use crate::spec::{Plane, Task, TriggerSpec};
-#[derive(Debug)]
 pub struct WebhookResponse {
     pub status: u16,
     pub body: String,

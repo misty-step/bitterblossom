@@ -81,7 +81,8 @@ Add a lifecycle reflex pack after the current branch:
 
 1. **Lifecycle triggers as data**
    - `pull_request` ready/synchronize: run review or open/refresh a submission.
-   - `check_suite` failed: run a CI-diagnose task with logs as evidence.
+   - `check_suite` failed: run a CI-diagnose task with logs as evidence and a
+     deterministic builder-packet recommendation.
    - `submission.opened` or explicit manual command: run verdict storm members.
    - `gate.blocked`: run a fix-prompt generator that writes a bounded packet for
      the builder; it does not edit code.
@@ -111,6 +112,14 @@ Add a lifecycle reflex pack after the current branch:
      `event`, `task`, `repo`, `rev`, `claim`, `evidence`, `suggested_next_run`,
      `cost`, `artifact_paths`, and `residual_risk`.
    - Fix prompts are artifacts, not hidden chat context.
+
+6. **First runnable slice**
+   - Implement `ci-diagnose` as a task/agent/card packet with a manual trigger
+     for dogfood and a `check_suite.completed` webhook filtered to failed
+     GitHub Actions suites for `misty-step/bitterblossom`.
+   - The agent emits `REPORT.json` and may recommend an exact `bb run build`
+     command, but the first slice does not grant run-creation, comment, merge,
+     deploy, or task-parking authority.
 
 5. **Model composition**
    - Default reflex review lanes stay cheap OpenRouter/Pi.

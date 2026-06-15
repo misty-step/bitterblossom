@@ -11,10 +11,6 @@ pub const PIDFILE: &str = "harness.pid";
 pub struct LocalSubstrate;
 
 impl Substrate for LocalSubstrate {
-    fn name(&self) -> &'static str {
-        "local"
-    }
-
     fn acquire(&self, _host: &str, attempt_dir: &Path) -> Result<Box<dyn Session>> {
         let workspace = attempt_dir.join("workspace");
         std::fs::create_dir_all(&workspace)?;
@@ -164,6 +160,10 @@ impl Session for LocalSession {
     }
 
     fn release(&mut self) -> Result<()> {
+        let report = self.workspace.join(super::REPORT_FILENAME);
+        if report.exists() {
+            std::fs::copy(report, self.artifacts.join(super::REPORT_FILENAME))?;
+        }
         Ok(())
     }
 }

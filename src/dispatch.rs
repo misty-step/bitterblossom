@@ -206,7 +206,6 @@ fn attempt_on_host(
         }
     }
     let plan = WorkspacePlan {
-        host: task.host(),
         repos: task.spec.workspace.repos.clone(),
         card: task.card.clone(),
         payload: match (&submission, ledger.run_payload(run_id)?) {

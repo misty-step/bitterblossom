@@ -57,6 +57,7 @@ Read the output for:
 | Task inventory, parked state, budgets | `bb --config <plane> task list --json` |
 | Trigger manual work | `bb --config <plane> run <task> --payload '<json>' --json` |
 | Dispatch a manual builder lane | `bb --config <plane> run build --payload '{"backlog":"<id-or-path>"}' --json` |
+| Diagnose failed CI | `bb --config <plane> run ci-diagnose --payload '{"repo":"owner/repo","head_sha":"<sha>"}' --json` |
 | Inspect ledger | `bb --config <plane> runs list --json`; `bb --config <plane> runs show <id> --json` |
 | Export run telemetry | `bb --config <plane> runs export` |
 | Handle pre-execute failures | `bb --config <plane> dlq list --json`; `bb --config <plane> dlq replay <id> --json` |

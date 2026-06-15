@@ -107,6 +107,23 @@ GH_TOKEN=$(gh auth token) bb --config <plane> run review \
 Evidence is both the ledger row and the external effect: PR comment for normal
 mode, artifact/result output for measurement mode.
 
+## CI Diagnose Workload
+
+For a failed GitHub Actions check suite, run the report-only diagnoser manually:
+
+```bash
+GH_TOKEN=$(gh auth token) bb --config <plane> run ci-diagnose \
+  --idempotency-key "ci-diagnose:<repo>:<sha>" \
+  --payload '{"repo":"owner/repo","head_sha":"<sha>","workflow":"verify"}' \
+  --json
+```
+
+Webhook mode is `POST /hooks/ci-diagnose` for GitHub `check_suite` deliveries.
+The task filters to failed completed GitHub Actions suites for the configured
+repo allowlist. The lane writes `REPORT.json` with diagnosis evidence and may
+recommend an exact builder command, but it does not edit code, comment, merge,
+deploy, park tasks, resolve runs, or invoke follow-up runs.
+
 ## Submission Gate
 
 Open a submission:

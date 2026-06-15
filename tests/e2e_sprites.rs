@@ -63,6 +63,8 @@ const CLAUDE_STUB: &str = r#"#!/bin/sh
 cat > /dev/null
 # Per-exec secret must arrive via the environment (stdin script exports).
 [ "$BB_TEST_SECRET" = "s3cret" ] || { echo "secret missing" >&2; exit 5; }
+[ ! -e REPORT.json ] || { echo "stale report leaked into run" >&2; exit 6; }
+printf '{"status":"ok","artifact_paths":["REPORT.json"]}\n' > REPORT.json
 echo '{"type":"result","subtype":"success","result":"sprite says hi","total_cost_usd":0.005,"num_turns":1,"usage":{"input_tokens":10,"output_tokens":5}}'
 "#;
 
@@ -136,6 +138,9 @@ fn sprites_task_runs_end_to_end_with_identical_row_shape() {
     assert_eq!(a.outcome.as_deref(), Some("success"));
     assert_eq!(a.phase, "released");
     assert_eq!(a.tokens_in, Some(10));
+    let artifact_dir = Path::new(a.artifact_dir.as_deref().unwrap());
+    let report = fs::read_to_string(artifact_dir.join("REPORT.json")).unwrap();
+    assert!(report.contains(r#""artifact_paths":["REPORT.json"]"#));
 
     // The card was materialized into the (fake) remote workspace.
     assert!(fake_home.join("bb/demo/LANE_CARD.md").exists());
@@ -153,6 +158,20 @@ fn sprites_task_runs_end_to_end_with_identical_row_shape() {
     );
     let db_bytes = fs::read(plane.db_path()).unwrap();
     assert!(!String::from_utf8_lossy(&db_bytes).contains("s3cret"));
+
+    let run_id = ledger
+        .ingest(IngressRequest {
+            task: "demo",
+            trigger_kind: "manual",
+            idempotency_key: Some("second"),
+            source_event_id: None,
+            payload: None,
+            parent_run_id: None,
+        })
+        .unwrap()
+        .run_id;
+    let run = dispatch::dispatch_run(&plane, &mut ledger, &run_id).unwrap();
+    assert_eq!(run.state, "success", "reason: {:?}", run.state_reason);
 
     std::env::remove_var("BB_SPRITE_BIN");
     std::env::remove_var("BB_TEST_SECRET");

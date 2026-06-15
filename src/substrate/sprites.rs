@@ -25,10 +25,6 @@ fn relay_cwd() -> PathBuf {
 pub struct SpritesSubstrate;
 
 impl Substrate for SpritesSubstrate {
-    fn name(&self) -> &'static str {
-        "sprites"
-    }
-
     fn acquire(&self, host: &str, attempt_dir: &Path) -> Result<Box<dyn Session>> {
         std::fs::create_dir_all(attempt_dir)?;
         let session = SpriteSession {
@@ -146,9 +142,10 @@ impl Session for SpriteSession {
         }
 
         let ws = shell_quote(&self.workspace);
-        let out = self.remote_shell(&format!("mkdir -p {ws}"), Duration::from_secs(60))?;
+        let cleanup = format!("mkdir -p {ws} && rm -f {ws}/EVENT.json {ws}/REPORT.json");
+        let out = self.remote_shell(&cleanup, Duration::from_secs(60))?;
         if out.exit_code != 0 {
-            bail!("mkdir workspace failed: {}", out.stderr.trim());
+            bail!("prepare workspace failed: {}", out.stderr.trim());
         }
 
         for repo in &plan.repos {
@@ -287,6 +284,16 @@ impl Session for SpriteSession {
     }
 
     fn release(&mut self) -> Result<()> {
+        let path = shell_quote(&format!("{}/{}", self.workspace, super::REPORT_FILENAME));
+        let out = self.remote_shell(
+            &format!("if [ -f {path} ]; then cat {path}; else exit 42; fi"),
+            Duration::from_secs(120),
+        )?;
+        match out.exit_code {
+            0 => self.write_artifact(super::REPORT_FILENAME, out.stdout.as_bytes())?,
+            42 => {}
+            _ => bail!("read artifact REPORT.json failed: {}", out.stderr.trim()),
+        }
         if !self.marker.is_empty() {
             let _ = self.remote_shell(
                 &format!("rm -f /tmp/{}.pid", self.marker),

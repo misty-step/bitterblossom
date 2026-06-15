@@ -2,7 +2,6 @@ use anyhow::Result;
 
 use crate::ledger::Ledger;
 use crate::spec::{Plane, Task};
-#[derive(Debug)]
 pub struct Violation {
     pub kind: &'static str,
     pub detail: String,

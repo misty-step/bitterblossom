@@ -14,6 +14,7 @@ use bitterblossom::spec::Plane;
 const CLAUDE_STUB: &str = r#"#!/bin/sh
 # Claude-shaped result object on stdout; ignores its arguments.
 cat > /dev/null
+printf '{"status":"ok","artifact_paths":["REPORT.json"]}\n' > REPORT.json
 echo '{"type":"result","subtype":"success","result":"commission complete","total_cost_usd":0.0123,"num_turns":3,"usage":{"input_tokens":120,"output_tokens":45}}'
 "#;
 
@@ -99,6 +100,8 @@ fn demo_task_runs_end_to_end_with_cost_and_artifacts() {
     let artifact_dir = Path::new(a.artifact_dir.as_deref().unwrap());
     let result = fs::read_to_string(artifact_dir.join("result.md")).unwrap();
     assert_eq!(result, "commission complete");
+    let report = fs::read_to_string(artifact_dir.join("REPORT.json")).unwrap();
+    assert!(report.contains(r#""artifact_paths":["REPORT.json"]"#));
     assert!(artifact_dir.join("workspace/LANE_CARD.md").exists());
 }
 

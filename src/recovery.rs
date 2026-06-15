@@ -6,7 +6,7 @@ use crate::ledger::{phase_reached, Ledger};
 use crate::spec::Plane;
 use crate::substrate::{self, ProbeResult};
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 pub struct RecoveryReport {
     pub run_id: String,
     pub task: String,

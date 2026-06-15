@@ -93,7 +93,7 @@ pub struct AttemptRow {
     pub ended_at: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 pub struct RunEventRow {
     pub run_id: String,
     pub kind: String,
@@ -101,7 +101,7 @@ pub struct RunEventRow {
     pub at: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 pub struct DeadLetterRow {
     pub id: i64,
     pub run_id: String,
@@ -811,14 +811,13 @@ pub struct IngressRequest<'a> {
     pub parent_run_id: Option<&'a str>,
 }
 
-#[derive(Debug)]
 pub struct IngressOutcome {
     pub run_id: String,
     pub duplicate: bool,
     pub state: String,
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct AttemptStats {
     pub tokens_in: Option<i64>,
     pub tokens_out: Option<i64>,

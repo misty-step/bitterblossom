@@ -1386,3 +1386,62 @@ Backlog implications:
   parked member explains itself in one operator read.
 - 054 should keep host/account probes and post-execute connection failures in
   the operations drill backlog.
+
+## Update 2026-06-15: 061 CI-diagnose reflex slice
+
+Goal: add the first SDLC lifecycle reflex packet,
+`check_suite.failed -> ci-diagnose`, and dogfood it through `bb`.
+
+Dogfood runs:
+
+- `./target/debug/bb --config plane check` validated the new
+  `ci-diagnoser` agent and `ci-diagnose` task.
+- `GH_TOKEN=$(gh auth token) ./target/debug/bb --config plane run ci-diagnose
+  --idempotency-key dogfood:ci-diagnose:87c2111 --payload ... --json` ran on
+  the Sprites substrate as run `cf193e8b1be8`, cost `$0.0022721032`.
+- The first run wrote `REPORT.json` in the sprite workspace, but the local
+  attempt directory only contained `EVENT.json`, `LANE_CARD.md`, `result.md`,
+  `stdout.txt`, and `stderr.txt`.
+- After adding generic report collection in substrate release,
+  `dogfood:ci-diagnose:87c2111:v2` ran as `db4c75680f1b`, cost
+  `$0.003111851`, duration `53.665s`, and local artifacts included
+  `REPORT.json`.
+- After tightening the card to list only collected artifacts,
+  `dogfood:ci-diagnose:87c2111:v3` ran as `27b506855f67`, cost
+  `$0.0022944447`, duration `51.368s`, and `REPORT.json` reported
+  `artifact_paths: ["REPORT.json"]`.
+- The first review storm exposed a second substrate bug: persistent sprite
+  workspaces could leak a stale `REPORT.json` into later runs with no prior
+  report. `tests/e2e_sprites.rs` now runs the same sprite task twice and fails
+  if the second run sees the stale file; sprite prepare now clears `EVENT.json`
+  and `REPORT.json` before materializing the new plan.
+
+Friction:
+
+- `bb run --json` stayed silent for about 54 seconds while the sprite lane ran.
+  The final receipt is useful, but operators need progress events during remote
+  work.
+- `bb task list --json` returns a top-level array with a `task` key, not a
+  `{tasks: [...]}` envelope or `name` field. This is agent-readable but easy to
+  misremember across status/task surfaces.
+- The agent initially listed `failed-log.txt` in `artifact_paths`, but the
+  plane only collected `REPORT.json`. The card now says artifact paths must name
+  collected local attempt artifacts only.
+- Persistent sprite workspaces are sharp: a missing per-run file is not the
+  same as an absent file unless prepare explicitly removes residue from prior
+  runs.
+
+Delight:
+
+- The run receipt had the right operator evidence in one place: run id, trace
+  id, attempt id, model, cost, tokens, duration, state events, and artifact dir.
+- Dogfooding found a real generic substrate gap before closeout. The fix made
+  report collection work for both local and sprite substrates without adding
+  workload-specific dispatch logic.
+
+Backlog implications:
+
+- A progress-emitting `bb run --json` stream or `--follow` mode would make long
+  remote lanes much easier to operate.
+- Arbitrary artifact collection should eventually follow a declared artifact
+  contract. For this slice, `REPORT.json` is the durable packet.

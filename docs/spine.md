@@ -239,10 +239,14 @@ Deployment contract:
 - Image: [Dockerfile](../Dockerfile) builds the Rust `bb` binary and installs
   the pinned Linux Sprite CLI; [fly.toml](../fly.toml) sets `BB_SPRITE_BIN`.
 - Runtime secrets live on Fly, never in git: `BB_API_TOKEN`,
-  `BB_HOOK_REVIEW`, `OPENROUTER_API_KEY`, `GH_TOKEN`, and `SPRITE_TOKEN`.
+  `BB_HOOK_REVIEW`, `BB_HOOK_CI_DIAGNOSE`, `OPENROUTER_API_KEY`, `GH_TOKEN`,
+  and `SPRITE_TOKEN`.
 - GitHub `pull_request` webhooks for the reviewed repo subset point at
   `https://bitterblossom-plane.fly.dev/hooks/review`; the current subset is
   `misty-step/bitterblossom`, enforced again by the task filter.
+- GitHub `check_suite` webhooks for failed GitHub Actions suites point at
+  `https://bitterblossom-plane.fly.dev/hooks/ci-diagnose`; the first slice is
+  report-only and may recommend a builder command, but never creates one.
 - Health and recovery checks after a host restart are: unauthenticated
   `GET /health`, `GET /api/tasks` with `Authorization: Bearer $BB_API_TOKEN`,
   `flyctl status --app bitterblossom-plane`, `flyctl volumes list --app
@@ -282,6 +286,11 @@ The review workload also supports explicit manual tokenomics probes:
 Measurement mode runs the same real PR review path but suppresses the
 GitHub comment and leaves the full findings in `result.md`; webhook
 reviews always post exactly one PR comment.
+
+The CI-diagnose workload supports manual dogfood:
+`bb --config plane run ci-diagnose --payload '{"repo":"o/r","head_sha":"SHA","workflow":"verify"}'`.
+It writes a report/fix packet and may recommend a builder command, but does not
+edit code, post comments, or trigger follow-up runs.
 
 ## The submission loop
 

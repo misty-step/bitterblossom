@@ -8,9 +8,7 @@ use anyhow::Result;
 
 use crate::spec::RepoSpec;
 
-#[derive(Debug, Clone)]
 pub struct WorkspacePlan {
-    pub host: String,
     pub repos: Vec<RepoSpec>,
     pub card: String,
     pub payload: Option<String>,
@@ -24,7 +22,6 @@ pub struct WorkspacePlan {
     pub hermetic: bool,
 }
 
-#[derive(Debug)]
 pub struct ExecResult {
     pub exit_code: i64,
     pub stdout: String,
@@ -39,7 +36,6 @@ pub enum ProbeResult {
 }
 
 pub trait Substrate {
-    fn name(&self) -> &'static str;
     fn acquire(&self, host: &str, attempt_dir: &Path) -> Result<Box<dyn Session>>;
     fn probe(&self, host: &str, attempt_dir: &Path, marker: &str) -> ProbeResult;
 }

@@ -68,14 +68,23 @@ Model posture:
 ## Children
 
 1. Write the lifecycle event graph and payload contract.
-2. Pick the first runnable slice: `submission.opened -> storm members` or
-   `check_suite.failed -> ci-diagnose packet`.
+2. Pick the first runnable slice: `check_suite.failed -> ci-diagnose packet`.
 3. Add the needed task/agent/card files and dev-plane validation fixtures.
 4. Add report artifact shape tests for the selected reflex task.
 5. Dogfood on a real Bitterblossom PR and record run IDs, costs, findings,
    parked tasks, and operator UX notes.
 6. File follow-ups for status joins or run-creation permissions discovered
    during dogfood.
+
+## Slice 1: CI diagnose reflex
+
+The first runnable slice is `check_suite.failed -> ci-diagnose packet`.
+Acceptance is intentionally data-owned: a `ci-diagnoser` API-auth agent, a
+`ci-diagnose` task with manual and GitHub webhook triggers, fail-closed
+check-suite filters, and a card that writes a durable diagnosis/fix packet to
+`REPORT.json`. The plane records the exact trigger payload and run id; the
+agent may recommend a builder run, but it does not create that run, push code,
+comment, merge, deploy, park tasks, or resolve runs.
 
 ## Notes
 

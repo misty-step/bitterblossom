@@ -4,7 +4,6 @@ use serde_json::Value;
 use crate::ledger::AttemptStats;
 use crate::spec::{AgentSpec, TaskBudget};
 
-#[derive(Debug)]
 pub struct ParsedOutput {
     pub result: String,
     pub stats: AttemptStats,

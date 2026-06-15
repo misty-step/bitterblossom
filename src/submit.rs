@@ -381,7 +381,7 @@ fn row_to_submission(r: &rusqlite::Row<'_>) -> rusqlite::Result<SubmissionRow> {
     })
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 pub struct MemberStatus {
     pub kind: String,
     pub status: String,
@@ -395,7 +395,7 @@ pub struct MemberStatus {
     pub safe_next_reason: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 pub struct GateReport {
     pub submission: String,
     pub change_key: String,
