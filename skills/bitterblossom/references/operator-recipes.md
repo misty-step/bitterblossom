@@ -124,6 +124,40 @@ repo allowlist. The lane writes `REPORT.json` with diagnosis evidence and may
 recommend an exact builder command, but it does not edit code, comment, merge,
 deploy, park tasks, resolve runs, or invoke follow-up runs.
 
+## Model Evaluation Loop
+
+When the best model/config for a flow is uncertain, run at least three
+candidate tasks against the same payload. For the CI-diagnose cohort:
+
+```bash
+payload='{"repo":"owner/repo","head_sha":"<sha>","workflow":"verify","dry_run":true}'
+
+GH_TOKEN=$(gh auth token) bb --config <plane> run ci-diagnose \
+  --idempotency-key "model-eval:<sha>:deepseek" \
+  --payload "$payload" --json
+GH_TOKEN=$(gh auth token) bb --config <plane> run ci-diagnose-kimi \
+  --idempotency-key "model-eval:<sha>:kimi" \
+  --payload "$payload" --json
+GH_TOKEN=$(gh auth token) bb --config <plane> run ci-diagnose-glm \
+  --idempotency-key "model-eval:<sha>:glm" \
+  --payload "$payload" --json
+```
+
+Extract each run's `REPORT.json` and pass a compact candidate packet to the
+evaluator:
+
+```bash
+bb --config <plane> run model-eval \
+  --idempotency-key "model-eval:<flow>:<sha>:judge" \
+  --payload '{"flow":"ci-diagnose","objective":"compare reports","candidates":[...],"reference_context_path":"docs/model-evals/ci-diagnose/YYYY-MM-DD.md"}' \
+  --json
+```
+
+The evaluator is report-only. Save accepted conclusions under
+`docs/model-evals/` with run ids, model ids, cost, latency, and residual risk.
+Do not promote a model default from malformed candidate output or same-context
+self-review.
+
 ## Submission Gate
 
 Open a submission:

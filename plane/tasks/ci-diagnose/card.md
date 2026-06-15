@@ -68,6 +68,10 @@ Work backward from the first meaningful failure in the failed logs. Separate:
 Drop vague advice. If logs are missing or GitHub is inaccessible, write a
 blocked report with the exact command and error.
 
+For `no_failure`, set `suggested_next_run` to `null`. Evidence `source` fields
+must be concrete replayable commands with the actual repo, commit, and run id;
+do not leave placeholders such as `<rev>`.
+
 ## Suggested Next Run
 
 You may recommend one deterministic follow-up command. Prefer:

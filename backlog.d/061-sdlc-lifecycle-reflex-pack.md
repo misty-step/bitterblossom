@@ -86,6 +86,15 @@ check-suite filters, and a card that writes a durable diagnosis/fix packet to
 agent may recommend a builder run, but it does not create that run, push code,
 comment, merge, deploy, park tasks, or resolve runs.
 
+## Slice 2: Model-evaluated CI diagnose cohort
+
+Because model fit is empirical, not assumed, the CI diagnose flow now has a
+manual model-evaluation cohort: `ci-diagnose` (DeepSeek),
+`ci-diagnose-kimi` (Kimi), and `ci-diagnose-glm` (GLM-family). Operators run all
+three on the same payload, then send the reports to `model-eval`, a stronger
+manual evaluator. Accepted findings are recorded under `docs/model-evals/` and
+become future reference context before any default model promotion.
+
 ## Notes
 
 Why now: the builder-dispatch slice proved manual implementation dispatch can

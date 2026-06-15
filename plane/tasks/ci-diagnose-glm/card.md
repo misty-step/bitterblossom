@@ -1,0 +1,1 @@
+../ci-diagnose/card.md

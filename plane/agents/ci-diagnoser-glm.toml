@@ -1,0 +1,12 @@
+# CI failure diagnoser GLM-family variant. GLM 5.2 has a model page, but its
+# OpenRouter API release is 2026-06-16; use GLM 5.1 for runnable cohorts today.
+version = 1
+role = "diagnoser"
+harness = "pi"
+model = "z-ai/glm-5.1"
+secrets = ["OPENROUTER_API_KEY", "GH_TOKEN"]
+skills = [
+  "harness-kit/diagnose#ci-failure",
+  "harness-kit/ci#failure-triage",
+  "bitterblossom/operator-min",
+]
