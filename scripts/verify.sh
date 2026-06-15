@@ -17,6 +17,7 @@ cargo test
 echo "==> plane configs validate (bb check)"
 cargo run --quiet -- --config plane check
 cargo run --quiet -- --config examples/demo-plane check
+cargo run --quiet -- --config examples/canary-responder-plane check
 
 echo "==> spine LOC budget (<= 5000; the Python conductor died of bloat)"
 loc=$(find src -name '*.rs' -exec cat {} + | grep -vc '^\s*$')
