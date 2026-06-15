@@ -348,6 +348,8 @@ pub fn tasks_view(plane: &Plane, ledger: &Ledger) -> Result<Vec<serde_json::Valu
         out.push(serde_json::json!({
             "task": task.name,
             "agent": format!("{}@v{}", task.agent_name, task.agent.version),
+            "agent_role": task.agent.role,
+            "agent_skills": task.agent.skills,
             "harness": task.agent.harness,
             "model": task.agent.model,
             "substrate": task.spec.substrate,

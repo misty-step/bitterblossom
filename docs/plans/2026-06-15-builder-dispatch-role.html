@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Plan Review: Builder Dispatch Role</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f6f4ef;
+      --panel: #ffffff;
+      --ink: #171717;
+      --muted: #5f6460;
+      --line: #d9d5ca;
+      --accent: #126a5a;
+      --accent-soft: #dcece7;
+      --risk: #8f2432;
+      --risk-soft: #f0d7dc;
+      --code: #eeece4;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #171816;
+        --panel: #22231f;
+        --ink: #f4f1e9;
+        --muted: #b9baaf;
+        --line: #3e4039;
+        --accent: #69c3ad;
+        --accent-soft: #1f3d37;
+        --risk: #ef8896;
+        --risk-soft: #3d2026;
+        --code: #303129;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 15px/1.48 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main { max-width: 1080px; margin: 0 auto; padding: 34px 22px 64px; }
+    header { border-bottom: 1px solid var(--line); padding-bottom: 22px; margin-bottom: 22px; }
+    h1 { font-size: clamp(34px, 5vw, 56px); line-height: 1; margin: 0 0 12px; letter-spacing: 0; }
+    h2 { font-size: 19px; margin: 0 0 10px; }
+    p { margin-top: 0; }
+    code { background: var(--code); border-radius: 4px; padding: 1px 4px; }
+    .eyebrow { color: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+    .lede { color: var(--muted); font-size: 18px; max-width: 820px; }
+    .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 14px; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
+    .span-4 { grid-column: span 4; }
+    .span-6 { grid-column: span 6; }
+    .span-12 { grid-column: span 12; }
+    .callout { border-left: 5px solid var(--accent); background: var(--accent-soft); }
+    .risk { border-left: 5px solid var(--risk); background: var(--risk-soft); }
+    ul { margin: 0; padding-left: 18px; }
+    li + li { margin-top: 6px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border-bottom: 1px solid var(--line); padding: 9px 8px; text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: 12px; letter-spacing: .05em; text-transform: uppercase; }
+    @media (max-width: 860px) {
+      .span-4, .span-6, .span-12 { grid-column: span 12; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <p class="eyebrow">Plan review</p>
+    <h1>Builder Dispatch Role</h1>
+    <p class="lede">
+      Deliver the first manual authoring lane for Bitterblossom without
+      turning the Rust spine into a semantic workflow engine.
+    </p>
+  </header>
+
+  <section class="grid">
+    <div class="panel callout span-12">
+      <h2>Goal</h2>
+      <p>
+        Add a versioned, manual-only Rust builder launch contract and task
+        card so an operator can dispatch focused code-authoring work through
+        <code>bb run build</code>, then verify the resulting branch through
+        the existing submission/gate loop.
+      </p>
+    </div>
+
+    <div class="panel span-6">
+      <h2>In Scope</h2>
+      <ul>
+        <li>Agent metadata for role and curated skill/profile references.</li>
+        <li>A production plane <code>bb-builder-rust</code> subscription agent.</li>
+        <li>A manual-only <code>build</code> task card with branch/report/no-merge boundaries.</li>
+        <li>Docs and tests proving the metadata parses and is visible from task JSON.</li>
+      </ul>
+    </div>
+
+    <div class="panel span-6">
+      <h2>Out Of Scope</h2>
+      <ul>
+        <li>No multi-step orchestrator inside dispatch.</li>
+        <li>No runtime skill projection or Daedalus-generated agent deployment yet.</li>
+        <li>No reflex/webhook builder task; subscription agents stay manual dispatch only.</li>
+        <li>No automatic merge authority for builder runs.</li>
+      </ul>
+    </div>
+
+    <div class="panel span-12">
+      <h2>Acceptance Oracle</h2>
+      <table>
+        <tr><th>Check</th><th>Evidence</th></tr>
+        <tr><td>Config contract</td><td><code>role</code> and <code>skills</code> load, validate, and appear in task JSON.</td></tr>
+        <tr><td>Builder task</td><td><code>bb --config plane check --json</code> lists <code>build</code> bound to <code>bb-builder-rust@v1</code>.</td></tr>
+        <tr><td>Repo gate</td><td><code>./scripts/verify.sh</code> passes without weakening lint/test/LOC gates.</td></tr>
+        <tr><td>Dogfood</td><td>A local <code>bb submit</code>/<code>bb gate --json</code> storm is attempted and UX notes are recorded.</td></tr>
+      </table>
+    </div>
+
+    <div class="panel risk span-12">
+      <h2>Primary Risk</h2>
+      <p>
+        The easy mistake is to build a hidden meta-agent framework. The
+        intended change is narrower: make role/skill metadata first-class
+        enough for operators and future Daedalus contracts while leaving
+        execution as the existing card plus harness command.
+      </p>
+    </div>
+  </section>
+</main>
+</body>
+</html>

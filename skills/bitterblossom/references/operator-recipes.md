@@ -58,6 +58,23 @@ immediately and emits heartbeat lines on stderr while the run is pending or
 running. Keep `--json` for agents and scripts; it stays quiet until the final
 `run`/`attempts`/`events` bundle is ready.
 
+## Builder Dispatch
+
+Use the checked-in `build` task only for shaped implementation work. It binds a
+manual subscription-auth builder agent, so it must not be attached to webhook
+or cron triggers.
+
+```bash
+GH_TOKEN=$(gh auth token) bb --config <plane> run build \
+  --idempotency-key "build:<backlog-or-packet>:<date>" \
+  --payload '{"repo":"misty-step/bitterblossom","backlog":"backlog.d/060-builder-dispatch-role.md","branch_slug":"builder-dispatch-role"}' \
+  --json
+```
+
+Expected side effects: a pushed `bb/build/<slug>` branch and a builder report
+in the run result. The builder never merges. Submit and gate the produced rev
+with the normal submission loop.
+
 ## Ledger Export
 
 Export run and attempt telemetry as JSONL for downstream analysis:

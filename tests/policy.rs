@@ -5,6 +5,7 @@
 use std::fs;
 use std::path::Path;
 
+use bitterblossom::ledger::Ledger;
 use bitterblossom::spec::Plane;
 
 fn plane_with(root: &Path, agent_toml: &str, task_toml: &str) -> anyhow::Result<Plane> {
@@ -123,4 +124,30 @@ fn non_local_substrates_require_explicit_host_generically() {
         "{msg}"
     );
     assert!(!msg.contains("sprites"), "{msg}");
+}
+
+#[test]
+fn agent_role_and_skill_contract_are_loaded_and_exposed() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = plane_with(
+        dir.path(),
+        r#"version = 4
+harness = "codex"
+model = "gpt-5.5"
+role = "builder"
+skills = ["harness-kit/deliver#builder", "bitterblossom/operator-min"]
+"#,
+        MANUAL,
+    )
+    .unwrap();
+
+    let agent = &plane.agents["a"];
+    assert_eq!(agent.role.as_deref(), Some("builder"));
+    assert_eq!(agent.skills.len(), 2);
+    assert_eq!(agent.skills[0], "harness-kit/deliver#builder");
+
+    let ledger = Ledger::open(&plane.db_path()).unwrap();
+    let rows = bitterblossom::serve::tasks_view(&plane, &ledger).unwrap();
+    assert_eq!(rows[0]["agent_role"], "builder");
+    assert_eq!(rows[0]["agent_skills"][0], "harness-kit/deliver#builder");
 }
