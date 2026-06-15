@@ -1290,3 +1290,99 @@ Storm UX notes:
 - Lean in: `bb` receipts made this storm easy to audit: run ids, costs,
   durations, token counts, artifact dirs, and the final gate report were all
   ledger-native.
+
+## Update 2026-06-15: builder dispatch role
+
+Goal: deliver a first-class, manual-only builder dispatch role so operators and
+agents can launch a focused Rust builder through `bb` instead of treating
+agent identity as prose outside the plane.
+
+Preflight:
+
+- `flyctl orgs list` failed with a 503 plus metrics 401. I treated Fly org
+  listing as unavailable rather than proof of the wrong account.
+- `sprite org list` showed `misty-step` as the selected Sprite org.
+- `sprite use -o misty-step lane-1` followed by `sprite exec -- whoami`
+  returned `sprite`, confirming the intended Misty Step Sprites context.
+- `./target/debug/bb --config plane status --json` showed `tasks: 9`,
+  `parked_tasks: 1`, and `open_dlq: 5`; `security` remained parked for
+  `run cost $0.2539 > max_cost_per_run_usd $0.25`.
+- `./target/debug/bb --config plane task list --json` exposed the new
+  `build` task as `bb-builder-rust@v1`, `agent_role: builder`, and skills
+  `harness-kit/deliver#builder`, `harness-kit/ci#rust-local-gate`, and
+  `bitterblossom/operator-min`.
+
+Work:
+
+- Added `plane/agents/bb-builder-rust.toml` and `plane/tasks/build/` as a
+  manual-only builder launch contract on the Sprites substrate.
+- Added agent `role` and `skills` metadata to the loaded task view and
+  `/api/tasks`/`bb task list --json` output.
+- Updated `docs/spine.md`, the Bitterblossom skill, and operator recipes so
+  consuming agents can discover the builder contract from repo-owned files.
+- Archived backlog item `060-builder-dispatch-role` as the focused slice of
+  the broader agent-interface work.
+
+Verification:
+
+- Full local gate: `./scripts/verify.sh` passed with `src LOC: 4999`.
+- Contract read: `./target/debug/bb --config plane check --json` loaded the
+  `build` task and `bb-builder-rust@v1` agent.
+- Task-surface read: `./target/debug/bb --config plane task list --json`
+  exposed builder role and skill metadata for agent consumers.
+
+Submission storm:
+
+- Code commit: `45383b5a4859380153cf012d2b255c482829dcc9`
+  (`feat: add manual builder dispatch role`).
+- First submission `78fefd04bd24` surfaced useful simplification advisories:
+  avoid a macro for the tiny default helpers and restore the `runs resolve`
+  doc comment. `product` also hit one post-execute `Error: connection closed`.
+- Second submission `3e595f89d5f8` caught another simplification issue: an
+  unnecessary `dlq` alias in `src/health.rs`.
+- Final submission `d75f46c39b27` for commit
+  `45383b5a4859380153cf012d2b255c482829dcc9`:
+  - `verify`: pass, run `339d463edc2b`, duration `46694ms`.
+  - `correctness`: pass, run `5c68f668c887`, cost `$0.129898192`,
+    duration `305337ms`.
+  - `simplification`: pass, run `3784ca33192a`, cost `$0.0194800651`,
+    duration `358593ms`.
+  - `product`: pass, run `7a6028b7292c`, cost `$0.02813225`, duration
+    `31123ms`.
+  - `security`: not started because the required security task remained
+    parked for the budget reason above.
+- `./target/debug/bb --config plane gate --submission d75f46c39b27 --json`
+  returned `decision: pending` with no blocking, advisory, or rejected
+  findings. The pending state is explained by the parked security member, not
+  by a finding against the change.
+
+UX notes:
+
+- Friction: `bb run --json` is still silent during long remote verdicts.
+  `correctness` and `simplification` each took several minutes with no
+  heartbeat until the final JSON receipt appeared.
+- Friction: gate output still reports a parked required member as
+  `not_started`; the operator must manually join `bb gate` with
+  `bb status --json` or `bb task list --json` to see the budget reason.
+- Friction: a post-execute product lane failure (`Error: connection closed`)
+  is correctly not mechanically retried, but the operator experience is a
+  manual same-submission retry decision.
+- Friction: Fly account preflight is not fully reliable because `flyctl orgs
+  list` can fail independently of Sprite org selection.
+- Delight: role and skill metadata in `bb task list --json` felt like the
+  right agent interface: the operator can see the task, bound harness, model,
+  role, skills, budget, and parked state without reading prose.
+- Delight: the storm caught real cleanup opportunities that improved the
+  delivered diff without expanding scope.
+- Lean in: submission and gate receipts made the review trail durable enough
+  to reconstruct why the final code looks the way it does.
+
+Backlog implications:
+
+- 053 should add schema-backed role/skill validation and projection rules so
+  agent launch contracts become stricter without adding workload logic to the
+  spine.
+- 052 should join gate member state with parked task reasons so a required
+  parked member explains itself in one operator read.
+- 054 should keep host/account probes and post-execute connection failures in
+  the operations drill backlog.
