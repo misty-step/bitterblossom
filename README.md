@@ -49,11 +49,14 @@ friction, bugs, and delight.
 cargo build
 ./target/debug/bb --config examples/demo-plane check
 ./target/debug/bb --config examples/demo-plane run demo
+./target/debug/bb --config examples/canary-responder-plane check
 ```
 
-`examples/demo-plane/` is a complete commented config. Production
-planes dispatch to a remote substrate only: `sprites` restores
-checkpoints, syncs repos, and executes the harness on a
+`examples/demo-plane/` is a complete commented config.
+`examples/canary-responder-plane/` shows a production-shaped reflex workload
+template for Canary incident response. Production planes dispatch to a remote
+substrate only: `sprites` restores checkpoints, syncs repos, and executes the
+harness on a
 [Fly Sprite](https://sprites.dev) over WebSocket exec. The `local`
 substrate is dev/test machinery, rejected unless plane.toml sets
 `dev = true`.

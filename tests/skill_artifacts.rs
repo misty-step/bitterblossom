@@ -56,3 +56,18 @@ fn bitterblossom_dogfood_skill_is_exportable_agent_interface() {
     assert!(openai.contains("display_name: \"Bitterblossom Dogfood\""));
     assert!(openai.contains("default_prompt: \"Use $bitterblossom-dogfood"));
 }
+
+#[test]
+fn canary_responder_skill_matches_template_contract() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/canary-responder");
+    let skill = fs::read_to_string(root.join("SKILL.md")).unwrap();
+
+    assert!(skill.starts_with("---\n"));
+    assert!(skill.contains("name: canary-responder"));
+    assert!(skill.contains("description: |"));
+    assert!(skill.contains("webhooks as wake-up hints"));
+    assert!(skill.contains("canary-services.toml"));
+    assert!(skill.contains("REPORT.json"));
+    assert!(skill.contains("examples/canary-responder-plane/"));
+    assert!(!skill.contains("TODO"));
+}
