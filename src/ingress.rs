@@ -5,6 +5,7 @@ use sha2::Sha256;
 
 use crate::ledger::{IngressOutcome, IngressRequest, Ledger};
 use crate::spec::{Plane, Task, TriggerSpec};
+#[derive(Debug)]
 pub struct WebhookResponse {
     pub status: u16,
     pub body: String,
@@ -52,7 +53,6 @@ pub fn handle_webhook(
     };
     let signature = header(headers, "x-hub-signature-256")
         .or_else(|| header(headers, "x-signature-256"))
-        .or_else(|| header(headers, "x-signature"))
         .unwrap_or_default();
     if !verify_hmac(&secret, body.as_bytes(), &signature) {
         return Ok(WebhookResponse {

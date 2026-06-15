@@ -66,25 +66,6 @@ fn webhook_valid_hmac_creates_durable_run_before_ack() {
 }
 
 #[test]
-fn webhook_accepts_canary_x_signature_header() {
-    let dir = tempfile::tempdir().unwrap();
-    let plane = make_plane(dir.path());
-    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
-    std::env::set_var(SECRET_ENV, "hunter2");
-
-    let body = r#"{"event":"incident.opened","incident":{"service":"canary"}}"#;
-    let sig = sign_hmac("hunter2", body.as_bytes());
-    let headers = vec![
-        ("X-Signature".to_string(), sig),
-        ("X-GitHub-Delivery".to_string(), "d-canary".to_string()),
-    ];
-    let resp = handle_webhook(&plane, &mut ledger, "demo", &headers, body).unwrap();
-
-    assert_eq!(resp.status, 202, "{}", resp.body);
-    assert_eq!(ledger.list_runs(Some("demo"), None).unwrap().len(), 1);
-}
-
-#[test]
 fn webhook_invalid_signature_rejected_with_no_row() {
     let dir = tempfile::tempdir().unwrap();
     let plane = make_plane(dir.path());
