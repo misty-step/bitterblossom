@@ -14,7 +14,7 @@ The product is the config surface. A workload is files, not Rust:
 
 ```
 plane.toml                  # db path, ingress bind/token, notify webhook, global budget
-agents/<name>.toml          # versioned agent binding: harness, model, flags
+agents/<name>.toml          # versioned launch contract: role, skills, harness, model, flags
 tasks/<name>/card.md        # lane card — the agent's entire context
 tasks/<name>/task.toml      # agent binding, substrate, workspace, budgets, triggers
 ```
@@ -79,6 +79,7 @@ max_cost_per_day_usd = 25.0       # global daily ceiling, enforced pre-dispatch
 
 ```toml
 version = 1                       # bump on any change; recorded on every attempt
+role = "reviewer"                 # operator-facing role: builder, critic, verifier, gardener...
 harness = "pi"                    # claude | codex | pi
 model = "moonshotai/kimi-k2.6"
 provider = "openrouter"           # pi only; defaults to "openrouter"
@@ -86,10 +87,21 @@ auth = "api"                      # api | subscription (defaults by harness)
 bin = "pi"                        # optional: override the harness binary path
 args = []                         # optional: extra CLI args appended verbatim
 secrets = ["OPENROUTER_API_KEY"]  # env names resolved per-exec, never persisted
+
+skills = [                         # curated role contract; v1 records/exposes,
+  "harness-kit/code-review#coordinator", # but does not project skills at runtime
+]
 ```
 
 Swapping a task's agent is a one-line edit to `task.toml`; the ledger
 records which agent name + version produced every attempt.
+
+`role` and `skills` are launch-contract metadata: visible in
+`bb check --json`, `/api/tasks`, and `bb task list --json` so operators and
+agents can tell what kind of worker is bound before dispatch. They do not
+change execution in v1. A runtime skill-projection system belongs behind a
+separate shaped contract so dispatch stays a thin card + harness runner, not
+a semantic workflow engine.
 
 ### Model & auth policy (enforced at load — `bb check` fails, not dispatch)
 
@@ -152,6 +164,16 @@ max = 4000
 pre_command = ""                  # optional adapter commands run in the
 post_command = ""                 # workspace before/after the agent
 ```
+
+### Manual builder dispatch
+
+The checked-in `build` task is the first authoring lane. It binds
+`bb-builder-rust@v1` to a manual-only sprites task and commissions exactly
+one shaped slice from a backlog item or context packet. The builder may
+create commits and push a branch, but it never merges, parks tasks, edits
+secrets, or runs from webhook/cron triggers. The existing submission loop
+remains the acceptance path: submit the produced branch, run the storm, then
+gate.
 
 ## Substrate contract
 

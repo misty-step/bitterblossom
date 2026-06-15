@@ -17,14 +17,10 @@ pub fn notify(plane: &Plane, event: &str, detail: &serde_json::Value) {
     let spawned = Command::new(bin)
         .args([
             "-fsS",
-            "-m",
-            "10",
-            "-X",
-            "POST",
-            "-H",
-            "Content-Type: application/json",
-            "-d",
-            "@-",
+            "-m10",
+            "-XPOST",
+            "-HContent-Type: application/json",
+            "-d@-",
         ])
         .arg(url)
         .stdin(Stdio::piped())
@@ -36,12 +32,10 @@ pub fn notify(plane: &Plane, event: &str, detail: &serde_json::Value) {
             if let Some(mut stdin) = child.stdin.take() {
                 let _ = stdin.write_all(body.as_bytes());
             }
-            match child.wait() {
-                Ok(status) if status.success() => {}
-                Ok(status) => {
+            if let Ok(status) = child.wait() {
+                if !status.success() {
                     eprintln!("notify: webhook POST failed (exit {status}) event={event}")
                 }
-                Err(e) => eprintln!("notify: cannot wait for curl: {e} event={event}"),
             }
         }
         Err(e) => eprintln!("notify: cannot spawn curl: {e}"),

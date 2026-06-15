@@ -107,6 +107,9 @@ pub struct AgentSpec {
     pub harness: String,
     #[serde(default)]
     pub model: String,
+    pub role: Option<String>,
+    #[serde(default)]
+    pub skills: Vec<String>,
     pub provider: Option<String>,
     pub auth: Option<String>,
     pub bin: Option<String>,
@@ -115,6 +118,7 @@ pub struct AgentSpec {
     #[serde(default)]
     pub secrets: Vec<String>,
 }
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthClass {
     Subscription,

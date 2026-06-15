@@ -56,6 +56,7 @@ Read the output for:
 | Decision-ready task/run/DLQ health | `bb --config <plane> status --json` |
 | Task inventory, parked state, budgets | `bb --config <plane> task list --json` |
 | Trigger manual work | `bb --config <plane> run <task> --payload '<json>' --json` |
+| Dispatch a manual builder lane | `bb --config <plane> run build --payload '{"backlog":"<id-or-path>"}' --json` |
 | Inspect ledger | `bb --config <plane> runs list --json`; `bb --config <plane> runs show <id> --json` |
 | Export run telemetry | `bb --config <plane> runs export` |
 | Handle pre-execute failures | `bb --config <plane> dlq list --json`; `bb --config <plane> dlq replay <id> --json` |
@@ -77,6 +78,9 @@ Detailed command recipes: `references/operator-recipes.md`.
   tokens into shell history.
 - Reflex triggers must use API-auth agents. Subscription-auth agents belong to
   manual dispatch only.
+- The checked-in `build` task is a manual subscription-auth builder lane. Use
+  it for shaped implementation work only; it creates/pushes a branch and report
+  but does not merge or replace the submission gate.
 - A parked task is intentionally blocked. Inspect the reason before `unpark`.
 - Dead letters are pre-execute failures. At/after execute, use operator
   resolution paths because the run may have side effects.

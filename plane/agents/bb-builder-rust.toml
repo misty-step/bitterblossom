@@ -1,0 +1,15 @@
+# Manual authoring agent: subscription-auth dispatch only. It can edit and
+# push a branch, but it never has merge authority and never runs from reflex
+# triggers.
+version = 1
+role = "builder"
+harness = "codex"
+model = "gpt-5.5"
+auth = "subscription"
+bin = "/home/sprite/.local/bin/codex"
+secrets = ["GH_TOKEN"]
+skills = [
+  "harness-kit/deliver#builder",
+  "harness-kit/ci#rust-local-gate",
+  "bitterblossom/operator-min",
+]
