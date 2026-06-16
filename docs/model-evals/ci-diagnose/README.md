@@ -16,6 +16,10 @@ Current evaluator:
 
 Records:
 
+- [`2026-06-16-real-failure-diagnosis.md`](2026-06-16-real-failure-diagnosis.md) —
+  GLM 5.1 won the real-failed-run evaluation for CI root-cause diagnosis
+  quality; use it as the strongest reference for failed-log diagnosis until a
+  broader sample says otherwise.
 - [`2026-06-15-no-failure-probe.md`](2026-06-15-no-failure-probe.md) —
   Kimi K2.7 Code won the no-failure CI probe; use a real failed run next before
   changing root-cause defaults.

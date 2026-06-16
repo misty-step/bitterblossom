@@ -1,6 +1,6 @@
 # Add an SDLC lifecycle reflex pack
 
-Priority: P1 | Status: ready | Estimate: XL
+Priority: P1 | Status: done | Estimate: XL
 
 ## Goal
 
@@ -117,3 +117,34 @@ Keep these boundaries:
 - More agents are not automatically better. Use multi-agent storming for
   independent review domains, breadth research, and verification; keep tightly
   coupled fixes in one builder lane.
+
+## Completion 2026-06-16
+
+This ticket is complete as the initial SDLC lifecycle reflex pack:
+
+- The lifecycle design packet exists in
+  [`docs/plans/2026-06-15-sdlc-reflex-agent-plane.md`](../docs/plans/2026-06-15-sdlc-reflex-agent-plane.md).
+- `check_suite.failed -> ci-diagnose packet` is implemented as task, agent,
+  webhook filter, manual trigger, and durable `REPORT.json` card contract.
+- The CI-diagnose flow has a model-evaluation cohort:
+  `ci-diagnose`, `ci-diagnose-kimi`, and `ci-diagnose-glm`.
+- `model-eval` compares candidate outputs using exact run ids, costs, and
+  reports, then writes reference context under `docs/model-evals/`.
+- Real dogfood evidence now exists for both no-failure handling and real failed
+  CI diagnosis:
+  - No-failure reference:
+    [`docs/model-evals/ci-diagnose/2026-06-15-no-failure-probe.md`](../docs/model-evals/ci-diagnose/2026-06-15-no-failure-probe.md).
+  - Real-failure reference:
+    [`docs/model-evals/ci-diagnose/2026-06-16-real-failure-diagnosis.md`](../docs/model-evals/ci-diagnose/2026-06-16-real-failure-diagnosis.md).
+- Final real-failure dogfood used GitHub Actions run `24208282343` at commit
+  `2b7e1b2b2b9a9694bfcbfff1950681d10c4e9be4`:
+  - `ci-diagnose`: run `701b4ce14c6b`, cost `$0.0340725056`.
+  - `ci-diagnose-kimi`: run `789da2d6c5ff`, cost `$0.03160564`.
+  - `ci-diagnose-glm`: run `2fadec48f213`, cost `$0.039297356`.
+  - `model-eval`: run `5a964da02de5`, cost `$0.157223`.
+- The real-failure evaluator selected `ci-diagnose-glm` / `z-ai/glm-5.1` as
+  the best root-cause diagnosis candidate for this sample.
+
+Remaining lifecycle reflex expansion is intentionally not smuggled into this
+ticket. It is tracked by
+[`062-remaining-lifecycle-reflexes.md`](../062-remaining-lifecycle-reflexes.md).

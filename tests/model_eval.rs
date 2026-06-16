@@ -373,6 +373,44 @@ fn model_eval_reference_context_is_documented_for_future_runs() {
 }
 
 #[test]
+fn ci_diagnose_real_failure_record_has_complete_receipts() {
+    let repo = root();
+    let readme = fs::read_to_string(repo.join("docs/model-evals/ci-diagnose/README.md")).unwrap();
+    let record_name = "2026-06-16-real-failure-diagnosis.md";
+    assert!(readme.contains(record_name));
+
+    let record = fs::read_to_string(
+        repo.join("docs")
+            .join("model-evals")
+            .join("ci-diagnose")
+            .join(record_name),
+    )
+    .unwrap();
+
+    for required in [
+        "24208282343",
+        "2b7e1b2b2b9a9694bfcbfff1950681d10c4e9be4",
+        "Hook Tests",
+        "Accepted Candidate Runs",
+        "ci-diagnose`",
+        "ci-diagnose-kimi`",
+        "ci-diagnose-glm`",
+        "Accepted Evaluator Run",
+        "model-eval`",
+        "Winner",
+        "Reference Context",
+        "Dogfood Notes",
+        "Residual Risk",
+    ] {
+        assert!(record.contains(required), "missing {required}");
+    }
+    assert!(
+        !record.contains("PENDING"),
+        "real-failure record must be completed before merge"
+    );
+}
+
+#[test]
 fn canonical_gate_verdict_kinds_stay_single_lane() {
     let repo = root();
     let plane = Plane::load(&repo.join("plane")).unwrap();
