@@ -14,7 +14,7 @@ Current first-class loop:
 4. Promote a new default only after the result is backed by receipts and the
    repo gate still passes.
 
-The first implemented cohort is `ci-diagnose`:
+The first implemented cohort is [`ci-diagnose`](ci-diagnose/README.md):
 
 | Candidate task | Model | Family |
 |---|---|---|

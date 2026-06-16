@@ -154,7 +154,8 @@ bb --config <plane> run model-eval \
 ```
 
 The evaluator is report-only. Save accepted conclusions under
-`docs/model-evals/` with run ids, model ids, cost, latency, and residual risk.
+[`docs/model-evals/`](../../../docs/model-evals/README.md) with run ids, model
+ids, cost, latency, and residual risk.
 Do not promote a model default from malformed candidate output or same-context
 self-review.
 

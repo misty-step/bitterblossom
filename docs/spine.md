@@ -303,9 +303,10 @@ checked-in cohort is `ci-diagnose`:
 
 The evaluator is `model-eval` on `openai/gpt-5.5` through OpenRouter API auth.
 It writes `REPORT.json`; the operator records accepted findings under
-`docs/model-evals/` as future reference context. `z-ai/glm-5.2` is page-visible
-but API-pending until June 16, 2026, so the runnable GLM-family candidate uses
-GLM 5.1 until the catalog and a dogfood run prove otherwise.
+[`docs/model-evals/`](model-evals/README.md) as future reference context.
+`z-ai/glm-5.2` is page-visible but API-pending until June 16, 2026, so the
+runnable GLM-family candidate uses GLM 5.1 until the catalog and a dogfood run
+prove otherwise.
 
 ## The submission loop
 
