@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>063 Model Catalog Watch</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #111418;
+      --muted: #5c6672;
+      --line: #d8dde5;
+      --paper: #f7f8fa;
+      --panel: #ffffff;
+      --accent: #0f766e;
+      --warn: #9a3412;
+      --blue: #1d4ed8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 15px/1.48 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: var(--paper);
+    }
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 32px 24px 52px;
+    }
+    h1, h2, h3 { margin: 0 0 12px; letter-spacing: 0; }
+    h1 { font-size: 34px; line-height: 1.08; }
+    h2 { font-size: 19px; margin-top: 28px; }
+    h3 { font-size: 15px; color: var(--muted); text-transform: uppercase; }
+    p { margin: 0 0 12px; color: var(--muted); }
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.92em;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--panel);
+      border: 1px solid var(--line);
+    }
+    th, td {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+    }
+    tr:last-child td { border-bottom: 0; }
+    ul { margin: 0; padding-left: 18px; }
+    li { margin: 6px 0; }
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(300px, 0.8fr);
+      gap: 24px;
+      align-items: start;
+      margin-bottom: 28px;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      padding: 16px;
+    }
+    .callout { border-left: 4px solid var(--accent); }
+    .warn { border-left-color: var(--warn); }
+    .blue { border-left-color: var(--blue); }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+    .grid3 {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+    }
+    .kicker {
+      margin-bottom: 8px;
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .phase {
+      display: grid;
+      grid-template-columns: 120px minmax(0, 1fr) minmax(220px, 0.7fr);
+      gap: 16px;
+      border-top: 1px solid var(--line);
+      padding-top: 14px;
+      margin-top: 14px;
+    }
+    .phase:first-of-type {
+      border-top: 0;
+      margin-top: 0;
+      padding-top: 0;
+    }
+    @media (max-width: 850px) {
+      .hero, .grid, .grid3, .phase { grid-template-columns: 1fr; }
+      main { padding: 24px 16px 40px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <div>
+        <p class="kicker">Backlog 063 / model catalog watch</p>
+        <h1>Make model freshness a deterministic guard plus a report-producing reflex.</h1>
+        <p>
+          The target outcome is not "use whatever launched today." The outcome is
+          that configured OpenRouter model ids stay valid, new runnable models
+          become visible quickly, and default promotions still require Bitterblossom
+          smoke plus model-eval evidence.
+        </p>
+      </div>
+      <aside class="panel callout">
+        <h2>Chosen Design</h2>
+        <p>
+          Build a hybrid: an offline catalog fixture check in the repo gate, plus
+          a scheduled <code>model-catalog-watch</code> task that fetches the live
+          OpenRouter catalog and writes recommendation artifacts.
+        </p>
+        <p>
+          Do not add provider polling to the Rust spine in this slice. The current
+          <code>src</code> budget has only 19 LOC of headroom.
+        </p>
+      </aside>
+    </section>
+
+    <section class="grid3">
+      <article class="panel">
+        <h3>Standards</h3>
+        <p>Deterministic local gate, no silent config mutation, event-plane workload for live discovery.</p>
+      </article>
+      <article class="panel">
+        <h3>Acceptance</h3>
+        <p>Configured models validate against a fixture; the live watcher produces <code>REPORT.json</code> recommendations.</p>
+      </article>
+      <article class="panel warn">
+        <h3>Stop If</h3>
+        <p>The implementation wants live network in default verify, Rust provider polling, or automatic model promotion.</p>
+      </article>
+    </section>
+
+    <section class="grid" style="margin-top: 16px">
+      <article class="panel">
+        <h2>Current State</h2>
+        <ul>
+          <li><code>plane/agents/*.toml</code> hold harness, provider, and model ids.</li>
+          <li><code>docs/model-evals/README.md</code> owns promotion doctrine.</li>
+          <li><code>scripts/verify.sh</code> is the one local gate and enforces <code>src LOC &lt;= 5000</code>.</li>
+          <li>OpenRouter exposes model metadata via <code>GET /api/v1/models</code>.</li>
+        </ul>
+      </article>
+      <article class="panel blue">
+        <h2>Proof Surface</h2>
+        <ul>
+          <li><code>cargo test --test model_catalog -- --nocapture</code></li>
+          <li><code>scripts/check-model-catalog.sh --catalog tests/fixtures/openrouter-models-current.json --json</code></li>
+          <li><code>scripts/check-model-catalog.sh --live --json</code></li>
+          <li><code>bb --config plane run model-catalog-watch --payload '{"dry_run":true}' --json</code></li>
+          <li><code>./scripts/verify.sh</code></li>
+        </ul>
+      </article>
+    </section>
+
+    <h2>Execution Plan</h2>
+    <section class="panel">
+      <div class="phase">
+        <strong>1. Guard</strong>
+        <p>Add a shell catalog check with fixture and live modes. It reads configured OpenRouter models and fails on missing ids or required metadata gaps.</p>
+        <p>Evidence: fixture test plus JSON output that names configured and missing ids.</p>
+      </div>
+      <div class="phase">
+        <strong>2. Reflex</strong>
+        <p>Add <code>model-catalog-watch</code> task/agent/card with manual and cron triggers. The card writes recommendations and may file one backlog PR when explicitly not dry-run.</p>
+        <p>Evidence: <code>bb check</code> sees the task and a dry-run produces <code>REPORT.json</code>.</p>
+      </div>
+      <div class="phase">
+        <strong>3. Doctrine</strong>
+        <p>Document that release pages and RSS are discovery signals, while API catalog plus smoke plus model-eval is the promotion path.</p>
+        <p>Evidence: model-eval docs name the policy and fixture boundary.</p>
+      </div>
+      <div class="phase">
+        <strong>4. Close</strong>
+        <p>Run full gate, live probe, and fresh artifact-only review focused on provider flake, silent mutation, and spine creep.</p>
+        <p>Evidence: green commands, watcher run id, clean git state.</p>
+      </div>
+    </section>
+
+    <h2>Alternatives</h2>
+    <table>
+      <thead>
+        <tr><th>Option</th><th>Helps</th><th>Fails</th><th>Verdict</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Manual sweep</td>
+          <td>Cheap, flexible.</td>
+          <td>Depends on memory and misses same-day launches.</td>
+          <td>Fallback only.</td>
+        </tr>
+        <tr>
+          <td>Pure LLM watcher</td>
+          <td>Fits Bitterblossom reflex style.</td>
+          <td>Too soft for configured-id correctness.</td>
+          <td>Use only as recommendation layer.</td>
+        </tr>
+        <tr>
+          <td>Live CI check</td>
+          <td>Reality on every run.</td>
+          <td>Provider outages block unrelated work.</td>
+          <td>Reject for default gate.</td>
+        </tr>
+        <tr>
+          <td>Rust <code>bb model-catalog</code></td>
+          <td>First-class CLI.</td>
+          <td>Blows or strains the 5k spine budget unless paired with refactor.</td>
+          <td>Defer.</td>
+        </tr>
+        <tr>
+          <td>Offline guard plus live reflex</td>
+          <td>Deterministic safety and durable discovery.</td>
+          <td>Requires fixture refresh discipline.</td>
+          <td>Choose.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <section class="grid" style="margin-top: 28px">
+      <article class="panel">
+        <h2>Repo Anchors</h2>
+        <ul>
+          <li><code>project.md</code></li>
+          <li><code>docs/spine.md</code></li>
+          <li><code>docs/adr/005-rust-event-plane.md</code></li>
+          <li><code>src/spec.rs</code></li>
+          <li><code>plane/tasks/gardener/</code></li>
+          <li><code>plane/tasks/model-eval/</code></li>
+          <li><code>tests/model_eval.rs</code></li>
+          <li><code>scripts/verify.sh</code></li>
+        </ul>
+      </article>
+      <article class="panel warn">
+        <h2>Adversarial Review Focus</h2>
+        <ul>
+          <li>Can stale fixtures create false confidence?</li>
+          <li>Can the watcher create noisy backlog PRs?</li>
+          <li>Does any code path silently alter model configs?</li>
+          <li>Does provider-specific logic leak into the Rust spine?</li>
+          <li>Can a page-visible but API-missing model be mistaken for runnable?</li>
+        </ul>
+      </article>
+    </section>
+
+    <p style="margin-top: 28px">
+      Premise source:
+      <code>sha256:6fd658002c6593cf1b9a2670bf5b691b1fa7e7ab49618f0da2463c4cb5ec8b33 git:3bc4b79d2380026d78d226d5f6dd231c72d10596:backlog.d/063-model-catalog-watch-and-promotion.md</code>
+    </p>
+  </main>
+</body>
+</html>
