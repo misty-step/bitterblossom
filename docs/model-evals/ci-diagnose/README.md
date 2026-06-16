@@ -17,5 +17,5 @@ Current evaluator:
 Records:
 
 - [`2026-06-15-no-failure-probe.md`](2026-06-15-no-failure-probe.md) —
-  DeepSeek Flash won the no-failure CI probe; use a real failed run next before
+  Kimi K2.7 Code won the no-failure CI probe; use a real failed run next before
   changing root-cause defaults.

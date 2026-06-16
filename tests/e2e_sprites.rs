@@ -142,8 +142,16 @@ fn sprites_task_runs_end_to_end_with_identical_row_shape() {
     let report = fs::read_to_string(artifact_dir.join("REPORT.json")).unwrap();
     assert!(report.contains(r#""artifact_paths":["REPORT.json"]"#));
 
-    // The card was materialized into the (fake) remote workspace.
+    let run_context: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(artifact_dir.join("RUN.json")).unwrap()).unwrap();
+    assert_eq!(run_context["run_id"], run_id);
+    assert_eq!(run_context["task"], "demo");
+    assert_eq!(run_context["agent"]["name"], "remote");
+    assert_eq!(run_context["agent"]["harness"], "claude");
+
+    // The card and run metadata were materialized into the (fake) remote workspace.
     assert!(fake_home.join("bb/demo/LANE_CARD.md").exists());
+    assert!(fake_home.join("bb/demo/RUN.json").exists());
     // Checkpoint restore was requested before preparing.
     let log_text = fs::read_to_string(&log).unwrap();
     assert!(

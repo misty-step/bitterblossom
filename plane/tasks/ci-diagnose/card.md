@@ -7,7 +7,13 @@ operator.
 
 ## Input
 
-Read `EVENT.json` first. Supported payloads:
+Read `RUN.json` first for plane metadata, then read `EVENT.json` for the
+workload payload. `RUN.json` contains the actual task name, run id, agent,
+model, and substrate. Always report `task` from `RUN.json`, not from examples in
+this card; model-evaluation variants such as `ci-diagnose-kimi` and
+`ci-diagnose-glm` must preserve their own task names.
+
+Supported `EVENT.json` payloads:
 
 - GitHub `check_suite` webhook payloads filtered by the plane to
   `check_suite.failed` semantics: `action = completed`, `check_suite.status =
@@ -100,7 +106,7 @@ markdown fence. Required shape:
     "source": "github|manual",
     "delivery_id": "optional"
   },
-  "task": "ci-diagnose",
+  "task": "actual task name from RUN.json",
   "repo": "misty-step/bitterblossom",
   "rev": "failed commit sha",
   "claim": "one sentence diagnosis",

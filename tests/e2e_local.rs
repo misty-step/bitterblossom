@@ -129,6 +129,14 @@ fn trigger_payload_materializes_as_event_json_in_workspace() {
     let artifact_dir = std::path::Path::new(attempts[0].artifact_dir.as_deref().unwrap());
     let event = fs::read_to_string(artifact_dir.join("workspace/EVENT.json")).unwrap();
     assert_eq!(event, r#"{"pr":7,"action":"opened"}"#);
+
+    let run_context: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(artifact_dir.join("workspace/RUN.json")).unwrap())
+            .unwrap();
+    assert_eq!(run_context["run_id"], run_id);
+    assert_eq!(run_context["task"], "demo");
+    assert_eq!(run_context["agent"]["name"], "stub");
+    assert_eq!(run_context["agent"]["harness"], "claude");
 }
 
 #[test]

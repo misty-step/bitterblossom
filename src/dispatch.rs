@@ -197,17 +197,16 @@ fn attempt_on_host(
 
     let mut secrets = Vec::new();
     for name in &task.agent.secrets {
-        match std::env::var(name) {
-            Ok(value) => secrets.push((name.clone(), value)),
-            Err(_) => {
-                let _ = session.release();
-                return fail(false, format!("secret env var '{name}' not set"));
-            }
-        }
+        let Ok(value) = std::env::var(name) else {
+            let _ = session.release();
+            return fail(false, format!("secret env var '{name}' not set"));
+        };
+        secrets.push((name.clone(), value));
     }
     let plan = WorkspacePlan {
         repos: task.spec.workspace.repos.clone(),
         card: task.card.clone(),
+        run_context: serde_json::json!({"run_id": run_id, "task": &task.name, "agent": {"name": &task.agent_name, "version": task.agent.version, "role": &task.agent.role, "harness": &task.agent.harness, "model": &task.agent.model}, "substrate": &task.spec.substrate}).to_string(),
         payload: match (&submission, ledger.run_payload(run_id)?) {
             (Some(sub), Some(raw)) => {
                 let mut v: serde_json::Value = serde_json::from_str(&raw)?;
@@ -222,9 +221,7 @@ fn attempt_on_host(
             }
             (_, payload) => payload,
         },
-        report: submission
-            .as_ref()
-            .and_then(|s| s.prior_report_json.clone()),
+        report: submission.as_ref().and_then(|s| s.prior_report_json.clone()),
         pre_command: task.spec.pre_command.clone(),
         post_command: task.spec.post_command.clone(),
         marker: attempt_marker(attempt_id),

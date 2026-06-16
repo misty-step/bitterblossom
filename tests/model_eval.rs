@@ -37,6 +37,7 @@ fn ci_diagnose_has_three_diverse_candidate_configs_and_one_evaluator() {
             task.card, baseline.card,
             "{task_name} must share the CI card"
         );
+        assert!(task.card.contains("report `task` from `RUN.json`"));
         assert!(task
             .spec
             .triggers
@@ -63,6 +64,7 @@ fn ci_diagnose_has_three_diverse_candidate_configs_and_one_evaluator() {
         "at least three",
         "integer from 1 to 5",
         "cost_usd` field as the source of truth",
+        "report.task` matches the candidate object's `task",
     ] {
         assert!(evaluator.card.contains(required), "missing {required}");
     }
