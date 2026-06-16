@@ -38,11 +38,20 @@ fn ci_diagnose_has_three_diverse_candidate_configs_and_one_evaluator() {
             "{task_name} must share the CI card"
         );
         assert!(task.card.contains("report `task` from `RUN.json`"));
-        assert!(task
-            .spec
-            .triggers
-            .iter()
-            .any(|trigger| matches!(trigger, TriggerSpec::Manual)));
+        assert!(!task.spec.triggers.is_empty());
+        if task_name == "ci-diagnose" {
+            assert!(task
+                .spec
+                .triggers
+                .iter()
+                .any(|trigger| matches!(trigger, TriggerSpec::Manual)));
+        } else {
+            assert!(task
+                .spec
+                .triggers
+                .iter()
+                .all(|trigger| matches!(trigger, TriggerSpec::Manual)));
+        }
         families.insert(family);
     }
     assert_eq!(families.len(), 3);
@@ -50,6 +59,7 @@ fn ci_diagnose_has_three_diverse_candidate_configs_and_one_evaluator() {
     let evaluator = plane.task("model-eval").unwrap();
     assert_eq!(evaluator.agent.role.as_deref(), Some("evaluator"));
     assert_eq!(evaluator.agent.model, "openai/gpt-5.5");
+    assert!(!evaluator.spec.triggers.is_empty());
     assert!(evaluator
         .spec
         .triggers
@@ -62,6 +72,9 @@ fn ci_diagnose_has_three_diverse_candidate_configs_and_one_evaluator() {
         "\"reference_context\"",
         "\"residual_risk\"",
         "at least three",
+        "materially different",
+        "blocked_reason",
+        "winner: null",
         "integer from 1 to 5",
         "cost_usd` field as the source of truth",
         "report.task` matches the candidate object's `task",

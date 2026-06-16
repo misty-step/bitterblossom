@@ -31,6 +31,10 @@ There must be at least three candidates, and they must represent at least
 three materially different configs: model family, harness, prompt, budget, or
 tooling. If that is not true, write a blocked report.
 
+For blocked reports, use this shape: `status = "blocked"`, include `flow`,
+`objective`, `candidate_count`, `blocked_reason`, `scorecard: []`,
+`winner: null`, `reference_context: null`, and `residual_risk`.
+
 ## Evaluation
 
 Judge the outputs against the flow's objective, not the model brand. For each
@@ -67,6 +71,7 @@ markdown fence. Required shape:
   "status": "complete|blocked",
   "flow": "ci-diagnose",
   "objective": "short objective",
+  "blocked_reason": "present only when status is blocked",
   "candidate_count": 3,
   "scorecard": [
     {
