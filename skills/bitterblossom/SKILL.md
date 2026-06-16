@@ -85,9 +85,10 @@ Detailed command recipes: `references/operator-recipes.md`.
   but does not merge or replace the submission gate.
 - For uncertain model fit, run a cohort: at least three materially different
   candidate tasks for the same flow and payload, then the `model-eval` task.
-  Record accepted findings under
-  [`docs/model-evals/`](../../docs/model-evals/README.md) before promoting a
-  new default.
+  First-class cohorts for `build`, `review`, `gardener`, `ci-diagnose`, and
+  submission-storm members are listed under
+  [`docs/model-evals/`](../../docs/model-evals/README.md). Record accepted
+  findings there before promoting a new default.
 - A parked task is intentionally blocked. Inspect the reason before `unpark`.
 - Dead letters are pre-execute failures. At/after execute, use operator
   resolution paths because the run may have side effects.

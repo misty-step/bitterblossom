@@ -126,8 +126,10 @@ deploy, park tasks, resolve runs, or invoke follow-up runs.
 
 ## Model Evaluation Loop
 
-When the best model/config for a flow is uncertain, run at least three
-candidate tasks against the same payload. For the CI-diagnose cohort:
+When the best model/config for a flow is uncertain, run the flow's first-class
+cohort from [`docs/model-evals/`](../../../docs/model-evals/README.md): at
+least three candidate tasks against the same payload, then one evaluator run.
+For example, the CI-diagnose cohort is:
 
 ```bash
 payload='{"repo":"owner/repo","head_sha":"<sha>","workflow":"verify","dry_run":true}'
@@ -158,6 +160,11 @@ The evaluator is report-only. Save accepted conclusions under
 ids, cost, latency, and residual risk.
 Do not promote a model default from malformed candidate output or same-context
 self-review.
+
+Candidate variants are manual-only. Review variants force measurement mode;
+gardener variants force dry-run; build variants default to dry-run unless the
+payload explicitly asks for a live branch; storm variants use eval-only verdict
+kinds and do not change gate arithmetic.
 
 ## Submission Gate
 

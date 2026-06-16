@@ -6,17 +6,21 @@ the authoring agent.
 
 ## Input
 
-Read `EVENT.json` in this directory. It identifies the PR, either as
-GitHub webhook payload (`repository.full_name`, `pull_request.number`) or
-as the manual shape `{"repo": "owner/name", "pr": 123}`. If `EVENT.json`
-is missing or names no PR, print an error and exit non-zero — do not
-guess.
+Read `RUN.json` first for the actual task name, then read `EVENT.json` in this
+directory. `EVENT.json` identifies the PR, either as GitHub webhook payload
+(`repository.full_name`, `pull_request.number`) or as the manual shape
+`{"repo": "owner/name", "pr": 123}`. If `EVENT.json` is missing or names no PR,
+print an error and exit non-zero — do not guess.
 
 Manual payloads may request measurement mode with either
 `"measurement": true` or `"comment": false`. Measurement mode still
 reviews the real PR diff through the same process, but it must not post a
 GitHub comment; the final JSON is the evidence artifact. GitHub webhook
 payloads always post the review comment.
+
+If `RUN.json.task` is not exactly `review`, force measurement mode regardless of
+payload. Model-evaluation variants such as `review-deepseek` and `review-glm`
+must never post duplicate public PR comments.
 
 Fetch context with `gh`:
 

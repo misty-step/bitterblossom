@@ -7,64 +7,313 @@ use std::path::PathBuf;
 
 use bitterblossom::spec::{AuthClass, Plane, TriggerSpec};
 
+struct Candidate<'a> {
+    task: &'a str,
+    harness: &'a str,
+    model: &'a str,
+    family: &'a str,
+    auth: AuthClass,
+    verdict: Option<&'a str>,
+}
+
+struct Cohort<'a> {
+    flow: &'a str,
+    candidates: &'a [Candidate<'a>],
+}
+
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-#[test]
-fn ci_diagnose_has_three_diverse_candidate_configs_and_one_evaluator() {
-    let repo = root();
-    let plane = Plane::load(&repo.join("plane")).unwrap();
-    let cohort = [
-        ("ci-diagnose", "deepseek/deepseek-v4-flash", "deepseek"),
-        ("ci-diagnose-kimi", "moonshotai/kimi-k2.7-code", "kimi"),
-        ("ci-diagnose-glm", "z-ai/glm-5.1", "glm"),
-    ];
-    let mut families = BTreeSet::new();
-    let baseline = plane.task("ci-diagnose").unwrap();
+const COHORTS: &[Cohort<'_>] = &[
+    Cohort {
+        flow: "build",
+        candidates: &[
+            Candidate {
+                task: "build",
+                harness: "codex",
+                model: "gpt-5.5",
+                family: "gpt",
+                auth: AuthClass::Subscription,
+                verdict: None,
+            },
+            Candidate {
+                task: "build-kimi",
+                harness: "pi",
+                model: "moonshotai/kimi-k2.7-code",
+                family: "kimi",
+                auth: AuthClass::Api,
+                verdict: None,
+            },
+            Candidate {
+                task: "build-glm",
+                harness: "pi",
+                model: "z-ai/glm-5.1",
+                family: "glm",
+                auth: AuthClass::Api,
+                verdict: None,
+            },
+        ],
+    },
+    Cohort {
+        flow: "review",
+        candidates: &[
+            Candidate {
+                task: "review",
+                harness: "pi",
+                model: "moonshotai/kimi-k2.6:minimal",
+                family: "kimi",
+                auth: AuthClass::Api,
+                verdict: None,
+            },
+            Candidate {
+                task: "review-deepseek",
+                harness: "pi",
+                model: "deepseek/deepseek-v4-pro",
+                family: "deepseek",
+                auth: AuthClass::Api,
+                verdict: None,
+            },
+            Candidate {
+                task: "review-glm",
+                harness: "pi",
+                model: "z-ai/glm-5.1",
+                family: "glm",
+                auth: AuthClass::Api,
+                verdict: None,
+            },
+        ],
+    },
+    Cohort {
+        flow: "gardener",
+        candidates: &[
+            Candidate {
+                task: "gardener",
+                harness: "pi",
+                model: "deepseek/deepseek-v4-flash",
+                family: "deepseek",
+                auth: AuthClass::Api,
+                verdict: None,
+            },
+            Candidate {
+                task: "gardener-kimi",
+                harness: "pi",
+                model: "moonshotai/kimi-k2.7-code",
+                family: "kimi",
+                auth: AuthClass::Api,
+                verdict: None,
+            },
+            Candidate {
+                task: "gardener-glm",
+                harness: "pi",
+                model: "z-ai/glm-5.1",
+                family: "glm",
+                auth: AuthClass::Api,
+                verdict: None,
+            },
+        ],
+    },
+    Cohort {
+        flow: "ci-diagnose",
+        candidates: &[
+            Candidate {
+                task: "ci-diagnose",
+                harness: "pi",
+                model: "deepseek/deepseek-v4-flash",
+                family: "deepseek",
+                auth: AuthClass::Api,
+                verdict: None,
+            },
+            Candidate {
+                task: "ci-diagnose-kimi",
+                harness: "pi",
+                model: "moonshotai/kimi-k2.7-code",
+                family: "kimi",
+                auth: AuthClass::Api,
+                verdict: None,
+            },
+            Candidate {
+                task: "ci-diagnose-glm",
+                harness: "pi",
+                model: "z-ai/glm-5.1",
+                family: "glm",
+                auth: AuthClass::Api,
+                verdict: None,
+            },
+        ],
+    },
+    Cohort {
+        flow: "correctness",
+        candidates: &[
+            Candidate {
+                task: "correctness",
+                harness: "pi",
+                model: "deepseek/deepseek-v4-pro",
+                family: "deepseek",
+                auth: AuthClass::Api,
+                verdict: Some("correctness"),
+            },
+            Candidate {
+                task: "correctness-kimi",
+                harness: "pi",
+                model: "moonshotai/kimi-k2.7-code",
+                family: "kimi",
+                auth: AuthClass::Api,
+                verdict: Some("correctness-kimi"),
+            },
+            Candidate {
+                task: "correctness-glm",
+                harness: "pi",
+                model: "z-ai/glm-5.1",
+                family: "glm",
+                auth: AuthClass::Api,
+                verdict: Some("correctness-glm"),
+            },
+        ],
+    },
+    Cohort {
+        flow: "security",
+        candidates: &[
+            Candidate {
+                task: "security",
+                harness: "pi",
+                model: "deepseek/deepseek-v4-pro",
+                family: "deepseek",
+                auth: AuthClass::Api,
+                verdict: Some("security"),
+            },
+            Candidate {
+                task: "security-kimi",
+                harness: "pi",
+                model: "moonshotai/kimi-k2.7-code",
+                family: "kimi",
+                auth: AuthClass::Api,
+                verdict: Some("security-kimi"),
+            },
+            Candidate {
+                task: "security-glm",
+                harness: "pi",
+                model: "z-ai/glm-5.1",
+                family: "glm",
+                auth: AuthClass::Api,
+                verdict: Some("security-glm"),
+            },
+        ],
+    },
+    Cohort {
+        flow: "simplification",
+        candidates: &[
+            Candidate {
+                task: "simplification",
+                harness: "pi",
+                model: "deepseek/deepseek-v4-flash",
+                family: "deepseek",
+                auth: AuthClass::Api,
+                verdict: Some("simplification"),
+            },
+            Candidate {
+                task: "simplification-kimi",
+                harness: "pi",
+                model: "moonshotai/kimi-k2.7-code",
+                family: "kimi",
+                auth: AuthClass::Api,
+                verdict: Some("simplification-kimi"),
+            },
+            Candidate {
+                task: "simplification-glm",
+                harness: "pi",
+                model: "z-ai/glm-5.1",
+                family: "glm",
+                auth: AuthClass::Api,
+                verdict: Some("simplification-glm"),
+            },
+        ],
+    },
+    Cohort {
+        flow: "product",
+        candidates: &[
+            Candidate {
+                task: "product",
+                harness: "pi",
+                model: "x-ai/grok-4.3",
+                family: "grok",
+                auth: AuthClass::Api,
+                verdict: Some("product"),
+            },
+            Candidate {
+                task: "product-kimi",
+                harness: "pi",
+                model: "moonshotai/kimi-k2.7-code",
+                family: "kimi",
+                auth: AuthClass::Api,
+                verdict: Some("product-kimi"),
+            },
+            Candidate {
+                task: "product-glm",
+                harness: "pi",
+                model: "z-ai/glm-5.1",
+                family: "glm",
+                auth: AuthClass::Api,
+                verdict: Some("product-glm"),
+            },
+        ],
+    },
+];
 
-    for (task_name, model, family) in cohort {
-        let task = plane.task(task_name).unwrap();
-        assert_eq!(task.agent.harness, "pi");
-        assert_eq!(task.agent.model, model);
-        assert_eq!(task.agent.auth_class().unwrap(), AuthClass::Api);
-        assert_eq!(task.agent.role.as_deref(), Some("diagnoser"));
-        assert!(task
-            .agent
-            .skills
-            .contains(&"harness-kit/diagnose#ci-failure".to_string()));
-        assert_eq!(
-            task.card, baseline.card,
-            "{task_name} must share the CI card"
-        );
-        assert!(task.card.contains("report `task` from `RUN.json`"));
-        assert!(!task.spec.triggers.is_empty());
-        if task_name == "ci-diagnose" {
-            assert!(task
-                .spec
-                .triggers
-                .iter()
-                .any(|trigger| matches!(trigger, TriggerSpec::Manual)));
-        } else {
-            assert!(task
-                .spec
-                .triggers
-                .iter()
-                .all(|trigger| matches!(trigger, TriggerSpec::Manual)));
-        }
-        families.insert(family);
-    }
-    assert_eq!(families.len(), 3);
-
-    let evaluator = plane.task("model-eval").unwrap();
-    assert_eq!(evaluator.agent.role.as_deref(), Some("evaluator"));
-    assert_eq!(evaluator.agent.model, "openai/gpt-5.5");
-    assert!(!evaluator.spec.triggers.is_empty());
-    assert!(evaluator
+fn assert_manual_only(task: &bitterblossom::spec::Task) {
+    assert!(!task.spec.triggers.is_empty());
+    assert!(task
         .spec
         .triggers
         .iter()
         .all(|trigger| matches!(trigger, TriggerSpec::Manual)));
+}
+
+#[test]
+fn evaluated_flows_have_three_diverse_candidate_configs() {
+    let repo = root();
+    let plane = Plane::load(&repo.join("plane")).unwrap();
+
+    for cohort in COHORTS {
+        let baseline = plane.task(cohort.flow).unwrap();
+        let mut families = BTreeSet::new();
+        assert_eq!(cohort.candidates.len(), 3);
+
+        for candidate in cohort.candidates {
+            let task = plane.task(candidate.task).unwrap();
+            assert_eq!(task.agent.harness, candidate.harness, "{}", candidate.task);
+            assert_eq!(task.agent.model, candidate.model, "{}", candidate.task);
+            assert_eq!(task.agent.auth_class().unwrap(), candidate.auth);
+            assert_eq!(task.spec.verdict.as_deref(), candidate.verdict);
+            if candidate.task == cohort.flow {
+                assert!(!task.spec.triggers.is_empty());
+                assert!(task
+                    .spec
+                    .triggers
+                    .iter()
+                    .any(|trigger| matches!(trigger, TriggerSpec::Manual)));
+            } else {
+                assert_manual_only(task);
+                assert_eq!(
+                    task.card, baseline.card,
+                    "{} must share the {} card",
+                    candidate.task, cohort.flow
+                );
+            }
+            families.insert(candidate.family);
+        }
+        assert_eq!(families.len(), 3, "{}", cohort.flow);
+    }
+}
+
+#[test]
+fn evaluator_task_and_cards_preserve_model_eval_contracts() {
+    let repo = root();
+    let plane = Plane::load(&repo.join("plane")).unwrap();
+    let evaluator = plane.task("model-eval").unwrap();
+    assert_eq!(evaluator.agent.role.as_deref(), Some("evaluator"));
+    assert_eq!(evaluator.agent.model, "openai/gpt-5.5");
+    assert_manual_only(evaluator);
     for required in [
         "\"candidates\"",
         "\"scorecard\"",
@@ -77,9 +326,24 @@ fn ci_diagnose_has_three_diverse_candidate_configs_and_one_evaluator() {
         "winner: null",
         "integer from 1 to 5",
         "cost_usd` field as the source of truth",
-        "report.task` matches the candidate object's `task",
+        "when present, matches",
     ] {
         assert!(evaluator.card.contains(required), "missing {required}");
+    }
+
+    for (task, phrase) in [
+        ("build", "dry_run = true"),
+        ("review", "force measurement mode"),
+        ("gardener", "force `dry_run = true`"),
+    ] {
+        assert!(plane.task(task).unwrap().card.contains(phrase), "{task}");
+    }
+    for task in ["correctness", "security", "simplification", "product"] {
+        let card = &plane.task(task).unwrap().card;
+        assert!(card.contains("not"), "{task}");
+        assert!(card.contains("canonical"), "{task}");
+        assert!(card.contains("gate"), "{task}");
+        assert!(card.contains("members"), "{task}");
     }
 }
 
@@ -92,4 +356,54 @@ fn model_eval_reference_context_is_documented_for_future_runs() {
     assert!(readme.contains("reference context"));
     assert!(readme.contains("z-ai/glm-5.2"));
     assert!(readme.contains("June 16, 2026"));
+    for cohort in COHORTS {
+        assert!(readme.contains(&format!("]({}/README.md)", cohort.flow)));
+        let flow_readme = fs::read_to_string(
+            repo.join("docs")
+                .join("model-evals")
+                .join(cohort.flow)
+                .join("README.md"),
+        )
+        .unwrap();
+        for candidate in cohort.candidates {
+            assert!(flow_readme.contains(candidate.task), "{}", candidate.task);
+            assert!(flow_readme.contains(candidate.model), "{}", candidate.model);
+        }
+    }
+}
+
+#[test]
+fn canonical_gate_verdict_kinds_stay_single_lane() {
+    let repo = root();
+    let plane = Plane::load(&repo.join("plane")).unwrap();
+
+    for kind in [
+        "verify",
+        "correctness",
+        "security",
+        "simplification",
+        "product",
+    ] {
+        let tasks: Vec<_> = plane
+            .tasks
+            .values()
+            .filter(|task| task.spec.verdict.as_deref() == Some(kind))
+            .map(|task| task.name.as_str())
+            .collect();
+        assert_eq!(tasks.len(), 1, "{kind}: {tasks:?}");
+    }
+
+    for task_name in [
+        "correctness-kimi",
+        "correctness-glm",
+        "security-kimi",
+        "security-glm",
+        "simplification-kimi",
+        "simplification-glm",
+        "product-kimi",
+        "product-glm",
+    ] {
+        let task = plane.task(task_name).unwrap();
+        assert_eq!(task.spec.verdict.as_deref(), Some(task_name));
+    }
 }

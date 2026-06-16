@@ -54,9 +54,10 @@ card says the plane records actual attempt cost outside the agent-authored
 report.
 
 For model-evaluation cohorts, candidate task variants are expected. Do not
-penalize a report because `report.task` is `ci-diagnose-kimi` or
-`ci-diagnose-glm` instead of the base flow `ci-diagnose`. Score task-name
-fidelity by checking that `report.task` matches the candidate object's `task`.
+penalize a report because `report.task` is a variant task such as
+`ci-diagnose-kimi`, `review-glm`, or `security-kimi` instead of the base flow.
+Score task-name fidelity by checking that `report.task`, when present, matches
+the candidate object's `task`.
 
 If the shared payload is a no-failure probe, evaluate no-failure handling only:
 clarity, proof that no failed run existed, residual risk, and report hygiene.

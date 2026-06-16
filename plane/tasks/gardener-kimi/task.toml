@@ -1,0 +1,13 @@
+agent = "gardener-kimi"
+substrate = "sprites"
+
+[workspace]
+host = "bb-polisher-2"
+
+[budget]
+timeout_minutes = 20
+max_runs_per_day = 2
+max_cost_per_run_usd = 0.50
+
+[[trigger]]
+kind = "manual"

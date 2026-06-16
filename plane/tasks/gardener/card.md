@@ -6,13 +6,19 @@ not to change the harness directly.
 
 ## Inputs
 
-Read `EVENT.json` if present before querying. Optional payload fields:
+Read `RUN.json` first for the actual task name, then read `EVENT.json` if
+present before querying. Optional payload fields:
 
 - `api_url`: read API base URL. Default:
   `https://bitterblossom-plane.fly.dev`.
 - `window_days`: rolling UTC analysis window. Default: `14`.
 - `dry_run`: when `true`, analyze and write the candidate report/ticket to
   `REPORT.json`, but do not clone, push, or open a PR.
+
+If `RUN.json.task` is not exactly `gardener`, force `dry_run = true` regardless
+of payload. Model-evaluation variants such as `gardener-kimi` and
+`gardener-glm` should produce comparable evidence without filing duplicate
+ticket PRs.
 
 Query the durable plane read API with the injected token:
 

@@ -6,10 +6,16 @@ verdict. You are never the authoring agent.
 
 ## Input
 
-Read `EVENT.json`: `{"submission": "<id>", "repo": "owner/name",
+Read `RUN.json` first for the actual task name, then read `EVENT.json`:
+`{"submission": "<id>", "repo": "owner/name",
 "rev": "<sha>", "change": "<branch>", "context": "<optional notes>"}`.
 If it is missing or names no rev, print the error and exit non-zero —
 never guess.
+
+If `RUN.json.task` is a model-evaluation variant such as `product-kimi` or
+`product-glm`, keep the same product lens and output schema. The plane records
+those variants under eval-only verdict kinds; they are not canonical gate
+members.
 
 If `REPORT.json` exists it is the canonical prior-round gate report.
 Check whether previously raised findings are actually resolved at this

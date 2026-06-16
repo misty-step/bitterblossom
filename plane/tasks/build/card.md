@@ -7,7 +7,8 @@ release manager, reviewer, or recurring reflex worker.
 
 ## Inputs
 
-Read `EVENT.json` first. Supported payload fields:
+Read `RUN.json` first for the actual task name, then read `EVENT.json`.
+Supported payload fields:
 
 - `repo`: GitHub `owner/name`. Default: `misty-step/bitterblossom`.
 - `base_ref`: branch or ref to start from. Default: `master`.
@@ -15,6 +16,11 @@ Read `EVENT.json` first. Supported payload fields:
 - `packet`: optional shaped context packet path or text.
 - `branch_slug`: optional branch suffix. Default from `backlog` or the work.
 - `dry_run`: when `true`, inspect and write a plan/report only; do not push.
+
+If `RUN.json.task` is not exactly `build` and `dry_run` is absent, treat the run
+as `dry_run = true`. Model-evaluation variants such as `build-kimi` and
+`build-glm` should not push branches unless the operator explicitly sets
+`"dry_run": false` and supplies a unique `branch_slug`.
 
 If neither `backlog` nor `packet` is present, stop and write `REPORT.json`
 with `status = "blocked"` and `reason = "missing backlog or packet"`.
