@@ -310,6 +310,17 @@ It writes `REPORT.json`; the operator records accepted findings under
 the runnable GLM-family candidate tasks use it. Historical model-eval records
 keep their original model ids when the actual run used GLM 5.1.
 
+The model-catalog watcher keeps that reference current without making model
+promotion automatic. `./scripts/verify.sh` runs
+`scripts/check-model-catalog.sh --catalog tests/fixtures/openrouter-models-current.json`
+against a checked-in OpenRouter fixture, so local and CI gates stay
+deterministic. Live discovery runs through
+`bb --config plane run model-catalog-watch --payload '{"dry_run":true}' --json`;
+the task fetches the live catalog, reports fixture/config/docs drift and
+same-family candidates in `REPORT.json`, and must not edit `plane/agents`.
+Changing a default still requires a flow-specific `bb` smoke run plus a
+model-eval record.
+
 ## The submission loop
 
 Completed agent work is quality-assured and landed by a **verdict storm**

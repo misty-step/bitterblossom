@@ -14,6 +14,9 @@ cargo clippy --all-targets -- -D warnings
 echo "==> tests"
 cargo test
 
+echo "==> OpenRouter model catalog fixture"
+scripts/check-model-catalog.sh --catalog tests/fixtures/openrouter-models-current.json --json >/dev/null
+
 echo "==> plane configs validate (bb check)"
 cargo run --quiet -- --config plane check
 cargo run --quiet -- --config examples/demo-plane check

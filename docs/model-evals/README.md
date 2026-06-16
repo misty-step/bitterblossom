@@ -27,6 +27,23 @@ Current first-class cohorts:
 | [`simplification`](simplification/README.md) | `simplification`, `simplification-kimi`, `simplification-glm` | Variants use eval-only verdict kinds. |
 | [`product`](product/README.md) | `product`, `product-kimi`, `product-glm` | Variants use eval-only verdict kinds. |
 
+Configured OpenRouter model ids are also checked against
+`tests/fixtures/openrouter-models-current.json` by `./scripts/verify.sh`.
+The fixture is deterministic local gate input, not proof that a new model
+should be promoted. Refresh it only from the live OpenRouter catalog and promote
+agent defaults only after a flow-specific `bb` smoke plus a model-eval record.
+
+| Model id | Current role |
+|---|---|
+| `deepseek/deepseek-v4-flash` | Gardener, CI diagnose, simplification |
+| `deepseek/deepseek-v4-pro` | Review, correctness, security |
+| `moonshotai/kimi-k2-thinking` | Storm arbiter |
+| `moonshotai/kimi-k2.6:minimal` | Review default; catalog id `moonshotai/kimi-k2.6` |
+| `moonshotai/kimi-k2.7-code` | Build, gardener, CI diagnose, storm variants |
+| `openai/gpt-5.5` | Model evaluator |
+| `x-ai/grok-4.3` | Product review |
+| `z-ai/glm-5.2` | GLM candidate variants |
+
 `z-ai/glm-5.2` is a runnable OpenRouter API model as checked on June 16, 2026:
 1M context at `$1.40 / $4.40` per 1M input/output tokens. GLM-family candidate
 tasks now use `z-ai/glm-5.2`; keep historical records on their original model
