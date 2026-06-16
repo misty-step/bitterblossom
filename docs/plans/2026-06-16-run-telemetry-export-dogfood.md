@@ -9,7 +9,8 @@
 - Plane: `plane`.
 - Sprite org: `misty-step` after correction.
 - Sprite: `lane-1`.
-- Commit/submission: pending at note creation.
+- Commit/submission: `ac19f857ce4b50cc7cc36d389b47a64aa6cceb4c`;
+  first submission `da50d9baa63c`, replacement submission `9f8333ad1877`.
 
 ## Preflight
 
@@ -46,9 +47,31 @@
   - Parser smoke:
     `bb.run_telemetry.v1 product bitterblossom openrouter` and
     `bb.run_telemetry.v1 security`.
-- `bb submit open`: pending.
-- `bb run` members: pending.
-- `bb gate`: pending.
+- `bb submit open`:
+  - First submission `da50d9baa63c`, change
+    `run-telemetry-export-ac19f85`, rev
+    `ac19f857ce4b50cc7cc36d389b47a64aa6cceb4c`.
+  - Replacement submission `9f8333ad1877` after canonical product member
+    `ccc6e9c30c36` failed before emitting a parseable verdict.
+- `bb run` members:
+  - First submission: `verify` `53798b48e358` pass, `correctness`
+    `f4bc4220eec8` pass (`$0.040554035`), `security` `b33cd31c0d96`
+    pass (`$0.047172734`), `simplification` `ce44f90c9d0a` pass
+    (`$0.0203155689`), `product` `ccc6e9c30c36` failed with
+    `pi output: assistant message has no text content`.
+  - Replacement submission: `product` `dcc0b206ed31` pass
+    (`$0.07269690000000001`), `verify` `415c98665e53` pass,
+    `correctness` `81e4cfefb528` pass (`$0.064844986`), `security`
+    `43f899dae1f6` pass (`$0.06860631499999999`), `simplification`
+    `c716d492b215` advisory (`$0.0128323401`).
+- `bb gate`:
+  - First gate `da50d9baa63c`: `escalated` because canonical product run
+    `ccc6e9c30c36` failed before verdict; all other members passed.
+  - Replacement gate `9f8333ad1877`: `clear`; no blocking findings.
+    Simplification raised one minor advisory (`b282d4a4571fdbbf`) about
+    multiple bounded passes over attempts in `export_run_telemetry`; rejected
+    with reason that attempts are bounded by the dispatch retry cap and the
+    separate views keep the run/Daedalus/OTel contract explicit.
 
 ## UX Notes
 
@@ -70,9 +93,15 @@
 
 ### Bugs
 
-- Observation: no new product bug found in the export dogfood path.
-- Evidence: live export parsed cleanly and full verify passed.
-- Mitigate: none.
+- Observation: the canonical product lane can lose an otherwise-valid verdict
+  when the model prints the final JSON through a tool call and then ends with
+  no assistant text.
+- Evidence: product run `ccc6e9c30c36` reached a tool result containing
+  `{"verdict":"pass","findings":[]}`, then failed collection with
+  `pi output: assistant message has no text content`.
+- Mitigate: clarify verdict-lane prompts to emit the final JSON as assistant
+  text, or make the harness parser/reporting surface expose this failure mode
+  more directly.
 
 ### Delight
 
@@ -86,17 +115,22 @@
 
 ## Backlog Emissions
 
-- Added: none yet.
-- Updated: backlog 056 will move to `_done/` after `bb` submission/gate.
+- Added: none in this delivery.
+- Updated: backlog 056 moved to `_done/`.
 - Proposed:
   - Warn or fail fast when Sprite selected org differs from the expected plane
     org/host namespace.
   - Add compact status summary command for large planes.
+  - Harden verdict-lane final-answer behavior so tool-echoed JSON does not
+    waste a canonical storm slot without a clearer recovery hint.
+  - Consider making `bb gate` safe-next output distinguish infrastructure
+    replacement from ordinary blocked-round continuation; after `escalated`,
+    `submit open` creates a fresh round-1 replacement for the same change.
 
 ## Closeout
 
 - Final git status: pending.
-- Remote sync: pending.
+- Remote sync: branch pushed before dogfood storm.
 - Remaining parked tasks: 0.
 - Remaining DLQ: five open historical rows.
-- Next best pickup: pending after submission review.
+- Next best pickup: compact status / dogfood-friction hardening.
