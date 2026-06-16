@@ -71,11 +71,34 @@ fn current_docs_and_skills_match_live_cli_contract() {
     let recipes = read("skills/bitterblossom/references/operator-recipes.md");
     assert!(recipes.contains("bb --config <plane> runs export"));
     assert!(recipes.contains("bb --config <plane> dlq replay <id> --json"));
-    assert!(recipes.contains("curl -H \"Authorization: Bearer $BB_API_TOKEN\""));
+    assert!(recipes.contains("curl --config -"));
+    assert!(!recipes.contains("curl -H \"Authorization: Bearer $BB_API_TOKEN\""));
 
     let dogfood = read("skills/bitterblossom-dogfood/SKILL.md");
     assert!(dogfood.contains("./target/debug/bb --config plane status --json"));
     assert!(
         dogfood.contains("./target/debug/bb --config plane gate --submission <submission> --json")
     );
+}
+
+#[test]
+fn operations_runbook_and_drill_are_wired_into_the_gate() {
+    let ops = read("docs/operations/README.md");
+    assert!(ops.contains("scripts/production-ops-drill.sh --remote"));
+    assert!(ops.contains("scripts/production-ops-drill.sh --local"));
+    assert!(ops.contains("flyctl releases rollback"));
+    assert!(ops.contains("bb --config plane recover --json"));
+    assert!(ops.contains("bb dlq replay <id> --json"));
+    assert!(ops.contains("there is no first-class acknowledge"));
+    assert!(!ops.contains("?token=$BB_API_TOKEN"));
+
+    let script = read("scripts/production-ops-drill.sh");
+    assert!(script.contains("backup_restore_check"));
+    assert!(script.contains("expect_bearer_code remote-tasks"));
+    assert!(script.contains("curl --config -"));
+    assert!(!script.contains("-H \"Authorization: Bearer $BB_API_TOKEN\""));
+    assert!(!script.contains("?token="));
+
+    let verify = read("scripts/verify.sh");
+    assert!(verify.contains("scripts/production-ops-drill.sh --local"));
 }

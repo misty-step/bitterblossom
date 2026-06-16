@@ -21,6 +21,9 @@ echo "==> plane configs validate (bb check)"
 cargo run --quiet -- --config plane check
 cargo run --quiet -- --config examples/demo-plane check
 
+echo "==> operations smoke drill"
+BB_BIN=./target/debug/bb scripts/production-ops-drill.sh --local >/dev/null
+
 echo "==> spine LOC budget (<= 5000; the Python conductor died of bloat)"
 loc=$(find src -name '*.rs' -exec cat {} + | grep -vc '^\s*$')
 echo "    src LOC: $loc"
