@@ -77,14 +77,16 @@ with the normal submission loop.
 
 ## Ledger Export
 
-Export run and attempt telemetry as JSONL for downstream analysis:
+Export run and attempt telemetry as versioned JSONL for downstream analysis:
 
 ```bash
 bb --config <plane> runs export
 ```
 
-`runs export` currently takes only `--config`; use `runs list --json` and
-`runs show --json` for filtered interactive inspection.
+Each line uses the `bb.run_telemetry.v1` contract documented in
+`docs/run-telemetry-export-v1.md`. `runs export` currently takes only
+`--config`; use `runs list --json` and `runs show --json` for filtered
+interactive inspection.
 
 ## Review Workload
 

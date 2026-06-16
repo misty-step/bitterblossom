@@ -276,10 +276,9 @@ The ledger is the system of record; everything reads from it:
 Cost attribution rides OpenRouter's per-response usage accounting
 (`usage.cost` arrives with every pi response — no extra calls), parsed
 per attempt into the ledger. Decision 2026-06-10: no OTel/Langfuse
-sidecar for now — the OTel GenAI semantic conventions are still
-experimental and both add infra the ≤5k LOC spine doesn't need; if
-deeper traces are wanted later, `bb runs export` is the integration
-seam (map attempts onto `gen_ai.*` spans then).
+sidecar for now; `bb runs export` is the versioned telemetry seam for
+Daedalus handoff and future `gen_ai.*` adapters. The v1 schema and
+compatibility rules live in `docs/run-telemetry-export-v1.md`.
 
 The review workload also supports explicit manual tokenomics probes:
 `bb --config plane run review --payload '{"repo":"o/r","pr":N,"measurement":true}'`.
@@ -424,7 +423,7 @@ bb run <task> [--idempotency-key K] [--payload JSON] [--json] # manual trigger
 bb status [--json]                                # task/run/queue/DLQ health
 bb runs list [--task T] [--state S] [--json]
 bb runs show <run-id> [--json]                    # run + attempts + events
-bb runs export                                    # flat JSONL for downstream analysis
+bb runs export                                    # bb.run_telemetry.v1 JSONL
 bb dlq list [--json]
 bb dlq replay <id> [--json]
 bb task park|unpark <task>

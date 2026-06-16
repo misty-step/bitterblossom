@@ -60,7 +60,7 @@ Read the output for:
 | Diagnose failed CI | `bb --config <plane> run ci-diagnose --payload '{"repo":"owner/repo","head_sha":"<sha>"}' --json` |
 | Compare candidate model configs | Run at least three candidate tasks, then `bb --config <plane> run model-eval --payload '<json>' --json` |
 | Inspect ledger | `bb --config <plane> runs list --json`; `bb --config <plane> runs show <id> --json` |
-| Export run telemetry | `bb --config <plane> runs export` |
+| Export run telemetry | `bb --config <plane> runs export` (`bb.run_telemetry.v1` JSONL) |
 | Handle pre-execute failures | `bb --config <plane> dlq list --json`; `bb --config <plane> dlq replay <id> --json` |
 | Park or unpark workload dispatch | `bb --config <plane> task park|unpark <task>` |
 | Classify inherited running rows after host restart | `bb --config <plane> recover` |

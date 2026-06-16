@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>056 Run Telemetry Export</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #1f2430;
+      --muted: #5e6675;
+      --line: #d8dde7;
+      --paper: #f7f4ed;
+      --panel: #ffffff;
+      --accent: #0d6b5f;
+      --accent-2: #8a4f17;
+      --risk: #a23b2a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font: 16px/1.55 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main { max-width: 1180px; margin: 0 auto; padding: 36px 28px 56px; }
+    header {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(320px, .8fr);
+      gap: 28px;
+      align-items: stretch;
+      border-bottom: 2px solid var(--ink);
+      padding-bottom: 28px;
+    }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { font-size: clamp(2.4rem, 6vw, 5rem); line-height: .92; letter-spacing: 0; margin-bottom: 18px; }
+    h2 { font-size: 1.35rem; margin-bottom: 12px; }
+    h3 { font-size: 1rem; margin-bottom: 6px; }
+    .deck { font-size: 1.15rem; color: var(--muted); max-width: 68ch; }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+    }
+    .contract {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .label { color: var(--muted); font-size: .8rem; text-transform: uppercase; letter-spacing: .08em; }
+    .value { font-weight: 700; }
+    section { margin-top: 30px; }
+    .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+    ul { padding-left: 1.1rem; margin: 0; }
+    li + li { margin-top: 8px; }
+    code {
+      background: #ece7dc;
+      border: 1px solid #ddd4c3;
+      border-radius: 4px;
+      padding: 1px 5px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: .92em;
+    }
+    table { width: 100%; border-collapse: collapse; background: var(--panel); }
+    th, td { text-align: left; vertical-align: top; padding: 10px 12px; border: 1px solid var(--line); }
+    th { color: var(--muted); font-size: .82rem; text-transform: uppercase; letter-spacing: .06em; }
+    .accent { border-left: 4px solid var(--accent); }
+    .risk { border-left: 4px solid var(--risk); }
+    .path { color: var(--accent-2); font-weight: 700; }
+    @media (max-width: 860px) {
+      header, .grid, .contract { grid-template-columns: 1fr; }
+      main { padding: 24px 18px 42px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <p class="label">Backlog 056</p>
+        <h1>Run Telemetry Export v1</h1>
+        <p class="deck">
+          Turn <code>bb runs export</code> from a raw ledger dump into a stable,
+          versioned JSONL contract that Daedalus can ingest and OTel GenAI
+          adapters can map later, without adding a sidecar or workload logic to
+          the Rust spine.
+        </p>
+      </div>
+      <div class="panel contract">
+        <div><div class="label">User</div><div class="value">Operator and lab tooling</div></div>
+        <div><div class="label">Surface</div><div class="value"><code>bb runs export</code></div></div>
+        <div><div class="label">Default</div><div class="value">Versioned JSONL envelope</div></div>
+        <div><div class="label">Done</div><div class="value">Docs, fixture, schema test, live dogfood</div></div>
+      </div>
+    </header>
+
+    <section class="grid">
+      <div class="panel accent">
+        <h2>Chosen Shape</h2>
+        <ul>
+          <li>Keep <code>bb runs export</code> as the integration seam.</li>
+          <li>Emit one <code>bb.run_telemetry.v1</code> JSON object per ledger run.</li>
+          <li>Normalize run, attempts, retry/DLQ, artifacts, Daedalus, and OTel mapping hints.</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <h2>Current Gap</h2>
+        <ul>
+          <li>Current output is unversioned raw <code>{"run": ..., "attempts": ...}</code>.</li>
+          <li>No compatibility rules, fixture, Daedalus handoff, or OTel field map.</li>
+          <li>Operators cannot tell which fields are contract versus incidental ledger internals.</li>
+        </ul>
+      </div>
+      <div class="panel risk">
+        <h2>Constraints</h2>
+        <ul>
+          <li><code>src/</code> is under a strict 5000 LOC gate.</li>
+          <li>No OTel/Langfuse sidecar in the default spine.</li>
+          <li>Dogfood must exercise real <code>bb</code> commands, not just tests.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section>
+      <h2>Contract Fields</h2>
+      <table>
+        <thead><tr><th>Area</th><th>Contents</th><th>Reason</th></tr></thead>
+        <tbody>
+          <tr><td>Envelope</td><td><code>schema</code>, <code>schema_version</code>, <code>exported_at</code></td><td>Consumers can pin a parser and reject unknown major versions.</td></tr>
+          <tr><td>Run</td><td>id, task, trigger, state, timestamps, duration, cost, total tokens, trace id, error</td><td>One row carries the operator-level outcome and budget signal.</td></tr>
+          <tr><td>Attempts</td><td>attempt number, phase, outcome, agent name/version, harness, model, cost, tokens, artifact pointer</td><td>Daedalus can compare agent configs and map failures to launch contracts.</td></tr>
+          <tr><td>Retry/DLQ</td><td>attempt count, retryable status, dead-letter status and replay pointer when present</td><td>Failure accounting survives outside the plane.</td></tr>
+          <tr><td>Artifacts</td><td>typed path pointers to run and attempt outputs</td><td>Downstream evaluators can fetch evidence without guessing ledger internals.</td></tr>
+          <tr><td>Daedalus</td><td>task key, agent config keys, score placeholders, source run pointer</td><td>Defines the handoff without importing Daedalus code.</td></tr>
+          <tr><td>OTel</td><td>GenAI span and metric attribute mapping hints</td><td>Future adapters can emit standard telemetry without changing the export contract.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="grid">
+      <div>
+        <h2>Execution</h2>
+        <ul>
+          <li>Document <span class="path">docs/run-telemetry-export-v1.md</span> first.</li>
+          <li>Add a stable fixture under <span class="path">tests/fixtures/</span>.</li>
+          <li>Add CLI/schema tests that parse real <code>bb runs export</code> output.</li>
+          <li>Implement the versioned envelope with minimal spine LOC.</li>
+          <li>Move backlog item to done only after verification and review.</li>
+        </ul>
+      </div>
+      <div>
+        <h2>Dogfood Loop</h2>
+        <ul>
+          <li>Run the old export once to capture baseline friction.</li>
+          <li>Run the new export against <code>plane/</code> and parse sample rows.</li>
+          <li>Use <code>bb</code> submission/review gates if available on this branch.</li>
+          <li>Record what felt good, bad, or missing in the doc or closeout.</li>
+        </ul>
+      </div>
+      <div>
+        <h2>Review Focus</h2>
+        <ul>
+          <li>Is the schema deep enough for Daedalus without coupling repos?</li>
+          <li>Are OTel fields mapped but not overbuilt into a runtime sidecar?</li>
+          <li>Does compatibility language protect consumers?</li>
+          <li>Does the code stay inside the spine budget?</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Stop Conditions</h2>
+      <ul>
+        <li><code>./scripts/verify.sh</code> fails after two distinct remediation approaches.</li>
+        <li>The new contract needs Daedalus code changes to be meaningfully specified.</li>
+        <li>Live dogfood reveals the existing plane ledger cannot provide a required oracle field.</li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>
