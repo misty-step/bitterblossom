@@ -7,7 +7,7 @@ Current candidate set:
 
 - `product` - `pi` / `x-ai/grok-4.3`
 - `product-kimi` - `pi` / `moonshotai/kimi-k2.7-code`
-- `product-glm` - `pi` / `z-ai/glm-5.1`
+- `product-glm` - `pi` / `z-ai/glm-5.2`
 
 Current evaluator:
 

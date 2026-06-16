@@ -60,8 +60,9 @@ Model posture:
 - Use DeepSeek V4 Pro for long-context correctness/security.
 - Use Kimi K2.7 Code for coding-aware orchestration where local smoke evidence
   exists.
-- Treat GLM 5.2 as page-visible/API-pending until it appears in the API catalog
-  and passes a local harness smoke.
+- GLM 5.2 was page-visible/API-pending during initial delivery; as of the
+  June 16, 2026 update it is API-catalog runnable and passed a local harness
+  smoke, so GLM-family candidate lanes now use it.
 - Use Fusion only for architecture/research council questions, not routine
   coding or deterministic gates.
 
@@ -144,6 +145,11 @@ This ticket is complete as the initial SDLC lifecycle reflex pack:
   - `model-eval`: run `5a964da02de5`, cost `$0.157223`.
 - The real-failure evaluator selected `ci-diagnose-glm` / `z-ai/glm-5.1` as
   the best root-cause diagnosis candidate for this sample.
+- June 16, 2026 GLM update: `z-ai/glm-5.2` appeared in the OpenRouter API
+  catalog and `ci-diagnose-glm` smoke run `51f3f03980a6` completed against the
+  same real failed-run payload, cost `$0.03326702`, duration 62.7s. The
+  current GLM-family configs now use GLM 5.2; this ticket's earlier model-eval
+  receipts remain GLM 5.1 historical evidence.
 
 Remaining lifecycle reflex expansion is intentionally not smuggled into this
 ticket. It is tracked by

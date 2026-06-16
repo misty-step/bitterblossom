@@ -1,4 +1,4 @@
 # Model-eval verdict candidate: same simplification lens, different model family.
 harness = "pi"
-model = "z-ai/glm-5.1"
+model = "z-ai/glm-5.2"
 secrets = ["OPENROUTER_API_KEY", "GH_TOKEN"]

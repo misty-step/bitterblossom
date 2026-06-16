@@ -8,7 +8,7 @@ Current candidate set:
 
 - `gardener` - `pi` / `deepseek/deepseek-v4-flash`
 - `gardener-kimi` - `pi` / `moonshotai/kimi-k2.7-code`
-- `gardener-glm` - `pi` / `z-ai/glm-5.1`
+- `gardener-glm` - `pi` / `z-ai/glm-5.2`
 
 Current evaluator:
 
