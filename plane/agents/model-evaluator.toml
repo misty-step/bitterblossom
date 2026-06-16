@@ -1,0 +1,12 @@
+# Strong manual evaluator for comparing candidate agent outputs. It uses
+# OpenRouter API auth, not OpenAI API keys.
+version = 1
+role = "evaluator"
+harness = "pi"
+model = "openai/gpt-5.5"
+secrets = ["OPENROUTER_API_KEY"]
+skills = [
+  "harness-kit/research#model-selection",
+  "harness-kit/harness-engineering#models",
+  "bitterblossom/operator-min",
+]

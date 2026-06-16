@@ -1,0 +1,4 @@
+# Model-eval verdict candidate: same security lens, different model family.
+harness = "pi"
+model = "moonshotai/kimi-k2.7-code"
+secrets = ["OPENROUTER_API_KEY", "GH_TOKEN"]

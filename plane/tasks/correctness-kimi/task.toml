@@ -1,0 +1,14 @@
+agent = "storm-correctness-kimi"
+substrate = "sprites"
+verdict = "correctness-kimi"
+
+[workspace]
+host = "bb-polisher-2"
+
+[budget]
+timeout_minutes = 45
+max_runs_per_day = 40
+max_cost_per_run_usd = 0.60
+
+[[trigger]]
+kind = "manual"

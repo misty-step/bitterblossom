@@ -1,0 +1,11 @@
+# Model-eval builder candidate: API-auth Kimi through Pi/OpenRouter.
+version = 1
+role = "builder"
+harness = "pi"
+model = "moonshotai/kimi-k2.7-code"
+secrets = ["OPENROUTER_API_KEY", "GH_TOKEN"]
+skills = [
+  "harness-kit/deliver#builder",
+  "harness-kit/ci#rust-local-gate",
+  "bitterblossom/operator-min",
+]

@@ -1,0 +1,11 @@
+# Model-eval builder candidate: API-auth GLM through Pi/OpenRouter.
+version = 1
+role = "builder"
+harness = "pi"
+model = "z-ai/glm-5.1"
+secrets = ["OPENROUTER_API_KEY", "GH_TOKEN"]
+skills = [
+  "harness-kit/deliver#builder",
+  "harness-kit/ci#rust-local-gate",
+  "bitterblossom/operator-min",
+]

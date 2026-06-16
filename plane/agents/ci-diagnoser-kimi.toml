@@ -1,0 +1,11 @@
+# CI failure diagnoser variant for model-evaluation cohorts.
+version = 1
+role = "diagnoser"
+harness = "pi"
+model = "moonshotai/kimi-k2.7-code"
+secrets = ["OPENROUTER_API_KEY", "GH_TOKEN"]
+skills = [
+  "harness-kit/diagnose#ci-failure",
+  "harness-kit/ci#failure-triage",
+  "bitterblossom/operator-min",
+]

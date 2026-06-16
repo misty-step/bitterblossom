@@ -17,9 +17,7 @@ fn selector_args(host: &str) -> Vec<String> {
     }
 }
 fn relay_cwd() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
+    std::env::var_os("HOME").map_or_else(std::env::temp_dir, PathBuf::from)
 }
 
 pub struct SpritesSubstrate;
@@ -142,8 +140,10 @@ impl Session for SpriteSession {
         }
 
         let ws = shell_quote(&self.workspace);
-        let cleanup = format!("mkdir -p {ws} && rm -f {ws}/EVENT.json {ws}/REPORT.json");
-        let out = self.remote_shell(&cleanup, Duration::from_secs(60))?;
+        let out = self.remote_shell(
+            &format!("mkdir -p {ws} && rm -f {ws}/RUN.json {ws}/EVENT.json {ws}/REPORT.json"),
+            Duration::from_secs(60),
+        )?;
         if out.exit_code != 0 {
             bail!("prepare workspace failed: {}", out.stderr.trim());
         }
@@ -188,8 +188,9 @@ impl Session for SpriteSession {
         }
 
         for (name, content) in [
-            (super::EVENT_FILENAME, &plan.payload),
-            (super::REPORT_FILENAME, &plan.report),
+            ("RUN.json", Some(&plan.run_context)),
+            (super::EVENT_FILENAME, plan.payload.as_ref()),
+            (super::REPORT_FILENAME, plan.report.as_ref()),
         ] {
             let Some(content) = content else { continue };
             let local = self.artifacts.join(name);

@@ -51,6 +51,8 @@ fn ci_diagnose_task_is_api_auth_reflex_contract() {
 
     for required in [
         "check_suite.failed",
+        "RUN.json",
+        "report `task` from `RUN.json`",
         "\"event\"",
         "\"task\"",
         "\"repo\"",

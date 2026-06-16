@@ -110,6 +110,7 @@ impl Session for LocalSession {
             }
         }
         std::fs::write(self.workspace.join(CARD_FILENAME), &plan.card)?;
+        std::fs::write(self.workspace.join("RUN.json"), &plan.run_context)?;
         if let Some(payload) = &plan.payload {
             std::fs::write(self.workspace.join(super::EVENT_FILENAME), payload)?;
         }

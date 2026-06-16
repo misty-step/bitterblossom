@@ -1,0 +1,14 @@
+agent = "ci-diagnoser-kimi"
+substrate = "sprites"
+
+[workspace]
+host = "bb-polisher-2"
+
+[budget]
+timeout_minutes = 20
+max_runs_per_day = 20
+max_cost_per_run_usd = 0.75
+turn_cap = 30
+
+[[trigger]]
+kind = "manual"

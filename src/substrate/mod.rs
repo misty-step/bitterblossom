@@ -11,6 +11,7 @@ use crate::spec::RepoSpec;
 pub struct WorkspacePlan {
     pub repos: Vec<RepoSpec>,
     pub card: String,
+    pub run_context: String,
     pub payload: Option<String>,
     pub report: Option<String>,
     pub pre_command: Option<String>,

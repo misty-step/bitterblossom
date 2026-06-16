@@ -292,6 +292,25 @@ The CI-diagnose workload supports manual dogfood:
 It writes a report/fix packet and may recommend a builder command, but does not
 edit code, post comments, or trigger follow-up runs.
 
+The model-evaluation loop supports manual candidate comparison. Run at least
+three candidate tasks for the same flow and payload, then pass their reports to
+`bb --config plane run model-eval --payload '<json>' --json`. First-class
+cohorts are listed in [`docs/model-evals/`](model-evals/README.md) and cover
+`build`, `review`, `gardener`, `ci-diagnose`, and the submission-storm member
+flows.
+
+Candidate variants are manual-only. Review variants force measurement mode;
+gardener variants force dry-run; build variants default to dry-run unless the
+payload explicitly asks for a live branch; storm variants use eval-only verdict
+kinds and do not change gate arithmetic.
+
+The evaluator is `model-eval` on `openai/gpt-5.5` through OpenRouter API auth.
+It writes `REPORT.json`; the operator records accepted findings under
+[`docs/model-evals/`](model-evals/README.md) as future reference context.
+`z-ai/glm-5.2` is not in the OpenRouter API catalog as checked on June 16,
+2026, so the runnable GLM-family candidate uses GLM 5.1 until the catalog and a
+dogfood run prove otherwise.
+
 ## The submission loop
 
 Completed agent work is quality-assured and landed by a **verdict storm**

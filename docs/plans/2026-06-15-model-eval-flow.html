@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bitterblossom Model Evaluation Flow</title>
+  <style>
+    body { margin: 0; font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #171717; background: #f7f7f4; }
+    main { max-width: 1120px; margin: 0 auto; padding: 40px 28px 64px; }
+    h1 { font-size: 42px; line-height: 1.02; margin: 0 0 10px; letter-spacing: 0; }
+    h2 { font-size: 20px; margin: 34px 0 12px; }
+    p { max-width: 780px; }
+    .hero { border-left: 6px solid #111; padding-left: 20px; margin-bottom: 28px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+    .cell { background: #fff; border: 1px solid #d8d8d2; border-radius: 6px; padding: 16px; }
+    .k { font-size: 12px; text-transform: uppercase; color: #666; letter-spacing: .04em; }
+    code { background: #ecece7; padding: 1px 4px; border-radius: 3px; }
+    table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #d8d8d2; }
+    th, td { text-align: left; vertical-align: top; border-bottom: 1px solid #e5e5df; padding: 10px; }
+    th { background: #eeeeea; }
+    ul { padding-left: 20px; }
+  </style>
+</head>
+<body>
+<main>
+  <section class="hero">
+    <h1>Multi-config agent evaluation for Bitterblossom flows</h1>
+    <p>Goal: stop pretending we know the best model for each workload. Important flows should run at least three materially different agent configs, then a stronger evaluator should synthesize outputs into durable reference context.</p>
+  </section>
+
+  <div class="grid">
+    <div class="cell"><div class="k">First flow</div><strong>CI diagnose</strong><br>DeepSeek baseline, Kimi comparator, GLM-family comparator, GPT-5.5 evaluator.</div>
+    <div class="cell"><div class="k">Design rule</div><strong>Files, not Rust workflows</strong><br>Use task/agent/card config, symlinked shared cards, and tests. Keep the spine untouched.</div>
+    <div class="cell"><div class="k">Proof</div><strong>bb dogfood loop</strong><br>Run the three candidates, run evaluator, persist reference notes, then gate with tests and review storm.</div>
+  </div>
+
+  <h2>Current Model Facts</h2>
+  <table>
+    <tr><th>Role</th><th>Model</th><th>Reason</th><th>Constraint</th></tr>
+    <tr><td>Candidate A</td><td><code>deepseek/deepseek-v4-flash</code></td><td>Cheap long-context baseline already used by CI diagnose.</td><td>OpenRouter API auth.</td></tr>
+    <tr><td>Candidate B</td><td><code>moonshotai/kimi-k2.7-code</code></td><td>Coding-focused Kimi family, current local roster default.</td><td>Higher output price than DeepSeek.</td></tr>
+    <tr><td>Candidate C</td><td><code>z-ai/glm-5.1</code></td><td>Runnable GLM-family comparator today.</td><td><code>z-ai/glm-5.2</code> page says API releases 2026-06-16 and is absent from API catalog on 2026-06-15.</td></tr>
+    <tr><td>Evaluator</td><td><code>openai/gpt-5.5</code></td><td>Stronger synthesis model available through OpenRouter catalog.</td><td>Manual-only, capped cost, not webhook reflex.</td></tr>
+  </table>
+
+  <h2>Change Shape</h2>
+  <ul>
+    <li>Use symlinked task cards so variant tasks share one checked-in card without copy-paste or Rust spine changes.</li>
+    <li>Add Kimi and GLM CI-diagnose task variants using the existing CI diagnose card.</li>
+    <li>Add a manual <code>model-eval</code> task that evaluates candidate run reports and writes <code>REPORT.json</code>.</li>
+    <li>Add durable reference docs under <code>docs/model-evals/</code> and operator recipe updates.</li>
+    <li>Add tests that enforce at least three diverse configs plus evaluator for the first flow.</li>
+  </ul>
+
+  <h2>Verification Loop</h2>
+  <ol>
+    <li>Red tests for missing model-eval cohort, model diversity, and durable reference docs.</li>
+    <li>Green config/tests with <code>cargo test --test model_eval</code>, <code>cargo test --test policy</code>, and <code>bb --config plane check</code>.</li>
+    <li>Dogfood: run all three CI-diagnose candidate tasks against the same known GitHub Actions run, then pass report snippets into <code>bb run model-eval</code>.</li>
+    <li>Record evaluator output in <code>docs/model-evals/</code>.</li>
+    <li>Full <code>./scripts/verify.sh</code>, then fresh-context review via <code>bb</code> storm.</li>
+  </ol>
+
+  <h2>Stop Conditions</h2>
+  <ul>
+    <li>Stop and redesign if shared-card reuse requires workload-specific Rust logic.</li>
+    <li>Stop if GLM 5.1 cannot run through Pi/OpenRouter; replace with another current non-DeepSeek/non-Kimi comparator and document why.</li>
+    <li>Do not unpark the existing security verdict task merely to make a gate fully clear.</li>
+  </ul>
+</main>
+</body>
+</html>
