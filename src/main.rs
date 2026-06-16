@@ -588,11 +588,6 @@ fn export_run_telemetry(
     attempts: Vec<ledger::AttemptRow>,
     dlq: Option<&ledger::DeadLetterRow>,
 ) -> serde_json::Value {
-    let has_input = attempts.iter().any(|a| a.tokens_in.is_some());
-    let has_output = attempts.iter().any(|a| a.tokens_out.is_some());
-    let input_tokens = has_input.then(|| attempts.iter().filter_map(|a| a.tokens_in).sum::<i64>());
-    let output_tokens =
-        has_output.then(|| attempts.iter().filter_map(|a| a.tokens_out).sum::<i64>());
     let dead_status = match dlq {
         Some(d) if d.replayed_run_id.is_some() => "replayed",
         Some(_) => "open",
@@ -605,56 +600,55 @@ fn export_run_telemetry(
             .map(|a| a.provider())
             .unwrap_or("unknown")
     };
-    let attempt_docs: Vec<_> = attempts
-        .iter()
-        .map(|a| {
-            serde_json::json!({
-                "n": a.n, "phase": &a.phase, "outcome": &a.outcome, "error": &a.error,
-                "exit_code": a.exit_code,
-                "agent": {"name": &a.agent_name, "version": a.agent_version, "harness": &a.harness,
-                    "provider": provider(&a.agent_name), "model": &a.model},
-                "tokens": {"input": a.tokens_in, "output": a.tokens_out}, "turns": a.turns,
-                "cost_usd": a.cost_usd, "artifact_dir": &a.artifact_dir,
-                "started_at": &a.started_at, "ended_at": &a.ended_at,
-            })
-        })
-        .collect();
-    let agent_configs: Vec<_> = attempts
-        .iter()
-        .map(|a| {
+    let mut attempt_docs = Vec::with_capacity(attempts.len());
+    let mut agent_configs = Vec::with_capacity(attempts.len());
+    let mut artifacts = Vec::new();
+    let mut spans = Vec::with_capacity(attempts.len());
+    let (mut input_total, mut output_total) = (0, 0);
+    let (mut has_input, mut has_output) = (false, false);
+    for a in &attempts {
+        let provider = provider(&a.agent_name);
+        has_input |= a.tokens_in.is_some();
+        has_output |= a.tokens_out.is_some();
+        input_total += a.tokens_in.unwrap_or(0);
+        output_total += a.tokens_out.unwrap_or(0);
+        attempt_docs.push(serde_json::json!({
+            "n": a.n, "phase": &a.phase, "outcome": &a.outcome, "error": &a.error,
+            "exit_code": a.exit_code,
+            "agent": {"name": &a.agent_name, "version": a.agent_version, "harness": &a.harness,
+                "provider": provider, "model": &a.model},
+            "tokens": {"input": a.tokens_in, "output": a.tokens_out}, "turns": a.turns,
+            "cost_usd": a.cost_usd, "artifact_dir": &a.artifact_dir,
+            "started_at": &a.started_at, "ended_at": &a.ended_at,
+        }));
+        agent_configs.push(
             serde_json::json!({"name": &a.agent_name, "version": a.agent_version,
-            "harness": &a.harness, "provider": provider(&a.agent_name), "model": &a.model,
+            "harness": &a.harness, "provider": provider, "model": &a.model,
             "outcome": &a.outcome, "cost_usd": a.cost_usd,
-            "tokens": {"input": a.tokens_in, "output": a.tokens_out}})
-        })
-        .collect();
-    let artifacts: Vec<_> = attempts
-        .iter()
-        .filter_map(|a| {
-            a.artifact_dir.as_ref().map(
-                |p| serde_json::json!({"kind": "attempt_artifact_dir", "attempt": a.n, "path": p}),
-            )
-        })
-        .collect();
-    let spans: Vec<_> = attempts
-        .iter()
-        .map(|a| {
-            serde_json::json!({
-                "name": format!("bb.{}.attempt.{}", r.task, a.n), "kind": "internal",
-                "start_time": &a.started_at, "end_time": &a.ended_at,
-                "attributes": {
-                    "gen_ai.operation.name": &r.task,
-                    "gen_ai.provider.name": provider(&a.agent_name),
-                    "gen_ai.request.model": &a.model, "gen_ai.response.model": &a.model,
-                    "gen_ai.agent.name": &a.agent_name,
-                    "gen_ai.agent.version": a.agent_version.to_string(),
-                    "gen_ai.usage.input_tokens": a.tokens_in,
-                    "gen_ai.usage.output_tokens": a.tokens_out,
-                    "bb.run.id": &r.id, "bb.attempt.n": a.n, "bb.harness": &a.harness
-                }
-            })
-        })
-        .collect();
+            "tokens": {"input": a.tokens_in, "output": a.tokens_out}}),
+        );
+        if let Some(path) = &a.artifact_dir {
+            artifacts.push(
+                serde_json::json!({"kind": "attempt_artifact_dir", "attempt": a.n, "path": path}),
+            );
+        }
+        spans.push(serde_json::json!({
+            "name": format!("bb.{}.attempt.{}", r.task, a.n), "kind": "internal",
+            "start_time": &a.started_at, "end_time": &a.ended_at,
+            "attributes": {
+                "gen_ai.operation.name": &r.task,
+                "gen_ai.provider.name": provider,
+                "gen_ai.request.model": &a.model, "gen_ai.response.model": &a.model,
+                "gen_ai.agent.name": &a.agent_name,
+                "gen_ai.agent.version": a.agent_version.to_string(),
+                "gen_ai.usage.input_tokens": a.tokens_in,
+                "gen_ai.usage.output_tokens": a.tokens_out,
+                "bb.run.id": &r.id, "bb.attempt.n": a.n, "bb.harness": &a.harness
+            }
+        }));
+    }
+    let input_tokens = has_input.then_some(input_total);
+    let output_tokens = has_output.then_some(output_total);
     let dead_letter = dlq.map_or_else(
         || serde_json::json!({"status": "none"}),
         |d| {
