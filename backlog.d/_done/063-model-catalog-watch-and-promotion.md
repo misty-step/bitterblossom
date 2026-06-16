@@ -1,6 +1,6 @@
 # Watch model catalogs and promote agent configs safely
 
-Priority: P1 | Status: ready | Estimate: M | Shaped: yes
+Priority: P1 | Status: done | Estimate: M | Shaped: yes
 
 ## PRD Summary
 
