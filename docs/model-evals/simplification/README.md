@@ -7,7 +7,7 @@ Current candidate set:
 
 - `simplification` - `pi` / `deepseek/deepseek-v4-flash`
 - `simplification-kimi` - `pi` / `moonshotai/kimi-k2.7-code`
-- `simplification-glm` - `pi` / `z-ai/glm-5.1`
+- `simplification-glm` - `pi` / `z-ai/glm-5.2`
 
 Current evaluator:
 

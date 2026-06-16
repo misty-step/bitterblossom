@@ -7,7 +7,7 @@ Current candidate set:
 
 - `build` - `codex` / `gpt-5.5` subscription auth
 - `build-kimi` - `pi` / `moonshotai/kimi-k2.7-code`
-- `build-glm` - `pi` / `z-ai/glm-5.1`
+- `build-glm` - `pi` / `z-ai/glm-5.2`
 
 Current evaluator:
 

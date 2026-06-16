@@ -48,7 +48,7 @@ const COHORTS: &[Cohort<'_>] = &[
             Candidate {
                 task: "build-glm",
                 harness: "pi",
-                model: "z-ai/glm-5.1",
+                model: "z-ai/glm-5.2",
                 family: "glm",
                 auth: AuthClass::Api,
                 verdict: None,
@@ -77,7 +77,7 @@ const COHORTS: &[Cohort<'_>] = &[
             Candidate {
                 task: "review-glm",
                 harness: "pi",
-                model: "z-ai/glm-5.1",
+                model: "z-ai/glm-5.2",
                 family: "glm",
                 auth: AuthClass::Api,
                 verdict: None,
@@ -106,7 +106,7 @@ const COHORTS: &[Cohort<'_>] = &[
             Candidate {
                 task: "gardener-glm",
                 harness: "pi",
-                model: "z-ai/glm-5.1",
+                model: "z-ai/glm-5.2",
                 family: "glm",
                 auth: AuthClass::Api,
                 verdict: None,
@@ -135,7 +135,7 @@ const COHORTS: &[Cohort<'_>] = &[
             Candidate {
                 task: "ci-diagnose-glm",
                 harness: "pi",
-                model: "z-ai/glm-5.1",
+                model: "z-ai/glm-5.2",
                 family: "glm",
                 auth: AuthClass::Api,
                 verdict: None,
@@ -164,7 +164,7 @@ const COHORTS: &[Cohort<'_>] = &[
             Candidate {
                 task: "correctness-glm",
                 harness: "pi",
-                model: "z-ai/glm-5.1",
+                model: "z-ai/glm-5.2",
                 family: "glm",
                 auth: AuthClass::Api,
                 verdict: Some("correctness-glm"),
@@ -193,7 +193,7 @@ const COHORTS: &[Cohort<'_>] = &[
             Candidate {
                 task: "security-glm",
                 harness: "pi",
-                model: "z-ai/glm-5.1",
+                model: "z-ai/glm-5.2",
                 family: "glm",
                 auth: AuthClass::Api,
                 verdict: Some("security-glm"),
@@ -222,7 +222,7 @@ const COHORTS: &[Cohort<'_>] = &[
             Candidate {
                 task: "simplification-glm",
                 harness: "pi",
-                model: "z-ai/glm-5.1",
+                model: "z-ai/glm-5.2",
                 family: "glm",
                 auth: AuthClass::Api,
                 verdict: Some("simplification-glm"),
@@ -251,7 +251,7 @@ const COHORTS: &[Cohort<'_>] = &[
             Candidate {
                 task: "product-glm",
                 harness: "pi",
-                model: "z-ai/glm-5.1",
+                model: "z-ai/glm-5.2",
                 family: "glm",
                 auth: AuthClass::Api,
                 verdict: Some("product-glm"),
@@ -355,7 +355,9 @@ fn model_eval_reference_context_is_documented_for_future_runs() {
     assert!(readme.contains("model-eval"));
     assert!(readme.contains("reference context"));
     assert!(readme.contains("z-ai/glm-5.2"));
+    assert!(readme.contains("51f3f03980a6"));
     assert!(readme.contains("June 16, 2026"));
+    assert!(!readme.contains("not a runnable OpenRouter API model"));
     for cohort in COHORTS {
         assert!(readme.contains(&format!("]({}/README.md)", cohort.flow)));
         let flow_readme = fs::read_to_string(
@@ -370,6 +372,44 @@ fn model_eval_reference_context_is_documented_for_future_runs() {
             assert!(flow_readme.contains(candidate.model), "{}", candidate.model);
         }
     }
+}
+
+#[test]
+fn ci_diagnose_real_failure_record_has_complete_receipts() {
+    let repo = root();
+    let readme = fs::read_to_string(repo.join("docs/model-evals/ci-diagnose/README.md")).unwrap();
+    let record_name = "2026-06-16-real-failure-diagnosis.md";
+    assert!(readme.contains(record_name));
+
+    let record = fs::read_to_string(
+        repo.join("docs")
+            .join("model-evals")
+            .join("ci-diagnose")
+            .join(record_name),
+    )
+    .unwrap();
+
+    for required in [
+        "24208282343",
+        "2b7e1b2b2b9a9694bfcbfff1950681d10c4e9be4",
+        "Hook Tests",
+        "Accepted Candidate Runs",
+        "ci-diagnose`",
+        "ci-diagnose-kimi`",
+        "ci-diagnose-glm`",
+        "Accepted Evaluator Run",
+        "model-eval`",
+        "Winner",
+        "Reference Context",
+        "Dogfood Notes",
+        "Residual Risk",
+    ] {
+        assert!(record.contains(required), "missing {required}");
+    }
+    assert!(
+        !record.contains("PENDING"),
+        "real-failure record must be completed before merge"
+    );
 }
 
 #[test]

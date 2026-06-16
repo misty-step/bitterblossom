@@ -7,7 +7,7 @@ Current candidate set:
 
 - `security` - `pi` / `deepseek/deepseek-v4-pro`
 - `security-kimi` - `pi` / `moonshotai/kimi-k2.7-code`
-- `security-glm` - `pi` / `z-ai/glm-5.1`
+- `security-glm` - `pi` / `z-ai/glm-5.2`
 
 Current evaluator:
 

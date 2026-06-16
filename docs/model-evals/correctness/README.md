@@ -7,7 +7,7 @@ Current candidate set:
 
 - `correctness` - `pi` / `deepseek/deepseek-v4-pro`
 - `correctness-kimi` - `pi` / `moonshotai/kimi-k2.7-code`
-- `correctness-glm` - `pi` / `z-ai/glm-5.1`
+- `correctness-glm` - `pi` / `z-ai/glm-5.2`
 
 Current evaluator:
 

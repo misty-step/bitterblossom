@@ -1,6 +1,6 @@
 # Add an SDLC lifecycle reflex pack
 
-Priority: P1 | Status: ready | Estimate: XL
+Priority: P1 | Status: done | Estimate: XL
 
 ## Goal
 
@@ -60,8 +60,9 @@ Model posture:
 - Use DeepSeek V4 Pro for long-context correctness/security.
 - Use Kimi K2.7 Code for coding-aware orchestration where local smoke evidence
   exists.
-- Treat GLM 5.2 as page-visible/API-pending until it appears in the API catalog
-  and passes a local harness smoke.
+- GLM 5.2 was page-visible/API-pending during initial delivery; as of the
+  June 16, 2026 update it is API-catalog runnable and passed a local harness
+  smoke, so GLM-family candidate lanes now use it.
 - Use Fusion only for architecture/research council questions, not routine
   coding or deterministic gates.
 
@@ -117,3 +118,39 @@ Keep these boundaries:
 - More agents are not automatically better. Use multi-agent storming for
   independent review domains, breadth research, and verification; keep tightly
   coupled fixes in one builder lane.
+
+## Completion 2026-06-16
+
+This ticket is complete as the initial SDLC lifecycle reflex pack:
+
+- The lifecycle design packet exists in
+  [`docs/plans/2026-06-15-sdlc-reflex-agent-plane.md`](../docs/plans/2026-06-15-sdlc-reflex-agent-plane.md).
+- `check_suite.failed -> ci-diagnose packet` is implemented as task, agent,
+  webhook filter, manual trigger, and durable `REPORT.json` card contract.
+- The CI-diagnose flow has a model-evaluation cohort:
+  `ci-diagnose`, `ci-diagnose-kimi`, and `ci-diagnose-glm`.
+- `model-eval` compares candidate outputs using exact run ids, costs, and
+  reports, then writes reference context under `docs/model-evals/`.
+- Real dogfood evidence now exists for both no-failure handling and real failed
+  CI diagnosis:
+  - No-failure reference:
+    [`docs/model-evals/ci-diagnose/2026-06-15-no-failure-probe.md`](../docs/model-evals/ci-diagnose/2026-06-15-no-failure-probe.md).
+  - Real-failure reference:
+    [`docs/model-evals/ci-diagnose/2026-06-16-real-failure-diagnosis.md`](../docs/model-evals/ci-diagnose/2026-06-16-real-failure-diagnosis.md).
+- Final real-failure dogfood used GitHub Actions run `24208282343` at commit
+  `2b7e1b2b2b9a9694bfcbfff1950681d10c4e9be4`:
+  - `ci-diagnose`: run `701b4ce14c6b`, cost `$0.0340725056`.
+  - `ci-diagnose-kimi`: run `789da2d6c5ff`, cost `$0.03160564`.
+  - `ci-diagnose-glm`: run `2fadec48f213`, cost `$0.039297356`.
+  - `model-eval`: run `5a964da02de5`, cost `$0.157223`.
+- The real-failure evaluator selected `ci-diagnose-glm` / `z-ai/glm-5.1` as
+  the best root-cause diagnosis candidate for this sample.
+- June 16, 2026 GLM update: `z-ai/glm-5.2` appeared in the OpenRouter API
+  catalog and `ci-diagnose-glm` smoke run `51f3f03980a6` completed against the
+  same real failed-run payload, cost `$0.03326702`, duration 62.7s. The
+  current GLM-family configs now use GLM 5.2; this ticket's earlier model-eval
+  receipts remain GLM 5.1 historical evidence.
+
+Remaining lifecycle reflex expansion is intentionally not smuggled into this
+ticket. It is tracked by
+[`062-remaining-lifecycle-reflexes.md`](../062-remaining-lifecycle-reflexes.md).
