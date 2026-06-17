@@ -252,6 +252,11 @@ Deployment contract:
   `flyctl status --app bitterblossom-plane`, `flyctl volumes list --app
   bitterblossom-plane`, and `bb --config plane recover` inside the Fly
   machine.
+- Production operations live in [`docs/operations/`](operations/). The
+  maintained smoke and restore drill is
+  `./scripts/production-ops-drill.sh --local` for CI/local proof and
+  `BB_API_TOKEN=... ./scripts/production-ops-drill.sh --remote` for the Fly
+  plane.
 
 The GitHub webhook is deliberately a per-repo hook for v1, not a GitHub
 App. It exercises the same HMAC/dedupe/filter path as a future App

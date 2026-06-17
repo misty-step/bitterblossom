@@ -255,11 +255,18 @@ curl http://127.0.0.1:7077/api/tasks
 Non-loopback serving needs `BB_API_TOKEN`. Query with:
 
 ```bash
-curl -H "Authorization: Bearer $BB_API_TOKEN" "$BB_URL/api/runs"
+{
+  printf '%s\n' 'fail'
+  printf '%s\n' 'silent'
+  printf '%s\n' 'show-error'
+  printf 'url = "%s/api/runs"\n' "$BB_URL"
+  printf 'header = "Authorization: Bearer %s"\n' "$BB_API_TOKEN"
+} | curl --config -
 ```
 
 Do not put `BB_API_TOKEN` in a query string. Read APIs and the HTML view accept
-only the bearer header when a token is configured.
+only the bearer header when a token is configured. Prefer curl config on stdin
+so the bearer value is not exposed in process argv.
 
 ## Parked Tasks
 
