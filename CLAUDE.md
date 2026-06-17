@@ -33,7 +33,7 @@ retries only, agents own their own decomposition.
 ## Layout
 
 ```text
-src/                 The spine (≤5300 LOC; mechanism only — see Gotchas)
+src/                 The spine (≤5100 LOC; mechanism only — see Gotchas)
   spec.rs            Config loading: plane.toml, agents/, tasks/
   ledger.rs          SQLite run ledger, state machine, leases, dead letters
   ingress.rs         Webhook HMAC + dedupe, cron schedules

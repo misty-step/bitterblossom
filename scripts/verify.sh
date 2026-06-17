@@ -24,10 +24,10 @@ cargo run --quiet -- --config examples/demo-plane check
 echo "==> operations smoke drill"
 BB_BIN=./target/debug/bb scripts/production-ops-drill.sh --local >/dev/null
 
-echo "==> spine LOC budget (<= 5300; mechanism only — the Python conductor died of bloat)"
+echo "==> spine LOC budget (<= 5100; mechanism only — the Python conductor died of bloat)"
 loc=$(find src -name '*.rs' -exec cat {} + | grep -vc '^\s*$')
 echo "    src LOC: $loc"
-if [ "$loc" -gt 5300 ]; then
+if [ "$loc" -gt 5100 ]; then
   echo "spine over the LOC budget. The cap is a proxy for one invariant: src/ is"
   echo "MECHANISM (config, ledger, dispatch, ingress, CLI, recovery), not WORKLOAD"
   echo "judgment. Before raising it, ask whether what you added is mechanism — if not,"

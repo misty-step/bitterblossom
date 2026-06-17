@@ -307,3 +307,24 @@ fn retire_marks_blocked_run_terminal_and_keeps_history() {
     assert!(ledger.retire_blocked_run(&blocked.id, "again").is_err());
     assert!(ledger.release_blocked_run(&blocked.id, "again").is_err());
 }
+
+#[test]
+fn release_refuses_a_run_held_by_a_ceiling_not_a_park() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = setup(dir.path(), "[budget]\nmax_cost_per_day_usd = 0.005\n", "");
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+
+    // First run blows the daily ceiling; the ceiling blocks without parking.
+    assert_eq!(run_task(&plane, &mut ledger).state, "success");
+    let blocked = run_task(&plane, &mut ledger);
+    assert_eq!(blocked.state, "blocked_budget");
+    assert!(ledger.parked_reason("demo").unwrap().is_none());
+
+    // release cannot clear a ceiling, so it refuses instead of bouncing with a
+    // false "released" success; retire still closes the row.
+    assert!(ledger.release_blocked_run(&blocked.id, "try").is_err());
+    ledger
+        .retire_blocked_run(&blocked.id, "over budget today")
+        .unwrap();
+    assert_eq!(ledger.run(&blocked.id).unwrap().state, "retired");
+}

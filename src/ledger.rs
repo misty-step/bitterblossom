@@ -511,12 +511,22 @@ impl Ledger {
             )
             .optional()?)
     }
-    /// Re-queue one budget-blocked run back to `pending`. Clears the task's park
-    /// so the run is not re-blocked at the next dispatch budget check; other
-    /// blocked runs for the task are left as-is (contrast `unpark_task`, which
-    /// releases the whole parked queue at once).
+    /// Re-queue one budget-blocked run back to `pending` and clear its task's
+    /// park so it can dispatch. Other blocked runs for the task are left as-is
+    /// (contrast `unpark_task`, which releases the whole parked queue). Refuses a
+    /// run held by a budget limit with no park (e.g. the global daily cost
+    /// ceiling): there is nothing to clear and it would just re-block — close it
+    /// with `retire` or wait for the limit to reset. A re-queued run can still
+    /// re-block if another limit (e.g. `max_runs_per_day`) is still over.
     pub fn release_blocked_run(&self, run_id: &str, reason: &str) -> Result<()> {
         let run = self.require_blocked_budget(run_id)?;
+        if self.parked_reason(&run.task)?.is_none() {
+            bail!(
+                "run {run_id} is held by a budget limit on task '{}', not a park; \
+                 release cannot clear it (retire it, or wait for the limit to reset)",
+                run.task
+            );
+        }
         self.conn.execute(
             "DELETE FROM parked_tasks WHERE task = ?1",
             params![run.task],
