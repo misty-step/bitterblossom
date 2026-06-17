@@ -99,6 +99,18 @@ enum RunsCommand {
         #[arg(long, default_value = "resolved by operator")]
         reason: String,
     },
+    /// Re-queue one budget-blocked run; clears the task park, leaves other blocked runs.
+    Release {
+        run_id: String,
+        #[arg(long, default_value = "released by operator")]
+        reason: String,
+    },
+    /// Retire one budget-blocked run as intentionally not-to-run; keeps ledger history.
+    Retire {
+        run_id: String,
+        #[arg(long)]
+        reason: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -279,6 +291,16 @@ fn run() -> Result<()> {
                 ledger.transition(&run_id, &outcome, Some(&reason))?;
                 ledger.release_leases_for_run(&run_id)?;
                 println!("run {run_id} resolved: {outcome}");
+            }
+            RunsCommand::Release { run_id, reason } => {
+                ledger.release_blocked_run(&run_id, &reason)?;
+                println!(
+                    "released {run_id} -> pending; task unparked, other blocked runs unchanged"
+                );
+            }
+            RunsCommand::Retire { run_id, reason } => {
+                ledger.retire_blocked_run(&run_id, &reason)?;
+                println!("retired {run_id}; kept in ledger history");
             }
             RunsCommand::Export => {
                 let dead_letters = ledger.list_dead_letters()?;

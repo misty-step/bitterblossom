@@ -18,6 +18,7 @@ pub const RUN_STATES: &[&str] = &[
     "failure",
     "awaiting_recovery",
     "blocked_budget",
+    "retired",
 ];
 
 fn transition_allowed(from: &str, to: &str) -> bool {
@@ -30,6 +31,7 @@ fn transition_allowed(from: &str, to: &str) -> bool {
             | ("running", "failure")
             | ("running", "awaiting_recovery")
             | ("blocked_budget", "pending")
+            | ("blocked_budget", "retired")
             | ("awaiting_recovery", "success")
             | ("awaiting_recovery", "failure")
     )
@@ -509,11 +511,41 @@ impl Ledger {
             )
             .optional()?)
     }
+    /// Re-queue one budget-blocked run back to `pending`. Clears the task's park
+    /// so the run is not re-blocked at the next dispatch budget check; other
+    /// blocked runs for the task are left as-is (contrast `unpark_task`, which
+    /// releases the whole parked queue at once).
+    pub fn release_blocked_run(&self, run_id: &str, reason: &str) -> Result<()> {
+        let run = self.require_blocked_budget(run_id)?;
+        self.conn.execute(
+            "DELETE FROM parked_tasks WHERE task = ?1",
+            params![run.task],
+        )?;
+        self.transition(run_id, "pending", Some(reason))?;
+        self.record_budget_event(Some(&run.task), "run_released", reason)
+    }
+
+    /// Retire one budget-blocked run as intentionally not-to-run, keeping the
+    /// ledger row and its history. Leaves the task's park untouched.
+    pub fn retire_blocked_run(&self, run_id: &str, reason: &str) -> Result<()> {
+        let run = self.require_blocked_budget(run_id)?;
+        self.transition(run_id, "retired", Some(reason))?;
+        self.record_budget_event(Some(&run.task), "run_retired", reason)
+    }
+
+    fn require_blocked_budget(&self, run_id: &str) -> Result<RunRow> {
+        let run = self.run(run_id)?;
+        if run.state != "blocked_budget" {
+            bail!("run {run_id} is '{}', not 'blocked_budget'", run.state);
+        }
+        Ok(run)
+    }
+
     pub fn runs_today(&self, task: &str) -> Result<i64> {
         let day = &now()[..10];
         Ok(self.conn.query_row(
             "SELECT COUNT(*) FROM runs WHERE task = ?1
-             AND state NOT IN ('blocked_budget', 'pending')
+             AND state NOT IN ('blocked_budget', 'pending', 'retired')
              AND substr(created_at, 1, 10) = ?2",
             params![task, day],
             |r| r.get(0),

@@ -33,7 +33,7 @@ retries only, agents own their own decomposition.
 ## Layout
 
 ```text
-src/                 The spine (≤ ~5k LOC budget)
+src/                 The spine (≤5300 LOC; mechanism only — see Gotchas)
   spec.rs            Config loading: plane.toml, agents/, tasks/
   ledger.rs          SQLite run ledger, state machine, leases, dead letters
   ingress.rs         Webhook HMAC + dedupe, cron schedules
@@ -111,6 +111,14 @@ per attempt.
   definition.** Workloads are task specs (config + lane card). The Python
   conductor (20k LOC) and the Elixir persona fleet both died of spine
   bloat — see `docs/archive/` and git history for the prior art.
+- **The `src/` LOC cap (`scripts/verify.sh`) is a proxy, not the goal.** The
+  real invariant is *mechanism, not workload judgment*: config, ledger,
+  dispatch, ingress, CLI, recovery belong in `src/`; anything that encodes what
+  a workload decides belongs in `tasks/` + lane cards. When you hit the cap,
+  first ask "is what I'm adding mechanism?" — if not, move it out (that shrinks
+  the spine). Raise the cap only as a conscious re-baseline when `src/` is
+  verifiably lean (no dead code, deep modules), never to sneak a change past
+  the gate.
 
 ## Coding Standards
 
