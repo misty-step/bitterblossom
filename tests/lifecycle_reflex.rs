@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use bitterblossom::ingress::{handle_webhook, sign_hmac};
 use bitterblossom::ledger::Ledger;
-use bitterblossom::spec::{AuthClass, Plane, TriggerSpec};
+use bitterblossom::spec::{AuthClass, Plane, TriggerSpec, WebhookActionSpec};
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -120,6 +120,52 @@ fn ci_diagnose_webhook_filters_failed_bitterblossom_check_suites() {
         ledger.list_runs(Some("ci-diagnose"), None).unwrap().len(),
         1
     );
+}
+
+#[test]
+fn review_webhook_is_submission_storm_reflex_without_additions_cap() {
+    let plane = Plane::load(&repo_root().join("plane")).unwrap();
+    let task = plane.task("review").unwrap();
+    let webhook = task
+        .spec
+        .triggers
+        .iter()
+        .find_map(|trigger| match trigger {
+            TriggerSpec::Webhook {
+                route,
+                dedupe_key,
+                filter,
+                action,
+                ..
+            } => Some((route, dedupe_key, filter, action)),
+            TriggerSpec::Manual | TriggerSpec::Cron { .. } => None,
+        })
+        .expect("review webhook trigger");
+
+    assert_eq!(webhook.0, "review");
+    assert_eq!(
+        webhook.1.as_deref(),
+        Some("json:/pull_request/html_url|json:/pull_request/head/sha")
+    );
+    assert!(!webhook
+        .2
+        .iter()
+        .any(|f| f.pointer == "/pull_request/additions"));
+    assert!(webhook.2.iter().any(|f| f.pointer == "/pull_request/draft"));
+
+    match webhook.3.as_ref().expect("submission storm action") {
+        WebhookActionSpec::SubmissionStorm {
+            change,
+            rev,
+            repo,
+            version,
+        } => {
+            assert_eq!(change, "json:/pull_request/html_url");
+            assert_eq!(rev, "json:/pull_request/head/sha");
+            assert_eq!(repo.as_deref(), Some("json:/repository/full_name"));
+            assert_eq!(version.as_deref(), Some("json:/pull_request/updated_at"));
+        }
+    }
 }
 
 fn temp_ci_plane(root: &Path) -> Plane {

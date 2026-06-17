@@ -4,7 +4,7 @@ use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
 use crate::ledger::{IngressOutcome, IngressRequest, Ledger};
-use crate::spec::{Plane, Task, TriggerSpec};
+use crate::spec::{Plane, Task, TriggerSpec, WebhookActionSpec};
 pub struct WebhookResponse {
     pub status: u16,
     pub body: String,
@@ -37,6 +37,7 @@ pub fn handle_webhook(
     let TriggerSpec::Webhook {
         secret_env,
         dedupe_key,
+        action,
         filter,
         ..
     } = trigger
@@ -85,25 +86,155 @@ pub fn handle_webhook(
     };
     let key = derived.map(|k| format!("wh:{route}:{k}"));
 
+    let source_event_id = header(headers, "x-github-delivery");
     let outcome = ledger.ingest(IngressRequest {
         task: &task.name,
         trigger_kind: "webhook",
         idempotency_key: key.as_deref(),
-        source_event_id: header(headers, "x-github-delivery").as_deref(),
+        source_event_id: source_event_id.as_deref(),
         payload: Some(body),
         parent_run_id: None,
     })?;
+    if let Some(action) = action {
+        start_submission_storm(
+            plane,
+            ledger,
+            &outcome.run_id,
+            headers,
+            body,
+            action,
+            !outcome.duplicate,
+        )?;
+    }
     Ok(WebhookResponse {
         status: 202,
-        body: serde_json::json!({
-            "run_id": outcome.run_id,
-            "duplicate": outcome.duplicate,
-            "state": outcome.state,
-        })
-        .to_string(),
+        body: serde_json::json!({"run_id": outcome.run_id, "duplicate": outcome.duplicate})
+            .to_string(),
     })
 }
+
+fn start_submission_storm(
+    plane: &Plane,
+    ledger: &mut Ledger,
+    parent_run_id: &str,
+    headers: &[(String, String)],
+    body: &str,
+    action: &WebhookActionSpec,
+    allow_supersede: bool,
+) -> Result<()> {
+    let WebhookActionSpec::SubmissionStorm {
+        change,
+        rev,
+        repo,
+        version,
+    } = action;
+    let gate = plane
+        .spec
+        .gate
+        .as_ref()
+        .context("submission_storm action requires [gate]")?;
+    let change = derive_dedupe_key(change, headers, body)?;
+    let rev = derive_dedupe_key(rev, headers, body)?;
+    let repo = derive_optional(repo, headers, body)?;
+    let version = derive_optional(version, headers, body)?;
+    let Some(submission) =
+        open_webhook_submission(ledger, &change, &rev, allow_supersede, version.as_deref())?
+    else {
+        return Ok(());
+    };
+    for kind in &gate.required {
+        let task = plane
+            .tasks
+            .values()
+            .find(|task| task.spec.verdict.as_deref() == Some(kind.as_str()))
+            .with_context(|| format!("no task declares verdict = \"{kind}\""))?;
+        let key = format!("storm:{}:{kind}", submission.id);
+        let mut payload = serde_json::json!({
+            "submission": submission.id,
+            "change": submission.change_key,
+            "rev": submission.rev,
+        });
+        if let Some(repo) = &repo {
+            payload["repo"] = repo.clone().into();
+        }
+        let payload = payload.to_string();
+        let _ = ledger.ingest(IngressRequest {
+            task: &task.name,
+            trigger_kind: "webhook",
+            idempotency_key: Some(&key),
+            source_event_id: None,
+            payload: Some(&payload),
+            parent_run_id: Some(parent_run_id),
+        })?;
+    }
+    Ok(())
+}
+
+fn derive_optional(
+    expr: &Option<String>,
+    headers: &[(String, String)],
+    body: &str,
+) -> Result<Option<String>> {
+    expr.as_deref()
+        .map(|expr| derive_dedupe_key(expr, headers, body))
+        .transpose()
+}
+
+fn open_webhook_submission(
+    ledger: &mut Ledger,
+    change: &str,
+    rev: &str,
+    allow_supersede: bool,
+    version: Option<&str>,
+) -> Result<Option<crate::submit::SubmissionRow>> {
+    match ledger.open_submission(change, rev, None) {
+        Ok(submission) => {
+            remember_submission_version(ledger, &submission.id, version)?;
+            Ok(Some(submission))
+        }
+        Err(err) => {
+            let latest = ledger
+                .latest_submission(change)?
+                .with_context(|| err.to_string())?;
+            if latest.state == "open" && latest.rev == rev {
+                return Ok(Some(latest));
+            }
+            if latest.state != "open" {
+                return Err(err);
+            }
+            if !allow_supersede {
+                return Ok(None);
+            }
+            if version
+                .zip(latest.report_json.as_deref())
+                .is_some_and(|(new, old)| new <= old)
+            {
+                return Ok(None);
+            }
+            ledger.settle_submission(&latest.id, "abandoned", "{}")?;
+            let submission = ledger.open_submission(change, rev, None)?;
+            remember_submission_version(ledger, &submission.id, version)?;
+            Ok(Some(submission))
+        }
+    }
+}
+
+fn remember_submission_version(ledger: &mut Ledger, id: &str, version: Option<&str>) -> Result<()> {
+    if let Some(version) = version {
+        ledger.conn.execute(
+            "UPDATE submissions SET report_json = ?2 WHERE id = ?1 AND state = 'open'",
+            rusqlite::params![id, version],
+        )?;
+    }
+    Ok(())
+}
+
 pub fn derive_dedupe_key(expr: &str, headers: &[(String, String)], body: &str) -> Result<String> {
+    if let Some((left, right)) = expr.split_once('|') {
+        let left = derive_dedupe_key(left, headers, body)?;
+        let right = derive_dedupe_key(right, headers, body)?;
+        return Ok(format!("{left}|{right}"));
+    }
     match expr.split_once(':') {
         Some(("header", name)) => header(headers, &name.to_ascii_lowercase())
             .with_context(|| format!("dedupe header '{name}' missing from delivery")),

@@ -205,10 +205,23 @@ pub enum TriggerSpec {
         route: String,
         secret_env: String,
         dedupe_key: Option<String>,
+        action: Option<WebhookActionSpec>,
         #[serde(default)]
         filter: Vec<FilterSpec>,
     },
 }
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WebhookActionSpec {
+    SubmissionStorm {
+        change: String,
+        rev: String,
+        repo: Option<String>,
+        version: Option<String>,
+    },
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct FilterSpec {
     pub pointer: String,
@@ -438,9 +451,20 @@ impl Plane {
             }
             for trigger in &task.spec.triggers {
                 match trigger {
-                    TriggerSpec::Webhook { route, filter, .. } => {
+                    TriggerSpec::Webhook {
+                        route,
+                        filter,
+                        action,
+                        ..
+                    } => {
                         if !routes.insert(route.clone()) {
                             bail!("webhook route '{route}' declared by more than one trigger");
+                        }
+                        if action.is_some() && spec.gate.is_none() {
+                            bail!(
+                                "task '{}': submission_storm action requires [gate]",
+                                task.name
+                            );
                         }
                         for f in filter {
                             f.validate()

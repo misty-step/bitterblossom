@@ -16,7 +16,14 @@ kind = "manual"              # bb --config plane run review --payload '{"repo":"
 kind = "webhook"             # POST /hooks/review (GitHub pull_request events)
 route = "review"
 secret_env = "BB_HOOK_REVIEW"
-dedupe_key = "json:/pull_request/head/sha"   # one run per head SHA, ever
+dedupe_key = "json:/pull_request/html_url|json:/pull_request/head/sha"  # one run per PR head
+
+[trigger.action]
+kind = "submission_storm"
+change = "json:/pull_request/html_url"
+rev = "json:/pull_request/head/sha"
+repo = "json:/repository/full_name"
+version = "json:/pull_request/updated_at"
 
 # Containment is mechanism, not card prose: out-of-scope deliveries are
 # acknowledged (so GitHub doesn't retry) but never become runs.
@@ -31,7 +38,3 @@ any_of = ["opened", "ready_for_review", "synchronize"]
 [[trigger.filter]]
 pointer = "/pull_request/draft"
 equals = false
-
-[[trigger.filter]]
-pointer = "/pull_request/additions"
-max = 4000                                   # oversized PRs don't auto-review

@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en" data-ae-mode="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HTML Plan: PR Reflex Storms</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&amp;family=Geist+Mono:wght@100..900&amp;display=swap">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/misty-step/aesthetic@v2.5.1/aesthetic.css">
+  <style>
+    :root { --ae-accent: #2643d0; --ae-accent-dark: #8c9eff; }
+    .plan-wide .ae-bar, .plan-wide .ae-stage { width: min(92rem, 100% - 4rem); }
+    .hero { display: grid; grid-template-columns: minmax(0, 1.08fr) minmax(25em, 0.72fr); gap: 3em; align-items: end; }
+    .kicker { display: block; margin-bottom: 0.8em; }
+    .rule { border-top: 1px solid var(--ae-line); margin: 1.5em 0; }
+    .grid-2, .grid-3, .grid-5 { display: grid; gap: 1px; background: var(--ae-line); }
+    .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .grid-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+    .cell { min-width: 0; background: var(--ae-surface); padding: 1.2em 1.35em; }
+    .wash { background: var(--ae-wash); }
+    .phase { display: grid; grid-template-columns: 8em minmax(0, 1fr) minmax(15em, 0.68fr); gap: 1.3em; border-top: 1px solid var(--ae-line); padding-top: 1em; margin-top: 1em; }
+    .phase:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
+    .table-wrap { overflow-x: auto; }
+    @media (max-width: 980px) {
+      .plan-wide .ae-bar, .plan-wide .ae-stage { width: min(100% - 2rem, 92rem); }
+      .hero, .grid-2, .grid-3, .grid-5, .phase { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<div class="ae-screen plan-wide">
+  <header class="ae-bar">
+    <a class="ae-name" href="#">PLAN / 065</a>
+    <p class="ae-chrome">rendered before implementation</p>
+  </header>
+  <main class="ae-stage ae-stage-scroll">
+    <article class="ae-view">
+      <section class="hero" aria-label="Plan contract">
+        <div>
+          <p class="ae-chrome kicker">PR REFLEX STORMS / BITTERBLOSSOM</p>
+          <h1 class="ae-strong">A PR open, ready-for-review, or update should automatically create a submission and enqueue the full adversarial storm.</h1>
+          <p class="ae-lede">Chosen design: extend webhook triggers with a generic <code>submission_storm</code> action. The trigger remains data-owned in <code>task.toml</code>; the Rust spine only maps event payload fields to the existing submission and canonical storm run mechanics.</p>
+        </div>
+        <aside class="ae-panel">
+          <h2 class="ae-h">CHOSEN DESIGN</h2>
+          <p>Add trigger-time expansion, not a review conductor: authenticated PR webhook -> one submission -> required verdict runs keyed as <code>storm:&lt;submission&gt;:&lt;kind&gt;</code>.</p>
+          <div class="rule"></div>
+          <h2 class="ae-h">QUALITY SYSTEM</h2>
+          <p>Proof: synthetic webhook oracle, checked-in plane contract, full repo gate, and a fresh diff critic before merge.</p>
+          <div class="rule"></div>
+          <p class="ae-dim">Premise source: <code>sha256:4eb48ff00fbb8d37f20176d5afc9ed8d25e756904a19755edba20f102ee429db docs/plans/2026-06-11-039-submission-loop.md</code></p>
+          <p class="ae-dim">External source: GitHub pull_request webhook docs, checked 2026-06-16.</p>
+        </aside>
+      </section>
+
+      <section class="grid-5" aria-label="Executive contract" style="margin-top: 2em">
+        <article class="cell"><h2 class="ae-h">STANDARDS</h2><p>Deep module, small surface. No workload-specific branches in dispatch. Reflex agents stay API-auth and hermetic. Large PRs are reviewed, not silently filtered.</p></article>
+        <article class="cell"><h2 class="ae-h">ACCEPTANCE</h2><p>A signed in-scope PR webhook creates one control run, one submission, and one pending run per required gate member. Redelivery creates no duplicate submission or storm members.</p></article>
+        <article class="cell"><h2 class="ae-h">VERIFY</h2><p><code>cargo test --test ingress</code>, <code>cargo test --test lifecycle_reflex</code>, <code>bb check plane</code>, and <code>./scripts/verify.sh</code>.</p></article>
+        <article class="cell"><h2 class="ae-h">COMMUNICATE</h2><p>Report exact trigger config, synthetic delivery result, gate/member state, and residual production deployment risk.</p></article>
+        <article class="cell wash"><h2 class="ae-h">STOP IF</h2><p>The design needs a semantic orchestrator, needs GitHub API writes, weakens auth policy, or cannot stay inside the existing submission/gate data model.</p></article>
+      </section>
+
+      <section class="grid-3" aria-label="Current change proof" style="margin-top: 1px">
+        <article class="cell"><h2 class="ae-h">CURRENT STATE</h2><p><code>review</code> has a PR webhook but creates one review-coordinator run. Storm members and <code>bb gate</code> are manual. The checked-in review trigger filters <code>/pull_request/additions &lt;= 4000</code>.</p></article>
+        <article class="cell"><h2 class="ae-h">CHANGE SHAPE</h2><p>Add a trigger action type that derives <code>change</code>, <code>rev</code>, <code>repo</code>, and freshness version, then enqueues required verdict tasks. Update the checked-in PR trigger to use it and remove the additions cap.</p></article>
+        <article class="cell wash"><h2 class="ae-h">PROOF SURFACE</h2><p>A synthetic oversized PR payload must be accepted and must materialize the submission plus canonical storm run rows without running external agents.</p></article>
+      </section>
+
+      <section class="grid-2" aria-label="Scope and anchors" style="margin-top: 2em">
+        <article class="cell">
+          <h2 class="ae-h">SCOPE</h2>
+          <p><strong>Goal:</strong> PR lifecycle events automatically start adversarial review swarms.</p>
+          <p><strong>Non-goals:</strong> automatic fixes, automatic merge, review-comment ingestion, GitHub status posting, model selection changes, or per-repo gate profiles.</p>
+          <p><strong>Invariants:</strong> HMAC required, filters fail closed, duplicate deliveries are idempotent, gate policy remains mechanical, and large PRs are budgeted instead of skipped.</p>
+        </article>
+        <article class="cell">
+          <h2 class="ae-h">REPO ANCHORS</h2>
+          <p><code>src/spec.rs</code> - trigger schema and load validation.</p>
+          <p><code>src/ingress.rs</code> - webhook HMAC, filters, dedupe, run creation.</p>
+          <p><code>src/submit.rs</code> - submission/gate mechanics to reuse.</p>
+          <p><code>tests/ingress.rs</code> and <code>tests/lifecycle_reflex.rs</code> - red tests for trigger behavior and checked-in plane contract.</p>
+          <p><code>docs/spine.md</code> and <code>plane/tasks/review/task.toml</code> - operator-facing contract.</p>
+        </article>
+      </section>
+
+      <section class="ae-panel" aria-label="Execution plan" style="margin-top: 2em">
+        <h2 class="ae-h">EXECUTION PLAN</h2>
+        <div class="phase"><strong class="ae-accent">1 red</strong><p>Add tests showing a PR webhook expands into a submission storm and an oversized PR is not filtered.</p><p class="ae-dim">Evidence: focused test fails before implementation.</p></div>
+        <div class="phase"><strong class="ae-accent">2 build</strong><p>Add the smallest trigger schema and ingress helper. Reuse <code>Ledger::open_submission</code> and <code>Ledger::ingest</code> with existing canonical idempotency keys.</p><p class="ae-dim">Evidence: focused tests pass.</p></div>
+        <div class="phase"><strong class="ae-accent">3 docs</strong><p>Update the product contract so operators see PR storm reflex as first-class, and remove the stale additions-cap example.</p><p class="ae-dim">Evidence: contract docs test and <code>bb check</code>.</p></div>
+        <div class="phase"><strong class="ae-accent">4 review</strong><p>Dogfood with <code>bb</code> where possible and run a fresh artifact-only critic on the diff and oracle.</p><p class="ae-dim">Evidence: BB receipt or explicit waiver, critic verdict, full gate.</p></div>
+      </section>
+
+      <section class="grid-2" aria-label="Alternatives and risks" style="margin-top: 2em">
+        <article class="cell">
+          <h2 class="ae-h">ALTERNATIVES</h2>
+          <div class="table-wrap"><table class="ae-table"><thead><tr><th>option</th><th>helps</th><th>tradeoff</th><th>verdict</th></tr></thead><tbody>
+            <tr><td class="ae-item">Leave manual</td><td>Zero code</td><td>Fails the operator outcome; PRs still depend on memory</td><td>reject</td></tr>
+            <tr><td class="ae-item">Make review card orchestrate</td><td>No schema change</td><td>Semantic workflow hidden in prose and one agent</td><td>reject</td></tr>
+            <tr><td class="ae-item">Generic trigger action</td><td>Small spine surface, data-owned workflow</td><td>Requires schema and tests</td><td>choose</td></tr>
+            <tr><td class="ae-item">Full lifecycle orchestrator</td><td>Future-proof</td><td>Too much surface before one loop proves itself</td><td>defer</td></tr>
+          </tbody></table></div>
+        </article>
+        <article class="cell wash">
+          <h2 class="ae-h">RISKS</h2>
+          <div class="table-wrap"><table class="ae-table"><thead><tr><th>risk</th><th>mitigation</th><th>owner</th></tr></thead><tbody>
+            <tr><td>Webhook redelivery creates duplicate storms</td><td>Dedupe by PR URL plus head SHA; member keys include submission id; duplicate redelivery repairs missing member rows without rolling back newer heads</td><td>spine</td></tr>
+            <tr><td>Large PRs run expensive storms</td><td>Task/global budgets and max runs per day remain hard/advisory controls</td><td>plane config</td></tr>
+            <tr><td>Open submission already exists for the PR</td><td>Return 202 with existing control run duplicate; do not create a second active submission</td><td>spine</td></tr>
+            <tr><td>Production webhook not configured</td><td>Report as deployment residual; local contract still verified</td><td>operator</td></tr>
+          </tbody></table></div>
+        </article>
+      </section>
+
+      <section class="ae-panel" aria-label="Verification system" style="margin-top: 2em">
+        <h2 class="ae-h">VERIFICATION SYSTEM</h2>
+        <p><strong>Claim:</strong> an in-scope PR webhook starts the same adversarial gate that manual submission storms use.</p>
+        <p><strong>Falsifier:</strong> no submission, wrong change/rev, missing required member runs, duplicate redelivery rows, or oversized PR filtered.</p>
+        <p><strong>Driver:</strong> signed synthetic webhook through <code>handle_webhook</code>; checked-in plane loaded through <code>Plane::load</code>; full <code>./scripts/verify.sh</code>.</p>
+        <p><strong>Grader:</strong> test assertions over ledger submissions and canonical storm idempotency keys.</p>
+        <p><strong>Evidence packet:</strong> this plan, test output, BB dogfood receipts where practical, critic receipt, final PR.</p>
+        <p><strong>Cadence:</strong> red before code, focused tests after implementation, full gate before PR.</p>
+      </section>
+    </article>
+  </main>
+  <footer class="ae-bar"><p class="ae-foot">No automatic merge, no hidden GitHub dependence beyond the ingress event. The ledger remains canonical.</p></footer>
+</div>
+</body>
+</html>
