@@ -18,6 +18,12 @@ pub fn pre_dispatch_check(
             detail: format!("task parked: {reason}"),
         }));
     }
+    budget_limits(plane, ledger, task)
+}
+
+/// Spend/quota limits that survive an unpark — a released run would still
+/// re-block on these. The task park is handled by `pre_dispatch_check`.
+pub fn budget_limits(plane: &Plane, ledger: &Ledger, task: &Task) -> Result<Option<Violation>> {
     if let Some(max) = task.spec.budget.max_runs_per_day {
         let today = ledger.runs_today(&task.name)?;
         if today >= max as i64 {

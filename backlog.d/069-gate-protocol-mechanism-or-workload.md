@@ -13,7 +13,7 @@ shrinks.
 
 The spine LOC cap is a proxy for one invariant: `src/` is mechanism, not
 workload judgment (CLAUDE.md). When 067 hit the cap it was re-baselined
-(5000 -> 5300) because the spine was verifiably lean and nothing was obviously
+(5000 -> 5100) because the spine was verifiably lean and nothing was obviously
 workload. But `submit.rs` is the largest single candidate: "adversarial review
 storm with rounds, fingerprint dedup, and arbiters" reads like a specific
 workload pattern, and #860's review flagged submission-lifecycle logic forking
