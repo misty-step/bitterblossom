@@ -25,7 +25,9 @@ without adding semantic workflow logic to the Rust spine.
 
 ## Children
 
-1. Shape the `gate.blocked` fix-prompt report contract and red lines.
+1. ~~Shape the `gate.blocked` fix-prompt report contract and red lines.~~ →
+   **graduated to backlog 070** (ready, P1) as the cheapest, highest-leverage
+   first reflex; budget-free (the `gate.blocked` decision already exists).
 2. Add the deploy/prod verifier event payload contract and manual dogfood
    fixture.
 3. Decide whether the lifecycle orchestrator is report-only or can create runs

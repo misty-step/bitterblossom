@@ -1,6 +1,6 @@
 # Make the agent-facing bb contract versioned and schema-backed
 
-Priority: P1 | Status: ready | Estimate: L
+Priority: P2 | Status: ready | Estimate: L
 
 ## Goal
 
@@ -42,3 +42,9 @@ Evidence:
 - `tests/skill_artifacts.rs:11-29` checks string presence, not command/schema
   compatibility.
 - `tests/task_cli.rs:60-67` checks only a few `task list` JSON fields.
+
+Demoted P1 → P2 (groom 2026-06-17): this is enabling-infrastructure — it
+protects the agent-facing contract from *future* breakage but adds no
+throughput — and it is the heaviest LOC item (~+120-250 in `src/`), budget-
+blocked behind the 069 extraction. Reprioritize up once 069 frees headroom and a
+contract-breakage actually bites.

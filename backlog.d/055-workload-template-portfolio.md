@@ -43,3 +43,10 @@ Evidence:
 050 is complete. Before increasing real reflex volume, pair these templates
 with the recovery and operations evidence from 051/054 rather than treating
 template creation alone as production readiness.
+
+Scope boundary (groom 2026-06-17): a **refactor** dispatch workload is NOT a
+template here — it is a first-class workload (the `build` sibling), filed as
+backlog 071. These children are copyable *starter templates* (review-factory,
+canary/incident, monitor/docs watcher) that make the value prop portable, not
+that make this plane do more work. Child 1 (review-factory template) is gated on
+051's recovery evidence per above — graduate it to a ready ticket once 051 lands.
