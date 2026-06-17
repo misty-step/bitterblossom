@@ -256,9 +256,13 @@ Deployment contract:
   run and expand into the submission storm automatically: one submission keyed
   by the PR URL plus one run for every `[gate].required` verdict member,
   deduped by PR URL plus head SHA so redeliveries repair missing member rows
-  without collapsing distinct PRs that share a commit. Large PRs are not
-  filtered by additions count; budgets, timeouts, and reviewer cards bound the
-  work instead.
+  without collapsing distinct PRs that share a commit, and a redelivery of a
+  head whose submission has already settled is an idempotent no-op. Large PRs
+  are not filtered by additions count: the `review` task carries no per-run cost
+  cap (a breached cap parks the whole task, which is why it was dropped), so
+  spend is bounded by the 30-minute per-run timeout, `max_runs_per_day`, and the
+  plane's enforced `max_cost_per_day_usd` daily ceiling — not by a per-run
+  dollar cap.
 - GitHub `check_suite` webhooks for failed GitHub Actions suites point at
   `https://bitterblossom-plane.fly.dev/hooks/ci-diagnose`; the first slice is
   report-only and may recommend a builder command, but never creates one.

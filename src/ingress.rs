@@ -187,36 +187,38 @@ fn open_webhook_submission(
     allow_supersede: bool,
     version: Option<&str>,
 ) -> Result<Option<crate::submit::SubmissionRow>> {
-    match ledger.open_submission(change, rev, None) {
-        Ok(submission) => {
-            remember_submission_version(ledger, &submission.id, version)?;
-            Ok(Some(submission))
+    // `open_submission` errors only when a submission is already open, so a redelivery
+    // that lands after one settles would re-open and re-storm. Decide from the latest
+    // submission's head and state instead.
+    match ledger.latest_submission(change)? {
+        // Same head we already handled: reuse an open submission (the member loop
+        // repairs missing rows); a settled one is an idempotent no-op.
+        Some(l) if l.rev == rev => {
+            if l.state == "open" {
+                return Ok(Some(l));
+            }
+            return Ok(None);
         }
-        Err(err) => {
-            let latest = ledger
-                .latest_submission(change)?
-                .with_context(|| err.to_string())?;
-            if latest.state == "open" && latest.rev == rev {
-                return Ok(Some(latest));
-            }
-            if latest.state != "open" {
-                return Err(err);
-            }
-            if !allow_supersede {
-                return Ok(None);
-            }
-            if version
-                .zip(latest.report_json.as_deref())
-                .is_some_and(|(new, old)| new <= old)
+        // Different head while one is open: supersede only on a non-duplicate, strictly
+        // newer delivery. report_json on an open row holds the freshness version.
+        Some(l) if l.state == "open" => {
+            if !allow_supersede
+                || version
+                    .zip(l.report_json.as_deref())
+                    .is_some_and(|(new, old)| new <= old)
             {
                 return Ok(None);
             }
-            ledger.settle_submission(&latest.id, "abandoned", "{}")?;
-            let submission = ledger.open_submission(change, rev, None)?;
-            remember_submission_version(ledger, &submission.id, version)?;
-            Ok(Some(submission))
+            ledger.settle_submission(&l.id, "abandoned", "{}")?;
         }
+        // No prior submission, or a settled one with a different head: open the next
+        // round below. (A stale older head arriving out of order after settle still
+        // opens here — see backlog 068.)
+        _ => {}
     }
+    let submission = ledger.open_submission(change, rev, None)?;
+    remember_submission_version(ledger, &submission.id, version)?;
+    Ok(Some(submission))
 }
 
 fn remember_submission_version(ledger: &mut Ledger, id: &str, version: Option<&str>) -> Result<()> {

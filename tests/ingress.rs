@@ -541,3 +541,57 @@ fn webhook_submission_storm_rejects_late_first_delivery_for_stale_head() {
     );
     assert_eq!(ledger.list_runs(Some("security"), None).unwrap().len(), 1);
 }
+
+#[test]
+fn webhook_submission_storm_is_idempotent_after_settle() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_pr_storm_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    std::env::set_var("BB_TEST_PR_STORM_SECRET", "s3cret");
+
+    let body = pr_body("sha-settled", 12);
+    let sig = sign_hmac("s3cret", body.as_bytes());
+
+    handle_webhook(
+        &plane,
+        &mut ledger,
+        "review",
+        &headers(&sig, "delivery-1"),
+        &body,
+    )
+    .unwrap();
+    let sub = ledger
+        .latest_submission("https://github.com/good/repo/pull/42")
+        .unwrap()
+        .expect("submission created");
+    assert_eq!(
+        ledger.list_runs(Some("correctness"), None).unwrap().len(),
+        1
+    );
+
+    // The gate settles the submission; `clear` is terminal.
+    assert!(ledger.settle_submission(&sub.id, "clear", "{}").unwrap());
+
+    // A routine GitHub redelivery of the same head must be an idempotent no-op:
+    // no new submission, no re-fired (paid) storm members, no duplicate PR comments.
+    let again = handle_webhook(
+        &plane,
+        &mut ledger,
+        "review",
+        &headers(&sig, "delivery-2"),
+        &body,
+    )
+    .unwrap();
+    assert_eq!(again.status, 202, "{}", again.body);
+    assert_eq!(
+        ledger.list_submissions(10).unwrap().len(),
+        1,
+        "redelivery after settle must not open a second submission"
+    );
+    assert_eq!(
+        ledger.list_runs(Some("correctness"), None).unwrap().len(),
+        1,
+        "redelivery after settle must not re-fire storm members"
+    );
+    assert_eq!(ledger.list_runs(Some("security"), None).unwrap().len(), 1);
+}
