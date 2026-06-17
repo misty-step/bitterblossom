@@ -33,7 +33,7 @@ retries only, agents own their own decomposition.
 ## Layout
 
 ```text
-src/                 The spine (≤5100 LOC; mechanism only — see Gotchas)
+src/                 The spine (mechanism only; ≤6000 LOC bloat tripwire — see Gotchas)
   spec.rs            Config loading: plane.toml, agents/, tasks/
   ledger.rs          SQLite run ledger, state machine, leases, dead letters
   ingress.rs         Webhook HMAC + dedupe, cron schedules
@@ -111,14 +111,20 @@ per attempt.
   definition.** Workloads are task specs (config + lane card). The Python
   conductor (20k LOC) and the Elixir persona fleet both died of spine
   bloat — see `docs/archive/` and git history for the prior art.
-- **The `src/` LOC cap (`scripts/verify.sh`) is a proxy, not the goal.** The
-  real invariant is *mechanism, not workload judgment*: config, ledger,
-  dispatch, ingress, CLI, recovery belong in `src/`; anything that encodes what
-  a workload decides belongs in `tasks/` + lane cards. When you hit the cap,
-  first ask "is what I'm adding mechanism?" — if not, move it out (that shrinks
-  the spine). Raise the cap only as a conscious re-baseline when `src/` is
-  verifiably lean (no dead code, deep modules), never to sneak a change past
-  the gate.
+- **The `src/` LOC cap (`scripts/verify.sh`) is a bloat tripwire, not a
+  budget.** The real invariant is *mechanism, not workload judgment*: config,
+  ledger, dispatch, ingress, CLI, recovery belong in `src/`; anything that
+  encodes what a workload decides belongs in `tasks/` + lane cards. The number
+  (6000) is arbitrary — its only job is to force a question when you hit it:
+  *"is what I'm adding mechanism?"* If not, move it out (that shrinks the
+  spine). If it is, and `src/` is verifiably lean, raising the cap is the
+  correct, sanctioned response — not cheating. The finer signal is the
+  per-module breakdown (one file ballooning), not the global count. What must
+  never happen: golfing code to fit, or inventing an extraction because you're
+  "near the cap." That second failure produced a phantom: 069 chased a
+  non-existent ~300-line gate extraction. `submit.rs` was then audited — it is
+  a generic gate primitive, mechanism (see `backlog.d/_done/069-*`). Trust the
+  audit, not the line count.
 
 ## Coding Standards
 
