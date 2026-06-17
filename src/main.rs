@@ -460,30 +460,21 @@ fn run() -> Result<()> {
         }
         Command::Status { json } => {
             let doc = bitterblossom::health::status_view(&plane, &ledger)?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&doc)?);
+            let output = if json {
+                serde_json::to_string_pretty(&doc)?
             } else {
-                print_status(&doc);
-            }
+                doc["summary"].to_string()
+            };
+            println!("{output}");
         }
         Command::Recover { json } => {
             let reports = recovery::recover_inherited_runs(&plane, &mut ledger)?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&reports)?);
-            } else if reports.is_empty() {
-                println!("no inherited running runs");
+            let output = if json {
+                serde_json::to_string_pretty(&reports)?
             } else {
-                for r in &reports {
-                    println!(
-                        "run {} task={} phase={} probe={} -> {}",
-                        r.run_id,
-                        r.task,
-                        r.attempt_phase.as_deref().unwrap_or("-"),
-                        r.probe.as_deref().unwrap_or("-"),
-                        r.disposition,
-                    );
-                }
-            }
+                format!("recovered {}", reports.len())
+            };
+            println!("{output}");
         }
         Command::Serve => {
             drop(ledger);
@@ -492,32 +483,20 @@ fn run() -> Result<()> {
         Command::Check { json } => {
             if json {
                 let summary = serde_json::json!({
-                    "root": plane.root,
-                    "db_path": plane.db_path(),
+                    "root": plane.root, "db_path": plane.db_path(),
                     "agents": plane.agents.keys().collect::<Vec<_>>(),
                     "tasks": plane.tasks.keys().collect::<Vec<_>>(),
                     "task_details": serve::tasks_view(&plane, &ledger)?,
                 });
                 println!("{}", serde_json::to_string_pretty(&summary)?);
             } else {
-                println!("plane root: {}", plane.root.display());
-                println!("db: {}", plane.db_path().display());
-                for (name, a) in &plane.agents {
-                    println!("agent {name}@v{}: {} {}", a.version, a.harness, a.model);
-                }
                 for (name, t) in &plane.tasks {
                     let source = t
                         .source
                         .as_ref()
                         .map(|s| format!(" source={}@{}", s.repo, s.r#ref))
                         .unwrap_or_default();
-                    println!(
-                        "task {name}: agent={} substrate={} triggers={}{}",
-                        t.agent_name,
-                        t.spec.substrate,
-                        t.spec.triggers.len(),
-                        source,
-                    );
+                    println!("task {name}: agent={}{}", t.agent_name, source);
                 }
             }
         }
@@ -527,59 +506,23 @@ fn run() -> Result<()> {
 
 fn start_run_progress(db_path: PathBuf, run_id: String) {
     eprintln!("run {run_id} accepted; inspect with `bb runs show {run_id} --json`");
-    let interval = std::env::var("BB_RUN_HEARTBEAT_MS")
+    let ms = std::env::var("BB_RUN_HEARTBEAT_MS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .map(Duration::from_millis)
-        .unwrap_or_else(|| Duration::from_secs(30));
+        .unwrap_or(30_000);
     let _ = thread::spawn(move || loop {
-        thread::sleep(interval);
+        thread::sleep(Duration::from_millis(ms));
         let Ok(ledger) = Ledger::open(&db_path) else {
             continue;
         };
         let Ok(run) = ledger.run(&run_id) else {
             continue;
         };
-        let phase = ledger
-            .attempts(&run_id)
-            .ok()
-            .and_then(|a| a.last().map(|a| a.phase.clone()))
-            .unwrap_or_else(|| "-".into());
-        eprintln!("run {run_id} heartbeat state={} phase={phase}", run.state);
+        eprintln!("run {run_id} heartbeat state={}", run.state);
         if !matches!(run.state.as_str(), "pending" | "running") {
             break;
         }
     });
-}
-
-fn print_status(doc: &serde_json::Value) {
-    let summary = &doc["summary"];
-    println!(
-        "tasks={} parked={} open_dlq={} cost_today=${:.4}",
-        summary["tasks"].as_u64().unwrap_or(0),
-        summary["parked_tasks"].as_u64().unwrap_or(0),
-        summary["open_dlq"].as_u64().unwrap_or(0),
-        summary["cost_today_usd"].as_f64().unwrap_or(0.0),
-    );
-    for task in doc["tasks"].as_array().into_iter().flatten() {
-        let actions = task["safe_next_actions"]
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(|v| v["kind"].as_str())
-                    .collect::<Vec<_>>()
-                    .join(",")
-            })
-            .unwrap_or_default();
-        println!(
-            "{:<18} parked={} recent={} dlq_open={} action={}",
-            task["task"].as_str().unwrap_or("-"),
-            task["parked"].as_str().unwrap_or("-"),
-            task["runs"]["recent"].as_u64().unwrap_or(0),
-            task["dlq"]["open"].as_u64().unwrap_or(0),
-            actions,
-        );
-    }
 }
 
 fn export_run_telemetry(

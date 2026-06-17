@@ -10,6 +10,7 @@ use bitterblossom::ingress::{
 use bitterblossom::ledger::Ledger;
 use bitterblossom::spec::Plane;
 use chrono::{TimeZone, Utc};
+use rusqlite::params;
 
 const SECRET_ENV: &str = "BB_TEST_HOOK_SECRET";
 
@@ -226,4 +227,371 @@ fn webhook_filters_reject_out_of_scope_deliveries_without_a_run() {
         assert!(resp.body.contains("filtered"), "{}", resp.body);
     }
     assert_eq!(ledger.list_runs(None, None).unwrap().len(), 1);
+}
+
+fn make_pr_storm_plane(root: &Path) -> Plane {
+    fs::create_dir_all(root.join("agents")).unwrap();
+    fs::write(
+        root.join("plane.toml"),
+        "dev = true\n[gate]\nrequired = [\"correctness\", \"security\"]\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("agents/a.toml"),
+        "harness = \"pi\"\nmodel = \"m\"\nauth = \"api\"\n",
+    )
+    .unwrap();
+    for task in ["review", "correctness", "security"] {
+        fs::create_dir_all(root.join("tasks").join(task)).unwrap();
+        fs::write(root.join(format!("tasks/{task}/card.md")), "card\n").unwrap();
+    }
+    fs::write(
+        root.join("tasks/review/task.toml"),
+        "agent = \"a\"\nsubstrate = \"local\"\n\n\
+         [[trigger]]\nkind = \"webhook\"\nroute = \"review\"\nsecret_env = \"BB_TEST_PR_STORM_SECRET\"\n\
+         dedupe_key = \"json:/pull_request/html_url|json:/pull_request/head/sha\"\n\
+         [trigger.action]\nkind = \"submission_storm\"\n\
+         change = \"json:/pull_request/html_url\"\n\
+         rev = \"json:/pull_request/head/sha\"\n\
+         repo = \"json:/repository/full_name\"\n\
+         version = \"json:/pull_request/updated_at\"\n\
+         [[trigger.filter]]\npointer = \"/repository/full_name\"\nany_of = [\"good/repo\"]\n\
+         [[trigger.filter]]\npointer = \"/action\"\nany_of = [\"opened\", \"ready_for_review\", \"synchronize\"]\n\
+         [[trigger.filter]]\npointer = \"/pull_request/draft\"\nequals = false\n",
+    )
+    .unwrap();
+    for task in ["correctness", "security"] {
+        fs::write(
+            root.join(format!("tasks/{task}/task.toml")),
+            format!(
+                "agent = \"a\"\nsubstrate = \"local\"\nverdict = \"{task}\"\n[[trigger]]\nkind = \"manual\"\n"
+            ),
+        )
+        .unwrap();
+    }
+    Plane::load(root).unwrap()
+}
+
+fn pr_body(rev: &str, additions: i64) -> String {
+    pr_body_for(42, rev, additions)
+}
+
+fn pr_body_for(number: i64, rev: &str, additions: i64) -> String {
+    pr_body_for_version(number, rev, additions, "2026-06-17T04:00:00Z")
+}
+
+fn pr_body_for_version(number: i64, rev: &str, additions: i64, updated_at: &str) -> String {
+    format!(
+        r#"{{
+          "action":"synchronize",
+          "number":{number},
+          "repository":{{"full_name":"good/repo"}},
+          "pull_request":{{
+            "draft":false,
+            "title":"Large but reviewable",
+            "html_url":"https://github.com/good/repo/pull/{number}",
+            "updated_at":"{updated_at}",
+            "additions":{additions},
+            "head":{{"sha":"{rev}"}}
+          }}
+        }}"#
+    )
+}
+
+#[test]
+fn webhook_submission_storm_distinguishes_distinct_prs_with_same_head_sha() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_pr_storm_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    std::env::set_var("BB_TEST_PR_STORM_SECRET", "s3cret");
+
+    for number in [42, 43] {
+        let body = pr_body_for(number, "shared-sha", 12);
+        let sig = sign_hmac("s3cret", body.as_bytes());
+        let resp = handle_webhook(
+            &plane,
+            &mut ledger,
+            "review",
+            &headers(&sig, &format!("delivery-{number}")),
+            &body,
+        )
+        .unwrap();
+        assert_eq!(resp.status, 202, "{}", resp.body);
+    }
+
+    assert!(ledger
+        .latest_submission("https://github.com/good/repo/pull/42")
+        .unwrap()
+        .is_some());
+    assert!(ledger
+        .latest_submission("https://github.com/good/repo/pull/43")
+        .unwrap()
+        .is_some());
+    assert_eq!(ledger.list_runs(Some("review"), None).unwrap().len(), 2);
+    assert_eq!(
+        ledger.list_runs(Some("correctness"), None).unwrap().len(),
+        2
+    );
+    assert_eq!(ledger.list_runs(Some("security"), None).unwrap().len(), 2);
+}
+
+#[test]
+fn webhook_submission_storm_accepts_oversized_pr_and_enqueues_gate_members() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_pr_storm_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    std::env::set_var("BB_TEST_PR_STORM_SECRET", "s3cret");
+
+    let body = pr_body("sha-large", 99_999);
+    let sig = sign_hmac("s3cret", body.as_bytes());
+    let resp = handle_webhook(
+        &plane,
+        &mut ledger,
+        "review",
+        &headers(&sig, "delivery-1"),
+        &body,
+    )
+    .unwrap();
+    assert_eq!(resp.status, 202, "{}", resp.body);
+
+    let sub = ledger
+        .latest_submission("https://github.com/good/repo/pull/42")
+        .unwrap()
+        .expect("submission created");
+    assert_eq!(sub.rev, "sha-large");
+    assert_eq!(sub.context, None);
+
+    let runs = ledger.list_runs(None, None).unwrap();
+    assert_eq!(runs.len(), 3, "{runs:#?}");
+    let control = runs.iter().find(|r| r.task == "review").unwrap();
+    for kind in ["correctness", "security"] {
+        let run = runs.iter().find(|r| r.task == kind).unwrap();
+        assert_eq!(
+            run.idempotency_key.as_deref(),
+            Some(format!("storm:{}:{kind}", sub.id).as_str())
+        );
+        assert_eq!(run.parent_run_id.as_deref(), Some(control.id.as_str()));
+        let payload = ledger.run_payload(&run.id).unwrap().unwrap();
+        let event: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(event["submission"], sub.id);
+        assert_eq!(event["repo"], "good/repo");
+        assert_eq!(event["rev"], "sha-large");
+        assert_eq!(event["change"], "https://github.com/good/repo/pull/42");
+        assert!(event.get("context").is_none());
+    }
+
+    let second = handle_webhook(
+        &plane,
+        &mut ledger,
+        "review",
+        &headers(&sig, "delivery-2"),
+        &body,
+    )
+    .unwrap();
+    assert_eq!(second.status, 202);
+    assert!(
+        second.body.contains("\"duplicate\":true"),
+        "{}",
+        second.body
+    );
+    assert_eq!(ledger.list_submissions(10).unwrap().len(), 1);
+    assert_eq!(ledger.list_runs(None, None).unwrap().len(), 3);
+}
+
+#[test]
+fn webhook_submission_storm_redelivery_repairs_missing_member_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_pr_storm_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    std::env::set_var("BB_TEST_PR_STORM_SECRET", "s3cret");
+
+    let body = pr_body("sha-repair", 12);
+    let sig = sign_hmac("s3cret", body.as_bytes());
+    handle_webhook(
+        &plane,
+        &mut ledger,
+        "review",
+        &headers(&sig, "delivery-1"),
+        &body,
+    )
+    .unwrap();
+    let sub = ledger
+        .latest_submission("https://github.com/good/repo/pull/42")
+        .unwrap()
+        .unwrap();
+    let missing_key = format!("storm:{}:security", sub.id);
+    rusqlite::Connection::open(plane.db_path())
+        .unwrap()
+        .execute(
+            "DELETE FROM runs WHERE idempotency_key = ?1",
+            params![missing_key],
+        )
+        .unwrap();
+    assert_eq!(ledger.list_runs(Some("security"), None).unwrap().len(), 0);
+
+    let resp = handle_webhook(
+        &plane,
+        &mut ledger,
+        "review",
+        &headers(&sig, "delivery-2"),
+        &body,
+    )
+    .unwrap();
+    assert_eq!(resp.status, 202);
+    assert!(resp.body.contains("\"duplicate\":true"));
+    assert_eq!(
+        ledger.list_runs(Some("correctness"), None).unwrap().len(),
+        1
+    );
+    assert_eq!(ledger.list_runs(Some("security"), None).unwrap().len(), 1);
+}
+
+#[test]
+fn webhook_submission_storm_supersedes_open_submission_on_new_pr_head() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_pr_storm_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    std::env::set_var("BB_TEST_PR_STORM_SECRET", "s3cret");
+
+    for (rev, delivery, updated_at) in [
+        ("sha-old", "delivery-1", "2026-06-17T04:00:00Z"),
+        ("sha-new", "delivery-2", "2026-06-17T04:01:00Z"),
+    ] {
+        let body = pr_body_for_version(42, rev, 12, updated_at);
+        let sig = sign_hmac("s3cret", body.as_bytes());
+        let resp = handle_webhook(
+            &plane,
+            &mut ledger,
+            "review",
+            &headers(&sig, delivery),
+            &body,
+        )
+        .unwrap();
+        assert_eq!(resp.status, 202, "{}", resp.body);
+    }
+
+    let submissions = ledger.list_submissions(10).unwrap();
+    assert_eq!(submissions.len(), 2, "{submissions:#?}");
+    assert_eq!(submissions[0].submission.rev, "sha-new");
+    assert_eq!(submissions[0].submission.state, "open");
+    assert_eq!(submissions[1].submission.rev, "sha-old");
+    assert_eq!(submissions[1].submission.state, "abandoned");
+
+    for kind in ["correctness", "security"] {
+        let expected = format!("storm:{}:{kind}", submissions[0].submission.id);
+        assert!(ledger
+            .list_runs(Some(kind), None)
+            .unwrap()
+            .iter()
+            .any(|r| r.idempotency_key.as_deref() == Some(expected.as_str())));
+    }
+
+    let old_body = pr_body_for_version(42, "sha-old", 12, "2026-06-17T04:00:00Z");
+    let old_sig = sign_hmac("s3cret", old_body.as_bytes());
+    let resp = handle_webhook(
+        &plane,
+        &mut ledger,
+        "review",
+        &headers(&old_sig, "delivery-3"),
+        &old_body,
+    )
+    .unwrap();
+    assert_eq!(resp.status, 202);
+    assert_eq!(
+        ledger
+            .latest_submission("https://github.com/good/repo/pull/42")
+            .unwrap()
+            .unwrap()
+            .rev,
+        "sha-new"
+    );
+}
+
+#[test]
+fn webhook_submission_storm_rejects_late_first_delivery_for_stale_head() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_pr_storm_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    std::env::set_var("BB_TEST_PR_STORM_SECRET", "s3cret");
+
+    for (rev, delivery, updated_at) in [
+        ("sha-new", "delivery-new", "2026-06-17T04:01:00Z"),
+        ("sha-old", "delivery-old-late", "2026-06-17T04:00:00Z"),
+    ] {
+        let body = pr_body_for_version(42, rev, 12, updated_at);
+        let sig = sign_hmac("s3cret", body.as_bytes());
+        let resp = handle_webhook(
+            &plane,
+            &mut ledger,
+            "review",
+            &headers(&sig, delivery),
+            &body,
+        )
+        .unwrap();
+        assert_eq!(resp.status, 202, "{}", resp.body);
+    }
+
+    let submissions = ledger.list_submissions(10).unwrap();
+    assert_eq!(submissions.len(), 1, "{submissions:#?}");
+    assert_eq!(submissions[0].submission.rev, "sha-new");
+    assert_eq!(ledger.list_runs(Some("review"), None).unwrap().len(), 2);
+    assert_eq!(
+        ledger.list_runs(Some("correctness"), None).unwrap().len(),
+        1
+    );
+    assert_eq!(ledger.list_runs(Some("security"), None).unwrap().len(), 1);
+}
+
+#[test]
+fn webhook_submission_storm_is_idempotent_after_settle() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_pr_storm_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    std::env::set_var("BB_TEST_PR_STORM_SECRET", "s3cret");
+
+    let body = pr_body("sha-settled", 12);
+    let sig = sign_hmac("s3cret", body.as_bytes());
+
+    handle_webhook(
+        &plane,
+        &mut ledger,
+        "review",
+        &headers(&sig, "delivery-1"),
+        &body,
+    )
+    .unwrap();
+    let sub = ledger
+        .latest_submission("https://github.com/good/repo/pull/42")
+        .unwrap()
+        .expect("submission created");
+    assert_eq!(
+        ledger.list_runs(Some("correctness"), None).unwrap().len(),
+        1
+    );
+
+    // The gate settles the submission; `clear` is terminal.
+    assert!(ledger.settle_submission(&sub.id, "clear", "{}").unwrap());
+
+    // A routine GitHub redelivery of the same head must be an idempotent no-op:
+    // no new submission, no re-fired (paid) storm members, no duplicate PR comments.
+    let again = handle_webhook(
+        &plane,
+        &mut ledger,
+        "review",
+        &headers(&sig, "delivery-2"),
+        &body,
+    )
+    .unwrap();
+    assert_eq!(again.status, 202, "{}", again.body);
+    assert_eq!(
+        ledger.list_submissions(10).unwrap().len(),
+        1,
+        "redelivery after settle must not open a second submission"
+    );
+    assert_eq!(
+        ledger.list_runs(Some("correctness"), None).unwrap().len(),
+        1,
+        "redelivery after settle must not re-fire storm members"
+    );
+    assert_eq!(ledger.list_runs(Some("security"), None).unwrap().len(), 1);
 }

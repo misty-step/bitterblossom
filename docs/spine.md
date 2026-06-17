@@ -146,7 +146,18 @@ schedule = "0 */6 * * *"          # dedupe key = the scheduled timestamp
 kind = "webhook"
 route = "demo"                    # POST /hooks/demo
 secret_env = "BB_HOOK_DEMO"       # HMAC-SHA256 secret env var
-dedupe_key = "header:X-GitHub-Delivery"   # or "json:<pointer>"
+dedupe_key = "header:X-GitHub-Delivery"   # or "json:<pointer>[|json:<pointer>]"
+
+# Optional trigger-time expansion. This keeps recurring lifecycle orchestration
+# data-owned: the webhook delivery opens or reuses a submission and enqueues
+# the gate-required verdict tasks with canonical `storm:<submission>:<kind>`
+# idempotency keys.
+[trigger.action]
+kind = "submission_storm"
+change = "json:/pull_request/html_url"
+rev = "json:/pull_request/head/sha"
+repo = "json:/repository/full_name"
+version = "json:/pull_request/updated_at"   # rejects late stale heads
 
 # Containment filters (ANDed; fail-closed on missing pointers). An
 # authenticated delivery failing any filter is acknowledged with 200
@@ -157,9 +168,6 @@ any_of = ["misty-step/bitterblossom"]
 [[trigger.filter]]
 pointer = "/pull_request/draft"
 equals = false
-[[trigger.filter]]
-pointer = "/pull_request/additions"
-max = 4000
 
 pre_command = ""                  # optional adapter commands run in the
 post_command = ""                 # workspace before/after the agent
@@ -224,7 +232,7 @@ The operator plane runs as the Fly app `bitterblossom-plane`, not as a
 laptop process. The checked-in [plane/plane.toml](../plane/plane.toml) stays
 loopback-local for safe ad hoc use; Fly sets `BB_INGRESS_BIND=0.0.0.0:8080`
 so its public URL can reach `bb serve`. Set `BB_API_TOKEN` before binding
-wider: the read API and HTML operator view are token-gated, and `bb serve`
+wider: the read API and HTML operator shell are token-gated, and `bb serve`
 refuses non-loopback binds without it. `/health` stays unauthenticated for
 liveness and exposes only coarse queue counts; webhook ingress is
 authenticated by each trigger's HMAC secret.
@@ -243,7 +251,18 @@ Deployment contract:
   and `SPRITE_TOKEN`.
 - GitHub `pull_request` webhooks for the reviewed repo subset point at
   `https://bitterblossom-plane.fly.dev/hooks/review`; the current subset is
-  `misty-step/bitterblossom`, enforced again by the task filter.
+  `misty-step/bitterblossom`, enforced again by the task filter. In-scope
+  `opened`, `ready_for_review`, and `synchronize` deliveries create the review
+  run and expand into the submission storm automatically: one submission keyed
+  by the PR URL plus one run for every `[gate].required` verdict member,
+  deduped by PR URL plus head SHA so redeliveries repair missing member rows
+  without collapsing distinct PRs that share a commit, and a redelivery of a
+  head whose submission has already settled is an idempotent no-op. Large PRs
+  are not filtered by additions count: the `review` task carries no per-run cost
+  cap (a breached cap parks the whole task, which is why it was dropped), so
+  spend is bounded by the 30-minute per-run timeout, `max_runs_per_day`, and the
+  plane's enforced `max_cost_per_day_usd` daily ceiling — not by a per-run
+  dollar cap.
 - GitHub `check_suite` webhooks for failed GitHub Actions suites point at
   `https://bitterblossom-plane.fly.dev/hooks/ci-diagnose`; the first slice is
   report-only and may recommend a builder command, but never creates one.
@@ -267,8 +286,7 @@ configuration while the plane remains workload-agnostic.
 
 The ledger is the system of record; everything reads from it:
 
-- `GET /` — server-rendered HTML operator view (tasks, budgets, parked
-  state, recent runs; auto-refreshes).
+- `GET /` — token-gated HTML operator shell linking the read API below.
 - `GET /api/runs[?task=&state=]`, `GET /api/runs/<id>` (run + attempts +
   events), `GET /api/dlq`, `GET /api/tasks`, `GET /api/submissions`
   (submissions + verdicts + rejection reasons) — the agent-facing read
@@ -289,7 +307,8 @@ The review workload also supports explicit manual tokenomics probes:
 `bb --config plane run review --payload '{"repo":"o/r","pr":N,"measurement":true}'`.
 Measurement mode runs the same real PR review path but suppresses the
 GitHub comment and leaves the full findings in `result.md`; webhook
-reviews always post exactly one PR comment.
+reviews post exactly one PR comment and also start the mechanical submission
+storm.
 
 The CI-diagnose workload supports manual dogfood:
 `bb --config plane run ci-diagnose --payload '{"repo":"o/r","head_sha":"SHA","workflow":"verify"}'`.
@@ -386,14 +405,16 @@ arbiter = "arbiter"               # verdict kind that settles disputes
   appear verbatim in every subsequent report.
 - `blocked` at `round == max_rounds` → `escalated` (one notify).
 
-**The driver (convention, not spine).** On judging work complete: push
-the branch → `bb submit open` → fire required storm members as parallel
-`bb run <kind> --idempotency-key storm:<submission>:<kind> --payload
-'{"submission":"<id>", ...}'` → `bb gate` (safe to call any time) → on
-`clear`: file advisories to backlog.d, squash-land (`clear` is terminal);
-on `blocked`: fix, push, `bb submit open` for the next round; on
-`escalated`: stop — the operator is already notified. Judgment (what to
-fix, what to reject) stays with the agent; arithmetic lives in `bb gate`.
+**The driver (convention, not spine).** Manual dispatch can still run the
+loop explicitly: push the branch → `bb submit open` → fire required storm
+members as parallel `bb run <kind> --idempotency-key
+storm:<submission>:<kind> --payload '{"submission":"<id>", ...}'` → `bb gate`
+(safe to call any time). For PR lifecycle work, the `review` webhook performs
+that opening fan-out automatically. On `clear`: file advisories to backlog.d,
+squash-land (`clear` is terminal); on `blocked`: fix, push, and the next
+`synchronize` delivery opens the next review submission; on `escalated`: stop
+— the operator is already notified. Judgment (what to fix, what to reject)
+stays with the agent; arithmetic lives in `bb gate`.
 
 ## Run lifecycle
 

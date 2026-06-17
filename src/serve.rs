@@ -245,7 +245,7 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
         let ledger = Ledger::open(&plane.db_path())?;
         let path = url.split('?').next().unwrap_or(&url);
         return match path {
-            "/" => html_view(&plane, &ledger).map(|body| (200, body)),
+            "/" => Ok((200, include_str!("operator.html").into())),
             "/api/runs" => {
                 let task = query_param(&url, "task");
                 let state = query_param(&url, "state");
@@ -364,84 +364,4 @@ pub fn tasks_view(plane: &Plane, ledger: &Ledger) -> Result<Vec<serde_json::Valu
         }));
     }
     Ok(out)
-}
-fn html_view(plane: &Plane, ledger: &Ledger) -> Result<String> {
-    let esc = |s: &str| {
-        s.replace('&', "&amp;")
-            .replace('<', "&lt;")
-            .replace('>', "&gt;")
-    };
-    let cost_today = ledger.cost_today()?;
-    let ceiling = plane
-        .spec
-        .budget
-        .max_cost_per_day_usd
-        .map(|c| format!(" / ${c:.2} ceiling"))
-        .unwrap_or_default();
-
-    let mut tasks_rows = String::new();
-    for t in tasks_view(plane, ledger)? {
-        let parked = t["parked"]
-            .as_str()
-            .map(|r| format!("<b>parked</b>: {}", esc(r)))
-            .unwrap_or_else(|| "active".into());
-        tasks_rows.push_str(&format!(
-            "<tr><td>{}</td><td>{}</td><td>{} {}</td><td>{}</td><td>{}{}</td><td>{}</td></tr>\n",
-            esc(t["task"].as_str().unwrap_or("-")),
-            esc(t["agent"].as_str().unwrap_or("-")),
-            esc(t["harness"].as_str().unwrap_or("-")),
-            esc(t["model"].as_str().unwrap_or("-")),
-            esc(t["substrate"].as_str().unwrap_or("-")),
-            t["runs_today"],
-            t["max_runs_per_day"]
-                .as_i64()
-                .map(|m| format!(" / {m}"))
-                .unwrap_or_default(),
-            parked,
-        ));
-    }
-
-    let mut run_rows = String::new();
-    for r in ledger.list_runs(None, None)?.into_iter().take(50) {
-        run_rows.push_str(&format!(
-            "<tr><td><a href=\"/api/runs/{id}\">{id}</a></td><td>{}</td><td class=\"{state}\">{state}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>\n",
-            esc(&r.task),
-            r.agent_name
-                .as_deref()
-                .map(esc)
-                .unwrap_or_else(|| "-".into()),
-            r.cost_usd
-                .map(|c| format!("${c:.4}"))
-                .unwrap_or_else(|| "-".into()),
-            r.duration_ms
-                .map(|d| format!("{:.1}s", d as f64 / 1000.0))
-                .unwrap_or_else(|| "-".into()),
-            esc(&r.created_at),
-            id = esc(&r.id),
-            state = esc(&r.state),
-        ));
-    }
-
-    Ok(format!(
-        r#"<!doctype html><html><head><meta charset="utf-8">
-<meta http-equiv="refresh" content="15">
-<title>bitterblossom</title>
-<style>
-body{{font:14px/1.5 ui-monospace,monospace;margin:2rem;background:#101014;color:#d8d8e0}}
-h1{{font-size:1.2rem}} h2{{font-size:1rem;margin-top:2rem}}
-table{{border-collapse:collapse;width:100%}}
-td,th{{padding:.3rem .6rem;border-bottom:1px solid #2a2a33;text-align:left}}
-a{{color:#9db4ff}} .success{{color:#7dce82}} .failure{{color:#e07a7a}}
-.running{{color:#e0c97a}} .pending,.blocked_budget{{color:#8a8a96}}
-</style></head><body>
-<h1>bitterblossom — the event plane</h1>
-<p>today's spend: ${cost_today:.4}{ceiling}</p>
-<h2>tasks</h2>
-<table><tr><th>task</th><th>agent</th><th>binding</th><th>substrate</th><th>runs today</th><th>state</th></tr>
-{tasks_rows}</table>
-<h2>recent runs</h2>
-<table><tr><th>run</th><th>task</th><th>state</th><th>agent</th><th>cost</th><th>duration</th><th>created</th></tr>
-{run_rows}</table>
-</body></html>"#
-    ))
 }
