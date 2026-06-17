@@ -423,10 +423,11 @@ States: `pending → running → success | failure | awaiting_recovery`, plus
 `blocked_budget` (ingress on a parked task or over a budget limit; recorded,
 never dispatched) and `retired` (a `blocked_budget` run an operator closed).
 A `blocked_budget` run is recovered run-by-run: `bb runs release <id>` re-queues
-one run and unparks its task (refused when the run is held by a ceiling, not a
-park), `bb runs retire <id> --reason …` closes one as `retired` (terminal, row
-kept), and `bb task unpark <task>` still releases the whole parked queue at
-once. Each dispatch attempt checkpoints its phase —
+one run and unparks its task (refused when releasing would just re-block it — a
+ceiling with no park, or a daily run/cost limit still over), `bb runs retire
+<id> --reason …` closes one as `retired` (terminal, row kept), and `bb task
+unpark <task>` still releases the whole parked queue at once. Each dispatch
+attempt checkpoints its phase —
 `acquired → prepared → executing → collecting → finalizing → released` —
 because agent runs have external side effects and "re-run it" is not a
 recovery semantic:
