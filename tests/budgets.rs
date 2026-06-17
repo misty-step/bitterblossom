@@ -250,3 +250,81 @@ fn agent_swap_is_one_config_edit_and_visible_in_ledger() {
     assert!(attempts.contains(&("a".to_string(), 1)));
     assert!(attempts.contains(&("b".to_string(), 5)));
 }
+
+#[test]
+fn release_requeues_one_blocked_run_and_leaves_the_rest() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = setup(dir.path(), "", "");
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+
+    // Park the task, then three deliveries pile up as blocked_budget.
+    ledger.park_task("demo", "cost outlier").unwrap();
+    let blocked: Vec<_> = (0..3).map(|_| run_task(&plane, &mut ledger)).collect();
+    for r in &blocked {
+        assert_eq!(r.state, "blocked_budget");
+    }
+
+    // Release exactly one: it returns to pending, the park clears, the rest stay blocked.
+    ledger
+        .release_blocked_run(&blocked[1].id, "current PR")
+        .unwrap();
+    assert_eq!(ledger.run(&blocked[1].id).unwrap().state, "pending");
+    assert_eq!(ledger.run(&blocked[0].id).unwrap().state, "blocked_budget");
+    assert_eq!(ledger.run(&blocked[2].id).unwrap().state, "blocked_budget");
+    assert!(
+        ledger.parked_reason("demo").unwrap().is_none(),
+        "release must clear the park so the run is not immediately re-blocked"
+    );
+
+    // The released run now actually dispatches instead of bouncing back to blocked.
+    let rerun = dispatch::dispatch_run(&plane, &mut ledger, &blocked[1].id).unwrap();
+    assert_eq!(rerun.state, "success");
+}
+
+#[test]
+fn retire_marks_blocked_run_terminal_and_keeps_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = setup(dir.path(), "", "");
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+
+    ledger.park_task("demo", "cost outlier").unwrap();
+    let blocked = run_task(&plane, &mut ledger);
+    assert_eq!(blocked.state, "blocked_budget");
+
+    ledger
+        .retire_blocked_run(&blocked.id, "superseded by a newer PR")
+        .unwrap();
+    let row = ledger.run(&blocked.id).unwrap();
+    assert_eq!(row.state, "retired");
+    assert_eq!(
+        row.state_reason.as_deref(),
+        Some("superseded by a newer PR")
+    );
+    // Retiring one run does not resume the task; the park is a separate decision.
+    assert!(ledger.parked_reason("demo").unwrap().is_some());
+
+    // Only blocked_budget runs can be released or retired.
+    assert!(ledger.retire_blocked_run(&blocked.id, "again").is_err());
+    assert!(ledger.release_blocked_run(&blocked.id, "again").is_err());
+}
+
+#[test]
+fn release_refuses_a_run_held_by_a_ceiling_not_a_park() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = setup(dir.path(), "[budget]\nmax_cost_per_day_usd = 0.005\n", "");
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+
+    // First run blows the daily ceiling; the ceiling blocks without parking.
+    assert_eq!(run_task(&plane, &mut ledger).state, "success");
+    let blocked = run_task(&plane, &mut ledger);
+    assert_eq!(blocked.state, "blocked_budget");
+    assert!(ledger.parked_reason("demo").unwrap().is_none());
+
+    // release cannot clear a ceiling, so it refuses instead of bouncing with a
+    // false "released" success; retire still closes the row.
+    assert!(ledger.release_blocked_run(&blocked.id, "try").is_err());
+    ledger
+        .retire_blocked_run(&blocked.id, "over budget today")
+        .unwrap();
+    assert_eq!(ledger.run(&blocked.id).unwrap().state, "retired");
+}

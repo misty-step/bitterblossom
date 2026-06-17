@@ -1,7 +1,7 @@
 use std::{path::PathBuf, thread, time::Duration};
 
 use anyhow::{bail, Result};
-use bitterblossom::{dispatch, ledger, recovery, serve, spec};
+use bitterblossom::{budget, dispatch, ledger, recovery, serve, spec};
 use clap::{Parser, Subcommand};
 
 use ledger::{IngressRequest, Ledger};
@@ -97,6 +97,18 @@ enum RunsCommand {
         #[arg(value_parser = ["success", "failure"])]
         outcome: String,
         #[arg(long, default_value = "resolved by operator")]
+        reason: String,
+    },
+    /// Re-queue one budget-blocked run; clears the task park, leaves other blocked runs.
+    Release {
+        run_id: String,
+        #[arg(long, default_value = "released by operator")]
+        reason: String,
+    },
+    /// Retire one budget-blocked run as intentionally not-to-run; keeps ledger history.
+    Retire {
+        run_id: String,
+        #[arg(long)]
         reason: String,
     },
 }
@@ -235,61 +247,77 @@ fn run() -> Result<()> {
                 std::process::exit(2);
             }
         }
-        Command::Runs { command } => match command {
-            RunsCommand::List { task, state, json } => {
-                let runs = ledger.list_runs(task.as_deref(), state.as_deref())?;
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&runs)?);
-                } else {
-                    for r in runs {
-                        let agent = format!(
-                            "{}@v{}",
-                            r.agent_name.as_deref().unwrap_or("-"),
-                            r.agent_version.unwrap_or(0)
-                        );
-                        println!(
-                            "{}  {:<18} {:<10} {:<14} {}  {}",
-                            r.created_at, r.task, r.trigger_kind, r.state, agent, r.id,
-                        );
+        Command::Runs { command } => {
+            match command {
+                RunsCommand::List { task, state, json } => {
+                    let runs = ledger.list_runs(task.as_deref(), state.as_deref())?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&runs)?);
+                    } else {
+                        for r in runs {
+                            let agent = format!(
+                                "{}@v{}",
+                                r.agent_name.as_deref().unwrap_or("-"),
+                                r.agent_version.unwrap_or(0)
+                            );
+                            println!(
+                                "{}  {:<18} {:<10} {:<14} {}  {}",
+                                r.created_at, r.task, r.trigger_kind, r.state, agent, r.id,
+                            );
+                        }
+                    }
+                }
+                RunsCommand::Show { run_id, json } => {
+                    print_run(&ledger, &run_id, json)?;
+                }
+                RunsCommand::Cancel { run_id, reason } => {
+                    let state = ledger.run(&run_id)?.state;
+                    if state != "pending" {
+                        bail!("run {run_id} is {state}; only pending runs can be canceled");
+                    }
+                    if !ledger.try_transition(
+                        &run_id,
+                        "failure",
+                        Some(&format!("canceled: {reason}")),
+                    )? {
+                        bail!("run {run_id} was claimed by a dispatcher before cancel");
+                    }
+                    println!("run {run_id} canceled");
+                }
+                RunsCommand::Resolve {
+                    run_id,
+                    outcome,
+                    reason,
+                } => {
+                    ledger.transition(&run_id, &outcome, Some(&reason))?;
+                    ledger.release_leases_for_run(&run_id)?;
+                    println!("run {run_id} resolved: {outcome}");
+                }
+                RunsCommand::Release { run_id, reason } => {
+                    let task = plane.task(&ledger.run(&run_id)?.task)?;
+                    if let Some(v) = budget::budget_limits(&plane, &ledger, task)? {
+                        bail!("cannot release {run_id}: {} — retire it or wait for the limit to reset", v.detail);
+                    }
+                    ledger.release_blocked_run(&run_id, &reason)?;
+                    println!(
+                        "released {run_id} -> pending; task unparked, other blocked runs unchanged"
+                    );
+                }
+                RunsCommand::Retire { run_id, reason } => {
+                    ledger.retire_blocked_run(&run_id, &reason)?;
+                    println!("retired {run_id}; kept in ledger history");
+                }
+                RunsCommand::Export => {
+                    let dead_letters = ledger.list_dead_letters()?;
+                    for r in ledger.list_runs(None, None)? {
+                        let attempts = ledger.attempts(&r.id)?;
+                        let dlq = dead_letters.iter().find(|d| d.run_id == r.id);
+                        let line = export_run_telemetry(&plane, r, attempts, dlq);
+                        println!("{line}");
                     }
                 }
             }
-            RunsCommand::Show { run_id, json } => {
-                print_run(&ledger, &run_id, json)?;
-            }
-            RunsCommand::Cancel { run_id, reason } => {
-                let state = ledger.run(&run_id)?.state;
-                if state != "pending" {
-                    bail!("run {run_id} is {state}; only pending runs can be canceled");
-                }
-                if !ledger.try_transition(
-                    &run_id,
-                    "failure",
-                    Some(&format!("canceled: {reason}")),
-                )? {
-                    bail!("run {run_id} was claimed by a dispatcher before cancel");
-                }
-                println!("run {run_id} canceled");
-            }
-            RunsCommand::Resolve {
-                run_id,
-                outcome,
-                reason,
-            } => {
-                ledger.transition(&run_id, &outcome, Some(&reason))?;
-                ledger.release_leases_for_run(&run_id)?;
-                println!("run {run_id} resolved: {outcome}");
-            }
-            RunsCommand::Export => {
-                let dead_letters = ledger.list_dead_letters()?;
-                for r in ledger.list_runs(None, None)? {
-                    let attempts = ledger.attempts(&r.id)?;
-                    let dlq = dead_letters.iter().find(|d| d.run_id == r.id);
-                    let line = export_run_telemetry(&plane, r, attempts, dlq);
-                    println!("{line}");
-                }
-            }
-        },
+        }
         Command::Dlq { command } => match command {
             DlqCommand::List { json } => {
                 let rows = ledger.list_dead_letters()?;

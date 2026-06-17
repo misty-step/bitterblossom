@@ -420,8 +420,14 @@ stays with the agent; arithmetic lives in `bb gate`.
 
 A durable run row exists in SQLite **before any trigger gets its ack**.
 States: `pending → running → success | failure | awaiting_recovery`, plus
-`blocked_budget` for ingress on a parked task (recorded, never dispatched,
-until `bb task unpark`). Each dispatch attempt checkpoints its phase —
+`blocked_budget` (ingress on a parked task or over a budget limit; recorded,
+never dispatched) and `retired` (a `blocked_budget` run an operator closed).
+A `blocked_budget` run is recovered run-by-run: `bb runs release <id>` re-queues
+one run and unparks its task (refused when releasing would just re-block it — a
+ceiling with no park, or a daily run/cost limit still over), `bb runs retire
+<id> --reason …` closes one as `retired` (terminal, row kept), and `bb task
+unpark <task>` still releases the whole parked queue at once. Each dispatch
+attempt checkpoints its phase —
 `acquired → prepared → executing → collecting → finalizing → released` —
 because agent runs have external side effects and "re-run it" is not a
 recovery semantic:
@@ -460,6 +466,8 @@ bb run <task> [--idempotency-key K] [--payload JSON] [--json] # manual trigger
 bb status [--json]                                # task/run/queue/DLQ health
 bb runs list [--task T] [--state S] [--json]
 bb runs show <run-id> [--json]                    # run + attempts + events
+bb runs release <id> [--reason TEXT]              # re-queue ONE blocked_budget run
+bb runs retire <id> --reason TEXT                 # blocked_budget -> retired (terminal)
 bb runs export                                    # bb.run_telemetry.v1 JSONL
 bb dlq list [--json]
 bb dlq replay <id> [--json]
