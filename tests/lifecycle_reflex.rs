@@ -126,6 +126,7 @@ fn ci_diagnose_webhook_filters_failed_bitterblossom_check_suites() {
 fn review_webhook_is_submission_storm_reflex_without_additions_cap() {
     let plane = Plane::load(&repo_root().join("plane")).unwrap();
     let task = plane.task("review").unwrap();
+    assert_eq!(task.spec.budget.max_cost_per_run_usd, None);
     let webhook = task
         .spec
         .triggers

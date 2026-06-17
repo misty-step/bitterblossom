@@ -5,9 +5,8 @@ substrate = "sprites"        # workloads never run on the operator's machine
 host = "lane-1"              # pi + gh installed; secrets travel per-exec
 
 [budget]
-timeout_minutes = 30         # K2.6 paces slower than claude; cost is the cap that matters
+timeout_minutes = 30         # K2.6 paces slower than claude
 max_runs_per_day = 20
-max_cost_per_run_usd = 0.50  # advisory; measured K2.6 baseline ~$0.03-0.10/review
 
 [[trigger]]
 kind = "manual"              # bb --config plane run review --payload '{"repo":"o/r","pr":N}'
