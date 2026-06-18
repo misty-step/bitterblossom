@@ -1,16 +1,16 @@
 ---
-name: bitterblossom-dogfood
+name: bb-dogfood
 description: |
   Dogfood Bitterblossom by using `bb` itself to deliver a Bitterblossom
   backlog PR, then critique the build, submission, gate, ledger, and operator
   UX. Use when the user asks to "dogfood Bitterblossom", "bb-dogfood",
   "work through the Bitterblossom backlog with bb", "use bb on itself",
   "capture Bitterblossom friction", "run the bb backlog loop", or "test the
-  event plane as its primary user". Trigger: bb-dogfood, bitterblossom-dogfood.
+  event plane as its primary user". Trigger: bb-dogfood.
 argument-hint: "[backlog-id|backlog-path] [--dry-run]"
 ---
 
-# Bitterblossom Dogfood
+# bb-dogfood
 
 Use Bitterblossom as the operating surface for Bitterblossom work. You are the
 primary user. `bb run build` is the authoring surface under test; local edits
@@ -18,10 +18,10 @@ afterward are for review, dogfood notes, and synthesized backlog.
 
 ## Load First
 
-Also load `../bitterblossom/SKILL.md` for the base `bb` command contract.
-Use `references/session-notes-template.md` when starting or updating a dogfood
-notes artifact. Use `references/ux-review-card.md` before reflecting into
-backlog.
+Also load `../../../skills/bitterblossom/SKILL.md` for the base `bb` command
+contract. Use `references/session-notes-template.md` when starting or updating
+a dogfood notes artifact. Use `references/ux-review-card.md` before reflecting
+into backlog.
 
 ## Preflight
 

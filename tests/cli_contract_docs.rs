@@ -50,7 +50,7 @@ fn current_docs_and_skills_match_live_cli_contract() {
         "docs/spine.md",
         "skills/bitterblossom/SKILL.md",
         "skills/bitterblossom/references/operator-recipes.md",
-        "skills/bitterblossom-dogfood/SKILL.md",
+        ".agents/skills/bb-dogfood/SKILL.md",
     ];
     for rel in current_contracts {
         let text = read(rel);
@@ -74,7 +74,7 @@ fn current_docs_and_skills_match_live_cli_contract() {
     assert!(recipes.contains("curl --config -"));
     assert!(!recipes.contains("curl -H \"Authorization: Bearer $BB_API_TOKEN\""));
 
-    let dogfood = read("skills/bitterblossom-dogfood/SKILL.md");
+    let dogfood = read(".agents/skills/bb-dogfood/SKILL.md");
     assert!(dogfood.contains("./target/debug/bb --config plane status --json"));
     assert!(
         dogfood.contains("./target/debug/bb --config plane gate --submission <submission> --json")

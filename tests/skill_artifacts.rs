@@ -37,16 +37,17 @@ fn bitterblossom_skill_is_exportable_agent_interface() {
 
 #[test]
 fn bitterblossom_dogfood_skill_is_exportable_agent_interface() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/bitterblossom-dogfood");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join(".agents/skills/bb-dogfood");
     let skill = fs::read_to_string(root.join("SKILL.md")).unwrap();
     let notes = fs::read_to_string(root.join("references/session-notes-template.md")).unwrap();
     let ux_card = fs::read_to_string(root.join("references/ux-review-card.md")).unwrap();
     let openai = fs::read_to_string(root.join("agents/openai.yaml")).unwrap();
 
     assert!(skill.starts_with("---\n"));
-    assert!(skill.contains("name: bitterblossom-dogfood"));
+    assert!(skill.contains("name: bb-dogfood"));
     assert!(skill.contains("description: |"));
     assert!(skill.contains("bb-dogfood"));
+    assert!(skill.contains("../../../skills/bitterblossom/SKILL.md"));
     assert!(skill.contains("sprite use -o misty-step lane-1"));
     assert!(skill.contains("./target/debug/bb --config plane task list --json"));
     assert!(skill.contains("./target/debug/bb --config plane run build"));
@@ -75,13 +76,10 @@ fn bitterblossom_dogfood_skill_is_exportable_agent_interface() {
 }
 
 #[test]
-fn bb_dogfood_alias_points_to_canonical_skill() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/bb-dogfood");
-    let skill = fs::read_to_string(root.join("SKILL.md")).unwrap();
+fn bb_dogfood_has_no_duplicate_skill_alias() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
 
-    assert!(skill.starts_with("---\n"));
-    assert!(skill.contains("name: bb-dogfood"));
-    assert!(skill.contains("skills/bitterblossom-dogfood/SKILL.md"));
-    assert!(skill.contains("Do not duplicate"));
-    assert!(!skill.contains("TODO"));
+    assert!(!root.join("skills/bb-dogfood/SKILL.md").exists());
+    assert!(!root.join("skills/bitterblossom-dogfood/SKILL.md").exists());
+    assert!(root.join(".agents/skills/bb-dogfood/SKILL.md").exists());
 }
