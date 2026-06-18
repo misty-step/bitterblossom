@@ -161,6 +161,11 @@ pub struct TaskSpec {
     pub pre_command: Option<String>,
     pub post_command: Option<String>,
     pub verdict: Option<String>,
+    /// Artifact filenames (relative to the attempt artifact dir) that must
+    /// exist after a zero-exit harness run for the run to count as success.
+    /// Checked after the session releases; missing artifacts fail the run.
+    #[serde(default)]
+    pub required_artifacts: Vec<String>,
 }
 
 fn default_substrate() -> String {
@@ -540,6 +545,8 @@ struct RepoOwnedTaskSpec {
     pub pre_command: Option<String>,
     pub post_command: Option<String>,
     pub verdict: Option<String>,
+    #[serde(default)]
+    pub required_artifacts: Vec<String>,
 }
 
 fn load_workload_repo_tasks(
@@ -696,6 +703,7 @@ fn repo_task_spec(
         pre_command: raw.pre_command,
         post_command: raw.post_command,
         verdict: raw.verdict,
+        required_artifacts: raw.required_artifacts,
     })
 }
 

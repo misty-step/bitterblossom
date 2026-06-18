@@ -23,6 +23,12 @@ cat > /dev/null
 echo 'this is not json'
 "#;
 
+// Parseable claude-shaped result on stdout, but no REPORT.json written.
+const NOREPORT_STUB: &str = r#"#!/bin/sh
+cat > /dev/null
+echo '{"type":"result","subtype":"success","result":"commission complete","total_cost_usd":0.0123,"num_turns":3,"usage":{"input_tokens":120,"output_tokens":45}}'
+"#;
+
 fn write_executable(path: &Path, content: &str) {
     fs::write(path, content).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
@@ -156,6 +162,64 @@ fn unparseable_harness_output_is_failure_not_silent_success() {
     let artifact_dir = attempts[0].artifact_dir.as_deref().unwrap();
     let raw = fs::read_to_string(Path::new(artifact_dir).join("stdout.txt")).unwrap();
     assert!(raw.contains("this is not json"));
+}
+
+#[test]
+fn required_artifact_missing_zero_exit_marks_run_failed() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_plane(
+        dir.path(),
+        NOREPORT_STUB,
+        "required_artifacts = [\"REPORT.json\"]",
+    );
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+
+    let run_id = manual_run(&mut ledger, "demo", None);
+    let run = dispatch::dispatch_run(&plane, &mut ledger, &run_id).unwrap();
+
+    // Zero-exit harness with a parseable final message, but the required
+    // artifact was never produced: the run is a failure, not a silent success.
+    assert_eq!(run.state, "failure");
+    let reason = run.state_reason.unwrap();
+    assert!(
+        reason.contains("missing required artifact"),
+        "reason={reason}"
+    );
+    assert!(reason.contains("REPORT.json"), "reason={reason}");
+
+    let attempts = ledger.attempts(&run_id).unwrap();
+    assert_eq!(attempts.len(), 1);
+    let a = &attempts[0];
+    assert_eq!(a.outcome.as_deref(), Some("failure"));
+    assert_eq!(a.exit_code, Some(0));
+
+    // The artifact directory is preserved for inspection even on contract
+    // failure: stdout/result.md are still there, REPORT.json is not.
+    let artifact_dir = Path::new(a.artifact_dir.as_deref().unwrap());
+    assert!(artifact_dir.join("stdout.txt").exists());
+    assert!(artifact_dir.join("result.md").exists());
+    assert!(!artifact_dir.join("REPORT.json").exists());
+}
+
+#[test]
+fn required_artifact_present_stays_success() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_plane(
+        dir.path(),
+        CLAUDE_STUB,
+        "required_artifacts = [\"REPORT.json\"]",
+    );
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+
+    let run_id = manual_run(&mut ledger, "demo", None);
+    let run = dispatch::dispatch_run(&plane, &mut ledger, &run_id).unwrap();
+
+    // Declaring the contract does not false-positive when the artifact lands.
+    assert_eq!(run.state, "success");
+    let attempts = ledger.attempts(&run_id).unwrap();
+    assert_eq!(attempts[0].outcome.as_deref(), Some("success"));
+    let artifact_dir = Path::new(attempts[0].artifact_dir.as_deref().unwrap());
+    assert!(artifact_dir.join("REPORT.json").exists());
 }
 
 #[test]

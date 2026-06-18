@@ -1,5 +1,6 @@
 agent = "model-evaluator"
 substrate = "sprites"
+required_artifacts = ["REPORT.json"]
 
 [workspace]
 host = "lane-1"

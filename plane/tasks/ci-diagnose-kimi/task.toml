@@ -1,5 +1,6 @@
 agent = "ci-diagnoser-kimi"
 substrate = "sprites"
+required_artifacts = ["REPORT.json"]
 
 [workspace]
 host = "bb-polisher-2"

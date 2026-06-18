@@ -1,5 +1,6 @@
 agent = "model-catalog-watcher"
 substrate = "sprites"
+required_artifacts = ["REPORT.json"]
 
 [workspace]
 host = "misty-step/lane-1"
