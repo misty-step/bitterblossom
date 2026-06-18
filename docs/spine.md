@@ -123,6 +123,7 @@ Two auth classes, two work classes:
 ```toml
 agent = "reviewer"                # agents/reviewer.toml
 substrate = "sprites"             # remote-only; "local" needs plane dev = true
+required_artifacts = ["REPORT.json"] # optional: zero-exit success requires these
 
 [workspace]                       # materialized by the substrate adapter
 host = "bb-demo"                  # substrate resource identity / host lease key
@@ -172,6 +173,13 @@ equals = false
 pre_command = ""                  # optional adapter commands run in the
 post_command = ""                 # workspace before/after the agent
 ```
+
+`required_artifacts` is a completion contract, not a prompt hint. After a
+zero-exit harness run and substrate release, every listed path must exist in
+the attempt artifact directory or dispatch records the attempt as `failure`
+while preserving stdout/stderr/result artifacts for inspection. Use it for
+report-producing workloads such as builders, diagnosers, gardeners, and model
+evaluators.
 
 ### Manual builder dispatch
 
