@@ -80,9 +80,9 @@ max_cost_per_day_usd = 25.0       # global daily ceiling, enforced pre-dispatch
 ```toml
 version = 1                       # bump on any change; recorded on every attempt
 role = "reviewer"                 # operator-facing role: builder, critic, verifier, gardener...
-harness = "pi"                    # claude | codex | pi
+harness = "pi"                    # claude | codex | pi | omp | command
 model = "moonshotai/kimi-k2.6"
-provider = "openrouter"           # pi only; defaults to "openrouter"
+provider = "openrouter"           # pi/omp only; defaults to "openrouter"
 auth = "api"                      # api | subscription (defaults by harness)
 bin = "pi"                        # optional: override the harness binary path
 args = []                         # optional: extra CLI args appended verbatim
@@ -112,7 +112,7 @@ Two auth classes, two work classes:
   `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` as agent secrets fail the load, as
   does `auth = "api"` on those harnesses. Subscription agents bind only
   to manual-only tasks (**dispatch** work).
-- **`api`** (pi default): cheap open-weight models via OpenRouter. The
+- **`api`** (pi/omp default): cheap open-weight models via OpenRouter. The
   only class allowed on webhook/cron triggers (**reflex** work). Execs
   are hermetic: scrubbed environment, workspace-local HOME, declared
   secrets only — nothing of the operator's identity crosses the exec
@@ -297,7 +297,7 @@ The ledger is the system of record; everything reads from it:
   open, acceptable only on the loopback default bind.
 
 Cost attribution rides OpenRouter's per-response usage accounting
-(`usage.cost` arrives with every pi response — no extra calls), parsed
+(`usage.cost` arrives with pi/omp responses — no extra calls), parsed
 per attempt into the ledger. Decision 2026-06-10: no OTel/Langfuse
 sidecar for now; `bb runs export` is the versioned telemetry seam for
 Daedalus handoff and future `gen_ai.*` adapters. The v1 schema and
@@ -330,9 +330,12 @@ kinds and do not change gate arithmetic.
 The evaluator is `model-eval` on `openai/gpt-5.5` through OpenRouter API auth.
 It writes `REPORT.json`; the operator records accepted findings under
 [`docs/model-evals/`](model-evals/README.md) as future reference context.
-`z-ai/glm-5.2` is in the OpenRouter API catalog as checked on June 16, 2026, so
-the runnable GLM-family candidate tasks use it. Historical model-eval records
-keep their original model ids when the actual run used GLM 5.1.
+`z-ai/glm-5.2` is in the OpenRouter API catalog as checked on June 16 and
+June 18, 2026, so the runnable GLM-family candidate tasks use it. The manual
+`build` default now uses OMP/GLM to avoid sprite-side Codex subscription-token
+rotation; the other flow defaults stay on their evaluated open-model configs
+until a flow-specific model-eval record promotes them. Historical model-eval
+records keep their original model ids when the actual run used GLM 5.1.
 
 The model-catalog watcher keeps that reference current without making model
 promotion automatic. `./scripts/verify.sh` runs

@@ -1,6 +1,6 @@
 #!/bin/sh
-# Validate configured Pi/OpenRouter agent models against a catalog fixture or
-# the live OpenRouter model catalog.
+# Validate configured OpenRouter API-harness agent models against a catalog
+# fixture or the live OpenRouter model catalog.
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -17,8 +17,8 @@ usage() {
   cat <<'USAGE'
 usage: scripts/check-model-catalog.sh (--catalog PATH | --live) [--agents DIR] [--docs PATH] [--json]
 
-Validates configured pi/OpenRouter models in plane/agents against an OpenRouter
-catalog document. The default docs target is docs/model-evals/README.md.
+Validates configured pi/omp OpenRouter models in plane/agents against an
+OpenRouter catalog document. The default docs target is docs/model-evals/README.md.
 
 Options:
   --catalog PATH   Read catalog JSON from PATH.
@@ -170,7 +170,7 @@ for file in "$agents_dir"/*.toml; do
     /^[[:space:]]*provider[[:space:]]*=/ { provider = value($0) }
     /^[[:space:]]*model[[:space:]]*=/ { model = value($0) }
     END {
-      if (harness == "pi" && model != "" && (provider == "" || provider == "openrouter")) {
+      if ((harness == "pi" || harness == "omp") && model != "" && (provider == "" || provider == "openrouter")) {
         catalog_model = model
         sub(/:(minimal|low|medium|high|max)$/, "", catalog_model)
         print file "\t" model "\t" catalog_model

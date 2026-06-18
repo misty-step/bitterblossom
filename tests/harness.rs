@@ -31,6 +31,29 @@ fn pi_command_carries_provider_and_model() {
 }
 
 #[test]
+fn omp_command_reads_lane_card_and_carries_provider_model_and_args() {
+    let agent: bitterblossom::spec::AgentSpec = toml::from_str(
+        r#"
+harness = "omp"
+model = "z-ai/glm-5.2"
+args = ["--thinking", "high"]
+"#,
+    )
+    .unwrap();
+    let cmd = build_command(&agent, &bitterblossom::spec::TaskBudget::default()).unwrap();
+    let joined = cmd.join(" ");
+    assert_eq!(cmd[0], "sh");
+    assert!(joined.contains("--provider' 'openrouter"), "{joined}");
+    assert!(joined.contains("z-ai/glm-5.2"), "{joined}");
+    assert!(joined.contains("--no-session"), "{joined}");
+    assert!(joined.contains("--mode' 'json"), "{joined}");
+    assert!(joined.contains("--auto-approve"), "{joined}");
+    assert!(joined.contains("--thinking' 'high"), "{joined}");
+    assert!(joined.contains("LANE_CARD.md"), "{joined}");
+    assert!(joined.contains("grep -v -F"), "{joined}");
+}
+
+#[test]
 fn parse_pi_jsonl_events_sums_usage_across_messages() {
     let out = concat!(
         r#"{"type":"message_update","assistantMessageEvent":{"type":"text_delta"}}"#,
@@ -54,11 +77,37 @@ fn parse_pi_jsonl_events_sums_usage_across_messages() {
 }
 
 #[test]
+fn parse_omp_jsonl_events_sums_usage_and_keeps_last_text() {
+    let out = concat!(
+        r#"{"type":"message_start","message":{"role":"assistant","content":[{"type":"text","text":"draft"}],"usage":{"input":10,"output":2,"cost":{"total":0.001}}}}"#,
+        "\n",
+        r#"{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"first"}],"usage":{"input":100,"output":10,"cost":{"total":0.002}}}}"#,
+        "\n",
+        r#"{"type":"turn_end","message":{"role":"assistant"}}"#,
+        "\n",
+        r#"{"type":"message_update","message":{"role":"assistant","content":[{"type":"text","text":"noise"}]}}"#,
+        "\n",
+        r#"{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"..."},{"type":"text","text":"BB-OMP-OK"}],"usage":{"input":200,"output":20,"cacheRead":1024,"cost":{"input":0.1,"output":0.2,"total":0.003}}}}"#,
+        "\n",
+        r#"{"type":"turn_end","message":{"role":"assistant"}}"#,
+        "\n",
+        r#"{"type":"agent_end","messages":[]}"#,
+    );
+    let parsed = parse_output("omp", out).unwrap();
+    assert_eq!(parsed.result, "BB-OMP-OK");
+    assert_eq!(parsed.stats.tokens_in, Some(300));
+    assert_eq!(parsed.stats.tokens_out, Some(30));
+    assert_eq!(parsed.stats.turns, Some(2));
+    assert_eq!(parsed.stats.cost_usd, Some(0.005));
+}
+
+#[test]
 fn parse_pi_rejects_incomplete_runs() {
     assert!(parse_output("pi", "not json").is_err());
     assert!(parse_output("pi", r#"{"type":"message_update"}"#).is_err());
     let no_text = r#"{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"x"}],"usage":{}}}"#;
     assert!(parse_output("pi", no_text).is_err());
+    assert!(parse_output("omp", "not json").is_err());
 }
 
 #[test]

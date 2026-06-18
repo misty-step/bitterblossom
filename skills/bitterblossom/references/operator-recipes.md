@@ -61,11 +61,11 @@ running. Keep `--json` for agents and scripts; it stays quiet until the final
 ## Builder Dispatch
 
 Use the checked-in `build` task only for shaped implementation work. It binds a
-manual subscription-auth builder agent, so it must not be attached to webhook
-or cron triggers.
+manual API-auth OMP/GLM builder agent, so it must not be attached to webhook or
+cron triggers.
 
 ```bash
-GH_TOKEN=$(gh auth token) bb --config <plane> run build \
+OPENROUTER_API_KEY=<key> GH_TOKEN=$(gh auth token) bb --config <plane> run build \
   --idempotency-key "build:<backlog-or-packet>:<date>" \
   --payload '{"repo":"misty-step/bitterblossom","backlog":"backlog.d/060-builder-dispatch-role.md","branch_slug":"builder-dispatch-role"}' \
   --json

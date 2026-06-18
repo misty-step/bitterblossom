@@ -1,13 +1,12 @@
-# Manual authoring agent: subscription-auth dispatch only. It can edit and
-# push a branch, but it never has merge authority and never runs from reflex
-# triggers.
-version = 1
+# Manual authoring agent: API-auth OMP/GLM default. It can edit and push a
+# branch, but it never has merge authority and never runs from reflex triggers.
+version = 2
 role = "builder"
-harness = "codex"
-model = "gpt-5.5"
-auth = "subscription"
-bin = "/home/sprite/.local/bin/codex"
-secrets = ["GH_TOKEN"]
+harness = "omp"
+model = "z-ai/glm-5.2"
+auth = "api"
+args = ["--thinking", "high"]
+secrets = ["OPENROUTER_API_KEY", "GH_TOKEN"]
 skills = [
   "harness-kit/deliver#builder",
   "harness-kit/ci#rust-local-gate",

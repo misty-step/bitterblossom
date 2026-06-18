@@ -58,7 +58,7 @@ fn reflex_triggers_require_api_auth_agents() {
 }
 
 #[test]
-fn pi_agents_default_to_api_auth_and_openrouter_and_may_run_reflex() {
+fn open_harness_agents_default_to_api_auth_and_openrouter_and_may_run_reflex() {
     let dir = tempfile::tempdir().unwrap();
     let plane = plane_with(
         dir.path(),
@@ -72,14 +72,37 @@ fn pi_agents_default_to_api_auth_and_openrouter_and_may_run_reflex() {
         bitterblossom::spec::AuthClass::Api
     );
     assert_eq!(agent.provider(), "openrouter");
+
+    let dir2 = tempfile::tempdir().unwrap();
+    let plane = plane_with(
+        dir2.path(),
+        "harness = \"omp\"\nmodel = \"z-ai/glm-5.2\"\nsecrets = [\"OPENROUTER_API_KEY\"]\n",
+        CRON,
+    )
+    .unwrap();
+    let agent = &plane.tasks["t"].agent;
+    assert_eq!(
+        agent.auth_class().unwrap(),
+        bitterblossom::spec::AuthClass::Api
+    );
+    assert_eq!(agent.provider(), "openrouter");
 }
 
 #[test]
-fn pi_cannot_claim_subscription_auth() {
+fn open_harness_agents_cannot_claim_subscription_auth() {
     let dir = tempfile::tempdir().unwrap();
     let err = plane_with(
         dir.path(),
         "harness = \"pi\"\nmodel = \"m\"\nauth = \"subscription\"\n",
+        MANUAL,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("no subscription auth"), "{err}");
+
+    let dir2 = tempfile::tempdir().unwrap();
+    let err = plane_with(
+        dir2.path(),
+        "harness = \"omp\"\nmodel = \"m\"\nauth = \"subscription\"\n",
         MANUAL,
     )
     .unwrap_err();

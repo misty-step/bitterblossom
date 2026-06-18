@@ -80,7 +80,7 @@ Detailed command recipes: `references/operator-recipes.md`.
   tokens into shell history.
 - Reflex triggers must use API-auth agents. Subscription-auth agents belong to
   manual dispatch only.
-- The checked-in `build` task is a manual subscription-auth builder lane. Use
+- The checked-in `build` task is a manual API-auth OMP/GLM builder lane. Use
   it for shaped implementation work only; it creates/pushes a branch and report
   but does not merge or replace the submission gate.
 - For uncertain model fit, run a cohort: at least three materially different

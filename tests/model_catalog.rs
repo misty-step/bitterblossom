@@ -152,6 +152,50 @@ model = 'missing/provider-model'
 }
 
 #[test]
+fn omp_openrouter_models_are_checked_by_catalog_guard() {
+    let dir = tempfile::tempdir().unwrap();
+    let agents = dir.path().join("agents");
+    fs::create_dir(&agents).unwrap();
+    fs::write(
+        agents.join("omp-glm.toml"),
+        r#"
+version = 1
+harness = "omp"
+model = "z-ai/glm-5.2"
+secrets = ["OPENROUTER_API_KEY"]
+"#,
+    )
+    .unwrap();
+    let docs = dir.path().join("docs.md");
+    fs::write(&docs, "z-ai/glm-5.2\n").unwrap();
+
+    let output = run_check(&[
+        "--catalog",
+        "tests/fixtures/openrouter-models-current.json",
+        "--agents",
+        agents.to_str().unwrap(),
+        "--docs",
+        docs.to_str().unwrap(),
+        "--json",
+    ]);
+
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let report = parse_json(&output);
+    assert_eq!(report["status"], "pass");
+    assert_eq!(report["configured"][0]["id"], "z-ai/glm-5.2");
+    assert!(report["configured"][0]["agent_file"]
+        .as_str()
+        .unwrap()
+        .ends_with("omp-glm.toml"));
+}
+
+#[test]
 fn malformed_catalog_metadata_is_a_gate_failure() {
     let dir = tempfile::tempdir().unwrap();
     let agents = dir.path().join("agents");

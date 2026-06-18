@@ -78,7 +78,7 @@ substrate is dev/test machinery, rejected unless plane.toml sets
   operator's subscription auth only (`ANTHROPIC_API_KEY` /
   `OPENAI_API_KEY` are rejected as agent secrets), reflex triggers
   (webhook/cron) bind only `auth = "api"` agents — cheap open-weight
-  models via OpenRouter on open harnesses (pi). Api-auth execs are
+  models via OpenRouter on open harnesses (pi/omp). Api-auth execs are
   hermetic: scrubbed env, workspace-local HOME, declared secrets only.
 - The plane holds no judgment: workloads are config, agents own their own
   decomposition, and a workload-specific branch in the spine is wrong by

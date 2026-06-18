@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en" data-ae-mode="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OMP + GLM 5.2 Sprite Defaults</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&amp;family=Geist+Mono:wght@100..900&amp;display=swap">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/misty-step/aesthetic@v2.5.1/aesthetic.css">
+  <style>
+    :root { --ae-accent: #235c42; --ae-accent-dark: #6fd39d; }
+    .plan-wide .ae-bar, .plan-wide .ae-stage { width: min(92rem, 100% - 4rem); }
+    .hero { display: grid; grid-template-columns: minmax(0, 1.08fr) minmax(24em, 0.78fr); gap: 3em; align-items: end; }
+    .grid-2, .grid-3, .grid-4 { display: grid; gap: 1px; background: var(--ae-line); }
+    .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .cell { min-width: 0; background: var(--ae-surface); padding: 1.2em 1.35em; }
+    .wash { background: var(--ae-wash); }
+    .rule { border-top: 1px solid var(--ae-line); margin: 1.2em 0; }
+    .phase { display: grid; grid-template-columns: 9em minmax(0, 1fr) minmax(16em, 0.66fr); gap: 1.2em; border-top: 1px solid var(--ae-line); padding-top: 1em; margin-top: 1em; }
+    .phase:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
+    @media (max-width: 980px) {
+      .plan-wide .ae-bar, .plan-wide .ae-stage { width: min(100% - 2rem, 92rem); }
+      .hero, .grid-2, .grid-3, .grid-4, .phase { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<div class="ae-screen plan-wide">
+  <header class="ae-bar">
+    <a class="ae-name" href="#">PLAN / OMP DEFAULTS</a>
+    <p class="ae-chrome">2026-06-18 rendered handoff before execution</p>
+  </header>
+
+  <main class="ae-stage ae-stage-scroll">
+    <article class="ae-view">
+      <section class="hero" aria-label="Plan contract">
+        <div>
+          <p class="ae-chrome">USER PREMISE: SPRITES SHOULD DEFAULT TO OMP + GLM 5.2</p>
+          <h1 class="ae-strong">Move the authoring sprite default to OMP + GLM 5.2, and support OMP as a first-class harness where it is runnable and parseable.</h1>
+          <p class="ae-lede">Chosen design: add an `omp` harness contract, promote the manual `build` default off Codex subscription auth and onto `z-ai/glm-5.2`, and keep review, CI, gardener, and storm defaults on their evaluated configs until their own model-eval records promote them. Do not hide the runtime fact that today's sprites had `pi` but not `omp` until provisioned.</p>
+        </div>
+        <aside class="ae-panel">
+          <h2 class="ae-h">QUALITY SYSTEM</h2>
+          <p>Claim: the checked-in authoring sprite runs on GLM 5.2 through an open API-auth harness, and OMP output is parsed into ledger cost/token fields.</p>
+          <p>Falsifier: `bb check` accepts a model the catalog guard misses, or an OMP JSONL run exits zero but records no result/cost.</p>
+          <p>Driver: harness unit tests, model-catalog guard, live OpenRouter catalog probe, live tiny `pi`/`omp` smokes, and `./scripts/verify.sh`.</p>
+          <div class="rule"></div>
+          <p class="ae-dim">Premise source: user chat request on 2026-06-18; no file-backed premise artifact. Waiver risk: wording may mean all sprite hosts rather than only Bitterblossom plane defaults, so runtime readiness is called out explicitly.</p>
+        </aside>
+      </section>
+
+      <section class="grid-4" aria-label="Executive contract" style="margin-top: 2em">
+        <article class="cell">
+          <h2 class="ae-h">STANDARDS</h2>
+          <p>Keep model choice in `plane/agents/*.toml`; keep harness mechanics generic in `src/harness.rs`; do not add workload judgment to the Rust spine.</p>
+        </article>
+        <article class="cell">
+          <h2 class="ae-h">ACCEPTANCE</h2>
+          <p>`omp` is a known API-auth harness, the checked-in `build` task uses `z-ai/glm-5.2`, and docs/tests name the promotion evidence.</p>
+        </article>
+        <article class="cell">
+          <h2 class="ae-h">VERIFY</h2>
+          <p>`cargo test --test harness`, `cargo test --test model_eval`, `scripts/check-model-catalog.sh --live --json`, and the repo gate.</p>
+        </article>
+        <article class="cell wash">
+          <h2 class="ae-h">STOP IF</h2>
+          <p>OMP is not parseable, GLM 5.2 disappears from OpenRouter, or sprite provisioning cannot make `omp` available without a separate bake story.</p>
+        </article>
+      </section>
+
+      <section class="grid-3" aria-label="Current state" style="margin-top: 1px">
+        <article class="cell">
+          <h2 class="ae-h">CURRENT STATE</h2>
+          <p>`pi` is the only checked open harness in Bitterblossom. GLM 5.2 candidate agents already exist. `build` still uses Codex subscription auth and failed dogfood on sprite auth.</p>
+        </article>
+        <article class="cell">
+          <h2 class="ae-h">RESEARCH</h2>
+          <p>Live OpenRouter catalog lists `z-ai/glm-5.2` with 1,048,576 catalog context and current pricing. Local `pi` and `omp` GLM smokes passed; current sprites now have Bun 1.3.14 and `omp/16.0.7` installed.</p>
+        </article>
+        <article class="cell wash">
+          <h2 class="ae-h">PROOF SURFACE</h2>
+          <p>Run rows should show harness/model/provider exactly. Attempt artifacts should include parseable `stdout.txt`, `result.md`, and ledger stats for OMP runs.</p>
+        </article>
+      </section>
+
+      <section class="grid-2" aria-label="Alternatives" style="margin-top: 2em">
+        <article class="cell">
+          <h2 class="ae-h">ALTERNATIVES</h2>
+          <p><strong>Flip only configs to `omp`.</strong> Rejected: current sprites lack the binary and `bb` cannot parse `omp` as a known harness.</p>
+          <p><strong>Stay on `pi`, only update models.</strong> Safe and runnable, but misses the user's OMP direction and leaves no first-class OMP path.</p>
+          <p><strong>Add OMP support plus promote GLM defaults.</strong> Chosen: smallest durable code change, preserves current comparison lanes, and makes readiness gaps visible.</p>
+        </article>
+        <article class="cell">
+          <h2 class="ae-h">REPO ANCHORS</h2>
+          <p><code>src/harness.rs</code> - harness command construction and output parsing.</p>
+          <p><code>src/spec.rs</code> - model/auth policy.</p>
+          <p><code>plane/agents/*.toml</code> - model defaults and comparison variants.</p>
+          <p><code>tests/model_catalog.rs</code>, <code>tests/model_eval.rs</code>, <code>tests/harness.rs</code> - executable contracts.</p>
+          <p><code>docs/model-evals/README.md</code>, <code>docs/spine.md</code>, <code>README.md</code> - operator-facing contract.</p>
+        </article>
+      </section>
+
+      <section class="ae-panel" style="margin-top: 2em">
+        <h2 class="ae-h">EXECUTION RESULT</h2>
+        <p>Implemented `omp` as a first-class API-auth harness, promoted the checked-in `build` task to `omp` / `z-ai/glm-5.2`, updated the model-catalog guard to include OMP, and kept the other flow defaults on their existing evaluated configs.</p>
+        <p>Live dry-run receipt: `b33bbe05b5d9`, `bb-builder-rust@v2`, harness `omp`, model `z-ai/glm-5.2`, ledger state `success`, duration 21m27s, cost `$2.46364376`, tokens in/out `289598` / `30146`, artifact dir `plane/.bb/runs/b33bbe05b5d9/attempt-1`.</p>
+        <p>Dogfood finding: the run produced `stdout.txt`, `stderr.txt`, `result.md`, `LANE_CARD.md`, `EVENT.json`, and `RUN.json`, but no `REPORT.json`; it also edited the target checkout despite `dry_run = true`. Follow-up filed as `backlog.d/074-task-artifact-contract-enforcement.md`.</p>
+      </section>
+
+      <section class="ae-panel" style="margin-top: 2em">
+        <h2 class="ae-h">PHASES</h2>
+        <div class="phase">
+          <p class="ae-chrome">1 / HARNESS</p>
+          <p>Add `omp` command construction and parse support. OMP print mode gets a small argv instruction to read `LANE_CARD.md` because it does not consume stdin like `pi`.</p>
+          <p class="ae-dim">Tests: command shape, JSONL parse, policy.</p>
+        </div>
+        <div class="phase">
+          <p class="ae-chrome">2 / CONFIG</p>
+          <p>Promote the manual authoring sprite to OMP/GLM. Preserve Kimi and Pi/GLM builder variants, and leave non-build flow defaults on their evaluated configs rather than deleting model diversity.</p>
+          <p class="ae-dim">Tests: model-eval cohort and model-catalog guard.</p>
+        </div>
+        <div class="phase">
+          <p class="ae-chrome">3 / RUNTIME</p>
+          <p>Check/install OMP on current named sprites only after local gates pass, then run a tiny live sprite smoke or record the blocker as a backlog item.</p>
+          <p class="ae-dim">Evidence: sprite command output or backlog item with exact failed probe.</p>
+        </div>
+      </section>
+    </article>
+  </main>
+</div>
+</body>
+</html>

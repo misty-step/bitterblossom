@@ -3,13 +3,14 @@ use serde_json::Value;
 
 use crate::ledger::AttemptStats;
 use crate::spec::{AgentSpec, TaskBudget};
+use crate::substrate::CARD_FILENAME;
 
 pub struct ParsedOutput {
     pub result: String,
     pub stats: AttemptStats,
 }
 
-pub const HARNESSES: &[&str] = &["claude", "codex", "pi", "command"];
+pub const HARNESSES: &[&str] = &["claude", "codex", "pi", "omp", "command"];
 pub fn build_command(agent: &AgentSpec, budget: &TaskBudget) -> Result<Vec<String>> {
     let bin = agent.bin.clone().unwrap_or_else(|| agent.harness.clone());
     let mut cmd = match agent.harness.as_str() {
@@ -52,21 +53,26 @@ pub fn build_command(agent: &AgentSpec, budget: &TaskBudget) -> Result<Vec<Strin
                 "-p".into(),
             ];
             inner.extend(agent.args.iter().cloned());
-            let quoted: Vec<String> = inner
-                .iter()
-                .map(|a| crate::substrate::local::shell_quote(a))
-                .collect();
-            return Ok(vec![
-                "sh".into(),
-                "-c".into(),
-                format!(
-                    "{{ {pi}; echo $? > .bb-harness-exit; }} \
-                     | grep -v -F '\"type\":\"message_update\"'; \
-                     exit \"$(cat .bb-harness-exit)\"",
-                    pi = quoted.join(" ")
-                ),
-                "sh".into(),
-            ]);
+            return Ok(filtered_jsonl_command(inner));
+        }
+        "omp" => {
+            let mut inner = vec![
+                bin,
+                "--provider".into(),
+                agent.provider().into(),
+                "--model".into(),
+                agent.model.clone(),
+                "--no-session".into(),
+                "--mode".into(),
+                "json".into(),
+                "--auto-approve".into(),
+            ];
+            inner.extend(agent.args.iter().cloned());
+            inner.push("-p".into());
+            inner.push(format!(
+                "Read {CARD_FILENAME} in this directory — it is your entire commission. Execute it."
+            ));
+            return Ok(filtered_jsonl_command(inner));
         }
         other => bail!(
             "unknown harness '{other}' (known: {})",
@@ -80,13 +86,30 @@ pub fn parse_output(harness: &str, stdout: &str) -> Result<ParsedOutput> {
     match harness {
         "claude" => parse_claude(stdout),
         "codex" => parse_codex(stdout),
-        "pi" => parse_pi(stdout),
+        "pi" | "omp" => parse_agent_jsonl(harness, stdout),
         "command" => Ok(ParsedOutput {
             result: stdout.trim().to_string(),
             stats: AttemptStats::default(),
         }),
         other => bail!("unknown harness '{other}'"),
     }
+}
+fn filtered_jsonl_command(inner: Vec<String>) -> Vec<String> {
+    let quoted: Vec<String> = inner
+        .iter()
+        .map(|a| crate::substrate::local::shell_quote(a))
+        .collect();
+    vec![
+        "sh".into(),
+        "-c".into(),
+        format!(
+            "{{ {cmd}; echo $? > .bb-harness-exit; }} \
+             | grep -v -F '\"type\":\"message_update\"'; \
+             exit \"$(cat .bb-harness-exit)\"",
+            cmd = quoted.join(" ")
+        ),
+        "sh".into(),
+    ]
 }
 fn parse_claude(stdout: &str) -> Result<ParsedOutput> {
     let v = last_json_object(stdout).context("claude output: no JSON object found")?;
@@ -159,7 +182,7 @@ fn parse_codex(stdout: &str) -> Result<ParsedOutput> {
         },
     })
 }
-fn parse_pi(stdout: &str) -> Result<ParsedOutput> {
+fn parse_agent_jsonl(harness: &str, stdout: &str) -> Result<ParsedOutput> {
     let mut turns: i64 = 0;
     let mut last_message: Option<Value> = None;
     let mut saw_event = false;
@@ -193,9 +216,10 @@ fn parse_pi(stdout: &str) -> Result<ParsedOutput> {
         }
     }
     if !saw_event {
-        bail!("pi output: no JSONL events found");
+        bail!("{harness} output: no JSONL events found");
     }
-    let message = last_message.context("pi output: no assistant message_end — incomplete run")?;
+    let message = last_message
+        .with_context(|| format!("{harness} output: no assistant message_end — incomplete run"))?;
     let result: String = message
         .get("content")
         .and_then(Value::as_array)
@@ -210,7 +234,7 @@ fn parse_pi(stdout: &str) -> Result<ParsedOutput> {
         .unwrap_or_default();
     let result = result.trim().to_string();
     if result.is_empty() {
-        bail!("pi output: assistant message has no text content");
+        bail!("{harness} output: assistant message has no text content");
     }
     Ok(ParsedOutput {
         result,
