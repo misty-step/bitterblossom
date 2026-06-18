@@ -40,9 +40,10 @@ Agents that need to operate Bitterblossom can load the portable skill folder at
 folder into a harness skill root; do not copy only `SKILL.md`, because the
 recipes and UI metadata are part of the interface.
 
-Use [`skills/bitterblossom-dogfood/`](skills/bitterblossom-dogfood/) when
-using `bb` to work through this repo's own backlog and capture primary-user
-friction, bugs, and delight.
+Use [`skills/bb-dogfood/`](skills/bb-dogfood/) as the short repo-local alias
+for [`skills/bitterblossom-dogfood/`](skills/bitterblossom-dogfood/) when
+using `bb` to deliver a PR from this repo's own backlog, capture primary-user
+friction, bugs, delight, and synthesize follow-up backlog.
 
 ## Quick start
 

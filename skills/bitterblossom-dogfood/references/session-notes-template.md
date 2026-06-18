@@ -10,6 +10,8 @@ Use this shape for `docs/plans/YYYY-MM-DD-<topic>-dogfood.md`.
 - Plane:
 - Sprite org:
 - Sprite:
+- Build run:
+- PR:
 - Commit/submission:
 
 ## Preflight
@@ -24,13 +26,34 @@ Use this shape for `docs/plans/YYYY-MM-DD-<topic>-dogfood.md`.
 
 ## Work
 
-- Local changes:
+- `bb run build`:
+- Build `REPORT.json`:
+- Branch checkout:
+- PR:
 - Local verification:
 - `bb submit open`:
 - `bb run` members:
 - `bb gate`:
 
 ## UX Notes
+
+### Good
+
+- Observation:
+- Evidence:
+- Lean in:
+
+### Bad
+
+- Observation:
+- Evidence:
+- Mitigate:
+
+### Ugly
+
+- Observation:
+- Evidence:
+- Mitigate:
 
 ### Friction
 
@@ -49,6 +72,18 @@ Use this shape for `docs/plans/YYYY-MM-DD-<topic>-dogfood.md`.
 - Observation:
 - Evidence:
 - Lean in:
+
+## Reflection
+
+- Does it work?:
+- Does it produce useful results?:
+- Does it feel good?:
+- Too complicated / awkward?:
+- Errors or unclear communication?:
+- More steps than necessary?:
+- Fits project vision?:
+- Backlog-worthy improvements:
+- No action:
 
 ## Backlog Emissions
 

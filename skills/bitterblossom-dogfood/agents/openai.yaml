@@ -1,4 +1,4 @@
 interface:
   display_name: "Bitterblossom Dogfood"
   short_description: "Dogfood bb on its own backlog"
-  default_prompt: "Use $bitterblossom-dogfood to work through the Bitterblossom backlog and capture dogfood notes."
+  default_prompt: "Use $bb-dogfood to deliver a Bitterblossom backlog PR through bb, capture UX notes, and synthesize backlog improvements."
