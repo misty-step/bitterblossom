@@ -12,8 +12,9 @@
   `bb-polisher-2` for `build-kimi`.
 - Build runs: `build=f6f2d75b2c3a`, `build-glm=87421671ebd5`,
   `build-kimi=5bccae0c1d4a`
-- PR: pending
-- Commit/submission: pending
+- PR: <https://github.com/misty-step/bitterblossom/pull/863>
+- Commit/submission: `dd621b2fcddbd057c5c756f362c2669eec115292` /
+  `1e6a8d15dba8`
 
 ## Preflight
 
@@ -71,10 +72,17 @@ zero runs today, and the expected outcome may re-park the task as evidence.
   comparator, not the default yet.
 - Local verification: focused
   `cargo test --test model_eval build_cost_calibration_record_matches_default_cap -- --nocapture`
-  passed.
-- `bb submit open`: pending
-- `bb run` members: pending
-- `bb gate`: pending
+  passed; full `./scripts/verify.sh` passed with `src LOC: 5172`.
+- `bb submit open`: `1e6a8d15dba8` against PR #863 at
+  `dd621b2fcddbd057c5c756f362c2669eec115292`.
+- `bb run` members:
+  - `verify`: `e73c511d3683`, pass.
+  - `correctness`: `f1be6f69a78e`, pass, cost `$0.017785787`.
+  - `security`: `b6190218418e`, pass, cost `$0.007490439`.
+  - `simplification`: `b86068a0d008`, pass, cost `$0.0073803486`.
+  - `product`: `ce3e7b3ef737`, pass, cost `$0.021195`.
+- `bb gate`: submission `1e6a8d15dba8`, `decision = clear`, no advisory or
+  blocking findings.
 
 ## UX Notes
 
@@ -163,9 +171,15 @@ zero runs today, and the expected outcome may re-park the task as evidence.
 
 ## Closeout
 
-- Final git status: pending
-- Remote sync: pending
-- Remaining parked tasks: pending final status
+- Pre-merge git status: clean on `bb/deliver/075-builder-cost-calibration`.
+- Remote sync: branch pushed to
+  `origin/bb/deliver/075-builder-cost-calibration`; PR #863 CI `verify` and
+  CodeRabbit success before the final notes update.
+- Remaining parked tasks: `build.parked = null` with
+  `budget.max_cost_per_run_usd = 4.0`; latest build run `f6f2d75b2c3a`
+  succeeded.
 - Remaining DLQ: old missing-`GH_TOKEN` rows remain, including IDs `12`, `11`,
   `10`, `9`, and `8`; not replayed in this slice.
-- Next best pickup: pending
+- Next best pickup: refresh active backlog after the squash merge; likely one
+  of the remaining P1 ready items (`070`, `073`, `064`, or `072`) depending on
+  current queue pressure.
