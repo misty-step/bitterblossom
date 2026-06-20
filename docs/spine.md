@@ -174,12 +174,15 @@ pre_command = ""                  # optional adapter commands run in the
 post_command = ""                 # workspace before/after the agent
 ```
 
-`required_artifacts` is a completion contract, not a prompt hint. After a
-zero-exit harness run and substrate release, every listed path must exist in
-the attempt artifact directory or dispatch records the attempt as `failure`
-while preserving stdout/stderr/result artifacts for inspection. Use it for
-report-producing workloads such as builders, diagnosers, gardeners, and model
-evaluators.
+`required_artifacts` is a completion contract, not a prompt hint. Entries are
+non-empty paths relative to the attempt artifact directory; absolute paths,
+`.` and `..` are rejected at config load. Current substrates release
+`REPORT.json`, so other required paths are rejected until artifact transport is
+generalized. After a zero-exit harness run and substrate release, every listed
+path must exist in the attempt artifact directory or dispatch records the
+attempt as `failure` while preserving stdout/stderr/result artifacts for
+inspection. Use it for report-producing workloads such as builders,
+diagnosers, gardeners, and model evaluators.
 
 ### Manual builder dispatch
 
