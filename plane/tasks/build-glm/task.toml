@@ -1,5 +1,6 @@
 agent = "bb-builder-rust-glm"
 substrate = "sprites"
+required_artifacts = ["REPORT.json"]
 
 [workspace]
 host = "bb-polisher-3"

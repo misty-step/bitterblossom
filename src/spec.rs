@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -161,6 +161,12 @@ pub struct TaskSpec {
     pub pre_command: Option<String>,
     pub post_command: Option<String>,
     pub verdict: Option<String>,
+    /// Artifact paths, relative to the attempt artifact dir, that must exist
+    /// after a zero-exit harness run for the run to count as success. Current
+    /// substrates release `REPORT.json`; other paths are rejected until the
+    /// artifact transport is generalized.
+    #[serde(default)]
+    pub required_artifacts: Vec<String>,
 }
 
 fn default_substrate() -> String {
@@ -419,6 +425,7 @@ impl Plane {
         }
         let mut routes = std::collections::BTreeSet::new();
         for task in tasks.values() {
+            validate_required_artifacts(&task.name, &task.spec.required_artifacts)?;
             if task.spec.substrate != "local" && task.spec.workspace.host.is_none() {
                 bail!(
                     "task '{}': substrate '{}' requires workspace.host",
@@ -540,6 +547,8 @@ struct RepoOwnedTaskSpec {
     pub pre_command: Option<String>,
     pub post_command: Option<String>,
     pub verdict: Option<String>,
+    #[serde(default)]
+    pub required_artifacts: Vec<String>,
 }
 
 fn load_workload_repo_tasks(
@@ -696,7 +705,30 @@ fn repo_task_spec(
         pre_command: raw.pre_command,
         post_command: raw.post_command,
         verdict: raw.verdict,
+        required_artifacts: raw.required_artifacts,
     })
+}
+
+fn validate_required_artifacts(task: &str, artifacts: &[String]) -> Result<()> {
+    for artifact in artifacts {
+        let path = Path::new(artifact);
+        let valid = !artifact.trim().is_empty()
+            && !path.is_absolute()
+            && path
+                .components()
+                .all(|component| matches!(component, Component::Normal(_)));
+        if !valid {
+            bail!(
+                "task '{task}': required_artifacts entry {artifact:?} must be a non-empty relative path without '.' or '..'"
+            );
+        }
+        if artifact != crate::substrate::REPORT_FILENAME {
+            bail!(
+                "task '{task}': required_artifacts entry {artifact:?} is not released by current substrates; only REPORT.json is supported today"
+            );
+        }
+    }
+    Ok(())
 }
 
 fn bounded_budget(

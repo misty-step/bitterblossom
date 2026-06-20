@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -313,6 +313,20 @@ fn attempt_on_host(
         };
         ledger.record_verdict(&sub.id, run_id, kind, &doc)?;
         session.release().context("release session")?;
+        if let Some(error) = missing_artifact_error(&task.spec.required_artifacts, &attempt_dir) {
+            ledger.finish_attempt(
+                attempt_id,
+                "failure",
+                Some(&error),
+                Some(exec.exit_code),
+                &AttemptStats::default(),
+                Some(&artifact_dir),
+            )?;
+            return Ok(AttemptOutcome::Failure {
+                phase_executed: true,
+                error,
+            });
+        }
         ledger.finish_attempt(
             attempt_id,
             "success",
@@ -426,7 +440,20 @@ fn attempt_on_host(
         }
     }
     session.release().context("release session")?;
-
+    if let Some(error) = missing_artifact_error(&task.spec.required_artifacts, &attempt_dir) {
+        ledger.finish_attempt(
+            attempt_id,
+            "failure",
+            Some(&error),
+            Some(exec.exit_code),
+            &parsed.stats,
+            Some(&artifact_dir),
+        )?;
+        return Ok(AttemptOutcome::Failure {
+            phase_executed: true,
+            error,
+        });
+    }
     ledger.finish_attempt(
         attempt_id,
         "success",
@@ -469,6 +496,23 @@ pub fn attempt_dir(plane: &Plane, run_id: &str, n: i64) -> PathBuf {
         .join(".bb/runs")
         .join(run_id)
         .join(format!("attempt-{n}"))
+}
+
+/// Returns an error message naming any required artifacts absent from the
+/// attempt artifact dir, or `None` if the contract is satisfied. Called after
+/// the session releases (which copies REPORT.json and other workspace
+/// artifacts into the attempt dir), so a missing file means the agent never
+/// produced it.
+fn missing_artifact_error(required: &[String], artifact_dir: &Path) -> Option<String> {
+    let missing: Vec<&String> = required
+        .iter()
+        .filter(|name| !artifact_dir.join(name).exists())
+        .collect();
+    if missing.is_empty() {
+        return None;
+    }
+    let names: Vec<&str> = missing.iter().map(|s| s.as_str()).collect();
+    Some(format!("missing required artifact: {}", names.join(", ")))
 }
 fn tail(s: &str, max: usize) -> String {
     if s.len() <= max {

@@ -150,6 +150,40 @@ fn non_local_substrates_require_explicit_host_generically() {
 }
 
 #[test]
+fn required_artifacts_must_stay_inside_attempt_artifacts() {
+    let cases = [
+        ("required_artifacts = [\"\"]\n", "non-empty relative path"),
+        (
+            "required_artifacts = [\"/tmp/REPORT.json\"]\n",
+            "non-empty relative path",
+        ),
+        (
+            "required_artifacts = [\"../REPORT.json\"]\n",
+            "non-empty relative path",
+        ),
+        (
+            "required_artifacts = [\"nested/../REPORT.json\"]\n",
+            "non-empty relative path",
+        ),
+        (
+            "required_artifacts = [\"ANALYSIS.md\"]\n",
+            "only REPORT.json is supported",
+        ),
+    ];
+
+    for (artifact, want) in cases {
+        let dir = tempfile::tempdir().unwrap();
+        let err = plane_with(
+            dir.path(),
+            "harness = \"pi\"\nmodel = \"m\"\n",
+            &format!("{artifact}{MANUAL}"),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains(want), "{err}");
+    }
+}
+
+#[test]
 fn agent_role_and_skill_contract_are_loaded_and_exposed() {
     let dir = tempfile::tempdir().unwrap();
     let plane = plane_with(
