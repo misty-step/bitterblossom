@@ -25,8 +25,16 @@ Default rationale:
   dogfood run `380ca26ed25b` failed before authoring because sprite-side Codex
   OAuth could not refresh. The promotion keeps authoring on the open API-auth
   path while retaining Kimi and Pi/GLM comparison lanes.
+- On June 20, 2026, backlog 075 calibrated the default `build` cap to `$4.00`
+  after a successful live OMP/GLM authoring run cost `$3.207397` and parked the
+  lane at the stale `$2.00` cap. Same-packet dry-runs showed Pi/GLM is cheaper,
+  but not yet production-default evidence because the candidate report noted
+  local commits during `dry_run`.
 
 Records:
 
-- None yet. First record should compare the same shaped packet across all three
-  tasks and include the pushed branch or dry-run evidence for each candidate.
+- [2026-06-20 builder cost calibration](2026-06-20-builder-cost-calibration.md):
+  same-packet dry-run comparison across `build`, `build-glm`, and `build-kimi`,
+  plus `model-eval` run `a6d019b66cda`. Decision: keep `build` on OMP/GLM and
+  raise `max_cost_per_run_usd` to `$4.00`; keep Pi/GLM as a promising
+  comparator, not the default yet.

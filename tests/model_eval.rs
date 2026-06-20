@@ -375,6 +375,33 @@ fn model_eval_reference_context_is_documented_for_future_runs() {
 }
 
 #[test]
+fn build_cost_calibration_record_matches_default_cap() {
+    let repo = root();
+    let plane = Plane::load(&repo.join("plane")).unwrap();
+    let build = plane.task("build").unwrap();
+    assert_eq!(build.spec.budget.max_cost_per_run_usd, Some(4.0));
+
+    let build_readme = fs::read_to_string(repo.join("docs/model-evals/build/README.md")).unwrap();
+    assert!(build_readme.contains("2026-06-20-builder-cost-calibration.md"));
+    assert!(build_readme.contains("a6d019b66cda"));
+
+    let record = fs::read_to_string(
+        repo.join("docs/model-evals/build/2026-06-20-builder-cost-calibration.md"),
+    )
+    .unwrap();
+    for required in [
+        "f6f2d75b2c3a",
+        "87421671ebd5",
+        "5bccae0c1d4a",
+        "a6d019b66cda",
+        "$4.00",
+        "d19d71f1eeae",
+    ] {
+        assert!(record.contains(required), "missing {required}");
+    }
+}
+
+#[test]
 fn ci_diagnose_real_failure_record_has_complete_receipts() {
     let repo = root();
     let readme = fs::read_to_string(repo.join("docs/model-evals/ci-diagnose/README.md")).unwrap();
