@@ -337,6 +337,81 @@ fn required_member_terminal_failure_escalates_with_one_notify() {
 }
 
 #[test]
+fn gate_blocked_fires_gate_blocked_notify_with_every_finding() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_gate_plane(dir.path(), 3, true);
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    let sub = ledger.open_submission("feat/x", "sha1", None).unwrap();
+
+    let log = dir.path().join("notify.log");
+    let notify_stub = dir.path().join("notify.sh");
+    write_executable(
+        &notify_stub,
+        &format!("#!/bin/sh\ncat >> {}\n", log.display()),
+    );
+    std::env::set_var("BB_NOTIFY_BIN", &notify_stub);
+
+    // Two distinct blockers across the two required members.
+    let bug_a = finding("blocking", "off-by-one in bounds check");
+    let bug_b = finding("blocking", "unchecked unwrap on None path");
+    fill_round(
+        &mut ledger,
+        &sub.id,
+        &[
+            (
+                "correctness",
+                &with_findings("blocking", vec![bug_a.clone()]),
+            ),
+            ("security", &with_findings("blocking", vec![bug_b.clone()])),
+        ],
+    );
+
+    let report = submit::evaluate(&plane, &ledger, &sub.id).unwrap();
+    std::env::remove_var("BB_NOTIFY_BIN");
+    assert_eq!(report.decision, "blocked");
+    assert_eq!(ledger.submission(&sub.id).unwrap().state, "blocked");
+    assert_eq!(report.blocking.len(), 2);
+
+    // The notify body is the contract the fix-prompt reflex consumes: a
+    // `gate.blocked` event carrying every blocking fingerprint, file, line,
+    // and claim.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut body = String::new();
+    while body.is_empty() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        body = fs::read_to_string(&log).unwrap_or_default();
+    }
+    assert!(body.contains("gate.blocked"), "{body}");
+    assert_eq!(body.matches("gate.blocked").count(), 1);
+    assert_eq!(body.matches("submission_escalated").count(), 0);
+    let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(parsed["event"], "gate.blocked");
+    assert_eq!(parsed["submission"], sub.id);
+    assert_eq!(parsed["change"], "feat/x");
+    assert_eq!(parsed["round"], 1);
+    let blocking = parsed["blocking"].as_array().unwrap();
+    assert_eq!(blocking.len(), 2);
+    let claims: Vec<&str> = blocking
+        .iter()
+        .map(|f| f["claim"].as_str().unwrap())
+        .collect();
+    assert!(claims.contains(&"off-by-one in bounds check"));
+    assert!(claims.contains(&"unchecked unwrap on None path"));
+    for f in blocking {
+        assert!(f["fingerprint"].as_str().unwrap().len() == 16);
+        assert_eq!(f["file"], "src/x.rs");
+        assert_eq!(f["line"], 1);
+    }
+
+    // Re-evaluating a settled submission neither re-settles nor re-notifies.
+    submit::evaluate(&plane, &ledger, &sub.id).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let body = fs::read_to_string(&log).unwrap();
+    assert_eq!(body.matches("gate.blocked").count(), 1);
+}
+
+#[test]
 fn fresh_blocking_finding_blocks_in_any_round() {
     let dir = tempfile::tempdir().unwrap();
     let plane = make_gate_plane(dir.path(), 3, false);
