@@ -621,12 +621,7 @@ fn export_run_telemetry(
     attempts: Vec<ledger::AttemptRow>,
     dlq: Option<&ledger::DeadLetterRow>,
 ) -> serde_json::Value {
-    let dead_status = match dlq {
-        Some(d) if d.replayed_run_id.is_some() => "replayed",
-        Some(d) if d.acknowledged_at.is_some() => "acknowledged",
-        Some(_) => "open",
-        None => "none",
-    };
+    let dead_status = dlq.map(|d| d.status.as_str()).unwrap_or("none");
     let provider = |name: &str| {
         plane
             .agents
