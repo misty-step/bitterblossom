@@ -1,0 +1,15 @@
+agent = "fix-prompter"
+substrate = "sprites"
+required_artifacts = ["REPORT.json"]
+
+[workspace]
+host = "misty-step/lane-1"
+
+[budget]
+timeout_minutes = 15
+max_runs_per_day = 20
+max_cost_per_run_usd = 0.20
+turn_cap = 25
+
+[[trigger]]
+kind = "manual"

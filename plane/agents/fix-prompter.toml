@@ -1,0 +1,14 @@
+# Fix-prompt reflex: hermetic API-auth agent that turns a blocked gate into a
+# bounded builder packet (a suggested `bb run build` input). It never
+# edits code, resolves runs, parks tasks, or merges: report-only, the same red
+# lines as ci-diagnoser.
+version = 1
+role = "fix-prompter"
+harness = "pi"
+model = "deepseek/deepseek-v4-flash"
+auth = "api"
+secrets = ["OPENROUTER_API_KEY"]
+skills = [
+  "harness-kit/diagnose#fix-prompt",
+  "bitterblossom/operator-min",
+]

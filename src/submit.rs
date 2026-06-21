@@ -524,13 +524,27 @@ pub fn evaluate(plane: &Plane, ledger: &Ledger, submission_id: &str) -> Result<G
 
     if sub.state == "open" && decision != "pending" {
         let json = serde_json::to_string(&report)?;
-        if ledger.settle_submission(&sub.id, decision, &json)? && decision == "escalated" {
+        let settled = ledger.settle_submission(&sub.id, decision, &json)?;
+        if settled && decision == "escalated" {
             crate::notify::notify(
                 plane,
                 "submission_escalated",
                 &serde_json::json!({
                     "submission": sub.id, "change": sub.change_key,
                     "round": sub.round, "blocking": report.blocking.len(),
+                }),
+            );
+        }
+        // A blocked gate fires `gate.blocked` carrying every blocking finding
+        // (fingerprint/file/line/claim): the contract the fix-prompt reflex
+        // consumes to mint a bounded builder packet. Report-only, like escalate.
+        if settled && decision == "blocked" {
+            crate::notify::notify(
+                plane,
+                "gate.blocked",
+                &serde_json::json!({
+                    "submission": sub.id, "change": sub.change_key,
+                    "rev": sub.rev, "round": sub.round, "blocking": report.blocking,
                 }),
             );
         }
