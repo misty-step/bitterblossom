@@ -165,6 +165,40 @@ fn dead_letter_replay_claim_is_atomic() {
 }
 
 #[test]
+fn dead_letter_replay_and_acknowledge_are_mutually_exclusive_in_ledger() {
+    let (_dir, mut ledger) = open_ledger();
+    let run = ingest_manual(&mut ledger, "demo", None).run_id;
+    let acked = ledger
+        .record_dead_letter(&run, "demo", None, "missing secret")
+        .unwrap();
+    ledger
+        .acknowledge_dead_letter(acked, " superseded by replacement ")
+        .unwrap();
+    let row = ledger.dead_letter(acked).unwrap();
+    assert_eq!(row.status, "acknowledged");
+    assert_eq!(
+        row.acknowledged_reason.as_deref(),
+        Some("superseded by replacement")
+    );
+    assert!(
+        !ledger.mark_dead_letter_replayed(acked, "replay-a").unwrap(),
+        "acknowledged DLQs cannot later be claimed for replay"
+    );
+
+    let replayed = ledger
+        .record_dead_letter(&run, "demo", None, "bad command")
+        .unwrap();
+    assert!(ledger
+        .mark_dead_letter_replayed(replayed, "replay-b")
+        .unwrap());
+    let err = match ledger.acknowledge_dead_letter(replayed, "superseded") {
+        Ok(_) => panic!("replayed DLQs cannot be acknowledged"),
+        Err(err) => err.to_string(),
+    };
+    assert!(err.contains("already replayed"), "{err}");
+}
+
+#[test]
 fn cross_handle_ingest_dedupes_on_disk() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("plane.db");

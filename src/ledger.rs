@@ -455,7 +455,9 @@ impl Ledger {
     pub fn mark_dead_letter_replayed(&self, id: i64, new_run_id: &str) -> Result<bool> {
         let changed = self.conn.execute(
             "UPDATE dead_letters SET replayed_run_id = ?2
-             WHERE id = ?1 AND (replayed_run_id IS NULL OR replayed_run_id = ?2)",
+             WHERE id = ?1
+               AND acknowledged_at IS NULL
+               AND (replayed_run_id IS NULL OR replayed_run_id = ?2)",
             params![id, new_run_id],
         )?;
         Ok(changed == 1)
@@ -495,14 +497,22 @@ impl Ledger {
         if let Some(prev_reason) = &dl.acknowledged_reason {
             bail!("dead letter {id} already acknowledged: {prev_reason}");
         }
-        if reason.trim().is_empty() {
+        let reason = reason.trim();
+        if reason.is_empty() {
             bail!("acknowledging dead letter {id} requires a non-empty reason");
         }
-        self.conn.execute(
+        let changed = self.conn.execute(
             "UPDATE dead_letters SET acknowledged_reason = ?2, acknowledged_at = ?3
-             WHERE id = ?1 AND acknowledged_at IS NULL",
+             WHERE id = ?1 AND replayed_run_id IS NULL AND acknowledged_at IS NULL",
             params![id, reason, now()],
         )?;
+        if changed != 1 {
+            let current = self.dead_letter(id)?;
+            bail!(
+                "dead letter {id} is {}; acknowledge requires an open row",
+                current.status
+            );
+        }
         self.record_event(&dl.run_id, "dlq:acknowledged", Some(reason))?;
         self.dead_letter(id)
     }
