@@ -178,11 +178,13 @@ Classify each problem:
   sprite before the agent executed. Fix the condition, then run
   `bb dlq replay <id> --json`.
 - **Superseded pre-execute DLQ:** a replacement submission or run already
-  passed. Record the DLQ id in closeout; there is no first-class acknowledge
-  command yet.
+  passed. Close it with `bb dlq ack <id> --reason <text>` so it stops
+  counting as open operator work; the row is kept with reason and timestamp,
+  replay history stays immutable, and an acknowledged DLQ cannot be replayed.
 - **At/after-execute uncertainty:** use `bb runs show <run-id> --json`, inspect
   artifacts and external side effects, then resolve only with
   `bb runs resolve`.
 
-Never hide open DLQs in summaries. If they are known superseded noise, say that
-explicitly and link the replacement run or submission.
+Never hide open DLQs in summaries. Acknowledgement is an explicit operator
+closure with a recorded reason, not a way to hide failures — if a DLQ is not
+known-superseded, replay or resolve the underlying run instead.

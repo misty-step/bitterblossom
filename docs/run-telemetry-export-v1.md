@@ -87,9 +87,10 @@ Each attempt includes:
 `retry.mechanical_retry_count` is `max(attempt_count - 1, 0)`. `retry.final_phase`
 is the last attempt phase or `null`.
 
-`dead_letter.status` is `none`, `open`, or `replayed`. Open rows include
-`id`, `error`, and `created_at`; replayed rows also include
-`replayed_run_id`.
+`dead_letter.status` is `none`, `open`, `replayed`, or `acknowledged`. Open
+rows include `id`, `error`, and `created_at`; replayed rows also include
+`replayed_run_id`; acknowledged rows also include `acknowledged_reason` and
+`acknowledged_at` (the row was closed as superseded without replay).
 
 ## Daedalus handoff
 

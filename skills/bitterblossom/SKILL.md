@@ -61,7 +61,7 @@ Read the output for:
 | Compare candidate model configs | Run at least three candidate tasks, then `bb --config <plane> run model-eval --payload '<json>' --json` |
 | Inspect ledger | `bb --config <plane> runs list --json`; `bb --config <plane> runs show <id> --json` |
 | Export run telemetry | `bb --config <plane> runs export` (`bb.run_telemetry.v1` JSONL) |
-| Handle pre-execute failures | `bb --config <plane> dlq list --json`; `bb --config <plane> dlq replay <id> --json` |
+| Handle pre-execute failures | `bb --config <plane> dlq list --json`; `bb --config <plane> dlq replay <id> --json`; `bb --config <plane> dlq ack <id> --reason <text> --json` to close a superseded DLQ |
 | Park or unpark workload dispatch | `bb --config <plane> task park|unpark <task>` |
 | Classify inherited running rows after host restart | `bb --config <plane> recover` |
 | Run webhook/cron plane | `bb --config <plane> serve` |
@@ -126,8 +126,12 @@ another cwd.
   the run only after inspecting side effects.
 - `bb dlq replay --json` mints a new run linked to a pre-execute dead letter
   and returns the replayed run bundle.
-- There may be no "acknowledge this intentional failed probe" command yet;
-  record the run id and reason in closeout instead of hiding it.
+- `bb dlq ack <id> --reason <text> --json` acknowledges a superseded
+  pre-execute dead letter without replaying it, recording reason + timestamp.
+  Acknowledged DLQs cannot be replayed; `bb status --json` no longer counts
+  them as open operator work.
+- `bb preflight <task> | --storm --json` checks missing declared secrets and
+  unspawnable `command`-harness binaries before dispatch creates run rows.
 
 ## Serving
 

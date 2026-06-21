@@ -463,6 +463,14 @@ recovery semantic:
   or replay side-effecting work automatically.
 - `bb dlq replay <id> [--json]` mints a **new** run linked via
   `parent_run_id`; JSON mode returns the replayed run + attempts + events.
+- `bb dlq ack <id> --reason TEXT [--json]` acknowledges a pre-execute dead
+  letter as superseded without replaying it, recording reason + timestamp.
+  Acknowledgement and replay are mutually exclusive: an acknowledged DLQ
+  cannot be replayed, and a replayed DLQ cannot be acknowledged. Replay
+  history (`replayed_run_id`) is immutable. `bb dlq list --json` reports each
+  row's `status` (`open`, `replayed`, or `acknowledged`) with acknowledgement
+  reason and timestamp; `bb status --json` counts only `open` rows as
+  unresolved operator work.
 
 Host mutual exclusion is a durable lease keyed by substrate resource
 identity (the sprite/host), not by task: two tasks sharing a host never
@@ -485,6 +493,8 @@ bb runs retire <id> --reason TEXT                 # blocked_budget -> retired (t
 bb runs export                                    # bb.run_telemetry.v1 JSONL
 bb dlq list [--json]
 bb dlq replay <id> [--json]
+bb dlq ack <id> --reason TEXT [--json]            # close a superseded pre-execute DLQ
+bb preflight <task> | --storm [--json]            # missing secrets + unspawnable command binaries, pre-dispatch
 bb task park|unpark <task>
 bb submit open --change K --rev SHA [--context TEXT]
 bb submit reject --change K --fingerprint FP --reason TEXT
@@ -496,6 +506,14 @@ bb serve                                          # webhook + cron + queue
 Cost and tokens are parsed from harness output per attempt; unparseable
 output is a `failure` with raw output preserved on the attempt row — never
 a silent zero-cost success.
+
+`bb preflight` is a read-only pre-dispatch check, not a gate: it reports
+missing declared secrets and unspawnable `command`-harness binaries (the
+`/bin/true`-missing and missing-`GH_TOKEN` storm classes) for one task or the
+submission-storm member set, before dispatch creates run rows. Secret checks
+apply on every substrate (secrets travel from the operator environment);
+binary checks apply only to `substrate = "local"`, the only substrate whose
+binaries `bb` can inspect.
 
 ## What the plane refuses to know
 

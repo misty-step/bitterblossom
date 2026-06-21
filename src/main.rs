@@ -68,6 +68,16 @@ enum Command {
         json: bool,
     },
     Serve,
+    /// Report missing declared secrets and unspawnable command-harness binaries
+    /// before dispatch creates run rows. Targets one task or the submission-storm
+    /// member set (the gate-required verdict tasks).
+    Preflight {
+        task: Option<String>,
+        #[arg(long)]
+        storm: bool,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -121,6 +131,16 @@ enum DlqCommand {
     },
     Replay {
         id: i64,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Acknowledge a pre-execute dead letter as superseded without replaying
+    /// it. Replay history is preserved; an acknowledged dead letter cannot be
+    /// replayed. Requires an explicit operator reason.
+    Ack {
+        id: i64,
+        #[arg(long)]
+        reason: String,
         #[arg(long)]
         json: bool,
     },
@@ -326,14 +346,15 @@ fn run() -> Result<()> {
                 } else {
                     for d in rows {
                         println!(
-                            "{}  #{} run={} task={} replayed={}  {}",
-                            d.created_at,
-                            d.id,
-                            d.run_id,
-                            d.task,
-                            d.replayed_run_id.as_deref().unwrap_or("-"),
-                            d.error,
+                            "{}  #{} {} run={} task={}  {}",
+                            d.created_at, d.id, d.status, d.run_id, d.task, d.error,
                         );
+                        if let Some(r) = &d.replayed_run_id {
+                            println!("    replayed as run {r}");
+                        }
+                        if let Some(reason) = &d.acknowledged_reason {
+                            println!("    acknowledged: {reason}");
+                        }
                     }
                 }
             }
@@ -341,6 +362,12 @@ fn run() -> Result<()> {
                 let dl = ledger.dead_letter(id)?;
                 if let Some(prev) = &dl.replayed_run_id {
                     bail!("dead letter {id} already replayed as run {prev}");
+                }
+                if let Some(reason) = &dl.acknowledged_reason {
+                    bail!(
+                        "dead letter {id} acknowledged ({}): replay rejected — acknowledge vs replay are mutually exclusive",
+                        reason
+                    );
                 }
                 let replay_key = format!("replay:dl-{id}");
                 let outcome = ledger.ingest(IngressRequest {
@@ -360,6 +387,18 @@ fn run() -> Result<()> {
                 } else {
                     println!("replaying dead letter {id} as run {}", outcome.run_id);
                     println!("run {} {}", run.id, run.state);
+                }
+            }
+            DlqCommand::Ack { id, reason, json } => {
+                let dl = ledger.acknowledge_dead_letter(id, &reason)?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&dl)?);
+                } else {
+                    println!(
+                        "acknowledged dead letter {id} (run {}): {}",
+                        dl.run_id,
+                        dl.acknowledged_reason.as_deref().unwrap_or(&reason)
+                    );
                 }
             }
         },
@@ -528,6 +567,29 @@ fn run() -> Result<()> {
                 }
             }
         }
+        Command::Preflight { task, storm, json } => {
+            let report = bitterblossom::preflight::run(&plane, task.as_deref(), storm)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else if report.findings.is_empty() {
+                println!(
+                    "preflight ok: {} task(s) checked, no missing secrets or unspawnable binaries",
+                    report.tasks_checked.len()
+                );
+            } else {
+                println!(
+                    "preflight found {} problem(s) across {} task(s):",
+                    report.findings.len(),
+                    report.tasks_checked.len()
+                );
+                for f in &report.findings {
+                    println!("  {} [{}] {}", f.task, f.kind, f.detail);
+                }
+            }
+            if !report.findings.is_empty() {
+                std::process::exit(2);
+            }
+        }
     }
     Ok(())
 }
@@ -561,6 +623,7 @@ fn export_run_telemetry(
 ) -> serde_json::Value {
     let dead_status = match dlq {
         Some(d) if d.replayed_run_id.is_some() => "replayed",
+        Some(d) if d.acknowledged_at.is_some() => "acknowledged",
         Some(_) => "open",
         None => "none",
     };
@@ -624,7 +687,8 @@ fn export_run_telemetry(
         || serde_json::json!({"status": "none"}),
         |d| {
             serde_json::json!({"status": dead_status, "id": d.id, "error": &d.error,
-            "created_at": &d.created_at, "replayed_run_id": &d.replayed_run_id})
+            "created_at": &d.created_at, "replayed_run_id": &d.replayed_run_id,
+            "acknowledged_reason": &d.acknowledged_reason, "acknowledged_at": &d.acknowledged_at})
         },
     );
     serde_json::json!({

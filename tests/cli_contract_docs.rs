@@ -89,7 +89,8 @@ fn operations_runbook_and_drill_are_wired_into_the_gate() {
     assert!(ops.contains("flyctl releases rollback"));
     assert!(ops.contains("bb --config plane recover --json"));
     assert!(ops.contains("bb dlq replay <id> --json"));
-    assert!(ops.contains("there is no first-class acknowledge"));
+    assert!(ops.contains("bb dlq ack <id> --reason <text>"));
+    assert!(!ops.contains("there is no first-class acknowledge"));
     assert!(!ops.contains("?token=$BB_API_TOKEN"));
 
     let script = read("scripts/production-ops-drill.sh");

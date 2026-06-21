@@ -5,6 +5,7 @@ pub mod health;
 pub mod ingress;
 pub mod ledger;
 pub mod notify;
+pub mod preflight;
 pub mod recovery;
 pub mod serve;
 pub mod spec;

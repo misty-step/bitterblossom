@@ -216,6 +216,24 @@ agent or script needs the replayed run, attempt, and event bundle:
 bb --config <plane> dlq replay <id> --json
 ```
 
+When a pre-execute dead letter is superseded (a replacement submission or run
+already passed), close it with an explicit reason instead of replaying it.
+`dlq list --json` reports each row's `status` (`open`, `replayed`, or
+`acknowledged`); acknowledged rows keep reason + timestamp and cannot be
+replayed, and `status --json` no longer counts them as open operator work:
+
+```bash
+bb --config <plane> dlq ack <id> --reason <text> --json
+```
+
+Before dispatching a storm, preflight missing declared secrets and unspawnable
+`command`-harness binaries for one task or the gate-required storm member set:
+
+```bash
+bb --config <plane> preflight <task> --json
+bb --config <plane> preflight --storm --json
+```
+
 After a host restart:
 
 ```bash

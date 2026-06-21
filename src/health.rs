@@ -13,10 +13,7 @@ pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
     let runs = ledger.list_runs(None, None)?;
     let dead_letters = ledger.list_dead_letters()?;
     let generated_at = OffsetDateTime::now_utc();
-    let open_dlq = dead_letters
-        .iter()
-        .filter(|d| d.replayed_run_id.is_none())
-        .count();
+    let open_dlq = dead_letters.iter().filter(|d| d.status == "open").count();
     let mut parked_tasks = 0usize;
     let mut tasks = Vec::new();
 
@@ -31,10 +28,7 @@ pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
             parked_tasks += 1;
         }
         let by_state = state_counts(&task_runs);
-        let latest_open_dlq = task_dlq
-            .iter()
-            .copied()
-            .find(|d| d.replayed_run_id.is_none());
+        let latest_open_dlq = task_dlq.iter().copied().find(|d| d.status == "open");
         let latest_failure = task_runs.iter().copied().find(|r| r.state == "failure");
         let latest_recovery = task_runs
             .iter()
@@ -54,9 +48,10 @@ pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
         let oldest_pending_age_seconds = oldest_pending
             .and_then(|at| OffsetDateTime::parse(at, &Rfc3339).ok())
             .map(|at| (generated_at - at).whole_seconds().max(0));
-        let open_task_dlq = task_dlq
+        let open_task_dlq = task_dlq.iter().filter(|d| d.status == "open").count();
+        let acknowledged_task_dlq = task_dlq
             .iter()
-            .filter(|d| d.replayed_run_id.is_none())
+            .filter(|d| d.status == "acknowledged")
             .count();
 
         tasks.push(json!({
@@ -90,6 +85,7 @@ pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
             },
             "dlq": {
                 "open": open_task_dlq,
+                "acknowledged": acknowledged_task_dlq,
                 "total": task_dlq.len(),
                 "latest_open": latest_open_dlq.map(dlq_summary),
             },
@@ -143,6 +139,7 @@ fn dlq_summary(d: &DeadLetterRow) -> Value {
     json!({
         "id": d.id,
         "run_id": d.run_id,
+        "status": d.status,
         "error": d.error,
         "created_at": d.created_at,
     })

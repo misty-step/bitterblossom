@@ -68,7 +68,9 @@ CREATE TABLE IF NOT EXISTS dead_letters (
   payload TEXT,
   error TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  replayed_run_id TEXT
+  replayed_run_id TEXT,
+  acknowledged_reason TEXT,
+  acknowledged_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS budget_events (

@@ -112,6 +112,23 @@ pub struct DeadLetterRow {
     pub error: String,
     pub created_at: String,
     pub replayed_run_id: Option<String>,
+    pub acknowledged_reason: Option<String>,
+    pub acknowledged_at: Option<String>,
+    /// `open` (no replay, no acknowledgement), `replayed`, or `acknowledged`.
+    pub status: String,
+}
+
+/// Resolution state of a dead letter, derived from its replay/acknowledgement
+/// columns. Acknowledgement and replay are mutually exclusive operator paths
+/// to close a pre-execute dead letter; replay history is immutable.
+pub fn dlq_status(replayed: Option<&str>, acknowledged_at: Option<&str>) -> String {
+    if replayed.is_some() {
+        "replayed".into()
+    } else if acknowledged_at.is_some() {
+        "acknowledged".into()
+    } else {
+        "open".into()
+    }
 }
 
 pub struct Ledger {
@@ -133,6 +150,8 @@ impl Ledger {
         conn.execute_batch(SCHEMA)?;
         ensure_column(&conn, "runs", "config_source_repo", "TEXT")?;
         ensure_column(&conn, "runs", "config_source_ref", "TEXT")?;
+        ensure_column(&conn, "dead_letters", "acknowledged_reason", "TEXT")?;
+        ensure_column(&conn, "dead_letters", "acknowledged_at", "TEXT")?;
         Ok(Self { conn })
     }
 
@@ -417,41 +436,19 @@ impl Ledger {
     pub fn dead_letter(&self, id: i64) -> Result<DeadLetterRow> {
         self.conn
             .query_row(
-                "SELECT id, run_id, task, payload, error, created_at, replayed_run_id
-                 FROM dead_letters WHERE id = ?1",
+                &format!("{DLQ_SELECT} WHERE id = ?1"),
                 params![id],
-                |r| {
-                    Ok(DeadLetterRow {
-                        id: r.get(0)?,
-                        run_id: r.get(1)?,
-                        task: r.get(2)?,
-                        payload: r.get(3)?,
-                        error: r.get(4)?,
-                        created_at: r.get(5)?,
-                        replayed_run_id: r.get(6)?,
-                    })
-                },
+                row_to_dlq,
             )
             .with_context(|| format!("dead letter {id} not found"))
     }
 
     pub fn list_dead_letters(&self) -> Result<Vec<DeadLetterRow>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, run_id, task, payload, error, created_at, replayed_run_id
-             FROM dead_letters ORDER BY id DESC",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare(&format!("{DLQ_SELECT} ORDER BY id DESC"))?;
         let rows = stmt
-            .query_map([], |r| {
-                Ok(DeadLetterRow {
-                    id: r.get(0)?,
-                    run_id: r.get(1)?,
-                    task: r.get(2)?,
-                    payload: r.get(3)?,
-                    error: r.get(4)?,
-                    created_at: r.get(5)?,
-                    replayed_run_id: r.get(6)?,
-                })
-            })?
+            .query_map([], row_to_dlq)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -484,6 +481,30 @@ impl Ledger {
             params![task, reason, now()],
         )?;
         Ok(())
+    }
+    /// Acknowledge a pre-execute dead letter as superseded without replaying
+    /// it. Requires a non-empty operator reason. Refuses a dead letter that is
+    /// already replayed (replay is the other resolution path) or already
+    /// acknowledged. Replay history (`replayed_run_id`) is never mutated here.
+    /// Records a `dlq:acknowledged` event on the originating run for traceability.
+    pub fn acknowledge_dead_letter(&self, id: i64, reason: &str) -> Result<DeadLetterRow> {
+        let dl = self.dead_letter(id)?;
+        if let Some(prev) = &dl.replayed_run_id {
+            bail!("dead letter {id} already replayed as run {prev}; acknowledge is for unreplayed rows");
+        }
+        if let Some(prev_reason) = &dl.acknowledged_reason {
+            bail!("dead letter {id} already acknowledged: {prev_reason}");
+        }
+        if reason.trim().is_empty() {
+            bail!("acknowledging dead letter {id} requires a non-empty reason");
+        }
+        self.conn.execute(
+            "UPDATE dead_letters SET acknowledged_reason = ?2, acknowledged_at = ?3
+             WHERE id = ?1 AND acknowledged_at IS NULL",
+            params![id, reason, now()],
+        )?;
+        self.record_event(&dl.run_id, "dlq:acknowledged", Some(reason))?;
+        self.dead_letter(id)
     }
 
     pub fn unpark_task(&self, task: &str) -> Result<Vec<String>> {
@@ -685,6 +706,9 @@ const RUN_SELECT: &str = "SELECT id, task, trigger_kind, idempotency_key, state,
   cost_usd, duration_ms,
   created_at, updated_at FROM runs";
 
+const DLQ_SELECT: &str = "SELECT id, run_id, task, payload, error, created_at,
+  replayed_run_id, acknowledged_reason, acknowledged_at FROM dead_letters";
+
 fn row_to_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<RunRow> {
     Ok(RunRow {
         id: r.get(0)?,
@@ -703,6 +727,23 @@ fn row_to_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<RunRow> {
         duration_ms: r.get(13)?,
         created_at: r.get(14)?,
         updated_at: r.get(15)?,
+    })
+}
+
+fn row_to_dlq(r: &rusqlite::Row<'_>) -> rusqlite::Result<DeadLetterRow> {
+    let replayed: Option<String> = r.get(6)?;
+    let acknowledged_at: Option<String> = r.get(8)?;
+    Ok(DeadLetterRow {
+        id: r.get(0)?,
+        run_id: r.get(1)?,
+        task: r.get(2)?,
+        payload: r.get(3)?,
+        error: r.get(4)?,
+        created_at: r.get(5)?,
+        status: dlq_status(replayed.as_deref(), acknowledged_at.as_deref()),
+        replayed_run_id: replayed,
+        acknowledged_reason: r.get(7)?,
+        acknowledged_at,
     })
 }
 
