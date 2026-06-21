@@ -10,9 +10,10 @@
 - Sprite org: `misty-step`
 - Sprite: `lane-1`
 - Build run: `6637761a726b`
-- PR: pending
+- PR: #865, `https://github.com/misty-step/bitterblossom/pull/865`
 - Commit/submission: builder commit `7ca1839266e5813e92626249b2ea65faad29a14b`;
-  local review patch and backlog archive pending commit.
+  final pushed head `90ee5db1e2db32972e0e18e3ea0707554d66103f`;
+  final submission `ab29efdd609e`.
 
 ## Preflight
 
@@ -71,9 +72,23 @@
   - `bb status --json` reported `summary.open_dlq = 0` and
     `broken.dlq.acknowledged = 1`.
   - `bb dlq replay 1 --json` exited `1` with `replay rejected`.
-- `bb submit open`: pending.
-- `bb run` members: pending.
-- `bb gate`: pending.
+- PR: draft PR #865 opened, GitHub `verify` and CodeRabbit passed on
+  `90ee5db1e2db32972e0e18e3ea0707554d66103f`.
+- `bb submit open`:
+  - First submission `7be74a2dd50e` at `6cf2f41` cleared with one
+    simplification advisory. Fixed by reusing `DeadLetterRow.status` in
+    telemetry export.
+  - Second submission `8b35f441f251` at `90ee5db` escalated because canonical
+    security run `e03e4df2e1fb` produced invalid verdict JSON after execution.
+    The gate safe-next command requested a replacement submission.
+  - Final submission `ab29efdd609e` at `90ee5db` cleared.
+- Final `bb run` members:
+  - `verify=af1f333bfef4`
+  - `correctness=6f12a0c69841` (`$0.035161746`)
+  - `security=3f84de30e80a` (`$0.020749558000000005`)
+  - `simplification=bb3c40faa9ea` (`$0.019449490300000004`)
+  - `product=4432eafbd60b` (`$0.04848165`)
+- Final `bb gate`: `decision = clear`, no blocking findings, no advisories.
 
 ## UX Notes
 
@@ -118,6 +133,13 @@
 - Evidence: `mark_dead_letter_replayed` and `acknowledge_dead_letter` update
   predicates did not both require the row to still be open.
 - Mitigate: fixed locally with a ledger-level test before PR.
+
+- Observation: second storm security run failed after execution because it
+  returned prose/tool trace instead of the required verdict JSON.
+- Evidence: run `e03e4df2e1fb`, error `invalid verdict JSON: no JSON object in
+  verdict output`.
+- Mitigate: followed the gate safe-next command and opened replacement
+  submission `ab29efdd609e`, which cleared.
 
 ### Delight
 
