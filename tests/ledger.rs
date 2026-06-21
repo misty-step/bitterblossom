@@ -180,6 +180,10 @@ fn dead_letter_replay_and_acknowledge_are_mutually_exclusive_in_ledger() {
         row.acknowledged_reason.as_deref(),
         Some("superseded by replacement")
     );
+    let events = ledger.events(&run).unwrap();
+    assert!(events.iter().any(|e| {
+        e.kind == "dlq:acknowledged" && e.data.as_deref() == Some("superseded by replacement")
+    }));
     assert!(
         !ledger.mark_dead_letter_replayed(acked, "replay-a").unwrap(),
         "acknowledged DLQs cannot later be claimed for replay"

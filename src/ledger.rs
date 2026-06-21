@@ -490,31 +490,44 @@ impl Ledger {
     /// acknowledged. Replay history (`replayed_run_id`) is never mutated here.
     /// Records a `dlq:acknowledged` event on the originating run for traceability.
     pub fn acknowledge_dead_letter(&self, id: i64, reason: &str) -> Result<DeadLetterRow> {
-        let dl = self.dead_letter(id)?;
-        if let Some(prev) = &dl.replayed_run_id {
-            bail!("dead letter {id} already replayed as run {prev}; acknowledge is for unreplayed rows");
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| {
+            let dl = self.dead_letter(id)?;
+            if let Some(prev) = &dl.replayed_run_id {
+                bail!("dead letter {id} already replayed as run {prev}; acknowledge is for unreplayed rows");
+            }
+            if let Some(prev_reason) = &dl.acknowledged_reason {
+                bail!("dead letter {id} already acknowledged: {prev_reason}");
+            }
+            let reason = reason.trim();
+            if reason.is_empty() {
+                bail!("acknowledging dead letter {id} requires a non-empty reason");
+            }
+            let changed = self.conn.execute(
+                "UPDATE dead_letters SET acknowledged_reason = ?2, acknowledged_at = ?3
+                 WHERE id = ?1 AND replayed_run_id IS NULL AND acknowledged_at IS NULL",
+                params![id, reason, now()],
+            )?;
+            if changed != 1 {
+                let current = self.dead_letter(id)?;
+                bail!(
+                    "dead letter {id} is {}; acknowledge requires an open row",
+                    current.status
+                );
+            }
+            self.record_event(&dl.run_id, "dlq:acknowledged", Some(reason))?;
+            self.dead_letter(id)
+        })();
+        match result {
+            Ok(row) => {
+                self.conn.execute_batch("COMMIT")?;
+                Ok(row)
+            }
+            Err(err) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(err)
+            }
         }
-        if let Some(prev_reason) = &dl.acknowledged_reason {
-            bail!("dead letter {id} already acknowledged: {prev_reason}");
-        }
-        let reason = reason.trim();
-        if reason.is_empty() {
-            bail!("acknowledging dead letter {id} requires a non-empty reason");
-        }
-        let changed = self.conn.execute(
-            "UPDATE dead_letters SET acknowledged_reason = ?2, acknowledged_at = ?3
-             WHERE id = ?1 AND replayed_run_id IS NULL AND acknowledged_at IS NULL",
-            params![id, reason, now()],
-        )?;
-        if changed != 1 {
-            let current = self.dead_letter(id)?;
-            bail!(
-                "dead letter {id} is {}; acknowledge requires an open row",
-                current.status
-            );
-        }
-        self.record_event(&dl.run_id, "dlq:acknowledged", Some(reason))?;
-        self.dead_letter(id)
     }
 
     pub fn unpark_task(&self, task: &str) -> Result<Vec<String>> {
