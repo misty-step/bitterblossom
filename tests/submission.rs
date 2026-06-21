@@ -23,6 +23,16 @@ fn write_executable(path: &Path, content: &str) {
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
 }
 
+fn wait_for_notify_body(log: &Path) -> String {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut body = String::new();
+    while body.is_empty() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        body = fs::read_to_string(log).unwrap_or_default();
+    }
+    body
+}
+
 /// A dev plane with verdict tasks for each required kind plus an arbiter.
 /// `notify` adds a webhook so escalations can be asserted via BB_NOTIFY_BIN.
 fn make_gate_plane(root: &Path, max_rounds: u32, notify: bool) -> Plane {
@@ -320,12 +330,7 @@ fn required_member_terminal_failure_escalates_with_one_notify() {
 
     // Notify is async fire-and-forget; the `>>` redirect creates the log
     // before cat copies stdin, so poll for content, not existence.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    let mut body = String::new();
-    while body.is_empty() && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        body = fs::read_to_string(&log).unwrap_or_default();
-    }
+    let body = wait_for_notify_body(&log);
     assert!(body.contains("submission_escalated"), "{body}");
     assert_eq!(body.matches("submission_escalated").count(), 1);
 
@@ -376,12 +381,7 @@ fn gate_blocked_fires_gate_blocked_notify_with_every_finding() {
     // The notify body is the contract the fix-prompt reflex consumes: a
     // `gate.blocked` event carrying every blocking fingerprint, file, line,
     // and claim.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    let mut body = String::new();
-    while body.is_empty() && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        body = fs::read_to_string(&log).unwrap_or_default();
-    }
+    let body = wait_for_notify_body(&log);
     assert!(body.contains("gate.blocked"), "{body}");
     assert_eq!(body.matches("gate.blocked").count(), 1);
     assert_eq!(body.matches("submission_escalated").count(), 0);
@@ -389,6 +389,7 @@ fn gate_blocked_fires_gate_blocked_notify_with_every_finding() {
     assert_eq!(parsed["event"], "gate.blocked");
     assert_eq!(parsed["submission"], sub.id);
     assert_eq!(parsed["change"], "feat/x");
+    assert_eq!(parsed["rev"], "sha1");
     assert_eq!(parsed["round"], 1);
     let blocking = parsed["blocking"].as_array().unwrap();
     assert_eq!(blocking.len(), 2);

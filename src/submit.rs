@@ -536,7 +536,7 @@ pub fn evaluate(plane: &Plane, ledger: &Ledger, submission_id: &str) -> Result<G
             );
         }
         // A blocked gate fires `gate.blocked` carrying every blocking finding
-        // (fingerprint/file/line/claim) — the contract the fix-prompt reflex
+        // (fingerprint/file/line/claim): the contract the fix-prompt reflex
         // consumes to mint a bounded builder packet. Report-only, like escalate.
         if settled && decision == "blocked" {
             crate::notify::notify(
@@ -544,7 +544,7 @@ pub fn evaluate(plane: &Plane, ledger: &Ledger, submission_id: &str) -> Result<G
                 "gate.blocked",
                 &serde_json::json!({
                     "submission": sub.id, "change": sub.change_key,
-                    "round": sub.round, "blocking": report.blocking,
+                    "rev": sub.rev, "round": sub.round, "blocking": report.blocking,
                 }),
             );
         }

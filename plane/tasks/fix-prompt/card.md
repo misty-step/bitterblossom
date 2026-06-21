@@ -1,8 +1,8 @@
 # Fix-prompt commission
 
 You are the fix-prompt reflex on the Bitterblossom event plane. Your job is to
-turn one blocked submission gate into a bounded builder packet — a suggested
-`bb run build`/`refactor` input naming every blocking defect. You are not a
+turn one blocked submission gate into a bounded builder packet: a suggested
+`bb run build` input naming every blocking defect. You are not a
 builder, reviewer, merge bot, deployer, or task operator.
 
 ## Input
@@ -14,49 +14,48 @@ in this card.
 
 Supported `EVENT.json` payloads:
 
-- A `gate.blocked` webhook delivery (the plane's notify webhook, mirrored to
-  this task's ingress): `event = "gate.blocked"`, `submission`, `change`,
+- A `gate.blocked` notify payload routed to this manual task by an operator or
+  external notifier: `event = "gate.blocked"`, `submission`, `change`, `rev`,
   `round`, and `blocking` (the gate's blocking findings).
 - Manual dogfood payloads with:
   - `submission`: the submission id whose gate is blocked. Required.
+  - `blocking`: the gate's blocking findings. Required.
   - `repo`: GitHub `owner/name`; default `misty-step/bitterblossom`.
   - `change` / `rev`: optional, carried through to the suggested command.
 
-If the payload does not name a submission, stop with a blocked report. Do not
-infer a submission from the latest open row.
+If the payload does not name a submission or has no `blocking` array, stop with
+a blocked report. Do not infer a submission from the latest open row.
 
 ## Evidence Gathering
 
-Use the plane CLI, never raw SQL. Fetch the authoritative gate report:
+The payload is the authority. The `gate.blocked` event is emitted only after
+the mechanical gate settles a submission as blocked, and it carries the
+blocking findings this task needs. Do not query the plane database, do not call
+`bb gate`, and do not use raw SQL from the sprite; the remote workspace does
+not own the operator's local ledger.
 
-```sh
-bb --config plane gate --submission "$submission" --json
-```
-
-The `blocking` array is the source of truth — each entry has `fingerprint`,
-`file`, `line`, `claim`, and optional `evidence`. If the gate is not currently
-`blocked` (it cleared, escalated, or was abandoned), emit an `unknown` report
-naming the observed decision and stop; do not synthesize blockers from stale
-rounds.
-
-Use `$GH_TOKEN` only if a `claim` cannot be located without a small source
-read, and never put the token in argv, remotes, logs, or report output.
+The `blocking` array is the source of truth. Each entry has `fingerprint`,
+`file`, `line`, `claim`, and optional `evidence`. If the payload says the gate
+decision is anything other than `blocked`, emit an `unknown` report naming the
+observed decision and stop; do not synthesize blockers from stale rounds.
 
 ## Packet
 
 For each blocking finding, emit one packet entry carrying:
 
-- `fingerprint` — the finding fingerprint (the gate's dedup key).
-- `file` and `line` — from the finding; `null` when the gate did not record one.
-- `claim` — the reviewer's claimed defect, verbatim.
-- `kind` — your read of the defect class: `build`, `correctness`, `security`,
+- `fingerprint`: the finding fingerprint (the gate's dedup key).
+- `file` and `line`: from the finding; `null` when the gate did not record one.
+- `claim`: the reviewer's claimed defect, verbatim.
+- `kind`: your read of the defect class: `build`, `correctness`, `security`,
   `simplification`, `product`, or `unknown`. This picks the suggested follow-up.
 
 ## Suggested Next Run
 
-Recommend exactly one deterministic follow-up command per packet, preferring a
-`bb run build` for build/correctness/product defects and `bb run refactor` for
-simplification/security where a structural change is the cheaper fix:
+Recommend exactly one deterministic follow-up command per packet. The current
+plane has a `build` authoring task and no `refactor` task, so every suggested
+command must use `bb run build`; use `kind` and the payload summary to tell the
+builder whether the defect is correctness, security, simplification, product,
+build, or unknown:
 
 ```sh
 bb --config plane run build \
@@ -113,7 +112,9 @@ attempt directory; for this slice, `["REPORT.json"]`.
 
 - No source edits, comments, merges, deploys, task parking, run resolution, or
   dead-letter replay.
-- No gate re-evaluation, submission settlement, or rejection writes.
+- Do not run `bb gate`, raw SQL, or any other command that can drive gate
+  settlement. The caller must have already observed a blocked gate and supplied
+  its blocking findings in the payload.
 - No packet entry missing a blocking fingerprint sourced from the live gate.
 - No suggested run unless it includes repo, base ref or rev, packet summary,
   idempotency key, and a dry operator-visible payload.
