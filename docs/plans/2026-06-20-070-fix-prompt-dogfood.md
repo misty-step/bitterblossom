@@ -35,7 +35,8 @@
 - Branch checkout: fetched and checked out; branch was based on pre-075
   `master` and was rebased onto `ad36ae18adcf7100ff30587c3a81f3dfae2f1cab`.
 - PR: pending
-- Local verification: pending
+- Local verification: `./scripts/verify.sh` passed at committed head
+  `167754a`; gate ended with `src LOC: 5186` and `==> verify: all gates green`.
 - `bb submit open`: pending
 - Live `fix-prompt` run: `b629d72e2c92`, success, `$0.0014680802`,
   `9786/2010` tokens, 4 turns, `30971ms`.
@@ -126,8 +127,15 @@
 - Errors or unclear communication?: pending
 - More steps than necessary?: pending
 - Fits project vision?: expected yes; this item should remain task/card-owned with no review judgment in Rust.
-- Backlog-worthy improvements: pending
-- No action: pending
+- Thermo review: production code stays a small mechanical notify branch; the
+  card/payload boundary was corrected before live execution; duplicate notify
+  test polling was extracted to a local helper. Remaining watchpoint:
+  `tests/submission.rs` is 998 lines, below the hard 1k threshold but close.
+- Backlog-worthy improvements: no new item yet; `bb run --json` progress and
+  compact status gaps are already represented by 072/observability-adjacent
+  work and old dogfood notes.
+- No action: `result.md` fenced JSON drift because `REPORT.json` is the
+  enforced artifact and passed shape validation.
 
 ## Backlog Emissions
 
