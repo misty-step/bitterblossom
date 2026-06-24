@@ -78,6 +78,55 @@ fn preflight_reports_missing_secret() {
 }
 
 #[test]
+fn preflight_reports_blank_secret() {
+    let dir = tempfile::tempdir().unwrap();
+    let root_path = dir.path();
+    mkdirs(root_path, &["demo"]);
+    fs::write(root_path.join("plane.toml"), "dev = true\n").unwrap();
+    let stub = root_path.join("stub.sh");
+    write_executable(&stub, "#!/bin/sh\ncat > /dev/null\n");
+    fs::write(
+        root_path.join("agents/stub.toml"),
+        format!(
+            "version = 1\nharness = \"command\"\nmodel = \"\"\nbin = \"{}\"\nsecrets = [\"BB_PREFLIGHT_TEST_BLANK_TOKEN\"]\n",
+            stub.display()
+        ),
+    )
+    .unwrap();
+    fs::write(
+        root_path.join("tasks/demo/task.toml"),
+        "agent = \"stub\"\nsubstrate = \"local\"\n[[trigger]]\nkind = \"manual\"\n",
+    )
+    .unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_bb"))
+        .args([
+            "--config",
+            root_path.to_str().unwrap(),
+            "preflight",
+            "demo",
+            "--json",
+        ])
+        .env("BB_PREFLIGHT_TEST_BLANK_TOKEN", "  ")
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "preflight with a blank declared secret must exit non-zero"
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(doc["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|f| f["kind"] == "missing_secret"
+            && f["detail"]
+                .as_str()
+                .unwrap()
+                .contains("BB_PREFLIGHT_TEST_BLANK_TOKEN")));
+}
+
+#[test]
 fn preflight_reports_unspawnable_command_binary() {
     let dir = tempfile::tempdir().unwrap();
     let root_path = dir.path();

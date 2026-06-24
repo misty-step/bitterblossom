@@ -4,9 +4,9 @@
 //! workload judgment.
 //!
 //! Two check types, both read-only:
-//! - **missing_secret**: an agent-declared secret env var is unset in the
-//!   environment `bb` runs in. Secrets travel from this environment to the
-//!   substrate, so an unset secret here fails on every substrate.
+//! - **missing_secret**: an agent-declared secret env var is unset or blank in
+//!   the environment `bb` runs in. Secrets travel from this environment to the
+//!   substrate, so an unusable secret here fails on every substrate.
 //! - **unspawnable_binary**: a `command`-harness bin cannot be executed on the
 //!   host running `bb`. Only checked for `substrate = "local"` — that is the
 //!   only substrate whose binaries `bb` can actually see. A sprites command
@@ -77,7 +77,10 @@ fn check_tasks<'a>(tasks: impl IntoIterator<Item = &'a Task>) -> Report {
     for t in tasks {
         tasks_checked.push(t.name.clone());
         for name in &t.agent.secrets {
-            if std::env::var(name).is_err() {
+            if std::env::var(name)
+                .map(|value| value.trim().is_empty())
+                .unwrap_or(true)
+            {
                 findings.push(Finding {
                     task: t.name.clone(),
                     kind: "missing_secret",
