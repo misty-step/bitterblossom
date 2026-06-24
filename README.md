@@ -86,11 +86,12 @@ substrate is dev/test machinery, rejected unless plane.toml sets
 
 ## Reading order
 
-1. [project.md](project.md) — vision and direction lock (2026-06-10)
-2. [docs/spine.md](docs/spine.md) — the operator contract
-3. [docs/adr/005-rust-event-plane.md](docs/adr/005-rust-event-plane.md) —
+1. [VISION.md](VISION.md) — product boundary and north star
+2. [project.md](project.md) — v3 direction lock record (2026-06-10)
+3. [docs/spine.md](docs/spine.md) — the operator contract
+4. [docs/adr/005-rust-event-plane.md](docs/adr/005-rust-event-plane.md) —
    why this shape (supersedes the Elixir conductor, ADR 003/004)
-4. [docs/plans/2026-06-10-031-event-plane-spine.md](docs/plans/2026-06-10-031-event-plane-spine.md)
+5. [docs/plans/2026-06-10-031-event-plane-spine.md](docs/plans/2026-06-10-031-event-plane-spine.md)
    — design + adversarial critique record
 
 Prior incarnations (Python conductor, Go CLI, Elixir persona factory) live

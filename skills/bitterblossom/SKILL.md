@@ -17,6 +17,8 @@ Operate the event plane. Do not move workload judgment into the plane.
 Bitterblossom is `bb`: tasks + agents + triggers as files, with a durable run
 ledger, budgets, retries, dead letters, and optional webhook/cron serving.
 Agents are CLI users, so prefer stable `--json` surfaces over prose parsing.
+When working in the Bitterblossom source checkout, read `VISION.md` for the
+runtime-vs-workload boundary before adding or reshaping tasks.
 
 ## Stance
 

@@ -3,7 +3,8 @@
 Claude-family tools read this file first. `AGENTS.md` symlinks here.
 
 Also read:
-- `project.md` — the v3 vision (2026-06-10 direction lock)
+- `VISION.md` — product boundary and north star
+- `project.md` — the v3 direction lock record (2026-06-10)
 - `docs/spine.md` — the operator contract for `bb`
 - `docs/adr/005-rust-event-plane.md` — why this shape
 - `docs/plans/2026-06-10-031-event-plane-spine.md` — design + critique record

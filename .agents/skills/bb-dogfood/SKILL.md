@@ -18,10 +18,10 @@ afterward are for review, dogfood notes, and synthesized backlog.
 
 ## Load First
 
-Also load `../../../skills/bitterblossom/SKILL.md` for the base `bb` command
-contract. Use `references/session-notes-template.md` when starting or updating
-a dogfood notes artifact. Use `references/ux-review-card.md` before reflecting
-into backlog.
+Also load `../../../VISION.md` for the product boundary and
+`../../../skills/bitterblossom/SKILL.md` for the base `bb` command contract. Use
+`references/session-notes-template.md` when starting or updating a dogfood notes
+artifact. Use `references/ux-review-card.md` before reflecting into backlog.
 
 ## Preflight
 
@@ -144,7 +144,7 @@ Answer the `references/ux-review-card.md` questions explicitly enough that a
 future implementer can improve the product without replaying chat context.
 
 Reflect into backlog only after the delivery evidence is read. Backlog-worthy
-means: the issue affects the event-plane vision in `project.md`, repeats beyond
+means: the issue affects the event-plane vision in `VISION.md`, repeats beyond
 one operator mistake, and has an oracle. Prefer one small `backlog.d/NNN-*.md`
 per product improvement. Do not create backlog for taste notes with no fix; put
 those under "No action".

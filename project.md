@@ -1,5 +1,8 @@
 # Project: Bitterblossom
 
+Canonical north star: `VISION.md`. This file records the 2026-06-10 v3
+direction lock and historical pivot into the Rust event-plane shape.
+
 ## Direction Lock
 
 **Current direction lock (2026-06-10): reimagined as the event plane.**
