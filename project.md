@@ -31,8 +31,8 @@ locally.
 **North Star:** Define a task, bind an agent to it, attach a trigger — and
 then watch it: durable run ledger, budgets, traces, receipts. Swap the
 agent without touching the task. Change the task without touching the
-plane. Daedalus-generated agents drop in as launch contracts, and run
-telemetry feeds back to the lab for iteration.
+plane. Evaluated agent contracts drop in as bindings, and run telemetry
+feeds back to external labs or operator tooling for iteration.
 
 **Target user:** The operator (and their ad-hoc agents) running a portfolio
 of repos with a handful of recurring agent workloads — code review,
@@ -49,7 +49,7 @@ degenerate substrate).
 | Primitive | What it is |
 |---|---|
 | **Task** | A workload spec, lane-card-shaped (goal, oracle, boundaries, repos, budget). Versioned in git. |
-| **Agent** | A binding of harness + model + prompt/skills — ideally a Daedalus launch contract. Swappable independently of the task. |
+| **Agent** | A binding of harness + model + prompt/skills or a launch contract. Swappable independently of the task. |
 | **Trigger** | cron, webhook, or manual CLI invocation. Many triggers may point at one task. |
 | **Run** | One accepted unit of work: durable ledger row before ack, trace ID surviving retries, status machine, cost, receipts, artifacts, dead-letter on exhaustion. |
 | **Substrate** | Where the run executes. Fly Sprites (checkpoint restore + repo sync) first; local process as fallback. One contract, no host-specific branches in workloads. |
@@ -72,9 +72,9 @@ degenerate substrate).
 
 - **Generic, not adminifi-shaped.** Olympus lanes are TypeScript code; here
   a workload is a task file + agent binding + trigger row.
-- **Daedalus integration.** Agents arrive as evaluated launch contracts;
-  run outcomes (cost, scores, failures) export back to the lab. Langfuse /
-  OTel-shaped telemetry from day one.
+- **Evaluated-agent integration.** Agents can arrive as launch contracts; run
+  outcomes (cost, scores, failures) export back to external labs or operator
+  tooling. Langfuse / OTel-shaped telemetry from day one.
 - **Rust.** The spine is a small Rust service (ingress + ledger + queue +
   dispatch + CLI). Olympus and the 1.6K-LOC Elixir conductor both prove the
   spine is small; the moat is the contracts, not the framework. Build-vs-
@@ -95,10 +95,11 @@ from a terminal with no webhook.
 
 ## Workload roadmap
 
-1. **Code review factory** (backlog 028, absorbed Cerberus mission):
-   coordinator + tiered reviewers, Cloudflare economics ($1–2/review).
-2. **Canary incident responder** (Tansy's mission as a workload spec, not a
-   resident sprite): incident webhook → investigate → repair → verify.
+1. **Code review reflex:** a task and agent binding around whichever external
+   review runner is current, with budget gates, one review per head SHA, and
+   receipt capture.
+2. **Incident responder:** incident webhook → investigate → repair → verify,
+   expressed as a workload spec rather than a resident persona.
 3. Monitor/deploy watchers and the unattended outer loop (the retired
    `/flywheel`), per the Mode B roadmap in CONTRACTS.md.
 
@@ -111,6 +112,6 @@ from a terminal with no webhook.
 - [ ] Cost, budget burn, retries, dead letters, and queue pressure are
       visible from the CLI without log spelunking
 - [ ] Every workload runs from a terminal with no webhook
-- [ ] Run telemetry exports in a shape Daedalus can consume
+- [ ] Run telemetry exports in a shape external evaluators can consume
 
 _Last updated: 2026-06-10, during the v3 reimagining session._

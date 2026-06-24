@@ -26,10 +26,10 @@ runner:
    has failed.
 2. **The plane owns mechanics; specialist brains own judgment.** Bitterblossom
    owns ingress, dedupe, queues, leases, recovery, budgets, substrate execution,
-   run receipts, and operator truth. Code review belongs to Cerberus, model and
-   harness evaluation belongs upstream, ad-hoc authoring belongs to Harness Kit,
-   and future incident or docs agents should arrive as workload brains behind the
-   same plane contract.
+   run receipts, and operator truth. Code review, incident diagnosis, docs sync,
+   model evaluation, and ad-hoc authoring are external workload brains or
+   operator tools. They arrive behind the same plane contract; the plane should
+   not know their product identities.
 
 ## Who would miss it
 
@@ -72,8 +72,8 @@ work.
   through `bb ... --json` and API mirrors, not log spelunking or SSH guesses. A
   dashboard may help humans drill down, but the CLI/API is the source of truth.
 - **Telemetry leaves the plane.** Runs export enough cost, model, task, artifact,
-  and receipt data for upstream labs such as Daedalus to improve agents without
-  turning Bitterblossom into the evaluation system.
+  and receipt data for external labs and operator tooling to improve agents
+  without turning Bitterblossom into the evaluation system.
 
 ## What this repo refuses
 
@@ -84,11 +84,10 @@ work.
   factory are prior art. The product is not a cast of named agents living on
   machines; it is the file-defined plane that can run whatever agent contract is
   current.
-- **No parallel review brain.** For code review, Cerberus is the durable review
-  program and artifact contract. Bitterblossom should trigger Cerberus, budget
-  it, isolate it, record it, and expose its receipts. Native static review or
-  storm cards are transitional unless they are proving plane mechanics or
-  producing model-eval evidence.
+- **No built-in workload brain.** Code review, incident diagnosis, docs sync, and
+  model evaluation are deployable workloads, not features of the plane. A review
+  runner deployed here is just a task and agent binding with artifacts and
+  receipts; it can be swapped without changing the spine.
 - **No GitHub-only core.** GitHub is a valuable first trigger and projection
   surface, not the architecture. Tasks and run artifacts must stay source- and
   host-neutral enough for other event sources and destinations.
@@ -110,8 +109,8 @@ work.
    automation. An unattended agent that fails visibly is useful; one that fails
    silently is worse than no agent.
 4. The best first unsupervised proof is not a bigger generic factory. It is a
-   thin Cerberus-backed review reflex: event in, Cerberus artifact out, ledger
-   and receipts visible, posting enabled only after dry-run evidence earns it.
+   thin external-specialist reflex: event in, specialist artifact out, ledger and
+   receipts visible, posting enabled only after dry-run evidence earns it.
 5. The same plane should support both supervised dispatch and unsupervised
    reflex work because the useful primitive is not autonomy level; it is durable,
    budgeted, inspectable execution.
@@ -120,25 +119,26 @@ work.
 
 - **Near term:** `master` has a boring local gate; `bb status --json` is the
   operator truth surface; `bb run build` can author one shaped slice without
-  discovering remote auth failure too late; the first Cerberus-backed review
-  reflex runs report-only from GitHub PR events and stores request, artifact,
-  cost, and receipts in the ledger.
+  discovering remote auth failure too late; the first specialist review reflex
+  runs report-only from GitHub PR events and stores request, artifact, cost, and
+  receipts in the ledger.
 - **Medium term:** recurring lifecycle reflexes cover PR review, CI diagnosis,
   gate-blocked fix packets, and deploy or production verification without adding
   workflow branches to `src/`. Every reflex has a manual payload, a live drill,
   artifact contracts, cost history, and an explicit rollback path.
 - **Long term:** Bitterblossom is the operator's durable Mode B substrate. New
-  specialist agents arrive as launch contracts and task files; Daedalus or other
-  labs improve their brains from exported run evidence; the plane remains small
-  enough that its safety and recovery behavior can be understood in one sitting.
+  specialist agents arrive as launch contracts and task files; external labs and
+  operator tooling improve their brains from exported run evidence; the plane
+  remains small enough that its safety and recovery behavior can be understood in
+  one sitting.
 
 ## Where it sits
 
-Harness Kit is Mode A: ad-hoc operator sessions on the local machine. Cerberus
-is the code-review brain and artifact contract. Daedalus evaluates and promotes
-agent configurations from receipts. Bitterblossom is Mode B: the event plane
-that turns those brains into recurring, isolated, budgeted, observable
-workloads.
+Ad-hoc operator tools are Mode A: interactive sessions on local machines.
+Bitterblossom is Mode B: the event plane that turns external workload brains
+into recurring, isolated, budgeted, observable workloads. Adjacent systems can
+provide agents, consume telemetry, or receive artifacts, but they are
+consumers and providers rather than dependencies.
 
 `project.md` records the 2026-06-10 v3 direction lock and historical pivot into
 this shape. `docs/spine.md` is the operator contract for the current `bb`
