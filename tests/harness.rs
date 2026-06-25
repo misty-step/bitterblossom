@@ -102,6 +102,21 @@ fn parse_omp_jsonl_events_sums_usage_and_keeps_last_text() {
 }
 
 #[test]
+fn parse_command_accepts_structured_result_with_usage() {
+    let out = concat!(
+        "cerberus noisy stdout\n",
+        r#"{"schema_version":"bb.command_result.v1","result":"cerberus review complete","tokens_in":1234,"tokens_out":567,"turns":2,"cost_usd":0.42}"#,
+        "\n"
+    );
+    let parsed = parse_output("command", out).unwrap();
+    assert_eq!(parsed.result, "cerberus review complete");
+    assert_eq!(parsed.stats.tokens_in, Some(1234));
+    assert_eq!(parsed.stats.tokens_out, Some(567));
+    assert_eq!(parsed.stats.turns, Some(2));
+    assert_eq!(parsed.stats.cost_usd, Some(0.42));
+}
+
+#[test]
 fn parse_pi_rejects_incomplete_runs() {
     assert!(parse_output("pi", "not json").is_err());
     assert!(parse_output("pi", r#"{"type":"message_update"}"#).is_err());

@@ -196,6 +196,7 @@ fn webhook_filters_reject_out_of_scope_deliveries_without_a_run() {
          [[trigger]]\nkind = \"webhook\"\nroute = \"rev\"\nsecret_env = \"BB_TEST_FILTER_SECRET\"\n\
          [[trigger.filter]]\npointer = \"/repository/full_name\"\nany_of = [\"good/repo\"]\n\
          [[trigger.filter]]\npointer = \"/action\"\nany_of = [\"opened\", \"synchronize\"]\n\
+         [[trigger.filter]]\npointer = \"/sender/login\"\nnot_any_of = [\"dependabot[bot]\", \"renovate[bot]\"]\n\
          [[trigger.filter]]\npointer = \"/pull_request/draft\"\nequals = false\n\
          [[trigger.filter]]\npointer = \"/pull_request/additions\"\nmax = 4000\n",
     )
@@ -209,17 +210,18 @@ fn webhook_filters_reject_out_of_scope_deliveries_without_a_run() {
         handle_webhook(&plane, ledger, "rev", &headers(&sig, "d1"), body).unwrap()
     };
 
-    let in_scope = r#"{"action":"opened","repository":{"full_name":"good/repo"},"pull_request":{"draft":false,"additions":12,"head":{"sha":"a1"}}}"#;
+    let in_scope = r#"{"action":"opened","sender":{"login":"human"},"repository":{"full_name":"good/repo"},"pull_request":{"draft":false,"additions":12,"head":{"sha":"a1"}}}"#;
     assert_eq!(deliver(&mut ledger, in_scope).status, 202);
 
-    // Wrong repo, draft PR, ignored action, oversized diff, missing field:
+    // Wrong repo, bot sender, draft PR, ignored action, oversized diff, missing field:
     // all acknowledged with 200 and no run row.
     let cases = [
-        r#"{"action":"opened","repository":{"full_name":"evil/repo"},"pull_request":{"draft":false,"additions":1}}"#,
-        r#"{"action":"opened","repository":{"full_name":"good/repo"},"pull_request":{"draft":true,"additions":1}}"#,
-        r#"{"action":"labeled","repository":{"full_name":"good/repo"},"pull_request":{"draft":false,"additions":1}}"#,
-        r#"{"action":"opened","repository":{"full_name":"good/repo"},"pull_request":{"draft":false,"additions":99999}}"#,
-        r#"{"action":"opened","repository":{"full_name":"good/repo"}}"#,
+        r#"{"action":"opened","sender":{"login":"human"},"repository":{"full_name":"evil/repo"},"pull_request":{"draft":false,"additions":1}}"#,
+        r#"{"action":"opened","sender":{"login":"dependabot[bot]"},"repository":{"full_name":"good/repo"},"pull_request":{"draft":false,"additions":1}}"#,
+        r#"{"action":"opened","sender":{"login":"human"},"repository":{"full_name":"good/repo"},"pull_request":{"draft":true,"additions":1}}"#,
+        r#"{"action":"labeled","sender":{"login":"human"},"repository":{"full_name":"good/repo"},"pull_request":{"draft":false,"additions":1}}"#,
+        r#"{"action":"opened","sender":{"login":"human"},"repository":{"full_name":"good/repo"},"pull_request":{"draft":false,"additions":99999}}"#,
+        r#"{"action":"opened","sender":{"login":"human"},"repository":{"full_name":"good/repo"}}"#,
     ];
     for body in cases {
         let resp = deliver(&mut ledger, body);

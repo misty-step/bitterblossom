@@ -1,12 +1,21 @@
-agent = "review-coordinator"
+agent = "cerberus-reviewer"
 substrate = "sprites"        # workloads never run on the operator's machine
 
 [workspace]
 host = "lane-1"              # pi + gh installed; secrets travel per-exec
 
+[[workspace.repos]]
+url = "https://github.com/misty-step/bitterblossom.git"
+ref = "master"
+
+[[workspace.repos]]
+url = "https://github.com/misty-step/cerberus.git"
+ref = "master"
+
 [budget]
-timeout_minutes = 30         # K2.6 paces slower than claude
+timeout_minutes = 30         # Cerberus may explore beyond the raw diff
 max_runs_per_day = 20
+max_cost_per_run_usd = 1.25
 
 [[trigger]]
 kind = "manual"              # bb --config plane run review --payload '{"repo":"o/r","pr":N}'
@@ -17,23 +26,28 @@ route = "review"
 secret_env = "BB_HOOK_REVIEW"
 dedupe_key = "json:/pull_request/html_url|json:/pull_request/head/sha"  # one run per PR head
 
-[trigger.action]
-kind = "submission_storm"
-change = "json:/pull_request/html_url"
-rev = "json:/pull_request/head/sha"
-repo = "json:/repository/full_name"
-version = "json:/pull_request/updated_at"
-
 # Containment is mechanism, not card prose: out-of-scope deliveries are
 # acknowledged (so GitHub doesn't retry) but never become runs.
 [[trigger.filter]]
-pointer = "/repository/full_name"
-any_of = ["misty-step/bitterblossom"]        # repo allowlist
+pointer = "/repository/owner/login"
+any_of = ["misty-step", "phrazzld"]          # org allowlist
 
 [[trigger.filter]]
 pointer = "/action"
 any_of = ["opened", "ready_for_review", "synchronize"]
 
 [[trigger.filter]]
+pointer = "/sender/login"
+not_any_of = ["dependabot[bot]", "renovate[bot]"]
+
+[[trigger.filter]]
 pointer = "/pull_request/draft"
 equals = false
+
+[[trigger.filter]]
+pointer = "/pull_request/additions"
+max = 2500
+
+[[trigger.filter]]
+pointer = "/pull_request/changed_files"
+max = 50

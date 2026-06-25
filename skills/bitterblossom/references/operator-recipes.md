@@ -90,6 +90,14 @@ interactive inspection.
 
 ## Review Workload
 
+The checked-in `review` task is a Cerberus-backed command workload. `bb` owns
+trigger filtering, dedupe, dispatch, budget/parking, and receipts; Cerberus owns
+the review request/artifact contract and GitHub projection. Org-wide rollout is
+controlled in `plane/tasks/review/task.toml`: owner allowlist, draft/action
+filters, bot denial, size/file caps, one Cerberus run per PR head SHA, and task
+budget. The submission-storm gate is a separate workflow; the org review reflex
+does not fan out storm members.
+
 For a real review comment:
 
 ```bash

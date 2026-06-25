@@ -1,1 +1,1 @@
-../review/card.md
+../review-kimi/card.md
