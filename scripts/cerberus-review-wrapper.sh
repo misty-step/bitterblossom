@@ -21,6 +21,14 @@ if [ -z "$harness" ]; then
   fi
 fi
 
+if [ "$harness" = "omp" ] && [ -n "${HOME:-}" ]; then
+  bun_binary="$(command -v bun 2>/dev/null || true)"
+  if [ -n "$bun_binary" ]; then
+    mkdir -p "$HOME/.local/bin"
+    ln -sf "$bun_binary" "$HOME/.local/bin/bun"
+  fi
+fi
+
 if [ ! -f "$event_file" ]; then
   echo "EVENT.json not found" >&2
   exit 64
@@ -76,6 +84,10 @@ set -- review-pr \
   --request-id "bb:${BB_REVIEW_REPO}#${BB_REVIEW_PR}:${BB_REVIEW_HEAD_SHA:-manual}" \
   --timeout-seconds "$timeout_seconds" \
   --receipt-bundle "$out_dir/receipt-bundle.json"
+
+if [ -n "${OPENROUTER_API_KEY:-}" ]; then
+  set -- "$@" --allow-env OPENROUTER_API_KEY
+fi
 
 if [ "$mode" = "dry-run" ]; then
   set -- "$@" --dry-run
