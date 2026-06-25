@@ -59,7 +59,7 @@ const COHORTS: &[Cohort<'_>] = &[
         flow: "review",
         candidates: &[
             Candidate {
-                task: "review",
+                task: "review-kimi",
                 harness: "pi",
                 model: "moonshotai/kimi-k2.6:minimal",
                 diversity_key: "kimi",
@@ -275,7 +275,12 @@ fn evaluated_flows_have_three_diverse_candidate_configs() {
     let plane = Plane::load(&repo.join("plane")).unwrap();
 
     for cohort in COHORTS {
-        let baseline = plane.task(cohort.flow).unwrap();
+        let baseline_task = if cohort.flow == "review" {
+            "review-kimi"
+        } else {
+            cohort.flow
+        };
+        let baseline = plane.task(baseline_task).unwrap();
         let mut diversity_keys = BTreeSet::new();
         assert_eq!(cohort.candidates.len(), 3);
 

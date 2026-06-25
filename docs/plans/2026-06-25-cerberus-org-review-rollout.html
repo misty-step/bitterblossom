@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en" data-ae-mode="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cerberus-backed org review rollout</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&amp;family=Geist+Mono:wght@100..900&amp;display=swap">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/misty-step/aesthetic@v2.5.1/aesthetic.css">
+  <style>
+    :root { --ae-accent: #225d6b; --ae-accent-dark: #7bd3e2; }
+    .plan-wide .ae-bar, .plan-wide .ae-stage { width: min(92rem, 100% - 4rem); }
+    .hero { display: grid; grid-template-columns: minmax(0, 1.08fr) minmax(25em, 0.72fr); gap: 3em; align-items: end; }
+    .grid-2, .grid-3, .grid-4, .grid-5 { display: grid; gap: 1px; background: var(--ae-line); }
+    .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .grid-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+    .cell { min-width: 0; background: var(--ae-surface); padding: 1.15em 1.3em; }
+    .wash { background: var(--ae-wash); }
+    .rule { border-top: 1px solid var(--ae-line); margin: 1.4em 0; }
+    .phase { display: grid; grid-template-columns: 8em minmax(0, 1fr) minmax(15em, 0.7fr); gap: 1.3em; border-top: 1px solid var(--ae-line); padding-top: 1em; margin-top: 1em; }
+    .phase:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
+    .table-wrap { overflow-x: auto; }
+    @media (max-width: 980px) {
+      .plan-wide .ae-bar, .plan-wide .ae-stage { width: min(100% - 2rem, 92rem); }
+      .hero, .grid-2, .grid-3, .grid-4, .grid-5, .phase { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<div class="ae-screen plan-wide">
+  <header class="ae-bar">
+    <a class="ae-name" href="#">PLAN / CERBERUS REVIEW ROLLOUT</a>
+    <p class="ae-chrome">2026-06-25 · shape before deliver</p>
+  </header>
+  <main class="ae-stage ae-stage-scroll">
+    <article class="ae-view">
+      <section class="hero" aria-label="Plan contract">
+        <div>
+          <p class="ae-chrome">Target outcome</p>
+          <h1 class="ae-strong">Bitterblossom can run Cerberus as the selected PR review workload across Misty Step and Phrazzld repos without opening an uncontrolled trigger or spend surface.</h1>
+          <p class="ae-lede">Keep the product boundary clean: Cerberus is the current external specialist review runner, while Bitterblossom owns webhook filtering, dedupe, budgeting, dispatch, and receipts. This slice makes the checked-in review task a Cerberus command wrapper and adds generic ingress denial filters for bots/noisy events.</p>
+        </div>
+        <aside class="ae-panel">
+          <h2 class="ae-h">Chosen Design</h2>
+          <p>Use the existing command harness to invoke <code>cerberus review-pr</code> from the review workload. Remove the old submission-storm fan-out for this trigger, then add generic <code>not_any_of</code> webhook filters and configure org, bot, draft, action, file, and size controls in <code>plane/tasks/review/task.toml</code>.</p>
+          <div class="rule"></div>
+          <h2 class="ae-h">Quality System</h2>
+          <p><strong>Standards:</strong> no workload judgment in Rust; no duplicated review brain in Bitterblossom; org rollout is controlled by task config; secrets stay in env/stdin plumbing.</p>
+          <p><strong>Proof:</strong> fixture webhook tests, command-wrapper smoke, <code>bb check</code>, <code>./scripts/verify.sh</code>, and one artifact-only fresh critic.</p>
+          <div class="rule"></div>
+          <p class="ae-dim">Premise source: <code>sha256:592479a5efdecc56d317eb89876087154be689d1c9b726a65e12102cd1bbdf50 VISION.md</code>; <code>sha256:1d66f3b38081b3e11e1741af30a824e3e5fd4d795e00c5dc966f6b3ade1c04f2 plane/tasks/review/task.toml</code>; <code>sha256:6cce44bf24eee6ed35a6f9c19f8c41011ef12b34360949c0473a4f3fd7a347b9 /Users/phaedrus/Development/cerberus/README.md</code></p>
+        </aside>
+      </section>
+
+      <section class="grid-5" style="margin-top: 2em" aria-label="Executive contract">
+        <article class="cell"><h2 class="ae-h">Standards</h2><p>Mechanism in Bitterblossom; review policy/artifact contract in Cerberus. Config must stay portable and readable.</p></article>
+        <article class="cell"><h2 class="ae-h">Acceptance</h2><p>Review task wraps Cerberus; org filters admit only <code>misty-step</code>/<code>phrazzld</code> PR events and reject Dependabot-like senders before run creation.</p></article>
+        <article class="cell"><h2 class="ae-h">Verify</h2><p>Webhook fixtures catch allow/deny/dedupe. Command wrapper can run in fixture mode without posting. Full repo gate passes.</p></article>
+        <article class="cell"><h2 class="ae-h">Communicate</h2><p>Report config controls, commands run, residual production rollout gap, and whether any live run was attempted.</p></article>
+        <article class="cell wash"><h2 class="ae-h">Stop If</h2><p>Running Cerberus requires hidden host-specific paths, webhook filters need semantic PR logic in Rust, or production deploy/auth cannot be proven.</p></article>
+      </section>
+
+      <section class="grid-3" style="margin-top: 1px" aria-label="Current state">
+        <article class="cell">
+          <h2 class="ae-h">Current State</h2>
+          <p><code>plane/tasks/review</code> currently uses a Kimi/Pi card that reviews and comments directly via <code>gh</code>. It is allowlisted to one repo and has no deny-list predicate for Dependabot-like senders.</p>
+        </article>
+        <article class="cell">
+          <h2 class="ae-h">Change Shape</h2>
+          <p>Add one generic filter operator; replace the review task's agent/card with a Cerberus command wrapper; widen config to org owner allowlist plus bot/size/file gates.</p>
+        </article>
+        <article class="cell wash">
+          <h2 class="ae-h">Proof Surface</h2>
+          <p><code>tests/ingress.rs</code> proves filtered deliveries do not create rows. A local dev-plane Cerberus fixture run proves the wrapper surfaces artifacts without GitHub side effects.</p>
+        </article>
+      </section>
+
+      <section class="grid-2" style="margin-top: 2em" aria-label="Scope and anchors">
+        <article class="cell">
+          <h2 class="ae-h">Scope</h2>
+          <p><strong>Goal:</strong> make the repo-ready review workload Cerberus-backed and safe to widen from one repo to the two orgs in controlled stages.</p>
+          <p><strong>Non-goals:</strong> live org webhook installation, Cerberus product changes, per-repo policy engine, auto-merge, or posting to every open PR today.</p>
+          <p><strong>Invariants:</strong> one run per PR head SHA, webhook filters acknowledge out-of-scope events, reflex agents use API auth, and the plane does not encode review judgment.</p>
+        </article>
+        <article class="cell">
+          <h2 class="ae-h">Repo Anchors</h2>
+          <p><code>VISION.md</code> - external workload brain boundary.</p>
+          <p><code>src/spec.rs</code> and <code>src/ingress.rs</code> - generic filter contract.</p>
+          <p><code>src/harness.rs</code> - command harness behavior.</p>
+          <p><code>plane/tasks/review/task.toml</code> and <code>plane/agents/*</code> - production task shape.</p>
+          <p><code>/Users/phaedrus/Development/cerberus/README.md</code> - <code>review-pr</code> CLI contract.</p>
+        </article>
+      </section>
+
+      <section class="ae-panel" style="margin-top: 2em" aria-label="Execution plan">
+        <h2 class="ae-h">Execution Plan</h2>
+        <div class="phase"><strong class="ae-accent">1 docs</strong><p>Update operator docs and task card to say the review workload invokes Cerberus and that org widening is controlled by task filters and budgets.</p><p class="ae-dim">Evidence: docs name exact filters and wrapper behavior.</p></div>
+        <div class="phase"><strong class="ae-accent">2 tests</strong><p>Add failing tests for <code>not_any_of</code> and org/bot/size filtering. Add a local command-wrapper smoke if cheap.</p><p class="ae-dim">Evidence: focused tests fail before implementation and pass after.</p></div>
+        <div class="phase"><strong class="ae-accent">3 code</strong><p>Implement generic deny filtering and wire review config to a Cerberus wrapper script/agent. Keep Cerberus path configurable, not hardcoded in Rust.</p><p class="ae-dim">Evidence: <code>bb check</code> validates the checked-in plane.</p></div>
+        <div class="phase"><strong class="ae-accent">4 review</strong><p>Run a fresh artifact-only critic on diff plus oracle. Fix blockers or record explicit rejection.</p><p class="ae-dim">Evidence: critic receipt in closeout or plan notes.</p></div>
+        <div class="phase"><strong class="ae-accent">5 close</strong><p>Run the repo gate and final status. Do not install org webhooks or unpark production budget without explicit operator approval.</p><p class="ae-dim">Evidence: <code>./scripts/verify.sh</code>, final git state.</p></div>
+      </section>
+
+      <section class="grid-2" style="margin-top: 2em" aria-label="Alternatives and risks">
+        <article class="cell">
+          <h2 class="ae-h">Alternatives</h2>
+          <div class="table-wrap">
+            <table class="ae-table">
+              <thead><tr><th>option</th><th>helps</th><th>fails</th><th>verdict</th></tr></thead>
+              <tbody>
+                <tr><td>Command-wrapper Cerberus workload</td><td>Uses current specialist runner and existing BB mechanics.</td><td>Needs deployment discipline and host binary availability.</td><td>choose</td></tr>
+                <tr><td>Keep native Kimi/Pi review card</td><td>Already works in BB.</td><td>Duplicates Cerberus and violates the current boundary.</td><td>reject</td></tr>
+                <tr><td>Install Cerberus GitHub Actions everywhere</td><td>Simpler event path.</td><td>Loses BB ledger, budgets, park/DLQ, and rollout control.</td><td>reject</td></tr>
+                <tr><td>Manual review runs only</td><td>No overtrigger risk.</td><td>Does not deliver the recurring review-agent outcome.</td><td>defer as fallback</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+        <article class="cell wash">
+          <h2 class="ae-h">Risks + Rollout</h2>
+          <p><strong>Spend:</strong> bot bursts or large PRs create queued work. Mitigate with sender deny, action/draft/size/file filters, one-run-per-head, max runs/day, and task parking.</p>
+          <p><strong>Posting noise:</strong> keep fixture/dry-run proof before production posting; Cerberus handles idempotent GitHub projection.</p>
+          <p><strong>Host drift:</strong> wrapper fails if Cerberus or its harness is missing. Preflight should expose command-harness binary availability; production host readiness remains a deployment check.</p>
+        </article>
+      </section>
+
+      <section class="grid-2" style="margin-top: 2em" aria-label="Verification">
+        <article class="cell">
+          <h2 class="ae-h">Verification System</h2>
+          <p><strong>Claim:</strong> BB admits only controlled org PR review events and dispatches Cerberus as the review runner.</p>
+          <p><strong>Falsifier:</strong> Dependabot or out-of-org delivery creates a run; one PR head creates more than one review run; task still points at the native reviewer; wrapper posts during fixture/dry-run smoke.</p>
+          <p><strong>Driver:</strong> focused Rust tests, <code>bb --config plane check</code>, optional local fixture <code>bb run review</code>, and <code>./scripts/verify.sh</code>.</p>
+          <p><strong>Grader:</strong> no run rows for filtered events, one row for valid org event, Cerberus artifacts in <code>REPORT.json</code>, and green gate.</p>
+          <p><strong>Evidence packet:</strong> command transcripts and final gate output in closeout.</p>
+          <p><strong>Cadence:</strong> before merge and again before any production webhook widening.</p>
+        </article>
+        <article class="cell">
+          <h2 class="ae-h">Fresh Critic Prompt</h2>
+          <p>Given only the diff and this oracle, find the production failure that would embarrass us: uncontrolled webhook spend, duplicate comments, hidden host-specific Cerberus coupling, broken command-harness output, or a filter that silently drops valid human PRs.</p>
+        </article>
+      </section>
+    </article>
+  </main>
+</div>
+</body>
+</html>

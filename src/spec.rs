@@ -233,6 +233,7 @@ pub struct FilterSpec {
     pub pointer: String,
     pub equals: Option<serde_json::Value>,
     pub any_of: Option<Vec<serde_json::Value>>,
+    pub not_any_of: Option<Vec<serde_json::Value>>,
     pub max: Option<f64>,
 }
 
@@ -241,6 +242,7 @@ impl FilterSpec {
         let n = [
             self.equals.is_some(),
             self.any_of.is_some(),
+            self.not_any_of.is_some(),
             self.max.is_some(),
         ]
         .iter()
@@ -248,7 +250,7 @@ impl FilterSpec {
         .count();
         if n != 1 {
             bail!(
-                "filter on '{}' needs exactly one of equals / any_of / max",
+                "filter on '{}' needs exactly one of equals / any_of / not_any_of / max",
                 self.pointer
             );
         }
@@ -266,6 +268,11 @@ impl FilterSpec {
         if let Some(allowed) = &self.any_of {
             if !allowed.contains(found) {
                 return Some(format!("'{}' is {found}, not in allowlist", self.pointer));
+            }
+        }
+        if let Some(denied) = &self.not_any_of {
+            if denied.contains(found) {
+                return Some(format!("'{}' is {found}, in denylist", self.pointer));
             }
         }
         if let Some(max) = self.max {

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use bitterblossom::ingress::{handle_webhook, sign_hmac};
 use bitterblossom::ledger::Ledger;
-use bitterblossom::spec::{AuthClass, Plane, TriggerSpec, WebhookActionSpec};
+use bitterblossom::spec::{AuthClass, Plane, TriggerSpec};
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -123,10 +123,33 @@ fn ci_diagnose_webhook_filters_failed_bitterblossom_check_suites() {
 }
 
 #[test]
-fn review_webhook_is_submission_storm_reflex_without_additions_cap() {
+fn review_webhook_is_cerberus_reflex_with_org_and_noise_controls() {
     let plane = Plane::load(&repo_root().join("plane")).unwrap();
     let task = plane.task("review").unwrap();
-    assert_eq!(task.spec.budget.max_cost_per_run_usd, None);
+    assert_eq!(task.agent_name, "cerberus-reviewer");
+    assert_eq!(task.agent.harness, "command");
+    assert_eq!(task.agent.auth_class().unwrap(), AuthClass::Api);
+    assert!(task.agent.secrets.contains(&"GH_TOKEN".to_string()));
+    assert!(task
+        .agent
+        .secrets
+        .contains(&"OPENROUTER_API_KEY".to_string()));
+    assert!(task
+        .spec
+        .workspace
+        .repos
+        .iter()
+        .any(|repo| repo.url == "https://github.com/misty-step/cerberus.git"));
+    assert!(task
+        .spec
+        .workspace
+        .repos
+        .iter()
+        .any(|repo| repo.url == "https://github.com/misty-step/bitterblossom.git"));
+    assert_eq!(task.spec.budget.max_runs_per_day, Some(20));
+    assert_eq!(task.spec.budget.max_cost_per_run_usd, Some(1.25));
+    assert!(task.card.contains("cerberus review-pr"));
+
     let webhook = task
         .spec
         .triggers
@@ -148,25 +171,91 @@ fn review_webhook_is_submission_storm_reflex_without_additions_cap() {
         webhook.1.as_deref(),
         Some("json:/pull_request/html_url|json:/pull_request/head/sha")
     );
-    assert!(!webhook
+    assert!(webhook.2.iter().any(|f| {
+        f.pointer == "/repository/owner/login"
+            && f.any_of.as_ref().is_some_and(|values| {
+                values.contains(&serde_json::json!("misty-step"))
+                    && values.contains(&serde_json::json!("phrazzld"))
+            })
+    }));
+    assert!(webhook.2.iter().any(|f| {
+        f.pointer == "/sender/login"
+            && f.not_any_of.as_ref().is_some_and(|values| {
+                values.contains(&serde_json::json!("dependabot[bot]"))
+                    && values.contains(&serde_json::json!("renovate[bot]"))
+            })
+    }));
+    assert!(webhook
         .2
         .iter()
-        .any(|f| f.pointer == "/pull_request/additions"));
+        .any(|f| f.pointer == "/pull_request/additions" && f.max == Some(2500.0)));
+    assert!(webhook
+        .2
+        .iter()
+        .any(|f| f.pointer == "/pull_request/changed_files" && f.max == Some(50.0)));
     assert!(webhook.2.iter().any(|f| f.pointer == "/pull_request/draft"));
 
-    match webhook.3.as_ref().expect("submission storm action") {
-        WebhookActionSpec::SubmissionStorm {
-            change,
-            rev,
-            repo,
-            version,
-        } => {
-            assert_eq!(change, "json:/pull_request/html_url");
-            assert_eq!(rev, "json:/pull_request/head/sha");
-            assert_eq!(repo.as_deref(), Some("json:/repository/full_name"));
-            assert_eq!(version.as_deref(), Some("json:/pull_request/updated_at"));
-        }
+    assert!(
+        webhook.3.is_none(),
+        "org review reflex must not fan out submission-storm member runs"
+    );
+}
+
+#[test]
+fn review_webhook_filters_org_rollout_without_storm_fanout() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = temp_review_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    std::env::set_var("BB_HOOK_REVIEW", "s3cret");
+
+    let deliver = |ledger: &mut Ledger, body: &str, delivery: &str| {
+        let sig = sign_hmac("s3cret", body.as_bytes());
+        handle_webhook(
+            &plane,
+            ledger,
+            "review",
+            &[
+                ("X-Hub-Signature-256".to_string(), sig),
+                ("X-GitHub-Delivery".to_string(), delivery.to_string()),
+            ],
+            body,
+        )
+        .unwrap()
+    };
+
+    let in_scope = r#"{"action":"opened","sender":{"login":"allie"},"repository":{"full_name":"phrazzld/vanity","owner":{"login":"phrazzld"}},"pull_request":{"number":121,"draft":false,"html_url":"https://github.com/phrazzld/vanity/pull/121","updated_at":"2026-06-25T10:00:00Z","additions":42,"changed_files":3,"head":{"sha":"abc123"}}}"#;
+    assert_eq!(deliver(&mut ledger, in_scope, "d1").status, 202);
+    assert_eq!(ledger.list_runs(Some("review"), None).unwrap().len(), 1);
+    assert_eq!(ledger.list_runs(None, None).unwrap().len(), 1);
+
+    let duplicate = deliver(&mut ledger, in_scope, "d2");
+    assert_eq!(duplicate.status, 202);
+    assert!(duplicate.body.contains("\"duplicate\":true"));
+    assert_eq!(ledger.list_runs(None, None).unwrap().len(), 1);
+
+    for (body, delivery) in [
+        (
+            r#"{"action":"opened","sender":{"login":"dependabot[bot]"},"repository":{"full_name":"phrazzld/vanity","owner":{"login":"phrazzld"}},"pull_request":{"number":122,"draft":false,"html_url":"https://github.com/phrazzld/vanity/pull/122","updated_at":"2026-06-25T10:00:00Z","additions":1,"changed_files":1,"head":{"sha":"botsha"}}}"#,
+            "d3",
+        ),
+        (
+            r#"{"action":"opened","repository":{"full_name":"phrazzld/vanity","owner":{"login":"phrazzld"}},"pull_request":{"number":123,"draft":false,"html_url":"https://github.com/phrazzld/vanity/pull/123","updated_at":"2026-06-25T10:00:00Z","additions":1,"changed_files":1,"head":{"sha":"nosender"}}}"#,
+            "d4",
+        ),
+        (
+            r#"{"action":"opened","sender":{"login":"allie"},"repository":{"full_name":"other/repo","owner":{"login":"other"}},"pull_request":{"number":1,"draft":false,"html_url":"https://github.com/other/repo/pull/1","updated_at":"2026-06-25T10:00:00Z","additions":1,"changed_files":1,"head":{"sha":"outsider"}}}"#,
+            "d5",
+        ),
+        (
+            r#"{"action":"opened","sender":{"login":"allie"},"repository":{"full_name":"misty-step/big","owner":{"login":"misty-step"}},"pull_request":{"number":9,"draft":false,"html_url":"https://github.com/misty-step/big/pull/9","updated_at":"2026-06-25T10:00:00Z","additions":2501,"changed_files":1,"head":{"sha":"bigsha"}}}"#,
+            "d6",
+        ),
+    ] {
+        let resp = deliver(&mut ledger, body, delivery);
+        assert_eq!(resp.status, 200, "{body} -> {}", resp.body);
+        assert!(resp.body.contains("filtered"), "{}", resp.body);
     }
+    assert_eq!(ledger.list_runs(None, None).unwrap().len(), 1);
 }
 
 fn temp_ci_plane(root: &Path) -> Plane {
@@ -188,6 +277,31 @@ fn temp_ci_plane(root: &Path) -> Plane {
     fs::write(
         root.join("tasks/ci-diagnose/card.md"),
         fs::read_to_string(repo.join("plane/tasks/ci-diagnose/card.md")).unwrap(),
+    )
+    .unwrap();
+
+    Plane::load(root).unwrap()
+}
+
+fn temp_review_plane(root: &Path) -> Plane {
+    fs::create_dir_all(root.join("agents")).unwrap();
+    fs::create_dir_all(root.join("tasks/review")).unwrap();
+    fs::write(root.join("plane.toml"), "dev = true\n").unwrap();
+
+    let repo = repo_root();
+    fs::write(
+        root.join("agents/cerberus-reviewer.toml"),
+        fs::read_to_string(repo.join("plane/agents/cerberus-reviewer.toml")).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        root.join("tasks/review/task.toml"),
+        fs::read_to_string(repo.join("plane/tasks/review/task.toml")).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        root.join("tasks/review/card.md"),
+        fs::read_to_string(repo.join("plane/tasks/review/card.md")).unwrap(),
     )
     .unwrap();
 

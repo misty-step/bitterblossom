@@ -55,7 +55,8 @@ report.
 
 For model-evaluation cohorts, candidate task variants are expected. Do not
 penalize a report because `report.task` is a variant task such as
-`ci-diagnose-kimi`, `review-glm`, or `security-kimi` instead of the base flow.
+`ci-diagnose-kimi`, `review-kimi`, `review-glm`, or `security-kimi` instead of
+the base flow.
 Score task-name fidelity by checking that `report.task`, when present, matches
 the candidate object's `task`.
 

@@ -87,12 +87,43 @@ pub fn parse_output(harness: &str, stdout: &str) -> Result<ParsedOutput> {
         "claude" => parse_claude(stdout),
         "codex" => parse_codex(stdout),
         "pi" | "omp" => parse_agent_jsonl(harness, stdout),
-        "command" => Ok(ParsedOutput {
-            result: stdout.trim().to_string(),
-            stats: AttemptStats::default(),
-        }),
+        "command" => parse_command(stdout),
         other => bail!("unknown harness '{other}'"),
     }
+}
+
+fn parse_command(stdout: &str) -> Result<ParsedOutput> {
+    let trimmed = stdout.trim().to_string();
+    let Some(v) = last_json_object(stdout) else {
+        return Ok(ParsedOutput {
+            result: trimmed,
+            stats: AttemptStats::default(),
+        });
+    };
+    if v.get("schema_version").and_then(Value::as_str) != Some("bb.command_result.v1") {
+        return Ok(ParsedOutput {
+            result: trimmed,
+            stats: AttemptStats::default(),
+        });
+    }
+    let result = v
+        .get("result")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if result.is_empty() {
+        bail!("command output: structured result has no non-empty 'result'");
+    }
+    Ok(ParsedOutput {
+        result,
+        stats: AttemptStats {
+            tokens_in: v.get("tokens_in").and_then(Value::as_i64),
+            tokens_out: v.get("tokens_out").and_then(Value::as_i64),
+            turns: v.get("turns").and_then(Value::as_i64),
+            cost_usd: v.get("cost_usd").and_then(Value::as_f64),
+        },
+    })
 }
 fn filtered_jsonl_command(inner: Vec<String>) -> Vec<String> {
     let quoted: Vec<String> = inner

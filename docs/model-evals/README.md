@@ -19,7 +19,7 @@ Current first-class cohorts:
 | Flow | Candidates | Notes |
 |---|---|---|
 | [`build`](build/README.md) | `build`, `build-kimi`, `build-glm` | Variants default to dry-run unless explicitly live. |
-| [`review`](review/README.md) | `review`, `review-deepseek`, `review-glm` | Variants force measurement mode and never post PR comments. |
+| [`review`](review/README.md) | `review-kimi`, `review-deepseek`, `review-glm` | Prompt-based eval candidates force measurement mode and never post PR comments; production `review` wraps Cerberus. |
 | [`gardener`](gardener/README.md) | `gardener`, `gardener-kimi`, `gardener-glm` | Variants force dry-run and never file duplicate ticket PRs. |
 | [`ci-diagnose`](ci-diagnose/README.md) | `ci-diagnose`, `ci-diagnose-kimi`, `ci-diagnose-glm` | Reflex default plus manual variants. |
 | [`correctness`](correctness/README.md) | `correctness`, `correctness-kimi`, `correctness-glm` | Variants use eval-only verdict kinds. |
@@ -36,9 +36,9 @@ agent defaults only after a flow-specific `bb` smoke plus a model-eval record.
 | Model id | Current role |
 |---|---|
 | `deepseek/deepseek-v4-flash` | Gardener, CI diagnose, simplification |
-| `deepseek/deepseek-v4-pro` | Review, correctness, security |
+| `deepseek/deepseek-v4-pro` | Review candidate, correctness, security |
 | `moonshotai/kimi-k2-thinking` | Storm arbiter |
-| `moonshotai/kimi-k2.6:minimal` | Review default; catalog id `moonshotai/kimi-k2.6` |
+| `moonshotai/kimi-k2.6:minimal` | Review model-eval candidate; catalog id `moonshotai/kimi-k2.6` |
 | `moonshotai/kimi-k2.7-code` | Build comparison, gardener, CI diagnose, storm variants |
 | `openai/gpt-5.5` | Model evaluator |
 | `x-ai/grok-4.3` | Product review |
