@@ -9,7 +9,17 @@ run_file="${BB_RUN_FILE:-RUN.json}"
 out_dir="${CERBERUS_REVIEW_OUT_DIR:-cerberus-review}"
 summary_target="${CERBERUS_SUMMARY_TARGET:-check-run}"
 timeout_seconds="${CERBERUS_TIMEOUT_SECONDS:-900}"
-harness="${CERBERUS_HARNESS:-opencode}"
+harness="${CERBERUS_HARNESS:-}"
+
+if [ -z "$harness" ]; then
+  if command -v opencode >/dev/null 2>&1; then
+    harness="opencode"
+  elif command -v omp >/dev/null 2>&1; then
+    harness="omp"
+  else
+    harness="opencode"
+  fi
+fi
 
 if [ ! -f "$event_file" ]; then
   echo "EVENT.json not found" >&2
@@ -87,12 +97,22 @@ if [ -n "${CERBERUS_GH_BINARY:-}" ]; then
 fi
 if [ -n "${CERBERUS_OPENCODE_BINARY:-}" ]; then
   set -- "$@" --opencode-binary "$CERBERUS_OPENCODE_BINARY"
+elif [ "$harness" = "opencode" ]; then
+  opencode_binary="$(command -v opencode 2>/dev/null || true)"
+  if [ -n "$opencode_binary" ]; then
+    set -- "$@" --opencode-binary "$opencode_binary"
+  fi
 fi
 if [ -n "${CERBERUS_OPENCODE_AGENT:-}" ]; then
   set -- "$@" --opencode-agent "$CERBERUS_OPENCODE_AGENT"
 fi
 if [ -n "${CERBERUS_OMP_BINARY:-}" ]; then
   set -- "$@" --omp-binary "$CERBERUS_OMP_BINARY"
+elif [ "$harness" = "omp" ]; then
+  omp_binary="$(command -v omp 2>/dev/null || true)"
+  if [ -n "$omp_binary" ]; then
+    set -- "$@" --omp-binary "$omp_binary"
+  fi
 fi
 
 if [ -n "${CERBERUS_BIN:-}" ]; then

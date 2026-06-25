@@ -147,3 +147,61 @@ printf '{"receipt":true}\n' > "$out_dir/receipt-bundle.json"
     assert!(!dir.path().join("stale-target-used").exists());
     assert!(dir.path().join("REPORT.json").exists());
 }
+
+#[test]
+fn cerberus_wrapper_uses_omp_when_opencode_is_unavailable() {
+    let dir = tempfile::tempdir().unwrap();
+    write_event_and_run(dir.path());
+    fs::create_dir_all(dir.path().join("cerberus")).unwrap();
+    fs::write(dir.path().join("cerberus/Cargo.toml"), "[package]\n").unwrap();
+
+    let fake_bin = dir.path().join("bin");
+    fs::create_dir_all(&fake_bin).unwrap();
+    write_executable(&fake_bin.join("omp"), "#!/bin/sh\nexit 0\n");
+    write_executable(
+        &fake_bin.join("cargo"),
+        r#"#!/bin/sh
+set -eu
+out_dir=""
+mode=""
+harness=""
+omp_binary=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --out-dir) out_dir="$2"; shift 2;;
+    --dry-run) mode="dry-run"; shift;;
+    --post) mode="post"; shift;;
+    --harness) harness="$2"; shift 2;;
+    --omp-binary) omp_binary="$2"; shift 2;;
+    *) shift;;
+  esac
+done
+test "$mode" = "dry-run"
+[ "$harness" = "omp" ] || { echo "harness=$harness" >&2; exit 1; }
+case "$omp_binary" in
+  /*/bin/omp) ;;
+  *) echo "omp_binary=$omp_binary" >&2; exit 1;;
+esac
+[ -x "$omp_binary" ] || { echo "omp_binary is not executable: $omp_binary" >&2; exit 1; }
+mkdir -p "$out_dir"
+printf '{"run":{}}\n' > "$out_dir/artifact.json"
+printf 'review body\n' > "$out_dir/review.md"
+printf '{"receipt":true}\n' > "$out_dir/receipt-bundle.json"
+"#,
+    );
+
+    let output = Command::new(repo_root().join("scripts/cerberus-review-wrapper.sh"))
+        .current_dir(dir.path())
+        .env(
+            "PATH",
+            format!("{}:/usr/bin:/bin:/usr/sbin:/sbin", fake_bin.display()),
+        )
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
