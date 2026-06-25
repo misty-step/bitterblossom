@@ -13,6 +13,15 @@ fn write_executable(path: &std::path::Path, content: &str) {
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
 }
 
+fn write_event_and_run(dir: &std::path::Path) {
+    fs::write(
+        dir.join("EVENT.json"),
+        r#"{"repo":"misty-step/example","pr":42,"measurement":true}"#,
+    )
+    .unwrap();
+    fs::write(dir.join("RUN.json"), r#"{"run_id":"r1","task":"review"}"#).unwrap();
+}
+
 #[test]
 fn cerberus_wrapper_emits_report_and_structured_command_result() {
     let dir = tempfile::tempdir().unwrap();
@@ -45,16 +54,7 @@ printf 'review body\n' > "$out_dir/review.md"
 printf '{"receipt":true}\n' > "$out_dir/receipt-bundle.json"
 "#,
     );
-    fs::write(
-        dir.path().join("EVENT.json"),
-        r#"{"repo":"misty-step/example","pr":42,"measurement":true}"#,
-    )
-    .unwrap();
-    fs::write(
-        dir.path().join("RUN.json"),
-        r#"{"run_id":"r1","task":"review"}"#,
-    )
-    .unwrap();
+    write_event_and_run(dir.path());
 
     let output = Command::new(repo_root().join("scripts/cerberus-review-wrapper.sh"))
         .current_dir(dir.path())
@@ -86,4 +86,64 @@ printf '{"receipt":true}\n' > "$out_dir/receipt-bundle.json"
     assert_eq!(parsed.stats.tokens_in, Some(1234));
     assert_eq!(parsed.stats.tokens_out, Some(567));
     assert_eq!(parsed.stats.cost_usd, Some(0.42));
+}
+
+#[test]
+fn cerberus_wrapper_prefers_source_checkout_over_stale_target_binary() {
+    let dir = tempfile::tempdir().unwrap();
+    write_event_and_run(dir.path());
+
+    let stale_binary = dir.path().join("cerberus/target/debug/cerberus");
+    fs::create_dir_all(stale_binary.parent().unwrap()).unwrap();
+    write_executable(
+        &stale_binary,
+        r#"#!/bin/sh
+touch stale-target-used
+exit 42
+"#,
+    );
+    fs::write(dir.path().join("cerberus/Cargo.toml"), "[package]\n").unwrap();
+
+    let fake_bin = dir.path().join("bin");
+    fs::create_dir_all(&fake_bin).unwrap();
+    write_executable(
+        &fake_bin.join("cargo"),
+        r#"#!/bin/sh
+set -eu
+touch cargo-used
+out_dir=""
+mode=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --out-dir) out_dir="$2"; shift 2;;
+    --dry-run) mode="dry-run"; shift;;
+    --post) mode="post"; shift;;
+    *) shift;;
+  esac
+done
+test "$mode" = "dry-run"
+mkdir -p "$out_dir"
+printf '{"run":{}}\n' > "$out_dir/artifact.json"
+printf 'review body\n' > "$out_dir/review.md"
+printf '{"receipt":true}\n' > "$out_dir/receipt-bundle.json"
+"#,
+    );
+
+    let output = Command::new(repo_root().join("scripts/cerberus-review-wrapper.sh"))
+        .current_dir(dir.path())
+        .env(
+            "PATH",
+            format!("{}:/usr/bin:/bin:/usr/sbin:/sbin", fake_bin.display()),
+        )
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(dir.path().join("cargo-used").exists());
+    assert!(!dir.path().join("stale-target-used").exists());
+    assert!(dir.path().join("REPORT.json").exists());
 }

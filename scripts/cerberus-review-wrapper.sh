@@ -97,12 +97,12 @@ fi
 
 if [ -n "${CERBERUS_BIN:-}" ]; then
   "$CERBERUS_BIN" "$@"
+elif [ -f "./cerberus/Cargo.toml" ] && command -v cargo >/dev/null 2>&1; then
+  cargo run --locked --manifest-path ./cerberus/Cargo.toml --quiet -- "$@"
 elif command -v cerberus >/dev/null 2>&1; then
   cerberus "$@"
 elif [ -x "./cerberus/target/debug/cerberus" ]; then
   ./cerberus/target/debug/cerberus "$@"
-elif [ -f "./cerberus/Cargo.toml" ] && command -v cargo >/dev/null 2>&1; then
-  cargo run --locked --manifest-path ./cerberus/Cargo.toml --quiet -- "$@"
 else
   echo "cerberus binary not found; set CERBERUS_BIN or include ./cerberus with cargo" >&2
   exit 127
