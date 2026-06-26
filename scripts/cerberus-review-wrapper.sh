@@ -164,23 +164,44 @@ artifact = load_json(artifact_path)
 receipt = load_json(receipt_path)
 post_result = load_json(post_result_path)
 
+def numeric(value):
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return value
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+def add_numeric(total, value):
+    value = numeric(value)
+    if value is None:
+        return total
+    return value if total is None else total + value
+
+def normalize_number(value):
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
+
 tokens_in = None
 tokens_out = None
 cost = None
 if artifact:
     run = artifact.get("run") or {}
-    raw_cost = run.get("cost_usd")
-    if raw_cost is not None:
-        try:
-            cost = float(raw_cost)
-        except (TypeError, ValueError):
-            pass
+    cost = numeric(run.get("cost_usd"))
+    receipt_cost = None
     for receipt_row in artifact.get("receipts") or []:
         usage = receipt_row.get("usage") or {}
-        tokens_in = tokens_in or usage.get("prompt_tokens")
-        tokens_out = tokens_out or usage.get("completion_tokens")
-        if cost is None and usage.get("cost_usd") is not None:
-            cost = usage.get("cost_usd")
+        tokens_in = add_numeric(tokens_in, usage.get("prompt_tokens"))
+        tokens_out = add_numeric(tokens_out, usage.get("completion_tokens"))
+        receipt_cost = add_numeric(receipt_cost, usage.get("cost_usd"))
+    if cost is None:
+        cost = receipt_cost
+tokens_in = normalize_number(tokens_in)
+tokens_out = normalize_number(tokens_out)
+cost = normalize_number(cost)
 
 review_markdown = None
 try:

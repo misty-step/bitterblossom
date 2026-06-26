@@ -47,9 +47,10 @@ test "$summary_target" = "status"
 mkdir -p "$out_dir"
 cat > "$out_dir/artifact.json" <<'JSON'
 {
-  "run": {"cost_usd": "0.42"},
+  "run": {},
   "receipts": [
-    {"usage": {"prompt_tokens": 1234, "completion_tokens": 567, "cost_usd": 0.42}}
+    {"usage": {"prompt_tokens": 1000, "completion_tokens": 500, "cost_usd": 0.25}},
+    {"usage": {"prompt_tokens": 234, "completion_tokens": 67, "cost_usd": 0.125}}
   ]
 }
 JSON
@@ -77,7 +78,7 @@ printf '{"receipt":true}\n' > "$out_dir/receipt-bundle.json"
     assert_eq!(report["repo"], "misty-step/example");
     assert_eq!(report["pr"], 42);
     assert_eq!(report["mode"], "dry-run");
-    assert_eq!(report["usage"]["cost_usd"], 0.42);
+    assert_eq!(report["usage"]["cost_usd"], 0.375);
     assert_eq!(report["artifact_paths"][0], "REPORT.json");
 
     let stdout = String::from_utf8(output.stdout).unwrap();
@@ -88,7 +89,7 @@ printf '{"receipt":true}\n' > "$out_dir/receipt-bundle.json"
     );
     assert_eq!(parsed.stats.tokens_in, Some(1234));
     assert_eq!(parsed.stats.tokens_out, Some(567));
-    assert_eq!(parsed.stats.cost_usd, Some(0.42));
+    assert_eq!(parsed.stats.cost_usd, Some(0.375));
 }
 
 #[test]
