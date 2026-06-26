@@ -7,7 +7,7 @@ set -eu
 event_file="${BB_EVENT_FILE:-EVENT.json}"
 run_file="${BB_RUN_FILE:-RUN.json}"
 out_dir="${CERBERUS_REVIEW_OUT_DIR:-cerberus-review}"
-summary_target="${CERBERUS_SUMMARY_TARGET:-check-run}"
+summary_target="${CERBERUS_SUMMARY_TARGET:-status}"
 timeout_seconds="${CERBERUS_TIMEOUT_SECONDS:-900}"
 harness="${CERBERUS_HARNESS:-}"
 

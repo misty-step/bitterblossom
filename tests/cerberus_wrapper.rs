@@ -32,15 +32,18 @@ fn cerberus_wrapper_emits_report_and_structured_command_result() {
 set -eu
 out_dir=""
 mode=""
+summary_target=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --out-dir) out_dir="$2"; shift 2;;
+    --summary-target) summary_target="$2"; shift 2;;
     --dry-run) mode="dry-run"; shift;;
     --post) mode="post"; shift;;
     *) shift;;
   esac
 done
 test "$mode" = "dry-run"
+test "$summary_target" = "status"
 mkdir -p "$out_dir"
 cat > "$out_dir/artifact.json" <<'JSON'
 {
