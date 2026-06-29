@@ -13,8 +13,9 @@ Also read:
 
 Bitterblossom is the **event plane** for agent workloads: define a task,
 bind an agent, attach a trigger — all as files — and the plane runs it
-durably on a Fly Sprite (or a local process) with cost, budget, and trace
-visible from the CLI.
+durably on a declared substrate (Sprites today, local for dev/test, future
+adapters only after they beat the same workload contract) with cost, budget,
+and trace visible from the CLI.
 
 One Rust crate, one binary (`bb`), two personalities:
 

@@ -4,6 +4,11 @@ Status: canonical north star. Lifespan: long-lived product substrate for Misty
 Step first, designed so other agent operators can adopt the same shape without
 inheriting our repos, models, or GitHub conventions.
 
+Direction lock, 2026-06-29: Misty Step will route more of its agent operations
+through Bitterblossom. The product must support both supervised dispatch and
+unsupervised reflex work as first-class modes; the split is an authority and
+auth boundary, not a product fork.
+
 Bitterblossom is the event plane for recurring agent workloads. It lets an
 operator define a task, bind an agent, attach a trigger, and then watch the work
 run durably on isolated infrastructure with cost, budget, queue, trace, and
@@ -17,7 +22,7 @@ workload means.
 
 ## The premise that makes this Bitterblossom
 
-Two bets make Bitterblossom different from another agent framework or workflow
+Three bets make Bitterblossom different from another agent framework or workflow
 runner:
 
 1. **Workloads are files, not runtime branches.** A new recurring workflow
@@ -30,13 +35,20 @@ runner:
    model evaluation, and ad-hoc authoring are external workload brains or
    operator tools. They arrive behind the same plane contract; the plane should
    not know their product identities.
+3. **Supervised and unsupervised operations share one spine.** Manual builder
+   dispatch, explicit operator commissions, webhook reflexes, cron watchers, and
+   future unattended lifecycle tasks all need the same ledger, substrate,
+   artifact, budget, and recovery primitives. They differ in authority, auth,
+   trigger source, and side-effect rules; they should not become separate
+   systems unless live evidence proves the shared spine cannot serve both.
 
 ## Who would miss it
 
-The first user is the operator running a portfolio of repos with recurring agent
-work that should not depend on a laptop tab staying open: PR review, CI failure
-diagnosis, gate-blocked fix packets, scheduled probes, deploy verification,
-production incident diagnosis, and eventually docs or maintenance watchers.
+The first user is the operator running a portfolio of repos and operations with
+recurring agent work that should not depend on a laptop tab staying open: PR
+review, CI failure diagnosis, gate-blocked fix packets, scheduled probes, deploy
+verification, production incident diagnosis, and eventually docs or maintenance
+watchers.
 
 The second user is the operator's ad-hoc agent. It needs a stable CLI and JSON
 surface that can answer: what is configured, what is running, what failed, what
@@ -54,17 +66,20 @@ work.
 - **Every workload runs from a terminal.** Webhook and cron are triggers, not
   privileged execution paths. A human or agent must be able to replay the same
   workflow deliberately with `bb run`.
-- **Reflex and dispatch stay distinct.** Reflex work is trigger-fired,
+- **Reflex and dispatch both stay first-class.** Reflex work is trigger-fired,
   hermetic, API-auth, cheap, and bounded. Dispatch work is deliberate,
   operator- or agent-initiated, and may use subscription-auth builders with
-  explicit operator authority.
+  explicit operator authority. Shared mechanics are good; blurred authority is
+  not.
 - **Side effects are not replayed casually.** Only pre-execute failures retry
   mechanically. Anything at or after execution is operator-resolved with ledger
   evidence because agents may have commented, pushed, opened tickets, or touched
   external systems.
-- **Substrate is a deep module.** Sprites, local execution, and any future
-  substrate hide host paths, transport quirks, checkpoints, process control, and
-  artifact release behind one workspace plan.
+- **Substrate is a deep module, not the product identity.** Fly/Sprites is the
+  current proving adapter and local execution is the dev/test adapter. Any
+  future substrate must hide host paths, transport quirks, checkpoints, process
+  control, and artifact release behind the same workspace plan before it earns a
+  place in the plane.
 - **Secrets never become payload.** Credentials travel through declared secret
   names and stdin plumbing, never card prose, argv, logs, persisted DB fields, or
   ad-hoc JSON payloads.
@@ -98,6 +113,10 @@ work.
   post within an explicit task contract. Merging, unpark decisions, production
   mutations, and broad rollout remain deliberate operator authority until a
   future vision revision says otherwise.
+- **No substrate lock-in disguised as architecture.** Sprites is valuable
+  because it currently fits the remote-workspace problem, not because
+  Bitterblossom is a Fly product. Cloudflare, E2B, Modal, Daytona, or another
+  substrate may win if they prove better on the same workload contract.
 
 ## Strategic bets
 
@@ -114,6 +133,11 @@ work.
 5. The same plane should support both supervised dispatch and unsupervised
    reflex work because the useful primitive is not autonomy level; it is durable,
    budgeted, inspectable execution.
+6. The next substrate decision should be empirical. Compare Fly/Sprites,
+   Cloudflare Sandbox/Agents, E2B, Modal, Daytona, and durable workflow systems
+   against a real coding-harness workload: prepare a repo workspace, stream the
+   harness, persist or recover state, capture artifacts, enforce budget, and
+   replay from ledger evidence.
 
 ## What excellent looks like
 
@@ -121,11 +145,14 @@ work.
   operator truth surface; `bb run build` can author one shaped slice without
   discovering remote auth failure too late; the first specialist review reflex
   runs report-only from GitHub PR events and stores request, artifact, cost, and
-  receipts in the ledger.
+  receipts in the ledger; the substrate bakeoff has one repeatable workload and
+  a scored baseline rather than opinions about infrastructure.
 - **Medium term:** recurring lifecycle reflexes cover PR review, CI diagnosis,
   gate-blocked fix packets, and deploy or production verification without adding
-  workflow branches to `src/`. Every reflex has a manual payload, a live drill,
-  artifact contracts, cost history, and an explicit rollback path.
+  workflow branches to `src/`. Manual dispatch lanes and unattended reflex lanes
+  are both used in real Misty Step operations, each with task files, manual
+  payloads, live drills, artifact contracts, cost history, and explicit rollback
+  or operator-resolution paths.
 - **Long term:** Bitterblossom is the operator's durable Mode B substrate. New
   specialist agents arrive as launch contracts and task files; external labs and
   operator tooling improve their brains from exported run evidence; the plane
