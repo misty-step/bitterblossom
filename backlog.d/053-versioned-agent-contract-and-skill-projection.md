@@ -1,12 +1,13 @@
 # Make the agent-facing bb contract versioned and schema-backed
 
-Priority: P2 | Status: ready | Estimate: L
+Priority: P0 | Status: ready | Estimate: L
 
 ## Goal
 
 Make Bitterblossom safe for consuming applications and agents by versioning
 CLI/API JSON contracts, testing the portable skill against those contracts, and
-choosing a durable Harness Kit projection path.
+choosing a durable Harness Kit projection path for the agent-friendly layer v1
+(epic 076).
 
 ## Oracle
 
@@ -20,6 +21,15 @@ choosing a durable Harness Kit projection path.
       source entry, or other no-drift path into Harness Kit.
 - [ ] Lane-card/task-card quality requirements are validated or explicitly
       deferred with a shaped follow-up.
+
+## Verification System
+
+- Claim: the agent-facing BB contract is stable enough for skills, MCP, HTTP consumers, and scripts to depend on without prose-only interpretation.
+- Falsifier: a documented skill recipe or MCP tool emits/parses a shape that differs from CLI/API output; a JSON field used by an agent changes without fixture failure; or a stale help example survives the gate.
+- Driver: fixture tests for each key JSON surface plus live-help/doc parity tests and a local-plane smoke once backlog 077 lands.
+- Grader: required fields and types match fixtures; unknown additive fields are tolerated only where the compatibility contract says so; removed/renamed fields fail.
+- Evidence packet: fixture diffs, focused test transcript, and one local-plane command transcript linked from the implementing PR.
+- Cadence: every CLI/API/MCP/skill change touching agent-facing surfaces.
 
 ## Children
 
@@ -43,8 +53,9 @@ Evidence:
   compatibility.
 - `tests/task_cli.rs:60-67` checks only a few `task list` JSON fields.
 
-Demoted P1 → P2 (groom 2026-06-17): this is enabling-infrastructure — it
-protects the agent-facing contract from *future* breakage but adds no
-throughput — and it is the heaviest LOC item (~+120-250 in `src/`), budget-
-blocked behind the 069 extraction. Reprioritize up once 069 frees headroom and a
-contract-breakage actually bites.
+Re-promoted P2 → P0 (groom 2026-06-29): the operator explicitly prioritized
+the agent-friendly layer — packaged skill, agent CLI, MCP, and unsupervised
+workflow authoring — as the product surface. LOC cost remains a risk, but the
+first implementation should minimize spine growth by extracting shared read-view
+helpers and using fixtures rather than adding workflow judgment. This ticket now
+serves epic 076.
