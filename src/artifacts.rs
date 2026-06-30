@@ -139,7 +139,17 @@ pub fn read(ledger: &Ledger, run_id: &str, path: &str) -> Result<ReadOutcome> {
         let file = dir.join(&rel);
         let meta = match fs::metadata(&file) {
             Ok(m) if m.is_file() => m,
-            _ => continue,
+            Ok(_) => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                return Err(e).with_context(|| {
+                    format!(
+                        "stat artifact for run {run_id} attempt {} at {}",
+                        a.n,
+                        file.display()
+                    )
+                })
+            }
         };
         // Defense-in-depth: safe_relative already blocks lexical escapes;
         // canonicalize catches symlinks pointing outside the artifact root.
