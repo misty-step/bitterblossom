@@ -249,6 +249,26 @@ fn list_enumerates_top_level_files_across_attempts() {
 }
 
 #[test]
+fn list_does_not_follow_symlink_escapes() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("plane.db");
+    let mut ledger = Ledger::open(&db).unwrap();
+    let run = run_id(&mut ledger);
+    let a1 = dir.path().join("a1");
+    fs::create_dir_all(&a1).unwrap();
+    fs::write(a1.join("REPORT.json"), "{}").unwrap();
+    fs::write(dir.path().join("outside"), "outside").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(dir.path().join("outside"), a1.join("escape")).unwrap();
+    add_attempt(&mut ledger, &run, 1, &a1);
+
+    let entries = artifacts::list(&ledger, &run).unwrap();
+    assert!(entries.iter().any(|e| e.path == "REPORT.json"));
+    #[cfg(unix)]
+    assert!(!entries.iter().any(|e| e.path == "escape"));
+}
+
+#[test]
 fn list_missing_run_bails() {
     let dir = tempfile::tempdir().unwrap();
     let ledger = Ledger::open(&dir.path().join("plane.db")).unwrap();

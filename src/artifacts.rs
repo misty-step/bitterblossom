@@ -90,7 +90,11 @@ pub fn list(ledger: &Ledger, run_id: &str) -> Result<Vec<ArtifactEntry>> {
                     dir.display()
                 )
             })?;
-            let meta = entry.metadata().with_context(|| {
+            // Do not follow symlinks while listing. `read` has a containment
+            // guard for explicit paths; `list` should never stat or sniff a
+            // target outside the attempt artifact root just because a symlink
+            // exists in the directory.
+            let meta = entry.path().symlink_metadata().with_context(|| {
                 format!(
                     "stat artifact for run {run_id} attempt {} at {}",
                     a.n,
