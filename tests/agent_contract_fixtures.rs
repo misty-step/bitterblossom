@@ -7,6 +7,9 @@
 
 use std::fs;
 use std::process::{Command, Output};
+use std::sync::Mutex;
+
+static BB_CMD_LOCK: Mutex<()> = Mutex::new(());
 
 fn write_local_plane(root: &std::path::Path) {
     fs::create_dir_all(root.join("agents")).unwrap();
@@ -52,6 +55,7 @@ fn write_gate_plane(root: &std::path::Path) {
 }
 
 fn bb(root: &str, args: &[&str]) -> Output {
+    let _guard = BB_CMD_LOCK.lock().unwrap();
     Command::new(env!("CARGO_BIN_EXE_bb"))
         .arg("--config")
         .arg(root)
