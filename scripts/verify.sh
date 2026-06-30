@@ -27,9 +27,9 @@ BB=./target/debug/bb
 CFG=examples/local-plane
 $BB --config $CFG preflight hello --json >/dev/null
 # invalid payload must not create a run row; before/after run count equal.
-before=$($BB --config $CFG runs list --json | grep -c '"id"')
+before=$($BB --config $CFG runs list --json | grep -c '"id"' || true)
 $BB --config $CFG run hello --payload 'not json' >/dev/null 2>&1 || true
-after=$($BB --config $CFG runs list --json | grep -c '"id"')
+after=$($BB --config $CFG runs list --json | grep -c '"id"' || true)
 [ "$before" = "$after" ] || { echo "local-plane smoke: invalid payload created a run ($before -> $after)"; exit 1; }
 $BB --config $CFG run hello --payload '{"ok":true}' --json >/dev/null
 $BB --config $CFG status --json >/dev/null
