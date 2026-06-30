@@ -208,7 +208,7 @@ pub fn read(ledger: &Ledger, run_id: &str, path: &str) -> Result<ReadOutcome> {
             });
         }
         let bytes = fs::read(&file).context("read artifact")?;
-        if is_binary_bytes(&bytes) {
+        if is_binary_full_bytes(&bytes) {
             return Ok(ReadOutcome::Binary {
                 attempt: a.n,
                 path: rel.to_string_lossy().into_owned(),
@@ -264,7 +264,7 @@ struct ArtifactProfile {
 
 fn artifact_profile(path: &Path, size: u64) -> Result<ArtifactProfile> {
     let binary = if size <= READ_LIMIT {
-        is_binary_bytes(&fs::read(path).context("read artifact for classification")?)
+        is_binary_full_bytes(&fs::read(path).context("read artifact for classification")?)
     } else {
         looks_binary(path, size)?
     };
@@ -284,17 +284,24 @@ fn content_type(path: &Path) -> String {
     .into()
 }
 
-/// Null-byte scan plus UTF-8 validation. Complete buffers with invalid UTF-8
-/// are treated as binary; a large-file sniff that ends mid-codepoint is still
-/// text so `list` does not misclassify oversized UTF-8 artifacts.
-fn is_binary_bytes(bytes: &[u8]) -> bool {
+/// Null-byte scan plus full-buffer UTF-8 validation. Complete artifacts with
+/// invalid UTF-8 are binary even when the invalid sequence is an incomplete
+/// trailing codepoint.
+fn is_binary_full_bytes(bytes: &[u8]) -> bool {
     if bytes.contains(&0u8) {
         return true;
     }
-    match std::str::from_utf8(bytes) {
-        Ok(_) => false,
-        Err(e) => e.error_len().is_some(),
+    std::str::from_utf8(bytes).is_err()
+}
+
+/// Null-byte scan plus partial-sniff UTF-8 validation. A large-file sniff that
+/// ends mid-codepoint is still text so `list` does not misclassify oversized
+/// UTF-8 artifacts whose sampled prefix is valid except for the cut boundary.
+fn is_binary_sniff_bytes(bytes: &[u8]) -> bool {
+    if bytes.contains(&0u8) {
+        return true;
     }
+    std::str::from_utf8(bytes).is_err_and(|e| e.error_len().is_some())
 }
 
 fn looks_binary(path: &Path, size: u64) -> Result<bool> {
@@ -305,5 +312,5 @@ fn looks_binary(path: &Path, size: u64) -> Result<bool> {
     use std::io::Read;
     let mut buf = [0u8; 8192];
     let n = f.read(&mut buf).context("read artifact for binary sniff")?;
-    Ok(is_binary_bytes(&buf[..n]))
+    Ok(is_binary_sniff_bytes(&buf[..n]))
 }

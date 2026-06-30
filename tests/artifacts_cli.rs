@@ -173,6 +173,28 @@ fn artifacts_read_binary_json_exits_nonzero_with_binary_envelope() {
 }
 
 #[test]
+fn artifacts_read_incomplete_utf8_tail_is_binary_not_io_error() {
+    let dir = tempfile::tempdir().unwrap();
+    write_plane(dir.path());
+    let root = dir.path().to_str().unwrap();
+    let run_id = run_hello(root);
+    fs::write(
+        artifact_dir(root, &run_id).join("incomplete.txt"),
+        [b'a', 0xc3],
+    )
+    .unwrap();
+
+    let read = bb(
+        root,
+        &["artifacts", "read", &run_id, "incomplete.txt", "--json"],
+    );
+    assert!(!read.status.success());
+    let env: serde_json::Value = serde_json::from_slice(&read.stdout).unwrap();
+    assert_eq!(env["kind"], "binary");
+    assert_eq!(env["path"], "incomplete.txt");
+}
+
+#[test]
 fn artifacts_read_oversized_json_exits_nonzero_with_oversized_envelope() {
     let dir = tempfile::tempdir().unwrap();
     write_plane(dir.path());
