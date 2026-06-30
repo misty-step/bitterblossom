@@ -277,6 +277,69 @@ fn gate_json_shape() {
 }
 
 #[test]
+fn submit_list_json_shape() {
+    let dir = tempfile::tempdir().unwrap();
+    write_gate_plane(dir.path());
+    let root = dir.path().to_str().unwrap();
+    json_ok(
+        root,
+        &[
+            "submit", "open", "--change", "c1", "--rev", "deadbeef", "--json",
+        ],
+    );
+    let c2 = json_ok(
+        root,
+        &[
+            "submit", "open", "--change", "c2", "--rev", "cafebabe", "--json",
+        ],
+    );
+    let c2_id = as_str(&c2, "id");
+    assert!(bb(
+        root,
+        &[
+            "run",
+            "verify",
+            "--idempotency-key",
+            &format!("storm:{c2_id}:verify"),
+            "--payload",
+            &format!("{{\"submission\":\"{c2_id}\"}}"),
+            "--json",
+        ]
+    )
+    .status
+    .success());
+    let report = json_ok(root, &["gate", "--change", "c2", "--json"]);
+    assert_eq!(as_str(&report, "decision"), "clear");
+    let rows = json_ok(root, &["submit", "list", "--limit", "1", "--json"]);
+    assert_eq!(top_arr(&rows).len(), 1, "--limit must constrain output");
+    let row = &top_arr(&rows)[0];
+    let sub = &row["submission"];
+    assert_eq!(
+        as_str(sub, "change_key"),
+        "c2",
+        "submit list should return newest submissions first"
+    );
+    as_str(sub, "id");
+    as_str(sub, "rev");
+    as_num(sub, "round");
+    as_str(sub, "state");
+    as_str(sub, "created_at");
+    as_str(sub, "updated_at");
+    let verdict = &as_arr(row, "verdicts")[0];
+    as_str(verdict, "kind");
+    as_str(verdict, "run_id");
+    as_str(verdict, "verdict");
+    assert!(verdict["findings"].is_array());
+    assert!(row["rejections"].is_array());
+
+    let human = bb(root, &["submit", "list", "--limit", "1"]);
+    assert!(human.status.success());
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    assert!(stdout.contains("change=c2"), "{stdout}");
+    assert!(!stdout.contains("change=c1"), "{stdout}");
+}
+
+#[test]
 fn run_rejects_invalid_payload_before_ingest() {
     let dir = tempfile::tempdir().unwrap();
     write_local_plane(dir.path());

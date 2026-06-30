@@ -59,7 +59,7 @@ enum Command {
         #[command(subcommand)]
         command: TaskCommand,
     },
-    /// Submission-loop merge gate: open a change, reject a finding, abandon.
+    /// Submission-loop merge gate: list/open changes, reject findings, abandon.
     Submit {
         #[command(subcommand)]
         command: SubmitCommand,
@@ -197,6 +197,14 @@ enum DlqCommand {
 
 #[derive(Subcommand)]
 enum SubmitCommand {
+    /// List recent submissions with verdict rows and rejections. `--json`
+    /// emits the versioned submission bundle used by agents/supervisors.
+    List {
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
+        #[arg(long)]
+        json: bool,
+    },
     Open {
         #[arg(long)]
         change: String,
@@ -598,6 +606,27 @@ fn run() -> Result<()> {
             }
         },
         Command::Submit { command } => match command {
+            SubmitCommand::List { limit, json } => {
+                let submissions = ledger.list_submissions(
+                    bitterblossom::submit::clamp_submission_list_limit(i64::from(limit)),
+                )?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&submissions)?);
+                } else {
+                    for bundle in submissions {
+                        let sub = bundle.submission;
+                        println!(
+                            "{}  {:<10} round={} verdicts={} change={} rev={}",
+                            sub.id,
+                            sub.state,
+                            sub.round,
+                            bundle.verdicts.len(),
+                            sub.change_key,
+                            sub.rev
+                        );
+                    }
+                }
+            }
             SubmitCommand::Open {
                 change,
                 rev,

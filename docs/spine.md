@@ -368,12 +368,16 @@ gate arithmetic); what a reviewer looks for lives in cards.
 
 **Submissions.** `bb submit open --change <key> --rev <sha>` creates a
 submission: `open → clear | blocked | escalated | abandoned`, at most one
-non-terminal submission per change key (CAS-enforced). The change key and
-rev are opaque strings (branch + SHA today; jj change IDs later, zero
-spine change). Round numbering is plane-owned: reopening after `blocked`
-increments the round and snapshots the prior gate report — the driver
-cannot soften or omit prior findings; verdict tasks receive the canonical
-report as `REPORT.json` next to `EVENT.json`.
+non-terminal submission per change key (CAS-enforced). `bb submit list --json`
+returns recent submissions (default 20, `--limit` clamped to 1..=200 like
+`/api/submissions`) with verdict rows and rejection reasons, giving cron
+supervisors and agents a typed way to discover active or stale gate work
+without querying SQLite or guessing receipt shapes. The change key and rev are
+opaque strings (branch + SHA today; jj change IDs later, zero spine change).
+Round numbering is plane-owned: reopening after `blocked` increments the
+round and snapshots the prior gate report — the driver cannot soften or omit
+prior findings; verdict tasks receive the canonical report as `REPORT.json`
+next to `EVENT.json`.
 
 **Verdict tasks.** A task with `verdict = "<kind>"` in task.toml is a
 storm member. Its payload is `{"submission": "<id>", ...}` and its parsed

@@ -30,6 +30,7 @@ These are not model-intelligence problems. They are BB operator UX and product-c
 - [ ] Required secrets are preflighted before paid remote execution; missing secrets fail before storm fanout.
 - [ ] Duplicate active work is refused unless `--force` is explicit and recorded.
 - [ ] The command returns a receipt: run/submission id, idempotency key, branch/change, watcher command or status URL, and safe next command.
+- [ ] `bb submit list --json` exposes recent submission/gate state so supervisors can find active or stale review work without direct SQLite queries.
 - [ ] Secrets and prompts travel on stdin/env-safe paths, not process-table-visible argv where avoidable.
 - [ ] `./scripts/verify.sh` passes.
 
@@ -75,3 +76,5 @@ This is the BB-side complement to backlog 085. Hermes can schedule a loop, but B
 2026-06-30 cron tick evidence: the Level 3 dogfood loop reached the clean storm point for rev `e9531a3` (local verify green, Cursor Thermo PASS, branch pushed) but `bb preflight --storm --json` failed before fanout because the fresh Hermes cron environment lacked `OPENROUTER_API_KEY`; `GH_TOKEN` was recoverable from `gh auth token`. The recipe/supervisor contract needs a first-class secret bootstrap/preflight receipt so cron fails before opening or dispatching a storm, without each tick hand-assembling shell exports.
 
 2026-06-30 repeated-blocker evidence: the next scheduled tick bootstrapped `GH_TOKEN` again but still had no `OPENROUTER_API_KEY` after sourcing the operator `.env`, so it stopped before opening a new submission or dispatching paid storm lanes. Hold this exact-rev storm until either the Hermes cron profile receives the required secret through an approved path or backlog 086 ships a BB-owned recipe/preflight that can prove the secret contract before mutation.
+
+2026-06-30 follow-up slice: the cron loop also had to query `plane/.bb/plane.db` directly because the shell-level `bb submit list --json` recipe was absent from the CLI even though the ledger already had a typed `list_submissions` shape. Add `bb submit list --json` as the smallest BB-owned discovery primitive before larger submit-and-storm recipes.

@@ -5,9 +5,15 @@ use serde::{Deserialize, Serialize};
 use crate::ledger::{new_id, now, Ledger};
 use crate::spec::Plane;
 pub const SUBMISSION_STATES: &[&str] = &["open", "clear", "blocked", "escalated", "abandoned"];
+pub const SUBMISSION_LIST_LIMIT_MIN: i64 = 1;
+pub const SUBMISSION_LIST_LIMIT_MAX: i64 = 200;
 
 pub const VERDICTS: &[&str] = &["pass", "blocking", "advisory"];
 pub const SEVERITIES: &[&str] = &["blocking", "serious", "minor"];
+
+pub fn clamp_submission_list_limit(limit: i64) -> i64 {
+    limit.clamp(SUBMISSION_LIST_LIMIT_MIN, SUBMISSION_LIST_LIMIT_MAX)
+}
 
 #[derive(Debug, Serialize)]
 pub struct SubmissionRow {

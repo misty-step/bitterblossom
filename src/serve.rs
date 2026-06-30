@@ -260,8 +260,8 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
             "/api/submissions" => {
                 let limit = query_param(&url, "limit")
                     .and_then(|s| s.parse::<i64>().ok())
-                    .unwrap_or(50)
-                    .clamp(1, 200);
+                    .map(crate::submit::clamp_submission_list_limit)
+                    .unwrap_or(50);
                 Ok((
                     200,
                     serde_json::to_string(&ledger.list_submissions(limit)?)?,
