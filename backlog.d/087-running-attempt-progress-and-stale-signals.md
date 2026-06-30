@@ -18,7 +18,7 @@ updated_at=2026-06-30T01:59:22Z
 events: state:running, boot_probe alive
 ```
 
-Hours later this was still technically alive, but not enough for an overnight supervisor to know whether the agent was making meaningful progress, waiting on a model, hung in remote execution, or safe to escalate.
+Hours later this was still technically alive, but not enough for an overnight supervisor to know whether the agent was making meaningful progress, waiting on a model, hung in remote execution, or safe to escalate. A later `bb recover --json` classified the run as dead/`awaiting_recovery`; side-effect inspection found the pushed branch, but the original run still had no artifact directory/REPORT for closeout. That split-brain outcome is exactly the missing product signal: pushed side effects can exist while BB's run row lacks meaningful progress/artifact evidence.
 
 ## Oracle
 

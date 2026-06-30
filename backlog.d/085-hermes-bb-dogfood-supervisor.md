@@ -22,7 +22,9 @@ This is partly Hermes configuration/ops and partly BB product design:
 - **Level 0: read-only monitor** — inspect BB ledger/status, classify active/stale/completed runs, deliver a report. No dispatch, no git writes, no recovery, no paid runs.
 - **Level 1: recovery/report helper** — may run `bb recover --json`, inspect artifacts, and write a local report/backlog note. No new agent dispatch.
 - **Level 2: bounded continuation** — may dispatch at most one paid BB action per tick from a groomed allowlist, with daily cost/run caps and duplicate suppression.
-- **Level 3: full dogfood loop** — may build, verify, storm, groom blockers, and select next backlog item, but still cannot merge or expand autonomy without scorecard approval.
+- **Level 3: full dogfood loop** — may build, verify, storm, groom blockers, and select next backlog item, and may merge only when a scorecard-approved prompt requires fresh local verify, live QA, Thermo-Nuclear review approval, BB gate clear, clean worktree, clean merge, and post-merge verify.
+
+Current installed supervisor note (2026-06-30): operator explicitly promoted the active Hermes cron from Level 0 monitor to a bounded Level 3 delivery loop with one active backlog item per tick, at most one new builder or one storm fanout per tick, mandatory Thermo-Nuclear review for ship-bound code, and merge-only-after-gates conditions.
 
 ## Oracle
 

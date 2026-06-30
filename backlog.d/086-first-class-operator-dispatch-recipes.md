@@ -15,6 +15,8 @@ The 077/079 dogfood loops repeatedly failed for non-semantic reasons:
 - missing `repo` in storm payload made verification try `https://github.com/.git/`;
 - different idempotency keys created duplicate semantic work for backlog 079;
 - killed local wrappers left BB runs needing recovery/classification;
+- `submit open --json` returned top-level `{id,...}` while the ad-hoc wrapper expected `{submission:{id}}`, proving the recipe needs a tested receipt schema instead of wrapper-side guesses;
+- `op-agent` supplied some secrets but not `GH_TOKEN`, so the wrapper had to know a second auth preflight/export rule;
 - the operator had to manually assemble payload JSON, `op-agent`, GitHub auth, storm member dispatch, and watcher logic.
 
 These are not model-intelligence problems. They are BB operator UX and product-contract gaps.
