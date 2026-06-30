@@ -206,4 +206,47 @@ fn artifacts_read_rejects_path_traversal_at_cli_boundary() {
             "traversal {bad:?} not rejected: {err}"
         );
     }
+
+    let json = bb(root, &["artifacts", "read", &run_id, "../escape", "--json"]);
+    assert!(!json.status.success());
+    let env: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(env["kind"], "invalid_path");
+    assert_eq!(env["path"], "../escape");
+}
+
+#[test]
+fn artifacts_json_errors_cover_missing_run_and_stat_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    write_plane(dir.path());
+    let root = dir.path().to_str().unwrap();
+    let run_id = run_hello(root);
+
+    let list = bb(root, &["artifacts", "list", "no-such-run", "--json"]);
+    assert!(!list.status.success());
+    let env: serde_json::Value = serde_json::from_slice(&list.stdout).unwrap();
+    assert_eq!(env["kind"], "missing_run");
+    assert_eq!(env["run_id"], "no-such-run");
+
+    let read = bb(
+        root,
+        &["artifacts", "read", "no-such-run", "REPORT.json", "--json"],
+    );
+    assert!(!read.status.success());
+    let env: serde_json::Value = serde_json::from_slice(&read.stdout).unwrap();
+    assert_eq!(env["kind"], "missing_run");
+    assert_eq!(env["path"], "REPORT.json");
+
+    fs::write(
+        artifact_path(dir.path(), &run_id, "not-dir"),
+        "not a directory",
+    )
+    .unwrap();
+    let stat = bb(
+        root,
+        &["artifacts", "read", &run_id, "not-dir/child", "--json"],
+    );
+    assert!(!stat.status.success());
+    let env: serde_json::Value = serde_json::from_slice(&stat.stdout).unwrap();
+    assert_eq!(env["kind"], "io_error");
+    assert_eq!(env["path"], "not-dir/child");
 }

@@ -436,7 +436,14 @@ fn run() -> Result<()> {
         }
         Command::Artifacts { command } => match command {
             ArtifactsCommand::List { run_id, json } => {
-                let entries = artifacts::list(&ledger, &run_id)?;
+                let entries = match artifacts::list(&ledger, &run_id) {
+                    Ok(entries) => entries,
+                    Err(e) if json => {
+                        print_artifact_json_error(&run_id, None, &e)?;
+                        std::process::exit(1);
+                    }
+                    Err(e) => return Err(e),
+                };
                 if json {
                     println!("{}", serde_json::to_string_pretty(&entries)?);
                 } else if entries.is_empty() {
@@ -452,7 +459,14 @@ fn run() -> Result<()> {
                 }
             }
             ArtifactsCommand::Read { run_id, path, json } => {
-                let outcome = artifacts::read(&ledger, &run_id, &path)?;
+                let outcome = match artifacts::read(&ledger, &run_id, &path) {
+                    Ok(outcome) => outcome,
+                    Err(e) if json => {
+                        print_artifact_json_error(&run_id, Some(&path), &e)?;
+                        std::process::exit(1);
+                    }
+                    Err(e) => return Err(e),
+                };
                 if json {
                     println!("{}", serde_json::to_string_pretty(&outcome)?);
                 }
@@ -463,6 +477,9 @@ fn run() -> Result<()> {
                         }
                     }
                     artifacts::ReadOutcome::Binary { attempt, size, .. } => {
+                        if json {
+                            std::process::exit(1);
+                        }
                         bail!("artifact {path:?} (attempt {attempt}, {size} bytes) is binary; refused");
                     }
                     artifacts::ReadOutcome::Oversized {
@@ -471,11 +488,17 @@ fn run() -> Result<()> {
                         limit,
                         ..
                     } => {
+                        if json {
+                            std::process::exit(1);
+                        }
                         bail!(
                             "artifact {path:?} (attempt {attempt}, {size} bytes) exceeds read limit {limit}; refused"
                         );
                     }
                     artifacts::ReadOutcome::Missing { .. } => {
+                        if json {
+                            std::process::exit(1);
+                        }
                         bail!("no artifact {path:?} found in any attempt of run {run_id}");
                     }
                 }
@@ -907,4 +930,36 @@ fn print_run(ledger: &Ledger, run_id: &str, json: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn print_artifact_json_error(run_id: &str, path: Option<&str>, err: &anyhow::Error) -> Result<()> {
+    let mut doc = serde_json::Map::new();
+    doc.insert(
+        "kind".into(),
+        serde_json::Value::String(artifact_json_error_kind(err).into()),
+    );
+    doc.insert("run_id".into(), serde_json::Value::String(run_id.into()));
+    if let Some(path) = path {
+        doc.insert("path".into(), serde_json::Value::String(path.into()));
+    }
+    doc.insert(
+        "message".into(),
+        serde_json::Value::String(format!("{err:#}")),
+    );
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::Value::Object(doc))?
+    );
+    Ok(())
+}
+
+fn artifact_json_error_kind(err: &anyhow::Error) -> &'static str {
+    let message = format!("{err:#}");
+    if message.contains("artifact path must") || message.contains("escapes attempt artifact root") {
+        "invalid_path"
+    } else if message.starts_with("run ") && message.contains(" not found") {
+        "missing_run"
+    } else {
+        "io_error"
+    }
 }
