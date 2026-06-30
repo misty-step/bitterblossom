@@ -46,3 +46,5 @@ Why: run state says a task finished; artifacts prove whether it did useful work.
 2026-06-30 storm advisory: `looks_binary` can falsely mark a large UTF-8 text artifact as binary if the 8 KiB sniff boundary cuts through a multibyte character. This affects `artifacts list` metadata for files above `READ_LIMIT`, not `artifacts read`; fix or test the boundary before widening artifact resources.
 
 2026-06-30 dogfood follow-up: local branch `bb-agent-friendly-layer-v1` now treats an incomplete UTF-8 codepoint at the fixed sniff boundary as text, while still marking complete invalid UTF-8 and NUL bytes as binary; `cargo test --locked --test artifacts_cli` covers the oversized split-boundary case.
+
+2026-06-30 Thermo review follow-up: Cursor Thermo-Nuclear review caught that the sniff-boundary fix had reused one helper for both full artifact reads and partial oversized sniffing, which could make a small file ending in an incomplete UTF-8 byte report `io_error` instead of `binary`. Commit `eca7e24` split full-buffer and sniff-buffer classifiers and added `artifacts_read_incomplete_utf8_tail_is_binary_not_io_error`.
