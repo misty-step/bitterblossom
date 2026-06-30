@@ -54,3 +54,5 @@ This is a review-authority requirement, not an autonomy feature by itself. It ga
 ## Notes
 
 Harness Kit already knows the lens in `skills/code-review/SKILL.md` and `skills/deliver/SKILL.md`; Bitterblossom needs to project that discipline into Mode B review factory execution.
+
+2026-07-01 tick progress: updated `plane/tasks/simplification/card.md` to explicitly invoke the Thermo-Nuclear maintainability lens with full provenance to Harness Kit's synced skill. The card now includes all 8 non-negotiable review rules, primary review questions, aggressive flag list, and the approval bar. Gate-weakening (from the original card) is preserved as a blocking structural regression. Added `tests/thermo_nuclear_lens.rs` as a contract test guarding the projection. Updated `docs/spine.md` with a maintainability-lens section documenting the projection and the canonical-source rule.
