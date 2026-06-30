@@ -280,6 +280,12 @@ fn run_rejects_invalid_payload_before_ingest() {
     let before = top_arr(&json_ok(root, &["runs", "list", "--json"])).len();
     let bad = bb(root, &["run", "hello", "--payload", "not json"]);
     assert!(!bad.status.success(), "invalid payload must exit non-zero");
+    let stderr = String::from_utf8_lossy(&bad.stderr);
+    assert!(stderr.contains("--payload is not valid JSON"));
+    assert!(
+        !stderr.contains("not json"),
+        "invalid payload contents must not be echoed to stderr: {stderr}"
+    );
     let after = top_arr(&json_ok(root, &["runs", "list", "--json"])).len();
     assert_eq!(before, after, "invalid payload must not create a run row");
 }
@@ -310,6 +316,28 @@ fn run_payload_file_and_exclusivity() {
     assert_eq!(doc["run"]["state"], "success");
 
     // Mutually exclusive with --payload: clap rejects with a non-zero exit.
+    let invalid_file = dir.path().join("invalid-payload.json");
+    fs::write(&invalid_file, "{\"marker\":\"payload-redaction-marker\",}").unwrap();
+    let bad_file = bb(
+        root,
+        &[
+            "run",
+            "hello",
+            "--payload-file",
+            invalid_file.to_str().unwrap(),
+        ],
+    );
+    assert!(
+        !bad_file.status.success(),
+        "invalid --payload-file JSON must exit non-zero"
+    );
+    let stderr = String::from_utf8_lossy(&bad_file.stderr);
+    assert!(stderr.contains("--payload-file is not valid JSON"));
+    assert!(
+        !stderr.contains("payload-redaction-marker"),
+        "invalid payload-file contents must not be echoed to stderr: {stderr}"
+    );
+
     let both = bb(
         root,
         &[

@@ -261,20 +261,23 @@ fn run() -> Result<()> {
             // Resolve payload from --payload or --payload-file (clap enforces
             // mutual exclusion), then validate as JSON *before* ingest so a
             // malformed payload never creates a run row.
-            let payload = match (payload, payload_file) {
-                (Some(p), None) => Some(p),
-                (None, Some(path)) => Some(
-                    std::fs::read_to_string(&path)
-                        .with_context(|| format!("read payload file {}", path.display()))?,
+            let (payload, payload_source) = match (payload, payload_file) {
+                (Some(p), None) => (Some(p), "--payload"),
+                (None, Some(path)) => (
+                    Some(
+                        std::fs::read_to_string(&path)
+                            .with_context(|| format!("read payload file {}", path.display()))?,
+                    ),
+                    "--payload-file",
                 ),
-                (None, None) => None,
+                (None, None) => (None, "payload"),
                 (Some(_), Some(_)) => {
                     unreachable!("clap enforces --payload/--payload-file exclusion")
                 }
             };
             if let Some(p) = &payload {
                 serde_json::from_str::<serde_json::Value>(p)
-                    .with_context(|| format!("--payload is not valid JSON: {p}"))?;
+                    .with_context(|| format!("{payload_source} is not valid JSON"))?;
             }
             let outcome = ledger.ingest(IngressRequest {
                 task: &task,
