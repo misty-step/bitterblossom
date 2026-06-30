@@ -6,6 +6,7 @@
 //! and the read-only MCP server (backlog 078) both call these helpers so
 //! their outputs agree by construction.
 
+use std::fmt;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
@@ -22,6 +23,39 @@ pub const READ_LIMIT: u64 = 1 << 20; // 1 MiB
 /// Files the harness writes into the attempt artifact dir for its own
 /// bookkeeping. They are not agent artifacts and are hidden from `list`.
 const INTERNAL_ARTIFACTS: &[&str] = &["harness.pid"];
+
+#[derive(Debug)]
+pub enum ArtifactError {
+    InvalidPath { path: String },
+    EscapesRoot { path: String },
+    MissingRun { run_id: String },
+}
+
+impl ArtifactError {
+    pub fn json_kind(&self) -> &'static str {
+        match self {
+            ArtifactError::InvalidPath { .. } | ArtifactError::EscapesRoot { .. } => "invalid_path",
+            ArtifactError::MissingRun { .. } => "missing_run",
+        }
+    }
+}
+
+impl fmt::Display for ArtifactError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ArtifactError::InvalidPath { path } => write!(
+                f,
+                "artifact path must be a non-empty relative path without '.' or '..': {path:?}"
+            ),
+            ArtifactError::EscapesRoot { path } => {
+                write!(f, "artifact path escapes attempt artifact root: {path:?}")
+            }
+            ArtifactError::MissingRun { run_id } => write!(f, "run {run_id} not found"),
+        }
+    }
+}
+
+impl std::error::Error for ArtifactError {}
 
 #[derive(Debug, Serialize)]
 pub struct ArtifactEntry {
@@ -68,7 +102,7 @@ pub enum ReadOutcome {
 /// Subdirectory artifacts are reachable via `read` but not enumerated yet;
 /// bundling/listing nested trees is deferred (backlog 079 oracle).
 pub fn list(ledger: &Ledger, run_id: &str) -> Result<Vec<ArtifactEntry>> {
-    ledger.run(run_id)?; // bails with "run <id> not found" if absent
+    ensure_run_exists(ledger, run_id)?;
     let mut out = Vec::new();
     for a in ledger.attempts(run_id)? {
         let Some(dir) = &a.artifact_dir else { continue };
@@ -133,7 +167,7 @@ pub fn list(ledger: &Ledger, run_id: &str) -> Result<Vec<ArtifactEntry>> {
 /// artifacts are summarized, never streamed to stdout.
 pub fn read(ledger: &Ledger, run_id: &str, path: &str) -> Result<ReadOutcome> {
     let rel = safe_relative(path)?;
-    ledger.run(run_id)?;
+    ensure_run_exists(ledger, run_id)?;
     let mut attempts = ledger.attempts(run_id)?;
     // Newest-first so a retry's artifact wins over an earlier attempt's.
     attempts.reverse();
@@ -162,7 +196,7 @@ pub fn read(ledger: &Ledger, run_id: &str, path: &str) -> Result<ReadOutcome> {
             fs::canonicalize(&file).context("canonicalize artifact path")?,
         );
         if !file_c.starts_with(&root_c) {
-            bail!("artifact path escapes attempt artifact root: {path:?}");
+            return Err(ArtifactError::EscapesRoot { path: path.into() }.into());
         }
         let size = meta.len();
         if size > READ_LIMIT {
@@ -199,9 +233,28 @@ pub fn read(ledger: &Ledger, run_id: &str, path: &str) -> Result<ReadOutcome> {
 fn safe_relative(path: &str) -> Result<PathBuf> {
     let p = Path::new(path);
     if path.trim().is_empty() || p.components().any(|c| !matches!(c, Component::Normal(_))) {
-        bail!("artifact path must be a non-empty relative path without '.' or '..': {path:?}");
+        return Err(ArtifactError::InvalidPath { path: path.into() }.into());
     }
     Ok(p.to_path_buf())
+}
+
+fn ensure_run_exists(ledger: &Ledger, run_id: &str) -> Result<()> {
+    match ledger.run(run_id) {
+        Ok(_) => Ok(()),
+        Err(err) if is_not_found(&err) => Err(ArtifactError::MissingRun {
+            run_id: run_id.into(),
+        }
+        .into()),
+        Err(err) => Err(err),
+    }
+}
+
+fn is_not_found(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<rusqlite::Error>()
+            .is_some_and(|e| matches!(e, rusqlite::Error::QueryReturnedNoRows))
+    })
 }
 
 struct ArtifactProfile {

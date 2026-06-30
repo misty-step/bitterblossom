@@ -954,12 +954,7 @@ fn print_artifact_json_error(run_id: &str, path: Option<&str>, err: &anyhow::Err
 }
 
 fn artifact_json_error_kind(err: &anyhow::Error) -> &'static str {
-    let message = format!("{err:#}");
-    if message.contains("artifact path must") || message.contains("escapes attempt artifact root") {
-        "invalid_path"
-    } else if message.starts_with("run ") && message.contains(" not found") {
-        "missing_run"
-    } else {
-        "io_error"
-    }
+    err.downcast_ref::<artifacts::ArtifactError>()
+        .map(artifacts::ArtifactError::json_kind)
+        .unwrap_or("io_error")
 }

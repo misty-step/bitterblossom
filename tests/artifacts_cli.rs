@@ -1,7 +1,7 @@
 //! CLI integration for `bb artifacts`: a real local-plane run produces
 //! REPORT.json, then `list --json` and `read` consume it through the public
-//! binary surface — no local path spelunking. Also covers missing-artifact
-//! and path-traversal rejection at the CLI boundary.
+//! binary surface. Edge-case fixtures discover the attempt artifact dir through
+//! `bb runs show --json` instead of hardcoding storage layout.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -62,12 +62,18 @@ fn run_hello(root: &str) -> String {
     doc["run"]["id"].as_str().unwrap().to_string()
 }
 
-fn artifact_path(root: &std::path::Path, run_id: &str, path: &str) -> std::path::PathBuf {
-    root.join(".bb")
-        .join("runs")
-        .join(run_id)
-        .join("attempt-1")
-        .join(path)
+fn artifact_dir(root: &str, run_id: &str) -> std::path::PathBuf {
+    let show = bb(root, &["runs", "show", run_id, "--json"]);
+    assert!(
+        show.status.success(),
+        "{}",
+        String::from_utf8_lossy(&show.stderr)
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&show.stdout).unwrap();
+    doc["attempts"][0]["artifact_dir"]
+        .as_str()
+        .expect("attempt artifact_dir")
+        .into()
 }
 
 #[test]
@@ -143,11 +149,7 @@ fn artifacts_read_binary_json_exits_nonzero_with_binary_envelope() {
     write_plane(dir.path());
     let root = dir.path().to_str().unwrap();
     let run_id = run_hello(root);
-    fs::write(
-        artifact_path(dir.path(), &run_id, "binary.bin"),
-        [0xff, 0x00],
-    )
-    .unwrap();
+    fs::write(artifact_dir(root, &run_id).join("binary.bin"), [0xff, 0x00]).unwrap();
 
     let list = bb(root, &["artifacts", "list", &run_id, "--json"]);
     assert!(list.status.success());
@@ -177,7 +179,7 @@ fn artifacts_read_oversized_json_exits_nonzero_with_oversized_envelope() {
     let root = dir.path().to_str().unwrap();
     let run_id = run_hello(root);
     fs::write(
-        artifact_path(dir.path(), &run_id, "huge.txt"),
+        artifact_dir(root, &run_id).join("huge.txt"),
         vec![b'a'; READ_LIMIT as usize + 1],
     )
     .unwrap();
@@ -237,7 +239,7 @@ fn artifacts_json_errors_cover_missing_run_and_stat_failure() {
     assert_eq!(env["path"], "REPORT.json");
 
     fs::write(
-        artifact_path(dir.path(), &run_id, "not-dir"),
+        artifact_dir(root, &run_id).join("not-dir"),
         "not a directory",
     )
     .unwrap();
