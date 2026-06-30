@@ -193,6 +193,34 @@ fn artifacts_read_oversized_json_exits_nonzero_with_oversized_envelope() {
 }
 
 #[test]
+fn artifacts_list_does_not_mark_oversized_utf8_split_at_sniff_boundary_as_binary() {
+    let dir = tempfile::tempdir().unwrap();
+    write_plane(dir.path());
+    let root = dir.path().to_str().unwrap();
+    let run_id = run_hello(root);
+    let mut content = vec![b'a'; 8191];
+    content.extend_from_slice("é".as_bytes());
+    content.resize(READ_LIMIT as usize + 1, b'a');
+    fs::write(artifact_dir(root, &run_id).join("huge-utf8.txt"), content).unwrap();
+
+    let list = bb(root, &["artifacts", "list", &run_id, "--json"]);
+    assert!(
+        list.status.success(),
+        "{}",
+        String::from_utf8_lossy(&list.stderr)
+    );
+    let entries: serde_json::Value = serde_json::from_slice(&list.stdout).unwrap();
+    let huge = entries
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["path"] == "huge-utf8.txt")
+        .expect("huge UTF-8 artifact listed");
+    assert_eq!(huge["content_type"], "text/plain");
+    assert_eq!(huge["binary"], false);
+}
+
+#[test]
 fn artifacts_read_rejects_path_traversal_at_cli_boundary() {
     let dir = tempfile::tempdir().unwrap();
     write_plane(dir.path());

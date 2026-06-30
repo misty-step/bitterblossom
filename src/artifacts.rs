@@ -284,10 +284,17 @@ fn content_type(path: &Path) -> String {
     .into()
 }
 
-/// Null-byte scan over the first 8 KiB: a conservative binary heuristic that
-/// flags non-text artifacts without reading the whole file.
+/// Null-byte scan plus UTF-8 validation. Complete buffers with invalid UTF-8
+/// are treated as binary; a large-file sniff that ends mid-codepoint is still
+/// text so `list` does not misclassify oversized UTF-8 artifacts.
 fn is_binary_bytes(bytes: &[u8]) -> bool {
-    bytes.contains(&0u8) || std::str::from_utf8(bytes).is_err()
+    if bytes.contains(&0u8) {
+        return true;
+    }
+    match std::str::from_utf8(bytes) {
+        Ok(_) => false,
+        Err(e) => e.error_len().is_some(),
+    }
 }
 
 fn looks_binary(path: &Path, size: u64) -> Result<bool> {
