@@ -491,6 +491,8 @@ bb runs show <run-id> [--json]                    # run + attempts + events
 bb runs release <id> [--reason TEXT]              # re-queue ONE blocked_budget run
 bb runs retire <id> --reason TEXT                 # blocked_budget -> retired (terminal)
 bb runs export                                    # bb.run_telemetry.v1 JSONL
+bb artifacts list <run-id> [--json]                # artifact files across a run's attempts
+bb artifacts read <run-id> <path> [--json]         # safe text/JSON read; binary/oversized/unsafe paths refused
 bb dlq list [--json]
 bb dlq replay <id> [--json]
 bb dlq ack <id> --reason TEXT [--json]            # close a superseded pre-execute DLQ

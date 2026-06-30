@@ -1,7 +1,7 @@
 use std::{path::PathBuf, thread, time::Duration};
 
 use anyhow::{bail, Context, Result};
-use bitterblossom::{budget, dispatch, ledger, recovery, serve, spec};
+use bitterblossom::{artifacts, budget, dispatch, ledger, recovery, serve, spec};
 use clap::{Parser, Subcommand};
 
 use ledger::{IngressRequest, Ledger};
@@ -107,6 +107,14 @@ enum Command {
         storm: bool,
         #[arg(long)]
         json: bool,
+    },
+    /// Inspect run artifacts without spelunking attempt directories. `list`
+    /// enumerates artifact files across a run's attempts; `read` prints a
+    /// safe text/JSON artifact such as REPORT.json. Binary and oversized
+    /// artifacts are rejected with structured errors; unsafe paths fail.
+    Artifacts {
+        #[command(subcommand)]
+        command: ArtifactsCommand,
     },
 }
 
@@ -230,6 +238,28 @@ enum TaskCommand {
     },
     /// Unpark a task and re-queue its blocked-budget runs.
     Unpark { task: String },
+}
+
+#[derive(Subcommand)]
+enum ArtifactsCommand {
+    /// List artifact files (attempt, path, size, content type, binary flag)
+    /// across a run's attempts. `--json` emits the versioned ArtifactEntry
+    /// array; human mode prints a compact table.
+    List {
+        run_id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print a safe text/JSON artifact from the newest attempt that has it.
+    /// Binary and oversized artifacts are rejected; unsafe paths fail.
+    /// Default prints the raw artifact to stdout; `--json` emits a
+    /// `{kind, ...}` envelope and exits non-zero on non-text outcomes.
+    Read {
+        run_id: String,
+        path: String,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() {
@@ -404,6 +434,53 @@ fn run() -> Result<()> {
                 }
             }
         }
+        Command::Artifacts { command } => match command {
+            ArtifactsCommand::List { run_id, json } => {
+                let entries = artifacts::list(&ledger, &run_id)?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&entries)?);
+                } else if entries.is_empty() {
+                    println!("no artifacts recorded for run {run_id}");
+                } else {
+                    println!("attempt  size      type                 binary  path");
+                    for e in &entries {
+                        println!(
+                            "{:>7}  {:>8}  {:<20} {:<6}  {}",
+                            e.attempt, e.size, e.content_type, e.binary, e.path
+                        );
+                    }
+                }
+            }
+            ArtifactsCommand::Read { run_id, path, json } => {
+                let outcome = artifacts::read(&ledger, &run_id, &path)?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&outcome)?);
+                }
+                match outcome {
+                    artifacts::ReadOutcome::Text { content, .. } => {
+                        if !json {
+                            print!("{content}");
+                        }
+                    }
+                    artifacts::ReadOutcome::Binary { attempt, size, .. } => {
+                        bail!("artifact {path:?} (attempt {attempt}, {size} bytes) is binary; refused");
+                    }
+                    artifacts::ReadOutcome::Oversized {
+                        attempt,
+                        size,
+                        limit,
+                        ..
+                    } => {
+                        bail!(
+                            "artifact {path:?} (attempt {attempt}, {size} bytes) exceeds read limit {limit}; refused"
+                        );
+                    }
+                    artifacts::ReadOutcome::Missing { .. } => {
+                        bail!("no artifact {path:?} found in any attempt of run {run_id}");
+                    }
+                }
+            }
+        },
         Command::Dlq { command } => match command {
             DlqCommand::List { json } => {
                 let rows = ledger.list_dead_letters()?;
