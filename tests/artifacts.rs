@@ -4,8 +4,6 @@
 //! real ledger + tempdirs so the helper is exercised without full dispatch.
 
 use std::fs;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use bitterblossom::{
@@ -112,7 +110,6 @@ fn missing_artifact_is_reported_not_panicked() {
     assert!(matches!(outcome, ReadOutcome::Missing { .. }));
 }
 
-#[cfg(unix)]
 #[test]
 fn read_surfaces_non_not_found_stat_errors() {
     let dir = tempfile::tempdir().unwrap();
@@ -121,13 +118,10 @@ fn read_surfaces_non_not_found_stat_errors() {
     let run = run_id(&mut ledger);
     let a1 = dir.path().join("a1");
     fs::create_dir_all(&a1).unwrap();
-    fs::write(a1.join("REPORT.json"), r#"{"ok":true}"#).unwrap();
+    fs::write(a1.join("not-dir"), "plain file").unwrap();
     add_attempt(&mut ledger, &run, 1, &a1);
 
-    fs::set_permissions(&a1, fs::Permissions::from_mode(0o000)).unwrap();
-    let err = artifacts::read(&ledger, &run, "REPORT.json").unwrap_err();
-    fs::set_permissions(&a1, fs::Permissions::from_mode(0o700)).unwrap();
-
+    let err = artifacts::read(&ledger, &run, "not-dir/REPORT.json").unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("stat artifact"), "unexpected error: {msg}");
 }
