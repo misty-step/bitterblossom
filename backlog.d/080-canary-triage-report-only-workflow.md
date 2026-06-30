@@ -33,6 +33,19 @@ Make Canary incidents trigger a bounded Bitterblossom triage agent that investig
 4. Add docs/skill recipe for incident triage.
 5. Dogfood on a real low-severity Canary event before any mutation authority.
 
+## Report-Only Graduation Metrics
+
+This ticket must ship with an explicit promotion scorecard. It remains report-only until all of these are true:
+
+- at least 5 replayed fixture incidents and 3 real low-severity incidents produce useful `REPORT.json` artifacts with no external side effects;
+- every report links incident id, service→repo mapping, evidence sources, suspected files/services, confidence, and residual uncertainty;
+- human or fresh-agent review marks at least 80% of reports “actionable” and 0 reports “dangerously wrong”;
+- artifact access via backlog 079 is sufficient to inspect reports without SSH/path spelunking;
+- alert noise stays bounded: no duplicate storm for the same incident fingerprint within the configured dedupe window;
+- budget/cost per incident is visible in `bb status`/runs and within the configured cap.
+
+Promotion trigger: only when the scorecard is green should backlog 081 level 2 (“branch/PR but no merge”) become eligible. Any mutation authority must cite the report-only evidence packet that justified promotion.
+
 ## Notes
 
 Why: Canary triage is the highest-value first unsupervised workflow because it is event-native, evidence-heavy, and can start report-only. Remediation and rollback belong in later authority levels, not this ticket.

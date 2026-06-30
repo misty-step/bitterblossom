@@ -25,6 +25,18 @@ Expose Bitterblossom to consuming agents through MCP without duplicating control
 - Evidence packet: MCP transcript plus matching CLI output for the same plane/run.
 - Cadence: run in the main verification gate once stable.
 
+## Autonomy / Write-Capability Graduation Signals
+
+This ticket intentionally ships **read-only MCP only**. Do not add mutating MCP tools in this slice. A future writable MCP surface requires a separate backlog item and evidence that the read-only surface is safe and useful:
+
+- at least 20 dogfood MCP sessions or one week of internal use where agents prefer MCP over shell spelunking for status/runs/artifacts;
+- zero observed MCP/CLI JSON shape drift in the compatibility fixtures;
+- every read-only tool has bounded output, path-safety checks where applicable, and artifact links instead of dumping large logs;
+- operators can answer “what happened, what evidence exists, what is the next safe command?” from MCP alone for recent build/storm runs;
+- backlog 083 guardrails are in place before any MCP write tool can dispatch, resolve, cancel, or mutate runs.
+
+Promotion trigger: open a follow-up writable-MCP ticket only when the above metrics are met and at least one consuming agent workflow is blocked specifically on safe write access rather than read access.
+
 ## Notes
 
 Why: earlier docs said MCP was unnecessary unless BB ran its own LLM loop. The 2026-06-29 groom supersedes that premise. MCP is needed because external agents consume Bitterblossom; BB itself still should not run an LLM loop.

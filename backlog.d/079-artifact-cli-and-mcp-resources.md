@@ -25,6 +25,18 @@ Let humans and agents inspect run evidence directly through `bb` and MCP instead
 - Evidence packet: command transcript and run id.
 - Cadence: artifact contract test joins the agent-interface gate.
 
+## Graduation Metrics / Trigger Conditions
+
+This first slice is read-only artifact inspection. Do not add artifact mutation, deletion, redaction rewriting, or automatic publication. Ship with metrics that tell us when to expand capability:
+
+- agents can close out at least 10 recent BB runs using `bb artifacts list/read` without direct `plane/.bb/runs/...` path spelunking;
+- gate-blocking evidence includes a public artifact handle/path for the full stdout/stderr or report, not just a truncated excerpt;
+- artifact reads reject traversal and oversized/binary output in tests and in one real run drill;
+- closeout receipts include artifact command transcripts for builder/storm/verifier runs;
+- a dogfood note records every time artifact access still required shell/file tools.
+
+Promotion trigger: only after those metrics are met should backlog 078 expose artifact resources over MCP, and only after MCP/read-only usage is stable should we consider artifact bundle/export automation.
+
 ## Notes
 
 Why: run state says a task finished; artifacts prove whether it did useful work. This is especially important for unsupervised report-only flows such as Canary triage and backlog-chewer dry runs.

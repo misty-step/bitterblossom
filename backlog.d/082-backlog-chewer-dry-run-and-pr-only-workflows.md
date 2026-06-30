@@ -33,6 +33,19 @@ Let Bitterblossom cron agents consume whitelisted, well-specced backlogs by firs
 4. Add repo whitelist and active-PR pressure checks.
 5. Decide later whether any repo earns guarded auto-merge.
 
+## Dry-Run → PR-Only Graduation Metrics
+
+Dry-run is a product requirement, not a delay tactic. PR-only mode is eligible only after dry-run evidence shows the selector and planner are reliable:
+
+- at least 20 dry-run selections across fixture + real whitelisted backlogs;
+- 90%+ of selected tickets are judged genuinely ready by a human or fresh reviewer;
+- 0 dangerous/blocked tickets are selected for implementation;
+- vague tickets produce useful shaping/context packets instead of code attempts;
+- every dry-run plan names verifier, acceptance criteria, budget, stop conditions, branch name, and expected changed paths;
+- max-one-active-BB-authored-PR checks are implemented before PR-only mode.
+
+Promotion trigger: PR-only can be enabled per repo only when the dry-run scorecard is green for that repo family. Auto-merge remains out of scope until a separate guarded-landing ticket proves repo-specific gates and rollback drills.
+
 ## Notes
 
 Why: the operator wants to become primarily a backlog groomer while agents consume shaped work. The safety invariant is that product judgment stays in grooming; BB consumes ready tickets and reports when tickets are not ready.

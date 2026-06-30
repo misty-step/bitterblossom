@@ -25,6 +25,18 @@ After report-only Canary triage proves useful, add narrowly staged authority for
 - Evidence packet: branch/PR URLs, gate JSON, Canary sanity result, revert drill transcript.
 - Cadence: each authority level requires its own dogfood evidence before promotion.
 
+## Promotion Gates By Authority Level
+
+Each level requires measured evidence from the previous level; do not skip levels.
+
+- **Observe / report only → branch/PR:** requires backlog 080 report-only scorecard green: useful reports, no side effects, dedupe working, artifact inspection working, bounded spend.
+- **Branch/PR → guarded land:** requires at least 5 low-risk PRs where CI, storm gate, and human/fresh-agent review all pass; no competing active PRs; no post-merge Canary regression in the same service.
+- **Guarded land → rollback authority:** requires deterministic sanity checks for the affected service, ownership of the exact prior agent change, and a rollback drill in a fixture/low-risk repo.
+
+Metrics to record in every level: incident fingerprint, authority level, allowed actions, action actually taken, verifier/gate ids, cost, time-to-report, time-to-PR, human override count, and whether the run halted safely on uncertainty.
+
+Automatic promotion is forbidden. Metrics can only make the next backlog issue eligible for explicit operator approval.
+
 ## Notes
 
 Why: the operator vision includes investigate → remediate → PR → review → merge → sanity check → revert if unfixed. That is the right long-term loop, but it is unsafe as a first slice. This ticket preserves the ambition while forcing evidence-gated graduation.

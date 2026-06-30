@@ -25,6 +25,20 @@ Make recurring and webhook-triggered BB loops fail loudly, halt safely, and avoi
 - Evidence packet: drill transcripts and status JSON snapshots.
 - Cadence: before increasing Canary/backlog-chewer allowlists or authority levels.
 
+## Rollout Gate Metrics
+
+These guardrails are prerequisites for expanding autonomous volume. A workflow may not move from read/report-only into write authority unless status/API can show:
+
+- global pause state and reason;
+- per-task active runs, duplicate-suppression key, and max active concurrency;
+- last progress heartbeat for running attempts and stale-run safe next action;
+- notification/outbox failures;
+- in-flight or reserved spend, not just terminal cost;
+- cron/webhook collapse/skipped event counts;
+- active authority level for each autonomous task family.
+
+Promotion trigger: before any new autonomous repo/service allowlist expansion, run the guardrail drill and attach status JSON snapshots to the promotion issue.
+
 ## Notes
 
 Why: previous hardening made the plane much safer, but the 2026-06-29 groom identified unsupervised-volume guardrails as a prerequisite for broader autonomous loops. This ticket is mechanism only: pause, caps, outbox/status, heartbeat, budget reservation. It must not add workflow judgment to the spine.
