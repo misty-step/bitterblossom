@@ -9,7 +9,7 @@ fn write_plane(root: &std::path::Path) {
     }
     fs::write(
         root.join("agents/true.toml"),
-        "version = 1\nharness = \"command\"\nmodel = \"\"\nbin = \"true\"\n",
+        "version = 1\nharness = \"command\"\nmodel = \"\"\nbin = \"/usr/bin/true\"\n",
     )
     .unwrap();
     fs::write(root.join("plane.toml"), "dev = true\n").unwrap();
