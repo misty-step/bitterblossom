@@ -69,3 +69,5 @@ The contract matters more than the spelling.
 ## Notes
 
 This is the BB-side complement to backlog 085. Hermes can schedule a loop, but BB must give that loop safe, typed operator actions.
+
+2026-06-30 tick evidence: after local verify and Thermo approval for `e2ccd32`, the hand-built storm wrapper opened submission `e0584b6875b3` but dispatched payload `{"submission":"e0584b6875b3"}` without `repo`. The verify lane cloned `https://github.com/.git/` and the security lane refused to produce a verdict because `EVENT.json` lacked `repo`, escalating the gate before simplification/product ran. This polluted submission should be abandoned; the next clean storm must use a typed recipe/payload that includes `repo":"misty-step/bitterblossom"` and refuses to dispatch if required fields are missing.
