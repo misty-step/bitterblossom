@@ -434,6 +434,15 @@ squash-land (`clear` is terminal); on `blocked`: fix, push, and the next
 — the operator is already notified. Judgment (what to fix, what to reject)
 stays with the agent; arithmetic lives in `bb gate`.
 
+**Maintainability lens.** The `simplification` storm member applies the
+Thermo-Nuclear maintainability lens (sourced from Harness Kit's synced
+`cursor-thermo-nuclear-code-quality-review` skill). The card encodes the
+skill's review rules — code-judo moves, file-size boundaries, spaghetti
+growth, approval bar — so structural blockers are found by the gate, not
+left as an optional local ritual. Provenance lives in the card; if the
+skill and card diverge, the skill is canonical. A contract test
+(`tests/thermo_nuclear_lens.rs`) guards the projection.
+
 ## Run lifecycle
 
 A durable run row exists in SQLite **before any trigger gets its ack**.
