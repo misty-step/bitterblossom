@@ -73,24 +73,50 @@ pub fn list(ledger: &Ledger, run_id: &str) -> Result<Vec<ArtifactEntry>> {
     for a in ledger.attempts(run_id)? {
         let Some(dir) = &a.artifact_dir else { continue };
         let dir = Path::new(dir);
-        let Ok(entries) = fs::read_dir(dir) else {
-            continue;
+        let entries = match fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => bail!(
+                "read artifact dir for run {run_id} attempt {} at {}: {e}",
+                a.n,
+                dir.display()
+            ),
         };
-        for entry in entries.flatten() {
-            let meta = match entry.metadata() {
-                Ok(m) if m.is_file() => m,
-                _ => continue,
-            };
+        for entry in entries {
+            let entry = entry.with_context(|| {
+                format!(
+                    "read artifact dir entry for run {run_id} attempt {} at {}",
+                    a.n,
+                    dir.display()
+                )
+            })?;
+            let meta = entry.metadata().with_context(|| {
+                format!(
+                    "stat artifact for run {run_id} attempt {} at {}",
+                    a.n,
+                    entry.path().display()
+                )
+            })?;
+            if !meta.is_file() {
+                continue;
+            }
             let name = entry.file_name().to_string_lossy().into_owned();
             if INTERNAL_ARTIFACTS.contains(&name.as_str()) {
                 continue;
             }
+            let profile = artifact_profile(&entry.path(), meta.len()).with_context(|| {
+                format!(
+                    "classify artifact for run {run_id} attempt {} at {}",
+                    a.n,
+                    entry.path().display()
+                )
+            })?;
             out.push(ArtifactEntry {
                 attempt: a.n,
                 path: name,
                 size: meta.len(),
-                content_type: content_type(&entry.path()),
-                binary: looks_binary(&entry.path(), meta.len()),
+                content_type: profile.content_type,
+                binary: profile.binary,
             });
         }
     }
@@ -134,7 +160,7 @@ pub fn read(ledger: &Ledger, run_id: &str, path: &str) -> Result<ReadOutcome> {
             });
         }
         let bytes = fs::read(&file).context("read artifact")?;
-        if bytes.contains(&0u8) || std::str::from_utf8(&bytes).is_err() {
+        if is_binary_bytes(&bytes) {
             return Ok(ReadOutcome::Binary {
                 attempt: a.n,
                 path: rel.to_string_lossy().into_owned(),
@@ -164,6 +190,23 @@ fn safe_relative(path: &str) -> Result<PathBuf> {
     Ok(p.to_path_buf())
 }
 
+struct ArtifactProfile {
+    content_type: String,
+    binary: bool,
+}
+
+fn artifact_profile(path: &Path, size: u64) -> Result<ArtifactProfile> {
+    let binary = if size <= READ_LIMIT {
+        is_binary_bytes(&fs::read(path).context("read artifact for classification")?)
+    } else {
+        looks_binary(path, size)?
+    };
+    Ok(ArtifactProfile {
+        content_type: content_type(path),
+        binary,
+    })
+}
+
 fn content_type(path: &Path) -> String {
     match path.extension().and_then(|e| e.to_str()) {
         Some("json") => "application/json",
@@ -176,16 +219,17 @@ fn content_type(path: &Path) -> String {
 
 /// Null-byte scan over the first 8 KiB: a conservative binary heuristic that
 /// flags non-text artifacts without reading the whole file.
-fn looks_binary(path: &Path, size: u64) -> bool {
+fn is_binary_bytes(bytes: &[u8]) -> bool {
+    bytes.contains(&0u8) || std::str::from_utf8(bytes).is_err()
+}
+
+fn looks_binary(path: &Path, size: u64) -> Result<bool> {
     if size == 0 {
-        return false;
+        return Ok(false);
     }
-    let mut f = match fs::File::open(path) {
-        Ok(f) => f,
-        Err(_) => return false,
-    };
+    let mut f = fs::File::open(path).context("open artifact for binary sniff")?;
     use std::io::Read;
     let mut buf = [0u8; 8192];
-    let n = f.read(&mut buf).unwrap_or(0);
-    buf[..n].contains(&0u8)
+    let n = f.read(&mut buf).context("read artifact for binary sniff")?;
+    Ok(is_binary_bytes(&buf[..n]))
 }

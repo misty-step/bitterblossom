@@ -63,7 +63,7 @@ Read the output for:
 | Compare candidate model configs | Run at least three candidate tasks, then `bb --config <plane> run model-eval --payload '<json>' --json` |
 | Inspect ledger | `bb --config <plane> runs list --json`; `bb --config <plane> runs show <id> --json` |
 | Export run telemetry | `bb --config <plane> runs export` (`bb.run_telemetry.v1` JSONL) |
-| Inspect run artifacts | `bb --config <plane> artifacts list <run-id> --json`; `bb --config <plane> artifacts read <run-id> REPORT.json` (safe text/JSON read; binary, oversized, and traversal paths refused) |
+| Inspect run artifacts | `bb --config <plane> artifacts list <run-id> --json` (top-level artifact files); `bb --config <plane> artifacts read <run-id> REPORT.json` (safe text/JSON read, including known nested relative paths; binary, oversized, and traversal paths refused) |
 | Handle pre-execute failures | `bb --config <plane> dlq list --json`; `bb --config <plane> dlq replay <id> --json`; `bb --config <plane> dlq ack <id> --reason <text> --json` to close a superseded DLQ |
 | Park or unpark workload dispatch | `bb --config <plane> task park|unpark <task>` |
 | Classify inherited running rows after host restart | `bb --config <plane> recover` |

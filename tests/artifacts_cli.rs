@@ -7,6 +7,8 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::process::{Command, Output};
 
+use bitterblossom::artifacts::READ_LIMIT;
+
 fn write_executable(path: &std::path::Path, content: &str) {
     fs::write(path, content).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
@@ -47,6 +49,25 @@ fn bb(root: &str, args: &[&str]) -> Output {
         .args(args)
         .output()
         .unwrap()
+}
+
+fn run_hello(root: &str) -> String {
+    let run = bb(root, &["run", "hello", "--json"]);
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&run.stdout).unwrap();
+    doc["run"]["id"].as_str().unwrap().to_string()
+}
+
+fn artifact_path(root: &std::path::Path, run_id: &str, path: &str) -> std::path::PathBuf {
+    root.join(".bb")
+        .join("runs")
+        .join(run_id)
+        .join("attempt-1")
+        .join(path)
 }
 
 #[test]
@@ -108,9 +129,7 @@ fn artifacts_read_missing_exits_nonzero_with_structured_error() {
     let dir = tempfile::tempdir().unwrap();
     write_plane(dir.path());
     let root = dir.path().to_str().unwrap();
-    let run = bb(root, &["run", "hello", "--json"]);
-    let doc: serde_json::Value = serde_json::from_slice(&run.stdout).unwrap();
-    let run_id = doc["run"]["id"].as_str().unwrap().to_string();
+    let run_id = run_hello(root);
 
     let missing = bb(root, &["artifacts", "read", &run_id, "NOPE.json", "--json"]);
     assert!(!missing.status.success());
@@ -119,13 +138,64 @@ fn artifacts_read_missing_exits_nonzero_with_structured_error() {
 }
 
 #[test]
+fn artifacts_read_binary_json_exits_nonzero_with_binary_envelope() {
+    let dir = tempfile::tempdir().unwrap();
+    write_plane(dir.path());
+    let root = dir.path().to_str().unwrap();
+    let run_id = run_hello(root);
+    fs::write(
+        artifact_path(dir.path(), &run_id, "binary.bin"),
+        [0xff, 0x00],
+    )
+    .unwrap();
+
+    let list = bb(root, &["artifacts", "list", &run_id, "--json"]);
+    assert!(list.status.success());
+    let entries: serde_json::Value = serde_json::from_slice(&list.stdout).unwrap();
+    let binary = entries
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["path"] == "binary.bin")
+        .expect("binary artifact listed");
+    assert_eq!(binary["binary"], true);
+
+    let read = bb(
+        root,
+        &["artifacts", "read", &run_id, "binary.bin", "--json"],
+    );
+    assert!(!read.status.success());
+    let env: serde_json::Value = serde_json::from_slice(&read.stdout).unwrap();
+    assert_eq!(env["kind"], "binary");
+    assert_eq!(env["path"], "binary.bin");
+}
+
+#[test]
+fn artifacts_read_oversized_json_exits_nonzero_with_oversized_envelope() {
+    let dir = tempfile::tempdir().unwrap();
+    write_plane(dir.path());
+    let root = dir.path().to_str().unwrap();
+    let run_id = run_hello(root);
+    fs::write(
+        artifact_path(dir.path(), &run_id, "huge.txt"),
+        vec![b'a'; READ_LIMIT as usize + 1],
+    )
+    .unwrap();
+
+    let read = bb(root, &["artifacts", "read", &run_id, "huge.txt", "--json"]);
+    assert!(!read.status.success());
+    let env: serde_json::Value = serde_json::from_slice(&read.stdout).unwrap();
+    assert_eq!(env["kind"], "oversized");
+    assert_eq!(env["path"], "huge.txt");
+    assert_eq!(env["limit"], READ_LIMIT);
+}
+
+#[test]
 fn artifacts_read_rejects_path_traversal_at_cli_boundary() {
     let dir = tempfile::tempdir().unwrap();
     write_plane(dir.path());
     let root = dir.path().to_str().unwrap();
-    let run = bb(root, &["run", "hello", "--json"]);
-    let doc: serde_json::Value = serde_json::from_slice(&run.stdout).unwrap();
-    let run_id = doc["run"]["id"].as_str().unwrap().to_string();
+    let run_id = run_hello(root);
 
     for bad in ["../escape", "/etc/passwd", ".."] {
         let out = bb(root, &["artifacts", "read", &run_id, bad]);
