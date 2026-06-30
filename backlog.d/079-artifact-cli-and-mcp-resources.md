@@ -40,3 +40,7 @@ Promotion trigger: only after those metrics are met should backlog 078 expose ar
 ## Notes
 
 Why: run state says a task finished; artifacts prove whether it did useful work. This is especially important for unsupervised report-only flows such as Canary triage and backlog-chewer dry runs.
+
+2026-06-30 dogfood review note: the first CLI slice now emits structured JSON error envelopes for invalid paths, missing runs, and IO/stat failures, but maps `anyhow` messages to envelope kinds at the CLI boundary. Before expanding this into MCP or bundle, prefer typed artifact errors in `src/artifacts.rs` so CLI/API/MCP cannot drift on error classification. Also decide whether nested artifact listing remains deferred or becomes part of the MCP resource contract.
+
+2026-06-30 storm advisory: `looks_binary` can falsely mark a large UTF-8 text artifact as binary if the 8 KiB sniff boundary cuts through a multibyte character. This affects `artifacts list` metadata for files above `READ_LIMIT`, not `artifacts read`; fix or test the boundary before widening artifact resources.

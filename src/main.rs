@@ -1,7 +1,7 @@
 use std::{path::PathBuf, thread, time::Duration};
 
-use anyhow::{bail, Result};
-use bitterblossom::{budget, dispatch, ledger, recovery, serve, spec};
+use anyhow::{bail, Context, Result};
+use bitterblossom::{artifacts, budget, dispatch, ledger, recovery, serve, spec};
 use clap::{Parser, Subcommand};
 
 use ledger::{IngressRequest, Ledger};
@@ -22,31 +22,51 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Dispatch a task manually from a terminal. Ingests the event (idempotent
+    /// per `--idempotency-key`), then runs it to completion. `--payload` is
+    /// validated as JSON *before* a run row is created; invalid JSON exits
+    /// non-zero and leaves the ledger untouched. `--json` prints only the
+    /// final run bundle; human mode prints an early run id plus stderr
+    /// heartbeats while dispatch is in progress.
     Run {
         task: String,
         #[arg(long)]
         idempotency_key: Option<String>,
+        /// Inline JSON payload for the run. Validated as JSON before ingest.
         #[arg(long)]
         payload: Option<String>,
+        /// Path to a file holding the JSON payload. Read and validated as
+        /// JSON before ingest. Mutually exclusive with `--payload`.
+        #[arg(long, conflicts_with = "payload")]
+        payload_file: Option<PathBuf>,
         #[arg(long)]
         json: bool,
     },
+    /// Durable run ledger: list, show, export, cancel, resolve, release, retire.
     Runs {
         #[command(subcommand)]
         command: RunsCommand,
     },
+    /// Dead-letter queue: list, replay, acknowledge. Pre-execute failures only;
+    /// post-execute failures are operator-resolved via `runs resolve`.
     Dlq {
         #[command(subcommand)]
         command: DlqCommand,
     },
+    /// Task inventory and budget parking. `list --json` is the agent-facing
+    /// task surface (agent, substrate, triggers, verdict, parked, caps).
     Task {
         #[command(subcommand)]
         command: TaskCommand,
     },
+    /// Submission-loop merge gate: open a change, reject a finding, abandon.
     Submit {
         #[command(subcommand)]
         command: SubmitCommand,
     },
+    /// Evaluate the submission gate for a change or submission id. Pure
+    /// arithmetic over recorded verdicts: `clear` proceeds, `blocked` names
+    /// the fix prompt, `escalated` fires past max_rounds. Read-only.
     Gate {
         #[arg(long)]
         submission: Option<String>,
@@ -55,22 +75,32 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Operator truth: tasks, runs by state, parked tasks, open DLQs, and the
+    /// safe next action for each. Read-only; the stale-recovery surface.
     Status {
         #[arg(long)]
         json: bool,
     },
+    /// Validate the config surface: agents, tasks, substrates, budget caps,
+    /// and auth policy. Read-only. `--json` emits agent/task lists and the
+    /// task view.
     Check {
         #[arg(long)]
         json: bool,
     },
+    /// Classify runs inherited from a dead plane (probe, no orphaning):
+    /// transitions `running`/`pending` into `awaiting_recovery` for operator
+    /// resolution. Read-only inspection.
     Recover {
         #[arg(long)]
         json: bool,
     },
+    /// Run the plane: webhook ingress, cron scheduler, queue, dispatch.
     Serve,
-    /// Report missing declared secrets and unspawnable command-harness binaries
-    /// before dispatch creates run rows. Targets one task or the submission-storm
-    /// member set (the gate-required verdict tasks).
+    /// Report missing declared secrets and unspawnable command-harness
+    /// binaries before dispatch creates run rows. Targets one task or the
+    /// submission-storm member set (the gate-required verdict tasks).
+    /// Read-only report; non-zero exit when findings exist.
     Preflight {
         task: Option<String>,
         #[arg(long)]
@@ -78,10 +108,20 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Inspect run artifacts without spelunking attempt directories. `list`
+    /// enumerates artifact files across a run's attempts; `read` prints a
+    /// safe text/JSON artifact such as REPORT.json. Binary and oversized
+    /// artifacts are rejected with structured errors; unsafe paths fail.
+    Artifacts {
+        #[command(subcommand)]
+        command: ArtifactsCommand,
+    },
 }
 
 #[derive(Subcommand)]
 enum RunsCommand {
+    /// List runs, optionally filtered by task or state. `--json` emits the
+    /// versioned RunRow shape (state, agent@version, cost, duration, timestamps).
     List {
         #[arg(long)]
         task: Option<String>,
@@ -90,12 +130,16 @@ enum RunsCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Show one run with its attempts and event timeline. `--json` emits the
+    /// run bundle `{ run, attempts, events }`.
     Show {
         run_id: String,
         #[arg(long)]
         json: bool,
     },
+    /// Emit bb.run_telemetry.v1 JSONL for every run (Daedalus/OTel adapters).
     Export,
+    /// Cancel one pending run. Refused once a dispatcher has claimed it.
     Cancel {
         run_id: String,
         #[arg(long, default_value = "canceled by operator")]
@@ -125,10 +169,15 @@ enum RunsCommand {
 
 #[derive(Subcommand)]
 enum DlqCommand {
+    /// List dead letters with status (`open`, `replayed`, `acknowledged`),
+    /// replay lineage, and acknowledgement reason/timestamp. `--json` emits
+    /// the versioned DeadLetterRow shape.
     List {
         #[arg(long)]
         json: bool,
     },
+    /// Replay a dead letter as a new run with lineage (`parent_run_id` set).
+    /// Refused once replayed or acknowledged — the two are mutually exclusive.
     Replay {
         id: i64,
         #[arg(long)]
@@ -174,17 +223,42 @@ enum SubmitCommand {
 
 #[derive(Subcommand)]
 enum TaskCommand {
+    /// List tasks with agent, substrate, trigger count, verdict, and parked
+    /// state. `--json` is the agent-facing task inventory surface.
     List {
         #[arg(long)]
         json: bool,
     },
+    /// Park a task (budget breach or operator pause). Blocks new runs;
+    /// existing blocked runs stay queued.
     Park {
         task: String,
         #[arg(long, default_value = "parked by operator")]
         reason: String,
     },
-    Unpark {
-        task: String,
+    /// Unpark a task and re-queue its blocked-budget runs.
+    Unpark { task: String },
+}
+
+#[derive(Subcommand)]
+enum ArtifactsCommand {
+    /// List artifact files (attempt, path, size, content type, binary flag)
+    /// across a run's attempts. `--json` emits the versioned ArtifactEntry
+    /// array; human mode prints a compact table.
+    List {
+        run_id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print a safe text/JSON artifact from the newest attempt that has it.
+    /// Binary and oversized artifacts are rejected; unsafe paths fail.
+    /// Default prints the raw artifact to stdout; `--json` emits a
+    /// `{kind, ...}` envelope and exits non-zero on non-text outcomes.
+    Read {
+        run_id: String,
+        path: String,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -210,9 +284,31 @@ fn run() -> Result<()> {
             task,
             idempotency_key,
             payload,
+            payload_file,
             json,
         } => {
             plane.task(&task)?;
+            // Resolve payload from --payload or --payload-file (clap enforces
+            // mutual exclusion), then validate as JSON *before* ingest so a
+            // malformed payload never creates a run row.
+            let (payload, payload_source) = match (payload, payload_file) {
+                (Some(p), None) => (Some(p), "--payload"),
+                (None, Some(path)) => (
+                    Some(
+                        std::fs::read_to_string(&path)
+                            .with_context(|| format!("read payload file {}", path.display()))?,
+                    ),
+                    "--payload-file",
+                ),
+                (None, None) => (None, "payload"),
+                (Some(_), Some(_)) => {
+                    unreachable!("clap enforces --payload/--payload-file exclusion")
+                }
+            };
+            if let Some(p) = &payload {
+                serde_json::from_str::<serde_json::Value>(p)
+                    .with_context(|| format!("{payload_source} is not valid JSON"))?;
+            }
             let outcome = ledger.ingest(IngressRequest {
                 task: &task,
                 trigger_kind: "manual",
@@ -338,6 +434,76 @@ fn run() -> Result<()> {
                 }
             }
         }
+        Command::Artifacts { command } => match command {
+            ArtifactsCommand::List { run_id, json } => {
+                let entries = match artifacts::list(&ledger, &run_id) {
+                    Ok(entries) => entries,
+                    Err(e) if json => {
+                        print_artifact_json_error(&run_id, None, &e)?;
+                        std::process::exit(1);
+                    }
+                    Err(e) => return Err(e),
+                };
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&entries)?);
+                } else if entries.is_empty() {
+                    println!("no artifacts recorded for run {run_id}");
+                } else {
+                    println!("attempt  size      type                 binary  path");
+                    for e in &entries {
+                        println!(
+                            "{:>7}  {:>8}  {:<20} {:<6}  {}",
+                            e.attempt, e.size, e.content_type, e.binary, e.path
+                        );
+                    }
+                }
+            }
+            ArtifactsCommand::Read { run_id, path, json } => {
+                let outcome = match artifacts::read(&ledger, &run_id, &path) {
+                    Ok(outcome) => outcome,
+                    Err(e) if json => {
+                        print_artifact_json_error(&run_id, Some(&path), &e)?;
+                        std::process::exit(1);
+                    }
+                    Err(e) => return Err(e),
+                };
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&outcome)?);
+                }
+                match outcome {
+                    artifacts::ReadOutcome::Text { content, .. } => {
+                        if !json {
+                            print!("{content}");
+                        }
+                    }
+                    artifacts::ReadOutcome::Binary { attempt, size, .. } => {
+                        if json {
+                            std::process::exit(1);
+                        }
+                        bail!("artifact {path:?} (attempt {attempt}, {size} bytes) is binary; refused");
+                    }
+                    artifacts::ReadOutcome::Oversized {
+                        attempt,
+                        size,
+                        limit,
+                        ..
+                    } => {
+                        if json {
+                            std::process::exit(1);
+                        }
+                        bail!(
+                            "artifact {path:?} (attempt {attempt}, {size} bytes) exceeds read limit {limit}; refused"
+                        );
+                    }
+                    artifacts::ReadOutcome::Missing { .. } => {
+                        if json {
+                            std::process::exit(1);
+                        }
+                        bail!("no artifact {path:?} found in any attempt of run {run_id}");
+                    }
+                }
+            }
+        },
         Command::Dlq { command } => match command {
             DlqCommand::List { json } => {
                 let rows = ledger.list_dead_letters()?;
@@ -764,4 +930,31 @@ fn print_run(ledger: &Ledger, run_id: &str, json: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn print_artifact_json_error(run_id: &str, path: Option<&str>, err: &anyhow::Error) -> Result<()> {
+    let mut doc = serde_json::Map::new();
+    doc.insert(
+        "kind".into(),
+        serde_json::Value::String(artifact_json_error_kind(err).into()),
+    );
+    doc.insert("run_id".into(), serde_json::Value::String(run_id.into()));
+    if let Some(path) = path {
+        doc.insert("path".into(), serde_json::Value::String(path.into()));
+    }
+    doc.insert(
+        "message".into(),
+        serde_json::Value::String(format!("{err:#}")),
+    );
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::Value::Object(doc))?
+    );
+    Ok(())
+}
+
+fn artifact_json_error_kind(err: &anyhow::Error) -> &'static str {
+    err.downcast_ref::<artifacts::ArtifactError>()
+        .map(artifacts::ArtifactError::json_kind)
+        .unwrap_or("io_error")
 }

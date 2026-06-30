@@ -32,3 +32,5 @@ Why: the existing `examples/demo-plane` is valuable but not a cold-start path be
 This ticket should stay thin. It is not a new workflow. It is the local proof surface for every later skill/MCP/docs claim.
 
 Swarm evidence 2026-06-29: the current `plane/` has 30 tasks and all are Sprite-backed; `preflight build`, `build-glm`, `build-kimi`, and `gardener` report missing `OPENROUTER_API_KEY` / `GH_TOKEN` in this shell, and `gardener` also wants `BB_API_TOKEN`. Use repo-local `./target/debug/bb` in verification because host `bb` may resolve to `/opt/homebrew/bin/bb` rather than the checked-out binary.
+
+2026-06-30 dogfood review note: the local-plane invalid-payload smoke in `scripts/verify.sh` currently compares run counts with a brittle text grep over JSON. Before treating that smoke as a reusable agent-interface oracle, replace it with a typed/shape-aware count (or a small Rust/JSON fixture) so formatting or future fields cannot create a false pass/fail.

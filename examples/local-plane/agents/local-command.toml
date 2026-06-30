@@ -1,0 +1,17 @@
+# A zero-credential command-harness agent: no model, no provider, no secrets.
+# The `command` harness runs a plain binary (here `sh`) and records its
+# stdout as the attempt result. `bin = "sh"` with an inline script is the
+# established local-substrate pattern (cf. plane/agents/verifier.toml).
+#
+# The script runs in the attempt workspace, where the local substrate has
+# already written LANE_CARD.md, RUN.json, and EVENT.json (the --payload).
+# It writes a small REPORT.json — which the substrate copies into the
+# attempt artifact dir on release — and prints a one-line result.
+version = 1
+harness = "command"
+model = ""
+bin = "sh"
+args = [
+  "-c",
+  '''printf '{"task":"hello","ok":true}\n' > REPORT.json; echo hello-local-plane''',
+]

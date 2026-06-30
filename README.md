@@ -48,18 +48,32 @@ contract.
 
 ## Quick start
 
+The one-minute zero-credential golden path — no secrets, no remote
+substrate, no network. It validates the plane, dispatches a task, records
+a run, exposes status, and reads the run bundle:
+
 ```bash
 cargo build
+./target/debug/bb --config examples/local-plane check --json
+./target/debug/bb --config examples/local-plane preflight hello --json
+./target/debug/bb --config examples/local-plane run hello --payload '{"ok":true}' --json
+./target/debug/bb --config examples/local-plane status --json
+./target/debug/bb --config examples/local-plane runs show <run-id> --json   # from the run --json output
+```
+
+`examples/local-plane/` is a zero-credential local plane: a `command`-harness
+agent whose inline script writes a small `REPORT.json`. The `local` substrate
+is dev/test machinery, rejected unless `plane.toml` sets `dev = true`.
+
+`examples/demo-plane/` is a complete commented production-shaped config that
+dispatches to a remote substrate: `sprites` restores checkpoints, syncs
+repos, and executes the harness on a [Fly Sprite](https://sprites.dev) over
+WebSocket exec.
+
+```bash
 ./target/debug/bb --config examples/demo-plane check
 ./target/debug/bb --config examples/demo-plane run demo
 ```
-
-`examples/demo-plane/` is a complete commented config. Production
-planes dispatch to a remote substrate only: `sprites` restores
-checkpoints, syncs repos, and executes the harness on a
-[Fly Sprite](https://sprites.dev) over WebSocket exec. The `local`
-substrate is dev/test machinery, rejected unless plane.toml sets
-`dev = true`.
 
 ## Guarantees
 

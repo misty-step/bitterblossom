@@ -30,6 +30,7 @@ fn live_help_exposes_current_agent_cli_contract() {
     let run = help(&["run", "--help"]);
     assert!(run.contains("Usage: bb run [OPTIONS] <TASK>"));
     assert!(run.contains("--payload <PAYLOAD>"));
+    assert!(run.contains("--payload-file <PAYLOAD_FILE>"));
     assert!(run.contains("--json"));
     assert!(!run.contains("--var"));
 
@@ -59,7 +60,10 @@ fn current_docs_and_skills_match_live_cli_contract() {
     }
 
     let spine = read("docs/spine.md");
-    assert!(spine.contains("bb run <task> [--idempotency-key K] [--payload JSON] [--json]"));
+    assert!(spine.contains(
+        "bb run <task> [--idempotency-key K] [--payload JSON | --payload-file PATH] [--json]"
+    ));
+    assert!(spine.contains("bb task list [--json]"));
     assert!(spine.contains("bb runs export"));
     assert!(spine.contains("bb gate --change K | --submission ID [--json]"));
 
