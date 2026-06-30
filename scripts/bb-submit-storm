@@ -1,0 +1,205 @@
+#!/usr/bin/env python3
+"""Open a BB submission and run the canonical storm members safely.
+
+This is intentionally a small operator recipe rather than a second workflow
+engine: it validates a payload file, preflights the declared storm secrets, opens
+one submission, dispatches members with --payload-file, then returns a receipt.
+"""
+
+import argparse
+import json
+import os
+import shlex
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any, Dict, List
+
+DEFAULT_MEMBERS = ["verify", "correctness", "security", "simplification", "product"]
+BASE_REQUIRED_FIELDS = ["repo", "change", "rev"]
+
+
+def eprint(*parts: object) -> None:
+    print(*parts, file=sys.stderr)
+
+
+def load_payload(path: Path) -> Dict[str, Any]:
+    try:
+        raw = path.read_text()
+    except OSError as exc:
+        raise SystemExit(f"payload file {path}: cannot read: {exc}")
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"payload file {path}: is not valid JSON: {exc}")
+    if not isinstance(value, dict):
+        raise SystemExit(f"payload file {path}: top-level JSON must be an object")
+    return value
+
+
+def validate_required(payload: Dict[str, Any], path: Path, extra: List[str]) -> None:
+    missing = []
+    for field in BASE_REQUIRED_FIELDS + extra:
+        value = payload.get(field)
+        if not isinstance(value, str) or not value.strip():
+            missing.append(field)
+    if missing:
+        joined = ", ".join(f"'{f}'" for f in missing)
+        raise SystemExit(f"payload file {path}: required field(s) {joined} missing or empty string")
+
+
+def bb_command(raw: str) -> List[str]:
+    parts = shlex.split(raw)
+    if not parts:
+        raise SystemExit("--bb resolved to an empty command")
+    return parts
+
+
+def run_bb(base: List[str], config: str, args: List[str]) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        base + ["--config", config] + args,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+
+def parse_json(proc: subprocess.CompletedProcess, action: str) -> Any:
+    try:
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(
+            f"{action}: bb returned non-JSON stdout: {exc}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+        )
+
+
+def submission_id(doc: Any) -> str:
+    if isinstance(doc, dict):
+        if isinstance(doc.get("id"), str):
+            return doc["id"]
+        sub = doc.get("submission")
+        if isinstance(sub, dict) and isinstance(sub.get("id"), str):
+            return sub["id"]
+    raise SystemExit(f"submit open receipt did not contain submission id: {json.dumps(doc, sort_keys=True)}")
+
+
+def run_id(doc: Any) -> str:
+    if isinstance(doc, dict):
+        run = doc.get("run")
+        if isinstance(run, dict) and isinstance(run.get("id"), str):
+            return run["id"]
+        if isinstance(doc.get("id"), str):
+            return doc["id"]
+    raise SystemExit(f"run receipt did not contain run id: {json.dumps(doc, sort_keys=True)}")
+
+
+def write_temp_payload(payload: Dict[str, Any]) -> str:
+    fd, path = tempfile.mkstemp(prefix="bb-storm-payload-", suffix=".json")
+    with os.fdopen(fd, "w") as handle:
+        json.dump(payload, handle, sort_keys=True)
+        handle.write("\n")
+    return path
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Open a BB submission, dispatch storm members with checked payload files, and print a receipt."
+    )
+    parser.add_argument("--config", required=True, help="BB plane directory")
+    parser.add_argument("--payload-file", required=True, type=Path, help="JSON object with repo, change, rev, and optional context/backlog/base_ref")
+    parser.add_argument("--bb", default=os.environ.get("BB_CMD") or ("target/debug/bb" if Path("target/debug/bb").exists() else "bb"), help="bb command; may include a secret helper wrapper")
+    parser.add_argument("--member", action="append", help="Storm member task to run; defaults to BB's canonical review storm")
+    parser.add_argument("--require-field", action="append", default=[], help="Additional payload string field required before mutation")
+    parser.add_argument("--context", help="Submission context override; defaults to payload.context when present")
+    parser.add_argument("--json", action="store_true", help="Emit machine-readable receipt")
+    args = parser.parse_args()
+
+    payload = load_payload(args.payload_file)
+    validate_required(payload, args.payload_file, args.require_field)
+    base = bb_command(args.bb)
+    members = args.member or DEFAULT_MEMBERS
+    change = payload["change"].strip()
+    rev = payload["rev"].strip()
+    context = args.context if args.context is not None else payload.get("context")
+
+    preflight = run_bb(base, args.config, ["preflight", "--storm", "--json"])
+    if preflight.returncode != 0:
+        eprint("storm preflight failed before submission mutation")
+        if preflight.stdout:
+            eprint(preflight.stdout.rstrip())
+        if preflight.stderr:
+            eprint(preflight.stderr.rstrip())
+        return preflight.returncode
+
+    open_args = ["submit", "open", "--change", change, "--rev", rev, "--json"]
+    if isinstance(context, str) and context.strip():
+        open_args.extend(["--context", context])
+    opened = run_bb(base, args.config, open_args)
+    if opened.returncode != 0:
+        eprint("submit open failed")
+        if opened.stdout:
+            eprint(opened.stdout.rstrip())
+        if opened.stderr:
+            eprint(opened.stderr.rstrip())
+        return opened.returncode
+    opened_doc = parse_json(opened, "submit open")
+    sub_id = submission_id(opened_doc)
+
+    member_payload = dict(payload)
+    member_payload["submission"] = sub_id
+    temp_path = write_temp_payload(member_payload)
+    member_receipts = []
+    try:
+        for member in members:
+            key = f"storm:{sub_id}:{member}"
+            proc = run_bb(
+                base,
+                args.config,
+                ["run", member, "--idempotency-key", key, "--payload-file", temp_path, "--json"],
+            )
+            if proc.returncode != 0:
+                eprint(f"storm member {member} failed; stopping before additional fanout")
+                if proc.stdout:
+                    eprint(proc.stdout.rstrip())
+                if proc.stderr:
+                    eprint(proc.stderr.rstrip())
+                return proc.returncode
+            doc = parse_json(proc, f"run {member}")
+            member_receipts.append({"kind": member, "run_id": run_id(doc), "idempotency_key": key})
+    finally:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+
+    gate = run_bb(base, args.config, ["gate", "--submission", sub_id, "--json"])
+    if gate.returncode != 0:
+        eprint("gate evaluation failed after storm dispatch")
+        if gate.stdout:
+            eprint(gate.stdout.rstrip())
+        if gate.stderr:
+            eprint(gate.stderr.rstrip())
+        return gate.returncode
+    gate_doc = parse_json(gate, "gate")
+
+    receipt = {
+        "submission": sub_id,
+        "change": change,
+        "rev": rev,
+        "members": member_receipts,
+        "gate": gate_doc,
+        "safe_next_command": f"bb --config {shlex.quote(args.config)} gate --submission {shlex.quote(sub_id)} --json",
+    }
+    if args.json:
+        print(json.dumps(receipt, indent=2, sort_keys=True))
+    else:
+        print(f"submission {sub_id} storm dispatched for {change}@{rev}")
+        member_summary = ", ".join(f"{m['kind']}={m['run_id']}" for m in member_receipts)
+        print(f"members: {member_summary}")
+        print(f"safe next: {receipt['safe_next_command']}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

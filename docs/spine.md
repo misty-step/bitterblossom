@@ -504,6 +504,7 @@ bb preflight <task> | --storm [--json]            # missing secrets + unspawnabl
 bb task list [--json]                               # agent-facing task inventory
 bb task park|unpark <task>
 bb submit open --change K --rev SHA [--context TEXT]
+scripts/bb-submit-storm --config <plane> --payload-file storm.json [--bb "target/debug/bb"] [--json] # checked-in operator recipe: validate payload, storm preflight, open, run members via --payload-file, return receipt
 bb submit reject --change K --fingerprint FP --reason TEXT
 bb submit abandon --change K
 bb gate --change K | --submission ID [--json]     # also GET /api/gate?change=K

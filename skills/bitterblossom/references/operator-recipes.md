@@ -187,6 +187,33 @@ bb --config <plane> submit open \
   --json
 ```
 
+For the common submit-and-storm path, prefer the checked-in recipe over a
+hand-built shell wrapper. It validates a JSON payload file before any ledger
+mutation, runs `bb preflight --storm --json` before opening the submission,
+relies on `bb submit open`'s CAS refusal for duplicate open submissions,
+dispatches storm lanes with `--payload-file` (so the payload is not visible in
+argv), and prints a machine-readable receipt plus the safe next gate command:
+
+```bash
+cat > /tmp/bb-storm-payload.json <<'JSON'
+{"repo":"misty-step/bitterblossom","change":"<change-id>","rev":"<git-rev>","backlog":"backlog.d/086-first-class-operator-dispatch-recipes.md","base_ref":"origin/master"}
+JSON
+
+scripts/bb-submit-storm \
+  --config <plane> \
+  --bb "target/debug/bb" \
+  --payload-file /tmp/bb-storm-payload.json \
+  --require-field backlog \
+  --require-field base_ref \
+  --json
+```
+
+Cron supervisors that need runtime secrets must pass the BB secret helper as
+part of `--bb`, for example
+`--bb "plane/.bb/dogfood-loop/with-bb-secrets target/debug/bb"`. The helper
+keeps secrets in environment, not argv; the payload file must not contain
+secrets.
+
 Run verdict members with the returned submission id:
 
 ```bash

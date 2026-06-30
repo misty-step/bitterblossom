@@ -49,7 +49,7 @@ Start with repo-owned scripts if that is faster, then promote to `bb` commands o
 
 ```text
 scripts/bb-dispatch-build.sh --backlog 079 --base-ref bb/build/agent-friendly-local-contracts --branch-slug artifact-cli-first-slice --payload-file packet.json
-scripts/bb-submit-storm.sh --repo misty-step/bitterblossom --change <key> --rev <sha> --payload-file storm.json
+scripts/bb-submit-storm --config plane --bb "target/debug/bb" --payload-file storm.json --require-field backlog --require-field base_ref
 ```
 
 or CLI-native:
@@ -78,3 +78,5 @@ This is the BB-side complement to backlog 085. Hermes can schedule a loop, but B
 2026-06-30 repeated-blocker evidence: the next scheduled tick bootstrapped `GH_TOKEN` again but still had no `OPENROUTER_API_KEY` after sourcing the operator `.env`, so it stopped before opening a new submission or dispatching paid storm lanes. Hold this exact-rev storm until either the Hermes cron profile receives the required secret through an approved path or backlog 086 ships a BB-owned recipe/preflight that can prove the secret contract before mutation.
 
 2026-06-30 follow-up slice: the cron loop also had to query `plane/.bb/plane.db` directly because the shell-level `bb submit list --json` recipe was absent from the CLI even though the ledger already had a typed `list_submissions` shape. Add `bb submit list --json` as the smallest BB-owned discovery primitive before larger submit-and-storm recipes.
+
+2026-06-30 follow-up slice 2: added checked-in `scripts/bb-submit-storm` as the first submit-and-storm recipe. It validates `repo`/`change`/`rev` plus caller-declared required fields from `--payload-file` before mutation, runs `bb preflight --storm --json` before `submit open`, relies on `submit open`'s CAS refusal for duplicate open submissions, dispatches members with `bb run --payload-file` after injecting the submission id into a temporary payload file, and returns a JSON receipt with member run ids plus the safe next `gate` command. This is still script-owned; promote to CLI only after dogfood metrics show the contract is stable.
