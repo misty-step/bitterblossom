@@ -20,6 +20,19 @@ scripts/check-model-catalog.sh --catalog tests/fixtures/openrouter-models-curren
 echo "==> plane configs validate (bb check)"
 cargo run --quiet -- --config plane check
 cargo run --quiet -- --config examples/demo-plane check
+cargo run --quiet -- --config examples/local-plane check
+
+echo "==> local-plane zero-credential golden path (no secrets, no network)"
+BB=./target/debug/bb
+CFG=examples/local-plane
+$BB --config $CFG preflight hello --json >/dev/null
+# invalid payload must not create a run row; before/after run count equal.
+before=$($BB --config $CFG runs list --json | grep -c '"id"')
+$BB --config $CFG run hello --payload 'not json' >/dev/null 2>&1 || true
+after=$($BB --config $CFG runs list --json | grep -c '"id"')
+[ "$before" = "$after" ] || { echo "local-plane smoke: invalid payload created a run ($before -> $after)"; exit 1; }
+$BB --config $CFG run hello --payload '{"ok":true}' --json >/dev/null
+$BB --config $CFG status --json >/dev/null
 
 echo "==> operations smoke drill"
 BB_BIN=./target/debug/bb scripts/production-ops-drill.sh --local >/dev/null

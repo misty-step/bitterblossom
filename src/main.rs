@@ -1,6 +1,6 @@
 use std::{path::PathBuf, thread, time::Duration};
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use bitterblossom::{budget, dispatch, ledger, recovery, serve, spec};
 use clap::{Parser, Subcommand};
 
@@ -22,31 +22,51 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Dispatch a task manually from a terminal. Ingests the event (idempotent
+    /// per `--idempotency-key`), then runs it to completion. `--payload` is
+    /// validated as JSON *before* a run row is created; invalid JSON exits
+    /// non-zero and leaves the ledger untouched. `--json` prints only the
+    /// final run bundle; human mode prints an early run id plus stderr
+    /// heartbeats while dispatch is in progress.
     Run {
         task: String,
         #[arg(long)]
         idempotency_key: Option<String>,
+        /// Inline JSON payload for the run. Validated as JSON before ingest.
         #[arg(long)]
         payload: Option<String>,
+        /// Path to a file holding the JSON payload. Read and validated as
+        /// JSON before ingest. Mutually exclusive with `--payload`.
+        #[arg(long, conflicts_with = "payload")]
+        payload_file: Option<PathBuf>,
         #[arg(long)]
         json: bool,
     },
+    /// Durable run ledger: list, show, export, cancel, resolve, release, retire.
     Runs {
         #[command(subcommand)]
         command: RunsCommand,
     },
+    /// Dead-letter queue: list, replay, acknowledge. Pre-execute failures only;
+    /// post-execute failures are operator-resolved via `runs resolve`.
     Dlq {
         #[command(subcommand)]
         command: DlqCommand,
     },
+    /// Task inventory and budget parking. `list --json` is the agent-facing
+    /// task surface (agent, substrate, triggers, verdict, parked, caps).
     Task {
         #[command(subcommand)]
         command: TaskCommand,
     },
+    /// Submission-loop merge gate: open a change, reject a finding, abandon.
     Submit {
         #[command(subcommand)]
         command: SubmitCommand,
     },
+    /// Evaluate the submission gate for a change or submission id. Pure
+    /// arithmetic over recorded verdicts: `clear` proceeds, `blocked` names
+    /// the fix prompt, `escalated` fires past max_rounds. Read-only.
     Gate {
         #[arg(long)]
         submission: Option<String>,
@@ -55,22 +75,32 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Operator truth: tasks, runs by state, parked tasks, open DLQs, and the
+    /// safe next action for each. Read-only; the stale-recovery surface.
     Status {
         #[arg(long)]
         json: bool,
     },
+    /// Validate the config surface: agents, tasks, substrates, budget caps,
+    /// and auth policy. Read-only. `--json` emits agent/task lists and the
+    /// task view.
     Check {
         #[arg(long)]
         json: bool,
     },
+    /// Classify runs inherited from a dead plane (probe, no orphaning):
+    /// transitions `running`/`pending` into `awaiting_recovery` for operator
+    /// resolution. Read-only inspection.
     Recover {
         #[arg(long)]
         json: bool,
     },
+    /// Run the plane: webhook ingress, cron scheduler, queue, dispatch.
     Serve,
-    /// Report missing declared secrets and unspawnable command-harness binaries
-    /// before dispatch creates run rows. Targets one task or the submission-storm
-    /// member set (the gate-required verdict tasks).
+    /// Report missing declared secrets and unspawnable command-harness
+    /// binaries before dispatch creates run rows. Targets one task or the
+    /// submission-storm member set (the gate-required verdict tasks).
+    /// Read-only report; non-zero exit when findings exist.
     Preflight {
         task: Option<String>,
         #[arg(long)]
@@ -82,6 +112,8 @@ enum Command {
 
 #[derive(Subcommand)]
 enum RunsCommand {
+    /// List runs, optionally filtered by task or state. `--json` emits the
+    /// versioned RunRow shape (state, agent@version, cost, duration, timestamps).
     List {
         #[arg(long)]
         task: Option<String>,
@@ -90,12 +122,16 @@ enum RunsCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Show one run with its attempts and event timeline. `--json` emits the
+    /// run bundle `{ run, attempts, events }`.
     Show {
         run_id: String,
         #[arg(long)]
         json: bool,
     },
+    /// Emit bb.run_telemetry.v1 JSONL for every run (Daedalus/OTel adapters).
     Export,
+    /// Cancel one pending run. Refused once a dispatcher has claimed it.
     Cancel {
         run_id: String,
         #[arg(long, default_value = "canceled by operator")]
@@ -125,10 +161,15 @@ enum RunsCommand {
 
 #[derive(Subcommand)]
 enum DlqCommand {
+    /// List dead letters with status (`open`, `replayed`, `acknowledged`),
+    /// replay lineage, and acknowledgement reason/timestamp. `--json` emits
+    /// the versioned DeadLetterRow shape.
     List {
         #[arg(long)]
         json: bool,
     },
+    /// Replay a dead letter as a new run with lineage (`parent_run_id` set).
+    /// Refused once replayed or acknowledged — the two are mutually exclusive.
     Replay {
         id: i64,
         #[arg(long)]
@@ -174,18 +215,21 @@ enum SubmitCommand {
 
 #[derive(Subcommand)]
 enum TaskCommand {
+    /// List tasks with agent, substrate, trigger count, verdict, and parked
+    /// state. `--json` is the agent-facing task inventory surface.
     List {
         #[arg(long)]
         json: bool,
     },
+    /// Park a task (budget breach or operator pause). Blocks new runs;
+    /// existing blocked runs stay queued.
     Park {
         task: String,
         #[arg(long, default_value = "parked by operator")]
         reason: String,
     },
-    Unpark {
-        task: String,
-    },
+    /// Unpark a task and re-queue its blocked-budget runs.
+    Unpark { task: String },
 }
 
 fn main() {
@@ -210,9 +254,28 @@ fn run() -> Result<()> {
             task,
             idempotency_key,
             payload,
+            payload_file,
             json,
         } => {
             plane.task(&task)?;
+            // Resolve payload from --payload or --payload-file (clap enforces
+            // mutual exclusion), then validate as JSON *before* ingest so a
+            // malformed payload never creates a run row.
+            let payload = match (payload, payload_file) {
+                (Some(p), None) => Some(p),
+                (None, Some(path)) => Some(
+                    std::fs::read_to_string(&path)
+                        .with_context(|| format!("read payload file {}", path.display()))?,
+                ),
+                (None, None) => None,
+                (Some(_), Some(_)) => {
+                    unreachable!("clap enforces --payload/--payload-file exclusion")
+                }
+            };
+            if let Some(p) = &payload {
+                serde_json::from_str::<serde_json::Value>(p)
+                    .with_context(|| format!("--payload is not valid JSON: {p}"))?;
+            }
             let outcome = ledger.ingest(IngressRequest {
                 task: &task,
                 trigger_kind: "manual",

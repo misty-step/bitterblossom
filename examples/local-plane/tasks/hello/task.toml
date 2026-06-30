@@ -1,0 +1,9 @@
+agent = "local-command"      # the zero-credential command agent above
+substrate = "local"          # local substrate: dev/test machinery (plane sets dev = true)
+
+[budget]
+timeout_minutes = 1         # enforced: wall-clock kill
+max_runs_per_day = 100       # enforced pre-dispatch; generous for a demo
+
+[[trigger]]
+kind = "manual"             # bb run hello

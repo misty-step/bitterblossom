@@ -1,0 +1,19 @@
+# Zero-credential local plane: prove the event plane end to end with no
+# external auth, no remote substrate, no secrets, no network. This is the
+# cold-start golden path for humans and agents — `dev = true` is required
+# to allow the `local` substrate (production planes dispatch to sprites).
+#
+# The whole sequence runs from a clean checkout with no BB-related secrets:
+#   bb --config examples/local-plane check --json
+#   bb --config examples/local-plane preflight hello --json
+#   bb --config examples/local-plane run hello --payload '{"ok":true}' --json
+#   bb --config examples/local-plane status --json
+#   bb --config examples/local-plane runs show <id> --json
+dev = true
+db_path = ".bb/plane.db"
+
+[ingress]
+bind = "127.0.0.1:7077"
+
+[budget]
+max_cost_per_day_usd = 1.0

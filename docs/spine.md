@@ -484,7 +484,7 @@ early run id plus periodic heartbeat lines on stderr while dispatch is in
 progress.
 
 ```
-bb run <task> [--idempotency-key K] [--payload JSON] [--json] # manual trigger
+bb run <task> [--idempotency-key K] [--payload JSON | --payload-file PATH] [--json] # manual trigger; payload validated as JSON before ingest
 bb status [--json]                                # task/run/queue/DLQ health
 bb runs list [--task T] [--state S] [--json]
 bb runs show <run-id> [--json]                    # run + attempts + events
@@ -495,6 +495,7 @@ bb dlq list [--json]
 bb dlq replay <id> [--json]
 bb dlq ack <id> --reason TEXT [--json]            # close a superseded pre-execute DLQ
 bb preflight <task> | --storm [--json]            # missing secrets + unspawnable command binaries, pre-dispatch
+bb task list [--json]                               # agent-facing task inventory
 bb task park|unpark <task>
 bb submit open --change K --rev SHA [--context TEXT]
 bb submit reject --change K --fingerprint FP --reason TEXT
