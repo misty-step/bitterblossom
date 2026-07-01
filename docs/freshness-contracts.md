@@ -1,8 +1,9 @@
 # Freshness Contracts
 
 Bitterblossom treats unattended silence as operator work. The status surface
-emits the live machine-readable copy of this table as
-`bb status --json | jq '.freshness_contracts'`.
+emits the run/attempt machine-readable contracts as
+`bb status --json | jq '.freshness_contracts'`; gate-arm policy is live under
+`bb status --json | jq '.guards.gate'`.
 
 | Subject | Threshold | Owner | Safe next action | Notify severity |
 |---|---:|---|---|---|
@@ -17,6 +18,7 @@ emits the live machine-readable copy of this table as
 | `attempt.finalizing` | 1800s | dispatcher | `bb runs show <id> --json`; `bb recover --json` if stale | warning |
 | `attempt.released` | 1800s | dispatcher | `bb runs show <id> --json`; `bb recover --json` if stale | warning |
 | `notification.pending_or_failed` | none | operator | `bb notify retry --json` or `bb notify ack <id> --reason TEXT --json` | warning |
+| `submission.gate_arm` | `[gate].arm_timeout_seconds` | gate | `bb gate --submission <id> --json`, then inspect the member `safe_next_*` fields | warning/critical |
 
 The executing boundary is intentionally conservative: an agent at or after
 `attempt.executing` may have external side effects. The plane may probe and
@@ -28,3 +30,10 @@ durable `run_stale_executing` notification through the outbox and records a
 `watchdog:stale_notified` run event as the dedupe marker. Repeated scans do not
 create duplicate notifications unless the run records new progress and then goes
 stale again.
+
+Submission gate arms use the plane's `[gate].arm_timeout_seconds` policy
+(default 3600s). A member that is not started or whose canonical storm run stops
+changing past that threshold cannot keep `bb gate` pending forever: the gate
+either escalates through `submission_escalated` when quorum cannot be met, or
+settles with a separate `submission_arm_timed_out` notification when an explicit
+lower quorum allows the decision to proceed.

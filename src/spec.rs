@@ -54,14 +54,28 @@ pub struct WorkloadRepoSpec {
 #[derive(Debug, Clone, Deserialize)]
 pub struct GateSpec {
     pub required: Vec<String>,
+    #[serde(default)]
+    pub quorum: Option<usize>,
+    #[serde(default = "default_gate_arm_timeout_seconds")]
+    pub arm_timeout_seconds: u64,
     #[serde(default = "default_max_rounds")]
     pub max_rounds: u32,
     #[serde(default = "default_arbiter")]
     pub arbiter: String,
 }
 
+impl GateSpec {
+    pub fn effective_quorum(&self) -> usize {
+        self.quorum.unwrap_or(self.required.len())
+    }
+}
+
 fn default_max_rounds() -> u32 {
     3
+}
+
+fn default_gate_arm_timeout_seconds() -> u64 {
+    3600
 }
 
 fn default_arbiter() -> String {
@@ -513,6 +527,19 @@ impl Plane {
             }
         }
         if let Some(gate) = &spec.gate {
+            if gate.required.is_empty() {
+                bail!("[gate] required must list at least one verdict kind");
+            }
+            let quorum = gate.effective_quorum();
+            if quorum == 0 || quorum > gate.required.len() {
+                bail!(
+                    "[gate] quorum must be between 1 and required.len() ({})",
+                    gate.required.len()
+                );
+            }
+            if gate.arm_timeout_seconds == 0 {
+                bail!("[gate] arm_timeout_seconds must be greater than zero");
+            }
             for kind in &gate.required {
                 if !tasks
                     .values()

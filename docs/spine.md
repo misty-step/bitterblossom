@@ -404,17 +404,21 @@ evaluates pure data:
 ```toml
 [gate]
 required = ["verify", "correctness", "security", "simplification", "product"]
+quorum = 5                       # optional; defaults to required.len()
+arm_timeout_seconds = 3600       # pending/not-started members cannot hang forever
 max_rounds = 3                    # rounds 1..=max_rounds may run
 arbiter = "arbiter"               # verdict kind that settles disputes
 ```
 
 - A required kind without a terminal run → `pending` (per-kind states
-  listed). A required kind whose run is terminal `failure` → the
-  submission **escalates** (one notify): infrastructure failure is loud,
-  never an eternal pending. The failed member includes `safe_next_command`
-  in JSON, normally a clean `bb --config "PLANE" submit open --change K --rev
-  SHA --json` retry after the operator fixes the infrastructure issue.
-  `clear` is only emitted over a complete round.
+  listed) until it breaches `arm_timeout_seconds`. A timed-out or terminally
+  failed member is unavailable: if the configured quorum cannot still be met,
+  the submission **escalates** through the notification outbox instead of
+  staying pending forever. Unavailable members include `safe_next_command` and
+  `safe_next_reason` in JSON. With no explicit `quorum`, all required members
+  are still required, preserving the original all-hands gate. With an explicit
+  lower quorum, a timed-out extra arm may allow `clear`, but the timeout still
+  emits a durable `submission_arm_timed_out` notification.
 - **Only `blocking`-severity findings block — every round.** Fresh
   blockers are never demoted by recency; termination rests solely on the
   round cap. `serious`/`minor` never block (anti-needling is mechanical).

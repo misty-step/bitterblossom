@@ -142,6 +142,15 @@ pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
     let recent_notifications = ledger.list_notification_outbox(50)?;
     let running: Vec<&RunRow> = runs.iter().filter(|r| r.state == "running").collect();
     let in_flight_cost = ledger.in_flight_cost()?;
+    let gate_policy = plane.spec.gate.as_ref().map(|gate| {
+        json!({
+            "required": &gate.required,
+            "quorum": gate.effective_quorum(),
+            "arm_timeout_seconds": gate.arm_timeout_seconds,
+            "max_rounds": gate.max_rounds,
+            "arbiter": &gate.arbiter,
+        })
+    });
     // Conservative reservation: the worst-case cost each in-flight run could
     // still incur, bounded by its task's per-run cap. The daily ceiling is
     // enforced separately on every dispatch (budget::pre_dispatch_check).
@@ -191,6 +200,7 @@ pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
                 "reserved_usd": reserved_usd,
                 "policy": "reserved = sum(max_cost_per_run_usd) over running runs; the global daily ceiling (max_cost_per_day_usd) is still enforced by budget::pre_dispatch_check on every dispatch.",
             },
+            "gate": gate_policy,
             "guard_event_counts": guard_counts,
             "recent_guard_events": recent_guards,
         },

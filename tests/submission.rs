@@ -12,6 +12,7 @@ use bitterblossom::dispatch;
 use bitterblossom::ledger::{IngressRequest, Ledger};
 use bitterblossom::spec::Plane;
 use bitterblossom::submit::{self, Finding, VerdictDoc};
+use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
 
 /// BB_NOTIFY_BIN is process-global; tests that set it serialize here.
 static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -36,6 +37,15 @@ fn wait_for_notify_body(log: &Path) -> String {
 /// A dev plane with verdict tasks for each required kind plus an arbiter.
 /// `notify` adds a webhook so escalations can be asserted via BB_NOTIFY_BIN.
 fn make_gate_plane(root: &Path, max_rounds: u32, notify: bool) -> Plane {
+    make_gate_plane_with_policy(root, max_rounds, notify, "")
+}
+
+fn make_gate_plane_with_policy(
+    root: &Path,
+    max_rounds: u32,
+    notify: bool,
+    gate_policy: &str,
+) -> Plane {
     fs::create_dir_all(root.join("agents")).unwrap();
     let stub = root.join("stub.sh");
     write_executable(
@@ -58,7 +68,7 @@ fn make_gate_plane(root: &Path, max_rounds: u32, notify: bool) -> Plane {
     fs::write(
         root.join("plane.toml"),
         format!(
-            "dev = true\n{webhook}[gate]\nrequired = [\"correctness\", \"security\"]\nmax_rounds = {max_rounds}\n"
+            "dev = true\n{webhook}[gate]\nrequired = [\"correctness\", \"security\"]\nmax_rounds = {max_rounds}\n{gate_policy}"
         ),
     )
     .unwrap();
@@ -75,6 +85,28 @@ fn make_gate_plane(root: &Path, max_rounds: u32, notify: bool) -> Plane {
         .unwrap();
     }
     Plane::load(root).unwrap()
+}
+
+fn age_run(plane: &Plane, run_id: &str, ago_seconds: i64) {
+    let at = (OffsetDateTime::now_utc() - Duration::seconds(ago_seconds))
+        .format(&Rfc3339)
+        .unwrap();
+    rusqlite::Connection::open(plane.db_path())
+        .unwrap()
+        .execute(
+            "UPDATE runs SET updated_at = ?1 WHERE id = ?2",
+            rusqlite::params![at, run_id],
+        )
+        .unwrap();
+}
+
+fn outbox_events(ledger: &Ledger) -> Vec<String> {
+    ledger
+        .list_notification_outbox(20)
+        .unwrap()
+        .into_iter()
+        .map(|row| row.event)
+        .collect()
 }
 
 fn pass() -> VerdictDoc {
@@ -260,6 +292,98 @@ fn gate_is_pending_with_member_states_until_round_is_complete() {
         .iter()
         .any(|m| m.kind == "security" && m.status == "run:pending"));
     let _ = run;
+}
+
+#[test]
+fn timed_out_required_arm_escalates_through_notification_outbox() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_gate_plane_with_policy(dir.path(), 3, true, "arm_timeout_seconds = 60\n");
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    let sub = ledger.open_submission("feat/x", "sha1", None).unwrap();
+
+    let run_a = canonical_run(&mut ledger, &sub.id, "correctness");
+    ledger
+        .record_verdict(&sub.id, &run_a, "correctness", &pass())
+        .unwrap();
+    let security = ledger
+        .ingest(IngressRequest {
+            task: "security",
+            trigger_kind: "manual",
+            idempotency_key: Some(&format!("storm:{}:security", sub.id)),
+            source_event_id: None,
+            payload: Some(&format!("{{\"submission\":\"{}\"}}", sub.id)),
+            parent_run_id: None,
+        })
+        .unwrap()
+        .run_id;
+    age_run(&plane, &security, 120);
+
+    std::env::set_var("BB_NOTIFY_BIN", "/usr/bin/true");
+    let report = submit::evaluate(&plane, &ledger, &sub.id).unwrap();
+    std::env::remove_var("BB_NOTIFY_BIN");
+
+    assert_eq!(report.decision, "escalated");
+    assert_eq!(report.quorum, 2);
+    assert_eq!(ledger.submission(&sub.id).unwrap().state, "escalated");
+    let security = report
+        .members
+        .iter()
+        .find(|m| m.kind == "security")
+        .unwrap();
+    assert_eq!(security.status, "run:timed_out");
+    assert!(security.timed_out_after_seconds.unwrap() >= 60);
+    assert!(security
+        .safe_next_reason
+        .as_deref()
+        .unwrap()
+        .contains("gate arm timeout"));
+    assert_eq!(outbox_events(&ledger), vec!["submission_escalated"]);
+}
+
+#[test]
+fn quorum_can_clear_after_extra_arm_times_out_but_still_notifies() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_gate_plane_with_policy(
+        dir.path(),
+        3,
+        true,
+        "quorum = 1\narm_timeout_seconds = 60\n",
+    );
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    let sub = ledger.open_submission("feat/x", "sha1", None).unwrap();
+
+    let run_a = canonical_run(&mut ledger, &sub.id, "correctness");
+    ledger
+        .record_verdict(&sub.id, &run_a, "correctness", &pass())
+        .unwrap();
+    let security = ledger
+        .ingest(IngressRequest {
+            task: "security",
+            trigger_kind: "manual",
+            idempotency_key: Some(&format!("storm:{}:security", sub.id)),
+            source_event_id: None,
+            payload: Some(&format!("{{\"submission\":\"{}\"}}", sub.id)),
+            parent_run_id: None,
+        })
+        .unwrap()
+        .run_id;
+    ledger.transition(&security, "running", None).unwrap();
+    age_run(&plane, &security, 120);
+
+    std::env::set_var("BB_NOTIFY_BIN", "/usr/bin/true");
+    let report = submit::evaluate(&plane, &ledger, &sub.id).unwrap();
+    std::env::remove_var("BB_NOTIFY_BIN");
+
+    assert_eq!(report.decision, "clear");
+    assert_eq!(report.quorum, 1);
+    assert_eq!(ledger.submission(&sub.id).unwrap().state, "clear");
+    assert!(report
+        .members
+        .iter()
+        .any(|m| m.kind == "security" && m.status == "run:timed_out"));
+    assert_eq!(outbox_events(&ledger), vec!["submission_arm_timed_out"]);
 }
 
 #[test]
