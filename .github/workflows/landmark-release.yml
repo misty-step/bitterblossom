@@ -10,14 +10,19 @@ permissions:
 jobs:
   synthesize:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      issues: write
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: misty-step/landfall@90249a366099e6a5f66b081de24359c5b3cbf506 # v1.23.0
+      - uses: misty-step/landmark@v1
         with:
           mode: synthesis-only
           healthcheck: "true"
+          node-version: "24"
           release-tag: ${{ github.event.release.tag_name }}
           github-token: ${{ secrets.GH_RELEASE_TOKEN }}
           llm-api-key: ${{ secrets.OPENROUTER_API_KEY }}
