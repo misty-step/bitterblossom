@@ -154,6 +154,23 @@ pub struct GuardEventCount {
     pub total: i64,
 }
 
+#[derive(Debug, Serialize)]
+pub struct NotificationOutboxRow {
+    pub id: i64,
+    pub event: String,
+    pub status: String,
+    pub attempts: i64,
+    pub last_error: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct NotificationOutboxCount {
+    pub status: String,
+    pub total: i64,
+}
+
 /// Resolution state of a dead letter, derived from its replay/acknowledgement
 /// columns. Acknowledgement and replay are mutually exclusive operator paths
 /// to close a pre-execute dead letter; replay history is immutable.
@@ -879,6 +896,76 @@ impl Ledger {
             .query_map([], |r| {
                 Ok(GuardEventCount {
                     kind: r.get(0)?,
+                    total: r.get(1)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn enqueue_notification(&self, event: &str, payload: &str) -> Result<i64> {
+        let ts = now();
+        self.conn.execute(
+            "INSERT INTO notification_outbox (event, payload, status, created_at, updated_at)
+             VALUES (?1, ?2, 'pending', ?3, ?3)",
+            params![event, payload, ts],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn mark_notification_delivered(&self, id: i64) -> Result<()> {
+        let ts = now();
+        self.conn.execute(
+            "UPDATE notification_outbox
+             SET status = 'delivered', attempts = attempts + 1, last_error = NULL,
+                 updated_at = ?2, delivered_at = ?2
+             WHERE id = ?1",
+            params![id, ts],
+        )?;
+        Ok(())
+    }
+
+    pub fn mark_notification_failed(&self, id: i64, error: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE notification_outbox
+             SET status = 'failed', attempts = attempts + 1, last_error = ?2,
+                 updated_at = ?3
+             WHERE id = ?1",
+            params![id, error, now()],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_notification_outbox(&self, limit: i64) -> Result<Vec<NotificationOutboxRow>> {
+        let limit = limit.clamp(1, 200);
+        let mut stmt = self.conn.prepare(
+            "SELECT id, event, status, attempts, last_error, created_at, updated_at
+             FROM notification_outbox ORDER BY id DESC LIMIT ?1",
+        )?;
+        let rows = stmt
+            .query_map(params![limit], |r| {
+                Ok(NotificationOutboxRow {
+                    id: r.get(0)?,
+                    event: r.get(1)?,
+                    status: r.get(2)?,
+                    attempts: r.get(3)?,
+                    last_error: r.get(4)?,
+                    created_at: r.get(5)?,
+                    updated_at: r.get(6)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn notification_outbox_counts(&self) -> Result<Vec<NotificationOutboxCount>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT status, COUNT(*) FROM notification_outbox GROUP BY status ORDER BY status",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(NotificationOutboxCount {
+                    status: r.get(0)?,
                     total: r.get(1)?,
                 })
             })?

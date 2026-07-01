@@ -17,6 +17,7 @@ pub fn notify(plane: &Plane, ledger: &Ledger, event: &str, detail: &serde_json::
         }
     }
     let body = payload.to_string();
+    let outbox_id = ledger.enqueue_notification(event, &body).ok();
     let bin = std::env::var("BB_NOTIFY_BIN").unwrap_or_else(|_| "curl".into());
     let spawned = Command::new(bin)
         .args([
@@ -47,7 +48,12 @@ pub fn notify(plane: &Plane, ledger: &Ledger, event: &str, detail: &serde_json::
         Err(e) => Some(format!("event={event} cannot_spawn_curl={e}")),
     };
     if let Some(detail) = failure {
+        if let Some(id) = outbox_id {
+            let _ = ledger.mark_notification_failed(id, &detail);
+        }
         eprintln!("notify: {detail}");
         let _ = ledger.record_guard_event("notify_failed", None, &detail, 1);
+    } else if let Some(id) = outbox_id {
+        let _ = ledger.mark_notification_delivered(id);
     }
 }

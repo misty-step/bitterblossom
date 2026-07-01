@@ -113,6 +113,12 @@ fn status_view_covers_operator_truth_fixtures() {
             params![stale_at, stale_recovery],
         )
         .unwrap();
+    let notification = ledger
+        .enqueue_notification("status_probe", r#"{"event":"status_probe"}"#)
+        .unwrap();
+    ledger
+        .mark_notification_failed(notification, "webhook down")
+        .unwrap();
 
     let doc = health::status_view(&plane, &ledger).unwrap();
     let tasks = doc["tasks"].as_array().unwrap();
@@ -143,6 +149,11 @@ fn status_view_covers_operator_truth_fixtures() {
     assert_eq!(recovery_action["kind"], "escalate_stale_recovery");
     assert!(recovery_action["age_seconds"].as_i64().unwrap() >= 3600);
     assert_eq!(recovery_action["stale_after_seconds"], 3600);
+    assert_eq!(doc["guards"]["notify"]["outbox"]["failed"], 1);
+    assert_eq!(
+        doc["guards"]["notify"]["recent_outbox"][0]["event"],
+        "status_probe"
+    );
 }
 
 #[test]
