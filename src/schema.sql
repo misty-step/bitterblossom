@@ -126,3 +126,25 @@ CREATE TABLE IF NOT EXISTS rejections (
   created_at TEXT NOT NULL,
   PRIMARY KEY (change_key, fingerprint)
 );
+
+-- Backlog 083: unattended-loop guardrails. Guard events are the durable,
+-- operator-visible surface for circuit breakers: ingress body rejections,
+-- cron catch-up collapses, notification failures, and plane pause/resume.
+-- `count` lets a collapse record how many fires it skipped in one row.
+CREATE TABLE IF NOT EXISTS guard_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL,
+  task TEXT,
+  detail TEXT,
+  count INTEGER NOT NULL DEFAULT 1,
+  at TEXT NOT NULL
+);
+
+-- Single-row table: presence of row 1 means reflex dispatch is paused.
+-- Distinct from per-task parking (parked_tasks): a pause halts the
+-- autonomous dispatch loop for the whole plane, not one task's budget.
+CREATE TABLE IF NOT EXISTS plane_pause (
+  row INTEGER PRIMARY KEY CHECK (row = 1),
+  reason TEXT NOT NULL,
+  at TEXT NOT NULL
+);

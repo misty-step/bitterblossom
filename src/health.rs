@@ -137,6 +137,19 @@ pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
             ),
         }));
     }
+    let paused = ledger.plane_paused()?;
+    let guard_counts = ledger.guard_event_counts()?;
+    let recent_guards = ledger.list_guard_events(50)?;
+    let running: Vec<&RunRow> = runs.iter().filter(|r| r.state == "running").collect();
+    let in_flight_cost = ledger.in_flight_cost()?;
+    // Conservative reservation: the worst-case cost each in-flight run could
+    // still incur, bounded by its task's per-run cap. The daily ceiling is
+    // enforced separately on every dispatch (budget::pre_dispatch_check).
+    let reserved_usd: f64 = running
+        .iter()
+        .filter_map(|r| plane.task(&r.task).ok())
+        .filter_map(|t| t.spec.budget.max_cost_per_run_usd)
+        .sum();
 
     Ok(json!({
         "generated_at": generated_at.format(&Rfc3339)?,
@@ -148,6 +161,31 @@ pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
             "recent_ingress_events": ingress_events.len(),
             "cost_today_usd": ledger.cost_today()?,
             "max_cost_per_day_usd": plane.spec.budget.max_cost_per_day_usd,
+            "plane_paused": paused.is_some(),
+        },
+        "guards": {
+            "plane_paused": paused.is_some(),
+            "paused_reason": paused.as_ref().map(|(r, _)| r.clone()),
+            "paused_at": paused.as_ref().map(|(_, a)| a.clone()),
+            "ingress": {
+                "max_body_bytes": plane.spec.ingress.max_body_bytes,
+                "oversized_rejections": guard_total(&guard_counts, "ingress_oversized"),
+            },
+            "cron": {
+                "max_catchup_fires": plane.spec.ingress.max_cron_catchup_fires,
+                "skipped_catchup_fires": guard_total(&guard_counts, "cron_collapse"),
+            },
+            "notify": {
+                "failed": guard_total(&guard_counts, "notify_failed"),
+            },
+            "in_flight": {
+                "runs": running.len(),
+                "cost_usd": in_flight_cost,
+                "reserved_usd": reserved_usd,
+                "policy": "reserved = sum(max_cost_per_run_usd) over running runs; the global daily ceiling (max_cost_per_day_usd) is still enforced by budget::pre_dispatch_check on every dispatch.",
+            },
+            "guard_event_counts": guard_counts,
+            "recent_guard_events": recent_guards,
         },
         "leases": leases,
         "ingress": {
@@ -163,6 +201,13 @@ fn state_counts(runs: &[&RunRow]) -> BTreeMap<String, usize> {
         *out.entry(r.state.clone()).or_default() += 1;
     }
     out
+}
+fn guard_total(counts: &[crate::ledger::GuardEventCount], kind: &str) -> i64 {
+    counts
+        .iter()
+        .find(|c| c.kind == kind)
+        .map(|c| c.total)
+        .unwrap_or(0)
 }
 
 fn run_summary(r: &RunRow) -> Value {

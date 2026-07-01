@@ -30,6 +30,11 @@ sleep 0.1
 echo done >> "$BB_NOTIFY_LOG"
 "#;
 
+const FAIL_NOTIFY_STUB: &str = r#"#!/bin/sh
+cat > /dev/null
+exit 9
+"#;
+
 fn write_executable(path: &Path, content: &str) {
     fs::write(path, content).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
@@ -123,8 +128,14 @@ fn notification_storm_is_synchronously_accounted() {
     std::env::set_var("BB_NOTIFY_BIN", &notify_stub);
     std::env::set_var("BB_NOTIFY_LOG", &log);
 
+    let ledger = Ledger::open(&plane.db_path()).unwrap();
     for i in 0..8 {
-        bitterblossom::notify::notify(&plane, "storm_probe", &serde_json::json!({ "sequence": i }));
+        bitterblossom::notify::notify(
+            &plane,
+            &ledger,
+            "storm_probe",
+            &serde_json::json!({ "sequence": i }),
+        );
     }
 
     let finished = fs::read_to_string(&log).unwrap_or_default();
@@ -135,6 +146,43 @@ fn notification_storm_is_synchronously_accounted() {
         8,
         "notify() returned before all curl waiters were accounted"
     );
+}
+
+#[test]
+fn notification_failures_are_recorded_as_guard_events() {
+    let _guard = NOTIFY_ENV_LOCK.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let plane = setup(
+        dir.path(),
+        "[notify]\nwebhook_url = \"http://example.invalid/hook\"\n",
+        "",
+    );
+    let notify_stub = dir.path().join("fail-notify-stub.sh");
+    write_executable(&notify_stub, FAIL_NOTIFY_STUB);
+    std::env::set_var("BB_NOTIFY_BIN", &notify_stub);
+
+    let ledger = Ledger::open(&plane.db_path()).unwrap();
+    bitterblossom::notify::notify(
+        &plane,
+        &ledger,
+        "failure_probe",
+        &serde_json::json!({ "sequence": 1 }),
+    );
+    std::env::remove_var("BB_NOTIFY_BIN");
+
+    let failed = ledger
+        .guard_event_counts()
+        .unwrap()
+        .into_iter()
+        .find(|c| c.kind == "notify_failed")
+        .unwrap();
+    assert_eq!(failed.total, 1);
+    let events = ledger.list_guard_events(10).unwrap();
+    assert!(events[0]
+        .detail
+        .as_deref()
+        .unwrap()
+        .contains("event=failure_probe"));
 }
 
 #[test]

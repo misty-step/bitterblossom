@@ -138,6 +138,22 @@ pub struct IngressEventRow {
     pub received_at: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct GuardEventRow {
+    pub id: i64,
+    pub kind: String,
+    pub task: Option<String>,
+    pub detail: Option<String>,
+    pub count: i64,
+    pub at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GuardEventCount {
+    pub kind: String,
+    pub total: i64,
+}
+
 /// Resolution state of a dead letter, derived from its replay/acknowledgement
 /// columns. Acknowledgement and replay are mutually exclusive operator paths
 /// to close a pre-execute dead letter; replay history is immutable.
@@ -815,6 +831,102 @@ impl Ledger {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    /// Record a guardrail event (backlog 083): ingress body rejection, cron
+    /// catch-up collapse, notification failure, or plane pause/resume. `count`
+    /// lets a collapse record how many fires it skipped in a single row.
+    pub fn record_guard_event(
+        &self,
+        kind: &str,
+        task: Option<&str>,
+        detail: &str,
+        count: i64,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO guard_events (kind, task, detail, count, at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![kind, task, detail, count, now()],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_guard_events(&self, limit: i64) -> Result<Vec<GuardEventRow>> {
+        let limit = limit.clamp(1, 200);
+        let mut stmt = self.conn.prepare(
+            "SELECT id, kind, task, detail, count, at FROM guard_events
+             ORDER BY id DESC LIMIT ?1",
+        )?;
+        let rows = stmt
+            .query_map(params![limit], |r| {
+                Ok(GuardEventRow {
+                    id: r.get(0)?,
+                    kind: r.get(1)?,
+                    task: r.get(2)?,
+                    detail: r.get(3)?,
+                    count: r.get(4)?,
+                    at: r.get(5)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn guard_event_counts(&self) -> Result<Vec<GuardEventCount>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT kind, COALESCE(SUM(count), 0) FROM guard_events GROUP BY kind")?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(GuardEventCount {
+                    kind: r.get(0)?,
+                    total: r.get(1)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Pause reflex dispatch for the whole plane (backlog 083). Distinct from
+    /// per-task parking: a pause stops the autonomous dispatch loop, not one
+    /// task's budget. Manual `bb run` still dispatches — pause is a reflex
+    /// circuit breaker, not an operator lock.
+    pub fn pause_plane(&self, reason: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO plane_pause (row, reason, at) VALUES (1, ?2, ?3)
+             ON CONFLICT(row) DO UPDATE SET reason = ?2, at = ?3",
+            params![1, reason, now()],
+        )?;
+        Ok(())
+    }
+
+    pub fn resume_plane(&self) -> Result<bool> {
+        let changed = self
+            .conn
+            .execute("DELETE FROM plane_pause WHERE row = 1", [])?;
+        Ok(changed == 1)
+    }
+
+    pub fn plane_paused(&self) -> Result<Option<(String, String)>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT reason, at FROM plane_pause WHERE row = 1",
+                [],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            )
+            .optional()?)
+    }
+
+    /// Spent so far on attempts belonging to currently-running runs. A
+    /// conservative in-flight signal: partial — a running attempt's cost is
+    /// only set when it finishes. Pairs with reserved spend in status.
+    pub fn in_flight_cost(&self) -> Result<f64> {
+        Ok(self.conn.query_row(
+            "SELECT COALESCE(SUM(a.cost_usd), 0.0) FROM attempts a
+             JOIN runs r ON r.id = a.run_id WHERE r.state = 'running'",
+            [],
+            |r| r.get(0),
+        )?)
     }
 }
 

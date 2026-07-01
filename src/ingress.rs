@@ -34,6 +34,22 @@ pub fn handle_webhook(
             body: format!("{{\"error\":\"no webhook route '{route}'\"}}"),
         });
     };
+    let max_body = plane.spec.ingress.max_body_bytes;
+    if body.len() > max_body {
+        ledger.record_guard_event(
+            "ingress_oversized",
+            Some(&task.name),
+            &format!("route={route} bytes={} max={max_body}", body.len()),
+            1,
+        )?;
+        return Ok(WebhookResponse {
+            status: 413,
+            body: format!(
+                "{{\"error\":\"webhook body {} bytes exceeds max_body_bytes {max_body}\"}}",
+                body.len()
+            ),
+        });
+    }
     let TriggerSpec::Webhook {
         secret_env,
         dedupe_key,
@@ -345,4 +361,59 @@ pub fn ingest_cron_fire(
         payload: None,
         parent_run_id: None,
     })
+}
+
+/// Outcome of one cron catch-up tick for a task (backlog 083).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct CronCatchupOutcome {
+    pub ingested: usize,
+    pub duplicates: usize,
+    pub skipped: usize,
+}
+
+/// Ingest due cron fires for `task` between `last` and `now`, bounded by
+/// `max_fires`. When more fires are due than `max_fires`, the oldest are
+/// collapsed (skipped) and only the latest `max_fires` are ingested — reflex
+/// tasks catch up to the newest state, not the whole backlog. Skipped fires
+/// are recorded as a `cron_collapse` guard event so the count is visible in
+/// status. Returns counts for assertion/drill visibility.
+pub fn cron_catchup(
+    ledger: &mut Ledger,
+    task: &str,
+    schedule: &cron::Schedule,
+    last: DateTime<Utc>,
+    now: DateTime<Utc>,
+    max_fires: u32,
+) -> Result<CronCatchupOutcome> {
+    let fires = due_fires(schedule, last, now);
+    if fires.is_empty() {
+        return Ok(CronCatchupOutcome::default());
+    }
+    let max = max_fires.max(1) as usize;
+    let (ingest_fires, skipped) = if fires.len() > max {
+        let skipped = fires.len() - max;
+        (fires[fires.len() - max..].to_vec(), skipped)
+    } else {
+        (fires.clone(), 0)
+    };
+    let mut outcome = CronCatchupOutcome {
+        skipped,
+        ..Default::default()
+    };
+    for fire in &ingest_fires {
+        match ingest_cron_fire(ledger, task, *fire) {
+            Ok(o) if o.duplicate => outcome.duplicates += 1,
+            Ok(_) => outcome.ingested += 1,
+            Err(e) => return Err(e),
+        }
+    }
+    if skipped > 0 {
+        ledger.record_guard_event(
+            "cron_collapse",
+            Some(task),
+            &format!("skipped={skipped} fired={}", fires.len()),
+            skipped as i64,
+        )?;
+    }
+    Ok(outcome)
 }

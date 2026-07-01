@@ -5,7 +5,8 @@ use std::fs;
 use std::path::Path;
 
 use bitterblossom::ingress::{
-    derive_dedupe_key, due_fires, handle_webhook, ingest_cron_fire, parse_schedule, sign_hmac,
+    cron_catchup, derive_dedupe_key, due_fires, handle_webhook, ingest_cron_fire, parse_schedule,
+    sign_hmac,
 };
 use bitterblossom::ledger::Ledger;
 use bitterblossom::spec::Plane;
@@ -83,6 +84,32 @@ fn webhook_invalid_signature_rejected_with_no_row() {
     // Missing signature entirely: same refusal.
     let resp = handle_webhook(&plane, &mut ledger, "demo", &[], body).unwrap();
     assert_eq!(resp.status, 401);
+}
+
+#[test]
+fn webhook_body_cap_rejects_before_ledger_growth() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut plane = make_plane(dir.path());
+    plane.spec.ingress.max_body_bytes = 8;
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    std::env::set_var(SECRET_ENV, "hunter2");
+
+    let body = r#"{"too":"large"}"#;
+    let sig = sign_hmac("hunter2", body.as_bytes());
+    let resp = handle_webhook(&plane, &mut ledger, "demo", &headers(&sig, "d-1"), body).unwrap();
+    assert_eq!(resp.status, 413, "{}", resp.body);
+    assert!(ledger.list_runs(Some("demo"), None).unwrap().is_empty());
+    assert_eq!(ledger.ingress_event_count("demo").unwrap(), 0);
+
+    let counts = ledger.guard_event_counts().unwrap();
+    let oversized = counts
+        .iter()
+        .find(|c| c.kind == "ingress_oversized")
+        .unwrap();
+    assert_eq!(oversized.total, 1);
+    let events = ledger.list_guard_events(10).unwrap();
+    assert_eq!(events[0].task.as_deref(), Some("demo"));
+    assert!(events[0].detail.as_deref().unwrap().contains("max=8"));
 }
 
 #[test]
@@ -222,6 +249,64 @@ fn cron_due_fires_and_scheduled_timestamp_dedupes() {
     assert!(b.duplicate, "same scheduled timestamp must not double-fire");
     assert_eq!(a.run_id, b.run_id);
     assert_eq!(ledger.list_runs(Some("demo"), None).unwrap().len(), 1);
+}
+
+#[test]
+fn cron_catchup_collapses_old_fires_and_records_count() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+
+    let schedule = parse_schedule("* * * * *").unwrap();
+    let after = Utc.with_ymd_and_hms(2026, 6, 10, 12, 0, 0).unwrap();
+    let until = Utc.with_ymd_and_hms(2026, 6, 10, 12, 6, 0).unwrap();
+    let fires = due_fires(&schedule, after, until);
+    assert!(fires.len() > 2, "{fires:?}");
+
+    let outcome = cron_catchup(&mut ledger, "demo", &schedule, after, until, 2).unwrap();
+    assert_eq!(outcome.ingested, 2);
+    assert_eq!(outcome.duplicates, 0);
+    assert_eq!(outcome.skipped, fires.len() - 2);
+    assert_eq!(ledger.ingress_event_count("demo").unwrap(), 2);
+
+    let collapsed = ledger
+        .guard_event_counts()
+        .unwrap()
+        .into_iter()
+        .find(|c| c.kind == "cron_collapse")
+        .unwrap();
+    assert_eq!(collapsed.total, outcome.skipped as i64);
+}
+
+#[test]
+fn cron_catchup_records_collapse_only_after_ingest_success() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    rusqlite::Connection::open(plane.db_path())
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER fail_second_ingress
+             BEFORE INSERT ON ingress_events
+             WHEN (SELECT COUNT(*) FROM ingress_events) >= 1
+             BEGIN
+               SELECT RAISE(FAIL, 'simulated ingress failure');
+             END;",
+        )
+        .unwrap();
+
+    let schedule = parse_schedule("* * * * *").unwrap();
+    let after = Utc.with_ymd_and_hms(2026, 6, 10, 12, 0, 0).unwrap();
+    let until = Utc.with_ymd_and_hms(2026, 6, 10, 12, 6, 0).unwrap();
+
+    let err = cron_catchup(&mut ledger, "demo", &schedule, after, until, 2).unwrap_err();
+    assert!(format!("{err:#}").contains("simulated ingress failure"));
+    assert_eq!(ledger.ingress_event_count("demo").unwrap(), 1);
+    assert!(ledger
+        .guard_event_counts()
+        .unwrap()
+        .into_iter()
+        .all(|c| c.kind != "cron_collapse"));
 }
 
 #[test]
