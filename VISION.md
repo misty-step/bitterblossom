@@ -9,6 +9,12 @@ through Bitterblossom. The product must support both supervised dispatch and
 unsupervised reflex work as first-class modes; the split is an authority and
 auth boundary, not a product fork.
 
+Direction lock, 2026-07-01: Bitterblossom is the Weave execution plane. Heavy
+agent execution moves here first: backlog chewing, review dispatch, incident
+triage, doc sync, CI audit, and ad-hoc repo work. The product must make
+execution cheap and observable while keeping judgment in specialist agents and
+human/frontier review loops.
+
 Bitterblossom is the event plane for recurring agent workloads. It lets an
 operator define a task, bind an agent, attach a trigger, and then watch the work
 run durably on isolated infrastructure with cost, budget, queue, trace, and
@@ -59,10 +65,20 @@ If Bitterblossom disappeared, the missing piece would not be "an AI reviewer" or
 specialist agent programs into repeatable, budgeted, inspectable event-driven
 work.
 
+In the Weave loop, Bitterblossom is the compute plane. Powder may hold work
+state, Cerberus may review, Canary may report incidents, Landmark may write
+release intelligence, and Harness Kit may provide skills, but recurring model
+calls and remote execution run through BB with per-agent budgets, scoped
+authority, artifacts, and recovery evidence.
+
 ## What must stay true
 
 - **Run truth precedes external acknowledgement.** Webhooks, cron ticks, and
   manual dispatch all converge on a ledger row before acceptance is claimed.
+- **Unattended work fails visibly.** Every non-terminal run and submission needs
+  a freshness contract, durable escalation path, and operator-visible next
+  action. A state that can go stale without notification is a product bug, not
+  an ops inconvenience.
 - **Every workload runs from a terminal.** Webhook and cron are triggers, not
   privileged execution paths. A human or agent must be able to replay the same
   workflow deliberately with `bb run`.
@@ -83,9 +99,20 @@ work.
 - **Secrets never become payload.** Credentials travel through declared secret
   names and stdin plumbing, never card prose, argv, logs, persisted DB fields, or
   ad-hoc JSON payloads.
+- **BYOK and per-agent governance are default.** Released deployments should let
+  operators bring their own model keys. Inside a plane, agent definitions carry
+  scoped credentials, spend caps, and loop limits so one workload cannot consume
+  the whole budget or authority surface.
 - **Observation is part of the product.** Agents and humans should read state
   through `bb ... --json` and API mirrors, not log spelunking or SSH guesses. A
   dashboard may help humans drill down, but the CLI/API is the source of truth.
+- **Agent-first means more than shelling out.** The product surface should be one
+  core projected through CLI, HTTP/API, MCP, SDK, skill, and a thin human UI. MCP
+  tools are designed around agent intent and risk boundaries, not auto-wrapped
+  REST endpoints.
+- **Product and instance stay separate.** This repo should be public-able at any
+  moment. Misty Step task cards, org allowlists, sprite hosts, budgets, and live
+  runtime data are instance config, not product code baked into the image.
 - **Telemetry leaves the plane.** Runs export enough cost, model, task, artifact,
   and receipt data for external labs and operator tooling to improve agents
   without turning Bitterblossom into the evaluation system.
@@ -133,7 +160,10 @@ work.
 5. The same plane should support both supervised dispatch and unsupervised
    reflex work because the useful primitive is not autonomy level; it is durable,
    budgeted, inspectable execution.
-6. The next substrate decision should be empirical. Compare Fly/Sprites,
+6. Heavy execution belongs on the plane, not the operator laptop. Frontier tokens
+   are reserved for planning and review; cheaper API-auth models and Sprites do
+   the bounded execution work whenever they are good enough.
+7. The next substrate decision should be empirical. Compare Fly/Sprites,
    Cloudflare Sandbox/Agents, E2B, Modal, Daytona, and durable workflow systems
    against a real coding-harness workload: prepare a repo workspace, stream the
    harness, persist or recover state, capture artifacts, enforce budget, and
@@ -142,17 +172,18 @@ work.
 ## What excellent looks like
 
 - **Near term:** `master` has a boring local gate; `bb status --json` is the
-  operator truth surface; `bb run build` can author one shaped slice without
-  discovering remote auth failure too late; the first specialist review reflex
-  runs report-only from GitHub PR events and stores request, artifact, cost, and
-  receipts in the ledger; the substrate bakeoff has one repeatable workload and
-  a scored baseline rather than opinions about infrastructure.
+  operator truth surface; `bb run build` can chew real backlog items on Sprites;
+  stale executing work and stuck gate arms escalate through a durable
+  notification outbox; the ledger is backed up and restore-drilled; and the repo
+  can be made public because product code no longer contains Misty Step instance
+  config.
 - **Medium term:** recurring lifecycle reflexes cover PR review, CI diagnosis,
-  gate-blocked fix packets, and deploy or production verification without adding
-  workflow branches to `src/`. Manual dispatch lanes and unattended reflex lanes
-  are both used in real Misty Step operations, each with task files, manual
-  payloads, live drills, artifact contracts, cost history, and explicit rollback
-  or operator-resolution paths.
+  Canary triage, doc sync, gate-blocked fix packets, and deploy or production
+  verification without adding workflow branches to `src/`. Manual dispatch lanes
+  and unattended reflex lanes are both used in real Misty Step operations, each
+  with task files, manual payloads, live drills, artifact contracts, cost
+  history, per-agent governance, and explicit rollback or operator-resolution
+  paths.
 - **Long term:** Bitterblossom is the operator's durable Mode B substrate. New
   specialist agents arrive as launch contracts and task files; external labs and
   operator tooling improve their brains from exported run evidence; the plane
