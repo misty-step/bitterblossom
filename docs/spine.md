@@ -466,6 +466,9 @@ recovery semantic:
   `resolve_after_side_effect_inspection` to `escalate_stale_recovery`, with
   `age_seconds` and `stale_after_seconds` included. The plane does not resolve
   or replay side-effecting work automatically.
+- The full run-state, attempt-phase, and notification freshness contract is
+  documented in [`freshness-contracts.md`](freshness-contracts.md) and emitted
+  by `bb status --json` under `freshness_contracts`.
 - `bb dlq replay <id> [--json]` mints a **new** run linked via
   `parent_run_id`; JSON mode returns the replayed run + attempts + events.
 - `bb dlq ack <id> --reason TEXT [--json]` acknowledges a pre-execute dead

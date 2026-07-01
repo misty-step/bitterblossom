@@ -154,6 +154,13 @@ fn status_view_covers_operator_truth_fixtures() {
         doc["guards"]["notify"]["recent_outbox"][0]["event"],
         "status_probe"
     );
+    let contracts = doc["freshness_contracts"].as_array().unwrap();
+    let recovery_contract = contracts
+        .iter()
+        .find(|c| c["subject"] == "run.awaiting_recovery")
+        .unwrap();
+    assert_eq!(recovery_contract["threshold_seconds"], 3600);
+    assert_eq!(recovery_contract["notification_severity"], "critical");
 }
 
 #[test]

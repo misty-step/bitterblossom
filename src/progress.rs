@@ -25,6 +25,100 @@ use crate::ledger::{phase_reached, Ledger, RunRow};
 /// timeout: the goal is visibility ("is this making progress?"), not a kill
 /// switch.
 pub const PROGRESS_STALE_SECONDS: i64 = 1800;
+pub const RECOVERY_STALE_SECONDS: i64 = 3600;
+
+#[derive(Serialize)]
+pub struct FreshnessContract {
+    pub subject: &'static str,
+    pub threshold_seconds: Option<i64>,
+    pub owner: &'static str,
+    pub safe_next_action: &'static str,
+    pub notification_severity: &'static str,
+}
+
+pub fn freshness_contracts() -> &'static [FreshnessContract] {
+    &FRESHNESS_CONTRACTS
+}
+
+const FRESHNESS_CONTRACTS: [FreshnessContract; 11] = [
+    FreshnessContract {
+        subject: "run.pending",
+        threshold_seconds: None,
+        owner: "dispatcher",
+        safe_next_action: "bb runs list --state pending --json",
+        notification_severity: "none",
+    },
+    FreshnessContract {
+        subject: "run.running",
+        threshold_seconds: Some(PROGRESS_STALE_SECONDS),
+        owner: "operator",
+        safe_next_action: "bb recover --json before resolving or killing",
+        notification_severity: "warning",
+    },
+    FreshnessContract {
+        subject: "run.awaiting_recovery",
+        threshold_seconds: Some(RECOVERY_STALE_SECONDS),
+        owner: "operator",
+        safe_next_action: "bb runs show <id> --json, inspect side effects, then bb runs resolve",
+        notification_severity: "critical",
+    },
+    FreshnessContract {
+        subject: "run.blocked_budget",
+        threshold_seconds: None,
+        owner: "operator",
+        safe_next_action: "bb runs release <id> or bb runs retire <id> --reason TEXT",
+        notification_severity: "warning",
+    },
+    FreshnessContract {
+        subject: "attempt.acquired",
+        threshold_seconds: Some(PROGRESS_STALE_SECONDS),
+        owner: "dispatcher",
+        safe_next_action: "bb runs show <id> --json; bb recover --json if stale",
+        notification_severity: "warning",
+    },
+    FreshnessContract {
+        subject: "attempt.prepared",
+        threshold_seconds: Some(PROGRESS_STALE_SECONDS),
+        owner: "dispatcher",
+        safe_next_action: "bb runs show <id> --json; bb recover --json if stale",
+        notification_severity: "warning",
+    },
+    FreshnessContract {
+        subject: "attempt.executing",
+        threshold_seconds: Some(PROGRESS_STALE_SECONDS),
+        owner: "operator",
+        safe_next_action: "bb recover --json; never auto-replay without side-effect inspection",
+        notification_severity: "critical",
+    },
+    FreshnessContract {
+        subject: "attempt.collecting",
+        threshold_seconds: Some(PROGRESS_STALE_SECONDS),
+        owner: "dispatcher",
+        safe_next_action: "bb runs show <id> --json; bb recover --json if stale",
+        notification_severity: "warning",
+    },
+    FreshnessContract {
+        subject: "attempt.finalizing",
+        threshold_seconds: Some(PROGRESS_STALE_SECONDS),
+        owner: "dispatcher",
+        safe_next_action: "bb runs show <id> --json; bb recover --json if stale",
+        notification_severity: "warning",
+    },
+    FreshnessContract {
+        subject: "attempt.released",
+        threshold_seconds: Some(PROGRESS_STALE_SECONDS),
+        owner: "dispatcher",
+        safe_next_action: "bb runs show <id> --json; bb recover --json if stale",
+        notification_severity: "warning",
+    },
+    FreshnessContract {
+        subject: "notification.pending_or_failed",
+        threshold_seconds: None,
+        owner: "operator",
+        safe_next_action: "bb notify retry --json or bb notify ack <id> --reason TEXT --json",
+        notification_severity: "warning",
+    },
+];
 
 #[derive(Serialize)]
 pub struct SafeNextAction {
