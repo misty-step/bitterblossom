@@ -21,3 +21,10 @@ emits the live machine-readable copy of this table as
 The executing boundary is intentionally conservative: an agent at or after
 `attempt.executing` may have external side effects. The plane may probe and
 escalate, but it does not blindly replay or kill that work as a remediation.
+
+`bb serve` runs a watchdog alongside dispatch, cron, and notification retry.
+When a running attempt classifies as `stale_executing`, the watchdog emits a
+durable `run_stale_executing` notification through the outbox and records a
+`watchdog:stale_notified` run event as the dedupe marker. Repeated scans do not
+create duplicate notifications unless the run records new progress and then goes
+stale again.
