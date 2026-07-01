@@ -66,6 +66,38 @@ fn run_progress_view(ledger: &Ledger, run_id: &str) -> progress::ProgressView {
 }
 
 #[test]
+fn freshness_contracts_cover_nonterminal_states_and_attempt_phases() {
+    let subjects = progress::freshness_contracts()
+        .iter()
+        .map(|c| c.subject)
+        .collect::<Vec<_>>();
+    for subject in [
+        "run.pending",
+        "run.running",
+        "run.awaiting_recovery",
+        "run.blocked_budget",
+        "attempt.acquired",
+        "attempt.prepared",
+        "attempt.executing",
+        "attempt.collecting",
+        "attempt.finalizing",
+        "attempt.released",
+        "notification.pending_or_failed",
+    ] {
+        assert!(subjects.contains(&subject), "missing {subject}");
+    }
+    let executing = progress::freshness_contracts()
+        .iter()
+        .find(|c| c.subject == "attempt.executing")
+        .unwrap();
+    assert_eq!(
+        executing.threshold_seconds,
+        Some(progress::PROGRESS_STALE_SECONDS)
+    );
+    assert_eq!(executing.notification_severity, "critical");
+}
+
+#[test]
 fn fresh_running_has_recent_progress() {
     let dir = tempfile::tempdir().unwrap();
     let plane = make_plane(dir.path());

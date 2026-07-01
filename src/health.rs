@@ -8,8 +8,6 @@ use crate::ledger::{DeadLetterRow, Ledger, RunRow};
 use crate::progress;
 use crate::spec::Plane;
 
-const RECOVERY_STALE_SECONDS: i64 = 3600;
-
 pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
     let runs = ledger.list_runs(None, None)?;
     let dead_letters = ledger.list_dead_letters()?;
@@ -200,6 +198,7 @@ pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
         "ingress": {
             "recent": ingress_events,
         },
+        "freshness_contracts": progress::freshness_contracts(),
         "tasks": tasks,
     }))
 }
@@ -278,12 +277,12 @@ fn safe_actions(
         let age_seconds = OffsetDateTime::parse(&r.updated_at, &Rfc3339)
             .map(|at| (generated_at - at).whole_seconds().max(0))
             .unwrap_or(0);
-        let stale = age_seconds >= RECOVERY_STALE_SECONDS;
+        let stale = age_seconds >= progress::RECOVERY_STALE_SECONDS;
         out.push(json!({
             "kind": if stale { "escalate_stale_recovery" } else { "resolve_after_side_effect_inspection" },
             "reason": r.state_reason,
             "age_seconds": age_seconds,
-            "stale_after_seconds": RECOVERY_STALE_SECONDS,
+            "stale_after_seconds": progress::RECOVERY_STALE_SECONDS,
             "command": format!("bb runs resolve {} success|failure", r.id),
         }));
     }
