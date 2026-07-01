@@ -14,6 +14,10 @@ export BB_URL=https://bitterblossom-plane.fly.dev
 The production SQLite ledger lives on the Fly volume mounted at
 `/app/plane/.bb`, with the database path `/app/plane/.bb/plane.db`.
 
+For the local reviewer dashboard served on Serenity over Tailscale, see
+[`bb-dashboard.md`](bb-dashboard.md). That service intentionally runs a local
+dev/demo plane rather than the production plane.
+
 ## Preflight
 
 Before dispatching a storm or touching production, check the operator surface:

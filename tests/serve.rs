@@ -279,6 +279,16 @@ fn tasks_view_reports_trigger_details() {
 }
 
 #[test]
+fn operator_html_escapes_trigger_labels_before_inserting_task_rows() {
+    let html = include_str!("../src/operator.html");
+
+    assert!(html.contains("map(triggerLabel).join(\"<br>\")"));
+    assert!(html.contains("return `cron ${esc(trigger.schedule)}`"));
+    assert!(html.contains("return `webhook /hooks/${esc(trigger.route)}`"));
+    assert!(html.contains("return esc(trigger.kind);"));
+}
+
+#[test]
 fn read_api_exposes_dashboard_observability_routes() {
     let dir = tempfile::tempdir().unwrap();
     write_dispatch_plane(dir.path());

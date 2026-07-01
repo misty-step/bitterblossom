@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use anyhow::Result;
 use serde_json::{json, Value};
@@ -13,6 +13,15 @@ pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
     let runs = ledger.list_runs(None, None)?;
     let dead_letters = ledger.list_dead_letters()?;
     let leases = ledger.list_host_leases()?;
+    let lease_runs = leases
+        .iter()
+        .filter_map(|lease| {
+            ledger
+                .run(&lease.run_id)
+                .ok()
+                .map(|run| (lease.run_id.clone(), run))
+        })
+        .collect::<HashMap<_, _>>();
     let ingress_events = ledger.latest_ingress_events(200)?;
     let generated_at = OffsetDateTime::now_utc();
     let open_dlq = dead_letters.iter().filter(|d| d.status == "open").count();
@@ -57,9 +66,9 @@ pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
             .count();
         let latest_ingress = ingress_events.iter().find(|e| e.task == task.name);
         let active_lease = leases.iter().find(|l| {
-            task_runs
-                .iter()
-                .any(|r| r.id == l.run_id && r.state == "running")
+            lease_runs
+                .get(&l.run_id)
+                .is_some_and(|r| r.task == task.name && r.state == "running")
         });
 
         tasks.push(json!({

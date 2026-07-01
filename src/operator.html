@@ -113,6 +113,11 @@ a:hover { color: var(--accent); text-decoration-color: currentColor; }
   margin-bottom: 1rem;
 }
 .topbar h1 { font-weight: 800; }
+.plane-sentence {
+  color: var(--muted);
+  max-width: 44rem;
+  overflow-wrap: anywhere;
+}
 .chrome {
   font: 13px/1.6 var(--mono);
   color: var(--muted);
@@ -273,6 +278,8 @@ tbody tr:first-child td { border-top: 0; }
 .next-action code {
   display: block;
   margin-top: .25rem;
+  padding-left: .6rem;
+  border-left: 1px solid var(--line);
   color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
@@ -347,6 +354,7 @@ tbody tr:first-child td { border-top: 0; }
       <div class="grow">
         <p class="chrome">event plane visibility</p>
         <h1 id="pageTitle">overview</h1>
+        <p id="planeSentence" class="plane-sentence">loading plane</p>
       </div>
       <form id="tokenForm" class="token" autocomplete="off">
         <label class="chrome" for="apiToken">token</label>
@@ -375,14 +383,14 @@ tbody tr:first-child td { border-top: 0; }
 
       <section class="grid-2">
         <article class="plate">
-          <h2>Live Now / Fleet</h2>
+          <h2>Fleet</h2>
           <div class="table-wrap"><table>
             <thead><tr><th>host</th><th>task</th><th>run</th><th>phase</th><th class="right">cost</th></tr></thead>
             <tbody id="fleetRows"></tbody>
           </table></div>
         </article>
         <article class="plate">
-          <h2>Safe Next Action</h2>
+          <h2>Next Action</h2>
           <div id="actions" class="actions"></div>
         </article>
       </section>
@@ -527,12 +535,29 @@ function tokenTotals() {
 
 function render() {
   if (!state.data) return;
+  renderPlaneSentence();
   renderSummary();
   renderFleet();
   renderActions();
   renderRuns();
   renderTasks();
   renderHealth();
+}
+
+function renderPlaneSentence() {
+  const summary = state.data.status.summary || {};
+  const running = state.data.runs.filter((r) => r.state === "running").length;
+  const pending = state.data.runs.filter((r) => r.state === "pending").length;
+  const openDlq = summary.open_dlq || 0;
+  const activeLeases = summary.active_leases || state.data.leases.length;
+  const parts = [
+    openDlq ? `${openDlq} open DLQ` : "DLQ clear",
+    activeLeases ? `${activeLeases} lease${activeLeases === 1 ? "" : "s"}` : "no leases",
+    pending ? `${pending} pending` : "queue clear",
+    running ? `${running} running` : null,
+    `${fmtMoney(summary.cost_today_usd || 0)} today`
+  ].filter(Boolean);
+  $("planeSentence").textContent = parts.join(" / ");
 }
 
 function renderSummary() {
@@ -640,11 +665,7 @@ function runRow(run, totals, compact = false) {
 
 function renderTasks() {
   $("taskRows").innerHTML = state.data.tasks.map((task) => {
-    const triggers = (task.trigger_details || []).map((trigger) => {
-      if (trigger.kind === "cron") return `cron ${trigger.schedule}`;
-      if (trigger.kind === "webhook") return `webhook /hooks/${trigger.route}`;
-      return trigger.kind;
-    }).join("<br>");
+    const triggers = (task.trigger_details || []).map(triggerLabel).join("<br>");
     const budget = [
       task.max_runs_per_day == null ? null : `${task.runs_today}/${task.max_runs_per_day} runs`,
       task.max_cost_per_run_usd == null ? null : `${fmtMoney(task.max_cost_per_run_usd)} per run`,
@@ -660,6 +681,12 @@ function renderTasks() {
       <td>${parked}</td>
     </tr>`;
   }).join("") || `<tr><td colspan="6" class="empty">no tasks configured</td></tr>`;
+}
+
+function triggerLabel(trigger) {
+  if (trigger.kind === "cron") return `cron ${esc(trigger.schedule)}`;
+  if (trigger.kind === "webhook") return `webhook /hooks/${esc(trigger.route)}`;
+  return esc(trigger.kind);
 }
 
 function renderHealth() {
