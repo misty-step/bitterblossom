@@ -208,3 +208,148 @@ skills = ["harness-kit/deliver#builder", "bitterblossom/operator-min"]
     assert_eq!(rows[0]["agent_role"], "builder");
     assert_eq!(rows[0]["agent_skills"][0], "harness-kit/deliver#builder");
 }
+
+const POLICY_AGENT: &str = r#"version = 2
+harness = "omp"
+model = "z-ai/glm-5.2"
+auth = "api"
+secrets = ["OPENROUTER_API_KEY"]
+[policy]
+authority = "edit"
+provider_key_name = "openrouter-builder"
+provider_spend_cap_usd = 25.0
+model_allowlist = ["z-ai/glm-5.2", "z-ai/glm-5.2-mini"]
+trigger_bindings = ["manual"]
+iteration_cap = 1
+turn_cap = 120
+tool_action_cap = 200
+output_bytes_cap = 262144
+wall_clock_minutes = 45
+side_effect_policy = "log"
+"#;
+
+#[test]
+fn policy_table_loads_validates_and_projects() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = plane_with(dir.path(), POLICY_AGENT, MANUAL).unwrap();
+
+    let p = &plane.agents["a"].policy;
+    assert_eq!(p.authority.as_deref(), Some("edit"));
+    assert_eq!(p.provider_key_name.as_deref(), Some("openrouter-builder"));
+    assert_eq!(p.provider_spend_cap_usd, Some(25.0));
+    assert_eq!(p.model_allowlist.len(), 2);
+    assert_eq!(p.trigger_bindings, vec!["manual".to_string()]);
+    assert_eq!(p.iteration_cap, Some(1));
+    assert_eq!(p.turn_cap, Some(120));
+    assert_eq!(p.tool_action_cap, Some(200));
+    assert_eq!(p.output_bytes_cap, Some(262_144));
+    assert_eq!(p.wall_clock_minutes, Some(45));
+    assert_eq!(p.side_effect_policy.as_deref(), Some("log"));
+
+    let ledger = Ledger::open(&plane.db_path()).unwrap();
+    let rows = bitterblossom::serve::tasks_view(&plane, &ledger).unwrap();
+    assert_eq!(rows[0]["policy"]["authority"], "edit");
+    assert_eq!(rows[0]["policy"]["provider_spend_cap_usd"], 25.0);
+    assert_eq!(rows[0]["policy"]["model_allowlist"][0], "z-ai/glm-5.2");
+    assert_eq!(rows[0]["policy"]["side_effect_policy"], "log");
+
+    let check = bitterblossom::serve::check_view(&plane, &ledger).unwrap();
+    assert_eq!(check["agent_policy"]["a"]["authority"], "edit");
+    assert_eq!(check["task_details"][0]["policy"]["authority"], "edit");
+}
+
+#[test]
+fn policy_absent_defaults_to_empty_and_still_projects() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = plane_with(
+        dir.path(),
+        "version = 2\nharness = \"omp\"\nmodel = \"z-ai/glm-5.2\"\nauth = \"api\"\n",
+        MANUAL,
+    )
+    .unwrap();
+    let p = &plane.agents["a"].policy;
+    assert!(p.authority.is_none());
+    assert!(p.model_allowlist.is_empty());
+
+    let ledger = Ledger::open(&plane.db_path()).unwrap();
+    let rows = bitterblossom::serve::tasks_view(&plane, &ledger).unwrap();
+    assert!(rows[0]["policy"]["authority"].is_null());
+    assert!(rows[0]["policy"]["model_allowlist"].is_array());
+}
+
+#[test]
+fn policy_rejects_model_allowlist_mismatch() {
+    let dir = tempfile::tempdir().unwrap();
+    // Replace only the `model = "..."` line (first occurrence), leaving the
+    // allowlist listing glm variants so the model is not a member.
+    let agent = POLICY_AGENT.replacen(
+        "model = \"z-ai/glm-5.2\"",
+        "model = \"anthropic/claude-opus-4\"",
+        1,
+    );
+    let err = plane_with(dir.path(), &agent, MANUAL).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("not in policy.model_allowlist") && msg.contains("agent 'a'"),
+        "unexpected error: {msg}"
+    );
+}
+
+#[test]
+fn policy_rejects_unknown_authority_and_side_effect() {
+    // authority's original value is "edit"; side_effect_policy's is "log".
+    for (field, original_val, bad) in [
+        ("authority", "edit", "merge-and-delete"),
+        ("side_effect_policy", "log", "explode"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let from = format!("{field} = \"{original_val}\"");
+        let to = format!("{field} = \"{bad}\"");
+        let agent = POLICY_AGENT.replacen(&from, &to, 1);
+        let err = plane_with(dir.path(), &agent, MANUAL).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains(&format!("policy.{field}")) && msg.contains("is unknown"),
+            "unexpected error for {field}={bad}: {msg}"
+        );
+    }
+}
+
+#[test]
+fn policy_rejects_zero_cap_and_negative_spend() {
+    // zero iteration_cap
+    let dir = tempfile::tempdir().unwrap();
+    let agent = POLICY_AGENT.replace("iteration_cap = 1", "iteration_cap = 0");
+    let err = plane_with(dir.path(), &agent, MANUAL).unwrap_err();
+    assert!(format!("{err:#}").contains("policy.iteration_cap must be greater than zero"));
+
+    // negative spend cap
+    let dir = tempfile::tempdir().unwrap();
+    let agent = POLICY_AGENT.replace(
+        "provider_spend_cap_usd = 25.0",
+        "provider_spend_cap_usd = -1.0",
+    );
+    let err = plane_with(dir.path(), &agent, MANUAL).unwrap_err();
+    assert!(format!("{err:#}").contains("provider_spend_cap_usd must be non-negative"));
+}
+
+#[test]
+fn policy_rejects_unknown_and_duplicate_trigger_bindings() {
+    // unknown binding kind
+    let dir = tempfile::tempdir().unwrap();
+    let agent = POLICY_AGENT.replace(
+        "trigger_bindings = [\"manual\"]",
+        "trigger_bindings = [\"manual\", \"slack\"]",
+    );
+    let err = plane_with(dir.path(), &agent, MANUAL).unwrap_err();
+    assert!(format!("{err:#}").contains("policy.trigger_bindings entry 'slack' is unknown"));
+
+    // duplicate binding
+    let dir = tempfile::tempdir().unwrap();
+    let agent = POLICY_AGENT.replace(
+        "trigger_bindings = [\"manual\"]",
+        "trigger_bindings = [\"manual\", \"manual\"]",
+    );
+    let err = plane_with(dir.path(), &agent, MANUAL).unwrap_err();
+    assert!(format!("{err:#}").contains("is duplicated"));
+}

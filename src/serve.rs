@@ -603,6 +603,7 @@ pub fn tasks_view(plane: &Plane, ledger: &Ledger) -> Result<Vec<serde_json::Valu
             "max_runs_per_day": task.spec.budget.max_runs_per_day,
             "max_cost_per_run_usd": task.spec.budget.max_cost_per_run_usd,
             "timeout_minutes": task.spec.budget.timeout_minutes,
+            "policy": serde_json::to_value(&task.agent.policy)?,
         }));
     }
     Ok(out)
@@ -662,10 +663,15 @@ fn filter_view(filter: &crate::spec::FilterSpec) -> serde_json::Value {
 /// tool, and future API routes. Read-only; same shape everywhere so MCP
 /// never builds its own check/status shapes (backlog 078 oracle).
 pub fn check_view(plane: &Plane, ledger: &Ledger) -> Result<serde_json::Value> {
+    let mut agent_policy = serde_json::Map::new();
+    for (name, agent) in &plane.agents {
+        agent_policy.insert(name.clone(), serde_json::to_value(&agent.policy)?);
+    }
     Ok(serde_json::json!({
         "root": plane.root,
         "db_path": plane.db_path(),
         "agents": plane.agents.keys().collect::<Vec<_>>(),
+        "agent_policy": agent_policy,
         "tasks": plane.tasks.keys().collect::<Vec<_>>(),
         "task_details": tasks_view(plane, ledger)?,
     }))

@@ -12,3 +12,21 @@ skills = [
   "harness-kit/ci#rust-local-gate",
   "bitterblossom/operator-min",
 ]
+
+# Per-agent governance boundary (backlog 091, schema/read-surface slice).
+# The builder may edit and push a branch but never merge; its spend, model,
+# and loop surface are bounded and projected read-only through `bb check
+# --json`, `bb task list --json`, and `/api/tasks`. Enforcement (in-flight
+# kill/quarantine, provider cap sync) is a later slice.
+[policy]
+authority = "edit"
+provider_key_name = "openrouter-builder"
+provider_spend_cap_usd = 25.0
+model_allowlist = ["z-ai/glm-5.2"]
+trigger_bindings = ["manual"]
+iteration_cap = 1
+turn_cap = 120
+tool_action_cap = 200
+output_bytes_cap = 262144
+wall_clock_minutes = 45
+side_effect_policy = "log"

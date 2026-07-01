@@ -147,6 +147,10 @@ pub struct AgentSpec {
     pub args: Vec<String>,
     #[serde(default)]
     pub secrets: Vec<String>,
+    /// Optional per-agent governance boundary (backlog 091): validated at
+    /// load, projected read-only via check/task-list/api-tasks JSON.
+    #[serde(default)]
+    pub policy: PolicySpec,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,6 +174,77 @@ impl AgentSpec {
 
     pub fn provider(&self) -> &str {
         self.provider.as_deref().unwrap_or("openrouter")
+    }
+}
+/// Optional per-agent governance boundary (backlog 091): authority, provider
+/// key, spend cap, model allowlist, trigger bindings, caps, side-effect policy.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct PolicySpec {
+    pub authority: Option<String>,
+    pub provider_key_name: Option<String>,
+    pub provider_spend_cap_usd: Option<f64>,
+    #[serde(default)]
+    pub model_allowlist: Vec<String>,
+    #[serde(default)]
+    pub trigger_bindings: Vec<String>,
+    pub iteration_cap: Option<u32>,
+    pub turn_cap: Option<u32>,
+    pub tool_action_cap: Option<u32>,
+    pub output_bytes_cap: Option<u64>,
+    pub wall_clock_minutes: Option<u64>,
+    pub side_effect_policy: Option<String>,
+}
+
+impl PolicySpec {
+    /// Reject malformed values and model-allowlist mismatches at load.
+    pub fn validate(&self, agent: &str, model: &str) -> Result<()> {
+        if let Some(a) = &self.authority {
+            if !matches!(a.as_str(), "read" | "edit" | "merge") {
+                bail!("agent '{agent}': policy.authority '{a}' is unknown (read/edit/merge)");
+            }
+        }
+        if let Some(s) = &self.side_effect_policy {
+            if !matches!(s.as_str(), "log" | "quarantine" | "kill") {
+                bail!("agent '{agent}': policy.side_effect_policy '{s}' is unknown");
+            }
+        }
+        if let Some(c) = self.provider_spend_cap_usd {
+            if c < 0.0 {
+                bail!("agent '{agent}': policy.provider_spend_cap_usd must be non-negative");
+            }
+        }
+        for (field, n) in [
+            ("iteration_cap", self.iteration_cap.map(u64::from)),
+            ("turn_cap", self.turn_cap.map(u64::from)),
+            ("tool_action_cap", self.tool_action_cap.map(u64::from)),
+            ("output_bytes_cap", self.output_bytes_cap),
+            ("wall_clock_minutes", self.wall_clock_minutes),
+        ] {
+            if let Some(n) = n {
+                if n == 0 {
+                    bail!("agent '{agent}': policy.{field} must be greater than zero");
+                }
+            }
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for b in &self.trigger_bindings {
+            if !matches!(b.as_str(), "manual" | "cron" | "webhook") {
+                bail!("agent '{agent}': policy.trigger_bindings entry '{b}' is unknown");
+            }
+            if !seen.insert(b.clone()) {
+                bail!("agent '{agent}': policy.trigger_bindings entry '{b}' is duplicated");
+            }
+        }
+        if !self.model_allowlist.is_empty()
+            && !model.is_empty()
+            && !self.model_allowlist.iter().any(|m| m == model)
+        {
+            bail!(
+                "agent '{agent}': model '{model}' is not in policy.model_allowlist (allowed: {})",
+                self.model_allowlist.join(", ")
+            );
+        }
+        Ok(())
     }
 }
 
@@ -459,6 +534,10 @@ impl Plane {
                     );
                 }
             }
+            agent
+                .policy
+                .validate(name, &agent.model)
+                .with_context(|| format!("agent '{name}'"))?;
         }
         let mut routes = std::collections::BTreeSet::new();
         for task in tasks.values() {
