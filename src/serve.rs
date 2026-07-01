@@ -114,11 +114,10 @@ fn run_cron_tick(
         seen.insert(task.clone());
         let last = *last_by_task.entry(task.clone()).or_insert(*default_last);
         match ingress::cron_catchup(ledger, task, schedule, last, now, max_fires) {
-            Ok(o) if o.skipped > 0 => {
-                last_by_task.insert(task.clone(), now);
-                eprintln!("cron: task {task} collapsed {} skipped fires", o.skipped)
-            }
-            Ok(_) => {
+            Ok(o) => {
+                if o.skipped > 0 {
+                    eprintln!("cron: task {task} collapsed {} skipped fires", o.skipped);
+                }
                 last_by_task.insert(task.clone(), now);
             }
             Err(e) => {
