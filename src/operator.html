@@ -298,12 +298,33 @@ tbody tr:first-child td { border-top: 0; }
     border-right: 0;
     border-bottom: 1px solid var(--line);
     display: block;
+    overflow: visible;
+    padding: .8rem 1rem;
   }
-  .rail button { display: inline-block; width: auto; margin-right: .7rem; }
+  .brand { margin-bottom: .35rem; }
+  .rail button {
+    display: inline-block;
+    width: auto;
+    border-left: 0;
+    border-bottom: 2px solid transparent;
+    margin: 0;
+    padding: .15rem .05rem;
+  }
+  .rail button.is-active { border-bottom-color: var(--accent); }
   .rail-foot { display: none; }
   .desk { overflow: visible; padding: 1rem; }
   .summary, .grid-2, .health-grid { grid-template-columns: 1fr; }
-  .topbar { align-items: flex-start; flex-wrap: wrap; }
+  .topbar { align-items: flex-start; flex-wrap: wrap; gap: .6rem; }
+  .topbar .grow { flex-basis: 100%; }
+  .token {
+    order: 3;
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+  }
+  .token input {
+    flex: 1 1 10rem;
+    width: auto;
+  }
 }
 </style>
 </head>
