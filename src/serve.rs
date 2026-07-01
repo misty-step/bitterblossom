@@ -89,16 +89,22 @@ fn cron_loop(root: &Path) {
         // older fires and records a `cron_collapse` guard event so skipped
         // counts surface in status. Reflex tasks catch up to the newest state.
         let max_fires = plane.spec.ingress.max_cron_catchup_fires;
+        let mut caught_up = true;
         for (task, schedule) in &schedules {
             match ingress::cron_catchup(&mut ledger, task, schedule, last, now, max_fires) {
                 Ok(o) if o.skipped > 0 => {
                     eprintln!("cron: task {task} collapsed {} skipped fires", o.skipped)
                 }
                 Ok(_) => {}
-                Err(e) => eprintln!("cron: task {task}: {e:#}"),
+                Err(e) => {
+                    caught_up = false;
+                    eprintln!("cron: task {task}: {e:#}");
+                }
             }
         }
-        last = now;
+        if caught_up {
+            last = now;
+        }
     }
 }
 
