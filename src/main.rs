@@ -97,6 +97,16 @@ enum Command {
     },
     /// Run the plane: webhook ingress, cron scheduler, queue, dispatch.
     Serve,
+    /// Pause reflex dispatch for the whole plane (backlog 083): the
+    /// autonomous dispatch loop stops claiming pending runs until `resume`.
+    /// Distinct from per-task parking — manual `bb run` still dispatches.
+    /// Reason is recorded and visible in `status`.
+    Pause {
+        #[arg(long, default_value = "paused by operator")]
+        reason: String,
+    },
+    /// Resume reflex dispatch after a `pause`. No-op if not paused.
+    Resume,
     /// Report missing declared secrets and unspawnable command-harness
     /// binaries before dispatch creates run rows. Targets one task or the
     /// submission-storm member set (the gate-required verdict tasks).
@@ -751,6 +761,20 @@ fn run() -> Result<()> {
         Command::Serve => {
             drop(ledger);
             serve::serve(&plane.root)?;
+        }
+        Command::Pause { reason } => {
+            ledger.pause_plane(&reason)?;
+            ledger.record_guard_event("plane_paused", None, &reason, 1)?;
+            println!("paused reflex dispatch: {reason}");
+            eprintln!("note: manual `bb run` still dispatches; autonomous loop halted");
+        }
+        Command::Resume => {
+            if ledger.resume_plane()? {
+                ledger.record_guard_event("plane_resumed", None, "operator resume", 1)?;
+                println!("resumed reflex dispatch");
+            } else {
+                println!("plane was not paused");
+            }
         }
         Command::Check { json } => {
             if json {

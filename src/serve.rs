@@ -35,6 +35,7 @@ pub fn serve(root: &Path) -> Result<()> {
         );
         notify::notify(
             &plane,
+            &ledger,
             "run_recovered_at_boot",
             &serde_json::json!({
                 "run_id": r.run_id,
@@ -84,15 +85,17 @@ fn cron_loop(root: &Path) {
             }
         }
         let now = Utc::now();
+        // Backlog 083: cron catch-up is bounded — `cron_catchup` collapses
+        // older fires and records a `cron_collapse` guard event so skipped
+        // counts surface in status. Reflex tasks catch up to the newest state.
+        let max_fires = plane.spec.ingress.max_cron_catchup_fires;
         for (task, schedule) in &schedules {
-            for fire in ingress::due_fires(schedule, last, now) {
-                match ingress::ingest_cron_fire(&mut ledger, task, fire) {
-                    Ok(o) if !o.duplicate => {
-                        eprintln!("cron: task {task} fire {fire} -> run {}", o.run_id)
-                    }
-                    Ok(_) => {}
-                    Err(e) => eprintln!("cron: task {task}: {e:#}"),
+            match ingress::cron_catchup(&mut ledger, task, schedule, last, now, max_fires) {
+                Ok(o) if o.skipped > 0 => {
+                    eprintln!("cron: task {task} collapsed {} skipped fires", o.skipped)
                 }
+                Ok(_) => {}
+                Err(e) => eprintln!("cron: task {task}: {e:#}"),
             }
         }
         last = now;
@@ -107,6 +110,12 @@ fn dispatch_loop(root: &Path) {
     };
     loop {
         std::thread::sleep(DISPATCH_POLL);
+        // Backlog 083: a paused plane halts reflex dispatch. Manual `bb run`
+        // bypasses this loop and still dispatches — pause is a reflex circuit
+        // breaker, not an operator lock. State is visible in `status`.
+        if ledger.plane_paused().unwrap_or(None).is_some() {
+            continue;
+        }
         let pending = match ledger.pending_runs_oldest_first() {
             Ok(p) => p,
             Err(e) => {

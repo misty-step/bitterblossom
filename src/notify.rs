@@ -1,7 +1,12 @@
 use std::process::{Command, Stdio};
 
+use crate::ledger::Ledger;
 use crate::spec::Plane;
-pub fn notify(plane: &Plane, event: &str, detail: &serde_json::Value) {
+/// Deliver a notification for `event` to the plane's notify webhook, if any.
+/// Failures are recorded as durable `notify_failed` guard events (backlog 083)
+/// so they surface in `status` instead of dying on stderr. The webhook POST
+/// is synchronous and bounded to 10s; a missing webhook_url is a no-op.
+pub fn notify(plane: &Plane, ledger: &Ledger, event: &str, detail: &serde_json::Value) {
     let Some(url) = &plane.spec.notify.webhook_url else {
         return;
     };
@@ -26,19 +31,23 @@ pub fn notify(plane: &Plane, event: &str, detail: &serde_json::Value) {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn();
-    match spawned {
+    let failure: Option<String> = match spawned {
         Ok(mut child) => {
             if let Some(mut stdin) = child.stdin.take() {
                 let _ = std::io::Write::write_all(&mut stdin, body.as_bytes());
             }
             match child.wait() {
                 Ok(status) if !status.success() => {
-                    eprintln!("notify: webhook POST failed (exit {status}) event={event}")
+                    Some(format!("event={event} webhook_exit={status}"))
                 }
-                Err(e) => eprintln!("notify: cannot wait for curl: {e} event={event}"),
-                _ => {}
+                Err(e) => Some(format!("event={event} cannot_wait_curl={e}")),
+                _ => None,
             }
         }
-        Err(e) => eprintln!("notify: cannot spawn curl: {e}"),
+        Err(e) => Some(format!("event={event} cannot_spawn_curl={e}")),
+    };
+    if let Some(detail) = failure {
+        eprintln!("notify: {detail}");
+        let _ = ledger.record_guard_event("notify_failed", None, &detail, 1);
     }
 }

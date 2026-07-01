@@ -36,6 +36,7 @@ pub fn dispatch_run(plane: &Plane, ledger: &mut Ledger, run_id: &str) -> Result<
         ledger.transition(run_id, "blocked_budget", Some(&v.detail))?;
         crate::notify::notify(
             plane,
+            ledger,
             "budget_blocked",
             &serde_json::json!({ "run_id": run_id, "task": task.name, "kind": v.kind, "detail": v.detail }),
         );
@@ -64,6 +65,7 @@ pub fn dispatch_run(plane: &Plane, ledger: &mut Ledger, run_id: &str) -> Result<
                     ledger.park_task(&task.name, &v.detail)?;
                     crate::notify::notify(
                         plane,
+                        ledger,
                         "budget_breach_parked",
                         &serde_json::json!({ "run_id": run_id, "task": task.name, "detail": v.detail }),
                     );
@@ -97,6 +99,7 @@ pub fn dispatch_run(plane: &Plane, ledger: &mut Ledger, run_id: &str) -> Result<
                 )?;
                 crate::notify::notify(
                     plane,
+                    ledger,
                     "run_dead_lettered",
                     &serde_json::json!({ "run_id": run_id, "task": task.name, "dead_letter": dl, "error": error }),
                 );

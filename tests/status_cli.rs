@@ -93,3 +93,49 @@ fn status_cli_clusters_tasks_runs_dlq_and_safe_actions() {
     assert_eq!(doc["summary"]["open_dlq"], 1);
     assert_eq!(doc["summary"]["parked_tasks"], 1);
 }
+
+#[test]
+fn pause_resume_is_visible_and_manual_runs_still_dispatch() {
+    let dir = tempfile::tempdir().unwrap();
+    write_plane(dir.path());
+    let root = dir.path().to_str().unwrap();
+
+    let pause = bb(&[
+        "--config",
+        root,
+        "pause",
+        "--reason",
+        "incident guardrail drill",
+    ]);
+    assert!(
+        pause.status.success(),
+        "{}",
+        String::from_utf8_lossy(&pause.stderr)
+    );
+
+    let status = bb(&["--config", root, "status", "--json"]);
+    assert!(status.status.success());
+    let doc: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(doc["summary"]["plane_paused"], true);
+    assert_eq!(doc["guards"]["plane_paused"], true);
+    assert_eq!(doc["guards"]["paused_reason"], "incident guardrail drill");
+
+    let run = bb(&["--config", root, "run", "ok", "--json"]);
+    assert!(
+        run.status.success(),
+        "manual dispatch should bypass reflex pause: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let resume = bb(&["--config", root, "resume"]);
+    assert!(
+        resume.status.success(),
+        "{}",
+        String::from_utf8_lossy(&resume.stderr)
+    );
+    let status = bb(&["--config", root, "status", "--json"]);
+    let doc: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(doc["summary"]["plane_paused"], false);
+    assert_eq!(doc["guards"]["plane_paused"], false);
+    assert!(doc["guards"]["paused_reason"].is_null());
+}

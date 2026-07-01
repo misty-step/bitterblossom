@@ -534,6 +534,7 @@ pub fn evaluate(plane: &Plane, ledger: &Ledger, submission_id: &str) -> Result<G
         if settled && decision == "escalated" {
             crate::notify::notify(
                 plane,
+                ledger,
                 "submission_escalated",
                 &serde_json::json!({
                     "submission": sub.id, "change": sub.change_key,
@@ -547,6 +548,7 @@ pub fn evaluate(plane: &Plane, ledger: &Ledger, submission_id: &str) -> Result<G
         if settled && decision == "blocked" {
             crate::notify::notify(
                 plane,
+                ledger,
                 "gate.blocked",
                 &serde_json::json!({
                     "submission": sub.id, "change": sub.change_key,
