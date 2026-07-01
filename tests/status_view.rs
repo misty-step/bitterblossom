@@ -144,3 +144,25 @@ fn status_view_covers_operator_truth_fixtures() {
     assert!(recovery_action["age_seconds"].as_i64().unwrap() >= 3600);
     assert_eq!(recovery_action["stale_after_seconds"], 3600);
 }
+
+#[test]
+fn status_view_reports_active_lease_even_when_run_is_outside_recent_window() {
+    let dir = tempfile::tempdir().unwrap();
+    write_plane(dir.path());
+    let plane = Plane::load(dir.path()).unwrap();
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+
+    let leased = ingest(&mut ledger, "review");
+    ledger.transition(&leased, "running", None).unwrap();
+    ledger.try_acquire_host_lease("lane-old", &leased).unwrap();
+    for _ in 0..205 {
+        ingest(&mut ledger, "review");
+    }
+
+    let doc = health::status_view(&plane, &ledger).unwrap();
+    let tasks = doc["tasks"].as_array().unwrap();
+    let review = tasks.iter().find(|t| t["task"] == "review").unwrap();
+
+    assert_eq!(review["lease"]["host"], "lane-old");
+    assert_eq!(review["lease"]["run_id"], leased);
+}
