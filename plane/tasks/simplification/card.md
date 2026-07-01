@@ -196,7 +196,14 @@ would catch, correctness bugs with no maintainability consequence
   Some failures are blocking by definition — never downgrade them:
   secrets/credentials written to logs, disk, argv, or process output; a
   reachable runtime panic/crash on realistic input; data loss on a
-  normal path; auth bypass.
+  normal path; auth bypass. **For this simplification member, a concrete
+  structural maintainability regression is also blocking when it violates
+  the approval bar above**: unjustified file-size explosion, clear
+  spaghetti growth, wrong-layer workload logic, gate-weakening, or an
+  obvious code-judo simplification whose absence leaves the change
+  materially harder to maintain. Name the structure, the affected path,
+  and why the cleaner shape is available; vague taste, naming, or style
+  feedback is not blocking.
 - `serious`: should be fixed; never blocks the merge.
 - `minor`: worth a note; never blocks.
 

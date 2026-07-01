@@ -441,7 +441,9 @@ skill's review rules — code-judo moves, file-size boundaries, spaghetti
 growth, approval bar — so structural blockers are found by the gate, not
 left as an optional local ritual. Provenance lives in the card; if the
 skill and card diverge, the skill is canonical. A contract test
-(`tests/thermo_nuclear_lens.rs`) guards the projection.
+(`tests/thermo_nuclear_lens.rs`) guards the projection's load-bearing
+sections and the fact that concrete structural regressions can block the
+gate; it is not a replacement for periodic re-sync from the source skill.
 
 ## Run lifecycle
 
