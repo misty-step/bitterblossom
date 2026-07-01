@@ -5,8 +5,8 @@ use std::fs;
 use std::path::Path;
 
 use bitterblossom::ingress::{
-    cron_catchup, derive_dedupe_key, due_fires, handle_webhook, ingest_cron_fire, parse_schedule,
-    sign_hmac,
+    cron_catchup, cron_catchup_guarded, derive_dedupe_key, due_fires, handle_webhook,
+    ingest_cron_fire, parse_schedule, sign_hmac,
 };
 use bitterblossom::ledger::Ledger;
 use bitterblossom::spec::Plane;
@@ -132,6 +132,30 @@ fn webhook_redelivery_same_dedupe_key_records_event_no_second_run() {
     );
     assert_eq!(ledger.list_runs(Some("demo"), None).unwrap().len(), 1);
     assert_eq!(ledger.ingress_event_count("demo").unwrap(), 2);
+}
+
+#[test]
+fn webhook_attention_debt_brake_refuses_without_ingesting() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    ledger
+        .record_dead_letter("old-run", "demo", Some("{}"), "operator debt")
+        .unwrap();
+    std::env::set_var(SECRET_ENV, "hunter2");
+
+    let body = r#"{"action":"opened","number":7}"#;
+    let sig = sign_hmac("hunter2", body.as_bytes());
+    let resp = handle_webhook(&plane, &mut ledger, "demo", &headers(&sig, "d-1"), body).unwrap();
+    assert_eq!(resp.status, 429, "{}", resp.body);
+    assert!(resp.body.contains("attention debt brake"), "{}", resp.body);
+    assert!(ledger.list_runs(Some("demo"), None).unwrap().is_empty());
+    assert_eq!(ledger.ingress_event_count("demo").unwrap(), 0);
+
+    let events = ledger.list_guard_events(10).unwrap();
+    assert_eq!(events[0].kind, "attention_debt_brake");
+    assert_eq!(events[0].task.as_deref(), Some("demo"));
+    assert!(events[0].detail.as_deref().unwrap().contains("open_dlq=1"));
 }
 
 #[test]
@@ -276,6 +300,31 @@ fn cron_catchup_collapses_old_fires_and_records_count() {
         .find(|c| c.kind == "cron_collapse")
         .unwrap();
     assert_eq!(collapsed.total, outcome.skipped as i64);
+}
+
+#[test]
+fn guarded_cron_attention_debt_brake_refuses_due_fires() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    ledger
+        .record_dead_letter("old-run", "demo", Some("{}"), "operator debt")
+        .unwrap();
+    let schedule = parse_schedule("* * * * *").unwrap();
+    let after = Utc.with_ymd_and_hms(2026, 6, 10, 12, 0, 0).unwrap();
+    let until = Utc.with_ymd_and_hms(2026, 6, 10, 12, 6, 0).unwrap();
+
+    let outcome =
+        cron_catchup_guarded(&plane, &mut ledger, "demo", &schedule, after, until, 2).unwrap();
+
+    assert_eq!(outcome.ingested, 0);
+    assert_eq!(outcome.duplicates, 0);
+    assert_eq!(outcome.skipped, 6);
+    assert_eq!(ledger.ingress_event_count("demo").unwrap(), 0);
+    let events = ledger.list_guard_events(10).unwrap();
+    assert_eq!(events[0].kind, "attention_debt_brake");
+    assert_eq!(events[0].task.as_deref(), Some("demo"));
+    assert!(events[0].detail.as_deref().unwrap().contains("source=cron"));
 }
 
 #[test]

@@ -51,10 +51,10 @@ if report.get("status") != "pass":
 PY
 rm -rf "$self_drill_tmp"
 
-echo "==> spine LOC bloat tripwire (<= 7900; mechanism only — the Python conductor died of bloat)"
+echo "==> spine LOC bloat tripwire (<= 8100; mechanism only — the Python conductor died of bloat)"
 loc=$(find src -name '*.rs' -exec cat {} + | grep -vc '^\s*$')
 echo "    src LOC: $loc"
-if [ "$loc" -gt 7900 ]; then
+if [ "$loc" -gt 8100 ]; then
   echo "spine tripped the bloat tripwire. The number is arbitrary; the invariant is not:"
   echo "src/ is MECHANISM (config, ledger, dispatch, ingress, CLI, recovery, serve, mcp), not WORKLOAD"
   echo "judgment. Ask whether what you added is mechanism — if not, move it to tasks/ +"

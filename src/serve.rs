@@ -103,6 +103,7 @@ fn cron_loop(root: &Path) {
         }
         let now = Utc::now();
         run_cron_tick(
+            &plane,
             &mut ledger,
             &schedules,
             &mut last_by_task,
@@ -114,6 +115,7 @@ fn cron_loop(root: &Path) {
 }
 
 fn run_cron_tick(
+    plane: &Plane,
     ledger: &mut Ledger,
     schedules: &[(String, Schedule)],
     last_by_task: &mut HashMap<String, DateTime<Utc>>,
@@ -128,7 +130,7 @@ fn run_cron_tick(
     for (task, schedule) in schedules {
         seen.insert(task.clone());
         let last = *last_by_task.entry(task.clone()).or_insert(*default_last);
-        match ingress::cron_catchup(ledger, task, schedule, last, now, max_fires) {
+        match ingress::cron_catchup_guarded(plane, ledger, task, schedule, last, now, max_fires) {
             Ok(o) => {
                 if o.skipped > 0 {
                     eprintln!("cron: task {task} collapsed {} skipped fires", o.skipped);
@@ -759,6 +761,7 @@ mod tests {
     #[test]
     fn cron_tick_does_not_rewind_successful_tasks_when_peer_fails() {
         let dir = tempfile::tempdir().unwrap();
+        let plane = watchdog_plane(dir.path());
         let db = dir.path().join("ledger.sqlite");
         let mut ledger = Ledger::open(&db).unwrap();
         rusqlite::Connection::open(&db)
@@ -789,6 +792,7 @@ mod tests {
         let second = Utc.with_ymd_and_hms(2026, 6, 10, 12, 7, 0).unwrap();
 
         run_cron_tick(
+            &plane,
             &mut ledger,
             &schedules,
             &mut last_by_task,
@@ -801,6 +805,7 @@ mod tests {
         assert_eq!(guard_total(&ledger, "cron_collapse"), 4);
 
         run_cron_tick(
+            &plane,
             &mut ledger,
             &schedules,
             &mut last_by_task,

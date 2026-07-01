@@ -211,3 +211,22 @@ If the notification has already been handled out of band, close it explicitly:
 ```
 
 Acknowledgement keeps the row with reason and timestamp; it is not a delete.
+
+## Attention Debt Brake
+
+`bb status --json` exposes aggregate unattended-loop debt at
+`guards.attention_debt`: open DLQs, parked tasks, stale executing runs,
+`awaiting_recovery` runs, and pending or failed notification rows. Any nonzero
+count makes `blocking=true`.
+
+When the brake is blocking, new reflex admissions are refused before they create
+run rows:
+
+- signed webhooks return HTTP `429` with the debt counts;
+- serve-mode cron catch-up records an `attention_debt_brake` guard event and
+  skips the due fire instead of queueing more work;
+- manual `bb run ...` remains available for operator-controlled repair.
+
+Clear the named debt first: replay or acknowledge DLQs, unpark tasks only after
+the reason is fixed, inspect/resolve `awaiting_recovery`, run `bb recover --json`
+for stale executing work, and retry or acknowledge notification outbox rows.
