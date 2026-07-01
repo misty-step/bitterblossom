@@ -118,6 +118,26 @@ pub struct DeadLetterRow {
     pub status: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct HostLeaseRow {
+    pub host: String,
+    pub run_id: String,
+    pub acquired_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct IngressEventRow {
+    pub id: i64,
+    pub run_id: Option<String>,
+    pub task: String,
+    pub trigger_kind: String,
+    pub source_event_id: Option<String>,
+    pub dedupe_key: Option<String>,
+    pub payload_hash: Option<String>,
+    pub duplicate: bool,
+    pub received_at: String,
+}
+
 /// Resolution state of a dead letter, derived from its replay/acknowledgement
 /// columns. Acknowledgement and replay are mutually exclusive operator paths
 /// to close a pre-execute dead letter; replay history is immutable.
@@ -451,6 +471,22 @@ impl Ledger {
             .optional()?)
     }
 
+    pub fn list_host_leases(&self) -> Result<Vec<HostLeaseRow>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT host, run_id, acquired_at FROM host_leases ORDER BY acquired_at")?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(HostLeaseRow {
+                    host: r.get(0)?,
+                    run_id: r.get(1)?,
+                    acquired_at: r.get(2)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     pub fn record_dead_letter(
         &self,
         run_id: &str,
@@ -754,6 +790,31 @@ impl Ledger {
             params![task],
             |r| r.get(0),
         )?)
+    }
+
+    pub fn latest_ingress_events(&self, limit: i64) -> Result<Vec<IngressEventRow>> {
+        let limit = limit.clamp(1, 200);
+        let mut stmt = self.conn.prepare(
+            "SELECT id, run_id, task, trigger_kind, source_event_id, dedupe_key,
+               payload_hash, duplicate, received_at
+             FROM ingress_events ORDER BY id DESC LIMIT ?1",
+        )?;
+        let rows = stmt
+            .query_map(params![limit], |r| {
+                Ok(IngressEventRow {
+                    id: r.get(0)?,
+                    run_id: r.get(1)?,
+                    task: r.get(2)?,
+                    trigger_kind: r.get(3)?,
+                    source_event_id: r.get(4)?,
+                    dedupe_key: r.get(5)?,
+                    payload_hash: r.get(6)?,
+                    duplicate: r.get::<_, i64>(7)? != 0,
+                    received_at: r.get(8)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 }
 

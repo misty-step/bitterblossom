@@ -237,6 +237,10 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
     let method = request.method().to_string();
     let url = request.url().to_string();
 
+    if method == "GET" && url == "/favicon.ico" {
+        return Ok((204, String::new()));
+    }
+
     if method == "GET" && (url.starts_with("/api/") || url == "/" || url.starts_with("/?")) {
         if !read_authorized(request) {
             return Ok((401, "{\"error\":\"missing or bad bearer token\"}".into()));
@@ -257,6 +261,24 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
                 serde_json::to_string(&crate::health::status_view(&plane, &ledger)?)?,
             )),
             "/api/dlq" => Ok((200, serde_json::to_string(&ledger.list_dead_letters()?)?)),
+            "/api/leases" => Ok((200, serde_json::to_string(&ledger.list_host_leases()?)?)),
+            "/api/ingress" => {
+                let limit = query_param(&url, "limit")
+                    .and_then(|s| s.parse::<i64>().ok())
+                    .unwrap_or(50);
+                Ok((
+                    200,
+                    serde_json::to_string(&ledger.latest_ingress_events(limit)?)?,
+                ))
+            }
+            "/api/export" => {
+                let lines = crate::telemetry::export_all(&plane, &ledger)?
+                    .into_iter()
+                    .map(|line| line.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Ok((200, format!("{lines}\n")))
+            }
             "/api/submissions" => {
                 let limit = query_param(&url, "limit")
                     .and_then(|s| s.parse::<i64>().ok())
@@ -354,6 +376,7 @@ pub fn tasks_view(plane: &Plane, ledger: &Ledger) -> Result<Vec<serde_json::Valu
             "model": task.agent.model,
             "substrate": task.spec.substrate,
             "triggers": task.spec.triggers.len(),
+            "trigger_details": task.spec.triggers.iter().map(trigger_view).collect::<Vec<_>>(),
             "verdict": task.spec.verdict,
             "source": task.source,
             "parked": ledger.parked_reason(&task.name)?,
@@ -365,6 +388,57 @@ pub fn tasks_view(plane: &Plane, ledger: &Ledger) -> Result<Vec<serde_json::Valu
     }
     Ok(out)
 }
+fn trigger_view(trigger: &TriggerSpec) -> serde_json::Value {
+    match trigger {
+        TriggerSpec::Manual => serde_json::json!({"kind": "manual"}),
+        TriggerSpec::Cron { schedule } => serde_json::json!({
+            "kind": "cron",
+            "schedule": schedule,
+        }),
+        TriggerSpec::Webhook {
+            route,
+            secret_env,
+            dedupe_key,
+            action,
+            filter,
+        } => serde_json::json!({
+            "kind": "webhook",
+            "route": route,
+            "secret_env": secret_env,
+            "dedupe_key": dedupe_key,
+            "action": action.as_ref().map(webhook_action_view),
+            "filters": filter.iter().map(filter_view).collect::<Vec<_>>(),
+        }),
+    }
+}
+
+fn webhook_action_view(action: &crate::spec::WebhookActionSpec) -> serde_json::Value {
+    match action {
+        crate::spec::WebhookActionSpec::SubmissionStorm {
+            change,
+            rev,
+            repo,
+            version,
+        } => serde_json::json!({
+            "kind": "submission_storm",
+            "change": change,
+            "rev": rev,
+            "repo": repo,
+            "version": version,
+        }),
+    }
+}
+
+fn filter_view(filter: &crate::spec::FilterSpec) -> serde_json::Value {
+    serde_json::json!({
+        "pointer": &filter.pointer,
+        "equals": &filter.equals,
+        "any_of": &filter.any_of,
+        "not_any_of": &filter.not_any_of,
+        "max": filter.max,
+    })
+}
+
 /// Config-surface snapshot shared by `bb check --json`, the MCP `bb_check`
 /// tool, and future API routes. Read-only; same shape everywhere so MCP
 /// never builds its own check/status shapes (backlog 078 oracle).

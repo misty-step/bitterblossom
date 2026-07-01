@@ -203,10 +203,11 @@ fn attempt_on_host(
         };
         secrets.push((name.clone(), value));
     }
+    let trigger = ledger.run(run_id)?;
     let plan = WorkspacePlan {
         repos: task.spec.workspace.repos.clone(),
         card: task.card.clone(),
-        run_context: serde_json::json!({"run_id": run_id, "task": &task.name, "agent": {"name": &task.agent_name, "version": task.agent.version, "role": &task.agent.role, "harness": &task.agent.harness, "model": &task.agent.model}, "substrate": &task.spec.substrate}).to_string(),
+        run_context: serde_json::json!({"run_id": run_id, "task": &task.name, "trigger": {"kind": trigger.trigger_kind, "idempotency_key": trigger.idempotency_key}, "agent": {"name": &task.agent_name, "version": task.agent.version, "role": &task.agent.role, "harness": &task.agent.harness, "model": &task.agent.model}, "substrate": &task.spec.substrate}).to_string(),
         payload: match (&submission, ledger.run_payload(run_id)?) {
             (Some(sub), Some(raw)) => {
                 let mut v: serde_json::Value = serde_json::from_str(&raw)?;
@@ -504,11 +505,6 @@ pub fn attempt_dir(plane: &Plane, run_id: &str, n: i64) -> PathBuf {
         .join(format!("attempt-{n}"))
 }
 
-/// Returns an error message naming any required artifacts absent from the
-/// attempt artifact dir, or `None` if the contract is satisfied. Called after
-/// the session releases (which copies REPORT.json and other workspace
-/// artifacts into the attempt dir), so a missing file means the agent never
-/// produced it.
 fn missing_artifact_error(required: &[String], artifact_dir: &Path) -> Option<String> {
     let missing: Vec<&String> = required
         .iter()

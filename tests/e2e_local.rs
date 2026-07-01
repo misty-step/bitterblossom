@@ -121,7 +121,7 @@ fn trigger_payload_materializes_as_event_json_in_workspace() {
         .ingest(IngressRequest {
             task: "demo",
             trigger_kind: "manual",
-            idempotency_key: None,
+            idempotency_key: Some("manual:demo:7"),
             source_event_id: None,
             payload: Some(r#"{"pr":7,"action":"opened"}"#),
             parent_run_id: None,
@@ -141,6 +141,8 @@ fn trigger_payload_materializes_as_event_json_in_workspace() {
             .unwrap();
     assert_eq!(run_context["run_id"], run_id);
     assert_eq!(run_context["task"], "demo");
+    assert_eq!(run_context["trigger"]["kind"], "manual");
+    assert_eq!(run_context["trigger"]["idempotency_key"], "manual:demo:7");
     assert_eq!(run_context["agent"]["name"], "stub");
     assert_eq!(run_context["agent"]["harness"], "claude");
 }

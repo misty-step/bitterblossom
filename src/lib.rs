@@ -14,3 +14,4 @@ pub mod serve;
 pub mod spec;
 pub mod submit;
 pub mod substrate;
+pub mod telemetry;
