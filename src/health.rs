@@ -12,6 +12,8 @@ const RECOVERY_STALE_SECONDS: i64 = 3600;
 pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
     let runs = ledger.list_runs(None, None)?;
     let dead_letters = ledger.list_dead_letters()?;
+    let leases = ledger.list_host_leases()?;
+    let ingress_events = ledger.latest_ingress_events(200)?;
     let generated_at = OffsetDateTime::now_utc();
     let open_dlq = dead_letters.iter().filter(|d| d.status == "open").count();
     let mut parked_tasks = 0usize;
@@ -53,6 +55,12 @@ pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
             .iter()
             .filter(|d| d.status == "acknowledged")
             .count();
+        let latest_ingress = ingress_events.iter().find(|e| e.task == task.name);
+        let active_lease = leases.iter().find(|l| {
+            task_runs
+                .iter()
+                .any(|r| r.id == l.run_id && r.state == "running")
+        });
 
         tasks.push(json!({
             "task": task.name,
@@ -89,6 +97,11 @@ pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
                 "total": task_dlq.len(),
                 "latest_open": latest_open_dlq.map(dlq_summary),
             },
+            "ingress": {
+                "events": ledger.ingress_event_count(&task.name)?,
+                "latest": latest_ingress,
+            },
+            "lease": active_lease,
             "safe_next_actions": safe_actions(
                 &task.name,
                 parked.as_deref(),
@@ -107,8 +120,14 @@ pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
             "tasks": plane.tasks.len(),
             "parked_tasks": parked_tasks,
             "open_dlq": open_dlq,
+            "active_leases": leases.len(),
+            "recent_ingress_events": ingress_events.len(),
             "cost_today_usd": ledger.cost_today()?,
             "max_cost_per_day_usd": plane.spec.budget.max_cost_per_day_usd,
+        },
+        "leases": leases,
+        "ingress": {
+            "recent": ingress_events,
         },
         "tasks": tasks,
     }))

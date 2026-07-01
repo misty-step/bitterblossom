@@ -44,6 +44,19 @@ fn write_dispatch_plane(root: &std::path::Path) {
     .unwrap();
 }
 
+fn write_trigger_plane(root: &std::path::Path) {
+    write_dispatch_plane(root);
+    fs::write(
+        root.join("tasks/demo/task.toml"),
+        "agent = \"stub\"\nsubstrate = \"local\"\n\
+         [[trigger]]\nkind = \"manual\"\n\
+         [[trigger]]\nkind = \"cron\"\nschedule = \"0 * * * *\"\n\
+         [[trigger]]\nkind = \"webhook\"\nroute = \"demo\"\nsecret_env = \"BB_TEST_DEMO\"\ndedupe_key = \"header:X-Demo\"\n\
+         [[trigger.filter]]\npointer = \"/repository/full_name\"\nany_of = [\"misty-step/bitterblossom\"]\n",
+    )
+    .unwrap();
+}
+
 fn enqueue(root: &std::path::Path, task: &str) -> String {
     let plane = Plane::load(root).unwrap();
     let mut ledger = Ledger::open(&plane.db_path()).unwrap();
@@ -132,6 +145,10 @@ fn http_get(port: u16, path: &str, bearer: Option<&str>) -> (u16, String) {
         .parse()
         .unwrap();
     (status, response)
+}
+
+fn response_body(response: &str) -> &str {
+    response.split("\r\n\r\n").nth(1).unwrap_or("")
 }
 
 struct ChildGuard(Child);
@@ -236,4 +253,81 @@ fn read_api_requires_bearer_and_rejects_query_token() {
     assert_eq!(status, 200, "{body}");
     let (status, body) = http_get(port, "/", Some("test-token"));
     assert_eq!(status, 200, "{body}");
+}
+
+#[test]
+fn tasks_view_reports_trigger_details() {
+    let dir = tempfile::tempdir().unwrap();
+    write_trigger_plane(dir.path());
+    let plane = Plane::load(dir.path()).unwrap();
+    let ledger = Ledger::open(&plane.db_path()).unwrap();
+
+    let rows = bitterblossom::serve::tasks_view(&plane, &ledger).unwrap();
+    let details = rows[0]["trigger_details"].as_array().unwrap();
+
+    assert_eq!(rows[0]["triggers"], 3);
+    assert!(details.iter().any(|t| t["kind"] == "manual"));
+    assert!(details
+        .iter()
+        .any(|t| t["kind"] == "cron" && t["schedule"] == "0 * * * *"));
+    assert!(details.iter().any(|t| {
+        t["kind"] == "webhook"
+            && t["route"] == "demo"
+            && t["dedupe_key"] == "header:X-Demo"
+            && t["filters"].as_array().unwrap().len() == 1
+    }));
+}
+
+#[test]
+fn read_api_exposes_dashboard_observability_routes() {
+    let dir = tempfile::tempdir().unwrap();
+    write_dispatch_plane(dir.path());
+    let run_id = enqueue(dir.path(), "demo");
+    let plane = Plane::load(dir.path()).unwrap();
+    let ledger = Ledger::open(&plane.db_path()).unwrap();
+    ledger
+        .try_acquire_host_lease("lane-1", "external-run")
+        .unwrap();
+    drop(ledger);
+    drop(plane);
+    let port = free_loopback_port();
+
+    let child = Command::new(env!("CARGO_BIN_EXE_bb"))
+        .args(["--config", dir.path().to_str().unwrap(), "serve"])
+        .env("BB_INGRESS_BIND", format!("127.0.0.1:{port}"))
+        .env("BB_API_TOKEN", "test-token")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let _child = ChildGuard(child);
+    wait_for_http(port);
+
+    for route in [
+        "/api/status",
+        "/api/tasks",
+        "/api/runs",
+        "/api/leases",
+        "/api/ingress",
+        "/api/export",
+    ] {
+        assert_eq!(http_get(port, route, None).0, 401, "{route}");
+        let (status, body) = http_get(port, route, Some("test-token"));
+        assert_eq!(status, 200, "{route}: {body}");
+    }
+
+    let (_, body) = http_get(port, "/api/leases", Some("test-token"));
+    let leases: serde_json::Value = serde_json::from_str(response_body(&body)).unwrap();
+    assert_eq!(leases[0]["host"], "lane-1");
+
+    let (_, body) = http_get(port, "/api/ingress", Some("test-token"));
+    let ingress: serde_json::Value = serde_json::from_str(response_body(&body)).unwrap();
+    assert!(ingress.as_array().unwrap().iter().any(|e| {
+        e["task"] == "demo" && e["run_id"] == run_id && e["trigger_kind"] == "manual"
+    }));
+
+    let (_, body) = http_get(port, "/api/export", Some("test-token"));
+    let first_line = response_body(&body).lines().next().unwrap();
+    let exported: serde_json::Value = serde_json::from_str(first_line).unwrap();
+    assert_eq!(exported["schema"], "bb.run_telemetry.v1");
 }

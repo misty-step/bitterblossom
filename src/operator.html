@@ -1,7 +1,681 @@
-<!doctype html><html><head><meta charset="utf-8">
-<meta http-equiv="refresh" content="15">
-<title>bitterblossom</title>
-<style>body{font:14px/1.5 ui-monospace,monospace;margin:2rem;background:#101014;color:#d8d8e0}a{color:#9db4ff}</style></head><body>
-<h1>bitterblossom - the event plane</h1>
-<p><a href="/api/status">status</a> <a href="/api/tasks">tasks</a> <a href="/api/runs">runs</a> <a href="/api/submissions">submissions</a></p>
-</body></html>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bitterblossom dashboard</title>
+<style>
+:root {
+  --surface: #fcfcfc;
+  --wash: #f3f3f3;
+  --ink: #151515;
+  --muted: #737373;
+  --faint: #a3a3a3;
+  --line: #e9e9e9;
+  --accent: #2643d0;
+  --ok: #15714b;
+  --warn: #8a5f32;
+  --err: #a84138;
+  --font: "Geist", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface: #121212;
+    --wash: #1b1b1b;
+    --ink: #ededed;
+    --muted: #8f8f8f;
+    --faint: #5c5c5c;
+    --line: #262626;
+    --accent: #8c9eff;
+    --ok: #6fd2a8;
+    --warn: #c49d72;
+    --err: #e58379;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--surface);
+  color: var(--ink);
+  font: 16px/1.75 var(--font);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  cursor: default;
+}
+h1, h2, h3, p, button, input, table { margin: 0; font: inherit; }
+button, input { color: inherit; }
+button { cursor: pointer; }
+a {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: var(--faint);
+  text-underline-offset: .22em;
+}
+a:hover { color: var(--accent); text-decoration-color: currentColor; }
+.shell {
+  height: 100dvh;
+  display: grid;
+  grid-template-columns: 14rem minmax(0, 1fr);
+  overflow: hidden;
+}
+.rail {
+  border-right: 1px solid var(--line);
+  padding: 1.4rem 1.2rem;
+  font: 13px/1.7 var(--mono);
+  color: var(--muted);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+.brand {
+  color: var(--ink);
+  font-weight: 800;
+  margin-bottom: 1.2rem;
+}
+.rail button {
+  display: block;
+  width: 100%;
+  border: 0;
+  border-left: 2px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  text-align: left;
+  padding: .25rem 0 .25rem .55rem;
+  margin: .05rem 0;
+}
+.rail button:hover,
+.rail button.is-active {
+  color: var(--ink);
+}
+.rail button.is-active {
+  border-left-color: var(--accent);
+  font-weight: 550;
+}
+.rail-foot {
+  margin-top: auto;
+  padding-top: 1.4rem;
+  color: var(--faint);
+}
+.desk {
+  min-width: 0;
+  overflow-y: auto;
+  padding: 1.6rem 2rem 2rem;
+}
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 1rem;
+  margin-bottom: 1rem;
+}
+.topbar h1 { font-weight: 800; }
+.chrome {
+  font: 13px/1.6 var(--mono);
+  color: var(--muted);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.grow { flex: 1; min-width: 0; }
+.action {
+  border: 1px solid var(--ink);
+  background: var(--ink);
+  color: var(--surface);
+  padding: .35rem .7rem;
+  font: 13px/1.4 var(--mono);
+}
+.quiet {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+  padding: .35rem .7rem;
+  font: 13px/1.4 var(--mono);
+}
+.quiet:hover { border-color: var(--ink); }
+.token {
+  display: none;
+  align-items: center;
+  gap: .45rem;
+}
+.token.is-visible { display: flex; }
+.token input {
+  width: min(16rem, 36vw);
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  padding: .25rem 0;
+  font: 13px/1.4 var(--mono);
+}
+.view { display: none; }
+.view.is-active { display: block; }
+.summary {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+}
+.metric {
+  min-width: 0;
+  min-height: 6rem;
+  padding: .8rem;
+  background: var(--surface);
+}
+.metric strong,
+.num {
+  display: block;
+  margin-top: .35rem;
+  font: 800 1em/1.5 var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+.metric p { color: var(--muted); }
+.meter {
+  position: relative;
+  height: 4px;
+  border: 1px solid var(--line);
+  background: var(--wash);
+  margin-top: .65rem;
+}
+.meter span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  background: var(--accent);
+  transition: width 480ms cubic-bezier(.23, 1, .32, 1);
+}
+.meter span.ok { background: var(--ok); }
+.meter span.warn { background: var(--warn); }
+.meter span.err { background: var(--err); }
+.grid-2 {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(22rem, .85fr);
+  gap: 1rem;
+  margin-top: 1rem;
+}
+.plate {
+  border: 1px solid var(--line);
+  padding: 1rem;
+  min-width: 0;
+  background: var(--surface);
+}
+.plate h2 {
+  font-weight: 800;
+  margin-bottom: .8rem;
+}
+.plate-note {
+  margin-top: .8rem;
+  padding-top: .8rem;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font: 13px/1.6 var(--mono);
+}
+.table-wrap { overflow-x: auto; }
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font: 13px/1.65 var(--mono);
+}
+th {
+  text-align: left;
+  font-weight: 400;
+  color: var(--muted);
+  background: var(--wash);
+  letter-spacing: .08em;
+  padding: .42rem .6rem;
+}
+td {
+  border-top: 1px solid var(--line);
+  padding: .42rem .6rem;
+  vertical-align: top;
+}
+tbody tr:first-child td { border-top: 0; }
+.right { text-align: right; }
+.item { font-weight: 550; color: var(--ink); }
+.muted { color: var(--muted); }
+.faint { color: var(--faint); }
+.ok { color: var(--ok); }
+.warn { color: var(--warn); }
+.err { color: var(--err); }
+.accent { color: var(--accent); }
+.state {
+  white-space: nowrap;
+  font-weight: 550;
+}
+.state::before {
+  display: inline-block;
+  width: auto;
+  margin-right: .35em;
+  font-weight: 800;
+}
+.state.success::before { content: "ok"; color: var(--ok); }
+.state.failure::before,
+.state.awaiting_recovery::before { content: "x"; color: var(--err); }
+.state.blocked_budget::before,
+.state.retired::before { content: "!"; color: var(--warn); }
+.state.pending::before,
+.state.running::before { content: ">"; color: var(--accent); }
+.empty {
+  color: var(--muted);
+  padding: 1rem 0;
+}
+.actions {
+  display: grid;
+  gap: .6rem;
+}
+.next-action {
+  border-top: 1px solid var(--line);
+  padding-top: .6rem;
+}
+.next-action:first-child { border-top: 0; padding-top: 0; }
+.next-action code {
+  display: block;
+  margin-top: .25rem;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.health-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+.error {
+  border: 1px solid var(--err);
+  color: var(--err);
+  padding: .8rem;
+  margin-bottom: 1rem;
+  display: none;
+}
+.error.is-visible { display: block; }
+@media (max-width: 980px) {
+  .shell { grid-template-columns: 1fr; overflow: auto; }
+  .rail {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    display: block;
+  }
+  .rail button { display: inline-block; width: auto; margin-right: .7rem; }
+  .rail-foot { display: none; }
+  .desk { overflow: visible; padding: 1rem; }
+  .summary, .grid-2, .health-grid { grid-template-columns: 1fr; }
+  .topbar { align-items: flex-start; flex-wrap: wrap; }
+}
+</style>
+</head>
+<body>
+<div class="shell">
+  <nav class="rail" aria-label="Dashboard views">
+    <div class="brand">bitterblossom</div>
+    <button class="is-active" data-view-button="overview">overview</button>
+    <button data-view-button="runs">runs</button>
+    <button data-view-button="tasks">tasks</button>
+    <button data-view-button="health">health</button>
+    <div class="rail-foot">
+      <div id="railStatus">loading</div>
+      <div id="railGenerated">-</div>
+    </div>
+  </nav>
+
+  <main class="desk">
+    <header class="topbar">
+      <div class="grow">
+        <p class="chrome">event plane visibility</p>
+        <h1 id="pageTitle">overview</h1>
+      </div>
+      <form id="tokenForm" class="token" autocomplete="off">
+        <label class="chrome" for="apiToken">token</label>
+        <input id="apiToken" name="apiToken" type="password" autocomplete="new-password">
+        <button class="quiet" type="submit">save</button>
+      </form>
+      <button class="quiet" id="tokenToggle" type="button">token</button>
+      <button class="action" id="refresh" type="button">refresh</button>
+    </header>
+
+    <div id="error" class="error"></div>
+
+    <section class="view is-active" data-view="overview">
+      <section class="summary" aria-label="Plane summary">
+        <article class="metric">
+          <span class="chrome">cost today</span>
+          <strong id="costToday">$0.00 / -</strong>
+          <div class="meter"><span id="costMeter"></span></div>
+          <p id="costNote">global budget</p>
+        </article>
+        <article class="metric"><span class="chrome">running</span><strong id="runningCount">0</strong><p id="leaseCount">0 leases</p></article>
+        <article class="metric"><span class="chrome">pending</span><strong id="pendingCount">0</strong><p id="pendingAge">oldest -</p></article>
+        <article class="metric"><span class="chrome">open dlq</span><strong id="dlqCount">0</strong><p>operator work</p></article>
+        <article class="metric"><span class="chrome">triggers</span><strong id="triggerCount">0</strong><p id="triggerKinds">manual / cron / webhook</p></article>
+      </section>
+
+      <section class="grid-2">
+        <article class="plate">
+          <h2>Live Now / Fleet</h2>
+          <div class="table-wrap"><table>
+            <thead><tr><th>host</th><th>task</th><th>run</th><th>phase</th><th class="right">cost</th></tr></thead>
+            <tbody id="fleetRows"></tbody>
+          </table></div>
+        </article>
+        <article class="plate">
+          <h2>Safe Next Action</h2>
+          <div id="actions" class="actions"></div>
+        </article>
+      </section>
+
+      <article class="plate" style="margin-top:1rem">
+        <h2>Recent Runs</h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>state</th><th>task</th><th>agent / model</th><th>duration</th><th class="right">cost</th><th class="right">tokens</th><th>evidence</th></tr></thead>
+          <tbody id="recentRuns"></tbody>
+        </table></div>
+      </article>
+    </section>
+
+    <section class="view" data-view="runs">
+      <article class="plate">
+        <h2>Runs</h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>created</th><th>state</th><th>task</th><th>trigger</th><th>agent</th><th>duration</th><th class="right">cost</th><th class="right">tokens</th><th>trace</th></tr></thead>
+          <tbody id="runRows"></tbody>
+        </table></div>
+      </article>
+    </section>
+
+    <section class="view" data-view="tasks">
+      <article class="plate">
+        <h2>Configured Tasks</h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>task</th><th>agent</th><th>substrate</th><th>triggers</th><th>budget</th><th>state</th></tr></thead>
+          <tbody id="taskRows"></tbody>
+        </table></div>
+      </article>
+    </section>
+
+    <section class="view" data-view="health">
+      <section class="health-grid">
+        <article class="plate">
+          <h2>DLQ</h2>
+          <div class="table-wrap"><table>
+            <thead><tr><th>id</th><th>status</th><th>task</th><th>run</th><th>error</th></tr></thead>
+            <tbody id="dlqRows"></tbody>
+          </table></div>
+        </article>
+        <article class="plate">
+          <h2>Leases</h2>
+          <div class="table-wrap"><table>
+            <thead><tr><th>host</th><th>run</th><th>acquired</th></tr></thead>
+            <tbody id="leaseRows"></tbody>
+          </table></div>
+        </article>
+        <article class="plate">
+          <h2>Ingress</h2>
+          <div class="table-wrap"><table>
+            <thead><tr><th>received</th><th>task</th><th>kind</th><th>duplicate</th></tr></thead>
+            <tbody id="ingressRows"></tbody>
+          </table></div>
+        </article>
+      </section>
+    </section>
+  </main>
+</div>
+
+<script>
+const state = {
+  token: sessionStorage.getItem("bb-api-token") || "",
+  view: "overview",
+  data: null
+};
+
+const $ = (id) => document.getElementById(id);
+const fmtMoney = (n) => n == null ? "-" : `$${Number(n).toFixed(2)}`;
+const fmtSmallMoney = (n) => n == null ? "-" : `$${Number(n).toFixed(4)}`;
+const fmtDuration = (ms) => {
+  if (ms == null) return "-";
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rest = s % 60;
+  if (m < 60) return `${m}m ${rest}s`;
+  return `${Math.floor(m / 60)}h ${m % 60}m`;
+};
+const short = (s, n = 12) => !s ? "-" : s.length > n ? `${s.slice(0, n)}...` : s;
+const esc = (value) => String(value ?? "-")
+  .replaceAll("&", "&amp;")
+  .replaceAll("<", "&lt;")
+  .replaceAll(">", "&gt;")
+  .replaceAll('"', "&quot;");
+const stateClass = (s) => ["success", "failure", "awaiting_recovery", "blocked_budget", "retired", "pending", "running"].includes(s) ? s : "";
+
+function apiHeaders() {
+  return state.token ? { Authorization: `Bearer ${state.token}` } : {};
+}
+
+async function fetchText(path) {
+  const response = await fetch(path, { headers: apiHeaders() });
+  if (response.status === 401) {
+    $("tokenForm").classList.add("is-visible");
+    throw new Error("API token required");
+  }
+  if (!response.ok) throw new Error(`${path}: ${response.status}`);
+  return response.text();
+}
+
+async function fetchJson(path) {
+  return JSON.parse(await fetchText(path));
+}
+
+function parseExport(text) {
+  return text.split("\n").filter(Boolean).map((line) => JSON.parse(line));
+}
+
+async function load() {
+  $("error").classList.remove("is-visible");
+  $("railStatus").textContent = "loading";
+  try {
+    const [status, tasks, runs, dlq, leases, ingress, exportedText] = await Promise.all([
+      fetchJson("/api/status"),
+      fetchJson("/api/tasks"),
+      fetchJson("/api/runs"),
+      fetchJson("/api/dlq"),
+      fetchJson("/api/leases"),
+      fetchJson("/api/ingress?limit=40"),
+      fetchText("/api/export")
+    ]);
+    state.data = { status, tasks, runs, dlq, leases, ingress, exported: parseExport(exportedText) };
+    render();
+    $("railStatus").textContent = "live";
+    $("railGenerated").textContent = short(status.generated_at, 19);
+  } catch (error) {
+    $("error").textContent = error.message;
+    $("error").classList.add("is-visible");
+    $("railStatus").textContent = "error";
+  }
+}
+
+function tokenTotals() {
+  const totals = new Map();
+  for (const row of state.data.exported) {
+    totals.set(row.run.id, row.run.tokens || {});
+  }
+  return totals;
+}
+
+function render() {
+  if (!state.data) return;
+  renderSummary();
+  renderFleet();
+  renderActions();
+  renderRuns();
+  renderTasks();
+  renderHealth();
+}
+
+function renderSummary() {
+  const { status, tasks, runs } = state.data;
+  const summary = status.summary || {};
+  const running = runs.filter((r) => r.state === "running").length;
+  const pending = runs.filter((r) => r.state === "pending").length;
+  const oldestPending = runs.filter((r) => r.state === "pending").at(-1);
+  const triggerKinds = { manual: 0, cron: 0, webhook: 0 };
+  for (const task of tasks) {
+    for (const trigger of task.trigger_details || []) {
+      if (triggerKinds[trigger.kind] != null) triggerKinds[trigger.kind] += 1;
+    }
+  }
+  const budget = summary.max_cost_per_day_usd;
+  const cost = summary.cost_today_usd || 0;
+  const pct = budget ? Math.min(100, (cost / budget) * 100) : 0;
+  $("costToday").textContent = `${fmtMoney(cost)} / ${budget == null ? "-" : fmtMoney(budget)}`;
+  $("costNote").textContent = budget == null ? "no daily cap" : `${pct.toFixed(0)}% of daily cap`;
+  $("costMeter").style.width = `${pct}%`;
+  $("costMeter").className = pct >= 90 ? "err" : pct >= 65 ? "warn" : "ok";
+  $("runningCount").textContent = running;
+  $("leaseCount").textContent = `${summary.active_leases || state.data.leases.length} leases`;
+  $("pendingCount").textContent = pending;
+  $("pendingAge").textContent = oldestPending ? `oldest ${short(oldestPending.created_at, 19)}` : "oldest -";
+  $("dlqCount").textContent = summary.open_dlq || 0;
+  $("triggerCount").textContent = Object.values(triggerKinds).reduce((a, b) => a + b, 0);
+  $("triggerKinds").textContent = `${triggerKinds.manual} manual / ${triggerKinds.cron} cron / ${triggerKinds.webhook} webhook`;
+}
+
+function runById() {
+  return new Map(state.data.runs.map((run) => [run.id, run]));
+}
+
+function latestAttemptByRun() {
+  const attempts = new Map();
+  for (const row of state.data.exported) {
+    attempts.set(row.run.id, row.attempts.at(-1));
+  }
+  return attempts;
+}
+
+function renderFleet() {
+  const runs = runById();
+  const attempts = latestAttemptByRun();
+  const rows = state.data.leases.map((lease) => {
+    const run = runs.get(lease.run_id);
+    const attempt = attempts.get(lease.run_id);
+    return `<tr>
+      <td class="item">${esc(lease.host)}</td>
+      <td>${esc(run?.task)}</td>
+      <td><a href="/api/runs/${encodeURIComponent(lease.run_id)}">${esc(short(lease.run_id))}</a></td>
+      <td>${esc(attempt?.phase || run?.state || "leased")}</td>
+      <td class="right">${fmtSmallMoney(run?.cost_usd)}</td>
+    </tr>`;
+  });
+  $("fleetRows").innerHTML = rows.join("") || `<tr><td colspan="5" class="empty">no active host leases</td></tr>`;
+}
+
+function renderActions() {
+  const tasks = [...(state.data.status.tasks || [])];
+  const actions = tasks.flatMap((task) => (task.safe_next_actions || []).map((action) => ({ task: task.task, ...action })));
+  const important = actions.filter((a) => a.kind !== "monitor").slice(0, 5);
+  const chosen = important.length ? important : actions.slice(0, 3);
+  $("actions").innerHTML = chosen.map((action) => `<div class="next-action">
+    <p><span class="${action.kind.includes("replay") || action.kind.includes("escalate") ? "warn" : "ok"}">${action.kind === "monitor" ? "ok" : "!"}</span> <span class="item">${esc(action.task)}</span> ${esc(action.reason)}</p>
+    <code>${esc(action.command)}</code>
+  </div>`).join("") || `<p class="empty">no safe action surfaced</p>`;
+}
+
+function renderRuns() {
+  const totals = tokenTotals();
+  const rowHtml = state.data.runs.map((run) => runRow(run, totals)).join("");
+  $("recentRuns").innerHTML = state.data.runs.slice(0, 10).map((run) => runRow(run, totals, true)).join("") || `<tr><td colspan="7" class="empty">no runs recorded</td></tr>`;
+  $("runRows").innerHTML = rowHtml || `<tr><td colspan="9" class="empty">no runs recorded</td></tr>`;
+}
+
+function runRow(run, totals, compact = false) {
+  const token = totals.get(run.id) || {};
+  const tokens = token.input == null && token.output == null ? "-" : `${token.input || 0}/${token.output || 0}`;
+  const agent = `${run.agent_name || "-"}${run.agent_version ? `@v${run.agent_version}` : ""}`;
+  if (compact) {
+    return `<tr>
+      <td><span class="state ${stateClass(run.state)}">${esc(run.state)}</span></td>
+      <td class="item">${esc(run.task)}</td>
+      <td>${esc(agent)}</td>
+      <td>${fmtDuration(run.duration_ms)}</td>
+      <td class="right">${fmtSmallMoney(run.cost_usd)}</td>
+      <td class="right">${esc(tokens)}</td>
+      <td><a href="/api/runs/${encodeURIComponent(run.id)}">${esc(short(run.id))}</a></td>
+    </tr>`;
+  }
+  return `<tr>
+    <td>${esc(short(run.created_at, 19))}</td>
+    <td><span class="state ${stateClass(run.state)}">${esc(run.state)}</span></td>
+    <td class="item">${esc(run.task)}</td>
+    <td>${esc(run.trigger_kind)}</td>
+    <td>${esc(agent)}</td>
+    <td>${fmtDuration(run.duration_ms)}</td>
+    <td class="right">${fmtSmallMoney(run.cost_usd)}</td>
+    <td class="right">${esc(tokens)}</td>
+    <td>${esc(short(run.trace_id))}</td>
+  </tr>`;
+}
+
+function renderTasks() {
+  $("taskRows").innerHTML = state.data.tasks.map((task) => {
+    const triggers = (task.trigger_details || []).map((trigger) => {
+      if (trigger.kind === "cron") return `cron ${trigger.schedule}`;
+      if (trigger.kind === "webhook") return `webhook /hooks/${trigger.route}`;
+      return trigger.kind;
+    }).join("<br>");
+    const budget = [
+      task.max_runs_per_day == null ? null : `${task.runs_today}/${task.max_runs_per_day} runs`,
+      task.max_cost_per_run_usd == null ? null : `${fmtMoney(task.max_cost_per_run_usd)} per run`,
+      task.timeout_minutes == null ? null : `${task.timeout_minutes}m timeout`
+    ].filter(Boolean).join("<br>") || "-";
+    const parked = task.parked ? `<span class="warn">parked</span><br><span class="muted">${esc(task.parked)}</span>` : `<span class="ok">active</span>`;
+    return `<tr>
+      <td class="item">${esc(task.task)}</td>
+      <td>${esc(task.agent)}<br><span class="muted">${esc(task.harness)} ${esc(task.model)}</span></td>
+      <td>${esc(task.substrate)}</td>
+      <td>${triggers || "-"}</td>
+      <td>${budget}</td>
+      <td>${parked}</td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="6" class="empty">no tasks configured</td></tr>`;
+}
+
+function renderHealth() {
+  $("dlqRows").innerHTML = state.data.dlq.slice(0, 12).map((row) => `<tr>
+    <td class="right">${row.id}</td><td>${esc(row.status)}</td><td class="item">${esc(row.task)}</td>
+    <td>${esc(short(row.run_id))}</td><td>${esc(short(row.error, 80))}</td>
+  </tr>`).join("") || `<tr><td colspan="5" class="empty">no dead letters</td></tr>`;
+  $("leaseRows").innerHTML = state.data.leases.map((lease) => `<tr>
+    <td class="item">${esc(lease.host)}</td><td>${esc(short(lease.run_id))}</td><td>${esc(short(lease.acquired_at, 19))}</td>
+  </tr>`).join("") || `<tr><td colspan="3" class="empty">no active leases</td></tr>`;
+  $("ingressRows").innerHTML = state.data.ingress.map((event) => `<tr>
+    <td>${esc(short(event.received_at, 19))}</td><td class="item">${esc(event.task)}</td>
+    <td>${esc(event.trigger_kind)}</td><td>${event.duplicate ? "yes" : "no"}</td>
+  </tr>`).join("") || `<tr><td colspan="4" class="empty">no ingress events</td></tr>`;
+}
+
+function switchView(view) {
+  state.view = view;
+  document.querySelectorAll("[data-view]").forEach((el) => el.classList.toggle("is-active", el.dataset.view === view));
+  document.querySelectorAll("[data-view-button]").forEach((el) => el.classList.toggle("is-active", el.dataset.viewButton === view));
+  $("pageTitle").textContent = view;
+}
+
+document.querySelectorAll("[data-view-button]").forEach((button) => {
+  button.addEventListener("click", () => switchView(button.dataset.viewButton));
+});
+$("refresh").addEventListener("click", load);
+$("tokenToggle").addEventListener("click", () => $("tokenForm").classList.toggle("is-visible"));
+$("tokenForm").addEventListener("submit", (event) => {
+  event.preventDefault();
+  state.token = $("apiToken").value.trim();
+  if (state.token) sessionStorage.setItem("bb-api-token", state.token);
+  else sessionStorage.removeItem("bb-api-token");
+  load();
+});
+$("apiToken").value = state.token;
+load();
+</script>
+</body>
+</html>
