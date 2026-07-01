@@ -16,5 +16,7 @@ max_cost_per_day_usd = 25.0
 # result must be verdict JSON; `bb gate --change <key>` is the arithmetic.
 # [gate]
 # required = ["verify", "correctness"]   # kinds that must report before clear
+# quorum = 2                             # optional; defaults to required.len()
+# arm_timeout_seconds = 3600             # stuck members escalate instead of hanging
 # max_rounds = 3                         # rounds 1..=max_rounds, then escalate
 # arbiter = "arbiter"                    # kind whose `pass` sustains a rejection

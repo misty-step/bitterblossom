@@ -18,13 +18,13 @@ implementation PRs.
 
 - [ ] Each run state and attempt phase has a documented freshness contract:
       threshold, owner, safe next action, and notification severity.
-- [ ] `stale_executing`, stale `awaiting_recovery`, and stuck submission arms
+- [x] `stale_executing`, stale `awaiting_recovery`, and stuck submission arms
       emit durable notification-outbox rows with retry, ack, and visible status.
-- [ ] Notification delivery is no longer fire-and-forget curl; failures survive
+- [x] Notification delivery is no longer fire-and-forget curl; failures survive
       process restart and are retried or explicitly acknowledged.
 - [ ] Serve-mode dispatch writes meaningful progress while execute is active or
       records why the harness cannot emit heartbeats.
-- [ ] Submission storms have a bounded arm timeout and quorum/escalation policy
+- [x] Submission storms have a bounded arm timeout and quorum/escalation policy
       in config; a hung member cannot leave the gate pending forever.
 - [ ] An attention-debt brake aggregates open DLQ, parked tasks, stale runs, and
       awaiting recovery, and can refuse new reflex admissions while dispatch
@@ -40,11 +40,11 @@ implementation PRs.
 
 - [ ] Freshness-contract table in docs plus status JSON fields for every
       non-terminal state.
-- [ ] Durable notification outbox: schema, retry worker, ack CLI, and status/API
+- [x] Durable notification outbox: schema, retry worker, ack CLI, and status/API
       projection.
-- [ ] Serve-mode heartbeat/watchdog for executing attempts, respecting the
+- [x] Serve-mode heartbeat/watchdog for executing attempts, respecting the
       no-blind-replay side-effect boundary.
-- [ ] Submission arm timeout and quorum/escalation policy in `[gate]`.
+- [x] Submission arm timeout and quorum/escalation policy in `[gate]`.
 - [ ] Attention-debt brake for reflex ingress.
 - [ ] Self-drill chaos reflex task, report artifact, and failure notification.
 - [ ] Backlog consolidation notes for 051, 083, 085, 087, and any storm-timeout

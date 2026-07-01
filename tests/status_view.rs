@@ -13,7 +13,11 @@ fn write_plane(root: &std::path::Path) {
         "version = 3\nharness = \"command\"\nmodel = \"\"\nbin = \"true\"\n",
     )
     .unwrap();
-    fs::write(root.join("plane.toml"), "dev = true\n").unwrap();
+    fs::write(
+        root.join("plane.toml"),
+        "dev = true\n[gate]\nrequired = [\"security\"]\nquorum = 1\narm_timeout_seconds = 77\n",
+    )
+    .unwrap();
     for task in [
         "review",
         "security",
@@ -154,6 +158,9 @@ fn status_view_covers_operator_truth_fixtures() {
         doc["guards"]["notify"]["recent_outbox"][0]["event"],
         "status_probe"
     );
+    assert_eq!(doc["guards"]["gate"]["required"][0], "security");
+    assert_eq!(doc["guards"]["gate"]["quorum"], 1);
+    assert_eq!(doc["guards"]["gate"]["arm_timeout_seconds"], 77);
     let contracts = doc["freshness_contracts"].as_array().unwrap();
     let recovery_contract = contracts
         .iter()

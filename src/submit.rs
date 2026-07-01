@@ -1,6 +1,7 @@
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::ledger::{new_id, now, Ledger};
 use crate::spec::Plane;
@@ -71,7 +72,13 @@ pub struct SubmissionBundle {
     pub rejections: Vec<RejectionRow>,
 }
 
-type StormRun = (String, String, Option<f64>, Option<String>);
+struct StormRun {
+    id: String,
+    state: String,
+    cost_usd: Option<f64>,
+    state_reason: Option<String>,
+    updated_at: String,
+}
 
 pub fn fingerprint(kind: &str, file: Option<&str>, claim: &str) -> String {
     use sha2::{Digest, Sha256};
@@ -332,10 +339,18 @@ impl Ledger {
         Ok(self
             .conn
             .query_row(
-                "SELECT id, state, cost_usd, state_reason FROM runs
+                "SELECT id, state, cost_usd, state_reason, updated_at FROM runs
                  WHERE task = ?1 AND idempotency_key = ?2",
                 params![task, key],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                |r| {
+                    Ok(StormRun {
+                        id: r.get(0)?,
+                        state: r.get(1)?,
+                        cost_usd: r.get(2)?,
+                        state_reason: r.get(3)?,
+                        updated_at: r.get(4)?,
+                    })
+                },
             )
             .optional()?)
     }
@@ -396,6 +411,8 @@ pub struct MemberStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub timed_out_after_seconds: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub safe_next_command: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub safe_next_reason: Option<String>,
@@ -408,6 +425,8 @@ pub struct GateReport {
     pub rev: String,
     pub round: i64,
     pub max_rounds: u32,
+    pub quorum: usize,
+    pub arm_timeout_seconds: u64,
     pub decision: String,
     pub members: Vec<MemberStatus>,
     pub blocking: Vec<Finding>,
@@ -426,8 +445,11 @@ pub fn evaluate(plane: &Plane, ledger: &Ledger, submission_id: &str) -> Result<G
     let verdicts = ledger.verdicts(submission_id)?;
     let mut members = Vec::new();
     let mut counted: Vec<&VerdictRow> = Vec::new();
-    let mut pending = false;
-    let mut infra_failure = false;
+    let mut pending_count = 0usize;
+    let mut unavailable_count = 0usize;
+    let now = OffsetDateTime::now_utc();
+    let quorum = gate.effective_quorum();
+    let arm_timeout = i64::try_from(gate.arm_timeout_seconds).unwrap_or(i64::MAX);
     for kind in &gate.required {
         let task = plane
             .tasks
@@ -436,43 +458,104 @@ pub fn evaluate(plane: &Plane, ledger: &Ledger, submission_id: &str) -> Result<G
             .with_context(|| format!("no task declares verdict = \"{kind}\""))?;
         let key = format!("storm:{submission_id}:{kind}");
         let run = ledger.storm_run(&task.name, &key)?;
-        let (status, run_id, cost, safe_next_command, safe_next_reason) = match run {
-            Some((id, state, cost, reason)) => {
-                let canonical = verdicts
-                    .iter()
-                    .find(|v| v.kind == *kind && v.run_id == id && state == "success");
-                match canonical {
-                    Some(v) => {
-                        counted.push(v);
-                        (format!("verdict:{}", v.verdict), Some(id), cost, None, None)
-                    }
-                    None => {
-                        if state == "failure" {
-                            infra_failure = true;
-                            let why = reason.clone().unwrap_or_else(|| "run failed".into());
-                            let cmd = format!(
-                                "bb --config {:?} submit open --change {} --rev {} --json",
-                                plane.root, sub.change_key, sub.rev
-                            );
-                            let why = format!("canonical {kind} run {id} failed: {why}");
-                            (format!("run:{state}"), Some(id), cost, Some(cmd), Some(why))
-                        } else {
-                            pending = true;
-                            (format!("run:{state}"), Some(id), cost, None, None)
+        let (status, run_id, cost, timed_out_after_seconds, safe_next_command, safe_next_reason) =
+            match run {
+                Some(run) => {
+                    let canonical = verdicts
+                        .iter()
+                        .find(|v| v.kind == *kind && v.run_id == run.id && run.state == "success");
+                    match canonical {
+                        Some(v) => {
+                            counted.push(v);
+                            (
+                                format!("verdict:{}", v.verdict),
+                                Some(run.id),
+                                run.cost_usd,
+                                None,
+                                None,
+                                None,
+                            )
+                        }
+                        None => {
+                            if run.state == "failure" {
+                                unavailable_count += 1;
+                                let why = run
+                                    .state_reason
+                                    .clone()
+                                    .unwrap_or_else(|| "run failed".into());
+                                let cmd = replacement_submission_command(plane, &sub);
+                                let why = format!("canonical {kind} run {} failed: {why}", run.id);
+                                (
+                                    format!("run:{}", run.state),
+                                    Some(run.id),
+                                    run.cost_usd,
+                                    None,
+                                    Some(cmd),
+                                    Some(why),
+                                )
+                            } else if let Some(age) =
+                                timed_out_age(&run.updated_at, now, arm_timeout)
+                            {
+                                unavailable_count += 1;
+                                let cmd = format!(
+                                    "bb --config {:?} runs show {} --json",
+                                    plane.root, run.id
+                                );
+                                let why = format!(
+                                    "canonical {kind} run {} has not changed for {age}s; \
+                                 gate arm timeout is {arm_timeout}s",
+                                    run.id
+                                );
+                                (
+                                    "run:timed_out".to_string(),
+                                    Some(run.id),
+                                    run.cost_usd,
+                                    Some(age),
+                                    Some(cmd),
+                                    Some(why),
+                                )
+                            } else {
+                                pending_count += 1;
+                                (
+                                    format!("run:{}", run.state),
+                                    Some(run.id),
+                                    run.cost_usd,
+                                    None,
+                                    None,
+                                    None,
+                                )
+                            }
                         }
                     }
                 }
-            }
-            None => {
-                pending = true;
-                ("not_started".to_string(), None, None, None, None)
-            }
-        };
+                None => {
+                    if let Some(age) = timed_out_age(&sub.created_at, now, arm_timeout) {
+                        unavailable_count += 1;
+                        let cmd = replacement_submission_command(plane, &sub);
+                        let why = format!(
+                            "canonical {kind} run was not started for {age}s; \
+                         gate arm timeout is {arm_timeout}s"
+                        );
+                        (
+                            "not_started:timed_out".to_string(),
+                            None,
+                            None,
+                            Some(age),
+                            Some(cmd),
+                            Some(why),
+                        )
+                    } else {
+                        pending_count += 1;
+                        ("not_started".to_string(), None, None, None, None, None)
+                    }
+                }
+            };
         members.push(MemberStatus {
             kind: kind.clone(),
             status,
             run_id,
             cost_usd: cost,
+            timed_out_after_seconds,
             safe_next_command,
             safe_next_reason,
         });
@@ -481,7 +564,7 @@ pub fn evaluate(plane: &Plane, ledger: &Ledger, submission_id: &str) -> Result<G
     let mut blocking = Vec::new();
     let mut advisory = Vec::new();
     let mut rejected = Vec::new();
-    for v in counted {
+    for v in &counted {
         for f in &v.findings {
             let fp = f.fingerprint.as_deref().unwrap_or("");
             let rejection = rejections.iter().find(|(r, _)| r == fp);
@@ -503,16 +586,24 @@ pub fn evaluate(plane: &Plane, ledger: &Ledger, submission_id: &str) -> Result<G
         }
     }
 
-    let decision = if infra_failure {
-        "escalated"
-    } else if pending {
+    let verdict_count = counted.len();
+    let quorum_possible = verdict_count + pending_count >= quorum;
+    let quorum_met = verdict_count >= quorum;
+    let blocker_decision = || {
+        if sub.round >= gate.max_rounds as i64 {
+            "escalated"
+        } else {
+            "blocked"
+        }
+    };
+    let decision = if pending_count > 0 && quorum_possible {
         "pending"
-    } else if blocking.is_empty() {
+    } else if blocking.is_empty() && quorum_met {
         "clear"
-    } else if sub.round >= gate.max_rounds as i64 {
-        "escalated"
+    } else if !blocking.is_empty() && (quorum_met || unavailable_count == 0) {
+        blocker_decision()
     } else {
-        "blocked"
+        "escalated"
     };
 
     let report = GateReport {
@@ -521,6 +612,8 @@ pub fn evaluate(plane: &Plane, ledger: &Ledger, submission_id: &str) -> Result<G
         rev: sub.rev.clone(),
         round: sub.round,
         max_rounds: gate.max_rounds,
+        quorum,
+        arm_timeout_seconds: gate.arm_timeout_seconds,
         decision: decision.to_string(),
         members,
         blocking,
@@ -531,6 +624,7 @@ pub fn evaluate(plane: &Plane, ledger: &Ledger, submission_id: &str) -> Result<G
     if sub.state == "open" && decision != "pending" {
         let json = serde_json::to_string(&report)?;
         let settled = ledger.settle_submission(&sub.id, decision, &json)?;
+        let timed_out_members = timed_out_members_json(&report.members);
         if settled && decision == "escalated" {
             crate::notify::notify(
                 plane,
@@ -539,6 +633,22 @@ pub fn evaluate(plane: &Plane, ledger: &Ledger, submission_id: &str) -> Result<G
                 &serde_json::json!({
                     "submission": sub.id, "change": sub.change_key,
                     "round": sub.round, "blocking": report.blocking.len(),
+                    "quorum": report.quorum, "verdicts": verdict_count,
+                    "pending": pending_count, "unavailable": unavailable_count,
+                    "timed_out_members": &timed_out_members,
+                }),
+            );
+        }
+        if settled && decision != "escalated" && !timed_out_members.is_empty() {
+            crate::notify::notify(
+                plane,
+                ledger,
+                "submission_arm_timed_out",
+                &serde_json::json!({
+                    "submission": sub.id, "change": sub.change_key,
+                    "round": sub.round, "decision": decision,
+                    "quorum": report.quorum, "verdicts": verdict_count,
+                    "timed_out_members": &timed_out_members,
                 }),
             );
         }
@@ -552,10 +662,42 @@ pub fn evaluate(plane: &Plane, ledger: &Ledger, submission_id: &str) -> Result<G
                 "gate.blocked",
                 &serde_json::json!({
                     "submission": sub.id, "change": sub.change_key,
-                    "rev": sub.rev, "round": sub.round, "blocking": report.blocking,
+                    "rev": sub.rev, "round": sub.round, "blocking": &report.blocking,
+                    "quorum": report.quorum, "verdicts": verdict_count,
+                    "timed_out_members": &timed_out_members,
                 }),
             );
         }
     }
     Ok(report)
+}
+
+fn replacement_submission_command(plane: &Plane, sub: &SubmissionRow) -> String {
+    format!(
+        "bb --config {:?} submit open --change {} --rev {} --json",
+        plane.root, sub.change_key, sub.rev
+    )
+}
+
+fn timed_out_age(at: &str, now: OffsetDateTime, threshold_seconds: i64) -> Option<i64> {
+    OffsetDateTime::parse(at, &Rfc3339)
+        .ok()
+        .map(|then| (now - then).whole_seconds().max(0))
+        .filter(|age| *age >= threshold_seconds)
+}
+
+fn timed_out_members_json(members: &[MemberStatus]) -> Vec<serde_json::Value> {
+    members
+        .iter()
+        .filter_map(|m| {
+            m.timed_out_after_seconds.map(|age| {
+                serde_json::json!({
+                    "kind": m.kind,
+                    "status": m.status,
+                    "run_id": m.run_id,
+                    "age_seconds": age,
+                })
+            })
+        })
+        .collect()
 }
