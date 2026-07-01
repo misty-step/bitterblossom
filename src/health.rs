@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::ledger::{DeadLetterRow, Ledger, RunRow};
+use crate::progress;
 use crate::spec::Plane;
 
 const RECOVERY_STALE_SECONDS: i64 = 3600;
@@ -64,6 +65,17 @@ pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
             .iter()
             .filter(|d| d.status == "acknowledged")
             .count();
+        let mut running_progress: Vec<Value> = Vec::new();
+        for r in task_runs
+            .iter()
+            .filter(|r| r.state == "running" || r.state == "awaiting_recovery")
+        {
+            running_progress.push(serde_json::to_value(progress::from_ledger(
+                ledger,
+                r,
+                generated_at,
+            )?)?);
+        }
         let latest_ingress = ingress_events.iter().find(|e| e.task == task.name);
         let active_lease = leases.iter().find(|l| {
             lease_runs
@@ -105,6 +117,9 @@ pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
                 "acknowledged": acknowledged_task_dlq,
                 "total": task_dlq.len(),
                 "latest_open": latest_open_dlq.map(dlq_summary),
+            },
+            "progress": {
+                "running": running_progress,
             },
             "ingress": {
                 "events": ledger.ingress_event_count(&task.name)?,

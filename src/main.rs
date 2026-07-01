@@ -1,7 +1,7 @@
 use std::{path::PathBuf, thread, time::Duration};
 
 use anyhow::{bail, Context, Result};
-use bitterblossom::{artifacts, budget, dispatch, ledger, mcp, recovery, serve, spec};
+use bitterblossom::{artifacts, budget, dispatch, ledger, mcp, progress, recovery, serve, spec};
 use clap::{Parser, Subcommand};
 
 use ledger::{IngressRequest, Ledger};
@@ -815,6 +815,7 @@ fn start_run_progress(db_path: PathBuf, run_id: String) {
             continue;
         };
         eprintln!("run {run_id} heartbeat state={}", run.state);
+        let _ = ledger.record_progress(&run_id, &format!("heartbeat state={}", run.state));
         if !matches!(run.state.as_str(), "pending" | "running") {
             break;
         }
@@ -826,7 +827,30 @@ fn print_run(ledger: &Ledger, run_id: &str, json: bool) -> Result<()> {
     let attempts = ledger.attempts(run_id)?;
     let events = ledger.events(run_id)?;
     if json {
-        let doc = serde_json::json!({ "run": run, "attempts": attempts, "events": events });
+        let latest_phase = attempts.last().map(|a| a.phase.as_str());
+        let last_progress_at = events
+            .iter()
+            .rev()
+            .find(|e| e.kind == "progress")
+            .map(|e| e.at.as_str());
+        let probe = events
+            .iter()
+            .rev()
+            .find(|e| e.kind == "boot_probe")
+            .and_then(|e| e.data.as_deref());
+        let view = progress::classify(
+            &run,
+            latest_phase,
+            last_progress_at,
+            probe,
+            time::OffsetDateTime::now_utc(),
+        );
+        let doc = serde_json::json!({
+            "run": run,
+            "attempts": attempts,
+            "events": events,
+            "progress": view,
+        });
         println!("{}", serde_json::to_string_pretty(&doc)?);
     } else {
         println!(

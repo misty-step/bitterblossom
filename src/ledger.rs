@@ -327,6 +327,39 @@ impl Ledger {
         )?;
         Ok(())
     }
+    /// Record a lightweight progress marker for `run_id`, separate from run
+    /// creation/update time. Used by the dispatcher at attempt phase
+    /// transitions and by the foreground heartbeat thread.
+    pub fn record_progress(&self, run_id: &str, marker: &str) -> Result<()> {
+        self.record_event(run_id, "progress", Some(marker))
+    }
+
+    pub fn last_progress_at(&self, run_id: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT at FROM run_events WHERE run_id = ?1 AND kind = 'progress' \
+                 ORDER BY id DESC LIMIT 1",
+                params![run_id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?)
+    }
+
+    /// Data of the most recent `boot_probe` event recorded by recovery, or
+    /// `None` when the run was never probed.
+    pub fn latest_probe(&self, run_id: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT data FROM run_events WHERE run_id = ?1 AND kind = 'boot_probe' \
+                 ORDER BY id DESC LIMIT 1",
+                params![run_id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten())
+    }
 
     pub fn create_attempt(
         &self,
