@@ -69,6 +69,7 @@ Read the output for:
 | Classify inherited running rows after host restart | `bb --config <plane> recover` |
 | Run webhook/cron plane | `bb --config <plane> serve` |
 | Submission storm / review factory | `bb submit ...`, verdict `bb run <kind> ...`, then `bb gate --json` |
+| Read-only inspection for agents over MCP | `bb --config <plane> mcp serve` (stdio JSON-RPC; `bb_status`, `bb_check`) |
 
 Detailed command recipes: `references/operator-recipes.md`.
 
@@ -150,6 +151,30 @@ Useful API mirrors:
 - `GET /api/runs/<id>`
 - `GET /api/dlq`
 - `GET /api/submissions`
+
+## MCP (read-only)
+
+`bb --config <plane> mcp serve` runs a read-only MCP stdio server: JSON-RPC
+2.0 over stdin/stdout, no network listener, no external credentials for
+local-plane inspection. Consume it MCP-first where a host agent supports it;
+fall back to `bb ... --json` for anything the MCP tool table does not yet
+cover. The registered read tools (`bb_status`, `bb_check`) return exactly
+the same shapes as `bb status --json` / `bb check --json` and the HTTP
+`/api/*` mirrors — MCP is a typed adapter, not a second implementation.
+
+This slice ships read-only tools only. No mutating MCP tool exists; a
+`tools/call` for an unknown or would-be mutating name is rejected with a
+JSON-RPC `-32602` error. Do not expect `bb runs cancel`, `bb dlq replay`,
+`bb run`, or submission/gate mutations over MCP until a separate
+writable-MCP backlog lands its graduation signals.
+
+Routing:
+
+| Need | First choice | Fallback |
+|---|---|---|
+| Decision-ready plane health | MCP `bb_status` | `bb status --json` |
+| Config/task inventory | MCP `bb_check` | `bb check --json` |
+| Runs, DLQ, artifacts, submissions | (not yet MCP) | `bb runs/dlq/artifacts/submit ... --json` |
 
 ## Distribution
 

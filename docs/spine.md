@@ -509,6 +509,7 @@ bb submit reject --change K --fingerprint FP --reason TEXT
 bb submit abandon --change K
 bb gate --change K | --submission ID [--json]     # also GET /api/gate?change=K
 bb serve                                          # webhook + cron + queue
+bb mcp serve                                      # read-only MCP stdio server (bb_status, bb_check); JSON-RPC over stdin/stdout, no listener
 ```
 
 Cost and tokens are parsed from harness output per attempt; unparseable

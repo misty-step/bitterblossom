@@ -35,7 +35,7 @@ retries only, agents own their own decomposition.
 ## Layout
 
 ```text
-src/                 The spine (mechanism only; ≤6300 LOC bloat tripwire — see Gotchas)
+src/                 The spine (mechanism only; ≤6500 LOC bloat tripwire — see Gotchas)
   spec.rs            Config loading: plane.toml, agents/, tasks/
   ledger.rs          SQLite run ledger, state machine, leases, dead letters
   ingress.rs         Webhook HMAC + dedupe, cron schedules
@@ -117,7 +117,7 @@ per attempt.
   budget.** The real invariant is *mechanism, not workload judgment*: config,
   ledger, dispatch, ingress, CLI, recovery belong in `src/`; anything that
   encodes what a workload decides belongs in `tasks/` + lane cards. The number
-  (6300) is arbitrary — its only job is to force a question when you hit it:
+  (6500) is arbitrary — its only job is to force a question when you hit it:
   *"is what I'm adding mechanism?"* If not, move it out (that shrinks the
   spine). If it is, and `src/` is verifiably lean, raising the cap is the
   correct, sanctioned response — not cheating. The finer signal is the
