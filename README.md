@@ -28,6 +28,7 @@ bb status --json            # operator truth: tasks, runs, queue, parked, DLQ
 bb runs list --json         # durable ledger: state, agent@version, cost, duration
 bb runs export              # versioned JSONL telemetry for evaluation/OTel adapters
 bb dlq replay <id>          # dead letters replay as new runs with lineage
+bb notify retry --json      # retry durable notification outbox rows
 bb task park|unpark <task>  # budget breaches park; unpark is explicit
 bb recover                  # classify runs inherited from a dead plane
 bb check                    # validate the config surface

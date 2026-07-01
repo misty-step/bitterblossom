@@ -53,6 +53,12 @@ enum Command {
         #[command(subcommand)]
         command: DlqCommand,
     },
+    /// Notification outbox: list retryable/delivered rows, retry pending or
+    /// failed webhook deliveries, and acknowledge rows that should not retry.
+    Notify {
+        #[command(subcommand)]
+        command: NotifyCommand,
+    },
     /// Task inventory and budget parking. `list --json` is the agent-facing
     /// task surface (agent, substrate, triggers, verdict, parked, caps).
     Task {
@@ -204,6 +210,32 @@ enum DlqCommand {
     /// Acknowledge a pre-execute dead letter as superseded without replaying
     /// it. Replay history is preserved; an acknowledged dead letter cannot be
     /// replayed. Requires an explicit operator reason.
+    Ack {
+        id: i64,
+        #[arg(long)]
+        reason: String,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum NotifyCommand {
+    /// List notification outbox rows. `--json` emits the versioned row shape.
+    List {
+        #[arg(long, default_value_t = 50)]
+        limit: i64,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Retry pending and failed notification rows using the configured webhook.
+    Retry {
+        #[arg(long, default_value_t = 20)]
+        limit: i64,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Acknowledge a pending or failed notification as handled out-of-band.
     Ack {
         id: i64,
         #[arg(long)]
@@ -592,6 +624,55 @@ fn run() -> Result<()> {
                         "acknowledged dead letter {id} (run {}): {}",
                         dl.run_id,
                         dl.acknowledged_reason.as_deref().unwrap_or(&reason)
+                    );
+                }
+            }
+        },
+        Command::Notify { command } => match command {
+            NotifyCommand::List { limit, json } => {
+                let rows = ledger.list_notification_outbox(limit)?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&rows)?);
+                } else {
+                    for n in rows {
+                        println!(
+                            "{}  #{} {:<12} attempts={} event={}",
+                            n.created_at, n.id, n.status, n.attempts, n.event
+                        );
+                        if let Some(err) = &n.last_error {
+                            println!("    last_error: {err}");
+                        }
+                        if let Some(reason) = &n.acknowledged_reason {
+                            println!("    acknowledged: {reason}");
+                        }
+                    }
+                }
+            }
+            NotifyCommand::Retry { limit, json } => {
+                let report = bitterblossom::notify::retry_pending(&plane, &ledger, limit)?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&report)?);
+                } else {
+                    println!(
+                        "notification retry: attempted={} delivered={} failed={}",
+                        report.attempted, report.delivered, report.failed
+                    );
+                    for row in report.rows {
+                        println!("  #{} {:<9} {}", row.id, row.status, row.event);
+                        if let Some(err) = row.error {
+                            println!("    {err}");
+                        }
+                    }
+                }
+            }
+            NotifyCommand::Ack { id, reason, json } => {
+                let row = ledger.acknowledge_notification(id, &reason)?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&row)?);
+                } else {
+                    println!(
+                        "acknowledged notification {id}: {}",
+                        row.acknowledged_reason.as_deref().unwrap_or(&reason)
                     );
                 }
             }
