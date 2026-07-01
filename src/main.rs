@@ -1,7 +1,7 @@
 use std::{path::PathBuf, thread, time::Duration};
 
 use anyhow::{bail, Context, Result};
-use bitterblossom::{artifacts, budget, dispatch, ledger, recovery, serve, spec};
+use bitterblossom::{artifacts, budget, dispatch, ledger, mcp, recovery, serve, spec};
 use clap::{Parser, Subcommand};
 
 use ledger::{IngressRequest, Ledger};
@@ -115,6 +115,14 @@ enum Command {
     Artifacts {
         #[command(subcommand)]
         command: ArtifactsCommand,
+    },
+    /// Read-only MCP (Model Context Protocol) stdio server. `serve` speaks
+    /// JSON-RPC 2.0 over stdin/stdout with no network listener, exposing
+    /// read-only tools (`bb_status`, `bb_check`) backed by the same view
+    /// helpers as the CLI/API. No mutating tools in this slice.
+    Mcp {
+        #[command(subcommand)]
+        command: McpCommand,
     },
 }
 
@@ -268,6 +276,12 @@ enum ArtifactsCommand {
         #[arg(long)]
         json: bool,
     },
+}
+#[derive(Subcommand)]
+enum McpCommand {
+    /// Run the read-only MCP stdio server. Reads newline-delimited JSON-RPC
+    /// from stdin and writes one response per request to stdout.
+    Serve,
 }
 
 fn main() {
@@ -744,12 +758,7 @@ fn run() -> Result<()> {
         }
         Command::Check { json } => {
             if json {
-                let summary = serde_json::json!({
-                    "root": plane.root, "db_path": plane.db_path(),
-                    "agents": plane.agents.keys().collect::<Vec<_>>(),
-                    "tasks": plane.tasks.keys().collect::<Vec<_>>(),
-                    "task_details": serve::tasks_view(&plane, &ledger)?,
-                });
+                let summary = serve::check_view(&plane, &ledger)?;
                 println!("{}", serde_json::to_string_pretty(&summary)?);
             } else {
                 for (name, t) in &plane.tasks {
@@ -785,6 +794,12 @@ fn run() -> Result<()> {
                 std::process::exit(2);
             }
         }
+        Command::Mcp { command } => match command {
+            McpCommand::Serve => {
+                drop(ledger);
+                mcp::serve_stdio(&plane)?;
+            }
+        },
     }
     Ok(())
 }

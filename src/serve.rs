@@ -365,3 +365,15 @@ pub fn tasks_view(plane: &Plane, ledger: &Ledger) -> Result<Vec<serde_json::Valu
     }
     Ok(out)
 }
+/// Config-surface snapshot shared by `bb check --json`, the MCP `bb_check`
+/// tool, and future API routes. Read-only; same shape everywhere so MCP
+/// never builds its own check/status shapes (backlog 078 oracle).
+pub fn check_view(plane: &Plane, ledger: &Ledger) -> Result<serde_json::Value> {
+    Ok(serde_json::json!({
+        "root": plane.root,
+        "db_path": plane.db_path(),
+        "agents": plane.agents.keys().collect::<Vec<_>>(),
+        "tasks": plane.tasks.keys().collect::<Vec<_>>(),
+        "task_details": tasks_view(plane, ledger)?,
+    }))
+}
