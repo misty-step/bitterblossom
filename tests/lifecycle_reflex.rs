@@ -202,6 +202,62 @@ fn canary_triage_task_is_report_only_sprite_reflex_contract() {
 }
 
 #[test]
+fn self_drill_task_is_weekly_sprite_reflex_contract() {
+    let plane = Plane::load(&repo_root().join("plane")).unwrap();
+    let task = plane.task("self-drill").unwrap();
+
+    assert_eq!(task.agent_name, "self-drill-runner");
+    assert_eq!(task.agent.harness, "command");
+    assert_eq!(task.agent.auth_class().unwrap(), AuthClass::Api);
+    assert_eq!(task.agent.role.as_deref(), Some("self-drill"));
+    assert_eq!(task.spec.substrate, "sprites");
+    assert_eq!(task.host(), "misty-step/lane-1");
+    assert_eq!(task.spec.required_artifacts, vec!["REPORT.json"]);
+    assert_eq!(task.spec.budget.timeout_minutes, Some(20));
+    assert_eq!(task.spec.budget.max_runs_per_day, Some(1));
+    assert_eq!(task.spec.budget.max_cost_per_run_usd, Some(0.01));
+    assert!(task
+        .spec
+        .workspace
+        .repos
+        .iter()
+        .any(|repo| repo.url == "https://github.com/misty-step/bitterblossom.git"));
+    assert!(task
+        .agent
+        .args
+        .iter()
+        .any(|arg| arg.contains("scripts/self-drill-chaos.sh")));
+
+    let has_manual = task
+        .spec
+        .triggers
+        .iter()
+        .any(|trigger| matches!(trigger, TriggerSpec::Manual));
+    let cron = task
+        .spec
+        .triggers
+        .iter()
+        .find_map(|trigger| match trigger {
+            TriggerSpec::Cron { schedule } => Some(schedule.as_str()),
+            TriggerSpec::Manual | TriggerSpec::Webhook { .. } => None,
+        })
+        .expect("self-drill cron trigger");
+    assert!(has_manual);
+    assert_eq!(cron, "0 16 * * 1");
+
+    for required in [
+        "isolated temporary dev plane",
+        "stale submission-storm member",
+        "`bb gate`",
+        "notification outbox",
+        "REPORT.json",
+        "Do not touch the production ledger directly",
+    ] {
+        assert!(task.card.contains(required), "card missing {required}");
+    }
+}
+
+#[test]
 fn canary_triage_webhook_filters_and_dedupes_canary_events() {
     let dir = tempfile::tempdir().unwrap();
     let plane = temp_canary_triage_plane(dir.path());

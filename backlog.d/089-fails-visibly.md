@@ -29,7 +29,7 @@ implementation PRs.
 - [ ] An attention-debt brake aggregates open DLQ, parked tasks, stale runs, and
       awaiting recovery, and can refuse new reflex admissions while dispatch
       remains operator-controlled.
-- [ ] A weekly self-drill chaos reflex deliberately creates a controlled stale or
+- [x] A weekly self-drill chaos reflex deliberately creates a controlled stale or
       failed run and verifies the expected escalation trail.
 - [ ] `bb status --json`, `/api/status`, and `bb runs show --json` expose the
       freshness/outbox/escalation state needed by humans and agents.
@@ -46,7 +46,7 @@ implementation PRs.
       no-blind-replay side-effect boundary.
 - [x] Submission arm timeout and quorum/escalation policy in `[gate]`.
 - [ ] Attention-debt brake for reflex ingress.
-- [ ] Self-drill chaos reflex task, report artifact, and failure notification.
+- [x] Self-drill chaos reflex task, report artifact, and failure notification.
 - [ ] Backlog consolidation notes for 051, 083, 085, 087, and any storm-timeout
       follow-up produced during implementation.
 

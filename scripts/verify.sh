@@ -37,6 +37,20 @@ $BB --config $CFG status --json >/dev/null
 echo "==> operations smoke drill"
 BB_BIN=./target/debug/bb scripts/production-ops-drill.sh --local >/dev/null
 
+echo "==> self-drill chaos fixture"
+self_drill_tmp=$(mktemp -d "${TMPDIR:-/tmp}/bb-self-drill-verify.XXXXXX")
+BB_BIN=$BB scripts/self-drill-chaos.sh --report "$self_drill_tmp/REPORT.json" >/dev/null
+python3 - "$self_drill_tmp/REPORT.json" <<'PY'
+import json
+import pathlib
+import sys
+
+report = json.loads(pathlib.Path(sys.argv[1]).read_text())
+if report.get("status") != "pass":
+    raise SystemExit(f"self-drill failed: {report}")
+PY
+rm -rf "$self_drill_tmp"
+
 echo "==> spine LOC bloat tripwire (<= 7900; mechanism only — the Python conductor died of bloat)"
 loc=$(find src -name '*.rs' -exec cat {} + | grep -vc '^\s*$')
 echo "    src LOC: $loc"
