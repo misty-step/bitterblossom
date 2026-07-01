@@ -51,10 +51,7 @@ pub fn handle_webhook(
             body: format!("{{\"error\":\"secret env '{secret_env}' not set on the plane\"}}"),
         });
     };
-    let signature = header(headers, "x-hub-signature-256")
-        .or_else(|| header(headers, "x-signature-256"))
-        .unwrap_or_default();
-    if !verify_hmac(&secret, body.as_bytes(), &signature) {
+    if !verify_delivery_hmac(&secret, headers, body) {
         return Ok(WebhookResponse {
             status: 401,
             body: "{\"error\":\"invalid signature\"}".to_string(),
@@ -86,12 +83,12 @@ pub fn handle_webhook(
     };
     let key = derived.map(|k| format!("wh:{route}:{k}"));
 
-    let source_event_id = header(headers, "x-github-delivery");
+    let source = header(headers, "x-github-delivery").or_else(|| header(headers, "x-delivery-id"));
     let outcome = ledger.ingest(IngressRequest {
         task: &task.name,
         trigger_kind: "webhook",
         idempotency_key: key.as_deref(),
-        source_event_id: source_event_id.as_deref(),
+        source_event_id: source.as_deref(),
         payload: Some(body),
         parent_run_id: None,
     })?;
@@ -271,6 +268,24 @@ pub fn verify_hmac(secret: &str, body: &[u8], signature_header: &str) -> bool {
     let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("hmac accepts any key");
     mac.update(body);
     mac.verify_slice(&expected).is_ok()
+}
+
+fn verify_delivery_hmac(secret: &str, headers: &[(String, String)], body: &str) -> bool {
+    if let (Some(signature), Some(timestamp), Some(delivery_id)) = (
+        header(headers, "x-canary-signature"),
+        header(headers, "x-timestamp"),
+        header(headers, "x-delivery-id"),
+    ) {
+        let signed = format!("{timestamp}.{delivery_id}.{body}");
+        return verify_hmac(secret, signed.as_bytes(), &signature);
+    }
+
+    ["x-hub-signature-256", "x-signature-256", "x-signature"]
+        .iter()
+        .any(|name| {
+            header(headers, name)
+                .is_some_and(|signature| verify_hmac(secret, body.as_bytes(), &signature))
+        })
 }
 
 pub fn sign_hmac(secret: &str, body: &[u8]) -> String {

@@ -123,6 +123,143 @@ fn ci_diagnose_webhook_filters_failed_bitterblossom_check_suites() {
 }
 
 #[test]
+fn canary_triage_task_is_report_only_sprite_reflex_contract() {
+    let plane = Plane::load(&repo_root().join("plane")).unwrap();
+    let task = plane.task("canary-triage").unwrap();
+
+    assert_eq!(task.agent_name, "canary-triager");
+    assert_eq!(task.agent.harness, "pi");
+    assert_eq!(task.agent.model, "deepseek/deepseek-v4-flash");
+    assert_eq!(task.agent.auth_class().unwrap(), AuthClass::Api);
+    assert_eq!(task.agent.role.as_deref(), Some("diagnoser"));
+    assert!(task
+        .agent
+        .secrets
+        .contains(&"OPENROUTER_API_KEY".to_string()));
+    assert!(task.agent.secrets.contains(&"GH_TOKEN".to_string()));
+    assert!(task.agent.secrets.contains(&"CANARY_ENDPOINT".to_string()));
+    assert!(task.agent.secrets.contains(&"CANARY_API_KEY".to_string()));
+    assert_eq!(task.spec.substrate, "sprites");
+    assert_eq!(task.spec.required_artifacts, vec!["REPORT.json"]);
+    assert_eq!(task.spec.budget.max_runs_per_day, Some(8));
+    assert_eq!(task.spec.budget.max_cost_per_run_usd, Some(0.75));
+
+    let webhook = task
+        .spec
+        .triggers
+        .iter()
+        .find_map(|trigger| match trigger {
+            TriggerSpec::Webhook {
+                route,
+                dedupe_key,
+                filter,
+                action,
+                ..
+            } => Some((route, dedupe_key, filter, action)),
+            TriggerSpec::Manual | TriggerSpec::Cron { .. } => None,
+        })
+        .expect("canary-triage webhook trigger");
+    assert_eq!(webhook.0, "canary-triage");
+    assert_eq!(webhook.1.as_deref(), Some("header:X-Delivery-Id"));
+    assert!(webhook.2.iter().any(|f| {
+        f.pointer == "/event"
+            && f.any_of.as_ref().is_some_and(|values| {
+                values.contains(&serde_json::json!("incident.opened"))
+                    && values.contains(&serde_json::json!("incident.updated"))
+            })
+    }));
+    assert!(webhook.2.iter().any(|f| f.pointer == "/incident/service"
+        && f.any_of
+            .as_ref()
+            .is_some_and(|values| values.contains(&serde_json::json!("canary")))));
+    assert!(
+        webhook.3.is_none(),
+        "canary triage must create only the report-only task run"
+    );
+
+    for required in [
+        "report_only",
+        "No code edits",
+        "No branches",
+        "No PRs",
+        "No deploys",
+        "Read RUN.json first",
+        "Read EVENT.json",
+        "query Canary",
+        "remediation claim",
+        "REPORT.json",
+        "\"canary_subject\"",
+        "\"delivery_id\"",
+        "\"bb_run_id\"",
+        "\"service\"",
+        "\"repo\"",
+        "\"evidence\"",
+        "\"hypotheses\"",
+        "\"residual_uncertainty\"",
+    ] {
+        assert!(task.card.contains(required), "card missing {required}");
+    }
+}
+
+#[test]
+fn canary_triage_webhook_filters_and_dedupes_canary_events() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = temp_canary_triage_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    std::env::set_var("BB_HOOK_CANARY_TRIAGE", "s3cret");
+
+    let deliver = |ledger: &mut Ledger, body: &str, delivery: &str| {
+        let timestamp = "2026-07-01T17:00:00Z";
+        let sig = sign_hmac(
+            "s3cret",
+            format!("{timestamp}.{delivery}.{body}").as_bytes(),
+        );
+        handle_webhook(
+            &plane,
+            ledger,
+            "canary-triage",
+            &[
+                ("X-Canary-Signature".to_string(), sig),
+                ("X-Timestamp".to_string(), timestamp.to_string()),
+                ("X-Delivery-Id".to_string(), delivery.to_string()),
+            ],
+            body,
+        )
+        .unwrap()
+    };
+
+    let in_scope = r#"{"event":"incident.opened","incident":{"id":"INC-factory","service":"canary","severity":"error","opened_at":"2026-07-01T17:00:00Z","signals":[{"signal_type":"error_group","signal_ref":"grp-factory"}]},"tenant_id":"default","project_id":"default"}"#;
+    assert_eq!(deliver(&mut ledger, in_scope, "DLV-1").status, 202);
+
+    let duplicate = deliver(&mut ledger, in_scope, "DLV-1");
+    assert_eq!(duplicate.status, 202);
+    assert!(duplicate.body.contains("\"duplicate\":true"));
+
+    for (body, delivery) in [
+        (
+            r#"{"event":"incident.opened","incident":{"id":"INC-linejam","service":"linejam"}}"#,
+            "DLV-2",
+        ),
+        (
+            r#"{"event":"annotation.added","incident":{"id":"INC-factory","service":"canary"}}"#,
+            "DLV-3",
+        ),
+        (
+            r#"{"event":"incident.opened","signal":{"kind":"error_group"}}"#,
+            "DLV-4",
+        ),
+    ] {
+        let resp = deliver(&mut ledger, body, delivery);
+        assert_eq!(resp.status, 200, "{body} -> {}", resp.body);
+        assert!(resp.body.contains("filtered"), "{}", resp.body);
+    }
+    assert_eq!(
+        ledger.list_runs(Some("canary-triage"), None).unwrap().len(),
+        1
+    );
+}
+
+#[test]
 fn review_webhook_is_cerberus_reflex_with_org_and_noise_controls() {
     let plane = Plane::load(&repo_root().join("plane")).unwrap();
     let task = plane.task("review").unwrap();
@@ -277,6 +414,31 @@ fn temp_ci_plane(root: &Path) -> Plane {
     fs::write(
         root.join("tasks/ci-diagnose/card.md"),
         fs::read_to_string(repo.join("plane/tasks/ci-diagnose/card.md")).unwrap(),
+    )
+    .unwrap();
+
+    Plane::load(root).unwrap()
+}
+
+fn temp_canary_triage_plane(root: &Path) -> Plane {
+    fs::create_dir_all(root.join("agents")).unwrap();
+    fs::create_dir_all(root.join("tasks/canary-triage")).unwrap();
+    fs::write(root.join("plane.toml"), "dev = true\n").unwrap();
+
+    let repo = repo_root();
+    fs::write(
+        root.join("agents/canary-triager.toml"),
+        fs::read_to_string(repo.join("plane/agents/canary-triager.toml")).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        root.join("tasks/canary-triage/task.toml"),
+        fs::read_to_string(repo.join("plane/tasks/canary-triage/task.toml")).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        root.join("tasks/canary-triage/card.md"),
+        fs::read_to_string(repo.join("plane/tasks/canary-triage/card.md")).unwrap(),
     )
     .unwrap();
 
