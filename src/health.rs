@@ -140,6 +140,8 @@ pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
     let paused = ledger.plane_paused()?;
     let guard_counts = ledger.guard_event_counts()?;
     let recent_guards = ledger.list_guard_events(50)?;
+    let notification_counts = ledger.notification_outbox_counts()?;
+    let recent_notifications = ledger.list_notification_outbox(50)?;
     let running: Vec<&RunRow> = runs.iter().filter(|r| r.state == "running").collect();
     let in_flight_cost = ledger.in_flight_cost()?;
     // Conservative reservation: the worst-case cost each in-flight run could
@@ -177,6 +179,13 @@ pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
             },
             "notify": {
                 "failed": guard_total(&guard_counts, "notify_failed"),
+                "outbox": {
+                    "pending": outbox_total(&notification_counts, "pending"),
+                    "failed": outbox_total(&notification_counts, "failed"),
+                    "delivered": outbox_total(&notification_counts, "delivered"),
+                    "acknowledged": outbox_total(&notification_counts, "acknowledged"),
+                },
+                "recent_outbox": recent_notifications,
             },
             "in_flight": {
                 "runs": running.len(),
@@ -206,6 +215,14 @@ fn guard_total(counts: &[crate::ledger::GuardEventCount], kind: &str) -> i64 {
     counts
         .iter()
         .find(|c| c.kind == kind)
+        .map(|c| c.total)
+        .unwrap_or(0)
+}
+
+fn outbox_total(counts: &[crate::ledger::NotificationOutboxCount], status: &str) -> i64 {
+    counts
+        .iter()
+        .find(|c| c.status == status)
         .map(|c| c.total)
         .unwrap_or(0)
 }

@@ -140,6 +140,23 @@ CREATE TABLE IF NOT EXISTS guard_events (
   at TEXT NOT NULL
 );
 
+-- Backlog 089: outbound notifications are durable before transport. This is
+-- the operator-visible outbox behind the webhook notifier; pending rows mean
+-- delivery was queued but not observed, failed rows are retry/ack candidates.
+CREATE TABLE IF NOT EXISTS notification_outbox (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  status TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  delivered_at TEXT,
+  acknowledged_reason TEXT,
+  acknowledged_at TEXT
+);
+
 -- Single-row table: presence of row 1 means reflex dispatch is paused.
 -- Distinct from per-task parking (parked_tasks): a pause halts the
 -- autonomous dispatch loop for the whole plane, not one task's budget.

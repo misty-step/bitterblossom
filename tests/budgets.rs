@@ -146,6 +146,13 @@ fn notification_storm_is_synchronously_accounted() {
         8,
         "notify() returned before all curl waiters were accounted"
     );
+    let delivered = ledger
+        .notification_outbox_counts()
+        .unwrap()
+        .into_iter()
+        .find(|c| c.status == "delivered")
+        .unwrap();
+    assert_eq!(delivered.total, 8);
 }
 
 #[test]
@@ -183,6 +190,15 @@ fn notification_failures_are_recorded_as_guard_events() {
         .as_deref()
         .unwrap()
         .contains("event=failure_probe"));
+    let outbox = ledger.list_notification_outbox(10).unwrap();
+    assert_eq!(outbox[0].event, "failure_probe");
+    assert_eq!(outbox[0].status, "failed");
+    assert_eq!(outbox[0].attempts, 1);
+    assert!(outbox[0]
+        .last_error
+        .as_deref()
+        .unwrap()
+        .contains("webhook_exit"));
 }
 
 #[test]
