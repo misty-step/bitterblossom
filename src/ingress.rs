@@ -396,14 +396,6 @@ pub fn cron_catchup(
     } else {
         (fires.clone(), 0)
     };
-    if skipped > 0 {
-        ledger.record_guard_event(
-            "cron_collapse",
-            Some(task),
-            &format!("skipped={skipped} fired={}", fires.len()),
-            skipped as i64,
-        )?;
-    }
     let mut outcome = CronCatchupOutcome {
         skipped,
         ..Default::default()
@@ -414,6 +406,14 @@ pub fn cron_catchup(
             Ok(_) => outcome.ingested += 1,
             Err(e) => return Err(e),
         }
+    }
+    if skipped > 0 {
+        ledger.record_guard_event(
+            "cron_collapse",
+            Some(task),
+            &format!("skipped={skipped} fired={}", fires.len()),
+            skipped as i64,
+        )?;
     }
     Ok(outcome)
 }

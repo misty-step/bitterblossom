@@ -279,6 +279,37 @@ fn cron_catchup_collapses_old_fires_and_records_count() {
 }
 
 #[test]
+fn cron_catchup_records_collapse_only_after_ingest_success() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    rusqlite::Connection::open(plane.db_path())
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER fail_second_ingress
+             BEFORE INSERT ON ingress_events
+             WHEN (SELECT COUNT(*) FROM ingress_events) >= 1
+             BEGIN
+               SELECT RAISE(FAIL, 'simulated ingress failure');
+             END;",
+        )
+        .unwrap();
+
+    let schedule = parse_schedule("* * * * *").unwrap();
+    let after = Utc.with_ymd_and_hms(2026, 6, 10, 12, 0, 0).unwrap();
+    let until = Utc.with_ymd_and_hms(2026, 6, 10, 12, 6, 0).unwrap();
+
+    let err = cron_catchup(&mut ledger, "demo", &schedule, after, until, 2).unwrap_err();
+    assert!(format!("{err:#}").contains("simulated ingress failure"));
+    assert_eq!(ledger.ingress_event_count("demo").unwrap(), 1);
+    assert!(ledger
+        .guard_event_counts()
+        .unwrap()
+        .into_iter()
+        .all(|c| c.kind != "cron_collapse"));
+}
+
+#[test]
 fn five_field_cron_schedules_are_accepted_and_bad_ones_fail_at_load() {
     parse_schedule("0 */6 * * *").unwrap();
     parse_schedule("0 0 */6 * * *").unwrap();
