@@ -1,10 +1,11 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
+use cron::Schedule;
 
 use crate::ingress;
 use crate::ledger::Ledger;
@@ -64,7 +65,8 @@ pub fn serve(root: &Path) -> Result<()> {
 }
 
 fn cron_loop(root: &Path) {
-    let mut last = Utc::now();
+    let mut default_last = Utc::now();
+    let mut last_by_task = HashMap::new();
     loop {
         std::thread::sleep(CRON_POLL);
         let Ok(plane) = Plane::load(root) else {
@@ -85,27 +87,47 @@ fn cron_loop(root: &Path) {
             }
         }
         let now = Utc::now();
-        // Backlog 083: cron catch-up is bounded — `cron_catchup` collapses
-        // older fires and records a `cron_collapse` guard event so skipped
-        // counts surface in status. Reflex tasks catch up to the newest state.
-        let max_fires = plane.spec.ingress.max_cron_catchup_fires;
-        let mut caught_up = true;
-        for (task, schedule) in &schedules {
-            match ingress::cron_catchup(&mut ledger, task, schedule, last, now, max_fires) {
-                Ok(o) if o.skipped > 0 => {
-                    eprintln!("cron: task {task} collapsed {} skipped fires", o.skipped)
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    caught_up = false;
-                    eprintln!("cron: task {task}: {e:#}");
-                }
+        run_cron_tick(
+            &mut ledger,
+            &schedules,
+            &mut last_by_task,
+            &mut default_last,
+            now,
+            plane.spec.ingress.max_cron_catchup_fires,
+        );
+    }
+}
+
+fn run_cron_tick(
+    ledger: &mut Ledger,
+    schedules: &[(String, Schedule)],
+    last_by_task: &mut HashMap<String, DateTime<Utc>>,
+    default_last: &mut DateTime<Utc>,
+    now: DateTime<Utc>,
+    max_fires: u32,
+) {
+    let mut seen = HashSet::new();
+    // Backlog 083: cron catch-up is bounded per task. A task that catches up
+    // advances independently; a task that fails retries its own window without
+    // rewinding successful tasks and duplicating their collapse counts.
+    for (task, schedule) in schedules {
+        seen.insert(task.clone());
+        let last = *last_by_task.entry(task.clone()).or_insert(*default_last);
+        match ingress::cron_catchup(ledger, task, schedule, last, now, max_fires) {
+            Ok(o) if o.skipped > 0 => {
+                last_by_task.insert(task.clone(), now);
+                eprintln!("cron: task {task} collapsed {} skipped fires", o.skipped)
+            }
+            Ok(_) => {
+                last_by_task.insert(task.clone(), now);
+            }
+            Err(e) => {
+                eprintln!("cron: task {task}: {e:#}");
             }
         }
-        if caught_up {
-            last = now;
-        }
     }
+    last_by_task.retain(|task, _| seen.contains(task));
+    *default_last = now;
 }
 
 fn dispatch_loop(root: &Path) {
@@ -119,7 +141,7 @@ fn dispatch_loop(root: &Path) {
         // Backlog 083: a paused plane halts reflex dispatch. Manual `bb run`
         // bypasses this loop and still dispatches — pause is a reflex circuit
         // breaker, not an operator lock. State is visible in `status`.
-        if ledger.plane_paused().unwrap_or(None).is_some() {
+        if reflex_dispatch_paused(&ledger) {
             continue;
         }
         let pending = match ledger.pending_runs_oldest_first() {
@@ -155,6 +177,17 @@ fn dispatch_loop(root: &Path) {
                 eprintln!("dispatch: spawn failed: {e}");
                 in_flight.lock().expect("in_flight lock").remove(&run.task);
             }
+        }
+    }
+}
+
+fn reflex_dispatch_paused(ledger: &Ledger) -> bool {
+    match ledger.plane_paused() {
+        Ok(Some(_)) => true,
+        Ok(None) => false,
+        Err(e) => {
+            eprintln!("dispatch: pause check: {e:#}");
+            true
         }
     }
 }
@@ -465,4 +498,90 @@ pub fn check_view(plane: &Plane, ledger: &Ledger) -> Result<serde_json::Value> {
         "tasks": plane.tasks.keys().collect::<Vec<_>>(),
         "task_details": tasks_view(plane, ledger)?,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn guard_total(ledger: &Ledger, kind: &str) -> i64 {
+        ledger
+            .guard_event_counts()
+            .unwrap()
+            .into_iter()
+            .find(|c| c.kind == kind)
+            .map(|c| c.total)
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn reflex_dispatch_pause_check_fails_closed_on_ledger_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ledger.sqlite");
+        let ledger = Ledger::open(&db).unwrap();
+        rusqlite::Connection::open(&db)
+            .unwrap()
+            .execute("DROP TABLE plane_pause", [])
+            .unwrap();
+
+        assert!(reflex_dispatch_paused(&ledger));
+    }
+
+    #[test]
+    fn cron_tick_does_not_rewind_successful_tasks_when_peer_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ledger.sqlite");
+        let mut ledger = Ledger::open(&db).unwrap();
+        rusqlite::Connection::open(&db)
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER fail_bad_ingress
+                 BEFORE INSERT ON ingress_events
+                 WHEN NEW.task = 'bad'
+                 BEGIN
+                   SELECT RAISE(FAIL, 'simulated bad-task cron failure');
+                 END;",
+            )
+            .unwrap();
+
+        let schedules = vec![
+            (
+                "good".to_string(),
+                ingress::parse_schedule("* * * * *").unwrap(),
+            ),
+            (
+                "bad".to_string(),
+                ingress::parse_schedule("* * * * *").unwrap(),
+            ),
+        ];
+        let mut last_by_task = HashMap::new();
+        let mut default_last = Utc.with_ymd_and_hms(2026, 6, 10, 12, 0, 0).unwrap();
+        let first = Utc.with_ymd_and_hms(2026, 6, 10, 12, 6, 0).unwrap();
+        let second = Utc.with_ymd_and_hms(2026, 6, 10, 12, 7, 0).unwrap();
+
+        run_cron_tick(
+            &mut ledger,
+            &schedules,
+            &mut last_by_task,
+            &mut default_last,
+            first,
+            2,
+        );
+        assert_eq!(ledger.ingress_event_count("good").unwrap(), 2);
+        assert_eq!(ledger.ingress_event_count("bad").unwrap(), 0);
+        assert_eq!(guard_total(&ledger, "cron_collapse"), 4);
+
+        run_cron_tick(
+            &mut ledger,
+            &schedules,
+            &mut last_by_task,
+            &mut default_last,
+            second,
+            2,
+        );
+        assert_eq!(ledger.ingress_event_count("good").unwrap(), 3);
+        assert_eq!(ledger.ingress_event_count("bad").unwrap(), 0);
+        assert_eq!(guard_total(&ledger, "cron_collapse"), 4);
+    }
 }
