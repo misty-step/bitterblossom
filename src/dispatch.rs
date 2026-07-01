@@ -235,6 +235,7 @@ fn attempt_on_host(
         return fail(false, format!("prepare: {e:#}"));
     }
     ledger.set_attempt_phase(attempt_id, "prepared")?;
+    ledger.record_progress(run_id, "phase:prepared")?;
 
     let cmd = match harness::build_command(&task.agent, &task.spec.budget) {
         Ok(c) => c,
@@ -245,6 +246,7 @@ fn attempt_on_host(
     };
 
     ledger.set_attempt_phase(attempt_id, "executing")?;
+    ledger.record_progress(run_id, "phase:executing")?;
     let timeout = Duration::from_secs(
         60 * task
             .spec
@@ -265,6 +267,7 @@ fn attempt_on_host(
     };
 
     ledger.set_attempt_phase(attempt_id, "collecting")?;
+    ledger.record_progress(run_id, "phase:collecting")?;
     session.write_artifact("stdout.txt", exec.stdout.as_bytes())?;
     session.write_artifact("stderr.txt", exec.stderr.as_bytes())?;
 
@@ -336,6 +339,7 @@ fn attempt_on_host(
             Some(&artifact_dir),
         )?;
         ledger.set_attempt_phase(attempt_id, "released")?;
+        ledger.record_progress(run_id, "phase:released")?;
         return Ok(AttemptOutcome::Success {
             stats: AttemptStats::default(),
         });
@@ -408,6 +412,7 @@ fn attempt_on_host(
     }
 
     ledger.set_attempt_phase(attempt_id, "finalizing")?;
+    ledger.record_progress(run_id, "phase:finalizing")?;
     if let Some(post) = &plan.post_command {
         let post_result = session.execute(
             &["sh".into(), "-c".into(), post.clone()],
@@ -463,6 +468,7 @@ fn attempt_on_host(
         Some(&artifact_dir),
     )?;
     ledger.set_attempt_phase(attempt_id, "released")?;
+    ledger.record_progress(run_id, "phase:released")?;
     Ok(AttemptOutcome::Success {
         stats: parsed.stats,
     })

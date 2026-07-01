@@ -8,6 +8,7 @@ pub mod ledger;
 pub mod mcp;
 pub mod notify;
 pub mod preflight;
+pub mod progress;
 pub mod recovery;
 pub mod serve;
 pub mod spec;
