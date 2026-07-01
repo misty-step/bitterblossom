@@ -1,6 +1,6 @@
 # Bitterblossom Factory Lane Dogfood Plan
 
-Status: milestone 1 plan. Branch: `factory/bitterblossom-lane-20260701`.
+Status: milestone achieved. Branch: `factory/bitterblossom-lane-20260701`.
 
 ## Context
 
@@ -8,7 +8,7 @@ Status: milestone 1 plan. Branch: `factory/bitterblossom-lane-20260701`.
 - Factory bar: Bitterblossom is the keystone because the factory needs off-laptop agent execution. The first proof is backlog item to Sprite to branch/report.
 - Product boundary: keep runtime mechanics in Rust; workload judgment stays in task cards and backlog packets.
 - Selected first slice: dispatch `backlog.d/078-read-only-mcp-server.md` through `bb run build` as a scoped first MCP slice. MCP is the repeated factory gap and is explicitly prioritized by the lane.
-- Outward-facing pause: `bb run build` may push a remote `bb/build/...` branch, so dispatch waits for operator approval after this milestone.
+- Outward-facing pause: operator approved `bb run build` and pushing the `bb/build/...` branch on 2026-07-01.
 
 ## Preflight Evidence
 
@@ -33,13 +33,53 @@ GH_TOKEN=$(gh auth token) ./target/debug/bb --config plane run build \
   --json
 ```
 
+## Builder Run Evidence
+
+- Dispatch command: the `bb run build` command above, with `GH_TOKEN=$(gh auth token)` and `--config plane`.
+- Run id: `a78a6b73b18f`; trace: `fd59e922e5ff`.
+- Task/agent/substrate: `build`, `bb-builder-rust@v2`, Sprites on `misty-step/lane-1`, OMP via OpenRouter `z-ai/glm-5.2`.
+- Ledger result: `state=success`, attempt phase `released`, exit code `0`, ended `2026-07-01T16:36:33.55011Z`.
+- Cost and usage: `$2.2418345600000014`, `1,079,582` tokens in, `33,077` tokens out, `97` turns.
+- Artifact surface: `./target/debug/bb --config plane artifacts list a78a6b73b18f --json` returned `REPORT.json`, `result.md`, `LANE_CARD.md`, `EVENT.json`, `RUN.json`, `stdout.txt`, and empty `stderr.txt`.
+- Report read: `./target/debug/bb --config plane artifacts read a78a6b73b18f REPORT.json`.
+- Builder report status: `ready`; branch `bb/build/078-read-only-mcp-first-slice`; commit `d0e737729e76b9b921d02f757718753d9e52b49b`.
+- Remote branch proof: `git ls-remote --heads origin bb/build/078-read-only-mcp-first-slice` returned `d0e737729e76b9b921d02f757718753d9e52b49b`.
+- Draft PR: <https://github.com/misty-step/bitterblossom/pull/870>.
+
+## Builder Output Summary
+
+- Added `bb mcp serve` as a read-only stdio MCP server.
+- Exposed `tools/list`, `bb_status`, and `bb_check`.
+- Kept MCP as a thin adapter over canonical view helpers: `health::status_view` and a new `serve::check_view`.
+- Added subprocess stdio coverage in `tests/mcp_cli.rs`.
+- Updated `docs/spine.md` and `skills/bitterblossom/SKILL.md` with the new MCP route.
+- Raised the spine LOC tripwire from `6000` to `6300`; builder report argues this is mechanism, not workload judgment.
+
+## Lead Verification
+
+- Local checkout: `git switch --track refs/remotes/origin/bb/build/078-read-only-mcp-first-slice`.
+- Whitespace check: `git diff --check refs/remotes/origin/master..HEAD` passed.
+- Local gate: `./scripts/verify.sh` passed on the builder branch. The gate included fmt, clippy, the full Rust test suite, the new MCP CLI test, plane config checks, local-plane golden path, operations smoke drill, and LOC tripwire `6199 <= 6300`.
+- PR check: `gh pr view 870 --json number,url,state,isDraft,headRefName,baseRefName,title` confirmed open draft PR #870 from `bb/build/078-read-only-mcp-first-slice` to `master`.
+
+## Landmark Integration
+
+- Read Landmark lane contract plus Landmark `VISION.md`, `CHANGELOG.md`, `action.yml`, `README.md`, `docs/agent-integration.md`, and the fleet adoption notes.
+- Updated Bitterblossom release intelligence wiring on this branch:
+  - `.github/workflows/landfall-release.yml` -> `.github/workflows/landmark-release.yml`
+  - `.landfall.yml` -> `.landmark.yml`
+  - `misty-step/landfall@90249a8...` -> `misty-step/landmark@v1`
+  - added workflow permissions and `node-version: "24"` per current Landmark action surface.
+- Verification: `/Users/phaedrus/Development/landmark/target/debug/landmark doctor --repo-root .` passed.
+- Workflow parse/lint: `actionlint .github/workflows/landmark-release.yml` passed; Ruby YAML parsing passed for both `.github/workflows/landmark-release.yml` and `.landmark.yml`.
+
 ## Verification Plan
 
-1. Inspect build run with `bb runs show <id> --json`.
-2. Read artifacts through public surface, not paths: `bb artifacts list <id> --json` and `bb artifacts read <id> REPORT.json`.
-3. Fetch the builder branch and run `./scripts/verify.sh` locally.
-4. If the branch is reviewable, open/update a draft PR only after reporting that outward-facing step.
-5. Submit and storm using the checked-in recipe or explicit `bb submit` flow with `GH_TOKEN=$(gh auth token)`, then evaluate `bb gate --submission <id> --json`.
+1. Done: inspected build run with `bb runs show a78a6b73b18f --json`.
+2. Done: read artifacts through public surface, not paths: `bb artifacts list a78a6b73b18f --json` and `bb artifacts read a78a6b73b18f REPORT.json`.
+3. Done: fetched the builder branch and ran `./scripts/verify.sh` locally.
+4. Done: opened draft PR #870 for reviewable product evidence.
+5. Deferred: submission storm/gate remains the next BB-native review step after this milestone report.
 
 ## Stop Conditions
 
@@ -61,11 +101,14 @@ GH_TOKEN=$(gh auth token) ./target/debug/bb --config plane run build \
 
 - `bb status --json` gave a compact operator health summary and safe-next-action hints.
 - `bb preflight` correctly separated missing env binding from actual credential availability once `GH_TOKEN=$(gh auth token)` was used.
+- `bb run build` successfully moved a real backlog item off the laptop and produced a pushed branch plus `REPORT.json`.
+- Artifact APIs were sufficient to inspect the run without spelunking local attempt directories.
 
 ### Bad
 
 - Huge default `runs list --json` and `submit list --json` outputs are too large for milestone summaries without custom `jq`.
 - The selected Sprite org was wrong for this directory until manually corrected.
+- While running, `bb run --json` was silent until final output and the ledger only showed `executing`; there was no mid-run progress, branch, or heartbeat signal in `runs show`.
 
 ### Ugly
 
@@ -74,7 +117,12 @@ GH_TOKEN=$(gh auth token) ./target/debug/bb --config plane run build \
 ### Friction
 
 - The lane asks for "chew a backlog" but outward-facing builder dispatch can push a branch. That pause boundary needs to be explicit every time.
+- The slash-heavy remote branch shorthand `origin/bb/build/078-read-only-mcp-first-slice` was ambiguous in `git log`; full ref names worked.
+
+### Delight
+
+- The Sprite builder completed the full backlog-to-branch loop in about 22.6 minutes, including verify, report, and push.
 
 ## Next Best Action
 
-After operator approval, run the exact `bb run build` command above and stop again when the builder run reaches a terminal state or produces a branch/report.
+Review PR #870, then run the BB submission storm/gate on the builder branch if we want the next level of product evidence before merge. In parallel, promote backlog 087-style progress/stale signals because this successful run still exposed weak mid-run observability.
