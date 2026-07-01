@@ -108,6 +108,78 @@ fn webhook_redelivery_same_dedupe_key_records_event_no_second_run() {
 }
 
 #[test]
+fn webhook_accepts_canary_timestamped_signature_and_delivery_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join("agents")).unwrap();
+    fs::create_dir_all(root.join("tasks/canary")).unwrap();
+    fs::write(root.join("plane.toml"), "dev = true\n").unwrap();
+    fs::write(
+        root.join("agents/a.toml"),
+        "harness = \"pi\"\nmodel = \"m\"\nauth = \"api\"\n",
+    )
+    .unwrap();
+    fs::write(root.join("tasks/canary/card.md"), "card\n").unwrap();
+    fs::write(
+        root.join("tasks/canary/task.toml"),
+        "agent = \"a\"\nsubstrate = \"local\"\n\n\
+         [[trigger]]\nkind = \"webhook\"\nroute = \"canary\"\nsecret_env = \"BB_TEST_CANARY_SECRET\"\n\
+         dedupe_key = \"header:X-Delivery-Id\"\n",
+    )
+    .unwrap();
+    let plane = Plane::load(root).unwrap();
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    std::env::set_var("BB_TEST_CANARY_SECRET", "s3cret");
+
+    let body = r#"{"event":"incident.opened","subject":{"id":"INC-live","service":"canary"}}"#;
+    let timestamp = "2026-07-01T17:00:00Z";
+    let delivery = "DLV-canary-live";
+    let signature = sign_hmac(
+        "s3cret",
+        format!("{timestamp}.{delivery}.{body}").as_bytes(),
+    );
+    let resp = handle_webhook(
+        &plane,
+        &mut ledger,
+        "canary",
+        &[
+            ("X-Canary-Signature".to_string(), signature.clone()),
+            ("X-Timestamp".to_string(), timestamp.to_string()),
+            ("X-Delivery-Id".to_string(), delivery.to_string()),
+        ],
+        body,
+    )
+    .unwrap();
+    assert_eq!(resp.status, 202, "{}", resp.body);
+
+    let runs = ledger.list_runs(Some("canary"), None).unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(
+        runs[0].idempotency_key.as_deref(),
+        Some("wh:canary:DLV-canary-live")
+    );
+    assert_eq!(
+        ledger.run_payload(&runs[0].id).unwrap().as_deref(),
+        Some(body)
+    );
+    let duplicate = handle_webhook(
+        &plane,
+        &mut ledger,
+        "canary",
+        &[
+            ("X-Canary-Signature".to_string(), signature),
+            ("X-Timestamp".to_string(), timestamp.to_string()),
+            ("X-Delivery-Id".to_string(), delivery.to_string()),
+        ],
+        body,
+    )
+    .unwrap();
+    assert_eq!(duplicate.status, 202);
+    assert!(duplicate.body.contains("\"duplicate\":true"));
+    assert_eq!(ledger.list_runs(Some("canary"), None).unwrap().len(), 1);
+}
+
+#[test]
 fn webhook_unknown_route_404s_with_no_row() {
     let dir = tempfile::tempdir().unwrap();
     let plane = make_plane(dir.path());
