@@ -6,16 +6,18 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use cron::Schedule;
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::ingress;
 use crate::ledger::Ledger;
 use crate::recovery;
 use crate::spec::{Plane, TriggerSpec};
-use crate::{dispatch, notify};
+use crate::{dispatch, notify, progress};
 
 const DISPATCH_POLL: Duration = Duration::from_millis(500);
 const CRON_POLL: Duration = Duration::from_secs(10);
 const NOTIFY_RETRY_POLL: Duration = Duration::from_secs(60);
+const WATCHDOG_POLL: Duration = Duration::from_secs(60);
 const INGRESS_BIND_ENV: &str = "BB_INGRESS_BIND";
 const API_TOKEN_ENV: &str = "BB_API_TOKEN";
 
@@ -66,6 +68,12 @@ pub fn serve(root: &Path) -> Result<()> {
         std::thread::Builder::new()
             .name("bb-notify".into())
             .spawn(move || notify_loop(&root))?;
+    }
+    {
+        let root = root_buf.clone();
+        std::thread::Builder::new()
+            .name("bb-watchdog".into())
+            .spawn(move || watchdog_loop(&root))?;
     }
 
     http_loop(&root_buf, &bind)
@@ -219,6 +227,129 @@ fn notify_loop(root: &Path) {
             _ => {}
         }
     }
+}
+
+fn watchdog_loop(root: &Path) {
+    loop {
+        std::thread::sleep(watchdog_poll());
+        let Ok(plane) = Plane::load(root) else {
+            continue;
+        };
+        let Ok(ledger) = Ledger::open(&plane.db_path()) else {
+            continue;
+        };
+        match watchdog_scan(&plane, &ledger) {
+            Ok(n) if n > 0 => eprintln!("watchdog: emitted {n} stale notification(s)"),
+            Err(e) => eprintln!("watchdog: {e:#}"),
+            _ => {}
+        }
+    }
+}
+
+fn watchdog_poll() -> Duration {
+    std::env::var("BB_WATCHDOG_POLL_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(WATCHDOG_POLL)
+}
+
+fn watchdog_scan(plane: &Plane, ledger: &Ledger) -> Result<usize> {
+    if plane.spec.notify.webhook_url.is_none() {
+        return Ok(0);
+    }
+    let now = OffsetDateTime::now_utc();
+    let mut emitted = 0usize;
+    for state in ["running", "awaiting_recovery"] {
+        for run in ledger.runs_in_state(state)? {
+            let view = progress::from_ledger(ledger, &run, now)?;
+            let Some(escalation) = watchdog_escalation(&run, &view, now) else {
+                continue;
+            };
+            if watchdog_notified(ledger, &run.id, &escalation.key)? {
+                continue;
+            }
+            notify::notify(
+                plane,
+                ledger,
+                escalation.event,
+                &serde_json::json!({
+                    "run_id": run.id.clone(),
+                    "task": run.task.clone(),
+                    "classification": view.classification,
+                    "attempt_phase": view.attempt_phase.clone(),
+                    "last_progress_at": view.last_progress_at.clone(),
+                    "age_seconds": escalation.age_seconds,
+                    "threshold_seconds": escalation.threshold_seconds,
+                    "severity": escalation.severity,
+                    "safe_next_action": &view.safe_next_action,
+                    "stale_key": escalation.key.clone(),
+                }),
+            );
+            ledger.record_event(&run.id, "watchdog:stale_notified", Some(&escalation.key))?;
+            ledger.record_guard_event(
+                escalation.event,
+                Some(&run.task),
+                &format!("run={} classification={}", run.id, view.classification),
+                1,
+            )?;
+            emitted += 1;
+        }
+    }
+    Ok(emitted)
+}
+
+struct WatchdogEscalation {
+    event: &'static str,
+    key: String,
+    age_seconds: Option<i64>,
+    threshold_seconds: i64,
+    severity: &'static str,
+}
+
+fn watchdog_escalation(
+    run: &crate::ledger::RunRow,
+    view: &progress::ProgressView,
+    now: OffsetDateTime,
+) -> Option<WatchdogEscalation> {
+    if view.classification == "stale_executing" {
+        let freshness = view.last_progress_at.as_deref().unwrap_or(&run.created_at);
+        return Some(WatchdogEscalation {
+            event: "run_stale_executing",
+            key: format!(
+                "stale_executing:{}:{}:{}",
+                run.id,
+                view.attempt_phase.as_deref().unwrap_or("-"),
+                freshness
+            ),
+            age_seconds: view.age_seconds,
+            threshold_seconds: view.threshold_seconds,
+            severity: "critical",
+        });
+    }
+    if run.state == "awaiting_recovery" {
+        let Ok(updated_at) = OffsetDateTime::parse(&run.updated_at, &Rfc3339) else {
+            return None;
+        };
+        let age = (now - updated_at).whole_seconds().max(0);
+        if age >= progress::RECOVERY_STALE_SECONDS {
+            return Some(WatchdogEscalation {
+                event: "run_stale_recovery",
+                key: format!("stale_recovery:{}:{}", run.id, run.updated_at),
+                age_seconds: Some(age),
+                threshold_seconds: progress::RECOVERY_STALE_SECONDS,
+                severity: "critical",
+            });
+        }
+    }
+    None
+}
+
+fn watchdog_notified(ledger: &Ledger, run_id: &str, key: &str) -> Result<bool> {
+    Ok(ledger
+        .events(run_id)?
+        .iter()
+        .any(|event| event.kind == "watchdog:stale_notified" && event.data.as_deref() == Some(key)))
 }
 
 fn run_one(root: &Path, run_id: &str) {
@@ -541,7 +672,12 @@ pub fn check_view(plane: &Plane, ledger: &Ledger) -> Result<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ledger::IngressRequest;
     use chrono::TimeZone;
+    use std::fs;
+    use time::{format_description::well_known::Rfc3339, Duration as TimeDuration};
+
+    static NOTIFY_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn guard_total(ledger: &Ledger, kind: &str) -> i64 {
         ledger
@@ -551,6 +687,60 @@ mod tests {
             .find(|c| c.kind == kind)
             .map(|c| c.total)
             .unwrap_or(0)
+    }
+
+    fn watchdog_plane(root: &Path) -> Plane {
+        fs::create_dir_all(root.join("agents")).unwrap();
+        fs::create_dir_all(root.join("tasks/demo")).unwrap();
+        fs::write(
+            root.join("plane.toml"),
+            "dev = true\n[notify]\nwebhook_url = \"http://example.invalid/hook\"\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("agents/a.toml"),
+            "version = 1\nharness = \"command\"\nmodel = \"\"\nbin = \"true\"\n",
+        )
+        .unwrap();
+        fs::write(root.join("tasks/demo/card.md"), "card\n").unwrap();
+        fs::write(
+            root.join("tasks/demo/task.toml"),
+            "agent = \"a\"\nsubstrate = \"local\"\n[[trigger]]\nkind = \"manual\"\n",
+        )
+        .unwrap();
+        Plane::load(root).unwrap()
+    }
+
+    fn stale_executing_run(ledger: &mut Ledger, plane: &Plane) -> String {
+        let run_id = ledger
+            .ingest(IngressRequest {
+                task: "demo",
+                trigger_kind: "manual",
+                idempotency_key: None,
+                source_event_id: None,
+                payload: Some("{}"),
+                parent_run_id: None,
+            })
+            .unwrap()
+            .run_id;
+        ledger.transition(&run_id, "running", None).unwrap();
+        let attempt = ledger
+            .create_attempt(&run_id, 1, "a", 1, "command", "")
+            .unwrap();
+        ledger.set_attempt_phase(attempt, "executing").unwrap();
+        ledger.record_progress(&run_id, "phase:executing").unwrap();
+        let stale_at = (OffsetDateTime::now_utc()
+            - TimeDuration::seconds(progress::PROGRESS_STALE_SECONDS + 60))
+        .format(&Rfc3339)
+        .unwrap();
+        rusqlite::Connection::open(plane.db_path())
+            .unwrap()
+            .execute(
+                "UPDATE run_events SET at = ?1 WHERE run_id = ?2 AND kind = 'progress'",
+                rusqlite::params![stale_at, run_id],
+            )
+            .unwrap();
+        run_id
     }
 
     #[test]
@@ -621,5 +811,34 @@ mod tests {
         assert_eq!(ledger.ingress_event_count("good").unwrap(), 3);
         assert_eq!(ledger.ingress_event_count("bad").unwrap(), 0);
         assert_eq!(guard_total(&ledger, "cron_collapse"), 4);
+    }
+
+    #[test]
+    fn watchdog_escalates_stale_executing_once_through_notification_outbox() {
+        let _guard = NOTIFY_ENV_LOCK.lock().unwrap();
+        std::env::set_var("BB_NOTIFY_BIN", "true");
+        let dir = tempfile::tempdir().unwrap();
+        let plane = watchdog_plane(dir.path());
+        let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+        let run_id = stale_executing_run(&mut ledger, &plane);
+
+        assert_eq!(watchdog_scan(&plane, &ledger).unwrap(), 1);
+        let rows = ledger.list_notification_outbox(10).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].event, "run_stale_executing");
+        assert_eq!(rows[0].status, "delivered");
+        assert_eq!(rows[0].attempts, 1);
+        assert_eq!(guard_total(&ledger, "run_stale_executing"), 1);
+        assert!(ledger.events(&run_id).unwrap().iter().any(|e| {
+            e.kind == "watchdog:stale_notified"
+                && e.data
+                    .as_deref()
+                    .is_some_and(|data| data.starts_with("stale_executing:"))
+        }));
+
+        assert_eq!(watchdog_scan(&plane, &ledger).unwrap(), 0);
+        assert_eq!(ledger.list_notification_outbox(10).unwrap().len(), 1);
+        assert_eq!(guard_total(&ledger, "run_stale_executing"), 1);
+        std::env::remove_var("BB_NOTIFY_BIN");
     }
 }
