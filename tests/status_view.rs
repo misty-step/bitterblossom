@@ -161,6 +161,11 @@ fn status_view_covers_operator_truth_fixtures() {
     assert_eq!(doc["guards"]["gate"]["required"][0], "security");
     assert_eq!(doc["guards"]["gate"]["quorum"], 1);
     assert_eq!(doc["guards"]["gate"]["arm_timeout_seconds"], 77);
+    assert_eq!(doc["guards"]["attention_debt"]["blocking"], true);
+    assert_eq!(doc["guards"]["attention_debt"]["open_dlq"], 1);
+    assert_eq!(doc["guards"]["attention_debt"]["parked_tasks"], 1);
+    assert_eq!(doc["guards"]["attention_debt"]["awaiting_recovery"], 2);
+    assert_eq!(doc["guards"]["attention_debt"]["notification_failed"], 1);
     let contracts = doc["freshness_contracts"].as_array().unwrap();
     let recovery_contract = contracts
         .iter()

@@ -2,7 +2,9 @@ use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
+use time::OffsetDateTime;
 
+use crate::attention::{self, AttentionDebt};
 use crate::ledger::{IngressOutcome, IngressRequest, Ledger};
 use crate::spec::{Plane, Task, TriggerSpec, WebhookActionSpec};
 pub struct WebhookResponse {
@@ -91,6 +93,18 @@ pub fn handle_webhook(
                 });
             }
         }
+    }
+
+    if let Some(debt) = attention_debt_brake(plane, ledger, &task.name, "webhook")? {
+        return Ok(WebhookResponse {
+            status: 429,
+            body: serde_json::json!({
+                "error": "attention debt brake refused reflex admission",
+                "task": task.name,
+                "debt": debt,
+            })
+            .to_string(),
+        });
     }
 
     let derived = match dedupe_key {
@@ -385,9 +399,41 @@ pub fn cron_catchup(
     now: DateTime<Utc>,
     max_fires: u32,
 ) -> Result<CronCatchupOutcome> {
+    cron_catchup_inner(None, ledger, task, schedule, last, now, max_fires)
+}
+
+pub fn cron_catchup_guarded(
+    plane: &Plane,
+    ledger: &mut Ledger,
+    task: &str,
+    schedule: &cron::Schedule,
+    last: DateTime<Utc>,
+    now: DateTime<Utc>,
+    max_fires: u32,
+) -> Result<CronCatchupOutcome> {
+    cron_catchup_inner(Some(plane), ledger, task, schedule, last, now, max_fires)
+}
+
+fn cron_catchup_inner(
+    plane: Option<&Plane>,
+    ledger: &mut Ledger,
+    task: &str,
+    schedule: &cron::Schedule,
+    last: DateTime<Utc>,
+    now: DateTime<Utc>,
+    max_fires: u32,
+) -> Result<CronCatchupOutcome> {
     let fires = due_fires(schedule, last, now);
     if fires.is_empty() {
         return Ok(CronCatchupOutcome::default());
+    }
+    if let Some(plane) = plane {
+        if attention_debt_brake(plane, ledger, task, "cron")?.is_some() {
+            return Ok(CronCatchupOutcome {
+                skipped: fires.len(),
+                ..Default::default()
+            });
+        }
     }
     let max = max_fires.max(1) as usize;
     let (ingest_fires, skipped) = if fires.len() > max {
@@ -416,4 +462,23 @@ pub fn cron_catchup(
         )?;
     }
     Ok(outcome)
+}
+
+pub fn attention_debt_brake(
+    plane: &Plane,
+    ledger: &Ledger,
+    task: &str,
+    source: &str,
+) -> Result<Option<AttentionDebt>> {
+    let debt = attention::scan(plane, ledger, OffsetDateTime::now_utc())?;
+    if !debt.blocking {
+        return Ok(None);
+    }
+    ledger.record_guard_event(
+        "attention_debt_brake",
+        Some(task),
+        &format!("source={source} {}", debt.reason),
+        1,
+    )?;
+    Ok(Some(debt))
 }

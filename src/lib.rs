@@ -1,4 +1,5 @@
 pub mod artifacts;
+pub mod attention;
 pub mod budget;
 pub mod dispatch;
 pub mod harness;

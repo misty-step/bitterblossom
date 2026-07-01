@@ -4,6 +4,7 @@ use anyhow::Result;
 use serde_json::{json, Value};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
+use crate::attention;
 use crate::ledger::{DeadLetterRow, Ledger, RunRow};
 use crate::progress;
 use crate::spec::Plane;
@@ -151,6 +152,7 @@ pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
             "arbiter": &gate.arbiter,
         })
     });
+    let attention_debt = attention::scan(plane, ledger, generated_at)?;
     // Conservative reservation: the worst-case cost each in-flight run could
     // still incur, bounded by its task's per-run cap. The daily ceiling is
     // enforced separately on every dispatch (budget::pre_dispatch_check).
@@ -201,6 +203,7 @@ pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
                 "policy": "reserved = sum(max_cost_per_run_usd) over running runs; the global daily ceiling (max_cost_per_day_usd) is still enforced by budget::pre_dispatch_check on every dispatch.",
             },
             "gate": gate_policy,
+            "attention_debt": attention_debt,
             "guard_event_counts": guard_counts,
             "recent_guard_events": recent_guards,
         },
