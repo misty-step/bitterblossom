@@ -299,7 +299,8 @@ The ledger is the system of record; everything reads from it:
 
 - `GET /` — token-gated HTML operator shell linking the read API below.
 - `GET /api/runs[?task=&state=]`, `GET /api/runs/<id>` (run + attempts +
-  events), `GET /api/dlq`, `GET /api/tasks`, `GET /api/submissions`
+  events), `GET /api/dlq`, `GET /api/notify`, `GET /api/tasks`,
+  `GET /api/submissions`
   (submissions + verdicts + rejection reasons) — the agent-facing read
   API, same shapes as the `--json` CLI.
 - Auth: set `BB_API_TOKEN` on the plane and send
@@ -500,6 +501,9 @@ bb artifacts read <run-id> <path> [--json]         # safe text/JSON read, includ
 bb dlq list [--json]
 bb dlq replay <id> [--json]
 bb dlq ack <id> --reason TEXT [--json]            # close a superseded pre-execute DLQ
+bb notify list [--limit N] [--json]               # outbound notification outbox
+bb notify retry [--limit N] [--json]              # retry pending/failed webhook deliveries
+bb notify ack <id> --reason TEXT [--json]         # close a handled notification row
 bb preflight <task> | --storm [--json]            # missing secrets + unspawnable command binaries, pre-dispatch
 bb task list [--json]                               # agent-facing task inventory
 bb task park|unpark <task>

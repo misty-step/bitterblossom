@@ -163,12 +163,21 @@ pub struct NotificationOutboxRow {
     pub last_error: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    pub acknowledged_reason: Option<String>,
+    pub acknowledged_at: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct NotificationOutboxCount {
     pub status: String,
     pub total: i64,
+}
+
+#[derive(Debug)]
+pub struct RetryableNotificationRow {
+    pub id: i64,
+    pub event: String,
+    pub payload: String,
 }
 
 /// Resolution state of a dead letter, derived from its replay/acknowledgement
@@ -936,22 +945,75 @@ impl Ledger {
         Ok(())
     }
 
+    pub fn acknowledge_notification(&self, id: i64, reason: &str) -> Result<NotificationOutboxRow> {
+        let reason = reason.trim();
+        if reason.is_empty() {
+            bail!("acknowledging notification {id} requires a non-empty reason");
+        }
+        let row = self.notification_outbox(id)?;
+        match row.status.as_str() {
+            "pending" | "failed" => {}
+            "acknowledged" => bail!(
+                "notification {id} already acknowledged: {}",
+                row.acknowledged_reason.as_deref().unwrap_or("-")
+            ),
+            "delivered" => bail!(
+                "notification {id} already delivered; acknowledge is for pending or failed rows"
+            ),
+            other => bail!("notification {id} is {other}; acknowledge requires pending or failed"),
+        }
+        let ts = now();
+        let changed = self.conn.execute(
+            "UPDATE notification_outbox
+             SET status = 'acknowledged', acknowledged_reason = ?2,
+                 acknowledged_at = ?3, updated_at = ?3
+             WHERE id = ?1 AND status IN ('pending', 'failed')",
+            params![id, reason, ts],
+        )?;
+        if changed != 1 {
+            bail!("notification {id} changed before acknowledgement");
+        }
+        self.notification_outbox(id)
+    }
+
+    pub fn notification_outbox(&self, id: i64) -> Result<NotificationOutboxRow> {
+        self.conn
+            .query_row(
+                "SELECT id, event, status, attempts, last_error, created_at, updated_at,
+                        acknowledged_reason, acknowledged_at
+                 FROM notification_outbox WHERE id = ?1",
+                params![id],
+                row_to_notification_outbox,
+            )
+            .with_context(|| format!("notification {id} not found"))
+    }
+
     pub fn list_notification_outbox(&self, limit: i64) -> Result<Vec<NotificationOutboxRow>> {
         let limit = limit.clamp(1, 200);
         let mut stmt = self.conn.prepare(
-            "SELECT id, event, status, attempts, last_error, created_at, updated_at
+            "SELECT id, event, status, attempts, last_error, created_at, updated_at,
+                    acknowledged_reason, acknowledged_at
              FROM notification_outbox ORDER BY id DESC LIMIT ?1",
         )?;
         let rows = stmt
+            .query_map(params![limit], row_to_notification_outbox)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn retryable_notifications(&self, limit: i64) -> Result<Vec<RetryableNotificationRow>> {
+        let limit = limit.clamp(1, 200);
+        let mut stmt = self.conn.prepare(
+            "SELECT id, event, payload FROM notification_outbox
+             WHERE status IN ('pending', 'failed')
+             ORDER BY id ASC LIMIT ?1",
+        )?;
+        let rows = stmt
             .query_map(params![limit], |r| {
-                Ok(NotificationOutboxRow {
+                Ok(RetryableNotificationRow {
                     id: r.get(0)?,
                     event: r.get(1)?,
-                    status: r.get(2)?,
-                    attempts: r.get(3)?,
-                    last_error: r.get(4)?,
-                    created_at: r.get(5)?,
-                    updated_at: r.get(6)?,
+                    payload: r.get(2)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1060,6 +1122,20 @@ fn row_to_dlq(r: &rusqlite::Row<'_>) -> rusqlite::Result<DeadLetterRow> {
         replayed_run_id: replayed,
         acknowledged_reason: r.get(7)?,
         acknowledged_at,
+    })
+}
+
+fn row_to_notification_outbox(r: &rusqlite::Row<'_>) -> rusqlite::Result<NotificationOutboxRow> {
+    Ok(NotificationOutboxRow {
+        id: r.get(0)?,
+        event: r.get(1)?,
+        status: r.get(2)?,
+        attempts: r.get(3)?,
+        last_error: r.get(4)?,
+        created_at: r.get(5)?,
+        updated_at: r.get(6)?,
+        acknowledged_reason: r.get(7)?,
+        acknowledged_at: r.get(8)?,
     })
 }
 

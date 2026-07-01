@@ -15,6 +15,7 @@ use crate::{dispatch, notify};
 
 const DISPATCH_POLL: Duration = Duration::from_millis(500);
 const CRON_POLL: Duration = Duration::from_secs(10);
+const NOTIFY_RETRY_POLL: Duration = Duration::from_secs(60);
 const INGRESS_BIND_ENV: &str = "BB_INGRESS_BIND";
 const API_TOKEN_ENV: &str = "BB_API_TOKEN";
 
@@ -59,6 +60,12 @@ pub fn serve(root: &Path) -> Result<()> {
         std::thread::Builder::new()
             .name("bb-dispatch".into())
             .spawn(move || dispatch_loop(&root))?;
+    }
+    {
+        let root = root_buf.clone();
+        std::thread::Builder::new()
+            .name("bb-notify".into())
+            .spawn(move || notify_loop(&root))?;
     }
 
     http_loop(&root_buf, &bind)
@@ -191,6 +198,29 @@ fn reflex_dispatch_paused(ledger: &Ledger) -> bool {
     }
 }
 
+fn notify_loop(root: &Path) {
+    loop {
+        std::thread::sleep(NOTIFY_RETRY_POLL);
+        let Ok(plane) = Plane::load(root) else {
+            continue;
+        };
+        if plane.spec.notify.webhook_url.is_none() {
+            continue;
+        }
+        let Ok(ledger) = Ledger::open(&plane.db_path()) else {
+            continue;
+        };
+        match notify::retry_pending(&plane, &ledger, 20) {
+            Ok(report) if report.attempted > 0 => eprintln!(
+                "notify retry: attempted={} delivered={} failed={}",
+                report.attempted, report.delivered, report.failed
+            ),
+            Err(e) => eprintln!("notify retry: {e:#}"),
+            _ => {}
+        }
+    }
+}
+
 fn run_one(root: &Path, run_id: &str) {
     let result = (|| -> Result<()> {
         let plane = Plane::load(root)?;
@@ -308,6 +338,15 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
                 serde_json::to_string(&crate::health::status_view(&plane, &ledger)?)?,
             )),
             "/api/dlq" => Ok((200, serde_json::to_string(&ledger.list_dead_letters()?)?)),
+            "/api/notify" => {
+                let limit = query_param(&url, "limit")
+                    .and_then(|s| s.parse::<i64>().ok())
+                    .unwrap_or(50);
+                Ok((
+                    200,
+                    serde_json::to_string(&ledger.list_notification_outbox(limit)?)?,
+                ))
+            }
             "/api/leases" => Ok((200, serde_json::to_string(&ledger.list_host_leases()?)?)),
             "/api/ingress" => {
                 let limit = query_param(&url, "limit")

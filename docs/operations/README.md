@@ -32,6 +32,7 @@ sprite exec -- whoami
 ./target/debug/bb --config plane check
 ./target/debug/bb --config plane status --json
 ./target/debug/bb --config plane dlq list --json
+./target/debug/bb --config plane notify list --json
 ```
 
 Before running GitHub-backed BB tasks, make `GH_TOKEN` explicit for the command
@@ -192,3 +193,21 @@ Classify each problem:
 Never hide open DLQs in summaries. Acknowledgement is an explicit operator
 closure with a recorded reason, not a way to hide failures — if a DLQ is not
 known-superseded, replay or resolve the underlying run instead.
+
+## Notification Outbox
+
+Webhook notifications are durable before transport. If `status --json` shows
+pending or failed rows under `guards.notify.outbox`, inspect and retry them:
+
+```sh
+./target/debug/bb --config plane notify list --json
+./target/debug/bb --config plane notify retry --json
+```
+
+If the notification has already been handled out of band, close it explicitly:
+
+```sh
+./target/debug/bb --config plane notify ack <id> --reason "<handled reason>" --json
+```
+
+Acknowledgement keeps the row with reason and timestamp; it is not a delete.

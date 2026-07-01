@@ -317,6 +317,7 @@ fn read_api_exposes_dashboard_observability_routes() {
         "/api/status",
         "/api/tasks",
         "/api/runs",
+        "/api/notify",
         "/api/leases",
         "/api/ingress",
         "/api/export",
