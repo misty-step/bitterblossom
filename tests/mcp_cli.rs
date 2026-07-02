@@ -108,12 +108,21 @@ fn mcp_serve_read_only_tools_list_and_call() {
     // notifications/initialized -> no response (silent).
     writeln!(stdin, "{}", req(None, "notifications/initialized", None)).unwrap();
 
-    // tools/list -> exact read-only tool names present.
+    // tools/list -> exact read-only tool names present for this slice.
     writeln!(stdin, "{}", req(Some(2), "tools/list", None)).unwrap();
     let list = read_response(&mut stdout);
     let tools = list["result"]["tools"].as_array().unwrap();
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-    assert_eq!(names, vec!["bb_status", "bb_check"]);
+    assert_eq!(
+        names,
+        vec![
+            "bb_status",
+            "bb_check",
+            "bb_tasks",
+            "bb_dlq_list",
+            "bb_preflight"
+        ]
+    );
     for t in tools {
         assert_eq!(t["inputSchema"]["type"], "object");
     }
@@ -180,12 +189,88 @@ fn mcp_serve_read_only_tools_list_and_call() {
         "MCP bb_check shape drifted from `bb check --json`"
     );
 
+    // tools/call bb_tasks -> same shape as `bb task list --json`.
+    writeln!(
+        stdin,
+        "{}",
+        req(Some(5), "tools/call", Some(json!({ "name": "bb_tasks" })))
+    )
+    .unwrap();
+    let tasks_call = read_response(&mut stdout);
+    assert_eq!(tasks_call["result"]["isError"], false);
+    let tasks_text = tasks_call["result"]["content"][0]["text"].as_str().unwrap();
+    let tasks: Value = serde_json::from_str(tasks_text).unwrap();
+    let cli_tasks = Command::new(env!("CARGO_BIN_EXE_bb"))
+        .args(["--config", root, "task", "list", "--json"])
+        .output()
+        .unwrap();
+    assert!(cli_tasks.status.success());
+    assert_eq!(
+        tasks,
+        serde_json::from_slice::<Value>(&cli_tasks.stdout).unwrap(),
+        "MCP bb_tasks shape drifted from `bb task list --json`"
+    );
+
+    // tools/call bb_dlq_list -> same shape as `bb dlq list --json`.
+    writeln!(
+        stdin,
+        "{}",
+        req(
+            Some(6),
+            "tools/call",
+            Some(json!({ "name": "bb_dlq_list" }))
+        )
+    )
+    .unwrap();
+    let dlq_call = read_response(&mut stdout);
+    assert_eq!(dlq_call["result"]["isError"], false);
+    let dlq_text = dlq_call["result"]["content"][0]["text"].as_str().unwrap();
+    let dlq: Value = serde_json::from_str(dlq_text).unwrap();
+    let cli_dlq = Command::new(env!("CARGO_BIN_EXE_bb"))
+        .args(["--config", root, "dlq", "list", "--json"])
+        .output()
+        .unwrap();
+    assert!(cli_dlq.status.success());
+    assert_eq!(
+        dlq,
+        serde_json::from_slice::<Value>(&cli_dlq.stdout).unwrap(),
+        "MCP bb_dlq_list shape drifted from `bb dlq list --json`"
+    );
+
+    // tools/call bb_preflight -> same shape as `bb preflight <task> --json`.
+    writeln!(
+        stdin,
+        "{}",
+        req(
+            Some(7),
+            "tools/call",
+            Some(json!({ "name": "bb_preflight", "arguments": { "task": "demo" } }))
+        )
+    )
+    .unwrap();
+    let preflight_call = read_response(&mut stdout);
+    assert_eq!(preflight_call["result"]["isError"], false);
+    let preflight_text = preflight_call["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    let preflight: Value = serde_json::from_str(preflight_text).unwrap();
+    let cli_preflight = Command::new(env!("CARGO_BIN_EXE_bb"))
+        .args(["--config", root, "preflight", "demo", "--json"])
+        .output()
+        .unwrap();
+    assert!(cli_preflight.status.success());
+    assert_eq!(
+        preflight,
+        serde_json::from_slice::<Value>(&cli_preflight.stdout).unwrap(),
+        "MCP bb_preflight shape drifted from `bb preflight demo --json`"
+    );
+
     // Unknown / would-be mutating tool is rejected (read-only by construction).
     writeln!(
         stdin,
         "{}",
         req(
-            Some(5),
+            Some(8),
             "tools/call",
             Some(json!({ "name": "bb_runs_cancel" }))
         )

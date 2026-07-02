@@ -28,7 +28,7 @@ struct Tool {
     name: &'static str,
     description: &'static str,
     input_schema: Value,
-    call: fn(&Plane, &Ledger) -> Result<Value>,
+    call: fn(&Plane, &Ledger, &Value) -> Result<Value>,
 }
 
 fn tools() -> Vec<Tool> {
@@ -43,7 +43,7 @@ fn tools() -> Vec<Tool> {
                 "properties": {},
                 "additionalProperties": false,
             }),
-            call: crate::health::status_view,
+            call: status_tool,
         },
         Tool {
             name: "bb_check",
@@ -55,9 +55,66 @@ fn tools() -> Vec<Tool> {
                 "properties": {},
                 "additionalProperties": false,
             }),
-            call: serve::check_view,
+            call: check_tool,
+        },
+        Tool {
+            name: "bb_tasks",
+            description: "List tasks with agent, substrate, triggers, verdict, \
+                parked state, budget caps, and policy. Read-only. Same shape as \
+                `bb task list --json` and `GET /api/tasks`.",
+            input_schema: empty_schema(),
+            call: tasks_tool,
+        },
+        Tool {
+            name: "bb_dlq_list",
+            description: "List dead letters with replay/acknowledgement status. \
+                Read-only. Same shape as `bb dlq list --json` and `GET /api/dlq`.",
+            input_schema: empty_schema(),
+            call: dlq_list_tool,
+        },
+        Tool {
+            name: "bb_preflight",
+            description: "Run read-only pre-dispatch checks for one task or the \
+                submission-storm member set. Same shape as `bb preflight --json`.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "task": { "type": "string" },
+                    "storm": { "type": "boolean", "default": false }
+                },
+                "additionalProperties": false,
+            }),
+            call: preflight_tool,
         },
     ]
+}
+
+fn empty_schema() -> Value {
+    json!({ "type": "object", "properties": {}, "additionalProperties": false })
+}
+
+fn status_tool(plane: &Plane, ledger: &Ledger, _: &Value) -> Result<Value> {
+    crate::health::status_view(plane, ledger)
+}
+
+fn check_tool(plane: &Plane, ledger: &Ledger, _: &Value) -> Result<Value> {
+    serve::check_view(plane, ledger)
+}
+
+fn tasks_tool(plane: &Plane, ledger: &Ledger, _: &Value) -> Result<Value> {
+    Ok(Value::Array(serve::tasks_view(plane, ledger)?))
+}
+
+fn dlq_list_tool(_: &Plane, ledger: &Ledger, _: &Value) -> Result<Value> {
+    Ok(serde_json::to_value(ledger.list_dead_letters()?)?)
+}
+
+fn preflight_tool(plane: &Plane, _: &Ledger, args: &Value) -> Result<Value> {
+    let task = args.get("task").and_then(Value::as_str);
+    let storm = args.get("storm").and_then(Value::as_bool).unwrap_or(false);
+    Ok(serde_json::to_value(crate::preflight::run(
+        plane, task, storm,
+    )?)?)
 }
 /// Run the read-only MCP stdio server. Reads newline-delimited JSON-RPC from
 /// stdin and writes one response per request to stdout. No network listener.
@@ -138,8 +195,11 @@ fn dispatch(plane: &Plane, req: &Value) -> Option<Value> {
             let table = tools();
             match table.iter().find(|t| t.name == name) {
                 Some(t) => {
-                    let result =
-                        Ledger::open(&plane.db_path()).and_then(|ledger| (t.call)(plane, &ledger));
+                    let args = params
+                        .and_then(|p| p.get("arguments"))
+                        .unwrap_or(&Value::Null);
+                    let result = Ledger::open(&plane.db_path())
+                        .and_then(|ledger| (t.call)(plane, &ledger, args));
                     match result {
                         Ok(value) => {
                             let text = serde_json::to_string_pretty(&value)
