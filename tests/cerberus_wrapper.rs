@@ -93,6 +93,53 @@ printf '{"receipt":true}\n' > "$out_dir/receipt-bundle.json"
 }
 
 #[test]
+fn cerberus_wrapper_passes_explicit_gh_token_env() {
+    // Regression: review-pr refuses ambient `gh` auth and requires an explicit
+    // --gh-token-file/--gh-token-env source. GH_TOKEN is a declared agent
+    // secret, so the wrapper must forward it or every real run fails with
+    // "requires an explicit GitHub token" (as happened in production before
+    // this test existed).
+    let dir = tempfile::tempdir().unwrap();
+    let stub = dir.path().join("cerberus-stub.sh");
+    write_executable(
+        &stub,
+        r#"#!/bin/sh
+set -eu
+out_dir=""
+gh_token_env=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --out-dir) out_dir="$2"; shift 2;;
+    --gh-token-env) gh_token_env="$2"; shift 2;;
+    --dry-run) shift;;
+    --post) shift;;
+    *) shift;;
+  esac
+done
+[ "$gh_token_env" = "GH_TOKEN" ] || { echo "gh_token_env=$gh_token_env" >&2; exit 1; }
+mkdir -p "$out_dir"
+printf '{"run":{}}\n' > "$out_dir/artifact.json"
+printf 'review body\n' > "$out_dir/review.md"
+printf '{"receipt":true}\n' > "$out_dir/receipt-bundle.json"
+"#,
+    );
+    write_event_and_run(dir.path());
+
+    let output = Command::new(repo_root().join("scripts/cerberus-review-wrapper.sh"))
+        .current_dir(dir.path())
+        .env("CERBERUS_BIN", &stub)
+        .env("GH_TOKEN", "test-gh-token")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn cerberus_wrapper_prefers_source_checkout_over_stale_target_binary() {
     let dir = tempfile::tempdir().unwrap();
     write_event_and_run(dir.path());
