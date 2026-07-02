@@ -11,6 +11,16 @@ summary_target="${CERBERUS_SUMMARY_TARGET:-status}"
 timeout_seconds="${CERBERUS_TIMEOUT_SECONDS:-900}"
 harness="${CERBERUS_HARNESS:-}"
 
+# Cerberus gets its own OpenRouter key so usage is attributable and governable
+# separately from the plane's shared long-lived OPENROUTER_API_KEY (backlog
+# 104 context). Prefer the dedicated key when the secret is declared for this
+# agent; fall back to the shared key so the wrapper keeps working before
+# CERBERUS_OPENROUTER_API_KEY is wired everywhere.
+if [ -n "${CERBERUS_OPENROUTER_API_KEY:-}" ]; then
+  OPENROUTER_API_KEY="$CERBERUS_OPENROUTER_API_KEY"
+  export OPENROUTER_API_KEY
+fi
+
 if [ -z "$harness" ]; then
   if command -v opencode >/dev/null 2>&1; then
     harness="opencode"
