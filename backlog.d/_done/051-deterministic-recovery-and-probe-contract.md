@@ -1,6 +1,6 @@
 # Make recovery and substrate probes deterministic under uncertainty
 
-Priority: P1 | Status: ready | Estimate: L
+Priority: P1 | Status: done | Estimate: L
 
 ## Goal
 
@@ -9,25 +9,25 @@ auditable operator states instead of indefinite ambiguity.
 
 ## Oracle
 
-- [ ] Local and sprite probe contracts include malformed-marker handling,
+- [x] Local and sprite probe contracts include malformed-marker handling,
       heartbeat or generation metadata, and explicit unknown-state outcomes.
-- [ ] `awaiting_recovery` has an escalation or stale-age policy that avoids
+- [x] `awaiting_recovery` has an escalation or stale-age policy that avoids
       silent indefinite uncertainty.
-- [ ] Recovery tests cover malformed pidfiles, missing markers, probe command
+- [x] Recovery tests cover malformed pidfiles, missing markers, probe command
       failure, stale unknowns, host lease retention, and operator resolution.
-- [ ] `bb recover` and `bb runs show --json` expose enough evidence for an
+- [x] `bb recover` and `bb runs show --json` expose enough evidence for an
       operator or agent to choose resolve/replay/leave-blocked safely.
-- [ ] `./scripts/verify.sh` passes.
+- [x] `./scripts/verify.sh` passes.
 
 ## Children
 
-1. Specify the probe-result state machine for local and sprite substrates.
-2. Add fixture tests for malformed and stale probe artifacts. (malformed local
+1. [x] Specify the probe-result state machine for local and sprite substrates.
+2. [x] Add fixture tests for malformed and stale probe artifacts. (malformed local
    and sprite pidfile coverage started 2026-06-14; stale recovery visibility
    covered in `bb status --json`)
-3. Add stale `awaiting_recovery` visibility and escalation rules. (started:
+3. [x] Add stale `awaiting_recovery` visibility and escalation rules. (started:
    one-hour status escalation action)
-4. Update the skill/operator recipes for recovery decisions.
+4. [x] Update the skill/operator recipes for recovery decisions.
 
 ## Notes
 
