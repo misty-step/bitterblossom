@@ -88,7 +88,27 @@ set -- review-pr \
 # Cerberus refuses ambient `gh` auth for both reads and posting; it requires
 # an explicit token source. GH_TOKEN is a declared agent secret (see
 # agents/cerberus-reviewer.toml), so it is present in this run's environment.
+#
+# gh_token_env names the env var, it is never used as data, but the value
+# still reaches an indirect-expansion `eval` below. Validate it as a plain
+# shell identifier first so a malformed override can't inject shell syntax
+# into this process's environment (which also holds GH_TOKEN/OPENROUTER_API_KEY).
 gh_token_env="${CERBERUS_GH_TOKEN_ENV:-GH_TOKEN}"
+# Shell case/glob patterns can't express "one-or-more of a character class"
+# ([A-Za-z0-9_]* means one class-char then ANY trailing bytes, not a repeated
+# class) -- strip every legal identifier byte and require nothing remains.
+gh_token_env_stripped=$(printf '%s' "$gh_token_env" | tr -d 'A-Za-z0-9_')
+case "$gh_token_env" in
+  [A-Za-z_]*) ;;
+  *)
+    echo "CERBERUS_GH_TOKEN_ENV must be a valid environment variable name, got: $gh_token_env" >&2
+    exit 64
+    ;;
+esac
+if [ -n "$gh_token_env_stripped" ]; then
+  echo "CERBERUS_GH_TOKEN_ENV must be a valid environment variable name, got: $gh_token_env" >&2
+  exit 64
+fi
 if [ -n "$(eval "printf '%s' \"\${${gh_token_env}:-}\"")" ]; then
   set -- "$@" --gh-token-env "$gh_token_env"
 else
