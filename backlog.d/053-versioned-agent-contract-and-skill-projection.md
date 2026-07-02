@@ -59,3 +59,16 @@ workflow authoring — as the product surface. LOC cost remains a risk, but the
 first implementation should minimize spine growth by extracting shared read-view
 helpers and using fixtures rather than adding workflow judgment. This ticket now
 serves epic 076.
+
+## Delivery Notes
+
+### 2026-07-02 read-surface contract fixture slice
+
+- Added `tests/fixtures/contracts/bb.agent_read_surfaces.v1.schema.json`, a
+  durable required-path/type contract for `task list`, `runs list`,
+  `runs show`, `dlq list`, `gate --json`, and their `/api/*` mirrors.
+- Strengthened `tests/agent_contract_fixtures.rs` so the gate loads that
+  fixture and validates live CLI output plus served HTTP API responses.
+- The fixture deliberately tolerates additive fields but fails removed,
+  renamed, or type-changed required paths, giving consuming agents a concrete
+  contract file to diff.
