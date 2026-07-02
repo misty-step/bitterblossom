@@ -232,6 +232,53 @@ fn incident_triage_wrapper_rejects_malformed_token_env_name() {
 }
 
 #[test]
+fn incident_triage_wrapper_blocks_when_agent_exits_without_report() {
+    let dir = tempfile::tempdir().unwrap();
+    write_event_and_run(dir.path(), "canary");
+    let stub = dir.path().join("triage-agent-stub.sh");
+    write_executable(
+        &stub,
+        r#"#!/bin/sh
+cat >/dev/null
+echo "model failed before report" >&2
+exit 9
+"#,
+    );
+
+    let output = Command::new(repo_root().join("scripts/incident-triage-wrapper.sh"))
+        .current_dir(dir.path())
+        .env("INCIDENT_TRIAGE_AGENT_BIN", &stub)
+        .env("OPENROUTER_API_KEY", "test-openrouter")
+        .env("GH_TOKEN", "test-gh")
+        .env("CANARY_ENDPOINT", "http://127.0.0.1:1")
+        .env("CANARY_API_KEY", "test-canary")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let report: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("REPORT.json")).unwrap()).unwrap();
+    assert_eq!(report["status"], "blocked");
+    assert_eq!(
+        report["residual_risk"][0],
+        "agent command exited 9 before REPORT.json"
+    );
+    let parsed = parse_output("command", &String::from_utf8(output.stdout).unwrap()).unwrap();
+    assert!(
+        parsed
+            .result
+            .contains("incident triage blocked: agent command exited 9 before REPORT.json"),
+        "{}",
+        parsed.result
+    );
+}
+
+#[test]
 fn incident_triage_wrapper_blocks_unlisted_service_before_model_run() {
     let dir = tempfile::tempdir().unwrap();
     write_event_and_run(dir.path(), "elsewhere");
