@@ -125,6 +125,14 @@ fn status_view_covers_operator_truth_fixtures() {
         .unwrap();
 
     let doc = health::status_view(&plane, &ledger).unwrap();
+    assert_eq!(
+        doc["ledger"]["schema_version"],
+        bitterblossom::ledger::LEDGER_SCHEMA_VERSION
+    );
+    assert_eq!(
+        doc["ledger"]["supported_schema_version"],
+        bitterblossom::ledger::LEDGER_SCHEMA_VERSION
+    );
     let tasks = doc["tasks"].as_array().unwrap();
     let by_task = |name: &str| tasks.iter().find(|t| t["task"] == name).unwrap();
 

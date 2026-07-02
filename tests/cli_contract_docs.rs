@@ -224,6 +224,9 @@ fn operations_runbook_and_drill_are_wired_into_the_gate() {
     assert!(ops.contains("BB_LITESTREAM_REPLICA_URL_ENV=LITESTREAM_REPLICA_URL"));
     assert!(ops.contains("LITESTREAM_REPLICA_URL=%s"));
     assert!(ops.contains("litestream restore -config /tmp/bb-litestream.yml"));
+    assert!(ops.contains("ledger.schema_version"));
+    assert!(ops.contains("newer than the rollback target supports"));
+    assert!(ops.contains("Do not edit `PRAGMA user_version`"));
     assert!(ops.contains("backup.status == \"fresh\""));
     assert!(ops.contains("last_success_path = \".bb/backup-last-success\""));
     assert!(ops.contains("flyctl releases rollback"));

@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::attention;
-use crate::ledger::{DeadLetterRow, Ledger, RunRow};
+use crate::ledger::{DeadLetterRow, Ledger, RunRow, LEDGER_SCHEMA_VERSION};
 use crate::progress;
 use crate::spec::Plane;
 
@@ -178,6 +178,10 @@ pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
 
     Ok(json!({
         "generated_at": generated_at.format(&Rfc3339)?,
+        "ledger": {
+            "schema_version": ledger.schema_version()?,
+            "supported_schema_version": LEDGER_SCHEMA_VERSION,
+        },
         "summary": {
             "tasks": plane.tasks.len(),
             "parked_tasks": parked_tasks,
