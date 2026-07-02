@@ -10,6 +10,8 @@ model="${INCIDENT_TRIAGE_MODEL:-z-ai/glm-5.2}"
 provider="${INCIDENT_TRIAGE_PROVIDER:-openrouter}"
 agent_bin="${INCIDENT_TRIAGE_AGENT_BIN:-pi}"
 agent_npx_package="${INCIDENT_TRIAGE_AGENT_NPX_PACKAGE:-@earendil-works/pi-coding-agent@0.80.3}"
+agent_thinking="${INCIDENT_TRIAGE_THINKING:-off}"
+agent_stdout_max_bytes="${INCIDENT_TRIAGE_AGENT_STDOUT_MAX_BYTES:-10485760}"
 max_fix_attempts="${INCIDENT_TRIAGE_MAX_FIX_ATTEMPTS:-3}"
 agent_out_dir="${INCIDENT_TRIAGE_OUT_DIR:-incident-triage}"
 prompt_file="INCIDENT_TRIAGE_PROMPT.md"
@@ -71,6 +73,16 @@ case "$max_fix_attempts" in
 esac
 if [ "$max_fix_attempts" -lt 1 ]; then
   echo "INCIDENT_TRIAGE_MAX_FIX_ATTEMPTS must be a positive integer" >&2
+  exit 64
+fi
+case "$agent_stdout_max_bytes" in
+  ''|*[!0-9]*)
+    echo "INCIDENT_TRIAGE_AGENT_STDOUT_MAX_BYTES must be a positive integer" >&2
+    exit 64
+    ;;
+esac
+if [ "$agent_stdout_max_bytes" -lt 4096 ]; then
+  echo "INCIDENT_TRIAGE_AGENT_STDOUT_MAX_BYTES must be at least 4096" >&2
   exit 64
 fi
 
@@ -229,22 +241,50 @@ cat "$event_file" >> "$prompt_file"
 printf '\n\nRUN.json:\n\n' >> "$prompt_file"
 cat "$run_file" >> "$prompt_file"
 
-if [ "$agent_via_npx" = "1" ]; then
-  "$agent_cmd" \
-    -y \
-    "$agent_npx_package" \
-    --provider "$provider" \
-    --model "$model" \
-    --no-session \
-    --mode json \
-    -p < "$prompt_file" > "$agent_out_dir/stdout.jsonl" 2> "$agent_out_dir/stderr.txt"
-else
-  "$agent_cmd" \
-    --provider "$provider" \
-    --model "$model" \
-    --no-session \
-    --mode json \
-    -p < "$prompt_file" > "$agent_out_dir/stdout.jsonl" 2> "$agent_out_dir/stderr.txt"
+run_agent() {
+  if [ "$agent_via_npx" = "1" ]; then
+    "$agent_cmd" \
+      -y \
+      "$agent_npx_package" \
+      --provider "$provider" \
+      --model "$model" \
+      --thinking "$agent_thinking" \
+      --no-session \
+      --mode json \
+      -p
+  elif [ "$agent_bin" = "pi" ]; then
+    "$agent_cmd" \
+      --provider "$provider" \
+      --model "$model" \
+      --thinking "$agent_thinking" \
+      --no-session \
+      --mode json \
+      -p
+  else
+    "$agent_cmd" \
+      --provider "$provider" \
+      --model "$model" \
+      --no-session \
+      --mode json \
+      -p
+  fi
+}
+
+stdout_blocks=$(( (agent_stdout_max_bytes + 511) / 512 ))
+set +e
+(
+  ulimit -f "$stdout_blocks" 2>/dev/null || true
+  run_agent < "$prompt_file" > "$agent_out_dir/stdout.jsonl" 2> "$agent_out_dir/stderr.txt"
+)
+agent_status=$?
+set -e
+
+if [ "$agent_status" -ne 0 ] && [ ! -f REPORT.json ]; then
+  write_blocked_report "agent command exited $agent_status before REPORT.json"
+  exit 0
+fi
+if [ "$agent_status" -ne 0 ]; then
+  printf 'agent command exited %s after REPORT.json\n' "$agent_status" >> "$agent_out_dir/stderr.txt"
 fi
 
 python3 - "$agent_out_dir/stdout.jsonl" "$max_fix_attempts" "$BB_TRIAGE_REPO" <<'PY'
