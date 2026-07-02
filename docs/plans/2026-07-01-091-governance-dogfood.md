@@ -68,12 +68,20 @@ adds an `agent_policy` map keyed by agent name. Same shape everywhere, so MCP
 - Tests (`tests/policy.rs`): valid load + projection; absent defaults; model
   allowlist mismatch; unknown authority/side_effect; zero cap; negative spend;
   unknown + duplicate trigger bindings.
+- Submission storm round 1 exposed a verifier-only loopback flake:
+  `tests/serve.rs::read_api_requires_bearer_and_rejects_query_token` saw
+  `Connection reset by peer` after the readiness helper opened and dropped a raw
+  TCP connection. The branch now makes readiness use a real `/health` request
+  and retries bounded HTTP reads in the test helper.
 
 ## Verification
 
 - `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and the
   policy test suite pass.
 - Full gate: `./scripts/verify.sh` (run on this branch; see REPORT.json).
+- Focused flake proof after the test-harness patch:
+  `cargo test --test serve read_api_requires_bearer_and_rejects_query_token`
+  passed five consecutive runs.
 
 ## UX Notes
 
@@ -83,6 +91,9 @@ adds an `agent_policy` map keyed by agent name. Same shape everywhere, so MCP
   co-located with the agent definition, not a separate registry. Reads naturally.
 - Reusing `tasks_view` for all three read surfaces meant one projection point;
   no per-surface shape drift.
+- BB submission storm caught a non-product test harness race that the first
+  local verify run did not expose; the gate did its job by forcing a repair
+  instead of letting a flaky verifier be waived.
 
 ### Friction
 

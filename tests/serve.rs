@@ -115,8 +115,14 @@ fn free_loopback_port() -> u16 {
 fn wait_for_http(port: u16) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
-        if TcpStream::connect(("127.0.0.1", port)).is_ok() {
-            return;
+        if let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) {
+            let _ = stream.set_read_timeout(Some(Duration::from_millis(250)));
+            let _ = stream
+                .write_all(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+            let mut response = String::new();
+            if stream.read_to_string(&mut response).is_ok() && response.starts_with("HTTP/1.1") {
+                return;
+            }
         }
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -124,27 +130,41 @@ fn wait_for_http(port: u16) {
 }
 
 fn http_get(port: u16, path: &str, bearer: Option<&str>) -> (u16, String) {
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
     let auth = bearer
         .map(|t| format!("Authorization: Bearer {t}\r\n"))
         .unwrap_or_default();
-    write!(
-        stream,
-        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{auth}Connection: close\r\n\r\n"
-    )
-    .unwrap();
-    let mut response = String::new();
-    stream.read_to_string(&mut response).unwrap();
-    let status = response
-        .lines()
-        .next()
-        .unwrap()
-        .split_whitespace()
-        .nth(1)
-        .unwrap()
-        .parse()
-        .unwrap();
-    (status, response)
+    let request =
+        format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{auth}Connection: close\r\n\r\n");
+    let mut last_error = None;
+    while Instant::now() < deadline {
+        match TcpStream::connect(("127.0.0.1", port)).and_then(|mut stream| {
+            stream.write_all(request.as_bytes())?;
+            let mut response = String::new();
+            stream.read_to_string(&mut response)?;
+            Ok(response)
+        }) {
+            Ok(response) if response.starts_with("HTTP/1.1") => {
+                let status = response
+                    .lines()
+                    .next()
+                    .unwrap()
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                return (status, response);
+            }
+            Ok(response) => last_error = Some(format!("malformed response: {response:?}")),
+            Err(e) => last_error = Some(e.to_string()),
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!(
+        "GET {path} on port {port} did not return HTTP response: {}",
+        last_error.unwrap_or_else(|| "timed out".to_string())
+    );
 }
 
 fn response_body(response: &str) -> &str {
