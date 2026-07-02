@@ -32,7 +32,7 @@ without adding semantic workflow logic to the Rust spine.
    fixture.
 3. [x] Decide whether the lifecycle orchestrator is report-only or can create runs
    with a narrow plane token.
-4. Add status-surface joins if operators still need to correlate gate state,
+4. [x] Add status-surface joins if operators still need to correlate gate state,
    parked tasks, DLQs, and lifecycle recommendations manually.
 
 ## Notes
@@ -66,3 +66,13 @@ payload contracts, and reference docs.
   does not receive a plane mutation token.
 - Documented the allowed report shape, red lines, and revisit criteria in
   `docs/lifecycle-orchestrator-authority.md`.
+
+### 2026-07-02 lifecycle status read path
+
+- Decided no new runtime status join is needed until a real lifecycle
+  orchestrator run proves operators need to stitch together more than source
+  run id, follow-up run id, and submission key.
+- Documented the current read path in `docs/lifecycle-status-read-path.md`:
+  `bb status --json`, `bb runs show <run-id> --json`,
+  `bb artifacts read <run-id> REPORT.json --json`, and `bb gate --json` when a
+  recommendation references a submission.
