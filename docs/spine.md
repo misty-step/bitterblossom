@@ -369,6 +369,16 @@ The ledger is the system of record; everything reads from it:
   `Authorization: Bearer <token>`. Query-string tokens are rejected so
   credentials do not leak through URLs, logs, or browser history. Unset =
   open, acceptable only on the loopback default bind.
+- Canary self-report: `src/canary.rs` posts a `bb-plane` check-in every 60s
+  and ad hoc error reports to canary-obs, gated on two Fly secrets —
+  `CANARY_ENDPOINT` (e.g. `https://canary-obs.fly.dev`) and
+  `CANARY_INGEST_KEY` (a scoped `ingest-only` key bound to service
+  `bitterblossom-plane`, minted via canary's `POST /api/v1/keys`). Both must
+  be set or `canary::enabled()` silently no-ops. The check-in name is
+  `bb-plane`; canary needs a matching monitor (`POST /api/v1/monitors` with
+  `"name":"bb-plane"`) or check-ins 404. This is a different secret from
+  `BB_API_TOKEN` and unrelated to `CANARY_API_KEY` (canary's own admin key,
+  never set here).
 
 Cost attribution rides OpenRouter's per-response usage accounting
 (`usage.cost` arrives with pi/omp responses — no extra calls), parsed
