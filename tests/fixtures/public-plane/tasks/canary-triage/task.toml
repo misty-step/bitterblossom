@@ -1,0 +1,34 @@
+agent = "canary-triager"
+substrate = "sprites"
+required_artifacts = ["REPORT.json"]
+
+[workspace]
+host = "example-org/lane-1"
+repos = [
+  { url = "https://github.com/example-org/canary-example.git", ref = "main" },
+  { url = "https://github.com/example-org/bitterblossom-example.git", ref = "main" },
+]
+
+[budget]
+timeout_minutes = 30
+max_runs_per_day = 8
+max_cost_per_run_usd = 0.75
+turn_cap = 40
+
+[[trigger]]
+kind = "manual"
+
+[[trigger]]
+kind = "webhook"
+route = "canary-triage"
+secret_env = "BB_HOOK_CANARY_TRIAGE"
+dedupe_key = "header:X-Delivery-Id"
+
+[[trigger.filter]]
+pointer = "/event"
+any_of = ["incident.opened", "incident.updated"]
+
+[[trigger.filter]]
+pointer = "/incident/service"
+any_of = ["canary"]
+

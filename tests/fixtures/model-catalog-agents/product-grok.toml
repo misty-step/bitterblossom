@@ -1,0 +1,5 @@
+version = 1
+harness = "pi"
+provider = "openrouter"
+model = "x-ai/grok-4.3"
+

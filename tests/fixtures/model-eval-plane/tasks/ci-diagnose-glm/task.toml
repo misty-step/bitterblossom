@@ -1,0 +1,5 @@
+agent = "pi-glm"
+substrate = "local"
+
+[[trigger]]
+kind = "manual"

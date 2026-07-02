@@ -22,7 +22,7 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      # The same gate agents run locally: fmt, clippy, tests, plane
+      # The same gate agents run locally: fmt, clippy, tests, public fixture
       # config validation, local operations smoke drill, spine LOC budget.
       - name: Verify
         run: ./scripts/verify.sh

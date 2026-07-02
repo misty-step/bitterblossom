@@ -1,0 +1,10 @@
+agent = "pi-glm"
+substrate = "local"
+
+[budget]
+timeout_minutes = 90
+max_runs_per_day = 5
+max_cost_per_run_usd = 4.0
+
+[[trigger]]
+kind = "manual"

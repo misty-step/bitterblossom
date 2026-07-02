@@ -31,17 +31,18 @@ otherwise.
 Run:
 
 ```bash
+export BB_RUNTIME_PLANE="${BB_RUNTIME_PLANE:-/path/to/private/plane}"
 git status --short --branch --untracked-files=all
 flyctl orgs list
 sprite org list
 sprite use -o misty-step lane-1
 sprite org list
 sprite exec -- whoami
-./target/debug/bb --config plane check
-./target/debug/bb --config plane status --json
-./target/debug/bb --config plane task list --json
-./target/debug/bb --config plane runs list --json
-./target/debug/bb --config plane dlq list --json
+./target/debug/bb --config "$BB_RUNTIME_PLANE" check
+./target/debug/bb --config "$BB_RUNTIME_PLANE" status --json
+./target/debug/bb --config "$BB_RUNTIME_PLANE" task list --json
+./target/debug/bb --config "$BB_RUNTIME_PLANE" runs list --json
+./target/debug/bb --config "$BB_RUNTIME_PLANE" dlq list --json
 ```
 
 Hard requirements:
@@ -49,6 +50,9 @@ Hard requirements:
 - Sprite org must be `misty-step` before any remote lane or `bb` dispatch.
   `sprite org list` can show another selected org; fix with
   `sprite use -o misty-step lane-1` and verify with `sprite exec -- whoami`.
+- The production plane is instance data, not checked into this repo. Do not
+  assume `--config plane`; require `BB_RUNTIME_PLANE` or the service's
+  `BB_PLANE_DIR` runtime environment.
 - Do not unpark a task just to make a gate run. Read the parked reason and
   record what condition would make unpark safe.
 - Do not run verdict tasks directly with arbitrary payloads. They need a
@@ -65,7 +69,7 @@ Hard requirements:
    being tested:
 
 ```bash
-GH_TOKEN=$(gh auth token) ./target/debug/bb --config plane run build \
+GH_TOKEN=$(gh auth token) ./target/debug/bb --config "$BB_RUNTIME_PLANE" run build \
   --payload '{"repo":"misty-step/bitterblossom","backlog":"<backlog-id-or-path>","branch_slug":"<slug>","dry_run":false}' \
   --json
 ```
@@ -98,7 +102,7 @@ opening a duplicate.
 7. Open a submission and run the gate through `bb`:
 
 ```bash
-./target/debug/bb --config plane submit open \
+./target/debug/bb --config "$BB_RUNTIME_PLANE" submit open \
   --change "<pr-url-or-branch>" \
   --rev "<git-sha>" \
   --context "<short dogfood context>" \
@@ -110,7 +114,7 @@ for the whole storm unless you have checked the task specs and know a member
 does not need it; even command-backed verifier tasks may shell out to GitHub:
 
 ```bash
-GH_TOKEN=$(gh auth token) ./target/debug/bb --config plane run verify \
+GH_TOKEN=$(gh auth token) ./target/debug/bb --config "$BB_RUNTIME_PLANE" run verify \
   --idempotency-key "storm:<submission>:verify" \
   --payload '{"submission":"<submission>","repo":"misty-step/bitterblossom","rev":"<git-sha>","change":"<change-key>"}' \
   --json
@@ -122,7 +126,7 @@ when those tasks are unparked and the plane is healthy.
 Evaluate:
 
 ```bash
-./target/debug/bb --config plane gate --submission <submission> --json
+./target/debug/bb --config "$BB_RUNTIME_PLANE" gate --submission <submission> --json
 ```
 
 If a required member is parked, blocked, or unavailable, record that as
@@ -177,8 +181,8 @@ End with:
 ```bash
 git status --short --branch --untracked-files=all
 git rev-list --left-right --count master...origin/master
-./target/debug/bb --config plane task list --json
-./target/debug/bb --config plane dlq list --json
+./target/debug/bb --config "$BB_RUNTIME_PLANE" task list --json
+./target/debug/bb --config "$BB_RUNTIME_PLANE" dlq list --json
 ```
 
 Report final verification, dogfood findings, residual parked/DLQ state, and

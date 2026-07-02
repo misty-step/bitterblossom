@@ -49,8 +49,8 @@ fn bitterblossom_dogfood_skill_is_exportable_agent_interface() {
     assert!(skill.contains("bb-dogfood"));
     assert!(skill.contains("../../../skills/bitterblossom/SKILL.md"));
     assert!(skill.contains("sprite use -o misty-step lane-1"));
-    assert!(skill.contains("./target/debug/bb --config plane task list --json"));
-    assert!(skill.contains("./target/debug/bb --config plane run build"));
+    assert!(skill.contains("./target/debug/bb --config \"$BB_RUNTIME_PLANE\" task list --json"));
+    assert!(skill.contains("./target/debug/bb --config \"$BB_RUNTIME_PLANE\" run build"));
     assert!(skill.contains("gh pr create --draft"));
     assert!(skill.contains("submit open"));
     assert!(skill.contains("payload '{\"submission\":\"<submission>\""));

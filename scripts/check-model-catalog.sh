@@ -6,7 +6,7 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 
-agents_dir="plane/agents"
+agents_dir="tests/fixtures/model-catalog-agents"
 docs_path="docs/model-evals/README.md"
 catalog_path=
 live=false
@@ -17,13 +17,13 @@ usage() {
   cat <<'USAGE'
 usage: scripts/check-model-catalog.sh (--catalog PATH | --live) [--agents DIR] [--docs PATH] [--json]
 
-Validates configured pi/omp OpenRouter models in plane/agents against an
-OpenRouter catalog document. The default docs target is docs/model-evals/README.md.
+Validates configured pi/omp OpenRouter model fixtures against an OpenRouter
+catalog document. The default docs target is docs/model-evals/README.md.
 
 Options:
   --catalog PATH   Read catalog JSON from PATH.
   --live           Fetch https://openrouter.ai/api/v1/models.
-  --agents DIR     Agent config directory. Default: plane/agents.
+  --agents DIR     Agent config directory. Default: tests/fixtures/model-catalog-agents.
   --docs PATH      Documentation file or directory to search for model ids.
                    Default: docs/model-evals/README.md.
   --json           Emit stable JSON instead of human text.
@@ -303,7 +303,7 @@ jq -L "$tmpdir" --slurpfile configured "$configured_json" '
             prompt: ($m.pricing.prompt // null),
             completion: ($m.pricing.completion // null)
           },
-          promotion_smoke: ("bb --config plane run <flow> --payload '\''{\"model\":\"" + $m.id + "\",\"dry_run\":true}'\'' --json")
+          promotion_smoke: ("bb --config <runtime-plane> run <flow> --payload '\''{\"model\":\"" + $m.id + "\",\"dry_run\":true}'\'' --json")
         }]
   | sort_by(.created // 0)
   | reverse
@@ -337,7 +337,7 @@ jq -L "$tmpdir" --slurpfile configured "$configured_json" '
                   prompt: ($candidate.pricing.prompt // null),
                   completion: ($candidate.pricing.completion // null)
                 },
-                promotion_smoke: ("bb --config plane run <flow> --payload '\''{\"model\":\"" + $candidate.id + "\",\"dry_run\":true}'\'' --json")
+                promotion_smoke: ("bb --config <runtime-plane> run <flow> --payload '\''{\"model\":\"" + $candidate.id + "\",\"dry_run\":true}'\'' --json")
               }]
           | sort_by(.created // 0)
           | reverse
@@ -394,7 +394,7 @@ jq -n \
       "successful bb smoke run for the affected flow",
       "model-eval reference record under docs/model-evals/",
       "green ./scripts/verify.sh",
-      "explicit reviewed PR changing plane/agents; no automatic promotion"
+      "explicit reviewed PR changing runtime agent config; no automatic promotion"
     ]
   }' >"$report_json"
 

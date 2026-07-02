@@ -1,0 +1,53 @@
+agent = "cerberus-reviewer"
+substrate = "sprites"
+required_artifacts = ["REPORT.json"]
+
+[workspace]
+host = "example-org/lane-1"
+
+[[workspace.repos]]
+url = "https://github.com/example-org/bitterblossom-example.git"
+ref = "main"
+
+[[workspace.repos]]
+url = "https://github.com/example-org/cerberus-example.git"
+ref = "main"
+
+[budget]
+timeout_minutes = 30
+max_runs_per_day = 20
+max_cost_per_run_usd = 1.25
+
+[[trigger]]
+kind = "manual"
+
+[[trigger]]
+kind = "webhook"
+route = "review"
+secret_env = "BB_HOOK_REVIEW"
+dedupe_key = "json:/pull_request/html_url|json:/pull_request/head/sha"
+
+[[trigger.filter]]
+pointer = "/repository/owner/login"
+any_of = ["example-org", "external-example"]
+
+[[trigger.filter]]
+pointer = "/action"
+any_of = ["opened", "ready_for_review", "synchronize"]
+
+[[trigger.filter]]
+pointer = "/sender/login"
+not_any_of = ["dependabot[bot]", "renovate[bot]"]
+
+[[trigger.filter]]
+pointer = "/pull_request/draft"
+equals = false
+
+[[trigger.filter]]
+pointer = "/pull_request/additions"
+max = 2500
+
+[[trigger.filter]]
+pointer = "/pull_request/changed_files"
+max = 50
+

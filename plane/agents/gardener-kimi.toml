@@ -1,6 +1,0 @@
-# Model-eval gardener candidate: Kimi code model for ledger-to-ticket judgment.
-version = 1
-role = "gardener"
-harness = "pi"
-model = "moonshotai/kimi-k2.7-code"
-secrets = ["OPENROUTER_API_KEY", "GH_TOKEN", "BB_API_TOKEN"]

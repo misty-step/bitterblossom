@@ -1,0 +1,6 @@
+agent = "pi-glm"
+substrate = "local"
+verdict = "correctness-glm"
+
+[[trigger]]
+kind = "manual"

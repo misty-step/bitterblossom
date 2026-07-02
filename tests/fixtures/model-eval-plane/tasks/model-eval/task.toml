@@ -1,0 +1,10 @@
+agent = "evaluator"
+substrate = "local"
+
+[budget]
+timeout_minutes = 30
+max_runs_per_day = 10
+max_cost_per_run_usd = 2.0
+
+[[trigger]]
+kind = "manual"

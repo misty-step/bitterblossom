@@ -1,0 +1,6 @@
+agent = "pi-glm"
+substrate = "local"
+verdict = "product-glm"
+
+[[trigger]]
+kind = "manual"

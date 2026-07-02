@@ -1,9 +1,0 @@
-# Cerberus is the selected review workload brain. Bitterblossom owns event-plane
-# mechanics around it: trigger filtering, dedupe, budget, dispatch, and receipts.
-version = 1
-harness = "command"
-model = "cerberus-review-pr"
-role = "reviewer"
-skills = ["cerberus/review-pr#external-specialist"]
-bin = "bitterblossom/scripts/cerberus-review-wrapper.sh"
-secrets = ["GH_TOKEN", "OPENROUTER_API_KEY"]

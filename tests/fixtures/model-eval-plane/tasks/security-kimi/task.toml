@@ -1,0 +1,6 @@
+agent = "pi-kimi-code"
+substrate = "local"
+verdict = "security-kimi"
+
+[[trigger]]
+kind = "manual"

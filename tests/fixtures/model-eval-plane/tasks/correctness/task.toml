@@ -1,0 +1,6 @@
+agent = "pi-deepseek-pro"
+substrate = "local"
+verdict = "correctness"
+
+[[trigger]]
+kind = "manual"

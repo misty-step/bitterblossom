@@ -79,10 +79,10 @@ fn current_docs_and_skills_match_live_cli_contract() {
     assert!(!recipes.contains("curl -H \"Authorization: Bearer $BB_API_TOKEN\""));
 
     let dogfood = read(".agents/skills/bb-dogfood/SKILL.md");
-    assert!(dogfood.contains("./target/debug/bb --config plane status --json"));
-    assert!(
-        dogfood.contains("./target/debug/bb --config plane gate --submission <submission> --json")
-    );
+    assert!(dogfood.contains("./target/debug/bb --config \"$BB_RUNTIME_PLANE\" status --json"));
+    assert!(dogfood.contains(
+        "./target/debug/bb --config \"$BB_RUNTIME_PLANE\" gate --submission <submission> --json"
+    ));
 }
 
 #[test]
@@ -91,7 +91,7 @@ fn operations_runbook_and_drill_are_wired_into_the_gate() {
     assert!(ops.contains("scripts/production-ops-drill.sh --remote"));
     assert!(ops.contains("scripts/production-ops-drill.sh --local"));
     assert!(ops.contains("flyctl releases rollback"));
-    assert!(ops.contains("bb --config plane recover --json"));
+    assert!(ops.contains("BB_PLANE_DIR=${BB_PLANE_DIR:-/app/plane} bb recover --json"));
     assert!(ops.contains("bb dlq replay <id> --json"));
     assert!(ops.contains("bb dlq ack <id> --reason <text>"));
     assert!(!ops.contains("there is no first-class acknowledge"));

@@ -1,0 +1,42 @@
+agent = "ci-diagnoser"
+substrate = "sprites"
+required_artifacts = ["REPORT.json"]
+
+[workspace]
+host = "example-org/lane-1"
+
+[budget]
+timeout_minutes = 20
+max_runs_per_day = 20
+max_cost_per_run_usd = 0.25
+turn_cap = 30
+
+[[trigger]]
+kind = "manual"
+
+[[trigger]]
+kind = "webhook"
+route = "ci-diagnose"
+secret_env = "BB_HOOK_CI_DIAGNOSE"
+dedupe_key = "json:/check_suite/head_sha"
+
+[[trigger.filter]]
+pointer = "/repository/full_name"
+any_of = ["example-org/bitterblossom-example"]
+
+[[trigger.filter]]
+pointer = "/action"
+any_of = ["completed"]
+
+[[trigger.filter]]
+pointer = "/check_suite/status"
+equals = "completed"
+
+[[trigger.filter]]
+pointer = "/check_suite/conclusion"
+any_of = ["failure"]
+
+[[trigger.filter]]
+pointer = "/check_suite/app/slug"
+any_of = ["github-actions"]
+

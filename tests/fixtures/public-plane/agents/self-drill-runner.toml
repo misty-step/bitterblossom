@@ -1,0 +1,8 @@
+version = 1
+role = "self-drill"
+harness = "command"
+model = ""
+auth = "api"
+bin = "sh"
+args = ["-c", "cd bitterblossom && scripts/self-drill-chaos.sh --report ../REPORT.json"]
+

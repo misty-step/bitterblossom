@@ -40,7 +40,7 @@ fn live_catalog_fetch_does_not_put_openrouter_key_in_curl_argv() {
 
 #[test]
 fn model_catalog_watch_task_is_manual_and_scheduled_api_reflex() {
-    let plane = Plane::load(&root().join("plane")).unwrap();
+    let plane = Plane::load(&root().join("tests/fixtures/public-plane")).unwrap();
     let task = plane.task("model-catalog-watch").unwrap();
 
     assert_eq!(task.agent.harness, "pi");
@@ -66,7 +66,7 @@ fn model_catalog_watch_task_is_manual_and_scheduled_api_reflex() {
         "fixture_drift",
         "new_family_candidates",
         "configured_successors",
-        "Do not edit `plane/agents/*.toml`",
+        "Do not edit runtime agent configs",
         "model-eval record",
     ] {
         assert!(task.card.contains(required), "missing {required}");
@@ -105,7 +105,7 @@ fn fixture_catalog_validates_configured_openrouter_models() {
         .unwrap()
         .iter()
         .any(|entry| {
-            entry["agent_file"] == "plane/agents/review-coordinator.toml"
+            entry["agent_file"] == "tests/fixtures/model-catalog-agents/review-candidate-kimi.toml"
                 && entry["current"]["id"] == "moonshotai/kimi-k2.6:minimal"
                 && entry["current"]["catalog_id"] == "moonshotai/kimi-k2.6"
                 && entry["successors"]

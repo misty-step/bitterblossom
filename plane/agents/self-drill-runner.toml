@@ -1,7 +1,0 @@
-# Weekly chaos self-drill: deterministic command harness, no model needed.
-version = 1
-role = "self-drill"
-harness = "command"
-model = ""
-bin = "sh"
-args = ["-c", "cd bitterblossom && scripts/self-drill-chaos.sh --report ../REPORT.json"]

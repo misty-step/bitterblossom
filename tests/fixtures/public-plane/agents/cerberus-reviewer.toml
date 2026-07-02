@@ -1,0 +1,9 @@
+version = 1
+harness = "command"
+model = "cerberus-review-pr"
+role = "reviewer"
+auth = "api"
+skills = ["cerberus/review-pr#external-specialist"]
+bin = "bitterblossom/scripts/cerberus-review-wrapper.sh"
+secrets = ["GH_TOKEN", "OPENROUTER_API_KEY"]
+
