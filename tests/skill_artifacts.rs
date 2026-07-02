@@ -83,3 +83,35 @@ fn bb_dogfood_has_no_duplicate_skill_alias() {
     assert!(!root.join("skills/bitterblossom-dogfood/SKILL.md").exists());
     assert!(root.join(".agents/skills/bb-dogfood/SKILL.md").exists());
 }
+
+#[test]
+fn bitterblossom_skill_projection_has_single_source_of_truth() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let adr = fs::read_to_string(root.join("docs/adr/006-skill-projection.md")).unwrap();
+    let skill = fs::read_to_string(root.join("skills/bitterblossom/SKILL.md")).unwrap();
+    let dogfood = fs::read_to_string(root.join(".agents/skills/bb-dogfood/SKILL.md")).unwrap();
+
+    assert!(adr.contains("Status:** Accepted"));
+    assert!(adr.contains("`skills/bitterblossom/` in this repository is the source of truth"));
+    assert!(adr.contains("Manual copied skill folders are not an accepted projection path"));
+    assert!(adr.contains(".agents/skills/bb-dogfood/"));
+    assert!(skill.contains("docs/adr/006-skill-projection.md"));
+    assert!(dogfood.contains("../../../skills/bitterblossom/SKILL.md"));
+
+    let aliases: Vec<_> = [
+        root.join("skills/bitterblossom/SKILL.md"),
+        root.join("skills/bb-dogfood/SKILL.md"),
+        root.join("skills/bitterblossom-dogfood/SKILL.md"),
+        root.join(".agents/skills/bb-dogfood/SKILL.md"),
+    ]
+    .into_iter()
+    .filter(|path| path.exists())
+    .collect();
+    assert_eq!(
+        aliases,
+        vec![
+            root.join("skills/bitterblossom/SKILL.md"),
+            root.join(".agents/skills/bb-dogfood/SKILL.md")
+        ]
+    );
+}
