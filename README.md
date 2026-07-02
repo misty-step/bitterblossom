@@ -86,8 +86,10 @@ WebSocket exec.
   after has side effects and is operator-resolved. Boot recovery probes
   the host instead of blindly orphaning inherited runs.
 - Budgets are tiered honestly: runs/day and the global daily ceiling are
-  enforced pre-dispatch, the wall-clock kill is the spend backstop, and
-  per-run cost is advisory — a breach parks the task and notifies.
+  enforced pre-dispatch, streaming harness usage is metered in-flight against
+  `max_cost_per_run_usd`, and a breach follows the agent side-effect policy
+  (`kill` by default) through the notification outbox. Harnesses that only
+  report final cost still park the task and notify after completion.
 - Secrets are resolved per-exec and travel on stdin, never argv. API-auth
   agents with `policy.provider_key_name` use plane-side scoped OpenRouter child
   keys minted by `bb keys`; the management key is never injected into runs.

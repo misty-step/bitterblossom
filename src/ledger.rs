@@ -440,6 +440,21 @@ impl Ledger {
         Ok(())
     }
 
+    pub fn update_attempt_stats(&self, attempt_id: i64, stats: &AttemptStats) -> Result<()> {
+        self.conn.execute(
+            "UPDATE attempts SET tokens_in = ?2, tokens_out = ?3, turns = ?4, cost_usd = ?5
+             WHERE id = ?1",
+            params![
+                attempt_id,
+                stats.tokens_in,
+                stats.tokens_out,
+                stats.turns,
+                stats.cost_usd
+            ],
+        )?;
+        Ok(())
+    }
+
     pub fn attempt_phase(&self, attempt_id: i64) -> Result<String> {
         Ok(self.conn.query_row(
             "SELECT phase FROM attempts WHERE id = ?1",
@@ -1066,9 +1081,10 @@ impl Ledger {
             .optional()?)
     }
 
-    /// Spent so far on attempts belonging to currently-running runs. A
-    /// conservative in-flight signal: partial — a running attempt's cost is
-    /// only set when it finishes. Pairs with reserved spend in status.
+    /// Spent so far on attempts belonging to currently-running runs. Streaming
+    /// harnesses update the running attempt while it executes; final-only
+    /// harnesses contribute once they finish. Pairs with reserved spend in
+    /// status.
     pub fn in_flight_cost(&self) -> Result<f64> {
         Ok(self.conn.query_row(
             "SELECT COALESCE(SUM(a.cost_usd), 0.0) FROM attempts a
@@ -1165,7 +1181,7 @@ pub struct IngressOutcome {
     pub state: String,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct AttemptStats {
     pub tokens_in: Option<i64>,
     pub tokens_out: Option<i64>,

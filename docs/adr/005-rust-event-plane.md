@@ -49,9 +49,12 @@ Rewrite bitterblossom as a small Rust event plane — one crate, one binary
   keyed by substrate resource identity, not task.
 
 Budgets are tiered honestly: runs/day and a global daily ceiling are
-enforced pre-dispatch; the wall-clock timeout (substrate kill) is the v1
-spend backstop; per-run cost is advisory — a breach parks the task
-(`blocked_budget`) and notifies, bounding damage to one run.
+enforced pre-dispatch; wall-clock timeout remains a substrate backstop, and
+streaming harness usage is metered in-flight. A `max_cost_per_run_usd`
+breach follows the agent side-effect policy (`kill` by default,
+`quarantine`, or `log`) and escalates through the notification outbox.
+Harnesses that only report final cost still park the task
+(`blocked_budget`) and notify after completion, bounding damage to one run.
 
 The plane holds no judgment: no workload logic, no retry cleverness, no
 opinion about what agents do. Workloads expressible as lane-card execution

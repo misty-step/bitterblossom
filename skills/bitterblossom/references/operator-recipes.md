@@ -34,8 +34,9 @@ bb --config <plane> dlq list --json
 ```
 
 Read `status --json` first when triaging. It clusters tasks, recent run states,
-cost, queue age, parked reasons, DLQ rows, and safe next actions. Use raw
-`task list`, `runs list`, and `dlq list` when you need the underlying rows.
+cost, in-flight cap enforcement, queue age, parked reasons, DLQ rows, and safe
+next actions. Use raw `task list`, `runs list`, and `dlq list` when you need the
+underlying rows.
 
 ## Manual Dispatch
 
@@ -92,6 +93,23 @@ to the agent policy cap. `bb keys rotate <agent> --json` creates a replacement
 key with the current cap and revokes the old one; `bb keys revoke <agent>
 --json` disables the stored child key and clears local key material. Policy-bound
 OpenRouter agents do not fall back to a shared `OPENROUTER_API_KEY`.
+
+## In-Flight Cap Enforcement
+
+For harnesses that stream usage, `bb` meters partial attempt cost while the
+process is still running. A `max_cost_per_run_usd` breach follows the agent's
+`[policy].side_effect_policy`:
+
+```toml
+[policy]
+side_effect_policy = "kill" # kill | quarantine | log
+```
+
+`kill` terminates the running harness and emits a
+`run_in_flight_cap_killed` notification outbox row. `quarantine` moves the run
+to `awaiting_recovery` and emits `run_in_flight_cap_quarantined`. `log` records
+the observed breach and lets the run continue. Check `bb status --json` for
+`guards.in_flight` and `tasks[].budget.cost_enforcement`.
 
 ## Ledger Export
 

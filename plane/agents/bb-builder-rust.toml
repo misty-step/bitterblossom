@@ -16,8 +16,9 @@ skills = [
 # Per-agent governance boundary (backlog 091, schema/read-surface slice).
 # The builder may edit and push a branch but never merge; its spend, model,
 # and loop surface are bounded and projected read-only through `bb check
-# --json`, `bb task list --json`, and `/api/tasks`. Enforcement (in-flight
-# kill/quarantine, provider cap sync) is a later slice.
+# --json`, `bb task list --json`, and `/api/tasks`. Streaming cost is now
+# enforced in-flight: a max_cost_per_run_usd breach kills the run and
+# escalates through the notification outbox.
 [policy]
 authority = "edit"
 provider_key_name = "openrouter-builder"
@@ -29,4 +30,4 @@ turn_cap = 120
 tool_action_cap = 200
 output_bytes_cap = 262144
 wall_clock_minutes = 45
-side_effect_policy = "log"
+side_effect_policy = "kill"

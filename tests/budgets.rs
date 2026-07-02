@@ -1,6 +1,6 @@
 //! Budget enforcement tiers and agent-swap visibility. Enforced:
-//! runs/day and the global daily ceiling, pre-dispatch. Advisory: per-run
-//! cost — the run completes, the task parks, the operator gets a webhook.
+//! runs/day and the global daily ceiling, pre-dispatch. Streaming per-run
+//! cost is enforced in-flight; final-only cost still parks after completion.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -15,6 +15,13 @@ static NOTIFY_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 const CLAUDE_STUB: &str = r#"#!/bin/sh
 cat > /dev/null
 echo '{"type":"result","result":"ok","total_cost_usd":0.0123,"num_turns":2,"usage":{"input_tokens":50,"output_tokens":20}}'
+"#;
+
+const STREAMING_PI_OVERRUN_STUB: &str = r#"#!/bin/sh
+cat > /dev/null
+printf '{"type":"turn_end"}\n'
+printf '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"over cap but still running"}],"usage":{"input":10,"output":5,"cost":{"total":0.02}}}}\n'
+sleep 2
 "#;
 
 /// Notify transport stub: swallow curl-style args, append the JSON body
@@ -86,6 +93,35 @@ fn run_task(plane: &Plane, ledger: &mut Ledger) -> bitterblossom::ledger::RunRow
         .unwrap()
         .run_id;
     dispatch::dispatch_run(plane, ledger, &id).unwrap()
+}
+
+fn setup_streaming_overrun(root: &Path) -> Plane {
+    fs::create_dir_all(root.join("agents")).unwrap();
+    fs::create_dir_all(root.join("tasks/demo")).unwrap();
+    let stub = root.join("streaming-pi-overrun.sh");
+    write_executable(&stub, STREAMING_PI_OVERRUN_STUB);
+    fs::write(
+        root.join("agents/a.toml"),
+        format!(
+            "version = 1\nharness = \"pi\"\nmodel = \"m\"\nbin = \"{}\"\n\
+             [policy]\nside_effect_policy = \"kill\"\n",
+            stub.display()
+        ),
+    )
+    .unwrap();
+    fs::write(root.join("tasks/demo/card.md"), "card\n").unwrap();
+    fs::write(
+        root.join("tasks/demo/task.toml"),
+        "agent = \"a\"\nsubstrate = \"local\"\n[budget]\nmax_cost_per_run_usd = 0.01\n\
+         [[trigger]]\nkind = \"manual\"\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("plane.toml"),
+        "dev = true\n[notify]\nwebhook_url = \"http://example.invalid/hook\"\n",
+    )
+    .unwrap();
+    Plane::load(root).unwrap()
 }
 
 fn with_notify_stub<T>(root: &Path, f: impl FnOnce() -> T) -> (T, String) {
@@ -247,6 +283,62 @@ fn advisory_per_run_cost_breach_parks_task_and_notifies() {
         })
         .unwrap();
     assert_eq!(blocked.state, "blocked_budget");
+}
+
+#[test]
+fn in_flight_cost_cap_kills_running_harness_and_notifies() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = setup_streaming_overrun(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+
+    let _guard = NOTIFY_ENV_LOCK.lock().unwrap();
+    let notify_stub = dir.path().join("notify-stub.sh");
+    write_executable(&notify_stub, NOTIFY_STUB);
+    let log = dir.path().join("notify.log");
+    std::env::set_var("BB_NOTIFY_BIN", &notify_stub);
+    std::env::set_var("BB_NOTIFY_LOG", &log);
+    std::env::set_var("BB_IN_FLIGHT_MONITOR_MS", "50");
+
+    let started = std::time::Instant::now();
+    let run = run_task(&plane, &mut ledger);
+
+    std::env::remove_var("BB_NOTIFY_BIN");
+    std::env::remove_var("BB_NOTIFY_LOG");
+    std::env::remove_var("BB_IN_FLIGHT_MONITOR_MS");
+
+    assert_eq!(run.state, "failure");
+    let reason = run.state_reason.as_deref().unwrap_or_default();
+    assert!(reason.contains("in-flight cost cap"), "reason={reason}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "run should be killed before the harness exits normally"
+    );
+    assert_eq!(run.cost_usd, Some(0.02));
+
+    let attempts = ledger.attempts(&run.id).unwrap();
+    assert_eq!(attempts.len(), 1);
+    assert_eq!(attempts[0].outcome.as_deref(), Some("failure"));
+    assert_eq!(attempts[0].cost_usd, Some(0.02));
+    assert!(attempts[0]
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("in-flight cost cap"));
+
+    let notify_log = fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        notify_log.contains("run_in_flight_cap_killed"),
+        "{notify_log}"
+    );
+    let outbox = ledger.list_notification_outbox(10).unwrap();
+    assert_eq!(outbox[0].event, "run_in_flight_cap_killed");
+    assert_eq!(outbox[0].status, "delivered");
+
+    let status = bitterblossom::health::status_view(&plane, &ledger).unwrap();
+    let guard_counts = status["guards"]["guard_event_counts"].as_array().unwrap();
+    assert!(guard_counts
+        .iter()
+        .any(|count| count["kind"] == "in_flight_cap_killed" && count["total"] == 1));
 }
 
 #[test]

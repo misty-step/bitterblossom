@@ -92,6 +92,117 @@ pub fn parse_output(harness: &str, stdout: &str) -> Result<ParsedOutput> {
     }
 }
 
+pub fn parse_partial_stats(harness: &str, stdout: &str) -> AttemptStats {
+    match harness {
+        "pi" | "omp" => partial_agent_jsonl_stats(stdout),
+        "claude" => partial_claude_stats(stdout),
+        "codex" => partial_codex_stats(stdout),
+        "command" => partial_command_stats(stdout),
+        _ => AttemptStats::default(),
+    }
+}
+
+fn partial_agent_jsonl_stats(stdout: &str) -> AttemptStats {
+    let mut turns: i64 = 0;
+    let (mut tokens_in, mut tokens_out, mut cost) = (0i64, 0i64, 0f64);
+    let mut saw_usage = false;
+    for line in stdout.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if v.get("type").and_then(Value::as_str) == Some("turn_end") {
+            turns += 1;
+        }
+        if v.get("type").and_then(Value::as_str) != Some("message_end") {
+            continue;
+        }
+        let Some(message) = v.get("message") else {
+            continue;
+        };
+        if message.get("role").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
+        let Some(usage) = message.get("usage") else {
+            continue;
+        };
+        saw_usage = true;
+        tokens_in += usage.get("input").and_then(Value::as_i64).unwrap_or(0);
+        tokens_out += usage.get("output").and_then(Value::as_i64).unwrap_or(0);
+        cost += usage
+            .get("cost")
+            .and_then(|c| c.get("total"))
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+    }
+    AttemptStats {
+        tokens_in: saw_usage.then_some(tokens_in),
+        tokens_out: saw_usage.then_some(tokens_out),
+        turns: (turns > 0).then_some(turns),
+        cost_usd: saw_usage.then_some(cost),
+    }
+}
+
+fn partial_claude_stats(stdout: &str) -> AttemptStats {
+    let Some(v) = last_json_object(stdout) else {
+        return AttemptStats::default();
+    };
+    let usage = v.get("usage").cloned().unwrap_or(Value::Null);
+    AttemptStats {
+        tokens_in: usage.get("input_tokens").and_then(Value::as_i64),
+        tokens_out: usage.get("output_tokens").and_then(Value::as_i64),
+        turns: v.get("num_turns").and_then(Value::as_i64),
+        cost_usd: v.get("total_cost_usd").and_then(Value::as_f64),
+    }
+}
+
+fn partial_codex_stats(stdout: &str) -> AttemptStats {
+    let mut tokens_in: i64 = 0;
+    let mut tokens_out: i64 = 0;
+    let mut turns: i64 = 0;
+    let mut saw_usage = false;
+    for line in stdout.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if v.get("type").and_then(Value::as_str) != Some("turn.completed") {
+            continue;
+        }
+        turns += 1;
+        if let Some(usage) = v.get("usage") {
+            saw_usage = true;
+            tokens_in += usage
+                .get("input_tokens")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            tokens_out += usage
+                .get("output_tokens")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+        }
+    }
+    AttemptStats {
+        tokens_in: saw_usage.then_some(tokens_in),
+        tokens_out: saw_usage.then_some(tokens_out),
+        turns: (turns > 0).then_some(turns),
+        cost_usd: None,
+    }
+}
+
+fn partial_command_stats(stdout: &str) -> AttemptStats {
+    let Some(v) = last_json_object(stdout) else {
+        return AttemptStats::default();
+    };
+    if v.get("schema_version").and_then(Value::as_str) != Some("bb.command_result.v1") {
+        return AttemptStats::default();
+    }
+    AttemptStats {
+        tokens_in: v.get("tokens_in").and_then(Value::as_i64),
+        tokens_out: v.get("tokens_out").and_then(Value::as_i64),
+        turns: v.get("turns").and_then(Value::as_i64),
+        cost_usd: v.get("cost_usd").and_then(Value::as_f64),
+    }
+}
+
 fn parse_command(stdout: &str) -> Result<ParsedOutput> {
     let trimmed = stdout.trim().to_string();
     let Some(v) = last_json_object(stdout) else {
@@ -135,7 +246,11 @@ fn filtered_jsonl_command(inner: Vec<String>) -> Vec<String> {
         "-c".into(),
         format!(
             "{{ {cmd}; echo $? > .bb-harness-exit; }} \
-             | grep -v -F '\"type\":\"message_update\"'; \
+             | while IFS= read -r line; do \
+                 case \"$line\" in *'\"type\":\"message_update\"'*) ;; \
+                   *) printf '%s\n' \"$line\" ;; \
+                 esac; \
+               done; \
              exit \"$(cat .bb-harness-exit)\"",
             cmd = quoted.join(" ")
         ),

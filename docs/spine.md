@@ -98,7 +98,7 @@ provider_spend_cap_usd = 10.0      # mapped to OpenRouter key `limit`
 model_allowlist = ["moonshotai/kimi-k2.6"]
 trigger_bindings = ["manual", "webhook"]
 iteration_cap = 1
-side_effect_policy = "log"
+side_effect_policy = "kill"        # kill | quarantine | log on in-flight overrun
 ```
 
 Swapping a task's agent is a one-line edit to `task.toml`; the ledger
@@ -149,7 +149,7 @@ checkpoint = "v3"                 # optional snapshot; ignored by adapters witho
 [budget]
 timeout_minutes = 30              # enforced: wall-clock cancel
 max_runs_per_day = 10             # enforced pre-dispatch
-max_cost_per_run_usd = 2.0        # advisory in v1: breach parks the task
+max_cost_per_run_usd = 2.0        # enforced in-flight when usage streams
 turn_cap = 50                     # enforced only where the harness streams turns
 
 [[trigger]]

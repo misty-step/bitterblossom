@@ -65,8 +65,21 @@ fn status_exposes_in_flight_reserved_spend_policy() {
     assert_eq!(status["guards"]["in_flight"]["runs"], 1);
     assert_eq!(status["guards"]["in_flight"]["cost_usd"], 0.2);
     assert_eq!(status["guards"]["in_flight"]["reserved_usd"], 0.75);
+    assert_eq!(status["guards"]["in_flight"]["spent_today_usd"], 0.2);
+    assert!(status["guards"]["in_flight"]["enforcement_mode"]
+        .as_str()
+        .unwrap()
+        .contains("default kill"));
     assert!(status["guards"]["in_flight"]["policy"]
         .as_str()
         .unwrap()
         .contains("max_cost_per_run_usd"));
+    let task = status["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["task"] == "demo")
+        .unwrap();
+    assert_eq!(task["budget"]["cost_enforcement"]["mode"], "kill");
+    assert_eq!(task["budget"]["cost_enforcement"]["in_flight"], true);
 }

@@ -5,7 +5,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
-use super::{ExecResult, ProbeResult, Session, Substrate, WorkspacePlan, CARD_FILENAME};
+use super::{
+    ExecMonitor, ExecResult, ExecSnapshot, ProbeResult, Session, Substrate, WorkspacePlan,
+    CARD_FILENAME,
+};
 pub const PIDFILE: &str = "harness.pid";
 
 pub struct LocalSubstrate;
@@ -53,8 +56,8 @@ impl LocalSession {
             &self.workspace,
             &[],
             false,
-            None,
             timeout,
+            RunControl::default(),
         )
     }
     fn workload_env(&self) -> Result<Vec<(String, String)>> {
@@ -124,8 +127,8 @@ impl Session for LocalSession {
                 &self.workspace,
                 &self.workload_env()?,
                 true,
-                None,
                 Duration::from_secs(600),
+                RunControl::default(),
             )?;
             if out.exit_code != 0 {
                 anyhow::bail!("pre_command failed: {}", out.stderr.trim());
@@ -139,6 +142,7 @@ impl Session for LocalSession {
         cmd: &[String],
         stdin: Option<&str>,
         timeout: Duration,
+        monitor: Option<&mut ExecMonitor<'_>>,
     ) -> Result<ExecResult> {
         run_with_timeout(
             cmd,
@@ -146,8 +150,11 @@ impl Session for LocalSession {
             &self.workspace,
             &self.workload_env()?,
             true,
-            Some(&self.artifacts.join(PIDFILE)),
             timeout,
+            RunControl {
+                pidfile: Some(&self.artifacts.join(PIDFILE)),
+                monitor,
+            },
         )
     }
 
@@ -182,14 +189,20 @@ pub fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+#[derive(Default)]
+pub(crate) struct RunControl<'pid, 'monitor, 'callback> {
+    pub pidfile: Option<&'pid Path>,
+    pub monitor: Option<&'monitor mut ExecMonitor<'callback>>,
+}
+
 pub(crate) fn run_with_timeout(
     cmd: &[String],
     stdin: Option<&str>,
     cwd: &Path,
     envs: &[(String, String)],
     clear_env: bool,
-    pidfile: Option<&Path>,
     timeout: Duration,
+    mut control: RunControl<'_, '_, '_>,
 ) -> Result<ExecResult> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static CAPTURE_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -225,7 +238,7 @@ pub(crate) fn run_with_timeout(
     let mut child = command
         .spawn()
         .with_context(|| format!("spawn {program}"))?;
-    if let Some(path) = pidfile {
+    if let Some(path) = control.pidfile {
         let _ = std::fs::write(path, child.id().to_string());
     }
 
@@ -235,7 +248,9 @@ pub(crate) fn run_with_timeout(
     }
 
     let started = Instant::now();
+    let mut next_monitor_at = started;
     let mut timed_out = false;
+    let mut termination_reason = None;
     let exit_code = loop {
         if let Some(status) = child.try_wait()? {
             break status.code().unwrap_or(-1) as i64;
@@ -249,6 +264,28 @@ pub(crate) fn run_with_timeout(
             let status = child.wait()?;
             break status.code().unwrap_or(-1) as i64;
         }
+        if let Some(monitor) = control.monitor.as_deref_mut() {
+            let now = Instant::now();
+            if now >= next_monitor_at {
+                let stdout = std::fs::read_to_string(&stdout_path).unwrap_or_default();
+                let stderr = std::fs::read_to_string(&stderr_path).unwrap_or_default();
+                let snapshot = ExecSnapshot {
+                    elapsed: started.elapsed(),
+                    stdout: &stdout,
+                    stderr: &stderr,
+                };
+                if let Some(reason) = (monitor.check)(&snapshot) {
+                    termination_reason = Some(reason);
+                    unsafe {
+                        libc::kill(-(child.id() as i32), libc::SIGKILL);
+                    }
+                    let _ = child.kill();
+                    let status = child.wait()?;
+                    break status.code().unwrap_or(-1) as i64;
+                }
+                next_monitor_at = now + monitor.poll_interval;
+            }
+        }
         std::thread::sleep(Duration::from_millis(100));
     };
 
@@ -261,5 +298,6 @@ pub(crate) fn run_with_timeout(
         stdout,
         stderr,
         timed_out,
+        termination_reason,
     })
 }

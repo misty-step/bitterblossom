@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>091 In-Flight Cap Enforcement</title>
+  <style>
+    body { margin: 0; font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #181818; background: #f6f4ef; }
+    main { max-width: 1120px; margin: 0 auto; padding: 32px 24px 56px; }
+    h1 { font-size: 34px; line-height: 1.08; margin: 0 0 8px; letter-spacing: 0; }
+    h2 { font-size: 18px; margin: 28px 0 10px; }
+    p { margin: 0 0 12px; }
+    .hero { display: grid; grid-template-columns: 1.4fr .9fr; gap: 24px; align-items: start; border-bottom: 2px solid #1f1f1f; padding-bottom: 24px; }
+    .contract { border: 1px solid #1f1f1f; background: #fff; padding: 16px; border-radius: 6px; }
+    .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 18px; }
+    .cell { border: 1px solid #b8b0a3; background: #fffdf8; border-radius: 6px; padding: 14px; min-height: 120px; }
+    .label { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: #5f574d; margin-bottom: 8px; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+    ul { padding-left: 18px; margin: 8px 0 0; }
+    li { margin: 5px 0; }
+  </style>
+</head>
+<body>
+<main>
+  <section class="hero">
+    <div>
+      <h1>In-flight cap enforcement</h1>
+      <p>Target: make a running agent spend breach stop while it is still running, then surface the breach through the durable notification outbox.</p>
+      <p>Scope: runtime metering, process termination, ledger stats, status projection, proof fixture, docs/backlog notes. No provider-key changes and no <code>plane/</code> excision in this slice.</p>
+    </div>
+    <div class="contract">
+      <div class="label">Acceptance</div>
+      <p>A deliberately over-cap run emits live usage, BB records partial cost, kills the process before normal completion, marks the run failed, and delivers a <code>run_in_flight_cap_killed</code> notification through the outbox.</p>
+    </div>
+  </section>
+
+  <section class="grid">
+    <div class="cell">
+      <div class="label">Design</div>
+      <ul>
+        <li>Add an execution monitor at the substrate boundary.</li>
+        <li>Parse partial harness usage from JSONL stdout while the process runs.</li>
+        <li>Update attempt stats before completion so <code>bb status --json</code> can see spend.</li>
+      </ul>
+    </div>
+    <div class="cell">
+      <div class="label">Enforcement</div>
+      <ul>
+        <li>Use task <code>max_cost_per_run_usd</code> as the in-flight threshold.</li>
+        <li>Use agent <code>policy.side_effect_policy</code> for action; default to kill.</li>
+        <li>Kill local process groups and Sprite marker process groups.</li>
+      </ul>
+    </div>
+    <div class="cell">
+      <div class="label">Proof</div>
+      <ul>
+        <li>Red test in <code>tests/budgets.rs</code>.</li>
+        <li>Local dev-plane live drill with notify stub.</li>
+        <li>Repo gate: <code>./scripts/verify.sh</code>.</li>
+      </ul>
+    </div>
+  </section>
+
+  <h2>Stop Conditions</h2>
+  <p>Stop before merge if the monitor cannot kill a sleeping process before timeout, if notification outbox delivery is not visible, if running status cannot show partial cost, or if this requires workload-specific logic in the Rust spine.</p>
+</main>
+</body>
+</html>

@@ -27,7 +27,8 @@ fn pi_command_carries_provider_and_model() {
     assert!(joined.contains("moonshotai/kimi-k2.6"), "{joined}");
     assert!(joined.contains("--no-session"), "{joined}");
     assert_eq!(cmd[0], "sh");
-    assert!(joined.contains("grep -v -F"), "{joined}");
+    assert!(joined.contains("while IFS= read -r line"), "{joined}");
+    assert!(joined.contains("message_update"), "{joined}");
 }
 
 #[test]
@@ -50,7 +51,8 @@ args = ["--thinking", "high"]
     assert!(joined.contains("--auto-approve"), "{joined}");
     assert!(joined.contains("--thinking' 'high"), "{joined}");
     assert!(joined.contains("LANE_CARD.md"), "{joined}");
-    assert!(joined.contains("grep -v -F"), "{joined}");
+    assert!(joined.contains("while IFS= read -r line"), "{joined}");
+    assert!(joined.contains("message_update"), "{joined}");
 }
 
 #[test]
