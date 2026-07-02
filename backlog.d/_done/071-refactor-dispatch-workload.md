@@ -1,6 +1,6 @@
-# (Deferred) Refactor as a focused PR-review subagent, not a dispatch workload
+# Refactor as a focused PR-review subagent, not a dispatch workload
 
-Priority: P3 | Status: pending | Estimate: M
+Priority: P3 | Status: done | Estimate: M
 
 ## Goal
 
@@ -21,12 +21,12 @@ task-vs-card) that don't need resolving until the foundation is solid.
 
 ## When we revisit, decide
 
-- [ ] Lens or diff-producer? A read-only review lens (detection only; diff via
+- [x] Lens or diff-producer? A read-only review lens (detection only; diff via
       `build`/operator) is cheaper, reuses `simplification`, and has no
       auto-mutation risk. Default to the lens unless a diff-producer earns it.
-- [ ] If a lens: how does it differ from `simplification` (deeper structural
+- [x] If a lens: how does it differ from `simplification` (deeper structural
       proposals?), and does it just enrich the review report?
-- [ ] If ever a diff-producer: the no-auto-merge invariant (output is a PR that
+- [x] If ever a diff-producer: the no-auto-merge invariant (output is a PR that
       re-enters review) and the review→refactor loop terminator (storm
       `max_rounds`).
 
@@ -37,3 +37,16 @@ Today refactor exists only as the read-only `simplification` lens
 (`plane/tasks/simplification/card.md`); the operator's `/refactor` discipline and
 the `build` workload already cover operator-initiated structural work. Superseding
 focus: dispatch + code review — see 051, 064, 066, 068, 069, 070, 072.
+
+## Delivery Notes
+
+### 2026-07-02
+
+- Decided refactor remains a read-only review lens, implemented by the existing
+  `simplification` verdict member.
+- Codified that refactor diffs route through `bb run build` or the operator and
+  then re-enter the normal submission storm.
+- Added `docs/refactor-lens.md`, a `docs/spine.md` pointer, and a docs-contract
+  regression test preventing accidental `plane/tasks/refactor` introduction.
+- Focused verification:
+  `cargo test --test cli_contract_docs refactor_stays_a_read_only_review_lens_not_a_dispatch_workload`.

@@ -237,3 +237,26 @@ fn operations_runbook_and_drill_are_wired_into_the_gate() {
     let verify = read("scripts/verify.sh");
     assert!(verify.contains("scripts/production-ops-drill.sh --local"));
 }
+
+#[test]
+fn refactor_stays_a_read_only_review_lens_not_a_dispatch_workload() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    assert!(
+        !root.join("plane/tasks/refactor").exists(),
+        "071 decided not to add a mutating refactor workload"
+    );
+
+    let decision = read("docs/refactor-lens.md");
+    assert!(decision.contains("Refactor remains a read-only review lens"));
+    assert!(decision.contains("canonical implementation is the existing `simplification`"));
+    assert!(decision.contains("no auto-merge"));
+    assert!(decision.contains("re-enters the submission storm"));
+    assert!(decision.contains("do not add `plane/tasks/refactor`"));
+
+    let spine = read("docs/spine.md");
+    assert!(spine.contains("`simplification` is the read-only refactor lens"));
+    assert!(spine.contains("standalone mutating refactor workload in v1"));
+
+    let fixture = read("tests/fixtures/model-eval-plane/tasks/simplification/card.md");
+    assert!(fixture.contains("canonical simplification gate member"));
+}
