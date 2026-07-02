@@ -1,0 +1,29 @@
+{
+  "schema": "bb.canary_incident_response.report.v1",
+  "canary_subject": "INC-example123",
+  "delivery_id": "delivery-example-001",
+  "bb_run_id": "run-example",
+  "service": "checkout-api",
+  "repo": "example-org/checkout-api",
+  "evidence": [
+    {
+      "source": "canary.timeline",
+      "summary": "Error group group-incident-a crossed the warning threshold at 2026-07-01T00:00:00Z."
+    }
+  ],
+  "hypotheses": [
+    {
+      "confidence": "medium",
+      "summary": "Recent checkout-api deploy changed payment retry behavior and may be surfacing as duplicate timeout errors."
+    }
+  ],
+  "recommended_actions": [
+    "Compare the incident window against the last checkout-api deploy.",
+    "Inspect traces with fingerprint group-incident-a before changing code.",
+    "Escalate to the service owner if the error rate remains elevated for another window."
+  ],
+  "residual_uncertainty": [
+    "Template sample did not query a live Canary endpoint.",
+    "No remediation claim was created from this sample."
+  ]
+}

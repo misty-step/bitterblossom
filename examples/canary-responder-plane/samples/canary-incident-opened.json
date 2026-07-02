@@ -1,0 +1,41 @@
+{
+  "schema_version": "canary.incident_event.v1",
+  "event": "incident.opened",
+  "tenant_id": "default",
+  "project_id": "misty-step",
+  "subject": {
+    "type": "incident",
+    "id": "INC-example123",
+    "service": "checkout-api",
+    "environment": "production"
+  },
+  "signal": {
+    "kind": "error_group",
+    "fingerprint": "group-incident-a",
+    "severity": "warning",
+    "observed_at": "2026-07-01T00:00:00Z"
+  },
+  "replay": {
+    "timeline_url": "/api/v1/timeline?service=checkout-api&window=1h",
+    "report_url": "/api/v1/report?window=1h",
+    "incident_url": "/api/v1/incidents/INC-example123"
+  },
+  "incident": {
+    "id": "INC-example123",
+    "service": "checkout-api",
+    "state": "investigating",
+    "severity": "warning",
+    "title": "checkout-api warning incident",
+    "opened_at": "2026-07-01T00:00:00Z",
+    "resolved_at": null,
+    "signals": [
+      {
+        "signal_type": "error_group",
+        "signal_ref": "group-incident-a",
+        "attached_at": "2026-07-01T00:00:00Z",
+        "resolved_at": null
+      }
+    ]
+  },
+  "timestamp": "2026-07-01T00:00:00Z"
+}

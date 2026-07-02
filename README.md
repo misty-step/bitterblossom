@@ -82,13 +82,20 @@ WebSocket exec.
 ./target/debug/bb --config examples/demo-plane run demo
 ```
 
-`examples/review-factory-plane/` is the first copyable workload template beyond
-the demo: a credential-free-to-validate pull-request review factory with agent
-policy, webhook containment filters, budgets, sample GitHub payload, expected
-`REPORT.json`, and a local validation recipe in its README.
+Copyable workload templates beyond the demo live under `examples/`:
+
+- `examples/review-factory-plane/` is a credential-free-to-validate
+  pull-request review factory with agent policy, webhook containment filters,
+  budgets, sample GitHub payload, expected `REPORT.json`, and a local
+  validation recipe.
+- `examples/canary-responder-plane/` is a credential-free-to-validate
+  report-only incident responder for Canary-style wake-up events with
+  containment filters, budgets, sample incident payload, expected
+  `REPORT.json`, and a local validation recipe.
 
 ```bash
 ./target/debug/bb --config examples/review-factory-plane check --json
+./target/debug/bb --config examples/canary-responder-plane check --json
 ```
 
 ## Guarantees

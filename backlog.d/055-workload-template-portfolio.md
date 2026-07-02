@@ -22,7 +22,7 @@ production-shaped workload templates after the control plane is hardened.
 ## Children
 
 1. [x] Extract a credential-free review-factory template from `plane/`.
-2. Shape a canary/incident responder template from the Tansy direction.
+2. [x] Shape a canary/incident responder template from the Tansy direction.
 3. Shape a docs-sync or monitor watcher template.
 4. Add template validation to the repo gate where feasible.
 5. Document when to use a template versus authoring a custom task.
@@ -58,3 +58,9 @@ files, scoped-key policy, webhook trigger filters, budgets, sample GitHub PR
 payload, sample `REPORT.json`, and a README validation recipe. The repo gate now
 runs `bb check` against the template, and the task-card contract test covers its
 lane card. The remaining children are separate templates and stay open.
+
+Child 2 landed as `examples/canary-responder-plane/`: public plane/task/agent
+files, scoped-key policy, Canary incident webhook filters, budgets, a sample
+`canary.incident_event.v1` payload, sample `REPORT.json`, and a README
+validation recipe. The repo gate now runs `bb check` against the template, and
+the task-card contract test covers its lane card.
