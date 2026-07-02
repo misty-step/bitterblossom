@@ -362,3 +362,46 @@ fn read_api_exposes_dashboard_observability_routes() {
     let exported: serde_json::Value = serde_json::from_str(first_line).unwrap();
     assert_eq!(exported["schema"], "bb.run_telemetry.v1");
 }
+
+#[test]
+fn submissions_read_api_exposes_top_level_identity_summary() {
+    let dir = tempfile::tempdir().unwrap();
+    write_plane(dir.path());
+    let plane = Plane::load(dir.path()).unwrap();
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    let sub = ledger
+        .open_submission(
+            "refs/pull/910",
+            "fee9bf7509da994e4a7302685f781d2f3462c1e8",
+            None,
+        )
+        .unwrap();
+    drop(ledger);
+    drop(plane);
+    let port = free_loopback_port();
+
+    let child = Command::new(env!("CARGO_BIN_EXE_bb"))
+        .args(["--config", dir.path().to_str().unwrap(), "serve"])
+        .env("BB_INGRESS_BIND", format!("127.0.0.1:{port}"))
+        .env("BB_API_TOKEN", "test-token")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let _child = ChildGuard(child);
+    wait_for_http(port);
+
+    let (status, body) = http_get(port, "/api/submissions?limit=1", Some("test-token"));
+    assert_eq!(status, 200, "{body}");
+    let rows: serde_json::Value = serde_json::from_str(response_body(&body)).unwrap();
+    let row = &rows.as_array().unwrap()[0];
+
+    assert_eq!(row["id"], sub.id);
+    assert_eq!(row["change_key"], "refs/pull/910");
+    assert_eq!(row["rev"], "fee9bf7509da994e4a7302685f781d2f3462c1e8");
+    assert_eq!(row["round"], 1);
+    assert_eq!(row["state"], "open");
+    assert_eq!(row["submission"]["id"], sub.id);
+    assert!(row["verdicts"].is_array());
+    assert!(row["rejections"].is_array());
+}

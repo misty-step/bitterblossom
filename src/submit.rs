@@ -67,6 +67,11 @@ pub struct RejectionRow {
 
 #[derive(Debug, Serialize)]
 pub struct SubmissionBundle {
+    pub id: String,
+    pub change_key: String,
+    pub rev: String,
+    pub round: i64,
+    pub state: String,
     pub submission: SubmissionRow,
     pub verdicts: Vec<VerdictRow>,
     pub rejections: Vec<RejectionRow>,
@@ -263,6 +268,11 @@ impl Ledger {
                     })
                     .collect();
                 Ok(SubmissionBundle {
+                    id: submission.id.clone(),
+                    change_key: submission.change_key.clone(),
+                    rev: submission.rev.clone(),
+                    round: submission.round,
+                    state: submission.state.clone(),
                     verdicts: self.verdicts(&submission.id)?,
                     rejections,
                     submission,

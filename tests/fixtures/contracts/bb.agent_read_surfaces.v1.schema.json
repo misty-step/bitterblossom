@@ -143,6 +143,34 @@
         { "path": "/members/0/kind", "type": "string" },
         { "path": "/members/0/status", "type": "string" }
       ]
+    },
+    {
+      "name": "submit_list",
+      "required": [
+        { "path": "/0/id", "type": "string" },
+        { "path": "/0/change_key", "type": "string" },
+        { "path": "/0/rev", "type": "string" },
+        { "path": "/0/round", "type": "number" },
+        { "path": "/0/state", "type": "string" },
+        { "path": "/0/submission/id", "type": "string" },
+        { "path": "/0/submission/change_key", "type": "string" },
+        { "path": "/0/verdicts", "type": "array" },
+        { "path": "/0/rejections", "type": "array" }
+      ]
+    },
+    {
+      "name": "api_submissions",
+      "required": [
+        { "path": "/0/id", "type": "string" },
+        { "path": "/0/change_key", "type": "string" },
+        { "path": "/0/rev", "type": "string" },
+        { "path": "/0/round", "type": "number" },
+        { "path": "/0/state", "type": "string" },
+        { "path": "/0/submission/id", "type": "string" },
+        { "path": "/0/submission/change_key", "type": "string" },
+        { "path": "/0/verdicts", "type": "array" },
+        { "path": "/0/rejections", "type": "array" }
+      ]
     }
   ]
 }

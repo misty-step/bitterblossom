@@ -335,6 +335,14 @@ fn versioned_agent_read_surface_contract_fixture_validates_cli_and_api() {
         &json_ok(gate_root, &["gate", "--change", "c1", "--json"]),
     );
     assert_contract_surface("api_gate", &http_get_json(gate_port, "/api/gate?change=c1"));
+    assert_contract_surface(
+        "submit_list",
+        &json_ok(gate_root, &["submit", "list", "--json"]),
+    );
+    assert_contract_surface(
+        "api_submissions",
+        &http_get_json(gate_port, "/api/submissions"),
+    );
 }
 
 #[test]
@@ -554,6 +562,15 @@ fn submit_list_json_shape() {
     let rows = json_ok(root, &["submit", "list", "--limit", "1", "--json"]);
     assert_eq!(top_arr(&rows).len(), 1, "--limit must constrain output");
     let row = &top_arr(&rows)[0];
+    assert_eq!(
+        as_str(row, "change_key"),
+        "c2",
+        "submit list should expose top-level summary fields"
+    );
+    as_str(row, "id");
+    as_str(row, "rev");
+    as_num(row, "round");
+    as_str(row, "state");
     let sub = &row["submission"];
     assert_eq!(
         as_str(sub, "change_key"),
