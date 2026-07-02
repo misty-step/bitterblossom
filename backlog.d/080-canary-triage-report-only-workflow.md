@@ -27,10 +27,10 @@ Make Canary incidents trigger a bounded Bitterblossom triage agent that investig
 
 ## Children
 
-1. Define the Canary incident payload and service→repo mapping contract; file Canary-side work if the event is missing fields.
-2. Add manual fixture and report-only `canary-triage` BB task.
-3. Add webhook trigger with containment filters and budget caps.
-4. Add docs/skill recipe for incident triage.
+1. [x] Define the Canary incident payload and service→repo mapping contract; file Canary-side work if the event is missing fields.
+2. [x] Add manual fixture and report-only `canary-triage` BB task.
+3. [x] Add webhook trigger with containment filters and budget caps.
+4. [x] Add docs/skill recipe for incident triage.
 5. Dogfood on a real low-severity Canary event before any mutation authority.
 
 ## Report-Only Graduation Metrics
@@ -55,3 +55,24 @@ Swarm evidence 2026-06-29: `/Users/phaedrus/Development/bitterblossom/canary-ser
 Canary-side references to inspect before implementation: `/Users/phaedrus/Development/canary/backlog.d/010-ramp-pattern.md` for the current responder north star and `048-responder-rich-context-safety-gate.md` before broader responders or write-back. Older `011-canary-triage-sprite` references appear stale/archived.
 
 Mode B readiness: repeats on incidents; verifier is report quality plus later human/fresh agent review; environment is target repo + infra context; budgets and blast radius are bounded by report-only authority.
+
+## Delivery Notes
+
+### 2026-07-02 report-only contract hardening
+
+- Tightened the public-plane `canary-triage` card to forbid code edits,
+  branches, PRs, merges, deploys, remediation claims, Canary annotations,
+  incident acknowledgement/resolution, task parking/unparking, run resolution,
+  and user-visible notifications.
+- Added the pinned `bb.canary_triage_report.v1.valid.json` fixture using
+  schema `bb.canary_incident_response.report.v1`. It links incident id, service,
+  environment, severity, fingerprint, replay URLs, service→repo mapping source,
+  hypotheses with owner files/services, recommended next commands, and
+  `constraints.mutations_performed = []`.
+- Added contract tests proving the report is actionable and report-only, and
+  lifecycle tests proving the task/card still exposes the expected API-auth,
+  Sprite, webhook, budget, and no-mutation contract.
+- Verification:
+  `cargo test --locked --test canary_contract --test lifecycle_reflex --test ingress --test task_card_contract -- --nocapture`.
+- Deferred by overnight guardrail: no live Sprite dispatch, run receipt, cost,
+  or real low-severity Canary event dogfood was produced.
