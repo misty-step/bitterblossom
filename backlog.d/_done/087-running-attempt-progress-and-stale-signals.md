@@ -1,6 +1,6 @@
 # Expose meaningful progress and stale-action signals for long-running attempts
 
-Priority: P1 · Status: ready · Estimate: M
+Priority: P1 · Status: done (consolidated into 089) · Estimate: M
 
 ## Goal
 
@@ -22,12 +22,12 @@ Hours later this was still technically alive, but not enough for an overnight su
 
 ## Oracle
 
-- [ ] Running attempts expose last heartbeat/progress time separate from run creation/update time.
-- [ ] `bb runs show --json` and `bb status --json` include a stale-progress classification with `age_seconds`, threshold, and safe next action.
-- [ ] The dispatcher or harness captures lightweight progress markers when available: remote process alive, bytes/log lines changed, artifact dir created, model turn count/tokens when reported, or explicit harness heartbeat.
-- [ ] Lack of meaningful progress does not automatically kill executing work with external side effects; it produces an operator-visible `awaiting_recovery`/`stale_executing` recommendation according to policy.
-- [ ] Tests cover fresh running, alive-but-no-progress, dead pre-attempt, dead executing, and unknown probe outcomes.
-- [ ] `./scripts/verify.sh` passes.
+- [x] Running attempts expose last heartbeat/progress time separate from run creation/update time.
+- [x] `bb runs show --json` and `bb status --json` include a stale-progress classification with `age_seconds`, threshold, and safe next action.
+- [x] The dispatcher or harness captures lightweight progress markers when available: remote process alive, bytes/log lines changed, artifact dir created, model turn count/tokens when reported, or explicit harness heartbeat.
+- [x] Lack of meaningful progress does not automatically kill executing work with external side effects; it produces an operator-visible `awaiting_recovery`/`stale_executing` recommendation according to policy.
+- [x] Tests cover fresh running, alive-but-no-progress, dead pre-attempt, dead executing, and unknown probe outcomes.
+- [x] `./scripts/verify.sh` passes.
 
 ## Verification System
 
@@ -49,3 +49,16 @@ This must land before the dogfood supervisor may move beyond read-only monitorin
 ## Notes
 
 Related to 051 and 083, but this ticket is scoped to the product surface exposed to operators/agents for active long-running attempts. It is the missing signal that made the overnight dogfood loop unsafe to automate.
+
+## Closure Notes
+
+Closed 2026-07-02 as consolidated into the fails-visibly epic `089`.
+
+- PR #873 shipped the first progress surface: `bb runs/status --json` expose
+  progress and stale classifications for active attempts.
+- PRs #878-#882 completed the action side of the same signal: freshness
+  contracts, outbox-backed stale-run escalation, watchdog-triggered
+  notifications, submission timeout/quorum, and the weekly self-drill.
+- Canonical completion record: `backlog.d/_done/089-fails-visibly.md`.
+- Verification: `./scripts/verify.sh` passed on 2026-07-02 during backlog 100
+  closeout.

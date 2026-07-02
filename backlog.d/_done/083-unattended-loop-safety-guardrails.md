@@ -1,6 +1,6 @@
 # Add unattended-loop safety guardrails before expanding autonomous volume
 
-Priority: P1 · Status: ready · Estimate: L
+Priority: P1 · Status: done (consolidated into 089) · Estimate: L
 
 ## Goal
 
@@ -8,13 +8,13 @@ Make recurring and webhook-triggered BB loops fail loudly, halt safely, and avoi
 
 ## Oracle
 
-- [ ] A global pause/resume path exists for reflex dispatch, separate from per-task parking, with reason recorded and visible in `status --json`.
-- [ ] Ingress enforces a maximum request body size and tests oversized webhook rejection without ledger growth.
-- [ ] Cron catch-up is bounded by a configured max fires per tick or an explicit collapse policy; skipped/collapsed fires are recorded visibly.
-- [ ] Notification delivery has a durable outbox or an explicitly smaller first slice that records failed notifications and surfaces them in status.
-- [ ] Running attempts expose heartbeat/generation or last-progress evidence sufficient for stale detection without guessing.
-- [ ] Budget accounting includes in-flight/reserved spend or documents a conservative cap policy for high-volume reflex tasks.
-- [ ] `./scripts/verify.sh` passes.
+- [x] A global pause/resume path exists for reflex dispatch, separate from per-task parking, with reason recorded and visible in `status --json`.
+- [x] Ingress enforces a maximum request body size and tests oversized webhook rejection without ledger growth.
+- [x] Cron catch-up is bounded by a configured max fires per tick or an explicit collapse policy; skipped/collapsed fires are recorded visibly.
+- [x] Notification delivery has a durable outbox or an explicitly smaller first slice that records failed notifications and surfaces them in status.
+- [x] Running attempts expose heartbeat/generation or last-progress evidence sufficient for stale detection without guessing.
+- [x] Budget accounting includes in-flight/reserved spend or documents a conservative cap policy for high-volume reflex tasks.
+- [x] `./scripts/verify.sh` passes.
 
 ## Verification System
 
@@ -44,3 +44,18 @@ Promotion trigger: before any new autonomous repo/service allowlist expansion, r
 Why: previous hardening made the plane much safer, but the 2026-06-29 groom identified unsupervised-volume guardrails as a prerequisite for broader autonomous loops. This ticket is mechanism only: pause, caps, outbox/status, heartbeat, budget reservation. It must not add workflow judgment to the spine.
 
 Related: 051 recovery/probe determinism and 072 observability. Keep this ticket focused on loop containment and noisy failure.
+
+## Closure Notes
+
+Closed 2026-07-02 as consolidated into the fails-visibly epic `089`.
+
+- PR #874 shipped the direct 083 guardrails: global reflex pause/resume,
+  ingress body cap, bounded cron catch-up, notification-failure recording,
+  and reserved-spend status.
+- PRs #878-#882 completed the remaining fails-visibly chain through freshness
+  contracts, durable notification outbox escalation, serve watchdog stale-run
+  escalation, bounded submission arms, self-drill chaos proof, and the
+  attention-debt brake.
+- Canonical completion record: `backlog.d/_done/089-fails-visibly.md`.
+- Verification: `./scripts/verify.sh` passed on 2026-07-02 during backlog 100
+  closeout.
