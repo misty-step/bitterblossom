@@ -21,13 +21,13 @@ loops before they consume budget or authority.
       are enforceable per agent/task before a run starts.
 - [ ] In-flight overrun handling can kill or quarantine a run according to a
       configured side-effect policy, then records a recovery action.
-- [ ] Per-agent policy is visible in `bb check --json`, `bb task list --json`,
+- [x] Per-agent policy is visible in `bb check --json`, `bb task list --json`,
       and `/api/tasks`.
 - [ ] `./scripts/verify.sh` passes.
 
 ## Children
 
-- [ ] Agent policy schema: authority, provider key name, budget cap, iteration
+- [x] Agent policy schema: authority, provider key name, budget cap, iteration
       caps, timeout, and side-effect policy.
 - [ ] OpenRouter key provisioning or audited manual import path.
 - [ ] Provider cap sync and drift check.
