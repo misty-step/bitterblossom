@@ -10,9 +10,9 @@ loops before they consume budget or authority.
 
 ## Oracle
 
-- [ ] Each API-auth agent can use a discrete OpenRouter API key or equivalent
+- [x] Each API-auth agent can use a discrete OpenRouter API key or equivalent
       BYOK credential scoped to that agent definition.
-- [ ] Key provisioning is automated through the OpenRouter provisioning API or a
+- [x] Key provisioning is automated through the OpenRouter provisioning API or a
       documented manual fallback with the same ledger-visible fields.
 - [ ] Agent budget lines map to provider-side spend caps where supported, and BB
       status shows configured cap, reserved spend, spent today, and enforcement
@@ -29,7 +29,7 @@ loops before they consume budget or authority.
 
 - [x] Agent policy schema: authority, provider key name, budget cap, iteration
       caps, timeout, and side-effect policy.
-- [ ] OpenRouter key provisioning or audited manual import path.
+- [x] OpenRouter key provisioning or audited manual import path.
 - [ ] Provider cap sync and drift check.
 - [ ] In-flight kill/quarantine mechanism for overrun policies.
 - [ ] Status/API/readiness projection of governance state.
@@ -40,3 +40,10 @@ loops before they consume budget or authority.
 This epic turns the word "circuit breaker" into code. It is distinct from global
 daily budget admission: provider-side caps and per-agent loop belts prevent one
 bad agent from exhausting the whole plane.
+
+2026-07-02 slice: `bb keys mint|rotate|revoke|list` provisions OpenRouter child
+keys from agent policy caps using `OPENROUTER_MANAGEMENT_KEY`, stores child
+keys under plane `.bb/`, injects them per run, and refuses shared-key fallback
+for policy-bound OpenRouter agents. Live proof: `bb-builder-rust` minted hash
+`2693df917b62ba4de9c1bf339cb881ae97f0f98f3be3d7533b697ec237d089ed`, remote
+list showed `limit = 25.0`, `limit_remaining = 25.0`, `disabled = false`.

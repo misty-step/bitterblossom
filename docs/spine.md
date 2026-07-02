@@ -91,6 +91,14 @@ secrets = ["OPENROUTER_API_KEY"]  # env names resolved per-exec, never persisted
 skills = [                         # curated role contract; v1 records/exposes,
   "harness-kit/code-review#coordinator", # but does not project skills at runtime
 ]
+
+[policy]                           # optional per-agent governance boundary
+provider_key_name = "openrouter-reviewer"
+provider_spend_cap_usd = 10.0      # mapped to OpenRouter key `limit`
+model_allowlist = ["moonshotai/kimi-k2.6"]
+trigger_bindings = ["manual", "webhook"]
+iteration_cap = 1
+side_effect_policy = "log"
 ```
 
 Swapping a task's agent is a one-line edit to `task.toml`; the ledger
@@ -102,6 +110,14 @@ agents can tell what kind of worker is bound before dispatch. They do not
 change execution in v1. A runtime skill-projection system belongs behind a
 separate shaped contract so dispatch stays a thin card + harness runner, not
 a semantic workflow engine.
+
+When an OpenRouter API-auth agent declares `policy.provider_key_name` and
+`policy.provider_spend_cap_usd`, `bb keys mint <agent>` creates a child API key
+through the OpenRouter management API using `OPENROUTER_MANAGEMENT_KEY`, stores
+the one-time plaintext child key under the plane's `.bb/` state, and sets the
+provider-side `limit` to the policy cap. Dispatch then injects that child key as
+the agent's declared `OPENROUTER_API_KEY`; it does not fall back to a shared
+key for policy-bound agents.
 
 ### Model & auth policy (enforced at load — `bb check` fails, not dispatch)
 
@@ -511,6 +527,10 @@ bb dlq ack <id> --reason TEXT [--json]            # close a superseded pre-execu
 bb notify list [--limit N] [--json]               # outbound notification outbox
 bb notify retry [--limit N] [--json]              # retry pending/failed webhook deliveries
 bb notify ack <id> --reason TEXT [--json]         # close a handled notification row
+bb keys mint <agent> | --all [--json]             # mint scoped OpenRouter child keys from agent policy caps
+bb keys rotate <agent> [--json]                   # replace one stored child key, revoke the old key
+bb keys revoke <agent> [--json]                   # revoke one stored child key and clear local key material
+bb keys list [--remote] [--include-disabled] [--json] # local metadata or OpenRouter management list
 bb preflight <task> | --storm [--json]            # missing secrets + unspawnable command binaries, pre-dispatch
 bb task list [--json]                               # agent-facing task inventory
 bb task park|unpark <task>
@@ -528,10 +548,10 @@ output is a `failure` with raw output preserved on the attempt row — never
 a silent zero-cost success.
 
 `bb preflight` is a read-only pre-dispatch check, not a gate: it reports
-missing declared secrets and unspawnable `command`-harness binaries (the
-`/bin/true`-missing and missing-`GH_TOKEN` storm classes) for one task or the
-submission-storm member set, before dispatch creates run rows. Secret checks
-apply on every substrate (secrets travel from the operator environment);
+missing declared secrets, missing policy-bound provider keys, and unspawnable
+`command`-harness binaries (the `/bin/true`-missing and missing-`GH_TOKEN`
+storm classes) for one task or the submission-storm member set, before dispatch
+creates run rows. Secret and provider-key checks apply on every substrate;
 binary checks apply only to `substrate = "local"`, the only substrate whose
 binaries `bb` can inspect.
 
@@ -540,5 +560,6 @@ binaries `bb` can inspect.
 No workload logic, no judgment. Retry semantics are mechanical; agents own
 their own decomposition. If a feature needs a workload-specific branch in
 dispatch/queue/substrate, it belongs in the task spec or in harness-kit.
-Spine budget: ≤ ~5k LOC. Design rationale and critique record:
+The spine LOC tripwire lives in `scripts/verify.sh`; it is a bloat audit, not a
+workload-judgment budget. Design rationale and critique record:
 `docs/plans/2026-06-10-031-event-plane-spine.md`, ADR 005.

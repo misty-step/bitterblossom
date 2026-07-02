@@ -29,6 +29,7 @@ bb runs list --json         # durable ledger: state, agent@version, cost, durati
 bb runs export              # versioned JSONL telemetry for evaluation/OTel adapters
 bb dlq replay <id>          # dead letters replay as new runs with lineage
 bb notify retry --json      # retry durable notification outbox rows
+bb keys mint <agent>        # mint scoped OpenRouter child keys from policy caps
 bb task park|unpark <task>  # budget breaches park; unpark is explicit
 bb recover                  # classify runs inherited from a dead plane
 bb check                    # validate the config surface
@@ -87,8 +88,9 @@ WebSocket exec.
 - Budgets are tiered honestly: runs/day and the global daily ceiling are
   enforced pre-dispatch, the wall-clock kill is the spend backstop, and
   per-run cost is advisory — a breach parks the task and notifies.
-- Secrets are resolved per-exec from the plane's environment and travel
-  on stdin, never argv, never persisted.
+- Secrets are resolved per-exec and travel on stdin, never argv. API-auth
+  agents with `policy.provider_key_name` use plane-side scoped OpenRouter child
+  keys minted by `bb keys`; the management key is never injected into runs.
 - Model & auth policy is code, not intent: claude/codex run on the
   operator's subscription auth only (`ANTHROPIC_API_KEY` /
   `OPENAI_API_KEY` are rejected as agent secrets), reflex triggers
