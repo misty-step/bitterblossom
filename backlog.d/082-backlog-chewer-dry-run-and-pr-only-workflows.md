@@ -8,9 +8,9 @@ Let Bitterblossom cron agents consume whitelisted, well-specced backlogs by firs
 
 ## Oracle
 
-- [ ] A `backlog-chewer-dry-run` task scans only whitelisted repos and selects only tickets with clear Goal, executable Oracle, bounded scope, and allowed credentials/side effects.
-- [ ] Under-specified tickets produce a shaping/context-packet artifact instead of implementation.
-- [ ] Dry-run mode writes a plan artifact naming selected ticket, assumptions, verifier, budget, and stop conditions; it creates no branch.
+- [x] A `backlog-chewer-dry-run` task scans only whitelisted repos and selects only tickets with clear Goal, executable Oracle, bounded scope, and allowed credentials/side effects.
+- [x] Under-specified tickets produce a shaping/context-packet artifact instead of implementation.
+- [x] Dry-run mode writes a plan artifact naming selected ticket, assumptions, verifier, budget, and stop conditions; it creates no branch.
 - [ ] PR-only mode, after dry-run proves useful, may run the deliver/TDD/review workflow and open a PR but cannot merge.
 - [ ] The workflow enforces max one active BB-authored PR per repo/task family and a daily run/cost cap.
 - [ ] Fresh-context review and deterministic CI/gates are required before merge eligibility is even reported.
@@ -27,8 +27,8 @@ Let Bitterblossom cron agents consume whitelisted, well-specced backlogs by firs
 
 ## Children
 
-1. Define ticket-readiness classifier using deterministic fields plus model-readable context; avoid brittle keyword-only scoring.
-2. Add dry-run task/card and fixture backlog.
+1. [x] Define ticket-readiness classifier using deterministic fields plus model-readable context; avoid brittle keyword-only scoring.
+2. [x] Add dry-run task/card and fixture backlog.
 3. Add PR-only task/card that reuses existing build/review/gate machinery.
 4. Add repo whitelist and active-PR pressure checks.
 5. Decide later whether any repo earns guarded auto-merge.
@@ -49,3 +49,28 @@ Promotion trigger: PR-only can be enabled per repo only when the dry-run scoreca
 ## Notes
 
 Why: the operator wants to become primarily a backlog groomer while agents consume shaped work. The safety invariant is that product judgment stays in grooming; BB consumes ready tickets and reports when tickets are not ready.
+
+## Delivery Notes
+
+### 2026-07-02 dry-run contract slice
+
+- Added public-plane `backlog-chewer-dry-run` task and `backlog-chewer`
+  API-auth agent. The task is manual + daily cron, requires `REPORT.json`, uses
+  Sprite substrate for normal operation, and has a low dry-run budget.
+- Added a fixture backlog with ready, vague, blocked, and destructive tickets.
+- Added `bb.backlog_chewer_dry_run_report.v1.valid.json`, proving the dry-run
+  report selects only the ready ticket, emits a `shaping_packet` for the vague
+  ticket, skips blocked/destructive tickets with reasons, names verifier,
+  budget, branch name, expected paths, stop conditions, duplicate pressure, and
+  forbids branch/PR/merge/deploy/code-edit authority.
+- Added `tests/backlog_chewer_contract.rs` and lifecycle contract coverage for
+  the new task/card.
+
+Proof:
+
+- `cargo test --locked --test backlog_chewer_contract --test lifecycle_reflex -- --nocapture`
+- `cargo test --locked --test task_card_contract --test agent_contract_fixtures -- --nocapture`
+- `cargo run --quiet -- --config tests/fixtures/public-plane check`
+
+Deferred by overnight guardrail: no live Sprite dry-run receipt/cost was
+produced.
