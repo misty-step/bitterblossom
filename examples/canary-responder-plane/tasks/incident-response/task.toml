@@ -1,0 +1,45 @@
+agent = "incident-responder"
+substrate = "sprites"
+required_artifacts = ["REPORT.json"]
+
+[workspace]
+host = "example-org/canary-lane-1"
+repos = [
+  { url = "https://github.com/example-org/checkout-api.git", ref = "main" },
+  { url = "https://github.com/example-org/runbooks.git", ref = "main" },
+]
+
+[budget]
+timeout_minutes = 30
+max_runs_per_day = 8
+max_cost_per_run_usd = 0.75
+turn_cap = 40
+
+[[trigger]]
+kind = "manual"
+
+[[trigger]]
+kind = "webhook"
+route = "canary-incident"
+secret_env = "BB_HOOK_CANARY_INCIDENT"
+dedupe_key = "header:X-Delivery-Id"
+
+[[trigger.filter]]
+pointer = "/schema_version"
+equals = "canary.incident_event.v1"
+
+[[trigger.filter]]
+pointer = "/event"
+any_of = ["incident.opened", "incident.updated"]
+
+[[trigger.filter]]
+pointer = "/subject/service"
+any_of = ["checkout-api"]
+
+[[trigger.filter]]
+pointer = "/subject/environment"
+any_of = ["production", "staging"]
+
+[[trigger.filter]]
+pointer = "/signal/severity"
+any_of = ["warning", "error", "high", "critical"]

@@ -12,6 +12,16 @@ fn public_plane_task_cards_have_agent_contract_sections() {
 }
 
 #[test]
+fn canary_responder_template_task_cards_have_agent_contract_sections() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/canary-responder-plane/tasks");
+    let checked = assert_contract_cards(&root);
+    assert!(
+        checked >= 1,
+        "expected canary-responder template cards, checked {checked}"
+    );
+}
+
+#[test]
 fn review_factory_template_task_cards_have_agent_contract_sections() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/review-factory-plane/tasks");
     let checked = assert_contract_cards(&root);

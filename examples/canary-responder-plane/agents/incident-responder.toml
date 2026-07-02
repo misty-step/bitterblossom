@@ -1,0 +1,24 @@
+version = 1
+harness = "pi"
+model = "deepseek/deepseek-v4-flash"
+role = "incident-responder"
+auth = "api"
+secrets = ["OPENROUTER_API_KEY", "CANARY_ENDPOINT", "CANARY_API_KEY"]
+skills = [
+  "harness-kit/diagnose#incident-triage",
+  "harness-kit/canary#report-only-responder",
+  "bitterblossom/operator-min",
+]
+
+[policy]
+authority = "read"
+provider_key_name = "canary-incident-responder"
+provider_spend_cap_usd = 0.75
+model_allowlist = ["deepseek/deepseek-v4-flash"]
+trigger_bindings = ["manual", "webhook"]
+iteration_cap = 20
+turn_cap = 40
+tool_action_cap = 80
+output_bytes_cap = 28000
+wall_clock_minutes = 30
+side_effect_policy = "kill"
