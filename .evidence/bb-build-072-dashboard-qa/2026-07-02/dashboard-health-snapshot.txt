@@ -1,0 +1,77 @@
+- navigation "Dashboard views" [ref=e1]
+  - StaticText "bitterblossom"
+  - button "overview" [ref=e2]
+  - button "runs" [ref=e3]
+  - button "tasks" [ref=e4]
+  - button "health" [ref=e5]
+  - StaticText "live"
+  - StaticText "2026-07-02T05:28:19..."
+- main
+  - sectionheader
+    - paragraph
+      - StaticText "EVENT PLANE VISIBILITY"
+    - heading "health" [level=1, ref=e6]
+    - paragraph
+      - StaticText "DLQ clear / no leases / queue clear / $0.00 today"
+    - button "token" [ref=e7]
+    - button "refresh" [ref=e8]
+  - generic
+    - article
+      - heading "DLQ" [level=2, ref=e9]
+      - table
+        - rowgroup
+          - row
+            - columnheader "id" [ref=e12]
+            - columnheader "status" [ref=e13]
+            - columnheader "task" [ref=e14]
+            - columnheader "run" [ref=e15]
+            - columnheader "error" [ref=e16]
+        - rowgroup
+          - row
+            - cell "no dead letters" [ref=e17]
+    - article
+      - heading "Leases" [level=2, ref=e10]
+      - table
+        - rowgroup
+          - row
+            - columnheader "host" [ref=e18]
+            - columnheader "run" [ref=e19]
+            - columnheader "acquired" [ref=e20]
+        - rowgroup
+          - row
+            - cell "no active leases" [ref=e21]
+    - article
+      - heading "Ingress" [level=2, ref=e11]
+      - table
+        - rowgroup
+          - row
+            - columnheader "received" [ref=e22]
+            - columnheader "task" [ref=e23]
+            - columnheader "kind" [ref=e24]
+            - columnheader "duplicate" [ref=e25]
+        - rowgroup
+          - row
+            - cell "2026-07-02T05:27:53..." [ref=e26]
+            - cell "demo" [ref=e27]
+            - cell "webhook" [ref=e28]
+            - cell "no" [ref=e29]
+          - row
+            - cell "2026-07-02T05:27:52..." [ref=e30]
+            - cell "demo" [ref=e31]
+            - cell "webhook" [ref=e32]
+            - cell "no" [ref=e33]
+          - row
+            - cell "2026-07-02T05:27:52..." [ref=e34]
+            - cell "demo" [ref=e35]
+            - cell "webhook" [ref=e36]
+            - cell "no" [ref=e37]
+          - row
+            - cell "2026-07-02T05:27:52..." [ref=e38]
+            - cell "demo" [ref=e39]
+            - cell "webhook" [ref=e40]
+            - cell "no" [ref=e41]
+          - row
+            - cell "2026-07-02T05:27:52..." [ref=e42]
+            - cell "demo" [ref=e43]
+            - cell "webhook" [ref=e44]
+            - cell "no" [ref=e45]

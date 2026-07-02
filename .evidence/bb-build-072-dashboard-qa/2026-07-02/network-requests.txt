@@ -1,0 +1,9 @@
+[707E1372230555E0A49B242B89FE63CE] GET http://127.0.0.1:65308/ (Document) 200
+[28309.2] GET http://127.0.0.1:65308/api/status (Fetch) 200
+[28309.3] GET http://127.0.0.1:65308/api/tasks (Fetch) 200
+[28309.4] GET http://127.0.0.1:65308/api/runs (Fetch) 200
+[28309.5] GET http://127.0.0.1:65308/api/dlq (Fetch) 200
+[28309.6] GET http://127.0.0.1:65308/api/leases (Fetch) 200
+[28309.7] GET http://127.0.0.1:65308/api/ingress?limit=40 (Fetch) 200
+[28309.8] GET http://127.0.0.1:65308/api/export (Fetch) 200
+[28309.9] GET http://127.0.0.1:65308/favicon.ico (Other) 204

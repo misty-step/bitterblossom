@@ -1,0 +1,137 @@
+- navigation "Dashboard views" [ref=e1]
+  - StaticText "bitterblossom"
+  - button "overview" [ref=e2]
+  - button "runs" [ref=e3]
+  - button "tasks" [ref=e4]
+  - button "health" [ref=e5]
+  - StaticText "live"
+  - StaticText "2026-07-02T05:28:19..."
+- main
+  - sectionheader
+    - paragraph
+      - StaticText "EVENT PLANE VISIBILITY"
+    - heading "overview" [level=1, ref=e6]
+    - paragraph
+      - StaticText "DLQ clear / no leases / queue clear / $0.00 today"
+    - button "token" [ref=e7]
+    - button "refresh" [ref=e8]
+  - generic
+    - region "Plane summary" [ref=e9]
+      - article
+        - StaticText "COST TODAY"
+        - strong
+          - StaticText "$0.00 / -"
+        - paragraph
+          - StaticText "no daily cap"
+      - article
+        - StaticText "RUNNING"
+        - strong
+          - StaticText "0"
+        - paragraph
+          - StaticText "0 leases"
+      - article
+        - StaticText "PENDING"
+        - strong
+          - StaticText "0"
+        - paragraph
+          - StaticText "oldest -"
+      - article
+        - StaticText "OPEN DLQ"
+        - strong
+          - StaticText "0"
+        - paragraph
+          - StaticText "operator work"
+      - article
+        - StaticText "TRIGGERS"
+        - strong
+          - StaticText "2"
+        - paragraph
+          - StaticText "1 manual / 0 cron / 1 webhook"
+    - generic
+      - article
+        - heading "Fleet" [level=2, ref=e11]
+        - table
+          - rowgroup
+            - row
+              - columnheader "host" [ref=e55]
+              - columnheader "task" [ref=e56]
+              - columnheader "run" [ref=e57]
+              - columnheader "phase" [ref=e58]
+              - columnheader "cost" [ref=e59]
+          - rowgroup
+            - row
+              - cell "no active host leases" [ref=e60]
+      - article
+        - heading "Next Action" [level=2, ref=e12]
+        - paragraph
+          - StaticText "! demo 1 runs today >= max_runs_per_day 1"
+        - code
+          - StaticText "bb task unpark demo"
+    - article
+      - heading "Recent Runs" [level=2, ref=e10]
+      - table
+        - rowgroup
+          - row
+            - columnheader "state" [ref=e13]
+            - columnheader "task" [ref=e14]
+            - columnheader "agent / model" [ref=e15]
+            - columnheader "duration" [ref=e16]
+            - columnheader "cost" [ref=e17]
+            - columnheader "tokens" [ref=e18]
+            - columnheader "evidence" [ref=e19]
+        - rowgroup
+          - row
+            - cell "! blocked_budget" [ref=e20]
+              - StaticText "!"
+              - StaticText "blocked_budget"
+            - cell "demo" [ref=e21]
+            - cell "-" [ref=e22]
+            - cell "-" [ref=e23]
+            - cell "-" [ref=e24]
+            - cell "-" [ref=e25]
+            - cell "39902a744c34" [ref=e26]
+              - link "39902a744c34" [ref=e61]
+          - row
+            - cell "! blocked_budget" [ref=e27]
+              - StaticText "!"
+              - StaticText "blocked_budget"
+            - cell "demo" [ref=e28]
+            - cell "-" [ref=e29]
+            - cell "-" [ref=e30]
+            - cell "-" [ref=e31]
+            - cell "-" [ref=e32]
+            - cell "9409f9861d8a" [ref=e33]
+              - link "9409f9861d8a" [ref=e62]
+          - row
+            - cell "! blocked_budget" [ref=e34]
+              - StaticText "!"
+              - StaticText "blocked_budget"
+            - cell "demo" [ref=e35]
+            - cell "-" [ref=e36]
+            - cell "-" [ref=e37]
+            - cell "-" [ref=e38]
+            - cell "-" [ref=e39]
+            - cell "27f125e12186" [ref=e40]
+              - link "27f125e12186" [ref=e63]
+          - row
+            - cell "! blocked_budget" [ref=e41]
+              - StaticText "!"
+              - StaticText "blocked_budget"
+            - cell "demo" [ref=e42]
+            - cell "-" [ref=e43]
+            - cell "-" [ref=e44]
+            - cell "-" [ref=e45]
+            - cell "-" [ref=e46]
+            - cell "de8beb1aa3c9" [ref=e47]
+              - link "de8beb1aa3c9" [ref=e64]
+          - row
+            - cell "ok success" [ref=e48]
+              - StaticText "ok"
+              - StaticText "success"
+            - cell "demo" [ref=e49]
+            - cell "stub@v1" [ref=e50]
+            - cell "0s" [ref=e51]
+            - cell "-" [ref=e52]
+            - cell "-" [ref=e53]
+            - cell "9080a268ab1c" [ref=e54]
+              - link "9080a268ab1c" [ref=e65]
