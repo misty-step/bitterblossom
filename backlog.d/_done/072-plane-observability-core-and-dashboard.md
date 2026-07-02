@@ -1,6 +1,6 @@
 # Make the plane observable: core read surface + thin dashboard
 
-Priority: P1 | Status: ready | Estimate: L
+Priority: P1 | Status: done | Estimate: L
 
 ## Goal
 
@@ -11,17 +11,17 @@ dashboard on top for humans, with no workload logic in the spine.
 
 ## Oracle
 
-- [ ] Every dashboard datum is reachable from both `bb <verb> --json` (primary,
+- [x] Every dashboard datum is reachable from both `bb <verb> --json` (primary,
       agent-facing) and a `GET /api/*` route (mirror) — no HTML-only data path.
-- [ ] The four buckets are complete (see Children): Configured, Running,
+- [x] The four buckets are complete (see Children): Configured, Running,
       History, Health.
-- [ ] The dashboard is a static asset served by `bb serve` (the existing
+- [x] The dashboard is a static asset served by `bb serve` (the existing
       `operator.html` shell), consuming only the JSON API; net `src/` cost is
       read-mirrors only (~≤30 LOC, mechanism).
-- [ ] `bb serve` + curl every `/api/*` route with and without `BB_API_TOKEN`
+- [x] `bb serve` + curl every `/api/*` route with and without `BB_API_TOKEN`
       passes (extends the existing Read-API QA recipe); the control-loop drill
       covers the new routes.
-- [ ] `./scripts/verify.sh` passes.
+- [x] `./scripts/verify.sh` passes.
 
 ## Children
 
@@ -35,7 +35,7 @@ dashboard on top for humans, with no workload logic in the spine.
 2. [x] **Read-API shape consistency** (P2, ready, S) — **see backlog 066** (the
    `bb gate` top-level `rev` vs `/api/submissions` nested `submission.rev`
    bug). Kept standalone; this epic depends on it for correct summarization.
-3. [ ] **Thin static dashboard** (P2, ready, M). Finish `operator.html`
+3. [x] **Thin static dashboard** (P2, ready, M). Finish `operator.html`
    (`src/serve.rs` `GET /`) into a drill-down dashboard with Configured /
    Running / History / Health views. Notification-first, drill-down — not a
    pane of glass to watch (project.md:83-84). No new workload logic.
@@ -80,3 +80,24 @@ reference (066 stays its own pickup-able ticket).
 - Backlog 066 is archived and covers the `/api/submissions` summary-shape
   consistency child.
 - Focused verification: `scripts/control-loop-drill.sh`.
+
+### 2026-07-02 dashboard QA closure
+
+- Ran the expanded `scripts/control-loop-drill.sh` to seed a dev plane with
+  configured task data, webhook ingress, successful and budget-blocked runs,
+  parked task state, notification outbox rows, and export telemetry.
+- Served the seeded plane with `bb serve` and walked `operator.html` in
+  `agent-browser` across Overview, Runs, Tasks, and Health.
+- Captured screenshots, accessibility snapshots, network requests, and
+  console/page-error logs under
+  `.evidence/bb-build-072-dashboard-qa/2026-07-02/`.
+- Evidence:
+  `.evidence/bb-build-072-dashboard-qa/2026-07-02/control-loop-drill.txt`;
+  `.evidence/bb-build-072-dashboard-qa/2026-07-02/dashboard-overview.png`;
+  `.evidence/bb-build-072-dashboard-qa/2026-07-02/dashboard-runs.png`;
+  `.evidence/bb-build-072-dashboard-qa/2026-07-02/dashboard-tasks.png`;
+  `.evidence/bb-build-072-dashboard-qa/2026-07-02/dashboard-health.png`;
+  `.evidence/bb-build-072-dashboard-qa/2026-07-02/network-requests.txt`.
+- Browser result: no console output and no page errors; network log shows the
+  dashboard document plus `/api/status`, `/api/tasks`, `/api/runs`, `/api/dlq`,
+  `/api/leases`, `/api/ingress`, and `/api/export` all returning `200`.

@@ -1,0 +1,36 @@
+serve:open port=65254
+ok:open-health http=200
+ok:open-status http=200
+ok:open-tasks http=200
+ok:open-runs http=200
+ok:open-dlq http=200
+ok:open-notify http=200
+ok:open-leases http=200
+ok:open-ingress http=200
+ok:open-export http=200
+ok:open-submissions http=200
+ok:open-html http=200
+ok:webhook-1 http=202
+ok:webhook-2 http=202
+ok:webhook-3 http=202
+ok:webhook-4 http=202
+ok:webhook-5 http=202
+storm: total=5 states=success,blocked_budget,blocked_budget,blocked_budget,blocked_budget parked=1 runs today >= max_runs_per_day 1
+storm: notifications=4
+serve:token port=65283
+ok:token-health-noauth http=200
+ok:token-status-noauth http=401
+ok:token-status-query http=401
+ok:token-status-bad http=401
+ok:token-status-bearer http=200
+ok:token-tasks-bearer http=200
+ok:token-runs-bearer http=200
+ok:token-dlq-bearer http=200
+ok:token-notify-bearer http=200
+ok:token-leases-bearer http=200
+ok:token-ingress-bearer http=200
+ok:token-export-bearer http=200
+ok:token-submissions-bearer http=200
+ok:token-html-bearer http=200
+control-loop drill: pass
+kept temp plane: /var/folders/jr/0kj0xfdd4s1ggs921sr2d7f80000gn/T//bb-control-loop.OhiChM
