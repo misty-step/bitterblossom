@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-aesthetic="noir-ledger">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -7,11 +7,13 @@
 <style>
 :root {
   --surface: #fcfcfc;
-  --wash: #f3f3f3;
+  --panel: #ffffff;
+  --wash: #f1f1ef;
   --ink: #151515;
   --muted: #737373;
   --faint: #a3a3a3;
-  --line: #e9e9e9;
+  --line: #d9d9d6;
+  --frame: #202020;
   --accent: #2643d0;
   --ok: #15714b;
   --warn: #8a5f32;
@@ -23,11 +25,13 @@
 @media (prefers-color-scheme: dark) {
   :root {
     --surface: #121212;
-    --wash: #1b1b1b;
+    --panel: #171717;
+    --wash: #1f1f1f;
     --ink: #ededed;
     --muted: #8f8f8f;
     --faint: #5c5c5c;
     --line: #262626;
+    --frame: #d8d8d8;
     --accent: #8c9eff;
     --ok: #6fd2a8;
     --warn: #c49d72;
@@ -63,6 +67,7 @@ a:hover { color: var(--accent); text-decoration-color: currentColor; }
 }
 .rail {
   border-right: 1px solid var(--line);
+  background: var(--wash);
   padding: 1.4rem 1.2rem;
   font: 13px/1.7 var(--mono);
   color: var(--muted);
@@ -111,6 +116,39 @@ a:hover { color: var(--accent); text-decoration-color: currentColor; }
   border-bottom: 1px solid var(--line);
   padding-bottom: 1rem;
   margin-bottom: 1rem;
+}
+.proof-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border: 1px solid var(--frame);
+  margin-bottom: 1rem;
+  background: var(--line);
+  gap: 1px;
+  font: 12px/1.5 var(--mono);
+}
+.proof-strip span {
+  min-width: 0;
+  background: var(--panel);
+  padding: .48rem .6rem;
+}
+.proof-strip b,
+.proof-strip em {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-style: normal;
+}
+.proof-strip b {
+  color: var(--muted);
+  font-weight: 400;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.proof-strip em {
+  color: var(--ink);
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
 }
 .topbar h1 { font-weight: 800; }
 .plane-sentence {
@@ -161,13 +199,13 @@ a:hover { color: var(--accent); text-decoration-color: currentColor; }
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 1px;
   background: var(--line);
-  border: 1px solid var(--line);
+  border: 1px solid var(--frame);
 }
 .metric {
   min-width: 0;
   min-height: 6rem;
   padding: .8rem;
-  background: var(--surface);
+  background: var(--panel);
 }
 .metric strong,
 .num {
@@ -201,14 +239,20 @@ a:hover { color: var(--accent); text-decoration-color: currentColor; }
   margin-top: 1rem;
 }
 .plate {
-  border: 1px solid var(--line);
+  border: 1px solid var(--frame);
   padding: 1rem;
   min-width: 0;
-  background: var(--surface);
+  background: var(--panel);
 }
 .plate h2 {
+  margin: -1rem -1rem .8rem;
+  padding: .48rem .7rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--wash);
   font-weight: 800;
-  margin-bottom: .8rem;
+  font: 12px/1.5 var(--mono);
+  letter-spacing: .08em;
+  text-transform: uppercase;
 }
 .plate-note {
   margin-top: .8rem;
@@ -321,6 +365,7 @@ tbody tr:first-child td { border-top: 0; }
   .rail-foot { display: none; }
   .desk { overflow: visible; padding: 1rem; }
   .summary, .grid-2, .health-grid { grid-template-columns: 1fr; }
+  .proof-strip { grid-template-columns: 1fr 1fr; }
   .topbar { align-items: flex-start; flex-wrap: wrap; gap: .6rem; }
   .topbar .grow { flex-basis: 100%; }
   .token {
@@ -364,6 +409,13 @@ tbody tr:first-child td { border-top: 0; }
       <button class="quiet" id="tokenToggle" type="button">token</button>
       <button class="action" id="refresh" type="button">refresh</button>
     </header>
+
+    <div class="proof-strip" aria-label="Plane proof strip">
+      <span><b>ledger</b><em id="schemaVersion">-</em></span>
+      <span><b>budget</b><em id="budgetState">-</em></span>
+      <span><b>notify</b><em id="outboxState">-</em></span>
+      <span><b>freshness</b><em id="freshnessState">-</em></span>
+    </div>
 
     <div id="error" class="error"></div>
 
@@ -536,12 +588,27 @@ function tokenTotals() {
 function render() {
   if (!state.data) return;
   renderPlaneSentence();
+  renderProofStrip();
   renderSummary();
   renderFleet();
   renderActions();
   renderRuns();
   renderTasks();
   renderHealth();
+}
+
+function renderProofStrip() {
+  const status = state.data.status || {};
+  const ledger = status.ledger || {};
+  const summary = status.summary || {};
+  const notify = status.guards?.notify?.outbox || {};
+  const freshness = status.freshness_contracts || [];
+  const critical = freshness.filter((row) => row.notification_severity === "critical").length;
+  const budget = summary.max_cost_per_day_usd;
+  $("schemaVersion").textContent = ledger.schema_version == null ? "-" : `schema v${ledger.schema_version}`;
+  $("budgetState").textContent = budget == null ? "no daily cap" : `${fmtMoney(summary.cost_today_usd || 0)} / ${fmtMoney(budget)}`;
+  $("outboxState").textContent = `${notify.pending || 0} pending / ${notify.failed || 0} failed`;
+  $("freshnessState").textContent = `${critical} critical / ${freshness.length} total`;
 }
 
 function renderPlaneSentence() {
