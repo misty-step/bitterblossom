@@ -389,6 +389,31 @@ The CI-diagnose workload supports manual dogfood:
 It writes a report/fix packet and may recommend a builder command, but does not
 edit code, post comments, or trigger follow-up runs.
 
+CI-diagnose is one of the lifecycle reflex pack — report-only SDLC reflexes that
+ship as public-plane examples, each writing `REPORT.json` without mutation and
+each manually dispatchable with
+`bb --config <runtime-plane> run <reflex> --payload-file EVENT.json --json`:
+
+- `fix-prompt` turns a `gate.blocked` event into a bounded builder packet naming
+  every blocking fingerprint plus a suggested `bb run build` command.
+- `deploy-prod-verify` verifies a deploy-smoke or production-incident signal and
+  writes evidence plus a suggested next run.
+- `canary-triage` turns a Canary incident into hypotheses, cited evidence,
+  likely owner files/services, and recommended next commands.
+- `backlog-chewer-dry-run` scans whitelisted backlogs and writes a selection and
+  plan artifact: it selects only ready tickets, shapes vague ones, skips
+  blocked/destructive ones, and creates no branch.
+- `lifecycle-orchestrator` reads a lifecycle event plus plane state and emits an
+  ordered run plan of exact `bb run ... --payload-file ... --idempotency-key ...`
+  commands, stop conditions, and residual risk.
+
+Every reflex is manually dispatchable; `fix-prompt`, `deploy-prod-verify`, and
+`canary-triage` also carry a webhook trigger, `backlog-chewer-dry-run` a cron
+trigger, and `lifecycle-orchestrator` is manual-only for now. None edits code,
+merges, deploys, or resolves runs. Their authority contracts and promotion
+scorecards live in [`lifecycle-orchestrator-authority.md`](lifecycle-orchestrator-authority.md)
+and [`rollout-scorecards.md`](rollout-scorecards.md).
+
 The model-evaluation loop supports manual candidate comparison. Run at least
 three candidate tasks for the same flow and payload, then pass their reports to
 `bb --config <runtime-plane> run model-eval --payload '<json>' --json`. First-class
