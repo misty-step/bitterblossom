@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 fn write_plane(root: &std::path::Path) {
     fs::create_dir_all(root.join("agents")).unwrap();
     fs::create_dir_all(root.join("tasks/demo")).unwrap();
+    fs::create_dir_all(root.join("tasks/verify")).unwrap();
     fs::write(
         root.join("agents/a.toml"),
         "version = 1\nharness = \"command\"\nmodel = \"\"\nbin = \"/usr/bin/true\"\n",
@@ -25,7 +26,17 @@ fn write_plane(root: &std::path::Path) {
         "agent = \"a\"\nsubstrate = \"local\"\n[[trigger]]\nkind = \"manual\"\n",
     )
     .unwrap();
-    fs::write(root.join("plane.toml"), "dev = true\n").unwrap();
+    fs::write(root.join("tasks/verify/card.md"), "card\n").unwrap();
+    fs::write(
+        root.join("tasks/verify/task.toml"),
+        "agent = \"a\"\nsubstrate = \"local\"\nverdict = \"verify\"\n[[trigger]]\nkind = \"manual\"\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("plane.toml"),
+        "dev = true\n[gate]\nrequired = [\"verify\"]\n",
+    )
+    .unwrap();
 }
 
 /// One JSON-RPC line for the server.
@@ -60,30 +71,52 @@ fn read_response(out: &mut std::process::ChildStdout) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse response {text:?}: {e}"))
 }
 
+fn bb_json(root: &str, args: &[&str]) -> Value {
+    let output = Command::new(env!("CARGO_BIN_EXE_bb"))
+        .arg("--config")
+        .arg(root)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "bb {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+fn tool_json(response: &Value) -> Value {
+    assert_eq!(response["result"]["isError"], false, "{response}");
+    let text = response["result"]["content"][0]["text"].as_str().unwrap();
+    serde_json::from_str(text).unwrap()
+}
+
+fn scrub_progress_age(value: &mut Value) {
+    if let Some(progress) = value.get_mut("progress") {
+        progress["age_seconds"] = json!(null);
+        if let Some(action) = progress.get_mut("safe_next_action") {
+            action["reason"] = json!(null);
+        }
+    }
+}
+
 #[test]
 fn mcp_serve_read_only_tools_list_and_call() {
     let dir = tempfile::tempdir().unwrap();
     write_plane(dir.path());
     let root = dir.path().to_str().unwrap();
 
-    // Seed one run so bb_status has real ledger content to report.
-    assert!(
-        Command::new(env!("CARGO_BIN_EXE_bb"))
-            .args([
-                "--config",
-                root,
-                "run",
-                "demo",
-                "--payload",
-                "{\"ok\":true}",
-                "--json"
-            ])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .unwrap()
-            .success(),
-        "seed run failed"
+    // Seed one run and one submission so read-only tools have real ledger
+    // content to report.
+    let seed_run = bb_json(
+        root,
+        &["run", "demo", "--payload", "{\"ok\":true}", "--json"],
+    );
+    let run_id = seed_run["run"]["id"].as_str().unwrap().to_string();
+    let _submission = bb_json(
+        root,
+        &["submit", "open", "--change", "c1", "--rev", "r1", "--json"],
     );
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_bb"))
@@ -119,8 +152,11 @@ fn mcp_serve_read_only_tools_list_and_call() {
             "bb_status",
             "bb_check",
             "bb_tasks",
+            "bb_runs_list",
+            "bb_runs_show",
             "bb_dlq_list",
-            "bb_preflight"
+            "bb_preflight",
+            "bb_gate"
         ]
     );
     for t in tools {
@@ -211,12 +247,51 @@ fn mcp_serve_read_only_tools_list_and_call() {
         "MCP bb_tasks shape drifted from `bb task list --json`"
     );
 
-    // tools/call bb_dlq_list -> same shape as `bb dlq list --json`.
+    // tools/call bb_runs_list -> same shape as `bb runs list --json`.
     writeln!(
         stdin,
         "{}",
         req(
             Some(6),
+            "tools/call",
+            Some(json!({ "name": "bb_runs_list" }))
+        )
+    )
+    .unwrap();
+    let runs_list_call = read_response(&mut stdout);
+    assert_eq!(
+        tool_json(&runs_list_call),
+        bb_json(root, &["runs", "list", "--json"]),
+        "MCP bb_runs_list shape drifted from `bb runs list --json`"
+    );
+
+    // tools/call bb_runs_show -> same shape as `bb runs show <id> --json`.
+    writeln!(
+        stdin,
+        "{}",
+        req(
+            Some(7),
+            "tools/call",
+            Some(json!({ "name": "bb_runs_show", "arguments": { "run_id": run_id } }))
+        )
+    )
+    .unwrap();
+    let runs_show_call = read_response(&mut stdout);
+    let mut mcp_run = tool_json(&runs_show_call);
+    let mut cli_run = bb_json(root, &["runs", "show", &run_id, "--json"]);
+    scrub_progress_age(&mut mcp_run);
+    scrub_progress_age(&mut cli_run);
+    assert_eq!(
+        mcp_run, cli_run,
+        "MCP bb_runs_show shape drifted from `bb runs show --json`"
+    );
+
+    // tools/call bb_dlq_list -> same shape as `bb dlq list --json`.
+    writeln!(
+        stdin,
+        "{}",
+        req(
+            Some(8),
             "tools/call",
             Some(json!({ "name": "bb_dlq_list" }))
         )
@@ -242,7 +317,7 @@ fn mcp_serve_read_only_tools_list_and_call() {
         stdin,
         "{}",
         req(
-            Some(7),
+            Some(9),
             "tools/call",
             Some(json!({ "name": "bb_preflight", "arguments": { "task": "demo" } }))
         )
@@ -265,12 +340,30 @@ fn mcp_serve_read_only_tools_list_and_call() {
         "MCP bb_preflight shape drifted from `bb preflight demo --json`"
     );
 
+    // tools/call bb_gate -> same shape as `bb gate --change <change> --json`.
+    writeln!(
+        stdin,
+        "{}",
+        req(
+            Some(10),
+            "tools/call",
+            Some(json!({ "name": "bb_gate", "arguments": { "change": "c1" } }))
+        )
+    )
+    .unwrap();
+    let gate_call = read_response(&mut stdout);
+    assert_eq!(
+        tool_json(&gate_call),
+        bb_json(root, &["gate", "--change", "c1", "--json"]),
+        "MCP bb_gate shape drifted from `bb gate --change --json`"
+    );
+
     // Unknown / would-be mutating tool is rejected (read-only by construction).
     writeln!(
         stdin,
         "{}",
         req(
-            Some(8),
+            Some(11),
             "tools/call",
             Some(json!({ "name": "bb_runs_cancel" }))
         )

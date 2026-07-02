@@ -3,7 +3,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use cron::Schedule;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -463,8 +463,10 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
             "/api/runs" => {
                 let task = query_param(&url, "task");
                 let state = query_param(&url, "state");
-                let runs = ledger.list_runs(task.as_deref(), state.as_deref())?;
-                Ok((200, serde_json::to_string(&runs)?))
+                Ok((
+                    200,
+                    serde_json::to_string(&runs_view(&ledger, task.as_deref(), state.as_deref())?)?,
+                ))
             }
             "/api/status" => Ok((
                 200,
@@ -519,19 +521,15 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
                         return Ok((400, "{\"error\":\"pass submission= or change=\"}".into()))
                     }
                 };
-                let report = crate::submit::evaluate(&plane, &ledger, &id)?;
-                Ok((200, serde_json::to_string(&report)?))
+                Ok((
+                    200,
+                    serde_json::to_string(&gate_view(&plane, &ledger, Some(&id), None)?)?,
+                ))
             }
             "/api/tasks" => Ok((200, serde_json::to_string(&tasks_view(&plane, &ledger)?)?)),
             _ => {
                 if let Some(id) = path.strip_prefix("/api/runs/") {
-                    let run = ledger.run(id)?;
-                    let body = serde_json::json!({
-                        "run": run,
-                        "attempts": ledger.attempts(id)?,
-                        "events": ledger.events(id)?,
-                    });
-                    Ok((200, body.to_string()))
+                    Ok((200, run_view(&ledger, id)?.to_string()))
                 } else {
                     Ok((404, "{\"error\":\"not found\"}".into()))
                 }
@@ -583,6 +581,47 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
 
     Ok((404, "{\"error\":\"not found\"}".to_string()))
 }
+
+pub fn runs_view(
+    ledger: &Ledger,
+    task: Option<&str>,
+    state: Option<&str>,
+) -> Result<serde_json::Value> {
+    Ok(serde_json::to_value(ledger.list_runs(task, state)?)?)
+}
+
+pub fn run_view(ledger: &Ledger, run_id: &str) -> Result<serde_json::Value> {
+    let run = ledger.run(run_id)?;
+    let attempts = ledger.attempts(run_id)?;
+    let events = ledger.events(run_id)?;
+    let progress = progress::from_ledger(ledger, &run, OffsetDateTime::now_utc())?;
+    Ok(serde_json::json!({
+        "run": run,
+        "attempts": attempts,
+        "events": events,
+        "progress": progress,
+    }))
+}
+
+pub fn gate_view(
+    plane: &Plane,
+    ledger: &Ledger,
+    submission: Option<&str>,
+    change: Option<&str>,
+) -> Result<crate::submit::GateReport> {
+    let id = match (submission, change) {
+        (Some(id), _) => id.to_string(),
+        (None, Some(change)) => {
+            ledger
+                .latest_submission(change)?
+                .ok_or_else(|| anyhow::anyhow!("no submissions for change '{change}'"))?
+                .id
+        }
+        (None, None) => bail!("pass submission or change"),
+    };
+    crate::submit::evaluate(plane, ledger, &id)
+}
+
 pub fn tasks_view(plane: &Plane, ledger: &Ledger) -> Result<Vec<serde_json::Value>> {
     let mut out = Vec::new();
     for task in plane.tasks.values() {
