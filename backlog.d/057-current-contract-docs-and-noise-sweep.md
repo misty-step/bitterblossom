@@ -24,7 +24,7 @@ or superseded.
 
 ## Children
 
-1. Build the stale-doc inventory.
+1. [x] Build the stale-doc inventory.
 2. Mark old ADRs as superseded by ADR 005 and the spine contract.
 3. Archive or remove duplicate terminal walkthrough transcripts.
 4. Audit remaining live CLI snippets after 050's parity checks.
@@ -46,3 +46,11 @@ Evidence:
   transcripts.
 - Some older ADRs still describe pre-v3 harness/control-plane assumptions at
   the same visibility as the Rust event-plane direction.
+
+## Slice 2026-07-02
+
+Child 1 landed as `docs/stale-doc-inventory.md`. The inventory records the
+exact scan commands, current surfaces already covered by
+`tests/cli_contract_docs.rs`, archive-safe historical hits, current-looking
+historical ADR/walkthrough files, terminal transcript duplicates, and the
+follow-up owner for each remaining child.
