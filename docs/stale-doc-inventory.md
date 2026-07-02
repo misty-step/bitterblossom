@@ -1,0 +1,96 @@
+# Stale Documentation Inventory
+
+Date: 2026-07-02
+
+This inventory supports backlog 057. Its job is to separate current operator
+contract docs from historical material before we move or supersede anything.
+
+## Scan
+
+Commands used:
+
+```bash
+rg -n "cmd/bb|go test|--var|--since|conductor|Elixir|Python|Go CLI|terminal\\.txt" \
+  README.md CLAUDE.md AGENTS.md docs skills .github scripts tests backlog.d \
+  -g '*.md' -g '*.txt' -g '*.sh' -g '*.rs' -g '*.yml'
+
+for p in 'cmd/bb' 'go test' '--var' '--since'; do
+  rg -l --fixed-strings -- "$p" README.md CLAUDE.md AGENTS.md docs skills .github scripts tests backlog.d
+done
+```
+
+`go test` has false positives inside `cargo test`; future regression checks
+should use a word-boundary pattern for the Go command rather than a fixed
+substring.
+
+## Current-Surface Status
+
+These current surfaces already agree with live Rust-plane CLI help through
+`tests/cli_contract_docs.rs`:
+
+- `README.md`
+- `docs/spine.md`
+- `skills/bitterblossom/SKILL.md`
+- `skills/bitterblossom/references/operator-recipes.md`
+- `.agents/skills/bb-dogfood/SKILL.md`
+- `docs/operations/README.md`
+- `scripts/production-ops-drill.sh`
+
+The existing gate covers the known stale `--var` and unsupported `--since`
+forms on current docs/skills, plus positive live CLI examples for `bb run`,
+`bb task list`, `bb runs export`, and `bb gate`.
+
+## Historical And Archive-Safe Hits
+
+These contexts can mention old commands because they are already under an
+archive or backlog-history boundary:
+
+- `docs/archive/**`
+- `backlog.d/_done/**`
+- dated dogfood/evidence records in `docs/plans/**`
+- dated audit reports in `docs/audit-reports/**` and `docs/audits/**`
+- tests that assert stale commands are absent from current docs
+
+Do not delete these just to make search output clean; preserve prior art unless
+a later slice moves a current-looking document behind an archive boundary.
+
+## Historical But Still Too Current-Looking
+
+These files live outside `docs/archive/` and still mention Go/Python/Elixir or
+conductor-era contracts. They should be marked superseded by ADR 005 and
+`docs/spine.md`, or moved under an archive boundary in later 057 slices:
+
+- `docs/adr/001-claude-code-canonical-harness.md`
+- `docs/adr/002-architecture-minimalism.md`
+- `docs/adr/003-conductor-control-plane.md`
+- `docs/adr/004-bounded-review-governance.md`
+- `docs/adr/004-elixir-conductor-architecture.md`
+- `docs/walkthroughs/*.md`
+
+The current ADR exception is `docs/adr/005-rust-event-plane.md`, which is the
+current superseding record and intentionally names prior systems as negative
+evidence.
+
+## Terminal Transcript Duplicates
+
+`docs/walkthroughs/` contains terminal transcript companions that are
+historical evidence, not current operator instructions:
+
+- `docs/walkthroughs/codex-simplify-bb-sprite-transport-terminal.txt`
+- `docs/walkthroughs/codex-simplify-bb-workspace-contract-terminal.txt`
+- `docs/walkthroughs/codex-simplify-governance-session-terminal.txt`
+- `docs/walkthroughs/issue-505-qa-intake-terminal.txt`
+- `docs/walkthroughs/issue-529-trusted-thread-metadata-terminal.txt`
+
+Later 057 work should either move these under an archive boundary or justify
+why paired terminal transcripts remain in the live walkthrough directory.
+
+## Follow-Up Slices
+
+- Child 2: add explicit superseded banners to historical ADRs or move them
+  behind an archive boundary.
+- Child 3: archive or justify walkthrough terminal transcript duplicates.
+- Child 4: re-audit live CLI snippets after the ADR/walkthrough move.
+- Child 5: extend `tests/cli_contract_docs.rs` with path-aware stale-command
+  checks for current docs only, avoiding archive, backlog-history, and test
+  fixtures.
