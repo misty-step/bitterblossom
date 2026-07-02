@@ -31,7 +31,7 @@ wins.
 ## Children
 
 1. [x] Capture stress and recovery evidence after 050/051.
-2. Compare required primitives: queues, retries, leases, recovery, visibility,
+2. [x] Compare required primitives: queues, retries, leases, recovery, visibility,
    cost tracking, sandbox dispatch, and file-first workload config.
 3. Define one repeatable coding-harness workload and scoring rubric: cold start,
    max runtime, disk/workspace size, persistent state, streaming/interactive
@@ -59,3 +59,5 @@ Evidence:
 - 050/051 will produce the stress evidence needed for a fair re-check.
 - 2026-07-02 child 1 captured the post-050/051 evidence baseline in
   `docs/build-vs-borrow/2026-07-02-stress-recovery-evidence.md`.
+- 2026-07-02 child 2 defined the required primitive baseline in
+  `docs/build-vs-borrow/2026-07-02-required-primitives.md`.
