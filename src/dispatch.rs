@@ -8,14 +8,28 @@ use crate::harness;
 use crate::ledger::{AttemptStats, Ledger, RunRow};
 use crate::spec::{Plane, Task};
 use crate::submit;
-use crate::substrate::{self, WorkspacePlan, CARD_FILENAME};
+use crate::substrate::{self, ExecSnapshot, WorkspacePlan, CARD_FILENAME};
 const MAX_RETRIES: i64 = 2;
 const DEFAULT_TIMEOUT_MINUTES: u64 = 60;
 const LEASE_WAIT: Duration = Duration::from_secs(60);
 const LEASE_POLL: Duration = Duration::from_millis(250);
 enum AttemptOutcome {
-    Success { stats: AttemptStats },
-    Failure { phase_executed: bool, error: String },
+    Success {
+        stats: AttemptStats,
+    },
+    Failure {
+        phase_executed: bool,
+        error: String,
+        stats: AttemptStats,
+        cap_breach: Option<InFlightCapBreach>,
+    },
+}
+
+#[derive(Clone, Debug)]
+struct InFlightCapBreach {
+    observed_cost_usd: f64,
+    cap_usd: f64,
+    policy: String,
 }
 
 pub fn dispatch_run(plane: &Plane, ledger: &mut Ledger, run_id: &str) -> Result<RunRow> {
@@ -75,14 +89,56 @@ pub fn dispatch_run(plane: &Plane, ledger: &mut Ledger, run_id: &str) -> Result<
             AttemptOutcome::Failure {
                 phase_executed: true,
                 error,
+                stats,
+                cap_breach,
             } => {
-                ledger.finalize_run(run_id, None, started.elapsed().as_millis() as i64)?;
-                ledger.transition(run_id, "failure", Some(&error))?;
+                ledger.finalize_run(
+                    run_id,
+                    stats.cost_usd,
+                    started.elapsed().as_millis() as i64,
+                )?;
+                if let Some(breach) = cap_breach {
+                    let (state, event, budget_kind, guard_kind) = if breach.policy == "quarantine" {
+                        (
+                            "awaiting_recovery",
+                            "run_in_flight_cap_quarantined",
+                            "in_flight_cap_quarantined",
+                            "in_flight_cap_quarantined",
+                        )
+                    } else {
+                        (
+                            "failure",
+                            "run_in_flight_cap_killed",
+                            "in_flight_cap_killed",
+                            "in_flight_cap_killed",
+                        )
+                    };
+                    ledger.transition(run_id, state, Some(&error))?;
+                    ledger.record_budget_event(Some(&task.name), budget_kind, &error)?;
+                    ledger.record_guard_event(guard_kind, Some(&task.name), &error, 1)?;
+                    crate::notify::notify(
+                        plane,
+                        ledger,
+                        event,
+                        &serde_json::json!({
+                            "run_id": run_id,
+                            "task": task.name,
+                            "agent": task.agent_name,
+                            "observed_cost_usd": breach.observed_cost_usd,
+                            "cap_usd": breach.cap_usd,
+                            "policy": breach.policy,
+                            "detail": error,
+                        }),
+                    );
+                } else {
+                    ledger.transition(run_id, "failure", Some(&error))?;
+                }
                 break;
             }
             AttemptOutcome::Failure {
                 phase_executed: false,
                 error,
+                ..
             } => {
                 if attempt_n - 1 < MAX_RETRIES {
                     ledger.record_event(run_id, "retry", Some(&error))?;
@@ -137,6 +193,8 @@ fn run_attempt(
                     "host '{host}' lease held by run {:?}",
                     ledger.lease_holder(&host)?
                 ),
+                stats: AttemptStats::default(),
+                cap_breach: None,
             });
         }
         std::thread::sleep(LEASE_POLL);
@@ -179,6 +237,8 @@ fn attempt_on_host(
         Ok(AttemptOutcome::Failure {
             phase_executed,
             error,
+            stats: AttemptStats::default(),
+            cap_breach: None,
         })
     };
 
@@ -272,13 +332,25 @@ fn attempt_on_host(
         "Read {CARD_FILENAME} in this directory — it is your entire commission. Execute it.\n\n{}",
         task.card
     );
-    let exec = match session.execute(&cmd, Some(&card_prompt), timeout) {
-        Ok(r) => r,
-        Err(e) => {
-            let _ = session.release();
-            return fail(true, format!("execute: {e:#}"));
+    let mut budget_monitor = InFlightBudgetMonitor::new(ledger, run_id, attempt_id, task);
+    let exec = {
+        let mut monitor_check =
+            |snapshot: &ExecSnapshot<'_>| budget_monitor.observe(snapshot).map(|b| b.reason);
+        let poll_interval = in_flight_monitor_interval();
+        let mut monitor = substrate::ExecMonitor {
+            poll_interval,
+            check: &mut monitor_check,
+        };
+        match session.execute(&cmd, Some(&card_prompt), timeout, Some(&mut monitor)) {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = session.release();
+                return fail(true, format!("execute: {e:#}"));
+            }
         }
     };
+    let observed_stats = budget_monitor.latest_stats();
+    let observed_breach = budget_monitor.breach();
 
     ledger.set_attempt_phase(attempt_id, "collecting")?;
     ledger.record_progress(run_id, "phase:collecting")?;
@@ -298,6 +370,26 @@ fn attempt_on_host(
         return Ok(AttemptOutcome::Failure {
             phase_executed: true,
             error: format!("timeout after {}s", timeout.as_secs()),
+            stats: AttemptStats::default(),
+            cap_breach: None,
+        });
+    }
+    if let Some(reason) = exec.termination_reason {
+        let _ = session.release();
+        let stats = observed_stats;
+        ledger.finish_attempt(
+            attempt_id,
+            "failure",
+            Some(&reason),
+            Some(exec.exit_code),
+            &stats,
+            Some(&artifact_dir),
+        )?;
+        return Ok(AttemptOutcome::Failure {
+            phase_executed: true,
+            error: reason,
+            stats,
+            cap_breach: observed_breach,
         });
     }
     if let (Some(sub), "command", Some(kind)) = (
@@ -342,6 +434,8 @@ fn attempt_on_host(
             return Ok(AttemptOutcome::Failure {
                 phase_executed: true,
                 error,
+                stats: AttemptStats::default(),
+                cap_breach: None,
             });
         }
         ledger.finish_attempt(
@@ -377,6 +471,8 @@ fn attempt_on_host(
         return Ok(AttemptOutcome::Failure {
             phase_executed: true,
             error,
+            stats: AttemptStats::default(),
+            cap_breach: None,
         });
     }
 
@@ -396,6 +492,8 @@ fn attempt_on_host(
             return Ok(AttemptOutcome::Failure {
                 phase_executed: true,
                 error,
+                stats: AttemptStats::default(),
+                cap_breach: None,
             });
         }
     };
@@ -420,6 +518,8 @@ fn attempt_on_host(
                 return Ok(AttemptOutcome::Failure {
                     phase_executed: true,
                     error,
+                    stats: parsed.stats,
+                    cap_breach: None,
                 });
             }
         }
@@ -432,6 +532,7 @@ fn attempt_on_host(
             &["sh".into(), "-c".into(), post.clone()],
             None,
             Duration::from_secs(600),
+            None,
         );
         let post_error = match post_result {
             Ok(res) if res.exit_code == 0 => None,
@@ -455,6 +556,8 @@ fn attempt_on_host(
             return Ok(AttemptOutcome::Failure {
                 phase_executed: true,
                 error,
+                stats: parsed.stats,
+                cap_breach: None,
             });
         }
     }
@@ -471,6 +574,8 @@ fn attempt_on_host(
         return Ok(AttemptOutcome::Failure {
             phase_executed: true,
             error,
+            stats: parsed.stats,
+            cap_breach: None,
         });
     }
     ledger.finish_attempt(
@@ -516,6 +621,116 @@ pub fn attempt_dir(plane: &Plane, run_id: &str, n: i64) -> PathBuf {
         .join(".bb/runs")
         .join(run_id)
         .join(format!("attempt-{n}"))
+}
+
+struct InFlightBudgetMonitor<'a> {
+    ledger: &'a Ledger,
+    run_id: &'a str,
+    attempt_id: i64,
+    task_name: &'a str,
+    harness: &'a str,
+    max_cost_usd: Option<f64>,
+    policy: String,
+    latest_stats: AttemptStats,
+    last_recorded_cost: Option<f64>,
+    breach: Option<InFlightCapBreach>,
+}
+
+struct MonitorDecision {
+    reason: String,
+}
+
+impl<'a> InFlightBudgetMonitor<'a> {
+    fn new(ledger: &'a Ledger, run_id: &'a str, attempt_id: i64, task: &'a Task) -> Self {
+        Self {
+            ledger,
+            run_id,
+            attempt_id,
+            task_name: &task.name,
+            harness: &task.agent.harness,
+            max_cost_usd: task.spec.budget.max_cost_per_run_usd,
+            policy: task
+                .agent
+                .policy
+                .side_effect_policy
+                .clone()
+                .unwrap_or_else(|| "kill".to_string()),
+            latest_stats: AttemptStats::default(),
+            last_recorded_cost: None,
+            breach: None,
+        }
+    }
+
+    fn observe(&mut self, snapshot: &ExecSnapshot<'_>) -> Option<MonitorDecision> {
+        let stats = harness::parse_partial_stats(self.harness, snapshot.stdout);
+        if stats.cost_usd.is_none()
+            && stats.tokens_in.is_none()
+            && stats.tokens_out.is_none()
+            && stats.turns.is_none()
+        {
+            return None;
+        }
+        self.latest_stats = stats;
+        let _ = self
+            .ledger
+            .update_attempt_stats(self.attempt_id, &self.latest_stats);
+        let cost = self.latest_stats.cost_usd?;
+        let changed = match self.last_recorded_cost {
+            Some(prior) => (prior - cost).abs() > f64::EPSILON,
+            None => true,
+        };
+        if changed {
+            let _ = self.ledger.record_progress(
+                self.run_id,
+                &format!(
+                    "cost observed ${cost:.4} elapsed={}s",
+                    snapshot.elapsed.as_secs()
+                ),
+            );
+            self.last_recorded_cost = Some(cost);
+        }
+        let max = self.max_cost_usd?;
+        if cost <= max || self.breach.is_some() {
+            return None;
+        }
+        let reason = format!(
+            "in-flight cost cap {}: observed ${cost:.4} > max_cost_per_run_usd ${max:.2}",
+            self.policy
+        );
+        let breach = InFlightCapBreach {
+            observed_cost_usd: cost,
+            cap_usd: max,
+            policy: self.policy.clone(),
+        };
+        let _ = self.ledger.record_budget_event(
+            Some(self.task_name),
+            "in_flight_cap_observed",
+            &reason,
+        );
+        self.breach = Some(breach);
+        match self.policy.as_str() {
+            "log" => None,
+            "kill" | "quarantine" => Some(MonitorDecision { reason }),
+            _ => Some(MonitorDecision { reason }),
+        }
+    }
+
+    fn latest_stats(&self) -> AttemptStats {
+        self.latest_stats.clone()
+    }
+
+    fn breach(&self) -> Option<InFlightCapBreach> {
+        self.breach.clone()
+    }
+}
+
+fn in_flight_monitor_interval() -> Duration {
+    std::env::var("BB_IN_FLIGHT_MONITOR_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .filter(|d| !d.is_zero())
+        .unwrap_or_else(|| Duration::from_secs(1))
 }
 
 fn missing_artifact_error(required: &[String], artifact_dir: &Path) -> Option<String> {

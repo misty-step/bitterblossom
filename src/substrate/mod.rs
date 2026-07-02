@@ -28,6 +28,18 @@ pub struct ExecResult {
     pub stdout: String,
     pub stderr: String,
     pub timed_out: bool,
+    pub termination_reason: Option<String>,
+}
+
+pub struct ExecSnapshot<'a> {
+    pub elapsed: Duration,
+    pub stdout: &'a str,
+    pub stderr: &'a str,
+}
+
+pub struct ExecMonitor<'a> {
+    pub poll_interval: Duration,
+    pub check: &'a mut dyn FnMut(&ExecSnapshot<'_>) -> Option<String>,
 }
 #[derive(Debug, PartialEq, Eq)]
 pub enum ProbeResult {
@@ -48,6 +60,7 @@ pub trait Session {
         cmd: &[String],
         stdin: Option<&str>,
         timeout: Duration,
+        monitor: Option<&mut ExecMonitor<'_>>,
     ) -> Result<ExecResult>;
     fn write_artifact(&mut self, name: &str, data: &[u8]) -> Result<()>;
     fn release(&mut self) -> Result<()>;

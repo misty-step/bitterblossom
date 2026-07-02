@@ -3,8 +3,10 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 
-use super::local::{run_with_timeout, shell_quote};
-use super::{ExecResult, ProbeResult, Session, Substrate, WorkspacePlan, CARD_FILENAME};
+use super::local::{run_with_timeout, shell_quote, RunControl};
+use super::{
+    ExecMonitor, ExecResult, ProbeResult, Session, Substrate, WorkspacePlan, CARD_FILENAME,
+};
 pub const SPRITE_BIN_ENV: &str = "BB_SPRITE_BIN";
 
 fn sprite_bin() -> String {
@@ -33,7 +35,7 @@ impl Substrate for SpritesSubstrate {
             secrets: Vec::new(),
             hermetic: false,
         };
-        let out = session.sprite_exec(&["true".into()], None, Duration::from_secs(120))?;
+        let out = session.sprite_exec(&["true".into()], None, Duration::from_secs(120), None)?;
         if out.exit_code != 0 {
             bail!(
                 "sprite '{host}' unreachable: {}",
@@ -54,8 +56,8 @@ impl Substrate for SpritesSubstrate {
             &relay_cwd(),
             &[],
             false,
-            None,
             Duration::from_secs(60),
+            RunControl::default(),
         ) {
             Ok(out) => match out.exit_code {
                 0 => ProbeResult::Alive,
@@ -88,13 +90,25 @@ impl SpriteSession {
         remote: &[String],
         stdin: Option<&str>,
         timeout: Duration,
+        monitor: Option<&mut ExecMonitor<'_>>,
     ) -> Result<ExecResult> {
         let mut cmd = vec![sprite_bin(), "exec".into()];
         cmd.extend(selector_args(&self.host));
         cmd.extend(extra_args.iter().cloned());
         cmd.push("--".into());
         cmd.extend(remote.iter().cloned());
-        run_with_timeout(&cmd, stdin, &relay_cwd(), &[], false, None, timeout)
+        run_with_timeout(
+            &cmd,
+            stdin,
+            &relay_cwd(),
+            &[],
+            false,
+            timeout,
+            RunControl {
+                pidfile: None,
+                monitor,
+            },
+        )
     }
 
     fn sprite_exec(
@@ -102,12 +116,18 @@ impl SpriteSession {
         remote: &[String],
         stdin: Option<&str>,
         timeout: Duration,
+        monitor: Option<&mut ExecMonitor<'_>>,
     ) -> Result<ExecResult> {
-        self.sprite_exec_with(&[], remote, stdin, timeout)
+        self.sprite_exec_with(&[], remote, stdin, timeout, monitor)
     }
 
     fn remote_shell(&self, script: &str, timeout: Duration) -> Result<ExecResult> {
-        self.sprite_exec(&["sh".into(), "-c".into(), script.into()], None, timeout)
+        self.sprite_exec(
+            &["sh".into(), "-c".into(), script.into()],
+            None,
+            timeout,
+            None,
+        )
     }
 }
 
@@ -128,8 +148,8 @@ impl Session for SpriteSession {
                 &relay_cwd(),
                 &[],
                 false,
-                None,
                 Duration::from_secs(300),
+                RunControl::default(),
             )?;
             if out.exit_code != 0 {
                 bail!(
@@ -182,6 +202,7 @@ impl Session for SpriteSession {
             &["true".into()],
             None,
             Duration::from_secs(120),
+            None,
         )?;
         if out.exit_code != 0 {
             bail!("card upload failed: {}", out.stderr.trim());
@@ -201,6 +222,7 @@ impl Session for SpriteSession {
                 &["true".into()],
                 None,
                 Duration::from_secs(120),
+                None,
             )?;
             if out.exit_code != 0 {
                 bail!("{name} upload failed: {}", out.stderr.trim());
@@ -212,6 +234,7 @@ impl Session for SpriteSession {
                 &["sh".into(), "-c".into(), pre.clone()],
                 None,
                 Duration::from_secs(600),
+                None,
             )?;
             if out.exit_code != 0 {
                 bail!("pre_command failed: {}", out.stderr.trim());
@@ -225,6 +248,7 @@ impl Session for SpriteSession {
         cmd: &[String],
         stdin: Option<&str>,
         timeout: Duration,
+        monitor: Option<&mut ExecMonitor<'_>>,
     ) -> Result<ExecResult> {
         let exports: String = self
             .secrets
@@ -264,8 +288,9 @@ impl Session for SpriteSession {
             &["setsid".into(), "-w".into(), "sh".into()],
             Some(&script),
             timeout,
+            monitor,
         )?;
-        if result.timed_out {
+        if result.timed_out || result.termination_reason.is_some() {
             let kill = format!(
                 "pid=\"$(cat /tmp/{}.pid 2>/dev/null)\" && kill -9 -- \"-$pid\" 2>/dev/null; true",
                 self.marker

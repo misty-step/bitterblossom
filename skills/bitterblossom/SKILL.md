@@ -47,7 +47,7 @@ Read the output for:
 
 - loaded tasks and agent versions;
 - parked tasks and budget ceilings;
-- recent failures, dead letters, and costs;
+- recent failures, dead letters, in-flight cap kills, and costs;
 - whether a task is reflex (`webhook`/`cron`) or dispatch (`manual`).
 
 ## Route
@@ -98,6 +98,10 @@ Detailed command recipes: `references/operator-recipes.md`.
 - A parked task is intentionally blocked. Inspect the reason before `unpark`.
 - Dead letters are pre-execute failures. At/after execute, use operator
   resolution paths because the run may have side effects.
+- Streaming harness usage is metered while the run is executing. If
+  `max_cost_per_run_usd` is breached, the agent policy chooses `kill`,
+  `quarantine`, or `log`; `kill` and `quarantine` must emit notification
+  outbox rows such as `run_in_flight_cap_killed`.
 
 ## Submission Storm
 

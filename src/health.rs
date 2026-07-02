@@ -95,6 +95,11 @@ pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
                 "max_runs_per_day": task.spec.budget.max_runs_per_day,
                 "max_cost_per_run_usd": task.spec.budget.max_cost_per_run_usd,
                 "timeout_minutes": task.spec.budget.timeout_minutes,
+                "cost_enforcement": {
+                    "mode": task.agent.policy.side_effect_policy.as_deref().unwrap_or("kill"),
+                    "in_flight": task.spec.budget.max_cost_per_run_usd.is_some(),
+                    "source": "task.max_cost_per_run_usd plus agent.policy.side_effect_policy",
+                },
             },
             "runs": {
                 "recent": task_runs.len(),
@@ -161,6 +166,11 @@ pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
         .filter_map(|r| plane.task(&r.task).ok())
         .filter_map(|t| t.spec.budget.max_cost_per_run_usd)
         .sum();
+    let reserved_usd = if reserved_usd == 0.0 {
+        0.0
+    } else {
+        reserved_usd
+    };
 
     Ok(json!({
         "generated_at": generated_at.format(&Rfc3339)?,
@@ -200,7 +210,9 @@ pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
                 "runs": running.len(),
                 "cost_usd": in_flight_cost,
                 "reserved_usd": reserved_usd,
-                "policy": "reserved = sum(max_cost_per_run_usd) over running runs; the global daily ceiling (max_cost_per_day_usd) is still enforced by budget::pre_dispatch_check on every dispatch.",
+                "spent_today_usd": ledger.cost_today()?,
+                "enforcement_mode": "streaming harness usage updates attempt cost while running; max_cost_per_run_usd breaches follow agent.policy.side_effect_policy (default kill)",
+                "policy": "reserved = sum(max_cost_per_run_usd) over running runs; observed in-flight cost is metered from streaming harness usage and can kill/quarantine/log on max_cost_per_run_usd breach; the global daily ceiling (max_cost_per_day_usd) is still enforced by budget::pre_dispatch_check on every dispatch.",
             },
             "gate": gate_policy,
             "attention_debt": attention_debt,
