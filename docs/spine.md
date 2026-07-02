@@ -322,6 +322,11 @@ The ledger is the system of record; everything reads from it:
   `GET /api/submissions`
   (submissions + verdicts + rejection reasons) — the agent-facing read
   API, same shapes as the `--json` CLI.
+- The required v1 read-surface fields are pinned in
+  `tests/fixtures/contracts/bb.agent_read_surfaces.v1.schema.json` and
+  validated against live CLI output plus HTTP API mirrors by
+  `tests/agent_contract_fixtures.rs`. Additive fields are allowed; removing
+  or renaming a required path needs a new major schema.
 - Auth: set `BB_API_TOKEN` on the plane and send
   `Authorization: Bearer <token>`. Query-string tokens are rejected so
   credentials do not leak through URLs, logs, or browser history. Unset =

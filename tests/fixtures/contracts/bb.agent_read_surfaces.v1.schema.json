@@ -1,0 +1,148 @@
+{
+  "schema_version": "bb.agent_read_surfaces.v1",
+  "compatibility": "Required paths and types are stable for consuming agents. Additive fields are allowed; removing or renaming a required path requires a new major schema.",
+  "surfaces": [
+    {
+      "name": "task_list",
+      "required": [
+        { "path": "/0/task", "type": "string" },
+        { "path": "/0/agent", "type": "string" },
+        { "path": "/0/substrate", "type": "string" },
+        { "path": "/0/triggers", "type": "number" },
+        { "path": "/0/runs_today", "type": "number" },
+        { "path": "/0/verdict", "type": "string|null" },
+        { "path": "/0/parked", "type": "string|null" },
+        { "path": "/0/max_runs_per_day", "type": "number|null" }
+      ]
+    },
+    {
+      "name": "api_tasks",
+      "required": [
+        { "path": "/0/task", "type": "string" },
+        { "path": "/0/agent", "type": "string" },
+        { "path": "/0/harness", "type": "string" },
+        { "path": "/0/substrate", "type": "string" },
+        { "path": "/0/triggers", "type": "number" },
+        { "path": "/0/trigger_details", "type": "array" },
+        { "path": "/0/policy", "type": "object" }
+      ]
+    },
+    {
+      "name": "runs_list",
+      "required": [
+        { "path": "/0/id", "type": "string" },
+        { "path": "/0/task", "type": "string" },
+        { "path": "/0/trigger_kind", "type": "string" },
+        { "path": "/0/state", "type": "string" },
+        { "path": "/0/trace_id", "type": "string" },
+        { "path": "/0/created_at", "type": "string" },
+        { "path": "/0/updated_at", "type": "string" },
+        { "path": "/0/agent_name", "type": "string|null" },
+        { "path": "/0/agent_version", "type": "number|null" },
+        { "path": "/0/cost_usd", "type": "number|null" },
+        { "path": "/0/duration_ms", "type": "number|null" }
+      ]
+    },
+    {
+      "name": "api_runs",
+      "required": [
+        { "path": "/0/id", "type": "string" },
+        { "path": "/0/task", "type": "string" },
+        { "path": "/0/trigger_kind", "type": "string" },
+        { "path": "/0/state", "type": "string" },
+        { "path": "/0/trace_id", "type": "string" },
+        { "path": "/0/created_at", "type": "string" },
+        { "path": "/0/updated_at", "type": "string" }
+      ]
+    },
+    {
+      "name": "runs_show",
+      "required": [
+        { "path": "/run/id", "type": "string" },
+        { "path": "/run/task", "type": "string" },
+        { "path": "/run/state", "type": "string" },
+        { "path": "/run/trace_id", "type": "string" },
+        { "path": "/attempts/0/id", "type": "number" },
+        { "path": "/attempts/0/n", "type": "number" },
+        { "path": "/attempts/0/agent_name", "type": "string" },
+        { "path": "/attempts/0/agent_version", "type": "number" },
+        { "path": "/attempts/0/harness", "type": "string" },
+        { "path": "/attempts/0/model", "type": "string" },
+        { "path": "/attempts/0/phase", "type": "string" },
+        { "path": "/events/0/run_id", "type": "string" },
+        { "path": "/events/0/kind", "type": "string" },
+        { "path": "/progress/classification", "type": "string" },
+        { "path": "/progress/safe_next_action/kind", "type": "string" },
+        { "path": "/progress/safe_next_action/reason", "type": "string" }
+      ]
+    },
+    {
+      "name": "api_runs_show",
+      "required": [
+        { "path": "/run/id", "type": "string" },
+        { "path": "/run/task", "type": "string" },
+        { "path": "/run/state", "type": "string" },
+        { "path": "/run/trace_id", "type": "string" },
+        { "path": "/attempts/0/id", "type": "number" },
+        { "path": "/attempts/0/n", "type": "number" },
+        { "path": "/attempts/0/agent_name", "type": "string" },
+        { "path": "/attempts/0/phase", "type": "string" },
+        { "path": "/events/0/run_id", "type": "string" },
+        { "path": "/events/0/kind", "type": "string" }
+      ]
+    },
+    {
+      "name": "dlq_list",
+      "required": [
+        { "path": "/0/id", "type": "number" },
+        { "path": "/0/run_id", "type": "string" },
+        { "path": "/0/task", "type": "string" },
+        { "path": "/0/error", "type": "string" },
+        { "path": "/0/created_at", "type": "string" },
+        { "path": "/0/status", "type": "string" },
+        { "path": "/0/replayed_run_id", "type": "string|null" },
+        { "path": "/0/acknowledged_reason", "type": "string|null" }
+      ]
+    },
+    {
+      "name": "api_dlq",
+      "required": [
+        { "path": "/0/id", "type": "number" },
+        { "path": "/0/run_id", "type": "string" },
+        { "path": "/0/task", "type": "string" },
+        { "path": "/0/error", "type": "string" },
+        { "path": "/0/created_at", "type": "string" },
+        { "path": "/0/status", "type": "string" }
+      ]
+    },
+    {
+      "name": "gate",
+      "required": [
+        { "path": "/submission", "type": "string" },
+        { "path": "/change_key", "type": "string" },
+        { "path": "/rev", "type": "string" },
+        { "path": "/round", "type": "number" },
+        { "path": "/max_rounds", "type": "number" },
+        { "path": "/decision", "type": "string" },
+        { "path": "/members/0/kind", "type": "string" },
+        { "path": "/members/0/status", "type": "string" },
+        { "path": "/blocking", "type": "array" },
+        { "path": "/advisory", "type": "array" },
+        { "path": "/rejected", "type": "array" }
+      ]
+    },
+    {
+      "name": "api_gate",
+      "required": [
+        { "path": "/submission", "type": "string" },
+        { "path": "/change_key", "type": "string" },
+        { "path": "/rev", "type": "string" },
+        { "path": "/round", "type": "number" },
+        { "path": "/max_rounds", "type": "number" },
+        { "path": "/decision", "type": "string" },
+        { "path": "/members/0/kind", "type": "string" },
+        { "path": "/members/0/status", "type": "string" }
+      ]
+    }
+  ]
+}

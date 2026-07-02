@@ -6,8 +6,11 @@
 //! `dev = true` local plane, no secrets, no network.
 
 use std::fs;
-use std::process::{Command, Output};
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::process::{Child, Command, Output, Stdio};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 static BB_CMD_LOCK: Mutex<()> = Mutex::new(());
 
@@ -65,6 +68,83 @@ fn bb(root: &str, args: &[&str]) -> Output {
         .unwrap()
 }
 
+fn free_loopback_port() -> u16 {
+    TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+fn wait_for_http(port: u16) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) {
+            let _ = stream.set_read_timeout(Some(Duration::from_millis(250)));
+            let _ = stream
+                .write_all(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+            let mut response = String::new();
+            if stream.read_to_string(&mut response).is_ok() && response.starts_with("HTTP/1.1") {
+                return;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!("server did not listen on port {port}");
+}
+
+fn http_get_json(port: u16, path: &str) -> serde_json::Value {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let request = format!(
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer test-token\r\nConnection: close\r\n\r\n"
+    );
+    let mut last_error = None;
+    while Instant::now() < deadline {
+        match TcpStream::connect(("127.0.0.1", port)).and_then(|mut stream| {
+            stream.write_all(request.as_bytes())?;
+            let mut response = String::new();
+            stream.read_to_string(&mut response)?;
+            Ok(response)
+        }) {
+            Ok(response) if response.starts_with("HTTP/1.1 200") => {
+                let body = response.split("\r\n\r\n").nth(1).unwrap_or("");
+                return serde_json::from_str(body)
+                    .unwrap_or_else(|e| panic!("{path} returned invalid json: {e}: {body}"));
+            }
+            Ok(response) => last_error = Some(response.lines().next().unwrap_or("").to_string()),
+            Err(e) => last_error = Some(e.to_string()),
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!(
+        "GET {path} on port {port} did not return JSON: {}",
+        last_error.unwrap_or_else(|| "timed out".to_string())
+    );
+}
+
+struct ChildGuard(Child);
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn start_api(root: &str) -> (u16, ChildGuard) {
+    let port = free_loopback_port();
+    let child = Command::new(env!("CARGO_BIN_EXE_bb"))
+        .args(["--config", root, "serve"])
+        .env("BB_INGRESS_BIND", format!("127.0.0.1:{port}"))
+        .env("BB_API_TOKEN", "test-token")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_for_http(port);
+    (port, ChildGuard(child))
+}
+
 fn json_ok(root: &str, args: &[&str]) -> serde_json::Value {
     let out = bb(root, args);
     assert!(
@@ -94,6 +174,167 @@ fn top_arr(v: &serde_json::Value) -> &[serde_json::Value] {
 fn as_arr<'a>(v: &'a serde_json::Value, k: &str) -> &'a [serde_json::Value] {
     v[k].as_array()
         .unwrap_or_else(|| panic!("'{k}' not an array: {}", v[k]))
+}
+
+#[derive(Debug)]
+struct Requirement {
+    surface: String,
+    path: String,
+    type_name: String,
+}
+
+fn read_contract_requirements() -> Vec<Requirement> {
+    let doc: serde_json::Value = serde_json::from_str(include_str!(
+        "fixtures/contracts/bb.agent_read_surfaces.v1.schema.json"
+    ))
+    .unwrap();
+    assert_eq!(doc["schema_version"], "bb.agent_read_surfaces.v1");
+    let mut out = Vec::new();
+    for surface in doc["surfaces"].as_array().unwrap() {
+        let name = surface["name"].as_str().unwrap().to_string();
+        for req in surface["required"].as_array().unwrap() {
+            out.push(Requirement {
+                surface: name.clone(),
+                path: req["path"].as_str().unwrap().to_string(),
+                type_name: req["type"].as_str().unwrap().to_string(),
+            });
+        }
+    }
+    out
+}
+
+fn values_at_path<'a>(value: &'a serde_json::Value, path: &str) -> Vec<&'a serde_json::Value> {
+    fn walk<'a>(
+        value: &'a serde_json::Value,
+        segments: &[&str],
+        out: &mut Vec<&'a serde_json::Value>,
+    ) {
+        if segments.is_empty() {
+            out.push(value);
+            return;
+        }
+        let (head, tail) = segments.split_first().unwrap();
+        if *head == "*" {
+            if let Some(items) = value.as_array() {
+                for item in items {
+                    walk(item, tail, out);
+                }
+            }
+        } else if let Ok(index) = head.parse::<usize>() {
+            if let Some(item) = value.as_array().and_then(|items| items.get(index)) {
+                walk(item, tail, out);
+            }
+        } else if let Some(item) = value.get(*head) {
+            walk(item, tail, out);
+        }
+    }
+
+    let segments: Vec<_> = path.trim_start_matches('/').split('/').collect();
+    let mut out = Vec::new();
+    walk(value, &segments, &mut out);
+    out
+}
+
+fn value_matches_type(value: &serde_json::Value, type_name: &str) -> bool {
+    match type_name {
+        "string" => value.is_string(),
+        "number" => value.is_number(),
+        "object" => value.is_object(),
+        "array" => value.is_array(),
+        "boolean" => value.is_boolean(),
+        "null" => value.is_null(),
+        "string|null" => value.is_string() || value.is_null(),
+        "number|null" => value.is_number() || value.is_null(),
+        "boolean|null" => value.is_boolean() || value.is_null(),
+        other => panic!("unknown contract type {other}"),
+    }
+}
+
+fn assert_contract_surface(surface: &str, value: &serde_json::Value) {
+    let requirements = read_contract_requirements();
+    let mut matched = 0;
+    for req in requirements.iter().filter(|req| req.surface == surface) {
+        matched += 1;
+        let values = values_at_path(value, &req.path);
+        assert!(
+            !values.is_empty(),
+            "{surface} missing required path {} in {value}",
+            req.path
+        );
+        for found in values {
+            assert!(
+                value_matches_type(found, &req.type_name),
+                "{surface} path {} expected {}, got {found}",
+                req.path,
+                req.type_name
+            );
+        }
+    }
+    assert!(matched > 0, "no contract requirements for {surface}");
+}
+
+#[test]
+fn versioned_agent_read_surface_contract_fixture_validates_cli_and_api() {
+    let dir = tempfile::tempdir().unwrap();
+    write_local_plane(dir.path());
+    let root = dir.path().to_str().unwrap();
+    let run = json_ok(root, &["run", "hello", "--json"]);
+    let run_id = as_str(&run["run"], "id").to_string();
+    fs::write(
+        dir.path().join("tasks/hello/task.toml"),
+        "agent = \"local-command\"\nsubstrate = \"local\"\npre_command = \"exit 7\"\n[[trigger]]\nkind = \"manual\"\n",
+    )
+    .unwrap();
+    assert!(!bb(root, &["run", "hello", "--json"]).status.success());
+    let (port, _api) = start_api(root);
+
+    for (surface, doc) in [
+        ("task_list", json_ok(root, &["task", "list", "--json"])),
+        ("runs_list", json_ok(root, &["runs", "list", "--json"])),
+        (
+            "runs_show",
+            json_ok(root, &["runs", "show", &run_id, "--json"]),
+        ),
+        ("dlq_list", json_ok(root, &["dlq", "list", "--json"])),
+        ("api_tasks", http_get_json(port, "/api/tasks")),
+        ("api_runs", http_get_json(port, "/api/runs")),
+        (
+            "api_runs_show",
+            http_get_json(port, &format!("/api/runs/{run_id}")),
+        ),
+        ("api_dlq", http_get_json(port, "/api/dlq")),
+    ] {
+        assert_contract_surface(surface, &doc);
+    }
+
+    let gate_dir = tempfile::tempdir().unwrap();
+    write_gate_plane(gate_dir.path());
+    let gate_root = gate_dir.path().to_str().unwrap();
+    let sub = json_ok(
+        gate_root,
+        &[
+            "submit", "open", "--change", "c1", "--rev", "deadbeef", "--json",
+        ],
+    );
+    let sub_id = as_str(&sub, "id").to_string();
+    assert!(bb(
+        gate_root,
+        &[
+            "run",
+            "verify",
+            "--payload",
+            &format!("{{\"submission\":\"{sub_id}\"}}"),
+            "--json"
+        ]
+    )
+    .status
+    .success());
+    let (gate_port, _api) = start_api(gate_root);
+    assert_contract_surface(
+        "gate",
+        &json_ok(gate_root, &["gate", "--change", "c1", "--json"]),
+    );
+    assert_contract_surface("api_gate", &http_get_json(gate_port, "/api/gate?change=c1"));
 }
 
 #[test]
