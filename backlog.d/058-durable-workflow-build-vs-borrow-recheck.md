@@ -33,7 +33,7 @@ wins.
 1. [x] Capture stress and recovery evidence after 050/051.
 2. [x] Compare required primitives: queues, retries, leases, recovery, visibility,
    cost tracking, sandbox dispatch, and file-first workload config.
-3. Define one repeatable coding-harness workload and scoring rubric: cold start,
+3. [x] Define one repeatable coding-harness workload and scoring rubric: cold start,
    max runtime, disk/workspace size, persistent state, streaming/interactive
    affordances, secret handling, artifact extraction, network egress,
    concurrency/cost, failure recovery, and operator CLI ergonomics.
@@ -61,3 +61,5 @@ Evidence:
   `docs/build-vs-borrow/2026-07-02-stress-recovery-evidence.md`.
 - 2026-07-02 child 2 defined the required primitive baseline in
   `docs/build-vs-borrow/2026-07-02-required-primitives.md`.
+- 2026-07-02 child 3 defined the repeatable coding-harness workload and
+  scoring rubric in `docs/build-vs-borrow/2026-07-02-workload-rubric.md`.
