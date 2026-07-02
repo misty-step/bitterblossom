@@ -1,0 +1,45 @@
+agent = "docs-watcher"
+substrate = "sprites"
+required_artifacts = ["REPORT.json"]
+
+[workspace]
+host = "example-org/docs-lane-1"
+repos = [
+  { url = "https://github.com/example-org/product-api.git", ref = "main" },
+  { url = "https://github.com/example-org/docs-styleguide.git", ref = "main" },
+]
+
+[budget]
+timeout_minutes = 25
+max_runs_per_day = 12
+max_cost_per_run_usd = 0.5
+turn_cap = 35
+
+[[trigger]]
+kind = "manual"
+
+[[trigger]]
+kind = "cron"
+schedule = "0 15 * * 1"
+
+[[trigger]]
+kind = "webhook"
+route = "docs-sync"
+secret_env = "BB_HOOK_DOCS_SYNC"
+dedupe_key = "header:X-GitHub-Delivery"
+
+[[trigger.filter]]
+pointer = "/repository/full_name"
+any_of = ["example-org/product-api"]
+
+[[trigger.filter]]
+pointer = "/repository/owner/login"
+any_of = ["example-org"]
+
+[[trigger.filter]]
+pointer = "/ref"
+any_of = ["refs/heads/main"]
+
+[[trigger.filter]]
+pointer = "/sender/login"
+not_any_of = ["dependabot[bot]", "renovate[bot]"]
