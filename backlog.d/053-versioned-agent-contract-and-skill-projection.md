@@ -72,3 +72,14 @@ serves epic 076.
 - The fixture deliberately tolerates additive fields but fails removed,
   renamed, or type-changed required paths, giving consuming agents a concrete
   contract file to diff.
+
+### 2026-07-02 skill projection decision slice
+
+- Added ADR-006: `skills/bitterblossom/` in this repo is the single source of
+  truth for the portable agent interface.
+- Accepted projection paths are source-entry bootstrap, symlink, or automated
+  whole-folder replacement. Manual copied skill folders are explicitly not an
+  accepted editing surface.
+- Strengthened `tests/skill_artifacts.rs` to gate the ADR, source path, and
+  duplicate-alias invariant while keeping `.agents/skills/bb-dogfood/` as the
+  repo-local dogfood interface.

@@ -195,7 +195,8 @@ metadata travel with it.
 
 Harness Kit integration should keep one source of truth. Prefer a source entry,
 bootstrap projection, or explicit symlink from Harness Kit to this folder over a
-manual copied skill that can drift.
+manual copied skill that can drift. The durable decision is
+`docs/adr/006-skill-projection.md`.
 
 ## Closeout Evidence
 
