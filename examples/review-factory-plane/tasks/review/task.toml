@@ -1,0 +1,49 @@
+agent = "reviewer"
+substrate = "sprites"
+required_artifacts = ["REPORT.json"]
+
+[workspace]
+host = "example-org/review-lane-1"
+repos = [
+  { url = "https://github.com/example-org/product-api.git", ref = "main" },
+  { url = "https://github.com/example-org/review-rules.git", ref = "main" },
+]
+
+[budget]
+timeout_minutes = 30
+max_runs_per_day = 20
+max_cost_per_run_usd = 1.25
+turn_cap = 40
+
+[[trigger]]
+kind = "manual"
+
+[[trigger]]
+kind = "webhook"
+route = "review-factory"
+secret_env = "BB_HOOK_REVIEW_FACTORY"
+dedupe_key = "header:X-GitHub-Delivery"
+
+[[trigger.filter]]
+pointer = "/repository/owner/login"
+any_of = ["example-org"]
+
+[[trigger.filter]]
+pointer = "/action"
+any_of = ["opened", "ready_for_review", "synchronize", "reopened"]
+
+[[trigger.filter]]
+pointer = "/sender/login"
+not_any_of = ["dependabot[bot]", "renovate[bot]"]
+
+[[trigger.filter]]
+pointer = "/pull_request/draft"
+equals = false
+
+[[trigger.filter]]
+pointer = "/pull_request/additions"
+max = 2500
+
+[[trigger.filter]]
+pointer = "/pull_request/changed_files"
+max = 50

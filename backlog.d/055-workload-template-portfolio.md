@@ -21,7 +21,7 @@ production-shaped workload templates after the control plane is hardened.
 
 ## Children
 
-1. Extract a credential-free review-factory template from `plane/`.
+1. [x] Extract a credential-free review-factory template from `plane/`.
 2. Shape a canary/incident responder template from the Tansy direction.
 3. Shape a docs-sync or monitor watcher template.
 4. Add template validation to the repo gate where feasible.
@@ -50,3 +50,11 @@ backlog 071. These children are copyable *starter templates* (review-factory,
 canary/incident, monitor/docs watcher) that make the value prop portable, not
 that make this plane do more work. Child 1 (review-factory template) is gated on
 051's recovery evidence per above — graduate it to a ready ticket once 051 lands.
+
+## Slice 2026-07-02
+
+Child 1 landed as `examples/review-factory-plane/`: public plane/task/agent
+files, scoped-key policy, webhook trigger filters, budgets, sample GitHub PR
+payload, sample `REPORT.json`, and a README validation recipe. The repo gate now
+runs `bb check` against the template, and the task-card contract test covers its
+lane card. The remaining children are separate templates and stay open.
