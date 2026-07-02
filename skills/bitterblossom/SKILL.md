@@ -91,6 +91,7 @@ decision says otherwise.
 | Trigger manual work | `bb --config <plane> run <task> --payload '<json>' --json` |
 | Dispatch a manual builder lane | `bb --config <plane> run build --payload '{"backlog":"<id-or-path>"}' --json` |
 | Diagnose failed CI | `bb --config <plane> run ci-diagnose --payload '{"repo":"owner/repo","head_sha":"<sha>"}' --json` |
+| Run a report-only lifecycle reflex | `bb --config <plane> run <reflex> --payload-file EVENT.json --json` where `<reflex>` is `fix-prompt`, `deploy-prod-verify`, `canary-triage`, `backlog-chewer-dry-run`, or `lifecycle-orchestrator` (each writes `REPORT.json`, no mutation; see `docs/rollout-scorecards.md`) |
 | Compare candidate model configs | Run at least three candidate tasks, then `bb --config <plane> run model-eval --payload '<json>' --json` |
 | Inspect ledger | `bb --config <plane> runs list --json`; `bb --config <plane> runs show <id> --json` |
 | Export run telemetry | `bb --config <plane> runs export` (`bb.run_telemetry.v1` JSONL) |
