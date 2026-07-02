@@ -37,7 +37,7 @@ wins.
    max runtime, disk/workspace size, persistent state, streaming/interactive
    affordances, secret handling, artifact extraction, network egress,
    concurrency/cost, failure recovery, and operator CLI ergonomics.
-4. Prototype only the smallest adapter probes needed to score the candidates.
+4. [x] Prototype only the smallest adapter probes needed to score the candidates.
 5. Write the decision memo.
 6. Emit follow-up only if the memo changes the architecture.
 
@@ -63,3 +63,6 @@ Evidence:
   `docs/build-vs-borrow/2026-07-02-required-primitives.md`.
 - 2026-07-02 child 3 defined the repeatable coding-harness workload and
   scoring rubric in `docs/build-vs-borrow/2026-07-02-workload-rubric.md`.
+- 2026-07-02 child 4 added `scripts/build-vs-borrow-local-probe.sh` and
+  recorded the local baseline evidence in
+  `docs/build-vs-borrow/2026-07-02-local-probe-evidence.md`.
