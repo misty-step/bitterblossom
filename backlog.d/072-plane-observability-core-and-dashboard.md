@@ -25,17 +25,17 @@ dashboard on top for humans, with no workload logic in the spine.
 
 ## Children
 
-1. **Core read-surface gaps** (P1, ready, S). Fill the four MISSING/partial
+1. [x] **Core read-surface gaps** (P1, ready, S). Fill the four MISSING/partial
    reads found in the surface audit: (a) trigger detail in `/api/tasks`
    (kind/route/cron-schedule, not just a count); (b) `GET /api/leases` +
    `Ledger::list_leases()` (in-flight host leases); (c) trigger/ingress
    activity (last cron/webhook fired, over the already-populated
    `ingress_events` table); (d) run-level tokens + a `GET /api/export` mirror of
    `bb runs export`. Each is a near-verbatim mirror of existing query/CLI code.
-2. **Read-API shape consistency** (P2, ready, S) — **see backlog 066** (the
+2. [x] **Read-API shape consistency** (P2, ready, S) — **see backlog 066** (the
    `bb gate` top-level `rev` vs `/api/submissions` nested `submission.rev`
    bug). Kept standalone; this epic depends on it for correct summarization.
-3. **Thin static dashboard** (P2, ready, M). Finish `operator.html`
+3. [ ] **Thin static dashboard** (P2, ready, M). Finish `operator.html`
    (`src/serve.rs` `GET /`) into a drill-down dashboard with Configured /
    Running / History / Health views. Notification-first, drill-down — not a
    pane of glass to watch (project.md:83-84). No new workload logic.
@@ -66,3 +66,17 @@ exist** — this is *finishing* it (4 thin reads + the HTML), hence the tiny
 budget. CLI stays the first-class interface for the primary user (the agent);
 the dashboard is one more human-oriented layer. Consolidates 066 as child 2 by
 reference (066 stays its own pickup-able ticket).
+
+## Delivery Notes
+
+### 2026-07-02 read-route drill coverage
+
+- Confirmed the core read mirrors exist in `src/serve.rs` and are covered by
+  `tests/serve.rs::read_api_exposes_dashboard_observability_routes`.
+- Extended `scripts/control-loop-drill.sh` to curl the full dashboard route set
+  in open-loopback and bearer-token modes: `/api/status`, `/api/tasks`,
+  `/api/runs`, `/api/dlq`, `/api/notify`, `/api/leases`, `/api/ingress`,
+  `/api/export`, `/api/submissions`, and `/`.
+- Backlog 066 is archived and covers the `/api/submissions` summary-shape
+  consistency child.
+- Focused verification: `scripts/control-loop-drill.sh`.
