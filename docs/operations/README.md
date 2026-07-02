@@ -121,6 +121,34 @@ Healthy output has `backup.status == "fresh"` and `backup.healthy == true`.
 Treat `stale`, `unknown`, or a missing heartbeat as a production-readiness
 failure before raising unattended workload volume.
 
+The production container starts through `bb-litestream-entrypoint`. Fly keeps
+the instance data volume mounted at `/app/plane` and sets the Litestream runtime
+contract by env name only:
+
+```sh
+BB_LITESTREAM_REQUIRED=1
+BB_LITESTREAM_DB_PATH=/app/plane/.bb/plane.db
+BB_LITESTREAM_CONFIG=/tmp/bb-litestream.yml
+BB_LITESTREAM_REPLICA_URL_ENV=LITESTREAM_REPLICA_URL
+BB_LITESTREAM_HEARTBEAT_PATH=/app/plane/.bb/backup-last-success
+BB_LITESTREAM_STARTUP_TIMEOUT_SECONDS=60
+```
+
+Set the actual replica URL as a Fly secret, never in git:
+
+```sh
+printf 'LITESTREAM_REPLICA_URL=%s\n' "$LITESTREAM_REPLICA_URL" \
+  | flyctl secrets import --app "$BB_FLY_APP"
+```
+
+On startup, the entrypoint writes a temporary Litestream config containing
+`${LITESTREAM_REPLICA_URL}`, starts `litestream replicate -config`, waits for an
+initial `litestream sync -wait`, and writes the heartbeat only after sync
+confirms a durable remote write. If `BB_LITESTREAM_REQUIRED=1` and the secret is
+missing, the initial sync does not complete, or Litestream exits while
+`bb serve` is still running, the container exits instead of accepting
+unprotected work.
+
 ## Rollback
 
 List recent releases, pick the previous known-good version, then rollback:
@@ -172,8 +200,19 @@ pre-execute dead letters are mechanically replayable.
 
 ## Backup And Restore
 
-Production backup copies the volume-backed SQLite database from inside the Fly
-machine, then verifies the copy locally before it is trusted:
+Production replication is Litestream-backed. To prove the current replica before
+an incident, run a dry-run restore inside the machine and read the backup health
+surface:
+
+```sh
+flyctl ssh console --app "$BB_FLY_APP" --command '
+  litestream restore -config /tmp/bb-litestream.yml -dry-run -json /app/plane/.bb/plane.db
+  BB_PLANE_DIR=/app/plane bb status --json
+'
+```
+
+For an operator-held backup copy, copy the volume-backed SQLite database from
+inside the Fly machine, then verify the copy locally before it is trusted:
 
 ```sh
 mkdir -p .ops/backups
@@ -190,10 +229,15 @@ PY
 ```
 
 Restore is a manual incident action. Stop the machine, upload the verified
-backup to the mounted path, restart, then run the smoke:
+backup or restore from the Litestream replica to the mounted path, restart, then
+run the smoke:
 
 ```sh
 flyctl machines stop --app "$BB_FLY_APP" <machine-id>
+flyctl ssh console --app "$BB_FLY_APP" --command '
+  rm -f /app/plane/.bb/plane.db /app/plane/.bb/plane.db-wal /app/plane/.bb/plane.db-shm
+  litestream restore -config /tmp/bb-litestream.yml -json /app/plane/.bb/plane.db
+'
 flyctl ssh sftp shell --app "$BB_FLY_APP"
 # Inside sftp:
 # put .ops/backups/<backup-file>.db /app/plane/.bb/plane.db
@@ -218,6 +262,7 @@ flyctl secrets list --app "$BB_FLY_APP"
   printf 'OPENROUTER_API_KEY=%s\n' "$OPENROUTER_API_KEY"
   printf 'GH_TOKEN=%s\n' "$GH_TOKEN"
   printf 'SPRITE_TOKEN=%s\n' "$SPRITE_TOKEN"
+  printf 'LITESTREAM_REPLICA_URL=%s\n' "$LITESTREAM_REPLICA_URL"
 } | flyctl secrets import --app "$BB_FLY_APP"
 ```
 

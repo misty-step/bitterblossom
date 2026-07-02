@@ -297,13 +297,18 @@ Deployment contract:
   secret env name, RPO/RTO, and heartbeat file. `bb status --json` reports
   `backup.status` from that heartbeat without reading replica secrets; a stale
   or missing heartbeat means the ledger is not protected enough for unattended
-  growth.
+  growth. The production image starts through `bb-litestream-entrypoint`, which
+  fails closed when `BB_LITESTREAM_REQUIRED=1` and the replica secret env is
+  missing, starts `litestream replicate -config`, waits for the first
+  `litestream sync -wait`, and writes the heartbeat only after sync confirms the
+  volume-backed ledger has replicated.
 - Image: [Dockerfile](../Dockerfile) builds the Rust `bb` binary and installs
-  the pinned Linux Sprite CLI; it must not `COPY plane`. [fly.toml](../fly.toml)
-  sets `BB_PLANE_DIR` and `BB_SPRITE_BIN`.
+  the pinned Linux Sprite CLI plus pinned Litestream; it must not `COPY plane`.
+  [fly.toml](../fly.toml) sets `BB_PLANE_DIR`, `BB_SPRITE_BIN`, and the
+  Litestream env-name contract without storing the replica URL.
 - Runtime secrets live on Fly, never in git: `BB_API_TOKEN`,
   `BB_HOOK_REVIEW`, `BB_HOOK_CI_DIAGNOSE`, `OPENROUTER_API_KEY`, `GH_TOKEN`,
-  and `SPRITE_TOKEN`.
+  `SPRITE_TOKEN`, and `LITESTREAM_REPLICA_URL`.
 - GitHub `pull_request` webhooks for the reviewed repo subset point at
   `https://bitterblossom-plane.fly.dev/hooks/review`; the current subset is
   `misty-step/bitterblossom`, enforced again by the task filter. In-scope

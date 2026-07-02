@@ -220,6 +220,10 @@ fn operations_runbook_and_drill_are_wired_into_the_gate() {
     let ops = read("docs/operations/README.md");
     assert!(ops.contains("scripts/production-ops-drill.sh --remote"));
     assert!(ops.contains("scripts/production-ops-drill.sh --local"));
+    assert!(ops.contains("BB_LITESTREAM_REQUIRED=1"));
+    assert!(ops.contains("BB_LITESTREAM_REPLICA_URL_ENV=LITESTREAM_REPLICA_URL"));
+    assert!(ops.contains("LITESTREAM_REPLICA_URL=%s"));
+    assert!(ops.contains("litestream restore -config /tmp/bb-litestream.yml"));
     assert!(ops.contains("backup.status == \"fresh\""));
     assert!(ops.contains("last_success_path = \".bb/backup-last-success\""));
     assert!(ops.contains("flyctl releases rollback"));
@@ -238,6 +242,25 @@ fn operations_runbook_and_drill_are_wired_into_the_gate() {
     assert!(script.contains("curl --config -"));
     assert!(!script.contains("-H \"Authorization: Bearer $BB_API_TOKEN\""));
     assert!(!script.contains("?token="));
+
+    let dockerfile = read("Dockerfile");
+    assert!(dockerfile.contains("ARG LITESTREAM_VERSION=0.5.13"));
+    assert!(dockerfile.contains("litestream-${LITESTREAM_VERSION}-linux-${litestream_arch}.tar.gz"));
+    assert!(dockerfile.contains("ENTRYPOINT [\"/usr/local/bin/bb-litestream-entrypoint\"]"));
+    assert!(!dockerfile.contains("LITESTREAM_REPLICA_URL="));
+
+    let fly = read("fly.toml");
+    assert!(fly.contains("BB_LITESTREAM_REQUIRED = \"1\""));
+    assert!(fly.contains("BB_LITESTREAM_DB_PATH = \"/app/plane/.bb/plane.db\""));
+    assert!(fly.contains("BB_LITESTREAM_REPLICA_URL_ENV = \"LITESTREAM_REPLICA_URL\""));
+    assert!(fly.contains("BB_LITESTREAM_HEARTBEAT_PATH = \"/app/plane/.bb/backup-last-success\""));
+    assert!(!fly.contains("s3://"));
+
+    let entrypoint = read("scripts/bb-litestream-entrypoint.sh");
+    assert!(entrypoint.contains("litestream replicate -config \"$config_path\""));
+    assert!(entrypoint.contains("litestream sync -wait -timeout \"$sync_timeout\""));
+    assert!(entrypoint.contains("url: ${%s}"));
+    assert!(entrypoint.contains("date -u '+%Y-%m-%dT%H:%M:%SZ' >\"$heartbeat_path\""));
 
     let verify = read("scripts/verify.sh");
     assert!(verify.contains("scripts/production-ops-drill.sh --local"));
