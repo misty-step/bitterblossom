@@ -22,6 +22,16 @@ fn canary_responder_template_task_cards_have_agent_contract_sections() {
 }
 
 #[test]
+fn docs_sync_template_task_cards_have_agent_contract_sections() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/docs-sync-plane/tasks");
+    let checked = assert_contract_cards(&root);
+    assert!(
+        checked >= 1,
+        "expected docs-sync template cards, checked {checked}"
+    );
+}
+
+#[test]
 fn review_factory_template_task_cards_have_agent_contract_sections() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/review-factory-plane/tasks");
     let checked = assert_contract_cards(&root);

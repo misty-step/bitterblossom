@@ -92,10 +92,15 @@ Copyable workload templates beyond the demo live under `examples/`:
   report-only incident responder for Canary-style wake-up events with
   containment filters, budgets, sample incident payload, expected
   `REPORT.json`, and a local validation recipe.
+- `examples/docs-sync-plane/` is a credential-free-to-validate docs drift
+  watcher with manual, cron, and GitHub push webhook triggers, containment
+  filters, budgets, sample push payload, expected `REPORT.json`, and a local
+  validation recipe.
 
 ```bash
 ./target/debug/bb --config examples/review-factory-plane check --json
 ./target/debug/bb --config examples/canary-responder-plane check --json
+./target/debug/bb --config examples/docs-sync-plane check --json
 ```
 
 ## Guarantees

@@ -1,0 +1,30 @@
+{
+  "schema": "bb.docs_sync.report.v1",
+  "repo": "example-org/product-api",
+  "source_ref": "refs/heads/main",
+  "source_sha": "2222222222222222222222222222222222222222",
+  "docs_targets": [
+    "README.md",
+    "docs/operations.md",
+    "docs/api.md"
+  ],
+  "drift_findings": [
+    {
+      "severity": "minor",
+      "source": "src/api/routes.rs",
+      "docs_target": "docs/api.md",
+      "summary": "A new response field is present in code but absent from the API reference."
+    }
+  ],
+  "recommended_changes": [
+    "Update docs/api.md with the new response field and its compatibility note.",
+    "Add the changed route to the next release-note draft."
+  ],
+  "skipped_mutations": [
+    "No files were edited because this template is report-only."
+  ],
+  "residual_risk": [
+    "The sample did not inspect a live repository checkout.",
+    "A human should confirm whether the API change is user-facing."
+  ]
+}

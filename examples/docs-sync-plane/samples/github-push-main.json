@@ -1,0 +1,25 @@
+{
+  "ref": "refs/heads/main",
+  "before": "1111111111111111111111111111111111111111",
+  "after": "2222222222222222222222222222222222222222",
+  "repository": {
+    "full_name": "example-org/product-api",
+    "default_branch": "main",
+    "owner": {
+      "login": "example-org"
+    }
+  },
+  "head_commit": {
+    "id": "2222222222222222222222222222222222222222",
+    "message": "feat: add response metadata",
+    "modified": [
+      "src/api/routes.rs",
+      "README.md"
+    ],
+    "added": [],
+    "removed": []
+  },
+  "sender": {
+    "login": "maintainer"
+  }
+}
