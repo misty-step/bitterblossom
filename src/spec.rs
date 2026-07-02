@@ -15,6 +15,8 @@ pub struct PlaneSpec {
     #[serde(default)]
     pub notify: NotifySpec,
     #[serde(default)]
+    pub backup: BackupSpec,
+    #[serde(default)]
     pub budget: GlobalBudget,
     #[serde(default, rename = "workload_repo")]
     pub workload_repos: Vec<WorkloadRepoSpec>,
@@ -28,6 +30,7 @@ impl Default for PlaneSpec {
             dev: false,
             ingress: IngressSpec::default(),
             notify: NotifySpec::default(),
+            backup: BackupSpec::default(),
             budget: GlobalBudget::default(),
             workload_repos: Vec::new(),
             gate: None,
@@ -123,6 +126,17 @@ impl Default for IngressSpec {
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct NotifySpec {
     pub webhook_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct BackupSpec {
+    #[serde(default)]
+    pub enabled: bool,
+    pub provider: Option<String>,
+    pub replica_env: Option<String>,
+    pub last_success_path: Option<String>,
+    pub rpo_seconds: Option<u64>,
+    pub rto_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -541,6 +555,7 @@ impl Plane {
                 .validate(name, &agent.model)
                 .with_context(|| format!("agent '{name}'"))?;
         }
+        validate_backup_spec(&spec.backup)?;
         let mut routes = std::collections::BTreeSet::new();
         for task in tasks.values() {
             validate_required_artifacts(&task.name, &task.spec.required_artifacts)?;
@@ -838,6 +853,35 @@ fn repo_task_spec(
         verdict: raw.verdict,
         required_artifacts: raw.required_artifacts,
     })
+}
+
+fn validate_backup_spec(backup: &BackupSpec) -> Result<()> {
+    if !backup.enabled {
+        return Ok(());
+    }
+    let required = [
+        ("provider", backup.provider.as_deref()),
+        ("last_success_path", backup.last_success_path.as_deref()),
+    ];
+    for (field, value) in required {
+        if value.is_none_or(|v| v.trim().is_empty()) {
+            bail!("[backup] enabled=true requires {field}");
+        }
+    }
+    if backup.rpo_seconds.is_none_or(|v| v == 0) {
+        bail!("[backup] enabled=true requires rpo_seconds > 0");
+    }
+    if backup.rto_seconds.is_none_or(|v| v == 0) {
+        bail!("[backup] enabled=true requires rto_seconds > 0");
+    }
+    if backup
+        .replica_env
+        .as_deref()
+        .is_some_and(|v| v.trim().is_empty())
+    {
+        bail!("[backup] replica_env must be a non-empty env var name when set");
+    }
+    Ok(())
 }
 
 fn validate_required_artifacts(task: &str, artifacts: &[String]) -> Result<()> {

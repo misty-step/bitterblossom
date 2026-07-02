@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
 
 use anyhow::Result;
 use serde_json::{json, Value};
@@ -187,6 +188,7 @@ pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
             "max_cost_per_day_usd": plane.spec.budget.max_cost_per_day_usd,
             "plane_paused": paused.is_some(),
         },
+        "backup": backup_status(plane, generated_at)?,
         "guards": {
             "plane_paused": paused.is_some(),
             "paused_reason": paused.as_ref().map(|(r, _)| r.clone()),
@@ -228,6 +230,66 @@ pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
         },
         "freshness_contracts": progress::freshness_contracts(),
         "tasks": tasks,
+    }))
+}
+
+fn backup_status(plane: &Plane, generated_at: OffsetDateTime) -> Result<Value> {
+    let backup = &plane.spec.backup;
+    if !backup.enabled {
+        return Ok(json!({
+            "enabled": false,
+            "status": "disabled",
+        }));
+    }
+    let path = backup.last_success_path.as_deref().map(|p| {
+        let p = Path::new(p);
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            plane.root.join(p)
+        }
+    });
+    let mut last_success_at = None;
+    let mut last_success_age_seconds = None;
+    let mut reason = None;
+    if let Some(path) = &path {
+        match std::fs::read_to_string(path) {
+            Ok(text) => {
+                let stamp = text.trim();
+                match OffsetDateTime::parse(stamp, &Rfc3339) {
+                    Ok(at) => {
+                        last_success_at = Some(stamp.to_string());
+                        last_success_age_seconds = Some((generated_at - at).whole_seconds().max(0));
+                    }
+                    Err(_) => {
+                        reason = Some("last_success_path did not contain RFC3339".to_string())
+                    }
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                reason = Some("last_success_path missing".to_string());
+            }
+            Err(err) => reason = Some(format!("last_success_path unreadable: {err}")),
+        }
+    }
+    let status = match (last_success_age_seconds, backup.rpo_seconds) {
+        (Some(age), Some(rpo)) if age <= i64::try_from(rpo).unwrap_or(i64::MAX) => "fresh",
+        (Some(_), Some(_)) => "stale",
+        (Some(_), None) => "unknown",
+        (None, _) => "unknown",
+    };
+    Ok(json!({
+        "enabled": true,
+        "status": status,
+        "provider": &backup.provider,
+        "replica_env": &backup.replica_env,
+        "last_success_path": &backup.last_success_path,
+        "last_success_at": last_success_at,
+        "last_success_age_seconds": last_success_age_seconds,
+        "rpo_seconds": backup.rpo_seconds,
+        "rto_seconds": backup.rto_seconds,
+        "healthy": status == "fresh",
+        "reason": reason,
     }))
 }
 

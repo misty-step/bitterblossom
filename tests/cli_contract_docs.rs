@@ -220,6 +220,8 @@ fn operations_runbook_and_drill_are_wired_into_the_gate() {
     let ops = read("docs/operations/README.md");
     assert!(ops.contains("scripts/production-ops-drill.sh --remote"));
     assert!(ops.contains("scripts/production-ops-drill.sh --local"));
+    assert!(ops.contains("backup.status == \"fresh\""));
+    assert!(ops.contains("last_success_path = \".bb/backup-last-success\""));
     assert!(ops.contains("flyctl releases rollback"));
     assert!(ops.contains("BB_PLANE_DIR=${BB_PLANE_DIR:-/app/plane} bb recover --json"));
     assert!(ops.contains("bb dlq replay <id> --json"));
@@ -229,6 +231,9 @@ fn operations_runbook_and_drill_are_wired_into_the_gate() {
 
     let script = read("scripts/production-ops-drill.sh");
     assert!(script.contains("backup_restore_check"));
+    assert!(script.contains("restore_read_surface_check"));
+    assert!(script.contains("gate --change ops-drill --json"));
+    assert!(script.contains("backup status was not fresh"));
     assert!(script.contains("expect_bearer_code remote-tasks"));
     assert!(script.contains("curl --config -"));
     assert!(!script.contains("-H \"Authorization: Bearer $BB_API_TOKEN\""));

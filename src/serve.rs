@@ -712,6 +712,7 @@ pub fn check_view(plane: &Plane, ledger: &Ledger) -> Result<serde_json::Value> {
     Ok(serde_json::json!({
         "root": plane.root,
         "db_path": plane.db_path(),
+        "backup": &plane.spec.backup,
         "agents": plane.agents.keys().collect::<Vec<_>>(),
         "agent_policy": agent_policy,
         "tasks": plane.tasks.keys().collect::<Vec<_>>(),
